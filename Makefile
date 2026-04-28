@@ -3,7 +3,7 @@
 all: build
 
 build:
-	$(MAKE) -C workspace
+	$(MAKE) -C src
 
 clean:
-	$(MAKE) -C workspace clean
+	$(MAKE) -C src clean
