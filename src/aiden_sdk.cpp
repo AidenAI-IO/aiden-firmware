@@ -12,6 +12,7 @@
 extern "C" {
 #include "rk_debug.h"
 #include "rk_mpi_ai.h"
+#include "rk_mpi_amix.h"
 #include "rk_mpi_ao.h"
 #include "rk_mpi_mb.h"
 #include "rk_mpi_sys.h"
@@ -146,6 +147,7 @@ bool WakeupListener::is_running() const {
 class AudioCaptureImpl {
 public:
     std::atomic<bool> running{false};
+    bool initialized = false;
     pthread_t thread{};
     AudioConfig config;
     AudioStreamCallback callback;
@@ -163,7 +165,7 @@ public:
 
     void run() {
         while (running) {
-            RK_S32 ret = RK_MPI_AI_GetFrame(dev_id, chn_id, &frame, nullptr, -1);
+            RK_S32 ret = RK_MPI_AI_GetFrame(dev_id, chn_id, &frame, nullptr, 500);
             if (ret == RK_SUCCESS) {
                 void* data = RK_MPI_MB_Handle2VirAddr(frame.pMbBlk);
                 if (callback && data) {
@@ -175,7 +177,6 @@ public:
                 }
                 RK_MPI_AI_ReleaseFrame(dev_id, chn_id, &frame, nullptr);
             }
-            usleep(1000);
         }
     }
 };
@@ -190,34 +191,48 @@ bool AudioCapture::init(const AudioConfig& config) {
     impl_->dev_id = 0;
     impl_->chn_id = 0;
 
-    // Configure AI attributes
-    impl_->attr.soundCard.channels = config.channels;
-    impl_->attr.soundCard.sampleRate = config.sample_rate;
-    impl_->attr.soundCard.bitWidth = to_bit_width(config.bit_width);
-    impl_->attr.enBitwidth = to_bit_width(config.bit_width);
-    impl_->attr.enSamplerate = (AUDIO_SAMPLE_RATE_E)config.sample_rate;
-    impl_->attr.enSoundmode = (config.channels == 1) ? AUDIO_SOUND_MODE_MONO : AUDIO_SOUND_MODE_STEREO;
-    impl_->attr.u32FrmNum = 4;
-    impl_->attr.u32PtNumPerFrm = 1024;
-    impl_->attr.u32EXFlag = 0;
-    impl_->attr.u32ChnCnt = config.channels;
+    memset(&impl_->attr, 0, sizeof(AIO_ATTR_S));
 
     if (config.device_name) {
         strncpy((char*)impl_->attr.u8CardName, config.device_name, sizeof(impl_->attr.u8CardName) - 1);
     }
 
+    // Hardware always opens with 2 channels (rv1106-acodec minimum)
+    impl_->attr.soundCard.channels = 2;
+    impl_->attr.soundCard.sampleRate = config.sample_rate;
+    impl_->attr.soundCard.bitWidth = to_bit_width(config.bit_width);
+    impl_->attr.enBitwidth = to_bit_width(config.bit_width);
+    impl_->attr.enSamplerate = (AUDIO_SAMPLE_RATE_E)config.sample_rate;
+    impl_->attr.enSoundmode = (config.channels == 1) ? AUDIO_SOUND_MODE_MONO : AUDIO_SOUND_MODE_STEREO;
+    impl_->attr.u32PtNumPerFrm = 1024;
+    impl_->attr.u32FrmNum = 4;
+    impl_->attr.u32EXFlag = 0;
+    impl_->attr.u32ChnCnt = 2;
+
     RK_S32 ret = RK_MPI_AI_SetPubAttr(impl_->dev_id, &impl_->attr);
     if (ret != RK_SUCCESS) return false;
+
+    // RV1106 mixer: enable loopback and set ADC volume
+    RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Mode2");
+    RK_MPI_AMIX_SetControl(impl_->dev_id, "ADC ALC Left Volume", (char*)"22");
+    RK_MPI_AMIX_SetControl(impl_->dev_id, "ADC ALC Right Volume", (char*)"22");
 
     ret = RK_MPI_AI_Enable(impl_->dev_id);
     if (ret != RK_SUCCESS) return false;
 
+    // Set channel param — s32UsrFrmDepth must be > 0 for GetFrame to work
+    AI_CHN_PARAM_S chnParam;
+    memset(&chnParam, 0, sizeof(AI_CHN_PARAM_S));
+    chnParam.s32UsrFrmDepth = 4;
+    RK_MPI_AI_SetChnParam(impl_->dev_id, impl_->chn_id, &chnParam);
+
     ret = RK_MPI_AI_EnableChn(impl_->dev_id, impl_->chn_id);
     if (ret != RK_SUCCESS) return false;
 
-    ret = RK_MPI_AI_EnableReSmp(impl_->dev_id, impl_->chn_id, (AUDIO_SAMPLE_RATE_E)config.sample_rate);
-    if (ret != RK_SUCCESS) return false;
+    RK_MPI_AI_SetVolume(impl_->dev_id, 100);
+    RK_MPI_AI_SetTrackMode(impl_->dev_id, AUDIO_TRACK_NORMAL);
 
+    impl_->initialized = true;
     return true;
 }
 
@@ -231,20 +246,23 @@ bool AudioCapture::start(AudioStreamCallback callback) {
 }
 
 void AudioCapture::stop() {
+    if (!impl_->initialized) return;
+
     if (impl_->running) {
         impl_->running = false;
         pthread_join(impl_->thread, nullptr);
     }
 
-    RK_MPI_AI_DisableReSmp(impl_->dev_id, impl_->chn_id);
     RK_MPI_AI_DisableChn(impl_->dev_id, impl_->chn_id);
     RK_MPI_AI_Disable(impl_->dev_id);
+    RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Disabled");
 
+    impl_->initialized = false;
     maybe_sys_deinit();
 }
 
 bool AudioCapture::get_frame(AudioFrame& frame) {
-    RK_S32 ret = RK_MPI_AI_GetFrame(impl_->dev_id, impl_->chn_id, &impl_->frame, nullptr, -1);
+    RK_S32 ret = RK_MPI_AI_GetFrame(impl_->dev_id, impl_->chn_id, &impl_->frame, nullptr, 500);
     if (ret == RK_SUCCESS) {
         void* data = RK_MPI_MB_Handle2VirAddr(impl_->frame.pMbBlk);
         frame.data = data;
@@ -285,20 +303,23 @@ bool AudioPlayer::init(const AudioConfig& config) {
     impl_->dev_id = 0;
     impl_->chn_id = 0;
 
-    impl_->attr.soundCard.channels = config.channels;
+    memset(&impl_->attr, 0, sizeof(AIO_ATTR_S));
+
+    if (config.device_name) {
+        strncpy((char*)impl_->attr.u8CardName, config.device_name, sizeof(impl_->attr.u8CardName) - 1);
+    }
+
+    // Hardware always opens with 2 channels (rv1106-acodec minimum)
+    impl_->attr.soundCard.channels = 2;
     impl_->attr.soundCard.sampleRate = config.sample_rate;
     impl_->attr.soundCard.bitWidth = to_bit_width(config.bit_width);
     impl_->attr.enBitwidth = to_bit_width(config.bit_width);
     impl_->attr.enSamplerate = (AUDIO_SAMPLE_RATE_E)config.sample_rate;
     impl_->attr.enSoundmode = (config.channels == 1) ? AUDIO_SOUND_MODE_MONO : AUDIO_SOUND_MODE_STEREO;
-    impl_->attr.u32FrmNum = 4;
     impl_->attr.u32PtNumPerFrm = 1024;
+    impl_->attr.u32FrmNum = 4;
     impl_->attr.u32EXFlag = 0;
-    impl_->attr.u32ChnCnt = config.channels;
-
-    if (config.device_name) {
-        strncpy((char*)impl_->attr.u8CardName, config.device_name, sizeof(impl_->attr.u8CardName) - 1);
-    }
+    impl_->attr.u32ChnCnt = 2;
 
     RK_S32 ret = RK_MPI_AO_SetPubAttr(impl_->dev_id, &impl_->attr);
     if (ret != RK_SUCCESS) return false;
@@ -306,11 +327,24 @@ bool AudioPlayer::init(const AudioConfig& config) {
     ret = RK_MPI_AO_Enable(impl_->dev_id);
     if (ret != RK_SUCCESS) return false;
 
+    AO_CHN_PARAM_S chnParam;
+    memset(&chnParam, 0, sizeof(AO_CHN_PARAM_S));
+    chnParam.enLoopbackMode = AUDIO_LOOPBACK_NONE;
+    RK_MPI_AO_SetChnParams(impl_->dev_id, impl_->chn_id, &chnParam);
+
+    if (config.channels == 1)
+        RK_MPI_AO_SetTrackMode(impl_->dev_id, AUDIO_TRACK_OUT_STEREO);
+    else
+        RK_MPI_AO_SetTrackMode(impl_->dev_id, AUDIO_TRACK_NORMAL);
+
     ret = RK_MPI_AO_EnableChn(impl_->dev_id, impl_->chn_id);
     if (ret != RK_SUCCESS) return false;
 
-    ret = RK_MPI_AO_EnableReSmp(impl_->dev_id, impl_->chn_id, (AUDIO_SAMPLE_RATE_E)config.sample_rate);
+    ret = RK_MPI_AO_EnableReSmp(impl_->dev_id, impl_->chn_id,
+                                (AUDIO_SAMPLE_RATE_E)config.sample_rate);
     if (ret != RK_SUCCESS) return false;
+
+    RK_MPI_AO_SetVolume(impl_->dev_id, 100);
 
     impl_->initialized = true;
     return true;
@@ -319,20 +353,24 @@ bool AudioPlayer::init(const AudioConfig& config) {
 bool AudioPlayer::play(const void* data, uint32_t length) {
     if (!impl_->initialized) return false;
 
-    MB_BLK blk = nullptr;
-    RK_S32 ret = RK_MPI_SYS_MmzAlloc(&blk, nullptr, nullptr, length);
-    if (ret != RK_SUCCESS || !blk) return false;
-
-    void* vaddr = RK_MPI_MB_Handle2VirAddr(blk);
-    memcpy(vaddr, data, length);
-
     AUDIO_FRAME_S frame{};
-    frame.pMbBlk = blk;
     frame.u32Len = length;
+    frame.enBitWidth = to_bit_width(impl_->config.bit_width);
+    frame.enSoundMode = (impl_->config.channels == 1) ? AUDIO_SOUND_MODE_MONO : AUDIO_SOUND_MODE_STEREO;
+    frame.bBypassMbBlk = RK_FALSE;
+
+    MB_EXT_CONFIG_S extConfig;
+    memset(&extConfig, 0, sizeof(MB_EXT_CONFIG_S));
+    extConfig.pOpaque = const_cast<void*>(data);
+    extConfig.pu8VirAddr = (RK_U8*)data;
+    extConfig.u64Size = length;
+
+    RK_S32 ret = RK_MPI_SYS_CreateMB(&frame.pMbBlk, &extConfig);
+    if (ret != RK_SUCCESS) return false;
 
     ret = RK_MPI_AO_SendFrame(impl_->dev_id, impl_->chn_id, &frame, -1);
 
-    RK_MPI_MB_ReleaseMB(blk);
+    RK_MPI_MB_ReleaseMB(frame.pMbBlk);
     return ret == RK_SUCCESS;
 }
 
@@ -391,6 +429,7 @@ static PIXEL_FORMAT_E to_pixel_format(const char* fmt) {
 class CameraCaptureImpl {
 public:
     std::atomic<bool> running{false};
+    bool initialized = false;
     pthread_t thread{};
     CameraConfig config;
     VideoStreamCallback callback;
@@ -411,7 +450,7 @@ public:
 
     void run() {
         while (running) {
-            RK_S32 ret = RK_MPI_VI_GetChnFrame(pipe_id, chn_id, &frame, -1);
+            RK_S32 ret = RK_MPI_VI_GetChnFrame(pipe_id, chn_id, &frame, 500);
             if (ret == RK_SUCCESS) {
                 void* data = RK_MPI_MB_Handle2VirAddr(frame.stVFrame.pMbBlk);
                 if (callback && data) {
@@ -499,6 +538,7 @@ bool CameraCapture::init(const CameraConfig& config) {
         return false;
     }
 
+    impl_->initialized = true;
     return true;
 }
 
@@ -512,6 +552,8 @@ bool CameraCapture::start(VideoStreamCallback callback) {
 }
 
 void CameraCapture::stop() {
+    if (!impl_->initialized) return;
+
     if (impl_->running) {
         impl_->running = false;
         pthread_join(impl_->thread, nullptr);
@@ -520,6 +562,7 @@ void CameraCapture::stop() {
     RK_MPI_VI_DisableChn(impl_->pipe_id, impl_->chn_id);
     RK_MPI_VI_DisableDev(impl_->dev_id);
 
+    impl_->initialized = false;
     maybe_sys_deinit();
 }
 

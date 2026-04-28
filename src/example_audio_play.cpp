@@ -2,19 +2,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
-
-// Generate a simple sine wave tone
-void generate_tone(short* buffer, int samples, int sample_rate, float frequency) {
-    for (int i = 0; i < samples; i++) {
-        float t = (float)i / sample_rate;
-        buffer[i] = (short)(sin(2.0 * M_PI * frequency * t) * 16000);
-    }
-}
 
 int main(int argc, char* argv[]) {
+    const char* input_file = (argc > 1) ? argv[1] : "audio_capture_debug.pcm";
+
+    FILE* fp = fopen(input_file, "rb");
+    if (!fp) {
+        fprintf(stderr, "Failed to open %s\n", input_file);
+        return 1;
+    }
+
     aiden::AudioConfig config;
-    config.device_name = (argc > 1) ? argv[1] : nullptr;
     config.sample_rate = 16000;
     config.channels = 1;
     config.bit_width = 16;
@@ -24,29 +22,25 @@ int main(int argc, char* argv[]) {
     printf("Initializing audio player...\n");
     if (!player.init(config)) {
         fprintf(stderr, "Failed to initialize audio player\n");
+        fclose(fp);
         return 1;
     }
 
-    printf("Playing 440Hz tone for 2 seconds...\n");
+    printf("Playing %s (16kHz/16bit/mono)...\n", input_file);
 
-    const int samples_per_buffer = 1024;
-    const int total_samples = config.sample_rate * 2;  // 2 seconds
-    short buffer[samples_per_buffer];
-
-    for (int offset = 0; offset < total_samples; offset += samples_per_buffer) {
-        int samples = (offset + samples_per_buffer > total_samples)
-                      ? (total_samples - offset)
-                      : samples_per_buffer;
-
-        generate_tone(buffer, samples, config.sample_rate, 440.0f);
-
-        if (!player.play(buffer, samples * sizeof(short))) {
-            fprintf(stderr, "Failed to play audio\n");
+    uint8_t buffer[1024];
+    int chunks = 0;
+    size_t bytes_read;
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), fp)) > 0) {
+        if (!player.play(buffer, bytes_read)) {
+            fprintf(stderr, "Failed to play audio chunk\n");
             break;
         }
+        chunks++;
     }
 
-    printf("Playback complete.\n");
+    fclose(fp);
+    printf("Played %d chunks. Done.\n", chunks);
     player.stop();
 
     return 0;

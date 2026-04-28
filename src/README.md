@@ -17,17 +17,27 @@ The SDK wraps the Rockchip Media Process Interface (MPI) APIs with a clean C++ i
 
 ## Building
 
+Standard out-of-source CMake build:
+
 ```bash
-cd src
-make
+cmake -S . -B build
+cmake --build build
+```
+
+For the Luckfox cross-compilation environment, use:
+
+```bash
+./build.sh
 ```
 
 This builds:
-- `libaiden.a` - Static library
-- `example_wakeup` - Wakeup event demo
-- `example_audio_capture` - Audio recording demo
-- `example_audio_play` - Audio playback demo
-- `example_camera_capture` - Camera frame capture demo
+- `build/lib/libaiden.a` - Static library
+- `build/bin/example_wakeup` - Wakeup event demo
+- `build/bin/example_audio_capture` - Audio recording demo
+- `build/bin/example_audio_play` - Audio playback demo
+- `build/bin/example_camera_capture` - Camera frame capture demo
+
+All build artifacts are placed in the `build/` directory to keep the source tree clean.
 
 ## API Reference
 
@@ -152,7 +162,7 @@ struct CameraConfig {
 ### Wakeup Event
 
 ```bash
-./output/example_wakeup
+./build/bin/example_wakeup
 ```
 
 Listens for falling edge on GPIO 33 (Pin 3).
@@ -160,7 +170,7 @@ Listens for falling edge on GPIO 33 (Pin 3).
 ### Audio Capture
 
 ```bash
-./output/example_audio_capture [device_name]
+./build/bin/example_audio_capture [device_name]
 ```
 
 Captures audio and prints frame info. Optional device name parameter.
@@ -168,7 +178,7 @@ Captures audio and prints frame info. Optional device name parameter.
 ### Audio Playback
 
 ```bash
-./output/example_audio_play [device_name]
+./build/bin/example_audio_play [device_name]
 ```
 
 Plays a 440Hz tone for 2 seconds.
@@ -176,7 +186,7 @@ Plays a 440Hz tone for 2 seconds.
 ### Camera Capture
 
 ```bash
-./output/example_camera_capture [device_name]
+./build/bin/example_camera_capture [device_name]
 ```
 
 Captures video frames and prints frame info. Optional device name parameter.

@@ -10,9 +10,9 @@ namespace aiden {
 
 // Audio configuration
 struct AudioConfig {
-    const char* device_name = nullptr;  // e.g., "default:CARD=rockchipes8388"
+    const char* device_name = "hw:0,0";
     int sample_rate = 16000;
-    int channels = 2;
+    int channels = 1;
     int bit_width = 16;  // 8, 16, or 24
 };
 

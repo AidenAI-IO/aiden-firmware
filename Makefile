@@ -1,9 +1,14 @@
-.PHONY: all build clean
+.PHONY: all configure build clean
+
+BUILD_DIR := build
 
 all: build
 
-build:
-	$(MAKE) -C src
+configure:
+	cmake -S . -B $(BUILD_DIR)
+
+build: configure
+	cmake --build $(BUILD_DIR)
 
 clean:
-	$(MAKE) -C src clean
+	rm -rf $(BUILD_DIR)
