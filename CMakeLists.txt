@@ -58,3 +58,5 @@ target_link_libraries(example_audio_play PRIVATE aiden)
 
 add_executable(example_camera_capture src/example_camera_capture.cpp)
 target_link_libraries(example_camera_capture PRIVATE aiden)
+
+add_executable(example_usb_hid src/example_usb_hid.cpp)

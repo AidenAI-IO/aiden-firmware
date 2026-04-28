@@ -5,6 +5,7 @@ C++ development SDK for Luckfox Pico Zero providing high-level APIs for:
 2. Audio capture (recording)
 3. Audio playback
 4. Camera frame capture (VI)
+5. USB HID emulation (keyboard, touch)
 
 ## Architecture
 
@@ -36,6 +37,7 @@ This builds:
 - `build/bin/example_audio_capture` - Audio recording demo
 - `build/bin/example_audio_play` - Audio playback demo
 - `build/bin/example_camera_capture` - Camera frame capture demo
+- `build/bin/example_usb_hid` - USB HID emulation tool
 
 All build artifacts are placed in the `build/` directory to keep the source tree clean.
 
@@ -191,6 +193,29 @@ Plays a 440Hz tone for 2 seconds.
 
 Captures video frames and prints frame info. Optional device name parameter.
 
+### USB HID Emulation
+
+```bash
+# Setup USB gadget (run once, requires root)
+sudo ./build/bin/example_usb_hid setup composite
+
+# Keyboard examples
+sudo ./build/bin/example_usb_hid keyboard tap ENTER
+sudo ./build/bin/example_usb_hid keyboard tap CTRL ALT DELETE
+sudo ./build/bin/example_usb_hid keyboard text "hello from pico"
+
+# Touch examples (coordinates: 0-32767)
+sudo ./build/bin/example_usb_hid touch tap 16000 16000
+sudo ./build/bin/example_usb_hid touch down 10000 10000
+sudo ./build/bin/example_usb_hid touch move 20000 20000
+sudo ./build/bin/example_usb_hid touch up
+
+# Cleanup
+sudo ./build/bin/example_usb_hid cleanup
+```
+
+Emulates HID devices (keyboard, touchscreen) through USB-C port using Linux USB gadget framework.
+
 ## Hardware Setup
 
 ### GPIO Wakeup
@@ -209,6 +234,14 @@ Captures video frames and prints frame info. Optional device name parameter.
 - Default resolution: 1920x1080
 - Supported formats: NV12, NV16, UYVY, YUYV
 - Uses Rockchip ISP for image processing
+
+### USB HID
+- USB-C port in peripheral/device mode
+- Requires Linux USB gadget support (CONFIG_USB_CONFIGFS)
+- ConfigFS mounted at `/sys/kernel/config`
+- Supports composite devices (keyboard + touch simultaneously)
+- Keyboard: standard 104-key layout with modifiers
+- Touch: absolute positioning touchscreen (32767x32767 coordinate space)
 
 ## Dependencies
 
