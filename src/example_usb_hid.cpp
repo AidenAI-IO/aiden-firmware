@@ -77,71 +77,40 @@ const uint8_t kKeyboardDescriptor[] = {
     0xc0,
 };
 
+// Absolute Mouse descriptor - works on macOS/iOS/Windows/Linux
+// Uses Generic Desktop Pointer instead of Digitizer for universal compatibility
 const uint8_t kTouchDescriptor[] = {
-    0x05, 0x0d,             // Usage Page (Digitizer)
-    0x09, 0x04,             // Usage (Touch Screen)
+    0x05, 0x01,             // Usage Page (Generic Desktop)
+    0x09, 0x02,             // Usage (Mouse)
     0xa1, 0x01,             // Collection (Application)
-    0x09, 0x22,             //   Usage (Finger)
-    0xa1, 0x02,             //   Collection (Logical)
-    // Contact ID
-    0x09, 0x51,             //     Usage (Contact ID)
+    // Buttons
+    0x09, 0x01,             //   Usage (Pointer)
+    0xa1, 0x00,             //   Collection (Physical)
+    0x05, 0x09,             //     Usage Page (Button)
+    0x19, 0x01,             //     Usage Minimum (Button 1)
+    0x29, 0x03,             //     Usage Maximum (Button 3)
     0x15, 0x00,             //     Logical Minimum (0)
     0x25, 0x01,             //     Logical Maximum (1)
-    0x75, 0x08,             //     Report Size (8)
-    0x95, 0x01,             //     Report Count (1)
-    0x81, 0x02,             //     Input (Data, Variable, Absolute)
-    // Tip Switch + In Range
-    0x09, 0x42,             //     Usage (Tip Switch)
-    0x09, 0x32,             //     Usage (In Range)
-    0x15, 0x00,             //     Logical Minimum (0)
-    0x25, 0x01,             //     Logical Maximum (1)
+    0x95, 0x03,             //     Report Count (3)
     0x75, 0x01,             //     Report Size (1)
-    0x95, 0x02,             //     Report Count (2)
     0x81, 0x02,             //     Input (Data, Variable, Absolute)
-    // Padding (6 bits)
-    0x75, 0x06,             //     Report Size (6)
+    // Padding (5 bits)
     0x95, 0x01,             //     Report Count (1)
+    0x75, 0x05,             //     Report Size (5)
     0x81, 0x03,             //     Input (Constant)
-    // X and Y with physical dimensions
+    // X and Y - Absolute positioning
     0x05, 0x01,             //     Usage Page (Generic Desktop)
     0x09, 0x30,             //     Usage (X)
-    0x16, 0x00, 0x00,       //     Logical Minimum (0)
-    0x26, 0xff, 0x7f,       //     Logical Maximum (32767)
-    0x36, 0x00, 0x00,       //     Physical Minimum (0)
-    0x46, 0x00, 0x10,       //     Physical Maximum (4096)
-    0x55, 0x0e,             //     Unit Exponent (-2)
-    0x65, 0x11,             //     Unit (cm)
-    0x75, 0x10,             //     Report Size (16)
-    0x95, 0x01,             //     Report Count (1)
-    0x81, 0x02,             //     Input (Data, Variable, Absolute)
     0x09, 0x31,             //     Usage (Y)
     0x16, 0x00, 0x00,       //     Logical Minimum (0)
     0x26, 0xff, 0x7f,       //     Logical Maximum (32767)
     0x36, 0x00, 0x00,       //     Physical Minimum (0)
-    0x46, 0x00, 0x10,       //     Physical Maximum (4096)
-    0x55, 0x0e,             //     Unit Exponent (-2)
-    0x65, 0x11,             //     Unit (cm)
+    0x46, 0xff, 0x7f,       //     Physical Maximum (32767)
     0x75, 0x10,             //     Report Size (16)
-    0x95, 0x01,             //     Report Count (1)
+    0x95, 0x02,             //     Report Count (2)
     0x81, 0x02,             //     Input (Data, Variable, Absolute)
-    // Scan Time
-    0x05, 0x0d,             //     Usage Page (Digitizer)
-    0x09, 0x56,             //     Usage (Scan Time)
-    0x15, 0x00,             //     Logical Minimum (0)
-    0x26, 0xff, 0x00,       //     Logical Maximum (255)
-    0x75, 0x08,             //     Report Size (8)
-    0x95, 0x01,             //     Report Count (1)
-    0x81, 0x02,             //     Input (Data, Variable, Absolute)
-    0xc0,                   //   End Collection
-    // Contact Count
-    0x05, 0x0d,             //   Usage Page (Digitizer)
-    0x09, 0x54,             //   Usage (Contact Count)
-    0x15, 0x00,             //   Logical Minimum (0)
-    0x25, 0x01,             //   Logical Maximum (1)
-    0x75, 0x08,             //   Report Size (8)
-    0x95, 0x01,             //   Report Count (1)
-    0x81, 0x02,             //   Input (Data, Variable, Absolute)
-    0xc0,                   // End Collection
+    0xc0,                   //   End Collection (Physical)
+    0xc0,                   // End Collection (Application)
 };
 
 std::string gadget_path(const Options& options) {
@@ -493,7 +462,7 @@ void setup_touch_function(const std::string& gadget) {
     ensure_dir(function_path);
     write_text_file(function_path + "/protocol", "0");
     write_text_file(function_path + "/subclass", "0");
-    write_text_file(function_path + "/report_length", "8");
+    write_text_file(function_path + "/report_length", "5");
     write_binary_file(function_path + "/report_desc", kTouchDescriptor, sizeof(kTouchDescriptor));
     ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb1");
 }
@@ -746,13 +715,12 @@ int clamp_coordinate(int value, int maximum) {
 void update_touch_coordinates(std::vector<uint8_t>& state, int x, int y, const Options& options) {
     x = clamp_coordinate(x, options.width);
     y = clamp_coordinate(y, options.height);
-    state[2] = static_cast<uint8_t>(x & 0xff);
-    state[3] = static_cast<uint8_t>((x >> 8) & 0xff);
-    state[4] = static_cast<uint8_t>(y & 0xff);
-    state[5] = static_cast<uint8_t>((y >> 8) & 0xff);
+    // Absolute mouse format: [buttons][X_lo][X_hi][Y_lo][Y_hi]
+    state[1] = static_cast<uint8_t>(x & 0xff);
+    state[2] = static_cast<uint8_t>((x >> 8) & 0xff);
+    state[3] = static_cast<uint8_t>(y & 0xff);
+    state[4] = static_cast<uint8_t>((y >> 8) & 0xff);
 }
-
-static uint8_t scan_time_counter = 0;
 
 void handle_touch(const Options& options, const std::vector<std::string>& args) {
     if (args.size() < 2) {
@@ -760,19 +728,17 @@ void handle_touch(const Options& options, const std::vector<std::string>& args) 
     }
 
     const std::string& action = args[1];
-    std::vector<uint8_t> state = load_state(touch_state_path(options), 8);
+    // Absolute mouse report: 5 bytes [buttons][X_lo][X_hi][Y_lo][Y_hi]
+    std::vector<uint8_t> state = load_state(touch_state_path(options), 5);
 
     if (action == "down" || action == "move") {
         if (args.size() != 4) {
             throw std::runtime_error("touch down/move require X and Y");
         }
-        state[0] = 0x01;  // contact_id = 1
         update_touch_coordinates(state, parse_int(args[2]), parse_int(args[3]), options);
-        if (action == "down" || state[1] == 0x00) {
-            state[1] = 0x03;  // tip_switch=1, in_range=1
+        if (action == "down" || state[0] == 0x00) {
+            state[0] = 0x01;  // Left button pressed
         }
-        state[6] = ++scan_time_counter;
-        state[7] = 0x01;  // contact_count = 1
         write_report(options.touch_dev, state);
         save_state(touch_state_path(options), state);
         return;
@@ -782,9 +748,7 @@ void handle_touch(const Options& options, const std::vector<std::string>& args) 
         if (args.size() != 2) {
             throw std::runtime_error("touch up takes no coordinates");
         }
-        state[1] = 0x00;  // tip_switch=0, in_range=0
-        state[6] = ++scan_time_counter;
-        state[7] = 0x01;  // contact_count = 1
+        state[0] = 0x00;  // No buttons pressed
         write_report(options.touch_dev, state);
         save_state(touch_state_path(options), state);
         return;
@@ -794,19 +758,15 @@ void handle_touch(const Options& options, const std::vector<std::string>& args) 
         if (args.size() != 4) {
             throw std::runtime_error("touch tap requires X and Y");
         }
-        // Down
-        std::vector<uint8_t> down(8, 0);
-        down[0] = 0x01;  // contact_id = 1
-        down[1] = 0x03;  // tip_switch=1, in_range=1
+        // Down - move to position and press button
+        std::vector<uint8_t> down(5, 0);
+        down[0] = 0x01;  // Left button pressed
         update_touch_coordinates(down, parse_int(args[2]), parse_int(args[3]), options);
-        down[6] = ++scan_time_counter;
-        down[7] = 0x01;  // contact_count = 1
         write_report(options.touch_dev, down);
         sleep_ms(options.duration_ms);
-        // Up
+        // Up - release button at same position
         std::vector<uint8_t> up = down;
-        up[1] = 0x00;  // tip_switch=0, in_range=0
-        up[6] = ++scan_time_counter;
+        up[0] = 0x00;  // No buttons pressed
         write_report(options.touch_dev, up);
         save_state(touch_state_path(options), up);
         return;
