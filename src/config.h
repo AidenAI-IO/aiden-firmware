@@ -10,6 +10,7 @@ struct AgentConfig {
     char minimax_voice_id[128];
     char minimax_emotion[64];
     char hid_binary[256];
+    char additional_prompt[2048];
     int energy_threshold;
     int silence_ms;
     int min_speech_ms;
@@ -23,6 +24,7 @@ struct AgentConfig {
         minimax_voice_id[0] = '\0';
         minimax_emotion[0] = '\0';
         hid_binary[0] = '\0';
+        additional_prompt[0] = '\0';
         energy_threshold = 300;
         silence_ms = 800;
         min_speech_ms = 300;

@@ -16,3 +16,7 @@ hid_binary = ./build/bin/example_usb_hid
 energy_threshold = 300
 silence_ms = 800
 min_speech_ms = 300
+
+# Optional: Additional system prompt appended to the default prompt
+# Use this to customize the agent's behavior for your specific use case
+# additional_prompt = You are controlling a Luckfox Pico Zero device connected to a laptop via HDMI and USB. The device captures the laptop screen and can control it via keyboard and touchscreen. When the user asks you to do something, use the tools to interact with the laptop.

@@ -71,6 +71,8 @@ bool load_config(const char* path, AgentConfig& config) {
         else if (strcmp(current_section, "agent") == 0) {
             if (strcmp(key, "hid_binary") == 0)
                 strncpy(config.hid_binary, val, sizeof(config.hid_binary) - 1);
+            else if (strcmp(key, "additional_prompt") == 0)
+                strncpy(config.additional_prompt, val, sizeof(config.additional_prompt) - 1);
             else if (strcmp(key, "energy_threshold") == 0)
                 config.energy_threshold = atoi(val);
             else if (strcmp(key, "silence_ms") == 0)

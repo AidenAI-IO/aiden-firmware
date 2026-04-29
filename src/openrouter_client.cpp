@@ -139,16 +139,24 @@ static cJSON* create_tool_definitions() {
 }
 
 OpenRouterClient::OpenRouterClient(const char* api_key, const char* llm_model,
-                                   const char* tts_model)
+                                   const char* tts_model, const char* additional_prompt)
     : api_key_(api_key), llm_model_(llm_model), tts_model_(tts_model) {
 
     // Initialize conversation with system message
     cJSON* messages = cJSON_CreateArray();
     cJSON* sys_msg = cJSON_CreateObject();
     cJSON_AddStringToObject(sys_msg, "role", "system");
-    cJSON_AddStringToObject(sys_msg, "content",
+
+    std::string system_prompt =
         "You are an AI assistant controlling a device via keyboard and touchscreen. "
-        "Use the provided tools to interact. Touch coordinates: 0-32767 absolute range.");
+        "Use the provided tools to interact. Touch coordinates: 0-32767 absolute range.";
+
+    if (additional_prompt && additional_prompt[0] != '\0') {
+        system_prompt += "\n\n";
+        system_prompt += additional_prompt;
+    }
+
+    cJSON_AddStringToObject(sys_msg, "content", system_prompt.c_str());
     cJSON_AddItemToArray(messages, sys_msg);
 
     char* json_str = cJSON_PrintUnformatted(messages);
