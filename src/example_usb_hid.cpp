@@ -119,6 +119,10 @@ const uint8_t kTouchDescriptor[] = {
     0x26, 0xff, 0x7f,       //     Logical Maximum (32767)
     0x36, 0x00, 0x00,       //     Physical Minimum (0)
     0x46, 0x00, 0x10,       //     Physical Maximum (4096)
+    0x55, 0x0e,             //     Unit Exponent (-2)
+    0x65, 0x11,             //     Unit (cm)
+    0x75, 0x10,             //     Report Size (16)
+    0x95, 0x01,             //     Report Count (1)
     0x81, 0x02,             //     Input (Data, Variable, Absolute)
     // Scan Time
     0x05, 0x0d,             //     Usage Page (Digitizer)
