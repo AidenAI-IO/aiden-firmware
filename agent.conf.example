@@ -1,0 +1,18 @@
+# AI Agent Configuration
+# Copy to agent.conf and fill in your values
+
+[openrouter]
+api_key = sk-or-v1-YOUR_OPENROUTER_KEY
+llm_model = openai/gpt-4o-audio-preview
+
+[minimax]
+api_key = YOUR_MINIMAX_API_KEY
+voice_id = male-qn-qingse
+speed = 1.0
+emotion = happy
+
+[agent]
+hid_binary = ./build/bin/example_usb_hid
+energy_threshold = 300
+silence_ms = 800
+min_speech_ms = 300
