@@ -77,8 +77,8 @@ const uint8_t kKeyboardDescriptor[] = {
     0xc0,
 };
 
-// Absolute Mouse descriptor - Based on PiKVM implementation
-// Tested and working on macOS/iOS/Windows/Linux
+// Relative Mouse descriptor - Based on PiKVM implementation
+// Works on macOS/iOS/Windows/Linux (iOS requires relative positioning)
 // Reference: https://github.com/pikvm/kvmd/blob/master/kvmd/apps/otg/hid/mouse.py
 const uint8_t kTouchDescriptor[] = {
     0x05, 0x01,             // Usage Page (Generic Desktop)
@@ -95,21 +95,15 @@ const uint8_t kTouchDescriptor[] = {
     0x95, 0x08,             //     Report Count (8)
     0x75, 0x01,             //     Report Size (1)
     0x81, 0x02,             //     Input (Data, Variable, Absolute)
-    // X and Y - Absolute positioning
+    // X, Y, Wheel - Relative positioning
     0x05, 0x01,             //     Usage Page (Generic Desktop)
     0x09, 0x30,             //     Usage (X)
     0x09, 0x31,             //     Usage (Y)
-    0x16, 0x00, 0x00,       //     Logical Minimum (0)
-    0x26, 0xff, 0x7f,       //     Logical Maximum (32767)
-    0x75, 0x10,             //     Report Size (16)
-    0x95, 0x02,             //     Report Count (2)
-    0x81, 0x02,             //     Input (Data, Variable, Absolute)
-    // Wheel
     0x09, 0x38,             //     Usage (Wheel)
     0x15, 0x81,             //     Logical Minimum (-127)
     0x25, 0x7f,             //     Logical Maximum (127)
     0x75, 0x08,             //     Report Size (8)
-    0x95, 0x01,             //     Report Count (1)
+    0x95, 0x03,             //     Report Count (3)
     0x81, 0x06,             //     Input (Data, Variable, Relative)
     0xc0,                   //   End Collection (Physical)
     0xc0,                   // End Collection (Application)
@@ -462,9 +456,9 @@ void setup_keyboard_function(const std::string& gadget) {
 void setup_touch_function(const std::string& gadget) {
     std::string function_path = gadget + "/functions/hid.usb1";
     ensure_dir(function_path);
-    write_text_file(function_path + "/protocol", "0");
-    write_text_file(function_path + "/subclass", "0");
-    write_text_file(function_path + "/report_length", "6");
+    write_text_file(function_path + "/protocol", "2");  // Mouse protocol
+    write_text_file(function_path + "/subclass", "1");  // Boot interface subclass
+    write_text_file(function_path + "/report_length", "4");
     write_binary_file(function_path + "/report_desc", kTouchDescriptor, sizeof(kTouchDescriptor));
     ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb1");
 }
@@ -553,10 +547,11 @@ void print_usage() {
         << "  example_usb_hid [global options] keyboard release [KEY ...]\n"
         << "  example_usb_hid [global options] keyboard tap <KEY> [KEY ...]\n"
         << "  example_usb_hid [global options] keyboard text <TEXT>\n"
-        << "  example_usb_hid [global options] touch down <X> <Y>\n"
-        << "  example_usb_hid [global options] touch move <X> <Y>\n"
+        << "  example_usb_hid [global options] touch move <dX> <dY>\n"
+        << "  example_usb_hid [global options] touch click [left|right|middle]\n"
+        << "  example_usb_hid [global options] touch down [left|right|middle]\n"
         << "  example_usb_hid [global options] touch up\n"
-        << "  example_usb_hid [global options] touch tap <X> <Y>\n"
+        << "  example_usb_hid [global options] touch scroll <amount>\n"
         << "  example_usb_hid [global options] server [PORT]\n"
         << "\n"
         << "Global options:\n"
@@ -714,14 +709,14 @@ int clamp_coordinate(int value, int maximum) {
     return value;
 }
 
-void update_touch_coordinates(std::vector<uint8_t>& state, int x, int y, const Options& options) {
-    x = clamp_coordinate(x, options.width);
-    y = clamp_coordinate(y, options.height);
-    // PiKVM absolute mouse format: [buttons(1)][X_lo][X_hi][Y_lo][Y_hi][wheel(1)]
-    state[1] = static_cast<uint8_t>(x & 0xff);
-    state[2] = static_cast<uint8_t>((x >> 8) & 0xff);
-    state[3] = static_cast<uint8_t>(y & 0xff);
-    state[4] = static_cast<uint8_t>((y >> 8) & 0xff);
+// Send a relative mouse report: [buttons][dX][dY][wheel]
+void send_mouse_report(const Options& options, uint8_t buttons, int dx, int dy, int wheel) {
+    std::vector<uint8_t> report(4, 0);
+    report[0] = buttons;
+    report[1] = static_cast<uint8_t>(static_cast<int8_t>(std::max(-127, std::min(127, dx))));
+    report[2] = static_cast<uint8_t>(static_cast<int8_t>(std::max(-127, std::min(127, dy))));
+    report[3] = static_cast<uint8_t>(static_cast<int8_t>(std::max(-127, std::min(127, wheel))));
+    write_report(options.touch_dev, report);
 }
 
 void handle_touch(const Options& options, const std::vector<std::string>& args) {
@@ -730,50 +725,53 @@ void handle_touch(const Options& options, const std::vector<std::string>& args) 
     }
 
     const std::string& action = args[1];
-    // PiKVM absolute mouse report: 6 bytes [buttons(1)][X_lo][X_hi][Y_lo][Y_hi][wheel(1)]
-    std::vector<uint8_t> state = load_state(touch_state_path(options), 6);
 
-    if (action == "down" || action == "move") {
+    if (action == "move") {
         if (args.size() != 4) {
-            throw std::runtime_error("touch down/move require X and Y");
+            throw std::runtime_error("touch move requires dX and dY (-127 to 127)");
         }
-        update_touch_coordinates(state, parse_int(args[2]), parse_int(args[3]), options);
-        if (action == "down" || state[0] == 0x00) {
-            state[0] = 0x01;  // Left button pressed (bit 0)
+        send_mouse_report(options, 0x00, parse_int(args[2]), parse_int(args[3]), 0);
+        return;
+    }
+
+    if (action == "click") {
+        int button = 0x01;  // Left button default
+        if (args.size() >= 3) {
+            std::string btn = args[2];
+            if (btn == "left")   button = 0x01;
+            else if (btn == "right")  button = 0x02;
+            else if (btn == "middle") button = 0x04;
+            else button = parse_int(btn);
         }
-        state[5] = 0x00;  // No wheel movement
-        write_report(options.touch_dev, state);
-        save_state(touch_state_path(options), state);
+        send_mouse_report(options, button, 0, 0, 0);
+        sleep_ms(options.duration_ms);
+        send_mouse_report(options, 0x00, 0, 0, 0);
+        return;
+    }
+
+    if (action == "down") {
+        int button = 0x01;
+        if (args.size() >= 3) {
+            std::string btn = args[2];
+            if (btn == "left")   button = 0x01;
+            else if (btn == "right")  button = 0x02;
+            else if (btn == "middle") button = 0x04;
+            else button = parse_int(btn);
+        }
+        send_mouse_report(options, button, 0, 0, 0);
         return;
     }
 
     if (action == "up") {
-        if (args.size() != 2) {
-            throw std::runtime_error("touch up takes no coordinates");
-        }
-        state[0] = 0x00;  // No buttons pressed
-        state[5] = 0x00;  // No wheel movement
-        write_report(options.touch_dev, state);
-        save_state(touch_state_path(options), state);
+        send_mouse_report(options, 0x00, 0, 0, 0);
         return;
     }
 
-    if (action == "tap") {
-        if (args.size() != 4) {
-            throw std::runtime_error("touch tap requires X and Y");
+    if (action == "scroll") {
+        if (args.size() != 3) {
+            throw std::runtime_error("touch scroll requires amount (-127 to 127)");
         }
-        // Down - move to position and press button
-        std::vector<uint8_t> down(6, 0);
-        down[0] = 0x01;  // Left button pressed (bit 0)
-        update_touch_coordinates(down, parse_int(args[2]), parse_int(args[3]), options);
-        down[5] = 0x00;  // No wheel movement
-        write_report(options.touch_dev, down);
-        sleep_ms(options.duration_ms);
-        // Up - release button at same position
-        std::vector<uint8_t> up = down;
-        up[0] = 0x00;  // No buttons pressed
-        write_report(options.touch_dev, up);
-        save_state(touch_state_path(options), up);
+        send_mouse_report(options, 0x00, 0, 0, parse_int(args[2]));
         return;
     }
 

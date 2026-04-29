@@ -176,32 +176,50 @@ std::string handle_api_request(const std::string& path, const std::string& body,
         return "{\"result\": \"" + result + "\"}";
     }
 
-    if (path == "/api/touch/tap") {
-        std::string x = extract_json_field(body, "x");
-        std::string y = extract_json_field(body, "y");
+    if (path == "/api/touch/move") {
+        std::string dx = extract_json_field(body, "dx");
+        std::string dy = extract_json_field(body, "dy");
 
-        if (x.empty() || y.empty()) {
-            return "{\"error\": \"missing x or y\"}";
+        if (dx.empty() || dy.empty()) {
+            return "{\"error\": \"missing dx or dy\"}";
         }
 
-        std::string cmd = hid_binary + " touch tap " + x + " " + y;
+        std::string cmd = hid_binary + " touch move " + dx + " " + dy;
         std::string result = execute_hid_command(cmd);
         return "{\"result\": \"" + result + "\"}";
     }
 
-    if (path == "/api/touch/swipe") {
-        std::string x1 = extract_json_field(body, "x1");
-        std::string y1 = extract_json_field(body, "y1");
-        std::string x2 = extract_json_field(body, "x2");
-        std::string y2 = extract_json_field(body, "y2");
+    if (path == "/api/touch/click") {
+        std::string button = extract_json_field(body, "button");
+        if (button.empty()) button = "left";
 
-        if (x1.empty() || y1.empty() || x2.empty() || y2.empty()) {
-            return "{\"error\": \"missing coordinates\"}";
+        std::string cmd = hid_binary + " touch click " + button;
+        std::string result = execute_hid_command(cmd);
+        return "{\"result\": \"" + result + "\"}";
+    }
+
+    if (path == "/api/touch/scroll") {
+        std::string amount = extract_json_field(body, "amount");
+        if (amount.empty()) {
+            return "{\"error\": \"missing amount\"}";
         }
 
-        std::string cmd = hid_binary + " touch down " + x1 + " " + y1 +
-                         " && " + hid_binary + " touch move " + x2 + " " + y2 +
-                         " && " + hid_binary + " touch up";
+        std::string cmd = hid_binary + " touch scroll " + amount;
+        std::string result = execute_hid_command(cmd);
+        return "{\"result\": \"" + result + "\"}";
+    }
+
+    if (path == "/api/touch/down") {
+        std::string button = extract_json_field(body, "button");
+        if (button.empty()) button = "left";
+
+        std::string cmd = hid_binary + " touch down " + button;
+        std::string result = execute_hid_command(cmd);
+        return "{\"result\": \"" + result + "\"}";
+    }
+
+    if (path == "/api/touch/up") {
+        std::string cmd = hid_binary + " touch up";
         std::string result = execute_hid_command(cmd);
         return "{\"result\": \"" + result + "\"}";
     }

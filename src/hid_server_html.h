@@ -23,7 +23,7 @@ button:active { transform: translateY(0); background: #2a7edf; }
 .btn-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 8px; margin-bottom: 15px; }
 .btn-small { padding: 8px 12px; font-size: 13px; }
 .btn-compact { padding: 6px 10px; font-size: 12px; }
-.touchpad { width: 100%; max-width: 500px; height: 300px; background: #1a1a1a; border: 2px solid #4a9eff; border-radius: 8px; margin: 15px auto; cursor: crosshair; position: relative; }
+.touchpad { width: 100%; max-width: 500px; height: 300px; background: #1a1a1a; border: 2px solid #4a9eff; border-radius: 8px; margin: 15px auto; cursor: crosshair; position: relative; user-select: none; touch-action: none; }
 .touchpad:active { border-color: #6ab7ff; }
 .coords { text-align: center; margin: 10px 0; color: #888; font-family: monospace; }
 #log { background: #1a1a1a; padding: 15px; border-radius: 4px; max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; }
@@ -85,20 +85,20 @@ button:active { transform: translateY(0); background: #2a7edf; }
 </div>
 
 <div class="section">
-<h2>👆 Touch</h2>
+<h2>🖱 Mouse</h2>
 <div class="touchpad" id="touchpad"></div>
-<div class="coords" id="coordsDisplay">Click the pad to send a tap</div>
-<div class="input-group">
-<input type="number" id="tapX" placeholder="X (0-32767)" min="0" max="32767">
-<input type="number" id="tapY" placeholder="Y (0-32767)" min="0" max="32767">
-<button onclick="manualTap()">Tap</button>
+<div class="coords" id="coordsDisplay">Drag to move cursor, click to left-click</div>
+<div class="btn-grid">
+<button class="btn-small" onclick="mouseClick('left')">Left Click</button>
+<button class="btn-small" onclick="mouseClick('right')">Right Click</button>
+<button class="btn-small" onclick="mouseClick('middle')">Middle Click</button>
+<button class="btn-small" onclick="mouseScroll(-3)">Scroll Up</button>
+<button class="btn-small" onclick="mouseScroll(3)">Scroll Down</button>
 </div>
 <div class="input-group">
-<input type="number" id="sx1" placeholder="Start X" min="0" max="32767">
-<input type="number" id="sy1" placeholder="Start Y" min="0" max="32767">
-<input type="number" id="sx2" placeholder="End X" min="0" max="32767">
-<input type="number" id="sy2" placeholder="End Y" min="0" max="32767">
-<button onclick="swipe()">Swipe</button>
+<input type="number" id="moveDx" placeholder="dX (-127~127)" min="-127" max="127">
+<input type="number" id="moveDy" placeholder="dY (-127~127)" min="-127" max="127">
+<button onclick="manualMove()">Move</button>
 </div>
 </div>
 
@@ -142,27 +142,51 @@ function tapCustom() {
     if (v) api('/api/keyboard/tap', {keys: v.split('+').map(s => s.trim())});
 }
 
-function manualTap() {
-    const x = parseInt(document.getElementById('tapX').value);
-    const y = parseInt(document.getElementById('tapY').value);
-    if (!isNaN(x) && !isNaN(y)) api('/api/touch/tap', {x, y});
+function mouseClick(btn) { api('/api/touch/click', {button: btn}); }
+function mouseScroll(amt) { api('/api/touch/scroll', {amount: amt}); }
+
+function manualMove() {
+    const dx = parseInt(document.getElementById('moveDx').value);
+    const dy = parseInt(document.getElementById('moveDy').value);
+    if (!isNaN(dx) && !isNaN(dy)) api('/api/touch/move', {dx, dy});
 }
 
-function swipe() {
-    const x1 = parseInt(document.getElementById('sx1').value);
-    const y1 = parseInt(document.getElementById('sy1').value);
-    const x2 = parseInt(document.getElementById('sx2').value);
-    const y2 = parseInt(document.getElementById('sy2').value);
-    if ([x1,y1,x2,y2].every(v => !isNaN(v))) api('/api/touch/swipe', {x1, y1, x2, y2});
-}
+(function() {
+    const pad = document.getElementById('touchpad');
+    const display = document.getElementById('coordsDisplay');
+    let dragging = false, lastX = 0, lastY = 0;
 
-document.getElementById('touchpad').addEventListener('click', function(e) {
-    const r = this.getBoundingClientRect();
-    const x = Math.round(((e.clientX - r.left) / r.width) * 32767);
-    const y = Math.round(((e.clientY - r.top) / r.height) * 32767);
-    document.getElementById('coordsDisplay').textContent = 'Tap: (' + x + ', ' + y + ')';
-    api('/api/touch/tap', {x, y});
-});
+    pad.addEventListener('pointerdown', function(e) {
+        dragging = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        pad.setPointerCapture(e.pointerId);
+        e.preventDefault();
+    });
+
+    pad.addEventListener('pointermove', function(e) {
+        if (!dragging) return;
+        const dx = Math.round(e.clientX - lastX);
+        const dy = Math.round(e.clientY - lastY);
+        lastX = e.clientX;
+        lastY = e.clientY;
+        if (dx !== 0 || dy !== 0) {
+            const clamp = v => Math.max(-127, Math.min(127, v));
+            display.textContent = 'Move: (' + dx + ', ' + dy + ')';
+            api('/api/touch/move', {dx: clamp(dx), dy: clamp(dy)});
+        }
+        e.preventDefault();
+    });
+
+    pad.addEventListener('pointerup', function(e) {
+        if (dragging && Math.abs(e.clientX - lastX) < 3 && Math.abs(e.clientY - lastY) < 3) {
+            api('/api/touch/click', {button: 'left'});
+            display.textContent = 'Click';
+        }
+        dragging = false;
+        e.preventDefault();
+    });
+})();
 </script>
 </body>
 </html>
