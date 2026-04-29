@@ -18,6 +18,8 @@
 #include <unistd.h>
 #include <vector>
 
+#include "hid_server.h"
+
 namespace {
 
 struct Options {
@@ -545,6 +547,7 @@ void print_usage() {
         << "  example_usb_hid [global options] touch move <X> <Y>\n"
         << "  example_usb_hid [global options] touch up\n"
         << "  example_usb_hid [global options] touch tap <X> <Y>\n"
+        << "  example_usb_hid [global options] server [PORT]\n"
         << "\n"
         << "Global options:\n"
         << "  --gadget-root <PATH>\n"
@@ -802,6 +805,16 @@ int main(int argc, char** argv) {
 
         if (command == "touch") {
             handle_touch(options, args);
+            return 0;
+        }
+
+        if (command == "server") {
+            int port = 8000;
+            if (args.size() >= 2) {
+                port = parse_int(args[1]);
+            }
+            std::string self = argv[0];
+            run_hid_server(port, self);
             return 0;
         }
 

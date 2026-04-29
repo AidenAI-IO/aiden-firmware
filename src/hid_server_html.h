@@ -1,0 +1,169 @@
+#pragma once
+
+static const char* HID_SERVER_HTML = R"HTML(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aiden HID Test</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a1a; color: #e0e0e0; padding: 20px; }
+h1 { text-align: center; margin-bottom: 30px; color: #4a9eff; }
+h2 { margin: 20px 0 15px; color: #6ab7ff; font-size: 1.3em; }
+.container { max-width: 900px; margin: 0 auto; }
+.section { background: #252525; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+.input-group { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; }
+input[type="text"], input[type="number"] { flex: 1; padding: 10px; background: #333; border: 1px solid #444; border-radius: 4px; color: #e0e0e0; font-size: 14px; }
+input[type="text"]:focus, input[type="number"]:focus { outline: none; border-color: #4a9eff; }
+button { padding: 10px 16px; background: #4a9eff; border: none; border-radius: 4px; color: white; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.2s; }
+button:hover { background: #3a8eef; transform: translateY(-1px); }
+button:active { transform: translateY(0); background: #2a7edf; }
+.btn-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 8px; margin-bottom: 15px; }
+.btn-small { padding: 8px 12px; font-size: 13px; }
+.btn-compact { padding: 6px 10px; font-size: 12px; }
+.touchpad { width: 100%; max-width: 500px; height: 300px; background: #1a1a1a; border: 2px solid #4a9eff; border-radius: 8px; margin: 15px auto; cursor: crosshair; position: relative; }
+.touchpad:active { border-color: #6ab7ff; }
+.coords { text-align: center; margin: 10px 0; color: #888; font-family: monospace; }
+#log { background: #1a1a1a; padding: 15px; border-radius: 4px; max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; }
+.log-entry { padding: 4px 0; border-bottom: 1px solid #333; }
+.log-entry:last-child { border-bottom: none; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Aiden HID Test</h1>
+
+<div class="section">
+<h2>⌨️ Keyboard</h2>
+<div class="input-group">
+<input type="text" id="textInput" placeholder="Type text to send...">
+<button onclick="sendText()">Type</button>
+</div>
+<div class="btn-grid">
+<button class="btn-small" onclick="tap('ENTER')">Enter</button>
+<button class="btn-small" onclick="tap('TAB')">Tab</button>
+<button class="btn-small" onclick="tap('BACKSPACE')">Backspace</button>
+<button class="btn-small" onclick="tap('ESCAPE')">Escape</button>
+<button class="btn-small" onclick="tap('SPACE')">Space</button>
+<button class="btn-small" onclick="tap('DELETE')">Delete</button>
+</div>
+<div class="btn-grid">
+<button class="btn-small" onclick="tap('UP')">↑ Up</button>
+<button class="btn-small" onclick="tap('DOWN')">↓ Down</button>
+<button class="btn-small" onclick="tap('LEFT')">← Left</button>
+<button class="btn-small" onclick="tap('RIGHT')">→ Right</button>
+</div>
+<div class="btn-grid">
+<button class="btn-compact" onclick="tap('CTRL','C')">Ctrl+C</button>
+<button class="btn-compact" onclick="tap('CTRL','V')">Ctrl+V</button>
+<button class="btn-compact" onclick="tap('CTRL','Z')">Ctrl+Z</button>
+<button class="btn-compact" onclick="tap('CTRL','A')">Ctrl+A</button>
+<button class="btn-compact" onclick="tap('CTRL','S')">Ctrl+S</button>
+<button class="btn-compact" onclick="tap('ALT','TAB')">Alt+Tab</button>
+<button class="btn-compact" onclick="tap('ALT','F4')">Alt+F4</button>
+</div>
+<div class="btn-grid">
+<button class="btn-compact" onclick="tap('F1')">F1</button>
+<button class="btn-compact" onclick="tap('F2')">F2</button>
+<button class="btn-compact" onclick="tap('F3')">F3</button>
+<button class="btn-compact" onclick="tap('F4')">F4</button>
+<button class="btn-compact" onclick="tap('F5')">F5</button>
+<button class="btn-compact" onclick="tap('F6')">F6</button>
+<button class="btn-compact" onclick="tap('F7')">F7</button>
+<button class="btn-compact" onclick="tap('F8')">F8</button>
+<button class="btn-compact" onclick="tap('F9')">F9</button>
+<button class="btn-compact" onclick="tap('F10')">F10</button>
+<button class="btn-compact" onclick="tap('F11')">F11</button>
+<button class="btn-compact" onclick="tap('F12')">F12</button>
+</div>
+<div class="input-group">
+<input type="text" id="customKey" placeholder="Key name (e.g. HOME, PAGEUP)">
+<button onclick="tapCustom()">Tap</button>
+</div>
+</div>
+
+<div class="section">
+<h2>👆 Touch</h2>
+<div class="touchpad" id="touchpad"></div>
+<div class="coords" id="coordsDisplay">Click the pad to send a tap</div>
+<div class="input-group">
+<input type="number" id="tapX" placeholder="X (0-32767)" min="0" max="32767">
+<input type="number" id="tapY" placeholder="Y (0-32767)" min="0" max="32767">
+<button onclick="manualTap()">Tap</button>
+</div>
+<div class="input-group">
+<input type="number" id="sx1" placeholder="Start X" min="0" max="32767">
+<input type="number" id="sy1" placeholder="Start Y" min="0" max="32767">
+<input type="number" id="sx2" placeholder="End X" min="0" max="32767">
+<input type="number" id="sy2" placeholder="End Y" min="0" max="32767">
+<button onclick="swipe()">Swipe</button>
+</div>
+</div>
+
+<div class="section">
+<h2>Log</h2>
+<div id="log"></div>
+</div>
+</div>
+
+<script>
+function log(msg) {
+    const el = document.getElementById('log');
+    const t = new Date().toLocaleTimeString();
+    el.innerHTML = '<div class="log-entry">[' + t + '] ' + msg + '</div>' + el.innerHTML;
+    if (el.children.length > 50) el.lastChild.remove();
+}
+
+async function api(endpoint, body) {
+    try {
+        const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        });
+        const text = await res.text();
+        log(endpoint + ' → ' + text);
+    } catch (e) {
+        log(endpoint + ' ERROR: ' + e.message);
+    }
+}
+
+function tap(...keys) { api('/api/keyboard/tap', {keys: keys}); }
+
+function sendText() {
+    const v = document.getElementById('textInput').value;
+    if (v) api('/api/keyboard/text', {text: v});
+}
+
+function tapCustom() {
+    const v = document.getElementById('customKey').value.trim().toUpperCase();
+    if (v) api('/api/keyboard/tap', {keys: v.split('+').map(s => s.trim())});
+}
+
+function manualTap() {
+    const x = parseInt(document.getElementById('tapX').value);
+    const y = parseInt(document.getElementById('tapY').value);
+    if (!isNaN(x) && !isNaN(y)) api('/api/touch/tap', {x, y});
+}
+
+function swipe() {
+    const x1 = parseInt(document.getElementById('sx1').value);
+    const y1 = parseInt(document.getElementById('sy1').value);
+    const x2 = parseInt(document.getElementById('sx2').value);
+    const y2 = parseInt(document.getElementById('sy2').value);
+    if ([x1,y1,x2,y2].every(v => !isNaN(v))) api('/api/touch/swipe', {x1, y1, x2, y2});
+}
+
+document.getElementById('touchpad').addEventListener('click', function(e) {
+    const r = this.getBoundingClientRect();
+    const x = Math.round(((e.clientX - r.left) / r.width) * 32767);
+    const y = Math.round(((e.clientY - r.top) / r.height) * 32767);
+    document.getElementById('coordsDisplay').textContent = 'Tap: (' + x + ', ' + y + ')';
+    api('/api/touch/tap', {x, y});
+});
+</script>
+</body>
+</html>
+)HTML";
