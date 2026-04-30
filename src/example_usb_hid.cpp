@@ -77,8 +77,8 @@ const uint8_t kKeyboardDescriptor[] = {
     0xc0,
 };
 
-// Relative Mouse descriptor - Based on PiKVM implementation
-// Works on macOS/iOS/Windows/Linux (iOS requires relative positioning)
+// Absolute Mouse descriptor - Based on PiKVM implementation
+// Testing iOS absolute positioning support
 // Reference: https://github.com/pikvm/kvmd/blob/master/kvmd/apps/otg/hid/mouse.py
 const uint8_t kTouchDescriptor[] = {
     0x05, 0x01,             // Usage Page (Generic Desktop)
@@ -95,15 +95,21 @@ const uint8_t kTouchDescriptor[] = {
     0x95, 0x08,             //     Report Count (8)
     0x75, 0x01,             //     Report Size (1)
     0x81, 0x02,             //     Input (Data, Variable, Absolute)
-    // X, Y, Wheel - Relative positioning
+    // X and Y - Absolute positioning
     0x05, 0x01,             //     Usage Page (Generic Desktop)
     0x09, 0x30,             //     Usage (X)
     0x09, 0x31,             //     Usage (Y)
+    0x16, 0x00, 0x00,       //     Logical Minimum (0)
+    0x26, 0xff, 0x7f,       //     Logical Maximum (32767)
+    0x75, 0x10,             //     Report Size (16)
+    0x95, 0x02,             //     Report Count (2)
+    0x81, 0x02,             //     Input (Data, Variable, Absolute)
+    // Wheel
     0x09, 0x38,             //     Usage (Wheel)
     0x15, 0x81,             //     Logical Minimum (-127)
     0x25, 0x7f,             //     Logical Maximum (127)
     0x75, 0x08,             //     Report Size (8)
-    0x95, 0x03,             //     Report Count (3)
+    0x95, 0x01,             //     Report Count (1)
     0x81, 0x06,             //     Input (Data, Variable, Relative)
     0xc0,                   //   End Collection (Physical)
     0xc0,                   // End Collection (Application)
@@ -456,9 +462,9 @@ void setup_keyboard_function(const std::string& gadget) {
 void setup_touch_function(const std::string& gadget) {
     std::string function_path = gadget + "/functions/hid.usb1";
     ensure_dir(function_path);
-    write_text_file(function_path + "/protocol", "2");  // Mouse protocol
-    write_text_file(function_path + "/subclass", "1");  // Boot interface subclass
-    write_text_file(function_path + "/report_length", "4");
+    write_text_file(function_path + "/protocol", "0");  // None protocol
+    write_text_file(function_path + "/subclass", "0");  // No subclass
+    write_text_file(function_path + "/report_length", "6");
     write_binary_file(function_path + "/report_desc", kTouchDescriptor, sizeof(kTouchDescriptor));
     ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb1");
 }
@@ -547,7 +553,8 @@ void print_usage() {
         << "  example_usb_hid [global options] keyboard release [KEY ...]\n"
         << "  example_usb_hid [global options] keyboard tap <KEY> [KEY ...]\n"
         << "  example_usb_hid [global options] keyboard text <TEXT>\n"
-        << "  example_usb_hid [global options] touch move <dX> <dY>\n"
+        << "  example_usb_hid [global options] touch move <X> <Y>\n"
+        << "  example_usb_hid [global options] touch tap <X> <Y>\n"
         << "  example_usb_hid [global options] touch click [left|right|middle]\n"
         << "  example_usb_hid [global options] touch down [left|right|middle]\n"
         << "  example_usb_hid [global options] touch up\n"
@@ -709,13 +716,17 @@ int clamp_coordinate(int value, int maximum) {
     return value;
 }
 
-// Send a relative mouse report: [buttons][dX][dY][wheel]
-void send_mouse_report(const Options& options, uint8_t buttons, int dx, int dy, int wheel) {
-    std::vector<uint8_t> report(4, 0);
+// Send absolute mouse report: [buttons][X_lo][X_hi][Y_lo][Y_hi][wheel]
+void send_mouse_report(const Options& options, uint8_t buttons, int x, int y, int wheel) {
+    x = clamp_coordinate(x, options.width);
+    y = clamp_coordinate(y, options.height);
+    std::vector<uint8_t> report(6, 0);
     report[0] = buttons;
-    report[1] = static_cast<uint8_t>(static_cast<int8_t>(std::max(-127, std::min(127, dx))));
-    report[2] = static_cast<uint8_t>(static_cast<int8_t>(std::max(-127, std::min(127, dy))));
-    report[3] = static_cast<uint8_t>(static_cast<int8_t>(std::max(-127, std::min(127, wheel))));
+    report[1] = static_cast<uint8_t>(x & 0xff);
+    report[2] = static_cast<uint8_t>((x >> 8) & 0xff);
+    report[3] = static_cast<uint8_t>(y & 0xff);
+    report[4] = static_cast<uint8_t>((y >> 8) & 0xff);
+    report[5] = static_cast<uint8_t>(static_cast<int8_t>(std::max(-127, std::min(127, wheel))));
     write_report(options.touch_dev, report);
 }
 
@@ -728,14 +739,26 @@ void handle_touch(const Options& options, const std::vector<std::string>& args) 
 
     if (action == "move") {
         if (args.size() != 4) {
-            throw std::runtime_error("touch move requires dX and dY (-127 to 127)");
+            throw std::runtime_error("touch move requires X and Y (0-32767)");
         }
         send_mouse_report(options, 0x00, parse_int(args[2]), parse_int(args[3]), 0);
         return;
     }
 
+    if (action == "tap") {
+        if (args.size() != 4) {
+            throw std::runtime_error("touch tap requires X and Y (0-32767)");
+        }
+        int x = parse_int(args[2]);
+        int y = parse_int(args[3]);
+        send_mouse_report(options, 0x01, x, y, 0);
+        sleep_ms(options.duration_ms);
+        send_mouse_report(options, 0x00, x, y, 0);
+        return;
+    }
+
     if (action == "click") {
-        int button = 0x01;  // Left button default
+        int button = 0x01;
         if (args.size() >= 3) {
             std::string btn = args[2];
             if (btn == "left")   button = 0x01;

@@ -87,7 +87,7 @@ button:active { transform: translateY(0); background: #2a7edf; }
 <div class="section">
 <h2>🖱 Mouse</h2>
 <div class="touchpad" id="touchpad"></div>
-<div class="coords" id="coordsDisplay">Drag to move cursor, click to left-click</div>
+<div class="coords" id="coordsDisplay">Click the pad to move cursor (0-32767)</div>
 <div class="btn-grid">
 <button class="btn-small" onclick="mouseClick('left')">Left Click</button>
 <button class="btn-small" onclick="mouseClick('right')">Right Click</button>
@@ -96,9 +96,10 @@ button:active { transform: translateY(0); background: #2a7edf; }
 <button class="btn-small" onclick="mouseScroll(3)">Scroll Down</button>
 </div>
 <div class="input-group">
-<input type="number" id="moveDx" placeholder="dX (-127~127)" min="-127" max="127">
-<input type="number" id="moveDy" placeholder="dY (-127~127)" min="-127" max="127">
+<input type="number" id="moveX" placeholder="X (0-32767)" min="0" max="32767">
+<input type="number" id="moveY" placeholder="Y (0-32767)" min="0" max="32767">
 <button onclick="manualMove()">Move</button>
+<button onclick="manualTap()">Tap</button>
 </div>
 </div>
 
@@ -146,45 +147,27 @@ function mouseClick(btn) { api('/api/touch/click', {button: btn}); }
 function mouseScroll(amt) { api('/api/touch/scroll', {amount: amt}); }
 
 function manualMove() {
-    const dx = parseInt(document.getElementById('moveDx').value);
-    const dy = parseInt(document.getElementById('moveDy').value);
-    if (!isNaN(dx) && !isNaN(dy)) api('/api/touch/move', {dx, dy});
+    const x = parseInt(document.getElementById('moveX').value);
+    const y = parseInt(document.getElementById('moveY').value);
+    if (!isNaN(x) && !isNaN(y)) api('/api/touch/move', {x, y});
+}
+
+function manualTap() {
+    const x = parseInt(document.getElementById('moveX').value);
+    const y = parseInt(document.getElementById('moveY').value);
+    if (!isNaN(x) && !isNaN(y)) api('/api/touch/tap', {x, y});
 }
 
 (function() {
     const pad = document.getElementById('touchpad');
     const display = document.getElementById('coordsDisplay');
-    let dragging = false, lastX = 0, lastY = 0;
 
-    pad.addEventListener('pointerdown', function(e) {
-        dragging = true;
-        lastX = e.clientX;
-        lastY = e.clientY;
-        pad.setPointerCapture(e.pointerId);
-        e.preventDefault();
-    });
-
-    pad.addEventListener('pointermove', function(e) {
-        if (!dragging) return;
-        const dx = Math.round(e.clientX - lastX);
-        const dy = Math.round(e.clientY - lastY);
-        lastX = e.clientX;
-        lastY = e.clientY;
-        if (dx !== 0 || dy !== 0) {
-            const clamp = v => Math.max(-127, Math.min(127, v));
-            display.textContent = 'Move: (' + dx + ', ' + dy + ')';
-            api('/api/touch/move', {dx: clamp(dx), dy: clamp(dy)});
-        }
-        e.preventDefault();
-    });
-
-    pad.addEventListener('pointerup', function(e) {
-        if (dragging && Math.abs(e.clientX - lastX) < 3 && Math.abs(e.clientY - lastY) < 3) {
-            api('/api/touch/click', {button: 'left'});
-            display.textContent = 'Click';
-        }
-        dragging = false;
-        e.preventDefault();
+    pad.addEventListener('click', function(e) {
+        const r = this.getBoundingClientRect();
+        const x = Math.round(((e.clientX - r.left) / r.width) * 32767);
+        const y = Math.round(((e.clientY - r.top) / r.height) * 32767);
+        display.textContent = 'Tap: (' + x + ', ' + y + ')';
+        api('/api/touch/tap', {x, y});
     });
 })();
 </script>

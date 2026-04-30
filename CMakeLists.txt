@@ -57,7 +57,7 @@ add_executable(example_audio_play src/example_audio_play.cpp)
 target_link_libraries(example_audio_play PRIVATE aiden)
 
 add_executable(example_camera_capture src/example_camera_capture.cpp)
-target_link_libraries(example_camera_capture PRIVATE aiden)
+# example_camera_capture uses V4L2 API directly, no aiden SDK dependency
 
 add_executable(example_usb_hid src/example_usb_hid.cpp src/hid_server.cpp)
 target_include_directories(example_usb_hid PRIVATE ${CMAKE_SOURCE_DIR}/src)

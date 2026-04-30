@@ -177,14 +177,27 @@ std::string handle_api_request(const std::string& path, const std::string& body,
     }
 
     if (path == "/api/touch/move") {
-        std::string dx = extract_json_field(body, "dx");
-        std::string dy = extract_json_field(body, "dy");
+        std::string x = extract_json_field(body, "x");
+        std::string y = extract_json_field(body, "y");
 
-        if (dx.empty() || dy.empty()) {
-            return "{\"error\": \"missing dx or dy\"}";
+        if (x.empty() || y.empty()) {
+            return "{\"error\": \"missing x or y\"}";
         }
 
-        std::string cmd = hid_binary + " touch move " + dx + " " + dy;
+        std::string cmd = hid_binary + " touch move " + x + " " + y;
+        std::string result = execute_hid_command(cmd);
+        return "{\"result\": \"" + result + "\"}";
+    }
+
+    if (path == "/api/touch/tap") {
+        std::string x = extract_json_field(body, "x");
+        std::string y = extract_json_field(body, "y");
+
+        if (x.empty() || y.empty()) {
+            return "{\"error\": \"missing x or y\"}";
+        }
+
+        std::string cmd = hid_binary + " touch tap " + x + " " + y;
         std::string result = execute_hid_command(cmd);
         return "{\"result\": \"" + result + "\"}";
     }
@@ -205,21 +218,6 @@ std::string handle_api_request(const std::string& path, const std::string& body,
         }
 
         std::string cmd = hid_binary + " touch scroll " + amount;
-        std::string result = execute_hid_command(cmd);
-        return "{\"result\": \"" + result + "\"}";
-    }
-
-    if (path == "/api/touch/down") {
-        std::string button = extract_json_field(body, "button");
-        if (button.empty()) button = "left";
-
-        std::string cmd = hid_binary + " touch down " + button;
-        std::string result = execute_hid_command(cmd);
-        return "{\"result\": \"" + result + "\"}";
-    }
-
-    if (path == "/api/touch/up") {
-        std::string cmd = hid_binary + " touch up";
         std::string result = execute_hid_command(cmd);
         return "{\"result\": \"" + result + "\"}";
     }
