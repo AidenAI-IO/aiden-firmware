@@ -1,3 +1,22 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:cac9586d7b431380f3c9fd945c1709f75ed1636de2a27bdde9eeb4a7323c56ae
-size 1314
+#env.img 0x0:0x0 0x40:0x8000 0x40:0x8000
+mw.b ${ramdisk_addr_r} 0xff 0x8000; fatload mmc 1 ${ramdisk_addr_r} env.img; mmc write ${ramdisk_addr_r} 0x0 0x40;
+
+#idblock.img 0x40:0x8000 0x400:0x80000 0x170:0x2E000
+mw.b ${ramdisk_addr_r} 0xff 0x2E000; fatload mmc 1 ${ramdisk_addr_r} idblock.img; mmc write ${ramdisk_addr_r} 0x40 0x170;
+
+#uboot.img 0x440:0x88000 0x200:0x40000 0x200:0x40000
+mw.b ${ramdisk_addr_r} 0xff 0x40000; fatload mmc 1 ${ramdisk_addr_r} uboot.img; mmc write ${ramdisk_addr_r} 0x440 0x200;
+
+#boot.img 0x640:0xC8000 0x10000:0x2000000 0x1D96:0x3B2C00
+mw.b ${ramdisk_addr_r} 0xff 0x3B2C00; fatload mmc 1 ${ramdisk_addr_r} boot.img; mmc write ${ramdisk_addr_r} 0x640 0x1D96;
+
+#oem.img 0x10640:0x20C8000 0x100000:0x20000000 0x12858:0x250B000
+mw.b ${ramdisk_addr_r} 0xff 0x250B000; fatload mmc 1 ${ramdisk_addr_r} oem.img; mmc write ${ramdisk_addr_r} 0x10640 0x12858;
+
+#userdata.img 0x110640:0x220C8000 0x80000:0x10000000 0x4C4A:0x989400
+mw.b ${ramdisk_addr_r} 0xff 0x989400; fatload mmc 1 ${ramdisk_addr_r} userdata.img; mmc write ${ramdisk_addr_r} 0x110640 0x4C4A;
+
+#rootfs.img 0x190640:0x320C8000 0xC00000:0x180000000 0xC9ED8:0x193DB000
+mw.b ${ramdisk_addr_r} 0xff 0x193DB000; fatload mmc 1 ${ramdisk_addr_r} rootfs.img; mmc write ${ramdisk_addr_r} 0x190640 0xC9ED8;
+
+% <- this is end of file symbol

@@ -16,7 +16,7 @@ BIN_DIR := $(BUILD_DIR)/bin
 
 CFLAGS := -Wall -O2
 CXXFLAGS := -Wall -O2 -std=c++11 -I$(ROCKIT_PATH)/mpi/sdk/include
-LDFLAGS := -L$(ROCKIT_PATH)/lib/lib32 -L$(MPP_PATH)/lib -L$(RGA_PATH)/lib -L$(IVE_PATH)/lib -lrockit -lrockchip_mpp -lrga -lrve -lpthread -lstdc++ -lm
+LDFLAGS := -L$(ROCKIT_PATH)/lib/lib32 -L$(MPP_PATH)/lib -L$(RGA_PATH)/lib -L$(IVE_PATH)/lib -Wl,-rpath,/oem/usr/lib -lrockit -lrockchip_mpp -lrga -lrve -lpthread -lstdc++ -lm
 
 SDK_LIBRARY := $(LIB_DIR)/libaiden.a
 SDK_OBJECT := $(OBJ_DIR)/aiden_sdk.o

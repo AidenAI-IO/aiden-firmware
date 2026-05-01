@@ -1,13 +1,25 @@
+#include "aiden_sdk.h"
+#include "camera_frame_utils.h"
+#include "hid_server.h"
 #include "hid_server_html.h"
+
 #include <arpa/inet.h>
+#include <cerrno>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <netinet/in.h>
 #include <sstream>
 #include <string>
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
+
+static ScreenshotData g_screenshot;
 
 namespace {
 
@@ -17,217 +29,723 @@ struct HttpRequest {
     std::string body;
 };
 
+struct ApiResponse {
+    int status_code = 200;
+    std::string status_text = "OK";
+    std::string body = "{}";
+};
+
+struct CommandResult {
+    int exit_code = -1;
+    std::string output;
+};
+
+struct CaptureRequest {
+    CaptureRequest()
+        : device_name("/dev/video0"),
+          pixel_format("uyvy"),
+          subdev_device("/dev/v4l-subdev2") {
+        aiden_demo::set_default_camera_config(&config);
+        sync_strings();
+    }
+
+    void sync_strings() {
+        config.device_name = device_name.c_str();
+        config.pixel_format = pixel_format.c_str();
+        config.subdev_device = subdev_device.c_str();
+        config.edid_path = edid_path.empty() ? nullptr : edid_path.c_str();
+    }
+
+    aiden::CameraConfig config;
+    std::string device_name;
+    std::string pixel_format;
+    std::string subdev_device;
+    std::string edid_path;
+};
+
+bool is_json_space(char ch) {
+    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
+}
+
+size_t skip_json_space(const std::string& text, size_t pos) {
+    while (pos < text.size() && is_json_space(text[pos])) {
+        ++pos;
+    }
+    return pos;
+}
+
+bool parse_json_string_at(const std::string& text, size_t* pos, std::string* out) {
+    if (!pos || !out || *pos >= text.size() || text[*pos] != '"') {
+        return false;
+    }
+
+    ++(*pos);
+    out->clear();
+    while (*pos < text.size()) {
+        char ch = text[*pos];
+        ++(*pos);
+        if (ch == '"') {
+            return true;
+        }
+        if (ch == '\\') {
+            if (*pos >= text.size()) {
+                return false;
+            }
+            char escaped = text[*pos];
+            ++(*pos);
+            switch (escaped) {
+                case '"':
+                case '\\':
+                case '/':
+                    out->push_back(escaped);
+                    break;
+                case 'b':
+                    out->push_back('\b');
+                    break;
+                case 'f':
+                    out->push_back('\f');
+                    break;
+                case 'n':
+                    out->push_back('\n');
+                    break;
+                case 'r':
+                    out->push_back('\r');
+                    break;
+                case 't':
+                    out->push_back('\t');
+                    break;
+                default:
+                    out->push_back(escaped);
+                    break;
+            }
+            continue;
+        }
+        out->push_back(ch);
+    }
+
+    return false;
+}
+
+bool find_json_field_value(const std::string& json,
+                           const std::string& field,
+                           size_t* value_pos) {
+    const std::string needle = "\"" + field + "\"";
+    size_t search_pos = 0;
+
+    while (true) {
+        search_pos = json.find(needle, search_pos);
+        if (search_pos == std::string::npos) {
+            return false;
+        }
+
+        size_t pos = skip_json_space(json, search_pos + needle.size());
+        if (pos >= json.size() || json[pos] != ':') {
+            search_pos += needle.size();
+            continue;
+        }
+
+        pos = skip_json_space(json, pos + 1);
+        if (pos >= json.size()) {
+            return false;
+        }
+
+        *value_pos = pos;
+        return true;
+    }
+}
+
+bool extract_json_string_field(const std::string& json,
+                               const std::string& field,
+                               std::string* out) {
+    size_t pos = 0;
+    if (!find_json_field_value(json, field, &pos)) {
+        return false;
+    }
+    return parse_json_string_at(json, &pos, out);
+}
+
+bool extract_json_int_field(const std::string& json,
+                            const std::string& field,
+                            int* value) {
+    size_t pos = 0;
+    if (!value || !find_json_field_value(json, field, &pos)) {
+        return false;
+    }
+
+    char* end = nullptr;
+    long parsed = std::strtol(json.c_str() + pos, &end, 10);
+    if (end == json.c_str() + pos) {
+        return false;
+    }
+
+    *value = static_cast<int>(parsed);
+    return true;
+}
+
+bool extract_json_bool_field(const std::string& json,
+                             const std::string& field,
+                             bool* value) {
+    size_t pos = 0;
+    if (!value || !find_json_field_value(json, field, &pos)) {
+        return false;
+    }
+
+    if (json.compare(pos, 4, "true") == 0) {
+        *value = true;
+        return true;
+    }
+    if (json.compare(pos, 5, "false") == 0) {
+        *value = false;
+        return true;
+    }
+
+    return false;
+}
+
+bool extract_json_string_array_field(const std::string& json,
+                                     const std::string& field,
+                                     std::vector<std::string>* out) {
+    size_t pos = 0;
+    if (!out || !find_json_field_value(json, field, &pos) || pos >= json.size() ||
+        json[pos] != '[') {
+        return false;
+    }
+
+    out->clear();
+    ++pos;
+    while (pos < json.size()) {
+        pos = skip_json_space(json, pos);
+        if (pos >= json.size()) {
+            return false;
+        }
+        if (json[pos] == ']') {
+            return true;
+        }
+
+        std::string item;
+        if (!parse_json_string_at(json, &pos, &item)) {
+            return false;
+        }
+        out->push_back(item);
+
+        pos = skip_json_space(json, pos);
+        if (pos < json.size() && json[pos] == ',') {
+            ++pos;
+        }
+    }
+
+    return false;
+}
+
+std::string json_escape(const std::string& text) {
+    static const char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(text.size() + 16);
+
+    for (size_t i = 0; i < text.size(); ++i) {
+        unsigned char ch = static_cast<unsigned char>(text[i]);
+        switch (ch) {
+            case '\\':
+                out += "\\\\";
+                break;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\b':
+                out += "\\b";
+                break;
+            case '\f':
+                out += "\\f";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
+            default:
+                if (ch < 0x20) {
+                    out += "\\u00";
+                    out.push_back(kHex[(ch >> 4) & 0x0f]);
+                    out.push_back(kHex[ch & 0x0f]);
+                } else {
+                    out.push_back(static_cast<char>(ch));
+                }
+                break;
+        }
+    }
+
+    return out;
+}
+
+std::string trim_output(const std::string& text) {
+    size_t end = text.size();
+    while (end > 0 && (text[end - 1] == '\n' || text[end - 1] == '\r')) {
+        --end;
+    }
+    return text.substr(0, end);
+}
+
 std::string read_until(int fd, const std::string& delimiter) {
     std::string result;
-    char buf[1];
+    char ch = '\0';
     while (true) {
-        ssize_t n = read(fd, buf, 1);
-        if (n <= 0) break;
-        result += buf[0];
+        ssize_t n = read(fd, &ch, 1);
+        if (n <= 0) {
+            break;
+        }
+        result.push_back(ch);
         if (result.size() >= delimiter.size() &&
-            result.substr(result.size() - delimiter.size()) == delimiter) {
+            result.compare(result.size() - delimiter.size(),
+                           delimiter.size(),
+                           delimiter) == 0) {
             break;
         }
     }
     return result;
 }
 
+bool read_exact(int fd, std::string* out, size_t length) {
+    if (!out) {
+        return false;
+    }
+
+    out->assign(length, '\0');
+    size_t offset = 0;
+    while (offset < length) {
+        ssize_t n = read(fd, &(*out)[offset], length - offset);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        if (n == 0) {
+            return false;
+        }
+        offset += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+bool write_all(int fd, const void* data, size_t size) {
+    const char* bytes = static_cast<const char*>(data);
+    size_t offset = 0;
+    while (offset < size) {
+        ssize_t n = write(fd, bytes + offset, size - offset);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        offset += static_cast<size_t>(n);
+    }
+    return true;
+}
+
 HttpRequest parse_request(int client_fd) {
     HttpRequest req;
-
-    // Read request line and headers
     std::string headers = read_until(client_fd, "\r\n\r\n");
 
     std::istringstream stream(headers);
     std::string line;
-
-    // Parse request line
     if (std::getline(stream, line)) {
         std::istringstream line_stream(line);
         line_stream >> req.method >> req.path;
-    }
-
-    // Find Content-Length
-    size_t content_length = 0;
-    while (std::getline(stream, line)) {
-        if (line.find("Content-Length:") == 0) {
-            content_length = std::stoul(line.substr(15));
+        size_t query_pos = req.path.find('?');
+        if (query_pos != std::string::npos) {
+            req.path = req.path.substr(0, query_pos);
         }
     }
 
-    // Read body if present
+    size_t content_length = 0;
+    while (std::getline(stream, line)) {
+        if (line.compare(0, 15, "Content-Length:") == 0) {
+            content_length = static_cast<size_t>(std::strtoul(line.c_str() + 15, nullptr, 10));
+        }
+    }
+
     if (content_length > 0) {
-        req.body.resize(content_length);
-        read(client_fd, &req.body[0], content_length);
+        read_exact(client_fd, &req.body, content_length);
     }
 
     return req;
 }
 
-void send_response(int client_fd, int status_code, const std::string& status_text,
-                   const std::string& content_type, const std::string& body) {
-    std::ostringstream response;
-    response << "HTTP/1.1 " << status_code << " " << status_text << "\r\n";
-    response << "Content-Type: " << content_type << "\r\n";
-    response << "Content-Length: " << body.size() << "\r\n";
-    response << "Connection: close\r\n";
-    response << "\r\n";
-    response << body;
+void send_response(int client_fd,
+                   int status_code,
+                   const std::string& status_text,
+                   const std::string& content_type,
+                   const std::string& body) {
+    std::ostringstream header;
+    header << "HTTP/1.1 " << status_code << " " << status_text << "\r\n";
+    header << "Content-Type: " << content_type << "\r\n";
+    header << "Content-Length: " << body.size() << "\r\n";
+    header << "Connection: close\r\n";
+    header << "\r\n";
 
-    std::string resp_str = response.str();
-    write(client_fd, resp_str.c_str(), resp_str.size());
+    const std::string header_text = header.str();
+    write_all(client_fd, header_text.data(), header_text.size());
+    write_all(client_fd, body.data(), body.size());
 }
 
-std::string extract_json_field(const std::string& json, const std::string& field) {
-    std::string search = "\"" + field + "\":";
-    size_t pos = json.find(search);
-    if (pos == std::string::npos) return "";
+void send_binary_response(int client_fd,
+                          int status_code,
+                          const std::string& status_text,
+                          const std::string& content_type,
+                          const std::vector<uint8_t>& body) {
+    std::ostringstream header;
+    header << "HTTP/1.1 " << status_code << " " << status_text << "\r\n";
+    header << "Content-Type: " << content_type << "\r\n";
+    header << "Content-Length: " << body.size() << "\r\n";
+    header << "Connection: close\r\n";
+    header << "\r\n";
 
-    pos += search.size();
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
-
-    if (pos >= json.size()) return "";
-
-    if (json[pos] == '"') {
-        // String value
-        pos++;
-        size_t end = json.find('"', pos);
-        if (end == std::string::npos) return "";
-        return json.substr(pos, end - pos);
-    } else if (json[pos] == '[') {
-        // Array value
-        size_t end = json.find(']', pos);
-        if (end == std::string::npos) return "";
-        return json.substr(pos, end - pos + 1);
-    } else {
-        // Number value
-        size_t end = pos;
-        while (end < json.size() && (std::isdigit(json[end]) || json[end] == '-')) end++;
-        return json.substr(pos, end - pos);
+    const std::string header_text = header.str();
+    write_all(client_fd, header_text.data(), header_text.size());
+    if (!body.empty()) {
+        write_all(client_fd, body.data(), body.size());
     }
 }
 
-std::vector<std::string> parse_json_array(const std::string& array_str) {
-    std::vector<std::string> result;
-    if (array_str.empty() || array_str[0] != '[') return result;
+CommandResult execute_command(const std::vector<std::string>& command) {
+    CommandResult result;
+    if (command.empty()) {
+        result.exit_code = 127;
+        result.output = "missing command";
+        return result;
+    }
 
-    size_t pos = 1;
-    while (pos < array_str.size()) {
-        while (pos < array_str.size() && (array_str[pos] == ' ' || array_str[pos] == ',')) pos++;
-        if (pos >= array_str.size() || array_str[pos] == ']') break;
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        result.exit_code = errno;
+        result.output = std::string("pipe failed: ") + std::strerror(errno);
+        return result;
+    }
 
-        if (array_str[pos] == '"') {
-            pos++;
-            size_t end = array_str.find('"', pos);
-            if (end == std::string::npos) break;
-            result.push_back(array_str.substr(pos, end - pos));
-            pos = end + 1;
+    pid_t pid = fork();
+    if (pid < 0) {
+        const int saved_errno = errno;
+        close(pipefd[0]);
+        close(pipefd[1]);
+        result.exit_code = saved_errno;
+        result.output = std::string("fork failed: ") + std::strerror(saved_errno);
+        return result;
+    }
+
+    if (pid == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[1]);
+
+        std::vector<char*> argv;
+        argv.reserve(command.size() + 1);
+        for (size_t i = 0; i < command.size(); ++i) {
+            argv.push_back(const_cast<char*>(command[i].c_str()));
+        }
+        argv.push_back(nullptr);
+
+        execv(argv[0], argv.data());
+
+        char buf[256];
+        int len = std::snprintf(buf,
+                                sizeof(buf),
+                                "execv failed for %s: %s\n",
+                                command[0].c_str(),
+                                std::strerror(errno));
+        if (len > 0) {
+            write(STDERR_FILENO, buf, static_cast<size_t>(len));
+        }
+        _exit(127);
+    }
+
+    close(pipefd[1]);
+    char buf[4096];
+    while (true) {
+        ssize_t n = read(pipefd[0], buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        if (n == 0) {
+            break;
+        }
+        result.output.append(buf, static_cast<size_t>(n));
+    }
+    close(pipefd[0]);
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            status = -1;
+            break;
         }
     }
 
+    if (status == -1) {
+        result.exit_code = 127;
+    } else if (WIFEXITED(status)) {
+        result.exit_code = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        result.exit_code = 128 + WTERMSIG(status);
+    } else {
+        result.exit_code = 127;
+    }
+
+    result.output = trim_output(result.output);
     return result;
 }
 
-std::string execute_hid_command(const std::string& cmd) {
-    FILE* fp = popen(cmd.c_str(), "r");
-    if (!fp) return "error: popen failed";
-
-    char buf[256];
-    std::string result;
-    while (fgets(buf, sizeof(buf), fp)) {
-        result += buf;
-    }
-
-    int status = pclose(fp);
-    if (status != 0) {
-        return "error: command failed with status " + std::to_string(status);
-    }
-
-    return result.empty() ? "ok" : result;
+CommandResult execute_hid_command(const std::vector<std::string>& hid_command_prefix,
+                                  const std::vector<std::string>& args) {
+    std::vector<std::string> command = hid_command_prefix;
+    command.insert(command.end(), args.begin(), args.end());
+    return execute_command(command);
 }
 
-std::string handle_api_request(const std::string& path, const std::string& body,
-                               const std::string& hid_binary) {
+ApiResponse make_json_error(int status_code, const std::string& message) {
+    ApiResponse response;
+    response.status_code = status_code;
+    response.status_text = (status_code >= 500) ? "Internal Server Error" : "Bad Request";
+    response.body = "{\"error\":\"" + json_escape(message) + "\"}";
+    return response;
+}
+
+ApiResponse make_command_response(const CommandResult& result) {
+    ApiResponse response;
+    if (result.exit_code == 0) {
+        const std::string output = result.output.empty() ? "ok" : result.output;
+        response.body = "{\"result\":\"" + json_escape(output) + "\"}";
+        return response;
+    }
+
+    response.status_code = 500;
+    response.status_text = "Internal Server Error";
+    response.body = "{\"error\":\"" +
+                    json_escape(result.output.empty() ? "command failed" : result.output) +
+                    "\",\"exit_code\":" + std::to_string(result.exit_code) + "}";
+    return response;
+}
+
+bool parse_capture_request(const std::string& body,
+                           CaptureRequest* request,
+                           std::string* error) {
+    if (!request) {
+        if (error) {
+            *error = "missing capture request";
+        }
+        return false;
+    }
+
+    extract_json_string_field(body, "device", &request->device_name);
+    extract_json_string_field(body, "subdev", &request->subdev_device);
+    extract_json_string_field(body, "edid", &request->edid_path);
+    if (!extract_json_string_field(body, "pixfmt", &request->pixel_format)) {
+        extract_json_string_field(body, "pixel_format", &request->pixel_format);
+    }
+
+    extract_json_int_field(body, "width", &request->config.width);
+    extract_json_int_field(body, "height", &request->config.height);
+    extract_json_int_field(body, "skip_frames", &request->config.skip_frames);
+    extract_json_int_field(body, "trigger_retries", &request->config.trigger_retries);
+    extract_json_int_field(body, "trigger_delay_ms", &request->config.trigger_delay_ms);
+    extract_json_int_field(body, "capture_retries", &request->config.capture_retries);
+
+    bool bool_value = false;
+    if (extract_json_bool_field(body, "force", &bool_value)) {
+        request->config.force_trigger = bool_value;
+    }
+    if (extract_json_bool_field(body, "enable_hdmi_sync", &bool_value)) {
+        request->config.enable_hdmi_sync = bool_value;
+    }
+    if (extract_json_bool_field(body, "no_hdmi_sync", &bool_value)) {
+        request->config.enable_hdmi_sync = !bool_value;
+    }
+    if (extract_json_bool_field(body, "require_exact_resolution", &bool_value)) {
+        request->config.require_exact_resolution = bool_value;
+    }
+    if (extract_json_bool_field(body, "allow_resolution_mismatch", &bool_value)) {
+        request->config.require_exact_resolution = !bool_value;
+    }
+    if (extract_json_bool_field(body, "reject_uniform_frames", &bool_value)) {
+        request->config.reject_uniform_frames = bool_value;
+    }
+    if (extract_json_bool_field(body, "allow_uniform_frames", &bool_value)) {
+        request->config.reject_uniform_frames = !bool_value;
+    }
+
+    if (request->config.width <= 0 || request->config.height <= 0) {
+        if (error) {
+            *error = "width and height must be positive";
+        }
+        return false;
+    }
+    if (request->config.skip_frames < 0 || request->config.trigger_retries < 0 ||
+        request->config.trigger_delay_ms < 0 || request->config.capture_retries < 0) {
+        if (error) {
+            *error = "capture counts and delays must be non-negative";
+        }
+        return false;
+    }
+    if (request->pixel_format.empty()) {
+        if (error) {
+            *error = "pixel format must not be empty";
+        }
+        return false;
+    }
+
+    request->sync_strings();
+    return true;
+}
+
+ApiResponse handle_capture_request(const std::string& body) {
+    CaptureRequest request;
+    std::string error;
+    if (!parse_capture_request(body, &request, &error)) {
+        g_screenshot = ScreenshotData{};
+        return make_json_error(400, error);
+    }
+
+    aiden::CameraCapture camera;
+    aiden::VideoFrame frame{};
+    std::vector<uint8_t> frame_buffer;
+    std::vector<uint8_t> rgb;
+    std::vector<uint8_t> bmp;
+
+    if (!camera.capture_once(request.config, frame, frame_buffer)) {
+        g_screenshot = ScreenshotData{};
+        return make_json_error(500, "capture failed");
+    }
+    if (!aiden_demo::convert_frame_to_rgb(frame, request.config.pixel_format, frame_buffer, &rgb)) {
+        g_screenshot = ScreenshotData{};
+        return make_json_error(500, "unsupported pixel format or incomplete frame buffer");
+    }
+    if (!aiden_demo::encode_rgb_to_bmp(rgb, frame.width, frame.height, &bmp)) {
+        g_screenshot = ScreenshotData{};
+        return make_json_error(500, "failed to encode bmp");
+    }
+
+    g_screenshot.bmp.swap(bmp);
+    g_screenshot.width = static_cast<int>(frame.width);
+    g_screenshot.height = static_cast<int>(frame.height);
+
+    ApiResponse response;
+    response.body = "{\"ok\":true,\"width\":" + std::to_string(frame.width) +
+                    ",\"height\":" + std::to_string(frame.height) +
+                    ",\"pixel_format\":\"" + json_escape(request.pixel_format) + "\"}";
+    return response;
+}
+
+ApiResponse handle_api_request(const std::string& path,
+                               const std::string& body,
+                               const std::vector<std::string>& hid_command_prefix) {
     if (path == "/api/keyboard/tap") {
-        std::string keys_str = extract_json_field(body, "keys");
-        std::vector<std::string> keys = parse_json_array(keys_str);
-
-        if (keys.empty()) {
-            return "{\"error\": \"missing keys\"}";
+        std::vector<std::string> keys;
+        if (!extract_json_string_array_field(body, "keys", &keys) || keys.empty()) {
+            return make_json_error(400, "missing keys");
         }
 
-        std::string cmd = hid_binary + " keyboard tap";
-        for (const auto& key : keys) {
-            cmd += " " + key;
-        }
-
-        std::string result = execute_hid_command(cmd);
-        return "{\"result\": \"" + result + "\"}";
+        std::vector<std::string> args;
+        args.push_back("keyboard");
+        args.push_back("tap");
+        args.insert(args.end(), keys.begin(), keys.end());
+        return make_command_response(execute_hid_command(hid_command_prefix, args));
     }
 
     if (path == "/api/keyboard/text") {
-        std::string text = extract_json_field(body, "text");
-        if (text.empty()) {
-            return "{\"error\": \"missing text\"}";
+        std::string text;
+        if (!extract_json_string_field(body, "text", &text) || text.empty()) {
+            return make_json_error(400, "missing text");
         }
 
-        std::string cmd = hid_binary + " keyboard text '" + text + "'";
-        std::string result = execute_hid_command(cmd);
-        return "{\"result\": \"" + result + "\"}";
+        std::vector<std::string> args;
+        args.push_back("keyboard");
+        args.push_back("text");
+        args.push_back(text);
+        return make_command_response(execute_hid_command(hid_command_prefix, args));
     }
 
     if (path == "/api/touch/move") {
-        std::string x = extract_json_field(body, "x");
-        std::string y = extract_json_field(body, "y");
-
-        if (x.empty() || y.empty()) {
-            return "{\"error\": \"missing x or y\"}";
+        int x = 0;
+        int y = 0;
+        if (!extract_json_int_field(body, "x", &x) || !extract_json_int_field(body, "y", &y)) {
+            return make_json_error(400, "missing x or y");
         }
 
-        std::string cmd = hid_binary + " touch move " + x + " " + y;
-        std::string result = execute_hid_command(cmd);
-        return "{\"result\": \"" + result + "\"}";
-    }
-
-    if (path == "/api/touch/tap") {
-        std::string x = extract_json_field(body, "x");
-        std::string y = extract_json_field(body, "y");
-
-        if (x.empty() || y.empty()) {
-            return "{\"error\": \"missing x or y\"}";
-        }
-
-        std::string cmd = hid_binary + " touch tap " + x + " " + y;
-        std::string result = execute_hid_command(cmd);
-        return "{\"result\": \"" + result + "\"}";
+        std::vector<std::string> args;
+        args.push_back("touch");
+        args.push_back("move");
+        args.push_back(std::to_string(x));
+        args.push_back(std::to_string(y));
+        return make_command_response(execute_hid_command(hid_command_prefix, args));
     }
 
     if (path == "/api/touch/click") {
-        std::string button = extract_json_field(body, "button");
-        if (button.empty()) button = "left";
+        std::string button = "left";
+        extract_json_string_field(body, "button", &button);
 
-        std::string cmd = hid_binary + " touch click " + button;
-        std::string result = execute_hid_command(cmd);
-        return "{\"result\": \"" + result + "\"}";
+        int x = 0;
+        int y = 0;
+        const bool has_x = extract_json_int_field(body, "x", &x);
+        const bool has_y = extract_json_int_field(body, "y", &y);
+        if (has_x != has_y) {
+            return make_json_error(400, "x and y must be provided together");
+        }
+        if (has_x && has_y) {
+            std::vector<std::string> move_args;
+            move_args.push_back("touch");
+            move_args.push_back("move");
+            move_args.push_back(std::to_string(x));
+            move_args.push_back(std::to_string(y));
+            CommandResult move_result = execute_hid_command(hid_command_prefix, move_args);
+            if (move_result.exit_code != 0) {
+                return make_command_response(move_result);
+            }
+        }
+
+        std::vector<std::string> args;
+        args.push_back("touch");
+        args.push_back("click");
+        if (has_x && has_y) {
+            args.push_back(std::to_string(x));
+            args.push_back(std::to_string(y));
+            args.push_back(button);
+        } else {
+            args.push_back(button);
+        }
+        return make_command_response(execute_hid_command(hid_command_prefix, args));
     }
 
     if (path == "/api/touch/scroll") {
-        std::string amount = extract_json_field(body, "amount");
-        if (amount.empty()) {
-            return "{\"error\": \"missing amount\"}";
+        int amount = 0;
+        if (!extract_json_int_field(body, "amount", &amount)) {
+            return make_json_error(400, "missing amount");
         }
 
-        std::string cmd = hid_binary + " touch scroll " + amount;
-        std::string result = execute_hid_command(cmd);
-        return "{\"result\": \"" + result + "\"}";
+        std::vector<std::string> args;
+        args.push_back("touch");
+        args.push_back("scroll");
+        args.push_back(std::to_string(amount));
+        return make_command_response(execute_hid_command(hid_command_prefix, args));
     }
 
-    return "{\"error\": \"unknown endpoint\"}";
+    if (path == "/api/capture") {
+        return handle_capture_request(body);
+    }
+
+    return make_json_error(400, "unknown endpoint");
 }
 
 }  // namespace
 
-void run_hid_server(int port, const std::string& hid_binary) {
+void run_hid_server(int port, const std::vector<std::string>& hid_command_prefix) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
         std::cerr << "Failed to create socket" << std::endl;
@@ -237,19 +755,21 @@ void run_hid_server(int port, const std::string& hid_binary) {
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    struct sockaddr_in addr;
+    sockaddr_in addr;
+    std::memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(static_cast<uint16_t>(port));
 
-    if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        std::cerr << "Failed to bind to port " << port << std::endl;
+    if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        std::cerr << "Failed to bind to port " << port << ": "
+                  << std::strerror(errno) << std::endl;
         close(server_fd);
         return;
     }
 
     if (listen(server_fd, 10) < 0) {
-        std::cerr << "Failed to listen" << std::endl;
+        std::cerr << "Failed to listen: " << std::strerror(errno) << std::endl;
         close(server_fd);
         return;
     }
@@ -258,10 +778,10 @@ void run_hid_server(int port, const std::string& hid_binary) {
     std::cout << "Press Ctrl+C to stop" << std::endl;
 
     while (true) {
-        struct sockaddr_in client_addr;
+        sockaddr_in client_addr;
         socklen_t client_len = sizeof(client_addr);
-        int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
-
+        int client_fd =
+            accept(server_fd, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
         if (client_fd < 0) {
             continue;
         }
@@ -269,12 +789,23 @@ void run_hid_server(int port, const std::string& hid_binary) {
         HttpRequest req = parse_request(client_fd);
 
         if (req.method == "GET" && req.path == "/") {
-            send_response(client_fd, 200, "OK", "text/html", HID_SERVER_HTML);
-        } else if (req.method == "POST" && req.path.find("/api/") == 0) {
-            std::string response = handle_api_request(req.path, req.body, hid_binary);
-            send_response(client_fd, 200, "OK", "application/json", response);
+            send_response(client_fd, 200, "OK", "text/html; charset=utf-8", HID_SERVER_HTML);
+        } else if (req.method == "GET" && req.path == "/screenshot.bmp") {
+            if (g_screenshot.bmp.empty()) {
+                send_response(client_fd, 404, "Not Found", "text/plain; charset=utf-8",
+                              "No screenshot yet");
+            } else {
+                send_binary_response(client_fd, 200, "OK", "image/bmp", g_screenshot.bmp);
+            }
+        } else if (req.method == "POST" && req.path.compare(0, 5, "/api/") == 0) {
+            ApiResponse response = handle_api_request(req.path, req.body, hid_command_prefix);
+            send_response(client_fd,
+                          response.status_code,
+                          response.status_text,
+                          "application/json; charset=utf-8",
+                          response.body);
         } else {
-            send_response(client_fd, 404, "Not Found", "text/plain", "Not Found");
+            send_response(client_fd, 404, "Not Found", "text/plain; charset=utf-8", "Not Found");
         }
 
         close(client_fd);

@@ -95,7 +95,7 @@ min_speech_ms = 300      # 最短语句长度
 5. **工具调用**: LLM可以调用工具来控制设备：
    - `keyboard_tap`: 按键组合（如ENTER, CTRL+C）
    - `keyboard_text`: 输入文本
-   - `touch_tap`: 点击坐标（0-32767范围）
+   - `touch_click`: 在绝对坐标点击（0-32767范围）
    - `touch_swipe`: 滑动手势
 6. **流式TTS播放**: LLM回复发送给MiniMax TTS API
    - 流式接收MP3音频chunks（hex编码）

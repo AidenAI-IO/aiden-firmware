@@ -93,14 +93,14 @@ static std::string execute_tool(const char* hid_binary, const char* tool_name,
         snprintf(cmd, sizeof(cmd), "sudo %s keyboard text '%s'",
                 hid_binary, text->valuestring);
     }
-    else if (strcmp(tool_name, "touch_tap") == 0) {
+    else if (strcmp(tool_name, "touch_click") == 0) {
         cJSON* x = cJSON_GetObjectItem(args, "x");
         cJSON* y = cJSON_GetObjectItem(args, "y");
         if (!x || !y) {
             cJSON_Delete(args);
             return "error: missing x or y";
         }
-        snprintf(cmd, sizeof(cmd), "sudo %s touch tap %d %d",
+        snprintf(cmd, sizeof(cmd), "sudo %s touch click %d %d",
                 hid_binary, x->valueint, y->valueint);
     }
     else if (strcmp(tool_name, "touch_swipe") == 0) {

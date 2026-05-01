@@ -1,4 +1,12 @@
 #pragma once
 #include <string>
+#include <vector>
+#include <cstdint>
 
-void run_hid_server(int port, const std::string& hid_binary);
+struct ScreenshotData {
+    std::vector<uint8_t> bmp;
+    int width = 0;
+    int height = 0;
+};
+
+void run_hid_server(int port, const std::vector<std::string>& hid_command_prefix);

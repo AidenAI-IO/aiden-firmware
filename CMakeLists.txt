@@ -5,6 +5,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+add_link_options(-Wl,-rpath,/oem/usr/lib)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -61,6 +62,7 @@ target_link_libraries(example_camera_capture PRIVATE aiden)
 
 add_executable(example_usb_hid src/example_usb_hid.cpp src/hid_server.cpp)
 target_include_directories(example_usb_hid PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(example_usb_hid PRIVATE aiden)
 
 add_executable(audio_stream src/audio_stream.cpp)
 target_link_libraries(audio_stream PRIVATE aiden)

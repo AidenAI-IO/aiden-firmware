@@ -1,1 +1,2 @@
-image/**/* filter=lfs diff=lfs merge=lfs -text
+image/*.img filter=lfs diff=lfs merge=lfs -text
+image/*.bin filter=lfs diff=lfs merge=lfs -text

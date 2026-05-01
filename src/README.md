@@ -241,7 +241,7 @@ sudo ./build/bin/example_usb_hid keyboard tap CTRL ALT DELETE
 sudo ./build/bin/example_usb_hid keyboard text "hello from pico"
 
 # Touch examples (coordinates: 0-32767)
-sudo ./build/bin/example_usb_hid touch tap 16000 16000
+sudo ./build/bin/example_usb_hid touch click 16000 16000
 sudo ./build/bin/example_usb_hid touch down 10000 10000
 sudo ./build/bin/example_usb_hid touch move 20000 20000
 sudo ./build/bin/example_usb_hid touch up

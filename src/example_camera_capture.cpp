@@ -1,4 +1,5 @@
 #include "aiden_sdk.h"
+#include "camera_frame_utils.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -70,104 +71,6 @@ static int parse_int(const char* text, int* value) {
     return 0;
 }
 
-static uint8_t clamp_u8(int value) {
-    if (value < 0) {
-        return 0;
-    }
-    if (value > 255) {
-        return 255;
-    }
-    return static_cast<uint8_t>(value);
-}
-
-static void yuv_to_rgb(uint8_t y, uint8_t u, uint8_t v, uint8_t* rgb) {
-    const int c = static_cast<int>(y) - 16;
-    const int d = static_cast<int>(u) - 128;
-    const int e = static_cast<int>(v) - 128;
-    const int c298 = (c < 0 ? 0 : c) * 298;
-
-    rgb[0] = clamp_u8((c298 + 409 * e + 128) >> 8);
-    rgb[1] = clamp_u8((c298 - 100 * d - 208 * e + 128) >> 8);
-    rgb[2] = clamp_u8((c298 + 516 * d + 128) >> 8);
-}
-
-static bool convert_frame_to_rgb(const aiden::VideoFrame& frame,
-                                 const char* pixel_format,
-                                 const std::vector<uint8_t>& buffer,
-                                 std::vector<uint8_t>* rgb) {
-    if (!pixel_format || !rgb) {
-        return false;
-    }
-
-    const uint32_t width = frame.width;
-    const uint32_t height = frame.height;
-    const size_t pixels = static_cast<size_t>(width) * height;
-    rgb->assign(pixels * 3, 0);
-
-    if (strcmp(pixel_format, "uyvy") == 0) {
-        if (buffer.size() < pixels * 2) {
-            return false;
-        }
-        size_t src = 0;
-        size_t dst = 0;
-        while (src + 3 < buffer.size() && dst + 5 < rgb->size()) {
-            const uint8_t u = buffer[src++];
-            const uint8_t y0 = buffer[src++];
-            const uint8_t v = buffer[src++];
-            const uint8_t y1 = buffer[src++];
-            yuv_to_rgb(y0, u, v, rgb->data() + dst);
-            yuv_to_rgb(y1, u, v, rgb->data() + dst + 3);
-            dst += 6;
-        }
-        return true;
-    }
-
-    if (strcmp(pixel_format, "yuyv") == 0) {
-        if (buffer.size() < pixels * 2) {
-            return false;
-        }
-        size_t src = 0;
-        size_t dst = 0;
-        while (src + 3 < buffer.size() && dst + 5 < rgb->size()) {
-            const uint8_t y0 = buffer[src++];
-            const uint8_t u = buffer[src++];
-            const uint8_t y1 = buffer[src++];
-            const uint8_t v = buffer[src++];
-            yuv_to_rgb(y0, u, v, rgb->data() + dst);
-            yuv_to_rgb(y1, u, v, rgb->data() + dst + 3);
-            dst += 6;
-        }
-        return true;
-    }
-
-    if (strcmp(pixel_format, "nv12") == 0 || strcmp(pixel_format, "nv16") == 0) {
-        const bool is_nv12 = strcmp(pixel_format, "nv12") == 0;
-        const size_t y_plane_size = pixels;
-        const size_t uv_plane_size = is_nv12 ? pixels / 2 : pixels;
-        if (buffer.size() < y_plane_size + uv_plane_size) {
-            return false;
-        }
-
-        const uint8_t* y_plane = buffer.data();
-        const uint8_t* uv_plane = buffer.data() + y_plane_size;
-
-        for (uint32_t y = 0; y < height; ++y) {
-            const uint32_t uv_row = is_nv12 ? (y / 2) : y;
-            for (uint32_t x = 0; x < width; ++x) {
-                const size_t y_index = static_cast<size_t>(y) * width + x;
-                const size_t uv_index = static_cast<size_t>(uv_row) * width + (x & ~1U);
-                yuv_to_rgb(y_plane[y_index],
-                           uv_plane[uv_index],
-                           uv_plane[uv_index + 1],
-                           rgb->data() + y_index * 3);
-            }
-        }
-        return true;
-    }
-
-    return false;
-}
-
 static int write_raw_file(const char* path, const std::vector<uint8_t>& buffer) {
     FILE* file = fopen(path, "wb");
     if (!file) {
@@ -205,7 +108,7 @@ static int write_ppm_file(const char* path,
                           const char* pixel_format,
                           const std::vector<uint8_t>& buffer) {
     std::vector<uint8_t> rgb;
-    if (!convert_frame_to_rgb(frame, pixel_format, buffer, &rgb)) {
+    if (!aiden_demo::convert_frame_to_rgb(frame, pixel_format, buffer, &rgb)) {
         fprintf(stderr, "PPM export does not support pixel format %s or buffer is incomplete\n",
                 pixel_format ? pixel_format : "(null)");
         errno = EINVAL;
@@ -255,21 +158,7 @@ static int save_frame(const Options& opts,
 static int parse_options(int argc, char* argv[], Options* opts) {
     int positional = 0;
 
-    opts->camera.width = 1920;
-    opts->camera.height = 1080;
-    opts->camera.camera_id = 0;
-    opts->camera.device_name = "/dev/video0";
-    opts->camera.pixel_format = "uyvy";
-    opts->camera.subdev_device = "/dev/v4l-subdev2";
-    opts->camera.edid_path = nullptr;
-    opts->camera.skip_frames = 1;
-    opts->camera.trigger_retries = 0;
-    opts->camera.trigger_delay_ms = 1000;
-    opts->camera.capture_retries = 2;
-    opts->camera.enable_hdmi_sync = true;
-    opts->camera.force_trigger = false;
-    opts->camera.require_exact_resolution = true;
-    opts->camera.reject_uniform_frames = true;
+    aiden_demo::set_default_camera_config(&opts->camera);
     opts->output_path = "/mnt/tmp/frame.ppm";
 
     for (int i = 1; i < argc; ++i) {

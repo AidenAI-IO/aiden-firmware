@@ -77,30 +77,30 @@ static cJSON* create_tool_definitions() {
     cJSON_AddItemToObject(kb_text, "function", kb_text_func);
     cJSON_AddItemToArray(tools, kb_text);
 
-    // touch_tap tool
-    cJSON* touch_tap = cJSON_CreateObject();
-    cJSON_AddStringToObject(touch_tap, "type", "function");
-    cJSON* touch_tap_func = cJSON_CreateObject();
-    cJSON_AddStringToObject(touch_tap_func, "name", "touch_tap");
-    cJSON_AddStringToObject(touch_tap_func, "description",
-        "Tap touchscreen at coordinates");
-    cJSON* touch_tap_params = cJSON_CreateObject();
-    cJSON_AddStringToObject(touch_tap_params, "type", "object");
-    cJSON* touch_tap_props = cJSON_CreateObject();
-    cJSON* touch_tap_x = cJSON_CreateObject();
-    cJSON_AddStringToObject(touch_tap_x, "type", "integer");
-    cJSON_AddItemToObject(touch_tap_props, "x", touch_tap_x);
-    cJSON* touch_tap_y = cJSON_CreateObject();
-    cJSON_AddStringToObject(touch_tap_y, "type", "integer");
-    cJSON_AddItemToObject(touch_tap_props, "y", touch_tap_y);
-    cJSON_AddItemToObject(touch_tap_params, "properties", touch_tap_props);
-    cJSON* touch_tap_req = cJSON_CreateArray();
-    cJSON_AddItemToArray(touch_tap_req, cJSON_CreateString("x"));
-    cJSON_AddItemToArray(touch_tap_req, cJSON_CreateString("y"));
-    cJSON_AddItemToObject(touch_tap_params, "required", touch_tap_req);
-    cJSON_AddItemToObject(touch_tap_func, "parameters", touch_tap_params);
-    cJSON_AddItemToObject(touch_tap, "function", touch_tap_func);
-    cJSON_AddItemToArray(tools, touch_tap);
+    // touch_click tool
+    cJSON* touch_click = cJSON_CreateObject();
+    cJSON_AddStringToObject(touch_click, "type", "function");
+    cJSON* touch_click_func = cJSON_CreateObject();
+    cJSON_AddStringToObject(touch_click_func, "name", "touch_click");
+    cJSON_AddStringToObject(touch_click_func, "description",
+        "Send a left click at absolute coordinates");
+    cJSON* touch_click_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(touch_click_params, "type", "object");
+    cJSON* touch_click_props = cJSON_CreateObject();
+    cJSON* touch_click_x = cJSON_CreateObject();
+    cJSON_AddStringToObject(touch_click_x, "type", "integer");
+    cJSON_AddItemToObject(touch_click_props, "x", touch_click_x);
+    cJSON* touch_click_y = cJSON_CreateObject();
+    cJSON_AddStringToObject(touch_click_y, "type", "integer");
+    cJSON_AddItemToObject(touch_click_props, "y", touch_click_y);
+    cJSON_AddItemToObject(touch_click_params, "properties", touch_click_props);
+    cJSON* touch_click_req = cJSON_CreateArray();
+    cJSON_AddItemToArray(touch_click_req, cJSON_CreateString("x"));
+    cJSON_AddItemToArray(touch_click_req, cJSON_CreateString("y"));
+    cJSON_AddItemToObject(touch_click_params, "required", touch_click_req);
+    cJSON_AddItemToObject(touch_click_func, "parameters", touch_click_params);
+    cJSON_AddItemToObject(touch_click, "function", touch_click_func);
+    cJSON_AddItemToArray(tools, touch_click);
 
     // touch_swipe tool
     cJSON* touch_swipe = cJSON_CreateObject();

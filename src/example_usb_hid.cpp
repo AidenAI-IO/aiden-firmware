@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits.h>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -554,7 +555,7 @@ void print_usage() {
         << "  example_usb_hid [global options] keyboard tap <KEY> [KEY ...]\n"
         << "  example_usb_hid [global options] keyboard text <TEXT>\n"
         << "  example_usb_hid [global options] touch move <X> <Y>\n"
-        << "  example_usb_hid [global options] touch tap <X> <Y>\n"
+        << "  example_usb_hid [global options] touch click <X> <Y> [left|right|middle]\n"
         << "  example_usb_hid [global options] touch click [left|right|middle]\n"
         << "  example_usb_hid [global options] touch down [left|right|middle]\n"
         << "  example_usb_hid [global options] touch up\n"
@@ -582,7 +583,7 @@ void print_usage() {
         << "  example_usb_hid setup composite\n"
         << "  example_usb_hid keyboard tap CTRL ALT DELETE\n"
         << "  example_usb_hid keyboard text \"hello from pico\"\n"
-        << "  example_usb_hid touch tap 12000 8000\n"
+        << "  example_usb_hid touch click 12000 8000\n"
         << std::endl;
 }
 
@@ -634,6 +635,56 @@ Options parse_global_options(std::vector<std::string>& args) {
 
     args.swap(remaining);
     return options;
+}
+
+std::string current_executable_path(const char* argv0) {
+    char path[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    if (len > 0) {
+        path[len] = '\0';
+        return path;
+    }
+    return argv0 ? argv0 : "example_usb_hid";
+}
+
+std::vector<std::string> build_server_command_prefix(const Options& options,
+                                                     const std::string& executable_path) {
+    std::vector<std::string> command;
+    command.push_back(executable_path);
+    command.push_back("--gadget-root");
+    command.push_back(options.gadget_root);
+    command.push_back("--gadget-name");
+    command.push_back(options.gadget_name);
+    command.push_back("--keyboard-dev");
+    command.push_back(options.keyboard_dev);
+    command.push_back("--touch-dev");
+    command.push_back(options.touch_dev);
+    command.push_back("--state-dir");
+    command.push_back(options.state_dir);
+    command.push_back("--manufacturer");
+    command.push_back(options.manufacturer);
+    command.push_back("--product-name");
+    command.push_back(options.product_name);
+    command.push_back("--serial");
+    command.push_back(options.serial);
+    command.push_back("--vendor");
+    command.push_back(std::to_string(options.vendor_id));
+    command.push_back("--product-id");
+    command.push_back(std::to_string(options.product_id));
+    if (!options.udc.empty()) {
+        command.push_back("--udc");
+        command.push_back(options.udc);
+    }
+    command.push_back("--width");
+    command.push_back(std::to_string(options.width));
+    command.push_back("--height");
+    command.push_back(std::to_string(options.height));
+    command.push_back("--duration-ms");
+    command.push_back(std::to_string(options.duration_ms));
+    if (options.force) {
+        command.push_back("--force");
+    }
+    return command;
 }
 
 void handle_keyboard(const Options& options, const std::vector<std::string>& args) {
@@ -716,6 +767,26 @@ int clamp_coordinate(int value, int maximum) {
     return value;
 }
 
+bool try_parse_int_arg(const std::string& text, int* value) {
+    char* end = nullptr;
+    errno = 0;
+    long parsed = std::strtol(text.c_str(), &end, 0);
+    if (errno != 0 || !end || *end != '\0') {
+        return false;
+    }
+    if (value) {
+        *value = static_cast<int>(parsed);
+    }
+    return true;
+}
+
+int parse_mouse_button(const std::string& arg) {
+    if (arg == "left") return 0x01;
+    if (arg == "right") return 0x02;
+    if (arg == "middle") return 0x04;
+    return parse_int(arg);
+}
+
 // Send absolute mouse report: [buttons][X_lo][X_hi][Y_lo][Y_hi][wheel]
 void send_mouse_report(const Options& options, uint8_t buttons, int x, int y, int wheel) {
     x = clamp_coordinate(x, options.width);
@@ -745,41 +816,42 @@ void handle_touch(const Options& options, const std::vector<std::string>& args) 
         return;
     }
 
-    if (action == "tap") {
-        if (args.size() != 4) {
-            throw std::runtime_error("touch tap requires X and Y (0-32767)");
-        }
-        int x = parse_int(args[2]);
-        int y = parse_int(args[3]);
-        send_mouse_report(options, 0x01, x, y, 0);
-        sleep_ms(options.duration_ms);
-        send_mouse_report(options, 0x00, x, y, 0);
-        return;
-    }
-
     if (action == "click") {
         int button = 0x01;
-        if (args.size() >= 3) {
-            std::string btn = args[2];
-            if (btn == "left")   button = 0x01;
-            else if (btn == "right")  button = 0x02;
-            else if (btn == "middle") button = 0x04;
-            else button = parse_int(btn);
+        int x = 0;
+        int y = 0;
+        bool has_coords = false;
+
+        if (args.size() == 3) {
+            button = parse_mouse_button(args[2]);
+        } else if (args.size() == 4 || args.size() == 5) {
+            if (!try_parse_int_arg(args[2], &x) || !try_parse_int_arg(args[3], &y)) {
+                throw std::runtime_error(
+                    "touch click requires either [button] or <X> <Y> [left|right|middle]");
+            }
+            has_coords = true;
+            if (args.size() == 5) {
+                button = parse_mouse_button(args[4]);
+            }
+        } else if (args.size() > 5) {
+            throw std::runtime_error(
+                "touch click requires either [button] or <X> <Y> [left|right|middle]");
         }
-        send_mouse_report(options, button, 0, 0, 0);
+
+        if (has_coords) {
+            send_mouse_report(options, 0x00, x, y, 0);
+        }
+
+        send_mouse_report(options, button, x, y, 0);
         sleep_ms(options.duration_ms);
-        send_mouse_report(options, 0x00, 0, 0, 0);
+        send_mouse_report(options, 0x00, x, y, 0);
         return;
     }
 
     if (action == "down") {
         int button = 0x01;
         if (args.size() >= 3) {
-            std::string btn = args[2];
-            if (btn == "left")   button = 0x01;
-            else if (btn == "right")  button = 0x02;
-            else if (btn == "middle") button = 0x04;
-            else button = parse_int(btn);
+            button = parse_mouse_button(args[2]);
         }
         send_mouse_report(options, button, 0, 0, 0);
         return;
@@ -850,8 +922,8 @@ int main(int argc, char** argv) {
             if (args.size() >= 2) {
                 port = parse_int(args[1]);
             }
-            std::string self = argv[0];
-            run_hid_server(port, self);
+            const std::string self = current_executable_path(argv[0]);
+            run_hid_server(port, build_server_command_prefix(options, self));
             return 0;
         }
 
