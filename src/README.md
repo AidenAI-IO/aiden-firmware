@@ -125,13 +125,27 @@ aiden::CameraConfig config;
 config.width = 1920;
 config.height = 1080;
 config.camera_id = 0;
-config.pixel_format = "nv12";
+config.pixel_format = "uyvy";
 
 aiden::CameraCapture camera;
 camera.init(config);
 camera.start(on_video);
 // ... video streams to callback ...
 camera.stop();
+```
+
+Capture a single copied frame without manual `release_frame()`:
+
+```cpp
+aiden::CameraConfig config;
+config.edid_path = nullptr;  // use built-in 1080p30 CTA EDID
+
+aiden::CameraCapture camera;
+aiden::VideoFrame frame;
+std::vector<uint8_t> bytes;
+camera.capture_once(config, frame, bytes);
+
+printf("Frame: %ux%u, %u bytes\n", frame.width, frame.height, frame.length);
 ```
 
 ## Configuration
@@ -151,11 +165,21 @@ struct AudioConfig {
 
 ```cpp
 struct CameraConfig {
-    const char* device_name;  // V4L2 device, e.g., "/dev/video0"
+    const char* device_name;  // V4L2 capture device path (default: /dev/video0)
     int width;                // Frame width (default: 1920)
     int height;               // Frame height (default: 1080)
-    int camera_id;            // Camera ID (default: 0)
-    const char* pixel_format; // "nv12", "nv16", "uyvy", "yuyv"
+    int camera_id;            // Reserved camera index (default: 0)
+    const char* pixel_format; // "nv12", "nv16", "uyvy", "yuyv" (default: "uyvy")
+    const char* subdev_device;// HDMI bridge subdev (default: /dev/v4l-subdev2)
+    const char* edid_path;    // Custom EDID hex file, null uses built-in 1080p30 CTA
+    int skip_frames;          // Frames discarded after stream-on (default: 1)
+    int trigger_retries;      // Additional EDID retrigger attempts after the first trigger
+    int trigger_delay_ms;     // Delay after each trigger
+    int capture_retries;      // Full init/capture recovery retries
+    bool enable_hdmi_sync;    // Trigger EDID + set DV timings before VI init
+    bool force_trigger;       // Push EDID before the first timing query
+    bool require_exact_resolution; // Reject wrong negotiated modes like 1024x768
+    bool reject_uniform_frames;    // Retry on known-bad all-same HDMI frames
 };
 ```
 
@@ -188,10 +212,22 @@ Plays a 440Hz tone for 2 seconds.
 ### Camera Capture
 
 ```bash
-./build/bin/example_camera_capture [device_name]
+./build/bin/example_camera_capture
+./build/bin/example_camera_capture --output /mnt/tmp/frame.raw
+./build/bin/example_camera_capture --edid /mnt/tmp/hdmi_1080p30_cta.hex
 ```
 
-Captures video frames and prints frame info. Optional device name parameter.
+Uses `libaiden` camera capture. The default one-shot path now:
+
+- queries current DV timings first and only pushes EDID if sync is missing
+- uses the built-in `1080p30` CTA EDID when a retrigger is needed
+- waits for HDMI sync through `/dev/v4l-subdev2`
+- discards the transitional first frame after stream-on
+- captures from `/dev/video0` through a V4L2 MMAP path
+- saves a viewable `/mnt/tmp/frame.ppm` by default
+
+Use `--help` to see optional `--device`, `--subdev`, `--edid`, `--force-trigger`,
+`--capture-retries`, and `--output` arguments.
 
 ### USB HID Emulation
 

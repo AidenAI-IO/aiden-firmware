@@ -25,11 +25,21 @@ struct AudioFrame {
 
 // Camera configuration
 struct CameraConfig {
-    const char* device_name = nullptr;  // e.g., "/dev/video0"
+    const char* device_name = "/dev/video0";  // V4L2 capture device
     int width = 1920;
     int height = 1080;
     int camera_id = 0;
-    const char* pixel_format = "nv12";  // nv12, nv16, uyvy, yuyv
+    const char* pixel_format = "uyvy";  // nv12, nv16, uyvy, yuyv
+    const char* subdev_device = "/dev/v4l-subdev2";
+    const char* edid_path = nullptr;    // Defaults to built-in 1080p30 CTA EDID
+    int skip_frames = 1;                // Drop transitional frames after stream-on
+    int trigger_retries = 0;            // Additional EDID retrigger attempts after the first trigger
+    int trigger_delay_ms = 1000;
+    int capture_retries = 2;            // Full init/capture recovery retries
+    bool enable_hdmi_sync = true;
+    bool force_trigger = false;
+    bool require_exact_resolution = true;
+    bool reject_uniform_frames = true;  // Reject known-bad all-same HDMI frames
 };
 
 // Video frame data
@@ -158,6 +168,14 @@ public:
 
     // Get a single frame (blocking)
     bool get_frame(VideoFrame& frame);
+
+    // Get a single frame and copy it into a caller-owned buffer.
+    bool capture_frame(VideoFrame& frame, std::vector<uint8_t>& buffer);
+
+    // One-shot still capture helper: init, capture, and stop internally.
+    bool capture_once(const CameraConfig& config,
+                      VideoFrame& frame,
+                      std::vector<uint8_t>& buffer);
 
     // Release frame after processing
     void release_frame();

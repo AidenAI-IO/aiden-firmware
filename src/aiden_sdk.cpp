@@ -3,10 +3,15 @@
 #include <atomic>
 #include <cstring>
 #include <fcntl.h>
+#include <linux/v4l2-subdev.h>
+#include <linux/videodev2.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <string>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 extern "C" {
@@ -41,6 +46,397 @@ static AUDIO_BIT_WIDTH_E to_bit_width(int bits) {
     case 24: return AUDIO_BIT_WIDTH_24;
     default: return AUDIO_BIT_WIDTH_16;
     }
+}
+
+static const uint8_t kDefaultHdmiEdid1080p30[] = {
+    0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00,
+    0x31, 0xd8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x05, 0x16, 0x01, 0x03, 0x80, 0x32, 0x1c, 0x78,
+    0xea, 0x5e, 0xc0, 0xa4, 0x59, 0x4a, 0x98, 0x25,
+    0x20, 0x50, 0x54, 0x00, 0x00, 0x00, 0x01, 0x01,
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x1d,
+    0x80, 0x18, 0x71, 0x38, 0x2d, 0x40, 0x58, 0x2c,
+    0x45, 0x00, 0xf4, 0x19, 0x11, 0x00, 0x00, 0x1e,
+    0x00, 0x00, 0x00, 0xff, 0x00, 0x4c, 0x69, 0x6e,
+    0x75, 0x78, 0x20, 0x23, 0x30, 0x0a, 0x20, 0x20,
+    0x20, 0x20, 0x00, 0x00, 0x00, 0xfd, 0x00, 0x1d,
+    0x1f, 0x20, 0x22, 0x08, 0x00, 0x0a, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x00, 0x00, 0x00, 0xfc,
+    0x00, 0x4c, 0x69, 0x6e, 0x75, 0x78, 0x20, 0x46,
+    0x48, 0x44, 0x33, 0x30, 0x0a, 0x20, 0x01, 0x02,
+    0x02, 0x03, 0x0c, 0x00, 0x41, 0xa2, 0x65, 0x03,
+    0x0c, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88,
+};
+
+static_assert(sizeof(kDefaultHdmiEdid1080p30) % 128 == 0,
+              "Built-in HDMI EDID must be a multiple of 128 bytes");
+
+static int xioctl(int fd, unsigned long request, void* arg) {
+    int ret;
+
+    do {
+        ret = ioctl(fd, request, arg);
+    } while (ret < 0 && errno == EINTR);
+
+    return ret;
+}
+
+static const char* v4l2_format_name(uint32_t format, char text[5]) {
+    text[0] = static_cast<char>(format & 0xff);
+    text[1] = static_cast<char>((format >> 8) & 0xff);
+    text[2] = static_cast<char>((format >> 16) & 0xff);
+    text[3] = static_cast<char>((format >> 24) & 0xff);
+    text[4] = '\0';
+    return text;
+}
+
+static uint32_t frame_size_bytes(const char* pixel_format, uint32_t width, uint32_t height) {
+    if (!pixel_format || strcmp(pixel_format, "nv12") == 0) {
+        return width * height * 3 / 2;
+    }
+    return width * height * 2;
+}
+
+static bool timings_match_request(const CameraConfig& config,
+                                  const struct v4l2_dv_timings& timings) {
+    if (!config.require_exact_resolution) {
+        return true;
+    }
+
+    return timings.bt.width == static_cast<uint32_t>(config.width) &&
+           timings.bt.height == static_cast<uint32_t>(config.height);
+}
+
+static bool is_uniform_packed_frame(const uint8_t* data, size_t size) {
+    if (!data || size < 4 || (size % 2) != 0) {
+        return false;
+    }
+
+    const uint8_t first0 = data[0];
+    const uint8_t first1 = data[1];
+    size_t step = size / 4096;
+
+    if (step < 2) {
+        step = 2;
+    }
+    if (step & 1) {
+        ++step;
+    }
+
+    for (size_t i = 0; i + 1 < size; i += step) {
+        if (data[i] != first0 || data[i + 1] != first1) {
+            return false;
+        }
+    }
+
+    return data[size - 2] == first0 && data[size - 1] == first1;
+}
+
+static bool frame_looks_invalid(const CameraConfig& config,
+                                const uint8_t* data,
+                                size_t size) {
+    if (!config.reject_uniform_frames || !config.pixel_format) {
+        return false;
+    }
+
+    return (strcmp(config.pixel_format, "uyvy") == 0 ||
+            strcmp(config.pixel_format, "yuyv") == 0) &&
+           is_uniform_packed_frame(data, size);
+}
+
+static int write_all(int fd, const void* data, size_t length) {
+    const uint8_t* bytes = static_cast<const uint8_t*>(data);
+
+    while (length > 0) {
+        ssize_t written = write(fd, bytes, length);
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        bytes += written;
+        length -= static_cast<size_t>(written);
+    }
+
+    return 0;
+}
+
+static int load_edid_hex_file(const char* path, uint8_t** data_out, uint32_t* blocks_out) {
+    FILE* file = fopen(path, "r");
+    uint8_t* buffer = nullptr;
+    size_t used = 0;
+    size_t capacity = 0;
+    unsigned value;
+
+    if (!file) {
+        fprintf(stderr, "Failed to open EDID file %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+
+    while (fscanf(file, "%x", &value) == 1) {
+        if (value > 0xff) {
+            fprintf(stderr, "Invalid EDID byte 0x%x in %s\n", value, path);
+            free(buffer);
+            fclose(file);
+            errno = EINVAL;
+            return -1;
+        }
+
+        if (used == capacity) {
+            size_t new_capacity = capacity ? capacity * 2 : 256;
+            uint8_t* new_buffer = static_cast<uint8_t*>(realloc(buffer, new_capacity));
+            if (!new_buffer) {
+                fprintf(stderr, "Out of memory while loading EDID file %s\n", path);
+                free(buffer);
+                fclose(file);
+                errno = ENOMEM;
+                return -1;
+            }
+            buffer = new_buffer;
+            capacity = new_capacity;
+        }
+
+        buffer[used++] = static_cast<uint8_t>(value);
+    }
+
+    fclose(file);
+
+    if (used == 0 || (used % 128) != 0) {
+        fprintf(stderr, "EDID file %s has %zu bytes, expected a non-zero multiple of 128\n",
+                path, used);
+        free(buffer);
+        errno = EINVAL;
+        return -1;
+    }
+
+    *data_out = buffer;
+    *blocks_out = static_cast<uint32_t>(used / 128);
+    return 0;
+}
+
+static int write_edid_hex_file(const char* path, const uint8_t* data, size_t size) {
+    int fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (fd < 0) {
+        fprintf(stderr, "Failed to create temporary EDID file %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+
+    std::string text;
+    text.reserve(size * 3);
+    for (size_t i = 0; i < size; ++i) {
+        char byte_text[4];
+        snprintf(byte_text, sizeof(byte_text), "%02x%s", data[i], ((i + 1) % 16) ? " " : "\n");
+        text += byte_text;
+    }
+    if ((size % 16) != 0) {
+        text += '\n';
+    }
+
+    int ret = write_all(fd, text.data(), text.size());
+    close(fd);
+    return ret;
+}
+
+static int push_edid_with_v4l2ctl(const CameraConfig& config,
+                                  const uint8_t* data,
+                                  uint32_t blocks) {
+    char temp_path[64];
+    snprintf(temp_path, sizeof(temp_path), "/tmp/libaiden_edid_%d.hex", getpid());
+
+    const char* edid_path = config.edid_path;
+    if (!edid_path) {
+        if (write_edid_hex_file(temp_path, data, static_cast<size_t>(blocks) * 128) < 0) {
+            return -1;
+        }
+        edid_path = temp_path;
+    }
+
+    const char* subdev = config.subdev_device ? config.subdev_device : "/dev/v4l-subdev2";
+    std::string edid_arg = std::string("pad=0,file=") + edid_path;
+    pid_t child = fork();
+    int status = -1;
+    int wait_ret = -1;
+
+    if (child == 0) {
+        execlp("v4l2-ctl",
+               "v4l2-ctl",
+               "-d",
+               subdev,
+               "--set-edid",
+               edid_arg.c_str(),
+               "--fix-edid-checksums",
+               static_cast<char*>(nullptr));
+        _exit(127);
+    }
+
+    if (child > 0) {
+        do {
+            wait_ret = waitpid(child, &status, 0);
+        } while (wait_ret < 0 && errno == EINTR);
+    }
+
+    if (!config.edid_path) {
+        unlink(temp_path);
+    }
+
+    if (child < 0 || wait_ret < 0) {
+        fprintf(stderr, "Failed to execute EDID fallback command: %s\n", strerror(errno));
+        return -1;
+    }
+
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "EDID fallback command failed with status %d\n",
+                WIFEXITED(status) ? WEXITSTATUS(status) : status);
+        errno = EIO;
+        return -1;
+    }
+
+    return 0;
+}
+
+static int push_edid(int subdev_fd, const CameraConfig& config) {
+    struct v4l2_edid edid;
+    uint8_t* heap_edid = nullptr;
+    const uint8_t* data = kDefaultHdmiEdid1080p30;
+    uint32_t blocks = sizeof(kDefaultHdmiEdid1080p30) / 128;
+
+    if (config.edid_path) {
+        if (load_edid_hex_file(config.edid_path, &heap_edid, &blocks) < 0) {
+            return -1;
+        }
+        data = heap_edid;
+    }
+
+    memset(&edid, 0, sizeof(edid));
+    edid.pad = 0;
+    edid.start_block = 0;
+    edid.blocks = blocks;
+    edid.edid = const_cast<uint8_t*>(data);
+
+    if (push_edid_with_v4l2ctl(config, data, blocks) < 0 &&
+        xioctl(subdev_fd, VIDIOC_SUBDEV_S_EDID, &edid) < 0) {
+        free(heap_edid);
+        return -1;
+    }
+
+    free(heap_edid);
+    return 0;
+}
+
+static int query_and_set_timings(int subdev_fd, struct v4l2_dv_timings* timings) {
+    memset(timings, 0, sizeof(*timings));
+
+    if (xioctl(subdev_fd, VIDIOC_SUBDEV_QUERY_DV_TIMINGS, timings) < 0) {
+        return -1;
+    }
+    if (xioctl(subdev_fd, VIDIOC_SUBDEV_S_DV_TIMINGS, timings) < 0) {
+        return -2;
+    }
+
+    return 0;
+}
+
+static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_t* height) {
+    if (!config.enable_hdmi_sync) {
+        *width = static_cast<uint32_t>(config.width);
+        *height = static_cast<uint32_t>(config.height);
+        return true;
+    }
+
+    const char* subdev_device = config.subdev_device ? config.subdev_device : "/dev/v4l-subdev2";
+    int subdev_fd = open(subdev_device, O_RDWR);
+    if (subdev_fd < 0) {
+        fprintf(stderr, "Failed to open HDMI subdev %s: %s\n",
+                subdev_device, strerror(errno));
+        return false;
+    }
+
+    struct v4l2_dv_timings timings;
+    const int trigger_attempts = config.force_trigger ? (config.trigger_retries + 1) : config.trigger_retries;
+
+    if (!config.force_trigger) {
+        int ret = query_and_set_timings(subdev_fd, &timings);
+        if (ret == 0) {
+            if (!timings_match_request(config, timings)) {
+                fprintf(stderr,
+                        "HDMI timing mismatch on %s: detected %ux%u, expected %dx%d\n",
+                        subdev_device,
+                        timings.bt.width,
+                        timings.bt.height,
+                        config.width,
+                        config.height);
+                errno = ERANGE;
+            } else {
+                *width = timings.bt.width;
+                *height = timings.bt.height;
+                close(subdev_fd);
+                return true;
+            }
+        } else if (ret == -2) {
+            fprintf(stderr, "Failed to apply detected HDMI timings on %s: %s\n",
+                    subdev_device, strerror(errno));
+        }
+    }
+
+    for (int attempt = 0; attempt <= trigger_attempts; ++attempt) {
+        if (push_edid(subdev_fd, config) < 0) {
+            close(subdev_fd);
+            return false;
+        }
+        if (config.trigger_delay_ms > 0) {
+            usleep(static_cast<useconds_t>(config.trigger_delay_ms) * 1000);
+        }
+
+        int ret = query_and_set_timings(subdev_fd, &timings);
+        if (ret == 0) {
+            if (!timings_match_request(config, timings)) {
+                fprintf(stderr,
+                        "HDMI timing mismatch on %s: detected %ux%u, expected %dx%d\n",
+                        subdev_device,
+                        timings.bt.width,
+                        timings.bt.height,
+                        config.width,
+                        config.height);
+                errno = ERANGE;
+                continue;
+            }
+
+            *width = timings.bt.width;
+            *height = timings.bt.height;
+            close(subdev_fd);
+            return true;
+        }
+
+        if (ret == -2) {
+            fprintf(stderr, "Failed to apply detected HDMI timings on %s: %s\n",
+                    subdev_device, strerror(errno));
+        }
+
+        if (attempt == trigger_attempts) {
+            break;
+        }
+    }
+
+    fprintf(stderr, "Failed to synchronize HDMI DV timings on %s: %s\n",
+            subdev_device, strerror(errno));
+    close(subdev_fd);
+    return false;
 }
 
 // --- WakeupListener ---
@@ -418,29 +814,37 @@ bool AudioPlayer::is_initialized() const {
 
 // --- CameraCapture ---
 
-static PIXEL_FORMAT_E to_pixel_format(const char* fmt) {
-    if (!fmt || strcmp(fmt, "nv12") == 0) return RK_FMT_YUV420SP;
-    if (strcmp(fmt, "nv16") == 0) return RK_FMT_YUV422SP;
-    if (strcmp(fmt, "uyvy") == 0) return RK_FMT_YUV422_UYVY;
-    if (strcmp(fmt, "yuyv") == 0) return RK_FMT_YUV422_YUYV;
-    return RK_FMT_YUV420SP;
+static uint32_t to_v4l2_pixel_format(const char* fmt) {
+    if (!fmt || strcmp(fmt, "nv12") == 0) return V4L2_PIX_FMT_NV12;
+    if (strcmp(fmt, "nv16") == 0) return V4L2_PIX_FMT_NV16;
+    if (strcmp(fmt, "uyvy") == 0) return V4L2_PIX_FMT_UYVY;
+    if (strcmp(fmt, "yuyv") == 0) return V4L2_PIX_FMT_YUYV;
+    return V4L2_PIX_FMT_NV12;
 }
+
+struct CaptureBuffer {
+    void* start = nullptr;
+    size_t length = 0;
+};
 
 class CameraCaptureImpl {
 public:
     std::atomic<bool> running{false};
     bool initialized = false;
+    bool streaming = false;
+    bool frame_held = false;
     pthread_t thread{};
     CameraConfig config;
     VideoStreamCallback callback;
+    int skip_frames_remaining = 0;
 
-    VI_DEV dev_id = 0;
-    VI_PIPE pipe_id = 0;
-    VI_CHN chn_id = 1;
-    VI_DEV_ATTR_S dev_attr{};
-    VI_DEV_BIND_PIPE_S bind_pipe{};
-    VI_CHN_ATTR_S chn_attr{};
-    VIDEO_FRAME_INFO_S frame{};
+    int video_fd = -1;
+    bool is_mplane = false;
+    enum v4l2_buf_type buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    std::vector<CaptureBuffer> buffers;
+    struct v4l2_buffer held_buffer{};
+    struct v4l2_plane held_planes[VIDEO_MAX_PLANES]{};
+    uint32_t held_bytes_used = 0;
 
     static void* thread_func(void* arg) {
         auto* self = static_cast<CameraCaptureImpl*>(arg);
@@ -448,24 +852,160 @@ public:
         return nullptr;
     }
 
+    void cleanup_buffers() {
+        for (size_t i = 0; i < buffers.size(); ++i) {
+            if (buffers[i].start) {
+                munmap(buffers[i].start, buffers[i].length);
+            }
+        }
+        buffers.clear();
+    }
+
+    void cleanup_device() {
+        if (frame_held) {
+            if (xioctl(video_fd, VIDIOC_QBUF, &held_buffer) < 0) {
+                fprintf(stderr, "VIDIOC_QBUF failed while releasing held frame: %s\n",
+                        strerror(errno));
+            }
+            frame_held = false;
+            held_bytes_used = 0;
+        }
+
+        if (streaming) {
+            if (xioctl(video_fd, VIDIOC_STREAMOFF, &buf_type) < 0) {
+                fprintf(stderr, "VIDIOC_STREAMOFF failed: %s\n", strerror(errno));
+            }
+            streaming = false;
+        }
+
+        cleanup_buffers();
+
+        if (video_fd >= 0) {
+            close(video_fd);
+            video_fd = -1;
+        }
+    }
+
+    bool wait_for_ready(int timeout_ms) const {
+        struct pollfd pfd;
+        pfd.fd = video_fd;
+        pfd.events = POLLIN | POLLERR;
+        pfd.revents = 0;
+
+        while (true) {
+            int ret = poll(&pfd, 1, timeout_ms);
+            if (ret > 0) {
+                return true;
+            }
+            if (ret == 0) {
+                errno = ETIMEDOUT;
+                return false;
+            }
+            if (errno != EINTR) {
+                return false;
+            }
+        }
+    }
+
+    void fill_video_frame(VideoFrame& frame_info, const struct v4l2_buffer& raw_buffer) const {
+        frame_info.data = buffers[raw_buffer.index].start;
+        frame_info.width = static_cast<uint32_t>(config.width);
+        frame_info.height = static_cast<uint32_t>(config.height);
+        frame_info.length = held_bytes_used
+            ? held_bytes_used
+            : frame_size_bytes(config.pixel_format,
+                               static_cast<uint32_t>(config.width),
+                               static_cast<uint32_t>(config.height));
+        frame_info.timestamp =
+            static_cast<uint64_t>(raw_buffer.timestamp.tv_sec) * 1000000ULL +
+            static_cast<uint64_t>(raw_buffer.timestamp.tv_usec);
+        frame_info.sequence = raw_buffer.sequence;
+    }
+
+    bool acquire_frame(VideoFrame* frame_info, int timeout_ms) {
+        while (true) {
+            if (!wait_for_ready(timeout_ms)) {
+                return false;
+            }
+
+            struct v4l2_buffer raw_buffer;
+            struct v4l2_plane raw_planes[VIDEO_MAX_PLANES];
+            memset(&raw_buffer, 0, sizeof(raw_buffer));
+            memset(raw_planes, 0, sizeof(raw_planes));
+
+            raw_buffer.type = buf_type;
+            raw_buffer.memory = V4L2_MEMORY_MMAP;
+            if (is_mplane) {
+                raw_buffer.m.planes = raw_planes;
+                raw_buffer.length = VIDEO_MAX_PLANES;
+            }
+
+            if (xioctl(video_fd, VIDIOC_DQBUF, &raw_buffer) < 0) {
+                if (errno == EAGAIN) {
+                    continue;
+                }
+                return false;
+            }
+
+            if (raw_buffer.index >= buffers.size()) {
+                errno = EIO;
+                return false;
+            }
+
+            uint32_t bytes_used = is_mplane ? raw_planes[0].bytesused : raw_buffer.bytesused;
+            if (bytes_used == 0) {
+                bytes_used = frame_size_bytes(config.pixel_format,
+                                              static_cast<uint32_t>(config.width),
+                                              static_cast<uint32_t>(config.height));
+            }
+
+            if (skip_frames_remaining > 0) {
+                --skip_frames_remaining;
+                if (xioctl(video_fd, VIDIOC_QBUF, &raw_buffer) < 0) {
+                    return false;
+                }
+                continue;
+            }
+
+            memset(&held_buffer, 0, sizeof(held_buffer));
+            held_bytes_used = bytes_used;
+            if (is_mplane) {
+                memcpy(held_planes, raw_planes, sizeof(raw_planes));
+            }
+            held_buffer = raw_buffer;
+            if (is_mplane) {
+                held_buffer.m.planes = held_planes;
+            }
+            frame_held = true;
+
+            if (frame_info) {
+                fill_video_frame(*frame_info, held_buffer);
+            }
+            return true;
+        }
+    }
+
     void run() {
         while (running) {
-            RK_S32 ret = RK_MPI_VI_GetChnFrame(pipe_id, chn_id, &frame, 500);
-            if (ret == RK_SUCCESS) {
-                void* data = RK_MPI_MB_Handle2VirAddr(frame.stVFrame.pMbBlk);
-                if (callback && data) {
-                    VideoFrame vf;
-                    vf.data = data;
-                    vf.width = frame.stVFrame.u32Width;
-                    vf.height = frame.stVFrame.u32Height;
-                    vf.length = frame.stVFrame.u64PrivateData;
-                    vf.timestamp = frame.stVFrame.u64PTS;
-                    vf.sequence = frame.stVFrame.u32TimeRef;
-                    callback(vf);
+            VideoFrame frame_info{};
+
+            if (!acquire_frame(&frame_info, 500)) {
+                if (errno == ETIMEDOUT || errno == EAGAIN) {
+                    continue;
                 }
-                RK_MPI_VI_ReleaseChnFrame(pipe_id, chn_id, &frame);
+                usleep(1000);
+                continue;
             }
-            usleep(1000);
+
+            if (callback) {
+                callback(frame_info);
+            }
+
+            if (frame_held && xioctl(video_fd, VIDIOC_QBUF, &held_buffer) < 0) {
+                fprintf(stderr, "VIDIOC_QBUF failed: %s\n", strerror(errno));
+            }
+            frame_held = false;
+            held_bytes_used = 0;
         }
     }
 };
@@ -474,76 +1014,185 @@ CameraCapture::CameraCapture() : impl_(new CameraCaptureImpl()) {}
 CameraCapture::~CameraCapture() { stop(); }
 
 bool CameraCapture::init(const CameraConfig& config) {
-    ensure_sys_init();
-
-    impl_->config = config;
-    impl_->dev_id = config.camera_id;
-    impl_->pipe_id = config.camera_id;
-    impl_->chn_id = 1;
-
-    // Check if device is already configured
-    RK_S32 ret = RK_MPI_VI_GetDevAttr(impl_->dev_id, &impl_->dev_attr);
-    if (ret == RK_ERR_VI_NOT_CONFIG) {
-        // Configure device
-        impl_->dev_attr.enIntfMode = VI_MODE_MIPI;
-        impl_->dev_attr.enWorkMode = VI_WORK_MODE_1Multiplex;
-        impl_->dev_attr.enInputDataType = VI_DATA_TYPE_RGB;
-
-        ret = RK_MPI_VI_SetDevAttr(impl_->dev_id, &impl_->dev_attr);
-        if (ret != RK_SUCCESS) return false;
+    if (impl_->initialized) {
+        stop();
     }
 
-    // Enable device if not already enabled
-    ret = RK_MPI_VI_GetDevIsEnable(impl_->dev_id);
-    if (ret != RK_SUCCESS) {
-        ret = RK_MPI_VI_EnableDev(impl_->dev_id);
-        if (ret != RK_SUCCESS) return false;
+    impl_->config = config;
+    impl_->skip_frames_remaining = config.skip_frames;
+    impl_->frame_held = false;
+    impl_->held_bytes_used = 0;
+    impl_->streaming = false;
+    impl_->video_fd = -1;
+    impl_->buffers.clear();
 
-        // Bind device to pipe
-        impl_->bind_pipe.u32Num = 1;
-        impl_->bind_pipe.PipeId[0] = impl_->pipe_id;
-        ret = RK_MPI_VI_SetDevBindPipe(impl_->dev_id, &impl_->bind_pipe);
-        if (ret != RK_SUCCESS) {
-            RK_MPI_VI_DisableDev(impl_->dev_id);
-            return false;
+    auto fail = [this]() {
+        impl_->cleanup_device();
+        impl_->initialized = false;
+        return false;
+    };
+
+    uint32_t synced_width = static_cast<uint32_t>(config.width);
+    uint32_t synced_height = static_cast<uint32_t>(config.height);
+    if (!sync_hdmi_input(config, &synced_width, &synced_height)) {
+        return fail();
+    }
+    impl_->config.width = static_cast<int>(synced_width);
+    impl_->config.height = static_cast<int>(synced_height);
+
+    const char* device = config.device_name ? config.device_name : "/dev/video0";
+    impl_->video_fd = open(device, O_RDWR | O_NONBLOCK);
+    if (impl_->video_fd < 0) {
+        fprintf(stderr, "Failed to open video device %s: %s\n", device, strerror(errno));
+        return fail();
+    }
+
+    struct v4l2_capability cap;
+    memset(&cap, 0, sizeof(cap));
+    if (xioctl(impl_->video_fd, VIDIOC_QUERYCAP, &cap) < 0) {
+        fprintf(stderr, "VIDIOC_QUERYCAP failed for %s: %s\n", device, strerror(errno));
+        return fail();
+    }
+
+    uint32_t capabilities = (cap.capabilities & V4L2_CAP_DEVICE_CAPS)
+        ? cap.device_caps
+        : cap.capabilities;
+
+    if (capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE) {
+        impl_->is_mplane = true;
+        impl_->buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    } else if (capabilities & V4L2_CAP_VIDEO_CAPTURE) {
+        impl_->is_mplane = false;
+        impl_->buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    } else {
+        fprintf(stderr, "Video device %s is not a capture device\n", device);
+        errno = ENODEV;
+        return fail();
+    }
+
+    struct v4l2_format fmt;
+    memset(&fmt, 0, sizeof(fmt));
+    fmt.type = impl_->buf_type;
+    if (impl_->is_mplane) {
+        fmt.fmt.pix_mp.width = synced_width;
+        fmt.fmt.pix_mp.height = synced_height;
+        fmt.fmt.pix_mp.pixelformat = to_v4l2_pixel_format(config.pixel_format);
+        fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
+    } else {
+        fmt.fmt.pix.width = synced_width;
+        fmt.fmt.pix.height = synced_height;
+        fmt.fmt.pix.pixelformat = to_v4l2_pixel_format(config.pixel_format);
+        fmt.fmt.pix.field = V4L2_FIELD_NONE;
+    }
+
+    if (xioctl(impl_->video_fd, VIDIOC_S_FMT, &fmt) < 0) {
+        fprintf(stderr, "VIDIOC_S_FMT failed for %s: %s\n", device, strerror(errno));
+        return fail();
+    }
+
+    const uint32_t requested_format = to_v4l2_pixel_format(config.pixel_format);
+    const uint32_t actual_format = impl_->is_mplane
+        ? fmt.fmt.pix_mp.pixelformat
+        : fmt.fmt.pix.pixelformat;
+    if (actual_format != requested_format) {
+        char requested_text[5];
+        char actual_text[5];
+        fprintf(stderr,
+                "Video device %s returned pixelformat %s instead of requested %s\n",
+                device,
+                v4l2_format_name(actual_format, actual_text),
+                v4l2_format_name(requested_format, requested_text));
+        errno = EINVAL;
+        return fail();
+    }
+
+    if (impl_->is_mplane) {
+        impl_->config.width = static_cast<int>(fmt.fmt.pix_mp.width);
+        impl_->config.height = static_cast<int>(fmt.fmt.pix_mp.height);
+    } else {
+        impl_->config.width = static_cast<int>(fmt.fmt.pix.width);
+        impl_->config.height = static_cast<int>(fmt.fmt.pix.height);
+    }
+
+    if (config.require_exact_resolution &&
+        (impl_->config.width != static_cast<int>(synced_width) ||
+         impl_->config.height != static_cast<int>(synced_height))) {
+        fprintf(stderr,
+                "Video device %s returned %dx%d instead of synchronized %ux%u\n",
+                device,
+                impl_->config.width,
+                impl_->config.height,
+                synced_width,
+                synced_height);
+        errno = EINVAL;
+        return fail();
+    }
+
+    struct v4l2_requestbuffers req;
+    memset(&req, 0, sizeof(req));
+    req.count = 4;
+    req.type = impl_->buf_type;
+    req.memory = V4L2_MEMORY_MMAP;
+    if (xioctl(impl_->video_fd, VIDIOC_REQBUFS, &req) < 0) {
+        fprintf(stderr, "VIDIOC_REQBUFS failed for %s: %s\n", device, strerror(errno));
+        return fail();
+    }
+    if (req.count == 0) {
+        fprintf(stderr, "Video device %s returned zero capture buffers\n", device);
+        errno = ENOMEM;
+        return fail();
+    }
+
+    impl_->buffers.resize(req.count);
+    for (uint32_t i = 0; i < req.count; ++i) {
+        struct v4l2_buffer buf;
+        struct v4l2_plane planes[VIDEO_MAX_PLANES];
+        memset(&buf, 0, sizeof(buf));
+        memset(planes, 0, sizeof(planes));
+
+        buf.type = impl_->buf_type;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index = i;
+        if (impl_->is_mplane) {
+            buf.m.planes = planes;
+            buf.length = VIDEO_MAX_PLANES;
+        }
+
+        if (xioctl(impl_->video_fd, VIDIOC_QUERYBUF, &buf) < 0) {
+            fprintf(stderr, "VIDIOC_QUERYBUF failed for %s: %s\n", device, strerror(errno));
+            return fail();
+        }
+
+        size_t length = impl_->is_mplane ? planes[0].length : buf.length;
+        off_t offset = impl_->is_mplane ? planes[0].m.mem_offset : buf.m.offset;
+        void* start = mmap(nullptr, length, PROT_READ | PROT_WRITE, MAP_SHARED, impl_->video_fd, offset);
+        if (start == MAP_FAILED) {
+            fprintf(stderr, "mmap failed for %s buffer %u: %s\n", device, i, strerror(errno));
+            return fail();
+        }
+
+        impl_->buffers[i].start = start;
+        impl_->buffers[i].length = length;
+
+        if (xioctl(impl_->video_fd, VIDIOC_QBUF, &buf) < 0) {
+            fprintf(stderr, "VIDIOC_QBUF failed for %s buffer %u: %s\n",
+                    device, i, strerror(errno));
+            return fail();
         }
     }
 
-    // Configure channel
-    impl_->chn_attr.stSize.u32Width = config.width;
-    impl_->chn_attr.stSize.u32Height = config.height;
-    impl_->chn_attr.enPixelFormat = to_pixel_format(config.pixel_format);
-    impl_->chn_attr.enCompressMode = COMPRESS_MODE_NONE;
-    impl_->chn_attr.stFrameRate.s32SrcFrameRate = -1;
-    impl_->chn_attr.stFrameRate.s32DstFrameRate = -1;
-    impl_->chn_attr.u32Depth = 1;
-    impl_->chn_attr.stIspOpt.u32BufCount = 2;
-    impl_->chn_attr.stIspOpt.enMemoryType = VI_V4L2_MEMORY_TYPE_DMABUF;
-
-    if (config.device_name) {
-        strncpy(impl_->chn_attr.stIspOpt.aEntityName, config.device_name,
-                sizeof(impl_->chn_attr.stIspOpt.aEntityName) - 1);
+    if (xioctl(impl_->video_fd, VIDIOC_STREAMON, &impl_->buf_type) < 0) {
+        fprintf(stderr, "VIDIOC_STREAMON failed for %s: %s\n", device, strerror(errno));
+        return fail();
     }
 
-    ret = RK_MPI_VI_SetChnAttr(impl_->pipe_id, impl_->chn_id, &impl_->chn_attr);
-    if (ret != RK_SUCCESS) {
-        RK_MPI_VI_DisableDev(impl_->dev_id);
-        return false;
-    }
-
-    // Enable channel
-    ret = RK_MPI_VI_EnableChn(impl_->pipe_id, impl_->chn_id);
-    if (ret != RK_SUCCESS) {
-        RK_MPI_VI_DisableDev(impl_->dev_id);
-        return false;
-    }
-
+    impl_->streaming = true;
     impl_->initialized = true;
     return true;
 }
 
 bool CameraCapture::start(VideoStreamCallback callback) {
-    if (impl_->running) return false;
+    if (!impl_->initialized || impl_->running || impl_->frame_held) return false;
 
     impl_->callback = callback;
     impl_->running = true;
@@ -559,30 +1208,97 @@ void CameraCapture::stop() {
         pthread_join(impl_->thread, nullptr);
     }
 
-    RK_MPI_VI_DisableChn(impl_->pipe_id, impl_->chn_id);
-    RK_MPI_VI_DisableDev(impl_->dev_id);
-
+    impl_->cleanup_device();
     impl_->initialized = false;
-    maybe_sys_deinit();
 }
 
 bool CameraCapture::get_frame(VideoFrame& frame) {
-    RK_S32 ret = RK_MPI_VI_GetChnFrame(impl_->pipe_id, impl_->chn_id, &impl_->frame, -1);
-    if (ret == RK_SUCCESS) {
-        void* data = RK_MPI_MB_Handle2VirAddr(impl_->frame.stVFrame.pMbBlk);
-        frame.data = data;
-        frame.width = impl_->frame.stVFrame.u32Width;
-        frame.height = impl_->frame.stVFrame.u32Height;
-        frame.length = impl_->frame.stVFrame.u64PrivateData;
-        frame.timestamp = impl_->frame.stVFrame.u64PTS;
-        frame.sequence = impl_->frame.stVFrame.u32TimeRef;
-        return true;
+    if (!impl_->initialized || impl_->running || impl_->frame_held) {
+        return false;
     }
+
+    return impl_->acquire_frame(&frame, -1);
+}
+
+bool CameraCapture::capture_frame(VideoFrame& frame, std::vector<uint8_t>& buffer) {
+    if (!impl_->initialized || impl_->running) {
+        return false;
+    }
+
+    CameraConfig retry_config = impl_->config;
+    const int max_attempts = retry_config.capture_retries + 1;
+
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        if (!impl_->initialized) {
+            if (!init(retry_config)) {
+                fprintf(stderr, "Camera init failed (attempt %d/%d): %s\n",
+                        attempt + 1, max_attempts, strerror(errno));
+                continue;
+            }
+        }
+
+        if (!get_frame(frame)) {
+            fprintf(stderr, "Failed to acquire frame (attempt %d/%d): %s\n",
+                    attempt + 1, max_attempts, strerror(errno));
+        } else {
+            buffer.resize(frame.length);
+            memcpy(buffer.data(), frame.data, frame.length);
+            release_frame();
+
+            if (!frame_looks_invalid(retry_config, buffer.data(), buffer.size())) {
+                frame.data = buffer.data();
+                return true;
+            }
+
+            fprintf(stderr,
+                    "Rejected uniform frame payload (attempt %d/%d), reinitializing capture\n",
+                    attempt + 1, max_attempts);
+        }
+
+        if (impl_->frame_held) {
+            release_frame();
+        }
+        if (attempt + 1 >= max_attempts) {
+            break;
+        }
+
+        stop();
+    }
+
+    return false;
+}
+
+bool CameraCapture::capture_once(const CameraConfig& config,
+                                 VideoFrame& frame,
+                                 std::vector<uint8_t>& buffer) {
+    const int max_attempts = config.capture_retries + 1;
+
+    stop();
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        if (!init(config)) {
+            fprintf(stderr, "Camera init failed (attempt %d/%d): %s\n",
+                    attempt + 1, max_attempts, strerror(errno));
+        } else if (capture_frame(frame, buffer)) {
+            stop();
+            return true;
+        }
+
+        stop();
+    }
+
     return false;
 }
 
 void CameraCapture::release_frame() {
-    RK_MPI_VI_ReleaseChnFrame(impl_->pipe_id, impl_->chn_id, &impl_->frame);
+    if (!impl_->frame_held) {
+        return;
+    }
+
+    if (xioctl(impl_->video_fd, VIDIOC_QBUF, &impl_->held_buffer) < 0) {
+        fprintf(stderr, "VIDIOC_QBUF failed: %s\n", strerror(errno));
+    }
+    impl_->frame_held = false;
+    impl_->held_bytes_used = 0;
 }
 
 bool CameraCapture::is_running() const {

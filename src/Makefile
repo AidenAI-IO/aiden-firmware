@@ -41,6 +41,7 @@ $(BIN_DIR)/trigger: trigger.c | directories
 	$(CC) $(CFLAGS) $< -o $@
 
 $(SDK_LIBRARY): $(SDK_OBJECT) | directories
+	rm -f $@
 	$(AR) rcs $@ $^
 
 $(OBJ_DIR)/aiden_sdk.o: aiden_sdk.cpp aiden_sdk.h | directories
