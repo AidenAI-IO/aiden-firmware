@@ -153,7 +153,7 @@ bool MinimaxTTS::text_to_speech_stream(const char* text, aiden::AudioPlayer& pla
     cJSON* request = cJSON_CreateObject();
     cJSON_AddStringToObject(request, "model", "speech-2.8-hd");
     cJSON_AddStringToObject(request, "text", text);
-    cJSON_AddBoolToObject(request, "stream", true);
+    cJSON_AddBoolToObject(request, "stream", false);
 
     cJSON* voice_setting = cJSON_CreateObject();
     cJSON_AddStringToObject(voice_setting, "voice_id", voice_id_.c_str());
