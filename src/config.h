@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace aiden {
 
 struct ModelConfig {
@@ -52,6 +54,6 @@ struct AgentConfig {
     }
 };
 
-bool load_config(const char* path, AgentConfig& config);
+bool load_config(const char* path, AgentConfig& config, std::string* error = nullptr);
 
 }

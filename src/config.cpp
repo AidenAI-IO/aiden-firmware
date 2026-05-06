@@ -3,8 +3,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <errno.h>
 
 namespace aiden {
+
+static void set_error(std::string* error, const std::string& msg) {
+    if (error) *error = msg;
+}
 
 static void trim(char* s) {
     char* end = s + strlen(s) - 1;
@@ -19,29 +24,55 @@ static void copy_str(char* dst, size_t dst_size, const char* src) {
     dst[dst_size - 1] = '\0';
 }
 
-bool load_config(const char* path, AgentConfig& config) {
+bool load_config(const char* path, AgentConfig& config, std::string* error) {
+    if (error) error->clear();
+
     FILE* fp = fopen(path, "r");
-    if (!fp) return false;
+    if (!fp) {
+        int saved_errno = errno;
+        char buf[512];
+        snprintf(buf, sizeof(buf), "cannot open '%s': %s (errno=%d)",
+                 path ? path : "(null)", strerror(saved_errno), saved_errno);
+        set_error(error, buf);
+        return false;
+    }
 
     char line[512];
     char current_section[64] = "";
+    int line_no = 0;
 
     while (fgets(line, sizeof(line), fp)) {
+        line_no++;
         trim(line);
         if (line[0] == '#' || line[0] == ';' || line[0] == '\0')
             continue;
 
         if (line[0] == '[') {
             char* end = strchr(line, ']');
-            if (end) {
-                *end = '\0';
-                copy_str(current_section, sizeof(current_section), line + 1);
+            if (!end) {
+                char buf[512];
+                snprintf(buf, sizeof(buf),
+                         "%s:%d: unterminated section header: '%s'",
+                         path, line_no, line);
+                set_error(error, buf);
+                fclose(fp);
+                return false;
             }
+            *end = '\0';
+            copy_str(current_section, sizeof(current_section), line + 1);
             continue;
         }
 
         char* eq = strchr(line, '=');
-        if (!eq) continue;
+        if (!eq) {
+            char buf[512];
+            snprintf(buf, sizeof(buf),
+                     "%s:%d: expected 'key = value', got: '%s'",
+                     path, line_no, line);
+            set_error(error, buf);
+            fclose(fp);
+            return false;
+        }
 
         *eq = '\0';
         char key[128], val[256];
@@ -89,7 +120,16 @@ bool load_config(const char* path, AgentConfig& config) {
     }
 
     fclose(fp);
-    return config.model.api_key[0] != '\0';
+
+    if (config.model.api_key[0] == '\0') {
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+                 "%s: required field [model] api_key is missing or empty", path);
+        set_error(error, buf);
+        return false;
+    }
+
+    return true;
 }
 
 }
