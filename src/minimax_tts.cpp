@@ -7,32 +7,116 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <pthread.h>
 #include <sys/wait.h>
 #include <vector>
 
 namespace aiden {
 
 struct StreamContext {
-    int ffmpeg_stdin;
-    int ffmpeg_stdout;
-    pid_t ffmpeg_pid;
     aiden::AudioPlayer* player;
-    pthread_t reader_thread;
+    minimax::StreamParser parser;
+    std::vector<uint8_t> previous_pcm;
 };
 
-static void* pcm_reader_thread(void* arg) {
-    StreamContext* ctx = (StreamContext*)arg;
-
-    uint8_t pcm_buf[4096];
-    while (true) {
-        ssize_t n = read(ctx->ffmpeg_stdout, pcm_buf, sizeof(pcm_buf));
-        if (n <= 0) break;
-
-        ctx->player->play(pcm_buf, n);
+static bool decode_mp3_to_pcm(const std::vector<uint8_t>& mp3, std::vector<uint8_t>& pcm) {
+    int stdin_pipe[2], stdout_pipe[2];
+    if (pipe(stdin_pipe) < 0 || pipe(stdout_pipe) < 0) {
+        fprintf(stderr, "[error] Failed to create decode pipes\n");
+        return false;
     }
 
-    return NULL;
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "[error] Failed to fork ffmpeg\n");
+        close(stdin_pipe[0]);
+        close(stdin_pipe[1]);
+        close(stdout_pipe[0]);
+        close(stdout_pipe[1]);
+        return false;
+    }
+
+    if (pid == 0) {
+        close(stdin_pipe[1]);
+        close(stdout_pipe[0]);
+        dup2(stdin_pipe[0], STDIN_FILENO);
+        dup2(stdout_pipe[1], STDOUT_FILENO);
+        close(stdin_pipe[0]);
+        close(stdout_pipe[1]);
+
+        execlp("ffmpeg", "ffmpeg",
+               "-loglevel", "error",
+               "-i", "pipe:0",
+               "-f", "s16le",
+               "-ar", "16000",
+               "-ac", "1",
+               "pipe:1",
+               NULL);
+        _exit(1);
+    }
+
+    close(stdin_pipe[0]);
+    close(stdout_pipe[1]);
+
+    size_t offset = 0;
+    while (offset < mp3.size()) {
+        ssize_t n = write(stdin_pipe[1], mp3.data() + offset, mp3.size() - offset);
+        if (n > 0) {
+            offset += (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR)
+            continue;
+        fprintf(stderr, "[error] Failed to write mp3 to ffmpeg: %s\n", strerror(errno));
+        close(stdin_pipe[1]);
+        close(stdout_pipe[0]);
+        waitpid(pid, NULL, 0);
+        return false;
+    }
+    close(stdin_pipe[1]);
+
+    pcm.clear();
+    uint8_t buf[4096];
+    while (true) {
+        ssize_t n = read(stdout_pipe[0], buf, sizeof(buf));
+        if (n > 0) {
+            pcm.insert(pcm.end(), buf, buf + n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR)
+            continue;
+        break;
+    }
+    close(stdout_pipe[0]);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 && !pcm.empty();
+}
+
+static void stream_chunk_callback(const char* data, size_t len, void* user_data) {
+    StreamContext* ctx = (StreamContext*)user_data;
+    std::vector<std::vector<uint8_t>> snapshots = ctx->parser.feed(data, len);
+
+    for (size_t i = 0; i < snapshots.size(); i++) {
+        std::vector<uint8_t> pcm;
+        if (!decode_mp3_to_pcm(snapshots[i], pcm)) {
+            fprintf(stderr, "[error] Failed to decode streamed MiniMax audio snapshot\n");
+            continue;
+        }
+
+        size_t prefix = 0;
+        while (prefix < ctx->previous_pcm.size() &&
+               prefix < pcm.size() &&
+               ctx->previous_pcm[prefix] == pcm[prefix]) {
+            prefix++;
+        }
+
+        if (prefix < pcm.size()) {
+            ctx->player->play(pcm.data() + prefix, (uint32_t)(pcm.size() - prefix));
+        }
+
+        ctx->previous_pcm = std::move(pcm);
+    }
 }
 
 MinimaxTTS::MinimaxTTS(const char* api_key, const char* voice_id,
@@ -44,7 +128,7 @@ bool MinimaxTTS::text_to_speech_stream(const char* text, aiden::AudioPlayer& pla
     cJSON* request = cJSON_CreateObject();
     cJSON_AddStringToObject(request, "model", "speech-2.8-hd");
     cJSON_AddStringToObject(request, "text", text);
-    cJSON_AddBoolToObject(request, "stream", false);
+    cJSON_AddBoolToObject(request, "stream", true);
 
     cJSON* voice_setting = cJSON_CreateObject();
     cJSON_AddStringToObject(voice_setting, "voice_id", voice_id_.c_str());
@@ -67,121 +151,24 @@ bool MinimaxTTS::text_to_speech_stream(const char* text, aiden::AudioPlayer& pla
     fprintf(stderr, "[minimax] Request: %s\n", request_str);
     cJSON_Delete(request);
 
-    std::string response;
+    StreamContext ctx;
+    ctx.player = &player;
+
     HttpClient http;
-    bool success = http.post_json(
+    bool success = http.post_stream(
         "https://api.minimaxi.com/v1/t2a_v2",
         api_key_.c_str(),
         request_str,
-        response);
+        stream_chunk_callback,
+        &ctx);
     free(request_str);
 
-    if (!success || response.empty()) {
-        fprintf(stderr, "[error] MiniMax TTS request failed or returned empty response\n");
+    if (!success) {
+        fprintf(stderr, "[error] MiniMax TTS stream failed\n");
         return false;
     }
 
-    cJSON* json = cJSON_Parse(response.c_str());
-    if (!json) {
-        fprintf(stderr, "[error] MiniMax TTS returned invalid JSON\n");
-        return false;
-    }
-
-    cJSON* base_resp = cJSON_GetObjectItem(json, "base_resp");
-    if (base_resp) {
-        cJSON* status_code = cJSON_GetObjectItem(base_resp, "status_code");
-        cJSON* status_msg = cJSON_GetObjectItem(base_resp, "status_msg");
-        if (status_code && status_code->valueint != 0) {
-            fprintf(stderr, "[error] MiniMax TTS API error: code=%d, msg=%s\n",
-                    status_code->valueint,
-                    status_msg ? status_msg->valuestring : "unknown");
-            cJSON_Delete(json);
-            return false;
-        }
-    }
-
-    cJSON* data_obj = cJSON_GetObjectItem(json, "data");
-    cJSON* audio = data_obj ? cJSON_GetObjectItem(data_obj, "audio") : NULL;
-    if (!audio || audio->type != cJSON_String || !audio->valuestring || audio->valuestring[0] == '\0') {
-        fprintf(stderr, "[error] MiniMax TTS response missing audio payload\n");
-        cJSON_Delete(json);
-        return false;
-    }
-
-    std::vector<uint8_t> mp3 = minimax::hex_decode(audio->valuestring);
-    cJSON_Delete(json);
-
-    if (mp3.empty()) {
-        fprintf(stderr, "[error] MiniMax TTS audio payload decoded empty\n");
-        return false;
-    }
-
-    int stdin_pipe[2], stdout_pipe[2];
-    if (pipe(stdin_pipe) < 0 || pipe(stdout_pipe) < 0) {
-        fprintf(stderr, "[error] Failed to create pipes\n");
-        return false;
-    }
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        fprintf(stderr, "[error] Failed to fork\n");
-        return false;
-    }
-
-    if (pid == 0) {
-        close(stdin_pipe[1]);
-        close(stdout_pipe[0]);
-        dup2(stdin_pipe[0], STDIN_FILENO);
-        dup2(stdout_pipe[1], STDOUT_FILENO);
-        close(stdin_pipe[0]);
-        close(stdout_pipe[1]);
-
-        execlp("ffmpeg", "ffmpeg",
-               "-i", "pipe:0",
-               "-f", "s16le",
-               "-ar", "16000",
-               "-ac", "1",
-               "pipe:1",
-               NULL);
-        _exit(1);
-    }
-
-    close(stdin_pipe[0]);
-    close(stdout_pipe[1]);
-
-    StreamContext ctx;
-    ctx.ffmpeg_stdin = stdin_pipe[1];
-    ctx.ffmpeg_stdout = stdout_pipe[0];
-    ctx.ffmpeg_pid = pid;
-    ctx.player = &player;
-
-    pthread_create(&ctx.reader_thread, NULL, pcm_reader_thread, &ctx);
-
-    size_t offset = 0;
-    while (offset < mp3.size()) {
-        ssize_t n = write(ctx.ffmpeg_stdin, mp3.data() + offset, mp3.size() - offset);
-        if (n > 0) {
-            offset += (size_t)n;
-            continue;
-        }
-        if (n < 0 && errno == EINTR)
-            continue;
-        fprintf(stderr, "[error] Failed to write mp3 to ffmpeg: %s\n", strerror(errno));
-        close(ctx.ffmpeg_stdin);
-        close(ctx.ffmpeg_stdout);
-        pthread_join(ctx.reader_thread, NULL);
-        waitpid(ctx.ffmpeg_pid, NULL, 0);
-        return false;
-    }
-
-    close(ctx.ffmpeg_stdin);
-
-    int status;
-    waitpid(ctx.ffmpeg_pid, &status, 0);
-    pthread_join(ctx.reader_thread, NULL);
-    close(ctx.ffmpeg_stdout);
-
-    fprintf(stderr, "[minimax] TTS complete\n");
+    fprintf(stderr, "[minimax] TTS stream complete\n");
     return true;
 }
 

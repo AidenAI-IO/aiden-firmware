@@ -103,15 +103,10 @@ std::vector<std::vector<uint8_t>> StreamParser::feed(const char* data, size_t le
             if (audio && audio->type == cJSON_String) {
                 std::vector<uint8_t> mp3_chunk = hex_decode(audio->valuestring);
                 if (!mp3_chunk.empty()) {
-                    if (mp3_chunk.size() >= previous_audio_.size() &&
-                        std::equal(previous_audio_.begin(), previous_audio_.end(), mp3_chunk.begin())) {
-                        if (mp3_chunk.size() > previous_audio_.size()) {
-                            out.emplace_back(mp3_chunk.begin() + previous_audio_.size(), mp3_chunk.end());
-                        }
-                    } else {
+                    if (mp3_chunk != previous_audio_) {
                         out.push_back(mp3_chunk);
+                        previous_audio_ = mp3_chunk;
                     }
-                    previous_audio_ = std::move(mp3_chunk);
                 }
             }
         }

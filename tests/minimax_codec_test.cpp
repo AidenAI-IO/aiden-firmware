@@ -85,7 +85,7 @@ TEST_CASE("stream parser emits multiple audio payloads from one input") {
     CHECK(chunks[2][0] == 'C');
 }
 
-TEST_CASE("stream parser emits only new suffix when audio payload is cumulative") {
+TEST_CASE("stream parser emits full updated audio when payload is cumulative") {
     StreamParser parser;
     const char* first = R"({"data":{"audio":"4142"}})";
     const char* second = R"({"data":{"audio":"41424344"}})";
@@ -96,7 +96,7 @@ TEST_CASE("stream parser emits only new suffix when audio payload is cumulative"
 
     auto second_chunks = parser.feed(second, std::strlen(second));
     REQUIRE(second_chunks.size() == 1);
-    CHECK(std::string(second_chunks[0].begin(), second_chunks[0].end()) == "CD");
+    CHECK(std::string(second_chunks[0].begin(), second_chunks[0].end()) == "ABCD");
 }
 
 TEST_CASE("stream parser ignores identical repeated audio payloads") {
