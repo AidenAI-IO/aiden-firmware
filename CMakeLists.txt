@@ -5,6 +5,15 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+option(AIDEN_TESTS "Build host-native unit tests only (skips Pico targets)" OFF)
+
+if(AIDEN_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+    return()
+endif()
+
 add_link_options(-Wl,-rpath,/oem/usr/lib)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
