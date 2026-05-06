@@ -11,10 +11,14 @@ using aiden::check_llm_config;
 using aiden::check_tts_config;
 using aiden::check_provider_config;
 
-TEST_CASE("check_llm_provider accepts openrouter") {
-    ProviderCheckResult r = check_llm_provider("openrouter");
-    CHECK(r.ok);
-    CHECK(r.normalized == "openrouter");
+TEST_CASE("check_llm_provider accepts openrouter and openai") {
+    ProviderCheckResult openrouter = check_llm_provider("openrouter");
+    CHECK(openrouter.ok);
+    CHECK(openrouter.normalized == "openrouter");
+
+    ProviderCheckResult openai = check_llm_provider("openai");
+    CHECK(openai.ok);
+    CHECK(openai.normalized == "openai");
 }
 
 TEST_CASE("check_tts_provider accepts minimax") {
@@ -37,6 +41,24 @@ TEST_CASE("check_llm_config validates openrouter independently") {
     CHECK(missing_model.error == "model provider openrouter requires model");
 
     std::snprintf(cfg.model, sizeof(cfg.model), "%s", "openai/gpt-4o-audio-preview");
+    ProviderCheckResult ok = check_llm_config(cfg);
+    CHECK(ok.ok);
+}
+
+TEST_CASE("check_llm_config validates openai independently") {
+    aiden::ModelConfig cfg;
+    std::snprintf(cfg.provider, sizeof(cfg.provider), "%s", "openai");
+
+    ProviderCheckResult missing_key = check_llm_config(cfg);
+    CHECK_FALSE(missing_key.ok);
+    CHECK(missing_key.error == "model provider openai requires api_key");
+
+    std::snprintf(cfg.api_key, sizeof(cfg.api_key), "%s", "sk-openai");
+    ProviderCheckResult missing_model = check_llm_config(cfg);
+    CHECK_FALSE(missing_model.ok);
+    CHECK(missing_model.error == "model provider openai requires model");
+
+    std::snprintf(cfg.model, sizeof(cfg.model), "%s", "gpt-4o-audio-preview");
     ProviderCheckResult ok = check_llm_config(cfg);
     CHECK(ok.ok);
 }
@@ -169,6 +191,19 @@ TEST_CASE("check_provider_config accepts complete provider config") {
     std::snprintf(cfg.model.provider, sizeof(cfg.model.provider), "%s", "openrouter");
     std::snprintf(cfg.model.api_key, sizeof(cfg.model.api_key), "%s", "sk-key");
     std::snprintf(cfg.model.model, sizeof(cfg.model.model), "%s", "openai/gpt-4o-audio-preview");
+    std::snprintf(cfg.tts.provider, sizeof(cfg.tts.provider), "%s", "minimax");
+    std::snprintf(cfg.tts.api_key, sizeof(cfg.tts.api_key), "%s", "mm-key");
+    std::snprintf(cfg.tts.voice_id, sizeof(cfg.tts.voice_id), "%s", "voice-a");
+
+    ProviderCheckResult r = check_provider_config(cfg);
+    CHECK(r.ok);
+}
+
+TEST_CASE("check_provider_config accepts openai model provider") {
+    aiden::AgentConfig cfg;
+    std::snprintf(cfg.model.provider, sizeof(cfg.model.provider), "%s", "openai");
+    std::snprintf(cfg.model.api_key, sizeof(cfg.model.api_key), "%s", "sk-openai");
+    std::snprintf(cfg.model.model, sizeof(cfg.model.model), "%s", "gpt-4o-audio-preview");
     std::snprintf(cfg.tts.provider, sizeof(cfg.tts.provider), "%s", "minimax");
     std::snprintf(cfg.tts.api_key, sizeof(cfg.tts.api_key), "%s", "mm-key");
     std::snprintf(cfg.tts.voice_id, sizeof(cfg.tts.voice_id), "%s", "voice-a");

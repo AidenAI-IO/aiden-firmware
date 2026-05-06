@@ -1,11 +1,11 @@
 #pragma once
-#include "openrouter_client.h"
+#include "provider_interfaces.h"
 #include <cstddef>
 #include <cstdint>
 #include <string>
 
 namespace aiden {
-namespace openrouter {
+namespace openai {
 
 struct ChatResult {
     std::string content;

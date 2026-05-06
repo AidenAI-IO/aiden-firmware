@@ -6,11 +6,13 @@ struct ModelConfig {
     char provider[32];
     char api_key[256];
     char model[128];
+    char base_url[256];
 
     ModelConfig() {
         provider[0] = '\0';
         api_key[0] = '\0';
         model[0] = '\0';
+        base_url[0] = '\0';
     }
 };
 

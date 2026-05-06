@@ -1,9 +1,9 @@
-#include "openrouter_codec.h"
+#include "openai_codec.h"
 #include "cJSON/cJSON.h"
 #include <stdlib.h>
 
 namespace aiden {
-namespace openrouter {
+namespace openai {
 
 static const char* BASE64_CHARS =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

@@ -10,10 +10,12 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/config.cpp
     ${CMAKE_SOURCE_DIR}/src/vad.cpp
     ${CMAKE_SOURCE_DIR}/src/openrouter_codec.cpp
+    ${CMAKE_SOURCE_DIR}/src/openai_codec.cpp
     ${CMAKE_SOURCE_DIR}/src/minimax_codec.cpp
     ${CMAKE_SOURCE_DIR}/src/tool_dispatch.cpp
     ${CMAKE_SOURCE_DIR}/src/wav_codec.cpp
     ${CMAKE_SOURCE_DIR}/src/provider_factory.cpp
+    ${CMAKE_SOURCE_DIR}/src/llm_api_url.cpp
     ${CMAKE_SOURCE_DIR}/src/cJSON/cJSON.c
 )
 
@@ -22,10 +24,12 @@ add_executable(aiden_tests
     config_test.cpp
     vad_test.cpp
     openrouter_codec_test.cpp
+    openai_codec_test.cpp
     minimax_codec_test.cpp
     tool_dispatch_test.cpp
     wav_codec_test.cpp
     provider_factory_test.cpp
+    llm_api_url_test.cpp
     ${AIDEN_TEST_SOURCES}
 )
 

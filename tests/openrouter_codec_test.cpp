@@ -9,6 +9,7 @@ using aiden::openrouter::build_tool_definitions_json;
 using aiden::openrouter::parse_chat_response;
 using aiden::openrouter::init_conversation;
 using aiden::openrouter::append_user_audio_wav;
+using aiden::openrouter::append_user_audio_wav_if_present;
 using aiden::openrouter::append_assistant_message;
 using aiden::openrouter::append_tool_result;
 using aiden::openrouter::build_chat_request;
@@ -142,6 +143,12 @@ TEST_CASE("append_user_audio_wav appends a user message with input_audio") {
     CHECK(std::string(cJSON_GetObjectItem(ia, "data")->valuestring) == "AAAA");
     CHECK(std::string(cJSON_GetObjectItem(ia, "format")->valuestring) == "wav");
     cJSON_Delete(arr);
+}
+
+TEST_CASE("append_user_audio_wav_if_present skips empty follow-up audio") {
+    std::string conv = init_conversation("sys");
+    std::string unchanged = append_user_audio_wav_if_present(conv, NULL, 0);
+    CHECK(unchanged == conv);
 }
 
 TEST_CASE("append_tool_result adds a role=tool message") {

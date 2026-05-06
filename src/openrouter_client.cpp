@@ -1,5 +1,6 @@
 #include "openrouter_client.h"
 #include "http_client.h"
+#include "llm_api_url.h"
 #include "openrouter_codec.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,8 +8,9 @@
 namespace aiden {
 
 OpenRouterClient::OpenRouterClient(const char* api_key, const char* llm_model,
+                                   const char* base_url,
                                    const char* additional_prompt)
-    : api_key_(api_key), llm_model_(llm_model) {
+    : api_key_(api_key), llm_model_(llm_model), base_url_(base_url ? base_url : "") {
     std::string system_prompt =
         "You are an AI assistant controlling a device via keyboard and touchscreen. "
         "Use the provided tools to interact. Touch coordinates: 0-32767 absolute range.";
@@ -23,14 +25,15 @@ OpenRouterClient::OpenRouterClient(const char* api_key, const char* llm_model,
 
 bool OpenRouterClient::chat(const uint8_t* wav_data, size_t wav_len,
                             std::string& response, std::vector<ToolCall>& tool_calls) {
-    std::string b64_audio = openrouter::base64_encode(wav_data, wav_len);
-    std::string conversation_with_user = openrouter::append_user_audio_wav(conversation_, b64_audio);
+    std::string conversation_with_user =
+        openrouter::append_user_audio_wav_if_present(conversation_, wav_data, wav_len);
     std::string request_body = openrouter::build_chat_request(conversation_with_user, llm_model_);
+    std::string url = build_chat_completions_url(base_url_.c_str(), "https://openrouter.ai/api/v1");
 
     HttpClient http;
     std::string http_response;
     bool success = http.post_json(
-        "https://openrouter.ai/api/v1/chat/completions",
+        url.c_str(),
         api_key_.c_str(),
         request_body.c_str(),
         http_response);

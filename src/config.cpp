@@ -57,6 +57,8 @@ bool load_config(const char* path, AgentConfig& config) {
                 copy_str(config.model.api_key, sizeof(config.model.api_key), val);
             else if (strcmp(key, "model") == 0)
                 copy_str(config.model.model, sizeof(config.model.model), val);
+            else if (strcmp(key, "base_url") == 0)
+                copy_str(config.model.base_url, sizeof(config.model.base_url), val);
         }
         else if (strcmp(current_section, "tts") == 0) {
             if (strcmp(key, "provider") == 0)
