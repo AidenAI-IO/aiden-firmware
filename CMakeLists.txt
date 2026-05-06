@@ -5,6 +5,15 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+option(AIDEN_TESTS "Build host-native unit tests only (skips Pico targets)" OFF)
+
+if(AIDEN_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+    return()
+endif()
+
 add_link_options(-Wl,-rpath,/oem/usr/lib)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -76,7 +85,13 @@ add_executable(agent_main
     src/config.cpp
     src/http_client.cpp
     src/openrouter_client.cpp
+    src/openrouter_codec.cpp
     src/minimax_tts.cpp
+    src/minimax_codec.cpp
+    src/tool_dispatch.cpp
+    src/wav_codec.cpp
+    src/provider_factory.cpp
+    src/provider_factory_runtime.cpp
     src/vad.cpp
 )
 target_link_libraries(agent_main PRIVATE aiden cjson pthread)

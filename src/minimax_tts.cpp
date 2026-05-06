@@ -1,33 +1,17 @@
 #include "minimax_tts.h"
 #include "http_client.h"
+#include "minimax_codec.h"
 #include "cJSON/cJSON.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <pthread.h>
 #include <sys/wait.h>
 #include <vector>
 
 namespace aiden {
-
-// Hex decode helper
-static uint8_t hex_to_byte(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return 0;
-}
-
-static std::vector<uint8_t> hex_decode(const char* hex) {
-    std::vector<uint8_t> result;
-    size_t len = strlen(hex);
-    for (size_t i = 0; i + 1 < len; i += 2) {
-        uint8_t byte = (hex_to_byte(hex[i]) << 4) | hex_to_byte(hex[i + 1]);
-        result.push_back(byte);
-    }
-    return result;
-}
 
 struct StreamContext {
     int ffmpeg_stdin;
@@ -36,7 +20,7 @@ struct StreamContext {
     aiden::AudioPlayer* player;
     pthread_t reader_thread;
     bool reader_running;
-    std::string buffer;
+    minimax::StreamParser parser;
 };
 
 static void* pcm_reader_thread(void* arg) {
@@ -55,73 +39,24 @@ static void* pcm_reader_thread(void* arg) {
 
 static void stream_chunk_callback(const char* data, size_t len, void* user_data) {
     StreamContext* ctx = (StreamContext*)user_data;
-
-    ctx->buffer.append(data, len);
-
-    // Parse complete JSON objects from buffer
-    size_t pos = 0;
-    while (pos < ctx->buffer.size()) {
-        size_t start = ctx->buffer.find('{', pos);
-        if (start == std::string::npos) break;
-
-        int depth = 0;
-        size_t end = start;
-        bool in_string = false;
-        bool escaped = false;
-
-        for (size_t i = start; i < ctx->buffer.size(); i++) {
-            char c = ctx->buffer[i];
-
-            if (escaped) {
-                escaped = false;
-                continue;
-            }
-
-            if (c == '\\') {
-                escaped = true;
-                continue;
-            }
-
-            if (c == '"') {
-                in_string = !in_string;
-                continue;
-            }
-
-            if (in_string) continue;
-
-            if (c == '{') depth++;
-            else if (c == '}') {
-                depth--;
-                if (depth == 0) {
-                    end = i + 1;
-                    break;
+    std::vector<std::vector<uint8_t>> chunks = ctx->parser.feed(data, len);
+    for (size_t i = 0; i < chunks.size(); i++) {
+        const std::vector<uint8_t>& mp3_chunk = chunks[i];
+        if (!mp3_chunk.empty()) {
+            size_t offset = 0;
+            while (offset < mp3_chunk.size()) {
+                ssize_t n = write(ctx->ffmpeg_stdin,
+                                  mp3_chunk.data() + offset,
+                                  mp3_chunk.size() - offset);
+                if (n > 0) {
+                    offset += (size_t)n;
+                    continue;
                 }
+                if (n < 0 && errno == EINTR)
+                    continue;
+                return;
             }
         }
-
-        if (depth != 0) break; // Incomplete JSON
-
-        std::string json_str = ctx->buffer.substr(start, end - start);
-        ctx->buffer.erase(0, end);
-        pos = 0;
-
-        // Parse JSON and extract audio
-        cJSON* json = cJSON_Parse(json_str.c_str());
-        if (!json) continue;
-
-        cJSON* data_obj = cJSON_GetObjectItem(json, "data");
-        if (data_obj) {
-            cJSON* audio = cJSON_GetObjectItem(data_obj, "audio");
-            if (audio && audio->type == cJSON_String) {
-                std::vector<uint8_t> mp3_chunk = hex_decode(audio->valuestring);
-
-                if (!mp3_chunk.empty()) {
-                    write(ctx->ffmpeg_stdin, mp3_chunk.data(), mp3_chunk.size());
-                }
-            }
-        }
-
-        cJSON_Delete(json);
     }
 }
 
@@ -131,7 +66,6 @@ MinimaxTTS::MinimaxTTS(const char* api_key, const char* voice_id,
 }
 
 bool MinimaxTTS::text_to_speech_stream(const char* text, aiden::AudioPlayer& player) {
-    // Build request JSON
     cJSON* request = cJSON_CreateObject();
     cJSON_AddStringToObject(request, "model", "speech-2.8-hd");
     cJSON_AddStringToObject(request, "text", text);
@@ -158,7 +92,6 @@ bool MinimaxTTS::text_to_speech_stream(const char* text, aiden::AudioPlayer& pla
     fprintf(stderr, "[minimax] Request: %s\n", request_str);
     cJSON_Delete(request);
 
-    // Start ffmpeg subprocess for MP3 -> PCM decoding
     int stdin_pipe[2], stdout_pipe[2];
     if (pipe(stdin_pipe) < 0 || pipe(stdout_pipe) < 0) {
         fprintf(stderr, "[error] Failed to create pipes\n");
@@ -174,7 +107,6 @@ bool MinimaxTTS::text_to_speech_stream(const char* text, aiden::AudioPlayer& pla
     }
 
     if (pid == 0) {
-        // Child: ffmpeg
         close(stdin_pipe[1]);
         close(stdout_pipe[0]);
         dup2(stdin_pipe[0], STDIN_FILENO);
@@ -192,7 +124,6 @@ bool MinimaxTTS::text_to_speech_stream(const char* text, aiden::AudioPlayer& pla
         _exit(1);
     }
 
-    // Parent
     close(stdin_pipe[0]);
     close(stdout_pipe[1]);
 
@@ -203,10 +134,8 @@ bool MinimaxTTS::text_to_speech_stream(const char* text, aiden::AudioPlayer& pla
     ctx.player = &player;
     ctx.reader_running = true;
 
-    // Start PCM reader thread
     pthread_create(&ctx.reader_thread, NULL, pcm_reader_thread, &ctx);
 
-    // Stream HTTP request
     HttpClient http;
     bool success = http.post_stream(
         "https://api.minimaxi.com/v1/t2a_v2",
@@ -216,14 +145,11 @@ bool MinimaxTTS::text_to_speech_stream(const char* text, aiden::AudioPlayer& pla
         &ctx);
     free(request_str);
 
-    // Close ffmpeg stdin to signal EOF
     close(ctx.ffmpeg_stdin);
 
-    // Wait for reader thread
     ctx.reader_running = false;
     pthread_join(ctx.reader_thread, NULL);
 
-    // Close stdout and wait for ffmpeg
     close(ctx.ffmpeg_stdout);
     int status;
     waitpid(ctx.ffmpeg_pid, &status, 0);
