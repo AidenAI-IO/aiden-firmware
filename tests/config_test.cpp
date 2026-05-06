@@ -145,3 +145,81 @@ TEST_CASE("load_config applies defaults for absent numeric fields") {
     CHECK(cfg.min_speech_ms == 300);
     CHECK(cfg.tts.speed == doctest::Approx(1.0f));
 }
+
+TEST_CASE("load_config uses the last value when a key is repeated") {
+    TempFile f(
+        "[model]\n"
+        "api_key = sk-first\n"
+        "api_key = sk-last\n"
+        "model = first-model\n"
+        "model = final-model\n"
+        "\n"
+        "[tts]\n"
+        "speed = 0.5\n"
+        "speed = 1.75\n"
+    );
+
+    aiden::AgentConfig cfg;
+    REQUIRE(aiden::load_config(f.path.c_str(), cfg));
+    CHECK(std::string(cfg.model.api_key) == "sk-last");
+    CHECK(std::string(cfg.model.model) == "final-model");
+    CHECK(cfg.tts.speed == doctest::Approx(1.75f));
+}
+
+TEST_CASE("load_config parses sections regardless of order") {
+    TempFile f(
+        "[agent]\n"
+        "silence_ms = 650\n"
+        "\n"
+        "[tts]\n"
+        "voice_id = calm\n"
+        "\n"
+        "[model]\n"
+        "api_key = sk-ok\n"
+        "provider = openrouter\n"
+    );
+
+    aiden::AgentConfig cfg;
+    REQUIRE(aiden::load_config(f.path.c_str(), cfg));
+    CHECK(cfg.silence_ms == 650);
+    CHECK(std::string(cfg.tts.voice_id) == "calm");
+    CHECK(std::string(cfg.model.provider) == "openrouter");
+}
+
+TEST_CASE("load_config leaves numeric defaults when values are non-numeric") {
+    TempFile f(
+        "[model]\n"
+        "api_key = sk-ok\n"
+        "\n"
+        "[tts]\n"
+        "speed = fast\n"
+        "\n"
+        "[agent]\n"
+        "energy_threshold = not-a-number\n"
+        "silence_ms = NaN\n"
+        "min_speech_ms = ???\n"
+    );
+
+    aiden::AgentConfig cfg;
+    REQUIRE(aiden::load_config(f.path.c_str(), cfg));
+    CHECK(cfg.energy_threshold == 0);
+    CHECK(cfg.silence_ms == 0);
+    CHECK(cfg.min_speech_ms == 0);
+    CHECK(cfg.tts.speed == doctest::Approx(0.0f));
+}
+
+TEST_CASE("load_config keeps optional fields at defaults when omitted") {
+    TempFile f(
+        "[model]\n"
+        "api_key = sk-ok\n"
+    );
+
+    aiden::AgentConfig cfg;
+    REQUIRE(aiden::load_config(f.path.c_str(), cfg));
+    CHECK(std::string(cfg.model.provider).empty());
+    CHECK(std::string(cfg.model.model).empty());
+    CHECK(std::string(cfg.tts.api_key).empty());
+    CHECK(std::string(cfg.tts.voice_id).empty());
+    CHECK(std::string(cfg.hid_binary).empty());
+    CHECK(std::string(cfg.additional_prompt).empty());
+}

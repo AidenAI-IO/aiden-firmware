@@ -85,7 +85,13 @@ add_executable(agent_main
     src/config.cpp
     src/http_client.cpp
     src/openrouter_client.cpp
+    src/openrouter_codec.cpp
     src/minimax_tts.cpp
+    src/minimax_codec.cpp
+    src/tool_dispatch.cpp
+    src/wav_codec.cpp
+    src/provider_factory.cpp
+    src/provider_factory_runtime.cpp
     src/vad.cpp
 )
 target_link_libraries(agent_main PRIVATE aiden cjson pthread)

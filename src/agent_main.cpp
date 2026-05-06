@@ -1,9 +1,10 @@
 #include "aiden_sdk.h"
 #include "config.h"
 #include "http_client.h"
-#include "openrouter_client.h"
-#include "minimax_tts.h"
+#include "provider_factory.h"
+#include "tool_dispatch.h"
 #include "vad.h"
+#include "wav_codec.h"
 #include "cJSON/cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,95 +38,13 @@ static void on_wakeup() {
     wakeup_triggered = true;
 }
 
-static std::vector<uint8_t> pcm_to_wav(const std::vector<int16_t>& pcm) {
-    uint32_t data_size = pcm.size() * 2;
-    uint32_t file_size = 36 + data_size;
-    std::vector<uint8_t> wav(44 + data_size);
-    uint8_t* p = wav.data();
-
-    memcpy(p, "RIFF", 4); p += 4;
-    *(uint32_t*)p = file_size; p += 4;
-    memcpy(p, "WAVE", 4); p += 4;
-    memcpy(p, "fmt ", 4); p += 4;
-    *(uint32_t*)p = 16; p += 4;
-    *(uint16_t*)p = 1; p += 2;
-    *(uint16_t*)p = 1; p += 2;
-    *(uint32_t*)p = 16000; p += 4;
-    *(uint32_t*)p = 32000; p += 4;
-    *(uint16_t*)p = 2; p += 2;
-    *(uint16_t*)p = 16; p += 2;
-    memcpy(p, "data", 4); p += 4;
-    *(uint32_t*)p = data_size; p += 4;
-    memcpy(p, pcm.data(), data_size);
-    return wav;
-}
-
 static std::string execute_tool(const char* hid_binary, const char* tool_name,
                                 const char* args_json) {
-    cJSON* args = cJSON_Parse(args_json);
-    if (!args) {
-        fprintf(stderr, "[error] Failed to parse tool arguments JSON\n");
-        return "error: invalid JSON";
-    }
+    aiden::ToolCommandResult command = aiden::build_tool_command(hid_binary, tool_name, args_json);
+    if (!command.ok)
+        return command.error;
 
-    char cmd[1024];
-
-    if (strcmp(tool_name, "keyboard_tap") == 0) {
-        cJSON* keys = cJSON_GetObjectItem(args, "keys");
-        if (!keys || keys->type != cJSON_Array) {
-            cJSON_Delete(args);
-            return "error: missing keys array";
-        }
-        int len = snprintf(cmd, sizeof(cmd), "sudo %s keyboard tap", hid_binary);
-        int count = cJSON_GetArraySize(keys);
-        for (int i = 0; i < count && len < (int)sizeof(cmd) - 32; i++) {
-            cJSON* key = cJSON_GetArrayItem(keys, i);
-            if (key && key->type == cJSON_String)
-                len += snprintf(cmd + len, sizeof(cmd) - len, " %s", key->valuestring);
-        }
-    }
-    else if (strcmp(tool_name, "keyboard_text") == 0) {
-        cJSON* text = cJSON_GetObjectItem(args, "text");
-        if (!text || text->type != cJSON_String) {
-            cJSON_Delete(args);
-            return "error: missing text";
-        }
-        snprintf(cmd, sizeof(cmd), "sudo %s keyboard text '%s'",
-                hid_binary, text->valuestring);
-    }
-    else if (strcmp(tool_name, "touch_click") == 0) {
-        cJSON* x = cJSON_GetObjectItem(args, "x");
-        cJSON* y = cJSON_GetObjectItem(args, "y");
-        if (!x || !y) {
-            cJSON_Delete(args);
-            return "error: missing x or y";
-        }
-        snprintf(cmd, sizeof(cmd), "sudo %s touch click %d %d",
-                hid_binary, x->valueint, y->valueint);
-    }
-    else if (strcmp(tool_name, "touch_swipe") == 0) {
-        cJSON* x1 = cJSON_GetObjectItem(args, "x1");
-        cJSON* y1 = cJSON_GetObjectItem(args, "y1");
-        cJSON* x2 = cJSON_GetObjectItem(args, "x2");
-        cJSON* y2 = cJSON_GetObjectItem(args, "y2");
-        if (!x1 || !y1 || !x2 || !y2) {
-            cJSON_Delete(args);
-            return "error: missing coordinates";
-        }
-        snprintf(cmd, sizeof(cmd),
-                "sudo %s touch down %d %d && sudo %s touch move %d %d && sudo %s touch up",
-                hid_binary, x1->valueint, y1->valueint,
-                hid_binary, x2->valueint, y2->valueint,
-                hid_binary);
-    }
-    else {
-        cJSON_Delete(args);
-        return "error: unknown tool";
-    }
-
-    cJSON_Delete(args);
-
-    FILE* fp = popen(cmd, "r");
+    FILE* fp = popen(command.command.c_str(), "r");
     if (!fp) return "error: popen failed";
 
     char buf[256];
@@ -138,14 +57,14 @@ static std::string execute_tool(const char* hid_binary, const char* tool_name,
 }
 
 static void process_utterance(const std::vector<int16_t>& utterance,
-                              aiden::OpenRouterClient& llm,
-                              aiden::MinimaxTTS& tts,
+                              aiden::LlmClient& llm,
+                              aiden::TtsClient& tts,
                               aiden::AudioPlayer& player,
                               const aiden::AgentConfig& config) {
     float duration = utterance.size() / 16000.0f;
     printf("[utterance] %.1fs of speech\n", duration);
 
-    std::vector<uint8_t> wav = pcm_to_wav(utterance);
+    std::vector<uint8_t> wav = aiden::pcm16_mono_16khz_to_wav(utterance);
     printf("[debug] WAV size: %zu bytes\n", wav.size());
 
     while (true) {
@@ -217,6 +136,12 @@ int main(int argc, char* argv[]) {
     printf("[init] Config loaded: model=%s, threshold=%d, silence=%dms\n",
            config.model.model, config.energy_threshold, config.silence_ms);
 
+    aiden::ProviderCheckResult provider_check = aiden::check_provider_config(config);
+    if (!provider_check.ok) {
+        fprintf(stderr, "[error] %s\n", provider_check.error.c_str());
+        return 1;
+    }
+
     aiden::HttpClient http;
     if (!http.is_available()) {
         fprintf(stderr, "[error] curl not found. Install curl to use this agent.\n");
@@ -252,10 +177,20 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    aiden::OpenRouterClient llm(config.model.api_key, config.model.model,
-                                config.additional_prompt);
-    aiden::MinimaxTTS tts(config.tts.api_key, config.tts.voice_id,
-                          config.tts.emotion, config.tts.speed);
+    std::string provider_error;
+    std::unique_ptr<aiden::LlmClient> llm = aiden::create_llm_client(config, provider_error);
+    if (!llm) {
+        fprintf(stderr, "[error] %s\n", provider_error.c_str());
+        return 1;
+    }
+
+    provider_error.clear();
+    std::unique_ptr<aiden::TtsClient> tts = aiden::create_tts_client(config, provider_error);
+    if (!tts) {
+        fprintf(stderr, "[error] %s\n", provider_error.c_str());
+        return 1;
+    }
+
     aiden::AudioVAD vad(16000, config.energy_threshold, config.silence_ms,
                         config.min_speech_ms, manual_mode);
 
@@ -305,7 +240,7 @@ int main(int argc, char* argv[]) {
 
             if (utterance) {
                 printf("[utterance] VAD detected end of speech\n");
-                process_utterance(*utterance, llm, tts, player, config);
+                process_utterance(*utterance, *llm, *tts, player, config);
                 wakeup_triggered = false;
                 printf("\n[ready] Waiting for next wakeup event...\n\n");
                 break;
@@ -316,7 +251,7 @@ int main(int argc, char* argv[]) {
             const std::vector<int16_t>* utterance = vad.flush();
             if (utterance && !utterance->empty()) {
                 printf("[manual] Sending buffered audio without waiting for VAD\n");
-                process_utterance(*utterance, llm, tts, player, config);
+                process_utterance(*utterance, *llm, *tts, player, config);
             } else {
                 printf("[manual] No buffered audio to send\n");
             }
