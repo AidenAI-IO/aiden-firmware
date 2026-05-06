@@ -28,6 +28,8 @@ All build artifacts are placed in `build/`:
 - `build/bin/` - Executables
 - `build/CMakeFiles/` - CMake metadata and intermediate files
 
+Copy `build/bin/` executables into board, setup Wi-Fi for hid server demo.
+
 ## AI Agent
 
 纯C++实现的AI agent，直接运行在Pico Zero上，通过语音控制设备的键盘和触摸屏。
@@ -120,5 +122,4 @@ Agent会打印详细的调试信息：
 
 ## Scripts
 
-- `start-dev.sh`: 启动 Docker 编译环境
 - `build.sh`: 使用交叉编译工具链构建项目
