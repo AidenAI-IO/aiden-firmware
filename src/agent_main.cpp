@@ -95,7 +95,8 @@ static void process_utterance(const std::vector<int16_t>& utterance,
         std::string response;
         std::vector<aiden::ToolCall> tool_calls;
 
-        printf("[llm] Sending request to OpenRouter...\n");
+        printf("[llm] Sending request to provider '%s' (model=%s)...\n",
+               config.model.provider, config.model.model);
         if (!llm.chat(wav.data(), wav.size(), response, tool_calls)) {
             fprintf(stderr, "[error] LLM request failed\n");
             break;

@@ -93,12 +93,16 @@ TEST_CASE("load_config reports missing-file error via error output") {
     std::string err;
     CHECK_FALSE(aiden::load_config("/tmp/aiden_definitely_does_not_exist_xyz", cfg, &err));
     CHECK(err.find("/tmp/aiden_definitely_does_not_exist_xyz") != std::string::npos);
-    // Error should reference the underlying cause (ENOENT / "No such file").
-    bool mentions_cause =
-        err.find("No such file") != std::string::npos ||
-        err.find("not found") != std::string::npos ||
-        err.find("ENOENT") != std::string::npos;
-    CHECK(mentions_cause);
+    // Locale-independent check for ENOENT.
+    CHECK(err.find("(errno=2)") != std::string::npos);
+}
+
+TEST_CASE("load_config reports null path without dereferencing it") {
+    aiden::AgentConfig cfg;
+    std::string err;
+    CHECK_FALSE(aiden::load_config(nullptr, cfg, &err));
+    CHECK_FALSE(err.empty());
+    CHECK(err.find("null") != std::string::npos);
 }
 
 TEST_CASE("load_config reports missing api_key via error output") {

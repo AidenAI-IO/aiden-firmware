@@ -27,12 +27,17 @@ static void copy_str(char* dst, size_t dst_size, const char* src) {
 bool load_config(const char* path, AgentConfig& config, std::string* error) {
     if (error) error->clear();
 
+    if (!path) {
+        set_error(error, "cannot open config: path is null");
+        return false;
+    }
+
     FILE* fp = fopen(path, "r");
     if (!fp) {
         int saved_errno = errno;
         char buf[512];
         snprintf(buf, sizeof(buf), "cannot open '%s': %s (errno=%d)",
-                 path ? path : "(null)", strerror(saved_errno), saved_errno);
+                 path, strerror(saved_errno), saved_errno);
         set_error(error, buf);
         return false;
     }
