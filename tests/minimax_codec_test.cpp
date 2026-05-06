@@ -86,9 +86,9 @@ TEST_CASE("stream parser emits multiple audio payloads from one input") {
     REQUIRE(chunks.size() == 3);
     CHECK_FALSE(chunks[0].reset_decoder);
     CHECK(chunks[0].audio[0] == 'A');
-    CHECK(chunks[1].reset_decoder);
+    CHECK_FALSE(chunks[1].reset_decoder);
     CHECK(chunks[1].audio[0] == 'B');
-    CHECK(chunks[2].reset_decoder);
+    CHECK_FALSE(chunks[2].reset_decoder);
     CHECK(chunks[2].audio[0] == 'C');
 }
 
@@ -134,7 +134,7 @@ TEST_CASE("stream parser ignores regressive snapshots") {
     CHECK(second_chunks.empty());
 }
 
-TEST_CASE("stream parser signals reset for unrelated snapshots") {
+TEST_CASE("stream parser emits unrelated snapshots without reset") {
     StreamParser parser;
     const char* first = R"({"data":{"audio":"4142"}})";
     const char* second = R"({"data":{"audio":"4344"}})";
@@ -145,7 +145,7 @@ TEST_CASE("stream parser signals reset for unrelated snapshots") {
 
     auto second_chunks = parser.feed(second, std::strlen(second));
     REQUIRE(second_chunks.size() == 1);
-    CHECK(second_chunks[0].reset_decoder);
+    CHECK_FALSE(second_chunks[0].reset_decoder);
     CHECK(std::string(second_chunks[0].audio.begin(), second_chunks[0].audio.end()) == "CD");
 }
 

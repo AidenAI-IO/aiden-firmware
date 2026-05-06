@@ -122,7 +122,7 @@ std::vector<StreamChunk> StreamParser::feed(const char* data, size_t len) {
                     } else {
                         StreamChunk chunk;
                         chunk.audio = std::move(mp3_chunk);
-                        chunk.reset_decoder = true;
+                        chunk.reset_decoder = false;
                         out.push_back(chunk);
                         previous_audio_ = chunk.audio;
                     }
