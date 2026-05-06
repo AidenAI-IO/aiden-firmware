@@ -14,12 +14,14 @@ std::unique_ptr<LlmClient> create_llm_client(const AgentConfig& config, std::str
 
     if (check.normalized == "openrouter") {
         return std::unique_ptr<LlmClient>(
-            new OpenRouterClient(config.model.api_key, config.model.model, config.additional_prompt));
+            new OpenRouterClient(config.model.api_key, config.model.model,
+                                 config.model.base_url, config.additional_prompt));
     }
 
     if (check.normalized == "openai") {
         return std::unique_ptr<LlmClient>(
-            new OpenAIClient(config.model.api_key, config.model.model, config.additional_prompt));
+            new OpenAIClient(config.model.api_key, config.model.model,
+                             config.model.base_url, config.additional_prompt));
     }
 
     error = std::string("unsupported model provider: ") + config.model.provider;

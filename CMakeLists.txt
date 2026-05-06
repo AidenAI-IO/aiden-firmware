@@ -88,6 +88,7 @@ add_executable(agent_main
     src/openrouter_codec.cpp
     src/openai_client.cpp
     src/openai_codec.cpp
+    src/llm_api_url.cpp
     src/minimax_tts.cpp
     src/minimax_codec.cpp
     src/tool_dispatch.cpp

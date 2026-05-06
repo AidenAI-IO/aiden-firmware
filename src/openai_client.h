@@ -9,6 +9,7 @@ namespace aiden {
 class OpenAIClient : public LlmClient {
 public:
     OpenAIClient(const char* api_key, const char* llm_model,
+                 const char* base_url = "",
                  const char* additional_prompt = "");
 
     bool chat(const uint8_t* wav_data, size_t wav_len,
@@ -19,6 +20,7 @@ public:
 private:
     std::string api_key_;
     std::string llm_model_;
+    std::string base_url_;
     std::string conversation_;
 };
 

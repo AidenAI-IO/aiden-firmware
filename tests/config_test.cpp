@@ -31,6 +31,7 @@ TEST_CASE("load_config parses role-based sections") {
         "provider = openrouter\n"
         "api_key = sk-test\n"
         "model = openai/gpt-4o-audio-preview\n"
+        "base_url = https://proxy.example/v1\n"
         "\n"
         "[tts]\n"
         "provider = minimax\n"
@@ -53,6 +54,7 @@ TEST_CASE("load_config parses role-based sections") {
     CHECK(std::string(cfg.model.provider) == "openrouter");
     CHECK(std::string(cfg.model.api_key) == "sk-test");
     CHECK(std::string(cfg.model.model) == "openai/gpt-4o-audio-preview");
+    CHECK(std::string(cfg.model.base_url) == "https://proxy.example/v1");
 
     CHECK(std::string(cfg.tts.provider) == "minimax");
     CHECK(std::string(cfg.tts.api_key) == "mm-test");
@@ -218,6 +220,7 @@ TEST_CASE("load_config keeps optional fields at defaults when omitted") {
     REQUIRE(aiden::load_config(f.path.c_str(), cfg));
     CHECK(std::string(cfg.model.provider).empty());
     CHECK(std::string(cfg.model.model).empty());
+    CHECK(std::string(cfg.model.base_url).empty());
     CHECK(std::string(cfg.tts.api_key).empty());
     CHECK(std::string(cfg.tts.voice_id).empty());
     CHECK(std::string(cfg.hid_binary).empty());

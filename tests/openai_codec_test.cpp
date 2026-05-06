@@ -7,6 +7,7 @@ using aiden::openai::build_chat_request;
 using aiden::openai::parse_chat_response;
 using aiden::openai::init_conversation;
 using aiden::openai::append_user_audio_wav;
+using aiden::openai::append_user_audio_wav_if_present;
 using aiden::openai::append_assistant_message;
 using aiden::openai::append_tool_result;
 using aiden::openai::ChatResult;
@@ -75,6 +76,12 @@ TEST_CASE("openai append_user_audio_wav appends a user message with input_audio"
     CHECK(std::string(cJSON_GetObjectItem(ia, "data")->valuestring) == "AAAA");
     CHECK(std::string(cJSON_GetObjectItem(ia, "format")->valuestring) == "wav");
     cJSON_Delete(arr);
+}
+
+TEST_CASE("openai append_user_audio_wav_if_present skips empty follow-up audio") {
+    std::string conv = init_conversation("sys");
+    std::string unchanged = append_user_audio_wav_if_present(conv, NULL, 0);
+    CHECK(unchanged == conv);
 }
 
 TEST_CASE("openai append_tool_result adds a role=tool message") {

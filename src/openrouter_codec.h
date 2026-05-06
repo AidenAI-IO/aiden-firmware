@@ -24,6 +24,9 @@ ChatResult parse_chat_response(const std::string& http_response);
 std::string init_conversation(const std::string& system_prompt);
 std::string append_user_audio_wav(const std::string& conversation_json,
                                   const std::string& base64_wav);
+std::string append_user_audio_wav_if_present(const std::string& conversation_json,
+                                             const uint8_t* wav_data,
+                                             size_t wav_len);
 std::string append_assistant_message(const std::string& conversation_json,
                                      const std::string& assistant_message_json);
 std::string append_tool_result(const std::string& conversation_json,

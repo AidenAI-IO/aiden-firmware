@@ -236,6 +236,14 @@ std::string append_user_audio_wav(const std::string& conversation_json,
     return result;
 }
 
+std::string append_user_audio_wav_if_present(const std::string& conversation_json,
+                                             const uint8_t* wav_data,
+                                             size_t wav_len) {
+    if (!wav_data || wav_len == 0)
+        return conversation_json;
+    return append_user_audio_wav(conversation_json, base64_encode(wav_data, wav_len));
+}
+
 std::string append_assistant_message(const std::string& conversation_json,
                                      const std::string& assistant_message_json) {
     cJSON* messages = parse_conversation_or_empty(conversation_json);
