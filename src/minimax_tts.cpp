@@ -7,21 +7,36 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <pthread.h>
 #include <sys/wait.h>
 #include <vector>
 
 namespace aiden {
 
-struct StreamContext {
+struct StreamDecoder {
+    int ffmpeg_stdin;
+    int ffmpeg_stdout;
+    pid_t ffmpeg_pid;
     aiden::AudioPlayer* player;
-    minimax::StreamParser parser;
-    std::vector<uint8_t> previous_pcm;
+    pthread_t reader_thread;
+    bool reader_running;
 };
 
-static bool decode_mp3_to_pcm(const std::vector<uint8_t>& mp3, std::vector<uint8_t>& pcm) {
+static void* pcm_reader_thread(void* arg) {
+    StreamDecoder* decoder = (StreamDecoder*)arg;
+    uint8_t pcm_buf[4096];
+    while (decoder->reader_running) {
+        ssize_t n = read(decoder->ffmpeg_stdout, pcm_buf, sizeof(pcm_buf));
+        if (n <= 0) break;
+        decoder->player->play(pcm_buf, n);
+    }
+    return NULL;
+}
+
+static bool start_decoder(StreamDecoder& decoder, aiden::AudioPlayer* player) {
     int stdin_pipe[2], stdout_pipe[2];
     if (pipe(stdin_pipe) < 0 || pipe(stdout_pipe) < 0) {
-        fprintf(stderr, "[error] Failed to create decode pipes\n");
+        fprintf(stderr, "[error] Failed to create decoder pipes\n");
         return false;
     }
 
@@ -57,65 +72,75 @@ static bool decode_mp3_to_pcm(const std::vector<uint8_t>& mp3, std::vector<uint8
     close(stdin_pipe[0]);
     close(stdout_pipe[1]);
 
-    size_t offset = 0;
-    while (offset < mp3.size()) {
-        ssize_t n = write(stdin_pipe[1], mp3.data() + offset, mp3.size() - offset);
-        if (n > 0) {
-            offset += (size_t)n;
-            continue;
-        }
-        if (n < 0 && errno == EINTR)
-            continue;
-        fprintf(stderr, "[error] Failed to write mp3 to ffmpeg: %s\n", strerror(errno));
-        close(stdin_pipe[1]);
-        close(stdout_pipe[0]);
-        waitpid(pid, NULL, 0);
-        return false;
-    }
-    close(stdin_pipe[1]);
+    decoder.ffmpeg_stdin = stdin_pipe[1];
+    decoder.ffmpeg_stdout = stdout_pipe[0];
+    decoder.ffmpeg_pid = pid;
+    decoder.player = player;
+    decoder.reader_running = true;
 
-    pcm.clear();
-    uint8_t buf[4096];
-    while (true) {
-        ssize_t n = read(stdout_pipe[0], buf, sizeof(buf));
-        if (n > 0) {
-            pcm.insert(pcm.end(), buf, buf + n);
-            continue;
-        }
-        if (n < 0 && errno == EINTR)
-            continue;
-        break;
-    }
-    close(stdout_pipe[0]);
-
-    int status = 0;
-    waitpid(pid, &status, 0);
-    return WIFEXITED(status) && WEXITSTATUS(status) == 0 && !pcm.empty();
+    pthread_create(&decoder.reader_thread, NULL, pcm_reader_thread, &decoder);
+    return true;
 }
+
+static void stop_decoder(StreamDecoder& decoder) {
+    close(decoder.ffmpeg_stdin);
+    decoder.reader_running = false;
+    pthread_join(decoder.reader_thread, NULL);
+    close(decoder.ffmpeg_stdout);
+    int status;
+    waitpid(decoder.ffmpeg_pid, &status, 0);
+}
+
+struct StreamContext {
+    aiden::AudioPlayer* player;
+    minimax::StreamParser parser;
+    StreamDecoder decoder;
+    bool decoder_started;
+};
 
 static void stream_chunk_callback(const char* data, size_t len, void* user_data) {
     StreamContext* ctx = (StreamContext*)user_data;
-    std::vector<std::vector<uint8_t>> snapshots = ctx->parser.feed(data, len);
+    std::vector<minimax::StreamChunk> chunks = ctx->parser.feed(data, len);
 
-    for (size_t i = 0; i < snapshots.size(); i++) {
-        std::vector<uint8_t> pcm;
-        if (!decode_mp3_to_pcm(snapshots[i], pcm)) {
-            fprintf(stderr, "[error] Failed to decode streamed MiniMax audio snapshot\n");
-            continue;
+    for (size_t i = 0; i < chunks.size(); i++) {
+        const minimax::StreamChunk& chunk = chunks[i];
+
+        if (chunk.reset_decoder) {
+            fprintf(stderr, "[minimax] Reset decoder due to unrelated snapshot\n");
+            if (ctx->decoder_started) {
+                stop_decoder(ctx->decoder);
+            }
+            ctx->decoder_started = start_decoder(ctx->decoder, ctx->player);
+            if (!ctx->decoder_started) {
+                fprintf(stderr, "[error] Failed to restart decoder\n");
+                continue;
+            }
         }
 
-        size_t prefix = 0;
-        while (prefix < ctx->previous_pcm.size() &&
-               prefix < pcm.size() &&
-               ctx->previous_pcm[prefix] == pcm[prefix]) {
-            prefix++;
+        if (!ctx->decoder_started) {
+            ctx->decoder_started = start_decoder(ctx->decoder, ctx->player);
+            if (!ctx->decoder_started) {
+                fprintf(stderr, "[error] Failed to start decoder\n");
+                continue;
+            }
         }
 
-        if (prefix < pcm.size()) {
-            ctx->player->play(pcm.data() + prefix, (uint32_t)(pcm.size() - prefix));
+        if (!chunk.audio.empty()) {
+            size_t offset = 0;
+            while (offset < chunk.audio.size()) {
+                ssize_t n = write(ctx->decoder.ffmpeg_stdin,
+                                  chunk.audio.data() + offset,
+                                  chunk.audio.size() - offset);
+                if (n > 0) {
+                    offset += (size_t)n;
+                    continue;
+                }
+                if (n < 0 && errno == EINTR)
+                    continue;
+                fprintf(stderr, "[error] Failed to write mp3 delta to decoder: %s\n", strerror(errno));
+                break;
+            }
         }
-
-        ctx->previous_pcm = std::move(pcm);
     }
 }
 
@@ -153,6 +178,7 @@ bool MinimaxTTS::text_to_speech_stream(const char* text, aiden::AudioPlayer& pla
 
     StreamContext ctx;
     ctx.player = &player;
+    ctx.decoder_started = false;
 
     HttpClient http;
     bool success = http.post_stream(
@@ -162,6 +188,10 @@ bool MinimaxTTS::text_to_speech_stream(const char* text, aiden::AudioPlayer& pla
         stream_chunk_callback,
         &ctx);
     free(request_str);
+
+    if (ctx.decoder_started) {
+        stop_decoder(ctx.decoder);
+    }
 
     if (!success) {
         fprintf(stderr, "[error] MiniMax TTS stream failed\n");

@@ -32,7 +32,8 @@ TEST_CASE("stream parser emits decoded audio from a single complete object") {
     const char* json = R"({"data":{"audio":"48656c6c6f"}})";
     auto chunks = parser.feed(json, std::strlen(json));
     REQUIRE(chunks.size() == 1);
-    CHECK(std::string(chunks[0].begin(), chunks[0].end()) == "Hello");
+    CHECK_FALSE(chunks[0].reset_decoder);
+    CHECK(std::string(chunks[0].audio.begin(), chunks[0].audio.end()) == "Hello");
 }
 
 TEST_CASE("stream parser waits for object completion across chunk boundaries") {
@@ -44,7 +45,8 @@ TEST_CASE("stream parser waits for object completion across chunk boundaries") {
 
     auto second = parser.feed(part2, std::strlen(part2));
     REQUIRE(second.size() == 1);
-    CHECK(std::string(second[0].begin(), second[0].end()) == "Hello");
+    CHECK_FALSE(second[0].reset_decoder);
+    CHECK(std::string(second[0].audio.begin(), second[0].audio.end()) == "Hello");
 }
 
 TEST_CASE("stream parser handles escaped quotes inside unrelated strings") {
@@ -52,8 +54,9 @@ TEST_CASE("stream parser handles escaped quotes inside unrelated strings") {
     const char* json = "{\"trace\":\"brace \\\"}\\\" inside\",\"data\":{\"audio\":\"41\"}}";
     auto chunks = parser.feed(json, std::strlen(json));
     REQUIRE(chunks.size() == 1);
-    CHECK(chunks[0].size() == 1);
-    CHECK(chunks[0][0] == 'A');
+    CHECK_FALSE(chunks[0].reset_decoder);
+    CHECK(chunks[0].audio.size() == 1);
+    CHECK(chunks[0].audio[0] == 'A');
 }
 
 TEST_CASE("stream parser skips objects without audio") {
@@ -68,8 +71,9 @@ TEST_CASE("stream parser skips invalid JSON objects and continues") {
     std::string stream = "{bad json}{\"data\":{\"audio\":\"41\"}}";
     auto chunks = parser.feed(stream.c_str(), stream.size());
     REQUIRE(chunks.size() == 1);
-    CHECK(chunks[0].size() == 1);
-    CHECK(chunks[0][0] == 'A');
+    CHECK_FALSE(chunks[0].reset_decoder);
+    CHECK(chunks[0].audio.size() == 1);
+    CHECK(chunks[0].audio[0] == 'A');
 }
 
 TEST_CASE("stream parser emits multiple audio payloads from one input") {
@@ -80,23 +84,28 @@ TEST_CASE("stream parser emits multiple audio payloads from one input") {
         "{\"data\":{\"audio\":\"43\"}}";
     auto chunks = parser.feed(stream.c_str(), stream.size());
     REQUIRE(chunks.size() == 3);
-    CHECK(chunks[0][0] == 'A');
-    CHECK(chunks[1][0] == 'B');
-    CHECK(chunks[2][0] == 'C');
+    CHECK_FALSE(chunks[0].reset_decoder);
+    CHECK(chunks[0].audio[0] == 'A');
+    CHECK(chunks[1].reset_decoder);
+    CHECK(chunks[1].audio[0] == 'B');
+    CHECK(chunks[2].reset_decoder);
+    CHECK(chunks[2].audio[0] == 'C');
 }
 
-TEST_CASE("stream parser emits full updated audio when payload is cumulative") {
+TEST_CASE("stream parser emits only delta when payload is cumulative") {
     StreamParser parser;
     const char* first = R"({"data":{"audio":"4142"}})";
     const char* second = R"({"data":{"audio":"41424344"}})";
 
     auto first_chunks = parser.feed(first, std::strlen(first));
     REQUIRE(first_chunks.size() == 1);
-    CHECK(std::string(first_chunks[0].begin(), first_chunks[0].end()) == "AB");
+    CHECK_FALSE(first_chunks[0].reset_decoder);
+    CHECK(std::string(first_chunks[0].audio.begin(), first_chunks[0].audio.end()) == "AB");
 
     auto second_chunks = parser.feed(second, std::strlen(second));
     REQUIRE(second_chunks.size() == 1);
-    CHECK(std::string(second_chunks[0].begin(), second_chunks[0].end()) == "ABCD");
+    CHECK_FALSE(second_chunks[0].reset_decoder);
+    CHECK(std::string(second_chunks[0].audio.begin(), second_chunks[0].audio.end()) == "CD");
 }
 
 TEST_CASE("stream parser ignores identical repeated audio payloads") {
@@ -105,9 +114,38 @@ TEST_CASE("stream parser ignores identical repeated audio payloads") {
 
     auto first_chunks = parser.feed(json, std::strlen(json));
     REQUIRE(first_chunks.size() == 1);
-    CHECK(std::string(first_chunks[0].begin(), first_chunks[0].end()) == "AB");
+    CHECK_FALSE(first_chunks[0].reset_decoder);
+    CHECK(std::string(first_chunks[0].audio.begin(), first_chunks[0].audio.end()) == "AB");
 
     auto second_chunks = parser.feed(json, std::strlen(json));
     CHECK(second_chunks.empty());
+}
+
+TEST_CASE("stream parser ignores regressive snapshots") {
+    StreamParser parser;
+    const char* first = R"({"data":{"audio":"41424344"}})";
+    const char* second = R"({"data":{"audio":"4142"}})";
+
+    auto first_chunks = parser.feed(first, std::strlen(first));
+    REQUIRE(first_chunks.size() == 1);
+    CHECK(std::string(first_chunks[0].audio.begin(), first_chunks[0].audio.end()) == "ABCD");
+
+    auto second_chunks = parser.feed(second, std::strlen(second));
+    CHECK(second_chunks.empty());
+}
+
+TEST_CASE("stream parser signals reset for unrelated snapshots") {
+    StreamParser parser;
+    const char* first = R"({"data":{"audio":"4142"}})";
+    const char* second = R"({"data":{"audio":"4344"}})";
+
+    auto first_chunks = parser.feed(first, std::strlen(first));
+    REQUIRE(first_chunks.size() == 1);
+    CHECK(std::string(first_chunks[0].audio.begin(), first_chunks[0].audio.end()) == "AB");
+
+    auto second_chunks = parser.feed(second, std::strlen(second));
+    REQUIRE(second_chunks.size() == 1);
+    CHECK(second_chunks[0].reset_decoder);
+    CHECK(std::string(second_chunks[0].audio.begin(), second_chunks[0].audio.end()) == "CD");
 }
 

@@ -9,9 +9,14 @@ namespace minimax {
 
 std::vector<uint8_t> hex_decode(const char* hex);
 
+struct StreamChunk {
+    std::vector<uint8_t> audio;
+    bool reset_decoder = false;
+};
+
 class StreamParser {
 public:
-    std::vector<std::vector<uint8_t>> feed(const char* data, size_t len);
+    std::vector<StreamChunk> feed(const char* data, size_t len);
     void reset();
 
 private:

@@ -23,8 +23,8 @@ std::vector<uint8_t> hex_decode(const char* hex) {
     return result;
 }
 
-std::vector<std::vector<uint8_t>> StreamParser::feed(const char* data, size_t len) {
-    std::vector<std::vector<uint8_t>> out;
+std::vector<StreamChunk> StreamParser::feed(const char* data, size_t len) {
+    std::vector<StreamChunk> out;
     buffer_.append(data, len);
 
     size_t pos = 0;
@@ -103,9 +103,28 @@ std::vector<std::vector<uint8_t>> StreamParser::feed(const char* data, size_t le
             if (audio && audio->type == cJSON_String) {
                 std::vector<uint8_t> mp3_chunk = hex_decode(audio->valuestring);
                 if (!mp3_chunk.empty()) {
-                    if (mp3_chunk != previous_audio_) {
-                        out.push_back(mp3_chunk);
-                        previous_audio_ = mp3_chunk;
+                    if (previous_audio_.empty()) {
+                        StreamChunk chunk;
+                        chunk.audio = std::move(mp3_chunk);
+                        chunk.reset_decoder = false;
+                        out.push_back(chunk);
+                        previous_audio_ = chunk.audio;
+                    } else if (mp3_chunk == previous_audio_) {
+                    } else if (mp3_chunk.size() > previous_audio_.size() &&
+                               std::equal(previous_audio_.begin(), previous_audio_.end(), mp3_chunk.begin())) {
+                        StreamChunk chunk;
+                        chunk.audio = std::vector<uint8_t>(mp3_chunk.begin() + previous_audio_.size(), mp3_chunk.end());
+                        chunk.reset_decoder = false;
+                        out.push_back(chunk);
+                        previous_audio_ = std::move(mp3_chunk);
+                    } else if (mp3_chunk.size() < previous_audio_.size() &&
+                               std::equal(mp3_chunk.begin(), mp3_chunk.end(), previous_audio_.begin())) {
+                    } else {
+                        StreamChunk chunk;
+                        chunk.audio = std::move(mp3_chunk);
+                        chunk.reset_decoder = true;
+                        out.push_back(chunk);
+                        previous_audio_ = chunk.audio;
                     }
                 }
             }
