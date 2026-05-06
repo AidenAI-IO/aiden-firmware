@@ -8,11 +8,18 @@
 
 [CH375B](https://easyelecmodule.com/ch375b-u-disk-read-write-module-development-guide/)
 
+## Init
+```bash
+git clone --recursive git@github.com:AidenAI-IO/aiden-hardware-demo.git
+git lfs install
+git lfs pull
+```
+
 ## Flash Image
 
 ```bash
 # 按住 boot 按钮后连接电脑，或者在板子上 `reboot loader` 进入 maskrom 模式
-./upgrade_tool/upgrade_tool uf update.img
+./upgrade_tool/upgrade_tool uf ./image/update.img
 ```
 
 提供的固件是从 pico-sdk 生成的，包含了一些调整：
