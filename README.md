@@ -8,6 +8,22 @@
 
 [CH375B](https://easyelecmodule.com/ch375b-u-disk-read-write-module-development-guide/)
 
+## Flash Image
+
+```bash
+# 按住 boot 按钮后连接电脑，或者在板子上 `reboot loader` 进入 maskrom 模式
+./upgrade_tool/upgrade_tool uf update.img
+```
+
+提供的固件是从 pico-sdk 生成的，包含了一些调整：
+- Wi-Fi 默认使用板载天线
+- 内核启用了 TC358743 驱动
+- DTS 添加了 TC358743 的支持
+- 内置了 1080p30 的 EDID
+- 启动时自动将原有的 USB-C 接口配置为 HID 设备
+
+详情可以查看 pico-sdk 的相关 commit
+
 ## Build
 
 Standard out-of-source CMake build:
@@ -20,7 +36,7 @@ cmake --build build
 For the Luckfox cross-compilation environment, use:
 
 ```bash
-./build.sh
+sh ./build.sh
 ```
 
 All build artifacts are placed in `build/`:
