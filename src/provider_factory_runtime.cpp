@@ -1,5 +1,6 @@
 #include "provider_factory.h"
 #include "openrouter_client.h"
+#include "openai_client.h"
 #include "minimax_tts.h"
 
 namespace aiden {
@@ -14,6 +15,11 @@ std::unique_ptr<LlmClient> create_llm_client(const AgentConfig& config, std::str
     if (check.normalized == "openrouter") {
         return std::unique_ptr<LlmClient>(
             new OpenRouterClient(config.model.api_key, config.model.model, config.additional_prompt));
+    }
+
+    if (check.normalized == "openai") {
+        return std::unique_ptr<LlmClient>(
+            new OpenAIClient(config.model.api_key, config.model.model, config.additional_prompt));
     }
 
     error = std::string("unsupported model provider: ") + config.model.provider;

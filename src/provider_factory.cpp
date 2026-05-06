@@ -18,6 +18,11 @@ ProviderCheckResult check_llm_provider(const char* provider) {
         result.normalized = "openrouter";
         return result;
     }
+    if (strcmp(provider, "openai") == 0) {
+        result.ok = true;
+        result.normalized = "openai";
+        return result;
+    }
     result.error = std::string("unsupported model provider: ") + provider;
     return result;
 }
@@ -41,15 +46,15 @@ ProviderCheckResult check_llm_config(const ModelConfig& config) {
     ProviderCheckResult llm = check_llm_provider(config.provider);
     if (!llm.ok) return llm;
 
-    if (llm.normalized == "openrouter") {
+    if (llm.normalized == "openrouter" || llm.normalized == "openai") {
         if (is_empty(config.api_key)) {
             ProviderCheckResult result;
-            result.error = "model provider openrouter requires api_key";
+            result.error = std::string("model provider ") + llm.normalized + " requires api_key";
             return result;
         }
         if (is_empty(config.model)) {
             ProviderCheckResult result;
-            result.error = "model provider openrouter requires model";
+            result.error = std::string("model provider ") + llm.normalized + " requires model";
             return result;
         }
     }
