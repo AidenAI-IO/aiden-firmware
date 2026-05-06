@@ -109,9 +109,9 @@ static void process_utterance(const std::vector<int16_t>& utterance,
                 printf("[reply] %s\n", response.c_str());
 
                 printf("[tts] Requesting speech synthesis for: \"%s\"\n", response.c_str());
-                printf("[tts] Starting streaming playback...\n");
+                printf("[tts] Starting playback...\n");
                 if (tts.text_to_speech_stream(response.c_str(), player)) {
-                    printf("[tts] Streaming playback complete\n");
+                    printf("[tts] Playback complete\n");
                 } else {
                     fprintf(stderr, "[error] TTS streaming failed\n");
                 }

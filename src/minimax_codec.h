@@ -16,6 +16,7 @@ public:
 
 private:
     std::string buffer_;
+    std::vector<uint8_t> previous_audio_;
 };
 
 }

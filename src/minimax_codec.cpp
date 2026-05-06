@@ -1,5 +1,6 @@
 #include "minimax_codec.h"
 #include "cJSON/cJSON.h"
+#include <algorithm>
 #include <string.h>
 
 namespace aiden {
@@ -77,14 +78,41 @@ std::vector<std::vector<uint8_t>> StreamParser::feed(const char* data, size_t le
         pos = 0;
 
         cJSON* json = cJSON_Parse(json_str.c_str());
-        if (!json) continue;
+        if (!json) {
+            fprintf(stderr, "[minimax] Failed to parse JSON: %s\n", json_str.c_str());
+            continue;
+        }
+
+        // Check for error response
+        cJSON* base_resp = cJSON_GetObjectItem(json, "base_resp");
+        if (base_resp) {
+            cJSON* status_code = cJSON_GetObjectItem(base_resp, "status_code");
+            cJSON* status_msg = cJSON_GetObjectItem(base_resp, "status_msg");
+            if (status_code && status_code->valueint != 0) {
+                fprintf(stderr, "[minimax] API error: code=%d, msg=%s\n",
+                        status_code->valueint,
+                        status_msg ? status_msg->valuestring : "unknown");
+                cJSON_Delete(json);
+                continue;
+            }
+        }
 
         cJSON* data_obj = cJSON_GetObjectItem(json, "data");
         if (data_obj) {
             cJSON* audio = cJSON_GetObjectItem(data_obj, "audio");
             if (audio && audio->type == cJSON_String) {
                 std::vector<uint8_t> mp3_chunk = hex_decode(audio->valuestring);
-                if (!mp3_chunk.empty()) out.push_back(mp3_chunk);
+                if (!mp3_chunk.empty()) {
+                    if (mp3_chunk.size() >= previous_audio_.size() &&
+                        std::equal(previous_audio_.begin(), previous_audio_.end(), mp3_chunk.begin())) {
+                        if (mp3_chunk.size() > previous_audio_.size()) {
+                            out.emplace_back(mp3_chunk.begin() + previous_audio_.size(), mp3_chunk.end());
+                        }
+                    } else {
+                        out.push_back(mp3_chunk);
+                    }
+                    previous_audio_ = std::move(mp3_chunk);
+                }
             }
         }
 
@@ -96,6 +124,7 @@ std::vector<std::vector<uint8_t>> StreamParser::feed(const char* data, size_t le
 
 void StreamParser::reset() {
     buffer_.clear();
+    previous_audio_.clear();
 }
 
 }
