@@ -88,6 +88,48 @@ TEST_CASE("load_config returns false for missing file") {
     CHECK_FALSE(aiden::load_config("/tmp/aiden_definitely_does_not_exist_xyz", cfg));
 }
 
+TEST_CASE("load_config reports missing-file error via error output") {
+    aiden::AgentConfig cfg;
+    std::string err;
+    CHECK_FALSE(aiden::load_config("/tmp/aiden_definitely_does_not_exist_xyz", cfg, &err));
+    CHECK(err.find("/tmp/aiden_definitely_does_not_exist_xyz") != std::string::npos);
+    // Locale-independent check for ENOENT.
+    CHECK(err.find("(errno=2)") != std::string::npos);
+}
+
+TEST_CASE("load_config reports null path without dereferencing it") {
+    aiden::AgentConfig cfg;
+    std::string err;
+    CHECK_FALSE(aiden::load_config(nullptr, cfg, &err));
+    CHECK_FALSE(err.empty());
+    CHECK(err.find("null") != std::string::npos);
+}
+
+TEST_CASE("load_config reports missing api_key via error output") {
+    TempFile f(
+        "[model]\n"
+        "provider = openrouter\n"
+        "model = foo\n"
+    );
+
+    aiden::AgentConfig cfg;
+    std::string err;
+    CHECK_FALSE(aiden::load_config(f.path.c_str(), cfg, &err));
+    CHECK(err.find("api_key") != std::string::npos);
+}
+
+TEST_CASE("load_config clears error output on success") {
+    TempFile f(
+        "[model]\n"
+        "api_key = sk-ok\n"
+    );
+
+    aiden::AgentConfig cfg;
+    std::string err = "stale previous error";
+    REQUIRE(aiden::load_config(f.path.c_str(), cfg, &err));
+    CHECK(err.empty());
+}
+
 TEST_CASE("load_config skips comments and blank lines") {
     TempFile f(
         "# top comment\n"

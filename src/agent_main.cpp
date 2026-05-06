@@ -95,7 +95,8 @@ static void process_utterance(const std::vector<int16_t>& utterance,
         std::string response;
         std::vector<aiden::ToolCall> tool_calls;
 
-        printf("[llm] Sending request to OpenRouter...\n");
+        printf("[llm] Sending request to provider '%s' (model=%s)...\n",
+               config.model.provider, config.model.model);
         if (!llm.chat(wav.data(), wav.size(), response, tool_calls)) {
             fprintf(stderr, "[error] LLM request failed\n");
             break;
@@ -150,8 +151,10 @@ int main(int argc, char* argv[]) {
     }
 
     aiden::AgentConfig config;
-    if (!aiden::load_config(config_path, config)) {
-        fprintf(stderr, "[error] Failed to load config from %s\n", config_path);
+    std::string config_error;
+    if (!aiden::load_config(config_path, config, &config_error)) {
+        fprintf(stderr, "[error] Failed to load config from %s: %s\n",
+                config_path, config_error.c_str());
         fprintf(stderr, "Usage: %s [--manual] [config_file]\n", argv[0]);
         fprintf(stderr, "  --manual: Use manual trigger (press Enter) instead of GPIO wakeup\n");
         return 1;
