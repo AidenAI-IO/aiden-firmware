@@ -10,8 +10,10 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <unistd.h>
+#include <errno.h>
 #include <string.h>
 #include <sys/select.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <vector>
 #include <string>
@@ -52,7 +54,29 @@ static std::string execute_tool(const char* hid_binary, const char* tool_name,
     while (fgets(buf, sizeof(buf), fp))
         result += buf;
 
-    pclose(fp);
+    int status = pclose(fp);
+    if (status == -1) {
+        char err[128];
+        snprintf(err, sizeof(err), "error: tool command failed: %s", strerror(errno));
+        return err;
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+        char err[128];
+        snprintf(err, sizeof(err), "error: tool command exited with status %d",
+                 WEXITSTATUS(status));
+        return result.empty() ? std::string(err) : std::string(err) + ": " + result;
+    }
+    if (WIFSIGNALED(status)) {
+        char err[128];
+        snprintf(err, sizeof(err), "error: tool command terminated by signal %d",
+                 WTERMSIG(status));
+        return result.empty() ? std::string(err) : std::string(err) + ": " + result;
+    }
+    if (!WIFEXITED(status)) {
+        char err[128];
+        snprintf(err, sizeof(err), "error: tool command ended abnormally: status %d", status);
+        return result.empty() ? std::string(err) : std::string(err) + ": " + result;
+    }
     return result.empty() ? "ok" : result;
 }
 

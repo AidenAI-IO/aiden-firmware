@@ -6,6 +6,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <pthread.h>
 #include <sys/wait.h>
 #include <vector>
@@ -42,7 +43,19 @@ static void stream_chunk_callback(const char* data, size_t len, void* user_data)
     for (size_t i = 0; i < chunks.size(); i++) {
         const std::vector<uint8_t>& mp3_chunk = chunks[i];
         if (!mp3_chunk.empty()) {
-            write(ctx->ffmpeg_stdin, mp3_chunk.data(), mp3_chunk.size());
+            size_t offset = 0;
+            while (offset < mp3_chunk.size()) {
+                ssize_t n = write(ctx->ffmpeg_stdin,
+                                  mp3_chunk.data() + offset,
+                                  mp3_chunk.size() - offset);
+                if (n > 0) {
+                    offset += (size_t)n;
+                    continue;
+                }
+                if (n < 0 && errno == EINTR)
+                    continue;
+                return;
+            }
         }
     }
 }

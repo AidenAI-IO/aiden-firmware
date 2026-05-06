@@ -39,8 +39,10 @@ ToolCommandResult build_tool_command(const char* hid_binary,
         int count = cJSON_GetArraySize(keys);
         for (int i = 0; i < count && len < (int)sizeof(cmd) - 32; i++) {
             cJSON* key = cJSON_GetArrayItem(keys, i);
-            if (key && key->type == cJSON_String)
-                len += snprintf(cmd + len, sizeof(cmd) - len, " %s", key->valuestring);
+            if (key && key->type == cJSON_String) {
+                std::string quoted = shell_single_quote(key->valuestring);
+                len += snprintf(cmd + len, sizeof(cmd) - len, " %s", quoted.c_str());
+            }
         }
         result.command = cmd;
     }

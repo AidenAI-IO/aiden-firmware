@@ -107,6 +107,7 @@ TEST_CASE("parse_chat_response rejects empty choices array") {
 TEST_CASE("init_conversation embeds the system prompt") {
     std::string conv = init_conversation("You are a helpful assistant.");
     cJSON* arr = cJSON_Parse(conv.c_str());
+    REQUIRE(arr != nullptr);
     REQUIRE(arr->type == cJSON_Array);
     REQUIRE(cJSON_GetArraySize(arr) == 1);
 
@@ -127,6 +128,7 @@ TEST_CASE("append_user_audio_wav appends a user message with input_audio") {
     std::string appended = append_user_audio_wav(conv, "AAAA");
 
     cJSON* arr = cJSON_Parse(appended.c_str());
+    REQUIRE(arr != nullptr);
     REQUIRE(arr->type == cJSON_Array);
     REQUIRE(cJSON_GetArraySize(arr) == 2);
 
@@ -147,6 +149,9 @@ TEST_CASE("append_tool_result adds a role=tool message") {
     conv = append_tool_result(conv, "call_abc", "ok");
 
     cJSON* arr = cJSON_Parse(conv.c_str());
+    REQUIRE(arr != nullptr);
+    REQUIRE(arr->type == cJSON_Array);
+    REQUIRE(cJSON_GetArraySize(arr) == 2);
     cJSON* tool = cJSON_GetArrayItem(arr, 1);
     CHECK(std::string(cJSON_GetObjectItem(tool, "role")->valuestring) == "tool");
     CHECK(std::string(cJSON_GetObjectItem(tool, "tool_call_id")->valuestring) == "call_abc");
@@ -160,6 +165,8 @@ TEST_CASE("append_assistant_message appends verbatim message JSON") {
     conv = append_assistant_message(conv, assistant);
 
     cJSON* arr = cJSON_Parse(conv.c_str());
+    REQUIRE(arr != nullptr);
+    REQUIRE(arr->type == cJSON_Array);
     REQUIRE(cJSON_GetArraySize(arr) == 2);
     cJSON* msg = cJSON_GetArrayItem(arr, 1);
     CHECK(std::string(cJSON_GetObjectItem(msg, "role")->valuestring) == "assistant");

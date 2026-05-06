@@ -186,7 +186,7 @@ TEST_CASE("load_config parses sections regardless of order") {
     CHECK(std::string(cfg.model.provider) == "openrouter");
 }
 
-TEST_CASE("load_config leaves numeric defaults when values are non-numeric") {
+TEST_CASE("load_config produces zero for non-numeric numeric field values") {
     TempFile f(
         "[model]\n"
         "api_key = sk-ok\n"

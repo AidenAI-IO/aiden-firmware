@@ -8,7 +8,13 @@ using aiden::build_tool_command;
 TEST_CASE("keyboard_tap builds sequential key tap command") {
     ToolCommandResult r = build_tool_command("./hid", "keyboard_tap", R"({"keys":["CTRL","C"]})");
     REQUIRE(r.ok);
-    CHECK(r.command == "sudo ./hid keyboard tap CTRL C");
+    CHECK(r.command == "sudo ./hid keyboard tap 'CTRL' 'C'");
+}
+
+TEST_CASE("keyboard_tap shell-escapes key tokens safely") {
+    ToolCommandResult r = build_tool_command("./hid", "keyboard_tap", R"({"keys":["A; rm -rf /","it's"]})");
+    REQUIRE(r.ok);
+    CHECK(r.command == "sudo ./hid keyboard tap 'A; rm -rf /' 'it'\\''s'");
 }
 
 TEST_CASE("keyboard_tap requires keys array") {
