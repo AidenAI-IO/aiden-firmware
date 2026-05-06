@@ -139,8 +139,8 @@ static cJSON* create_tool_definitions() {
 }
 
 OpenRouterClient::OpenRouterClient(const char* api_key, const char* llm_model,
-                                   const char* tts_model, const char* additional_prompt)
-    : api_key_(api_key), llm_model_(llm_model), tts_model_(tts_model) {
+                                   const char* additional_prompt)
+    : api_key_(api_key), llm_model_(llm_model) {
 
     // Initialize conversation with system message
     cJSON* messages = cJSON_CreateArray();
@@ -304,96 +304,6 @@ void OpenRouterClient::add_tool_result(const char* tool_call_id, const char* res
     conversation_ = conv_str;
     free(conv_str);
     cJSON_Delete(messages);
-}
-
-bool OpenRouterClient::text_to_speech(const char* text, std::vector<uint8_t>& pcm_audio) {
-    cJSON* request = cJSON_CreateObject();
-    cJSON_AddStringToObject(request, "model", tts_model_.c_str());
-    cJSON_AddStringToObject(request, "voice", "alloy");
-    cJSON_AddStringToObject(request, "input", text);
-    cJSON_AddStringToObject(request, "response_format", "mp3");
-
-    char* request_str = cJSON_PrintUnformatted(request);
-    fprintf(stderr, "[tts] Request: %s\n", request_str);
-    cJSON_Delete(request);
-
-    HttpClient http;
-    std::vector<uint8_t> mp3_data;
-    bool success = http.post_binary(
-        "https://openrouter.ai/api/v1/audio/speech",
-        api_key_.c_str(),
-        request_str,
-        mp3_data);
-    free(request_str);
-
-    if (!success) {
-        fprintf(stderr, "[error] TTS HTTP request failed\n");
-        return false;
-    }
-
-    // Check if response is a JSON error instead of MP3 audio
-    if (!mp3_data.empty() && mp3_data[0] == '{') {
-        std::string err_str(mp3_data.begin(), mp3_data.end());
-        fprintf(stderr, "[error] TTS returned error: %s\n", err_str.c_str());
-        return false;
-    }
-
-    fprintf(stderr, "[tts] Received %zu bytes of MP3 audio\n", mp3_data.size());
-
-    // Decode MP3 to PCM using ffmpeg
-    char mp3_file[] = "/tmp/agent_tts_XXXXXX.mp3";
-    int fd = mkstemps(mp3_file, 4);
-    if (fd < 0) {
-        fprintf(stderr, "[error] Failed to create temp MP3 file\n");
-        return false;
-    }
-    write(fd, mp3_data.data(), mp3_data.size());
-    close(fd);
-
-    char pcm_file[] = "/tmp/agent_pcm_XXXXXX.pcm";
-    fd = mkstemps(pcm_file, 4);
-    if (fd < 0) {
-        unlink(mp3_file);
-        fprintf(stderr, "[error] Failed to create temp PCM file\n");
-        return false;
-    }
-    close(fd);
-
-    // Convert MP3 to 16kHz mono 16-bit PCM
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd),
-        "ffmpeg -i '%s' -f s16le -ar 16000 -ac 1 '%s' 2>/dev/null",
-        mp3_file, pcm_file);
-
-    fprintf(stderr, "[tts] Decoding MP3 to PCM...\n");
-    int status = system(cmd);
-    unlink(mp3_file);
-
-    if (status != 0) {
-        unlink(pcm_file);
-        fprintf(stderr, "[error] ffmpeg failed (status %d). Is ffmpeg installed?\n", status);
-        return false;
-    }
-
-    // Read PCM file
-    FILE* fp = fopen(pcm_file, "rb");
-    if (!fp) {
-        unlink(pcm_file);
-        fprintf(stderr, "[error] Failed to open PCM file\n");
-        return false;
-    }
-
-    fseek(fp, 0, SEEK_END);
-    long size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-
-    pcm_audio.resize(size);
-    fread(pcm_audio.data(), 1, size, fp);
-    fclose(fp);
-    unlink(pcm_file);
-
-    fprintf(stderr, "[tts] Decoded to %zu bytes of PCM audio\n", pcm_audio.size());
-    return true;
 }
 
 }

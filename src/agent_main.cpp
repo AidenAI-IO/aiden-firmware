@@ -215,7 +215,7 @@ int main(int argc, char* argv[]) {
     }
 
     printf("[init] Config loaded: model=%s, threshold=%d, silence=%dms\n",
-           config.llm_model, config.energy_threshold, config.silence_ms);
+           config.model.model, config.energy_threshold, config.silence_ms);
 
     aiden::HttpClient http;
     if (!http.is_available()) {
@@ -252,10 +252,10 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    aiden::OpenRouterClient llm(config.api_key, config.llm_model, config.tts_model,
+    aiden::OpenRouterClient llm(config.model.api_key, config.model.model,
                                 config.additional_prompt);
-    aiden::MinimaxTTS tts(config.minimax_api_key, config.minimax_voice_id,
-                          config.minimax_emotion, config.minimax_speed);
+    aiden::MinimaxTTS tts(config.tts.api_key, config.tts.voice_id,
+                          config.tts.emotion, config.tts.speed);
     aiden::AudioVAD vad(16000, config.energy_threshold, config.silence_ms,
                         config.min_speech_ms, manual_mode);
 

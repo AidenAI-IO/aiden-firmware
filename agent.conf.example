@@ -1,15 +1,22 @@
 # AI Agent Configuration
 # Copy to agent.conf and fill in your values
 
-[openrouter]
+# LLM: handles speech input, reasoning, and tool calls.
+# provider selects which client implementation to use.
+[model]
+provider = openrouter
 api_key = sk-or-v1-YOUR_OPENROUTER_KEY
-llm_model = openai/gpt-4o-audio-preview
+model = openai/gpt-4o-audio-preview
 
-[minimax]
+# TTS: synthesizes assistant replies to speech.
+# provider selects which client implementation to use.
+[tts]
+provider = minimax
 api_key = YOUR_MINIMAX_API_KEY
+model = speech-2.8-hd
 voice_id = male-qn-qingse
-speed = 1.0
 emotion = happy
+speed = 1.0
 
 [agent]
 hid_binary = ./build/bin/example_usb_hid

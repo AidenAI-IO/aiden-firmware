@@ -94,15 +94,18 @@ sudo ./build/bin/agent_main --manual /etc/agent.conf
 ### 配置文件 (`agent.conf`)
 
 ```ini
-[openrouter]
+[model]
+provider = openrouter
 api_key = sk-or-v1-...
-llm_model = openai/gpt-4o-audio-preview
+model = openai/gpt-4o-audio-preview
 
-[minimax]
+[tts]
+provider = minimax
 api_key = YOUR_MINIMAX_API_KEY
+model = speech-2.8-hd
 voice_id = male-qn-qingse
-speed = 1.0
 emotion = happy
+speed = 1.0
 
 [agent]
 hid_binary = ./build/bin/example_usb_hid
