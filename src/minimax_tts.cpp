@@ -86,6 +86,10 @@ bool MinimaxTTS::text_to_speech_stream(const char* text, aiden::AudioPlayer& pla
     cJSON_AddNumberToObject(audio_setting, "channel", 1);
     cJSON_AddItemToObject(request, "audio_setting", audio_setting);
 
+    cJSON* stream_options = cJSON_CreateObject();
+    cJSON_AddBoolToObject(stream_options, "exclude_aggregated_audio", true);
+    cJSON_AddItemToObject(request, "stream_options", stream_options);
+
     cJSON_AddBoolToObject(request, "subtitle_enable", false);
 
     char* request_str = cJSON_PrintUnformatted(request);
