@@ -19,7 +19,6 @@ struct StreamContext {
     pid_t ffmpeg_pid;
     aiden::AudioPlayer* player;
     pthread_t reader_thread;
-    bool reader_running;
     minimax::StreamParser parser;
 };
 
@@ -27,11 +26,15 @@ static void* pcm_reader_thread(void* arg) {
     StreamContext* ctx = (StreamContext*)arg;
 
     uint8_t pcm_buf[4096];
-    while (ctx->reader_running) {
+    for (;;) {
         ssize_t n = read(ctx->ffmpeg_stdout, pcm_buf, sizeof(pcm_buf));
-        if (n <= 0) break;
-
-        ctx->player->play(pcm_buf, n);
+        if (n > 0) {
+            ctx->player->play(pcm_buf, (uint32_t)n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR)
+            continue;
+        break;
     }
 
     return NULL;
@@ -136,7 +139,6 @@ bool MinimaxTTS::text_to_speech_stream(const char* text, aiden::AudioPlayer& pla
     ctx.ffmpeg_stdout = stdout_pipe[0];
     ctx.ffmpeg_pid = pid;
     ctx.player = &player;
-    ctx.reader_running = true;
 
     pthread_create(&ctx.reader_thread, NULL, pcm_reader_thread, &ctx);
 
@@ -151,7 +153,6 @@ bool MinimaxTTS::text_to_speech_stream(const char* text, aiden::AudioPlayer& pla
 
     close(ctx.ffmpeg_stdin);
 
-    ctx.reader_running = false;
     pthread_join(ctx.reader_thread, NULL);
 
     close(ctx.ffmpeg_stdout);
