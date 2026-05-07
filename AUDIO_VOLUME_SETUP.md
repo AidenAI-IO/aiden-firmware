@@ -1,26 +1,26 @@
-# 音量设置脚本使用说明
+# Audio Volume Setup Guide
 
-## 脚本功能
+## Overview
 
-`setup_audio_volume.sh` 会自动将 Luckfox Pico Zero 的音频输出音量设置到最大：
+`setup_audio_volume.sh` automatically sets the audio output volume to maximum on Luckfox Pico Zero devices:
 - DAC HPMIX: 2/2 (100%)
 - DAC LINEOUT: 30/30 (100%)
 
-## 部署步骤
+## Deployment Steps
 
-### 1. 将脚本传输到 Pico Zero 设备
+### 1. Transfer Script to Pico Zero Device
 
 ```bash
-# 方法一：使用 scp
+# Method 1: Using scp
 scp setup_audio_volume.sh root@<pico-zero-ip>:/root/
 
-# 方法二：如果使用 USB 连接
+# Method 2: If using USB connection
 scp setup_audio_volume.sh root@172.32.0.93:/root/
 ```
 
-### 2. 在设备上测试脚本
+### 2. Test the Script on Device
 
-SSH 连接到 Pico Zero 设备后运行：
+After SSH into the Pico Zero device, run:
 
 ```bash
 cd /root
@@ -28,26 +28,26 @@ chmod +x setup_audio_volume.sh
 ./setup_audio_volume.sh
 ```
 
-### 3. 设置开机自动运行
+### 3. Configure Auto-run on Startup
 
-有以下几种方式：
+There are several methods:
 
-#### 方式一：添加到 /etc/rc.local（推荐）
+#### Method 1: Add to /etc/rc.local (Recommended)
 
 ```bash
-# 在 Pico Zero 设备上执行
+# On Pico Zero device
 vi /etc/rc.local
 
-# 在 exit 0 之前添加：
+# Add before exit 0:
 /root/setup_audio_volume.sh
 
-# 保存并退出
+# Save and exit
 ```
 
-#### 方式二：创建 systemd 服务
+#### Method 2: Create systemd Service
 
 ```bash
-# 创建服务文件
+# Create service file
 cat > /etc/systemd/system/audio-volume.service << 'EOF'
 [Unit]
 Description=Set audio volume to maximum
@@ -62,52 +62,52 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 
-# 启用服务
+# Enable service
 systemctl daemon-reload
 systemctl enable audio-volume.service
 systemctl start audio-volume.service
 
-# 检查状态
+# Check status
 systemctl status audio-volume.service
 ```
 
-#### 方式三：添加到应用启动脚本
+#### Method 3: Add to Application Startup Script
 
-如果你的应用有自己的启动脚本，可以在启动应用之前调用：
+If your application has its own startup script, call the volume setup before starting the app:
 
 ```bash
 #!/bin/sh
-# 设置音量
+# Set volume
 /root/setup_audio_volume.sh
 
-# 启动应用
+# Start application
 /path/to/your/app
 ```
 
-## 验证
+## Verification
 
-重启设备后，检查音量设置：
+After rebooting the device, check the volume settings:
 
 ```bash
 amixer sget 'DAC HPMIX'
 amixer sget 'DAC LINEOUT'
 ```
 
-应该看到：
+You should see:
 - DAC HPMIX: Mono: 2 [100%]
 - DAC LINEOUT: Mono: 30 [100%]
 
-## 手动调整音量
+## Manual Volume Adjustment
 
-如果需要手动调整音量：
+If you need to manually adjust the volume:
 
 ```bash
-# 设置 DAC HPMIX (范围: 0-2)
+# Set DAC HPMIX (range: 0-2)
 amixer sset 'DAC HPMIX' 2
 
-# 设置 DAC LINEOUT (范围: 0-30)
+# Set DAC LINEOUT (range: 0-30)
 amixer sset 'DAC LINEOUT' 30
 
-# 保存当前 ALSA 设置（可选）
+# Save current ALSA settings (optional)
 alsactl store
 ```
