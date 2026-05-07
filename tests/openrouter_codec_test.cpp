@@ -10,6 +10,7 @@ using aiden::openrouter::parse_chat_response;
 using aiden::openrouter::init_conversation;
 using aiden::openrouter::append_user_audio_wav;
 using aiden::openrouter::append_user_audio_wav_if_present;
+using aiden::openrouter::append_user_text;
 using aiden::openrouter::append_assistant_message;
 using aiden::openrouter::append_tool_result;
 using aiden::openrouter::build_chat_request;
@@ -149,6 +150,39 @@ TEST_CASE("append_user_audio_wav_if_present skips empty follow-up audio") {
     std::string conv = init_conversation("sys");
     std::string unchanged = append_user_audio_wav_if_present(conv, NULL, 0);
     CHECK(unchanged == conv);
+}
+
+TEST_CASE("openrouter append_user_text appends a user message with string content") {
+    std::string conv = init_conversation("sys");
+    std::string appended = append_user_text(conv, "hello world");
+
+    cJSON* arr = cJSON_Parse(appended.c_str());
+    REQUIRE(arr->type == cJSON_Array);
+    REQUIRE(cJSON_GetArraySize(arr) == 2);
+
+    cJSON* user = cJSON_GetArrayItem(arr, 1);
+    CHECK(std::string(cJSON_GetObjectItem(user, "role")->valuestring) == "user");
+    cJSON* content = cJSON_GetObjectItem(user, "content");
+    REQUIRE(content->type == cJSON_String);
+    CHECK(std::string(content->valuestring) == "hello world");
+    cJSON_Delete(arr);
+}
+
+TEST_CASE("openrouter append_user_text escapes quotes and survives NULL") {
+    std::string conv = init_conversation("sys");
+    std::string quoted = append_user_text(conv, "say \"hi\" now");
+    cJSON* arr = cJSON_Parse(quoted.c_str());
+    REQUIRE(arr != nullptr);
+    cJSON* user = cJSON_GetArrayItem(arr, 1);
+    CHECK(std::string(cJSON_GetObjectItem(user, "content")->valuestring) == "say \"hi\" now");
+    cJSON_Delete(arr);
+
+    std::string null_input = append_user_text(conv, NULL);
+    cJSON* arr2 = cJSON_Parse(null_input.c_str());
+    REQUIRE(arr2 != nullptr);
+    cJSON* user2 = cJSON_GetArrayItem(arr2, 1);
+    CHECK(std::string(cJSON_GetObjectItem(user2, "content")->valuestring) == "");
+    cJSON_Delete(arr2);
 }
 
 TEST_CASE("append_tool_result adds a role=tool message") {

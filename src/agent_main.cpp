@@ -18,6 +18,12 @@
 #include <vector>
 #include <string>
 
+enum TriggerMode {
+    MODE_WAKEUP,
+    MODE_MANUAL,
+    MODE_TEXT
+};
+
 static volatile bool quit = false;
 static volatile bool wakeup_triggered = false;
 
@@ -80,30 +86,13 @@ static std::string execute_tool(const char* hid_binary, const char* tool_name,
     return result.empty() ? "ok" : result;
 }
 
-static void process_utterance(const std::vector<int16_t>& utterance,
-                              aiden::LlmClient& llm,
-                              aiden::TtsClient& tts,
-                              aiden::AudioPlayer& player,
-                              const aiden::AgentConfig& config) {
-    float duration = utterance.size() / 16000.0f;
-    printf("[utterance] %.1fs of speech\n", duration);
-
-    std::vector<uint8_t> wav = aiden::pcm16_mono_16khz_to_wav(utterance);
-    printf("[debug] WAV size: %zu bytes\n", wav.size());
-
+static void run_after_first_turn(aiden::LlmClient& llm,
+                                 aiden::TtsClient& tts,
+                                 aiden::AudioPlayer& player,
+                                 const aiden::AgentConfig& config,
+                                 std::string response,
+                                 std::vector<aiden::ToolCall> tool_calls) {
     while (true) {
-        std::string response;
-        std::vector<aiden::ToolCall> tool_calls;
-
-        printf("[llm] Sending request to provider '%s' (model=%s)...\n",
-               config.model.provider, config.model.model);
-        if (!llm.chat(wav.data(), wav.size(), response, tool_calls)) {
-            fprintf(stderr, "[error] LLM request failed\n");
-            break;
-        }
-
-        printf("[llm] Response received\n");
-
         if (tool_calls.empty()) {
             if (!response.empty()) {
                 printf("[reply] %s\n", response.c_str());
@@ -118,7 +107,7 @@ static void process_utterance(const std::vector<int16_t>& utterance,
             } else {
                 printf("[llm] Empty response from LLM\n");
             }
-            break;
+            return;
         }
 
         printf("[tools] Executing %zu tool call(s)...\n", tool_calls.size());
@@ -132,19 +121,95 @@ static void process_utterance(const std::vector<int16_t>& utterance,
             llm.add_tool_result(tc.id.c_str(), result.c_str());
         }
 
-        wav.clear();
+        response.clear();
+        tool_calls.clear();
+
+        printf("[llm] Sending tool results to provider '%s' (model=%s)...\n",
+               config.model.provider, config.model.model);
+        if (!llm.chat(NULL, 0, response, tool_calls)) {
+            fprintf(stderr, "[error] LLM request failed\n");
+            return;
+        }
+        printf("[llm] Response received\n");
     }
+}
+
+static void process_utterance(const std::vector<int16_t>& utterance,
+                              aiden::LlmClient& llm,
+                              aiden::TtsClient& tts,
+                              aiden::AudioPlayer& player,
+                              const aiden::AgentConfig& config) {
+    float duration = utterance.size() / 16000.0f;
+    printf("[utterance] %.1fs of speech\n", duration);
+
+    std::vector<uint8_t> wav = aiden::pcm16_mono_16khz_to_wav(utterance);
+    printf("[debug] WAV size: %zu bytes\n", wav.size());
+
+    std::string response;
+    std::vector<aiden::ToolCall> tool_calls;
+
+    printf("[llm] Sending request to provider '%s' (model=%s)...\n",
+           config.model.provider, config.model.model);
+    if (!llm.chat(wav.data(), wav.size(), response, tool_calls)) {
+        fprintf(stderr, "[error] LLM request failed\n");
+        return;
+    }
+    printf("[llm] Response received\n");
+
+    run_after_first_turn(llm, tts, player, config, response, tool_calls);
+}
+
+static void process_text_input(const std::string& text,
+                               aiden::LlmClient& llm,
+                               aiden::TtsClient& tts,
+                               aiden::AudioPlayer& player,
+                               const aiden::AgentConfig& config) {
+    printf("[text] %s\n", text.c_str());
+
+    std::string response;
+    std::vector<aiden::ToolCall> tool_calls;
+
+    printf("[llm] Sending request to provider '%s' (model=%s)...\n",
+           config.model.provider, config.model.model);
+    if (!llm.chat_text(text.c_str(), response, tool_calls)) {
+        fprintf(stderr, "[error] LLM request failed\n");
+        return;
+    }
+    printf("[llm] Response received\n");
+
+    run_after_first_turn(llm, tts, player, config, response, tool_calls);
+}
+
+static bool parse_mode_value(const char* v, TriggerMode& mode) {
+    if (strcmp(v, "wakeup") == 0) { mode = MODE_WAKEUP; return true; }
+    if (strcmp(v, "manual") == 0) { mode = MODE_MANUAL; return true; }
+    if (strcmp(v, "text") == 0)   { mode = MODE_TEXT;   return true; }
+    return false;
 }
 
 int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
 
-    bool manual_mode = false;
+    TriggerMode mode = MODE_WAKEUP;
     const char* config_path = "agent.conf";
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--manual") == 0) {
-            manual_mode = true;
+        if (strncmp(argv[i], "--mode=", 7) == 0) {
+            const char* v = argv[i] + 7;
+            if (!parse_mode_value(v, mode)) {
+                fprintf(stderr, "[error] Unknown mode: %s (expected wakeup|manual|text)\n", v);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--mode") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "[error] --mode requires a value (wakeup|manual|text)\n");
+                return 1;
+            }
+            const char* v = argv[++i];
+            if (!parse_mode_value(v, mode)) {
+                fprintf(stderr, "[error] Unknown mode: %s (expected wakeup|manual|text)\n", v);
+                return 1;
+            }
         } else {
             config_path = argv[i];
         }
@@ -155,8 +220,10 @@ int main(int argc, char* argv[]) {
     if (!aiden::load_config(config_path, config, &config_error)) {
         fprintf(stderr, "[error] Failed to load config from %s: %s\n",
                 config_path, config_error.c_str());
-        fprintf(stderr, "Usage: %s [--manual] [config_file]\n", argv[0]);
-        fprintf(stderr, "  --manual: Use manual trigger (press Enter) instead of GPIO wakeup\n");
+        fprintf(stderr, "Usage: %s [--mode=wakeup|manual|text] [config_file]\n", argv[0]);
+        fprintf(stderr, "  --mode=wakeup: Use GPIO 33 wakeup trigger (default)\n");
+        fprintf(stderr, "  --mode=manual: Press Enter to start/stop audio recording\n");
+        fprintf(stderr, "  --mode=text:   Type commands directly via stdin\n");
         return 1;
     }
 
@@ -176,26 +243,30 @@ int main(int argc, char* argv[]) {
     }
 
     aiden::WakeupListener wakeup;
-    if (!manual_mode) {
+    if (mode == MODE_WAKEUP) {
         printf("[init] Starting wakeup listener on GPIO 33...\n");
         if (!wakeup.start(33, on_wakeup)) {
             fprintf(stderr, "[error] Failed to start wakeup listener\n");
             return 1;
         }
-    } else {
+    } else if (mode == MODE_MANUAL) {
         printf("[init] Manual trigger mode enabled\n");
+    } else {
+        printf("[init] Text input mode enabled\n");
     }
 
-    printf("[init] Initializing audio (16kHz/16bit/mono)...\n");
     aiden::AudioConfig audio_cfg;
     audio_cfg.sample_rate = 16000;
     audio_cfg.channels = 1;
     audio_cfg.bit_width = 16;
 
     aiden::AudioCapture capture;
-    if (!capture.init(audio_cfg)) {
-        fprintf(stderr, "[error] Failed to initialize audio capture\n");
-        return 1;
+    if (mode != MODE_TEXT) {
+        printf("[init] Initializing audio (16kHz/16bit/mono)...\n");
+        if (!capture.init(audio_cfg)) {
+            fprintf(stderr, "[error] Failed to initialize audio capture\n");
+            return 1;
+        }
     }
 
     aiden::AudioPlayer player;
@@ -219,16 +290,37 @@ int main(int argc, char* argv[]) {
     }
 
     aiden::AudioVAD vad(16000, config.energy_threshold, config.silence_ms,
-                        config.min_speech_ms, manual_mode);
+                        config.min_speech_ms, mode == MODE_MANUAL);
 
-    if (manual_mode)
+    if (mode == MODE_TEXT) {
+        printf("\n[ready] Type a command and press Enter (empty line or Ctrl+C to quit)\n");
+        while (!quit) {
+            printf("\n> ");
+            fflush(stdout);
+
+            char buf[4096];
+            if (!fgets(buf, sizeof(buf), stdin)) break;
+
+            size_t len = strlen(buf);
+            while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+                buf[--len] = '\0';
+            }
+            if (len == 0) {
+                printf("[text] Empty input, exiting.\n");
+                break;
+            }
+
+            process_text_input(buf, *llm, *tts, player, config);
+        }
+    } else if (mode == MODE_MANUAL) {
         printf("\n[ready] Press Enter to start recording, press Enter again to stop\n");
-    else
+    } else {
         printf("\n[ready] Waiting for wakeup event (GPIO 33)... Ctrl+C to quit\n\n");
+    }
 
-    while (!quit) {
+    while (!quit && mode != MODE_TEXT) {
         if (!wakeup_triggered) {
-            if (manual_mode) {
+            if (mode == MODE_MANUAL) {
                 printf("\n[manual] Press Enter to start...\n");
                 int ch = getchar();
                 if (ch == EOF) break;
@@ -247,7 +339,7 @@ int main(int argc, char* argv[]) {
         bool manual_stop = false;
         while (wakeup_triggered && !quit) {
             // Check for manual stop in manual mode
-            if (manual_mode && stdin_has_data()) {
+            if (mode == MODE_MANUAL && stdin_has_data()) {
                 getchar();
                 drain_stdin();
                 printf("[manual] Stop triggered by user\n");
@@ -288,7 +380,7 @@ int main(int argc, char* argv[]) {
     }
 
     wakeup.stop();
-    capture.stop();
+    if (mode != MODE_TEXT) capture.stop();
     printf("\n[exit] Stopped.\n");
     return 0;
 }

@@ -57,6 +57,39 @@ bool OpenRouterClient::chat(const uint8_t* wav_data, size_t wav_len,
     return true;
 }
 
+bool OpenRouterClient::chat_text(const char* text,
+                                 std::string& response, std::vector<ToolCall>& tool_calls) {
+    std::string conversation_with_user = openrouter::append_user_text(conversation_, text);
+    std::string request_body = openrouter::build_chat_request(conversation_with_user, llm_model_);
+    std::string url = build_chat_completions_url(base_url_.c_str(), "https://openrouter.ai/api/v1");
+
+    HttpClient http;
+    std::string http_response;
+    bool success = http.post_json(
+        url.c_str(),
+        api_key_.c_str(),
+        request_body.c_str(),
+        http_response);
+    if (!success) {
+        fprintf(stderr, "[error] HTTP request failed\n");
+        fprintf(stderr, "[error] Response: %s\n", http_response.c_str());
+        return false;
+    }
+
+    openrouter::ChatResult result = openrouter::parse_chat_response(http_response);
+    if (!result.ok) {
+        fprintf(stderr, "[error] Failed to parse OpenRouter response: %s\n", result.error.c_str());
+        fprintf(stderr, "[error] Raw response: %s\n", http_response.c_str());
+        return false;
+    }
+
+    response = result.content;
+    tool_calls = result.tool_calls;
+    conversation_ = openrouter::append_assistant_message(conversation_with_user,
+                                                         result.assistant_message_json);
+    return true;
+}
+
 void OpenRouterClient::add_tool_result(const char* tool_call_id, const char* result) {
     conversation_ = openrouter::append_tool_result(conversation_, tool_call_id, result);
 }
