@@ -27,6 +27,8 @@ std::string append_user_audio_wav(const std::string& conversation_json,
 std::string append_user_audio_wav_if_present(const std::string& conversation_json,
                                              const uint8_t* wav_data,
                                              size_t wav_len);
+std::string append_user_text(const std::string& conversation_json,
+                             const char* text);
 std::string append_assistant_message(const std::string& conversation_json,
                                      const std::string& assistant_message_json);
 std::string append_tool_result(const std::string& conversation_json,

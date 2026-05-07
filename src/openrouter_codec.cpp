@@ -244,6 +244,22 @@ std::string append_user_audio_wav_if_present(const std::string& conversation_jso
     return append_user_audio_wav(conversation_json, base64_encode(wav_data, wav_len));
 }
 
+std::string append_user_text(const std::string& conversation_json,
+                             const char* text) {
+    const char* safe = text ? text : "";
+    cJSON* messages = parse_conversation_or_empty(conversation_json);
+    cJSON* user_msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(user_msg, "role", "user");
+    cJSON_AddStringToObject(user_msg, "content", safe);
+    cJSON_AddItemToArray(messages, user_msg);
+
+    char* json = cJSON_PrintUnformatted(messages);
+    std::string result = json ? json : "[]";
+    free(json);
+    cJSON_Delete(messages);
+    return result;
+}
+
 std::string append_assistant_message(const std::string& conversation_json,
                                      const std::string& assistant_message_json) {
     cJSON* messages = parse_conversation_or_empty(conversation_json);

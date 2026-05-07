@@ -79,16 +79,24 @@ Copy `build/bin/` executables into board, setup Wi-Fi for hid server demo.
 ### 使用
 
 ```bash
-# GPIO触发模式（生产环境）
+# GPIO 唤醒模式（默认，生产环境）
 sudo ./build/bin/agent_main
+sudo ./build/bin/agent_main --mode=wakeup
 
-# 手动触发模式（调试用）
-sudo ./build/bin/agent_main --manual
+# 手动触发模式（Enter 开始/停止录音，调试用）
+sudo ./build/bin/agent_main --mode=manual
 # 第一次按 Enter: 开始录音
-# 第二次按 Enter: 立即停止录音并发送已录音频（绕过VAD等待）
+# 第二次按 Enter: 立即停止录音并发送已录音频（绕过 VAD 等待）
+
+# 文字输入模式（从 stdin 读一行作为指令，无需录音）
+sudo ./build/bin/agent_main --mode=text
+# 在 `> ` 提示符后输入文字，按 Enter 提交
+# 空行或 Ctrl+C 退出
+# 注意：文字模式需使用非音频模型（如 gpt-4o 或 gpt-4o-mini），
+#      不兼容 gpt-4o-audio-preview
 
 # 指定配置文件
-sudo ./build/bin/agent_main --manual /etc/agent.conf
+sudo ./build/bin/agent_main --mode=manual /etc/agent.conf
 ```
 
 ### 配置文件 (`agent.conf`)

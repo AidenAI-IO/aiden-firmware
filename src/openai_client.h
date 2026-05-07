@@ -15,6 +15,9 @@ public:
     bool chat(const uint8_t* wav_data, size_t wav_len,
               std::string& response, std::vector<ToolCall>& tool_calls) override;
 
+    bool chat_text(const char* text,
+                   std::string& response, std::vector<ToolCall>& tool_calls) override;
+
     void add_tool_result(const char* tool_call_id, const char* result) override;
 
 private:
