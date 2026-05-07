@@ -92,6 +92,8 @@ sudo ./build/bin/agent_main --mode=manual
 sudo ./build/bin/agent_main --mode=text
 # 在 `> ` 提示符后输入文字，按 Enter 提交
 # 空行或 Ctrl+C 退出
+# 注意：文字模式需使用非音频模型（如 gpt-4o 或 gpt-4o-mini），
+#      不兼容 gpt-4o-audio-preview
 
 # 指定配置文件
 sudo ./build/bin/agent_main --mode=manual /etc/agent.conf

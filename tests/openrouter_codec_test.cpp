@@ -157,6 +157,7 @@ TEST_CASE("openrouter append_user_text appends a user message with string conten
     std::string appended = append_user_text(conv, "hello world");
 
     cJSON* arr = cJSON_Parse(appended.c_str());
+    REQUIRE(arr != nullptr);
     REQUIRE(arr->type == cJSON_Array);
     REQUIRE(cJSON_GetArraySize(arr) == 2);
 

@@ -15,6 +15,7 @@
 #include <sys/select.h>
 #include <sys/wait.h>
 #include <termios.h>
+#include <iostream>
 #include <vector>
 #include <string>
 
@@ -298,19 +299,15 @@ int main(int argc, char* argv[]) {
             printf("\n> ");
             fflush(stdout);
 
-            char buf[4096];
-            if (!fgets(buf, sizeof(buf), stdin)) break;
+            std::string line;
+            if (!std::getline(std::cin, line)) break;
 
-            size_t len = strlen(buf);
-            while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
-                buf[--len] = '\0';
-            }
-            if (len == 0) {
+            if (line.empty()) {
                 printf("[text] Empty input, exiting.\n");
                 break;
             }
 
-            process_text_input(buf, *llm, *tts, player, config);
+            process_text_input(line, *llm, *tts, player, config);
         }
     } else if (mode == MODE_MANUAL) {
         printf("\n[ready] Press Enter to start recording, press Enter again to stop\n");
