@@ -796,9 +796,9 @@ void AudioPlayer::resume() {
         RK_MPI_AO_ResumeChn(impl_->dev_id, impl_->chn_id);
 }
 
-bool AudioPlayer::set_volume(int volume_db) {
+bool AudioPlayer::set_volume(int volume) {
     if (!impl_->initialized) return false;
-    return RK_MPI_AO_SetVolume(impl_->dev_id, volume_db) == RK_SUCCESS;
+    return RK_MPI_AO_SetVolume(impl_->dev_id, volume) == RK_SUCCESS;
 }
 
 int AudioPlayer::get_volume() const {

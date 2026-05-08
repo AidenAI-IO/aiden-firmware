@@ -104,7 +104,7 @@ short samples[1024];
 // ... fill samples ...
 player.play(samples, sizeof(samples));
 
-player.set_volume(-10);  // -60 to 0 dB
+player.set_volume(80);  // range 0..100
 player.stop();
 ```
 

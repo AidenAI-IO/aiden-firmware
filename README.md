@@ -1,14 +1,13 @@
 # Aiden DEMO
 
-## 相关硬件
+## Hardware
 
-[Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero)
-
-[TC358743XBG](https://toshiba.semicon-storage.com/eu/semiconductor/product/interface-bridge-ics-for-mobile-peripheral-devices/hdmir-interface-bridge-ics/detail.TC358743XBG.html)
-
-[CH375B](https://easyelecmodule.com/ch375b-u-disk-read-write-module-development-guide/)
+- [Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero)
+- [TC358743XBG](https://toshiba.semicon-storage.com/eu/semiconductor/product/interface-bridge-ics-for-mobile-peripheral-devices/hdmir-interface-bridge-ics/detail.TC358743XBG.html)
+- [CH375B](https://easyelecmodule.com/ch375b-u-disk-read-write-module-development-guide/)
 
 ## Init
+
 ```bash
 git clone --recursive git@github.com:AidenAI-IO/aiden-hardware-demo.git
 git lfs install
@@ -18,18 +17,20 @@ git lfs pull
 ## Flash Image
 
 ```bash
-# 按住 boot 按钮后连接电脑，或者在板子上 `reboot loader` 进入 maskrom 模式
+# Hold the boot button while plugging the board in, or run `reboot loader`
+# on the device to enter maskrom mode.
 ./upgrade_tool/upgrade_tool uf ./image/update.img
 ```
 
-提供的固件是从 pico-sdk 生成的，包含了一些调整：
-- Wi-Fi 默认使用板载天线
-- 内核启用了 TC358743 驱动
-- DTS 添加了 TC358743 的支持
-- 内置了 1080p30 的 EDID
-- 启动时自动将原有的 USB-C 接口配置为 HID 设备
+The bundled firmware is built from `pico-sdk` with the following adjustments:
 
-详情可以查看 pico-sdk 的相关 commit
+- Wi-Fi defaults to the onboard antenna
+- Kernel enables the TC358743 driver
+- DTS adds TC358743 support
+- A 1080p30 EDID is baked in
+- The USB-C port is configured as a HID device at boot
+
+See the relevant commits in `pico-sdk/` for details.
 
 ## Build
 
@@ -47,59 +48,66 @@ sh ./build.sh
 ```
 
 All build artifacts are placed in `build/`:
-- `build/lib/` - Static libraries
-- `build/bin/` - Executables
-- `build/CMakeFiles/` - CMake metadata and intermediate files
 
-Copy `build/bin/` executables into board, setup Wi-Fi for hid server demo.
+- `build/lib/` — static libraries
+- `build/bin/` — executables
+- `build/CMakeFiles/` — CMake metadata and intermediate files
+
+Copy the `build/bin/` executables onto the board and configure Wi-Fi before
+running the HID server demo.
 
 ## AI Agent
 
-纯C++实现的AI agent，直接运行在Pico Zero上，通过语音控制设备的键盘和触摸屏。
+Pure C++ AI agent that runs directly on the Pico Zero and drives the device's
+keyboard and touchscreen via voice.
 
-### 特性
+### Features
 
-- **GPIO唤醒触发**: 等待GPIO 33的wakeup事件后才开始录音（不是持续监听）
-- **实时音频捕获**: 从设备麦克风实时捕获16kHz/16bit/mono音频
-- **VAD断句**: 基于能量的语音活动检测，自动检测说话停顿并断句
-- **LLM处理**: 通过OpenRouter调用支持音频输入的模型
-- **流式TTS**: MiniMax流式语音合成，边收边解码边播放，低延迟
-- **工具调用**: 键盘输入和触摸屏控制
-- **调试信息**: 详细的HTTP请求/响应日志用于调试
+- **GPIO wakeup trigger**: waits for a wakeup event on GPIO 33 before recording
+  (no always-on listening)
+- **Real-time audio capture**: captures 16 kHz / 16-bit / mono audio from the
+  onboard microphone
+- **VAD segmentation**: energy-based voice activity detection ends an utterance
+  on silence
+- **LLM processing**: calls an audio-capable model through OpenRouter
+- **Streaming TTS**: MiniMax streaming synthesis — decode and play as bytes
+  arrive, for low latency
+- **Tool calls**: keyboard input and touchscreen control
+- **Debug logging**: detailed HTTP request/response logs
 
-### 设置
+### Setup
 
-1. 确保设备上安装了 `curl`
-2. 复制配置文件并填入API key：
+1. Make sure `curl` is installed on the device.
+2. Copy the config template and fill in the API keys:
    ```bash
    cp agent.conf.example agent.conf
    vi agent.conf
    ```
 
-### 使用
+### Usage
 
 ```bash
-# GPIO 唤醒模式（默认，生产环境）
+# GPIO wakeup mode (default, production)
 sudo ./build/bin/agent_main
 sudo ./build/bin/agent_main --mode=wakeup
 
-# 手动触发模式（Enter 开始/停止录音，调试用）
+# Manual trigger mode (press Enter to start/stop recording, for debugging)
 sudo ./build/bin/agent_main --mode=manual
-# 第一次按 Enter: 开始录音
-# 第二次按 Enter: 立即停止录音并发送已录音频（绕过 VAD 等待）
+# First Enter: start recording
+# Second Enter: stop immediately and send what has been recorded (bypasses VAD)
 
-# 文字输入模式（从 stdin 读一行作为指令，无需录音）
+# Text input mode (reads a line from stdin as the instruction, no recording)
 sudo ./build/bin/agent_main --mode=text
-# 在 `> ` 提示符后输入文字，按 Enter 提交
-# 空行或 Ctrl+C 退出
-# 注意：文字模式需使用非音频模型（如 gpt-4o 或 gpt-4o-mini），
-#      不兼容 gpt-4o-audio-preview
+# Type text at the `> ` prompt and press Enter to submit.
+# Empty line or Ctrl+C to exit.
+# Note: text mode requires a non-audio model (e.g., gpt-4o or gpt-4o-mini);
+#       gpt-4o-audio-preview is not compatible.
 
-# 指定配置文件
+# Specify a config file
 sudo ./build/bin/agent_main --mode=manual /etc/agent.conf
 ```
 
-### 配置文件 (`agent.conf`)
+### Config file (`agent.conf`)
 
 ```ini
 [model]
@@ -117,43 +125,53 @@ speed = 1.0
 
 [agent]
 hid_binary = ./build/bin/example_usb_hid
-energy_threshold = 300   # 语音能量阈值
-silence_ms = 800         # 静音多久判定语句结束
-min_speech_ms = 300      # 最短语句长度
+energy_threshold = 300   # speech energy threshold
+silence_ms = 800         # silence duration that ends an utterance
+min_speech_ms = 300      # minimum utterance length
 ```
 
-### 工作原理
+### How it works
 
-1. **等待唤醒**: Agent启动后等待GPIO 33的wakeup事件（不消耗CPU）
-2. **开始录音**: 检测到wakeup后，AudioCapture开始捕获音频流
-3. **VAD断句**: 检测到说话停顿（默认800ms静音）后，判定语句结束
-4. **发送LLM**: 音频转WAV后base64编码，通过curl发送给OpenRouter
-5. **工具调用**: LLM可以调用工具来控制设备：
-   - `keyboard_tap`: 按键组合（如ENTER, CTRL+C）
-   - `keyboard_text`: 输入文本
-   - `touch_click`: 在绝对坐标点击（0-32767范围）
-   - `touch_swipe`: 滑动手势
-6. **流式TTS播放**: LLM回复发送给MiniMax TTS API
-   - 流式接收MP3音频chunks（hex编码）
-   - 边接收边喂给ffmpeg解码成PCM
-   - 边解码边播放，实现低延迟语音输出
-7. **返回等待**: 完成后返回等待下一次wakeup事件
+1. **Wait for wakeup**: the agent idles on a GPIO 33 wakeup event (no CPU
+   polling).
+2. **Start recording**: on wakeup, `AudioCapture` opens the input stream.
+3. **VAD segmentation**: when silence exceeds the configured duration
+   (default 800 ms), the utterance is considered complete.
+4. **Send to LLM**: the audio is wrapped as WAV, base64-encoded, and posted to
+   OpenRouter via curl.
+5. **Tool calls**: the LLM can invoke tools to drive the device:
+   - `keyboard_tap` — key combos (e.g., ENTER, CTRL+C)
+   - `keyboard_text` — type text
+   - `touch_click` — click at an absolute coordinate (0..32767)
+   - `touch_swipe` — swipe gesture
+6. **Streaming TTS playback**: the LLM reply is sent to MiniMax TTS:
+   - MP3 chunks arrive as a hex-encoded stream
+   - chunks are piped into ffmpeg and decoded to PCM
+   - PCM is played back while the rest of the stream is still arriving
+7. **Return to idle**: once playback finishes, the agent goes back to waiting
+   for the next wakeup event.
 
-### 调试
+### Debug output
 
-Agent会打印详细的调试信息：
-- `[wakeup]` - GPIO触发事件
-- `[listen]` - 开始录音
-- `[utterance]` - 捕获到的语音时长
-- `[debug]` - WAV大小等调试信息
-- `[http]` - HTTP请求/响应详情
-- `[llm]` - LLM请求状态
-- `[tools]` - 工具调用和结果
-- `[tts]` - TTS合成状态
-- `[error]` - 错误信息
+The agent prints verbose logs tagged by subsystem:
 
-需要USB HID设置（参见src/README.md）。
+- `[wakeup]` — GPIO trigger events
+- `[listen]` — recording started
+- `[utterance]` — captured utterance duration
+- `[debug]` — WAV size and other diagnostics
+- `[http]` — HTTP request/response details
+- `[llm]` — LLM request status
+- `[tools]` — tool invocations and their results
+- `[tts]` — TTS synthesis status
+- `[error]` — errors
+
+USB HID setup is required (see `src/README.md`).
 
 ## Scripts
 
-- `build.sh`: 使用交叉编译工具链构建项目
+- `build.sh` — build the project with the cross-compile toolchain
+- `scripts/setup_audio_volume.sh` — maximize audio output volume on device
+  (see `docs/AUDIO_VOLUME_SETUP.md`)
+- `scripts/setup_usb_gadget.sh` — configure the USB gadget for HID emulation
+- `scripts/test_audio_roundtrip.sh` — generate audio with the OpenRouter audio
+  model and feed it back for recognition
