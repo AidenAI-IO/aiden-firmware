@@ -10,6 +10,8 @@
 
 ```bash
 git clone --recursive git@github.com:AidenAI-IO/aiden-hardware-demo.git
+cd aiden-hardware-demo
+brew install git-lfs
 git lfs install
 git lfs pull
 ```
@@ -53,8 +55,7 @@ All build artifacts are placed in `build/`:
 - `build/bin/` — executables
 - `build/CMakeFiles/` — CMake metadata and intermediate files
 
-Copy the `build/bin/` executables onto the board and configure Wi-Fi before
-running the HID server demo.
+Copy the `build/bin/` executables onto the board and [configure Wi-Fi](https://wiki.luckfox.com/Luckfox-Pico-Zero/WiFi-BT/) before running the HID server demo.
 
 ## AI Agent
 
