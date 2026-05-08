@@ -6,7 +6,7 @@
 #   export HTTPS_PROXY=http://127.0.0.1:7890  # optional
 #   ./scripts/test_audio_roundtrip.sh
 
-set -e
+set -euo pipefail
 
 API_KEY="${OPENROUTER_KEY:-}"
 if [ -z "$API_KEY" ]; then
@@ -40,7 +40,9 @@ cat > /tmp/gen_req.json <<EOF
 EOF
 
 curl -s -N -X POST "$URL" \
-  "${CURL_PROXY_ARGS[@]}" \
+  ${CURL_PROXY_ARGS[@]+"${CURL_PROXY_ARGS[@]}"} \
+  --connect-timeout 15 \
+  --max-time 120 \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
   -d @/tmp/gen_req.json > /tmp/gen_stream.txt
@@ -63,7 +65,7 @@ if [ ! -s /tmp/generated.b64 ]; then
     exit 1
 fi
 
-base64 -d -i /tmp/generated.b64 > /tmp/generated.pcm
+base64 -d /tmp/generated.b64 > /tmp/generated.pcm
 PCM_SIZE=$(wc -c < /tmp/generated.pcm)
 echo "Generated PCM: $PCM_SIZE bytes"
 echo "Transcript: $TRANSCRIPT"
@@ -91,7 +93,7 @@ file /tmp/generated.wav
 
 echo ""
 echo "=== Step 2: Send generated audio back as input ==="
-AUDIO_BASE64=$(base64 -i /tmp/generated.wav | tr -d '\n')
+AUDIO_BASE64=$(base64 /tmp/generated.wav | tr -d '\n')
 
 cat > /tmp/recog_req.json <<EOF
 {
@@ -107,7 +109,9 @@ cat > /tmp/recog_req.json <<EOF
 EOF
 
 curl -s -X POST "$URL" \
-  "${CURL_PROXY_ARGS[@]}" \
+  ${CURL_PROXY_ARGS[@]+"${CURL_PROXY_ARGS[@]}"} \
+  --connect-timeout 15 \
+  --max-time 120 \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
   -d @/tmp/recog_req.json > /tmp/recog_resp.json
