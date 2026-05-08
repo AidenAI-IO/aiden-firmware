@@ -12,10 +12,10 @@
 
 ```bash
 # Method 1: Using scp
-scp setup_audio_volume.sh root@<pico-zero-ip>:/root/
+scp scripts/setup_audio_volume.sh root@<pico-zero-ip>:/root/
 
 # Method 2: If using USB connection
-scp setup_audio_volume.sh root@172.32.0.93:/root/
+scp scripts/setup_audio_volume.sh root@172.32.0.93:/root/
 ```
 
 ### 2. Test the Script on Device
