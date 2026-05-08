@@ -138,8 +138,10 @@ public:
     // Resume playback
     void resume();
 
-    // Set volume (-60 to 0 dB)
-    bool set_volume(int volume_db);
+    // Set playback volume. Range 0..100 despite RK_MPI_AO_SetVolume's
+    // parameter being named s32VolumeDb; the configured volume curve maps
+    // the step onto dB attenuation.
+    bool set_volume(int volume);
 
     // Get current volume
     int get_volume() const;

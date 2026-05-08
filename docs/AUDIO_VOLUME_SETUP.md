@@ -14,8 +14,8 @@
 # Method 1: Using scp
 scp scripts/setup_audio_volume.sh root@<pico-zero-ip>:/root/
 
-# Method 2: If using USB connection
-scp scripts/setup_audio_volume.sh root@172.32.0.93:/root/
+# Method 2: If using USB connection (default Luckfox Pico Zero USB gadget IP is 172.32.0.93)
+scp scripts/setup_audio_volume.sh root@<pico-zero-ip>:/root/
 ```
 
 ### 2. Test the Script on Device
