@@ -1,5 +1,6 @@
 .DS_Store
 /build/
-/build-host/
+/build-*/
 /output/
 *.pcm
+/pico-sdk/
