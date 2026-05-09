@@ -46,8 +46,27 @@ cmake --build build
 For the Luckfox cross-compilation environment, use:
 
 ```bash
-sh ./build.sh
+./build.sh
 ```
+
+On macOS Apple Silicon with Colima and Docker CLI, keep the Colima VM on the native `aarch64` architecture and enable Rosetta for `linux/amd64` containers:
+
+```bash
+# Install Docker CLI, buildx, and Colima if needed.
+brew install docker docker-buildx colima
+
+# Start a native Apple Silicon VM with Rosetta-based amd64 emulation.
+colima start --vm-type vz --vz-rosetta
+
+# Verify that buildx is available and Docker can see the builder.
+docker buildx version
+docker buildx ls
+
+# Cross-compile inside the pinned Luckfox amd64 image.
+./build.sh
+```
+
+`build.sh` runs `luckfoxtech/luckfox_pico:1.0` with `--platform linux/amd64` and maps your host UID/GID so generated build files remain owned by your user. Avoid starting Colima with `--arch x86_64` for this workflow; use the native `aarch64` VM plus `--platform linux/amd64` for the container instead.
 
 All build artifacts are placed in `build/`:
 
