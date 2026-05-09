@@ -46,17 +46,14 @@ For the Luckfox cross-compilation environment, use:
 ./build.sh
 ```
 
-On macOS Apple Silicon with Colima and Docker CLI, run the Luckfox Docker image as `linux/amd64`:
+On macOS Apple Silicon with Colima and Docker CLI, keep the Colima VM on the native `aarch64` architecture and enable Rosetta for `linux/amd64` containers:
 
 ```bash
 # Install Docker CLI, buildx, and Colima if needed.
 brew install docker docker-buildx colima
 
-# Start an x86_64 Colima VM so linux/amd64 containers run reliably.
-colima start --arch x86_64
-
-# Install amd64 binfmt support inside the Docker VM.
-docker run --privileged --rm tonistiigi/binfmt --install amd64
+# Start a native Apple Silicon VM with Rosetta-based amd64 emulation.
+colima start --vm-type vz --vz-rosetta
 
 # Verify that buildx is available and Docker can see the builder.
 docker buildx version
@@ -66,7 +63,7 @@ docker buildx ls
 ./build.sh
 ```
 
-`build.sh` runs `luckfoxtech/luckfox_pico:1.0` with `--platform linux/amd64` and maps your host UID/GID so generated build files remain owned by your user.
+`build.sh` runs `luckfoxtech/luckfox_pico:1.0` with `--platform linux/amd64` and maps your host UID/GID so generated build files remain owned by your user. Avoid starting Colima with `--arch x86_64` for this workflow; use the native `aarch64` VM plus `--platform linux/amd64` for the container instead.
 
 All build artifacts are placed in `build/`:
 - `build/lib/` - Static libraries
