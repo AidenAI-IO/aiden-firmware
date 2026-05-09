@@ -186,7 +186,7 @@ async function captureScreenshot() {
             if (r.ok) {
                 imgNaturalW = r.width;
                 imgNaturalH = r.height;
-                img.src = '/screenshot.bmp?t=' + Date.now();
+                img.src = '/screenshot.jpg?t=' + Date.now();
                 img.style.display = 'block';
                 document.getElementById('placeholder').style.display = 'none';
                 status.textContent = r.width + 'x' + r.height + ' OK';
