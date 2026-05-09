@@ -294,7 +294,15 @@ int main(int argc, char* argv[]) {
                         config.min_speech_ms, mode == MODE_MANUAL);
 
     if (mode == MODE_TEXT) {
-        printf("\n[ready] Type a command and press Enter (empty line or Ctrl+C to quit)\n");
+        // Enable IUTF8 so the TTY driver erases multi-byte UTF-8 chars (e.g. CJK)
+        // as a single unit on backspace, instead of byte-by-byte.
+        struct termios tio;
+        if (tcgetattr(STDIN_FILENO, &tio) == 0) {
+            tio.c_iflag |= IUTF8;
+            tcsetattr(STDIN_FILENO, TCSANOW, &tio);
+        }
+
+        printf("\n[ready] Type a command and press Enter (Ctrl+D or Ctrl+C to quit)\n");
         while (!quit) {
             printf("\n> ");
             fflush(stdout);
@@ -302,10 +310,7 @@ int main(int argc, char* argv[]) {
             std::string line;
             if (!std::getline(std::cin, line)) break;
 
-            if (line.empty()) {
-                printf("[text] Empty input, exiting.\n");
-                break;
-            }
+            if (line.empty()) continue;
 
             process_text_input(line, *llm, *tts, player, config);
         }
