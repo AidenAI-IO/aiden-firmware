@@ -43,8 +43,30 @@ cmake --build build
 For the Luckfox cross-compilation environment, use:
 
 ```bash
-sh ./build.sh
+./build.sh
 ```
+
+On macOS Apple Silicon with Colima and Docker CLI, run the Luckfox Docker image as `linux/amd64`:
+
+```bash
+# Install Docker CLI, buildx, and Colima if needed.
+brew install docker docker-buildx colima
+
+# Start an x86_64 Colima VM so linux/amd64 containers run reliably.
+colima start --arch x86_64
+
+# Install amd64 binfmt support inside the Docker VM.
+docker run --privileged --rm tonistiigi/binfmt --install amd64
+
+# Verify that buildx is available and Docker can see the builder.
+docker buildx version
+docker buildx ls
+
+# Cross-compile inside the pinned Luckfox amd64 image.
+./build.sh
+```
+
+`build.sh` runs `luckfoxtech/luckfox_pico:1.0` with `--platform linux/amd64` and maps your host UID/GID so generated build files remain owned by your user.
 
 All build artifacts are placed in `build/`:
 - `build/lib/` - Static libraries
