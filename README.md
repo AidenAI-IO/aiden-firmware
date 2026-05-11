@@ -76,6 +76,17 @@ All build artifacts are placed in `build/`:
 
 Copy the `build/bin/` executables onto the board and [configure Wi-Fi](https://wiki.luckfox.com/Luckfox-Pico-Zero/WiFi-BT/) before running the HID server demo.
 
+## iOS Configuration
+
+To use HID control on iOS, enable AssistiveTouch on the target device first:
+
+```text
+Settings > Accessibility > Touch > AssistiveTouch
+```
+
+For a better experience, also enable **Show Onscreen Keyboard** on the
+AssistiveTouch page.
+
 ## AI Agent
 
 Pure C++ AI agent that runs directly on the Pico Zero and drives the device's
