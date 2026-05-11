@@ -211,3 +211,33 @@ TEST_CASE("check_provider_config accepts openai model provider") {
     ProviderCheckResult r = check_provider_config(cfg);
     CHECK(r.ok);
 }
+
+TEST_CASE("check_provider_config skips stt validation in direct_audio mode") {
+    aiden::AgentConfig cfg;
+    std::snprintf(cfg.model.provider, sizeof(cfg.model.provider), "%s", "openrouter");
+    std::snprintf(cfg.model.api_key, sizeof(cfg.model.api_key), "%s", "sk-key");
+    std::snprintf(cfg.model.model, sizeof(cfg.model.model), "%s", "openai/gpt-4o-audio-preview");
+    std::snprintf(cfg.tts.provider, sizeof(cfg.tts.provider), "%s", "minimax");
+    std::snprintf(cfg.tts.api_key, sizeof(cfg.tts.api_key), "%s", "mm-key");
+    std::snprintf(cfg.tts.voice_id, sizeof(cfg.tts.voice_id), "%s", "voice-a");
+    std::snprintf(cfg.asr_mode, sizeof(cfg.asr_mode), "%s", "direct_audio");
+
+    ProviderCheckResult r = check_provider_config(cfg);
+    CHECK(r.ok);
+}
+
+TEST_CASE("check_provider_config requires stt config in stt_then_text mode") {
+    aiden::AgentConfig cfg;
+    std::snprintf(cfg.model.provider, sizeof(cfg.model.provider), "%s", "openrouter");
+    std::snprintf(cfg.model.api_key, sizeof(cfg.model.api_key), "%s", "sk-key");
+    std::snprintf(cfg.model.model, sizeof(cfg.model.model), "%s", "openai/gpt-4o-audio-preview");
+    std::snprintf(cfg.tts.provider, sizeof(cfg.tts.provider), "%s", "minimax");
+    std::snprintf(cfg.tts.api_key, sizeof(cfg.tts.api_key), "%s", "mm-key");
+    std::snprintf(cfg.tts.voice_id, sizeof(cfg.tts.voice_id), "%s", "voice-a");
+    std::snprintf(cfg.asr_mode, sizeof(cfg.asr_mode), "%s", "stt_then_text");
+    std::snprintf(cfg.stt.provider, sizeof(cfg.stt.provider), "%s", "tencent_asr");
+
+    ProviderCheckResult r = check_provider_config(cfg);
+    CHECK_FALSE(r.ok);
+    CHECK(r.error == "stt provider tencent_asr requires secret_id");
+}
