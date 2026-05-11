@@ -1,15 +1,10 @@
 #pragma once
 
-#include "frame_service_protocol.h"
-#include <string>
-#include <vector>
+#include "uds_message.h"
 
 namespace aiden {
 
-struct FrameIpcMessage {
-    std::string header_json;
-    std::vector<uint8_t> payload;
-};
+using FrameIpcMessage = UdsMessage;
 
 FrameServiceStatus write_frame_message(int fd,
                                        const std::string& header_json,

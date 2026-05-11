@@ -1,22 +1,19 @@
 #include "frame_service_server.h"
 #include "cJSON/cJSON.h"
-#include "frame_ipc.h"
+#include "uds_message.h"
 #include <chrono>
-#include <errno.h>
 #include <stdio.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <sys/un.h>
-#include <unistd.h>
+#include <stdlib.h>
 
 namespace aiden {
 
 FrameServiceServer::FrameServiceServer(const char* socket_path, size_t ring_capacity)
-    : socket_path_(socket_path ? socket_path : ""),
+    : uds_server_(new UdsServer(socket_path ? socket_path : "",
+                                [this](const UdsMessage& request, int fd) {
+                                    handle_request(request, fd);
+                                })),
       ring_(ring_capacity),
       state_("RUNNING"),
-      server_fd_(-1),
       running_(false),
       avg_frame_serve_latency_ms_(0.0),
       serve_latency_samples_(0),
@@ -127,70 +124,31 @@ static std::string status_response(const char* method, FrameServiceStatus status
 }
 
 FrameServiceStatus FrameServiceServer::start() {
-    if (socket_path_.empty()) {
-        return FrameServiceStatus::INTERNAL_ERROR;
-    }
     std::lock_guard<std::mutex> lock(mutex_);
     if (running_) {
         return FrameServiceStatus::OK;
     }
 
-    server_fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (server_fd_ < 0) {
-        return FrameServiceStatus::TRANSPORT_ERROR;
+    FrameServiceStatus status = uds_server_->start();
+    if (status != FrameServiceStatus::OK) {
+        return status;
     }
-
-    ::unlink(socket_path_.c_str());
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    if (socket_path_.size() >= sizeof(addr.sun_path)) {
-        ::close(server_fd_);
-        server_fd_ = -1;
-        return FrameServiceStatus::TRANSPORT_ERROR;
-    }
-    strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
-    if (::bind(server_fd_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0 ||
-        ::listen(server_fd_, 16) < 0) {
-        ::close(server_fd_);
-        server_fd_ = -1;
-        return FrameServiceStatus::TRANSPORT_ERROR;
-    }
-
     running_ = true;
-    accept_thread_ = std::thread(&FrameServiceServer::accept_loop, this);
     return FrameServiceStatus::OK;
 }
 
 void FrameServiceServer::stop() {
+    bool was_running = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!running_ && server_fd_ < 0) {
-            return;
-        }
+        was_running = running_;
         running_ = false;
-        if (server_fd_ >= 0) {
-            ::shutdown(server_fd_, SHUT_RDWR);
-            ::close(server_fd_);
-            server_fd_ = -1;
-        }
     }
-    frame_cv_.notify_all();
-    payload_cv_.notify_all();
-    if (accept_thread_.joinable()) {
-        accept_thread_.join();
+    if (was_running) {
+        frame_cv_.notify_all();
+        payload_cv_.notify_all();
     }
-    std::vector<ClientWorker> client_threads;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        client_threads.swap(client_threads_);
-    }
-    for (size_t i = 0; i < client_threads.size(); ++i) {
-        if (client_threads[i].thread.joinable()) {
-            client_threads[i].thread.join();
-        }
-    }
-    ::unlink(socket_path_.c_str());
+    uds_server_->stop();
 }
 
 FrameServiceStatus FrameServiceServer::append_frame(const FrameMetadata& metadata,
@@ -234,45 +192,6 @@ void FrameServiceServer::record_recovery(const std::string& error, bool count_fa
         }
     }
     frame_cv_.notify_all();
-}
-
-void FrameServiceServer::prune_client_threads_locked() {
-    for (size_t i = 0; i < client_threads_.size();) {
-        if (client_threads_[i].done && client_threads_[i].done->load()) {
-            if (client_threads_[i].thread.joinable()) {
-                client_threads_[i].thread.join();
-            }
-            client_threads_.erase(client_threads_.begin() + i);
-        } else {
-            ++i;
-        }
-    }
-}
-
-void FrameServiceServer::accept_loop() {
-    while (true) {
-        int fd = ::accept(server_fd_, nullptr, nullptr);
-        if (fd < 0) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (!running_) return;
-            if (errno == EINTR) continue;
-            continue;
-        }
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!running_) {
-            ::close(fd);
-            return;
-        }
-        prune_client_threads_locked();
-        ClientWorker worker;
-        worker.done.reset(new std::atomic<bool>(false));
-        std::shared_ptr<std::atomic<bool> > done = worker.done;
-        worker.thread = std::thread([this, fd, done]() {
-            handle_client(fd);
-            done->store(true);
-        });
-        client_threads_.push_back(std::move(worker));
-    }
 }
 
 bool FrameServiceServer::is_recovering() const {
@@ -351,34 +270,20 @@ FrameServiceStatus FrameServiceServer::write_payload_message(int fd,
                                                              const std::string& header,
                                                              const std::vector<uint8_t>& payload) {
     if (payload.empty()) {
-        return write_frame_message(fd, header, payload);
+        return write_uds_message(fd, header, payload);
     }
     if (!acquire_payload_send_slot()) {
         return FrameServiceStatus::TRANSPORT_ERROR;
     }
-    FrameServiceStatus status = write_frame_message(fd, header, payload);
+    FrameServiceStatus status = write_uds_message(fd, header, payload);
     release_payload_send_slot();
     return status;
 }
 
-void FrameServiceServer::handle_client(int fd) {
-    struct timeval timeout;
-    timeout.tv_sec = 5;
-    timeout.tv_usec = 0;
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-
-    FrameIpcMessage request;
-    FrameServiceStatus read_status = read_frame_message(fd, &request);
-    if (read_status != FrameServiceStatus::OK) {
-        ::close(fd);
-        return;
-    }
-
+void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
     cJSON* root = cJSON_Parse(request.header_json.c_str());
     if (!root) {
-        write_frame_message(fd, status_response("unknown", FrameServiceStatus::TRANSPORT_ERROR), std::vector<uint8_t>());
-        ::close(fd);
+        write_uds_message(fd, status_response("unknown", FrameServiceStatus::TRANSPORT_ERROR), std::vector<uint8_t>());
         return;
     }
 
@@ -409,7 +314,7 @@ void FrameServiceServer::handle_client(int fd) {
         header += ",\"avg_frame_serve_latency_ms\":" + std::to_string(avg_frame_serve_latency_ms());
         header += ",\"avg_capture_copy_latency_ms\":" + std::to_string(avg_capture_copy_latency_ms);
         header += "}";
-        write_frame_message(fd, header, std::vector<uint8_t>());
+        write_uds_message(fd, header, std::vector<uint8_t>());
     } else if (method == "latest_frame") {
         uint64_t since_seq = json_u64(root, "since_seq");
         uint32_t timeout_ms = json_u32(root, "timeout_ms");
@@ -444,7 +349,7 @@ void FrameServiceServer::handle_client(int fd) {
                 record_serve_latency(started_ns);
             }
         } else {
-            write_frame_message(fd, status_response("latest_frame", status), std::vector<uint8_t>());
+            write_uds_message(fd, status_response("latest_frame", status), std::vector<uint8_t>());
         }
     } else if (method == "get_frame") {
         uint64_t seq = json_u64(root, "seq");
@@ -458,7 +363,7 @@ void FrameServiceServer::handle_client(int fd) {
                 record_serve_latency(started_ns);
             }
         } else {
-            write_frame_message(fd, status_response("get_frame", status), std::vector<uint8_t>());
+            write_uds_message(fd, status_response("get_frame", status), std::vector<uint8_t>());
         }
     } else if (method == "list_frames") {
         uint32_t count = json_u32(root, "count");
@@ -469,7 +374,7 @@ void FrameServiceServer::handle_client(int fd) {
             header += frame_metadata_json(frames[i]);
         }
         header += "]}";
-        write_frame_message(fd, header, std::vector<uint8_t>());
+        write_uds_message(fd, header, std::vector<uint8_t>());
     } else if (method == "restart") {
         std::function<void()> handler;
         {
@@ -479,13 +384,12 @@ void FrameServiceServer::handle_client(int fd) {
         if (handler) {
             handler();
         }
-        write_frame_message(fd, "{\"type\":\"response\",\"method\":\"restart\",\"status\":\"OK\"}", std::vector<uint8_t>());
+        write_uds_message(fd, "{\"type\":\"response\",\"method\":\"restart\",\"status\":\"OK\"}", std::vector<uint8_t>());
     } else {
-        write_frame_message(fd, status_response(method.empty() ? "unknown" : method.c_str(), FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
+        write_uds_message(fd, status_response(method.empty() ? "unknown" : method.c_str(), FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
     }
 
     cJSON_Delete(root);
-    ::close(fd);
 }
 
 }  // namespace aiden

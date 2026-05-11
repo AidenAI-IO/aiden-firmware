@@ -1,6 +1,7 @@
 #pragma once
 
 #include "frame_ring_buffer.h"
+#include "uds_server.h"
 #include <atomic>
 #include <condition_variable>
 #include <functional>
@@ -30,15 +31,8 @@ public:
     void record_recovery(const std::string& error, bool count_failure);
 
 private:
-    struct ClientWorker {
-        std::thread thread;
-        std::shared_ptr<std::atomic<bool> > done;
-    };
-
-    void accept_loop();
-    void handle_client(int fd);
+    void handle_request(const UdsMessage& request, int fd);
     bool is_recovering() const;
-    void prune_client_threads_locked();
     uint64_t frame_age_ms() const;
     void record_serve_latency(uint64_t started_ns);
     void record_capture_copy_latency(uint64_t started_ns);
@@ -49,13 +43,10 @@ private:
                                              const std::string& header,
                                              const std::vector<uint8_t>& payload);
 
-    std::string socket_path_;
+    std::unique_ptr<UdsServer> uds_server_;
     FrameRingBuffer ring_;
     std::string state_;
-    int server_fd_;
     bool running_;
-    std::thread accept_thread_;
-    std::vector<ClientWorker> client_threads_;
     mutable std::mutex mutex_;
     std::condition_variable frame_cv_;
     std::condition_variable payload_cv_;

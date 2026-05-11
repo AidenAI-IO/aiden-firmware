@@ -1,71 +1,16 @@
 #include "frame_service_client.h"
 #include "cJSON/cJSON.h"
-#include "frame_ipc.h"
+#include "uds_client.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <sys/un.h>
 #include <utility>
-#include <unistd.h>
 
 namespace aiden {
 
 FrameServiceClient::FrameServiceClient(const char* socket_path)
     : socket_path_(socket_path ? socket_path : "") {}
-
-static int connect_socket(const std::string& socket_path, uint32_t timeout_ms) {
-    if (socket_path.empty()) {
-        return -1;
-    }
-
-    int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) {
-        return -1;
-    }
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    if (socket_path.size() >= sizeof(addr.sun_path)) {
-        ::close(fd);
-        return -1;
-    }
-    strncpy(addr.sun_path, socket_path.c_str(), sizeof(addr.sun_path) - 1);
-
-    if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-        ::close(fd);
-        return -1;
-    }
-
-    if (timeout_ms == 0) timeout_ms = 5000;
-    struct timeval timeout;
-    timeout.tv_sec = timeout_ms / 1000;
-    timeout.tv_usec = (timeout_ms % 1000) * 1000;
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-
-    return fd;
-}
-
-static FrameServiceStatus request_once(const std::string& socket_path,
-                                       const std::string& request_json,
-                                       FrameIpcMessage* response,
-                                       uint32_t timeout_ms = 5000) {
-    int fd = connect_socket(socket_path, timeout_ms);
-    if (fd < 0) {
-        return FrameServiceStatus::TRANSPORT_ERROR;
-    }
-
-    FrameServiceStatus status = write_frame_message(fd, request_json, std::vector<uint8_t>());
-    if (status == FrameServiceStatus::OK) {
-        status = read_frame_message(fd, response);
-    }
-    ::close(fd);
-    return status;
-}
 
 static uint64_t json_u64(cJSON* object, const char* key) {
     cJSON* item = cJSON_GetObjectItem(object, key);
@@ -121,9 +66,9 @@ static FrameServiceStatus response_status(cJSON* root) {
     return status;
 }
 
-static FrameServiceStatus parse_response_root(const FrameIpcMessage& response,
-                                              cJSON** root_out,
-                                              FrameServiceStatus* status_out) {
+static FrameServiceStatus parse_response_root(const UdsMessage& response,
+                                               cJSON** root_out,
+                                               FrameServiceStatus* status_out) {
     cJSON* root = cJSON_Parse(response.header_json.c_str());
     if (!root) {
         return FrameServiceStatus::TRANSPORT_ERROR;
@@ -173,11 +118,12 @@ FrameServiceStatus FrameServiceClient::health(HealthResult* out) {
         return FrameServiceStatus::INTERNAL_ERROR;
     }
 
-    FrameIpcMessage response;
-    FrameServiceStatus transport = request_once(socket_path_,
-                                                "{\"type\":\"request\",\"method\":\"health\"}",
-                                                &response,
-                                                5000);
+    UdsMessage response;
+    FrameServiceStatus transport = uds_request_once(socket_path_,
+                                                    "{\"type\":\"request\",\"method\":\"health\"}",
+                                                    std::vector<uint8_t>(),
+                                                    &response,
+                                                    5000);
     if (transport != FrameServiceStatus::OK) {
         return transport;
     }
@@ -216,9 +162,9 @@ FrameServiceStatus FrameServiceClient::latest_frame(uint64_t since_seq,
              "{\"type\":\"request\",\"method\":\"latest_frame\",\"since_seq\":\"%llu\",\"timeout_ms\":%u}",
              static_cast<unsigned long long>(since_seq), timeout_ms);
 
-    FrameIpcMessage response;
+    UdsMessage response;
     uint32_t response_timeout_ms = timeout_ms > 0 ? timeout_ms + 1000 : 5000;
-    FrameServiceStatus transport = request_once(socket_path_, request, &response, response_timeout_ms);
+    FrameServiceStatus transport = uds_request_once(socket_path_, request, std::vector<uint8_t>(), &response, response_timeout_ms);
     if (transport != FrameServiceStatus::OK) {
         return transport;
     }
@@ -256,8 +202,8 @@ FrameServiceStatus FrameServiceClient::get_frame(uint64_t seq, FrameResult* out)
              "{\"type\":\"request\",\"method\":\"get_frame\",\"seq\":\"%llu\"}",
              static_cast<unsigned long long>(seq));
 
-    FrameIpcMessage response;
-    FrameServiceStatus transport = request_once(socket_path_, request, &response, 5000);
+    UdsMessage response;
+    FrameServiceStatus transport = uds_request_once(socket_path_, request, std::vector<uint8_t>(), &response, 5000);
     if (transport != FrameServiceStatus::OK) {
         return transport;
     }
@@ -295,8 +241,8 @@ FrameServiceStatus FrameServiceClient::list_frames(uint32_t count, FrameListResu
              "{\"type\":\"request\",\"method\":\"list_frames\",\"count\":%u}",
              count);
 
-    FrameIpcMessage response;
-    FrameServiceStatus transport = request_once(socket_path_, request, &response, 5000);
+    UdsMessage response;
+    FrameServiceStatus transport = uds_request_once(socket_path_, request, std::vector<uint8_t>(), &response, 5000);
     if (transport != FrameServiceStatus::OK) {
         return transport;
     }
@@ -328,11 +274,12 @@ FrameServiceStatus FrameServiceClient::list_frames(uint32_t count, FrameListResu
 }
 
 FrameServiceStatus FrameServiceClient::restart() {
-    FrameIpcMessage response;
-    FrameServiceStatus transport = request_once(socket_path_,
-                                                "{\"type\":\"request\",\"method\":\"restart\"}",
-                                                &response,
-                                                5000);
+    UdsMessage response;
+    FrameServiceStatus transport = uds_request_once(socket_path_,
+                                                    "{\"type\":\"request\",\"method\":\"restart\"}",
+                                                    std::vector<uint8_t>(),
+                                                    &response,
+                                                    5000);
     if (transport != FrameServiceStatus::OK) {
         return transport;
     }

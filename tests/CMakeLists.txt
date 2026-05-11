@@ -18,6 +18,9 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/minimax_codec.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_ring_buffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/uds_message.cpp
+    ${CMAKE_SOURCE_DIR}/src/uds_client.cpp
+    ${CMAKE_SOURCE_DIR}/src/uds_server.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_ipc.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_capture_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_processing.cpp
@@ -79,6 +82,8 @@ add_executable(aiden_tests
     minimax_codec_test.cpp
     frame_service_protocol_test.cpp
     frame_service_defaults_test.cpp
+    uds_message_test.cpp
+    uds_client_server_test.cpp
     frame_ring_buffer_test.cpp
     frame_ipc_test.cpp
     frame_service_client_test.cpp

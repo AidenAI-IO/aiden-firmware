@@ -88,6 +88,14 @@ Use `--fps 0` to capture as fast as the HDMI source produces frames.
 
 Consumers use `FRAME_SERVICE_SOCKET` or `[agent] frame_service_socket` to locate the service. `hid_server` keeps `/api/capture`, but it now reads frames through `FrameServiceClient` instead of opening `/dev/video0` directly.
 
+While `frame_service` is running, it intentionally owns `/dev/video0`. Direct camera examples such as `example_camera_capture` will fail with `Device or resource busy`; use `frame_service_cli` for normal frame/screenshot testing. If you need to run `example_camera_capture` directly, stop the service first and restart it afterward:
+
+```bash
+/etc/init.d/S52frame_service stop
+./build/bin/example_camera_capture
+/etc/init.d/S52frame_service start
+```
+
 LLM tools can use the service through `agent_main`:
 
 - `capture_screenshot` — captures the latest frame and returns metadata plus a local image path. It writes PNG by default, limits the output image to `max_edge=960`, and forwards the PNG to the LLM as `image_url` input. Pass `format=bmp` for BMP output or `max_edge=0` for full resolution.

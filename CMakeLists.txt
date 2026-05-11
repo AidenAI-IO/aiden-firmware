@@ -62,6 +62,9 @@ target_include_directories(cjson PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
 add_library(aiden STATIC
     src/aiden_sdk.cpp
+    src/uds_message.cpp
+    src/uds_client.cpp
+    src/uds_server.cpp
     src/frame_ipc.cpp
     src/frame_capture_manager.cpp
     src/frame_camera_capture_source.cpp
