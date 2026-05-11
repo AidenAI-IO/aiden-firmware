@@ -4,7 +4,7 @@
 #include <cstdint>
 
 struct ScreenshotData {
-    std::vector<uint8_t> bmp;
+    std::vector<uint8_t> jpeg;
     int width = 0;
     int height = 0;
 };

@@ -117,7 +117,7 @@ Capture video frames from camera:
 
 void on_video(const aiden::VideoFrame& frame) {
     // Process video frame
-    printf("Frame: %ux%u, %u bytes\n", 
+    printf("Frame: %ux%u, %u bytes\n",
            frame.width, frame.height, frame.length);
 }
 
@@ -232,9 +232,6 @@ Use `--help` to see optional `--device`, `--subdev`, `--edid`, `--force-trigger`
 ### USB HID Emulation
 
 ```bash
-# Setup USB gadget (run once, requires root)
-sudo ./build/bin/example_usb_hid setup composite
-
 # Keyboard examples
 sudo ./build/bin/example_usb_hid keyboard tap ENTER
 sudo ./build/bin/example_usb_hid keyboard tap CTRL ALT DELETE

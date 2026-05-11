@@ -26,8 +26,8 @@ button:active { transform: translateY(0); background: #2a7edf; }
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
 .toolbar label { font-size: 13px; color: #888; }
 select { padding: 8px; background: #333; border: 1px solid #444; border-radius: 4px; color: #e0e0e0; font-size: 13px; }
-.screen-area { position: relative; width: 100%; background: #111; border: 2px solid #4a9eff; border-radius: 8px; overflow: hidden; cursor: crosshair; min-height: 300px; display: flex; align-items: center; justify-content: center; }
-.screen-area img { width: 100%; display: block; user-select: none; pointer-events: none; }
+.screen-area { position: relative; width: 100%; background: #111; border: 2px solid #4a9eff; border-radius: 8px; overflow: auto; cursor: crosshair; min-height: 300px; display: flex; align-items: center; justify-content: center; }
+.screen-area img { display: block; width: auto; height: auto; max-width: 100%; max-height: min(1080px, calc(100vh - 220px)); user-select: none; pointer-events: none; object-fit: contain; }
 .screen-area .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
 .screen-placeholder { color: #555; font-size: 18px; text-align: center; }
 .coords { text-align: center; margin: 8px 0; color: #888; font-family: monospace; font-size: 13px; }
@@ -119,6 +119,8 @@ select { padding: 8px; background: #333; border: 1px solid #444; border-radius: 
 let autoTimer = null;
 let captureInFlight = false;
 let imgNaturalW = 1920, imgNaturalH = 1080;
+const STANDARD_COORD_MAX = 32767;
+const DEFAULT_COORDS_TEXT = 'Click the screenshot to send a left click';
 
 function log(msg) {
     const el = document.getElementById('log');
@@ -153,6 +155,26 @@ function sendText() {
 function mouseClick(btn) { api('/api/touch/click', {button: btn}); }
 function mouseScroll(amt) { api('/api/touch/scroll', {amount: amt}); }
 
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+
+function normalizeCoordinate(pixelCoord, size) {
+    if (size <= 1) return 0;
+    return clamp(Math.round((pixelCoord / (size - 1)) * STANDARD_COORD_MAX), 0, STANDARD_COORD_MAX);
+}
+
+function screenshotToStandardCoords(imgX, imgY) {
+    const pixelX = clamp(Math.round(imgX), 0, Math.max(0, imgNaturalW - 1));
+    const pixelY = clamp(Math.round(imgY), 0, Math.max(0, imgNaturalH - 1));
+    return {
+        imgX: pixelX,
+        imgY: pixelY,
+        x: normalizeCoordinate(pixelX, imgNaturalW),
+        y: normalizeCoordinate(pixelY, imgNaturalH)
+    };
+}
+
 function manualMove() {
     const x = parseInt(document.getElementById('moveX').value);
     const y = parseInt(document.getElementById('moveY').value);
@@ -186,7 +208,7 @@ async function captureScreenshot() {
             if (r.ok) {
                 imgNaturalW = r.width;
                 imgNaturalH = r.height;
-                img.src = '/screenshot.bmp?t=' + Date.now();
+                img.src = '/screenshot.jpg?t=' + Date.now();
                 img.style.display = 'block';
                 document.getElementById('placeholder').style.display = 'none';
                 status.textContent = r.width + 'x' + r.height + ' OK';
@@ -222,17 +244,16 @@ function setupAutoCapture() {
         }
         const scaleX = imgNaturalW / r.width;
         const scaleY = imgNaturalH / r.height;
-        const imgX = Math.round((e.clientX - r.left) * scaleX);
-        const imgY = Math.round((e.clientY - r.top) * scaleY);
-        const touchX = Math.max(0, Math.min(32767, Math.round((imgX / imgNaturalW) * 32767)));
-        const touchY = Math.max(0, Math.min(32767, Math.round((imgY / imgNaturalH) * 32767)));
-        return {x: touchX, y: touchY};
+        const imgX = (e.clientX - r.left) * scaleX;
+        const imgY = (e.clientY - r.top) * scaleY;
+        return screenshotToStandardCoords(imgX, imgY);
     }
 
     overlay.addEventListener('click', function(e) {
         const coords = getTouchCoords(e);
         if (!coords) return;
-        display.textContent = 'Left click: (' + coords.x + ', ' + coords.y + ')';
+        display.textContent = 'Left click: screenshot (' + coords.imgX + ', ' + coords.imgY +
+            ') -> touch (' + coords.x + ', ' + coords.y + ')';
         api('/api/touch/click', {x: coords.x, y: coords.y});
     });
 
@@ -240,14 +261,20 @@ function setupAutoCapture() {
         e.preventDefault();
         const coords = getTouchCoords(e);
         if (!coords) return;
-        display.textContent = 'Right click: (' + coords.x + ', ' + coords.y + ')';
+        display.textContent = 'Right click: screenshot (' + coords.imgX + ', ' + coords.imgY +
+            ') -> touch (' + coords.x + ', ' + coords.y + ')';
         api('/api/touch/click', {button: 'right', x: coords.x, y: coords.y});
     });
 
     overlay.addEventListener('mousemove', function(e) {
         const coords = getTouchCoords(e);
         if (!coords) return;
-        display.textContent = 'Position: (' + coords.x + ', ' + coords.y + ')';
+        display.textContent = 'Position: screenshot (' + coords.imgX + ', ' + coords.imgY +
+            ') -> touch (' + coords.x + ', ' + coords.y + ')';
+    });
+
+    overlay.addEventListener('mouseleave', function() {
+        display.textContent = DEFAULT_COORDS_TEXT;
     });
 
     img.addEventListener('load', function() {

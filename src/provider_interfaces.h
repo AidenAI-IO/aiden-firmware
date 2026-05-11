@@ -30,4 +30,10 @@ public:
     virtual bool text_to_speech_stream(const char* text, class AudioPlayer& player) = 0;
 };
 
+class SttClient {
+public:
+    virtual ~SttClient() {}
+    virtual bool transcribe_wav(const uint8_t* wav_data, size_t wav_len, std::string& text) = 0;
+};
+
 }
