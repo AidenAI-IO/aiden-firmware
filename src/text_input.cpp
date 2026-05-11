@@ -24,6 +24,29 @@ bool is_text_byte(unsigned char byte) {
     return byte >= 0x20;
 }
 
+bool consume_escape_byte(TextInputState& state, unsigned char byte) {
+    const int kEscapeNone = 0;
+    const int kEscapeStarted = 1;
+    const int kEscapeSequence = 2;
+
+    if (state.escape_state == kEscapeStarted) {
+        state.escape_state = (byte == '[' || byte == 'O') ? kEscapeSequence : kEscapeNone;
+        return true;
+    }
+
+    if (state.escape_state == kEscapeSequence) {
+        if (byte >= 0x40 && byte <= 0x7e) state.escape_state = kEscapeNone;
+        return true;
+    }
+
+    if (byte == 0x1b) {
+        state.escape_state = kEscapeStarted;
+        return true;
+    }
+
+    return false;
+}
+
 uint32_t decode_utf8_codepoint(const std::string& text, size_t& index) {
     unsigned char first = static_cast<unsigned char>(text[index++]);
     if (first < 0x80) return first;
@@ -56,6 +79,9 @@ uint32_t decode_utf8_codepoint(const std::string& text, size_t& index) {
     return codepoint;
 }
 
+// This is a small terminal-width approximation for CJK/emoji input, not a
+// complete Unicode wcwidth implementation. Use generated Unicode tables if
+// broader locale support becomes necessary.
 bool is_combining_codepoint(uint32_t codepoint) {
     return (codepoint >= 0x0300 && codepoint <= 0x036f) ||
            (codepoint >= 0x1ab0 && codepoint <= 0x1aff) ||
@@ -89,7 +115,11 @@ int codepoint_display_width(uint32_t codepoint) {
 
 }
 
-TextInputLineStatus apply_text_input_byte(std::string& line, unsigned char byte) {
+TextInputLineStatus apply_text_input_byte(TextInputState& state,
+                                          std::string& line,
+                                          unsigned char byte) {
+    if (consume_escape_byte(state, byte)) return TextInputLineStatus::InProgress;
+
     if (byte == '\n' || byte == '\r') return TextInputLineStatus::Complete;
     if (byte == 0x03) return TextInputLineStatus::Interrupt;
     if (byte == 0x04) return line.empty() ? TextInputLineStatus::Eof

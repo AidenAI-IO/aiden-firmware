@@ -65,6 +65,7 @@ public:
 #ifdef IUTF8
         tio.c_iflag |= IUTF8;
 #endif
+        // Keep Ctrl-C on SIGINT; the 0x03 byte handler below is defensive only.
         tio.c_lflag |= ISIG;
         tio.c_lflag &= ~(ICANON | ECHO);
         tio.c_cc[VINTR] = 0x03;
@@ -87,9 +88,9 @@ private:
 };
 
 static void erase_display_columns(int columns) {
-    for (int i = 0; i < columns; i++) {
-        printf("\b \b");
-    }
+    for (int i = 0; i < columns; i++) putchar('\b');
+    for (int i = 0; i < columns; i++) putchar(' ');
+    for (int i = 0; i < columns; i++) putchar('\b');
     fflush(stdout);
 }
 
@@ -98,6 +99,7 @@ static bool read_interactive_text_line(const char* prompt, std::string& line) {
     printf("%s", prompt);
     fflush(stdout);
 
+    aiden::TextInputState input_state;
     while (!quit) {
         unsigned char byte;
         ssize_t n = read(STDIN_FILENO, &byte, 1);
@@ -109,7 +111,7 @@ static bool read_interactive_text_line(const char* prompt, std::string& line) {
 
         const std::string previous_line = line;
         const size_t previous_size = line.size();
-        aiden::TextInputLineStatus status = aiden::apply_text_input_byte(line, byte);
+        aiden::TextInputLineStatus status = aiden::apply_text_input_byte(input_state, line, byte);
         if (status == aiden::TextInputLineStatus::Complete) {
             printf("\n");
             fflush(stdout);
