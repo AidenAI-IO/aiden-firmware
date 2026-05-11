@@ -69,7 +69,7 @@ TEST_CASE("load_config parses role-based sections") {
     CHECK(cfg.min_speech_ms == 250);
 }
 
-TEST_CASE("load_config rejects config with empty model api_key") {
+TEST_CASE("load_config allows config with empty model api_key") {
     TempFile f(
         "[model]\n"
         "provider = openrouter\n"
@@ -80,7 +80,9 @@ TEST_CASE("load_config rejects config with empty model api_key") {
     );
 
     aiden::AgentConfig cfg;
-    CHECK_FALSE(aiden::load_config(f.path.c_str(), cfg));
+    REQUIRE(aiden::load_config(f.path.c_str(), cfg));
+    CHECK(std::string(cfg.model.api_key).empty());
+    CHECK(std::string(cfg.tts.api_key) == "mm-test");
 }
 
 TEST_CASE("load_config returns false for missing file") {
@@ -105,7 +107,7 @@ TEST_CASE("load_config reports null path without dereferencing it") {
     CHECK(err.find("null") != std::string::npos);
 }
 
-TEST_CASE("load_config reports missing api_key via error output") {
+TEST_CASE("load_config leaves api_key empty when omitted") {
     TempFile f(
         "[model]\n"
         "provider = openrouter\n"
@@ -114,8 +116,9 @@ TEST_CASE("load_config reports missing api_key via error output") {
 
     aiden::AgentConfig cfg;
     std::string err;
-    CHECK_FALSE(aiden::load_config(f.path.c_str(), cfg, &err));
-    CHECK(err.find("api_key") != std::string::npos);
+    REQUIRE(aiden::load_config(f.path.c_str(), cfg, &err));
+    CHECK(err.empty());
+    CHECK(std::string(cfg.model.api_key).empty());
 }
 
 TEST_CASE("load_config clears error output on success") {
