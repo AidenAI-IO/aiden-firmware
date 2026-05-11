@@ -16,6 +16,7 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/wav_codec.cpp
     ${CMAKE_SOURCE_DIR}/src/provider_factory.cpp
     ${CMAKE_SOURCE_DIR}/src/llm_api_url.cpp
+    ${CMAKE_SOURCE_DIR}/src/text_input.cpp
     ${CMAKE_SOURCE_DIR}/src/cJSON/cJSON.c
 )
 
@@ -30,6 +31,8 @@ add_executable(aiden_tests
     wav_codec_test.cpp
     provider_factory_test.cpp
     llm_api_url_test.cpp
+    terminal_input_test.cpp
+    text_input_test.cpp
     ${AIDEN_TEST_SOURCES}
 )
 
@@ -38,5 +41,10 @@ target_include_directories(aiden_tests PRIVATE
 )
 
 target_link_libraries(aiden_tests PRIVATE doctest)
+
+find_library(UTIL_LIBRARY util)
+if(UTIL_LIBRARY)
+    target_link_libraries(aiden_tests PRIVATE ${UTIL_LIBRARY})
+endif()
 
 add_test(NAME aiden_tests COMMAND aiden_tests)

@@ -95,6 +95,7 @@ add_executable(agent_main
     src/wav_codec.cpp
     src/provider_factory.cpp
     src/provider_factory_runtime.cpp
+    src/text_input.cpp
     src/vad.cpp
 )
 target_link_libraries(agent_main PRIVATE aiden cjson pthread)
