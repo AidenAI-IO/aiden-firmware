@@ -4,6 +4,7 @@
 #include "frame_service_client.h"
 #include "hid_server.h"
 #include "hid_server_html.h"
+#include "image_process.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -636,7 +637,7 @@ ApiResponse handle_capture_request(const std::string& body) {
         }
     }
     aiden::FrameResult frame;
-    std::vector<uint8_t> bmp;
+    std::vector<uint8_t> rgb;
 
     aiden::FrameServiceStatus status = aiden::FrameServiceStatus::INTERNAL_ERROR;
     if (request.config.force_trigger) {
@@ -671,18 +672,41 @@ ApiResponse handle_capture_request(const std::string& body) {
         return make_json_error(500, std::string("frame service capture failed: ") +
                                      aiden::frame_service_status_to_string(status));
     }
-    if (!aiden::encode_frame_to_bmp(frame.metadata, frame.data, &bmp)) {
+
+    if (!aiden::convert_frame_to_rgb(frame.metadata, frame.data, &rgb)) {
         g_screenshot = ScreenshotData{};
-        return make_json_error(500, "failed to encode bmp");
+        return make_json_error(500, "unsupported pixel format or incomplete frame buffer");
     }
 
-    g_screenshot.bmp.swap(bmp);
-    g_screenshot.width = static_cast<int>(frame.metadata.width);
-    g_screenshot.height = static_cast<int>(frame.metadata.height);
+    const int w = static_cast<int>(frame.metadata.width);
+    const int h = static_cast<int>(frame.metadata.height);
+    if (rgb.size() < static_cast<size_t>(w) * static_cast<size_t>(h) * 3U) {
+        g_screenshot = ScreenshotData{};
+        return make_json_error(500, "incomplete rgb buffer");
+    }
+
+    cv::Mat rgb_mat(h, w, CV_8UC3, rgb.data());
+    cv::Mat processed;
+    const int crop_rc = aiden_image::crop_black_bars(rgb_mat, processed);
+    if (crop_rc != aiden_image::kSuccess) {
+        std::cerr << "Warning: crop_black_bars failed (" << crop_rc
+                  << "); using uncropped frame" << std::endl;
+        processed = rgb_mat;
+    }
+
+    std::vector<uint8_t> jpeg;
+    if (aiden_image::encode_to_jpg_fit(processed, jpeg) != aiden_image::kSuccess) {
+        g_screenshot = ScreenshotData{};
+        return make_json_error(500, "jpeg encode failed");
+    }
+
+    g_screenshot.jpeg.swap(jpeg);
+    g_screenshot.width = processed.cols;
+    g_screenshot.height = processed.rows;
 
     ApiResponse response;
-    response.body = "{\"ok\":true,\"width\":" + std::to_string(frame.metadata.width) +
-                    ",\"height\":" + std::to_string(frame.metadata.height) +
+    response.body = "{\"ok\":true,\"width\":" + std::to_string(processed.cols) +
+                    ",\"height\":" + std::to_string(processed.rows) +
                     ",\"pixel_format\":\"" + json_escape(frame.metadata.pixel_format) + "\"}";
     return response;
 }
@@ -834,12 +858,13 @@ void run_hid_server(int port, const std::vector<std::string>& hid_command_prefix
 
         if (req.method == "GET" && req.path == "/") {
             send_response(client_fd, 200, "OK", "text/html; charset=utf-8", HID_SERVER_HTML);
-        } else if (req.method == "GET" && req.path == "/screenshot.bmp") {
-            if (g_screenshot.bmp.empty()) {
+        } else if (req.method == "GET" &&
+                   (req.path == "/screenshot.jpg" || req.path == "/screenshot.bmp")) {
+            if (g_screenshot.jpeg.empty()) {
                 send_response(client_fd, 404, "Not Found", "text/plain; charset=utf-8",
                               "No screenshot yet");
             } else {
-                send_binary_response(client_fd, 200, "OK", "image/bmp", g_screenshot.bmp);
+                send_binary_response(client_fd, 200, "OK", "image/jpeg", g_screenshot.jpeg);
             }
         } else if (req.method == "POST" && req.path.compare(0, 5, "/api/") == 0) {
             ApiResponse response = handle_api_request(req.path, req.body, hid_command_prefix);

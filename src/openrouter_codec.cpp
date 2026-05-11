@@ -1,6 +1,7 @@
 #include "openrouter_codec.h"
 #include "cJSON/cJSON.h"
 #include <stdlib.h>
+#include <string.h>
 
 namespace aiden {
 namespace openrouter {
@@ -262,6 +263,34 @@ static cJSON* parse_conversation_or_empty(const std::string& conversation_json) 
     return cJSON_CreateArray();
 }
 
+static void sanitize_messages_for_provider(cJSON* messages) {
+    if (!messages || messages->type != cJSON_Array) return;
+
+    int n = cJSON_GetArraySize(messages);
+    for (int i = 0; i < n; i++) {
+        cJSON* msg = cJSON_GetArrayItem(messages, i);
+        if (!msg || msg->type != cJSON_Object) continue;
+
+        cJSON* role = cJSON_GetObjectItem(msg, "role");
+        bool is_assistant = role && role->type == cJSON_String &&
+                            role->valuestring && strcmp(role->valuestring, "assistant") == 0;
+        bool is_last = (i == n - 1);
+
+        cJSON* content = cJSON_GetObjectItem(msg, "content");
+        bool content_missing = (content == nullptr);
+        bool content_null = (content && content->type == cJSON_NULL);
+        bool content_empty = (content && content->type == cJSON_String &&
+                              (!content->valuestring || content->valuestring[0] == '\0'));
+
+        // Bedrock-backed providers may reject empty/non-string or whitespace-only content.
+        if (content_missing || content_null || content_empty) {
+            if (!(is_assistant && is_last)) {
+                cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString("[empty]"));
+            }
+        }
+    }
+}
+
 std::string append_user_audio_wav(const std::string& conversation_json,
                                   const std::string& base64_wav) {
     cJSON* messages = parse_conversation_or_empty(conversation_json);
@@ -376,6 +405,7 @@ std::string append_tool_result(const std::string& conversation_json,
 std::string build_chat_request(const std::string& conversation_json,
                                const std::string& model) {
     cJSON* messages = parse_conversation_or_empty(conversation_json);
+    sanitize_messages_for_provider(messages);
     cJSON* request = cJSON_CreateObject();
     cJSON_AddStringToObject(request, "model", model.c_str());
     cJSON_AddItemToObject(request, "messages", messages);

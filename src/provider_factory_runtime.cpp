@@ -2,6 +2,8 @@
 #include "openrouter_client.h"
 #include "openai_client.h"
 #include "minimax_tts.h"
+#include "stt/providers/openai_whisper_stt.h"
+#include "stt/providers/tencent_asr_stt.h"
 
 namespace aiden {
 
@@ -43,6 +45,30 @@ std::unique_ptr<TtsClient> create_tts_client(const AgentConfig& config, std::str
 
     error = std::string("unsupported tts provider: ") + config.tts.provider;
     return std::unique_ptr<TtsClient>();
+}
+
+std::unique_ptr<SttClient> create_stt_client(const AgentConfig& config, std::string& error) {
+    ProviderCheckResult check = check_stt_config(config.stt);
+    if (!check.ok) {
+        error = check.error;
+        return std::unique_ptr<SttClient>();
+    }
+
+    if (check.normalized == "openai_whisper") {
+        return std::unique_ptr<SttClient>(
+            new OpenAIWhisperStt(config.stt.api_key, config.stt.model, config.stt.base_url));
+    }
+
+    if (check.normalized == "tencent_asr") {
+        return std::unique_ptr<SttClient>(
+            new TencentAsrStt(config.stt.secret_id,
+                              config.stt.secret_key,
+                              config.stt.region,
+                              config.stt.engine_model_type));
+    }
+
+    error = std::string("unsupported stt provider: ") + config.stt.provider;
+    return std::unique_ptr<SttClient>();
 }
 
 }
