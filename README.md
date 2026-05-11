@@ -126,7 +126,7 @@ sudo ./build/bin/agent_main --mode=text
 # Specify a config file
 sudo ./build/bin/agent_main --mode=manual /etc/agent.conf
 
-# Print build version (git tag if built from a tag, otherwise commit hash)
+# Print build version and commit time (git tag if built from a tag, otherwise commit hash)
 ./build/bin/agent_main version
 ./build/bin/agent_main --version
 ./build/bin/agent_main -v

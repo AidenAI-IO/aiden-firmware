@@ -6,6 +6,10 @@ TEST_CASE("agent version defaults to unknown without build injection") {
     CHECK(std::string(aiden::agent_version()) == "unknown");
 }
 
+TEST_CASE("agent commit time defaults to unknown without build injection") {
+    CHECK(std::string(aiden::agent_commit_time()) == "unknown");
+}
+
 TEST_CASE("agent version command accepts version subcommand") {
     char arg0[] = "agent_main";
     char arg1[] = "version";

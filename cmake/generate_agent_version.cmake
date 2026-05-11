@@ -7,9 +7,23 @@ if(NOT DEFINED SOURCE_DIR OR SOURCE_DIR STREQUAL "")
 endif()
 
 set(_version "unknown")
+set(_commit_time "unknown")
 find_package(Git QUIET)
 
 if(GIT_FOUND)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" show -s --format=%cI HEAD
+        WORKING_DIRECTORY "${SOURCE_DIR}"
+        RESULT_VARIABLE _commit_time_result
+        OUTPUT_VARIABLE _git_commit_time
+        ERROR_QUIET
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+
+    if(_commit_time_result EQUAL 0 AND NOT _git_commit_time STREQUAL "")
+        set(_commit_time "${_git_commit_time}")
+    endif()
+
     execute_process(
         COMMAND "${GIT_EXECUTABLE}" describe --tags --exact-match HEAD
         WORKING_DIRECTORY "${SOURCE_DIR}"
@@ -41,10 +55,14 @@ set(_escaped_version "${_version}")
 string(REPLACE "\\" "\\\\" _escaped_version "${_escaped_version}")
 string(REPLACE "\"" "\\\"" _escaped_version "${_escaped_version}")
 
+set(_escaped_commit_time "${_commit_time}")
+string(REPLACE "\\" "\\\\" _escaped_commit_time "${_escaped_commit_time}")
+string(REPLACE "\"" "\\\"" _escaped_commit_time "${_escaped_commit_time}")
+
 get_filename_component(_output_dir "${OUTPUT_FILE}" DIRECTORY)
 file(MAKE_DIRECTORY "${_output_dir}")
 
-set(_contents "#pragma once\n#define AIDEN_AGENT_VERSION \"${_escaped_version}\"\n")
+set(_contents "#pragma once\n#define AIDEN_AGENT_VERSION \"${_escaped_version}\"\n#define AIDEN_AGENT_COMMIT_TIME \"${_escaped_commit_time}\"\n")
 if(EXISTS "${OUTPUT_FILE}")
     file(READ "${OUTPUT_FILE}" _existing_contents)
 else()

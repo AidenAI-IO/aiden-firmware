@@ -324,7 +324,8 @@ static bool parse_mode_value(const char* v, TriggerMode& mode) {
 
 int main(int argc, char* argv[]) {
     if (aiden::is_agent_version_command(argc, argv)) {
-        printf("%s\n", aiden::agent_version());
+        printf("version: %s\n", aiden::agent_version());
+        printf("commit_time: %s\n", aiden::agent_commit_time());
         return 0;
     }
 
