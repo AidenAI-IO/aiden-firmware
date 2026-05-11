@@ -96,6 +96,16 @@ bool load_config(const char* path, AgentConfig& config, std::string* error) {
             else if (strcmp(key, "base_url") == 0)
                 copy_str(config.model.base_url, sizeof(config.model.base_url), val);
         }
+        else if (strcmp(current_section, "model_text") == 0) {
+            if (strcmp(key, "provider") == 0)
+                copy_str(config.model_text.provider, sizeof(config.model_text.provider), val);
+            else if (strcmp(key, "api_key") == 0)
+                copy_str(config.model_text.api_key, sizeof(config.model_text.api_key), val);
+            else if (strcmp(key, "model") == 0)
+                copy_str(config.model_text.model, sizeof(config.model_text.model), val);
+            else if (strcmp(key, "base_url") == 0)
+                copy_str(config.model_text.base_url, sizeof(config.model_text.base_url), val);
+        }
         else if (strcmp(current_section, "tts") == 0) {
             if (strcmp(key, "provider") == 0)
                 copy_str(config.tts.provider, sizeof(config.tts.provider), val);
@@ -110,8 +120,46 @@ bool load_config(const char* path, AgentConfig& config, std::string* error) {
             else if (strcmp(key, "speed") == 0)
                 config.tts.speed = atof(val);
         }
+        else if (strcmp(current_section, "stt") == 0) {
+            if (strcmp(key, "provider") == 0)
+                copy_str(config.stt.provider, sizeof(config.stt.provider), val);
+            else if (strcmp(key, "api_key") == 0)
+                copy_str(config.stt.api_key, sizeof(config.stt.api_key), val);
+            else if (strcmp(key, "model") == 0)
+                copy_str(config.stt.model, sizeof(config.stt.model), val);
+            else if (strcmp(key, "base_url") == 0)
+                copy_str(config.stt.base_url, sizeof(config.stt.base_url), val);
+            else if (strcmp(key, "secret_id") == 0)
+                copy_str(config.stt.secret_id, sizeof(config.stt.secret_id), val);
+            else if (strcmp(key, "secret_key") == 0)
+                copy_str(config.stt.secret_key, sizeof(config.stt.secret_key), val);
+            else if (strcmp(key, "region") == 0)
+                copy_str(config.stt.region, sizeof(config.stt.region), val);
+            else if (strcmp(key, "engine_model_type") == 0)
+                copy_str(config.stt.engine_model_type, sizeof(config.stt.engine_model_type), val);
+        }
+        else if (strcmp(current_section, "stt.tencent") == 0) {
+            if (strcmp(key, "secret_id") == 0)
+                copy_str(config.stt.secret_id, sizeof(config.stt.secret_id), val);
+            else if (strcmp(key, "secret_key") == 0)
+                copy_str(config.stt.secret_key, sizeof(config.stt.secret_key), val);
+            else if (strcmp(key, "region") == 0)
+                copy_str(config.stt.region, sizeof(config.stt.region), val);
+            else if (strcmp(key, "engine_model_type") == 0)
+                copy_str(config.stt.engine_model_type, sizeof(config.stt.engine_model_type), val);
+        }
+        else if (strcmp(current_section, "stt.openai") == 0) {
+            if (strcmp(key, "api_key") == 0)
+                copy_str(config.stt.api_key, sizeof(config.stt.api_key), val);
+            else if (strcmp(key, "model") == 0)
+                copy_str(config.stt.model, sizeof(config.stt.model), val);
+            else if (strcmp(key, "base_url") == 0)
+                copy_str(config.stt.base_url, sizeof(config.stt.base_url), val);
+        }
         else if (strcmp(current_section, "agent") == 0) {
-            if (strcmp(key, "hid_binary") == 0)
+            if (strcmp(key, "asr_mode") == 0)
+                copy_str(config.asr_mode, sizeof(config.asr_mode), val);
+            else if (strcmp(key, "hid_binary") == 0)
                 copy_str(config.hid_binary, sizeof(config.hid_binary), val);
             else if (strcmp(key, "additional_prompt") == 0)
                 copy_str(config.additional_prompt, sizeof(config.additional_prompt), val);
@@ -126,12 +174,15 @@ bool load_config(const char* path, AgentConfig& config, std::string* error) {
 
     fclose(fp);
 
-    if (config.model.api_key[0] == '\0') {
-        char buf[512];
-        snprintf(buf, sizeof(buf),
-                 "%s: required field [model] api_key is missing or empty", path);
-        set_error(error, buf);
-        return false;
+    if (config.asr_mode[0] == '\0') {
+        copy_str(config.asr_mode, sizeof(config.asr_mode), "direct_audio");
+    }
+
+    if (config.stt.region[0] == '\0') {
+        copy_str(config.stt.region, sizeof(config.stt.region), "ap-guangzhou");
+    }
+    if (config.stt.engine_model_type[0] == '\0') {
+        copy_str(config.stt.engine_model_type, sizeof(config.stt.engine_model_type), "16k_zh");
     }
 
     return true;

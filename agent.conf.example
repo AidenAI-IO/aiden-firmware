@@ -7,6 +7,15 @@
 provider = openrouter
 api_key = sk-or-v1-YOUR_OPENROUTER_KEY
 model = openai/gpt-4o-audio-preview
+# base_url = https://openrouter.ai/api/v1
+
+# Optional: dedicated text-model for stt_then_text mode.
+# If set, non-empty fields here override [model] for text LLM calls.
+[model_text]
+provider = openrouter
+api_key = sk-or-v1-YOUR_OPENROUTER_KEY
+model = anthropic/claude-3-haiku
+# base_url = https://openrouter.ai/api/v1
 
 # TTS: synthesizes assistant replies to speech.
 # provider selects which client implementation to use.
@@ -19,10 +28,26 @@ emotion = happy
 speed = 1.0
 
 [agent]
+asr_mode = stt_then_text
 hid_binary = ./build/bin/example_usb_hid
 energy_threshold = 300
 silence_ms = 800
 min_speech_ms = 300
+
+[stt]
+# options: openai_whisper | tencent_asr
+provider = tencent_asr
+
+[stt.tencent]
+secret_id = YOUR_TENCENT_SECRET_ID
+secret_key = YOUR_TENCENT_SECRET_KEY
+region = ap-guangzhou
+engine_model_type = 16k_zh
+
+[stt.openai]
+api_key = YOUR_OPENAI_API_KEY
+model = whisper-1
+# base_url = https://api.openai.com/v1
 
 # Optional: Additional system prompt appended to the default prompt
 # Use this to customize the agent's behavior for your specific use case
