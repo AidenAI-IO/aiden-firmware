@@ -5,6 +5,7 @@
 #include "tool_dispatch.h"
 #include "vad.h"
 #include "wav_codec.h"
+#include <memory>
 #include "cJSON/cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +19,7 @@
 #include <iostream>
 #include <vector>
 #include <string>
+#include <cstdlib>
 
 enum TriggerMode {
     MODE_WAKEUP,
@@ -87,6 +89,110 @@ static std::string execute_tool(const char* hid_binary, const char* tool_name,
     return result.empty() ? "ok" : result;
 }
 
+static bool is_stt_then_text_mode(const aiden::AgentConfig& config) {
+    return strcmp(config.asr_mode, "stt_then_text") == 0;
+}
+
+static bool has_any_model_text_override(const aiden::AgentConfig& config) {
+    return config.model_text.provider[0] != '\0' ||
+           config.model_text.api_key[0] != '\0' ||
+           config.model_text.model[0] != '\0' ||
+           config.model_text.base_url[0] != '\0';
+}
+
+static void copy_if_non_empty(char* dst, size_t dst_size, const char* src) {
+    if (!src || src[0] == '\0') return;
+    strncpy(dst, src, dst_size - 1);
+    dst[dst_size - 1] = '\0';
+}
+
+static aiden::AgentConfig make_runtime_config(const aiden::AgentConfig& config) {
+    aiden::AgentConfig runtime = config;
+    if (is_stt_then_text_mode(config) && has_any_model_text_override(config)) {
+        copy_if_non_empty(runtime.model.provider, sizeof(runtime.model.provider), config.model_text.provider);
+        copy_if_non_empty(runtime.model.api_key, sizeof(runtime.model.api_key), config.model_text.api_key);
+        copy_if_non_empty(runtime.model.model, sizeof(runtime.model.model), config.model_text.model);
+        copy_if_non_empty(runtime.model.base_url, sizeof(runtime.model.base_url), config.model_text.base_url);
+    }
+    return runtime;
+}
+
+static void append_transcript_piece(std::string& merged, const std::string& piece) {
+    if (piece.empty()) return;
+    if (!merged.empty()) merged += " ";
+    merged += piece;
+}
+
+static bool transcribe_with_auto_chunk(aiden::SttClient* stt,
+                                       const std::vector<int16_t>& pcm16_16k_mono,
+                                       std::string& transcript) {
+    transcript.clear();
+    if (!stt || pcm16_16k_mono.empty()) return false;
+
+    const size_t chunk_samples = 16000 * 6;    // ~6s
+    const size_t overlap_samples = 16000 / 3;  // ~333ms
+
+    if (pcm16_16k_mono.size() <= chunk_samples) {
+        std::vector<uint8_t> wav = aiden::pcm16_mono_16khz_to_wav(pcm16_16k_mono);
+        return stt->transcribe_wav(wav.data(), wav.size(), transcript);
+    }
+
+    size_t start = 0;
+    int chunk_idx = 0;
+    while (start < pcm16_16k_mono.size()) {
+        size_t end = start + chunk_samples;
+        if (end > pcm16_16k_mono.size()) end = pcm16_16k_mono.size();
+        std::vector<int16_t> chunk(pcm16_16k_mono.begin() + start, pcm16_16k_mono.begin() + end);
+        std::vector<uint8_t> wav = aiden::pcm16_mono_16khz_to_wav(chunk);
+
+        std::string piece;
+        if (!stt->transcribe_wav(wav.data(), wav.size(), piece)) {
+            fprintf(stderr, "[error] STT chunk %d transcription failed\n", chunk_idx);
+            return false;
+        }
+        printf("[stt] Chunk %d transcript: %s\n", chunk_idx, piece.c_str());
+        append_transcript_piece(transcript, piece);
+
+        if (end >= pcm16_16k_mono.size()) break;
+        start = end - overlap_samples;
+        chunk_idx++;
+    }
+    return !transcript.empty();
+}
+
+static void downsample_mono_to_16k(const int16_t* in,
+                                   int in_samples,
+                                   int input_rate,
+                                   std::vector<int16_t>& out) {
+    out.clear();
+    if (!in || in_samples <= 0) return;
+    if (input_rate <= 16000) {
+        out.assign(in, in + in_samples);
+        return;
+    }
+
+    if (input_rate == 32000) {
+        int n = in_samples / 2;
+        out.resize((size_t)n);
+        for (int i = 0; i < n; ++i) {
+            int a = in[i * 2];
+            int b = in[i * 2 + 1];
+            out[(size_t)i] = (int16_t)((a + b) / 2);
+        }
+        return;
+    }
+
+    // Generic fallback: nearest-neighbor resampling to 16k.
+    size_t out_count = (size_t)((int64_t)in_samples * 16000 / input_rate);
+    if (out_count == 0) out_count = 1;
+    out.resize(out_count);
+    for (size_t i = 0; i < out_count; ++i) {
+        size_t src = (size_t)((int64_t)i * input_rate / 16000);
+        if (src >= (size_t)in_samples) src = (size_t)in_samples - 1;
+        out[i] = in[src];
+    }
+}
+
 static void run_after_first_turn(aiden::LlmClient& llm,
                                  aiden::TtsClient& tts,
                                  aiden::AudioPlayer& player,
@@ -139,7 +245,8 @@ static void process_utterance(const std::vector<int16_t>& utterance,
                               aiden::LlmClient& llm,
                               aiden::TtsClient& tts,
                               aiden::AudioPlayer& player,
-                              const aiden::AgentConfig& config) {
+                              const aiden::AgentConfig& config,
+                              aiden::SttClient* stt) {
     float duration = utterance.size() / 16000.0f;
     printf("[utterance] %.1fs of speech\n", duration);
 
@@ -151,12 +258,38 @@ static void process_utterance(const std::vector<int16_t>& utterance,
 
     printf("[llm] Sending request to provider '%s' (model=%s)...\n",
            config.model.provider, config.model.model);
-    if (!llm.chat(wav.data(), wav.size(), response, tool_calls)) {
-        fprintf(stderr, "[error] LLM request failed\n");
-        return;
-    }
-    printf("[llm] Response received\n");
 
+    if (is_stt_then_text_mode(config)) {
+        if (!stt) {
+            fprintf(stderr, "[error] STT mode enabled but STT client is unavailable\n");
+            return;
+        }
+
+        std::string transcript;
+        printf("[stt] Transcribing audio with provider '%s' (engine=%s)...\n",
+               config.stt.provider, config.stt.engine_model_type);
+        if (!transcribe_with_auto_chunk(stt, utterance, transcript)) {
+            fprintf(stderr, "[error] STT transcription failed\n");
+            return;
+        }
+        if (transcript.empty()) {
+            fprintf(stderr, "[error] STT returned empty transcript\n");
+            return;
+        }
+
+        printf("[stt] Transcript: %s\n", transcript.c_str());
+        if (!llm.chat_text(transcript.c_str(), response, tool_calls)) {
+            fprintf(stderr, "[error] LLM request failed\n");
+            return;
+        }
+    } else {
+        if (!llm.chat(wav.data(), wav.size(), response, tool_calls)) {
+            fprintf(stderr, "[error] LLM request failed\n");
+            return;
+        }
+    }
+
+    printf("[llm] Response received\n");
     run_after_first_turn(llm, tts, player, config, response, tool_calls);
 }
 
@@ -228,10 +361,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    printf("[init] Config loaded: model=%s, threshold=%d, silence=%dms\n",
-           config.model.model, config.energy_threshold, config.silence_ms);
+    aiden::AgentConfig runtime_config = make_runtime_config(config);
+    printf("[init] Config loaded: model=%s, asr_mode=%s, threshold=%d, silence=%dms\n",
+           runtime_config.model.model, config.asr_mode, config.energy_threshold, config.silence_ms);
 
-    aiden::ProviderCheckResult provider_check = aiden::check_provider_config(config);
+    if (strcmp(config.asr_mode, "direct_audio") != 0 && strcmp(config.asr_mode, "stt_then_text") != 0) {
+        fprintf(stderr, "[error] Unknown asr_mode: %s (expected direct_audio|stt_then_text)\n", config.asr_mode);
+        return 1;
+    }
+
+    aiden::ProviderCheckResult provider_check = aiden::check_provider_config(runtime_config);
     if (!provider_check.ok) {
         fprintf(stderr, "[error] %s\n", provider_check.error.c_str());
         return 1;
@@ -262,13 +401,23 @@ int main(int argc, char* argv[]) {
     audio_cfg.bit_width = 16;
 
     aiden::AudioCapture capture;
-    if (mode != MODE_TEXT) {
-        printf("[init] Initializing audio (16kHz/16bit/mono)...\n");
+    bool capture_active = false;
+    auto start_capture = [&]() -> bool {
+        if (mode == MODE_TEXT || capture_active) return true;
+        printf("[audio] Opening capture device (16kHz/16bit/mono)...\n");
         if (!capture.init(audio_cfg)) {
             fprintf(stderr, "[error] Failed to initialize audio capture\n");
-            return 1;
+            return false;
         }
-    }
+        capture_active = true;
+        return true;
+    };
+    auto stop_capture = [&]() {
+        if (mode == MODE_TEXT || !capture_active) return;
+        capture.stop();
+        capture_active = false;
+        printf("[audio] Capture device closed\n");
+    };
 
     aiden::AudioPlayer player;
     if (!player.init(audio_cfg)) {
@@ -277,17 +426,27 @@ int main(int argc, char* argv[]) {
     }
 
     std::string provider_error;
-    std::unique_ptr<aiden::LlmClient> llm = aiden::create_llm_client(config, provider_error);
+    std::unique_ptr<aiden::LlmClient> llm = aiden::create_llm_client(runtime_config, provider_error);
     if (!llm) {
         fprintf(stderr, "[error] %s\n", provider_error.c_str());
         return 1;
     }
 
     provider_error.clear();
-    std::unique_ptr<aiden::TtsClient> tts = aiden::create_tts_client(config, provider_error);
+    std::unique_ptr<aiden::TtsClient> tts = aiden::create_tts_client(runtime_config, provider_error);
     if (!tts) {
         fprintf(stderr, "[error] %s\n", provider_error.c_str());
         return 1;
+    }
+
+    provider_error.clear();
+    std::unique_ptr<aiden::SttClient> stt;
+    if (is_stt_then_text_mode(runtime_config)) {
+        stt = aiden::create_stt_client(runtime_config, provider_error);
+        if (!stt) {
+            fprintf(stderr, "[error] %s\n", provider_error.c_str());
+            return 1;
+        }
     }
 
     aiden::AudioVAD vad(16000, config.energy_threshold, config.silence_ms,
@@ -312,7 +471,7 @@ int main(int argc, char* argv[]) {
 
             if (line.empty()) continue;
 
-            process_text_input(line, *llm, *tts, player, config);
+            process_text_input(line, *llm, *tts, player, runtime_config);
         }
     } else if (mode == MODE_MANUAL) {
         printf("\n[ready] Press Enter to start recording, press Enter again to stop\n");
@@ -335,8 +494,20 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        if (!start_capture()) {
+            wakeup_triggered = false;
+            continue;
+        }
+
         printf("[listen] Recording audio...\n");
         vad.reset();
+        int capture_channels = 0;
+        std::vector<int16_t> mono_frame;
+        std::vector<int16_t> resampled_frame;
+        int detected_input_rate = 16000;
+        uint64_t prev_frame_ts = 0;
+        int rate_vote_count = 0;
+        int rate_vote_32k = 0;
 
         bool manual_stop = false;
         while (wakeup_triggered && !quit) {
@@ -355,13 +526,57 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            const std::vector<int16_t>* utterance = vad.process(
-                (int16_t*)frame.data, frame.length / 2);
+            const std::vector<int16_t>* utterance = nullptr;
+            if (frame.data && frame.length >= 2) {
+                int16_t* raw = reinterpret_cast<int16_t*>(frame.data);
+                int sample_count = (int)(frame.length / sizeof(int16_t));
+
+                if (capture_channels == 0) {
+                    capture_channels = (frame.length >= 4096) ? 2 : 1;
+                    printf("[audio] Detected capture channels: %d (frame_len=%u bytes)\n",
+                           capture_channels, frame.length);
+                }
+
+                int samples_per_channel = sample_count / ((capture_channels == 2) ? 2 : 1);
+                if (prev_frame_ts > 0 && frame.timestamp > prev_frame_ts && samples_per_channel > 0) {
+                    uint64_t delta_us = frame.timestamp - prev_frame_ts;
+                    if (delta_us > 0) {
+                        double estimated = (double)samples_per_channel * 1000000.0 / (double)delta_us;
+                        if (estimated > 24000.0 && estimated < 40000.0) rate_vote_32k++;
+                        rate_vote_count++;
+                        if (rate_vote_count >= 3) {
+                            int new_rate = (rate_vote_32k >= 2) ? 32000 : 16000;
+                            if (new_rate != detected_input_rate) {
+                                detected_input_rate = new_rate;
+                                printf("[audio] Estimated input sample rate: %d Hz\n", detected_input_rate);
+                            }
+                        }
+                    }
+                }
+                prev_frame_ts = frame.timestamp;
+
+                if (capture_channels == 2) {
+                    int mono_count = sample_count / 2;
+                    mono_frame.resize((size_t)mono_count);
+                    for (int i = 0; i < mono_count; ++i) {
+                        int left = raw[i * 2];
+                        int right = raw[i * 2 + 1];
+                        mono_frame[(size_t)i] = (int16_t)((left + right) / 2);
+                    }
+                    downsample_mono_to_16k(mono_frame.data(), mono_count,
+                                           detected_input_rate, resampled_frame);
+                    utterance = vad.process(resampled_frame.data(), (int)resampled_frame.size());
+                } else {
+                    downsample_mono_to_16k(raw, sample_count,
+                                           detected_input_rate, resampled_frame);
+                    utterance = vad.process(resampled_frame.data(), (int)resampled_frame.size());
+                }
+            }
             capture.release_frame();
 
             if (utterance) {
                 printf("[utterance] VAD detected end of speech\n");
-                process_utterance(*utterance, *llm, *tts, player, config);
+                process_utterance(*utterance, *llm, *tts, player, runtime_config, stt.get());
                 wakeup_triggered = false;
                 printf("\n[ready] Waiting for next wakeup event...\n\n");
                 break;
@@ -372,17 +587,19 @@ int main(int argc, char* argv[]) {
             const std::vector<int16_t>* utterance = vad.flush();
             if (utterance && !utterance->empty()) {
                 printf("[manual] Sending buffered audio without waiting for VAD\n");
-                process_utterance(*utterance, *llm, *tts, player, config);
+                process_utterance(*utterance, *llm, *tts, player, runtime_config, stt.get());
             } else {
                 printf("[manual] No buffered audio to send\n");
             }
             wakeup_triggered = false;
             printf("\n[ready] Waiting for next wakeup event...\n\n");
         }
+
+        stop_capture();
     }
 
     wakeup.stop();
-    if (mode != MODE_TEXT) capture.stop();
+    stop_capture();
     printf("\n[exit] Stopped.\n");
     return 0;
 }

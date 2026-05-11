@@ -119,6 +119,8 @@ add_executable(agent_main
     src/openrouter_codec.cpp
     src/openai_client.cpp
     src/openai_codec.cpp
+    src/stt/providers/openai_whisper_stt.cpp
+    src/stt/providers/tencent_asr_stt.cpp
     src/llm_api_url.cpp
     src/minimax_tts.cpp
     src/minimax_codec.cpp
