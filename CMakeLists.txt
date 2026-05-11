@@ -90,8 +90,9 @@ target_link_directories(aiden
 )
 
 target_link_libraries(aiden
-    PUBLIC
+    PRIVATE
         cjson
+    PUBLIC
         rockit
         rockchip_mpp
         rga
