@@ -111,8 +111,19 @@ target_link_libraries(audio_stream PRIVATE aiden)
 add_library(cjson STATIC src/cJSON/cJSON.c)
 target_include_directories(cjson PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
+set(AIDEN_AGENT_VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/agent_version_build.h")
+add_custom_target(agent_version_header
+    COMMAND ${CMAKE_COMMAND}
+            "-DOUTPUT_FILE=${AIDEN_AGENT_VERSION_HEADER}"
+            "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+            -P "${CMAKE_SOURCE_DIR}/cmake/generate_agent_version.cmake"
+    BYPRODUCTS ${AIDEN_AGENT_VERSION_HEADER}
+    VERBATIM
+)
+
 add_executable(agent_main
     src/agent_main.cpp
+    src/agent_version.cpp
     src/config.cpp
     src/http_client.cpp
     src/openrouter_client.cpp
@@ -130,4 +141,6 @@ add_executable(agent_main
     src/provider_factory_runtime.cpp
     src/vad.cpp
 )
+target_include_directories(agent_main PRIVATE ${CMAKE_BINARY_DIR}/generated)
+add_dependencies(agent_main agent_version_header)
 target_link_libraries(agent_main PRIVATE aiden cjson pthread)

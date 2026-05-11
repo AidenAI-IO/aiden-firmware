@@ -1,4 +1,5 @@
 #include "aiden_sdk.h"
+#include "agent_version.h"
 #include "config.h"
 #include "http_client.h"
 #include "provider_factory.h"
@@ -322,6 +323,11 @@ static bool parse_mode_value(const char* v, TriggerMode& mode) {
 }
 
 int main(int argc, char* argv[]) {
+    if (aiden::is_agent_version_command(argc, argv)) {
+        printf("%s\n", aiden::agent_version());
+        return 0;
+    }
+
     signal(SIGINT, signal_handler);
 
     TriggerMode mode = MODE_WAKEUP;
@@ -355,6 +361,7 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "[error] Failed to load config from %s: %s\n",
                 config_path, config_error.c_str());
         fprintf(stderr, "Usage: %s [--mode=wakeup|manual|text] [config_file]\n", argv[0]);
+        fprintf(stderr, "       %s version|--version|-v\n", argv[0]);
         fprintf(stderr, "  --mode=wakeup: Use GPIO 33 wakeup trigger (default)\n");
         fprintf(stderr, "  --mode=manual: Press Enter to start/stop audio recording\n");
         fprintf(stderr, "  --mode=text:   Type commands directly via stdin\n");
