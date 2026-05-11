@@ -204,13 +204,13 @@ min_speech_ms = 300      # minimum utterance length
 4. **Send to LLM**: the audio is wrapped as WAV, base64-encoded, and posted to
    OpenRouter via curl.
 5. **Tool calls**: the LLM can invoke tools to drive the device:
-    - `keyboard_tap` — key combos (e.g., ENTER, CTRL+C)
-    - `keyboard_text` — type text
-    - `touch_click` — click at an absolute coordinate (0..32767)
-    - `touch_swipe` — swipe gesture
-    - `capture_screenshot` — capture the latest HDMI frame, write a PNG by default, and attach it to the next LLM turn as image input
-    - `frame_service_health` — inspect frame capture health and latency metrics
-    - `frame_service_restart` — request capture recovery when frames appear stale
+   - `keyboard_tap` — key combos (e.g., ENTER, CTRL+C)
+   - `keyboard_text` — type text
+   - `touch_click` — click at an absolute coordinate (0..32767)
+   - `touch_swipe` — swipe gesture
+   - `capture_screenshot` — capture the latest HDMI frame, write a PNG by default, and attach it to the next LLM turn as image input
+   - `frame_service_health` — inspect frame capture health and latency metrics
+   - `frame_service_restart` — request capture recovery when frames appear stale
 6. **Streaming TTS playback**: the LLM reply is sent to MiniMax TTS:
    - MP3 chunks arrive as a hex-encoded stream
    - chunks are piped into ffmpeg and decoded to PCM
