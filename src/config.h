@@ -40,6 +40,7 @@ struct AgentConfig {
     ModelConfig model;
     TTSConfig tts;
     char hid_binary[256];
+    char frame_service_socket[256];
     char additional_prompt[2048];
     int energy_threshold;
     int silence_ms;
@@ -47,6 +48,7 @@ struct AgentConfig {
 
     AgentConfig() {
         hid_binary[0] = '\0';
+        frame_service_socket[0] = '\0';
         additional_prompt[0] = '\0';
         energy_threshold = 300;
         silence_ms = 800;

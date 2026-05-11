@@ -26,8 +26,19 @@ set(MPP_PATH ${SDK_PATH}/media/mpp/release_mpp_rv1106_arm-rockchip830-linux-ucli
 set(RGA_PATH ${SDK_PATH}/media/rga/release_rga_rv1106_arm-rockchip830-linux-uclibcgnueabihf)
 set(IVE_PATH ${SDK_PATH}/media/ive/ive)
 
+add_library(cjson STATIC src/cJSON/cJSON.c)
+target_include_directories(cjson PUBLIC ${CMAKE_SOURCE_DIR}/src)
+
 add_library(aiden STATIC
     src/aiden_sdk.cpp
+    src/frame_ipc.cpp
+    src/frame_capture_manager.cpp
+    src/frame_camera_capture_source.cpp
+    src/frame_processing.cpp
+    src/frame_ring_buffer.cpp
+    src/frame_service_client.cpp
+    src/frame_service_protocol.cpp
+    src/frame_service_server.cpp
 )
 
 target_include_directories(aiden
@@ -46,6 +57,7 @@ target_link_directories(aiden
 
 target_link_libraries(aiden
     PUBLIC
+        cjson
         rockit
         rockchip_mpp
         rga
@@ -73,12 +85,16 @@ add_executable(example_usb_hid src/example_usb_hid.cpp src/hid_server.cpp)
 target_include_directories(example_usb_hid PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(example_usb_hid PRIVATE aiden)
 
+add_executable(frame_service src/frame_service_main.cpp)
+target_include_directories(frame_service PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(frame_service PRIVATE aiden pthread)
+
+add_executable(frame_service_cli src/frame_service_cli.cpp)
+target_include_directories(frame_service_cli PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(frame_service_cli PRIVATE aiden)
+
 add_executable(audio_stream src/audio_stream.cpp)
 target_link_libraries(audio_stream PRIVATE aiden)
-
-# AI Agent
-add_library(cjson STATIC src/cJSON/cJSON.c)
-target_include_directories(cjson PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
 add_executable(agent_main
     src/agent_main.cpp
@@ -92,6 +108,7 @@ add_executable(agent_main
     src/minimax_tts.cpp
     src/minimax_codec.cpp
     src/tool_dispatch.cpp
+    src/tool_image_attachment.cpp
     src/wav_codec.cpp
     src/provider_factory.cpp
     src/provider_factory_runtime.cpp

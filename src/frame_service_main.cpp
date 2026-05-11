@@ -1,0 +1,184 @@
+#include "camera_frame_utils.h"
+#include "frame_camera_capture_source.h"
+#include "frame_capture_manager.h"
+#include "frame_service_defaults.h"
+#include "frame_service_server.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <string>
+#include <sys/file.h>
+#include <thread>
+#include <unistd.h>
+
+namespace {
+
+volatile sig_atomic_t g_quit = 0;
+
+void signal_handler(int) {
+    g_quit = 1;
+}
+
+struct Options {
+    Options() : socket_path("/tmp/frame_service.sock"),
+                ring_size(aiden::kDefaultFrameServiceRingSize),
+                fps(aiden::kDefaultFrameServiceFps) {
+        aiden_demo::set_default_camera_config(&camera);
+        device_name = camera.device_name;
+        pixel_format = camera.pixel_format;
+        subdev_device = camera.subdev_device;
+        sync();
+    }
+
+    void sync() {
+        camera.device_name = device_name.c_str();
+        camera.pixel_format = pixel_format.c_str();
+        camera.subdev_device = subdev_device.c_str();
+        camera.edid_path = edid_path.empty() ? nullptr : edid_path.c_str();
+    }
+
+    std::string socket_path;
+    std::string device_name;
+    std::string pixel_format;
+    std::string subdev_device;
+    std::string edid_path;
+    size_t ring_size;
+    double fps;
+    aiden::CameraConfig camera;
+};
+
+void usage(const char* program) {
+    fprintf(stderr,
+            "Usage: %s [--socket PATH] [--device PATH] [--width N] [--height N] "
+            "[--pixel-format FMT] [--subdev PATH] [--edid PATH] [--ring-size N] "
+            "[--fps N] [--no-hdmi-sync]\n",
+            program);
+}
+
+bool parse_int_arg(const char* text, int* out) {
+    if (!text || !out) return false;
+    char* end = nullptr;
+    long value = strtol(text, &end, 10);
+    if (!end || *end != '\0') return false;
+    *out = static_cast<int>(value);
+    return true;
+}
+
+bool parse_double_arg(const char* text, double* out) {
+    if (!text || !out) return false;
+    char* end = nullptr;
+    double value = strtod(text, &end);
+    if (!end || *end != '\0') return false;
+    *out = value;
+    return true;
+}
+
+bool parse_options(int argc, char** argv, Options* options) {
+    const char* env_socket = getenv("FRAME_SERVICE_SOCKET");
+    if (env_socket && env_socket[0] != '\0') {
+        options->socket_path = env_socket;
+    }
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--socket" && i + 1 < argc) {
+            options->socket_path = argv[++i];
+        } else if (arg == "--device" && i + 1 < argc) {
+            options->device_name = argv[++i];
+        } else if (arg == "--width" && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], &options->camera.width)) return false;
+        } else if (arg == "--height" && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], &options->camera.height)) return false;
+        } else if (arg == "--pixel-format" && i + 1 < argc) {
+            options->pixel_format = argv[++i];
+        } else if (arg == "--subdev" && i + 1 < argc) {
+            options->subdev_device = argv[++i];
+        } else if (arg == "--edid" && i + 1 < argc) {
+            options->edid_path = argv[++i];
+        } else if (arg == "--ring-size" && i + 1 < argc) {
+            int value = 0;
+            if (!parse_int_arg(argv[++i], &value) || value <= 0) return false;
+            options->ring_size = static_cast<size_t>(value);
+        } else if (arg == "--fps" && i + 1 < argc) {
+            if (!parse_double_arg(argv[++i], &options->fps) || options->fps < 0.0) return false;
+        } else if (arg == "--no-hdmi-sync") {
+            options->camera.enable_hdmi_sync = false;
+        } else if (arg == "--help") {
+            usage(argv[0]);
+            exit(0);
+        } else {
+            return false;
+        }
+    }
+    options->sync();
+    return true;
+}
+
+int lock_video_device(const char* device) {
+    int fd = open(device, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "Failed to open %s for lock: %s\n", device, strerror(errno));
+        return -1;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) < 0) {
+        fprintf(stderr, "Failed to lock %s: %s\n", device, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+}
+
+int main(int argc, char** argv) {
+    Options options;
+    if (!parse_options(argc, argv, &options)) {
+        usage(argv[0]);
+        return 2;
+    }
+
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
+    int lock_fd = lock_video_device(options.camera.device_name);
+    if (lock_fd < 0) {
+        return 1;
+    }
+
+    aiden::FrameServiceServer server(options.socket_path.c_str(), options.ring_size);
+    if (server.start() != aiden::FrameServiceStatus::OK) {
+        fprintf(stderr, "Failed to start frame service socket at %s\n", options.socket_path.c_str());
+        close(lock_fd);
+        return 1;
+    }
+
+    aiden::FrameCameraCaptureSource source(options.camera);
+    aiden::FrameCaptureManagerOptions manager_options;
+    if (options.fps > 0.0) {
+        manager_options.capture_interval_ms = static_cast<int>(1000.0 / options.fps + 0.5);
+        if (manager_options.capture_interval_ms < 1) {
+            manager_options.capture_interval_ms = 1;
+        }
+    }
+    aiden::FrameCaptureManager manager(&source, &server, manager_options);
+    server.set_restart_handler([&manager]() { manager.request_restart(); });
+    if (!manager.start()) {
+        fprintf(stderr, "Failed to start frame capture manager\n");
+        server.stop();
+        close(lock_fd);
+        return 1;
+    }
+
+    printf("frame_service listening on %s\n", options.socket_path.c_str());
+    while (!g_quit) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    manager.stop();
+    server.stop();
+    close(lock_fd);
+    return 0;
+}

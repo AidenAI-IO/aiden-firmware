@@ -11,6 +11,7 @@ using aiden::openrouter::init_conversation;
 using aiden::openrouter::append_user_audio_wav;
 using aiden::openrouter::append_user_audio_wav_if_present;
 using aiden::openrouter::append_user_text;
+using aiden::openrouter::append_user_image_url;
 using aiden::openrouter::append_assistant_message;
 using aiden::openrouter::append_tool_result;
 using aiden::openrouter::build_chat_request;
@@ -34,12 +35,12 @@ TEST_CASE("base64_encode handles binary bytes") {
     CHECK(base64_encode(bytes, sizeof(bytes)) == "AP8Qqw==");
 }
 
-TEST_CASE("build_tool_definitions_json contains the four device tools") {
+TEST_CASE("build_tool_definitions_json contains HID and frame tools") {
     std::string json = build_tool_definitions_json();
     cJSON* arr = cJSON_Parse(json.c_str());
     REQUIRE(arr != nullptr);
     REQUIRE(arr->type == cJSON_Array);
-    CHECK(cJSON_GetArraySize(arr) == 4);
+    CHECK(cJSON_GetArraySize(arr) == 7);
 
     std::string names;
     for (cJSON* item = arr->child; item; item = item->next) {
@@ -57,6 +58,9 @@ TEST_CASE("build_tool_definitions_json contains the four device tools") {
     CHECK(names.find("keyboard_text,") != std::string::npos);
     CHECK(names.find("touch_click,") != std::string::npos);
     CHECK(names.find("touch_swipe,") != std::string::npos);
+    CHECK(names.find("capture_screenshot,") != std::string::npos);
+    CHECK(names.find("frame_service_health,") != std::string::npos);
+    CHECK(names.find("frame_service_restart,") != std::string::npos);
 }
 
 TEST_CASE("parse_chat_response extracts plain text content") {
@@ -184,6 +188,32 @@ TEST_CASE("openrouter append_user_text escapes quotes and survives NULL") {
     cJSON* user2 = cJSON_GetArrayItem(arr2, 1);
     CHECK(std::string(cJSON_GetObjectItem(user2, "content")->valuestring) == "");
     cJSON_Delete(arr2);
+}
+
+TEST_CASE("openrouter append_user_image_url appends vision content") {
+    std::string conv = init_conversation("sys");
+    std::string appended = append_user_image_url(conv,
+                                                 "data:image/png;base64,AAAA",
+                                                 "Screenshot captured from frame_service.");
+
+    cJSON* arr = cJSON_Parse(appended.c_str());
+    REQUIRE(arr != nullptr);
+    REQUIRE(cJSON_GetArraySize(arr) == 2);
+    cJSON* user = cJSON_GetArrayItem(arr, 1);
+    CHECK(std::string(cJSON_GetObjectItem(user, "role")->valuestring) == "user");
+    cJSON* content = cJSON_GetObjectItem(user, "content");
+    REQUIRE(content != nullptr);
+    REQUIRE(content->type == cJSON_Array);
+    REQUIRE(cJSON_GetArraySize(content) == 2);
+    cJSON* text = cJSON_GetArrayItem(content, 0);
+    CHECK(std::string(cJSON_GetObjectItem(text, "type")->valuestring) == "text");
+    CHECK(std::string(cJSON_GetObjectItem(text, "text")->valuestring) == "Screenshot captured from frame_service.");
+    cJSON* image = cJSON_GetArrayItem(content, 1);
+    CHECK(std::string(cJSON_GetObjectItem(image, "type")->valuestring) == "image_url");
+    cJSON* image_url = cJSON_GetObjectItem(image, "image_url");
+    REQUIRE(image_url != nullptr);
+    CHECK(std::string(cJSON_GetObjectItem(image_url, "url")->valuestring) == "data:image/png;base64,AAAA");
+    cJSON_Delete(arr);
 }
 
 TEST_CASE("append_tool_result adds a role=tool message") {

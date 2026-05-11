@@ -94,4 +94,8 @@ void OpenAIClient::add_tool_result(const char* tool_call_id, const char* result)
     conversation_ = openai::append_tool_result(conversation_, tool_call_id, result);
 }
 
+void OpenAIClient::add_user_image_url(const char* data_url, const char* text) {
+    conversation_ = openai::append_user_image_url(conversation_, data_url, text);
+}
+
 }

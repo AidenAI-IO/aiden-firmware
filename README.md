@@ -76,6 +76,28 @@ All build artifacts are placed in `build/`:
 
 Copy the `build/bin/` executables onto the board and [configure Wi-Fi](https://wiki.luckfox.com/Luckfox-Pico-Zero/WiFi-BT/) before running the HID server demo.
 
+## Frame Service
+
+`frame_service` owns `/dev/video0` and exposes raw frames over a Unix domain socket. It samples at 1 fps by default to reduce CPU, memory bandwidth, and heat. Start it before using screenshot tools or `/api/capture`:
+
+```bash
+./build/bin/frame_service --socket /tmp/frame_service.sock
+```
+
+Use `--fps 0` to capture as fast as the HDMI source produces frames.
+
+Consumers use `FRAME_SERVICE_SOCKET` or `[agent] frame_service_socket` to locate the service. `hid_server` keeps `/api/capture`, but it now reads frames through `FrameServiceClient` instead of opening `/dev/video0` directly.
+
+Debug the service with:
+
+```bash
+./build/bin/frame_service_cli --socket /tmp/frame_service.sock health
+./build/bin/frame_service_cli --socket /tmp/frame_service.sock screenshot --out /tmp/screenshot.bmp
+./build/bin/frame_service_cli --socket /tmp/frame_service.sock latest-frame --out /tmp/frame.raw
+./build/bin/frame_service_cli --socket /tmp/frame_service.sock list-frames
+./build/bin/frame_service_cli --socket /tmp/frame_service.sock restart
+```
+
 ## AI Agent
 
 Pure C++ AI agent that runs directly on the Pico Zero and drives the device's
