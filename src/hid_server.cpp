@@ -637,9 +637,11 @@ ApiResponse handle_capture_request(const std::string& body) {
 
     cv::Mat rgb_mat(h, w, CV_8UC3, rgb.data());
     cv::Mat processed;
-    if (aiden_image::crop_black_bars(rgb_mat, processed) != aiden_image::kSuccess) {
-        g_screenshot = ScreenshotData{};
-        return make_json_error(500, "crop_black_bars failed");
+    const int crop_rc = aiden_image::crop_black_bars(rgb_mat, processed);
+    if (crop_rc != aiden_image::kSuccess) {
+        std::cerr << "Warning: crop_black_bars failed (" << crop_rc
+                  << "); using uncropped frame" << std::endl;
+        processed = rgb_mat;
     }
 
     std::vector<uint8_t> jpeg;
