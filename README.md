@@ -88,6 +88,14 @@ Use `--fps 0` to capture as fast as the HDMI source produces frames.
 
 Consumers use `FRAME_SERVICE_SOCKET` or `[agent] frame_service_socket` to locate the service. `hid_server` keeps `/api/capture`, but it now reads frames through `FrameServiceClient` instead of opening `/dev/video0` directly.
 
+LLM tools can use the service through `agent_main`:
+
+- `capture_screenshot` — captures the latest frame and returns metadata plus a local image path. It writes PNG by default, limits the output image to `max_edge=960`, and forwards the PNG to the LLM as `image_url` input. Pass `format=bmp` for BMP output or `max_edge=0` for full resolution.
+- `frame_service_health` — returns capture state, latest frame sequence, ring usage, recovery, and latency metrics.
+- `frame_service_restart` — requests a capture-path restart if frames appear stale or unhealthy.
+
+Screenshot interpretation requires a model/provider that supports image input. Text-only models can call `capture_screenshot`, but they cannot inspect the pixels sent as `image_url`.
+
 Debug the service with:
 
 ```bash
@@ -114,7 +122,7 @@ keyboard and touchscreen via voice.
 - **LLM processing**: calls an audio-capable model through OpenRouter
 - **Streaming TTS**: MiniMax streaming synthesis — decode and play as bytes
   arrive, for low latency
-- **Tool calls**: keyboard input and touchscreen control
+- **Tool calls**: keyboard input, touchscreen control, and HDMI screenshot capture
 - **Debug logging**: detailed HTTP request/response logs
 
 ### Setup
@@ -167,6 +175,7 @@ speed = 1.0
 
 [agent]
 hid_binary = ./build/bin/example_usb_hid
+frame_service_socket = /tmp/frame_service.sock
 energy_threshold = 300   # speech energy threshold
 silence_ms = 800         # silence duration that ends an utterance
 min_speech_ms = 300      # minimum utterance length
@@ -182,10 +191,13 @@ min_speech_ms = 300      # minimum utterance length
 4. **Send to LLM**: the audio is wrapped as WAV, base64-encoded, and posted to
    OpenRouter via curl.
 5. **Tool calls**: the LLM can invoke tools to drive the device:
-   - `keyboard_tap` — key combos (e.g., ENTER, CTRL+C)
-   - `keyboard_text` — type text
-   - `touch_click` — click at an absolute coordinate (0..32767)
-   - `touch_swipe` — swipe gesture
+    - `keyboard_tap` — key combos (e.g., ENTER, CTRL+C)
+    - `keyboard_text` — type text
+    - `touch_click` — click at an absolute coordinate (0..32767)
+    - `touch_swipe` — swipe gesture
+    - `capture_screenshot` — capture the latest HDMI frame, write a PNG by default, and attach it to the next LLM turn as image input
+    - `frame_service_health` — inspect frame capture health and latency metrics
+    - `frame_service_restart` — request capture recovery when frames appear stale
 6. **Streaming TTS playback**: the LLM reply is sent to MiniMax TTS:
    - MP3 chunks arrive as a hex-encoded stream
    - chunks are piped into ffmpeg and decoded to PCM
