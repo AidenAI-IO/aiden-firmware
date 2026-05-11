@@ -314,6 +314,9 @@ FrameServiceStatus FrameServiceClient::list_frames(uint32_t count, FrameListResu
             int n = cJSON_GetArraySize(frames);
             for (int i = 0; i < n; ++i) {
                 cJSON* frame_json = cJSON_GetArrayItem(frames, i);
+                if (!frame_json || frame_json->type != cJSON_Object) {
+                    continue;
+                }
                 FrameMetadata metadata;
                 parse_frame_metadata(frame_json, &metadata);
                 out->frames.push_back(metadata);

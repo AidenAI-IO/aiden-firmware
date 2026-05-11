@@ -142,6 +142,7 @@ static cJSON* create_tool_definitions() {
     cJSON_AddItemToObject(capture_props, "format", capture_format);
     cJSON* capture_max_edge = cJSON_CreateObject();
     cJSON_AddStringToObject(capture_max_edge, "type", "integer");
+    cJSON_AddNumberToObject(capture_max_edge, "minimum", 0);
     cJSON_AddStringToObject(capture_max_edge, "description", "Maximum output image width or height. Defaults to 960. Use 0 for full resolution.");
     cJSON_AddItemToObject(capture_props, "max_edge", capture_max_edge);
     cJSON_AddItemToObject(capture_params, "properties", capture_props);

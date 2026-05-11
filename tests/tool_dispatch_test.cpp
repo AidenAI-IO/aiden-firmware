@@ -212,6 +212,22 @@ TEST_CASE("frame_service_health frame tool returns health JSON") {
     server.stop();
 }
 
+TEST_CASE("frame_service_health frame tool escapes control characters in health JSON") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 2);
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+    std::string error = std::string("line\nnext\t") + static_cast<char>(1) + "\"\\end";
+    server.record_recovery(error, true);
+
+    std::string result = handle_frame_tool(socket_path.path.c_str(), "frame_service_health", R"({})", "/tmp");
+    cJSON* json = cJSON_Parse(result.c_str());
+    REQUIRE(json != nullptr);
+    CHECK(cJSON_GetObjectItem(json, "ok")->type == cJSON_True);
+    CHECK(std::string(cJSON_GetObjectItem(json, "last_error")->valuestring) == error);
+    cJSON_Delete(json);
+    server.stop();
+}
+
 TEST_CASE("frame_service_restart frame tool invokes restart") {
     TempSocketPath socket_path;
     FrameServiceServer server(socket_path.path.c_str(), 2);

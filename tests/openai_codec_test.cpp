@@ -52,6 +52,31 @@ TEST_CASE("openai build_tool_definitions_json contains frame service tools") {
     CHECK(names.find("frame_service_restart,") != std::string::npos);
 }
 
+TEST_CASE("openai capture_screenshot max_edge schema allows full resolution sentinel") {
+    std::string json = build_tool_definitions_json();
+    cJSON* arr = cJSON_Parse(json.c_str());
+    REQUIRE(arr != nullptr);
+
+    cJSON* max_edge = nullptr;
+    for (cJSON* item = arr->child; item; item = item->next) {
+        cJSON* func = cJSON_GetObjectItem(item, "function");
+        cJSON* name = func ? cJSON_GetObjectItem(func, "name") : nullptr;
+        if (name && name->type == cJSON_String && std::string(name->valuestring) == "capture_screenshot") {
+            cJSON* params = cJSON_GetObjectItem(func, "parameters");
+            cJSON* props = params ? cJSON_GetObjectItem(params, "properties") : nullptr;
+            max_edge = props ? cJSON_GetObjectItem(props, "max_edge") : nullptr;
+            break;
+        }
+    }
+
+    REQUIRE(max_edge != nullptr);
+    cJSON* minimum = cJSON_GetObjectItem(max_edge, "minimum");
+    REQUIRE(minimum != nullptr);
+    CHECK(minimum->type == cJSON_Number);
+    CHECK(minimum->valuedouble == 0.0);
+    cJSON_Delete(arr);
+}
+
 TEST_CASE("openai parse_chat_response extracts plain text content") {
     std::string resp = R"({"choices":[{"message":{"role":"assistant","content":"hi there"}}]})";
     ChatResult r = parse_chat_response(resp);

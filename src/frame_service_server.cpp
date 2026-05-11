@@ -47,8 +47,31 @@ static std::string escape_json(const std::string& text) {
     std::string out;
     for (size_t i = 0; i < text.size(); ++i) {
         char c = text[i];
-        if (c == '\\' || c == '"') out.push_back('\\');
-        out.push_back(c);
+        switch (c) {
+        case '\\':
+            out += "\\\\";
+            break;
+        case '"':
+            out += "\\\"";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        case '\t':
+            out += "\\t";
+            break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20) {
+                char buf[8];
+                snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
+                out += buf;
+            } else {
+                out.push_back(c);
+            }
+        }
     }
     return out;
 }

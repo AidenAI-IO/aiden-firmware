@@ -71,10 +71,11 @@ TEST_CASE("frame wire prefix decodes header and payload lengths") {
 }
 
 TEST_CASE("frame wire prefix rejects incomplete input") {
-    uint8_t bytes[11] = {};
+    uint8_t short_bytes[11] = {};
+    uint8_t full_bytes[12] = {};
     FrameWirePrefix prefix{};
 
-    CHECK_FALSE(decode_frame_wire_prefix(bytes, sizeof(bytes), &prefix));
+    CHECK_FALSE(decode_frame_wire_prefix(short_bytes, sizeof(short_bytes), &prefix));
     CHECK_FALSE(decode_frame_wire_prefix(nullptr, 12, &prefix));
-    CHECK_FALSE(decode_frame_wire_prefix(bytes, 12, nullptr));
+    CHECK_FALSE(decode_frame_wire_prefix(full_bytes, sizeof(full_bytes), nullptr));
 }

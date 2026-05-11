@@ -156,6 +156,18 @@ TEST_CASE("FrameServiceClient list_frames preserves large uint64 metadata withou
     CHECK(result.frames[0].bytes == 9007199254740995ull);
 }
 
+TEST_CASE("FrameServiceClient list_frames skips malformed frame entries") {
+    SingleReplyServer server(
+        R"({"type":"response","method":"list_frames","status":"OK","frames":[null,{"seq":"7","capture_ts_ns":"8","width":1,"height":1,"pixel_format":"uyvy","stride":2,"bytes":"2"}]})",
+        std::vector<uint8_t>());
+    FrameServiceClient client(server.path.path.c_str());
+    aiden::FrameListResult result;
+
+    REQUIRE(client.list_frames(2, &result) == FrameServiceStatus::OK);
+    REQUIRE(result.frames.size() == 1);
+    CHECK(result.frames[0].seq == 7);
+}
+
 TEST_CASE("FrameServiceClient parses plane metadata") {
     std::vector<uint8_t> payload = {1, 2, 3, 4};
     SingleReplyServer server(

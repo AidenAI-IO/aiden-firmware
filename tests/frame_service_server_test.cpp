@@ -143,6 +143,21 @@ TEST_CASE("FrameServiceServer health reports frame age and serve latency") {
     server.stop();
 }
 
+TEST_CASE("FrameServiceServer health escapes control characters in last_error") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+    std::string error = std::string("line\nnext\t") + static_cast<char>(1) + "\"\\end";
+    server.record_recovery(error, true);
+
+    FrameServiceClient client(socket_path.path.c_str());
+    HealthResult health;
+    REQUIRE(client.health(&health) == FrameServiceStatus::OK);
+    CHECK(health.last_error == error);
+
+    server.stop();
+}
+
 TEST_CASE("FrameServiceServer returns latest frame payload") {
     TempSocketPath socket_path;
     FrameServiceServer server(socket_path.path.c_str(), 4);

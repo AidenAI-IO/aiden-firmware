@@ -25,6 +25,7 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/frame_service_server.cpp
     ${CMAKE_SOURCE_DIR}/src/tool_dispatch.cpp
     ${CMAKE_SOURCE_DIR}/src/tool_image_attachment.cpp
+    ${CMAKE_SOURCE_DIR}/src/agent_version.cpp
     ${CMAKE_SOURCE_DIR}/src/wav_codec.cpp
     ${CMAKE_SOURCE_DIR}/src/provider_factory.cpp
     ${CMAKE_SOURCE_DIR}/src/llm_api_url.cpp
@@ -86,6 +87,7 @@ add_executable(aiden_tests
     frame_processing_test.cpp
     tool_dispatch_test.cpp
     tool_image_attachment_test.cpp
+    agent_version_test.cpp
     wav_codec_test.cpp
     provider_factory_test.cpp
     llm_api_url_test.cpp
