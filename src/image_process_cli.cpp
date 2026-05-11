@@ -30,6 +30,31 @@ bool ends_with(const std::string& s, const char* suf) {
     return s.size() >= n && s.compare(s.size() - n, n, suf) == 0;
 }
 
+bool read_next_int(std::FILE* fp, int* value) {
+    if (!fp || !value) {
+        return false;
+    }
+
+    int ch = 0;
+    for (;;) {
+        ch = std::fgetc(fp);
+        if (ch == EOF) {
+            return false;
+        }
+        if (ch == '#') {
+            while ((ch = std::fgetc(fp)) != '\n' && ch != EOF) {}
+            continue;
+        }
+        if (std::isspace(static_cast<unsigned char>(ch))) {
+            continue;
+        }
+        std::ungetc(ch, fp);
+        break;
+    }
+
+    return std::fscanf(fp, "%d", value) == 1;
+}
+
 int output_format_from_path(const std::string& path, int* format) {
     if (ends_with(path, ".ppm") || ends_with(path, ".PPM")) {
         *format = aiden_image::kFormatPpm;
@@ -53,33 +78,16 @@ bool read_ppm_p6(const std::string& path, cv::Mat* out) {
         std::fclose(fp);
         return false;
     }
-    int ch = 0;
-    for (;;) {
-        ch = std::fgetc(fp);
-        if (ch == EOF) {
-            std::fclose(fp);
-            return false;
-        }
-        if (ch == '#') {
-            while ((ch = std::fgetc(fp)) != '\n' && ch != EOF) {}
-            continue;
-        }
-        if (std::isspace(static_cast<unsigned char>(ch))) {
-            continue;
-        }
-        std::ungetc(ch, fp);
-        break;
-    }
 
     int width = 0;
     int height = 0;
     int maxval = 0;
-    if (std::fscanf(fp, "%d %d %d", &width, &height, &maxval) != 3 || width <= 0 ||
-        height <= 0 || maxval != 255) {
+    if (!read_next_int(fp, &width) || !read_next_int(fp, &height) ||
+        !read_next_int(fp, &maxval) || width <= 0 || height <= 0 || maxval != 255) {
         std::fclose(fp);
         return false;
     }
-    ch = std::fgetc(fp);
+    int ch = std::fgetc(fp);
     if (ch == EOF) {
         std::fclose(fp);
         return false;
