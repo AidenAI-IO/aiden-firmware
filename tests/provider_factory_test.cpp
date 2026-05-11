@@ -220,6 +220,9 @@ TEST_CASE("check_provider_config skips stt validation in direct_audio mode") {
     std::snprintf(cfg.tts.provider, sizeof(cfg.tts.provider), "%s", "minimax");
     std::snprintf(cfg.tts.api_key, sizeof(cfg.tts.api_key), "%s", "mm-key");
     std::snprintf(cfg.tts.voice_id, sizeof(cfg.tts.voice_id), "%s", "voice-a");
+    // Intentionally incomplete STT config: should be ignored in direct_audio mode.
+    std::snprintf(cfg.stt.provider, sizeof(cfg.stt.provider), "%s", "tencent_asr");
+    std::snprintf(cfg.stt.secret_id, sizeof(cfg.stt.secret_id), "%s", "id-only");
     std::snprintf(cfg.asr_mode, sizeof(cfg.asr_mode), "%s", "direct_audio");
 
     ProviderCheckResult r = check_provider_config(cfg);
