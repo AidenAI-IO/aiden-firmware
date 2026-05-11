@@ -1,6 +1,7 @@
 #include "doctest.h"
 #include "vad.h"
 #include <vector>
+#include <cstddef>
 #include <cstdint>
 
 namespace {

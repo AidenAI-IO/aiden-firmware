@@ -3,6 +3,7 @@
 #include "config.h"
 #include "http_client.h"
 #include "provider_factory.h"
+#include "text_input.h"
 #include "tool_dispatch.h"
 #include "tool_image_attachment.h"
 #include "vad.h"
@@ -29,10 +30,19 @@ enum TriggerMode {
     MODE_TEXT
 };
 
-static volatile bool quit = false;
+static volatile sig_atomic_t quit = 0;
 static volatile bool wakeup_triggered = false;
 
-static void signal_handler(int) { quit = true; }
+static void signal_handler(int) { quit = 1; }
+
+static void install_signal_handler() {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+}
 
 static bool stdin_has_data() {
     fd_set fds;
@@ -44,6 +54,85 @@ static bool stdin_has_data() {
 
 static void drain_stdin() {
     while (stdin_has_data()) getchar();
+}
+
+class TextInputTerminalMode {
+public:
+    explicit TextInputTerminalMode(int fd) : fd_(fd), enabled_(false) {
+        if (!isatty(fd_)) return;
+        if (tcgetattr(fd_, &original_) != 0) return;
+
+        struct termios tio = original_;
+#ifdef IUTF8
+        tio.c_iflag |= IUTF8;
+#endif
+        // Keep Ctrl-C on SIGINT; the 0x03 byte handler below is defensive only.
+        tio.c_lflag |= ISIG;
+        tio.c_lflag &= ~(ICANON | ECHO);
+        tio.c_cc[VINTR] = 0x03;
+        tio.c_cc[VMIN] = 1;
+        tio.c_cc[VTIME] = 0;
+
+        enabled_ = tcsetattr(fd_, TCSANOW, &tio) == 0;
+    }
+
+    ~TextInputTerminalMode() {
+        if (enabled_) tcsetattr(fd_, TCSANOW, &original_);
+    }
+
+    bool enabled() const { return enabled_; }
+
+private:
+    int fd_;
+    bool enabled_;
+    struct termios original_;
+};
+
+static void erase_display_columns(int columns) {
+    for (int i = 0; i < columns; i++) putchar('\b');
+    for (int i = 0; i < columns; i++) putchar(' ');
+    for (int i = 0; i < columns; i++) putchar('\b');
+    fflush(stdout);
+}
+
+static bool read_interactive_text_line(const char* prompt, std::string& line) {
+    line.clear();
+    printf("%s", prompt);
+    fflush(stdout);
+
+    aiden::TextInputState input_state;
+    while (!quit) {
+        unsigned char byte;
+        ssize_t n = read(STDIN_FILENO, &byte, 1);
+        if (n == 0) return false;
+        if (n < 0) {
+            if (errno == EINTR) return false;
+            return false;
+        }
+
+        const std::string previous_line = line;
+        const size_t previous_size = line.size();
+        aiden::TextInputLineStatus status = aiden::apply_text_input_byte(input_state, line, byte);
+        if (status == aiden::TextInputLineStatus::Complete) {
+            printf("\n");
+            fflush(stdout);
+            return true;
+        }
+        if (status == aiden::TextInputLineStatus::Eof) return false;
+        if (status == aiden::TextInputLineStatus::Interrupt) {
+            quit = 1;
+            return false;
+        }
+
+        if (line.size() > previous_size) {
+            ssize_t written = write(STDOUT_FILENO, &byte, 1);
+            (void)written;
+        } else if (line.size() < previous_size) {
+            erase_display_columns(aiden::text_display_width(previous_line.substr(line.size())));
+        }
+    }
+
+    return false;
 }
 
 static void on_wakeup() {
@@ -351,7 +440,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    signal(SIGINT, signal_handler);
+    install_signal_handler();
 
     TriggerMode mode = MODE_WAKEUP;
     const char* config_path = "agent.conf";
@@ -483,21 +572,19 @@ int main(int argc, char* argv[]) {
                         config.min_speech_ms, mode == MODE_MANUAL);
 
     if (mode == MODE_TEXT) {
-        // Enable IUTF8 so the TTY driver erases multi-byte UTF-8 chars (e.g. CJK)
-        // as a single unit on backspace, instead of byte-by-byte.
-        struct termios tio;
-        if (tcgetattr(STDIN_FILENO, &tio) == 0) {
-            tio.c_iflag |= IUTF8;
-            tcsetattr(STDIN_FILENO, TCSANOW, &tio);
-        }
+        TextInputTerminalMode terminal_mode(STDIN_FILENO);
 
         printf("\n[ready] Type a command and press Enter (Ctrl+D or Ctrl+C to quit)\n");
         while (!quit) {
-            printf("\n> ");
-            fflush(stdout);
-
             std::string line;
-            if (!std::getline(std::cin, line)) break;
+            if (terminal_mode.enabled()) {
+                printf("\n");
+                if (!read_interactive_text_line("> ", line)) break;
+            } else {
+                printf("\n> ");
+                fflush(stdout);
+                if (!std::getline(std::cin, line)) break;
+            }
 
             if (line.empty()) continue;
 

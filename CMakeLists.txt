@@ -161,6 +161,7 @@ add_executable(agent_main
     src/wav_codec.cpp
     src/provider_factory.cpp
     src/provider_factory_runtime.cpp
+    src/text_input.cpp
     src/vad.cpp
 )
 target_include_directories(agent_main PRIVATE ${CMAKE_BINARY_DIR}/generated)
