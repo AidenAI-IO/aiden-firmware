@@ -1,0 +1,162 @@
+#!/bin/sh
+# Aiden frame service watchdog.
+# Keeps HDMI frame capture available over /run/frame_service/frame_service.sock when the
+# application bundle is deployed. Configure paths in /etc/aiden_frame_service.conf.
+
+CONFIG_FILE=/etc/aiden_frame_service.conf
+
+FRAME_SERVICE_BIN=/oem/usr/bin/frame_service
+SOCKET_PATH=/run/frame_service/frame_service.sock
+LOG_PATH=/var/log/frame_service/frame_service.log
+PID_FILE=/run/frame_service/frame_service.pid
+WATCHDOG_PID_FILE=/run/frame_service/frame_service_watchdog.pid
+
+if [ -f "$CONFIG_FILE" ]; then
+    . "$CONFIG_FILE"
+fi
+
+is_running() {
+    pid="$1"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+pid_matches_service() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    case "$cmd" in
+        *"$FRAME_SERVICE_BIN"*"--socket"*"$SOCKET_PATH"*) return 0 ;;
+        *"frame_service"*"--socket"*"$SOCKET_PATH"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+pid_matches_watchdog() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    case "$cmd" in
+        *"$0"*|*"S52frame_service"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+service_pid() {
+    if [ -f "$PID_FILE" ]; then
+        pid="$(cat "$PID_FILE" 2>/dev/null)"
+        case "$pid" in
+            ''|*[!0-9]*) return ;;
+        esac
+        if pid_matches_service "$pid"; then
+            echo "$pid"
+        fi
+    fi
+}
+
+watchdog_pid() {
+    if [ -f "$WATCHDOG_PID_FILE" ]; then
+        pid="$(cat "$WATCHDOG_PID_FILE" 2>/dev/null)"
+        case "$pid" in
+            ''|*[!0-9]*) return ;;
+        esac
+        if pid_matches_watchdog "$pid"; then
+            echo "$pid"
+        fi
+    fi
+}
+
+start() {
+    wpid="$(watchdog_pid)"
+    if is_running "$wpid"; then
+        echo "frame_service watchdog already running (pid $wpid)"
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$SOCKET_PATH")" "$(dirname "$LOG_PATH")"
+    chmod 0755 "$(dirname "$SOCKET_PATH")" "$(dirname "$LOG_PATH")"
+    rm -f "$SOCKET_PATH"
+
+    (
+        trap 'exit 0' INT TERM
+        while true; do
+            if [ ! -x "$FRAME_SERVICE_BIN" ]; then
+                echo "[frame_service] waiting for $FRAME_SERVICE_BIN" >> "$LOG_PATH"
+                sleep 5
+                continue
+            fi
+
+            echo "[frame_service] starting $FRAME_SERVICE_BIN --socket $SOCKET_PATH" >> "$LOG_PATH"
+            "$FRAME_SERVICE_BIN" --socket "$SOCKET_PATH" >> "$LOG_PATH" 2>&1 &
+            child="$!"
+            echo "$child" > "$PID_FILE"
+            wait "$child"
+            status="$?"
+            rm -f "$PID_FILE" "$SOCKET_PATH"
+            echo "[frame_service] exited with status $status; restarting in 2s" >> "$LOG_PATH"
+            sleep 2
+        done
+    ) &
+    echo "$!" > "$WATCHDOG_PID_FILE"
+    echo "Started frame_service"
+}
+
+stop() {
+    wpid="$(watchdog_pid)"
+    if is_running "$wpid"; then
+        kill "$wpid" 2>/dev/null || true
+    fi
+    rm -f "$WATCHDOG_PID_FILE"
+
+    spid="$(service_pid)"
+    if is_running "$spid"; then
+        kill "$spid" 2>/dev/null || true
+        i=0
+        while is_running "$spid" && [ "$i" -lt 5 ]; do
+            sleep 1
+            i="$((i + 1))"
+        done
+        if is_running "$spid"; then
+            kill -9 "$spid" 2>/dev/null || true
+        fi
+    fi
+
+    rm -f "$PID_FILE" "$SOCKET_PATH"
+    echo "Stopped frame_service"
+}
+
+status() {
+    wpid="$(watchdog_pid)"
+    spid="$(service_pid)"
+    if is_running "$wpid"; then
+        echo "watchdog=running pid=$wpid"
+    else
+        echo "watchdog=stopped"
+    fi
+    if is_running "$spid"; then
+        echo "frame_service=running pid=$spid socket=$SOCKET_PATH"
+    else
+        echo "frame_service=stopped"
+    fi
+}
+
+case "${1:-}" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart|reload)
+        stop
+        start
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}" >&2
+        exit 1
+        ;;
+esac

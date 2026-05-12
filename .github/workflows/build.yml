@@ -1,0 +1,75 @@
+name: Build All
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Run at 00:00 UTC every day
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Cache Buildroot downloads
+      uses: actions/cache@v4
+      with:
+        path: pico-sdk/sysdrv/source/buildroot/buildroot-2023.02.6/dl
+        key: buildroot-dl-${{ hashFiles('pico-sdk/sysdrv/source/buildroot/buildroot-2023.02.6/configs/luckfox_*') }}
+        restore-keys: |
+          buildroot-dl-
+
+    - name: Cache Buildroot output
+      uses: actions/cache@v4
+      with:
+        path: pico-sdk/sysdrv/source/buildroot/buildroot-2023.02.6/output
+        key: buildroot-out-${{ hashFiles('pico-sdk/project/cfg/**/BoardConfig-*.mk', 'pico-sdk/sysdrv/source/buildroot/buildroot-2023.02.6/configs/luckfox_*', 'pico-sdk/sysdrv/Makefile') }}
+        restore-keys: |
+          buildroot-out-
+
+    - name: Cache Kernel build objects
+      uses: actions/cache@v4
+      with:
+        path: |
+          pico-sdk/sysdrv/source/objs_kernel
+          pico-sdk/sysdrv/source/kernel/out
+        key: kernel-${{ hashFiles('pico-sdk/project/cfg/**/BoardConfig-*.mk', 'pico-sdk/sysdrv/source/kernel/arch/arm/configs/luckfox_*', 'pico-sdk/sysdrv/Makefile') }}
+        restore-keys: |
+          kernel-
+
+    - name: Run build script
+      run: sh build_image.sh
+
+    - name: Fix permissions for cache save
+      if: always()
+      run: |
+        sudo chown -R "$USER":"$USER" \
+          pico-sdk/sysdrv/source/buildroot/buildroot-2023.02.6/dl \
+          pico-sdk/sysdrv/source/buildroot/buildroot-2023.02.6/output \
+          pico-sdk/sysdrv/source/objs_kernel \
+          pico-sdk/sysdrv/source/kernel/out 2>/dev/null || true
+
+    - name: Generate release name
+      id: release_info
+      run: |
+        COMMIT_HASH=$(git rev-parse --short HEAD)
+        TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
+        RELEASE_NAME="${COMMIT_HASH}-${TIMESTAMP}"
+        echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+        echo "tag_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: ${{ steps.release_info.outputs.release_name }}
+        tag_name: ${{ steps.release_info.outputs.tag_name }}
+        files: pico-sdk/output/image/*
+        fail_on_unmatched_files: true

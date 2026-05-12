@@ -11,9 +11,6 @@
 ```bash
 git clone --recursive git@github.com:AidenAI-IO/aiden-hardware-demo.git
 cd aiden-hardware-demo
-brew install git-lfs
-git lfs install
-git lfs pull
 ```
 
 ## Flash Image
@@ -21,7 +18,8 @@ git lfs pull
 ```bash
 # Hold the boot button while plugging the board in, or run `reboot loader`
 # on the device to enter maskrom mode.
-./upgrade_tool/upgrade_tool uf ./image/update.img
+# update.img can be found on: https://github.com/AidenAI-IO/aiden-hardware-demo/releases
+./upgrade_tool/upgrade_tool uf ./update.img
 ```
 
 The bundled firmware is built from `pico-sdk` with the following adjustments:
