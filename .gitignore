@@ -4,3 +4,5 @@
 /output/
 *.pcm
 /pico-sdk/
+/overlay/oem/usr/bin/*
+!/overlay/oem/usr/bin/.gitkeep
