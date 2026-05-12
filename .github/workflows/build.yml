@@ -46,7 +46,7 @@ jobs:
           kernel-
 
     - name: Run build script
-      run: sh build_image.sh
+      run: ./build_image.sh
 
     - name: Fix permissions for cache save
       if: always()
