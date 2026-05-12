@@ -1,0 +1,80 @@
+# Agent Configuration Example
+# This file demonstrates all available configuration options
+
+default_agent = "coordinator"
+
+# Unified model configuration
+[model]
+provider = "openrouter"          # Options: openai, openrouter, ollama, fake
+model = "bytedance-seed/seed-2.0-lite"
+# api_key = ""                   # Direct API key (or use token_env)
+token_env = "OPENROUTER_API_KEY" # Environment variable for API key
+# base_url = ""                  # Custom API endpoint
+temperature = 0.2
+max_tokens = 1000
+
+# HID device paths (defaults: /dev/hidg0, /dev/hidg1)
+[hid]
+keyboard_device = "/dev/hidg0"
+mouse_device = "/dev/hidg1"
+frame_socket = "/tmp/frame_service.sock"
+
+# Agent configurations
+[agents.coordinator]
+description = "Main orchestration agent."
+instruction = "You are the main agent. Use tools when they reduce uncertainty."
+default_skills = ["planner"]
+children = ["researcher"]
+max_iterations = 6
+
+# Hardware/ASR options (aligned with agent_main.cpp AgentConfig)
+asr_mode = "direct_audio"       # Options: "direct_audio", "stt_then_text"
+energy_threshold = 300
+silence_ms = 800
+min_speech_ms = 300
+hid_binary = "/usr/local/bin/hid_tool"
+frame_service_socket = "/tmp/frame_service.sock"
+additional_prompt = ""
+
+[agents.coordinator.memory]
+type = "window"
+window_size = 6
+
+# Optional: Text model override (used when asr_mode = "stt_then_text")
+# [agents.coordinator.model_text]
+# provider = "openai"
+# model = "gpt-4"
+# api_key = ""
+
+# Optional: TTS configuration
+# [agents.coordinator.tts]
+# provider = "openai"
+# api_key = ""
+# model = "tts-1"
+# voice_id = "alloy"
+# emotion = "neutral"
+# speed = 1.0
+
+# Optional: STT configuration (OpenAI)
+# [agents.coordinator.stt]
+# provider = "openai"
+# api_key = ""
+# model = "whisper-1"
+# base_url = ""
+
+# Optional: STT configuration (Tencent)
+# [agents.coordinator.stt]
+# provider = "tencent"
+# secret_id = ""
+# secret_key = ""
+# region = "ap-guangzhou"
+# engine_model_type = "16k_zh"
+
+[agents.researcher]
+description = "Child agent for focused research tasks."
+instruction = "You are a child research agent. Finish the delegated sub-task directly and return a compact result."
+default_skills = ["research"]
+max_iterations = 4
+
+[agents.researcher.memory]
+type = "buffer"
