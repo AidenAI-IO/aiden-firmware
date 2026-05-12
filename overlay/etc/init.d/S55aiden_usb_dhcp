@@ -1,0 +1,92 @@
+#!/bin/sh
+# Aiden DHCP/DNS on usb0. Runs after S49usbhid has brought up usb0.
+
+DNSMASQ_BIN=/usr/bin/dnsmasq
+CONF_FILE=/etc/dnsmasq.d/usb0.conf
+PID_FILE=/run/aiden_usb_dhcp.pid
+LOG_FILE=/var/log/aiden_usb_dhcp.log
+
+is_running() {
+	pid="$1"
+	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+current_pid() {
+	[ -f "$PID_FILE" ] || return
+	pid="$(cat "$PID_FILE" 2>/dev/null)"
+	case "$pid" in
+		''|*[!0-9]*) return ;;
+	esac
+	echo "$pid"
+}
+
+start() {
+	pid="$(current_pid)"
+	if is_running "$pid"; then
+		echo "aiden_usb_dhcp already running (pid $pid)"
+		return 0
+	fi
+
+	if [ ! -x "$DNSMASQ_BIN" ]; then
+		echo "dnsmasq not found at $DNSMASQ_BIN"
+		return 1
+	fi
+	if [ ! -f "$CONF_FILE" ]; then
+		echo "config $CONF_FILE missing"
+		return 1
+	fi
+
+	for i in $(seq 1 20); do
+		if [ -d /sys/class/net/usb0 ] && ip -4 addr show usb0 2>/dev/null | grep -q 'inet '; then
+			break
+		fi
+		if ifconfig usb0 2>/dev/null | grep -q 'inet '; then
+			break
+		fi
+		sleep 1
+	done
+	if ! ifconfig usb0 2>/dev/null | grep -q 'inet '; then
+		echo "usb0 has no IPv4 address; not starting dnsmasq"
+		return 1
+	fi
+
+	mkdir -p "$(dirname "$LOG_FILE")"
+	"$DNSMASQ_BIN" --conf-file="$CONF_FILE" \
+		--pid-file="$PID_FILE" \
+		--log-facility="$LOG_FILE" \
+		--keep-in-foreground &
+	echo $! > "$PID_FILE"
+	echo "Started aiden_usb_dhcp (pid $!)"
+}
+
+stop() {
+	pid="$(current_pid)"
+	if is_running "$pid"; then
+		kill "$pid" 2>/dev/null || true
+		i=0
+		while is_running "$pid" && [ "$i" -lt 5 ]; do
+			sleep 1
+			i="$((i + 1))"
+		done
+		is_running "$pid" && kill -9 "$pid" 2>/dev/null || true
+	fi
+	rm -f "$PID_FILE"
+	echo "Stopped aiden_usb_dhcp"
+}
+
+status() {
+	pid="$(current_pid)"
+	if is_running "$pid"; then
+		echo "aiden_usb_dhcp=running pid=$pid"
+	else
+		echo "aiden_usb_dhcp=stopped"
+	fi
+}
+
+case "${1:-}" in
+	start)          start ;;
+	stop)           stop ;;
+	restart|reload) stop; start ;;
+	status)         status ;;
+	*) echo "Usage: $0 {start|stop|restart|status}" >&2; exit 1 ;;
+esac

@@ -1,6 +1,7 @@
 #include "doctest.h"
 #include "config.h"
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <unistd.h>
 
@@ -272,4 +273,64 @@ TEST_CASE("load_config keeps optional fields at defaults when omitted") {
     CHECK(std::string(cfg.tts.voice_id).empty());
     CHECK(std::string(cfg.hid_binary).empty());
     CHECK(std::string(cfg.additional_prompt).empty());
+}
+
+TEST_CASE("save_config preserves values through load roundtrip") {
+    char tmpl[] = "/tmp/aiden_cfg_save_XXXXXX";
+    int fd = mkstemp(tmpl);
+    REQUIRE(fd >= 0);
+    ::close(fd);
+
+    aiden::AgentConfig out;
+    strcpy(out.model.provider, "openrouter");
+    strcpy(out.model.api_key, "sk-save");
+    strcpy(out.model.model, "openai/gpt-4o-mini");
+    strcpy(out.model.base_url, "https://example.com/v1");
+    strcpy(out.model_text.provider, "openrouter");
+    strcpy(out.model_text.api_key, "sk-text");
+    strcpy(out.model_text.model, "anthropic/claude-3-haiku");
+    strcpy(out.tts.provider, "minimax");
+    strcpy(out.tts.api_key, "mm-save");
+    strcpy(out.tts.voice_id, "voice-test");
+    strcpy(out.tts.emotion, "calm");
+    out.tts.speed = 1.3f;
+    strcpy(out.asr_mode, "stt_then_text");
+    strcpy(out.hid_binary, "/usr/bin/example_usb_hid");
+    strcpy(out.additional_prompt, "custom prompt");
+    out.energy_threshold = 456;
+    out.silence_ms = 654;
+    out.min_speech_ms = 222;
+    strcpy(out.stt.provider, "tencent_asr");
+    strcpy(out.stt.secret_id, "id-test");
+    strcpy(out.stt.secret_key, "key-test");
+    strcpy(out.stt.region, "ap-shanghai");
+    strcpy(out.stt.engine_model_type, "16k_en");
+    strcpy(out.network.proxy, "http://192.168.50.200:7890");
+
+    std::string err;
+    REQUIRE(aiden::save_config(tmpl, out, &err));
+    CHECK(err.empty());
+
+    aiden::AgentConfig in;
+    REQUIRE(aiden::load_config(tmpl, in, &err));
+    CHECK(std::string(in.model.api_key) == "sk-save");
+    CHECK(std::string(in.model.model) == "openai/gpt-4o-mini");
+    CHECK(std::string(in.model.base_url) == "https://example.com/v1");
+    CHECK(std::string(in.model_text.api_key) == "sk-text");
+    CHECK(std::string(in.tts.api_key) == "mm-save");
+    CHECK(std::string(in.tts.voice_id) == "voice-test");
+    CHECK(in.tts.speed == doctest::Approx(1.3f));
+    CHECK(std::string(in.asr_mode) == "stt_then_text");
+    CHECK(std::string(in.hid_binary) == "/usr/bin/example_usb_hid");
+    CHECK(std::string(in.additional_prompt) == "custom prompt");
+    CHECK(in.energy_threshold == 456);
+    CHECK(in.silence_ms == 654);
+    CHECK(in.min_speech_ms == 222);
+    CHECK(std::string(in.stt.secret_id) == "id-test");
+    CHECK(std::string(in.stt.secret_key) == "key-test");
+    CHECK(std::string(in.stt.region) == "ap-shanghai");
+    CHECK(std::string(in.stt.engine_model_type) == "16k_en");
+    CHECK(std::string(in.network.proxy) == "http://192.168.50.200:7890");
+
+    ::unlink(tmpl);
 }

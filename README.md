@@ -243,6 +243,29 @@ The agent prints verbose logs tagged by subsystem:
 
 USB HID setup is required (see `src/README.md`).
 
+## USB Config Web
+
+Use `config_web` to configure Wi-Fi and `agent.conf` over the USB ECM link.
+
+```bash
+# Local development (override defaults)
+./build-config/bin/config_web --bind=127.0.0.1 --port=8080 --config=./agent.conf --wifi-config=./wpa_supplicant.conf
+
+# On the board — defaults already bind 192.168.42.1:80 and use /userdata paths
+sudo ./build/bin/config_web
+```
+
+Then open `http://192.168.42.1` from the host connected over USB.
+
+Current capabilities:
+
+- read existing `agent.conf`
+- edit agent settings as JSON and save back to disk
+- write Wi-Fi credentials into `wpa_supplicant.conf`
+- hex-encode SSID values to avoid issues with Chinese / special characters
+- scan nearby Wi-Fi networks with `iw` / `iwlist`
+- best-effort Wi-Fi apply flow via `wpa_cli` / `wpa_supplicant` + `udhcpc` / `dhclient`
+
 ## Scripts
 
 - `build.sh` — build the project with the cross-compile toolchain

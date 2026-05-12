@@ -12,6 +12,7 @@ target_include_directories(doctest INTERFACE
 
 set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/config.cpp
+    ${CMAKE_SOURCE_DIR}/src/wifi_config.cpp
     ${CMAKE_SOURCE_DIR}/src/vad.cpp
     ${CMAKE_SOURCE_DIR}/src/openrouter_codec.cpp
     ${CMAKE_SOURCE_DIR}/src/openai_codec.cpp
@@ -77,6 +78,7 @@ endif()
 add_executable(aiden_tests
     test_main.cpp
     config_test.cpp
+    wifi_config_test.cpp
     vad_test.cpp
     openrouter_codec_test.cpp
     openai_codec_test.cpp

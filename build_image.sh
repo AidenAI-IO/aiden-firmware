@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OVERLAY="$SCRIPT_DIR/overlay"
-DEST="$SCRIPT_DIR/pico-sdk/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buildroot-aiden"
+DEST="$SCRIPT_DIR/pico-sdk/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buildroot-aiden-hid"
 
 echo "Running build.sh"
 cd "$SCRIPT_DIR"
