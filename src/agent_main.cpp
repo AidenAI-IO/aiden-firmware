@@ -5,6 +5,7 @@
 #include "provider_factory.h"
 #include "text_input.h"
 #include "tool_dispatch.h"
+#include "tool_image_attachment.h"
 #include "vad.h"
 #include "wav_codec.h"
 #include <memory>
@@ -139,9 +140,21 @@ static void on_wakeup() {
     wakeup_triggered = true;
 }
 
-static std::string execute_tool(const char* hid_binary, const char* tool_name,
+static const char* frame_socket_path(const aiden::AgentConfig& config) {
+    const char* env_socket = getenv("FRAME_SERVICE_SOCKET");
+    if (env_socket && env_socket[0] != '\0') return env_socket;
+    if (config.frame_service_socket[0] != '\0') return config.frame_service_socket;
+    return "/tmp/frame_service.sock";
+}
+
+static std::string execute_tool(const aiden::AgentConfig& config,
+                                const char* tool_name,
                                 const char* args_json) {
-    aiden::ToolCommandResult command = aiden::build_tool_command(hid_binary, tool_name, args_json);
+    if (aiden::is_frame_tool(tool_name)) {
+        return aiden::handle_frame_tool(frame_socket_path(config), tool_name, args_json, "/tmp");
+    }
+
+    aiden::ToolCommandResult command = aiden::build_tool_command(config.hid_binary, tool_name, args_json);
     if (!command.ok)
         return command.error;
 
@@ -308,14 +321,23 @@ static void run_after_first_turn(aiden::LlmClient& llm,
         }
 
         printf("[tools] Executing %zu tool call(s)...\n", tool_calls.size());
+        std::vector<aiden::ImageAttachment> image_attachments;
         for (size_t i = 0; i < tool_calls.size(); i++) {
             const aiden::ToolCall& tc = tool_calls[i];
             printf("  [tool] %s(%s)\n", tc.name.c_str(), tc.arguments.c_str());
-            std::string result = execute_tool(config.hid_binary,
-                                             tc.name.c_str(),
-                                             tc.arguments.c_str());
+            std::string result = execute_tool(config,
+                                              tc.name.c_str(),
+                                              tc.arguments.c_str());
             printf("  [result] %s\n", result.c_str());
             llm.add_tool_result(tc.id.c_str(), result.c_str());
+            aiden::ImageAttachment attachment;
+            if (aiden::build_image_attachment_from_tool_result(tc.name.c_str(), result.c_str(), &attachment)) {
+                image_attachments.push_back(attachment);
+            }
+        }
+        for (size_t i = 0; i < image_attachments.size(); ++i) {
+            llm.add_user_image_url(image_attachments[i].data_url.c_str(),
+                                   image_attachments[i].text.c_str());
         }
 
         response.clear();

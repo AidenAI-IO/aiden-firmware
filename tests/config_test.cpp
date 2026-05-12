@@ -43,6 +43,7 @@ TEST_CASE("load_config parses role-based sections") {
         "\n"
         "[agent]\n"
         "hid_binary = ./build/bin/example_usb_hid\n"
+        "frame_service_socket = /tmp/test-frame.sock\n"
         "energy_threshold = 450\n"
         "silence_ms = 700\n"
         "min_speech_ms = 250\n"
@@ -64,6 +65,7 @@ TEST_CASE("load_config parses role-based sections") {
     CHECK(cfg.tts.speed == doctest::Approx(1.25f));
 
     CHECK(std::string(cfg.hid_binary) == "./build/bin/example_usb_hid");
+    CHECK(std::string(cfg.frame_service_socket) == "/tmp/test-frame.sock");
     CHECK(cfg.energy_threshold == 450);
     CHECK(cfg.silence_ms == 700);
     CHECK(cfg.min_speech_ms == 250);

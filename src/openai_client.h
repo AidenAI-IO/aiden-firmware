@@ -19,6 +19,7 @@ public:
                    std::string& response, std::vector<ToolCall>& tool_calls) override;
 
     void add_tool_result(const char* tool_call_id, const char* result) override;
+    void add_user_image_url(const char* data_url, const char* text) override;
 
 private:
     std::string api_key_;

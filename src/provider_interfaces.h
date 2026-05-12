@@ -22,6 +22,7 @@ public:
                            std::string& response,
                            std::vector<ToolCall>& tool_calls) = 0;
     virtual void add_tool_result(const char* tool_call_id, const char* result) = 0;
+    virtual void add_user_image_url(const char* data_url, const char* text) = 0;
 };
 
 class TtsClient {

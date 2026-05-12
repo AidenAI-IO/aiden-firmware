@@ -1221,6 +1221,10 @@ bool CameraCapture::get_frame(VideoFrame& frame) {
 }
 
 bool CameraCapture::capture_frame(VideoFrame& frame, std::vector<uint8_t>& buffer) {
+    return capture_frame_timeout(frame, buffer, -1);
+}
+
+bool CameraCapture::capture_frame_timeout(VideoFrame& frame, std::vector<uint8_t>& buffer, int timeout_ms) {
     if (!impl_->initialized || impl_->running) {
         return false;
     }
@@ -1237,7 +1241,7 @@ bool CameraCapture::capture_frame(VideoFrame& frame, std::vector<uint8_t>& buffe
             }
         }
 
-        if (!get_frame(frame)) {
+        if (!impl_->acquire_frame(&frame, timeout_ms)) {
             fprintf(stderr, "Failed to acquire frame (attempt %d/%d): %s\n",
                     attempt + 1, max_attempts, strerror(errno));
         } else {

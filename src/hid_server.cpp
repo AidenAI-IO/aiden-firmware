@@ -1,5 +1,7 @@
 #include "aiden_sdk.h"
 #include "camera_frame_utils.h"
+#include "frame_processing.h"
+#include "frame_service_client.h"
 #include "hid_server.h"
 #include "hid_server_html.h"
 #include "image_process.h"
@@ -14,6 +16,7 @@
 #include <netinet/in.h>
 #include <sstream>
 #include <string>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -614,22 +617,69 @@ ApiResponse handle_capture_request(const std::string& body) {
         return make_json_error(400, error);
     }
 
-    aiden::CameraCapture camera;
-    aiden::VideoFrame frame{};
-    std::vector<uint8_t> frame_buffer;
+    const char* socket_path = std::getenv("FRAME_SERVICE_SOCKET");
+    if (!socket_path || socket_path[0] == '\0') {
+        socket_path = "/tmp/frame_service.sock";
+    }
+
+    aiden::FrameServiceClient client(socket_path);
+    uint64_t since_seq = 0;
+    if (request.config.force_trigger) {
+        aiden::HealthResult health;
+        if (client.health(&health) == aiden::FrameServiceStatus::OK) {
+            since_seq = health.latest_seq;
+        }
+        aiden::FrameServiceStatus restart_status = client.restart();
+        if (restart_status != aiden::FrameServiceStatus::OK) {
+            g_screenshot = ScreenshotData{};
+            return make_json_error(500, std::string("frame service restart failed: ") +
+                                         aiden::frame_service_status_to_string(restart_status));
+        }
+    }
+    aiden::FrameResult frame;
     std::vector<uint8_t> rgb;
 
-    if (!camera.capture_once(request.config, frame, frame_buffer)) {
-        g_screenshot = ScreenshotData{};
-        return make_json_error(500, "capture failed");
+    aiden::FrameServiceStatus status = aiden::FrameServiceStatus::INTERNAL_ERROR;
+    if (request.config.force_trigger) {
+        const uint64_t start_ms = []() -> uint64_t {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            return static_cast<uint64_t>(ts.tv_sec) * 1000ULL + static_cast<uint64_t>(ts.tv_nsec) / 1000000ULL;
+        }();
+        while (true) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            uint64_t now_ms = static_cast<uint64_t>(ts.tv_sec) * 1000ULL + static_cast<uint64_t>(ts.tv_nsec) / 1000000ULL;
+            if (now_ms - start_ms >= 5000) {
+                status = aiden::FrameServiceStatus::TIMEOUT;
+                break;
+            }
+            uint32_t remaining_ms = static_cast<uint32_t>(5000 - (now_ms - start_ms));
+            status = client.latest_frame(since_seq, remaining_ms, &frame);
+            if (status != aiden::FrameServiceStatus::OK) {
+                break;
+            }
+            if (!frame.metadata.stale && frame.metadata.seq > since_seq) {
+                break;
+            }
+            usleep(50 * 1000);
+        }
+    } else {
+        status = client.latest_frame(0, 0, &frame);
     }
-    if (!aiden_demo::convert_frame_to_rgb(frame, request.config.pixel_format, frame_buffer, &rgb)) {
+    if (status != aiden::FrameServiceStatus::OK) {
+        g_screenshot = ScreenshotData{};
+        return make_json_error(500, std::string("frame service capture failed: ") +
+                                     aiden::frame_service_status_to_string(status));
+    }
+
+    if (!aiden::convert_frame_to_rgb(frame.metadata, frame.data, &rgb)) {
         g_screenshot = ScreenshotData{};
         return make_json_error(500, "unsupported pixel format or incomplete frame buffer");
     }
 
-    const int w = static_cast<int>(frame.width);
-    const int h = static_cast<int>(frame.height);
+    const int w = static_cast<int>(frame.metadata.width);
+    const int h = static_cast<int>(frame.metadata.height);
     if (rgb.size() < static_cast<size_t>(w) * static_cast<size_t>(h) * 3U) {
         g_screenshot = ScreenshotData{};
         return make_json_error(500, "incomplete rgb buffer");
@@ -657,7 +707,7 @@ ApiResponse handle_capture_request(const std::string& body) {
     ApiResponse response;
     response.body = "{\"ok\":true,\"width\":" + std::to_string(processed.cols) +
                     ",\"height\":" + std::to_string(processed.rows) +
-                    ",\"pixel_format\":\"" + json_escape(request.pixel_format) + "\"}";
+                    ",\"pixel_format\":\"" + json_escape(frame.metadata.pixel_format) + "\"}";
     return response;
 }
 

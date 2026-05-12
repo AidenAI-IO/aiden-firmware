@@ -16,7 +16,18 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/openrouter_codec.cpp
     ${CMAKE_SOURCE_DIR}/src/openai_codec.cpp
     ${CMAKE_SOURCE_DIR}/src/minimax_codec.cpp
+    ${CMAKE_SOURCE_DIR}/src/frame_service_protocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/frame_ring_buffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/uds_message.cpp
+    ${CMAKE_SOURCE_DIR}/src/uds_client.cpp
+    ${CMAKE_SOURCE_DIR}/src/uds_server.cpp
+    ${CMAKE_SOURCE_DIR}/src/frame_ipc.cpp
+    ${CMAKE_SOURCE_DIR}/src/frame_capture_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/frame_processing.cpp
+    ${CMAKE_SOURCE_DIR}/src/frame_service_client.cpp
+    ${CMAKE_SOURCE_DIR}/src/frame_service_server.cpp
     ${CMAKE_SOURCE_DIR}/src/tool_dispatch.cpp
+    ${CMAKE_SOURCE_DIR}/src/tool_image_attachment.cpp
     ${CMAKE_SOURCE_DIR}/src/agent_version.cpp
     ${CMAKE_SOURCE_DIR}/src/wav_codec.cpp
     ${CMAKE_SOURCE_DIR}/src/provider_factory.cpp
@@ -70,7 +81,18 @@ add_executable(aiden_tests
     openrouter_codec_test.cpp
     openai_codec_test.cpp
     minimax_codec_test.cpp
+    frame_service_protocol_test.cpp
+    frame_service_defaults_test.cpp
+    uds_message_test.cpp
+    uds_client_server_test.cpp
+    frame_ring_buffer_test.cpp
+    frame_ipc_test.cpp
+    frame_service_client_test.cpp
+    frame_service_server_test.cpp
+    frame_capture_manager_test.cpp
+    frame_processing_test.cpp
     tool_dispatch_test.cpp
+    tool_image_attachment_test.cpp
     agent_version_test.cpp
     wav_codec_test.cpp
     provider_factory_test.cpp

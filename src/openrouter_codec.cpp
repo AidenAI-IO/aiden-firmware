@@ -125,6 +125,56 @@ static cJSON* create_tool_definitions() {
     cJSON_AddItemToObject(touch_swipe, "function", touch_swipe_func);
     cJSON_AddItemToArray(tools, touch_swipe);
 
+    cJSON* capture_screenshot = cJSON_CreateObject();
+    cJSON_AddStringToObject(capture_screenshot, "type", "function");
+    cJSON* capture_func = cJSON_CreateObject();
+    cJSON_AddStringToObject(capture_func, "name", "capture_screenshot");
+    cJSON_AddStringToObject(capture_func, "description", "Capture the current HDMI frame as a screenshot and return image metadata plus a local image path");
+    cJSON* capture_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(capture_params, "type", "object");
+    cJSON* capture_props = cJSON_CreateObject();
+    cJSON* capture_format = cJSON_CreateObject();
+    cJSON_AddStringToObject(capture_format, "type", "string");
+    cJSON* capture_format_enum = cJSON_CreateArray();
+    cJSON_AddItemToArray(capture_format_enum, cJSON_CreateString("bmp"));
+    cJSON_AddItemToArray(capture_format_enum, cJSON_CreateString("png"));
+    cJSON_AddItemToObject(capture_format, "enum", capture_format_enum);
+    cJSON_AddStringToObject(capture_format, "description", "Output image format. Defaults to png.");
+    cJSON_AddItemToObject(capture_props, "format", capture_format);
+    cJSON* capture_max_edge = cJSON_CreateObject();
+    cJSON_AddStringToObject(capture_max_edge, "type", "integer");
+    cJSON_AddNumberToObject(capture_max_edge, "minimum", 0);
+    cJSON_AddStringToObject(capture_max_edge, "description", "Maximum output image width or height. Defaults to 960. Use 0 for full resolution.");
+    cJSON_AddItemToObject(capture_props, "max_edge", capture_max_edge);
+    cJSON_AddItemToObject(capture_params, "properties", capture_props);
+    cJSON_AddItemToObject(capture_func, "parameters", capture_params);
+    cJSON_AddItemToObject(capture_screenshot, "function", capture_func);
+    cJSON_AddItemToArray(tools, capture_screenshot);
+
+    cJSON* frame_health = cJSON_CreateObject();
+    cJSON_AddStringToObject(frame_health, "type", "function");
+    cJSON* frame_health_func = cJSON_CreateObject();
+    cJSON_AddStringToObject(frame_health_func, "name", "frame_service_health");
+    cJSON_AddStringToObject(frame_health_func, "description", "Return frame service health, latest frame sequence, age, recovery, and latency metrics");
+    cJSON* frame_health_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(frame_health_params, "type", "object");
+    cJSON_AddItemToObject(frame_health_params, "properties", cJSON_CreateObject());
+    cJSON_AddItemToObject(frame_health_func, "parameters", frame_health_params);
+    cJSON_AddItemToObject(frame_health, "function", frame_health_func);
+    cJSON_AddItemToArray(tools, frame_health);
+
+    cJSON* frame_restart = cJSON_CreateObject();
+    cJSON_AddStringToObject(frame_restart, "type", "function");
+    cJSON* frame_restart_func = cJSON_CreateObject();
+    cJSON_AddStringToObject(frame_restart_func, "name", "frame_service_restart");
+    cJSON_AddStringToObject(frame_restart_func, "description", "Restart the HDMI capture path if frame capture appears stale or unhealthy");
+    cJSON* frame_restart_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(frame_restart_params, "type", "object");
+    cJSON_AddItemToObject(frame_restart_params, "properties", cJSON_CreateObject());
+    cJSON_AddItemToObject(frame_restart_func, "parameters", frame_restart_params);
+    cJSON_AddItemToObject(frame_restart, "function", frame_restart_func);
+    cJSON_AddItemToArray(tools, frame_restart);
+
     return tools;
 }
 
@@ -284,6 +334,36 @@ std::string append_user_text(const std::string& conversation_json,
 
     char* json = cJSON_PrintUnformatted(messages);
     std::string result = json ? json : "[]";
+    free(json);
+    cJSON_Delete(messages);
+    return result;
+}
+
+std::string append_user_image_url(const std::string& conversation_json,
+                                  const char* data_url,
+                                  const char* text) {
+    cJSON* messages = parse_conversation_or_empty(conversation_json);
+    cJSON* user_msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(user_msg, "role", "user");
+    cJSON* content = cJSON_CreateArray();
+
+    cJSON* text_part = cJSON_CreateObject();
+    cJSON_AddStringToObject(text_part, "type", "text");
+    cJSON_AddStringToObject(text_part, "text", text ? text : "");
+    cJSON_AddItemToArray(content, text_part);
+
+    cJSON* image_part = cJSON_CreateObject();
+    cJSON_AddStringToObject(image_part, "type", "image_url");
+    cJSON* image_url = cJSON_CreateObject();
+    cJSON_AddStringToObject(image_url, "url", data_url ? data_url : "");
+    cJSON_AddItemToObject(image_part, "image_url", image_url);
+    cJSON_AddItemToArray(content, image_part);
+
+    cJSON_AddItemToObject(user_msg, "content", content);
+    cJSON_AddItemToArray(messages, user_msg);
+
+    char* json = cJSON_PrintUnformatted(messages);
+    std::string result = json ? json : conversation_json;
     free(json);
     cJSON_Delete(messages);
     return result;

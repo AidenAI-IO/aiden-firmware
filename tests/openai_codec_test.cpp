@@ -4,11 +4,13 @@
 #include <string>
 
 using aiden::openai::build_chat_request;
+using aiden::openai::build_tool_definitions_json;
 using aiden::openai::parse_chat_response;
 using aiden::openai::init_conversation;
 using aiden::openai::append_user_audio_wav;
 using aiden::openai::append_user_audio_wav_if_present;
 using aiden::openai::append_user_text;
+using aiden::openai::append_user_image_url;
 using aiden::openai::append_assistant_message;
 using aiden::openai::append_tool_result;
 using aiden::openai::ChatResult;
@@ -26,6 +28,53 @@ TEST_CASE("openai build_chat_request wraps conversation with model and tools") {
     CHECK(cJSON_GetObjectItem(obj, "messages")->type == cJSON_Array);
     CHECK(cJSON_GetObjectItem(obj, "tools")->type == cJSON_Array);
     cJSON_Delete(obj);
+}
+
+TEST_CASE("openai build_tool_definitions_json contains frame service tools") {
+    std::string json = build_tool_definitions_json();
+    cJSON* arr = cJSON_Parse(json.c_str());
+    REQUIRE(arr != nullptr);
+    REQUIRE(arr->type == cJSON_Array);
+
+    std::string names;
+    for (cJSON* item = arr->child; item; item = item->next) {
+        cJSON* func = cJSON_GetObjectItem(item, "function");
+        REQUIRE(func != nullptr);
+        cJSON* name = cJSON_GetObjectItem(func, "name");
+        REQUIRE(name != nullptr);
+        names += name->valuestring;
+        names += ",";
+    }
+    cJSON_Delete(arr);
+
+    CHECK(names.find("capture_screenshot,") != std::string::npos);
+    CHECK(names.find("frame_service_health,") != std::string::npos);
+    CHECK(names.find("frame_service_restart,") != std::string::npos);
+}
+
+TEST_CASE("openai capture_screenshot max_edge schema allows full resolution sentinel") {
+    std::string json = build_tool_definitions_json();
+    cJSON* arr = cJSON_Parse(json.c_str());
+    REQUIRE(arr != nullptr);
+
+    cJSON* max_edge = nullptr;
+    for (cJSON* item = arr->child; item; item = item->next) {
+        cJSON* func = cJSON_GetObjectItem(item, "function");
+        cJSON* name = func ? cJSON_GetObjectItem(func, "name") : nullptr;
+        if (name && name->type == cJSON_String && std::string(name->valuestring) == "capture_screenshot") {
+            cJSON* params = cJSON_GetObjectItem(func, "parameters");
+            cJSON* props = params ? cJSON_GetObjectItem(params, "properties") : nullptr;
+            max_edge = props ? cJSON_GetObjectItem(props, "max_edge") : nullptr;
+            break;
+        }
+    }
+
+    REQUIRE(max_edge != nullptr);
+    cJSON* minimum = cJSON_GetObjectItem(max_edge, "minimum");
+    REQUIRE(minimum != nullptr);
+    CHECK(minimum->type == cJSON_Number);
+    CHECK(minimum->valuedouble == 0.0);
+    cJSON_Delete(arr);
 }
 
 TEST_CASE("openai parse_chat_response extracts plain text content") {
@@ -116,6 +165,32 @@ TEST_CASE("openai append_user_text escapes quotes and survives NULL") {
     cJSON* user2 = cJSON_GetArrayItem(arr2, 1);
     CHECK(std::string(cJSON_GetObjectItem(user2, "content")->valuestring) == "");
     cJSON_Delete(arr2);
+}
+
+TEST_CASE("openai append_user_image_url appends vision content") {
+    std::string conv = init_conversation("sys");
+    std::string appended = append_user_image_url(conv,
+                                                 "data:image/png;base64,AAAA",
+                                                 "Screenshot captured from frame_service.");
+
+    cJSON* arr = cJSON_Parse(appended.c_str());
+    REQUIRE(arr != nullptr);
+    REQUIRE(cJSON_GetArraySize(arr) == 2);
+    cJSON* user = cJSON_GetArrayItem(arr, 1);
+    CHECK(std::string(cJSON_GetObjectItem(user, "role")->valuestring) == "user");
+    cJSON* content = cJSON_GetObjectItem(user, "content");
+    REQUIRE(content != nullptr);
+    REQUIRE(content->type == cJSON_Array);
+    REQUIRE(cJSON_GetArraySize(content) == 2);
+    cJSON* text = cJSON_GetArrayItem(content, 0);
+    CHECK(std::string(cJSON_GetObjectItem(text, "type")->valuestring) == "text");
+    CHECK(std::string(cJSON_GetObjectItem(text, "text")->valuestring) == "Screenshot captured from frame_service.");
+    cJSON* image = cJSON_GetArrayItem(content, 1);
+    CHECK(std::string(cJSON_GetObjectItem(image, "type")->valuestring) == "image_url");
+    cJSON* image_url = cJSON_GetObjectItem(image, "image_url");
+    REQUIRE(image_url != nullptr);
+    CHECK(std::string(cJSON_GetObjectItem(image_url, "url")->valuestring) == "data:image/png;base64,AAAA");
+    cJSON_Delete(arr);
 }
 
 TEST_CASE("openai append_tool_result adds a role=tool message") {
