@@ -63,8 +63,8 @@ jobs:
         COMMIT_HASH=$(git rev-parse --short HEAD)
         TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
         RELEASE_NAME="${COMMIT_HASH}-${TIMESTAMP}"
-        echo "release_name=${RELEASE_NAME}" >> $GITHUB_OUTPUT
-        echo "tag_name=${RELEASE_NAME}" >> $GITHUB_OUTPUT
+        echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+        echo "tag_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
 
     - name: Create Release
       uses: softprops/action-gh-release@v2

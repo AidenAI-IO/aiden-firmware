@@ -15,11 +15,11 @@
 你需要准备好 x86_64 Linux 环境，并安装好 Docker
 
 ```shell
-sh build_image.sh
+./build_image.sh
 ```
 
 > [!NOTE]
-> `sh build_image.sh` 将会使用 Docker 启动一个标准的 Ubuntu 22.04 编译环境，自动编译所有组件以及打包相关镜像
+> `./build_image.sh` 将会使用 Docker 启动一个标准的 Ubuntu 22.04 编译环境，自动编译所有组件以及打包相关镜像
 
 ## 固件刷入
 
