@@ -7,7 +7,7 @@
 
 如果不想自己编译生成固件（耗时较长），可以下载使用提前准备好的固件：
 
-[Aiden SDK Release](https://github.com/AidenAI-IO/aiden-sdk/releases)
+[Aiden Release](https://github.com/AidenAI-IO/aiden-hardware-demo/releases)
 
 
 ## 固件生成
@@ -15,13 +15,11 @@
 你需要准备好 x86_64 Linux 环境，并安装好 Docker
 
 ```shell
-git clone https://github.com/AidenAI-IO/aiden-sdk
-cd aiden-sdk
-sh dev.sh
+sh build_image.sh
 ```
 
 > [!NOTE]
-> `sh dev.sh` 将会使用 Docker 启动一个标准的 Ubuntu 22.04 编译环境，并执行 `./build.sh all`，自动编译所有组件以及打包相关镜像
+> `sh build_image.sh` 将会使用 Docker 启动一个标准的 Ubuntu 22.04 编译环境，自动编译所有组件以及打包相关镜像
 
 ## 固件刷入
 
@@ -55,13 +53,3 @@ upgrade_tool 是支持单独更新指定的分区的，分区划分可参考下�
 | **oem** | `0x000000500000` | `0x000002300000` | `0x1E00000` | 31,457,280 | 30 MB |
 | **userdata** | `0x000002300000` | `0x000002d00000` | `0xA00000` | 10,485,760 | 10 MB |
 | **rootfs** | `0x000002d00000` | `0x00000ff00000` | `0xC200000` | 203,843,584 | ~194.375 MB |
-
-
-## 固件调整
-
-通过添加 buildroot overlay 的形式，向固件中添加启动脚本或是一些 executables
-
-```shell
-# aiden-sdk/project/cfg/BoardConfig_IPC/BoardConfig-EMMC-Buildroot-RV1106_Luckfox_Pico_Zero-IPC.mk:129
-export RK_POST_OVERLAY="overlay-luckfox-config overlay-luckfox-buildroot-init overlay-luckfox-buildroot-shadow overlay-luckfox-buildroot-aiden-hid"
-```
