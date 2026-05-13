@@ -16,6 +16,7 @@ type Config struct {
 	HID          HIDConfig              `toml:"hid"`
 	SkillsDirs   []string               `toml:"skills_dirs"`
 	Agents       map[string]AgentConfig `toml:"agents"`
+	ConfigDir    string                 `toml:"-"` // Not from TOML, set by LoadConfigFromDir
 }
 
 type HIDConfig struct {
@@ -113,6 +114,9 @@ func LoadConfigFromDir(configDir string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+
+	// Store the config directory for logger and other uses
+	cfg.ConfigDir = configDir
 
 	skillsDir := filepath.Join(configDir, "skills")
 	if info, err := os.Stat(skillsDir); err == nil && info.IsDir() {

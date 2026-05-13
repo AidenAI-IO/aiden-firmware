@@ -26,6 +26,7 @@ type Runtime struct {
 	tools        *ToolSet
 	skills       *SkillManager
 	skillsLoaded bool
+	logger       *Logger
 }
 
 type RunRequest struct {
@@ -65,7 +66,19 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		skillIndex = NewSkillIndex()
 	}
 
-	return NewRuntimeWithDeps(cfg, NewModelManager(cfg.Model), NewMemoryManager(), NewBuiltinToolSet(cfg.HID), skillIndex), nil
+	// Create logger if ConfigDir is set
+	var logger *Logger
+	if cfg.ConfigDir != "" {
+		logger, err = NewLogger(cfg.ConfigDir)
+		if err != nil {
+			return nil, fmt.Errorf("create logger: %w", err)
+		}
+		logger.Info("Agent runtime initialized with config from %s", cfg.ConfigDir)
+	}
+
+	rt := NewRuntimeWithDeps(cfg, NewModelManager(cfg.Model), NewMemoryManager(), NewBuiltinToolSet(cfg.HID), skillIndex)
+	rt.logger = logger
+	return rt, nil
 }
 
 func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
@@ -88,6 +101,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		agentName = r.config.DefaultAgent
 	}
 
+	if r.logger != nil {
+		r.logger.Info("Starting agent run: agent=%s input=%q", agentName, req.Input)
+	}
+
 	cfg, ok := r.config.Agents[agentName]
 	if !ok {
 		return RunResult{}, fmt.Errorf("unknown agent %q", agentName)
@@ -100,8 +117,15 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	skillNames := uniqueNonEmpty(append(append([]string{}, cfg.DefaultSkills...), req.Skills...))
 	for _, skillName := range skillNames {
 		if err := r.skills.Activate(ctx, skillName); err != nil {
+			if r.logger != nil {
+				r.logger.Error("Failed to activate skill %q: %v", skillName, err)
+			}
 			return RunResult{}, fmt.Errorf("activate skill %q: %w", skillName, err)
 		}
+	}
+
+	if r.logger != nil && len(skillNames) > 0 {
+		r.logger.Info("Activated skills: %v", skillNames)
 	}
 
 	// Resolve activated skills
@@ -311,4 +335,13 @@ func (h *streamCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk [
 		h.firstTokenSeen = true
 		h.metrics.FirstTokenTime = float64(time.Since(h.startTime).Milliseconds())
 	}
+}
+
+// Close releases resources held by the runtime
+func (r *Runtime) Close() error {
+	if r.logger != nil {
+		r.logger.Info("Shutting down agent runtime")
+		return r.logger.Close()
+	}
+	return nil
 }

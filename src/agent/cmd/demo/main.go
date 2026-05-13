@@ -47,6 +47,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "create runtime: %v\n", err)
 		os.Exit(1)
 	}
+	defer runtime.Close()
 
 	ctx := context.Background()
 
