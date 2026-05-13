@@ -38,7 +38,21 @@ type frameResponse struct {
 
 // LatestFrame fetches the most recent frame from the service.
 func (c *FrameServiceClient) LatestFrame() (*frameMetadata, []byte, error) {
-	request := `{"type":"request","method":"latest_frame","since_seq":"0","timeout_ms":0}`
+	return c.LatestFrameWithFormat("raw", 0)
+}
+
+// LatestFrameWithFormat fetches the most recent frame with specified format.
+// format: "raw" (YUV) or "jpeg"
+// quality: JPEG quality (1-100), ignored for raw format
+func (c *FrameServiceClient) LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error) {
+	if format == "" {
+		format = "raw"
+	}
+	if quality <= 0 {
+		quality = 80
+	}
+
+	request := fmt.Sprintf(`{"type":"request","method":"latest_frame","since_seq":"0","timeout_ms":0,"format":"%s","quality":%d}`, format, quality)
 
 	headerJSON, payload, err := c.doRequest(request, nil, 5*time.Second)
 	if err != nil {

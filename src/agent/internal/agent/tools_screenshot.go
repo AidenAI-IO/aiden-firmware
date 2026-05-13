@@ -22,30 +22,18 @@ func (t *ScreenshotTool) Name() string { return "screenshot" }
 
 func (t *ScreenshotTool) Description() string {
 	return `Capture a screenshot from the connected display. No input required (pass empty JSON {} or ""). ` +
-		`Returns a JSON object with width, height, and base64-encoded JPEG image data. ` +
-		`Black borders are automatically cropped.`
+		`Returns a JSON object with width, height, and base64-encoded JPEG image data.`
 }
 
 func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
-	meta, frameData, err := t.client.LatestFrame()
+	// Request JPEG format directly from frame_service (hardware-encoded)
+	meta, jpegData, err := t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
 	if err != nil {
 		return "", fmt.Errorf("capture screenshot: %w", err)
 	}
 
-	rgb, err := convertFrameToRGB(meta, frameData)
-	if err != nil {
-		return "", fmt.Errorf("convert frame: %w", err)
-	}
-
-	w, h := int(meta.Width), int(meta.Height)
-
-	// Crop black bars
-	rgb, w, h = cropBlackBars(rgb, w, h, defaultBlackThreshold)
-
-	// Encode to JPEG
-	jpegData, err := encodeJPEG(rgb, w, h, screenshotJPEGQuality)
-	if err != nil {
-		return "", fmt.Errorf("encode jpeg: %w", err)
+	if meta.PixelFormat != "jpeg" {
+		return "", fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
 	}
 
 	result := struct {
@@ -55,8 +43,8 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		Size   int    `json:"size"`
 		Data   string `json:"data"`
 	}{
-		Width:  w,
-		Height: h,
+		Width:  int(meta.Width),
+		Height: int(meta.Height),
 		Format: "jpeg",
 		Size:   len(jpegData),
 		Data:   base64.StdEncoding.EncodeToString(jpegData),

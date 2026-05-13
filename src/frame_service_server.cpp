@@ -1,4 +1,5 @@
 #include "frame_service_server.h"
+#include "frame_jpeg_encoder.h"
 #include "cJSON/cJSON.h"
 #include "uds_message.h"
 #include <chrono>
@@ -318,6 +319,15 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
     } else if (method == "latest_frame") {
         uint64_t since_seq = json_u64(root, "since_seq");
         uint32_t timeout_ms = json_u32(root, "timeout_ms");
+        std::string format = json_string(root, "format");
+        int quality = static_cast<int>(json_u32(root, "quality"));
+        if (quality <= 0) {
+            quality = 80;
+        }
+        if (format.empty()) {
+            format = "raw";
+        }
+
         std::shared_ptr<const FrameBufferFrame> frame;
         bool recovering = is_recovering();
         FrameServiceStatus status = recovering ? ring_.latest_frame_ref(0, &frame)
@@ -343,9 +353,25 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
             if (recovering) {
                 metadata.stale = true;
             }
+
+            std::vector<uint8_t> payload;
+            if (format == "jpeg") {
+                // Encode to JPEG using hardware encoder
+                if (!encode_yuv_to_jpeg_hw(frame->data, metadata.width, metadata.height,
+                                           metadata.pixel_format, quality, &payload)) {
+                    write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
+                    cJSON_Delete(root);
+                    return;
+                }
+                metadata.pixel_format = "jpeg";
+                metadata.bytes = payload.size();
+            } else {
+                payload = frame->data;
+            }
+
             std::string header = "{\"type\":\"response\",\"method\":\"latest_frame\",\"status\":\"OK\",\"frame\":" +
                                  frame_metadata_json(metadata) + "}";
-            if (write_payload_message(fd, header, frame->data) == FrameServiceStatus::OK) {
+            if (write_payload_message(fd, header, payload) == FrameServiceStatus::OK) {
                 record_serve_latency(started_ns);
             }
         } else {
