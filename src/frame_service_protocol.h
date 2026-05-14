@@ -1,5 +1,6 @@
 #pragma once
 
+#include "service_status.h"
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -7,15 +8,9 @@
 
 namespace aiden {
 
-enum class FrameServiceStatus {
-    OK,
-    NO_NEW_FRAME,
-    FRAME_NOT_FOUND,
-    SERVICE_RECOVERING,
-    TIMEOUT,
-    TRANSPORT_ERROR,
-    INTERNAL_ERROR,
-};
+// FrameServiceStatus is an alias for the shared AidenServiceStatus.
+// All frame_service code continues to compile without modification.
+using FrameServiceStatus = AidenServiceStatus;
 
 struct FramePlaneMetadata {
     uint32_t offset = 0;

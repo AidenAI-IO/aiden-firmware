@@ -62,6 +62,7 @@ target_include_directories(cjson PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
 add_library(aiden STATIC
     src/aiden_sdk.cpp
+    src/service_status.cpp
     src/uds_message.cpp
     src/uds_client.cpp
     src/uds_server.cpp
@@ -73,6 +74,12 @@ add_library(aiden STATIC
     src/frame_service_client.cpp
     src/frame_service_protocol.cpp
     src/frame_service_server.cpp
+    src/audio_service_protocol.cpp
+    src/audio_record_session.cpp
+    src/audio_playback_session.cpp
+    src/audio_session_manager.cpp
+    src/audio_service_server.cpp
+    src/audio_service_client.cpp
 )
 
 target_include_directories(aiden
@@ -127,6 +134,14 @@ target_link_libraries(frame_service PRIVATE aiden pthread)
 add_executable(frame_service_cli src/frame_service_cli.cpp)
 target_include_directories(frame_service_cli PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(frame_service_cli PRIVATE aiden)
+
+add_executable(audio_service src/audio_service_main.cpp)
+target_include_directories(audio_service PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(audio_service PRIVATE aiden pthread)
+
+add_executable(audio_service_cli src/audio_service_cli.cpp)
+target_include_directories(audio_service_cli PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(audio_service_cli PRIVATE aiden)
 
 add_executable(audio_stream src/audio_stream.cpp)
 target_link_libraries(audio_stream PRIVATE aiden)

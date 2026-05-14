@@ -163,6 +163,8 @@ bool load_config(const char* path, AgentConfig& config, std::string* error) {
                 copy_str(config.hid_binary, sizeof(config.hid_binary), val);
             else if (strcmp(key, "frame_service_socket") == 0)
                 copy_str(config.frame_service_socket, sizeof(config.frame_service_socket), val);
+            else if (strcmp(key, "audio_service_socket") == 0)
+                copy_str(config.audio_service_socket, sizeof(config.audio_service_socket), val);
             else if (strcmp(key, "additional_prompt") == 0)
                 copy_str(config.additional_prompt, sizeof(config.additional_prompt), val);
             else if (strcmp(key, "energy_threshold") == 0)

@@ -1,6 +1,6 @@
 #pragma once
 #include "provider_interfaces.h"
-#include "aiden_sdk.h"
+#include "audio_service_client.h"
 #include <string>
 
 namespace aiden {
@@ -10,7 +10,8 @@ public:
     MinimaxTTS(const char* api_key, const char* voice_id,
                const char* emotion, float speed);
 
-    bool text_to_speech_stream(const char* text, aiden::AudioPlayer& player) override;
+    bool text_to_speech_stream(const char* text,
+                               aiden::AudioServiceClient& audio) override;
 
 private:
     std::string api_key_;

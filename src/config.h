@@ -66,6 +66,7 @@ struct AgentConfig {
     char asr_mode[32];
     char hid_binary[256];
     char frame_service_socket[256];
+    char audio_service_socket[256];
     char additional_prompt[2048];
     int energy_threshold;
     int silence_ms;
@@ -75,6 +76,7 @@ struct AgentConfig {
         asr_mode[0] = '\0';
         hid_binary[0] = '\0';
         frame_service_socket[0] = '\0';
+        audio_service_socket[0] = '\0';
         additional_prompt[0] = '\0';
         energy_threshold = 300;
         silence_ms = 800;

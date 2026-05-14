@@ -1,55 +1,15 @@
 #include "frame_service_protocol.h"
+#include "service_status.h"
 #include <string.h>
 
 namespace aiden {
 
 const char* frame_service_status_to_string(FrameServiceStatus status) {
-    switch (status) {
-        case FrameServiceStatus::OK:
-            return "OK";
-        case FrameServiceStatus::NO_NEW_FRAME:
-            return "NO_NEW_FRAME";
-        case FrameServiceStatus::FRAME_NOT_FOUND:
-            return "FRAME_NOT_FOUND";
-        case FrameServiceStatus::SERVICE_RECOVERING:
-            return "SERVICE_RECOVERING";
-        case FrameServiceStatus::TIMEOUT:
-            return "TIMEOUT";
-        case FrameServiceStatus::TRANSPORT_ERROR:
-            return "TRANSPORT_ERROR";
-        case FrameServiceStatus::INTERNAL_ERROR:
-            return "INTERNAL_ERROR";
-    }
-    return "INTERNAL_ERROR";
+    return service_status_to_string(status);
 }
 
 bool frame_service_status_from_string(const char* text, FrameServiceStatus* out) {
-    if (!text || !out) {
-        return false;
-    }
-
-    struct Mapping {
-        const char* text;
-        FrameServiceStatus status;
-    };
-
-    static const Mapping mappings[] = {
-        {"OK", FrameServiceStatus::OK},
-        {"NO_NEW_FRAME", FrameServiceStatus::NO_NEW_FRAME},
-        {"FRAME_NOT_FOUND", FrameServiceStatus::FRAME_NOT_FOUND},
-        {"SERVICE_RECOVERING", FrameServiceStatus::SERVICE_RECOVERING},
-        {"TIMEOUT", FrameServiceStatus::TIMEOUT},
-        {"TRANSPORT_ERROR", FrameServiceStatus::TRANSPORT_ERROR},
-        {"INTERNAL_ERROR", FrameServiceStatus::INTERNAL_ERROR},
-    };
-
-    for (size_t i = 0; i < sizeof(mappings) / sizeof(mappings[0]); ++i) {
-        if (strcmp(text, mappings[i].text) == 0) {
-            *out = mappings[i].status;
-            return true;
-        }
-    }
-    return false;
+    return service_status_from_string(text, out);
 }
 
 static void write_le32(std::vector<uint8_t>& out, uint32_t value) {
