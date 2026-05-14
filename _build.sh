@@ -18,3 +18,4 @@ echo "Build complete!"
 echo "Library: $ROOT_DIR/build/lib/libaiden.a"
 echo "Binaries in: $ROOT_DIR/build/bin/"
 ls -lh "$ROOT_DIR/build/bin/"
+
