@@ -89,9 +89,6 @@ func resolveToken(cfg ModelConfig) string {
 	if cfg.APIKey != "" {
 		return cfg.APIKey
 	}
-	if cfg.Token != "" {
-		return cfg.Token
-	}
 	if cfg.TokenEnv != "" {
 		return os.Getenv(cfg.TokenEnv)
 	}

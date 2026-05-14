@@ -52,22 +52,6 @@ func (s *ToolSet) Names() []string {
 	return names
 }
 
-type DelegateTool struct {
-	name        string
-	description string
-	run         func(ctx context.Context, input string) (string, error)
-}
-
-func (t *DelegateTool) Name() string        { return t.name }
-func (t *DelegateTool) Description() string { return t.description }
-func (t *DelegateTool) Call(ctx context.Context, input string) (string, error) {
-	return t.run(ctx, input)
-}
-
-func DelegateToolName(agentName string) string {
-	return "delegate_" + agentName
-}
-
 // ActivateSkillTool allows the LLM to activate skills at runtime.
 type ActivateSkillTool struct {
 	skillManager *SkillManager

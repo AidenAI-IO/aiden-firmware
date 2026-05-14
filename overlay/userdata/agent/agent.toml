@@ -1,4 +1,5 @@
-default_agent = "coordinator"
+instruction = "You are a helpful assistant. Use tools when they help accomplish the task."
+max_iterations = 6
 
 [model]
 provider = "openrouter"
@@ -11,23 +12,3 @@ max_tokens = 1000
 keyboard_device = "/dev/hidg0"
 mouse_device = "/dev/hidg1"
 frame_socket = "/run/frame_service/frame_service.sock"
-
-[agents.coordinator]
-description = "Main orchestration agent."
-instruction = "You are the main agent. Use tools when they reduce uncertainty. If a child agent is better suited for a focused sub-task, delegate and then synthesize the result."
-default_skills = ["planner"]
-children = ["researcher"]
-max_iterations = 6
-
-[agents.coordinator.memory]
-type = "window"
-window_size = 6
-
-[agents.researcher]
-description = "Child agent for focused research tasks."
-instruction = "You are a child research agent. Finish the delegated sub-task directly and return a compact result."
-default_skills = ["research"]
-max_iterations = 4
-
-[agents.researcher.memory]
-type = "buffer"

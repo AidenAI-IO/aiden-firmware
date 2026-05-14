@@ -15,10 +15,6 @@ import (
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
-const maxDelegateDepth = 4
-
-type delegateDepthKey struct{}
-
 type Runtime struct {
 	config       Config
 	models       ModelResolver
@@ -30,18 +26,16 @@ type Runtime struct {
 }
 
 type RunRequest struct {
-	AgentName    string
 	Input        string
 	Skills       []string
 	StreamWriter io.Writer
 }
 
 type RunResult struct {
-	AgentName string          `json:"agent_name"`
-	Output    string          `json:"output"`
-	Skills    []string        `json:"skills"`
-	Memory    []MessageRecord `json:"memory,omitempty"`
-	Metrics   *RunMetrics     `json:"metrics,omitempty"`
+	Output  string          `json:"output"`
+	Skills  []string        `json:"skills"`
+	Memory  []MessageRecord `json:"memory,omitempty"`
+	Metrics *RunMetrics     `json:"metrics,omitempty"`
 }
 
 type RunMetrics struct {
@@ -96,25 +90,16 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	startTime := time.Now()
 	metrics := &RunMetrics{}
 
-	agentName := req.AgentName
-	if agentName == "" {
-		agentName = r.config.DefaultAgent
-	}
-
 	if r.logger != nil {
-		r.logger.Info("Starting agent run: agent=%s input=%q", agentName, req.Input)
+		r.logger.Info("Starting agent run: input=%q", req.Input)
 	}
 
-	cfg, ok := r.config.Agents[agentName]
-	if !ok {
-		return RunResult{}, fmt.Errorf("unknown agent %q", agentName)
-	}
 	if req.Input == "" {
 		return RunResult{}, errors.New("input is required")
 	}
 
-	// Activate default skills
-	skillNames := uniqueNonEmpty(append(append([]string{}, cfg.DefaultSkills...), req.Skills...))
+	// Activate skills
+	skillNames := uniqueNonEmpty(req.Skills)
 	for _, skillName := range skillNames {
 		if err := r.skills.Activate(ctx, skillName); err != nil {
 			if r.logger != nil {
@@ -128,7 +113,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		r.logger.Info("Activated skills: %v", skillNames)
 	}
 
-	// Resolve activated skills
 	resolvedSkills, err := r.skills.Resolve(skillNames)
 	if err != nil {
 		return RunResult{}, err
@@ -139,20 +123,17 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, err
 	}
 
-	memoryHandle, err := r.memories.Get(agentName, cfg.Memory)
+	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
 	if err != nil {
 		return RunResult{}, err
 	}
 
-	availableTools, err := r.resolveTools(agentName, cfg, resolvedSkills)
-	if err != nil {
-		return RunResult{}, err
-	}
+	availableTools := r.resolveTools(resolvedSkills)
 
-	prompt := buildPrompt(agentName, cfg, resolvedSkills, availableTools)
+	prompt := buildPrompt("agent", AgentConfig{Instruction: r.config.Instruction}, resolvedSkills, availableTools)
 	agent := agents.NewOneShotAgent(model, availableTools, agents.WithPrompt(prompt))
 
-	maxIterations := cfg.MaxIterations
+	maxIterations := r.config.MaxIterations
 	if maxIterations <= 0 {
 		maxIterations = 6
 	}
@@ -163,10 +144,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		agents.WithMaxIterations(maxIterations),
 	)
 
-	// Build call options
 	callOptions := r.models.CallOptions()
 
-	// Add streaming callback if StreamWriter is provided
 	if req.StreamWriter != nil {
 		streamHandler := &streamCallbackHandler{
 			writer:    req.StreamWriter,
@@ -181,31 +160,26 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, err
 	}
 
-	// Calculate total duration
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
 
-	memorySnapshot, err := r.memories.Snapshot(ctx, agentName)
+	memorySnapshot, err := r.memories.Snapshot(ctx, "default")
 	if err != nil {
 		return RunResult{}, err
 	}
 
 	return RunResult{
-		AgentName: agentName,
-		Output:    output,
-		Skills:    r.skills.GetActivatedSkills(),
-		Memory:    memorySnapshot,
-		Metrics:   metrics,
+		Output:  output,
+		Skills:  r.skills.GetActivatedSkills(),
+		Memory:  memorySnapshot,
+		Metrics: metrics,
 	}, nil
 }
 
-func (r *Runtime) ClearMemory(ctx context.Context, agentName string) error {
-	if agentName == "" {
-		agentName = r.config.DefaultAgent
-	}
-	return r.memories.Clear(ctx, agentName)
+func (r *Runtime) ClearMemory(ctx context.Context) error {
+	return r.memories.Clear(ctx, "default")
 }
 
-func (r *Runtime) resolveTools(agentName string, cfg AgentConfig, skills ResolvedSkills) ([]langtools.Tool, error) {
+func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 	available := make([]langtools.Tool, 0)
 
 	if r.skillsLoaded {
@@ -218,61 +192,15 @@ func (r *Runtime) resolveTools(agentName string, cfg AgentConfig, skills Resolve
 				continue
 			}
 			tool, ok := r.tools.Get(toolName)
-			if !ok {
-				return nil, fmt.Errorf("skill references unknown tool %q", toolName)
+			if ok {
+				available = append(available, tool)
 			}
-			available = append(available, tool)
 		}
 	} else {
 		available = append(available, r.tools.All()...)
 	}
 
-	// Add child agent delegate tools
-	for _, child := range cfg.Children {
-		if skills.HasChildRestriction {
-			if _, ok := skills.AllowedChildren[child]; !ok {
-				continue
-			}
-		}
-
-		toolName := DelegateToolName(child)
-		if skills.HasToolRestriction {
-			if _, ok := skills.AllowedTools[toolName]; !ok {
-				continue
-			}
-		}
-
-		childCfg := r.config.Agents[child]
-		available = append(available, &DelegateTool{
-			name: toolName,
-			description: fmt.Sprintf(
-				"Delegate a focused sub-task to child agent %q. Child description: %s",
-				child,
-				childCfg.Description,
-			),
-			run: func(ctx context.Context, input string) (string, error) {
-				return r.runChild(ctx, agentName, child, input)
-			},
-		})
-	}
-
-	return available, nil
-}
-
-func (r *Runtime) runChild(ctx context.Context, parentName string, childName string, input string) (string, error) {
-	depth, _ := ctx.Value(delegateDepthKey{}).(int)
-	if depth >= maxDelegateDepth {
-		return "", fmt.Errorf("delegate depth exceeded while %q delegates to %q", parentName, childName)
-	}
-
-	result, err := r.Run(context.WithValue(ctx, delegateDepthKey{}, depth+1), RunRequest{
-		AgentName: childName,
-		Input:     input,
-	})
-	if err != nil {
-		return "", err
-	}
-	return result.Output, nil
+	return available
 }
 
 // streamCallbackHandler implements callbacks.Handler for streaming output

@@ -14,7 +14,6 @@ import (
 func main() {
 	var (
 		configDir  = flag.String("config", "", "path to config directory (required)")
-		agentName  = flag.String("agent", "", "agent name, defaults to config.default_agent")
 		skillCSV   = flag.String("skills", "", "comma separated skills")
 		input      = flag.String("input", "", "input text")
 		showMemory = flag.Bool("show-memory", false, "print memory snapshot after the run")
@@ -51,20 +50,14 @@ func main() {
 
 	ctx := context.Background()
 
-	targetAgent := *agentName
-	if targetAgent == "" {
-		targetAgent = cfg.DefaultAgent
-	}
-
 	if *clearFirst {
-		if err := runtime.ClearMemory(ctx, targetAgent); err != nil {
+		if err := runtime.ClearMemory(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "clear memory: %v\n", err)
 			os.Exit(1)
 		}
 	}
 
 	result, err := runtime.Run(ctx, agent.RunRequest{
-		AgentName:    *agentName,
 		Input:        requestText,
 		Skills:       splitCSV(*skillCSV),
 		StreamWriter: os.Stdout,
