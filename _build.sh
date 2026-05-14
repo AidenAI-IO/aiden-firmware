@@ -42,7 +42,7 @@ export GOPATH="/tmp/gopath"
 export GOTOOLCHAIN=local
 
 cd src/agent
-GOOS=linux GOARCH=arm GOARM=7 go build -o "../../${BUILD_DIR}/bin/agent" ./cmd/daemon
+GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -o "../../${BUILD_DIR}/bin/agent" ./cmd/daemon
 cd ../..
 
 echo "Go agent built: ${BUILD_DIR}/bin/agent"
