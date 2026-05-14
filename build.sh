@@ -19,7 +19,7 @@ docker run --rm \
   -v "$(pwd)/src/agent:/go/src/app" \
   -v "$(pwd)/build/bin:/go/bin" \
   -w /go/src/app \
-  golang:1.22-alpine \
+  golang:1.26-alpine \
   sh -c "GOOS=linux GOARCH=arm GOARM=7 go build -o /go/bin/agent ./cmd/daemon"
 
 if [ -f "$(pwd)/build/bin/agent" ]; then
