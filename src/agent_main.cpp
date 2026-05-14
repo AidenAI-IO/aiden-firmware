@@ -1,5 +1,6 @@
 #include "aiden_sdk.h"
 #include "agent_version.h"
+#include "audio_service_client.h"
 #include "config.h"
 #include "http_client.h"
 #include "provider_factory.h"
@@ -9,7 +10,6 @@
 #include "vad.h"
 #include "wav_codec.h"
 #include <memory>
-#include "cJSON/cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
@@ -232,7 +232,7 @@ static bool transcribe_with_auto_chunk(aiden::SttClient* stt,
     transcript.clear();
     if (!stt || pcm16_16k_mono.empty()) return false;
 
-    const size_t chunk_samples = 16000 * 6;    // ~6s
+    const size_t chunk_samples = 16000 * 60;   // ~60s (tencent_asr max)
     const size_t overlap_samples = 16000 / 3;  // ~333ms
 
     if (pcm16_16k_mono.size() <= chunk_samples) {
@@ -263,42 +263,9 @@ static bool transcribe_with_auto_chunk(aiden::SttClient* stt,
     return !transcript.empty();
 }
 
-static void downsample_mono_to_16k(const int16_t* in,
-                                   int in_samples,
-                                   int input_rate,
-                                   std::vector<int16_t>& out) {
-    out.clear();
-    if (!in || in_samples <= 0) return;
-    if (input_rate <= 16000) {
-        out.assign(in, in + in_samples);
-        return;
-    }
-
-    if (input_rate == 32000) {
-        int n = in_samples / 2;
-        out.resize((size_t)n);
-        for (int i = 0; i < n; ++i) {
-            int a = in[i * 2];
-            int b = in[i * 2 + 1];
-            out[(size_t)i] = (int16_t)((a + b) / 2);
-        }
-        return;
-    }
-
-    // Generic fallback: nearest-neighbor resampling to 16k.
-    size_t out_count = (size_t)((int64_t)in_samples * 16000 / input_rate);
-    if (out_count == 0) out_count = 1;
-    out.resize(out_count);
-    for (size_t i = 0; i < out_count; ++i) {
-        size_t src = (size_t)((int64_t)i * input_rate / 16000);
-        if (src >= (size_t)in_samples) src = (size_t)in_samples - 1;
-        out[i] = in[src];
-    }
-}
-
 static void run_after_first_turn(aiden::LlmClient& llm,
                                  aiden::TtsClient& tts,
-                                 aiden::AudioPlayer& player,
+                                 aiden::AudioServiceClient& audio,
                                  const aiden::AgentConfig& config,
                                  std::string response,
                                  std::vector<aiden::ToolCall> tool_calls) {
@@ -309,7 +276,7 @@ static void run_after_first_turn(aiden::LlmClient& llm,
 
                 printf("[tts] Requesting speech synthesis for: \"%s\"\n", response.c_str());
                 printf("[tts] Starting streaming playback...\n");
-                if (tts.text_to_speech_stream(response.c_str(), player)) {
+                if (tts.text_to_speech_stream(response.c_str(), audio)) {
                     printf("[tts] Streaming playback complete\n");
                 } else {
                     fprintf(stderr, "[error] TTS streaming failed\n");
@@ -356,7 +323,7 @@ static void run_after_first_turn(aiden::LlmClient& llm,
 static void process_utterance(const std::vector<int16_t>& utterance,
                               aiden::LlmClient& llm,
                               aiden::TtsClient& tts,
-                              aiden::AudioPlayer& player,
+                              aiden::AudioServiceClient& audio,
                               const aiden::AgentConfig& config,
                               aiden::SttClient* stt) {
     float duration = utterance.size() / 16000.0f;
@@ -364,6 +331,12 @@ static void process_utterance(const std::vector<int16_t>& utterance,
 
     std::vector<uint8_t> wav = aiden::pcm16_mono_16khz_to_wav(utterance);
     printf("[debug] WAV size: %zu bytes\n", wav.size());
+
+    // Dump WAV to file for debugging audio capture issues.
+    {
+        FILE* f = fopen("/tmp/last_utterance.wav", "wb");
+        if (f) { fwrite(wav.data(), 1, wav.size(), f); fclose(f); }
+    }
 
     std::string response;
     std::vector<aiden::ToolCall> tool_calls;
@@ -402,13 +375,13 @@ static void process_utterance(const std::vector<int16_t>& utterance,
     }
 
     printf("[llm] Response received\n");
-    run_after_first_turn(llm, tts, player, config, response, tool_calls);
+    run_after_first_turn(llm, tts, audio, config, response, tool_calls);
 }
 
 static void process_text_input(const std::string& text,
                                aiden::LlmClient& llm,
                                aiden::TtsClient& tts,
-                               aiden::AudioPlayer& player,
+                               aiden::AudioServiceClient& audio,
                                const aiden::AgentConfig& config) {
     printf("[text] %s\n", text.c_str());
 
@@ -423,7 +396,7 @@ static void process_text_input(const std::string& text,
     }
     printf("[llm] Response received\n");
 
-    run_after_first_turn(llm, tts, player, config, response, tool_calls);
+    run_after_first_turn(llm, tts, audio, config, response, tool_calls);
 }
 
 static bool parse_mode_value(const char* v, TriggerMode& mode) {
@@ -514,35 +487,40 @@ int main(int argc, char* argv[]) {
         printf("[init] Text input mode enabled\n");
     }
 
-    aiden::AudioConfig audio_cfg;
-    audio_cfg.sample_rate = 16000;
-    audio_cfg.channels = 1;
-    audio_cfg.bit_width = 16;
+    // Connect to audio_service.
+    const char* audio_sock = config.audio_service_socket[0] != '\0'
+                             ? config.audio_service_socket
+                             : "/tmp/audio_service.sock";
+    aiden::AudioServiceClient audio_client(audio_sock);
 
-    aiden::AudioCapture capture;
-    bool capture_active = false;
+    // Record session state (opened per utterance, closed after VAD end).
+    uint64_t record_session_id = 0;
+    bool record_active = false;
+
+    aiden::AudioFormat audio_fmt;
+    audio_fmt.sample_rate = 16000;
+    audio_fmt.channels    = 1;
+    audio_fmt.bit_width   = 16;
+
     auto start_capture = [&]() -> bool {
-        if (mode == MODE_TEXT || capture_active) return true;
-        printf("[audio] Opening capture device (16kHz/16bit/mono)...\n");
-        if (!capture.init(audio_cfg)) {
-            fprintf(stderr, "[error] Failed to initialize audio capture\n");
+        if (mode == MODE_TEXT || record_active) return true;
+        printf("[audio] Opening record session on audio_service...\n");
+        aiden::RecordStartResult rs;
+        if (audio_client.start_recording(audio_fmt, &rs) != aiden::AidenServiceStatus::OK) {
+            fprintf(stderr, "[error] Failed to start recording session\n");
             return false;
         }
-        capture_active = true;
+        record_session_id = rs.session_id;
+        record_active = true;
         return true;
     };
     auto stop_capture = [&]() {
-        if (mode == MODE_TEXT || !capture_active) return;
-        capture.stop();
-        capture_active = false;
-        printf("[audio] Capture device closed\n");
+        if (mode == MODE_TEXT || !record_active) return;
+        audio_client.stop_recording(record_session_id);
+        record_active = false;
+        record_session_id = 0;
+        printf("[audio] Record session closed\n");
     };
-
-    aiden::AudioPlayer player;
-    if (!player.init(audio_cfg)) {
-        fprintf(stderr, "[error] Failed to initialize audio player\n");
-        return 1;
-    }
 
     std::string provider_error;
     std::unique_ptr<aiden::LlmClient> llm = aiden::create_llm_client(runtime_config, provider_error);
@@ -588,13 +566,15 @@ int main(int argc, char* argv[]) {
 
             if (line.empty()) continue;
 
-            process_text_input(line, *llm, *tts, player, runtime_config);
+            process_text_input(line, *llm, *tts, audio_client, runtime_config);
         }
     } else if (mode == MODE_MANUAL) {
         printf("\n[ready] Press Enter to start recording, press Enter again to stop\n");
     } else {
         printf("\n[ready] Waiting for wakeup event (GPIO 33)... Ctrl+C to quit\n\n");
     }
+
+    std::vector<int16_t> vad_pending;
 
     while (!quit && mode != MODE_TEXT) {
         if (!wakeup_triggered) {
@@ -618,17 +598,11 @@ int main(int argc, char* argv[]) {
 
         printf("[listen] Recording audio...\n");
         vad.reset();
-        int capture_channels = 0;
-        std::vector<int16_t> mono_frame;
-        std::vector<int16_t> resampled_frame;
-        int detected_input_rate = 16000;
-        uint64_t prev_frame_ts = 0;
-        int rate_vote_count = 0;
-        int rate_vote_32k = 0;
+        vad_pending.clear();
 
         bool manual_stop = false;
         while (wakeup_triggered && !quit) {
-            // Check for manual stop in manual mode
+            // Check for manual stop in manual mode.
             if (mode == MODE_MANUAL && stdin_has_data()) {
                 getchar();
                 drain_stdin();
@@ -637,63 +611,49 @@ int main(int argc, char* argv[]) {
                 break;
             }
 
-            aiden::AudioFrame frame;
-            if (!capture.get_frame(frame)) {
-                usleep(10000);
-                continue;
+            aiden::AudioChunkResult chunk;
+            aiden::AidenServiceStatus cs =
+                audio_client.read_record_chunk(record_session_id, 200, &chunk);
+            if (cs == aiden::AidenServiceStatus::TIMEOUT) continue;
+            if (cs != aiden::AidenServiceStatus::OK) {
+                fprintf(stderr, "[listen] read_record_chunk error, stopping\n");
+                record_active = false;
+                record_session_id = 0;
+                wakeup_triggered = false;
+                break;
             }
+            if (chunk.end_of_stream) {
+                fprintf(stderr, "[listen] record session closed by service\n");
+                record_active = false;
+                record_session_id = 0;
+                wakeup_triggered = false;
+                break;
+            }
+            if (chunk.pcm.empty()) continue;
 
             const std::vector<int16_t>* utterance = nullptr;
-            if (frame.data && frame.length >= 2) {
-                int16_t* raw = reinterpret_cast<int16_t*>(frame.data);
-                int sample_count = (int)(frame.length / sizeof(int16_t));
+            {
+                int16_t* raw = reinterpret_cast<int16_t*>(chunk.pcm.data());
+                int sample_count = static_cast<int>(chunk.pcm.size() / sizeof(int16_t));
+                vad_pending.insert(vad_pending.end(), raw, raw + sample_count);
 
-                if (capture_channels == 0) {
-                    capture_channels = (frame.length >= 4096) ? 2 : 1;
-                    printf("[audio] Detected capture channels: %d (frame_len=%u bytes)\n",
-                           capture_channels, frame.length);
+                // Feed VAD in 30ms frames (480 samples at 16kHz). Keep remainder
+                // between chunks so no tail samples are dropped.
+                const int kFrameSamples = 480;
+                size_t consumed = 0;
+                while (consumed + kFrameSamples <= vad_pending.size()) {
+                    utterance = vad.process(vad_pending.data() + consumed, kFrameSamples);
+                    consumed += kFrameSamples;
+                    if (utterance) break;
                 }
-
-                int samples_per_channel = sample_count / ((capture_channels == 2) ? 2 : 1);
-                if (prev_frame_ts > 0 && frame.timestamp > prev_frame_ts && samples_per_channel > 0) {
-                    uint64_t delta_us = frame.timestamp - prev_frame_ts;
-                    if (delta_us > 0) {
-                        double estimated = (double)samples_per_channel * 1000000.0 / (double)delta_us;
-                        if (estimated > 24000.0 && estimated < 40000.0) rate_vote_32k++;
-                        rate_vote_count++;
-                        if (rate_vote_count >= 3) {
-                            int new_rate = (rate_vote_32k >= 2) ? 32000 : 16000;
-                            if (new_rate != detected_input_rate) {
-                                detected_input_rate = new_rate;
-                                printf("[audio] Estimated input sample rate: %d Hz\n", detected_input_rate);
-                            }
-                        }
-                    }
-                }
-                prev_frame_ts = frame.timestamp;
-
-                if (capture_channels == 2) {
-                    int mono_count = sample_count / 2;
-                    mono_frame.resize((size_t)mono_count);
-                    for (int i = 0; i < mono_count; ++i) {
-                        int left = raw[i * 2];
-                        int right = raw[i * 2 + 1];
-                        mono_frame[(size_t)i] = (int16_t)((left + right) / 2);
-                    }
-                    downsample_mono_to_16k(mono_frame.data(), mono_count,
-                                           detected_input_rate, resampled_frame);
-                    utterance = vad.process(resampled_frame.data(), (int)resampled_frame.size());
-                } else {
-                    downsample_mono_to_16k(raw, sample_count,
-                                           detected_input_rate, resampled_frame);
-                    utterance = vad.process(resampled_frame.data(), (int)resampled_frame.size());
+                if (consumed > 0) {
+                    vad_pending.erase(vad_pending.begin(), vad_pending.begin() + consumed);
                 }
             }
-            capture.release_frame();
 
             if (utterance) {
                 printf("[utterance] VAD detected end of speech\n");
-                process_utterance(*utterance, *llm, *tts, player, runtime_config, stt.get());
+                process_utterance(*utterance, *llm, *tts, audio_client, runtime_config, stt.get());
                 wakeup_triggered = false;
                 printf("\n[ready] Waiting for next wakeup event...\n\n");
                 break;
@@ -701,10 +661,17 @@ int main(int argc, char* argv[]) {
         }
 
         if (manual_stop) {
+            if (!vad_pending.empty()) {
+                // Preserve any tail samples not aligned to 30ms frame.
+                vad.process(vad_pending.data(), static_cast<int>(vad_pending.size()));
+                vad_pending.clear();
+            }
             const std::vector<int16_t>* utterance = vad.flush();
+            printf("[debug] vad.flush() returned %zu samples\n",
+                   utterance ? utterance->size() : 0);
             if (utterance && !utterance->empty()) {
                 printf("[manual] Sending buffered audio without waiting for VAD\n");
-                process_utterance(*utterance, *llm, *tts, player, runtime_config, stt.get());
+                process_utterance(*utterance, *llm, *tts, audio_client, runtime_config, stt.get());
             } else {
                 printf("[manual] No buffered audio to send\n");
             }

@@ -28,7 +28,9 @@ public:
 class TtsClient {
 public:
     virtual ~TtsClient() {}
-    virtual bool text_to_speech_stream(const char* text, class AudioPlayer& player) = 0;
+    // Stream TTS audio into an AudioServiceClient playback session.
+    virtual bool text_to_speech_stream(const char* text,
+                                       class AudioServiceClient& audio) = 0;
 };
 
 class SttClient {

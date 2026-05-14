@@ -31,6 +31,7 @@ speed = 1.0
 asr_mode = stt_then_text
 hid_binary = ./build/bin/example_usb_hid
 frame_service_socket = /tmp/frame_service.sock
+audio_service_socket = /tmp/audio_service.sock
 energy_threshold = 300
 silence_ms = 800
 min_speech_ms = 300

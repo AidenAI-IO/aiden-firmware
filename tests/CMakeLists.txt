@@ -16,6 +16,7 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/openrouter_codec.cpp
     ${CMAKE_SOURCE_DIR}/src/openai_codec.cpp
     ${CMAKE_SOURCE_DIR}/src/minimax_codec.cpp
+    ${CMAKE_SOURCE_DIR}/src/service_status.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_ring_buffer.cpp
     ${CMAKE_SOURCE_DIR}/src/uds_message.cpp
@@ -26,6 +27,8 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/frame_processing.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_client.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_server.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio_service_protocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio_service_client.cpp
     ${CMAKE_SOURCE_DIR}/src/tool_dispatch.cpp
     ${CMAKE_SOURCE_DIR}/src/tool_image_attachment.cpp
     ${CMAKE_SOURCE_DIR}/src/agent_version.cpp
@@ -99,6 +102,9 @@ add_executable(aiden_tests
     llm_api_url_test.cpp
     terminal_input_test.cpp
     text_input_test.cpp
+    service_status_test.cpp
+    audio_service_protocol_test.cpp
+    audio_service_client_test.cpp
     ${AIDEN_IMAGE_TEST_SOURCES}
     ${AIDEN_TEST_SOURCES}
 )
