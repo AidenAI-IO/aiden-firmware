@@ -1,8 +1,15 @@
 #include "audio_playback_session.h"
 #include <chrono>
 #include <stdio.h>
+#include <thread>
 
 namespace aiden {
+namespace {
+// AO uses a small internal queue (configured as 4 * 1024 samples in AudioPlayer).
+// After the final chunk is dequeued from our userspace queue, give the driver a
+// short grace period to finish rendering buffered tail samples before teardown.
+static const int kPlaybackDrainGraceMs = 300;
+}  // namespace
 
 AudioPlaybackSession::AudioPlaybackSession(uint64_t session_id, const AudioFormat& fmt)
     : session_id_(session_id), fmt_(fmt), stopped_(false), final_received_(false) {}
@@ -61,6 +68,7 @@ void AudioPlaybackSession::wait_until_done() {
 void AudioPlaybackSession::playback_loop() {
     while (!stopped_.load()) {
         std::vector<uint8_t> chunk;
+        bool final_and_drained = false;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             cv_.wait(lock, [this] {
@@ -74,9 +82,15 @@ void AudioPlaybackSession::playback_loop() {
                 queue_.pop();
                 cv_.notify_one();  // wake push_chunk back-pressure waiter
             } else if (final_received_) {
-                // Queue drained and final chunk received — we're done.
-                break;
+                // Queue drained and final chunk received — no more PCM writes are
+                // expected; allow AO buffer to drain before session teardown.
+                final_and_drained = true;
             }
+        }
+
+        if (final_and_drained) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(kPlaybackDrainGraceMs));
+            break;
         }
 
         if (!chunk.empty()) {
