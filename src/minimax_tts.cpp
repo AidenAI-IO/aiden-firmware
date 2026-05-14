@@ -121,9 +121,18 @@ bool MinimaxTTS::text_to_speech_stream(const char* text,
     }
 
     // Spawn ffmpeg: mp3 stdin → pcm s16le 16kHz mono stdout.
-    int stdin_pipe[2], stdout_pipe[2];
+    int stdin_pipe[2] = {-1, -1};
+    int stdout_pipe[2] = {-1, -1};
     if (pipe(stdin_pipe) < 0 || pipe(stdout_pipe) < 0) {
         fprintf(stderr, "[error] Failed to create pipes\n");
+        if (stdin_pipe[0] >= 0) {
+            close(stdin_pipe[0]);
+            close(stdin_pipe[1]);
+        }
+        if (stdout_pipe[0] >= 0) {
+            close(stdout_pipe[0]);
+            close(stdout_pipe[1]);
+        }
         audio.stop_playback(playback.session_id);
         free(request_str);
         return false;
@@ -132,6 +141,10 @@ bool MinimaxTTS::text_to_speech_stream(const char* text,
     pid_t pid = fork();
     if (pid < 0) {
         fprintf(stderr, "[error] Failed to fork\n");
+        close(stdin_pipe[0]);
+        close(stdin_pipe[1]);
+        close(stdout_pipe[0]);
+        close(stdout_pipe[1]);
         audio.stop_playback(playback.session_id);
         free(request_str);
         return false;

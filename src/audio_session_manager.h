@@ -3,9 +3,12 @@
 #include "audio_playback_session.h"
 #include "audio_record_session.h"
 #include "audio_service_protocol.h"
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 
 namespace aiden {
@@ -54,12 +57,20 @@ public:
     void fill_health(AudioHealthResult* out) const;
 
 private:
+    using Clock = std::chrono::steady_clock;
+
     uint64_t next_session_id();
+    void reaper_loop();
+    void reap_idle_sessions();
 
     mutable std::mutex mutex_;
+    std::atomic<bool> stop_reaper_;
+    std::thread reaper_thread_;
     uint64_t next_id_;
-    std::unordered_map<uint64_t, std::unique_ptr<AudioRecordSession>>   record_sessions_;
-    std::unordered_map<uint64_t, std::unique_ptr<AudioPlaybackSession>> playback_sessions_;
+    std::unordered_map<uint64_t, std::shared_ptr<AudioRecordSession>>   record_sessions_;
+    std::unordered_map<uint64_t, std::shared_ptr<AudioPlaybackSession>> playback_sessions_;
+    std::unordered_map<uint64_t, Clock::time_point> record_last_active_;
+    std::unordered_map<uint64_t, Clock::time_point> playback_last_active_;
 };
 
 }  // namespace aiden

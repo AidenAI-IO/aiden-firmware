@@ -16,7 +16,7 @@ void signal_handler(int) {
 }
 
 struct Options {
-    std::string socket_path = "/tmp/audio_service.sock";
+    std::string socket_path = "/run/audio_service/audio_service.sock";
 };
 
 void usage(const char* program) {

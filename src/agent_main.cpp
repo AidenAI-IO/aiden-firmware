@@ -203,6 +203,38 @@ static bool has_any_model_text_override(const aiden::AgentConfig& config) {
            config.model_text.base_url[0] != '\0';
 }
 
+static bool should_dump_last_utterance_wav() {
+    const char* enabled = getenv("AIDEN_DEBUG_DUMP_LAST_UTTERANCE");
+    return enabled && strcmp(enabled, "1") == 0;
+}
+
+static void append_pcm16le_samples(const std::vector<uint8_t>& pcm_bytes,
+                                   std::vector<int16_t>& out_samples,
+                                   bool* has_pending_byte,
+                                   uint8_t* pending_byte) {
+    if (!has_pending_byte || !pending_byte) return;
+
+    size_t i = 0;
+    if (*has_pending_byte && !pcm_bytes.empty()) {
+        uint16_t word = static_cast<uint16_t>(*pending_byte) |
+                        (static_cast<uint16_t>(pcm_bytes[0]) << 8);
+        out_samples.push_back(static_cast<int16_t>(word));
+        *has_pending_byte = false;
+        i = 1;
+    }
+
+    for (; i + 1 < pcm_bytes.size(); i += 2) {
+        uint16_t word = static_cast<uint16_t>(pcm_bytes[i]) |
+                        (static_cast<uint16_t>(pcm_bytes[i + 1]) << 8);
+        out_samples.push_back(static_cast<int16_t>(word));
+    }
+
+    if (i < pcm_bytes.size()) {
+        *pending_byte = pcm_bytes[i];
+        *has_pending_byte = true;
+    }
+}
+
 static void copy_if_non_empty(char* dst, size_t dst_size, const char* src) {
     if (!src || src[0] == '\0') return;
     strncpy(dst, src, dst_size - 1);
@@ -332,8 +364,8 @@ static void process_utterance(const std::vector<int16_t>& utterance,
     std::vector<uint8_t> wav = aiden::pcm16_mono_16khz_to_wav(utterance);
     printf("[debug] WAV size: %zu bytes\n", wav.size());
 
-    // Dump WAV to file for debugging audio capture issues.
-    {
+    // Keep raw utterance dumps opt-in to avoid persisting user audio by default.
+    if (should_dump_last_utterance_wav()) {
         FILE* f = fopen("/tmp/last_utterance.wav", "wb");
         if (f) { fwrite(wav.data(), 1, wav.size(), f); fclose(f); }
     }
@@ -490,7 +522,7 @@ int main(int argc, char* argv[]) {
     // Connect to audio_service.
     const char* audio_sock = config.audio_service_socket[0] != '\0'
                              ? config.audio_service_socket
-                             : "/tmp/audio_service.sock";
+                             : "/run/audio_service/audio_service.sock";
     aiden::AudioServiceClient audio_client(audio_sock);
 
     // Record session state (opened per utterance, closed after VAD end).
@@ -599,6 +631,8 @@ int main(int argc, char* argv[]) {
         printf("[listen] Recording audio...\n");
         vad.reset();
         vad_pending.clear();
+        bool has_pending_pcm_byte = false;
+        uint8_t pending_pcm_byte = 0;
 
         bool manual_stop = false;
         while (wakeup_triggered && !quit) {
@@ -617,8 +651,8 @@ int main(int argc, char* argv[]) {
             if (cs == aiden::AidenServiceStatus::TIMEOUT) continue;
             if (cs != aiden::AidenServiceStatus::OK) {
                 fprintf(stderr, "[listen] read_record_chunk error, stopping\n");
-                record_active = false;
-                record_session_id = 0;
+                // Keep session state until stop_capture() runs, so we can do a
+                // best-effort close of the server-side recording session.
                 wakeup_triggered = false;
                 break;
             }
@@ -633,9 +667,8 @@ int main(int argc, char* argv[]) {
 
             const std::vector<int16_t>* utterance = nullptr;
             {
-                int16_t* raw = reinterpret_cast<int16_t*>(chunk.pcm.data());
-                int sample_count = static_cast<int>(chunk.pcm.size() / sizeof(int16_t));
-                vad_pending.insert(vad_pending.end(), raw, raw + sample_count);
+                append_pcm16le_samples(chunk.pcm, vad_pending,
+                                       &has_pending_pcm_byte, &pending_pcm_byte);
 
                 // Feed VAD in 30ms frames (480 samples at 16kHz). Keep remainder
                 // between chunks so no tail samples are dropped.

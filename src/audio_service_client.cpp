@@ -1,5 +1,6 @@
 #include "audio_service_client.h"
 #include "uds_client.h"
+#include <limits>
 #include <stdio.h>
 
 namespace aiden {
@@ -40,7 +41,12 @@ AidenServiceStatus AudioServiceClient::read_record_chunk(uint64_t session_id,
     std::string req   = audio_request_json("read_record_chunk", extra);
 
     // Socket timeout must exceed the server-side long-poll timeout.
-    uint32_t socket_timeout_ms = timeout_ms + kSocketPaddingMs;
+    uint32_t socket_timeout_ms = timeout_ms;
+    if (socket_timeout_ms > std::numeric_limits<uint32_t>::max() - kSocketPaddingMs) {
+        socket_timeout_ms = std::numeric_limits<uint32_t>::max();
+    } else {
+        socket_timeout_ms += kSocketPaddingMs;
+    }
 
     UdsMessage resp;
     AidenServiceStatus transport = uds_request_once(socket_path_, req, {}, &resp,
@@ -89,6 +95,12 @@ AidenServiceStatus AudioServiceClient::write_play_chunk(uint64_t session_id,
                                                          const uint8_t* data,
                                                          size_t len,
                                                          bool is_final) {
+    if (!data && len > 0) {
+        fprintf(stderr, "[audio_service_client] write_play_chunk invalid args: data=null len=%zu\n",
+                len);
+        return AidenServiceStatus::INTERNAL_ERROR;
+    }
+
     std::string extra = "\"session_id\":\"" + std::to_string(session_id) + "\"" +
                         ",\"is_final\":"    + (is_final ? "true" : "false");
     std::string req   = audio_request_json("write_play_chunk", extra);

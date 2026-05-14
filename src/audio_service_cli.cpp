@@ -18,7 +18,7 @@ static void usage(const char* program) {
 
 static const char* default_socket() {
     const char* env = getenv("AUDIO_SERVICE_SOCKET");
-    return (env && env[0] != '\0') ? env : "/tmp/audio_service.sock";
+    return (env && env[0] != '\0') ? env : "/run/audio_service/audio_service.sock";
 }
 
 static int cmd_health(aiden::AudioServiceClient& client) {
@@ -48,19 +48,25 @@ static int cmd_record_stream(aiden::AudioServiceClient& client, int seconds) {
     // audio_service are not fixed, so byte counting can terminate early.
     auto deadline = std::chrono::steady_clock::now() +
                     std::chrono::seconds(seconds);
+    bool read_failed = false;
 
     while (std::chrono::steady_clock::now() < deadline) {
         aiden::AudioChunkResult chunk;
         aiden::AidenServiceStatus s = client.read_record_chunk(rs.session_id, 2000, &chunk);
         if (s == aiden::AidenServiceStatus::TIMEOUT) continue;
-        if (s != aiden::AidenServiceStatus::OK || chunk.end_of_stream) break;
+        if (s != aiden::AidenServiceStatus::OK) {
+            fprintf(stderr, "read_record_chunk failed: %s\n", service_status_to_string(s));
+            read_failed = true;
+            break;
+        }
+        if (chunk.end_of_stream) break;
         if (!chunk.pcm.empty()) {
             fwrite(chunk.pcm.data(), 1, chunk.pcm.size(), stdout);
         }
     }
 
     client.stop_recording(rs.session_id);
-    return 0;
+    return read_failed ? 1 : 0;
 }
 
 static int cmd_play_stream(aiden::AudioServiceClient& client, const aiden::AudioFormat& fmt) {
@@ -71,14 +77,38 @@ static int cmd_play_stream(aiden::AudioServiceClient& client, const aiden::Audio
     }
 
     uint8_t buf[4096];
+    bool write_failed = false;
     for (;;) {
         size_t n = fread(buf, 1, sizeof(buf), stdin);
-        if (n == 0) break;
-        bool is_final = feof(stdin) != 0;
-        client.write_play_chunk(ps.session_id, buf, n, is_final);
-        if (is_final) break;
+        if (n > 0) {
+            aiden::AidenServiceStatus ws =
+                client.write_play_chunk(ps.session_id, buf, n, false);
+            if (ws != aiden::AidenServiceStatus::OK) {
+                fprintf(stderr, "write_play_chunk failed: %s\n", service_status_to_string(ws));
+                write_failed = true;
+                break;
+            }
+        }
+        if (n < sizeof(buf)) {
+            if (ferror(stdin)) {
+                fprintf(stderr, "read stdin failed\n");
+                write_failed = true;
+            }
+            break;
+        }
     }
-    return 0;
+
+    // Always finalize playback explicitly, even when stdin size is an exact
+    // multiple of chunk size.
+    aiden::AidenServiceStatus final_ws =
+        client.write_play_chunk(ps.session_id, nullptr, 0, true);
+    if (final_ws != aiden::AidenServiceStatus::OK) {
+        fprintf(stderr, "final write_play_chunk failed: %s\n",
+                service_status_to_string(final_ws));
+        write_failed = true;
+    }
+
+    return write_failed ? 1 : 0;
 }
 
 int main(int argc, char** argv) {
