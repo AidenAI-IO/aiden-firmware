@@ -19,3 +19,28 @@ echo "Library: $ROOT_DIR/build/lib/libaiden.a"
 echo "Binaries in: $ROOT_DIR/build/bin/"
 ls -lh "$ROOT_DIR/build/bin/"
 
+# Build Go agent
+echo ""
+echo "Building Go agent..."
+
+GO_VERSION="1.26.0"
+GO_TARBALL="go${GO_VERSION}.linux-amd64.tar.gz"
+GO_INSTALL_DIR="/usr/local"
+
+if [ ! -x "${GO_INSTALL_DIR}/go/bin/go" ]; then
+    echo "Installing Go ${GO_VERSION}..."
+    wget -q "https://go.dev/dl/${GO_TARBALL}" -O "/tmp/${GO_TARBALL}"
+    tar -C "${GO_INSTALL_DIR}" -xzf "/tmp/${GO_TARBALL}"
+    rm -f "/tmp/${GO_TARBALL}"
+fi
+
+export PATH="${GO_INSTALL_DIR}/go/bin:$PATH"
+export GOCACHE="${BUILD_DIR}/.cache/go-build"
+export GOMODCACHE="${BUILD_DIR}/.cache/go-mod"
+
+cd src/agent
+GOOS=linux GOARCH=arm GOARM=7 go build -o "../../${BUILD_DIR}/bin/agent" ./cmd/daemon
+cd ../..
+
+echo "Go agent built: ${BUILD_DIR}/bin/agent"
+ls -lh "${BUILD_DIR}/bin/agent"
