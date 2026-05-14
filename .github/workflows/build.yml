@@ -2,7 +2,7 @@ name: Build All
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Run at 00:00 UTC every day
+    - cron: "0 0 * * *" # Run at 00:00 UTC every day
   workflow_dispatch:
 
 permissions:
@@ -13,31 +13,31 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Fetch pico-sdk submodule
-      run: git submodule update --init pico-sdk
+      - name: Fetch pico-sdk submodule
+        run: git submodule update --init --depth=1 pico-sdk
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-    - name: Run build script
-      run: ./build_image.sh
+      - name: Run build script
+        run: ./build_image.sh
 
-    - name: Generate release name
-      id: release_info
-      run: |
-        COMMIT_HASH=$(git rev-parse --short HEAD)
-        TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
-        RELEASE_NAME="${COMMIT_HASH}-${TIMESTAMP}"
-        echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
-        echo "tag_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+      - name: Generate release name
+        id: release_info
+        run: |
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
+          RELEASE_NAME="${COMMIT_HASH}-${TIMESTAMP}"
+          echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
 
-    - name: Create Release
-      uses: softprops/action-gh-release@v2
-      with:
-        name: ${{ steps.release_info.outputs.release_name }}
-        tag_name: ${{ steps.release_info.outputs.tag_name }}
-        files: pico-sdk/output/image/*
-        fail_on_unmatched_files: true
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.release_info.outputs.release_name }}
+          tag_name: ${{ steps.release_info.outputs.tag_name }}
+          files: pico-sdk/output/image/*
+          fail_on_unmatched_files: true
