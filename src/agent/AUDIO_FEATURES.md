@@ -202,7 +202,27 @@ Flow:
 
 ### `wakeup` (GPIO Trigger)
 
-**Not yet implemented**. Will support GPIO wakeup trigger (e.g., GPIO 33).
+Automatically starts recording when GPIO 33 is triggered (falling edge).
+
+```toml
+trigger_mode = "wakeup"
+```
+
+Flow:
+1. Wait for GPIO 33 falling edge event
+2. Automatically start recording
+3. VAD detects end of speech
+4. Audio is processed (STT if in stt mode)
+5. Text is sent to LLM
+6. Response is spoken via TTS
+7. Wait for next GPIO trigger
+
+**Hardware Requirements:**
+- GPIO 33 must be configured as input with falling edge trigger
+- Typically connected to a physical button or wakeup signal
+- Uses Linux sysfs GPIO interface (`/sys/class/gpio/`)
+
+**Note:** GPIO wakeup is only available on Linux systems with GPIO support.
 
 ## Usage
 

@@ -8,7 +8,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"aiden-agent/internal/agent"
 )
@@ -81,6 +83,8 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime) {
 
 	if triggerMode == "manual" {
 		runManualMode(cfg, dialog, runtime, sigChan)
+	} else if triggerMode == "wakeup" {
+		runWakeupMode(cfg, dialog, runtime, sigChan)
 	} else {
 		log.Printf("[error] Unsupported trigger mode: %s\n", triggerMode)
 		os.Exit(1)
@@ -149,6 +153,138 @@ func runManualMode(cfg agent.Config, dialog *agent.AudioDialog, runtime *agent.R
 	}
 
 	log.Println("\n[exit] Stopped.")
+}
+
+func runWakeupMode(cfg agent.Config, dialog *agent.AudioDialog, runtime *agent.Runtime, sigChan chan os.Signal) {
+	log.Println("\n[ready] Starting GPIO wakeup listener on GPIO 33...")
+
+	ctx := context.Background()
+	wakeupTriggered := false
+	var wakeupMutex sync.Mutex
+
+	// Create GPIO watcher
+	watcher, err := agent.NewGPIOWatcher(33, func() {
+		wakeupMutex.Lock()
+		defer wakeupMutex.Unlock()
+		if !wakeupTriggered {
+			log.Println("\n[wakeup] GPIO 33 triggered, starting to listen...")
+			wakeupTriggered = true
+		}
+	})
+	if err != nil {
+		log.Printf("[error] Failed to create GPIO watcher: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := watcher.Start(); err != nil {
+		log.Printf("[error] Failed to start GPIO watcher: %v\n", err)
+		os.Exit(1)
+	}
+	defer watcher.Stop()
+
+	log.Println("[ready] Waiting for wakeup event (GPIO 33)... Ctrl+C to quit\n")
+
+	for {
+		select {
+		case <-sigChan:
+			if dialog != nil {
+				dialog.StopRecording()
+			}
+			log.Println("\n[exit] Stopped.")
+			return
+		default:
+		}
+
+		// Check if wakeup was triggered
+		wakeupMutex.Lock()
+		triggered := wakeupTriggered
+		wakeupMutex.Unlock()
+
+		if !triggered {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		// Start recording
+		log.Println("[listen] Recording audio...")
+		if err := dialog.StartRecording(); err != nil {
+			log.Printf("[error] Failed to start recording: %v\n", err)
+			wakeupMutex.Lock()
+			wakeupTriggered = false
+			wakeupMutex.Unlock()
+			continue
+		}
+
+		dialog.ResetVAD()
+		vadPending := make([]int16, 0, 480*10)
+		var hasPendingByte bool
+		var pendingByte byte
+
+		// Process audio until VAD detects end of speech
+		utteranceDetected := false
+		for !utteranceDetected {
+			select {
+			case <-sigChan:
+				dialog.StopRecording()
+				log.Println("\n[exit] Stopped.")
+				return
+			default:
+			}
+
+			// Read audio chunk
+			chunk, err := dialog.ReadRecordChunk(200)
+			if err != nil {
+				log.Printf("[listen] read_record_chunk error: %v\n", err)
+				break
+			}
+
+			if chunk == nil {
+				continue
+			}
+
+			if chunk.EndOfStream {
+				log.Println("[listen] record session closed by service")
+				break
+			}
+
+			if len(chunk.PCM) == 0 {
+				continue
+			}
+
+			// Convert PCM bytes to int16 samples
+			agent.AppendPCM16Samples(chunk.PCM, &vadPending, &hasPendingByte, &pendingByte)
+
+			// Feed VAD in 30ms frames (480 samples at 16kHz)
+			const frameSamples = 480
+			consumed := 0
+			for consumed+frameSamples <= len(vadPending) {
+				utterance := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
+				consumed += frameSamples
+				if utterance != nil {
+					log.Println("[utterance] VAD detected end of speech")
+					if err := dialog.ProcessUtterance(ctx, utterance, runtime); err != nil {
+						log.Printf("[error] %v\n", err)
+					}
+					utteranceDetected = true
+					break
+				}
+			}
+
+			if consumed > 0 {
+				vadPending = vadPending[consumed:]
+			}
+		}
+
+		// Stop recording
+		dialog.StopRecording()
+
+		// Reset wakeup flag
+		wakeupMutex.Lock()
+		wakeupTriggered = false
+		wakeupMutex.Unlock()
+
+		log.Println("\n[ready] Waiting for next wakeup event...\n")
+	}
 }
 
 func processAudioLoop(dialog *agent.AudioDialog, runtime *agent.Runtime, recording *bool, ctx context.Context) {
