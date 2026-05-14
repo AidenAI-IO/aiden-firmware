@@ -25,16 +25,17 @@ echo "Building Go agent..."
 
 GO_VERSION="1.26.0"
 GO_TARBALL="go${GO_VERSION}.linux-amd64.tar.gz"
-GO_INSTALL_DIR="/usr/local"
+GO_INSTALL_DIR="${BUILD_DIR}/.go"
 
-if [ ! -x "${GO_INSTALL_DIR}/go/bin/go" ]; then
+if [ ! -x "${GO_INSTALL_DIR}/bin/go" ]; then
     echo "Installing Go ${GO_VERSION}..."
+    mkdir -p "${GO_INSTALL_DIR}"
     wget -q "https://go.dev/dl/${GO_TARBALL}" -O "/tmp/${GO_TARBALL}"
-    tar -C "${GO_INSTALL_DIR}" -xzf "/tmp/${GO_TARBALL}"
+    tar -C "${GO_INSTALL_DIR}" --strip-components=1 -xzf "/tmp/${GO_TARBALL}"
     rm -f "/tmp/${GO_TARBALL}"
 fi
 
-export PATH="${GO_INSTALL_DIR}/go/bin:$PATH"
+export PATH="${GO_INSTALL_DIR}/bin:$PATH"
 export GOCACHE="${BUILD_DIR}/.cache/go-build"
 export GOMODCACHE="${BUILD_DIR}/.cache/go-mod"
 
