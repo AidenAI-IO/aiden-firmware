@@ -1,0 +1,298 @@
+package agent
+
+import (
+	"context"
+	"encoding/binary"
+	"fmt"
+	"log"
+)
+
+// AudioDialog manages the audio conversation loop
+type AudioDialog struct {
+	config       Config
+	audioClient  *AudioServiceClient
+	sttClient    STTClient
+	ttsClient    TTSClient
+	vad          *AudioVAD
+	recordActive bool
+	sessionID    uint64
+}
+
+// NewAudioDialog creates a new audio dialog manager
+func NewAudioDialog(cfg Config) (*AudioDialog, error) {
+	// Create audio client
+	audioClient := NewAudioServiceClient(cfg.Audio.SocketOrDefault())
+
+	// Create STT client if needed
+	var sttClient STTClient
+	if cfg.InputModeOrDefault() == "stt" {
+		switch cfg.STT.Provider {
+		case "openai", "openai-whisper":
+			sttClient = NewOpenAIWhisperSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL)
+		case "tencent":
+			sttClient = NewTencentASRSTT(cfg.STT.SecretID, cfg.STT.SecretKey, cfg.STT.Region, cfg.STT.EngineModelType)
+		default:
+			return nil, fmt.Errorf("unsupported STT provider: %s", cfg.STT.Provider)
+		}
+	}
+
+	// Create TTS client
+	var ttsClient TTSClient
+	if cfg.TTS.Provider != "" {
+		switch cfg.TTS.Provider {
+		case "minimax":
+			ttsClient = NewMinimaxTTS(cfg.TTS.APIKey, cfg.TTS.VoiceID, cfg.TTS.Emotion, cfg.TTS.Speed)
+		default:
+			return nil, fmt.Errorf("unsupported TTS provider: %s", cfg.TTS.Provider)
+		}
+	}
+
+	// Create VAD
+	energyThreshold := cfg.EnergyThreshold
+	if energyThreshold == 0 {
+		energyThreshold = 500
+	}
+	silenceMs := cfg.SilenceMs
+	if silenceMs == 0 {
+		silenceMs = 1000
+	}
+	minSpeechMs := cfg.MinSpeechMs
+	if minSpeechMs == 0 {
+		minSpeechMs = 300
+	}
+
+	alwaysBuffer := cfg.TriggerModeOrDefault() == "manual"
+	vad := NewAudioVAD(
+		cfg.Audio.SampleRateOrDefault(),
+		energyThreshold,
+		silenceMs,
+		minSpeechMs,
+		alwaysBuffer,
+	)
+
+	return &AudioDialog{
+		config:      cfg,
+		audioClient: audioClient,
+		sttClient:   sttClient,
+		ttsClient:   ttsClient,
+		vad:         vad,
+	}, nil
+}
+
+// StartRecording starts an audio recording session
+func (d *AudioDialog) StartRecording() error {
+	if d.recordActive {
+		return nil
+	}
+
+	log.Println("[audio] Opening record session...")
+	result, err := d.audioClient.StartRecording(AudioFormat{
+		SampleRate: uint32(d.config.Audio.SampleRateOrDefault()),
+		Channels:   uint32(d.config.Audio.ChannelsOrDefault()),
+		BitWidth:   uint32(d.config.Audio.BitWidthOrDefault()),
+	})
+	if err != nil {
+		return fmt.Errorf("start recording: %w", err)
+	}
+
+	d.sessionID = result.SessionID
+	d.recordActive = true
+	return nil
+}
+
+// StopRecording stops the current recording session
+func (d *AudioDialog) StopRecording() error {
+	if !d.recordActive {
+		return nil
+	}
+
+	if err := d.audioClient.StopRecording(d.sessionID); err != nil {
+		return fmt.Errorf("stop recording: %w", err)
+	}
+
+	d.recordActive = false
+	d.sessionID = 0
+	log.Println("[audio] Record session closed")
+	return nil
+}
+
+// ReadRecordChunk reads a PCM chunk from the recording session
+func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, error) {
+	return d.audioClient.ReadRecordChunk(d.sessionID, timeoutMs)
+}
+
+// ProcessVADFrame processes an audio frame through VAD
+func (d *AudioDialog) ProcessVADFrame(samples []int16) []int16 {
+	return d.vad.Process(samples)
+}
+
+// FlushVAD flushes any buffered audio from VAD
+func (d *AudioDialog) FlushVAD() []int16 {
+	return d.vad.Flush()
+}
+
+// ResetVAD resets the VAD state
+func (d *AudioDialog) ResetVAD() {
+	d.vad.Reset()
+}
+
+// ProcessUtterance processes a detected utterance
+func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, runtime *Runtime) error {
+	duration := float64(len(utterance)) / float64(d.config.Audio.SampleRateOrDefault())
+	log.Printf("[utterance] %.1fs of speech\n", duration)
+
+	// Convert to WAV
+	wavData := pcm16MonoToWAV(utterance, d.config.Audio.SampleRateOrDefault())
+	log.Printf("[debug] WAV size: %d bytes\n", len(wavData))
+
+	var inputText string
+	var err error
+
+	inputMode := d.config.InputModeOrDefault()
+
+	// Process based on input mode
+	switch inputMode {
+	case "stt":
+		if d.sttClient == nil {
+			return fmt.Errorf("STT mode enabled but STT client is unavailable")
+		}
+
+		log.Printf("[stt] Transcribing audio with provider '%s'...\n", d.config.STT.Provider)
+		inputText, err = d.sttClient.TranscribeWAV(wavData)
+		if err != nil {
+			return fmt.Errorf("STT transcription failed: %w", err)
+		}
+		if inputText == "" {
+			return fmt.Errorf("STT returned empty transcript")
+		}
+		log.Printf("[stt] Transcript: %s\n", inputText)
+
+	case "audio":
+		// TODO: Direct audio mode - send WAV to LLM
+		return fmt.Errorf("direct audio mode not yet implemented")
+
+	default:
+		return fmt.Errorf("invalid input mode: %s", inputMode)
+	}
+
+	// Send to LLM
+	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
+		d.config.Model.Provider, d.config.Model.Model)
+
+	result, err := runtime.Run(ctx, RunRequest{
+		Input: inputText,
+	})
+	if err != nil {
+		return fmt.Errorf("LLM request failed: %w", err)
+	}
+
+	log.Printf("[llm] Response received\n")
+
+	// Speak response if TTS is available
+	if d.ttsClient != nil && result.Output != "" {
+		log.Printf("[reply] %s\n", result.Output)
+		log.Printf("[tts] Starting streaming playback...\n")
+		if err := d.ttsClient.TextToSpeechStream(result.Output, d.audioClient); err != nil {
+			log.Printf("[error] TTS streaming failed: %v", err)
+		} else {
+			log.Printf("[tts] Streaming playback complete\n")
+		}
+	} else if result.Output != "" {
+		log.Printf("[reply] %s\n", result.Output)
+	}
+
+	return nil
+}
+
+// ProcessTextInput processes text input and speaks the response
+func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime *Runtime) error {
+	log.Printf("[text] %s\n", text)
+
+	// Send to LLM
+	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
+		d.config.Model.Provider, d.config.Model.Model)
+
+	result, err := runtime.Run(ctx, RunRequest{
+		Input: text,
+	})
+	if err != nil {
+		return fmt.Errorf("LLM request failed: %w", err)
+	}
+
+	log.Printf("[llm] Response received\n")
+
+	// Speak response if TTS is available
+	if d.ttsClient != nil && result.Output != "" {
+		log.Printf("[reply] %s\n", result.Output)
+		log.Printf("[tts] Starting streaming playback...\n")
+		if err := d.ttsClient.TextToSpeechStream(result.Output, d.audioClient); err != nil {
+			log.Printf("[error] TTS streaming failed: %v", err)
+		} else {
+			log.Printf("[tts] Streaming playback complete\n")
+		}
+	} else if result.Output != "" {
+		log.Printf("[reply] %s\n", result.Output)
+	}
+
+	return nil
+}
+
+// pcm16MonoToWAV converts PCM16 mono samples to WAV format
+func pcm16MonoToWAV(samples []int16, sampleRate int) []byte {
+	dataSize := len(samples) * 2
+	fileSize := 36 + dataSize
+
+	wav := make([]byte, 44+dataSize)
+
+	// RIFF header
+	copy(wav[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(wav[4:8], uint32(fileSize))
+	copy(wav[8:12], "WAVE")
+
+	// fmt chunk
+	copy(wav[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(wav[16:20], 16)                    // chunk size
+	binary.LittleEndian.PutUint16(wav[20:22], 1)                     // PCM
+	binary.LittleEndian.PutUint16(wav[22:24], 1)                     // mono
+	binary.LittleEndian.PutUint32(wav[24:28], uint32(sampleRate))   // sample rate
+	binary.LittleEndian.PutUint32(wav[28:32], uint32(sampleRate*2)) // byte rate
+	binary.LittleEndian.PutUint16(wav[32:34], 2)                     // block align
+	binary.LittleEndian.PutUint16(wav[34:36], 16)                    // bits per sample
+
+	// data chunk
+	copy(wav[36:40], "data")
+	binary.LittleEndian.PutUint32(wav[40:44], uint32(dataSize))
+
+	// PCM data
+	for i, sample := range samples {
+		binary.LittleEndian.PutUint16(wav[44+i*2:], uint16(sample))
+	}
+
+	return wav
+}
+
+// AppendPCM16Samples converts PCM bytes to int16 samples
+func AppendPCM16Samples(pcmBytes []byte, samples *[]int16, hasPending *bool, pending *byte) {
+	i := 0
+
+	// Handle pending byte from previous chunk
+	if *hasPending && len(pcmBytes) > 0 {
+		word := uint16(*pending) | (uint16(pcmBytes[0]) << 8)
+		*samples = append(*samples, int16(word))
+		*hasPending = false
+		i = 1
+	}
+
+	// Process pairs of bytes
+	for i+1 < len(pcmBytes) {
+		word := binary.LittleEndian.Uint16(pcmBytes[i : i+2])
+		*samples = append(*samples, int16(word))
+		i += 2
+	}
+
+	// Save odd byte for next chunk
+	if i < len(pcmBytes) {
+		*pending = pcmBytes[i]
+		*hasPending = true
+	}
+}
