@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"time"
 )
@@ -54,27 +56,112 @@ type audioRequest struct {
 	Format    *AudioFormat `json:"format,omitempty"`
 	SessionID uint64       `json:"session_id,omitempty"`
 	TimeoutMs uint32       `json:"timeout_ms,omitempty"`
-	Data      []byte       `json:"data,omitempty"`
 	IsFinal   bool         `json:"is_final,omitempty"`
+	payload   []byte       // sent as binary payload, not in JSON
 }
 
 // audioResponse is the wire format for responses
 type audioResponse struct {
-	Status          string `json:"status"`
-	SessionID       uint64 `json:"session_id,omitempty"`
-	PCM             []byte `json:"pcm,omitempty"`
-	EndOfStream     bool   `json:"end_of_stream,omitempty"`
-	RecordingActive bool   `json:"recording_active,omitempty"`
-	PlaybackActive  bool   `json:"playback_active,omitempty"`
-	RecordSessions  uint32 `json:"record_sessions,omitempty"`
+	Status           string `json:"status"`
+	SessionID        stringUint64 `json:"session_id,omitempty"`
+	EndOfStream      bool   `json:"end_of_stream,omitempty"`
+	RecordingActive  bool   `json:"recording_active,omitempty"`
+	PlaybackActive   bool   `json:"playback_active,omitempty"`
+	RecordSessions   uint32 `json:"record_sessions,omitempty"`
 	PlaybackSessions uint32 `json:"playback_sessions,omitempty"`
 }
 
-// sendRequest sends a request and receives a response
-func (c *AudioServiceClient) sendRequest(req audioRequest, timeout time.Duration) (*audioResponse, error) {
+// stringUint64 handles JSON values that may be either a string or number
+type stringUint64 uint64
+
+func (s *stringUint64) UnmarshalJSON(data []byte) error {
+	// Try as number first
+	var n uint64
+	if err := json.Unmarshal(data, &n); err == nil {
+		*s = stringUint64(n)
+		return nil
+	}
+	// Try as string
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	var parsed uint64
+	_, err := fmt.Sscanf(str, "%d", &parsed)
+	if err != nil {
+		return fmt.Errorf("parse session_id %q: %w", str, err)
+	}
+	*s = stringUint64(parsed)
+	return nil
+}
+
+// udsMessage represents the wire format: [4B header_len LE][8B payload_len LE][header JSON][payload]
+type udsMessage struct {
+	HeaderJSON string
+	Payload    []byte
+}
+
+// writeUdsMessage writes a message in the wire protocol format
+func writeUdsMessage(conn net.Conn, msg udsMessage) error {
+	// Write 12-byte prefix: header_len (4 LE) + payload_len (8 LE)
+	prefix := make([]byte, 12)
+	binary.LittleEndian.PutUint32(prefix[0:4], uint32(len(msg.HeaderJSON)))
+	binary.LittleEndian.PutUint64(prefix[4:12], uint64(len(msg.Payload)))
+
+	if _, err := conn.Write(prefix); err != nil {
+		return fmt.Errorf("write prefix: %w", err)
+	}
+	if len(msg.HeaderJSON) > 0 {
+		if _, err := conn.Write([]byte(msg.HeaderJSON)); err != nil {
+			return fmt.Errorf("write header: %w", err)
+		}
+	}
+	if len(msg.Payload) > 0 {
+		if _, err := conn.Write(msg.Payload); err != nil {
+			return fmt.Errorf("write payload: %w", err)
+		}
+	}
+	return nil
+}
+
+// readUdsMessage reads a message in the wire protocol format
+func readUdsMessage(conn net.Conn) (*udsMessage, error) {
+	// Read 12-byte prefix
+	prefix := make([]byte, 12)
+	if _, err := io.ReadFull(conn, prefix); err != nil {
+		return nil, fmt.Errorf("read prefix: %w", err)
+	}
+
+	headerLen := binary.LittleEndian.Uint32(prefix[0:4])
+	payloadLen := binary.LittleEndian.Uint64(prefix[4:12])
+
+	msg := &udsMessage{}
+
+	// Read header JSON
+	if headerLen > 0 {
+		headerBuf := make([]byte, headerLen)
+		if _, err := io.ReadFull(conn, headerBuf); err != nil {
+			return nil, fmt.Errorf("read header: %w", err)
+		}
+		msg.HeaderJSON = string(headerBuf)
+	}
+
+	// Read payload
+	if payloadLen > 0 {
+		msg.Payload = make([]byte, payloadLen)
+		if _, err := io.ReadFull(conn, msg.Payload); err != nil {
+			return nil, fmt.Errorf("read payload: %w", err)
+		}
+	}
+
+	return msg, nil
+}
+
+// sendRequest sends a request and receives a response using the UDS wire protocol
+func (c *AudioServiceClient) sendRequest(req audioRequest, timeout time.Duration) (*audioResponse, []byte, error) {
 	conn, err := net.DialTimeout("unix", c.socketPath, 5*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("dial: %w", err)
+		return nil, nil, fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
 
@@ -82,29 +169,29 @@ func (c *AudioServiceClient) sendRequest(req audioRequest, timeout time.Duration
 		conn.SetDeadline(time.Now().Add(timeout))
 	}
 
-	// Send request
-	reqData, err := json.Marshal(req)
+	// Marshal request header JSON
+	headerJSON, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return nil, nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	if _, err := conn.Write(reqData); err != nil {
-		return nil, fmt.Errorf("write request: %w", err)
+	// Send request (header JSON + optional binary payload)
+	if err := writeUdsMessage(conn, udsMessage{HeaderJSON: string(headerJSON), Payload: req.payload}); err != nil {
+		return nil, nil, fmt.Errorf("write request: %w", err)
 	}
 
 	// Read response
-	buf := make([]byte, 1024*1024) // 1MB buffer for audio chunks
-	n, err := conn.Read(buf)
+	respMsg, err := readUdsMessage(conn)
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, nil, fmt.Errorf("read response: %w", err)
 	}
 
 	var resp audioResponse
-	if err := json.Unmarshal(buf[:n], &resp); err != nil {
-		return nil, fmt.Errorf("unmarshal response: %w", err)
+	if err := json.Unmarshal([]byte(respMsg.HeaderJSON), &resp); err != nil {
+		return nil, nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
-	return &resp, nil
+	return &resp, respMsg.Payload, nil
 }
 
 // StartRecording starts a new recording session
@@ -114,16 +201,16 @@ func (c *AudioServiceClient) StartRecording(format AudioFormat) (*RecordStartRes
 		Format: &format,
 	}
 
-	resp, err := c.sendRequest(req, 5*time.Second)
+	resp, _, err := c.sendRequest(req, 5*time.Second)
 	if err != nil {
 		return nil, err
 	}
 
-	if resp.Status != "ok" {
+	if resp.Status != "OK" {
 		return nil, fmt.Errorf("start_recording failed: %s", resp.Status)
 	}
 
-	return &RecordStartResult{SessionID: resp.SessionID}, nil
+	return &RecordStartResult{SessionID: uint64(resp.SessionID)}, nil
 }
 
 // ReadRecordChunk reads a PCM chunk from a recording session (long-poll)
@@ -135,21 +222,21 @@ func (c *AudioServiceClient) ReadRecordChunk(sessionID uint64, timeoutMs uint32)
 	}
 
 	timeout := time.Duration(timeoutMs+5000) * time.Millisecond
-	resp, err := c.sendRequest(req, timeout)
+	resp, payload, err := c.sendRequest(req, timeout)
 	if err != nil {
 		return nil, err
 	}
 
-	if resp.Status == "timeout" {
+	if resp.Status == "TIMEOUT" {
 		return &AudioChunkResult{}, nil
 	}
 
-	if resp.Status != "ok" {
+	if resp.Status != "OK" {
 		return nil, fmt.Errorf("read_record_chunk failed: %s", resp.Status)
 	}
 
 	return &AudioChunkResult{
-		PCM:         resp.PCM,
+		PCM:         payload,
 		EndOfStream: resp.EndOfStream,
 	}, nil
 }
@@ -161,12 +248,12 @@ func (c *AudioServiceClient) StopRecording(sessionID uint64) error {
 		SessionID: sessionID,
 	}
 
-	resp, err := c.sendRequest(req, 5*time.Second)
+	resp, _, err := c.sendRequest(req, 5*time.Second)
 	if err != nil {
 		return err
 	}
 
-	if resp.Status != "ok" {
+	if resp.Status != "OK" {
 		return fmt.Errorf("stop_recording failed: %s", resp.Status)
 	}
 
@@ -180,16 +267,16 @@ func (c *AudioServiceClient) StartPlayback(format AudioFormat) (*PlaybackStartRe
 		Format: &format,
 	}
 
-	resp, err := c.sendRequest(req, 5*time.Second)
+	resp, _, err := c.sendRequest(req, 5*time.Second)
 	if err != nil {
 		return nil, err
 	}
 
-	if resp.Status != "ok" {
+	if resp.Status != "OK" {
 		return nil, fmt.Errorf("start_playback failed: %s", resp.Status)
 	}
 
-	return &PlaybackStartResult{SessionID: resp.SessionID}, nil
+	return &PlaybackStartResult{SessionID: uint64(resp.SessionID)}, nil
 }
 
 // WritePlayChunk writes a PCM chunk to a playback session
@@ -197,16 +284,16 @@ func (c *AudioServiceClient) WritePlayChunk(sessionID uint64, data []byte, isFin
 	req := audioRequest{
 		Op:        "write_play_chunk",
 		SessionID: sessionID,
-		Data:      data,
 		IsFinal:   isFinal,
+		payload:   data,
 	}
 
-	resp, err := c.sendRequest(req, 5*time.Second)
+	resp, _, err := c.sendRequest(req, 5*time.Second)
 	if err != nil {
 		return err
 	}
 
-	if resp.Status != "ok" {
+	if resp.Status != "OK" {
 		return fmt.Errorf("write_play_chunk failed: %s", resp.Status)
 	}
 
@@ -220,12 +307,12 @@ func (c *AudioServiceClient) StopPlayback(sessionID uint64) error {
 		SessionID: sessionID,
 	}
 
-	resp, err := c.sendRequest(req, 5*time.Second)
+	resp, _, err := c.sendRequest(req, 5*time.Second)
 	if err != nil {
 		return err
 	}
 
-	if resp.Status != "ok" {
+	if resp.Status != "OK" {
 		return fmt.Errorf("stop_playback failed: %s", resp.Status)
 	}
 
@@ -238,12 +325,12 @@ func (c *AudioServiceClient) Health() (*AudioHealthResult, error) {
 		Op: "health",
 	}
 
-	resp, err := c.sendRequest(req, 5*time.Second)
+	resp, _, err := c.sendRequest(req, 5*time.Second)
 	if err != nil {
 		return nil, err
 	}
 
-	if resp.Status != "ok" {
+	if resp.Status != "OK" {
 		return nil, fmt.Errorf("health check failed: %s", resp.Status)
 	}
 

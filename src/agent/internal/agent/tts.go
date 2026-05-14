@@ -1,15 +1,11 @@
 package agent
 
 import (
-	"bufio"
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
-	"sync"
 )
 
 // TTSClient is the interface for text-to-speech providers
@@ -44,9 +40,11 @@ func NewMinimaxTTS(apiKey, voiceID, emotion string, speed float64) *MinimaxTTS {
 	}
 }
 
-// TextToSpeechStream streams TTS audio to audio_service
+// TextToSpeechStream streams TTS audio to audio_service.
+// Requests PCM format directly from Minimax to avoid MP3 decoding.
 func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) error {
-	// Build request
+	// Request PCM at 16kHz/16-bit/mono so we can stream directly to
+	// audio_service without any decoding or resampling.
 	reqBody := map[string]interface{}{
 		"model":  "speech-2.8-hd",
 		"text":   text,
@@ -59,9 +57,8 @@ func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) 
 			"emotion":  t.emotion,
 		},
 		"audio_setting": map[string]interface{}{
-			"sample_rate": 32000,
-			"bitrate":     128000,
-			"format":      "mp3",
+			"sample_rate": 16000,
+			"format":      "pcm",
 			"channel":     1,
 		},
 		"stream_options": map[string]interface{}{
@@ -75,7 +72,7 @@ func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) 
 		return fmt.Errorf("marshal request: %w", err)
 	}
 
-	// Open playback session (16kHz/16bit/mono - ffmpeg output)
+	// Open playback session matching the format we request from Minimax
 	playbackFmt := AudioFormat{
 		SampleRate: 16000,
 		Channels:   1,
@@ -86,158 +83,197 @@ func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) 
 	if err != nil {
 		return fmt.Errorf("start playback: %w", err)
 	}
-	defer audio.StopPlayback(playback.SessionID)
-
-	// Spawn ffmpeg: mp3 stdin → pcm s16le 16kHz mono stdout
-	cmd := exec.Command("ffmpeg",
-		"-i", "pipe:0",
-		"-f", "s16le",
-		"-ar", "16000",
-		"-ac", "1",
-		"pipe:1")
-
-	ffmpegStdin, err := cmd.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("create stdin pipe: %w", err)
-	}
-
-	ffmpegStdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("create stdout pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start ffmpeg: %w", err)
-	}
-
-	// Start PCM reader goroutine
-	var wg sync.WaitGroup
-	var writeErr error
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		buf := make([]byte, 4096)
-		for {
-			n, err := ffmpegStdout.Read(buf)
-			if n > 0 {
-				if err := audio.WritePlayChunk(playback.SessionID, buf[:n], false); err != nil {
-					writeErr = fmt.Errorf("write play chunk: %w", err)
-					return
-				}
-			}
-			if err != nil {
-				break
-			}
-		}
-	}()
 
 	// Make HTTP request
 	req, err := http.NewRequest("POST", "https://api.minimaxi.com/v1/t2a_v2", bytes.NewReader(reqData))
 	if err != nil {
-		ffmpegStdin.Close()
-		cmd.Wait()
+		audio.StopPlayback(playback.SessionID)
 		return fmt.Errorf("create request: %w", err)
 	}
-
 	req.Header.Set("Authorization", "Bearer "+t.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		ffmpegStdin.Close()
-		cmd.Wait()
+		audio.StopPlayback(playback.SessionID)
 		return fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		ffmpegStdin.Close()
-		cmd.Wait()
+		audio.StopPlayback(playback.SessionID)
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Stream response to ffmpeg
-	parser := NewMinimaxStreamParser()
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		chunks := parser.Feed(line)
-		for _, mp3Chunk := range chunks {
-			if len(mp3Chunk) > 0 {
-				if _, err := ffmpegStdin.Write(mp3Chunk); err != nil {
-					ffmpegStdin.Close()
-					cmd.Wait()
-					return fmt.Errorf("write to ffmpeg: %w", err)
+	// Stream response → parse JSON objects → hex-decode PCM → write to audio_service
+	parser := newMinimaxStreamParser()
+	readBuf := make([]byte, 8192)
+	for {
+		n, rerr := resp.Body.Read(readBuf)
+		if n > 0 {
+			chunks, _ := parser.feed(readBuf[:n])
+			for _, pcm := range chunks {
+				// Split large PCM chunks into smaller pieces so they fit
+				// the AO driver's internal frame buffer (configured for
+				// 1024 samples × 4 frames). Sending oversized buffers in
+				// one call causes the driver to drop the tail.
+				if err := writePlaybackPCM(audio, playback.SessionID, pcm); err != nil {
+					audio.StopPlayback(playback.SessionID)
+					return err
 				}
 			}
 		}
+		if rerr != nil {
+			if rerr != io.EOF {
+				audio.StopPlayback(playback.SessionID)
+				return fmt.Errorf("read response: %w", rerr)
+			}
+			break
+		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		ffmpegStdin.Close()
-		cmd.Wait()
-		return fmt.Errorf("read response: %w", err)
+	// Pad a short silence tail to avoid clipping the last phonemes on some
+	// AO drivers that stop slightly early.
+	const tailMs = 200
+	const bytesPerSample = 2 // s16le
+	tailBytes := (16000 * tailMs / 1000) * bytesPerSample
+	silenceTail := make([]byte, tailBytes)
+	if err := writePlaybackPCM(audio, playback.SessionID, silenceTail); err != nil {
+		return fmt.Errorf("write silence tail: %w", err)
 	}
 
-	// Close ffmpeg stdin and wait for completion
-	ffmpegStdin.Close()
-	wg.Wait()
-	cmd.Wait()
-
-	if writeErr != nil {
-		return writeErr
+	// Final chunk drains the playback session
+	if err := audio.WritePlayChunk(playback.SessionID, nil, true); err != nil {
+		return fmt.Errorf("send final chunk: %w", err)
 	}
 
-	// Send final chunk
-	return audio.WritePlayChunk(playback.SessionID, []byte{}, true)
+	return nil
 }
 
-// MinimaxStreamParser parses Minimax streaming response
-type MinimaxStreamParser struct {
+// writePlaybackPCM splits a PCM buffer into smaller pieces sized for the AO
+// driver's internal frame buffer. Sending larger buffers in one call causes
+// the driver to play only a portion before dropping the tail.
+const playbackChunkBytes = 4096 // 2048 samples = 128ms @16kHz s16le mono
+
+func writePlaybackPCM(audio *AudioServiceClient, sessionID uint64, pcm []byte) error {
+	for off := 0; off < len(pcm); off += playbackChunkBytes {
+		end := off + playbackChunkBytes
+		if end > len(pcm) {
+			end = len(pcm)
+		}
+		if err := audio.WritePlayChunk(sessionID, pcm[off:end], false); err != nil {
+			return fmt.Errorf("write play chunk: %w", err)
+		}
+	}
+	return nil
+}
+
+// minimaxStreamParser parses the streaming response from Minimax.
+// The response is a stream of concatenated JSON objects (no SSE framing).
+// Each object may contain data.audio as a hex-encoded chunk.
+type minimaxStreamParser struct {
 	buffer []byte
 }
 
-// NewMinimaxStreamParser creates a new stream parser
-func NewMinimaxStreamParser() *MinimaxStreamParser {
-	return &MinimaxStreamParser{}
+func newMinimaxStreamParser() *minimaxStreamParser {
+	return &minimaxStreamParser{}
 }
 
-// Feed processes incoming data and returns MP3 chunks
-func (p *MinimaxStreamParser) Feed(line string) [][]byte {
-	// Minimax streams data as SSE (Server-Sent Events)
-	// Format: data: {"data":{"audio":"base64..."}}
-	if !bytes.HasPrefix([]byte(line), []byte("data: ")) {
-		return nil
+// feed appends data to the buffer and extracts any complete JSON objects.
+// Returns hex-decoded audio chunks. The events return value is reserved for
+// optional debug logging.
+func (p *minimaxStreamParser) feed(data []byte) ([][]byte, []string) {
+	p.buffer = append(p.buffer, data...)
+
+	var out [][]byte
+	for {
+		start := bytes.IndexByte(p.buffer, '{')
+		if start < 0 {
+			p.buffer = p.buffer[:0]
+			break
+		}
+		if start > 0 {
+			p.buffer = p.buffer[start:]
+		}
+
+		end, complete := findJSONObjectEnd(p.buffer)
+		if !complete {
+			break
+		}
+
+		var obj struct {
+			Data struct {
+				Audio string `json:"audio"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(p.buffer[:end], &obj); err == nil {
+			if obj.Data.Audio != "" {
+				if pcm := hexDecode(obj.Data.Audio); len(pcm) > 0 {
+					out = append(out, pcm)
+				}
+			}
+		}
+
+		p.buffer = p.buffer[end:]
 	}
 
-	jsonData := line[6:] // Skip "data: "
-	var event struct {
-		Data struct {
-			Audio string `json:"audio"`
-		} `json:"data"`
-	}
-
-	if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
-		return nil
-	}
-
-	if event.Data.Audio == "" {
-		return nil
-	}
-
-	// Decode base64 MP3 data
-	mp3Data := make([]byte, len(event.Data.Audio)*3/4)
-	n, err := base64Decode(mp3Data, []byte(event.Data.Audio))
-	if err != nil {
-		return nil
-	}
-
-	return [][]byte{mp3Data[:n]}
+	return out, nil
 }
 
-// base64Decode is a simple base64 decoder
-func base64Decode(dst, src []byte) (int, error) {
-	return base64.StdEncoding.Decode(dst, src)
+// findJSONObjectEnd locates the end (exclusive) of the JSON object starting at buffer[0].
+// Returns (endIndex, true) if a complete object is found, (0, false) otherwise.
+func findJSONObjectEnd(buffer []byte) (int, bool) {
+	depth := 0
+	inString := false
+	escaped := false
+	for i, c := range buffer {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch c {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i + 1, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// hexDecode decodes a hex string into bytes. Invalid characters yield 0.
+func hexDecode(hex string) []byte {
+	out := make([]byte, 0, len(hex)/2)
+	for i := 0; i+1 < len(hex); i += 2 {
+		b := (hexNibble(hex[i]) << 4) | hexNibble(hex[i+1])
+		out = append(out, b)
+	}
+	return out
+}
+
+func hexNibble(c byte) byte {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10
+	}
+	return 0
 }

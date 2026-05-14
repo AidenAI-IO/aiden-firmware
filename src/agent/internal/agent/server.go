@@ -11,11 +11,13 @@ import (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime *Runtime
-	addr    string
-	logger  *Logger
-	mu      sync.Mutex
-	history []Message
+	runtime     *Runtime
+	addr        string
+	logger      *Logger
+	mu          sync.Mutex
+	history     []Message
+	ttsClient   TTSClient
+	audioClient *AudioServiceClient
 }
 
 // Message represents a chat message or tool call
@@ -41,12 +43,31 @@ type ChatResponse struct {
 
 // NewServer creates a new HTTP server
 func NewServer(runtime *Runtime, addr string) *Server {
-	return &Server{
+	s := &Server{
 		runtime: runtime,
 		addr:    addr,
 		logger:  runtime.logger,
 		history: make([]Message, 0),
 	}
+
+	// Initialize TTS client if configured
+	cfg := runtime.config
+	if cfg.TTS.Provider != "" {
+		switch cfg.TTS.Provider {
+		case "minimax":
+			s.ttsClient = NewMinimaxTTS(cfg.TTS.APIKey, cfg.TTS.VoiceID, cfg.TTS.Emotion, cfg.TTS.Speed)
+			s.audioClient = NewAudioServiceClient(cfg.Audio.SocketOrDefault())
+			if s.logger != nil {
+				s.logger.Info("TTS enabled: provider=%s voice=%s", cfg.TTS.Provider, cfg.TTS.VoiceID)
+			}
+		default:
+			if s.logger != nil {
+				s.logger.Error("Unknown TTS provider: %s", cfg.TTS.Provider)
+			}
+		}
+	}
+
+	return s
 }
 
 // Start starts the HTTP server
@@ -123,6 +144,20 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	historySnapshot := make([]Message, len(s.history))
 	copy(historySnapshot, s.history)
 	s.mu.Unlock()
+
+	// Play TTS in background if configured
+	if s.ttsClient != nil && s.audioClient != nil && result.Output != "" {
+		go func(text string) {
+			if s.logger != nil {
+				s.logger.Info("TTS playback: %q", text)
+			}
+			if err := s.ttsClient.TextToSpeechStream(text, s.audioClient); err != nil {
+				if s.logger != nil {
+					s.logger.Error("TTS playback failed: %v", err)
+				}
+			}
+		}(result.Output)
+	}
 
 	// Return response
 	w.Header().Set("Content-Type", "application/json")
