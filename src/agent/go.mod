@@ -1,6 +1,6 @@
 module aiden-agent
 
-go 1.26.3
+go 1.26
 
 require github.com/tmc/langchaingo v0.1.14
 
