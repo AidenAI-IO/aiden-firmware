@@ -188,12 +188,16 @@ target_include_directories(agent_main PRIVATE ${CMAKE_BINARY_DIR}/generated)
 add_dependencies(agent_main agent_version_header)
 target_link_libraries(agent_main PRIVATE aiden cjson pthread)
 
-# Go Agent
-find_program(GO_EXECUTABLE go REQUIRED)
+# Go Agent (only build on host, not for cross-compilation)
+find_program(GO_EXECUTABLE go)
 
-add_custom_target(agent_go ALL
-    COMMAND ${GO_EXECUTABLE} build -o ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/agent ./cmd/daemon
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/src/agent
-    COMMENT "Building Go agent"
-    VERBATIM
-)
+if(GO_EXECUTABLE)
+    add_custom_target(agent_go ALL
+        COMMAND ${GO_EXECUTABLE} build -o ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/agent ./cmd/daemon
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/src/agent
+        COMMENT "Building Go agent"
+        VERBATIM
+    )
+else()
+    message(STATUS "Go not found, skipping agent build (cross-compilation environment)")
+endif()
