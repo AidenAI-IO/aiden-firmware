@@ -193,7 +193,16 @@ bool MinimaxTTS::text_to_speech_stream(const char* text,
     close(ctx.ffmpeg_stdout);
 
     int status;
-    waitpid(ctx.ffmpeg_pid, &status, 0);
+    if (waitpid(ctx.ffmpeg_pid, &status, 0) < 0) {
+        fprintf(stderr, "[minimax] waitpid failed: %s\n", strerror(errno));
+        success = false;
+    } else if (!WIFEXITED(status)) {
+        fprintf(stderr, "[minimax] ffmpeg exited abnormally: status=%d\n", status);
+        success = false;
+    } else if (WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "[minimax] ffmpeg exited with code %d\n", WEXITSTATUS(status));
+        success = false;
+    }
 
     // Pad a short silence tail before finalizing playback to avoid clipping
     // the last phonemes on some AO drivers that stop slightly early.

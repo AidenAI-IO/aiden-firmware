@@ -1,5 +1,7 @@
 #include "audio_service_client.h"
 #include <chrono>
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +21,28 @@ static void usage(const char* program) {
 static const char* default_socket() {
     const char* env = getenv("AUDIO_SERVICE_SOCKET");
     return (env && env[0] != '\0') ? env : "/run/audio_service/audio_service.sock";
+}
+
+static bool parse_non_negative_int(const char* text, int* out) {
+    if (!text || !out) return false;
+    errno = 0;
+    char* end = nullptr;
+    long value = strtol(text, &end, 10);
+    if (errno != 0 || !end || *end != '\0') return false;
+    if (value < 0 || value > INT_MAX) return false;
+    *out = static_cast<int>(value);
+    return true;
+}
+
+static bool parse_positive_u32(const char* text, uint32_t* out) {
+    if (!text || !out) return false;
+    errno = 0;
+    char* end = nullptr;
+    unsigned long value = strtoul(text, &end, 10);
+    if (errno != 0 || !end || *end != '\0') return false;
+    if (value == 0 || value > 0xFFFFFFFFUL) return false;
+    *out = static_cast<uint32_t>(value);
+    return true;
 }
 
 static int cmd_health(aiden::AudioServiceClient& client) {
@@ -61,11 +85,23 @@ static int cmd_record_stream(aiden::AudioServiceClient& client, int seconds) {
         }
         if (chunk.end_of_stream) break;
         if (!chunk.pcm.empty()) {
-            fwrite(chunk.pcm.data(), 1, chunk.pcm.size(), stdout);
+            size_t written = fwrite(chunk.pcm.data(), 1, chunk.pcm.size(), stdout);
+            if (written != chunk.pcm.size()) {
+                fprintf(stderr, "write stdout failed (written=%zu expected=%zu)\n",
+                        written, chunk.pcm.size());
+                read_failed = true;
+                break;
+            }
         }
     }
 
-    client.stop_recording(rs.session_id);
+    aiden::AidenServiceStatus stop_status = client.stop_recording(rs.session_id);
+    if (stop_status != aiden::AidenServiceStatus::OK &&
+        stop_status != aiden::AidenServiceStatus::SESSION_NOT_FOUND) {
+        fprintf(stderr, "stop_recording failed: %s\n",
+                service_status_to_string(stop_status));
+        read_failed = true;
+    }
     return read_failed ? 1 : 0;
 }
 
@@ -135,7 +171,11 @@ int main(int argc, char** argv) {
     if (cmd == "record-stream") {
         for (; i < argc; ++i) {
             if (strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
-                seconds = atoi(argv[++i]);
+                if (!parse_non_negative_int(argv[i + 1], &seconds)) {
+                    fprintf(stderr, "invalid --seconds value: %s\n", argv[i + 1]);
+                    return 2;
+                }
+                ++i;
             }
         }
         return cmd_record_stream(client, seconds);
@@ -144,11 +184,23 @@ int main(int argc, char** argv) {
     if (cmd == "play-stream") {
         for (; i < argc; ++i) {
             if (strcmp(argv[i], "--rate") == 0 && i + 1 < argc) {
-                play_fmt.sample_rate = static_cast<uint32_t>(atoi(argv[++i]));
+                if (!parse_positive_u32(argv[i + 1], &play_fmt.sample_rate)) {
+                    fprintf(stderr, "invalid --rate value: %s\n", argv[i + 1]);
+                    return 2;
+                }
+                ++i;
             } else if (strcmp(argv[i], "--ch") == 0 && i + 1 < argc) {
-                play_fmt.channels = static_cast<uint32_t>(atoi(argv[++i]));
+                if (!parse_positive_u32(argv[i + 1], &play_fmt.channels)) {
+                    fprintf(stderr, "invalid --ch value: %s\n", argv[i + 1]);
+                    return 2;
+                }
+                ++i;
             } else if (strcmp(argv[i], "--bits") == 0 && i + 1 < argc) {
-                play_fmt.bit_width = static_cast<uint32_t>(atoi(argv[++i]));
+                if (!parse_positive_u32(argv[i + 1], &play_fmt.bit_width)) {
+                    fprintf(stderr, "invalid --bits value: %s\n", argv[i + 1]);
+                    return 2;
+                }
+                ++i;
             }
         }
         return cmd_play_stream(client, play_fmt);

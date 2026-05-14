@@ -6,7 +6,9 @@
 namespace aiden {
 
 AudioSessionManager::AudioSessionManager()
-    : stop_reaper_(false), next_id_(1) {
+    : stop_reaper_(false),
+      draining_playback_count_(std::make_shared<std::atomic<uint32_t>>(0)),
+      next_id_(1) {
     reaper_thread_ = std::thread([this]() { reaper_loop(); });
 }
 
@@ -153,8 +155,11 @@ AidenServiceStatus AudioSessionManager::write_play_chunk(uint64_t session_id,
         if (owned) {
             // Keep session alive on detached thread so playback can drain
             // without blocking the RPC handler thread.
-            std::thread([owned]() {
+            std::shared_ptr<std::atomic<uint32_t>> draining = draining_playback_count_;
+            draining->fetch_add(1, std::memory_order_relaxed);
+            std::thread([owned, draining]() {
                 owned->wait_until_done();
+                draining->fetch_sub(1, std::memory_order_relaxed);
             }).detach();
         }
     }
@@ -185,10 +190,11 @@ AidenServiceStatus AudioSessionManager::stop_playback(uint64_t session_id) {
 
 void AudioSessionManager::fill_health(AudioHealthResult* out) const {
     std::lock_guard<std::mutex> lock(mutex_);
+    const uint32_t draining = draining_playback_count_->load(std::memory_order_relaxed);
     out->record_sessions   = static_cast<uint32_t>(record_sessions_.size());
-    out->playback_sessions = static_cast<uint32_t>(playback_sessions_.size());
+    out->playback_sessions = static_cast<uint32_t>(playback_sessions_.size()) + draining;
     out->recording_active  = !record_sessions_.empty();
-    out->playback_active   = !playback_sessions_.empty();
+    out->playback_active   = out->playback_sessions > 0;
 }
 
 void AudioSessionManager::reaper_loop() {

@@ -66,6 +66,7 @@ private:
     mutable std::mutex mutex_;
     std::atomic<bool> stop_reaper_;
     std::thread reaper_thread_;
+    std::shared_ptr<std::atomic<uint32_t>> draining_playback_count_;
     uint64_t next_id_;
     std::unordered_map<uint64_t, std::shared_ptr<AudioRecordSession>>   record_sessions_;
     std::unordered_map<uint64_t, std::shared_ptr<AudioPlaybackSession>> playback_sessions_;
