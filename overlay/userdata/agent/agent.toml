@@ -1,6 +1,25 @@
+# Agent instruction and behavior
 instruction = "You are a helpful assistant. Use tools when they help accomplish the task."
+additional_prompt = ""
 max_iterations = 6
 
+# Input mode: "text" (HTTP server), "stt" (speech-to-text), or "audio" (direct audio)
+# - text: Run HTTP server with Web UI (default)
+# - stt: Audio → STT → LLM → TTS
+# - audio: Audio → LLM → TTS (not yet implemented)
+input_mode = "text"
+
+# Trigger mode: "manual" (push-to-talk) or "wakeup" (GPIO trigger)
+# Only used when input_mode is "stt" or "audio"
+trigger_mode = "manual"
+
+# VAD (Voice Activity Detection) parameters
+# Only used when input_mode is "stt" or "audio"
+energy_threshold = 500    # Energy threshold for speech detection
+silence_ms = 1000         # Silence duration to end utterance (ms)
+min_speech_ms = 300       # Minimum speech duration to accept (ms)
+
+# Primary LLM model configuration
 [model]
 provider = "openrouter"
 model = "bytedance-seed/seed-2.0-lite"
@@ -8,6 +27,45 @@ api_key = "OPENROUTER_API_KEY"
 temperature = 0.2
 max_tokens = 1000
 
+# Optional: Override model for text-only mode (when input_mode = "stt")
+# Useful if you want to use a different model for text vs audio
+# [model_text]
+# provider = "openrouter"
+# model = "anthropic/claude-3.5-sonnet"
+# api_key = "OPENROUTER_API_KEY"
+
+# Audio service configuration
+[audio]
+socket = "/run/audio_service/audio_service.sock"
+sample_rate = 16000
+channels = 1
+bit_width = 16
+
+# Speech-to-Text (STT) configuration
+# Required when input_mode = "stt"
+[stt]
+provider = "openai-whisper"  # "openai-whisper" or "tencent"
+api_key = "OPENAI_API_KEY"
+model = "whisper-1"
+# base_url = "https://api.openai.com/v1"  # Optional: custom endpoint
+
+# For Tencent ASR (alternative to OpenAI Whisper):
+# provider = "tencent"
+# secret_id = "TENCENT_SECRET_ID"
+# secret_key = "TENCENT_SECRET_KEY"
+# region = "ap-guangzhou"
+# engine_model_type = "16k_zh"
+
+# Text-to-Speech (TTS) configuration
+# Required when input_mode = "stt" or "audio"
+[tts]
+provider = "minimax"
+api_key = "MINIMAX_API_KEY"
+voice_id = "male-qn-qingse"  # Voice ID from Minimax
+emotion = "happy"             # Emotion: happy, sad, angry, etc.
+speed = 1.0                   # Speech speed: 0.5 - 2.0
+
+# HID (Human Interface Device) configuration
 [hid]
 keyboard_device = "/dev/hidg0"
 mouse_device = "/dev/hidg1"
