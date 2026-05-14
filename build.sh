@@ -18,6 +18,9 @@ docker run --rm \
   -u "$(id -u):$(id -g)" \
   -v "$(pwd)/src/agent:/go/src/app" \
   -v "$(pwd)/build/bin:/go/bin" \
+  -v "$(pwd)/build/.cache:/go/.cache" \
+  -e GOCACHE=/go/.cache/go-build \
+  -e GOMODCACHE=/go/.cache/go-mod \
   -w /go/src/app \
   golang:1.26-alpine \
   sh -c "GOOS=linux GOARCH=arm GOARM=7 go build -o /go/bin/agent ./cmd/daemon"
