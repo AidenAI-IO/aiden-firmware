@@ -109,10 +109,10 @@ func (t *KeyboardTapTool) Call(_ context.Context, input string) (string, error) 
 		Keys []string `json:"keys"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+		return fmt.Sprintf("error: invalid input: %v", err), nil
 	}
 	if len(args.Keys) == 0 {
-		return "", fmt.Errorf("keys array is required")
+		return "error: keys array is required", nil
 	}
 
 	var modifier uint8
@@ -124,7 +124,7 @@ func (t *KeyboardTapTool) Call(_ context.Context, input string) (string, error) 
 		} else if code, ok := hidKeyboardMap[k]; ok {
 			keys = append(keys, code)
 		} else {
-			return "", fmt.Errorf("unknown key: %q", k)
+			return fmt.Sprintf("error: unknown key: %q", k), nil
 		}
 	}
 
@@ -137,11 +137,11 @@ func (t *KeyboardTapTool) Call(_ context.Context, input string) (string, error) 
 
 	// Press
 	if err := t.dev.Write(report); err != nil {
-		return "", err
+		return fmt.Sprintf("error: %v", err), nil
 	}
 	// Release
 	if err := t.dev.Write(make([]byte, 8)); err != nil {
-		return "", err
+		return fmt.Sprintf("error: %v", err), nil
 	}
 
 	return "ok", nil
@@ -164,10 +164,10 @@ func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error)
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+		return fmt.Sprintf("error: invalid input: %v", err), nil
 	}
 	if args.Text == "" {
-		return "", fmt.Errorf("text is required")
+		return "error: text is required", nil
 	}
 
 	for _, ch := range args.Text {
@@ -179,10 +179,10 @@ func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error)
 		report[0] = modifier
 		report[2] = code
 		if err := t.dev.Write(report); err != nil {
-			return "", err
+			return fmt.Sprintf("error: %v", err), nil
 		}
 		if err := t.dev.Write(make([]byte, 8)); err != nil {
-			return "", err
+			return fmt.Sprintf("error: %v", err), nil
 		}
 	}
 
@@ -208,18 +208,18 @@ func (t *MouseClickTool) Call(_ context.Context, input string) (string, error) {
 		Button string `json:"button"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+		return fmt.Sprintf("error: invalid input: %v", err), nil
 	}
 
 	btn := mouseButtonByte(args.Button)
 
 	// Press
 	if err := writeAbsMouseReport(t.dev, args.X, args.Y, btn); err != nil {
-		return "", err
+		return fmt.Sprintf("error: %v", err), nil
 	}
 	// Release
 	if err := writeAbsMouseReport(t.dev, args.X, args.Y, 0); err != nil {
-		return "", err
+		return fmt.Sprintf("error: %v", err), nil
 	}
 
 	return "ok", nil
@@ -243,11 +243,11 @@ func (t *MouseMoveTool) Call(_ context.Context, input string) (string, error) {
 		Y int `json:"y"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+		return fmt.Sprintf("error: invalid input: %v", err), nil
 	}
 
 	if err := writeAbsMouseReport(t.dev, args.X, args.Y, 0); err != nil {
-		return "", err
+		return fmt.Sprintf("error: %v", err), nil
 	}
 
 	return "ok", nil
@@ -270,7 +270,7 @@ func (t *MouseScrollTool) Call(_ context.Context, input string) (string, error) 
 		Delta int `json:"delta"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+		return fmt.Sprintf("error: invalid input: %v", err), nil
 	}
 	if args.Delta == 0 {
 		return "ok", nil
@@ -284,7 +284,7 @@ func (t *MouseScrollTool) Call(_ context.Context, input string) (string, error) 
 	// Wheel report: [report_id=2, wheel_value]
 	report := []byte{0x02, byte(int8(args.Delta))}
 	if err := t.dev.Write(report); err != nil {
-		return "", err
+		return fmt.Sprintf("error: %v", err), nil
 	}
 
 	return "ok", nil

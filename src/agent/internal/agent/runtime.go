@@ -157,7 +157,19 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	output, err := chains.Run(ctx, executor, req.Input, callOptions...)
 	if err != nil {
-		return RunResult{}, err
+		// If the agent couldn't parse the LLM output format, extract the raw
+		// text and return it as the response instead of failing.
+		if errors.Is(err, agents.ErrUnableToParseOutput) {
+			raw := err.Error()
+			const prefix = "unable to parse agent output: "
+			if idx := strings.Index(raw, prefix); idx >= 0 {
+				output = strings.TrimSpace(raw[idx+len(prefix):])
+				err = nil
+			}
+		}
+		if err != nil {
+			return RunResult{}, err
+		}
 	}
 
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())

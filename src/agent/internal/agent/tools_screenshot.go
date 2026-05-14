@@ -29,11 +29,11 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 	// Request JPEG format directly from frame_service (hardware-encoded)
 	meta, jpegData, err := t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
 	if err != nil {
-		return "", fmt.Errorf("capture screenshot: %w", err)
+		return fmt.Sprintf("error: %v", err), nil
 	}
 
 	if meta.PixelFormat != "jpeg" {
-		return "", fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
+		return fmt.Sprintf("error: expected jpeg format, got %s", meta.PixelFormat), nil
 	}
 
 	result := struct {
