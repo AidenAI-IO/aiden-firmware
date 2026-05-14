@@ -25,7 +25,7 @@ echo "Building Go agent..."
 
 GO_VERSION="1.26.0"
 GO_TARBALL="go${GO_VERSION}.linux-amd64.tar.gz"
-GO_INSTALL_DIR="${BUILD_DIR}/.go"
+GO_INSTALL_DIR="/tmp/go-${GO_VERSION}"
 
 if [ ! -x "${GO_INSTALL_DIR}/bin/go" ]; then
     echo "Installing Go ${GO_VERSION}..."
@@ -36,8 +36,8 @@ if [ ! -x "${GO_INSTALL_DIR}/bin/go" ]; then
 fi
 
 export PATH="${GO_INSTALL_DIR}/bin:$PATH"
-export GOCACHE="${BUILD_DIR}/.cache/go-build"
-export GOMODCACHE="${BUILD_DIR}/.cache/go-mod"
+export GOCACHE="/tmp/go-cache"
+export GOMODCACHE="/tmp/go-mod"
 
 cd src/agent
 GOOS=linux GOARCH=arm GOARM=7 go build -o "../../${BUILD_DIR}/bin/agent" ./cmd/daemon
