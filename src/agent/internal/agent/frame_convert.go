@@ -49,7 +49,7 @@ func convertFrameToRGB(meta *frameMetadata, frame []byte) ([]byte, error) {
 		}
 		src := 0
 		dst := 0
-		for src+3 < len(frame) && dst+5 < len(rgb) {
+		for src+4 <= len(frame) && dst+6 <= len(rgb) {
 			var y0, u, y1, v byte
 			if meta.PixelFormat == "uyvy" {
 				u, y0, v, y1 = frame[src], frame[src+1], frame[src+2], frame[src+3]
