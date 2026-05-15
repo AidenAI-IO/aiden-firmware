@@ -354,24 +354,26 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
                 metadata.stale = true;
             }
 
-            std::vector<uint8_t> payload;
+            std::vector<uint8_t> encoded_payload;
+            const std::vector<uint8_t>* payload = &frame->data;
             if (format == "jpeg") {
                 // Encode to JPEG using hardware encoder
                 if (!encode_yuv_to_jpeg_hw(frame->data, metadata.width, metadata.height,
-                                           metadata.pixel_format, quality, &payload)) {
+                                           metadata.pixel_format, quality, &encoded_payload)) {
                     write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
                     cJSON_Delete(root);
                     return;
                 }
+                payload = &encoded_payload;
+                metadata.stride = 0;
+                metadata.planes.clear();
                 metadata.pixel_format = "jpeg";
-                metadata.bytes = payload.size();
-            } else {
-                payload = frame->data;
+                metadata.bytes = payload->size();
             }
 
             std::string header = "{\"type\":\"response\",\"method\":\"latest_frame\",\"status\":\"OK\",\"frame\":" +
                                  frame_metadata_json(metadata) + "}";
-            if (write_payload_message(fd, header, payload) == FrameServiceStatus::OK) {
+            if (write_payload_message(fd, header, *payload) == FrameServiceStatus::OK) {
                 record_serve_latency(started_ns);
             }
         } else {
