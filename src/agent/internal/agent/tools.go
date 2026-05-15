@@ -18,15 +18,17 @@ type ToolSet struct {
 func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig) *ToolSet {
 	kbDev := NewHIDDevice(hidCfg.KeyboardDeviceOrDefault())
 	mouseDev := NewHIDDevice(hidCfg.MouseDeviceOrDefault())
+	screen := &screenState{}
 
 	return &ToolSet{
 		tools: map[string]langtools.Tool{
 			"keyboard_tap":  &KeyboardTapTool{dev: kbDev},
 			"keyboard_text": &KeyboardTextTool{dev: kbDev},
-			"mouse_click":   &MouseClickTool{dev: mouseDev},
-			"mouse_move":    &MouseMoveTool{dev: mouseDev},
+			"mouse_click":   &MouseClickTool{dev: mouseDev, screen: screen},
+			"mouse_move":    &MouseMoveTool{dev: mouseDev, screen: screen},
 			"mouse_scroll":  &MouseScrollTool{dev: mouseDev},
-			"screenshot":    NewScreenshotTool(hidCfg.FrameSocketOrDefault()),
+			"touch_gesture": &TouchGestureTool{dev: mouseDev, screen: screen},
+			"screenshot":    NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen),
 			"audio_volume":  NewAudioVolumeTool(audioCfg.SocketOrDefault()),
 		},
 	}

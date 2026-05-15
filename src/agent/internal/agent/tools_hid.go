@@ -5,9 +5,11 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -31,7 +33,7 @@ var hidKeyboardMap = map[string]uint8{
 	"backslash": 0x31, "semicolon": 0x33, "apostrophe": 0x34,
 	"grave": 0x35, "comma": 0x36, "dot": 0x37, "slash": 0x38,
 	"capslock": 0x39,
-	"f1": 0x3a, "f2": 0x3b, "f3": 0x3c, "f4": 0x3d,
+	"f1":       0x3a, "f2": 0x3b, "f3": 0x3c, "f4": 0x3d,
 	"f5": 0x3e, "f6": 0x3f, "f7": 0x40, "f8": 0x41,
 	"f9": 0x42, "f10": 0x43, "f11": 0x44, "f12": 0x45,
 	"printscreen": 0x46, "scrolllock": 0x47, "pause": 0x48,
@@ -53,6 +55,32 @@ type HIDDevice struct {
 	path string
 	mu   sync.Mutex
 	file *os.File
+}
+
+type screenState struct {
+	mu     sync.RWMutex
+	width  int
+	height int
+}
+
+func (s *screenState) Update(width, height int) {
+	if width <= 0 || height <= 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.width = width
+	s.height = height
+}
+
+func (s *screenState) Dimensions() (width, height int, ok bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.width <= 0 || s.height <= 0 {
+		return 0, 0, false
+	}
+	return s.width, s.height, true
 }
 
 func NewHIDDevice(path string) *HIDDevice {
@@ -191,34 +219,38 @@ func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error)
 
 // MouseClickTool moves the mouse to absolute coordinates and clicks.
 type MouseClickTool struct {
-	dev *HIDDevice
+	dev    *HIDDevice
+	screen *screenState
 }
 
 func (t *MouseClickTool) Name() string { return "mouse_click" }
 
 func (t *MouseClickTool) Description() string {
-	return `Move mouse to absolute position and click. Input JSON: {"x": 500, "y": 300, "button": "left"}. ` +
-		`Coordinates are in screen pixels. Button options: "left" (default), "right", "middle".`
+	return `Move mouse to a position and click. Input JSON: {"x": 500, "y": 300, "button": "left", "coord_space": "pixel"}. ` +
+		`coord_space options: "pixel", "normalized", "absolute". If omitted, pixel coordinates are used when a screenshot has cached screen dimensions; otherwise coordinates are treated as HID absolute values in the range 0-32767. Button options: "left" (default), "right", "middle".`
 }
 
 func (t *MouseClickTool) Call(_ context.Context, input string) (string, error) {
 	var args struct {
-		X      int    `json:"x"`
-		Y      int    `json:"y"`
-		Button string `json:"button"`
+		X          float64 `json:"x"`
+		Y          float64 `json:"y"`
+		Button     string  `json:"button"`
+		CoordSpace string  `json:"coord_space"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return fmt.Sprintf("error: invalid input: %v", err), nil
 	}
 
-	btn := mouseButtonByte(args.Button)
-
-	// Press
-	if err := writeAbsMouseReport(t.dev, args.X, args.Y, btn); err != nil {
+	absX, absY, err := resolvePointerPosition(t.screen, args.X, args.Y, args.CoordSpace, coordinateSpaceAuto)
+	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
-	// Release
-	if err := writeAbsMouseReport(t.dev, args.X, args.Y, 0); err != nil {
+	btn := mouseButtonByte(args.Button)
+
+	if err := pressPointer(t.dev, absX, absY, btn); err != nil {
+		return fmt.Sprintf("error: %v", err), nil
+	}
+	if err := releasePointer(t.dev, absX, absY); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
 
@@ -227,27 +259,136 @@ func (t *MouseClickTool) Call(_ context.Context, input string) (string, error) {
 
 // MouseMoveTool moves the mouse to absolute coordinates without clicking.
 type MouseMoveTool struct {
-	dev *HIDDevice
+	dev    *HIDDevice
+	screen *screenState
 }
 
 func (t *MouseMoveTool) Name() string { return "mouse_move" }
 
 func (t *MouseMoveTool) Description() string {
-	return `Move mouse to absolute position without clicking. Input JSON: {"x": 500, "y": 300}. ` +
-		`Coordinates are in screen pixels.`
+	return `Move mouse to a position without clicking. Input JSON: {"x": 500, "y": 300, "coord_space": "pixel"}. ` +
+		`coord_space options: "pixel", "normalized", "absolute". If omitted, pixel coordinates are used when a screenshot has cached screen dimensions; otherwise coordinates are treated as HID absolute values in the range 0-32767.`
 }
 
 func (t *MouseMoveTool) Call(_ context.Context, input string) (string, error) {
 	var args struct {
-		X int `json:"x"`
-		Y int `json:"y"`
+		X          float64 `json:"x"`
+		Y          float64 `json:"y"`
+		CoordSpace string  `json:"coord_space"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return fmt.Sprintf("error: invalid input: %v", err), nil
 	}
 
-	if err := writeAbsMouseReport(t.dev, args.X, args.Y, 0); err != nil {
+	absX, absY, err := resolvePointerPosition(t.screen, args.X, args.Y, args.CoordSpace, coordinateSpaceAuto)
+	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
+	}
+
+	if err := movePointer(t.dev, absX, absY, 0); err != nil {
+		return fmt.Sprintf("error: %v", err), nil
+	}
+
+	return "ok", nil
+}
+
+// TouchGestureTool executes touch-like pointer gestures for mobile UI control.
+type TouchGestureTool struct {
+	dev    *HIDDevice
+	screen *screenState
+}
+
+func (t *TouchGestureTool) Name() string { return "touch_gesture" }
+
+func (t *TouchGestureTool) Description() string {
+	return `Perform a touch-like gesture using the absolute mouse HID device. ` +
+		`Input JSON examples: {"type":"tap","point":{"x":0.5,"y":0.5}}, {"type":"swipe","start":{"x":0.5,"y":0.92},"end":{"x":0.5,"y":0.22},"duration_ms":260,"steps":12}. ` +
+		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe". coord_space defaults to "normalized" and also supports "pixel" and "absolute".`
+}
+
+func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error) {
+	var args struct {
+		Type         string        `json:"type"`
+		Point        *pointerPoint `json:"point"`
+		Start        *pointerPoint `json:"start"`
+		End          *pointerPoint `json:"end"`
+		CoordSpace   string        `json:"coord_space"`
+		Button       string        `json:"button"`
+		DurationMs   *int          `json:"duration_ms"`
+		HoldBeforeMs *int          `json:"hold_before_ms"`
+		PauseMs      *int          `json:"pause_ms"`
+		Steps        *int          `json:"steps"`
+	}
+	if err := json.Unmarshal([]byte(input), &args); err != nil {
+		return fmt.Sprintf("error: invalid input: %v", err), nil
+	}
+
+	gestureType := strings.ToLower(strings.TrimSpace(args.Type))
+	if gestureType == "" {
+		return "error: type is required", nil
+	}
+
+	coordSpace := strings.TrimSpace(args.CoordSpace)
+	if coordSpace == "" {
+		coordSpace = coordinateSpaceNormalized
+	}
+	button := mouseButtonByte(args.Button)
+
+	switch gestureType {
+	case "tap":
+		point, err := resolveRequiredPoint(t.screen, args.Point, coordSpace)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		if err := tapPointer(t.dev, point.x, point.y, button); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+	case "double_tap":
+		point, err := resolveRequiredPoint(t.screen, args.Point, coordSpace)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		if err := tapPointer(t.dev, point.x, point.y, button); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		sleepMs(intOrDefault(args.PauseMs, 100))
+		if err := tapPointer(t.dev, point.x, point.y, button); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+	case "long_press":
+		point, err := resolveRequiredPoint(t.screen, args.Point, coordSpace)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		if err := pressPointer(t.dev, point.x, point.y, button); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		sleepMs(intOrDefault(args.DurationMs, 500))
+		if err := releasePointer(t.dev, point.x, point.y); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+	case "drag", "swipe":
+		start, err := resolveRequiredPoint(t.screen, args.Start, coordSpace)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		end, err := resolveRequiredPoint(t.screen, args.End, coordSpace)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		if err := dragPointer(
+			t.dev,
+			start,
+			end,
+			button,
+			intOrDefault(args.DurationMs, 250),
+			intOrDefault(args.HoldBeforeMs, 0),
+			positiveIntOrDefault(args.Steps, 12),
+		); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+	default:
+		return fmt.Sprintf("error: unsupported gesture type: %q", args.Type), nil
 	}
 
 	return "ok", nil
@@ -262,7 +403,7 @@ func (t *MouseScrollTool) Name() string { return "mouse_scroll" }
 
 func (t *MouseScrollTool) Description() string {
 	return `Scroll the mouse wheel. Input JSON: {"delta": -3}. ` +
-		`Positive values scroll up, negative scroll down. Range: -127 to 127.`
+		`Positive values scroll up, negative scroll down. Range: -127 to 127. This is a wheel event and is not equivalent to a mobile swipe gesture.`
 }
 
 func (t *MouseScrollTool) Call(_ context.Context, input string) (string, error) {
@@ -303,6 +444,177 @@ func writeAbsMouseReport(dev *HIDDevice, x, y int, buttons uint8) error {
 	binary.LittleEndian.PutUint16(report[4:6], absY)
 
 	return dev.Write(report)
+}
+
+type pointerPoint struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+type resolvedPointerPoint struct {
+	x int
+	y int
+}
+
+const (
+	coordinateSpaceAuto       = "auto"
+	coordinateSpacePixel      = "pixel"
+	coordinateSpaceNormalized = "normalized"
+	coordinateSpaceAbsolute   = "absolute"
+)
+
+func resolveRequiredPoint(screen *screenState, point *pointerPoint, coordSpace string) (resolvedPointerPoint, error) {
+	if point == nil {
+		return resolvedPointerPoint{}, fmt.Errorf("point is required")
+	}
+
+	x, y, err := resolvePointerPosition(screen, point.X, point.Y, coordSpace, coordinateSpaceNormalized)
+	if err != nil {
+		return resolvedPointerPoint{}, err
+	}
+	return resolvedPointerPoint{x: x, y: y}, nil
+}
+
+func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string, defaultSpace string) (int, int, error) {
+	space := strings.ToLower(strings.TrimSpace(coordSpace))
+	if space == "" {
+		space = defaultSpace
+	}
+
+	switch space {
+	case coordinateSpaceAuto:
+		if screen != nil {
+			if width, height, ok := screen.Dimensions(); ok {
+				return pixelToAbsolutePoint(x, y, width, height)
+			}
+		}
+		return int(clampFloat(math.Round(x), 0, absMouseMaxPos)), int(clampFloat(math.Round(y), 0, absMouseMaxPos)), nil
+	case coordinateSpacePixel:
+		if screen == nil {
+			return 0, 0, fmt.Errorf("pixel coordinates require known screen dimensions; call screenshot first or use coord_space normalized/absolute")
+		}
+		width, height, ok := screen.Dimensions()
+		if !ok {
+			return 0, 0, fmt.Errorf("pixel coordinates require known screen dimensions; call screenshot first or use coord_space normalized/absolute")
+		}
+		return pixelToAbsolutePoint(x, y, width, height)
+	case coordinateSpaceNormalized:
+		absX, absY := normalizedToAbsolutePoint(x, y)
+		return absX, absY, nil
+	case coordinateSpaceAbsolute:
+		return int(clampFloat(math.Round(x), 0, absMouseMaxPos)), int(clampFloat(math.Round(y), 0, absMouseMaxPos)), nil
+	default:
+		return 0, 0, fmt.Errorf("unsupported coord_space: %q", coordSpace)
+	}
+}
+
+func normalizedToAbsolutePoint(x, y float64) (int, int) {
+	return int(math.Round(clampFloat(x, 0, 1) * absMouseMaxPos)), int(math.Round(clampFloat(y, 0, 1) * absMouseMaxPos))
+}
+
+func pixelToAbsolutePoint(x, y float64, width, height int) (int, int, error) {
+	if width <= 0 || height <= 0 {
+		return 0, 0, fmt.Errorf("invalid screen dimensions: %dx%d", width, height)
+	}
+	return scalePixelToAbsolute(x, width), scalePixelToAbsolute(y, height), nil
+}
+
+func scalePixelToAbsolute(value float64, size int) int {
+	if size <= 1 {
+		return 0
+	}
+	maxPixel := float64(size - 1)
+	clamped := clampFloat(value, 0, maxPixel)
+	return int(math.Round((clamped / maxPixel) * absMouseMaxPos))
+}
+
+func clampFloat(value, min, max float64) float64 {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+func tapPointer(dev *HIDDevice, x, y int, button uint8) error {
+	if err := pressPointer(dev, x, y, button); err != nil {
+		return err
+	}
+	return releasePointer(dev, x, y)
+}
+
+func pressPointer(dev *HIDDevice, x, y int, button uint8) error {
+	return movePointer(dev, x, y, button)
+}
+
+func releasePointer(dev *HIDDevice, x, y int) error {
+	return movePointer(dev, x, y, 0)
+}
+
+func movePointer(dev *HIDDevice, x, y int, buttons uint8) error {
+	return writeAbsMouseReport(dev, x, y, buttons)
+}
+
+func dragPointer(dev *HIDDevice, start, end resolvedPointerPoint, button uint8, durationMs, holdBeforeMs, steps int) error {
+	if steps < 1 {
+		steps = 1
+	}
+	if durationMs < 0 {
+		durationMs = 0
+	}
+	if holdBeforeMs < 0 {
+		holdBeforeMs = 0
+	}
+
+	if err := pressPointer(dev, start.x, start.y, button); err != nil {
+		return err
+	}
+	sleepMs(holdBeforeMs)
+
+	stepDelay := 0
+	if steps > 0 {
+		stepDelay = durationMs / steps
+	}
+	for i := 1; i <= steps; i++ {
+		progress := float64(i) / float64(steps)
+		x := interpolateInt(start.x, end.x, progress)
+		y := interpolateInt(start.y, end.y, progress)
+		if err := movePointer(dev, x, y, button); err != nil {
+			return err
+		}
+		if i < steps {
+			sleepMs(stepDelay)
+		}
+	}
+
+	return releasePointer(dev, end.x, end.y)
+}
+
+func interpolateInt(start, end int, progress float64) int {
+	return int(math.Round(float64(start) + (float64(end-start) * progress)))
+}
+
+func sleepMs(ms int) {
+	if ms <= 0 {
+		return
+	}
+	time.Sleep(time.Duration(ms) * time.Millisecond)
+}
+
+func intOrDefault(value *int, fallback int) int {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func positiveIntOrDefault(value *int, fallback int) int {
+	if value == nil || *value <= 0 {
+		return fallback
+	}
+	return *value
 }
 
 func clampUint16(val, max int) uint16 {
