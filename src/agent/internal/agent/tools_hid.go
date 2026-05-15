@@ -198,9 +198,16 @@ func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error)
 		return "error: text is required", nil
 	}
 
+	skipped := make([]rune, 0)
 	for _, ch := range args.Text {
+		if ch > 0x7F {
+			skipped = append(skipped, ch)
+			continue
+		}
+
 		modifier, code, ok := charToHIDKey(byte(ch))
 		if !ok {
+			skipped = append(skipped, ch)
 			continue
 		}
 		report := make([]byte, 8)
@@ -214,6 +221,9 @@ func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error)
 		}
 	}
 
+	if len(skipped) > 0 {
+		return fmt.Sprintf("ok; skipped unsupported characters: %q", string(skipped)), nil
+	}
 	return "ok", nil
 }
 

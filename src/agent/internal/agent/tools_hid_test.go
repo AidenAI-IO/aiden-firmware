@@ -95,6 +95,28 @@ func TestMouseMoveAutoFallsBackToAbsoluteWithoutScreenDimensions(t *testing.T) {
 	}
 }
 
+func TestKeyboardTextReportsUnsupportedCharacters(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &KeyboardTextTool{dev: dev}
+
+	out, err := tool.Call(context.Background(), `{"text":"A™B"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != `ok; skipped unsupported characters: "™"` {
+		t.Fatalf("unexpected output: %q", out)
+	}
+
+	dev.Close()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(data) != 32 {
+		t.Fatalf("expected 4 keyboard reports for 2 ASCII characters, got %d bytes", len(data))
+	}
+}
+
 type mouseReport struct {
 	buttons uint8
 	x       uint16

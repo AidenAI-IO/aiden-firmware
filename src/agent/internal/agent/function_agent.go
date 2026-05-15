@@ -24,6 +24,10 @@ type FunctionAgent struct {
 	CallbacksHandler callbacks.Handler
 }
 
+type visualObservationTool interface {
+	ReturnsVisualObservation() bool
+}
+
 func NewFunctionAgent(
 	llm llms.Model,
 	tools []langtools.Tool,
@@ -79,7 +83,7 @@ func (a *FunctionAgent) Plan(
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: buildUserMessageParts(inputs["input"], a.InputAttachments),
 	})
-	messages = append(messages, constructFunctionScratchPad(intermediateSteps)...)
+	messages = append(messages, a.constructFunctionScratchPad(intermediateSteps)...)
 
 	llmOptions := []llms.CallOption{
 		llms.WithTools(a.toolsAsLLM()),
@@ -197,7 +201,7 @@ func chatMessageToContent(msg llms.ChatMessage) llms.MessageContent {
 	}
 }
 
-func constructFunctionScratchPad(steps []schema.AgentStep) []llms.MessageContent {
+func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []llms.MessageContent {
 	if len(steps) == 0 {
 		return nil
 	}
@@ -227,7 +231,7 @@ func constructFunctionScratchPad(steps []schema.AgentStep) []llms.MessageContent
 		})
 
 		for j := i; j < groupEnd; j++ {
-			toolContent, followups := observationMessagesForStep(steps[j])
+			toolContent, followups := a.observationMessagesForStep(steps[j])
 			if steps[j].Action.ToolID != "" {
 				messages = append(messages, llms.MessageContent{
 					Role: llms.ChatMessageTypeTool,
@@ -254,8 +258,8 @@ func constructFunctionScratchPad(steps []schema.AgentStep) []llms.MessageContent
 	return messages
 }
 
-func observationMessagesForStep(step schema.AgentStep) (string, []llms.MessageContent) {
-	if step.Action.Tool != "screenshot" {
+func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep) (string, []llms.MessageContent) {
+	if !a.isVisualObservationTool(step.Action.Tool) {
 		return step.Observation, nil
 	}
 
@@ -288,6 +292,17 @@ func observationMessagesForStep(step schema.AgentStep) (string, []llms.MessageCo
 			buildImagePart(mimeType, imageBytes),
 		},
 	}}
+}
+
+func (a *FunctionAgent) isVisualObservationTool(name string) bool {
+	for _, tool := range a.Tools {
+		if tool.Name() != name {
+			continue
+		}
+		visualTool, ok := tool.(visualObservationTool)
+		return ok && visualTool.ReturnsVisualObservation()
+	}
+	return false
 }
 
 func buildUserMessageParts(input string, attachments []InputAttachment) []llms.ContentPart {

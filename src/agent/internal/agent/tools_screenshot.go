@@ -32,6 +32,8 @@ func NewScreenshotTool(socketPath string, screen *screenState) *ScreenshotTool {
 
 func (t *ScreenshotTool) Name() string { return "screenshot" }
 
+func (t *ScreenshotTool) ReturnsVisualObservation() bool { return true }
+
 func (t *ScreenshotTool) Description() string {
 	return `Capture a screenshot from the connected display. No input required (pass empty JSON {} or ""). ` +
 		`Returns a JSON object with width, height, and base64-encoded JPEG image data.`

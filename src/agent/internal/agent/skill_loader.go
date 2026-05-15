@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,10 +122,10 @@ func loadSkillMetadata(path string) (*SkillDefinition, error) {
 			skill.PreferredModel = model
 		}
 		if tools, ok := meta.Metadata["allowed_tools"].([]interface{}); ok {
-			skill.AllowedTools = interfaceSliceToStringSlice(tools)
+			skill.AllowedTools = interfaceSliceToStringSlice(tools, "allowed_tools")
 		}
 		if children, ok := meta.Metadata["allowed_children"].([]interface{}); ok {
-			skill.AllowedChildren = interfaceSliceToStringSlice(children)
+			skill.AllowedChildren = interfaceSliceToStringSlice(children, "allowed_children")
 		}
 	}
 
@@ -163,12 +164,14 @@ func parseFrontmatter(content string) (frontmatter, body string, err error) {
 	return frontmatter, body, nil
 }
 
-func interfaceSliceToStringSlice(in []interface{}) []string {
+func interfaceSliceToStringSlice(in []interface{}, fieldName string) []string {
 	out := make([]string, 0, len(in))
 	for _, v := range in {
 		if s, ok := v.(string); ok {
 			out = append(out, s)
+			continue
 		}
+		log.Printf("[skill_loader] ignoring non-string %s value %v (type %T)", fieldName, v, v)
 	}
 	return out
 }

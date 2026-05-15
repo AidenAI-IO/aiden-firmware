@@ -110,6 +110,9 @@ func (d *AudioDialog) StopRecording() error {
 
 // ReadRecordChunk reads a PCM chunk from the recording session
 func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, error) {
+	if !d.recordActive || d.sessionID == 0 {
+		return nil, fmt.Errorf("recording is not active")
+	}
 	return d.audioClient.ReadRecordChunk(d.sessionID, timeoutMs)
 }
 

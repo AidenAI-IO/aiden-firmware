@@ -318,12 +318,38 @@ func (h *runtimeCallbackHandler) HandleLLMGenerateContentStart(ctx context.Conte
 }
 
 func (h *runtimeCallbackHandler) HandleLLMGenerateContentEnd(ctx context.Context, res *llms.ContentResponse) {
-	if res != nil && h.metrics != nil {
-		// Extract token usage from response
-		if res.Choices != nil && len(res.Choices) > 0 {
-			// Try to get token usage from the response
-			// Note: This depends on the LLM provider returning usage info
-		}
+	if res == nil || h.metrics == nil || len(res.Choices) == 0 {
+		return
+	}
+
+	info := res.Choices[0].GenerationInfo
+	if info == nil {
+		return
+	}
+
+	if v, ok := usageMetricInt(info["prompt_tokens"]); ok {
+		h.metrics.PromptTokens = v
+	}
+	if v, ok := usageMetricInt(info["completion_tokens"]); ok {
+		h.metrics.CompletionTokens = v
+	}
+	if v, ok := usageMetricInt(info["total_tokens"]); ok {
+		h.metrics.TotalTokens = v
+	}
+}
+
+func usageMetricInt(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int32:
+		return int(typed), true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	default:
+		return 0, false
 	}
 }
 

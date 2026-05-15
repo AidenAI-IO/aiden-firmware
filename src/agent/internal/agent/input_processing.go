@@ -24,11 +24,12 @@ type AudioInputResult struct {
 }
 
 func NewSTTClientFromConfig(cfg Config) (STTClient, error) {
-	if strings.TrimSpace(cfg.STT.Provider) == "" {
+	provider := strings.ToLower(strings.TrimSpace(cfg.STT.Provider))
+	if provider == "" {
 		return nil, nil
 	}
 
-	switch strings.ToLower(cfg.STT.Provider) {
+	switch provider {
 	case "openai", "openai-whisper":
 		return NewOpenAIWhisperSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL), nil
 	case "tencent":
@@ -39,11 +40,12 @@ func NewSTTClientFromConfig(cfg Config) (STTClient, error) {
 }
 
 func NewTTSClientFromConfig(cfg Config) (TTSClient, error) {
-	if strings.TrimSpace(cfg.TTS.Provider) == "" {
+	provider := strings.ToLower(strings.TrimSpace(cfg.TTS.Provider))
+	if provider == "" {
 		return nil, nil
 	}
 
-	switch strings.ToLower(cfg.TTS.Provider) {
+	switch provider {
 	case "minimax":
 		return NewMinimaxTTS(cfg.TTS.APIKey, cfg.TTS.VoiceID, cfg.TTS.Emotion, cfg.TTS.Speed), nil
 	default:

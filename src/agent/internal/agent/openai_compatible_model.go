@@ -91,6 +91,11 @@ type compatibleChatResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage,omitempty"`
 }
 
 func newOpenAICompatibleModel(baseURL, model, token string, httpClient *http.Client) llms.Model {
@@ -186,6 +191,13 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 			StopReason: choice.FinishReason,
 			ToolCalls:  convertResponseToolCalls(choice.Message.ToolCalls),
 		}},
+	}
+	if decoded.Usage != nil {
+		result.Choices[0].GenerationInfo = map[string]any{
+			"prompt_tokens":     decoded.Usage.PromptTokens,
+			"completion_tokens": decoded.Usage.CompletionTokens,
+			"total_tokens":      decoded.Usage.TotalTokens,
+		}
 	}
 	if len(result.Choices[0].ToolCalls) > 0 {
 		result.Choices[0].FuncCall = result.Choices[0].ToolCalls[0].FunctionCall

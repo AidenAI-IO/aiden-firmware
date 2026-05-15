@@ -715,8 +715,28 @@ bool AudioPlayer::init(const AudioConfig& config) {
     ensure_sys_init();
 
     impl_->config = config;
+    impl_->initialized = false;
+    impl_->logical_volume = 0;
     impl_->dev_id = 0;
     impl_->chn_id = 0;
+
+    bool ao_enabled = false;
+    bool chn_enabled = false;
+    bool resmp_enabled = false;
+    auto rollback_init = [&]() {
+        if (resmp_enabled) {
+            RK_MPI_AO_DisableReSmp(impl_->dev_id, impl_->chn_id);
+        }
+        if (chn_enabled) {
+            RK_MPI_AO_DisableChn(impl_->dev_id, impl_->chn_id);
+        }
+        if (ao_enabled) {
+            RK_MPI_AO_Disable(impl_->dev_id);
+        }
+        impl_->initialized = false;
+        impl_->logical_volume = 0;
+        maybe_sys_deinit();
+    };
 
     memset(&impl_->attr, 0, sizeof(AIO_ATTR_S));
 
@@ -737,10 +757,17 @@ bool AudioPlayer::init(const AudioConfig& config) {
     impl_->attr.u32ChnCnt = 2;
 
     RK_S32 ret = RK_MPI_AO_SetPubAttr(impl_->dev_id, &impl_->attr);
-    if (ret != RK_SUCCESS) return false;
+    if (ret != RK_SUCCESS) {
+        rollback_init();
+        return false;
+    }
 
     ret = RK_MPI_AO_Enable(impl_->dev_id);
-    if (ret != RK_SUCCESS) return false;
+    if (ret != RK_SUCCESS) {
+        rollback_init();
+        return false;
+    }
+    ao_enabled = true;
 
     AO_CHN_PARAM_S chnParam;
     memset(&chnParam, 0, sizeof(AO_CHN_PARAM_S));
@@ -753,15 +780,32 @@ bool AudioPlayer::init(const AudioConfig& config) {
         RK_MPI_AO_SetTrackMode(impl_->dev_id, AUDIO_TRACK_NORMAL);
 
     ret = RK_MPI_AO_EnableChn(impl_->dev_id, impl_->chn_id);
-    if (ret != RK_SUCCESS) return false;
+    if (ret != RK_SUCCESS) {
+        rollback_init();
+        return false;
+    }
+    chn_enabled = true;
 
     ret = RK_MPI_AO_EnableReSmp(impl_->dev_id, impl_->chn_id,
                                 (AUDIO_SAMPLE_RATE_E)config.sample_rate);
-    if (ret != RK_SUCCESS) return false;
+    if (ret != RK_SUCCESS) {
+        rollback_init();
+        return false;
+    }
+    resmp_enabled = true;
 
-    if (!configure_ao_volume_curve(impl_->dev_id)) return false;
-    if (!set_ao_mute(impl_->dev_id, false)) return false;
-    if (RK_MPI_AO_SetVolume(impl_->dev_id, 100) != RK_SUCCESS) return false;
+    if (!configure_ao_volume_curve(impl_->dev_id)) {
+        rollback_init();
+        return false;
+    }
+    if (!set_ao_mute(impl_->dev_id, false)) {
+        rollback_init();
+        return false;
+    }
+    if (RK_MPI_AO_SetVolume(impl_->dev_id, 100) != RK_SUCCESS) {
+        rollback_init();
+        return false;
+    }
     impl_->logical_volume = 100;
 
     impl_->initialized = true;

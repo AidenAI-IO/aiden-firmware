@@ -329,6 +329,10 @@ func (c *AudioServiceClient) StopPlayback(sessionID uint64) error {
 
 // SetPlaybackVolume sets the default playback volume and applies it to active sessions.
 func (c *AudioServiceClient) SetPlaybackVolume(volume int) error {
+	if volume < 0 || volume > 100 {
+		return fmt.Errorf("volume must be in range 0..100, got %d", volume)
+	}
+
 	req := audioRequest{
 		Op:     "set_playback_volume",
 		Volume: uint32(volume),

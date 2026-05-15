@@ -135,3 +135,25 @@ func TestOpenAICompatibleModelMergesSystemMessages(t *testing.T) {
 		t.Fatalf("unexpected user message: %#v", captured.Messages[1])
 	}
 }
+
+func TestOpenAICompatibleModelIncludesUsageInGenerationInfo(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
+	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	got := resp.Choices[0].GenerationInfo
+	if got["prompt_tokens"] != 11 || got["completion_tokens"] != 7 || got["total_tokens"] != 18 {
+		t.Fatalf("unexpected generation info: %#v", got)
+	}
+}

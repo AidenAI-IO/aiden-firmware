@@ -2,6 +2,7 @@
 #include "audio_service_protocol.h"
 #include "cJSON/cJSON.h"
 #include "uds_message.h"
+#include <limits>
 #include <stdio.h>
 
 namespace aiden {
@@ -147,6 +148,10 @@ void AudioServiceServer::handle_stop_playback(const UdsMessage& req, int fd) {
 
 void AudioServiceServer::handle_set_playback_volume(const UdsMessage& req, int fd) {
     uint32_t volume = audio_json_u32(req.header_json.c_str(), "volume");
+    if (volume > static_cast<uint32_t>(std::numeric_limits<int>::max()) || volume > 100) {
+        send_response(fd, AidenServiceStatus::INTERNAL_ERROR);
+        return;
+    }
     AidenServiceStatus status = manager_.set_playback_volume(static_cast<int>(volume));
     send_response(fd, status);
 }

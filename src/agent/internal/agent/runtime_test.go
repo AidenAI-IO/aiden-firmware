@@ -97,12 +97,15 @@ type stubTool struct {
 	name        string
 	description string
 	output      string
+	visual      bool
 	inputs      []string
 }
 
 func (t *stubTool) Name() string { return t.name }
 
 func (t *stubTool) Description() string { return t.description }
+
+func (t *stubTool) ReturnsVisualObservation() bool { return t.visual }
 
 func (t *stubTool) Call(_ context.Context, input string) (string, error) {
 	t.inputs = append(t.inputs, input)
@@ -285,6 +288,7 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 	tool := &stubTool{
 		name:        "screenshot",
 		description: "Capture a screenshot from the connected display.",
+		visual:      true,
 		output: `{"width":800,"height":600,"format":"jpeg","size":16,"data":"` +
 			base64.StdEncoding.EncodeToString(jpegBytes) + `"}`,
 	}
@@ -344,6 +348,25 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 	}
 	if !foundImageURL {
 		t.Fatalf("expected screenshot image URL in second model call")
+	}
+}
+
+func TestRuntimeCallbackHandlerCapturesUsageMetrics(t *testing.T) {
+	metrics := &RunMetrics{}
+	handler := &runtimeCallbackHandler{metrics: metrics}
+
+	handler.HandleLLMGenerateContentEnd(context.Background(), &llms.ContentResponse{
+		Choices: []*llms.ContentChoice{{
+			GenerationInfo: map[string]any{
+				"prompt_tokens":     12,
+				"completion_tokens": 34,
+				"total_tokens":      46,
+			},
+		}},
+	})
+
+	if metrics.PromptTokens != 12 || metrics.CompletionTokens != 34 || metrics.TotalTokens != 46 {
+		t.Fatalf("unexpected metrics: %#v", metrics)
 	}
 }
 

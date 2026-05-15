@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -108,7 +112,39 @@ func (s *Server) Start() error {
 		s.logger.Info("Starting HTTP server on %s", s.addr)
 	}
 
-	return http.ListenAndServe(s.addr, mux)
+	srv := &http.Server{
+		Addr:    s.addr,
+		Handler: mux,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		err := srv.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	select {
+	case err := <-errCh:
+		return err
+	case sig := <-sigCh:
+		if s.logger != nil {
+			s.logger.Info("Shutting down HTTP server after signal %s", sig)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			return fmt.Errorf("shutdown HTTP server: %w", err)
+		}
+		return <-errCh
+	}
 }
 
 // handleChat handles chat requests

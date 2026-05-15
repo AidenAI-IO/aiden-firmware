@@ -57,3 +57,13 @@ func TestAudioRequestVolumeField(t *testing.T) {
 		t.Fatalf("volume = %v, want 65", decoded["volume"])
 	}
 }
+
+func TestSetPlaybackVolumeRejectsOutOfRange(t *testing.T) {
+	client := NewAudioServiceClient("/tmp/does-not-matter.sock")
+
+	for _, volume := range []int{-1, 101} {
+		if err := client.SetPlaybackVolume(volume); err == nil {
+			t.Fatalf("expected error for volume %d", volume)
+		}
+	}
+}
