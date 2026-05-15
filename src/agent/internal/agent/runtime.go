@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -32,6 +33,7 @@ type RunRequest struct {
 	Input        string
 	Skills       []string
 	StreamWriter io.Writer
+	EventHandler func(RunEvent)
 }
 
 type RunResult struct {
@@ -47,6 +49,15 @@ type RunMetrics struct {
 	CompletionTokens int     `json:"completion_tokens,omitempty"`
 	TotalTokens      int     `json:"total_tokens,omitempty"`
 	FirstTokenTime   float64 `json:"first_token_time_ms,omitempty"`
+}
+
+type RunEvent struct {
+	Type      string    `json:"type"`
+	ToolName  string    `json:"tool_name,omitempty"`
+	ToolInput string    `json:"tool_input,omitempty"`
+	Content   string    `json:"content,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+	IsError   bool      `json:"is_error,omitempty"`
 }
 
 func NewRuntime(cfg Config) (*Runtime, error) {
@@ -140,27 +151,34 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	callOptions := r.models.CallOptions()
 	var streamCallbackHandler *runtimeCallbackHandler
-	if req.StreamWriter != nil {
+	var agentCallbackHandler callbacks.Handler
+	if req.StreamWriter != nil || req.EventHandler != nil || r.logger != nil {
 		streamCallbackHandler = &runtimeCallbackHandler{
-			writer:    req.StreamWriter,
-			metrics:   metrics,
-			startTime: startTime,
+			writer:       req.StreamWriter,
+			metrics:      metrics,
+			startTime:    startTime,
+			logger:       r.logger,
+			eventHandler: req.EventHandler,
 		}
+	}
+	if req.StreamWriter != nil {
+		agentCallbackHandler = streamCallbackHandler
 		callOptions = append(callOptions, chains.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
 			streamCallbackHandler.HandleStreamingFunc(ctx, chunk)
 			return nil
 		}))
 	}
+	if streamCallbackHandler != nil {
+		availableTools = wrapToolsWithCallbacks(availableTools, streamCallbackHandler)
+	}
 
-	agent := r.buildAgent(model, resolvedSkills, availableTools, streamCallbackHandler)
+	agent := r.buildAgent(model, resolvedSkills, availableTools, agentCallbackHandler)
 	executorOptions := []agents.Option{
 		agents.WithMemory(memoryHandle.Memory),
 		agents.WithMaxIterations(maxIterations),
 	}
-	if r.logger != nil {
-		executorOptions = append(executorOptions, agents.WithCallbacksHandler(&runtimeCallbackHandler{
-			logger: r.logger,
-		}))
+	if streamCallbackHandler != nil {
+		executorOptions = append(executorOptions, agents.WithCallbacksHandler(streamCallbackHandler))
 	}
 	executor := agents.NewExecutor(agent, executorOptions...)
 
@@ -224,43 +242,42 @@ func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 	return available
 }
 
+func wrapToolsWithCallbacks(tools []langtools.Tool, handler callbacks.Handler) []langtools.Tool {
+	if handler == nil {
+		return tools
+	}
+	wrapped := make([]langtools.Tool, 0, len(tools))
+	for _, tool := range tools {
+		wrapped = append(wrapped, &callbackTool{
+			inner:   tool,
+			handler: handler,
+		})
+	}
+	return wrapped
+}
+
 func (r *Runtime) buildAgent(
 	model llms.Model,
 	skills ResolvedSkills,
 	availableTools []langtools.Tool,
 	callbackHandler callbacks.Handler,
 ) agents.Agent {
-	provider := strings.ToLower(r.config.Model.Provider)
-
-	if provider == "openai" || provider == "openrouter" {
-		options := []agents.Option{
-			agents.NewOpenAIOption().WithSystemMessage(
-				buildFunctionAgentSystemMessage(
-					AgentConfig{Instruction: r.config.Instruction},
-					skills,
-					availableTools,
-				),
+	return NewFunctionAgent(
+		model,
+		availableTools,
+		buildFunctionAgentSystemMessage(
+			AgentConfig{Instruction: r.config.Instruction},
+			skills,
+			availableTools,
+		),
+		[]prompts.MessageFormatter{
+			prompts.NewSystemMessagePromptTemplate(
+				"Conversation history:\n{{.history}}",
+				[]string{"history"},
 			),
-			agents.NewOpenAIOption().WithExtraMessages([]prompts.MessageFormatter{
-				prompts.NewSystemMessagePromptTemplate(
-					"Conversation history:\n{{.history}}",
-					[]string{"history"},
-				),
-			}),
-		}
-		if callbackHandler != nil {
-			options = append(options, agents.WithCallbacksHandler(callbackHandler))
-		}
-		return agents.NewOpenAIFunctionsAgent(model, availableTools, options...)
-	}
-
-	options := []agents.Option{
-		agents.WithPrompt(buildPrompt("agent", AgentConfig{Instruction: r.config.Instruction}, skills, availableTools)),
-	}
-	if callbackHandler != nil {
-		options = append(options, agents.WithCallbacksHandler(callbackHandler))
-	}
-	return agents.NewOneShotAgent(model, availableTools, options...)
+		},
+		callbackHandler,
+	)
 }
 
 // runtimeCallbackHandler implements callbacks.Handler for streaming output and
@@ -271,6 +288,9 @@ type runtimeCallbackHandler struct {
 	startTime      time.Time
 	firstTokenSeen bool
 	logger         *Logger
+	eventHandler   func(RunEvent)
+	mu             sync.Mutex
+	pendingActions []schema.AgentAction
 }
 
 func (h *runtimeCallbackHandler) HandleText(ctx context.Context, text string) {
@@ -308,11 +328,36 @@ func (h *runtimeCallbackHandler) HandleToolEnd(ctx context.Context, output strin
 	if h.logger != nil {
 		h.logger.Info("Tool result: %s", truncateForLog(output, 240))
 	}
+	if h.eventHandler != nil {
+		action, ok := h.popPendingAction()
+		if ok {
+			h.eventHandler(RunEvent{
+				Type:      "tool_result",
+				ToolName:  action.Tool,
+				ToolInput: action.ToolInput,
+				Content:   output,
+				Timestamp: time.Now(),
+			})
+		}
+	}
 }
 
 func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error) {
 	if h.logger != nil {
 		h.logger.Error("Tool error: %v", err)
+	}
+	if h.eventHandler != nil {
+		action, ok := h.popPendingAction()
+		if ok {
+			h.eventHandler(RunEvent{
+				Type:      "tool_result",
+				ToolName:  action.Tool,
+				ToolInput: action.ToolInput,
+				Content:   "error: " + err.Error(),
+				Timestamp: time.Now(),
+				IsError:   true,
+			})
+		}
 	}
 }
 
@@ -320,6 +365,15 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 	if h.logger != nil {
 		h.logger.Info("Tool call: name=%s input=%s",
 			action.Tool, truncateForLog(action.ToolInput, 240))
+	}
+	if h.eventHandler != nil {
+		h.pushPendingAction(action)
+		h.eventHandler(RunEvent{
+			Type:      "tool_call",
+			ToolName:  action.Tool,
+			ToolInput: action.ToolInput,
+			Timestamp: time.Now(),
+		})
 	}
 }
 
@@ -343,6 +397,23 @@ func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk 
 }
 
 var _ callbacks.Handler = (*runtimeCallbackHandler)(nil)
+
+func (h *runtimeCallbackHandler) pushPendingAction(action schema.AgentAction) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pendingActions = append(h.pendingActions, action)
+}
+
+func (h *runtimeCallbackHandler) popPendingAction() (schema.AgentAction, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.pendingActions) == 0 {
+		return schema.AgentAction{}, false
+	}
+	action := h.pendingActions[0]
+	h.pendingActions = h.pendingActions[1:]
+	return action, true
+}
 
 func truncateForLog(text string, max int) string {
 	if max <= 0 || text == "" {

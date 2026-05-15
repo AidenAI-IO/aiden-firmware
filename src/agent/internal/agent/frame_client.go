@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"time"
 )
 
@@ -29,6 +30,55 @@ type frameMetadata struct {
 	Stride      uint32 `json:"stride"`
 	Bytes       uint64 `json:"bytes"`
 	Stale       bool   `json:"stale"`
+}
+
+func (m *frameMetadata) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Seq         json.RawMessage `json:"seq"`
+		Width       json.RawMessage `json:"width"`
+		Height      json.RawMessage `json:"height"`
+		PixelFormat string          `json:"pixel_format"`
+		Stride      json.RawMessage `json:"stride"`
+		Bytes       json.RawMessage `json:"bytes"`
+		Stale       json.RawMessage `json:"stale"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	seq, err := parseFlexibleUint64(raw.Seq)
+	if err != nil {
+		return fmt.Errorf("seq: %w", err)
+	}
+	width, err := parseFlexibleUint32(raw.Width)
+	if err != nil {
+		return fmt.Errorf("width: %w", err)
+	}
+	height, err := parseFlexibleUint32(raw.Height)
+	if err != nil {
+		return fmt.Errorf("height: %w", err)
+	}
+	stride, err := parseFlexibleUint32(raw.Stride)
+	if err != nil {
+		return fmt.Errorf("stride: %w", err)
+	}
+	sizeBytes, err := parseFlexibleUint64(raw.Bytes)
+	if err != nil {
+		return fmt.Errorf("bytes: %w", err)
+	}
+	stale, err := parseFlexibleBool(raw.Stale)
+	if err != nil {
+		return fmt.Errorf("stale: %w", err)
+	}
+
+	m.Seq = seq
+	m.Width = width
+	m.Height = height
+	m.PixelFormat = raw.PixelFormat
+	m.Stride = stride
+	m.Bytes = sizeBytes
+	m.Stale = stale
+	return nil
 }
 
 type frameResponse struct {
@@ -140,4 +190,59 @@ func readUDSMessage(r io.Reader) (header []byte, payload []byte, err error) {
 	}
 
 	return header, payload, nil
+}
+
+func parseFlexibleUint64(data json.RawMessage) (uint64, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return 0, nil
+	}
+
+	var asUint uint64
+	if err := json.Unmarshal(data, &asUint); err == nil {
+		return asUint, nil
+	}
+
+	var asString string
+	if err := json.Unmarshal(data, &asString); err == nil {
+		value, parseErr := strconv.ParseUint(asString, 10, 64)
+		if parseErr != nil {
+			return 0, parseErr
+		}
+		return value, nil
+	}
+
+	return 0, fmt.Errorf("unsupported value %s", string(data))
+}
+
+func parseFlexibleUint32(data json.RawMessage) (uint32, error) {
+	value, err := parseFlexibleUint64(data)
+	if err != nil {
+		return 0, err
+	}
+	if value > uint64(^uint32(0)) {
+		return 0, fmt.Errorf("value %d overflows uint32", value)
+	}
+	return uint32(value), nil
+}
+
+func parseFlexibleBool(data json.RawMessage) (bool, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return false, nil
+	}
+
+	var asBool bool
+	if err := json.Unmarshal(data, &asBool); err == nil {
+		return asBool, nil
+	}
+
+	var asString string
+	if err := json.Unmarshal(data, &asString); err == nil {
+		value, parseErr := strconv.ParseBool(asString)
+		if parseErr != nil {
+			return false, parseErr
+		}
+		return value, nil
+	}
+
+	return false, fmt.Errorf("unsupported value %s", string(data))
 }
