@@ -2,8 +2,11 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace aiden {
 
@@ -163,19 +166,49 @@ bool read_file(const char* path, std::string* out, std::string* error) {
     return true;
 }
 
+FILE* open_secure_write_file(const char* path, std::string* error) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+    if (fd < 0) {
+        int saved_errno = errno;
+        char buf[512];
+        snprintf(buf, sizeof(buf), "cannot open '%s' for write: %s (errno=%d)",
+                 path, strerror(saved_errno), saved_errno);
+        set_error(error, buf);
+        return NULL;
+    }
+
+    if (fchmod(fd, S_IRUSR | S_IWUSR) != 0) {
+        int saved_errno = errno;
+        close(fd);
+        char buf[512];
+        snprintf(buf, sizeof(buf), "cannot set permissions on '%s': %s (errno=%d)",
+                 path, strerror(saved_errno), saved_errno);
+        set_error(error, buf);
+        return NULL;
+    }
+
+    FILE* fp = fdopen(fd, "w");
+    if (!fp) {
+        int saved_errno = errno;
+        close(fd);
+        char buf[512];
+        snprintf(buf, sizeof(buf), "cannot open '%s' stream for write: %s (errno=%d)",
+                 path, strerror(saved_errno), saved_errno);
+        set_error(error, buf);
+        return NULL;
+    }
+
+    return fp;
+}
+
 bool write_file(const char* path, const std::string& text, std::string* error) {
     if (!path) {
         set_error(error, "cannot save wifi config: path is null");
         return false;
     }
 
-    FILE* fp = fopen(path, "w");
+    FILE* fp = open_secure_write_file(path, error);
     if (!fp) {
-        int saved_errno = errno;
-        char buf[512];
-        snprintf(buf, sizeof(buf), "cannot open '%s' for write: %s (errno=%d)",
-                 path, strerror(saved_errno), saved_errno);
-        set_error(error, buf);
         return false;
     }
 

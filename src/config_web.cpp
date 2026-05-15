@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -39,6 +40,9 @@ struct HttpRequest {
     std::string method;
     std::string path;
     std::string body;
+    int error_status_code = 0;
+    std::string error_status_text;
+    std::string error_body;
 };
 
 struct ApiResponse {
@@ -62,6 +66,20 @@ struct WifiRuntimeStatus {
 };
 
 volatile sig_atomic_t g_should_stop = 0;
+
+const char* kUsbBindAddress = "192.168.42.1";
+const char* kLoopbackBindAddress = "127.0.0.1";
+const size_t kMaxHttpHeaderSize = 8 * 1024;
+const size_t kMaxHttpBodySize = 64 * 1024;
+const int kClientReadTimeoutSeconds = 5;
+
+enum ReadStatus {
+    READ_STATUS_OK,
+    READ_STATUS_EOF,
+    READ_STATUS_ERROR,
+    READ_STATUS_TIMEOUT,
+    READ_STATUS_LIMIT_EXCEEDED,
+};
 
 void on_signal(int) {
     g_should_stop = 1;
@@ -242,26 +260,49 @@ bool write_all(int fd, const void* data, size_t size) {
     return true;
 }
 
-std::string read_until(int fd, const std::string& delimiter) {
-    std::string result;
+bool is_socket_timeout(int error_code) {
+    return error_code == EAGAIN || error_code == EWOULDBLOCK;
+}
+
+ReadStatus read_until(int fd,
+                      const std::string& delimiter,
+                      size_t max_length,
+                      std::string* out) {
+    if (!out) {
+        return READ_STATUS_ERROR;
+    }
+
+    out->clear();
     char ch = '\0';
     while (true) {
         ssize_t n = read(fd, &ch, 1);
-        if (n <= 0) {
-            break;
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (is_socket_timeout(errno)) {
+                return READ_STATUS_TIMEOUT;
+            }
+            return READ_STATUS_ERROR;
         }
-        result.push_back(ch);
-        if (result.size() >= delimiter.size() &&
-            result.compare(result.size() - delimiter.size(), delimiter.size(), delimiter) == 0) {
-            break;
+        if (n == 0) {
+            return READ_STATUS_EOF;
+        }
+
+        out->push_back(ch);
+        if (out->size() > max_length) {
+            return READ_STATUS_LIMIT_EXCEEDED;
+        }
+        if (out->size() >= delimiter.size() &&
+            out->compare(out->size() - delimiter.size(), delimiter.size(), delimiter) == 0) {
+            return READ_STATUS_OK;
         }
     }
-    return result;
 }
 
-bool read_exact(int fd, std::string* out, size_t length) {
+ReadStatus read_exact(int fd, std::string* out, size_t length) {
     if (!out) {
-        return false;
+        return READ_STATUS_ERROR;
     }
 
     out->assign(length, '\0');
@@ -272,41 +313,124 @@ bool read_exact(int fd, std::string* out, size_t length) {
             if (errno == EINTR) {
                 continue;
             }
-            return false;
+            if (is_socket_timeout(errno)) {
+                return READ_STATUS_TIMEOUT;
+            }
+            return READ_STATUS_ERROR;
         }
         if (n == 0) {
-            return false;
+            return READ_STATUS_EOF;
         }
         offset += static_cast<size_t>(n);
     }
+    return READ_STATUS_OK;
+}
+
+void set_request_error(HttpRequest* request,
+                       int status_code,
+                       const char* status_text,
+                       const char* body) {
+    if (!request) {
+        return;
+    }
+    request->error_status_code = status_code;
+    request->error_status_text = status_text ? status_text : "Bad Request";
+    request->error_body = body ? body : "invalid request";
+}
+
+bool parse_size(const std::string& text, size_t* value) {
+    if (!value) {
+        return false;
+    }
+
+    std::string trimmed = trim_copy(text);
+    if (trimmed.empty()) {
+        return false;
+    }
+
+    errno = 0;
+    char* end = NULL;
+    unsigned long parsed = strtoul(trimmed.c_str(), &end, 10);
+    if (errno != 0 || !end || *end != '\0') {
+        return false;
+    }
+
+    *value = static_cast<size_t>(parsed);
     return true;
+}
+
+bool is_allowed_bind_address(const std::string& bind_address) {
+    return bind_address == kUsbBindAddress || bind_address == kLoopbackBindAddress;
+}
+
+bool set_socket_recv_timeout(int fd, int timeout_seconds) {
+    struct timeval timeout;
+    timeout.tv_sec = timeout_seconds;
+    timeout.tv_usec = 0;
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0;
 }
 
 HttpRequest parse_request(int client_fd) {
     HttpRequest req;
-    std::string headers = read_until(client_fd, "\r\n\r\n");
+    std::string headers;
+    ReadStatus header_status = read_until(client_fd, "\r\n\r\n", kMaxHttpHeaderSize, &headers);
+    if (header_status == READ_STATUS_TIMEOUT) {
+        set_request_error(&req, 408, "Request Timeout", "request read timed out");
+        return req;
+    }
+    if (header_status == READ_STATUS_LIMIT_EXCEEDED) {
+        set_request_error(&req, 413, "Payload Too Large", "request headers too large");
+        return req;
+    }
+    if (header_status != READ_STATUS_OK) {
+        set_request_error(&req, 400, "Bad Request", "invalid HTTP request");
+        return req;
+    }
 
     std::istringstream stream(headers);
     std::string line;
     if (std::getline(stream, line)) {
         std::istringstream first(line);
         first >> req.method >> req.path;
+        if (req.method.empty() || req.path.empty()) {
+            set_request_error(&req, 400, "Bad Request", "invalid HTTP request line");
+            return req;
+        }
         size_t query_pos = req.path.find('?');
         if (query_pos != std::string::npos) {
             req.path = req.path.substr(0, query_pos);
         }
+    } else {
+        set_request_error(&req, 400, "Bad Request", "missing HTTP request line");
+        return req;
     }
 
     size_t content_length = 0;
     while (std::getline(stream, line)) {
         std::string value;
         if (consume_prefix(line.c_str(), "Content-Length:", &value)) {
-            content_length = static_cast<size_t>(strtoul(value.c_str(), NULL, 10));
+            if (!parse_size(value, &content_length)) {
+                set_request_error(&req, 400, "Bad Request", "invalid Content-Length header");
+                return req;
+            }
         }
     }
 
     if (content_length > 0) {
-        read_exact(client_fd, &req.body, content_length);
+        if (content_length > kMaxHttpBodySize) {
+            set_request_error(&req, 413, "Payload Too Large", "request body too large");
+            return req;
+        }
+
+        ReadStatus body_status = read_exact(client_fd, &req.body, content_length);
+        if (body_status == READ_STATUS_TIMEOUT) {
+            set_request_error(&req, 408, "Request Timeout", "request body read timed out");
+            return req;
+        }
+        if (body_status != READ_STATUS_OK) {
+            set_request_error(&req, 400, "Bad Request", "truncated request body");
+            return req;
+        }
     }
 
     return req;
@@ -938,6 +1062,15 @@ ApiResponse handle_wifi_scan(const Options& options) {
 }
 
 ApiResponse handle_request(const Options& options, const HttpRequest& request) {
+    if (request.error_status_code != 0) {
+        ApiResponse response;
+        response.status_code = request.error_status_code;
+        response.status_text = request.error_status_text;
+        response.content_type = "text/plain; charset=utf-8";
+        response.body = request.error_body;
+        return response;
+    }
+
     if (request.method == "GET" && request.path == "/") {
         ApiResponse response;
         response.content_type = "text/html; charset=utf-8";
@@ -969,15 +1102,18 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     return response;
 }
 
-bool parse_int(const char* text, int* value) {
+bool parse_int(const char* text, int min_value, int max_value, int* value) {
     if (!text || !value || text[0] == '\0') {
         return false;
     }
+
+    errno = 0;
     char* end = NULL;
     long parsed = strtol(text, &end, 10);
-    if (!end || *end != '\0') {
+    if (errno != 0 || !end || *end != '\0' || parsed < min_value || parsed > max_value) {
         return false;
     }
+
     *value = static_cast<int>(parsed);
     return true;
 }
@@ -997,7 +1133,7 @@ bool parse_args(int argc, char** argv, Options* options) {
         std::string value;
         if (consume_prefix(arg, "--bind=", &options->bind_address)) {
         } else if (consume_prefix(arg, "--port=", &value)) {
-            if (!parse_int(value.c_str(), &options->port)) {
+            if (!parse_int(value.c_str(), 1, 65535, &options->port)) {
                 return false;
             }
         } else if (consume_prefix(arg, "--config=", &options->agent_config_path)) {
@@ -1016,6 +1152,13 @@ int main(int argc, char** argv) {
     Options options;
     if (!parse_args(argc, argv, &options)) {
         print_usage(argv[0]);
+        return 1;
+    }
+
+    if (!is_allowed_bind_address(options.bind_address)) {
+        std::cerr << "Refusing to bind config_web to " << options.bind_address
+                  << "; allowed addresses are " << kUsbBindAddress
+                  << " and " << kLoopbackBindAddress << std::endl;
         return 1;
     }
 
@@ -1077,6 +1220,11 @@ int main(int argc, char** argv) {
                 continue;
             }
             break;
+        }
+
+        if (!set_socket_recv_timeout(client_fd, kClientReadTimeoutSeconds)) {
+            close(client_fd);
+            continue;
         }
 
         HttpRequest request = parse_request(client_fd);

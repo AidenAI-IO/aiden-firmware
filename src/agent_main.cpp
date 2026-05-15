@@ -147,6 +147,20 @@ static const char* frame_socket_path(const aiden::AgentConfig& config) {
     return "/tmp/frame_service.sock";
 }
 
+static std::string redact_proxy_for_log(const char* proxy) {
+    if (!proxy) return "";
+
+    std::string text(proxy);
+    size_t authority_start = 0;
+    size_t scheme_pos = text.find("://");
+    if (scheme_pos != std::string::npos) authority_start = scheme_pos + 3;
+
+    size_t at_pos = text.find('@', authority_start);
+    if (at_pos == std::string::npos) return text;
+
+    return text.substr(0, authority_start) + "***@" + text.substr(at_pos + 1);
+}
+
 static std::string execute_tool(const aiden::AgentConfig& config,
                                 const char* tool_name,
                                 const char* args_json) {
@@ -497,7 +511,8 @@ int main(int argc, char* argv[]) {
         setenv("https_proxy", config.network.proxy, 1);
         setenv("HTTP_PROXY", config.network.proxy, 1);
         setenv("HTTPS_PROXY", config.network.proxy, 1);
-        printf("[init] Proxy set: %s\n", config.network.proxy);
+        std::string redacted_proxy = redact_proxy_for_log(config.network.proxy);
+        printf("[init] Proxy set: %s\n", redacted_proxy.c_str());
     }
 
     if (strcmp(config.asr_mode, "direct_audio") != 0 && strcmp(config.asr_mode, "stt_then_text") != 0) {

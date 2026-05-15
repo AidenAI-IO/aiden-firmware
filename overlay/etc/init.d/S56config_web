@@ -5,7 +5,14 @@ BIN=/oem/usr/bin/config_web
 PID_FILE=/run/config_web.pid
 
 is_running() {
-    [ -n "$1" ] && kill -0 "$1" 2>/dev/null
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
+    case "$exe" in
+        "$BIN"|*/config_web) return 0 ;;
+    esac
+    return 1
 }
 
 current_pid() {
@@ -30,8 +37,18 @@ start() {
     fi
 
     "$BIN" &
-    echo $! > "$PID_FILE"
-    echo "Started config_web (pid $!)"
+    child_pid=$!
+    echo "$child_pid" > "$PID_FILE"
+    sleep 1
+
+    pid="$(current_pid)"
+    if ! is_running "$pid"; then
+        rm -f "$PID_FILE"
+        echo "Failed to start config_web"
+        return 1
+    fi
+
+    echo "Started config_web (pid $pid)"
 }
 
 stop() {
@@ -53,5 +70,5 @@ case "${1:-}" in
     start)          start ;;
     stop)           stop ;;
     restart|reload) stop; start ;;
-    *) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+    *) echo "Usage: $0 {start|stop|restart|reload}" >&2; exit 1 ;;
 esac

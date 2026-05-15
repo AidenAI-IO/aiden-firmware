@@ -8,7 +8,14 @@ LOG_FILE=/var/log/aiden_usb_dhcp.log
 
 is_running() {
 	pid="$1"
-	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+	[ -n "$pid" ] || return 1
+	kill -0 "$pid" 2>/dev/null || return 1
+	exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
+	case "$exe" in
+		"$DNSMASQ_BIN"|*/dnsmasq) ;;
+		*) return 1 ;;
+	esac
+	grep -aq -- "$CONF_FILE" "/proc/$pid/cmdline" 2>/dev/null
 }
 
 current_pid() {
@@ -55,8 +62,16 @@ start() {
 		--pid-file="$PID_FILE" \
 		--log-facility="$LOG_FILE" \
 		--keep-in-foreground &
-	echo $! > "$PID_FILE"
-	echo "Started aiden_usb_dhcp (pid $!)"
+	child_pid=$!
+	echo "$child_pid" > "$PID_FILE"
+	sleep 1
+	pid="$(current_pid)"
+	if ! is_running "$pid"; then
+		rm -f "$PID_FILE"
+		echo "Failed to start aiden_usb_dhcp"
+		return 1
+	fi
+	echo "Started aiden_usb_dhcp (pid $pid)"
 }
 
 stop() {
@@ -88,5 +103,5 @@ case "${1:-}" in
 	stop)           stop ;;
 	restart|reload) stop; start ;;
 	status)         status ;;
-	*) echo "Usage: $0 {start|stop|restart|status}" >&2; exit 1 ;;
+	*) echo "Usage: $0 {start|stop|restart|reload|status}" >&2; exit 1 ;;
 esac

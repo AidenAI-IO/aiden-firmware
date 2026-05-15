@@ -4,6 +4,9 @@
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace aiden {
 
@@ -55,6 +58,41 @@ static void append_float_line(std::string& out,
     char buf[64];
     snprintf(buf, sizeof(buf), "%.3f", static_cast<double>(value));
     append_line(out, key, buf, blank_line_after);
+}
+
+static FILE* open_secure_write_file(const char* path, std::string* error) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+    if (fd < 0) {
+        int saved_errno = errno;
+        char buf[512];
+        snprintf(buf, sizeof(buf), "cannot open '%s' for write: %s (errno=%d)",
+                 path, strerror(saved_errno), saved_errno);
+        set_error(error, buf);
+        return NULL;
+    }
+
+    if (fchmod(fd, S_IRUSR | S_IWUSR) != 0) {
+        int saved_errno = errno;
+        close(fd);
+        char buf[512];
+        snprintf(buf, sizeof(buf), "cannot set permissions on '%s': %s (errno=%d)",
+                 path, strerror(saved_errno), saved_errno);
+        set_error(error, buf);
+        return NULL;
+    }
+
+    FILE* fp = fdopen(fd, "w");
+    if (!fp) {
+        int saved_errno = errno;
+        close(fd);
+        char buf[512];
+        snprintf(buf, sizeof(buf), "cannot open '%s' stream for write: %s (errno=%d)",
+                 path, strerror(saved_errno), saved_errno);
+        set_error(error, buf);
+        return NULL;
+    }
+
+    return fp;
 }
 
 static bool parse_config_file(const char* path, AgentConfig& config, std::string* error) {
@@ -256,13 +294,8 @@ bool save_config(const char* path, const AgentConfig& config, std::string* error
         return false;
     }
 
-    FILE* fp = fopen(path, "w");
+    FILE* fp = open_secure_write_file(path, error);
     if (!fp) {
-        int saved_errno = errno;
-        char buf[512];
-        snprintf(buf, sizeof(buf), "cannot open '%s' for write: %s (errno=%d)",
-                 path, strerror(saved_errno), saved_errno);
-        set_error(error, buf);
         return false;
     }
 
@@ -293,6 +326,7 @@ bool save_config(const char* path, const AgentConfig& config, std::string* error
     text += "[agent]\n";
     append_line(text, "asr_mode", config.asr_mode);
     append_line(text, "hid_binary", config.hid_binary);
+    append_line(text, "frame_service_socket", config.frame_service_socket);
     append_int_line(text, "energy_threshold", config.energy_threshold);
     append_int_line(text, "silence_ms", config.silence_ms);
     append_int_line(text, "min_speech_ms", config.min_speech_ms);

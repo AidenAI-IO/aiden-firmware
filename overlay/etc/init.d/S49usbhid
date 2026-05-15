@@ -109,8 +109,11 @@ start() {
 		sleep 1
 	done
 	if [ -d /sys/class/net/usb0 ]; then
-		ifconfig usb0 "$USB0_ADDR" netmask "$USB0_NETMASK" up
-		echo "usb0 up at $USB0_ADDR/$USB0_NETMASK"
+		if ifconfig usb0 "$USB0_ADDR" netmask "$USB0_NETMASK" up; then
+			echo "usb0 up at $USB0_ADDR/$USB0_NETMASK"
+		else
+			echo "usb0 ifconfig failed"
+		fi
 	else
 		echo "usb0 did not appear; ECM may not be bound"
 	fi
