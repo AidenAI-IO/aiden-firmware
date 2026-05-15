@@ -23,6 +23,9 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 		"You can use the following tools:",
 		"{{.tool_descriptions}}",
 		"",
+		"For any request that reads or changes external device or service state, you must use the relevant tool.",
+		"Never claim a state change succeeded until you have a tool Observation confirming it.",
+		"",
 		"Use the following format:",
 		"Question: the user's current request",
 		"Thought: reason about the next step",
@@ -53,6 +56,25 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 			"tool_descriptions":  describeTools(availableTools),
 		},
 	}
+}
+
+func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool) string {
+	parts := []string{
+		"You are agent.",
+		"Base instruction:",
+		cfg.Instruction,
+		"",
+		"Active skills:",
+		skills.CombinedInstructions(),
+		"",
+		"You can use the following tools:",
+		describeTools(availableTools),
+		"",
+		"For any request that reads or changes external device or service state, you must use the relevant tool.",
+		"Never claim a state change succeeded until you have a tool result confirming it.",
+		"If no tool is needed, answer directly.",
+	}
+	return strings.Join(parts, "\n")
 }
 
 func joinToolNames(availableTools []langtools.Tool) string {

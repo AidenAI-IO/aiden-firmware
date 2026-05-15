@@ -52,6 +52,9 @@ public:
     // Stop and remove a playback session.
     AidenServiceStatus stop_playback(uint64_t session_id);
 
+    AidenServiceStatus set_playback_volume(int volume);
+    AidenServiceStatus get_playback_volume(uint32_t* out) const;
+
     // --- Health ---
 
     void fill_health(AudioHealthResult* out) const;
@@ -67,6 +70,7 @@ private:
     std::atomic<bool> stop_reaper_;
     std::thread reaper_thread_;
     std::shared_ptr<std::atomic<uint32_t>> draining_playback_count_;
+    int playback_volume_;
     uint64_t next_id_;
     std::unordered_map<uint64_t, std::shared_ptr<AudioRecordSession>>   record_sessions_;
     std::unordered_map<uint64_t, std::shared_ptr<AudioPlaybackSession>> playback_sessions_;

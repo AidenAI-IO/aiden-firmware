@@ -7,10 +7,13 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tmc/langchaingo/agents"
+	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
+	"github.com/tmc/langchaingo/prompts"
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -70,7 +73,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		logger.Info("Agent runtime initialized with config from %s", cfg.ConfigDir)
 	}
 
-	rt := NewRuntimeWithDeps(cfg, NewModelManager(cfg.Model), NewMemoryManager(), NewBuiltinToolSet(cfg.HID), skillIndex)
+	rt := NewRuntimeWithDeps(cfg, NewModelManager(cfg.Model), NewMemoryManager(), NewBuiltinToolSet(cfg.HID, cfg.Audio), skillIndex)
 	rt.logger = logger
 	return rt, nil
 }
@@ -130,30 +133,36 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	availableTools := r.resolveTools(resolvedSkills)
 
-	prompt := buildPrompt("agent", AgentConfig{Instruction: r.config.Instruction}, resolvedSkills, availableTools)
-	agent := agents.NewOneShotAgent(model, availableTools, agents.WithPrompt(prompt))
-
 	maxIterations := r.config.MaxIterations
 	if maxIterations <= 0 {
 		maxIterations = 6
 	}
 
-	executor := agents.NewExecutor(
-		agent,
-		agents.WithMemory(memoryHandle.Memory),
-		agents.WithMaxIterations(maxIterations),
-	)
-
 	callOptions := r.models.CallOptions()
-
+	var streamCallbackHandler *runtimeCallbackHandler
 	if req.StreamWriter != nil {
-		streamHandler := &streamCallbackHandler{
+		streamCallbackHandler = &runtimeCallbackHandler{
 			writer:    req.StreamWriter,
 			metrics:   metrics,
 			startTime: startTime,
 		}
-		callOptions = append(callOptions, chains.WithCallback(streamHandler))
+		callOptions = append(callOptions, chains.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
+			streamCallbackHandler.HandleStreamingFunc(ctx, chunk)
+			return nil
+		}))
 	}
+
+	agent := r.buildAgent(model, resolvedSkills, availableTools, streamCallbackHandler)
+	executorOptions := []agents.Option{
+		agents.WithMemory(memoryHandle.Memory),
+		agents.WithMaxIterations(maxIterations),
+	}
+	if r.logger != nil {
+		executorOptions = append(executorOptions, agents.WithCallbacksHandler(&runtimeCallbackHandler{
+			logger: r.logger,
+		}))
+	}
+	executor := agents.NewExecutor(agent, executorOptions...)
 
 	output, err := chains.Run(ctx, executor, req.Input, callOptions...)
 	if err != nil {
@@ -215,25 +224,67 @@ func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 	return available
 }
 
-// streamCallbackHandler implements callbacks.Handler for streaming output
-type streamCallbackHandler struct {
+func (r *Runtime) buildAgent(
+	model llms.Model,
+	skills ResolvedSkills,
+	availableTools []langtools.Tool,
+	callbackHandler callbacks.Handler,
+) agents.Agent {
+	provider := strings.ToLower(r.config.Model.Provider)
+
+	if provider == "openai" || provider == "openrouter" {
+		options := []agents.Option{
+			agents.NewOpenAIOption().WithSystemMessage(
+				buildFunctionAgentSystemMessage(
+					AgentConfig{Instruction: r.config.Instruction},
+					skills,
+					availableTools,
+				),
+			),
+			agents.NewOpenAIOption().WithExtraMessages([]prompts.MessageFormatter{
+				prompts.NewSystemMessagePromptTemplate(
+					"Conversation history:\n{{.history}}",
+					[]string{"history"},
+				),
+			}),
+		}
+		if callbackHandler != nil {
+			options = append(options, agents.WithCallbacksHandler(callbackHandler))
+		}
+		return agents.NewOpenAIFunctionsAgent(model, availableTools, options...)
+	}
+
+	options := []agents.Option{
+		agents.WithPrompt(buildPrompt("agent", AgentConfig{Instruction: r.config.Instruction}, skills, availableTools)),
+	}
+	if callbackHandler != nil {
+		options = append(options, agents.WithCallbacksHandler(callbackHandler))
+	}
+	return agents.NewOneShotAgent(model, availableTools, options...)
+}
+
+// runtimeCallbackHandler implements callbacks.Handler for streaming output and
+// tool/agent observability.
+type runtimeCallbackHandler struct {
 	writer         io.Writer
 	metrics        *RunMetrics
 	startTime      time.Time
 	firstTokenSeen bool
+	logger         *Logger
 }
 
-func (h *streamCallbackHandler) HandleText(ctx context.Context, text string) {
+func (h *runtimeCallbackHandler) HandleText(ctx context.Context, text string) {
 	if h.writer != nil {
 		h.writer.Write([]byte(text))
 	}
 }
 
-func (h *streamCallbackHandler) HandleLLMStart(ctx context.Context, prompts []string) {}
+func (h *runtimeCallbackHandler) HandleLLMStart(ctx context.Context, prompts []string) {}
 
-func (h *streamCallbackHandler) HandleLLMGenerateContentStart(ctx context.Context, ms []llms.MessageContent) {}
+func (h *runtimeCallbackHandler) HandleLLMGenerateContentStart(ctx context.Context, ms []llms.MessageContent) {
+}
 
-func (h *streamCallbackHandler) HandleLLMGenerateContentEnd(ctx context.Context, res *llms.ContentResponse) {
+func (h *runtimeCallbackHandler) HandleLLMGenerateContentEnd(ctx context.Context, res *llms.ContentResponse) {
 	if res != nil && h.metrics != nil {
 		// Extract token usage from response
 		if res.Choices != nil && len(res.Choices) > 0 {
@@ -243,29 +294,43 @@ func (h *streamCallbackHandler) HandleLLMGenerateContentEnd(ctx context.Context,
 	}
 }
 
-func (h *streamCallbackHandler) HandleLLMError(ctx context.Context, err error) {}
+func (h *runtimeCallbackHandler) HandleLLMError(ctx context.Context, err error) {}
 
-func (h *streamCallbackHandler) HandleChainStart(ctx context.Context, inputs map[string]any) {}
+func (h *runtimeCallbackHandler) HandleChainStart(ctx context.Context, inputs map[string]any) {}
 
-func (h *streamCallbackHandler) HandleChainEnd(ctx context.Context, outputs map[string]any) {}
+func (h *runtimeCallbackHandler) HandleChainEnd(ctx context.Context, outputs map[string]any) {}
 
-func (h *streamCallbackHandler) HandleChainError(ctx context.Context, err error) {}
+func (h *runtimeCallbackHandler) HandleChainError(ctx context.Context, err error) {}
 
-func (h *streamCallbackHandler) HandleToolStart(ctx context.Context, input string) {}
+func (h *runtimeCallbackHandler) HandleToolStart(ctx context.Context, input string) {}
 
-func (h *streamCallbackHandler) HandleToolEnd(ctx context.Context, output string) {}
+func (h *runtimeCallbackHandler) HandleToolEnd(ctx context.Context, output string) {
+	if h.logger != nil {
+		h.logger.Info("Tool result: %s", truncateForLog(output, 240))
+	}
+}
 
-func (h *streamCallbackHandler) HandleToolError(ctx context.Context, err error) {}
+func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error) {
+	if h.logger != nil {
+		h.logger.Error("Tool error: %v", err)
+	}
+}
 
-func (h *streamCallbackHandler) HandleAgentAction(ctx context.Context, action schema.AgentAction) {}
+func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action schema.AgentAction) {
+	if h.logger != nil {
+		h.logger.Info("Tool call: name=%s input=%s",
+			action.Tool, truncateForLog(action.ToolInput, 240))
+	}
+}
 
-func (h *streamCallbackHandler) HandleAgentFinish(ctx context.Context, finish schema.AgentFinish) {}
+func (h *runtimeCallbackHandler) HandleAgentFinish(ctx context.Context, finish schema.AgentFinish) {}
 
-func (h *streamCallbackHandler) HandleRetrieverStart(ctx context.Context, query string) {}
+func (h *runtimeCallbackHandler) HandleRetrieverStart(ctx context.Context, query string) {}
 
-func (h *streamCallbackHandler) HandleRetrieverEnd(ctx context.Context, query string, documents []schema.Document) {}
+func (h *runtimeCallbackHandler) HandleRetrieverEnd(ctx context.Context, query string, documents []schema.Document) {
+}
 
-func (h *streamCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk []byte) {
+func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk []byte) {
 	if h.writer != nil {
 		h.writer.Write(chunk)
 	}
@@ -275,6 +340,19 @@ func (h *streamCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk [
 		h.firstTokenSeen = true
 		h.metrics.FirstTokenTime = float64(time.Since(h.startTime).Milliseconds())
 	}
+}
+
+var _ callbacks.Handler = (*runtimeCallbackHandler)(nil)
+
+func truncateForLog(text string, max int) string {
+	if max <= 0 || text == "" {
+		return text
+	}
+	if utf8.RuneCountInString(text) <= max {
+		return text
+	}
+	runes := []rune(text)
+	return string(runes[:max]) + "..."
 }
 
 // Close releases resources held by the runtime

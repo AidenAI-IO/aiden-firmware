@@ -15,7 +15,7 @@ type ToolSet struct {
 
 // NewBuiltinToolSet returns all built-in tools. Tools are not configurable;
 // everything is registered here with its runtime dependencies already wired up.
-func NewBuiltinToolSet(hidCfg HIDConfig) *ToolSet {
+func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig) *ToolSet {
 	kbDev := NewHIDDevice(hidCfg.KeyboardDeviceOrDefault())
 	mouseDev := NewHIDDevice(hidCfg.MouseDeviceOrDefault())
 
@@ -27,6 +27,7 @@ func NewBuiltinToolSet(hidCfg HIDConfig) *ToolSet {
 			"mouse_move":    &MouseMoveTool{dev: mouseDev},
 			"mouse_scroll":  &MouseScrollTool{dev: mouseDev},
 			"screenshot":    NewScreenshotTool(hidCfg.FrameSocketOrDefault()),
+			"audio_volume":  NewAudioVolumeTool(audioCfg.SocketOrDefault()),
 		},
 	}
 }

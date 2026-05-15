@@ -8,6 +8,13 @@ import (
 	"net/http"
 )
 
+const (
+	minimaxTTSModel      = "speech-2.8-hd"
+	minimaxTTSSampleRate = 32000
+	minimaxTTSChannels   = 1
+	minimaxTTSBitWidth   = 16
+)
+
 // TTSClient is the interface for text-to-speech providers
 type TTSClient interface {
 	TextToSpeechStream(text string, audio *AudioServiceClient) error
@@ -43,10 +50,11 @@ func NewMinimaxTTS(apiKey, voiceID, emotion string, speed float64) *MinimaxTTS {
 // TextToSpeechStream streams TTS audio to audio_service.
 // Requests PCM format directly from Minimax to avoid MP3 decoding.
 func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) error {
-	// Request PCM at 16kHz/16-bit/mono so we can stream directly to
-	// audio_service without any decoding or resampling.
+	// Request PCM at 32kHz/16-bit/mono and open audio_service playback with
+	// the same format so we can stream directly without any decoding or
+	// resampling.
 	reqBody := map[string]interface{}{
-		"model":  "speech-2.8-hd",
+		"model":  minimaxTTSModel,
 		"text":   text,
 		"stream": true,
 		"voice_setting": map[string]interface{}{
@@ -57,9 +65,9 @@ func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) 
 			"emotion":  t.emotion,
 		},
 		"audio_setting": map[string]interface{}{
-			"sample_rate": 16000,
+			"sample_rate": minimaxTTSSampleRate,
 			"format":      "pcm",
-			"channel":     1,
+			"channel":     minimaxTTSChannels,
 		},
 		"stream_options": map[string]interface{}{
 			"exclude_aggregated_audio": true,
@@ -74,9 +82,9 @@ func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) 
 
 	// Open playback session matching the format we request from Minimax
 	playbackFmt := AudioFormat{
-		SampleRate: 16000,
-		Channels:   1,
-		BitWidth:   16,
+		SampleRate: minimaxTTSSampleRate,
+		Channels:   minimaxTTSChannels,
+		BitWidth:   minimaxTTSBitWidth,
 	}
 
 	playback, err := audio.StartPlayback(playbackFmt)
@@ -136,8 +144,8 @@ func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) 
 	// Pad a short silence tail to avoid clipping the last phonemes on some
 	// AO drivers that stop slightly early.
 	const tailMs = 200
-	const bytesPerSample = 2 // s16le
-	tailBytes := (16000 * tailMs / 1000) * bytesPerSample
+	const bytesPerSample = minimaxTTSBitWidth / 8 // s16le mono
+	tailBytes := (minimaxTTSSampleRate * tailMs / 1000) * bytesPerSample
 	silenceTail := make([]byte, tailBytes)
 	if err := writePlaybackPCM(audio, playback.SessionID, silenceTail); err != nil {
 		return fmt.Errorf("write silence tail: %w", err)
@@ -154,7 +162,7 @@ func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) 
 // writePlaybackPCM splits a PCM buffer into smaller pieces sized for the AO
 // driver's internal frame buffer. Sending larger buffers in one call causes
 // the driver to play only a portion before dropping the tail.
-const playbackChunkBytes = 4096 // 2048 samples = 128ms @16kHz s16le mono
+const playbackChunkBytes = 4096 // 2048 samples = 64ms @32kHz s16le mono
 
 func writePlaybackPCM(audio *AudioServiceClient, sessionID uint64, pcm []byte) error {
 	for off := 0; off < len(pcm); off += playbackChunkBytes {

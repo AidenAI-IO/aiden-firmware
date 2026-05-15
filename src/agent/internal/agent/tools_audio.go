@@ -1,0 +1,65 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+type playbackVolumeClient interface {
+	SetPlaybackVolume(volume int) error
+	GetPlaybackVolume() (int, error)
+}
+
+// AudioVolumeTool gets or sets audio_service playback volume.
+type AudioVolumeTool struct {
+	client playbackVolumeClient
+}
+
+func NewAudioVolumeTool(socketPath string) *AudioVolumeTool {
+	return &AudioVolumeTool{client: NewAudioServiceClient(socketPath)}
+}
+
+func (t *AudioVolumeTool) Name() string { return "audio_volume" }
+
+func (t *AudioVolumeTool) Description() string {
+	return `Get or set audio playback volume for audio_service/TTS playback. ` +
+		`Input JSON: {} to read current volume, or {"volume": 70} to set it. ` +
+		`Volume range is 0..100.`
+}
+
+func (t *AudioVolumeTool) Call(_ context.Context, input string) (string, error) {
+	var args struct {
+		Volume *int `json:"volume"`
+	}
+
+	trimmed := strings.TrimSpace(input)
+	if trimmed != "" {
+		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+			return fmt.Sprintf("error: invalid input: %v", err), nil
+		}
+	}
+
+	if args.Volume != nil {
+		if *args.Volume < 0 || *args.Volume > 100 {
+			return "error: volume must be between 0 and 100", nil
+		}
+		if err := t.client.SetPlaybackVolume(*args.Volume); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+	}
+
+	volume, err := t.client.GetPlaybackVolume()
+	if err != nil {
+		return fmt.Sprintf("error: %v", err), nil
+	}
+
+	result := struct {
+		Volume int `json:"volume"`
+	}{
+		Volume: volume,
+	}
+	out, _ := json.Marshal(result)
+	return string(out), nil
+}

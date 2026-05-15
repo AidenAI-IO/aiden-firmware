@@ -59,6 +59,8 @@ void AudioServiceServer::handle_request(const UdsMessage& req, int fd) {
     if (op == "start_playback")     { handle_start_playback(req, fd);     return; }
     if (op == "write_play_chunk")   { handle_write_play_chunk(req, fd);   return; }
     if (op == "stop_playback")      { handle_stop_playback(req, fd);      return; }
+    if (op == "set_playback_volume"){ handle_set_playback_volume(req, fd);return; }
+    if (op == "get_playback_volume"){ handle_get_playback_volume(fd);     return; }
     if (op == "health")             { handle_health(fd);                  return; }
 
     fprintf(stderr, "[audio_service] unknown op: %s\n", op.c_str());
@@ -141,6 +143,23 @@ void AudioServiceServer::handle_stop_playback(const UdsMessage& req, int fd) {
     uint64_t session_id = audio_json_u64(req.header_json.c_str(), "session_id");
     AidenServiceStatus status = manager_.stop_playback(session_id);
     send_response(fd, status);
+}
+
+void AudioServiceServer::handle_set_playback_volume(const UdsMessage& req, int fd) {
+    uint32_t volume = audio_json_u32(req.header_json.c_str(), "volume");
+    AidenServiceStatus status = manager_.set_playback_volume(static_cast<int>(volume));
+    send_response(fd, status);
+}
+
+void AudioServiceServer::handle_get_playback_volume(int fd) {
+    uint32_t volume = 0;
+    AidenServiceStatus status = manager_.get_playback_volume(&volume);
+    if (status != AidenServiceStatus::OK) {
+        send_response(fd, status);
+        return;
+    }
+    std::string extra = "\"volume\":" + std::to_string(volume);
+    send_response(fd, AidenServiceStatus::OK, extra);
 }
 
 // -----------------------------------------------------------------------

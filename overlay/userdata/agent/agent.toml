@@ -37,7 +37,7 @@ max_tokens = 1000
 # Audio service configuration
 [audio]
 socket = "/run/audio_service/audio_service.sock"
-sample_rate = 16000
+sample_rate = 32000
 channels = 1
 bit_width = 16
 

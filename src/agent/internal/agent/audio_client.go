@@ -34,10 +34,10 @@ type PlaybackStartResult struct {
 
 // AudioHealthResult contains audio service health status
 type AudioHealthResult struct {
-	RecordingActive   bool   `json:"recording_active"`
-	PlaybackActive    bool   `json:"playback_active"`
-	RecordSessions    uint32 `json:"record_sessions"`
-	PlaybackSessions  uint32 `json:"playback_sessions"`
+	RecordingActive  bool   `json:"recording_active"`
+	PlaybackActive   bool   `json:"playback_active"`
+	RecordSessions   uint32 `json:"record_sessions"`
+	PlaybackSessions uint32 `json:"playback_sessions"`
 }
 
 // AudioServiceClient is a client for the audio_service Unix socket
@@ -52,23 +52,27 @@ func NewAudioServiceClient(socketPath string) *AudioServiceClient {
 
 // audioRequest is the wire format for requests
 type audioRequest struct {
-	Op        string       `json:"op"`
-	Format    *AudioFormat `json:"format,omitempty"`
-	SessionID uint64       `json:"session_id,omitempty"`
-	TimeoutMs uint32       `json:"timeout_ms,omitempty"`
-	IsFinal   bool         `json:"is_final,omitempty"`
-	payload   []byte       // sent as binary payload, not in JSON
+	Op         string `json:"op"`
+	SampleRate uint32 `json:"sample_rate,omitempty"`
+	Channels   uint32 `json:"channels,omitempty"`
+	BitWidth   uint32 `json:"bit_width,omitempty"`
+	Volume     uint32 `json:"volume,omitempty"`
+	SessionID  uint64 `json:"session_id,omitempty"`
+	TimeoutMs  uint32 `json:"timeout_ms,omitempty"`
+	IsFinal    bool   `json:"is_final,omitempty"`
+	payload    []byte // sent as binary payload, not in JSON
 }
 
 // audioResponse is the wire format for responses
 type audioResponse struct {
-	Status           string `json:"status"`
+	Status           string       `json:"status"`
 	SessionID        stringUint64 `json:"session_id,omitempty"`
-	EndOfStream      bool   `json:"end_of_stream,omitempty"`
-	RecordingActive  bool   `json:"recording_active,omitempty"`
-	PlaybackActive   bool   `json:"playback_active,omitempty"`
-	RecordSessions   uint32 `json:"record_sessions,omitempty"`
-	PlaybackSessions uint32 `json:"playback_sessions,omitempty"`
+	EndOfStream      bool         `json:"end_of_stream,omitempty"`
+	RecordingActive  bool         `json:"recording_active,omitempty"`
+	PlaybackActive   bool         `json:"playback_active,omitempty"`
+	RecordSessions   uint32       `json:"record_sessions,omitempty"`
+	PlaybackSessions uint32       `json:"playback_sessions,omitempty"`
+	Volume           uint32       `json:"volume,omitempty"`
 }
 
 // stringUint64 handles JSON values that may be either a string or number
@@ -197,8 +201,10 @@ func (c *AudioServiceClient) sendRequest(req audioRequest, timeout time.Duration
 // StartRecording starts a new recording session
 func (c *AudioServiceClient) StartRecording(format AudioFormat) (*RecordStartResult, error) {
 	req := audioRequest{
-		Op:     "start_recording",
-		Format: &format,
+		Op:         "start_recording",
+		SampleRate: format.SampleRate,
+		Channels:   format.Channels,
+		BitWidth:   format.BitWidth,
 	}
 
 	resp, _, err := c.sendRequest(req, 5*time.Second)
@@ -263,8 +269,10 @@ func (c *AudioServiceClient) StopRecording(sessionID uint64) error {
 // StartPlayback starts a new playback session
 func (c *AudioServiceClient) StartPlayback(format AudioFormat) (*PlaybackStartResult, error) {
 	req := audioRequest{
-		Op:     "start_playback",
-		Format: &format,
+		Op:         "start_playback",
+		SampleRate: format.SampleRate,
+		Channels:   format.Channels,
+		BitWidth:   format.BitWidth,
 	}
 
 	resp, _, err := c.sendRequest(req, 5*time.Second)
@@ -317,6 +325,43 @@ func (c *AudioServiceClient) StopPlayback(sessionID uint64) error {
 	}
 
 	return nil
+}
+
+// SetPlaybackVolume sets the default playback volume and applies it to active sessions.
+func (c *AudioServiceClient) SetPlaybackVolume(volume int) error {
+	req := audioRequest{
+		Op:     "set_playback_volume",
+		Volume: uint32(volume),
+	}
+
+	resp, _, err := c.sendRequest(req, 5*time.Second)
+	if err != nil {
+		return err
+	}
+
+	if resp.Status != "OK" {
+		return fmt.Errorf("set_playback_volume failed: %s", resp.Status)
+	}
+
+	return nil
+}
+
+// GetPlaybackVolume returns the current playback volume in the range 0..100.
+func (c *AudioServiceClient) GetPlaybackVolume() (int, error) {
+	req := audioRequest{
+		Op: "get_playback_volume",
+	}
+
+	resp, _, err := c.sendRequest(req, 5*time.Second)
+	if err != nil {
+		return 0, err
+	}
+
+	if resp.Status != "OK" {
+		return 0, fmt.Errorf("get_playback_volume failed: %s", resp.Status)
+	}
+
+	return int(resp.Volume), nil
 }
 
 // Health checks the audio service health

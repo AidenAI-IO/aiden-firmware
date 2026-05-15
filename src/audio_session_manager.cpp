@@ -8,6 +8,7 @@ namespace aiden {
 AudioSessionManager::AudioSessionManager()
     : stop_reaper_(false),
       draining_playback_count_(std::make_shared<std::atomic<uint32_t>>(0)),
+      playback_volume_(100),
       next_id_(1) {
     reaper_thread_ = std::thread([this]() { reaper_loop(); });
 }
@@ -110,11 +111,15 @@ AidenServiceStatus AudioSessionManager::start_playback(const AudioFormat& fmt,
     if (!session->start()) {
         return AidenServiceStatus::INTERNAL_ERROR;
     }
+    if (!session->set_volume(playback_volume_)) {
+        session->stop();
+        return AidenServiceStatus::INTERNAL_ERROR;
+    }
     out->session_id = id;
     playback_sessions_[id] = std::move(session);
     playback_last_active_[id] = now;
-    fprintf(stderr, "[audio_service] playback session %llu started\n",
-            static_cast<unsigned long long>(id));
+    fprintf(stderr, "[audio_service] playback session %llu started (volume=%d)\n",
+            static_cast<unsigned long long>(id), playback_volume_);
     return AidenServiceStatus::OK;
 }
 
@@ -181,6 +186,36 @@ AidenServiceStatus AudioSessionManager::stop_playback(uint64_t session_id) {
     session->stop();
     fprintf(stderr, "[audio_service] playback session %llu stopped\n",
             static_cast<unsigned long long>(session_id));
+    return AidenServiceStatus::OK;
+}
+
+AidenServiceStatus AudioSessionManager::set_playback_volume(int volume) {
+    if (volume < 0 || volume > 100) {
+        return AidenServiceStatus::INTERNAL_ERROR;
+    }
+
+    std::vector<std::shared_ptr<AudioPlaybackSession>> sessions;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        playback_volume_ = volume;
+        for (auto it = playback_sessions_.begin(); it != playback_sessions_.end(); ++it) {
+            sessions.push_back(it->second);
+        }
+    }
+
+    for (size_t i = 0; i < sessions.size(); ++i) {
+        if (!sessions[i]->set_volume(volume)) {
+            return AidenServiceStatus::INTERNAL_ERROR;
+        }
+    }
+    fprintf(stderr, "[audio_service] playback volume set to %d\n", volume);
+    return AidenServiceStatus::OK;
+}
+
+AidenServiceStatus AudioSessionManager::get_playback_volume(uint32_t* out) const {
+    if (!out) return AidenServiceStatus::INTERNAL_ERROR;
+    std::lock_guard<std::mutex> lock(mutex_);
+    *out = static_cast<uint32_t>(playback_volume_);
     return AidenServiceStatus::OK;
 }
 

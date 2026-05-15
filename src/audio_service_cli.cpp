@@ -14,7 +14,9 @@ static void usage(const char* program) {
             "Commands:\n"
             "  health                    Print service health\n"
             "  record-stream [--seconds N]  Capture PCM and write to stdout\n"
-            "  play-stream [--rate N] [--ch N] [--bits N]  Read PCM from stdin and play\n",
+            "  play-stream [--rate N] [--ch N] [--bits N]  Read PCM from stdin and play\n"
+            "  get-volume                Print playback volume (0..100)\n"
+            "  set-volume --volume N    Set playback volume (0..100)\n",
             program);
 }
 
@@ -45,6 +47,17 @@ static bool parse_positive_u32(const char* text, uint32_t* out) {
     return true;
 }
 
+static bool parse_u32(const char* text, uint32_t* out) {
+    if (!text || !out) return false;
+    errno = 0;
+    char* end = nullptr;
+    unsigned long value = strtoul(text, &end, 10);
+    if (errno != 0 || !end || *end != '\0') return false;
+    if (value > 0xFFFFFFFFUL) return false;
+    *out = static_cast<uint32_t>(value);
+    return true;
+}
+
 static int cmd_health(aiden::AudioServiceClient& client) {
     aiden::AudioHealthResult h;
     aiden::AidenServiceStatus s = client.health(&h);
@@ -58,6 +71,30 @@ static int cmd_health(aiden::AudioServiceClient& client) {
            h.record_sessions,
            h.playback_sessions);
     return 0;
+}
+
+static int cmd_get_volume(aiden::AudioServiceClient& client) {
+    uint32_t volume = 0;
+    aiden::AidenServiceStatus s = client.get_playback_volume(&volume);
+    if (s != aiden::AidenServiceStatus::OK) {
+        fprintf(stderr, "get_playback_volume failed: %s\n", service_status_to_string(s));
+        return 1;
+    }
+    printf("%u\n", volume);
+    return 0;
+}
+
+static int cmd_set_volume(aiden::AudioServiceClient& client, uint32_t volume) {
+    if (volume > 100) {
+        fprintf(stderr, "invalid volume: %u (expected 0..100)\n", volume);
+        return 2;
+    }
+    aiden::AidenServiceStatus s = client.set_playback_volume(volume);
+    if (s != aiden::AidenServiceStatus::OK) {
+        fprintf(stderr, "set_playback_volume failed: %s\n", service_status_to_string(s));
+        return 1;
+    }
+    return cmd_get_volume(client);
 }
 
 static int cmd_record_stream(aiden::AudioServiceClient& client, int seconds) {
@@ -166,6 +203,30 @@ int main(int argc, char** argv) {
 
     if (cmd == "health") {
         return cmd_health(client);
+    }
+
+    if (cmd == "get-volume") {
+        return cmd_get_volume(client);
+    }
+
+    if (cmd == "set-volume") {
+        uint32_t volume = 0;
+        bool have_volume = false;
+        for (; i < argc; ++i) {
+            if (strcmp(argv[i], "--volume") == 0 && i + 1 < argc) {
+                if (!parse_u32(argv[i + 1], &volume)) {
+                    fprintf(stderr, "invalid --volume value: %s\n", argv[i + 1]);
+                    return 2;
+                }
+                have_volume = true;
+                ++i;
+            }
+        }
+        if (!have_volume) {
+            fprintf(stderr, "set-volume requires --volume N\n");
+            return 2;
+        }
+        return cmd_set_volume(client, volume);
     }
 
     if (cmd == "record-stream") {
