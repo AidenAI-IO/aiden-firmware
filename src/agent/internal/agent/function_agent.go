@@ -126,6 +126,9 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 	if len(choice.ToolCalls) > 0 {
 		actions := make([]schema.AgentAction, 0, len(choice.ToolCalls))
 		for _, toolCall := range choice.ToolCalls {
+			if toolCall.FunctionCall == nil {
+				continue
+			}
 			functionName := toolCall.FunctionCall.Name
 			toolInputStr := toolCall.FunctionCall.Arguments
 			toolInput := extractToolInput(toolInputStr)
@@ -327,6 +330,9 @@ func buildUserMessageParts(input string, attachments []InputAttachment) []llms.C
 }
 
 func buildImagePart(mimeType string, data []byte) llms.ContentPart {
+	if strings.TrimSpace(mimeType) == "" {
+		mimeType = "image/png"
+	}
 	return llms.ImageURLPart("data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data))
 }
 

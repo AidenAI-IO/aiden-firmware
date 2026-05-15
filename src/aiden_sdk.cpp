@@ -712,6 +712,10 @@ AudioPlayer::AudioPlayer() : impl_(new AudioPlayerImpl()) {}
 AudioPlayer::~AudioPlayer() { stop(); }
 
 bool AudioPlayer::init(const AudioConfig& config) {
+    if (impl_->initialized) {
+        stop();
+    }
+
     ensure_sys_init();
 
     impl_->config = config;
