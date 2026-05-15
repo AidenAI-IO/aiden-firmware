@@ -2,14 +2,26 @@ package agent
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
+	fakellm "github.com/tmc/langchaingo/llms/fake"
 	langtools "github.com/tmc/langchaingo/tools"
 )
+
+type stubSTTClient struct {
+	transcript string
+	inputs     [][]byte
+}
+
+func (s *stubSTTClient) TranscribeWAV(wavData []byte) (string, error) {
+	s.inputs = append(s.inputs, append([]byte(nil), wavData...))
+	return s.transcript, nil
+}
 
 func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	model := &scriptedModel{
@@ -122,5 +134,67 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 	}
 	if history[1].Type != "tool_call" || history[2].Type != "tool_result" {
 		t.Fatalf("unexpected history payload: %#v", history)
+	}
+}
+
+func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
+	stt := &stubSTTClient{transcript: "你好，帮我总结一下"}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Answer directly.",
+		},
+		&testModelResolver{model: fakellm.NewFakeLLM([]string{"已处理"})},
+		NewMemoryManager(),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}),
+		NewSkillIndex(),
+	)
+	server := &Server{
+		runtime:   runtime,
+		history:   make([]Message, 0),
+		sttClient: stt,
+	}
+
+	payload, err := json.Marshal(ChatRequest{
+		Attachments: []MessageAttachment{{
+			Kind:     AttachmentKindAudio,
+			Name:     "recording.wav",
+			MIMEType: "audio/wav",
+			Data:     base64.StdEncoding.EncodeToString([]byte("RIFFtest")),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(stt.inputs) != 1 {
+		t.Fatalf("expected 1 STT invocation, got %d", len(stt.inputs))
+	}
+
+	var resp ChatResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if resp.Response != "已处理" {
+		t.Fatalf("unexpected response: %q", resp.Response)
+	}
+	if len(resp.History) != 2 {
+		t.Fatalf("expected 2 history entries, got %d", len(resp.History))
+	}
+	if resp.History[0].Content != "你好，帮我总结一下" {
+		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
+	}
+	if len(resp.History[0].Attachments) != 1 || resp.History[0].Attachments[0].Transcript != "你好，帮我总结一下" {
+		t.Fatalf("expected transcript on audio attachment, got %#v", resp.History[0].Attachments)
 	}
 }

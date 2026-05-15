@@ -182,7 +182,7 @@ func runWakeupMode(cfg agent.Config, dialog *agent.AudioDialog, runtime *agent.R
 	}
 	defer watcher.Stop()
 
-	log.Println("[ready] Waiting for wakeup event (GPIO 33)... Ctrl+C to quit\n")
+	log.Println("[ready] Waiting for wakeup event (GPIO 33)... Ctrl+C to quit")
 
 	for {
 		select {
@@ -283,7 +283,7 @@ func runWakeupMode(cfg agent.Config, dialog *agent.AudioDialog, runtime *agent.R
 		wakeupTriggered = false
 		wakeupMutex.Unlock()
 
-		log.Println("\n[ready] Waiting for next wakeup event...\n")
+		log.Println("[ready] Waiting for next wakeup event...")
 	}
 }
 

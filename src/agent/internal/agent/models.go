@@ -14,7 +14,6 @@ import (
 	"github.com/tmc/langchaingo/llms"
 	fakellm "github.com/tmc/langchaingo/llms/fake"
 	"github.com/tmc/langchaingo/llms/ollama"
-	"github.com/tmc/langchaingo/llms/openai"
 )
 
 type ModelResolver interface {
@@ -58,26 +57,21 @@ func (m *ModelManager) CallOptions() []chains.ChainCallOption {
 func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 	switch strings.ToLower(cfg.Provider) {
 	case "openai":
-		options := []openai.Option{openai.WithModel(cfg.Model)}
-		if token := resolveToken(cfg); token != "" {
-			options = append(options, openai.WithToken(token))
+		baseURL := cfg.BaseURL
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
 		}
-		if cfg.BaseURL != "" {
-			options = append(options, openai.WithBaseURL(cfg.BaseURL))
-		}
-		return openai.New(options...)
+		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient()), nil
 	case "openrouter":
-		options := []openai.Option{
-			openai.WithModel(cfg.Model),
-			openai.WithBaseURL("https://openrouter.ai/api/v1"),
-			openai.WithHTTPClient(newRetryHTTPClient()),
-		}
 		token := resolveToken(cfg)
 		if token == "" {
 			return nil, fmt.Errorf("missing the OpenRouter API key, set it in the %s environment variable", cfg.TokenEnv)
 		}
-		options = append(options, openai.WithToken(token))
-		return openai.New(options...)
+		baseURL := cfg.BaseURL
+		if baseURL == "" {
+			baseURL = "https://openrouter.ai/api/v1"
+		}
+		return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient()), nil
 	case "ollama":
 		options := []ollama.Option{ollama.WithModel(cfg.Model)}
 		if cfg.BaseURL != "" {

@@ -26,25 +26,17 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 	// Create STT client if needed
 	var sttClient STTClient
 	if cfg.InputModeOrDefault() == "stt" {
-		switch cfg.STT.Provider {
-		case "openai", "openai-whisper":
-			sttClient = NewOpenAIWhisperSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL)
-		case "tencent":
-			sttClient = NewTencentASRSTT(cfg.STT.SecretID, cfg.STT.SecretKey, cfg.STT.Region, cfg.STT.EngineModelType)
-		default:
-			return nil, fmt.Errorf("unsupported STT provider: %s", cfg.STT.Provider)
+		var err error
+		sttClient, err = NewSTTClientFromConfig(cfg)
+		if err != nil {
+			return nil, err
 		}
 	}
 
 	// Create TTS client
-	var ttsClient TTSClient
-	if cfg.TTS.Provider != "" {
-		switch cfg.TTS.Provider {
-		case "minimax":
-			ttsClient = NewMinimaxTTS(cfg.TTS.APIKey, cfg.TTS.VoiceID, cfg.TTS.Emotion, cfg.TTS.Speed)
-		default:
-			return nil, fmt.Errorf("unsupported TTS provider: %s", cfg.TTS.Provider)
-		}
+	ttsClient, err := NewTTSClientFromConfig(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create VAD
@@ -145,34 +137,12 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	wavData := pcm16MonoToWAV(utterance, d.config.Audio.SampleRateOrDefault())
 	log.Printf("[debug] WAV size: %d bytes\n", len(wavData))
 
-	var inputText string
-	var err error
-
-	inputMode := d.config.InputModeOrDefault()
-
-	// Process based on input mode
-	switch inputMode {
-	case "stt":
-		if d.sttClient == nil {
-			return fmt.Errorf("STT mode enabled but STT client is unavailable")
-		}
-
-		log.Printf("[stt] Transcribing audio with provider '%s'...\n", d.config.STT.Provider)
-		inputText, err = d.sttClient.TranscribeWAV(wavData)
-		if err != nil {
-			return fmt.Errorf("STT transcription failed: %w", err)
-		}
-		if inputText == "" {
-			return fmt.Errorf("STT returned empty transcript")
-		}
-		log.Printf("[stt] Transcript: %s\n", inputText)
-
-	case "audio":
-		// TODO: Direct audio mode - send WAV to LLM
-		return fmt.Errorf("direct audio mode not yet implemented")
-
-	default:
-		return fmt.Errorf("invalid input mode: %s", inputMode)
+	audioInput, err := PrepareAudioInput(d.config.InputModeOrDefault(), d.sttClient, wavData, "", nil)
+	if err != nil {
+		return err
+	}
+	if audioInput.Transcript != "" {
+		log.Printf("[stt] Transcript: %s\n", audioInput.Transcript)
 	}
 
 	// Send to LLM
@@ -180,7 +150,8 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 		d.config.Model.Provider, d.config.Model.Model)
 
 	result, err := runtime.Run(ctx, RunRequest{
-		Input: inputText,
+		Input:       audioInput.InputText,
+		Attachments: audioInput.Attachments,
 	})
 	if err != nil {
 		return fmt.Errorf("LLM request failed: %w", err)
@@ -251,13 +222,13 @@ func pcm16MonoToWAV(samples []int16, sampleRate int) []byte {
 
 	// fmt chunk
 	copy(wav[12:16], "fmt ")
-	binary.LittleEndian.PutUint32(wav[16:20], 16)                    // chunk size
-	binary.LittleEndian.PutUint16(wav[20:22], 1)                     // PCM
-	binary.LittleEndian.PutUint16(wav[22:24], 1)                     // mono
+	binary.LittleEndian.PutUint32(wav[16:20], 16)                   // chunk size
+	binary.LittleEndian.PutUint16(wav[20:22], 1)                    // PCM
+	binary.LittleEndian.PutUint16(wav[22:24], 1)                    // mono
 	binary.LittleEndian.PutUint32(wav[24:28], uint32(sampleRate))   // sample rate
 	binary.LittleEndian.PutUint32(wav[28:32], uint32(sampleRate*2)) // byte rate
-	binary.LittleEndian.PutUint16(wav[32:34], 2)                     // block align
-	binary.LittleEndian.PutUint16(wav[34:36], 16)                    // bits per sample
+	binary.LittleEndian.PutUint16(wav[32:34], 2)                    // block align
+	binary.LittleEndian.PutUint16(wav[34:36], 16)                   // bits per sample
 
 	// data chunk
 	copy(wav[36:40], "data")

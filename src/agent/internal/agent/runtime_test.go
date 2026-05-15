@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tmc/langchaingo/chains"
@@ -313,7 +314,7 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 
 	secondCall := model.messages[1]
 	var foundToolResponse bool
-	var foundBinaryImage bool
+	var foundImageURL bool
 
 	for _, msg := range secondCall {
 		for _, part := range msg.Parts {
@@ -325,13 +326,14 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 						t.Fatalf("expected screenshot tool response to be summarized, got raw payload")
 					}
 				}
-			case llms.BinaryContent:
-				foundBinaryImage = true
-				if p.MIMEType != "image/jpeg" {
-					t.Fatalf("unexpected MIME type: %q", p.MIMEType)
+			case llms.ImageURLContent:
+				foundImageURL = true
+				expectedPrefix := "data:image/jpeg;base64,"
+				if !strings.HasPrefix(p.URL, expectedPrefix) {
+					t.Fatalf("unexpected image URL prefix: %q", p.URL)
 				}
-				if !bytes.Equal(p.Data, jpegBytes) {
-					t.Fatalf("unexpected image bytes: %#v", p.Data)
+				if p.URL != expectedPrefix+base64.StdEncoding.EncodeToString(jpegBytes) {
+					t.Fatalf("unexpected image URL payload: %q", p.URL)
 				}
 			}
 		}
@@ -340,8 +342,8 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 	if !foundToolResponse {
 		t.Fatalf("expected screenshot tool response in second model call")
 	}
-	if !foundBinaryImage {
-		t.Fatalf("expected screenshot binary image in second model call")
+	if !foundImageURL {
+		t.Fatalf("expected screenshot image URL in second model call")
 	}
 }
 
@@ -402,6 +404,89 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	}
 	if secondResult.Memory[0].Role != "human" || secondResult.Memory[0].Content != "hello" {
 		t.Fatalf("expected first persisted message to be restored, got %#v", secondResult.Memory[0])
+	}
+}
+
+func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "processed",
+				}},
+			},
+		},
+	}
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "openrouter"},
+			Instruction: "Use the provided media when answering.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}),
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "Describe the uploaded media.",
+		Attachments: []InputAttachment{
+			{
+				Kind:     AttachmentKindImage,
+				Name:     "photo.png",
+				MIMEType: "image/png",
+				Data:     []byte{0x89, 0x50, 0x4e, 0x47},
+			},
+			{
+				Kind:     AttachmentKindAudio,
+				Name:     "note.wav",
+				MIMEType: "audio/wav",
+				Data:     []byte{0x52, 0x49, 0x46, 0x46},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "processed" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if len(model.messages) != 1 {
+		t.Fatalf("expected 1 model call, got %d", len(model.messages))
+	}
+
+	lastCall := model.messages[0]
+	if len(lastCall) == 0 {
+		t.Fatalf("expected messages in model call")
+	}
+	userMessage := lastCall[len(lastCall)-1]
+	if userMessage.Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("expected final message to be human, got %q", userMessage.Role)
+	}
+
+	var textContent string
+	var imageURL string
+	var binaryMIMEs []string
+	for _, part := range userMessage.Parts {
+		switch p := part.(type) {
+		case llms.TextContent:
+			textContent = p.Text
+		case llms.ImageURLContent:
+			imageURL = p.URL
+		case llms.BinaryContent:
+			binaryMIMEs = append(binaryMIMEs, p.MIMEType)
+		}
+	}
+
+	if !strings.Contains(textContent, "photo.png") || !strings.Contains(textContent, "note.wav") {
+		t.Fatalf("expected attachment names in prompt text, got %q", textContent)
+	}
+	if imageURL == "" || !strings.HasPrefix(imageURL, "data:image/png;base64,") {
+		t.Fatalf("expected image attachment as data URL, got %q", imageURL)
+	}
+	if len(binaryMIMEs) != 1 || binaryMIMEs[0] != "audio/wav" {
+		t.Fatalf("unexpected binary attachment MIME types: %#v", binaryMIMEs)
 	}
 }
 

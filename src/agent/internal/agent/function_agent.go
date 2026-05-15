@@ -19,6 +19,7 @@ type FunctionAgent struct {
 	LLM              llms.Model
 	Prompt           prompts.FormatPrompter
 	Tools            []langtools.Tool
+	InputAttachments []InputAttachment
 	OutputKey        string
 	CallbacksHandler callbacks.Handler
 }
@@ -28,18 +29,19 @@ func NewFunctionAgent(
 	tools []langtools.Tool,
 	systemMessage string,
 	extraMessages []prompts.MessageFormatter,
+	inputAttachments []InputAttachment,
 	callbackHandler callbacks.Handler,
 ) *FunctionAgent {
 	messageFormatters := []prompts.MessageFormatter{
 		prompts.NewSystemMessagePromptTemplate(systemMessage, nil),
 	}
 	messageFormatters = append(messageFormatters, extraMessages...)
-	messageFormatters = append(messageFormatters, prompts.NewHumanMessagePromptTemplate("{{.input}}", []string{"input"}))
 
 	return &FunctionAgent{
 		LLM:              llm,
 		Prompt:           prompts.NewChatPromptTemplate(messageFormatters),
 		Tools:            tools,
+		InputAttachments: append([]InputAttachment{}, inputAttachments...),
 		OutputKey:        "output",
 		CallbacksHandler: callbackHandler,
 	}
@@ -73,6 +75,10 @@ func (a *FunctionAgent) Plan(
 	for _, msg := range prompt.Messages() {
 		messages = append(messages, chatMessageToContent(msg))
 	}
+	messages = append(messages, llms.MessageContent{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: buildUserMessageParts(inputs["input"], a.InputAttachments),
+	})
 	messages = append(messages, constructFunctionScratchPad(intermediateSteps)...)
 
 	llmOptions := []llms.CallOption{
@@ -90,7 +96,13 @@ func (a *FunctionAgent) Plan(
 }
 
 func (a *FunctionAgent) GetInputKeys() []string {
-	return a.Prompt.GetInputVariables()
+	inputs := append([]string{}, a.Prompt.GetInputVariables()...)
+	for _, key := range inputs {
+		if key == "input" {
+			return inputs
+		}
+	}
+	return append(inputs, "input")
 }
 
 func (a *FunctionAgent) GetOutputKeys() []string {
@@ -273,9 +285,54 @@ func observationMessagesForStep(step schema.AgentStep) (string, []llms.MessageCo
 		Role: llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{
 			llms.TextPart("This image is the screenshot returned by the screenshot tool. Use it when answering the original request."),
-			llms.BinaryPart(mimeType, imageBytes),
+			buildImagePart(mimeType, imageBytes),
 		},
 	}}
+}
+
+func buildUserMessageParts(input string, attachments []InputAttachment) []llms.ContentPart {
+	text := normalizeRunInput(input, attachments)
+	if len(attachments) == 0 {
+		return []llms.ContentPart{llms.TextPart(text)}
+	}
+
+	descriptions := make([]string, 0, len(attachments))
+	parts := []llms.ContentPart{llms.TextPart(attachmentAwarePrompt(text, attachments, descriptions))}
+	for _, attachment := range attachments {
+		if len(attachment.Data) == 0 {
+			continue
+		}
+		if attachment.Kind == AttachmentKindImage {
+			parts = append(parts, buildImagePart(attachment.MIMEType, attachment.Data))
+			continue
+		}
+		parts = append(parts, llms.BinaryPart(attachment.MIMEType, attachment.Data))
+	}
+	return parts
+}
+
+func buildImagePart(mimeType string, data []byte) llms.ContentPart {
+	return llms.ImageURLPart("data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data))
+}
+
+func attachmentAwarePrompt(text string, attachments []InputAttachment, descriptions []string) string {
+	if descriptions == nil {
+		descriptions = make([]string, 0, len(attachments))
+	}
+	for _, attachment := range attachments {
+		label := attachment.Kind
+		if attachment.Name != "" {
+			label += ": " + attachment.Name
+		}
+		if attachment.MIMEType != "" {
+			label += " (" + attachment.MIMEType + ")"
+		}
+		descriptions = append(descriptions, label)
+	}
+	if len(descriptions) == 0 {
+		return text
+	}
+	return text + "\n\nAttached content:\n- " + strings.Join(descriptions, "\n- ")
 }
 
 func extractToolInput(raw string) string {

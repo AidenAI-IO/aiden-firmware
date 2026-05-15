@@ -32,6 +32,7 @@ type Runtime struct {
 
 type RunRequest struct {
 	Input        string
+	Attachments  []InputAttachment
 	Skills       []string
 	StreamWriter io.Writer
 	EventHandler func(RunEvent)
@@ -109,12 +110,13 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	startTime := time.Now()
 	metrics := &RunMetrics{}
+	normalizedInput := normalizeRunInput(req.Input, req.Attachments)
 
 	if r.logger != nil {
-		r.logger.Info("Starting agent run: input=%q", req.Input)
+		r.logger.Info("Starting agent run: input=%q attachments=%d", normalizedInput, len(req.Attachments))
 	}
 
-	if req.Input == "" {
+	if normalizedInput == "" {
 		return RunResult{}, errors.New("input is required")
 	}
 
@@ -178,7 +180,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		availableTools = wrapToolsWithCallbacks(availableTools, streamCallbackHandler)
 	}
 
-	agent := r.buildAgent(model, resolvedSkills, availableTools, agentCallbackHandler)
+	agent := r.buildAgent(model, resolvedSkills, availableTools, req.Attachments, agentCallbackHandler)
 	executorOptions := []agents.Option{
 		agents.WithMemory(memoryHandle.Memory),
 		agents.WithMaxIterations(maxIterations),
@@ -188,7 +190,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	executor := agents.NewExecutor(agent, executorOptions...)
 
-	output, err := chains.Run(ctx, executor, req.Input, callOptions...)
+	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
 		// If the agent couldn't parse the LLM output format, extract the raw
 		// text and return it as the response instead of failing.
@@ -269,6 +271,7 @@ func (r *Runtime) buildAgent(
 	model llms.Model,
 	skills ResolvedSkills,
 	availableTools []langtools.Tool,
+	attachments []InputAttachment,
 	callbackHandler callbacks.Handler,
 ) agents.Agent {
 	return NewFunctionAgent(
@@ -285,6 +288,7 @@ func (r *Runtime) buildAgent(
 				[]string{"history"},
 			),
 		},
+		attachments,
 		callbackHandler,
 	)
 }
