@@ -147,6 +147,20 @@ static const char* frame_socket_path(const aiden::AgentConfig& config) {
     return "/tmp/frame_service.sock";
 }
 
+static std::string redact_proxy_for_log(const char* proxy) {
+    if (!proxy) return "";
+
+    std::string text(proxy);
+    size_t authority_start = 0;
+    size_t scheme_pos = text.find("://");
+    if (scheme_pos != std::string::npos) authority_start = scheme_pos + 3;
+
+    size_t at_pos = text.find('@', authority_start);
+    if (at_pos == std::string::npos) return text;
+
+    return text.substr(0, authority_start) + "***@" + text.substr(at_pos + 1);
+}
+
 static std::string execute_tool(const aiden::AgentConfig& config,
                                 const char* tool_name,
                                 const char* args_json) {
@@ -448,7 +462,7 @@ int main(int argc, char* argv[]) {
     install_signal_handler();
 
     TriggerMode mode = MODE_WAKEUP;
-    const char* config_path = "agent.conf";
+    const char* config_path = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--mode=", 7) == 0) {
@@ -472,6 +486,14 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    if (!config_path) {
+        if (access("agent.conf", F_OK) == 0) {
+            config_path = "agent.conf";
+        } else {
+            config_path = "/userdata/agent.conf";
+        }
+    }
+
     aiden::AgentConfig config;
     std::string config_error;
     if (!aiden::load_config(config_path, config, &config_error)) {
@@ -488,6 +510,15 @@ int main(int argc, char* argv[]) {
     aiden::AgentConfig runtime_config = make_runtime_config(config);
     printf("[init] Config loaded: model=%s, asr_mode=%s, threshold=%d, silence=%dms\n",
            runtime_config.model.model, config.asr_mode, config.energy_threshold, config.silence_ms);
+
+    if (config.network.proxy[0] != '\0') {
+        setenv("http_proxy", config.network.proxy, 1);
+        setenv("https_proxy", config.network.proxy, 1);
+        setenv("HTTP_PROXY", config.network.proxy, 1);
+        setenv("HTTPS_PROXY", config.network.proxy, 1);
+        std::string redacted_proxy = redact_proxy_for_log(config.network.proxy);
+        printf("[init] Proxy set: %s\n", redacted_proxy.c_str());
+    }
 
     if (strcmp(config.asr_mode, "direct_audio") != 0 && strcmp(config.asr_mode, "stt_then_text") != 0) {
         fprintf(stderr, "[error] Unknown asr_mode: %s (expected direct_audio|stt_then_text)\n", config.asr_mode);

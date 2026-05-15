@@ -157,6 +157,13 @@ add_custom_target(agent_version_header
     VERBATIM
 )
 
+add_executable(config_web
+    src/config_web.cpp
+    src/config.cpp
+    src/wifi_config.cpp
+)
+target_link_libraries(config_web PRIVATE cjson)
+
 add_executable(agent_main
     src/agent_main.cpp
     src/agent_version.cpp

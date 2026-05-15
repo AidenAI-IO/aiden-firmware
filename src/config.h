@@ -58,11 +58,20 @@ struct STTConfig {
     }
 };
 
+struct NetworkConfig {
+    char proxy[256];
+
+    NetworkConfig() {
+        proxy[0] = '\0';
+    }
+};
+
 struct AgentConfig {
     ModelConfig model;
     ModelConfig model_text;
     TTSConfig tts;
     STTConfig stt;
+    NetworkConfig network;
     char asr_mode[32];
     char hid_binary[256];
     char frame_service_socket[256];
@@ -85,5 +94,7 @@ struct AgentConfig {
 };
 
 bool load_config(const char* path, AgentConfig& config, std::string* error = nullptr);
+bool load_config_relaxed(const char* path, AgentConfig& config, std::string* error = nullptr);
+bool save_config(const char* path, const AgentConfig& config, std::string* error = nullptr);
 
 }

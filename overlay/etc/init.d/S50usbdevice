@@ -1,0 +1,3 @@
+#!/bin/sh
+# Aiden overlay: skip SDK default USB gadget when aiden_hid is active.
+[ -d /sys/kernel/config/usb_gadget/aiden_hid ] && exit 0
