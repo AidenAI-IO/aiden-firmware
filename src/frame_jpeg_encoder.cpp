@@ -44,9 +44,18 @@ bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width,
         cv::Mat yuv_nv21(height * 3 / 2, width, CV_8UC1, const_cast<uint8_t*>(yuv_data.data()));
         cv::cvtColor(yuv_nv21, bgr, cv::COLOR_YUV2BGR_NV21);
     } else if (pixel_format == "nv16") {
-        // NV16: Y plane + interleaved UV plane (4:2:2)
-        cv::Mat yuv_nv16(height * 2, width, CV_8UC1, const_cast<uint8_t*>(yuv_data.data()));
-        cv::cvtColor(yuv_nv16, bgr, cv::COLOR_YUV2BGR_NV12);  // Use NV12 conversion for NV16
+        FrameMetadata meta;
+        meta.width = width;
+        meta.height = height;
+        meta.pixel_format = pixel_format;
+        meta.bytes = yuv_data.size();
+
+        std::vector<uint8_t> rgb;
+        if (!convert_frame_to_rgb(meta, yuv_data, &rgb)) {
+            return false;
+        }
+        cv::Mat rgb_mat(height, width, CV_8UC3, rgb.data());
+        cv::cvtColor(rgb_mat, bgr, cv::COLOR_RGB2BGR);
     } else if (pixel_format == "yuyv") {
         // YUYV: packed YUV 4:2:2
         cv::Mat yuv_yuyv(height, width, CV_8UC2, const_cast<uint8_t*>(yuv_data.data()));
