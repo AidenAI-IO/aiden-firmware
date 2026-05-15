@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/tmc/langchaingo/chains"
@@ -340,5 +342,101 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 	}
 	if !foundBinaryImage {
 		t.Fatalf("expected screenshot binary image in second model call")
+	}
+}
+
+func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
+	configDir := t.TempDir()
+
+	firstRuntime, err := NewRuntime(Config{
+		ConfigDir:     configDir,
+		Model:         ModelConfig{Provider: "fake"},
+		Instruction:   "Answer directly.",
+		SkillsDirs:    []string{},
+		MaxIterations: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer firstRuntime.Close()
+
+	firstRuntime.models = &testModelResolver{
+		model: fakellm.NewFakeLLM([]string{"first"}),
+	}
+
+	firstResult, err := firstRuntime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if len(firstResult.Memory) != 2 {
+		t.Fatalf("expected 2 memory entries after first run, got %d", len(firstResult.Memory))
+	}
+
+	memoryPath := filepath.Join(configDir, "memory", "default.json")
+	if _, err := os.Stat(memoryPath); err != nil {
+		t.Fatalf("expected persisted memory file at %s: %v", memoryPath, err)
+	}
+
+	secondRuntime, err := NewRuntime(Config{
+		ConfigDir:     configDir,
+		Model:         ModelConfig{Provider: "fake"},
+		Instruction:   "Answer directly.",
+		SkillsDirs:    []string{},
+		MaxIterations: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() second error = %v", err)
+	}
+	defer secondRuntime.Close()
+
+	secondRuntime.models = &testModelResolver{
+		model: fakellm.NewFakeLLM([]string{"second"}),
+	}
+
+	secondResult, err := secondRuntime.Run(context.Background(), RunRequest{Input: "again"})
+	if err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if len(secondResult.Memory) != 4 {
+		t.Fatalf("expected 4 memory entries after reload, got %d", len(secondResult.Memory))
+	}
+	if secondResult.Memory[0].Role != "human" || secondResult.Memory[0].Content != "hello" {
+		t.Fatalf("expected first persisted message to be restored, got %#v", secondResult.Memory[0])
+	}
+}
+
+func TestRuntimeClearMemoryRemovesPersistedFile(t *testing.T) {
+	configDir := t.TempDir()
+	runtime, err := NewRuntime(Config{
+		ConfigDir:     configDir,
+		Model:         ModelConfig{Provider: "fake"},
+		Instruction:   "Answer directly.",
+		SkillsDirs:    []string{},
+		MaxIterations: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer runtime.Close()
+
+	runtime.models = &testModelResolver{
+		model: fakellm.NewFakeLLM([]string{"first"}),
+	}
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	memoryPath := filepath.Join(configDir, "memory", "default.json")
+	if _, err := os.Stat(memoryPath); err != nil {
+		t.Fatalf("expected persisted memory file at %s: %v", memoryPath, err)
+	}
+
+	if err := runtime.ClearMemory(context.Background()); err != nil {
+		t.Fatalf("ClearMemory() error = %v", err)
+	}
+
+	if _, err := os.Stat(memoryPath); !os.IsNotExist(err) {
+		t.Fatalf("expected memory file to be removed, stat err = %v", err)
 	}
 }

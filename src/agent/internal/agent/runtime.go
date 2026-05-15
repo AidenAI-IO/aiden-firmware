@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -84,7 +85,12 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		logger.Info("Agent runtime initialized with config from %s", cfg.ConfigDir)
 	}
 
-	rt := NewRuntimeWithDeps(cfg, NewModelManager(cfg.Model), NewMemoryManager(), NewBuiltinToolSet(cfg.HID, cfg.Audio), skillIndex)
+	memoryDir := ""
+	if cfg.ConfigDir != "" {
+		memoryDir = filepath.Join(cfg.ConfigDir, "memory")
+	}
+
+	rt := NewRuntimeWithDeps(cfg, NewModelManager(cfg.Model), NewMemoryManager(memoryDir), NewBuiltinToolSet(cfg.HID, cfg.Audio), skillIndex)
 	rt.logger = logger
 	return rt, nil
 }
@@ -203,6 +209,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	memorySnapshot, err := r.memories.Snapshot(ctx, "default")
 	if err != nil {
+		return RunResult{}, err
+	}
+	if err := r.memories.Save(ctx, "default"); err != nil {
 		return RunResult{}, err
 	}
 
