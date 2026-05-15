@@ -48,6 +48,24 @@ static AUDIO_BIT_WIDTH_E to_bit_width(int bits) {
     }
 }
 
+static bool configure_ao_volume_curve(AUDIO_DEV dev_id) {
+    AUDIO_VOLUME_CURVE_S volume_curve;
+    memset(&volume_curve, 0, sizeof(volume_curve));
+    volume_curve.enCurveType = AUDIO_CURVE_LOGARITHM;
+    volume_curve.s32Resolution = 101;
+    volume_curve.fMinDB = -51.0f;
+    volume_curve.fMaxDB = 0.0f;
+    volume_curve.pCurveTable = RK_NULL;
+    return RK_MPI_AO_SetVolumeCurve(dev_id, &volume_curve) == RK_SUCCESS;
+}
+
+static bool set_ao_mute(AUDIO_DEV dev_id, bool mute) {
+    AUDIO_FADE_S fade;
+    memset(&fade, 0, sizeof(fade));
+    fade.bFade = RK_FALSE;
+    return RK_MPI_AO_SetMute(dev_id, mute ? RK_TRUE : RK_FALSE, &fade) == RK_SUCCESS;
+}
+
 static const uint8_t kDefaultHdmiEdid1080p30[] = {
     0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00,
     0x31, 0xd8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -683,6 +701,7 @@ class AudioPlayerImpl {
 public:
     AudioConfig config;
     bool initialized = false;
+    int logical_volume = 100;
 
     AUDIO_DEV dev_id = 0;
     AO_CHN chn_id = 0;
@@ -693,11 +712,35 @@ AudioPlayer::AudioPlayer() : impl_(new AudioPlayerImpl()) {}
 AudioPlayer::~AudioPlayer() { stop(); }
 
 bool AudioPlayer::init(const AudioConfig& config) {
+    if (impl_->initialized) {
+        stop();
+    }
+
     ensure_sys_init();
 
     impl_->config = config;
+    impl_->initialized = false;
+    impl_->logical_volume = 0;
     impl_->dev_id = 0;
     impl_->chn_id = 0;
+
+    bool ao_enabled = false;
+    bool chn_enabled = false;
+    bool resmp_enabled = false;
+    auto rollback_init = [&]() {
+        if (resmp_enabled) {
+            RK_MPI_AO_DisableReSmp(impl_->dev_id, impl_->chn_id);
+        }
+        if (chn_enabled) {
+            RK_MPI_AO_DisableChn(impl_->dev_id, impl_->chn_id);
+        }
+        if (ao_enabled) {
+            RK_MPI_AO_Disable(impl_->dev_id);
+        }
+        impl_->initialized = false;
+        impl_->logical_volume = 0;
+        maybe_sys_deinit();
+    };
 
     memset(&impl_->attr, 0, sizeof(AIO_ATTR_S));
 
@@ -718,10 +761,17 @@ bool AudioPlayer::init(const AudioConfig& config) {
     impl_->attr.u32ChnCnt = 2;
 
     RK_S32 ret = RK_MPI_AO_SetPubAttr(impl_->dev_id, &impl_->attr);
-    if (ret != RK_SUCCESS) return false;
+    if (ret != RK_SUCCESS) {
+        rollback_init();
+        return false;
+    }
 
     ret = RK_MPI_AO_Enable(impl_->dev_id);
-    if (ret != RK_SUCCESS) return false;
+    if (ret != RK_SUCCESS) {
+        rollback_init();
+        return false;
+    }
+    ao_enabled = true;
 
     AO_CHN_PARAM_S chnParam;
     memset(&chnParam, 0, sizeof(AO_CHN_PARAM_S));
@@ -734,13 +784,33 @@ bool AudioPlayer::init(const AudioConfig& config) {
         RK_MPI_AO_SetTrackMode(impl_->dev_id, AUDIO_TRACK_NORMAL);
 
     ret = RK_MPI_AO_EnableChn(impl_->dev_id, impl_->chn_id);
-    if (ret != RK_SUCCESS) return false;
+    if (ret != RK_SUCCESS) {
+        rollback_init();
+        return false;
+    }
+    chn_enabled = true;
 
     ret = RK_MPI_AO_EnableReSmp(impl_->dev_id, impl_->chn_id,
                                 (AUDIO_SAMPLE_RATE_E)config.sample_rate);
-    if (ret != RK_SUCCESS) return false;
+    if (ret != RK_SUCCESS) {
+        rollback_init();
+        return false;
+    }
+    resmp_enabled = true;
 
-    RK_MPI_AO_SetVolume(impl_->dev_id, 100);
+    if (!configure_ao_volume_curve(impl_->dev_id)) {
+        rollback_init();
+        return false;
+    }
+    if (!set_ao_mute(impl_->dev_id, false)) {
+        rollback_init();
+        return false;
+    }
+    if (RK_MPI_AO_SetVolume(impl_->dev_id, 100) != RK_SUCCESS) {
+        rollback_init();
+        return false;
+    }
+    impl_->logical_volume = 100;
 
     impl_->initialized = true;
     return true;
@@ -798,14 +868,24 @@ void AudioPlayer::resume() {
 
 bool AudioPlayer::set_volume(int volume) {
     if (!impl_->initialized) return false;
-    return RK_MPI_AO_SetVolume(impl_->dev_id, volume) == RK_SUCCESS;
+    if (volume < 0) volume = 0;
+    if (volume > 100) volume = 100;
+
+    if (volume == 0) {
+        if (!set_ao_mute(impl_->dev_id, true)) return false;
+        impl_->logical_volume = 0;
+        return true;
+    }
+
+    if (!set_ao_mute(impl_->dev_id, false)) return false;
+    if (RK_MPI_AO_SetVolume(impl_->dev_id, volume) != RK_SUCCESS) return false;
+    impl_->logical_volume = volume;
+    return true;
 }
 
 int AudioPlayer::get_volume() const {
     if (!impl_->initialized) return 0;
-    RK_S32 vol = 0;
-    RK_MPI_AO_GetVolume(impl_->dev_id, &vol);
-    return vol;
+    return impl_->logical_volume;
 }
 
 bool AudioPlayer::is_initialized() const {

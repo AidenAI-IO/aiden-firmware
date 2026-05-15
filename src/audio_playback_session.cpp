@@ -41,6 +41,15 @@ void AudioPlaybackSession::stop() {
     cv_.notify_all();
 }
 
+bool AudioPlaybackSession::set_volume(int volume) {
+    if (stopped_.load()) return false;
+    return player_.set_volume(volume);
+}
+
+int AudioPlaybackSession::get_volume() const {
+    return player_.get_volume();
+}
+
 AidenServiceStatus AudioPlaybackSession::push_chunk(const uint8_t* data, size_t len,
                                                     bool is_final) {
     if (stopped_.load()) return AidenServiceStatus::SESSION_NOT_FOUND;

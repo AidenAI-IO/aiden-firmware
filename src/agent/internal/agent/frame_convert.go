@@ -1,0 +1,177 @@
+package agent
+
+import (
+	"bytes"
+	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
+)
+
+func convertFrameToRGB(meta *frameMetadata, frame []byte) ([]byte, error) {
+	w := int(meta.Width)
+	h := int(meta.Height)
+	if w == 0 || h == 0 {
+		return nil, fmt.Errorf("invalid dimensions: %dx%d", w, h)
+	}
+
+	pixels := w * h
+	rgb := make([]byte, pixels*3)
+
+	switch meta.PixelFormat {
+	case "nv12", "nv16":
+		isNV12 := meta.PixelFormat == "nv12"
+		yPlaneSize := pixels
+		uvPlaneSize := pixels / 2
+		if !isNV12 {
+			uvPlaneSize = pixels
+		}
+		if len(frame) < yPlaneSize+uvPlaneSize {
+			return nil, fmt.Errorf("frame too small for %s: %d < %d", meta.PixelFormat, len(frame), yPlaneSize+uvPlaneSize)
+		}
+		yPlane := frame[:yPlaneSize]
+		uvPlane := frame[yPlaneSize:]
+		for y := 0; y < h; y++ {
+			uvRow := y
+			if isNV12 {
+				uvRow = y / 2
+			}
+			for x := 0; x < w; x++ {
+				yIdx := y*w + x
+				uvIdx := uvRow*w + (x & ^1)
+				yuvToRGB(yPlane[yIdx], uvPlane[uvIdx], uvPlane[uvIdx+1], rgb[yIdx*3:])
+			}
+		}
+
+	case "yuyv", "uyvy":
+		if w%2 != 0 || len(frame) < pixels*2 {
+			return nil, fmt.Errorf("frame too small for %s: %d < %d", meta.PixelFormat, len(frame), pixels*2)
+		}
+		src := 0
+		dst := 0
+		for src+4 <= len(frame) && dst+6 <= len(rgb) {
+			var y0, u, y1, v byte
+			if meta.PixelFormat == "uyvy" {
+				u, y0, v, y1 = frame[src], frame[src+1], frame[src+2], frame[src+3]
+			} else {
+				y0, u, y1, v = frame[src], frame[src+1], frame[src+2], frame[src+3]
+			}
+			src += 4
+			yuvToRGB(y0, u, v, rgb[dst:])
+			yuvToRGB(y1, u, v, rgb[dst+3:])
+			dst += 6
+		}
+
+	default:
+		return nil, fmt.Errorf("unsupported pixel format: %s", meta.PixelFormat)
+	}
+
+	return rgb, nil
+}
+
+func yuvToRGB(y, u, v byte, dst []byte) {
+	c := int(y) - 16
+	if c < 0 {
+		c = 0
+	}
+	d := int(u) - 128
+	e := int(v) - 128
+	c298 := c * 298
+	dst[0] = clampByte((c298 + 409*e + 128) >> 8)
+	dst[1] = clampByte((c298 - 100*d - 208*e + 128) >> 8)
+	dst[2] = clampByte((c298 + 516*d + 128) >> 8)
+}
+
+func clampByte(v int) byte {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return byte(v)
+}
+
+const defaultBlackThreshold = 15
+
+// cropBlackBars trims uniform near-black borders from an RGB image.
+// Rows/columns whose mean grayscale <= threshold are treated as border.
+func cropBlackBars(rgb []byte, w, h int, threshold uint8) ([]byte, int, int) {
+	if w <= 0 || h <= 0 || len(rgb) < w*h*3 {
+		return rgb, w, h
+	}
+
+	rowMeanGray := func(row int) float64 {
+		var sum int
+		off := row * w * 3
+		for x := 0; x < w; x++ {
+			r, g, b := int(rgb[off]), int(rgb[off+1]), int(rgb[off+2])
+			sum += (r*299 + g*587 + b*114) / 1000
+			off += 3
+		}
+		return float64(sum) / float64(w)
+	}
+
+	colMeanGray := func(col int) float64 {
+		var sum int
+		for y := 0; y < h; y++ {
+			off := (y*w + col) * 3
+			r, g, b := int(rgb[off]), int(rgb[off+1]), int(rgb[off+2])
+			sum += (r*299 + g*587 + b*114) / 1000
+		}
+		return float64(sum) / float64(h)
+	}
+
+	thresh := float64(threshold)
+
+	top := 0
+	for top < h && rowMeanGray(top) <= thresh {
+		top++
+	}
+
+	bottom := h - 1
+	for bottom >= top && rowMeanGray(bottom) <= thresh {
+		bottom--
+	}
+
+	left := 0
+	for left < w && colMeanGray(left) <= thresh {
+		left++
+	}
+
+	right := w - 1
+	for right >= left && colMeanGray(right) <= thresh {
+		right--
+	}
+
+	if right < left || bottom < top {
+		return rgb, w, h
+	}
+
+	newW := right - left + 1
+	newH := bottom - top + 1
+	cropped := make([]byte, newW*newH*3)
+	for y := 0; y < newH; y++ {
+		srcOff := ((top+y)*w + left) * 3
+		dstOff := y * newW * 3
+		copy(cropped[dstOff:dstOff+newW*3], rgb[srcOff:srcOff+newW*3])
+	}
+	return cropped, newW, newH
+}
+
+// encodeJPEG encodes RGB data to JPEG at the given quality (1-100).
+func encodeJPEG(rgb []byte, w, h int, quality int) ([]byte, error) {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			i := (y*w + x) * 3
+			img.SetRGBA(x, y, color.RGBA{R: rgb[i], G: rgb[i+1], B: rgb[i+2], A: 255})
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+		return nil, fmt.Errorf("jpeg encode: %w", err)
+	}
+	return buf.Bytes(), nil
+}

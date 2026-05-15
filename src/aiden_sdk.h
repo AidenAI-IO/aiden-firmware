@@ -138,12 +138,11 @@ public:
     // Resume playback
     void resume();
 
-    // Set playback volume. Range 0..100 despite RK_MPI_AO_SetVolume's
-    // parameter being named s32VolumeDb; the configured volume curve maps
-    // the step onto dB attenuation.
+    // Set playback volume in the logical range 0..100.
+    // 0 mutes playback; 1..100 map onto the configured AO volume curve.
     bool set_volume(int volume);
 
-    // Get current volume
+    // Get current logical volume in the range 0..100.
     int get_volume() const;
 
     // Check if player is initialized

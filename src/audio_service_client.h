@@ -41,6 +41,8 @@ public:
                                         bool is_final);
 
     AidenServiceStatus stop_playback(uint64_t session_id);
+    AidenServiceStatus set_playback_volume(uint32_t volume);
+    AidenServiceStatus get_playback_volume(uint32_t* out);
 
     // --- Health ---
 

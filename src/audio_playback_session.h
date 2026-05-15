@@ -36,6 +36,9 @@ public:
 
     bool is_stopped() const { return stopped_.load(); }
 
+    bool set_volume(int volume);
+    int get_volume() const;
+
     // Block until all queued audio has been played (or stop() is called).
     void wait_until_done();
 

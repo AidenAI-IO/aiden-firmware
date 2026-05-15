@@ -26,6 +26,8 @@ private:
     void handle_start_playback(const UdsMessage& req, int fd);
     void handle_write_play_chunk(const UdsMessage& req, int fd);
     void handle_stop_playback(const UdsMessage& req, int fd);
+    void handle_set_playback_volume(const UdsMessage& req, int fd);
+    void handle_get_playback_volume(int fd);
     void handle_health(int fd);
 
     std::unique_ptr<UdsServer> uds_server_;

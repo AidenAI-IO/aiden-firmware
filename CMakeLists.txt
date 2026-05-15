@@ -80,12 +80,14 @@ add_library(aiden STATIC
     src/audio_session_manager.cpp
     src/audio_service_server.cpp
     src/audio_service_client.cpp
+    src/frame_jpeg_encoder.cpp
 )
 
 target_include_directories(aiden
     PUBLIC
         ${CMAKE_SOURCE_DIR}/src
         ${ROCKIT_PATH}/mpi/sdk/include
+        ${OpenCV_INCLUDE_DIRS}
 )
 
 target_link_directories(aiden
@@ -106,6 +108,9 @@ target_link_libraries(aiden
         rve
         pthread
         m
+        opencv_core
+        opencv_imgproc
+        opencv_highgui
 )
 
 add_executable(hello src/hello.c)
@@ -189,3 +194,4 @@ add_executable(agent_main
 target_include_directories(agent_main PRIVATE ${CMAKE_BINARY_DIR}/generated)
 add_dependencies(agent_main agent_version_header)
 target_link_libraries(agent_main PRIVATE aiden cjson pthread)
+

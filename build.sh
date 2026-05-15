@@ -9,3 +9,4 @@ docker run \
   -w /home \
   luckfoxtech/luckfox_pico:1.0 \
   /bin/bash -c "./_build.sh"
+

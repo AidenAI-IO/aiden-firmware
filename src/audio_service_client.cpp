@@ -124,6 +124,30 @@ AidenServiceStatus AudioServiceClient::stop_playback(uint64_t session_id) {
     return audio_response_status(resp.header_json.c_str());
 }
 
+AidenServiceStatus AudioServiceClient::set_playback_volume(uint32_t volume) {
+    std::string extra = "\"volume\":" + std::to_string(volume);
+    std::string req   = audio_request_json("set_playback_volume", extra);
+
+    UdsMessage resp;
+    AidenServiceStatus transport = uds_request_once(socket_path_, req, {}, &resp);
+    if (transport != AidenServiceStatus::OK) return transport;
+    return audio_response_status(resp.header_json.c_str());
+}
+
+AidenServiceStatus AudioServiceClient::get_playback_volume(uint32_t* out) {
+    std::string req = audio_request_json("get_playback_volume");
+
+    UdsMessage resp;
+    AidenServiceStatus transport = uds_request_once(socket_path_, req, {}, &resp);
+    if (transport != AidenServiceStatus::OK) return transport;
+
+    AidenServiceStatus status = audio_response_status(resp.header_json.c_str());
+    if (status == AidenServiceStatus::OK && out) {
+        *out = audio_json_u32(resp.header_json.c_str(), "volume");
+    }
+    return status;
+}
+
 // -----------------------------------------------------------------------
 // Health
 // -----------------------------------------------------------------------
