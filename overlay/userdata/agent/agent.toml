@@ -3,10 +3,11 @@ instruction = "You are a helpful assistant. Use tools when they help accomplish 
 additional_prompt = ""
 max_iterations = 6
 
-# Input mode: "text" (HTTP server), "stt" (speech-to-text), or "audio" (direct audio)
-# - text: Run HTTP server with Web UI (default)
-# - stt: Audio → STT → LLM → TTS
-# - audio: Audio → LLM → TTS (not yet implemented)
+# Input mode:
+# - text: run HTTP server with Web UI
+# - stt: device audio -> STT -> LLM -> TTS
+# - audio: device audio -> LLM audio attachment -> TTS
+#   Use audio mode only with a provider/model path that supports audio input.
 input_mode = "text"
 
 # Trigger mode: "manual" (push-to-talk) or "wakeup" (GPIO trigger)
@@ -27,8 +28,7 @@ api_key = "OPENROUTER_API_KEY"
 temperature = 0.2
 max_tokens = 1000
 
-# Optional: Override model for text-only mode (when input_mode = "stt")
-# Useful if you want to use a different model for text vs audio
+# Optional future field parsed by config but not currently used by the runtime.
 # [model_text]
 # provider = "openrouter"
 # model = "anthropic/claude-3.5-sonnet"

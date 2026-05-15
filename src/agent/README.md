@@ -1,250 +1,316 @@
-# LangChainGo Agent Skeleton
+# Aiden Go Agent
 
-一个用 `github.com/tmc/langchaingo` 搭出来的简单但结构完整的 Go Agent 框架，支持 [Agent Skills](https://agentskills.io) 标准，覆盖：
+Go-based agent daemon and CLI built on `github.com/tmc/langchaingo` for the
+Aiden hardware demo.
 
-- 工具的注册与调用
-- Agent Skills 的动态加载与激活
-- 子 Agent 委派
-- Memory 管理
-- 模型的配置与切换
+This directory contains two user-facing binaries:
 
-## 目录
+- `cmd/daemon`: long-running daemon with either Web UI mode or device-side audio mode
+- `cmd/demo`: simple CLI runner for local testing
 
-- `internal/agent`
-  - `config.go`: JSON 配置结构与校验
-  - `models.go`: 模型工厂，支持 `openai`、`ollama`、`fake`
-  - `tools.go`: 工具注册表、内置工具、子 Agent 委派工具
-  - `skills.go`: Skills 管理器，支持按需激活
-  - `skill_loader.go`: Agent Skills 目录扫描与加载
-  - `memory.go`: 基于 `langchaingo/memory` 的 Memory 管理器
-  - `prompt.go`: ReAct Prompt 构造，注入 `history`
-  - `runtime.go`: 运行时编排，基于 `agents.NewOneShotAgent` + `agents.NewExecutor`
-- `cmd/demo`: 示例入口
-- `configs/agent.example.json`: 示例配置
-- `configs/skills/`: Agent Skills 目录示例
+## Current capabilities
 
-## 关键设计
+- OpenAI-compatible model calls via `openai` and `openrouter`
+- Local text-model support via `ollama`
+- Built-in tool calling with device-control tools
+- Skill discovery and runtime activation from `SKILL.md`
+- Conversation memory persisted under the config directory
+- Web UI with chat history, browser audio recording, and attachment support
+- Device-side speech pipeline with VAD, STT, and TTS
 
-### 1. Agent Skills 支持
+## Current tool set
 
-本框架完整支持 [Agent Skills](https://agentskills.io) 标准，实现了 **Progressive Disclosure** 机制：
+Built-in tools are registered in [internal/agent/tools.go](/Volumes/dev/aiden-hardware-demo/src/agent/internal/agent/tools.go:12):
 
-**Discovery（发现阶段）**：启动时扫描 `skills_dirs` 配置的目录，加载所有 `SKILL.md` 文件的 frontmatter（name + description），构建技能索引。
+- `activate_skill`
+- `keyboard_tap`
+- `keyboard_text`
+- `mouse_click`
+- `mouse_move`
+- `mouse_scroll`
+- `touch_gesture`
+- `screenshot`
+- `audio_volume`
 
-**Activation（激活阶段）**：运行时通过两种方式激活技能：
-- Agent 的 `default_skills` 在启动时自动激活
-- LLM 可以通过 `activate_skill` 工具按需激活其他技能
+## Config layout
 
-**Execution（执行阶段）**：激活后的技能指令会注入到 Prompt 中，影响 Agent 行为。
+The daemon expects a config directory, not a single config file.
 
-#### Skill 文件格式
+Typical layout:
 
-每个 skill 是一个包含 `SKILL.md` 文件的目录：
+```text
+your-config-dir/
+├── agent.toml
+├── skills/
+│   └── my-skill/
+│       └── SKILL.md
+├── log/
+└── memory/
+```
+
+- `agent.toml` is required
+- `skills/` is optional and is auto-discovered if present
+- `log/` and `memory/` are created/used by the runtime under `configDir`
+
+TOML is the supported format. JSON config is deprecated.
+
+See the baseline example at [config/agent.toml](/Volumes/dev/aiden-hardware-demo/src/agent/config/agent.toml:1).
+
+## Quick start
+
+Assume you are in `src/agent`:
+
+```bash
+go build ./cmd/daemon
+go build ./cmd/demo
+```
+
+Run the CLI demo:
+
+```bash
+go run ./cmd/demo -config ./config -input "What tools do you have?"
+```
+
+Run the daemon in Web UI mode:
+
+```bash
+go run ./cmd/daemon -config ./config -addr :8080
+```
+
+Then open `http://localhost:8080`.
+
+## Example `agent.toml`
+
+Minimal Web UI setup:
+
+```toml
+instruction = "You are a helpful assistant. Use tools when they help."
+max_iterations = 6
+input_mode = "text"
+
+[model]
+provider = "openrouter"
+model = "bytedance-seed/seed-2.0-lite"
+token_env = "OPENROUTER_API_KEY"
+temperature = 0.2
+max_tokens = 1000
+
+[audio]
+socket = "/run/audio_service/audio_service.sock"
+sample_rate = 32000
+channels = 1
+bit_width = 16
+
+[hid]
+keyboard_device = "/dev/hidg0"
+mouse_device = "/dev/hidg1"
+frame_socket = "/run/frame_service/frame_service.sock"
+```
+
+Minimal speech-to-text setup:
+
+```toml
+instruction = "You are a helpful assistant. Use tools when they help."
+input_mode = "stt"
+trigger_mode = "manual"
+energy_threshold = 500
+silence_ms = 1000
+min_speech_ms = 300
+
+[model]
+provider = "openrouter"
+model = "bytedance-seed/seed-2.0-lite"
+token_env = "OPENROUTER_API_KEY"
+
+[stt]
+provider = "openai-whisper"
+api_key = "sk-..."
+model = "whisper-1"
+
+[tts]
+provider = "minimax"
+api_key = "..."
+voice_id = "male-qn-qingse"
+emotion = "happy"
+speed = 1.0
+
+[audio]
+socket = "/run/audio_service/audio_service.sock"
+sample_rate = 16000
+channels = 1
+bit_width = 16
+
+[hid]
+keyboard_device = "/dev/hidg0"
+mouse_device = "/dev/hidg1"
+frame_socket = "/run/frame_service/frame_service.sock"
+```
+
+## Configuration reference
+
+Top-level fields from [internal/agent/config.go](/Volumes/dev/aiden-hardware-demo/src/agent/internal/agent/config.go:11):
+
+- `instruction`: base system instruction for the agent
+- `additional_prompt`: extra prompt text field in config; currently not wired into prompt construction
+- `max_iterations`: max tool-usage loop iterations, default `6`
+- `input_mode`: `text`, `stt`, or `audio`
+- `trigger_mode`: `manual` or `wakeup`; only used in `stt`/`audio`
+- `energy_threshold`, `silence_ms`, `min_speech_ms`: VAD tuning
+
+Model config:
+
+- `provider`: `openai`, `openrouter`, `ollama`, or `fake`
+- `model`: model name, required except for `fake`
+- `base_url`: optional custom endpoint
+- `api_key`: literal API key
+- `token_env`: environment variable name for model auth
+- `temperature`, `max_tokens`
+
+Notes:
+
+- `token_env` exists only on `[model]`
+- `[stt]` and `[tts]` currently use literal `api_key` fields
+- `model_text` exists in the config struct but is not currently used by the runtime
+
+## Input modes
+
+### `input_mode = "text"`
+
+Starts the HTTP server and embedded Web UI.
+
+Available behavior:
+
+- text chat
+- browser audio recording and upload
+- binary attachments such as image/audio
+- optional TTS playback of assistant replies through `audio_service`
+
+Web audio behavior in text mode:
+
+- if `[stt]` is configured, uploaded/recorded browser audio is transcribed first
+- otherwise audio is forwarded to the model as an audio attachment
+
+### `input_mode = "stt"`
+
+Starts the device-side audio loop:
+
+1. record PCM from `audio_service`
+2. detect utterance boundaries with VAD
+3. transcribe WAV via STT
+4. send text to the agent runtime
+5. speak the reply via TTS
+
+### `input_mode = "audio"`
+
+Starts the device-side audio loop, but forwards the utterance to the model as
+an audio attachment instead of transcribing it first.
+
+Use this only with a model/backend that actually supports audio input in the
+selected provider path. The OpenAI-compatible path in
+[openai_compatible_model.go](/Volumes/dev/aiden-hardware-demo/src/agent/internal/agent/openai_compatible_model.go:117)
+can serialize audio attachments as `input_audio`.
+
+## Trigger modes
+
+### `trigger_mode = "manual"`
+
+Used in device audio modes. Press Enter to start recording and Enter again to
+stop.
+
+### `trigger_mode = "wakeup"`
+
+Used in device audio modes. Waits for the GPIO wakeup path implemented in
+[cmd/daemon/main.go](/Volumes/dev/aiden-hardware-demo/src/agent/cmd/daemon/main.go:154)
+before recording.
+
+## Web UI and audio mode relationship
+
+One daemon instance currently runs exactly one of these:
+
+- Web UI mode via `input_mode = "text"`
+- device-side audio loop via `input_mode = "stt"` or `input_mode = "audio"`
+
+They do not run together in the same process today.
+
+This is an important current limitation of
+[cmd/daemon/main.go](/Volumes/dev/aiden-hardware-demo/src/agent/cmd/daemon/main.go:43).
+
+## Skills
+
+Skills are loaded from `configDir/skills/**/SKILL.md`.
+
+Example:
 
 ```markdown
 ---
-name: planner
-description: Task decomposition and delegation.
+name: ui-operator
+description: Prefer screenshot-driven UI inspection before clicking.
 metadata:
-  preferred_model: primary
-  allowed_tools: [calculator, policy, delegate_researcher]
-  allowed_children: [researcher]
+  allowed_tools: [screenshot, mouse_click, mouse_move, keyboard_text]
 ---
 
-Break the problem into small steps. Delegate focused research or drafting work to child agents when that reduces complexity.
-
-When you encounter a task that requires:
-- Gathering information from multiple sources
-- Performing focused analysis on a specific subtopic
-- Researching a narrow question
-
-Consider delegating to the researcher agent using the `delegate_researcher` tool.
-
-Always synthesize the results from child agents into a coherent final answer.
+Take a screenshot before interacting with an unfamiliar UI.
+Prefer describing what you see before clicking.
 ```
 
-**Frontmatter 字段**：
-- `name`: 技能名称（必需）
-- `description`: 简短描述，用于发现阶段（必需）
-- `metadata.preferred_model`: 偏好的模型别名
-- `metadata.allowed_tools`: 允许使用的工具列表
-- `metadata.allowed_children`: 允许委派的子 Agent 列表
+What is currently implemented:
 
-**Body**：完整的技能指令，激活后注入到 Prompt 中。
+- skill discovery by scanning `SKILL.md`
+- runtime activation via `activate_skill`
+- `allowed_tools` restriction enforcement
+- instruction injection into the system prompt
 
-### 2. 工具注册与调用
+What is only parsed, not actively enforced by the runtime today:
 
-工具通过 `ToolRegistry` 统一注册：
+- `preferred_model`
+- `allowed_children`
 
-```go
-registry := agent.NewDefaultToolRegistry()
-registry.MustRegister("my_tool", func(name string, cfg agent.ToolConfig) (tools.Tool, error) {
-    return &MyTool{name: name}, nil
-})
-```
+The sample skill files under [config/skills](/Volumes/dev/aiden-hardware-demo/src/agent/config/skills/planner/SKILL.md:1) are older placeholders and may reference tools that do not exist in the current Go runtime. Treat them as format examples, not guaranteed-valid production skills.
 
-内置工具：
-- `calculator`: 数学计算
-- `echo`: 回显输入，用于调试
-- `static`: 返回固定响应，用于策略或模拟
-- `activate_skill`: 运行时激活技能（自动注入）
+## Runtime behavior
 
-### 3. Skills 配置与管理
+The runtime:
 
-Skills 不再在 JSON 中配置，而是从文件系统加载：
+- keeps windowed memory for agent name `default`
+- persists memory under `configDir/memory`
+- writes logs under `configDir/log`
+- emits tool-call and tool-result events to the Web UI
+- records token usage when the backend returns usage metadata
 
-```json
-{
-  "skills_dirs": [
-    "/absolute/path/to/skills"
-  ]
-}
-```
+Relevant code:
 
-Agent 通过 `default_skills` 指定启动时激活的技能：
+- [internal/agent/runtime.go](/Volumes/dev/aiden-hardware-demo/src/agent/internal/agent/runtime.go:20)
+- [internal/agent/server.go](/Volumes/dev/aiden-hardware-demo/src/agent/internal/agent/server.go:16)
 
-```json
-{
-  "agents": {
-    "coordinator": {
-      "default_skills": ["planner"]
-    }
-  }
-}
-```
+## External dependencies
 
-Skill 支持三类职责：
-- 追加行为说明 `instructions`
-- 约束允许使用的 `allowed_tools`
-- 指定偏好模型 `preferred_model`
+Depending on which tools and modes you use, the agent expects these external services/devices:
 
-多个 Skill 会被合并，最终影响 Prompt、工具可见性和模型选择。
+- `audio_service` for recording, playback, and `audio_volume`
+- `frame_service` for `screenshot`
+- HID gadget devices such as `/dev/hidg0` and `/dev/hidg1`
 
-### 4. 子 Agent
+If these are unavailable, the corresponding tools or audio paths will fail at runtime.
 
-父 Agent 的 `children` 会自动暴露为工具，例如子 Agent `researcher` 会对应工具 `delegate_researcher`。
+## CLI usage
 
-父 Agent 调用这个工具时，实际上会递归调用：
-
-```go
-runtime.Run(ctx, agent.RunRequest{
-    AgentName: "researcher",
-    Input:     subTask,
-})
-```
-
-这样子 Agent 有自己独立的：
-- Prompt
-- Skill
-- Model
-- Memory
-
-### 5. Memory 管理
-
-`MemoryManager` 为每个 agent 保留独立 Memory 句柄，当前支持：
-
-- `buffer`: 完整对话缓冲
-- `window`: 最近 N 轮窗口
-
-Memory 不只是保存，还会注入 Prompt 的 `history` 变量，让模型真正看到上下文。
-
-### 6. 模型配置与切换
-
-模型由别名统一管理，例如：
-
-```json
-"models": {
-  "primary": { "provider": "openai", "model": "gpt-4o-mini" },
-  "local": { "provider": "ollama", "model": "qwen3:4b" }
-}
-```
-
-切换方式有三层优先级：
-
-1. `RunRequest.ModelAlias`
-2. `Skill.preferred_model`
-3. `Agent.default_model`
-
-## 运行
-
-### 1. 配置环境变量
-
-如果使用 OpenAI：
+`cmd/demo`:
 
 ```bash
-export OPENAI_API_KEY=your-key
+go run ./cmd/demo -config ./config -input "Hello"
+go run ./cmd/demo -config ./config -skills my-skill,another-skill -input "Inspect the UI"
+go run ./cmd/demo -config ./config -clear-memory -show-memory -input "Start fresh"
 ```
 
-如果使用 Ollama，请先启动本地服务并准备模型。
-
-### 2. 创建 Skills 目录
+`cmd/daemon`:
 
 ```bash
-mkdir -p configs/skills/my-skill
-cat > configs/skills/my-skill/SKILL.md <<'EOF'
----
-name: my-skill
-description: My custom skill
-metadata:
-  allowed_tools: [calculator]
----
-
-Custom instructions for this skill.
-EOF
+go run ./cmd/daemon -config ./config -addr :8080
 ```
 
-### 3. 配置 Agent
+## Known limitations
 
-编辑 `configs/agent.example.json`，设置 `skills_dirs` 为绝对路径：
-
-```json
-{
-  "skills_dirs": [
-    "/absolute/path/to/configs/skills"
-  ]
-}
-```
-
-### 4. 运行 Demo
-
-```bash
-go run ./cmd/demo -config configs/agent.example.json -input "帮我规划一个包含计算和研究委派的回答"
-```
-
-查看 Memory：
-
-```bash
-go run ./cmd/demo -config configs/agent.example.json -show-memory -input "继续上一个话题"
-```
-
-覆盖模型：
-
-```bash
-go run ./cmd/demo -config configs/agent.example.json -model local -input "用本地模型回答这个问题"
-```
-
-## Agent Skills 工作流程
-
-1. **启动时**：扫描 `skills_dirs`，加载所有 `SKILL.md` 的 name + description
-2. **运行时**：
-   - 自动激活 `default_skills` 中的技能
-   - LLM 可以通过 `activate_skill` 工具激活其他技能
-   - 激活的技能指令注入到 Prompt 中
-3. **工具解析**：
-   - 如果技能定义了 `allowed_tools`，只有这些工具可用
-   - 否则，所有配置的工具都可用
-   - `activate_skill` 工具始终可用（如果有技能可加载）
-
-## 说明
-
-这个实现选择 `agents.NewOneShotAgent` 而不是只绑定 OpenAI Functions Agent，原因是这样可以同时兼容：
-
-- OpenAI
-- OpenAI-compatible endpoint
-- Ollama 这类不一定支持函数调用协议的模型
-
-如果你后续只跑支持 function-calling 的模型，可以把 `runtime.go` 里的 `OneShotAgent` 替换为 `OpenAIFunctionsAgent`，工具注册层和 Skill/Memory/子 Agent 框架层都可以保持不变。
-
-## Agent Skills 生态
-
-本框架遵循 [Agent Skills](https://agentskills.io) 开放标准，技能可以在不同的 Agent 系统间复用。访问 [agentskills.io](https://agentskills.io) 了解更多信息和社区技能库。
+- Web UI mode and device-side audio mode are mutually exclusive per daemon instance
+- Tencent ASR is declared but not implemented yet
+- `preferred_model`, `allowed_children`, and `model_text` are not wired into execution yet
+- Some sample skills in `config/skills/` reference legacy tools and should be updated before real use
