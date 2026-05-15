@@ -83,8 +83,9 @@ func (m *MemoryManager) Get(agentName string, cfg MemoryConfig) (*MemoryHandle, 
 
 func (m *MemoryManager) Snapshot(ctx context.Context, agentName string) ([]MessageRecord, error) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	handle, ok := m.handles[agentName]
-	m.mu.Unlock()
 	if !ok {
 		return nil, nil
 	}
@@ -107,12 +108,16 @@ func (m *MemoryManager) Snapshot(ctx context.Context, agentName string) ([]Messa
 func (m *MemoryManager) Clear(ctx context.Context, agentName string) error {
 	m.mu.Lock()
 	handle, ok := m.handles[agentName]
+	if ok {
+		if err := handle.Memory.Clear(ctx); err != nil {
+			m.mu.Unlock()
+			return err
+		}
+	}
 	m.mu.Unlock()
+
 	if !ok {
 		return m.removePersisted(agentName)
-	}
-	if err := handle.Memory.Clear(ctx); err != nil {
-		return err
 	}
 	return m.removePersisted(agentName)
 }
