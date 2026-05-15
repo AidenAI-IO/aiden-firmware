@@ -20,7 +20,7 @@ This directory contains two user-facing binaries:
 
 ## Current tool set
 
-Built-in tools are registered in [internal/agent/tools.go](/Volumes/dev/aiden-hardware-demo/src/agent/internal/agent/tools.go:12):
+Built-in tools are registered in [internal/agent/tools.go](./internal/agent/tools.go#L12):
 
 - `activate_skill`
 - `keyboard_tap`
@@ -54,7 +54,7 @@ your-config-dir/
 
 TOML is the supported format. JSON config is deprecated.
 
-See the baseline example at [config/agent.toml](/Volumes/dev/aiden-hardware-demo/src/agent/config/agent.toml:1).
+See the baseline example at [config/agent.toml](./config/agent.toml#L1).
 
 ## Quick start
 
@@ -148,7 +148,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 ## Configuration reference
 
-Top-level fields from [internal/agent/config.go](/Volumes/dev/aiden-hardware-demo/src/agent/internal/agent/config.go:11):
+Top-level fields from [internal/agent/config.go](./internal/agent/config.go#L11):
 
 - `instruction`: base system instruction for the agent
 - `additional_prompt`: extra prompt text field in config; currently not wired into prompt construction
@@ -207,7 +207,7 @@ an audio attachment instead of transcribing it first.
 
 Use this only with a model/backend that actually supports audio input in the
 selected provider path. The OpenAI-compatible path in
-[openai_compatible_model.go](/Volumes/dev/aiden-hardware-demo/src/agent/internal/agent/openai_compatible_model.go:117)
+[openai_compatible_model.go](./internal/agent/openai_compatible_model.go#L117)
 can serialize audio attachments as `input_audio`.
 
 ## Trigger modes
@@ -220,7 +220,7 @@ stop.
 ### `trigger_mode = "wakeup"`
 
 Used in device audio modes. Waits for the GPIO wakeup path implemented in
-[cmd/daemon/main.go](/Volumes/dev/aiden-hardware-demo/src/agent/cmd/daemon/main.go:154)
+[cmd/daemon/main.go](./cmd/daemon/main.go#L154)
 before recording.
 
 ## Web UI and audio mode relationship
@@ -233,7 +233,7 @@ One daemon instance currently runs exactly one of these:
 They do not run together in the same process today.
 
 This is an important current limitation of
-[cmd/daemon/main.go](/Volumes/dev/aiden-hardware-demo/src/agent/cmd/daemon/main.go:43).
+[cmd/daemon/main.go](./cmd/daemon/main.go#L43).
 
 ## Skills
 
@@ -265,7 +265,7 @@ What is only parsed, not actively enforced by the runtime today:
 - `preferred_model`
 - `allowed_children`
 
-The sample skill files under [config/skills](/Volumes/dev/aiden-hardware-demo/src/agent/config/skills/planner/SKILL.md:1) are older placeholders and may reference tools that do not exist in the current Go runtime. Treat them as format examples, not guaranteed-valid production skills.
+The sample skill files under [config/skills](./config/skills/planner/SKILL.md#L1) are older placeholders and may reference tools that do not exist in the current Go runtime. Treat them as format examples, not guaranteed-valid production skills.
 
 ## Runtime behavior
 
@@ -279,8 +279,8 @@ The runtime:
 
 Relevant code:
 
-- [internal/agent/runtime.go](/Volumes/dev/aiden-hardware-demo/src/agent/internal/agent/runtime.go:20)
-- [internal/agent/server.go](/Volumes/dev/aiden-hardware-demo/src/agent/internal/agent/server.go:16)
+- [internal/agent/runtime.go](./internal/agent/runtime.go#L20)
+- [internal/agent/server.go](./internal/agent/server.go#L16)
 
 ## External dependencies
 
