@@ -14,9 +14,9 @@ func shellSetProcessGroup(cmd *exec.Cmd) {}
 
 func shellSetProcessGroupPty(cmd *gopty.Cmd) {}
 
-func shellKillProcessGroup(process *os.Process) {
+func shellKillProcessGroup(process *os.Process) error {
 	if process == nil {
-		return
+		return nil
 	}
-	_ = exec.Command("taskkill", "/T", "/F", "/PID", fmt.Sprintf("%d", process.Pid)).Run()
+	return exec.Command("taskkill", "/T", "/F", "/PID", fmt.Sprintf("%d", process.Pid)).Run()
 }

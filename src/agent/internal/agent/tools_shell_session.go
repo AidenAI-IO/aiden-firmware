@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"runtime"
@@ -26,7 +27,7 @@ type shellSession struct {
 	workdir      string
 	usePTY       bool
 	cmd          *exec.Cmd
-	ptyCmd      *gopty.Cmd
+	ptyCmd       *gopty.Cmd
 	stdin        io.WriteCloser
 	pty          gopty.Pty
 	output       *shellRingBuffer
@@ -195,13 +196,17 @@ func (s *shellSession) stop() {
 		return
 	}
 	if err := process.Signal(os.Interrupt); err != nil {
-		shellKillProcessGroup(process)
+		if killErr := shellKillProcessGroup(process); killErr != nil {
+			log.Printf("shell: kill after failed interrupt: %v", killErr)
+		}
 		return
 	}
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		shellKillProcessGroup(process)
+		if killErr := shellKillProcessGroup(process); killErr != nil {
+			log.Printf("shell: kill after interrupt timeout: %v", killErr)
+		}
 	}
 }
 

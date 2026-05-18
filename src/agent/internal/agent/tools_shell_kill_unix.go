@@ -24,9 +24,9 @@ func shellSetProcessGroupPty(cmd *gopty.Cmd) {
 	cmd.SysProcAttr.Setpgid = true
 }
 
-func shellKillProcessGroup(process *os.Process) {
+func shellKillProcessGroup(process *os.Process) error {
 	if process == nil {
-		return
+		return nil
 	}
-	_ = syscall.Kill(-process.Pid, syscall.SIGKILL)
+	return syscall.Kill(-process.Pid, syscall.SIGKILL)
 }

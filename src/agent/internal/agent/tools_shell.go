@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
 	"strings"
 	"time"
@@ -445,7 +446,9 @@ func shellRunForegroundCmd(ctx context.Context, command string, workdir string) 
 		return result, nil
 
 	case <-ctx.Done():
-		shellKillProcessGroup(cmd.Process)
+		if killErr := shellKillProcessGroup(cmd.Process); killErr != nil {
+			log.Printf("shell: kill process group failed: %v", killErr)
+		}
 		<-waitDone
 		return "", ctx.Err()
 	}
@@ -501,7 +504,9 @@ func shellRunForegroundPTY(ctx context.Context, command string, workdir string) 
 		return text, nil
 
 	case <-ctx.Done():
-		shellKillProcessGroup(ptyCmd.Process)
+		if killErr := shellKillProcessGroup(ptyCmd.Process); killErr != nil {
+			log.Printf("shell: kill pty process group failed: %v", killErr)
+		}
 		_ = ptmx.Close()
 		<-waitDone
 		<-copyDone
