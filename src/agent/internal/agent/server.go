@@ -611,18 +611,14 @@ const webUI = `<!DOCTYPE html>
         :root {
             color-scheme: light;
             --bg: #f1ede2;
-            --bg-grid: rgba(32, 36, 31, 0.045);
             --panel: rgba(255, 251, 245, 0.92);
             --panel-strong: rgba(255, 254, 250, 0.97);
-            --panel-muted: rgba(238, 231, 219, 0.8);
             --line: rgba(52, 56, 49, 0.14);
-            --line-strong: rgba(52, 56, 49, 0.24);
             --text: #1e241d;
             --muted: #697063;
             --muted-strong: #43493d;
             --accent: #1f7a63;
             --accent-strong: #155646;
-            --accent-warm: #b76b2f;
             --surface-soft: #efe7da;
             --surface-code: #f6f0e6;
             --surface-contrast: #20241f;
@@ -638,7 +634,6 @@ const webUI = `<!DOCTYPE html>
             --radius-xl: 26px;
             --radius-lg: 20px;
             --radius-md: 14px;
-            --rail-width: 220px;
             --dock-width: 380px;
         }
 
@@ -680,12 +675,11 @@ const webUI = `<!DOCTYPE html>
         .app-shell {
             height: 100vh;
             display: grid;
-            grid-template-columns: var(--rail-width) minmax(0, 1fr) var(--dock-width);
+            grid-template-columns: minmax(0, 1fr) var(--dock-width);
             gap: 12px;
             padding: 12px;
         }
 
-        .sidebar,
         .inspector {
             display: flex;
             flex-direction: column;
@@ -700,53 +694,6 @@ const webUI = `<!DOCTYPE html>
             box-shadow: var(--shadow-soft);
         }
 
-        .brand {
-            display: flex;
-            align-items: flex-start;
-            gap: 10px;
-            padding-bottom: 6px;
-            border-bottom: 1px solid rgba(52, 56, 49, 0.08);
-        }
-
-        .brand-mark {
-            width: 42px;
-            height: 42px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 13px;
-            background: linear-gradient(145deg, #1d241d 0%, #355443 55%, #b76b2f 100%);
-            color: #fff9f2;
-            font-size: 0.95rem;
-            font-weight: 700;
-            letter-spacing: 0.08em;
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
-        }
-
-        .brand-copy h1 {
-            font-size: 1.02rem;
-            font-weight: 700;
-            letter-spacing: -0.02em;
-        }
-
-        .brand-copy p,
-        .sidebar-note,
-        .sidebar-kicker,
-        .composer-hint,
-        .message-time,
-        .empty-state p,
-        .topbar p {
-            color: var(--muted);
-        }
-
-        .brand-copy p,
-        .sidebar-note,
-        .topbar p,
-        .empty-state p {
-            line-height: 1.45;
-        }
-
-        .sidebar-kicker,
         .message-role,
         .tool-section-label,
         .tool-meta-key {
@@ -756,27 +703,8 @@ const webUI = `<!DOCTYPE html>
             text-transform: uppercase;
         }
 
-        .sidebar-action {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 100%;
-            padding: 0.82rem 0.95rem;
-            border: 1px solid var(--line);
-            border-radius: 16px;
-            background: linear-gradient(180deg, #20241f 0%, #31382f 100%);
-            color: #f5efe6;
-            font-weight: 600;
-            cursor: pointer;
-            transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease, background 120ms ease;
-        }
-
-        .sidebar-action:hover,
-        .sidebar-action:focus-visible,
-        .send-btn:hover,
-        .send-btn:focus-visible {
-            transform: translateY(-1px);
-            box-shadow: 0 12px 20px rgba(43, 47, 40, 0.12);
+        .hidden {
+            display: none !important;
         }
 
         .sidebar-card {
@@ -787,44 +715,30 @@ const webUI = `<!DOCTYPE html>
             box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32);
         }
 
+        .sidebar-note,
+        .composer-hint,
+        .message-time,
+        .empty-state p {
+            color: var(--muted);
+        }
+
+        .sidebar-note {
+            line-height: 1.45;
+            font-size: 0.82rem;
+        }
+
+        .sidebar-kicker {
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+        }
+
         .sidebar-card strong {
             display: block;
             margin: 0.22rem 0 0.45rem;
             font-size: 0.95rem;
             letter-spacing: -0.01em;
-        }
-
-        .hidden {
-            display: none !important;
-        }
-
-        .rail-stack {
-            display: grid;
-            gap: 12px;
-        }
-
-        .rail-stats {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 8px;
-        }
-
-        .rail-stat {
-            padding: 10px 10px 11px;
-            border-radius: 14px;
-            background: var(--surface-soft);
-            border: 1px solid rgba(52, 56, 49, 0.06);
-        }
-
-        .rail-stat-value {
-            margin-top: 0.25rem;
-            font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-            font-size: 0.96rem;
-            font-weight: 700;
-        }
-
-        .rail-footnote {
-            margin-top: auto;
         }
 
         .tool-lab,
@@ -921,66 +835,47 @@ const webUI = `<!DOCTYPE html>
         .topbar {
             display: flex;
             justify-content: space-between;
-            gap: 18px;
-            align-items: flex-start;
-            padding: 18px 20px 14px;
+            gap: 14px;
+            align-items: center;
+            padding: 12px 20px;
             border-bottom: 1px solid var(--line);
             background:
                 linear-gradient(120deg, rgba(255, 255, 255, 0.84), rgba(255, 248, 239, 0.76)),
                 linear-gradient(90deg, rgba(31, 122, 99, 0.06), rgba(183, 107, 47, 0.08));
         }
 
-        .topbar-main {
-            min-width: 0;
-        }
-
-        .topbar-main .sidebar-kicker {
-            color: var(--accent-strong);
-        }
-
-        .topbar h2 {
-            margin-top: 0.28rem;
-            font-size: clamp(1.35rem, 1.7vw, 1.9rem);
+        .topbar h1 {
+            font-size: 1.15rem;
             font-weight: 700;
-            letter-spacing: -0.035em;
-            max-width: 780px;
+            letter-spacing: -0.02em;
         }
 
-        .topbar p {
-            max-width: 920px;
-            margin-top: 0.35rem;
-            font-size: 0.92rem;
-        }
-
-        .topbar-metrics {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(86px, 1fr));
+        .topbar-actions {
+            display: flex;
+            align-items: center;
             gap: 8px;
-            min-width: 300px;
         }
 
-        .topbar-metric {
-            padding: 10px 12px;
-            border-radius: 14px;
-            background: rgba(255, 255, 255, 0.62);
-            border: 1px solid rgba(52, 56, 49, 0.08);
-            text-align: left;
+        .new-chat-btn {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.55rem 0.9rem;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: linear-gradient(180deg, #20241f 0%, #31382f 100%);
+            color: #f5efe6;
+            font-weight: 600;
+            font-size: 0.82rem;
+            cursor: pointer;
+            transition: transform 120ms ease, box-shadow 120ms ease;
         }
 
-        .topbar-metric-label {
-            font-size: 0.68rem;
-            font-weight: 700;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-            color: var(--muted);
-        }
-
-        .topbar-metric-value {
-            margin-top: 0.3rem;
-            font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-            font-size: 0.88rem;
-            font-weight: 700;
-            color: var(--text);
+        .new-chat-btn:hover,
+        .new-chat-btn:focus-visible,
+        .send-btn:hover,
+        .send-btn:focus-visible {
+            transform: translateY(-1px);
+            box-shadow: 0 12px 20px rgba(43, 47, 40, 0.12);
         }
 
         .conversation {
@@ -1002,23 +897,22 @@ const webUI = `<!DOCTYPE html>
 
         .empty-state {
             margin: auto;
-            width: min(100%, 920px);
-            padding: 28px 30px;
-            border-radius: 24px;
-            background: linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(246, 239, 228, 0.9));
-            border: 1px solid rgba(255, 255, 255, 0.8);
-            box-shadow: var(--shadow-soft);
-            text-align: left;
+            width: min(100%, 640px);
+            padding: 32px 30px;
+            text-align: center;
         }
 
         .empty-state h3 {
-            font-size: clamp(1.55rem, 3vw, 2.1rem);
-            letter-spacing: -0.04em;
+            font-size: 1.4rem;
+            letter-spacing: -0.03em;
+            color: var(--muted-strong);
         }
 
         .empty-state p {
-            margin-top: 0.55rem;
-            max-width: 640px;
+            margin-top: 0.4rem;
+            color: var(--muted);
+            font-size: 0.92rem;
+            line-height: 1.45;
         }
 
         .empty-state.hidden {
@@ -1489,44 +1383,19 @@ const webUI = `<!DOCTYPE html>
             to { transform: rotate(360deg); }
         }
 
-        @media (max-width: 1380px) {
-            .app-shell {
-                grid-template-columns: 200px minmax(0, 1fr) 340px;
-            }
-
-            .topbar {
-                flex-direction: column;
-            }
-
-            .topbar-metrics {
-                width: 100%;
-                min-width: 0;
-            }
-        }
-
-        @media (max-width: 1180px) {
+        @media (max-width: 1100px) {
             .app-shell {
                 grid-template-columns: 1fr;
                 height: auto;
                 min-height: 100vh;
             }
 
-            .sidebar,
-            .inspector {
-                max-height: none;
-            }
-
-            .sidebar {
-                order: 1;
-            }
-
             .main-panel {
-                order: 2;
                 min-height: 72vh;
             }
 
             .inspector {
-                order: 3;
+                max-height: none;
             }
 
             .conversation {
@@ -1540,17 +1409,12 @@ const webUI = `<!DOCTYPE html>
                 gap: 8px;
             }
 
-            .sidebar,
             .inspector {
                 padding: 10px;
             }
 
             .topbar {
                 padding: 14px 14px 12px;
-            }
-
-            .topbar-metrics {
-                grid-template-columns: repeat(3, minmax(0, 1fr));
             }
 
             .composer-shell,
@@ -1594,84 +1458,19 @@ const webUI = `<!DOCTYPE html>
 </head>
 <body>
     <div class="app-shell">
-        <aside class="sidebar">
-            <div class="brand">
-                <div class="brand-mark">AI</div>
-                <div class="brand-copy">
-                    <h1>Aiden Control Deck</h1>
-                    <p>Dense workspace for chat, tool execution, and device operation.</p>
-                </div>
-            </div>
-
-            <button type="button" class="sidebar-action" onclick="clearHistory()">New chat</button>
-
-            <div class="rail-stack">
-                <div class="sidebar-card">
-                    <div class="sidebar-kicker">Layout</div>
-                    <strong>Wide console, live dock</strong>
-                    <div class="sidebar-note">The center column now uses the screen like an operator console instead of a narrow chat transcript.</div>
-                </div>
-
-                <div class="rail-stats">
-                    <div class="rail-stat">
-                        <div class="sidebar-kicker">Mode</div>
-                        <div class="rail-stat-value">Chat + Tools</div>
-                    </div>
-                    <div class="rail-stat">
-                        <div class="sidebar-kicker">Transport</div>
-                        <div class="rail-stat-value">HTTP</div>
-                    </div>
-                    <div class="rail-stat">
-                        <div class="sidebar-kicker">Input</div>
-                        <div class="rail-stat-value">Text / Audio</div>
-                    </div>
-                    <div class="rail-stat">
-                        <div class="sidebar-kicker">Trace</div>
-                        <div class="rail-stat-value">Inline</div>
-                    </div>
-                </div>
-
-                <div class="sidebar-card">
-                    <div class="sidebar-kicker">Flow</div>
-                    <strong>Fast iteration path</strong>
-                    <div class="sidebar-note">Ask in the center, inspect results on the right, and reset the thread from the left rail without losing visibility.</div>
-                </div>
-
-                <div class="sidebar-card rail-footnote">
-                    <div class="sidebar-kicker">Keys</div>
-                    <div class="sidebar-note">Enter sends. Shift+Enter adds a line break. Tool calls and results stay in the same thread so execution never disappears behind the answer.</div>
-                </div>
-            </div>
-        </aside>
-
         <main class="main-panel">
             <header class="topbar">
-                <div class="topbar-main">
-                    <div class="sidebar-kicker">Agent Console</div>
-                    <h2>Run the agent in a full-width control surface instead of a narrow message column.</h2>
-                    <p>Conversation stays central, the input bar stays dense, and the right dock keeps tool testing plus skill export visible without stealing the main thread.</p>
-                </div>
-                <div class="topbar-metrics">
-                    <div class="topbar-metric">
-                        <div class="topbar-metric-label">Workspace</div>
-                        <div class="topbar-metric-value">3-Column</div>
-                    </div>
-                    <div class="topbar-metric">
-                        <div class="topbar-metric-label">Trace</div>
-                        <div class="topbar-metric-value">Inline</div>
-                    </div>
-                    <div class="topbar-metric">
-                        <div class="topbar-metric-label">Tools</div>
-                        <div class="topbar-metric-value">HTTP</div>
-                    </div>
+                <h1>Aiden Agent</h1>
+                <div class="topbar-actions">
+                    <button type="button" class="new-chat-btn" onclick="clearHistory()">New chat</button>
                 </div>
             </header>
 
             <section class="conversation" id="conversation">
                 <div class="conversation-inner">
                     <div class="empty-state" id="emptyState">
-                        <h3>How can Aiden help?</h3>
-                        <p>Start a conversation to run the agent, inspect tool activity, and iterate in a single thread.</p>
+                        <h3>Aiden Agent</h3>
+                        <p>Ask a question or run a task.</p>
                     </div>
                     <div class="message-list" id="messages"></div>
                 </div>
@@ -1709,13 +1508,12 @@ const webUI = `<!DOCTYPE html>
         <aside class="inspector">
             <div class="sidebar-card tool-lab">
                 <div class="sidebar-kicker">Tool Lab</div>
-                <strong>Manual HTTP tool test</strong>
-                <div class="sidebar-note">Invoke any exposed tool directly from the browser. Results stay outside chat history but beside the conversation.</div>
+                <strong>Manual tool test</strong>
                 <label class="tool-lab-label" for="toolSelect">Tool</label>
                 <select id="toolSelect" class="tool-lab-select">
                     <option value="">Loading tools...</option>
                 </select>
-                <div class="sidebar-note" id="toolDescription">Tool metadata will appear here.</div>
+                <div class="sidebar-note" id="toolDescription"></div>
                 <textarea
                     id="toolInput"
                     class="tool-lab-input"
@@ -1727,7 +1525,7 @@ const webUI = `<!DOCTYPE html>
                     <button type="button" class="composer-btn tool-secondary-btn" id="toolExampleBtn" onclick="loadSelectedToolExample()">Use example</button>
                     <button type="button" class="send-btn tool-run-btn" id="toolInvokeBtn" onclick="invokeSelectedTool()">Run tool</button>
                 </div>
-                <div class="tool-lab-status" id="toolStatus">The request body is forwarded as raw tool input, so JSON and plain text both work.</div>
+                <div class="tool-lab-status" id="toolStatus"></div>
                 <div class="tool-lab-result hidden" id="toolResultPanel">
                     <div class="tool-lab-result-meta" id="toolResultMeta"></div>
                     <div class="tool-lab-preview hidden" id="toolResultPreviewWrap">
@@ -1739,8 +1537,7 @@ const webUI = `<!DOCTYPE html>
 
             <div class="sidebar-card skill-export">
                 <div class="sidebar-kicker">Skill Export</div>
-                <strong>Generated HTTP skills</strong>
-                <div class="sidebar-note">Copy a generated SKILL.md block for Codex or other agents that should operate Aiden through HTTP.</div>
+                <strong>HTTP skill bundle</strong>
                 <label class="tool-lab-label" for="skillSelect">Skill bundle</label>
                 <select id="skillSelect" class="tool-lab-select">
                     <option value="">Loading skills...</option>
@@ -1756,7 +1553,7 @@ const webUI = `<!DOCTYPE html>
                 <div class="tool-lab-row">
                     <button type="button" class="composer-btn tool-secondary-btn" id="copySkillBtn" onclick="copySelectedSkill()">Copy skill</button>
                 </div>
-                <div class="tool-lab-status" id="skillStatus">The exported skill points mature agents at the same HTTP tool surface used by this WebUI.</div>
+                <div class="tool-lab-status" id="skillStatus"></div>
             </div>
         </aside>
     </div>
@@ -1839,7 +1636,7 @@ const webUI = `<!DOCTYPE html>
                 toolExampleBtnEl.disabled = true;
                 toolInvokeBtnEl.disabled = true;
                 toolDescriptionEl.textContent = 'Tool metadata failed to load: ' + err.message;
-                toolStatusEl.textContent = 'Check the daemon logs and refresh after the tool API is available.';
+                toolStatusEl.textContent = 'Failed to load tools.';
                 toolStatusEl.classList.add('error');
             }
         }
@@ -1864,7 +1661,7 @@ const webUI = `<!DOCTYPE html>
             toolCatalog.forEach(function(tool) {
                 const option = document.createElement('option');
                 option.value = tool.name;
-                option.textContent = tool.name + ' · ' + tool.category;
+                option.textContent = tool.name;
                 toolSelectEl.appendChild(option);
             });
 
@@ -1889,13 +1686,12 @@ const webUI = `<!DOCTYPE html>
                 toolSelectEl.value = tool.name;
             }
 
-            toolDescriptionEl.textContent = tool.description + ' Endpoint: ' + tool.http.method + ' ' + tool.http.path;
+            toolDescriptionEl.textContent = tool.description || '';
             toolInputEl.placeholder = tool.example_input || '';
             if (toolInputEl.dataset.toolName !== tool.name) {
                 toolInputEl.value = tool.example_input || '';
                 toolInputEl.dataset.toolName = tool.name;
             }
-            toolStatusEl.textContent = 'Input mode: ' + tool.input_mode + '. Raw payload is sent directly to the tool.';
             toolStatusEl.classList.remove('error');
             clearToolResultPreview();
         }
@@ -1904,7 +1700,7 @@ const webUI = `<!DOCTYPE html>
             const tool = getSelectedTool();
             if (!tool) return;
             toolInputEl.value = tool.example_input || '';
-            toolStatusEl.textContent = 'Example payload loaded for ' + tool.name + '.';
+            toolStatusEl.textContent = 'Example loaded.';
             toolStatusEl.classList.remove('error');
         }
 
@@ -1914,7 +1710,7 @@ const webUI = `<!DOCTYPE html>
 
             toolInvokeBtnEl.disabled = true;
             toolExampleBtnEl.disabled = true;
-            toolStatusEl.textContent = 'Running ' + tool.name + '...';
+            toolStatusEl.textContent = 'Running...';
             toolStatusEl.classList.remove('error');
 
             try {
@@ -1961,10 +1757,10 @@ const webUI = `<!DOCTYPE html>
             }
 
             if (result.is_error) {
-                toolStatusEl.textContent = result.error || 'Tool returned an error state.';
+                toolStatusEl.textContent = result.error || 'Error';
                 toolStatusEl.classList.add('error');
             } else {
-                toolStatusEl.textContent = 'Tool finished successfully at ' + formatTime(result.called_at) + '.';
+                toolStatusEl.textContent = 'Done at ' + formatTime(result.called_at) + '.';
                 toolStatusEl.classList.remove('error');
             }
         }
@@ -2036,7 +1832,7 @@ const webUI = `<!DOCTYPE html>
                 skillSelectEl.value = skill.name;
             }
             skillMarkdownEl.value = skill.markdown || '';
-            skillStatusEl.textContent = skill.description + ' Tools: ' + (skill.tool_names || []).join(', ');
+            skillStatusEl.textContent = skill.description || '';
             skillStatusEl.classList.remove('error');
         }
 
@@ -2052,11 +1848,11 @@ const webUI = `<!DOCTYPE html>
                     skillMarkdownEl.select();
                     document.execCommand('copy');
                 }
-                skillStatusEl.textContent = 'Copied ' + skill.name + ' to clipboard.';
+                skillStatusEl.textContent = 'Copied.';
                 skillStatusEl.classList.remove('error');
             } catch (err) {
                 console.error('Failed to copy skill:', err);
-                skillStatusEl.textContent = 'Copy failed: ' + err.message;
+                skillStatusEl.textContent = 'Copy failed.';
                 skillStatusEl.classList.add('error');
             }
         }
