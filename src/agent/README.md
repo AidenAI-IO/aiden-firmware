@@ -13,9 +13,10 @@ This directory contains two user-facing binaries:
 - OpenAI-compatible model calls via `openai` and `openrouter`
 - Local text-model support via `ollama`
 - Built-in tool calling with device-control tools
+- HTTP tool API for direct invocation and external agent integration
 - Skill discovery and runtime activation from `SKILL.md`
 - Conversation memory persisted under the config directory
-- Web UI with chat history, browser audio recording, and attachment support
+- Web UI with chat history, browser audio recording, attachment support, and a tool-testing workbench
 - Device-side speech pipeline with VAD, STT, and TTS
 
 ## Current tool set
@@ -79,6 +80,11 @@ go run ./cmd/daemon -config ./config -addr :8080
 ```
 
 Then open `http://localhost:8080`.
+
+The Web UI now includes:
+
+- `Tool Lab`: manually invoke any exposed tool over HTTP with raw input and inspect the result
+- `Skill Export`: copy generated `SKILL.md` bundles that tell external agents how to use the same HTTP tool surface
 
 ## Example `agent.toml`
 
@@ -267,6 +273,68 @@ What is only parsed, not actively enforced by the runtime today:
 - `allowed_children`
 
 The sample skill files under [config/skills](./config/skills/planner/SKILL.md#L1) are older placeholders and may reference tools that do not exist in the current Go runtime. Treat them as format examples, not guaranteed-valid production skills.
+
+## Tool HTTP API
+
+All agent-owned tools are exposed over HTTP for manual testing and external-agent reuse.
+
+Endpoints:
+
+- `GET /api/tools`: list all exposed tools with description, input mode, example input, and HTTP binding
+- `POST /api/tools/{tool_name}`: invoke a specific tool directly
+- `GET /api/tool-skills`: return generated skill bundles that describe how mature agents such as Codex should use the HTTP tool API
+
+Invocation request body:
+
+```json
+{
+  "input": {"command": "pwd"}
+}
+```
+
+or:
+
+```json
+{
+  "raw_input": "{\"command\":\"pwd\"}"
+}
+```
+
+`input` accepts either a JSON object or a JSON string. For plain-text tools such as `activate_skill`, send:
+
+```json
+{
+  "input": "planner"
+}
+```
+
+Invocation response shape:
+
+```json
+{
+  "tool": {
+    "name": "shell",
+    "category": "system",
+    "description": "...",
+    "input_mode": "json",
+    "example_input": "{\"command\":\"pwd\"}",
+    "http": {
+      "method": "POST",
+      "path": "/api/tools/shell"
+    }
+  },
+  "raw_input": "{\"command\":\"pwd\"}",
+  "output": "...",
+  "is_error": false,
+  "duration_ms": 12,
+  "called_at": "2026-05-18T12:34:56Z"
+}
+```
+
+Notes:
+
+- tool failures are returned in-band as JSON; inspect `is_error` and `output`
+- `Tool Lab` in the Web UI uses the same endpoints, so browser testing and external-agent integration share one surface
 
 ## Runtime behavior
 

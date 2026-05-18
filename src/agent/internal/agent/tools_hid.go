@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -54,13 +57,21 @@ var hidModifierMap = map[string]uint8{
 type HIDDevice struct {
 	path string
 	mu   sync.Mutex
-	file *os.File
+	file io.WriteCloser
+	open func(string) (io.WriteCloser, error)
 }
 
 type screenState struct {
 	mu     sync.RWMutex
 	width  int
 	height int
+}
+
+type pointerState struct {
+	mu    sync.Mutex
+	x     int
+	y     int
+	valid bool
 }
 
 func (s *screenState) Update(width, height int) {
@@ -83,27 +94,76 @@ func (s *screenState) Dimensions() (width, height int, ok bool) {
 	return s.width, s.height, true
 }
 
+func (s *pointerState) Update(x, y int) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.x = x
+	s.y = y
+	s.valid = true
+}
+
+func (s *pointerState) Current() (x, y int, ok bool) {
+	if s == nil {
+		return 0, 0, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.valid {
+		return 0, 0, false
+	}
+	return s.x, s.y, true
+}
+
 func NewHIDDevice(path string) *HIDDevice {
-	return &HIDDevice{path: path}
+	return &HIDDevice{
+		path: path,
+		open: func(path string) (io.WriteCloser, error) {
+			return os.OpenFile(path, os.O_WRONLY, 0)
+		},
+	}
 }
 
 func (d *HIDDevice) Write(data []byte) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.writeLocked(data, nil)
+}
 
-	if d.file == nil {
-		f, err := os.OpenFile(d.path, os.O_WRONLY, 0)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", d.path, err)
-		}
-		d.file = f
+func (d *HIDDevice) writeLocked(data []byte, after func()) error {
+	if err := d.ensureOpenLocked(); err != nil {
+		return err
 	}
 
-	_, err := d.file.Write(data)
+	n, err := d.file.Write(data)
 	if err != nil {
-		d.file.Close()
-		d.file = nil
+		d.closeLocked()
+		if n == 0 && hidShouldRetryWrite(err) {
+			if reopenErr := d.ensureOpenLocked(); reopenErr == nil {
+				n2, retryErr := d.file.Write(data)
+				if retryErr == nil && n2 == len(data) {
+					if after != nil {
+						after()
+					}
+					return nil
+				}
+				d.closeLocked()
+				if retryErr != nil {
+					return fmt.Errorf("write %s: %w", d.path, retryErr)
+				}
+				return fmt.Errorf("write %s: short write after retry (%d/%d bytes)", d.path, n2, len(data))
+			}
+		}
 		return fmt.Errorf("write %s: %w", d.path, err)
+	}
+	if n != len(data) {
+		d.closeLocked()
+		return fmt.Errorf("write %s: short write (%d/%d bytes)", d.path, n, len(data))
+	}
+	if after != nil {
+		after()
 	}
 	return nil
 }
@@ -111,10 +171,45 @@ func (d *HIDDevice) Write(data []byte) error {
 func (d *HIDDevice) Close() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.closeLocked()
+}
+
+func (d *HIDDevice) ensureOpenLocked() error {
 	if d.file != nil {
-		d.file.Close()
+		return nil
+	}
+	opener := d.open
+	if opener == nil {
+		opener = func(path string) (io.WriteCloser, error) {
+			return os.OpenFile(path, os.O_WRONLY, 0)
+		}
+	}
+	f, err := opener(d.path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", d.path, err)
+	}
+	d.file = f
+	return nil
+}
+
+func (d *HIDDevice) closeLocked() {
+	if d.file != nil {
+		_ = d.file.Close()
 		d.file = nil
 	}
+}
+
+func hidShouldRetryWrite(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.ESHUTDOWN) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ENODEV) {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "transport endpoint shutdown") ||
+		strings.Contains(text, "broken pipe") ||
+		strings.Contains(text, "connection reset")
 }
 
 // KeyboardTapTool sends a key press then release via HID.
@@ -231,6 +326,7 @@ func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error)
 type MouseClickTool struct {
 	dev    *HIDDevice
 	screen *screenState
+	state  *pointerState
 }
 
 func (t *MouseClickTool) Name() string { return "mouse_click" }
@@ -257,10 +353,10 @@ func (t *MouseClickTool) Call(_ context.Context, input string) (string, error) {
 	}
 	btn := mouseButtonByte(args.Button)
 
-	if err := pressPointer(t.dev, absX, absY, btn); err != nil {
+	if err := pressPointer(t.dev, t.state, absX, absY, btn); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
-	if err := releasePointer(t.dev, absX, absY); err != nil {
+	if err := releasePointer(t.dev, t.state, absX, absY); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
 
@@ -271,6 +367,7 @@ func (t *MouseClickTool) Call(_ context.Context, input string) (string, error) {
 type MouseMoveTool struct {
 	dev    *HIDDevice
 	screen *screenState
+	state  *pointerState
 }
 
 func (t *MouseMoveTool) Name() string { return "mouse_move" }
@@ -295,7 +392,7 @@ func (t *MouseMoveTool) Call(_ context.Context, input string) (string, error) {
 		return fmt.Sprintf("error: %v", err), nil
 	}
 
-	if err := movePointer(t.dev, absX, absY, 0); err != nil {
+	if err := movePointer(t.dev, t.state, absX, absY, 0); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
 
@@ -306,6 +403,7 @@ func (t *MouseMoveTool) Call(_ context.Context, input string) (string, error) {
 type TouchGestureTool struct {
 	dev    *HIDDevice
 	screen *screenState
+	state  *pointerState
 }
 
 func (t *TouchGestureTool) Name() string { return "touch_gesture" }
@@ -350,7 +448,7 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
-		if err := tapPointer(t.dev, point.x, point.y, button); err != nil {
+		if err := tapPointer(t.dev, t.state, point.x, point.y, button); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
 	case "double_tap":
@@ -358,11 +456,11 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
-		if err := tapPointer(t.dev, point.x, point.y, button); err != nil {
+		if err := tapPointer(t.dev, t.state, point.x, point.y, button); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
 		sleepMs(intOrDefault(args.PauseMs, 100))
-		if err := tapPointer(t.dev, point.x, point.y, button); err != nil {
+		if err := tapPointer(t.dev, t.state, point.x, point.y, button); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
 	case "long_press":
@@ -370,11 +468,11 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
-		if err := pressPointer(t.dev, point.x, point.y, button); err != nil {
+		if err := pressPointer(t.dev, t.state, point.x, point.y, button); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
 		sleepMs(intOrDefault(args.DurationMs, 500))
-		if err := releasePointer(t.dev, point.x, point.y); err != nil {
+		if err := releasePointer(t.dev, t.state, point.x, point.y); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
 	case "drag", "swipe":
@@ -388,6 +486,7 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		}
 		if err := dragPointer(
 			t.dev,
+			t.state,
 			start,
 			end,
 			button,
@@ -406,7 +505,8 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 
 // MouseScrollTool sends mouse wheel events.
 type MouseScrollTool struct {
-	dev *HIDDevice
+	dev   *HIDDevice
+	state *pointerState
 }
 
 func (t *MouseScrollTool) Name() string { return "mouse_scroll" }
@@ -432,28 +532,35 @@ func (t *MouseScrollTool) Call(_ context.Context, input string) (string, error) 
 		args.Delta = 127
 	}
 
-	// Wheel report: [report_id=2, wheel_value]
-	report := []byte{0x02, byte(int8(args.Delta))}
-	if err := t.dev.Write(report); err != nil {
+	if err := scrollPointer(t.dev, t.state, args.Delta); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
 
 	return "ok", nil
 }
 
-// writeAbsMouseReport writes an absolute mouse position report.
-// Report format: [report_id=1, buttons, x_low, x_high, y_low, y_high]
-func writeAbsMouseReport(dev *HIDDevice, x, y int, buttons uint8) error {
+// writeAbsMouseReport writes an absolute mouse report that matches the
+// configured hid.usb1 descriptor: [buttons, x_low, x_high, y_low, y_high, wheel].
+func writeAbsMouseReport(dev *HIDDevice, state *pointerState, x, y int, buttons uint8, wheel int8) error {
 	absX := clampUint16(x, absMouseMaxPos)
 	absY := clampUint16(y, absMouseMaxPos)
 
 	report := make([]byte, 6)
-	report[0] = 0x01 // report ID
-	report[1] = buttons
-	binary.LittleEndian.PutUint16(report[2:4], absX)
-	binary.LittleEndian.PutUint16(report[4:6], absY)
+	report[0] = buttons
+	binary.LittleEndian.PutUint16(report[1:3], absX)
+	binary.LittleEndian.PutUint16(report[3:5], absY)
+	report[5] = byte(wheel)
 
-	return dev.Write(report)
+	var after func()
+	if state != nil {
+		after = func() {
+			state.Update(int(absX), int(absY))
+		}
+	}
+
+	dev.mu.Lock()
+	defer dev.mu.Unlock()
+	return dev.writeLocked(report, after)
 }
 
 type pointerPoint struct {
@@ -548,26 +655,38 @@ func clampFloat(value, min, max float64) float64 {
 	return value
 }
 
-func tapPointer(dev *HIDDevice, x, y int, button uint8) error {
-	if err := pressPointer(dev, x, y, button); err != nil {
+func tapPointer(dev *HIDDevice, state *pointerState, x, y int, button uint8) error {
+	if err := pressPointer(dev, state, x, y, button); err != nil {
 		return err
 	}
-	return releasePointer(dev, x, y)
+	return releasePointer(dev, state, x, y)
 }
 
-func pressPointer(dev *HIDDevice, x, y int, button uint8) error {
-	return movePointer(dev, x, y, button)
+func pressPointer(dev *HIDDevice, state *pointerState, x, y int, button uint8) error {
+	return movePointer(dev, state, x, y, button)
 }
 
-func releasePointer(dev *HIDDevice, x, y int) error {
-	return movePointer(dev, x, y, 0)
+func releasePointer(dev *HIDDevice, state *pointerState, x, y int) error {
+	return movePointer(dev, state, x, y, 0)
 }
 
-func movePointer(dev *HIDDevice, x, y int, buttons uint8) error {
-	return writeAbsMouseReport(dev, x, y, buttons)
+func movePointer(dev *HIDDevice, state *pointerState, x, y int, buttons uint8) error {
+	return writeAbsMouseReport(dev, state, x, y, buttons, 0)
 }
 
-func dragPointer(dev *HIDDevice, start, end resolvedPointerPoint, button uint8, durationMs, holdBeforeMs, steps int) error {
+func scrollPointer(dev *HIDDevice, state *pointerState, delta int) error {
+	x := absMouseMaxPos / 2
+	y := absMouseMaxPos / 2
+	if state != nil {
+		if currentX, currentY, ok := state.Current(); ok {
+			x = currentX
+			y = currentY
+		}
+	}
+	return writeAbsMouseReport(dev, state, x, y, 0, int8(delta))
+}
+
+func dragPointer(dev *HIDDevice, state *pointerState, start, end resolvedPointerPoint, button uint8, durationMs, holdBeforeMs, steps int) error {
 	if steps < 1 {
 		steps = 1
 	}
@@ -578,7 +697,7 @@ func dragPointer(dev *HIDDevice, start, end resolvedPointerPoint, button uint8, 
 		holdBeforeMs = 0
 	}
 
-	if err := pressPointer(dev, start.x, start.y, button); err != nil {
+	if err := pressPointer(dev, state, start.x, start.y, button); err != nil {
 		return err
 	}
 	sleepMs(holdBeforeMs)
@@ -591,7 +710,7 @@ func dragPointer(dev *HIDDevice, start, end resolvedPointerPoint, button uint8, 
 		progress := float64(i) / float64(steps)
 		x := interpolateInt(start.x, end.x, progress)
 		y := interpolateInt(start.y, end.y, progress)
-		if err := movePointer(dev, x, y, button); err != nil {
+		if err := movePointer(dev, state, x, y, button); err != nil {
 			return err
 		}
 		if i < steps {
@@ -599,7 +718,7 @@ func dragPointer(dev *HIDDevice, start, end resolvedPointerPoint, button uint8, 
 		}
 	}
 
-	return releasePointer(dev, end.x, end.y)
+	return releasePointer(dev, state, end.x, end.y)
 }
 
 func interpolateInt(start, end int, progress float64) int {

@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	gopty "github.com/aymanbagabas/go-pty"
@@ -246,7 +245,10 @@ func (s *shellSession) writeString(input string) (int, error) {
 }
 
 func (m *shellSessionManager) nextSessionID() string {
-	id := atomic.AddUint64(&m.nextID, 1)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextID++
+	id := m.nextID
 	return "shell-" + strconv.FormatUint(id, 10)
 }
 

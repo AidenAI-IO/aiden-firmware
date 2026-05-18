@@ -198,3 +198,196 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 		t.Fatalf("expected transcript on audio attachment, got %#v", resp.History[0].Attachments)
 	}
 }
+
+func TestServerToolCatalogEndpoint(t *testing.T) {
+	tool := &stubTool{
+		name:        "shell",
+		description: "Run shell commands.",
+		output:      "ok",
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"shell": tool,
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
+	rec := httptest.NewRecorder()
+
+	server.handleToolCatalog(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp ToolCatalogResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if len(resp.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(resp.Tools))
+	}
+	if resp.Tools[0].Name != "shell" {
+		t.Fatalf("unexpected tool descriptor: %#v", resp.Tools[0])
+	}
+	if resp.Tools[0].HTTP.Path != "/api/tools/shell" {
+		t.Fatalf("unexpected tool path: %#v", resp.Tools[0].HTTP)
+	}
+	if resp.Tools[0].ExampleInput != `{"command":"pwd"}` {
+		t.Fatalf("unexpected example input: %q", resp.Tools[0].ExampleInput)
+	}
+}
+
+func TestServerToolInvokeEndpointAcceptsStructuredJSON(t *testing.T) {
+	tool := &stubTool{
+		name:        "shell",
+		description: "Run shell commands.",
+		output:      `{"status":"ok"}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"shell": tool,
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	body := bytes.NewBufferString(`{"input":{"command":"pwd"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/tools/shell", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleToolInvoke(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(tool.inputs) != 1 || tool.inputs[0] != `{"command":"pwd"}` {
+		t.Fatalf("unexpected tool input: %#v", tool.inputs)
+	}
+
+	var resp ToolInvokeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Tool.Name != "shell" || resp.RawInput != `{"command":"pwd"}` || resp.Output != `{"status":"ok"}` || resp.IsError {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestServerToolInvokeEndpointAcceptsPlainStringInput(t *testing.T) {
+	index := NewSkillIndex()
+	index.skills["planner"] = &SkillDefinition{
+		Name:         "planner",
+		Description:  "Planning skill",
+		Instructions: "Plan before acting.",
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		index,
+	)
+	server := NewServer(runtime, ":0")
+
+	body := bytes.NewBufferString(`{"input":"planner"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/tools/activate_skill", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleToolInvoke(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp ToolInvokeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.RawInput != "planner" {
+		t.Fatalf("expected raw input planner, got %#v", resp)
+	}
+	if resp.Tool.Name != "activate_skill" {
+		t.Fatalf("unexpected tool name: %#v", resp.Tool)
+	}
+	if resp.IsError {
+		t.Fatalf("expected successful activation, got %#v", resp)
+	}
+}
+
+func TestServerToolSkillsEndpointReturnsGeneratedSkills(t *testing.T) {
+	tool := &stubTool{
+		name:        "shell",
+		description: "Run shell commands.",
+		output:      "ok",
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"shell": tool,
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	req := httptest.NewRequest(http.MethodGet, "https://device.example/api/tool-skills", nil)
+	req.Header.Set("X-Forwarded-Host", "192.168.50.57:8080")
+	req.Header.Set("X-Forwarded-Proto", "http")
+	rec := httptest.NewRecorder()
+
+	server.handleToolSkills(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp ToolSkillsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Skills) != 1 {
+		t.Fatalf("expected exactly 1 generated skill, got %d", len(resp.Skills))
+	}
+
+	skill := resp.Skills[0]
+	if skill.Name != "aiden-http-tool-suite" {
+		t.Fatalf("unexpected skill name: %#v", skill)
+	}
+	if len(skill.ToolNames) != 1 || skill.ToolNames[0] != "shell" {
+		t.Fatalf("unexpected tool list: %#v", skill.ToolNames)
+	}
+	if !bytes.Contains([]byte(skill.Markdown), []byte("/api/tools/{tool_name}")) {
+		t.Fatalf("unexpected skill markdown: %q", skill.Markdown)
+	}
+	if !bytes.Contains([]byte(skill.Markdown), []byte("http://192.168.50.57:8080")) {
+		t.Fatalf("expected forwarded base URL in markdown: %q", skill.Markdown)
+	}
+	if !bytes.Contains([]byte(skill.Markdown), []byte("NO_PROXY")) {
+		t.Fatalf("expected proxy guidance in markdown: %q", skill.Markdown)
+	}
+}
+
+func TestRequestBaseURLPrefersForwardedHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "https://local.invalid/api/tool-skills", nil)
+	req.Host = "127.0.0.1:8080"
+	req.Header.Set("X-Forwarded-Proto", "https, http")
+	req.Header.Set("X-Forwarded-Host", "device.example:8443, proxy.local")
+
+	got := requestBaseURL(req)
+	if got != "https://device.example:8443" {
+		t.Fatalf("requestBaseURL = %q, want %q", got, "https://device.example:8443")
+	}
+}

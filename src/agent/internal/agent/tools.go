@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	langtools "github.com/tmc/langchaingo/tools"
@@ -19,15 +20,16 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig) *ToolSet {
 	kbDev := NewHIDDevice(hidCfg.KeyboardDeviceOrDefault())
 	mouseDev := NewHIDDevice(hidCfg.MouseDeviceOrDefault())
 	screen := &screenState{}
+	pointer := &pointerState{}
 
 	return &ToolSet{
 		tools: map[string]langtools.Tool{
 			"keyboard_tap":  &KeyboardTapTool{dev: kbDev},
 			"keyboard_text": &KeyboardTextTool{dev: kbDev},
-			"mouse_click":   &MouseClickTool{dev: mouseDev, screen: screen},
-			"mouse_move":    &MouseMoveTool{dev: mouseDev, screen: screen},
-			"mouse_scroll":  &MouseScrollTool{dev: mouseDev},
-			"touch_gesture": &TouchGestureTool{dev: mouseDev, screen: screen},
+			"mouse_click":   &MouseClickTool{dev: mouseDev, screen: screen, state: pointer},
+			"mouse_move":    &MouseMoveTool{dev: mouseDev, screen: screen, state: pointer},
+			"mouse_scroll":  &MouseScrollTool{dev: mouseDev, state: pointer},
+			"touch_gesture": &TouchGestureTool{dev: mouseDev, screen: screen, state: pointer},
 			"screenshot":    NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen),
 			"audio_volume":  NewAudioVolumeTool(audioCfg.SocketOrDefault()),
 			"shell":         &ShellTool{},
@@ -41,9 +43,12 @@ func (s *ToolSet) Get(name string) (langtools.Tool, bool) {
 }
 
 func (s *ToolSet) All() []langtools.Tool {
-	result := make([]langtools.Tool, 0, len(s.tools))
-	for _, t := range s.tools {
-		result = append(result, t)
+	names := s.Names()
+	result := make([]langtools.Tool, 0, len(names))
+	for _, name := range names {
+		if t, ok := s.tools[name]; ok {
+			result = append(result, t)
+		}
 	}
 	return result
 }
@@ -53,6 +58,7 @@ func (s *ToolSet) Names() []string {
 	for name := range s.tools {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 
@@ -77,7 +83,13 @@ func (t *ActivateSkillTool) Description() string {
 
 	var builder strings.Builder
 	builder.WriteString("Activate a skill to gain specialized capabilities. Available skills:\n")
-	for name, skill := range skills {
+	names := make([]string, 0, len(skills))
+	for name := range skills {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		skill := skills[name]
 		builder.WriteString(fmt.Sprintf("- %s: %s\n", name, skill.Description))
 	}
 	builder.WriteString("\nInput: skill name to activate")
