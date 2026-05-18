@@ -236,7 +236,7 @@ func shellPollBackground(arguments map[string]interface{}) (string, error) {
 		"exit_error":       session.exitErrorText(),
 	}
 
-	if !running {
+	if !running && !session.output.hasUnread() {
 		globalShellSessionManager.delete(session.id)
 	}
 	return shellJSONString(payload), nil

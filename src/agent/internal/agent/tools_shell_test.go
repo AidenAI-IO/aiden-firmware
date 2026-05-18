@@ -280,6 +280,106 @@ func TestShellRingBufferTruncates(t *testing.T) {
 	}
 }
 
+func TestShellRingBufferHasUnread(t *testing.T) {
+	rb := newShellRingBuffer(16)
+	if rb.hasUnread() {
+		t.Fatalf("hasUnread() = true on empty buffer")
+	}
+	rb.write([]byte("abcdef"))
+	if !rb.hasUnread() {
+		t.Fatalf("hasUnread() = false after write")
+	}
+	if _, _ = rb.readUnread(3); !rb.hasUnread() {
+		t.Fatalf("hasUnread() = false with bytes still pending")
+	}
+	if _, _ = rb.readUnread(100); rb.hasUnread() {
+		t.Fatalf("hasUnread() = true after full drain")
+	}
+}
+
+func TestShellToolBackgroundPollDrainsBeforeDelete(t *testing.T) {
+	skipOnWindows(t)
+	tool := &ShellTool{}
+
+	// Produce > shellDefaultPollBytes of output and exit, so the first
+	// bounded poll cannot drain everything.
+	startOut, err := tool.Call(context.Background(), `{"action":"start","command":"sh -c 'printf %20000s X'"}`)
+	if err != nil {
+		t.Fatalf("start returned error: %v", err)
+	}
+	var started struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(startOut), &started); err != nil {
+		t.Fatalf("start unmarshal err: %v", err)
+	}
+
+	pollArgs, _ := json.Marshal(map[string]interface{}{
+		"action":     "poll",
+		"session_id": started.SessionID,
+	})
+
+	// Wait for the process to exit, then poll once. Output should be capped
+	// to the default poll size; session must still be reachable for follow-up
+	// polls because there is more buffered data.
+	deadline := time.Now().Add(2 * time.Second)
+	var pollOut string
+	for time.Now().Before(deadline) {
+		pollOut, err = tool.Call(context.Background(), string(pollArgs))
+		if err != nil {
+			t.Fatalf("poll returned error: %v", err)
+		}
+		var poll struct {
+			Running bool `json:"running"`
+		}
+		if err := json.Unmarshal([]byte(pollOut), &poll); err != nil {
+			t.Fatalf("poll unmarshal err: %v", err)
+		}
+		if !poll.Running {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// Drain remaining output across follow-up polls. The first poll already
+	// happened in the wait loop above. We accumulate until the session is
+	// gone, then assert the full payload was delivered.
+	totalBytes := 0
+	firstPollSawTruncation := false
+	for i := 0; i < 10; i++ {
+		if strings.Contains(pollOut, "shell session not found") {
+			break
+		}
+		var poll struct {
+			SessionID       string `json:"session_id"`
+			Running         bool   `json:"running"`
+			Output          string `json:"output"`
+			OutputTruncated bool   `json:"output_truncated"`
+		}
+		if err := json.Unmarshal([]byte(pollOut), &poll); err != nil {
+			t.Fatalf("poll unmarshal err: %v (raw=%q)", err, pollOut)
+		}
+		if i == 0 && poll.OutputTruncated {
+			firstPollSawTruncation = true
+		}
+		totalBytes += len(poll.Output)
+		pollOut, err = tool.Call(context.Background(), string(pollArgs))
+		if err != nil {
+			t.Fatalf("poll returned error: %v", err)
+		}
+	}
+
+	if !firstPollSawTruncation {
+		t.Fatalf("expected first post-exit poll to be truncated; output may have fit in one poll")
+	}
+	if totalBytes < 20000 {
+		t.Fatalf("totalBytes = %d, want >= 20000 (drain lost data)", totalBytes)
+	}
+	if !strings.Contains(pollOut, "shell session not found") {
+		t.Fatalf("expected session-not-found after drain, got %q", pollOut)
+	}
+}
+
 func TestShellKeySequence(t *testing.T) {
 	cases := map[string]string{
 		"enter":  "\n",

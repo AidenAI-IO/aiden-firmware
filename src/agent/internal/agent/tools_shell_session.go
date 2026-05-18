@@ -105,6 +105,12 @@ func (b *shellRingBuffer) readUnread(limit int) (string, bool) {
 	return text, truncated || b.truncated
 }
 
+func (b *shellRingBuffer) hasUnread() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.readPos < len(b.buf)
+}
+
 func (s *shellSession) capture(r io.Reader) {
 	buffer := make([]byte, 4096)
 	for {
