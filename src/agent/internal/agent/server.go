@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	langtools "github.com/tmc/langchaingo/tools"
 )
 
 // Server provides HTTP API for agent interactions
@@ -60,6 +63,29 @@ type ChatResponse struct {
 	History  []Message `json:"history"`
 }
 
+type ToolCatalogResponse struct {
+	Tools []ToolDescriptor `json:"tools"`
+}
+
+type ToolSkillsResponse struct {
+	Skills []ToolSkillDefinition `json:"skills"`
+}
+
+type ToolInvokeRequest struct {
+	Input    json.RawMessage `json:"input,omitempty"`
+	RawInput *string         `json:"raw_input,omitempty"`
+}
+
+type ToolInvokeResponse struct {
+	Tool       ToolDescriptor `json:"tool"`
+	RawInput   string         `json:"raw_input"`
+	Output     string         `json:"output"`
+	IsError    bool           `json:"is_error"`
+	Error      string         `json:"error,omitempty"`
+	DurationMs int64          `json:"duration_ms"`
+	CalledAt   time.Time      `json:"called_at"`
+}
+
 // NewServer creates a new HTTP server
 func NewServer(runtime *Runtime, addr string) *Server {
 	s := &Server{
@@ -104,6 +130,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/chat", s.handleChat)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/clear", s.handleClear)
+	mux.HandleFunc("/api/tools", s.handleTools)
+	mux.HandleFunc("/api/tools/", s.handleTools)
+	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
@@ -265,6 +294,175 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
+func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.URL.Path == "/api/tools":
+		s.handleToolCatalog(w, r)
+	case strings.HasPrefix(r.URL.Path, "/api/tools/"):
+		s.handleToolInvoke(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) handleToolCatalog(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ToolCatalogResponse{
+		Tools: s.runtime.ToolDescriptors(),
+	})
+}
+
+func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	toolName := strings.TrimPrefix(r.URL.Path, "/api/tools/")
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" || strings.Contains(toolName, "/") {
+		http.NotFound(w, r)
+		return
+	}
+
+	tool, descriptor, ok := s.lookupOwnedTool(toolName)
+	if !ok {
+		http.Error(w, fmt.Sprintf("Unknown tool: %s", toolName), http.StatusNotFound)
+		return
+	}
+
+	rawInput, err := decodeToolInvokeInput(r.Body)
+	if err != nil {
+		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	startedAt := time.Now()
+	output, callErr := tool.Call(r.Context(), rawInput)
+	duration := time.Since(startedAt).Milliseconds()
+
+	response := ToolInvokeResponse{
+		Tool:       descriptor,
+		RawInput:   rawInput,
+		Output:     output,
+		IsError:    callErr != nil || toolOutputLooksLikeError(output),
+		DurationMs: duration,
+		CalledAt:   startedAt,
+	}
+	if callErr != nil {
+		response.Error = callErr.Error()
+		if response.Output == "" {
+			response.Output = callErr.Error()
+		}
+	}
+
+	if s.logger != nil {
+		s.logger.Info("HTTP tool invoke: name=%s input=%s error=%v", toolName, truncateForLog(rawInput, 200), response.IsError)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) handleToolSkills(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ToolSkillsResponse{
+		Skills: s.runtime.HTTPToolSkills(requestBaseURL(r)),
+	})
+}
+
+func requestBaseURL(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwardedProto := firstForwardedHeaderValue(r.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
+		scheme = forwardedProto
+	}
+
+	host := firstForwardedHeaderValue(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(r.Host)
+	}
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+func firstForwardedHeaderValue(value string) string {
+	if value == "" {
+		return ""
+	}
+	parts := strings.Split(value, ",")
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(parts[0])
+}
+
+func (s *Server) lookupOwnedTool(name string) (tool langtools.Tool, descriptor ToolDescriptor, ok bool) {
+	for _, candidate := range s.runtime.OwnedTools() {
+		if candidate.Name() != name {
+			continue
+		}
+		descriptor, _ = s.runtime.ToolDescriptorByName(name)
+		return candidate, descriptor, true
+	}
+	return nil, ToolDescriptor{}, false
+}
+
+func decodeToolInvokeInput(body io.Reader) (string, error) {
+	if body == nil {
+		return "", nil
+	}
+
+	var req ToolInvokeRequest
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&req); err != nil {
+		if errors.Is(err, io.EOF) {
+			return "", nil
+		}
+		return "", err
+	}
+
+	if req.RawInput != nil {
+		return *req.RawInput, nil
+	}
+
+	trimmed := strings.TrimSpace(string(req.Input))
+	if trimmed == "" || trimmed == "null" {
+		return "", nil
+	}
+
+	if strings.HasPrefix(trimmed, `"`) {
+		var plain string
+		if err := json.Unmarshal(req.Input, &plain); err == nil {
+			return plain, nil
+		}
+	}
+
+	return trimmed, nil
+}
+
+func toolOutputLooksLikeError(output string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(output)), "error:")
+}
+
 func (s *Server) appendHistory(message Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -412,32 +610,36 @@ const webUI = `<!DOCTYPE html>
     <style>
         :root {
             color-scheme: light;
-            --bg: #f7f7f4;
-            --bg-accent: rgba(16, 163, 127, 0.12);
-            --panel: rgba(255, 255, 255, 0.78);
-            --panel-strong: rgba(255, 255, 255, 0.92);
-            --sidebar: rgba(236, 238, 232, 0.82);
-            --line: rgba(17, 24, 39, 0.08);
-            --line-strong: rgba(17, 24, 39, 0.14);
-            --text: #1f2937;
-            --muted: #6b7280;
-            --muted-strong: #4b5563;
-            --accent: #10a37f;
-            --accent-strong: #0c8a6a;
-            --surface-soft: #f3f4f6;
-            --surface-code: #f6f7f8;
-            --user-bubble: #ffffff;
-            --tool-call: rgba(180, 83, 9, 0.1);
-            --tool-call-text: #92400e;
-            --tool-ok: rgba(16, 163, 127, 0.12);
-            --tool-ok-text: #0f766e;
-            --tool-error: rgba(220, 38, 38, 0.12);
-            --tool-error-text: #b91c1c;
-            --shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
-            --shadow-soft: 0 10px 30px rgba(15, 23, 42, 0.04);
-            --radius-xl: 28px;
-            --radius-lg: 22px;
-            --radius-md: 16px;
+            --bg: #f1ede2;
+            --bg-grid: rgba(32, 36, 31, 0.045);
+            --panel: rgba(255, 251, 245, 0.92);
+            --panel-strong: rgba(255, 254, 250, 0.97);
+            --panel-muted: rgba(238, 231, 219, 0.8);
+            --line: rgba(52, 56, 49, 0.14);
+            --line-strong: rgba(52, 56, 49, 0.24);
+            --text: #1e241d;
+            --muted: #697063;
+            --muted-strong: #43493d;
+            --accent: #1f7a63;
+            --accent-strong: #155646;
+            --accent-warm: #b76b2f;
+            --surface-soft: #efe7da;
+            --surface-code: #f6f0e6;
+            --surface-contrast: #20241f;
+            --user-bubble: #fffdf8;
+            --tool-call: rgba(183, 107, 47, 0.15);
+            --tool-call-text: #8e4d1d;
+            --tool-ok: rgba(31, 122, 99, 0.14);
+            --tool-ok-text: #155646;
+            --tool-error: rgba(190, 67, 52, 0.14);
+            --tool-error-text: #a0382a;
+            --shadow: 0 24px 48px rgba(43, 47, 40, 0.14);
+            --shadow-soft: 0 12px 26px rgba(43, 47, 40, 0.08);
+            --radius-xl: 26px;
+            --radius-lg: 20px;
+            --radius-md: 14px;
+            --rail-width: 220px;
+            --dock-width: 380px;
         }
 
         * {
@@ -451,62 +653,80 @@ const webUI = `<!DOCTYPE html>
         }
 
         body {
-            font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
             background:
-                radial-gradient(circle at top left, var(--bg-accent), transparent 26%),
-                radial-gradient(circle at bottom right, rgba(15, 118, 110, 0.08), transparent 20%),
+                linear-gradient(rgba(255, 255, 255, 0.3) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.3) 1px, transparent 1px),
+                radial-gradient(circle at top left, rgba(31, 122, 99, 0.12), transparent 22%),
+                radial-gradient(circle at bottom right, rgba(183, 107, 47, 0.12), transparent 20%),
                 var(--bg);
+            background-size: 28px 28px, 28px 28px, auto, auto, auto;
+            background-position: 0 0, 0 0, 0 0, 100% 100%, 0 0;
             color: var(--text);
         }
 
         button,
-        textarea {
+        textarea,
+        select {
             font: inherit;
         }
 
-        .app-shell {
-            min-height: 100vh;
-            display: grid;
-            grid-template-columns: 280px minmax(0, 1fr);
-            gap: 16px;
-            padding: 16px;
+        button,
+        select,
+        textarea {
+            outline: none;
         }
 
-        .sidebar {
+        .app-shell {
+            height: 100vh;
+            display: grid;
+            grid-template-columns: var(--rail-width) minmax(0, 1fr) var(--dock-width);
+            gap: 12px;
+            padding: 12px;
+        }
+
+        .sidebar,
+        .inspector {
             display: flex;
             flex-direction: column;
-            gap: 18px;
-            padding: 22px 18px;
+            gap: 12px;
+            min-height: 0;
+            overflow-y: auto;
+            padding: 14px;
             border-radius: var(--radius-xl);
-            background: var(--sidebar);
+            background: linear-gradient(180deg, rgba(255, 254, 250, 0.9), rgba(241, 235, 224, 0.82));
             border: 1px solid var(--line);
-            backdrop-filter: blur(18px);
+            backdrop-filter: blur(18px) saturate(1.05);
             box-shadow: var(--shadow-soft);
         }
 
         .brand {
             display: flex;
-            align-items: center;
-            gap: 12px;
+            align-items: flex-start;
+            gap: 10px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid rgba(52, 56, 49, 0.08);
         }
 
         .brand-mark {
-            width: 40px;
-            height: 40px;
+            width: 42px;
+            height: 42px;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            border-radius: 14px;
-            background: linear-gradient(135deg, #0f172a 0%, #1f2937 100%);
-            color: #f9fafb;
-            font-size: 1rem;
+            border-radius: 13px;
+            background: linear-gradient(145deg, #1d241d 0%, #355443 55%, #b76b2f 100%);
+            color: #fff9f2;
+            font-size: 0.95rem;
             font-weight: 700;
-            letter-spacing: 0.02em;
+            letter-spacing: 0.08em;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
         }
 
         .brand-copy h1 {
-            font-size: 1rem;
+            font-size: 1.02rem;
             font-weight: 700;
+            letter-spacing: -0.02em;
         }
 
         .brand-copy p,
@@ -523,16 +743,16 @@ const webUI = `<!DOCTYPE html>
         .sidebar-note,
         .topbar p,
         .empty-state p {
-            line-height: 1.5;
+            line-height: 1.45;
         }
 
         .sidebar-kicker,
         .message-role,
         .tool-section-label,
         .tool-meta-key {
-            font-size: 0.74rem;
+            font-size: 0.68rem;
             font-weight: 700;
-            letter-spacing: 0.08em;
+            letter-spacing: 0.12em;
             text-transform: uppercase;
         }
 
@@ -541,13 +761,14 @@ const webUI = `<!DOCTYPE html>
             align-items: center;
             justify-content: center;
             width: 100%;
-            padding: 0.9rem 1rem;
+            padding: 0.82rem 0.95rem;
             border: 1px solid var(--line);
-            border-radius: 18px;
-            background: var(--panel-strong);
-            color: var(--text);
+            border-radius: 16px;
+            background: linear-gradient(180deg, #20241f 0%, #31382f 100%);
+            color: #f5efe6;
+            font-weight: 600;
             cursor: pointer;
-            transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+            transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease, background 120ms ease;
         }
 
         .sidebar-action:hover,
@@ -555,61 +776,225 @@ const webUI = `<!DOCTYPE html>
         .send-btn:hover,
         .send-btn:focus-visible {
             transform: translateY(-1px);
-            box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+            box-shadow: 0 12px 20px rgba(43, 47, 40, 0.12);
         }
 
         .sidebar-card {
-            padding: 16px;
-            border-radius: 20px;
-            background: rgba(255, 255, 255, 0.58);
-            border: 1px solid rgba(255, 255, 255, 0.5);
+            padding: 14px;
+            border-radius: 18px;
+            background: rgba(255, 251, 245, 0.82);
+            border: 1px solid rgba(52, 56, 49, 0.08);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32);
         }
 
         .sidebar-card strong {
             display: block;
-            margin: 0.35rem 0 0.5rem;
-            font-size: 0.98rem;
+            margin: 0.22rem 0 0.45rem;
+            font-size: 0.95rem;
+            letter-spacing: -0.01em;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .rail-stack {
+            display: grid;
+            gap: 12px;
+        }
+
+        .rail-stats {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+
+        .rail-stat {
+            padding: 10px 10px 11px;
+            border-radius: 14px;
+            background: var(--surface-soft);
+            border: 1px solid rgba(52, 56, 49, 0.06);
+        }
+
+        .rail-stat-value {
+            margin-top: 0.25rem;
+            font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+            font-size: 0.96rem;
+            font-weight: 700;
+        }
+
+        .rail-footnote {
+            margin-top: auto;
+        }
+
+        .tool-lab,
+        .skill-export {
+            display: flex;
+            flex-direction: column;
+            gap: 9px;
+        }
+
+        .tool-lab-label {
+            font-size: 0.74rem;
+            font-weight: 600;
+            color: var(--muted-strong);
+        }
+
+        .tool-lab-select,
+        .tool-lab-input {
+            width: 100%;
+            border-radius: 14px;
+            border: 1px solid rgba(52, 56, 49, 0.12);
+            background: rgba(255, 255, 255, 0.88);
+            color: var(--text);
+        }
+
+        .tool-lab-select {
+            padding: 0.68rem 0.78rem;
+        }
+
+        .tool-lab-input {
+            min-height: 104px;
+            padding: 11px 12px;
+            resize: vertical;
+            line-height: 1.5;
+            font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+            font-size: 0.82rem;
+        }
+
+        .tool-lab-input[readonly] {
+            background: rgba(248, 244, 238, 0.95);
+        }
+
+        .tool-lab-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .tool-secondary-btn,
+        .tool-run-btn {
+            flex: 1 1 0;
+            justify-content: center;
+        }
+
+        .tool-lab-status {
+            font-size: 0.76rem;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        .tool-lab-status.error {
+            color: var(--tool-error-text);
+        }
+
+        .tool-lab-result {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .tool-lab-result-meta {
+            font-size: 0.76rem;
+            color: var(--muted-strong);
+        }
+
+        .tool-lab-preview img {
+            width: 100%;
+            border-radius: 14px;
+            border: 1px solid rgba(52, 56, 49, 0.08);
+            background: #ffffff;
         }
 
         .main-panel {
             min-height: 0;
             display: flex;
             flex-direction: column;
-            border-radius: calc(var(--radius-xl) + 4px);
-            background: var(--panel);
-            border: 1px solid rgba(255, 255, 255, 0.58);
-            backdrop-filter: blur(20px);
+            border-radius: calc(var(--radius-xl) + 2px);
+            background: linear-gradient(180deg, rgba(255, 252, 247, 0.96), rgba(248, 242, 233, 0.9));
+            border: 1px solid rgba(255, 255, 255, 0.48);
+            backdrop-filter: blur(22px);
             box-shadow: var(--shadow);
             overflow: hidden;
         }
 
         .topbar {
-            padding: 28px 28px 20px;
+            display: flex;
+            justify-content: space-between;
+            gap: 18px;
+            align-items: flex-start;
+            padding: 18px 20px 14px;
             border-bottom: 1px solid var(--line);
+            background:
+                linear-gradient(120deg, rgba(255, 255, 255, 0.84), rgba(255, 248, 239, 0.76)),
+                linear-gradient(90deg, rgba(31, 122, 99, 0.06), rgba(183, 107, 47, 0.08));
+        }
+
+        .topbar-main {
+            min-width: 0;
+        }
+
+        .topbar-main .sidebar-kicker {
+            color: var(--accent-strong);
         }
 
         .topbar h2 {
-            margin-top: 0.45rem;
-            font-size: clamp(1.7rem, 2vw, 2.25rem);
+            margin-top: 0.28rem;
+            font-size: clamp(1.35rem, 1.7vw, 1.9rem);
             font-weight: 700;
-            letter-spacing: -0.03em;
+            letter-spacing: -0.035em;
+            max-width: 780px;
         }
 
         .topbar p {
-            max-width: 700px;
-            margin-top: 0.45rem;
+            max-width: 920px;
+            margin-top: 0.35rem;
+            font-size: 0.92rem;
+        }
+
+        .topbar-metrics {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(86px, 1fr));
+            gap: 8px;
+            min-width: 300px;
+        }
+
+        .topbar-metric {
+            padding: 10px 12px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.62);
+            border: 1px solid rgba(52, 56, 49, 0.08);
+            text-align: left;
+        }
+
+        .topbar-metric-label {
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+
+        .topbar-metric-value {
+            margin-top: 0.3rem;
+            font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+            font-size: 0.88rem;
+            font-weight: 700;
+            color: var(--text);
         }
 
         .conversation {
             flex: 1;
             min-height: 0;
             overflow-y: auto;
-            padding: 0 28px;
+            padding: 10px 18px 0;
+            background:
+                linear-gradient(180deg, rgba(255, 255, 255, 0.24), transparent 120px),
+                transparent;
         }
 
         .conversation-inner {
-            max-width: 880px;
-            margin: 0 auto;
+            width: 100%;
             min-height: 100%;
             display: flex;
             flex-direction: column;
@@ -617,22 +1002,23 @@ const webUI = `<!DOCTYPE html>
 
         .empty-state {
             margin: auto;
-            width: min(100%, 620px);
-            padding: 38px 30px;
-            border-radius: 30px;
-            background: rgba(255, 255, 255, 0.72);
+            width: min(100%, 920px);
+            padding: 28px 30px;
+            border-radius: 24px;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(246, 239, 228, 0.9));
             border: 1px solid rgba(255, 255, 255, 0.8);
             box-shadow: var(--shadow-soft);
-            text-align: center;
+            text-align: left;
         }
 
         .empty-state h3 {
-            font-size: clamp(1.7rem, 4vw, 2.6rem);
+            font-size: clamp(1.55rem, 3vw, 2.1rem);
             letter-spacing: -0.04em;
         }
 
         .empty-state p {
-            margin-top: 0.75rem;
+            margin-top: 0.55rem;
+            max-width: 640px;
         }
 
         .empty-state.hidden {
@@ -640,18 +1026,19 @@ const webUI = `<!DOCTYPE html>
         }
 
         .message-list {
-            padding: 28px 0 20px;
+            display: grid;
+            gap: 14px;
+            padding: 10px 0 16px;
         }
 
         .message {
             width: 100%;
-            margin-bottom: 26px;
         }
 
         .message-shell {
             display: flex;
             align-items: flex-start;
-            gap: 14px;
+            gap: 10px;
         }
 
         .message.user .message-shell {
@@ -666,63 +1053,64 @@ const webUI = `<!DOCTYPE html>
 
         .message.user .message-body {
             order: 1;
-            max-width: min(76%, 640px);
+            max-width: min(78%, 860px);
             background: var(--user-bubble);
             border: 1px solid var(--line);
-            border-radius: 26px;
-            padding: 16px 18px;
+            border-radius: 18px 18px 8px 18px;
+            padding: 13px 15px;
             box-shadow: var(--shadow-soft);
         }
 
         .message.assistant .message-body {
-            max-width: 100%;
+            max-width: min(100%, 1120px);
             flex: 1;
-            padding-top: 2px;
+            padding: 1px 2px 0 0;
         }
 
         .message.tool_call .message-body,
         .message.tool_result .message-body {
             flex: 1;
-            background: rgba(255, 255, 255, 0.72);
+            background: rgba(255, 255, 255, 0.68);
             border: 1px solid var(--line);
-            border-radius: 24px;
-            padding: 16px 18px;
+            border-radius: 18px;
+            padding: 14px 15px;
             box-shadow: var(--shadow-soft);
         }
 
         .message-avatar {
-            flex: 0 0 36px;
-            width: 36px;
-            height: 36px;
+            flex: 0 0 34px;
+            width: 34px;
+            height: 34px;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            border-radius: 12px;
-            background: #111827;
-            color: #f9fafb;
-            font-size: 0.84rem;
+            border-radius: 11px;
+            background: var(--surface-contrast);
+            color: #f9f4eb;
+            font-size: 0.78rem;
             font-weight: 700;
         }
 
         .message-role {
-            margin-bottom: 0.55rem;
+            margin-bottom: 0.42rem;
             color: var(--muted-strong);
         }
 
         .message-copy {
-            line-height: 1.72;
+            line-height: 1.62;
             white-space: pre-wrap;
             word-break: break-word;
+            font-size: 0.95rem;
         }
 
         .message.assistant .message-copy {
-            font-size: 1rem;
+            font-size: 0.96rem;
         }
 
         .message-attachments {
             display: grid;
-            gap: 12px;
-            margin-bottom: 12px;
+            gap: 10px;
+            margin-bottom: 10px;
         }
 
         .message-attachments:last-child {
@@ -732,11 +1120,11 @@ const webUI = `<!DOCTYPE html>
         .attachment-card {
             display: flex;
             flex-direction: column;
-            gap: 10px;
-            padding: 12px;
-            border-radius: 18px;
-            background: rgba(243, 244, 246, 0.9);
-            border: 1px solid rgba(17, 24, 39, 0.06);
+            gap: 8px;
+            padding: 10px;
+            border-radius: 14px;
+            background: rgba(243, 237, 228, 0.78);
+            border: 1px solid rgba(52, 56, 49, 0.06);
         }
 
         .attachment-card img,
@@ -748,50 +1136,50 @@ const webUI = `<!DOCTYPE html>
 
         .attachment-card img {
             max-width: min(100%, 420px);
-            border: 1px solid rgba(17, 24, 39, 0.08);
+            border: 1px solid rgba(52, 56, 49, 0.08);
         }
 
         .attachment-meta {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 10px;
+            gap: 8px;
             flex-wrap: wrap;
-            font-size: 0.84rem;
+            font-size: 0.8rem;
             color: var(--muted-strong);
         }
 
         .attachment-kind {
             display: inline-flex;
             align-items: center;
-            padding: 0.24rem 0.55rem;
+            padding: 0.22rem 0.5rem;
             border-radius: 999px;
             background: rgba(16, 163, 127, 0.12);
             color: var(--accent-strong);
-            font-size: 0.72rem;
+            font-size: 0.68rem;
             font-weight: 700;
-            letter-spacing: 0.04em;
+            letter-spacing: 0.08em;
             text-transform: uppercase;
         }
 
         .attachment-transcript {
-            padding: 10px 12px;
-            border-radius: 14px;
+            padding: 9px 10px;
+            border-radius: 12px;
             background: rgba(255, 255, 255, 0.85);
-            border: 1px solid rgba(17, 24, 39, 0.06);
-            line-height: 1.6;
+            border: 1px solid rgba(52, 56, 49, 0.06);
+            line-height: 1.55;
             color: var(--text);
         }
 
         .message-time {
-            margin-top: 0.75rem;
-            font-size: 0.78rem;
+            margin-top: 0.55rem;
+            font-size: 0.74rem;
         }
 
         .tool-card {
             display: flex;
             flex-direction: column;
-            gap: 14px;
+            gap: 12px;
         }
 
         .tool-card-header,
@@ -806,23 +1194,23 @@ const webUI = `<!DOCTYPE html>
         .tool-card-header,
         .composer-footer {
             justify-content: space-between;
-            gap: 12px;
+            gap: 10px;
             flex-wrap: wrap;
         }
 
         .tool-card-title,
         .composer-actions {
-            gap: 10px;
+            gap: 8px;
         }
 
         .tool-label {
             display: inline-flex;
             align-items: center;
-            padding: 0.34rem 0.65rem;
+            padding: 0.26rem 0.54rem;
             border-radius: 999px;
-            font-size: 0.72rem;
+            font-size: 0.68rem;
             font-weight: 700;
-            letter-spacing: 0.06em;
+            letter-spacing: 0.08em;
             text-transform: uppercase;
         }
 
@@ -842,14 +1230,14 @@ const webUI = `<!DOCTYPE html>
         }
 
         .tool-name {
-            font-size: 1rem;
+            font-size: 0.94rem;
             font-weight: 700;
         }
 
         .tool-section {
             display: flex;
             flex-direction: column;
-            gap: 8px;
+            gap: 7px;
         }
 
         .tool-section-label,
@@ -859,96 +1247,99 @@ const webUI = `<!DOCTYPE html>
 
         .tool-block {
             overflow-x: auto;
-            padding: 14px 15px;
-            border-radius: 16px;
-            border: 1px solid rgba(17, 24, 39, 0.06);
+            padding: 12px 13px;
+            border-radius: 14px;
+            border: 1px solid rgba(52, 56, 49, 0.08);
             background: var(--surface-code);
             color: var(--text);
-            font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
-            font-size: 0.86rem;
-            line-height: 1.55;
+            font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+            font-size: 0.81rem;
+            line-height: 1.5;
             white-space: pre-wrap;
             word-break: break-word;
         }
 
         .tool-meta-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-            gap: 10px;
+            grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+            gap: 8px;
         }
 
         .tool-meta-item {
-            padding: 12px 14px;
-            border-radius: 16px;
+            padding: 10px 12px;
+            border-radius: 14px;
             background: var(--surface-soft);
-            border: 1px solid rgba(17, 24, 39, 0.06);
+            border: 1px solid rgba(52, 56, 49, 0.06);
         }
 
         .tool-meta-value {
             margin-top: 0.2rem;
-            font-size: 0.98rem;
+            font-size: 0.92rem;
             font-weight: 700;
         }
 
         .screenshot-preview {
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            gap: 8px;
         }
 
         .screenshot-preview img {
             width: 100%;
-            max-width: min(100%, 720px);
-            border-radius: 18px;
-            border: 1px solid rgba(17, 24, 39, 0.08);
+            max-width: min(100%, 880px);
+            border-radius: 14px;
+            border: 1px solid rgba(52, 56, 49, 0.08);
             box-shadow: var(--shadow-soft);
             background: #ffffff;
         }
 
         details.tool-details {
             border-top: 1px solid var(--line);
-            padding-top: 12px;
+            padding-top: 10px;
         }
 
         details.tool-details summary {
             cursor: pointer;
             color: var(--muted-strong);
             font-weight: 600;
+            font-size: 0.84rem;
         }
 
         .composer {
-            padding: 0 28px 28px;
+            padding: 10px 18px 18px;
+            border-top: 1px solid rgba(52, 56, 49, 0.08);
+            background: linear-gradient(180deg, rgba(255, 252, 247, 0.1), rgba(255, 252, 247, 0.76));
         }
 
         .composer-shell {
-            max-width: 880px;
-            margin: 0 auto;
-            padding: 14px 16px 12px;
-            border-radius: 30px;
+            width: 100%;
+            padding: 12px 13px 11px;
+            border-radius: 18px;
             background: var(--panel-strong);
             border: 1px solid var(--line);
             box-shadow: var(--shadow);
         }
 
         .composer-shell:focus-within {
-            border-color: rgba(16, 163, 127, 0.4);
-            box-shadow: 0 24px 64px rgba(15, 23, 42, 0.1);
+            border-color: rgba(31, 122, 99, 0.4);
+            box-shadow: 0 16px 34px rgba(43, 47, 40, 0.12);
         }
 
         .composer-input {
             width: 100%;
-            min-height: 30px;
-            max-height: 180px;
+            min-height: 26px;
+            max-height: 168px;
             border: none;
             outline: none;
             resize: none;
             background: transparent;
             color: var(--text);
-            line-height: 1.6;
+            line-height: 1.5;
+            font-size: 0.95rem;
         }
 
         .composer-input::placeholder {
-            color: #9ca3af;
+            color: #8a9085;
         }
 
         .hidden-input {
@@ -957,26 +1348,26 @@ const webUI = `<!DOCTYPE html>
 
         .draft-attachments {
             display: grid;
-            gap: 10px;
-            margin-bottom: 12px;
+            gap: 8px;
+            margin-bottom: 10px;
         }
 
         .draft-attachment {
             display: flex;
             align-items: flex-start;
-            gap: 10px;
-            padding: 10px 12px;
-            border-radius: 16px;
-            background: rgba(243, 244, 246, 0.9);
-            border: 1px solid rgba(17, 24, 39, 0.06);
+            gap: 8px;
+            padding: 9px 10px;
+            border-radius: 14px;
+            background: rgba(243, 237, 228, 0.8);
+            border: 1px solid rgba(52, 56, 49, 0.06);
         }
 
         .draft-attachment img {
-            width: 64px;
-            height: 64px;
+            width: 58px;
+            height: 58px;
             object-fit: cover;
-            border-radius: 12px;
-            border: 1px solid rgba(17, 24, 39, 0.06);
+            border-radius: 10px;
+            border: 1px solid rgba(52, 56, 49, 0.06);
             background: #ffffff;
         }
 
@@ -990,46 +1381,48 @@ const webUI = `<!DOCTYPE html>
         }
 
         .draft-attachment-name {
-            font-size: 0.92rem;
+            font-size: 0.88rem;
             font-weight: 600;
             word-break: break-word;
         }
 
         .draft-attachment-meta {
-            margin-top: 0.3rem;
-            font-size: 0.78rem;
+            margin-top: 0.22rem;
+            font-size: 0.74rem;
             color: var(--muted);
         }
 
         .draft-remove {
             flex: 0 0 auto;
-            padding: 0.45rem 0.7rem;
+            padding: 0.38rem 0.62rem;
             border: none;
             border-radius: 999px;
             background: rgba(220, 38, 38, 0.1);
             color: #b91c1c;
             cursor: pointer;
+            font-size: 0.76rem;
         }
 
         .composer-footer {
-            margin-top: 10px;
+            margin-top: 8px;
         }
 
         .composer-toolbar {
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
             flex-wrap: wrap;
         }
 
         .composer-btn {
-            padding: 0.6rem 0.9rem;
+            padding: 0.54rem 0.8rem;
             border: 1px solid var(--line);
             border-radius: 999px;
             background: rgba(255, 255, 255, 0.9);
             color: var(--text);
             cursor: pointer;
             transition: border-color 120ms ease, background 120ms ease;
+            font-size: 0.82rem;
         }
 
         .composer-btn.recording {
@@ -1045,17 +1438,19 @@ const webUI = `<!DOCTYPE html>
         }
 
         .composer-hint {
-            font-size: 0.82rem;
+            font-size: 0.76rem;
         }
 
         .send-btn {
-            padding: 0.72rem 1.15rem;
+            padding: 0.64rem 1rem;
             border: none;
             border-radius: 999px;
-            background: var(--accent);
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
             color: #ffffff;
             cursor: pointer;
             transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+            font-size: 0.84rem;
+            font-weight: 600;
         }
 
         .send-btn:disabled {
@@ -1066,14 +1461,14 @@ const webUI = `<!DOCTYPE html>
         }
 
         .loading {
-            max-width: 880px;
-            margin: 0 auto;
-            padding: 0 0 8px;
-            gap: 10px;
+            margin: 0 18px;
+            padding: 0 0 4px;
+            gap: 8px;
             color: var(--muted);
             visibility: hidden;
             opacity: 0;
             transition: opacity 140ms ease;
+            font-size: 0.82rem;
         }
 
         .loading.active {
@@ -1082,10 +1477,10 @@ const webUI = `<!DOCTYPE html>
         }
 
         .spinner {
-            width: 16px;
-            height: 16px;
+            width: 14px;
+            height: 14px;
             border-radius: 999px;
-            border: 2px solid rgba(16, 163, 127, 0.2);
+            border: 2px solid rgba(31, 122, 99, 0.16);
             border-top-color: var(--accent);
             animation: spin 0.8s linear infinite;
         }
@@ -1094,50 +1489,96 @@ const webUI = `<!DOCTYPE html>
             to { transform: rotate(360deg); }
         }
 
-        @media (max-width: 960px) {
+        @media (max-width: 1380px) {
+            .app-shell {
+                grid-template-columns: 200px minmax(0, 1fr) 340px;
+            }
+
+            .topbar {
+                flex-direction: column;
+            }
+
+            .topbar-metrics {
+                width: 100%;
+                min-width: 0;
+            }
+        }
+
+        @media (max-width: 1180px) {
             .app-shell {
                 grid-template-columns: 1fr;
+                height: auto;
+                min-height: 100vh;
+            }
+
+            .sidebar,
+            .inspector {
+                max-height: none;
             }
 
             .sidebar {
-                padding: 18px;
+                order: 1;
+            }
+
+            .main-panel {
+                order: 2;
+                min-height: 72vh;
+            }
+
+            .inspector {
+                order: 3;
+            }
+
+            .conversation {
+                padding: 10px 14px 0;
             }
         }
 
         @media (max-width: 720px) {
-            .app-shell,
-            .conversation,
-            .composer,
-            .topbar {
-                padding-left: 16px;
-                padding-right: 16px;
-            }
-
             .app-shell {
-                padding-top: 16px;
-                padding-bottom: 16px;
+                padding: 8px;
+                gap: 8px;
             }
 
-            .main-panel {
-                border-radius: 24px;
+            .sidebar,
+            .inspector {
+                padding: 10px;
             }
 
-            .conversation {
-                padding-left: 16px;
-                padding-right: 16px;
+            .topbar {
+                padding: 14px 14px 12px;
             }
 
-            .composer {
-                padding-bottom: 20px;
+            .topbar-metrics {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
             }
 
             .composer-shell,
             .empty-state {
-                border-radius: 24px;
+                border-radius: 16px;
             }
 
             .message.user .message-body {
                 max-width: 100%;
+            }
+
+            .message-shell {
+                gap: 8px;
+            }
+
+            .message-avatar {
+                width: 30px;
+                height: 30px;
+                flex-basis: 30px;
+                font-size: 0.7rem;
+            }
+
+            .conversation {
+                padding: 8px 10px 0;
+            }
+
+            .composer {
+                padding: 10px;
             }
 
             .composer-footer {
@@ -1157,30 +1598,73 @@ const webUI = `<!DOCTYPE html>
             <div class="brand">
                 <div class="brand-mark">AI</div>
                 <div class="brand-copy">
-                    <h1>Aiden Agent</h1>
-                    <p>Operator workspace for reasoning, tool use, and iteration.</p>
+                    <h1>Aiden Control Deck</h1>
+                    <p>Dense workspace for chat, tool execution, and device operation.</p>
                 </div>
             </div>
 
             <button type="button" class="sidebar-action" onclick="clearHistory()">New chat</button>
 
-            <div class="sidebar-card">
-                <div class="sidebar-kicker">Workspace</div>
-                <strong>ChatGPT-inspired layout</strong>
-                <div class="sidebar-note">Neutral canvas, centered conversation flow, compact user bubbles, and transparent tool traces.</div>
-            </div>
+            <div class="rail-stack">
+                <div class="sidebar-card">
+                    <div class="sidebar-kicker">Layout</div>
+                    <strong>Wide console, live dock</strong>
+                    <div class="sidebar-note">The center column now uses the screen like an operator console instead of a narrow chat transcript.</div>
+                </div>
 
-            <div class="sidebar-card">
-                <div class="sidebar-kicker">Tips</div>
-                <div class="sidebar-note">Send with Enter. Use Shift+Enter for a new line. Tool calls and results appear inline so the full execution path stays visible.</div>
+                <div class="rail-stats">
+                    <div class="rail-stat">
+                        <div class="sidebar-kicker">Mode</div>
+                        <div class="rail-stat-value">Chat + Tools</div>
+                    </div>
+                    <div class="rail-stat">
+                        <div class="sidebar-kicker">Transport</div>
+                        <div class="rail-stat-value">HTTP</div>
+                    </div>
+                    <div class="rail-stat">
+                        <div class="sidebar-kicker">Input</div>
+                        <div class="rail-stat-value">Text / Audio</div>
+                    </div>
+                    <div class="rail-stat">
+                        <div class="sidebar-kicker">Trace</div>
+                        <div class="rail-stat-value">Inline</div>
+                    </div>
+                </div>
+
+                <div class="sidebar-card">
+                    <div class="sidebar-kicker">Flow</div>
+                    <strong>Fast iteration path</strong>
+                    <div class="sidebar-note">Ask in the center, inspect results on the right, and reset the thread from the left rail without losing visibility.</div>
+                </div>
+
+                <div class="sidebar-card rail-footnote">
+                    <div class="sidebar-kicker">Keys</div>
+                    <div class="sidebar-note">Enter sends. Shift+Enter adds a line break. Tool calls and results stay in the same thread so execution never disappears behind the answer.</div>
+                </div>
             </div>
         </aside>
 
         <main class="main-panel">
             <header class="topbar">
-                <div class="sidebar-kicker">Agent Console</div>
-                <h2>Ask the agent, inspect the work, continue the thread.</h2>
-                <p>The interface keeps the conversation centered and lets execution details sit alongside the final answer instead of overwhelming it.</p>
+                <div class="topbar-main">
+                    <div class="sidebar-kicker">Agent Console</div>
+                    <h2>Run the agent in a full-width control surface instead of a narrow message column.</h2>
+                    <p>Conversation stays central, the input bar stays dense, and the right dock keeps tool testing plus skill export visible without stealing the main thread.</p>
+                </div>
+                <div class="topbar-metrics">
+                    <div class="topbar-metric">
+                        <div class="topbar-metric-label">Workspace</div>
+                        <div class="topbar-metric-value">3-Column</div>
+                    </div>
+                    <div class="topbar-metric">
+                        <div class="topbar-metric-label">Trace</div>
+                        <div class="topbar-metric-value">Inline</div>
+                    </div>
+                    <div class="topbar-metric">
+                        <div class="topbar-metric-label">Tools</div>
+                        <div class="topbar-metric-value">HTTP</div>
+                    </div>
+                </div>
             </header>
 
             <section class="conversation" id="conversation">
@@ -1221,6 +1705,60 @@ const webUI = `<!DOCTYPE html>
                 </div>
             </form>
         </main>
+
+        <aside class="inspector">
+            <div class="sidebar-card tool-lab">
+                <div class="sidebar-kicker">Tool Lab</div>
+                <strong>Manual HTTP tool test</strong>
+                <div class="sidebar-note">Invoke any exposed tool directly from the browser. Results stay outside chat history but beside the conversation.</div>
+                <label class="tool-lab-label" for="toolSelect">Tool</label>
+                <select id="toolSelect" class="tool-lab-select">
+                    <option value="">Loading tools...</option>
+                </select>
+                <div class="sidebar-note" id="toolDescription">Tool metadata will appear here.</div>
+                <textarea
+                    id="toolInput"
+                    class="tool-lab-input"
+                    rows="7"
+                    spellcheck="false"
+                    placeholder='{"command":"pwd"}'
+                ></textarea>
+                <div class="tool-lab-row">
+                    <button type="button" class="composer-btn tool-secondary-btn" id="toolExampleBtn" onclick="loadSelectedToolExample()">Use example</button>
+                    <button type="button" class="send-btn tool-run-btn" id="toolInvokeBtn" onclick="invokeSelectedTool()">Run tool</button>
+                </div>
+                <div class="tool-lab-status" id="toolStatus">The request body is forwarded as raw tool input, so JSON and plain text both work.</div>
+                <div class="tool-lab-result hidden" id="toolResultPanel">
+                    <div class="tool-lab-result-meta" id="toolResultMeta"></div>
+                    <div class="tool-lab-preview hidden" id="toolResultPreviewWrap">
+                        <img id="toolResultPreview" alt="Tool output preview" />
+                    </div>
+                    <pre class="tool-block" id="toolResultOutput"></pre>
+                </div>
+            </div>
+
+            <div class="sidebar-card skill-export">
+                <div class="sidebar-kicker">Skill Export</div>
+                <strong>Generated HTTP skills</strong>
+                <div class="sidebar-note">Copy a generated SKILL.md block for Codex or other agents that should operate Aiden through HTTP.</div>
+                <label class="tool-lab-label" for="skillSelect">Skill bundle</label>
+                <select id="skillSelect" class="tool-lab-select">
+                    <option value="">Loading skills...</option>
+                </select>
+                <textarea
+                    id="skillMarkdown"
+                    class="tool-lab-input"
+                    rows="12"
+                    readonly
+                    spellcheck="false"
+                    placeholder="Generated skill markdown will appear here."
+                ></textarea>
+                <div class="tool-lab-row">
+                    <button type="button" class="composer-btn tool-secondary-btn" id="copySkillBtn" onclick="copySelectedSkill()">Copy skill</button>
+                </div>
+                <div class="tool-lab-status" id="skillStatus">The exported skill points mature agents at the same HTTP tool surface used by this WebUI.</div>
+            </div>
+        </aside>
     </div>
 
     <script>
@@ -1234,17 +1772,38 @@ const webUI = `<!DOCTYPE html>
         const draftAttachmentsEl = document.getElementById('draftAttachments');
         const loadingDiv = document.getElementById('loading');
         const emptyStateEl = document.getElementById('emptyState');
+        const toolSelectEl = document.getElementById('toolSelect');
+        const toolDescriptionEl = document.getElementById('toolDescription');
+        const toolInputEl = document.getElementById('toolInput');
+        const toolExampleBtnEl = document.getElementById('toolExampleBtn');
+        const toolInvokeBtnEl = document.getElementById('toolInvokeBtn');
+        const toolStatusEl = document.getElementById('toolStatus');
+        const toolResultPanelEl = document.getElementById('toolResultPanel');
+        const toolResultMetaEl = document.getElementById('toolResultMeta');
+        const toolResultPreviewWrapEl = document.getElementById('toolResultPreviewWrap');
+        const toolResultPreviewEl = document.getElementById('toolResultPreview');
+        const toolResultOutputEl = document.getElementById('toolResultOutput');
+        const skillSelectEl = document.getElementById('skillSelect');
+        const skillMarkdownEl = document.getElementById('skillMarkdown');
+        const skillStatusEl = document.getElementById('skillStatus');
+        const copySkillBtnEl = document.getElementById('copySkillBtn');
         const targetAudioSampleRate = 16000;
 
         let nextAttachmentId = 1;
         let draftAttachments = [];
         let recorderState = createRecorderState();
+        let toolCatalog = [];
+        let toolSkills = [];
 
         loadHistory();
+        loadToolCatalog();
+        loadToolSkills();
         autoResizeInput();
 
         inputEl.addEventListener('input', autoResizeInput);
         imageInputEl.addEventListener('change', handleImageSelection);
+        toolSelectEl.addEventListener('change', syncSelectedTool);
+        skillSelectEl.addEventListener('change', syncSelectedSkill);
         inputEl.addEventListener('keydown', function(event) {
             if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
@@ -1259,6 +1818,246 @@ const webUI = `<!DOCTYPE html>
                 renderHistory(history);
             } catch (err) {
                 console.error('Failed to load history:', err);
+            }
+        }
+
+        async function loadToolCatalog() {
+            try {
+                const res = await fetch('/api/tools');
+                if (!res.ok) {
+                    throw new Error(await res.text() || 'Failed to load tools');
+                }
+                const data = await res.json();
+                toolCatalog = data.tools || [];
+                renderToolCatalog();
+            } catch (err) {
+                console.error('Failed to load tools:', err);
+                toolCatalog = [];
+                toolSelectEl.innerHTML = '<option value="">Tools unavailable</option>';
+                toolSelectEl.disabled = true;
+                toolInputEl.disabled = true;
+                toolExampleBtnEl.disabled = true;
+                toolInvokeBtnEl.disabled = true;
+                toolDescriptionEl.textContent = 'Tool metadata failed to load: ' + err.message;
+                toolStatusEl.textContent = 'Check the daemon logs and refresh after the tool API is available.';
+                toolStatusEl.classList.add('error');
+            }
+        }
+
+        function renderToolCatalog() {
+            toolSelectEl.innerHTML = '';
+
+            if (toolCatalog.length === 0) {
+                toolSelectEl.innerHTML = '<option value="">No tools exposed</option>';
+                toolSelectEl.disabled = true;
+                toolInputEl.disabled = true;
+                toolExampleBtnEl.disabled = true;
+                toolInvokeBtnEl.disabled = true;
+                return;
+            }
+
+            toolSelectEl.disabled = false;
+            toolInputEl.disabled = false;
+            toolExampleBtnEl.disabled = false;
+            toolInvokeBtnEl.disabled = false;
+
+            toolCatalog.forEach(function(tool) {
+                const option = document.createElement('option');
+                option.value = tool.name;
+                option.textContent = tool.name + ' · ' + tool.category;
+                toolSelectEl.appendChild(option);
+            });
+
+            syncSelectedTool();
+        }
+
+        function getSelectedTool() {
+            const selectedName = toolSelectEl.value;
+            for (let i = 0; i < toolCatalog.length; i++) {
+                if (toolCatalog[i].name === selectedName) {
+                    return toolCatalog[i];
+                }
+            }
+            return toolCatalog.length > 0 ? toolCatalog[0] : null;
+        }
+
+        function syncSelectedTool() {
+            const tool = getSelectedTool();
+            if (!tool) return;
+
+            if (toolSelectEl.value !== tool.name) {
+                toolSelectEl.value = tool.name;
+            }
+
+            toolDescriptionEl.textContent = tool.description + ' Endpoint: ' + tool.http.method + ' ' + tool.http.path;
+            toolInputEl.placeholder = tool.example_input || '';
+            if (toolInputEl.dataset.toolName !== tool.name) {
+                toolInputEl.value = tool.example_input || '';
+                toolInputEl.dataset.toolName = tool.name;
+            }
+            toolStatusEl.textContent = 'Input mode: ' + tool.input_mode + '. Raw payload is sent directly to the tool.';
+            toolStatusEl.classList.remove('error');
+            clearToolResultPreview();
+        }
+
+        function loadSelectedToolExample() {
+            const tool = getSelectedTool();
+            if (!tool) return;
+            toolInputEl.value = tool.example_input || '';
+            toolStatusEl.textContent = 'Example payload loaded for ' + tool.name + '.';
+            toolStatusEl.classList.remove('error');
+        }
+
+        async function invokeSelectedTool() {
+            const tool = getSelectedTool();
+            if (!tool || toolInvokeBtnEl.disabled) return;
+
+            toolInvokeBtnEl.disabled = true;
+            toolExampleBtnEl.disabled = true;
+            toolStatusEl.textContent = 'Running ' + tool.name + '...';
+            toolStatusEl.classList.remove('error');
+
+            try {
+                const res = await fetch(tool.http.path, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        raw_input: toolInputEl.value
+                    })
+                });
+
+                if (!res.ok) {
+                    throw new Error(await res.text() || 'Tool call failed');
+                }
+
+                const data = await res.json();
+                renderToolInvokeResult(data);
+            } catch (err) {
+                console.error('Failed to invoke tool:', err);
+                toolStatusEl.textContent = 'Tool call failed: ' + err.message;
+                toolStatusEl.classList.add('error');
+                toolResultPanelEl.classList.add('hidden');
+            } finally {
+                toolInvokeBtnEl.disabled = false;
+                toolExampleBtnEl.disabled = false;
+            }
+        }
+
+        function renderToolInvokeResult(result) {
+            toolResultPanelEl.classList.remove('hidden');
+            toolResultMetaEl.textContent = [
+                result.tool && result.tool.name ? result.tool.name : 'tool',
+                result.duration_ms + ' ms',
+                result.is_error ? 'error' : 'ok'
+            ].join(' · ');
+            toolResultOutputEl.textContent = formatToolPayload(result.output || '');
+
+            const screenshot = parseScreenshotOutput(result.tool ? result.tool.name : '', result.output || '');
+            if (screenshot) {
+                toolResultPreviewWrapEl.classList.remove('hidden');
+                toolResultPreviewEl.src = 'data:image/' + (screenshot.format || 'jpeg') + ';base64,' + screenshot.data;
+            } else {
+                clearToolResultPreview();
+            }
+
+            if (result.is_error) {
+                toolStatusEl.textContent = result.error || 'Tool returned an error state.';
+                toolStatusEl.classList.add('error');
+            } else {
+                toolStatusEl.textContent = 'Tool finished successfully at ' + formatTime(result.called_at) + '.';
+                toolStatusEl.classList.remove('error');
+            }
+        }
+
+        function clearToolResultPreview() {
+            toolResultPreviewWrapEl.classList.add('hidden');
+            toolResultPreviewEl.removeAttribute('src');
+        }
+
+        async function loadToolSkills() {
+            try {
+                const res = await fetch('/api/tool-skills');
+                if (!res.ok) {
+                    throw new Error(await res.text() || 'Failed to load tool skills');
+                }
+                const data = await res.json();
+                toolSkills = data.skills || [];
+                renderToolSkills();
+            } catch (err) {
+                console.error('Failed to load tool skills:', err);
+                toolSkills = [];
+                skillSelectEl.innerHTML = '<option value="">Skills unavailable</option>';
+                skillSelectEl.disabled = true;
+                skillMarkdownEl.value = '';
+                copySkillBtnEl.disabled = true;
+                skillStatusEl.textContent = 'Skill export unavailable: ' + err.message;
+                skillStatusEl.classList.add('error');
+            }
+        }
+
+        function renderToolSkills() {
+            skillSelectEl.innerHTML = '';
+
+            if (toolSkills.length === 0) {
+                skillSelectEl.innerHTML = '<option value="">No generated skills</option>';
+                skillSelectEl.disabled = true;
+                skillMarkdownEl.value = '';
+                copySkillBtnEl.disabled = true;
+                return;
+            }
+
+            skillSelectEl.disabled = false;
+            copySkillBtnEl.disabled = false;
+
+            toolSkills.forEach(function(skill) {
+                const option = document.createElement('option');
+                option.value = skill.name;
+                option.textContent = skill.name;
+                skillSelectEl.appendChild(option);
+            });
+
+            syncSelectedSkill();
+        }
+
+        function getSelectedSkill() {
+            const selectedName = skillSelectEl.value;
+            for (let i = 0; i < toolSkills.length; i++) {
+                if (toolSkills[i].name === selectedName) {
+                    return toolSkills[i];
+                }
+            }
+            return toolSkills.length > 0 ? toolSkills[0] : null;
+        }
+
+        function syncSelectedSkill() {
+            const skill = getSelectedSkill();
+            if (!skill) return;
+            if (skillSelectEl.value !== skill.name) {
+                skillSelectEl.value = skill.name;
+            }
+            skillMarkdownEl.value = skill.markdown || '';
+            skillStatusEl.textContent = skill.description + ' Tools: ' + (skill.tool_names || []).join(', ');
+            skillStatusEl.classList.remove('error');
+        }
+
+        async function copySelectedSkill() {
+            const skill = getSelectedSkill();
+            if (!skill || !skill.markdown) return;
+
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(skill.markdown);
+                } else {
+                    skillMarkdownEl.focus();
+                    skillMarkdownEl.select();
+                    document.execCommand('copy');
+                }
+                skillStatusEl.textContent = 'Copied ' + skill.name + ' to clipboard.';
+                skillStatusEl.classList.remove('error');
+            } catch (err) {
+                console.error('Failed to copy skill:', err);
+                skillStatusEl.textContent = 'Copy failed: ' + err.message;
+                skillStatusEl.classList.add('error');
             }
         }
 
@@ -2017,9 +2816,13 @@ const webUI = `<!DOCTYPE html>
         }
 
         function parseScreenshotPayload(msg) {
-            if (msg.tool_name !== 'screenshot' || !msg.content) return null;
+            return parseScreenshotOutput(msg.tool_name || '', msg.content || '');
+        }
+
+        function parseScreenshotOutput(toolName, content) {
+            if (toolName !== 'screenshot' || !content) return null;
             try {
-                const parsed = JSON.parse(msg.content);
+                const parsed = JSON.parse(content);
                 if (!parsed || typeof parsed.data !== 'string') return null;
                 return parsed;
             } catch (_) {
