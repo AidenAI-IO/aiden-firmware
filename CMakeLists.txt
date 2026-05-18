@@ -101,6 +101,7 @@ target_link_directories(aiden
 target_link_libraries(aiden
     PRIVATE
         cjson
+        aiden_image
     PUBLIC
         rockit
         rockchip_mpp

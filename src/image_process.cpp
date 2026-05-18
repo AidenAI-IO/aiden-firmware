@@ -91,36 +91,38 @@ int crop_black_bars(const cv::Mat& image, cv::Mat& dst, unsigned char black_thre
     cv::Mat gray;
     cv::cvtColor(image, gray, cv::COLOR_RGB2GRAY);
 
+    const double stddev_limit = 6.0;
+
+    auto is_border_row = [&](int row) -> bool {
+        cv::Scalar m, s;
+        cv::meanStdDev(gray.row(row), m, s);
+        return m[0] <= static_cast<double>(black_threshold) && s[0] <= stddev_limit;
+    };
+
+    auto is_border_col = [&](int col) -> bool {
+        cv::Scalar m, s;
+        cv::meanStdDev(gray.col(col), m, s);
+        return m[0] <= static_cast<double>(black_threshold) && s[0] <= stddev_limit;
+    };
+
     int top = 0;
     for (; top < gray.rows; ++top) {
-        cv::Scalar m = cv::mean(gray.row(top));
-        if (m[0] > static_cast<double>(black_threshold)) {
-            break;
-        }
+        if (!is_border_row(top)) break;
     }
 
     int bottom = gray.rows - 1;
     for (; bottom >= top; --bottom) {
-        cv::Scalar m = cv::mean(gray.row(bottom));
-        if (m[0] > static_cast<double>(black_threshold)) {
-            break;
-        }
+        if (!is_border_row(bottom)) break;
     }
 
     int left = 0;
     for (; left < gray.cols; ++left) {
-        cv::Scalar m = cv::mean(gray.col(left));
-        if (m[0] > static_cast<double>(black_threshold)) {
-            break;
-        }
+        if (!is_border_col(left)) break;
     }
 
     int right = gray.cols - 1;
     for (; right >= left; --right) {
-        cv::Scalar m = cv::mean(gray.col(right));
-        if (m[0] > static_cast<double>(black_threshold)) {
-            break;
-        }
+        if (!is_border_col(right)) break;
     }
 
     if (right < left || bottom < top) {
