@@ -30,6 +30,7 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig) *ToolSet {
 			"touch_gesture": &TouchGestureTool{dev: mouseDev, screen: screen},
 			"screenshot":    NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen),
 			"audio_volume":  NewAudioVolumeTool(audioCfg.SocketOrDefault()),
+			"shell":         &ShellTool{},
 		},
 	}
 }

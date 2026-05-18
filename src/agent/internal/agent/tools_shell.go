@@ -1,0 +1,649 @@
+package agent
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"os/exec"
+	"strings"
+	"time"
+
+	gopty "github.com/aymanbagabas/go-pty"
+)
+
+const (
+	shellDefaultTimeoutSeconds = 30.0
+	shellMaxTimeoutSeconds     = 300.0
+	shellDefaultPollBytes      = 12000
+	shellMaxPollBytes          = 100000
+	shellDefaultPTYRows        = 40
+	shellDefaultPTYCols        = 120
+)
+
+type ShellTool struct{}
+
+func (t *ShellTool) Name() string { return "shell" }
+
+func (t *ShellTool) Description() string {
+	return `Execute a shell command or manage a running shell session. Input is a JSON object with these fields:
+- command (required for foreground/start): the shell command to run, e.g. "ls -la".
+- timeout: execution timeout in seconds (default 30, max 300).
+- workdir: working directory for the command (default: current directory).
+- background: when true, start a long-running shell session and return a session_id immediately.
+- pty: when true, run the command in a pseudo-terminal for interactive CLI programs.
+- action: session lifecycle action. One of "start", "poll", "write", "submit", "send_keys", "resize", "stop".
+- session_id: required for session actions after "start".
+- input: text to write to the running terminal for "write" or "submit".
+- keys: key sequence names for "send_keys", e.g. ["enter"], ["ctrl+c"], ["tab"].
+- rows / cols: terminal size for PTY start or "resize".
+- bytes: max bytes to return for "poll" (default 12000, max 100000).`
+}
+
+func (t *ShellTool) Call(ctx context.Context, input string) (string, error) {
+	arguments := map[string]interface{}{}
+	trimmed := strings.TrimSpace(input)
+	if trimmed != "" {
+		if err := json.Unmarshal([]byte(trimmed), &arguments); err != nil {
+			return shellErrorString(fmt.Sprintf("invalid input: %v", err)), nil
+		}
+	}
+
+	if shellBoolArg(arguments, "background") || shellHasAction(arguments) {
+		return shellExecuteBackground(ctx, arguments)
+	}
+
+	command, ok := arguments["command"].(string)
+	if !ok || strings.TrimSpace(command) == "" {
+		return shellErrorString("Missing required parameter: command"), nil
+	}
+
+	timeoutSecs := shellDefaultTimeoutSeconds
+	if v, ok := arguments["timeout"].(float64); ok && v > 0 {
+		timeoutSecs = v
+		if timeoutSecs > shellMaxTimeoutSeconds {
+			timeoutSecs = shellMaxTimeoutSeconds
+		}
+	}
+
+	workdir := shellStringArg(arguments, "workdir", "")
+	usePTY := shellBoolArg(arguments, "pty")
+
+	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSecs*float64(time.Second)))
+	defer cancel()
+
+	result, runErr := shellRunForeground(execCtx, command, workdir, usePTY)
+	if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+		return shellErrorString(fmt.Sprintf("Error: command timed out after %.0f seconds", timeoutSecs)), nil
+	}
+	if runErr != nil {
+		return shellErrorString(result), nil
+	}
+	return result, nil
+}
+
+func shellExecuteBackground(ctx context.Context, arguments map[string]interface{}) (string, error) {
+	action := shellStringArg(arguments, "action", "start")
+	switch action {
+	case "start":
+		return shellStartBackground(ctx, arguments)
+	case "poll":
+		return shellPollBackground(arguments)
+	case "write":
+		return shellWriteBackground(arguments)
+	case "submit":
+		return shellSubmitBackground(arguments)
+	case "send_keys":
+		return shellSendKeysBackground(arguments)
+	case "resize":
+		return shellResizeBackground(arguments)
+	case "stop":
+		return shellStopBackground(arguments)
+	default:
+		return shellErrorString(fmt.Sprintf("invalid action: %s", action)), nil
+	}
+}
+
+func shellStartBackground(ctx context.Context, arguments map[string]interface{}) (string, error) {
+	command := shellStringArg(arguments, "command", "")
+	if command == "" {
+		return shellErrorString("Missing required parameter: command"), nil
+	}
+
+	workdir := shellStringArg(arguments, "workdir", "")
+	usePTY := shellBoolArg(arguments, "pty")
+
+	var sessionCtx context.Context
+	var cancel context.CancelFunc
+	if v, ok := arguments["timeout"].(float64); ok && v > 0 {
+		timeoutSecs := v
+		if timeoutSecs > shellMaxTimeoutSeconds {
+			timeoutSecs = shellMaxTimeoutSeconds
+		}
+		sessionCtx, cancel = context.WithTimeout(context.Background(), time.Duration(timeoutSecs*float64(time.Second)))
+	} else {
+		sessionCtx, cancel = context.WithCancel(context.Background())
+	}
+
+	cmd, err := shellBuildCommand(sessionCtx, command)
+	if err != nil {
+		cancel()
+		return shellErrorString(err.Error()), nil
+	}
+
+	session := &shellSession{
+		id:        globalShellSessionManager.nextSessionID(),
+		command:   command,
+		workdir:   workdir,
+		usePTY:    usePTY,
+		cmd:       cmd,
+		output:    newShellRingBuffer(shellMaxPollBytes * 2),
+		done:      make(chan struct{}),
+		cancel:    cancel,
+		startedAt: time.Now(),
+	}
+
+	if usePTY {
+		if err = shellStartPTYBackground(sessionCtx, session, arguments); err != nil {
+			cancel()
+			return shellErrorString(err.Error()), nil
+		}
+	} else {
+		if workdir != "" {
+			cmd.Dir = workdir
+		}
+		stdin, pipeErr := cmd.StdinPipe()
+		if pipeErr != nil {
+			cancel()
+			return shellErrorString(pipeErr.Error()), nil
+		}
+		stdoutPipe, pipeErr := cmd.StdoutPipe()
+		if pipeErr != nil {
+			cancel()
+			_ = stdin.Close()
+			return shellErrorString(pipeErr.Error()), nil
+		}
+		stderrPipe, pipeErr := cmd.StderrPipe()
+		if pipeErr != nil {
+			cancel()
+			_ = stdin.Close()
+			_ = stdoutPipe.Close()
+			return shellErrorString(pipeErr.Error()), nil
+		}
+
+		if pipeErr = cmd.Start(); pipeErr != nil {
+			cancel()
+			_ = stdin.Close()
+			_ = stdoutPipe.Close()
+			_ = stderrPipe.Close()
+			return shellErrorString(pipeErr.Error()), nil
+		}
+
+		session.stdin = stdin
+		go session.capture(stdoutPipe)
+		go session.capture(stderrPipe)
+	}
+
+	go session.wait()
+	globalShellSessionManager.put(session)
+
+	return shellJSONString(map[string]interface{}{
+		"session_id": session.id,
+		"running":    true,
+		"pid":        session.processID(),
+		"command":    session.command,
+		"workdir":    session.workdir,
+		"pty":        session.usePTY,
+		"started_at": session.startedAt.Format(time.RFC3339),
+		"message":    "Background shell session started. Use action=poll to read output, action=write to send input, and action=stop to terminate it.",
+	}), nil
+}
+
+func shellPollBackground(arguments map[string]interface{}) (string, error) {
+	sessionID := shellStringArg(arguments, "session_id", "")
+	if sessionID == "" {
+		return shellErrorString("Missing required parameter: session_id"), nil
+	}
+	session := globalShellSessionManager.get(sessionID)
+	if session == nil {
+		return shellErrorString(fmt.Sprintf("shell session not found: %s", sessionID)), nil
+	}
+
+	maxBytes := shellIntArg(arguments, "bytes", shellDefaultPollBytes)
+	if maxBytes <= 0 {
+		maxBytes = shellDefaultPollBytes
+	}
+	if maxBytes > shellMaxPollBytes {
+		maxBytes = shellMaxPollBytes
+	}
+
+	output, truncated := session.output.readUnread(maxBytes)
+	running := session.isRunning()
+	payload := map[string]interface{}{
+		"session_id":       session.id,
+		"running":          running,
+		"pid":              session.processID(),
+		"command":          session.command,
+		"workdir":          session.workdir,
+		"pty":              session.usePTY,
+		"output":           output,
+		"output_truncated": truncated,
+		"started_at":       session.startedAt.Format(time.RFC3339),
+		"exit_code":        session.exitCodeValue(),
+		"exit_error":       session.exitErrorText(),
+	}
+
+	if !running && !session.output.hasUnread() {
+		globalShellSessionManager.delete(session.id)
+	}
+	return shellJSONString(payload), nil
+}
+
+func shellWriteBackground(arguments map[string]interface{}) (string, error) {
+	sessionID := shellStringArg(arguments, "session_id", "")
+	if sessionID == "" {
+		return shellErrorString("Missing required parameter: session_id"), nil
+	}
+	session := globalShellSessionManager.get(sessionID)
+	if session == nil {
+		return shellErrorString(fmt.Sprintf("shell session not found: %s", sessionID)), nil
+	}
+	if !session.isRunning() {
+		return shellErrorString("shell session is no longer running"), nil
+	}
+
+	input := shellStringArg(arguments, "input", "")
+	if input == "" {
+		return shellErrorString("Missing required parameter: input"), nil
+	}
+
+	n, err := session.writeString(input)
+	if err != nil {
+		return shellErrorString(err.Error()), nil
+	}
+	return shellJSONString(map[string]interface{}{
+		"session_id":    session.id,
+		"written_bytes": n,
+		"message":       "Input written to shell session.",
+	}), nil
+}
+
+func shellSubmitBackground(arguments map[string]interface{}) (string, error) {
+	input := shellStringArg(arguments, "input", "")
+	if input == "" {
+		return shellWriteBackground(map[string]interface{}{
+			"session_id": arguments["session_id"],
+			"input":      "\n",
+		})
+	}
+	return shellWriteBackground(map[string]interface{}{
+		"session_id": arguments["session_id"],
+		"input":      input + "\n",
+	})
+}
+
+func shellSendKeysBackground(arguments map[string]interface{}) (string, error) {
+	sessionID := shellStringArg(arguments, "session_id", "")
+	if sessionID == "" {
+		return shellErrorString("Missing required parameter: session_id"), nil
+	}
+	session := globalShellSessionManager.get(sessionID)
+	if session == nil {
+		return shellErrorString(fmt.Sprintf("shell session not found: %s", sessionID)), nil
+	}
+	if !session.isRunning() {
+		return shellErrorString("shell session is no longer running"), nil
+	}
+
+	keys := shellStringSliceArg(arguments, "keys")
+	if len(keys) == 0 {
+		return shellErrorString("Missing required parameter: keys"), nil
+	}
+
+	var seq strings.Builder
+	for _, key := range keys {
+		part, err := shellKeySequence(key)
+		if err != nil {
+			return shellErrorString(err.Error()), nil
+		}
+		seq.WriteString(part)
+	}
+
+	n, err := session.writeString(seq.String())
+	if err != nil {
+		return shellErrorString(err.Error()), nil
+	}
+	return shellJSONString(map[string]interface{}{
+		"session_id":    session.id,
+		"written_bytes": n,
+		"message":       "Key sequence written to shell session.",
+	}), nil
+}
+
+func shellResizeBackground(arguments map[string]interface{}) (string, error) {
+	sessionID := shellStringArg(arguments, "session_id", "")
+	if sessionID == "" {
+		return shellErrorString("Missing required parameter: session_id"), nil
+	}
+	session := globalShellSessionManager.get(sessionID)
+	if session == nil {
+		return shellErrorString(fmt.Sprintf("shell session not found: %s", sessionID)), nil
+	}
+	if !session.usePTY || session.pty == nil {
+		return shellErrorString("shell session is not running in pty mode"), nil
+	}
+
+	cols := shellPTYCols(arguments)
+	rows := shellPTYRows(arguments)
+	if err := shellResizePTY(session, cols, rows); err != nil {
+		return shellErrorString(err.Error()), nil
+	}
+	return shellJSONString(map[string]interface{}{
+		"session_id": session.id,
+		"pty":        true,
+		"cols":       cols,
+		"rows":       rows,
+		"message":    "Shell PTY resized.",
+	}), nil
+}
+
+func shellStopBackground(arguments map[string]interface{}) (string, error) {
+	sessionID := shellStringArg(arguments, "session_id", "")
+	if sessionID == "" {
+		return shellErrorString("Missing required parameter: session_id"), nil
+	}
+	session := globalShellSessionManager.get(sessionID)
+	if session == nil {
+		return shellErrorString(fmt.Sprintf("shell session not found: %s", sessionID)), nil
+	}
+
+	session.stop()
+	globalShellSessionManager.delete(session.id)
+
+	return shellJSONString(map[string]interface{}{
+		"session_id": session.id,
+		"stopped":    true,
+		"running":    false,
+		"message":    "Shell session stopped.",
+	}), nil
+}
+
+func shellBuildCommand(ctx context.Context, command string) (*exec.Cmd, error) {
+	cmd := exec.CommandContext(ctx, shellPlatformShell(), shellPlatformShellArg(), command)
+	cmd.Env = shellCommandEnv(false)
+	shellSetProcessGroup(cmd)
+	return cmd, nil
+}
+
+func shellBuildPtyCommand(ctx context.Context, command string) (gopty.Pty, *gopty.Cmd, error) {
+	ptmx, err := gopty.New()
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd := ptmx.CommandContext(ctx, shellPlatformShell(), shellPlatformShellArg(), command)
+	cmd.Env = shellCommandEnv(true)
+	shellSetProcessGroupPty(cmd)
+	return ptmx, cmd, nil
+}
+
+func shellRunForeground(ctx context.Context, command string, workdir string, usePTY bool) (string, error) {
+	if !usePTY {
+		return shellRunForegroundCmd(ctx, command, workdir)
+	}
+	return shellRunForegroundPTY(ctx, command, workdir)
+}
+
+func shellRunForegroundCmd(ctx context.Context, command string, workdir string) (string, error) {
+	cmd := exec.Command(shellPlatformShell(), shellPlatformShellArg(), command)
+	cmd.Env = shellCommandEnv(false)
+	shellSetProcessGroup(cmd)
+	if workdir != "" {
+		cmd.Dir = workdir
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if startErr := cmd.Start(); startErr != nil {
+		return fmt.Sprintf("Error: %s", startErr.Error()), startErr
+	}
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+
+	select {
+	case runErr := <-waitDone:
+		stdoutStr := stdout.String()
+		stderrStr := stderr.String()
+		if runErr != nil {
+			var parts []string
+			parts = append(parts, fmt.Sprintf("Error: %s", runErr.Error()))
+			if stderrStr != "" {
+				parts = append(parts, fmt.Sprintf("Stderr:\n%s", stderrStr))
+			}
+			if stdoutStr != "" {
+				parts = append(parts, fmt.Sprintf("Stdout:\n%s", stdoutStr))
+			}
+			return strings.Join(parts, "\n"), runErr
+		}
+		result := stdoutStr
+		if stderrStr != "" {
+			if result != "" {
+				result = fmt.Sprintf("%s\nStderr:\n%s", result, stderrStr)
+			} else {
+				result = fmt.Sprintf("Stderr:\n%s", stderrStr)
+			}
+		}
+		if result == "" {
+			result = "(no output)"
+		}
+		return result, nil
+
+	case <-ctx.Done():
+		if killErr := shellKillProcessGroup(cmd.Process); killErr != nil {
+			log.Printf("shell: kill process group failed: %v", killErr)
+		}
+		<-waitDone
+		return "", ctx.Err()
+	}
+}
+
+func shellRunForegroundPTY(ctx context.Context, command string, workdir string) (string, error) {
+	ptmx, ptyCmd, err := shellBuildPtyCommand(ctx, command)
+	if err != nil {
+		return fmt.Sprintf("Error: %s", err.Error()), err
+	}
+	if workdir != "" {
+		ptyCmd.Dir = workdir
+	}
+	if sizeErr := shellResizePtyRaw(ptmx, int(shellDefaultPTYCols), int(shellDefaultPTYRows)); sizeErr != nil {
+		_ = ptmx.Close()
+		return fmt.Sprintf("Error: %s", sizeErr.Error()), sizeErr
+	}
+	if err = ptyCmd.Start(); err != nil {
+		_ = ptmx.Close()
+		return fmt.Sprintf("Error: %s", err.Error()), err
+	}
+
+	var output bytes.Buffer
+	copyDone := make(chan error, 1)
+	go func() {
+		_, copyErr := io.Copy(&output, ptmx)
+		if copyErr != nil && !errors.Is(copyErr, io.EOF) {
+			copyDone <- copyErr
+			return
+		}
+		copyDone <- nil
+	}()
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- ptyCmd.Wait()
+	}()
+
+	select {
+	case runErr := <-waitDone:
+		_ = ptmx.Close()
+		copyErr := <-copyDone
+		if copyErr != nil && runErr == nil {
+			runErr = copyErr
+		}
+		text := output.String()
+		if text == "" {
+			text = "(no output)"
+		}
+		if runErr != nil {
+			return fmt.Sprintf("Error: %s\nOutput:\n%s", runErr.Error(), text), runErr
+		}
+		return text, nil
+
+	case <-ctx.Done():
+		if killErr := shellKillProcessGroup(ptyCmd.Process); killErr != nil {
+			log.Printf("shell: kill pty process group failed: %v", killErr)
+		}
+		_ = ptmx.Close()
+		<-waitDone
+		<-copyDone
+		return "", ctx.Err()
+	}
+}
+
+func shellStartPTYBackground(ctx context.Context, session *shellSession, arguments map[string]interface{}) error {
+	ptmx, ptyCmd, err := shellBuildPtyCommand(ctx, session.command)
+	if err != nil {
+		return err
+	}
+	if session.workdir != "" {
+		ptyCmd.Dir = session.workdir
+	}
+	if sizeErr := shellResizePtyRaw(ptmx, int(shellPTYCols(arguments)), int(shellPTYRows(arguments))); sizeErr != nil {
+		_ = ptmx.Close()
+		return sizeErr
+	}
+	if err = ptyCmd.Start(); err != nil {
+		_ = ptmx.Close()
+		return err
+	}
+
+	session.pty = ptmx
+	session.ptyCmd = ptyCmd
+	session.stdin = ptmx
+	go session.capture(ptmx)
+	return nil
+}
+
+func shellResizePTY(session *shellSession, cols uint16, rows uint16) error {
+	if session.pty == nil {
+		return fmt.Errorf("pty is not available for this shell session")
+	}
+	return shellResizePtyRaw(session.pty, int(cols), int(rows))
+}
+
+func shellResizePtyRaw(ptmx gopty.Pty, cols int, rows int) error {
+	return ptmx.Resize(cols, rows)
+}
+
+func shellStringArg(arguments map[string]interface{}, key string, defaultValue string) string {
+	value, ok := arguments[key].(string)
+	if !ok {
+		return defaultValue
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return defaultValue
+	}
+	return value
+}
+
+func shellBoolArg(arguments map[string]interface{}, key string) bool {
+	value, ok := arguments[key].(bool)
+	return ok && value
+}
+
+func shellIntArg(arguments map[string]interface{}, key string, defaultValue int) int {
+	value, ok := arguments[key]
+	if !ok {
+		return defaultValue
+	}
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return defaultValue
+	}
+}
+
+func shellHasAction(arguments map[string]interface{}) bool {
+	action, ok := arguments["action"].(string)
+	if !ok {
+		return false
+	}
+	switch strings.TrimSpace(action) {
+	case "start", "poll", "write", "submit", "send_keys", "resize", "stop":
+		return true
+	default:
+		return false
+	}
+}
+
+func shellStringSliceArg(arguments map[string]interface{}, key string) []string {
+	value, ok := arguments[key]
+	if !ok {
+		return nil
+	}
+	raw, ok := value.([]interface{})
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(raw))
+	for _, item := range raw {
+		text, ok := item.(string)
+		if !ok {
+			continue
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		result = append(result, text)
+	}
+	return result
+}
+
+func shellPTYRows(arguments map[string]interface{}) uint16 {
+	rows := shellIntArg(arguments, "rows", shellDefaultPTYRows)
+	if rows <= 0 {
+		rows = shellDefaultPTYRows
+	}
+	return uint16(rows)
+}
+
+func shellPTYCols(arguments map[string]interface{}) uint16 {
+	cols := shellIntArg(arguments, "cols", shellDefaultPTYCols)
+	if cols <= 0 {
+		cols = shellDefaultPTYCols
+	}
+	return uint16(cols)
+}
+
+func shellErrorString(text string) string {
+	return "error: " + text
+}
+
+func shellJSONString(v interface{}) string {
+	bs, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return shellErrorString(err.Error())
+	}
+	return string(bs)
+}

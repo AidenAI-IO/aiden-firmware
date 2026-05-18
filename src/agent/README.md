@@ -31,6 +31,7 @@ Built-in tools are registered in [internal/agent/tools.go](./internal/agent/tool
 - `touch_gesture`
 - `screenshot`
 - `audio_volume`
+- `shell`
 
 ## Config layout
 
