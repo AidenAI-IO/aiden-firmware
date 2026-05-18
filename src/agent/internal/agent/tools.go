@@ -83,7 +83,13 @@ func (t *ActivateSkillTool) Description() string {
 
 	var builder strings.Builder
 	builder.WriteString("Activate a skill to gain specialized capabilities. Available skills:\n")
-	for name, skill := range skills {
+	names := make([]string, 0, len(skills))
+	for name := range skills {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		skill := skills[name]
 		builder.WriteString(fmt.Sprintf("- %s: %s\n", name, skill.Description))
 	}
 	builder.WriteString("\nInput: skill name to activate")

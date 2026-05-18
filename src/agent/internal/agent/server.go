@@ -362,7 +362,7 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.logger != nil {
-		s.logger.Info("HTTP tool invoke: name=%s input=%s error=%v", toolName, truncateForLog(rawInput, 200), response.IsError)
+		s.logger.Info("HTTP tool invoke: name=%s error=%v", toolName, response.IsError)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -666,10 +666,17 @@ const webUI = `<!DOCTYPE html>
             font: inherit;
         }
 
-        button,
-        select,
-        textarea {
+        button:not(:focus-visible),
+        select:not(:focus-visible),
+        textarea:not(:focus-visible) {
             outline: none;
+        }
+
+        button:focus-visible,
+        select:focus-visible,
+        textarea:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
         }
 
         .app-shell {
@@ -1682,18 +1689,22 @@ const webUI = `<!DOCTYPE html>
             const tool = getSelectedTool();
             if (!tool) return;
 
+            const switched = toolInputEl.dataset.toolName !== tool.name;
+            if (switched) {
+                clearToolResultPreview();
+            }
+
             if (toolSelectEl.value !== tool.name) {
                 toolSelectEl.value = tool.name;
             }
 
             toolDescriptionEl.textContent = tool.description || '';
             toolInputEl.placeholder = tool.example_input || '';
-            if (toolInputEl.dataset.toolName !== tool.name) {
+            if (switched) {
                 toolInputEl.value = tool.example_input || '';
                 toolInputEl.dataset.toolName = tool.name;
             }
             toolStatusEl.classList.remove('error');
-            clearToolResultPreview();
         }
 
         function loadSelectedToolExample() {

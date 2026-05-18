@@ -129,25 +129,41 @@ func NewHIDDevice(path string) *HIDDevice {
 func (d *HIDDevice) Write(data []byte) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.writeLocked(data, nil)
+}
 
+func (d *HIDDevice) writeLocked(data []byte, after func()) error {
 	if err := d.ensureOpenLocked(); err != nil {
 		return err
 	}
 
-	_, err := d.file.Write(data)
+	n, err := d.file.Write(data)
 	if err != nil {
 		d.closeLocked()
-		if hidShouldRetryWrite(err) {
+		if n == 0 && hidShouldRetryWrite(err) {
 			if reopenErr := d.ensureOpenLocked(); reopenErr == nil {
-				if _, retryErr := d.file.Write(data); retryErr == nil {
+				n2, retryErr := d.file.Write(data)
+				if retryErr == nil && n2 == len(data) {
+					if after != nil {
+						after()
+					}
 					return nil
-				} else {
-					d.closeLocked()
+				}
+				d.closeLocked()
+				if retryErr != nil {
 					return fmt.Errorf("write %s: %w", d.path, retryErr)
 				}
+				return fmt.Errorf("write %s: short write after retry (%d/%d bytes)", d.path, n2, len(data))
 			}
 		}
 		return fmt.Errorf("write %s: %w", d.path, err)
+	}
+	if n != len(data) {
+		d.closeLocked()
+		return fmt.Errorf("write %s: short write (%d/%d bytes)", d.path, n, len(data))
+	}
+	if after != nil {
+		after()
 	}
 	return nil
 }
@@ -535,13 +551,16 @@ func writeAbsMouseReport(dev *HIDDevice, state *pointerState, x, y int, buttons 
 	binary.LittleEndian.PutUint16(report[3:5], absY)
 	report[5] = byte(wheel)
 
-	if err := dev.Write(report); err != nil {
-		return err
-	}
+	var after func()
 	if state != nil {
-		state.Update(int(absX), int(absY))
+		after = func() {
+			state.Update(int(absX), int(absY))
+		}
 	}
-	return nil
+
+	dev.mu.Lock()
+	defer dev.mu.Unlock()
+	return dev.writeLocked(report, after)
 }
 
 type pointerPoint struct {
