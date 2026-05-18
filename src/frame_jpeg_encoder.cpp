@@ -1,5 +1,6 @@
 #include "frame_jpeg_encoder.h"
 #include "frame_processing.h"
+#include "image_process.h"
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -7,17 +8,25 @@
 namespace aiden {
 
 bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t height,
-                              int quality, std::vector<uint8_t>* output) {
+                              int quality, std::vector<uint8_t>* output,
+                              uint32_t* out_width, uint32_t* out_height) {
     if (!rgb_data || !output || width == 0 || height == 0) {
         return false;
     }
 
-    // Create cv::Mat from RGB data (opencv-mobile uses BGR internally)
     cv::Mat rgb(height, width, CV_8UC3, const_cast<uint8_t*>(rgb_data));
-    cv::Mat bgr;
-    cv::cvtColor(rgb, bgr, cv::COLOR_RGB2BGR);
 
-    // Encode to JPEG using opencv-mobile (automatically uses hardware encoder on RV1106)
+    cv::Mat cropped;
+    if (aiden_image::crop_black_bars(rgb, cropped) != aiden_image::kSuccess) {
+        cropped = rgb;
+    }
+
+    if (out_width) *out_width = static_cast<uint32_t>(cropped.cols);
+    if (out_height) *out_height = static_cast<uint32_t>(cropped.rows);
+
+    cv::Mat bgr;
+    cv::cvtColor(cropped, bgr, cv::COLOR_RGB2BGR);
+
     std::vector<int> params;
     params.push_back(cv::IMWRITE_JPEG_QUALITY);
     params.push_back(quality);
@@ -25,9 +34,66 @@ bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t h
     return cv::imencode(".jpg", bgr, *output, params);
 }
 
+namespace {
+
+// Crop black bars directly on a BGR mat (avoids extra RGB↔BGR conversion).
+// A row/column is considered "black border" only if BOTH its mean grayscale
+// is <= threshold AND its standard deviation is low (uniform darkness).
+// This prevents cropping dark UI elements (e.g. phone status bars) that
+// contain small bright pixels.
+void crop_black_bars_bgr(const cv::Mat& bgr, cv::Mat& dst, unsigned char threshold = 15) {
+    if (bgr.empty() || bgr.type() != CV_8UC3) {
+        dst = bgr;
+        return;
+    }
+    cv::Mat gray;
+    cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
+
+    const double stddev_limit = 6.0;
+
+    auto is_border_row = [&](int row) -> bool {
+        cv::Scalar m, s;
+        cv::meanStdDev(gray.row(row), m, s);
+        return m[0] <= static_cast<double>(threshold) && s[0] <= stddev_limit;
+    };
+
+    auto is_border_col = [&](int col) -> bool {
+        cv::Scalar m, s;
+        cv::meanStdDev(gray.col(col), m, s);
+        return m[0] <= static_cast<double>(threshold) && s[0] <= stddev_limit;
+    };
+
+    int top = 0;
+    for (; top < gray.rows; ++top) {
+        if (!is_border_row(top)) break;
+    }
+    int bottom = gray.rows - 1;
+    for (; bottom >= top; --bottom) {
+        if (!is_border_row(bottom)) break;
+    }
+    int left = 0;
+    for (; left < gray.cols; ++left) {
+        if (!is_border_col(left)) break;
+    }
+    int right = gray.cols - 1;
+    for (; right >= left; --right) {
+        if (!is_border_col(right)) break;
+    }
+
+    if (right < left || bottom < top) {
+        dst = bgr;
+        return;
+    }
+    cv::Rect roi(left, top, right - left + 1, bottom - top + 1);
+    bgr(roi).copyTo(dst);
+}
+
+}  // namespace
+
 bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width, uint32_t height,
                             const std::string& pixel_format, int quality,
-                            std::vector<uint8_t>* output) {
+                            std::vector<uint8_t>* output,
+                            uint32_t* out_width, uint32_t* out_height) {
     if (yuv_data.empty() || !output || width == 0 || height == 0) {
         return false;
     }
@@ -76,15 +142,22 @@ bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width,
         if (!convert_frame_to_rgb(meta, yuv_data, &rgb)) {
             return false;
         }
-        return encode_frame_to_jpeg_hw(rgb.data(), width, height, quality, output);
+        return encode_frame_to_jpeg_hw(rgb.data(), width, height, quality, output, out_width, out_height);
     }
+
+    // Crop black bars before encoding
+    cv::Mat cropped;
+    crop_black_bars_bgr(bgr, cropped);
+
+    if (out_width) *out_width = static_cast<uint32_t>(cropped.cols);
+    if (out_height) *out_height = static_cast<uint32_t>(cropped.rows);
 
     // Encode to JPEG using opencv-mobile (automatically uses hardware encoder on RV1106)
     std::vector<int> params;
     params.push_back(cv::IMWRITE_JPEG_QUALITY);
     params.push_back(quality);
 
-    return cv::imencode(".jpg", bgr, *output, params);
+    return cv::imencode(".jpg", cropped, *output, params);
 }
 
 }  // namespace aiden

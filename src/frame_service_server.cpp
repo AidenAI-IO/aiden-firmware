@@ -357,14 +357,18 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
             std::vector<uint8_t> encoded_payload;
             const std::vector<uint8_t>* payload = &frame->data;
             if (format == "jpeg") {
-                // Encode to JPEG using hardware encoder
+                // Encode to JPEG using hardware encoder (includes black bar cropping)
+                uint32_t encoded_width = 0, encoded_height = 0;
                 if (!encode_yuv_to_jpeg_hw(frame->data, metadata.width, metadata.height,
-                                           metadata.pixel_format, quality, &encoded_payload)) {
+                                           metadata.pixel_format, quality, &encoded_payload,
+                                           &encoded_width, &encoded_height)) {
                     write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
                     cJSON_Delete(root);
                     return;
                 }
                 payload = &encoded_payload;
+                metadata.width = encoded_width;
+                metadata.height = encoded_height;
                 metadata.stride = 0;
                 metadata.planes.clear();
                 metadata.pixel_format = "jpeg";
