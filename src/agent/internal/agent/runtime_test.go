@@ -351,6 +351,89 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
+	jpegBytes := []byte("fake-jpeg-binary")
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "screenshot",
+							Arguments: `{"__arg1":"{}"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "The screenshot shows a UI.",
+				}},
+			},
+		},
+	}
+	tool := &stubTool{
+		name:        "screenshot",
+		description: "Capture a screenshot from the connected display.",
+		visual:      true,
+		output: `{"width":800,"height":600,"format":"jpeg","size":16,"data":"` +
+			base64.StdEncoding.EncodeToString(jpegBytes) + `"}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "openrouter"},
+			Instruction: "Use tools when visual state is requested.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"screenshot": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	var streamBuf bytes.Buffer
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input:        "屏幕上有什么？",
+		StreamWriter: &streamBuf,
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if len(model.messages) != 2 {
+		t.Fatalf("expected 2 model calls, got %d", len(model.messages))
+	}
+
+	var foundToolResponse, foundImageURL bool
+	for _, msg := range model.messages[1] {
+		for _, part := range msg.Parts {
+			switch p := part.(type) {
+			case llms.ToolCallResponse:
+				if p.ToolCallID == "call_1" {
+					foundToolResponse = true
+					if p.Content == tool.output {
+						t.Fatalf("expected screenshot tool response to be summarized when wrapped by callbackTool, got raw payload")
+					}
+				}
+			case llms.ImageURLContent:
+				foundImageURL = true
+				expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpegBytes)
+				if p.URL != expected {
+					t.Fatalf("unexpected image URL: %q", p.URL)
+				}
+			}
+		}
+	}
+	if !foundToolResponse {
+		t.Fatalf("expected screenshot tool response when wrapped by callbackTool")
+	}
+	if !foundImageURL {
+		t.Fatalf("expected screenshot image URL when wrapped by callbackTool")
+	}
+}
+
 func TestRuntimeCallbackHandlerCapturesUsageMetrics(t *testing.T) {
 	metrics := &RunMetrics{}
 	handler := &runtimeCallbackHandler{metrics: metrics}

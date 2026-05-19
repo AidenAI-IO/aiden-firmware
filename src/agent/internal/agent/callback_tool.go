@@ -38,3 +38,10 @@ func (t *callbackTool) Call(ctx context.Context, input string) (string, error) {
 	}
 	return output, nil
 }
+
+func (t *callbackTool) ReturnsVisualObservation() bool {
+	if visual, ok := t.inner.(visualObservationTool); ok {
+		return visual.ReturnsVisualObservation()
+	}
+	return false
+}
