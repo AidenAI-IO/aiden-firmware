@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestResolvePointerPositionNormalized(t *testing.T) {
@@ -61,20 +63,26 @@ func TestTouchGestureSwipeWritesDragSequence(t *testing.T) {
 	}
 
 	reports := readMouseReports(t, dev, path)
-	if len(reports) != 5 {
-		t.Fatalf("len(reports) = %d, want 5", len(reports))
+	if len(reports) != 6 {
+		t.Fatalf("len(reports) = %d, want 6 (pre-move, press, 3 moves, release)", len(reports))
 	}
-	if reports[0].buttons != 0x01 {
-		t.Fatalf("press buttons = %d, want 1", reports[0].buttons)
+	if reports[0].buttons != 0x00 {
+		t.Fatalf("pre-move buttons = %d, want 0", reports[0].buttons)
 	}
 	if reports[0].x != 3277 || reports[0].y != 29490 {
-		t.Fatalf("press point = (%d,%d), want (3277,29490)", reports[0].x, reports[0].y)
+		t.Fatalf("pre-move point = (%d,%d), want (3277,29490)", reports[0].x, reports[0].y)
 	}
-	if reports[3].x != 29490 || reports[3].y != 3277 || reports[3].buttons != 0x01 {
-		t.Fatalf("final move = (%d,%d,%d), want (29490,3277,1)", reports[3].x, reports[3].y, reports[3].buttons)
+	if reports[1].buttons != 0x01 {
+		t.Fatalf("press buttons = %d, want 1", reports[1].buttons)
 	}
-	if reports[4].x != 29490 || reports[4].y != 3277 || reports[4].buttons != 0x00 {
-		t.Fatalf("release = (%d,%d,%d), want (29490,3277,0)", reports[4].x, reports[4].y, reports[4].buttons)
+	if reports[1].x != 3277 || reports[1].y != 29490 {
+		t.Fatalf("press point = (%d,%d), want (3277,29490)", reports[1].x, reports[1].y)
+	}
+	if reports[4].x != 29490 || reports[4].y != 3277 || reports[4].buttons != 0x01 {
+		t.Fatalf("final move = (%d,%d,%d), want (29490,3277,1)", reports[4].x, reports[4].y, reports[4].buttons)
+	}
+	if reports[5].x != 29490 || reports[5].y != 3277 || reports[5].buttons != 0x00 {
+		t.Fatalf("release = (%d,%d,%d), want (29490,3277,0)", reports[5].x, reports[5].y, reports[5].buttons)
 	}
 }
 
@@ -255,4 +263,274 @@ func (f *fakeHIDWriteCloser) Write(p []byte) (int, error) {
 func (f *fakeHIDWriteCloser) Close() error {
 	f.closed = true
 	return nil
+}
+
+// timestampedHIDWriter records the time of each successful write so timing
+// behaviour (e.g. tap hold, swipe hold_before_ms) can be asserted in tests.
+type timestampedHIDWriter struct {
+	mu     sync.Mutex
+	closed bool
+	times  []time.Time
+}
+
+func (w *timestampedHIDWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.times = append(w.times, time.Now())
+	return len(p), nil
+}
+
+func (w *timestampedHIDWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.closed = true
+	return nil
+}
+
+func (w *timestampedHIDWriter) writeTimes() []time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]time.Time, len(w.times))
+	copy(out, w.times)
+	return out
+}
+
+func newTimedHIDDevice() (*HIDDevice, *timestampedHIDWriter) {
+	w := &timestampedHIDWriter{}
+	dev := &HIDDevice{
+		path: "timed-hid",
+		open: func(string) (io.WriteCloser, error) {
+			return w, nil
+		},
+	}
+	return dev, w
+}
+
+func TestTapPointerHoldsBetweenPressAndRelease(t *testing.T) {
+	dev, w := newTimedHIDDevice()
+
+	if err := tapPointer(dev, &pointerState{}, 100, 200, 0x01); err != nil {
+		t.Fatalf("tapPointer error: %v", err)
+	}
+
+	times := w.writeTimes()
+	if len(times) != 3 {
+		t.Fatalf("len(times) = %d, want 3 (pre-move, press, release)", len(times))
+	}
+	gap := times[2].Sub(times[1])
+	if gap < 50*time.Millisecond {
+		t.Fatalf("gap between press and release = %v, want >= 50ms", gap)
+	}
+}
+
+func TestTapPointerSettlesCursorBeforePress(t *testing.T) {
+	dev, w := newTimedHIDDevice()
+
+	if err := tapPointer(dev, &pointerState{}, 100, 200, 0x01); err != nil {
+		t.Fatalf("tapPointer error: %v", err)
+	}
+
+	times := w.writeTimes()
+	if len(times) != 3 {
+		t.Fatalf("len(times) = %d, want 3", len(times))
+	}
+	settleGap := times[1].Sub(times[0])
+	if settleGap < 60*time.Millisecond {
+		t.Fatalf("pre-move to press gap = %v, want >= 60ms (cursor settle)", settleGap)
+	}
+}
+
+func TestMouseClickToolHoldsBetweenPressAndRelease(t *testing.T) {
+	dev, w := newTimedHIDDevice()
+	tool := &MouseClickTool{dev: dev, screen: &screenState{}, state: &pointerState{}}
+
+	out, err := tool.Call(context.Background(), `{"x":0.5,"y":0.5,"coord_space":"normalized"}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	times := w.writeTimes()
+	if len(times) != 3 {
+		t.Fatalf("len(times) = %d, want 3 (pre-move, press, release)", len(times))
+	}
+	gap := times[2].Sub(times[1])
+	if gap < 50*time.Millisecond {
+		t.Fatalf("gap between press and release = %v, want >= 50ms", gap)
+	}
+}
+
+func TestTouchGestureTapAcceptsHoldMs(t *testing.T) {
+	dev, w := newTimedHIDDevice()
+	tool := &TouchGestureTool{dev: dev, screen: &screenState{}, state: &pointerState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":0.5,"y":0.5},"hold_ms":150}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	times := w.writeTimes()
+	if len(times) != 3 {
+		t.Fatalf("len(times) = %d, want 3 (pre-move, press, release)", len(times))
+	}
+	gap := times[2].Sub(times[1])
+	if gap < 130*time.Millisecond {
+		t.Fatalf("press-to-release gap = %v, want >= 130ms", gap)
+	}
+}
+
+func TestTouchGestureSwipeAppliesDefaultHoldBeforeMs(t *testing.T) {
+	dev, w := newTimedHIDDevice()
+	tool := &TouchGestureTool{dev: dev, screen: &screenState{}, state: &pointerState{}}
+
+	// duration_ms=0 keeps the per-step delay at 0 so only the hold_before_ms
+	// shows up between the press and the first move step.
+	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":0.01,"y":0.5},"end":{"x":0.5,"y":0.5},"steps":2,"duration_ms":0}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	// Writes: pre-move, press, move1, move2, release
+	times := w.writeTimes()
+	if len(times) < 4 {
+		t.Fatalf("len(times) = %d, want >= 4", len(times))
+	}
+	gap := times[2].Sub(times[1])
+	if gap < 30*time.Millisecond {
+		t.Fatalf("swipe press-to-first-move gap = %v, want >= 30ms", gap)
+	}
+}
+
+func TestTouchGestureDragKeepsZeroHoldBeforeMs(t *testing.T) {
+	dev, w := newTimedHIDDevice()
+	tool := &TouchGestureTool{dev: dev, screen: &screenState{}, state: &pointerState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"drag","start":{"x":0.1,"y":0.1},"end":{"x":0.9,"y":0.9},"steps":2,"duration_ms":0}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	// Writes: pre-move, press, move1, move2, release. Drag must not inherit
+	// the swipe hold_before_ms default, so the press → first move gap is ~0.
+	times := w.writeTimes()
+	if len(times) < 4 {
+		t.Fatalf("len(times) = %d, want >= 4", len(times))
+	}
+	gap := times[2].Sub(times[1])
+	if gap > 20*time.Millisecond {
+		t.Fatalf("drag press-to-first-move gap = %v, want < 20ms (drag must not inherit swipe hold)", gap)
+	}
+}
+
+func TestDragPointerReleasesOnMoveError(t *testing.T) {
+	failAfter := 3 // settle + press + first move = 3rd write fails
+	writer := &countingFailWriter{failAt: failAfter}
+	dev := &HIDDevice{
+		path: "fail-hid",
+		open: func(string) (io.WriteCloser, error) {
+			return writer, nil
+		},
+	}
+
+	start := resolvedPointerPoint{x: 100, y: 100}
+	end := resolvedPointerPoint{x: 200, y: 200}
+	err := dragPointer(dev, &pointerState{}, start, end, 0x01, 0, 0, 3)
+	if err == nil {
+		t.Fatal("expected error from dragPointer")
+	}
+	// The release report must have been attempted even though a move failed.
+	if writer.writeCount < failAfter+1 {
+		t.Fatalf("writeCount = %d, expected at least %d (release must be attempted after move failure)", writer.writeCount, failAfter+1)
+	}
+}
+
+type countingFailWriter struct {
+	mu         sync.Mutex
+	writeCount int
+	failAt     int
+	closed     bool
+}
+
+func (w *countingFailWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.writeCount++
+	if w.writeCount == w.failAt {
+		return 0, errors.New("simulated write failure")
+	}
+	return len(p), nil
+}
+
+func (w *countingFailWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.closed = true
+	return nil
+}
+
+func TestScreenStateDimensionsWithAge(t *testing.T) {
+	screen := &screenState{}
+
+	if _, _, _, ok := screen.DimensionsWithAge(); ok {
+		t.Fatal("expected ok=false before Update")
+	}
+
+	screen.Update(800, 1600)
+	w, h, age, ok := screen.DimensionsWithAge()
+	if !ok {
+		t.Fatal("expected ok=true after Update")
+	}
+	if w != 800 || h != 1600 {
+		t.Fatalf("dims = %dx%d, want 800x1600", w, h)
+	}
+	if age > time.Second {
+		t.Fatalf("fresh age = %v, want < 1s", age)
+	}
+}
+
+func TestResolvePointerPositionPixelRejectsStaleDimensions(t *testing.T) {
+	screen := &screenState{}
+	screen.Update(1000, 2000)
+
+	// Backdate the cache to look older than the staleness threshold.
+	screen.mu.Lock()
+	screen.updatedAt = time.Now().Add(-2 * screenDimensionsStaleAfter)
+	screen.mu.Unlock()
+
+	_, _, err := resolvePointerPosition(screen, 500, 1000, "pixel", coordinateSpaceAuto)
+	if err == nil {
+		t.Fatal("expected error for stale pixel coordinates")
+	}
+	if !strings.Contains(err.Error(), "stale") && !strings.Contains(err.Error(), "old") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolvePointerPositionAutoFallsBackWhenStale(t *testing.T) {
+	screen := &screenState{}
+	screen.Update(1000, 2000)
+	screen.mu.Lock()
+	screen.updatedAt = time.Now().Add(-2 * screenDimensionsStaleAfter)
+	screen.mu.Unlock()
+
+	// Auto must not error on stale cache; it falls back to treating values as
+	// absolute HID coordinates, matching the cold-start behaviour.
+	x, y, err := resolvePointerPosition(screen, 123, 456, "", coordinateSpaceAuto)
+	if err != nil {
+		t.Fatalf("expected no error on stale auto, got %v", err)
+	}
+	if x != 123 || y != 456 {
+		t.Fatalf("auto fallback = (%d,%d), want (123,456)", x, y)
+	}
 }

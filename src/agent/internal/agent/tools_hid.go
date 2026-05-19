@@ -17,6 +17,30 @@ import (
 
 const (
 	absMouseMaxPos = 32767
+
+	// defaultTapHoldMs is the dwell between a touch press and release so iOS
+	// registers a tap rather than dropping the sub-millisecond event or
+	// treating it as a long-press.
+	defaultTapHoldMs = 60
+
+	// defaultSwipeHoldBeforeMs is the dwell at the start of a swipe so iOS
+	// recognises the touchdown frame before the touch begins moving. The
+	// edge-back recogniser in particular rejects swipes that move on the same
+	// frame as the press.
+	defaultSwipeHoldBeforeMs = 40
+
+	// defaultCursorSettleMs is the dwell between positioning the HID absolute
+	// cursor and pressing a button at that position. iOS HID cursor mode
+	// smoothly animates the cursor toward the target; if the press lands while
+	// the cursor is still in flight the input is interpreted as a drag from
+	// the previous cursor position rather than a tap, which triggers
+	// long-press menus or off-target activations.
+	defaultCursorSettleMs = 80
+
+	// screenDimensionsStaleAfter bounds how long cached screenshot dimensions
+	// are trusted for pixel-coordinate resolution. Past this age the cache may
+	// not match the current HDMI capture resolution.
+	screenDimensionsStaleAfter = 30 * time.Second
 )
 
 var hidKeyboardMap = map[string]uint8{
@@ -62,9 +86,10 @@ type HIDDevice struct {
 }
 
 type screenState struct {
-	mu     sync.RWMutex
-	width  int
-	height int
+	mu        sync.RWMutex
+	width     int
+	height    int
+	updatedAt time.Time
 }
 
 type pointerState struct {
@@ -83,6 +108,7 @@ func (s *screenState) Update(width, height int) {
 	defer s.mu.Unlock()
 	s.width = width
 	s.height = height
+	s.updatedAt = time.Now()
 }
 
 func (s *screenState) Dimensions() (width, height int, ok bool) {
@@ -92,6 +118,18 @@ func (s *screenState) Dimensions() (width, height int, ok bool) {
 		return 0, 0, false
 	}
 	return s.width, s.height, true
+}
+
+func (s *screenState) DimensionsWithAge() (width, height int, age time.Duration, ok bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.width <= 0 || s.height <= 0 {
+		return 0, 0, 0, false
+	}
+	if s.updatedAt.IsZero() {
+		return s.width, s.height, 0, true
+	}
+	return s.width, s.height, time.Since(s.updatedAt), true
 }
 
 func (s *pointerState) Update(x, y int) {
@@ -333,7 +371,11 @@ func (t *MouseClickTool) Name() string { return "mouse_click" }
 
 func (t *MouseClickTool) Description() string {
 	return `Move mouse to a position and click. Input JSON: {"x": 500, "y": 300, "button": "left", "coord_space": "pixel"}. ` +
-		`coord_space options: "pixel", "normalized", "absolute". If omitted, pixel coordinates are used when a screenshot has cached screen dimensions; otherwise coordinates are treated as HID absolute values in the range 0-32767. Button options: "left" (default), "right", "middle".`
+		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": pixel coordinates when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
+		`Cached screen dimensions are considered stale after 30s; take a screenshot before using pixel coordinates. ` +
+		`Recommended for stability on mobile screens whose capture resolution can change: pass coord_space:"normalized" with x/y in [0,1]. ` +
+		`The cursor is positioned at the target and allowed to settle before the press, then the press and release are separated by a brief hold, so iOS HID-cursor mode registers a tap rather than a drag or long-press. ` +
+		`Button options: "left" (default), "right", "middle".`
 }
 
 func (t *MouseClickTool) Call(_ context.Context, input string) (string, error) {
@@ -353,10 +395,7 @@ func (t *MouseClickTool) Call(_ context.Context, input string) (string, error) {
 	}
 	btn := mouseButtonByte(args.Button)
 
-	if err := pressPointer(t.dev, t.state, absX, absY, btn); err != nil {
-		return fmt.Sprintf("error: %v", err), nil
-	}
-	if err := releasePointer(t.dev, t.state, absX, absY); err != nil {
+	if err := tapPointer(t.dev, t.state, absX, absY, btn); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
 
@@ -374,7 +413,8 @@ func (t *MouseMoveTool) Name() string { return "mouse_move" }
 
 func (t *MouseMoveTool) Description() string {
 	return `Move mouse to a position without clicking. Input JSON: {"x": 500, "y": 300, "coord_space": "pixel"}. ` +
-		`coord_space options: "pixel", "normalized", "absolute". If omitted, pixel coordinates are used when a screenshot has cached screen dimensions; otherwise coordinates are treated as HID absolute values in the range 0-32767.`
+		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": pixel coordinates when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
+		`Cached screen dimensions are considered stale after 30s; take a screenshot before using pixel coordinates.`
 }
 
 func (t *MouseMoveTool) Call(_ context.Context, input string) (string, error) {
@@ -410,8 +450,12 @@ func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
 func (t *TouchGestureTool) Description() string {
 	return `Perform a touch-like gesture using the absolute mouse HID device. ` +
-		`Input JSON examples: {"type":"tap","point":{"x":0.5,"y":0.5}}, {"type":"swipe","start":{"x":0.5,"y":0.92},"end":{"x":0.5,"y":0.22},"duration_ms":260,"steps":12}. ` +
-		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe". coord_space defaults to "normalized" and also supports "pixel" and "absolute".`
+		`Input JSON examples: {"type":"tap","point":{"x":0.5,"y":0.5}}, {"type":"swipe","start":{"x":0.01,"y":0.5},"end":{"x":0.6,"y":0.5},"duration_ms":260,"steps":12}. ` +
+		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe". ` +
+		`coord_space defaults to "normalized" (x/y in [0,1]) and also supports "pixel" and "absolute". ` +
+		`Every gesture first positions the cursor at the target and waits for iOS HID-cursor smoothing to settle before pressing, so clicks register on the intended element instead of as drags from the previous cursor position. ` +
+		`Tap and double_tap accept an optional "hold_ms" (dwell between press and release, default 60ms). ` +
+		`Swipe applies a default "hold_before_ms" of 40ms after the press so iOS recognises the touchdown frame (important for the left-edge back gesture: swipe from x near 0 toward the right). Drag keeps the previous 0 default to avoid unintended long-press behaviour during slow content drag.`
 }
 
 func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error) {
@@ -424,6 +468,7 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		Button       string        `json:"button"`
 		DurationMs   *int          `json:"duration_ms"`
 		HoldBeforeMs *int          `json:"hold_before_ms"`
+		HoldMs       *int          `json:"hold_ms"`
 		PauseMs      *int          `json:"pause_ms"`
 		Steps        *int          `json:"steps"`
 	}
@@ -448,7 +493,7 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
-		if err := tapPointer(t.dev, t.state, point.x, point.y, button); err != nil {
+		if err := tapPointerWithHold(t.dev, t.state, point.x, point.y, button, intOrDefault(args.HoldMs, defaultTapHoldMs)); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
 	case "double_tap":
@@ -456,16 +501,20 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
-		if err := tapPointer(t.dev, t.state, point.x, point.y, button); err != nil {
+		holdMs := intOrDefault(args.HoldMs, defaultTapHoldMs)
+		if err := tapPointerWithHold(t.dev, t.state, point.x, point.y, button, holdMs); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
 		sleepMs(intOrDefault(args.PauseMs, 100))
-		if err := tapPointer(t.dev, t.state, point.x, point.y, button); err != nil {
+		if err := tapPointerWithHold(t.dev, t.state, point.x, point.y, button, holdMs); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
 	case "long_press":
 		point, err := resolveRequiredPoint(t.screen, args.Point, coordSpace)
 		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		if err := settlePointer(t.dev, t.state, point.x, point.y); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
 		if err := pressPointer(t.dev, t.state, point.x, point.y, button); err != nil {
@@ -484,6 +533,10 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
+		defaultHold := 0
+		if gestureType == "swipe" {
+			defaultHold = defaultSwipeHoldBeforeMs
+		}
 		if err := dragPointer(
 			t.dev,
 			t.state,
@@ -491,7 +544,7 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 			end,
 			button,
 			intOrDefault(args.DurationMs, 250),
-			intOrDefault(args.HoldBeforeMs, 0),
+			intOrDefault(args.HoldBeforeMs, defaultHold),
 			positiveIntOrDefault(args.Steps, 12),
 		); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
@@ -601,7 +654,7 @@ func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string
 	switch space {
 	case coordinateSpaceAuto:
 		if screen != nil {
-			if width, height, ok := screen.Dimensions(); ok {
+			if width, height, age, ok := screen.DimensionsWithAge(); ok && age < screenDimensionsStaleAfter {
 				return pixelToAbsolutePoint(x, y, width, height)
 			}
 		}
@@ -610,9 +663,12 @@ func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string
 		if screen == nil {
 			return 0, 0, fmt.Errorf("pixel coordinates require known screen dimensions; call screenshot first or use coord_space normalized/absolute")
 		}
-		width, height, ok := screen.Dimensions()
+		width, height, age, ok := screen.DimensionsWithAge()
 		if !ok {
 			return 0, 0, fmt.Errorf("pixel coordinates require known screen dimensions; call screenshot first or use coord_space normalized/absolute")
+		}
+		if age >= screenDimensionsStaleAfter {
+			return 0, 0, fmt.Errorf("cached screen dimensions are %.0fs old; call screenshot to refresh before using pixel coordinates", age.Seconds())
 		}
 		return pixelToAbsolutePoint(x, y, width, height)
 	case coordinateSpaceNormalized:
@@ -656,10 +712,30 @@ func clampFloat(value, min, max float64) float64 {
 }
 
 func tapPointer(dev *HIDDevice, state *pointerState, x, y int, button uint8) error {
+	return tapPointerWithHold(dev, state, x, y, button, defaultTapHoldMs)
+}
+
+func tapPointerWithHold(dev *HIDDevice, state *pointerState, x, y int, button uint8, holdMs int) error {
+	if err := settlePointer(dev, state, x, y); err != nil {
+		return err
+	}
 	if err := pressPointer(dev, state, x, y, button); err != nil {
 		return err
 	}
+	sleepMs(holdMs)
 	return releasePointer(dev, state, x, y)
+}
+
+// settlePointer moves the absolute mouse cursor to (x, y) with no button
+// pressed and pauses for iOS HID cursor smoothing to settle. A subsequent
+// press at the same coordinates then registers as a tap on (x, y) instead of
+// a drag from wherever the cursor was last.
+func settlePointer(dev *HIDDevice, state *pointerState, x, y int) error {
+	if err := movePointer(dev, state, x, y, 0); err != nil {
+		return err
+	}
+	sleepMs(defaultCursorSettleMs)
+	return nil
 }
 
 func pressPointer(dev *HIDDevice, state *pointerState, x, y int, button uint8) error {
@@ -686,7 +762,7 @@ func scrollPointer(dev *HIDDevice, state *pointerState, delta int) error {
 	return writeAbsMouseReport(dev, state, x, y, 0, int8(delta))
 }
 
-func dragPointer(dev *HIDDevice, state *pointerState, start, end resolvedPointerPoint, button uint8, durationMs, holdBeforeMs, steps int) error {
+func dragPointer(dev *HIDDevice, state *pointerState, start, end resolvedPointerPoint, button uint8, durationMs, holdBeforeMs, steps int) (dragErr error) {
 	if steps < 1 {
 		steps = 1
 	}
@@ -697,9 +773,20 @@ func dragPointer(dev *HIDDevice, state *pointerState, start, end resolvedPointer
 		holdBeforeMs = 0
 	}
 
+	if err := settlePointer(dev, state, start.x, start.y); err != nil {
+		return err
+	}
 	if err := pressPointer(dev, state, start.x, start.y, button); err != nil {
 		return err
 	}
+
+	defer func() {
+		relErr := releasePointer(dev, state, end.x, end.y)
+		if dragErr == nil {
+			dragErr = relErr
+		}
+	}()
+
 	sleepMs(holdBeforeMs)
 
 	stepDelay := 0
@@ -718,7 +805,7 @@ func dragPointer(dev *HIDDevice, state *pointerState, start, end resolvedPointer
 		}
 	}
 
-	return releasePointer(dev, state, end.x, end.y)
+	return nil
 }
 
 func interpolateInt(start, end int, progress float64) int {
