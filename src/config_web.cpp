@@ -817,6 +817,11 @@ void restart_wpa_supplicant(const Options& options, std::ostringstream& log) {
         << " -c " << options.wifi_config_path << "\n" << start.output;
 }
 
+void schedule_agent_restart() {
+    int rc = system("/etc/init.d/S53agent restart >/dev/null 2>&1 &");
+    (void)rc;
+}
+
 CommandResult apply_wifi_config(const Options& options) {
     CommandResult result;
     result.exit_code = 0;
@@ -1002,9 +1007,12 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         return make_json_error(500, save_error);
     }
 
+    schedule_agent_restart();
+
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddStringToObject(response, "message", "config saved");
+    cJSON_AddStringToObject(response, "message", "config saved; agent restarting");
+    cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
     cJSON_AddItemToObject(response, "config", config_to_json(config));
 
     cJSON* paths = add_object(response, "paths");
