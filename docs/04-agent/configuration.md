@@ -1,0 +1,145 @@
+# Agent 配置参考
+
+Agent 期望 `-config` 指向一个目录，而不是单个配置文件。
+
+## 目录布局
+
+```text
+/userdata/agent/
+├── agent.toml       # 必需
+├── skills/          # 可选，自动发现 **/SKILL.md
+├── log/             # 运行时日志目录
+└── memory/          # 对话记忆持久化目录
+```
+
+TOML 是当前支持的配置格式；JSON 配置已废弃。
+
+## Web UI 最小配置
+
+```toml
+instruction = "You are a helpful assistant. Use tools when they help."
+max_iterations = 6
+input_mode = "text"
+
+[model]
+provider = "openrouter"
+model = "bytedance-seed/seed-2.0-lite"
+token_env = "OPENROUTER_API_KEY"
+temperature = 0.2
+max_tokens = 1000
+
+[audio]
+socket = "/run/audio_service/audio_service.sock"
+sample_rate = 32000
+channels = 1
+bit_width = 16
+
+[hid]
+keyboard_device = "/dev/hidg0"
+mouse_device = "/dev/hidg1"
+frame_socket = "/run/frame_service/frame_service.sock"
+```
+
+> `token_env` 表示从环境变量读取密钥。overlay 示例配置中也可能直接写 `api_key` 字段；生产环境建议使用环境变量或设备侧安全注入方式。
+
+## STT 语音模式最小配置
+
+```toml
+instruction = "You are a helpful assistant. Use tools when they help."
+input_mode = "stt"
+trigger_mode = "manual"
+energy_threshold = 500
+silence_ms = 1000
+min_speech_ms = 300
+
+[model]
+provider = "openrouter"
+model = "bytedance-seed/seed-2.0-lite"
+token_env = "OPENROUTER_API_KEY"
+
+[stt]
+provider = "openai-whisper"
+api_key = "sk-..."
+model = "whisper-1"
+
+[tts]
+provider = "minimax"
+api_key = "..."
+voice_id = "male-qn-qingse"
+emotion = "happy"
+speed = 1.0
+
+[audio]
+socket = "/run/audio_service/audio_service.sock"
+sample_rate = 16000
+channels = 1
+bit_width = 16
+
+[hid]
+keyboard_device = "/dev/hidg0"
+mouse_device = "/dev/hidg1"
+frame_socket = "/run/frame_service/frame_service.sock"
+```
+
+## 顶层字段
+
+| 字段 | 默认/可选值 | 说明 |
+| --- | --- | --- |
+| `instruction` | - | Agent system instruction |
+| `additional_prompt` | - | 额外 prompt 字段；当前解析但未完全接入 prompt 构造 |
+| `max_iterations` | `6` | 单次运行最大工具调用循环次数 |
+| `input_mode` | `text` / `stt` / `audio` | 输入模式 |
+| `trigger_mode` | `manual` / `wakeup` | 语音模式触发方式 |
+| `energy_threshold` | `500` | VAD 能量阈值 |
+| `silence_ms` | `1000` | 多少毫秒静音后认为一句话结束 |
+| `min_speech_ms` | `300` | 最短有效语音时长 |
+
+## `[model]`
+
+| 字段 | 说明 |
+| --- | --- |
+| `provider` | `openai`、`openrouter`、`ollama`、`fake` |
+| `model` | 模型名；`fake` 之外通常必需 |
+| `base_url` | 自定义 OpenAI-compatible endpoint |
+| `api_key` | 直接填写 API key |
+| `token_env` | 从指定环境变量读取 API key；仅 `[model]` 支持 |
+| `temperature` | 采样温度 |
+| `max_tokens` | 最大输出 token |
+
+## `[audio]`
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `socket` | `/run/audio_service/audio_service.sock` | Audio Service socket |
+| `sample_rate` | `16000` | 采样率 |
+| `channels` | `1` | 声道数 |
+| `bit_width` | `16` | 位宽 |
+
+## `[hid]`
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `keyboard_device` | `/dev/hidg0` | 键盘 HID 设备 |
+| `mouse_device` | `/dev/hidg1` | 鼠标/触控 HID 设备 |
+| `frame_socket` | `/run/frame_service/frame_service.sock` | 截图工具使用的 Frame Service socket |
+
+## `[stt]` 和 `[tts]`
+
+`input_mode = "stt"` 时需要 `[stt]`；`input_mode = "stt"` 或 `"audio"` 时需要 `[tts]`。
+
+STT：
+
+- `provider = "openai-whisper"`：当前可用；
+- `provider = "tencent"`：字段已声明，Tencent ASR 仍属于待完善项。
+
+TTS：
+
+- `provider = "minimax"`：当前实现；
+- 依赖 `ffmpeg` 将 MP3 转为 PCM 并流式写入 `audio_service`。
+
+## 已知限制
+
+- Web UI 模式和设备侧语音模式互斥；
+- Tencent ASR 仍未完整实现；
+- `preferred_model`、`allowed_children`、`model_text` 当前解析但未完全接入执行；
+- 示例 skills 可能引用旧工具，生产使用前需检查。
