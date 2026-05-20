@@ -1,0 +1,42 @@
+#!/bin/sh
+# Aiden override: optional samba startup.
+
+BOOT_CONF=/etc/aiden_boot.conf
+
+if [ -f "$BOOT_CONF" ]; then
+	. "$BOOT_CONF"
+fi
+: "${ENABLE_SMB:=0}"
+
+start() {
+	if [ "$ENABLE_SMB" != "1" ]; then
+		echo "smb disabled by config (ENABLE_SMB=$ENABLE_SMB)"
+		return 0
+	fi
+
+	if [ -x /usr/sbin/smbd ]; then
+		/usr/sbin/smbd -D
+	fi
+	if [ -x /usr/sbin/nmbd ]; then
+		/usr/sbin/nmbd -D
+	fi
+	echo "Started samba (smbd/nmbd)"
+}
+
+stop() {
+	killall smbd 2>/dev/null || true
+	killall nmbd 2>/dev/null || true
+	echo "Stopped samba (smbd/nmbd)"
+}
+
+restart() {
+	stop
+	start
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart|reload) restart ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

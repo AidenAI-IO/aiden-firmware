@@ -1,0 +1,43 @@
+#!/bin/sh
+# Aiden override: optional bluetooth daemon startup.
+
+BOOT_CONF=/etc/aiden_boot.conf
+
+if [ -f "$BOOT_CONF" ]; then
+	. "$BOOT_CONF"
+fi
+: "${ENABLE_BLUETOOTHD:=0}"
+
+start() {
+	if [ "$ENABLE_BLUETOOTHD" != "1" ]; then
+		echo "bluetoothd disabled by config (ENABLE_BLUETOOTHD=$ENABLE_BLUETOOTHD)"
+		return 0
+	fi
+
+	if [ -x /usr/libexec/bluetooth/bluetoothd ]; then
+		/usr/libexec/bluetooth/bluetoothd
+	elif [ -x /usr/sbin/bluetoothd ]; then
+		/usr/sbin/bluetoothd
+	else
+		echo "bluetoothd binary not found"
+		return 1
+	fi
+	echo "Started bluetoothd"
+}
+
+stop() {
+	killall bluetoothd 2>/dev/null || true
+	echo "Stopped bluetoothd"
+}
+
+restart() {
+	stop
+	start
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart|reload) restart ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
