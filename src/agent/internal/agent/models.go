@@ -23,11 +23,12 @@ type ModelResolver interface {
 
 type ModelManager struct {
 	config ModelConfig
+	proxy  ProxyConfig
 	model  llms.Model
 }
 
-func NewModelManager(config ModelConfig) *ModelManager {
-	return &ModelManager{config: config}
+func NewModelManager(config ModelConfig, proxy ProxyConfig) *ModelManager {
+	return &ModelManager{config: config, proxy: proxy}
 }
 
 func (m *ModelManager) Get() (llms.Model, error) {
@@ -61,7 +62,7 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 		if baseURL == "" {
 			baseURL = "https://api.openai.com/v1"
 		}
-		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient()), nil
+		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy)), nil
 	case "openrouter":
 		token := resolveToken(cfg)
 		if token == "" {
@@ -71,9 +72,9 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 		if baseURL == "" {
 			baseURL = "https://openrouter.ai/api/v1"
 		}
-		return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient()), nil
+		return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient(m.proxy)), nil
 	case "ollama":
-		options := []ollama.Option{ollama.WithModel(cfg.Model)}
+		options := []ollama.Option{ollama.WithModel(cfg.Model), ollama.WithHTTPClient(newProxyHTTPClient(m.proxy))}
 		if cfg.BaseURL != "" {
 			options = append(options, ollama.WithServerURL(cfg.BaseURL))
 		}
@@ -144,10 +145,10 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, err
 }
 
-func newRetryHTTPClient() *http.Client {
+func newRetryHTTPClient(proxy ProxyConfig) *http.Client {
 	return &http.Client{
 		Transport: &retryTransport{
-			wrapped:    http.DefaultTransport,
+			wrapped:    newProxyTransport(proxy),
 			maxRetries: 2,
 		},
 	}

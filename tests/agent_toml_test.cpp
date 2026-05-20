@@ -58,6 +58,11 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.hid.mouse_device = "/dev/hidg1";
     cfg.hid.frame_socket = "/run/frame_service/frame_service.sock";
 
+    cfg.proxy.http_proxy = "http://127.0.0.1:7890";
+    cfg.proxy.https_proxy = "http://127.0.0.1:7890";
+    cfg.proxy.all_proxy = "socks5://127.0.0.1:7891";
+    cfg.proxy.no_proxy = "localhost,127.0.0.1,192.168.0.0/16";
+
     std::string path = make_temp_path("roundtrip.toml");
     std::string err;
     REQUIRE(aiden::save_agent_toml(path.c_str(), cfg, &err));
@@ -100,6 +105,11 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.hid.keyboard_device == "/dev/hidg0");
     CHECK(loaded.hid.mouse_device == "/dev/hidg1");
     CHECK(loaded.hid.frame_socket == "/run/frame_service/frame_service.sock");
+
+    CHECK(loaded.proxy.http_proxy == "http://127.0.0.1:7890");
+    CHECK(loaded.proxy.https_proxy == "http://127.0.0.1:7890");
+    CHECK(loaded.proxy.all_proxy == "socks5://127.0.0.1:7891");
+    CHECK(loaded.proxy.no_proxy == "localhost,127.0.0.1,192.168.0.0/16");
 
     std::remove(path.c_str());
 }
