@@ -32,6 +32,7 @@ func TestProxyFuncHonorsNoProxy(t *testing.T) {
 
 	for _, target := range []string{
 		"https://api.openai.com/v1/models",
+		"https://api.invalid/v1/models",
 		"http://192.168.1.10/status",
 	} {
 		req, err := http.NewRequest(http.MethodGet, target, nil)
