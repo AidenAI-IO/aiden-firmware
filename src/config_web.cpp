@@ -1,4 +1,4 @@
-#include "config.h"
+#include "agent_toml.h"
 #include "config_web_html.h"
 #include "wifi_config.h"
 
@@ -31,7 +31,7 @@ namespace {
 struct Options {
     std::string bind_address = "192.168.42.1";
     int port = 80;
-    std::string agent_config_path = "/userdata/agent.conf";
+    std::string agent_config_path = "/userdata/agent/agent.toml";
     std::string wifi_config_path = "/userdata/wpa_supplicant.conf";
     std::string wifi_interface = "wlan0";
 };
@@ -87,14 +87,6 @@ void on_signal(int) {
 
 bool file_exists(const char* path) {
     return path && access(path, F_OK) == 0;
-}
-
-void copy_str(char* dst, size_t dst_size, const std::string& src) {
-    if (dst_size == 0) {
-        return;
-    }
-    strncpy(dst, src.c_str(), dst_size - 1);
-    dst[dst_size - 1] = '\0';
 }
 
 std::string trim_copy(const std::string& input) {
@@ -452,32 +444,40 @@ void send_response(int client_fd,
     write_all(client_fd, body.data(), body.size());
 }
 
-void apply_default_agent_config(aiden::AgentConfig& config) {
-    copy_str(config.model.provider, sizeof(config.model.provider), "openrouter");
-    copy_str(config.model.model, sizeof(config.model.model), "openai/gpt-4o-audio-preview");
+void apply_default_agent_config(aiden::AgentToml& cfg) {
+    cfg.instruction = "You are a helpful assistant. Use tools when they help.";
+    cfg.input_mode = "text";
+    cfg.trigger_mode = "manual";
+    cfg.energy_threshold = 500;
+    cfg.silence_ms = 1000;
+    cfg.min_speech_ms = 300;
+    cfg.max_iterations = 6;
 
-    copy_str(config.model_text.provider, sizeof(config.model_text.provider), "openrouter");
-    copy_str(config.model_text.model, sizeof(config.model_text.model), "anthropic/claude-3-haiku");
+    cfg.model.provider = "openrouter";
+    cfg.model.model = "bytedance-seed/seed-2.0-lite";
+    cfg.model.temperature = 0.2;
+    cfg.model.max_tokens = 1000;
 
-    copy_str(config.tts.provider, sizeof(config.tts.provider), "minimax");
-    copy_str(config.tts.model, sizeof(config.tts.model), "speech-2.8-hd");
-    copy_str(config.tts.voice_id, sizeof(config.tts.voice_id), "male-qn-qingse");
-    copy_str(config.tts.emotion, sizeof(config.tts.emotion), "happy");
-    config.tts.speed = 1.0f;
+    cfg.tts.provider = "minimax";
+    cfg.tts.voice_id = "male-qn-qingse";
+    cfg.tts.emotion = "happy";
+    cfg.tts.speed = 1.0;
 
-    copy_str(config.asr_mode, sizeof(config.asr_mode), "stt_then_text");
-    copy_str(config.hid_binary, sizeof(config.hid_binary), "./build/bin/example_usb_hid");
-    config.energy_threshold = 300;
-    config.silence_ms = 800;
-    config.min_speech_ms = 300;
+    cfg.stt.provider = "openai-whisper";
+    cfg.stt.model = "whisper-1";
 
-    copy_str(config.stt.provider, sizeof(config.stt.provider), "tencent_asr");
-    copy_str(config.stt.region, sizeof(config.stt.region), "ap-guangzhou");
-    copy_str(config.stt.engine_model_type, sizeof(config.stt.engine_model_type), "16k_zh");
+    cfg.audio.socket = "/run/audio_service/audio_service.sock";
+    cfg.audio.sample_rate = 16000;
+    cfg.audio.channels = 1;
+    cfg.audio.bit_width = 16;
+
+    cfg.hid.keyboard_device = "/dev/hidg0";
+    cfg.hid.mouse_device = "/dev/hidg1";
+    cfg.hid.frame_socket = "/run/frame_service/frame_service.sock";
 }
 
 void load_current_agent_config(const Options& options,
-                               aiden::AgentConfig* config,
+                               aiden::AgentToml* config,
                                std::string* load_error) {
     if (load_error) {
         load_error->clear();
@@ -486,10 +486,16 @@ void load_current_agent_config(const Options& options,
         return;
     }
 
-    *config = aiden::AgentConfig();
+    *config = aiden::AgentToml();
     apply_default_agent_config(*config);
     if (file_exists(options.agent_config_path.c_str())) {
-        aiden::load_config_relaxed(options.agent_config_path.c_str(), *config, load_error);
+        aiden::AgentToml loaded;
+        std::string err;
+        if (aiden::load_agent_toml(options.agent_config_path.c_str(), loaded, &err)) {
+            *config = loaded;
+        } else if (load_error) {
+            *load_error = err;
+        }
     }
 }
 
@@ -509,52 +515,66 @@ void load_current_wifi_config(const Options& options,
     }
 }
 
-cJSON* json_string_or_empty(const char* value) {
-    return cJSON_CreateString(value ? value : "");
-}
-
-cJSON* config_to_json(const aiden::AgentConfig& config) {
+cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON* root = cJSON_CreateObject();
+
     cJSON* model = add_object(root, "model");
-    cJSON_AddItemToObject(model, "provider", json_string_or_empty(config.model.provider));
-    cJSON_AddItemToObject(model, "api_key", json_string_or_empty(config.model.api_key));
-    cJSON_AddItemToObject(model, "model", json_string_or_empty(config.model.model));
-    cJSON_AddItemToObject(model, "base_url", json_string_or_empty(config.model.base_url));
+    cJSON_AddStringToObject(model, "provider", config.model.provider.c_str());
+    cJSON_AddStringToObject(model, "api_key", config.model.api_key.c_str());
+    cJSON_AddStringToObject(model, "model", config.model.model.c_str());
+    cJSON_AddStringToObject(model, "base_url", config.model.base_url.c_str());
+    cJSON_AddStringToObject(model, "token_env", config.model.token_env.c_str());
+    cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
+    cJSON_AddNumberToObject(model, "max_tokens", config.model.max_tokens);
 
     cJSON* model_text = add_object(root, "model_text");
-    cJSON_AddItemToObject(model_text, "provider", json_string_or_empty(config.model_text.provider));
-    cJSON_AddItemToObject(model_text, "api_key", json_string_or_empty(config.model_text.api_key));
-    cJSON_AddItemToObject(model_text, "model", json_string_or_empty(config.model_text.model));
-    cJSON_AddItemToObject(model_text, "base_url", json_string_or_empty(config.model_text.base_url));
+    cJSON_AddStringToObject(model_text, "provider", config.model_text.provider.c_str());
+    cJSON_AddStringToObject(model_text, "api_key", config.model_text.api_key.c_str());
+    cJSON_AddStringToObject(model_text, "model", config.model_text.model.c_str());
+    cJSON_AddStringToObject(model_text, "base_url", config.model_text.base_url.c_str());
+    cJSON_AddStringToObject(model_text, "token_env", config.model_text.token_env.c_str());
+    cJSON_AddNumberToObject(model_text, "temperature", config.model_text.temperature);
+    cJSON_AddNumberToObject(model_text, "max_tokens", config.model_text.max_tokens);
 
     cJSON* tts = add_object(root, "tts");
-    cJSON_AddItemToObject(tts, "provider", json_string_or_empty(config.tts.provider));
-    cJSON_AddItemToObject(tts, "api_key", json_string_or_empty(config.tts.api_key));
-    cJSON_AddItemToObject(tts, "model", json_string_or_empty(config.tts.model));
-    cJSON_AddItemToObject(tts, "voice_id", json_string_or_empty(config.tts.voice_id));
-    cJSON_AddItemToObject(tts, "emotion", json_string_or_empty(config.tts.emotion));
+    cJSON_AddStringToObject(tts, "provider", config.tts.provider.c_str());
+    cJSON_AddStringToObject(tts, "api_key", config.tts.api_key.c_str());
+    cJSON_AddStringToObject(tts, "model", config.tts.model.c_str());
+    cJSON_AddStringToObject(tts, "voice_id", config.tts.voice_id.c_str());
+    cJSON_AddStringToObject(tts, "emotion", config.tts.emotion.c_str());
     cJSON_AddNumberToObject(tts, "speed", config.tts.speed);
 
     cJSON* stt = add_object(root, "stt");
-    cJSON_AddItemToObject(stt, "provider", json_string_or_empty(config.stt.provider));
-    cJSON_AddItemToObject(stt, "api_key", json_string_or_empty(config.stt.api_key));
-    cJSON_AddItemToObject(stt, "model", json_string_or_empty(config.stt.model));
-    cJSON_AddItemToObject(stt, "base_url", json_string_or_empty(config.stt.base_url));
-    cJSON_AddItemToObject(stt, "secret_id", json_string_or_empty(config.stt.secret_id));
-    cJSON_AddItemToObject(stt, "secret_key", json_string_or_empty(config.stt.secret_key));
-    cJSON_AddItemToObject(stt, "region", json_string_or_empty(config.stt.region));
-    cJSON_AddItemToObject(stt, "engine_model_type", json_string_or_empty(config.stt.engine_model_type));
+    cJSON_AddStringToObject(stt, "provider", config.stt.provider.c_str());
+    cJSON_AddStringToObject(stt, "api_key", config.stt.api_key.c_str());
+    cJSON_AddStringToObject(stt, "model", config.stt.model.c_str());
+    cJSON_AddStringToObject(stt, "base_url", config.stt.base_url.c_str());
+    cJSON_AddStringToObject(stt, "secret_id", config.stt.secret_id.c_str());
+    cJSON_AddStringToObject(stt, "secret_key", config.stt.secret_key.c_str());
+    cJSON_AddStringToObject(stt, "region", config.stt.region.c_str());
+    cJSON_AddStringToObject(stt, "engine_model_type", config.stt.engine_model_type.c_str());
+
+    cJSON* audio = add_object(root, "audio");
+    cJSON_AddStringToObject(audio, "socket", config.audio.socket.c_str());
+    cJSON_AddNumberToObject(audio, "sample_rate", config.audio.sample_rate);
+    cJSON_AddNumberToObject(audio, "channels", config.audio.channels);
+    cJSON_AddNumberToObject(audio, "bit_width", config.audio.bit_width);
+
+    cJSON* hid = add_object(root, "hid");
+    cJSON_AddStringToObject(hid, "keyboard_device", config.hid.keyboard_device.c_str());
+    cJSON_AddStringToObject(hid, "mouse_device", config.hid.mouse_device.c_str());
+    cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
 
     cJSON* agent = add_object(root, "agent");
-    cJSON_AddItemToObject(agent, "asr_mode", json_string_or_empty(config.asr_mode));
-    cJSON_AddItemToObject(agent, "hid_binary", json_string_or_empty(config.hid_binary));
+    cJSON_AddStringToObject(agent, "instruction", config.instruction.c_str());
+    cJSON_AddStringToObject(agent, "additional_prompt", config.additional_prompt.c_str());
+    cJSON_AddStringToObject(agent, "input_mode", config.input_mode.c_str());
+    cJSON_AddStringToObject(agent, "trigger_mode", config.trigger_mode.c_str());
     cJSON_AddNumberToObject(agent, "energy_threshold", config.energy_threshold);
     cJSON_AddNumberToObject(agent, "silence_ms", config.silence_ms);
     cJSON_AddNumberToObject(agent, "min_speech_ms", config.min_speech_ms);
-    cJSON_AddItemToObject(agent, "additional_prompt", json_string_or_empty(config.additional_prompt));
+    cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
 
-    cJSON* network = add_object(root, "network");
-    cJSON_AddItemToObject(network, "proxy", json_string_or_empty(config.network.proxy));
     return root;
 }
 
@@ -606,10 +626,10 @@ ApiResponse make_json_ok(cJSON* root) {
     return response;
 }
 
-void set_json_string(char* dst, size_t dst_size, cJSON* obj, const char* key) {
+void set_json_str(std::string* dst, cJSON* obj, const char* key) {
     cJSON* item = cJSON_GetObjectItem(obj, key);
-    if (json_is_string(item)) {
-        copy_str(dst, dst_size, item->valuestring);
+    if (dst && json_is_string(item)) {
+        *dst = item->valuestring;
     }
 }
 
@@ -620,76 +640,79 @@ void set_json_int(int* dst, cJSON* obj, const char* key) {
     }
 }
 
-void set_json_float(float* dst, cJSON* obj, const char* key) {
+void set_json_double(double* dst, cJSON* obj, const char* key) {
     cJSON* item = cJSON_GetObjectItem(obj, key);
     if (dst && json_is_number(item)) {
-        *dst = static_cast<float>(item->valuedouble);
+        *dst = item->valuedouble;
     }
 }
 
-void set_json_std_string(std::string* dst, cJSON* obj, const char* key) {
-    cJSON* item = cJSON_GetObjectItem(obj, key);
-    if (dst && json_is_string(item)) {
-        *dst = item->valuestring;
-    }
+void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
+    if (!json_is_object(obj) || !m) return;
+    set_json_str(&m->provider, obj, "provider");
+    set_json_str(&m->model, obj, "model");
+    set_json_str(&m->base_url, obj, "base_url");
+    set_json_str(&m->api_key, obj, "api_key");
+    set_json_str(&m->token_env, obj, "token_env");
+    set_json_double(&m->temperature, obj, "temperature");
+    set_json_int(&m->max_tokens, obj, "max_tokens");
 }
 
-void update_config_from_json(cJSON* root, aiden::AgentConfig* config) {
+void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     if (!root || !config) {
         return;
     }
 
-    cJSON* model = cJSON_GetObjectItem(root, "model");
-    if (json_is_object(model)) {
-        set_json_string(config->model.provider, sizeof(config->model.provider), model, "provider");
-        set_json_string(config->model.api_key, sizeof(config->model.api_key), model, "api_key");
-        set_json_string(config->model.model, sizeof(config->model.model), model, "model");
-        set_json_string(config->model.base_url, sizeof(config->model.base_url), model, "base_url");
-    }
-
-    cJSON* model_text = cJSON_GetObjectItem(root, "model_text");
-    if (json_is_object(model_text)) {
-        set_json_string(config->model_text.provider, sizeof(config->model_text.provider), model_text, "provider");
-        set_json_string(config->model_text.api_key, sizeof(config->model_text.api_key), model_text, "api_key");
-        set_json_string(config->model_text.model, sizeof(config->model_text.model), model_text, "model");
-        set_json_string(config->model_text.base_url, sizeof(config->model_text.base_url), model_text, "base_url");
-    }
+    update_model_from_json(cJSON_GetObjectItem(root, "model"), &config->model);
+    update_model_from_json(cJSON_GetObjectItem(root, "model_text"), &config->model_text);
 
     cJSON* tts = cJSON_GetObjectItem(root, "tts");
     if (json_is_object(tts)) {
-        set_json_string(config->tts.provider, sizeof(config->tts.provider), tts, "provider");
-        set_json_string(config->tts.api_key, sizeof(config->tts.api_key), tts, "api_key");
-        set_json_string(config->tts.model, sizeof(config->tts.model), tts, "model");
-        set_json_string(config->tts.voice_id, sizeof(config->tts.voice_id), tts, "voice_id");
-        set_json_string(config->tts.emotion, sizeof(config->tts.emotion), tts, "emotion");
-        set_json_float(&config->tts.speed, tts, "speed");
+        set_json_str(&config->tts.provider, tts, "provider");
+        set_json_str(&config->tts.api_key, tts, "api_key");
+        set_json_str(&config->tts.model, tts, "model");
+        set_json_str(&config->tts.voice_id, tts, "voice_id");
+        set_json_str(&config->tts.emotion, tts, "emotion");
+        set_json_double(&config->tts.speed, tts, "speed");
     }
 
     cJSON* stt = cJSON_GetObjectItem(root, "stt");
     if (json_is_object(stt)) {
-        set_json_string(config->stt.provider, sizeof(config->stt.provider), stt, "provider");
-        set_json_string(config->stt.api_key, sizeof(config->stt.api_key), stt, "api_key");
-        set_json_string(config->stt.model, sizeof(config->stt.model), stt, "model");
-        set_json_string(config->stt.base_url, sizeof(config->stt.base_url), stt, "base_url");
-        set_json_string(config->stt.secret_id, sizeof(config->stt.secret_id), stt, "secret_id");
-        set_json_string(config->stt.secret_key, sizeof(config->stt.secret_key), stt, "secret_key");
-        set_json_string(config->stt.region, sizeof(config->stt.region), stt, "region");
-        set_json_string(config->stt.engine_model_type, sizeof(config->stt.engine_model_type), stt, "engine_model_type");
+        set_json_str(&config->stt.provider, stt, "provider");
+        set_json_str(&config->stt.api_key, stt, "api_key");
+        set_json_str(&config->stt.model, stt, "model");
+        set_json_str(&config->stt.base_url, stt, "base_url");
+        set_json_str(&config->stt.secret_id, stt, "secret_id");
+        set_json_str(&config->stt.secret_key, stt, "secret_key");
+        set_json_str(&config->stt.region, stt, "region");
+        set_json_str(&config->stt.engine_model_type, stt, "engine_model_type");
+    }
+
+    cJSON* audio = cJSON_GetObjectItem(root, "audio");
+    if (json_is_object(audio)) {
+        set_json_str(&config->audio.socket, audio, "socket");
+        set_json_int(&config->audio.sample_rate, audio, "sample_rate");
+        set_json_int(&config->audio.channels, audio, "channels");
+        set_json_int(&config->audio.bit_width, audio, "bit_width");
+    }
+
+    cJSON* hid = cJSON_GetObjectItem(root, "hid");
+    if (json_is_object(hid)) {
+        set_json_str(&config->hid.keyboard_device, hid, "keyboard_device");
+        set_json_str(&config->hid.mouse_device, hid, "mouse_device");
+        set_json_str(&config->hid.frame_socket, hid, "frame_socket");
     }
 
     cJSON* agent = cJSON_GetObjectItem(root, "agent");
     if (json_is_object(agent)) {
-        set_json_string(config->asr_mode, sizeof(config->asr_mode), agent, "asr_mode");
-        set_json_string(config->hid_binary, sizeof(config->hid_binary), agent, "hid_binary");
-        set_json_string(config->additional_prompt, sizeof(config->additional_prompt), agent, "additional_prompt");
+        set_json_str(&config->instruction, agent, "instruction");
+        set_json_str(&config->additional_prompt, agent, "additional_prompt");
+        set_json_str(&config->input_mode, agent, "input_mode");
+        set_json_str(&config->trigger_mode, agent, "trigger_mode");
         set_json_int(&config->energy_threshold, agent, "energy_threshold");
         set_json_int(&config->silence_ms, agent, "silence_ms");
         set_json_int(&config->min_speech_ms, agent, "min_speech_ms");
-    }
-
-    cJSON* network = cJSON_GetObjectItem(root, "network");
-    if (json_is_object(network)) {
-        set_json_string(config->network.proxy, sizeof(config->network.proxy), network, "proxy");
+        set_json_int(&config->max_iterations, agent, "max_iterations");
     }
 }
 
@@ -697,9 +720,9 @@ void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {
     if (!root || !wifi) {
         return;
     }
-    set_json_std_string(&wifi->ssid, root, "ssid");
-    set_json_std_string(&wifi->psk, root, "psk");
-    set_json_std_string(&wifi->country, root, "country");
+    set_json_str(&wifi->ssid, root, "ssid");
+    set_json_str(&wifi->psk, root, "psk");
+    set_json_str(&wifi->country, root, "country");
     if (wifi->country.empty()) {
         wifi->country = "CN";
     }
@@ -910,7 +933,7 @@ WifiRuntimeStatus query_wifi_status(const Options& options) {
 }
 
 ApiResponse handle_get_config(const Options& options) {
-    aiden::AgentConfig config;
+    aiden::AgentToml config;
     aiden::WifiNetworkConfig wifi;
     WifiRuntimeStatus wifi_status = query_wifi_status(options);
     std::string config_error;
@@ -945,7 +968,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         return make_json_error(400, "invalid JSON body");
     }
 
-    aiden::AgentConfig config;
+    aiden::AgentToml config;
     aiden::WifiNetworkConfig wifi;
     std::string ignore_error;
     load_current_agent_config(options, &config, &ignore_error);
@@ -970,7 +993,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON_Delete(root);
 
     std::string save_error;
-    if (!aiden::save_config(options.agent_config_path.c_str(), config, &save_error)) {
+    if (!aiden::save_agent_toml(options.agent_config_path.c_str(), config, &save_error)) {
         return make_json_error(500, save_error);
     }
 
@@ -1208,7 +1231,7 @@ int main(int argc, char** argv) {
 
     std::cout << "Config server running on http://" << options.bind_address << ":"
               << options.port << std::endl;
-    std::cout << "agent.conf -> " << options.agent_config_path << std::endl;
+    std::cout << "agent.toml -> " << options.agent_config_path << std::endl;
     std::cout << "wifi.conf  -> " << options.wifi_config_path << std::endl;
 
     while (!g_should_stop) {

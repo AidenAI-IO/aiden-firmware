@@ -1,8 +1,11 @@
 #!/bin/sh
 # Aiden config web portal. Runs after usb0 + dnsmasq are up.
+# Maintains /userdata/agent/agent.toml for the Go agent daemon.
 
 BIN=/oem/usr/bin/config_web
 PID_FILE=/run/config_web.pid
+CONFIG_PATH=/userdata/agent/agent.toml
+WIFI_CONFIG_PATH=/userdata/wpa_supplicant.conf
 
 is_running() {
     pid="$1"
@@ -36,7 +39,9 @@ start() {
         return 1
     fi
 
-    "$BIN" &
+    mkdir -p "$(dirname "$CONFIG_PATH")"
+
+    "$BIN" --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" &
     child_pid=$!
     echo "$child_pid" > "$PID_FILE"
     sleep 1
