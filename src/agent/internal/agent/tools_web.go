@@ -10,12 +10,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/gocolly/colly"
 	langtools "github.com/tmc/langchaingo/tools"
 	"github.com/tmc/langchaingo/tools/duckduckgo"
-	"github.com/tmc/langchaingo/tools/scraper"
 	"github.com/tmc/langchaingo/tools/wikipedia"
 )
 
@@ -36,16 +37,19 @@ type WebSearchTool struct {
 	provider string
 }
 
-func NewWebSearchTool(cfg SearchConfig) *WebSearchTool {
+func NewWebSearchTool(cfg SearchConfig, proxy ProxyConfig) *WebSearchTool {
 	provider := cfg.ProviderOrDefault()
 	var backend searchBackend
+
+	httpClient := newProxyHTTPClient(proxy)
+	httpClient.Timeout = defaultWebToolTimeout
 
 	switch provider {
 	case "duckduckgo":
 		inner, err := duckduckgo.New(
 			defaultWebSearchMaxResults,
 			defaultUserAgent,
-			duckduckgo.WithHTTPClient(&http.Client{Timeout: defaultWebToolTimeout}),
+			duckduckgo.WithHTTPClient(httpClient),
 		)
 		if err == nil {
 			backend = &duckduckgoBackend{inner: inner}
@@ -55,7 +59,7 @@ func NewWebSearchTool(cfg SearchConfig) *WebSearchTool {
 		if apiKey != "" {
 			backend = &tavilyBackend{
 				apiKey: apiKey,
-				client: http.Client{Timeout: defaultWebToolTimeout},
+				client: *httpClient,
 			}
 		}
 	}
@@ -186,11 +190,13 @@ type WikipediaTool struct {
 	inner wikipedia.Tool
 }
 
-func NewWikipediaTool() *WikipediaTool {
+func NewWikipediaTool(proxy ProxyConfig) *WikipediaTool {
+	httpClient := newProxyHTTPClient(proxy)
+	httpClient.Timeout = defaultWebToolTimeout
 	return &WikipediaTool{
 		inner: wikipedia.New(
 			defaultUserAgent,
-			wikipedia.WithHTTPClient(&http.Client{Timeout: defaultWebToolTimeout}),
+			wikipedia.WithHTTPClient(httpClient),
 		),
 	}
 }
@@ -270,19 +276,11 @@ func (t *CalculatorTool) Call(ctx context.Context, input string) (string, error)
 // --- Web Scraper ---
 
 type WebScraperTool struct {
-	inner *scraper.Scraper
+	proxy ProxyConfig
 }
 
-func NewWebScraperTool() *WebScraperTool {
-	s, err := scraper.New(
-		scraper.WithMaxDepth(1),
-		scraper.WithAsync(false),
-		scraper.WithMaxPages(1),
-	)
-	if err != nil {
-		return &WebScraperTool{}
-	}
-	return &WebScraperTool{inner: s}
+func NewWebScraperTool(proxy ProxyConfig) *WebScraperTool {
+	return &WebScraperTool{proxy: proxy}
 }
 
 func (t *WebScraperTool) Name() string { return "web_scraper" }
@@ -295,10 +293,6 @@ func (t *WebScraperTool) Description() string {
 }
 
 func (t *WebScraperTool) Call(ctx context.Context, input string) (string, error) {
-	if t.inner == nil {
-		return "error: web_scraper tool is not configured", nil
-	}
-
 	rawURL := strings.TrimSpace(input)
 	if rawURL == "" {
 		return "error: url is required", nil
@@ -320,11 +314,131 @@ func (t *WebScraperTool) Call(ctx context.Context, input string) (string, error)
 	callCtx, cancel := contextWithDefaultTimeout(ctx)
 	defer cancel()
 
-	result, err := t.inner.Call(callCtx, rawURL)
+	result, err := t.scrape(callCtx, rawURL)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
 	return truncateToolOutput(result), nil
+}
+
+func (t *WebScraperTool) scrape(ctx context.Context, targetURL string) (string, error) {
+	c := colly.NewCollector(
+		colly.MaxDepth(1),
+		colly.Async(false),
+	)
+	c.WithTransport(newProxyTransport(t.proxy))
+
+	if err := c.Limit(&colly.LimitRule{
+		DomainGlob:  "*",
+		Parallelism: 2,
+		Delay:       3 * time.Second,
+	}); err != nil {
+		return "", err
+	}
+
+	var siteData strings.Builder
+	scrapedLinks := make(map[string]bool)
+	scrapedLinksMutex := sync.RWMutex{}
+	pageCount := 0
+	pageCountMutex := sync.Mutex{}
+	const maxPages = 1
+
+	blacklist := []string{"login", "signup", "signin", "register", "logout", "download", "redirect"}
+
+	c.OnRequest(func(r *colly.Request) {
+		if ctx.Err() != nil {
+			r.Abort()
+			return
+		}
+		pageCountMutex.Lock()
+		if pageCount >= maxPages {
+			r.Abort()
+			pageCountMutex.Unlock()
+			return
+		}
+		pageCount++
+		pageCountMutex.Unlock()
+	})
+
+	c.OnHTML("html", func(e *colly.HTMLElement) {
+		currentURL := e.Request.URL.String()
+
+		scrapedLinksMutex.Lock()
+		if scrapedLinks[currentURL] {
+			scrapedLinksMutex.Unlock()
+			return
+		}
+		scrapedLinks[currentURL] = true
+		scrapedLinksMutex.Unlock()
+
+		siteData.WriteString("\n\nPage URL: " + currentURL)
+
+		if title := e.ChildText("title"); title != "" {
+			siteData.WriteString("\nPage Title: " + title)
+		}
+		if desc := e.ChildAttr("meta[name=description]", "content"); desc != "" {
+			siteData.WriteString("\nPage Description: " + desc)
+		}
+
+		siteData.WriteString("\nHeaders:")
+		e.ForEach("h1, h2, h3, h4, h5, h6", func(_ int, el *colly.HTMLElement) {
+			siteData.WriteString("\n" + el.Text)
+		})
+
+		siteData.WriteString("\nContent:")
+		e.ForEach("p", func(_ int, el *colly.HTMLElement) {
+			siteData.WriteString("\n" + el.Text)
+		})
+
+		if currentURL == targetURL {
+			e.ForEach("a", func(_ int, el *colly.HTMLElement) {
+				link := el.Attr("href")
+				if link != "" {
+					siteData.WriteString("\nLink: " + link)
+				}
+			})
+		}
+	})
+
+	c.OnHTML("a[href]", func(e *colly.HTMLElement) {
+		link := e.Request.AbsoluteURL(e.Attr("href"))
+		u, err := url.Parse(link)
+		if err != nil || u.Hostname() != e.Request.URL.Hostname() {
+			return
+		}
+		for _, item := range blacklist {
+			if strings.Contains(u.Path, item) {
+				return
+			}
+		}
+		if u.Path == "/index.html" || u.Path == "" {
+			u.Path = "/"
+		}
+		scrapedLinksMutex.RLock()
+		visited := scrapedLinks[u.String()]
+		scrapedLinksMutex.RUnlock()
+		if !visited {
+			_ = c.Visit(u.String())
+		}
+	})
+
+	if err := c.Visit(targetURL); err != nil {
+		return "", err
+	}
+
+	done := make(chan struct{})
+	go func() {
+		c.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-done:
+	}
+
+	return siteData.String(), nil
 }
 
 func validateScrapeURL(rawURL string) error {

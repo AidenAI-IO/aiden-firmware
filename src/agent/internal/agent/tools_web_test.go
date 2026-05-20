@@ -38,7 +38,7 @@ func TestWebSearchAcceptsJSONAndTruncatesOutput(t *testing.T) {
 }
 
 func TestWebSearchRejectsUnconfiguredProvider(t *testing.T) {
-	tool := NewWebSearchTool(SearchConfig{Provider: "tavily"})
+	tool := NewWebSearchTool(SearchConfig{Provider: "tavily"}, ProxyConfig{})
 
 	out, err := tool.Call(context.Background(), "test")
 	if err != nil {
@@ -60,7 +60,7 @@ func TestCalculatorAcceptsJSONExpression(t *testing.T) {
 }
 
 func TestWebScraperRejectsInvalidURL(t *testing.T) {
-	out, err := NewWebScraperTool().Call(context.Background(), `{"url":"not a url"}`)
+	out, err := NewWebScraperTool(ProxyConfig{}).Call(context.Background(), `{"url":"not a url"}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}

@@ -41,7 +41,7 @@ func TestRuntimeRun(t *testing.T) {
 		}),
 	}
 
-	runtime := NewRuntimeWithDeps(cfg, resolver, NewMemoryManager(), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}), NewSkillIndex())
+	runtime := NewRuntimeWithDeps(cfg, resolver, NewMemoryManager(), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}), NewSkillIndex())
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -238,7 +238,7 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 		},
 		&testModelResolver{model: model},
 		NewMemoryManager(),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
 
@@ -531,7 +531,7 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 		},
 		&testModelResolver{model: model},
 		NewMemoryManager(),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
 
