@@ -1,0 +1,46 @@
+#!/bin/sh
+# Aiden override: optional Wi-Fi optimization hook.
+
+BOOT_CONF=/etc/aiden_boot.conf
+
+if [ -f "$BOOT_CONF" ]; then
+	. "$BOOT_CONF"
+fi
+: "${ENABLE_WIFIOPT:=1}"
+
+WIFI_OPT_SCRIPT=/oem/usr/bin/wifi_opt.sh
+
+start() {
+	if [ "$ENABLE_WIFIOPT" != "1" ]; then
+		echo "wifiopt disabled by config (ENABLE_WIFIOPT=$ENABLE_WIFIOPT)"
+		return 0
+	fi
+
+	if [ -x "$WIFI_OPT_SCRIPT" ]; then
+		"$WIFI_OPT_SCRIPT" start >/dev/null 2>&1 || "$WIFI_OPT_SCRIPT" >/dev/null 2>&1 || true
+		echo "Ran Wi-Fi optimization script"
+		return 0
+	fi
+
+	echo "Wi-Fi optimization script not found, skipping"
+	return 0
+}
+
+stop() {
+	if [ -x "$WIFI_OPT_SCRIPT" ]; then
+		"$WIFI_OPT_SCRIPT" stop >/dev/null 2>&1 || true
+	fi
+	echo "Stopped Wi-Fi optimization hook"
+}
+
+restart() {
+	stop
+	start
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart|reload) restart ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
