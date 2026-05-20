@@ -104,6 +104,13 @@ func bypassProxy(host, port, noProxy string) bool {
 			}
 			continue
 		}
+		if strings.HasPrefix(rule, "*.") {
+			base := strings.TrimPrefix(rule, "*.")
+			if host == base || strings.HasSuffix(host, "."+base) {
+				return true
+			}
+			continue
+		}
 		rule = strings.TrimPrefix(rule, ".")
 		if host == rule || strings.HasSuffix(host, "."+rule) {
 			return true
