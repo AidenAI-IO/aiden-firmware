@@ -8,17 +8,35 @@ if [ -f "$BOOT_CONF" ]; then
 fi
 : "${ENABLE_NTP:=1}"
 
+is_running() {
+	pidof ntpd >/dev/null 2>&1
+}
+
 start() {
 	if [ "$ENABLE_NTP" != "1" ]; then
 		echo "ntp disabled by config (ENABLE_NTP=$ENABLE_NTP)"
 		return 0
 	fi
 
+	if is_running; then
+		echo "ntpd already running"
+		return 0
+	fi
+
 	if [ -x /usr/sbin/ntpd ]; then
 		if [ -f /etc/ntp.conf ]; then
-			/usr/sbin/ntpd -c /etc/ntp.conf >/dev/null 2>&1 || true
+			/usr/sbin/ntpd -c /etc/ntp.conf >/dev/null 2>&1
 		else
-			/usr/sbin/ntpd -p ntp.aliyun.com >/dev/null 2>&1 || true
+			/usr/sbin/ntpd -p ntp.aliyun.com >/dev/null 2>&1
+		fi
+		rc="$?"
+		if [ "$rc" -ne 0 ]; then
+			echo "Failed to start ntpd (exit=$rc)"
+			return "$rc"
+		fi
+		if ! is_running; then
+			echo "Failed to start ntpd (not running after start)"
+			return 1
 		fi
 		echo "Started ntpd"
 		return 0
@@ -29,8 +47,16 @@ start() {
 }
 
 stop() {
-	killall ntpd 2>/dev/null || true
+	if is_running; then
+		killall ntpd 2>/dev/null || true
+		sleep 1
+	fi
+	if is_running; then
+		echo "Failed to stop ntpd"
+		return 1
+	fi
 	echo "Stopped ntpd"
+	return 0
 }
 
 restart() {

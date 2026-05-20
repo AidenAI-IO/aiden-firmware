@@ -17,7 +17,16 @@ start() {
 	fi
 
 	if [ -x "$WIFI_OPT_SCRIPT" ]; then
-		"$WIFI_OPT_SCRIPT" start >/dev/null 2>&1 || "$WIFI_OPT_SCRIPT" >/dev/null 2>&1 || true
+		"$WIFI_OPT_SCRIPT" start >/dev/null 2>&1
+		rc="$?"
+		if [ "$rc" -ne 0 ]; then
+			"$WIFI_OPT_SCRIPT" >/dev/null 2>&1
+			rc="$?"
+		fi
+		if [ "$rc" -ne 0 ]; then
+			echo "Wi-Fi optimization script failed (exit=$rc)"
+			return "$rc"
+		fi
 		echo "Ran Wi-Fi optimization script"
 		return 0
 	fi
@@ -28,9 +37,13 @@ start() {
 
 stop() {
 	if [ -x "$WIFI_OPT_SCRIPT" ]; then
-		"$WIFI_OPT_SCRIPT" stop >/dev/null 2>&1 || true
+		"$WIFI_OPT_SCRIPT" stop >/dev/null 2>&1 || {
+			echo "Wi-Fi optimization stop failed"
+			return 1
+		}
 	fi
 	echo "Stopped Wi-Fi optimization hook"
+	return 0
 }
 
 restart() {

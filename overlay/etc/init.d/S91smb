@@ -8,25 +8,77 @@ if [ -f "$BOOT_CONF" ]; then
 fi
 : "${ENABLE_SMB:=0}"
 
+is_running() {
+	name="$1"
+	pidof "$name" >/dev/null 2>&1
+}
+
 start() {
 	if [ "$ENABLE_SMB" != "1" ]; then
 		echo "smb disabled by config (ENABLE_SMB=$ENABLE_SMB)"
 		return 0
 	fi
 
+	started=0
+	failed=0
+
 	if [ -x /usr/sbin/smbd ]; then
-		/usr/sbin/smbd -D
+		if ! is_running smbd; then
+			/usr/sbin/smbd -D >/dev/null 2>&1
+			rc="$?"
+			if [ "$rc" -ne 0 ]; then
+				echo "Failed to start smbd (exit=$rc)"
+				failed="$((failed + 1))"
+			fi
+		fi
+		if is_running smbd; then
+			started="$((started + 1))"
+		fi
 	fi
 	if [ -x /usr/sbin/nmbd ]; then
-		/usr/sbin/nmbd -D
+		if ! is_running nmbd; then
+			/usr/sbin/nmbd -D >/dev/null 2>&1
+			rc="$?"
+			if [ "$rc" -ne 0 ]; then
+				echo "Failed to start nmbd (exit=$rc)"
+				failed="$((failed + 1))"
+			fi
+		fi
+		if is_running nmbd; then
+			started="$((started + 1))"
+		fi
+	fi
+
+	if [ "$started" -eq 0 ]; then
+		if [ -x /usr/sbin/smbd ] || [ -x /usr/sbin/nmbd ]; then
+			echo "Failed to start samba daemons"
+		else
+			echo "smbd/nmbd binary not found"
+		fi
+		return 1
+	fi
+	if [ "$failed" -gt 0 ]; then
+		echo "Started samba partially (started=$started failed=$failed)"
+		return 1
 	fi
 	echo "Started samba (smbd/nmbd)"
+	return 0
 }
 
 stop() {
-	killall smbd 2>/dev/null || true
-	killall nmbd 2>/dev/null || true
+	if is_running smbd; then
+		killall smbd 2>/dev/null || true
+	fi
+	if is_running nmbd; then
+		killall nmbd 2>/dev/null || true
+	fi
+	sleep 1
+	if is_running smbd || is_running nmbd; then
+		echo "Failed to stop samba (smbd/nmbd)"
+		return 1
+	fi
 	echo "Stopped samba (smbd/nmbd)"
+	return 0
 }
 
 restart() {

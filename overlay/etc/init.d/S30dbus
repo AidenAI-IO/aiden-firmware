@@ -2,11 +2,29 @@
 # Aiden override: optional dbus-daemon startup.
 
 BOOT_CONF=/etc/aiden_boot.conf
+DBUS_PID_FILE=/run/dbus/pid
 
 if [ -f "$BOOT_CONF" ]; then
 	. "$BOOT_CONF"
 fi
 : "${ENABLE_DBUS:=1}"
+
+read_pid() {
+	if [ -f "$DBUS_PID_FILE" ]; then
+		pid="$(cat "$DBUS_PID_FILE" 2>/dev/null)"
+		case "$pid" in
+			''|*[!0-9]*) return 1 ;;
+		esac
+		echo "$pid"
+		return 0
+	fi
+	return 1
+}
+
+is_running_pid() {
+	pid="$1"
+	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
 
 start() {
 	if [ "$ENABLE_DBUS" != "1" ]; then
@@ -14,7 +32,8 @@ start() {
 		return 0
 	fi
 
-	if pidof dbus-daemon >/dev/null 2>&1; then
+	pid="$(read_pid)"
+	if is_running_pid "$pid"; then
 		echo "dbus-daemon already running"
 		return 0
 	fi
@@ -23,20 +42,49 @@ start() {
 		/usr/bin/dbus-uuidgen --ensure=/etc/machine-id >/dev/null 2>&1 || true
 	fi
 
+	mkdir -p /run/dbus 2>/dev/null || true
+	rm -f "$DBUS_PID_FILE"
+
 	if [ -x /usr/bin/dbus-daemon ]; then
-		/usr/bin/dbus-daemon --system
+		/usr/bin/dbus-daemon --system --fork --print-pid > "$DBUS_PID_FILE" 2>/dev/null
 	elif [ -x /usr/sbin/dbus-daemon ]; then
-		/usr/sbin/dbus-daemon --system
+		/usr/sbin/dbus-daemon --system --fork --print-pid > "$DBUS_PID_FILE" 2>/dev/null
 	else
 		echo "dbus-daemon binary not found"
 		return 1
 	fi
+
+	pid="$(read_pid)"
+	if ! is_running_pid "$pid"; then
+		echo "dbus-daemon failed to start"
+		rm -f "$DBUS_PID_FILE"
+		return 1
+	fi
 	echo "Started dbus-daemon"
+	return 0
 }
 
 stop() {
-	killall dbus-daemon 2>/dev/null || true
+	pid="$(read_pid)"
+	if ! is_running_pid "$pid"; then
+		rm -f "$DBUS_PID_FILE"
+		echo "dbus-daemon already stopped"
+		return 0
+	fi
+
+	kill "$pid" 2>/dev/null || true
+	i=0
+	while is_running_pid "$pid" && [ "$i" -lt 5 ]; do
+		sleep 1
+		i="$((i + 1))"
+	done
+	if is_running_pid "$pid"; then
+		echo "Failed to stop dbus-daemon pid=$pid"
+		return 1
+	fi
+	rm -f "$DBUS_PID_FILE"
 	echo "Stopped dbus-daemon"
+	return 0
 }
 
 restart() {
