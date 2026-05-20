@@ -565,6 +565,12 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddStringToObject(hid, "mouse_device", config.hid.mouse_device.c_str());
     cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
 
+    cJSON* proxy = add_object(root, "proxy");
+    cJSON_AddStringToObject(proxy, "http_proxy", config.proxy.http_proxy.c_str());
+    cJSON_AddStringToObject(proxy, "https_proxy", config.proxy.https_proxy.c_str());
+    cJSON_AddStringToObject(proxy, "all_proxy", config.proxy.all_proxy.c_str());
+    cJSON_AddStringToObject(proxy, "no_proxy", config.proxy.no_proxy.c_str());
+
     cJSON* agent = add_object(root, "agent");
     cJSON_AddStringToObject(agent, "instruction", config.instruction.c_str());
     cJSON_AddStringToObject(agent, "additional_prompt", config.additional_prompt.c_str());
@@ -701,6 +707,14 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->hid.keyboard_device, hid, "keyboard_device");
         set_json_str(&config->hid.mouse_device, hid, "mouse_device");
         set_json_str(&config->hid.frame_socket, hid, "frame_socket");
+    }
+
+    cJSON* proxy = cJSON_GetObjectItem(root, "proxy");
+    if (json_is_object(proxy)) {
+        set_json_str(&config->proxy.http_proxy, proxy, "http_proxy");
+        set_json_str(&config->proxy.https_proxy, proxy, "https_proxy");
+        set_json_str(&config->proxy.all_proxy, proxy, "all_proxy");
+        set_json_str(&config->proxy.no_proxy, proxy, "no_proxy");
     }
 
     cJSON* agent = cJSON_GetObjectItem(root, "agent");

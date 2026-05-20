@@ -49,6 +49,7 @@ config_web [--bind=IP] [--port=PORT] [--config=PATH] [--wifi-config=PATH]
 - `tts`：provider、api_key、model、voice_id、emotion、speed
 - `audio`：socket、sample_rate、channels、bit_width
 - `hid`：keyboard_device、mouse_device、frame_socket
+- `proxy`：http_proxy、https_proxy、all_proxy、no_proxy（Agent 外部请求代理）
 - Wi-Fi：SSID / PSK 等（写入 `/userdata/wpa_supplicant.conf`）
 
 ## 使用建议

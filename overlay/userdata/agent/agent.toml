@@ -28,6 +28,14 @@ api_key = "OPENROUTER_API_KEY"
 temperature = 0.2
 max_tokens = 1000
 
+# Optional request proxy configuration for outbound Agent HTTP requests.
+# Leave all fields blank to use the process environment (HTTP_PROXY / HTTPS_PROXY / NO_PROXY).
+[proxy]
+http_proxy = ""
+https_proxy = ""
+all_proxy = ""
+no_proxy = ""
+
 # Optional future field parsed by config but not currently used by the runtime.
 # [model_text]
 # provider = "openrouter"

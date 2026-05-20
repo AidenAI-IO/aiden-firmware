@@ -91,7 +91,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		memoryDir = filepath.Join(cfg.ConfigDir, "memory")
 	}
 
-	rt := NewRuntimeWithDeps(cfg, NewModelManager(cfg.Model), NewMemoryManager(memoryDir), NewBuiltinToolSet(cfg.HID, cfg.Audio), skillIndex)
+	rt := NewRuntimeWithDeps(cfg, NewModelManager(cfg.Model, cfg.Proxy), NewMemoryManager(memoryDir), NewBuiltinToolSet(cfg.HID, cfg.Audio), skillIndex)
 	rt.logger = logger
 	return rt, nil
 }

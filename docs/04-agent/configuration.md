@@ -28,6 +28,12 @@ token_env = "OPENROUTER_API_KEY"
 temperature = 0.2
 max_tokens = 1000
 
+[proxy]
+http_proxy = ""
+https_proxy = ""
+all_proxy = ""
+no_proxy = ""
+
 [audio]
 socket = "/run/audio_service/audio_service.sock"
 sample_rate = 32000
@@ -105,6 +111,17 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `token_env` | 从指定环境变量读取 API key；仅 `[model]` 支持 |
 | `temperature` | 采样温度 |
 | `max_tokens` | 最大输出 token |
+
+## `[proxy]`
+
+可选。用于 Agent 发起的外部 HTTP 请求（OpenAI-compatible / OpenRouter / Ollama 模型请求、OpenAI Whisper STT、Minimax TTS）。留空时使用进程环境变量中的 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`。
+
+| 字段 | 说明 |
+| --- | --- |
+| `http_proxy` | HTTP 请求代理，例如 `http://127.0.0.1:7890` |
+| `https_proxy` | HTTPS 请求代理，通常也填写 HTTP 代理地址，例如 `http://127.0.0.1:7890` |
+| `all_proxy` | HTTP/HTTPS 未分别配置时使用的通用代理，支持 `http://`、`https://`、`socks5://` |
+| `no_proxy` | 逗号/空格分隔的直连规则；支持主机名、域名后缀、`host:port`、CIDR 和 `*` |
 
 ## `[audio]`
 
