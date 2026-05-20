@@ -494,6 +494,9 @@ void load_current_agent_config(const Options& options,
         aiden::AgentToml loaded;
         std::string err;
         if (aiden::load_agent_toml(options.agent_config_path.c_str(), loaded, &err)) {
+            if (loaded.search.provider.empty()) {
+                loaded.search.provider = "duckduckgo";
+            }
             *config = loaded;
         } else if (load_error) {
             *load_error = err;
@@ -575,7 +578,7 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
 
     cJSON* search = add_object(root, "search");
     cJSON_AddStringToObject(search, "provider", config.search.provider.c_str());
-    cJSON_AddStringToObject(search, "api_key", config.search.api_key.c_str());
+    cJSON_AddBoolToObject(search, "has_api_key", !config.search.api_key.empty());
 
     cJSON* agent = add_object(root, "agent");
     cJSON_AddStringToObject(agent, "instruction", config.instruction.c_str());
@@ -726,7 +729,10 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     cJSON* search = cJSON_GetObjectItem(root, "search");
     if (json_is_object(search)) {
         set_json_str(&config->search.provider, search, "provider");
-        set_json_str(&config->search.api_key, search, "api_key");
+        cJSON* key_item = cJSON_GetObjectItem(search, "api_key");
+        if (json_is_string(key_item) && strlen(key_item->valuestring) > 0) {
+            config->search.api_key = key_item->valuestring;
+        }
     }
 
     cJSON* agent = cJSON_GetObjectItem(root, "agent");

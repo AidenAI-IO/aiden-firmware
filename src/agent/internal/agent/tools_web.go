@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -311,6 +313,10 @@ func (t *WebScraperTool) Call(ctx context.Context, input string) (string, error)
 		}
 	}
 
+	if err := validateScrapeURL(rawURL); err != nil {
+		return fmt.Sprintf("error: %v", err), nil
+	}
+
 	callCtx, cancel := contextWithDefaultTimeout(ctx)
 	defer cancel()
 
@@ -319,6 +325,29 @@ func (t *WebScraperTool) Call(ctx context.Context, input string) (string, error)
 		return fmt.Sprintf("error: %v", err), nil
 	}
 	return truncateToolOutput(result), nil
+}
+
+func validateScrapeURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid url: %v", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("invalid url scheme: only http/https allowed")
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return fmt.Errorf("invalid url: empty host")
+	}
+	if host == "localhost" {
+		return fmt.Errorf("url host is not allowed")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("url host is not allowed")
+		}
+	}
+	return nil
 }
 
 func contextWithDefaultTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

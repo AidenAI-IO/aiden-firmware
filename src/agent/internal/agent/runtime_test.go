@@ -238,7 +238,7 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 		},
 		&testModelResolver{model: model},
 		NewMemoryManager(),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}),
 		NewSkillIndex(),
 	)
 
@@ -531,7 +531,7 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 		},
 		&testModelResolver{model: model},
 		NewMemoryManager(),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}),
 		NewSkillIndex(),
 	)
 

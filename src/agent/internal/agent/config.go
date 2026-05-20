@@ -228,6 +228,16 @@ func (c Config) Validate() error {
 		return err
 	}
 
+	switch c.Search.ProviderOrDefault() {
+	case "duckduckgo":
+	case "tavily":
+		if strings.TrimSpace(c.Search.APIKey) == "" {
+			return errors.New("search.api_key is required when search.provider=tavily")
+		}
+	default:
+		return fmt.Errorf("invalid search.provider: %s (expected duckduckgo or tavily)", c.Search.Provider)
+	}
+
 	if strings.TrimSpace(c.Model.Provider) == "" {
 		return errors.New("model.provider is required")
 	}
