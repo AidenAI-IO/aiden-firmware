@@ -11,12 +11,8 @@ target_include_directories(doctest INTERFACE
 )
 
 set(AIDEN_TEST_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/config.cpp
+    ${CMAKE_SOURCE_DIR}/src/agent_toml.cpp
     ${CMAKE_SOURCE_DIR}/src/wifi_config.cpp
-    ${CMAKE_SOURCE_DIR}/src/vad.cpp
-    ${CMAKE_SOURCE_DIR}/src/openrouter_codec.cpp
-    ${CMAKE_SOURCE_DIR}/src/openai_codec.cpp
-    ${CMAKE_SOURCE_DIR}/src/minimax_codec.cpp
     ${CMAKE_SOURCE_DIR}/src/service_status.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_ring_buffer.cpp
@@ -30,13 +26,6 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/frame_service_server.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_service_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_service_client.cpp
-    ${CMAKE_SOURCE_DIR}/src/tool_dispatch.cpp
-    ${CMAKE_SOURCE_DIR}/src/tool_image_attachment.cpp
-    ${CMAKE_SOURCE_DIR}/src/agent_version.cpp
-    ${CMAKE_SOURCE_DIR}/src/wav_codec.cpp
-    ${CMAKE_SOURCE_DIR}/src/provider_factory.cpp
-    ${CMAKE_SOURCE_DIR}/src/llm_api_url.cpp
-    ${CMAKE_SOURCE_DIR}/src/text_input.cpp
     ${CMAKE_SOURCE_DIR}/src/cJSON/cJSON.c
 )
 
@@ -80,12 +69,8 @@ endif()
 
 add_executable(aiden_tests
     test_main.cpp
-    config_test.cpp
+    agent_toml_test.cpp
     wifi_config_test.cpp
-    vad_test.cpp
-    openrouter_codec_test.cpp
-    openai_codec_test.cpp
-    minimax_codec_test.cpp
     frame_service_protocol_test.cpp
     frame_service_defaults_test.cpp
     uds_message_test.cpp
@@ -96,14 +81,7 @@ add_executable(aiden_tests
     frame_service_server_test.cpp
     frame_capture_manager_test.cpp
     frame_processing_test.cpp
-    tool_dispatch_test.cpp
-    tool_image_attachment_test.cpp
-    agent_version_test.cpp
-    wav_codec_test.cpp
-    provider_factory_test.cpp
-    llm_api_url_test.cpp
     terminal_input_test.cpp
-    text_input_test.cpp
     service_status_test.cpp
     audio_service_protocol_test.cpp
     audio_service_client_test.cpp

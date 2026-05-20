@@ -105,13 +105,11 @@ While `frame_service` is running, it intentionally owns `/dev/video0`. Direct ca
 /etc/init.d/S52frame_service start
 ```
 
-LLM tools can use the service through `agent_main`:
+LLM tools can use the service through the Go agent (see [`src/agent/`](src/agent/README.md)):
 
-- `capture_screenshot` — captures the latest frame and returns metadata plus a local image path. It writes PNG by default, limits the output image to `max_edge=960`, and forwards the PNG to the LLM as `image_url` input. Pass `format=bmp` for BMP output or `max_edge=0` for full resolution.
-- `frame_service_health` — returns capture state, latest frame sequence, ring usage, recovery, and latency metrics.
-- `frame_service_restart` — requests a capture-path restart if frames appear stale or unhealthy.
+- `screenshot` — captures the latest frame, encodes a PNG, and forwards it to the LLM as image input.
 
-Screenshot interpretation requires a model/provider that supports image input. Text-only models can call `capture_screenshot`, but they cannot inspect the pixels sent as `image_url`.
+Screenshot interpretation requires a model/provider that supports image input. Text-only models can call `screenshot`, but they cannot inspect the pixels.
 
 Debug the service with:
 
@@ -125,123 +123,13 @@ Debug the service with:
 
 ## AI Agent
 
-Pure C++ AI agent that runs directly on the Pico Zero and drives the device's
-keyboard and touchscreen via voice.
+The agent is a Go-based daemon and CLI under [`src/agent/`](src/agent/README.md).
+It drives the device's keyboard/mouse/touchscreen, exposes an HTTP tool API,
+serves a Web UI, and supports a device-side speech pipeline (VAD/STT/TTS).
 
-### Features
-
-- **GPIO wakeup trigger**: waits for a wakeup event on GPIO 33 before recording
-  (no always-on listening)
-- **Real-time audio capture**: captures 16 kHz / 16-bit / mono audio from the
-  onboard microphone
-- **VAD segmentation**: energy-based voice activity detection ends an utterance
-  on silence
-- **LLM processing**: calls an audio-capable model through OpenRouter
-- **Streaming TTS**: MiniMax streaming synthesis — decode and play as bytes
-  arrive, for low latency
-- **Tool calls**: keyboard input, touchscreen control, and HDMI screenshot capture
-- **Debug logging**: detailed HTTP request/response logs
-
-### Setup
-
-1. Make sure `curl` is installed on the device.
-2. Copy the config template and fill in the API keys:
-   ```bash
-   cp agent.conf.example agent.conf
-   vi agent.conf
-   ```
-
-### Usage
-
-```bash
-# GPIO wakeup mode (default, production)
-sudo ./build/bin/agent_main
-sudo ./build/bin/agent_main --mode=wakeup
-
-# Manual trigger mode (press Enter to start/stop recording, for debugging)
-sudo ./build/bin/agent_main --mode=manual
-# First Enter: start recording
-# Second Enter: stop immediately and send what has been recorded (bypasses VAD)
-
-# Text input mode (reads a line from stdin as the instruction, no recording)
-sudo ./build/bin/agent_main --mode=text
-# Type text at the `> ` prompt and press Enter to submit.
-# Empty line or Ctrl+C to exit.
-# Note: text mode requires a non-audio model (e.g., gpt-4o or gpt-4o-mini);
-#       gpt-4o-audio-preview is not compatible.
-
-# Specify a config file
-sudo ./build/bin/agent_main --mode=manual /etc/agent.conf
-
-# Print build version and commit time (git tag if built from a tag, otherwise commit hash)
-./build/bin/agent_main version
-./build/bin/agent_main --version
-./build/bin/agent_main -v
-```
-
-### Config file (`agent.conf`)
-
-```ini
-[model]
-provider = openrouter
-api_key = sk-or-v1-...
-model = openai/gpt-4o-audio-preview
-
-[tts]
-provider = minimax
-api_key = YOUR_MINIMAX_API_KEY
-model = speech-2.8-hd
-voice_id = male-qn-qingse
-emotion = happy
-speed = 1.0
-
-[agent]
-hid_binary = ./build/bin/example_usb_hid
-frame_service_socket = /tmp/frame_service.sock
-energy_threshold = 300   # speech energy threshold
-silence_ms = 800         # silence duration that ends an utterance
-min_speech_ms = 300      # minimum utterance length
-```
-
-### How it works
-
-1. **Wait for wakeup**: the agent idles on a GPIO 33 wakeup event (no CPU
-   polling).
-2. **Start recording**: on wakeup, `AudioCapture` opens the input stream.
-3. **VAD segmentation**: when silence exceeds the configured duration
-   (default 800 ms), the utterance is considered complete.
-4. **Send to LLM**: the audio is wrapped as WAV, base64-encoded, and posted to
-   OpenRouter via curl.
-5. **Tool calls**: the LLM can invoke tools to drive the device:
-   - `keyboard_tap` — key combos (e.g., ENTER, CTRL+C)
-   - `keyboard_text` — type text
-   - `touch_click` — click at an absolute coordinate (0..32767)
-   - `touch_swipe` — swipe gesture
-   - `capture_screenshot` — capture the latest HDMI frame, write a PNG by default, and attach it to the next LLM turn as image input
-   - `frame_service_health` — inspect frame capture health and latency metrics
-   - `frame_service_restart` — request capture recovery when frames appear stale
-6. **Streaming TTS playback**: the LLM reply is sent to MiniMax TTS:
-   - MP3 chunks arrive as a hex-encoded stream
-   - chunks are piped into ffmpeg and decoded to PCM
-   - PCM is played back while the rest of the stream is still arriving
-7. **Return to idle**: once playback finishes, the agent goes back to waiting
-   for the next wakeup event.
-
-### Debug output
-
-The agent prints verbose logs tagged by subsystem:
-
-- `[wakeup]` — GPIO trigger events
-- `[listen]` — recording started
-- `[utterance]` — captured utterance duration
-- `[debug]` — WAV size and other diagnostics
-- `[http]` — HTTP request/response details
-- `[llm]` — LLM request status
-- `[tools]` — tool invocations and their results
-- `[tts]` — TTS synthesis status
-- `[error]` — errors
-
-USB HID setup is required (see `src/README.md`).
+See [`src/agent/README.md`](src/agent/README.md) for setup, configuration, and
+usage. On the device the agent runs under `/etc/init.d/S53agent` and reads
+its config from `/userdata/agent/`.
 
 ## Scripts
 
