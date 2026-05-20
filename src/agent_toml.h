@@ -54,6 +54,11 @@ struct ProxyToml {
     std::string no_proxy;
 };
 
+struct SearchToml {
+    std::string provider;
+    std::string api_key;
+};
+
 struct AgentToml {
     ModelToml model;
     ModelToml model_text;
@@ -62,6 +67,7 @@ struct AgentToml {
     AudioToml audio;
     HIDToml hid;
     ProxyToml proxy;
+    SearchToml search;
 
     std::string instruction;
     std::string additional_prompt;

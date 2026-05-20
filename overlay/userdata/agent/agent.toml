@@ -78,3 +78,9 @@ speed = 1.0                   # Speech speed: 0.5 - 2.0
 keyboard_device = "/dev/hidg0"
 mouse_device = "/dev/hidg1"
 frame_socket = "/run/frame_service/frame_service.sock"
+
+# Web search tool configuration
+# provider: "duckduckgo" (free, no key) or "tavily" (better results, needs api_key)
+[search]
+provider = "duckduckgo"
+api_key = ""

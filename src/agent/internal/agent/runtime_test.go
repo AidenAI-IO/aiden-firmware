@@ -41,7 +41,7 @@ func TestRuntimeRun(t *testing.T) {
 		}),
 	}
 
-	runtime := NewRuntimeWithDeps(cfg, resolver, NewMemoryManager(), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}), NewSkillIndex())
+	runtime := NewRuntimeWithDeps(cfg, resolver, NewMemoryManager(), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}), NewSkillIndex())
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)

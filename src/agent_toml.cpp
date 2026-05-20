@@ -202,6 +202,10 @@ void apply_kv(AgentToml& cfg,
         else if (key == "all_proxy") assign_string(&cfg.proxy.all_proxy, raw, &sub_err);
         else if (key == "no_proxy") assign_string(&cfg.proxy.no_proxy, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "search") {
+        if (key == "provider") assign_string(&cfg.search.provider, raw, &sub_err);
+        else if (key == "api_key") assign_string(&cfg.search.api_key, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
     }
     // Unknown sections / keys are ignored.
 }
@@ -411,6 +415,11 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     emit_string(out, "https_proxy", cfg.proxy.https_proxy);
     emit_string(out, "all_proxy", cfg.proxy.all_proxy);
     emit_string(out, "no_proxy", cfg.proxy.no_proxy);
+    out << "\n";
+
+    out << "[search]\n";
+    emit_string(out, "provider", cfg.search.provider);
+    emit_string(out, "api_key", cfg.search.api_key);
     out << "\n";
 
     return atomic_write(path, out.str(), error);

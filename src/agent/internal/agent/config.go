@@ -10,15 +10,28 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+type SearchConfig struct {
+	Provider string `toml:"provider,omitempty"`
+	APIKey   string `toml:"api_key,omitempty"`
+}
+
+func (s SearchConfig) ProviderOrDefault() string {
+	if strings.TrimSpace(s.Provider) != "" {
+		return strings.ToLower(strings.TrimSpace(s.Provider))
+	}
+	return "duckduckgo"
+}
+
 type Config struct {
 	Model            ModelConfig `toml:"model"`
 	ModelText        ModelConfig `toml:"model_text,omitempty"` // Override for STT-then-text mode
 	TTS              TTSConfig   `toml:"tts,omitempty"`
 	STT              STTConfig   `toml:"stt,omitempty"`
-	HID              HIDConfig   `toml:"hid"`
-	Audio            AudioConfig `toml:"audio,omitempty"`
-	Proxy            ProxyConfig `toml:"proxy,omitempty"`
-	Instruction      string      `toml:"instruction"`
+	HID              HIDConfig    `toml:"hid"`
+	Audio            AudioConfig  `toml:"audio,omitempty"`
+	Proxy            ProxyConfig  `toml:"proxy,omitempty"`
+	Search           SearchConfig `toml:"search,omitempty"`
+	Instruction      string       `toml:"instruction"`
 	AdditionalPrompt string      `toml:"additional_prompt,omitempty"`
 	InputMode        string      `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
 	TriggerMode      string      `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
