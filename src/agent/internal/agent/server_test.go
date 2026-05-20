@@ -107,7 +107,7 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 			Config{Model: ModelConfig{Provider: "fake"}},
 			&testModelResolver{model: &scriptedModel{}},
 			NewMemoryManager(),
-			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}),
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 			NewSkillIndex(),
 		),
 		history: []Message{
@@ -146,7 +146,7 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 		},
 		&testModelResolver{model: fakellm.NewFakeLLM([]string{"已处理"})},
 		NewMemoryManager(),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
 	server := &Server{

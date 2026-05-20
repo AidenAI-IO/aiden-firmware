@@ -474,6 +474,8 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.hid.keyboard_device = "/dev/hidg0";
     cfg.hid.mouse_device = "/dev/hidg1";
     cfg.hid.frame_socket = "/run/frame_service/frame_service.sock";
+
+    cfg.search.provider = "duckduckgo";
 }
 
 void load_current_agent_config(const Options& options,
@@ -492,6 +494,9 @@ void load_current_agent_config(const Options& options,
         aiden::AgentToml loaded;
         std::string err;
         if (aiden::load_agent_toml(options.agent_config_path.c_str(), loaded, &err)) {
+            if (loaded.search.provider.empty()) {
+                loaded.search.provider = "duckduckgo";
+            }
             *config = loaded;
         } else if (load_error) {
             *load_error = err;
@@ -570,6 +575,10 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddStringToObject(proxy, "https_proxy", config.proxy.https_proxy.c_str());
     cJSON_AddStringToObject(proxy, "all_proxy", config.proxy.all_proxy.c_str());
     cJSON_AddStringToObject(proxy, "no_proxy", config.proxy.no_proxy.c_str());
+
+    cJSON* search = add_object(root, "search");
+    cJSON_AddStringToObject(search, "provider", config.search.provider.c_str());
+    cJSON_AddBoolToObject(search, "has_api_key", !config.search.api_key.empty());
 
     cJSON* agent = add_object(root, "agent");
     cJSON_AddStringToObject(agent, "instruction", config.instruction.c_str());
@@ -715,6 +724,15 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->proxy.https_proxy, proxy, "https_proxy");
         set_json_str(&config->proxy.all_proxy, proxy, "all_proxy");
         set_json_str(&config->proxy.no_proxy, proxy, "no_proxy");
+    }
+
+    cJSON* search = cJSON_GetObjectItem(root, "search");
+    if (json_is_object(search)) {
+        set_json_str(&config->search.provider, search, "provider");
+        cJSON* key_item = cJSON_GetObjectItem(search, "api_key");
+        if (json_is_string(key_item) && strlen(key_item->valuestring) > 0) {
+            config->search.api_key = key_item->valuestring;
+        }
     }
 
     cJSON* agent = cJSON_GetObjectItem(root, "agent");

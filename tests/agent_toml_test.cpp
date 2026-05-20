@@ -63,6 +63,9 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.proxy.all_proxy = "socks5://127.0.0.1:7891";
     cfg.proxy.no_proxy = "localhost,127.0.0.1,192.168.0.0/16";
 
+    cfg.search.provider = "duckduckgo";
+    cfg.search.api_key = "tvly-test";
+
     std::string path = make_temp_path("roundtrip.toml");
     std::string err;
     REQUIRE(aiden::save_agent_toml(path.c_str(), cfg, &err));
@@ -110,6 +113,9 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.proxy.https_proxy == "http://127.0.0.1:7890");
     CHECK(loaded.proxy.all_proxy == "socks5://127.0.0.1:7891");
     CHECK(loaded.proxy.no_proxy == "localhost,127.0.0.1,192.168.0.0/16");
+
+    CHECK(loaded.search.provider == "duckduckgo");
+    CHECK(loaded.search.api_key == "tvly-test");
 
     std::remove(path.c_str());
 }
