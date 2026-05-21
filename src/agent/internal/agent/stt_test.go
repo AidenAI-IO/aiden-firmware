@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -32,19 +33,29 @@ func TestNewSTTClientFromConfigOpenRouter(t *testing.T) {
 
 func TestOpenRouterSTTTranscribeWAVSendsJSONAudioPayload(t *testing.T) {
 	wavData := []byte("RIFF wav data")
+	errCh := make(chan error, 1)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fail := func(format string, args ...any) {
+			errCh <- fmt.Errorf(format, args...)
+			http.Error(w, "bad request", http.StatusBadRequest)
+		}
+
 		if r.Method != http.MethodPost {
-			t.Fatalf("method = %s, want POST", r.Method)
+			fail("method = %s, want POST", r.Method)
+			return
 		}
 		if r.URL.Path != "/audio/transcriptions" {
-			t.Fatalf("path = %s, want /audio/transcriptions", r.URL.Path)
+			fail("path = %s, want /audio/transcriptions", r.URL.Path)
+			return
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer sk-or" {
-			t.Fatalf("Authorization = %q, want bearer token", got)
+			fail("Authorization = %q, want bearer token", got)
+			return
 		}
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
-			t.Fatalf("Content-Type = %q, want application/json", got)
+			fail("Content-Type = %q, want application/json", got)
+			return
 		}
 
 		var body struct {
@@ -55,18 +66,23 @@ func TestOpenRouterSTTTranscribeWAVSendsJSONAudioPayload(t *testing.T) {
 			} `json:"input_audio"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode request body: %v", err)
+			fail("decode request body: %v", err)
+			return
 		}
 		if body.Model != "custom/asr" {
-			t.Fatalf("model = %q, want custom/asr", body.Model)
+			fail("model = %q, want custom/asr", body.Model)
+			return
 		}
 		if body.InputAudio.Data != base64.StdEncoding.EncodeToString(wavData) {
-			t.Fatalf("input_audio.data = %q, want base64 wav data", body.InputAudio.Data)
+			fail("input_audio.data = %q, want base64 wav data", body.InputAudio.Data)
+			return
 		}
 		if body.InputAudio.Format != "wav" {
-			t.Fatalf("input_audio.format = %q, want wav", body.InputAudio.Format)
+			fail("input_audio.format = %q, want wav", body.InputAudio.Format)
+			return
 		}
 
+		errCh <- nil
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"text":"hello world"}`))
 	}))
@@ -74,6 +90,9 @@ func TestOpenRouterSTTTranscribeWAVSendsJSONAudioPayload(t *testing.T) {
 
 	client := NewOpenRouterSTT("sk-or", "custom/asr", server.URL+"/", server.Client())
 	text, err := client.TranscribeWAV(wavData)
+	if handlerErr := <-errCh; handlerErr != nil {
+		t.Fatal(handlerErr)
+	}
 	if err != nil {
 		t.Fatalf("TranscribeWAV() error = %v", err)
 	}
