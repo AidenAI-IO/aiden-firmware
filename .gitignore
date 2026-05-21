@@ -2,8 +2,25 @@
 /build/
 /build-*/
 /output/
+.worktrees/
+.claude/
 *.pcm
 /pico-sdk/
 /overlay/oem/usr/bin/*
 !/overlay/oem/usr/bin/.gitkeep
 !/overlay/oem/usr/bin/RkLunch.sh
+
+# Secrets
+agent.conf
+
+# Debug artifacts
+screen-memory-debug-*/
+capture.md
+
+# Python (uv)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+benchmark/runs/
+benchmark/artifacts/
