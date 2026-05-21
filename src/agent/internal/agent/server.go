@@ -20,14 +20,38 @@ import (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime     *Runtime
-	addr        string
-	logger      *Logger
-	mu          sync.Mutex
-	history     []Message
-	sttClient   STTClient
-	ttsClient   TTSClient
-	audioClient *AudioServiceClient
+	runtime      *Runtime
+	addr         string
+	logger       *Logger
+	mu           sync.Mutex
+	history      []Message
+	sttClient    STTClient
+	ttsClient    TTSClient
+	audioClient  *AudioServiceClient
+	recordMu     sync.Mutex
+	webRecording *webAudioRecording
+}
+
+type webAudioRecording struct {
+	sessionID  uint64
+	sampleRate int
+	done       chan struct{}
+
+	mu         sync.Mutex
+	samples    []int16
+	hasPending bool
+	pending    byte
+	stopping   bool
+	err        error
+}
+
+type AudioRecordStartResponse struct {
+	Status     string `json:"status"`
+	SampleRate int    `json:"sample_rate"`
+}
+
+type AudioRecordStopResponse struct {
+	Attachment MessageAttachment `json:"attachment"`
 }
 
 type MessageAttachment struct {
@@ -97,6 +121,8 @@ func NewServer(runtime *Runtime, addr string) *Server {
 
 	// Initialize TTS client if configured
 	cfg := runtime.config
+	s.audioClient = NewAudioServiceClient(cfg.Audio.SocketOrDefault())
+
 	sttClient, err := NewSTTClientFromConfig(cfg)
 	if err != nil {
 		if s.logger != nil {
@@ -113,7 +139,6 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		}
 	} else if ttsClient != nil {
 		s.ttsClient = ttsClient
-		s.audioClient = NewAudioServiceClient(cfg.Audio.SocketOrDefault())
 		if s.logger != nil {
 			s.logger.Info("TTS enabled: provider=%s voice=%s", cfg.TTS.Provider, cfg.TTS.VoiceID)
 		}
@@ -133,6 +158,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/tools", s.handleTools)
 	mux.HandleFunc("/api/tools/", s.handleTools)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
+	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
+	mux.HandleFunc("/api/audio/record/stop", s.handleAudioRecordStop)
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
@@ -292,6 +319,177 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.audioClient == nil {
+		http.Error(w, "audio service client is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	s.recordMu.Lock()
+	defer s.recordMu.Unlock()
+
+	if s.webRecording != nil {
+		http.Error(w, "audio recording is already active", http.StatusConflict)
+		return
+	}
+
+	sampleRate := s.runtime.config.Audio.SampleRateOrDefault()
+	result, err := s.audioClient.StartRecording(AudioFormat{
+		SampleRate: uint32(sampleRate),
+		Channels:   1,
+		BitWidth:   16,
+	})
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("Web audio recording start failed: %v", err)
+		}
+		http.Error(w, "start device audio recording: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	recording := &webAudioRecording{
+		sessionID:  result.SessionID,
+		sampleRate: sampleRate,
+		done:       make(chan struct{}),
+		samples:    make([]int16, 0, sampleRate),
+	}
+	s.webRecording = recording
+	go s.readWebAudioRecording(recording)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(AudioRecordStartResponse{
+		Status:     "recording",
+		SampleRate: sampleRate,
+	})
+}
+
+func (s *Server) handleAudioRecordStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.audioClient == nil {
+		http.Error(w, "audio service client is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	s.recordMu.Lock()
+	recording := s.webRecording
+	if recording == nil {
+		s.recordMu.Unlock()
+		http.Error(w, "audio recording is not active", http.StatusBadRequest)
+		return
+	}
+	recording.setStopping()
+	s.recordMu.Unlock()
+
+	stopErr := s.audioClient.StopRecording(recording.sessionID)
+
+	select {
+	case <-recording.done:
+	case <-time.After(7 * time.Second):
+		if stopErr == nil {
+			stopErr = fmt.Errorf("timed out waiting for audio recording to drain")
+		}
+	}
+
+	s.recordMu.Lock()
+	if s.webRecording == recording {
+		s.webRecording = nil
+	}
+	s.recordMu.Unlock()
+
+	if stopErr != nil {
+		if s.logger != nil {
+			s.logger.Error("Web audio recording stop failed: %v", stopErr)
+		}
+		http.Error(w, "stop device audio recording: "+stopErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := recording.readError(); err != nil {
+		if s.logger != nil {
+			s.logger.Error("Web audio recording read failed: %v", err)
+		}
+		http.Error(w, "read device audio recording: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	samples := recording.snapshotSamples()
+	wavData := pcm16MonoToWAV(samples, recording.sampleRate)
+	attachment := MessageAttachment{
+		Kind:     AttachmentKindAudio,
+		Name:     "recording.wav",
+		MIMEType: "audio/wav",
+		Data:     base64.StdEncoding.EncodeToString(wavData),
+		Size:     len(wavData),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(AudioRecordStopResponse{Attachment: attachment})
+}
+
+func (s *Server) readWebAudioRecording(recording *webAudioRecording) {
+	defer close(recording.done)
+
+	for {
+		chunk, err := s.audioClient.ReadRecordChunk(recording.sessionID, 1000)
+		if err != nil {
+			if !recording.isStopping() {
+				recording.setError(err)
+			}
+			return
+		}
+		if len(chunk.PCM) > 0 {
+			recording.appendPCM(chunk.PCM)
+		}
+		if chunk.EndOfStream {
+			return
+		}
+	}
+}
+
+func (r *webAudioRecording) appendPCM(pcm []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	AppendPCM16Samples(pcm, &r.samples, &r.hasPending, &r.pending)
+}
+
+func (r *webAudioRecording) setStopping() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stopping = true
+}
+
+func (r *webAudioRecording) isStopping() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stopping
+}
+
+func (r *webAudioRecording) setError(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.err = err
+}
+
+func (r *webAudioRecording) readError() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.err
+}
+
+func (r *webAudioRecording) snapshotSamples() []int16 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	samples := make([]int16, len(r.samples))
+	copy(samples, r.samples)
+	return samples
 }
 
 func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
@@ -2096,9 +2294,27 @@ const webUI = `<!DOCTYPE html>
 
         async function startRecording() {
             if (recorderState.isRecording) return;
+
+            const startedOnServer = await startServerRecording();
+            if (startedOnServer) {
+                recorderState = {
+                    isRecording: true,
+                    mode: 'server',
+                    stream: null,
+                    context: null,
+                    source: null,
+                    processor: null,
+                    sink: null,
+                    chunks: [],
+                    sampleRate: targetAudioSampleRate
+                };
+                updateRecordButton();
+                return;
+            }
+
             const AudioContextClass = window.AudioContext || window.webkitAudioContext;
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !AudioContextClass) {
-                throw new Error('This browser does not support audio recording.');
+                throw new Error('Device audio recording is unavailable and this browser cannot record audio from the page.');
             }
 
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -2121,6 +2337,7 @@ const webUI = `<!DOCTYPE html>
 
             recorderState = {
                 isRecording: true,
+                mode: 'browser',
                 stream: stream,
                 context: context,
                 source: source,
@@ -2135,6 +2352,21 @@ const webUI = `<!DOCTYPE html>
 
         async function stopRecording() {
             if (!recorderState.isRecording) return;
+
+            if (recorderState.mode === 'server') {
+                recorderState.isRecording = false;
+                const attachment = await stopServerRecording();
+                await teardownRecorder();
+                upsertAudioAttachment({
+                    id: nextAttachmentId++,
+                    kind: attachment.kind || 'audio',
+                    name: attachment.name || 'recording.wav',
+                    mime_type: attachment.mime_type || 'audio/wav',
+                    data: attachment.data || '',
+                    size: attachment.size || 0
+                });
+                return;
+            }
 
             recorderState.isRecording = false;
             const chunks = recorderState.chunks.slice();
@@ -2153,6 +2385,29 @@ const webUI = `<!DOCTYPE html>
                 size: wavBlob.size,
                 preview_url: URL.createObjectURL(wavBlob)
             });
+        }
+
+        async function startServerRecording() {
+            const res = await fetch('/api/audio/record/start', { method: 'POST' });
+            if (res.status === 404) {
+                return false;
+            }
+            if (!res.ok) {
+                throw new Error(await res.text() || 'Device audio recording failed to start.');
+            }
+            return true;
+        }
+
+        async function stopServerRecording() {
+            const res = await fetch('/api/audio/record/stop', { method: 'POST' });
+            if (!res.ok) {
+                throw new Error(await res.text() || 'Device audio recording failed to stop.');
+            }
+            const data = await res.json();
+            if (!data.attachment || !data.attachment.data) {
+                throw new Error('Device audio recording returned no audio data.');
+            }
+            return data.attachment;
         }
 
         function upsertAudioAttachment(attachment) {
@@ -2191,6 +2446,7 @@ const webUI = `<!DOCTYPE html>
         function createRecorderState() {
             return {
                 isRecording: false,
+                mode: '',
                 stream: null,
                 context: null,
                 source: null,
