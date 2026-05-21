@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -129,6 +130,64 @@ func TestKeyboardTextReportsUnsupportedCharacters(t *testing.T) {
 	}
 	if len(data) != 32 {
 		t.Fatalf("expected 4 keyboard reports for 2 ASCII characters, got %d bytes", len(data))
+	}
+}
+
+func TestPostActionScreenshotToolReturnsScreenshotJSON(t *testing.T) {
+	action := &stubTool{name: "keyboard_tap", output: "ok"}
+	screenshot := &stubTool{
+		name:   "screenshot",
+		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
+	}
+	tool := newPostActionScreenshotTool(action, screenshot, 0)
+
+	out, err := tool.Call(context.Background(), `{"keys":["enter"]}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out == "ok" {
+		t.Fatalf("Call output = %q, want screenshot JSON", out)
+	}
+
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("output is not valid post-action screenshot JSON: %v", err)
+	}
+	if result.ActionOutput != "ok" {
+		t.Fatalf("ActionOutput = %q, want ok", result.ActionOutput)
+	}
+	if result.Width != 320 || result.Height != 240 || result.Format != "jpeg" || result.Data != "ZmFrZQ==" {
+		t.Fatalf("unexpected screenshot result: %#v", result)
+	}
+	if len(action.inputs) != 1 || action.inputs[0] != `{"keys":["enter"]}` {
+		t.Fatalf("action inputs = %#v", action.inputs)
+	}
+	if len(screenshot.inputs) != 1 || screenshot.inputs[0] != "{}" {
+		t.Fatalf("screenshot inputs = %#v", screenshot.inputs)
+	}
+	visual, ok := tool.(visualObservationTool)
+	if !ok || !visual.ReturnsVisualObservation() {
+		t.Fatalf("post-action tool must be a visual observation tool")
+	}
+}
+
+func TestPostActionScreenshotToolSkipsScreenshotOnActionErrorOutput(t *testing.T) {
+	action := &stubTool{name: "mouse_click", output: "error: invalid input"}
+	screenshot := &stubTool{
+		name:   "screenshot",
+		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
+	}
+	tool := newPostActionScreenshotTool(action, screenshot, 0)
+
+	out, err := tool.Call(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "error: invalid input" {
+		t.Fatalf("Call output = %q, want original error output", out)
+	}
+	if len(screenshot.inputs) != 0 {
+		t.Fatalf("screenshot should not be called on action error, got inputs %#v", screenshot.inputs)
 	}
 }
 

@@ -64,9 +64,9 @@ model = "bytedance-seed/seed-2.0-lite"
 token_env = "OPENROUTER_API_KEY"
 
 [stt]
-provider = "openai-whisper"
-api_key = "sk-..."
-model = "whisper-1"
+provider = "openrouter"
+api_key = "OPENROUTER_API_KEY"
+model = "qwen/qwen3-asr-flash-2026-02-10"
 
 [tts]
 provider = "minimax"
@@ -147,6 +147,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 STT：
 
 - `provider = "openai-whisper"`：当前可用；
+- `provider = "openrouter"`：当前可用，默认 endpoint 为 `https://openrouter.ai/api/v1/audio/transcriptions`，请求体使用 base64 WAV；
 - `provider = "tencent"`：字段已声明，Tencent ASR 仍属于待完善项。
 
 TTS：

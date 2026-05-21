@@ -131,6 +131,11 @@ func (d *AudioDialog) ResetVAD() {
 	d.vad.Reset()
 }
 
+// VADFrameSamples returns the number of samples to feed into each VAD frame.
+func (d *AudioDialog) VADFrameSamples() int {
+	return d.vad.FrameSamples()
+}
+
 // ProcessUtterance processes a detected utterance
 func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, runtime *Runtime) error {
 	duration := float64(len(utterance)) / float64(d.config.Audio.SampleRateOrDefault())

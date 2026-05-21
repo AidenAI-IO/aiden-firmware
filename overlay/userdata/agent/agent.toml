@@ -52,10 +52,16 @@ bit_width = 16
 # Speech-to-Text (STT) configuration
 # Required when input_mode = "stt"
 [stt]
-provider = "openai-whisper"  # "openai-whisper" or "tencent"
+provider = "openai-whisper"  # "openai-whisper", "openrouter", or "tencent"
 api_key = "OPENAI_API_KEY"
 model = "whisper-1"
 # base_url = "https://api.openai.com/v1"  # Optional: custom endpoint
+
+# For OpenRouter STT:
+# provider = "openrouter"
+# api_key = "OPENROUTER_API_KEY"
+# model = "qwen/qwen3-asr-flash-2026-02-10"
+# base_url = "https://openrouter.ai/api/v1"  # Optional: custom endpoint
 
 # For Tencent ASR (alternative to OpenAI Whisper):
 # provider = "tencent"

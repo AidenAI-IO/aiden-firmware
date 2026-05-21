@@ -5,10 +5,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
@@ -247,6 +251,81 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	}
 }
 
+func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
+	stopCh := make(chan struct{})
+	var stopOnce sync.Once
+	var readCount int32
+
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_recording":
+			if req.SampleRate != 16000 || req.Channels != 1 || req.BitWidth != 16 {
+				t.Errorf("unexpected recording format: %#v", req)
+			}
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		case "read_record_chunk":
+			count := atomic.AddInt32(&readCount, 1)
+			if count == 1 {
+				return audioResponse{Status: "OK"}, []byte{1, 0, 2, 0}
+			}
+			<-stopCh
+			return audioResponse{Status: "OK", EndOfStream: true}, nil
+		case "stop_recording":
+			stopOnce.Do(func() { close(stopCh) })
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "INTERNAL_ERROR"}, nil
+		}
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+			},
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	startReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/start", nil)
+	startRec := httptest.NewRecorder()
+	server.handleAudioRecordStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/stop", nil)
+	stopRec := httptest.NewRecorder()
+	server.handleAudioRecordStop(stopRec, stopReq)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("unexpected stop status: %d body=%s", stopRec.Code, stopRec.Body.String())
+	}
+
+	var resp AudioRecordStopResponse
+	if err := json.NewDecoder(stopRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if resp.Attachment.Kind != AttachmentKindAudio || resp.Attachment.MIMEType != "audio/wav" {
+		t.Fatalf("unexpected attachment metadata: %#v", resp.Attachment)
+	}
+	wavData, err := base64.StdEncoding.DecodeString(resp.Attachment.Data)
+	if err != nil {
+		t.Fatalf("decode wav payload: %v", err)
+	}
+	if !bytes.HasPrefix(wavData, []byte("RIFF")) || !bytes.Contains(wavData[:44], []byte("WAVE")) {
+		t.Fatalf("expected wav payload, got %q", string(wavData[:12]))
+	}
+	if len(wavData) != 48 {
+		t.Fatalf("expected 2 PCM16 samples in WAV, got %d bytes", len(wavData))
+	}
+}
+
 func TestServerToolCatalogEndpoint(t *testing.T) {
 	tool := &stubTool{
 		name:        "shell",
@@ -438,4 +517,78 @@ func TestRequestBaseURLPrefersForwardedHeaders(t *testing.T) {
 	if got != "https://device.example:8443" {
 		t.Fatalf("requestBaseURL = %q, want %q", got, "https://device.example:8443")
 	}
+}
+
+func TestWebUIRedactsScreenshotBase64Payloads(t *testing.T) {
+	required := []string{
+		"redactToolPayloadForDisplay(JSON.parse(value))",
+		"clone.data = '[base64 screenshot omitted: ' + byteLabel + ']'",
+		"function isScreenshotPayload(value)",
+	}
+	for _, snippet := range required {
+		if !strings.Contains(webUI, snippet) {
+			t.Fatalf("webUI missing screenshot redaction snippet %q", snippet)
+		}
+	}
+	if strings.Contains(webUI, "toolName !== 'screenshot'") {
+		t.Fatalf("webUI still limits screenshot parsing to only the screenshot tool")
+	}
+}
+
+func startFakeAudioServiceSocket(t *testing.T, handler func(audioRequest) (audioResponse, []byte)) string {
+	t.Helper()
+
+	socketDir, err := os.MkdirTemp("/tmp", "aiden-audio-test-*")
+	if err != nil {
+		t.Fatalf("create fake audio socket dir: %v", err)
+	}
+	t.Cleanup(func() {
+		os.RemoveAll(socketDir)
+	})
+
+	socketPath := filepath.Join(socketDir, "audio.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on fake audio socket: %v", err)
+	}
+	t.Cleanup(func() {
+		listener.Close()
+	})
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+
+				msg, err := readUdsMessage(conn)
+				if err != nil {
+					t.Errorf("fake audio read request: %v", err)
+					return
+				}
+
+				var req audioRequest
+				if err := json.Unmarshal([]byte(msg.HeaderJSON), &req); err != nil {
+					t.Errorf("fake audio decode request: %v", err)
+					return
+				}
+
+				resp, payload := handler(req)
+				respHeader, err := json.Marshal(resp)
+				if err != nil {
+					t.Errorf("fake audio encode response: %v", err)
+					return
+				}
+				if err := writeUdsMessage(conn, udsMessage{HeaderJSON: string(respHeader), Payload: payload}); err != nil {
+					t.Errorf("fake audio write response: %v", err)
+					return
+				}
+			}()
+		}
+	}()
+
+	return socketPath
 }
