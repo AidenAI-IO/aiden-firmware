@@ -1,0 +1,3 @@
+httpx>=0.27
+anthropic>=0.40
+Pillow>=10.0

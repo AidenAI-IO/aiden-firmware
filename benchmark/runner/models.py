@@ -1,0 +1,47 @@
+from __future__ import annotations
+import dataclasses as dc
+from typing import Any
+
+@dc.dataclass
+class ToolCall:
+    step: int
+    tool: str
+    input: dict[str, Any]
+    has_screenshot: bool = False
+
+@dc.dataclass
+class Trace:
+    tool_calls: list[ToolCall]
+    final_response: str
+    total_tool_calls: int
+    total_duration_ms: int
+
+@dc.dataclass
+class RubricVerdict:
+    id: str
+    verdict: str  # "yes" | "no"
+    reason: str
+
+@dc.dataclass
+class HardAssertionResults:
+    min_tool_calls: bool | None = None
+    max_tool_calls: bool | None = None
+    timeout: bool = True
+    response_exists: bool = False
+
+@dc.dataclass
+class TaskResult:
+    suite: str
+    run_id: str
+    task_id: str
+    category: str
+    attempt: int
+    status: str  # passed|failed|skipped|judge_error|timeout
+    rubric: list[RubricVerdict]
+    rubric_pass_count: int = 0
+    rubric_total: int = 0
+    hard_assertions: HardAssertionResults | None = None
+    metrics: dict[str, Any] = dc.field(default_factory=dict)
+    artifact_dir: str = ""
+    started_at: str = ""
+    finished_at: str = ""
