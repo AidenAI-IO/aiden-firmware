@@ -6,7 +6,7 @@
 
 **Architecture:** Python package at `benchmark/runner/` talks to the Go agent daemon at `http://localhost:8080`. Each task: clear history → reset phone → optional setup → pre-screenshot → POST /api/chat → extract trace → assert → judge → write artifacts.
 
-**Tech Stack:** Python 3.10+, `httpx` (HTTP client), `anthropic` SDK (judge), `Pillow` (image handling), no framework.
+**Tech Stack:** Python 3.10+, managed by **uv** (single `pyproject.toml` at the repo root). Runtime deps: `httpx` (HTTP client), `anthropic` SDK (judge), `Pillow` (image handling). Dev deps: `pytest`. All commands run via `uv run …`.
 
 ---
 
@@ -28,7 +28,8 @@
 | `benchmark/runner/report.py`             | Write JSONL + summary.md + manifest.json      |
 | `benchmark/runner/models.py`             | Shared dataclasses (TaskResult, Trace, etc.)  |
 | `benchmark/suites/phone_control_v1.json` | Main suite (15 tasks)                         |
-| `benchmark/requirements.txt`             | Python dependencies                           |
+| `pyproject.toml` (repo root)             | Python project + uv dependency manifest       |
+| `uv.lock` (repo root)                    | uv-resolved lockfile                          |
 | `tests/benchmark/__init__.py`            | Test package                                  |
 | `tests/benchmark/test_suite.py`          | Suite loading tests                           |
 | `tests/benchmark/test_trace.py`          | Trace extraction tests                        |
@@ -37,99 +38,24 @@
 
 ---
 
-## Task 1: Python package skeleton + models
+## Task 1: Python package skeleton + models — DONE
 
-**Files:**
-
-- Create: `benchmark/runner/__init__.py`
-- Create: `benchmark/runner/__main__.py`
-- Create: `benchmark/runner/models.py`
-- Create: `benchmark/requirements.txt`
-- Create: `tests/benchmark/__init__.py`
-
-- [ ] **Step 1: Create requirements.txt**
-
-```
-httpx>=0.27
-anthropic>=0.40
-Pillow>=10.0
-```
-
-- [ ] **Step 2: Create package files**
-
-`benchmark/runner/__init__.py`: empty file.
-
-`benchmark/runner/__main__.py`:
-
-```python
-from benchmark.runner.main import cli
-
-if __name__ == "__main__":
-    cli()
-```
-
-- [ ] **Step 3: Create models.py with shared dataclasses**
-
-```python
-from __future__ import annotations
-import dataclasses as dc
-from typing import Any
-
-@dc.dataclass
-class ToolCall:
-    step: int
-    tool: str
-    input: dict[str, Any]
-    has_screenshot: bool = False
-
-@dc.dataclass
-class Trace:
-    tool_calls: list[ToolCall]
-    final_response: str
-    total_tool_calls: int
-    total_duration_ms: int
-
-@dc.dataclass
-class RubricVerdict:
-    id: str
-    verdict: str  # "yes" | "no"
-    reason: str
-
-@dc.dataclass
-class HardAssertionResults:
-    min_tool_calls: bool | None = None
-    max_tool_calls: bool | None = None
-    timeout: bool = True
-    response_exists: bool = False
-
-@dc.dataclass
-class TaskResult:
-    suite: str
-    run_id: str
-    task_id: str
-    category: str
-    attempt: int
-    status: str  # passed|failed|skipped|judge_error|timeout
-    rubric: list[RubricVerdict]
-    rubric_pass_count: int = 0
-    rubric_total: int = 0
-    hard_assertions: HardAssertionResults | None = None
-    metrics: dict[str, Any] = dc.field(default_factory=dict)
-    artifact_dir: str = ""
-    started_at: str = ""
-    finished_at: str = ""
-```
-
-- [ ] **Step 4: Create test package marker**
-
-`tests/benchmark/__init__.py`: empty file.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add benchmark/runner/__init__.py benchmark/runner/__main__.py benchmark/runner/models.py benchmark/requirements.txt tests/benchmark/__init__.py
-git commit -m "feat(benchmark): add runner package skeleton and models"
-```
+> Already complete (commits `771fc24` + `e57faaf`).
+>
+> Layout migrated to **uv**:
+>
+> - `pyproject.toml` + `uv.lock` at repo root.
+> - `benchmark/__init__.py` makes `benchmark.runner` importable as a package.
+> - Runtime deps: `httpx`, `anthropic`, `Pillow`. Dev deps: `pytest`.
+> - `tests/benchmark/__init__.py` and the 5 dataclasses in `benchmark/runner/models.py` match the spec.
+>
+> **For all subsequent tasks, run Python via `uv run …`:**
+>
+> - `uv run pytest tests/benchmark/test_<x>.py -v`
+> - `uv run python -m benchmark.runner run --suite ...`
+> - To add a runtime dep: `uv add some-pkg`. Dev dep: `uv add --dev some-pkg`.
+>
+> Reading the existing files (`uv.lock`, `pyproject.toml`, `benchmark/runner/models.py`) before starting any later task is encouraged.
 
 ---
 
@@ -200,7 +126,7 @@ def test_load_suite_duplicate_ids_raise(tmp_path: Path):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```
-pytest tests/benchmark/test_suite.py -v
+uv run pytest tests/benchmark/test_suite.py -v
 ```
 
 Expected: ImportError (suite module not found).
@@ -303,7 +229,7 @@ def load_suite(path: Path) -> Suite:
 - [ ] **Step 4: Run tests, expect PASS**
 
 ```
-pytest tests/benchmark/test_suite.py -v
+uv run pytest tests/benchmark/test_suite.py -v
 ```
 
 Expected: 4 passed.
@@ -389,7 +315,7 @@ def test_health_returns_true_when_tools_endpoint_ok():
 - [ ] **Step 2: Run tests, expect ImportError**
 
 ```
-pytest tests/benchmark/test_agent_client.py -v
+uv run pytest tests/benchmark/test_agent_client.py -v
 ```
 
 - [ ] **Step 3: Implement agent_client.py**
@@ -479,7 +405,7 @@ class AgentClient:
 - [ ] **Step 4: Run tests, expect PASS**
 
 ```
-pytest tests/benchmark/test_agent_client.py -v
+uv run pytest tests/benchmark/test_agent_client.py -v
 ```
 
 - [ ] **Step 5: Commit**
@@ -550,7 +476,7 @@ def test_extract_trace_handles_malformed_input_gracefully():
 - [ ] **Step 2: Run tests, expect ImportError**
 
 ```
-pytest tests/benchmark/test_trace.py -v
+uv run pytest tests/benchmark/test_trace.py -v
 ```
 
 - [ ] **Step 3: Implement trace.py**
@@ -618,7 +544,7 @@ def extract_step_screenshots(history: list[dict[str, Any]]) -> list[tuple[str, s
 - [ ] **Step 4: Run tests, expect PASS**
 
 ```
-pytest tests/benchmark/test_trace.py -v
+uv run pytest tests/benchmark/test_trace.py -v
 ```
 
 - [ ] **Step 5: Commit**
@@ -685,7 +611,7 @@ def test_missing_response_fails_when_required():
 - [ ] **Step 2: Run tests, expect ImportError**
 
 ```
-pytest tests/benchmark/test_assertions.py -v
+uv run pytest tests/benchmark/test_assertions.py -v
 ```
 
 - [ ] **Step 3: Implement assertions.py**
@@ -722,7 +648,7 @@ def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool
 - [ ] **Step 4: Run tests, expect PASS**
 
 ```
-pytest tests/benchmark/test_assertions.py -v
+uv run pytest tests/benchmark/test_assertions.py -v
 ```
 
 - [ ] **Step 5: Commit**
@@ -1928,7 +1854,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Rewrite docs/BENCHMARK.md**
 
-Replace the file with content describing the new agent-driven flow: prerequisites (Go agent daemon running), how to run (`python -m benchmark.runner run --suite benchmark/suites/phone_control_v1.json`), how to interpret results (run dir layout, summary.md, rejudge), and a "Legacy" section noting `full_smoke.json` is deprecated and kept for reference only.
+Replace the file with content describing the new agent-driven flow: prerequisites (Go agent daemon running), how to run (`uv run python -m benchmark.runner run --suite benchmark/suites/phone_control_v1.json`), how to interpret results (run dir layout, summary.md, rejudge), and a "Legacy" section noting `full_smoke.json` is deprecated and kept for reference only.
 
 - [ ] **Step 3: Mark full_smoke.json deprecated**
 
@@ -1960,12 +1886,13 @@ go run ./cmd/daemon -config /path/to/agent/config -addr :8080
 
 Verify: `curl http://localhost:8080/api/tools` returns a JSON list of tools.
 
-- [ ] **Step 2: Install Python deps**
+- [ ] **Step 2: Install Python deps via uv**
 
 ```
-python3 -m venv .venv-bench
-.venv-bench/bin/pip install -r benchmark/requirements.txt
+uv sync
 ```
+
+This reads `pyproject.toml` + `uv.lock` and creates `.venv` if missing.
 
 - [ ] **Step 3: Set judge API key**
 
@@ -1976,7 +1903,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 - [ ] **Step 4: Dry-run with --no-judge first**
 
 ```
-.venv-bench/bin/python -m benchmark.runner run \
+uv run python -m benchmark.runner run \
   --suite benchmark/suites/phone_control_v1.json \
   --no-judge
 ```
@@ -1988,7 +1915,7 @@ Inspect at least 3 task artifact dirs manually. If trace.json or screenshots loo
 - [ ] **Step 5: Full run with judge**
 
 ```
-.venv-bench/bin/python -m benchmark.runner run \
+uv run python -m benchmark.runner run \
   --suite benchmark/suites/phone_control_v1.json
 ```
 
@@ -1999,7 +1926,7 @@ Expected: `summary.md` shows pass/fail per category. For each FAILED task, manua
 For tasks where judge disagrees with human:
 
 1. Tighten or loosen the rubric `check` text.
-2. Run `python -m benchmark.runner rejudge --run-dir benchmark/runs/<id>`.
+2. Run `uv run python -m benchmark.runner rejudge --run-dir benchmark/runs/<id>`.
 3. Verify new `results.rejudged.jsonl` matches human assessment.
 4. Once stable, commit the rubric updates.
 
@@ -2016,6 +1943,6 @@ git commit -m "fix(benchmark): tune phone_control_v1 rubrics from rig run"
 
 - All 15 tasks in `phone_control_v1.json` execute end-to-end against a real Go agent + phone rig.
 - `benchmark/runs/<id>/summary.md` reports a pass rate that matches human review (no systematic judge errors).
-- `python -m benchmark.runner run`, `rejudge`, and `compare` all work.
-- All unit tests pass: `pytest tests/benchmark/ -v`.
+- `uv run python -m benchmark.runner run`, `rejudge`, and `compare` all work.
+- All unit tests pass: `uv run pytest tests/benchmark/ -v`.
 - `scripts/aiden_benchmark.py` continues to work as a shim.
