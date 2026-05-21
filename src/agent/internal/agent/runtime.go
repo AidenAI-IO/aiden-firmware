@@ -263,6 +263,11 @@ func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 
 	memoryTools := []string{"recall_session_chunks", "recall_memory", "save_memory", "forget_memory"}
 	for _, name := range memoryTools {
+		if skills.HasToolRestriction {
+			if _, allowed := skills.AllowedTools[name]; !allowed {
+				continue
+			}
+		}
 		if tool, ok := r.tools.Get(name); ok {
 			if !toolAlreadyIncluded(available, name) {
 				available = append(available, tool)

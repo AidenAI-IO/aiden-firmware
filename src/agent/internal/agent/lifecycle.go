@@ -144,8 +144,9 @@ func (lm *LifecycleManager) Verify(ctx context.Context) (VerifyReport, error) {
 			if _, err := os.Stat(chunkPath); os.IsNotExist(err) {
 				parsed.Item.Traceability = "excerpt_only"
 				parsed.Item.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-				_ = writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644)
-				report.StaleTraceability++
+				if err := writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644); err == nil {
+					report.StaleTraceability++
+				}
 				break
 			}
 		}
