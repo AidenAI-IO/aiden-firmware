@@ -107,12 +107,9 @@ func TestRecallToolDescriptionsGuideAgentUsage(t *testing.T) {
 	for _, want := range []string{
 		"MUST use this tool",
 		"earlier in this conversation",
-		"Do not use",
-		`{"tags":["topic_keyword"]`,
-		"How to choose tags",
-		"CONTENT/TOPIC keywords",
-		"empty tags []",
-		"evidence",
+		"chunk_ids",
+		"PREFERRED",
+		"FALLBACK",
 	} {
 		if !strings.Contains(sessionDescription, want) {
 			t.Fatalf("recall_session_chunks description missing %q:\n%s", want, sessionDescription)

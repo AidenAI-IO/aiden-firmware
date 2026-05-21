@@ -326,7 +326,7 @@ func TestSummaryAccumulatesChunks(t *testing.T) {
 	if !strings.Contains(content, "第二次压缩摘要") {
 		t.Fatalf("expected latest summary in content, got:\n%s", content)
 	}
-	if strings.Count(content, "- chunk_") < 2 {
+	if strings.Count(content, "- **chunk_") < 2 {
 		t.Fatalf("expected at least 2 chunk entries in summary, got:\n%s", content)
 	}
 }

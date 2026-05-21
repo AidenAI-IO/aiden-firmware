@@ -41,10 +41,11 @@ type ChunkSummary struct {
 }
 
 type ChunkRecallQuery struct {
-	Tags     []string
-	Entities []string
-	AppName  string
-	Limit    int
+	ChunkIDs []string `json:"chunk_ids,omitempty"`
+	Tags     []string `json:"tags,omitempty"`
+	Entities []string `json:"entities,omitempty"`
+	AppName  string   `json:"app_name,omitempty"`
+	Limit    int      `json:"limit,omitempty"`
 }
 
 type ChunkRecallResult struct {
@@ -168,7 +169,7 @@ func (s *SessionMemoryStore) compressEvents(ctx context.Context, events []Sessio
 		return ChunkSummary{}, err
 	}
 	existingSummary, _ := os.ReadFile(s.summaryPath())
-	if err := writeFileAtomic(s.summaryPath(), []byte(formatSessionSummary(existingSummary, opt.Summary, opt.ChunkID)), 0o644); err != nil {
+	if err := writeFileAtomic(s.summaryPath(), []byte(formatSessionSummary(existingSummary, entry)), 0o644); err != nil {
 		return ChunkSummary{}, fmt.Errorf("write session summary: %w", err)
 	}
 	return ChunkSummary{
@@ -215,6 +216,26 @@ func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecall
 	if limit <= 0 {
 		limit = 3
 	}
+
+	if len(query.ChunkIDs) > 0 {
+		idSet := make(map[string]bool, len(query.ChunkIDs))
+		for _, id := range query.ChunkIDs {
+			idSet[id] = true
+		}
+		var results []ChunkRecallResult
+		for _, entry := range index.Chunks {
+			if !idSet[entry.ID] {
+				continue
+			}
+			events, err := s.readEvents(filepath.Join(s.chunksDir(), entry.File))
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, ChunkRecallResult{ChunkID: entry.ID, Summary: entry.Summary, Evidence: events})
+		}
+		return results, nil
+	}
+
 	entries := make([]chunkIndexEntry, 0)
 	allActive := make([]chunkIndexEntry, 0)
 	hasFilter := query.AppName != "" || len(query.Tags) > 0 || len(query.Entities) > 0
@@ -350,26 +371,37 @@ func firstNonEmptyAppName(events []SessionEvent) string {
 	return ""
 }
 
-func formatSessionSummary(existingContent []byte, summary string, chunkID string) string {
-	var chunks []string
+func formatSessionSummary(existingContent []byte, newChunk chunkIndexEntry) string {
+	type chunkLine struct {
+		ID      string
+		Summary string
+	}
+	var chunks []chunkLine
 	if len(existingContent) > 0 {
-		for _, line := range strings.Split(string(existingContent), "\n") {
+		lines := strings.Split(string(existingContent), "\n")
+		for i, line := range lines {
 			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "- chunk_") {
-				chunks = append(chunks, trimmed)
+			if !strings.HasPrefix(trimmed, "- **") {
+				continue
 			}
+			id := strings.TrimPrefix(trimmed, "- **")
+			if idx := strings.Index(id, "**"); idx > 0 {
+				id = id[:idx]
+			}
+			summary := ""
+			if i+1 < len(lines) {
+				summary = strings.TrimSpace(lines[i+1])
+			}
+			chunks = append(chunks, chunkLine{ID: id, Summary: summary})
 		}
 	}
-	chunks = append(chunks, "- "+chunkID)
+	chunks = append(chunks, chunkLine{ID: newChunk.ID, Summary: strings.TrimSpace(newChunk.Summary)})
 
 	var b strings.Builder
-	b.WriteString("# Current Session Summary\n\n")
-	b.WriteString("## 当前任务\n\n")
-	b.WriteString(strings.TrimSpace(summary))
-	b.WriteString("\n\n## 已压缩片段\n\n")
+	b.WriteString("# Session History (compressed chunks)\n\n")
+	b.WriteString("Use recall_session_chunks with a chunk_id to retrieve full conversation details.\n\n")
 	for _, c := range chunks {
-		b.WriteString(c)
-		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("- **%s**\n  %s\n", c.ID, c.Summary))
 	}
 	return b.String()
 }

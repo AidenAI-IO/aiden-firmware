@@ -33,16 +33,12 @@ func (t *RecallSessionChunksTool) Description() string {
 	return strings.Join([]string{
 		"Recall compressed session history chunks from earlier in this conversation.",
 		"IMPORTANT: You MUST use this tool when the user asks about something said earlier that you cannot find in your visible conversation context.",
-		"Triggers: any reference to earlier conversation content (e.g., 'what did I say earlier', 'you mentioned before', 'do you remember').",
-		"If you cannot find the answer in your visible history, call this tool BEFORE saying you don't remember.",
-		"Do not use for stable long-term preferences, rules, or procedures; use recall_memory for those.",
-		`Input JSON: {"tags":["topic_keyword"],"entities":["AppName"],"limit":3}`,
-		"How to choose tags:",
-		"  - tags should be CONTENT/TOPIC keywords from the conversation (e.g., 'payment', 'login', 'verification') — NOT time words like 'earlier', 'before', 'initially'.",
-		"  - When the user asks about a specific topic, pass that topic in tags.",
-		"  - When the user asks about earliest/recent history with NO specific topic, pass empty tags [] and rely on limit — chunks are returned newest-first.",
-		"  - When unsure what topic to pass, prefer empty tags [] over guessing — empty returns recent chunks; wrong guesses return nothing.",
-		"Returns JSON with matching conversation chunks and original event evidence.",
+		"The session summary in your prompt lists all available chunks with their IDs and summaries.",
+		"How to recall:",
+		"  - PREFERRED: pass chunk_ids to retrieve specific chunks by ID from the session summary.",
+		"  - FALLBACK: pass tags (content/topic keywords like 'payment', 'login') to search. Use empty tags [] for recent history.",
+		`Input JSON: {"chunk_ids":["chunk_xxx"]} or {"tags":["topic"],"limit":3}`,
+		"Returns JSON with matching conversation chunks and their full original events.",
 	}, " ")
 }
 

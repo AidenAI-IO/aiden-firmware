@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -308,14 +309,25 @@ func (r *Runtime) buildAgent(
 	attachments []InputAttachment,
 	callbackHandler callbacks.Handler,
 ) agents.Agent {
+	systemMessage := buildFunctionAgentSystemMessage(
+		AgentConfig{Instruction: r.config.Instruction},
+		skills,
+		availableTools,
+	)
+	if r.config.ConfigDir != "" {
+		sessionSummary, _ := os.ReadFile(filepath.Join(r.config.ConfigDir, "memory", "session", "summary.md"))
+		if len(sessionSummary) > 0 {
+			systemMessage += "\n\n" + string(sessionSummary)
+		}
+		profile, _ := os.ReadFile(filepath.Join(r.config.ConfigDir, "memory", "long_term", "profile.md"))
+		if len(profile) > 0 {
+			systemMessage += "\n\n" + string(profile)
+		}
+	}
 	return NewFunctionAgent(
 		model,
 		availableTools,
-		buildFunctionAgentSystemMessage(
-			AgentConfig{Instruction: r.config.Instruction},
-			skills,
-			availableTools,
-		),
+		systemMessage,
 		[]prompts.MessageFormatter{
 			prompts.NewSystemMessagePromptTemplate(
 				"Conversation history:\n{{.history}}",
