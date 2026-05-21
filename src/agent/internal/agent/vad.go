@@ -34,6 +34,11 @@ func NewAudioVAD(sampleRate, energyThreshold, silenceMs, minSpeechMs int, always
 	}
 }
 
+// FrameSamples returns the number of samples expected in each VAD frame.
+func (v *AudioVAD) FrameSamples() int {
+	return v.frameSamples
+}
+
 // computeEnergy calculates the average energy of audio samples
 func computeEnergy(samples []int16) int {
 	if len(samples) == 0 {

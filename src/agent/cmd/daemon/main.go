@@ -84,14 +84,36 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime) {
 	if triggerMode == "manual" {
 		runManualMode(cfg, dialog, runtime, sigChan)
 	} else if triggerMode == "wakeup" {
-		runWakeupMode(cfg, dialog, runtime, sigChan)
+		runWakeupMode(cfg, dialog, runtime, sigChan, newGPIOWatcher)
 	} else {
 		log.Printf("[error] Unsupported trigger mode: %s\n", triggerMode)
 		os.Exit(1)
 	}
 }
 
-func runManualMode(cfg agent.Config, dialog *agent.AudioDialog, runtime *agent.Runtime, sigChan chan os.Signal) {
+type audioDialogRunner interface {
+	StartRecording() error
+	StopRecording() error
+	ReadRecordChunk(timeoutMs uint32) (*agent.AudioChunkResult, error)
+	ProcessVADFrame(samples []int16) []int16
+	ProcessUtterance(ctx context.Context, utterance []int16, runtime *agent.Runtime) error
+	FlushVAD() []int16
+	ResetVAD()
+	VADFrameSamples() int
+}
+
+type wakeupWatcher interface {
+	Start() error
+	Stop()
+}
+
+type wakeupWatcherFactory func(pin int, callback func()) (wakeupWatcher, error)
+
+func newGPIOWatcher(pin int, callback func()) (wakeupWatcher, error) {
+	return agent.NewGPIOWatcher(pin, callback)
+}
+
+func runManualMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal) {
 	log.Println("\n[ready] Press Enter to start recording, press Enter again to stop")
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -155,7 +177,7 @@ func runManualMode(cfg agent.Config, dialog *agent.AudioDialog, runtime *agent.R
 	log.Println("\n[exit] Stopped.")
 }
 
-func runWakeupMode(cfg agent.Config, dialog *agent.AudioDialog, runtime *agent.Runtime, sigChan chan os.Signal) {
+func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory) {
 	log.Println("\n[ready] Starting GPIO wakeup listener on GPIO 33...")
 
 	ctx := context.Background()
@@ -163,7 +185,7 @@ func runWakeupMode(cfg agent.Config, dialog *agent.AudioDialog, runtime *agent.R
 	var wakeupMutex sync.Mutex
 
 	// Create GPIO watcher
-	watcher, err := agent.NewGPIOWatcher(33, func() {
+	watcher, err := newWatcher(33, func() {
 		wakeupMutex.Lock()
 		defer wakeupMutex.Unlock()
 		if !wakeupTriggered {
@@ -216,63 +238,10 @@ func runWakeupMode(cfg agent.Config, dialog *agent.AudioDialog, runtime *agent.R
 		}
 
 		dialog.ResetVAD()
-		vadPending := make([]int16, 0, 480*10)
-		var hasPendingByte bool
-		var pendingByte byte
-
-		// Process audio until VAD detects end of speech
-		utteranceDetected := false
-		for !utteranceDetected {
-			select {
-			case <-sigChan:
-				dialog.StopRecording()
-				log.Println("\n[exit] Stopped.")
-				return
-			default:
-			}
-
-			// Read audio chunk
-			chunk, err := dialog.ReadRecordChunk(200)
-			if err != nil {
-				log.Printf("[listen] read_record_chunk error: %v\n", err)
-				break
-			}
-
-			if chunk == nil {
-				continue
-			}
-
-			if chunk.EndOfStream {
-				log.Println("[listen] record session closed by service")
-				break
-			}
-
-			if len(chunk.PCM) == 0 {
-				continue
-			}
-
-			// Convert PCM bytes to int16 samples
-			agent.AppendPCM16Samples(chunk.PCM, &vadPending, &hasPendingByte, &pendingByte)
-
-			// Feed VAD in 30ms frames (480 samples at 16kHz)
-			const frameSamples = 480
-			consumed := 0
-			for consumed+frameSamples <= len(vadPending) {
-				utterance := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
-				consumed += frameSamples
-				if utterance != nil {
-					log.Println("[utterance] VAD detected end of speech")
-					if err := dialog.ProcessUtterance(ctx, utterance, runtime); err != nil {
-						log.Printf("[error] %v\n", err)
-					}
-					utteranceDetected = true
-					break
-				}
-			}
-
-			if consumed > 0 {
-				vadPending = vadPending[consumed:]
-			}
+		if exit := processAudioUntilUtterance(dialog, runtime, ctx, sigChan); exit {
+			dialog.StopRecording()
+			log.Println("\n[exit] Stopped.")
+			return
 		}
 
 		// Stop recording
@@ -287,8 +256,76 @@ func runWakeupMode(cfg agent.Config, dialog *agent.AudioDialog, runtime *agent.R
 	}
 }
 
-func processAudioLoop(dialog *agent.AudioDialog, runtime *agent.Runtime, recording *bool, ctx context.Context) {
-	vadPending := make([]int16, 0, 480*10)
+func processAudioUntilUtterance(dialog audioDialogRunner, runtime *agent.Runtime, ctx context.Context, sigChan chan os.Signal) bool {
+	frameSamples := dialog.VADFrameSamples()
+	if frameSamples <= 0 {
+		log.Printf("[listen] invalid VAD frame size: %d\n", frameSamples)
+		return false
+	}
+
+	vadPending := make([]int16, 0, frameSamples*10)
+	var hasPendingByte bool
+	var pendingByte byte
+
+	for {
+		// Read audio chunk
+		select {
+		case <-sigChan:
+			return true
+		default:
+		}
+
+		chunk, err := dialog.ReadRecordChunk(200)
+		if err != nil {
+			log.Printf("[listen] read_record_chunk error: %v\n", err)
+			return false
+		}
+
+		if chunk == nil {
+			continue
+		}
+
+		if chunk.EndOfStream {
+			log.Println("[listen] record session closed by service")
+			return false
+		}
+
+		if len(chunk.PCM) == 0 {
+			continue
+		}
+
+		// Convert PCM bytes to int16 samples
+		agent.AppendPCM16Samples(chunk.PCM, &vadPending, &hasPendingByte, &pendingByte)
+
+		// Feed VAD in 30ms frames.
+		consumed := 0
+		for consumed+frameSamples <= len(vadPending) {
+			utterance := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
+			consumed += frameSamples
+			if utterance != nil {
+				log.Println("[utterance] VAD detected end of speech")
+				if err := dialog.ProcessUtterance(ctx, utterance, runtime); err != nil {
+					log.Printf("[error] %v\n", err)
+				}
+				return false
+			}
+		}
+
+		if consumed > 0 {
+			vadPending = vadPending[consumed:]
+		}
+	}
+}
+
+func processAudioLoop(dialog audioDialogRunner, runtime *agent.Runtime, recording *bool, ctx context.Context) {
+	frameSamples := dialog.VADFrameSamples()
+	if frameSamples <= 0 {
+		log.Printf("[listen] invalid VAD frame size: %d\n", frameSamples)
+		*recording = false
+		return
+	}
+
+	vadPending := make([]int16, 0, frameSamples*10)
 	var hasPendingByte bool
 	var pendingByte byte
 
@@ -318,8 +355,7 @@ func processAudioLoop(dialog *agent.AudioDialog, runtime *agent.Runtime, recordi
 		// Convert PCM bytes to int16 samples
 		agent.AppendPCM16Samples(chunk.PCM, &vadPending, &hasPendingByte, &pendingByte)
 
-		// Feed VAD in 30ms frames (480 samples at 16kHz)
-		const frameSamples = 480
+		// Feed VAD in 30ms frames.
 		consumed := 0
 		for consumed+frameSamples <= len(vadPending) {
 			utterance := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
