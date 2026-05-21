@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewSTTClientFromConfigOpenRouter(t *testing.T) {
@@ -90,8 +91,13 @@ func TestOpenRouterSTTTranscribeWAVSendsJSONAudioPayload(t *testing.T) {
 
 	client := NewOpenRouterSTT("sk-or", "custom/asr", server.URL+"/", server.Client())
 	text, err := client.TranscribeWAV(wavData)
-	if handlerErr := <-errCh; handlerErr != nil {
-		t.Fatal(handlerErr)
+	select {
+	case handlerErr := <-errCh:
+		if handlerErr != nil {
+			t.Fatal(handlerErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for OpenRouter STT test handler")
 	}
 	if err != nil {
 		t.Fatalf("TranscribeWAV() error = %v", err)
