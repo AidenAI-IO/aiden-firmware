@@ -118,11 +118,12 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	toolSet := NewBuiltinToolSet(cfg.HID, cfg.Audio, cfg.Search, cfg.Proxy)
-	toolSet.RegisterMemoryTools(memoryDir)
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
 	modelManager := NewModelManager(cfg.Model, cfg.Proxy)
 	summarizeFn := buildLLMSummarizeFn(modelManager)
-	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithMemoryLogger(logger)), toolSet, skillIndex)
+	profileFn := buildLLMProfileFn(modelManager)
+	toolSet.RegisterMemoryTools(memoryDir, profileFn)
+	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithProfileFn(profileFn), WithMemoryLogger(logger)), toolSet, skillIndex)
 	rt.logger = logger
 	return rt, nil
 }
@@ -557,6 +558,38 @@ func buildLLMSummarizeFn(models ModelResolver) SummarizeFn {
 		}
 		prompt := "Summarize this conversation in 2-3 concise sentences. Focus on what was discussed, decided, or requested. Write in the same language as the conversation.\n\n" + transcript.String()
 		result, err := llms.GenerateFromSinglePrompt(ctx, model, prompt, llms.WithMaxTokens(200))
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(result)
+	}
+}
+
+func buildLLMProfileFn(models ModelResolver) ProfileFn {
+	return func(ctx context.Context, entries []ProfileEntry) string {
+		model, err := models.Get()
+		if err != nil {
+			return ""
+		}
+		var input strings.Builder
+		for _, e := range entries {
+			input.WriteString(fmt.Sprintf("[%s] %s\n", e.Type, e.Content))
+		}
+		if input.Len() == 0 {
+			return ""
+		}
+		prompt := `Based on the following memory entries about a user, synthesize a concise user profile.
+Rules:
+- Only include information directly about the user (identity, role, preferences, habits, rules they set).
+- Discard transient facts, one-time events, or information not useful for future interactions.
+- Group related information under clear headings.
+- Keep it concise — no more than 10 lines total.
+- Write in the same language as the entries.
+- Output markdown starting with "# User Profile".
+
+Memory entries:
+` + input.String()
+		result, err := llms.GenerateFromSinglePrompt(ctx, model, prompt, llms.WithMaxTokens(400))
 		if err != nil {
 			return ""
 		}

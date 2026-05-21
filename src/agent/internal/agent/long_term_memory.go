@@ -18,15 +18,29 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ProfileFn synthesizes a user profile from a list of memory entries.
+// Each entry has Type (profile/rule/preference) and Content.
+type ProfileFn func(ctx context.Context, entries []ProfileEntry) string
+
+type ProfileEntry struct {
+	Type    string
+	Content string
+}
+
 type LongTermMemoryStore struct {
 	rootDir      string
 	lifecycleDir string
+	profileFn    ProfileFn
 }
 
 type LongTermMemoryOption func(*LongTermMemoryStore)
 
 func WithLifecycleDir(dir string) LongTermMemoryOption {
 	return func(s *LongTermMemoryStore) { s.lifecycleDir = dir }
+}
+
+func WithStoreProfileFn(fn ProfileFn) LongTermMemoryOption {
+	return func(s *LongTermMemoryStore) { s.profileFn = fn }
 }
 
 type MemorySourceRef struct {
@@ -365,34 +379,51 @@ func (s *LongTermMemoryStore) RegenerateProfileMD(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	type profileEntry struct {
-		Type    string
-		Content string
-	}
-	var entries []profileEntry
+	var entries []ProfileEntry
 	for _, entry := range index.Memories {
 		if entry.Status != "active" {
 			continue
 		}
-		if entry.Type != "profile" && entry.Type != "rule" && entry.Type != "preference" {
+		if !isProfileRelevantType(entry.Type) {
 			continue
 		}
 		parsed, err := readMemoryMarkdown(filepath.Join(s.rootDir, entry.File))
 		if err != nil {
 			continue
 		}
-		entries = append(entries, profileEntry{Type: entry.Type, Content: strings.TrimSpace(parsed.Content)})
+		entries = append(entries, ProfileEntry{Type: entry.Type, Content: strings.TrimSpace(parsed.Content)})
 	}
 	if len(entries) == 0 {
 		return nil
 	}
+
+	var profileContent string
+	if s.profileFn != nil {
+		profileContent = s.profileFn(ctx, entries)
+	}
+	if profileContent == "" {
+		profileContent = fallbackProfile(entries)
+	}
+
+	return writeFileAtomic(filepath.Join(s.rootDir, "profile.md"), []byte(profileContent), 0o644)
+}
+
+func isProfileRelevantType(t string) bool {
+	switch t {
+	case "profile", "rule", "preference":
+		return true
+	}
+	return false
+}
+
+func fallbackProfile(entries []ProfileEntry) string {
 	var b strings.Builder
 	b.WriteString("# User Profile\n\n")
 	b.WriteString(fmt.Sprintf("updated_at: %s\n\n", time.Now().UTC().Format(time.RFC3339)))
 	for _, e := range entries {
 		b.WriteString(fmt.Sprintf("## [%s]\n\n%s\n\n", e.Type, e.Content))
 	}
-	return writeFileAtomic(filepath.Join(s.rootDir, "profile.md"), []byte(b.String()), 0o644)
+	return b.String()
 }
 
 func (s *LongTermMemoryStore) RebuildIndex(ctx context.Context) error {

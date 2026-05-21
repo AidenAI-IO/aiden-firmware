@@ -35,6 +35,7 @@ type MemoryManager struct {
 	extraction       MemoryExtractionConfig
 	lastPromptTokens int
 	summarizeFn      SummarizeFn
+	profileFn        ProfileFn
 	logger           *Logger
 }
 
@@ -65,6 +66,10 @@ func WithExtractionConfig(cfg MemoryExtractionConfig) MemoryManagerOption {
 
 func WithSummarizeFn(fn SummarizeFn) MemoryManagerOption {
 	return func(m *MemoryManager) { m.summarizeFn = fn }
+}
+
+func WithProfileFn(fn ProfileFn) MemoryManagerOption {
+	return func(m *MemoryManager) { m.profileFn = fn }
 }
 
 func WithMemoryLogger(logger *Logger) MemoryManagerOption {
@@ -429,7 +434,7 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		return err
 	}
 
-	longTerm := NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"), WithLifecycleDir(filepath.Join(m.storageDir, "lifecycle")))
+	longTerm := NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"), WithLifecycleDir(filepath.Join(m.storageDir, "lifecycle")), WithStoreProfileFn(m.profileFn))
 	if err := longTerm.RegenerateProfileMD(ctx); err != nil {
 		if m.logger != nil {
 			m.logger.Error("[memory] profile.md regeneration failed: %v", err)
