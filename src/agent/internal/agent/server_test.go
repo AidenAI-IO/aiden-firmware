@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
@@ -107,7 +108,7 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 			Config{Model: ModelConfig{Provider: "fake"}},
 			&testModelResolver{model: &scriptedModel{}},
 			NewMemoryManager(),
-			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}),
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 			NewSkillIndex(),
 		),
 		history: []Message{
@@ -146,7 +147,7 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 		},
 		&testModelResolver{model: fakellm.NewFakeLLM([]string{"已处理"})},
 		NewMemoryManager(),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
 	server := &Server{
@@ -389,5 +390,21 @@ func TestRequestBaseURLPrefersForwardedHeaders(t *testing.T) {
 	got := requestBaseURL(req)
 	if got != "https://device.example:8443" {
 		t.Fatalf("requestBaseURL = %q, want %q", got, "https://device.example:8443")
+	}
+}
+
+func TestWebUIRedactsScreenshotBase64Payloads(t *testing.T) {
+	required := []string{
+		"redactToolPayloadForDisplay(JSON.parse(value))",
+		"clone.data = '[base64 screenshot omitted: ' + byteLabel + ']'",
+		"function isScreenshotPayload(value)",
+	}
+	for _, snippet := range required {
+		if !strings.Contains(webUI, snippet) {
+			t.Fatalf("webUI missing screenshot redaction snippet %q", snippet)
+		}
+	}
+	if strings.Contains(webUI, "toolName !== 'screenshot'") {
+		t.Fatalf("webUI still limits screenshot parsing to only the screenshot tool")
 	}
 }

@@ -10,16 +10,30 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+type SearchConfig struct {
+	Provider string `toml:"provider,omitempty"`
+	APIKey   string `toml:"api_key,omitempty"`
+}
+
+func (s SearchConfig) ProviderOrDefault() string {
+	if strings.TrimSpace(s.Provider) != "" {
+		return strings.ToLower(strings.TrimSpace(s.Provider))
+	}
+	return "duckduckgo"
+}
+
 type Config struct {
 	Model            ModelConfig `toml:"model"`
 	ModelText        ModelConfig `toml:"model_text,omitempty"` // Override for STT-then-text mode
 	TTS              TTSConfig   `toml:"tts,omitempty"`
 	STT              STTConfig   `toml:"stt,omitempty"`
-	HID              HIDConfig   `toml:"hid"`
-	Audio            AudioConfig `toml:"audio,omitempty"`
-	Instruction      string      `toml:"instruction"`
+	HID              HIDConfig    `toml:"hid"`
+	Audio            AudioConfig  `toml:"audio,omitempty"`
+	Proxy            ProxyConfig  `toml:"proxy,omitempty"`
+	Search           SearchConfig `toml:"search,omitempty"`
+	Instruction      string       `toml:"instruction"`
 	AdditionalPrompt string      `toml:"additional_prompt,omitempty"`
-	InputMode        string      `toml:"input_mode,omitempty"` // "text", "audio", "stt"
+	InputMode        string      `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
 	TriggerMode      string      `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
 	EnergyThreshold  int         `toml:"energy_threshold,omitempty"`
 	SilenceMs        int         `toml:"silence_ms,omitempty"`
@@ -54,6 +68,33 @@ type AudioConfig struct {
 	SampleRate int    `toml:"sample_rate,omitempty"`
 	Channels   int    `toml:"channels,omitempty"`
 	BitWidth   int    `toml:"bit_width,omitempty"`
+}
+
+type ProxyConfig struct {
+	HTTPProxy  string `toml:"http_proxy,omitempty"`
+	HTTPSProxy string `toml:"https_proxy,omitempty"`
+	AllProxy   string `toml:"all_proxy,omitempty"`
+	NoProxy    string `toml:"no_proxy,omitempty"`
+}
+
+func (p ProxyConfig) IsZero() bool {
+	return strings.TrimSpace(p.HTTPProxy) == "" &&
+		strings.TrimSpace(p.HTTPSProxy) == "" &&
+		strings.TrimSpace(p.AllProxy) == "" &&
+		strings.TrimSpace(p.NoProxy) == ""
+}
+
+func (p ProxyConfig) Validate() error {
+	for name, value := range map[string]string{
+		"http_proxy":  p.HTTPProxy,
+		"https_proxy": p.HTTPSProxy,
+		"all_proxy":   p.AllProxy,
+	} {
+		if err := validateProxyURL(value); err != nil {
+			return fmt.Errorf("proxy.%s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func (a AudioConfig) SocketOrDefault() string {
@@ -183,6 +224,20 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if err := c.Proxy.Validate(); err != nil {
+		return err
+	}
+
+	switch c.Search.ProviderOrDefault() {
+	case "duckduckgo":
+	case "tavily":
+		if strings.TrimSpace(c.Search.APIKey) == "" {
+			return errors.New("search.api_key is required when search.provider=tavily")
+		}
+	default:
+		return fmt.Errorf("invalid search.provider: %s (expected duckduckgo or tavily)", c.Search.Provider)
+	}
+
 	if strings.TrimSpace(c.Model.Provider) == "" {
 		return errors.New("model.provider is required")
 	}

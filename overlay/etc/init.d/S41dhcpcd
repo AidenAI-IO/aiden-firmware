@@ -1,0 +1,51 @@
+#!/bin/sh
+# Aiden override: optional DHCP client startup.
+
+BOOT_CONF=/etc/aiden_boot.conf
+
+if [ -f "$BOOT_CONF" ]; then
+	. "$BOOT_CONF"
+fi
+: "${ENABLE_DHCPCD:=1}"
+
+start() {
+	if [ "$ENABLE_DHCPCD" != "1" ]; then
+		echo "dhcp disabled by config (ENABLE_DHCPCD=$ENABLE_DHCPCD)"
+		return 0
+	fi
+
+	if [ -x /sbin/udhcpc ]; then
+		/sbin/udhcpc -b -i eth0 >/dev/null 2>&1 || true
+		/sbin/udhcpc -b -i wlan0 >/dev/null 2>&1 || true
+		echo "Started udhcpc on eth0/wlan0"
+		return 0
+	fi
+
+	if [ -x /sbin/dhcpcd ]; then
+		/sbin/dhcpcd eth0 >/dev/null 2>&1 || true
+		/sbin/dhcpcd wlan0 >/dev/null 2>&1 || true
+		echo "Started dhcpcd on eth0/wlan0"
+		return 0
+	fi
+
+	echo "No DHCP client binary found"
+	return 1
+}
+
+stop() {
+	killall udhcpc 2>/dev/null || true
+	killall dhcpcd 2>/dev/null || true
+	echo "Stopped DHCP clients"
+}
+
+restart() {
+	stop
+	start
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart|reload) restart ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

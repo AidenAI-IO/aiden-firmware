@@ -22,14 +22,15 @@ type TTSClient interface {
 
 // MinimaxTTS implements TTS using Minimax API
 type MinimaxTTS struct {
-	apiKey  string
-	voiceID string
-	emotion string
-	speed   float64
+	apiKey     string
+	voiceID    string
+	emotion    string
+	speed      float64
+	httpClient *http.Client
 }
 
 // NewMinimaxTTS creates a new Minimax TTS client
-func NewMinimaxTTS(apiKey, voiceID, emotion string, speed float64) *MinimaxTTS {
+func NewMinimaxTTS(apiKey, voiceID, emotion string, speed float64, httpClients ...*http.Client) *MinimaxTTS {
 	if voiceID == "" {
 		voiceID = "male-qn-qingse"
 	}
@@ -39,11 +40,16 @@ func NewMinimaxTTS(apiKey, voiceID, emotion string, speed float64) *MinimaxTTS {
 	if speed == 0 {
 		speed = 1.0
 	}
+	httpClient := http.DefaultClient
+	if len(httpClients) > 0 && httpClients[0] != nil {
+		httpClient = httpClients[0]
+	}
 	return &MinimaxTTS{
-		apiKey:  apiKey,
-		voiceID: voiceID,
-		emotion: emotion,
-		speed:   speed,
+		apiKey:     apiKey,
+		voiceID:    voiceID,
+		emotion:    emotion,
+		speed:      speed,
+		httpClient: httpClient,
 	}
 }
 
@@ -101,7 +107,7 @@ func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) 
 	req.Header.Set("Authorization", "Bearer "+t.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := t.httpClient.Do(req)
 	if err != nil {
 		audio.StopPlayback(playback.SessionID)
 		return fmt.Errorf("send request: %w", err)

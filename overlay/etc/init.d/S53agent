@@ -8,6 +8,12 @@ ADDR=:8080
 LOG_PATH=/var/log/agent/agent.log
 PID_FILE=/run/agent/agent.pid
 WATCHDOG_PID_FILE=/run/agent/agent_watchdog.pid
+BOOT_CONF=/etc/aiden_boot.conf
+
+if [ -f "$BOOT_CONF" ]; then
+    . "$BOOT_CONF"
+fi
+: "${ENABLE_AGENT:=1}"
 
 is_running() {
     pid="$1"
@@ -62,6 +68,11 @@ watchdog_pid() {
 }
 
 start() {
+    if [ "$ENABLE_AGENT" != "1" ]; then
+        echo "agent disabled by config (ENABLE_AGENT=$ENABLE_AGENT)"
+        return 0
+    fi
+
     wpid="$(watchdog_pid)"
     if is_running "$wpid"; then
         echo "agent watchdog already running (pid $wpid)"

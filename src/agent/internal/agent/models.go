@@ -2,9 +2,12 @@ package agent
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -23,11 +26,12 @@ type ModelResolver interface {
 
 type ModelManager struct {
 	config ModelConfig
+	proxy  ProxyConfig
 	model  llms.Model
 }
 
-func NewModelManager(config ModelConfig) *ModelManager {
-	return &ModelManager{config: config}
+func NewModelManager(config ModelConfig, proxy ProxyConfig) *ModelManager {
+	return &ModelManager{config: config, proxy: proxy}
 }
 
 func (m *ModelManager) Get() (llms.Model, error) {
@@ -61,7 +65,7 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 		if baseURL == "" {
 			baseURL = "https://api.openai.com/v1"
 		}
-		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient()), nil
+		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy)), nil
 	case "openrouter":
 		token := resolveToken(cfg)
 		if token == "" {
@@ -71,9 +75,9 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 		if baseURL == "" {
 			baseURL = "https://openrouter.ai/api/v1"
 		}
-		return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient()), nil
+		return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient(m.proxy)), nil
 	case "ollama":
-		options := []ollama.Option{ollama.WithModel(cfg.Model)}
+		options := []ollama.Option{ollama.WithModel(cfg.Model), ollama.WithHTTPClient(newProxyHTTPClient(m.proxy))}
 		if cfg.BaseURL != "" {
 			options = append(options, ollama.WithServerURL(cfg.BaseURL))
 		}
@@ -95,10 +99,11 @@ func resolveToken(cfg ModelConfig) string {
 	return ""
 }
 
-// retryTransport retries on 5xx errors with exponential backoff
+// retryTransport retries transient HTTP and transport failures with backoff.
 type retryTransport struct {
-	wrapped    http.RoundTripper
-	maxRetries int
+	wrapped        http.RoundTripper
+	maxRetries     int
+	retryDelayBase time.Duration
 }
 
 func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -111,44 +116,97 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	var resp *http.Response
 	var err error
+	maxAttempts := t.maxRetries + 1
 
-	for attempt := 0; attempt <= t.maxRetries; attempt++ {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			delay := time.Duration(attempt) * 2 * time.Second
-			log.Printf("[http-retry] attempt %d/%d, waiting %v", attempt+1, t.maxRetries+1, delay)
-			time.Sleep(delay)
 			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		}
 
 		resp, err = t.wrapped.RoundTrip(req)
 		if err != nil {
+			if attempt == maxAttempts-1 || !shouldRetryTransportError(req.Context(), err) {
+				if attempt > 0 {
+					log.Printf("[WARN] [http-retry] giving up after attempt %d/%d: %v", attempt+1, maxAttempts, err)
+				}
+				return resp, err
+			}
+			log.Printf("[WARN] [http-retry] transport error on attempt %d/%d: %v", attempt+1, maxAttempts, err)
+			if waitErr := t.waitBeforeRetry(req.Context(), attempt+1, maxAttempts); waitErr != nil {
+				return resp, waitErr
+			}
 			continue
 		}
 
-		if resp.StatusCode < 500 {
+		if !shouldRetryHTTPStatus(resp.StatusCode) {
 			return resp, nil
 		}
 
 		// Read error body for logging, then close
 		errBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		log.Printf("[http-retry] got %d: %s", resp.StatusCode, string(errBody))
+		log.Printf("[WARN] [http-retry] got retryable status %d on attempt %d/%d: %s", resp.StatusCode, attempt+1, maxAttempts, string(errBody))
 
 		// On last attempt, return a reconstructed response
-		if attempt == t.maxRetries {
+		if attempt == maxAttempts-1 {
 			resp.Body = io.NopCloser(bytes.NewReader(errBody))
 			return resp, nil
+		}
+		if waitErr := t.waitBeforeRetry(req.Context(), attempt+1, maxAttempts); waitErr != nil {
+			return nil, waitErr
 		}
 	}
 
 	return resp, err
 }
 
-func newRetryHTTPClient() *http.Client {
+func (t *retryTransport) waitBeforeRetry(ctx context.Context, retryNumber, maxAttempts int) error {
+	delay := time.Duration(retryNumber) * t.retryDelayBase
+	log.Printf("[INFO] [http-retry] retrying attempt %d/%d after %v", retryNumber+1, maxAttempts, delay)
+	if delay <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func shouldRetryTransportError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	return true
+}
+
+func shouldRetryHTTPStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests || statusCode >= 500
+}
+
+func newRetryHTTPClient(proxy ProxyConfig) *http.Client {
 	return &http.Client{
 		Transport: &retryTransport{
-			wrapped:    http.DefaultTransport,
-			maxRetries: 2,
+			wrapped:        newProxyTransport(proxy),
+			maxRetries:     5,
+			retryDelayBase: 2 * time.Second,
 		},
 	}
 }

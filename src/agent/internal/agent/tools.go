@@ -16,23 +16,28 @@ type ToolSet struct {
 
 // NewBuiltinToolSet returns all built-in tools. Tools are not configurable;
 // everything is registered here with its runtime dependencies already wired up.
-func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig) *ToolSet {
+func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchConfig, proxyCfg ProxyConfig) *ToolSet {
 	kbDev := NewHIDDevice(hidCfg.KeyboardDeviceOrDefault())
 	mouseDev := NewHIDDevice(hidCfg.MouseDeviceOrDefault())
 	screen := &screenState{}
 	pointer := &pointerState{}
+	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 
 	return &ToolSet{
 		tools: map[string]langtools.Tool{
-			"keyboard_tap":  &KeyboardTapTool{dev: kbDev},
-			"keyboard_text": &KeyboardTextTool{dev: kbDev},
-			"mouse_click":   &MouseClickTool{dev: mouseDev, screen: screen, state: pointer},
-			"mouse_move":    &MouseMoveTool{dev: mouseDev, screen: screen, state: pointer},
-			"mouse_scroll":  &MouseScrollTool{dev: mouseDev, state: pointer},
-			"touch_gesture": &TouchGestureTool{dev: mouseDev, screen: screen, state: pointer},
-			"screenshot":    NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen),
+			"keyboard_tap":  newPostActionScreenshotTool(&KeyboardTapTool{dev: kbDev}, screenshot, postActionScreenshotDelay),
+			"keyboard_text": newPostActionScreenshotTool(&KeyboardTextTool{dev: kbDev}, screenshot, postActionScreenshotDelay),
+			"mouse_click":   newPostActionScreenshotTool(&MouseClickTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
+			"mouse_move":    newPostActionScreenshotTool(&MouseMoveTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
+			"mouse_scroll":  newPostActionScreenshotTool(&MouseScrollTool{dev: mouseDev, state: pointer}, screenshot, postActionScreenshotDelay),
+			"touch_gesture": newPostActionScreenshotTool(&TouchGestureTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
+			"screenshot":    screenshot,
 			"audio_volume":  NewAudioVolumeTool(audioCfg.SocketOrDefault()),
 			"shell":         &ShellTool{},
+			"web_search":    NewWebSearchTool(searchCfg, proxyCfg),
+			"wikipedia":     NewWikipediaTool(proxyCfg),
+			"calculator":    NewCalculatorTool(),
+			"web_scraper":   NewWebScraperTool(proxyCfg),
 		},
 	}
 }

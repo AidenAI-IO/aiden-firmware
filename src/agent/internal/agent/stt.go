@@ -16,23 +16,29 @@ type STTClient interface {
 
 // OpenAIWhisperSTT implements STT using OpenAI Whisper API
 type OpenAIWhisperSTT struct {
-	apiKey  string
-	model   string
-	baseURL string
+	apiKey     string
+	model      string
+	baseURL    string
+	httpClient *http.Client
 }
 
 // NewOpenAIWhisperSTT creates a new OpenAI Whisper STT client
-func NewOpenAIWhisperSTT(apiKey, model, baseURL string) *OpenAIWhisperSTT {
+func NewOpenAIWhisperSTT(apiKey, model, baseURL string, httpClients ...*http.Client) *OpenAIWhisperSTT {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
 	if model == "" {
 		model = "whisper-1"
 	}
+	httpClient := http.DefaultClient
+	if len(httpClients) > 0 && httpClients[0] != nil {
+		httpClient = httpClients[0]
+	}
 	return &OpenAIWhisperSTT{
-		apiKey:  apiKey,
-		model:   model,
-		baseURL: baseURL,
+		apiKey:     apiKey,
+		model:      model,
+		baseURL:    baseURL,
+		httpClient: httpClient,
 	}
 }
 
@@ -70,8 +76,7 @@ func (s *OpenAIWhisperSTT) TranscribeWAV(wavData []byte) (string, error) {
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	// Send request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("send request: %w", err)
 	}

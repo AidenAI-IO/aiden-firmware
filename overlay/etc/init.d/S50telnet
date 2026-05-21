@@ -1,0 +1,71 @@
+#!/bin/sh
+# Aiden override: optional telnet startup.
+
+BOOT_CONF=/etc/aiden_boot.conf
+
+if [ -f "$BOOT_CONF" ]; then
+	. "$BOOT_CONF"
+fi
+: "${ENABLE_TELNET:=0}"
+
+is_running() {
+	pidof telnetd >/dev/null 2>&1
+}
+
+start() {
+	if [ "$ENABLE_TELNET" != "1" ]; then
+		echo "telnet disabled by config (ENABLE_TELNET=$ENABLE_TELNET)"
+		return 0
+	fi
+
+	if is_running; then
+		echo "telnetd already running"
+		return 0
+	fi
+
+	if [ -x /usr/sbin/telnetd ]; then
+		/usr/sbin/telnetd
+		rc="$?"
+	elif [ -x /usr/bin/telnetd ]; then
+		/usr/bin/telnetd
+		rc="$?"
+	else
+		echo "telnetd binary not found"
+		return 1
+	fi
+	if [ "$rc" -ne 0 ]; then
+		echo "Failed to start telnetd (exit=$rc)"
+		return "$rc"
+	fi
+	if ! is_running; then
+		echo "Failed to start telnetd (not running after start)"
+		return 1
+	fi
+	echo "Started telnetd"
+	return 0
+}
+
+stop() {
+	if is_running; then
+		killall telnetd 2>/dev/null || true
+		sleep 1
+	fi
+	if is_running; then
+		echo "Failed to stop telnetd"
+		return 1
+	fi
+	echo "Stopped telnetd"
+	return 0
+}
+
+restart() {
+	stop
+	start
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart|reload) restart ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

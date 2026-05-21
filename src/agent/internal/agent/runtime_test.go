@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,18 @@ import (
 	fakellm "github.com/tmc/langchaingo/llms/fake"
 	langtools "github.com/tmc/langchaingo/tools"
 )
+
+func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
+	if got := effectiveMaxIterations(-1); got != math.MaxInt {
+		t.Fatalf("effectiveMaxIterations(-1) = %d, want math.MaxInt", got)
+	}
+	if got := effectiveMaxIterations(0); got != math.MaxInt {
+		t.Fatalf("effectiveMaxIterations(0) = %d, want math.MaxInt", got)
+	}
+	if got := effectiveMaxIterations(10); got != 10 {
+		t.Fatalf("effectiveMaxIterations(10) = %d, want 10", got)
+	}
+}
 
 type testModelResolver struct {
 	model llms.Model
@@ -41,7 +54,7 @@ func TestRuntimeRun(t *testing.T) {
 		}),
 	}
 
-	runtime := NewRuntimeWithDeps(cfg, resolver, NewMemoryManager(), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}), NewSkillIndex())
+	runtime := NewRuntimeWithDeps(cfg, resolver, NewMemoryManager(), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}), NewSkillIndex())
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -238,7 +251,7 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 		},
 		&testModelResolver{model: model},
 		NewMemoryManager(),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
 
@@ -434,6 +447,88 @@ func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunKeyboardToolAddsPostActionImageObservation(t *testing.T) {
+	jpegBytes := []byte("keyboard-post-action-jpeg")
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "keyboard_tap",
+							Arguments: `{"keys":["enter"]}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "The keyboard action updated the UI.",
+				}},
+			},
+		},
+	}
+	tool := &stubTool{
+		name:        "keyboard_tap",
+		description: "Press and release keyboard keys.",
+		visual:      true,
+		output: `{"action_output":"ok","width":800,"height":600,"format":"jpeg","size":25,"data":"` +
+			base64.StdEncoding.EncodeToString(jpegBytes) + `"}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "openrouter"},
+			Instruction: "Use input tools when needed.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"keyboard_tap": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "press enter"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "The keyboard action updated the UI." {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+
+	var foundToolResponse, foundImageURL bool
+	for _, msg := range model.messages[1] {
+		for _, part := range msg.Parts {
+			switch p := part.(type) {
+			case llms.ToolCallResponse:
+				if p.ToolCallID == "call_1" {
+					foundToolResponse = true
+					if p.Content == tool.output {
+						t.Fatalf("expected keyboard tool response to be summarized, got raw screenshot payload")
+					}
+					if !strings.Contains(p.Content, `keyboard_tap completed with output "ok"`) {
+						t.Fatalf("unexpected keyboard tool response summary: %q", p.Content)
+					}
+				}
+			case llms.ImageURLContent:
+				foundImageURL = true
+				expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpegBytes)
+				if p.URL != expected {
+					t.Fatalf("unexpected image URL: %q", p.URL)
+				}
+			}
+		}
+	}
+	if !foundToolResponse {
+		t.Fatalf("expected keyboard tool response in second model call")
+	}
+	if !foundImageURL {
+		t.Fatalf("expected keyboard post-action screenshot image URL in second model call")
+	}
+}
+
 func TestRuntimeCallbackHandlerCapturesUsageMetrics(t *testing.T) {
 	metrics := &RunMetrics{}
 	handler := &runtimeCallbackHandler{metrics: metrics}
@@ -531,7 +626,7 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 		},
 		&testModelResolver{model: model},
 		NewMemoryManager(),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
 

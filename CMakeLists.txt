@@ -152,47 +152,10 @@ target_link_libraries(audio_service_cli PRIVATE aiden)
 add_executable(audio_stream src/audio_stream.cpp)
 target_link_libraries(audio_stream PRIVATE aiden)
 
-# AI Agent
-set(AIDEN_AGENT_VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/agent_version_build.h")
-add_custom_target(agent_version_header
-    COMMAND ${CMAKE_COMMAND}
-            "-DOUTPUT_FILE=${AIDEN_AGENT_VERSION_HEADER}"
-            "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
-            -P "${CMAKE_SOURCE_DIR}/cmake/generate_agent_version.cmake"
-    BYPRODUCTS ${AIDEN_AGENT_VERSION_HEADER}
-    VERBATIM
-)
-
 add_executable(config_web
     src/config_web.cpp
-    src/config.cpp
+    src/agent_toml.cpp
     src/wifi_config.cpp
 )
 target_link_libraries(config_web PRIVATE cjson)
-
-add_executable(agent_main
-    src/agent_main.cpp
-    src/agent_version.cpp
-    src/config.cpp
-    src/http_client.cpp
-    src/openrouter_client.cpp
-    src/openrouter_codec.cpp
-    src/openai_client.cpp
-    src/openai_codec.cpp
-    src/stt/providers/openai_whisper_stt.cpp
-    src/stt/providers/tencent_asr_stt.cpp
-    src/llm_api_url.cpp
-    src/minimax_tts.cpp
-    src/minimax_codec.cpp
-    src/tool_dispatch.cpp
-    src/tool_image_attachment.cpp
-    src/wav_codec.cpp
-    src/provider_factory.cpp
-    src/provider_factory_runtime.cpp
-    src/text_input.cpp
-    src/vad.cpp
-)
-target_include_directories(agent_main PRIVATE ${CMAKE_BINARY_DIR}/generated)
-add_dependencies(agent_main agent_version_header)
-target_link_libraries(agent_main PRIVATE aiden cjson pthread)
 
