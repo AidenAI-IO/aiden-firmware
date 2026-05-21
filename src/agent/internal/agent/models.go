@@ -126,9 +126,12 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		resp, err = t.wrapped.RoundTrip(req)
 		if err != nil {
 			if attempt == maxAttempts-1 || !shouldRetryTransportError(req.Context(), err) {
+				if attempt > 0 {
+					log.Printf("[WARN] [http-retry] giving up after attempt %d/%d: %v", attempt+1, maxAttempts, err)
+				}
 				return resp, err
 			}
-			log.Printf("[http-retry] transport error on attempt %d/%d: %v", attempt+1, maxAttempts, err)
+			log.Printf("[WARN] [http-retry] transport error on attempt %d/%d: %v", attempt+1, maxAttempts, err)
 			if waitErr := t.waitBeforeRetry(req.Context(), attempt+1, maxAttempts); waitErr != nil {
 				return resp, waitErr
 			}
@@ -142,7 +145,7 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Read error body for logging, then close
 		errBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		log.Printf("[http-retry] got retryable status %d on attempt %d/%d: %s", resp.StatusCode, attempt+1, maxAttempts, string(errBody))
+		log.Printf("[WARN] [http-retry] got retryable status %d on attempt %d/%d: %s", resp.StatusCode, attempt+1, maxAttempts, string(errBody))
 
 		// On last attempt, return a reconstructed response
 		if attempt == maxAttempts-1 {
@@ -159,7 +162,7 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func (t *retryTransport) waitBeforeRetry(ctx context.Context, retryNumber, maxAttempts int) error {
 	delay := time.Duration(retryNumber) * t.retryDelayBase
-	log.Printf("[http-retry] retrying attempt %d/%d after %v", retryNumber+1, maxAttempts, delay)
+	log.Printf("[INFO] [http-retry] retrying attempt %d/%d after %v", retryNumber+1, maxAttempts, delay)
 	if delay <= 0 {
 		return nil
 	}
@@ -202,7 +205,7 @@ func newRetryHTTPClient(proxy ProxyConfig) *http.Client {
 	return &http.Client{
 		Transport: &retryTransport{
 			wrapped:        newProxyTransport(proxy),
-			maxRetries:     2,
+			maxRetries:     5,
 			retryDelayBase: 2 * time.Second,
 		},
 	}
