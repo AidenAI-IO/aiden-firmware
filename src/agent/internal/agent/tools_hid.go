@@ -27,7 +27,16 @@ const (
 	// recognises the touchdown frame before the touch begins moving. The
 	// edge-back recogniser in particular rejects swipes that move on the same
 	// frame as the press.
-	defaultSwipeHoldBeforeMs = 40
+	defaultSwipeHoldBeforeMs = 80
+
+	// defaultSwipeHoldAfterMs keeps the touch down briefly at the destination
+	// before releasing. Releasing immediately after the final move leaves a
+	// high terminal velocity, which mobile UIs often interpret as inertial
+	// scrolling instead of a precise drag-like swipe.
+	defaultSwipeHoldAfterMs = 300
+
+	defaultSwipeDurationMs = 700
+	defaultSwipeSteps      = 24
 
 	// defaultCursorSettleMs is the dwell between positioning the HID absolute
 	// cursor and pressing a button at that position. iOS HID cursor mode
@@ -450,12 +459,12 @@ func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
 func (t *TouchGestureTool) Description() string {
 	return `Perform a touch-like gesture using the absolute mouse HID device. ` +
-		`Input JSON examples: {"type":"tap","point":{"x":0.5,"y":0.5}}, {"type":"swipe","start":{"x":0.01,"y":0.5},"end":{"x":0.6,"y":0.5},"duration_ms":260,"steps":12}. ` +
+		`Input JSON examples: {"type":"tap","point":{"x":0.5,"y":0.5}}, {"type":"swipe","start":{"x":0.01,"y":0.5},"end":{"x":0.6,"y":0.5},"duration_ms":700,"steps":24}. ` +
 		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe". ` +
 		`coord_space defaults to "normalized" (x/y in [0,1]) and also supports "pixel" and "absolute". ` +
 		`Every gesture first positions the cursor at the target and waits for iOS HID-cursor smoothing to settle before pressing, so clicks register on the intended element instead of as drags from the previous cursor position. ` +
 		`Tap and double_tap accept an optional "hold_ms" (dwell between press and release, default 60ms). ` +
-		`Swipe applies a default "hold_before_ms" of 40ms after the press so iOS recognises the touchdown frame (important for the left-edge back gesture: swipe from x near 0 toward the right). Drag keeps the previous 0 default to avoid unintended long-press behaviour during slow content drag.`
+		`Swipe defaults to a slower 700ms / 24-step motion, applies "hold_before_ms" of 80ms after the press, and holds at the destination for "hold_after_ms" 300ms before release to reduce inertial scrolling. Drag keeps the previous 250ms / 12-step motion with 0ms hold defaults to avoid unintended long-press behaviour during slow content drag.`
 }
 
 func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error) {
@@ -468,6 +477,7 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		Button       string        `json:"button"`
 		DurationMs   *int          `json:"duration_ms"`
 		HoldBeforeMs *int          `json:"hold_before_ms"`
+		HoldAfterMs  *int          `json:"hold_after_ms"`
 		HoldMs       *int          `json:"hold_ms"`
 		PauseMs      *int          `json:"pause_ms"`
 		Steps        *int          `json:"steps"`
@@ -533,9 +543,15 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
-		defaultHold := 0
+		defaultDuration := 250
+		defaultSteps := 12
+		defaultHoldBefore := 0
+		defaultHoldAfter := 0
 		if gestureType == "swipe" {
-			defaultHold = defaultSwipeHoldBeforeMs
+			defaultDuration = defaultSwipeDurationMs
+			defaultSteps = defaultSwipeSteps
+			defaultHoldBefore = defaultSwipeHoldBeforeMs
+			defaultHoldAfter = defaultSwipeHoldAfterMs
 		}
 		if err := dragPointer(
 			t.dev,
@@ -543,9 +559,10 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 			start,
 			end,
 			button,
-			intOrDefault(args.DurationMs, 250),
-			intOrDefault(args.HoldBeforeMs, defaultHold),
-			positiveIntOrDefault(args.Steps, 12),
+			intOrDefault(args.DurationMs, defaultDuration),
+			intOrDefault(args.HoldBeforeMs, defaultHoldBefore),
+			intOrDefault(args.HoldAfterMs, defaultHoldAfter),
+			positiveIntOrDefault(args.Steps, defaultSteps),
 		); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
@@ -762,7 +779,7 @@ func scrollPointer(dev *HIDDevice, state *pointerState, delta int) error {
 	return writeAbsMouseReport(dev, state, x, y, 0, int8(delta))
 }
 
-func dragPointer(dev *HIDDevice, state *pointerState, start, end resolvedPointerPoint, button uint8, durationMs, holdBeforeMs, steps int) (dragErr error) {
+func dragPointer(dev *HIDDevice, state *pointerState, start, end resolvedPointerPoint, button uint8, durationMs, holdBeforeMs, holdAfterMs, steps int) (dragErr error) {
 	if steps < 1 {
 		steps = 1
 	}
@@ -771,6 +788,9 @@ func dragPointer(dev *HIDDevice, state *pointerState, start, end resolvedPointer
 	}
 	if holdBeforeMs < 0 {
 		holdBeforeMs = 0
+	}
+	if holdAfterMs < 0 {
+		holdAfterMs = 0
 	}
 
 	if err := settlePointer(dev, state, start.x, start.y); err != nil {
@@ -805,6 +825,7 @@ func dragPointer(dev *HIDDevice, state *pointerState, start, end resolvedPointer
 		}
 	}
 
+	sleepMs(holdAfterMs)
 	return nil
 }
 
