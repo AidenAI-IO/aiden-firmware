@@ -419,6 +419,16 @@ func TestVerifyRebuildsCorruptedIndex(t *testing.T) {
 	}
 }
 
+func TestMemoryExtractionConfigCompressThresholds(t *testing.T) {
+	cfg := DefaultMemoryExtractionConfig()
+	if cfg.ContextWindow != 32000 {
+		t.Fatalf("expected default ContextWindow=32000, got %d", cfg.ContextWindow)
+	}
+	if cfg.CompressAtPercent != 50 {
+		t.Fatalf("expected default CompressAtPercent=50, got %d", cfg.CompressAtPercent)
+	}
+}
+
 func TestMemoryExtractionConfigFromYAML(t *testing.T) {
 	dir := t.TempDir()
 	memDir := filepath.Join(dir, "memory")

@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -120,6 +123,133 @@ func TestMemoryManagerSaveCompactsHotWindow(t *testing.T) {
 	}
 	if len(chunks[0].Evidence) == 0 {
 		t.Fatalf("expected chunk to contain evidence events")
+	}
+}
+
+func TestMaintainFilesystemMemoryUsesLLMSummary(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	called := false
+	manager := NewMemoryManager(storageDir, WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+		called = true
+		return "LLM generated summary of " + fmt.Sprintf("%d", len(events)) + " events"
+	}))
+
+	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	var msgs []llms.ChatMessage
+	for i := 0; i < 22; i++ {
+		msgs = append(msgs, llms.HumanChatMessage{Content: fmt.Sprintf("message %d", i)})
+	}
+	if err := handle.History.SetMessages(ctx, msgs); err != nil {
+		t.Fatalf("SetMessages() error = %v", err)
+	}
+	if err := manager.Save(ctx, "default"); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	if !called {
+		t.Fatalf("expected SummarizeFn to be called during compression")
+	}
+
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	data, err := os.ReadFile(session.summaryPath())
+	if err != nil {
+		t.Fatalf("read summary.md: %v", err)
+	}
+	if !strings.Contains(string(data), "LLM generated summary") {
+		t.Fatalf("expected LLM summary in summary.md, got:\n%s", data)
+	}
+}
+
+func TestMaintainFilesystemMemoryTriggersOnTokenThreshold(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 1000
+	cfg.CompressAtPercent = 50
+	cfg.HotWindowEvents = 100 // high event limit so only token threshold triggers
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
+
+	// Write 5 events (well under 100 event limit)
+	sessionDir := filepath.Join(storageDir, "session")
+	os.MkdirAll(sessionDir, 0o755)
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: "message",
+		})
+	}
+
+	// Set prompt tokens to 60% of context window (above 50% threshold)
+	manager.SetLastPromptTokens(600)
+
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory() error = %v", err)
+	}
+
+	// Should have compressed despite only 5 events
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(chunks) == 0 {
+		t.Fatalf("expected compression to trigger from token threshold, got no chunks")
+	}
+}
+
+func TestMaintainFilesystemMemorySkipsWhenBelowTokenThreshold(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 1000
+	cfg.CompressAtPercent = 50
+	cfg.HotWindowEvents = 100 // high event limit
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
+
+	sessionDir := filepath.Join(storageDir, "session")
+	os.MkdirAll(sessionDir, 0o755)
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: "message",
+		})
+	}
+
+	// Set prompt tokens to 30% of context window (below 50% threshold)
+	manager.SetLastPromptTokens(300)
+
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory() error = %v", err)
+	}
+
+	// Should NOT have compressed
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(chunks) != 0 {
+		t.Fatalf("expected no compression below token threshold, got %d chunks", len(chunks))
+	}
+}
+
+func TestMemoryManagerTokenTracking(t *testing.T) {
+	manager := NewMemoryManager("")
+	manager.SetLastPromptTokens(5000)
+	if got := manager.LastPromptTokens(); got != 5000 {
+		t.Fatalf("expected 5000, got %d", got)
 	}
 }
 

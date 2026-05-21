@@ -103,7 +103,9 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	toolSet := NewBuiltinToolSet(cfg.HID, cfg.Audio, cfg.Search, cfg.Proxy)
 	toolSet.RegisterMemoryTools(memoryDir)
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
-	rt := NewRuntimeWithDeps(cfg, NewModelManager(cfg.Model, cfg.Proxy), NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg)), toolSet, skillIndex)
+	modelManager := NewModelManager(cfg.Model, cfg.Proxy)
+	summarizeFn := buildLLMSummarizeFn(modelManager)
+	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn)), toolSet, skillIndex)
 	rt.logger = logger
 	return rt, nil
 }
@@ -217,6 +219,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
+	if metrics.PromptTokens > 0 {
+		r.memories.SetLastPromptTokens(metrics.PromptTokens)
+	}
 	if err := r.memories.AppendExchange(ctx, "default", normalizedInput, output); err != nil {
 		return RunResult{}, err
 	}
@@ -509,6 +514,31 @@ func truncateForLog(text string, max int) string {
 	}
 	runes := []rune(text)
 	return string(runes[:max]) + "..."
+}
+
+func buildLLMSummarizeFn(models ModelResolver) SummarizeFn {
+	return func(ctx context.Context, events []SessionEvent) string {
+		model, err := models.Get()
+		if err != nil {
+			return ""
+		}
+		var transcript strings.Builder
+		for _, evt := range events {
+			if evt.Content == "" {
+				continue
+			}
+			transcript.WriteString(fmt.Sprintf("[%s] %s\n", evt.Role, evt.Content))
+		}
+		if transcript.Len() == 0 {
+			return ""
+		}
+		prompt := "Summarize this conversation in 2-3 concise sentences. Focus on what was discussed, decided, or requested. Write in the same language as the conversation.\n\n" + transcript.String()
+		result, err := llms.GenerateFromSinglePrompt(ctx, model, prompt, llms.WithMaxTokens(200))
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(result)
+	}
 }
 
 // Close releases resources held by the runtime

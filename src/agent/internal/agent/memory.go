@@ -22,12 +22,19 @@ type MemoryHandle struct {
 	History *langmemory.ChatMessageHistory
 }
 
+// SummarizeFn generates a summary string from a list of session events.
+// It is called during session compression to produce a human-readable
+// summary of the events being archived into a chunk.
+type SummarizeFn func(ctx context.Context, events []SessionEvent) string
+
 type MemoryManager struct {
-	mu         sync.Mutex
-	handles    map[string]*MemoryHandle
-	eventCount map[string]int
-	storageDir string
-	extraction MemoryExtractionConfig
+	mu               sync.Mutex
+	handles          map[string]*MemoryHandle
+	eventCount       map[string]int
+	storageDir       string
+	extraction       MemoryExtractionConfig
+	lastPromptTokens int
+	summarizeFn      SummarizeFn
 }
 
 const defaultMemoryHotWindowEvents = 20
@@ -55,6 +62,10 @@ func WithExtractionConfig(cfg MemoryExtractionConfig) MemoryManagerOption {
 	return func(m *MemoryManager) { m.extraction = cfg }
 }
 
+func WithSummarizeFn(fn SummarizeFn) MemoryManagerOption {
+	return func(m *MemoryManager) { m.summarizeFn = fn }
+}
+
 func NewMemoryManager(storageDir string, opts ...MemoryManagerOption) *MemoryManager {
 	manager := &MemoryManager{
 		handles:    map[string]*MemoryHandle{},
@@ -68,6 +79,18 @@ func NewMemoryManager(storageDir string, opts ...MemoryManagerOption) *MemoryMan
 		opt(manager)
 	}
 	return manager
+}
+
+func (m *MemoryManager) SetLastPromptTokens(tokens int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastPromptTokens = tokens
+}
+
+func (m *MemoryManager) LastPromptTokens() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastPromptTokens
 }
 
 func (m *MemoryManager) Get(agentName string, cfg MemoryConfig) (*MemoryHandle, error) {
@@ -335,19 +358,42 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if len(events) == 0 {
+		return nil
+	}
+
+	if !m.shouldCompress(len(events)) {
+		return nil
+	}
+
 	hotWindow := m.extraction.HotWindowEvents
 	if hotWindow <= 0 {
 		hotWindow = defaultMemoryHotWindowEvents
 	}
-	if len(events) <= hotWindow {
+	keepCount := hotWindow
+	if keepCount > len(events) {
+		keepCount = len(events) / 2
+	}
+	if keepCount < 4 {
+		keepCount = 4
+	}
+	if keepCount >= len(events) {
 		return nil
 	}
 
-	compactCount := len(events) - hotWindow
+	compactCount := len(events) - keepCount
 	compactEvents := append([]SessionEvent(nil), events[:compactCount]...)
 	hotEvents := append([]SessionEvent(nil), events[compactCount:]...)
+
+	summary := summarizeSessionEvents(compactEvents)
+	if m.summarizeFn != nil {
+		if llmSummary := m.summarizeFn(ctx, compactEvents); llmSummary != "" {
+			summary = llmSummary
+		}
+	}
+
 	_, err = session.compressEvents(ctx, compactEvents, CompressOption{
-		Summary:  summarizeSessionEvents(compactEvents),
+		Summary:  summary,
 		Tags:     m.extraction.extractMemoryTags(compactEvents),
 		Entities: m.extraction.extractMemoryEntities(compactEvents),
 	})
@@ -360,6 +406,21 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 
 	longTerm := NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"), WithLifecycleDir(filepath.Join(m.storageDir, "lifecycle")))
 	return longTerm.RegenerateProfileMD(ctx)
+}
+
+func (m *MemoryManager) shouldCompress(eventCount int) bool {
+	if m.lastPromptTokens > 0 && m.extraction.ContextWindow > 0 {
+		ratio := float64(m.lastPromptTokens) / float64(m.extraction.ContextWindow)
+		threshold := float64(m.extraction.CompressAtPercent) / 100.0
+		if ratio >= threshold {
+			return true
+		}
+	}
+	hotWindow := m.extraction.HotWindowEvents
+	if hotWindow <= 0 {
+		hotWindow = defaultMemoryHotWindowEvents
+	}
+	return eventCount > hotWindow
 }
 
 func summarizeSessionEvents(events []SessionEvent) string {
@@ -379,7 +440,6 @@ func summarizeSessionEvents(events []SessionEvent) string {
 	}
 	return strings.Join(parts, " / ")
 }
-
 
 func (cfg MemoryExtractionConfig) extractMemoryTags(events []SessionEvent) []string {
 	seen := map[string]bool{}
