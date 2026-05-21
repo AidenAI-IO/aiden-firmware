@@ -45,3 +45,5 @@ class TaskResult:
     artifact_dir: str = ""
     started_at: str = ""
     finished_at: str = ""
+    description_for_judge: str = ""
+    rubric_spec: list[dict] = dc.field(default_factory=list)
