@@ -263,9 +263,9 @@ Per-run `manifest.json`:
   "started_at": "...",
   "finished_at": "...",
   "totals": {
-    "tasks": 10,
-    "passed": 7,
-    "failed": 2,
+    "tasks": 15,
+    "passed": 11,
+    "failed": 3,
     "skipped": 1,
     "judge_error": 0,
   },
@@ -278,20 +278,44 @@ Per-run `manifest.json`:
 
 ## Task Set v1
 
-Main suite `phone_control_v1.json` — 10 tasks:
+The task set is designed to exercise every tool the agent has (`capture_screenshot`, `keyboard_tap`, `keyboard_text`, `touch_click`, `touch_swipe`) across varied real-world phone scenarios with increasing difficulty.
 
-| ID                           | category    | Goal (Chinese prompt)                                                     | Rubric items |
-| ---------------------------- | ----------- | ------------------------------------------------------------------------- | ------------ |
-| `open_settings`              | single_step | 打开系统设置                                                              | 2            |
-| `open_clock`                 | single_step | 打开时钟 app                                                              | 2            |
-| `tap_back_from_settings`     | single_step | 当前在设置某子页（setup 进入），返回上一层                                | 2            |
-| `type_in_search`             | single_step | 在屏幕上的搜索框里输入指定文字                                            | 3            |
-| `scroll_and_describe`        | single_step | 向下滚动一屏并说明页面变化                                                | 2            |
-| `settings_search_bluetooth`  | multi_step  | 进设置 → 搜 Bluetooth → 进入蓝牙页                                        | 3            |
-| `toggle_wifi_off_then_on`    | multi_step  | 进设置 → 关 WiFi → 再开回来                                               | 4            |
-| `add_clock_alarm`            | multi_step  | 时钟 → 新建 7:30 闹钟 → 保存                                              | 4            |
-| `recover_from_unknown_app`   | recovery    | 起点在任意 app 深层页（setup 推入），agent 需识别并回到桌面               | 2            |
-| `recover_from_blocked_state` | recovery    | 起点是无法操作的全屏弹窗/锁屏（setup 制造），agent 需说明无法继续而非乱点 | 2            |
+Main suite `phone_control_v1.json` — 15 tasks:
+
+### single_step (7 tasks) — 考单次操作正确性
+
+| ID                        | Goal                                     | Primary tools exercised                       | Rubric |
+| ------------------------- | ---------------------------------------- | --------------------------------------------- | ------ |
+| `open_settings`           | 从桌面打开系统设置                       | screenshot → touch_click                      | 2      |
+| `open_clock`              | 从桌面打开时钟 app                       | screenshot → touch_click                      | 2      |
+| `tap_back`                | 当前在设置子页（setup 进入），返回上一层 | screenshot → touch_click 或 keyboard_tap BACK | 2      |
+| `type_in_search`          | 在搜索框输入指定短文字 "hello"           | screenshot → touch_click → keyboard_text      | 3      |
+| `scroll_page_down`        | 向下滑动一屏                             | screenshot → touch_swipe(垂直)                | 2      |
+| `swipe_between_pages`     | 在桌面左右滑动切换页面                   | screenshot → touch_swipe(水平)                | 2      |
+| `open_notification_shade` | 从顶部下滑打开通知栏                     | screenshot → touch_swipe(从顶部向下)          | 2      |
+
+### multi_step (8 tasks) — 考多步规划 + 工具组合
+
+| ID                           | Goal                                                     | Primary tools exercised                                                   | Rubric |
+| ---------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------- | ------ |
+| `settings_search_bluetooth`  | 进设置 → 找到搜索 → 输入蓝牙 → 进入蓝牙页                | 全部 5 个 tool                                                            | 3      |
+| `toggle_wifi`                | 进设置 → 找到 WiFi 开关 → 关闭再打开                     | screenshot → touch_click 连续                                             | 4      |
+| `add_clock_alarm`            | 时钟 → 新建 7:30 闹钟 → 保存                             | screenshot → touch_click → keyboard_text                                  | 4      |
+| `scroll_to_bottom`           | 在设置页反复滑动直到页面到底（agent 需判断何时停止）     | screenshot → touch_swipe(循环)                                            | 3      |
+| `type_long_mixed_text`       | 在输入框输入一段中英混合文字 "Aiden测试 benchmark-2026!" | screenshot → touch_click → keyboard_text                                  | 3      |
+| `select_all_and_delete`      | 在已有文字的输入框里全选并删除（清空）                   | screenshot → keyboard_tap META+A → keyboard_tap BACKSPACE                 | 3      |
+| `copy_paste_text`            | 在输入框输入文字 → 全选 → 复制 → 点击另一输入框 → 粘贴   | keyboard_text → keyboard_tap META+A/C → touch_click → keyboard_tap META+V | 4      |
+| `find_and_tap_specific_item` | 在设置列表中滑动找到"关于手机"并点击进入                 | screenshot → touch_swipe(多次) → touch_click                              | 3      |
+
+### Tool coverage matrix
+
+| Tool                 | single_step tasks | multi_step tasks | Total coverage          |
+| -------------------- | ----------------- | ---------------- | ----------------------- |
+| `capture_screenshot` | 7/7               | 8/8              | 15 (every task uses it) |
+| `touch_click`        | 4                 | 7                | 11                      |
+| `touch_swipe`        | 3                 | 3                | 6                       |
+| `keyboard_text`      | 1                 | 4                | 5                       |
+| `keyboard_tap`       | 1                 | 4                | 5                       |
 
 Diagnostic suite `perception_v1.json` (separate, does not contribute to main score):
 
@@ -299,12 +323,13 @@ Diagnostic suite `perception_v1.json` (separate, does not contribute to main sco
 | ------------------- | ---------------------------------------------------------------- |
 | `name_current_page` | "看截图，告诉我当前在哪个 app/页面"，judge 比对真值              |
 | `find_button`       | "找到屏幕上的'保存'按钮，给出归一化坐标"，judge 看 post 是否点中 |
+| `count_list_items`  | "当前列表可见几个条目？列出前三个的文字"，judge 比对截图         |
 
 Setup conventions:
 
-- All `multi_step` tasks start from home (relying on `global_reset` only).
-- `recovery` tasks declare a `tool_sequence` setup that pushes the phone into the off-baseline state.
-- The blocked-state task uses whichever overlay can be triggered reliably on the rig; if neither lock-screen nor permission dialog is reproducible, it degrades to a full-screen modal/dialog scenario.
+- All `multi_step` tasks start from home (relying on `global_reset` only), except `select_all_and_delete` and `copy_paste_text` which use a setup that opens a text field and pre-fills content.
+- `tap_back` uses a setup that navigates into a settings sub-page.
+- `find_and_tap_specific_item` relies on global_reset only (starts from home, agent must navigate to settings first).
 
 `repeats` defaults to 1 in v1. The `--repeats N` CLI flag overrides per-run for consistency studies once everything else is stable.
 
@@ -316,6 +341,7 @@ Setup conventions:
 - **Hard assertion fails**: status `failed`, judge skipped (saves cost; judge wouldn't be informative anyway).
 - **Judge errors**: status `judge_error`, excluded from pass-rate denominator, surfaced separately.
 - **Phone in unexpected state at start of run**: not detected automatically; mitigated by `global_reset`. A future enhancement could screenshot-diff against a known home-screen baseline before declaring a run valid.
+- **`copy_paste_text` depends on META+C/V working**: some Android skins remap these shortcuts. If the test rig doesn't support them, this task degrades to a keyboard_tap-only variant or is marked `skipped`.
 
 ## Out of Scope (v2 candidates)
 

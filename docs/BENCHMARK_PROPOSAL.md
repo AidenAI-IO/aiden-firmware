@@ -55,12 +55,57 @@ Benchmark 度量四个核心维度：
 
 ## 四、关键设计决策
 
-1. **任务集 v1 共 10 个主任务 + 2 个诊断任务**，覆盖 single_step / multi_step / recovery 三类。任务清单见 spec 第 "Task Set v1"。
-2. **状态隔离**：每任务前都跑全局 reset 回主屏；recovery 类任务在 reset 后再用 tool 序列把手机推到非主屏起点。
+1. **任务集 v1 共 15 个主任务 + 3 个诊断任务**，覆盖 single_step / multi_step 两类，围绕 agent 实际可用的 5 个 tool（capture_screenshot、keyboard_tap、keyboard_text、touch_click、touch_swipe）设计。任务清单见 spec 第 "Task Set v1"。
+2. **状态隔离**：每任务前都跑全局 reset 回主屏；部分任务（如 `tap_back`、`select_all_and_delete`）在 reset 后用 tool 序列构造特定起点。
 3. **Agent 一次性退出**：给 `agent_main` 加 `--once` 开关，跑完一个 prompt 自然退出。Runner 不用 SIGTERM 收尾，干净很多。改动很小，集中在 `src/agent_main.cpp` 的 MODE_TEXT 循环里。
 4. **Judge 离线可重跑**：`rejudge --run-dir runs/<id>` 命令只读取已有 artifact 重跑 judge，不碰硬件。改 rubric 或换 judge 模型时不需要重测一次手机。
 5. **跨 run 对比**：`compare --runs A B` 输出两次 run 之间哪些任务 flip、效率指标差多少。这是回归检测的核心。
 6. **不上 docker**：硬件在环（HID 设备、frame_service socket 都在测试机本机），docker 化只增加复杂度不增加隔离。Python 依赖用 venv + requirements.txt 锁版本即可。
+
+## 4.1 v1 任务清单
+
+### single_step（7 个）— 考单次操作正确性
+
+| ID                        | 目标                                   | 主要考验的 tool 组合                     |
+| ------------------------- | -------------------------------------- | ---------------------------------------- |
+| `open_settings`           | 从桌面打开系统设置                     | screenshot → touch_click                 |
+| `open_clock`              | 从桌面打开时钟 app                     | screenshot → touch_click                 |
+| `tap_back`                | 从设置子页返回上一层（setup 进入子页） | screenshot → touch_click 或 keyboard_tap |
+| `type_in_search`          | 在搜索框输入 "hello"                   | screenshot → touch_click → keyboard_text |
+| `scroll_page_down`        | 向下滑动一屏                           | screenshot → touch_swipe(垂直)           |
+| `swipe_between_pages`     | 在桌面左右滑动切换页面                 | screenshot → touch_swipe(水平)           |
+| `open_notification_shade` | 从顶部下滑打开通知栏                   | screenshot → touch_swipe(从顶部向下)     |
+
+### multi_step（8 个）— 考多步规划 + 工具组合
+
+| ID                           | 目标                                             | 主要考验的 tool 组合                                  |
+| ---------------------------- | ------------------------------------------------ | ----------------------------------------------------- |
+| `settings_search_bluetooth`  | 进设置 → 搜索蓝牙 → 进入蓝牙页                   | 全部 5 个 tool                                        |
+| `toggle_wifi`                | 进设置 → 找 WiFi 开关 → 关闭再打开               | screenshot → touch_click 连续                         |
+| `add_clock_alarm`            | 时钟 → 新建 7:30 闹钟 → 保存                     | screenshot → touch_click → keyboard_text              |
+| `scroll_to_bottom`           | 在设置页反复滑动直到到底（agent 需判断何时停止） | screenshot → touch_swipe(循环)                        |
+| `type_long_mixed_text`       | 输入中英混合文字 "Aiden测试 benchmark-2026!"     | screenshot → touch_click → keyboard_text              |
+| `select_all_and_delete`      | 在已有文字的输入框里全选并删除                   | screenshot → keyboard_tap META+A → BACKSPACE          |
+| `copy_paste_text`            | 输入文字 → 全选 → 复制 → 点另一输入框 → 粘贴     | keyboard_text → keyboard_tap META+A/C/V → touch_click |
+| `find_and_tap_specific_item` | 在设置列表中滑动找到"关于手机"并点击             | screenshot → touch_swipe(多次) → touch_click          |
+
+### Tool 覆盖矩阵
+
+| Tool                 | single_step | multi_step | 总计               |
+| -------------------- | ----------- | ---------- | ------------------ |
+| `capture_screenshot` | 7/7         | 8/8        | 15（每个任务都用） |
+| `touch_click`        | 4           | 7          | 11                 |
+| `touch_swipe`        | 3           | 3          | 6                  |
+| `keyboard_text`      | 1           | 4          | 5                  |
+| `keyboard_tap`       | 1           | 4          | 5                  |
+
+### 诊断子 suite（perception_v1.json，3 个，不计入主分数）
+
+| ID                  | 目标                                 |
+| ------------------- | ------------------------------------ |
+| `name_current_page` | 看截图说出当前在哪个 app/页面        |
+| `find_button`       | 找到屏幕上的"保存"按钮并给出坐标     |
+| `count_list_items`  | 当前列表可见几个条目？列出前三个文字 |
 
 ## 五、目录结构
 
@@ -78,8 +123,8 @@ benchmark/
 │   ├── metrics.py       # 效率指标聚合
 │   └── report.py        # JSONL + summary.md
 ├── suites/
-│   ├── phone_control_v1.json   # 主 suite，10 个任务
-│   └── perception_v1.json      # 诊断子 suite，2 个任务
+│   ├── phone_control_v1.json   # 主 suite，15 个任务
+│   └── perception_v1.json      # 诊断子 suite，3 个任务
 └── runs/<run_id>/
     ├── manifest.json    # 整次 run 的环境信息（git sha、模型、suite 版本）
     ├── results.jsonl    # 每任务一行，机器读
@@ -105,8 +150,8 @@ benchmark/
    `judge.py` 实现纯函数 + 缓存；接 Anthropic 或 OpenRouter 的多模态 API。`main.py rejudge` 命令复用同一函数。
 4. **报告 / 聚合**（~1 天）
    `metrics.py` + `report.py`：results.jsonl、manifest.json、summary.md、`main.py compare`。
-5. **Suite 内容**（~1~2 天）
-   写 `phone_control_v1.json` 的 10 个任务；每个任务的 rubric 需要在真机上跑几轮调出来。
+5. **Suite 内容**（~2 天）
+   写 `phone_control_v1.json` 的 15 个任务 + `perception_v1.json` 的 3 个诊断任务；每个任务的 rubric 需要在真机上跑几轮调出来。
 6. **`scripts/aiden_benchmark.py` 跳板 + 文档更新**（~半天）
    旧入口转发到新 runner；`docs/BENCHMARK.md` 重写；`full_smoke.json` 标 deprecated。
 7. **跑通端到端**（~1 天）
@@ -119,8 +164,8 @@ benchmark/
 - **`agent_main` stdout 格式**：trace 解析依赖 `[tool] name(args)`、`[tools] Executing N` 等行的稳定性。一旦改了日志格式 trace 就坏。降级方案是后续在 `agent_main.cpp` 加一行 JSON 格式的 `[trace] {...}`，做机器可读旁路。
 - **HOME 键能否回桌面**：global_reset 现在按 HOME。如果测试机的 USB HID HOME 不能可靠回桌面，要换成 swipe up 或多次 ESC。需要在真机上验证。
 - **Judge 一致性**：判图模型对"是不是设置主页"这种问题的判定可能有 10~20% 边缘情况。需要在第 7 步用人工 spot check 校准 rubric 措辞。
-- **锁屏 / 全屏弹窗能否稳定模拟**：`recover_from_blocked_state` 任务依赖能造出"无法操作的页面"。如果不行就降级成普通全屏 modal。
-- **Judge 费用**：每任务一次多模态调用（含两张截图）。10 任务一次 run 大约 10 次 judge 调用，单次 run 成本应该在 $0.1~$0.5 量级（看用哪个 judge 模型）。日常跑得起，重 rejudge 有缓存基本不花钱。
+- **META+C/V 组合键兼容性**：`copy_paste_text` 和 `select_all_and_delete` 依赖 META 组合键。部分 Android 厂商 ROM 可能不支持。如果测试机不支持，这些任务降级或标 skipped。
+- **Judge 费用**：每任务一次多模态调用（含两张截图）。15 任务一次 run 大约 15 次 judge 调用，单次 run 成本应该在 $0.2~$0.8 量级（看用哪个 judge 模型）。日常跑得起，重 rejudge 有缓存基本不花钱。
 
 ## 八、不在 v1 范围（v2 候选）
 
