@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -94,6 +95,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		logger:  runtime.logger,
 		history: make([]Message, 0),
 	}
+	s.loadHistoryFromDisk()
 
 	// Initialize TTS client if configured
 	cfg := runtime.config
@@ -482,6 +484,30 @@ func (s *Server) historySnapshot() []Message {
 	historySnapshot := make([]Message, len(s.history))
 	copy(historySnapshot, s.history)
 	return historySnapshot
+}
+
+func (s *Server) loadHistoryFromDisk() {
+	if s.runtime.config.ConfigDir == "" {
+		return
+	}
+	eventsPath := filepath.Join(s.runtime.config.ConfigDir, "memory", "session", "events.jsonl")
+	store := NewSessionMemoryStore(filepath.Join(s.runtime.config.ConfigDir, "memory", "session"))
+	events, err := store.readEvents(eventsPath)
+	if err != nil {
+		return
+	}
+	for _, evt := range events {
+		msgType := "user"
+		if evt.Role == "assistant" {
+			msgType = "assistant"
+		}
+		ts, _ := time.Parse(time.RFC3339Nano, evt.Ts)
+		s.history = append(s.history, Message{
+			Type:      msgType,
+			Content:   evt.Content,
+			Timestamp: ts,
+		})
+	}
 }
 
 func (s *Server) resolveRequestInput(req ChatRequest) (string, []InputAttachment, []MessageAttachment, error) {
