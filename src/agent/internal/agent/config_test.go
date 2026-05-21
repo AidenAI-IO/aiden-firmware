@@ -41,6 +41,34 @@ func TestConfigValidateRejectsInvalidTriggerMode(t *testing.T) {
 	}
 }
 
+func TestConfigValidateRejectsWakeupForTextInput(t *testing.T) {
+	tests := []struct {
+		name      string
+		inputMode string
+	}{
+		{name: "default text", inputMode: ""},
+		{name: "explicit text", inputMode: " text "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Model:       ModelConfig{Provider: "fake"},
+				InputMode:   tt.inputMode,
+				TriggerMode: " wakeup ",
+			}
+
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected incompatible trigger_mode/input_mode error")
+			}
+			if !strings.Contains(err.Error(), "incompatible trigger_mode") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestConfigValidateRequiresTTSForAudioWakeup(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},
