@@ -4,11 +4,11 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from benchmark.runner.agent_client import AgentClient
-from benchmark.runner.judge import JudgeConfig
-from benchmark.runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
-from benchmark.runner.runtask import run_one_task
-from benchmark.runner.suite import load_suite
+from runner.agent_client import AgentClient
+from runner.judge import JudgeConfig
+from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
+from runner.runtask import run_one_task
+from runner.suite import load_suite
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -32,10 +32,10 @@ def cli(argv: list[str] | None = None) -> int:
     if args.cmd == "run":
         return _cmd_run(args)
     if args.cmd == "rejudge":
-        from benchmark.runner.rejudge import rejudge_run
+        from runner.rejudge import rejudge_run
         return rejudge_run(Path(args.run_dir), args.judge_model)
     if args.cmd == "compare":
-        from benchmark.runner.compare import compare_runs
+        from runner.compare import compare_runs
         return compare_runs(Path(args.runs[0]), Path(args.runs[1]))
     return 2
 

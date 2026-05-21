@@ -1,7 +1,7 @@
 import json
 import pytest
 from pathlib import Path
-from benchmark.runner.suite import load_suite, SuiteValidationError
+from runner.suite import load_suite, SuiteValidationError
 
 FIXTURE = {
     "name": "test_suite",

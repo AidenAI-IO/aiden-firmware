@@ -5,8 +5,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from benchmark.runner.models import TaskResult
-from benchmark.runner.metrics import aggregate
+from runner.models import TaskResult
+from runner.metrics import aggregate
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()

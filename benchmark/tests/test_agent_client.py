@@ -1,6 +1,6 @@
 import httpx
 import pytest
-from benchmark.runner.agent_client import AgentClient, AgentTimeoutError
+from runner.agent_client import AgentClient, AgentTimeoutError
 
 def make_client(handler):
     transport = httpx.MockTransport(handler)

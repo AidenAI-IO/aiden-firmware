@@ -3,15 +3,15 @@ import dataclasses as dc
 import json
 import time
 from pathlib import Path
-from benchmark.runner.agent_client import AgentClient, AgentTimeoutError
-from benchmark.runner.assertions import evaluate_hard_assertions
-from benchmark.runner.capture import take_screenshot, write_step_screenshot
-from benchmark.runner.judge import judge_task, JudgeConfig
-from benchmark.runner.models import TaskResult, RubricVerdict, HardAssertionResults
-from benchmark.runner.reset import global_reset, per_task_setup, ResetError
-from benchmark.runner.suite import Suite, TaskSpec
-from benchmark.runner.trace import extract_trace, extract_step_screenshots
-from benchmark.runner.report import now_iso
+from runner.agent_client import AgentClient, AgentTimeoutError
+from runner.assertions import evaluate_hard_assertions
+from runner.capture import take_screenshot, write_step_screenshot
+from runner.judge import judge_task, JudgeConfig
+from runner.models import TaskResult, RubricVerdict, HardAssertionResults
+from runner.reset import global_reset, per_task_setup, ResetError
+from runner.suite import Suite, TaskSpec
+from runner.trace import extract_trace, extract_step_screenshots
+from runner.report import now_iso
 
 
 def run_one_task(

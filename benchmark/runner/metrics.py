@@ -1,7 +1,7 @@
 from __future__ import annotations
 import statistics
 from collections import Counter
-from benchmark.runner.models import TaskResult
+from runner.models import TaskResult
 
 def aggregate(results: list[TaskResult]) -> dict[str, object]:
     if not results:

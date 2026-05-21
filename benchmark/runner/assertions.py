@@ -1,7 +1,7 @@
 from __future__ import annotations
 import dataclasses as dc
-from benchmark.runner.models import HardAssertionResults, Trace
-from benchmark.runner.suite import HardAssertions
+from runner.models import HardAssertionResults, Trace
+from runner.suite import HardAssertions
 
 @dc.dataclass
 class AssertionOutcome:

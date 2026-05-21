@@ -1,4 +1,4 @@
-from benchmark.runner.main import cli
+from runner.main import cli
 
 if __name__ == "__main__":
     cli()

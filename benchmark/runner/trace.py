@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 from typing import Any
-from benchmark.runner.models import ToolCall, Trace
+from runner.models import ToolCall, Trace
 
 
 def _safe_loads(s: str) -> Any:

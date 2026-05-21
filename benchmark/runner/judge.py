@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 import anthropic
 
-from benchmark.runner.models import RubricVerdict
-from benchmark.runner.suite import RubricItem
+from runner.models import RubricVerdict
+from runner.suite import RubricItem
 
 JUDGE_PROMPT_VERSION = "v1"
 

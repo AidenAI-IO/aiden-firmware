@@ -1,6 +1,6 @@
-from benchmark.runner.assertions import evaluate_hard_assertions, AssertionOutcome
-from benchmark.runner.suite import HardAssertions
-from benchmark.runner.models import Trace, ToolCall
+from runner.assertions import evaluate_hard_assertions, AssertionOutcome
+from runner.suite import HardAssertions
+from runner.models import Trace, ToolCall
 
 def make_trace(n: int, response: str = "ok") -> Trace:
     return Trace(

@@ -1,4 +1,4 @@
-from benchmark.runner.trace import extract_trace, extract_step_screenshots
+from runner.trace import extract_trace, extract_step_screenshots
 
 HISTORY = [
     {"type": "user", "content": "请打开设置"},

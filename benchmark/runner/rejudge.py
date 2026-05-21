@@ -2,10 +2,10 @@ from __future__ import annotations
 import dataclasses as dc
 import json
 from pathlib import Path
-from benchmark.runner.judge import JudgeConfig, judge_task
-from benchmark.runner.suite import RubricItem
-from benchmark.runner.models import RubricVerdict
-from benchmark.runner.report import now_iso
+from runner.judge import JudgeConfig, judge_task
+from runner.suite import RubricItem
+from runner.models import RubricVerdict
+from runner.report import now_iso
 
 def rejudge_run(run_dir: Path, judge_model: str) -> int:
     cfg = JudgeConfig(model=judge_model)
