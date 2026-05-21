@@ -2515,12 +2515,16 @@ const webUI = `<!DOCTYPE html>
                 const grid = document.createElement('div');
                 grid.className = 'tool-meta-grid';
 
-                [
+                const metaEntries = [
                     ['Format', screenshot.format || 'jpeg'],
                     ['Width', String(screenshot.width)],
                     ['Height', String(screenshot.height)],
                     ['Bytes', String(screenshot.size)]
-                ].forEach(function(entry) {
+                ];
+                if (screenshot.action_output) {
+                    metaEntries.unshift(['Action', screenshot.action_output]);
+                }
+                metaEntries.forEach(function(entry) {
                     const item = document.createElement('div');
                     item.className = 'tool-meta-item';
 
@@ -2616,10 +2620,30 @@ const webUI = `<!DOCTYPE html>
         function formatToolPayload(value) {
             if (!value) return '';
             try {
-                return JSON.stringify(JSON.parse(value), null, 2);
+                return JSON.stringify(redactToolPayloadForDisplay(JSON.parse(value)), null, 2);
             } catch (_) {
                 return value;
             }
+        }
+
+        function redactToolPayloadForDisplay(value) {
+            if (Array.isArray(value)) {
+                return value.map(redactToolPayloadForDisplay);
+            }
+            if (!value || typeof value !== 'object') {
+                return value;
+            }
+
+            const clone = {};
+            Object.keys(value).forEach(function(key) {
+                clone[key] = redactToolPayloadForDisplay(value[key]);
+            });
+            if (isScreenshotPayload(value)) {
+                const bytes = Number(value.size);
+                const byteLabel = Number.isFinite(bytes) && bytes >= 0 ? bytes + ' bytes' : 'base64 omitted';
+                clone.data = '[base64 screenshot omitted: ' + byteLabel + ']';
+            }
+            return clone;
         }
 
         function parseScreenshotPayload(msg) {
@@ -2627,14 +2651,22 @@ const webUI = `<!DOCTYPE html>
         }
 
         function parseScreenshotOutput(toolName, content) {
-            if (toolName !== 'screenshot' || !content) return null;
+            if (!content) return null;
             try {
                 const parsed = JSON.parse(content);
-                if (!parsed || typeof parsed.data !== 'string') return null;
+                if (!isScreenshotPayload(parsed)) return null;
                 return parsed;
             } catch (_) {
                 return null;
             }
+        }
+
+        function isScreenshotPayload(value) {
+            return !!value &&
+                typeof value === 'object' &&
+                typeof value.data === 'string' &&
+                value.data.length > 0 &&
+                (value.format === 'jpeg' || value.format === 'jpg' || value.format === 'png' || value.width || value.height || value.size);
         }
     </script>
 </body>

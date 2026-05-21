@@ -266,7 +266,7 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep) (strin
 		return step.Observation, nil
 	}
 
-	var result screenshotResult
+	var result postActionScreenshotResult
 	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
 		return step.Observation, nil
 	}
@@ -278,12 +278,24 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep) (strin
 
 	mimeType := "image/jpeg"
 	toolContent := fmt.Sprintf(
-		"screenshot captured successfully: format=%s width=%d height=%d size=%d bytes. The image is attached in the next message.",
+		"%s returned a screenshot observation: format=%s width=%d height=%d size=%d bytes. The image is attached in the next message.",
+		step.Action.Tool,
 		result.Format,
 		result.Width,
 		result.Height,
 		result.Size,
 	)
+	if strings.TrimSpace(result.ActionOutput) != "" {
+		toolContent = fmt.Sprintf(
+			"%s completed with output %q, then returned a screenshot observation after the action settled: format=%s width=%d height=%d size=%d bytes. The image is attached in the next message.",
+			step.Action.Tool,
+			result.ActionOutput,
+			result.Format,
+			result.Width,
+			result.Height,
+			result.Size,
+		)
+	}
 	if result.Format != "" && result.Format != "jpeg" {
 		mimeType = "image/" + result.Format
 	}
@@ -291,7 +303,7 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep) (strin
 	return toolContent, []llms.MessageContent{{
 		Role: llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{
-			llms.TextPart("This image is the screenshot returned by the screenshot tool. Use it when answering the original request."),
+			llms.TextPart(fmt.Sprintf("This image is the screenshot observation returned by the %s tool. Use it when answering the original request.", step.Action.Tool)),
 			buildImagePart(mimeType, imageBytes),
 		},
 	}}
