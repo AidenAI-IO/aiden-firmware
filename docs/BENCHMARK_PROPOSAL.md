@@ -16,21 +16,23 @@
 
 ## 二、方案总览
 
-把 benchmark 重新定位为"agent 能力评测"，所有任务一律通过 `agent_main --mode=text` 执行。Runner 只负责搭测试环境、抓副产物、判分。
+把 benchmark 重新定位为"agent 能力评测"，所有任务通过 Go agent 的 HTTP API（`POST /api/chat`）执行。Agent 以 daemon 形式常驻运行，runner 只负责发请求、抓副产物、判分。
 
 调用链：
 
 ```
 runner (Python，本机执行)
-  ├── 全局 reset      (固定 tool 序列，把手机弄回主屏)
-  ├── per-task setup  (可选，用来构造非主屏起点；setup 失败 → 任务 skipped)
-  ├── pre 截图
-  ├── agent_main --mode=text --once   ← 唯一被评测的进程
-  │     stdin: 任务 prompt
-  │     stdout: trace 行
-  ├── post 截图
-  ├── 硬断言        (返回码、tool call 数下限/上限、超时、post 截图存在)
-  └── LLM judge     (吃 artifact，不碰硬件，可离线重跑)
+  ├── POST /api/clear    (清空 agent 对话历史，隔离任务)
+  ├── 全局 reset          (通过 /api/tools/invoke 直接调 HID 工具，把手机弄回主屏)
+  ├── per-task setup      (可选，直接 tool 调用构造起点；setup 失败 → 任务 skipped)
+  ├── pre 截图            (POST /api/tools/invoke screenshot)
+  ├── POST /api/chat      ← 唯一被评测的接口
+  │     request:  {"message": "任务 prompt"}
+  │     response: ChatResponse{Response, History}
+  │     History 包含结构化的 tool_call/tool_result 消息
+  │     每个输入 tool 自动返回 post-action screenshot
+  ├── 硬断言              (tool call 数下限/上限、超时、response 存在)
+  └── LLM judge           (吃 artifact，不碰硬件，可离线重跑)
 ```
 
 判分采用 **硬断言 + LLM judge** 两段式：
@@ -55,10 +57,10 @@ Benchmark 度量四个核心维度：
 
 ## 四、关键设计决策
 
-1. **任务集 v1 共 15 个主任务 + 3 个诊断任务**，覆盖 single_step / multi_step 两类，围绕 agent 实际可用的 5 个 tool（capture_screenshot、keyboard_tap、keyboard_text、touch_click、touch_swipe）设计。任务清单见 spec 第 "Task Set v1"。
-2. **状态隔离**：每任务前都跑全局 reset 回主屏；部分任务（如 `tap_back`、`select_all_and_delete`）在 reset 后用 tool 序列构造特定起点。
-3. **Agent 一次性退出**：给 `agent_main` 加 `--once` 开关，跑完一个 prompt 自然退出。Runner 不用 SIGTERM 收尾，干净很多。改动很小，集中在 `src/agent_main.cpp` 的 MODE_TEXT 循环里。
-4. **Judge 离线可重跑**：`rejudge --run-dir runs/<id>` 命令只读取已有 artifact 重跑 judge，不碰硬件。改 rubric 或换 judge 模型时不需要重测一次手机。
+1. **任务集 v1 共 15 个主任务 + 3 个诊断任务**，覆盖 single_step / multi_step 两类，围绕 Go agent 实际可用的 tool 集（screenshot、keyboard_tap、keyboard_text、mouse_click、mouse_scroll、touch_gesture 等 13 个）设计。
+2. **状态隔离**：每任务前调 `POST /api/clear` 清空对话历史 + 全局 reset 回主屏；部分任务在 reset 后用直接 tool 调用构造特定起点。
+3. **Agent 是常驻 daemon**：Go agent 跑在 `:8080`，runner 通过 HTTP API 交互。不需要 spawn 子进程、不需要 `--once` 开关。
+4. **Trace 结构化获取**：`ChatResponse.History` 直接返回 tool_call/tool_result 消息列表，不需要 regex 解析 stdout。每个输入 tool 自动附带 post-action screenshot。
 5. **跨 run 对比**：`compare --runs A B` 输出两次 run 之间哪些任务 flip、效率指标差多少。这是回归检测的核心。
 6. **不上 docker**：硬件在环（HID 设备、frame_service socket 都在测试机本机），docker 化只增加复杂度不增加隔离。Python 依赖用 venv + requirements.txt 锁版本即可。
 
@@ -68,36 +70,36 @@ Benchmark 度量四个核心维度：
 
 | ID                        | 目标                                   | 主要考验的 tool 组合                     |
 | ------------------------- | -------------------------------------- | ---------------------------------------- |
-| `open_settings`           | 从桌面打开系统设置                     | screenshot → touch_click                 |
-| `open_clock`              | 从桌面打开时钟 app                     | screenshot → touch_click                 |
-| `tap_back`                | 从设置子页返回上一层（setup 进入子页） | screenshot → touch_click 或 keyboard_tap |
-| `type_in_search`          | 在搜索框输入 "hello"                   | screenshot → touch_click → keyboard_text |
-| `scroll_page_down`        | 向下滑动一屏                           | screenshot → touch_swipe(垂直)           |
-| `swipe_between_pages`     | 在桌面左右滑动切换页面                 | screenshot → touch_swipe(水平)           |
-| `open_notification_shade` | 从顶部下滑打开通知栏                   | screenshot → touch_swipe(从顶部向下)     |
+| `open_settings`           | 从桌面打开系统设置                     | screenshot → mouse_click                 |
+| `open_clock`              | 从桌面打开时钟 app                     | screenshot → mouse_click                 |
+| `tap_back`                | 从设置子页返回上一层（setup 进入子页） | screenshot → mouse_click 或 keyboard_tap |
+| `type_in_search`          | 在搜索框输入 "hello"                   | screenshot → mouse_click → keyboard_text |
+| `scroll_page_down`        | 向下滑动一屏                           | screenshot → touch_gesture(垂直)         |
+| `swipe_between_pages`     | 在桌面左右滑动切换页面                 | screenshot → touch_gesture(水平)         |
+| `open_notification_shade` | 从顶部下滑打开通知栏                   | screenshot → touch_gesture(从顶部向下)   |
 
 ### multi_step（8 个）— 考多步规划 + 工具组合
 
-| ID                           | 目标                                             | 主要考验的 tool 组合                                  |
-| ---------------------------- | ------------------------------------------------ | ----------------------------------------------------- |
-| `settings_search_bluetooth`  | 进设置 → 搜索蓝牙 → 进入蓝牙页                   | 全部 5 个 tool                                        |
-| `toggle_wifi`                | 进设置 → 找 WiFi 开关 → 关闭再打开               | screenshot → touch_click 连续                         |
-| `add_clock_alarm`            | 时钟 → 新建 7:30 闹钟 → 保存                     | screenshot → touch_click → keyboard_text              |
-| `scroll_to_bottom`           | 在设置页反复滑动直到到底（agent 需判断何时停止） | screenshot → touch_swipe(循环)                        |
-| `type_long_mixed_text`       | 输入中英混合文字 "Aiden测试 benchmark-2026!"     | screenshot → touch_click → keyboard_text              |
-| `select_all_and_delete`      | 在已有文字的输入框里全选并删除                   | screenshot → keyboard_tap META+A → BACKSPACE          |
-| `copy_paste_text`            | 输入文字 → 全选 → 复制 → 点另一输入框 → 粘贴     | keyboard_text → keyboard_tap META+A/C/V → touch_click |
-| `find_and_tap_specific_item` | 在设置列表中滑动找到"关于手机"并点击             | screenshot → touch_swipe(多次) → touch_click          |
+| ID                           | 目标                                             | 主要考验的 tool 组合                                     |
+| ---------------------------- | ------------------------------------------------ | -------------------------------------------------------- |
+| `settings_search_bluetooth`  | 进设置 → 搜索蓝牙 → 进入蓝牙页                   | screenshot + mouse_click + keyboard_text + touch_gesture |
+| `toggle_wifi`                | 进设置 → 找 WiFi 开关 → 关闭再打开               | screenshot → mouse_click 连续                            |
+| `add_clock_alarm`            | 时钟 → 新建 7:30 闹钟 → 保存                     | screenshot → mouse_click → keyboard_text                 |
+| `scroll_to_bottom`           | 在设置页反复滑动直到到底（agent 需判断何时停止） | screenshot → touch_gesture(循环)                         |
+| `type_long_mixed_text`       | 输入中英混合文字 "Aiden测试 benchmark-2026!"     | screenshot → mouse_click → keyboard_text                 |
+| `select_all_and_delete`      | 在已有文字的输入框里全选并删除                   | screenshot → keyboard_tap META+A → BACKSPACE             |
+| `copy_paste_text`            | 输入文字 → 全选 → 复制 → 点另一输入框 → 粘贴     | keyboard_text → keyboard_tap META+A/C/V → mouse_click    |
+| `find_and_tap_specific_item` | 在设置列表中滑动找到"关于手机"并点击             | screenshot → touch_gesture(多次) → mouse_click           |
 
 ### Tool 覆盖矩阵
 
-| Tool                 | single_step | multi_step | 总计               |
-| -------------------- | ----------- | ---------- | ------------------ |
-| `capture_screenshot` | 7/7         | 8/8        | 15（每个任务都用） |
-| `touch_click`        | 4           | 7          | 11                 |
-| `touch_swipe`        | 3           | 3          | 6                  |
-| `keyboard_text`      | 1           | 4          | 5                  |
-| `keyboard_tap`       | 1           | 4          | 5                  |
+| Tool            | single_step | multi_step | 总计                                     |
+| --------------- | ----------- | ---------- | ---------------------------------------- |
+| `screenshot`    | 7/7         | 8/8        | 15（每个任务都用，auto via post-action） |
+| `mouse_click`   | 4           | 7          | 11                                       |
+| `touch_gesture` | 3           | 3          | 6                                        |
+| `keyboard_text` | 1           | 4          | 5                                        |
+| `keyboard_tap`  | 1           | 4          | 5                                        |
 
 ### 诊断子 suite（perception_v1.json，3 个，不计入主分数）
 
@@ -114,10 +116,10 @@ benchmark/
 ├── runner/              # Python 包，新写
 │   ├── main.py          # CLI: run | rejudge | compare
 │   ├── suite.py         # 加载/校验 suite
-│   ├── reset.py         # 全局 reset + per-task setup
-│   ├── agent_session.py # spawn agent_main，捕获 stdout，超时管理
-│   ├── capture.py       # pre/post 截图
-│   ├── trace.py         # 解析 stdout 成结构化 tool call 序列
+│   ├── reset.py         # 全局 reset + per-task setup（直接调 agent tool API）
+│   ├── agent_client.py  # Go agent HTTP 客户端（/api/chat, /api/clear, /api/history）
+│   ├── capture.py       # pre 截图（via /api/tools/invoke screenshot）
+│   ├── trace.py         # 从 /api/history 提取结构化 trace
 │   ├── assertions.py    # 硬断言
 │   ├── judge.py         # LLM judge（纯函数，吃 artifact 写 judge.json）
 │   ├── metrics.py       # 效率指标聚合
@@ -130,11 +132,13 @@ benchmark/
     ├── results.jsonl    # 每任务一行，机器读
     ├── summary.md       # 人读摘要
     └── tasks/<task_id>/
-        ├── pre.png      # 执行前截图
-        ├── post.png     # 执行后截图
-        ├── agent_stdout.log
-        ├── agent_stderr.log
+        ├── pre.jpg      # 执行前截图
+        ├── history.json # 原始 /api/history 响应
         ├── trace.json   # 解析后的 tool call 序列
+        ├── steps/       # 逐步 post-action 截图（从 tool_result 提取）
+        │   ├── step_01_screenshot.jpg
+        │   ├── step_02_mouse_click.jpg
+        │   └── ...
         └── judge.json   # judge 的逐 rubric 输出 + 理由
 ```
 
@@ -142,29 +146,27 @@ benchmark/
 
 按依赖顺序：
 
-1. **`agent_main --once`**（小改动，~1 天）
-   在 `src/agent_main.cpp` MODE_TEXT 分支加一个开关，处理完一个 prompt 后 exit。其他 mode 不动。
-2. **Runner 骨架**（~2 天）
-   `suite.py` / `reset.py` / `capture.py` / `agent_session.py` / `trace.py` / `assertions.py`，加上 `main.py run` 命令，先不接 judge，能产出 trace.json 和 pre/post 截图就行。
-3. **LLM Judge**（~1 天）
+1. **Runner 骨架 + Agent HTTP 客户端**（~2 天）
+   `agent_client.py` / `suite.py` / `reset.py` / `capture.py` / `trace.py` / `assertions.py`，加上 `main.py run` 命令。先不接 judge，能产出 trace.json 和 pre + 逐步截图就行。Go agent 不需要改动——它已经是 HTTP daemon。
+2. **LLM Judge**（~1 天）
    `judge.py` 实现纯函数 + 缓存；接 Anthropic 或 OpenRouter 的多模态 API。`main.py rejudge` 命令复用同一函数。
-4. **报告 / 聚合**（~1 天）
+3. **报告 / 聚合**（~1 天）
    `metrics.py` + `report.py`：results.jsonl、manifest.json、summary.md、`main.py compare`。
-5. **Suite 内容**（~2 天）
+4. **Suite 内容**（~2 天）
    写 `phone_control_v1.json` 的 15 个任务 + `perception_v1.json` 的 3 个诊断任务；每个任务的 rubric 需要在真机上跑几轮调出来。
-6. **`scripts/aiden_benchmark.py` 跳板 + 文档更新**（~半天）
+5. **`scripts/aiden_benchmark.py` 跳板 + 文档更新**（~半天）
    旧入口转发到新 runner；`docs/BENCHMARK.md` 重写；`full_smoke.json` 标 deprecated。
-7. **跑通端到端**（~1 天）
+6. **跑通端到端**（~1 天）
    真机上拉一遍完整 suite，对照人工复核调 rubric 直到 judge 判定基本一致。
 
-总计大概 **7~10 个工作日**，主要不确定性在第 5 步（rubric 调试）和第 7 步（judge 一致性）。
+总计大概 **6~8 个工作日**，主要不确定性在第 4 步（rubric 调试）和第 6 步（judge 一致性）。比之前估计少了 1 天——不需要改 agent 代码了。
 
 ## 七、风险点 / 待验证
 
-- **`agent_main` stdout 格式**：trace 解析依赖 `[tool] name(args)`、`[tools] Executing N` 等行的稳定性。一旦改了日志格式 trace 就坏。降级方案是后续在 `agent_main.cpp` 加一行 JSON 格式的 `[trace] {...}`，做机器可读旁路。
-- **HOME 键能否回桌面**：global_reset 现在按 HOME。如果测试机的 USB HID HOME 不能可靠回桌面，要换成 swipe up 或多次 ESC。需要在真机上验证。
-- **Judge 一致性**：判图模型对"是不是设置主页"这种问题的判定可能有 10~20% 边缘情况。需要在第 7 步用人工 spot check 校准 rubric 措辞。
-- **META+C/V 组合键兼容性**：`copy_paste_text` 和 `select_all_and_delete` 依赖 META 组合键。部分 Android 厂商 ROM 可能不支持。如果测试机不支持，这些任务降级或标 skipped。
+- **Agent HTTP API 稳定性**：runner 依赖 `/api/chat` 返回的 `History` 字段结构。如果 Go agent 改了 response schema，trace 提取就坏。降级方案是 runner 做 schema 版本检查，不兼容时报错。
+- **HOME 键能否回桌面**：global_reset 现在按 HOME。如果测试机的 USB HID HOME 不能可靠回桌面，要换成 touch_gesture swipe up 或多次 ESC。需要在真机上验证。
+- **Judge 一致性**：判图模型对"是不是设置主页"这种问题的判定可能有 10~20% 边缘情况。需要在第 6 步用人工 spot check 校准 rubric 措辞。
+- **META+C/V 组合键兼容性**：`copy_paste_text` 和 `select_all_and_delete` 依赖 META 组合键。部分 Android 厂商 ROM 可能不支持。如果测试机不支持，这些任务标 skipped。
 - **Judge 费用**：每任务一次多模态调用（含两张截图）。15 任务一次 run 大约 15 次 judge 调用，单次 run 成本应该在 $0.2~$0.8 量级（看用哪个 judge 模型）。日常跑得起，重 rejudge 有缓存基本不花钱。
 
 ## 八、不在 v1 范围（v2 候选）
