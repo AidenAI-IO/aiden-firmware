@@ -41,7 +41,7 @@ func TestRuntimeRun(t *testing.T) {
 		}),
 	}
 
-	runtime := NewRuntimeWithDeps(cfg, resolver, NewMemoryManager(), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}), NewSkillIndex())
+	runtime := NewRuntimeWithDeps(cfg, resolver, NewMemoryManager(""), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}), NewSkillIndex())
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -145,7 +145,7 @@ func TestRuntimeRunOpenRouterUsesToolsWithoutStreaming(t *testing.T) {
 			Instruction: "Use tools when external state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"audio_volume": tool,
 		}},
@@ -201,7 +201,7 @@ func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 			Instruction: "Use tools when external state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"audio_volume": tool,
 		}},
@@ -237,7 +237,7 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 			Instruction: "Answer directly.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
@@ -298,7 +298,7 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 			Instruction: "Use tools when visual state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"screenshot": tool,
 		}},
@@ -387,7 +387,7 @@ func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 			Instruction: "Use tools when visual state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"screenshot": tool,
 		}},
@@ -555,13 +555,6 @@ func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 	if len(chunks) != 1 {
 		t.Fatalf("expected compacted chunk from real runs, got %d", len(chunks))
 	}
-	memories, err := NewLongTermMemoryStore(filepath.Join(configDir, "memory", "long_term")).Search(context.Background(), MemoryQuery{Entities: []string{"蓝海报销App"}, Limit: 5})
-	if err != nil {
-		t.Fatalf("Search() error = %v", err)
-	}
-	if len(memories) == 0 || !strings.Contains(memories[0].Content, "必须先给风险摘要") {
-		t.Fatalf("expected extracted durable memory from real runs, got %#v", memories)
-	}
 }
 
 func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {
@@ -602,7 +595,7 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 			Instruction: "Use the provided media when answering.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)

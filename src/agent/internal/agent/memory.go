@@ -27,6 +27,7 @@ type MemoryManager struct {
 	handles    map[string]*MemoryHandle
 	eventCount map[string]int
 	storageDir string
+	extraction MemoryExtractionConfig
 }
 
 const defaultMemoryHotWindowEvents = 20
@@ -48,13 +49,23 @@ type SessionEvent struct {
 	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
-func NewMemoryManager(storageDir ...string) *MemoryManager {
+type MemoryManagerOption func(*MemoryManager)
+
+func WithExtractionConfig(cfg MemoryExtractionConfig) MemoryManagerOption {
+	return func(m *MemoryManager) { m.extraction = cfg }
+}
+
+func NewMemoryManager(storageDir string, opts ...MemoryManagerOption) *MemoryManager {
 	manager := &MemoryManager{
 		handles:    map[string]*MemoryHandle{},
 		eventCount: map[string]int{},
+		extraction: DefaultMemoryExtractionConfig(),
 	}
-	if len(storageDir) > 0 {
-		manager.storageDir = storageDir[0]
+	if storageDir != "" {
+		manager.storageDir = storageDir
+	}
+	for _, opt := range opts {
+		opt(manager)
 	}
 	return manager
 }
@@ -245,6 +256,7 @@ func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRe
 
 	var records []MessageRecord
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0), 1<<20)
 	for scanner.Scan() {
 		var event SessionEvent
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
@@ -323,17 +335,21 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(events) <= defaultMemoryHotWindowEvents {
+	hotWindow := m.extraction.HotWindowEvents
+	if hotWindow <= 0 {
+		hotWindow = defaultMemoryHotWindowEvents
+	}
+	if len(events) <= hotWindow {
 		return nil
 	}
 
-	compactCount := len(events) - defaultMemoryHotWindowEvents
+	compactCount := len(events) - hotWindow
 	compactEvents := append([]SessionEvent(nil), events[:compactCount]...)
 	hotEvents := append([]SessionEvent(nil), events[compactCount:]...)
-	chunk, err := session.compressEvents(ctx, compactEvents, CompressOption{
+	_, err = session.compressEvents(ctx, compactEvents, CompressOption{
 		Summary:  summarizeSessionEvents(compactEvents),
-		Tags:     extractMemoryTags(compactEvents),
-		Entities: extractMemoryEntities(compactEvents),
+		Tags:     m.extraction.extractMemoryTags(compactEvents),
+		Entities: m.extraction.extractMemoryEntities(compactEvents),
 	})
 	if err != nil {
 		return err
@@ -342,13 +358,8 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		return err
 	}
 
-	longTerm := NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"))
-	for _, item := range extractDurableMemories(compactEvents, chunk.ID) {
-		if _, err := longTerm.AddMemory(ctx, item); err != nil {
-			return err
-		}
-	}
-	return nil
+	longTerm := NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"), WithLifecycleDir(filepath.Join(m.storageDir, "lifecycle")))
+	return longTerm.RegenerateProfileMD(ctx)
 }
 
 func summarizeSessionEvents(events []SessionEvent) string {
@@ -369,77 +380,12 @@ func summarizeSessionEvents(events []SessionEvent) string {
 	return strings.Join(parts, " / ")
 }
 
-func extractDurableMemories(events []SessionEvent, chunkID string) []MemoryItem {
-	items := make([]MemoryItem, 0)
-	for i, event := range events {
-		if event.Role != "user" {
-			continue
-		}
-		content := strings.TrimSpace(event.Content)
-		if content == "" {
-			continue
-		}
-		evidence := []string{content}
-		refs := []MemorySourceRef{{Type: "chunk", ID: chunkID, EventIDs: []string{event.EventID}}}
-		if looksLikeProfile(content) {
-			items = append(items, MemoryItem{
-				ID:               fmt.Sprintf("mem_%s_profile_%d", chunkID, i),
-				Type:             "profile",
-				Priority:         70,
-				Confidence:       0.75,
-				Tags:             []string{"用户画像"},
-				Entities:         extractEntitiesFromText(content),
-				Title:            "用户画像",
-				Content:          content,
-				EvidenceExcerpts: evidence,
-				SourceRefs:       refs,
-			})
-		}
-		if looksLikeDurableRule(content) {
-			items = append(items, MemoryItem{
-				ID:               fmt.Sprintf("mem_%s_rule_%d", chunkID, i),
-				Type:             durableMemoryType(content),
-				Priority:         90,
-				Confidence:       0.8,
-				Tags:             extractTagsFromText(content),
-				Entities:         extractEntitiesFromText(content),
-				Title:            firstSentence(content),
-				Content:          content,
-				EvidenceExcerpts: evidence,
-				SourceRefs:       refs,
-			})
-		}
-	}
-	return items
-}
 
-func looksLikeProfile(content string) bool {
-	return strings.Contains(content, "我是") || strings.Contains(content, "我叫") || strings.Contains(content, "我的名字")
-}
-
-func looksLikeDurableRule(content string) bool {
-	for _, marker := range []string{"记一下", "你要记住", "以后", "下次", "不要再", "必须", "先问我", "先确认"} {
-		if strings.Contains(content, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func durableMemoryType(content string) string {
-	for _, marker := range []string{"必须", "先问我", "先确认", "不要再"} {
-		if strings.Contains(content, marker) {
-			return "rule"
-		}
-	}
-	return "preference"
-}
-
-func extractMemoryTags(events []SessionEvent) []string {
+func (cfg MemoryExtractionConfig) extractMemoryTags(events []SessionEvent) []string {
 	seen := map[string]bool{}
 	var tags []string
 	for _, event := range events {
-		for _, tag := range extractTagsFromText(event.Content) {
+		for _, tag := range cfg.extractTagsFromText(event.Content) {
 			if !seen[tag] {
 				seen[tag] = true
 				tags = append(tags, tag)
@@ -449,10 +395,9 @@ func extractMemoryTags(events []SessionEvent) []string {
 	return tags
 }
 
-func extractTagsFromText(content string) []string {
-	candidates := []string{"报销", "支付", "付款", "提交", "登录", "验证码", "发票", "项目编码", "风险", "确认", "开发板", "agent"}
+func (cfg MemoryExtractionConfig) extractTagsFromText(content string) []string {
 	tags := make([]string, 0)
-	for _, candidate := range candidates {
+	for _, candidate := range cfg.TagCandidates {
 		if strings.Contains(content, candidate) {
 			tags = append(tags, candidate)
 		}
@@ -460,7 +405,7 @@ func extractTagsFromText(content string) []string {
 	return tags
 }
 
-func extractMemoryEntities(events []SessionEvent) []string {
+func (cfg MemoryExtractionConfig) extractMemoryEntities(events []SessionEvent) []string {
 	seen := map[string]bool{}
 	var entities []string
 	for _, event := range events {
@@ -468,7 +413,7 @@ func extractMemoryEntities(events []SessionEvent) []string {
 			seen[event.AppName] = true
 			entities = append(entities, event.AppName)
 		}
-		for _, entity := range extractEntitiesFromText(event.Content) {
+		for _, entity := range cfg.extractEntitiesFromText(event.Content) {
 			if !seen[entity] {
 				seen[entity] = true
 				entities = append(entities, entity)
@@ -478,9 +423,9 @@ func extractMemoryEntities(events []SessionEvent) []string {
 	return entities
 }
 
-func extractEntitiesFromText(content string) []string {
+func (cfg MemoryExtractionConfig) extractEntitiesFromText(content string) []string {
 	var entities []string
-	for _, suffix := range []string{"App", "app", "APP"} {
+	for _, suffix := range cfg.EntitySuffixes {
 		searchStart := 0
 		for {
 			idx := strings.Index(content[searchStart:], suffix)

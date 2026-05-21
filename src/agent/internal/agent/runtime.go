@@ -93,7 +93,8 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 	toolSet := NewBuiltinToolSet(cfg.HID, cfg.Audio, cfg.Search, cfg.Proxy)
 	toolSet.RegisterMemoryTools(memoryDir)
-	rt := NewRuntimeWithDeps(cfg, NewModelManager(cfg.Model, cfg.Proxy), NewMemoryManager(memoryDir), toolSet, skillIndex)
+	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
+	rt := NewRuntimeWithDeps(cfg, NewModelManager(cfg.Model, cfg.Proxy), NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg)), toolSet, skillIndex)
 	rt.logger = logger
 	return rt, nil
 }
@@ -255,7 +256,25 @@ func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 		available = append(available, r.tools.All()...)
 	}
 
+	memoryTools := []string{"recall_session_chunks", "recall_memory", "save_memory", "forget_memory"}
+	for _, name := range memoryTools {
+		if tool, ok := r.tools.Get(name); ok {
+			if !toolAlreadyIncluded(available, name) {
+				available = append(available, tool)
+			}
+		}
+	}
+
 	return available
+}
+
+func toolAlreadyIncluded(tools []langtools.Tool, name string) bool {
+	for _, t := range tools {
+		if t.Name() == name {
+			return true
+		}
+	}
+	return false
 }
 
 func wrapToolsWithCallbacks(tools []langtools.Tool, handler callbacks.Handler) []langtools.Tool {

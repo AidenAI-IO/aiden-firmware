@@ -11,12 +11,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 type SessionMemoryStore struct {
+	mu      sync.Mutex
 	rootDir string
 }
 
@@ -80,6 +82,8 @@ func (s *SessionMemoryStore) AppendEvent(ctx context.Context, event SessionEvent
 		return "", ctx.Err()
 	default:
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	now := time.Now().UTC()
 	if event.EventID == "" {
 		event.EventID = "evt_" + strconvTimeID(now)
@@ -113,6 +117,8 @@ func (s *SessionMemoryStore) Compress(ctx context.Context, opt CompressOption) (
 		return ChunkSummary{}, ctx.Err()
 	default:
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	events, err := s.readEvents(s.eventsPath())
 	if err != nil {
 		return ChunkSummary{}, err
@@ -161,7 +167,8 @@ func (s *SessionMemoryStore) compressEvents(ctx context.Context, events []Sessio
 	if err := s.writeChunkIndex(index); err != nil {
 		return ChunkSummary{}, err
 	}
-	if err := writeFileAtomic(s.summaryPath(), []byte(formatSessionSummary(opt.Summary, opt.ChunkID)), 0o644); err != nil {
+	existingSummary, _ := os.ReadFile(s.summaryPath())
+	if err := writeFileAtomic(s.summaryPath(), []byte(formatSessionSummary(existingSummary, opt.Summary, opt.ChunkID)), 0o644); err != nil {
 		return ChunkSummary{}, fmt.Errorf("write session summary: %w", err)
 	}
 	return ChunkSummary{
@@ -176,6 +183,8 @@ func (s *SessionMemoryStore) compressEvents(ctx context.Context, events []Sessio
 }
 
 func (s *SessionMemoryStore) replaceEvents(events []SessionEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(events) == 0 {
 		if err := os.Remove(s.eventsPath()); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove session events: %w", err)
@@ -207,20 +216,26 @@ func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecall
 		limit = 3
 	}
 	entries := make([]chunkIndexEntry, 0)
+	allActive := make([]chunkIndexEntry, 0)
+	hasFilter := query.AppName != "" || len(query.Tags) > 0 || len(query.Entities) > 0
 	for _, entry := range index.Chunks {
 		if entry.Status != "active" {
 			continue
 		}
+		allActive = append(allActive, entry)
 		if query.AppName != "" && entry.AppName != query.AppName {
 			continue
 		}
-		if !matchesAny(query.Tags, entry.Tags) {
+		if hasFilter && len(query.Tags) > 0 && !matchesAny(query.Tags, entry.Tags) {
 			continue
 		}
-		if !matchesAny(query.Entities, entry.Entities) {
+		if hasFilter && len(query.Entities) > 0 && !matchesAny(query.Entities, entry.Entities) {
 			continue
 		}
 		entries = append(entries, entry)
+	}
+	if len(entries) == 0 && hasFilter {
+		entries = allActive
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
 		return entries[i].ID > entries[j].ID
@@ -263,6 +278,7 @@ func (s *SessionMemoryStore) readEvents(path string) ([]SessionEvent, error) {
 	defer file.Close()
 	var events []SessionEvent
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0), 1<<20)
 	for scanner.Scan() {
 		var event SessionEvent
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
@@ -334,10 +350,28 @@ func firstNonEmptyAppName(events []SessionEvent) string {
 	return ""
 }
 
-func formatSessionSummary(summary string, chunkID string) string {
-	return "# Current Session Summary\n\n" +
-		"## 当前摘要\n\n" + strings.TrimSpace(summary) + "\n\n" +
-		"## 已压缩片段\n\n- " + chunkID + "\n"
+func formatSessionSummary(existingContent []byte, summary string, chunkID string) string {
+	var chunks []string
+	if len(existingContent) > 0 {
+		for _, line := range strings.Split(string(existingContent), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "- chunk_") {
+				chunks = append(chunks, trimmed)
+			}
+		}
+	}
+	chunks = append(chunks, "- "+chunkID)
+
+	var b strings.Builder
+	b.WriteString("# Current Session Summary\n\n")
+	b.WriteString("## 当前任务\n\n")
+	b.WriteString(strings.TrimSpace(summary))
+	b.WriteString("\n\n## 已压缩片段\n\n")
+	for _, c := range chunks {
+		b.WriteString(c)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func minInt(a int, b int) int {

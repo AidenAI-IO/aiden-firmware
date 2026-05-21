@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
@@ -82,7 +81,7 @@ func TestMemoryManagerRestoresFromSessionEventsWhenSnapshotMissing(t *testing.T)
 	}
 }
 
-func TestMemoryManagerSaveCompactsHotWindowAndExtractsDurableMemory(t *testing.T) {
+func TestMemoryManagerSaveCompactsHotWindow(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	manager := NewMemoryManager(storageDir)
@@ -119,25 +118,8 @@ func TestMemoryManagerSaveCompactsHotWindowAndExtractsDurableMemory(t *testing.T
 	if len(chunks) != 1 {
 		t.Fatalf("expected one compacted chunk, got %d", len(chunks))
 	}
-	if len(chunks[0].Evidence) == 0 || !strings.Contains(chunks[0].Summary, "蓝海报销App") {
-		t.Fatalf("unexpected chunk: %#v", chunks[0])
-	}
-
-	longTerm := NewLongTermMemoryStore(filepath.Join(storageDir, "long_term"))
-	memories, err := longTerm.Search(ctx, MemoryQuery{Entities: []string{"蓝海报销App"}, Limit: 5})
-	if err != nil {
-		t.Fatalf("Search() preference error = %v", err)
-	}
-	if len(memories) == 0 || !strings.Contains(memories[0].Content, "必须先给风险摘要") {
-		t.Fatalf("expected extracted long-term rule, got %#v", memories)
-	}
-
-	profiles, err := longTerm.Search(ctx, MemoryQuery{Types: []string{"profile"}, Limit: 5})
-	if err != nil {
-		t.Fatalf("Search() profile error = %v", err)
-	}
-	if len(profiles) == 0 || !strings.Contains(profiles[0].Content, "硬件产品经理") {
-		t.Fatalf("expected extracted user profile, got %#v", profiles)
+	if len(chunks[0].Evidence) == 0 {
+		t.Fatalf("expected chunk to contain evidence events")
 	}
 }
 
@@ -163,9 +145,6 @@ func TestMemoryManagerClearRemovesFilesystemMemoryArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(storageDir, "session", "chunks", "index.yaml")); err != nil {
 		t.Fatalf("expected session chunk index before clear: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(storageDir, "long_term", "index.yaml")); err != nil {
-		t.Fatalf("expected long-term index before clear: %v", err)
 	}
 
 	if err := manager.Clear(ctx, "default"); err != nil {

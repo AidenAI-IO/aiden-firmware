@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +19,14 @@ import (
 )
 
 type LongTermMemoryStore struct {
-	rootDir string
+	rootDir      string
+	lifecycleDir string
+}
+
+type LongTermMemoryOption func(*LongTermMemoryStore)
+
+func WithLifecycleDir(dir string) LongTermMemoryOption {
+	return func(s *LongTermMemoryStore) { s.lifecycleDir = dir }
 }
 
 type MemorySourceRef struct {
@@ -85,8 +94,15 @@ type memoryIndexEntry struct {
 	Summary    string   `yaml:"summary"`
 }
 
-func NewLongTermMemoryStore(rootDir string) *LongTermMemoryStore {
-	return &LongTermMemoryStore{rootDir: rootDir}
+func NewLongTermMemoryStore(rootDir string, opts ...LongTermMemoryOption) *LongTermMemoryStore {
+	s := &LongTermMemoryStore{rootDir: rootDir}
+	for _, opt := range opts {
+		opt(s)
+	}
+	if s.lifecycleDir == "" {
+		s.lifecycleDir = filepath.Join(rootDir, "..", "lifecycle")
+	}
+	return s
 }
 
 func (s *LongTermMemoryStore) RootDir() string {
@@ -195,6 +211,190 @@ func (s *LongTermMemoryStore) Forget(ctx context.Context, id string, reason stri
 	return s.RebuildIndex(ctx)
 }
 
+func (s *LongTermMemoryStore) SupersedeMemory(ctx context.Context, oldID string, newItem MemoryItem) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+	oldPath := s.memoryPath(oldID)
+	oldParsed, err := readMemoryMarkdown(oldPath)
+	if err != nil {
+		return "", fmt.Errorf("read old memory %q for supersede: %w", oldID, err)
+	}
+
+	newItem = normalizeMemoryItem(newItem, time.Now().UTC())
+	newItem.Supersedes = oldID
+
+	oldParsed.Item.Status = "replaced"
+	oldParsed.Item.SupersededBy = newItem.ID
+	oldParsed.Item.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := writeFileAtomic(oldPath, []byte(formatMemoryMarkdown(oldParsed.Item)), 0o644); err != nil {
+		return "", fmt.Errorf("update superseded memory %q: %w", oldID, err)
+	}
+
+	newPath := s.memoryPath(newItem.ID)
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+		return "", fmt.Errorf("create memory directory: %w", err)
+	}
+	if err := writeFileAtomic(newPath, []byte(formatMemoryMarkdown(newItem)), 0o644); err != nil {
+		return "", fmt.Errorf("write superseding memory %q: %w", newItem.ID, err)
+	}
+	if err := s.RebuildIndex(ctx); err != nil {
+		return "", err
+	}
+	return newItem.ID, nil
+}
+
+func (s *LongTermMemoryStore) MarkConflict(ctx context.Context, aID string, bID string, reason string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	for _, id := range []string{aID, bID} {
+		path := s.memoryPath(id)
+		parsed, err := readMemoryMarkdown(path)
+		if err != nil {
+			continue
+		}
+		if parsed.Item.Status == "active" {
+			parsed.Item.Status = "conflicted"
+			parsed.Item.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			_ = writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644)
+		}
+	}
+	return s.RebuildIndex(ctx)
+}
+
+func (s *LongTermMemoryStore) DecideAction(ctx context.Context, candidate MemoryItem) (string, string, error) {
+	results, err := s.Search(ctx, MemoryQuery{
+		Tags:     candidate.Tags,
+		Entities: candidate.Entities,
+		Types:    []string{candidate.Type},
+		Limit:    10,
+	})
+	if err != nil {
+		return "add", "", err
+	}
+	for _, existing := range results {
+		if hasOverlappingSourceEvents(candidate, existing) {
+			return "ignore", existing.ID, nil
+		}
+		candidateContent := strings.TrimSpace(candidate.Content)
+		existingContent := strings.TrimSpace(existing.Content)
+		if candidateContent == existingContent {
+			return "ignore", existing.ID, nil
+		}
+		if strings.Contains(existingContent, candidateContent) {
+			return "ignore", existing.ID, nil
+		}
+		if strings.Contains(candidateContent, existingContent) {
+			return "supersede", existing.ID, nil
+		}
+		if candidate.Type == existing.Type && hasOverlappingEntities(candidate.Entities, existing.Entities) && hasOverlappingTags(candidate.Tags, existing.Tags) {
+			return "supersede", existing.ID, nil
+		}
+	}
+	return "add", "", nil
+}
+
+func hasOverlappingSourceEvents(candidate MemoryItem, existing MemoryResult) bool {
+	if len(candidate.SourceRefs) == 0 {
+		return false
+	}
+	existingPath := existing.FilePath
+	if existingPath == "" {
+		return false
+	}
+	parsed, err := readMemoryMarkdown(existingPath)
+	if err != nil {
+		return false
+	}
+	for _, cRef := range candidate.SourceRefs {
+		for _, eRef := range parsed.Item.SourceRefs {
+			if cRef.ID == eRef.ID {
+				for _, cEvt := range cRef.EventIDs {
+					for _, eEvt := range eRef.EventIDs {
+						if cEvt == eEvt {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func hasOverlappingEntities(a []string, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	for _, ae := range a {
+		for _, be := range b {
+			if strings.EqualFold(ae, be) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasOverlappingTags(a []string, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	for _, at := range a {
+		for _, bt := range b {
+			if strings.EqualFold(at, bt) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *LongTermMemoryStore) RegenerateProfileMD(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	index, err := s.loadIndex(ctx)
+	if err != nil {
+		return err
+	}
+	type profileEntry struct {
+		Type    string
+		Content string
+	}
+	var entries []profileEntry
+	for _, entry := range index.Memories {
+		if entry.Status != "active" {
+			continue
+		}
+		if entry.Type != "profile" && entry.Type != "rule" && entry.Type != "preference" {
+			continue
+		}
+		parsed, err := readMemoryMarkdown(filepath.Join(s.rootDir, entry.File))
+		if err != nil {
+			continue
+		}
+		entries = append(entries, profileEntry{Type: entry.Type, Content: strings.TrimSpace(parsed.Content)})
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("# User Profile\n\n")
+	b.WriteString(fmt.Sprintf("updated_at: %s\n\n", time.Now().UTC().Format(time.RFC3339)))
+	for _, e := range entries {
+		b.WriteString(fmt.Sprintf("## [%s]\n\n%s\n\n", e.Type, e.Content))
+	}
+	return writeFileAtomic(filepath.Join(s.rootDir, "profile.md"), []byte(b.String()), 0o644)
+}
+
 func (s *LongTermMemoryStore) RebuildIndex(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
@@ -288,11 +488,10 @@ func (s *LongTermMemoryStore) writeIndex(index memoryIndex) error {
 }
 
 func (s *LongTermMemoryStore) appendTombstone(id string, reason string) error {
-	lifecycleDir := filepath.Join(s.rootDir, "..", "lifecycle")
-	if err := os.MkdirAll(lifecycleDir, 0o755); err != nil {
+	if err := os.MkdirAll(s.lifecycleDir, 0o755); err != nil {
 		return fmt.Errorf("create lifecycle directory: %w", err)
 	}
-	path := filepath.Join(lifecycleDir, "tombstones.jsonl")
+	path := filepath.Join(s.lifecycleDir, "tombstones.jsonl")
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("open tombstones: %w", err)
@@ -473,7 +672,9 @@ func safeMemoryFileName(id string) string {
 }
 
 func strconvTimeID(ts time.Time) string {
-	return fmt.Sprintf("%d", ts.UnixNano())
+	var buf [4]byte
+	_, _ = rand.Read(buf[:])
+	return fmt.Sprintf("%d_%s", ts.UnixNano(), hex.EncodeToString(buf[:]))
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {

@@ -71,8 +71,12 @@ func (s *ToolSet) RegisterMemoryTools(memoryDir string) {
 	if memoryDir == "" {
 		return
 	}
-	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(NewSessionMemoryStore(filepath.Join(memoryDir, "session")))
-	s.tools["recall_memory"] = NewRecallMemoryTool(NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term")))
+	sessionStore := NewSessionMemoryStore(filepath.Join(memoryDir, "session"))
+	longTermStore := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")))
+	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(sessionStore)
+	s.tools["recall_memory"] = NewRecallMemoryTool(longTermStore)
+	s.tools["save_memory"] = NewSaveMemoryTool(longTermStore)
+	s.tools["forget_memory"] = NewForgetMemoryTool(longTermStore)
 }
 
 // ActivateSkillTool allows the LLM to activate skills at runtime.

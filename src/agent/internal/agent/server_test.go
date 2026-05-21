@@ -59,7 +59,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 			Instruction: "Use tools when external state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"audio_volume": tool,
 		}},
@@ -109,7 +109,7 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 		runtime: NewRuntimeWithDeps(
 			Config{Model: ModelConfig{Provider: "fake"}},
 			&testModelResolver{model: &scriptedModel{}},
-			NewMemoryManager(),
+			NewMemoryManager(""),
 			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 			NewSkillIndex(),
 		),
@@ -193,7 +193,7 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 			Instruction: "Answer directly.",
 		},
 		&testModelResolver{model: fakellm.NewFakeLLM([]string{"已处理"})},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
@@ -256,7 +256,7 @@ func TestServerToolCatalogEndpoint(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"shell": tool,
 		}},
@@ -301,7 +301,7 @@ func TestServerToolInvokeEndpointAcceptsStructuredJSON(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"shell": tool,
 		}},
@@ -342,7 +342,7 @@ func TestServerToolInvokeEndpointAcceptsPlainStringInput(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		index,
 	)
@@ -383,7 +383,7 @@ func TestServerToolSkillsEndpointReturnsGeneratedSkills(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"shell": tool,
 		}},

@@ -105,11 +105,13 @@ func TestToolSetRegistersMemoryRecallTools(t *testing.T) {
 func TestRecallToolDescriptionsGuideAgentUsage(t *testing.T) {
 	sessionDescription := NewRecallSessionChunksTool(NewSessionMemoryStore(t.TempDir())).Description()
 	for _, want := range []string{
-		"Use when",
-		"recent or current session",
+		"MUST use this tool",
+		"earlier in this conversation",
 		"Do not use",
-		`{"tags":["验证码"],"app_name":"某政务App","limit":3}`,
-		"chunk_id",
+		`{"tags":["topic_keyword"]`,
+		"How to choose tags",
+		"CONTENT/TOPIC keywords",
+		"empty tags []",
 		"evidence",
 	} {
 		if !strings.Contains(sessionDescription, want) {
@@ -122,7 +124,10 @@ func TestRecallToolDescriptionsGuideAgentUsage(t *testing.T) {
 		"Use when",
 		"long-term",
 		"Do not use",
-		`{"tags":["验证码"],"entities":["某政务App"],"types":["preference"],"limit":5}`,
+		`"tags":["验证码"`,
+		`"entities":["某政务App"]`,
+		"How to choose filters",
+		"TOPIC/DOMAIN keywords",
 		"preference",
 		"rule",
 		"procedure",
