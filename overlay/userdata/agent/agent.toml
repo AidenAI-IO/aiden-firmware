@@ -23,7 +23,7 @@ min_speech_ms = 300       # Minimum speech duration to accept (ms)
 # Primary LLM model configuration
 [model]
 provider = "openrouter"
-model = "bytedance-seed/seed-2.0-lite"
+model = "google/gemini-3.5-flash"
 api_key = "OPENROUTER_API_KEY"
 temperature = 0.2
 max_tokens = 1000
