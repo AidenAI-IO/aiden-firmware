@@ -451,7 +451,7 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.energy_threshold = 500;
     cfg.silence_ms = 1000;
     cfg.min_speech_ms = 300;
-    cfg.max_iterations = 6;
+    cfg.max_iterations = -1;
 
     cfg.model.provider = "openrouter";
     cfg.model.model = "bytedance-seed/seed-2.0-lite";

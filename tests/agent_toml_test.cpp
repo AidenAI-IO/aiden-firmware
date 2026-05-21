@@ -139,6 +139,7 @@ TEST_CASE("agent_toml ignores unknown sections and keys") {
     REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
     REQUIRE(err.empty());
     CHECK(cfg.input_mode == "text");
+    CHECK(cfg.max_iterations == -1);
     CHECK(cfg.model.provider == "openai");
     CHECK(cfg.model.model == "gpt-4o-mini");
 

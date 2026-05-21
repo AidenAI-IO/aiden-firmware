@@ -18,7 +18,7 @@
 | Socket（开发直接运行） | `/tmp/frame_service.sock` | `frame_service_main.cpp` 默认值 |
 | Socket（固件服务） | `/run/frame_service/frame_service.sock` | init 配置默认值 |
 | Ring size | `3` | `kDefaultFrameServiceRingSize` |
-| FPS | `1.0` | 降低 CPU、内存带宽和发热 |
+| FPS | `3.0` | 降低 CPU、内存带宽和发热，同时保持截图帧龄更低 |
 | Screenshot max edge | `960` | Go screenshot 工具默认压缩策略相关 |
 
 ## 启动
