@@ -513,6 +513,78 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
+	configDir := t.TempDir()
+	responses := make([]string, 30)
+	for i := range responses {
+		responses[i] = "ok"
+	}
+	runtime, err := NewRuntime(Config{
+		ConfigDir:     configDir,
+		Model:         ModelConfig{Provider: "fake", Responses: responses},
+		Instruction:   "Answer directly.",
+		SkillsDirs:    []string{},
+		MaxIterations: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer runtime.Close()
+
+	inputs := []string{
+		"我是硬件产品经理，平时用中文沟通，关注开发板 agent 端到端行为。",
+		"记一下，以后处理蓝海报销App超过100元的提交或付款动作，必须先给风险摘要并等我确认。",
+	}
+	for i := 0; i < 21; i++ {
+		inputs = append(inputs, "填充对话轮次")
+	}
+	for _, input := range inputs {
+		if _, err := runtime.Run(context.Background(), RunRequest{Input: input}); err != nil {
+			t.Fatalf("Run(%q) error = %v", input, err)
+		}
+	}
+
+	events := readSessionEvents(t, filepath.Join(configDir, "memory", "session", "events.jsonl"))
+	if len(events) > 20 {
+		t.Fatalf("expected hot window events <= 20, got %d", len(events))
+	}
+	chunks, err := NewSessionMemoryStore(filepath.Join(configDir, "memory", "session")).RecallChunks(context.Background(), ChunkRecallQuery{Entities: []string{"蓝海报销App"}, Limit: 1})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected compacted chunk from real runs, got %d", len(chunks))
+	}
+	memories, err := NewLongTermMemoryStore(filepath.Join(configDir, "memory", "long_term")).Search(context.Background(), MemoryQuery{Entities: []string{"蓝海报销App"}, Limit: 5})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(memories) == 0 || !strings.Contains(memories[0].Content, "必须先给风险摘要") {
+		t.Fatalf("expected extracted durable memory from real runs, got %#v", memories)
+	}
+}
+
+func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {
+	runtime, err := NewRuntime(Config{
+		ConfigDir:     t.TempDir(),
+		Model:         ModelConfig{Provider: "fake"},
+		Instruction:   "Answer directly.",
+		SkillsDirs:    []string{},
+		MaxIterations: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer runtime.Close()
+
+	if _, ok := runtime.tools.Get("recall_session_chunks"); !ok {
+		t.Fatalf("expected runtime to register recall_session_chunks")
+	}
+	if _, ok := runtime.tools.Get("recall_memory"); !ok {
+		t.Fatalf("expected runtime to register recall_memory")
+	}
+}
+
 func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{

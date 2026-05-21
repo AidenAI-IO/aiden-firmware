@@ -91,7 +91,9 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		memoryDir = filepath.Join(cfg.ConfigDir, "memory")
 	}
 
-	rt := NewRuntimeWithDeps(cfg, NewModelManager(cfg.Model, cfg.Proxy), NewMemoryManager(memoryDir), NewBuiltinToolSet(cfg.HID, cfg.Audio, cfg.Search, cfg.Proxy), skillIndex)
+	toolSet := NewBuiltinToolSet(cfg.HID, cfg.Audio, cfg.Search, cfg.Proxy)
+	toolSet.RegisterMemoryTools(memoryDir)
+	rt := NewRuntimeWithDeps(cfg, NewModelManager(cfg.Model, cfg.Proxy), NewMemoryManager(memoryDir), toolSet, skillIndex)
 	rt.logger = logger
 	return rt, nil
 }
@@ -208,6 +210,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
+	if err := r.memories.AppendExchange(ctx, "default", normalizedInput, output); err != nil {
+		return RunResult{}, err
+	}
 
 	memorySnapshot, err := r.memories.Snapshot(ctx, "default")
 	if err != nil {

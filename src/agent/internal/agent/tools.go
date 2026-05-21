@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -64,6 +65,14 @@ func (s *ToolSet) Names() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func (s *ToolSet) RegisterMemoryTools(memoryDir string) {
+	if memoryDir == "" {
+		return
+	}
+	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(NewSessionMemoryStore(filepath.Join(memoryDir, "session")))
+	s.tools["recall_memory"] = NewRecallMemoryTool(NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term")))
 }
 
 // ActivateSkillTool allows the LLM to activate skills at runtime.

@@ -1,13 +1,16 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 	langmemory "github.com/tmc/langchaingo/memory"
@@ -22,16 +25,34 @@ type MemoryHandle struct {
 type MemoryManager struct {
 	mu         sync.Mutex
 	handles    map[string]*MemoryHandle
+	eventCount map[string]int
 	storageDir string
 }
+
+const defaultMemoryHotWindowEvents = 20
 
 type MessageRecord struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
+type SessionEvent struct {
+	EventID    string `json:"event_id"`
+	Ts         string `json:"ts"`
+	Type       string `json:"type"`
+	Role       string `json:"role"`
+	Source     string `json:"source,omitempty"`
+	Content    string `json:"content"`
+	AppName    string `json:"app_name,omitempty"`
+	RiskLevel  string `json:"risk_level,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
 func NewMemoryManager(storageDir ...string) *MemoryManager {
-	manager := &MemoryManager{handles: map[string]*MemoryHandle{}}
+	manager := &MemoryManager{
+		handles:    map[string]*MemoryHandle{},
+		eventCount: map[string]int{},
+	}
 	if len(storageDir) > 0 {
 		manager.storageDir = storageDir[0]
 	}
@@ -127,11 +148,64 @@ func (m *MemoryManager) Save(ctx context.Context, agentName string) error {
 	if err != nil {
 		return err
 	}
-	return m.persistSnapshot(agentName, records)
+	if err := m.persistSnapshot(agentName, records); err != nil {
+		return err
+	}
+	return m.maintainFilesystemMemory(ctx)
+}
+
+func (m *MemoryManager) AppendExchange(ctx context.Context, agentName string, input string, output string) error {
+	if m.storageDir == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := os.MkdirAll(filepath.Dir(m.sessionEventsPath()), 0o755); err != nil {
+		return fmt.Errorf("create session memory directory: %w", err)
+	}
+	file, err := os.OpenFile(m.sessionEventsPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open session events for %q: %w", agentName, err)
+	}
+	defer file.Close()
+
+	now := time.Now().UTC()
+	encoder := json.NewEncoder(file)
+	records := []MessageRecord{
+		{Role: string(llms.ChatMessageTypeHuman), Content: input},
+		{Role: string(llms.ChatMessageTypeAI), Content: output},
+	}
+	for i, record := range records {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		event := sessionEventFromRecord(record, now, m.eventCount[agentName]+i)
+		if err := encoder.Encode(event); err != nil {
+			return fmt.Errorf("append session exchange for %q: %w", agentName, err)
+		}
+	}
+	m.eventCount[agentName] += len(records)
+	return nil
 }
 
 func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHistory, agentName string) error {
 	if m.storageDir == "" {
+		return nil
+	}
+	if records, ok, err := m.loadSessionMessageRecords(agentName); err != nil {
+		return err
+	} else if ok {
+		messages := make([]llms.ChatMessage, 0, len(records))
+		for _, record := range records {
+			messages = append(messages, messageFromRecord(record))
+		}
+		if err := history.SetMessages(context.Background(), messages); err != nil {
+			return fmt.Errorf("restore session events for %q: %w", agentName, err)
+		}
+		m.eventCount[agentName] = len(records)
 		return nil
 	}
 
@@ -155,7 +229,36 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 	if err := history.SetMessages(context.Background(), messages); err != nil {
 		return fmt.Errorf("restore persisted memory for %q: %w", agentName, err)
 	}
+	m.eventCount[agentName] = len(records)
 	return nil
+}
+
+func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRecord, bool, error) {
+	file, err := os.Open(m.sessionEventsPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("read session events for %q: %w", agentName, err)
+	}
+	defer file.Close()
+
+	var records []MessageRecord
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var event SessionEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			return nil, false, fmt.Errorf("decode session event for %q: %w", agentName, err)
+		}
+		record, ok := messageRecordFromSessionEvent(event)
+		if ok {
+			records = append(records, record)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, false, fmt.Errorf("scan session events for %q: %w", agentName, err)
+	}
+	return records, true, nil
 }
 
 func (m *MemoryManager) persistSnapshot(agentName string, records []MessageRecord) error {
@@ -164,6 +267,9 @@ func (m *MemoryManager) persistSnapshot(agentName string, records []MessageRecor
 	}
 	if err := os.MkdirAll(m.storageDir, 0o755); err != nil {
 		return fmt.Errorf("create memory directory: %w", err)
+	}
+	if err := m.appendSessionEvents(agentName, records); err != nil {
+		return err
 	}
 
 	data, err := json.MarshalIndent(records, "", "  ")
@@ -189,11 +295,276 @@ func (m *MemoryManager) removePersisted(agentName string) error {
 	if err := os.Remove(m.memoryPath(agentName)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove persisted memory for %q: %w", agentName, err)
 	}
+	for _, path := range []string{
+		filepath.Join(m.storageDir, "session"),
+		filepath.Join(m.storageDir, "long_term"),
+		filepath.Join(m.storageDir, "lifecycle"),
+	} {
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove filesystem memory path %q for %q: %w", path, agentName, err)
+		}
+	}
+	m.eventCount[agentName] = 0
 	return nil
+}
+
+func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
+	if m.storageDir == "" {
+		return nil
+	}
+	session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"))
+	if _, err := os.Stat(session.eventsPath()); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat session events: %w", err)
+	}
+	events, err := session.readEvents(session.eventsPath())
+	if err != nil {
+		return err
+	}
+	if len(events) <= defaultMemoryHotWindowEvents {
+		return nil
+	}
+
+	compactCount := len(events) - defaultMemoryHotWindowEvents
+	compactEvents := append([]SessionEvent(nil), events[:compactCount]...)
+	hotEvents := append([]SessionEvent(nil), events[compactCount:]...)
+	chunk, err := session.compressEvents(ctx, compactEvents, CompressOption{
+		Summary:  summarizeSessionEvents(compactEvents),
+		Tags:     extractMemoryTags(compactEvents),
+		Entities: extractMemoryEntities(compactEvents),
+	})
+	if err != nil {
+		return err
+	}
+	if err := session.replaceEvents(hotEvents); err != nil {
+		return err
+	}
+
+	longTerm := NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"))
+	for _, item := range extractDurableMemories(compactEvents, chunk.ID) {
+		if _, err := longTerm.AddMemory(ctx, item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func summarizeSessionEvents(events []SessionEvent) string {
+	parts := make([]string, 0, 3)
+	for _, event := range events {
+		content := strings.TrimSpace(event.Content)
+		if content == "" {
+			continue
+		}
+		parts = append(parts, truncateForLog(content, 80))
+		if len(parts) >= 3 {
+			break
+		}
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("Compressed %d session events.", len(events))
+	}
+	return strings.Join(parts, " / ")
+}
+
+func extractDurableMemories(events []SessionEvent, chunkID string) []MemoryItem {
+	items := make([]MemoryItem, 0)
+	for i, event := range events {
+		if event.Role != "user" {
+			continue
+		}
+		content := strings.TrimSpace(event.Content)
+		if content == "" {
+			continue
+		}
+		evidence := []string{content}
+		refs := []MemorySourceRef{{Type: "chunk", ID: chunkID, EventIDs: []string{event.EventID}}}
+		if looksLikeProfile(content) {
+			items = append(items, MemoryItem{
+				ID:               fmt.Sprintf("mem_%s_profile_%d", chunkID, i),
+				Type:             "profile",
+				Priority:         70,
+				Confidence:       0.75,
+				Tags:             []string{"用户画像"},
+				Entities:         extractEntitiesFromText(content),
+				Title:            "用户画像",
+				Content:          content,
+				EvidenceExcerpts: evidence,
+				SourceRefs:       refs,
+			})
+		}
+		if looksLikeDurableRule(content) {
+			items = append(items, MemoryItem{
+				ID:               fmt.Sprintf("mem_%s_rule_%d", chunkID, i),
+				Type:             durableMemoryType(content),
+				Priority:         90,
+				Confidence:       0.8,
+				Tags:             extractTagsFromText(content),
+				Entities:         extractEntitiesFromText(content),
+				Title:            firstSentence(content),
+				Content:          content,
+				EvidenceExcerpts: evidence,
+				SourceRefs:       refs,
+			})
+		}
+	}
+	return items
+}
+
+func looksLikeProfile(content string) bool {
+	return strings.Contains(content, "我是") || strings.Contains(content, "我叫") || strings.Contains(content, "我的名字")
+}
+
+func looksLikeDurableRule(content string) bool {
+	for _, marker := range []string{"记一下", "你要记住", "以后", "下次", "不要再", "必须", "先问我", "先确认"} {
+		if strings.Contains(content, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func durableMemoryType(content string) string {
+	for _, marker := range []string{"必须", "先问我", "先确认", "不要再"} {
+		if strings.Contains(content, marker) {
+			return "rule"
+		}
+	}
+	return "preference"
+}
+
+func extractMemoryTags(events []SessionEvent) []string {
+	seen := map[string]bool{}
+	var tags []string
+	for _, event := range events {
+		for _, tag := range extractTagsFromText(event.Content) {
+			if !seen[tag] {
+				seen[tag] = true
+				tags = append(tags, tag)
+			}
+		}
+	}
+	return tags
+}
+
+func extractTagsFromText(content string) []string {
+	candidates := []string{"报销", "支付", "付款", "提交", "登录", "验证码", "发票", "项目编码", "风险", "确认", "开发板", "agent"}
+	tags := make([]string, 0)
+	for _, candidate := range candidates {
+		if strings.Contains(content, candidate) {
+			tags = append(tags, candidate)
+		}
+	}
+	return tags
+}
+
+func extractMemoryEntities(events []SessionEvent) []string {
+	seen := map[string]bool{}
+	var entities []string
+	for _, event := range events {
+		if event.AppName != "" && !seen[event.AppName] {
+			seen[event.AppName] = true
+			entities = append(entities, event.AppName)
+		}
+		for _, entity := range extractEntitiesFromText(event.Content) {
+			if !seen[entity] {
+				seen[entity] = true
+				entities = append(entities, entity)
+			}
+		}
+	}
+	return entities
+}
+
+func extractEntitiesFromText(content string) []string {
+	var entities []string
+	for _, suffix := range []string{"App", "app", "APP"} {
+		searchStart := 0
+		for {
+			idx := strings.Index(content[searchStart:], suffix)
+			if idx < 0 {
+				break
+			}
+			end := searchStart + idx + len(suffix)
+			start := entityStart(content[:end])
+			entity := cleanEntityName(content[start:end])
+			if entity != "" {
+				entities = append(entities, entity)
+			}
+			searchStart = end
+		}
+	}
+	return entities
+}
+
+func entityStart(prefix string) int {
+	runes := []rune(prefix)
+	start := len(runes)
+	for start > 0 {
+		r := runes[start-1]
+		if strings.ContainsRune(" \t\n\r，。,.、；;：:\"'（）()[]【】", r) {
+			break
+		}
+		start--
+		if len(runes)-start >= 16 {
+			break
+		}
+	}
+	return len(string(runes[:start]))
+}
+
+func cleanEntityName(entity string) string {
+	entity = strings.Trim(entity, " ，。,.、；;：:\"'（）()[]【】")
+	for _, marker := range []string{"处理", "打开", "使用", "登录", "进入", "关于", "在"} {
+		if idx := strings.LastIndex(entity, marker); idx >= 0 {
+			entity = entity[idx+len(marker):]
+		}
+	}
+	return strings.Trim(entity, " ，。,.、；;：:\"'（）()[]【】")
 }
 
 func (m *MemoryManager) memoryPath(agentName string) string {
 	return filepath.Join(m.storageDir, memoryFileName(agentName))
+}
+
+func (m *MemoryManager) sessionEventsPath() string {
+	return filepath.Join(m.storageDir, "session", "events.jsonl")
+}
+
+func (m *MemoryManager) appendSessionEvents(agentName string, records []MessageRecord) error {
+	path := m.sessionEventsPath()
+	start := m.eventCount[agentName]
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		start = 0
+	} else if err != nil {
+		return fmt.Errorf("stat session events for %q: %w", agentName, err)
+	}
+	if start >= len(records) {
+		m.eventCount[agentName] = len(records)
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create session memory directory: %w", err)
+	}
+
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open session events for %q: %w", agentName, err)
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	now := time.Now().UTC()
+	for i, record := range records[start:] {
+		event := sessionEventFromRecord(record, now, start+i)
+		if err := encoder.Encode(event); err != nil {
+			return fmt.Errorf("append session event for %q: %w", agentName, err)
+		}
+	}
+	m.eventCount[agentName] = len(records)
+	return nil
 }
 
 func memoryFileName(agentName string) string {
@@ -219,6 +590,46 @@ func memoryFileName(agentName string) string {
 		}
 	}, agentName)
 	return safe + ".json"
+}
+
+func sessionEventFromRecord(record MessageRecord, ts time.Time, offset int) SessionEvent {
+	event := SessionEvent{
+		EventID: "evt_" + strconv.FormatInt(ts.UnixNano(), 10) + "_" + strconv.Itoa(offset),
+		Ts:      ts.Format(time.RFC3339Nano),
+		Content: record.Content,
+	}
+	switch record.Role {
+	case string(llms.ChatMessageTypeAI):
+		event.Type = "assistant_output"
+		event.Role = "assistant"
+	case string(llms.ChatMessageTypeTool), string(llms.ChatMessageTypeFunction):
+		event.Type = "tool_result"
+		event.Role = "tool"
+	case string(llms.ChatMessageTypeSystem):
+		event.Type = "system_event"
+		event.Role = "system"
+	case string(llms.ChatMessageTypeHuman):
+		fallthrough
+	default:
+		event.Type = "user_input"
+		event.Role = "user"
+	}
+	return event
+}
+
+func messageRecordFromSessionEvent(event SessionEvent) (MessageRecord, bool) {
+	switch event.Role {
+	case "assistant":
+		return MessageRecord{Role: string(llms.ChatMessageTypeAI), Content: event.Content}, true
+	case "tool":
+		return MessageRecord{Role: string(llms.ChatMessageTypeTool), Content: event.Content}, true
+	case "system":
+		return MessageRecord{Role: string(llms.ChatMessageTypeSystem), Content: event.Content}, true
+	case "user":
+		return MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: event.Content}, true
+	default:
+		return MessageRecord{}, false
+	}
 }
 
 func messageFromRecord(record MessageRecord) llms.ChatMessage {

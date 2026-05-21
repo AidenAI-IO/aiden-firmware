@@ -289,6 +289,13 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 	if s.logger != nil {
 		s.logger.Info("Conversation history cleared")
 	}
+	if err := s.runtime.ClearMemory(r.Context()); err != nil {
+		if s.logger != nil {
+			s.logger.Error("Clear memory failed: %v", err)
+		}
+		http.Error(w, fmt.Sprintf("Clear memory failed: %v", err), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
