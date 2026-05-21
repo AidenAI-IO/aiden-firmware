@@ -23,24 +23,24 @@ func (s SearchConfig) ProviderOrDefault() string {
 }
 
 type Config struct {
-	Model            ModelConfig `toml:"model"`
-	ModelText        ModelConfig `toml:"model_text,omitempty"` // Override for STT-then-text mode
-	TTS              TTSConfig   `toml:"tts,omitempty"`
-	STT              STTConfig   `toml:"stt,omitempty"`
+	Model            ModelConfig  `toml:"model"`
+	ModelText        ModelConfig  `toml:"model_text,omitempty"` // Override for STT-then-text mode
+	TTS              TTSConfig    `toml:"tts,omitempty"`
+	STT              STTConfig    `toml:"stt,omitempty"`
 	HID              HIDConfig    `toml:"hid"`
 	Audio            AudioConfig  `toml:"audio,omitempty"`
 	Proxy            ProxyConfig  `toml:"proxy,omitempty"`
 	Search           SearchConfig `toml:"search,omitempty"`
 	Instruction      string       `toml:"instruction"`
-	AdditionalPrompt string      `toml:"additional_prompt,omitempty"`
-	InputMode        string      `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
-	TriggerMode      string      `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
-	EnergyThreshold  int         `toml:"energy_threshold,omitempty"`
-	SilenceMs        int         `toml:"silence_ms,omitempty"`
-	MinSpeechMs      int         `toml:"min_speech_ms,omitempty"`
-	MaxIterations    int         `toml:"max_iterations,omitempty"`
-	SkillsDirs       []string    `toml:"skills_dirs"`
-	ConfigDir        string      `toml:"-"`
+	AdditionalPrompt string       `toml:"additional_prompt,omitempty"`
+	InputMode        string       `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
+	TriggerMode      string       `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
+	EnergyThreshold  int          `toml:"energy_threshold,omitempty"`
+	SilenceMs        int          `toml:"silence_ms,omitempty"`
+	MinSpeechMs      int          `toml:"min_speech_ms,omitempty"`
+	MaxIterations    int          `toml:"max_iterations,omitempty"`
+	SkillsDirs       []string     `toml:"skills_dirs"`
+	ConfigDir        string       `toml:"-"`
 }
 
 type TTSConfig struct {
@@ -246,22 +246,41 @@ func (c Config) Validate() error {
 	}
 
 	// Validate input_mode
-	if c.InputMode != "" {
-		mode := strings.ToLower(c.InputMode)
+	if strings.TrimSpace(c.InputMode) != "" {
+		mode := strings.ToLower(strings.TrimSpace(c.InputMode))
 		if mode != "text" && mode != "audio" && mode != "stt" {
 			return fmt.Errorf("invalid input_mode: %s (expected text, audio, or stt)", c.InputMode)
 		}
 
 		// Validate STT config if in stt mode
 		if mode == "stt" {
-			if c.STT.Provider == "" {
+			if strings.TrimSpace(c.STT.Provider) == "" {
 				return errors.New("stt.provider is required when input_mode=stt")
 			}
 		}
 
 		// Validate TTS config if not in text mode
-		if mode != "text" && c.TTS.Provider == "" {
+		if mode != "text" && strings.TrimSpace(c.TTS.Provider) == "" {
 			return errors.New("tts.provider is required when input_mode is audio or stt")
+		}
+
+		if mode != "text" {
+			if c.Audio.SampleRate != 0 && c.Audio.SampleRate < 8000 {
+				return fmt.Errorf("audio.sample_rate must be at least 8000 when set, got %d", c.Audio.SampleRate)
+			}
+			if c.Audio.Channels != 0 && c.Audio.Channels != 1 {
+				return fmt.Errorf("audio.channels must be 1 when input_mode is audio or stt, got %d", c.Audio.Channels)
+			}
+			if c.Audio.BitWidth != 0 && c.Audio.BitWidth != 16 {
+				return fmt.Errorf("audio.bit_width must be 16 when input_mode is audio or stt, got %d", c.Audio.BitWidth)
+			}
+		}
+	}
+
+	if strings.TrimSpace(c.TriggerMode) != "" {
+		triggerMode := strings.ToLower(strings.TrimSpace(c.TriggerMode))
+		if triggerMode != "manual" && triggerMode != "wakeup" {
+			return fmt.Errorf("invalid trigger_mode: %s (expected manual or wakeup)", c.TriggerMode)
 		}
 	}
 
@@ -270,16 +289,18 @@ func (c Config) Validate() error {
 
 // InputModeOrDefault returns the input mode or "text" as default
 func (c Config) InputModeOrDefault() string {
-	if c.InputMode == "" {
+	mode := strings.TrimSpace(c.InputMode)
+	if mode == "" {
 		return "text"
 	}
-	return strings.ToLower(c.InputMode)
+	return strings.ToLower(mode)
 }
 
 // TriggerModeOrDefault returns the trigger mode or "manual" as default
 func (c Config) TriggerModeOrDefault() string {
-	if c.TriggerMode == "" {
+	mode := strings.TrimSpace(c.TriggerMode)
+	if mode == "" {
 		return "manual"
 	}
-	return strings.ToLower(c.TriggerMode)
+	return strings.ToLower(mode)
 }
