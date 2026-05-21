@@ -34,6 +34,8 @@ func NewLogger(configDir string) (*Logger, error) {
 	// Write to both file and stderr
 	multiWriter := io.MultiWriter(f, os.Stderr)
 	logger := log.New(multiWriter, "", log.LstdFlags)
+	log.SetOutput(multiWriter)
+	log.SetFlags(log.LstdFlags)
 
 	return &Logger{
 		file:   f,
@@ -42,6 +44,8 @@ func NewLogger(configDir string) (*Logger, error) {
 }
 
 func (l *Logger) Close() error {
+	log.SetOutput(os.Stderr)
+	log.SetFlags(log.LstdFlags)
 	if l.file != nil {
 		return l.file.Close()
 	}

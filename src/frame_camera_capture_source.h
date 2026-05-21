@@ -12,6 +12,7 @@ public:
 
     bool open() override;
     bool capture(CapturedFrame* frame) override;
+    bool discard() override;
     void close() override;
 
 private:

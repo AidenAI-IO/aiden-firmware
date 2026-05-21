@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,18 @@ import (
 	fakellm "github.com/tmc/langchaingo/llms/fake"
 	langtools "github.com/tmc/langchaingo/tools"
 )
+
+func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
+	if got := effectiveMaxIterations(-1); got != math.MaxInt {
+		t.Fatalf("effectiveMaxIterations(-1) = %d, want math.MaxInt", got)
+	}
+	if got := effectiveMaxIterations(0); got != math.MaxInt {
+		t.Fatalf("effectiveMaxIterations(0) = %d, want math.MaxInt", got)
+	}
+	if got := effectiveMaxIterations(10); got != 10 {
+		t.Fatalf("effectiveMaxIterations(10) = %d, want 10", got)
+	}
+}
 
 type testModelResolver struct {
 	model llms.Model

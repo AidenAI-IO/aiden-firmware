@@ -176,6 +176,9 @@ public:
     // Get a single frame with timeout and copy it into a caller-owned buffer.
     bool capture_frame_timeout(VideoFrame& frame, std::vector<uint8_t>& buffer, int timeout_ms);
 
+    // Dequeue and release a single frame without copying it.
+    bool discard_frame_timeout(int timeout_ms);
+
     // One-shot still capture helper: init, capture, and stop internally.
     bool capture_once(const CameraConfig& config,
                       VideoFrame& frame,

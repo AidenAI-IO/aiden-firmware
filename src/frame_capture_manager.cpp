@@ -72,33 +72,39 @@ void FrameCaptureManager::run() {
         }
         server_->set_state("RUNNING");
         backoff_ms = options_.recovery_initial_backoff_ms > 0 ? options_.recovery_initial_backoff_ms : 1;
-        bool have_next_capture_time = false;
-        std::chrono::steady_clock::time_point next_capture_time;
+        bool have_next_publish_time = false;
+        std::chrono::steady_clock::time_point next_publish_time;
 
         while (running_) {
-            if (options_.capture_interval_ms > 0 && have_next_capture_time) {
-                std::unique_lock<std::mutex> lock(mutex_);
-                stop_cv_.wait_until(lock, next_capture_time, [&]() {
-                    return !running_ || restart_requested_.load();
-                });
-            }
-            if (!running_) {
-                break;
-            }
             if (restart_requested_.exchange(false)) {
                 recover(&backoff_ms, "restart requested", false);
                 break;
             }
+
+            if (options_.capture_interval_ms > 0 && have_next_publish_time) {
+                // Keep dequeuing frames between publish ticks so V4L2 driver
+                // buffers do not accumulate seconds-old completed frames.
+                const auto now = std::chrono::steady_clock::now();
+                if (now < next_publish_time) {
+                    if (!source_->discard()) {
+                        recover(&backoff_ms, "capture failed", true);
+                        break;
+                    }
+                    continue;
+                }
+            }
+
             CapturedFrame frame;
             if (!source_->capture(&frame)) {
                 recover(&backoff_ms, "capture failed", true);
                 break;
             }
             server_->append_frame(frame.metadata, frame.data.data(), frame.data.size(), nullptr);
+
             if (options_.capture_interval_ms > 0) {
-                next_capture_time = std::chrono::steady_clock::now() +
+                next_publish_time = std::chrono::steady_clock::now() +
                     std::chrono::milliseconds(options_.capture_interval_ms);
-                have_next_capture_time = true;
+                have_next_publish_time = true;
             }
         }
     }

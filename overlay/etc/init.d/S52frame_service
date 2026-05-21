@@ -8,6 +8,7 @@ BOOT_CONF=/etc/aiden_boot.conf
 
 FRAME_SERVICE_BIN=/oem/usr/bin/frame_service
 SOCKET_PATH=/run/frame_service/frame_service.sock
+FRAME_SERVICE_FPS=3
 LOG_PATH=/var/log/frame_service/frame_service.log
 PID_FILE=/run/frame_service/frame_service.pid
 WATCHDOG_PID_FILE=/run/frame_service/frame_service_watchdog.pid
@@ -97,8 +98,8 @@ start() {
                 continue
             fi
 
-            echo "[frame_service] starting $FRAME_SERVICE_BIN --socket $SOCKET_PATH" >> "$LOG_PATH"
-            "$FRAME_SERVICE_BIN" --socket "$SOCKET_PATH" >> "$LOG_PATH" 2>&1 &
+            echo "[frame_service] starting $FRAME_SERVICE_BIN --socket $SOCKET_PATH --fps $FRAME_SERVICE_FPS" >> "$LOG_PATH"
+            "$FRAME_SERVICE_BIN" --socket "$SOCKET_PATH" --fps "$FRAME_SERVICE_FPS" >> "$LOG_PATH" 2>&1 &
             child="$!"
             echo "$child" > "$PID_FILE"
             wait "$child"
