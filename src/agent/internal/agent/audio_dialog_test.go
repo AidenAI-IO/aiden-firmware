@@ -21,6 +21,24 @@ func TestAudioDialogReadRecordChunkRequiresActiveRecording(t *testing.T) {
 	}
 }
 
+func TestAudioDialogStopRecordingClearsLocalStateOnStopError(t *testing.T) {
+	dialog := &AudioDialog{
+		audioClient:  NewAudioServiceClient("/tmp/aiden-agent-test-missing-audio.sock"),
+		recordActive: true,
+		sessionID:    123,
+	}
+
+	if err := dialog.StopRecording(); err == nil {
+		t.Fatal("expected stop recording error")
+	}
+	if dialog.recordActive {
+		t.Fatal("recordActive should be cleared after stop attempt")
+	}
+	if dialog.sessionID != 0 {
+		t.Fatalf("sessionID = %d, want 0", dialog.sessionID)
+	}
+}
+
 func TestNewAudioDialogAudioWakeupUsesDirectAudioPath(t *testing.T) {
 	dialog, err := NewAudioDialog(Config{
 		Model:       ModelConfig{Provider: "fake"},

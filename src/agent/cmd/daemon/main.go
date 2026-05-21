@@ -15,6 +15,8 @@ import (
 	"aiden-agent/internal/agent"
 )
 
+const wakeupListenTimeout = 10 * time.Second
+
 func main() {
 	var (
 		configDir = flag.String("config", "", "path to config directory (required)")
@@ -111,6 +113,10 @@ type wakeupWatcherFactory func(pin int, callback func()) (wakeupWatcher, error)
 
 func newGPIOWatcher(pin int, callback func()) (wakeupWatcher, error) {
 	return agent.NewGPIOWatcher(pin, callback)
+}
+
+type vadDebugReporter interface {
+	VADDebugState() agent.VADDebugState
 }
 
 func runManualMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal) {
@@ -257,6 +263,10 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 }
 
 func processAudioUntilUtterance(dialog audioDialogRunner, runtime *agent.Runtime, ctx context.Context, sigChan chan os.Signal) bool {
+	return processAudioUntilUtteranceWithTimeout(dialog, runtime, ctx, sigChan, wakeupListenTimeout)
+}
+
+func processAudioUntilUtteranceWithTimeout(dialog audioDialogRunner, runtime *agent.Runtime, ctx context.Context, sigChan chan os.Signal, listenTimeout time.Duration) bool {
 	frameSamples := dialog.VADFrameSamples()
 	if frameSamples <= 0 {
 		log.Printf("[listen] invalid VAD frame size: %d\n", frameSamples)
@@ -264,8 +274,11 @@ func processAudioUntilUtterance(dialog audioDialogRunner, runtime *agent.Runtime
 	}
 
 	vadPending := make([]int16, 0, frameSamples*10)
+	captured := make([]int16, 0, frameSamples*100)
 	var hasPendingByte bool
 	var pendingByte byte
+	startedAt := time.Now()
+	nextVADLogAt := startedAt.Add(time.Second)
 
 	for {
 		// Read audio chunk
@@ -273,6 +286,20 @@ func processAudioUntilUtterance(dialog audioDialogRunner, runtime *agent.Runtime
 		case <-sigChan:
 			return true
 		default:
+		}
+
+		if listenTimeout > 0 && time.Since(startedAt) >= listenTimeout {
+			log.Printf("[listen] No complete utterance within %s, stopping recording\n", listenTimeout)
+			if len(captured) > 0 {
+				log.Printf("[listen] Sending %d buffered samples after VAD timeout\n", len(captured))
+				if err := dialog.StopRecording(); err != nil {
+					log.Printf("[listen] stop recording before timeout utterance: %v\n", err)
+				}
+				if err := dialog.ProcessUtterance(ctx, captured, runtime); err != nil {
+					log.Printf("[error] %v\n", err)
+				}
+			}
+			return false
 		}
 
 		chunk, err := dialog.ReadRecordChunk(200)
@@ -295,15 +322,35 @@ func processAudioUntilUtterance(dialog audioDialogRunner, runtime *agent.Runtime
 		}
 
 		// Convert PCM bytes to int16 samples
+		pendingStart := len(vadPending)
 		agent.AppendPCM16Samples(chunk.PCM, &vadPending, &hasPendingByte, &pendingByte)
+		if len(vadPending) > pendingStart {
+			captured = append(captured, vadPending[pendingStart:]...)
+		}
 
 		// Feed VAD in 30ms frames.
 		consumed := 0
 		for consumed+frameSamples <= len(vadPending) {
 			utterance := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
 			consumed += frameSamples
+			if reporter, ok := dialog.(vadDebugReporter); ok && time.Now().After(nextVADLogAt) {
+				state := reporter.VADDebugState()
+				log.Printf("[vad] energy=%d config_threshold=%d adaptive_threshold=%d noise_floor=%d speaking=%v speech_frames=%d silence_frames=%d\n",
+					state.Energy,
+					state.ConfigThreshold,
+					state.AdaptiveThreshold,
+					state.NoiseFloor,
+					state.Speaking,
+					state.SpeechFrames,
+					state.SilenceFrames,
+				)
+				nextVADLogAt = time.Now().Add(time.Second)
+			}
 			if utterance != nil {
 				log.Println("[utterance] VAD detected end of speech")
+				if err := dialog.StopRecording(); err != nil {
+					log.Printf("[listen] stop recording before utterance processing: %v\n", err)
+				}
 				if err := dialog.ProcessUtterance(ctx, utterance, runtime); err != nil {
 					log.Printf("[error] %v\n", err)
 				}

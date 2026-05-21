@@ -98,12 +98,14 @@ func (d *AudioDialog) StopRecording() error {
 		return nil
 	}
 
-	if err := d.audioClient.StopRecording(d.sessionID); err != nil {
+	sessionID := d.sessionID
+	d.recordActive = false
+	d.sessionID = 0
+
+	if err := d.audioClient.StopRecording(sessionID); err != nil {
 		return fmt.Errorf("stop recording: %w", err)
 	}
 
-	d.recordActive = false
-	d.sessionID = 0
 	log.Println("[audio] Record session closed")
 	return nil
 }
@@ -134,6 +136,10 @@ func (d *AudioDialog) ResetVAD() {
 // VADFrameSamples returns the number of samples to feed into each VAD frame.
 func (d *AudioDialog) VADFrameSamples() int {
 	return d.vad.FrameSamples()
+}
+
+func (d *AudioDialog) VADDebugState() VADDebugState {
+	return d.vad.DebugState()
 }
 
 // ProcessUtterance processes a detected utterance
