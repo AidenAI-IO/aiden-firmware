@@ -101,13 +101,9 @@ Benchmark 度量四个核心维度：
 | `keyboard_text` | 1           | 4          | 5                                        |
 | `keyboard_tap`  | 1           | 4          | 5                                        |
 
-### 诊断子 suite（perception_v1.json，3 个，不计入主分数）
+### 诊断子 suite（v2 候选，v1 不实现）
 
-| ID                  | 目标                                 |
-| ------------------- | ------------------------------------ |
-| `name_current_page` | 看截图说出当前在哪个 app/页面        |
-| `find_button`       | 找到屏幕上的"保存"按钮并给出坐标     |
-| `count_list_items`  | 当前列表可见几个条目？列出前三个文字 |
+感知诊断（`perception_v1.json`）在 v1 暂不实现。当前优先跑通 15 个主任务并能评估执行正确率。等主 suite 稳定后再加诊断子 suite 做 root cause 分析。
 
 ## 五、目录结构
 

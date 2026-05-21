@@ -372,13 +372,7 @@ Main suite `phone_control_v1.json` — 15 tasks:
 | `keyboard_tap`  | 1           | 4          | 5                                                 |
 | `mouse_scroll`  | 0           | 0          | 0 (covered by touch_gesture swipe; can add in v2) |
 
-Diagnostic suite `perception_v1.json` (separate, does not contribute to main score):
-
-| ID                  | Goal                                                             |
-| ------------------- | ---------------------------------------------------------------- |
-| `name_current_page` | "看截图，告诉我当前在哪个 app/页面"，judge 比对真值              |
-| `find_button`       | "找到屏幕上的'保存'按钮，给出归一化坐标"，judge 看 post 是否点中 |
-| `count_list_items`  | "当前列表可见几个条目？列出前三个的文字"，judge 比对截图         |
+Diagnostic suite `perception_v1.json` is deferred to v2. The v1 focus is running all 15 main tasks end-to-end and evaluating execution correctness rate.
 
 Setup conventions:
 
