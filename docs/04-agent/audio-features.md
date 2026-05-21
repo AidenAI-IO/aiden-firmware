@@ -26,7 +26,7 @@ Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go
 | --- | --- | --- |
 | Audio client | `audio_client.go` | 连接 `audio_service`，启动录音/播放 session，读写 PCM chunk |
 | VAD | `vad.go` | 基于能量阈值的语音活动检测 |
-| STT | `stt.go` | OpenAI Whisper 实现；Tencent ASR 字段已预留 |
+| STT | `stt.go` | OpenAI Whisper / OpenRouter 实现；Tencent ASR 字段已预留 |
 | TTS | `tts.go` | Minimax TTS，使用 `ffmpeg` 转 PCM 后播放 |
 | Dialog manager | `audio_dialog.go` | 编排录音、VAD、STT/LLM/TTS 流程 |
 
@@ -82,6 +82,11 @@ bit_width = 16
 provider = "openai-whisper"
 api_key = "sk-..."
 model = "whisper-1"
+
+# OpenRouter alternative:
+# provider = "openrouter"
+# api_key = "OPENROUTER_API_KEY"
+# model = "qwen/qwen3-asr-flash-2026-02-10"
 
 [tts]
 provider = "minimax"

@@ -53,7 +53,7 @@ type TTSConfig struct {
 }
 
 type STTConfig struct {
-	Provider        string `toml:"provider"` // "openai", "tencent"
+	Provider        string `toml:"provider"` // "openai", "openai-whisper", "openrouter", "tencent"
 	APIKey          string `toml:"api_key,omitempty"`
 	Model           string `toml:"model,omitempty"`
 	BaseURL         string `toml:"base_url,omitempty"`
