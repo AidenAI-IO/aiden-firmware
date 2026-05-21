@@ -99,11 +99,13 @@ curl -X POST http://127.0.0.1:8080/api/tools/screenshot \
 ```
 
 `screenshot` 成功输出通常包含 `width`、`height`、`format`、`size` 和 base64 JPEG `data`。
+`keyboard_tap`、`keyboard_text`、`mouse_click`、`mouse_move`、`mouse_scroll` 和 `touch_gesture` 成功执行后，会等待 500ms 再自动截屏；其 `output` 为 JSON，包含原动作结果 `action_output`，以及截图的 `width`、`height`、`format`、`size` 和 base64 JPEG `data`。
 
 ## 外部 Agent 使用建议
 
 - 优先通过 `GET /api/tools` 做能力发现；
 - 需要屏幕操作时，先 `screenshot`，再点击/输入；
+- 点击/输入等动作成功后直接检查该工具返回的 post-action screenshot，不需要再立刻调用一次 `screenshot`；
 - 鼠标和触控优先使用 `coord_space: "normalized"`；
 - 私有 IP 或 USB 网卡访问时注意代理绕过：设置 `NO_PROXY` / `no_proxy`；
 - `shell` 的长任务应按工具说明使用后台 session，并在结束时停止。
