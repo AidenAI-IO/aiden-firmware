@@ -466,6 +466,79 @@ func TestRuntimeCallbackHandlerCapturesUsageMetrics(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunCapturesUsageMetricsFromDirectModelCall(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{{
+			Choices: []*llms.ContentChoice{{
+				Content: "completed",
+				GenerationInfo: map[string]any{
+					"prompt_tokens":     600,
+					"completion_tokens": 40,
+					"total_tokens":      640,
+				},
+			}},
+		}},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.Metrics == nil || result.Metrics.PromptTokens != 600 || result.Metrics.CompletionTokens != 40 || result.Metrics.TotalTokens != 640 {
+		t.Fatalf("unexpected metrics: %#v", result.Metrics)
+	}
+}
+
+func TestRuntimeRunResetsPromptTokensWhenUsageUnavailable(t *testing.T) {
+	manager := NewMemoryManager("")
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "with usage",
+					GenerationInfo: map[string]any{
+						"prompt_tokens": 600,
+					},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "without usage",
+				}},
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		manager,
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "first"}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if got := manager.LastPromptTokens(); got != 600 {
+		t.Fatalf("expected first run prompt tokens 600, got %d", got)
+	}
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "second"}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if got := manager.LastPromptTokens(); got != 0 {
+		t.Fatalf("expected missing usage to reset prompt tokens, got %d", got)
+	}
+}
+
 func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	configDir := t.TempDir()
 

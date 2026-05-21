@@ -409,8 +409,9 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 }
 
 func (m *MemoryManager) shouldCompress(eventCount int) bool {
-	if m.lastPromptTokens > 0 && m.extraction.ContextWindow > 0 {
-		ratio := float64(m.lastPromptTokens) / float64(m.extraction.ContextWindow)
+	lastPromptTokens := m.LastPromptTokens()
+	if lastPromptTokens > 0 && m.extraction.ContextWindow > 0 {
+		ratio := float64(lastPromptTokens) / float64(m.extraction.ContextWindow)
 		threshold := float64(m.extraction.CompressAtPercent) / 100.0
 		if ratio >= threshold {
 			return true

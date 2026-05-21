@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -251,6 +252,30 @@ func TestMemoryManagerTokenTracking(t *testing.T) {
 	if got := manager.LastPromptTokens(); got != 5000 {
 		t.Fatalf("expected 5000, got %d", got)
 	}
+}
+
+func TestMemoryManagerTokenTrackingConcurrentAccess(t *testing.T) {
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 1000
+	cfg.CompressAtPercent = 50
+	cfg.HotWindowEvents = 100
+	manager := NewMemoryManager("", WithExtractionConfig(cfg))
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 10000; i++ {
+			manager.SetLastPromptTokens(i)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 10000; i++ {
+			_ = manager.shouldCompress(1)
+		}
+	}()
+	wg.Wait()
 }
 
 func TestMemoryManagerClearRemovesFilesystemMemoryArtifacts(t *testing.T) {

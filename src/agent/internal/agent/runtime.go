@@ -71,6 +71,23 @@ type RunEvent struct {
 	IsError   bool      `json:"is_error,omitempty"`
 }
 
+type usageTrackingModel struct {
+	inner   llms.Model
+	metrics *RunMetrics
+}
+
+func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	res, err := m.inner.GenerateContent(ctx, messages, options...)
+	if err == nil {
+		recordUsageMetrics(m.metrics, res)
+	}
+	return res, err
+}
+
+func (m *usageTrackingModel) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
+	return m.inner.Call(ctx, prompt, options...)
+}
+
 func NewRuntime(cfg Config) (*Runtime, error) {
 	// Load skills from configured directories
 	var skillIndex *SkillIndex
@@ -158,6 +175,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
+	model = &usageTrackingModel{inner: model, metrics: metrics}
 
 	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
 	if err != nil {
@@ -219,9 +237,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
-	if metrics.PromptTokens > 0 {
-		r.memories.SetLastPromptTokens(metrics.PromptTokens)
-	}
+	r.memories.SetLastPromptTokens(metrics.PromptTokens)
 	if err := r.memories.AppendExchange(ctx, "default", normalizedInput, output); err != nil {
 		return RunResult{}, err
 	}
@@ -369,9 +385,16 @@ func (h *runtimeCallbackHandler) HandleLLMGenerateContentStart(ctx context.Conte
 }
 
 func (h *runtimeCallbackHandler) HandleLLMGenerateContentEnd(ctx context.Context, res *llms.ContentResponse) {
-	if res == nil || h.metrics == nil || len(res.Choices) == 0 {
+	recordUsageMetrics(h.metrics, res)
+}
+
+func recordUsageMetrics(metrics *RunMetrics, res *llms.ContentResponse) {
+	if res == nil || metrics == nil || len(res.Choices) == 0 {
 		return
 	}
+	metrics.PromptTokens = 0
+	metrics.CompletionTokens = 0
+	metrics.TotalTokens = 0
 
 	info := res.Choices[0].GenerationInfo
 	if info == nil {
@@ -379,13 +402,13 @@ func (h *runtimeCallbackHandler) HandleLLMGenerateContentEnd(ctx context.Context
 	}
 
 	if v, ok := usageMetricInt(info["prompt_tokens"]); ok {
-		h.metrics.PromptTokens = v
+		metrics.PromptTokens = v
 	}
 	if v, ok := usageMetricInt(info["completion_tokens"]); ok {
-		h.metrics.CompletionTokens = v
+		metrics.CompletionTokens = v
 	}
 	if v, ok := usageMetricInt(info["total_tokens"]); ok {
-		h.metrics.TotalTokens = v
+		metrics.TotalTokens = v
 	}
 }
 
