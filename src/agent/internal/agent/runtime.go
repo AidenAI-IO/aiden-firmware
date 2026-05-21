@@ -122,7 +122,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
 	modelManager := NewModelManager(cfg.Model, cfg.Proxy)
 	summarizeFn := buildLLMSummarizeFn(modelManager)
-	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn)), toolSet, skillIndex)
+	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithMemoryLogger(logger)), toolSet, skillIndex)
 	rt.logger = logger
 	return rt, nil
 }

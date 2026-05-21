@@ -35,6 +35,7 @@ type MemoryManager struct {
 	extraction       MemoryExtractionConfig
 	lastPromptTokens int
 	summarizeFn      SummarizeFn
+	logger           *Logger
 }
 
 const defaultMemoryHotWindowEvents = 20
@@ -64,6 +65,10 @@ func WithExtractionConfig(cfg MemoryExtractionConfig) MemoryManagerOption {
 
 func WithSummarizeFn(fn SummarizeFn) MemoryManagerOption {
 	return func(m *MemoryManager) { m.summarizeFn = fn }
+}
+
+func WithMemoryLogger(logger *Logger) MemoryManagerOption {
+	return func(m *MemoryManager) { m.logger = logger }
 }
 
 func NewMemoryManager(storageDir string, opts ...MemoryManagerOption) *MemoryManager {
@@ -366,6 +371,12 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		return nil
 	}
 
+	promptTokens := m.LastPromptTokens()
+	if m.logger != nil {
+		m.logger.Info("[memory] compression triggered: events=%d, prompt_tokens=%d, context_window=%d, threshold=%d%%",
+			len(events), promptTokens, m.extraction.ContextWindow, m.extraction.CompressAtPercent)
+	}
+
 	hotWindow := m.extraction.HotWindowEvents
 	if hotWindow <= 0 {
 		hotWindow = defaultMemoryHotWindowEvents
@@ -387,25 +398,48 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 
 	summary := summarizeSessionEvents(compactEvents)
 	if m.summarizeFn != nil {
+		if m.logger != nil {
+			m.logger.Info("[memory] generating LLM summary for %d events", len(compactEvents))
+		}
 		if llmSummary := m.summarizeFn(ctx, compactEvents); llmSummary != "" {
 			summary = llmSummary
+			if m.logger != nil {
+				m.logger.Info("[memory] LLM summary generated: %s", truncateForLog(summary, 80))
+			}
+		} else if m.logger != nil {
+			m.logger.Info("[memory] LLM summary failed, using fallback")
 		}
 	}
 
-	_, err = session.compressEvents(ctx, compactEvents, CompressOption{
+	chunkSummary, err := session.compressEvents(ctx, compactEvents, CompressOption{
 		Summary:  summary,
 		Tags:     m.extraction.extractMemoryTags(compactEvents),
 		Entities: m.extraction.extractMemoryEntities(compactEvents),
 	})
 	if err != nil {
+		if m.logger != nil {
+			m.logger.Error("[memory] compression failed: %v", err)
+		}
 		return err
+	}
+	if m.logger != nil {
+		m.logger.Info("[memory] chunk created: id=%s, events=%d, keep=%d", chunkSummary.ID, compactCount, keepCount)
 	}
 	if err := session.replaceEvents(hotEvents); err != nil {
 		return err
 	}
 
 	longTerm := NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"), WithLifecycleDir(filepath.Join(m.storageDir, "lifecycle")))
-	return longTerm.RegenerateProfileMD(ctx)
+	if err := longTerm.RegenerateProfileMD(ctx); err != nil {
+		if m.logger != nil {
+			m.logger.Error("[memory] profile.md regeneration failed: %v", err)
+		}
+		return err
+	}
+	if m.logger != nil {
+		m.logger.Info("[memory] profile.md regenerated")
+	}
+	return nil
 }
 
 func (m *MemoryManager) shouldCompress(eventCount int) bool {
