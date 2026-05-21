@@ -18,7 +18,7 @@ TOML 是当前支持的配置格式；JSON 配置已废弃。
 
 ```toml
 instruction = "You are a helpful assistant. Use tools when they help."
-max_iterations = 6
+max_iterations = -1
 input_mode = "text"
 
 [model]
@@ -93,7 +93,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | --- | --- | --- |
 | `instruction` | - | Agent system instruction |
 | `additional_prompt` | - | 额外 prompt 字段；当前解析但未完全接入 prompt 构造 |
-| `max_iterations` | `6` | 单次运行最大工具调用循环次数 |
+| `max_iterations` | `-1` | 单次运行最大工具调用循环次数；`-1` 表示不限制 |
 | `input_mode` | `text` / `stt` / `audio` | 输入模式 |
 | `trigger_mode` | `manual` / `wakeup` | 语音模式触发方式 |
 | `energy_threshold` | `500` | VAD 能量阈值 |

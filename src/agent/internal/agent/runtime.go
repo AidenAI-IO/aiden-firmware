@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,6 +20,13 @@ import (
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 )
+
+func effectiveMaxIterations(configured int) int {
+	if configured <= 0 {
+		return math.MaxInt
+	}
+	return configured
+}
 
 type Runtime struct {
 	config       Config
@@ -152,10 +160,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	availableTools := r.resolveTools(resolvedSkills)
 
-	maxIterations := r.config.MaxIterations
-	if maxIterations <= 0 {
-		maxIterations = 6
-	}
+	maxIterations := effectiveMaxIterations(r.config.MaxIterations)
 
 	callOptions := r.models.CallOptions()
 	var streamCallbackHandler *runtimeCallbackHandler

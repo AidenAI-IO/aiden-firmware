@@ -63,6 +63,10 @@ bool FrameCameraCaptureSource::capture(CapturedFrame* frame) {
     return true;
 }
 
+bool FrameCameraCaptureSource::discard() {
+    return camera_.discard_frame_timeout(500);
+}
+
 void FrameCameraCaptureSource::close() {
     camera_.stop();
 }

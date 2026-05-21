@@ -19,6 +19,13 @@ public:
     virtual ~FrameCaptureSource() {}
     virtual bool open() = 0;
     virtual bool capture(CapturedFrame* frame) = 0;
+    // Drain one frame without publishing it. Implementations can override this
+    // to avoid copying payload bytes for frames that are only used to keep the
+    // underlying capture queue fresh.
+    virtual bool discard() {
+        CapturedFrame frame;
+        return capture(&frame);
+    }
     virtual void close() = 0;
 };
 

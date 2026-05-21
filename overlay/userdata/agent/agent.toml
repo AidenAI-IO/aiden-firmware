@@ -1,7 +1,7 @@
 # Agent instruction and behavior
 instruction = "You are a helpful assistant. Use tools when they help accomplish the task."
 additional_prompt = ""
-max_iterations = 6
+max_iterations = -1
 
 # Input mode:
 # - text: run HTTP server with Web UI

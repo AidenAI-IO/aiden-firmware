@@ -70,7 +70,7 @@ struct AgentToml {
     int energy_threshold = 0;
     int silence_ms = 0;
     int min_speech_ms = 0;
-    int max_iterations = 0;
+    int max_iterations = -1;
 };
 
 bool load_agent_toml(const char* path, AgentToml& config, std::string* error = nullptr);
