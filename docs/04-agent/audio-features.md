@@ -61,7 +61,7 @@ Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go
 
 ### `trigger_mode = "wakeup"`
 
-等待 GPIO 33 falling edge 触发后录音。需要 Linux GPIO sysfs 可用，并完成硬件连线。
+等待 GPIO 33 falling edge 触发后录音。`input_mode = "stt"` 时，wakeup 默认打开一个连续语音 session：首轮仍需要 GPIO，Agent 回复后会在 `voice_followup_timeout_ms` 窗口内继续听追问；session 内再次触发 wakeup 会取消正在进行的 LLM 请求或 TTS 播放并重新听音。需要 Linux GPIO sysfs 可用，并完成硬件连线。
 
 ## 配置片段
 
@@ -71,6 +71,12 @@ trigger_mode = "manual"
 energy_threshold = 500
 silence_ms = 1000
 min_speech_ms = 300
+voice_session_enabled = true
+voice_followup_timeout_ms = 6000
+voice_first_turn_timeout_ms = 10000
+voice_max_turns = 0
+voice_interrupt_on_wakeup = true
+voice_interrupt_listen_during_tts = false
 
 [audio]
 socket = "/run/audio_service/audio_service.sock"

@@ -3,6 +3,7 @@ package agent
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestConfigValidateAcceptsAudioWakeup(t *testing.T) {
@@ -127,5 +128,54 @@ func TestConfigValidateRejectsUnsupportedAudioFormatForVoiceInput(t *testing.T) 
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestVoiceSessionConfigDefaults(t *testing.T) {
+	cfg := Config{}
+
+	if !cfg.VoiceSessionEnabledOrDefault() {
+		t.Fatal("VoiceSessionEnabledOrDefault() = false, want true")
+	}
+	if cfg.VoiceFirstTurnTimeoutOrDefault() != 10*time.Second {
+		t.Fatalf("VoiceFirstTurnTimeoutOrDefault() = %s, want 10s", cfg.VoiceFirstTurnTimeoutOrDefault())
+	}
+	if cfg.VoiceFollowupTimeoutOrDefault() != 6*time.Second {
+		t.Fatalf("VoiceFollowupTimeoutOrDefault() = %s, want 6s", cfg.VoiceFollowupTimeoutOrDefault())
+	}
+	if !cfg.VoiceInterruptOnWakeupOrDefault() {
+		t.Fatal("VoiceInterruptOnWakeupOrDefault() = false, want true")
+	}
+	if cfg.VoiceInterruptListenDuringTTSOrDefault() {
+		t.Fatal("VoiceInterruptListenDuringTTSOrDefault() = true, want false")
+	}
+}
+
+func TestVoiceSessionConfigOverrides(t *testing.T) {
+	disabled := false
+	interruptDisabled := false
+	listenDuringTTS := true
+	cfg := Config{
+		VoiceSessionEnabled:           &disabled,
+		VoiceFirstTurnTimeoutMs:       1234,
+		VoiceFollowupTimeoutMs:        5678,
+		VoiceInterruptOnWakeup:        &interruptDisabled,
+		VoiceInterruptListenDuringTTS: &listenDuringTTS,
+	}
+
+	if cfg.VoiceSessionEnabledOrDefault() {
+		t.Fatal("VoiceSessionEnabledOrDefault() = true, want false")
+	}
+	if cfg.VoiceFirstTurnTimeoutOrDefault() != 1234*time.Millisecond {
+		t.Fatalf("VoiceFirstTurnTimeoutOrDefault() = %s, want 1234ms", cfg.VoiceFirstTurnTimeoutOrDefault())
+	}
+	if cfg.VoiceFollowupTimeoutOrDefault() != 5678*time.Millisecond {
+		t.Fatalf("VoiceFollowupTimeoutOrDefault() = %s, want 5678ms", cfg.VoiceFollowupTimeoutOrDefault())
+	}
+	if cfg.VoiceInterruptOnWakeupOrDefault() {
+		t.Fatal("VoiceInterruptOnWakeupOrDefault() = true, want false")
+	}
+	if !cfg.VoiceInterruptListenDuringTTSOrDefault() {
+		t.Fatal("VoiceInterruptListenDuringTTSOrDefault() = false, want true")
 	}
 }

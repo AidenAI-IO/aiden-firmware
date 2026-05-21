@@ -57,6 +57,12 @@ trigger_mode = "manual"
 energy_threshold = 500
 silence_ms = 1000
 min_speech_ms = 300
+voice_session_enabled = true
+voice_followup_timeout_ms = 6000
+voice_first_turn_timeout_ms = 10000
+voice_max_turns = 0
+voice_interrupt_on_wakeup = true
+voice_interrupt_listen_during_tts = false
 
 [model]
 provider = "openrouter"
@@ -99,6 +105,12 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `energy_threshold` | `500` | VAD 能量阈值 |
 | `silence_ms` | `1000` | 多少毫秒静音后认为一句话结束 |
 | `min_speech_ms` | `300` | 最短有效语音时长 |
+| `voice_session_enabled` | `true` | wakeup 模式下启用一次唤醒后的连续对话；设为 `false` 保持一轮一唤醒 |
+| `voice_followup_timeout_ms` | `6000` | Agent 回复后等待用户追问的窗口 |
+| `voice_first_turn_timeout_ms` | `10000` | wakeup 后等待第一句话的窗口 |
+| `voice_max_turns` | `0` | 单个 wakeup session 最大轮数；`0` 表示不限制 |
+| `voice_interrupt_on_wakeup` | `true` | session 内再次收到 wakeup 时取消 thinking/TTS 并重新听音 |
+| `voice_interrupt_listen_during_tts` | `false` | 保留配置；默认不在 TTS 播放期间开麦做语音打断 |
 
 ## `[model]`
 

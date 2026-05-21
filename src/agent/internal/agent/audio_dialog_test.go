@@ -138,7 +138,7 @@ type fakeTTSClient struct {
 	audio *AudioServiceClient
 }
 
-func (c *fakeTTSClient) TextToSpeechStream(text string, audio *AudioServiceClient) error {
+func (c *fakeTTSClient) TextToSpeechStream(ctx context.Context, text string, audio *AudioServiceClient) error {
 	c.texts = append(c.texts, text)
 	c.audio = audio
 	return nil
