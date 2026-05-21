@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -155,5 +156,55 @@ func TestOpenAICompatibleModelIncludesUsageInGenerationInfo(t *testing.T) {
 	got := resp.Choices[0].GenerationInfo
 	if got["prompt_tokens"] != 11 || got["completion_tokens"] != 7 || got["total_tokens"] != 18 {
 		t.Fatalf("unexpected generation info: %#v", got)
+	}
+}
+
+func TestModelManagerOpenRouterRetriesEOFInModelCall(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if _, err := io.ReadAll(r.Body); err != nil {
+			t.Fatalf("ReadAll body: %v", err)
+		}
+		if attempts == 1 {
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("response writer does not support hijacking")
+			}
+			conn, _, err := hijacker.Hijack()
+			if err != nil {
+				t.Fatalf("Hijack: %v", err)
+			}
+			conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok after retry"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	manager := NewModelManager(ModelConfig{
+		Provider: "openrouter",
+		Model:    "test-model",
+		APIKey:   "token",
+		BaseURL:  server.URL,
+	}, ProxyConfig{})
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get model: %v", err)
+	}
+
+	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if resp.Choices[0].Content != "ok after retry" {
+		t.Fatalf("unexpected response: %#v", resp.Choices[0].Content)
 	}
 }

@@ -409,6 +409,35 @@ func TestTouchGestureSwipeAppliesDefaultHoldBeforeMs(t *testing.T) {
 	}
 }
 
+func TestTouchGestureSwipeDefaultsUseSlowerMotionAndDelayedRelease(t *testing.T) {
+	dev, w := newTimedHIDDevice()
+	tool := &TouchGestureTool{dev: dev, screen: &screenState{}, state: &pointerState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":0.1,"y":0.5},"end":{"x":0.9,"y":0.5}}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	// Writes: pre-move, press, 24 default move steps, release.
+	times := w.writeTimes()
+	if len(times) != defaultSwipeSteps+3 {
+		t.Fatalf("len(times) = %d, want %d", len(times), defaultSwipeSteps+3)
+	}
+	moveStart := 2
+	lastMove := len(times) - 2
+	moveDuration := times[lastMove].Sub(times[moveStart])
+	if moveDuration < 550*time.Millisecond {
+		t.Fatalf("swipe move duration = %v, want >= 550ms", moveDuration)
+	}
+	releaseDelay := times[len(times)-1].Sub(times[lastMove])
+	if releaseDelay < 270*time.Millisecond {
+		t.Fatalf("swipe final-move-to-release gap = %v, want >= 270ms", releaseDelay)
+	}
+}
+
 func TestTouchGestureDragKeepsZeroHoldBeforeMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
 	tool := &TouchGestureTool{dev: dev, screen: &screenState{}, state: &pointerState{}}
@@ -422,7 +451,8 @@ func TestTouchGestureDragKeepsZeroHoldBeforeMs(t *testing.T) {
 	}
 
 	// Writes: pre-move, press, move1, move2, release. Drag must not inherit
-	// the swipe hold_before_ms default, so the press → first move gap is ~0.
+	// the swipe hold defaults, so the press-to-first-move and final-move-to-
+	// release gaps are both ~0.
 	times := w.writeTimes()
 	if len(times) < 4 {
 		t.Fatalf("len(times) = %d, want >= 4", len(times))
@@ -430,6 +460,10 @@ func TestTouchGestureDragKeepsZeroHoldBeforeMs(t *testing.T) {
 	gap := times[2].Sub(times[1])
 	if gap > 20*time.Millisecond {
 		t.Fatalf("drag press-to-first-move gap = %v, want < 20ms (drag must not inherit swipe hold)", gap)
+	}
+	releaseGap := times[len(times)-1].Sub(times[len(times)-2])
+	if releaseGap > 20*time.Millisecond {
+		t.Fatalf("drag final-move-to-release gap = %v, want < 20ms (drag must not inherit swipe release hold)", releaseGap)
 	}
 }
 
@@ -445,7 +479,7 @@ func TestDragPointerReleasesOnMoveError(t *testing.T) {
 
 	start := resolvedPointerPoint{x: 100, y: 100}
 	end := resolvedPointerPoint{x: 200, y: 200}
-	err := dragPointer(dev, &pointerState{}, start, end, 0x01, 0, 0, 3)
+	err := dragPointer(dev, &pointerState{}, start, end, 0x01, 0, 0, 0, 3)
 	if err == nil {
 		t.Fatal("expected error from dragPointer")
 	}
