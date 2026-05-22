@@ -337,19 +337,19 @@ func (s *Server) handleClearAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	s.history = make([]Message, 0)
-	s.mu.Unlock()
-
-	if s.logger != nil {
-		s.logger.Info("All memory cleared")
-	}
 	if err := s.runtime.ClearAllMemory(r.Context()); err != nil {
 		if s.logger != nil {
 			s.logger.Error("Clear all memory failed: %v", err)
 		}
 		http.Error(w, fmt.Sprintf("Clear all memory failed: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	s.mu.Lock()
+	s.history = make([]Message, 0)
+	s.mu.Unlock()
+	if s.logger != nil {
+		s.logger.Info("All memory cleared")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -2200,7 +2200,10 @@ const webUI = `<!DOCTYPE html>
             if (!confirm('This will permanently delete ALL memory including long-term memories and user profile. Continue?')) return;
 
             try {
-                await fetch('/api/clear-all', { method: 'POST' });
+                const res = await fetch('/api/clear-all', { method: 'POST' });
+                if (!res.ok) {
+                    throw new Error(await res.text() || 'Failed to reset all memory.');
+                }
                 clearDraftAttachments();
                 renderHistory([]);
             } catch (err) {
