@@ -10,7 +10,7 @@ import (
 const (
 	DefaultBootPartitionSize   int64 = 32 << 20
 	DefaultOEMPartitionSize    int64 = 256 << 20
-	DefaultRootFSPartitionSize int64 = 1 << 30
+	DefaultRootFSPartitionSize int64 = 1536 << 20
 )
 
 var DefaultProductionPartitionSizes = map[string]int64{

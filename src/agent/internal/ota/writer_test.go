@@ -7,6 +7,19 @@ import (
 	"testing"
 )
 
+func TestDefaultProductionRootFSPartitionSizeMatchesBoardConfig(t *testing.T) {
+	const wantRootFSSize = int64(1536 << 20)
+
+	if DefaultRootFSPartitionSize != wantRootFSSize {
+		t.Fatalf("DefaultRootFSPartitionSize = %d, want %d", DefaultRootFSPartitionSize, wantRootFSSize)
+	}
+	for _, name := range []string{"rootfs_a", "rootfs_b"} {
+		if got := DefaultProductionPartitionSizes[name]; got != wantRootFSSize {
+			t.Fatalf("DefaultProductionPartitionSizes[%q] = %d, want %d", name, got, wantRootFSSize)
+		}
+	}
+}
+
 func TestWriterWritesOnlyInactiveCanonicalPartitions(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"boot_b", "oem_b", "rootfs_b"} {

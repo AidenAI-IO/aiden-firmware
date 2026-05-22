@@ -54,8 +54,8 @@ upgrade_tool 支持单独更新指定分区。生产镜像使用 A/B 分区布�
 | **boot_b** | 32 MB | Slot B FIT boot image with `rootfs_b` bootargs |
 | **oem_a** | 256 MB | Slot A `/oem` contents, mounted when `aiden.slot_suffix=_a` |
 | **oem_b** | 256 MB | Slot B `/oem` contents, mounted when `aiden.slot_suffix=_b` |
-| **rootfs_a** | 1 GB | Slot A root filesystem |
-| **rootfs_b** | 1 GB | Slot B root filesystem |
-| **userdata** | 4 GB | Shared persistent data, including `/userdata/ota` state |
+| **rootfs_a** | 1536 MB | Slot A root filesystem |
+| **rootfs_b** | 1536 MB | Slot B root filesystem |
+| **userdata** | 3 GB | Shared persistent data, including `/userdata/ota` state |
 
 构建完成后，`pico-sdk/output/image/` 应包含 `misc.img`、`boot_a.img`、`boot_b.img`、`oem_a.img`、`oem_b.img`、`rootfs_a.img`、`rootfs_b.img`、`userdata.img` 和 `update.img`。发布流程还会在同一目录生成签名的 `manifest.json`。

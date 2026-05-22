@@ -285,7 +285,7 @@ Checkpoint: inspect `git diff -- _build.sh _build_image.sh overlay src/agent_mai
 
 - [ ] **Step 1: Update BoardConfig**
 
-Set partition table to `32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1G(rootfs_a),1G(rootfs_b),4G(userdata)`. Configure filesystem entries for `rootfs_a/rootfs_b`, `userdata`, and avoid static single `/oem` mounting.
+Set partition table to `32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata)`. Configure filesystem entries for `rootfs_a/rootfs_b`, `userdata`, and avoid static single `/oem` mounting.
 
 - [ ] **Step 2: Add deterministic `misc.img` generation**
 

@@ -134,9 +134,9 @@ RK_PARTITION_CMD_IN_ENV =
   32M(boot_b),            #              (slot B)
   256M(oem_a),            # 业务程序   (slot A)
   256M(oem_b),            #            (slot B)
-  1G(rootfs_a),           # 系统库     (slot A)
-  1G(rootfs_b),           #            (slot B)
-  4G(userdata)            # 用户数据 (跨升级保留)
+  1536M(rootfs_a),        # 系统库     (slot A)
+  1536M(rootfs_b),        #            (slot B)
+  3G(userdata)            # 用户数据 (跨升级保留)
 ```
 
 ### 3.2 容量核算
@@ -146,8 +146,8 @@ RK_PARTITION_CMD_IN_ENV =
 | env + idblock + uboot + misc | ~5 MB    |
 | boot A+B                     | 64 MB    |
 | oem A+B                      | 512 MB   |
-| rootfs A+B                   | 2048 MB  |
-| userdata                     | 4096 MB  |
+| rootfs A+B                   | 3072 MB  |
+| userdata                     | 3072 MB  |
 | 合计                         | ~6725 MB |
 | 板载 eMMC                    | 7296 MB  |
 | 余量                         | ~570 MB  |
@@ -694,7 +694,7 @@ SPL 选了哪个 slot 就加载哪个 boot.img，cmdline 自然正确。**不动
 PR 1 落地后必须验证：
 
 1. **misc 4M 够用**：AvbABData 本身仅 32 字节，给 4M 主要为对齐方便。Rockchip 有时会往 misc 塞 recovery message。可以收缩到 1M 但不建议小于 256K。
-2. **rootfs 1G 是否够**：当前用 231M，1G 留 4× 余量。引入更多依赖（如 Python runtime、模型）可能需要 1.5G。建议 PR 1 完成后用实际 rootfs 验证。
+2. **rootfs 1536M 是否够**：当前用约 231M，1536M 留约 6.6× 余量。引入更多依赖（如 Python runtime、模型）后仍需用实际 rootfs 验证。
 3. **build.sh 对 A/B 的支持**：当前按单分区设计，需要补丁（详见 PR 1 改动清单）。这是工程量，不是技术不确定性。
 4. **方案 A 的 dtb 双份打包流程**：需要在 build.sh 里加一段，针对 _a 和 _b 各生成一份 boot.img。可基于 `make_fit_optee.sh` 改。
 

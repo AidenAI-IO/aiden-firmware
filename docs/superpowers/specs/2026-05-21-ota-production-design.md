@@ -44,7 +44,7 @@ Update flow:
 The target eMMC partition layout is:
 
 ```text
-32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1G(rootfs_a),1G(rootfs_b),4G(userdata)
+32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata)
 ```
 
 `pico-sdk/project/build.sh` must generate these image artifacts:
