@@ -18,7 +18,7 @@ test-build: test-configure
 	cmake --build $(TEST_BUILD_DIR)
 
 test: test-build
-	ctest --test-dir $(TEST_BUILD_DIR) --output-on-failure
+	cd $(TEST_BUILD_DIR) && ctest --output-on-failure
 
 test-clean:
 	rm -rf $(TEST_BUILD_DIR)
