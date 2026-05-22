@@ -30,8 +30,8 @@ struct AudioConfig {
 ```cpp
 struct CameraConfig {
     const char* device_name = "/dev/video0";
-    int width = 1920;
-    int height = 1080;
+    int width = 1280;
+    int height = 720;
     int camera_id = 0;
     const char* pixel_format = "uyvy";
     const char* subdev_device = "/dev/v4l-subdev2";
@@ -102,8 +102,8 @@ player.stop();
 
 ```cpp
 aiden::CameraConfig config;
-config.width = 1920;
-config.height = 1080;
+config.width = 1280;
+config.height = 720;
 config.pixel_format = "uyvy";
 
 aiden::CameraCapture camera;
@@ -119,7 +119,7 @@ camera.stop();
 
 ```cpp
 aiden::CameraConfig config;
-config.edid_path = nullptr; // 使用内置 1080p30 CTA EDID
+config.edid_path = nullptr; // 使用内置 720p60+1080p30 CTA EDID，720p60 为首选
 
 aiden::CameraCapture camera;
 aiden::VideoFrame frame;

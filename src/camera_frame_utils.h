@@ -15,8 +15,8 @@ inline void set_default_camera_config(aiden::CameraConfig* config) {
     }
 
     config->device_name = "/dev/video0";
-    config->width = 1920;
-    config->height = 1080;
+    config->width = 1280;
+    config->height = 720;
     config->camera_id = 0;
     config->pixel_format = "uyvy";
     config->subdev_device = "/dev/v4l-subdev2";

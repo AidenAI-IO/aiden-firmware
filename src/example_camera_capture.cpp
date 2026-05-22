@@ -30,8 +30,8 @@ static void usage(const char* prog) {
             "Options:\n"
             "  --device PATH             V4L2 capture device (default: /dev/video0)\n"
             "  --entity PATH             Deprecated alias for --device\n"
-            "  --width N                 Requested width before HDMI sync (default: 1920)\n"
-            "  --height N                Requested height before HDMI sync (default: 1080)\n"
+            "  --width N                 Requested width before HDMI sync (default: 1280)\n"
+            "  --height N                Requested height before HDMI sync (default: 720)\n"
             "  --pixfmt FORMAT           Capture pixel format (default: uyvy)\n"
             "  --skip N                  Drop the first N frames after stream-on (default: 1)\n"
             "  --count N                 Capture N frames, 0 means loop until Ctrl+C (default: 1)\n"
@@ -39,7 +39,7 @@ static void usage(const char* prog) {
             "                           (default: /mnt/tmp/frame.ppm)\n"
             "  --no-output               Capture without saving a file\n"
             "  --subdev PATH             HDMI bridge subdev (default: /dev/v4l-subdev2)\n"
-            "  --edid PATH               Use a custom EDID hex file instead of built-in 1080p30 CTA\n"
+            "  --edid PATH               Use a custom EDID hex file instead of built-in 720p60+1080p30 CTA\n"
             "  --trigger-retries N       Additional EDID retrigger attempts after the first trigger (default: 0)\n"
             "  --trigger-delay-ms N      Delay after each trigger (default: 1000)\n"
             "  --capture-retries N       Full init/capture recovery retries (default: 2)\n"
@@ -303,7 +303,7 @@ int main(int argc, char* argv[]) {
     if (opts.camera.enable_hdmi_sync) {
         printf("HDMI sync: enabled, subdev=%s, EDID=%s, force_trigger=%s, retries=%d\n",
                opts.camera.subdev_device,
-               opts.camera.edid_path ? opts.camera.edid_path : "built-in 1080p30 CTA",
+               opts.camera.edid_path ? opts.camera.edid_path : "built-in 720p60+1080p30 CTA",
                opts.camera.force_trigger ? "yes" : "no",
                opts.camera.trigger_retries);
     } else {
