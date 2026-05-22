@@ -28,9 +28,10 @@ type ProfileEntry struct {
 }
 
 type LongTermMemoryStore struct {
-	rootDir      string
-	lifecycleDir string
-	profileFn    ProfileFn
+	rootDir          string
+	lifecycleDir     string
+	profileFn        ProfileFn
+	profileDebouncer *ProfileDebouncer
 }
 
 type LongTermMemoryOption func(*LongTermMemoryStore)
@@ -41,6 +42,10 @@ func WithLifecycleDir(dir string) LongTermMemoryOption {
 
 func WithStoreProfileFn(fn ProfileFn) LongTermMemoryOption {
 	return func(s *LongTermMemoryStore) { s.profileFn = fn }
+}
+
+func WithProfileDebouncer(d *ProfileDebouncer) LongTermMemoryOption {
+	return func(s *LongTermMemoryStore) { s.profileDebouncer = d }
 }
 
 type MemorySourceRef struct {
@@ -406,6 +411,16 @@ func (s *LongTermMemoryStore) RegenerateProfileMD(ctx context.Context) error {
 	}
 
 	return writeFileAtomic(filepath.Join(s.rootDir, "profile.md"), []byte(profileContent), 0o644)
+}
+
+func (s *LongTermMemoryStore) RequestProfileRebuild() {
+	if s.profileDebouncer != nil {
+		s.profileDebouncer.RequestRebuild()
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = s.RegenerateProfileMD(ctx)
 }
 
 func isProfileRelevantType(t string) bool {

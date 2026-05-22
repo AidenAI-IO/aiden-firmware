@@ -173,9 +173,7 @@ func (t *SaveMemoryTool) Call(ctx context.Context, input string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	if err := t.store.RegenerateProfileMD(ctx); err != nil {
-		return "", fmt.Errorf("regenerate profile: %w", err)
-	}
+	t.store.RequestProfileRebuild()
 	return encodeToolJSON(map[string]string{"status": "saved", "id": id})
 }
 
