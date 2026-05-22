@@ -123,7 +123,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	summarizeFn := buildLLMSummarizeFn(modelManager)
 	profileFn := buildLLMProfileFn(modelManager)
 	contextWindowFn := func() int { return modelManager.Spec().ContextWindow }
-	toolSet.RegisterMemoryTools(memoryDir, profileFn)
+	toolSet.RegisterMemoryTools(memoryDir, profileFn, extractionCfg.SummaryMaxChunks)
 	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryLogger(logger)), toolSet, skillIndex)
 	rt.logger = logger
 	return rt, nil

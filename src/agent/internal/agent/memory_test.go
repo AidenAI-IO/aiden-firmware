@@ -338,3 +338,186 @@ func readSessionEvents(t *testing.T, path string) []SessionEvent {
 	}
 	return events
 }
+
+func TestFormatSessionSummaryWithWindowKeepsMaxChunks(t *testing.T) {
+	existing := []byte("# Session History (compressed chunks)\n\n" +
+		"Use recall_session_chunks with a chunk_id to retrieve full conversation details.\n\n" +
+		"- **chunk_001**\n  Summary 1\n" +
+		"- **chunk_002**\n  Summary 2\n" +
+		"- **chunk_003**\n  Summary 3\n")
+
+	newChunk := chunkIndexEntry{ID: "chunk_004", Summary: "Summary 4"}
+	summary, archive := formatSessionSummaryWithWindow(existing, nil, newChunk, 3)
+
+	if !strings.Contains(summary, "chunk_002") {
+		t.Fatalf("expected summary to contain chunk_002, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "chunk_003") {
+		t.Fatalf("expected summary to contain chunk_003, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "chunk_004") {
+		t.Fatalf("expected summary to contain chunk_004, got:\n%s", summary)
+	}
+	if strings.Contains(summary, "chunk_001") {
+		t.Fatalf("expected summary NOT to contain chunk_001, got:\n%s", summary)
+	}
+
+	if !strings.Contains(archive, "chunk_001") {
+		t.Fatalf("expected archive to contain chunk_001, got:\n%s", archive)
+	}
+	if strings.Contains(archive, "chunk_002") {
+		t.Fatalf("expected archive NOT to contain chunk_002, got:\n%s", archive)
+	}
+}
+
+func TestFormatSessionSummaryWithWindowNoArchiveWhenUnderMax(t *testing.T) {
+	existing := []byte("# Session History (compressed chunks)\n\n" +
+		"Use recall_session_chunks with a chunk_id to retrieve full conversation details.\n\n" +
+		"- **chunk_001**\n  Summary 1\n")
+
+	newChunk := chunkIndexEntry{ID: "chunk_002", Summary: "Summary 2"}
+	summary, archive := formatSessionSummaryWithWindow(existing, nil, newChunk, 10)
+
+	if !strings.Contains(summary, "chunk_001") || !strings.Contains(summary, "chunk_002") {
+		t.Fatalf("expected summary to contain both chunks, got:\n%s", summary)
+	}
+	if archive != "" {
+		t.Fatalf("expected no archive content, got:\n%s", archive)
+	}
+}
+
+func TestFormatSessionSummaryWithWindowAppendsToExistingArchive(t *testing.T) {
+	existing := []byte("# Session History (compressed chunks)\n\n" +
+		"Use recall_session_chunks with a chunk_id to retrieve full conversation details.\n\n" +
+		"- **chunk_010**\n  Summary 10\n" +
+		"- **chunk_011**\n  Summary 11\n")
+	existingArchive := []byte("# Session History Archive\n\n" +
+		"Older chunk summaries moved out of the active session summary.\n" +
+		"Use recall_session_chunks with a chunk_id to retrieve full conversation details.\n\n" +
+		"- **chunk_001**\n  Summary 1\n" +
+		"- **chunk_009**\n  Summary 9\n")
+
+	newChunk := chunkIndexEntry{ID: "chunk_012", Summary: "Summary 12"}
+	summary, archive := formatSessionSummaryWithWindow(existing, existingArchive, newChunk, 2)
+
+	if strings.Contains(summary, "chunk_010") {
+		t.Fatalf("expected chunk_010 to be archived out of summary, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "chunk_011") || !strings.Contains(summary, "chunk_012") {
+		t.Fatalf("expected summary to contain chunk_011 and chunk_012, got:\n%s", summary)
+	}
+
+	if !strings.Contains(archive, "chunk_001") {
+		t.Fatalf("expected archive to preserve chunk_001, got:\n%s", archive)
+	}
+	if !strings.Contains(archive, "chunk_009") {
+		t.Fatalf("expected archive to preserve chunk_009, got:\n%s", archive)
+	}
+	if !strings.Contains(archive, "chunk_010") {
+		t.Fatalf("expected archive to contain newly archived chunk_010, got:\n%s", archive)
+	}
+}
+
+func TestSessionMemoryStoreCompressCreatesArchive(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store := NewSessionMemoryStore(filepath.Join(root, "session"), 2)
+
+	for i := 0; i < 3; i++ {
+		if _, err := store.AppendEvent(ctx, SessionEvent{
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("message %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+		if _, err := store.Compress(ctx, CompressOption{
+			ChunkID: fmt.Sprintf("chunk_%03d", i),
+			Summary: fmt.Sprintf("Summary %d", i),
+		}); err != nil {
+			t.Fatalf("Compress() error = %v", err)
+		}
+	}
+
+	summaryData, err := os.ReadFile(filepath.Join(root, "session", "summary.md"))
+	if err != nil {
+		t.Fatalf("ReadFile summary.md error = %v", err)
+	}
+	summary := string(summaryData)
+	if strings.Contains(summary, "chunk_000") {
+		t.Fatalf("expected chunk_000 to be archived out of summary.md, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "chunk_001") || !strings.Contains(summary, "chunk_002") {
+		t.Fatalf("expected summary to contain chunk_001 and chunk_002, got:\n%s", summary)
+	}
+
+	archiveData, err := os.ReadFile(filepath.Join(root, "session", "summary_archive.md"))
+	if err != nil {
+		t.Fatalf("ReadFile summary_archive.md error = %v", err)
+	}
+	archive := string(archiveData)
+	if !strings.Contains(archive, "chunk_000") {
+		t.Fatalf("expected archive to contain chunk_000, got:\n%s", archive)
+	}
+}
+
+func TestSessionMemoryStoreRecallHitsArchivedChunks(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store := NewSessionMemoryStore(filepath.Join(root, "session"), 2)
+
+	for i := 0; i < 4; i++ {
+		if _, err := store.AppendEvent(ctx, SessionEvent{
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("message %d", i),
+			AppName: "TestApp",
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+		if _, err := store.Compress(ctx, CompressOption{
+			ChunkID:  fmt.Sprintf("chunk_%03d", i),
+			Summary:  fmt.Sprintf("Summary %d", i),
+			Tags:     []string{"test"},
+			Entities: []string{"TestApp"},
+		}); err != nil {
+			t.Fatalf("Compress() error = %v", err)
+		}
+	}
+
+	results, err := store.RecallChunks(ctx, ChunkRecallQuery{ChunkIDs: []string{"chunk_000"}})
+	if err != nil {
+		t.Fatalf("RecallChunks() by ID error = %v", err)
+	}
+	if len(results) != 1 || results[0].ChunkID != "chunk_000" {
+		t.Fatalf("expected to recall archived chunk_000, got %d results", len(results))
+	}
+
+	results, err = store.RecallChunks(ctx, ChunkRecallQuery{Tags: []string{"test"}, Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks() by tags error = %v", err)
+	}
+	if len(results) != 4 {
+		t.Fatalf("expected 4 recall results (including archived), got %d", len(results))
+	}
+}
+
+func TestSummaryMaxChunksConfigDefaultAndCustom(t *testing.T) {
+	cfg := DefaultMemoryExtractionConfig()
+	if cfg.SummaryMaxChunks != 10 {
+		t.Fatalf("expected default SummaryMaxChunks=10, got %d", cfg.SummaryMaxChunks)
+	}
+
+	dir := t.TempDir()
+	memDir := filepath.Join(dir, "memory")
+	if err := os.MkdirAll(memDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memDir, "extraction.yaml"), []byte("summary_max_chunks: 5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded := LoadMemoryExtractionConfig(dir)
+	if loaded.SummaryMaxChunks != 5 {
+		t.Fatalf("expected loaded SummaryMaxChunks=5, got %d", loaded.SummaryMaxChunks)
+	}
+}

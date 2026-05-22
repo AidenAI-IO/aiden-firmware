@@ -18,8 +18,9 @@ import (
 )
 
 type SessionMemoryStore struct {
-	mu      sync.Mutex
-	rootDir string
+	mu               sync.Mutex
+	rootDir          string
+	summaryMaxChunks int
 }
 
 type CompressOption struct {
@@ -73,8 +74,14 @@ type chunkIndexEntry struct {
 	Checksum   string   `yaml:"checksum"`
 }
 
-func NewSessionMemoryStore(rootDir string) *SessionMemoryStore {
-	return &SessionMemoryStore{rootDir: rootDir}
+const defaultSummaryMaxChunks = 10
+
+func NewSessionMemoryStore(rootDir string, summaryMaxChunks ...int) *SessionMemoryStore {
+	maxChunks := defaultSummaryMaxChunks
+	if len(summaryMaxChunks) > 0 && summaryMaxChunks[0] > 0 {
+		maxChunks = summaryMaxChunks[0]
+	}
+	return &SessionMemoryStore{rootDir: rootDir, summaryMaxChunks: maxChunks}
 }
 
 func (s *SessionMemoryStore) AppendEvent(ctx context.Context, event SessionEvent) (string, error) {
@@ -169,8 +176,15 @@ func (s *SessionMemoryStore) compressEvents(ctx context.Context, events []Sessio
 		return ChunkSummary{}, err
 	}
 	existingSummary, _ := os.ReadFile(s.summaryPath())
-	if err := writeFileAtomic(s.summaryPath(), []byte(formatSessionSummary(existingSummary, entry)), 0o644); err != nil {
+	existingArchive, _ := os.ReadFile(s.summaryArchivePath())
+	summaryContent, archiveContent := formatSessionSummaryWithWindow(existingSummary, existingArchive, entry, s.summaryMaxChunks)
+	if err := writeFileAtomic(s.summaryPath(), []byte(summaryContent), 0o644); err != nil {
 		return ChunkSummary{}, fmt.Errorf("write session summary: %w", err)
+	}
+	if archiveContent != "" {
+		if err := writeFileAtomic(s.summaryArchivePath(), []byte(archiveContent), 0o644); err != nil {
+			return ChunkSummary{}, fmt.Errorf("write session summary archive: %w", err)
+		}
 	}
 	return ChunkSummary{
 		ID:         entry.ID,
@@ -283,6 +297,10 @@ func (s *SessionMemoryStore) summaryPath() string {
 	return filepath.Join(s.rootDir, "summary.md")
 }
 
+func (s *SessionMemoryStore) summaryArchivePath() string {
+	return filepath.Join(s.rootDir, "summary_archive.md")
+}
+
 func (s *SessionMemoryStore) chunksDir() string {
 	return filepath.Join(s.rootDir, "chunks")
 }
@@ -372,31 +390,40 @@ func firstNonEmptyAppName(events []SessionEvent) string {
 }
 
 func formatSessionSummary(existingContent []byte, newChunk chunkIndexEntry) string {
-	type chunkLine struct {
-		ID      string
-		Summary string
+	summary, _ := formatSessionSummaryWithWindow(existingContent, nil, newChunk, 0)
+	return summary
+}
+
+type chunkLine struct {
+	ID      string
+	Summary string
+}
+
+func parseChunkLines(content []byte) []chunkLine {
+	if len(content) == 0 {
+		return nil
 	}
 	var chunks []chunkLine
-	if len(existingContent) > 0 {
-		lines := strings.Split(string(existingContent), "\n")
-		for i, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if !strings.HasPrefix(trimmed, "- **") {
-				continue
-			}
-			id := strings.TrimPrefix(trimmed, "- **")
-			if idx := strings.Index(id, "**"); idx > 0 {
-				id = id[:idx]
-			}
-			summary := ""
-			if i+1 < len(lines) {
-				summary = strings.TrimSpace(lines[i+1])
-			}
-			chunks = append(chunks, chunkLine{ID: id, Summary: summary})
+	lines := strings.Split(string(content), "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "- **") {
+			continue
 		}
+		id := strings.TrimPrefix(trimmed, "- **")
+		if idx := strings.Index(id, "**"); idx > 0 {
+			id = id[:idx]
+		}
+		summary := ""
+		if i+1 < len(lines) {
+			summary = strings.TrimSpace(lines[i+1])
+		}
+		chunks = append(chunks, chunkLine{ID: id, Summary: summary})
 	}
-	chunks = append(chunks, chunkLine{ID: newChunk.ID, Summary: strings.TrimSpace(newChunk.Summary)})
+	return chunks
+}
 
+func renderSummaryMD(chunks []chunkLine) string {
 	var b strings.Builder
 	b.WriteString("# Session History (compressed chunks)\n\n")
 	b.WriteString("Use recall_session_chunks with a chunk_id to retrieve full conversation details.\n\n")
@@ -404,6 +431,34 @@ func formatSessionSummary(existingContent []byte, newChunk chunkIndexEntry) stri
 		b.WriteString(fmt.Sprintf("- **%s**\n  %s\n", c.ID, c.Summary))
 	}
 	return b.String()
+}
+
+func renderArchiveMD(chunks []chunkLine) string {
+	var b strings.Builder
+	b.WriteString("# Session History Archive\n\n")
+	b.WriteString("Older chunk summaries moved out of the active session summary.\n")
+	b.WriteString("Use recall_session_chunks with a chunk_id to retrieve full conversation details.\n\n")
+	for _, c := range chunks {
+		b.WriteString(fmt.Sprintf("- **%s**\n  %s\n", c.ID, c.Summary))
+	}
+	return b.String()
+}
+
+func formatSessionSummaryWithWindow(existingSummary []byte, existingArchive []byte, newChunk chunkIndexEntry, maxChunks int) (summaryContent string, archiveContent string) {
+	chunks := parseChunkLines(existingSummary)
+	chunks = append(chunks, chunkLine{ID: newChunk.ID, Summary: strings.TrimSpace(newChunk.Summary)})
+
+	if maxChunks <= 0 || len(chunks) <= maxChunks {
+		return renderSummaryMD(chunks), ""
+	}
+
+	overflow := chunks[:len(chunks)-maxChunks]
+	keep := chunks[len(chunks)-maxChunks:]
+
+	archived := parseChunkLines(existingArchive)
+	archived = append(archived, overflow...)
+
+	return renderSummaryMD(keep), renderArchiveMD(archived)
 }
 
 func minInt(a int, b int) int {
