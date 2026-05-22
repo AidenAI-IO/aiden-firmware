@@ -40,7 +40,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 						Type: "function",
 						FunctionCall: &llms.FunctionCall{
 							Name:      "audio_volume",
-							Arguments: `{"__arg1":"{}"}`,
+							Arguments: `{"__arg1":"{}","description":"我先读取当前音量。"}`,
 						},
 					}},
 				}},
@@ -100,11 +100,31 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if resp.History[1].Type != "tool_call" || resp.History[1].ToolName != "audio_volume" || resp.History[1].ToolInput != "{}" {
 		t.Fatalf("unexpected tool_call message: %#v", resp.History[1])
 	}
+	if resp.History[1].Description != "我先读取当前音量。" || resp.History[1].Content != "我先读取当前音量。" {
+		t.Fatalf("unexpected tool_call description: %#v", resp.History[1])
+	}
 	if resp.History[2].Type != "tool_result" || resp.History[2].ToolName != "audio_volume" || resp.History[2].Content != `{"volume":42}` {
 		t.Fatalf("unexpected tool_result message: %#v", resp.History[2])
 	}
 	if resp.History[3].Type != "assistant" || resp.History[3].Content != "The current audio volume is 42." {
 		t.Fatalf("unexpected assistant message: %#v", resp.History[3])
+	}
+}
+
+func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
+	tts := &fakeTTSClient{}
+	server := &Server{
+		ttsClient:   tts,
+		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
+	}
+
+	server.speakToolDescription(context.Background(), " 我先读取当前音量。 ")
+
+	if len(tts.texts) != 1 || tts.texts[0] != "我先读取当前音量。" {
+		t.Fatalf("unexpected TTS texts: %#v", tts.texts)
+	}
+	if tts.audio != server.audioClient {
+		t.Fatal("expected server audio client to be used for tool description TTS")
 	}
 }
 

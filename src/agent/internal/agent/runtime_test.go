@@ -78,6 +78,7 @@ type scriptedModel struct {
 	callCount    int
 	sawStreaming []bool
 	messages     [][]llms.MessageContent
+	tools        [][]llms.Tool
 }
 
 func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -87,6 +88,7 @@ func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.Mes
 	}
 	m.sawStreaming = append(m.sawStreaming, callOptions.StreamingFunc != nil)
 	m.messages = append(m.messages, messages)
+	m.tools = append(m.tools, callOptions.Tools)
 
 	if callOptions.StreamingFunc != nil && m.callCount < len(m.responses) {
 		content := m.responses[m.callCount].Choices[0].Content
@@ -236,6 +238,74 @@ func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 	}
 	if len(tool.inputs) != 1 || tool.inputs[0] != "{}" {
 		t.Fatalf("unexpected tool inputs: %#v", tool.inputs)
+	}
+}
+
+func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "audio_volume",
+							Arguments: `{"__arg1":"{}","description":"我先读取当前音量。"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "The current audio volume is 42.",
+				}},
+			},
+		},
+	}
+	tool := &stubTool{
+		name:        "audio_volume",
+		description: "Get the current audio playback volume.",
+		output:      `{"volume":42}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools when external state is requested.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "当前音量是多少？",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.Output != "The current audio volume is 42." {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if len(tool.inputs) != 1 || tool.inputs[0] != "{}" {
+		t.Fatalf("unexpected tool inputs: %#v", tool.inputs)
+	}
+	if len(events) < 1 || events[0].Type != "tool_call" {
+		t.Fatalf("expected first event to be tool_call, got %#v", events)
+	}
+	if events[0].Description != "我先读取当前音量。" || events[0].Content != events[0].Description {
+		t.Fatalf("unexpected tool description event: %#v", events[0])
+	}
+	if events[0].ToolInput != "{}" {
+		t.Fatalf("tool_call event input = %q, want stripped input", events[0].ToolInput)
 	}
 }
 

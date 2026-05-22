@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"strings"
 )
 
 type TurnInput = AudioInputResult
@@ -183,6 +184,11 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 	result, err := runtime.Run(ctx, RunRequest{
 		Input:       input.InputText,
 		Attachments: input.Attachments,
+		EventHandler: func(event RunEvent) {
+			if event.Type == "tool_call" {
+				d.SpeakToolDescription(ctx, event.Description)
+			}
+		},
 	})
 	if err != nil {
 		return RunResult{}, fmt.Errorf("LLM request failed: %w", err)
@@ -190,6 +196,16 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 
 	log.Printf("[llm] Response received\n")
 	return result, nil
+}
+
+func (d *AudioDialog) SpeakToolDescription(ctx context.Context, description string) {
+	description = strings.TrimSpace(description)
+	if description == "" {
+		return
+	}
+	if err := d.Speak(ctx, description, nil); err != nil {
+		log.Printf("[error] Tool description TTS failed: %v", err)
+	}
 }
 
 func (d *AudioDialog) Speak(ctx context.Context, text string, interrupt <-chan struct{}) error {
@@ -236,6 +252,11 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 
 	result, err := runtime.Run(ctx, RunRequest{
 		Input: text,
+		EventHandler: func(event RunEvent) {
+			if event.Type == "tool_call" {
+				d.SpeakToolDescription(ctx, event.Description)
+			}
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("LLM request failed: %w", err)
