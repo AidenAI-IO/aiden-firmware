@@ -27,6 +27,12 @@ type MemoryHandle struct {
 // summary of the events being archived into a chunk.
 type SummarizeFn func(ctx context.Context, events []SessionEvent) string
 
+// ContextWindowFn returns the current model's context window in tokens. The
+// memory manager calls it on every compression decision so model swaps take
+// effect at runtime without restart. Implementations should return 0 when the
+// window is unknown; callers fall back to the yaml-configured default.
+type ContextWindowFn func() int
+
 type MemoryManager struct {
 	mu               sync.Mutex
 	handles          map[string]*MemoryHandle
@@ -36,6 +42,7 @@ type MemoryManager struct {
 	lastPromptTokens int
 	summarizeFn      SummarizeFn
 	profileFn        ProfileFn
+	contextWindowFn  ContextWindowFn
 	logger           *Logger
 }
 
@@ -74,6 +81,14 @@ func WithProfileFn(fn ProfileFn) MemoryManagerOption {
 
 func WithMemoryLogger(logger *Logger) MemoryManagerOption {
 	return func(m *MemoryManager) { m.logger = logger }
+}
+
+// WithContextWindowFn lets the runtime supply the active model's context
+// window dynamically. When the callback returns a positive value it overrides
+// the yaml-configured ContextWindow for compression decisions. A zero return
+// means "unknown, use the yaml default". The yaml value remains the fallback.
+func WithContextWindowFn(fn ContextWindowFn) MemoryManagerOption {
+	return func(m *MemoryManager) { m.contextWindowFn = fn }
 }
 
 func NewMemoryManager(storageDir string, opts ...MemoryManagerOption) *MemoryManager {
@@ -377,9 +392,10 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	}
 
 	promptTokens := m.LastPromptTokens()
+	contextWindow := m.effectiveContextWindow()
 	if m.logger != nil {
 		m.logger.Info("[memory] compression triggered: events=%d, prompt_tokens=%d, context_window=%d, threshold=%d%%",
-			len(events), promptTokens, m.extraction.ContextWindow, m.extraction.CompressAtPercent)
+			len(events), promptTokens, contextWindow, m.extraction.CompressAtPercent)
 	}
 
 	hotWindow := m.extraction.HotWindowEvents
@@ -449,8 +465,9 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 
 func (m *MemoryManager) shouldCompress(eventCount int) bool {
 	lastPromptTokens := m.LastPromptTokens()
-	if lastPromptTokens > 0 && m.extraction.ContextWindow > 0 {
-		ratio := float64(lastPromptTokens) / float64(m.extraction.ContextWindow)
+	contextWindow := m.effectiveContextWindow()
+	if lastPromptTokens > 0 && contextWindow > 0 {
+		ratio := float64(lastPromptTokens) / float64(contextWindow)
 		threshold := float64(m.extraction.CompressAtPercent) / 100.0
 		if ratio >= threshold {
 			return true
@@ -461,6 +478,19 @@ func (m *MemoryManager) shouldCompress(eventCount int) bool {
 		hotWindow = defaultMemoryHotWindowEvents
 	}
 	return eventCount > hotWindow
+}
+
+// effectiveContextWindow returns the context window in tokens that should be
+// used for compression decisions. It prefers the resolver-supplied callback
+// (so model swaps take effect at runtime); a zero from the callback means
+// "unknown" and falls back to the yaml-configured default.
+func (m *MemoryManager) effectiveContextWindow() int {
+	if m.contextWindowFn != nil {
+		if w := m.contextWindowFn(); w > 0 {
+			return w
+		}
+	}
+	return m.extraction.ContextWindow
 }
 
 func summarizeSessionEvents(events []SessionEvent) string {

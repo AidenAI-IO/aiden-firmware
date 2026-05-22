@@ -31,6 +31,7 @@ func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
 type testModelResolver struct {
 	model llms.Model
 	calls int
+	spec  ModelSpec
 }
 
 func (r *testModelResolver) Get() (llms.Model, error) {
@@ -40,6 +41,10 @@ func (r *testModelResolver) Get() (llms.Model, error) {
 
 func (r *testModelResolver) CallOptions() []chains.ChainCallOption {
 	return nil
+}
+
+func (r *testModelResolver) Spec() ModelSpec {
+	return r.spec
 }
 
 func TestRuntimeRun(t *testing.T) {

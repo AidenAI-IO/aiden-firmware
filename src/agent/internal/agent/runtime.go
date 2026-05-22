@@ -122,8 +122,9 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	modelManager := NewModelManager(cfg.Model, cfg.Proxy)
 	summarizeFn := buildLLMSummarizeFn(modelManager)
 	profileFn := buildLLMProfileFn(modelManager)
+	contextWindowFn := func() int { return modelManager.Spec().ContextWindow }
 	toolSet.RegisterMemoryTools(memoryDir, profileFn)
-	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithProfileFn(profileFn), WithMemoryLogger(logger)), toolSet, skillIndex)
+	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryLogger(logger)), toolSet, skillIndex)
 	rt.logger = logger
 	return rt, nil
 }

@@ -8,11 +8,16 @@ import (
 )
 
 type MemoryExtractionConfig struct {
-	TagCandidates     []string `yaml:"tag_candidates"`
-	EntitySuffixes    []string `yaml:"entity_suffixes"`
-	HotWindowEvents   int      `yaml:"hot_window_events"`
-	ContextWindow     int      `yaml:"context_window"`
-	CompressAtPercent int      `yaml:"compress_at_percent"`
+	TagCandidates   []string `yaml:"tag_candidates"`
+	EntitySuffixes  []string `yaml:"entity_suffixes"`
+	HotWindowEvents int      `yaml:"hot_window_events"`
+	// ContextWindow is the fallback context window in tokens used by the
+	// memory manager's compression trigger when the active model is unknown
+	// to the model_specs registry. The runtime normally derives the window
+	// from ModelResolver.Spec(); this value only kicks in for unrecognised
+	// models so behaviour stays sane instead of disabling compression.
+	ContextWindow     int `yaml:"context_window"`
+	CompressAtPercent int `yaml:"compress_at_percent"`
 }
 
 func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
