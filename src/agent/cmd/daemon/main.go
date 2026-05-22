@@ -16,7 +16,10 @@ import (
 	"aiden-agent/internal/agent"
 )
 
-const wakeupListenTimeout = 10 * time.Second
+const (
+	wakeupListenTimeout = 10 * time.Second
+	wakeupAckText       = "我在"
+)
 
 func main() {
 	var (
@@ -234,6 +237,7 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 			return
 		case <-events:
 			log.Println("\n[wakeup] GPIO 33 triggered, opening voice session...")
+			speakWakeupAck(dialog)
 			if exit := runVoiceSession(cfg, dialog, runtime, sigChan, events); exit {
 				dialog.StopRecording()
 				log.Println("\n[exit] Stopped.")
@@ -293,6 +297,7 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 		}
 
 		// Start recording
+		speakWakeupAck(dialog)
 		log.Println("[listen] Recording audio...")
 		if err := dialog.StartRecording(); err != nil {
 			log.Printf("[error] Failed to start recording: %v\n", err)
@@ -318,6 +323,15 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 		wakeupMutex.Unlock()
 
 		log.Println("[ready] Waiting for next wakeup event...")
+	}
+}
+
+func speakWakeupAck(dialog audioDialogRunner) {
+	if dialog == nil {
+		return
+	}
+	if err := dialog.Speak(context.Background(), wakeupAckText, nil); err != nil {
+		log.Printf("[wakeup] acknowledgement failed: %v\n", err)
 	}
 }
 
@@ -354,6 +368,9 @@ func runVoiceSession(cfg agent.Config, dialog audioDialogRunner, runtime *agent.
 		firstTurn = false
 		if interrupted {
 			log.Println("[session] turn interrupted, listening for follow-up")
+			if maxTurns <= 0 || turns < maxTurns {
+				speakWakeupAck(dialog)
+			}
 		}
 	}
 }
