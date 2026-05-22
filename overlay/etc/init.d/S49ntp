@@ -25,9 +25,9 @@ start() {
 
 	if [ -x /usr/sbin/ntpd ]; then
 		if [ -f /etc/ntp.conf ]; then
-			/usr/sbin/ntpd -c /etc/ntp.conf >/dev/null 2>&1
+			/usr/sbin/ntpd -g -c /etc/ntp.conf >/dev/null 2>&1
 		else
-			/usr/sbin/ntpd -p ntp.aliyun.com >/dev/null 2>&1
+			/usr/sbin/ntpd -g ntp.aliyun.com >/dev/null 2>&1
 		fi
 		rc="$?"
 		if [ "$rc" -ne 0 ]; then
