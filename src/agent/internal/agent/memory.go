@@ -170,7 +170,7 @@ func (m *MemoryManager) Snapshot(ctx context.Context, agentName string) ([]Messa
 	return result, nil
 }
 
-func (m *MemoryManager) Clear(ctx context.Context, agentName string) error {
+func (m *MemoryManager) ClearSession(ctx context.Context, agentName string) error {
 	m.mu.Lock()
 	handle, ok := m.handles[agentName]
 	if ok {
@@ -181,10 +181,21 @@ func (m *MemoryManager) Clear(ctx context.Context, agentName string) error {
 	}
 	m.mu.Unlock()
 
-	if !ok {
-		return m.removePersisted(agentName)
+	return m.removeSessionPersisted(agentName)
+}
+
+func (m *MemoryManager) ClearAll(ctx context.Context, agentName string) error {
+	m.mu.Lock()
+	handle, ok := m.handles[agentName]
+	if ok {
+		if err := handle.Memory.Clear(ctx); err != nil {
+			m.mu.Unlock()
+			return err
+		}
 	}
-	return m.removePersisted(agentName)
+	m.mu.Unlock()
+
+	return m.removeAllPersisted(agentName)
 }
 
 func (m *MemoryManager) Save(ctx context.Context, agentName string) error {
@@ -333,7 +344,21 @@ func (m *MemoryManager) persistSnapshot(agentName string, records []MessageRecor
 	return nil
 }
 
-func (m *MemoryManager) removePersisted(agentName string) error {
+func (m *MemoryManager) removeSessionPersisted(agentName string) error {
+	if m.storageDir == "" {
+		return nil
+	}
+	if err := os.Remove(m.memoryPath(agentName)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove persisted memory for %q: %w", agentName, err)
+	}
+	if err := os.RemoveAll(filepath.Join(m.storageDir, "session")); err != nil {
+		return fmt.Errorf("remove session memory for %q: %w", agentName, err)
+	}
+	m.eventCount[agentName] = 0
+	return nil
+}
+
+func (m *MemoryManager) removeAllPersisted(agentName string) error {
 	if m.storageDir == "" {
 		return nil
 	}

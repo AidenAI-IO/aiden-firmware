@@ -278,7 +278,7 @@ func TestMemoryManagerTokenTrackingConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
-func TestMemoryManagerClearRemovesFilesystemMemoryArtifacts(t *testing.T) {
+func TestMemoryManagerClearAllRemovesFilesystemMemoryArtifacts(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	manager := NewMemoryManager(storageDir)
@@ -302,8 +302,8 @@ func TestMemoryManagerClearRemovesFilesystemMemoryArtifacts(t *testing.T) {
 		t.Fatalf("expected session chunk index before clear: %v", err)
 	}
 
-	if err := manager.Clear(ctx, "default"); err != nil {
-		t.Fatalf("Clear() error = %v", err)
+	if err := manager.ClearAll(ctx, "default"); err != nil {
+		t.Fatalf("ClearAll() error = %v", err)
 	}
 	for _, path := range []string{
 		filepath.Join(storageDir, "session"),
@@ -313,6 +313,67 @@ func TestMemoryManagerClearRemovesFilesystemMemoryArtifacts(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("expected %s to be removed, stat err = %v", path, err)
 		}
+	}
+}
+
+func TestMemoryManagerClearSessionPreservesLongTermMemory(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	// Create long_term and lifecycle directories with content
+	longTermDir := filepath.Join(storageDir, "long_term")
+	lifecycleDir := filepath.Join(storageDir, "lifecycle")
+	if err := os.MkdirAll(longTermDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll long_term: %v", err)
+	}
+	if err := os.MkdirAll(lifecycleDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll lifecycle: %v", err)
+	}
+	profilePath := filepath.Join(longTermDir, "profile.md")
+	if err := os.WriteFile(profilePath, []byte("# User Profile\nPrefers concise answers."), 0o644); err != nil {
+		t.Fatalf("WriteFile profile.md: %v", err)
+	}
+	tombstonePath := filepath.Join(lifecycleDir, "tombstones.jsonl")
+	if err := os.WriteFile(tombstonePath, []byte(`{"id":"mem-1","reason":"outdated"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile tombstones.jsonl: %v", err)
+	}
+
+	// Create session data via Save
+	messages := []llms.ChatMessage{
+		llms.HumanChatMessage{Content: "hello"},
+	}
+	for i := 0; i < 22; i++ {
+		messages = append(messages, llms.HumanChatMessage{Content: "filler"})
+	}
+	if err := handle.History.SetMessages(ctx, messages); err != nil {
+		t.Fatalf("SetMessages() error = %v", err)
+	}
+	if err := manager.Save(ctx, "default"); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	sessionDir := filepath.Join(storageDir, "session")
+	if _, err := os.Stat(sessionDir); err != nil {
+		t.Fatalf("expected session dir to exist before clear: %v", err)
+	}
+
+	// ClearSession should remove session but preserve long_term and lifecycle
+	if err := manager.ClearSession(ctx, "default"); err != nil {
+		t.Fatalf("ClearSession() error = %v", err)
+	}
+
+	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
+		t.Fatalf("expected session dir to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(profilePath); err != nil {
+		t.Fatalf("expected long_term/profile.md to be preserved: %v", err)
+	}
+	if _, err := os.Stat(tombstonePath); err != nil {
+		t.Fatalf("expected lifecycle/tombstones.jsonl to be preserved: %v", err)
 	}
 }
 
