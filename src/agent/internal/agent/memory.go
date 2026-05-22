@@ -390,7 +390,9 @@ func (m *MemoryManager) removeSessionPersisted(agentName string) error {
 	if err := os.RemoveAll(filepath.Join(m.storageDir, "session")); err != nil {
 		return fmt.Errorf("remove session memory for %q: %w", agentName, err)
 	}
+	m.mu.Lock()
 	m.eventCount[agentName] = 0
+	m.mu.Unlock()
 	return nil
 }
 
@@ -417,7 +419,9 @@ func (m *MemoryManager) removeAllPersisted(agentName string) error {
 			return fmt.Errorf("remove filesystem memory path %q for %q: %w", path, agentName, err)
 		}
 	}
+	m.mu.Lock()
 	m.eventCount[agentName] = 0
+	m.mu.Unlock()
 	return nil
 }
 
