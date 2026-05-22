@@ -357,7 +357,7 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	if m.storageDir == "" {
 		return nil
 	}
-	session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"))
+	session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"), m.extraction.SummaryMaxChunks)
 	if _, err := os.Stat(session.eventsPath()); err != nil {
 		if os.IsNotExist(err) {
 			return nil

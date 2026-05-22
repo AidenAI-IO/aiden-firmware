@@ -33,10 +33,10 @@ func (t *RecallSessionChunksTool) Description() string {
 	return strings.Join([]string{
 		"Recall compressed session history chunks from earlier in this conversation.",
 		"IMPORTANT: You MUST use this tool when the user asks about something said earlier that you cannot find in your visible conversation context.",
-		"The session summary in your prompt lists all available chunks with their IDs and summaries.",
+		"The session summary in your prompt lists recent chunks; older chunks are archived but still recallable.",
 		"How to recall:",
-		"  - PREFERRED: pass chunk_ids to retrieve specific chunks by ID from the session summary.",
-		"  - FALLBACK: pass tags (content/topic keywords like 'payment', 'login') to search. Use empty tags [] for recent history.",
+		"  - PREFERRED: pass chunk_ids to retrieve specific chunks by ID (works for both active and archived chunks).",
+		"  - FALLBACK: pass tags (content/topic keywords like 'payment', 'login') to search all chunks. Use empty tags [] for recent history.",
 		`Input JSON: {"chunk_ids":["chunk_xxx"]} or {"tags":["topic"],"limit":3}`,
 		"Returns JSON with matching conversation chunks and their full original events.",
 	}, " ")

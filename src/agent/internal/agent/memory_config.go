@@ -13,6 +13,7 @@ type MemoryExtractionConfig struct {
 	HotWindowEvents   int      `yaml:"hot_window_events"`
 	ContextWindow     int      `yaml:"context_window"`
 	CompressAtPercent int      `yaml:"compress_at_percent"`
+	SummaryMaxChunks  int      `yaml:"summary_max_chunks"`
 }
 
 func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
@@ -25,6 +26,7 @@ func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
 		HotWindowEvents:   20,
 		ContextWindow:     32000,
 		CompressAtPercent: 50,
+		SummaryMaxChunks:  10,
 	}
 }
 
@@ -47,6 +49,9 @@ func LoadMemoryExtractionConfig(configDir string) MemoryExtractionConfig {
 	}
 	if cfg.CompressAtPercent <= 0 || cfg.CompressAtPercent > 100 {
 		cfg.CompressAtPercent = 50
+	}
+	if cfg.SummaryMaxChunks <= 0 {
+		cfg.SummaryMaxChunks = 10
 	}
 	return cfg
 }

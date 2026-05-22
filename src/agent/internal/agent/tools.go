@@ -68,11 +68,11 @@ func (s *ToolSet) Names() []string {
 	return names
 }
 
-func (s *ToolSet) RegisterMemoryTools(memoryDir string, profileFn ProfileFn) {
+func (s *ToolSet) RegisterMemoryTools(memoryDir string, profileFn ProfileFn, summaryMaxChunks int) {
 	if memoryDir == "" {
 		return
 	}
-	sessionStore := NewSessionMemoryStore(filepath.Join(memoryDir, "session"))
+	sessionStore := NewSessionMemoryStore(filepath.Join(memoryDir, "session"), summaryMaxChunks)
 	longTermStore := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")), WithStoreProfileFn(profileFn))
 	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(sessionStore)
 	s.tools["recall_memory"] = NewRecallMemoryTool(longTermStore)
