@@ -31,6 +31,7 @@ func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
 type testModelResolver struct {
 	model llms.Model
 	calls int
+	spec  ModelSpec
 }
 
 func (r *testModelResolver) Get() (llms.Model, error) {
@@ -40,6 +41,10 @@ func (r *testModelResolver) Get() (llms.Model, error) {
 
 func (r *testModelResolver) CallOptions() []chains.ChainCallOption {
 	return nil
+}
+
+func (r *testModelResolver) Spec() ModelSpec {
+	return r.spec
 }
 
 func TestRuntimeRun(t *testing.T) {
@@ -54,7 +59,7 @@ func TestRuntimeRun(t *testing.T) {
 		}),
 	}
 
-	runtime := NewRuntimeWithDeps(cfg, resolver, NewMemoryManager(), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}), NewSkillIndex())
+	runtime := NewRuntimeWithDeps(cfg, resolver, NewMemoryManager(""), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}), NewSkillIndex())
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -158,7 +163,7 @@ func TestRuntimeRunOpenRouterUsesToolsWithoutStreaming(t *testing.T) {
 			Instruction: "Use tools when external state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"audio_volume": tool,
 		}},
@@ -214,7 +219,7 @@ func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 			Instruction: "Use tools when external state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"audio_volume": tool,
 		}},
@@ -250,7 +255,7 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 			Instruction: "Answer directly.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
@@ -311,7 +316,7 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 			Instruction: "Use tools when visual state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"screenshot": tool,
 		}},
@@ -400,7 +405,7 @@ func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 			Instruction: "Use tools when visual state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"screenshot": tool,
 		}},
@@ -483,7 +488,7 @@ func TestRuntimeRunKeyboardToolAddsPostActionImageObservation(t *testing.T) {
 			Instruction: "Use input tools when needed.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"keyboard_tap": tool,
 		}},
@@ -548,6 +553,79 @@ func TestRuntimeCallbackHandlerCapturesUsageMetrics(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunCapturesUsageMetricsFromDirectModelCall(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{{
+			Choices: []*llms.ContentChoice{{
+				Content: "completed",
+				GenerationInfo: map[string]any{
+					"prompt_tokens":     600,
+					"completion_tokens": 40,
+					"total_tokens":      640,
+				},
+			}},
+		}},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.Metrics == nil || result.Metrics.PromptTokens != 600 || result.Metrics.CompletionTokens != 40 || result.Metrics.TotalTokens != 640 {
+		t.Fatalf("unexpected metrics: %#v", result.Metrics)
+	}
+}
+
+func TestRuntimeRunResetsPromptTokensWhenUsageUnavailable(t *testing.T) {
+	manager := NewMemoryManager("")
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "with usage",
+					GenerationInfo: map[string]any{
+						"prompt_tokens": 600,
+					},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "without usage",
+				}},
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		manager,
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "first"}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if got := manager.LastPromptTokens(); got != 600 {
+		t.Fatalf("expected first run prompt tokens 600, got %d", got)
+	}
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "second"}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if got := manager.LastPromptTokens(); got != 0 {
+		t.Fatalf("expected missing usage to reset prompt tokens, got %d", got)
+	}
+}
+
 func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	configDir := t.TempDir()
 
@@ -608,6 +686,71 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
+	configDir := t.TempDir()
+	responses := make([]string, 30)
+	for i := range responses {
+		responses[i] = "ok"
+	}
+	runtime, err := NewRuntime(Config{
+		ConfigDir:     configDir,
+		Model:         ModelConfig{Provider: "fake", Responses: responses},
+		Instruction:   "Answer directly.",
+		SkillsDirs:    []string{},
+		MaxIterations: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer runtime.Close()
+
+	inputs := []string{
+		"我是硬件产品经理，平时用中文沟通，关注开发板 agent 端到端行为。",
+		"记一下，以后处理蓝海报销App超过100元的提交或付款动作，必须先给风险摘要并等我确认。",
+	}
+	for i := 0; i < 21; i++ {
+		inputs = append(inputs, "填充对话轮次")
+	}
+	for _, input := range inputs {
+		if _, err := runtime.Run(context.Background(), RunRequest{Input: input}); err != nil {
+			t.Fatalf("Run(%q) error = %v", input, err)
+		}
+	}
+
+	events := readSessionEvents(t, filepath.Join(configDir, "memory", "session", "events.jsonl"))
+	if len(events) > 20 {
+		t.Fatalf("expected hot window events <= 20, got %d", len(events))
+	}
+	chunks, err := NewSessionMemoryStore(filepath.Join(configDir, "memory", "session")).RecallChunks(context.Background(), ChunkRecallQuery{Entities: []string{"蓝海报销App"}, Limit: 1})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected compacted chunk from real runs, got %d", len(chunks))
+	}
+}
+
+func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {
+	runtime, err := NewRuntime(Config{
+		ConfigDir:     t.TempDir(),
+		Model:         ModelConfig{Provider: "fake"},
+		Instruction:   "Answer directly.",
+		SkillsDirs:    []string{},
+		MaxIterations: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer runtime.Close()
+
+	if _, ok := runtime.tools.Get("recall_session_chunks"); !ok {
+		t.Fatalf("expected runtime to register recall_session_chunks")
+	}
+	if _, ok := runtime.tools.Get("recall_memory"); !ok {
+		t.Fatalf("expected runtime to register recall_memory")
+	}
+}
+
 func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -625,7 +768,7 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 			Instruction: "Use the provided media when answering.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)

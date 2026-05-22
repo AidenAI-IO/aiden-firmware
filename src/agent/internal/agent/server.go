@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -118,6 +119,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		logger:  runtime.logger,
 		history: make([]Message, 0),
 	}
+	s.loadHistoryFromDisk()
 
 	// Initialize TTS client if configured
 	cfg := runtime.config
@@ -155,6 +157,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/chat", s.handleChat)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/clear", s.handleClear)
+	mux.HandleFunc("/api/clear-all", s.handleClearAll)
 	mux.HandleFunc("/api/tools", s.handleTools)
 	mux.HandleFunc("/api/tools/", s.handleTools)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
@@ -315,6 +318,38 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 
 	if s.logger != nil {
 		s.logger.Info("Conversation history cleared")
+	}
+	if err := s.runtime.ClearMemory(r.Context()); err != nil {
+		if s.logger != nil {
+			s.logger.Error("Clear memory failed: %v", err)
+		}
+		http.Error(w, fmt.Sprintf("Clear memory failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleClearAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := s.runtime.ClearAllMemory(r.Context()); err != nil {
+		if s.logger != nil {
+			s.logger.Error("Clear all memory failed: %v", err)
+		}
+		http.Error(w, fmt.Sprintf("Clear all memory failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	s.mu.Lock()
+	s.history = make([]Message, 0)
+	s.mu.Unlock()
+	if s.logger != nil {
+		s.logger.Info("All memory cleared")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -673,6 +708,30 @@ func (s *Server) historySnapshot() []Message {
 	historySnapshot := make([]Message, len(s.history))
 	copy(historySnapshot, s.history)
 	return historySnapshot
+}
+
+func (s *Server) loadHistoryFromDisk() {
+	if s.runtime.config.ConfigDir == "" {
+		return
+	}
+	eventsPath := filepath.Join(s.runtime.config.ConfigDir, "memory", "session", "events.jsonl")
+	store := NewSessionMemoryStore(filepath.Join(s.runtime.config.ConfigDir, "memory", "session"))
+	events, err := store.readEvents(eventsPath)
+	if err != nil {
+		return
+	}
+	for _, evt := range events {
+		msgType := "user"
+		if evt.Role == "assistant" {
+			msgType = "assistant"
+		}
+		ts, _ := time.Parse(time.RFC3339Nano, evt.Ts)
+		s.history = append(s.history, Message{
+			Type:      msgType,
+			Content:   evt.Content,
+			Timestamp: ts,
+		})
+	}
 }
 
 func (s *Server) resolveRequestInput(req ChatRequest) (string, []InputAttachment, []MessageAttachment, error) {
@@ -1668,6 +1727,7 @@ const webUI = `<!DOCTYPE html>
                 <h1>Aiden Agent</h1>
                 <div class="topbar-actions">
                     <button type="button" class="new-chat-btn" onclick="clearHistory()">New chat</button>
+                    <button type="button" class="new-chat-btn" onclick="resetAllMemory()" style="background:#c0392b;">Reset all memory</button>
                 </div>
             </header>
 
@@ -2133,6 +2193,21 @@ const webUI = `<!DOCTYPE html>
                 renderHistory([]);
             } catch (err) {
                 console.error('Failed to clear history:', err);
+            }
+        }
+
+        async function resetAllMemory() {
+            if (!confirm('This will permanently delete ALL memory including long-term memories and user profile. Continue?')) return;
+
+            try {
+                const res = await fetch('/api/clear-all', { method: 'POST' });
+                if (!res.ok) {
+                    throw new Error(await res.text() || 'Failed to reset all memory.');
+                }
+                clearDraftAttachments();
+                renderHistory([]);
+            } catch (err) {
+                console.error('Failed to reset all memory:', err);
             }
         }
 

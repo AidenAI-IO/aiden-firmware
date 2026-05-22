@@ -7,3 +7,4 @@
 /overlay/oem/usr/bin/*
 !/overlay/oem/usr/bin/.gitkeep
 !/overlay/oem/usr/bin/RkLunch.sh
+/.claude/

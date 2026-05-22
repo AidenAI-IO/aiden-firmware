@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net"
@@ -62,7 +63,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 			Instruction: "Use tools when external state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"audio_volume": tool,
 		}},
@@ -112,7 +113,7 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 		runtime: NewRuntimeWithDeps(
 			Config{Model: ModelConfig{Provider: "fake"}},
 			&testModelResolver{model: &scriptedModel{}},
-			NewMemoryManager(),
+			NewMemoryManager(""),
 			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 			NewSkillIndex(),
 		),
@@ -143,6 +144,51 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 	}
 }
 
+func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
+	storageDir := t.TempDir()
+	memoryManager := NewMemoryManager(storageDir)
+	handle, err := memoryManager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if err := handle.History.SetMessages(context.Background(), []llms.ChatMessage{
+		llms.HumanChatMessage{Content: "记一下，以后处理蓝海报销App超过100元必须先确认。"},
+	}); err != nil {
+		t.Fatalf("SetMessages() error = %v", err)
+	}
+	if err := memoryManager.Save(context.Background(), "default"); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(storageDir, "session", "events.jsonl")); err != nil {
+		t.Fatalf("expected session events before clear: %v", err)
+	}
+
+	server := &Server{
+		runtime: NewRuntimeWithDeps(
+			Config{Model: ModelConfig{Provider: "fake"}},
+			&testModelResolver{model: &scriptedModel{}},
+			memoryManager,
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+			NewSkillIndex(),
+		),
+		history: []Message{{Type: "user", Content: "hello"}},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/clear", nil)
+	rec := httptest.NewRecorder()
+	server.handleClear(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(server.history) != 0 {
+		t.Fatalf("expected web history to be cleared, got %#v", server.history)
+	}
+	if _, err := os.Stat(filepath.Join(storageDir, "session")); !os.IsNotExist(err) {
+		t.Fatalf("expected session memory to be removed, stat err = %v", err)
+	}
+}
+
 func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	stt := &stubSTTClient{transcript: "你好，帮我总结一下"}
 	runtime := NewRuntimeWithDeps(
@@ -151,7 +197,7 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 			Instruction: "Answer directly.",
 		},
 		&testModelResolver{model: fakellm.NewFakeLLM([]string{"已处理"})},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
@@ -241,7 +287,7 @@ func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 			},
 		},
 		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
@@ -289,7 +335,7 @@ func TestServerToolCatalogEndpoint(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"shell": tool,
 		}},
@@ -334,7 +380,7 @@ func TestServerToolInvokeEndpointAcceptsStructuredJSON(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"shell": tool,
 		}},
@@ -375,7 +421,7 @@ func TestServerToolInvokeEndpointAcceptsPlainStringInput(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		index,
 	)
@@ -416,7 +462,7 @@ func TestServerToolSkillsEndpointReturnsGeneratedSkills(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"shell": tool,
 		}},

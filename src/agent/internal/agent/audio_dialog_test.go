@@ -63,7 +63,7 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 			Instruction: "Use attached audio.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
