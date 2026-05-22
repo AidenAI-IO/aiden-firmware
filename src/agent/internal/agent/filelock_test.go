@@ -208,8 +208,8 @@ func TestMemoryManagerNoDeadlockMultipleAgents(t *testing.T) {
 				t.Errorf("Save for %s: %v", agentName, err)
 				return
 			}
-			if err := mgr.Clear(context.Background(), agentName); err != nil {
-				t.Errorf("Clear for %s: %v", agentName, err)
+			if err := mgr.ClearSession(context.Background(), agentName); err != nil {
+				t.Errorf("ClearSession for %s: %v", agentName, err)
 			}
 		}(g)
 	}
