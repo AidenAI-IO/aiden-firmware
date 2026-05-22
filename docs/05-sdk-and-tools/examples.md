@@ -31,7 +31,7 @@ CMake 会构建多个 `example_*` 可执行文件，用于验证 SDK 和设备�
 ```bash
 ./build/bin/example_camera_capture
 ./build/bin/example_camera_capture --output /mnt/tmp/frame.raw
-./build/bin/example_camera_capture --edid /mnt/tmp/hdmi_1080p30_cta.hex
+./build/bin/example_camera_capture --edid /mnt/tmp/hdmi_720p60_1080p30_cta.hex
 ```
 
 常用参数：
@@ -45,7 +45,7 @@ example_camera_capture [device_path] [width] [height] [pixfmt] [skip_frames] [op
 默认 one-shot 流程会：
 
 - 先查询当前 DV timings；
-- 必要时推送内置 1080p30 CTA EDID；
+- 必要时推送内置 720p60+1080p30 CTA EDID，720p60 为首选；
 - 等待 `/dev/v4l-subdev2` HDMI sync；
 - stream-on 后丢弃过渡帧；
 - 通过 V4L2 MMAP 从 `/dev/video0` 捕获；

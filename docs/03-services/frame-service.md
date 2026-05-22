@@ -47,10 +47,10 @@ frame_service [--socket PATH] [--device PATH] [--width N] [--height N]
 | --- | --- |
 | `--socket PATH` | UDS socket 路径 |
 | `--device PATH` | V4L2 capture device，默认 `/dev/video0` |
-| `--width N` / `--height N` | 期望分辨率，默认 1920x1080 |
+| `--width N` / `--height N` | 期望分辨率，默认 1280x720 |
 | `--pixel-format FMT` | `nv12`、`nv16`、`uyvy`、`yuyv`，默认 `uyvy` |
 | `--subdev PATH` | HDMI bridge subdev，默认 `/dev/v4l-subdev2` |
-| `--edid PATH` | 自定义 EDID hex；为空时使用内置 1080p30 CTA EDID |
+| `--edid PATH` | 自定义 EDID hex；为空时使用内置 720p60+1080p30 CTA EDID，720p60 为首选 |
 | `--ring-size N` | ring buffer 容量 |
 | `--fps N` | 采样 FPS；`0` 表示尽可能快 |
 | `--no-hdmi-sync` | 跳过 HDMI sync 辅助流程 |

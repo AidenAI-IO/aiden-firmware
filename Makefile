@@ -18,7 +18,7 @@ test-build: test-configure
 	cmake --build $(TEST_BUILD_DIR)
 
 test: test-build
-	$(TEST_BUILD_DIR)/tests/aiden_tests
+	ctest --test-dir $(TEST_BUILD_DIR) --output-on-failure
 
 test-clean:
 	rm -rf $(TEST_BUILD_DIR)
