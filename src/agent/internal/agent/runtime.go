@@ -274,7 +274,11 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 }
 
 func (r *Runtime) ClearMemory(ctx context.Context) error {
-	return r.memories.Clear(ctx, "default")
+	return r.memories.ClearSession(ctx, "default")
+}
+
+func (r *Runtime) ClearAllMemory(ctx context.Context) error {
+	return r.memories.ClearAll(ctx, "default")
 }
 
 func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
