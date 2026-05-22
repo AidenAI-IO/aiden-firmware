@@ -43,6 +43,7 @@ type MemoryManager struct {
 	summarizeFn      SummarizeFn
 	profileFn        ProfileFn
 	contextWindowFn  ContextWindowFn
+	profileDebouncer *ProfileDebouncer
 	logger           *Logger
 }
 
@@ -77,6 +78,10 @@ func WithSummarizeFn(fn SummarizeFn) MemoryManagerOption {
 
 func WithProfileFn(fn ProfileFn) MemoryManagerOption {
 	return func(m *MemoryManager) { m.profileFn = fn }
+}
+
+func WithMemoryProfileDebouncer(d *ProfileDebouncer) MemoryManagerOption {
+	return func(m *MemoryManager) { m.profileDebouncer = d }
 }
 
 func WithMemoryLogger(logger *Logger) MemoryManagerOption {
@@ -450,13 +455,8 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		return err
 	}
 
-	longTerm := NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"), WithLifecycleDir(filepath.Join(m.storageDir, "lifecycle")), WithStoreProfileFn(m.profileFn))
-	if err := longTerm.RegenerateProfileMD(ctx); err != nil {
-		if m.logger != nil {
-			m.logger.Error("[memory] profile.md regeneration failed: %v", err)
-		}
-		return err
-	}
+	longTerm := NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"), WithLifecycleDir(filepath.Join(m.storageDir, "lifecycle")), WithStoreProfileFn(m.profileFn), WithProfileDebouncer(m.profileDebouncer))
+	longTerm.RequestProfileRebuild()
 	if m.logger != nil {
 		m.logger.Info("[memory] profile.md regenerated")
 	}

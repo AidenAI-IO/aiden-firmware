@@ -30,13 +30,14 @@ func effectiveMaxIterations(configured int) int {
 }
 
 type Runtime struct {
-	config       Config
-	models       ModelResolver
-	memories     *MemoryManager
-	tools        *ToolSet
-	skills       *SkillManager
-	skillsLoaded bool
-	logger       *Logger
+	config           Config
+	models           ModelResolver
+	memories         *MemoryManager
+	tools            *ToolSet
+	skills           *SkillManager
+	skillsLoaded     bool
+	logger           *Logger
+	profileDebouncer *ProfileDebouncer
 }
 
 type RunRequest struct {
@@ -123,9 +124,21 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	summarizeFn := buildLLMSummarizeFn(modelManager)
 	profileFn := buildLLMProfileFn(modelManager)
 	contextWindowFn := func() int { return modelManager.Spec().ContextWindow }
-	toolSet.RegisterMemoryTools(memoryDir, profileFn, extractionCfg.SummaryMaxChunks)
-	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryLogger(logger)), toolSet, skillIndex)
+
+	longTermDir := ""
+	if memoryDir != "" {
+		longTermDir = filepath.Join(memoryDir, "long_term")
+	}
+	var debouncer *ProfileDebouncer
+	if longTermDir != "" {
+		store := NewLongTermMemoryStore(longTermDir, WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")), WithStoreProfileFn(profileFn))
+		debouncer = NewProfileDebouncer(store.RegenerateProfileMD, 60*time.Second, logger)
+	}
+
+	toolSet.RegisterMemoryTools(memoryDir, profileFn, extractionCfg.SummaryMaxChunks, debouncer)
+	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithMemoryLogger(logger)), toolSet, skillIndex)
 	rt.logger = logger
+	rt.profileDebouncer = debouncer
 	return rt, nil
 }
 
@@ -600,6 +613,13 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	if r.profileDebouncer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := r.profileDebouncer.Flush(ctx); err != nil && r.logger != nil {
+			r.logger.Error("profile debouncer flush on close: %v", err)
+		}
+	}
 	if r.logger != nil {
 		r.logger.Info("Shutting down agent runtime")
 		return r.logger.Close()
