@@ -30,7 +30,7 @@
 - Create: `overlay/etc/init.d/S54ota` for boot startup.
 - Create: `overlay/etc/init.d/S20oemslot` for slot-aware `/oem` mount.
 - Modify: `src/agent_main.cpp` to write nonce-bound `/userdata/ota/health.ok` after ready.
-- Production OTA public key is supplied via `OTA_PUBLIC_KEY_PATH` or derived by CI from the signing key; development key use is explicit via `keys/ota_pubkey.dev.pem` and requires `OTA_ALLOW_DEV_KEY=1`.
+- Production OTA public key is supplied via `OTA_PUBLIC_KEY_PATH` or derived by CI from the signing key.
 - Create/copy: `overlay/oem/etc/ota_pubkey.pem` during image build from the production-safe key source above.
 - Create: `scripts/generate_ota_manifest.sh` and optional helper `scripts/verify_ota_manifest.sh`.
 - Modify: `.github/workflows/build.yml` for monotonic release naming and signed manifest generation.
@@ -230,7 +230,7 @@ Checkpoint: inspect `git diff -- src/agent/internal/ota src/agent/cmd/ota`.
 - Create: `overlay/etc/init.d/S20oemslot`
 - Create: `overlay/etc/init.d/S54ota`
 - Modify: `src/agent_main.cpp`
-- Use production public key from `OTA_PUBLIC_KEY_PATH` or CI-derived signing key; optional development key is `keys/ota_pubkey.dev.pem` with `OTA_ALLOW_DEV_KEY=1`.
+- Use production public key from `OTA_PUBLIC_KEY_PATH` or CI-derived signing key.
 - Create/copy: `overlay/oem/etc/ota_pubkey.pem`
 - Create: `scripts/test_oemslot.sh`
 
@@ -246,7 +246,7 @@ Build Go binaries with `GOOS=linux GOARCH=arm GOARM=7`: `./cmd/daemon` -> `agent
 
 - [ ] **Step 3: Modify `_build_image.sh`**
 
-Copy all build binaries to `overlay/oem/usr/bin`, install `overlay/oem/etc/ota_pubkey.pem` from `OTA_PUBLIC_KEY_PATH` or the CI-derived public key, allow `keys/ota_pubkey.dev.pem` only when `OTA_ALLOW_DEV_KEY=1`, run SDK build, and fail if expected A/B images are missing after build.
+Copy all build binaries to `overlay/oem/usr/bin`, install `overlay/oem/etc/ota_pubkey.pem` from `OTA_PUBLIC_KEY_PATH` or the CI-derived public key, run SDK build, and fail if expected A/B images are missing after build.
 
 - [ ] **Step 4: Add `/oem` slot mount init script**
 

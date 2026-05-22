@@ -31,6 +31,13 @@ if grep -q 'build.sh firmware .*|| true' "$ROOT_DIR/_build_image.sh"; then
     exit 1
 fi
 
+dev_key_env='OTA_ALLOW_DEV_''KEY'
+dev_key_file='ota_pubkey.''dev''.pem'
+if grep -R -Eq "${dev_key_env}|${dev_key_file}" "$ROOT_DIR/_build_image.sh" "$ROOT_DIR/build_image.sh" "$ROOT_DIR/scripts/validate_ota_pubkey.sh"; then
+    echo "production build path must not support development OTA key fallback" >&2
+    exit 1
+fi
+
 if ! grep -q 'actions/setup-go@' "$WORKFLOW"; then
     echo "build workflow must install a verified Go toolchain with actions/setup-go" >&2
     exit 1
@@ -60,6 +67,11 @@ fi
 
 if ! grep -q '/usr/local/go/bin:$PATH' "$BUILD_IMAGE_SH"; then
     echo "build_image.sh must prepend mounted Go to Docker PATH" >&2
+    exit 1
+fi
+
+if ! grep -q 'chown -R' "$BUILD_IMAGE_SH" || ! grep -q 'pico-sdk/output' "$BUILD_IMAGE_SH"; then
+    echo "build_image.sh must restore ownership of Docker-generated output for later CI steps" >&2
     exit 1
 fi
 

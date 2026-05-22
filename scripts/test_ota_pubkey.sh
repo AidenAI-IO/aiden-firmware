@@ -27,16 +27,4 @@ if "$VALIDATOR" "$TMP_DIR/rsa.pub" >/dev/null 2>&1; then
 	exit 1
 fi
 
-if [ -f "$ROOT_DIR/keys/ota_pubkey.dev.pem" ]; then
-	cp "$ROOT_DIR/keys/ota_pubkey.dev.pem" "$TMP_DIR/renamed-production.pem"
-	if "$VALIDATOR" "$TMP_DIR/renamed-production.pem" >/dev/null 2>&1; then
-		echo "renamed development OTA public key was accepted" >&2
-		exit 1
-	fi
-	if ! OTA_ALLOW_DEV_KEY=1 "$VALIDATOR" "$TMP_DIR/renamed-production.pem" >/dev/null; then
-		echo "development OTA public key was rejected despite OTA_ALLOW_DEV_KEY=1" >&2
-		exit 1
-	fi
-fi
-
 echo "OTA public key validation tests passed"

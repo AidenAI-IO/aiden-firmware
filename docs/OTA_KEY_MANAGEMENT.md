@@ -27,7 +27,6 @@ Production image builds require a production public key. `_build_image.sh` accep
 
 - `OTA_PUBLIC_KEY_PATH=/path/to/ota_pubkey.pem ./_build_image.sh`
 - `keys/ota_pubkey.pem`, if present and not marked dev/test/placeholder
-- `OTA_ALLOW_DEV_KEY=1 ./_build_image.sh` for development images only
 
 The selected key is copied to `overlay/oem/etc/ota_pubkey.pem` and packaged into `/oem/etc/ota_pubkey.pem`.
 
@@ -112,6 +111,4 @@ If the OTA private key may be compromised:
 6. If OTA must be used, publish only a carefully audited transition release and monitor devices with `ota status` and `abctl read`.
 7. Rotate any private repository `gh_token` values separately if repository access may also be compromised.
 
-## Development Key Caveat
-
-`keys/ota_pubkey.dev.pem` is a development convenience only. `_build_image.sh` refuses it unless `OTA_ALLOW_DEV_KEY=1` is explicitly set. Never ship production devices with the development public key, because anyone with the matching test private key can sign accepted manifests.
+Do not commit private keys. If local development needs a throwaway key pair, pass the generated public key explicitly with `OTA_PUBLIC_KEY_PATH` and keep the private key outside the repository.

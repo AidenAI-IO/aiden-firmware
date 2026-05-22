@@ -33,11 +33,8 @@ elif [ -f "$SCRIPT_DIR/keys/ota_pubkey.pem" ]; then
         exit 1
     fi
     KEY_SOURCE="$SCRIPT_DIR/keys/ota_pubkey.pem"
-elif [ "${OTA_ALLOW_DEV_KEY:-}" = 1 ] && [ -f "$SCRIPT_DIR/keys/ota_pubkey.dev.pem" ]; then
-    echo "  ! Using development OTA public key because OTA_ALLOW_DEV_KEY=1"
-    KEY_SOURCE="$SCRIPT_DIR/keys/ota_pubkey.dev.pem"
 else
-    echo "  ✗ Error: set OTA_PUBLIC_KEY_PATH to a production Ed25519 public key, commit keys/ota_pubkey.pem, or set OTA_ALLOW_DEV_KEY=1 for development images"
+    echo "  ✗ Error: set OTA_PUBLIC_KEY_PATH to a production Ed25519 public key or commit keys/ota_pubkey.pem"
     exit 1
 fi
 

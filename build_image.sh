@@ -15,14 +15,32 @@ else
   echo "Host Go toolchain not found; Docker build will rely on go already being present in the image." >&2
 fi
 
+restore_docker_output_ownership() {
+  if [ "$(uname -s)" != Linux ] || ! command -v sudo >/dev/null 2>&1; then
+    return 0
+  fi
+
+  paths=()
+  for path in build overlay/oem pico-sdk/output; do
+    if [ -e "$path" ]; then
+      paths+=("$path")
+    fi
+  done
+
+  if [ "${#paths[@]}" -gt 0 ]; then
+    sudo chown -R "$(id -u):$(id -g)" "${paths[@]}"
+  fi
+}
+
 docker run \
   --platform linux/amd64 \
   --privileged \
   --rm \
   -e OTA_PUBLIC_KEY_PATH \
-  -e OTA_ALLOW_DEV_KEY \
   "${docker_go_args[@]}" \
   -v "$(pwd):/home" \
   -w /home \
   luckfoxtech/luckfox_pico:1.0 \
   /bin/bash -c 'export PATH="/usr/local/go/bin:$PATH"; ./_build_image.sh'
+
+restore_docker_output_ownership
