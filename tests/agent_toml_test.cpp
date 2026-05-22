@@ -30,6 +30,12 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.energy_threshold = 500;
     cfg.silence_ms = 1000;
     cfg.min_speech_ms = 250;
+    cfg.voice_session_enabled = false;
+    cfg.voice_followup_timeout_ms = 6500;
+    cfg.voice_first_turn_timeout_ms = 11000;
+    cfg.voice_max_turns = 4;
+    cfg.voice_interrupt_on_wakeup = false;
+    cfg.voice_interrupt_listen_during_tts = true;
     cfg.max_iterations = 6;
 
     cfg.model.provider = "openrouter";
@@ -81,6 +87,12 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.energy_threshold == 500);
     CHECK(loaded.silence_ms == 1000);
     CHECK(loaded.min_speech_ms == 250);
+    CHECK(loaded.voice_session_enabled == false);
+    CHECK(loaded.voice_followup_timeout_ms == 6500);
+    CHECK(loaded.voice_first_turn_timeout_ms == 11000);
+    CHECK(loaded.voice_max_turns == 4);
+    CHECK(loaded.voice_interrupt_on_wakeup == false);
+    CHECK(loaded.voice_interrupt_listen_during_tts == true);
     CHECK(loaded.max_iterations == 6);
 
     CHECK(loaded.model.provider == "openrouter");

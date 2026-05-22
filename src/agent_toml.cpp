@@ -105,6 +105,19 @@ bool parse_double(const std::string& raw, double* out, std::string* err) {
     return true;
 }
 
+bool parse_bool(const std::string& raw, bool* out, std::string* err) {
+    if (raw == "true") {
+        *out = true;
+        return true;
+    }
+    if (raw == "false") {
+        *out = false;
+        return true;
+    }
+    if (err) *err = "invalid boolean: " + raw;
+    return false;
+}
+
 bool assign_string(std::string* dst, const std::string& raw, std::string* err) {
     return unquote(raw, dst, err);
 }
@@ -115,6 +128,10 @@ bool assign_int(int* dst, const std::string& raw, std::string* err) {
 
 bool assign_double(double* dst, const std::string& raw, std::string* err) {
     return parse_double(raw, dst, err);
+}
+
+bool assign_bool(bool* dst, const std::string& raw, std::string* err) {
+    return parse_bool(raw, dst, err);
 }
 
 void apply_kv(AgentToml& cfg,
@@ -145,6 +162,18 @@ void apply_kv(AgentToml& cfg,
             if (!assign_int(&cfg.silence_ms, raw, &sub_err)) fail(sub_err);
         } else if (key == "min_speech_ms") {
             if (!assign_int(&cfg.min_speech_ms, raw, &sub_err)) fail(sub_err);
+        } else if (key == "voice_session_enabled") {
+            if (!assign_bool(&cfg.voice_session_enabled, raw, &sub_err)) fail(sub_err);
+        } else if (key == "voice_followup_timeout_ms") {
+            if (!assign_int(&cfg.voice_followup_timeout_ms, raw, &sub_err)) fail(sub_err);
+        } else if (key == "voice_first_turn_timeout_ms") {
+            if (!assign_int(&cfg.voice_first_turn_timeout_ms, raw, &sub_err)) fail(sub_err);
+        } else if (key == "voice_max_turns") {
+            if (!assign_int(&cfg.voice_max_turns, raw, &sub_err)) fail(sub_err);
+        } else if (key == "voice_interrupt_on_wakeup") {
+            if (!assign_bool(&cfg.voice_interrupt_on_wakeup, raw, &sub_err)) fail(sub_err);
+        } else if (key == "voice_interrupt_listen_during_tts") {
+            if (!assign_bool(&cfg.voice_interrupt_listen_during_tts, raw, &sub_err)) fail(sub_err);
         } else if (key == "max_iterations") {
             if (!assign_int(&cfg.max_iterations, raw, &sub_err)) fail(sub_err);
         }
@@ -252,6 +281,10 @@ void emit_double(std::ostringstream& out, const char* key, double value) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%g", value);
     out << key << " = " << buf << "\n";
+}
+
+void emit_bool(std::ostringstream& out, const char* key, bool value) {
+    out << key << " = " << (value ? "true" : "false") << "\n";
 }
 
 void emit_model(std::ostringstream& out, const char* section, const ModelToml& m) {
@@ -369,6 +402,12 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (cfg.energy_threshold != 0) emit_int(out, "energy_threshold", cfg.energy_threshold);
     if (cfg.silence_ms != 0) emit_int(out, "silence_ms", cfg.silence_ms);
     if (cfg.min_speech_ms != 0) emit_int(out, "min_speech_ms", cfg.min_speech_ms);
+    emit_bool(out, "voice_session_enabled", cfg.voice_session_enabled);
+    if (cfg.voice_followup_timeout_ms != 0) emit_int(out, "voice_followup_timeout_ms", cfg.voice_followup_timeout_ms);
+    if (cfg.voice_first_turn_timeout_ms != 0) emit_int(out, "voice_first_turn_timeout_ms", cfg.voice_first_turn_timeout_ms);
+    if (cfg.voice_max_turns != 0) emit_int(out, "voice_max_turns", cfg.voice_max_turns);
+    emit_bool(out, "voice_interrupt_on_wakeup", cfg.voice_interrupt_on_wakeup);
+    emit_bool(out, "voice_interrupt_listen_during_tts", cfg.voice_interrupt_listen_during_tts);
     if (cfg.max_iterations != 0) emit_int(out, "max_iterations", cfg.max_iterations);
     out << "\n";
 

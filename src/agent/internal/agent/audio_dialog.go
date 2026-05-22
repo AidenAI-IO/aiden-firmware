@@ -7,6 +7,8 @@ import (
 	"log"
 )
 
+type TurnInput = AudioInputResult
+
 // AudioDialog manages the audio conversation loop
 type AudioDialog struct {
 	config       Config
@@ -98,12 +100,14 @@ func (d *AudioDialog) StopRecording() error {
 		return nil
 	}
 
-	if err := d.audioClient.StopRecording(d.sessionID); err != nil {
+	sessionID := d.sessionID
+	d.recordActive = false
+	d.sessionID = 0
+
+	if err := d.audioClient.StopRecording(sessionID); err != nil {
 		return fmt.Errorf("stop recording: %w", err)
 	}
 
-	d.recordActive = false
-	d.sessionID = 0
 	log.Println("[audio] Record session closed")
 	return nil
 }
@@ -136,8 +140,24 @@ func (d *AudioDialog) VADFrameSamples() int {
 	return d.vad.FrameSamples()
 }
 
+func (d *AudioDialog) VADDebugState() VADDebugState {
+	return d.vad.DebugState()
+}
+
 // ProcessUtterance processes a detected utterance
 func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, runtime *Runtime) error {
+	input, err := d.PrepareTurnInput(utterance)
+	if err != nil {
+		return err
+	}
+	result, err := d.RunAgentTurn(ctx, input, runtime)
+	if err != nil {
+		return err
+	}
+	return d.Speak(ctx, result.Output, nil)
+}
+
+func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {
 	duration := float64(len(utterance)) / float64(d.config.Audio.SampleRateOrDefault())
 	log.Printf("[utterance] %.1fs of speech\n", duration)
 
@@ -147,37 +167,60 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 
 	audioInput, err := PrepareAudioInput(d.config.InputModeOrDefault(), d.sttClient, wavData, "", nil)
 	if err != nil {
-		return err
+		return TurnInput{}, err
 	}
 	if audioInput.Transcript != "" {
 		log.Printf("[stt] Transcript: %s\n", audioInput.Transcript)
 	}
+	return audioInput, nil
+}
 
+func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime *Runtime) (RunResult, error) {
 	// Send to LLM
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
 
 	result, err := runtime.Run(ctx, RunRequest{
-		Input:       audioInput.InputText,
-		Attachments: audioInput.Attachments,
+		Input:       input.InputText,
+		Attachments: input.Attachments,
 	})
 	if err != nil {
-		return fmt.Errorf("LLM request failed: %w", err)
+		return RunResult{}, fmt.Errorf("LLM request failed: %w", err)
 	}
 
 	log.Printf("[llm] Response received\n")
+	return result, nil
+}
 
+func (d *AudioDialog) Speak(ctx context.Context, text string, interrupt <-chan struct{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	speakCtx := ctx
+	cancel := func() {}
+	if interrupt != nil {
+		speakCtx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		go func() {
+			select {
+			case <-interrupt:
+				cancel()
+			case <-speakCtx.Done():
+			}
+		}()
+	}
 	// Speak response if TTS is available
-	if d.ttsClient != nil && result.Output != "" {
-		log.Printf("[reply] %s\n", result.Output)
+	if d.ttsClient != nil && text != "" {
+		log.Printf("[reply] %s\n", text)
 		log.Printf("[tts] Starting streaming playback...\n")
-		if err := d.ttsClient.TextToSpeechStream(result.Output, d.audioClient); err != nil {
+		if err := d.ttsClient.TextToSpeechStream(speakCtx, text, d.audioClient); err != nil {
 			log.Printf("[error] TTS streaming failed: %v", err)
+			return err
 		} else {
 			log.Printf("[tts] Streaming playback complete\n")
 		}
-	} else if result.Output != "" {
-		log.Printf("[reply] %s\n", result.Output)
+	} else if text != "" {
+		log.Printf("[reply] %s\n", text)
 	}
 
 	return nil
@@ -204,7 +247,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	if d.ttsClient != nil && result.Output != "" {
 		log.Printf("[reply] %s\n", result.Output)
 		log.Printf("[tts] Starting streaming playback...\n")
-		if err := d.ttsClient.TextToSpeechStream(result.Output, d.audioClient); err != nil {
+		if err := d.ttsClient.TextToSpeechStream(ctx, result.Output, d.audioClient); err != nil {
 			log.Printf("[error] TTS streaming failed: %v", err)
 		} else {
 			log.Printf("[tts] Streaming playback complete\n")

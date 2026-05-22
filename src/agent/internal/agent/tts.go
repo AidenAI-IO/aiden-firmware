@@ -2,10 +2,13 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"time"
 )
 
 const (
@@ -13,11 +16,14 @@ const (
 	minimaxTTSSampleRate = 32000
 	minimaxTTSChannels   = 1
 	minimaxTTSBitWidth   = 16
+
+	playbackDrainPollInterval = 50 * time.Millisecond
+	playbackDrainTimeout      = 30 * time.Second
 )
 
 // TTSClient is the interface for text-to-speech providers
 type TTSClient interface {
-	TextToSpeechStream(text string, audio *AudioServiceClient) error
+	TextToSpeechStream(ctx context.Context, text string, audio *AudioServiceClient) error
 }
 
 // MinimaxTTS implements TTS using Minimax API
@@ -55,7 +61,17 @@ func NewMinimaxTTS(apiKey, voiceID, emotion string, speed float64, httpClients .
 
 // TextToSpeechStream streams TTS audio to audio_service.
 // Requests PCM format directly from Minimax to avoid MP3 decoding.
-func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) error {
+func (t *MinimaxTTS) TextToSpeechStream(ctx context.Context, text string, audio *AudioServiceClient) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	// Request PCM at 32kHz/16-bit/mono and open audio_service playback with
 	// the same format so we can stream directly without any decoding or
 	// resampling.
@@ -97,11 +113,19 @@ func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) 
 	if err != nil {
 		return fmt.Errorf("start playback: %w", err)
 	}
+	playbackStopped := false
+	stopPlayback := func() {
+		if playbackStopped {
+			return
+		}
+		playbackStopped = true
+		_ = stopPlaybackIgnoringEnded(audio, playback.SessionID)
+	}
 
 	// Make HTTP request
-	req, err := http.NewRequest("POST", "https://api.minimaxi.com/v1/t2a_v2", bytes.NewReader(reqData))
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.minimaxi.com/v1/t2a_v2", bytes.NewReader(reqData))
 	if err != nil {
-		audio.StopPlayback(playback.SessionID)
+		stopPlayback()
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+t.apiKey)
@@ -109,14 +133,17 @@ func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) 
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
-		audio.StopPlayback(playback.SessionID)
+		stopPlayback()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		audio.StopPlayback(playback.SessionID)
+		stopPlayback()
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -124,23 +151,39 @@ func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) 
 	parser := newMinimaxStreamParser()
 	readBuf := make([]byte, 8192)
 	for {
+		select {
+		case <-ctx.Done():
+			stopPlayback()
+			return ctx.Err()
+		default:
+		}
+
 		n, rerr := resp.Body.Read(readBuf)
 		if n > 0 {
 			chunks, _ := parser.feed(readBuf[:n])
 			for _, pcm := range chunks {
+				select {
+				case <-ctx.Done():
+					stopPlayback()
+					return ctx.Err()
+				default:
+				}
 				// Split large PCM chunks into smaller pieces so they fit
 				// the AO driver's internal frame buffer (configured for
 				// 1024 samples × 4 frames). Sending oversized buffers in
 				// one call causes the driver to drop the tail.
-				if err := writePlaybackPCM(audio, playback.SessionID, pcm); err != nil {
-					audio.StopPlayback(playback.SessionID)
+				if err := writePlaybackPCMContext(ctx, audio, playback.SessionID, pcm); err != nil {
+					stopPlayback()
 					return err
 				}
 			}
 		}
 		if rerr != nil {
 			if rerr != io.EOF {
-				audio.StopPlayback(playback.SessionID)
+				stopPlayback()
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				return fmt.Errorf("read response: %w", rerr)
 			}
 			break
@@ -153,16 +196,81 @@ func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) 
 	const bytesPerSample = minimaxTTSBitWidth / 8 // s16le mono
 	tailBytes := (minimaxTTSSampleRate * tailMs / 1000) * bytesPerSample
 	silenceTail := make([]byte, tailBytes)
-	if err := writePlaybackPCM(audio, playback.SessionID, silenceTail); err != nil {
+	select {
+	case <-ctx.Done():
+		stopPlayback()
+		return ctx.Err()
+	default:
+	}
+	if err := writePlaybackPCMContext(ctx, audio, playback.SessionID, silenceTail); err != nil {
+		stopPlayback()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("write silence tail: %w", err)
 	}
 
 	// Final chunk drains the playback session
+	select {
+	case <-ctx.Done():
+		stopPlayback()
+		return ctx.Err()
+	default:
+	}
 	if err := audio.WritePlayChunk(playback.SessionID, nil, true); err != nil {
+		stopPlayback()
 		return fmt.Errorf("send final chunk: %w", err)
+	}
+	if err := waitForPlaybackDrain(ctx, audio, playbackDrainTimeout); err != nil {
+		stopPlayback()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return err
 	}
 
 	return nil
+}
+
+func waitForPlaybackDrain(ctx context.Context, audio *AudioServiceClient, timeout time.Duration) error {
+	if timeout <= 0 {
+		return nil
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(playbackDrainPollInterval)
+	defer ticker.Stop()
+
+	for {
+		health, err := audio.Health()
+		if err != nil {
+			return fmt.Errorf("wait playback drain: %w", err)
+		}
+		if health.PlaybackSessions == 0 {
+			return nil
+		}
+
+		select {
+		case <-waitCtx.Done():
+			return waitCtx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func stopPlaybackIgnoringEnded(audio *AudioServiceClient, sessionID uint64) error {
+	err := audio.StopPlayback(sessionID)
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "session_not_found") ||
+		strings.Contains(msg, "not_found") ||
+		strings.Contains(msg, "not found") {
+		return nil
+	}
+	return err
 }
 
 // writePlaybackPCM splits a PCM buffer into smaller pieces sized for the AO
@@ -171,7 +279,16 @@ func (t *MinimaxTTS) TextToSpeechStream(text string, audio *AudioServiceClient) 
 const playbackChunkBytes = 4096 // 2048 samples = 64ms @32kHz s16le mono
 
 func writePlaybackPCM(audio *AudioServiceClient, sessionID uint64, pcm []byte) error {
+	return writePlaybackPCMContext(context.Background(), audio, sessionID, pcm)
+}
+
+func writePlaybackPCMContext(ctx context.Context, audio *AudioServiceClient, sessionID uint64, pcm []byte) error {
 	for off := 0; off < len(pcm); off += playbackChunkBytes {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		end := off + playbackChunkBytes
 		if end > len(pcm) {
 			end = len(pcm)

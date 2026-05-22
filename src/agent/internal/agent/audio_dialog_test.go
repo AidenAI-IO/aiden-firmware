@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -18,6 +19,25 @@ func TestAudioDialogReadRecordChunkRequiresActiveRecording(t *testing.T) {
 	}
 	if chunk != nil {
 		t.Fatalf("expected nil chunk, got %#v", chunk)
+	}
+}
+
+func TestAudioDialogStopRecordingClearsLocalStateOnStopError(t *testing.T) {
+	missingSocket := filepath.Join(t.TempDir(), "missing-audio.sock")
+	dialog := &AudioDialog{
+		audioClient:  NewAudioServiceClient(missingSocket),
+		recordActive: true,
+		sessionID:    123,
+	}
+
+	if err := dialog.StopRecording(); err == nil {
+		t.Fatal("expected stop recording error")
+	}
+	if dialog.recordActive {
+		t.Fatal("recordActive should be cleared after stop attempt")
+	}
+	if dialog.sessionID != 0 {
+		t.Fatalf("sessionID = %d, want 0", dialog.sessionID)
 	}
 }
 
@@ -120,7 +140,7 @@ type fakeTTSClient struct {
 	audio *AudioServiceClient
 }
 
-func (c *fakeTTSClient) TextToSpeechStream(text string, audio *AudioServiceClient) error {
+func (c *fakeTTSClient) TextToSpeechStream(ctx context.Context, text string, audio *AudioServiceClient) error {
 	c.texts = append(c.texts, text)
 	c.audio = audio
 	return nil

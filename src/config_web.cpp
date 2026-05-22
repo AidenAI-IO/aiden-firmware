@@ -451,6 +451,12 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.energy_threshold = 500;
     cfg.silence_ms = 1000;
     cfg.min_speech_ms = 300;
+    cfg.voice_session_enabled = true;
+    cfg.voice_followup_timeout_ms = 6000;
+    cfg.voice_first_turn_timeout_ms = 10000;
+    cfg.voice_max_turns = 0;
+    cfg.voice_interrupt_on_wakeup = true;
+    cfg.voice_interrupt_listen_during_tts = false;
     cfg.max_iterations = -1;
 
     cfg.model.provider = "openrouter";
@@ -588,6 +594,12 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddNumberToObject(agent, "energy_threshold", config.energy_threshold);
     cJSON_AddNumberToObject(agent, "silence_ms", config.silence_ms);
     cJSON_AddNumberToObject(agent, "min_speech_ms", config.min_speech_ms);
+    cJSON_AddBoolToObject(agent, "voice_session_enabled", config.voice_session_enabled ? 1 : 0);
+    cJSON_AddNumberToObject(agent, "voice_followup_timeout_ms", config.voice_followup_timeout_ms);
+    cJSON_AddNumberToObject(agent, "voice_first_turn_timeout_ms", config.voice_first_turn_timeout_ms);
+    cJSON_AddNumberToObject(agent, "voice_max_turns", config.voice_max_turns);
+    cJSON_AddBoolToObject(agent, "voice_interrupt_on_wakeup", config.voice_interrupt_on_wakeup ? 1 : 0);
+    cJSON_AddBoolToObject(agent, "voice_interrupt_listen_during_tts", config.voice_interrupt_listen_during_tts ? 1 : 0);
     cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
 
     return root;
@@ -659,6 +671,13 @@ void set_json_double(double* dst, cJSON* obj, const char* key) {
     cJSON* item = cJSON_GetObjectItem(obj, key);
     if (dst && json_is_number(item)) {
         *dst = item->valuedouble;
+    }
+}
+
+void set_json_bool(bool* dst, cJSON* obj, const char* key) {
+    cJSON* item = cJSON_GetObjectItem(obj, key);
+    if (dst && json_is_bool(item)) {
+        *dst = json_is_type(item, cJSON_True);
     }
 }
 
@@ -744,8 +763,30 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->energy_threshold, agent, "energy_threshold");
         set_json_int(&config->silence_ms, agent, "silence_ms");
         set_json_int(&config->min_speech_ms, agent, "min_speech_ms");
+        set_json_bool(&config->voice_session_enabled, agent, "voice_session_enabled");
+        set_json_int(&config->voice_followup_timeout_ms, agent, "voice_followup_timeout_ms");
+        set_json_int(&config->voice_first_turn_timeout_ms, agent, "voice_first_turn_timeout_ms");
+        set_json_int(&config->voice_max_turns, agent, "voice_max_turns");
+        set_json_bool(&config->voice_interrupt_on_wakeup, agent, "voice_interrupt_on_wakeup");
+        set_json_bool(&config->voice_interrupt_listen_during_tts, agent, "voice_interrupt_listen_during_tts");
         set_json_int(&config->max_iterations, agent, "max_iterations");
     }
+}
+
+std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
+    if (config.voice_followup_timeout_ms < 0) {
+        return "voice_followup_timeout_ms must be >= 0";
+    }
+    if (config.voice_first_turn_timeout_ms < 0) {
+        return "voice_first_turn_timeout_ms must be >= 0";
+    }
+    if (config.voice_max_turns < 0) {
+        return "voice_max_turns must be >= 0";
+    }
+    if (config.max_iterations < -1) {
+        return "max_iterations must be >= -1";
+    }
+    return "";
 }
 
 void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {
@@ -1025,6 +1066,13 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON* apply_wifi_json = cJSON_GetObjectItem(root, "apply_wifi");
     if (json_is_bool(apply_wifi_json)) {
         apply_wifi = json_is_type(apply_wifi_json, cJSON_True);
+    }
+
+    std::string validation_error = validate_agent_config_for_save(config);
+    if (!validation_error.empty()) {
+        std::cerr << "Invalid agent config: " << validation_error << "\n";
+        cJSON_Delete(root);
+        return make_json_error(400, validation_error);
     }
 
     cJSON_Delete(root);

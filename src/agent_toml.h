@@ -76,6 +76,12 @@ struct AgentToml {
     int energy_threshold = 0;
     int silence_ms = 0;
     int min_speech_ms = 0;
+    bool voice_session_enabled = true;
+    int voice_followup_timeout_ms = 6000;
+    int voice_first_turn_timeout_ms = 10000;
+    int voice_max_turns = 0;
+    bool voice_interrupt_on_wakeup = true;
+    bool voice_interrupt_listen_during_tts = false;
     int max_iterations = -1;
 };
 

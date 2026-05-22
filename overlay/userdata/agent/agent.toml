@@ -20,6 +20,15 @@ energy_threshold = 500    # Energy threshold for speech detection
 silence_ms = 1000         # Silence duration to end utterance (ms)
 min_speech_ms = 300       # Minimum speech duration to accept (ms)
 
+# Wakeup voice session parameters
+# Only used when input_mode = "stt" and trigger_mode = "wakeup"
+voice_session_enabled = true
+voice_followup_timeout_ms = 6000
+voice_first_turn_timeout_ms = 10000
+voice_max_turns = 0
+voice_interrupt_on_wakeup = true
+voice_interrupt_listen_during_tts = false
+
 # Primary LLM model configuration
 [model]
 provider = "openrouter"

@@ -276,7 +276,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			if s.logger != nil {
 				s.logger.Info("TTS playback: %q", text)
 			}
-			if err := s.ttsClient.TextToSpeechStream(text, s.audioClient); err != nil {
+			if err := s.ttsClient.TextToSpeechStream(context.Background(), text, s.audioClient); err != nil {
 				if s.logger != nil {
 					s.logger.Error("TTS playback failed: %v", err)
 				}
