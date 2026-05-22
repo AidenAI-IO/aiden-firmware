@@ -773,6 +773,22 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     }
 }
 
+std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
+    if (config.voice_followup_timeout_ms < 0) {
+        return "voice_followup_timeout_ms must be >= 0";
+    }
+    if (config.voice_first_turn_timeout_ms < 0) {
+        return "voice_first_turn_timeout_ms must be >= 0";
+    }
+    if (config.voice_max_turns < 0) {
+        return "voice_max_turns must be >= 0";
+    }
+    if (config.max_iterations < -1) {
+        return "max_iterations must be >= -1";
+    }
+    return "";
+}
+
 void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {
     if (!root || !wifi) {
         return;
@@ -1050,6 +1066,13 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON* apply_wifi_json = cJSON_GetObjectItem(root, "apply_wifi");
     if (json_is_bool(apply_wifi_json)) {
         apply_wifi = json_is_type(apply_wifi_json, cJSON_True);
+    }
+
+    std::string validation_error = validate_agent_config_for_save(config);
+    if (!validation_error.empty()) {
+        std::cerr << "Invalid agent config: " << validation_error << "\n";
+        cJSON_Delete(root);
+        return make_json_error(400, validation_error);
     }
 
     cJSON_Delete(root);

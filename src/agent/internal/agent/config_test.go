@@ -179,3 +179,48 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 		t.Fatal("VoiceInterruptListenDuringTTSOrDefault() = false, want true")
 	}
 }
+
+func TestVoiceSessionConfigValidationRejectsNegativeValues(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{
+			name: "negative followup timeout",
+			cfg: Config{
+				Model:                  ModelConfig{Provider: "fake"},
+				VoiceFollowupTimeoutMs: -1,
+			},
+			want: "voice_followup_timeout_ms must be >= 0",
+		},
+		{
+			name: "negative first turn timeout",
+			cfg: Config{
+				Model:                   ModelConfig{Provider: "fake"},
+				VoiceFirstTurnTimeoutMs: -1,
+			},
+			want: "voice_first_turn_timeout_ms must be >= 0",
+		},
+		{
+			name: "negative max turns",
+			cfg: Config{
+				Model:         ModelConfig{Provider: "fake"},
+				VoiceMaxTurns: -1,
+			},
+			want: "voice_max_turns must be >= 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if err == nil {
+				t.Fatal("Validate() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate() error = %v, want contains %q", err, tt.want)
+			}
+		})
+	}
+}

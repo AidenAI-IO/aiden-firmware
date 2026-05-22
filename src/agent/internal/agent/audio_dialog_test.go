@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,8 +23,9 @@ func TestAudioDialogReadRecordChunkRequiresActiveRecording(t *testing.T) {
 }
 
 func TestAudioDialogStopRecordingClearsLocalStateOnStopError(t *testing.T) {
+	missingSocket := filepath.Join(t.TempDir(), "missing-audio.sock")
 	dialog := &AudioDialog{
-		audioClient:  NewAudioServiceClient("/tmp/aiden-agent-test-missing-audio.sock"),
+		audioClient:  NewAudioServiceClient(missingSocket),
 		recordActive: true,
 		sessionID:    123,
 	}

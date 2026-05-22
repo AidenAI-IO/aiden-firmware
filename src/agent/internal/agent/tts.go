@@ -203,8 +203,8 @@ func (t *MinimaxTTS) TextToSpeechStream(ctx context.Context, text string, audio 
 	default:
 	}
 	if err := writePlaybackPCMContext(ctx, audio, playback.SessionID, silenceTail); err != nil {
+		stopPlayback()
 		if ctx.Err() != nil {
-			stopPlayback()
 			return ctx.Err()
 		}
 		return fmt.Errorf("write silence tail: %w", err)
@@ -218,11 +218,12 @@ func (t *MinimaxTTS) TextToSpeechStream(ctx context.Context, text string, audio 
 	default:
 	}
 	if err := audio.WritePlayChunk(playback.SessionID, nil, true); err != nil {
+		stopPlayback()
 		return fmt.Errorf("send final chunk: %w", err)
 	}
 	if err := waitForPlaybackDrain(ctx, audio, playbackDrainTimeout); err != nil {
+		stopPlayback()
 		if ctx.Err() != nil {
-			stopPlayback()
 			return ctx.Err()
 		}
 		return err

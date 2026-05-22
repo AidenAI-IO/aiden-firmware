@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -179,7 +180,14 @@ type testAudioService struct {
 
 func newTestAudioService(t *testing.T) *testAudioService {
 	t.Helper()
-	socketPath := filepath.Join(t.TempDir(), "audio.sock")
+	tempDir, err := os.MkdirTemp("", "aiden-tts-")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		os.RemoveAll(tempDir)
+	})
+	socketPath := filepath.Join(tempDir, "audio.sock")
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen unix socket: %v", err)
