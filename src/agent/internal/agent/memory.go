@@ -17,6 +17,8 @@ import (
 	"github.com/tmc/langchaingo/schema"
 )
 
+const defaultLockTimeout = 10 * time.Second
+
 type MemoryHandle struct {
 	Memory  schema.Memory
 	History *langmemory.ChatMessageHistory
@@ -44,6 +46,7 @@ type MemoryManager struct {
 	profileFn        ProfileFn
 	contextWindowFn  ContextWindowFn
 	profileDebouncer *ProfileDebouncer
+	lockTimeout      time.Duration
 	logger           *Logger
 }
 
@@ -98,9 +101,10 @@ func WithContextWindowFn(fn ContextWindowFn) MemoryManagerOption {
 
 func NewMemoryManager(storageDir string, opts ...MemoryManagerOption) *MemoryManager {
 	manager := &MemoryManager{
-		handles:    map[string]*MemoryHandle{},
-		eventCount: map[string]int{},
-		extraction: DefaultMemoryExtractionConfig(),
+		handles:     map[string]*MemoryHandle{},
+		eventCount:  map[string]int{},
+		extraction:  DefaultMemoryExtractionConfig(),
+		lockTimeout: defaultLockTimeout,
 	}
 	if storageDir != "" {
 		manager.storageDir = storageDir
@@ -273,6 +277,12 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 		return nil
 	}
 
+	fl := NewFileLock(m.storageDir)
+	if err := fl.Lock(m.lockTimeout); err != nil {
+		return fmt.Errorf("lock for loading memory %q: %w", agentName, err)
+	}
+	defer fl.Unlock()
+
 	data, err := os.ReadFile(m.memoryPath(agentName))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -337,6 +347,12 @@ func (m *MemoryManager) persistSnapshot(agentName string, records []MessageRecor
 		return err
 	}
 
+	fl := NewFileLock(m.storageDir)
+	if err := fl.Lock(m.lockTimeout); err != nil {
+		return fmt.Errorf("lock for persisting memory %q: %w", agentName, err)
+	}
+	defer fl.Unlock()
+
 	data, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal memory snapshot for %q: %w", agentName, err)
@@ -357,6 +373,13 @@ func (m *MemoryManager) removePersisted(agentName string) error {
 	if m.storageDir == "" {
 		return nil
 	}
+
+	fl := NewFileLock(m.storageDir)
+	if err := fl.Lock(m.lockTimeout); err != nil {
+		return fmt.Errorf("lock for removing memory %q: %w", agentName, err)
+	}
+	defer fl.Unlock()
+
 	if err := os.Remove(m.memoryPath(agentName)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove persisted memory for %q: %w", agentName, err)
 	}
