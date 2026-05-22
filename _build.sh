@@ -19,23 +19,18 @@ echo "Library: $ROOT_DIR/build/lib/libaiden.a"
 echo "Binaries in: $ROOT_DIR/build/bin/"
 ls -lh "$ROOT_DIR/build/bin/"
 
-# Build Go agent
+# Build Go tools. The build environment must provide a verified Go in PATH.
+# GOTOOLCHAIN=local disables automatic toolchain downloads; if the installed Go
+# cannot satisfy go.mod, go build fails before producing binaries.
 echo ""
-echo "Building Go agent..."
+echo "Building Go binaries..."
 
 GO_VERSION="1.26.0"
-GO_TARBALL="go${GO_VERSION}.linux-amd64.tar.gz"
-GO_INSTALL_DIR="/tmp/go-${GO_VERSION}"
-
-if [ ! -x "${GO_INSTALL_DIR}/bin/go" ]; then
-    echo "Installing Go ${GO_VERSION}..."
-    mkdir -p "${GO_INSTALL_DIR}"
-    wget -q "https://go.dev/dl/${GO_TARBALL}" -O "/tmp/${GO_TARBALL}"
-    tar -C "${GO_INSTALL_DIR}" --strip-components=1 -xzf "/tmp/${GO_TARBALL}"
-    rm -f "/tmp/${GO_TARBALL}"
+if ! command -v go >/dev/null 2>&1; then
+    echo "Go ${GO_VERSION} is required in PATH. Install a verified Go toolchain in the build container/CI before running _build.sh." >&2
+    exit 1
 fi
 
-export PATH="${GO_INSTALL_DIR}/bin:$PATH"
 export GOCACHE="/tmp/go-cache"
 export GOMODCACHE="/tmp/go-mod"
 export GOPATH="/tmp/gopath"
@@ -43,7 +38,9 @@ export GOTOOLCHAIN=local
 
 cd src/agent
 GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -o "../../${BUILD_DIR}/bin/agent" ./cmd/daemon
+GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -o "../../${BUILD_DIR}/bin/ota" ./cmd/ota
+GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -o "../../${BUILD_DIR}/bin/abctl" ./cmd/abctl
 cd ../..
 
-echo "Go agent built: ${BUILD_DIR}/bin/agent"
-ls -lh "${BUILD_DIR}/bin/agent"
+echo "Go binaries built:"
+ls -lh "${BUILD_DIR}/bin/agent" "${BUILD_DIR}/bin/ota" "${BUILD_DIR}/bin/abctl"

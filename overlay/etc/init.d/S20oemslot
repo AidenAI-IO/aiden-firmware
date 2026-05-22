@@ -1,0 +1,48 @@
+#!/bin/sh
+# Mount the slot-matched OEM partition at /oem.
+
+CMDLINE_PATH=${CMDLINE_PATH:-/proc/cmdline}
+MOUNT_BIN=${MOUNT_BIN:-mount}
+OEM_MOUNTPOINT=${OEM_MOUNTPOINT:-/oem}
+
+find_slot_suffix() {
+    [ -r "$CMDLINE_PATH" ] || return 1
+    for arg in $(cat "$CMDLINE_PATH"); do
+        case "$arg" in
+            aiden.slot_suffix=*)
+                printf '%s\n' "${arg#aiden.slot_suffix=}"
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+start() {
+    suffix=$(find_slot_suffix || true)
+    case "$suffix" in
+        _a|_b) ;;
+        '') echo "S20oemslot: missing aiden.slot_suffix in $CMDLINE_PATH" >&2; return 1 ;;
+        *) echo "S20oemslot: invalid aiden.slot_suffix=$suffix" >&2; return 1 ;;
+    esac
+
+    mkdir -p "$OEM_MOUNTPOINT"
+    "$MOUNT_BIN" "/dev/block/by-name/oem${suffix}" "$OEM_MOUNTPOINT"
+}
+
+case "${1:-start}" in
+    start)
+        start
+        ;;
+    stop)
+        umount "$OEM_MOUNTPOINT" 2>/dev/null || true
+        ;;
+    restart|reload)
+        "$0" stop
+        "$0" start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}" >&2
+        exit 1
+        ;;
+esac

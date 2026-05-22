@@ -19,7 +19,7 @@
 ```
 
 > [!NOTE]
-> `./build_image.sh` 将会使用 Docker 启动一个标准的 Ubuntu 22.04 编译环境，自动编译所有组件以及打包相关镜像
+> `./build_image.sh` 将会使用 Docker 启动 Luckfox Pico SDK 编译环境，自动编译所有组件以及打包相关镜像。完整 USB 刷机包输出到 `pico-sdk/output/image/update.img`，A/B OTA 分区镜像输出在同一目录。
 
 ## 固件刷入
 
@@ -39,17 +39,23 @@
 ```shell
 cd aiden-hardware-demo
 # 刷入完整固件
-./upgrade_tool/upgrade_tool uf ./image/update.img
+./upgrade_tool/upgrade_tool uf pico-sdk/output/image/update.img
 ```
 
-upgrade_tool 是支持单独更新指定的分区的，分区划分可参考下表：
+upgrade_tool 支持单独更新指定分区。生产镜像使用 A/B 分区布局，在线 OTA 只写入非活动槽位的 `boot_*`、`oem_*`、`rootfs_*` 分区；`env`、`idblock`、`uboot` 仅用于工厂或 USB 恢复刷机，不通过 OTA 更新。`misc` 分区保存 Rockchip SPL A/B 元数据，元数据位于字节偏移 `2048`，详见 `docs/OTA_AB_VERIFICATION.md`。
 
-| Partition | Start Address | End Address | Size (Hex) | Size (Bytes) | Size (Readable) |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **env** | `0x000000000000` | `0x000000040000` | `0x40000` | 262,144 | 256 KB |
-| **idblock** | `0x000000040000` | `0x000000080000` | `0x40000` | 262,144 | 256 KB |
-| **uboot** | `0x000000080000` | `0x000000100000` | `0x80000` | 524,288 | 512 KB |
-| **boot** | `0x000000100000` | `0x000000500000` | `0x400000` | 4,194,304 | 4 MB |
-| **oem** | `0x000000500000` | `0x000002300000` | `0x1E00000` | 31,457,280 | 30 MB |
-| **userdata** | `0x000002300000` | `0x000002d00000` | `0xA00000` | 10,485,760 | 10 MB |
-| **rootfs** | `0x000002d00000` | `0x00000ff00000` | `0xC200000` | 203,843,584 | ~194.375 MB |
+| Partition | Size | Purpose |
+| :--- | :--- | :--- |
+| **env** | 32 KB | Bootloader environment, factory/USB recovery only |
+| **idblock** | 512 KB @ 32 KB | Rockchip idblock, factory/USB recovery only |
+| **uboot** | 256 KB | Bootloader, factory/USB recovery only |
+| **misc** | 4 MB | SPL A/B metadata; AVB A/B record at byte offset `2048` |
+| **boot_a** | 32 MB | Slot A FIT boot image with `rootfs_a` bootargs |
+| **boot_b** | 32 MB | Slot B FIT boot image with `rootfs_b` bootargs |
+| **oem_a** | 256 MB | Slot A `/oem` contents, mounted when `aiden.slot_suffix=_a` |
+| **oem_b** | 256 MB | Slot B `/oem` contents, mounted when `aiden.slot_suffix=_b` |
+| **rootfs_a** | 1 GB | Slot A root filesystem |
+| **rootfs_b** | 1 GB | Slot B root filesystem |
+| **userdata** | 4 GB | Shared persistent data, including `/userdata/ota` state |
+
+构建完成后，`pico-sdk/output/image/` 应包含 `misc.img`、`boot_a.img`、`boot_b.img`、`oem_a.img`、`oem_b.img`、`rootfs_a.img`、`rootfs_b.img`、`userdata.img` 和 `update.img`。发布流程还会在同一目录生成签名的 `manifest.json`。

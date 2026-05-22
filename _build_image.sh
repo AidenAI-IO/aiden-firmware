@@ -9,16 +9,41 @@ DEST_OVERLAY="$PICO_SDK/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buil
 echo "=== Aiden Hardware Demo - Image Builder ==="
 echo ""
 
-# Step 1: 编译应用程序
+# Step 1: 编译应用程序. _build.sh requires a verified Go in PATH and disables
+# automatic Go toolchain downloads.
 echo "[1/6] Building applications..."
 cd "$SCRIPT_DIR"
 ./_build.sh
 
 # Step 2: 准备 overlay 目录
 echo "[2/6] Preparing overlay directories..."
-mkdir -p "$OVERLAY/oem/usr/bin"
+mkdir -p "$OVERLAY/oem/usr/bin" "$OVERLAY/oem/etc"
 cp -a "$SCRIPT_DIR/build/bin"/. "$OVERLAY/oem/usr/bin/"
 echo "  ✓ Binaries copied to overlay/oem/usr/bin"
+
+KEY_SOURCE="${OTA_PUBLIC_KEY_PATH:-}"
+if [ -n "$KEY_SOURCE" ]; then
+    if [ ! -f "$KEY_SOURCE" ]; then
+        echo "  ✗ Error: OTA_PUBLIC_KEY_PATH does not exist: $KEY_SOURCE"
+        exit 1
+    fi
+elif [ -f "$SCRIPT_DIR/keys/ota_pubkey.pem" ]; then
+    if grep -Eiq 'dev|test|placeholder' "$SCRIPT_DIR/keys/ota_pubkey.pem"; then
+        echo "  ✗ Error: keys/ota_pubkey.pem is marked dev/test/placeholder; refusing production image"
+        exit 1
+    fi
+    KEY_SOURCE="$SCRIPT_DIR/keys/ota_pubkey.pem"
+elif [ "${OTA_ALLOW_DEV_KEY:-}" = 1 ] && [ -f "$SCRIPT_DIR/keys/ota_pubkey.dev.pem" ]; then
+    echo "  ! Using development OTA public key because OTA_ALLOW_DEV_KEY=1"
+    KEY_SOURCE="$SCRIPT_DIR/keys/ota_pubkey.dev.pem"
+else
+    echo "  ✗ Error: set OTA_PUBLIC_KEY_PATH to a production Ed25519 public key, commit keys/ota_pubkey.pem, or set OTA_ALLOW_DEV_KEY=1 for development images"
+    exit 1
+fi
+
+"$SCRIPT_DIR/scripts/validate_ota_pubkey.sh" "$KEY_SOURCE"
+cp "$KEY_SOURCE" "$OVERLAY/oem/etc/ota_pubkey.pem"
+echo "  ✓ OTA public key copied to overlay/oem/etc/ota_pubkey.pem"
 
 # Step 3: 同步 etc 等目录到 buildroot overlay（排除 oem 和 userdata）
 echo "[3/6] Syncing overlay (etc) to buildroot overlay..."
@@ -65,7 +90,7 @@ if [ -d "$OVERLAY/oem" ]; then
 fi
 
 # 复制 userdata 内容
-if [ -d "$OVERLAY/userdata" ] && [ "$(ls -A $OVERLAY/userdata 2>/dev/null)" ]; then
+if [ -d "$OVERLAY/userdata" ] && [ "$(ls -A "$OVERLAY/userdata" 2>/dev/null)" ]; then
     echo "  → Copying userdata content..."
     mkdir -p "$RK_PROJECT_PACKAGE_USERDATA_DIR"
     rsync -a "$OVERLAY/userdata/" "$RK_PROJECT_PACKAGE_USERDATA_DIR/"
@@ -77,9 +102,12 @@ echo "[6/6] Rebuilding oem.img and userdata.img..."
 cd "$PICO_SDK/project"
 
 # 重新打包 oem.img
-if [ -d "$RK_PROJECT_PACKAGE_OEM_DIR" ] && [ "$(ls -A $RK_PROJECT_PACKAGE_OEM_DIR)" ]; then
+if [ -d "$RK_PROJECT_PACKAGE_OEM_DIR" ] && [ "$(ls -A "$RK_PROJECT_PACKAGE_OEM_DIR")" ]; then
     echo "  → Rebuilding oem.img..."
-    ./build.sh firmware 2>&1 | grep -E "(oem|userdata|update)" || true
+    firmware_log="$(mktemp)"
+    ./build.sh firmware > "$firmware_log" 2>&1
+    grep -E "(oem|userdata|update)" "$firmware_log" || true
+    rm -f "$firmware_log"
     echo "  ✓ Images rebuilt"
 fi
 
@@ -89,5 +117,17 @@ echo "Images location: $RK_PROJECT_OUTPUT_IMAGE"
 echo ""
 ls -lh "$RK_PROJECT_OUTPUT_IMAGE"/*.img 2>/dev/null | awk '{print "  " $9 " (" $5 ")"}'
 echo ""
+
+missing=0
+for img in misc.img boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img update.img; do
+    if [ ! -s "$RK_PROJECT_OUTPUT_IMAGE/$img" ]; then
+        echo "  ✗ Missing expected image: $RK_PROJECT_OUTPUT_IMAGE/$img" >&2
+        missing=1
+    fi
+done
+if [ "$missing" -ne 0 ]; then
+    exit 1
+fi
+echo "  ✓ Expected A/B images verified"
 
 cd "$SCRIPT_DIR"

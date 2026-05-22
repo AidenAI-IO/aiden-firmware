@@ -23,6 +23,10 @@
 #include <vector>
 #include <string>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 enum TriggerMode {
     MODE_WAKEUP,
@@ -220,6 +224,173 @@ static bool has_any_model_text_override(const aiden::AgentConfig& config) {
 static bool should_dump_last_utterance_wav() {
     const char* enabled = getenv("AIDEN_DEBUG_DUMP_LAST_UTTERANCE");
     return enabled && strcmp(enabled, "1") == 0;
+}
+
+static bool read_text_file(const char* path, std::string& out) {
+    out.clear();
+    std::ifstream f(path);
+    if (!f) return false;
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    out = ss.str();
+    while (!out.empty() && (out[out.size() - 1] == '\n' || out[out.size() - 1] == '\r')) out.erase(out.size() - 1);
+    return true;
+}
+
+static std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (size_t i = 0; i < s.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        switch (c) {
+        case '\\': out += "\\\\"; break;
+        case '"': out += "\\\""; break;
+        case '\b': out += "\\b"; break;
+        case '\f': out += "\\f"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default:
+            if (c < 0x20) {
+                char buf[7];
+                snprintf(buf, sizeof(buf), "\\u%04x", c);
+                out += buf;
+            } else {
+                out += static_cast<char>(c);
+            }
+        }
+    }
+    return out;
+}
+
+static bool extract_json_string_field(const std::string& json, const char* field, std::string& out) {
+    out.clear();
+    std::string key = std::string("\"") + field + "\"";
+    size_t pos = json.find(key);
+    if (pos == std::string::npos) return false;
+    pos = json.find(':', pos + key.size());
+    if (pos == std::string::npos) return false;
+    pos = json.find('"', pos + 1);
+    if (pos == std::string::npos) return false;
+    ++pos;
+    while (pos < json.size()) {
+        char c = json[pos++];
+        if (c == '"') return true;
+        if (c == '\\') {
+            if (pos >= json.size()) return false;
+            char e = json[pos++];
+            switch (e) {
+            case '"': out += '"'; break;
+            case '\\': out += '\\'; break;
+            case '/': out += '/'; break;
+            case 'b': out += '\b'; break;
+            case 'f': out += '\f'; break;
+            case 'n': out += '\n'; break;
+            case 'r': out += '\r'; break;
+            case 't': out += '\t'; break;
+            default: return false;
+            }
+        } else {
+            out += c;
+        }
+    }
+    return false;
+}
+
+static bool current_slot_from_cmdline(std::string& slot) {
+    std::string cmdline;
+    if (!read_text_file("/proc/cmdline", cmdline)) return false;
+    const std::string prefix = "aiden.slot_suffix=";
+    size_t pos = cmdline.find(prefix);
+    if (pos == std::string::npos) return false;
+    pos += prefix.size();
+    size_t end = cmdline.find_first_of(" \t\r\n", pos);
+    std::string suffix = cmdline.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+    if (suffix == "_a") { slot = "a"; return true; }
+    if (suffix == "_b") { slot = "b"; return true; }
+    return false;
+}
+
+static bool write_file_atomic(const char* path, const std::string& data) {
+    std::string tmp = std::string(path) + ".tmp";
+    int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return false;
+
+    const char* p = data.data();
+    size_t left = data.size();
+    while (left > 0) {
+        ssize_t n = write(fd, p, left);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            unlink(tmp.c_str());
+            return false;
+        }
+        p += n;
+        left -= static_cast<size_t>(n);
+    }
+
+    if (fsync(fd) != 0) {
+        close(fd);
+        unlink(tmp.c_str());
+        return false;
+    }
+    if (close(fd) != 0) {
+        unlink(tmp.c_str());
+        return false;
+    }
+    if (rename(tmp.c_str(), path) != 0) {
+        unlink(tmp.c_str());
+        return false;
+    }
+
+    int dirfd = open("/userdata/ota", O_RDONLY | O_DIRECTORY);
+    if (dirfd >= 0) {
+        fsync(dirfd);
+        close(dirfd);
+    }
+    return true;
+}
+
+static void write_ota_health_marker_if_pending() {
+    const char* pending_path = "/userdata/ota/pending_boot.json";
+    const char* health_path = "/userdata/ota/health.ok";
+
+    std::string pending;
+    if (!read_text_file(pending_path, pending)) return;
+
+    std::string version, build_time, nonce, slot, boot_id;
+    if (!extract_json_string_field(pending, "target_version", version) ||
+        !extract_json_string_field(pending, "target_build_time", build_time) ||
+        !extract_json_string_field(pending, "nonce", nonce)) {
+        fprintf(stderr, "[ota] pending boot record is missing required fields; health marker not written\n");
+        return;
+    }
+    if (!current_slot_from_cmdline(slot)) {
+        fprintf(stderr, "[ota] aiden.slot_suffix missing or invalid; health marker not written\n");
+        return;
+    }
+    if (!read_text_file("/proc/sys/kernel/random/boot_id", boot_id)) {
+        fprintf(stderr, "[ota] boot_id unavailable; health marker not written\n");
+        return;
+    }
+
+    mkdir("/userdata/ota", 0755);
+    std::string json = "{\n";
+    json += "  \"slot\": \"" + json_escape(slot) + "\",\n";
+    json += "  \"version\": \"" + json_escape(version) + "\",\n";
+    json += "  \"build_time\": \"" + json_escape(build_time) + "\",\n";
+    json += "  \"nonce\": \"" + json_escape(nonce) + "\",\n";
+    json += "  \"boot_id\": \"" + json_escape(boot_id) + "\",\n";
+    json += "  \"agent_version\": \"" + json_escape(aiden::agent_version()) + "\",\n";
+    json += "  \"agent_commit_time\": \"" + json_escape(aiden::agent_commit_time()) + "\"\n";
+    json += "}\n";
+
+    if (write_file_atomic(health_path, json)) {
+        printf("[ota] health marker written for slot %s version %s\n", slot.c_str(), version.c_str());
+    } else {
+        fprintf(stderr, "[ota] failed to write health marker: %s\n", strerror(errno));
+    }
 }
 
 static void append_pcm16le_samples(const std::vector<uint8_t>& pcm_bytes,
@@ -611,6 +782,8 @@ int main(int argc, char* argv[]) {
 
     aiden::AudioVAD vad(16000, config.energy_threshold, config.silence_ms,
                         config.min_speech_ms, mode == MODE_MANUAL);
+
+    write_ota_health_marker_if_pending();
 
     if (mode == MODE_TEXT) {
         TextInputTerminalMode terminal_mode(STDIN_FILENO);

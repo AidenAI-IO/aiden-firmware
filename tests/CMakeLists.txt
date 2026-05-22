@@ -75,6 +75,7 @@ if(OpenCV_FOUND)
     list(APPEND AIDEN_IMAGE_TEST_SOURCES image_process_test.cpp)
     message(STATUS "OpenCV ${OpenCV_VERSION} found; image_process tests enabled in aiden_tests")
 else()
+    list(APPEND AIDEN_IMAGE_TEST_SOURCES frame_jpeg_encoder_stub.cpp)
     message(STATUS "OpenCV not found; image_process tests omitted from aiden_tests")
 endif()
 
