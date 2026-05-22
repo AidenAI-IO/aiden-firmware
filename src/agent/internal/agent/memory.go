@@ -8,11 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 	langmemory "github.com/tmc/langchaingo/memory"
 	"github.com/tmc/langchaingo/schema"
 )
+
+const defaultLockTimeout = 10 * time.Second
 
 type MemoryHandle struct {
 	Memory  schema.Memory
@@ -20,9 +23,10 @@ type MemoryHandle struct {
 }
 
 type MemoryManager struct {
-	mu         sync.Mutex
-	handles    map[string]*MemoryHandle
-	storageDir string
+	mu          sync.Mutex
+	handles     map[string]*MemoryHandle
+	storageDir  string
+	lockTimeout time.Duration
 }
 
 type MessageRecord struct {
@@ -31,7 +35,10 @@ type MessageRecord struct {
 }
 
 func NewMemoryManager(storageDir ...string) *MemoryManager {
-	manager := &MemoryManager{handles: map[string]*MemoryHandle{}}
+	manager := &MemoryManager{
+		handles:     map[string]*MemoryHandle{},
+		lockTimeout: defaultLockTimeout,
+	}
 	if len(storageDir) > 0 {
 		manager.storageDir = storageDir[0]
 	}
@@ -135,6 +142,12 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 		return nil
 	}
 
+	fl := NewFileLock(m.storageDir)
+	if err := fl.Lock(m.lockTimeout); err != nil {
+		return fmt.Errorf("lock for loading memory %q: %w", agentName, err)
+	}
+	defer fl.Unlock()
+
 	data, err := os.ReadFile(m.memoryPath(agentName))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -166,6 +179,12 @@ func (m *MemoryManager) persistSnapshot(agentName string, records []MessageRecor
 		return fmt.Errorf("create memory directory: %w", err)
 	}
 
+	fl := NewFileLock(m.storageDir)
+	if err := fl.Lock(m.lockTimeout); err != nil {
+		return fmt.Errorf("lock for persisting memory %q: %w", agentName, err)
+	}
+	defer fl.Unlock()
+
 	data, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal memory snapshot for %q: %w", agentName, err)
@@ -186,6 +205,13 @@ func (m *MemoryManager) removePersisted(agentName string) error {
 	if m.storageDir == "" {
 		return nil
 	}
+
+	fl := NewFileLock(m.storageDir)
+	if err := fl.Lock(m.lockTimeout); err != nil {
+		return fmt.Errorf("lock for removing memory %q: %w", agentName, err)
+	}
+	defer fl.Unlock()
+
 	if err := os.Remove(m.memoryPath(agentName)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove persisted memory for %q: %w", agentName, err)
 	}
