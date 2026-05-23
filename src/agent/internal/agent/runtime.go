@@ -64,12 +64,13 @@ type RunMetrics struct {
 }
 
 type RunEvent struct {
-	Type      string    `json:"type"`
-	ToolName  string    `json:"tool_name,omitempty"`
-	ToolInput string    `json:"tool_input,omitempty"`
-	Content   string    `json:"content,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
-	IsError   bool      `json:"is_error,omitempty"`
+	Type        string    `json:"type"`
+	ToolName    string    `json:"tool_name,omitempty"`
+	ToolInput   string    `json:"tool_input,omitempty"`
+	Description string    `json:"description,omitempty"`
+	Content     string    `json:"content,omitempty"`
+	Timestamp   time.Time `json:"timestamp"`
+	IsError     bool      `json:"is_error,omitempty"`
 }
 
 type usageTrackingModel struct {
@@ -494,17 +495,25 @@ func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error)
 }
 
 func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action schema.AgentAction) {
+	description := toolDescriptionFromAction(action)
 	if h.logger != nil {
-		h.logger.Info("Tool call: name=%s input=%s",
-			action.Tool, truncateForLog(action.ToolInput, 240))
+		if description != "" {
+			h.logger.Info("Tool call: name=%s input=%s description=%s",
+				action.Tool, truncateForLog(action.ToolInput, 240), truncateForLog(description, 240))
+		} else {
+			h.logger.Info("Tool call: name=%s input=%s",
+				action.Tool, truncateForLog(action.ToolInput, 240))
+		}
 	}
 	if h.eventHandler != nil {
 		h.pushPendingAction(action)
 		h.eventHandler(RunEvent{
-			Type:      "tool_call",
-			ToolName:  action.Tool,
-			ToolInput: action.ToolInput,
-			Timestamp: time.Now(),
+			Type:        "tool_call",
+			ToolName:    action.Tool,
+			ToolInput:   action.ToolInput,
+			Description: description,
+			Content:     description,
+			Timestamp:   time.Now(),
 		})
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 	fakellm "github.com/tmc/langchaingo/llms/fake"
@@ -40,7 +41,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 						Type: "function",
 						FunctionCall: &llms.FunctionCall{
 							Name:      "audio_volume",
-							Arguments: `{"__arg1":"{}"}`,
+							Arguments: `{"__arg1":"{}","description":"我先读取当前音量。"}`,
 						},
 					}},
 				}},
@@ -100,12 +101,124 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if resp.History[1].Type != "tool_call" || resp.History[1].ToolName != "audio_volume" || resp.History[1].ToolInput != "{}" {
 		t.Fatalf("unexpected tool_call message: %#v", resp.History[1])
 	}
+	if resp.History[1].Description != "我先读取当前音量。" || resp.History[1].Content != "我先读取当前音量。" {
+		t.Fatalf("unexpected tool_call description: %#v", resp.History[1])
+	}
 	if resp.History[2].Type != "tool_result" || resp.History[2].ToolName != "audio_volume" || resp.History[2].Content != `{"volume":42}` {
 		t.Fatalf("unexpected tool_result message: %#v", resp.History[2])
 	}
 	if resp.History[3].Type != "assistant" || resp.History[3].Content != "The current audio volume is 42." {
 		t.Fatalf("unexpected assistant message: %#v", resp.History[3])
 	}
+}
+
+func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
+	tts := &fakeTTSClient{}
+	server := &Server{
+		ttsClient:   tts,
+		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
+	}
+
+	server.speakToolDescription(context.Background(), " 我先读取当前音量。 ")
+
+	if len(tts.texts) != 1 || tts.texts[0] != "我先读取当前音量。" {
+		t.Fatalf("unexpected TTS texts: %#v", tts.texts)
+	}
+	if len(tts.deadlineSet) != 1 || !tts.deadlineSet[0] {
+		t.Fatalf("tool description TTS should use a deadline, got %#v", tts.deadlineSet)
+	}
+	if tts.audio != server.audioClient {
+		t.Fatal("expected server audio client to be used for tool description TTS")
+	}
+}
+
+func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "audio_volume",
+							Arguments: `{"__arg1":"{}","description":"我先读取当前音量。"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "The current audio volume is 42.",
+				}},
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools when external state is requested.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": &stubTool{
+				name:        "audio_volume",
+				description: "Get the current audio playback volume.",
+				output:      `{"volume":42}`,
+			},
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	tts := &blockingUntilContextTTS{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	server.ttsClient = tts
+	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		server.handleChat(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		cancel()
+		<-done
+		t.Fatal("handleChat waited for tool description TTS")
+	}
+	select {
+	case <-tts.started:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("tool description TTS was not started")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+type blockingUntilContextTTS struct {
+	started   chan struct{}
+	blockText string
+	once      sync.Once
+}
+
+func (t *blockingUntilContextTTS) TextToSpeechStream(ctx context.Context, text string, audio *AudioServiceClient) error {
+	if text != t.blockText {
+		return nil
+	}
+	t.once.Do(func() {
+		close(t.started)
+	})
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {

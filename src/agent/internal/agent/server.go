@@ -70,6 +70,7 @@ type Message struct {
 	Content     string              `json:"content"`
 	ToolName    string              `json:"tool_name,omitempty"`
 	ToolInput   string              `json:"tool_input,omitempty"`
+	Description string              `json:"description,omitempty"`
 	Attachments []MessageAttachment `json:"attachments,omitempty"`
 	Timestamp   time.Time           `json:"timestamp"`
 	IsError     bool                `json:"is_error,omitempty"`
@@ -244,13 +245,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Skills:      req.Skills,
 		EventHandler: func(event RunEvent) {
 			s.appendHistory(Message{
-				Type:      event.Type,
-				Content:   event.Content,
-				ToolName:  event.ToolName,
-				ToolInput: event.ToolInput,
-				Timestamp: event.Timestamp,
-				IsError:   event.IsError,
+				Type:        event.Type,
+				Content:     event.Content,
+				ToolName:    event.ToolName,
+				ToolInput:   event.ToolInput,
+				Description: event.Description,
+				Timestamp:   event.Timestamp,
+				IsError:     event.IsError,
 			})
+			if event.Type == "tool_call" {
+				go s.speakToolDescription(r.Context(), event.Description)
+			}
 		},
 	})
 
@@ -290,6 +295,26 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Response: result.Output,
 		History:  historySnapshot,
 	})
+}
+
+func (s *Server) speakToolDescription(ctx context.Context, description string) {
+	description = strings.TrimSpace(description)
+	if description == "" || s.ttsClient == nil || s.audioClient == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ttsCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
+	defer cancel()
+	if s.logger != nil {
+		s.logger.Info("Tool description TTS playback: %q", description)
+	}
+	if err := s.ttsClient.TextToSpeechStream(ttsCtx, description, s.audioClient); err != nil {
+		if s.logger != nil {
+			s.logger.Error("Tool description TTS playback failed: %v", err)
+		}
+	}
 }
 
 // handleHistory returns the conversation history

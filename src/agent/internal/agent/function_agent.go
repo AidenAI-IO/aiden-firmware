@@ -28,6 +28,19 @@ type visualObservationTool interface {
 	ReturnsVisualObservation() bool
 }
 
+const toolActionLogVersion = 1
+
+type toolActionLog struct {
+	Version         int    `json:"aiden_action_log_version"`
+	Message         string `json:"message"`
+	ToolDescription string `json:"tool_description,omitempty"`
+}
+
+type toolInvocation struct {
+	Input       string
+	Description string
+}
+
 func NewFunctionAgent(
 	llm llms.Model,
 	tools []langtools.Tool,
@@ -131,7 +144,8 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 			}
 			functionName := toolCall.FunctionCall.Name
 			toolInputStr := toolCall.FunctionCall.Arguments
-			toolInput := extractToolInput(toolInputStr)
+			invocation := extractToolInvocation(toolInputStr)
+			invocation.Description = toolDescriptionOrFallback(functionName, invocation.Description)
 
 			contentMsg := "\n"
 			if choice.Content != "" {
@@ -140,8 +154,8 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 
 			actions = append(actions, schema.AgentAction{
 				Tool:      functionName,
-				ToolInput: toolInput,
-				Log:       fmt.Sprintf("Invoking: %s with %s %s", functionName, toolInputStr, contentMsg),
+				ToolInput: invocation.Input,
+				Log:       formatToolActionLog(functionName, toolInputStr, invocation.Description, contentMsg),
 				ToolID:    toolCall.ID,
 			})
 		}
@@ -151,7 +165,8 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 	if choice.FuncCall != nil {
 		functionName := choice.FuncCall.Name
 		toolInputStr := choice.FuncCall.Arguments
-		toolInput := extractToolInput(toolInputStr)
+		invocation := extractToolInvocation(toolInputStr)
+		invocation.Description = toolDescriptionOrFallback(functionName, invocation.Description)
 
 		contentMsg := "\n"
 		if choice.Content != "" {
@@ -160,8 +175,8 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 
 		return []schema.AgentAction{{
 			Tool:      functionName,
-			ToolInput: toolInput,
-			Log:       fmt.Sprintf("Invoking: %s with %s %s", functionName, toolInputStr, contentMsg),
+			ToolInput: invocation.Input,
+			Log:       formatToolActionLog(functionName, toolInputStr, invocation.Description, contentMsg),
 		}}, nil, nil
 	}
 
@@ -185,11 +200,17 @@ func (a *FunctionAgent) toolsAsLLM() []llms.Tool {
 					"type": "object",
 					"properties": map[string]any{
 						"__arg1": map[string]string{
-							"title": "__arg1",
-							"type":  "string",
+							"title":       "__arg1",
+							"type":        "string",
+							"description": "The plain string input for the selected tool.",
+						},
+						"description": map[string]string{
+							"title":       "description",
+							"type":        "string",
+							"description": "A short first-person sentence in the user's language that says what you are about to do with this tool. This will be spoken aloud before the tool runs.",
 						},
 					},
-					"required": []string{"__arg1"},
+					"required": []string{"__arg1", "description"},
 				},
 			},
 		})
@@ -223,8 +244,11 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 				ID:   steps[j].Action.ToolID,
 				Type: "function",
 				FunctionCall: &llms.FunctionCall{
-					Name:      steps[j].Action.Tool,
-					Arguments: encodeToolArguments(steps[j].Action.ToolInput),
+					Name: steps[j].Action.Tool,
+					Arguments: encodeToolArguments(
+						steps[j].Action.ToolInput,
+						toolDescriptionOrFallback(steps[j].Action.Tool, toolDescriptionFromAction(steps[j].Action)),
+					),
 				},
 			})
 		}
@@ -368,23 +392,73 @@ func attachmentAwarePrompt(text string, attachments []InputAttachment, descripti
 	return text + "\n\nAttached content:\n- " + strings.Join(descriptions, "\n- ")
 }
 
-func extractToolInput(raw string) string {
+func extractToolInvocation(raw string) toolInvocation {
 	var toolInputMap map[string]any
 	if err := json.Unmarshal([]byte(raw), &toolInputMap); err != nil {
-		return raw
+		return toolInvocation{Input: raw}
 	}
+	invocation := toolInvocation{Input: raw}
 	if arg1, ok := toolInputMap["__arg1"].(string); ok {
-		return arg1
+		invocation.Input = arg1
 	}
-	return raw
+	if description, ok := toolInputMap["description"].(string); ok {
+		invocation.Description = strings.TrimSpace(description)
+	}
+	return invocation
 }
 
-func encodeToolArguments(input string) string {
-	encoded, err := json.Marshal(map[string]string{"__arg1": input})
+func extractToolInput(raw string) string {
+	return extractToolInvocation(raw).Input
+}
+
+func encodeToolArguments(input string, descriptions ...string) string {
+	args := map[string]string{"__arg1": input}
+	if len(descriptions) > 0 {
+		if description := strings.TrimSpace(descriptions[0]); description != "" {
+			args["description"] = description
+		}
+	}
+	encoded, err := json.Marshal(args)
 	if err != nil {
 		return input
 	}
 	return string(encoded)
+}
+
+func formatToolActionLog(name, arguments, description, contentMsg string) string {
+	message := fmt.Sprintf("Invoking: %s with %s %s", name, arguments, contentMsg)
+	metadata := toolActionLog{
+		Version:         toolActionLogVersion,
+		Message:         message,
+		ToolDescription: toolDescriptionOrFallback(name, description),
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return message
+	}
+	return string(encoded)
+}
+
+func toolDescriptionFromAction(action schema.AgentAction) string {
+	var metadata toolActionLog
+	if err := json.Unmarshal([]byte(action.Log), &metadata); err != nil {
+		return ""
+	}
+	if metadata.Version != toolActionLogVersion {
+		return ""
+	}
+	return strings.TrimSpace(metadata.ToolDescription)
+}
+
+func toolDescriptionOrFallback(toolName, description string) string {
+	if description = strings.TrimSpace(description); description != "" {
+		return description
+	}
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return "I will use a tool."
+	}
+	return fmt.Sprintf("I will use the %s tool.", toolName)
 }
 
 func extractFinalAnswer(content string) string {

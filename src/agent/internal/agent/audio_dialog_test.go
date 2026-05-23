@@ -135,13 +135,79 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 	}
 }
 
+func TestAudioDialogSpeaksToolDescriptionBeforeFinalAnswer(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "audio_volume",
+							Arguments: `{"__arg1":"{}","description":"我先检查当前音量。"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "当前音量是 42。",
+				}},
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools when external state is requested.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": &stubTool{
+				name:        "audio_volume",
+				description: "Get the current audio playback volume.",
+				output:      `{"volume":42}`,
+			},
+		}},
+		NewSkillIndex(),
+	)
+	tts := &fakeTTSClient{}
+	dialog := &AudioDialog{
+		config: Config{
+			Model:     ModelConfig{Provider: "fake"},
+			Audio:     AudioConfig{SampleRate: 16000},
+			InputMode: "audio",
+		},
+		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
+		ttsClient:   tts,
+	}
+
+	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
+		t.Fatalf("ProcessUtterance() error = %v", err)
+	}
+	if len(tts.texts) != 2 {
+		t.Fatalf("expected tool description and final answer TTS, got %#v", tts.texts)
+	}
+	if tts.texts[0] != "我先检查当前音量。" || tts.texts[1] != "当前音量是 42。" {
+		t.Fatalf("unexpected TTS order: %#v", tts.texts)
+	}
+	if len(tts.deadlineSet) != 2 || !tts.deadlineSet[0] || tts.deadlineSet[1] {
+		t.Fatalf("unexpected TTS deadline use: %#v", tts.deadlineSet)
+	}
+}
+
 type fakeTTSClient struct {
-	texts []string
-	audio *AudioServiceClient
+	texts       []string
+	audio       *AudioServiceClient
+	deadlineSet []bool
 }
 
 func (c *fakeTTSClient) TextToSpeechStream(ctx context.Context, text string, audio *AudioServiceClient) error {
+	_, hasDeadline := ctx.Deadline()
 	c.texts = append(c.texts, text)
 	c.audio = audio
+	c.deadlineSet = append(c.deadlineSet, hasDeadline)
 	return nil
 }
