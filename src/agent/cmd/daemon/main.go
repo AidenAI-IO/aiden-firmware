@@ -101,6 +101,7 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime) {
 type audioDialogRunner interface {
 	StartRecording() error
 	StopRecording() error
+	RecordingActive() bool
 	ReadRecordChunk(timeoutMs uint32) (*agent.AudioChunkResult, error)
 	ProcessVADFrame(samples []int16) []int16
 	ProcessUtterance(ctx context.Context, utterance []int16, runtime *agent.Runtime) error
@@ -132,6 +133,12 @@ type voiceEvent int
 const (
 	voiceEventWakeup voiceEvent = iota + 1
 )
+
+type voiceTurnResult struct {
+	interrupted    bool
+	sleepRequested bool
+	exit           bool
+}
 
 func runManualMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal) {
 	log.Println("\n[ready] Press Enter to start recording, press Enter again to stop")
@@ -174,8 +181,12 @@ func runManualMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 			log.Println("[manual] Stop triggered by user")
 			recording = false
 
-			// Flush VAD and process
+			// Flush VAD, close capture, then process so TTS playback is never
+			// fed back into the active recording session.
 			utterance := dialog.FlushVAD()
+			if err := dialog.StopRecording(); err != nil {
+				log.Printf("[listen] stop recording before manual utterance processing: %v\n", err)
+			}
 			if utterance != nil && len(utterance) > 0 {
 				log.Println("[manual] Sending buffered audio without waiting for VAD")
 				if err := dialog.ProcessUtterance(ctx, utterance, runtime); err != nil {
@@ -185,7 +196,6 @@ func runManualMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 				log.Println("[manual] No buffered audio to send")
 			}
 
-			dialog.StopRecording()
 			log.Println("\n[ready] Waiting for next trigger...")
 		}
 	}
@@ -231,16 +241,12 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 	for {
 		select {
 		case <-sigChan:
-			if dialog != nil {
-				dialog.StopRecording()
-			}
 			log.Println("\n[exit] Stopped.")
 			return
 		case <-events:
 			log.Println("\n[wakeup] GPIO 33 triggered, opening voice session...")
 			speakWakeupAck(dialog)
 			if exit := runVoiceSession(cfg, dialog, runtime, sigChan, events); exit {
-				dialog.StopRecording()
 				log.Println("\n[exit] Stopped.")
 				return
 			}
@@ -361,32 +367,40 @@ func runVoiceSession(cfg agent.Config, dialog audioDialogRunner, runtime *agent.
 			return false
 		}
 
+		input, err := dialog.PrepareTurnInput(utterance)
+		if err != nil {
+			log.Printf("[error] prepare turn input failed: %v\n", err)
+			firstTurn = false
+			continue
+		}
+
 		turns++
-		interrupted, sleepRequested, exit := runVoiceTurn(cfg, dialog, runtime, utterance, sigChan, events)
-		if exit {
+		result := runVoiceTurnWithInput(cfg, dialog, runtime, input, sigChan, events)
+		if result.exit {
 			return true
 		}
 		firstTurn = false
-		if sleepRequested {
+		if result.sleepRequested {
 			log.Println("[session] agent requested sleep, closing voice session")
 			return false
 		}
-		if interrupted {
+		if result.interrupted {
 			log.Println("[session] turn interrupted, listening for follow-up")
-			if maxTurns <= 0 || turns < maxTurns {
-				speakWakeupAck(dialog)
-			}
 		}
 	}
 }
 
-func runVoiceTurn(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, utterance []int16, sigChan chan os.Signal, events <-chan voiceEvent) (bool, bool, bool) {
+func runVoiceTurn(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, utterance []int16, sigChan chan os.Signal, events <-chan voiceEvent) voiceTurnResult {
 	input, err := dialog.PrepareTurnInput(utterance)
 	if err != nil {
 		log.Printf("[error] prepare turn input failed: %v\n", err)
-		return false, false, false
+		return voiceTurnResult{}
 	}
 
+	return runVoiceTurnWithInput(cfg, dialog, runtime, input, sigChan, events)
+}
+
+func runVoiceTurnWithInput(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, input agent.TurnInput, sigChan chan os.Signal, events <-chan voiceEvent) voiceTurnResult {
 	turnCtx, cancel := context.WithCancel(context.Background())
 	resultCh := make(chan struct {
 		result agent.RunResult
@@ -407,7 +421,7 @@ thinking:
 		case <-sigChan:
 			cancel()
 			waitForTurnCancel(resultCh)
-			return false, false, true
+			return voiceTurnResult{exit: true}
 		case <-events:
 			if cfg.VoiceInterruptOnWakeupOrDefault() {
 				log.Println("[interrupt] wakeup received during thinking, canceling current turn")
@@ -417,13 +431,13 @@ thinking:
 				case <-time.After(2 * time.Second):
 					log.Println("[interrupt] current turn did not finish after cancellation; continuing session")
 				}
-				return true, false, false
+				return voiceTurnResult{interrupted: true}
 			}
 		case turnResult := <-resultCh:
 			cancel()
 			if turnResult.err != nil {
 				log.Printf("[error] %v\n", turnResult.err)
-				return false, false, false
+				return voiceTurnResult{}
 			}
 			result = turnResult.result
 			break thinking
@@ -431,11 +445,17 @@ thinking:
 	}
 
 	if result.SleepRequested {
-		return false, true, false
+		return voiceTurnResult{sleepRequested: true}
 	}
 
 	if result.Output == "" || result.SpeechStreamed {
-		return false, false, false
+		return voiceTurnResult{}
+	}
+
+	if dialog.RecordingActive() {
+		if err := dialog.StopRecording(); err != nil {
+			log.Printf("[listen] stop recording before TTS playback: %v\n", err)
+		}
 	}
 
 	speakCtx, cancelSpeak := context.WithCancel(context.Background())
@@ -450,13 +470,13 @@ speaking:
 		case <-sigChan:
 			cancelSpeak()
 			waitForSpeakCancel(speakCh)
-			return false, false, true
+			return voiceTurnResult{exit: true}
 		case <-events:
 			if cfg.VoiceInterruptOnWakeupOrDefault() {
 				log.Println("[interrupt] wakeup received during speaking, stopping playback")
 				cancelSpeak()
 				<-speakCh
-				return true, false, false
+				return voiceTurnResult{interrupted: true}
 			}
 		case err := <-speakCh:
 			cancelSpeak()
@@ -467,7 +487,7 @@ speaking:
 		}
 	}
 
-	return false, false, false
+	return voiceTurnResult{}
 }
 
 func waitForTurnCancel(resultCh <-chan struct {
@@ -498,11 +518,13 @@ func listenOneUtterance(dialog audioDialogRunner, sigChan chan os.Signal, events
 		log.Printf("[error] Failed to start recording: %v\n", err)
 		return nil, false
 	}
+	defer func() {
+		if err := dialog.StopRecording(); err != nil {
+			log.Printf("[listen] stop recording after listen: %v\n", err)
+		}
+	}()
 	dialog.ResetVAD()
 	utterance, exit := captureUtteranceWithTimeout(dialog, sigChan, events, listenTimeout)
-	if err := dialog.StopRecording(); err != nil {
-		log.Printf("[listen] stop recording: %v\n", err)
-	}
 	return utterance, exit
 }
 
@@ -751,10 +773,13 @@ func processAudioLoop(dialog audioDialogRunner, runtime *agent.Runtime, recordin
 			consumed += frameSamples
 			if utterance != nil {
 				log.Println("[utterance] VAD detected end of speech")
+				*recording = false
+				if err := dialog.StopRecording(); err != nil {
+					log.Printf("[listen] stop recording before utterance processing: %v\n", err)
+				}
 				if err := dialog.ProcessUtterance(ctx, utterance, runtime); err != nil {
 					log.Printf("[error] %v\n", err)
 				}
-				*recording = false
 				log.Println("\n[ready] Waiting for next trigger...")
 				break
 			}

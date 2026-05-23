@@ -38,15 +38,36 @@ uint64_t AudioSessionManager::next_session_id() {
 AidenServiceStatus AudioSessionManager::start_recording(const AudioFormat& fmt,
                                                          RecordStartResult* out) {
     const Clock::time_point now = Clock::now();
-    std::lock_guard<std::mutex> lock(mutex_);
-    uint64_t id = next_session_id();
+    std::vector<std::pair<uint64_t, std::shared_ptr<AudioRecordSession>>> stale_records;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto it = record_sessions_.begin(); it != record_sessions_.end(); ++it) {
+            stale_records.push_back(std::make_pair(it->first, it->second));
+        }
+        record_sessions_.clear();
+        record_last_active_.clear();
+    }
+    for (size_t i = 0; i < stale_records.size(); ++i) {
+        stale_records[i].second->stop();
+        fprintf(stderr, "[audio_service] record session %llu replaced\n",
+                static_cast<unsigned long long>(stale_records[i].first));
+    }
+
+    uint64_t id;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        id = next_session_id();
+    }
     auto session = std::make_shared<AudioRecordSession>(id, fmt);
     if (!session->start()) {
         return AidenServiceStatus::INTERNAL_ERROR;
     }
     out->session_id = id;
-    record_sessions_[id] = std::move(session);
-    record_last_active_[id] = now;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        record_sessions_[id] = std::move(session);
+        record_last_active_[id] = now;
+    }
     fprintf(stderr, "[audio_service] record session %llu started\n",
             static_cast<unsigned long long>(id));
     return AidenServiceStatus::OK;
@@ -164,6 +185,7 @@ AidenServiceStatus AudioSessionManager::write_play_chunk(uint64_t session_id,
             draining->fetch_add(1, std::memory_order_relaxed);
             std::thread([owned, draining]() {
                 owned->wait_until_done();
+                owned->stop();
                 draining->fetch_sub(1, std::memory_order_relaxed);
             }).detach();
         }
@@ -240,33 +262,32 @@ void AudioSessionManager::reaper_loop() {
 }
 
 void AudioSessionManager::reap_idle_sessions() {
-    const Clock::time_point now = Clock::now();
-    const std::chrono::milliseconds timeout(kSessionTimeoutMs);
-    std::vector<std::pair<uint64_t, std::shared_ptr<AudioRecordSession>>> expired_records;
-    std::vector<std::pair<uint64_t, std::shared_ptr<AudioPlaybackSession>>> expired_playbacks;
+	const Clock::time_point now = Clock::now();
+	const std::chrono::milliseconds timeout(kSessionTimeoutMs);
+	std::vector<std::pair<uint64_t, std::shared_ptr<AudioRecordSession>>> expired_records;
+	std::vector<std::pair<uint64_t, std::shared_ptr<AudioPlaybackSession>>> expired_playbacks;
 
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        for (auto it = record_sessions_.begin(); it != record_sessions_.end();) {
-            auto at = record_last_active_.find(it->first);
-            if (at == record_last_active_.end()) {
-                record_last_active_[it->first] = now;
-                ++it;
-                continue;
-            }
-            if (now - at->second >= timeout) {
-                expired_records.push_back(std::make_pair(it->first, it->second));
-                record_last_active_.erase(at);
-                it = record_sessions_.erase(it);
-            } else {
-                ++it;
-            }
-        }
-
-        for (auto it = playback_sessions_.begin(); it != playback_sessions_.end();) {
-            auto at = playback_last_active_.find(it->first);
-            if (at == playback_last_active_.end()) {
-                playback_last_active_[it->first] = now;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		for (auto it = record_sessions_.begin(); it != record_sessions_.end();) {
+			auto at = record_last_active_.find(it->first);
+			if (at == record_last_active_.end()) {
+				record_last_active_[it->first] = now;
+				++it;
+				continue;
+			}
+			if (now - at->second >= timeout) {
+				expired_records.push_back(std::make_pair(it->first, it->second));
+				record_last_active_.erase(at);
+				it = record_sessions_.erase(it);
+			} else {
+				++it;
+			}
+		}
+		for (auto it = playback_sessions_.begin(); it != playback_sessions_.end();) {
+			auto at = playback_last_active_.find(it->first);
+			if (at == playback_last_active_.end()) {
+				playback_last_active_[it->first] = now;
                 ++it;
                 continue;
             }
@@ -277,18 +298,17 @@ void AudioSessionManager::reap_idle_sessions() {
             } else {
                 ++it;
             }
-        }
-    }
+		}
+	}
 
-    for (size_t i = 0; i < expired_records.size(); ++i) {
-        expired_records[i].second->stop();
-        fprintf(stderr, "[audio_service] reaped idle record session %llu\n",
-                static_cast<unsigned long long>(expired_records[i].first));
-    }
-
-    for (size_t i = 0; i < expired_playbacks.size(); ++i) {
-        expired_playbacks[i].second->stop();
-        fprintf(stderr, "[audio_service] reaped idle playback session %llu\n",
+	for (size_t i = 0; i < expired_records.size(); ++i) {
+		expired_records[i].second->stop();
+		fprintf(stderr, "[audio_service] reaped idle record session %llu\n",
+		        static_cast<unsigned long long>(expired_records[i].first));
+	}
+	for (size_t i = 0; i < expired_playbacks.size(); ++i) {
+		expired_playbacks[i].second->stop();
+		fprintf(stderr, "[audio_service] reaped idle playback session %llu\n",
                 static_cast<unsigned long long>(expired_playbacks[i].first));
     }
 }
