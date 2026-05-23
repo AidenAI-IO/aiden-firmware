@@ -46,6 +46,7 @@ type RunRequest struct {
 	Attachments  []InputAttachment
 	Skills       []string
 	StreamWriter io.Writer
+	MaxTokens    int
 	EventHandler func(RunEvent)
 }
 
@@ -56,6 +57,7 @@ type RunResult struct {
 	Metrics        *RunMetrics     `json:"metrics,omitempty"`
 	SleepRequested bool            `json:"sleep_requested,omitempty"`
 	SleepReason    string          `json:"sleep_reason,omitempty"`
+	SpeechStreamed bool            `json:"-"`
 }
 
 type RunMetrics struct {
@@ -220,6 +222,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	maxIterations := effectiveMaxIterations(r.config.MaxIterations)
 
 	callOptions := r.models.CallOptions()
+	if req.MaxTokens > 0 {
+		callOptions = append(callOptions, chains.WithMaxTokens(req.MaxTokens))
+	}
 	var streamCallbackHandler *runtimeCallbackHandler
 	var agentCallbackHandler callbacks.Handler
 	if req.StreamWriter != nil || req.EventHandler != nil || r.logger != nil {
@@ -243,14 +248,11 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 
 	agent := r.buildAgent(model, resolvedSkills, availableTools, req.Attachments, agentCallbackHandler)
-	executorOptions := []agents.Option{
-		agents.WithMemory(memoryHandle.Memory),
-		agents.WithMaxIterations(maxIterations),
-	}
+	var executorHandler callbacks.Handler
 	if streamCallbackHandler != nil {
-		executorOptions = append(executorOptions, agents.WithCallbacksHandler(streamCallbackHandler))
+		executorHandler = streamCallbackHandler
 	}
-	executor := agents.NewExecutor(agent, executorOptions...)
+	executor := newParallelToolExecutor(agent, memoryHandle.Memory, maxIterations, executorHandler)
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
@@ -279,9 +281,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
-	if err := r.memories.Save(ctx, "default"); err != nil {
+	if err := r.memories.SaveSnapshot(ctx, "default", memorySnapshot); err != nil {
 		return RunResult{}, err
 	}
+	r.memories.RequestMaintenance()
 
 	sleepRequested, sleepReason := r.sleep.Consume()
 	return RunResult{
@@ -511,6 +514,39 @@ func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error)
 				IsError:   true,
 			})
 		}
+	}
+}
+
+func (h *runtimeCallbackHandler) HandleNamedToolStart(ctx context.Context, name, input string) {}
+
+func (h *runtimeCallbackHandler) HandleNamedToolEnd(ctx context.Context, name, input, output string) {
+	if h.logger != nil {
+		h.logger.Info("Tool result: name=%s output=%s", name, truncateForLog(output, 240))
+	}
+	if h.eventHandler != nil {
+		h.eventHandler(RunEvent{
+			Type:      "tool_result",
+			ToolName:  name,
+			ToolInput: input,
+			Content:   output,
+			Timestamp: time.Now(),
+		})
+	}
+}
+
+func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name, input string, err error) {
+	if h.logger != nil {
+		h.logger.Error("Tool error: name=%s err=%v", name, err)
+	}
+	if h.eventHandler != nil {
+		h.eventHandler(RunEvent{
+			Type:      "tool_result",
+			ToolName:  name,
+			ToolInput: input,
+			Content:   "error: " + err.Error(),
+			Timestamp: time.Now(),
+			IsError:   true,
+		})
 	}
 }
 

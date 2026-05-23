@@ -149,18 +149,32 @@ func TestVoiceSessionConfigDefaults(t *testing.T) {
 	if cfg.VoiceInterruptListenDuringTTSOrDefault() {
 		t.Fatal("VoiceInterruptListenDuringTTSOrDefault() = true, want false")
 	}
+	if !cfg.VoiceStreamingTTSEnabledOrDefault() {
+		t.Fatal("VoiceStreamingTTSEnabledOrDefault() = false, want true")
+	}
+	if !cfg.VoiceToolCallSpeechOrDefault() {
+		t.Fatal("VoiceToolCallSpeechOrDefault() = false, want true")
+	}
+	if cfg.VoiceMaxResponseTokensOrDefault() != 400 {
+		t.Fatalf("VoiceMaxResponseTokensOrDefault() = %d, want 400", cfg.VoiceMaxResponseTokensOrDefault())
+	}
 }
 
 func TestVoiceSessionConfigOverrides(t *testing.T) {
 	disabled := false
 	interruptDisabled := false
 	listenDuringTTS := true
+	streamingDisabled := false
+	toolSpeech := false
 	cfg := Config{
 		VoiceSessionEnabled:           &disabled,
 		VoiceFirstTurnTimeoutMs:       1234,
 		VoiceFollowupTimeoutMs:        5678,
 		VoiceInterruptOnWakeup:        &interruptDisabled,
 		VoiceInterruptListenDuringTTS: &listenDuringTTS,
+		VoiceStreamingTTSEnabled:      &streamingDisabled,
+		VoiceToolCallSpeech:           &toolSpeech,
+		VoiceMaxResponseTokens:        123,
 	}
 
 	if cfg.VoiceSessionEnabledOrDefault() {
@@ -177,6 +191,15 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 	}
 	if !cfg.VoiceInterruptListenDuringTTSOrDefault() {
 		t.Fatal("VoiceInterruptListenDuringTTSOrDefault() = false, want true")
+	}
+	if cfg.VoiceStreamingTTSEnabledOrDefault() {
+		t.Fatal("VoiceStreamingTTSEnabledOrDefault() = true, want false")
+	}
+	if cfg.VoiceToolCallSpeechOrDefault() {
+		t.Fatal("VoiceToolCallSpeechOrDefault() = true, want false")
+	}
+	if cfg.VoiceMaxResponseTokensOrDefault() != 123 {
+		t.Fatalf("VoiceMaxResponseTokensOrDefault() = %d, want 123", cfg.VoiceMaxResponseTokensOrDefault())
 	}
 }
 
@@ -209,6 +232,14 @@ func TestVoiceSessionConfigValidationRejectsNegativeValues(t *testing.T) {
 				VoiceMaxTurns: -1,
 			},
 			want: "voice_max_turns must be >= 0",
+		},
+		{
+			name: "negative voice max response tokens",
+			cfg: Config{
+				Model:                  ModelConfig{Provider: "fake"},
+				VoiceMaxResponseTokens: -1,
+			},
+			want: "voice_max_response_tokens must be >= 0",
 		},
 	}
 

@@ -449,7 +449,7 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.input_mode = "text";
     cfg.trigger_mode = "manual";
     cfg.energy_threshold = 500;
-    cfg.silence_ms = 1000;
+    cfg.silence_ms = 650;
     cfg.min_speech_ms = 300;
     cfg.voice_session_enabled = true;
     cfg.voice_followup_timeout_ms = 6000;
@@ -457,6 +457,9 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.voice_max_turns = 0;
     cfg.voice_interrupt_on_wakeup = true;
     cfg.voice_interrupt_listen_during_tts = false;
+    cfg.voice_streaming_tts_enabled = true;
+    cfg.voice_tool_call_speech = true;
+    cfg.voice_max_response_tokens = 400;
     cfg.max_iterations = -1;
 
     cfg.model.provider = "openrouter";
@@ -600,6 +603,9 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddNumberToObject(agent, "voice_max_turns", config.voice_max_turns);
     cJSON_AddBoolToObject(agent, "voice_interrupt_on_wakeup", config.voice_interrupt_on_wakeup ? 1 : 0);
     cJSON_AddBoolToObject(agent, "voice_interrupt_listen_during_tts", config.voice_interrupt_listen_during_tts ? 1 : 0);
+    cJSON_AddBoolToObject(agent, "voice_streaming_tts_enabled", config.voice_streaming_tts_enabled ? 1 : 0);
+    cJSON_AddBoolToObject(agent, "voice_tool_call_speech", config.voice_tool_call_speech ? 1 : 0);
+    cJSON_AddNumberToObject(agent, "voice_max_response_tokens", config.voice_max_response_tokens);
     cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
 
     return root;
@@ -769,6 +775,9 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->voice_max_turns, agent, "voice_max_turns");
         set_json_bool(&config->voice_interrupt_on_wakeup, agent, "voice_interrupt_on_wakeup");
         set_json_bool(&config->voice_interrupt_listen_during_tts, agent, "voice_interrupt_listen_during_tts");
+        set_json_bool(&config->voice_streaming_tts_enabled, agent, "voice_streaming_tts_enabled");
+        set_json_bool(&config->voice_tool_call_speech, agent, "voice_tool_call_speech");
+        set_json_int(&config->voice_max_response_tokens, agent, "voice_max_response_tokens");
         set_json_int(&config->max_iterations, agent, "max_iterations");
     }
 }
@@ -782,6 +791,9 @@ std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
     }
     if (config.voice_max_turns < 0) {
         return "voice_max_turns must be >= 0";
+    }
+    if (config.voice_max_response_tokens < 0) {
+        return "voice_max_response_tokens must be >= 0";
     }
     if (config.max_iterations < -1) {
         return "max_iterations must be >= -1";

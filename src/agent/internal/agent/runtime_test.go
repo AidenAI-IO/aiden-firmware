@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
@@ -117,6 +121,7 @@ type stubTool struct {
 	name        string
 	description string
 	output      string
+	err         error
 	visual      bool
 	inputs      []string
 }
@@ -129,7 +134,30 @@ func (t *stubTool) ReturnsVisualObservation() bool { return t.visual }
 
 func (t *stubTool) Call(_ context.Context, input string) (string, error) {
 	t.inputs = append(t.inputs, input)
+	if t.err != nil {
+		return "", t.err
+	}
 	return t.output, nil
+}
+
+type sleepTool struct {
+	name  string
+	delay time.Duration
+}
+
+func (t *sleepTool) Name() string { return t.name }
+
+func (t *sleepTool) Description() string { return "Sleep briefly." }
+
+func (t *sleepTool) Call(ctx context.Context, input string) (string, error) {
+	timer := time.NewTimer(t.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-timer.C:
+		return `{"ok":true}`, nil
+	}
 }
 
 func TestRuntimeRunOpenRouterUsesToolsWithoutStreaming(t *testing.T) {
@@ -238,6 +266,141 @@ func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 	}
 	if len(tool.inputs) != 1 || tool.inputs[0] != "{}" {
 		t.Fatalf("unexpected tool inputs: %#v", tool.inputs)
+	}
+}
+
+func TestRuntimeRunExecutesMultipleToolCallsInParallel(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{
+						{
+							ID:   "call_1",
+							Type: "function",
+							FunctionCall: &llms.FunctionCall{
+								Name:      "slow_a",
+								Arguments: `{"__arg1":"{}"}`,
+							},
+						},
+						{
+							ID:   "call_2",
+							Type: "function",
+							FunctionCall: &llms.FunctionCall{
+								Name:      "slow_b",
+								Arguments: `{"__arg1":"{}"}`,
+							},
+						},
+					},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "done",
+				}},
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"slow_a": &sleepTool{name: "slow_a", delay: 200 * time.Millisecond},
+			"slow_b": &sleepTool{name: "slow_b", delay: 200 * time.Millisecond},
+		}},
+		NewSkillIndex(),
+	)
+
+	started := time.Now()
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "run both"})
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if elapsed >= 350*time.Millisecond {
+		t.Fatalf("tool calls took %s, expected parallel execution", elapsed)
+	}
+}
+
+func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "screenshot",
+							Arguments: `{"__arg1":"{}"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "屏幕暂时获取失败，frame service 正在恢复。",
+				}},
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"screenshot": &stubTool{
+				name:        "screenshot",
+				description: "Capture a screenshot from the connected display.",
+				visual:      true,
+				err:         errors.New("frame service: SERVICE_RECOVERING"),
+			},
+		}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "看看屏幕",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "屏幕暂时获取失败，frame service 正在恢复。" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("expected second model call with tool observation, got %d calls", len(model.messages))
+	}
+	var toolObservation string
+	for _, msg := range model.messages[1] {
+		if msg.Role != llms.ChatMessageTypeTool {
+			continue
+		}
+		if len(msg.Parts) == 1 {
+			if part, ok := msg.Parts[0].(llms.ToolCallResponse); ok {
+				toolObservation = part.Content
+			}
+		}
+	}
+	if !strings.Contains(toolObservation, "error: screenshot failed: frame service: SERVICE_RECOVERING") {
+		t.Fatalf("unexpected tool observation: %q", toolObservation)
+	}
+	if len(events) < 2 || events[1].Type != "tool_result" || !events[1].IsError {
+		t.Fatalf("expected error tool_result event, got %#v", events)
 	}
 }
 
@@ -835,17 +998,114 @@ func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 		}
 	}
 
-	events := readSessionEvents(t, filepath.Join(configDir, "memory", "session", "events.jsonl"))
-	if len(events) > 20 {
-		t.Fatalf("expected hot window events <= 20, got %d", len(events))
+	waitForSessionCompaction(t, configDir)
+}
+
+func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.HotWindowEvents = 4
+
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC()
+	for i := 0; i < 8; i++ {
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_%d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: "历史消息",
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
 	}
-	chunks, err := NewSessionMemoryStore(filepath.Join(configDir, "memory", "session")).RecallChunks(context.Background(), ChunkRecallQuery{Entities: []string{"蓝海报销App"}, Limit: 1})
-	if err != nil {
-		t.Fatalf("RecallChunks() error = %v", err)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var released atomic.Bool
+	releaseMaintenance := func() {
+		if released.CompareAndSwap(false, true) {
+			close(release)
+		}
 	}
-	if len(chunks) != 1 {
-		t.Fatalf("expected compacted chunk from real runs, got %d", len(chunks))
+	defer releaseMaintenance()
+	var startedOnce atomic.Bool
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg), WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+		if startedOnce.CompareAndSwap(false, true) {
+			close(started)
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-release:
+			return "async summary"
+		}
+	}))
+
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: fakellm.NewFakeLLM([]string{"ok"})},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Run() blocked on memory maintenance")
 	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("async memory maintenance did not start")
+	}
+	releaseMaintenance()
+}
+
+func waitForSessionCompaction(t *testing.T, configDir string) {
+	t.Helper()
+	session := NewSessionMemoryStore(filepath.Join(configDir, "memory", "session"))
+	deadline := time.Now().Add(3 * time.Second)
+	var lastEventCount int
+	var lastChunkCount int
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		events, err := session.readEvents(session.eventsPath())
+		if err != nil {
+			lastErr = err
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		chunks, err := session.RecallChunks(context.Background(), ChunkRecallQuery{Entities: []string{"蓝海报销App"}, Limit: 1})
+		if err != nil {
+			lastErr = err
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		lastEventCount = len(events)
+		lastChunkCount = len(chunks)
+		if lastEventCount <= 20 && lastChunkCount == 1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if lastErr != nil {
+		t.Fatalf("waiting for session compaction: %v", lastErr)
+	}
+	t.Fatalf("expected compacted chunk and hot window events <= 20, got chunks=%d events=%d", lastChunkCount, lastEventCount)
 }
 
 func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {

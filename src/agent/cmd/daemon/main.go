@@ -434,7 +434,7 @@ thinking:
 		return false, true, false
 	}
 
-	if result.Output == "" {
+	if result.Output == "" || result.SpeechStreamed {
 		return false, false, false
 	}
 

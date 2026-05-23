@@ -25,7 +25,7 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 		"",
 		"For any request that reads or changes external device or service state, you must use the relevant tool.",
 		"Never claim a state change succeeded until you have a tool Observation confirming it.",
-		"When calling a tool, include a concise description of what you are about to do; it will be spoken aloud to the user before the tool runs.",
+		"When calling a tool, include a concise description of what you are about to do; voice clients may present it while the tool runs.",
 		"",
 		"Use the following format:",
 		"Question: the user's current request",
@@ -73,7 +73,7 @@ func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, ava
 		"",
 		"For any request that reads or changes external device or service state, you must use the relevant tool.",
 		"Never claim a state change succeeded until you have a tool result confirming it.",
-		"When calling a tool, fill the description argument with a concise sentence in the user's language explaining what you are about to do; it will be spoken aloud before the tool runs.",
+		"When calling a tool, fill the description argument with a concise sentence in the user's language explaining what you are about to do; voice clients may present it while the tool runs.",
 		"If no tool is needed, answer directly.",
 	}
 	return strings.Join(parts, "\n")
