@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 )
 
 type TurnInput = AudioInputResult
+
+const toolDescriptionSpeechTimeout = 5 * time.Second
 
 // AudioDialog manages the audio conversation loop
 type AudioDialog struct {
@@ -203,7 +206,12 @@ func (d *AudioDialog) SpeakToolDescription(ctx context.Context, description stri
 	if description == "" {
 		return
 	}
-	if err := d.Speak(ctx, description, nil); err != nil {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	speakCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
+	defer cancel()
+	if err := d.Speak(speakCtx, description, nil); err != nil {
 		log.Printf("[error] Tool description TTS failed: %v", err)
 	}
 }

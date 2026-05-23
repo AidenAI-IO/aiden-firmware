@@ -254,7 +254,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				IsError:     event.IsError,
 			})
 			if event.Type == "tool_call" {
-				s.speakToolDescription(r.Context(), event.Description)
+				go s.speakToolDescription(r.Context(), event.Description)
 			}
 		},
 	})
@@ -302,10 +302,15 @@ func (s *Server) speakToolDescription(ctx context.Context, description string) {
 	if description == "" || s.ttsClient == nil || s.audioClient == nil {
 		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ttsCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
+	defer cancel()
 	if s.logger != nil {
 		s.logger.Info("Tool description TTS playback: %q", description)
 	}
-	if err := s.ttsClient.TextToSpeechStream(ctx, description, s.audioClient); err != nil {
+	if err := s.ttsClient.TextToSpeechStream(ttsCtx, description, s.audioClient); err != nil {
 		if s.logger != nil {
 			s.logger.Error("Tool description TTS playback failed: %v", err)
 		}

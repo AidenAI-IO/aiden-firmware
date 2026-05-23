@@ -193,15 +193,21 @@ func TestAudioDialogSpeaksToolDescriptionBeforeFinalAnswer(t *testing.T) {
 	if tts.texts[0] != "我先检查当前音量。" || tts.texts[1] != "当前音量是 42。" {
 		t.Fatalf("unexpected TTS order: %#v", tts.texts)
 	}
+	if len(tts.deadlineSet) != 2 || !tts.deadlineSet[0] || tts.deadlineSet[1] {
+		t.Fatalf("unexpected TTS deadline use: %#v", tts.deadlineSet)
+	}
 }
 
 type fakeTTSClient struct {
-	texts []string
-	audio *AudioServiceClient
+	texts       []string
+	audio       *AudioServiceClient
+	deadlineSet []bool
 }
 
 func (c *fakeTTSClient) TextToSpeechStream(ctx context.Context, text string, audio *AudioServiceClient) error {
+	_, hasDeadline := ctx.Deadline()
 	c.texts = append(c.texts, text)
 	c.audio = audio
+	c.deadlineSet = append(c.deadlineSet, hasDeadline)
 	return nil
 }

@@ -28,7 +28,13 @@ type visualObservationTool interface {
 	ReturnsVisualObservation() bool
 }
 
-const toolDescriptionLogMarker = "\nTool description: "
+const toolActionLogVersion = 1
+
+type toolActionLog struct {
+	Version         int    `json:"aiden_action_log_version"`
+	Message         string `json:"message"`
+	ToolDescription string `json:"tool_description,omitempty"`
+}
 
 type toolInvocation struct {
 	Input       string
@@ -139,6 +145,7 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 			functionName := toolCall.FunctionCall.Name
 			toolInputStr := toolCall.FunctionCall.Arguments
 			invocation := extractToolInvocation(toolInputStr)
+			invocation.Description = toolDescriptionOrFallback(functionName, invocation.Description)
 
 			contentMsg := "\n"
 			if choice.Content != "" {
@@ -159,6 +166,7 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 		functionName := choice.FuncCall.Name
 		toolInputStr := choice.FuncCall.Arguments
 		invocation := extractToolInvocation(toolInputStr)
+		invocation.Description = toolDescriptionOrFallback(functionName, invocation.Description)
 
 		contentMsg := "\n"
 		if choice.Content != "" {
@@ -236,8 +244,11 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 				ID:   steps[j].Action.ToolID,
 				Type: "function",
 				FunctionCall: &llms.FunctionCall{
-					Name:      steps[j].Action.Tool,
-					Arguments: encodeToolArguments(steps[j].Action.ToolInput, toolDescriptionFromAction(steps[j].Action)),
+					Name: steps[j].Action.Tool,
+					Arguments: encodeToolArguments(
+						steps[j].Action.ToolInput,
+						toolDescriptionOrFallback(steps[j].Action.Tool, toolDescriptionFromAction(steps[j].Action)),
+					),
 				},
 			})
 		}
@@ -415,19 +426,39 @@ func encodeToolArguments(input string, descriptions ...string) string {
 }
 
 func formatToolActionLog(name, arguments, description, contentMsg string) string {
-	log := fmt.Sprintf("Invoking: %s with %s %s", name, arguments, contentMsg)
-	if description == "" {
-		return log
+	message := fmt.Sprintf("Invoking: %s with %s %s", name, arguments, contentMsg)
+	metadata := toolActionLog{
+		Version:         toolActionLogVersion,
+		Message:         message,
+		ToolDescription: toolDescriptionOrFallback(name, description),
 	}
-	return log + toolDescriptionLogMarker + description
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return message
+	}
+	return string(encoded)
 }
 
 func toolDescriptionFromAction(action schema.AgentAction) string {
-	idx := strings.LastIndex(action.Log, toolDescriptionLogMarker)
-	if idx < 0 {
+	var metadata toolActionLog
+	if err := json.Unmarshal([]byte(action.Log), &metadata); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(action.Log[idx+len(toolDescriptionLogMarker):])
+	if metadata.Version != toolActionLogVersion {
+		return ""
+	}
+	return strings.TrimSpace(metadata.ToolDescription)
+}
+
+func toolDescriptionOrFallback(toolName, description string) string {
+	if description = strings.TrimSpace(description); description != "" {
+		return description
+	}
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return "I will use a tool."
+	}
+	return fmt.Sprintf("I will use the %s tool.", toolName)
 }
 
 func extractFinalAnswer(content string) string {
