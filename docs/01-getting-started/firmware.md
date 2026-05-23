@@ -15,7 +15,7 @@
 - Wi-Fi 默认使用板载天线；
 - Kernel 启用 TC358743 驱动；
 - DTS 添加 TC358743 支持；
-- 内置 720p60+1080p30 EDID，720p60 为首选；
+- 内置 1080p30-only EDID；
 - USB-C 口开机配置为 HID gadget；
 - 注入 `/overlay` 中的启动脚本、配置和应用二进制。
 
