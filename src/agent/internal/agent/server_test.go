@@ -368,14 +368,20 @@ func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 	stopCh := make(chan struct{})
 	var stopOnce sync.Once
 	var readCount int32
+	var startPlaybackCount int32
+	var writePlayChunkCount int32
+	var healthCount int32
 
 	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
 		switch req.Op {
 		case "start_playback":
+			atomic.AddInt32(&startPlaybackCount, 1)
 			return audioResponse{Status: "OK", SessionID: stringUint64(7)}, nil
 		case "write_play_chunk":
+			atomic.AddInt32(&writePlayChunkCount, 1)
 			return audioResponse{Status: "OK"}, nil
 		case "health":
+			atomic.AddInt32(&healthCount, 1)
 			return audioResponse{
 				Status:           "OK",
 				RecordingActive:  false,
@@ -423,6 +429,12 @@ func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 	server.handleAudioRecordStart(startRec, startReq)
 	if startRec.Code != http.StatusOK {
 		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+	if atomic.LoadInt32(&startPlaybackCount) == 0 ||
+		atomic.LoadInt32(&writePlayChunkCount) == 0 ||
+		atomic.LoadInt32(&healthCount) == 0 {
+		t.Fatalf("expected prompt sound playback flow to call start_playback/write_play_chunk/health, got start=%d write=%d health=%d",
+			startPlaybackCount, writePlayChunkCount, healthCount)
 	}
 
 	stopReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/stop", nil)

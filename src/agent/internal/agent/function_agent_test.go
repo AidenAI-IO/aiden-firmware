@@ -275,3 +275,25 @@ func TestFunctionAgentCompactsInvalidVisualObservation(t *testing.T) {
 		t.Fatalf("unexpected compacted observation suffix: %q", toolContent[len(toolContent)-40:])
 	}
 }
+
+func TestFunctionAgentRejectsEmptyVisualObservationData(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
+	}
+	observation := `{"width":800,"height":600,"format":"jpeg","size":0,"data":""}`
+	step := schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "screenshot"},
+		Observation: observation,
+	}
+
+	if agent.countVisualObservations([]schema.AgentStep{step}) != 0 {
+		t.Fatal("empty screenshot data counted as a visual observation")
+	}
+	toolContent, followups := agent.observationMessagesForStep(step, true)
+	if followups != nil {
+		t.Fatalf("expected no followup messages for empty screenshot data, got %#v", followups)
+	}
+	if toolContent != observation {
+		t.Fatalf("unexpected compacted observation: %q", toolContent)
+	}
+}

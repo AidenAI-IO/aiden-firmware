@@ -303,9 +303,15 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
 		return compactToolObservation(step.Observation), nil
 	}
+	if result.Data == "" {
+		return compactToolObservation(step.Observation), nil
+	}
 
 	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
 	if err != nil {
+		return compactToolObservation(step.Observation), nil
+	}
+	if len(imageBytes) == 0 {
 		return compactToolObservation(step.Observation), nil
 	}
 
@@ -371,7 +377,11 @@ func (a *FunctionAgent) hasVisualObservation(step schema.AgentStep) bool {
 	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
 		return false
 	}
-	if _, err := base64.StdEncoding.DecodeString(result.Data); err != nil {
+	if result.Data == "" {
+		return false
+	}
+	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
+	if err != nil || len(imageBytes) == 0 {
 		return false
 	}
 	return true

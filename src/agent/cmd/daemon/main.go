@@ -463,7 +463,7 @@ speaking:
 			if cfg.VoiceInterruptOnWakeupOrDefault() {
 				log.Println("[interrupt] wakeup received during speaking, stopping playback")
 				cancelSpeak()
-				<-speakCh
+				waitForSpeakCancel(speakCh)
 				return voiceTurnResult{interrupted: true}
 			}
 		case err := <-speakCh:

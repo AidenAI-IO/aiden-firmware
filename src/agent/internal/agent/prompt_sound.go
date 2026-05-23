@@ -56,11 +56,13 @@ func playPromptSound(ctx context.Context, audio *AudioServiceClient, kind prompt
 	if err := audio.WritePlayChunk(playback.SessionID, nil, true); err != nil {
 		return fmt.Errorf("finish prompt playback: %w", err)
 	}
-	stopPlayback = false
 
 	if wait {
-		return waitPromptPlayback(ctx, audio)
+		if err := waitPromptPlayback(ctx, audio); err != nil {
+			return err
+		}
 	}
+	stopPlayback = false
 	return nil
 }
 

@@ -138,6 +138,42 @@ func TestMemoryManagerRepairsTruncatedSessionEventTail(t *testing.T) {
 	}
 }
 
+func TestSessionMemoryRecallRejectsTruncatedChunkEvidence(t *testing.T) {
+	ctx := context.Background()
+	session := NewSessionMemoryStore(filepath.Join(t.TempDir(), "session"))
+	now := time.Now().UTC()
+	if _, err := session.AppendEvent(ctx, sessionEventFromRecord(MessageRecord{
+		Role:    string(llms.ChatMessageTypeHuman),
+		Content: "preserve this evidence",
+	}, now, 0)); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+	chunk, err := session.Compress(ctx, CompressOption{ChunkID: "chunk_bad", Summary: "summary"})
+	if err != nil {
+		t.Fatalf("Compress() error = %v", err)
+	}
+	chunkPath := filepath.Join(session.chunksDir(), chunk.ID+".jsonl")
+	file, err := os.OpenFile(chunkPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open chunk for append: %v", err)
+	}
+	if _, err := file.WriteString(`{"event_id":"partial","type":"user_input","role":"user","content":"cut`); err != nil {
+		file.Close()
+		t.Fatalf("write truncated chunk tail: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close chunk: %v", err)
+	}
+
+	_, err = session.RecallChunks(ctx, ChunkRecallQuery{ChunkIDs: []string{chunk.ID}})
+	if err == nil {
+		t.Fatal("RecallChunks() error = nil, want truncated chunk evidence error")
+	}
+	if !strings.Contains(err.Error(), "decode session event") {
+		t.Fatalf("RecallChunks() error = %v, want decode session event", err)
+	}
+}
+
 func TestMemoryManagerSaveCompactsHotWindow(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
