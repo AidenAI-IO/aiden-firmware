@@ -6,7 +6,7 @@ Run these checks on representative hardware before enabling production OTA rollo
 
 - A production image built with a production Ed25519 public key.
 - A GitHub Release containing `manifest.json`, `boot_a.img`, `boot_b.img`, `oem_a.img`, `oem_b.img`, `rootfs_a.img`, `rootfs_b.img`, and `update.img`.
-- Device OTA config at `/userdata/ota/config.json` with repo/channel settings.
+- Factory `update.img` must already seed `/userdata/ota/config.json` with repo/channel settings and slot-aware factory partition hashes.
 - UART access for bootloader and SPL rollback observation where possible.
 
 `ota` processes `/userdata/ota/pending_boot.json` health before starting network/GitHub update checks. Do not add a network wait before pending health handling; a newly booted slot must be able to mark itself successful even if the network is unavailable.
@@ -28,6 +28,7 @@ Expected:
 - `aiden.slot_suffix=_a` on the factory boot.
 - `/oem` is mounted from `oem_a`.
 - `misc` metadata parses from offset `2048` and slot A is successful.
+- `/userdata/ota/config.json` exists and `/oem/usr/bin/ota status` initializes state without a missing factory baseline error.
 
 ## 2. Manual Slot Switching
 
@@ -80,7 +81,7 @@ Expected: SPL returns to the previous successful slot. Confirm with UART logs if
 
 ## 5. OTA Happy Path
 
-1. Confirm `/userdata/ota/config.json` points at the release repo and `stable` channel.
+1. Confirm `/userdata/ota/config.json` points at the release repo and `stable` channel, and contains `factory_partition_hashes.a` and `factory_partition_hashes.b` entries for `boot`, `oem`, and `rootfs`.
 2. Start a one-shot update:
 
 ```sh

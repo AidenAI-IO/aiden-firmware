@@ -101,7 +101,10 @@ func TestUpdaterInitializesMissingStateFromFactoryConfig(t *testing.T) {
 	}
 	env.config.FactoryVersion = "factory-1"
 	env.config.FactoryBuildTime = "2026-05-21T10:00:00Z"
-	env.config.FactoryPartitionHash = testHashA
+	env.config.FactoryPartitionHashes = map[string]map[string]string{
+		"a": {"boot": testHashA, "oem": testHashB, "rootfs": testHashC},
+		"b": {"boot": testHashB, "oem": testHashC, "rootfs": testHashA},
+	}
 
 	state, err := env.updater().loadState()
 	if err != nil {
@@ -111,10 +114,10 @@ func TestUpdaterInitializesMissingStateFromFactoryConfig(t *testing.T) {
 		t.Fatalf("factory state version/build_time = %q/%q", state.LastCommittedVersion, state.LastCommittedBuildTime)
 	}
 	for _, slot := range []string{"a", "b"} {
-		for _, part := range []string{"boot", "oem", "rootfs"} {
+		for part, wantHash := range env.config.FactoryPartitionHashes[slot] {
 			got := state.Slots[slot].Partitions[part]
-			if got.Version != env.config.FactoryVersion || got.Hash != env.config.FactoryPartitionHash {
-				t.Fatalf("state.Slots[%s].Partitions[%s] = %+v", slot, part, got)
+			if got.Version != env.config.FactoryVersion || got.Hash != wantHash {
+				t.Fatalf("state.Slots[%s].Partitions[%s] = %+v, want hash %s", slot, part, got, wantHash)
 			}
 		}
 	}
@@ -130,7 +133,7 @@ func TestUpdaterRejectsDowngradeOnFreshDeviceWithFactoryConfig(t *testing.T) {
 	}
 	env.config.FactoryVersion = "factory-2"
 	env.config.FactoryBuildTime = "2026-05-21T12:00:00Z"
-	env.config.FactoryPartitionHash = testHashA
+	env.config.FactoryPartitionHashes = uniformFactoryPartitionHashes(testHashA)
 	manifest := env.signedManifest(map[string][]byte{
 		"boot_a.img": []byte("boot-a-v1"),
 		"boot_b.img": []byte("boot-b-v1"),
@@ -869,7 +872,7 @@ func newUpdaterTestEnv(t *testing.T) *updaterTestEnv {
 	if err := CreateMiscImage(env.miscPath, DefaultMiscSize); err != nil {
 		t.Fatalf("CreateMiscImage() error = %v", err)
 	}
-	env.state = NewFactoryState("factory", "2026-05-21T10:00:00Z", testHashA)
+	env.state = NewFactoryState("factory", "2026-05-21T10:00:00Z", uniformFactoryPartitionHashes(testHashA))
 	env.state.ActiveSlot = SlotA
 	env.saveState(t)
 	if err := os.WriteFile(filepath.Join(env.stateDir, "health.ok"), []byte("stale"), 0o644); err != nil {

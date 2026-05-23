@@ -15,6 +15,11 @@ else
   echo "Host Go toolchain not found; Docker build will rely on go already being present in the image." >&2
 fi
 
+docker_command=("./_build_image.sh")
+if [ "$#" -gt 0 ]; then
+  docker_command=("$@")
+fi
+
 restore_docker_output_ownership() {
   if [ "$(uname -s)" != Linux ] || ! command -v sudo >/dev/null 2>&1; then
     return 0
@@ -41,6 +46,6 @@ docker run \
   -v "$(pwd):/home" \
   -w /home \
   luckfoxtech/luckfox_pico:1.0 \
-  /bin/bash -c 'export PATH="/usr/local/go/bin:$PATH"; ./_build_image.sh'
+  /bin/bash -c 'export PATH="/usr/local/go/bin:$PATH"; exec "$@"' _ "${docker_command[@]}"
 
 restore_docker_output_ownership

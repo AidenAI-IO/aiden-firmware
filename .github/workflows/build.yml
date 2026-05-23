@@ -45,9 +45,6 @@ jobs:
         scripts/validate_ota_pubkey.sh "$public_key"
         echo "OTA_PUBLIC_KEY_PATH=/home/.ota-ci/ota_ed25519_public_key.pem" >> "$GITHUB_ENV"
 
-    - name: Run build script
-      run: ./build_image.sh
-
     - name: Generate release name
       id: release_info
       run: |
@@ -58,6 +55,9 @@ jobs:
         echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
         echo "tag_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
         echo "build_time=${BUILD_TIME}" >> "$GITHUB_OUTPUT"
+
+    - name: Run build script
+      run: ./build_image.sh
 
     - name: Generate OTA manifest
       env:
@@ -77,6 +77,17 @@ jobs:
           --sign-key "$private_key" \
           --image-dir pico-sdk/output/image \
           --output pico-sdk/output/image/manifest.json
+
+    - name: Generate OTA device config
+      run: |
+        bash scripts/generate_ota_device_config.sh \
+          --manifest pico-sdk/output/image/manifest.json \
+          --repo "$GITHUB_REPOSITORY" \
+          --channel stable \
+          --output pico-sdk/output/out/userdata/ota/config.json
+
+    - name: Repack update image with OTA config
+      run: ./build_image.sh bash ./scripts/repack_ota_update_image.sh
 
     - name: Create Release
       uses: softprops/action-gh-release@v2

@@ -11,7 +11,7 @@ import (
 
 func TestStateAtomicWriteReadAndFactoryInitialization(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	state := NewFactoryState("factory-v1", "2026-05-21T10:00:00Z", "factory-hash")
+	state := NewFactoryState("factory-v1", "2026-05-21T10:00:00Z", uniformFactoryPartitionHashes("factory-hash"))
 	state.ActiveSlot = SlotA
 	if err := SaveState(path, state); err != nil {
 		t.Fatalf("SaveState() error = %v", err)
@@ -44,14 +44,14 @@ func TestStateSaveReturnsDirectoryFsyncErrors(t *testing.T) {
 	t.Cleanup(func() { syncDir = original })
 
 	path := filepath.Join(t.TempDir(), "state.json")
-	err := SaveState(path, NewFactoryState("factory", "2026-05-21T10:00:00Z", testHashA))
+	err := SaveState(path, NewFactoryState("factory", "2026-05-21T10:00:00Z", uniformFactoryPartitionHashes(testHashA)))
 	if !errors.Is(err, want) {
 		t.Fatalf("SaveState() error = %v, want %v", err, want)
 	}
 }
 
 func TestStateRejectDowngradeByEqualVersionOrOlderBuildTime(t *testing.T) {
-	state := NewFactoryState("20260521-100000-old", time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC).Format(time.RFC3339), testHashA)
+	state := NewFactoryState("20260521-100000-old", time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC).Format(time.RFC3339), uniformFactoryPartitionHashes(testHashA))
 	if err := state.RejectDowngrade(Manifest{Version: state.LastCommittedVersion, BuildTime: state.LastCommittedBuildTime}); err != nil {
 		t.Fatalf("exact committed manifest should be allowed for no-update path: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestStateRejectDowngradeByEqualVersionOrOlderBuildTime(t *testing.T) {
 }
 
 func TestStateSelectiveUpdateRequiresOmittedTargetPartitions(t *testing.T) {
-	state := NewFactoryState("factory", "2026-05-21T10:00:00Z", testHashA)
+	state := NewFactoryState("factory", "2026-05-21T10:00:00Z", uniformFactoryPartitionHashes(testHashA))
 	manifest := Manifest{
 		Version:   "20260521-120000-new",
 		BuildTime: "2026-05-21T12:00:00Z",
@@ -91,7 +91,7 @@ func TestStateSelectiveUpdateRequiresOmittedTargetPartitions(t *testing.T) {
 }
 
 func TestStateCommitUpdateRecordsTargetSlotAndCommittedVersion(t *testing.T) {
-	state := NewFactoryState("factory", "2026-05-21T10:00:00Z", testHashA)
+	state := NewFactoryState("factory", "2026-05-21T10:00:00Z", uniformFactoryPartitionHashes(testHashA))
 	manifest := Manifest{Version: "20260521-120000-new", BuildTime: "2026-05-21T12:00:00Z"}
 	assets := map[string]ManifestAsset{"boot": {SHA256: testHashB}, "oem": {SHA256: testHashC}}
 	if err := state.CommitUpdate(manifest, SlotB, assets); err != nil {
@@ -110,7 +110,7 @@ func TestStateCommitUpdateRecordsTargetSlotAndCommittedVersion(t *testing.T) {
 }
 
 func TestStateRejectsInvalidTargetSlot(t *testing.T) {
-	state := NewFactoryState("factory", "2026-05-21T10:00:00Z", testHashA)
+	state := NewFactoryState("factory", "2026-05-21T10:00:00Z", uniformFactoryPartitionHashes(testHashA))
 	manifest := Manifest{Version: "v2", BuildTime: "2026-05-21T12:00:00Z", Parts: []ManifestPart{{Name: "boot"}}}
 
 	if _, err := slotName(Slot(99)); err == nil || !strings.Contains(err.Error(), "invalid slot") {

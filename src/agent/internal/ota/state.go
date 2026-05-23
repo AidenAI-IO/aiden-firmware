@@ -1,6 +1,7 @@
 package ota
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,7 +49,10 @@ type PartitionVersion struct {
 	Hash    string `json:"hash"`
 }
 
-func NewFactoryState(version string, buildTime string, hash string) State {
+var factorySlotNames = []string{"a", "b"}
+var factoryPartitionNames = []string{"boot", "oem", "rootfs"}
+
+func NewFactoryState(version string, buildTime string, hashes map[string]map[string]string) State {
 	state := State{
 		Phase:                  "factory",
 		CurrentVersion:         version,
@@ -59,13 +63,44 @@ func NewFactoryState(version string, buildTime string, hash string) State {
 	}
 	for _, slot := range []Slot{SlotA, SlotB} {
 		parts := map[string]PartitionVersion{}
-		for _, part := range []string{"boot", "oem", "rootfs"} {
-			parts[part] = PartitionVersion{Version: version, Hash: hash}
-		}
 		name, _ := slotName(slot)
+		for _, part := range factoryPartitionNames {
+			parts[part] = PartitionVersion{Version: version, Hash: hashes[name][part]}
+		}
 		state.Slots[name] = SlotPartitionInfo{Partitions: parts}
 	}
 	return state
+}
+
+func uniformFactoryPartitionHashes(hash string) map[string]map[string]string {
+	hashes := map[string]map[string]string{}
+	for _, slot := range factorySlotNames {
+		hashes[slot] = map[string]string{}
+		for _, part := range factoryPartitionNames {
+			hashes[slot][part] = hash
+		}
+	}
+	return hashes
+}
+
+func validateFactoryPartitionHashes(hashes map[string]map[string]string) error {
+	for _, slot := range factorySlotNames {
+		parts, ok := hashes[slot]
+		if !ok {
+			return fmt.Errorf("factory_partition_hashes missing slot %s", slot)
+		}
+		for _, part := range factoryPartitionNames {
+			hash := strings.TrimSpace(parts[part])
+			if hash == "" {
+				return fmt.Errorf("factory_partition_hashes.%s.%s is required", slot, part)
+			}
+			decoded, err := hex.DecodeString(hash)
+			if err != nil || len(decoded) != 32 {
+				return fmt.Errorf("factory_partition_hashes.%s.%s must be a sha256 hex digest", slot, part)
+			}
+		}
+	}
+	return nil
 }
 
 func LoadState(path string) (State, error) {

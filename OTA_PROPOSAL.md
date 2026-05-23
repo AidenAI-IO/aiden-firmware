@@ -12,6 +12,7 @@
 > - Runtime slot switches use default `tries=3`. The AVB field can represent `0..7`, and `7` remains the maximum accepted by tooling, but it is not the production default.
 > - Manifest parts use `asset`, `asset_a`, and `asset_b` objects with `{name,size,sha256}`. `signature.algorithm` is `ed25519`. The older flat `asset_name` examples are superseded.
 > - Release names and manifest versions use monotonic `YYYYMMDD-HHMMSS-<shortcommit>`, not `<commit>-<timestamp>`.
+> - Release `update.img` seeds `/userdata/ota/config.json` with repo/channel, factory version/build time, and slot-aware `factory_partition_hashes`; factory-flashed devices should not need manual OTA provisioning.
 
 ## 1. 背景与目标
 
@@ -472,7 +473,22 @@ GET boot_<slot>.img / oem_<slot>.img / rootfs_<slot>.img (按 manifest asset 对
 - `stable` channel → 用 GitHub Release 的 `latest`（非 pre-release）
 - `beta` channel → 用标记为 pre-release 的 Release
 
-设备配置文件 `/userdata/ota/config.json` 里写 channel，ota 据此决定查 latest 还是 pre-release。
+设备配置文件 `/userdata/ota/config.json` 里写 repo/channel 和 factory baseline。CI 从签名 manifest 生成该文件，然后重新打包 `userdata.img` 和 `update.img`。示例结构：
+
+```json
+{
+  "repo": "AidenAI-IO/aiden-hardware-demo",
+  "channel": "stable",
+  "factory_version": "20260523-120000-abcdef0",
+  "factory_build_time": "2026-05-23T12:00:00Z",
+  "factory_partition_hashes": {
+    "a": {"boot": "...", "oem": "...", "rootfs": "..."},
+    "b": {"boot": "...", "oem": "...", "rootfs": "..."}
+  }
+}
+```
+
+`boot_a.img` 和 `boot_b.img` 包含不同 slot bootargs，因此 factory baseline 必须记录 A/B 两边各自的 hash。
 
 ### 7.6 generate_ota_manifest.sh 脚本
 

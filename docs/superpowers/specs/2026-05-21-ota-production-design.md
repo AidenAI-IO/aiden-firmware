@@ -126,7 +126,7 @@ Each part defines one of these asset forms:
 Selective update slot coherence rules:
 
 - `state.json` tracks per-slot partition versions and per-slot partition hashes for `boot`, `oem`, and `rootfs` after every successful commit.
-- Factory initialization records both slots as the factory version because images are generated in pairs.
+- Factory initialization records both slots as the factory version and uses slot-aware factory partition hashes from `/userdata/ota/config.json` because `boot_a.img` and `boot_b.img` differ.
 - A manifest may omit unchanged partitions only if it declares `requires_partitions` for the omitted target-slot partitions and local state proves those partitions already match the required version/hash.
 - If the inactive target slot has unknown or incompatible omitted partition versions, `ota` rejects the selective update before downloading assets.
 - A full update that includes all `boot`, `oem`, and `rootfs` parts is always coherent.
@@ -217,7 +217,7 @@ The runtime startup script starts `ota` after persistent storage and network are
 
 ## CI Release Flow
 
-GitHub Actions keeps existing daily/manual triggers. After image build and release name generation, CI runs `scripts/generate_ota_manifest.sh` to create signed `manifest.json` from slot-aware images. The script includes canonical manifest names and slot-specific asset objects where needed:
+GitHub Actions keeps existing daily/manual triggers. After image build and release name generation, CI runs `scripts/generate_ota_manifest.sh` to create signed `manifest.json` from slot-aware images. CI then derives `/userdata/ota/config.json` from the signed manifest, writes it to the SDK userdata staging directory, and repacks `userdata.img` plus `update.img` before publishing. The script includes canonical manifest names and slot-specific asset objects where needed:
 
 - `boot` includes both `asset_a={name:"boot_a.img",size,sha256}` and `asset_b={name:"boot_b.img",size,sha256}`.
 - `oem` includes `asset_a={name:"oem_a.img",size,sha256}` and `asset_b={name:"oem_b.img",size,sha256}` unless a byte-identical `asset={name:"oem.img",size,sha256}` is produced.
@@ -228,6 +228,8 @@ The Release contains:
 - signed `manifest.json`
 - OTA partition images
 - `update.img` for USB recovery/factory flashing
+
+The published `update.img` must include `/userdata/ota/config.json` with `repo`, `channel`, `factory_version`, `factory_build_time`, and `factory_partition_hashes.{a,b}.{boot,oem,rootfs}`.
 
 CI must fail if manifest signing key is missing for release builds. Release names and manifest versions use the monotonic format `YYYYMMDD-HHMMSS-<shortcommit>`.
 

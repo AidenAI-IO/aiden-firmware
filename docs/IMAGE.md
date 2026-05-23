@@ -19,7 +19,7 @@
 ```
 
 > [!NOTE]
-> `./build_image.sh` 将会使用 Docker 启动 Luckfox Pico SDK 编译环境，自动编译所有组件以及打包相关镜像。完整 USB 刷机包输出到 `pico-sdk/output/image/update.img`，A/B OTA 分区镜像输出在同一目录。
+> `./build_image.sh` 将会使用 Docker 启动 Luckfox Pico SDK 编译环境，自动编译所有组件以及打包相关镜像。完整 USB 刷机包输出到 `pico-sdk/output/image/update.img`，A/B OTA 分区镜像输出在同一目录。GitHub Release 流程会在生成签名 `manifest.json` 后写入 `/userdata/ota/config.json` 并重新打包 `userdata.img`/`update.img`，因此发布版 USB 刷机包包含 OTA 初始配置。
 
 ## 固件刷入
 
@@ -56,6 +56,6 @@ upgrade_tool 支持单独更新指定分区。生产镜像使用 A/B 分区布�
 | **oem_b** | 256 MB | Slot B `/oem` contents, mounted when `aiden.slot_suffix=_b` |
 | **rootfs_a** | 1536 MB | Slot A root filesystem |
 | **rootfs_b** | 1536 MB | Slot B root filesystem |
-| **userdata** | 3 GB | Shared persistent data, including `/userdata/ota` state |
+| **userdata** | 3 GB | Shared persistent data, including seeded `/userdata/ota/config.json` and runtime OTA state |
 
-构建完成后，`pico-sdk/output/image/` 应包含 `misc.img`、`boot_a.img`、`boot_b.img`、`oem_a.img`、`oem_b.img`、`rootfs_a.img`、`rootfs_b.img`、`userdata.img` 和 `update.img`。发布流程还会在同一目录生成签名的 `manifest.json`。
+构建完成后，`pico-sdk/output/image/` 应包含 `misc.img`、`boot_a.img`、`boot_b.img`、`oem_a.img`、`oem_b.img`、`rootfs_a.img`、`rootfs_b.img`、`userdata.img` 和 `update.img`。发布流程还会在同一目录生成签名的 `manifest.json`，再从 manifest 生成包含 `repo`、`channel`、`factory_version`、`factory_build_time` 和 slot-aware `factory_partition_hashes` 的设备配置并重新打包发布版 `update.img`。

@@ -5,6 +5,7 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD_SH="$ROOT_DIR/_build.sh"
 BUILD_IMAGE_SH="$ROOT_DIR/build_image.sh"
 WORKFLOW="$ROOT_DIR/.github/workflows/build.yml"
+REPACK_SCRIPT="$ROOT_DIR/scripts/repack_ota_update_image.sh"
 
 if grep -Eq 'go\.dev/dl|wget .*go|curl .*go|tar .*go\$|GO_TARBALL|GO_TARBALL_SHA256' "$BUILD_SH" "$BUILD_IMAGE_SH"; then
     echo "build scripts must not download or extract Go toolchains" >&2
@@ -72,6 +73,26 @@ fi
 
 if ! grep -q 'chown -R' "$BUILD_IMAGE_SH" || ! grep -q 'pico-sdk/output' "$BUILD_IMAGE_SH"; then
     echo "build_image.sh must restore ownership of Docker-generated output for later CI steps" >&2
+    exit 1
+fi
+
+if ! grep -q 'exec "\$@"' "$BUILD_IMAGE_SH"; then
+    echo "build_image.sh must allow CI to run a Dockerized repack command" >&2
+    exit 1
+fi
+
+if [ ! -f "$REPACK_SCRIPT" ]; then
+    echo "missing OTA update repack script" >&2
+    exit 1
+fi
+
+manifest_line=$(grep -n 'Generate OTA manifest' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
+config_line=$(grep -n 'Generate OTA device config' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
+repack_line=$(grep -n 'Repack update image with OTA config' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
+release_line=$(grep -n 'Create Release' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
+if [ -z "$manifest_line" ] || [ -z "$config_line" ] || [ -z "$repack_line" ] || [ -z "$release_line" ] || \
+    [ "$manifest_line" -ge "$config_line" ] || [ "$config_line" -ge "$repack_line" ] || [ "$repack_line" -ge "$release_line" ]; then
+    echo "workflow must generate manifest, write device config, repack update.img, then create release" >&2
     exit 1
 fi
 

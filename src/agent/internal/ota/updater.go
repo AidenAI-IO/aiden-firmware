@@ -27,36 +27,36 @@ const (
 )
 
 type UpdaterConfig struct {
-	ConfigPath           string            `json:"-"`
-	StateDir             string            `json:"state_dir,omitempty"`
-	DownloadDir          string            `json:"download_dir,omitempty"`
-	MiscPath             string            `json:"misc_path,omitempty"`
-	BlockDir             string            `json:"block_dir,omitempty"`
-	Repo                 string            `json:"repo,omitempty"`
-	Channel              string            `json:"channel,omitempty"`
-	APIBase              string            `json:"api_base,omitempty"`
-	ManifestAsset        string            `json:"manifest_asset,omitempty"`
-	PublicKeyPath        string            `json:"public_key_path,omitempty"`
-	PublicKey            ed25519.PublicKey `json:"-"`
-	FactoryVersion       string            `json:"factory_version,omitempty"`
-	FactoryBuildTime     string            `json:"factory_build_time,omitempty"`
-	FactoryPartitionHash string            `json:"factory_partition_hash,omitempty"`
-	PartitionSizes       map[string]int64  `json:"partition_sizes,omitempty"`
-	GitHubToken          string            `json:"github_token,omitempty"`
-	GitHubTokenPath      string            `json:"github_token_path,omitempty"`
-	Interval             time.Duration     `json:"-"`
-	Jitter               time.Duration     `json:"-"`
-	IntervalSeconds      int               `json:"interval_seconds,omitempty"`
-	JitterSeconds        int               `json:"jitter_seconds,omitempty"`
-	SwitchTries          uint8             `json:"switch_tries,omitempty"`
-	HealthTimeout        time.Duration     `json:"-"`
-	HealthTimeoutSecs    int               `json:"health_timeout_seconds,omitempty"`
-	HealthPollInterval   time.Duration     `json:"-"`
-	HTTPTimeout          time.Duration     `json:"-"`
-	HTTPTimeoutSecs      int               `json:"http_timeout_seconds,omitempty"`
-	DryRun               bool              `json:"dry_run,omitempty"`
-	TargetSlotOverride   string            `json:"target_slot_override,omitempty"`
-	Logger               *log.Logger       `json:"-"`
+	ConfigPath             string                       `json:"-"`
+	StateDir               string                       `json:"state_dir,omitempty"`
+	DownloadDir            string                       `json:"download_dir,omitempty"`
+	MiscPath               string                       `json:"misc_path,omitempty"`
+	BlockDir               string                       `json:"block_dir,omitempty"`
+	Repo                   string                       `json:"repo,omitempty"`
+	Channel                string                       `json:"channel,omitempty"`
+	APIBase                string                       `json:"api_base,omitempty"`
+	ManifestAsset          string                       `json:"manifest_asset,omitempty"`
+	PublicKeyPath          string                       `json:"public_key_path,omitempty"`
+	PublicKey              ed25519.PublicKey            `json:"-"`
+	FactoryVersion         string                       `json:"factory_version,omitempty"`
+	FactoryBuildTime       string                       `json:"factory_build_time,omitempty"`
+	FactoryPartitionHashes map[string]map[string]string `json:"factory_partition_hashes,omitempty"`
+	PartitionSizes         map[string]int64             `json:"partition_sizes,omitempty"`
+	GitHubToken            string                       `json:"github_token,omitempty"`
+	GitHubTokenPath        string                       `json:"github_token_path,omitempty"`
+	Interval               time.Duration                `json:"-"`
+	Jitter                 time.Duration                `json:"-"`
+	IntervalSeconds        int                          `json:"interval_seconds,omitempty"`
+	JitterSeconds          int                          `json:"jitter_seconds,omitempty"`
+	SwitchTries            uint8                        `json:"switch_tries,omitempty"`
+	HealthTimeout          time.Duration                `json:"-"`
+	HealthTimeoutSecs      int                          `json:"health_timeout_seconds,omitempty"`
+	HealthPollInterval     time.Duration                `json:"-"`
+	HTTPTimeout            time.Duration                `json:"-"`
+	HTTPTimeoutSecs        int                          `json:"http_timeout_seconds,omitempty"`
+	DryRun                 bool                         `json:"dry_run,omitempty"`
+	TargetSlotOverride     string                       `json:"target_slot_override,omitempty"`
+	Logger                 *log.Logger                  `json:"-"`
 }
 
 type UpdateResult struct {
@@ -550,10 +550,13 @@ func (u *Updater) loadState() (State, error) {
 }
 
 func (u *Updater) initializeFactoryState() (State, error) {
-	if u.config.FactoryVersion == "" || u.config.FactoryBuildTime == "" || u.config.FactoryPartitionHash == "" {
-		return State{}, errors.New("missing OTA state: factory_version, factory_build_time, and factory_partition_hash are required")
+	if u.config.FactoryVersion == "" || u.config.FactoryBuildTime == "" || len(u.config.FactoryPartitionHashes) == 0 {
+		return State{}, errors.New("missing OTA state: factory_version, factory_build_time, and factory_partition_hashes are required")
 	}
-	state := NewFactoryState(u.config.FactoryVersion, u.config.FactoryBuildTime, u.config.FactoryPartitionHash)
+	if err := validateFactoryPartitionHashes(u.config.FactoryPartitionHashes); err != nil {
+		return State{}, fmt.Errorf("invalid OTA factory state: %w", err)
+	}
+	state := NewFactoryState(u.config.FactoryVersion, u.config.FactoryBuildTime, u.config.FactoryPartitionHashes)
 	if err := SaveState(u.statePath(), state); err != nil {
 		return State{}, err
 	}

@@ -47,7 +47,7 @@ The release workflow fails if this secret is missing. It uses the secret to:
 - derive and deploy the matching public key during image build
 - sign `pico-sdk/output/image/manifest.json` after the A/B images are built
 
-The manifest version and release name use `YYYYMMDD-HHMMSS-<shortcommit>`.
+The manifest version and release name use `YYYYMMDD-HHMMSS-<shortcommit>`. After signing, CI derives `/userdata/ota/config.json` from the signed manifest metadata, writes it into the SDK userdata staging directory, and repacks `userdata.img` plus `update.img` before publishing the Release.
 
 ## Manifest Signing
 
@@ -63,7 +63,7 @@ scripts/generate_ota_manifest.sh \
   --output pico-sdk/output/image/manifest.json
 ```
 
-The script requires `boot_a.img`, `boot_b.img`, and either slot-specific or slot-neutral `oem` and `rootfs` images. CI uploads `pico-sdk/output/image/*`, including `manifest.json` and USB `update.img`.
+The script requires `boot_a.img`, `boot_b.img`, and either slot-specific or slot-neutral `oem` and `rootfs` images. CI uploads `pico-sdk/output/image/*`, including `manifest.json` and USB `update.img`. The published `update.img` includes `/userdata/ota/config.json`, so factory-flashed devices can initialize OTA state without manual provisioning.
 
 ## Private Repository Token Behavior
 
