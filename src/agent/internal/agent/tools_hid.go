@@ -720,14 +720,18 @@ func resolvePointOrDefaultNormalized(screen *screenState, point *pointerPoint, c
 		return resolveRequiredPoint(screen, point, coordSpace)
 	}
 
+	if _, err := normalizeCoordinateSpace(coordSpace, coordinateSpaceNormalized); err != nil {
+		return resolvedPointerPoint{}, err
+	}
+
 	x, y := normalizedToAbsolutePoint(defaultX, defaultY)
 	return resolvedPointerPoint{x: x, y: y}, nil
 }
 
 func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string, defaultSpace string) (int, int, error) {
-	space := strings.ToLower(strings.TrimSpace(coordSpace))
-	if space == "" {
-		space = defaultSpace
+	space, err := normalizeCoordinateSpace(coordSpace, defaultSpace)
+	if err != nil {
+		return 0, 0, err
 	}
 
 	switch space {
@@ -755,8 +759,22 @@ func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string
 		return absX, absY, nil
 	case coordinateSpaceAbsolute:
 		return int(clampFloat(math.Round(x), 0, absMouseMaxPos)), int(clampFloat(math.Round(y), 0, absMouseMaxPos)), nil
+	}
+
+	return 0, 0, fmt.Errorf("unsupported coord_space: %q", coordSpace)
+}
+
+func normalizeCoordinateSpace(coordSpace string, defaultSpace string) (string, error) {
+	space := strings.ToLower(strings.TrimSpace(coordSpace))
+	if space == "" {
+		space = defaultSpace
+	}
+
+	switch space {
+	case coordinateSpaceAuto, coordinateSpacePixel, coordinateSpaceNormalized, coordinateSpaceAbsolute:
+		return space, nil
 	default:
-		return 0, 0, fmt.Errorf("unsupported coord_space: %q", coordSpace)
+		return "", fmt.Errorf("unsupported coord_space: %q", coordSpace)
 	}
 }
 

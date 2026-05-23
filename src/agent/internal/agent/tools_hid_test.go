@@ -560,6 +560,24 @@ func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	}
 }
 
+func TestTouchGestureDefaultEdgeGestureRejectsInvalidCoordSpace(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &TouchGestureTool{dev: dev, screen: &screenState{}, state: &pointerState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"back","coord_space":"typo"}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if !strings.Contains(out, `unsupported coord_space: "typo"`) {
+		t.Fatalf("output = %q, want unsupported coord_space error", out)
+	}
+
+	reports := readMouseReports(t, dev, path)
+	if len(reports) != 0 {
+		t.Fatalf("len(reports) = %d, want no HID writes", len(reports))
+	}
+}
+
 func TestTouchGestureDragKeepsZeroHoldBeforeMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
 	tool := &TouchGestureTool{dev: dev, screen: &screenState{}, state: &pointerState{}}
