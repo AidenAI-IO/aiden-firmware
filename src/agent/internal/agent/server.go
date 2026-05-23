@@ -238,6 +238,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.logger.Info("Chat request: %s attachments=%d", inputText, len(runAttachments))
 	}
 
+	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
+
 	// Run agent
 	result, err := s.runtime.Run(context.Background(), RunRequest{
 		Input:       inputText,
@@ -315,6 +317,17 @@ func (s *Server) speakToolDescription(ctx context.Context, description string) {
 			s.logger.Error("Tool description TTS playback failed: %v", err)
 		}
 	}
+}
+
+func (s *Server) playPromptSoundAsync(kind promptSoundKind, label string) {
+	if s.audioClient == nil {
+		return
+	}
+	go func() {
+		if err := playPromptSound(context.Background(), s.audioClient, kind, false); err != nil && s.logger != nil {
+			s.logger.Error("%s prompt sound failed: %v", label, err)
+		}
+	}()
 }
 
 // handleHistory returns the conversation history
@@ -397,6 +410,12 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 	if s.webRecording != nil {
 		http.Error(w, "audio recording is already active", http.StatusConflict)
 		return
+	}
+
+	if err := playPromptSound(context.Background(), s.audioClient, promptSoundRecordingStart, true); err != nil {
+		if s.logger != nil {
+			s.logger.Error("Recording prompt sound failed: %v", err)
+		}
 	}
 
 	sampleRate := s.runtime.config.Audio.SampleRateOrDefault()

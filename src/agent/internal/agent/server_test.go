@@ -371,6 +371,18 @@ func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 
 	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
 		switch req.Op {
+		case "start_playback":
+			return audioResponse{Status: "OK", SessionID: stringUint64(7)}, nil
+		case "write_play_chunk":
+			return audioResponse{Status: "OK"}, nil
+		case "health":
+			return audioResponse{
+				Status:           "OK",
+				RecordingActive:  false,
+				PlaybackActive:   false,
+				RecordSessions:   0,
+				PlaybackSessions: 0,
+			}, nil
 		case "start_recording":
 			if req.SampleRate != 16000 || req.Channels != 1 || req.BitWidth != 16 {
 				t.Errorf("unexpected recording format: %#v", req)

@@ -90,6 +90,10 @@ func (d *AudioDialog) StartRecording() error {
 		return nil
 	}
 
+	if err := playPromptSound(context.Background(), d.audioClient, promptSoundRecordingStart, true); err != nil {
+		log.Printf("[audio] recording prompt sound failed: %v\n", err)
+	}
+
 	log.Println("[audio] Opening record session...")
 	format := AudioFormat{
 		SampleRate: uint32(d.config.Audio.SampleRateOrDefault()),
@@ -233,6 +237,8 @@ func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {
 }
 
 func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime *Runtime) (RunResult, error) {
+	d.playPromptSoundAsync(promptSoundAgentSend, "agent send")
+
 	// Send to LLM
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
@@ -335,9 +341,18 @@ func (d *AudioDialog) Speak(ctx context.Context, text string, interrupt <-chan s
 	return nil
 }
 
+func (d *AudioDialog) playPromptSoundAsync(kind promptSoundKind, label string) {
+	go func() {
+		if err := playPromptSound(context.Background(), d.audioClient, kind, false); err != nil {
+			log.Printf("[audio] %s prompt sound failed: %v\n", label, err)
+		}
+	}()
+}
+
 // ProcessTextInput processes text input and speaks the response
 func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime *Runtime) error {
 	log.Printf("[text] %s\n", text)
+	d.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 
 	// Send to LLM
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
