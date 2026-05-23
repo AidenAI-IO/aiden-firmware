@@ -38,6 +38,14 @@ const (
 	defaultSwipeDurationMs = 700
 	defaultSwipeSteps      = 24
 
+	phoneBackStartX = 0.001
+	phoneBackEndX   = 0.75
+	phoneBackY      = 0.50
+
+	phoneHomeX      = 0.50
+	phoneHomeStartY = 0.999
+	phoneHomeEndY   = 0.18
+
 	// defaultCursorSettleMs is the dwell between positioning the HID absolute
 	// cursor and pressing a button at that position. iOS HID cursor mode
 	// smoothly animates the cursor toward the target; if the press lands while
@@ -459,12 +467,13 @@ func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
 func (t *TouchGestureTool) Description() string {
 	return `Perform a touch-like gesture using the absolute mouse HID device. ` +
-		`Input JSON examples: {"type":"tap","point":{"x":0.5,"y":0.5}}, {"type":"swipe","start":{"x":0.01,"y":0.5},"end":{"x":0.6,"y":0.5},"duration_ms":700,"steps":24}. ` +
-		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe". ` +
+		`Input JSON examples: {"type":"tap","point":{"x":0.5,"y":0.5}}, {"type":"swipe","start":{"x":0.001,"y":0.5},"end":{"x":0.75,"y":0.5},"duration_ms":700,"steps":24}, {"type":"back"}, {"type":"home"}. ` +
+		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe", "back" (left-edge back), "home" (bottom-edge home). ` +
 		`coord_space defaults to "normalized" (x/y in [0,1]) and also supports "pixel" and "absolute". ` +
 		`Every gesture first positions the cursor at the target and waits for iOS HID-cursor smoothing to settle before pressing, so clicks register on the intended element instead of as drags from the previous cursor position. ` +
 		`Tap and double_tap accept an optional "hold_ms" (dwell between press and release, default 60ms). ` +
-		`Swipe defaults to a slower 700ms / 24-step motion, applies "hold_before_ms" of 80ms after the press, and holds at the destination for "hold_after_ms" 300ms before release to reduce inertial scrolling. Drag keeps the previous 250ms / 12-step motion with 0ms hold defaults to avoid unintended long-press behaviour during slow content drag.`
+		`Swipe defaults to a slower 700ms / 24-step motion, applies "hold_before_ms" of 80ms after the press, and holds at the destination for "hold_after_ms" 300ms before release to reduce inertial scrolling. ` +
+		`For phone edge gestures, do not use conservative inset coordinates such as 0.05-0.10: "back" starts at normalized x=0.001 and "home" starts at normalized y=0.999. Drag keeps the previous 250ms / 12-step motion with 0ms hold defaults to avoid unintended long-press behaviour during slow content drag.`
 }
 
 func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error) {
@@ -566,6 +575,50 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
+	case "back", "edge_back", "left_edge_back":
+		start, err := resolvePointOrDefaultNormalized(t.screen, args.Start, coordSpace, phoneBackStartX, phoneBackY)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		end, err := resolvePointOrDefaultNormalized(t.screen, args.End, coordSpace, phoneBackEndX, phoneBackY)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		if err := dragPointer(
+			t.dev,
+			t.state,
+			start,
+			end,
+			button,
+			intOrDefault(args.DurationMs, defaultSwipeDurationMs),
+			intOrDefault(args.HoldBeforeMs, defaultSwipeHoldBeforeMs),
+			intOrDefault(args.HoldAfterMs, defaultSwipeHoldAfterMs),
+			positiveIntOrDefault(args.Steps, defaultSwipeSteps),
+		); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+	case "home", "home_swipe", "bottom_edge_home":
+		start, err := resolvePointOrDefaultNormalized(t.screen, args.Start, coordSpace, phoneHomeX, phoneHomeStartY)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		end, err := resolvePointOrDefaultNormalized(t.screen, args.End, coordSpace, phoneHomeX, phoneHomeEndY)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		if err := dragPointer(
+			t.dev,
+			t.state,
+			start,
+			end,
+			button,
+			intOrDefault(args.DurationMs, defaultSwipeDurationMs),
+			intOrDefault(args.HoldBeforeMs, defaultSwipeHoldBeforeMs),
+			intOrDefault(args.HoldAfterMs, defaultSwipeHoldAfterMs),
+			positiveIntOrDefault(args.Steps, defaultSwipeSteps),
+		); err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
 	default:
 		return fmt.Sprintf("error: unsupported gesture type: %q", args.Type), nil
 	}
@@ -659,6 +712,15 @@ func resolveRequiredPoint(screen *screenState, point *pointerPoint, coordSpace s
 	if err != nil {
 		return resolvedPointerPoint{}, err
 	}
+	return resolvedPointerPoint{x: x, y: y}, nil
+}
+
+func resolvePointOrDefaultNormalized(screen *screenState, point *pointerPoint, coordSpace string, defaultX, defaultY float64) (resolvedPointerPoint, error) {
+	if point != nil {
+		return resolveRequiredPoint(screen, point, coordSpace)
+	}
+
+	x, y := normalizedToAbsolutePoint(defaultX, defaultY)
 	return resolvedPointerPoint{x: x, y: y}, nil
 }
 

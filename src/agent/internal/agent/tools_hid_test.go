@@ -497,6 +497,69 @@ func TestTouchGestureSwipeDefaultsUseSlowerMotionAndDelayedRelease(t *testing.T)
 	}
 }
 
+func TestTouchGestureBackStartsAtLeftPhysicalEdge(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &TouchGestureTool{dev: dev, screen: &screenState{}, state: &pointerState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"back","steps":2,"duration_ms":0,"hold_before_ms":0,"hold_after_ms":0}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	reports := readMouseReports(t, dev, path)
+	if len(reports) != 5 {
+		t.Fatalf("len(reports) = %d, want 5 (pre-move, press, 2 moves, release)", len(reports))
+	}
+	if reports[0].x > 100 {
+		t.Fatalf("back start x = %d, want near left physical edge", reports[0].x)
+	}
+	if reports[0].y != uint16(absMouseMaxPos/2+1) {
+		t.Fatalf("back start y = %d, want center", reports[0].y)
+	}
+	if reports[3].x < uint16(absMouseMaxPos*70/100) {
+		t.Fatalf("back end x = %d, want a long swipe across the screen", reports[3].x)
+	}
+}
+
+func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &TouchGestureTool{dev: dev, screen: &screenState{}, state: &pointerState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"home","steps":2,"duration_ms":0,"hold_before_ms":0,"hold_after_ms":0}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	reports := readMouseReports(t, dev, path)
+	if len(reports) != 5 {
+		t.Fatalf("len(reports) = %d, want 5 (pre-move, press, 2 moves, release)", len(reports))
+	}
+	if reports[0].y < uint16(absMouseMaxPos*995/1000) {
+		t.Fatalf("home start y = %d, want near bottom physical edge", reports[0].y)
+	}
+	if reports[0].x != uint16(absMouseMaxPos/2+1) {
+		t.Fatalf("home start x = %d, want center", reports[0].x)
+	}
+	if reports[3].y > uint16(absMouseMaxPos/4) {
+		t.Fatalf("home end y = %d, want a long upward swipe", reports[3].y)
+	}
+}
+
+func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
+	desc := (&TouchGestureTool{}).Description()
+	for _, want := range []string{`"back"`, `"home"`, "0.001", "0.999"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+}
+
 func TestTouchGestureDragKeepsZeroHoldBeforeMs(t *testing.T) {
 	dev, w := newTimedHIDDevice()
 	tool := &TouchGestureTool{dev: dev, screen: &screenState{}, state: &pointerState{}}

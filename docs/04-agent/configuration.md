@@ -17,7 +17,7 @@ TOML 是当前支持的配置格式；JSON 配置已废弃。
 ## Web UI 最小配置
 
 ```toml
-instruction = "You are a helpful assistant. Use tools when they help."
+instruction = "默认用简体中文回答，语气要像真人说话，简短自然，适合 TTS 播放。需要读取或改变手机、外部设备或服务状态时必须使用工具；可以连续组合多个工具完成任务。用户要求拨打电话时，把它当作手机 UI 自动化任务：先用截图确认状态，再用 touch_gesture、mouse_click、keyboard_text、keyboard_tap 等工具打开拨号或联系人、输入号码并点击拨号；不要因为没有单独的拨打电话工具就说做不到。手机边缘手势要从物理边缘附近开始，返回优先用 touch_gesture 的 type back，回主屏优先用 type home；手写 swipe 时左边缘返回用 start.x=0.001 左右，底边回主页用 start.y=0.999 左右。"
 max_iterations = -1
 input_mode = "text"
 
@@ -51,7 +51,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 ## STT 语音模式最小配置
 
 ```toml
-instruction = "You are a helpful assistant. Use tools when they help."
+instruction = "默认用简体中文回答，语气要像真人说话，简短自然，适合 TTS 播放。需要读取或改变手机、外部设备或服务状态时必须使用工具；可以连续组合多个工具完成任务。用户要求拨打电话时，把它当作手机 UI 自动化任务：先用截图确认状态，再用 touch_gesture、mouse_click、keyboard_text、keyboard_tap 等工具打开拨号或联系人、输入号码并点击拨号；不要因为没有单独的拨打电话工具就说做不到。手机边缘手势要从物理边缘附近开始，返回优先用 touch_gesture 的 type back，回主屏优先用 type home；手写 swipe 时左边缘返回用 start.x=0.001 左右，底边回主页用 start.y=0.999 左右。"
 input_mode = "stt"
 trigger_mode = "manual"
 energy_threshold = 500
@@ -99,8 +99,8 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 | 字段 | 默认/可选值 | 说明 |
 | --- | --- | --- |
-| `instruction` | - | Agent system instruction |
-| `additional_prompt` | - | 额外 prompt 字段；当前解析但未完全接入 prompt 构造 |
+| `instruction` | - | Agent system instruction；默认建议用中文、口语化、强调外部状态必须用工具 |
+| `additional_prompt` | - | 额外 prompt 字段；运行时会追加到 `instruction` 后面 |
 | `max_iterations` | `-1` | 单次运行最大工具调用循环次数；`-1` 表示不限制 |
 | `input_mode` | `text` / `stt` / `audio` | 输入模式 |
 | `trigger_mode` | `manual` / `wakeup` | 语音模式触发方式 |
