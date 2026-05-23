@@ -111,16 +111,20 @@ func (w *streamingSpeechWriter) enqueueLocked(text string) {
 }
 
 func (w *streamingSpeechWriter) speakLoop() {
+	var firstErr error
 	for chunk := range w.chunks {
+		if firstErr != nil {
+			continue
+		}
 		if err := w.dialog.Speak(w.ctx, chunk, nil); err != nil {
-			w.done <- err
-			return
+			firstErr = err
+			continue
 		}
 		w.mu.Lock()
 		w.spoken = true
 		w.mu.Unlock()
 	}
-	w.done <- nil
+	w.done <- firstErr
 }
 
 func nextSpeechChunk(text string, flush bool) (string, bool) {

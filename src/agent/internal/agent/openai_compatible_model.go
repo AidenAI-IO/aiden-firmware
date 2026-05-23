@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -314,8 +315,13 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	}
 
 	orderedToolCalls := make([]compatibleToolCall, 0, len(toolCalls))
-	for i := 0; i < len(toolCalls); i++ {
-		if call := toolCalls[i]; call != nil {
+	toolCallIndexes := make([]int, 0, len(toolCalls))
+	for index := range toolCalls {
+		toolCallIndexes = append(toolCallIndexes, index)
+	}
+	sort.Ints(toolCallIndexes)
+	for _, index := range toolCallIndexes {
+		if call := toolCalls[index]; call != nil {
 			orderedToolCalls = append(orderedToolCalls, *call)
 		}
 	}

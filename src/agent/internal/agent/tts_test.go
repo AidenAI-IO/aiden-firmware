@@ -147,7 +147,7 @@ func TestMinimaxTTSWaitsForPlaybackDrainBeforeReturning(t *testing.T) {
 func TestMinimaxTTSRetriesTransientPlaybackDrainHealthFailure(t *testing.T) {
 	audioServer := newTestAudioService(t)
 	audioServer.healthConnectionDrops = 1
-	audioServer.healthPlaybackSessions = []uint32{0}
+	audioServer.healthPlaybackSessions = []uint32{1, 0}
 	transport := ttsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -160,8 +160,8 @@ func TestMinimaxTTSRetriesTransientPlaybackDrainHealthFailure(t *testing.T) {
 	if err := tts.TextToSpeechStream(context.Background(), "hello", NewAudioServiceClient(audioServer.socketPath)); err != nil {
 		t.Fatalf("TextToSpeechStream() error = %v", err)
 	}
-	if audioServer.countOp("health") < 2 {
-		t.Fatalf("health count = %d, want retry after dropped health connection", audioServer.countOp("health"))
+	if audioServer.countOp("health") < 3 {
+		t.Fatalf("health count = %d, want retry without consuming dropped health state", audioServer.countOp("health"))
 	}
 }
 
@@ -251,8 +251,9 @@ func (s *testAudioService) handleConn(conn net.Conn) {
 		if s.healthConnectionDrops > 0 {
 			s.healthConnectionDrops--
 			dropConnection = true
+		} else {
+			playbackSessions = s.nextHealthPlaybackSessionsLocked()
 		}
-		playbackSessions = s.nextHealthPlaybackSessionsLocked()
 	}
 	s.mu.Unlock()
 	if dropConnection {

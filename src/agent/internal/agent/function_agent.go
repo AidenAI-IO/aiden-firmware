@@ -293,12 +293,12 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep) (strin
 
 	var result postActionScreenshotResult
 	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
-		return step.Observation, nil
+		return compactToolObservation(step.Observation), nil
 	}
 
 	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
 	if err != nil {
-		return step.Observation, nil
+		return compactToolObservation(step.Observation), nil
 	}
 
 	mimeType := "image/jpeg"

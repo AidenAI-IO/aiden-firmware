@@ -144,8 +144,8 @@ func TestOpenAICompatibleModelStreamsContent(t *testing.T) {
 func TestOpenAICompatibleModelStreamsToolCalls(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"\"}}]}}]}\n\n"))
-		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"value\\\":\\\"hello\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":2,\"id\":\"call_3\",\"type\":\"function\",\"function\":{\"name\":\"later\",\"arguments\":\"{\\\"\"}},{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"\"}}]}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"value\\\":\\\"hello\\\"}\"}},{\"index\":2,\"function\":{\"arguments\":\"value\\\":\\\"done\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 		w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer server.Close()
@@ -162,11 +162,15 @@ func TestOpenAICompatibleModelStreamsToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateContent() error = %v", err)
 	}
-	if len(resp.Choices[0].ToolCalls) != 1 {
-		t.Fatalf("expected one tool call, got %#v", resp.Choices[0].ToolCalls)
+	if len(resp.Choices[0].ToolCalls) != 2 {
+		t.Fatalf("expected two tool calls, got %#v", resp.Choices[0].ToolCalls)
 	}
 	call := resp.Choices[0].ToolCalls[0]
 	if call.ID != "call_1" || call.FunctionCall.Name != "echo" || call.FunctionCall.Arguments != `{"value":"hello"}` {
+		t.Fatalf("unexpected streamed tool call: %#v", call)
+	}
+	call = resp.Choices[0].ToolCalls[1]
+	if call.ID != "call_3" || call.FunctionCall.Name != "later" || call.FunctionCall.Arguments != `{"value":"done"}` {
 		t.Fatalf("unexpected streamed tool call: %#v", call)
 	}
 }

@@ -260,12 +260,7 @@ func TestAudioDialogDoesNotSpeakEnterSleepToolDescription(t *testing.T) {
 		Description: "用户让我休息，我准备进入睡眠模式。",
 	})
 
-	time.Sleep(10 * time.Millisecond)
-	tts.mu.Lock()
-	defer tts.mu.Unlock()
-	if len(tts.texts) != 0 {
-		t.Fatalf("enter_sleep tool description should not be spoken, got %#v", tts.texts)
-	}
+	assertNoTTSCallsWithin(t, tts, 200*time.Millisecond)
 }
 
 func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
@@ -347,6 +342,20 @@ func waitForTTSCount(t *testing.T, tts *fakeTTSClient, count int) {
 			return
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func assertNoTTSCallsWithin(t *testing.T, tts *fakeTTSClient, duration time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(duration)
+	for time.Now().Before(deadline) {
+		tts.mu.Lock()
+		got := append([]string(nil), tts.texts...)
+		tts.mu.Unlock()
+		if len(got) != 0 {
+			t.Fatalf("unexpected TTS calls: %#v", got)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

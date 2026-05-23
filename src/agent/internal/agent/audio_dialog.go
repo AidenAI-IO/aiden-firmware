@@ -366,12 +366,8 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 
 	// Speak response if TTS is available
 	if d.ttsClient != nil && result.Output != "" && !result.SpeechStreamed {
-		log.Printf("[reply] %s\n", result.Output)
-		log.Printf("[tts] Starting streaming playback...\n")
-		if err := d.ttsClient.TextToSpeechStream(ctx, result.Output, d.audioClient); err != nil {
+		if err := d.Speak(ctx, result.Output, nil); err != nil {
 			log.Printf("[error] TTS streaming failed: %v", err)
-		} else {
-			log.Printf("[tts] Streaming playback complete\n")
 		}
 	} else if result.Output != "" {
 		log.Printf("[reply] %s\n", result.Output)
