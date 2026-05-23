@@ -13,6 +13,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -29,11 +31,11 @@ const (
 	// frame as the press.
 	defaultSwipeHoldBeforeMs = 80
 
-	// defaultSwipeHoldAfterMs keeps the touch down briefly at the destination
-	// before releasing. Releasing immediately after the final move leaves a
-	// high terminal velocity, which mobile UIs often interpret as inertial
-	// scrolling instead of a precise drag-like swipe.
-	defaultSwipeHoldAfterMs = 300
+	// defaultSwipeHoldAfterMs defaults to zero so a swipe releases as soon as
+	// it reaches the destination. Holding at the end makes phone UIs look like
+	// the touch never released and can leave the screen stuck in a dragged
+	// state. Callers that need a drag-like dwell can still pass hold_after_ms.
+	defaultSwipeHoldAfterMs = 0
 
 	defaultSwipeDurationMs = 700
 	defaultSwipeSteps      = 24
@@ -58,6 +60,20 @@ const (
 	// are trusted for pixel-coordinate resolution. Past this age the cache may
 	// not match the current HDMI capture resolution.
 	screenDimensionsStaleAfter = 30 * time.Second
+
+	// defaultHIDWriteTimeout bounds each HID report write. Linux hidg writes can
+	// otherwise block forever when the USB host stops polling, which leaves the
+	// last successful pressed report active and prevents swipe release reports
+	// from being sent.
+	defaultHIDWriteTimeout = 750 * time.Millisecond
+
+	// dragReleaseReportCount repeats the button-up report for drag/swipe
+	// gestures. On phone USB HID hosts a single final button=0 report can be
+	// missed or coalesced with the final move, leaving the UI in a dragged
+	// state. Repeating the release is harmless for normal hosts and gives the
+	// target several polling frames to observe button-up.
+	dragReleaseReportCount   = 3
+	dragReleaseReportDelayMs = 15
 )
 
 var hidKeyboardMap = map[string]uint8{
@@ -96,10 +112,11 @@ var hidModifierMap = map[string]uint8{
 
 // HIDDevice manages a single HID device file with lazy open and auto-reopen.
 type HIDDevice struct {
-	path string
-	mu   sync.Mutex
-	file io.WriteCloser
-	open func(string) (io.WriteCloser, error)
+	path         string
+	mu           sync.Mutex
+	file         io.WriteCloser
+	open         func(string) (io.WriteCloser, error)
+	writeTimeout time.Duration
 }
 
 type screenState struct {
@@ -174,9 +191,10 @@ func (s *pointerState) Current() (x, y int, ok bool) {
 
 func NewHIDDevice(path string) *HIDDevice {
 	return &HIDDevice{
-		path: path,
+		path:         path,
+		writeTimeout: defaultHIDWriteTimeout,
 		open: func(path string) (io.WriteCloser, error) {
-			return os.OpenFile(path, os.O_WRONLY, 0)
+			return os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
 		},
 	}
 }
@@ -192,12 +210,12 @@ func (d *HIDDevice) writeLocked(data []byte, after func()) error {
 		return err
 	}
 
-	n, err := d.file.Write(data)
+	n, err := d.writeOnceLocked(data)
 	if err != nil {
 		d.closeLocked()
 		if n == 0 && hidShouldRetryWrite(err) {
 			if reopenErr := d.ensureOpenLocked(); reopenErr == nil {
-				n2, retryErr := d.file.Write(data)
+				n2, retryErr := d.writeOnceLocked(data)
 				if retryErr == nil && n2 == len(data) {
 					if after != nil {
 						after()
@@ -221,6 +239,61 @@ func (d *HIDDevice) writeLocked(data []byte, after func()) error {
 		after()
 	}
 	return nil
+}
+
+func (d *HIDDevice) writeOnceLocked(data []byte) (int, error) {
+	if fdFile, ok := d.file.(interface{ Fd() uintptr }); ok {
+		return d.writeFDLocked(int(fdFile.Fd()), data)
+	}
+	return d.file.Write(data)
+}
+
+func (d *HIDDevice) writeFDLocked(fd int, data []byte) (int, error) {
+	timeout := d.writeTimeout
+	if timeout <= 0 {
+		timeout = defaultHIDWriteTimeout
+	}
+	deadline := time.Now().Add(timeout)
+
+	for {
+		n, err := unix.Write(fd, data)
+		if err == nil {
+			return n, nil
+		}
+		if err == unix.EINTR {
+			continue
+		}
+		if !hidWriteWouldBlock(err) {
+			return n, err
+		}
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return 0, fmt.Errorf("timed out after %s waiting to write HID report", timeout)
+		}
+
+		pollTimeoutMs := int(remaining.Milliseconds())
+		if pollTimeoutMs < 1 {
+			pollTimeoutMs = 1
+		}
+		fds := []unix.PollFd{{
+			Fd:     int32(fd),
+			Events: unix.POLLOUT | unix.POLLERR | unix.POLLHUP,
+		}}
+		ready, pollErr := unix.Poll(fds, pollTimeoutMs)
+		if pollErr == unix.EINTR {
+			continue
+		}
+		if pollErr != nil {
+			return 0, pollErr
+		}
+		if ready == 0 {
+			return 0, fmt.Errorf("timed out after %s waiting to write HID report", timeout)
+		}
+		if fds[0].Revents&(unix.POLLERR|unix.POLLHUP|unix.POLLNVAL) != 0 {
+			return 0, syscall.EPIPE
+		}
+	}
 }
 
 func (d *HIDDevice) Close() {
@@ -265,6 +338,10 @@ func hidShouldRetryWrite(err error) bool {
 	return strings.Contains(text, "transport endpoint shutdown") ||
 		strings.Contains(text, "broken pipe") ||
 		strings.Contains(text, "connection reset")
+}
+
+func hidWriteWouldBlock(err error) bool {
+	return errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK)
 }
 
 // KeyboardTapTool sends a key press then release via HID.
@@ -472,7 +549,7 @@ func (t *TouchGestureTool) Description() string {
 		`coord_space defaults to "normalized" (x/y in [0,1]) and also supports "pixel" and "absolute". ` +
 		`Every gesture first positions the cursor at the target and waits for iOS HID-cursor smoothing to settle before pressing, so clicks register on the intended element instead of as drags from the previous cursor position. ` +
 		`Tap and double_tap accept an optional "hold_ms" (dwell between press and release, default 60ms). ` +
-		`Swipe defaults to a slower 700ms / 24-step motion, applies "hold_before_ms" of 80ms after the press, and holds at the destination for "hold_after_ms" 300ms before release to reduce inertial scrolling. ` +
+		`Swipe defaults to a slower 700ms / 24-step motion, applies "hold_before_ms" of 80ms after the press, and releases immediately at the destination by default; pass "hold_after_ms" only when a drag-like end dwell is required. ` +
 		`For phone edge gestures, do not use conservative inset coordinates such as 0.05-0.10: "back" starts at normalized x=0.001 and "home" starts at normalized y=0.999. Drag keeps the previous 250ms / 12-step motion with 0ms hold defaults to avoid unintended long-press behaviour during slow content drag.`
 }
 
@@ -843,6 +920,31 @@ func releasePointer(dev *HIDDevice, state *pointerState, x, y int) error {
 	return movePointer(dev, state, x, y, 0)
 }
 
+func releasePointerRepeated(dev *HIDDevice, state *pointerState, x, y int, count int, delayMs int) error {
+	if count < 1 {
+		count = 1
+	}
+
+	var firstErr error
+	released := false
+	for i := 0; i < count; i++ {
+		if err := releasePointer(dev, state, x, y); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+		} else {
+			released = true
+		}
+		if i+1 < count {
+			sleepMs(delayMs)
+		}
+	}
+	if released {
+		return nil
+	}
+	return firstErr
+}
+
 func movePointer(dev *HIDDevice, state *pointerState, x, y int, buttons uint8) error {
 	return writeAbsMouseReport(dev, state, x, y, buttons, 0)
 }
@@ -881,7 +983,7 @@ func dragPointer(dev *HIDDevice, state *pointerState, start, end resolvedPointer
 	}
 
 	defer func() {
-		relErr := releasePointer(dev, state, end.x, end.y)
+		relErr := releasePointerRepeated(dev, state, end.x, end.y, dragReleaseReportCount, dragReleaseReportDelayMs)
 		if dragErr == nil {
 			dragErr = relErr
 		}
