@@ -72,6 +72,12 @@ func TestUpdaterHappyPathDownloadsWritesSwitchesAndReboots(t *testing.T) {
 	}
 }
 
+func TestDefaultHTTPTimeoutAllowsLargeImageDownloads(t *testing.T) {
+	if DefaultHTTPRequestLimit < 30*time.Minute {
+		t.Fatalf("DefaultHTTPRequestLimit = %s, want at least 30m", DefaultHTTPRequestLimit)
+	}
+}
+
 func TestUpdaterNoUpdateReturnsNoop(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	env.state.LastCommittedVersion = env.version

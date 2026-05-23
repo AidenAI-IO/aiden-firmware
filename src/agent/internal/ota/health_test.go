@@ -73,6 +73,30 @@ func TestHealthTimeoutCallsInjectedReboot(t *testing.T) {
 	}
 }
 
+func TestWriteHealthMarkerUsesPendingBootAndCurrentBoot(t *testing.T) {
+	dir := t.TempDir()
+	markerPath := filepath.Join(dir, "health.ok")
+	pending := PendingBoot{TargetSlot: "b", TargetVersion: "v2", TargetBuildTime: "2026-05-21T12:00:00Z", Nonce: "nonce-1"}
+
+	if err := WriteHealthMarker(markerPath, pending, "b", "boot-1"); err != nil {
+		t.Fatalf("WriteHealthMarker() error = %v", err)
+	}
+	if err := ValidateHealthMarker(markerPath, pending, "boot-1"); err != nil {
+		t.Fatalf("ValidateHealthMarker() error = %v", err)
+	}
+}
+
+func TestWriteHealthMarkerIfPendingIgnoresMissingPendingBoot(t *testing.T) {
+	dir := t.TempDir()
+	wrote, err := WriteHealthMarkerIfPending(filepath.Join(dir, "missing.json"), filepath.Join(dir, "health.ok"))
+	if err != nil {
+		t.Fatalf("WriteHealthMarkerIfPending() error = %v", err)
+	}
+	if wrote {
+		t.Fatal("WriteHealthMarkerIfPending() wrote marker for missing pending boot")
+	}
+}
+
 func TestHealthWaitRejectsNonPositiveInterval(t *testing.T) {
 	for _, interval := range []time.Duration{0, -time.Millisecond} {
 		called := false

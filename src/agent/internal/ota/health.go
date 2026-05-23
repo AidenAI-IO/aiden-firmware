@@ -88,6 +88,79 @@ func ValidateHealthMarker(path string, pending PendingBoot, currentBootID string
 	return nil
 }
 
+func WriteHealthMarker(path string, pending PendingBoot, slot string, bootID string) error {
+	if slot == "" {
+		return fmt.Errorf("health slot is empty")
+	}
+	if bootID == "" {
+		return fmt.Errorf("health boot_id is empty")
+	}
+	marker := HealthMarker{
+		Slot:      slot,
+		Version:   pending.TargetVersion,
+		BuildTime: pending.TargetBuildTime,
+		Nonce:     pending.Nonce,
+		BootID:    bootID,
+	}
+	data, err := json.MarshalIndent(marker, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	writeErr := error(nil)
+	if _, writeErr = f.Write(data); writeErr == nil {
+		writeErr = f.Sync()
+	}
+	closeErr := f.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return fsyncDirFor(path)
+}
+
+func WriteHealthMarkerIfPending(pendingPath string, markerPath string) (bool, error) {
+	data, err := os.ReadFile(pendingPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	var pending PendingBoot
+	if err := json.Unmarshal(data, &pending); err != nil {
+		return false, err
+	}
+	running, ok, err := currentSlotFromProcCmdline()
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, fmt.Errorf("aiden.slot_suffix missing from cmdline")
+	}
+	runningName, err := slotName(running)
+	if err != nil {
+		return false, err
+	}
+	if runningName != pending.TargetSlot {
+		return false, fmt.Errorf("running slot %s does not match pending target %s", runningName, pending.TargetSlot)
+	}
+	return true, WriteHealthMarker(markerPath, pending, runningName, currentBootID())
+}
+
 func WaitForHealth(ctx context.Context, markerPath string, pending PendingBoot, currentBootID string, timeout time.Duration, interval time.Duration, reboot func() error) error {
 	if interval <= 0 {
 		return fmt.Errorf("health interval must be positive")

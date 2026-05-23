@@ -23,7 +23,7 @@ const (
 	DefaultOTAStateDir      = "/userdata/ota"
 	DefaultGitHubAPIBase    = "https://api.github.com"
 	MaxRemoteManifestBytes  = 1 << 20
-	DefaultHTTPRequestLimit = 2 * time.Minute
+	DefaultHTTPRequestLimit = 30 * time.Minute
 )
 
 type UpdaterConfig struct {
