@@ -86,6 +86,16 @@ if [ ! -f "$REPACK_SCRIPT" ]; then
     exit 1
 fi
 
+if grep -q 'build.sh firmware' "$REPACK_SCRIPT"; then
+    echo "OTA update repack must not rebuild boot/oem/rootfs after manifest generation" >&2
+    exit 1
+fi
+
+if ! grep -q 'build.sh updateimg' "$REPACK_SCRIPT"; then
+    echo "OTA update repack must rebuild update.img without rerunning full firmware packaging" >&2
+    exit 1
+fi
+
 manifest_line=$(grep -n 'Generate OTA manifest' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
 config_line=$(grep -n 'Generate OTA device config' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
 repack_line=$(grep -n 'Repack update image with OTA config' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
