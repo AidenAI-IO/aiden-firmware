@@ -51,6 +51,16 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
 	},
+	"current_time": {
+		Category:     "system",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"timezone":"Asia/Shanghai"}`,
+	},
+	"enter_sleep": {
+		Category:     "system",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"reason":"user asked me to sleep"}`,
+	},
 	"keyboard_tap": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
@@ -90,6 +100,11 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"type":"tap","point":{"x":0.5,"y":0.5}}`,
+	},
+	"weather": {
+		Category:     "system",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"location":"Shanghai"}`,
 	},
 }
 
