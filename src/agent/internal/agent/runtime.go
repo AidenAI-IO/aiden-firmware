@@ -374,7 +374,10 @@ func (r *Runtime) buildAgent(
 	callbackHandler callbacks.Handler,
 ) agents.Agent {
 	systemMessage := buildFunctionAgentSystemMessage(
-		AgentConfig{Instruction: r.config.Instruction},
+		AgentConfig{
+			Instruction:      r.config.Instruction,
+			AdditionalPrompt: r.config.AdditionalPrompt,
+		},
 		skills,
 		availableTools,
 	)
