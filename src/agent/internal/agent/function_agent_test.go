@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
@@ -194,5 +195,27 @@ func TestBuildImagePartDefaultsMimeType(t *testing.T) {
 	}
 	if imagePart.URL != "data:image/png;base64,aW1hZ2UtYnl0ZXM=" {
 		t.Fatalf("unexpected image url: %q", imagePart.URL)
+	}
+}
+
+func TestFunctionAgentCompactsInvalidVisualObservation(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
+	}
+	observation := strings.Repeat("x", maxToolObservationRunes+10)
+
+	toolContent, followups := agent.observationMessagesForStep(schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "screenshot"},
+		Observation: observation,
+	})
+
+	if followups != nil {
+		t.Fatalf("expected no followup messages for invalid visual observation, got %#v", followups)
+	}
+	if toolContent == observation {
+		t.Fatal("invalid visual observation was not compacted")
+	}
+	if !strings.Contains(toolContent, "[truncated 10 chars]") {
+		t.Fatalf("unexpected compacted observation suffix: %q", toolContent[len(toolContent)-40:])
 	}
 }

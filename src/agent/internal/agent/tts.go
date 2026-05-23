@@ -242,17 +242,26 @@ func waitForPlaybackDrain(ctx context.Context, audio *AudioServiceClient, timeou
 	ticker := time.NewTicker(playbackDrainPollInterval)
 	defer ticker.Stop()
 
+	var lastErr error
 	for {
 		health, err := audio.Health()
 		if err != nil {
-			return fmt.Errorf("wait playback drain: %w", err)
-		}
-		if health.PlaybackSessions == 0 {
-			return nil
+			if !isTransientAudioServiceError(err) {
+				return fmt.Errorf("wait playback drain: %w", err)
+			}
+			lastErr = err
+		} else {
+			lastErr = nil
+			if health.PlaybackSessions == 0 {
+				return nil
+			}
 		}
 
 		select {
 		case <-waitCtx.Done():
+			if lastErr != nil {
+				return fmt.Errorf("wait playback drain: %w", lastErr)
+			}
 			return waitCtx.Err()
 		case <-ticker.C:
 		}

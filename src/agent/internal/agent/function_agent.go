@@ -29,6 +29,7 @@ type visualObservationTool interface {
 }
 
 const toolActionLogVersion = 1
+const maxToolObservationRunes = 4000
 
 type toolActionLog struct {
 	Version         int    `json:"aiden_action_log_version"`
@@ -207,7 +208,7 @@ func (a *FunctionAgent) toolsAsLLM() []llms.Tool {
 						"description": map[string]string{
 							"title":       "description",
 							"type":        "string",
-							"description": "A short first-person sentence in the user's language that says what you are about to do with this tool. This will be spoken aloud before the tool runs.",
+							"description": "A short first-person sentence in the user's language that says what you are about to do with this tool. Voice clients may present it while the tool runs.",
 						},
 					},
 					"required": []string{"__arg1", "description"},
@@ -287,17 +288,17 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 
 func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep) (string, []llms.MessageContent) {
 	if !a.isVisualObservationTool(step.Action.Tool) {
-		return step.Observation, nil
+		return compactToolObservation(step.Observation), nil
 	}
 
 	var result postActionScreenshotResult
 	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
-		return step.Observation, nil
+		return compactToolObservation(step.Observation), nil
 	}
 
 	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
 	if err != nil {
-		return step.Observation, nil
+		return compactToolObservation(step.Observation), nil
 	}
 
 	mimeType := "image/jpeg"
@@ -310,10 +311,11 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep) (strin
 		result.Size,
 	)
 	if strings.TrimSpace(result.ActionOutput) != "" {
+		actionOutput := compactToolObservation(result.ActionOutput)
 		toolContent = fmt.Sprintf(
 			"%s completed with output %q, then returned a screenshot observation after the action settled: format=%s width=%d height=%d size=%d bytes. The image is attached in the next message.",
 			step.Action.Tool,
-			result.ActionOutput,
+			actionOutput,
 			result.Format,
 			result.Width,
 			result.Height,
@@ -331,6 +333,15 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep) (strin
 			buildImagePart(mimeType, imageBytes),
 		},
 	}}
+}
+
+func compactToolObservation(observation string) string {
+	observation = strings.TrimSpace(observation)
+	if observation == "" || len([]rune(observation)) <= maxToolObservationRunes {
+		return observation
+	}
+	runes := []rune(observation)
+	return string(runes[:maxToolObservationRunes]) + fmt.Sprintf("\n...[truncated %d chars]", len(runes)-maxToolObservationRunes)
 }
 
 func (a *FunctionAgent) isVisualObservationTool(name string) bool {

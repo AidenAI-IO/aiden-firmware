@@ -48,6 +48,10 @@ type MemoryManager struct {
 	profileDebouncer *ProfileDebouncer
 	lockTimeout      time.Duration
 	logger           *Logger
+
+	maintenanceMu      sync.Mutex
+	maintenanceRunning bool
+	maintenancePending bool
 }
 
 const defaultMemoryHotWindowEvents = 20
@@ -231,6 +235,50 @@ func (m *MemoryManager) Save(ctx context.Context, agentName string) error {
 		return err
 	}
 	return m.maintainFilesystemMemory(ctx)
+}
+
+func (m *MemoryManager) SaveSnapshot(ctx context.Context, agentName string, records []MessageRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return m.persistSnapshot(agentName, records)
+}
+
+func (m *MemoryManager) RequestMaintenance() {
+	if m.storageDir == "" {
+		return
+	}
+
+	m.maintenanceMu.Lock()
+	if m.maintenanceRunning {
+		m.maintenancePending = true
+		m.maintenanceMu.Unlock()
+		return
+	}
+	m.maintenanceRunning = true
+	m.maintenanceMu.Unlock()
+
+	go m.maintenanceLoop()
+}
+
+func (m *MemoryManager) maintenanceLoop() {
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		err := m.maintainFilesystemMemory(ctx)
+		cancel()
+		if err != nil && m.logger != nil {
+			m.logger.Error("[memory] async maintenance failed: %v", err)
+		}
+
+		m.maintenanceMu.Lock()
+		if !m.maintenancePending {
+			m.maintenanceRunning = false
+			m.maintenanceMu.Unlock()
+			return
+		}
+		m.maintenancePending = false
+		m.maintenanceMu.Unlock()
+	}
 }
 
 func (m *MemoryManager) AppendExchange(ctx context.Context, agentName string, input string, output string) error {

@@ -17,7 +17,7 @@ trigger_mode = "manual"
 # VAD (Voice Activity Detection) parameters
 # Only used when input_mode is "stt" or "audio"
 energy_threshold = 500    # Energy threshold for speech detection
-silence_ms = 1000         # Silence duration to end utterance (ms)
+silence_ms = 650          # Silence duration to end utterance (ms)
 min_speech_ms = 300       # Minimum speech duration to accept (ms)
 
 # Wakeup voice session parameters
@@ -28,6 +28,9 @@ voice_first_turn_timeout_ms = 10000
 voice_max_turns = 0
 voice_interrupt_on_wakeup = true
 voice_interrupt_listen_during_tts = false
+voice_streaming_tts_enabled = true
+voice_tool_call_speech = true
+voice_max_response_tokens = 400
 
 # Primary LLM model configuration
 [model]

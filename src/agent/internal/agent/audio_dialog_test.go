@@ -2,9 +2,15 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"net"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 	langtools "github.com/tmc/langchaingo/tools"
@@ -38,6 +44,40 @@ func TestAudioDialogStopRecordingClearsLocalStateOnStopError(t *testing.T) {
 	}
 	if dialog.sessionID != 0 {
 		t.Fatalf("sessionID = %d, want 0", dialog.sessionID)
+	}
+}
+
+func TestAudioDialogStartRecordingRetriesUntilAudioServiceAvailable(t *testing.T) {
+	oldTimeout := recordingStartRetryTimeout
+	oldInterval := recordingStartRetryInterval
+	recordingStartRetryTimeout = 300 * time.Millisecond
+	recordingStartRetryInterval = 10 * time.Millisecond
+	t.Cleanup(func() {
+		recordingStartRetryTimeout = oldTimeout
+		recordingStartRetryInterval = oldInterval
+	})
+
+	socketPath := filepath.Join(t.TempDir(), "audio.sock")
+	ready := make(chan struct{})
+	go serveDelayedStartRecording(t, socketPath, ready)
+
+	dialog := &AudioDialog{
+		config:      Config{Audio: AudioConfig{SampleRate: 16000, Channels: 1, BitWidth: 16}},
+		audioClient: NewAudioServiceClient(socketPath),
+	}
+	if err := dialog.StartRecording(); err != nil {
+		t.Fatalf("StartRecording() error = %v", err)
+	}
+	if !dialog.recordActive {
+		t.Fatal("recordActive = false, want true")
+	}
+	if dialog.sessionID != 42 {
+		t.Fatalf("sessionID = %d, want 42", dialog.sessionID)
+	}
+	select {
+	case <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("delayed audio service did not handle start_recording")
 	}
 }
 
@@ -92,9 +132,10 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 	audioClient := NewAudioServiceClient("/tmp/audio.sock")
 	dialog := &AudioDialog{
 		config: Config{
-			Model:     ModelConfig{Provider: "fake"},
-			Audio:     AudioConfig{SampleRate: 16000},
-			InputMode: "audio",
+			Model:                    ModelConfig{Provider: "fake"},
+			Audio:                    AudioConfig{SampleRate: 16000},
+			InputMode:                "audio",
+			VoiceStreamingTTSEnabled: boolPtr(false),
 		},
 		audioClient: audioClient,
 		ttsClient:   tts,
@@ -135,7 +176,7 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 	}
 }
 
-func TestAudioDialogSpeaksToolDescriptionBeforeFinalAnswer(t *testing.T) {
+func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			{
@@ -174,11 +215,14 @@ func TestAudioDialogSpeaksToolDescriptionBeforeFinalAnswer(t *testing.T) {
 		NewSkillIndex(),
 	)
 	tts := &fakeTTSClient{}
+	toolSpeech := true
 	dialog := &AudioDialog{
 		config: Config{
-			Model:     ModelConfig{Provider: "fake"},
-			Audio:     AudioConfig{SampleRate: 16000},
-			InputMode: "audio",
+			Model:                    ModelConfig{Provider: "fake"},
+			Audio:                    AudioConfig{SampleRate: 16000},
+			InputMode:                "audio",
+			VoiceStreamingTTSEnabled: boolPtr(false),
+			VoiceToolCallSpeech:      &toolSpeech,
 		},
 		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
 		ttsClient:   tts,
@@ -187,27 +231,200 @@ func TestAudioDialogSpeaksToolDescriptionBeforeFinalAnswer(t *testing.T) {
 	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
 		t.Fatalf("ProcessUtterance() error = %v", err)
 	}
+	waitForTTSCount(t, tts, 2)
 	if len(tts.texts) != 2 {
 		t.Fatalf("expected tool description and final answer TTS, got %#v", tts.texts)
 	}
-	if tts.texts[0] != "我先检查当前音量。" || tts.texts[1] != "当前音量是 42。" {
-		t.Fatalf("unexpected TTS order: %#v", tts.texts)
+	if !containsString(tts.texts, "我先检查当前音量。") || !containsString(tts.texts, "当前音量是 42。") {
+		t.Fatalf("unexpected TTS texts: %#v", tts.texts)
 	}
-	if len(tts.deadlineSet) != 2 || !tts.deadlineSet[0] || tts.deadlineSet[1] {
+	if !containsBool(tts.deadlineSet, true) || !containsBool(tts.deadlineSet, false) {
 		t.Fatalf("unexpected TTS deadline use: %#v", tts.deadlineSet)
 	}
 }
 
+func TestAudioDialogDoesNotSpeakEnterSleepToolDescription(t *testing.T) {
+	toolSpeech := true
+	tts := &fakeTTSClient{}
+	dialog := &AudioDialog{
+		config: Config{
+			VoiceToolCallSpeech: &toolSpeech,
+		},
+		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
+		ttsClient:   tts,
+	}
+
+	dialog.HandleRunEvent(context.Background(), RunEvent{
+		Type:        "tool_call",
+		ToolName:    "enter_sleep",
+		Description: "用户让我休息，我准备进入睡眠模式。",
+	})
+
+	assertNoTTSCallsWithin(t, tts, 200*time.Millisecond)
+}
+
+func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "enter_sleep",
+							Arguments: `{"__arg1":"{\"reason\":\"user asked\"}"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "I will wait for the next wakeup.",
+				}},
+			},
+		},
+	}
+	controller := NewSleepController()
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools when external state is requested.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"enter_sleep": NewEnterSleepTool(controller),
+		}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config: Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			VoiceStreamingTTSEnabled: boolPtr(true),
+		},
+		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
+		ttsClient:   &fakeTTSClient{err: errors.New("start playback failed")},
+	}
+
+	result, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "go to sleep"}, runtime)
+	if err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", err)
+	}
+	if !result.SleepRequested {
+		t.Fatal("SleepRequested = false, want true even when streaming speech fails")
+	}
+	if result.SpeechStreamed {
+		t.Fatal("SpeechStreamed = true, want false when TTS playback failed before successful speech")
+	}
+}
+
 type fakeTTSClient struct {
+	mu          sync.Mutex
 	texts       []string
 	audio       *AudioServiceClient
 	deadlineSet []bool
+	err         error
+}
+
+func boolPtr(value bool) *bool {
+	return &value
+}
+
+func waitForTTSCount(t *testing.T, tts *fakeTTSClient, count int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		tts.mu.Lock()
+		got := len(tts.texts)
+		tts.mu.Unlock()
+		if got >= count {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func assertNoTTSCallsWithin(t *testing.T, tts *fakeTTSClient, duration time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(duration)
+	for time.Now().Before(deadline) {
+		tts.mu.Lock()
+		got := append([]string(nil), tts.texts...)
+		tts.mu.Unlock()
+		if len(got) != 0 {
+			t.Fatalf("unexpected TTS calls: %#v", got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsBool(values []bool, want bool) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *fakeTTSClient) TextToSpeechStream(ctx context.Context, text string, audio *AudioServiceClient) error {
 	_, hasDeadline := ctx.Deadline()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.texts = append(c.texts, text)
 	c.audio = audio
 	c.deadlineSet = append(c.deadlineSet, hasDeadline)
-	return nil
+	return c.err
+}
+
+func serveDelayedStartRecording(t *testing.T, socketPath string, ready chan<- struct{}) {
+	t.Helper()
+	time.Sleep(30 * time.Millisecond)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Errorf("listen unix socket: %v", err)
+		close(ready)
+		return
+	}
+	defer os.Remove(socketPath)
+	defer listener.Close()
+
+	conn, err := listener.Accept()
+	if err != nil {
+		t.Errorf("accept unix socket: %v", err)
+		close(ready)
+		return
+	}
+	defer conn.Close()
+
+	msg, err := readUdsMessage(conn)
+	if err != nil {
+		t.Errorf("read request: %v", err)
+		close(ready)
+		return
+	}
+	var req audioRequest
+	if err := json.Unmarshal([]byte(msg.HeaderJSON), &req); err != nil {
+		t.Errorf("unmarshal request: %v", err)
+		close(ready)
+		return
+	}
+	if req.Op != "start_recording" {
+		t.Errorf("op = %q, want start_recording", req.Op)
+	}
+	resp := `{"status":"OK","session_id":"42"}`
+	if err := writeUdsMessage(conn, udsMessage{HeaderJSON: resp}); err != nil {
+		t.Errorf("write response: %v", err)
+	}
+	close(ready)
 }

@@ -6,12 +6,18 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
 type TurnInput = AudioInputResult
 
 const toolDescriptionSpeechTimeout = 5 * time.Second
+
+var (
+	recordingStartRetryTimeout  = 5 * time.Second
+	recordingStartRetryInterval = 250 * time.Millisecond
+)
 
 // AudioDialog manages the audio conversation loop
 type AudioDialog struct {
@@ -22,6 +28,7 @@ type AudioDialog struct {
 	vad          *AudioVAD
 	recordActive bool
 	sessionID    uint64
+	speechMu     sync.Mutex
 }
 
 // NewAudioDialog creates a new audio dialog manager
@@ -52,7 +59,7 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 	}
 	silenceMs := cfg.SilenceMs
 	if silenceMs == 0 {
-		silenceMs = 1000
+		silenceMs = 650
 	}
 	minSpeechMs := cfg.MinSpeechMs
 	if minSpeechMs == 0 {
@@ -84,18 +91,57 @@ func (d *AudioDialog) StartRecording() error {
 	}
 
 	log.Println("[audio] Opening record session...")
-	result, err := d.audioClient.StartRecording(AudioFormat{
+	format := AudioFormat{
 		SampleRate: uint32(d.config.Audio.SampleRateOrDefault()),
 		Channels:   uint32(d.config.Audio.ChannelsOrDefault()),
 		BitWidth:   uint32(d.config.Audio.BitWidthOrDefault()),
-	})
+	}
+
+	result, err := startRecordingWithRetry(d.audioClient, format, recordingStartRetryTimeout, recordingStartRetryInterval)
 	if err != nil {
 		return fmt.Errorf("start recording: %w", err)
 	}
-
 	d.sessionID = result.SessionID
 	d.recordActive = true
 	return nil
+}
+
+func startRecordingWithRetry(audio *AudioServiceClient, format AudioFormat, retryTimeout, retryInterval time.Duration) (*RecordStartResult, error) {
+	if retryTimeout <= 0 {
+		return audio.StartRecording(format)
+	}
+	if retryInterval <= 0 {
+		retryInterval = 100 * time.Millisecond
+	}
+
+	deadline := time.Now().Add(retryTimeout)
+	attempts := 0
+	var lastErr error
+	for {
+		result, err := audio.StartRecording(format)
+		if err == nil {
+			if attempts > 0 {
+				log.Printf("[audio] Record session opened after %d retries\n", attempts)
+			}
+			return result, nil
+		}
+		lastErr = err
+		attempts++
+		if attempts == 1 {
+			log.Printf("[audio] Record session unavailable, retrying for up to %s: %v\n", retryTimeout, err)
+		}
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		sleep := retryInterval
+		if sleep > remaining {
+			sleep = remaining
+		}
+		time.Sleep(sleep)
+	}
+	return nil, fmt.Errorf("after %s: %w", retryTimeout, lastErr)
 }
 
 // StopRecording stops the current recording session
@@ -158,6 +204,9 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	if err != nil {
 		return err
 	}
+	if result.SpeechStreamed {
+		return nil
+	}
 	return d.Speak(ctx, result.Output, nil)
 }
 
@@ -184,21 +233,45 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
 
-	result, err := runtime.Run(ctx, RunRequest{
+	req := RunRequest{
 		Input:       input.InputText,
 		Attachments: input.Attachments,
+		MaxTokens:   d.config.VoiceMaxResponseTokensOrDefault(),
 		EventHandler: func(event RunEvent) {
-			if event.Type == "tool_call" {
-				d.SpeakToolDescription(ctx, event.Description)
-			}
+			d.HandleRunEvent(ctx, event)
 		},
-	})
+	}
+
+	var speech *streamingSpeechWriter
+	if d.ttsClient != nil && d.config.VoiceStreamingTTSEnabledOrDefault() {
+		speech = newStreamingSpeechWriter(ctx, d)
+		req.StreamWriter = speech
+	}
+
+	result, err := runtime.Run(ctx, req)
+	if speech != nil {
+		if closeErr := speech.CloseAndWait(); closeErr != nil {
+			log.Printf("[error] streaming speech failed: %v", closeErr)
+		}
+		result.SpeechStreamed = speech.Spoke()
+	}
 	if err != nil {
 		return RunResult{}, fmt.Errorf("LLM request failed: %w", err)
 	}
 
 	log.Printf("[llm] Response received\n")
 	return result, nil
+}
+
+func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
+	if event.Type != "tool_call" || !d.config.VoiceToolCallSpeechOrDefault() {
+		return
+	}
+	if event.ToolName == "enter_sleep" {
+		return
+	}
+	description := event.Description
+	go d.SpeakToolDescription(ctx, description)
 }
 
 func (d *AudioDialog) SpeakToolDescription(ctx context.Context, description string) {
@@ -235,6 +308,14 @@ func (d *AudioDialog) Speak(ctx context.Context, text string, interrupt <-chan s
 	}
 	// Speak response if TTS is available
 	if d.ttsClient != nil && text != "" {
+		if err := speakCtx.Err(); err != nil {
+			return err
+		}
+		d.speechMu.Lock()
+		defer d.speechMu.Unlock()
+		if err := speakCtx.Err(); err != nil {
+			return err
+		}
 		log.Printf("[reply] %s\n", text)
 		log.Printf("[tts] Starting streaming playback...\n")
 		if err := d.ttsClient.TextToSpeechStream(speakCtx, text, d.audioClient); err != nil {
@@ -258,14 +339,25 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
 
-	result, err := runtime.Run(ctx, RunRequest{
+	req := RunRequest{
 		Input: text,
 		EventHandler: func(event RunEvent) {
-			if event.Type == "tool_call" {
-				d.SpeakToolDescription(ctx, event.Description)
-			}
+			d.HandleRunEvent(ctx, event)
 		},
-	})
+	}
+	var speech *streamingSpeechWriter
+	if d.ttsClient != nil && d.config.VoiceStreamingTTSEnabledOrDefault() {
+		speech = newStreamingSpeechWriter(ctx, d)
+		req.StreamWriter = speech
+	}
+
+	result, err := runtime.Run(ctx, req)
+	if speech != nil {
+		if closeErr := speech.CloseAndWait(); closeErr != nil {
+			log.Printf("[error] streaming speech failed: %v", closeErr)
+		}
+		result.SpeechStreamed = speech.Spoke()
+	}
 	if err != nil {
 		return fmt.Errorf("LLM request failed: %w", err)
 	}
@@ -273,13 +365,9 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	log.Printf("[llm] Response received\n")
 
 	// Speak response if TTS is available
-	if d.ttsClient != nil && result.Output != "" {
-		log.Printf("[reply] %s\n", result.Output)
-		log.Printf("[tts] Starting streaming playback...\n")
-		if err := d.ttsClient.TextToSpeechStream(ctx, result.Output, d.audioClient); err != nil {
+	if d.ttsClient != nil && result.Output != "" && !result.SpeechStreamed {
+		if err := d.Speak(ctx, result.Output, nil); err != nil {
 			log.Printf("[error] TTS streaming failed: %v", err)
-		} else {
-			log.Printf("[tts] Streaming playback complete\n")
 		}
 	} else if result.Output != "" {
 		log.Printf("[reply] %s\n", result.Output)
