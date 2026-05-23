@@ -19,7 +19,6 @@ import (
 const (
 	wakeupListenTimeout        = 10 * time.Second
 	voiceTurnCancelWaitTimeout = 2 * time.Second
-	wakeupAckText              = "我在"
 )
 
 func main() {
@@ -245,7 +244,6 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 			return
 		case <-events:
 			log.Println("\n[wakeup] GPIO 33 triggered, opening voice session...")
-			speakWakeupAck(dialog)
 			if exit := runVoiceSession(cfg, dialog, runtime, sigChan, events); exit {
 				log.Println("\n[exit] Stopped.")
 				return
@@ -304,7 +302,6 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 		}
 
 		// Start recording
-		speakWakeupAck(dialog)
 		log.Println("[listen] Recording audio...")
 		if err := dialog.StartRecording(); err != nil {
 			log.Printf("[error] Failed to start recording: %v\n", err)
@@ -330,15 +327,6 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 		wakeupMutex.Unlock()
 
 		log.Println("[ready] Waiting for next wakeup event...")
-	}
-}
-
-func speakWakeupAck(dialog audioDialogRunner) {
-	if dialog == nil {
-		return
-	}
-	if err := dialog.Speak(context.Background(), wakeupAckText, nil); err != nil {
-		log.Printf("[wakeup] acknowledgement failed: %v\n", err)
 	}
 }
 

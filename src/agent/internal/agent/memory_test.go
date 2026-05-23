@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -82,6 +83,58 @@ func TestMemoryManagerRestoresFromSessionEventsWhenSnapshotMissing(t *testing.T)
 	}
 	if messages[0].GetContent() != "remember this" || messages[1].GetContent() != "stored" {
 		t.Fatalf("unexpected restored messages: %#v", messages)
+	}
+}
+
+func TestMemoryManagerRepairsTruncatedSessionEventTail(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	sessionDir := filepath.Join(storageDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+
+	now := time.Now().UTC()
+	events := []SessionEvent{
+		sessionEventFromRecord(MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: "hello"}, now, 0),
+		sessionEventFromRecord(MessageRecord{Role: string(llms.ChatMessageTypeAI), Content: "hi"}, now, 1),
+	}
+	data, _, err := encodeSessionEventsJSONL(events)
+	if err != nil {
+		t.Fatalf("encode events: %v", err)
+	}
+	data = append(data, []byte(`{"event_id":"partial","type":"assistant_output","role":"assistant","content":"cut`)...)
+
+	eventsPath := filepath.Join(sessionDir, "events.jsonl")
+	if err := os.WriteFile(eventsPath, data, 0o644); err != nil {
+		t.Fatalf("write truncated events: %v", err)
+	}
+
+	manager := NewMemoryManager(storageDir)
+	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	messages, err := handle.History.Messages(ctx)
+	if err != nil {
+		t.Fatalf("Messages() error = %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(messages))
+	}
+	if messages[0].GetContent() != "hello" || messages[1].GetContent() != "hi" {
+		t.Fatalf("unexpected restored messages: %#v", messages)
+	}
+
+	repaired, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("read repaired events: %v", err)
+	}
+	if bytes.Contains(repaired, []byte("partial")) {
+		t.Fatalf("truncated event tail was not removed: %q", repaired)
+	}
+	if got := readSessionEvents(t, eventsPath); len(got) != 2 {
+		t.Fatalf("repaired events = %d, want 2", len(got))
 	}
 }
 

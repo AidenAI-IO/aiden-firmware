@@ -326,6 +326,9 @@ func (s *SessionMemoryStore) readEvents(path string) ([]SessionEvent, error) {
 		}
 		var event SessionEvent
 		if err := json.Unmarshal(line, &event); err != nil {
+			if isTruncatedJSONLineError(err) {
+				break
+			}
 			return nil, fmt.Errorf("decode session event %q: %w", path, err)
 		}
 		events = append(events, event)
