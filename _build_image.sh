@@ -56,10 +56,12 @@ if [ -d "$OVERLAY/etc" ]; then
     echo "  ✓ etc directory synced"
 fi
 
-# Step 4: 运行完整的 pico-sdk 构建
-echo "[4/6] Running pico-sdk build all..."
+# Step 4: 运行 pico-sdk 构建，overlay 注入后只打包一次 firmware，避免 A/B 大镜像重复生成。
+echo "[4/6] Running pico-sdk build stages..."
 cd "$PICO_SDK"
-./build.sh all "$@"
+./build.sh sysdrv "$@"
+./build.sh media "$@"
+./build.sh app "$@"
 
 # Step 5: 获取输出路径并复制 oem/userdata 内容
 echo "[5/6] Injecting oem and userdata content..."
@@ -102,7 +104,7 @@ cd "$PICO_SDK/project"
 if [ -d "$RK_PROJECT_PACKAGE_OEM_DIR" ] && [ "$(ls -A "$RK_PROJECT_PACKAGE_OEM_DIR")" ]; then
     echo "  → Rebuilding oem.img..."
     firmware_log="$(mktemp)"
-    ./build.sh firmware > "$firmware_log" 2>&1
+    ./build.sh firmware "$@" > "$firmware_log" 2>&1
     grep -E "(oem|userdata|update)" "$firmware_log" || true
     rm -f "$firmware_log"
     echo "  ✓ Images rebuilt"

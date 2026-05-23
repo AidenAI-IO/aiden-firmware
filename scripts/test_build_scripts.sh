@@ -32,6 +32,24 @@ if grep -q 'build.sh firmware .*|| true' "$ROOT_DIR/_build_image.sh"; then
     exit 1
 fi
 
+if grep -q './build.sh all' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must not run build.sh all before overlay injection; it creates large A/B images twice" >&2
+    exit 1
+fi
+
+if ! grep -q './build.sh sysdrv' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -q './build.sh media' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -q './build.sh app' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -q './build.sh firmware' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must build components first, inject overlay, then package firmware once" >&2
+    exit 1
+fi
+
+if ! grep -q 'copy_ab_image' "$ROOT_DIR/pico-sdk/project/build.sh"; then
+    echo "pico-sdk build.sh must avoid duplicating identical A/B image bytes when possible" >&2
+    exit 1
+fi
+
 dev_key_env='OTA_ALLOW_DEV_''KEY'
 dev_key_file='ota_pubkey.''dev''.pem'
 if grep -R -Eq "${dev_key_env}|${dev_key_file}" "$ROOT_DIR/_build_image.sh" "$ROOT_DIR/build_image.sh" "$ROOT_DIR/scripts/validate_ota_pubkey.sh"; then
