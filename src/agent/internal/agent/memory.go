@@ -319,6 +319,12 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 }
 
 func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRecord, bool, error) {
+	fl := NewFileLock(m.storageDir)
+	if err := fl.Lock(m.lockTimeout); err != nil {
+		return nil, false, fmt.Errorf("lock for loading session events %q: %w", agentName, err)
+	}
+	defer fl.Unlock()
+
 	file, err := os.Open(m.sessionEventsPath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -354,15 +360,16 @@ func (m *MemoryManager) persistSnapshot(agentName string, records []MessageRecor
 	if err := os.MkdirAll(m.storageDir, 0o755); err != nil {
 		return fmt.Errorf("create memory directory: %w", err)
 	}
-	if err := m.appendSessionEvents(agentName, records); err != nil {
-		return err
-	}
 
 	fl := NewFileLock(m.storageDir)
 	if err := fl.Lock(m.lockTimeout); err != nil {
 		return fmt.Errorf("lock for persisting memory %q: %w", agentName, err)
 	}
 	defer fl.Unlock()
+
+	if err := m.appendSessionEvents(agentName, records); err != nil {
+		return err
+	}
 
 	data, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {

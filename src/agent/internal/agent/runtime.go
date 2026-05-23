@@ -38,6 +38,7 @@ type Runtime struct {
 	skillsLoaded     bool
 	logger           *Logger
 	profileDebouncer *ProfileDebouncer
+	sleep            *SleepController
 }
 
 type RunRequest struct {
@@ -49,10 +50,12 @@ type RunRequest struct {
 }
 
 type RunResult struct {
-	Output  string          `json:"output"`
-	Skills  []string        `json:"skills"`
-	Memory  []MessageRecord `json:"memory,omitempty"`
-	Metrics *RunMetrics     `json:"metrics,omitempty"`
+	Output         string          `json:"output"`
+	Skills         []string        `json:"skills"`
+	Memory         []MessageRecord `json:"memory,omitempty"`
+	Metrics        *RunMetrics     `json:"metrics,omitempty"`
+	SleepRequested bool            `json:"sleep_requested,omitempty"`
+	SleepReason    string          `json:"sleep_reason,omitempty"`
 }
 
 type RunMetrics struct {
@@ -119,7 +122,8 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		memoryDir = filepath.Join(cfg.ConfigDir, "memory")
 	}
 
-	toolSet := NewBuiltinToolSet(cfg.HID, cfg.Audio, cfg.Search, cfg.Proxy)
+	sleepController := NewSleepController()
+	toolSet := NewBuiltinToolSet(cfg.HID, cfg.Audio, cfg.Search, cfg.Proxy, WithSleepController(sleepController))
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
 	modelManager := NewModelManager(cfg.Model, cfg.Proxy)
 	summarizeFn := buildLLMSummarizeFn(modelManager)
@@ -140,10 +144,19 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithMemoryLogger(logger)), toolSet, skillIndex)
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
+	rt.sleep = sleepController
 	return rt, nil
 }
 
 func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
+	sleepController := NewSleepController()
+	if tools != nil {
+		if tool, ok := tools.Get("enter_sleep"); ok {
+			if sleepTool, ok := tool.(*EnterSleepTool); ok && sleepTool.controller != nil {
+				sleepController = sleepTool.controller
+			}
+		}
+	}
 	return &Runtime{
 		config:       cfg,
 		models:       models,
@@ -151,6 +164,7 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		tools:        tools,
 		skills:       NewSkillManager(skillIndex),
 		skillsLoaded: skillIndex != nil && len(skillIndex.Names()) > 0,
+		sleep:        sleepController,
 	}
 }
 
@@ -158,6 +172,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	startTime := time.Now()
 	metrics := &RunMetrics{}
 	normalizedInput := normalizeRunInput(req.Input, req.Attachments)
+	if r.sleep != nil {
+		r.sleep.Consume()
+	}
 
 	if r.logger != nil {
 		r.logger.Info("Starting agent run: input=%q attachments=%d", normalizedInput, len(req.Attachments))
@@ -266,11 +283,14 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, err
 	}
 
+	sleepRequested, sleepReason := r.sleep.Consume()
 	return RunResult{
-		Output:  output,
-		Skills:  r.skills.GetActivatedSkills(),
-		Memory:  memorySnapshot,
-		Metrics: metrics,
+		Output:         output,
+		Skills:         r.skills.GetActivatedSkills(),
+		Memory:         memorySnapshot,
+		Metrics:        metrics,
+		SleepRequested: sleepRequested,
+		SleepReason:    sleepReason,
 	}, nil
 }
 

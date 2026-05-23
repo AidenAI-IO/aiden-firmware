@@ -617,6 +617,33 @@ func TestRunVoiceSessionClosesAfterFollowupTimeout(t *testing.T) {
 	}
 }
 
+func TestRunVoiceSessionClosesWhenAgentRequestsSleep(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	dialog := &fakeAudioDialog{
+		frameSamples: 2,
+		chunkBatches: [][]*agent.AudioChunkResult{
+			{{PCM: pcm16BytesFromSamples(100, 200)}},
+		},
+		utterancesToReturn: [][]int16{
+			{100, 200},
+		},
+		runTurn: func(ctx context.Context) (agent.RunResult, error) {
+			return agent.RunResult{Output: "我先休眠，等下次唤醒。", SleepRequested: true}, nil
+		},
+	}
+
+	exit := runVoiceSession(agent.Config{VoiceFollowupTimeoutMs: 100}, dialog, nil, sigChan, make(chan voiceEvent, 1))
+	if exit {
+		t.Fatal("runVoiceSession returned exit=true")
+	}
+	if dialog.starts != 1 {
+		t.Fatalf("dialog starts = %d, want 1 because sleep closes the session", dialog.starts)
+	}
+	if len(dialog.spoken) != 0 {
+		t.Fatalf("spoken = %#v, want no final reply after sleep request", dialog.spoken)
+	}
+}
+
 func TestCaptureUtteranceTimeoutDiscardsSilenceWhenVADNeverDetectedSpeech(t *testing.T) {
 	vad := agent.NewAudioVAD(1000, 500, 90, 60, false)
 	dialog := &fakeAudioDialog{
