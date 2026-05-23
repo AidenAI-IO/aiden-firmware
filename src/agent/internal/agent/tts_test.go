@@ -144,6 +144,31 @@ func TestMinimaxTTSWaitsForPlaybackDrainBeforeReturning(t *testing.T) {
 	}
 }
 
+func TestMinimaxTTSDoneAudioIgnoresCallerDeadlineDuringPlaybackDrain(t *testing.T) {
+	audioServer := newTestAudioService(t)
+	audioServer.healthPlaybackSessions = []uint32{1, 1, 1, 1, 1, 0}
+	transport := ttsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"data":{"audio":"0000"}}`)),
+			Header:     make(http.Header),
+		}, nil
+	})
+	tts := NewMinimaxTTS("key", "", "", 0, &http.Client{Transport: transport})
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := tts.TextToSpeechStream(ctx, "hello", NewAudioServiceClient(audioServer.socketPath)); err != nil {
+		t.Fatalf("TextToSpeechStream() error = %v", err)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("caller deadline did not expire during playback drain")
+	}
+	if audioServer.countOp("health") < 6 {
+		t.Fatalf("health count = %d, want drain polling to continue after caller deadline", audioServer.countOp("health"))
+	}
+}
+
 func TestMinimaxTTSRetriesTransientPlaybackDrainHealthFailure(t *testing.T) {
 	audioServer := newTestAudioService(t)
 	audioServer.healthConnectionDrops = 1

@@ -290,37 +290,50 @@ func (d *AudioDialog) SpeakToolDescription(ctx context.Context, description stri
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	speakCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
-	defer cancel()
-	if err := d.Speak(speakCtx, description, nil); err != nil {
+	if err := d.speak(ctx, description, nil, toolDescriptionSpeechTimeout); err != nil {
 		log.Printf("[error] Tool description TTS failed: %v", err)
 	}
 }
 
 func (d *AudioDialog) Speak(ctx context.Context, text string, interrupt <-chan struct{}) error {
+	return d.speak(ctx, text, interrupt, 0)
+}
+
+func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan struct{}, timeoutAfterLock time.Duration) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	speakCtx := ctx
-	cancel := func() {}
+	baseCtx := ctx
+	cancelInterrupt := func() {}
 	if interrupt != nil {
-		speakCtx, cancel = context.WithCancel(ctx)
-		defer cancel()
+		interruptCtx, cancel := context.WithCancel(ctx)
+		baseCtx = interruptCtx
+		cancelInterrupt = cancel
+		defer cancelInterrupt()
 		go func() {
 			select {
 			case <-interrupt:
-				cancel()
-			case <-speakCtx.Done():
+				cancelInterrupt()
+			case <-interruptCtx.Done():
 			}
 		}()
 	}
 	// Speak response if TTS is available
 	if d.ttsClient != nil && text != "" {
-		if err := speakCtx.Err(); err != nil {
+		if err := baseCtx.Err(); err != nil {
 			return err
 		}
 		d.speechMu.Lock()
 		defer d.speechMu.Unlock()
+		if err := baseCtx.Err(); err != nil {
+			return err
+		}
+		speakCtx := baseCtx
+		cancelTimeout := func() {}
+		if timeoutAfterLock > 0 {
+			speakCtx, cancelTimeout = context.WithTimeout(baseCtx, timeoutAfterLock)
+			defer cancelTimeout()
+		}
 		if err := speakCtx.Err(); err != nil {
 			return err
 		}

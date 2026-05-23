@@ -230,11 +230,11 @@ func (t *MinimaxTTS) TextToSpeechStream(ctx context.Context, text string, audio 
 		stopPlayback()
 		return fmt.Errorf("send final chunk: %w", err)
 	}
-	if err := waitForPlaybackDrain(ctx, audio, playbackDrainTimeout); err != nil {
+	// The final chunk hands ownership of the queued audio to audio_service. From
+	// this point on, a caller deadline should not turn successful playback into a
+	// spurious TTS failure or allow the next speech item to start before AO drains.
+	if err := waitForPlaybackDrain(context.Background(), audio, playbackDrainTimeout); err != nil {
 		stopPlayback()
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
 		return err
 	}
 
