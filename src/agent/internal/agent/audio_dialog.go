@@ -90,6 +90,8 @@ func (d *AudioDialog) StartRecording() error {
 		return nil
 	}
 
+	d.playPromptSound(promptSoundRecordingStart, "recording", true)
+
 	log.Println("[audio] Opening record session...")
 	format := AudioFormat{
 		SampleRate: uint32(d.config.Audio.SampleRateOrDefault()),
@@ -162,6 +164,10 @@ func (d *AudioDialog) StopRecording() error {
 	return nil
 }
 
+func (d *AudioDialog) RecordingActive() bool {
+	return d.recordActive
+}
+
 // ReadRecordChunk reads a PCM chunk from the recording session
 func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, error) {
 	if !d.recordActive || d.sessionID == 0 {
@@ -229,6 +235,8 @@ func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {
 }
 
 func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime *Runtime) (RunResult, error) {
+	d.playPromptSound(promptSoundAgentSend, "agent send", true)
+
 	// Send to LLM
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
@@ -282,37 +290,50 @@ func (d *AudioDialog) SpeakToolDescription(ctx context.Context, description stri
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	speakCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
-	defer cancel()
-	if err := d.Speak(speakCtx, description, nil); err != nil {
+	if err := d.speak(ctx, description, nil, toolDescriptionSpeechTimeout); err != nil {
 		log.Printf("[error] Tool description TTS failed: %v", err)
 	}
 }
 
 func (d *AudioDialog) Speak(ctx context.Context, text string, interrupt <-chan struct{}) error {
+	return d.speak(ctx, text, interrupt, 0)
+}
+
+func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan struct{}, timeoutAfterLock time.Duration) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	speakCtx := ctx
-	cancel := func() {}
+	baseCtx := ctx
+	cancelInterrupt := func() {}
 	if interrupt != nil {
-		speakCtx, cancel = context.WithCancel(ctx)
-		defer cancel()
+		interruptCtx, cancel := context.WithCancel(ctx)
+		baseCtx = interruptCtx
+		cancelInterrupt = cancel
+		defer cancelInterrupt()
 		go func() {
 			select {
 			case <-interrupt:
-				cancel()
-			case <-speakCtx.Done():
+				cancelInterrupt()
+			case <-interruptCtx.Done():
 			}
 		}()
 	}
 	// Speak response if TTS is available
 	if d.ttsClient != nil && text != "" {
-		if err := speakCtx.Err(); err != nil {
+		if err := baseCtx.Err(); err != nil {
 			return err
 		}
 		d.speechMu.Lock()
 		defer d.speechMu.Unlock()
+		if err := baseCtx.Err(); err != nil {
+			return err
+		}
+		speakCtx := baseCtx
+		cancelTimeout := func() {}
+		if timeoutAfterLock > 0 {
+			speakCtx, cancelTimeout = context.WithTimeout(baseCtx, timeoutAfterLock)
+			defer cancelTimeout()
+		}
 		if err := speakCtx.Err(); err != nil {
 			return err
 		}
@@ -331,9 +352,24 @@ func (d *AudioDialog) Speak(ctx context.Context, text string, interrupt <-chan s
 	return nil
 }
 
+func (d *AudioDialog) playPromptSoundAsync(kind promptSoundKind, label string) {
+	go func() {
+		d.playPromptSound(kind, label, true)
+	}()
+}
+
+func (d *AudioDialog) playPromptSound(kind promptSoundKind, label string, wait bool) {
+	d.speechMu.Lock()
+	defer d.speechMu.Unlock()
+	if err := playPromptSound(context.Background(), d.audioClient, kind, wait); err != nil {
+		log.Printf("[audio] %s prompt sound failed: %v\n", label, err)
+	}
+}
+
 // ProcessTextInput processes text input and speaks the response
 func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime *Runtime) error {
 	log.Printf("[text] %s\n", text)
+	d.playPromptSound(promptSoundAgentSend, "agent send", true)
 
 	// Send to LLM
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",

@@ -62,7 +62,6 @@ voice_followup_timeout_ms = 6000
 voice_first_turn_timeout_ms = 10000
 voice_max_turns = 0
 voice_interrupt_on_wakeup = true
-voice_interrupt_listen_during_tts = false
 voice_streaming_tts_enabled = true
 voice_tool_call_speech = true
 voice_max_response_tokens = 400
@@ -113,7 +112,6 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `voice_first_turn_timeout_ms` | `10000` | wakeup 后等待第一句话的窗口 |
 | `voice_max_turns` | `0` | 单个 wakeup session 最大轮数；`0` 表示不限制 |
 | `voice_interrupt_on_wakeup` | `true` | session 内再次收到 wakeup 时取消 thinking/TTS 并重新听音 |
-| `voice_interrupt_listen_during_tts` | `false` | 保留配置；默认不在 TTS 播放期间开麦做语音打断 |
 | `voice_streaming_tts_enabled` | `true` | LLM 流式输出时按句送入 TTS，降低首句播放等待 |
 | `voice_tool_call_speech` | `true` | 是否异步朗读工具调用说明；默认开启以避免工具执行期间长时间沉默 |
 | `voice_max_response_tokens` | `400` | 语音回复的单次输出 token 上限（需 `>= 0`） |

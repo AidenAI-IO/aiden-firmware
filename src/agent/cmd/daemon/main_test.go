@@ -21,6 +21,7 @@ type fakeAudioDialog struct {
 	utterancesToReturn [][]int16
 	onUtterance        func()
 	utterances         [][]int16
+	prepareTurnInput   func([]int16) (agent.TurnInput, error)
 	runTurn            func(context.Context) (agent.RunResult, error)
 	speak              func(context.Context) error
 	spoken             []string
@@ -30,11 +31,16 @@ type fakeAudioDialog struct {
 	starts             int
 	stops              int
 	resets             int
+	recordingActive    bool
 }
 
 func (d *fakeAudioDialog) StartRecording() error {
+	if d.recordingActive {
+		return nil
+	}
 	d.ops = append(d.ops, "start")
 	d.starts++
+	d.recordingActive = true
 	if len(d.chunkBatches) > 0 {
 		d.chunks = d.chunkBatches[0]
 		d.chunkBatches = d.chunkBatches[1:]
@@ -45,7 +51,12 @@ func (d *fakeAudioDialog) StartRecording() error {
 func (d *fakeAudioDialog) StopRecording() error {
 	d.ops = append(d.ops, "stop")
 	d.stops++
+	d.recordingActive = false
 	return nil
+}
+
+func (d *fakeAudioDialog) RecordingActive() bool {
+	return d.recordingActive
 }
 
 func (d *fakeAudioDialog) ReadRecordChunk(timeoutMs uint32) (*agent.AudioChunkResult, error) {
@@ -95,6 +106,9 @@ func (d *fakeAudioDialog) PrepareTurnInput(utterance []int16) (agent.TurnInput, 
 	if d.onUtterance != nil {
 		d.onUtterance()
 	}
+	if d.prepareTurnInput != nil {
+		return d.prepareTurnInput(utterance)
+	}
 	return agent.TurnInput{InputText: "voice"}, nil
 }
 
@@ -114,7 +128,12 @@ func (d *fakeAudioDialog) Speak(ctx context.Context, text string, interrupt <-ch
 	return nil
 }
 
-func (d *fakeAudioDialog) FlushVAD() []int16 { return nil }
+func (d *fakeAudioDialog) FlushVAD() []int16 {
+	if d.vad != nil {
+		return d.vad.Flush()
+	}
+	return nil
+}
 
 func (d *fakeAudioDialog) ResetVAD() {
 	d.ops = append(d.ops, "reset")
@@ -216,6 +235,36 @@ func TestProcessAudioUntilUtteranceSendsBufferedAudioAfterVADTimeout(t *testing.
 	}
 }
 
+func TestProcessAudioLoopStopsRecordingBeforeProcessingUtterance(t *testing.T) {
+	dialog := &fakeAudioDialog{
+		frameSamples:    2,
+		recordingActive: true,
+		chunks: []*agent.AudioChunkResult{
+			{PCM: pcm16BytesFromSamples(100, 200)},
+		},
+		utterance: []int16{100, 200},
+	}
+	processedWhileRecording := false
+	dialog.onUtterance = func() {
+		if dialog.recordingActive {
+			processedWhileRecording = true
+		}
+	}
+	recording := true
+
+	processAudioLoop(dialog, nil, &recording, context.Background())
+
+	if processedWhileRecording {
+		t.Fatal("processed utterance while recording was still active")
+	}
+	if dialog.stops != 1 {
+		t.Fatalf("dialog stops = %d, want 1 before utterance processing", dialog.stops)
+	}
+	if recording {
+		t.Fatal("recording flag still true after utterance")
+	}
+}
+
 func TestRunWakeupModeProcessesTriggeredAudioAndStopsOnSignal(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	dialog := &fakeAudioDialog{
@@ -261,7 +310,7 @@ func TestRunWakeupModeProcessesTriggeredAudioAndStopsOnSignal(t *testing.T) {
 	}
 }
 
-func TestRunWakeupModeLegacyAcknowledgesWakeupBeforeRecording(t *testing.T) {
+func TestRunWakeupModeLegacyStartsRecordingWithoutWakeupAck(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	dialog := &fakeAudioDialog{
 		frameSamples: 2,
@@ -290,11 +339,14 @@ func TestRunWakeupModeLegacyAcknowledgesWakeupBeforeRecording(t *testing.T) {
 		t.Fatal("runWakeupMode did not stop after signal")
 	}
 
-	if len(dialog.ops) < 3 {
-		t.Fatalf("dialog ops = %#v, want acknowledgement before recording", dialog.ops)
+	if len(dialog.spoken) != 0 {
+		t.Fatalf("spoken texts = %#v, want no wakeup acknowledgement", dialog.spoken)
 	}
-	if dialog.ops[0] != "speak:"+wakeupAckText || dialog.ops[1] != "start" || dialog.ops[2] != "reset" {
-		t.Fatalf("dialog ops = %#v, want speak acknowledgement before start/reset", dialog.ops)
+	if len(dialog.ops) < 2 {
+		t.Fatalf("dialog ops = %#v, want recording start/reset", dialog.ops)
+	}
+	if dialog.ops[0] != "start" || dialog.ops[1] != "reset" {
+		t.Fatalf("dialog ops = %#v, want start/reset without wakeup acknowledgement", dialog.ops)
 	}
 }
 
@@ -499,16 +551,23 @@ func TestRunWakeupModeVoiceSessionProcessesFollowupWithoutSecondWakeup(t *testin
 	var dialog *fakeAudioDialog
 	dialog = &fakeAudioDialog{
 		frameSamples: 2,
-		chunkBatches: [][]*agent.AudioChunkResult{
-			{{PCM: pcm16BytesFromSamples(100, 200)}},
-			{{PCM: pcm16BytesFromSamples(300, 400)}},
+		chunks: []*agent.AudioChunkResult{
+			{PCM: pcm16BytesFromSamples(100, 200)},
 		},
 		utterancesToReturn: [][]int16{
 			{100, 200},
 			{300, 400},
 		},
+		repeatEmpty: true,
+		readDelay:   time.Millisecond,
 		speak: func(ctx context.Context) error {
-			if len(dialog.spoken) == 3 {
+			if len(dialog.spoken) == 1 {
+				go func() {
+					time.Sleep(20 * time.Millisecond)
+					dialog.chunks = append(dialog.chunks, &agent.AudioChunkResult{PCM: pcm16BytesFromSamples(300, 400)})
+				}()
+			}
+			if len(dialog.spoken) == 2 {
 				sigChan <- syscall.SIGTERM
 			}
 			return nil
@@ -531,20 +590,20 @@ func TestRunWakeupModeVoiceSessionProcessesFollowupWithoutSecondWakeup(t *testin
 	}
 
 	if dialog.starts != 2 {
-		t.Fatalf("dialog starts = %d, want 2", dialog.starts)
+		t.Fatalf("dialog starts = %d, want one recording per voice turn", dialog.starts)
 	}
 	if len(dialog.utterances) != 2 {
 		t.Fatalf("utterances = %d, want 2", len(dialog.utterances))
 	}
-	if len(dialog.spoken) != 3 {
-		t.Fatalf("spoken replies = %d, want wakeup acknowledgement plus 2 replies", len(dialog.spoken))
+	if len(dialog.spoken) != 2 {
+		t.Fatalf("spoken replies = %d, want 2 agent replies without wakeup acknowledgement", len(dialog.spoken))
 	}
-	if dialog.spoken[0] != wakeupAckText {
-		t.Fatalf("first spoken text = %q, want wakeup acknowledgement", dialog.spoken[0])
+	if dialog.spoken[0] != "reply" || dialog.spoken[1] != "reply" {
+		t.Fatalf("spoken texts = %#v, want only agent replies", dialog.spoken)
 	}
 }
 
-func TestRunWakeupModeVoiceSessionAcknowledgesWakeupBeforeRecording(t *testing.T) {
+func TestRunWakeupModeVoiceSessionStartsRecordingWithoutWakeupAck(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	watcher := &fakeWakeupWatcher{}
 	var dialog *fakeAudioDialog
@@ -557,7 +616,7 @@ func TestRunWakeupModeVoiceSessionAcknowledgesWakeupBeforeRecording(t *testing.T
 			{100, 200},
 		},
 		speak: func(ctx context.Context) error {
-			if len(dialog.spoken) == 2 {
+			if len(dialog.spoken) == 1 {
 				go func() {
 					time.Sleep(10 * time.Millisecond)
 					sigChan <- syscall.SIGTERM
@@ -582,11 +641,14 @@ func TestRunWakeupModeVoiceSessionAcknowledgesWakeupBeforeRecording(t *testing.T
 		t.Fatal("runWakeupMode did not stop after signal")
 	}
 
-	if len(dialog.ops) < 3 {
-		t.Fatalf("dialog ops = %#v, want acknowledgement before recording", dialog.ops)
+	if len(dialog.ops) < 2 {
+		t.Fatalf("dialog ops = %#v, want recording start/reset", dialog.ops)
 	}
-	if dialog.ops[0] != "speak:"+wakeupAckText || dialog.ops[1] != "start" || dialog.ops[2] != "reset" {
-		t.Fatalf("dialog ops = %#v, want speak acknowledgement before start/reset", dialog.ops)
+	if dialog.ops[0] != "start" || dialog.ops[1] != "reset" {
+		t.Fatalf("dialog ops = %#v, want start/reset without wakeup acknowledgement", dialog.ops)
+	}
+	if len(dialog.spoken) != 1 || dialog.spoken[0] != "reply" {
+		t.Fatalf("spoken texts = %#v, want only the agent reply", dialog.spoken)
 	}
 }
 
@@ -610,7 +672,7 @@ func TestRunVoiceSessionClosesAfterFollowupTimeout(t *testing.T) {
 		t.Fatal("runVoiceSession returned exit=true")
 	}
 	if dialog.starts != 2 {
-		t.Fatalf("dialog starts = %d, want 2", dialog.starts)
+		t.Fatalf("dialog starts = %d, want one recording for initial turn and one follow-up listen", dialog.starts)
 	}
 	if len(dialog.utterances) != 1 {
 		t.Fatalf("utterances = %d, want 1", len(dialog.utterances))
@@ -637,10 +699,53 @@ func TestRunVoiceSessionClosesWhenAgentRequestsSleep(t *testing.T) {
 		t.Fatal("runVoiceSession returned exit=true")
 	}
 	if dialog.starts != 1 {
-		t.Fatalf("dialog starts = %d, want 1 because sleep closes the session", dialog.starts)
+		t.Fatalf("dialog starts = %d, want one recording for the single voice turn", dialog.starts)
 	}
 	if len(dialog.spoken) != 0 {
 		t.Fatalf("spoken = %#v, want no final reply after sleep request", dialog.spoken)
+	}
+}
+
+func TestRunVoiceSessionDoesNotRecordWhileSpeaking(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	dialog := &fakeAudioDialog{
+		frameSamples: 2,
+		chunkBatches: [][]*agent.AudioChunkResult{
+			{{PCM: pcm16BytesFromSamples(100, 200)}},
+			{},
+		},
+		utterancesToReturn: [][]int16{
+			{100, 200},
+		},
+		repeatEmpty: true,
+		readDelay:   time.Millisecond,
+	}
+	spokeWhileRecording := false
+	dialog.speak = func(ctx context.Context) error {
+		if dialog.recordingActive {
+			spokeWhileRecording = true
+		}
+		return nil
+	}
+
+	exit := runVoiceSession(agent.Config{VoiceFollowupTimeoutMs: 5}, dialog, nil, sigChan, make(chan voiceEvent, 1))
+	if exit {
+		t.Fatal("runVoiceSession returned exit=true")
+	}
+	if spokeWhileRecording {
+		t.Fatal("dialog was recording while speaking")
+	}
+	if dialog.starts != 2 {
+		t.Fatalf("dialog starts = %d, want recording once before speech and once after speech", dialog.starts)
+	}
+	wantOps := []string{"start", "reset", "stop", "speak:reply", "start", "reset", "stop"}
+	if len(dialog.ops) != len(wantOps) {
+		t.Fatalf("dialog ops = %#v, want %#v", dialog.ops, wantOps)
+	}
+	for i, want := range wantOps {
+		if dialog.ops[i] != want {
+			t.Fatalf("dialog ops = %#v, want %#v", dialog.ops, wantOps)
+		}
 	}
 }
 
@@ -663,9 +768,9 @@ func TestRunVoiceTurnSignalWaitsForThinkingGoroutine(t *testing.T) {
 		sigChan <- syscall.SIGTERM
 	}()
 
-	interrupted, sleepRequested, exit := runVoiceTurn(agent.Config{}, dialog, nil, []int16{1}, sigChan, events)
-	if interrupted || sleepRequested || !exit {
-		t.Fatalf("runVoiceTurn = interrupted:%v sleep:%v exit:%v, want false false true", interrupted, sleepRequested, exit)
+	result := runVoiceTurn(agent.Config{}, dialog, nil, []int16{1}, sigChan, events)
+	if result.interrupted || result.sleepRequested || !result.exit {
+		t.Fatalf("runVoiceTurn = interrupted:%v sleep:%v exit:%v, want false false true", result.interrupted, result.sleepRequested, result.exit)
 	}
 	select {
 	case <-ctxCanceled:
@@ -696,9 +801,9 @@ func TestRunVoiceTurnSignalWaitsForSpeakingGoroutine(t *testing.T) {
 		sigChan <- syscall.SIGTERM
 	}()
 
-	interrupted, sleepRequested, exit := runVoiceTurn(agent.Config{}, dialog, nil, []int16{1}, sigChan, events)
-	if interrupted || sleepRequested || !exit {
-		t.Fatalf("runVoiceTurn = interrupted:%v sleep:%v exit:%v, want false false true", interrupted, sleepRequested, exit)
+	result := runVoiceTurn(agent.Config{}, dialog, nil, []int16{1}, sigChan, events)
+	if result.interrupted || result.sleepRequested || !result.exit {
+		t.Fatalf("runVoiceTurn = interrupted:%v sleep:%v exit:%v, want false false true", result.interrupted, result.sleepRequested, result.exit)
 	}
 	select {
 	case <-ctxCanceled:
@@ -786,13 +891,12 @@ func TestRunVoiceSessionWakeupInterruptsThinking(t *testing.T) {
 	default:
 		t.Fatal("thinking context was not canceled")
 	}
-	if len(dialog.spoken) != 1 || dialog.spoken[0] != wakeupAckText {
-		t.Fatalf("spoken texts = %#v, want wakeup acknowledgement after thinking interrupt", dialog.spoken)
+	if len(dialog.spoken) != 0 {
+		t.Fatalf("spoken texts = %#v, want no acknowledgement after wakeup interrupt", dialog.spoken)
 	}
-	if dialog.starts < 2 {
-		t.Fatalf("dialog starts = %d, want follow-up listening after interrupt", dialog.starts)
+	if dialog.starts != 2 {
+		t.Fatalf("dialog starts = %d, want recording restarted for follow-up listen", dialog.starts)
 	}
-	assertWakeupAckBeforeSecondRecording(t, dialog.ops)
 }
 
 func TestRunVoiceSessionWakeupInterruptsSpeaking(t *testing.T) {
@@ -838,36 +942,11 @@ func TestRunVoiceSessionWakeupInterruptsSpeaking(t *testing.T) {
 	default:
 		t.Fatal("speaking context was not canceled")
 	}
-	if len(dialog.spoken) != 2 {
-		t.Fatalf("spoken texts = %d, want reply plus wakeup acknowledgement", len(dialog.spoken))
+	if len(dialog.spoken) != 1 {
+		t.Fatalf("spoken texts = %d, want only interrupted reply without wakeup acknowledgement", len(dialog.spoken))
 	}
-	if dialog.spoken[1] != wakeupAckText {
-		t.Fatalf("second spoken text = %q, want wakeup acknowledgement", dialog.spoken[1])
-	}
-	if dialog.starts < 2 {
-		t.Fatalf("dialog starts = %d, want follow-up listening after interrupt", dialog.starts)
-	}
-	assertWakeupAckBeforeSecondRecording(t, dialog.ops)
-}
-
-func assertWakeupAckBeforeSecondRecording(t *testing.T, ops []string) {
-	t.Helper()
-	ackIdx := -1
-	secondStartIdx := -1
-	startsSeen := 0
-	for i, op := range ops {
-		if op == "speak:"+wakeupAckText && ackIdx == -1 {
-			ackIdx = i
-		}
-		if op == "start" {
-			startsSeen++
-			if startsSeen == 2 {
-				secondStartIdx = i
-			}
-		}
-	}
-	if ackIdx == -1 || secondStartIdx == -1 || ackIdx > secondStartIdx {
-		t.Fatalf("dialog ops = %#v, want wakeup acknowledgement before second recording", ops)
+	if dialog.starts != 2 {
+		t.Fatalf("dialog starts = %d, want recording restarted immediately after wakeup interrupt", dialog.starts)
 	}
 }
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -383,13 +384,25 @@ func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRe
 	defer file.Close()
 
 	var records []MessageRecord
+	validData := make([]byte, 0)
+	repairedTruncatedTail := false
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0), 1<<20)
 	for scanner.Scan() {
+		line := bytes.Trim(scanner.Bytes(), "\x00 \t\r\n")
+		if len(line) == 0 {
+			continue
+		}
 		var event SessionEvent
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+		if err := json.Unmarshal(line, &event); err != nil {
+			if isTruncatedJSONLineError(err) {
+				repairedTruncatedTail = true
+				break
+			}
 			return nil, false, fmt.Errorf("decode session event for %q: %w", agentName, err)
 		}
+		validData = append(validData, line...)
+		validData = append(validData, '\n')
 		record, ok := messageRecordFromSessionEvent(event)
 		if ok {
 			records = append(records, record)
@@ -397,6 +410,15 @@ func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRe
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, false, fmt.Errorf("scan session events for %q: %w", agentName, err)
+	}
+	if repairedTruncatedTail {
+		if err := writeFileAtomic(m.sessionEventsPath(), validData, 0o644); err != nil {
+			if m.logger != nil {
+				m.logger.Warn("[memory] failed to repair truncated session events for %q: %v", agentName, err)
+			}
+		} else if m.logger != nil {
+			m.logger.Warn("[memory] repaired truncated session events for %q", agentName)
+		}
 	}
 	return records, true, nil
 }
@@ -772,6 +794,10 @@ func memoryFileName(agentName string) string {
 		}
 	}, agentName)
 	return safe + ".json"
+}
+
+func isTruncatedJSONLineError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "unexpected end of JSON input")
 }
 
 func sessionEventFromRecord(record MessageRecord, ts time.Time, offset int) SessionEvent {

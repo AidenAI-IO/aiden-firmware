@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -319,8 +320,15 @@ func (s *SessionMemoryStore) readEvents(path string) ([]SessionEvent, error) {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0), 1<<20)
 	for scanner.Scan() {
+		line := bytes.Trim(scanner.Bytes(), "\x00 \t\r\n")
+		if len(line) == 0 {
+			continue
+		}
 		var event SessionEvent
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+		if err := json.Unmarshal(line, &event); err != nil {
+			if isTruncatedJSONLineError(err) && filepath.Clean(path) == filepath.Clean(s.eventsPath()) {
+				break
+			}
 			return nil, fmt.Errorf("decode session event %q: %w", path, err)
 		}
 		events = append(events, event)

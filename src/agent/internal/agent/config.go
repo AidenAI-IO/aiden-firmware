@@ -24,33 +24,32 @@ func (s SearchConfig) ProviderOrDefault() string {
 }
 
 type Config struct {
-	Model                         ModelConfig  `toml:"model"`
-	ModelText                     ModelConfig  `toml:"model_text,omitempty"` // Override for STT-then-text mode
-	TTS                           TTSConfig    `toml:"tts,omitempty"`
-	STT                           STTConfig    `toml:"stt,omitempty"`
-	HID                           HIDConfig    `toml:"hid"`
-	Audio                         AudioConfig  `toml:"audio,omitempty"`
-	Proxy                         ProxyConfig  `toml:"proxy,omitempty"`
-	Search                        SearchConfig `toml:"search,omitempty"`
-	Instruction                   string       `toml:"instruction"`
-	AdditionalPrompt              string       `toml:"additional_prompt,omitempty"`
-	InputMode                     string       `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
-	TriggerMode                   string       `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
-	EnergyThreshold               int          `toml:"energy_threshold,omitempty"`
-	SilenceMs                     int          `toml:"silence_ms,omitempty"`
-	MinSpeechMs                   int          `toml:"min_speech_ms,omitempty"`
-	VoiceSessionEnabled           *bool        `toml:"voice_session_enabled,omitempty"`
-	VoiceFollowupTimeoutMs        int          `toml:"voice_followup_timeout_ms,omitempty"`
-	VoiceFirstTurnTimeoutMs       int          `toml:"voice_first_turn_timeout_ms,omitempty"`
-	VoiceMaxTurns                 int          `toml:"voice_max_turns,omitempty"`
-	VoiceInterruptOnWakeup        *bool        `toml:"voice_interrupt_on_wakeup,omitempty"`
-	VoiceInterruptListenDuringTTS *bool        `toml:"voice_interrupt_listen_during_tts,omitempty"`
-	VoiceStreamingTTSEnabled      *bool        `toml:"voice_streaming_tts_enabled,omitempty"`
-	VoiceToolCallSpeech           *bool        `toml:"voice_tool_call_speech,omitempty"`
-	VoiceMaxResponseTokens        int          `toml:"voice_max_response_tokens,omitempty"`
-	MaxIterations                 int          `toml:"max_iterations,omitempty"`
-	SkillsDirs                    []string     `toml:"skills_dirs"`
-	ConfigDir                     string       `toml:"-"`
+	Model                    ModelConfig  `toml:"model"`
+	ModelText                ModelConfig  `toml:"model_text,omitempty"` // Override for STT-then-text mode
+	TTS                      TTSConfig    `toml:"tts,omitempty"`
+	STT                      STTConfig    `toml:"stt,omitempty"`
+	HID                      HIDConfig    `toml:"hid"`
+	Audio                    AudioConfig  `toml:"audio,omitempty"`
+	Proxy                    ProxyConfig  `toml:"proxy,omitempty"`
+	Search                   SearchConfig `toml:"search,omitempty"`
+	Instruction              string       `toml:"instruction"`
+	AdditionalPrompt         string       `toml:"additional_prompt,omitempty"`
+	InputMode                string       `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
+	TriggerMode              string       `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
+	EnergyThreshold          int          `toml:"energy_threshold,omitempty"`
+	SilenceMs                int          `toml:"silence_ms,omitempty"`
+	MinSpeechMs              int          `toml:"min_speech_ms,omitempty"`
+	VoiceSessionEnabled      *bool        `toml:"voice_session_enabled,omitempty"`
+	VoiceFollowupTimeoutMs   int          `toml:"voice_followup_timeout_ms,omitempty"`
+	VoiceFirstTurnTimeoutMs  int          `toml:"voice_first_turn_timeout_ms,omitempty"`
+	VoiceMaxTurns            int          `toml:"voice_max_turns,omitempty"`
+	VoiceInterruptOnWakeup   *bool        `toml:"voice_interrupt_on_wakeup,omitempty"`
+	VoiceStreamingTTSEnabled *bool        `toml:"voice_streaming_tts_enabled,omitempty"`
+	VoiceToolCallSpeech      *bool        `toml:"voice_tool_call_speech,omitempty"`
+	VoiceMaxResponseTokens   int          `toml:"voice_max_response_tokens,omitempty"`
+	MaxIterations            int          `toml:"max_iterations,omitempty"`
+	SkillsDirs               []string     `toml:"skills_dirs"`
+	ConfigDir                string       `toml:"-"`
 }
 
 type TTSConfig struct {
@@ -361,13 +360,6 @@ func (c Config) VoiceInterruptOnWakeupOrDefault() bool {
 		return *c.VoiceInterruptOnWakeup
 	}
 	return true
-}
-
-func (c Config) VoiceInterruptListenDuringTTSOrDefault() bool {
-	if c.VoiceInterruptListenDuringTTS != nil {
-		return *c.VoiceInterruptListenDuringTTS
-	}
-	return false
 }
 
 func (c Config) VoiceStreamingTTSEnabledOrDefault() bool {

@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -152,6 +154,60 @@ func TestFunctionAgentScratchpadReplaysFallbackToolDescription(t *testing.T) {
 	}
 }
 
+func TestFunctionAgentScratchpadKeepsOnlyLatestThreeScreenshotImages(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
+	}
+	steps := make([]schema.AgentStep, 0, 5)
+	for i := 1; i <= 5; i++ {
+		label := strconv.Itoa(i)
+		steps = append(steps, schema.AgentStep{
+			Action: schema.AgentAction{
+				Tool:   "screenshot",
+				Log:    "log-" + label,
+				ToolID: "call_" + label,
+			},
+			Observation: `{"width":800,"height":600,"format":"jpeg","size":16,"data":"` +
+				base64.StdEncoding.EncodeToString([]byte("image-"+label)) + `"}`,
+		})
+	}
+
+	messages := agent.constructFunctionScratchPad(steps)
+
+	var imageURLs []string
+	var toolResponses int
+	var omittedNotices int
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			switch p := part.(type) {
+			case llms.ImageURLContent:
+				imageURLs = append(imageURLs, p.URL)
+			case llms.ToolCallResponse:
+				toolResponses++
+				if strings.Contains(p.Content, "only the latest 3 screenshot observations are attached") {
+					omittedNotices++
+				}
+			}
+		}
+	}
+
+	if toolResponses != 5 {
+		t.Fatalf("expected all 5 tool responses to remain, got %d", toolResponses)
+	}
+	if omittedNotices != 2 {
+		t.Fatalf("expected 2 older screenshot omission notices, got %d", omittedNotices)
+	}
+	if len(imageURLs) != 3 {
+		t.Fatalf("expected 3 screenshot images in context, got %d (%#v)", len(imageURLs), imageURLs)
+	}
+	for i, url := range imageURLs {
+		expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("image-"+strconv.Itoa(i+3)))
+		if url != expected {
+			t.Fatalf("image %d = %q, want %q", i, url, expected)
+		}
+	}
+}
+
 func TestFunctionAgentToolsAsLLMRequiresDescriptionParameter(t *testing.T) {
 	agent := &FunctionAgent{
 		Tools: []langtools.Tool{&stubTool{
@@ -207,7 +263,7 @@ func TestFunctionAgentCompactsInvalidVisualObservation(t *testing.T) {
 	toolContent, followups := agent.observationMessagesForStep(schema.AgentStep{
 		Action:      schema.AgentAction{Tool: "screenshot"},
 		Observation: observation,
-	})
+	}, true)
 
 	if followups != nil {
 		t.Fatalf("expected no followup messages for invalid visual observation, got %#v", followups)
@@ -217,5 +273,27 @@ func TestFunctionAgentCompactsInvalidVisualObservation(t *testing.T) {
 	}
 	if !strings.Contains(toolContent, "[truncated 10 chars]") {
 		t.Fatalf("unexpected compacted observation suffix: %q", toolContent[len(toolContent)-40:])
+	}
+}
+
+func TestFunctionAgentRejectsEmptyVisualObservationData(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
+	}
+	observation := `{"width":800,"height":600,"format":"jpeg","size":0,"data":""}`
+	step := schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "screenshot"},
+		Observation: observation,
+	}
+
+	if agent.countVisualObservations([]schema.AgentStep{step}) != 0 {
+		t.Fatal("empty screenshot data counted as a visual observation")
+	}
+	toolContent, followups := agent.observationMessagesForStep(step, true)
+	if followups != nil {
+		t.Fatalf("expected no followup messages for empty screenshot data, got %#v", followups)
+	}
+	if toolContent != observation {
+		t.Fatalf("unexpected compacted observation: %q", toolContent)
 	}
 }

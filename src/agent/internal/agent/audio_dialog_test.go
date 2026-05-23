@@ -399,32 +399,54 @@ func serveDelayedStartRecording(t *testing.T, socketPath string, ready chan<- st
 	defer os.Remove(socketPath)
 	defer listener.Close()
 
-	conn, err := listener.Accept()
-	if err != nil {
-		t.Errorf("accept unix socket: %v", err)
-		close(ready)
-		return
+	if unixListener, ok := listener.(*net.UnixListener); ok {
+		_ = unixListener.SetDeadline(time.Now().Add(2 * time.Second))
 	}
-	defer conn.Close()
 
-	msg, err := readUdsMessage(conn)
-	if err != nil {
-		t.Errorf("read request: %v", err)
-		close(ready)
-		return
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			t.Errorf("accept unix socket: %v", err)
+			close(ready)
+			return
+		}
+
+		msg, err := readUdsMessage(conn)
+		if err != nil {
+			conn.Close()
+			t.Errorf("read request: %v", err)
+			close(ready)
+			return
+		}
+		var req audioRequest
+		if err := json.Unmarshal([]byte(msg.HeaderJSON), &req); err != nil {
+			conn.Close()
+			t.Errorf("unmarshal request: %v", err)
+			close(ready)
+			return
+		}
+
+		resp := `{"status":"OK"}`
+		if req.Op == "start_playback" {
+			resp = `{"status":"OK","session_id":"7"}`
+		}
+		if req.Op == "health" {
+			resp = `{"status":"OK","recording_active":false,"playback_active":false,"record_sessions":0,"playback_sessions":0}`
+		}
+		if req.Op == "start_recording" {
+			resp = `{"status":"OK","session_id":"42"}`
+		}
+		if err := writeUdsMessage(conn, udsMessage{HeaderJSON: resp}); err != nil {
+			conn.Close()
+			t.Errorf("write response: %v", err)
+			close(ready)
+			return
+		}
+		conn.Close()
+
+		if req.Op == "start_recording" {
+			close(ready)
+			return
+		}
 	}
-	var req audioRequest
-	if err := json.Unmarshal([]byte(msg.HeaderJSON), &req); err != nil {
-		t.Errorf("unmarshal request: %v", err)
-		close(ready)
-		return
-	}
-	if req.Op != "start_recording" {
-		t.Errorf("op = %q, want start_recording", req.Op)
-	}
-	resp := `{"status":"OK","session_id":"42"}`
-	if err := writeUdsMessage(conn, udsMessage{HeaderJSON: resp}); err != nil {
-		t.Errorf("write response: %v", err)
-	}
-	close(ready)
 }

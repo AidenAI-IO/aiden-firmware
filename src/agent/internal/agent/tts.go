@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -13,7 +14,7 @@ import (
 
 const (
 	minimaxTTSModel      = "speech-2.8-hd"
-	minimaxTTSSampleRate = 32000
+	minimaxTTSSampleRate = 16000
 	minimaxTTSChannels   = 1
 	minimaxTTSBitWidth   = 16
 
@@ -72,9 +73,8 @@ func (t *MinimaxTTS) TextToSpeechStream(ctx context.Context, text string, audio 
 	default:
 	}
 
-	// Request PCM at 32kHz/16-bit/mono and open audio_service playback with
-	// the same format so we can stream directly without any decoding or
-	// resampling.
+	// Request PCM at 16kHz/16-bit/mono and open audio_service playback with
+	// the same format so playback does not need local decoding or resampling.
 	reqBody := map[string]interface{}{
 		"model":  minimaxTTSModel,
 		"text":   text,
@@ -150,6 +150,8 @@ func (t *MinimaxTTS) TextToSpeechStream(ctx context.Context, text string, audio 
 	// Stream response → parse JSON objects → hex-decode PCM → write to audio_service
 	parser := newMinimaxStreamParser()
 	readBuf := make([]byte, 8192)
+	audioChunks := 0
+	audioBytes := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -162,6 +164,8 @@ func (t *MinimaxTTS) TextToSpeechStream(ctx context.Context, text string, audio 
 		if n > 0 {
 			chunks, _ := parser.feed(readBuf[:n])
 			for _, pcm := range chunks {
+				audioChunks++
+				audioBytes += len(pcm)
 				select {
 				case <-ctx.Done():
 					stopPlayback()
@@ -189,6 +193,11 @@ func (t *MinimaxTTS) TextToSpeechStream(ctx context.Context, text string, audio 
 			break
 		}
 	}
+	if audioBytes == 0 {
+		stopPlayback()
+		return fmt.Errorf("TTS returned no PCM audio")
+	}
+	log.Printf("[tts] Received %d PCM chunks (%d bytes)\n", audioChunks, audioBytes)
 
 	// Pad a short silence tail to avoid clipping the last phonemes on some
 	// AO drivers that stop slightly early.
@@ -221,11 +230,11 @@ func (t *MinimaxTTS) TextToSpeechStream(ctx context.Context, text string, audio 
 		stopPlayback()
 		return fmt.Errorf("send final chunk: %w", err)
 	}
-	if err := waitForPlaybackDrain(ctx, audio, playbackDrainTimeout); err != nil {
+	// The final chunk hands ownership of the queued audio to audio_service. From
+	// this point on, a caller deadline should not turn successful playback into a
+	// spurious TTS failure or allow the next speech item to start before AO drains.
+	if err := waitForPlaybackDrain(context.Background(), audio, playbackDrainTimeout); err != nil {
 		stopPlayback()
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
 		return err
 	}
 
@@ -285,7 +294,7 @@ func stopPlaybackIgnoringEnded(audio *AudioServiceClient, sessionID uint64) erro
 // writePlaybackPCM splits a PCM buffer into smaller pieces sized for the AO
 // driver's internal frame buffer. Sending larger buffers in one call causes
 // the driver to play only a portion before dropping the tail.
-const playbackChunkBytes = 4096 // 2048 samples = 64ms @32kHz s16le mono
+const playbackChunkBytes = 4096 // 2048 samples = 128ms @16kHz s16le mono
 
 func writePlaybackPCM(audio *AudioServiceClient, sessionID uint64, pcm []byte) error {
 	return writePlaybackPCMContext(context.Background(), audio, sessionID, pcm)
