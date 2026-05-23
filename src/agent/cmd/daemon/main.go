@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	wakeupListenTimeout = 10 * time.Second
-	wakeupAckText       = "我在"
+	wakeupListenTimeout        = 10 * time.Second
+	voiceTurnCancelWaitTimeout = 2 * time.Second
+	wakeupAckText              = "我在"
 )
 
 func main() {
@@ -405,6 +406,7 @@ thinking:
 		select {
 		case <-sigChan:
 			cancel()
+			waitForTurnCancel(resultCh)
 			return false, false, true
 		case <-events:
 			if cfg.VoiceInterruptOnWakeupOrDefault() {
@@ -447,6 +449,7 @@ speaking:
 		select {
 		case <-sigChan:
 			cancelSpeak()
+			waitForSpeakCancel(speakCh)
 			return false, false, true
 		case <-events:
 			if cfg.VoiceInterruptOnWakeupOrDefault() {
@@ -465,6 +468,28 @@ speaking:
 	}
 
 	return false, false, false
+}
+
+func waitForTurnCancel(resultCh <-chan struct {
+	result agent.RunResult
+	err    error
+}) {
+	select {
+	case <-resultCh:
+	case <-time.After(voiceTurnCancelWaitTimeout):
+		log.Println("[interrupt] current turn did not finish after signal cancellation; exiting")
+	}
+}
+
+func waitForSpeakCancel(speakCh <-chan error) {
+	select {
+	case err := <-speakCh:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("[error] speak failed after signal cancellation: %v\n", err)
+		}
+	case <-time.After(voiceTurnCancelWaitTimeout):
+		log.Println("[interrupt] speech did not finish after signal cancellation; exiting")
+	}
 }
 
 func listenOneUtterance(dialog audioDialogRunner, sigChan chan os.Signal, events <-chan voiceEvent, listenTimeout time.Duration) ([]int16, bool) {

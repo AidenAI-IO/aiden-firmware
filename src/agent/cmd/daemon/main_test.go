@@ -644,6 +644,69 @@ func TestRunVoiceSessionClosesWhenAgentRequestsSleep(t *testing.T) {
 	}
 }
 
+func TestRunVoiceTurnSignalWaitsForThinkingGoroutine(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	events := make(chan voiceEvent, 1)
+	runStarted := make(chan struct{})
+	ctxCanceled := make(chan struct{})
+	dialog := &fakeAudioDialog{
+		runTurn: func(ctx context.Context) (agent.RunResult, error) {
+			close(runStarted)
+			<-ctx.Done()
+			close(ctxCanceled)
+			return agent.RunResult{}, ctx.Err()
+		},
+	}
+
+	go func() {
+		<-runStarted
+		sigChan <- syscall.SIGTERM
+	}()
+
+	interrupted, sleepRequested, exit := runVoiceTurn(agent.Config{}, dialog, nil, []int16{1}, sigChan, events)
+	if interrupted || sleepRequested || !exit {
+		t.Fatalf("runVoiceTurn = interrupted:%v sleep:%v exit:%v, want false false true", interrupted, sleepRequested, exit)
+	}
+	select {
+	case <-ctxCanceled:
+	default:
+		t.Fatal("RunAgentTurn goroutine was not finished before signal return")
+	}
+}
+
+func TestRunVoiceTurnSignalWaitsForSpeakingGoroutine(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	events := make(chan voiceEvent, 1)
+	speakStarted := make(chan struct{})
+	ctxCanceled := make(chan struct{})
+	dialog := &fakeAudioDialog{
+		runTurn: func(ctx context.Context) (agent.RunResult, error) {
+			return agent.RunResult{Output: "reply"}, nil
+		},
+		speak: func(ctx context.Context) error {
+			close(speakStarted)
+			<-ctx.Done()
+			close(ctxCanceled)
+			return ctx.Err()
+		},
+	}
+
+	go func() {
+		<-speakStarted
+		sigChan <- syscall.SIGTERM
+	}()
+
+	interrupted, sleepRequested, exit := runVoiceTurn(agent.Config{}, dialog, nil, []int16{1}, sigChan, events)
+	if interrupted || sleepRequested || !exit {
+		t.Fatalf("runVoiceTurn = interrupted:%v sleep:%v exit:%v, want false false true", interrupted, sleepRequested, exit)
+	}
+	select {
+	case <-ctxCanceled:
+	default:
+		t.Fatal("Speak goroutine was not finished before signal return")
+	}
+}
+
 func TestCaptureUtteranceTimeoutDiscardsSilenceWhenVADNeverDetectedSpeech(t *testing.T) {
 	vad := agent.NewAudioVAD(1000, 500, 90, 60, false)
 	dialog := &fakeAudioDialog{
