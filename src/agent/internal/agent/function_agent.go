@@ -30,6 +30,7 @@ type visualObservationTool interface {
 
 const toolActionLogVersion = 1
 const maxToolObservationRunes = 4000
+const maxScreenshotContextImages = 3
 
 type toolActionLog struct {
 	Version         int    `json:"aiden_action_log_version"`
@@ -232,6 +233,8 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 	}
 
 	messages := make([]llms.MessageContent, 0, len(steps)*3)
+	visualObservationCount := a.countVisualObservations(steps)
+	visualObservationIndex := 0
 
 	for i := 0; i < len(steps); {
 		groupEnd := i + 1
@@ -259,7 +262,12 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 		})
 
 		for j := i; j < groupEnd; j++ {
-			toolContent, followups := a.observationMessagesForStep(steps[j])
+			includeVisual := true
+			if a.hasVisualObservation(steps[j]) {
+				visualObservationIndex++
+				includeVisual = visualObservationIndex > visualObservationCount-maxScreenshotContextImages
+			}
+			toolContent, followups := a.observationMessagesForStep(steps[j], includeVisual)
 			if steps[j].Action.ToolID != "" {
 				messages = append(messages, llms.MessageContent{
 					Role: llms.ChatMessageTypeTool,
@@ -286,7 +294,7 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 	return messages
 }
 
-func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep) (string, []llms.MessageContent) {
+func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includeVisual bool) (string, []llms.MessageContent) {
 	if !a.isVisualObservationTool(step.Action.Tool) {
 		return compactToolObservation(step.Observation), nil
 	}
@@ -302,28 +310,37 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep) (strin
 	}
 
 	mimeType := "image/jpeg"
+	imageAvailability := "The image is attached in the next message."
+	if !includeVisual {
+		imageAvailability = fmt.Sprintf("This older screenshot image is omitted from the current context; only the latest %d screenshot observations are attached.", maxScreenshotContextImages)
+	}
 	toolContent := fmt.Sprintf(
-		"%s returned a screenshot observation: format=%s width=%d height=%d size=%d bytes. The image is attached in the next message.",
+		"%s returned a screenshot observation: format=%s width=%d height=%d size=%d bytes. %s",
 		step.Action.Tool,
 		result.Format,
 		result.Width,
 		result.Height,
 		result.Size,
+		imageAvailability,
 	)
 	if strings.TrimSpace(result.ActionOutput) != "" {
 		actionOutput := compactToolObservation(result.ActionOutput)
 		toolContent = fmt.Sprintf(
-			"%s completed with output %q, then returned a screenshot observation after the action settled: format=%s width=%d height=%d size=%d bytes. The image is attached in the next message.",
+			"%s completed with output %q, then returned a screenshot observation after the action settled: format=%s width=%d height=%d size=%d bytes. %s",
 			step.Action.Tool,
 			actionOutput,
 			result.Format,
 			result.Width,
 			result.Height,
 			result.Size,
+			imageAvailability,
 		)
 	}
 	if result.Format != "" && result.Format != "jpeg" {
 		mimeType = "image/" + result.Format
+	}
+	if !includeVisual {
+		return toolContent, nil
 	}
 
 	return toolContent, []llms.MessageContent{{
@@ -333,6 +350,31 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep) (strin
 			buildImagePart(mimeType, imageBytes),
 		},
 	}}
+}
+
+func (a *FunctionAgent) countVisualObservations(steps []schema.AgentStep) int {
+	count := 0
+	for _, step := range steps {
+		if a.hasVisualObservation(step) {
+			count++
+		}
+	}
+	return count
+}
+
+func (a *FunctionAgent) hasVisualObservation(step schema.AgentStep) bool {
+	if !a.isVisualObservationTool(step.Action.Tool) {
+		return false
+	}
+
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
+		return false
+	}
+	if _, err := base64.StdEncoding.DecodeString(result.Data); err != nil {
+		return false
+	}
+	return true
 }
 
 func compactToolObservation(observation string) string {
