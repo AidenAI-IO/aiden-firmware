@@ -146,9 +146,6 @@ func TestVoiceSessionConfigDefaults(t *testing.T) {
 	if !cfg.VoiceInterruptOnWakeupOrDefault() {
 		t.Fatal("VoiceInterruptOnWakeupOrDefault() = false, want true")
 	}
-	if cfg.VoiceInterruptListenDuringTTSOrDefault() {
-		t.Fatal("VoiceInterruptListenDuringTTSOrDefault() = true, want false")
-	}
 	if !cfg.VoiceStreamingTTSEnabledOrDefault() {
 		t.Fatal("VoiceStreamingTTSEnabledOrDefault() = false, want true")
 	}
@@ -163,18 +160,16 @@ func TestVoiceSessionConfigDefaults(t *testing.T) {
 func TestVoiceSessionConfigOverrides(t *testing.T) {
 	disabled := false
 	interruptDisabled := false
-	listenDuringTTS := true
 	streamingDisabled := false
 	toolSpeech := false
 	cfg := Config{
-		VoiceSessionEnabled:           &disabled,
-		VoiceFirstTurnTimeoutMs:       1234,
-		VoiceFollowupTimeoutMs:        5678,
-		VoiceInterruptOnWakeup:        &interruptDisabled,
-		VoiceInterruptListenDuringTTS: &listenDuringTTS,
-		VoiceStreamingTTSEnabled:      &streamingDisabled,
-		VoiceToolCallSpeech:           &toolSpeech,
-		VoiceMaxResponseTokens:        123,
+		VoiceSessionEnabled:      &disabled,
+		VoiceFirstTurnTimeoutMs:  1234,
+		VoiceFollowupTimeoutMs:   5678,
+		VoiceInterruptOnWakeup:   &interruptDisabled,
+		VoiceStreamingTTSEnabled: &streamingDisabled,
+		VoiceToolCallSpeech:      &toolSpeech,
+		VoiceMaxResponseTokens:   123,
 	}
 
 	if cfg.VoiceSessionEnabledOrDefault() {
@@ -188,9 +183,6 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 	}
 	if cfg.VoiceInterruptOnWakeupOrDefault() {
 		t.Fatal("VoiceInterruptOnWakeupOrDefault() = true, want false")
-	}
-	if !cfg.VoiceInterruptListenDuringTTSOrDefault() {
-		t.Fatal("VoiceInterruptListenDuringTTSOrDefault() = false, want true")
 	}
 	if cfg.VoiceStreamingTTSEnabledOrDefault() {
 		t.Fatal("VoiceStreamingTTSEnabledOrDefault() = true, want false")

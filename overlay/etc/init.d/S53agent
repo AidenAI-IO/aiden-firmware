@@ -83,6 +83,7 @@ start() {
     chmod 0755 "$(dirname "$PID_FILE")" "$(dirname "$LOG_PATH")"
 
     (
+        trap '' HUP
         trap 'exit 0' INT TERM
         while true; do
             if [ ! -x "$AGENT_BIN" ]; then

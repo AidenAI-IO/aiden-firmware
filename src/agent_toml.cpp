@@ -172,8 +172,6 @@ void apply_kv(AgentToml& cfg,
             if (!assign_int(&cfg.voice_max_turns, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_interrupt_on_wakeup") {
             if (!assign_bool(&cfg.voice_interrupt_on_wakeup, raw, &sub_err)) fail(sub_err);
-        } else if (key == "voice_interrupt_listen_during_tts") {
-            if (!assign_bool(&cfg.voice_interrupt_listen_during_tts, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_streaming_tts_enabled") {
             if (!assign_bool(&cfg.voice_streaming_tts_enabled, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_tool_call_speech") {
@@ -413,7 +411,6 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (cfg.voice_first_turn_timeout_ms != 0) emit_int(out, "voice_first_turn_timeout_ms", cfg.voice_first_turn_timeout_ms);
     if (cfg.voice_max_turns != 0) emit_int(out, "voice_max_turns", cfg.voice_max_turns);
     emit_bool(out, "voice_interrupt_on_wakeup", cfg.voice_interrupt_on_wakeup);
-    emit_bool(out, "voice_interrupt_listen_during_tts", cfg.voice_interrupt_listen_during_tts);
     emit_bool(out, "voice_streaming_tts_enabled", cfg.voice_streaming_tts_enabled);
     emit_bool(out, "voice_tool_call_speech", cfg.voice_tool_call_speech);
     if (cfg.voice_max_response_tokens != 0) emit_int(out, "voice_max_response_tokens", cfg.voice_max_response_tokens);

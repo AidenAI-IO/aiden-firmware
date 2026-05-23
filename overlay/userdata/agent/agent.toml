@@ -27,7 +27,6 @@ voice_followup_timeout_ms = 6000
 voice_first_turn_timeout_ms = 10000
 voice_max_turns = 0
 voice_interrupt_on_wakeup = true
-voice_interrupt_listen_during_tts = false
 voice_streaming_tts_enabled = true
 voice_tool_call_speech = true
 voice_max_response_tokens = 400

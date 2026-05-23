@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -386,8 +387,12 @@ func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRe
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0), 1<<20)
 	for scanner.Scan() {
+		line := bytes.Trim(scanner.Bytes(), "\x00 \t\r\n")
+		if len(line) == 0 {
+			continue
+		}
 		var event SessionEvent
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+		if err := json.Unmarshal(line, &event); err != nil {
 			return nil, false, fmt.Errorf("decode session event for %q: %w", agentName, err)
 		}
 		record, ok := messageRecordFromSessionEvent(event)

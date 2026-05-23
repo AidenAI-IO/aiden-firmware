@@ -29,8 +29,8 @@ func TestNewMinimaxTTSDefaults(t *testing.T) {
 }
 
 func TestMinimaxPlaybackFormatConstants(t *testing.T) {
-	if minimaxTTSSampleRate != 32000 {
-		t.Fatalf("sample rate = %d, want 32000", minimaxTTSSampleRate)
+	if minimaxTTSSampleRate != 16000 {
+		t.Fatalf("sample rate = %d, want 16000", minimaxTTSSampleRate)
 	}
 	if minimaxTTSChannels != 1 {
 		t.Fatalf("channels = %d, want 1", minimaxTTSChannels)
@@ -100,7 +100,7 @@ func TestMinimaxTTSNaturalCompletionDoesNotStopPlayback(t *testing.T) {
 	transport := ttsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(`{"data":{"audio":""}}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"data":{"audio":"0000"}}`)),
 			Header:     make(http.Header),
 		}, nil
 	})
@@ -126,7 +126,7 @@ func TestMinimaxTTSWaitsForPlaybackDrainBeforeReturning(t *testing.T) {
 	transport := ttsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(`{"data":{"audio":""}}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"data":{"audio":"0000"}}`)),
 			Header:     make(http.Header),
 		}, nil
 	})
@@ -151,7 +151,7 @@ func TestMinimaxTTSRetriesTransientPlaybackDrainHealthFailure(t *testing.T) {
 	transport := ttsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(`{"data":{"audio":""}}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"data":{"audio":"0000"}}`)),
 			Header:     make(http.Header),
 		}, nil
 	})
