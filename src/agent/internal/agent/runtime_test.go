@@ -140,26 +140,6 @@ func (t *stubTool) Call(_ context.Context, input string) (string, error) {
 	return t.output, nil
 }
 
-type sleepTool struct {
-	name  string
-	delay time.Duration
-}
-
-func (t *sleepTool) Name() string { return t.name }
-
-func (t *sleepTool) Description() string { return "Sleep briefly." }
-
-func (t *sleepTool) Call(ctx context.Context, input string) (string, error) {
-	timer := time.NewTimer(t.delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case <-timer.C:
-		return `{"ok":true}`, nil
-	}
-}
-
 func TestRuntimeRunOpenRouterUsesToolsWithoutStreaming(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -269,7 +249,7 @@ func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunExecutesMultipleToolCallsInParallel(t *testing.T) {
+func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			{
@@ -301,6 +281,8 @@ func TestRuntimeRunExecutesMultipleToolCallsInParallel(t *testing.T) {
 			},
 		},
 	}
+	toolA := &stubTool{name: "slow_a", description: "First tool.", output: `{"ok":true}`}
+	toolB := &stubTool{name: "slow_b", description: "Second tool.", output: `{"ok":true}`}
 	runtime := NewRuntimeWithDeps(
 		Config{
 			Model:       ModelConfig{Provider: "fake"},
@@ -309,23 +291,40 @@ func TestRuntimeRunExecutesMultipleToolCallsInParallel(t *testing.T) {
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
-			"slow_a": &sleepTool{name: "slow_a", delay: 200 * time.Millisecond},
-			"slow_b": &sleepTool{name: "slow_b", delay: 200 * time.Millisecond},
+			"slow_a": toolA,
+			"slow_b": toolB,
 		}},
 		NewSkillIndex(),
 	)
 
-	started := time.Now()
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "run both"})
-	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if result.Output != "done" {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if elapsed >= 350*time.Millisecond {
-		t.Fatalf("tool calls took %s, expected parallel execution", elapsed)
+	if len(toolA.inputs) != 1 || toolA.inputs[0] != "{}" {
+		t.Fatalf("first tool inputs = %#v, want one empty JSON call", toolA.inputs)
+	}
+	if len(toolB.inputs) != 0 {
+		t.Fatalf("second tool inputs = %#v, want no calls", toolB.inputs)
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("model calls = %d, want at least 2", len(model.messages))
+	}
+	var toolCallNames []string
+	for _, msg := range model.messages[1] {
+		for _, part := range msg.Parts {
+			toolCall, ok := part.(llms.ToolCall)
+			if !ok || toolCall.FunctionCall == nil {
+				continue
+			}
+			toolCallNames = append(toolCallNames, toolCall.FunctionCall.Name)
+		}
+	}
+	if len(toolCallNames) != 1 || toolCallNames[0] != "slow_a" {
+		t.Fatalf("scratchpad tool calls = %#v, want only slow_a", toolCallNames)
 	}
 }
 
