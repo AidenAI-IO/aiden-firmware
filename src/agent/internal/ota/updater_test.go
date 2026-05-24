@@ -674,6 +674,14 @@ func TestUpdaterClearsPendingHealthAfterRollbackToOldSlot(t *testing.T) {
 	if err := WritePendingBoot(filepath.Join(env.stateDir, "pending_boot.json"), pending); err != nil {
 		t.Fatalf("WritePendingBoot() error = %v", err)
 	}
+	env.state.Phase = "pending-reboot"
+	env.state.TargetVersion = env.version
+	env.state.TargetBuildTime = env.buildTime
+	env.state.TargetSlot = SlotB
+	env.state.PendingBootNonce = pending.Nonce
+	env.state.PendingBootID = "boot-before-rollback"
+	env.state.PendingTargetSlot = &SlotPartitionInfo{Partitions: map[string]PartitionVersion{"boot": {Version: "previous", Hash: testHashA}}}
+	env.saveState(t)
 	env.config.HealthTimeout = time.Millisecond
 	env.config.HealthPollInterval = time.Millisecond
 	updater := env.updater()
@@ -687,6 +695,16 @@ func TestUpdaterClearsPendingHealthAfterRollbackToOldSlot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(env.stateDir, "pending_boot.json")); !os.IsNotExist(err) {
 		t.Fatalf("pending_boot.json still exists after rollback: %v", err)
+	}
+	state, err := LoadState(filepath.Join(env.stateDir, "state.json"))
+	if err != nil {
+		t.Fatalf("LoadState() error = %v", err)
+	}
+	if state.Phase != "rolled-back" || state.TargetVersion != "" || state.TargetBuildTime != "" || state.PendingBootNonce != "" || state.PendingBootID != "" || state.PendingTargetSlot != nil {
+		t.Fatalf("state after rollback = %+v, want pending fields cleared", state)
+	}
+	if state.ActiveSlot != SlotA || state.TargetSlot != SlotA {
+		t.Fatalf("state slots after rollback active=%d target=%d, want A/A", state.ActiveSlot, state.TargetSlot)
 	}
 }
 

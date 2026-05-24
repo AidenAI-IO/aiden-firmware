@@ -97,6 +97,33 @@ func TestWriteHealthMarkerIfPendingIgnoresMissingPendingBoot(t *testing.T) {
 	}
 }
 
+func TestWriteHealthMarkerIfPendingRejectsRootSlotMismatch(t *testing.T) {
+	dir := t.TempDir()
+	pendingPath := filepath.Join(dir, "pending_boot.json")
+	markerPath := filepath.Join(dir, "health.ok")
+	pending := PendingBoot{TargetSlot: "b", TargetVersion: "v2", TargetBuildTime: "2026-05-21T12:00:00Z", Nonce: "nonce-1"}
+	if err := WritePendingBoot(pendingPath, pending); err != nil {
+		t.Fatalf("WritePendingBoot() error = %v", err)
+	}
+
+	wrote, err := writeHealthMarkerIfPending(
+		pendingPath,
+		markerPath,
+		func() (Slot, bool, error) { return SlotB, true, nil },
+		func() (Slot, bool, error) { return SlotA, true, nil },
+		func() string { return "boot-1" },
+	)
+	if err == nil || !strings.Contains(err.Error(), "running rootfs slot a does not match pending target b") {
+		t.Fatalf("writeHealthMarkerIfPending() error = %v, want rootfs mismatch", err)
+	}
+	if wrote {
+		t.Fatal("writeHealthMarkerIfPending() wrote marker despite rootfs mismatch")
+	}
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("health marker exists after rootfs mismatch: %v", err)
+	}
+}
+
 func TestHealthWaitRejectsNonPositiveInterval(t *testing.T) {
 	for _, interval := range []time.Duration{0, -time.Millisecond} {
 		called := false

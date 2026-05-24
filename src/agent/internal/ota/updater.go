@@ -401,8 +401,7 @@ func (u *Updater) ProcessPendingHealth(ctx context.Context) error {
 				runningName, _ := slotName(running)
 				return fmt.Errorf("pending target slot %s is selected in misc but running slot is %s", pending.TargetSlot, runningName)
 			}
-			_ = os.Remove(u.pendingPath())
-			return nil
+			return u.clearPendingAfterRollback(running)
 		}
 	}
 	bootID := currentBootID()
@@ -413,6 +412,28 @@ func (u *Updater) ProcessPendingHealth(ctx context.Context) error {
 		return err
 	}
 	return u.commitPendingHealth(pending)
+}
+
+func (u *Updater) clearPendingAfterRollback(running Slot) error {
+	state, err := u.loadState()
+	if err != nil {
+		return err
+	}
+	state.Phase = "rolled-back"
+	state.ActiveSlot = running
+	state.TargetSlot = running
+	state.TargetVersion = ""
+	state.TargetBuildTime = ""
+	state.PendingBootNonce = ""
+	state.PendingBootID = ""
+	state.PendingTargetSlot = nil
+	if err := SaveState(u.statePath(), state); err != nil {
+		return err
+	}
+	if err := os.Remove(u.pendingPath()); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (u *Updater) commitPendingHealth(pending PendingBoot) error {

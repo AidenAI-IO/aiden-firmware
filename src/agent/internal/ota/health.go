@@ -133,6 +133,10 @@ func WriteHealthMarker(path string, pending PendingBoot, slot string, bootID str
 }
 
 func WriteHealthMarkerIfPending(pendingPath string, markerPath string) (bool, error) {
+	return writeHealthMarkerIfPending(pendingPath, markerPath, currentSlotFromProcCmdline, currentRootSlotFromProcCmdline, currentBootID)
+}
+
+func writeHealthMarkerIfPending(pendingPath string, markerPath string, currentSlot func() (Slot, bool, error), currentRootSlot func() (Slot, bool, error), bootID func() string) (bool, error) {
 	data, err := os.ReadFile(pendingPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -144,7 +148,7 @@ func WriteHealthMarkerIfPending(pendingPath string, markerPath string) (bool, er
 	if err := json.Unmarshal(data, &pending); err != nil {
 		return false, err
 	}
-	running, ok, err := currentSlotFromProcCmdline()
+	running, ok, err := currentSlot()
 	if err != nil {
 		return false, err
 	}
@@ -158,7 +162,7 @@ func WriteHealthMarkerIfPending(pendingPath string, markerPath string) (bool, er
 	if runningName != pending.TargetSlot {
 		return false, fmt.Errorf("running slot %s does not match pending target %s", runningName, pending.TargetSlot)
 	}
-	rootSlot, ok, err := currentRootSlotFromProcCmdline()
+	rootSlot, ok, err := currentRootSlot()
 	if err != nil {
 		return false, err
 	}
@@ -172,7 +176,7 @@ func WriteHealthMarkerIfPending(pendingPath string, markerPath string) (bool, er
 	if rootName != pending.TargetSlot {
 		return false, fmt.Errorf("running rootfs slot %s does not match pending target %s", rootName, pending.TargetSlot)
 	}
-	return true, WriteHealthMarker(markerPath, pending, runningName, currentBootID())
+	return true, WriteHealthMarker(markerPath, pending, runningName, bootID())
 }
 
 func WaitForHealth(ctx context.Context, markerPath string, pending PendingBoot, currentBootID string, timeout time.Duration, interval time.Duration, reboot func() error) error {
