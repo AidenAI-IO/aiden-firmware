@@ -204,7 +204,7 @@ func (a *FunctionAgent) toolsAsLLM() []llms.Tool {
 						"__arg1": map[string]string{
 							"title":       "__arg1",
 							"type":        "string",
-							"description": "The plain string input for the selected tool.",
+							"description": `The plain string input for the selected tool. If the tool description says "Input JSON", pass that JSON object as this string; for example keyboard_text uses {"text":"App Store"}, not App Store.`,
 						},
 						"description": map[string]string{
 							"title":       "description",

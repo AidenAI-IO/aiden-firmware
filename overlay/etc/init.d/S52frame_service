@@ -8,7 +8,7 @@ BOOT_CONF=/etc/aiden_boot.conf
 
 FRAME_SERVICE_BIN=/oem/usr/bin/frame_service
 SOCKET_PATH=/run/frame_service/frame_service.sock
-FRAME_SERVICE_FPS=3
+FRAME_SERVICE_FPS=30
 FRAME_SERVICE_WIDTH=1920
 FRAME_SERVICE_HEIGHT=1080
 FRAME_SERVICE_EDID=

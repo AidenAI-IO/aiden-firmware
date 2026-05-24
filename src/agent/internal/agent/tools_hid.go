@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -411,32 +412,23 @@ func (t *KeyboardTextTool) Name() string { return "keyboard_text" }
 
 func (t *KeyboardTextTool) Description() string {
 	return `Type a string of text character by character. Input JSON: {"text": "hello world"}. ` +
-		`Supports ASCII printable characters. Each character is pressed and released sequentially.`
+		`Bare text is accepted only as a compatibility fallback; prefer JSON. ` +
+		`Supports US-keyboard ASCII characters only. It cannot directly type Chinese, emoji, or other non-ASCII text; use pinyin/English search terms plus on-screen candidates when Chinese input is needed. ` +
+		`If any unsupported character is present, no characters are typed and an error is returned.`
 }
 
 func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error) {
-	var args struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v", err), nil
-	}
-	if args.Text == "" {
-		return "error: text is required", nil
+	text, errText := parseKeyboardTextInput(input)
+	if errText != "" {
+		return errText, nil
 	}
 
-	skipped := make([]rune, 0)
-	for _, ch := range args.Text {
-		if ch > 0x7F {
-			skipped = append(skipped, ch)
-			continue
-		}
+	if unsupported := unsupportedKeyboardTextRunes(text); len(unsupported) > 0 {
+		return fmt.Sprintf("error: keyboard_text supports only US-keyboard ASCII characters; unsupported characters: %q", string(unsupported)), nil
+	}
 
-		modifier, code, ok := charToHIDKey(byte(ch))
-		if !ok {
-			skipped = append(skipped, ch)
-			continue
-		}
+	for _, ch := range text {
+		modifier, code, _ := charToHIDKey(byte(ch))
 		report := make([]byte, 8)
 		report[0] = modifier
 		report[2] = code
@@ -448,9 +440,6 @@ func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error)
 		}
 	}
 
-	if len(skipped) > 0 {
-		return fmt.Sprintf("ok; skipped unsupported characters: %q", string(skipped)), nil
-	}
 	return "ok", nil
 }
 
@@ -464,26 +453,27 @@ type MouseClickTool struct {
 func (t *MouseClickTool) Name() string { return "mouse_click" }
 
 func (t *MouseClickTool) Description() string {
-	return `Move mouse to a position and click. Input JSON: {"x": 500, "y": 300, "button": "left", "coord_space": "pixel"}. ` +
-		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": pixel coordinates when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
-		`Cached screen dimensions are considered stale after 30s; take a screenshot before using pixel coordinates. ` +
-		`Recommended for stability on mobile screens whose capture resolution can change: pass coord_space:"normalized" with x/y in [0,1]. ` +
+	return `Move mouse to a position and click. Input JSON: {"x": 0.5, "y": 0.3, "button": "left", "coord_space": "normalized"}. ` +
+		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": x/y in [0,1] are treated as normalized, otherwise pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
+		`For phone UI automation, prefer coord_space:"normalized" because screenshot pixels may be scaled differently from the HID pointer surface. ` +
+		`Use coord_space:"pixel" only when the pixel coordinate system is known to be calibrated; pixel coordinates require a recent screenshot, are considered stale after 30s, and are rejected if outside the cached screenshot bounds. ` +
+		`Click once and inspect the returned post-action screenshot before repeating the same click. ` +
 		`The cursor is positioned at the target and allowed to settle before the press, then the press and release are separated by a brief hold, so iOS HID-cursor mode registers a tap rather than a drag or long-press. ` +
 		`Button options: "left" (default), "right", "middle".`
 }
 
 func (t *MouseClickTool) Call(_ context.Context, input string) (string, error) {
 	var args struct {
-		X          float64 `json:"x"`
-		Y          float64 `json:"y"`
-		Button     string  `json:"button"`
-		CoordSpace string  `json:"coord_space"`
+		X          pointerCoordinate `json:"x"`
+		Y          pointerCoordinate `json:"y"`
+		Button     string            `json:"button"`
+		CoordSpace string            `json:"coord_space"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return fmt.Sprintf("error: invalid input: %v", err), nil
 	}
 
-	absX, absY, err := resolvePointerPosition(t.screen, args.X, args.Y, args.CoordSpace, coordinateSpaceAuto)
+	absX, absY, err := resolvePointerPosition(t.screen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
@@ -506,22 +496,22 @@ type MouseMoveTool struct {
 func (t *MouseMoveTool) Name() string { return "mouse_move" }
 
 func (t *MouseMoveTool) Description() string {
-	return `Move mouse to a position without clicking. Input JSON: {"x": 500, "y": 300, "coord_space": "pixel"}. ` +
-		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": pixel coordinates when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
-		`Cached screen dimensions are considered stale after 30s; take a screenshot before using pixel coordinates.`
+	return `Move mouse to a position without clicking. Input JSON: {"x": 0.5, "y": 0.3, "coord_space": "normalized"}. ` +
+		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": x/y in [0,1] are treated as normalized, otherwise pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
+		`For phone UI automation, prefer coord_space:"normalized"; pixel coordinates require calibrated screenshot dimensions, are stale after 30s, and are rejected if outside the cached screenshot bounds.`
 }
 
 func (t *MouseMoveTool) Call(_ context.Context, input string) (string, error) {
 	var args struct {
-		X          float64 `json:"x"`
-		Y          float64 `json:"y"`
-		CoordSpace string  `json:"coord_space"`
+		X          pointerCoordinate `json:"x"`
+		Y          pointerCoordinate `json:"y"`
+		CoordSpace string            `json:"coord_space"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return fmt.Sprintf("error: invalid input: %v", err), nil
 	}
 
-	absX, absY, err := resolvePointerPosition(t.screen, args.X, args.Y, args.CoordSpace, coordinateSpaceAuto)
+	absX, absY, err := resolvePointerPosition(t.screen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
@@ -547,6 +537,7 @@ func (t *TouchGestureTool) Description() string {
 		`Input JSON examples: {"type":"tap","point":{"x":0.5,"y":0.5}}, {"type":"swipe","start":{"x":0.001,"y":0.5},"end":{"x":0.75,"y":0.5},"duration_ms":700,"steps":24}, {"type":"back"}, {"type":"home"}. ` +
 		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe", "back" (left-edge back), "home" (bottom-edge home). ` +
 		`coord_space defaults to "normalized" (x/y in [0,1]) and also supports "pixel" and "absolute". ` +
+		`For tap-like actions, choose the visible target center from the latest screenshot and prefer normalized coordinates; use pixel coordinates only when the screenshot pixel coordinate system has been calibrated, then inspect the returned post-action screenshot before repeating. ` +
 		`Every gesture first positions the cursor at the target and waits for iOS HID-cursor smoothing to settle before pressing, so clicks register on the intended element instead of as drags from the previous cursor position. ` +
 		`Tap and double_tap accept an optional "hold_ms" (dwell between press and release, default 60ms). ` +
 		`Swipe defaults to a slower 700ms / 24-step motion, applies "hold_before_ms" of 80ms after the press, and releases immediately at the destination by default; pass "hold_after_ms" only when a drag-like end dwell is required. ` +
@@ -764,8 +755,34 @@ func writeAbsMouseReport(dev *HIDDevice, state *pointerState, x, y int, buttons 
 }
 
 type pointerPoint struct {
-	X float64 `json:"x"`
-	Y float64 `json:"y"`
+	X pointerCoordinate `json:"x"`
+	Y pointerCoordinate `json:"y"`
+}
+
+type pointerCoordinate float64
+
+func (c *pointerCoordinate) UnmarshalJSON(data []byte) error {
+	var number float64
+	if err := json.Unmarshal(data, &number); err == nil {
+		*c = pointerCoordinate(number)
+		return nil
+	}
+
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		value, parseErr := strconv.ParseFloat(strings.TrimSpace(text), 64)
+		if parseErr != nil {
+			return fmt.Errorf("parse coordinate %q: %w", text, parseErr)
+		}
+		*c = pointerCoordinate(value)
+		return nil
+	}
+
+	return fmt.Errorf("coordinate must be a number or numeric string")
+}
+
+func (c pointerCoordinate) Float64() float64 {
+	return float64(c)
 }
 
 type resolvedPointerPoint struct {
@@ -785,7 +802,7 @@ func resolveRequiredPoint(screen *screenState, point *pointerPoint, coordSpace s
 		return resolvedPointerPoint{}, fmt.Errorf("point is required")
 	}
 
-	x, y, err := resolvePointerPosition(screen, point.X, point.Y, coordSpace, coordinateSpaceNormalized)
+	x, y, err := resolvePointerPosition(screen, point.X.Float64(), point.Y.Float64(), coordSpace, coordinateSpaceNormalized)
 	if err != nil {
 		return resolvedPointerPoint{}, err
 	}
@@ -813,6 +830,10 @@ func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string
 
 	switch space {
 	case coordinateSpaceAuto:
+		if looksLikeNormalizedPoint(x, y) {
+			absX, absY := normalizedToAbsolutePoint(x, y)
+			return absX, absY, nil
+		}
 		if screen != nil {
 			if width, height, age, ok := screen.DimensionsWithAge(); ok && age < screenDimensionsStaleAfter {
 				return pixelToAbsolutePoint(x, y, width, height)
@@ -841,6 +862,10 @@ func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string
 	return 0, 0, fmt.Errorf("unsupported coord_space: %q", coordSpace)
 }
 
+func looksLikeNormalizedPoint(x, y float64) bool {
+	return x >= 0 && x <= 1 && y >= 0 && y <= 1
+}
+
 func normalizeCoordinateSpace(coordSpace string, defaultSpace string) (string, error) {
 	space := strings.ToLower(strings.TrimSpace(coordSpace))
 	if space == "" {
@@ -862,6 +887,9 @@ func normalizedToAbsolutePoint(x, y float64) (int, int) {
 func pixelToAbsolutePoint(x, y float64, width, height int) (int, int, error) {
 	if width <= 0 || height <= 0 {
 		return 0, 0, fmt.Errorf("invalid screen dimensions: %dx%d", width, height)
+	}
+	if x < 0 || y < 0 || x > float64(width-1) || y > float64(height-1) {
+		return 0, 0, fmt.Errorf("pixel coordinates x=%.2f y=%.2f are outside cached screenshot bounds %dx%d; use coord_space normalized with 0..1 coordinates or refresh/calibrate the screenshot dimensions", x, y, width, height)
 	}
 	return scalePixelToAbsolute(x, width), scalePixelToAbsolute(y, height), nil
 }
@@ -1140,4 +1168,51 @@ func charToHIDKey(ch byte) (modifier uint8, code uint8, ok bool) {
 		return 0x02, 0x38, true
 	}
 	return 0, 0, false
+}
+
+func parseKeyboardTextInput(input string) (string, string) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return "", "error: text is required"
+	}
+
+	if strings.HasPrefix(trimmed, "{") {
+		var args struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+			return "", fmt.Sprintf("error: invalid input: %v", err)
+		}
+		if args.Text == "" {
+			return "", "error: text is required"
+		}
+		return args.Text, ""
+	}
+
+	if strings.HasPrefix(trimmed, `"`) {
+		var text string
+		if err := json.Unmarshal([]byte(trimmed), &text); err != nil {
+			return "", fmt.Sprintf("error: invalid input: %v", err)
+		}
+		if text == "" {
+			return "", "error: text is required"
+		}
+		return text, ""
+	}
+
+	return trimmed, ""
+}
+
+func unsupportedKeyboardTextRunes(text string) []rune {
+	unsupported := make([]rune, 0)
+	for _, ch := range text {
+		if ch > 0x7F {
+			unsupported = append(unsupported, ch)
+			continue
+		}
+		if _, _, ok := charToHIDKey(byte(ch)); !ok {
+			unsupported = append(unsupported, ch)
+		}
+	}
+	return unsupported
 }

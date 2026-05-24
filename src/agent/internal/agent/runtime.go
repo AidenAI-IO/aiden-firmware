@@ -526,6 +526,7 @@ func (h *runtimeCallbackHandler) HandleNamedToolEnd(ctx context.Context, name, i
 	if h.logger != nil {
 		h.logger.Info("Tool result: name=%s output=%s", name, truncateForLog(output, 240))
 	}
+	h.removePendingAction(name, input)
 	if h.eventHandler != nil {
 		h.eventHandler(RunEvent{
 			Type:      "tool_result",
@@ -533,6 +534,7 @@ func (h *runtimeCallbackHandler) HandleNamedToolEnd(ctx context.Context, name, i
 			ToolInput: input,
 			Content:   output,
 			Timestamp: time.Now(),
+			IsError:   toolOutputLooksLikeError(output),
 		})
 	}
 }
@@ -541,6 +543,7 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 	if h.logger != nil {
 		h.logger.Error("Tool error: name=%s err=%v", name, err)
 	}
+	h.removePendingAction(name, input)
 	if h.eventHandler != nil {
 		h.eventHandler(RunEvent{
 			Type:      "tool_result",
@@ -613,6 +616,17 @@ func (h *runtimeCallbackHandler) popPendingAction() (schema.AgentAction, bool) {
 	action := h.pendingActions[0]
 	h.pendingActions = h.pendingActions[1:]
 	return action, true
+}
+
+func (h *runtimeCallbackHandler) removePendingAction(name, input string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, action := range h.pendingActions {
+		if strings.EqualFold(action.Tool, name) && action.ToolInput == input {
+			h.pendingActions = append(h.pendingActions[:i], h.pendingActions[i+1:]...)
+			return
+		}
+	}
 }
 
 func truncateForLog(text string, max int) string {

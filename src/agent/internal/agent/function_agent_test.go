@@ -234,6 +234,13 @@ func TestFunctionAgentToolsAsLLMRequiresDescriptionParameter(t *testing.T) {
 		encoded, _ := json.Marshal(params)
 		t.Fatalf("missing description property in %s", encoded)
 	}
+	arg1, ok := props["__arg1"].(map[string]string)
+	if !ok {
+		t.Fatalf("unexpected __arg1 schema: %#v", props["__arg1"])
+	}
+	if !strings.Contains(arg1["description"], `{"text":"App Store"}`) {
+		t.Fatalf("__arg1 description does not explain JSON tool input: %q", arg1["description"])
+	}
 	required, ok := params["required"].([]string)
 	if !ok {
 		t.Fatalf("unexpected required type: %T", params["required"])

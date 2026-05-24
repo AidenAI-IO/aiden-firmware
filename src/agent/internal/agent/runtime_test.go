@@ -404,6 +404,159 @@ func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
 	}
 }
 
+func TestRuntimeAllowsNearRepeatedMouseClick(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "mouse_click",
+							Arguments: `{"x":"0.5","y":"0.08","coord_space":"normalized"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_2",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "mouse_click",
+							Arguments: `{"x":0.5,"y":0.12,"coord_space":"normalized"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "我会换一个方式继续。",
+				}},
+			},
+		},
+	}
+	tool := &stubTool{
+		name:        "mouse_click",
+		description: "Move mouse to a position and click.",
+		output:      "ok",
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"mouse_click": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "tap the field",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "我会换一个方式继续。" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if len(tool.inputs) != 2 {
+		t.Fatalf("expected repeated click attempts to reach the tool, got inputs %#v", tool.inputs)
+	}
+	if !strings.Contains(tool.inputs[0], `"x":"0.5"`) {
+		t.Fatalf("first click should preserve model input, got %q", tool.inputs[0])
+	}
+	if !strings.Contains(tool.inputs[1], `"x":0.5`) {
+		t.Fatalf("second click should reach the tool, got %q", tool.inputs[1])
+	}
+
+	var resultCount int
+	for _, event := range events {
+		if event.Type == "tool_result" && event.ToolName == "mouse_click" {
+			resultCount++
+			if event.IsError {
+				t.Fatalf("repeated click should not be marked as an error: %#v", event)
+			}
+		}
+	}
+	if resultCount != 2 {
+		t.Fatalf("expected two mouse_click result events, got %#v", events)
+	}
+}
+
+func TestRuntimeAllowsRepeatedKeyboardText(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "keyboard_text",
+							Arguments: `{"text":"yuanshen"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_2",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "keyboard_text",
+							Arguments: `{"text":"yuanshen"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "我不会重复输入。",
+				}},
+			},
+		},
+	}
+	tool := &stubTool{
+		name:        "keyboard_text",
+		description: "Type text.",
+		output:      "ok",
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"keyboard_text": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "type twice"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "我不会重复输入。" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if len(tool.inputs) != 2 {
+		t.Fatalf("expected repeated keyboard_text attempts to reach the tool, got inputs %#v", tool.inputs)
+	}
+}
+
 func TestRuntimeRunReportsEnterSleepToolRequest(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
