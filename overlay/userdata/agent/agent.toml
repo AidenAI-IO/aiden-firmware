@@ -1,7 +1,7 @@
 # Agent instruction and behavior
-instruction = "You are a helpful assistant. Use tools when they help accomplish the task."
+instruction = "默认用简体中文回答，语气要像真人说话，简短自然，适合 TTS 播放。需要读取或改变手机、外部设备或服务状态时必须使用工具；可以连续组合多个工具完成任务。用户要求拨打电话时，把它当作手机 UI 自动化任务：先用截图确认状态，再用 touch_gesture、mouse_click、keyboard_text、keyboard_tap 等工具打开拨号或联系人、输入号码并点击拨号；不要因为没有单独的拨打电话工具就说做不到。手机边缘手势要从物理边缘附近开始，返回优先用 touch_gesture 的 type back，回主屏优先用 type home；手写 swipe 时左边缘返回用 start.x=0.001 左右，底边回主页用 start.y=0.999 左右。"
 additional_prompt = ""
-max_iterations = 6
+max_iterations = -1
 
 # Input mode:
 # - text: run HTTP server with Web UI
@@ -17,16 +17,35 @@ trigger_mode = "manual"
 # VAD (Voice Activity Detection) parameters
 # Only used when input_mode is "stt" or "audio"
 energy_threshold = 500    # Energy threshold for speech detection
-silence_ms = 1000         # Silence duration to end utterance (ms)
+silence_ms = 650          # Silence duration to end utterance (ms)
 min_speech_ms = 300       # Minimum speech duration to accept (ms)
+
+# Wakeup voice session parameters
+# Only used when input_mode = "stt" and trigger_mode = "wakeup"
+voice_session_enabled = true
+voice_followup_timeout_ms = 6000
+voice_first_turn_timeout_ms = 10000
+voice_max_turns = 0
+voice_interrupt_on_wakeup = true
+voice_streaming_tts_enabled = true
+voice_tool_call_speech = true
+voice_max_response_tokens = 400
 
 # Primary LLM model configuration
 [model]
 provider = "openrouter"
-model = "bytedance-seed/seed-2.0-lite"
+model = "google/gemini-3.5-flash"
 api_key = "OPENROUTER_API_KEY"
 temperature = 0.2
 max_tokens = 1000
+
+# Optional request proxy configuration for outbound Agent HTTP requests.
+# Leave all fields blank to use the process environment (HTTP_PROXY / HTTPS_PROXY / NO_PROXY).
+[proxy]
+http_proxy = ""
+https_proxy = ""
+all_proxy = ""
+no_proxy = ""
 
 # Optional future field parsed by config but not currently used by the runtime.
 # [model_text]
@@ -44,10 +63,16 @@ bit_width = 16
 # Speech-to-Text (STT) configuration
 # Required when input_mode = "stt"
 [stt]
-provider = "openai-whisper"  # "openai-whisper" or "tencent"
+provider = "openai-whisper"  # "openai-whisper", "openrouter", or "tencent"
 api_key = "OPENAI_API_KEY"
 model = "whisper-1"
 # base_url = "https://api.openai.com/v1"  # Optional: custom endpoint
+
+# For OpenRouter STT:
+# provider = "openrouter"
+# api_key = "OPENROUTER_API_KEY"
+# model = "qwen/qwen3-asr-flash-2026-02-10"
+# base_url = "https://openrouter.ai/api/v1"  # Optional: custom endpoint
 
 # For Tencent ASR (alternative to OpenAI Whisper):
 # provider = "tencent"
@@ -70,3 +95,9 @@ speed = 1.0                   # Speech speed: 0.5 - 2.0
 keyboard_device = "/dev/hidg0"
 mouse_device = "/dev/hidg1"
 frame_socket = "/run/frame_service/frame_service.sock"
+
+# Web search tool configuration
+# provider: "duckduckgo" (free, no key) or "tavily" (better results, needs api_key)
+[search]
+provider = "duckduckgo"
+api_key = ""

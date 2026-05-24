@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -16,25 +17,54 @@ type ToolSet struct {
 
 // NewBuiltinToolSet returns all built-in tools. Tools are not configurable;
 // everything is registered here with its runtime dependencies already wired up.
-func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig) *ToolSet {
+type BuiltinToolSetOption func(*builtinToolSetOptions)
+
+type builtinToolSetOptions struct {
+	sleepController *SleepController
+}
+
+func WithSleepController(controller *SleepController) BuiltinToolSetOption {
+	return func(options *builtinToolSetOptions) {
+		options.sleepController = controller
+	}
+}
+
+func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchConfig, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
+	toolOptions := builtinToolSetOptions{}
+	for _, option := range options {
+		if option != nil {
+			option(&toolOptions)
+		}
+	}
+
 	kbDev := NewHIDDevice(hidCfg.KeyboardDeviceOrDefault())
 	mouseDev := NewHIDDevice(hidCfg.MouseDeviceOrDefault())
 	screen := &screenState{}
 	pointer := &pointerState{}
+	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 
-	return &ToolSet{
-		tools: map[string]langtools.Tool{
-			"keyboard_tap":  &KeyboardTapTool{dev: kbDev},
-			"keyboard_text": &KeyboardTextTool{dev: kbDev},
-			"mouse_click":   &MouseClickTool{dev: mouseDev, screen: screen, state: pointer},
-			"mouse_move":    &MouseMoveTool{dev: mouseDev, screen: screen, state: pointer},
-			"mouse_scroll":  &MouseScrollTool{dev: mouseDev, state: pointer},
-			"touch_gesture": &TouchGestureTool{dev: mouseDev, screen: screen, state: pointer},
-			"screenshot":    NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen),
-			"audio_volume":  NewAudioVolumeTool(audioCfg.SocketOrDefault()),
-			"shell":         &ShellTool{},
-		},
+	tools := map[string]langtools.Tool{
+		"keyboard_tap":  newPostActionScreenshotTool(&KeyboardTapTool{dev: kbDev}, screenshot, postActionScreenshotDelay),
+		"keyboard_text": newPostActionScreenshotTool(&KeyboardTextTool{dev: kbDev}, screenshot, postActionScreenshotDelay),
+		"mouse_click":   newPostActionScreenshotTool(&MouseClickTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
+		"mouse_move":    newPostActionScreenshotTool(&MouseMoveTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
+		"mouse_scroll":  newPostActionScreenshotTool(&MouseScrollTool{dev: mouseDev, state: pointer}, screenshot, postActionScreenshotDelay),
+		"touch_gesture": newPostActionScreenshotTool(&TouchGestureTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
+		"screenshot":    screenshot,
+		"audio_volume":  NewAudioVolumeTool(audioCfg.SocketOrDefault()),
+		"shell":         &ShellTool{},
+		"current_time":  NewCurrentTimeTool(),
+		"weather":       NewWeatherTool(proxyCfg),
+		"web_search":    NewWebSearchTool(searchCfg, proxyCfg),
+		"wikipedia":     NewWikipediaTool(proxyCfg),
+		"calculator":    NewCalculatorTool(),
+		"web_scraper":   NewWebScraperTool(proxyCfg),
 	}
+	if toolOptions.sleepController != nil {
+		tools["enter_sleep"] = NewEnterSleepTool(toolOptions.sleepController)
+	}
+
+	return &ToolSet{tools: tools}
 }
 
 func (s *ToolSet) Get(name string) (langtools.Tool, bool) {
@@ -60,6 +90,18 @@ func (s *ToolSet) Names() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func (s *ToolSet) RegisterMemoryTools(memoryDir string, profileFn ProfileFn, summaryMaxChunks int, debouncer *ProfileDebouncer) {
+	if memoryDir == "" {
+		return
+	}
+	sessionStore := NewSessionMemoryStore(filepath.Join(memoryDir, "session"), summaryMaxChunks)
+	longTermStore := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")), WithStoreProfileFn(profileFn), WithProfileDebouncer(debouncer))
+	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(sessionStore)
+	s.tools["recall_memory"] = NewRecallMemoryTool(longTermStore)
+	s.tools["save_memory"] = NewSaveMemoryTool(longTermStore)
+	s.tools["forget_memory"] = NewForgetMemoryTool(longTermStore)
 }
 
 // ActivateSkillTool allows the LLM to activate skills at runtime.

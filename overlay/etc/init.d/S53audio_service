@@ -5,6 +5,7 @@
 # Configure paths in /etc/aiden_audio_service.conf.
 
 CONFIG_FILE=/etc/aiden_audio_service.conf
+BOOT_CONF=/etc/aiden_boot.conf
 
 AUDIO_SERVICE_BIN=/oem/usr/bin/audio_service
 SOCKET_PATH=/run/audio_service/audio_service.sock
@@ -15,6 +16,10 @@ WATCHDOG_PID_FILE=/run/audio_service/audio_service_watchdog.pid
 if [ -f "$CONFIG_FILE" ]; then
     . "$CONFIG_FILE"
 fi
+if [ -f "$BOOT_CONF" ]; then
+    . "$BOOT_CONF"
+fi
+: "${ENABLE_AUDIO_SERVICE:=1}"
 
 is_running() {
     pid="$1"
@@ -69,6 +74,11 @@ watchdog_pid() {
 }
 
 start() {
+    if [ "$ENABLE_AUDIO_SERVICE" != "1" ]; then
+        echo "audio_service disabled by config (ENABLE_AUDIO_SERVICE=$ENABLE_AUDIO_SERVICE)"
+        return 0
+    fi
+
     wpid="$(watchdog_pid)"
     if is_running "$wpid"; then
         echo "audio_service watchdog already running (pid $wpid)"
@@ -80,6 +90,7 @@ start() {
     rm -f "$SOCKET_PATH"
 
     (
+        trap '' HUP
         trap 'exit 0' INT TERM
         while true; do
             if [ ! -x "$AUDIO_SERVICE_BIN" ]; then

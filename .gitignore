@@ -10,3 +10,4 @@
 /ota_ed25519_private_key.pem
 /ota_ed25519_public_key.pem
 /update.img
+/.claude/

@@ -53,6 +53,7 @@ public:
     bool repeat_last = false;
     int open_count = 0;
     int close_count = 0;
+    int capture_delay_ms = 0;
 
     bool open() override {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -65,6 +66,9 @@ public:
     }
 
     bool capture(CapturedFrame* frame) override {
+        if (capture_delay_ms > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(capture_delay_ms));
+        }
         std::lock_guard<std::mutex> lock(mutex_);
         if (fail_after >= 0 && captures_ == fail_after) {
             fail_after = -1;
@@ -243,13 +247,14 @@ TEST_CASE("FrameCaptureManager publishes failure and copy latency health metrics
     server.stop();
 }
 
-TEST_CASE("FrameCaptureManager limits capture cadence when configured") {
+TEST_CASE("FrameCaptureManager drains captures while limiting publish cadence") {
     TempSocketPath socket_path;
-    FrameServiceServer server(socket_path.path.c_str(), 4);
+    FrameServiceServer server(socket_path.path.c_str(), 8);
     REQUIRE(server.start() == FrameServiceStatus::OK);
 
     FakeCaptureSource source;
     source.repeat_last = true;
+    source.capture_delay_ms = 10;
     source.frames.push_back(CapturedFrame{metadata(50), std::vector<uint8_t>{1, 2}});
     FrameCaptureManagerOptions options;
     options.recovery_initial_backoff_ms = 1;
@@ -260,7 +265,13 @@ TEST_CASE("FrameCaptureManager limits capture cadence when configured") {
 
     std::this_thread::sleep_for(std::chrono::milliseconds(260));
     manager.stop();
-    CHECK(source.capture_count() >= 2);
-    CHECK(source.capture_count() <= 4);
+
+    FrameServiceClient client(socket_path.path.c_str());
+    HealthResult health;
+    REQUIRE(client.health(&health) == FrameServiceStatus::OK);
+    CHECK(source.capture_count() >= 10);
+    CHECK(health.latest_seq >= 2);
+    CHECK(health.latest_seq <= 4);
+    CHECK(health.ring_buffer_used == health.latest_seq);
     server.stop();
 }

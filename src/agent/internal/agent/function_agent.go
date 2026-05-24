@@ -28,6 +28,21 @@ type visualObservationTool interface {
 	ReturnsVisualObservation() bool
 }
 
+const toolActionLogVersion = 1
+const maxToolObservationRunes = 4000
+const maxScreenshotContextImages = 3
+
+type toolActionLog struct {
+	Version         int    `json:"aiden_action_log_version"`
+	Message         string `json:"message"`
+	ToolDescription string `json:"tool_description,omitempty"`
+}
+
+type toolInvocation struct {
+	Input       string
+	Description string
+}
+
 func NewFunctionAgent(
 	llm llms.Model,
 	tools []langtools.Tool,
@@ -131,7 +146,8 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 			}
 			functionName := toolCall.FunctionCall.Name
 			toolInputStr := toolCall.FunctionCall.Arguments
-			toolInput := extractToolInput(toolInputStr)
+			invocation := extractToolInvocation(toolInputStr)
+			invocation.Description = toolDescriptionOrFallback(functionName, invocation.Description)
 
 			contentMsg := "\n"
 			if choice.Content != "" {
@@ -140,8 +156,8 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 
 			actions = append(actions, schema.AgentAction{
 				Tool:      functionName,
-				ToolInput: toolInput,
-				Log:       fmt.Sprintf("Invoking: %s with %s %s", functionName, toolInputStr, contentMsg),
+				ToolInput: invocation.Input,
+				Log:       formatToolActionLog(functionName, toolInputStr, invocation.Description, contentMsg),
 				ToolID:    toolCall.ID,
 			})
 		}
@@ -151,7 +167,8 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 	if choice.FuncCall != nil {
 		functionName := choice.FuncCall.Name
 		toolInputStr := choice.FuncCall.Arguments
-		toolInput := extractToolInput(toolInputStr)
+		invocation := extractToolInvocation(toolInputStr)
+		invocation.Description = toolDescriptionOrFallback(functionName, invocation.Description)
 
 		contentMsg := "\n"
 		if choice.Content != "" {
@@ -160,8 +177,8 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 
 		return []schema.AgentAction{{
 			Tool:      functionName,
-			ToolInput: toolInput,
-			Log:       fmt.Sprintf("Invoking: %s with %s %s", functionName, toolInputStr, contentMsg),
+			ToolInput: invocation.Input,
+			Log:       formatToolActionLog(functionName, toolInputStr, invocation.Description, contentMsg),
 		}}, nil, nil
 	}
 
@@ -185,11 +202,17 @@ func (a *FunctionAgent) toolsAsLLM() []llms.Tool {
 					"type": "object",
 					"properties": map[string]any{
 						"__arg1": map[string]string{
-							"title": "__arg1",
-							"type":  "string",
+							"title":       "__arg1",
+							"type":        "string",
+							"description": "The plain string input for the selected tool.",
+						},
+						"description": map[string]string{
+							"title":       "description",
+							"type":        "string",
+							"description": "A short first-person sentence in the user's language that says what you are about to do with this tool. Voice clients may present it while the tool runs.",
 						},
 					},
-					"required": []string{"__arg1"},
+					"required": []string{"__arg1", "description"},
 				},
 			},
 		})
@@ -210,6 +233,8 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 	}
 
 	messages := make([]llms.MessageContent, 0, len(steps)*3)
+	visualObservationCount := a.countVisualObservations(steps)
+	visualObservationIndex := 0
 
 	for i := 0; i < len(steps); {
 		groupEnd := i + 1
@@ -223,8 +248,11 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 				ID:   steps[j].Action.ToolID,
 				Type: "function",
 				FunctionCall: &llms.FunctionCall{
-					Name:      steps[j].Action.Tool,
-					Arguments: encodeToolArguments(steps[j].Action.ToolInput),
+					Name: steps[j].Action.Tool,
+					Arguments: encodeToolArguments(
+						steps[j].Action.ToolInput,
+						toolDescriptionOrFallback(steps[j].Action.Tool, toolDescriptionFromAction(steps[j].Action)),
+					),
 				},
 			})
 		}
@@ -234,7 +262,12 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 		})
 
 		for j := i; j < groupEnd; j++ {
-			toolContent, followups := a.observationMessagesForStep(steps[j])
+			includeVisual := true
+			if a.hasVisualObservation(steps[j]) {
+				visualObservationIndex++
+				includeVisual = visualObservationIndex > visualObservationCount-maxScreenshotContextImages
+			}
+			toolContent, followups := a.observationMessagesForStep(steps[j], includeVisual)
 			if steps[j].Action.ToolID != "" {
 				messages = append(messages, llms.MessageContent{
 					Role: llms.ChatMessageTypeTool,
@@ -261,40 +294,106 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 	return messages
 }
 
-func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep) (string, []llms.MessageContent) {
+func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includeVisual bool) (string, []llms.MessageContent) {
 	if !a.isVisualObservationTool(step.Action.Tool) {
-		return step.Observation, nil
+		return compactToolObservation(step.Observation), nil
 	}
 
-	var result screenshotResult
+	var result postActionScreenshotResult
 	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
-		return step.Observation, nil
+		return compactToolObservation(step.Observation), nil
+	}
+	if result.Data == "" {
+		return compactToolObservation(step.Observation), nil
 	}
 
 	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
 	if err != nil {
-		return step.Observation, nil
+		return compactToolObservation(step.Observation), nil
+	}
+	if len(imageBytes) == 0 {
+		return compactToolObservation(step.Observation), nil
 	}
 
 	mimeType := "image/jpeg"
+	imageAvailability := "The image is attached in the next message."
+	if !includeVisual {
+		imageAvailability = fmt.Sprintf("This older screenshot image is omitted from the current context; only the latest %d screenshot observations are attached.", maxScreenshotContextImages)
+	}
 	toolContent := fmt.Sprintf(
-		"screenshot captured successfully: format=%s width=%d height=%d size=%d bytes. The image is attached in the next message.",
+		"%s returned a screenshot observation: format=%s width=%d height=%d size=%d bytes. %s",
+		step.Action.Tool,
 		result.Format,
 		result.Width,
 		result.Height,
 		result.Size,
+		imageAvailability,
 	)
+	if strings.TrimSpace(result.ActionOutput) != "" {
+		actionOutput := compactToolObservation(result.ActionOutput)
+		toolContent = fmt.Sprintf(
+			"%s completed with output %q, then returned a screenshot observation after the action settled: format=%s width=%d height=%d size=%d bytes. %s",
+			step.Action.Tool,
+			actionOutput,
+			result.Format,
+			result.Width,
+			result.Height,
+			result.Size,
+			imageAvailability,
+		)
+	}
 	if result.Format != "" && result.Format != "jpeg" {
 		mimeType = "image/" + result.Format
+	}
+	if !includeVisual {
+		return toolContent, nil
 	}
 
 	return toolContent, []llms.MessageContent{{
 		Role: llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{
-			llms.TextPart("This image is the screenshot returned by the screenshot tool. Use it when answering the original request."),
+			llms.TextPart(fmt.Sprintf("This image is the screenshot observation returned by the %s tool. Use it when answering the original request.", step.Action.Tool)),
 			buildImagePart(mimeType, imageBytes),
 		},
 	}}
+}
+
+func (a *FunctionAgent) countVisualObservations(steps []schema.AgentStep) int {
+	count := 0
+	for _, step := range steps {
+		if a.hasVisualObservation(step) {
+			count++
+		}
+	}
+	return count
+}
+
+func (a *FunctionAgent) hasVisualObservation(step schema.AgentStep) bool {
+	if !a.isVisualObservationTool(step.Action.Tool) {
+		return false
+	}
+
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
+		return false
+	}
+	if result.Data == "" {
+		return false
+	}
+	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
+	if err != nil || len(imageBytes) == 0 {
+		return false
+	}
+	return true
+}
+
+func compactToolObservation(observation string) string {
+	observation = strings.TrimSpace(observation)
+	if observation == "" || len([]rune(observation)) <= maxToolObservationRunes {
+		return observation
+	}
+	runes := []rune(observation)
+	return string(runes[:maxToolObservationRunes]) + fmt.Sprintf("\n...[truncated %d chars]", len(runes)-maxToolObservationRunes)
 }
 
 func (a *FunctionAgent) isVisualObservationTool(name string) bool {
@@ -356,23 +455,73 @@ func attachmentAwarePrompt(text string, attachments []InputAttachment, descripti
 	return text + "\n\nAttached content:\n- " + strings.Join(descriptions, "\n- ")
 }
 
-func extractToolInput(raw string) string {
+func extractToolInvocation(raw string) toolInvocation {
 	var toolInputMap map[string]any
 	if err := json.Unmarshal([]byte(raw), &toolInputMap); err != nil {
-		return raw
+		return toolInvocation{Input: raw}
 	}
+	invocation := toolInvocation{Input: raw}
 	if arg1, ok := toolInputMap["__arg1"].(string); ok {
-		return arg1
+		invocation.Input = arg1
 	}
-	return raw
+	if description, ok := toolInputMap["description"].(string); ok {
+		invocation.Description = strings.TrimSpace(description)
+	}
+	return invocation
 }
 
-func encodeToolArguments(input string) string {
-	encoded, err := json.Marshal(map[string]string{"__arg1": input})
+func extractToolInput(raw string) string {
+	return extractToolInvocation(raw).Input
+}
+
+func encodeToolArguments(input string, descriptions ...string) string {
+	args := map[string]string{"__arg1": input}
+	if len(descriptions) > 0 {
+		if description := strings.TrimSpace(descriptions[0]); description != "" {
+			args["description"] = description
+		}
+	}
+	encoded, err := json.Marshal(args)
 	if err != nil {
 		return input
 	}
 	return string(encoded)
+}
+
+func formatToolActionLog(name, arguments, description, contentMsg string) string {
+	message := fmt.Sprintf("Invoking: %s with %s %s", name, arguments, contentMsg)
+	metadata := toolActionLog{
+		Version:         toolActionLogVersion,
+		Message:         message,
+		ToolDescription: toolDescriptionOrFallback(name, description),
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return message
+	}
+	return string(encoded)
+}
+
+func toolDescriptionFromAction(action schema.AgentAction) string {
+	var metadata toolActionLog
+	if err := json.Unmarshal([]byte(action.Log), &metadata); err != nil {
+		return ""
+	}
+	if metadata.Version != toolActionLogVersion {
+		return ""
+	}
+	return strings.TrimSpace(metadata.ToolDescription)
+}
+
+func toolDescriptionOrFallback(toolName, description string) string {
+	if description = strings.TrimSpace(description); description != "" {
+		return description
+	}
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return "I will use a tool."
+	}
+	return fmt.Sprintf("I will use the %s tool.", toolName)
 }
 
 func extractFinalAnswer(content string) string {

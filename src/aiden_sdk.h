@@ -31,7 +31,7 @@ struct CameraConfig {
     int camera_id = 0;
     const char* pixel_format = "uyvy";  // nv12, nv16, uyvy, yuyv
     const char* subdev_device = "/dev/v4l-subdev2";
-    const char* edid_path = nullptr;    // Defaults to built-in 1080p30 CTA EDID
+    const char* edid_path = nullptr;    // Defaults to built-in 1080p30-only CTA EDID
     int skip_frames = 1;                // Drop transitional frames after stream-on
     int trigger_retries = 0;            // Additional EDID retrigger attempts after the first trigger
     int trigger_delay_ms = 1000;
@@ -175,6 +175,9 @@ public:
 
     // Get a single frame with timeout and copy it into a caller-owned buffer.
     bool capture_frame_timeout(VideoFrame& frame, std::vector<uint8_t>& buffer, int timeout_ms);
+
+    // Dequeue and release a single frame without copying it.
+    bool discard_frame_timeout(int timeout_ms);
 
     // One-shot still capture helper: init, capture, and stop internally.
     bool capture_once(const CameraConfig& config,

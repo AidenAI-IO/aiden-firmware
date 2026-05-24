@@ -11,9 +11,14 @@ if ! grep -q 'access("/data/wpa_supplicant.conf", F_OK)' "$RK_WIFI"; then
 fi
 
 data_line=$(grep -n 'access("/data/wpa_supplicant.conf", F_OK)' "$RK_WIFI" | sed 's/:.*//' | head -n 1)
-copy_line=$(grep -n 'cp /etc/wpa_supplicant.conf /data/wpa_supplicant.conf' "$RK_WIFI" | sed 's/:.*//' | head -n 1)
-if [ -z "$data_line" ] || [ -z "$copy_line" ] || [ "$data_line" -ge "$copy_line" ]; then
-    echo "rkwifi_server must check persisted Wi-Fi config before copying /etc default" >&2
+etc_line=$(grep -n 'access("/etc/wpa_supplicant.conf", F_OK)' "$RK_WIFI" | sed 's/:.*//' | head -n 1)
+if [ -z "$data_line" ] || [ -z "$etc_line" ] || [ "$data_line" -ge "$etc_line" ]; then
+    echo "rkwifi_server must check persisted Wi-Fi config before /etc default" >&2
+    exit 1
+fi
+
+if grep -q 'cp /etc/wpa_supplicant.conf /data/wpa_supplicant.conf' "$RK_WIFI"; then
+    echo "rkwifi_server must not overwrite persisted Wi-Fi config with /etc default" >&2
     exit 1
 fi
 

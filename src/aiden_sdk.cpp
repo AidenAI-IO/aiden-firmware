@@ -1352,6 +1352,45 @@ bool CameraCapture::capture_frame_timeout(VideoFrame& frame, std::vector<uint8_t
     return false;
 }
 
+bool CameraCapture::discard_frame_timeout(int timeout_ms) {
+    if (!impl_->initialized || impl_->running) {
+        return false;
+    }
+
+    CameraConfig retry_config = impl_->config;
+    const int max_attempts = retry_config.capture_retries + 1;
+
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        if (!impl_->initialized) {
+            if (!init(retry_config)) {
+                fprintf(stderr, "Camera init failed while discarding frame (attempt %d/%d): %s\n",
+                        attempt + 1, max_attempts, strerror(errno));
+                continue;
+            }
+        }
+
+        VideoFrame frame{};
+        if (!impl_->acquire_frame(&frame, timeout_ms)) {
+            fprintf(stderr, "Failed to discard frame (attempt %d/%d): %s\n",
+                    attempt + 1, max_attempts, strerror(errno));
+        } else {
+            release_frame();
+            return true;
+        }
+
+        if (impl_->frame_held) {
+            release_frame();
+        }
+        if (attempt + 1 >= max_attempts) {
+            break;
+        }
+
+        stop();
+    }
+
+    return false;
+}
+
 bool CameraCapture::capture_once(const CameraConfig& config,
                                  VideoFrame& frame,
                                  std::vector<uint8_t>& buffer) {

@@ -1,6 +1,10 @@
 package agent
 
-import "math"
+const (
+	defaultNoiseFloor       = 20
+	minAdaptiveSpeechEnergy = 80
+	adaptiveNoiseMargin     = 40
+)
 
 // AudioVAD implements voice activity detection using energy-based algorithm
 type AudioVAD struct {
@@ -14,6 +18,19 @@ type AudioVAD struct {
 	minSpeechFrames int
 	speechBuf       []int16
 	utterance       []int16
+	noiseFloor      int
+	lastEnergy      int
+	lastAdaptive    int
+}
+
+type VADDebugState struct {
+	Energy            int
+	ConfigThreshold   int
+	AdaptiveThreshold int
+	NoiseFloor        int
+	Speaking          bool
+	SpeechFrames      int
+	SilenceFrames     int
 }
 
 // NewAudioVAD creates a new VAD instance
@@ -31,25 +48,81 @@ func NewAudioVAD(sampleRate, energyThreshold, silenceMs, minSpeechMs int, always
 		minSpeechFrames: minSpeechFrames,
 		speechBuf:       make([]int16, 0, frameSamples*100),
 		utterance:       make([]int16, 0, frameSamples*100),
+		noiseFloor:      defaultNoiseFloor,
 	}
 }
 
-// computeEnergy calculates the average energy of audio samples
+// FrameSamples returns the number of samples expected in each VAD frame.
+func (v *AudioVAD) FrameSamples() int {
+	return v.frameSamples
+}
+
+func (v *AudioVAD) DebugState() VADDebugState {
+	return VADDebugState{
+		Energy:            v.lastEnergy,
+		ConfigThreshold:   v.energyThreshold,
+		AdaptiveThreshold: v.lastAdaptive,
+		NoiseFloor:        v.noiseFloor,
+		Speaking:          v.speaking,
+		SpeechFrames:      v.speechFrames,
+		SilenceFrames:     v.silenceCount,
+	}
+}
+
+// computeEnergy calculates frame energy after removing DC offset.
 func computeEnergy(samples []int16) int {
 	if len(samples) == 0 {
 		return 0
 	}
 	var sum int64
 	for _, s := range samples {
-		sum += int64(math.Abs(float64(s)))
+		sum += int64(s)
 	}
-	return int(sum / int64(len(samples)))
+	mean := sum / int64(len(samples))
+
+	var deviation int64
+	for _, s := range samples {
+		delta := int64(s) - mean
+		if delta < 0 {
+			delta = -delta
+		}
+		deviation += delta
+	}
+	return int(deviation / int64(len(samples)))
+}
+
+func (v *AudioVAD) adaptiveThreshold() int {
+	threshold := v.noiseFloor*3 + adaptiveNoiseMargin
+	if threshold < minAdaptiveSpeechEnergy {
+		return minAdaptiveSpeechEnergy
+	}
+	return threshold
+}
+
+func (v *AudioVAD) updateNoiseFloor(energy int) {
+	if v.speaking {
+		return
+	}
+	if energy < 0 {
+		energy = 0
+	}
+	v.noiseFloor = (v.noiseFloor*9 + energy) / 10
+	if v.noiseFloor < defaultNoiseFloor {
+		v.noiseFloor = defaultNoiseFloor
+	}
 }
 
 // Process processes an audio frame and returns an utterance if detected
 func (v *AudioVAD) Process(samples []int16) []int16 {
 	energy := computeEnergy(samples)
-	isSpeech := energy > v.energyThreshold
+	adaptiveThreshold := v.adaptiveThreshold()
+	v.lastEnergy = energy
+	v.lastAdaptive = adaptiveThreshold
+	configSpeech := v.energyThreshold > 0 && energy > v.energyThreshold
+	isSpeech := configSpeech || energy > adaptiveThreshold
+	if !isSpeech {
+		v.updateNoiseFloor(energy)
+	}
 
 	// In always_buffer mode, collect all frames regardless of speech detection
 	if v.alwaysBuffer {

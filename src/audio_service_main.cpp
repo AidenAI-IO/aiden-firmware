@@ -54,6 +54,8 @@ int main(int argc, char** argv) {
 
     signal(SIGINT,  signal_handler);
     signal(SIGTERM, signal_handler);
+    signal(SIGHUP,  SIG_IGN);
+    signal(SIGPIPE, SIG_IGN);
 
     aiden::AudioServiceServer server(opts.socket_path.c_str());
     if (server.start() != aiden::AidenServiceStatus::OK) {

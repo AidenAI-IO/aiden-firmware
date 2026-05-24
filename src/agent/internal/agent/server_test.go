@@ -2,11 +2,19 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 	fakellm "github.com/tmc/langchaingo/llms/fake"
@@ -33,7 +41,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 						Type: "function",
 						FunctionCall: &llms.FunctionCall{
 							Name:      "audio_volume",
-							Arguments: `{"__arg1":"{}"}`,
+							Arguments: `{"__arg1":"{}","description":"我先读取当前音量。"}`,
 						},
 					}},
 				}},
@@ -56,7 +64,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 			Instruction: "Use tools when external state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"audio_volume": tool,
 		}},
@@ -93,6 +101,9 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if resp.History[1].Type != "tool_call" || resp.History[1].ToolName != "audio_volume" || resp.History[1].ToolInput != "{}" {
 		t.Fatalf("unexpected tool_call message: %#v", resp.History[1])
 	}
+	if resp.History[1].Description != "我先读取当前音量。" || resp.History[1].Content != "我先读取当前音量。" {
+		t.Fatalf("unexpected tool_call description: %#v", resp.History[1])
+	}
 	if resp.History[2].Type != "tool_result" || resp.History[2].ToolName != "audio_volume" || resp.History[2].Content != `{"volume":42}` {
 		t.Fatalf("unexpected tool_result message: %#v", resp.History[2])
 	}
@@ -101,13 +112,122 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	}
 }
 
+func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
+	tts := &fakeTTSClient{}
+	server := &Server{
+		ttsClient:   tts,
+		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
+	}
+
+	server.speakToolDescription(context.Background(), " 我先读取当前音量。 ")
+
+	if len(tts.texts) != 1 || tts.texts[0] != "我先读取当前音量。" {
+		t.Fatalf("unexpected TTS texts: %#v", tts.texts)
+	}
+	if len(tts.deadlineSet) != 1 || !tts.deadlineSet[0] {
+		t.Fatalf("tool description TTS should use a deadline, got %#v", tts.deadlineSet)
+	}
+	if tts.audio != server.audioClient {
+		t.Fatal("expected server audio client to be used for tool description TTS")
+	}
+}
+
+func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "audio_volume",
+							Arguments: `{"__arg1":"{}","description":"我先读取当前音量。"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "The current audio volume is 42.",
+				}},
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools when external state is requested.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": &stubTool{
+				name:        "audio_volume",
+				description: "Get the current audio playback volume.",
+				output:      `{"volume":42}`,
+			},
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	tts := &blockingUntilContextTTS{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	server.ttsClient = tts
+	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		server.handleChat(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		cancel()
+		<-done
+		t.Fatal("handleChat waited for tool description TTS")
+	}
+	select {
+	case <-tts.started:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("tool description TTS was not started")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+type blockingUntilContextTTS struct {
+	started   chan struct{}
+	blockText string
+	once      sync.Once
+}
+
+func (t *blockingUntilContextTTS) TextToSpeechStream(ctx context.Context, text string, audio *AudioServiceClient) error {
+	if text != t.blockText {
+		return nil
+	}
+	t.once.Do(func() {
+		close(t.started)
+	})
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 	server := &Server{
 		runtime: NewRuntimeWithDeps(
 			Config{Model: ModelConfig{Provider: "fake"}},
 			&testModelResolver{model: &scriptedModel{}},
-			NewMemoryManager(),
-			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}),
+			NewMemoryManager(""),
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 			NewSkillIndex(),
 		),
 		history: []Message{
@@ -137,6 +257,51 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 	}
 }
 
+func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
+	storageDir := t.TempDir()
+	memoryManager := NewMemoryManager(storageDir)
+	handle, err := memoryManager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if err := handle.History.SetMessages(context.Background(), []llms.ChatMessage{
+		llms.HumanChatMessage{Content: "记一下，以后处理蓝海报销App超过100元必须先确认。"},
+	}); err != nil {
+		t.Fatalf("SetMessages() error = %v", err)
+	}
+	if err := memoryManager.Save(context.Background(), "default"); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(storageDir, "session", "events.jsonl")); err != nil {
+		t.Fatalf("expected session events before clear: %v", err)
+	}
+
+	server := &Server{
+		runtime: NewRuntimeWithDeps(
+			Config{Model: ModelConfig{Provider: "fake"}},
+			&testModelResolver{model: &scriptedModel{}},
+			memoryManager,
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+			NewSkillIndex(),
+		),
+		history: []Message{{Type: "user", Content: "hello"}},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/clear", nil)
+	rec := httptest.NewRecorder()
+	server.handleClear(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(server.history) != 0 {
+		t.Fatalf("expected web history to be cleared, got %#v", server.history)
+	}
+	if _, err := os.Stat(filepath.Join(storageDir, "session")); !os.IsNotExist(err) {
+		t.Fatalf("expected session memory to be removed, stat err = %v", err)
+	}
+}
+
 func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	stt := &stubSTTClient{transcript: "你好，帮我总结一下"}
 	runtime := NewRuntimeWithDeps(
@@ -145,8 +310,8 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 			Instruction: "Answer directly.",
 		},
 		&testModelResolver{model: fakellm.NewFakeLLM([]string{"已处理"})},
-		NewMemoryManager(),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}),
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
 	server := &Server{
@@ -199,6 +364,105 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	}
 }
 
+func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
+	stopCh := make(chan struct{})
+	var stopOnce sync.Once
+	var readCount int32
+	var startPlaybackCount int32
+	var writePlayChunkCount int32
+	var healthCount int32
+
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_playback":
+			atomic.AddInt32(&startPlaybackCount, 1)
+			return audioResponse{Status: "OK", SessionID: stringUint64(7)}, nil
+		case "write_play_chunk":
+			atomic.AddInt32(&writePlayChunkCount, 1)
+			return audioResponse{Status: "OK"}, nil
+		case "health":
+			atomic.AddInt32(&healthCount, 1)
+			return audioResponse{
+				Status:           "OK",
+				RecordingActive:  false,
+				PlaybackActive:   false,
+				RecordSessions:   0,
+				PlaybackSessions: 0,
+			}, nil
+		case "start_recording":
+			if req.SampleRate != 16000 || req.Channels != 1 || req.BitWidth != 16 {
+				t.Errorf("unexpected recording format: %#v", req)
+			}
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		case "read_record_chunk":
+			count := atomic.AddInt32(&readCount, 1)
+			if count == 1 {
+				return audioResponse{Status: "OK"}, []byte{1, 0, 2, 0}
+			}
+			<-stopCh
+			return audioResponse{Status: "OK", EndOfStream: true}, nil
+		case "stop_recording":
+			stopOnce.Do(func() { close(stopCh) })
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "INTERNAL_ERROR"}, nil
+		}
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+			},
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	startReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/start", nil)
+	startRec := httptest.NewRecorder()
+	server.handleAudioRecordStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+	if atomic.LoadInt32(&startPlaybackCount) == 0 ||
+		atomic.LoadInt32(&writePlayChunkCount) == 0 ||
+		atomic.LoadInt32(&healthCount) == 0 {
+		t.Fatalf("expected prompt sound playback flow to call start_playback/write_play_chunk/health, got start=%d write=%d health=%d",
+			startPlaybackCount, writePlayChunkCount, healthCount)
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/stop", nil)
+	stopRec := httptest.NewRecorder()
+	server.handleAudioRecordStop(stopRec, stopReq)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("unexpected stop status: %d body=%s", stopRec.Code, stopRec.Body.String())
+	}
+
+	var resp AudioRecordStopResponse
+	if err := json.NewDecoder(stopRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if resp.Attachment.Kind != AttachmentKindAudio || resp.Attachment.MIMEType != "audio/wav" {
+		t.Fatalf("unexpected attachment metadata: %#v", resp.Attachment)
+	}
+	wavData, err := base64.StdEncoding.DecodeString(resp.Attachment.Data)
+	if err != nil {
+		t.Fatalf("decode wav payload: %v", err)
+	}
+	if !bytes.HasPrefix(wavData, []byte("RIFF")) || !bytes.Contains(wavData[:44], []byte("WAVE")) {
+		t.Fatalf("expected wav payload, got %q", string(wavData[:12]))
+	}
+	if len(wavData) != 48 {
+		t.Fatalf("expected 2 PCM16 samples in WAV, got %d bytes", len(wavData))
+	}
+}
+
 func TestServerToolCatalogEndpoint(t *testing.T) {
 	tool := &stubTool{
 		name:        "shell",
@@ -208,7 +472,7 @@ func TestServerToolCatalogEndpoint(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"shell": tool,
 		}},
@@ -253,7 +517,7 @@ func TestServerToolInvokeEndpointAcceptsStructuredJSON(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"shell": tool,
 		}},
@@ -294,7 +558,7 @@ func TestServerToolInvokeEndpointAcceptsPlainStringInput(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		index,
 	)
@@ -335,7 +599,7 @@ func TestServerToolSkillsEndpointReturnsGeneratedSkills(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"shell": tool,
 		}},
@@ -390,4 +654,78 @@ func TestRequestBaseURLPrefersForwardedHeaders(t *testing.T) {
 	if got != "https://device.example:8443" {
 		t.Fatalf("requestBaseURL = %q, want %q", got, "https://device.example:8443")
 	}
+}
+
+func TestWebUIRedactsScreenshotBase64Payloads(t *testing.T) {
+	required := []string{
+		"redactToolPayloadForDisplay(JSON.parse(value))",
+		"clone.data = '[base64 screenshot omitted: ' + byteLabel + ']'",
+		"function isScreenshotPayload(value)",
+	}
+	for _, snippet := range required {
+		if !strings.Contains(webUI, snippet) {
+			t.Fatalf("webUI missing screenshot redaction snippet %q", snippet)
+		}
+	}
+	if strings.Contains(webUI, "toolName !== 'screenshot'") {
+		t.Fatalf("webUI still limits screenshot parsing to only the screenshot tool")
+	}
+}
+
+func startFakeAudioServiceSocket(t *testing.T, handler func(audioRequest) (audioResponse, []byte)) string {
+	t.Helper()
+
+	socketDir, err := os.MkdirTemp("/tmp", "aiden-audio-test-*")
+	if err != nil {
+		t.Fatalf("create fake audio socket dir: %v", err)
+	}
+	t.Cleanup(func() {
+		os.RemoveAll(socketDir)
+	})
+
+	socketPath := filepath.Join(socketDir, "audio.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on fake audio socket: %v", err)
+	}
+	t.Cleanup(func() {
+		listener.Close()
+	})
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+
+				msg, err := readUdsMessage(conn)
+				if err != nil {
+					t.Errorf("fake audio read request: %v", err)
+					return
+				}
+
+				var req audioRequest
+				if err := json.Unmarshal([]byte(msg.HeaderJSON), &req); err != nil {
+					t.Errorf("fake audio decode request: %v", err)
+					return
+				}
+
+				resp, payload := handler(req)
+				respHeader, err := json.Marshal(resp)
+				if err != nil {
+					t.Errorf("fake audio encode response: %v", err)
+					return
+				}
+				if err := writeUdsMessage(conn, udsMessage{HeaderJSON: string(respHeader), Payload: payload}); err != nil {
+					t.Errorf("fake audio write response: %v", err)
+					return
+				}
+			}()
+		}
+	}()
+
+	return socketPath
 }

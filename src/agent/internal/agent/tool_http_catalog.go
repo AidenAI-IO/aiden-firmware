@@ -51,6 +51,16 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
 	},
+	"current_time": {
+		Category:     "system",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"timezone":"Asia/Shanghai"}`,
+	},
+	"enter_sleep": {
+		Category:     "system",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"reason":"user asked me to sleep"}`,
+	},
 	"keyboard_tap": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
@@ -90,6 +100,11 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"type":"tap","point":{"x":0.5,"y":0.5}}`,
+	},
+	"weather": {
+		Category:     "system",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"location":"Shanghai"}`,
 	},
 }
 
@@ -201,7 +216,7 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 	builder.WriteString("- For private device URLs, suspect proxy interference first if the TCP port is reachable but HTTP returns gateway/proxy errors.\n\n")
 	builder.WriteString("Recommended workflow:\n")
 	builder.WriteString("- Start with `GET /api/tools` if you need to confirm the tool list or example payloads.\n")
-	builder.WriteString("- Use `screenshot` before and after state-changing pointer or touch actions.\n")
+	builder.WriteString("- Use `screenshot` before input actions when you need current screen context; keyboard, mouse, and touch tools automatically wait 500ms and return a post-action screenshot on success.\n")
 	builder.WriteString("- Prefer `coord_space: \"normalized\"` for pointer and touch inputs so the same call survives display-resolution changes.\n")
 	builder.WriteString("- For `shell` background sessions, use `action:start`, then `poll`/`write`/`submit`/`send_keys`, and always finish with `stop`.\n\n")
 	builder.WriteString("Available tools in this skill:\n")
@@ -209,6 +224,8 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 		builder.WriteString(fmt.Sprintf("- `%s`: %s\n", descriptor.Name, descriptor.Description))
 		if descriptor.Name == "screenshot" {
 			builder.WriteString("  Successful output JSON includes `width`, `height`, `format`, `size`, and base64 JPEG `data`.\n")
+		} else if descriptor.Category == "input" {
+			builder.WriteString("  On successful execution, output JSON includes `action_output`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from a screenshot captured 500ms after the action.\n")
 		}
 		if strings.TrimSpace(descriptor.ExampleInput) != "" {
 			builder.WriteString(fmt.Sprintf("  Example input: `%s`\n", descriptor.ExampleInput))
@@ -217,6 +234,7 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 	builder.WriteString("\nExecution rules:\n")
 	builder.WriteString("- Treat `is_error=true` or outputs that start with `error:` as failures.\n")
 	builder.WriteString("- Use `screenshot` before pixel-based pointer actions when screen dimensions may be stale.\n")
+	builder.WriteString("- For successful keyboard, mouse, and touch calls, inspect the returned post-action screenshot before deciding the next step.\n")
 	builder.WriteString("- Keep tool input minimal and deterministic; prefer the example payloads as a starting point.\n")
 	return builder.String()
 }

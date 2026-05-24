@@ -4,10 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
@@ -15,9 +20,22 @@ import (
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
+func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
+	if got := effectiveMaxIterations(-1); got != math.MaxInt {
+		t.Fatalf("effectiveMaxIterations(-1) = %d, want math.MaxInt", got)
+	}
+	if got := effectiveMaxIterations(0); got != math.MaxInt {
+		t.Fatalf("effectiveMaxIterations(0) = %d, want math.MaxInt", got)
+	}
+	if got := effectiveMaxIterations(10); got != 10 {
+		t.Fatalf("effectiveMaxIterations(10) = %d, want 10", got)
+	}
+}
+
 type testModelResolver struct {
 	model llms.Model
 	calls int
+	spec  ModelSpec
 }
 
 func (r *testModelResolver) Get() (llms.Model, error) {
@@ -27,6 +45,10 @@ func (r *testModelResolver) Get() (llms.Model, error) {
 
 func (r *testModelResolver) CallOptions() []chains.ChainCallOption {
 	return nil
+}
+
+func (r *testModelResolver) Spec() ModelSpec {
+	return r.spec
 }
 
 func TestRuntimeRun(t *testing.T) {
@@ -41,7 +63,7 @@ func TestRuntimeRun(t *testing.T) {
 		}),
 	}
 
-	runtime := NewRuntimeWithDeps(cfg, resolver, NewMemoryManager(), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}), NewSkillIndex())
+	runtime := NewRuntimeWithDeps(cfg, resolver, NewMemoryManager(""), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}), NewSkillIndex())
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -60,6 +82,7 @@ type scriptedModel struct {
 	callCount    int
 	sawStreaming []bool
 	messages     [][]llms.MessageContent
+	tools        [][]llms.Tool
 }
 
 func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -69,6 +92,7 @@ func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.Mes
 	}
 	m.sawStreaming = append(m.sawStreaming, callOptions.StreamingFunc != nil)
 	m.messages = append(m.messages, messages)
+	m.tools = append(m.tools, callOptions.Tools)
 
 	if callOptions.StreamingFunc != nil && m.callCount < len(m.responses) {
 		content := m.responses[m.callCount].Choices[0].Content
@@ -97,6 +121,7 @@ type stubTool struct {
 	name        string
 	description string
 	output      string
+	err         error
 	visual      bool
 	inputs      []string
 }
@@ -109,7 +134,30 @@ func (t *stubTool) ReturnsVisualObservation() bool { return t.visual }
 
 func (t *stubTool) Call(_ context.Context, input string) (string, error) {
 	t.inputs = append(t.inputs, input)
+	if t.err != nil {
+		return "", t.err
+	}
 	return t.output, nil
+}
+
+type sleepTool struct {
+	name  string
+	delay time.Duration
+}
+
+func (t *sleepTool) Name() string { return t.name }
+
+func (t *sleepTool) Description() string { return "Sleep briefly." }
+
+func (t *sleepTool) Call(ctx context.Context, input string) (string, error) {
+	timer := time.NewTimer(t.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-timer.C:
+		return `{"ok":true}`, nil
+	}
 }
 
 func TestRuntimeRunOpenRouterUsesToolsWithoutStreaming(t *testing.T) {
@@ -145,7 +193,7 @@ func TestRuntimeRunOpenRouterUsesToolsWithoutStreaming(t *testing.T) {
 			Instruction: "Use tools when external state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"audio_volume": tool,
 		}},
@@ -201,7 +249,7 @@ func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 			Instruction: "Use tools when external state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"audio_volume": tool,
 		}},
@@ -221,6 +269,257 @@ func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunExecutesMultipleToolCallsInParallel(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{
+						{
+							ID:   "call_1",
+							Type: "function",
+							FunctionCall: &llms.FunctionCall{
+								Name:      "slow_a",
+								Arguments: `{"__arg1":"{}"}`,
+							},
+						},
+						{
+							ID:   "call_2",
+							Type: "function",
+							FunctionCall: &llms.FunctionCall{
+								Name:      "slow_b",
+								Arguments: `{"__arg1":"{}"}`,
+							},
+						},
+					},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "done",
+				}},
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"slow_a": &sleepTool{name: "slow_a", delay: 200 * time.Millisecond},
+			"slow_b": &sleepTool{name: "slow_b", delay: 200 * time.Millisecond},
+		}},
+		NewSkillIndex(),
+	)
+
+	started := time.Now()
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "run both"})
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if elapsed >= 350*time.Millisecond {
+		t.Fatalf("tool calls took %s, expected parallel execution", elapsed)
+	}
+}
+
+func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "screenshot",
+							Arguments: `{"__arg1":"{}"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "屏幕暂时获取失败，frame service 正在恢复。",
+				}},
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"screenshot": &stubTool{
+				name:        "screenshot",
+				description: "Capture a screenshot from the connected display.",
+				visual:      true,
+				err:         errors.New("frame service: SERVICE_RECOVERING"),
+			},
+		}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "看看屏幕",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "屏幕暂时获取失败，frame service 正在恢复。" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("expected second model call with tool observation, got %d calls", len(model.messages))
+	}
+	var toolObservation string
+	for _, msg := range model.messages[1] {
+		if msg.Role != llms.ChatMessageTypeTool {
+			continue
+		}
+		if len(msg.Parts) == 1 {
+			if part, ok := msg.Parts[0].(llms.ToolCallResponse); ok {
+				toolObservation = part.Content
+			}
+		}
+	}
+	if !strings.Contains(toolObservation, "error: screenshot failed: frame service: SERVICE_RECOVERING") {
+		t.Fatalf("unexpected tool observation: %q", toolObservation)
+	}
+	if len(events) < 2 || events[1].Type != "tool_result" || !events[1].IsError {
+		t.Fatalf("expected error tool_result event, got %#v", events)
+	}
+}
+
+func TestRuntimeRunReportsEnterSleepToolRequest(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "enter_sleep",
+							Arguments: `{"__arg1":"{\"reason\":\"user asked\"}"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "I will wait for the next wakeup.",
+				}},
+			},
+		},
+	}
+	controller := NewSleepController()
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools when external state is requested.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"enter_sleep": NewEnterSleepTool(controller),
+		}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "go to sleep"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !result.SleepRequested || result.SleepReason != "user asked" {
+		t.Fatalf("sleep request = %v %q, want true user asked", result.SleepRequested, result.SleepReason)
+	}
+	if result.Output != "I will wait for the next wakeup." {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+}
+
+func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "audio_volume",
+							Arguments: `{"__arg1":"{}","description":"我先读取当前音量。"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "The current audio volume is 42.",
+				}},
+			},
+		},
+	}
+	tool := &stubTool{
+		name:        "audio_volume",
+		description: "Get the current audio playback volume.",
+		output:      `{"volume":42}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools when external state is requested.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "当前音量是多少？",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.Output != "The current audio volume is 42." {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if len(tool.inputs) != 1 || tool.inputs[0] != "{}" {
+		t.Fatalf("unexpected tool inputs: %#v", tool.inputs)
+	}
+	if len(events) < 1 || events[0].Type != "tool_call" {
+		t.Fatalf("expected first event to be tool_call, got %#v", events)
+	}
+	if events[0].Description != "我先读取当前音量。" || events[0].Content != events[0].Description {
+		t.Fatalf("unexpected tool description event: %#v", events[0])
+	}
+	if events[0].ToolInput != "{}" {
+		t.Fatalf("tool_call event input = %q, want stripped input", events[0].ToolInput)
+	}
+}
+
 func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -237,8 +536,8 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 			Instruction: "Answer directly.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}),
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
 
@@ -298,7 +597,7 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 			Instruction: "Use tools when visual state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"screenshot": tool,
 		}},
@@ -387,7 +686,7 @@ func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 			Instruction: "Use tools when visual state is requested.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
+		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"screenshot": tool,
 		}},
@@ -434,6 +733,88 @@ func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunKeyboardToolAddsPostActionImageObservation(t *testing.T) {
+	jpegBytes := []byte("keyboard-post-action-jpeg")
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "keyboard_tap",
+							Arguments: `{"keys":["enter"]}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "The keyboard action updated the UI.",
+				}},
+			},
+		},
+	}
+	tool := &stubTool{
+		name:        "keyboard_tap",
+		description: "Press and release keyboard keys.",
+		visual:      true,
+		output: `{"action_output":"ok","width":800,"height":600,"format":"jpeg","size":25,"data":"` +
+			base64.StdEncoding.EncodeToString(jpegBytes) + `"}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "openrouter"},
+			Instruction: "Use input tools when needed.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"keyboard_tap": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "press enter"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "The keyboard action updated the UI." {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+
+	var foundToolResponse, foundImageURL bool
+	for _, msg := range model.messages[1] {
+		for _, part := range msg.Parts {
+			switch p := part.(type) {
+			case llms.ToolCallResponse:
+				if p.ToolCallID == "call_1" {
+					foundToolResponse = true
+					if p.Content == tool.output {
+						t.Fatalf("expected keyboard tool response to be summarized, got raw screenshot payload")
+					}
+					if !strings.Contains(p.Content, `keyboard_tap completed with output "ok"`) {
+						t.Fatalf("unexpected keyboard tool response summary: %q", p.Content)
+					}
+				}
+			case llms.ImageURLContent:
+				foundImageURL = true
+				expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpegBytes)
+				if p.URL != expected {
+					t.Fatalf("unexpected image URL: %q", p.URL)
+				}
+			}
+		}
+	}
+	if !foundToolResponse {
+		t.Fatalf("expected keyboard tool response in second model call")
+	}
+	if !foundImageURL {
+		t.Fatalf("expected keyboard post-action screenshot image URL in second model call")
+	}
+}
+
 func TestRuntimeCallbackHandlerCapturesUsageMetrics(t *testing.T) {
 	metrics := &RunMetrics{}
 	handler := &runtimeCallbackHandler{metrics: metrics}
@@ -450,6 +831,79 @@ func TestRuntimeCallbackHandlerCapturesUsageMetrics(t *testing.T) {
 
 	if metrics.PromptTokens != 12 || metrics.CompletionTokens != 34 || metrics.TotalTokens != 46 {
 		t.Fatalf("unexpected metrics: %#v", metrics)
+	}
+}
+
+func TestRuntimeRunCapturesUsageMetricsFromDirectModelCall(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{{
+			Choices: []*llms.ContentChoice{{
+				Content: "completed",
+				GenerationInfo: map[string]any{
+					"prompt_tokens":     600,
+					"completion_tokens": 40,
+					"total_tokens":      640,
+				},
+			}},
+		}},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.Metrics == nil || result.Metrics.PromptTokens != 600 || result.Metrics.CompletionTokens != 40 || result.Metrics.TotalTokens != 640 {
+		t.Fatalf("unexpected metrics: %#v", result.Metrics)
+	}
+}
+
+func TestRuntimeRunResetsPromptTokensWhenUsageUnavailable(t *testing.T) {
+	manager := NewMemoryManager("")
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "with usage",
+					GenerationInfo: map[string]any{
+						"prompt_tokens": 600,
+					},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "without usage",
+				}},
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		manager,
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "first"}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if got := manager.LastPromptTokens(); got != 600 {
+		t.Fatalf("expected first run prompt tokens 600, got %d", got)
+	}
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "second"}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if got := manager.LastPromptTokens(); got != 0 {
+		t.Fatalf("expected missing usage to reset prompt tokens, got %d", got)
 	}
 }
 
@@ -513,6 +967,169 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
+	configDir := t.TempDir()
+	responses := make([]string, 30)
+	for i := range responses {
+		responses[i] = "ok"
+	}
+	runtime, err := NewRuntime(Config{
+		ConfigDir:     configDir,
+		Model:         ModelConfig{Provider: "fake", Responses: responses},
+		Instruction:   "Answer directly.",
+		SkillsDirs:    []string{},
+		MaxIterations: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer runtime.Close()
+
+	inputs := []string{
+		"我是硬件产品经理，平时用中文沟通，关注开发板 agent 端到端行为。",
+		"记一下，以后处理蓝海报销App超过100元的提交或付款动作，必须先给风险摘要并等我确认。",
+	}
+	for i := 0; i < 21; i++ {
+		inputs = append(inputs, "填充对话轮次")
+	}
+	for _, input := range inputs {
+		if _, err := runtime.Run(context.Background(), RunRequest{Input: input}); err != nil {
+			t.Fatalf("Run(%q) error = %v", input, err)
+		}
+	}
+
+	waitForSessionCompaction(t, configDir)
+}
+
+func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.HotWindowEvents = 4
+
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC()
+	for i := 0; i < 8; i++ {
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_%d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: "历史消息",
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var released atomic.Bool
+	releaseMaintenance := func() {
+		if released.CompareAndSwap(false, true) {
+			close(release)
+		}
+	}
+	defer releaseMaintenance()
+	var startedOnce atomic.Bool
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg), WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+		if startedOnce.CompareAndSwap(false, true) {
+			close(started)
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-release:
+			return "async summary"
+		}
+	}))
+
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: fakellm.NewFakeLLM([]string{"ok"})},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	defer runtime.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Run() blocked on memory maintenance")
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("async memory maintenance did not start")
+	}
+	releaseMaintenance()
+}
+
+func waitForSessionCompaction(t *testing.T, configDir string) {
+	t.Helper()
+	session := NewSessionMemoryStore(filepath.Join(configDir, "memory", "session"))
+	deadline := time.Now().Add(3 * time.Second)
+	var lastEventCount int
+	var lastChunkCount int
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		events, err := session.readEvents(session.eventsPath())
+		if err != nil {
+			lastErr = err
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		chunks, err := session.RecallChunks(context.Background(), ChunkRecallQuery{Entities: []string{"蓝海报销App"}, Limit: 1})
+		if err != nil {
+			lastErr = err
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		lastEventCount = len(events)
+		lastChunkCount = len(chunks)
+		if lastEventCount <= 20 && lastChunkCount == 1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if lastErr != nil {
+		t.Fatalf("waiting for session compaction: %v", lastErr)
+	}
+	t.Fatalf("expected compacted chunk and hot window events <= 20, got chunks=%d events=%d", lastChunkCount, lastEventCount)
+}
+
+func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {
+	runtime, err := NewRuntime(Config{
+		ConfigDir:     t.TempDir(),
+		Model:         ModelConfig{Provider: "fake"},
+		Instruction:   "Answer directly.",
+		SkillsDirs:    []string{},
+		MaxIterations: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer runtime.Close()
+
+	if _, ok := runtime.tools.Get("recall_session_chunks"); !ok {
+		t.Fatalf("expected runtime to register recall_session_chunks")
+	}
+	if _, ok := runtime.tools.Get("recall_memory"); !ok {
+		t.Fatalf("expected runtime to register recall_memory")
+	}
+}
+
 func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -530,8 +1147,8 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 			Instruction: "Use the provided media when answering.",
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}),
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
 
