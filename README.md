@@ -67,3 +67,4 @@ make test
 - [C++ SDK 参考](docs/05-sdk-and-tools/cpp-sdk.md)
 - [Unix Domain Socket 协议](docs/06-protocols/uds-protocol.md)
 - [故障排查](docs/07-operations/troubleshooting.md)
+- [OTA](docs/09-ota/README.md)

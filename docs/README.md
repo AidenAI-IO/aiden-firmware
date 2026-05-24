@@ -52,3 +52,11 @@
 ### 08. 参考
 
 - [路径、产物与配置速查](08-reference/paths-and-artifacts.md)
+
+### 09. OTA
+
+- [OTA 概览](09-ota/README.md)
+- [OTA 架构与运行时](09-ota/architecture.md)
+- [OTA 密钥管理](09-ota/key-management.md)
+- [设备验收流程](09-ota/device-acceptance.md)
+- [A/B 与 abctl 验证](09-ota/verification.md)
