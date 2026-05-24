@@ -50,6 +50,17 @@ if ! grep -q 'copy_ab_image' "$ROOT_DIR/pico-sdk/project/build.sh"; then
     exit 1
 fi
 
+if ! grep -q 'normalize_image_tree_ownership' "$ROOT_DIR/pico-sdk/project/build.sh" || \
+   ! grep -q 'chown -hR 0:0' "$ROOT_DIR/pico-sdk/project/build.sh"; then
+    echo "pico-sdk build.sh must normalize image staging ownership before mkfs" >&2
+    exit 1
+fi
+
+if ! grep -q 'chown -hR 0:0 "\$USERDATA_DIR"' "$REPACK_SCRIPT"; then
+    echo "OTA update repack must normalize userdata ownership before rebuilding userdata.img" >&2
+    exit 1
+fi
+
 dev_key_env='OTA_ALLOW_DEV_''KEY'
 dev_key_file='ota_pubkey.''dev''.pem'
 if grep -R -Eq "${dev_key_env}|${dev_key_file}" "$ROOT_DIR/_build_image.sh" "$ROOT_DIR/build_image.sh" "$ROOT_DIR/scripts/validate_ota_pubkey.sh"; then

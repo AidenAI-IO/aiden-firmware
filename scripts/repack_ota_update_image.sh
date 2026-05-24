@@ -57,6 +57,7 @@ userdata_size="$(partition_size_bytes userdata)" || {
   exit 1
 }
 
+chown -hR 0:0 "$USERDATA_DIR"
 "$MKFS_EXT4" "$USERDATA_DIR" "$IMAGE_DIR/userdata.img" "$userdata_size"
 
 cd "$ROOT_DIR/pico-sdk/project"
