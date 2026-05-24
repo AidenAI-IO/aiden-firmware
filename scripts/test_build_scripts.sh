@@ -75,7 +75,8 @@ if ! grep -q 'actions/setup-go@' "$WORKFLOW"; then
     exit 1
 fi
 
-if grep -Eq 'uses: [^#]+@v[0-9]+([[:space:]]|$)' "$WORKFLOW"; then
+if grep -En '^[[:space:]]*uses:[[:space:]]*[^[:space:]#]+@' "$WORKFLOW" \
+    | grep -Ev '^[0-9]+:[[:space:]]*uses:[[:space:]]*(\./[^[:space:]]+|[^[:space:]@]+/[^[:space:]@]+@[0-9a-f]{40})([[:space:]]*#.*)?$' >/dev/null; then
     echo "build workflow GitHub Actions must be pinned to full commit SHAs" >&2
     exit 1
 fi

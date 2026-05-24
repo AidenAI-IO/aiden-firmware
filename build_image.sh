@@ -18,9 +18,11 @@ fi
 docker_ota_key_args=()
 if [ -n "${OTA_PUBLIC_KEY_PATH:-}" ]; then
   ota_key_host_path="$OTA_PUBLIC_KEY_PATH"
-  case "$OTA_PUBLIC_KEY_PATH" in
-    /home/*) ota_key_host_path="$(pwd)${OTA_PUBLIC_KEY_PATH#/home}" ;;
-  esac
+  if [ ! -f "$ota_key_host_path" ]; then
+    case "$OTA_PUBLIC_KEY_PATH" in
+      /home/*) ota_key_host_path="$(pwd)${OTA_PUBLIC_KEY_PATH#/home}" ;;
+    esac
+  fi
   if [ ! -f "$ota_key_host_path" ]; then
     echo "OTA_PUBLIC_KEY_PATH is set but key is missing on host: $ota_key_host_path" >&2
     exit 1
