@@ -43,8 +43,8 @@ def write_summary(path: Path, suite_name: str, manifest: dict[str, Any],
         f"# {suite_name} — {manifest.get('run_id', '')}",
         "",
         f"Agent: {manifest.get('agent_url', '')}",
-        f"Judge: {manifest.get('judge_config', {}).get('provider')}"
-        f" / {manifest.get('judge_config', {}).get('model')}",
+        f"Judge: {(manifest.get('judge_config') or {}).get('provider', 'none')}"
+        f" / {(manifest.get('judge_config') or {}).get('model', 'none')}",
         f"Total: {agg['passed']}/{agg['tasks']} passed",
         "",
         "## By category",

@@ -3,28 +3,9 @@
   "description": "Agent-driven phone control benchmark v1.",
   "global_reset": {
     "tool_sequence": [
-      {
-        "tool": "keyboard_tap",
-        "args": {
-          "keys": [
-            "escape"
-          ]
-        }
-      },
-      {
-        "tool": "keyboard_tap",
-        "args": {
-          "keys": [
-            "home"
-          ]
-        }
-      },
-      {
-        "tool": "wait_ms",
-        "args": {
-          "ms": 800
-        }
-      }
+      { "tool": "keyboard_tap", "args": { "keys": ["escape"] } },
+      { "tool": "keyboard_tap", "args": { "keys": ["home"] } },
+      { "tool": "wait_ms", "args": { "ms": 800 } }
     ]
   },
   "tasks": [

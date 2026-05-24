@@ -37,7 +37,8 @@ def run_one_task(
     )
     try:
         client.clear_history()
-        global_reset(client, suite.global_reset)
+        if suite.global_reset.get("tool_sequence"):
+            global_reset(client, suite.global_reset)
         per_task_setup(client, task.setup)
     except ResetError as e:
         base.status = "skipped"
@@ -45,7 +46,10 @@ def run_one_task(
         base.finished_at = now_iso()
         return base
     pre_path = artifact_dir / "pre.jpg"
-    take_screenshot(client, pre_path)
+    try:
+        take_screenshot(client, pre_path)
+    except Exception:
+        pass
     timed_out = False
     try:
         chat = client.chat(task.prompt, timeout_sec=task.hard_assertions.must_complete_within_sec)
@@ -53,6 +57,9 @@ def run_one_task(
     except AgentTimeoutError:
         timed_out = True
         history = client_history_or_empty(client)
+    except Exception as e:
+        history = client_history_or_empty(client)
+        base.metrics["agent_error"] = str(e)[:300]
     (artifact_dir / "history.json").write_text(
         json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
     trace = extract_trace(history)
@@ -70,8 +77,8 @@ def run_one_task(
         p = steps_dir / f"step_{i:02d}_{tool_name}.jpg"
         write_step_screenshot(p, b64)
         last_shot_path = p
-    base.metrics = {"wall_ms": wall_ms, "tool_calls": trace.total_tool_calls,
-                    "screenshots_taken": sum(1 for tc in trace.tool_calls if tc.has_screenshot)}
+    base.metrics.update({"wall_ms": wall_ms, "tool_calls": trace.total_tool_calls,
+                         "screenshots_taken": sum(1 for tc in trace.tool_calls if tc.has_screenshot)})
     outcome = evaluate_hard_assertions(trace, task.hard_assertions, timed_out=timed_out)
     base.hard_assertions = outcome.results
     if not outcome.all_passed:
