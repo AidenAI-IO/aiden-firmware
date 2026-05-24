@@ -46,4 +46,20 @@ jq -e '
   .factory_partition_hashes.b.rootfs == "rootfs-neutral-hash"
 ' "$TMP_DIR/config.json" >/dev/null
 
+for repo in \
+    AidenAI-IO \
+    AidenAI-IO/aiden-hardware-demo/extra \
+    /AidenAI-IO/aiden-hardware-demo \
+    AidenAI-IO/ \
+    AidenAI-IO//aiden-hardware-demo; do
+    if bash "$GENERATOR" \
+        --manifest "$TMP_DIR/manifest.json" \
+        --repo "$repo" \
+        --channel stable \
+        --output "$TMP_DIR/invalid-config.json" >/dev/null 2>&1; then
+        echo "accepted invalid repo: $repo" >&2
+        exit 1
+    fi
+done
+
 echo "OTA device config generation tests passed"

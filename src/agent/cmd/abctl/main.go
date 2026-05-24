@@ -221,16 +221,25 @@ func updateMisc(path string, update func(*ota.ABData) error) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
 	data, err := ota.ReadABData(f)
 	if err != nil {
+		_ = f.Close()
 		return err
 	}
 	if err := update(&data); err != nil {
+		_ = f.Close()
 		return err
 	}
-	return ota.WriteABDataAt(f, data)
+	writeErr := ota.WriteABDataAt(f, data)
+	if writeErr == nil {
+		writeErr = f.Sync()
+	}
+	closeErr := f.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
 }
 
 func parseSlot(s string) (ota.Slot, error) {

@@ -20,6 +20,17 @@ func DownloadFileWithToken(ctx context.Context, url string, dst string, expected
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	if expectedSize >= 0 {
+		if resumeAt == expectedSize {
+			if err := os.Rename(part, dst); err != nil {
+				return err
+			}
+			return fsyncDirFor(dst)
+		}
+		if resumeAt > expectedSize {
+			return fmt.Errorf("download size %d exceeds expected %d", resumeAt, expectedSize)
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -46,9 +57,6 @@ func DownloadFileWithToken(ctx context.Context, url string, dst string, expected
 	} else {
 		flags |= os.O_TRUNC
 		resumeAt = 0
-	}
-	if expectedSize >= 0 && resumeAt > expectedSize {
-		return fmt.Errorf("download size %d exceeds expected %d", resumeAt, expectedSize)
 	}
 	f, err := os.OpenFile(part, flags, 0o644)
 	if err != nil {

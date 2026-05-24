@@ -38,7 +38,7 @@ SLEEP_BIN=":" \
 "$SCRIPT" start >/dev/null
 
 deadline=$(( $(date +%s) + 5 ))
-while [ ! -s "$PID_FILE" ] || [ ! -s "$TMP_DIR/daemon.args" ]; do
+while [ ! -s "$PID_FILE" ] || [ ! -s "$WATCHDOG_PID_FILE" ] || [ ! -s "$TMP_DIR/daemon.args" ]; do
     if [ "$(date +%s)" -ge "$deadline" ]; then
         echo "ota daemon did not start promptly without network carrier" >&2
         [ -f "$LOG_PATH" ] && cat "$LOG_PATH" >&2

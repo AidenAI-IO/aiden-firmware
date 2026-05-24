@@ -100,4 +100,4 @@ USB 或工厂换钥是另一条路径：
 4. 构建包含新 public key 的 recovery image。
 5. 优先使用 USB 或受控物理 recovery 处理无法安全信任 OTA 的设备。
 6. 如果必须 OTA，发布经过人工审计的 transition release，并用 `ota status` 和 `abctl read` 监控。
-7. 如果仓库访问 token 也可能泄露，单独轮换 `/userdata/ota/gh_token`。
+7. 如果仓库访问 token 也可能泄露，单独轮换 `/userdata/ota/gh_token`。该 token 只用于私有仓库 Release 下载，不参与 manifest 签名；public Release 不需要配置 token。更多运行时路径见 [architecture.md](architecture.md#私有仓库-token)。

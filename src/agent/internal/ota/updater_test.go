@@ -78,6 +78,64 @@ func TestDefaultHTTPTimeoutAllowsLargeImageDownloads(t *testing.T) {
 	}
 }
 
+func TestUpdaterUsesPerRequestHTTPTimeout(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	env.config.HTTPTimeout = 120 * time.Millisecond
+	manifest := env.signedManifest(map[string][]byte{
+		"boot_a.img": []byte("boot-a-v2"),
+		"boot_b.img": []byte("boot-b-v2"),
+		"oem_a.img":  []byte("oem-a-v2"),
+		"oem_b.img":  []byte("oem-b-v2"),
+		"rootfs.img": []byte("rootfs-v2"),
+	}, nil)
+	assets := map[string][]byte{
+		"boot_b.img": []byte("boot-b-v2"),
+		"oem_b.img":  []byte("oem-b-v2"),
+		"rootfs.img": []byte("rootfs-v2"),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(80 * time.Millisecond)
+		if strings.HasSuffix(r.URL.Path, "/repos/owner/repo/releases/latest") {
+			var release struct {
+				Assets []githubAsset `json:"assets"`
+			}
+			release.Assets = append(release.Assets, githubAsset{Name: "manifest.json", BrowserDownloadURL: "http://" + r.Host + "/assets/manifest.json"})
+			for name := range assets {
+				release.Assets = append(release.Assets, githubAsset{Name: name, BrowserDownloadURL: "http://" + r.Host + "/assets/" + name})
+			}
+			_ = json.NewEncoder(w).Encode(release)
+			return
+		}
+		if r.URL.Path == "/assets/manifest.json" {
+			_, _ = w.Write(manifest)
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, "/assets/")
+		if b, ok := assets[name]; ok {
+			w.Header().Set("Content-Length", fmt.Sprint(len(b)))
+			_, _ = w.Write(b)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	env.config.APIBase = server.URL
+
+	if _, err := env.updater().CheckOnce(context.Background()); err != nil {
+		t.Fatalf("CheckOnce() error = %v", err)
+	}
+}
+
+func TestNewUpdaterNormalizesNonPositiveHTTPTimeout(t *testing.T) {
+	updater, err := NewUpdater(UpdaterConfig{HTTPTimeout: -time.Second}, nil)
+	if err != nil {
+		t.Fatalf("NewUpdater() error = %v", err)
+	}
+	if updater.config.HTTPTimeout != DefaultHTTPRequestLimit {
+		t.Fatalf("HTTPTimeout = %s, want %s", updater.config.HTTPTimeout, DefaultHTTPRequestLimit)
+	}
+}
+
 func TestUpdaterNoUpdateReturnsNoop(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	env.state.LastCommittedVersion = env.version

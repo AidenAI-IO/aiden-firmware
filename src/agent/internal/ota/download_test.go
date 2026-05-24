@@ -42,6 +42,32 @@ func TestDownloadResumesPartFileWithRange(t *testing.T) {
 	}
 }
 
+func TestDownloadPromotesCompletePartFileWithoutNetwork(t *testing.T) {
+	content := "already complete"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("server should not be contacted for complete part file")
+	}))
+	defer server.Close()
+
+	dst := filepath.Join(t.TempDir(), "image.img")
+	if err := os.WriteFile(dst+".part", []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(part) error = %v", err)
+	}
+	if err := DownloadFile(context.Background(), server.URL, dst, int64(len(content))); err != nil {
+		t.Fatalf("DownloadFile() error = %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("ReadFile(dst) error = %v", err)
+	}
+	if string(got) != content {
+		t.Fatalf("downloaded = %q", got)
+	}
+	if _, err := os.Stat(dst + ".part"); !os.IsNotExist(err) {
+		t.Fatalf("part file still exists, stat err = %v", err)
+	}
+}
+
 func TestDownloadRestartsWhenServerIgnoresRange(t *testing.T) {
 	content := "fresh full body"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

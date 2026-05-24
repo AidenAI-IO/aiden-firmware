@@ -98,3 +98,18 @@ func TestWriterRejectsOversizedDefaultProductionPartition(t *testing.T) {
 		t.Fatalf("block content = %q, want unchanged", got)
 	}
 }
+
+func TestWriterPreservesDefaultLimitsWithPartialOverrides(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "boot_b"), []byte("old boot"), 0o644); err != nil {
+		t.Fatalf("WriteFile(block) error = %v", err)
+	}
+	src := filepath.Join(dir, "boot_b.img")
+	if err := os.WriteFile(src, make([]byte, 32<<20+1), 0o644); err != nil {
+		t.Fatalf("WriteFile(src) error = %v", err)
+	}
+	w := PartitionWriter{BlockDir: dir, ActiveSlot: SlotA, PartitionSizes: map[string]int64{"oem_b": 1}}
+	if err := w.WritePart("boot", SlotB, src); err == nil || !strings.Contains(err.Error(), "larger than partition") {
+		t.Fatalf("partial override oversize error = %v", err)
+	}
+}

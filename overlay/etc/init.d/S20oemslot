@@ -42,7 +42,7 @@ case "${1:-start}" in
         "$0" start
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart}" >&2
+        echo "Usage: $0 {start|stop|restart|reload}" >&2
         exit 1
         ;;
 esac

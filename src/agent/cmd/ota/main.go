@@ -83,10 +83,12 @@ func rebootForConfig(config ota.UpdaterConfig) func() error {
 }
 
 func platformReboot() error {
-	if _, err := os.Stat("/sbin/reboot"); err == nil {
-		return exec.Command("/sbin/reboot").Run()
+	for _, path := range []string{"/sbin/reboot", "/usr/sbin/reboot"} {
+		if _, err := os.Stat(path); err == nil {
+			return exec.Command(path).Run()
+		}
 	}
-	return exec.Command("reboot").Run()
+	return fmt.Errorf("reboot binary not found in trusted paths")
 }
 
 func splitCommandAndFlags(args []string) (string, []string) {

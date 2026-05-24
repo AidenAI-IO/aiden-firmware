@@ -29,4 +29,11 @@ if ! grep -q 'WPA_CONF=/etc/wpa_supplicant.conf' "$WIFI_INIT" || \
     exit 1
 fi
 
+init_data_line=$(grep -n 'WPA_CONF=/data/wpa_supplicant.conf' "$WIFI_INIT" | sed 's/:.*//' | head -n 1)
+init_cfg_line=$(grep -n 'WPA_CONF=/data/cfg/wpa_supplicant.conf' "$WIFI_INIT" | sed 's/:.*//' | head -n 1)
+if [ -z "$init_data_line" ] || [ -z "$init_cfg_line" ] || [ "$init_data_line" -ge "$init_cfg_line" ]; then
+    echo "wifi init must prefer /data/wpa_supplicant.conf before /data/cfg/wpa_supplicant.conf" >&2
+    exit 1
+fi
+
 echo "wifi persistence tests passed"

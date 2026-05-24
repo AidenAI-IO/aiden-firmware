@@ -53,4 +53,4 @@ mount | grep ' /oem '
 | `scripts/generate_ota_manifest.sh` | 生成签名 OTA manifest |
 | `scripts/generate_ota_device_config.sh` | 从 manifest 生成首刷配置 |
 | `scripts/repack_ota_update_image.sh` | 把首刷 OTA 配置重新打入 `userdata.img` 和 `update.img` |
-| `pico-sdk/project/scripts/mk-ab-misc.py` | 生成 factory `misc.img` A/B metadata |
+| [`pico-sdk/project/scripts/mk-ab-misc.py`](../../pico-sdk/project/scripts/mk-ab-misc.py) | 生成 factory `misc.img` A/B metadata |

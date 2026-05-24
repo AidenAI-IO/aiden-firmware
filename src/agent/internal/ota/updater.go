@@ -146,7 +146,7 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 	if config.HealthPollInterval == 0 {
 		config.HealthPollInterval = time.Second
 	}
-	if config.HTTPTimeout == 0 {
+	if config.HTTPTimeout <= 0 {
 		if config.HTTPTimeoutSecs > 0 {
 			config.HTTPTimeout = time.Duration(config.HTTPTimeoutSecs) * time.Second
 		} else {
@@ -209,16 +209,13 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 	}
-	httpCtx, cancelHTTP := u.httpContext(ctx)
-	defer cancelHTTP()
-
 	releaseURL, err := u.releaseURL()
 	if err != nil {
 		u.recordError("release", err)
 		return UpdateResult{}, err
 	}
 	token := u.githubToken()
-	assetsByName, err := FetchLatestReleaseAssets(httpCtx, releaseURL, token)
+	assetsByName, err := u.fetchLatestReleaseAssets(ctx, releaseURL, token)
 	if err != nil {
 		u.recordError("release", err)
 		return UpdateResult{}, err
@@ -228,7 +225,7 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 		u.recordError("manifest", err)
 		return UpdateResult{}, err
 	}
-	manifestBytes, err := fetchBytesWithTokenLimit(httpCtx, manifestURL, token, MaxRemoteManifestBytes)
+	manifestBytes, err := u.fetchBytesWithTokenLimit(ctx, manifestURL, token, MaxRemoteManifestBytes)
 	if err != nil {
 		u.recordError("manifest", err)
 		return UpdateResult{}, err
@@ -284,7 +281,7 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 			u.recordError("download", err)
 			return UpdateResult{}, err
 		}
-		if err := DownloadFileWithToken(httpCtx, assetURL, dst, asset.Size, token); err != nil {
+		if err := u.downloadFileWithToken(ctx, assetURL, dst, asset.Size, token); err != nil {
 			u.recordError("download", err)
 			return UpdateResult{}, err
 		}
@@ -542,10 +539,11 @@ func (u *Updater) VerifyManifestFile(path string) (Manifest, error) {
 }
 
 func (u *Updater) httpContext(parent context.Context) (context.Context, context.CancelFunc) {
-	if u.config.HTTPTimeout <= 0 {
-		return context.WithCancel(parent)
+	timeout := u.config.HTTPTimeout
+	if timeout <= 0 {
+		timeout = DefaultHTTPRequestLimit
 	}
-	return context.WithTimeout(parent, u.config.HTTPTimeout)
+	return context.WithTimeout(parent, timeout)
 }
 
 func readLocalOrRemoteManifest(ctx context.Context, path string) ([]byte, error) {
@@ -670,6 +668,24 @@ func (u *Updater) partitionSizes() map[string]int64 {
 		sizes[name] = size
 	}
 	return sizes
+}
+
+func (u *Updater) fetchLatestReleaseAssets(parent context.Context, releaseURL string, token string) (map[string]string, error) {
+	ctx, cancel := u.httpContext(parent)
+	defer cancel()
+	return FetchLatestReleaseAssets(ctx, releaseURL, token)
+}
+
+func (u *Updater) fetchBytesWithTokenLimit(parent context.Context, url string, token string, limit int64) ([]byte, error) {
+	ctx, cancel := u.httpContext(parent)
+	defer cancel()
+	return fetchBytesWithTokenLimit(ctx, url, token, limit)
+}
+
+func (u *Updater) downloadFileWithToken(parent context.Context, url string, dst string, expectedSize int64, token string) error {
+	ctx, cancel := u.httpContext(parent)
+	defer cancel()
+	return DownloadFileWithToken(ctx, url, dst, expectedSize, token)
 }
 
 func (u *Updater) githubToken() string {

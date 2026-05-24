@@ -51,7 +51,9 @@ if ! grep -q 'copy_ab_image' "$ROOT_DIR/pico-sdk/project/build.sh"; then
 fi
 
 if ! grep -q 'normalize_image_tree_ownership' "$ROOT_DIR/pico-sdk/project/build.sh" || \
-   ! grep -q 'chown -hR 0:0' "$ROOT_DIR/pico-sdk/project/build.sh"; then
+   ! grep -q 'chown -hR 0:0' "$ROOT_DIR/pico-sdk/project/build.sh" || \
+   ! grep -q 'id -u' "$ROOT_DIR/pico-sdk/project/build.sh" || \
+   ! grep -q 'Skip ownership normalization' "$ROOT_DIR/pico-sdk/project/build.sh"; then
     echo "pico-sdk build.sh must normalize image staging ownership before mkfs" >&2
     exit 1
 fi
@@ -70,6 +72,16 @@ fi
 
 if ! grep -q 'actions/setup-go@' "$WORKFLOW"; then
     echo "build workflow must install a verified Go toolchain with actions/setup-go" >&2
+    exit 1
+fi
+
+if grep -Eq 'uses: [^#]+@v[0-9]+([[:space:]]|$)' "$WORKFLOW"; then
+    echo "build workflow GitHub Actions must be pinned to full commit SHAs" >&2
+    exit 1
+fi
+
+if ! grep -Eq 'uses: actions/setup-go@[0-9a-f]{40}' "$WORKFLOW"; then
+    echo "actions/setup-go must be pinned to a full commit SHA" >&2
     exit 1
 fi
 
@@ -92,6 +104,11 @@ fi
 
 if ! grep -Eq -- '-v .*:/usr/local/go:ro' "$BUILD_IMAGE_SH"; then
     echo "build_image.sh must mount suitable host Go read-only into Docker" >&2
+    exit 1
+fi
+
+if ! grep -q 'docker_ota_key_args' "$BUILD_IMAGE_SH" || ! grep -q 'OTA_PUBLIC_KEY_PATH}:ro' "$BUILD_IMAGE_SH"; then
+    echo "build_image.sh must mount OTA_PUBLIC_KEY_PATH read-only into Docker" >&2
     exit 1
 fi
 

@@ -204,6 +204,21 @@ func TestManifestValidationEnforcesAssetNameCoherence(t *testing.T) {
 	}
 }
 
+func TestManifestValidationRejectsUppercaseSHA256(t *testing.T) {
+	manifest := validTestManifest()
+	manifest.Parts[0].AssetA.SHA256 = strings.ToUpper(manifest.Parts[0].AssetA.SHA256)
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "lowercase") {
+		t.Fatalf("Validate() error = %v, want lowercase sha256 rejection", err)
+	}
+}
+
+func TestDecodeSignatureValueFallsBackToBase64AfterShortHex(t *testing.T) {
+	_, err := decodeSignatureValue("abcd")
+	if err == nil || !strings.Contains(err.Error(), "signature length 3") {
+		t.Fatalf("decodeSignatureValue() error = %v, want base64-decoded length failure", err)
+	}
+}
+
 func TestAssetResolutionSelectsTargetSlotAssets(t *testing.T) {
 	boot := ManifestPart{Name: "boot", AssetA: &ManifestAsset{Name: "boot_a.img", Size: 11, SHA256: testHashA}, AssetB: &ManifestAsset{Name: "boot_b.img", Size: 22, SHA256: testHashB}}
 

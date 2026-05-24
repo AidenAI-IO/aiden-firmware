@@ -58,10 +58,9 @@ done
 command -v jq >/dev/null 2>&1 || die "jq is required"
 [ -f "$manifest" ] || die "missing manifest: $manifest"
 
-case "$repo" in
-  */*) ;;
-  *) die "invalid --repo: $repo" ;;
-esac
+if [[ ! "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  die "invalid --repo: $repo"
+fi
 
 case "$channel" in
   *[!A-Za-z0-9._-]*|'') die "invalid --channel: $channel" ;;

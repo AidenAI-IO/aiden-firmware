@@ -152,6 +152,9 @@ func validateManifestAsset(field string, asset ManifestAsset, expectedName strin
 	if len(asset.SHA256) != 64 {
 		return fmt.Errorf("%s sha256 length %d, want 64", field, len(asset.SHA256))
 	}
+	if asset.SHA256 != strings.ToLower(asset.SHA256) {
+		return fmt.Errorf("%s sha256 must be lowercase", field)
+	}
 	if _, err := hex.DecodeString(asset.SHA256); err != nil {
 		return fmt.Errorf("%s has invalid sha256: %w", field, err)
 	}
@@ -243,10 +246,9 @@ func decodeSignatureValue(value string) ([]byte, error) {
 		return nil, errors.New("signature value is empty")
 	}
 	if sig, err := hex.DecodeString(value); err == nil {
-		if len(sig) != ed25519.SignatureSize {
-			return nil, fmt.Errorf("signature length %d, want %d", len(sig), ed25519.SignatureSize)
+		if len(sig) == ed25519.SignatureSize {
+			return sig, nil
 		}
-		return sig, nil
 	}
 	sig, err := base64.StdEncoding.DecodeString(value)
 	if err != nil {

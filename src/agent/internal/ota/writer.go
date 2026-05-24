@@ -67,10 +67,14 @@ func (w PartitionWriter) WritePart(part string, targetSlot Slot, imagePath strin
 }
 
 func (w PartitionWriter) partitionSizes() map[string]int64 {
-	if w.PartitionSizes != nil {
-		return w.PartitionSizes
+	sizes := map[string]int64{}
+	for name, size := range DefaultProductionPartitionSizes {
+		sizes[name] = size
 	}
-	return DefaultProductionPartitionSizes
+	for name, size := range w.PartitionSizes {
+		sizes[name] = size
+	}
+	return sizes
 }
 
 func (w PartitionWriter) ResolveBlockName(part string, targetSlot Slot) (string, error) {
