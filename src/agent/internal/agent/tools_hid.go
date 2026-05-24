@@ -764,8 +764,7 @@ type pointerCoordinate float64
 func (c *pointerCoordinate) UnmarshalJSON(data []byte) error {
 	var number float64
 	if err := json.Unmarshal(data, &number); err == nil {
-		*c = pointerCoordinate(number)
-		return nil
+		return c.setFinite(number)
 	}
 
 	var text string
@@ -774,11 +773,18 @@ func (c *pointerCoordinate) UnmarshalJSON(data []byte) error {
 		if parseErr != nil {
 			return fmt.Errorf("parse coordinate %q: %w", text, parseErr)
 		}
-		*c = pointerCoordinate(value)
-		return nil
+		return c.setFinite(value)
 	}
 
 	return fmt.Errorf("coordinate must be a number or numeric string")
+}
+
+func (c *pointerCoordinate) setFinite(value float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return fmt.Errorf("coordinate must be a finite number")
+	}
+	*c = pointerCoordinate(value)
+	return nil
 }
 
 func (c pointerCoordinate) Float64() float64 {

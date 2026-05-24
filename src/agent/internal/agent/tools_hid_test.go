@@ -82,6 +82,19 @@ func TestResolvePointerPositionPixelRejectsOutOfBounds(t *testing.T) {
 	}
 }
 
+func TestPointerCoordinateRejectsNonFiniteStringValues(t *testing.T) {
+	for _, input := range []string{`"NaN"`, `"Inf"`, `"-Inf"`, `"Infinity"`} {
+		var coordinate pointerCoordinate
+		err := json.Unmarshal([]byte(input), &coordinate)
+		if err == nil {
+			t.Fatalf("UnmarshalJSON(%s) succeeded, want finite number error", input)
+		}
+		if !strings.Contains(err.Error(), "coordinate must be a finite number") {
+			t.Fatalf("UnmarshalJSON(%s) error = %v, want finite number error", input, err)
+		}
+	}
+}
+
 func TestTouchGestureSwipeWritesDragSequence(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &TouchGestureTool{dev: dev, screen: &screenState{}, state: &pointerState{}}
