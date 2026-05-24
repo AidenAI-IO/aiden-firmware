@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
@@ -95,45 +94,15 @@ func (e *parallelToolExecutor) doIteration(
 }
 
 func (e *parallelToolExecutor) doActions(ctx context.Context, nameToTool map[string]langtools.Tool, actions []schema.AgentAction) ([]schema.AgentStep, error) {
-	for _, action := range actions {
-		if e.CallbacksHandler != nil {
-			e.CallbacksHandler.HandleAgentAction(ctx, action)
-		}
+	action := actions[0]
+	if e.CallbacksHandler != nil {
+		e.CallbacksHandler.HandleAgentAction(ctx, action)
 	}
-	if len(actions) == 1 {
-		step, err := e.callTool(ctx, nameToTool, actions[0])
-		if err != nil {
-			return nil, err
-		}
-		return []schema.AgentStep{step}, nil
+	step, err := e.callTool(ctx, nameToTool, action)
+	if err != nil {
+		return nil, err
 	}
-
-	type actionResult struct {
-		index int
-		step  schema.AgentStep
-		err   error
-	}
-	results := make(chan actionResult, len(actions))
-	var wg sync.WaitGroup
-	wg.Add(len(actions))
-	for i, action := range actions {
-		go func(index int, action schema.AgentAction) {
-			defer wg.Done()
-			step, err := e.callTool(ctx, nameToTool, action)
-			results <- actionResult{index: index, step: step, err: err}
-		}(i, action)
-	}
-	wg.Wait()
-	close(results)
-
-	steps := make([]schema.AgentStep, len(actions))
-	for result := range results {
-		if result.err != nil {
-			return nil, result.err
-		}
-		steps[result.index] = result.step
-	}
-	return steps, nil
+	return []schema.AgentStep{step}, nil
 }
 
 func (e *parallelToolExecutor) callTool(ctx context.Context, nameToTool map[string]langtools.Tool, action schema.AgentAction) (schema.AgentStep, error) {
@@ -144,7 +113,8 @@ func (e *parallelToolExecutor) callTool(ctx context.Context, nameToTool map[stri
 			Observation: fmt.Sprintf("%s is not a valid tool, try another one", action.Tool),
 		}, nil
 	}
-	observation, err := tool.Call(ctx, strings.TrimSuffix(action.ToolInput, "\nObservation:"))
+	toolInput := normalizeToolInput(action.ToolInput)
+	observation, err := tool.Call(ctx, toolInput)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return schema.AgentStep{}, err

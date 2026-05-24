@@ -17,6 +17,7 @@ import (
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
 	fakellm "github.com/tmc/langchaingo/llms/fake"
+	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
@@ -140,26 +141,6 @@ func (t *stubTool) Call(_ context.Context, input string) (string, error) {
 	return t.output, nil
 }
 
-type sleepTool struct {
-	name  string
-	delay time.Duration
-}
-
-func (t *sleepTool) Name() string { return t.name }
-
-func (t *sleepTool) Description() string { return "Sleep briefly." }
-
-func (t *sleepTool) Call(ctx context.Context, input string) (string, error) {
-	timer := time.NewTimer(t.delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case <-timer.C:
-		return `{"ok":true}`, nil
-	}
-}
-
 func TestRuntimeRunOpenRouterUsesToolsWithoutStreaming(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -269,7 +250,7 @@ func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunExecutesMultipleToolCallsInParallel(t *testing.T) {
+func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			{
@@ -301,6 +282,8 @@ func TestRuntimeRunExecutesMultipleToolCallsInParallel(t *testing.T) {
 			},
 		},
 	}
+	toolA := &stubTool{name: "slow_a", description: "First tool.", output: `{"ok":true}`}
+	toolB := &stubTool{name: "slow_b", description: "Second tool.", output: `{"ok":true}`}
 	runtime := NewRuntimeWithDeps(
 		Config{
 			Model:       ModelConfig{Provider: "fake"},
@@ -309,23 +292,40 @@ func TestRuntimeRunExecutesMultipleToolCallsInParallel(t *testing.T) {
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
-			"slow_a": &sleepTool{name: "slow_a", delay: 200 * time.Millisecond},
-			"slow_b": &sleepTool{name: "slow_b", delay: 200 * time.Millisecond},
+			"slow_a": toolA,
+			"slow_b": toolB,
 		}},
 		NewSkillIndex(),
 	)
 
-	started := time.Now()
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "run both"})
-	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if result.Output != "done" {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if elapsed >= 350*time.Millisecond {
-		t.Fatalf("tool calls took %s, expected parallel execution", elapsed)
+	if len(toolA.inputs) != 1 || toolA.inputs[0] != "{}" {
+		t.Fatalf("first tool inputs = %#v, want one empty JSON call", toolA.inputs)
+	}
+	if len(toolB.inputs) != 0 {
+		t.Fatalf("second tool inputs = %#v, want no calls", toolB.inputs)
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("model calls = %d, want at least 2", len(model.messages))
+	}
+	var toolCallNames []string
+	for _, msg := range model.messages[1] {
+		for _, part := range msg.Parts {
+			toolCall, ok := part.(llms.ToolCall)
+			if !ok || toolCall.FunctionCall == nil {
+				continue
+			}
+			toolCallNames = append(toolCallNames, toolCall.FunctionCall.Name)
+		}
+	}
+	if len(toolCallNames) != 1 || toolCallNames[0] != "slow_a" {
+		t.Fatalf("scratchpad tool calls = %#v, want only slow_a", toolCallNames)
 	}
 }
 
@@ -401,6 +401,159 @@ func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
 	}
 	if len(events) < 2 || events[1].Type != "tool_result" || !events[1].IsError {
 		t.Fatalf("expected error tool_result event, got %#v", events)
+	}
+}
+
+func TestRuntimeAllowsNearRepeatedMouseClick(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "mouse_click",
+							Arguments: `{"x":"0.5","y":"0.08","coord_space":"normalized"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_2",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "mouse_click",
+							Arguments: `{"x":0.5,"y":0.12,"coord_space":"normalized"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "我会换一个方式继续。",
+				}},
+			},
+		},
+	}
+	tool := &stubTool{
+		name:        "mouse_click",
+		description: "Move mouse to a position and click.",
+		output:      "ok",
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"mouse_click": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "tap the field",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "我会换一个方式继续。" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if len(tool.inputs) != 2 {
+		t.Fatalf("expected repeated click attempts to reach the tool, got inputs %#v", tool.inputs)
+	}
+	if !strings.Contains(tool.inputs[0], `"x":"0.5"`) {
+		t.Fatalf("first click should preserve model input, got %q", tool.inputs[0])
+	}
+	if !strings.Contains(tool.inputs[1], `"x":0.5`) {
+		t.Fatalf("second click should reach the tool, got %q", tool.inputs[1])
+	}
+
+	var resultCount int
+	for _, event := range events {
+		if event.Type == "tool_result" && event.ToolName == "mouse_click" {
+			resultCount++
+			if event.IsError {
+				t.Fatalf("repeated click should not be marked as an error: %#v", event)
+			}
+		}
+	}
+	if resultCount != 2 {
+		t.Fatalf("expected two mouse_click result events, got %#v", events)
+	}
+}
+
+func TestRuntimeAllowsRepeatedKeyboardText(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "keyboard_text",
+							Arguments: `{"text":"yuanshen"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_2",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "keyboard_text",
+							Arguments: `{"text":"yuanshen"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "我不会重复输入。",
+				}},
+			},
+		},
+	}
+	tool := &stubTool{
+		name:        "keyboard_text",
+		description: "Type text.",
+		output:      "ok",
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"keyboard_text": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "type twice"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "我不会重复输入。" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if len(tool.inputs) != 2 {
+		t.Fatalf("expected repeated keyboard_text attempts to reach the tool, got inputs %#v", tool.inputs)
 	}
 }
 
@@ -517,6 +670,20 @@ func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 	}
 	if events[0].ToolInput != "{}" {
 		t.Fatalf("tool_call event input = %q, want stripped input", events[0].ToolInput)
+	}
+}
+
+func TestRuntimeCallbackRemovesPendingActionWithNormalizedToolInput(t *testing.T) {
+	handler := &runtimeCallbackHandler{}
+	handler.pushPendingAction(schema.AgentAction{
+		Tool:      "audio_volume",
+		ToolInput: "{}\nObservation:",
+	})
+
+	handler.removePendingAction("AUDIO_VOLUME", "{}")
+
+	if action, ok := handler.popPendingAction(); ok {
+		t.Fatalf("pending action was not removed: %#v", action)
 	}
 }
 
@@ -1126,6 +1293,75 @@ func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {
 	}
 	if _, ok := runtime.tools.Get("recall_memory"); !ok {
 		t.Fatalf("expected runtime to register recall_memory")
+	}
+}
+
+func TestRuntimeRunInjectsMemoryFilesIntoSystemPrompt(t *testing.T) {
+	configDir := t.TempDir()
+	summary := "SESSION SUMMARY SENTINEL"
+	profile := "PROFILE SENTINEL"
+
+	sessionDir := filepath.Join(configDir, "memory", "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll session: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "summary.md"), []byte(summary), 0o644); err != nil {
+		t.Fatalf("WriteFile summary.md: %v", err)
+	}
+
+	longTermDir := filepath.Join(configDir, "memory", "long_term")
+	if err := os.MkdirAll(longTermDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll long_term: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(longTermDir, "profile.md"), []byte(profile), 0o644); err != nil {
+		t.Fatalf("WriteFile profile.md: %v", err)
+	}
+
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "ok",
+				}},
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) != 1 || len(model.messages[0]) == 0 {
+		t.Fatalf("expected one model call with messages, got %#v", model.messages)
+	}
+
+	systemMessage := model.messages[0][0]
+	if systemMessage.Role != llms.ChatMessageTypeSystem {
+		t.Fatalf("expected first message to be system, got %q", systemMessage.Role)
+	}
+	var systemText strings.Builder
+	for _, part := range systemMessage.Parts {
+		text, ok := part.(llms.TextContent)
+		if ok {
+			systemText.WriteString(text.Text)
+		}
+	}
+	if !strings.Contains(systemText.String(), summary) {
+		t.Fatalf("system message missing summary:\n%s", systemText.String())
+	}
+	if !strings.Contains(systemText.String(), profile) {
+		t.Fatalf("system message missing profile:\n%s", systemText.String())
 	}
 }
 
