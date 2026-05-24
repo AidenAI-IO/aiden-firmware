@@ -113,7 +113,7 @@ func (e *parallelToolExecutor) callTool(ctx context.Context, nameToTool map[stri
 			Observation: fmt.Sprintf("%s is not a valid tool, try another one", action.Tool),
 		}, nil
 	}
-	toolInput := strings.TrimSuffix(action.ToolInput, "\nObservation:")
+	toolInput := normalizeToolInput(action.ToolInput)
 	observation, err := tool.Call(ctx, toolInput)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

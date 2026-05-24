@@ -17,6 +17,7 @@ import (
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
 	fakellm "github.com/tmc/langchaingo/llms/fake"
+	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
@@ -669,6 +670,20 @@ func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 	}
 	if events[0].ToolInput != "{}" {
 		t.Fatalf("tool_call event input = %q, want stripped input", events[0].ToolInput)
+	}
+}
+
+func TestRuntimeCallbackRemovesPendingActionWithNormalizedToolInput(t *testing.T) {
+	handler := &runtimeCallbackHandler{}
+	handler.pushPendingAction(schema.AgentAction{
+		Tool:      "audio_volume",
+		ToolInput: "{}\nObservation:",
+	})
+
+	handler.removePendingAction("AUDIO_VOLUME", "{}")
+
+	if action, ok := handler.popPendingAction(); ok {
+		t.Fatalf("pending action was not removed: %#v", action)
 	}
 }
 
