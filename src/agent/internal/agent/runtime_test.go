@@ -1281,6 +1281,75 @@ func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunInjectsMemoryFilesIntoSystemPrompt(t *testing.T) {
+	configDir := t.TempDir()
+	summary := "SESSION SUMMARY SENTINEL"
+	profile := "PROFILE SENTINEL"
+
+	sessionDir := filepath.Join(configDir, "memory", "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll session: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "summary.md"), []byte(summary), 0o644); err != nil {
+		t.Fatalf("WriteFile summary.md: %v", err)
+	}
+
+	longTermDir := filepath.Join(configDir, "memory", "long_term")
+	if err := os.MkdirAll(longTermDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll long_term: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(longTermDir, "profile.md"), []byte(profile), 0o644); err != nil {
+		t.Fatalf("WriteFile profile.md: %v", err)
+	}
+
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "ok",
+				}},
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) != 1 || len(model.messages[0]) == 0 {
+		t.Fatalf("expected one model call with messages, got %#v", model.messages)
+	}
+
+	systemMessage := model.messages[0][0]
+	if systemMessage.Role != llms.ChatMessageTypeSystem {
+		t.Fatalf("expected first message to be system, got %q", systemMessage.Role)
+	}
+	var systemText strings.Builder
+	for _, part := range systemMessage.Parts {
+		text, ok := part.(llms.TextContent)
+		if ok {
+			systemText.WriteString(text.Text)
+		}
+	}
+	if !strings.Contains(systemText.String(), summary) {
+		t.Fatalf("system message missing summary:\n%s", systemText.String())
+	}
+	if !strings.Contains(systemText.String(), profile) {
+		t.Fatalf("system message missing profile:\n%s", systemText.String())
+	}
+}
+
 func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
