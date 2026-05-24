@@ -254,6 +254,41 @@ func TestCurrentSlotFromCmdlineReadsAidenSlotSuffix(t *testing.T) {
 	}
 }
 
+func TestRootSlotFromCmdlineReadsRunningRootfs(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cmdline string
+		want    Slot
+		wantOK  bool
+		wantErr string
+	}{
+		{name: "partlabel a", cmdline: "rootwait root=PARTLABEL=rootfs_a", want: SlotA, wantOK: true},
+		{name: "partlabel b", cmdline: "root=PARTLABEL=rootfs_b aiden.slot_suffix=_b", want: SlotB, wantOK: true},
+		{name: "by name a", cmdline: "root=/dev/block/by-name/rootfs_a", want: SlotA, wantOK: true},
+		{name: "by name b", cmdline: "root=/dev/block/by-name/rootfs_b", want: SlotB, wantOK: true},
+		{name: "legacy p9 a", cmdline: "aiden.slot_suffix=_b root=/dev/mmcblk0p9", want: SlotA, wantOK: true},
+		{name: "legacy p10 b", cmdline: "root=/dev/mmcblk0p10", want: SlotB, wantOK: true},
+		{name: "missing", cmdline: "console=ttyFIQ0", wantOK: false},
+		{name: "unsupported", cmdline: "root=/dev/mmcblk0p2", wantErr: "unsupported root device"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok, err := rootSlotFromCmdline(tc.cmdline)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("rootSlotFromCmdline() error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("rootSlotFromCmdline() error = %v", err)
+			}
+			if ok != tc.wantOK || (ok && got != tc.want) {
+				t.Fatalf("rootSlotFromCmdline() = %v, %v; want %v, %v", got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
 func TestUpdaterRejectsOversizedAssetWithDefaultPartitionSizes(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	bootBody := []byte("boot-b-v2")

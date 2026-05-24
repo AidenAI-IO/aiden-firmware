@@ -40,6 +40,7 @@ restore_docker_output_ownership() {
 docker run \
   --platform linux/amd64 \
   --privileged \
+  -u 0:0 \
   --rm \
   -e OTA_PUBLIC_KEY_PATH \
   "${docker_go_args[@]}" \

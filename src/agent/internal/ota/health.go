@@ -158,6 +158,20 @@ func WriteHealthMarkerIfPending(pendingPath string, markerPath string) (bool, er
 	if runningName != pending.TargetSlot {
 		return false, fmt.Errorf("running slot %s does not match pending target %s", runningName, pending.TargetSlot)
 	}
+	rootSlot, ok, err := currentRootSlotFromProcCmdline()
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, fmt.Errorf("rootfs slot missing from cmdline")
+	}
+	rootName, err := slotName(rootSlot)
+	if err != nil {
+		return false, err
+	}
+	if rootName != pending.TargetSlot {
+		return false, fmt.Errorf("running rootfs slot %s does not match pending target %s", rootName, pending.TargetSlot)
+	}
 	return true, WriteHealthMarker(markerPath, pending, runningName, currentBootID())
 }
 

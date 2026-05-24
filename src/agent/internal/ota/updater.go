@@ -768,6 +768,17 @@ func currentSlotFromProcCmdline() (Slot, bool, error) {
 	return currentSlotFromCmdline(string(data))
 }
 
+func currentRootSlotFromProcCmdline() (Slot, bool, error) {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return SlotA, false, nil
+		}
+		return SlotA, false, err
+	}
+	return rootSlotFromCmdline(string(data))
+}
+
 func currentSlotFromCmdline(cmdline string) (Slot, bool, error) {
 	for _, field := range strings.Fields(cmdline) {
 		value, ok := strings.CutPrefix(field, "aiden.slot_suffix=")
@@ -779,6 +790,25 @@ func currentSlotFromCmdline(cmdline string) (Slot, bool, error) {
 			return SlotA, false, err
 		}
 		return slot, true, nil
+	}
+	return SlotA, false, nil
+}
+
+func rootSlotFromCmdline(cmdline string) (Slot, bool, error) {
+	for _, field := range strings.Fields(cmdline) {
+		value, ok := strings.CutPrefix(field, "root=")
+		if !ok {
+			continue
+		}
+		value = strings.Trim(strings.ToLower(value), "\"'")
+		switch {
+		case value == "partlabel=rootfs_a" || value == "rootfs_a" || strings.HasSuffix(value, "/rootfs_a") || value == "/dev/mmcblk0p9":
+			return SlotA, true, nil
+		case value == "partlabel=rootfs_b" || value == "rootfs_b" || strings.HasSuffix(value, "/rootfs_b") || value == "/dev/mmcblk0p10":
+			return SlotB, true, nil
+		default:
+			return SlotA, false, fmt.Errorf("unsupported root device %q", value)
+		}
 	}
 	return SlotA, false, nil
 }
