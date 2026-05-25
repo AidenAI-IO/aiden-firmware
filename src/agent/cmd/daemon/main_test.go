@@ -158,19 +158,60 @@ func (d *fakeAudioDialog) VADDebugState() agent.VADDebugState {
 }
 
 type fakeWakeupWatcher struct {
-	callback func()
-	started  bool
-	stopped  bool
+	callback     func()
+	fireOnStart  bool
+	firedOnStart bool
+	started      bool
+	stopped      bool
+	startCount   int
+	stopCount    int
 }
 
 func (w *fakeWakeupWatcher) Start() error {
 	w.started = true
-	w.callback()
+	w.startCount++
+	if w.fireOnStart && !w.firedOnStart {
+		w.firedOnStart = true
+		w.callback()
+	}
 	return nil
 }
 
 func (w *fakeWakeupWatcher) Stop() {
 	w.stopped = true
+	w.stopCount++
+}
+
+func TestStartWakeupWatchersRegistersGPIO32And33Callbacks(t *testing.T) {
+	watchersByPin := map[int]*fakeWakeupWatcher{}
+	eventCount := 0
+
+	watchers, err := startWakeupWatchers(func(pin int, callback func()) (wakeupWatcher, error) {
+		watcher := &fakeWakeupWatcher{callback: callback}
+		watchersByPin[pin] = watcher
+		return watcher, nil
+	}, func() {
+		eventCount++
+	})
+	if err != nil {
+		t.Fatalf("startWakeupWatchers() error = %v", err)
+	}
+	defer stopWakeupWatchers(watchers)
+
+	for _, pin := range []int{33, 32} {
+		watcher := watchersByPin[pin]
+		if watcher == nil {
+			t.Fatalf("missing watcher for GPIO %d", pin)
+		}
+		if !watcher.started {
+			t.Fatalf("GPIO %d watcher was not started", pin)
+		}
+		watcher.callback()
+	}
+
+	if eventCount != 2 {
+		t.Fatalf("event count = %d, want one wakeup event per GPIO callback", eventCount)
+	}
 }
 
 func TestProcessAudioUntilUtteranceUsesConfiguredFrameSizeAndCarriesOddPCMByte(t *testing.T) {
@@ -277,13 +318,13 @@ func TestRunWakeupModeProcessesTriggeredAudioAndStopsOnSignal(t *testing.T) {
 			sigChan <- syscall.SIGTERM
 		},
 	}
-	watcher := &fakeWakeupWatcher{}
-	var watcherPin int
+	watcher := &fakeWakeupWatcher{fireOnStart: true}
+	var watcherPins []int
 
 	done := make(chan struct{})
 	go func() {
 		runWakeupMode(agent.Config{}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
-			watcherPin = pin
+			watcherPins = append(watcherPins, pin)
 			watcher.callback = callback
 			return watcher, nil
 		})
@@ -299,8 +340,8 @@ func TestRunWakeupModeProcessesTriggeredAudioAndStopsOnSignal(t *testing.T) {
 	if !watcher.started || !watcher.stopped {
 		t.Fatalf("watcher lifecycle started=%v stopped=%v", watcher.started, watcher.stopped)
 	}
-	if watcherPin != 33 {
-		t.Fatalf("watcher pin = %d, want 33", watcherPin)
+	if len(watcherPins) != 2 || watcherPins[0] != 33 || watcherPins[1] != 32 {
+		t.Fatalf("watcher pins = %#v, want [33 32]", watcherPins)
 	}
 	if dialog.starts != 1 || dialog.stops == 0 || dialog.resets != 1 {
 		t.Fatalf("dialog lifecycle starts=%d stops=%d resets=%d", dialog.starts, dialog.stops, dialog.resets)
@@ -322,7 +363,7 @@ func TestRunWakeupModeLegacyStartsRecordingWithoutWakeupAck(t *testing.T) {
 			sigChan <- syscall.SIGTERM
 		},
 	}
-	watcher := &fakeWakeupWatcher{}
+	watcher := &fakeWakeupWatcher{fireOnStart: true}
 
 	done := make(chan struct{})
 	go func() {
@@ -365,7 +406,7 @@ func TestRunWakeupModeStopsRecordingAfterSpeechThenBiasedSilence(t *testing.T) {
 			sigChan <- syscall.SIGTERM
 		},
 	}
-	watcher := &fakeWakeupWatcher{}
+	watcher := &fakeWakeupWatcher{fireOnStart: true}
 
 	done := make(chan struct{})
 	go func() {
@@ -421,7 +462,7 @@ func TestRunWakeupModeDetectsLowEnergySpeechAfterNoiseFloorLearning(t *testing.T
 			sigChan <- syscall.SIGTERM
 		},
 	}
-	watcher := &fakeWakeupWatcher{}
+	watcher := &fakeWakeupWatcher{fireOnStart: true}
 
 	done := make(chan struct{})
 	go func() {
@@ -454,7 +495,7 @@ func TestRunWakeupModeDetectsLowEnergySpeechAfterNoiseFloorLearning(t *testing.T
 
 func TestRunWakeupModeStartsNewRecordingForNextWakeup(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
-	watcher := &fakeWakeupWatcher{}
+	watcher := &fakeWakeupWatcher{fireOnStart: true}
 	voiceSessionDisabled := false
 	var dialog *fakeAudioDialog
 	dialog = &fakeAudioDialog{
@@ -507,7 +548,7 @@ func TestRunWakeupModeStartsNewRecordingForNextWakeup(t *testing.T) {
 
 func TestRunWakeupModeAudioWakeupKeepsLegacySingleTurnBehavior(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
-	watcher := &fakeWakeupWatcher{}
+	watcher := &fakeWakeupWatcher{fireOnStart: true}
 	dialog := &fakeAudioDialog{
 		frameSamples: 2,
 		chunks: []*agent.AudioChunkResult{
@@ -547,7 +588,7 @@ func TestRunWakeupModeAudioWakeupKeepsLegacySingleTurnBehavior(t *testing.T) {
 
 func TestRunWakeupModeVoiceSessionProcessesFollowupWithoutSecondWakeup(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
-	watcher := &fakeWakeupWatcher{}
+	watcher := &fakeWakeupWatcher{fireOnStart: true}
 	var dialog *fakeAudioDialog
 	dialog = &fakeAudioDialog{
 		frameSamples: 2,
@@ -605,7 +646,7 @@ func TestRunWakeupModeVoiceSessionProcessesFollowupWithoutSecondWakeup(t *testin
 
 func TestRunWakeupModeVoiceSessionStartsRecordingWithoutWakeupAck(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
-	watcher := &fakeWakeupWatcher{}
+	watcher := &fakeWakeupWatcher{fireOnStart: true}
 	var dialog *fakeAudioDialog
 	dialog = &fakeAudioDialog{
 		frameSamples: 2,

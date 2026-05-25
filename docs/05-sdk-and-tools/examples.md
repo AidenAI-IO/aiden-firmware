@@ -8,7 +8,7 @@ CMake 会构建多个 `example_*` 可执行文件，用于验证 SDK 和设备�
 ./build/bin/example_wakeup
 ```
 
-监听 GPIO 33 falling edge。典型硬件连接：按钮连接 GPIO 33 与 GND，内部上拉。
+监听 GPIO 33/GPIO 32 falling edge。典型硬件连接：按钮连接 GPIO 与 GND，内部上拉。
 
 ## Audio Capture
 

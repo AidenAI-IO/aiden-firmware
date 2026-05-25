@@ -62,7 +62,7 @@ listener.start(33, on_wakeup);
 listener.stop();
 ```
 
-GPIO 33 通常用于按钮或唤醒信号，falling edge 触发。
+GPIO 33/GPIO 32 通常用于按钮或唤醒信号，falling edge 触发。需要同时监听两路时，可创建两个 `WakeupListener`，并绑定同一个回调。
 
 ## AudioCapture
 

@@ -17,11 +17,14 @@ void on_wakeup() {
 int main() {
     signal(SIGINT, signal_handler);
 
-    aiden::WakeupListener listener;
+    aiden::WakeupListener listener33;
+    aiden::WakeupListener listener32;
 
-    printf("Starting wakeup listener on GPIO 33...\n");
-    if (!listener.start(33, on_wakeup)) {
-        fprintf(stderr, "Failed to start wakeup listener\n");
+    printf("Starting wakeup listeners on GPIO 33 and GPIO 32...\n");
+    if (!listener33.start(33, on_wakeup) || !listener32.start(32, on_wakeup)) {
+        fprintf(stderr, "Failed to start wakeup listeners\n");
+        listener33.stop();
+        listener32.stop();
         return 1;
     }
 
@@ -31,7 +34,8 @@ int main() {
         sleep(1);
     }
 
-    listener.stop();
+    listener32.stop();
+    listener33.stop();
     printf("Stopped.\n");
 
     return 0;
