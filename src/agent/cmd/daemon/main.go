@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/ota"
 )
 
 const (
@@ -45,6 +46,11 @@ func main() {
 		os.Exit(1)
 	}
 	defer runtime.Close()
+	if wrote, err := ota.WriteHealthMarkerIfPending("/userdata/ota/pending_boot.json", "/userdata/ota/health.ok"); err != nil {
+		log.Printf("[ota] health marker not written: %v", err)
+	} else if wrote {
+		log.Printf("[ota] health marker written")
+	}
 
 	inputMode := cfg.InputModeOrDefault()
 

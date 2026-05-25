@@ -706,12 +706,19 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	if r.memories != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := r.memories.WaitMaintenance(ctx); err != nil && r.logger != nil {
+			r.logger.Error("memory maintenance drain on close: %v", err)
+		}
+		cancel()
+	}
 	if r.profileDebouncer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
 		if err := r.profileDebouncer.Flush(ctx); err != nil && r.logger != nil {
 			r.logger.Error("profile debouncer flush on close: %v", err)
 		}
+		cancel()
 	}
 	if r.logger != nil {
 		r.logger.Info("Shutting down agent runtime")

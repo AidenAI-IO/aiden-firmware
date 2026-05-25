@@ -262,6 +262,26 @@ func (m *MemoryManager) RequestMaintenance() {
 	go m.maintenanceLoop()
 }
 
+func (m *MemoryManager) WaitMaintenance(ctx context.Context) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		m.maintenanceMu.Lock()
+		running := m.maintenanceRunning
+		m.maintenanceMu.Unlock()
+		if !running {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func (m *MemoryManager) maintenanceLoop() {
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)

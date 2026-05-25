@@ -7,4 +7,7 @@
 /overlay/oem/usr/bin/*
 !/overlay/oem/usr/bin/.gitkeep
 !/overlay/oem/usr/bin/RkLunch.sh
+/ota_ed25519_private_key.pem
+/ota_ed25519_public_key.pem
+/update.img
 /.claude/

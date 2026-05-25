@@ -1216,6 +1216,7 @@ func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	defer runtime.Close()
 
 	done := make(chan error, 1)
 	go func() {

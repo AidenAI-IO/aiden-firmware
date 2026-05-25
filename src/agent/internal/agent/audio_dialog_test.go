@@ -57,7 +57,14 @@ func TestAudioDialogStartRecordingRetriesUntilAudioServiceAvailable(t *testing.T
 		recordingStartRetryInterval = oldInterval
 	})
 
-	socketPath := filepath.Join(t.TempDir(), "audio.sock")
+	socketDir, err := os.MkdirTemp("/tmp", "aiden-audio-dialog-*")
+	if err != nil {
+		t.Fatalf("create temp socket dir: %v", err)
+	}
+	t.Cleanup(func() {
+		os.RemoveAll(socketDir)
+	})
+	socketPath := filepath.Join(socketDir, "audio.sock")
 	ready := make(chan struct{})
 	go serveDelayedStartRecording(t, socketPath, ready)
 
