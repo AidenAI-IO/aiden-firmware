@@ -22,6 +22,8 @@ const (
 	voiceTurnCancelWaitTimeout = 2 * time.Second
 )
 
+var wakeupGPIOPins = []int{33, 32}
+
 func main() {
 	var (
 		configDir = flag.String("config", "", "path to config directory (required)")
@@ -129,6 +131,33 @@ func newGPIOWatcher(pin int, callback func()) (wakeupWatcher, error) {
 	return agent.NewGPIOWatcher(pin, callback)
 }
 
+func wakeupGPIOPinsLabel() string {
+	return "GPIO 33/GPIO 32"
+}
+
+func startWakeupWatchers(newWatcher wakeupWatcherFactory, callback func()) ([]wakeupWatcher, error) {
+	watchers := make([]wakeupWatcher, 0, len(wakeupGPIOPins))
+	for _, pin := range wakeupGPIOPins {
+		watcher, err := newWatcher(pin, callback)
+		if err != nil {
+			stopWakeupWatchers(watchers)
+			return nil, fmt.Errorf("create GPIO %d watcher: %w", pin, err)
+		}
+		if err := watcher.Start(); err != nil {
+			stopWakeupWatchers(append(watchers, watcher))
+			return nil, fmt.Errorf("start GPIO %d watcher: %w", pin, err)
+		}
+		watchers = append(watchers, watcher)
+	}
+	return watchers, nil
+}
+
+func stopWakeupWatchers(watchers []wakeupWatcher) {
+	for i := len(watchers) - 1; i >= 0; i-- {
+		watchers[i].Stop()
+	}
+}
+
 type vadDebugReporter interface {
 	VADDebugState() agent.VADDebugState
 }
@@ -218,12 +247,11 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 		return
 	}
 
-	log.Println("\n[ready] Starting GPIO wakeup listener on GPIO 33...")
+	log.Printf("\n[ready] Starting GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
 
 	events := make(chan voiceEvent, 8)
 
-	// Create GPIO watcher
-	watcher, err := newWatcher(33, func() {
+	watchers, err := startWakeupWatchers(newWatcher, func() {
 		select {
 		case events <- voiceEventWakeup:
 		default:
@@ -231,17 +259,12 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 		}
 	})
 	if err != nil {
-		log.Printf("[error] Failed to create GPIO watcher: %v\n", err)
+		log.Printf("[error] Failed to start GPIO wakeup listeners: %v\n", err)
 		os.Exit(1)
 	}
+	defer stopWakeupWatchers(watchers)
 
-	if err := watcher.Start(); err != nil {
-		log.Printf("[error] Failed to start GPIO watcher: %v\n", err)
-		os.Exit(1)
-	}
-	defer watcher.Stop()
-
-	log.Println("[ready] Waiting for wakeup event (GPIO 33)... Ctrl+C to quit")
+	log.Printf("[ready] Waiting for wakeup event (%s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
 
 	for {
 		select {
@@ -249,7 +272,7 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 			log.Println("\n[exit] Stopped.")
 			return
 		case <-events:
-			log.Println("\n[wakeup] GPIO 33 triggered, opening voice session...")
+			log.Println("\n[wakeup] GPIO wakeup triggered, opening voice session...")
 			if exit := runVoiceSession(cfg, dialog, runtime, sigChan, events); exit {
 				log.Println("\n[exit] Stopped.")
 				return
@@ -260,32 +283,27 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 }
 
 func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory) {
-	log.Println("\n[ready] Starting GPIO wakeup listener on GPIO 33...")
+	log.Printf("\n[ready] Starting GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
 
 	ctx := context.Background()
 	wakeupTriggered := false
 	var wakeupMutex sync.Mutex
 
-	watcher, err := newWatcher(33, func() {
+	watchers, err := startWakeupWatchers(newWatcher, func() {
 		wakeupMutex.Lock()
 		defer wakeupMutex.Unlock()
 		if !wakeupTriggered {
-			log.Println("\n[wakeup] GPIO 33 triggered, starting to listen...")
+			log.Println("\n[wakeup] GPIO wakeup triggered, starting to listen...")
 			wakeupTriggered = true
 		}
 	})
 	if err != nil {
-		log.Printf("[error] Failed to create GPIO watcher: %v\n", err)
+		log.Printf("[error] Failed to start GPIO wakeup listeners: %v\n", err)
 		os.Exit(1)
 	}
+	defer stopWakeupWatchers(watchers)
 
-	if err := watcher.Start(); err != nil {
-		log.Printf("[error] Failed to start GPIO watcher: %v\n", err)
-		os.Exit(1)
-	}
-	defer watcher.Stop()
-
-	log.Println("[ready] Waiting for wakeup event (GPIO 33)... Ctrl+C to quit")
+	log.Printf("[ready] Waiting for wakeup event (%s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
 
 	for {
 		select {
@@ -537,14 +555,42 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 	nextVADLogAt := startedAt.Add(time.Second)
 	hasVADState := false
 	speechDetected := false
+	resetCapture := func(now time.Time) {
+		vadPending = vadPending[:0]
+		captured = captured[:0]
+		hasPendingByte = false
+		pendingByte = 0
+		startedAt = now
+		nextVADLogAt = now.Add(time.Second)
+		hasVADState = false
+		speechDetected = false
+	}
+	restartRecordingAfterWakeup := func() bool {
+		log.Println("[listen] wakeup received while listening, restarting recording")
+		if dialog.RecordingActive() {
+			if err := dialog.StopRecording(); err != nil {
+				log.Printf("[listen] stop recording before wakeup restart: %v\n", err)
+			}
+		}
+		if err := dialog.StartRecording(); err != nil {
+			log.Printf("[listen] restart recording after wakeup failed: %v\n", err)
+			return false
+		}
+		dialog.ResetVAD()
+		resetCapture(time.Now())
+		return true
+	}
 
+captureLoop:
 	for {
 		select {
 		case <-sigChan:
 			return nil, true
 		case <-events:
-			log.Println("[listen] wakeup received while listening, extending listen window")
-			startedAt = time.Now()
+			if !restartRecordingAfterWakeup() {
+				return nil, false
+			}
+			continue
 		default:
 		}
 
@@ -564,6 +610,17 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 		if err != nil {
 			log.Printf("[listen] read_record_chunk error: %v\n", err)
 			return nil, false
+		}
+
+		select {
+		case <-sigChan:
+			return nil, true
+		case <-events:
+			if !restartRecordingAfterWakeup() {
+				return nil, false
+			}
+			continue
+		default:
 		}
 
 		if chunk == nil {
@@ -609,6 +666,16 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 				}
 			}
 			if utterance != nil {
+				select {
+				case <-sigChan:
+					return nil, true
+				case <-events:
+					if !restartRecordingAfterWakeup() {
+						return nil, false
+					}
+					continue captureLoop
+				default:
+				}
 				log.Println("[utterance] VAD detected end of speech")
 				return utterance, false
 			}

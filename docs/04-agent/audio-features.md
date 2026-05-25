@@ -61,7 +61,7 @@ Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go
 
 ### `trigger_mode = "wakeup"`
 
-等待 GPIO 33 falling edge 触发后录音。`input_mode = "stt"` 且 `voice_session_enabled = true` 时，wakeup 默认打开一个连续语音 session：首轮仍需要 GPIO，Agent 回复后会在 `voice_followup_timeout_ms` 窗口内继续听追问，`voice_first_turn_timeout_ms` 控制首轮等待窗口，`voice_max_turns` 控制单个 session 的轮数上限。session 内再次触发 wakeup 是否取消当前 LLM 请求由 `voice_interrupt_on_wakeup` 控制；TTS 播放期间默认不开麦，播放结束后才继续录音；播放中再次触发 wakeup 会打断当前轮并立即开始录音。需要 Linux GPIO sysfs 可用，并完成硬件连线。
+等待 GPIO 33 或 GPIO 32 falling edge 触发后录音，两路触发进入同一套 wakeup 流程。`input_mode = "stt"` 且 `voice_session_enabled = true` 时，wakeup 默认打开一个连续语音 session：首轮仍需要 GPIO，Agent 回复后会在 `voice_followup_timeout_ms` 窗口内继续听追问，`voice_first_turn_timeout_ms` 控制首轮等待窗口，`voice_max_turns` 控制单个 session 的轮数上限。录音中再次触发 wakeup 会打断当前录音、丢弃已录音频，并重新开始录音计时；session 内再次触发 wakeup 是否取消当前 LLM 请求由 `voice_interrupt_on_wakeup` 控制；TTS 播放期间默认不开麦，播放结束后才继续录音；播放中再次触发 wakeup 会打断当前轮并立即开始录音。需要 Linux GPIO sysfs 可用，并完成硬件连线。
 
 ## 配置片段
 
@@ -109,7 +109,7 @@ speed = 1.0
 - `audio_service` 必须运行；
 - TTS 需要 `ffmpeg` 完成 MP3 → PCM 转换；
 - STT/TTS 需要外部 API key；
-- `wakeup` 模式需要 GPIO 33 硬件触发条件。
+- `wakeup` 模式需要 GPIO 33 或 GPIO 32 硬件触发条件。
 
 ## 已知限制
 

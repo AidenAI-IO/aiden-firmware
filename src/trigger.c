@@ -4,57 +4,108 @@
 #include <unistd.h>
 #include <poll.h>
 #include <string.h>
+#include <errno.h>
 
-#define GPIO_PIN "33"
-#define GPIO_VALUE_PATH "/sys/class/gpio/gpio33/value"
-#define GPIO_EDGE_PATH "/sys/class/gpio/gpio33/edge"
+typedef struct {
+    const char* pin;
+    const char* value_path;
+    const char* direction_path;
+    const char* edge_path;
+} GpioPin;
 
-void init_gpio() {
-    int fd = open("/sys/class/gpio/export", O_WRONLY);
-    if (fd != -1) {
-        write(fd, GPIO_PIN, strlen(GPIO_PIN));
-        close(fd);
+static const GpioPin GPIO_PINS[] = {
+    {"33", "/sys/class/gpio/gpio33/value", "/sys/class/gpio/gpio33/direction", "/sys/class/gpio/gpio33/edge"},
+    {"32", "/sys/class/gpio/gpio32/value", "/sys/class/gpio/gpio32/direction", "/sys/class/gpio/gpio32/edge"},
+};
+
+static int gpio_pin_count() {
+    return sizeof(GPIO_PINS) / sizeof(GPIO_PINS[0]);
+}
+
+static int write_gpio_setting(const char* path, const char* value, size_t value_len) {
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        return -errno;
     }
 
-    fd = open("/sys/class/gpio/gpio33/direction", O_WRONLY);
-    write(fd, "in", 2);
-    close(fd);
+    ssize_t written = write(fd, value, value_len);
+    if (written != (ssize_t)value_len) {
+        int err = written < 0 ? errno : EIO;
+        close(fd);
+        return -err;
+    }
 
-    fd = open(GPIO_EDGE_PATH, O_WRONLY);
-    write(fd, "falling", 7);
     close(fd);
+    return 0;
+}
+
+int init_gpio_pin(const GpioPin* gpio) {
+    int status = write_gpio_setting("/sys/class/gpio/export", gpio->pin, strlen(gpio->pin));
+    if (status != 0) {
+        return status;
+    }
+
+    status = write_gpio_setting(gpio->direction_path, "in", 2);
+    if (status != 0) {
+        return status;
+    }
+
+    return write_gpio_setting(gpio->edge_path, "falling", 7);
 }
 
 int main() {
-    int fd;
-    struct pollfd pfd;
+    int count = gpio_pin_count();
+    struct pollfd pfd[sizeof(GPIO_PINS) / sizeof(GPIO_PINS[0])];
     char buf[64];
 
-    init_gpio();
+    for (int i = 0; i < count; i++) {
+        int status = init_gpio_pin(&GPIO_PINS[i]);
+        if (status != 0) {
+            int err = status < 0 ? -status : status;
+            fprintf(stderr, "Failed to initialize GPIO %s: %s (errno %d)\n",
+                    GPIO_PINS[i].pin, strerror(err), err);
+            for (int j = 0; j < i; j++) {
+                close(pfd[j].fd);
+            }
+            return 1;
+        }
 
-    fd = open(GPIO_VALUE_PATH, O_RDONLY);
-    if (fd < 0) {
-        perror("Failed to open gpio value");
-        return 1;
+        int fd = open(GPIO_PINS[i].value_path, O_RDONLY);
+        if (fd < 0) {
+            perror("Failed to open gpio value");
+            for (int j = 0; j < i; j++) {
+                close(pfd[j].fd);
+            }
+            return 1;
+        }
+
+        pfd[i].fd = fd;
+        pfd[i].events = POLLPRI | POLLERR;
+        pfd[i].revents = 0;
     }
 
-    pfd.fd = fd;
-    pfd.events = POLLPRI | POLLERR;
-
-    printf("Listening for falling edge on Pin 3 (GPIO33)...\n");
+    printf("Listening for falling edge on GPIO33 or GPIO32...\n");
 
     while (1) {
-        lseek(fd, 0, SEEK_SET);
-        read(fd, buf, sizeof(buf));
+        for (int i = 0; i < count; i++) {
+            lseek(pfd[i].fd, 0, SEEK_SET);
+            read(pfd[i].fd, buf, sizeof(buf));
+        }
 
-        int ret = poll(&pfd, 1, -1);
+        int ret = poll(pfd, count, -1);
 
-        if (ret > 0 && (pfd.revents & POLLPRI)) {
-            printf("hello world\n");
-            usleep(150000);
+        if (ret > 0) {
+            for (int i = 0; i < count; i++) {
+                if (pfd[i].revents & POLLPRI) {
+                    printf("hello world\n");
+                    usleep(150000);
+                }
+            }
         }
     }
 
-    close(fd);
+    for (int i = 0; i < count; i++) {
+        close(pfd[i].fd);
+    }
     return 0;
 }
