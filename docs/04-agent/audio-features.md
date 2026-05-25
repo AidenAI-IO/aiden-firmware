@@ -26,7 +26,7 @@ Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go
 | --- | --- | --- |
 | Audio client | `audio_client.go` | 连接 `audio_service`，启动录音/播放 session，读写 PCM chunk |
 | VAD | `vad.go` | 基于能量阈值的语音活动检测 |
-| STT | `stt.go` | OpenAI Whisper 实现；Tencent ASR 字段已预留 |
+| STT | `stt.go` | OpenAI Whisper / OpenRouter 实现；Tencent ASR 字段已预留 |
 | TTS | `tts.go` | Minimax TTS，使用 `ffmpeg` 转 PCM 后播放 |
 | Dialog manager | `audio_dialog.go` | 编排录音、VAD、STT/LLM/TTS 流程 |
 
@@ -61,16 +61,24 @@ Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go
 
 ### `trigger_mode = "wakeup"`
 
-等待 GPIO 33 falling edge 触发后录音。需要 Linux GPIO sysfs 可用，并完成硬件连线。
+等待 GPIO 33 falling edge 触发后录音。`input_mode = "stt"` 且 `voice_session_enabled = true` 时，wakeup 默认打开一个连续语音 session：首轮仍需要 GPIO，Agent 回复后会在 `voice_followup_timeout_ms` 窗口内继续听追问，`voice_first_turn_timeout_ms` 控制首轮等待窗口，`voice_max_turns` 控制单个 session 的轮数上限。session 内再次触发 wakeup 是否取消当前 LLM 请求由 `voice_interrupt_on_wakeup` 控制；TTS 播放期间默认不开麦，播放结束后才继续录音；播放中再次触发 wakeup 会打断当前轮并立即开始录音。需要 Linux GPIO sysfs 可用，并完成硬件连线。
 
 ## 配置片段
 
 ```toml
 input_mode = "stt"
-trigger_mode = "manual"
+trigger_mode = "wakeup"
 energy_threshold = 500
-silence_ms = 1000
+silence_ms = 650
 min_speech_ms = 300
+voice_session_enabled = true
+voice_followup_timeout_ms = 6000
+voice_first_turn_timeout_ms = 10000
+voice_max_turns = 0
+voice_interrupt_on_wakeup = true
+voice_streaming_tts_enabled = true
+voice_tool_call_speech = true
+voice_max_response_tokens = 400
 
 [audio]
 socket = "/run/audio_service/audio_service.sock"
@@ -82,6 +90,11 @@ bit_width = 16
 provider = "openai-whisper"
 api_key = "sk-..."
 model = "whisper-1"
+
+# OpenRouter alternative:
+# provider = "openrouter"
+# api_key = "OPENROUTER_API_KEY"
+# model = "qwen/qwen3-asr-flash-2026-02-10"
 
 [tts]
 provider = "minimax"

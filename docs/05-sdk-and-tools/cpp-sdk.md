@@ -119,7 +119,7 @@ camera.stop();
 
 ```cpp
 aiden::CameraConfig config;
-config.edid_path = nullptr; // 使用内置 1080p30 CTA EDID
+config.edid_path = nullptr; // 使用内置 1080p30-only CTA EDID
 
 aiden::CameraCapture camera;
 aiden::VideoFrame frame;

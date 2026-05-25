@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -98,6 +100,28 @@ type compatibleChatResponse struct {
 	} `json:"usage,omitempty"`
 }
 
+type compatibleChatStreamResponse struct {
+	Choices []struct {
+		Delta struct {
+			Content   any                       `json:"content,omitempty"`
+			ToolCalls []compatibleToolCallDelta `json:"tool_calls,omitempty"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage,omitempty"`
+}
+
+type compatibleToolCallDelta struct {
+	Index    int                     `json:"index"`
+	ID       string                  `json:"id,omitempty"`
+	Type     string                  `json:"type,omitempty"`
+	Function *compatibleFunctionCall `json:"function,omitempty"`
+}
+
 func newOpenAICompatibleModel(baseURL, model, token string, httpClient *http.Client) llms.Model {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
@@ -141,6 +165,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 		Seed:             callOpts.Seed,
 		Tools:            convertTools(callOpts.Tools, callOpts.Functions),
 		ToolChoice:       normalizeToolChoice(callOpts.ToolChoice, callOpts.FunctionCallBehavior),
+		Stream:           callOpts.StreamingFunc != nil,
 	}
 	if callOpts.Temperature != 0 {
 		reqPayload.Temperature = &callOpts.Temperature
@@ -175,6 +200,10 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
+	if reqPayload.Stream {
+		return m.decodeStreamingResponse(ctx, resp.Body, callOpts.StreamingFunc)
+	}
+
 	var decoded compatibleChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
@@ -203,13 +232,112 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 		result.Choices[0].FuncCall = result.Choices[0].ToolCalls[0].FunctionCall
 	}
 
-	if callOpts.StreamingFunc != nil && content != "" {
-		if err := callOpts.StreamingFunc(ctx, []byte(content)); err != nil {
-			return nil, err
+	return result, nil
+}
+
+func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, body io.Reader, stream func(context.Context, []byte) error) (*llms.ContentResponse, error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	var content strings.Builder
+	stopReason := ""
+	toolCalls := map[int]*compatibleToolCall{}
+	var generationInfo map[string]any
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			break
+		}
+
+		var event compatibleChatStreamResponse
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			return nil, fmt.Errorf("decode stream event: %w", err)
+		}
+		if event.Usage != nil {
+			generationInfo = map[string]any{
+				"prompt_tokens":     event.Usage.PromptTokens,
+				"completion_tokens": event.Usage.CompletionTokens,
+				"total_tokens":      event.Usage.TotalTokens,
+			}
+		}
+		if len(event.Choices) == 0 {
+			continue
+		}
+		choice := event.Choices[0]
+		if choice.FinishReason != "" {
+			stopReason = choice.FinishReason
+		}
+
+		chunk := flattenResponseContent(choice.Delta.Content)
+		if chunk != "" {
+			content.WriteString(chunk)
+			if stream != nil {
+				if err := stream(ctx, []byte(chunk)); err != nil {
+					return nil, err
+				}
+			}
+		}
+		for _, delta := range choice.Delta.ToolCalls {
+			call := toolCalls[delta.Index]
+			if call == nil {
+				call = &compatibleToolCall{Type: "function"}
+				toolCalls[delta.Index] = call
+			}
+			if delta.ID != "" {
+				call.ID = delta.ID
+			}
+			if delta.Type != "" {
+				call.Type = delta.Type
+			}
+			if delta.Function != nil {
+				if call.Function == nil {
+					call.Function = &compatibleFunctionCall{}
+				}
+				if delta.Function.Name != "" {
+					call.Function.Name += delta.Function.Name
+				}
+				if delta.Function.Arguments != "" {
+					call.Function.Arguments += delta.Function.Arguments
+				}
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read stream response: %w", err)
+	}
+
+	orderedToolCalls := make([]compatibleToolCall, 0, len(toolCalls))
+	toolCallIndexes := make([]int, 0, len(toolCalls))
+	for index := range toolCalls {
+		toolCallIndexes = append(toolCallIndexes, index)
+	}
+	sort.Ints(toolCallIndexes)
+	for _, index := range toolCallIndexes {
+		if call := toolCalls[index]; call != nil {
+			orderedToolCalls = append(orderedToolCalls, *call)
 		}
 	}
 
-	return result, nil
+	choice := &llms.ContentChoice{
+		Content:    content.String(),
+		StopReason: stopReason,
+		ToolCalls:  convertResponseToolCalls(orderedToolCalls),
+	}
+	if len(choice.ToolCalls) > 0 {
+		choice.FuncCall = choice.ToolCalls[0].FunctionCall
+	}
+	if generationInfo != nil {
+		choice.GenerationInfo = generationInfo
+	}
+	return &llms.ContentResponse{Choices: []*llms.ContentChoice{choice}}, nil
 }
 
 func convertMessageContent(message llms.MessageContent) (compatibleMessage, error) {

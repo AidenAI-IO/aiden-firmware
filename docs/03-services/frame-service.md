@@ -17,8 +17,9 @@
 | --- | --- | --- |
 | Socket（开发直接运行） | `/tmp/frame_service.sock` | `frame_service_main.cpp` 默认值 |
 | Socket（固件服务） | `/run/frame_service/frame_service.sock` | init 配置默认值 |
+| EDID | 内置 1080p30 CTA EDID | 未传 `--edid` 时使用 |
 | Ring size | `3` | `kDefaultFrameServiceRingSize` |
-| FPS | `3.0` | 降低 CPU、内存带宽和发热，同时保持截图帧龄更低 |
+| FPS | `3.0` | 默认 1080p 输入，服务采样 FPS 保持较低以控制 CPU、内存带宽和发热 |
 | Screenshot max edge | `960` | Go screenshot 工具默认压缩策略相关 |
 
 ## 启动
@@ -50,7 +51,7 @@ frame_service [--socket PATH] [--device PATH] [--width N] [--height N]
 | `--width N` / `--height N` | 期望分辨率，默认 1920x1080 |
 | `--pixel-format FMT` | `nv12`、`nv16`、`uyvy`、`yuyv`，默认 `uyvy` |
 | `--subdev PATH` | HDMI bridge subdev，默认 `/dev/v4l-subdev2` |
-| `--edid PATH` | 自定义 EDID hex；为空时使用内置 1080p30 CTA EDID |
+| `--edid PATH` | 自定义 EDID hex；为空时使用内置 1080p30-only CTA EDID |
 | `--ring-size N` | ring buffer 容量 |
 | `--fps N` | 采样 FPS；`0` 表示尽可能快 |
 | `--no-hdmi-sync` | 跳过 HDMI sync 辅助流程 |

@@ -445,12 +445,28 @@ void send_response(int client_fd,
 }
 
 void apply_default_agent_config(aiden::AgentToml& cfg) {
-    cfg.instruction = "You are a helpful assistant. Use tools when they help.";
+    cfg.instruction =
+        "默认用简体中文回答，语气要像真人说话，简短自然，适合 TTS 播放。"
+        "需要读取或改变手机、外部设备或服务状态时必须使用工具；可以连续组合多个工具完成任务。"
+        "每次截图或输入工具返回 post-action screenshot 后，都要先根据最新画面判断上一步是否已经生效、焦点是否改变、页面是否跳转；不要连续重复同一个点击、手势或按键。"
+        "在手机上打开 App、查找联系人、设置项、商品或页面内容时，优先使用系统搜索、App 内搜索或页面上的搜索框；不要先靠连续滑动、翻页来碰运气。"
+        "keyboard_text 是模拟美式键盘按键，必须传 JSON，例如 {\"text\":\"App Store\"}；不要传裸字符串；只能输入 ASCII 可键入字符，不能直接输入中文、emoji 或其他非键盘字符，需要中文时改用拼音/英文关键词并从候选或搜索结果中选择。"
+        "点击要以最新截图为准，选择可见目标的中心点，并优先使用 coord_space:\"normalized\" 的 0..1 坐标；手机投屏/截图可能被缩放，pixel 坐标容易和实际触控坐标偏移。除非用户明确要求或坐标系已经校准，不要使用 coord_space:\"pixel\"。坐标不确定时先截图确认，不要用大概位置连续试点。"
+        "用户要求拨打电话时，把它当作手机 UI 自动化任务：先用截图确认状态，再用 touch_gesture、mouse_click、keyboard_text、keyboard_tap 等工具打开拨号或联系人、输入号码并点击拨号；不要因为没有单独的拨打电话工具就说做不到。"
+        "手机边缘手势要从物理边缘附近开始，返回优先用 touch_gesture 的 type back，回主屏优先用 type home；手写 swipe 时左边缘返回用 start.x=0.001 左右，底边回主页用 start.y=0.999 左右。";
     cfg.input_mode = "text";
     cfg.trigger_mode = "manual";
     cfg.energy_threshold = 500;
-    cfg.silence_ms = 1000;
+    cfg.silence_ms = 650;
     cfg.min_speech_ms = 300;
+    cfg.voice_session_enabled = true;
+    cfg.voice_followup_timeout_ms = 6000;
+    cfg.voice_first_turn_timeout_ms = 10000;
+    cfg.voice_max_turns = 0;
+    cfg.voice_interrupt_on_wakeup = true;
+    cfg.voice_streaming_tts_enabled = true;
+    cfg.voice_tool_call_speech = true;
+    cfg.voice_max_response_tokens = 400;
     cfg.max_iterations = -1;
 
     cfg.model.provider = "openrouter";
@@ -588,6 +604,14 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddNumberToObject(agent, "energy_threshold", config.energy_threshold);
     cJSON_AddNumberToObject(agent, "silence_ms", config.silence_ms);
     cJSON_AddNumberToObject(agent, "min_speech_ms", config.min_speech_ms);
+    cJSON_AddBoolToObject(agent, "voice_session_enabled", config.voice_session_enabled ? 1 : 0);
+    cJSON_AddNumberToObject(agent, "voice_followup_timeout_ms", config.voice_followup_timeout_ms);
+    cJSON_AddNumberToObject(agent, "voice_first_turn_timeout_ms", config.voice_first_turn_timeout_ms);
+    cJSON_AddNumberToObject(agent, "voice_max_turns", config.voice_max_turns);
+    cJSON_AddBoolToObject(agent, "voice_interrupt_on_wakeup", config.voice_interrupt_on_wakeup ? 1 : 0);
+    cJSON_AddBoolToObject(agent, "voice_streaming_tts_enabled", config.voice_streaming_tts_enabled ? 1 : 0);
+    cJSON_AddBoolToObject(agent, "voice_tool_call_speech", config.voice_tool_call_speech ? 1 : 0);
+    cJSON_AddNumberToObject(agent, "voice_max_response_tokens", config.voice_max_response_tokens);
     cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
 
     return root;
@@ -659,6 +683,13 @@ void set_json_double(double* dst, cJSON* obj, const char* key) {
     cJSON* item = cJSON_GetObjectItem(obj, key);
     if (dst && json_is_number(item)) {
         *dst = item->valuedouble;
+    }
+}
+
+void set_json_bool(bool* dst, cJSON* obj, const char* key) {
+    cJSON* item = cJSON_GetObjectItem(obj, key);
+    if (dst && json_is_bool(item)) {
+        *dst = json_is_type(item, cJSON_True);
     }
 }
 
@@ -744,8 +775,35 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->energy_threshold, agent, "energy_threshold");
         set_json_int(&config->silence_ms, agent, "silence_ms");
         set_json_int(&config->min_speech_ms, agent, "min_speech_ms");
+        set_json_bool(&config->voice_session_enabled, agent, "voice_session_enabled");
+        set_json_int(&config->voice_followup_timeout_ms, agent, "voice_followup_timeout_ms");
+        set_json_int(&config->voice_first_turn_timeout_ms, agent, "voice_first_turn_timeout_ms");
+        set_json_int(&config->voice_max_turns, agent, "voice_max_turns");
+        set_json_bool(&config->voice_interrupt_on_wakeup, agent, "voice_interrupt_on_wakeup");
+        set_json_bool(&config->voice_streaming_tts_enabled, agent, "voice_streaming_tts_enabled");
+        set_json_bool(&config->voice_tool_call_speech, agent, "voice_tool_call_speech");
+        set_json_int(&config->voice_max_response_tokens, agent, "voice_max_response_tokens");
         set_json_int(&config->max_iterations, agent, "max_iterations");
     }
+}
+
+std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
+    if (config.voice_followup_timeout_ms < 0) {
+        return "voice_followup_timeout_ms must be >= 0";
+    }
+    if (config.voice_first_turn_timeout_ms < 0) {
+        return "voice_first_turn_timeout_ms must be >= 0";
+    }
+    if (config.voice_max_turns < 0) {
+        return "voice_max_turns must be >= 0";
+    }
+    if (config.voice_max_response_tokens < 0) {
+        return "voice_max_response_tokens must be >= 0";
+    }
+    if (config.max_iterations < -1) {
+        return "max_iterations must be >= -1";
+    }
+    return "";
 }
 
 void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {
@@ -1025,6 +1083,13 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON* apply_wifi_json = cJSON_GetObjectItem(root, "apply_wifi");
     if (json_is_bool(apply_wifi_json)) {
         apply_wifi = json_is_type(apply_wifi_json, cJSON_True);
+    }
+
+    std::string validation_error = validate_agent_config_for_save(config);
+    if (!validation_error.empty()) {
+        std::cerr << "Invalid agent config: " << validation_error << "\n";
+        cJSON_Delete(root);
+        return make_json_error(400, validation_error);
     }
 
     cJSON_Delete(root);

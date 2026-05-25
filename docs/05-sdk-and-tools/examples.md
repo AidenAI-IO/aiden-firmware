@@ -45,7 +45,7 @@ example_camera_capture [device_path] [width] [height] [pixfmt] [skip_frames] [op
 默认 one-shot 流程会：
 
 - 先查询当前 DV timings；
-- 必要时推送内置 1080p30 CTA EDID；
+- 必要时推送内置 1080p30-only CTA EDID；
 - 等待 `/dev/v4l-subdev2` HDMI sync；
 - stream-on 后丢弃过渡帧；
 - 通过 V4L2 MMAP 从 `/dev/video0` 捕获；

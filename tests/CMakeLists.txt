@@ -22,7 +22,6 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/frame_ipc.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_capture_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_processing.cpp
-    ${CMAKE_SOURCE_DIR}/tests/frame_jpeg_encoder_stub.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_client.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_server.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_service_protocol.cpp
@@ -67,6 +66,8 @@ if(OpenCV_FOUND)
 else()
     message(STATUS "OpenCV not found; image_process tests omitted from aiden_tests")
 endif()
+
+list(APPEND AIDEN_IMAGE_TEST_SOURCES frame_jpeg_encoder_stub.cpp)
 
 add_executable(aiden_tests
     test_main.cpp

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -48,6 +49,29 @@ type AudioServiceClient struct {
 // NewAudioServiceClient creates a new audio service client
 func NewAudioServiceClient(socketPath string) *AudioServiceClient {
 	return &AudioServiceClient{socketPath: socketPath}
+}
+
+func isTransientAudioServiceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, fragment := range []string{
+		"connection refused",
+		"connection reset by peer",
+		"broken pipe",
+		"no such file or directory",
+		"temporary failure",
+		"temporarily unavailable",
+		"i/o timeout",
+		"eof",
+		"use of closed network connection",
+	} {
+		if strings.Contains(msg, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 // audioRequest is the wire format for requests

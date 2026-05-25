@@ -90,6 +90,7 @@ start() {
     rm -f "$SOCKET_PATH"
 
     (
+        trap '' HUP
         trap 'exit 0' INT TERM
         while true; do
             if [ ! -x "$AUDIO_SERVICE_BIN" ]; then

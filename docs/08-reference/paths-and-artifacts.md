@@ -20,7 +20,10 @@
 | `src/audio_service_main.cpp` | Audio Service 入口 |
 | `src/config_web.cpp` | Config Web 入口 |
 | `src/agent/cmd/daemon` | Go Agent daemon |
+| `src/agent/cmd/ota` | OTA CLI / daemon |
+| `src/agent/cmd/abctl` | A/B metadata 诊断工具 |
 | `src/agent/internal/agent` | Agent runtime 和工具实现 |
+| `src/agent/internal/ota` | OTA manifest、下载、slot、health 和状态机 |
 | `tests/` | 单元测试 |
 
 ## 设备默认路径
@@ -31,6 +34,8 @@
 | `/userdata/agent/agent.toml` | Agent 主配置 |
 | `/userdata/agent/skills/` | Agent skills 目录 |
 | `/userdata/agent/memory/` | Agent 记忆持久化目录 |
+| `/userdata/ota/` | OTA 配置、状态、下载缓存和 health marker |
+| `/oem/etc/ota_pubkey.pem` | OTA manifest Ed25519 public key |
 | `/userdata/wpa_supplicant.conf` | Wi-Fi 配置 |
 | `/run/frame_service/frame_service.sock` | Frame Service socket |
 | `/run/audio_service/audio_service.sock` | Audio Service socket |
@@ -44,6 +49,8 @@
 | --- | --- |
 | `overlay/etc/aiden_frame_service.conf` | Frame Service init 配置模板 |
 | `overlay/etc/aiden_audio_service.conf` | Audio Service init 配置模板 |
+| `overlay/etc/init.d/S20oemslot` | Slot-aware `/oem` 挂载脚本 |
+| `overlay/etc/init.d/S54ota` | OTA daemon watchdog |
 | `overlay/userdata/agent/agent.toml` | Agent 默认配置模板 |
 | `overlay/userdata/wpa_supplicant.conf` | Wi-Fi 默认配置模板 |
 
@@ -73,6 +80,11 @@ audio_service_cli --socket /run/audio_service/audio_service.sock get-volume
 
 # Agent API
 curl http://<device-ip>:8080/api/tools
+
+# OTA
+/oem/usr/bin/ota status
+/oem/usr/bin/ota check-now
+/oem/usr/bin/abctl read /dev/block/by-name/misc
 ```
 
 ## EDID 文件
@@ -84,5 +96,6 @@ curl http://<device-ip>:8080/api/tools
 - `720p60.hex`
 - `hdmi_1080p30_cta.hex`
 - `hdmi_720p60_cta.hex`
+- `hdmi_720p60_1080p30_cta.hex`
 - `phone_vrt_552x1200p30.hex`
 - `phone_vrt_640x1200p30.hex`

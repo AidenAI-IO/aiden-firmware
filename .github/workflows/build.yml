@@ -19,20 +19,84 @@ jobs:
     - name: Fetch pico-sdk submodule
       run: git submodule update --init --depth=1 pico-sdk
 
+    - name: Free hosted runner disk space
+      run: |
+        df -h
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo apt-get clean
+        docker system prune -af || true
+        df -h
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: Run build script
-      run: ./build_image.sh
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: src/agent/go.mod
+        cache-dependency-path: src/agent/go.sum
+
+    - name: Prepare OTA public key
+      env:
+        OTA_ED25519_PRIVATE_KEY: ${{ secrets.OTA_ED25519_PRIVATE_KEY }}
+      run: |
+        if [ -z "${OTA_ED25519_PRIVATE_KEY}" ]; then
+          echo "OTA_ED25519_PRIVATE_KEY secret is required for production image builds" >&2
+          exit 1
+        fi
+        private_key="$RUNNER_TEMP/ota_ed25519_private_key.pem"
+        public_key="$GITHUB_WORKSPACE/.ota-ci/ota_ed25519_public_key.pem"
+        mkdir -p "$(dirname "$public_key")"
+        printf '%s\n' "${OTA_ED25519_PRIVATE_KEY}" > "$private_key"
+        chmod 600 "$private_key"
+        openssl pkey -in "$private_key" -pubout -out "$public_key"
+        scripts/validate_ota_pubkey.sh "$public_key"
+        echo "OTA_PUBLIC_KEY_PATH=/home/.ota-ci/ota_ed25519_public_key.pem" >> "$GITHUB_ENV"
 
     - name: Generate release name
       id: release_info
       run: |
         COMMIT_HASH=$(git rev-parse --short HEAD)
         TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
-        RELEASE_NAME="${COMMIT_HASH}-${TIMESTAMP}"
+        BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        RELEASE_NAME="${TIMESTAMP}-${COMMIT_HASH}"
         echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
         echo "tag_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+        echo "build_time=${BUILD_TIME}" >> "$GITHUB_OUTPUT"
+
+    - name: Run build script
+      run: ./build_image.sh
+
+    - name: Generate OTA manifest
+      env:
+        OTA_ED25519_PRIVATE_KEY: ${{ secrets.OTA_ED25519_PRIVATE_KEY }}
+      run: |
+        if [ -z "${OTA_ED25519_PRIVATE_KEY}" ]; then
+          echo "OTA_ED25519_PRIVATE_KEY secret is required for manifest signing" >&2
+          exit 1
+        fi
+        private_key="$RUNNER_TEMP/ota_ed25519_private_key.pem"
+        printf '%s\n' "${OTA_ED25519_PRIVATE_KEY}" > "$private_key"
+        chmod 600 "$private_key"
+        scripts/generate_ota_manifest.sh \
+          --version "${{ steps.release_info.outputs.release_name }}" \
+          --channel stable \
+          --build-time "${{ steps.release_info.outputs.build_time }}" \
+          --sign-key "$private_key" \
+          --image-dir pico-sdk/output/image \
+          --output pico-sdk/output/image/manifest.json
+
+    - name: Generate OTA device config
+      run: |
+        bash scripts/generate_ota_device_config.sh \
+          --manifest pico-sdk/output/image/manifest.json \
+          --repo "$GITHUB_REPOSITORY" \
+          --channel stable \
+          --output pico-sdk/output/out/userdata/ota/config.json
+
+    - name: Repack update image with OTA config
+      run: ./build_image.sh bash ./scripts/repack_ota_update_image.sh
 
     - name: Create Release
       uses: softprops/action-gh-release@v2

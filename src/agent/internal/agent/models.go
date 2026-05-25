@@ -22,6 +22,10 @@ import (
 type ModelResolver interface {
 	Get() (llms.Model, error)
 	CallOptions() []chains.ChainCallOption
+	// Spec returns static capabilities (context window, max output) for the
+	// configured model. Implementations return a zero-value ModelSpec for
+	// unknown models; callers must fall back to a configured default.
+	Spec() ModelSpec
 }
 
 type ModelManager struct {
@@ -56,6 +60,11 @@ func (m *ModelManager) CallOptions() []chains.ChainCallOption {
 		options = append(options, chains.WithMaxTokens(m.config.MaxTokens))
 	}
 	return options
+}
+
+func (m *ModelManager) Spec() ModelSpec {
+	spec, _ := LookupModelSpec(m.config.Provider, m.config.Model)
+	return spec
 }
 
 func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {

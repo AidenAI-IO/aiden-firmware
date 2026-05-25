@@ -9,13 +9,15 @@
 /overlay/oem/usr/bin/*
 !/overlay/oem/usr/bin/.gitkeep
 !/overlay/oem/usr/bin/RkLunch.sh
-
 # Secrets
 agent.conf
+/ota_ed25519_private_key.pem
+/ota_ed25519_public_key.pem
 
 # Debug artifacts
 screen-memory-debug-*/
 capture.md
+/update.img
 
 # Python (uv)
 .venv/

@@ -51,6 +51,16 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
 	},
+	"current_time": {
+		Category:     "system",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"timezone":"Asia/Shanghai"}`,
+	},
+	"enter_sleep": {
+		Category:     "system",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"reason":"user asked me to sleep"}`,
+	},
 	"keyboard_tap": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
@@ -90,6 +100,11 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"type":"tap","point":{"x":0.5,"y":0.5}}`,
+	},
+	"weather": {
+		Category:     "system",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"location":"Shanghai"}`,
 	},
 }
 
@@ -202,7 +217,10 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 	builder.WriteString("Recommended workflow:\n")
 	builder.WriteString("- Start with `GET /api/tools` if you need to confirm the tool list or example payloads.\n")
 	builder.WriteString("- Use `screenshot` before input actions when you need current screen context; keyboard, mouse, and touch tools automatically wait 500ms and return a post-action screenshot on success.\n")
-	builder.WriteString("- Prefer `coord_space: \"normalized\"` for pointer and touch inputs so the same call survives display-resolution changes.\n")
+	builder.WriteString("- After any screenshot or post-action screenshot, inspect the current screen before choosing the next action; do not repeat the same click, gesture, or key unless the image proves the previous action did not take effect.\n")
+	builder.WriteString("- When opening apps or finding contacts, settings, products, or page content on a phone, prefer system search, in-app search, or visible search fields before scrolling through pages or lists.\n")
+	builder.WriteString("- `keyboard_text` simulates a US keyboard: call it with JSON like `{\"text\":\"App Store\"}` and only ASCII text. Do not send Chinese or emoji directly; use pinyin/English search terms and select on-screen candidates when needed.\n")
+	builder.WriteString("- For pointer and touch inputs, click the visible target center from the latest screenshot and prefer `coord_space: \"normalized\"` with 0..1 coordinates. Use `coord_space: \"pixel\"` only when the screenshot pixel coordinates are known to match the HID pointer surface.\n")
 	builder.WriteString("- For `shell` background sessions, use `action:start`, then `poll`/`write`/`submit`/`send_keys`, and always finish with `stop`.\n\n")
 	builder.WriteString("Available tools in this skill:\n")
 	for _, descriptor := range descriptors {
@@ -218,8 +236,9 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 	}
 	builder.WriteString("\nExecution rules:\n")
 	builder.WriteString("- Treat `is_error=true` or outputs that start with `error:` as failures.\n")
-	builder.WriteString("- Use `screenshot` before pixel-based pointer actions when screen dimensions may be stale.\n")
+	builder.WriteString("- Avoid pixel-based pointer actions unless calibrated; if you must use them, call `screenshot` first because stale or mismatched screen dimensions will be rejected.\n")
 	builder.WriteString("- For successful keyboard, mouse, and touch calls, inspect the returned post-action screenshot before deciding the next step.\n")
+	builder.WriteString("- Do not use repeated scrolling as the first search strategy on phone UIs; try available search controls first.\n")
 	builder.WriteString("- Keep tool input minimal and deterministic; prefer the example payloads as a starting point.\n")
 	return builder.String()
 }
