@@ -555,14 +555,42 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 	nextVADLogAt := startedAt.Add(time.Second)
 	hasVADState := false
 	speechDetected := false
+	resetCapture := func(now time.Time) {
+		vadPending = vadPending[:0]
+		captured = captured[:0]
+		hasPendingByte = false
+		pendingByte = 0
+		startedAt = now
+		nextVADLogAt = now.Add(time.Second)
+		hasVADState = false
+		speechDetected = false
+	}
+	restartRecordingAfterWakeup := func() bool {
+		log.Println("[listen] wakeup received while listening, restarting recording")
+		if dialog.RecordingActive() {
+			if err := dialog.StopRecording(); err != nil {
+				log.Printf("[listen] stop recording before wakeup restart: %v\n", err)
+			}
+		}
+		if err := dialog.StartRecording(); err != nil {
+			log.Printf("[listen] restart recording after wakeup failed: %v\n", err)
+			return false
+		}
+		dialog.ResetVAD()
+		resetCapture(time.Now())
+		return true
+	}
 
+captureLoop:
 	for {
 		select {
 		case <-sigChan:
 			return nil, true
 		case <-events:
-			log.Println("[listen] wakeup received while listening, extending listen window")
-			startedAt = time.Now()
+			if !restartRecordingAfterWakeup() {
+				return nil, false
+			}
+			continue
 		default:
 		}
 
@@ -582,6 +610,17 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 		if err != nil {
 			log.Printf("[listen] read_record_chunk error: %v\n", err)
 			return nil, false
+		}
+
+		select {
+		case <-sigChan:
+			return nil, true
+		case <-events:
+			if !restartRecordingAfterWakeup() {
+				return nil, false
+			}
+			continue
+		default:
 		}
 
 		if chunk == nil {
@@ -627,6 +666,16 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 				}
 			}
 			if utterance != nil {
+				select {
+				case <-sigChan:
+					return nil, true
+				case <-events:
+					if !restartRecordingAfterWakeup() {
+						return nil, false
+					}
+					continue captureLoop
+				default:
+				}
 				log.Println("[utterance] VAD detected end of speech")
 				return utterance, false
 			}

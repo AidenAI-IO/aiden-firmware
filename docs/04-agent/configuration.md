@@ -111,7 +111,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `voice_followup_timeout_ms` | `6000` | Agent 回复后等待用户追问的窗口 |
 | `voice_first_turn_timeout_ms` | `10000` | wakeup 后等待第一句话的窗口 |
 | `voice_max_turns` | `0` | 单个 wakeup session 最大轮数；`0` 表示不限制 |
-| `voice_interrupt_on_wakeup` | `true` | session 内再次收到 wakeup 时取消 thinking/TTS 并重新听音 |
+| `voice_interrupt_on_wakeup` | `true` | session 内再次收到 wakeup 时取消 thinking/TTS 并重新听音；录音中 wakeup 会直接重启录音并丢弃已录音频 |
 | `voice_streaming_tts_enabled` | `true` | LLM 流式输出时按句送入 TTS，降低首句播放等待 |
 | `voice_tool_call_speech` | `true` | 是否异步朗读工具调用说明；默认开启以避免工具执行期间长时间沉默 |
 | `voice_max_response_tokens` | `400` | 语音回复的单次输出 token 上限（需 `>= 0`） |

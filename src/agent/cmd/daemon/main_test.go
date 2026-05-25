@@ -24,6 +24,7 @@ type fakeAudioDialog struct {
 	prepareTurnInput   func([]int16) (agent.TurnInput, error)
 	runTurn            func(context.Context) (agent.RunResult, error)
 	speak              func(context.Context) error
+	onRead             func(*fakeAudioDialog, *agent.AudioChunkResult)
 	spoken             []string
 	repeatEmpty        bool
 	readDelay          time.Duration
@@ -71,6 +72,9 @@ func (d *fakeAudioDialog) ReadRecordChunk(timeoutMs uint32) (*agent.AudioChunkRe
 	}
 	chunk := d.chunks[0]
 	d.chunks = d.chunks[1:]
+	if d.onRead != nil {
+		d.onRead(d, chunk)
+	}
 	return chunk, nil
 }
 
@@ -891,6 +895,48 @@ func TestCaptureUtteranceTimeoutReturnsBufferedSpeechWhenVADStarted(t *testing.T
 	}
 	if len(utterance) == 0 {
 		t.Fatal("expected buffered speech after timeout")
+	}
+}
+
+func TestListenOneUtteranceWakeupRestartsRecordingAndDiscardsBufferedAudio(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	events := make(chan voiceEvent, 1)
+	firstRead := true
+	dialog := &fakeAudioDialog{
+		frameSamples: 2,
+		chunkBatches: [][]*agent.AudioChunkResult{
+			{{PCM: pcm16BytesFromSamples(100, 200)}},
+			{{PCM: pcm16BytesFromSamples(300, 400)}},
+		},
+		utterancesToReturn: [][]int16{
+			{300, 400},
+		},
+		onRead: func(d *fakeAudioDialog, chunk *agent.AudioChunkResult) {
+			if firstRead {
+				firstRead = false
+				events <- voiceEventWakeup
+			}
+		},
+	}
+
+	utterance, exit := listenOneUtterance(dialog, sigChan, events, time.Second)
+	if exit {
+		t.Fatal("listenOneUtterance returned exit=true")
+	}
+	if got, want := utterance, []int16{300, 400}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("utterance = %#v, want only restarted recording samples %#v", got, want)
+	}
+	if len(dialog.frames) != 1 || dialog.frames[0][0] != 300 || dialog.frames[0][1] != 400 {
+		t.Fatalf("VAD frames = %#v, want only restarted recording samples", dialog.frames)
+	}
+	wantOps := []string{"start", "reset", "stop", "start", "reset", "stop"}
+	if len(dialog.ops) != len(wantOps) {
+		t.Fatalf("dialog ops = %#v, want %#v", dialog.ops, wantOps)
+	}
+	for i, want := range wantOps {
+		if dialog.ops[i] != want {
+			t.Fatalf("dialog ops = %#v, want %#v", dialog.ops, wantOps)
+		}
 	}
 }
 
