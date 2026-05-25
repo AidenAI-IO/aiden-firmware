@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <poll.h>
 #include <string.h>
+#include <errno.h>
 
 typedef struct {
     const char* pin;
@@ -21,24 +22,35 @@ static int gpio_pin_count() {
     return sizeof(GPIO_PINS) / sizeof(GPIO_PINS[0]);
 }
 
-void init_gpio_pin(const GpioPin* gpio) {
-    int fd = open("/sys/class/gpio/export", O_WRONLY);
-    if (fd != -1) {
-        write(fd, gpio->pin, strlen(gpio->pin));
-        close(fd);
+static int write_gpio_setting(const char* path, const char* value, size_t value_len) {
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        return -errno;
     }
 
-    fd = open(gpio->direction_path, O_WRONLY);
-    if (fd != -1) {
-        write(fd, "in", 2);
+    ssize_t written = write(fd, value, value_len);
+    if (written != (ssize_t)value_len) {
+        int err = written < 0 ? errno : EIO;
         close(fd);
+        return -err;
     }
 
-    fd = open(gpio->edge_path, O_WRONLY);
-    if (fd != -1) {
-        write(fd, "falling", 7);
-        close(fd);
+    close(fd);
+    return 0;
+}
+
+int init_gpio_pin(const GpioPin* gpio) {
+    int status = write_gpio_setting("/sys/class/gpio/export", gpio->pin, strlen(gpio->pin));
+    if (status != 0) {
+        return status;
     }
+
+    status = write_gpio_setting(gpio->direction_path, "in", 2);
+    if (status != 0) {
+        return status;
+    }
+
+    return write_gpio_setting(gpio->edge_path, "falling", 7);
 }
 
 int main() {
@@ -47,7 +59,16 @@ int main() {
     char buf[64];
 
     for (int i = 0; i < count; i++) {
-        init_gpio_pin(&GPIO_PINS[i]);
+        int status = init_gpio_pin(&GPIO_PINS[i]);
+        if (status != 0) {
+            int err = status < 0 ? -status : status;
+            fprintf(stderr, "Failed to initialize GPIO %s: %s (errno %d)\n",
+                    GPIO_PINS[i].pin, strerror(err), err);
+            for (int j = 0; j < i; j++) {
+                close(pfd[j].fd);
+            }
+            return 1;
+        }
 
         int fd = open(GPIO_PINS[i].value_path, O_RDONLY);
         if (fd < 0) {
