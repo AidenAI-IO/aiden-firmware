@@ -21,6 +21,7 @@ typedef enum _rknn_query_cmd {
     RKNN_QUERY_IN_OUT_NUM = 0,
     RKNN_QUERY_INPUT_ATTR = 1,
     RKNN_QUERY_OUTPUT_ATTR = 2,
+    RKNN_QUERY_SDK_VERSION = 5,
     RKNN_QUERY_NATIVE_INPUT_ATTR = 8,
     RKNN_QUERY_NATIVE_OUTPUT_ATTR = 9,
 } rknn_query_cmd;
@@ -58,6 +59,21 @@ typedef struct _rknn_input_output_num {
     uint32_t n_output;
 } rknn_input_output_num;
 
+typedef struct _rknn_sdk_version {
+    char api_version[256];
+    char drv_version[256];
+} rknn_sdk_version;
+
+typedef struct _rknn_tensor_memory {
+    void* virt_addr;
+    uint64_t phys_addr;
+    int32_t fd;
+    int32_t offset;
+    uint32_t size;
+    uint32_t flags;
+    void* priv_data;
+} rknn_tensor_mem;
+
 typedef struct _rknn_tensor_attr {
     uint32_t index;
     uint32_t n_dims;
@@ -77,30 +93,13 @@ typedef struct _rknn_tensor_attr {
     uint32_t h_stride;
 } rknn_tensor_attr;
 
-typedef struct _rknn_input {
-    uint32_t index;
-    void* buf;
-    uint32_t size;
-    uint8_t pass_through;
-    rknn_tensor_type type;
-    rknn_tensor_format fmt;
-} rknn_input;
-
-typedef struct _rknn_output {
-    uint8_t want_float;
-    uint8_t is_prealloc;
-    uint32_t index;
-    void* buf;
-    uint32_t size;
-} rknn_output;
-
 int rknn_init(rknn_context* context, void* model, uint32_t size, uint32_t flag, void* extend);
 int rknn_destroy(rknn_context context);
 int rknn_query(rknn_context context, rknn_query_cmd cmd, void* info, uint32_t size);
-int rknn_inputs_set(rknn_context context, uint32_t n_inputs, rknn_input inputs[]);
 int rknn_run(rknn_context context, void* extend);
-int rknn_outputs_get(rknn_context context, uint32_t n_outputs, rknn_output outputs[], void* extend);
-int rknn_outputs_release(rknn_context context, uint32_t n_outputs, rknn_output outputs[]);
+rknn_tensor_mem* rknn_create_mem(rknn_context context, uint32_t size);
+int rknn_destroy_mem(rknn_context context, rknn_tensor_mem* mem);
+int rknn_set_io_mem(rknn_context context, rknn_tensor_mem* mem, rknn_tensor_attr* attr);
 
 #ifdef __cplusplus
 }

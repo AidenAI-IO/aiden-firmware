@@ -57,6 +57,10 @@ set(MPP_PATH ${SDK_PATH}/media/mpp/release_mpp_rv1106_arm-rockchip830-linux-ucli
 set(RGA_PATH ${SDK_PATH}/media/rga/release_rga_rv1106_arm-rockchip830-linux-uclibcgnueabihf)
 set(IVE_PATH ${SDK_PATH}/media/ive/ive)
 set(RKNNMRT_PATH ${SDK_PATH}/media/iva/iva/librockiva/rockiva-rv1106-Linux)
+set(RKNNMRT_LINK_DIR ${RKNNMRT_PATH}/lib)
+if(EXISTS "${CMAKE_SOURCE_DIR}/overlay/oem/usr/lib/librknnmrt.so")
+    set(RKNNMRT_LINK_DIR ${CMAKE_SOURCE_DIR}/overlay/oem/usr/lib)
+endif()
 
 add_library(cjson STATIC src/cJSON/cJSON.c)
 target_include_directories(cjson PUBLIC ${CMAKE_SOURCE_DIR}/src)
@@ -155,7 +159,7 @@ target_link_libraries(audio_stream PRIVATE aiden)
 
 add_executable(rknn_vad src/rknn_vad.cpp)
 target_include_directories(rknn_vad PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_directories(rknn_vad PRIVATE ${RKNNMRT_PATH}/lib)
+target_link_directories(rknn_vad PRIVATE ${RKNNMRT_LINK_DIR})
 target_link_libraries(rknn_vad PRIVATE rknnmrt)
 
 add_executable(config_web

@@ -114,6 +114,14 @@ speed = 1.0
 - STT/TTS 需要外部 API key；
 - `wakeup` 模式需要 GPIO 33 或 GPIO 32 硬件触发条件。
 
+可在板端直接验证 RKNN VAD helper：
+
+```bash
+/oem/usr/bin/rknn_vad --model /userdata/agent/silero_vad_rv1106.rknn --self-test
+```
+
+成功时会输出一行 `P <probability>`；如果仍有 RKNN 输入配置问题，会直接输出 `ERR ...`。
+
 ## 已知限制
 
 - Web UI 和设备语音 loop 当前不能在同一 daemon 实例同时运行；
