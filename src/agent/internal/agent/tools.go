@@ -104,6 +104,12 @@ func (s *ToolSet) RegisterMemoryTools(memoryDir string, profileFn ProfileFn, sum
 	s.tools["forget_memory"] = NewForgetMemoryTool(longTermStore)
 }
 
+func (s *ToolSet) RegisterSkillTools(skillsDir, manifestPath string) {
+	s.tools["skill_list"] = NewSkillListTool(skillsDir)
+	s.tools["skill_read"] = NewSkillReadTool(skillsDir)
+	s.tools["skill_manage"] = NewSkillManageTool(skillsDir, manifestPath)
+}
+
 // ActivateSkillTool allows the LLM to activate skills at runtime.
 type ActivateSkillTool struct {
 	skillManager *SkillManager

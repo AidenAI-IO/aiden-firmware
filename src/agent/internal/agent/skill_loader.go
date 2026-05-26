@@ -183,6 +183,32 @@ func (idx *SkillIndex) Get(name string) (*SkillDefinition, bool) {
 	return skill, ok
 }
 
+// parseSkillFromContent parses a SKILL.md from raw content without reading from disk.
+func parseSkillFromContent(content string) (*SkillDefinition, error) {
+	frontmatter, body, err := parseFrontmatter(content)
+	if err != nil {
+		return nil, err
+	}
+
+	var meta SkillMetadata
+	if err := yaml.Unmarshal([]byte(frontmatter), &meta); err != nil {
+		return nil, fmt.Errorf("parse frontmatter: %w", err)
+	}
+
+	if meta.Name == "" {
+		return nil, fmt.Errorf("skill name is required in frontmatter")
+	}
+	if meta.Description == "" {
+		return nil, fmt.Errorf("skill description is required in frontmatter")
+	}
+
+	return &SkillDefinition{
+		Name:         meta.Name,
+		Description:  meta.Description,
+		Instructions: strings.TrimSpace(body),
+	}, nil
+}
+
 // Names returns all registered skill names
 func (idx *SkillIndex) Names() []string {
 	names := make([]string, 0, len(idx.skills))

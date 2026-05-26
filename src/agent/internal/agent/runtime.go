@@ -99,12 +99,19 @@ func (m *usageTrackingModel) Call(ctx context.Context, prompt string, options ..
 func NewRuntime(cfg Config) (*Runtime, error) {
 	// Sync bundled skills into user directory before loading
 	if cfg.BundledSkillsDir != "" && cfg.ConfigDir != "" {
-		if _, err := SyncBundledSkills(context.Background(), SkillSyncOptions{
+		report, err := SyncBundledSkills(context.Background(), SkillSyncOptions{
 			ConfigDir:        cfg.ConfigDir,
 			BundledSkillsDir: cfg.BundledSkillsDir,
+			MergeModel:       cfg.SkillMergeModel,
 			Quiet:            false,
-		}); err != nil {
+		})
+		if err != nil {
 			log.Printf("[skill_sync] sync failed (non-fatal): %v", err)
+		} else if len(report.MergeNeeded) > 0 && cfg.SkillMergeModel != nil {
+			manifestPath := filepath.Join(cfg.ConfigDir, "skill-state", ".bundled_manifest.json")
+			worker := NewMergeWorker(cfg.SkillMergeModel, manifestPath)
+			worker.Enqueue(report.MergeNeeded)
+			worker.Start(context.Background())
 		}
 	}
 
@@ -155,6 +162,14 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	toolSet.RegisterMemoryTools(memoryDir, profileFn, extractionCfg.SummaryMaxChunks, debouncer)
+
+	// Register skill tools
+	if cfg.ConfigDir != "" {
+		skillsDir := filepath.Join(cfg.ConfigDir, "skills")
+		manifestPath := filepath.Join(cfg.ConfigDir, "skill-state", ".bundled_manifest.json")
+		toolSet.RegisterSkillTools(skillsDir, manifestPath)
+	}
+
 	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithMemoryLogger(logger)), toolSet, skillIndex)
 	rt.logger = logger
 	rt.profileDebouncer = debouncer

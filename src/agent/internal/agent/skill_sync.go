@@ -10,12 +10,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
+
+var manifestMu sync.Mutex
 
 type SkillSyncOptions struct {
 	ConfigDir        string
 	BundledSkillsDir string
+	MergeModel       SkillMergeModel
 	Quiet            bool
 }
 
@@ -25,6 +29,7 @@ type SkillSyncReport struct {
 	KeptUser      []string
 	DeletedByUser []string
 	Stale         []string
+	MergeNeeded   []SkillMergeJob
 }
 
 type BundledManifest struct {
@@ -34,15 +39,19 @@ type BundledManifest struct {
 }
 
 type ManifestEntry struct {
-	OriginHash   string `json:"origin_hash"`
-	Status       string `json:"status"`
-	BasePath     string `json:"base_path,omitempty"`
-	LastSyncedAt string `json:"last_synced_at,omitempty"`
+	OriginHash         string `json:"origin_hash"`
+	Status             string `json:"status"`
+	BasePath           string `json:"base_path,omitempty"`
+	LastSyncedAt       string `json:"last_synced_at,omitempty"`
+	LastMergedKey      string `json:"last_merged_key,omitempty"`
+	LastFailedMergeKey string `json:"last_failed_merge_key,omitempty"`
+	LastMergeError     string `json:"last_merge_error,omitempty"`
 }
 
 const (
 	StatusSynced        = "synced"
 	StatusUserModified  = "user_modified"
+	StatusMerged        = "merged"
 	StatusDeletedByUser = "deleted_by_user"
 )
 
@@ -110,7 +119,26 @@ func syncOneSkill(name, bundledPath, userSkillsDir, stateDir string, manifest *B
 		}
 
 	case userExists && !hasManifest:
-		report.KeptUser = append(report.KeptUser, name)
+		// §9.7: same name but no manifest — need two-way merge
+		userContent, _ := os.ReadFile(userPath)
+		if userContent != nil {
+			localHash := hashContent(userContent)
+			mergeKey := computeMergeKey(name, "", bundledHash, localHash)
+			report.MergeNeeded = append(report.MergeNeeded, SkillMergeJob{
+				SkillName:    name,
+				Mode:         MergeTwoWay,
+				Upstream:     string(bundledContent),
+				Local:        string(userContent),
+				LocalHash:    localHash,
+				UpstreamHash: bundledHash,
+				MergeKey:     mergeKey,
+				UserPath:     userPath,
+				BasePath:     basePathForSkill(stateDir, name),
+				StateDir:     stateDir,
+			})
+		} else {
+			report.KeptUser = append(report.KeptUser, name)
+		}
 
 	case userExists && hasManifest:
 		syncExistingSkill(name, userPath, bundledContent, bundledHash, entry, stateDir, manifest, report)
@@ -154,13 +182,44 @@ func syncExistingSkill(name, userPath string, bundledContent []byte, bundledHash
 		}
 		report.KeptUser = append(report.KeptUser, name)
 	case userModified && bundledUpdated:
-		manifest.Skills[name] = ManifestEntry{
-			OriginHash:   entry.OriginHash,
-			Status:       StatusUserModified,
-			BasePath:     entry.BasePath,
-			LastSyncedAt: entry.LastSyncedAt,
+		baseContent := ""
+		if entry.BasePath != "" {
+			if data, err := os.ReadFile(entry.BasePath); err == nil {
+				baseContent = string(data)
+			}
 		}
-		report.KeptUser = append(report.KeptUser, name)
+		mergeKey := computeMergeKey(name, entry.OriginHash, bundledHash, userHash)
+		if entry.LastFailedMergeKey == mergeKey {
+			// Same inputs already failed, don't retry
+			report.KeptUser = append(report.KeptUser, name)
+		} else {
+			mode := MergeThreeWay
+			if baseContent == "" {
+				mode = MergeTwoWay
+			}
+			report.MergeNeeded = append(report.MergeNeeded, SkillMergeJob{
+				SkillName:    name,
+				Mode:         mode,
+				Base:         baseContent,
+				Upstream:     string(bundledContent),
+				Local:        string(userContent),
+				LocalHash:    userHash,
+				UpstreamHash: bundledHash,
+				BaseHash:     entry.OriginHash,
+				MergeKey:     mergeKey,
+				UserPath:     userPath,
+				BasePath:     basePath,
+				StateDir:     stateDir,
+			})
+		}
+		manifest.Skills[name] = ManifestEntry{
+			OriginHash:         entry.OriginHash,
+			Status:             StatusUserModified,
+			BasePath:           entry.BasePath,
+			LastSyncedAt:       entry.LastSyncedAt,
+			LastFailedMergeKey: entry.LastFailedMergeKey,
+			LastMergeError:     entry.LastMergeError,
+		}
 	}
 }
 
@@ -212,6 +271,8 @@ func cleanStaleManifestEntries(manifest *BundledManifest, bundled map[string]str
 }
 
 func loadManifest(path string) *BundledManifest {
+	manifestMu.Lock()
+	defer manifestMu.Unlock()
 	m := &BundledManifest{Version: 1, Skills: make(map[string]ManifestEntry)}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -227,6 +288,8 @@ func loadManifest(path string) *BundledManifest {
 }
 
 func saveManifest(path string, m *BundledManifest) {
+	manifestMu.Lock()
+	defer manifestMu.Unlock()
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		log.Printf("[skill_sync] marshal manifest: %v", err)
