@@ -76,7 +76,8 @@ func (idx *SkillIndex) scanDirectory(dir string) error {
 		}
 
 		if _, exists := idx.skills[skill.Name]; exists {
-			return fmt.Errorf("duplicate skill name %q (found in %q)", skill.Name, path)
+			log.Printf("[skill_loader] duplicate skill name %q in %q, keeping first", skill.Name, path)
+			return nil
 		}
 
 		idx.skills[skill.Name] = skill

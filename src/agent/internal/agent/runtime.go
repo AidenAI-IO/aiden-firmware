@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -96,6 +97,17 @@ func (m *usageTrackingModel) Call(ctx context.Context, prompt string, options ..
 }
 
 func NewRuntime(cfg Config) (*Runtime, error) {
+	// Sync bundled skills into user directory before loading
+	if cfg.BundledSkillsDir != "" && cfg.ConfigDir != "" {
+		if _, err := SyncBundledSkills(context.Background(), SkillSyncOptions{
+			ConfigDir:        cfg.ConfigDir,
+			BundledSkillsDir: cfg.BundledSkillsDir,
+			Quiet:            false,
+		}); err != nil {
+			log.Printf("[skill_sync] sync failed (non-fatal): %v", err)
+		}
+	}
+
 	// Load skills from configured directories
 	var skillIndex *SkillIndex
 	var err error

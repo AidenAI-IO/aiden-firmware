@@ -49,6 +49,7 @@ type Config struct {
 	VoiceMaxResponseTokens   int          `toml:"voice_max_response_tokens,omitempty"`
 	MaxIterations            int          `toml:"max_iterations,omitempty"`
 	SkillsDirs               []string     `toml:"skills_dirs"`
+	BundledSkillsDir         string       `toml:"bundled_skills_dir,omitempty"`
 	ConfigDir                string       `toml:"-"`
 }
 
@@ -207,7 +208,26 @@ func LoadConfigFromDir(configDir string) (Config, error) {
 		cfg.SkillsDirs = []string{}
 	}
 
+	if cfg.BundledSkillsDir == "" {
+		cfg.BundledSkillsDir = resolveBundledSkillsDir(configDir)
+	}
+
 	return cfg, nil
+}
+
+func resolveBundledSkillsDir(configDir string) string {
+	if v := os.Getenv("AIDEN_BUNDLED_SKILLS_DIR"); v != "" {
+		return v
+	}
+	candidates := []string{
+		"/usr/share/aiden/skills",
+	}
+	for _, c := range candidates {
+		if info, err := os.Stat(c); err == nil && info.IsDir() {
+			return c
+		}
+	}
+	return ""
 }
 
 func LoadConfig(path string) (Config, error) {
