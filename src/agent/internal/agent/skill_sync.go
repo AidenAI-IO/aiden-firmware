@@ -36,6 +36,7 @@ type BundledManifest struct {
 type ManifestEntry struct {
 	OriginHash   string `json:"origin_hash"`
 	Status       string `json:"status"`
+	BasePath     string `json:"base_path,omitempty"`
 	LastSyncedAt string `json:"last_synced_at,omitempty"`
 }
 
@@ -66,7 +67,7 @@ func SyncBundledSkills(ctx context.Context, opts SkillSyncOptions) (*SkillSyncRe
 	report := &SkillSyncReport{}
 
 	for name, bundledPath := range bundled {
-		syncOneSkill(name, bundledPath, userSkillsDir, manifest, report)
+		syncOneSkill(name, bundledPath, userSkillsDir, stateDir, manifest, report)
 	}
 
 	cleanStaleManifestEntries(manifest, bundled, report)
@@ -79,7 +80,7 @@ func SyncBundledSkills(ctx context.Context, opts SkillSyncOptions) (*SkillSyncRe
 	return report, nil
 }
 
-func syncOneSkill(name, bundledPath, userSkillsDir string, manifest *BundledManifest, report *SkillSyncReport) {
+func syncOneSkill(name, bundledPath, userSkillsDir, stateDir string, manifest *BundledManifest, report *SkillSyncReport) {
 	userDir := filepath.Join(userSkillsDir, name)
 	userPath := filepath.Join(userDir, "SKILL.md")
 	bundledContent, err := os.ReadFile(bundledPath)
@@ -97,13 +98,14 @@ func syncOneSkill(name, bundledPath, userSkillsDir string, manifest *BundledMani
 		report.DeletedByUser = append(report.DeletedByUser, name)
 
 	case !userExists && !hasManifest:
-		copyBundledToUser(name, bundledContent, userDir, userPath, bundledHash, manifest, report)
+		copyBundledToUser(name, bundledContent, userDir, userPath, bundledHash, stateDir, manifest, report)
 
 	case !userExists && hasManifest:
 		report.DeletedByUser = append(report.DeletedByUser, name)
 		manifest.Skills[name] = ManifestEntry{
 			OriginHash:   entry.OriginHash,
 			Status:       StatusDeletedByUser,
+			BasePath:     entry.BasePath,
 			LastSyncedAt: entry.LastSyncedAt,
 		}
 
@@ -111,11 +113,11 @@ func syncOneSkill(name, bundledPath, userSkillsDir string, manifest *BundledMani
 		report.KeptUser = append(report.KeptUser, name)
 
 	case userExists && hasManifest:
-		syncExistingSkill(name, userPath, bundledContent, bundledHash, entry, manifest, report)
+		syncExistingSkill(name, userPath, bundledContent, bundledHash, entry, stateDir, manifest, report)
 	}
 }
 
-func syncExistingSkill(name, userPath string, bundledContent []byte, bundledHash string, entry ManifestEntry, manifest *BundledManifest, report *SkillSyncReport) {
+func syncExistingSkill(name, userPath string, bundledContent []byte, bundledHash string, entry ManifestEntry, stateDir string, manifest *BundledManifest, report *SkillSyncReport) {
 	userContent, err := os.ReadFile(userPath)
 	if err != nil {
 		log.Printf("[skill_sync] read user %s: %v", name, err)
@@ -125,6 +127,7 @@ func syncExistingSkill(name, userPath string, bundledContent []byte, bundledHash
 
 	userModified := userHash != entry.OriginHash
 	bundledUpdated := bundledHash != entry.OriginHash
+	basePath := basePathForSkill(stateDir, name)
 
 	switch {
 	case !userModified && !bundledUpdated:
@@ -134,9 +137,11 @@ func syncExistingSkill(name, userPath string, bundledContent []byte, bundledHash
 			log.Printf("[skill_sync] update %s: %v", name, err)
 			return
 		}
+		saveBase(basePath, bundledContent)
 		manifest.Skills[name] = ManifestEntry{
 			OriginHash:   bundledHash,
 			Status:       StatusSynced,
+			BasePath:     basePath,
 			LastSyncedAt: time.Now().Format(time.RFC3339),
 		}
 		report.Updated = append(report.Updated, name)
@@ -144,21 +149,22 @@ func syncExistingSkill(name, userPath string, bundledContent []byte, bundledHash
 		manifest.Skills[name] = ManifestEntry{
 			OriginHash:   entry.OriginHash,
 			Status:       StatusUserModified,
+			BasePath:     entry.BasePath,
 			LastSyncedAt: entry.LastSyncedAt,
 		}
 		report.KeptUser = append(report.KeptUser, name)
 	case userModified && bundledUpdated:
-		// Phase 3 will handle LLM merge; for now keep user version
 		manifest.Skills[name] = ManifestEntry{
 			OriginHash:   entry.OriginHash,
 			Status:       StatusUserModified,
+			BasePath:     entry.BasePath,
 			LastSyncedAt: entry.LastSyncedAt,
 		}
 		report.KeptUser = append(report.KeptUser, name)
 	}
 }
 
-func copyBundledToUser(name string, content []byte, userDir, userPath, bundledHash string, manifest *BundledManifest, report *SkillSyncReport) {
+func copyBundledToUser(name string, content []byte, userDir, userPath, bundledHash, stateDir string, manifest *BundledManifest, report *SkillSyncReport) {
 	if err := os.MkdirAll(userDir, 0o755); err != nil {
 		log.Printf("[skill_sync] mkdir %s: %v", userDir, err)
 		return
@@ -167,9 +173,12 @@ func copyBundledToUser(name string, content []byte, userDir, userPath, bundledHa
 		log.Printf("[skill_sync] write %s: %v", userPath, err)
 		return
 	}
+	basePath := basePathForSkill(stateDir, name)
+	saveBase(basePath, content)
 	manifest.Skills[name] = ManifestEntry{
 		OriginHash:   bundledHash,
 		Status:       StatusSynced,
+		BasePath:     basePath,
 		LastSyncedAt: time.Now().Format(time.RFC3339),
 	}
 	report.Copied = append(report.Copied, name)
@@ -248,4 +257,50 @@ func logSyncReport(report *SkillSyncReport) {
 	if len(report.KeptUser) > 0 {
 		log.Printf("[skill_sync] kept user version for %d skill(s): %s", len(report.KeptUser), strings.Join(report.KeptUser, ", "))
 	}
+}
+
+func basePathForSkill(stateDir, name string) string {
+	return filepath.Join(stateDir, "bases", name, "SKILL.md")
+}
+
+func saveBase(basePath string, content []byte) {
+	if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {
+		log.Printf("[skill_sync] mkdir base: %v", err)
+		return
+	}
+	if err := os.WriteFile(basePath, content, 0o644); err != nil {
+		log.Printf("[skill_sync] write base: %v", err)
+	}
+}
+
+func RestoreBundledSkill(configDir, bundledSkillsDir, name string) error {
+	bundledPath := filepath.Join(bundledSkillsDir, name, "SKILL.md")
+	content, err := os.ReadFile(bundledPath)
+	if err != nil {
+		return fmt.Errorf("read bundled skill %q: %w", name, err)
+	}
+
+	userPath := filepath.Join(configDir, "skills", name, "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
+		return fmt.Errorf("create skill dir: %w", err)
+	}
+	if err := os.WriteFile(userPath, content, 0o644); err != nil {
+		return fmt.Errorf("write user skill: %w", err)
+	}
+
+	stateDir := filepath.Join(configDir, "skill-state")
+	basePath := basePathForSkill(stateDir, name)
+	saveBase(basePath, content)
+
+	manifestPath := filepath.Join(stateDir, ".bundled_manifest.json")
+	manifest := loadManifest(manifestPath)
+	manifest.Skills[name] = ManifestEntry{
+		OriginHash:   hashContent(content),
+		Status:       StatusSynced,
+		BasePath:     basePath,
+		LastSyncedAt: time.Now().Format(time.RFC3339),
+	}
+	manifest.UpdatedAt = time.Now().Format(time.RFC3339)
+	saveManifest(manifestPath, manifest)
+	return nil
 }

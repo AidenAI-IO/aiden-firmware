@@ -183,3 +183,80 @@ func TestSyncBundledSkills_StaleManifestCleaned(t *testing.T) {
 		t.Fatal("stale entry not cleaned from manifest")
 	}
 }
+
+func TestSyncBundledSkills_BaseSavedOnCopy(t *testing.T) {
+	configDir := t.TempDir()
+	bundledDir := t.TempDir()
+	writeSKILL(t, bundledDir, "alpha", testSkillA)
+
+	SyncBundledSkills(context.Background(), SkillSyncOptions{
+		ConfigDir: configDir, BundledSkillsDir: bundledDir, Quiet: true,
+	})
+
+	basePath := filepath.Join(configDir, "skill-state", "bases", "alpha", "SKILL.md")
+	data, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatalf("base not saved: %v", err)
+	}
+	if string(data) != testSkillA {
+		t.Fatal("base content mismatch")
+	}
+
+	manifest := loadManifest(filepath.Join(configDir, "skill-state", ".bundled_manifest.json"))
+	if manifest.Skills["alpha"].BasePath == "" {
+		t.Fatal("manifest missing base_path")
+	}
+}
+
+func TestSyncBundledSkills_BaseUpdatedOnAutoUpdate(t *testing.T) {
+	configDir := t.TempDir()
+	bundledDir := t.TempDir()
+	writeSKILL(t, bundledDir, "alpha", testSkillA)
+
+	SyncBundledSkills(context.Background(), SkillSyncOptions{
+		ConfigDir: configDir, BundledSkillsDir: bundledDir, Quiet: true,
+	})
+
+	writeSKILL(t, bundledDir, "alpha", testSkillAv2)
+	SyncBundledSkills(context.Background(), SkillSyncOptions{
+		ConfigDir: configDir, BundledSkillsDir: bundledDir, Quiet: true,
+	})
+
+	basePath := filepath.Join(configDir, "skill-state", "bases", "alpha", "SKILL.md")
+	data, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatalf("base not updated: %v", err)
+	}
+	if string(data) != testSkillAv2 {
+		t.Fatal("base should contain v2 after auto-update")
+	}
+}
+
+func TestRestoreBundledSkill(t *testing.T) {
+	configDir := t.TempDir()
+	bundledDir := t.TempDir()
+	writeSKILL(t, bundledDir, "alpha", testSkillA)
+
+	SyncBundledSkills(context.Background(), SkillSyncOptions{
+		ConfigDir: configDir, BundledSkillsDir: bundledDir, Quiet: true,
+	})
+
+	// User modifies
+	userModified := "---\nname: alpha\ndescription: custom\n---\n\nCustom.\n"
+	writeSKILL(t, filepath.Join(configDir, "skills"), "alpha", userModified)
+
+	// Restore
+	if err := RestoreBundledSkill(configDir, bundledDir, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readSKILL(t, filepath.Join(configDir, "skills"), "alpha")
+	if got != testSkillA {
+		t.Fatal("restore did not reset to bundled version")
+	}
+
+	manifest := loadManifest(filepath.Join(configDir, "skill-state", ".bundled_manifest.json"))
+	if manifest.Skills["alpha"].Status != StatusSynced {
+		t.Fatalf("expected synced after restore, got %s", manifest.Skills["alpha"].Status)
+	}
+}
