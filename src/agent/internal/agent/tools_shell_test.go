@@ -259,10 +259,8 @@ func TestShellToolUnknownAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	// Unknown actions don't pass shellHasAction, so they fall through to the
-	// foreground path which then complains about a missing command.
-	if !strings.Contains(out, "Missing required parameter: command") {
-		t.Fatalf("expected missing-command error, got %q", out)
+	if out != "error: invalid action: bogus" {
+		t.Fatalf("expected invalid-action error, got %q", out)
 	}
 }
 

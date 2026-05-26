@@ -585,15 +585,7 @@ func shellIntArg(arguments map[string]interface{}, key string, defaultValue int)
 
 func shellHasAction(arguments map[string]interface{}) bool {
 	action, ok := arguments["action"].(string)
-	if !ok {
-		return false
-	}
-	switch strings.TrimSpace(action) {
-	case "start", "poll", "write", "submit", "send_keys", "resize", "stop":
-		return true
-	default:
-		return false
-	}
+	return ok && strings.TrimSpace(action) != ""
 }
 
 func shellStringSliceArg(arguments map[string]interface{}, key string) []string {
