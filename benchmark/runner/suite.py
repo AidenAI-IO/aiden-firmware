@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-VALID_CATEGORIES = {"diagnostic", "single_step", "multi_step"}
+VALID_CATEGORIES = {"diagnostic", "single_step", "multi_step", "memory"}
 
 class SuiteValidationError(ValueError):
     pass

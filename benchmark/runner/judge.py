@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 import anthropic
+import httpx
 
 from runner.models import RubricVerdict
 from runner.suite import RubricItem
@@ -15,9 +16,9 @@ JUDGE_PROMPT_VERSION = "v1"
 
 @dc.dataclass
 class JudgeConfig:
-    provider: str = "anthropic"
-    model: str = "claude-sonnet-4-6"
-    api_key_env: str = "ANTHROPIC_API_KEY"
+    provider: str = "openrouter"
+    model: str = "anthropic/claude-sonnet-4-6"
+    api_key_env: str = "OPENROUTER_API_KEY"
 
 @dc.dataclass
 class JudgeOutput:
@@ -26,18 +27,18 @@ class JudgeOutput:
     cache_key: str
     raw_response: str
 
-JUDGE_TEMPLATE = """You are evaluating whether a phone-control agent completed a task.
+JUDGE_TEMPLATE = """You are evaluating whether an agent completed a task.
 
 TASK GOAL: {description}
 
-The agent had access to a phone via screenshot+HID tools. Below are:
-- Pre-screenshot: phone state before the agent acted
-- Post-screenshot: phone state after the agent finished (last step screenshot)
+Below are:
+- Pre-screenshot: state before the agent acted (when applicable)
+- Post-screenshot: state after the agent finished (when applicable)
 - Tool trace: every action the agent took
 - Agent's final reply: what the agent said it did
 
 For each rubric item, answer ONLY "yes" or "no" with a one-sentence reason
-grounded in the screenshots/trace. Do not be lenient. If the post-screenshot
+grounded in the screenshots/trace/response. Do not be lenient. If evidence
 does not clearly show the required state, answer "no".
 
 RUBRIC:
@@ -52,11 +53,13 @@ Respond as JSON only, no prose:
 def _read_image_b64(p: Path) -> str:
     return base64.b64encode(p.read_bytes()).decode("ascii")
 
-def _cache_key(pre: Path, post: Path, trace_json: str, rubric: list[RubricItem],
+def _cache_key(pre: Path | None, post: Path | None, trace_json: str, rubric: list[RubricItem],
                description: str, model: str) -> str:
     h = hashlib.sha256()
-    h.update(pre.read_bytes())
-    h.update(post.read_bytes())
+    if pre is not None:
+        h.update(pre.read_bytes())
+    if post is not None:
+        h.update(post.read_bytes())
     h.update(trace_json.encode("utf-8"))
     h.update(description.encode("utf-8"))
     for r in rubric:
@@ -68,8 +71,8 @@ def _cache_key(pre: Path, post: Path, trace_json: str, rubric: list[RubricItem],
 def judge_task(
     description: str,
     rubric: list[RubricItem],
-    pre_screenshot: Path,
-    post_screenshot: Path,
+    pre_screenshot: Path | None,
+    post_screenshot: Path | None,
     trace: dict[str, Any],
     final_response: str,
     cfg: JudgeConfig,
@@ -84,20 +87,29 @@ def judge_task(
             verdicts = [RubricVerdict(**v) for v in data["verdicts"]]
             return JudgeOutput(verdicts=verdicts, overall_notes=data["overall_notes"],
                                cache_key=key, raw_response=data["raw_response"])
-    client = anthropic.Anthropic(api_key=os.environ[cfg.api_key_env])
+    client = anthropic.Anthropic(
+        api_key=os.environ[cfg.api_key_env],
+        base_url="https://openrouter.ai/api/v1",
+    )
     rubric_lines = "\n".join(f"{i+1}. {{\"id\": \"{r.id}\", \"check\": \"{r.check}\"}}"
                               for i, r in enumerate(rubric))
     prompt = JUDGE_TEMPLATE.format(
         description=description, rubric_lines=rubric_lines,
     )
-    user_content: list[dict[str, Any]] = [
-        {"type": "text", "text": prompt},
-        {"type": "text", "text": "PRE-SCREENSHOT:"},
-        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                       "data": _read_image_b64(pre_screenshot)}},
-        {"type": "text", "text": "POST-SCREENSHOT:"},
-        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                       "data": _read_image_b64(post_screenshot)}},
+    user_content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    if pre_screenshot is not None and pre_screenshot.exists():
+        user_content += [
+            {"type": "text", "text": "PRE-SCREENSHOT:"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                           "data": _read_image_b64(pre_screenshot)}},
+        ]
+    if post_screenshot is not None and post_screenshot.exists():
+        user_content += [
+            {"type": "text", "text": "POST-SCREENSHOT:"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                           "data": _read_image_b64(post_screenshot)}},
+        ]
+    user_content += [
         {"type": "text", "text": f"TOOL TRACE:\n{trace_json}"},
         {"type": "text", "text": f"FINAL RESPONSE:\n{final_response}"},
     ]

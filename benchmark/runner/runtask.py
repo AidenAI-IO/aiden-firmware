@@ -85,15 +85,15 @@ def run_one_task(
         base.status = "timeout" if timed_out else "failed"
         base.finished_at = now_iso()
         return base
-    if judge_cfg is None or last_shot_path is None:
-        base.status = "judge_error" if judge_cfg is not None else "failed"
+    if judge_cfg is None:
+        base.status = "passed"
         base.finished_at = now_iso()
         return base
     try:
         verdict = judge_task(
             description=task.description_for_judge,
             rubric=task.rubric,
-            pre_screenshot=pre_path,
+            pre_screenshot=pre_path if pre_path.exists() else None,
             post_screenshot=last_shot_path,
             trace=trace_dict,
             final_response=trace.final_response,

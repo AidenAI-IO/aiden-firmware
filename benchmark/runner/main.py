@@ -5,6 +5,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from runner.agent_client import AgentClient
+from runner.html_report import generate_report_html, upload_report
 from runner.judge import JudgeConfig
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
 from runner.runtask import run_one_task
@@ -83,6 +84,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
     write_manifest(run_dir / "manifest.json", manifest)
     write_jsonl(run_dir / "results.jsonl", results)
     write_summary(run_dir / "summary.md", suite.name, manifest, results)
+    html = generate_report_html(run_dir)
+    (run_dir / "report.html").write_text(html, encoding="utf-8")
+    upload_client = AgentClient(base_url=args.agent_url)
+    if upload_report(upload_client, html):
+        print(f"Report uploaded → http://{args.agent_url.split('//')[1].split(':')[0]}:80/benchmark")
+    else:
+        print("Warning: failed to upload report to board")
+    upload_client.close()
     return 0 if manifest["totals"]["passed"] == manifest["totals"]["tasks"] else 1
 
 

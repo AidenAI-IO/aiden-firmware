@@ -1041,6 +1041,7 @@ ApiResponse handle_get_config(const Options& options) {
     cJSON_AddItemToObject(root, "config", config_to_json(config));
     cJSON_AddItemToObject(root, "wifi", wifi_to_json(wifi));
     cJSON_AddItemToObject(root, "wifi_status", wifi_status_to_json(wifi_status));
+    cJSON_AddItemToObject(root, "firmware", firmware_info_to_json(options));
 
     cJSON* paths = add_object(root, "paths");
     cJSON_AddStringToObject(paths, "agent_config", options.agent_config_path.c_str());
@@ -1203,6 +1204,27 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         ApiResponse response;
         response.content_type = "text/html; charset=utf-8";
         response.body = CONFIG_WEB_HTML;
+        return response;
+    }
+
+    if (request.method == "GET" && request.path == "/benchmark") {
+        ApiResponse response;
+        response.content_type = "text/html; charset=utf-8";
+        FILE* fp = fopen("/userdata/agent/benchmark/report.html", "r");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long sz = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            if (sz > 0 && sz < 512 * 1024) {
+                std::string buf(sz, '\0');
+                fread(&buf[0], 1, sz, fp);
+                response.body = std::move(buf);
+            }
+            fclose(fp);
+        } else {
+            response.body = "<html><body><h2>No benchmark report yet</h2>"
+                "<p>Run the benchmark first, then refresh.</p></body></html>";
+        }
         return response;
     }
 
