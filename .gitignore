@@ -9,6 +9,8 @@
 /overlay/oem/usr/bin/*
 !/overlay/oem/usr/bin/.gitkeep
 !/overlay/oem/usr/bin/RkLunch.sh
+/overlay/oem/usr/lib/*
+
 # Secrets
 agent.conf
 /ota_ed25519_private_key.pem

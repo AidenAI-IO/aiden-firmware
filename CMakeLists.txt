@@ -56,6 +56,7 @@ set(ROCKIT_PATH ${SDK_PATH}/media/rockit/rockit)
 set(MPP_PATH ${SDK_PATH}/media/mpp/release_mpp_rv1106_arm-rockchip830-linux-uclibcgnueabihf)
 set(RGA_PATH ${SDK_PATH}/media/rga/release_rga_rv1106_arm-rockchip830-linux-uclibcgnueabihf)
 set(IVE_PATH ${SDK_PATH}/media/ive/ive)
+set(RKNNMRT_PATH ${SDK_PATH}/media/iva/iva/librockiva/rockiva-rv1106-Linux)
 
 add_library(cjson STATIC src/cJSON/cJSON.c)
 target_include_directories(cjson PUBLIC ${CMAKE_SOURCE_DIR}/src)
@@ -152,10 +153,14 @@ target_link_libraries(audio_service_cli PRIVATE aiden)
 add_executable(audio_stream src/audio_stream.cpp)
 target_link_libraries(audio_stream PRIVATE aiden)
 
+add_executable(rknn_vad src/rknn_vad.cpp)
+target_include_directories(rknn_vad PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_directories(rknn_vad PRIVATE ${RKNNMRT_PATH}/lib)
+target_link_libraries(rknn_vad PRIVATE rknnmrt)
+
 add_executable(config_web
     src/config_web.cpp
     src/agent_toml.cpp
     src/wifi_config.cpp
 )
 target_link_libraries(config_web PRIVATE cjson)
-

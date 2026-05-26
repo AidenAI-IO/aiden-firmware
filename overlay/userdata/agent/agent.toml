@@ -14,9 +14,11 @@ input_mode = "text"
 # Only used when input_mode is "stt" or "audio"
 trigger_mode = "manual"
 
-# VAD (Voice Activity Detection) parameters
+# RKNN Silero VAD parameters
 # Only used when input_mode is "stt" or "audio"
-energy_threshold = 500    # Energy threshold for speech detection
+vad_model_path = "/userdata/agent/silero_vad_rv1106.rknn"
+vad_helper_path = "/oem/usr/bin/rknn_vad"
+vad_speech_threshold = 0.5
 silence_ms = 650          # Silence duration to end utterance (ms)
 min_speech_ms = 300       # Minimum speech duration to accept (ms)
 
@@ -56,7 +58,7 @@ no_proxy = ""
 # Audio service configuration
 [audio]
 socket = "/run/audio_service/audio_service.sock"
-sample_rate = 32000
+sample_rate = 16000
 channels = 1
 bit_width = 16
 

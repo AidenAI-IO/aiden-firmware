@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -349,12 +350,19 @@ func TestHIDDeviceWriteReturnsNonRetryableError(t *testing.T) {
 }
 
 func TestHIDDeviceWriteTimesOutWhenFDWouldBlock(t *testing.T) {
-	fds := []int{0, 0}
-	if err := unix.Pipe2(fds, unix.O_NONBLOCK); err != nil {
-		t.Fatalf("Pipe2: %v", err)
+	if runtime.GOOS != "linux" {
+		t.Skip("requires Linux nonblocking pipe semantics")
 	}
-	readFile := os.NewFile(uintptr(fds[0]), "pipe-read")
-	writeFile := os.NewFile(uintptr(fds[1]), "pipe-write")
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	if err := unix.SetNonblock(int(readFile.Fd()), true); err != nil {
+		t.Fatalf("SetNonblock(read): %v", err)
+	}
+	if err := unix.SetNonblock(int(writeFile.Fd()), true); err != nil {
+		t.Fatalf("SetNonblock(write): %v", err)
+	}
 	defer readFile.Close()
 	defer writeFile.Close()
 
@@ -375,7 +383,7 @@ func TestHIDDeviceWriteTimesOutWhenFDWouldBlock(t *testing.T) {
 		writeTimeout: 20 * time.Millisecond,
 	}
 	start := time.Now()
-	err := dev.Write([]byte{1})
+	err = dev.Write([]byte{1})
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}

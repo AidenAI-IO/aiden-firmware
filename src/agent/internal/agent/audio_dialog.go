@@ -52,11 +52,6 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 		return nil, err
 	}
 
-	// Create VAD
-	energyThreshold := cfg.EnergyThreshold
-	if energyThreshold == 0 {
-		energyThreshold = 500
-	}
 	silenceMs := cfg.SilenceMs
 	if silenceMs == 0 {
 		silenceMs = 650
@@ -67,13 +62,18 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 	}
 
 	alwaysBuffer := cfg.TriggerModeOrDefault() == "manual"
-	vad := NewAudioVAD(
-		cfg.Audio.SampleRateOrDefault(),
-		energyThreshold,
-		silenceMs,
-		minSpeechMs,
-		alwaysBuffer,
-	)
+	vad, err := NewAudioVAD(AudioVADConfig{
+		SampleRate:      cfg.Audio.SampleRateOrDefault(),
+		SilenceMs:       silenceMs,
+		MinSpeechMs:     minSpeechMs,
+		AlwaysBuffer:    alwaysBuffer,
+		ModelPath:       cfg.VADModelPath,
+		HelperPath:      cfg.VADHelperPath,
+		SpeechThreshold: cfg.VADSpeechThreshold,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	return &AudioDialog{
 		config:      cfg,
@@ -176,8 +176,8 @@ func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, erro
 	return d.audioClient.ReadRecordChunk(d.sessionID, timeoutMs)
 }
 
-// ProcessVADFrame processes an audio frame through VAD
-func (d *AudioDialog) ProcessVADFrame(samples []int16) []int16 {
+// ProcessVADFrame processes an audio frame through RKNN VAD.
+func (d *AudioDialog) ProcessVADFrame(samples []int16) ([]int16, error) {
 	return d.vad.Process(samples)
 }
 
@@ -188,7 +188,9 @@ func (d *AudioDialog) FlushVAD() []int16 {
 
 // ResetVAD resets the VAD state
 func (d *AudioDialog) ResetVAD() {
-	d.vad.Reset()
+	if err := d.vad.Reset(); err != nil {
+		log.Printf("[vad] reset failed: %v\n", err)
+	}
 }
 
 // VADFrameSamples returns the number of samples to feed into each VAD frame.

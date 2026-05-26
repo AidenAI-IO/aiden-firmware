@@ -25,7 +25,7 @@ Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go
 | 组件 | 文件 | 说明 |
 | --- | --- | --- |
 | Audio client | `audio_client.go` | 连接 `audio_service`，启动录音/播放 session，读写 PCM chunk |
-| VAD | `vad.go` | 基于能量阈值的语音活动检测 |
+| VAD | `vad.go` + `/oem/usr/bin/rknn_vad` | Silero VAD RKNN 推理；输入固定为 16 kHz、512 samples/32 ms，并在 helper 中维护 `state` 状态 |
 | STT | `stt.go` | OpenAI Whisper / OpenRouter 实现；Tencent ASR 字段已预留 |
 | TTS | `tts.go` | Minimax TTS，使用 `ffmpeg` 转 PCM 后播放 |
 | Dialog manager | `audio_dialog.go` | 编排录音、VAD、STT/LLM/TTS 流程 |
@@ -68,7 +68,9 @@ Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go
 ```toml
 input_mode = "stt"
 trigger_mode = "wakeup"
-energy_threshold = 500
+vad_model_path = "/userdata/agent/silero_vad_rv1106.rknn"
+vad_helper_path = "/oem/usr/bin/rknn_vad"
+vad_speech_threshold = 0.5
 silence_ms = 650
 min_speech_ms = 300
 voice_session_enabled = true
@@ -107,6 +109,7 @@ speed = 1.0
 ## 依赖
 
 - `audio_service` 必须运行；
+- `rknn_vad` helper 必须可执行，`vad_model_path` 指向已转换好的 `silero_vad_rv1106.rknn`；可用 `scripts/convert_silero_vad_to_rknn.py --onnx silero_vad.onnx --output silero_vad_rv1106.rknn` 生成模型；
 - TTS 需要 `ffmpeg` 完成 MP3 → PCM 转换；
 - STT/TTS 需要外部 API key；
 - `wakeup` 模式需要 GPIO 33 或 GPIO 32 硬件触发条件。

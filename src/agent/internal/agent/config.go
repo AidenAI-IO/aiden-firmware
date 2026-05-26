@@ -36,7 +36,9 @@ type Config struct {
 	AdditionalPrompt         string       `toml:"additional_prompt,omitempty"`
 	InputMode                string       `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
 	TriggerMode              string       `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
-	EnergyThreshold          int          `toml:"energy_threshold,omitempty"`
+	VADModelPath             string       `toml:"vad_model_path,omitempty"`
+	VADHelperPath            string       `toml:"vad_helper_path,omitempty"`
+	VADSpeechThreshold       float64      `toml:"vad_speech_threshold,omitempty"`
 	SilenceMs                int          `toml:"silence_ms,omitempty"`
 	MinSpeechMs              int          `toml:"min_speech_ms,omitempty"`
 	VoiceSessionEnabled      *bool        `toml:"voice_session_enabled,omitempty"`

@@ -88,8 +88,12 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime) {
 
 	log.Printf("[init] Config loaded: model=%s, input_mode=%s, trigger_mode=%s\n",
 		cfg.Model.Model, inputMode, triggerMode)
-	log.Printf("[init] VAD: threshold=%d, silence=%dms, min_speech=%dms\n",
-		cfg.EnergyThreshold, cfg.SilenceMs, cfg.MinSpeechMs)
+	log.Printf("[init] VAD: rknn_model=%s, helper=%s, speech_threshold=%.2f, silence=%dms, min_speech=%dms\n",
+		valueOrDefault(cfg.VADModelPath, agent.DefaultVADModelPath()),
+		valueOrDefault(cfg.VADHelperPath, agent.DefaultVADHelperPath()),
+		floatOrDefault(cfg.VADSpeechThreshold, agent.DefaultVADSpeechThreshold()),
+		cfg.SilenceMs,
+		cfg.MinSpeechMs)
 
 	// Setup signal handler
 	sigChan := make(chan os.Signal, 1)
@@ -110,7 +114,7 @@ type audioDialogRunner interface {
 	StopRecording() error
 	RecordingActive() bool
 	ReadRecordChunk(timeoutMs uint32) (*agent.AudioChunkResult, error)
-	ProcessVADFrame(samples []int16) []int16
+	ProcessVADFrame(samples []int16) ([]int16, error)
 	ProcessUtterance(ctx context.Context, utterance []int16, runtime *agent.Runtime) error
 	PrepareTurnInput(utterance []int16) (agent.TurnInput, error)
 	RunAgentTurn(ctx context.Context, input agent.TurnInput, runtime *agent.Runtime) (agent.RunResult, error)
@@ -123,6 +127,20 @@ type audioDialogRunner interface {
 type wakeupWatcher interface {
 	Start() error
 	Stop()
+}
+
+func valueOrDefault(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
+}
+
+func floatOrDefault(value, fallback float64) float64 {
+	if value > 0 {
+		return value
+	}
+	return fallback
 }
 
 type wakeupWatcherFactory func(pin int, callback func()) (wakeupWatcher, error)
@@ -644,8 +662,12 @@ captureLoop:
 
 		consumed := 0
 		for consumed+frameSamples <= len(vadPending) {
-			utterance := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
+			utterance, err := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
 			consumed += frameSamples
+			if err != nil {
+				log.Printf("[vad] RKNN processing failed: %v\n", err)
+				return nil, false
+			}
 			if reporter, ok := dialog.(vadDebugReporter); ok {
 				state := reporter.VADDebugState()
 				hasVADState = true
@@ -653,14 +675,13 @@ captureLoop:
 					speechDetected = true
 				}
 				if time.Now().After(nextVADLogAt) {
-					log.Printf("[vad] energy=%d config_threshold=%d adaptive_threshold=%d noise_floor=%d speaking=%v speech_frames=%d silence_frames=%d\n",
-						state.Energy,
-						state.ConfigThreshold,
-						state.AdaptiveThreshold,
-						state.NoiseFloor,
+					log.Printf("[vad] probability=%.3f threshold=%.3f speaking=%v speech_frames=%d silence_frames=%d last_error=%q\n",
+						state.Probability,
+						state.Threshold,
 						state.Speaking,
 						state.SpeechFrames,
 						state.SilenceFrames,
+						state.LastError,
 					)
 					nextVADLogAt = time.Now().Add(time.Second)
 				}
@@ -753,21 +774,24 @@ func processAudioUntilUtteranceWithTimeout(dialog audioDialogRunner, runtime *ag
 			captured = append(captured, vadPending[pendingStart:]...)
 		}
 
-		// Feed VAD in 30ms frames.
+		// Feed VAD in 32ms Silero frames.
 		consumed := 0
 		for consumed+frameSamples <= len(vadPending) {
-			utterance := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
+			utterance, err := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
 			consumed += frameSamples
+			if err != nil {
+				log.Printf("[vad] RKNN processing failed: %v\n", err)
+				return false
+			}
 			if reporter, ok := dialog.(vadDebugReporter); ok && time.Now().After(nextVADLogAt) {
 				state := reporter.VADDebugState()
-				log.Printf("[vad] energy=%d config_threshold=%d adaptive_threshold=%d noise_floor=%d speaking=%v speech_frames=%d silence_frames=%d\n",
-					state.Energy,
-					state.ConfigThreshold,
-					state.AdaptiveThreshold,
-					state.NoiseFloor,
+				log.Printf("[vad] probability=%.3f threshold=%.3f speaking=%v speech_frames=%d silence_frames=%d last_error=%q\n",
+					state.Probability,
+					state.Threshold,
 					state.Speaking,
 					state.SpeechFrames,
 					state.SilenceFrames,
+					state.LastError,
 				)
 				nextVADLogAt = time.Now().Add(time.Second)
 			}
@@ -827,11 +851,16 @@ func processAudioLoop(dialog audioDialogRunner, runtime *agent.Runtime, recordin
 		// Convert PCM bytes to int16 samples
 		agent.AppendPCM16Samples(chunk.PCM, &vadPending, &hasPendingByte, &pendingByte)
 
-		// Feed VAD in 30ms frames.
+		// Feed VAD in 32ms Silero frames.
 		consumed := 0
 		for consumed+frameSamples <= len(vadPending) {
-			utterance := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
+			utterance, err := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
 			consumed += frameSamples
+			if err != nil {
+				log.Printf("[vad] RKNN processing failed: %v\n", err)
+				*recording = false
+				break
+			}
 			if utterance != nil {
 				log.Println("[utterance] VAD detected end of speech")
 				*recording = false

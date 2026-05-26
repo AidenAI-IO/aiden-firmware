@@ -156,8 +156,12 @@ void apply_kv(AgentToml& cfg,
             if (!assign_string(&cfg.input_mode, raw, &sub_err)) fail(sub_err);
         } else if (key == "trigger_mode") {
             if (!assign_string(&cfg.trigger_mode, raw, &sub_err)) fail(sub_err);
-        } else if (key == "energy_threshold") {
-            if (!assign_int(&cfg.energy_threshold, raw, &sub_err)) fail(sub_err);
+        } else if (key == "vad_model_path") {
+            if (!assign_string(&cfg.vad_model_path, raw, &sub_err)) fail(sub_err);
+        } else if (key == "vad_helper_path") {
+            if (!assign_string(&cfg.vad_helper_path, raw, &sub_err)) fail(sub_err);
+        } else if (key == "vad_speech_threshold") {
+            if (!assign_double(&cfg.vad_speech_threshold, raw, &sub_err)) fail(sub_err);
         } else if (key == "silence_ms") {
             if (!assign_int(&cfg.silence_ms, raw, &sub_err)) fail(sub_err);
         } else if (key == "min_speech_ms") {
@@ -403,7 +407,9 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (!cfg.additional_prompt.empty()) emit_string(out, "additional_prompt", cfg.additional_prompt);
     if (!cfg.input_mode.empty()) emit_string(out, "input_mode", cfg.input_mode);
     if (!cfg.trigger_mode.empty()) emit_string(out, "trigger_mode", cfg.trigger_mode);
-    if (cfg.energy_threshold != 0) emit_int(out, "energy_threshold", cfg.energy_threshold);
+    if (!cfg.vad_model_path.empty()) emit_string(out, "vad_model_path", cfg.vad_model_path);
+    if (!cfg.vad_helper_path.empty()) emit_string(out, "vad_helper_path", cfg.vad_helper_path);
+    if (cfg.vad_speech_threshold != 0.0) emit_double(out, "vad_speech_threshold", cfg.vad_speech_threshold);
     if (cfg.silence_ms != 0) emit_int(out, "silence_ms", cfg.silence_ms);
     if (cfg.min_speech_ms != 0) emit_int(out, "min_speech_ms", cfg.min_speech_ms);
     emit_bool(out, "voice_session_enabled", cfg.voice_session_enabled);

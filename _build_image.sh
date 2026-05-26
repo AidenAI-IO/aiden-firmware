@@ -17,9 +17,22 @@ cd "$SCRIPT_DIR"
 
 # Step 2: 准备 overlay 目录
 echo "[2/6] Preparing overlay directories..."
-mkdir -p "$OVERLAY/oem/usr/bin" "$OVERLAY/oem/etc"
+mkdir -p "$OVERLAY/oem/usr/bin" "$OVERLAY/oem/usr/lib" "$OVERLAY/oem/etc"
 cp -a "$SCRIPT_DIR/build/bin"/. "$OVERLAY/oem/usr/bin/"
 echo "  ✓ Binaries copied to overlay/oem/usr/bin"
+
+RKNNMRT_OVERLAY="$OVERLAY/oem/usr/lib/librknnmrt.so"
+RKNNMRT_SOURCE="$PICO_SDK/media/iva/iva/librockiva/rockiva-rv1106-Linux/lib/librknnmrt.so"
+if [ -f "$RKNNMRT_OVERLAY" ]; then
+    echo "  ✓ RKNN runtime already present in overlay/oem/usr/lib"
+else
+    if [ ! -f "$RKNNMRT_SOURCE" ]; then
+        echo "  ✗ Error: RKNN runtime not found: $RKNNMRT_SOURCE"
+        exit 1
+    fi
+    cp "$RKNNMRT_SOURCE" "$RKNNMRT_OVERLAY"
+    echo "  ✓ RKNN runtime copied to overlay/oem/usr/lib"
+fi
 
 KEY_SOURCE="${OTA_PUBLIC_KEY_PATH:-}"
 if [ -n "$KEY_SOURCE" ]; then
