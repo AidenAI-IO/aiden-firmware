@@ -34,6 +34,7 @@ struct Options {
     std::string agent_config_path = "/userdata/agent/agent.toml";
     std::string wifi_config_path = "/userdata/wpa_supplicant.conf";
     std::string wifi_interface = "wlan0";
+    std::string ota_state_path = "/userdata/ota/state.json";
 };
 
 struct HttpRequest {
@@ -1027,6 +1028,49 @@ WifiRuntimeStatus query_wifi_status(const Options& options) {
     return status;
 }
 
+std::string read_file_contents(const char* path) {
+    FILE* f = fopen(path, "r");
+    if (!f) {
+        return "";
+    }
+    std::string contents;
+    char buf[1024];
+    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
+        contents.append(buf, n);
+    }
+    fclose(f);
+    return contents;
+}
+
+cJSON* firmware_info_to_json(const Options& options) {
+    cJSON* fw = cJSON_CreateObject();
+    if (!file_exists(options.ota_state_path.c_str())) {
+        cJSON_AddStringToObject(fw, "version", "");
+        cJSON_AddStringToObject(fw, "build_time", "");
+        cJSON_AddStringToObject(fw, "phase", "");
+        return fw;
+    }
+    std::string contents = read_file_contents(options.ota_state_path.c_str());
+    cJSON* state = cJSON_Parse(contents.c_str());
+    if (!state) {
+        cJSON_AddStringToObject(fw, "version", "");
+        cJSON_AddStringToObject(fw, "build_time", "");
+        cJSON_AddStringToObject(fw, "phase", "");
+        return fw;
+    }
+    cJSON* version = cJSON_GetObjectItem(state, "current_version");
+    cJSON* build_time = cJSON_GetObjectItem(state, "current_build_time");
+    cJSON* phase = cJSON_GetObjectItem(state, "phase");
+    cJSON_AddStringToObject(fw, "version",
+                            json_is_string(version) ? version->valuestring : "");
+    cJSON_AddStringToObject(fw, "build_time",
+                            json_is_string(build_time) ? build_time->valuestring : "");
+    cJSON_AddStringToObject(fw, "phase",
+                            json_is_string(phase) ? phase->valuestring : "");
+    cJSON_Delete(state);
+    return fw;
+}
+
 ApiResponse handle_get_config(const Options& options) {
     aiden::AgentToml config;
     aiden::WifiNetworkConfig wifi;
@@ -1041,6 +1085,7 @@ ApiResponse handle_get_config(const Options& options) {
     cJSON_AddItemToObject(root, "config", config_to_json(config));
     cJSON_AddItemToObject(root, "wifi", wifi_to_json(wifi));
     cJSON_AddItemToObject(root, "wifi_status", wifi_status_to_json(wifi_status));
+    cJSON_AddItemToObject(root, "firmware", firmware_info_to_json(options));
 
     cJSON* paths = add_object(root, "paths");
     cJSON_AddStringToObject(paths, "agent_config", options.agent_config_path.c_str());
