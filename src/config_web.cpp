@@ -1028,12 +1028,20 @@ WifiRuntimeStatus query_wifi_status(const Options& options) {
     return status;
 }
 
-std::string read_file_contents(const char* path) {
+std::string read_file_contents(const char* path, size_t max_size = 64 * 1024) {
     FILE* f = fopen(path, "r");
     if (!f) {
         return "";
     }
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (file_size < 0 || static_cast<size_t>(file_size) > max_size) {
+        fclose(f);
+        return "";
+    }
     std::string contents;
+    contents.reserve(static_cast<size_t>(file_size));
     char buf[1024];
     while (size_t n = fread(buf, 1, sizeof(buf), f)) {
         contents.append(buf, n);
