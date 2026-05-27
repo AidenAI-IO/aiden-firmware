@@ -21,7 +21,7 @@ class FakeClient:
         }
         return ToolInvokeResult(output=json.dumps(payload), is_error=False, duration_ms=1)
 
-    def chat(self, message, timeout_sec=None):
+    def chat(self, message, timeout_sec=None, attachments=None):
         return ChatResponse(
             response="ok",
             history=[{"type": "assistant", "content": "ok"}],

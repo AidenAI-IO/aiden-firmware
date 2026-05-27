@@ -1,57 +1,90 @@
-import httpx
+import io
+import json
+import socket
+from unittest.mock import patch
+
 import pytest
+
 from runner.agent_client import AgentClient, AgentTimeoutError
 
-def make_client(handler):
-    transport = httpx.MockTransport(handler)
-    return AgentClient(base_url="http://test", transport=transport)
+
+class FakeResponse:
+    def __init__(self, status: int, body: dict):
+        self.status = status
+        self._body = json.dumps(body).encode("utf-8")
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _captured(seen, status=200, body=None):
+    """Return a urlopen replacement that records the request and returns body."""
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["method"] = req.get_method()
+        try:
+            seen["body"] = req.data.decode("utf-8") if req.data else ""
+        except Exception:
+            seen["body"] = ""
+        seen["timeout"] = timeout
+        return FakeResponse(status, body or {})
+    return fake_urlopen
+
 
 def test_clear_history_posts_correct_path():
     seen = {}
-    def handler(req: httpx.Request) -> httpx.Response:
-        seen["url"] = str(req.url)
-        seen["method"] = req.method
-        return httpx.Response(200, json={"status": "ok"})
-    client = make_client(handler)
-    client.clear_history()
+    client = AgentClient(base_url="http://test")
+    with patch("urllib.request.urlopen", _captured(seen, body={"status": "ok"})):
+        client.clear_history()
     assert seen["method"] == "POST"
     assert seen["url"].endswith("/api/clear")
 
+
 def test_chat_returns_response_and_history():
     history = [{"type": "assistant", "content": "done"}]
-    def handler(req: httpx.Request) -> httpx.Response:
-        assert req.method == "POST"
-        assert req.url.path == "/api/chat"
-        body = req.read().decode()
-        assert "请打开" in body
-        return httpx.Response(200, json={"response": "ok", "history": history})
-    client = make_client(handler)
-    resp = client.chat("请打开设置")
+    seen = {}
+    client = AgentClient(base_url="http://test")
+    with patch("urllib.request.urlopen",
+               _captured(seen, body={"response": "ok", "history": history})):
+        resp = client.chat("请打开设置")
+    assert seen["method"] == "POST"
+    assert seen["url"].endswith("/api/chat")
+    assert "请打开" in seen["body"]
     assert resp.response == "ok"
     assert resp.history == history
 
+
 def test_chat_timeout_raises():
-    def handler(req: httpx.Request) -> httpx.Response:
-        raise httpx.ReadTimeout("timeout", request=req)
-    client = make_client(handler)
-    with pytest.raises(AgentTimeoutError):
+    def fake_urlopen(req, timeout=None):
+        raise socket.timeout("read timed out")
+    client = AgentClient(base_url="http://test")
+    with patch("urllib.request.urlopen", fake_urlopen), \
+         pytest.raises(AgentTimeoutError):
         client.chat("hi", timeout_sec=1)
 
+
 def test_invoke_tool_returns_output():
-    def handler(req: httpx.Request) -> httpx.Response:
-        assert req.url.path == "/api/tools/keyboard_tap"
-        body = req.read().decode()
-        assert "escape" in body
-        return httpx.Response(200, json={"output": "{}", "is_error": False, "duration_ms": 12})
-    client = make_client(handler)
-    out = client.invoke_tool("keyboard_tap", {"keys": ["escape"]})
+    seen = {}
+    client = AgentClient(base_url="http://test")
+    with patch("urllib.request.urlopen",
+               _captured(seen, body={"output": "{}", "is_error": False, "duration_ms": 12})):
+        out = client.invoke_tool("keyboard_tap", {"keys": ["escape"]})
+    assert seen["url"].endswith("/api/tools/keyboard_tap")
+    assert "escape" in seen["body"]
     assert out.is_error is False
     assert out.duration_ms == 12
 
+
 def test_health_returns_true_when_tools_endpoint_ok():
-    def handler(req: httpx.Request) -> httpx.Response:
-        assert req.url.path == "/api/tools"
-        assert req.method == "GET"
-        return httpx.Response(200, json={"tools": []})
-    client = make_client(handler)
-    assert client.health() is True
+    seen = {}
+    client = AgentClient(base_url="http://test")
+    with patch("urllib.request.urlopen", _captured(seen, body={"tools": []})):
+        assert client.health() is True
+    assert seen["url"].endswith("/api/tools")
+    assert seen["method"] == "GET"

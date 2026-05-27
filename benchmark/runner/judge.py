@@ -4,10 +4,11 @@ import dataclasses as dc
 import hashlib
 import json
 import os
+import socket
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
-import anthropic
-import httpx
 
 from runner.models import RubricVerdict
 from runner.suite import RubricItem
@@ -114,21 +115,29 @@ def judge_task(
     ]
     # Use OpenRouter's OpenAI-compatible chat completions endpoint
     api_key = os.environ[cfg.api_key_env]
-    with httpx.Client(timeout=120) as http_client:
-        r = http_client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": cfg.model,
-                "messages": [{"role": "user", "content": user_content}],
-                "max_tokens": 1024,
-            },
-        )
-        r.raise_for_status()
-        body = r.json()
+    payload = json.dumps({
+        "model": cfg.model,
+        "messages": [{"role": "user", "content": user_content}],
+        "max_tokens": 1024,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"judge HTTP {resp.status}")
+            body = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"judge HTTP {e.code}: {e.read()[:200]!r}") from e
+    except (socket.timeout, urllib.error.URLError) as e:
+        raise RuntimeError(f"judge network error: {e}") from e
     raw = body["choices"][0]["message"]["content"]
     parsed = _parse_judge_json(raw)
     verdicts = [RubricVerdict(id=v["id"], verdict=v["verdict"], reason=v["reason"])

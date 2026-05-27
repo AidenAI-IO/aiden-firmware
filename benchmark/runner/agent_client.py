@@ -1,19 +1,25 @@
 from __future__ import annotations
 import dataclasses as dc
 import json
+import socket
+import urllib.error
+import urllib.request
 from typing import Any
-import httpx
+
 
 class AgentTimeoutError(TimeoutError):
     pass
 
+
 class AgentRequestError(RuntimeError):
     pass
+
 
 @dc.dataclass
 class ChatResponse:
     response: str
     history: list[dict[str, Any]]
+
 
 @dc.dataclass
 class ToolInvokeResult:
@@ -21,67 +27,89 @@ class ToolInvokeResult:
     is_error: bool
     duration_ms: int
 
+
 class AgentClient:
     def __init__(
         self,
         base_url: str = "http://localhost:8080",
-        transport: httpx.BaseTransport | None = None,
         default_timeout_sec: int = 180,
     ):
-        self._client = httpx.Client(
-            base_url=base_url, transport=transport, timeout=default_timeout_sec
-        )
+        self.base_url = base_url.rstrip("/")
         self._default_timeout = default_timeout_sec
+
+    def _post(self, path: str, payload: dict[str, Any] | None = None,
+              timeout: int = 30) -> tuple[int, bytes]:
+        data = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read()
+        except socket.timeout as e:
+            raise AgentTimeoutError(str(e)) from e
+        except urllib.error.HTTPError as e:
+            body = b""
+            try:
+                body = e.read()
+            except Exception:
+                pass
+            raise AgentRequestError(f"HTTP {e.code}: {body[:200]!r}") from e
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, socket.timeout):
+                raise AgentTimeoutError(str(e)) from e
+            raise AgentRequestError(str(e)) from e
+
+    def _get(self, path: str, timeout: int = 5) -> tuple[int, bytes]:
+        req = urllib.request.Request(f"{self.base_url}{path}", method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read()
+        except socket.timeout as e:
+            raise AgentTimeoutError(str(e)) from e
+        except urllib.error.HTTPError as e:
+            raise AgentRequestError(f"HTTP {e.code}") from e
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, socket.timeout):
+                raise AgentTimeoutError(str(e)) from e
+            raise AgentRequestError(str(e)) from e
 
     def health(self) -> bool:
         try:
-            r = self._client.get("/api/tools", timeout=5)
-            return r.status_code == 200
-        except httpx.HTTPError:
+            status, _ = self._get("/api/tools", timeout=5)
+            return status == 200
+        except (AgentRequestError, AgentTimeoutError):
             return False
 
     def clear_history(self) -> None:
-        try:
-            r = self._client.post("/api/clear", timeout=10)
-            r.raise_for_status()
-        except httpx.ReadTimeout as e:
-            raise AgentTimeoutError(str(e)) from e
-        except httpx.HTTPError as e:
-            raise AgentRequestError(str(e)) from e
+        self._post("/api/clear", timeout=10)
 
     def chat(self, message: str, timeout_sec: int | None = None,
              attachments: list[dict[str, str]] | None = None) -> ChatResponse:
-        try:
-            payload: dict[str, Any] = {"message": message}
-            if attachments:
-                payload["attachments"] = attachments
-            r = self._client.post(
-                "/api/chat",
-                json=payload,
-                timeout=timeout_sec or self._default_timeout,
-            )
-        except httpx.ReadTimeout as e:
-            raise AgentTimeoutError(str(e)) from e
-        except httpx.HTTPError as e:
-            raise AgentRequestError(str(e)) from e
-        if r.status_code != 200:
-            raise AgentRequestError(f"chat returned {r.status_code}: {r.text}")
-        body = r.json()
-        return ChatResponse(response=body.get("response", ""), history=body.get("history", []))
+        payload: dict[str, Any] = {"message": message}
+        if attachments:
+            payload["attachments"] = attachments
+        status, body_bytes = self._post(
+            "/api/chat", payload, timeout=timeout_sec or self._default_timeout
+        )
+        if status != 200:
+            raise AgentRequestError(f"chat returned {status}")
+        body = json.loads(body_bytes)
+        return ChatResponse(
+            response=body.get("response", ""),
+            history=body.get("history", []),
+        )
 
     def invoke_tool(self, name: str, args: dict[str, Any]) -> ToolInvokeResult:
-        try:
-            r = self._client.post(
-                f"/api/tools/{name}",
-                json={"input": args},
-                timeout=30,
-            )
-            r.raise_for_status()
-        except httpx.ReadTimeout as e:
-            raise AgentTimeoutError(str(e)) from e
-        except httpx.HTTPError as e:
-            raise AgentRequestError(str(e)) from e
-        body = r.json()
+        status, body_bytes = self._post(
+            f"/api/tools/{name}", {"input": args}, timeout=30
+        )
+        if status != 200:
+            raise AgentRequestError(f"invoke {name} returned {status}")
+        body = json.loads(body_bytes)
         return ToolInvokeResult(
             output=body.get("output", ""),
             is_error=bool(body.get("is_error")),
@@ -89,4 +117,5 @@ class AgentClient:
         )
 
     def close(self) -> None:
-        self._client.close()
+        # urllib doesn't keep persistent connections by default; nothing to clean up.
+        pass
