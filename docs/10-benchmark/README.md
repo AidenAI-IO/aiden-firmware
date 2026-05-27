@@ -27,7 +27,7 @@ uv run python -m runner run suites/memory_v1.json --agent http://192.168.1.100:8
 
 ### 目录结构
 
-```
+```text
 benchmark/
 ├── runner/              # Python 包
 │   ├── main.py          # CLI 入口

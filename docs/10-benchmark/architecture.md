@@ -6,7 +6,7 @@ Agent benchmark 采用 **HTTP API 驱动 + 离线判分** 的架构，将任务�
 
 ### 核心组件
 
-```
+```text
 ┌─────────────┐
 │   Runner    │  Python CLI，本机执行
 │  (Python)   │
@@ -92,18 +92,18 @@ Judge 结果按 `(pre, post, trace, description, final_response, model)` 缓存�
 ```json
 [
   { "type": "user", "content": "打开设置" },
-  { "type": "tool_call", "tool": "screenshot", "input": {} },
+  { "type": "tool_call", "tool_name": "screenshot", "tool_input": "{}" },
   {
     "type": "tool_result",
-    "tool": "screenshot",
-    "output": "data:image/jpeg;base64,..."
+    "tool_name": "screenshot",
+    "content": "{\"data\": \"...base64...\"}"
   },
   {
     "type": "tool_call",
-    "tool": "mouse_click",
-    "input": { "x": 540, "y": 960 }
+    "tool_name": "mouse_click",
+    "tool_input": "{\"x\": 540, \"y\": 960}"
   },
-  { "type": "tool_result", "tool": "mouse_click", "output": "clicked" },
+  { "type": "tool_result", "tool_name": "mouse_click", "content": "clicked" },
   { "type": "assistant", "content": "已打开设置" }
 ]
 ```
@@ -122,7 +122,7 @@ Judge 结果按 `(pre, post, trace, description, final_response, model)` 缓存�
 
 ## 目录结构
 
-```
+```text
 benchmark/
 ├── runner/              # Python 包
 │   ├── main.py          # CLI 入口
