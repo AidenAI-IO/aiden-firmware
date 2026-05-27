@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <sstream>
@@ -264,22 +265,58 @@ public:
             log_attr("output", output_attrs_[i]);
         }
 
-        input_index_ = find_tensor_index(input_attrs_, "input", 0);
-        state_input_index_ = find_tensor_index(input_attrs_, "state", 1);
-        sr_index_ = find_tensor_index(input_attrs_, "sr", kMissingTensorIndex);
-        output_index_ = find_tensor_index(output_attrs_, "output", 0);
-        state_output_index_ = find_tensor_index(output_attrs_, "stateN", 1);
+        const uint32_t x_index = find_tensor_index(input_attrs_, "x", kMissingTensorIndex);
+        const uint32_t h_index = find_tensor_index(input_attrs_, "h", kMissingTensorIndex);
+        const uint32_t c_index = find_tensor_index(input_attrs_, "c", kMissingTensorIndex);
+        const uint32_t prob_index = find_tensor_index(output_attrs_, "prob", kMissingTensorIndex);
+        const uint32_t next_h_index = find_tensor_index(output_attrs_, "next_h", kMissingTensorIndex);
+        const uint32_t next_c_index = find_tensor_index(output_attrs_, "next_c", kMissingTensorIndex);
+
+        split_state_ = (x_index != kMissingTensorIndex &&
+                        h_index != kMissingTensorIndex &&
+                        c_index != kMissingTensorIndex &&
+                        prob_index != kMissingTensorIndex &&
+                        next_h_index != kMissingTensorIndex &&
+                        next_c_index != kMissingTensorIndex) ||
+                       (io_num.n_input == 3 && io_num.n_output >= 3 &&
+                        find_tensor_index(input_attrs_, "state", kMissingTensorIndex) == kMissingTensorIndex);
+
+        if (split_state_) {
+            input_index_ = x_index != kMissingTensorIndex ? x_index : 0;
+            h_input_index_ = h_index != kMissingTensorIndex ? h_index : 1;
+            c_input_index_ = c_index != kMissingTensorIndex ? c_index : 2;
+            sr_index_ = kMissingTensorIndex;
+            output_index_ = prob_index != kMissingTensorIndex ? prob_index : 0;
+            h_output_index_ = next_h_index != kMissingTensorIndex ? next_h_index : 1;
+            c_output_index_ = next_c_index != kMissingTensorIndex ? next_c_index : 2;
+        } else {
+            input_index_ = find_tensor_index(input_attrs_, "input", 0);
+            state_input_index_ = find_tensor_index(input_attrs_, "state", 1);
+            sr_index_ = find_tensor_index(input_attrs_, "sr", kMissingTensorIndex);
+            output_index_ = find_tensor_index(output_attrs_, "output", 0);
+            state_output_index_ = find_tensor_index(output_attrs_, "stateN", 1);
+        }
 
         if (input_index_ >= input_attrs_.size()) {
             *err = "Silero VAD audio input is missing";
             return false;
         }
-        if (state_input_index_ >= input_attrs_.size()) {
+        if (!split_state_ && state_input_index_ >= input_attrs_.size()) {
             *err = "Silero VAD state input is missing";
             return false;
         }
-        if (output_index_ >= output_attrs_.size() || state_output_index_ >= output_attrs_.size()) {
+        if (split_state_ && (h_input_index_ >= input_attrs_.size() || c_input_index_ >= input_attrs_.size())) {
+            *err = "Silero VAD split state inputs are missing";
+            return false;
+        }
+        if (!split_state_ && (output_index_ >= output_attrs_.size() || state_output_index_ >= output_attrs_.size())) {
             *err = "Silero VAD outputs are missing";
+            return false;
+        }
+        if (split_state_ && (output_index_ >= output_attrs_.size() ||
+                             h_output_index_ >= output_attrs_.size() ||
+                             c_output_index_ >= output_attrs_.size())) {
+            *err = "Silero VAD split state outputs are missing";
             return false;
         }
         feature_input_ = input_attrs_[input_index_].n_elems % kSTFTBins == 0 &&
@@ -293,12 +330,21 @@ public:
             *err = "Silero VAD audio input is smaller than one frame";
             return false;
         }
-        if (input_attrs_[state_input_index_].n_elems == 0) {
+        if (!split_state_ && input_attrs_[state_input_index_].n_elems == 0) {
             *err = "Silero VAD state input is empty";
             return false;
         }
+        if (split_state_ && (input_attrs_[h_input_index_].n_elems == 0 || input_attrs_[c_input_index_].n_elems == 0)) {
+            *err = "Silero VAD split state input is empty";
+            return false;
+        }
         input_.assign(input_attrs_[input_index_].n_elems, 0.0f);
-        state_.assign(input_attrs_[state_input_index_].n_elems, 0.0f);
+        if (split_state_) {
+            h_.assign(input_attrs_[h_input_index_].n_elems, 0.0f);
+            c_.assign(input_attrs_[c_input_index_].n_elems, 0.0f);
+        } else {
+            state_.assign(input_attrs_[state_input_index_].n_elems, 0.0f);
+        }
         if (feature_input_) {
             prepare_stft_basis();
         }
@@ -311,7 +357,12 @@ public:
     }
 
     void reset() {
-        std::fill(state_.begin(), state_.end(), 0.0f);
+        if (split_state_) {
+            std::fill(h_.begin(), h_.end(), 0.0f);
+            std::fill(c_.begin(), c_.end(), 0.0f);
+        } else {
+            std::fill(state_.begin(), state_.end(), 0.0f);
+        }
         std::fill(context_.begin(), context_.end(), 0.0f);
     }
 
@@ -338,11 +389,18 @@ public:
             return false;
         }
 
-        if (!write_float_input(state_input_index_, state_, &state_bytes_, err)) {
+        if (split_state_) {
+            if (!write_float_input(h_input_index_, h_, &h_bytes_, err)) {
+                return false;
+            }
+            if (!write_float_input(c_input_index_, c_, &c_bytes_, err)) {
+                return false;
+            }
+        } else if (!write_float_input(state_input_index_, state_, &state_bytes_, err)) {
             return false;
         }
 
-        if (sr_index_ != kMissingTensorIndex) {
+        if (!split_state_ && sr_index_ != kMissingTensorIndex) {
             if (!write_int64_input(sr_index_, sr, &sr_bytes_, err)) {
                 return false;
             }
@@ -354,7 +412,7 @@ public:
             return false;
         }
 
-        if (!copy_outputs(output_buffer(output_index_), output_buffer(state_output_index_), probability, err)) {
+        if (!copy_outputs(probability, err)) {
             return false;
         }
         update_context(pcm);
@@ -508,11 +566,9 @@ private:
         }
     }
 
-    bool copy_outputs(const void* probability_buffer,
-                      const void* state_buffer,
-                      float* probability,
-                      std::string* err) {
-        if (probability_buffer == nullptr || state_buffer == nullptr) {
+    bool copy_outputs(float* probability, std::string* err) {
+        const void* probability_buffer = output_buffer(output_index_);
+        if (probability_buffer == nullptr) {
             *err = "RKNN returned a null output buffer";
             return false;
         }
@@ -521,16 +577,29 @@ private:
             return false;
         }
 
-        if (state_output_index_ < output_attrs_.size() &&
-            output_attrs_[state_output_index_].n_elems > 0 &&
-            output_attrs_[state_output_index_].n_elems < state_.size()) {
-            *err = "Silero VAD state outputs are smaller than expected";
+        if (split_state_) {
+            return copy_state_output(h_output_index_, &h_, err) &&
+                   copy_state_output(c_output_index_, &c_, err);
+        }
+        return copy_state_output(state_output_index_, &state_, err);
+    }
+
+    bool copy_state_output(uint32_t output_index, std::vector<float>* state, std::string* err) {
+        const void* state_buffer = output_buffer(output_index);
+        if (state_buffer == nullptr) {
+            *err = "RKNN returned a null state output buffer";
             return false;
         }
 
-        const rknn_tensor_attr& state_attr = output_attrs_[state_output_index_];
-        for (uint32_t i = 0; i < state_.size(); ++i) {
-            if (!read_tensor_float(state_attr, state_buffer, i, &state_[i], err)) {
+        const rknn_tensor_attr& state_attr = output_attrs_[output_index];
+        if (state_attr.n_elems > 0 && state_attr.n_elems < state->size()) {
+            *err = "Silero VAD state output " + std::string(state_attr.name) +
+                   " is smaller than expected";
+            return false;
+        }
+
+        for (uint32_t i = 0; i < state->size(); ++i) {
+            if (!read_tensor_float(state_attr, state_buffer, i, &(*state)[i], err)) {
                 return false;
             }
         }
@@ -793,23 +862,266 @@ private:
     std::vector<rknn_tensor_mem*> output_mems_;
     uint32_t input_index_ = 0;
     uint32_t state_input_index_ = 1;
+    uint32_t h_input_index_ = 1;
+    uint32_t c_input_index_ = 2;
     uint32_t sr_index_ = 2;
     uint32_t output_index_ = 0;
     uint32_t state_output_index_ = 1;
+    uint32_t h_output_index_ = 1;
+    uint32_t c_output_index_ = 2;
+    bool split_state_ = false;
     bool feature_input_ = false;
     uint32_t feature_frames_ = 0;
     std::vector<float> input_;
     std::vector<float> state_ = std::vector<float>(kStateFloats, 0.0f);
+    std::vector<float> h_;
+    std::vector<float> c_;
     std::vector<float> context_;
     std::vector<uint8_t> input_bytes_;
     std::vector<uint8_t> state_bytes_;
+    std::vector<uint8_t> h_bytes_;
+    std::vector<uint8_t> c_bytes_;
     std::vector<uint8_t> sr_bytes_;
     std::vector<float> stft_real_;
     std::vector<float> stft_imag_;
 };
 
+class SplitSileroVAD {
+public:
+    ~SplitSileroVAD() {
+        if (encoder_ctx_ != 0) {
+            if (input_mem_) rknn_destroy_mem(encoder_ctx_, input_mem_);
+            if (output_mem_) rknn_destroy_mem(encoder_ctx_, output_mem_);
+            rknn_destroy(encoder_ctx_);
+        }
+    }
+
+    bool init(const std::string& encoder_path, const std::string& weights_path, std::string* err) {
+        if (!load_weights(weights_path, err)) return false;
+        if (!init_encoder(encoder_path, err)) return false;
+        prepare_stft_basis();
+        reset();
+        return true;
+    }
+
+    void reset() {
+        std::memset(h_, 0, sizeof(h_));
+        std::memset(c_, 0, sizeof(c_));
+        std::memset(context_, 0, sizeof(context_));
+    }
+
+    bool infer(const int16_t* pcm, float* probability, std::string* err) {
+        compute_stft_features(pcm);
+        if (!run_encoder(err)) return false;
+        lstm_cell();
+        *probability = decoder();
+        update_context(pcm);
+        return true;
+    }
+
+private:
+    static constexpr int kHidden = 128;
+    static constexpr int kGates = 4 * kHidden;
+
+    bool load_weights(const std::string& path, std::string* err) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file) { *err = "cannot open weights: " + path; return false; }
+        char magic[4];
+        file.read(magic, 4);
+        if (std::memcmp(magic, "SVLW", 4) != 0) {
+            *err = "invalid weights magic"; return false;
+        }
+        uint32_t version, hidden, input_sz;
+        file.read(reinterpret_cast<char*>(&version), 4);
+        file.read(reinterpret_cast<char*>(&hidden), 4);
+        file.read(reinterpret_cast<char*>(&input_sz), 4);
+        if (hidden != kHidden || input_sz != kHidden) {
+            *err = "weights size mismatch"; return false;
+        }
+        file.read(reinterpret_cast<char*>(lstm_W_), sizeof(lstm_W_));
+        file.read(reinterpret_cast<char*>(lstm_R_), sizeof(lstm_R_));
+        file.read(reinterpret_cast<char*>(lstm_B_), sizeof(lstm_B_));
+        file.read(reinterpret_cast<char*>(dec_weight_), sizeof(dec_weight_));
+        file.read(reinterpret_cast<char*>(&dec_bias_), sizeof(dec_bias_));
+        if (!file) { *err = "weights file truncated"; return false; }
+        return true;
+    }
+
+    bool init_encoder(const std::string& path, std::string* err) {
+        int ret = rknn_init(&encoder_ctx_, const_cast<char*>(path.c_str()), 0, 0, nullptr);
+        if (ret != RKNN_SUCC) {
+            *err = "encoder rknn_init failed: " + std::to_string(ret);
+            return false;
+        }
+        rknn_input_output_num io_num;
+        std::memset(&io_num, 0, sizeof(io_num));
+        rknn_query(encoder_ctx_, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num));
+        if (io_num.n_input < 1 || io_num.n_output < 1) {
+            *err = "encoder model must have at least 1 input and 1 output";
+            return false;
+        }
+        std::memset(&input_attr_, 0, sizeof(input_attr_));
+        input_attr_.index = 0;
+        rknn_query(encoder_ctx_, RKNN_QUERY_NATIVE_INPUT_ATTR, &input_attr_, sizeof(input_attr_));
+        std::memset(&output_attr_, 0, sizeof(output_attr_));
+        output_attr_.index = 0;
+        rknn_query(encoder_ctx_, RKNN_QUERY_OUTPUT_ATTR, &output_attr_, sizeof(output_attr_));
+
+        std::cerr << "[split_vad] input: elems=" << input_attr_.n_elems
+                  << " type=" << tensor_type_name(input_attr_.type)
+                  << " scale=" << input_attr_.scale
+                  << " zp=" << input_attr_.zp << std::endl;
+        std::cerr << "[split_vad] output: elems=" << output_attr_.n_elems
+                  << " type=" << tensor_type_name(output_attr_.type)
+                  << " scale=" << output_attr_.scale
+                  << " zp=" << output_attr_.zp << std::endl;
+
+        input_attr_.pass_through = 1;
+        uint32_t in_bytes = tensor_storage_bytes(input_attr_);
+        input_mem_ = rknn_create_mem(encoder_ctx_, in_bytes);
+        if (!input_mem_ || !input_mem_->virt_addr) {
+            *err = "encoder input mem alloc failed"; return false;
+        }
+        ret = rknn_set_io_mem(encoder_ctx_, input_mem_, &input_attr_);
+        if (ret != RKNN_SUCC) {
+            *err = "encoder set input mem failed: " + std::to_string(ret);
+            return false;
+        }
+        uint32_t out_bytes = tensor_storage_bytes(output_attr_);
+        output_mem_ = rknn_create_mem(encoder_ctx_, out_bytes);
+        if (!output_mem_ || !output_mem_->virt_addr) {
+            *err = "encoder output mem alloc failed"; return false;
+        }
+        ret = rknn_set_io_mem(encoder_ctx_, output_mem_, &output_attr_);
+        if (ret != RKNN_SUCC) {
+            *err = "encoder set output mem failed: " + std::to_string(ret);
+            return false;
+        }
+        return true;
+    }
+
+    bool run_encoder(std::string* err) {
+        uint8_t* dst = static_cast<uint8_t*>(input_mem_->virt_addr);
+        for (int i = 0; i < kSTFTBins * kFeatureFrames; ++i) {
+            int32_t q = static_cast<int32_t>(
+                std::nearbyint(features_[i] / input_attr_.scale + input_attr_.zp));
+            if (q < -128) q = -128;
+            if (q > 127) q = 127;
+            dst[i] = static_cast<uint8_t>(static_cast<int8_t>(q));
+        }
+        int ret = rknn_run(encoder_ctx_, nullptr);
+        if (ret != RKNN_SUCC) {
+            *err = "encoder rknn_run failed: " + std::to_string(ret);
+            return false;
+        }
+        const uint8_t* src = static_cast<const uint8_t*>(output_mem_->virt_addr);
+        for (int i = 0; i < kHidden; ++i) {
+            int8_t raw = static_cast<int8_t>(src[i]);
+            encoder_out_[i] = (static_cast<float>(raw) - output_attr_.zp) * output_attr_.scale;
+        }
+        return true;
+    }
+
+    void lstm_cell() {
+        float gates[kGates];
+        for (int g = 0; g < kGates; ++g) {
+            float sum = lstm_B_[g] + lstm_B_[kGates + g];
+            const float* w_row = &lstm_W_[g * kHidden];
+            const float* r_row = &lstm_R_[g * kHidden];
+            for (int k = 0; k < kHidden; ++k) {
+                sum += w_row[k] * encoder_out_[k] + r_row[k] * h_[k];
+            }
+            gates[g] = sum;
+        }
+        for (int i = 0; i < kHidden; ++i) {
+            float ig = 1.0f / (1.0f + std::exp(-gates[i]));
+            float og = 1.0f / (1.0f + std::exp(-gates[kHidden + i]));
+            float fg = 1.0f / (1.0f + std::exp(-gates[2 * kHidden + i]));
+            float cg = std::tanh(gates[3 * kHidden + i]);
+            c_[i] = fg * c_[i] + ig * cg;
+            h_[i] = og * std::tanh(c_[i]);
+        }
+    }
+
+    float decoder() {
+        float logit = dec_bias_;
+        for (int i = 0; i < kHidden; ++i) {
+            float relu_h = h_[i] > 0.0f ? h_[i] : 0.0f;
+            logit += dec_weight_[i] * relu_h;
+        }
+        return 1.0f / (1.0f + std::exp(-logit));
+    }
+
+    void prepare_stft_basis() {
+        const float pi = 3.14159265358979323846f;
+        for (int freq = 0; freq < kSTFTBins; ++freq) {
+            for (int n = 0; n < kSTFTSize; ++n) {
+                float window = 0.5f - 0.5f * std::cos((2.0f * pi * n) / kSTFTSize);
+                float angle = (2.0f * pi * freq * n) / kSTFTSize;
+                stft_real_[freq * kSTFTSize + n] = window * std::cos(angle);
+                stft_imag_[freq * kSTFTSize + n] = window * -std::sin(angle);
+            }
+        }
+    }
+
+    void compute_stft_features(const int16_t* pcm) {
+        const int audio_samples = kFrameSamples + kSileroContextSamples;
+        float padded[audio_samples + kSTFTSize / 4];
+        int wi = 0;
+        for (int i = 0; i < kSileroContextSamples; ++i)
+            padded[wi++] = context_[i];
+        for (int i = 0; i < kFrameSamples; ++i)
+            padded[wi++] = static_cast<float>(pcm[i]) / 32768.0f;
+        for (int i = 0; i < kSTFTSize / 4; ++i)
+            padded[wi + i] = padded[audio_samples - 2 - i];
+
+        for (int frame = 0; frame < kFeatureFrames; ++frame) {
+            const int offset = frame * kSTFTHop;
+            for (int freq = 0; freq < kSTFTBins; ++freq) {
+                float real = 0.0f, imag = 0.0f;
+                const float* rb = &stft_real_[freq * kSTFTSize];
+                const float* ib = &stft_imag_[freq * kSTFTSize];
+                for (int n = 0; n < kSTFTSize; ++n) {
+                    float s = padded[offset + n];
+                    real += s * rb[n];
+                    imag += s * ib[n];
+                }
+                features_[freq * kFeatureFrames + frame] = std::sqrt(real * real + imag * imag);
+            }
+        }
+    }
+
+    void update_context(const int16_t* pcm) {
+        const int start = kFrameSamples - kSileroContextSamples;
+        for (int i = 0; i < kSileroContextSamples; ++i)
+            context_[i] = static_cast<float>(pcm[start + i]) / 32768.0f;
+    }
+
+    static constexpr int kFeatureFrames = 4;
+    rknn_context encoder_ctx_ = 0;
+    rknn_tensor_attr input_attr_;
+    rknn_tensor_attr output_attr_;
+    rknn_tensor_mem* input_mem_ = nullptr;
+    rknn_tensor_mem* output_mem_ = nullptr;
+
+    float lstm_W_[kGates * kHidden];
+    float lstm_R_[kGates * kHidden];
+    float lstm_B_[2 * kGates];
+    float dec_weight_[kHidden];
+    float dec_bias_ = 0.0f;
+
+    float h_[kHidden];
+    float c_[kHidden];
+    float context_[kSileroContextSamples];
+    float features_[kSTFTBins * kFeatureFrames];
+    float encoder_out_[kHidden];
+    float stft_real_[kSTFTBins * kSTFTSize];
+    float stft_imag_[kSTFTBins * kSTFTSize];
+};
+
 struct Args {
     std::string model_path;
+    std::string weights_path;
     bool self_test = false;
 };
 
@@ -819,6 +1131,8 @@ Args parse_args(int argc, char** argv) {
         const std::string arg(argv[i]);
         if (arg == "--model" && i + 1 < argc) {
             args.model_path = argv[++i];
+        } else if (arg == "--weights" && i + 1 < argc) {
+            args.weights_path = argv[++i];
         } else if (arg == "--self-test") {
             args.self_test = true;
         }
@@ -835,15 +1149,51 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    SileroRKNNVAD vad;
     std::string err;
+    std::vector<int16_t> frame(kFrameSamples);
+
+    if (!args.weights_path.empty()) {
+        SplitSileroVAD vad;
+        if (!vad.init(args.model_path, args.weights_path, &err)) {
+            protocol_error(err);
+            return 1;
+        }
+        if (args.self_test) {
+            std::fill(frame.begin(), frame.end(), 0);
+            float probability = 0.0f;
+            if (!vad.infer(frame.data(), &probability, &err)) {
+                protocol_error(err);
+                return 1;
+            }
+            std::cout << "P " << probability << std::endl;
+            return 0;
+        }
+        std::cout << "READY" << std::endl;
+        while (true) {
+            char command = 0;
+            if (!read_exact(std::cin, &command, 1)) return 0;
+            if (command == 'Q') return 0;
+            if (command == 'R') { vad.reset(); std::cout << "OK" << std::endl; continue; }
+            if (command != 'F') { protocol_error("unknown command"); continue; }
+            if (!read_exact(std::cin, reinterpret_cast<char*>(frame.data()), frame.size() * sizeof(int16_t)))
+                return 0;
+            float probability = 0.0f;
+            if (!vad.infer(frame.data(), &probability, &err)) {
+                protocol_error(err);
+                continue;
+            }
+            std::cout << "P " << probability << std::endl;
+        }
+    }
+
+    SileroRKNNVAD vad;
     if (!vad.init(args.model_path, &err)) {
         protocol_error(err);
         return 1;
     }
 
     if (args.self_test) {
-        std::vector<int16_t> frame(kFrameSamples, 0);
+        std::fill(frame.begin(), frame.end(), 0);
         float probability = 0.0f;
         if (!vad.infer(frame.data(), &probability, &err)) {
             protocol_error(err);
@@ -854,29 +1204,14 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "READY" << std::endl;
-
-    std::vector<int16_t> frame(kFrameSamples);
     while (true) {
         char command = 0;
-        if (!read_exact(std::cin, &command, 1)) {
+        if (!read_exact(std::cin, &command, 1)) return 0;
+        if (command == 'Q') return 0;
+        if (command == 'R') { vad.reset(); std::cout << "OK" << std::endl; continue; }
+        if (command != 'F') { protocol_error("unknown command"); continue; }
+        if (!read_exact(std::cin, reinterpret_cast<char*>(frame.data()), frame.size() * sizeof(int16_t)))
             return 0;
-        }
-        if (command == 'Q') {
-            return 0;
-        }
-        if (command == 'R') {
-            vad.reset();
-            std::cout << "OK" << std::endl;
-            continue;
-        }
-        if (command != 'F') {
-            protocol_error("unknown command");
-            continue;
-        }
-        if (!read_exact(std::cin, reinterpret_cast<char*>(frame.data()), frame.size() * sizeof(int16_t))) {
-            return 0;
-        }
-
         float probability = 0.0f;
         if (!vad.infer(frame.data(), &probability, &err)) {
             protocol_error(err);

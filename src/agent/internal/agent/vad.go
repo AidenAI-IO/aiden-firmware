@@ -17,7 +17,8 @@ const (
 	sileroVADSampleRate       = 16000
 	sileroVADFrameSamples     = 512
 	defaultVADSpeechThreshold = 0.5
-	defaultVADModelPath       = "/userdata/agent/silero_vad_rv1106.rknn"
+	defaultVADModelPath       = "/userdata/agent/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
+	defaultVADWeightsPath     = "/userdata/agent/silero_vad_6_2_lstm_decoder_weights.bin"
 	defaultVADHelperPath      = "/oem/usr/bin/rknn_vad"
 )
 
@@ -262,8 +263,9 @@ func (v *AudioVAD) resetBuffers() {
 }
 
 type rknnVADScorer struct {
-	modelPath  string
-	helperPath string
+	modelPath   string
+	weightsPath string
+	helperPath  string
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -274,8 +276,9 @@ type rknnVADScorer struct {
 
 func newRKNNVADScorer(modelPath, helperPath string) *rknnVADScorer {
 	return &rknnVADScorer{
-		modelPath:  modelPath,
-		helperPath: helperPath,
+		modelPath:   modelPath,
+		weightsPath: defaultVADWeightsPath,
+		helperPath:  helperPath,
 	}
 }
 
@@ -353,7 +356,11 @@ func (s *rknnVADScorer) ensureStarted() error {
 		return nil
 	}
 
-	cmd := exec.Command(s.helperPath, "--model", s.modelPath)
+	args := []string{"--model", s.modelPath}
+	if s.weightsPath != "" {
+		args = append(args, "--weights", s.weightsPath)
+	}
+	cmd := exec.Command(s.helperPath, args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("open RKNN VAD stdin: %w", err)

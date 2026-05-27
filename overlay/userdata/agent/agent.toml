@@ -16,7 +16,7 @@ trigger_mode = "manual"
 
 # RKNN Silero VAD parameters
 # Only used when input_mode is "stt" or "audio"
-vad_model_path = "/userdata/agent/silero_vad_rv1106.rknn"
+vad_model_path = "/userdata/agent/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
 vad_helper_path = "/oem/usr/bin/rknn_vad"
 vad_speech_threshold = 0.5
 silence_ms = 650          # Silence duration to end utterance (ms)
