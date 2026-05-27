@@ -65,19 +65,42 @@ def load_suite(path: Path) -> Suite:
             raise SuiteValidationError(f"task {tid}: empty rubric")
         rubric = [RubricItem(id=r["id"], check=r["check"]) for r in rubric_raw]
         ha = raw.get("hard_assertions") or {}
+        # Validate hard_assertions types
+        rr = ha.get("response_required", True)
+        if isinstance(rr, str):
+            rr = rr.lower() == "true"
+        elif not isinstance(rr, bool):
+            raise SuiteValidationError(f"task {tid}: response_required must be bool")
+        try:
+            min_tc = int(ha.get("min_tool_calls", 0))
+            max_tc = int(ha.get("max_tool_calls", 50))
+            timeout_sec = int(ha.get("must_complete_within_sec", 180))
+        except (ValueError, TypeError) as e:
+            raise SuiteValidationError(f"task {tid}: invalid hard_assertions numeric value: {e}") from e
+        if min_tc < 0 or max_tc < 0 or timeout_sec <= 0:
+            raise SuiteValidationError(f"task {tid}: hard_assertions values must be non-negative")
         hard = HardAssertions(
-            min_tool_calls=int(ha.get("min_tool_calls", 0)),
-            max_tool_calls=int(ha.get("max_tool_calls", 50)),
-            must_complete_within_sec=int(ha.get("must_complete_within_sec", 180)),
-            response_required=bool(ha.get("response_required", True)),
+            min_tool_calls=min_tc,
+            max_tool_calls=max_tc,
+            must_complete_within_sec=timeout_sec,
+            response_required=rr,
         )
+        # Validate and bound repeats
+        try:
+            repeats = int(raw.get("repeats", 1))
+        except (ValueError, TypeError) as e:
+            raise SuiteValidationError(f"task {tid}: invalid repeats: {e}") from e
+        if repeats < 1:
+            repeats = 1
+        elif repeats > 100:
+            raise SuiteValidationError(f"task {tid}: repeats {repeats} exceeds max 100")
         tasks.append(TaskSpec(
             id=tid, category=cat,
             description_for_judge=raw["description_for_judge"],
             prompt=raw["prompt"],
             rubric=rubric, hard_assertions=hard,
             setup=raw.get("setup"),
-            repeats=int(raw.get("repeats", 1)),
+            repeats=repeats,
         ))
     return Suite(
         name=data.get("name", Path(path).stem),

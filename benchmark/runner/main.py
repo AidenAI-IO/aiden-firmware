@@ -54,9 +54,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
     sha, dirty = git_sha(REPO_ROOT)
     started = now_iso()
     results = []
+    # Validate --repeats
+    if args.repeats is not None and args.repeats <= 0:
+        print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
+        return 2
     try:
         for task in suite.tasks:
-            n = args.repeats or task.repeats
+            n = args.repeats if args.repeats is not None else task.repeats
+            if n <= 0:
+                n = 1
             for attempt in range(1, n + 1):
                 art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if n > 1 else "")
                 r = run_one_task(client, suite, task, attempt, art_dir,

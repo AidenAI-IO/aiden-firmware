@@ -5,7 +5,16 @@ from runner.models import TaskResult
 
 def aggregate(results: list[TaskResult]) -> dict[str, object]:
     if not results:
-        return {"tasks": 0}
+        return {
+            "tasks": 0,
+            "passed": 0,
+            "by_status": {},
+            "by_category": {},
+            "wall_ms_median": None,
+            "wall_ms_p95": None,
+            "tool_calls_median": None,
+            "tool_calls_p95": None,
+        }
     by_status: Counter[str] = Counter(r.status for r in results)
     by_category: dict[str, dict[str, int]] = {}
     for r in results:

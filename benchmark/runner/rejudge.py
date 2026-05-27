@@ -23,20 +23,32 @@ def rejudge_run(run_dir: Path, judge_model: str) -> int:
             new_results.append(row)
             continue
         post = steps[-1]
-        trace = json.loads((attempt_dir / "trace.json").read_text("utf-8"))
+        try:
+            trace = json.loads((attempt_dir / "trace.json").read_text("utf-8"))
+        except Exception as e:
+            row["status"] = "judge_error"
+            row.setdefault("metrics", {})["rejudge_error"] = f"trace load: {e}"
+            new_results.append(row)
+            continue
         rubric = [RubricItem(id=r["id"], check=r["check"]) for r in row.get("rubric_spec", [])]
         if not rubric:
             row["status"] = "judge_error"
             row["metrics"] = {**row.get("metrics", {}), "rejudge_error": "missing rubric_spec"}
             new_results.append(row)
             continue
-        verdict = judge_task(
-            description=row.get("description_for_judge", ""),
-            rubric=rubric, pre_screenshot=pre, post_screenshot=post,
-            trace=trace, final_response=trace.get("final_response", ""),
-            cfg=cfg, cache_dir=cache,
-        )
-        row["rubric"] = [dc.asdict(v) for v in verdict.verdicts]
+        try:
+            verdict = judge_task(
+                description=row.get("description_for_judge", ""),
+                rubric=rubric, pre_screenshot=pre, post_screenshot=post,
+                trace=trace, final_response=trace.get("final_response", ""),
+                cfg=cfg, cache_dir=cache,
+            )
+            row["rubric"] = [dc.asdict(v) for v in verdict.verdicts]
+        except Exception as e:
+            row["status"] = "judge_error"
+            row.setdefault("metrics", {})["rejudge_error"] = str(e)
+            new_results.append(row)
+            continue
         row["rubric_pass_count"] = sum(1 for v in verdict.verdicts if v.verdict == "yes")
         row["status"] = "passed" if row["rubric_pass_count"] == row["rubric_total"] else "failed"
         row["finished_at"] = now_iso()

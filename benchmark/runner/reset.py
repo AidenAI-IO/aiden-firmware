@@ -13,7 +13,11 @@ def run_tool_sequence(client: AgentClient, sequence: list[dict[str, Any]]) -> No
         tool = step.get("tool")
         args = step.get("args") or {}
         if tool == "wait_ms":
-            time.sleep(int(args.get("ms", 0)) / 1000.0)
+            try:
+                ms = int(args.get("ms", 0))
+            except (ValueError, TypeError) as e:
+                raise ResetError(f"invalid wait_ms value: {args.get('ms')!r}") from e
+            time.sleep(ms / 1000.0)
             continue
         if not tool:
             raise ResetError(f"reset step missing 'tool': {step!r}")
@@ -38,7 +42,10 @@ def per_task_setup(client: AgentClient, setup: dict[str, Any] | None) -> None:
         prompt = setup.get("prompt")
         if not prompt:
             raise ResetError(f"agent_prompt setup missing prompt: {setup!r}")
-        timeout = int(setup.get("timeout_sec", 90))
+        try:
+            timeout = int(setup.get("timeout_sec", 90))
+        except (ValueError, TypeError) as e:
+            raise ResetError(f"invalid timeout_sec: {setup.get('timeout_sec')!r}") from e
         try:
             client.chat(prompt, timeout_sec=timeout)
         except AgentTimeoutError as e:

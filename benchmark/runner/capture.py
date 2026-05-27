@@ -1,5 +1,6 @@
 from __future__ import annotations
 import base64
+import binascii
 import json
 from pathlib import Path
 from runner.agent_client import AgentClient
@@ -20,9 +21,15 @@ def take_screenshot(client: AgentClient, out_path: Path) -> tuple[int, int]:
     if not data:
         raise CaptureError("screenshot returned no data field")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(base64.b64decode(data))
+    try:
+        out_path.write_bytes(base64.b64decode(data))
+    except (binascii.Error, ValueError) as e:
+        raise CaptureError(f"invalid base64 screenshot data: {e}") from e
     return int(payload.get("width", 0)), int(payload.get("height", 0))
 
 def write_step_screenshot(out_path: Path, base64_data: str) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(base64.b64decode(base64_data))
+    try:
+        out_path.write_bytes(base64.b64decode(base64_data))
+    except (binascii.Error, ValueError) as e:
+        raise CaptureError(f"invalid base64 step screenshot: {e}") from e

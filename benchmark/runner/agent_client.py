@@ -41,8 +41,13 @@ class AgentClient:
             return False
 
     def clear_history(self) -> None:
-        r = self._client.post("/api/clear", timeout=10)
-        r.raise_for_status()
+        try:
+            r = self._client.post("/api/clear", timeout=10)
+            r.raise_for_status()
+        except httpx.ReadTimeout as e:
+            raise AgentTimeoutError(str(e)) from e
+        except httpx.HTTPError as e:
+            raise AgentRequestError(str(e)) from e
 
     def chat(self, message: str, timeout_sec: int | None = None) -> ChatResponse:
         try:
@@ -61,13 +66,17 @@ class AgentClient:
         return ChatResponse(response=body.get("response", ""), history=body.get("history", []))
 
     def invoke_tool(self, name: str, args: dict[str, Any]) -> ToolInvokeResult:
-        r = self._client.post(
-            f"/api/tools/{name}",
-            json={"input": args},
-            timeout=30,
-        )
-        if r.status_code != 200:
-            raise AgentRequestError(f"invoke {name} returned {r.status_code}: {r.text}")
+        try:
+            r = self._client.post(
+                f"/api/tools/{name}",
+                json={"input": args},
+                timeout=30,
+            )
+            r.raise_for_status()
+        except httpx.ReadTimeout as e:
+            raise AgentTimeoutError(str(e)) from e
+        except httpx.HTTPError as e:
+            raise AgentRequestError(str(e)) from e
         body = r.json()
         return ToolInvokeResult(
             output=body.get("output", ""),
