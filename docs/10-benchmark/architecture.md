@@ -182,6 +182,4 @@ benchmark/
 ## 相关文档
 
 - [快速开始](./README.md)
-- [编写任务](./writing-tasks.md)
-- [Judge 机制](./judging.md)
-- [故障排查](./troubleshooting.md)
+- [详细指南](./quickstart.md)

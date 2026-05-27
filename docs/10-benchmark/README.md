@@ -87,6 +87,4 @@ uv run python -m runner compare runs/<run_a> runs/<run_b>
 ## 相关文档
 
 - [架构设计](./architecture.md) - Benchmark 设计原理和判分机制
-- [编写任务](./writing-tasks.md) - 如何编写 suite 和 task
-- [Judge 机制](./judging.md) - LLM judge 和 rubric 编写指南
-- [故障排查](./troubleshooting.md) - 常见问题和解决方案
+- [详细指南](./quickstart.md) - 完整使用说明
