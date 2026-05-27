@@ -65,5 +65,4 @@
 
 - [快速开始](10-benchmark/README.md)
 - [架构设计](10-benchmark/architecture.md)
-- [原始提案](10-benchmark/proposal.md)
 - [详细指南](10-benchmark/quickstart.md)
