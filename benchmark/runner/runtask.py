@@ -74,7 +74,9 @@ def run_one_task(
     steps_dir = artifact_dir / "steps"
     last_shot_path: Path | None = None
     for i, (tool_name, b64) in enumerate(extract_step_screenshots(history), start=1):
-        p = steps_dir / f"step_{i:02d}_{tool_name}.jpg"
+        # Sanitize tool_name to prevent path traversal
+        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in tool_name)[:50]
+        p = steps_dir / f"step_{i:02d}_{safe_name}.jpg"
         write_step_screenshot(p, b64)
         last_shot_path = p
     base.metrics.update({"wall_ms": wall_ms, "tool_calls": trace.total_tool_calls,

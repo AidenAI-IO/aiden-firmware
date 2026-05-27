@@ -22,7 +22,7 @@ def compare_runs(a: Path, b: Path) -> int:
             print(f"~ {k}  {ra['status']} -> {rb['status']}")
         wa = ra.get("metrics", {}).get("wall_ms")
         wb = rb.get("metrics", {}).get("wall_ms")
-        if wa and wb and abs(wb - wa) > 1000:
+        if wa is not None and wb is not None and abs(wb - wa) > 1000:
             print(f"   wall {wa}ms -> {wb}ms")
     print(f"flips: {flips}")
     return 0

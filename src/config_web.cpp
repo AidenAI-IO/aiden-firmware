@@ -1215,10 +1215,22 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
             fseek(fp, 0, SEEK_END);
             long sz = ftell(fp);
             fseek(fp, 0, SEEK_SET);
-            if (sz > 0 && sz < 512 * 1024) {
+            const long MAX_SIZE = 512 * 1024;
+            if (sz == 0) {
+                response.status_code = 500;
+                response.body = "<html><body><h2>Error</h2><p>report.html is empty</p></body></html>";
+            } else if (sz >= MAX_SIZE) {
+                response.status_code = 500;
+                response.body = "<html><body><h2>Error</h2><p>report.html too large</p></body></html>";
+            } else {
                 std::string buf(sz, '\0');
-                fread(&buf[0], 1, sz, fp);
-                response.body = std::move(buf);
+                size_t read = fread(&buf[0], 1, sz, fp);
+                if (read == (size_t)sz) {
+                    response.body = std::move(buf);
+                } else {
+                    response.status_code = 500;
+                    response.body = "<html><body><h2>Error</h2><p>report.html partial read</p></body></html>";
+                }
             }
             fclose(fp);
         } else {

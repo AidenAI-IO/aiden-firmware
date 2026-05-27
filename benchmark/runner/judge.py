@@ -54,7 +54,7 @@ def _read_image_b64(p: Path) -> str:
     return base64.b64encode(p.read_bytes()).decode("ascii")
 
 def _cache_key(pre: Path | None, post: Path | None, trace_json: str, rubric: list[RubricItem],
-               description: str, model: str) -> str:
+               description: str, final_response: str, model: str) -> str:
     h = hashlib.sha256()
     if pre is not None:
         h.update(pre.read_bytes())
@@ -62,6 +62,7 @@ def _cache_key(pre: Path | None, post: Path | None, trace_json: str, rubric: lis
         h.update(post.read_bytes())
     h.update(trace_json.encode("utf-8"))
     h.update(description.encode("utf-8"))
+    h.update(final_response.encode("utf-8"))
     for r in rubric:
         h.update(r.id.encode()); h.update(r.check.encode())
     h.update(model.encode())
@@ -79,7 +80,8 @@ def judge_task(
     cache_dir: Path | None = None,
 ) -> JudgeOutput:
     trace_json = json.dumps(trace, ensure_ascii=False, sort_keys=True)
-    key = _cache_key(pre_screenshot, post_screenshot, trace_json, rubric, description, cfg.model)
+    key = _cache_key(pre_screenshot, post_screenshot, trace_json, rubric, description,
+                     final_response, cfg.model)
     if cache_dir is not None:
         cached = cache_dir / f"{key}.json"
         if cached.exists():

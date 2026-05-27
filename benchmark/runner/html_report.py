@@ -90,6 +90,8 @@ def generate_report_html(run_dir: Path) -> str:
         })
 
     tasks_json = json.dumps(tasks_js_items, ensure_ascii=False, indent=2)
+    # Escape </script> to prevent XSS script-breakout
+    tasks_json = tasks_json.replace("</", r"<\/")
 
     rows_html = ""
     for i, t in enumerate(tasks_js_items):
@@ -115,9 +117,11 @@ def generate_report_html(run_dir: Path) -> str:
 
 def upload_report(client: AgentClient, html: str) -> bool:
     """Upload report HTML to the board via the agent's shell tool."""
-    cmd = ("mkdir -p /userdata/agent/benchmark && "
-           "cat > /userdata/agent/benchmark/report.html << 'BENCHEOF'\n"
-           f"{html}\nBENCHEOF")
+    import base64
+    # Use base64 to avoid heredoc delimiter collision
+    encoded = base64.b64encode(html.encode("utf-8")).decode("ascii")
+    cmd = (f"mkdir -p /userdata/agent/benchmark && "
+           f"echo '{encoded}' | base64 -d > /userdata/agent/benchmark/report.html")
     try:
         result = client.invoke_tool("shell", {"command": cmd})
         return not result.is_error
