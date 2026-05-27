@@ -18,7 +18,7 @@ Replace the existing benchmark (`scripts/aiden_benchmark.py` + `benchmark/suites
 
 The Go agent (`src/agent/`) runs as a persistent HTTP daemon on the test rig. The benchmark runner is a Python client that sends tasks via the agent's API and collects results.
 
-```
+```text
 runner (Python, on the test rig)
   ├── POST /api/clear              (reset agent conversation state)
   ├── global reset                 (direct HID tool calls to return phone to home screen)
@@ -96,7 +96,7 @@ Field conventions:
 
 ## Runner Layout
 
-```
+```text
 benchmark/
 ├── runner/
 │   ├── __init__.py
@@ -212,9 +212,9 @@ Inputs to the judge:
 
 - `description_for_judge`
 - `rubric[*].check`
-- `pre.png`, `post.png` (multimodal attachments)
+- `pre.jpg` (pre-action screenshot) and the last step screenshot from `steps/step_*.jpg` as the post-action image (multimodal attachments)
 - `trace.json` (truncated if very long)
-- `final_response` extracted from agent stdout
+- `final_response` extracted from agent's `ChatResponse`
 
 Deliberately **not** given:
 
@@ -223,7 +223,7 @@ Deliberately **not** given:
 
 Judge prompt template (frozen in code; bumped via `judge_prompt_version`):
 
-```
+```text
 You are evaluating whether a phone-control agent completed a task.
 
 TASK GOAL: {description_for_judge}

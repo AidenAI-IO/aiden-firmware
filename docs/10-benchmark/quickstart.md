@@ -25,7 +25,7 @@ uv run python -m benchmark.runner run --suite benchmark/suites/phone_control_v1.
 
 Each run creates `benchmark/runs/<run_id>/`:
 
-```
+```text
 <run_id>/
 ├── manifest.json       # Environment info (git sha, model, suite version)
 ├── results.jsonl       # One JSON row per task

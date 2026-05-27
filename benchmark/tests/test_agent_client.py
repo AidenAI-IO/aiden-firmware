@@ -50,6 +50,8 @@ def test_invoke_tool_returns_output():
 
 def test_health_returns_true_when_tools_endpoint_ok():
     def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/api/tools"
+        assert req.method == "GET"
         return httpx.Response(200, json={"tools": []})
     client = make_client(handler)
     assert client.health() is True

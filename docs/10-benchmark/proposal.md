@@ -20,7 +20,7 @@
 
 调用链：
 
-```
+```text
 runner (Python，本机执行)
   ├── POST /api/clear    (清空 agent 对话历史，隔离任务)
   ├── 全局 reset          (通过 /api/tools/invoke 直接调 HID 工具，把手机弄回主屏)
@@ -107,7 +107,7 @@ Benchmark 度量四个核心维度：
 
 ## 五、目录结构
 
-```
+```text
 benchmark/
 ├── runner/              # Python 包，新写
 │   ├── main.py          # CLI: run | rejudge | compare
