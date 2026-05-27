@@ -1,0 +1,117 @@
+{
+  "name": "memory_v1",
+  "description": "Agent memory benchmark — verifies save/recall/forget behavior end-to-end through the runner. Inspired by quick_memory_test.py.",
+  "global_reset": {
+    "tool_sequence": [
+      {
+        "tool": "shell",
+        "args": {
+          "command": "rm -rf /userdata/agent/memory/long_term /userdata/agent/memory/session /userdata/agent/memory/default.json /userdata/agent/memory/profile.md /userdata/agent/memory/summary.md 2>/dev/null; ls /userdata/agent/memory/"
+        }
+      },
+      { "tool": "wait_ms", "args": { "ms": 300 } }
+    ]
+  },
+  "tasks": [
+    {
+      "id": "save_explicit_preference",
+      "category": "memory",
+      "description_for_judge": "Agent must save the user's stated preference for dark mode to long-term memory. Success = the trace contains a save_memory tool_call whose input has type='preference' and content mentions dark mode.",
+      "prompt": "记住我喜欢用 dark mode，所有界面都给我切深色。",
+      "rubric": [
+        {
+          "id": "called_save_memory",
+          "check": "The tool trace contains at least one tool_call where tool='save_memory'."
+        },
+        {
+          "id": "type_is_preference",
+          "check": "Among save_memory calls, at least one has input.type == 'preference'."
+        },
+        {
+          "id": "content_mentions_dark_mode",
+          "check": "Among save_memory calls, at least one has input.content mentioning dark mode (English 'dark mode' or Chinese '深色'/'暗色')."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90,
+        "response_required": true
+      }
+    },
+    {
+      "id": "use_preference_brevity",
+      "category": "memory",
+      "description_for_judge": "After a previous turn stored the brevity preference, the agent must call recall_memory before answering and the final reply should be reasonably short (<=5 sentences).",
+      "prompt": "记住：我希望你回答尽量简短，最多 3 句话。然后告诉我 Go 的 channel 是什么。",
+      "rubric": [
+        {
+          "id": "called_save_memory",
+          "check": "The tool trace contains a save_memory tool_call whose input.content mentions brevity ('简短' or 'short' or '3 句')."
+        },
+        {
+          "id": "answered_about_channel",
+          "check": "The final response actually explains Go channel (mentions concurrency, goroutine, or 通信/通道)."
+        },
+        {
+          "id": "response_is_short",
+          "check": "The final response is at most 5 sentences (count Chinese 。/！/？ and English . / ! / ?)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 12,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      }
+    },
+    {
+      "id": "forget_on_request",
+      "category": "memory",
+      "description_for_judge": "Given that earlier in this turn the agent has saved a dark-mode preference and the user now asks to forget it, the agent must call recall_memory and then forget_memory (or directly forget_memory) referencing the dark mode preference.",
+      "prompt": "先记住我喜欢用 dark mode。然后请把关于 dark mode 的偏好忘掉。",
+      "rubric": [
+        {
+          "id": "called_save_then_forget",
+          "check": "The tool trace shows at least one save_memory call AND at least one forget_memory call, in that order."
+        },
+        {
+          "id": "forget_targets_dark_mode",
+          "check": "The forget_memory call input references dark mode (English 'dark mode' or Chinese '深色'/'暗色') in any input field (id/query/content)."
+        },
+        {
+          "id": "response_confirms_forgotten",
+          "check": "The final response confirms the dark-mode preference was forgotten or removed."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 12,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      }
+    },
+    {
+      "id": "no_recall_when_in_context",
+      "category": "memory",
+      "description_for_judge": "Within the same turn the user states a fact (meeting room is B201) and immediately asks where the meeting room is. Since the answer is in the current conversation context, the agent should answer correctly WITHOUT calling recall_memory or recall_session_chunks.",
+      "prompt": "今天会议室是 B201。请问会议室在哪？",
+      "rubric": [
+        {
+          "id": "answer_mentions_b201",
+          "check": "The final response contains 'B201'."
+        },
+        {
+          "id": "did_not_call_recall",
+          "check": "The tool trace contains zero tool_calls where tool='recall_memory' or tool='recall_session_chunks'."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 0,
+        "max_tool_calls": 5,
+        "must_complete_within_sec": 60,
+        "response_required": true
+      }
+    }
+  ]
+}

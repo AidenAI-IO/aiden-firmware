@@ -1,0 +1,211 @@
+{
+  "name": "full_smoke",
+  "description": "Benchmark that checks low-level perception and actuation tools first, then runs end-to-end phone-control prompts through agent_main text mode.",
+  "tasks": [
+    {
+      "id": "frame_health",
+      "category": "perception",
+      "type": "tool",
+      "tool": "frame_service_health",
+      "expect_output_contains": ["state=", "latest_seq="]
+    },
+    {
+      "id": "screenshot_capture",
+      "category": "perception",
+      "type": "tool",
+      "tool": "capture_screenshot",
+      "args": {"out": "benchmark/artifacts/screenshot_capture.bmp"},
+      "expect_output_contains": ["width=", "height=", "pixel_format="]
+    },
+    {
+      "id": "latest_frame_metadata",
+      "category": "perception",
+      "type": "tool",
+      "tool": "latest_frame",
+      "expect_output_contains": ["seq=", "width=", "height=", "bytes="]
+    },
+    {
+      "id": "latest_frame_dump",
+      "category": "perception",
+      "type": "tool",
+      "tool": "latest_frame",
+      "args": {"out": "benchmark/artifacts/latest_frame.raw"},
+      "expect_output_contains": ["seq=", "stale="]
+    },
+    {
+      "id": "frame_ring_list",
+      "category": "perception",
+      "type": "tool",
+      "tool": "list_frames",
+      "expect_output_contains": ["seq=", "stale="]
+    },
+    {
+      "id": "keyboard_text_lowercase",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "keyboard_text",
+      "args": {"text": "aiden benchmark"}
+    },
+    {
+      "id": "keyboard_text_symbols",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "keyboard_text",
+      "args": {"text": "Aiden-123!?"}
+    },
+    {
+      "id": "keyboard_enter",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "keyboard_tap",
+      "args": {"keys": ["ENTER"]}
+    },
+    {
+      "id": "keyboard_backspace",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "keyboard_tap",
+      "args": {"keys": ["BACKSPACE"]}
+    },
+    {
+      "id": "keyboard_escape",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "keyboard_tap",
+      "args": {"keys": ["ESCAPE"]}
+    },
+    {
+      "id": "keyboard_select_all_shortcut",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "keyboard_tap",
+      "args": {"keys": ["META", "A"]}
+    },
+    {
+      "id": "keyboard_arrow_navigation",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "keyboard_tap",
+      "args": {"keys": ["DOWN"]}
+    },
+    {
+      "id": "touch_move_center",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "touch_move",
+      "args": {"x": 16384, "y": 16384}
+    },
+    {
+      "id": "touch_center_click",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "touch_click",
+      "args": {"x": 16384, "y": 16384}
+    },
+    {
+      "id": "touch_top_left_click",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "touch_click",
+      "args": {"x": 4096, "y": 4096}
+    },
+    {
+      "id": "touch_bottom_right_click",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "touch_click",
+      "args": {"x": 28672, "y": 28672}
+    },
+    {
+      "id": "touch_vertical_swipe",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "touch_swipe",
+      "args": {"x1": 16384, "y1": 24576, "x2": 16384, "y2": 8192}
+    },
+    {
+      "id": "touch_horizontal_swipe",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "touch_swipe",
+      "args": {"x1": 4096, "y1": 16384, "x2": 28672, "y2": 16384}
+    },
+    {
+      "id": "touch_reverse_vertical_swipe",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "touch_swipe",
+      "args": {"x1": 16384, "y1": 8192, "x2": 16384, "y2": 24576}
+    },
+    {
+      "id": "touch_scroll_down",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "touch_scroll",
+      "args": {"amount": -5}
+    },
+    {
+      "id": "touch_scroll_up",
+      "category": "actuation",
+      "type": "tool",
+      "tool": "touch_scroll",
+      "args": {"amount": 5}
+    },
+    {
+      "id": "e2e_open_settings_probe",
+      "category": "end_to_end",
+      "type": "agent_prompt",
+      "prompt": "请观察手机屏幕，然后尝试打开系统设置页；如果无法确定位置，先截图再说明下一步动作。",
+      "timeout_sec": 180,
+      "expect_output_contains": ["[tools]"]
+    },
+    {
+      "id": "e2e_search_settings_probe",
+      "category": "end_to_end",
+      "type": "agent_prompt",
+      "prompt": "请观察手机屏幕，尝试进入系统设置并搜索 Bluetooth 或蓝牙；如果当前不在设置页，请先判断如何进入。",
+      "timeout_sec": 240,
+      "expect_output_contains": ["[tools]"]
+    },
+    {
+      "id": "e2e_text_entry_probe",
+      "category": "end_to_end",
+      "type": "agent_prompt",
+      "prompt": "请在当前可输入的位置输入 aiden benchmark；如果当前没有输入框，请先通过截图判断是否可以找到搜索框或文本框。",
+      "timeout_sec": 180,
+      "expect_output_contains": ["[tools]"]
+    },
+    {
+      "id": "e2e_scroll_read_probe",
+      "category": "end_to_end",
+      "type": "agent_prompt",
+      "prompt": "请观察当前页面，执行一次向下滚动并描述滚动后页面是否发生变化。",
+      "timeout_sec": 180,
+      "expect_output_contains": ["[tools]"]
+    },
+    {
+      "id": "e2e_back_navigation_probe",
+      "category": "end_to_end",
+      "type": "agent_prompt",
+      "prompt": "请观察当前手机界面，尝试返回上一层页面；如果已经在顶层或桌面，请说明判断依据。",
+      "timeout_sec": 180,
+      "expect_output_contains": ["[tools]"]
+    },
+    {
+      "id": "e2e_app_launch_probe",
+      "category": "end_to_end",
+      "type": "agent_prompt",
+      "prompt": "请观察手机屏幕，尝试打开一个系统自带应用（例如设置、时钟或相机中可见的一个），并说明你选择它的原因。",
+      "timeout_sec": 240,
+      "expect_output_contains": ["[tools]"]
+    },
+    {
+      "id": "e2e_recover_unknown_state_probe",
+      "category": "end_to_end",
+      "type": "agent_prompt",
+      "prompt": "请把当前手机状态当作未知初始状态：先截图判断所在页面，再执行一个安全的导航动作，让手机回到更容易继续操作的状态。",
+      "timeout_sec": 240,
+      "expect_output_contains": ["[tools]"]
+    }
+  ]
+}
