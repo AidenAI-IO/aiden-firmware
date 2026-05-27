@@ -51,6 +51,7 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 		"mouse_scroll":  newPostActionScreenshotTool(&MouseScrollTool{dev: mouseDev, state: pointer}, screenshot, postActionScreenshotDelay),
 		"touch_gesture": newPostActionScreenshotTool(&TouchGestureTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
 		"screenshot":    screenshot,
+		"image_diff":    &ImageDiffTool{},
 		"audio_volume":  NewAudioVolumeTool(audioCfg.SocketOrDefault()),
 		"shell":         &ShellTool{},
 		"current_time":  NewCurrentTimeTool(),

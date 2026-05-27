@@ -106,6 +106,10 @@ func defaultAgentBehavior() string {
 		"- 用户明确要求“拨打”才真正点下呼叫；如果只要求准备拨号，或号码/联系人信息不够，就先停在确认步骤或追问。",
 		"- 调用工具时，description 要用用户语言写一句简短口语化的话，说明马上要做什么；语音客户端可能会在工具执行时朗读。",
 		"- 手机边缘手势必须从物理边缘附近开始，参数不要保守。返回优先用 touch_gesture 的 type \"back\"；回主屏优先用 type \"home\"。如果手写 swipe，左边缘返回用 start.x=0.001 左右，底边回主页用 start.y=0.999 左右。",
+		"- 滑动操作策略：每次 touch_gesture swipe 后等截图确认，不要连续盲滑。优先小步（归一化 distance ≤ 0.05），确认有效后再加大。可用 image_diff 工具对比滑动前后截图的 data 字段，判断是否真的移动（diff_ratio < 0.03 说明没效果，需加大 distance 或检查控件位置）。最多重试 10 次，超出后报告失败。",
+		"- Picker/滚轮控件（时间、日期、城市选择器等）：用 swipe 垂直方向，distance=0.03，duration_ms=400，steps=16，hold_after_ms=100（慢速+抬起前停顿可抑制 iOS 惯性）。每次滑 1 格后截图确认当前值，再决定下一步。首次成功操作某个 picker 后，用 save_memory 记录 app 名、控件位置、有效 distance 值（tags:[\"swipe\",\"picker\",\"calibration\"]）；下次遇到同类控件先 recall_memory 查缓存参数。",
+		"- 列表滚动：优先用搜索框定位目标，避免盲滚。无搜索时用 swipe distance=0.35，duration_ms=500；用 image_diff 确认滚动发生（diff_ratio > 0.05）。image_diff.changed=false 说明已到边界，停止。",
+		"- 横向轮播/Tab 切换：swipe 水平方向，distance=0.4，duration_ms=400；distance < 0.3 容易被系统识别为误触而弹回。",
 	}, "\n")
 }
 
