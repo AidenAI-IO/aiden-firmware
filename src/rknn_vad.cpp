@@ -17,8 +17,7 @@ constexpr int kFrameSamples = 512;
 constexpr int kSTFTSize = 256;
 constexpr int kSTFTHop = 128;
 constexpr int kSTFTBins = 129;
-constexpr int kSTFTFrames = 3;
-constexpr int kFeatureFloats = kSTFTBins * kSTFTFrames;
+constexpr int kSileroContextSamples = 64;
 constexpr int kStateFloats = 2 * 1 * 128;
 constexpr int kMinInputFloats = kFrameSamples;
 constexpr uint32_t kMissingTensorIndex = 0xffffffffu;
@@ -257,9 +256,9 @@ public:
         for (uint32_t i = 0; i < io_num.n_output; ++i) {
             std::memset(&output_attrs_[i], 0, sizeof(rknn_tensor_attr));
             output_attrs_[i].index = i;
-            ret = rknn_query(ctx_, RKNN_QUERY_NATIVE_OUTPUT_ATTR, &output_attrs_[i], sizeof(rknn_tensor_attr));
+            ret = rknn_query(ctx_, RKNN_QUERY_OUTPUT_ATTR, &output_attrs_[i], sizeof(rknn_tensor_attr));
             if (ret != RKNN_SUCC) {
-                *err = "rknn_query native output attr failed at index " + std::to_string(i) + ": " + std::to_string(ret);
+                *err = "rknn_query output attr failed at index " + std::to_string(i) + ": " + std::to_string(ret);
                 return false;
             }
             log_attr("output", output_attrs_[i]);
@@ -283,7 +282,13 @@ public:
             *err = "Silero VAD outputs are missing";
             return false;
         }
-        feature_input_ = input_attrs_[input_index_].n_elems == kFeatureFloats;
+        feature_input_ = input_attrs_[input_index_].n_elems % kSTFTBins == 0 &&
+                         input_attrs_[input_index_].n_elems >= kSTFTBins * 3;
+        if (feature_input_) {
+            feature_frames_ = input_attrs_[input_index_].n_elems / kSTFTBins;
+            const uint32_t context_samples = feature_frames_ >= 4 ? kSileroContextSamples : 0;
+            context_.assign(context_samples, 0.0f);
+        }
         if (!feature_input_ && input_attrs_[input_index_].n_elems < kMinInputFloats) {
             *err = "Silero VAD audio input is smaller than one frame";
             return false;
@@ -307,6 +312,7 @@ public:
 
     void reset() {
         std::fill(state_.begin(), state_.end(), 0.0f);
+        std::fill(context_.begin(), context_.end(), 0.0f);
     }
 
     bool infer(const int16_t* pcm, float* probability, std::string* err) {
@@ -314,8 +320,15 @@ public:
         if (feature_input_) {
             compute_stft_features(pcm);
         } else {
+            uint32_t offset = 0;
+            if (input_.size() >= kFrameSamples + context_.size()) {
+                for (uint32_t i = 0; i < context_.size(); ++i) {
+                    input_[i] = context_[i];
+                }
+                offset = static_cast<uint32_t>(context_.size());
+            }
             for (int i = 0; i < kFrameSamples; ++i) {
-                input_[i] = static_cast<float>(pcm[i]) / 32768.0f;
+                input_[offset + i] = static_cast<float>(pcm[i]) / 32768.0f;
             }
         }
 
@@ -341,7 +354,11 @@ public:
             return false;
         }
 
-        return copy_outputs(output_buffer(output_index_), output_buffer(state_output_index_), probability, err);
+        if (!copy_outputs(output_buffer(output_index_), output_buffer(state_output_index_), probability, err)) {
+            return false;
+        }
+        update_context(pcm);
+        return true;
     }
 
 private:
@@ -703,13 +720,20 @@ private:
     }
 
     void compute_stft_features(const int16_t* pcm) {
-        float padded[kFrameSamples + kSTFTSize / 4];
-        std::fill(padded, padded + kFrameSamples + kSTFTSize / 4, 0.0f);
+        const int audio_samples = kFrameSamples + static_cast<int>(context_.size());
+        std::vector<float> padded(audio_samples + kSTFTSize / 4, 0.0f);
+        int write_index = 0;
+        for (uint32_t i = 0; i < context_.size(); ++i) {
+            padded[write_index++] = context_[i];
+        }
         for (int i = 0; i < kFrameSamples; ++i) {
-            padded[i] = static_cast<float>(pcm[i]) / 32768.0f;
+            padded[write_index++] = static_cast<float>(pcm[i]) / 32768.0f;
+        }
+        for (int i = 0; i < kSTFTSize / 4; ++i) {
+            padded[write_index + i] = padded[audio_samples - 2 - i];
         }
 
-        for (int frame = 0; frame < kSTFTFrames; ++frame) {
+        for (uint32_t frame = 0; frame < feature_frames_; ++frame) {
             const int offset = frame * kSTFTHop;
             for (int freq = 0; freq < kSTFTBins; ++freq) {
                 float real = 0.0f;
@@ -721,8 +745,18 @@ private:
                     real += sample * real_basis[n];
                     imag += sample * imag_basis[n];
                 }
-                input_[freq * kSTFTFrames + frame] = std::sqrt(real * real + imag * imag);
+                input_[freq * feature_frames_ + frame] = std::sqrt(real * real + imag * imag);
             }
+        }
+    }
+
+    void update_context(const int16_t* pcm) {
+        if (context_.empty()) {
+            return;
+        }
+        const int start = kFrameSamples - static_cast<int>(context_.size());
+        for (uint32_t i = 0; i < context_.size(); ++i) {
+            context_[i] = static_cast<float>(pcm[start + static_cast<int>(i)]) / 32768.0f;
         }
     }
 
@@ -763,8 +797,10 @@ private:
     uint32_t output_index_ = 0;
     uint32_t state_output_index_ = 1;
     bool feature_input_ = false;
+    uint32_t feature_frames_ = 0;
     std::vector<float> input_;
     std::vector<float> state_ = std::vector<float>(kStateFloats, 0.0f);
+    std::vector<float> context_;
     std::vector<uint8_t> input_bytes_;
     std::vector<uint8_t> state_bytes_;
     std::vector<uint8_t> sr_bytes_;
