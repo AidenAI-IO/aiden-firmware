@@ -89,37 +89,47 @@ def judge_task(
             verdicts = [RubricVerdict(**v) for v in data["verdicts"]]
             return JudgeOutput(verdicts=verdicts, overall_notes=data["overall_notes"],
                                cache_key=key, raw_response=data["raw_response"])
-    client = anthropic.Anthropic(
-        api_key=os.environ[cfg.api_key_env],
-        base_url="https://openrouter.ai/api/v1",
-    )
     rubric_lines = "\n".join(f"{i+1}. {{\"id\": \"{r.id}\", \"check\": \"{r.check}\"}}"
                               for i, r in enumerate(rubric))
     prompt = JUDGE_TEMPLATE.format(
         description=description, rubric_lines=rubric_lines,
     )
+    # Build OpenAI-compatible multimodal content
     user_content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
     if pre_screenshot is not None and pre_screenshot.exists():
         user_content += [
             {"type": "text", "text": "PRE-SCREENSHOT:"},
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                           "data": _read_image_b64(pre_screenshot)}},
+            {"type": "image_url", "image_url": {
+                "url": f"data:image/jpeg;base64,{_read_image_b64(pre_screenshot)}"}},
         ]
     if post_screenshot is not None and post_screenshot.exists():
         user_content += [
             {"type": "text", "text": "POST-SCREENSHOT:"},
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                           "data": _read_image_b64(post_screenshot)}},
+            {"type": "image_url", "image_url": {
+                "url": f"data:image/jpeg;base64,{_read_image_b64(post_screenshot)}"}},
         ]
     user_content += [
         {"type": "text", "text": f"TOOL TRACE:\n{trace_json}"},
         {"type": "text", "text": f"FINAL RESPONSE:\n{final_response}"},
     ]
-    msg = client.messages.create(
-        model=cfg.model, max_tokens=1024,
-        messages=[{"role": "user", "content": user_content}],
-    )
-    raw = "".join(block.text for block in msg.content if block.type == "text")
+    # Use OpenRouter's OpenAI-compatible chat completions endpoint
+    api_key = os.environ[cfg.api_key_env]
+    with httpx.Client(timeout=120) as http_client:
+        r = http_client.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": cfg.model,
+                "messages": [{"role": "user", "content": user_content}],
+                "max_tokens": 1024,
+            },
+        )
+        r.raise_for_status()
+        body = r.json()
+    raw = body["choices"][0]["message"]["content"]
     parsed = _parse_judge_json(raw)
     verdicts = [RubricVerdict(id=v["id"], verdict=v["verdict"], reason=v["reason"])
                 for v in parsed["items"]]

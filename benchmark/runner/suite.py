@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-VALID_CATEGORIES = {"diagnostic", "single_step", "multi_step", "memory"}
+VALID_CATEGORIES = {"diagnostic", "single_step", "multi_step", "memory", "perception"}
 
 class SuiteValidationError(ValueError):
     pass
@@ -32,6 +32,7 @@ class TaskSpec:
     hard_assertions: HardAssertions
     setup: dict[str, Any] | None = None
     repeats: int = 1
+    input_screenshot: str | None = None
 
 @dc.dataclass
 class Suite:
@@ -101,6 +102,7 @@ def load_suite(path: Path) -> Suite:
             rubric=rubric, hard_assertions=hard,
             setup=raw.get("setup"),
             repeats=repeats,
+            input_screenshot=raw.get("input_screenshot"),
         ))
     return Suite(
         name=data.get("name", Path(path).stem),

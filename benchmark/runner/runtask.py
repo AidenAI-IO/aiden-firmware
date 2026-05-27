@@ -1,6 +1,8 @@
 from __future__ import annotations
+import base64
 import dataclasses as dc
 import json
+import shutil
 import time
 from pathlib import Path
 from runner.agent_client import AgentClient, AgentTimeoutError
@@ -37,22 +39,39 @@ def run_one_task(
     )
     try:
         client.clear_history()
-        if suite.global_reset.get("tool_sequence"):
-            global_reset(client, suite.global_reset)
-        per_task_setup(client, task.setup)
+        # Skip global reset and setup for perception tasks (static screenshot input)
+        if not task.input_screenshot:
+            if suite.global_reset.get("tool_sequence"):
+                global_reset(client, suite.global_reset)
+            per_task_setup(client, task.setup)
     except ResetError as e:
         base.status = "skipped"
         base.metrics = {"error": f"setup: {e}"}
         base.finished_at = now_iso()
         return base
     pre_path = artifact_dir / "pre.jpg"
-    try:
-        take_screenshot(client, pre_path)
-    except Exception:
-        pass
+    # Resolve input_screenshot: use static image as pre and send as attachment
+    attachments = None
+    if task.input_screenshot:
+        screenshot_path = suite.source_path.parent / task.input_screenshot
+        if not screenshot_path.exists():
+            base.status = "skipped"
+            base.metrics = {"error": f"input_screenshot not found: {screenshot_path}"}
+            base.finished_at = now_iso()
+            return base
+        shutil.copy(screenshot_path, pre_path)
+        img_b64 = base64.b64encode(screenshot_path.read_bytes()).decode("ascii")
+        attachments = [{"kind": "image", "mime_type": "image/jpeg", "data": img_b64}]
+    else:
+        try:
+            take_screenshot(client, pre_path)
+        except Exception:
+            pass
     timed_out = False
     try:
-        chat = client.chat(task.prompt, timeout_sec=task.hard_assertions.must_complete_within_sec)
+        chat = client.chat(task.prompt,
+                           timeout_sec=task.hard_assertions.must_complete_within_sec,
+                           attachments=attachments)
         history = chat.history
     except AgentTimeoutError:
         timed_out = True

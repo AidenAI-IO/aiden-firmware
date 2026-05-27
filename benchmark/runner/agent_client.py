@@ -49,11 +49,15 @@ class AgentClient:
         except httpx.HTTPError as e:
             raise AgentRequestError(str(e)) from e
 
-    def chat(self, message: str, timeout_sec: int | None = None) -> ChatResponse:
+    def chat(self, message: str, timeout_sec: int | None = None,
+             attachments: list[dict[str, str]] | None = None) -> ChatResponse:
         try:
+            payload: dict[str, Any] = {"message": message}
+            if attachments:
+                payload["attachments"] = attachments
             r = self._client.post(
                 "/api/chat",
-                json={"message": message},
+                json=payload,
                 timeout=timeout_sec or self._default_timeout,
             )
         except httpx.ReadTimeout as e:
