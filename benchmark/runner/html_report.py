@@ -115,13 +115,24 @@ def generate_report_html(run_dir: Path) -> str:
     )
 
 
-def upload_report(client: AgentClient, html: str) -> bool:
+def upload_report(client: AgentClient, html: str, run_dir: Path | None = None) -> bool:
     """Upload report HTML to the board via the agent's shell tool."""
     import base64
     # Use base64 to avoid heredoc delimiter collision
     encoded = base64.b64encode(html.encode("utf-8")).decode("ascii")
-    cmd = (f"mkdir -p /userdata/agent/benchmark && "
-           f"echo '{encoded}' | base64 -d > /userdata/agent/benchmark/report.html")
+    cmd = ("mkdir -p /userdata/agent/benchmark && "
+           f"printf '%s' '{encoded}' | base64 -d > /userdata/agent/benchmark/report.html")
+    if run_dir is not None:
+        run_id = run_dir.name
+        manifest = run_dir / "manifest.json"
+        manifest_encoded = base64.b64encode(manifest.read_bytes()).decode("ascii")
+        board_run_dir = f"/userdata/agent/benchmark/runs/{run_id}"
+        cmd = (
+            f"mkdir -p {board_run_dir} /userdata/agent/benchmark && "
+            f"printf '%s' '{encoded}' | base64 -d > {board_run_dir}/report.html && "
+            f"printf '%s' '{manifest_encoded}' | base64 -d > {board_run_dir}/manifest.json && "
+            f"cp {board_run_dir}/report.html /userdata/agent/benchmark/report.html"
+        )
     try:
         result = client.invoke_tool("shell", {"command": cmd})
         return not result.is_error

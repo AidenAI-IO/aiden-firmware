@@ -93,7 +93,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     html = generate_report_html(run_dir)
     (run_dir / "report.html").write_text(html, encoding="utf-8")
     upload_client = AgentClient(base_url=args.agent_url)
-    if upload_report(upload_client, html):
+    if upload_report(upload_client, html, run_dir):
         print(f"Report uploaded → http://{args.agent_url.split('//')[1].split(':')[0]}:80/benchmark")
     else:
         print("Warning: failed to upload report to board")
