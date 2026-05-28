@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"os"
 	"syscall"
 	"testing"
@@ -24,6 +25,7 @@ type fakeAudioDialog struct {
 	prepareTurnInput   func([]int16) (agent.TurnInput, error)
 	runTurn            func(context.Context) (agent.RunResult, error)
 	speak              func(context.Context) error
+	vadErr             error
 	onRead             func(*fakeAudioDialog, *agent.AudioChunkResult)
 	spoken             []string
 	repeatEmpty        bool
@@ -78,23 +80,26 @@ func (d *fakeAudioDialog) ReadRecordChunk(timeoutMs uint32) (*agent.AudioChunkRe
 	return chunk, nil
 }
 
-func (d *fakeAudioDialog) ProcessVADFrame(samples []int16) []int16 {
+func (d *fakeAudioDialog) ProcessVADFrame(samples []int16) ([]int16, error) {
 	copied := append([]int16(nil), samples...)
 	d.frames = append(d.frames, copied)
+	if d.vadErr != nil {
+		return nil, d.vadErr
+	}
 	if d.vad != nil {
 		return d.vad.Process(samples)
 	}
 	if len(d.utterancesToReturn) > 0 {
 		utterance := d.utterancesToReturn[0]
 		d.utterancesToReturn = d.utterancesToReturn[1:]
-		return utterance
+		return utterance, nil
 	}
 	if d.utterance != nil {
 		utterance := d.utterance
 		d.utterance = nil
-		return utterance
+		return utterance, nil
 	}
-	return nil
+	return nil, nil
 }
 
 func (d *fakeAudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, runtime *agent.Runtime) error {
@@ -143,7 +148,7 @@ func (d *fakeAudioDialog) ResetVAD() {
 	d.ops = append(d.ops, "reset")
 	d.resets++
 	if d.vad != nil {
-		d.vad.Reset()
+		_ = d.vad.Reset()
 	}
 }
 
@@ -169,6 +174,47 @@ type fakeWakeupWatcher struct {
 	stopped      bool
 	startCount   int
 	stopCount    int
+}
+
+func newTestAudioVAD(t *testing.T, alwaysBuffer bool, probabilities []float64) *agent.AudioVAD {
+	t.Helper()
+	vad, err := agent.NewAudioVADWithScorer(agent.AudioVADConfig{
+		SampleRate:      16000,
+		SilenceMs:       90,
+		MinSpeechMs:     60,
+		AlwaysBuffer:    alwaysBuffer,
+		SpeechThreshold: 0.5,
+	}, &testVADScorer{probabilities: probabilities})
+	if err != nil {
+		t.Fatalf("NewAudioVADWithScorer() error = %v", err)
+	}
+	return vad
+}
+
+type testVADScorer struct {
+	probabilities []float64
+	index         int
+}
+
+func (s *testVADScorer) Score(samples []int16) (float64, error) {
+	if len(s.probabilities) == 0 {
+		return 0, nil
+	}
+	if s.index >= len(s.probabilities) {
+		return s.probabilities[len(s.probabilities)-1], nil
+	}
+	probability := s.probabilities[s.index]
+	s.index++
+	return probability, nil
+}
+
+func (s *testVADScorer) Reset() error {
+	s.index = 0
+	return nil
+}
+
+func (s *testVADScorer) Close() error {
+	return nil
 }
 
 func (w *fakeWakeupWatcher) Start() error {
@@ -310,6 +356,30 @@ func TestProcessAudioLoopStopsRecordingBeforeProcessingUtterance(t *testing.T) {
 	}
 }
 
+func TestProcessAudioLoopStopsRecordingOnVADError(t *testing.T) {
+	dialog := &fakeAudioDialog{
+		frameSamples:    2,
+		recordingActive: true,
+		chunks: []*agent.AudioChunkResult{
+			{PCM: pcm16BytesFromSamples(100, 200)},
+		},
+		vadErr: errors.New("vad failed"),
+	}
+	recording := true
+
+	processAudioLoop(dialog, nil, &recording, context.Background())
+
+	if recording {
+		t.Fatal("recording flag still true after VAD error")
+	}
+	if dialog.recordingActive {
+		t.Fatal("dialog recording still active after VAD error")
+	}
+	if dialog.stops != 1 {
+		t.Fatalf("dialog stops = %d, want 1 after VAD error", dialog.stops)
+	}
+}
+
 func TestRunWakeupModeProcessesTriggeredAudioAndStopsOnSignal(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	dialog := &fakeAudioDialog{
@@ -397,7 +467,7 @@ func TestRunWakeupModeLegacyStartsRecordingWithoutWakeupAck(t *testing.T) {
 
 func TestRunWakeupModeStopsRecordingAfterSpeechThenBiasedSilence(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
-	vad := agent.NewAudioVAD(1000, 50, 90, 60, false)
+	vad := newTestAudioVAD(t, false, []float64{0.9, 0.9, 0.1, 0.1, 0.1})
 	samples := append([]int16{}, alternatingSamples(vad.FrameSamples()*2, 700, 1000)...)
 	samples = append(samples, constantSamples(vad.FrameSamples()*3, 700)...)
 
@@ -447,9 +517,9 @@ func TestRunWakeupModeStopsRecordingAfterSpeechThenBiasedSilence(t *testing.T) {
 	}
 }
 
-func TestRunWakeupModeDetectsLowEnergySpeechAfterNoiseFloorLearning(t *testing.T) {
+func TestRunWakeupModeBuffersSpeechDetectedByRKNNAfterInitialNonSpeech(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
-	vad := agent.NewAudioVAD(1000, 500, 90, 60, false)
+	vad := newTestAudioVAD(t, false, append(append(make([]float64, 10), 0.9, 0.9), 0.1, 0.1, 0.1))
 	noise := alternatingSamples(vad.FrameSamples()*10, 700, 35)
 	speech := alternatingSamples(vad.FrameSamples()*2, 700, 160)
 	silence := constantSamples(vad.FrameSamples()*3, 700)
@@ -480,7 +550,7 @@ func TestRunWakeupModeDetectsLowEnergySpeechAfterNoiseFloorLearning(t *testing.T
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("runWakeupMode did not stop after low-energy VAD utterance")
+		t.Fatal("runWakeupMode did not stop after RKNN-detected utterance")
 	}
 
 	if dialog.starts != 1 || dialog.stops == 0 {
@@ -858,7 +928,7 @@ func TestRunVoiceTurnSignalWaitsForSpeakingGoroutine(t *testing.T) {
 }
 
 func TestCaptureUtteranceTimeoutDiscardsSilenceWhenVADNeverDetectedSpeech(t *testing.T) {
-	vad := agent.NewAudioVAD(1000, 500, 90, 60, false)
+	vad := newTestAudioVAD(t, false, []float64{0.1, 0.1, 0.1, 0.1})
 	dialog := &fakeAudioDialog{
 		vad: vad,
 		chunks: []*agent.AudioChunkResult{
@@ -878,7 +948,7 @@ func TestCaptureUtteranceTimeoutDiscardsSilenceWhenVADNeverDetectedSpeech(t *tes
 }
 
 func TestCaptureUtteranceTimeoutReturnsBufferedSpeechWhenVADStarted(t *testing.T) {
-	vad := agent.NewAudioVAD(1000, 500, 90, 60, false)
+	vad := newTestAudioVAD(t, false, []float64{0.9, 0.9, 0.9})
 	speech := alternatingSamples(vad.FrameSamples()*3, 700, 1000)
 	dialog := &fakeAudioDialog{
 		vad: vad,

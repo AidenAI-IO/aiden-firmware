@@ -51,6 +51,73 @@ func NewAudioServiceClient(socketPath string) *AudioServiceClient {
 	return &AudioServiceClient{socketPath: socketPath}
 }
 
+// AudioRecordChunkReader reuses one Unix socket for a recording session's
+// long-poll chunk reads.
+type AudioRecordChunkReader struct {
+	conn      net.Conn
+	sessionID uint64
+}
+
+func (c *AudioServiceClient) OpenRecordChunkReader(sessionID uint64) (*AudioRecordChunkReader, error) {
+	conn, err := net.DialTimeout("unix", c.socketPath, 5*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	return &AudioRecordChunkReader{conn: conn, sessionID: sessionID}, nil
+}
+
+func (r *AudioRecordChunkReader) Read(timeoutMs uint32) (*AudioChunkResult, error) {
+	if r == nil || r.conn == nil {
+		return nil, fmt.Errorf("record chunk reader is closed")
+	}
+	req := audioRequest{
+		Op:        "read_record_chunk",
+		SessionID: r.sessionID,
+		TimeoutMs: timeoutMs,
+	}
+
+	timeout := time.Duration(timeoutMs)*time.Millisecond + 5*time.Second
+	if timeout > 0 {
+		_ = r.conn.SetDeadline(time.Now().Add(timeout))
+	}
+
+	headerJSON, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	if err := writeUdsMessage(r.conn, udsMessage{HeaderJSON: string(headerJSON)}); err != nil {
+		return nil, fmt.Errorf("write request: %w", err)
+	}
+
+	respMsg, err := readUdsMessage(r.conn)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	var resp audioResponse
+	if err := json.Unmarshal([]byte(respMsg.HeaderJSON), &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+	if resp.Status == "TIMEOUT" {
+		return &AudioChunkResult{}, nil
+	}
+	if resp.Status != "OK" {
+		return nil, fmt.Errorf("read_record_chunk failed: %s", resp.Status)
+	}
+	return &AudioChunkResult{
+		PCM:         respMsg.Payload,
+		EndOfStream: resp.EndOfStream,
+	}, nil
+}
+
+func (r *AudioRecordChunkReader) Close() error {
+	if r == nil || r.conn == nil {
+		return nil
+	}
+	err := r.conn.Close()
+	r.conn = nil
+	return err
+}
+
 func isTransientAudioServiceError(err error) bool {
 	if err == nil {
 		return false
@@ -131,16 +198,15 @@ type udsMessage struct {
 
 // writeUdsMessage writes a message in the wire protocol format
 func writeUdsMessage(conn net.Conn, msg udsMessage) error {
-	// Write 12-byte prefix: header_len (4 LE) + payload_len (8 LE)
-	prefix := make([]byte, 12)
+	var prefix [12]byte
 	binary.LittleEndian.PutUint32(prefix[0:4], uint32(len(msg.HeaderJSON)))
 	binary.LittleEndian.PutUint64(prefix[4:12], uint64(len(msg.Payload)))
 
-	if _, err := conn.Write(prefix); err != nil {
+	if _, err := conn.Write(prefix[:]); err != nil {
 		return fmt.Errorf("write prefix: %w", err)
 	}
 	if len(msg.HeaderJSON) > 0 {
-		if _, err := conn.Write([]byte(msg.HeaderJSON)); err != nil {
+		if _, err := io.WriteString(conn, msg.HeaderJSON); err != nil {
 			return fmt.Errorf("write header: %w", err)
 		}
 	}
@@ -154,9 +220,8 @@ func writeUdsMessage(conn net.Conn, msg udsMessage) error {
 
 // readUdsMessage reads a message in the wire protocol format
 func readUdsMessage(conn net.Conn) (*udsMessage, error) {
-	// Read 12-byte prefix
-	prefix := make([]byte, 12)
-	if _, err := io.ReadFull(conn, prefix); err != nil {
+	var prefix [12]byte
+	if _, err := io.ReadFull(conn, prefix[:]); err != nil {
 		return nil, fmt.Errorf("read prefix: %w", err)
 	}
 

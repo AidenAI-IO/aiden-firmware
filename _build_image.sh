@@ -6,6 +6,24 @@ OVERLAY="$SCRIPT_DIR/overlay"
 PICO_SDK="$SCRIPT_DIR/pico-sdk"
 DEST_OVERLAY="$PICO_SDK/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buildroot-aiden"
 
+require_rknnmrt_version() {
+    local runtime="$1"
+    local version major minor
+
+    version="$(strings "$runtime" | sed -n 's/^librknnmrt version: \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
+    if [ -z "$version" ]; then
+        echo "  ✗ Error: cannot read RKNN runtime version from $runtime" >&2
+        exit 1
+    fi
+    major="${version%%.*}"
+    minor="${version#*.}"
+    minor="${minor%%.*}"
+    if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 3 ]; }; then
+        echo "  ✗ Error: RKNN runtime $version is too old for silero_vad_rv1106.rknn; use librknnmrt >= 2.3.x" >&2
+        exit 1
+    fi
+}
+
 echo "=== Aiden Hardware Demo - Image Builder ==="
 echo ""
 
@@ -17,9 +35,23 @@ cd "$SCRIPT_DIR"
 
 # Step 2: 准备 overlay 目录
 echo "[2/6] Preparing overlay directories..."
-mkdir -p "$OVERLAY/oem/usr/bin" "$OVERLAY/oem/etc"
+mkdir -p "$OVERLAY/oem/usr/bin" "$OVERLAY/oem/usr/lib" "$OVERLAY/oem/etc"
 cp -a "$SCRIPT_DIR/build/bin"/. "$OVERLAY/oem/usr/bin/"
 echo "  ✓ Binaries copied to overlay/oem/usr/bin"
+
+RKNNMRT_OVERLAY="$OVERLAY/oem/usr/lib/librknnmrt.so"
+RKNNMRT_SOURCE="$PICO_SDK/media/iva/iva/librockiva/rockiva-rv1106-Linux/lib/librknnmrt.so"
+if [ -f "$RKNNMRT_OVERLAY" ]; then
+    echo "  ✓ RKNN runtime already present in overlay/oem/usr/lib"
+else
+    if [ ! -f "$RKNNMRT_SOURCE" ]; then
+        echo "  ✗ Error: RKNN runtime not found: $RKNNMRT_SOURCE"
+        exit 1
+    fi
+    cp "$RKNNMRT_SOURCE" "$RKNNMRT_OVERLAY"
+    echo "  ✓ RKNN runtime copied to overlay/oem/usr/lib"
+fi
+require_rknnmrt_version "$RKNNMRT_OVERLAY"
 
 KEY_SOURCE="${OTA_PUBLIC_KEY_PATH:-}"
 if [ -n "$KEY_SOURCE" ]; then

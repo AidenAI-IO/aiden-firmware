@@ -73,7 +73,10 @@ struct AgentToml {
     std::string additional_prompt;
     std::string input_mode;
     std::string trigger_mode;
-    int energy_threshold = 0;
+    std::string vad_backend;
+    std::string vad_model_path;
+    std::string vad_helper_path;
+    double vad_speech_threshold = 0.0;
     int silence_ms = 0;
     int min_speech_ms = 0;
     bool voice_session_enabled = true;
