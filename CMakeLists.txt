@@ -166,6 +166,17 @@ add_executable(cpu_vad src/cpu_vad.cpp)
 target_include_directories(cpu_vad PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(cpu_vad PRIVATE m)
 
+foreach(_vad_target rknn_vad cpu_vad)
+    target_compile_options(${_vad_target} PRIVATE -O3)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|ARM)")
+        target_compile_options(${_vad_target} PRIVATE
+            -mcpu=cortex-a7
+            -mfpu=neon-vfpv4
+            -mfloat-abi=hard
+        )
+    endif()
+endforeach()
+
 add_executable(config_web
     src/config_web.cpp
     src/agent_toml.cpp

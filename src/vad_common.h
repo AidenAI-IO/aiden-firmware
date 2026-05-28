@@ -85,6 +85,112 @@ inline float dot_product(const float* a, const float* b, int n) {
 #endif
 }
 
+inline void dual_dot_product(const float* samples,
+                             const float* real_basis,
+                             const float* imag_basis,
+                             int n,
+                             float* real,
+                             float* imag) {
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    float32x4_t real_sum = vdupq_n_f32(0.0f);
+    float32x4_t imag_sum = vdupq_n_f32(0.0f);
+    int i = 0;
+    for (; i + 4 <= n; i += 4) {
+        const float32x4_t sample = vld1q_f32(samples + i);
+        real_sum = vmlaq_f32(real_sum, sample, vld1q_f32(real_basis + i));
+        imag_sum = vmlaq_f32(imag_sum, sample, vld1q_f32(imag_basis + i));
+    }
+    float32x2_t real_pair = vadd_f32(vget_low_f32(real_sum), vget_high_f32(real_sum));
+    float32x2_t imag_pair = vadd_f32(vget_low_f32(imag_sum), vget_high_f32(imag_sum));
+    real_pair = vpadd_f32(real_pair, real_pair);
+    imag_pair = vpadd_f32(imag_pair, imag_pair);
+    float real_out = vget_lane_f32(real_pair, 0);
+    float imag_out = vget_lane_f32(imag_pair, 0);
+    for (; i < n; ++i) {
+        const float sample = samples[i];
+        real_out += sample * real_basis[i];
+        imag_out += sample * imag_basis[i];
+    }
+    *real = real_out;
+    *imag = imag_out;
+#else
+    float real_out = 0.0f;
+    float imag_out = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        const float sample = samples[i];
+        real_out += sample * real_basis[i];
+        imag_out += sample * imag_basis[i];
+    }
+    *real = real_out;
+    *imag = imag_out;
+#endif
+}
+
+inline void dual_dot_product2(const float* samples,
+                              const float* real_basis0,
+                              const float* imag_basis0,
+                              const float* real_basis1,
+                              const float* imag_basis1,
+                              int n,
+                              float* real0,
+                              float* imag0,
+                              float* real1,
+                              float* imag1) {
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    float32x4_t r0 = vdupq_n_f32(0.0f);
+    float32x4_t i0 = vdupq_n_f32(0.0f);
+    float32x4_t r1 = vdupq_n_f32(0.0f);
+    float32x4_t i1 = vdupq_n_f32(0.0f);
+    int i = 0;
+    for (; i + 4 <= n; i += 4) {
+        const float32x4_t sample = vld1q_f32(samples + i);
+        r0 = vmlaq_f32(r0, sample, vld1q_f32(real_basis0 + i));
+        i0 = vmlaq_f32(i0, sample, vld1q_f32(imag_basis0 + i));
+        r1 = vmlaq_f32(r1, sample, vld1q_f32(real_basis1 + i));
+        i1 = vmlaq_f32(i1, sample, vld1q_f32(imag_basis1 + i));
+    }
+    float32x2_t p0 = vadd_f32(vget_low_f32(r0), vget_high_f32(r0));
+    float32x2_t p1 = vadd_f32(vget_low_f32(i0), vget_high_f32(i0));
+    float32x2_t p2 = vadd_f32(vget_low_f32(r1), vget_high_f32(r1));
+    float32x2_t p3 = vadd_f32(vget_low_f32(i1), vget_high_f32(i1));
+    p0 = vpadd_f32(p0, p0);
+    p1 = vpadd_f32(p1, p1);
+    p2 = vpadd_f32(p2, p2);
+    p3 = vpadd_f32(p3, p3);
+    float out_r0 = vget_lane_f32(p0, 0);
+    float out_i0 = vget_lane_f32(p1, 0);
+    float out_r1 = vget_lane_f32(p2, 0);
+    float out_i1 = vget_lane_f32(p3, 0);
+    for (; i < n; ++i) {
+        const float sample = samples[i];
+        out_r0 += sample * real_basis0[i];
+        out_i0 += sample * imag_basis0[i];
+        out_r1 += sample * real_basis1[i];
+        out_i1 += sample * imag_basis1[i];
+    }
+    *real0 = out_r0;
+    *imag0 = out_i0;
+    *real1 = out_r1;
+    *imag1 = out_i1;
+#else
+    float out_r0 = 0.0f;
+    float out_i0 = 0.0f;
+    float out_r1 = 0.0f;
+    float out_i1 = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        const float sample = samples[i];
+        out_r0 += sample * real_basis0[i];
+        out_i0 += sample * imag_basis0[i];
+        out_r1 += sample * real_basis1[i];
+        out_i1 += sample * imag_basis1[i];
+    }
+    *real0 = out_r0;
+    *imag0 = out_i0;
+    *real1 = out_r1;
+    *imag1 = out_i1;
+#endif
+}
+
 inline float sigmoid(float x) {
     return 1.0f / (1.0f + std::exp(-x));
 }
@@ -144,16 +250,30 @@ public:
 
         for (int frame = 0; frame < kFeatureFrames; ++frame) {
             const int offset = frame * kSTFTHop;
-            for (int freq = 0; freq < kSTFTBins; ++freq) {
+            int freq = 0;
+            for (; freq + 1 < kSTFTBins; freq += 2) {
+                float real0 = 0.0f;
+                float imag0 = 0.0f;
+                float real1 = 0.0f;
+                float imag1 = 0.0f;
+                const float* real_basis0 = &stft_real_[freq * kSTFTSize];
+                const float* imag_basis0 = &stft_imag_[freq * kSTFTSize];
+                const float* real_basis1 = &stft_real_[(freq + 1) * kSTFTSize];
+                const float* imag_basis1 = &stft_imag_[(freq + 1) * kSTFTSize];
+                dual_dot_product2(padded + offset,
+                                  real_basis0, imag_basis0,
+                                  real_basis1, imag_basis1,
+                                  kSTFTSize,
+                                  &real0, &imag0, &real1, &imag1);
+                features[freq * kFeatureFrames + frame] = std::sqrt(real0 * real0 + imag0 * imag0);
+                features[(freq + 1) * kFeatureFrames + frame] = std::sqrt(real1 * real1 + imag1 * imag1);
+            }
+            for (; freq < kSTFTBins; ++freq) {
                 float real = 0.0f;
                 float imag = 0.0f;
                 const float* real_basis = &stft_real_[freq * kSTFTSize];
                 const float* imag_basis = &stft_imag_[freq * kSTFTSize];
-                for (int n = 0; n < kSTFTSize; ++n) {
-                    const float sample = padded[offset + n];
-                    real += sample * real_basis[n];
-                    imag += sample * imag_basis[n];
-                }
+                dual_dot_product(padded + offset, real_basis, imag_basis, kSTFTSize, &real, &imag);
                 features[freq * kFeatureFrames + frame] = std::sqrt(real * real + imag * imag);
             }
         }

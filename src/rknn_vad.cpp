@@ -2,11 +2,13 @@
 #include "vad_common.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <sstream>
@@ -24,6 +26,31 @@ constexpr int kSileroContextSamples = 64;
 constexpr int kStateFloats = 2 * 1 * 128;
 constexpr int kMinInputFloats = kFrameSamples;
 constexpr uint32_t kMissingTensorIndex = 0xffffffffu;
+
+struct SplitStageTotals {
+    double stft_ms = 0.0;
+    double quant_ms = 0.0;
+    double rknn_ms = 0.0;
+    double dequant_ms = 0.0;
+    double decoder_ms = 0.0;
+    double context_ms = 0.0;
+    int frames = 0;
+
+    void reset() {
+        stft_ms = 0.0;
+        quant_ms = 0.0;
+        rknn_ms = 0.0;
+        dequant_ms = 0.0;
+        decoder_ms = 0.0;
+        context_ms = 0.0;
+        frames = 0;
+    }
+};
+
+double elapsed_ms(std::chrono::steady_clock::time_point start,
+                  std::chrono::steady_clock::time_point end) {
+    return std::chrono::duration_cast<std::chrono::duration<double, std::milli> >(end - start).count();
+}
 
 const char* tensor_type_name(rknn_tensor_type type) {
     switch (type) {
@@ -367,6 +394,10 @@ public:
         }
         std::fill(context_.begin(), context_.end(), 0.0f);
     }
+
+    void set_profile_stages(bool) {}
+    void reset_stage_totals() {}
+    void print_stage_totals(const std::string&, int) const {}
 
     bool infer(const int16_t* pcm, float* probability, std::string* err) {
         std::fill(input_.begin(), input_.end(), 0.0f);
@@ -911,11 +942,62 @@ public:
         decoder_.reset();
     }
 
+    void set_profile_stages(bool enabled) {
+        profile_stages_ = enabled;
+    }
+
+    void reset_stage_totals() {
+        stage_totals_.reset();
+    }
+
+    void print_stage_totals(const std::string& label, int frames) const {
+        if (!profile_stages_ || stage_totals_.frames == 0) {
+            return;
+        }
+        const double denom = static_cast<double>(stage_totals_.frames);
+        std::cout << std::fixed << std::setprecision(3)
+                  << "STAGES backend=" << label
+                  << " frames=" << frames
+                  << " measured_frames=" << stage_totals_.frames
+                  << " stft_ms=" << stage_totals_.stft_ms
+                  << " quant_ms=" << stage_totals_.quant_ms
+                  << " rknn_ms=" << stage_totals_.rknn_ms
+                  << " dequant_ms=" << stage_totals_.dequant_ms
+                  << " decoder_ms=" << stage_totals_.decoder_ms
+                  << " context_ms=" << stage_totals_.context_ms
+                  << " avg_stft_ms=" << (stage_totals_.stft_ms / denom)
+                  << " avg_quant_ms=" << (stage_totals_.quant_ms / denom)
+                  << " avg_rknn_ms=" << (stage_totals_.rknn_ms / denom)
+                  << " avg_dequant_ms=" << (stage_totals_.dequant_ms / denom)
+                  << " avg_decoder_ms=" << (stage_totals_.decoder_ms / denom)
+                  << " avg_context_ms=" << (stage_totals_.context_ms / denom)
+                  << std::endl;
+    }
+
     bool infer(const int16_t* pcm, float* probability, std::string* err) {
+        SplitStageTotals* totals = profile_stages_ ? &stage_totals_ : nullptr;
+        std::chrono::steady_clock::time_point start;
+        if (totals) start = std::chrono::steady_clock::now();
         feature_extractor_.compute(pcm, features_);
-        if (!run_encoder(err)) return false;
+        if (totals) {
+            const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+            totals->stft_ms += elapsed_ms(start, now);
+            start = now;
+        }
+        if (!run_encoder(err, totals)) return false;
+        if (totals) start = std::chrono::steady_clock::now();
         *probability = decoder_.infer(encoder_out_);
+        if (totals) {
+            const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+            totals->decoder_ms += elapsed_ms(start, now);
+            start = now;
+        }
         feature_extractor_.update_context(pcm);
+        if (totals) {
+            const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+            totals->context_ms += elapsed_ms(start, now);
+            totals->frames++;
+        }
         return true;
     }
 
@@ -973,7 +1055,9 @@ private:
         return true;
     }
 
-    bool run_encoder(std::string* err) {
+    bool run_encoder(std::string* err, SplitStageTotals* totals) {
+        std::chrono::steady_clock::time_point start;
+        if (totals) start = std::chrono::steady_clock::now();
         uint8_t* dst = static_cast<uint8_t*>(input_mem_->virt_addr);
         for (int i = 0; i < aiden_vad::kSTFTBins * aiden_vad::kFeatureFrames; ++i) {
             int32_t q = static_cast<int32_t>(
@@ -982,15 +1066,29 @@ private:
             if (q > 127) q = 127;
             dst[i] = static_cast<uint8_t>(static_cast<int8_t>(q));
         }
+        if (totals) {
+            const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+            totals->quant_ms += elapsed_ms(start, now);
+            start = now;
+        }
         int ret = rknn_run(encoder_ctx_, nullptr);
         if (ret != RKNN_SUCC) {
             *err = "encoder rknn_run failed: " + std::to_string(ret);
             return false;
         }
+        if (totals) {
+            const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+            totals->rknn_ms += elapsed_ms(start, now);
+            start = now;
+        }
         const uint8_t* src = static_cast<const uint8_t*>(output_mem_->virt_addr);
         for (int i = 0; i < aiden_vad::kHidden; ++i) {
             int8_t raw = static_cast<int8_t>(src[i]);
             encoder_out_[i] = (static_cast<float>(raw) - output_attr_.zp) * output_attr_.scale;
+        }
+        if (totals) {
+            const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+            totals->dequant_ms += elapsed_ms(start, now);
         }
         return true;
     }
@@ -1006,6 +1104,8 @@ private:
     aiden_vad::SileroLSTMDecoder decoder_;
     float features_[aiden_vad::kSTFTBins * aiden_vad::kFeatureFrames];
     float encoder_out_[aiden_vad::kHidden];
+    bool profile_stages_ = false;
+    SplitStageTotals stage_totals_;
 };
 
 struct Args {
@@ -1013,6 +1113,7 @@ struct Args {
     std::string weights_path;
     bool self_test = false;
     bool benchmark = false;
+    bool benchmark_stages = false;
     int benchmark_frames = 1000;
     int benchmark_warmup = 20;
 };
@@ -1046,6 +1147,9 @@ Args parse_args(int argc, char** argv) {
             parse_positive_int(argv[++i], &args.benchmark_frames);
         } else if (arg == "--benchmark-warmup" && i + 1 < argc) {
             parse_positive_int(argv[++i], &args.benchmark_warmup);
+        } else if (arg == "--benchmark-stages") {
+            args.benchmark = true;
+            args.benchmark_stages = true;
         }
     }
     return args;
@@ -1053,6 +1157,7 @@ Args parse_args(int argc, char** argv) {
 
 template <typename Vad>
 bool run_benchmark(Vad* vad, const Args& args, const std::string& label, std::string* err) {
+    vad->set_profile_stages(args.benchmark_stages);
     std::vector<std::vector<int16_t> > frames = aiden_vad::make_benchmark_frames();
     float probability = 0.0f;
     for (int i = 0; i < args.benchmark_warmup; ++i) {
@@ -1062,6 +1167,7 @@ bool run_benchmark(Vad* vad, const Args& args, const std::string& label, std::st
         }
     }
     vad->reset();
+    vad->reset_stage_totals();
 
     const aiden_vad::CPUUsage cpu_start = aiden_vad::current_cpu_usage();
     const std::chrono::steady_clock::time_point wall_start = std::chrono::steady_clock::now();
@@ -1077,6 +1183,7 @@ bool run_benchmark(Vad* vad, const Args& args, const std::string& label, std::st
         std::chrono::duration_cast<std::chrono::duration<double, std::milli> >(wall_end - wall_start).count();
     aiden_vad::print_benchmark_result(label, args.benchmark_frames, args.benchmark_warmup,
                                       wall_ms, cpu_start, cpu_end, probability);
+    vad->print_stage_totals(label, args.benchmark_frames);
     return true;
 }
 

@@ -315,6 +315,7 @@ type helperVADScorer struct {
 	stdin   io.WriteCloser
 	stdout  *bufio.Reader
 	waitErr chan error
+	frame   []byte
 }
 
 func newHelperVADScorer(backend, modelPath, helperPath string) *helperVADScorer {
@@ -334,7 +335,13 @@ func (s *helperVADScorer) Score(samples []int16) (float64, error) {
 		return 0, err
 	}
 
-	frame := make([]byte, 1+len(samples)*2)
+	frameLen := 1 + len(samples)*2
+	if cap(s.frame) < frameLen {
+		s.frame = make([]byte, frameLen)
+	} else {
+		s.frame = s.frame[:frameLen]
+	}
+	frame := s.frame
 	frame[0] = 'F'
 	for i, sample := range samples {
 		binary.LittleEndian.PutUint16(frame[1+i*2:], uint16(sample))
