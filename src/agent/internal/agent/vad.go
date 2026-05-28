@@ -16,10 +16,12 @@ import (
 const (
 	sileroVADSampleRate       = 16000
 	sileroVADFrameSamples     = 512
+	defaultVADBackend         = "rknn"
 	defaultVADSpeechThreshold = 0.5
-	defaultVADModelPath       = "/userdata/agent/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
-	defaultVADWeightsPath     = "/userdata/agent/silero_vad_6_2_lstm_decoder_weights.bin"
+	defaultVADModelPath       = "/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
+	defaultVADWeightsPath     = "/userdata/agent/model/silero_vad_6_2_lstm_decoder_weights.bin"
 	defaultVADHelperPath      = "/oem/usr/bin/rknn_vad"
+	defaultCPUVADHelperPath   = "/oem/usr/bin/cpu_vad"
 )
 
 type AudioVADConfig struct {
@@ -27,6 +29,7 @@ type AudioVADConfig struct {
 	SilenceMs       int
 	MinSpeechMs     int
 	AlwaysBuffer    bool
+	Backend         string
 	ModelPath       string
 	HelperPath      string
 	SpeechThreshold float64
@@ -38,7 +41,7 @@ type VADScorer interface {
 	Close() error
 }
 
-// AudioVAD segments utterances using Silero VAD probabilities produced by the RKNN helper.
+// AudioVAD segments utterances using Silero VAD probabilities produced by the helper.
 type AudioVAD struct {
 	scorer          VADScorer
 	alwaysBuffer    bool
@@ -68,8 +71,33 @@ func DefaultVADModelPath() string {
 	return defaultVADModelPath
 }
 
+func DefaultVADBackend() string {
+	return defaultVADBackend
+}
+
 func DefaultVADHelperPath() string {
 	return defaultVADHelperPath
+}
+
+func DefaultVADHelperPathForBackend(backend string) string {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "cpu":
+		return defaultCPUVADHelperPath
+	default:
+		return defaultVADHelperPath
+	}
+}
+
+func ResolveVADHelperPath(backend, helperPath string) string {
+	backend = strings.ToLower(strings.TrimSpace(backend))
+	helperPath = strings.TrimSpace(helperPath)
+	if helperPath == "" {
+		return DefaultVADHelperPathForBackend(backend)
+	}
+	if helperPath == defaultVADHelperPath || helperPath == defaultCPUVADHelperPath {
+		return DefaultVADHelperPathForBackend(backend)
+	}
+	return helperPath
 }
 
 func DefaultVADSpeechThreshold() float64 {
@@ -77,15 +105,16 @@ func DefaultVADSpeechThreshold() float64 {
 }
 
 func NewAudioVAD(cfg AudioVADConfig) (*AudioVAD, error) {
+	backend, err := normalizeVADBackend(cfg.Backend)
+	if err != nil {
+		return nil, err
+	}
 	modelPath := strings.TrimSpace(cfg.ModelPath)
 	if modelPath == "" {
 		modelPath = defaultVADModelPath
 	}
-	helperPath := strings.TrimSpace(cfg.HelperPath)
-	if helperPath == "" {
-		helperPath = defaultVADHelperPath
-	}
-	return newAudioVAD(cfg, newRKNNVADScorer(modelPath, helperPath))
+	helperPath := ResolveVADHelperPath(backend, cfg.HelperPath)
+	return newAudioVAD(cfg, newHelperVADScorer(backend, modelPath, helperPath))
 }
 
 func NewAudioVADWithScorer(cfg AudioVADConfig, scorer VADScorer) (*AudioVAD, error) {
@@ -101,7 +130,7 @@ func newAudioVAD(cfg AudioVADConfig, scorer VADScorer) (*AudioVAD, error) {
 		sampleRate = sileroVADSampleRate
 	}
 	if sampleRate != sileroVADSampleRate {
-		return nil, fmt.Errorf("silero RKNN VAD requires %d Hz audio, got %d Hz", sileroVADSampleRate, sampleRate)
+		return nil, fmt.Errorf("silero VAD requires %d Hz audio, got %d Hz", sileroVADSampleRate, sampleRate)
 	}
 
 	threshold := cfg.SpeechThreshold
@@ -148,6 +177,19 @@ func framesForDuration(durationMs, frameMs int) int {
 	return frames
 }
 
+func normalizeVADBackend(backend string) (string, error) {
+	backend = strings.ToLower(strings.TrimSpace(backend))
+	if backend == "" {
+		return defaultVADBackend, nil
+	}
+	switch backend {
+	case "rknn", "cpu":
+		return backend, nil
+	default:
+		return "", fmt.Errorf("invalid vad_backend: %s (expected rknn or cpu)", backend)
+	}
+}
+
 // FrameSamples returns the number of samples expected in each Silero VAD frame.
 func (v *AudioVAD) FrameSamples() int {
 	return v.frameSamples
@@ -167,7 +209,7 @@ func (v *AudioVAD) DebugState() VADDebugState {
 	return state
 }
 
-// Process feeds one 512-sample 16 kHz frame to the RKNN VAD and returns an utterance when speech ends.
+// Process feeds one 512-sample 16 kHz frame to the VAD helper and returns an utterance when speech ends.
 func (v *AudioVAD) Process(samples []int16) ([]int16, error) {
 	if len(samples) != v.frameSamples {
 		return nil, fmt.Errorf("invalid Silero VAD frame: got %d samples, want %d", len(samples), v.frameSamples)
@@ -262,7 +304,8 @@ func (v *AudioVAD) resetBuffers() {
 	v.speaking = false
 }
 
-type rknnVADScorer struct {
+type helperVADScorer struct {
+	backend     string
 	modelPath   string
 	weightsPath string
 	helperPath  string
@@ -274,15 +317,16 @@ type rknnVADScorer struct {
 	waitErr chan error
 }
 
-func newRKNNVADScorer(modelPath, helperPath string) *rknnVADScorer {
-	return &rknnVADScorer{
+func newHelperVADScorer(backend, modelPath, helperPath string) *helperVADScorer {
+	return &helperVADScorer{
+		backend:     backend,
 		modelPath:   modelPath,
 		weightsPath: defaultVADWeightsPath,
 		helperPath:  helperPath,
 	}
 }
 
-func (s *rknnVADScorer) Score(samples []int16) (float64, error) {
+func (s *helperVADScorer) Score(samples []int16) (float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -297,29 +341,29 @@ func (s *rknnVADScorer) Score(samples []int16) (float64, error) {
 	}
 	if _, err := s.stdin.Write(frame); err != nil {
 		s.stopAfterProtocolError()
-		return 0, fmt.Errorf("write RKNN VAD frame: %w", err)
+		return 0, fmt.Errorf("write VAD helper frame: %w", err)
 	}
 
 	line, err := s.stdout.ReadString('\n')
 	if err != nil {
 		s.stopAfterProtocolError()
-		return 0, fmt.Errorf("read RKNN VAD score: %w", err)
+		return 0, fmt.Errorf("read VAD helper score: %w", err)
 	}
 	line = strings.TrimSpace(line)
 	if strings.HasPrefix(line, "ERR ") {
 		return 0, errors.New(strings.TrimPrefix(line, "ERR "))
 	}
 	if !strings.HasPrefix(line, "P ") {
-		return 0, fmt.Errorf("unexpected RKNN VAD response %q", line)
+		return 0, fmt.Errorf("unexpected VAD helper response %q", line)
 	}
 	probability, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(line, "P ")), 64)
 	if err != nil {
-		return 0, fmt.Errorf("parse RKNN VAD probability %q: %w", line, err)
+		return 0, fmt.Errorf("parse VAD helper probability %q: %w", line, err)
 	}
 	return probability, nil
 }
 
-func (s *rknnVADScorer) Reset() error {
+func (s *helperVADScorer) Reset() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -328,12 +372,12 @@ func (s *rknnVADScorer) Reset() error {
 	}
 	if _, err := s.stdin.Write([]byte{'R'}); err != nil {
 		s.stopAfterProtocolError()
-		return fmt.Errorf("write RKNN VAD reset: %w", err)
+		return fmt.Errorf("write VAD helper reset: %w", err)
 	}
 	line, err := s.stdout.ReadString('\n')
 	if err != nil {
 		s.stopAfterProtocolError()
-		return fmt.Errorf("read RKNN VAD reset response: %w", err)
+		return fmt.Errorf("read VAD helper reset response: %w", err)
 	}
 	line = strings.TrimSpace(line)
 	if line == "OK" {
@@ -342,52 +386,55 @@ func (s *rknnVADScorer) Reset() error {
 	if strings.HasPrefix(line, "ERR ") {
 		return errors.New(strings.TrimPrefix(line, "ERR "))
 	}
-	return fmt.Errorf("unexpected RKNN VAD reset response %q", line)
+	return fmt.Errorf("unexpected VAD helper reset response %q", line)
 }
 
-func (s *rknnVADScorer) Close() error {
+func (s *helperVADScorer) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.closeLocked()
 }
 
-func (s *rknnVADScorer) ensureStarted() error {
+func (s *helperVADScorer) ensureStarted() error {
 	if s.cmd != nil {
 		return nil
 	}
 
-	args := []string{"--model", s.modelPath}
+	args := []string{}
+	if s.backend != "cpu" {
+		args = append(args, "--model", s.modelPath)
+	}
 	if s.weightsPath != "" {
 		args = append(args, "--weights", s.weightsPath)
 	}
 	cmd := exec.Command(s.helperPath, args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("open RKNN VAD stdin: %w", err)
+		return fmt.Errorf("open VAD helper stdin: %w", err)
 	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
-		return fmt.Errorf("open RKNN VAD stdout: %w", err)
+		return fmt.Errorf("open VAD helper stdout: %w", err)
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
 		_ = stdin.Close()
-		return fmt.Errorf("open RKNN VAD stderr: %w", err)
+		return fmt.Errorf("open VAD helper stderr: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
-		return fmt.Errorf("start RKNN VAD helper %q: %w", s.helperPath, err)
+		return fmt.Errorf("start VAD helper %q: %w", s.helperPath, err)
 	}
 
-	go logRKNNVADStderr(stderrPipe)
+	go logVADHelperStderr(s.backend, stderrPipe)
 
 	reader := bufio.NewReader(stdoutPipe)
 	line, err := reader.ReadString('\n')
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return fmt.Errorf("wait for RKNN VAD readiness: %w", err)
+		return fmt.Errorf("wait for VAD helper readiness: %w", err)
 	}
 	line = strings.TrimSpace(line)
 	if strings.HasPrefix(line, "ERR ") {
@@ -398,7 +445,7 @@ func (s *rknnVADScorer) ensureStarted() error {
 	if line != "READY" {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return fmt.Errorf("unexpected RKNN VAD readiness response %q", line)
+		return fmt.Errorf("unexpected VAD helper readiness response %q", line)
 	}
 
 	s.cmd = cmd
@@ -411,21 +458,21 @@ func (s *rknnVADScorer) ensureStarted() error {
 	return nil
 }
 
-func logRKNNVADStderr(stderr io.Reader) {
+func logVADHelperStderr(backend string, stderr io.Reader) {
 	scanner := bufio.NewScanner(stderr)
 	for scanner.Scan() {
-		log.Printf("[rknn_vad] %s\n", scanner.Text())
+		log.Printf("[vad:%s] %s\n", backend, scanner.Text())
 	}
 }
 
-func (s *rknnVADScorer) stopAfterProtocolError() {
+func (s *helperVADScorer) stopAfterProtocolError() {
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
 	}
 	_ = s.closeLocked()
 }
 
-func (s *rknnVADScorer) closeLocked() error {
+func (s *helperVADScorer) closeLocked() error {
 	if s.cmd == nil {
 		return nil
 	}

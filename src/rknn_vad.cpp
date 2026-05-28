@@ -1,7 +1,9 @@
 #include "rknn_api_minimal.h"
+#include "vad_common.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -897,56 +899,27 @@ public:
     }
 
     bool init(const std::string& encoder_path, const std::string& weights_path, std::string* err) {
-        if (!load_weights(weights_path, err)) return false;
+        if (!weights_.load(weights_path, false, err)) return false;
+        if (!decoder_.init(&weights_.recurrent, err)) return false;
         if (!init_encoder(encoder_path, err)) return false;
-        prepare_stft_basis();
         reset();
         return true;
     }
 
     void reset() {
-        std::memset(h_, 0, sizeof(h_));
-        std::memset(c_, 0, sizeof(c_));
-        std::memset(context_, 0, sizeof(context_));
+        feature_extractor_.reset();
+        decoder_.reset();
     }
 
     bool infer(const int16_t* pcm, float* probability, std::string* err) {
-        compute_stft_features(pcm);
+        feature_extractor_.compute(pcm, features_);
         if (!run_encoder(err)) return false;
-        lstm_cell();
-        *probability = decoder();
-        update_context(pcm);
+        *probability = decoder_.infer(encoder_out_);
+        feature_extractor_.update_context(pcm);
         return true;
     }
 
 private:
-    static constexpr int kHidden = 128;
-    static constexpr int kGates = 4 * kHidden;
-
-    bool load_weights(const std::string& path, std::string* err) {
-        std::ifstream file(path, std::ios::binary);
-        if (!file) { *err = "cannot open weights: " + path; return false; }
-        char magic[4];
-        file.read(magic, 4);
-        if (std::memcmp(magic, "SVLW", 4) != 0) {
-            *err = "invalid weights magic"; return false;
-        }
-        uint32_t version, hidden, input_sz;
-        file.read(reinterpret_cast<char*>(&version), 4);
-        file.read(reinterpret_cast<char*>(&hidden), 4);
-        file.read(reinterpret_cast<char*>(&input_sz), 4);
-        if (hidden != kHidden || input_sz != kHidden) {
-            *err = "weights size mismatch"; return false;
-        }
-        file.read(reinterpret_cast<char*>(lstm_W_), sizeof(lstm_W_));
-        file.read(reinterpret_cast<char*>(lstm_R_), sizeof(lstm_R_));
-        file.read(reinterpret_cast<char*>(lstm_B_), sizeof(lstm_B_));
-        file.read(reinterpret_cast<char*>(dec_weight_), sizeof(dec_weight_));
-        file.read(reinterpret_cast<char*>(&dec_bias_), sizeof(dec_bias_));
-        if (!file) { *err = "weights file truncated"; return false; }
-        return true;
-    }
-
     bool init_encoder(const std::string& path, std::string* err) {
         int ret = rknn_init(&encoder_ctx_, const_cast<char*>(path.c_str()), 0, 0, nullptr);
         if (ret != RKNN_SUCC) {
@@ -1002,7 +975,7 @@ private:
 
     bool run_encoder(std::string* err) {
         uint8_t* dst = static_cast<uint8_t*>(input_mem_->virt_addr);
-        for (int i = 0; i < kSTFTBins * kFeatureFrames; ++i) {
+        for (int i = 0; i < aiden_vad::kSTFTBins * aiden_vad::kFeatureFrames; ++i) {
             int32_t q = static_cast<int32_t>(
                 std::nearbyint(features_[i] / input_attr_.scale + input_attr_.zp));
             if (q < -128) q = -128;
@@ -1015,115 +988,44 @@ private:
             return false;
         }
         const uint8_t* src = static_cast<const uint8_t*>(output_mem_->virt_addr);
-        for (int i = 0; i < kHidden; ++i) {
+        for (int i = 0; i < aiden_vad::kHidden; ++i) {
             int8_t raw = static_cast<int8_t>(src[i]);
             encoder_out_[i] = (static_cast<float>(raw) - output_attr_.zp) * output_attr_.scale;
         }
         return true;
     }
 
-    void lstm_cell() {
-        float gates[kGates];
-        for (int g = 0; g < kGates; ++g) {
-            float sum = lstm_B_[g] + lstm_B_[kGates + g];
-            const float* w_row = &lstm_W_[g * kHidden];
-            const float* r_row = &lstm_R_[g * kHidden];
-            for (int k = 0; k < kHidden; ++k) {
-                sum += w_row[k] * encoder_out_[k] + r_row[k] * h_[k];
-            }
-            gates[g] = sum;
-        }
-        for (int i = 0; i < kHidden; ++i) {
-            float ig = 1.0f / (1.0f + std::exp(-gates[i]));
-            float og = 1.0f / (1.0f + std::exp(-gates[kHidden + i]));
-            float fg = 1.0f / (1.0f + std::exp(-gates[2 * kHidden + i]));
-            float cg = std::tanh(gates[3 * kHidden + i]);
-            c_[i] = fg * c_[i] + ig * cg;
-            h_[i] = og * std::tanh(c_[i]);
-        }
-    }
-
-    float decoder() {
-        float logit = dec_bias_;
-        for (int i = 0; i < kHidden; ++i) {
-            float relu_h = h_[i] > 0.0f ? h_[i] : 0.0f;
-            logit += dec_weight_[i] * relu_h;
-        }
-        return 1.0f / (1.0f + std::exp(-logit));
-    }
-
-    void prepare_stft_basis() {
-        const float pi = 3.14159265358979323846f;
-        for (int freq = 0; freq < kSTFTBins; ++freq) {
-            for (int n = 0; n < kSTFTSize; ++n) {
-                float window = 0.5f - 0.5f * std::cos((2.0f * pi * n) / kSTFTSize);
-                float angle = (2.0f * pi * freq * n) / kSTFTSize;
-                stft_real_[freq * kSTFTSize + n] = window * std::cos(angle);
-                stft_imag_[freq * kSTFTSize + n] = window * -std::sin(angle);
-            }
-        }
-    }
-
-    void compute_stft_features(const int16_t* pcm) {
-        const int audio_samples = kFrameSamples + kSileroContextSamples;
-        float padded[audio_samples + kSTFTSize / 4];
-        int wi = 0;
-        for (int i = 0; i < kSileroContextSamples; ++i)
-            padded[wi++] = context_[i];
-        for (int i = 0; i < kFrameSamples; ++i)
-            padded[wi++] = static_cast<float>(pcm[i]) / 32768.0f;
-        for (int i = 0; i < kSTFTSize / 4; ++i)
-            padded[wi + i] = padded[audio_samples - 2 - i];
-
-        for (int frame = 0; frame < kFeatureFrames; ++frame) {
-            const int offset = frame * kSTFTHop;
-            for (int freq = 0; freq < kSTFTBins; ++freq) {
-                float real = 0.0f, imag = 0.0f;
-                const float* rb = &stft_real_[freq * kSTFTSize];
-                const float* ib = &stft_imag_[freq * kSTFTSize];
-                for (int n = 0; n < kSTFTSize; ++n) {
-                    float s = padded[offset + n];
-                    real += s * rb[n];
-                    imag += s * ib[n];
-                }
-                features_[freq * kFeatureFrames + frame] = std::sqrt(real * real + imag * imag);
-            }
-        }
-    }
-
-    void update_context(const int16_t* pcm) {
-        const int start = kFrameSamples - kSileroContextSamples;
-        for (int i = 0; i < kSileroContextSamples; ++i)
-            context_[i] = static_cast<float>(pcm[start + i]) / 32768.0f;
-    }
-
-    static constexpr int kFeatureFrames = 4;
     rknn_context encoder_ctx_ = 0;
     rknn_tensor_attr input_attr_;
     rknn_tensor_attr output_attr_;
     rknn_tensor_mem* input_mem_ = nullptr;
     rknn_tensor_mem* output_mem_ = nullptr;
 
-    float lstm_W_[kGates * kHidden];
-    float lstm_R_[kGates * kHidden];
-    float lstm_B_[2 * kGates];
-    float dec_weight_[kHidden];
-    float dec_bias_ = 0.0f;
-
-    float h_[kHidden];
-    float c_[kHidden];
-    float context_[kSileroContextSamples];
-    float features_[kSTFTBins * kFeatureFrames];
-    float encoder_out_[kHidden];
-    float stft_real_[kSTFTBins * kSTFTSize];
-    float stft_imag_[kSTFTBins * kSTFTSize];
+    aiden_vad::SileroWeights weights_;
+    aiden_vad::STFTFeatureExtractor feature_extractor_;
+    aiden_vad::SileroLSTMDecoder decoder_;
+    float features_[aiden_vad::kSTFTBins * aiden_vad::kFeatureFrames];
+    float encoder_out_[aiden_vad::kHidden];
 };
 
 struct Args {
     std::string model_path;
     std::string weights_path;
     bool self_test = false;
+    bool benchmark = false;
+    int benchmark_frames = 1000;
+    int benchmark_warmup = 20;
 };
+
+bool parse_positive_int(const std::string& raw, int* value) {
+    char* end = nullptr;
+    long parsed = std::strtol(raw.c_str(), &end, 10);
+    if (end == raw.c_str() || *end != '\0' || parsed <= 0 || parsed > 10000000) {
+        return false;
+    }
+    *value = static_cast<int>(parsed);
+    return true;
+}
 
 Args parse_args(int argc, char** argv) {
     Args args;
@@ -1135,9 +1037,47 @@ Args parse_args(int argc, char** argv) {
             args.weights_path = argv[++i];
         } else if (arg == "--self-test") {
             args.self_test = true;
+        } else if (arg == "--benchmark") {
+            args.benchmark = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                parse_positive_int(argv[++i], &args.benchmark_frames);
+            }
+        } else if (arg == "--benchmark-frames" && i + 1 < argc) {
+            parse_positive_int(argv[++i], &args.benchmark_frames);
+        } else if (arg == "--benchmark-warmup" && i + 1 < argc) {
+            parse_positive_int(argv[++i], &args.benchmark_warmup);
         }
     }
     return args;
+}
+
+template <typename Vad>
+bool run_benchmark(Vad* vad, const Args& args, const std::string& label, std::string* err) {
+    std::vector<std::vector<int16_t> > frames = aiden_vad::make_benchmark_frames();
+    float probability = 0.0f;
+    for (int i = 0; i < args.benchmark_warmup; ++i) {
+        const std::vector<int16_t>& frame = frames[static_cast<std::size_t>(i) % frames.size()];
+        if (!vad->infer(frame.data(), &probability, err)) {
+            return false;
+        }
+    }
+    vad->reset();
+
+    const aiden_vad::CPUUsage cpu_start = aiden_vad::current_cpu_usage();
+    const std::chrono::steady_clock::time_point wall_start = std::chrono::steady_clock::now();
+    for (int i = 0; i < args.benchmark_frames; ++i) {
+        const std::vector<int16_t>& frame = frames[static_cast<std::size_t>(i) % frames.size()];
+        if (!vad->infer(frame.data(), &probability, err)) {
+            return false;
+        }
+    }
+    const std::chrono::steady_clock::time_point wall_end = std::chrono::steady_clock::now();
+    const aiden_vad::CPUUsage cpu_end = aiden_vad::current_cpu_usage();
+    const double wall_ms =
+        std::chrono::duration_cast<std::chrono::duration<double, std::milli> >(wall_end - wall_start).count();
+    aiden_vad::print_benchmark_result(label, args.benchmark_frames, args.benchmark_warmup,
+                                      wall_ms, cpu_start, cpu_end, probability);
+    return true;
 }
 
 }  // namespace
@@ -1166,6 +1106,13 @@ int main(int argc, char** argv) {
                 return 1;
             }
             std::cout << "P " << probability << std::endl;
+            return 0;
+        }
+        if (args.benchmark) {
+            if (!run_benchmark(&vad, args, "rknn_split", &err)) {
+                protocol_error(err);
+                return 1;
+            }
             return 0;
         }
         std::cout << "READY" << std::endl;
@@ -1200,6 +1147,14 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::cout << "P " << probability << std::endl;
+        return 0;
+    }
+
+    if (args.benchmark) {
+        if (!run_benchmark(&vad, args, "rknn", &err)) {
+            protocol_error(err);
+            return 1;
+        }
         return 0;
     }
 

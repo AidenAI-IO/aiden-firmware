@@ -61,6 +61,38 @@ func TestAudioVADRequiresSileroFrameShape(t *testing.T) {
 	}
 }
 
+func TestNewAudioVADSelectsHelperFromBackend(t *testing.T) {
+	vad, err := NewAudioVAD(AudioVADConfig{Backend: "cpu", HelperPath: defaultVADHelperPath})
+	if err != nil {
+		t.Fatalf("NewAudioVAD(cpu) error = %v", err)
+	}
+	scorer, ok := vad.scorer.(*helperVADScorer)
+	if !ok {
+		t.Fatalf("scorer type = %T, want *helperVADScorer", vad.scorer)
+	}
+	if scorer.backend != "cpu" {
+		t.Fatalf("backend = %q, want cpu", scorer.backend)
+	}
+	if scorer.helperPath != defaultCPUVADHelperPath {
+		t.Fatalf("helperPath = %q, want %q", scorer.helperPath, defaultCPUVADHelperPath)
+	}
+
+	defaultVAD, err := NewAudioVAD(AudioVADConfig{})
+	if err != nil {
+		t.Fatalf("NewAudioVAD(default) error = %v", err)
+	}
+	defaultScorer, ok := defaultVAD.scorer.(*helperVADScorer)
+	if !ok {
+		t.Fatalf("default scorer type = %T, want *helperVADScorer", defaultVAD.scorer)
+	}
+	if defaultScorer.backend != "rknn" {
+		t.Fatalf("default backend = %q, want rknn", defaultScorer.backend)
+	}
+	if defaultScorer.helperPath != defaultVADHelperPath {
+		t.Fatalf("default helperPath = %q, want %q", defaultScorer.helperPath, defaultVADHelperPath)
+	}
+}
+
 func TestAudioVADPropagatesRKNNScorerErrors(t *testing.T) {
 	wantErr := errors.New("rknn failed")
 	vad, err := NewAudioVADWithScorer(AudioVADConfig{

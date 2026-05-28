@@ -67,6 +67,7 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 		SilenceMs:       silenceMs,
 		MinSpeechMs:     minSpeechMs,
 		AlwaysBuffer:    alwaysBuffer,
+		Backend:         cfg.VADBackend,
 		ModelPath:       cfg.VADModelPath,
 		HelperPath:      cfg.VADHelperPath,
 		SpeechThreshold: cfg.VADSpeechThreshold,
@@ -176,7 +177,7 @@ func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, erro
 	return d.audioClient.ReadRecordChunk(d.sessionID, timeoutMs)
 }
 
-// ProcessVADFrame processes an audio frame through RKNN VAD.
+// ProcessVADFrame processes an audio frame through VAD.
 func (d *AudioDialog) ProcessVADFrame(samples []int16) ([]int16, error) {
 	return d.vad.Process(samples)
 }

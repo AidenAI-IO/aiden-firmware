@@ -42,6 +42,42 @@ func TestConfigValidateRejectsInvalidTriggerMode(t *testing.T) {
 	}
 }
 
+func TestConfigVADBackendDefaultsAndValidation(t *testing.T) {
+	cfg := Config{Model: ModelConfig{Provider: "fake"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if got := cfg.VADBackendOrDefault(); got != "rknn" {
+		t.Fatalf("VADBackendOrDefault() = %q, want rknn", got)
+	}
+
+	cfg.VADBackend = " cpu "
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() with cpu backend error = %v", err)
+	}
+	if got := cfg.VADBackendOrDefault(); got != "cpu" {
+		t.Fatalf("VADBackendOrDefault() = %q, want cpu", got)
+	}
+	if got := DefaultVADHelperPathForBackend("cpu"); got != "/oem/usr/bin/cpu_vad" {
+		t.Fatalf("DefaultVADHelperPathForBackend(cpu) = %q", got)
+	}
+	if got := ResolveVADHelperPath("cpu", DefaultVADHelperPath()); got != "/oem/usr/bin/cpu_vad" {
+		t.Fatalf("ResolveVADHelperPath(cpu, rknn default) = %q", got)
+	}
+	if got := ResolveVADHelperPath("cpu", "/custom/vad"); got != "/custom/vad" {
+		t.Fatalf("ResolveVADHelperPath(cpu, custom) = %q", got)
+	}
+
+	cfg.VADBackend = "npu"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected invalid vad_backend error")
+	}
+	if !strings.Contains(err.Error(), "invalid vad_backend") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestConfigValidateRejectsWakeupForTextInput(t *testing.T) {
 	tests := []struct {
 		name      string

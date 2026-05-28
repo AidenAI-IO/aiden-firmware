@@ -91,13 +91,14 @@ amixer sget 'DAC LINEOUT'
 先在板端直接运行 helper 自检：
 
 ```bash
-/oem/usr/bin/rknn_vad --model /userdata/agent/silero_vad_rv1106.rknn --self-test
+/oem/usr/bin/rknn_vad --model /userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn --weights /userdata/agent/model/silero_vad_6_2_lstm_decoder_weights.bin --self-test
+/oem/usr/bin/cpu_vad --weights /userdata/agent/model/silero_vad_6_2_lstm_decoder_weights.bin --self-test
 ```
 
 成功时会输出 `P <probability>`。当前 RV1106 helper 使用 RKNN zero-copy IO；如果输出 `rknn_set_io_mem failed`、`rknn_run failed`，或旧 helper 输出 `rknn_inputs_set failed`，检查：
 
 - `/oem/usr/lib/librknnmrt.so` 版本是否与模型匹配；
-- `silero_vad_rv1106.rknn` 是否为 RV1106 目标重新转换的模型；
+- `silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` 是否为 RV1106 目标重新转换的 encoder 模型；
 - helper 日志中的输入/输出 tensor type、size、scale、zero-point 是否正常。
 
 ## HID 输入无效

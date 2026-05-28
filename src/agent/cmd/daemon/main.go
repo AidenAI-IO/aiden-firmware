@@ -88,9 +88,11 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime) {
 
 	log.Printf("[init] Config loaded: model=%s, input_mode=%s, trigger_mode=%s\n",
 		cfg.Model.Model, inputMode, triggerMode)
-	log.Printf("[init] VAD: rknn_model=%s, helper=%s, speech_threshold=%.2f, silence=%dms, min_speech=%dms\n",
+	vadBackend := cfg.VADBackendOrDefault()
+	log.Printf("[init] VAD: backend=%s, rknn_model=%s, helper=%s, speech_threshold=%.2f, silence=%dms, min_speech=%dms\n",
+		vadBackend,
 		valueOrDefault(cfg.VADModelPath, agent.DefaultVADModelPath()),
-		valueOrDefault(cfg.VADHelperPath, agent.DefaultVADHelperPath()),
+		agent.ResolveVADHelperPath(vadBackend, cfg.VADHelperPath),
 		floatOrDefault(cfg.VADSpeechThreshold, agent.DefaultVADSpeechThreshold()),
 		cfg.SilenceMs,
 		cfg.MinSpeechMs)

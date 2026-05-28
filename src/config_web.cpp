@@ -457,7 +457,8 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
         "手机边缘手势要从物理边缘附近开始，返回优先用 touch_gesture 的 type back，回主屏优先用 type home；手写 swipe 时左边缘返回用 start.x=0.001 左右，底边回主页用 start.y=0.999 左右。";
     cfg.input_mode = "text";
     cfg.trigger_mode = "manual";
-    cfg.vad_model_path = "/userdata/agent/silero_vad_rv1106.rknn";
+    cfg.vad_backend = "rknn";
+    cfg.vad_model_path = "/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
     cfg.vad_helper_path = "/oem/usr/bin/rknn_vad";
     cfg.vad_speech_threshold = 0.5;
     cfg.silence_ms = 650;
@@ -604,6 +605,7 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddStringToObject(agent, "additional_prompt", config.additional_prompt.c_str());
     cJSON_AddStringToObject(agent, "input_mode", config.input_mode.c_str());
     cJSON_AddStringToObject(agent, "trigger_mode", config.trigger_mode.c_str());
+    cJSON_AddStringToObject(agent, "vad_backend", config.vad_backend.c_str());
     cJSON_AddStringToObject(agent, "vad_model_path", config.vad_model_path.c_str());
     cJSON_AddStringToObject(agent, "vad_helper_path", config.vad_helper_path.c_str());
     cJSON_AddNumberToObject(agent, "vad_speech_threshold", config.vad_speech_threshold);
@@ -777,6 +779,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->additional_prompt, agent, "additional_prompt");
         set_json_str(&config->input_mode, agent, "input_mode");
         set_json_str(&config->trigger_mode, agent, "trigger_mode");
+        set_json_str(&config->vad_backend, agent, "vad_backend");
         set_json_str(&config->vad_model_path, agent, "vad_model_path");
         set_json_str(&config->vad_helper_path, agent, "vad_helper_path");
         set_json_double(&config->vad_speech_threshold, agent, "vad_speech_threshold");

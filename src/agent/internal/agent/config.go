@@ -36,6 +36,7 @@ type Config struct {
 	AdditionalPrompt         string       `toml:"additional_prompt,omitempty"`
 	InputMode                string       `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
 	TriggerMode              string       `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
+	VADBackend               string       `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
 	VADModelPath             string       `toml:"vad_model_path,omitempty"`
 	VADHelperPath            string       `toml:"vad_helper_path,omitempty"`
 	VADSpeechThreshold       float64      `toml:"vad_speech_threshold,omitempty"`
@@ -303,6 +304,10 @@ func (c Config) Validate() error {
 		}
 	}
 
+	if _, err := normalizeVADBackend(c.VADBackend); err != nil {
+		return err
+	}
+
 	if c.VoiceFollowupTimeoutMs < 0 {
 		return fmt.Errorf("voice_followup_timeout_ms must be >= 0, got %d", c.VoiceFollowupTimeoutMs)
 	}
@@ -335,6 +340,14 @@ func (c Config) TriggerModeOrDefault() string {
 		return "manual"
 	}
 	return strings.ToLower(mode)
+}
+
+func (c Config) VADBackendOrDefault() string {
+	backend, err := normalizeVADBackend(c.VADBackend)
+	if err != nil {
+		return defaultVADBackend
+	}
+	return backend
 }
 
 func (c Config) VoiceSessionEnabledOrDefault() bool {

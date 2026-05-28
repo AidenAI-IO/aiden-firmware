@@ -160,7 +160,11 @@ target_link_libraries(audio_stream PRIVATE aiden)
 add_executable(rknn_vad src/rknn_vad.cpp)
 target_include_directories(rknn_vad PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_directories(rknn_vad PRIVATE ${RKNNMRT_LINK_DIR})
-target_link_libraries(rknn_vad PRIVATE rknnmrt)
+target_link_libraries(rknn_vad PRIVATE rknnmrt m)
+
+add_executable(cpu_vad src/cpu_vad.cpp)
+target_include_directories(cpu_vad PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(cpu_vad PRIVATE m)
 
 add_executable(config_web
     src/config_web.cpp
