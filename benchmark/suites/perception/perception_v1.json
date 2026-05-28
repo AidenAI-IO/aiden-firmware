@@ -1,0 +1,29 @@
+{
+  "name": "perception_v1",
+  "global_reset": {},
+  "tasks": [
+    {
+      "id": "find_settings_iphone",
+      "category": "perception",
+      "input_screenshot": "screenshots/home_iphone.jpg",
+      "prompt": "请打开设置 app。",
+      "description_for_judge": "Agent should identify the Settings (设置) app icon on the iPhone home screen and call touch_gesture or mouse_click with coordinates targeting it.",
+      "rubric": [
+        {
+          "id": "called_click_tool",
+          "check": "The tool trace contains at least one touch_gesture or mouse_click call."
+        },
+        {
+          "id": "click_targets_settings",
+          "check": "The touch/click coordinates target the Settings icon area: normalized x in [0.75, 0.98] and y in [0.38, 0.55]."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 5,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,121 @@
+from __future__ import annotations
+import dataclasses as dc
+import json
+import socket
+import urllib.error
+import urllib.request
+from typing import Any
+
+
+class AgentTimeoutError(TimeoutError):
+    pass
+
+
+class AgentRequestError(RuntimeError):
+    pass
+
+
+@dc.dataclass
+class ChatResponse:
+    response: str
+    history: list[dict[str, Any]]
+
+
+@dc.dataclass
+class ToolInvokeResult:
+    output: str
+    is_error: bool
+    duration_ms: int
+
+
+class AgentClient:
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8080",
+        default_timeout_sec: int = 180,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self._default_timeout = default_timeout_sec
+
+    def _post(self, path: str, payload: dict[str, Any] | None = None,
+              timeout: int = 30) -> tuple[int, bytes]:
+        data = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read()
+        except socket.timeout as e:
+            raise AgentTimeoutError(str(e)) from e
+        except urllib.error.HTTPError as e:
+            body = b""
+            try:
+                body = e.read()
+            except Exception:
+                pass
+            raise AgentRequestError(f"HTTP {e.code}: {body[:200]!r}") from e
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, socket.timeout):
+                raise AgentTimeoutError(str(e)) from e
+            raise AgentRequestError(str(e)) from e
+
+    def _get(self, path: str, timeout: int = 5) -> tuple[int, bytes]:
+        req = urllib.request.Request(f"{self.base_url}{path}", method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read()
+        except socket.timeout as e:
+            raise AgentTimeoutError(str(e)) from e
+        except urllib.error.HTTPError as e:
+            raise AgentRequestError(f"HTTP {e.code}") from e
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, socket.timeout):
+                raise AgentTimeoutError(str(e)) from e
+            raise AgentRequestError(str(e)) from e
+
+    def health(self) -> bool:
+        try:
+            status, _ = self._get("/api/tools", timeout=5)
+            return status == 200
+        except (AgentRequestError, AgentTimeoutError):
+            return False
+
+    def clear_history(self) -> None:
+        self._post("/api/clear", timeout=10)
+
+    def chat(self, message: str, timeout_sec: int | None = None,
+             attachments: list[dict[str, str]] | None = None) -> ChatResponse:
+        payload: dict[str, Any] = {"message": message}
+        if attachments:
+            payload["attachments"] = attachments
+        status, body_bytes = self._post(
+            "/api/chat", payload, timeout=timeout_sec or self._default_timeout
+        )
+        if status != 200:
+            raise AgentRequestError(f"chat returned {status}")
+        body = json.loads(body_bytes)
+        return ChatResponse(
+            response=body.get("response", ""),
+            history=body.get("history", []),
+        )
+
+    def invoke_tool(self, name: str, args: dict[str, Any]) -> ToolInvokeResult:
+        status, body_bytes = self._post(
+            f"/api/tools/{name}", {"input": args}, timeout=30
+        )
+        if status != 200:
+            raise AgentRequestError(f"invoke {name} returned {status}")
+        body = json.loads(body_bytes)
+        return ToolInvokeResult(
+            output=body.get("output", ""),
+            is_error=bool(body.get("is_error")),
+            duration_ms=int(body.get("duration_ms", 0)),
+        )
+
+    def close(self) -> None:
+        # urllib doesn't keep persistent connections by default; nothing to clean up.
+        pass

@@ -60,3 +60,9 @@
 - [OTA 密钥管理](09-ota/key-management.md)
 - [设备验收流程](09-ota/device-acceptance.md)
 - [A/B 与 abctl 验证](09-ota/verification.md)
+
+### 10. Benchmark
+
+- [快速开始](10-benchmark/README.md)
+- [架构设计](10-benchmark/architecture.md)
+- [详细指南](10-benchmark/quickstart.md)

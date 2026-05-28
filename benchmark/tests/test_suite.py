@@ -1,0 +1,49 @@
+import json
+import pytest
+from pathlib import Path
+from runner.suite import load_suite, SuiteValidationError
+
+FIXTURE = {
+    "name": "test_suite",
+    "global_reset": {"tool_sequence": [{"tool": "keyboard_tap", "args": {"keys": ["escape"]}}]},
+    "tasks": [
+        {
+            "id": "open_settings",
+            "category": "single_step",
+            "description_for_judge": "Agent should open Settings.",
+            "prompt": "请打开系统设置。",
+            "rubric": [{"id": "in_settings", "check": "Post-screenshot shows Settings."}],
+            "hard_assertions": {"min_tool_calls": 1, "max_tool_calls": 8, "must_complete_within_sec": 90},
+        }
+    ],
+}
+
+def test_load_suite_returns_parsed(tmp_path: Path):
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(FIXTURE), encoding="utf-8")
+    suite = load_suite(p)
+    assert suite.name == "test_suite"
+    assert len(suite.tasks) == 1
+    assert suite.tasks[0].id == "open_settings"
+    assert suite.tasks[0].category == "single_step"
+    assert suite.tasks[0].rubric[0].id == "in_settings"
+
+def test_load_suite_missing_tasks_raises(tmp_path: Path):
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps({"name": "x"}), encoding="utf-8")
+    with pytest.raises(SuiteValidationError):
+        load_suite(p)
+
+def test_load_suite_invalid_category_raises(tmp_path: Path):
+    bad = {**FIXTURE, "tasks": [{**FIXTURE["tasks"][0], "category": "weird"}]}
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(bad), encoding="utf-8")
+    with pytest.raises(SuiteValidationError):
+        load_suite(p)
+
+def test_load_suite_duplicate_ids_raise(tmp_path: Path):
+    bad = {**FIXTURE, "tasks": [FIXTURE["tasks"][0], FIXTURE["tasks"][0]]}
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(bad), encoding="utf-8")
+    with pytest.raises(SuiteValidationError):
+        load_suite(p)
