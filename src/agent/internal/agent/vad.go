@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -22,6 +23,9 @@ const (
 	defaultVADWeightsPath     = "/userdata/agent/model/silero_vad_6_2_lstm_decoder_weights.bin"
 	defaultVADHelperPath      = "/oem/usr/bin/rknn_vad"
 	defaultCPUVADHelperPath   = "/oem/usr/bin/cpu_vad"
+	vadHelperReadinessTimeout = 30 * time.Second
+	vadHelperProtocolTimeout  = 5 * time.Second
+	vadHelperShutdownTimeout  = 2 * time.Second
 )
 
 type AudioVADConfig struct {
@@ -318,6 +322,11 @@ type helperVADScorer struct {
 	frame   []byte
 }
 
+type helperReadResult struct {
+	line string
+	err  error
+}
+
 func newHelperVADScorer(backend, modelPath, helperPath string) *helperVADScorer {
 	return &helperVADScorer{
 		backend:     backend,
@@ -351,7 +360,7 @@ func (s *helperVADScorer) Score(samples []int16) (float64, error) {
 		return 0, fmt.Errorf("write VAD helper frame: %w", err)
 	}
 
-	line, err := s.stdout.ReadString('\n')
+	line, err := s.readLineWithTimeout("read VAD helper score")
 	if err != nil {
 		s.stopAfterProtocolError()
 		return 0, fmt.Errorf("read VAD helper score: %w", err)
@@ -361,10 +370,12 @@ func (s *helperVADScorer) Score(samples []int16) (float64, error) {
 		return 0, errors.New(strings.TrimPrefix(line, "ERR "))
 	}
 	if !strings.HasPrefix(line, "P ") {
+		s.stopAfterProtocolError()
 		return 0, fmt.Errorf("unexpected VAD helper response %q", line)
 	}
 	probability, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(line, "P ")), 64)
 	if err != nil {
+		s.stopAfterProtocolError()
 		return 0, fmt.Errorf("parse VAD helper probability %q: %w", line, err)
 	}
 	return probability, nil
@@ -381,7 +392,7 @@ func (s *helperVADScorer) Reset() error {
 		s.stopAfterProtocolError()
 		return fmt.Errorf("write VAD helper reset: %w", err)
 	}
-	line, err := s.stdout.ReadString('\n')
+	line, err := s.readLineWithTimeout("read VAD helper reset response")
 	if err != nil {
 		s.stopAfterProtocolError()
 		return fmt.Errorf("read VAD helper reset response: %w", err)
@@ -393,6 +404,7 @@ func (s *helperVADScorer) Reset() error {
 	if strings.HasPrefix(line, "ERR ") {
 		return errors.New(strings.TrimPrefix(line, "ERR "))
 	}
+	s.stopAfterProtocolError()
 	return fmt.Errorf("unexpected VAD helper reset response %q", line)
 }
 
@@ -437,21 +449,18 @@ func (s *helperVADScorer) ensureStarted() error {
 	go logVADHelperStderr(s.backend, stderrPipe)
 
 	reader := bufio.NewReader(stdoutPipe)
-	line, err := reader.ReadString('\n')
+	line, err := readHelperLineWithTimeout(cmd, reader, "wait for VAD helper readiness", vadHelperReadinessTimeout)
 	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		_ = terminateCommand(cmd)
 		return fmt.Errorf("wait for VAD helper readiness: %w", err)
 	}
 	line = strings.TrimSpace(line)
 	if strings.HasPrefix(line, "ERR ") {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		_ = terminateCommand(cmd)
 		return errors.New(strings.TrimPrefix(line, "ERR "))
 	}
 	if line != "READY" {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		_ = terminateCommand(cmd)
 		return fmt.Errorf("unexpected VAD helper readiness response %q", line)
 	}
 
@@ -463,6 +472,34 @@ func (s *helperVADScorer) ensureStarted() error {
 		s.waitErr <- cmd.Wait()
 	}()
 	return nil
+}
+
+func (s *helperVADScorer) readLineWithTimeout(operation string) (string, error) {
+	return readHelperLineWithTimeout(s.cmd, s.stdout, operation, vadHelperProtocolTimeout)
+}
+
+func readHelperLineWithTimeout(cmd *exec.Cmd, reader *bufio.Reader, operation string, timeout time.Duration) (string, error) {
+	if reader == nil {
+		return "", fmt.Errorf("%s: VAD helper stdout is closed", operation)
+	}
+	result := make(chan helperReadResult, 1)
+	go func() {
+		line, err := reader.ReadString('\n')
+		result <- helperReadResult{line: line, err: err}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case res := <-result:
+		return res.line, res.err
+	case <-timer.C:
+		if cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		return "", fmt.Errorf("%s timed out after %s", operation, timeout)
+	}
 }
 
 func logVADHelperStderr(backend string, stderr io.Reader) {
@@ -485,7 +522,7 @@ func (s *helperVADScorer) closeLocked() error {
 	}
 	_, _ = s.stdin.Write([]byte{'Q'})
 	_ = s.stdin.Close()
-	err := <-s.waitErr
+	err := s.waitForExitLocked()
 	s.cmd = nil
 	s.stdin = nil
 	s.stdout = nil
@@ -494,4 +531,50 @@ func (s *helperVADScorer) closeLocked() error {
 		return err
 	}
 	return nil
+}
+
+func (s *helperVADScorer) waitForExitLocked() error {
+	if s.waitErr == nil {
+		return nil
+	}
+	timer := time.NewTimer(vadHelperShutdownTimeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-s.waitErr:
+		return err
+	case <-timer.C:
+		if s.cmd != nil && s.cmd.Process != nil {
+			_ = s.cmd.Process.Kill()
+		}
+	}
+
+	timer.Reset(vadHelperShutdownTimeout)
+	select {
+	case err := <-s.waitErr:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("wait for VAD helper exit timed out after %s", vadHelperShutdownTimeout)
+	}
+}
+
+func terminateCommand(cmd *exec.Cmd) error {
+	if cmd == nil {
+		return nil
+	}
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	timer := time.NewTimer(vadHelperShutdownTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("wait for VAD helper exit timed out after %s", vadHelperShutdownTimeout)
+	}
 }

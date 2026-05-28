@@ -78,6 +78,23 @@ func TestConfigVADBackendDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestConfigValidateRejectsInvalidVADSpeechThreshold(t *testing.T) {
+	for _, threshold := range []float64{-0.1, 1.1} {
+		cfg := Config{
+			Model:              ModelConfig{Provider: "fake"},
+			VADSpeechThreshold: threshold,
+		}
+
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatalf("Validate() error = nil for threshold %v, want error", threshold)
+		}
+		if !strings.Contains(err.Error(), "vad_speech_threshold") {
+			t.Fatalf("Validate() error = %v, want vad_speech_threshold", err)
+		}
+	}
+}
+
 func TestConfigValidateRejectsWakeupForTextInput(t *testing.T) {
 	tests := []struct {
 		name      string

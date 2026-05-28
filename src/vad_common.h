@@ -381,6 +381,9 @@ struct SileroWeights {
     bool has_encoder = false;
 
     bool load(const std::string& path, bool require_encoder, std::string* err) {
+        encoder.clear();
+        has_encoder = false;
+
         std::ifstream file(path.c_str(), std::ios::binary);
         if (!file) {
             if (err) *err = "cannot open weights: " + path;
@@ -400,6 +403,10 @@ struct SileroWeights {
         if (!read_pod(file, &version, "version", err) ||
             !read_pod(file, &hidden, "hidden", err) ||
             !read_pod(file, &input_size, "input size", err)) {
+            return false;
+        }
+        if (version != 1) {
+            if (err) *err = "unsupported weights version";
             return false;
         }
         if (hidden != kHidden || input_size != kHidden) {

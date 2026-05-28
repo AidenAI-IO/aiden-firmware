@@ -859,8 +859,11 @@ func processAudioLoop(dialog audioDialogRunner, runtime *agent.Runtime, recordin
 			utterance, err := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
 			consumed += frameSamples
 			if err != nil {
-				log.Printf("[vad] RKNN processing failed: %v\n", err)
+				log.Printf("[vad] processing failed: %v\n", err)
 				*recording = false
+				if stopErr := dialog.StopRecording(); stopErr != nil {
+					log.Printf("[listen] stop recording after VAD failure: %v\n", stopErr)
+				}
 				break
 			}
 			if utterance != nil {

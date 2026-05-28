@@ -28,8 +28,34 @@ bool parse_positive_int(const std::string& raw, int* value) {
     return true;
 }
 
+bool is_integer_token(const char* raw) {
+    if (raw == nullptr || *raw == '\0') {
+        return false;
+    }
+    const char* p = raw;
+    if (*p == '+' || *p == '-') {
+        ++p;
+    }
+    if (*p == '\0') {
+        return false;
+    }
+    for (; *p != '\0'; ++p) {
+        if (*p < '0' || *p > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
 Args parse_args(int argc, char** argv) {
     Args args;
+    const auto parse_or_exit = [](const char* flag, const std::string& raw, int* value) {
+        if (!parse_positive_int(raw, value)) {
+            std::cerr << "invalid value for " << flag << ": " << raw << std::endl;
+            std::exit(2);
+        }
+    };
+
     for (int i = 1; i < argc; ++i) {
         const std::string arg(argv[i]);
         if ((arg == "--weights" || arg == "--model") && i + 1 < argc) {
@@ -43,13 +69,16 @@ Args parse_args(int argc, char** argv) {
             args.self_test = true;
         } else if (arg == "--benchmark") {
             args.benchmark = true;
-            if (i + 1 < argc && argv[i + 1][0] != '-') {
-                parse_positive_int(argv[++i], &args.benchmark_frames);
+            if (i + 1 < argc && (argv[i + 1][0] != '-' || is_integer_token(argv[i + 1]))) {
+                const std::string value(argv[++i]);
+                parse_or_exit("--benchmark", value, &args.benchmark_frames);
             }
         } else if (arg == "--benchmark-frames" && i + 1 < argc) {
-            parse_positive_int(argv[++i], &args.benchmark_frames);
+            const std::string value(argv[++i]);
+            parse_or_exit("--benchmark-frames", value, &args.benchmark_frames);
         } else if (arg == "--benchmark-warmup" && i + 1 < argc) {
-            parse_positive_int(argv[++i], &args.benchmark_warmup);
+            const std::string value(argv[++i]);
+            parse_or_exit("--benchmark-warmup", value, &args.benchmark_warmup);
         }
     }
     return args;

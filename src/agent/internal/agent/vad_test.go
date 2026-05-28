@@ -2,6 +2,9 @@ package agent
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -109,6 +112,30 @@ func TestAudioVADPropagatesRKNNScorerErrors(t *testing.T) {
 	}
 	if state := vad.DebugState(); state.LastError != wantErr.Error() {
 		t.Fatalf("LastError = %q, want %q", state.LastError, wantErr.Error())
+	}
+}
+
+func TestHelperVADScorerStopsAfterMalformedScoreResponse(t *testing.T) {
+	helperPath := filepath.Join(t.TempDir(), "vad-helper")
+	script := "#!/bin/sh\n" +
+		"printf 'READY\\n'\n" +
+		"dd bs=1 count=1 >/dev/null 2>/dev/null\n" +
+		"printf 'BOGUS\\n'\n" +
+		"sleep 30\n"
+	if err := os.WriteFile(helperPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write helper script: %v", err)
+	}
+
+	scorer := newHelperVADScorer("cpu", "", helperPath)
+	if _, err := scorer.Score(make([]int16, sileroVADFrameSamples)); err == nil || !strings.Contains(err.Error(), "unexpected VAD helper response") {
+		t.Fatalf("Score() error = %v, want unexpected response", err)
+	}
+
+	scorer.mu.Lock()
+	helperStillRunning := scorer.cmd != nil
+	scorer.mu.Unlock()
+	if helperStillRunning {
+		t.Fatal("helper process was kept after malformed response")
 	}
 }
 

@@ -798,6 +798,9 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
 }
 
 std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
+    if (config.vad_speech_threshold < 0.0 || config.vad_speech_threshold > 1.0) {
+        return "vad_speech_threshold must be in range [0.0, 1.0]";
+    }
     if (config.voice_followup_timeout_ms < 0) {
         return "voice_followup_timeout_ms must be >= 0";
     }

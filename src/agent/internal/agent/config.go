@@ -307,6 +307,9 @@ func (c Config) Validate() error {
 	if _, err := normalizeVADBackend(c.VADBackend); err != nil {
 		return err
 	}
+	if c.VADSpeechThreshold != 0 && (c.VADSpeechThreshold < 0 || c.VADSpeechThreshold > 1) {
+		return fmt.Errorf("vad_speech_threshold must be in [0,1] when set, got %v", c.VADSpeechThreshold)
+	}
 
 	if c.VoiceFollowupTimeoutMs < 0 {
 		return fmt.Errorf("voice_followup_timeout_ms must be >= 0, got %d", c.VoiceFollowupTimeoutMs)

@@ -76,7 +76,7 @@ func (r *AudioRecordChunkReader) Read(timeoutMs uint32) (*AudioChunkResult, erro
 		TimeoutMs: timeoutMs,
 	}
 
-	timeout := time.Duration(timeoutMs+5000) * time.Millisecond
+	timeout := time.Duration(timeoutMs)*time.Millisecond + 5*time.Second
 	if timeout > 0 {
 		_ = r.conn.SetDeadline(time.Now().Add(timeout))
 	}

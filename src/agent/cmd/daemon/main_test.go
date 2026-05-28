@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"os"
 	"syscall"
 	"testing"
@@ -24,6 +25,7 @@ type fakeAudioDialog struct {
 	prepareTurnInput   func([]int16) (agent.TurnInput, error)
 	runTurn            func(context.Context) (agent.RunResult, error)
 	speak              func(context.Context) error
+	vadErr             error
 	onRead             func(*fakeAudioDialog, *agent.AudioChunkResult)
 	spoken             []string
 	repeatEmpty        bool
@@ -81,6 +83,9 @@ func (d *fakeAudioDialog) ReadRecordChunk(timeoutMs uint32) (*agent.AudioChunkRe
 func (d *fakeAudioDialog) ProcessVADFrame(samples []int16) ([]int16, error) {
 	copied := append([]int16(nil), samples...)
 	d.frames = append(d.frames, copied)
+	if d.vadErr != nil {
+		return nil, d.vadErr
+	}
 	if d.vad != nil {
 		return d.vad.Process(samples)
 	}
@@ -348,6 +353,30 @@ func TestProcessAudioLoopStopsRecordingBeforeProcessingUtterance(t *testing.T) {
 	}
 	if recording {
 		t.Fatal("recording flag still true after utterance")
+	}
+}
+
+func TestProcessAudioLoopStopsRecordingOnVADError(t *testing.T) {
+	dialog := &fakeAudioDialog{
+		frameSamples:    2,
+		recordingActive: true,
+		chunks: []*agent.AudioChunkResult{
+			{PCM: pcm16BytesFromSamples(100, 200)},
+		},
+		vadErr: errors.New("vad failed"),
+	}
+	recording := true
+
+	processAudioLoop(dialog, nil, &recording, context.Background())
+
+	if recording {
+		t.Fatal("recording flag still true after VAD error")
+	}
+	if dialog.recordingActive {
+		t.Fatal("dialog recording still active after VAD error")
+	}
+	if dialog.stops != 1 {
+		t.Fatalf("dialog stops = %d, want 1 after VAD error", dialog.stops)
 	}
 }
 
