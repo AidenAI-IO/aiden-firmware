@@ -28,3 +28,20 @@ def test_upload_report_uploads_run_artifacts_for_benchmark_page(tmp_path: Path):
     assert "/userdata/agent/benchmark/runs/2026-05-28_091421" in command
     assert "/userdata/agent/benchmark/runs/2026-05-28_091421/report.html" in command
     assert "/userdata/agent/benchmark/runs/2026-05-28_091421/manifest.json" in command
+
+
+def test_upload_report_returns_false_when_manifest_is_missing(tmp_path: Path):
+    run_dir = tmp_path / "2026-05-28_091421"
+    run_dir.mkdir()
+    client = RecordingClient()
+
+    assert upload_report(client, "<html>report</html>", run_dir=run_dir) is False
+
+
+def test_upload_report_returns_false_when_manifest_is_invalid(tmp_path: Path):
+    run_dir = tmp_path / "2026-05-28_091421"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text("not json", encoding="utf-8")
+    client = RecordingClient()
+
+    assert upload_report(client, "<html>report</html>", run_dir=run_dir) is False
