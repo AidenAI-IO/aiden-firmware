@@ -110,7 +110,7 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 
 func (r *Runtime) OwnedTools() []langtools.Tool {
 	owned := make([]langtools.Tool, 0, len(r.tools.tools)+1)
-	if r.skillsLoaded {
+	if r.hasLoadedSkills() {
 		owned = append(owned, NewActivateSkillTool(r.skills))
 	}
 	owned = append(owned, r.tools.All()...)

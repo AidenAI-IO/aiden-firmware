@@ -15,6 +15,7 @@ import (
 )
 
 var manifestMu sync.Mutex
+var skillFileMu sync.Mutex
 
 type SkillSyncOptions struct {
 	ConfigDir        string
@@ -40,10 +41,13 @@ type BundledManifest struct {
 
 type ManifestEntry struct {
 	OriginHash         string `json:"origin_hash"`
+	EffectiveHash      string `json:"effective_hash,omitempty"`
 	Status             string `json:"status"`
 	BasePath           string `json:"base_path,omitempty"`
 	LastSyncedAt       string `json:"last_synced_at,omitempty"`
+	LastMergedAt       string `json:"last_merged_at,omitempty"`
 	LastMergedKey      string `json:"last_merged_key,omitempty"`
+	LastMergeFailedAt  string `json:"last_merge_failed_at,omitempty"`
 	LastFailedMergeKey string `json:"last_failed_merge_key,omitempty"`
 	LastMergeError     string `json:"last_merge_error,omitempty"`
 }
@@ -112,10 +116,16 @@ func syncOneSkill(name, bundledPath, userSkillsDir, stateDir string, manifest *B
 	case !userExists && hasManifest:
 		report.DeletedByUser = append(report.DeletedByUser, name)
 		manifest.Skills[name] = ManifestEntry{
-			OriginHash:   entry.OriginHash,
-			Status:       StatusDeletedByUser,
-			BasePath:     entry.BasePath,
-			LastSyncedAt: entry.LastSyncedAt,
+			OriginHash:         entry.OriginHash,
+			EffectiveHash:      entry.EffectiveHash,
+			Status:             StatusDeletedByUser,
+			BasePath:           entry.BasePath,
+			LastSyncedAt:       entry.LastSyncedAt,
+			LastMergedAt:       entry.LastMergedAt,
+			LastMergedKey:      entry.LastMergedKey,
+			LastMergeFailedAt:  entry.LastMergeFailedAt,
+			LastFailedMergeKey: entry.LastFailedMergeKey,
+			LastMergeError:     entry.LastMergeError,
 		}
 
 	case userExists && !hasManifest:
@@ -123,7 +133,7 @@ func syncOneSkill(name, bundledPath, userSkillsDir, stateDir string, manifest *B
 		userContent, _ := os.ReadFile(userPath)
 		if userContent != nil {
 			localHash := hashContent(userContent)
-			mergeKey := computeMergeKey(name, "", bundledHash, localHash)
+			mergeKey := computeMergeKey(MergeTwoWay, name, "", bundledHash, localHash)
 			report.MergeNeeded = append(report.MergeNeeded, SkillMergeJob{
 				SkillName:    name,
 				Mode:         MergeTwoWay,
@@ -153,50 +163,71 @@ func syncExistingSkill(name, userPath string, bundledContent []byte, bundledHash
 	}
 	userHash := hashContent(userContent)
 
-	userModified := userHash != entry.OriginHash
+	effectiveHash := entry.EffectiveHash
+	if effectiveHash == "" && entry.OriginHash != "" {
+		effectiveHash = entry.OriginHash
+	}
+
+	if entry.OriginHash == "" {
+		queueTwoWayMergeForConflict(name, userPath, userContent, bundledContent, bundledHash, entry, stateDir, manifest, report)
+		return
+	}
+
+	userMatchesOrigin := userHash == entry.OriginHash
+	userMatchesEffective := effectiveHash != "" && userHash == effectiveHash
+	localDiffersFromBaseline := userHash != entry.OriginHash
 	bundledUpdated := bundledHash != entry.OriginHash
 	basePath := basePathForSkill(stateDir, name)
 
 	switch {
-	case !userModified && !bundledUpdated:
-		// nothing to do
-	case !userModified && bundledUpdated:
+	case userMatchesEffective && !bundledUpdated:
+		entry.EffectiveHash = effectiveHash
+		manifest.Skills[name] = entry
+	case userMatchesOrigin && bundledUpdated:
 		if err := os.WriteFile(userPath, bundledContent, 0o644); err != nil {
 			log.Printf("[skill_sync] update %s: %v", name, err)
 			return
 		}
 		saveBase(basePath, bundledContent)
 		manifest.Skills[name] = ManifestEntry{
-			OriginHash:   bundledHash,
-			Status:       StatusSynced,
-			BasePath:     basePath,
-			LastSyncedAt: time.Now().Format(time.RFC3339),
+			OriginHash:    bundledHash,
+			EffectiveHash: bundledHash,
+			Status:        StatusSynced,
+			BasePath:      basePath,
+			LastSyncedAt:  time.Now().Format(time.RFC3339),
 		}
 		report.Updated = append(report.Updated, name)
-	case userModified && !bundledUpdated:
+	case localDiffersFromBaseline && !bundledUpdated:
 		manifest.Skills[name] = ManifestEntry{
-			OriginHash:   entry.OriginHash,
-			Status:       StatusUserModified,
-			BasePath:     entry.BasePath,
-			LastSyncedAt: entry.LastSyncedAt,
+			OriginHash:         entry.OriginHash,
+			EffectiveHash:      effectiveHash,
+			Status:             StatusUserModified,
+			BasePath:           entry.BasePath,
+			LastSyncedAt:       entry.LastSyncedAt,
+			LastMergedAt:       entry.LastMergedAt,
+			LastMergedKey:      entry.LastMergedKey,
+			LastMergeFailedAt:  entry.LastMergeFailedAt,
+			LastFailedMergeKey: entry.LastFailedMergeKey,
+			LastMergeError:     entry.LastMergeError,
 		}
 		report.KeptUser = append(report.KeptUser, name)
-	case userModified && bundledUpdated:
+	case localDiffersFromBaseline && bundledUpdated:
 		baseContent := ""
 		if entry.BasePath != "" {
 			if data, err := os.ReadFile(entry.BasePath); err == nil {
 				baseContent = string(data)
 			}
 		}
-		mergeKey := computeMergeKey(name, entry.OriginHash, bundledHash, userHash)
+		mode := MergeThreeWay
+		baseHash := entry.OriginHash
+		if baseContent == "" {
+			mode = MergeTwoWay
+			baseHash = ""
+		}
+		mergeKey := computeMergeKey(mode, name, baseHash, bundledHash, userHash)
 		if entry.LastFailedMergeKey == mergeKey {
-			// Same inputs already failed, don't retry
 			report.KeptUser = append(report.KeptUser, name)
 		} else {
-			mode := MergeThreeWay
-			if baseContent == "" {
-				mode = MergeTwoWay
-			}
 			report.MergeNeeded = append(report.MergeNeeded, SkillMergeJob{
 				SkillName:    name,
 				Mode:         mode,
@@ -205,7 +236,7 @@ func syncExistingSkill(name, userPath string, bundledContent []byte, bundledHash
 				Local:        string(userContent),
 				LocalHash:    userHash,
 				UpstreamHash: bundledHash,
-				BaseHash:     entry.OriginHash,
+				BaseHash:     baseHash,
 				MergeKey:     mergeKey,
 				UserPath:     userPath,
 				BasePath:     basePath,
@@ -214,13 +245,40 @@ func syncExistingSkill(name, userPath string, bundledContent []byte, bundledHash
 		}
 		manifest.Skills[name] = ManifestEntry{
 			OriginHash:         entry.OriginHash,
+			EffectiveHash:      effectiveHash,
 			Status:             StatusUserModified,
 			BasePath:           entry.BasePath,
 			LastSyncedAt:       entry.LastSyncedAt,
+			LastMergedAt:       entry.LastMergedAt,
+			LastMergedKey:      entry.LastMergedKey,
+			LastMergeFailedAt:  entry.LastMergeFailedAt,
 			LastFailedMergeKey: entry.LastFailedMergeKey,
 			LastMergeError:     entry.LastMergeError,
 		}
 	}
+}
+
+func queueTwoWayMergeForConflict(name, userPath string, userContent, bundledContent []byte, bundledHash string, entry ManifestEntry, stateDir string, manifest *BundledManifest, report *SkillSyncReport) {
+	localHash := hashContent(userContent)
+	mergeKey := computeMergeKey(MergeTwoWay, name, "", bundledHash, localHash)
+	if entry.LastFailedMergeKey == mergeKey {
+		report.KeptUser = append(report.KeptUser, name)
+	} else {
+		report.MergeNeeded = append(report.MergeNeeded, SkillMergeJob{
+			SkillName:    name,
+			Mode:         MergeTwoWay,
+			Upstream:     string(bundledContent),
+			Local:        string(userContent),
+			LocalHash:    localHash,
+			UpstreamHash: bundledHash,
+			MergeKey:     mergeKey,
+			UserPath:     userPath,
+			BasePath:     basePathForSkill(stateDir, name),
+			StateDir:     stateDir,
+		})
+	}
+	entry.Status = StatusUserModified
+	manifest.Skills[name] = entry
 }
 
 func copyBundledToUser(name string, content []byte, userDir, userPath, bundledHash, stateDir string, manifest *BundledManifest, report *SkillSyncReport) {
@@ -235,10 +293,11 @@ func copyBundledToUser(name string, content []byte, userDir, userPath, bundledHa
 	basePath := basePathForSkill(stateDir, name)
 	saveBase(basePath, content)
 	manifest.Skills[name] = ManifestEntry{
-		OriginHash:   bundledHash,
-		Status:       StatusSynced,
-		BasePath:     basePath,
-		LastSyncedAt: time.Now().Format(time.RFC3339),
+		OriginHash:    bundledHash,
+		EffectiveHash: bundledHash,
+		Status:        StatusSynced,
+		BasePath:      basePath,
+		LastSyncedAt:  time.Now().Format(time.RFC3339),
 	}
 	report.Copied = append(report.Copied, name)
 }
@@ -284,6 +343,12 @@ func loadManifest(path string) *BundledManifest {
 	if m.Skills == nil {
 		m.Skills = make(map[string]ManifestEntry)
 	}
+	for name, entry := range m.Skills {
+		if entry.EffectiveHash == "" && entry.OriginHash != "" {
+			entry.EffectiveHash = entry.OriginHash
+			m.Skills[name] = entry
+		}
+	}
 	return m
 }
 
@@ -295,7 +360,7 @@ func saveManifest(path string, m *BundledManifest) {
 		log.Printf("[skill_sync] marshal manifest: %v", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := writeFileAtomic(path, data, 0o644); err != nil {
 		log.Printf("[skill_sync] write manifest: %v", err)
 	}
 }
@@ -326,14 +391,12 @@ func basePathForSkill(stateDir, name string) string {
 	return filepath.Join(stateDir, "bases", name, "SKILL.md")
 }
 
-func saveBase(basePath string, content []byte) {
-	if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {
-		log.Printf("[skill_sync] mkdir base: %v", err)
-		return
-	}
-	if err := os.WriteFile(basePath, content, 0o644); err != nil {
+func saveBase(basePath string, content []byte) error {
+	if err := writeFileAtomic(basePath, content, 0o644); err != nil {
 		log.Printf("[skill_sync] write base: %v", err)
+		return err
 	}
+	return nil
 }
 
 func RestoreBundledSkill(configDir, bundledSkillsDir, name string) error {
@@ -358,10 +421,11 @@ func RestoreBundledSkill(configDir, bundledSkillsDir, name string) error {
 	manifestPath := filepath.Join(stateDir, ".bundled_manifest.json")
 	manifest := loadManifest(manifestPath)
 	manifest.Skills[name] = ManifestEntry{
-		OriginHash:   hashContent(content),
-		Status:       StatusSynced,
-		BasePath:     basePath,
-		LastSyncedAt: time.Now().Format(time.RFC3339),
+		OriginHash:    hashContent(content),
+		EffectiveHash: hashContent(content),
+		Status:        StatusSynced,
+		BasePath:      basePath,
+		LastSyncedAt:  time.Now().Format(time.RFC3339),
 	}
 	manifest.UpdatedAt = time.Now().Format(time.RFC3339)
 	saveManifest(manifestPath, manifest)

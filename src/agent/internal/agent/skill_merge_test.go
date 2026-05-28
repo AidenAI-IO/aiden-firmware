@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type mockMergeModel struct {
@@ -75,6 +76,109 @@ func TestMergeWorker_SuccessfulMerge(t *testing.T) {
 	if m.Skills["alpha"].Status != StatusMerged {
 		t.Fatalf("expected merged status, got %s", m.Skills["alpha"].Status)
 	}
+	if m.Skills["alpha"].EffectiveHash != hashContent([]byte(mergedContent)) {
+		t.Fatalf("expected effective_hash for merged content, got %s", m.Skills["alpha"].EffectiveHash)
+	}
+	if m.Skills["alpha"].LastMergedKey != "test-key" {
+		t.Fatalf("expected last_merged_key=test-key, got %s", m.Skills["alpha"].LastMergedKey)
+	}
+	if m.Skills["alpha"].LastFailedMergeKey != "" {
+		t.Fatalf("expected last_failed_merge_key cleared, got %s", m.Skills["alpha"].LastFailedMergeKey)
+	}
+}
+
+func TestMergeWorker_CallsSuccessCallback(t *testing.T) {
+	configDir := t.TempDir()
+	stateDir := filepath.Join(configDir, "skill-state")
+	os.MkdirAll(stateDir, 0o755)
+	manifestPath := filepath.Join(stateDir, ".bundled_manifest.json")
+
+	userSkillDir := filepath.Join(configDir, "skills", "alpha")
+	os.MkdirAll(userSkillDir, 0o755)
+	localContent := "---\nname: alpha\ndescription: user version\n---\n\nUser steps.\n"
+	os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte(localContent), 0o644)
+
+	mergedContent := "---\nname: alpha\ndescription: merged version\n---\n\nMerged steps.\n"
+	upstreamContent := "---\nname: alpha\ndescription: upstream\n---\n\nUpstream.\n"
+	job := SkillMergeJob{
+		SkillName:    "alpha",
+		Mode:         MergeThreeWay,
+		Upstream:     upstreamContent,
+		Local:        localContent,
+		LocalHash:    hashContent([]byte(localContent)),
+		UpstreamHash: hashContent([]byte(upstreamContent)),
+		MergeKey:     "callback-key",
+		UserPath:     filepath.Join(userSkillDir, "SKILL.md"),
+		BasePath:     filepath.Join(stateDir, "bases", "alpha", "SKILL.md"),
+		StateDir:     stateDir,
+	}
+	saveManifest(manifestPath, &BundledManifest{Version: 1, Skills: map[string]ManifestEntry{
+		"alpha": {OriginHash: "old", Status: StatusUserModified},
+	}})
+
+	called := false
+	worker := NewMergeWorker(&mockMergeModel{result: &SkillMergeResult{Status: "merged", MergedSkillMD: mergedContent}}, manifestPath)
+	worker.onSuccess = func(got SkillMergeJob) {
+		called = true
+		if got.SkillName != "alpha" {
+			t.Fatalf("unexpected callback job %q", got.SkillName)
+		}
+	}
+	worker.Enqueue([]SkillMergeJob{job})
+	worker.Start(context.Background())
+	worker.Wait()
+
+	if !called {
+		t.Fatal("expected merge success callback to run")
+	}
+}
+
+func TestMergeWorker_BaseWriteFailureRecordsFailure(t *testing.T) {
+	configDir := t.TempDir()
+	stateDir := filepath.Join(configDir, "skill-state")
+	os.MkdirAll(stateDir, 0o755)
+	manifestPath := filepath.Join(stateDir, ".bundled_manifest.json")
+
+	userSkillDir := filepath.Join(configDir, "skills", "alpha")
+	os.MkdirAll(userSkillDir, 0o755)
+	localContent := "---\nname: alpha\ndescription: user version\n---\n\nUser steps.\n"
+	os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte(localContent), 0o644)
+
+	mergedContent := "---\nname: alpha\ndescription: merged version\n---\n\nMerged steps.\n"
+	upstreamContent := "---\nname: alpha\ndescription: upstream\n---\n\nUpstream.\n"
+	blockedBasePath := filepath.Join(stateDir, "base-blocker")
+	if err := os.WriteFile(blockedBasePath, []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	job := SkillMergeJob{
+		SkillName:    "alpha",
+		Mode:         MergeThreeWay,
+		Upstream:     upstreamContent,
+		Local:        localContent,
+		LocalHash:    hashContent([]byte(localContent)),
+		UpstreamHash: hashContent([]byte(upstreamContent)),
+		MergeKey:     "base-fail-key",
+		UserPath:     filepath.Join(userSkillDir, "SKILL.md"),
+		BasePath:     filepath.Join(blockedBasePath, "alpha", "SKILL.md"),
+		StateDir:     stateDir,
+	}
+	saveManifest(manifestPath, &BundledManifest{Version: 1, Skills: map[string]ManifestEntry{
+		"alpha": {OriginHash: "old", Status: StatusUserModified},
+	}})
+
+	worker := NewMergeWorker(&mockMergeModel{result: &SkillMergeResult{Status: "merged", MergedSkillMD: mergedContent}}, manifestPath)
+	worker.Enqueue([]SkillMergeJob{job})
+	worker.Start(context.Background())
+	worker.Wait()
+
+	manifest := loadManifest(manifestPath)
+	entry := manifest.Skills["alpha"]
+	if entry.Status == StatusMerged {
+		t.Fatalf("expected base write failure not to record merged status")
+	}
+	if entry.LastFailedMergeKey != "base-fail-key" {
+		t.Fatalf("expected base write failure to record last_failed_merge_key, got %q", entry.LastFailedMergeKey)
+	}
 }
 
 func TestMergeWorker_FailedMerge(t *testing.T) {
@@ -124,6 +228,72 @@ func TestMergeWorker_FailedMerge(t *testing.T) {
 	}
 }
 
+func TestMergeResultOKRejectsUnknownAllowedTool(t *testing.T) {
+	result := &SkillMergeResult{
+		Status: "merged",
+		MergedSkillMD: `---
+name: alpha
+description: Alpha
+metadata:
+  allowed_tools: [not_a_real_tool]
+---
+
+Do alpha.
+`,
+	}
+	if mergeResultOK(result, "alpha") {
+		t.Fatal("expected unknown allowed_tools entry to fail validation")
+	}
+}
+
+func TestMergeResultOKAcceptsKnownAllowedTool(t *testing.T) {
+	result := &SkillMergeResult{
+		Status: "merged",
+		MergedSkillMD: `---
+name: alpha
+description: Alpha
+metadata:
+  allowed_tools: [screenshot, skill_read]
+---
+
+Do alpha.
+`,
+	}
+	if !mergeResultOK(result, "alpha") {
+		t.Fatal("expected known allowed_tools entries to pass validation")
+	}
+}
+
+func TestMergeResultOKAcceptsDelegateAllowedTool(t *testing.T) {
+	result := &SkillMergeResult{
+		Status: "merged",
+		MergedSkillMD: `---
+name: alpha
+description: Alpha
+metadata:
+  allowed_tools: [calculator, delegate_researcher]
+---
+
+Do alpha.
+`,
+	}
+	if !mergeResultOK(result, "alpha") {
+		t.Fatal("expected delegate_* allowed_tools entries to pass validation")
+	}
+}
+
+func TestBundledSkillsReferenceKnownAllowedTools(t *testing.T) {
+	index, err := LoadSkillsFromDirs([]string{filepath.Join("..", "..", "config", "skills")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, skill := range index.All() {
+		if !allowedToolsExist(skill.AllowedTools) {
+			t.Fatalf("bundled skill %q references unknown allowed_tools %v", skill.Name, skill.AllowedTools)
+		}
+	}
+}
+
 func TestMergeWorker_SkipsWhenLocalChanged(t *testing.T) {
 	configDir := t.TempDir()
 	stateDir := filepath.Join(configDir, "skill-state")
@@ -165,6 +335,46 @@ func TestMergeWorker_SkipsWhenLocalChanged(t *testing.T) {
 	if string(got) != originalContent {
 		t.Fatal("file was overwritten despite local hash mismatch")
 	}
+	m := loadManifest(manifestPath)
+	if m.Skills["alpha"].LastFailedMergeKey != "stale-key" {
+		t.Fatalf("expected local change to record last_failed_merge_key=stale-key, got %s", m.Skills["alpha"].LastFailedMergeKey)
+	}
+}
+
+func TestMergeWorker_TwoWayFailurePreventsSameInputRetry(t *testing.T) {
+	configDir := t.TempDir()
+	bundledDir := t.TempDir()
+	writeSKILL(t, bundledDir, "alpha", testSkillA)
+	userSkillsDir := filepath.Join(configDir, "skills")
+	userContent := "---\nname: alpha\ndescription: user\n---\n\nUser local.\n"
+	writeSKILL(t, userSkillsDir, "alpha", userContent)
+
+	report, err := SyncBundledSkills(context.Background(), SkillSyncOptions{
+		ConfigDir: configDir, BundledSkillsDir: bundledDir, Quiet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.MergeNeeded) != 1 {
+		t.Fatalf("expected initial two-way merge job, got %v", report.MergeNeeded)
+	}
+
+	stateDir := filepath.Join(configDir, "skill-state")
+	manifestPath := filepath.Join(stateDir, ".bundled_manifest.json")
+	worker := NewMergeWorker(&mockMergeModel{result: &SkillMergeResult{Status: "failed", Summary: "conflict"}}, manifestPath)
+	worker.Enqueue(report.MergeNeeded)
+	worker.Start(context.Background())
+	worker.Wait()
+
+	report, err = SyncBundledSkills(context.Background(), SkillSyncOptions{
+		ConfigDir: configDir, BundledSkillsDir: bundledDir, Quiet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.MergeNeeded) != 0 {
+		t.Fatalf("expected same failed inputs not to retry, got %v", report.MergeNeeded)
+	}
 }
 
 func TestSkillListTool(t *testing.T) {
@@ -189,6 +399,209 @@ func TestSkillListTool(t *testing.T) {
 	if strings.Contains(result, "beta") {
 		t.Fatal("filter should not return beta")
 	}
+}
+
+func TestSkillListToolFiltersArchivedByDefault(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	usagePath := filepath.Join(configDir, "skill-state", "usage.json")
+	writeSKILL(t, skillsDir, "alpha", testSkillA)
+	writeSKILL(t, skillsDir, "beta", testSkillB)
+	saveSkillUsage(usagePath, map[string]SkillUsageEntry{
+		"beta": {State: SkillUsageStateArchived},
+	})
+
+	tool := NewSkillListTool(skillsDir, usagePath)
+	result, err := tool.Call(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "alpha") || strings.Contains(result, "beta") {
+		t.Fatalf("expected default list to hide archived beta, got %s", result)
+	}
+
+	result, err = tool.Call(context.Background(), `{"include_archived":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "alpha") || !strings.Contains(result, "beta") {
+		t.Fatalf("expected include_archived list to include both skills, got %s", result)
+	}
+
+	result, err = tool.Call(context.Background(), `{"state":"archived","include_archived":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result, "alpha") || !strings.Contains(result, "beta") {
+		t.Fatalf("expected archived state filter to include only beta, got %s", result)
+	}
+}
+
+func TestSkillMarkUsedToolUpdatesUsage(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	usagePath := filepath.Join(configDir, "skill-state", "usage.json")
+	writeSKILL(t, skillsDir, "alpha", testSkillA)
+
+	tool := NewSkillMarkUsedTool(skillsDir, usagePath)
+	if _, err := tool.Call(context.Background(), "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	usage := loadSkillUsage(usagePath)
+	if usage["alpha"].UseCount != 1 || usage["alpha"].LastUsedAt == "" {
+		t.Fatalf("expected use_count update, got %+v", usage["alpha"])
+	}
+}
+
+func TestSkillMarkUsedToolRestoresArchivedSkill(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	usagePath := filepath.Join(configDir, "skill-state", "usage.json")
+	writeSKILL(t, skillsDir, "alpha", testSkillA)
+	saveSkillUsage(usagePath, map[string]SkillUsageEntry{
+		"alpha": {State: SkillUsageStateArchived},
+	})
+
+	tool := NewSkillMarkUsedTool(skillsDir, usagePath)
+	if _, err := tool.Call(context.Background(), "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	usage := loadSkillUsage(usagePath)
+	if usage["alpha"].State != SkillUsageStateActive || usage["alpha"].StateChangedAt == "" {
+		t.Fatalf("expected use to restore archived skill to active, got %+v", usage["alpha"])
+	}
+}
+
+func TestSkillListToolAutoMarksAgentSkillStale(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	usagePath := filepath.Join(configDir, "skill-state", "usage.json")
+	writeSKILL(t, skillsDir, "alpha", testAgentCreatedSkill("alpha"))
+	saveSkillUsage(usagePath, map[string]SkillUsageEntry{
+		"alpha": {
+			State:      SkillUsageStateActive,
+			LastUsedAt: time.Now().Add(-91 * 24 * time.Hour).Format(time.RFC3339),
+		},
+	})
+
+	tool := NewSkillListTool(skillsDir, usagePath)
+	result, err := tool.Call(context.Background(), `{"state":"stale","include_archived":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "alpha") || !strings.Contains(result, SkillUsageStateStale) {
+		t.Fatalf("expected stale alpha in list, got %s", result)
+	}
+	usage := loadSkillUsage(usagePath)
+	if usage["alpha"].State != SkillUsageStateStale || usage["alpha"].StateChangedAt == "" {
+		t.Fatalf("expected usage state stale, got %+v", usage["alpha"])
+	}
+}
+
+func TestSkillListToolAutoArchivesOldAgentSkill(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	usagePath := filepath.Join(configDir, "skill-state", "usage.json")
+	writeSKILL(t, skillsDir, "alpha", testAgentCreatedSkill("alpha"))
+	saveSkillUsage(usagePath, map[string]SkillUsageEntry{
+		"alpha": {
+			State:      SkillUsageStateStale,
+			LastUsedAt: time.Now().Add(-181 * 24 * time.Hour).Format(time.RFC3339),
+		},
+	})
+
+	tool := NewSkillListTool(skillsDir, usagePath)
+	defaultResult, err := tool.Call(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(defaultResult, "alpha") {
+		t.Fatalf("expected archived alpha to be hidden by default, got %s", defaultResult)
+	}
+	archivedResult, err := tool.Call(context.Background(), `{"state":"archived","include_archived":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(archivedResult, "alpha") || !strings.Contains(archivedResult, SkillUsageStateArchived) {
+		t.Fatalf("expected archived alpha in explicit list, got %s", archivedResult)
+	}
+}
+
+func TestAutomaticSkillLifecycleSkipsWhenRecentlyEvaluated(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	usagePath := filepath.Join(configDir, "skill-state", "usage.json")
+	writeSKILL(t, skillsDir, "alpha", testAgentCreatedSkill("alpha"))
+	now := time.Date(2026, 5, 28, 8, 0, 0, 0, time.UTC)
+	oldUsedAt := now.Add(-91 * 24 * time.Hour).Format(time.RFC3339)
+	saveSkillUsage(usagePath, map[string]SkillUsageEntry{
+		"alpha": {State: SkillUsageStateActive, LastUsedAt: oldUsedAt},
+	})
+
+	applyAutomaticSkillLifecycle(skillsDir, usagePath, now)
+	usage := loadSkillUsage(usagePath)
+	if usage["alpha"].State != SkillUsageStateStale {
+		t.Fatalf("expected first evaluation to mark stale, got %+v", usage["alpha"])
+	}
+
+	// Simulate a state reset shortly after the scan; the next skill_list should
+	// not rescan all skills until the throttle window expires.
+	saveSkillUsage(usagePath, map[string]SkillUsageEntry{
+		"alpha": {State: SkillUsageStateActive, LastUsedAt: oldUsedAt},
+	})
+	applyAutomaticSkillLifecycle(skillsDir, usagePath, now.Add(time.Hour))
+	usage = loadSkillUsage(usagePath)
+	if usage["alpha"].State != SkillUsageStateActive {
+		t.Fatalf("expected lifecycle scan to be throttled, got %+v", usage["alpha"])
+	}
+}
+
+func TestAutomaticSkillLifecycleRunsAfterThrottleWindow(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	usagePath := filepath.Join(configDir, "skill-state", "usage.json")
+	writeSKILL(t, skillsDir, "alpha", testAgentCreatedSkill("alpha"))
+	now := time.Date(2026, 5, 28, 8, 0, 0, 0, time.UTC)
+	oldUsedAt := now.Add(-91 * 24 * time.Hour).Format(time.RFC3339)
+	saveSkillUsage(usagePath, map[string]SkillUsageEntry{
+		"alpha": {State: SkillUsageStateActive, LastUsedAt: oldUsedAt},
+	})
+
+	applyAutomaticSkillLifecycle(skillsDir, usagePath, now)
+	saveSkillUsage(usagePath, map[string]SkillUsageEntry{
+		"alpha": {State: SkillUsageStateActive, LastUsedAt: oldUsedAt},
+	})
+	applyAutomaticSkillLifecycle(skillsDir, usagePath, now.Add(25*time.Hour))
+	usage := loadSkillUsage(usagePath)
+	if usage["alpha"].State != SkillUsageStateStale {
+		t.Fatalf("expected lifecycle scan after throttle window, got %+v", usage["alpha"])
+	}
+}
+
+func TestSkillListToolAutoLifecycleIgnoresNonAgentSkill(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	usagePath := filepath.Join(configDir, "skill-state", "usage.json")
+	writeSKILL(t, skillsDir, "alpha", testSkillA)
+	saveSkillUsage(usagePath, map[string]SkillUsageEntry{
+		"alpha": {
+			State:      SkillUsageStateActive,
+			LastUsedAt: time.Now().Add(-181 * 24 * time.Hour).Format(time.RFC3339),
+		},
+	})
+
+	tool := NewSkillListTool(skillsDir, usagePath)
+	result, err := tool.Call(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "alpha") || !strings.Contains(result, SkillUsageStateActive) {
+		t.Fatalf("expected non-agent alpha to stay active and visible, got %s", result)
+	}
+}
+
+func testAgentCreatedSkill(name string) string {
+	return "---\nname: " + name + "\ndescription: Agent-created skill\nsource: agent\ncreated_by: agent\n---\n\nDo agent things.\n"
 }
 
 func TestSkillManageTool_CreateAndPatch(t *testing.T) {
@@ -224,5 +637,130 @@ func TestSkillManageTool_CreateAndPatch(t *testing.T) {
 	got, _ = os.ReadFile(filepath.Join(dir, "foo", "SKILL.md"))
 	if !strings.Contains(string(got), "Do foo better.") {
 		t.Fatal("patch not applied")
+	}
+}
+
+func TestSkillManageTool_SupportingFileChangesMarkManifestModified(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	manifestPath := filepath.Join(configDir, "skill-state", ".bundled_manifest.json")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSKILL(t, skillsDir, "alpha", testSkillA)
+	originHash := hashContent([]byte(testSkillA))
+	saveManifest(manifestPath, &BundledManifest{Version: 1, Skills: map[string]ManifestEntry{
+		"alpha": {
+			OriginHash:         originHash,
+			EffectiveHash:      originHash,
+			Status:             StatusMerged,
+			LastFailedMergeKey: "failed-key",
+			LastMergeError:     "old failure",
+		},
+	}})
+
+	tool := NewSkillManageTool(skillsDir, manifestPath)
+	input := `{"action":"write_file","name":"alpha","file_path":"references/info.md","file_content":"notes","reason":"test"}`
+	if _, err := tool.Call(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := loadManifest(manifestPath)
+	entry := manifest.Skills["alpha"]
+	if entry.Status != StatusUserModified {
+		t.Fatalf("expected user_modified after supporting file write, got %s", entry.Status)
+	}
+	if entry.OriginHash != originHash || entry.EffectiveHash != originHash {
+		t.Fatal("supporting file write should not change origin/effective hashes")
+	}
+	if entry.LastFailedMergeKey != "failed-key" || entry.LastMergeError != "old failure" {
+		t.Fatalf("expected supporting file write to preserve failed merge fields, got key=%q error=%q", entry.LastFailedMergeKey, entry.LastMergeError)
+	}
+
+	removeInput := `{"action":"remove_file","name":"alpha","file_path":"references/info.md","reason":"test"}`
+	if _, err := tool.Call(context.Background(), removeInput); err != nil {
+		t.Fatal(err)
+	}
+	manifest = loadManifest(manifestPath)
+	if manifest.Skills["alpha"].Status != StatusUserModified {
+		t.Fatalf("expected user_modified after supporting file remove, got %s", manifest.Skills["alpha"].Status)
+	}
+}
+
+func TestSkillManageTool_SupportingFileRequiresExistingSkill(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewSkillManageTool(dir, "")
+
+	_, err := tool.Call(context.Background(), `{"action":"write_file","name":"missing","file_path":"references/info.md","file_content":"notes","reason":"test"}`)
+	if err == nil {
+		t.Fatal("expected write_file for missing skill to fail")
+	}
+	if fileExists(filepath.Join(dir, "missing", "references", "info.md")) {
+		t.Fatal("write_file created supporting file for missing skill")
+	}
+
+	_, err = tool.Call(context.Background(), `{"action":"remove_file","name":"missing","file_path":"references/info.md","reason":"test"}`)
+	if err == nil {
+		t.Fatal("expected remove_file for missing skill to fail")
+	}
+}
+
+func TestSkillManageTool_LifecycleStateActions(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	manifestPath := filepath.Join(configDir, "skill-state", ".bundled_manifest.json")
+	usagePath := filepath.Join(configDir, "skill-state", "usage.json")
+	writeSKILL(t, skillsDir, "alpha", testSkillA)
+	tool := NewSkillManageTool(skillsDir, manifestPath)
+
+	if _, err := tool.Call(context.Background(), `{"action":"mark_stale","name":"alpha","reason":"old"}`); err != nil {
+		t.Fatal(err)
+	}
+	usage := loadSkillUsage(usagePath)
+	if usage["alpha"].State != SkillUsageStateStale || usage["alpha"].StateChangedAt == "" {
+		t.Fatalf("expected stale state, got %+v", usage["alpha"])
+	}
+
+	if _, err := tool.Call(context.Background(), `{"action":"archive","name":"alpha","reason":"old"}`); err != nil {
+		t.Fatal(err)
+	}
+	usage = loadSkillUsage(usagePath)
+	if usage["alpha"].State != SkillUsageStateArchived {
+		t.Fatalf("expected archived state, got %+v", usage["alpha"])
+	}
+
+	if _, err := tool.Call(context.Background(), `{"action":"restore_archive","name":"alpha","reason":"needed"}`); err != nil {
+		t.Fatal(err)
+	}
+	usage = loadSkillUsage(usagePath)
+	if usage["alpha"].State != SkillUsageStateActive {
+		t.Fatalf("expected active state, got %+v", usage["alpha"])
+	}
+}
+
+func TestSkillReadAndManageUpdateUsage(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	manifestPath := filepath.Join(configDir, "skill-state", ".bundled_manifest.json")
+	usagePath := filepath.Join(configDir, "skill-state", "usage.json")
+	writeSKILL(t, skillsDir, "alpha", testSkillA)
+
+	readTool := NewSkillReadTool(skillsDir, usagePath)
+	if _, err := readTool.Call(context.Background(), "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	usage := loadSkillUsage(usagePath)
+	if usage["alpha"].ViewCount != 1 || usage["alpha"].LastViewedAt == "" {
+		t.Fatalf("expected skill_read usage update, got %+v", usage["alpha"])
+	}
+
+	manageTool := NewSkillManageTool(skillsDir, manifestPath)
+	patchInput := `{"action":"patch","name":"alpha","old_string":"Do alpha things.","new_string":"Do alpha things safely.","reason":"test"}`
+	if _, err := manageTool.Call(context.Background(), patchInput); err != nil {
+		t.Fatal(err)
+	}
+	usage = loadSkillUsage(usagePath)
+	if usage["alpha"].ModifyCount != 1 || usage["alpha"].LastModifiedAt == "" {
+		t.Fatalf("expected skill_manage usage update, got %+v", usage["alpha"])
 	}
 }

@@ -63,6 +63,7 @@ type MergeWorker struct {
 	cancel       context.CancelFunc
 	done         chan struct{}
 	manifestPath string
+	onSuccess    func(SkillMergeJob)
 }
 
 func NewMergeWorker(model SkillMergeModel, manifestPath string) *MergeWorker {
@@ -135,54 +136,85 @@ func (w *MergeWorker) processJob(ctx context.Context, job SkillMergeJob) {
 		return
 	}
 
-	// Check user hasn't modified the file since we started
-	currentContent, err := os.ReadFile(job.UserPath)
-	if err != nil || hashContent(currentContent) != job.LocalHash {
-		log.Printf("[skill_merge] %s: local changed during merge, skipping apply", job.SkillName)
-		return
-	}
-
 	// Write to temp, then move
 	tmpPath := filepath.Join(job.StateDir, "tmp", job.SkillName+".candidate.SKILL.md")
 	if err := os.MkdirAll(filepath.Dir(tmpPath), 0o755); err != nil {
 		log.Printf("[skill_merge] mkdir tmp: %v", err)
+		w.recordFailure(job, err.Error())
 		return
 	}
 	if err := os.WriteFile(tmpPath, []byte(result.MergedSkillMD), 0o644); err != nil {
 		log.Printf("[skill_merge] write tmp: %v", err)
+		w.recordFailure(job, err.Error())
 		return
 	}
 	defer os.Remove(tmpPath)
 
-	if err := os.MkdirAll(filepath.Dir(job.UserPath), 0o755); err != nil {
+	skillFileMu.Lock()
+	currentContent, err := os.ReadFile(job.UserPath)
+	if err != nil {
+		skillFileMu.Unlock()
+		log.Printf("[skill_merge] %s: read local before apply failed: %v", job.SkillName, err)
+		w.recordFailure(job, err.Error())
 		return
 	}
-	if err := moveFile(tmpPath, job.UserPath); err != nil {
-		log.Printf("[skill_merge] move: %v", err)
+	if hashContent(currentContent) != job.LocalHash {
+		skillFileMu.Unlock()
+		log.Printf("[skill_merge] %s: local changed during merge, skipping apply", job.SkillName)
+		w.recordFailure(job, "local changed before apply")
 		return
 	}
 
-	// Update base
-	saveBase(job.BasePath, []byte(job.Upstream))
+	if err := os.MkdirAll(filepath.Dir(job.UserPath), 0o755); err != nil {
+		skillFileMu.Unlock()
+		w.recordFailure(job, err.Error())
+		return
+	}
+	if err := moveFile(tmpPath, job.UserPath); err != nil {
+		skillFileMu.Unlock()
+		log.Printf("[skill_merge] move: %v", err)
+		w.recordFailure(job, err.Error())
+		return
+	}
+	skillFileMu.Unlock()
+
+	if err := saveBase(job.BasePath, []byte(job.Upstream)); err != nil {
+		log.Printf("[skill_merge] write base: %v", err)
+		w.recordFailure(job, err.Error())
+		return
+	}
 
 	// Update manifest
 	manifest := loadManifest(w.manifestPath)
 	manifest.Skills[job.SkillName] = ManifestEntry{
-		OriginHash:   job.UpstreamHash,
-		Status:       StatusMerged,
-		BasePath:     job.BasePath,
-		LastSyncedAt: time.Now().Format(time.RFC3339),
+		OriginHash:    job.UpstreamHash,
+		EffectiveHash: hashContent([]byte(result.MergedSkillMD)),
+		Status:        StatusMerged,
+		BasePath:      job.BasePath,
+		LastSyncedAt:  time.Now().Format(time.RFC3339),
+		LastMergedAt:  time.Now().Format(time.RFC3339),
+		LastMergedKey: job.MergeKey,
 	}
 	manifest.UpdatedAt = time.Now().Format(time.RFC3339)
 	saveManifest(w.manifestPath, manifest)
+	if w.onSuccess != nil {
+		w.onSuccess(job)
+	}
 	log.Printf("[skill_merge] %s merged successfully", job.SkillName)
 }
 
 func (w *MergeWorker) recordFailure(job SkillMergeJob, errMsg string) {
 	manifest := loadManifest(w.manifestPath)
 	entry := manifest.Skills[job.SkillName]
+	if entry.OriginHash == "" && job.BaseHash != "" {
+		entry.OriginHash = job.BaseHash
+	}
+	if entry.BasePath == "" {
+		entry.BasePath = job.BasePath
+	}
 	entry.Status = StatusUserModified
 	entry.LastFailedMergeKey = job.MergeKey
+	entry.LastMergeFailedAt = time.Now().Format(time.RFC3339)
 	entry.LastMergeError = truncate(errMsg, 200)
 	manifest.Skills[job.SkillName] = entry
 	manifest.UpdatedAt = time.Now().Format(time.RFC3339)
@@ -213,11 +245,54 @@ func mergeResultOK(result *SkillMergeResult, expectedName string) bool {
 	if strings.TrimSpace(skill.Instructions) == "" {
 		return false
 	}
+	if !allowedToolsExist(skill.AllowedTools) {
+		return false
+	}
 	return true
 }
 
-func computeMergeKey(skillName, baseHash, upstreamHash, localHash string) string {
-	data := fmt.Sprintf("%s|%s|%s|%s", skillName, baseHash, upstreamHash, localHash)
+func allowedToolsExist(tools []string) bool {
+	for _, tool := range tools {
+		if strings.HasPrefix(tool, "delegate_") {
+			continue
+		}
+		if _, ok := knownToolNames[tool]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+var knownToolNames = map[string]struct{}{
+	"activate_skill":        {},
+	"audio_volume":          {},
+	"calculator":            {},
+	"current_time":          {},
+	"enter_sleep":           {},
+	"forget_memory":         {},
+	"keyboard_tap":          {},
+	"keyboard_text":         {},
+	"mouse_click":           {},
+	"mouse_move":            {},
+	"mouse_scroll":          {},
+	"recall_memory":         {},
+	"recall_session_chunks": {},
+	"save_memory":           {},
+	"screenshot":            {},
+	"shell":                 {},
+	"skill_list":            {},
+	"skill_mark_used":       {},
+	"skill_manage":          {},
+	"skill_read":            {},
+	"touch_gesture":         {},
+	"weather":               {},
+	"web_scraper":           {},
+	"web_search":            {},
+	"wikipedia":             {},
+}
+
+func computeMergeKey(mode SkillMergeMode, skillName, baseHash, upstreamHash, localHash string) string {
+	data := fmt.Sprintf("%s|%s|%s|%s|%s", mode, skillName, baseHash, upstreamHash, localHash)
 	h := sha256.Sum256([]byte(data))
 	return "sha256:" + hex.EncodeToString(h[:8])
 }

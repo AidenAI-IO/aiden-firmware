@@ -3,7 +3,7 @@ name: planner
 description: Task decomposition and delegation.
 metadata:
   preferred_model: primary
-  allowed_tools: [calculator, policy, delegate_researcher]
+  allowed_tools: [calculator, delegate_researcher]
   allowed_children: [researcher]
 ---
 

@@ -37,6 +37,8 @@ type Runtime struct {
 	tools            *ToolSet
 	skills           *SkillManager
 	skillsLoaded     bool
+	skillsReloadMu   sync.Mutex
+	skillsDirty      bool
 	logger           *Logger
 	profileDebouncer *ProfileDebouncer
 	sleep            *SleepController
@@ -97,6 +99,8 @@ func (m *usageTrackingModel) Call(ctx context.Context, prompt string, options ..
 }
 
 func NewRuntime(cfg Config) (*Runtime, error) {
+	var mergeNeeded []SkillMergeJob
+
 	// Sync bundled skills into user directory before loading
 	if cfg.BundledSkillsDir != "" && cfg.ConfigDir != "" {
 		report, err := SyncBundledSkills(context.Background(), SkillSyncOptions{
@@ -107,11 +111,14 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		})
 		if err != nil {
 			log.Printf("[skill_sync] sync failed (non-fatal): %v", err)
-		} else if len(report.MergeNeeded) > 0 && cfg.SkillMergeModel != nil {
-			manifestPath := filepath.Join(cfg.ConfigDir, "skill-state", ".bundled_manifest.json")
-			worker := NewMergeWorker(cfg.SkillMergeModel, manifestPath)
-			worker.Enqueue(report.MergeNeeded)
-			worker.Start(context.Background())
+		} else {
+			mergeNeeded = report.MergeNeeded
+		}
+	}
+	if cfg.ConfigDir != "" {
+		skillsDir := filepath.Join(cfg.ConfigDir, "skills")
+		if info, err := os.Stat(skillsDir); err == nil && info.IsDir() {
+			cfg.SkillsDirs = []string{skillsDir}
 		}
 	}
 
@@ -174,6 +181,17 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
 	rt.sleep = sleepController
+
+	if len(mergeNeeded) > 0 && cfg.SkillMergeModel != nil {
+		manifestPath := filepath.Join(cfg.ConfigDir, "skill-state", ".bundled_manifest.json")
+		worker := NewMergeWorker(cfg.SkillMergeModel, manifestPath)
+		worker.onSuccess = func(SkillMergeJob) {
+			rt.MarkSkillsDirty()
+		}
+		worker.Enqueue(mergeNeeded)
+		worker.Start(context.Background())
+	}
+
 	return rt, nil
 }
 
@@ -213,10 +231,15 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, errors.New("input is required")
 	}
 
+	if err := r.reloadSkillsIfDirty(); err != nil {
+		return RunResult{}, err
+	}
+	runSkills := r.skills.Snapshot()
+
 	// Activate skills
 	skillNames := uniqueNonEmpty(req.Skills)
 	for _, skillName := range skillNames {
-		if err := r.skills.Activate(ctx, skillName); err != nil {
+		if err := runSkills.Activate(ctx, skillName); err != nil {
 			if r.logger != nil {
 				r.logger.Error("Failed to activate skill %q: %v", skillName, err)
 			}
@@ -228,7 +251,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		r.logger.Info("Activated skills: %v", skillNames)
 	}
 
-	resolvedSkills, err := r.skills.Resolve(skillNames)
+	resolvedSkills, err := runSkills.Resolve(skillNames)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -316,7 +339,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	sleepRequested, sleepReason := r.sleep.Consume()
 	return RunResult{
 		Output:         output,
-		Skills:         r.skills.GetActivatedSkills(),
+		Skills:         runSkills.GetActivatedSkills(),
 		Memory:         memorySnapshot,
 		Metrics:        metrics,
 		SleepRequested: sleepRequested,
@@ -328,6 +351,40 @@ func (r *Runtime) ClearMemory(ctx context.Context) error {
 	return r.memories.ClearSession(ctx, "default")
 }
 
+func (r *Runtime) MarkSkillsDirty() {
+	r.skillsReloadMu.Lock()
+	defer r.skillsReloadMu.Unlock()
+	r.skillsDirty = true
+}
+
+func (r *Runtime) reloadSkillsIfDirty() error {
+	r.skillsReloadMu.Lock()
+	defer r.skillsReloadMu.Unlock()
+
+	if !r.skillsDirty {
+		return nil
+	}
+	if len(r.config.SkillsDirs) == 0 {
+		r.skillsDirty = false
+		return nil
+	}
+
+	index, err := LoadSkillsFromDirs(r.config.SkillsDirs)
+	if err != nil {
+		return fmt.Errorf("reload skills: %w", err)
+	}
+	r.skills.ReplaceIndex(index)
+	r.skillsLoaded = len(index.Names()) > 0
+	r.skillsDirty = false
+	return nil
+}
+
+func (r *Runtime) hasLoadedSkills() bool {
+	r.skillsReloadMu.Lock()
+	defer r.skillsReloadMu.Unlock()
+	return r.skillsLoaded
+}
+
 func (r *Runtime) ClearAllMemory(ctx context.Context) error {
 	return r.memories.ClearAll(ctx, "default")
 }
@@ -335,8 +392,8 @@ func (r *Runtime) ClearAllMemory(ctx context.Context) error {
 func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 	available := make([]langtools.Tool, 0)
 
-	if r.skillsLoaded {
-		available = append(available, NewActivateSkillTool(r.skills))
+	if r.hasLoadedSkills() && skills.manager != nil {
+		available = append(available, NewActivateSkillTool(skills.manager))
 	}
 
 	if skills.HasToolRestriction {

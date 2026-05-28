@@ -42,8 +42,8 @@ fi
 cp "$KEY_SOURCE" "$OVERLAY/oem/etc/ota_pubkey.pem"
 echo "  ✓ OTA public key copied to overlay/oem/etc/ota_pubkey.pem"
 
-# Step 3: 同步 etc 等目录到 buildroot overlay（排除 oem 和 userdata）
-echo "[3/6] Syncing overlay (etc) to buildroot overlay..."
+# Step 3: 同步 etc 与内置 skills 到 buildroot overlay（rootfs）
+echo "[3/6] Syncing overlay (etc + bundled skills) to buildroot overlay..."
 if [ ! -d "$DEST_OVERLAY" ]; then
     echo "  ✗ Error: destination directory not found at $DEST_OVERLAY"
     exit 1
@@ -54,6 +54,23 @@ if [ -d "$OVERLAY/etc" ]; then
     mkdir -p "$DEST_OVERLAY/etc"
     rsync -a --delete "$OVERLAY/etc/" "$DEST_OVERLAY/etc/"
     echo "  ✓ etc directory synced"
+fi
+
+# Bundled agent skills: src/agent/config/skills/ 是单一源，固件里要落到
+# /usr/share/aiden/skills/ 才能被 agent 的 resolveBundledSkillsDir() 找到。
+SKILLS_SRC="$SCRIPT_DIR/src/agent/config/skills"
+SKILLS_DEST="$DEST_OVERLAY/usr/share/aiden/skills"
+if [ -d "$SKILLS_SRC" ]; then
+    mkdir -p "$SKILLS_DEST"
+    rsync -a --delete "$SKILLS_SRC/" "$SKILLS_DEST/"
+    skill_count=$(find "$SKILLS_DEST" -name SKILL.md | wc -l | tr -d ' ')
+    if [ "$skill_count" -lt 1 ]; then
+        echo "  ✗ Error: no SKILL.md staged in $SKILLS_DEST" >&2
+        exit 1
+    fi
+    echo "  ✓ bundled skills synced ($skill_count skill(s))"
+else
+    echo "  ⚠ Warning: $SKILLS_SRC not found; skipping bundled skills" >&2
 fi
 
 # Step 4: 运行 pico-sdk 构建，overlay 注入后只打包一次 firmware，避免 A/B 大镜像重复生成。

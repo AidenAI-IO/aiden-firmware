@@ -78,6 +78,113 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunReloadsSkillsWhenMarkedDirty(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	v1 := "---\nname: alpha\ndescription: Alpha\n---\n\nUse alpha v1.\n"
+	v2 := "---\nname: alpha\ndescription: Alpha\n---\n\nUse alpha v2.\n"
+	writeSKILL(t, skillsDir, "alpha", v1)
+	index, err := LoadSkillsFromDirs([]string{skillsDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{Choices: []*llms.ContentChoice{{Content: "first"}}},
+			{Choices: []*llms.ContentChoice{{Content: "second"}}},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			SkillsDirs:    []string{skillsDir},
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		index,
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello", Skills: []string{"alpha"}}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if !runtimeModelCallContains(model.messages[0], "Use alpha v1.") {
+		t.Fatalf("first run missing v1 skill instructions")
+	}
+
+	writeSKILL(t, skillsDir, "alpha", v2)
+	runtime.MarkSkillsDirty()
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello again", Skills: []string{"alpha"}}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if !runtimeModelCallContains(model.messages[1], "Use alpha v2.") {
+		t.Fatalf("second run missing reloaded v2 skill instructions")
+	}
+	if runtimeModelCallContains(model.messages[1], "Use alpha v1.") {
+		t.Fatalf("second run still contains stale v1 skill instructions")
+	}
+}
+
+func TestRuntimeRunSnapshotUnaffectedByConcurrentReload(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	v1 := "---\nname: alpha\ndescription: Alpha\n---\n\nUse alpha v1.\n"
+	v2 := "---\nname: alpha\ndescription: Alpha\n---\n\nUse alpha v2.\n"
+	writeSKILL(t, skillsDir, "alpha", v1)
+	index, err := LoadSkillsFromDirs([]string{skillsDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, SkillsDirs: []string{skillsDir}},
+		&testModelResolver{model: fakellm.NewFakeLLM([]string{"unused"})},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		index,
+	)
+
+	if err := runtime.reloadSkillsIfDirty(); err != nil {
+		t.Fatal(err)
+	}
+	runSkills := runtime.skills.Snapshot()
+	if err := runSkills.Activate(context.Background(), "alpha"); err != nil {
+		t.Fatal(err)
+	}
+
+	writeSKILL(t, skillsDir, "alpha", v2)
+	runtime.MarkSkillsDirty()
+	if err := runtime.reloadSkillsIfDirty(); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := runSkills.Resolve([]string{"alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resolved.CombinedInstructions(), "Use alpha v1.") {
+		t.Fatalf("in-progress run snapshot lost v1 instructions: %s", resolved.CombinedInstructions())
+	}
+	if strings.Contains(resolved.CombinedInstructions(), "Use alpha v2.") {
+		t.Fatalf("in-progress run snapshot saw reloaded v2 instructions: %s", resolved.CombinedInstructions())
+	}
+}
+
+func runtimeModelCallContains(messages []llms.MessageContent, want string) bool {
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			if text, ok := part.(llms.TextContent); ok && strings.Contains(text.Text, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 type scriptedModel struct {
 	responses    []*llms.ContentResponse
 	callCount    int
@@ -1131,6 +1238,29 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	}
 	if secondResult.Memory[0].Role != "human" || secondResult.Memory[0].Content != "hello" {
 		t.Fatalf("expected first persisted message to be restored, got %#v", secondResult.Memory[0])
+	}
+}
+
+func TestNewRuntimeLoadsBundledSkillsSeededOnFirstStartup(t *testing.T) {
+	configDir := t.TempDir()
+	bundledDir := t.TempDir()
+	writeSKILL(t, bundledDir, "alpha", testSkillA)
+
+	runtime, err := NewRuntime(Config{
+		ConfigDir:        configDir,
+		BundledSkillsDir: bundledDir,
+		Model:            ModelConfig{Provider: "fake"},
+		Instruction:      "Answer directly.",
+		SkillsDirs:       []string{},
+		MaxIterations:    1,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer runtime.Close()
+
+	if _, ok := runtime.skills.GetIndex().Get("alpha"); !ok {
+		t.Fatalf("expected runtime to load skill copied during startup sync")
 	}
 }
 

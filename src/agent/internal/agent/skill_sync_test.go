@@ -81,6 +81,20 @@ func TestSyncBundledSkills_NewSkillCopied(t *testing.T) {
 	if entry.OriginHash == "" {
 		t.Fatal("expected non-empty origin_hash")
 	}
+	if entry.EffectiveHash != entry.OriginHash {
+		t.Fatalf("expected effective_hash to match origin_hash, got %q vs %q", entry.EffectiveHash, entry.OriginHash)
+	}
+}
+
+func TestSaveManifestCreatesParentDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "nested", ".bundled_manifest.json")
+	saveManifest(path, &BundledManifest{Version: 1, Skills: map[string]ManifestEntry{
+		"alpha": {OriginHash: "sha256:test", Status: StatusSynced},
+	}})
+	manifest := loadManifest(path)
+	if manifest.Skills["alpha"].OriginHash != "sha256:test" {
+		t.Fatalf("expected manifest written through missing parent dirs, got %+v", manifest.Skills["alpha"])
+	}
 }
 
 func TestSyncBundledSkills_UpdateUnmodified(t *testing.T) {
@@ -104,6 +118,83 @@ func TestSyncBundledSkills_UpdateUnmodified(t *testing.T) {
 	got := readSKILL(t, filepath.Join(configDir, "skills"), "alpha")
 	if got != testSkillAv2 {
 		t.Fatalf("expected v2 content")
+	}
+
+	manifest := loadManifest(filepath.Join(configDir, "skill-state", ".bundled_manifest.json"))
+	entry := manifest.Skills["alpha"]
+	if entry.EffectiveHash != entry.OriginHash {
+		t.Fatalf("expected effective_hash to match updated origin_hash, got %q vs %q", entry.EffectiveHash, entry.OriginHash)
+	}
+}
+
+func TestSyncBundledSkills_KeepsMergedEffectiveCopyWhenBundledUnchanged(t *testing.T) {
+	configDir := t.TempDir()
+	bundledDir := t.TempDir()
+	writeSKILL(t, bundledDir, "alpha", testSkillA)
+
+	SyncBundledSkills(context.Background(), SkillSyncOptions{
+		ConfigDir: configDir, BundledSkillsDir: bundledDir, Quiet: true,
+	})
+
+	mergedContent := "---\nname: alpha\ndescription: merged\n---\n\nMerged steps.\n"
+	writeSKILL(t, filepath.Join(configDir, "skills"), "alpha", mergedContent)
+	manifestPath := filepath.Join(configDir, "skill-state", ".bundled_manifest.json")
+	manifest := loadManifest(manifestPath)
+	entry := manifest.Skills["alpha"]
+	entry.Status = StatusMerged
+	entry.EffectiveHash = hashContent([]byte(mergedContent))
+	manifest.Skills["alpha"] = entry
+	saveManifest(manifestPath, manifest)
+
+	report, _ := SyncBundledSkills(context.Background(), SkillSyncOptions{
+		ConfigDir: configDir, BundledSkillsDir: bundledDir, Quiet: true,
+	})
+	if len(report.KeptUser) != 0 || len(report.MergeNeeded) != 0 {
+		t.Fatalf("expected merged effective copy to be kept without user_modified handling, kept=%v merge=%v", report.KeptUser, report.MergeNeeded)
+	}
+
+	manifest = loadManifest(manifestPath)
+	if manifest.Skills["alpha"].Status != StatusMerged {
+		t.Fatalf("expected merged status to remain stable, got %s", manifest.Skills["alpha"].Status)
+	}
+	if got := readSKILL(t, filepath.Join(configDir, "skills"), "alpha"); got != mergedContent {
+		t.Fatal("merged effective copy was modified")
+	}
+}
+
+func TestSyncBundledSkills_TwoWayFallbackUsesEmptyBaseHash(t *testing.T) {
+	configDir := t.TempDir()
+	bundledDir := t.TempDir()
+	writeSKILL(t, bundledDir, "alpha", testSkillA)
+
+	SyncBundledSkills(context.Background(), SkillSyncOptions{
+		ConfigDir: configDir, BundledSkillsDir: bundledDir, Quiet: true,
+	})
+
+	userModified := "---\nname: alpha\ndescription: custom\n---\n\nCustom.\n"
+	writeSKILL(t, filepath.Join(configDir, "skills"), "alpha", userModified)
+	basePath := filepath.Join(configDir, "skill-state", "bases", "alpha", "SKILL.md")
+	if err := os.Remove(basePath); err != nil {
+		t.Fatal(err)
+	}
+	writeSKILL(t, bundledDir, "alpha", testSkillAv2)
+
+	report, _ := SyncBundledSkills(context.Background(), SkillSyncOptions{
+		ConfigDir: configDir, BundledSkillsDir: bundledDir, Quiet: true,
+	})
+	if len(report.MergeNeeded) != 1 {
+		t.Fatalf("expected one merge job, got %v", report.MergeNeeded)
+	}
+	job := report.MergeNeeded[0]
+	if job.Mode != MergeTwoWay {
+		t.Fatalf("expected two-way fallback, got %s", job.Mode)
+	}
+	if job.BaseHash != "" {
+		t.Fatalf("expected empty base hash for two-way fallback, got %q", job.BaseHash)
+	}
+	expectedKey := computeMergeKey(MergeTwoWay, "alpha", "", hashContent([]byte(testSkillAv2)), hashContent([]byte(userModified)))
+	if job.MergeKey != expectedKey {
+		t.Fatalf("expected merge key %s, got %s", expectedKey, job.MergeKey)
 	}
 }
 
@@ -258,5 +349,8 @@ func TestRestoreBundledSkill(t *testing.T) {
 	manifest := loadManifest(filepath.Join(configDir, "skill-state", ".bundled_manifest.json"))
 	if manifest.Skills["alpha"].Status != StatusSynced {
 		t.Fatalf("expected synced after restore, got %s", manifest.Skills["alpha"].Status)
+	}
+	if manifest.Skills["alpha"].EffectiveHash != manifest.Skills["alpha"].OriginHash {
+		t.Fatalf("expected restore effective_hash to match origin_hash")
 	}
 }

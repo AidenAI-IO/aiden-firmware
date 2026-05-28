@@ -8,32 +8,45 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 type SkillListTool struct {
 	skillsDir string
+	usagePath string
 }
 
-func NewSkillListTool(skillsDir string) *SkillListTool {
-	return &SkillListTool{skillsDir: skillsDir}
+func NewSkillListTool(skillsDir string, usagePath ...string) *SkillListTool {
+	tool := &SkillListTool{skillsDir: skillsDir}
+	if len(usagePath) > 0 {
+		tool.usagePath = usagePath[0]
+	}
+	return tool
 }
 
 func (t *SkillListTool) Name() string { return "skill_list" }
 
 func (t *SkillListTool) Description() string {
-	return "List installed skills from the user skills directory. Input: optional search query string to filter by name/description."
+	return `List installed skills from the user skills directory. Input: optional query string, or JSON with query, state, include_archived, and limit.`
 }
 
 func (t *SkillListTool) Call(_ context.Context, input string) (string, error) {
-	query := strings.TrimSpace(strings.ToLower(input))
+	req := parseSkillListInput(input)
+	query := strings.ToLower(req.Query)
+	applyAutomaticSkillLifecycle(t.skillsDir, t.usagePath, time.Now())
 	entries, err := os.ReadDir(t.skillsDir)
 	if err != nil {
 		return "[]", nil
 	}
+	usage := loadSkillUsage(t.usagePath)
 
 	type skillInfo struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
+		State       string `json:"state"`
+		ViewCount   int    `json:"view_count,omitempty"`
+		UseCount    int    `json:"use_count,omitempty"`
+		ModifyCount int    `json:"modify_count,omitempty"`
 	}
 
 	var results []skillInfo
@@ -46,6 +59,14 @@ func (t *SkillListTool) Call(_ context.Context, input string) (string, error) {
 		if err != nil {
 			continue
 		}
+		skillUsage := usage[skill.Name]
+		state := normalizeSkillUsageState(skillUsage.State)
+		if req.State != "" && state != req.State {
+			continue
+		}
+		if !req.IncludeArchived && state == SkillUsageStateArchived {
+			continue
+		}
 		if query != "" {
 			if !strings.Contains(strings.ToLower(skill.Name), query) &&
 				!strings.Contains(strings.ToLower(skill.Description), query) {
@@ -55,22 +76,98 @@ func (t *SkillListTool) Call(_ context.Context, input string) (string, error) {
 		results = append(results, skillInfo{
 			Name:        skill.Name,
 			Description: skill.Description,
+			State:       state,
+			ViewCount:   skillUsage.ViewCount,
+			UseCount:    skillUsage.UseCount,
+			ModifyCount: skillUsage.ModifyCount,
 		})
 	}
 
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Name < results[j].Name
 	})
+	if req.Limit > 0 && len(results) > req.Limit {
+		results = results[:req.Limit]
+	}
 	data, _ := json.Marshal(results)
 	return string(data), nil
 }
 
-type SkillReadTool struct {
-	skillsDir string
+type skillListInput struct {
+	Query           string `json:"query"`
+	State           string `json:"state"`
+	IncludeArchived bool   `json:"include_archived"`
+	Limit           int    `json:"limit"`
 }
 
-func NewSkillReadTool(skillsDir string) *SkillReadTool {
-	return &SkillReadTool{skillsDir: skillsDir}
+func parseSkillListInput(input string) skillListInput {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return skillListInput{}
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		var req skillListInput
+		if err := json.Unmarshal([]byte(trimmed), &req); err == nil {
+			req.Query = strings.TrimSpace(req.Query)
+			req.State = normalizeSkillUsageState(strings.TrimSpace(req.State))
+			if req.State == SkillUsageStateActive && !strings.Contains(trimmed, `"state"`) {
+				req.State = ""
+			}
+			return req
+		}
+	}
+	return skillListInput{Query: trimmed}
+}
+
+type SkillMarkUsedTool struct {
+	skillsDir string
+	usagePath string
+}
+
+func NewSkillMarkUsedTool(skillsDir, usagePath string) *SkillMarkUsedTool {
+	return &SkillMarkUsedTool{skillsDir: skillsDir, usagePath: usagePath}
+}
+
+func (t *SkillMarkUsedTool) Name() string { return "skill_mark_used" }
+
+func (t *SkillMarkUsedTool) Description() string {
+	return "Mark a skill as actually used after following it. Input: skill name."
+}
+
+func (t *SkillMarkUsedTool) Call(_ context.Context, input string) (string, error) {
+	name := strings.TrimSpace(input)
+	if strings.HasPrefix(name, "{") {
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal([]byte(name), &req); err == nil {
+			name = strings.TrimSpace(req.Name)
+		}
+	}
+	if name == "" {
+		return "", fmt.Errorf("skill name is required")
+	}
+	if !isValidSkillName(name) {
+		return "", fmt.Errorf("invalid skill name %q", name)
+	}
+	if !fileExists(filepath.Join(t.skillsDir, name, "SKILL.md")) {
+		return "", fmt.Errorf("skill %q not found", name)
+	}
+	recordSkillUsed(t.usagePath, name)
+	return fmt.Sprintf("Marked skill %q as used", name), nil
+}
+
+type SkillReadTool struct {
+	skillsDir string
+	usagePath string
+}
+
+func NewSkillReadTool(skillsDir string, usagePath ...string) *SkillReadTool {
+	tool := &SkillReadTool{skillsDir: skillsDir}
+	if len(usagePath) > 0 {
+		tool.usagePath = usagePath[0]
+	}
+	return tool
 }
 
 func (t *SkillReadTool) Name() string { return "skill_read" }
@@ -92,16 +189,18 @@ func (t *SkillReadTool) Call(_ context.Context, input string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("skill %q not found", name)
 	}
+	recordSkillViewed(t.usagePath, name)
 	return string(data), nil
 }
 
 type SkillManageTool struct {
 	skillsDir    string
 	manifestPath string
+	usagePath    string
 }
 
 func NewSkillManageTool(skillsDir, manifestPath string) *SkillManageTool {
-	return &SkillManageTool{skillsDir: skillsDir, manifestPath: manifestPath}
+	return &SkillManageTool{skillsDir: skillsDir, manifestPath: manifestPath, usagePath: usagePathForManifest(manifestPath)}
 }
 
 func (t *SkillManageTool) Name() string { return "skill_manage" }
@@ -152,6 +251,12 @@ func (t *SkillManageTool) Call(_ context.Context, input string) (string, error) 
 		return t.writeFile(req)
 	case "remove_file":
 		return t.removeFile(req)
+	case "mark_stale":
+		return t.setLifecycleState(req, SkillUsageStateStale, "Marked skill %q as stale")
+	case "archive":
+		return t.setLifecycleState(req, SkillUsageStateArchived, "Archived skill %q")
+	case "restore_archive":
+		return t.setLifecycleState(req, SkillUsageStateActive, "Restored skill %q")
 	default:
 		return "", fmt.Errorf("unknown action %q", req.Action)
 	}
@@ -183,10 +288,14 @@ func (t *SkillManageTool) create(req skillManageInput) (string, error) {
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(skillPath, []byte(req.Content), 0o644); err != nil {
+	skillFileMu.Lock()
+	err = os.WriteFile(skillPath, []byte(req.Content), 0o644)
+	skillFileMu.Unlock()
+	if err != nil {
 		return "", err
 	}
-	t.updateManifestOnModify(req.Name)
+	t.updateManifestOnModify(req.Name, true)
+	t.recordModify(req.Name)
 	return fmt.Sprintf("Created skill %q", req.Name), nil
 }
 
@@ -205,10 +314,14 @@ func (t *SkillManageTool) edit(req skillManageInput) (string, error) {
 	if skill.Name != req.Name {
 		return "", fmt.Errorf("frontmatter name %q must match %q", skill.Name, req.Name)
 	}
-	if err := os.WriteFile(skillPath, []byte(req.Content), 0o644); err != nil {
+	skillFileMu.Lock()
+	err = os.WriteFile(skillPath, []byte(req.Content), 0o644)
+	skillFileMu.Unlock()
+	if err != nil {
 		return "", err
 	}
-	t.updateManifestOnModify(req.Name)
+	t.updateManifestOnModify(req.Name, true)
+	t.recordModify(req.Name)
 	return fmt.Sprintf("Updated skill %q", req.Name), nil
 }
 
@@ -233,10 +346,14 @@ func (t *SkillManageTool) patch(req skillManageInput) (string, error) {
 	if _, err := parseSkillFromContent(newContent); err != nil {
 		return "", fmt.Errorf("patch produces invalid SKILL.md: %w", err)
 	}
-	if err := os.WriteFile(skillPath, []byte(newContent), 0o644); err != nil {
+	skillFileMu.Lock()
+	err = os.WriteFile(skillPath, []byte(newContent), 0o644)
+	skillFileMu.Unlock()
+	if err != nil {
 		return "", err
 	}
-	t.updateManifestOnModify(req.Name)
+	t.updateManifestOnModify(req.Name, true)
+	t.recordModify(req.Name)
 	return fmt.Sprintf("Patched skill %q", req.Name), nil
 }
 
@@ -245,7 +362,10 @@ func (t *SkillManageTool) deleteSkill(req skillManageInput) (string, error) {
 	if !fileExists(filepath.Join(skillDir, "SKILL.md")) {
 		return "", fmt.Errorf("skill %q not found", req.Name)
 	}
-	if err := os.RemoveAll(skillDir); err != nil {
+	skillFileMu.Lock()
+	err := os.RemoveAll(skillDir)
+	skillFileMu.Unlock()
+	if err != nil {
 		return "", err
 	}
 	if t.manifestPath != "" {
@@ -257,6 +377,7 @@ func (t *SkillManageTool) deleteSkill(req skillManageInput) (string, error) {
 			saveManifest(t.manifestPath, manifest)
 		}
 	}
+	t.recordModify(req.Name)
 	return fmt.Sprintf("Deleted skill %q", req.Name), nil
 }
 
@@ -267,13 +388,21 @@ func (t *SkillManageTool) writeFile(req skillManageInput) (string, error) {
 	if !isAllowedSubPath(req.FilePath) {
 		return "", fmt.Errorf("file_path must be under references/, templates/, scripts/, or assets/")
 	}
+	if !fileExists(filepath.Join(t.skillsDir, req.Name, "SKILL.md")) {
+		return "", fmt.Errorf("skill %q not found", req.Name)
+	}
 	fullPath := filepath.Join(t.skillsDir, req.Name, req.FilePath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(fullPath, []byte(req.FileContent), 0o644); err != nil {
+	skillFileMu.Lock()
+	err := os.WriteFile(fullPath, []byte(req.FileContent), 0o644)
+	skillFileMu.Unlock()
+	if err != nil {
 		return "", err
 	}
+	t.updateManifestOnModify(req.Name, false)
+	t.recordModify(req.Name)
 	return fmt.Sprintf("Wrote %s for skill %q", req.FilePath, req.Name), nil
 }
 
@@ -284,14 +413,35 @@ func (t *SkillManageTool) removeFile(req skillManageInput) (string, error) {
 	if !isAllowedSubPath(req.FilePath) {
 		return "", fmt.Errorf("file_path must be under references/, templates/, scripts/, or assets/")
 	}
+	if !fileExists(filepath.Join(t.skillsDir, req.Name, "SKILL.md")) {
+		return "", fmt.Errorf("skill %q not found", req.Name)
+	}
 	fullPath := filepath.Join(t.skillsDir, req.Name, req.FilePath)
-	if err := os.Remove(fullPath); err != nil {
+	skillFileMu.Lock()
+	err := os.Remove(fullPath)
+	skillFileMu.Unlock()
+	if err != nil {
 		return "", fmt.Errorf("remove %s: %w", req.FilePath, err)
 	}
+	t.updateManifestOnModify(req.Name, false)
+	t.recordModify(req.Name)
 	return fmt.Sprintf("Removed %s from skill %q", req.FilePath, req.Name), nil
 }
 
-func (t *SkillManageTool) updateManifestOnModify(name string) {
+func (t *SkillManageTool) setLifecycleState(req skillManageInput, state, message string) (string, error) {
+	if !fileExists(filepath.Join(t.skillsDir, req.Name, "SKILL.md")) {
+		return "", fmt.Errorf("skill %q not found", req.Name)
+	}
+	setSkillUsageState(t.usagePath, req.Name, state)
+	t.recordModify(req.Name)
+	return fmt.Sprintf(message, req.Name), nil
+}
+
+func (t *SkillManageTool) recordModify(name string) {
+	recordSkillModified(t.usagePath, name)
+}
+
+func (t *SkillManageTool) updateManifestOnModify(name string, clearFailedMerge bool) {
 	if t.manifestPath == "" {
 		return
 	}
@@ -301,8 +451,11 @@ func (t *SkillManageTool) updateManifestOnModify(name string) {
 		return
 	}
 	entry.Status = StatusUserModified
-	entry.LastFailedMergeKey = ""
-	entry.LastMergeError = ""
+	if clearFailedMerge {
+		entry.LastFailedMergeKey = ""
+		entry.LastMergeFailedAt = ""
+		entry.LastMergeError = ""
+	}
 	manifest.Skills[name] = entry
 	saveManifest(t.manifestPath, manifest)
 }

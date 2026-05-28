@@ -105,9 +105,18 @@ func (s *ToolSet) RegisterMemoryTools(memoryDir string, profileFn ProfileFn, sum
 }
 
 func (s *ToolSet) RegisterSkillTools(skillsDir, manifestPath string) {
-	s.tools["skill_list"] = NewSkillListTool(skillsDir)
-	s.tools["skill_read"] = NewSkillReadTool(skillsDir)
+	usagePath := usagePathForManifest(manifestPath)
+	s.tools["skill_list"] = NewSkillListTool(skillsDir, usagePath)
+	s.tools["skill_read"] = NewSkillReadTool(skillsDir, usagePath)
 	s.tools["skill_manage"] = NewSkillManageTool(skillsDir, manifestPath)
+	s.tools["skill_mark_used"] = NewSkillMarkUsedTool(skillsDir, usagePath)
+}
+
+func usagePathForManifest(manifestPath string) string {
+	if manifestPath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(manifestPath), "usage.json")
 }
 
 // ActivateSkillTool allows the LLM to activate skills at runtime.

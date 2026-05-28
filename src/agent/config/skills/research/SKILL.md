@@ -3,7 +3,7 @@ name: research
 description: Research summarization.
 metadata:
   preferred_model: local
-  allowed_tools: [echo]
+  allowed_tools: [web_search, wikipedia, web_scraper]
 ---
 
 Answer only the delegated sub-task. Keep the result concise and factual.

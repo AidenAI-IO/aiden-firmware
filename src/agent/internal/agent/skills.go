@@ -21,6 +21,7 @@ type ResolvedSkills struct {
 	AllowedChildren     map[string]struct{}
 	HasToolRestriction  bool
 	HasChildRestriction bool
+	manager             *SkillManager
 }
 
 func NewSkillManager(index *SkillIndex) *SkillManager {
@@ -32,7 +33,37 @@ func NewSkillManager(index *SkillIndex) *SkillManager {
 
 // GetIndex returns the skill index for discovery
 func (m *SkillManager) GetIndex() *SkillIndex {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.index
+}
+
+func (m *SkillManager) ReplaceIndex(index *SkillIndex) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.index = index
+	for name := range m.activatedSkills {
+		if skill, ok := index.Get(name); ok {
+			m.activatedSkills[name] = skill
+		} else {
+			delete(m.activatedSkills, name)
+		}
+	}
+}
+
+func (m *SkillManager) Snapshot() *SkillManager {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	activated := make(map[string]*SkillDefinition, len(m.activatedSkills))
+	for name, skill := range m.activatedSkills {
+		activated[name] = skill
+	}
+	return &SkillManager{
+		index:           m.index,
+		activatedSkills: activated,
+	}
 }
 
 // Activate loads the full instructions for a skill by name
@@ -65,6 +96,7 @@ func (m *SkillManager) Resolve(names []string) (ResolvedSkills, error) {
 		Names:           uniqueNonEmpty(names),
 		AllowedTools:    map[string]struct{}{},
 		AllowedChildren: map[string]struct{}{},
+		manager:         m,
 	}
 
 	for _, name := range resolved.Names {
