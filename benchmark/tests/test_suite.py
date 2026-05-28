@@ -58,23 +58,41 @@ def test_memory_suite_covers_representative_memory_behaviors():
         "save_user_fact",
         "save_user_rule",
         "save_user_procedure",
+        "save_correct_tags",
         "use_preference_brevity",
+        "use_preference_language",
+        "use_rule_to_block_action",
+        "use_procedure_steps",
         "recall_saved_fact_after_setup",
         "recall_session_chunk_details",
         "update_changed_preference",
+        "use_filtered_subset",
         "forget_on_request",
         "avoid_saving_ephemeral_fact",
+        "no_save_for_ephemeral_chat",
         "no_recall_when_in_context",
     }
     assert expected_tasks <= set(task_by_id)
-    assert len(suite.tasks) >= 11
+    assert len(suite.tasks) >= 17
     assert all(task.category == "memory" for task in suite.tasks)
 
     assert task_by_id["use_preference_brevity"].setup["type"] == "agent_prompt"
+    assert task_by_id["use_preference_language"].setup["tool_sequence"]
+    assert task_by_id["use_rule_to_block_action"].setup["tool_sequence"]
+    assert task_by_id["use_procedure_steps"].setup["tool_sequence"]
     assert task_by_id["recall_saved_fact_after_setup"].setup["type"] == "agent_prompt"
     assert task_by_id["recall_session_chunk_details"].setup["tool_sequence"]
+    assert task_by_id["use_filtered_subset"].setup["tool_sequence"]
     assert any(
         "recall_session_chunks" in item.check
         for item in task_by_id["recall_session_chunk_details"].rubric
     )
     assert task_by_id["forget_on_request"].setup["type"] == "agent_prompt"
+
+def test_memory_suite_global_reset_tolerates_missing_memory_dir():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "memory_v1.json"
+    suite = load_suite(suite_path)
+    command = suite.global_reset["tool_sequence"][0]["args"]["command"]
+
+    assert "mkdir -p /userdata/agent/memory" in command
+    assert "ls /userdata/agent/memory/ 2>/dev/null || true" in command
