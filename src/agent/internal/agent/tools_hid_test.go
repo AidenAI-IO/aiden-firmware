@@ -350,8 +350,18 @@ func TestHIDDeviceWriteReturnsNonRetryableError(t *testing.T) {
 
 func TestHIDDeviceWriteTimesOutWhenFDWouldBlock(t *testing.T) {
 	fds := []int{0, 0}
-	if err := unix.Pipe2(fds, unix.O_NONBLOCK); err != nil {
-		t.Fatalf("Pipe2: %v", err)
+	if err := unix.Pipe(fds); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	if err := unix.SetNonblock(fds[0], true); err != nil {
+		_ = unix.Close(fds[0])
+		_ = unix.Close(fds[1])
+		t.Fatalf("SetNonblock(read): %v", err)
+	}
+	if err := unix.SetNonblock(fds[1], true); err != nil {
+		_ = unix.Close(fds[0])
+		_ = unix.Close(fds[1])
+		t.Fatalf("SetNonblock(write): %v", err)
 	}
 	readFile := os.NewFile(uintptr(fds[0]), "pipe-read")
 	writeFile := os.NewFile(uintptr(fds[1]), "pipe-write")

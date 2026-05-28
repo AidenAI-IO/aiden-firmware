@@ -97,7 +97,7 @@ model = "whisper-1"
 # model = "qwen/qwen3-asr-flash-2026-02-10"
 
 [tts]
-provider = "minimax"
+provider = "minimax-ws"
 api_key = "..."
 voice_id = "male-qn-qingse"
 emotion = "happy"
@@ -107,7 +107,7 @@ speed = 1.0
 ## 依赖
 
 - `audio_service` 必须运行；
-- TTS 需要 `ffmpeg` 完成 MP3 → PCM 转换；
+- TTS adapter 直接输出 PCM 并写入 `audio_service`；
 - STT/TTS 需要外部 API key；
 - `wakeup` 模式需要 GPIO 33 或 GPIO 32 硬件触发条件。
 

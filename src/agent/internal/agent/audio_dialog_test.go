@@ -3,17 +3,17 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/tmc/langchaingo/llms"
 	langtools "github.com/tmc/langchaingo/tools"
+
+	ttsmodule "aiden-agent/internal/agent/tts"
 )
 
 func TestAudioDialogReadRecordChunkRequiresActiveRecording(t *testing.T) {
@@ -91,7 +91,6 @@ func TestAudioDialogStartRecordingRetriesUntilAudioServiceAvailable(t *testing.T
 func TestNewAudioDialogAudioWakeupUsesDirectAudioPath(t *testing.T) {
 	dialog, err := NewAudioDialog(Config{
 		Model:       ModelConfig{Provider: "fake"},
-		TTS:         TTSConfig{Provider: "minimax"},
 		Audio:       AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 32000},
 		InputMode:   "audio",
 		TriggerMode: "wakeup",
@@ -135,8 +134,8 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 		NewSkillIndex(),
 	)
 
-	tts := &fakeTTSClient{}
-	audioClient := NewAudioServiceClient("/tmp/audio.sock")
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	audioClient := NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
 	dialog := &AudioDialog{
 		config: Config{
 			Model:                    ModelConfig{Provider: "fake"},
@@ -145,7 +144,7 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 			VoiceStreamingTTSEnabled: boolPtr(false),
 		},
 		audioClient: audioClient,
-		ttsClient:   tts,
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
 	}
 
 	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
@@ -175,11 +174,8 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 	if len(audio) < 48 || string(audio[:4]) != "RIFF" || string(audio[8:12]) != "WAVE" {
 		t.Fatalf("expected WAV binary attachment, got %d bytes", len(audio))
 	}
-	if len(tts.texts) != 1 || tts.texts[0] != "heard it" {
-		t.Fatalf("unexpected TTS texts: %#v", tts.texts)
-	}
-	if tts.audio != audioClient {
-		t.Fatal("expected TTS to receive the dialog audio client")
+	if got := provider.texts(); len(got) != 1 || got[0] != "heard it" {
+		t.Fatalf("unexpected TTS texts: %#v", got)
 	}
 }
 
@@ -221,7 +217,7 @@ func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	tts := &fakeTTSClient{}
+	provider := &recordingTTSProvider{name: "dialog-provider"}
 	toolSpeech := true
 	dialog := &AudioDialog{
 		config: Config{
@@ -231,34 +227,32 @@ func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 			VoiceStreamingTTSEnabled: boolPtr(false),
 			VoiceToolCallSpeech:      &toolSpeech,
 		},
-		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
-		ttsClient:   tts,
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
 	}
 
 	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
 		t.Fatalf("ProcessUtterance() error = %v", err)
 	}
-	waitForTTSCount(t, tts, 2)
-	if len(tts.texts) != 2 {
-		t.Fatalf("expected tool description and final answer TTS, got %#v", tts.texts)
+	waitForProviderTextCount(t, provider, 2)
+	texts := provider.texts()
+	if len(texts) != 2 {
+		t.Fatalf("expected tool description and final answer TTS, got %#v", texts)
 	}
-	if !containsString(tts.texts, "我先检查当前音量。") || !containsString(tts.texts, "当前音量是 42。") {
-		t.Fatalf("unexpected TTS texts: %#v", tts.texts)
-	}
-	if !containsBool(tts.deadlineSet, true) || !containsBool(tts.deadlineSet, false) {
-		t.Fatalf("unexpected TTS deadline use: %#v", tts.deadlineSet)
+	if !containsString(texts, "我先检查当前音量。") || !containsString(texts, "当前音量是 42。") {
+		t.Fatalf("unexpected TTS texts: %#v", texts)
 	}
 }
 
 func TestAudioDialogDoesNotSpeakEnterSleepToolDescription(t *testing.T) {
 	toolSpeech := true
-	tts := &fakeTTSClient{}
+	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
 		config: Config{
 			VoiceToolCallSpeech: &toolSpeech,
 		},
-		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
-		ttsClient:   tts,
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
 	}
 
 	dialog.HandleRunEvent(context.Background(), RunEvent{
@@ -267,7 +261,7 @@ func TestAudioDialogDoesNotSpeakEnterSleepToolDescription(t *testing.T) {
 		Description: "用户让我休息，我准备进入睡眠模式。",
 	})
 
-	assertNoTTSCallsWithin(t, tts, 200*time.Millisecond)
+	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
 }
 
 func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
@@ -310,8 +304,8 @@ func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
 			Model:                    ModelConfig{Provider: "fake"},
 			VoiceStreamingTTSEnabled: boolPtr(true),
 		},
-		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
-		ttsClient:   &fakeTTSClient{err: errors.New("start playback failed")},
+		audioClient: NewAudioServiceClient(filepath.Join(t.TempDir(), "missing-audio.sock")),
+		ttsManager:  ttsmodule.NewProviderManager(&recordingTTSProvider{name: "dialog-provider"}, nil),
 	}
 
 	result, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "go to sleep"}, runtime)
@@ -326,25 +320,15 @@ func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
 	}
 }
 
-type fakeTTSClient struct {
-	mu          sync.Mutex
-	texts       []string
-	audio       *AudioServiceClient
-	deadlineSet []bool
-	err         error
-}
-
 func boolPtr(value bool) *bool {
 	return &value
 }
 
-func waitForTTSCount(t *testing.T, tts *fakeTTSClient, count int) {
+func waitForProviderTextCount(t *testing.T, provider *recordingTTSProvider, count int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		tts.mu.Lock()
-		got := len(tts.texts)
-		tts.mu.Unlock()
+		got := len(provider.texts())
 		if got >= count {
 			return
 		}
@@ -352,13 +336,11 @@ func waitForTTSCount(t *testing.T, tts *fakeTTSClient, count int) {
 	}
 }
 
-func assertNoTTSCallsWithin(t *testing.T, tts *fakeTTSClient, duration time.Duration) {
+func assertNoProviderTextWithin(t *testing.T, provider *recordingTTSProvider, duration time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(duration)
 	for time.Now().Before(deadline) {
-		tts.mu.Lock()
-		got := append([]string(nil), tts.texts...)
-		tts.mu.Unlock()
+		got := provider.texts()
 		if len(got) != 0 {
 			t.Fatalf("unexpected TTS calls: %#v", got)
 		}
@@ -373,25 +355,6 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func containsBool(values []bool, want bool) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *fakeTTSClient) TextToSpeechStream(ctx context.Context, text string, audio *AudioServiceClient) error {
-	_, hasDeadline := ctx.Deadline()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.texts = append(c.texts, text)
-	c.audio = audio
-	c.deadlineSet = append(c.deadlineSet, hasDeadline)
-	return c.err
 }
 
 func serveDelayedStartRecording(t *testing.T, socketPath string, ready chan<- struct{}) {

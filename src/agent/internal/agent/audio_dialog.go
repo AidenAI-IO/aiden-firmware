@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"aiden-agent/internal/agent/tts"
 )
 
 type TurnInput = AudioInputResult
@@ -24,7 +26,7 @@ type AudioDialog struct {
 	config       Config
 	audioClient  *AudioServiceClient
 	sttClient    STTClient
-	ttsClient    TTSClient
+	ttsManager   *tts.ProviderManager
 	vad          *AudioVAD
 	recordActive bool
 	sessionID    uint64
@@ -46,8 +48,8 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 		}
 	}
 
-	// Create TTS client
-	ttsClient, err := NewTTSClientFromConfig(cfg)
+	// Create pluggable TTS manager if configured.
+	ttsManager, err := newTTSProviderManagerFromConfig(cfg, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +81,7 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 		config:      cfg,
 		audioClient: audioClient,
 		sttClient:   sttClient,
-		ttsClient:   ttsClient,
+		ttsManager:  ttsManager,
 		vad:         vad,
 	}, nil
 }
@@ -250,18 +252,24 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 		},
 	}
 
-	var speech *streamingSpeechWriter
-	if d.ttsClient != nil && d.config.VoiceStreamingTTSEnabledOrDefault() {
-		speech = newStreamingSpeechWriter(ctx, d)
-		req.StreamWriter = speech
+	var newStream *streamSessionWriter
+	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.ttsManager != nil {
+		stream, err := beginManagedTTSStream(ctx, d.ttsManager, d.audioClient, d.config)
+		if err != nil {
+			log.Printf("[error] TTS BeginStream failed: %v\n", err)
+		} else {
+			newStream = stream
+			req.StreamWriter = newStream
+		}
 	}
 
 	result, err := runtime.Run(ctx, req)
-	if speech != nil {
-		if closeErr := speech.CloseAndWait(); closeErr != nil {
-			log.Printf("[error] streaming speech failed: %v", closeErr)
+	if newStream != nil {
+		closeErr := newStream.closeAndWait()
+		if closeErr != nil {
+			log.Printf("[error] new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = speech.Spoke()
+		result.SpeechStreamed = closeErr == nil && newStream.spoke
 	}
 	if err != nil {
 		return RunResult{}, fmt.Errorf("LLM request failed: %w", err)
@@ -319,7 +327,7 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 		}()
 	}
 	// Speak response if TTS is available
-	if d.ttsClient != nil && text != "" {
+	if d.ttsManager != nil && text != "" {
 		if err := baseCtx.Err(); err != nil {
 			return err
 		}
@@ -339,7 +347,8 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 		}
 		log.Printf("[reply] %s\n", text)
 		log.Printf("[tts] Starting streaming playback...\n")
-		if err := d.ttsClient.TextToSpeechStream(speakCtx, text, d.audioClient); err != nil {
+		_, err := speakWithTTSManager(speakCtx, d.ttsManager, d.audioClient, d.config, text)
+		if err != nil {
 			log.Printf("[error] TTS streaming failed: %v", err)
 			return err
 		} else {
@@ -381,18 +390,24 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 			d.HandleRunEvent(ctx, event)
 		},
 	}
-	var speech *streamingSpeechWriter
-	if d.ttsClient != nil && d.config.VoiceStreamingTTSEnabledOrDefault() {
-		speech = newStreamingSpeechWriter(ctx, d)
-		req.StreamWriter = speech
+	var newStream *streamSessionWriter
+	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.ttsManager != nil {
+		stream, err := beginManagedTTSStream(ctx, d.ttsManager, d.audioClient, d.config)
+		if err != nil {
+			log.Printf("[error] TTS BeginStream failed: %v\n", err)
+		} else {
+			newStream = stream
+			req.StreamWriter = newStream
+		}
 	}
 
 	result, err := runtime.Run(ctx, req)
-	if speech != nil {
-		if closeErr := speech.CloseAndWait(); closeErr != nil {
-			log.Printf("[error] streaming speech failed: %v", closeErr)
+	if newStream != nil {
+		closeErr := newStream.closeAndWait()
+		if closeErr != nil {
+			log.Printf("[error] new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = speech.Spoke()
+		result.SpeechStreamed = closeErr == nil && newStream.spoke
 	}
 	if err != nil {
 		return fmt.Errorf("LLM request failed: %w", err)
@@ -401,7 +416,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	log.Printf("[llm] Response received\n")
 
 	// Speak response if TTS is available
-	if d.ttsClient != nil && result.Output != "" && !result.SpeechStreamed {
+	if d.ttsManager != nil && result.Output != "" && !result.SpeechStreamed {
 		if err := d.Speak(ctx, result.Output, nil); err != nil {
 			log.Printf("[error] TTS streaming failed: %v", err)
 		}

@@ -77,7 +77,7 @@ api_key = "OPENROUTER_API_KEY"
 model = "qwen/qwen3-asr-flash-2026-02-10"
 
 [tts]
-provider = "minimax"
+provider = "minimax-ws"
 api_key = "..."
 voice_id = "male-qn-qingse"
 emotion = "happy"
@@ -130,7 +130,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 ## `[proxy]`
 
-可选。用于 Agent 发起的外部 HTTP 请求（OpenAI-compatible / OpenRouter / Ollama 模型请求、OpenAI Whisper STT、Minimax TTS）。留空时使用进程环境变量中的 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`。
+可选。用于 Agent 发起的外部 HTTP/WebSocket 请求（OpenAI-compatible / OpenRouter / Ollama 模型请求、OpenAI Whisper STT、TTS adapters）。留空时使用进程环境变量中的 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`。
 
 | 字段 | 说明 |
 | --- | --- |
@@ -168,8 +168,10 @@ STT：
 
 TTS：
 
-- `provider = "minimax"`：当前实现；
-- 依赖 `ffmpeg` 将 MP3 转为 PCM 并流式写入 `audio_service`。
+- `provider = "minimax"`：Minimax HTTP streaming；
+- `provider = "minimax-ws"`：Minimax WebSocket；
+- `provider = "fish-audio"`：Fish Audio WebSocket；
+- `provider = "alicloud"`：阿里云 Qwen-TTS Realtime。
 
 ## 已知限制
 

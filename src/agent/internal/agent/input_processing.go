@@ -41,20 +41,6 @@ func NewSTTClientFromConfig(cfg Config) (STTClient, error) {
 	}
 }
 
-func NewTTSClientFromConfig(cfg Config) (TTSClient, error) {
-	provider := strings.ToLower(strings.TrimSpace(cfg.TTS.Provider))
-	if provider == "" {
-		return nil, nil
-	}
-
-	switch provider {
-	case "minimax":
-		return NewMinimaxTTS(cfg.TTS.APIKey, cfg.TTS.VoiceID, cfg.TTS.Emotion, cfg.TTS.Speed, newProxyHTTPClient(cfg.Proxy)), nil
-	default:
-		return nil, fmt.Errorf("unsupported TTS provider: %s", cfg.TTS.Provider)
-	}
-}
-
 func PrepareAudioInput(mode string, sttClient STTClient, wavData []byte, userText string, attachments []InputAttachment) (AudioInputResult, error) {
 	resolvedMode := strings.ToLower(strings.TrimSpace(mode))
 	if resolvedMode == "" {

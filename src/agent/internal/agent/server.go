@@ -17,6 +17,11 @@ import (
 	"time"
 
 	langtools "github.com/tmc/langchaingo/tools"
+
+	"aiden-agent/internal/agent/tts"
+	_ "aiden-agent/internal/agent/tts/adapters/alicloud"
+	_ "aiden-agent/internal/agent/tts/adapters/fishaudio"
+	_ "aiden-agent/internal/agent/tts/adapters/minimax"
 )
 
 // Server provides HTTP API for agent interactions
@@ -27,7 +32,8 @@ type Server struct {
 	mu           sync.Mutex
 	history      []Message
 	sttClient    STTClient
-	ttsClient    TTSClient
+	ttsManager   *tts.ProviderManager
+	ttsMu        sync.RWMutex
 	audioClient  *AudioServiceClient
 	recordMu     sync.Mutex
 	webRecording *webAudioRecording
@@ -122,7 +128,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 	}
 	s.loadHistoryFromDisk()
 
-	// Initialize TTS client if configured
+	// Initialize speech clients if configured.
 	cfg := runtime.config
 	s.audioClient = NewAudioServiceClient(cfg.Audio.SocketOrDefault())
 
@@ -135,15 +141,15 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		s.sttClient = sttClient
 	}
 
-	ttsClient, err := NewTTSClientFromConfig(cfg)
-	if err != nil {
+	// Initialize the pluggable TTS provider manager from agent.toml fields.
+	if manager, err := newTTSProviderManagerFromConfig(cfg, s.logger); err != nil {
 		if s.logger != nil {
-			s.logger.Error("TTS init failed: %v", err)
+			s.logger.Warn("TTS init failed: %v", err)
 		}
-	} else if ttsClient != nil {
-		s.ttsClient = ttsClient
+	} else if manager != nil {
+		s.ttsManager = manager
 		if s.logger != nil {
-			s.logger.Info("TTS enabled: provider=%s voice=%s", cfg.TTS.Provider, cfg.TTS.VoiceID)
+			s.logger.Info("TTS enabled: provider=%s", manager.Current())
 		}
 	}
 
@@ -164,6 +170,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
 	mux.HandleFunc("/api/audio/record/stop", s.handleAudioRecordStop)
+	mux.HandleFunc("/api/settings/tts", s.handleTTSSettings)
+	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
@@ -240,8 +248,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 
-	// Run agent
-	result, err := s.runtime.Run(context.Background(), RunRequest{
+	// Run agent with streaming TTS if configured
+	runReq := RunRequest{
 		Input:       inputText,
 		Attachments: runAttachments,
 		Skills:      req.Skills,
@@ -259,7 +267,35 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				go s.speakToolDescription(r.Context(), event.Description)
 			}
 		},
-	})
+	}
+
+	var newStream *streamSessionWriter
+	ttsManager := s.currentTTSManager()
+
+	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
+		if ttsManager != nil {
+			stream, err := beginManagedTTSStream(context.Background(), ttsManager, s.audioClient, s.runtime.config)
+			if err != nil {
+				if s.logger != nil {
+					s.logger.Warn("TTS BeginStream failed: %v", err)
+				}
+			} else {
+				newStream = stream
+				runReq.StreamWriter = newStream
+			}
+		}
+	}
+
+	result, err := s.runtime.Run(context.Background(), runReq)
+	if newStream != nil {
+		closeErr := newStream.closeAndWait()
+		if closeErr != nil {
+			if s.logger != nil {
+				s.logger.Error("new TTS stream failed: %v", closeErr)
+			}
+		}
+		result.SpeechStreamed = closeErr == nil && newStream.spoke
+	}
 
 	if err != nil {
 		if s.logger != nil {
@@ -277,13 +313,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	})
 	historySnapshot := s.historySnapshot()
 
-	// Play TTS in background if configured
-	if s.ttsClient != nil && s.audioClient != nil && result.Output != "" {
+	// Play TTS in background if configured and not already streamed
+	if s.audioClient != nil && result.Output != "" && !result.SpeechStreamed {
 		go func(text string) {
 			if s.logger != nil {
 				s.logger.Info("TTS playback: %q", text)
 			}
-			if err := s.ttsClient.TextToSpeechStream(context.Background(), text, s.audioClient); err != nil {
+			if err := s.speakText(context.Background(), text, 0); err != nil {
 				if s.logger != nil {
 					s.logger.Error("TTS playback failed: %v", err)
 				}
@@ -301,7 +337,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) speakToolDescription(ctx context.Context, description string) {
 	description = strings.TrimSpace(description)
-	if description == "" || s.ttsClient == nil || s.audioClient == nil {
+	if description == "" || s.audioClient == nil {
 		return
 	}
 	if ctx == nil {
@@ -312,11 +348,33 @@ func (s *Server) speakToolDescription(ctx context.Context, description string) {
 	if s.logger != nil {
 		s.logger.Info("Tool description TTS playback: %q", description)
 	}
-	if err := s.ttsClient.TextToSpeechStream(ttsCtx, description, s.audioClient); err != nil {
+	if err := s.speakText(ttsCtx, description, 0); err != nil {
 		if s.logger != nil {
 			s.logger.Error("Tool description TTS playback failed: %v", err)
 		}
 	}
+}
+
+func (s *Server) currentTTSManager() *tts.ProviderManager {
+	s.ttsMu.RLock()
+	defer s.ttsMu.RUnlock()
+	return s.ttsManager
+}
+
+func (s *Server) speakText(ctx context.Context, text string, timeoutAfterLock time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	manager := s.currentTTSManager()
+	if manager != nil {
+		cfg := Config{}
+		if s.runtime != nil {
+			cfg = s.runtime.config
+		}
+		_, err := speakWithTTSManager(ctx, manager, s.audioClient, cfg, text)
+		return err
+	}
+	return nil
 }
 
 func (s *Server) playPromptSoundAsync(kind promptSoundKind, label string) {
