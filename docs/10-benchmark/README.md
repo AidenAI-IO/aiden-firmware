@@ -36,7 +36,7 @@ benchmark/
 │   ├── judge.py         # LLM judge
 │   └── html_report.py   # HTML 报告生成
 ├── suites/              # 任务集
-│   ├── memory_v1.json   # 记忆测试（4 个任务）
+│   ├── memory_v1.json   # 记忆测试（11 个任务）
 │   ├── full_smoke.json  # 完整冒烟测试
 │   └── phone_control_v1.json  # 手机控制测试
 └── runs/<run_id>/       # 运行结果

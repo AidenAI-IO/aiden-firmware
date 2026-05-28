@@ -1,6 +1,6 @@
 {
   "name": "memory_v1",
-  "description": "Agent memory benchmark — verifies save/recall/forget behavior end-to-end through the runner. Inspired by quick_memory_test.py.",
+  "description": "Agent memory benchmark — verifies save/recall/update/forget and negative memory behavior end-to-end through the runner.",
   "global_reset": {
     "tool_sequence": [
       {
@@ -40,14 +40,97 @@
       }
     },
     {
-      "id": "use_preference_brevity",
+      "id": "save_user_fact",
       "category": "memory",
-      "description_for_judge": "After a previous turn stored the brevity preference, the agent must call recall_memory before answering and the final reply should be reasonably short (<=5 sentences).",
-      "prompt": "记住：我希望你回答尽量简短，最多 3 句话。然后告诉我 Go 的 channel 是什么。",
+      "description_for_judge": "Agent must save a stable user fact to long-term memory. Success = save_memory is called with type='fact' and content preserving both the employee ID and city.",
+      "prompt": "记住：我的工号是 AIDEN-7429，办公城市是杭州。",
       "rubric": [
         {
           "id": "called_save_memory",
-          "check": "The tool trace contains a save_memory tool_call whose input.content mentions brevity ('简短' or 'short' or '3 句')."
+          "check": "The tool trace contains at least one save_memory call."
+        },
+        {
+          "id": "type_is_fact",
+          "check": "Among save_memory calls, at least one has input.type == 'fact'."
+        },
+        {
+          "id": "content_preserves_fact",
+          "check": "The saved content mentions both 'AIDEN-7429' and '杭州'."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90,
+        "response_required": true
+      }
+    },
+    {
+      "id": "save_user_rule",
+      "category": "memory",
+      "description_for_judge": "Agent must persist an explicit future behavior rule. Success = save_memory is called with type='rule' and content captures rollback-first and no destructive command guidance.",
+      "prompt": "记住：以后给我命令行操作建议时，必须优先给可回滚方案，不要直接建议破坏性命令。",
+      "rubric": [
+        {
+          "id": "called_save_memory",
+          "check": "The tool trace contains at least one save_memory call."
+        },
+        {
+          "id": "type_is_rule",
+          "check": "Among save_memory calls, at least one has input.type == 'rule'."
+        },
+        {
+          "id": "content_captures_rule",
+          "check": "The saved content mentions rollback/reversible guidance and destructive commands (Chinese 可回滚/破坏性 or equivalent English)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90,
+        "response_required": true
+      }
+    },
+    {
+      "id": "save_user_procedure",
+      "category": "memory",
+      "description_for_judge": "Agent must save a multi-step user procedure rather than flattening it into a generic preference. Success = save_memory is called with type='procedure' and content keeps the folder, filename, and expense.md steps.",
+      "prompt": "记住我的报销流程：先按日期建文件夹，再把发票截图命名为 YYYY-MM-DD-商家-金额，最后汇总到 expense.md。",
+      "rubric": [
+        {
+          "id": "called_save_memory",
+          "check": "The tool trace contains at least one save_memory call."
+        },
+        {
+          "id": "type_is_procedure",
+          "check": "Among save_memory calls, at least one has input.type == 'procedure'."
+        },
+        {
+          "id": "content_preserves_steps",
+          "check": "The saved content mentions the date folder, invoice screenshot filename pattern, and expense.md summary."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90,
+        "response_required": true
+      }
+    },
+    {
+      "id": "use_preference_brevity",
+      "category": "memory",
+      "description_for_judge": "After setup stored the brevity preference and cleared visible chat history, the agent must call recall_memory before answering and the final reply should be reasonably short (<=5 sentences).",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "记住：我希望你回答尽量简短，最多 3 句话。",
+        "timeout_sec": 120
+      },
+      "prompt": "给我介绍一下 Go 的 channel 是什么。",
+      "rubric": [
+        {
+          "id": "called_recall_memory",
+          "check": "The tool trace contains at least one recall_memory call before the final answer."
         },
         {
           "id": "answered_about_channel",
@@ -66,18 +149,122 @@
       }
     },
     {
-      "id": "forget_on_request",
+      "id": "recall_saved_fact_after_setup",
       "category": "memory",
-      "description_for_judge": "Given that earlier in this turn the agent has saved a dark-mode preference and the user now asks to forget it, the agent must call recall_memory and then forget_memory (or directly forget_memory) referencing the dark mode preference.",
-      "prompt": "先记住我喜欢用 dark mode。然后请把关于 dark mode 的偏好忘掉。",
+      "description_for_judge": "After setup saved a user fact and cleared visible chat history, the agent must recall long-term memory and answer with the saved employee ID and city.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "记住：我的工号是 AIDEN-7429，办公城市是杭州。",
+        "timeout_sec": 120
+      },
+      "prompt": "我的工号是什么？顺便说一下我的办公城市。",
       "rubric": [
         {
-          "id": "called_save_then_forget",
-          "check": "The tool trace shows at least one save_memory call AND at least one forget_memory call, in that order."
+          "id": "called_recall_memory",
+          "check": "The tool trace contains at least one recall_memory call."
+        },
+        {
+          "id": "answer_mentions_employee_id",
+          "check": "The final response contains 'AIDEN-7429'."
+        },
+        {
+          "id": "answer_mentions_city",
+          "check": "The final response contains '杭州'."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 10,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      }
+    },
+    {
+      "id": "recall_session_chunk_details",
+      "category": "memory",
+      "description_for_judge": "Given a compressed session summary that points to chunk_000 but omits the exact details, the agent must call recall_session_chunks and answer using the recalled evidence.",
+      "setup": {
+        "tool_sequence": [
+          {
+            "tool": "shell",
+            "args": {
+              "command": "mkdir -p /userdata/agent/memory/session/chunks; cat > /userdata/agent/memory/session/summary.md <<'EOF'\n# Session History (compressed chunks)\n\nUse recall_session_chunks with a chunk_id to retrieve full conversation details.\n\n- **chunk_000**\n  Earlier conversation discussed 蓝海报销App verification details. The exact code and project name require recalling the chunk.\nEOF\ncat > /userdata/agent/memory/session/chunks/chunk_000.jsonl <<'EOF'\n{\"event_id\":\"evt_001\",\"ts\":\"2026-05-28T00:00:00Z\",\"type\":\"user_input\",\"role\":\"user\",\"content\":\"我刚才在蓝海报销App看到核销码是 ZX-91-ALPHA，项目代号是 海鸥计划。\",\"app_name\":\"蓝海报销App\"}\n{\"event_id\":\"evt_002\",\"ts\":\"2026-05-28T00:00:01Z\",\"type\":\"assistant_output\",\"role\":\"assistant\",\"content\":\"收到。\"}\nEOF\ncat > /userdata/agent/memory/session/chunks/index.yaml <<'EOF'\nversion: 1\nupdated_at: \"2026-05-28T00:00:02Z\"\nchunks:\n  - id: chunk_000\n    file: chunk_000.jsonl\n    status: active\n    summary: Earlier conversation discussed 蓝海报销App verification details. The exact code and project name require recalling the chunk.\n    app_name: 蓝海报销App\n    tags:\n      - 报销\n      - 核销码\n    entities:\n      - 蓝海报销App\n    event_count: 2\n    checksum: sha256:benchmark-seed\nEOF"
+            }
+          },
+          { "tool": "wait_ms", "args": { "ms": 100 } }
+        ]
+      },
+      "prompt": "刚才蓝海报销App里提到的核销码和项目代号是什么？",
+      "rubric": [
+        {
+          "id": "called_recall_session_chunks",
+          "check": "The tool trace contains at least one recall_session_chunks call."
+        },
+        {
+          "id": "recall_uses_chunk_000",
+          "check": "The recall_session_chunks call input references chunk_000 via chunk_ids, or otherwise searches for 蓝海报销App/核销码 and retrieves that chunk."
+        },
+        {
+          "id": "answer_mentions_recalled_details",
+          "check": "The final response contains both 'ZX-91-ALPHA' and '海鸥计划'."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      }
+    },
+    {
+      "id": "update_changed_preference",
+      "category": "memory",
+      "description_for_judge": "Given a previously saved dark-mode preference, the user changes it to light mode. The agent must recall the old memory and save or supersede the new light-mode preference.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "记住我喜欢用 dark mode，所有界面都给我切深色。",
+        "timeout_sec": 120
+      },
+      "prompt": "我改主意了，以后界面请用 light mode，不要再按 dark mode 处理。请更新这个偏好。",
+      "rubric": [
+        {
+          "id": "called_recall_memory",
+          "check": "The tool trace contains at least one recall_memory call to find the existing dark-mode preference."
+        },
+        {
+          "id": "saved_light_mode_preference",
+          "check": "The tool trace contains a save_memory call whose input.type == 'preference' and content mentions light mode or 浅色/亮色."
+        },
+        {
+          "id": "response_confirms_update",
+          "check": "The final response confirms the preference was updated from dark mode to light mode."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 12,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      }
+    },
+    {
+      "id": "forget_on_request",
+      "category": "memory",
+      "description_for_judge": "Given setup stored a dark-mode preference, the user asks to forget it. The agent must recall the memory ID and call forget_memory for the dark-mode preference.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请记住三条长期偏好：我喜欢用 dark mode；我希望回答简短；所有列表都用 markdown 格式。",
+        "timeout_sec": 120
+      },
+      "prompt": "请把关于 dark mode 的偏好忘掉。",
+      "rubric": [
+        {
+          "id": "called_recall_then_forget",
+          "check": "The tool trace shows at least one recall_memory call followed by at least one forget_memory call."
         },
         {
           "id": "forget_targets_dark_mode",
-          "check": "The forget_memory call input references dark mode (English 'dark mode' or Chinese '深色'/'暗色') in any input field (id/query/content)."
+          "check": "The forgotten memory or surrounding trace references dark mode (English 'dark mode' or Chinese '深色'/'暗色')."
         },
         {
           "id": "response_confirms_forgotten",
@@ -88,6 +275,28 @@
         "min_tool_calls": 2,
         "max_tool_calls": 12,
         "must_complete_within_sec": 120,
+        "response_required": true
+      }
+    },
+    {
+      "id": "avoid_saving_ephemeral_fact",
+      "category": "memory",
+      "description_for_judge": "The user gives an explicitly temporary fact and says not to remember it long-term. The agent should answer from current context without calling save_memory.",
+      "prompt": "今天临时会议室是 B201，只在这次对话里用，不要长期记住。请告诉我会议室在哪。",
+      "rubric": [
+        {
+          "id": "answer_mentions_b201",
+          "check": "The final response contains 'B201'."
+        },
+        {
+          "id": "did_not_save_memory",
+          "check": "The tool trace contains zero save_memory calls."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 0,
+        "max_tool_calls": 5,
+        "must_complete_within_sec": 60,
         "response_required": true
       }
     },
