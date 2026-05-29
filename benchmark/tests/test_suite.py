@@ -47,6 +47,39 @@ def test_load_suite_parses_expected_option_answer(tmp_path: Path):
     assert suite.tasks[0].expected_answer == "(c)"
     assert suite.tasks[0].answer_format == "option_letter"
 
+def test_load_suite_parses_expected_recalled_memory_ids(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "expected_recalled_memory_ids": ["mem_expected"],
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+
+    assert suite.tasks[0].expected_recalled_memory_ids == ["mem_expected"]
+
+def test_load_suite_rejects_invalid_expected_recalled_memory_ids(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "expected_recalled_memory_ids": [""],
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError):
+        load_suite(p)
+
 def test_load_suite_rejects_invalid_expected_option_answer(tmp_path: Path):
     fixture = {
         **FIXTURE,
@@ -191,11 +224,13 @@ def test_personamem_lt_recall_suite_uses_deterministic_answers():
     }
 
     assert suite.name == "personamem_lt_recall_v1"
+    assert "recall_memory" in suite.prompt_prefix
     assert expected_tasks <= set(task_by_id)
     assert len(suite.tasks) >= 16
     assert all(task.category == "memory" for task in suite.tasks)
     assert all(task.setup and task.setup["tool_sequence"] for task in suite.tasks)
     assert all(task.expected_answer for task in suite.tasks)
+    assert all(task.expected_recalled_memory_ids for task in suite.tasks)
     assert all(task.answer_format == "option_letter" for task in suite.tasks)
     for task in suite.tasks:
         for step in task.setup["tool_sequence"]:

@@ -63,6 +63,136 @@ func TestLongTermMemoryAddWritesMarkdownAndSearchableIndex(t *testing.T) {
 	}
 }
 
+func TestLongTermMemorySearchReadsPlainMarkdownBody(t *testing.T) {
+	ctx := context.Background()
+	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))
+	memoriesDir := filepath.Join(store.RootDir(), "memories")
+	if err := os.MkdirAll(memoriesDir, 0o755); err != nil {
+		t.Fatalf("create memories dir: %v", err)
+	}
+	markdown := `---
+id: personamem_campfire_storytelling
+type: fact
+status: active
+priority: 80
+confidence: 0.9
+tags:
+  - family
+  - campfire
+  - storytelling
+time_scope: long_term
+created_at: "2026-05-29T00:00:00Z"
+updated_at: "2026-05-29T00:00:00Z"
+traceability: full
+---
+
+# Campfire storytelling discomfort
+
+The user previously said storytelling around the campfire can feel awkward.
+`
+	if err := os.WriteFile(filepath.Join(memoriesDir, "personamem_campfire_storytelling.md"), []byte(markdown), 0o644); err != nil {
+		t.Fatalf("write plain memory markdown: %v", err)
+	}
+
+	results, err := store.Search(ctx, MemoryQuery{Tags: []string{"campfire"}, Limit: 1})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 search result, got %d", len(results))
+	}
+	if !strings.Contains(results[0].Content, "feel awkward") {
+		t.Fatalf("expected plain markdown body as content, got %#v", results[0])
+	}
+	if !strings.Contains(results[0].Summary, "feel awkward") {
+		t.Fatalf("expected plain markdown body summary, got %#v", results[0])
+	}
+}
+
+func TestLongTermMemorySearchRanksTopicalMatchesWhenFiltersAreTooNarrow(t *testing.T) {
+	ctx := context.Background()
+	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))
+
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:         "personamem_running_background",
+		Type:       "profile",
+		Priority:   100,
+		Confidence: 0.9,
+		Tags:       []string{"fitness", "running", "background"},
+		Entities:   []string{"user"},
+		Title:      "Running background",
+		Content:    "The user has a background in running for fitness.",
+		EvidenceExcerpts: []string{
+			"The user mentioned running as a fitness background.",
+		},
+	}); err != nil {
+		t.Fatalf("AddMemory() running error = %v", err)
+	}
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:         "personamem_soccer_community",
+		Type:       "preference",
+		Priority:   80,
+		Confidence: 0.9,
+		Tags:       []string{"sports", "soccer", "community"},
+		Title:      "Soccer and community fitness",
+		Content:    "The user has positive experience with soccer and values team sports for fitness, camaraderie, teamwork, motivation, and lasting friendships.",
+		EvidenceExcerpts: []string{
+			"The user values soccer for fitness and community.",
+		},
+	}); err != nil {
+		t.Fatalf("AddMemory() soccer error = %v", err)
+	}
+
+	results, err := store.Search(ctx, MemoryQuery{
+		Tags:     []string{"fitness", "community"},
+		Entities: []string{"user"},
+		Types:    []string{"profile", "preference"},
+		Limit:    2,
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("expected ranked search results")
+	}
+	if results[0].ID != "personamem_soccer_community" {
+		t.Fatalf("expected soccer memory first, got %#v", results)
+	}
+}
+
+func TestLongTermMemorySearchDoesNotReturnTypeOnlyMatchesForTopicalQuery(t *testing.T) {
+	ctx := context.Background()
+	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))
+
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:         "personamem_campfire_storytelling",
+		Type:       "fact",
+		Priority:   80,
+		Confidence: 0.9,
+		Tags:       []string{"family", "campfire", "storytelling"},
+		Title:      "Campfire storytelling discomfort",
+		Content:    "The user previously said storytelling around the campfire can feel awkward.",
+		EvidenceExcerpts: []string{
+			"The user said campfire storytelling can feel awkward.",
+		},
+	}); err != nil {
+		t.Fatalf("AddMemory() error = %v", err)
+	}
+
+	results, err := store.Search(ctx, MemoryQuery{
+		Tags:     []string{"travel", "activities", "blog"},
+		Entities: []string{"travel blogs"},
+		Types:    []string{"fact"},
+		Limit:    3,
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected no unrelated type-only matches, got %#v", results)
+	}
+}
+
 func TestLongTermMemoryForgetExcludesMemoryFromSearch(t *testing.T) {
 	ctx := context.Background()
 	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))

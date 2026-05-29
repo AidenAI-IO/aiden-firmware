@@ -63,3 +63,32 @@ def test_expected_option_answer_rejects_ambiguous_predicted_answer():
 
     assert result.passed is False
     assert result.predicted_answer is None
+
+def test_expected_recalled_memory_ids_pass_when_tool_result_contains_id():
+    history = [
+        {"type": "tool_call", "tool_name": "recall_memory", "tool_input": "{}"},
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": '{"results":[{"id":"personamem_solo_travel"}]}',
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(history, ["personamem_solo_travel"])
+
+    assert result.passed is True
+    assert result.recalled_memory_ids == ["personamem_solo_travel"]
+
+def test_expected_recalled_memory_ids_fail_when_expected_id_absent():
+    history = [
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": '{"results":[{"id":"personamem_campfire_storytelling"}]}',
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(history, ["personamem_solo_travel"])
+
+    assert result.passed is False
+    assert result.recalled_memory_ids == ["personamem_campfire_storytelling"]
