@@ -57,3 +57,9 @@ def test_expected_option_answer_rejects_invalid_expected_answer():
 
     assert result.passed is False
     assert result.expected_answer is None
+
+def test_expected_option_answer_rejects_ambiguous_predicted_answer():
+    result = assertions.evaluate_expected_answer("I think (a), but maybe (c).", "(c)", "option_letter")
+
+    assert result.passed is False
+    assert result.predicted_answer is None

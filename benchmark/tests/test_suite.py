@@ -64,6 +64,39 @@ def test_load_suite_rejects_invalid_expected_option_answer(tmp_path: Path):
     with pytest.raises(SuiteValidationError):
         load_suite(p)
 
+def test_load_suite_rejects_ambiguous_expected_option_answer(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "expected_answer": "(a) or (b)",
+                "answer_format": "option_letter",
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError):
+        load_suite(p)
+
+def test_load_suite_rejects_answer_format_without_expected_answer(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "answer_format": "option_letter",
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError):
+        load_suite(p)
+
 def test_load_suite_missing_tasks_raises(tmp_path: Path):
     p = tmp_path / "s.json"
     p.write_text(json.dumps({"name": "x"}), encoding="utf-8")
@@ -164,3 +197,10 @@ def test_personamem_lt_recall_suite_uses_deterministic_answers():
     assert all(task.setup and task.setup["tool_sequence"] for task in suite.tasks)
     assert all(task.expected_answer for task in suite.tasks)
     assert all(task.answer_format == "option_letter" for task in suite.tasks)
+    for task in suite.tasks:
+        for step in task.setup["tool_sequence"]:
+            if step.get("tool") != "shell":
+                continue
+            command = step["args"]["command"]
+            assert "<<'EOF'" in command
+            assert "\nEOF" in command

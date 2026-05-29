@@ -100,14 +100,19 @@ def load_suite(path: Path) -> Suite:
             raise SuiteValidationError(f"task {tid}: repeats {repeats} exceeds max 100")
         expected_answer = raw.get("expected_answer")
         answer_format = raw.get("answer_format")
+        if expected_answer is None and answer_format is not None:
+            raise SuiteValidationError(f"task {tid}: answer_format requires expected_answer")
         if expected_answer is not None:
             if not isinstance(expected_answer, str):
                 raise SuiteValidationError(f"task {tid}: expected_answer must be string")
             answer_format = answer_format or "option_letter"
-            if answer_format == "option_letter" and not re.search(
-                r"\(([a-dA-D])\)|\b([a-dA-D])\b", expected_answer
-            ):
-                raise SuiteValidationError(f"task {tid}: invalid expected option answer {expected_answer!r}")
+            if answer_format == "option_letter":
+                matches = re.findall(r"\(([a-dA-D])\)|\b([a-dA-D])\b", expected_answer)
+                letters = [a or b for a, b in matches]
+                if len(letters) != 1:
+                    raise SuiteValidationError(
+                        f"task {tid}: expected_answer must contain exactly one option A-D, got {expected_answer!r}"
+                    )
         if answer_format is not None and answer_format != "option_letter":
             raise SuiteValidationError(f"task {tid}: unsupported answer_format {answer_format!r}")
         tasks.append(TaskSpec(
