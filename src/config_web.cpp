@@ -1342,6 +1342,372 @@ load();
 </script></body></html>)HTML";
 }
 
+bool is_valid_proxy_scheme(const std::string& url) {
+    if (url.empty()) return true;
+    return starts_with(url, "http://") || starts_with(url, "https://") ||
+           starts_with(url, "socks5://") || starts_with(url, "socks4://") ||
+           starts_with(url, "socks4a://");
+}
+
+std::string provider_default_url(const std::string& provider) {
+    if (provider == "openrouter") return "https://openrouter.ai/api/v1";
+    if (provider == "openai" || provider == "openai-whisper") return "https://api.openai.com/v1";
+    if (provider == "minimax") return "https://api.minimax.chat";
+    if (provider == "tencent") return "https://asr.cloud.tencent.com";
+    return "";
+}
+
+std::string build_curl_proxy_arg(const aiden::ProxyToml& proxy) {
+    std::string url = trim_copy(proxy.https_proxy);
+    if (url.empty()) url = trim_copy(proxy.http_proxy);
+    if (url.empty()) url = trim_copy(proxy.all_proxy);
+    if (url.empty()) return "";
+    return " -x " + shell_quote(url) + " ";
+}
+
+ApiResponse handle_config_test(const Options& options, const std::string& body) {
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+        return make_json_error(400, "invalid JSON body");
+    }
+
+    cJSON* section_item = cJSON_GetObjectItem(root, "section");
+    if (!json_is_string(section_item)) {
+        cJSON_Delete(root);
+        return make_json_error(400, "missing 'section' field");
+    }
+    std::string section = section_item->valuestring;
+
+    cJSON* values = cJSON_GetObjectItem(root, "values");
+    if (!json_is_object(values)) {
+        cJSON_Delete(root);
+        return make_json_error(400, "missing 'values' object");
+    }
+
+    cJSON* response = cJSON_CreateObject();
+    cJSON* results = add_array(response, "results");
+    bool all_passed = true;
+
+    aiden::AgentToml current_config;
+    std::string config_error;
+    load_current_agent_config(options, &current_config, &config_error);
+    std::string curl_proxy_arg = build_curl_proxy_arg(current_config.proxy);
+
+    if (section == "proxy") {
+        const char* proxy_keys[] = {"http_proxy", "https_proxy", "all_proxy", NULL};
+        for (int i = 0; proxy_keys[i]; ++i) {
+            cJSON* item = cJSON_GetObjectItem(values, proxy_keys[i]);
+            std::string val = json_is_string(item) ? trim_copy(item->valuestring) : "";
+            cJSON* r = cJSON_CreateObject();
+            cJSON_AddStringToObject(r, "check", proxy_keys[i]);
+            if (val.empty()) {
+                cJSON_AddBoolToObject(r, "passed", 1);
+                cJSON_AddStringToObject(r, "detail", "empty (ok)");
+            } else if (is_valid_proxy_scheme(val)) {
+                cJSON_AddBoolToObject(r, "passed", 1);
+                cJSON_AddStringToObject(r, "detail", val.c_str());
+            } else {
+                cJSON_AddBoolToObject(r, "passed", 0);
+                std::string msg = "invalid scheme in: " + val + " (allowed: http, https, socks5, socks4)";
+                cJSON_AddStringToObject(r, "detail", msg.c_str());
+                all_passed = false;
+            }
+            cJSON_AddItemToArray(results, r);
+        }
+    } else if (section == "model" || section == "tts" || section == "stt") {
+        cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
+        cJSON* base_url_item = cJSON_GetObjectItem(values, "base_url");
+        std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
+        std::string base_url = json_is_string(base_url_item) ? trim_copy(base_url_item->valuestring) : "";
+        std::string url = base_url.empty() ? provider_default_url(provider) : base_url;
+
+        cJSON* r = cJSON_CreateObject();
+        cJSON_AddStringToObject(r, "check", "endpoint_reachable");
+        if (url.empty()) {
+            cJSON_AddBoolToObject(r, "passed", 0);
+            cJSON_AddStringToObject(r, "detail", "no URL to test (provider unknown and base_url empty)");
+            all_passed = false;
+        } else {
+            std::string cmd = "curl -sI --max-time 6 " + curl_proxy_arg + shell_quote(url) + " 2>&1 | head -1";
+            CommandResult cr = run_shell_command(cmd);
+            bool reachable = cr.exit_code == 0 && cr.output.find("HTTP") != std::string::npos;
+            cJSON_AddBoolToObject(r, "passed", reachable ? 1 : 0);
+            std::string detail = url + " -> " + trim_trailing_newlines(cr.output);
+            cJSON_AddStringToObject(r, "detail", detail.c_str());
+            if (!reachable) all_passed = false;
+        }
+        cJSON_AddItemToArray(results, r);
+
+        cJSON* api_key_item = cJSON_GetObjectItem(values, "api_key");
+        std::string api_key = json_is_string(api_key_item) ? trim_copy(api_key_item->valuestring) : "";
+        cJSON* r2 = cJSON_CreateObject();
+        cJSON_AddStringToObject(r2, "check", "api_key_present");
+        cJSON_AddBoolToObject(r2, "passed", !api_key.empty() ? 1 : 0);
+        cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "api_key is empty" : "api_key is set");
+        if (api_key.empty()) all_passed = false;
+        cJSON_AddItemToArray(results, r2);
+
+        bool endpoint_ok = false;
+        {
+            cJSON* first = cJSON_GetArrayItem(results, 0);
+            cJSON* p = cJSON_GetObjectItem(first, "passed");
+            endpoint_ok = json_is_type(p, cJSON_True);
+        }
+
+        if (section == "model" && endpoint_ok && !api_key.empty()) {
+            cJSON* model_item = cJSON_GetObjectItem(values, "model");
+            std::string model_name = json_is_string(model_item) ? trim_copy(model_item->valuestring) : "";
+
+            cJSON* r3 = cJSON_CreateObject();
+            cJSON_AddStringToObject(r3, "check", "api_key_valid");
+
+            if (model_name.empty()) {
+                cJSON_AddBoolToObject(r3, "passed", 0);
+                cJSON_AddStringToObject(r3, "detail", "model name is empty; cannot send hello request");
+                all_passed = false;
+            } else {
+                std::string chat_url = url;
+                while (!chat_url.empty() && chat_url[chat_url.size() - 1] == '/') {
+                    chat_url.erase(chat_url.size() - 1);
+                }
+                chat_url += "/chat/completions";
+
+                cJSON* req = cJSON_CreateObject();
+                cJSON_AddStringToObject(req, "model", model_name.c_str());
+                cJSON_AddNumberToObject(req, "max_tokens", 4);
+                cJSON_AddNumberToObject(req, "temperature", 0);
+                cJSON* msgs = add_array(req, "messages");
+                cJSON* msg = cJSON_CreateObject();
+                cJSON_AddStringToObject(msg, "role", "user");
+                cJSON_AddStringToObject(msg, "content", "hello");
+                cJSON_AddItemToArray(msgs, msg);
+                std::string req_body = cjson_to_string(req);
+                cJSON_Delete(req);
+
+                std::string auth_header = "Authorization: Bearer " + api_key;
+                char response_path_template[] = "/tmp/config_test_body.XXXXXX";
+                int response_fd = mkstemp(response_path_template);
+                if (response_fd < 0) {
+                    cJSON_AddBoolToObject(r3, "passed", 0);
+                    cJSON_AddStringToObject(r3, "detail", "failed to create temporary response file");
+                    all_passed = false;
+                } else {
+                    close(response_fd);
+                    std::string response_path = response_path_template;
+
+                    std::string cmd =
+                        std::string("curl -sS --max-time 12 ") +
+                        curl_proxy_arg +
+                        "-o " + shell_quote(response_path) + " -w '%{http_code}' " +
+                        "-H " + shell_quote("Content-Type: application/json") + " " +
+                        "-H " + shell_quote(auth_header) + " " +
+                        "-d " + shell_quote(req_body) + " " +
+                        shell_quote(chat_url) + " 2>&1";
+
+                    CommandResult cr = run_shell_command(cmd);
+                    std::string http_code = trim_copy(cr.output);
+                    std::string resp_body = read_file_contents(response_path.c_str(), 4096);
+                    resp_body = trim_trailing_newlines(resp_body);
+                    if (resp_body.size() > 400) {
+                        resp_body = resp_body.substr(0, 400) + "...";
+                    }
+                    unlink(response_path.c_str());
+
+                    bool key_ok = (http_code == "200");
+                    cJSON_AddBoolToObject(r3, "passed", key_ok ? 1 : 0);
+
+                    std::string detail;
+                    if (cr.exit_code != 0 && http_code.empty()) {
+                        detail = "request failed: " + cr.output;
+                    } else if (key_ok) {
+                        detail = "HTTP 200 - key works (model: " + model_name + ")";
+                    } else {
+                        detail = "HTTP " + http_code + " - " + resp_body;
+                    }
+                    if (!key_ok) all_passed = false;
+                    cJSON_AddStringToObject(r3, "detail", detail.c_str());
+                }
+            }
+            cJSON_AddItemToArray(results, r3);
+        }
+    } else if (section == "audio") {
+        cJSON* socket_item = cJSON_GetObjectItem(values, "socket");
+        std::string socket_path = json_is_string(socket_item) ? trim_copy(socket_item->valuestring) : "";
+        cJSON* r = cJSON_CreateObject();
+        cJSON_AddStringToObject(r, "check", "socket_exists");
+        if (socket_path.empty()) {
+            cJSON_AddBoolToObject(r, "passed", 0);
+            cJSON_AddStringToObject(r, "detail", "socket path is empty");
+            all_passed = false;
+        } else {
+            std::string cmd = "test -S " + shell_quote(socket_path) + " && echo OK || echo MISSING";
+            CommandResult cr = run_shell_command(cmd);
+            bool exists = cr.output.find("OK") != std::string::npos;
+            cJSON_AddBoolToObject(r, "passed", exists ? 1 : 0);
+            std::string detail = socket_path + (exists ? " exists" : " not found");
+            cJSON_AddStringToObject(r, "detail", detail.c_str());
+            if (!exists) all_passed = false;
+        }
+        cJSON_AddItemToArray(results, r);
+    } else if (section == "hid") {
+        const char* dev_keys[] = {"keyboard_device", "mouse_device", NULL};
+        for (int i = 0; dev_keys[i]; ++i) {
+            cJSON* item = cJSON_GetObjectItem(values, dev_keys[i]);
+            std::string path = json_is_string(item) ? trim_copy(item->valuestring) : "";
+            cJSON* r = cJSON_CreateObject();
+            cJSON_AddStringToObject(r, "check", dev_keys[i]);
+            if (path.empty()) {
+                cJSON_AddBoolToObject(r, "passed", 0);
+                cJSON_AddStringToObject(r, "detail", "path is empty");
+                all_passed = false;
+            } else {
+                std::string cmd = "test -c " + shell_quote(path) + " && echo OK || echo MISSING";
+                CommandResult cr = run_shell_command(cmd);
+                bool exists = cr.output.find("OK") != std::string::npos;
+                cJSON_AddBoolToObject(r, "passed", exists ? 1 : 0);
+                std::string detail = path + (exists ? " exists" : " not found");
+                cJSON_AddStringToObject(r, "detail", detail.c_str());
+                if (!exists) all_passed = false;
+            }
+            cJSON_AddItemToArray(results, r);
+        }
+    } else if (section == "agent") {
+        struct Check {
+            const char* key;
+            const char* allowed[4];
+        };
+        Check enums[] = {
+            {"input_mode", {"text", "stt", "audio", NULL}},
+            {"trigger_mode", {"manual", "wakeup", NULL, NULL}},
+        };
+        for (size_t i = 0; i < sizeof(enums) / sizeof(enums[0]); ++i) {
+            cJSON* item = cJSON_GetObjectItem(values, enums[i].key);
+            std::string val = json_is_string(item) ? trim_copy(item->valuestring) : "";
+            cJSON* r = cJSON_CreateObject();
+            cJSON_AddStringToObject(r, "check", enums[i].key);
+            bool ok = false;
+            std::string allowed_list;
+            for (int j = 0; enums[i].allowed[j]; ++j) {
+                if (j) allowed_list += "/";
+                allowed_list += enums[i].allowed[j];
+                if (val == enums[i].allowed[j]) ok = true;
+            }
+            if (val.empty()) {
+                cJSON_AddBoolToObject(r, "passed", 0);
+                cJSON_AddStringToObject(r, "detail", "empty");
+                all_passed = false;
+            } else if (ok) {
+                cJSON_AddBoolToObject(r, "passed", 1);
+                cJSON_AddStringToObject(r, "detail", val.c_str());
+            } else {
+                cJSON_AddBoolToObject(r, "passed", 0);
+                std::string msg = "got '" + val + "', allowed: " + allowed_list;
+                cJSON_AddStringToObject(r, "detail", msg.c_str());
+                all_passed = false;
+            }
+            cJSON_AddItemToArray(results, r);
+        }
+
+        const char* numeric_keys[] = {
+            "energy_threshold", "silence_ms", "min_speech_ms",
+            "voice_followup_timeout_ms", "voice_first_turn_timeout_ms",
+            "voice_max_turns", "voice_max_response_tokens", NULL
+        };
+        for (int i = 0; numeric_keys[i]; ++i) {
+            cJSON* item = cJSON_GetObjectItem(values, numeric_keys[i]);
+            cJSON* r = cJSON_CreateObject();
+            cJSON_AddStringToObject(r, "check", numeric_keys[i]);
+            if (json_is_number(item)) {
+                int n = item->valueint;
+                if (n < 0) {
+                    cJSON_AddBoolToObject(r, "passed", 0);
+                    std::string msg = "must be >= 0, got ";
+                    msg += std::to_string(n);
+                    cJSON_AddStringToObject(r, "detail", msg.c_str());
+                    all_passed = false;
+                } else {
+                    cJSON_AddBoolToObject(r, "passed", 1);
+                    cJSON_AddStringToObject(r, "detail", std::to_string(n).c_str());
+                }
+            } else {
+                cJSON_AddBoolToObject(r, "passed", 0);
+                cJSON_AddStringToObject(r, "detail", "not a number");
+                all_passed = false;
+            }
+            cJSON_AddItemToArray(results, r);
+        }
+
+        cJSON* iter_item = cJSON_GetObjectItem(values, "max_iterations");
+        cJSON* iter_r = cJSON_CreateObject();
+        cJSON_AddStringToObject(iter_r, "check", "max_iterations");
+        if (json_is_number(iter_item)) {
+            int n = iter_item->valueint;
+            if (n < -1) {
+                cJSON_AddBoolToObject(iter_r, "passed", 0);
+                std::string msg = "must be >= -1, got " + std::to_string(n);
+                cJSON_AddStringToObject(iter_r, "detail", msg.c_str());
+                all_passed = false;
+            } else {
+                cJSON_AddBoolToObject(iter_r, "passed", 1);
+                std::string detail = std::to_string(n) + (n == -1 ? " (unlimited)" : "");
+                cJSON_AddStringToObject(iter_r, "detail", detail.c_str());
+            }
+        } else {
+            cJSON_AddBoolToObject(iter_r, "passed", 0);
+            cJSON_AddStringToObject(iter_r, "detail", "not a number");
+            all_passed = false;
+        }
+        cJSON_AddItemToArray(results, iter_r);
+    } else if (section == "search") {
+        cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
+        std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
+        cJSON* r = cJSON_CreateObject();
+        cJSON_AddStringToObject(r, "check", "provider");
+        const char* allowed[] = {"duckduckgo", "tavily", "google", "bing", NULL};
+        bool ok = false;
+        std::string allowed_list;
+        for (int i = 0; allowed[i]; ++i) {
+            if (i) allowed_list += "/";
+            allowed_list += allowed[i];
+            if (provider == allowed[i]) ok = true;
+        }
+        if (provider.empty()) {
+            cJSON_AddBoolToObject(r, "passed", 0);
+            cJSON_AddStringToObject(r, "detail", "provider is empty");
+            all_passed = false;
+        } else if (ok) {
+            cJSON_AddBoolToObject(r, "passed", 1);
+            cJSON_AddStringToObject(r, "detail", provider.c_str());
+        } else {
+            cJSON_AddBoolToObject(r, "passed", 0);
+            std::string msg = "unknown provider '" + provider + "', known: " + allowed_list;
+            cJSON_AddStringToObject(r, "detail", msg.c_str());
+            all_passed = false;
+        }
+        cJSON_AddItemToArray(results, r);
+
+        cJSON* api_key_item = cJSON_GetObjectItem(values, "api_key");
+        std::string api_key = json_is_string(api_key_item) ? trim_copy(api_key_item->valuestring) : "";
+        cJSON* r2 = cJSON_CreateObject();
+        cJSON_AddStringToObject(r2, "check", "api_key");
+        cJSON_AddBoolToObject(r2, "passed", 1);
+        if (provider == "duckduckgo") {
+            cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "not required for duckduckgo" : "set (not required for duckduckgo)");
+        } else {
+            cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "empty (may be required for paid providers)" : "set");
+        }
+        cJSON_AddItemToArray(results, r2);
+    } else {
+        cJSON_Delete(root);
+        cJSON_Delete(response);
+        return make_json_error(400, "unsupported section: " + section);
+    }
+
+    cJSON_Delete(root);
+    cJSON_AddBoolToObject(response, "ok", all_passed ? 1 : 0);
+    return make_json_ok(response);
+}
+
 ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     if (request.error_status_code != 0) {
         ApiResponse response;
@@ -1534,6 +1900,10 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "POST" && request.path == "/api/wifi/connect") {
         return handle_wifi_connect(options, request.body);
+    }
+
+    if (request.method == "POST" && request.path == "/api/config/test") {
+        return handle_config_test(options, request.body);
     }
 
     ApiResponse response;
