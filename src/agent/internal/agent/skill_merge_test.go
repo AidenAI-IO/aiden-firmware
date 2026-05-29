@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -228,6 +229,21 @@ func TestMergeWorker_FailedMerge(t *testing.T) {
 	}
 }
 
+func TestMergeWorker_StopBeforeStartReturns(t *testing.T) {
+	worker := NewMergeWorker(&mockMergeModel{}, filepath.Join(t.TempDir(), "manifest.json"))
+	done := make(chan struct{})
+	go func() {
+		worker.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Stop blocked before Start")
+	}
+}
+
 func TestMergeResultOKRejectsUnknownAllowedTool(t *testing.T) {
 	result := &SkillMergeResult{
 		Status: "merged",
@@ -283,7 +299,12 @@ Do alpha.
 }
 
 func TestBundledSkillsReferenceKnownAllowedTools(t *testing.T) {
-	index, err := LoadSkillsFromDirs([]string{filepath.Join("..", "..", "config", "skills")})
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	skillsDir := filepath.Join(filepath.Dir(file), "..", "..", "config", "skills")
+	index, err := LoadSkillsFromDirs([]string{skillsDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,6 +548,27 @@ func TestSkillListToolAutoArchivesOldAgentSkill(t *testing.T) {
 	}
 }
 
+func TestSkillListToolArchivesByLastActivityNotStateChange(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	usagePath := filepath.Join(configDir, "skill-state", "usage.json")
+	writeSKILL(t, skillsDir, "alpha", testAgentCreatedSkill("alpha"))
+	now := time.Date(2026, 5, 28, 8, 0, 0, 0, time.UTC)
+	saveSkillUsage(usagePath, map[string]SkillUsageEntry{
+		"alpha": {
+			State:          SkillUsageStateStale,
+			LastUsedAt:     now.Add(-181 * 24 * time.Hour).Format(time.RFC3339),
+			StateChangedAt: now.Add(-time.Hour).Format(time.RFC3339),
+		},
+	})
+
+	applyAutomaticSkillLifecycle(skillsDir, usagePath, now)
+	usage := loadSkillUsage(usagePath)
+	if usage["alpha"].State != SkillUsageStateArchived {
+		t.Fatalf("expected archive based on last activity, got %+v", usage["alpha"])
+	}
+}
+
 func TestAutomaticSkillLifecycleSkipsWhenRecentlyEvaluated(t *testing.T) {
 	configDir := t.TempDir()
 	skillsDir := filepath.Join(configDir, "skills")
@@ -637,6 +679,37 @@ func TestSkillManageTool_CreateAndPatch(t *testing.T) {
 	got, _ = os.ReadFile(filepath.Join(dir, "foo", "SKILL.md"))
 	if !strings.Contains(string(got), "Do foo better.") {
 		t.Fatal("patch not applied")
+	}
+}
+
+func TestSkillManageTool_PatchAllowsEmptyReplacement(t *testing.T) {
+	dir := t.TempDir()
+	writeSKILL(t, dir, "alpha", testSkillA)
+	tool := NewSkillManageTool(dir, "")
+
+	if _, err := tool.Call(context.Background(), `{"action":"patch","name":"alpha","old_string":"Do alpha things.","new_string":"","reason":"remove obsolete instruction"}`); err != nil {
+		t.Fatal(err)
+	}
+	got := readSKILL(t, dir, "alpha")
+	if strings.Contains(got, "Do alpha things.") {
+		t.Fatalf("expected patch to remove text, got %q", got)
+	}
+}
+
+func TestSkillManageTool_WriteFileAllowsEmptyContent(t *testing.T) {
+	dir := t.TempDir()
+	writeSKILL(t, dir, "alpha", testSkillA)
+	tool := NewSkillManageTool(dir, "")
+
+	if _, err := tool.Call(context.Background(), `{"action":"write_file","name":"alpha","file_path":"references/empty.md","file_content":"","reason":"create placeholder"}`); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "alpha", "references", "empty.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("expected empty supporting file, got %q", string(data))
 	}
 }
 

@@ -323,6 +323,31 @@ func TestSyncBundledSkills_BaseUpdatedOnAutoUpdate(t *testing.T) {
 	}
 }
 
+func TestSyncBundledSkills_TwoWayReadErrorNotKeptUser(t *testing.T) {
+	configDir := t.TempDir()
+	bundledDir := t.TempDir()
+	writeSKILL(t, bundledDir, "alpha", testSkillA)
+	blockedPath := filepath.Join(configDir, "skills", "alpha", "SKILL.md")
+	if err := os.MkdirAll(blockedPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := SyncBundledSkills(context.Background(), SkillSyncOptions{
+		ConfigDir:        configDir,
+		BundledSkillsDir: bundledDir,
+		Quiet:            true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.KeptUser) != 0 {
+		t.Fatalf("expected read error not to be treated as kept user, got %v", report.KeptUser)
+	}
+	if len(report.MergeNeeded) != 0 {
+		t.Fatalf("expected read error not to queue merge, got %v", report.MergeNeeded)
+	}
+}
+
 func TestRestoreBundledSkill(t *testing.T) {
 	configDir := t.TempDir()
 	bundledDir := t.TempDir()

@@ -39,6 +39,7 @@ type Runtime struct {
 	skillsLoaded     bool
 	skillsReloadMu   sync.Mutex
 	skillsDirty      bool
+	mergeWorker      *MergeWorker
 	logger           *Logger
 	profileDebouncer *ProfileDebouncer
 	sleep            *SleepController
@@ -190,6 +191,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		}
 		worker.Enqueue(mergeNeeded)
 		worker.Start(context.Background())
+		rt.mergeWorker = worker
 	}
 
 	return rt, nil
@@ -790,6 +792,9 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	if r.mergeWorker != nil {
+		r.mergeWorker.Stop()
+	}
 	if r.memories != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if err := r.memories.WaitMaintenance(ctx); err != nil && r.logger != nil {

@@ -590,6 +590,40 @@ func TestServerToolInvokeEndpointAcceptsPlainStringInput(t *testing.T) {
 	}
 }
 
+func TestServerDoesNotExposeSkillManageOverHTTP(t *testing.T) {
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"skill_manage": NewSkillManageTool(t.TempDir(), ""),
+			"skill_list":   NewSkillListTool(t.TempDir()),
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	catalogReq := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
+	catalogRec := httptest.NewRecorder()
+	server.handleToolCatalog(catalogRec, catalogReq)
+	if catalogRec.Code != http.StatusOK {
+		t.Fatalf("unexpected catalog status: %d body=%s", catalogRec.Code, catalogRec.Body.String())
+	}
+	if bytes.Contains(catalogRec.Body.Bytes(), []byte("skill_manage")) {
+		t.Fatalf("skill_manage should not be advertised over HTTP: %s", catalogRec.Body.String())
+	}
+	if !bytes.Contains(catalogRec.Body.Bytes(), []byte("skill_list")) {
+		t.Fatalf("expected non-mutating skill tool to remain exposed: %s", catalogRec.Body.String())
+	}
+
+	invokeReq := httptest.NewRequest(http.MethodPost, "/api/tools/skill_manage", bytes.NewBufferString(`{"raw_input":"{}"}`))
+	invokeRec := httptest.NewRecorder()
+	server.handleToolInvoke(invokeRec, invokeReq)
+	if invokeRec.Code != http.StatusNotFound {
+		t.Fatalf("expected skill_manage HTTP invoke to be blocked, got %d body=%s", invokeRec.Code, invokeRec.Body.String())
+	}
+}
+
 func TestServerToolSkillsEndpointReturnsGeneratedSkills(t *testing.T) {
 	tool := &stubTool{
 		name:        "shell",

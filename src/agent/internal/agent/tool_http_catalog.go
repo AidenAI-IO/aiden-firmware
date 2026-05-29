@@ -124,6 +124,9 @@ func (r *Runtime) ToolDescriptors() []ToolDescriptor {
 	tools := r.OwnedTools()
 	descriptors := make([]ToolDescriptor, 0, len(tools))
 	for _, tool := range tools {
+		if !isHTTPToolExposed(tool.Name()) {
+			continue
+		}
 		meta := builtInToolCatalog[tool.Name()]
 		exampleInput := meta.ExampleInput
 		if tool.Name() == "activate_skill" {
@@ -142,6 +145,10 @@ func (r *Runtime) ToolDescriptors() []ToolDescriptor {
 		})
 	}
 	return descriptors
+}
+
+func isHTTPToolExposed(name string) bool {
+	return name != "skill_manage"
 }
 
 func (r *Runtime) ToolDescriptorByName(name string) (ToolDescriptor, bool) {

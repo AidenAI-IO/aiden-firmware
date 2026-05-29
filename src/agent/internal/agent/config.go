@@ -210,13 +210,13 @@ func LoadConfigFromDir(configDir string) (Config, error) {
 	}
 
 	if cfg.BundledSkillsDir == "" {
-		cfg.BundledSkillsDir = resolveBundledSkillsDir(configDir)
+		cfg.BundledSkillsDir = resolveBundledSkillsDir()
 	}
 
 	return cfg, nil
 }
 
-func resolveBundledSkillsDir(configDir string) string {
+func resolveBundledSkillsDir() string {
 	if v := os.Getenv("AIDEN_BUNDLED_SKILLS_DIR"); v != "" {
 		return v
 	}
