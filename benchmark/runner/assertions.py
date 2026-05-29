@@ -1,6 +1,8 @@
 from __future__ import annotations
 import dataclasses as dc
+import json
 import re
+from typing import Any
 from runner.models import HardAssertionResults, Trace
 from runner.suite import HardAssertions
 
@@ -15,6 +17,12 @@ class ExpectedAnswerResult:
     expected_answer: str | None
     predicted_answer: str | None
     answer_format: str
+
+@dc.dataclass
+class ExpectedRecallResult:
+    passed: bool
+    expected_memory_ids: list[str]
+    recalled_memory_ids: list[str]
 
 def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool) -> AssertionOutcome:
     results = HardAssertionResults(
@@ -44,6 +52,33 @@ def evaluate_expected_answer(
         expected_answer=expected,
         predicted_answer=predicted,
         answer_format=answer_format,
+    )
+
+
+def evaluate_expected_recalled_memory_ids(
+    history: list[dict[str, Any]], expected_memory_ids: list[str]
+) -> ExpectedRecallResult:
+    recalled_ids: list[str] = []
+    for message in history:
+        if message.get("type") != "tool_result" or message.get("tool_name") != "recall_memory":
+            continue
+        content = message.get("content") or ""
+        try:
+            payload = json.loads(content)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for item in payload.get("results") or []:
+            if not isinstance(item, dict):
+                continue
+            memory_id = item.get("id")
+            if isinstance(memory_id, str) and memory_id and memory_id not in recalled_ids:
+                recalled_ids.append(memory_id)
+    return ExpectedRecallResult(
+        passed=all(memory_id in recalled_ids for memory_id in expected_memory_ids),
+        expected_memory_ids=list(expected_memory_ids),
+        recalled_memory_ids=recalled_ids,
     )
 
 

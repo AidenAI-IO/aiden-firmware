@@ -10,6 +10,7 @@ from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec
 class FakeClient:
     def __init__(self, response="ok"):
         self.response = response
+        self.messages = []
 
     def clear_history(self):
         pass
@@ -25,6 +26,7 @@ class FakeClient:
         return ToolInvokeResult(output=json.dumps(payload), is_error=False, duration_ms=1)
 
     def chat(self, message, timeout_sec=None, attachments=None):
+        self.messages.append(message)
         return ChatResponse(
             response=self.response,
             history=[{"type": "assistant", "content": self.response}],
@@ -89,3 +91,32 @@ def test_run_one_task_fails_without_judge_when_expected_answer_is_wrong(tmp_path
     assert result.status == "failed"
     assert result.metrics["expected_answer_match"] is False
     assert result.metrics["predicted_answer"] == "(b)"
+
+
+def test_run_one_task_applies_suite_prompt_prefix(tmp_path: Path):
+    suite = Suite(
+        name="persona",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+        prompt_prefix="You must call recall_memory before answering.",
+    )
+    task = TaskSpec(
+        id="personamem_case",
+        category="memory",
+        description_for_judge="Choose the personalized option.",
+        prompt="Choose one option.",
+        rubric=[RubricItem(id="chooses_correct", check="Agent chooses correct option.")],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=0),
+    )
+    client = FakeClient("ok")
+
+    result = run_one_task(
+        client, suite, task, 1, tmp_path / "artifacts", None, None, "run-1"
+    )
+
+    assert result.status == "passed"
+    assert client.messages == [
+        "You must call recall_memory before answering.\n\nChoose one option."
+    ]

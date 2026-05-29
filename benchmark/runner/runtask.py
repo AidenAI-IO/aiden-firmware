@@ -6,7 +6,11 @@ import shutil
 import time
 from pathlib import Path
 from runner.agent_client import AgentClient, AgentTimeoutError
-from runner.assertions import evaluate_expected_answer, evaluate_hard_assertions
+from runner.assertions import (
+    evaluate_expected_answer,
+    evaluate_expected_recalled_memory_ids,
+    evaluate_hard_assertions,
+)
 from runner.capture import take_screenshot, write_step_screenshot
 from runner.judge import judge_task, JudgeConfig
 from runner.models import TaskResult, RubricVerdict, HardAssertionResults
@@ -69,9 +73,12 @@ def run_one_task(
             pass
     timed_out = False
     try:
-        chat = client.chat(task.prompt,
-                           timeout_sec=task.hard_assertions.must_complete_within_sec,
-                           attachments=attachments)
+        prompt = task.prompt
+        if suite.prompt_prefix:
+            prompt = f"{suite.prompt_prefix.rstrip()}\n\n{task.prompt}"
+        chat = client.chat(prompt,
+                            timeout_sec=task.hard_assertions.must_complete_within_sec,
+                            attachments=attachments)
         history = chat.history
     except AgentTimeoutError:
         timed_out = True
@@ -117,6 +124,18 @@ def run_one_task(
         })
         base.hard_assertions.expected_answer = answer_outcome.passed
         if not answer_outcome.passed:
+            base.status = "failed"
+            base.finished_at = now_iso()
+            return base
+    if task.expected_recalled_memory_ids:
+        recall_outcome = evaluate_expected_recalled_memory_ids(history, task.expected_recalled_memory_ids)
+        base.metrics.update({
+            "expected_recalled_memory_ids": recall_outcome.expected_memory_ids,
+            "recalled_memory_ids": recall_outcome.recalled_memory_ids,
+            "expected_recalled_memory_match": recall_outcome.passed,
+        })
+        base.hard_assertions.expected_recalled_memory = recall_outcome.passed
+        if not recall_outcome.passed:
             base.status = "failed"
             base.finished_at = now_iso()
             return base

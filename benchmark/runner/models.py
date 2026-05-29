@@ -29,6 +29,7 @@ class HardAssertionResults:
     timeout: bool = True
     response_exists: bool = False
     expected_answer: bool | None = None
+    expected_recalled_memory: bool | None = None
 
 @dc.dataclass
 class TaskResult:

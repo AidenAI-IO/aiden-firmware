@@ -19,6 +19,8 @@ func TestFunctionAgentSystemMessageIncludesDefaultChinesePhoneAndGestureGuidance
 		"base instruction",
 		"extra prompt",
 		"默认用简体中文回答",
+		"recall_memory",
+		"不要直接凭常识",
 		"TTS",
 		"拨打电话",
 		"没有单独的拨打电话工具",
@@ -35,6 +37,10 @@ func TestFunctionAgentSystemMessageIncludesDefaultChinesePhoneAndGestureGuidance
 		if !strings.Contains(msg, want) {
 			t.Fatalf("system message missing %q:\n%s", want, msg)
 		}
+	}
+
+	if strings.Contains(msg, "Use long-term memory if relevant") {
+		t.Fatalf("system message should not contain benchmark-specific memory trigger:\n%s", msg)
 	}
 }
 

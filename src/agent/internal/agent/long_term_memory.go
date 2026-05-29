@@ -113,6 +113,11 @@ type memoryIndexEntry struct {
 	Summary    string   `yaml:"summary"`
 }
 
+type scoredMemoryResult struct {
+	Result MemoryResult
+	Score  int
+}
+
 func NewLongTermMemoryStore(rootDir string, opts ...LongTermMemoryOption) *LongTermMemoryStore {
 	s := &LongTermMemoryStore{rootDir: rootDir}
 	for _, opt := range opts {
@@ -169,18 +174,10 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 		limit = 5
 	}
 
-	results := make([]MemoryResult, 0)
+	matches := make([]scoredMemoryResult, 0)
+	matchAll := memoryQueryIsEmpty(query)
 	for _, entry := range index.Memories {
 		if entry.Status != "active" {
-			continue
-		}
-		if !matchesAny(query.Types, []string{entry.Type}) {
-			continue
-		}
-		if !matchesAny(query.Tags, entry.Tags) {
-			continue
-		}
-		if !matchesAny(query.Entities, entry.Entities) {
 			continue
 		}
 		path := filepath.Join(s.rootDir, entry.File)
@@ -188,7 +185,11 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 		if err != nil {
 			return nil, err
 		}
-		results = append(results, MemoryResult{
+		score := scoreMemoryEntry(query, entry, parsed)
+		if score == 0 && !matchAll {
+			continue
+		}
+		matches = append(matches, scoredMemoryResult{Score: score, Result: MemoryResult{
 			ID:         entry.ID,
 			Type:       entry.Type,
 			Status:     entry.Status,
@@ -200,10 +201,26 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 			Tags:       append([]string(nil), entry.Tags...),
 			Entities:   append([]string(nil), entry.Entities...),
 			FilePath:   path,
-		})
-		if len(results) >= limit {
-			break
+		}})
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].Score != matches[j].Score {
+			return matches[i].Score > matches[j].Score
 		}
+		if matches[i].Result.Priority != matches[j].Result.Priority {
+			return matches[i].Result.Priority > matches[j].Result.Priority
+		}
+		if matches[i].Result.Confidence != matches[j].Result.Confidence {
+			return matches[i].Result.Confidence > matches[j].Result.Confidence
+		}
+		return matches[i].Result.ID < matches[j].Result.ID
+	})
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	results := make([]MemoryResult, 0, len(matches))
+	for _, match := range matches {
+		results = append(results, match.Result)
 	}
 	return results, nil
 }
@@ -635,26 +652,28 @@ func parseMemoryBody(body string) (string, string, []string) {
 	scanner := bufio.NewScanner(strings.NewReader(body))
 	title := ""
 	var contentLines []string
+	var fallbackLines []string
 	var evidence []string
 	inContent := false
 	inEvidence := false
 	for scanner.Scan() {
 		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
 		if title == "" && strings.HasPrefix(line, "# ") {
 			title = strings.TrimSpace(strings.TrimPrefix(line, "# "))
 			continue
 		}
-		if strings.TrimSpace(line) == "## 内容" {
+		if trimmed == "## 内容" {
 			inContent = true
 			inEvidence = false
 			continue
 		}
-		if strings.TrimSpace(line) == "## 证据摘录" {
+		if trimmed == "## 证据摘录" {
 			inContent = false
 			inEvidence = true
 			continue
 		}
-		if strings.HasPrefix(strings.TrimSpace(line), "## ") {
+		if strings.HasPrefix(trimmed, "## ") {
 			inContent = false
 			inEvidence = false
 		}
@@ -662,13 +681,19 @@ func parseMemoryBody(body string) (string, string, []string) {
 			contentLines = append(contentLines, line)
 		}
 		if inEvidence {
-			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "- ") {
 				evidence = append(evidence, strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")))
 			}
 		}
+		if title != "" && !inContent && !inEvidence && trimmed != "" && !strings.HasPrefix(trimmed, "## ") {
+			fallbackLines = append(fallbackLines, line)
+		}
 	}
-	return title, strings.TrimSpace(strings.Join(contentLines, "\n")), evidence
+	content := strings.TrimSpace(strings.Join(contentLines, "\n"))
+	if content == "" {
+		content = strings.TrimSpace(strings.Join(fallbackLines, "\n"))
+	}
+	return title, content, evidence
 }
 
 func matchesAny(queryValues []string, candidateValues []string) bool {
@@ -683,6 +708,88 @@ func matchesAny(queryValues []string, candidateValues []string) bool {
 		}
 	}
 	return false
+}
+
+func memoryQueryIsEmpty(query MemoryQuery) bool {
+	return !memoryQueryHasTopicalTerms(query) && len(query.Types) == 0
+}
+
+func memoryQueryHasTopicalTerms(query MemoryQuery) bool {
+	for _, tag := range query.Tags {
+		if normalizeMemorySearchTerm(tag) != "" {
+			return true
+		}
+	}
+	return len(nonGenericMemoryEntities(query.Entities)) > 0
+}
+
+func scoreMemoryEntry(query MemoryQuery, entry memoryIndexEntry, parsed parsedMemoryMarkdown) int {
+	typeScore := 0
+	if matchesAny(query.Types, []string{entry.Type}) && len(query.Types) > 0 {
+		typeScore = 3
+	}
+	haystacks := []string{parsed.Title, entry.Summary, parsed.Content}
+	topicScore := scoreMemoryQueryValues(query.Tags, entry.Tags, haystacks)
+	topicScore += scoreMemoryQueryValues(nonGenericMemoryEntities(query.Entities), entry.Entities, haystacks)
+	if topicScore == 0 && memoryQueryHasTopicalTerms(query) {
+		return 0
+	}
+	return typeScore + topicScore
+}
+
+func scoreMemoryQueryValues(queryValues []string, candidateValues []string, haystacks []string) int {
+	score := 0
+	for _, queryValue := range queryValues {
+		queryTerm := normalizeMemorySearchTerm(queryValue)
+		if queryTerm == "" {
+			continue
+		}
+		for _, candidateValue := range candidateValues {
+			candidateTerm := normalizeMemorySearchTerm(candidateValue)
+			if candidateTerm == "" {
+				continue
+			}
+			if queryTerm == candidateTerm {
+				score += 10
+				break
+			}
+			if memorySearchTermContains(queryTerm, candidateTerm) {
+				score += 6
+				break
+			}
+		}
+		for _, haystack := range haystacks {
+			if strings.Contains(normalizeMemorySearchTerm(haystack), queryTerm) {
+				score += 4
+				break
+			}
+		}
+	}
+	return score
+}
+
+func nonGenericMemoryEntities(entities []string) []string {
+	filtered := make([]string, 0, len(entities))
+	for _, entity := range entities {
+		switch normalizeMemorySearchTerm(entity) {
+		case "", "user", "me", "my", "myself", "you":
+			continue
+		default:
+			filtered = append(filtered, entity)
+		}
+	}
+	return filtered
+}
+
+func normalizeMemorySearchTerm(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func memorySearchTermContains(a string, b string) bool {
+	if len(a) < 4 || len(b) < 4 {
+		return false
+	}
+	return strings.Contains(a, b) || strings.Contains(b, a)
 }
 
 func firstSentence(content string) string {

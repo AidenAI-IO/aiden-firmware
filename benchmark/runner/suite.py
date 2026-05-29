@@ -36,6 +36,7 @@ class TaskSpec:
     input_screenshot: str | None = None
     expected_answer: str | None = None
     answer_format: str | None = None
+    expected_recalled_memory_ids: list[str] = dc.field(default_factory=list)
 
 @dc.dataclass
 class Suite:
@@ -44,6 +45,7 @@ class Suite:
     tasks: list[TaskSpec]
     sha256: str
     source_path: Path
+    prompt_prefix: str = ""
 
 def load_suite(path: Path) -> Suite:
     raw_bytes = Path(path).read_bytes()
@@ -115,6 +117,11 @@ def load_suite(path: Path) -> Suite:
                     )
         if answer_format is not None and answer_format != "option_letter":
             raise SuiteValidationError(f"task {tid}: unsupported answer_format {answer_format!r}")
+        expected_recalled_memory_ids = raw.get("expected_recalled_memory_ids", [])
+        if not isinstance(expected_recalled_memory_ids, list) or not all(
+            isinstance(item, str) and item.strip() for item in expected_recalled_memory_ids
+        ):
+            raise SuiteValidationError(f"task {tid}: expected_recalled_memory_ids must be a list of non-empty strings")
         tasks.append(TaskSpec(
             id=tid, category=cat,
             description_for_judge=raw["description_for_judge"],
@@ -125,11 +132,17 @@ def load_suite(path: Path) -> Suite:
             input_screenshot=raw.get("input_screenshot"),
             expected_answer=expected_answer,
             answer_format=answer_format,
+            expected_recalled_memory_ids=expected_recalled_memory_ids,
         ))
+    prompt_prefix = data.get("prompt_prefix", "")
+    if not isinstance(prompt_prefix, str):
+        raise SuiteValidationError("suite prompt_prefix must be a string")
+
     return Suite(
         name=data.get("name", Path(path).stem),
         global_reset=data.get("global_reset") or {},
         tasks=tasks,
         sha256=sha,
         source_path=Path(path),
+        prompt_prefix=prompt_prefix,
     )
