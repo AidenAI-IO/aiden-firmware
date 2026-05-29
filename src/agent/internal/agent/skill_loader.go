@@ -14,6 +14,8 @@ import (
 type SkillMetadata struct {
 	Name        string                 `yaml:"name"`
 	Description string                 `yaml:"description"`
+	Source      string                 `yaml:"source,omitempty"`
+	CreatedBy   string                 `yaml:"created_by,omitempty"`
 	Metadata    map[string]interface{} `yaml:"metadata,omitempty"`
 }
 
@@ -25,6 +27,8 @@ type SkillDefinition struct {
 	PreferredModel  string
 	AllowedTools    []string
 	AllowedChildren []string
+	Source          string
+	CreatedBy       string
 	FilePath        string
 }
 
@@ -76,7 +80,8 @@ func (idx *SkillIndex) scanDirectory(dir string) error {
 		}
 
 		if _, exists := idx.skills[skill.Name]; exists {
-			return fmt.Errorf("duplicate skill name %q (found in %q)", skill.Name, path)
+			log.Printf("[skill_loader] duplicate skill name %q in %q, keeping first", skill.Name, path)
+			return nil
 		}
 
 		idx.skills[skill.Name] = skill
@@ -109,27 +114,7 @@ func loadSkillMetadata(path string) (*SkillDefinition, error) {
 		return nil, fmt.Errorf("skill description is required in frontmatter")
 	}
 
-	skill := &SkillDefinition{
-		Name:         meta.Name,
-		Description:  meta.Description,
-		Instructions: strings.TrimSpace(body),
-		FilePath:     path,
-	}
-
-	// Extract metadata fields
-	if meta.Metadata != nil {
-		if model, ok := meta.Metadata["preferred_model"].(string); ok {
-			skill.PreferredModel = model
-		}
-		if tools, ok := meta.Metadata["allowed_tools"].([]interface{}); ok {
-			skill.AllowedTools = interfaceSliceToStringSlice(tools, "allowed_tools")
-		}
-		if children, ok := meta.Metadata["allowed_children"].([]interface{}); ok {
-			skill.AllowedChildren = interfaceSliceToStringSlice(children, "allowed_children")
-		}
-	}
-
-	return skill, nil
+	return skillDefinitionFromMetadata(meta, body, path), nil
 }
 
 // parseFrontmatter splits a markdown document into YAML frontmatter and body.
@@ -176,10 +161,67 @@ func interfaceSliceToStringSlice(in []interface{}, fieldName string) []string {
 	return out
 }
 
+func skillDefinitionFromMetadata(meta SkillMetadata, body, path string) *SkillDefinition {
+	skill := &SkillDefinition{
+		Name:         meta.Name,
+		Description:  meta.Description,
+		Instructions: strings.TrimSpace(body),
+		Source:       meta.Source,
+		CreatedBy:    meta.CreatedBy,
+		FilePath:     path,
+	}
+
+	if meta.Metadata != nil {
+		if skill.Source == "" {
+			if source, ok := meta.Metadata["source"].(string); ok {
+				skill.Source = source
+			}
+		}
+		if skill.CreatedBy == "" {
+			if createdBy, ok := meta.Metadata["created_by"].(string); ok {
+				skill.CreatedBy = createdBy
+			}
+		}
+		if model, ok := meta.Metadata["preferred_model"].(string); ok {
+			skill.PreferredModel = model
+		}
+		if tools, ok := meta.Metadata["allowed_tools"].([]interface{}); ok {
+			skill.AllowedTools = interfaceSliceToStringSlice(tools, "allowed_tools")
+		}
+		if children, ok := meta.Metadata["allowed_children"].([]interface{}); ok {
+			skill.AllowedChildren = interfaceSliceToStringSlice(children, "allowed_children")
+		}
+	}
+
+	return skill
+}
+
 // Get returns the skill definition for a given name
 func (idx *SkillIndex) Get(name string) (*SkillDefinition, bool) {
 	skill, ok := idx.skills[name]
 	return skill, ok
+}
+
+// parseSkillFromContent parses a SKILL.md from raw content without reading from disk.
+func parseSkillFromContent(content string) (*SkillDefinition, error) {
+	frontmatter, body, err := parseFrontmatter(content)
+	if err != nil {
+		return nil, err
+	}
+
+	var meta SkillMetadata
+	if err := yaml.Unmarshal([]byte(frontmatter), &meta); err != nil {
+		return nil, fmt.Errorf("parse frontmatter: %w", err)
+	}
+
+	if meta.Name == "" {
+		return nil, fmt.Errorf("skill name is required in frontmatter")
+	}
+	if meta.Description == "" {
+		return nil, fmt.Errorf("skill description is required in frontmatter")
+	}
+
+	return skillDefinitionFromMetadata(meta, body, ""), nil
 }
 
 // Names returns all registered skill names

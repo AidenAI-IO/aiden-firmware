@@ -78,6 +78,249 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunIncludesAvailableSkillCatalog(t *testing.T) {
+	index := NewSkillIndex()
+	index.skills["planner"] = &SkillDefinition{
+		Name:         "planner",
+		Description:  "Plan before acting",
+		Instructions: "Make a plan.",
+	}
+	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "ok"}}}}}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		index,
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !runtimeModelCallContains(model.messages[0], "Available skills:") {
+		t.Fatalf("run missing available skills heading")
+	}
+	if !runtimeModelCallContains(model.messages[0], "- planner: Plan before acting") {
+		t.Fatalf("run missing planner skill catalog entry")
+	}
+	if runtimeModelCallContains(model.messages[0], "[planner] Make a plan.") {
+		t.Fatalf("inactive skill instructions should not be injected")
+	}
+}
+
+func TestRuntimeRunOmitsArchivedSkillsFromAvailableCatalog(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	writeSKILL(t, skillsDir, "alpha", testSkillA)
+	writeSKILL(t, skillsDir, "beta", testSkillB)
+	saveSkillUsage(filepath.Join(configDir, "skill-state", "usage.json"), map[string]SkillUsageEntry{
+		"beta": {State: SkillUsageStateArchived},
+	})
+	index, err := LoadSkillsFromDirs([]string{skillsDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "ok"}}}}}
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, SkillsDirs: []string{skillsDir}, Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		index,
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !runtimeModelCallContains(model.messages[0], "- alpha: Alpha skill") {
+		t.Fatalf("run missing active alpha skill catalog entry")
+	}
+	if runtimeModelCallContains(model.messages[0], "- beta: Beta skill") {
+		t.Fatalf("run included archived beta skill catalog entry")
+	}
+}
+
+func TestToolDescriptorsIncludeSkillToolMetadata(t *testing.T) {
+	configDir := t.TempDir()
+	tools := &ToolSet{tools: map[string]langtools.Tool{}}
+	tools.RegisterSkillTools(filepath.Join(configDir, "skills"), filepath.Join(configDir, "skill-state", ".bundled_manifest.json"))
+	runtime := NewRuntimeWithDeps(Config{}, nil, nil, tools, NewSkillIndex())
+
+	for _, name := range []string{"skill_list", "skill_read", "skill_mark_used"} {
+		desc, ok := runtime.ToolDescriptorByName(name)
+		if !ok {
+			t.Fatalf("expected descriptor for %s", name)
+		}
+		if desc.Category != "skills" {
+			t.Fatalf("%s category = %q, want skills", name, desc.Category)
+		}
+		if desc.InputMode != toolInputModeJSON {
+			t.Fatalf("%s input mode = %q, want json", name, desc.InputMode)
+		}
+		if strings.TrimSpace(desc.ExampleInput) == "" {
+			t.Fatalf("%s missing example input", name)
+		}
+	}
+}
+
+func TestSkillCatalogSummaryLimitsEntriesAndDescriptionLength(t *testing.T) {
+	index := NewSkillIndex()
+	longDesc := strings.Repeat("长", maxSkillCatalogDescriptionRunes+10)
+	for i := 0; i < maxSkillCatalogEntries+2; i++ {
+		name := fmt.Sprintf("skill-%02d", i)
+		index.skills[name] = &SkillDefinition{Name: name, Description: longDesc}
+	}
+	manager := NewSkillManager(index)
+	catalog := manager.CatalogSummary()
+	if strings.Count(catalog, "- skill-") != maxSkillCatalogEntries {
+		t.Fatalf("expected %d catalog entries, got catalog:\n%s", maxSkillCatalogEntries, catalog)
+	}
+	if !strings.Contains(catalog, "more skills hidden. Use skill_list to search") {
+		t.Fatalf("expected hidden skills hint, got:\n%s", catalog)
+	}
+	if strings.Contains(catalog, strings.Repeat("长", maxSkillCatalogDescriptionRunes+1)) {
+		t.Fatalf("expected long descriptions to be truncated")
+	}
+}
+
+func TestResolveToolsKeepsSkillMetaToolsWhenRestricted(t *testing.T) {
+	tools := &ToolSet{tools: map[string]langtools.Tool{
+		"screenshot":      &stubTool{name: "screenshot", description: "Take screenshot."},
+		"skill_list":      NewSkillListTool(t.TempDir()),
+		"skill_read":      NewSkillReadTool(t.TempDir()),
+		"skill_mark_used": NewSkillMarkUsedTool(t.TempDir(), ""),
+		"skill_manage":    NewSkillManageTool(t.TempDir(), ""),
+		"recall_memory":   &stubTool{name: "recall_memory", description: "Recall memory."},
+	}}
+	runtime := NewRuntimeWithDeps(Config{}, nil, nil, tools, NewSkillIndex())
+	resolved := ResolvedSkills{
+		AllowedTools:       map[string]struct{}{"screenshot": {}},
+		HasToolRestriction: true,
+	}
+	resolvedTools := runtime.resolveTools(resolved)
+	names := map[string]bool{}
+	for _, tool := range resolvedTools {
+		names[tool.Name()] = true
+	}
+	for _, name := range []string{"screenshot", "skill_list", "skill_read", "skill_manage", "skill_mark_used"} {
+		if !names[name] {
+			t.Fatalf("expected %s to be available under tool restrictions; got %#v", name, names)
+		}
+	}
+	for _, name := range []string{"recall_memory"} {
+		if names[name] {
+			t.Fatalf("did not expect %s without explicit allowed_tools entry; got %#v", name, names)
+		}
+	}
+}
+
+func TestRuntimeRunReloadsSkillsWhenMarkedDirty(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	v1 := "---\nname: alpha\ndescription: Alpha\n---\n\nUse alpha v1.\n"
+	v2 := "---\nname: alpha\ndescription: Alpha\n---\n\nUse alpha v2.\n"
+	writeSKILL(t, skillsDir, "alpha", v1)
+	index, err := LoadSkillsFromDirs([]string{skillsDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{Choices: []*llms.ContentChoice{{Content: "first"}}},
+			{Choices: []*llms.ContentChoice{{Content: "second"}}},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			SkillsDirs:    []string{skillsDir},
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		index,
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello", Skills: []string{"alpha"}}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if !runtimeModelCallContains(model.messages[0], "Use alpha v1.") {
+		t.Fatalf("first run missing v1 skill instructions")
+	}
+
+	writeSKILL(t, skillsDir, "alpha", v2)
+	runtime.MarkSkillsDirty()
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello again", Skills: []string{"alpha"}}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if !runtimeModelCallContains(model.messages[1], "Use alpha v2.") {
+		t.Fatalf("second run missing reloaded v2 skill instructions")
+	}
+	if runtimeModelCallContains(model.messages[1], "Use alpha v1.") {
+		t.Fatalf("second run still contains stale v1 skill instructions")
+	}
+}
+
+func TestRuntimeRunSnapshotUnaffectedByConcurrentReload(t *testing.T) {
+	configDir := t.TempDir()
+	skillsDir := filepath.Join(configDir, "skills")
+	v1 := "---\nname: alpha\ndescription: Alpha\n---\n\nUse alpha v1.\n"
+	v2 := "---\nname: alpha\ndescription: Alpha\n---\n\nUse alpha v2.\n"
+	writeSKILL(t, skillsDir, "alpha", v1)
+	index, err := LoadSkillsFromDirs([]string{skillsDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, SkillsDirs: []string{skillsDir}},
+		&testModelResolver{model: fakellm.NewFakeLLM([]string{"unused"})},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		index,
+	)
+
+	if err := runtime.reloadSkillsIfDirty(); err != nil {
+		t.Fatal(err)
+	}
+	runSkills := runtime.skills.Snapshot()
+	if err := runSkills.Activate(context.Background(), "alpha"); err != nil {
+		t.Fatal(err)
+	}
+
+	writeSKILL(t, skillsDir, "alpha", v2)
+	runtime.MarkSkillsDirty()
+	if err := runtime.reloadSkillsIfDirty(); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := runSkills.Resolve([]string{"alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resolved.CombinedInstructions(), "Use alpha v1.") {
+		t.Fatalf("in-progress run snapshot lost v1 instructions: %s", resolved.CombinedInstructions())
+	}
+	if strings.Contains(resolved.CombinedInstructions(), "Use alpha v2.") {
+		t.Fatalf("in-progress run snapshot saw reloaded v2 instructions: %s", resolved.CombinedInstructions())
+	}
+}
+
+func runtimeModelCallContains(messages []llms.MessageContent, want string) bool {
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			if text, ok := part.(llms.TextContent); ok && strings.Contains(text.Text, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 type scriptedModel struct {
 	responses    []*llms.ContentResponse
 	callCount    int
@@ -1131,6 +1374,29 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	}
 	if secondResult.Memory[0].Role != "human" || secondResult.Memory[0].Content != "hello" {
 		t.Fatalf("expected first persisted message to be restored, got %#v", secondResult.Memory[0])
+	}
+}
+
+func TestNewRuntimeLoadsBundledSkillsSeededOnFirstStartup(t *testing.T) {
+	configDir := t.TempDir()
+	bundledDir := t.TempDir()
+	writeSKILL(t, bundledDir, "alpha", testSkillA)
+
+	runtime, err := NewRuntime(Config{
+		ConfigDir:        configDir,
+		BundledSkillsDir: bundledDir,
+		Model:            ModelConfig{Provider: "fake"},
+		Instruction:      "Answer directly.",
+		SkillsDirs:       []string{},
+		MaxIterations:    1,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	defer runtime.Close()
+
+	if _, ok := runtime.skills.GetIndex().Get("alpha"); !ok {
+		t.Fatalf("expected runtime to load skill copied during startup sync")
 	}
 }
 

@@ -42,6 +42,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	cfg.SkillMergeModel = agent.NewLLMSkillMergeModel(agent.NewModelManager(cfg.Model, cfg.Proxy))
+
 	runtime, err := agent.NewRuntime(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create runtime: %v\n", err)

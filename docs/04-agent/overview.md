@@ -70,7 +70,10 @@ go run ./cmd/demo -config ./config -clear-memory -show-memory -input "Start fres
 
 ## 内置工具
 
-- `activate_skill`
+- `skill_list`
+- `skill_read`
+- `skill_manage`
+- `skill_mark_used`
 - `keyboard_tap`
 - `keyboard_text`
 - `mouse_click`
