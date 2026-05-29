@@ -52,7 +52,7 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 		"touch_gesture": newPostActionScreenshotTool(&TouchGestureTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
 		"screenshot":    screenshot,
 		"audio_volume":  NewAudioVolumeTool(audioCfg.SocketOrDefault()),
-		"shell":         &ShellTool{},
+		"shell":         &ShellTool{proxy: proxyCfg},
 		"current_time":  NewCurrentTimeTool(),
 		"weather":       NewWeatherTool(proxyCfg),
 		"web_search":    NewWebSearchTool(searchCfg, proxyCfg),

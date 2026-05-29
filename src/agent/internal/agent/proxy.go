@@ -19,7 +19,8 @@ func newProxyTransport(proxy ProxyConfig) http.RoundTripper {
 }
 
 func proxyFunc(proxy ProxyConfig) func(*http.Request) (*url.URL, error) {
-	if proxy.IsZero() {
+	proxy = proxy.WithDefaults()
+	if !proxy.HasProxyURL() {
 		return http.ProxyFromEnvironment
 	}
 
@@ -95,6 +96,12 @@ func bypassProxy(host, port, noProxy string) bool {
 				if _, network, err := net.ParseCIDR(rule); err == nil && network.Contains(ip) {
 					return true
 				}
+			}
+			continue
+		}
+		if ruleIP := net.ParseIP(rule); ruleIP != nil {
+			if hostIP := net.ParseIP(host); hostIP != nil && hostIP.Equal(ruleIP) {
+				return true
 			}
 			continue
 		}

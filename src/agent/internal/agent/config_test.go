@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +24,50 @@ func TestConfigValidateAcceptsAudioWakeup(t *testing.T) {
 	}
 	if got := cfg.TriggerModeOrDefault(); got != "wakeup" {
 		t.Fatalf("TriggerModeOrDefault() = %q, want wakeup", got)
+	}
+}
+
+func TestLoadConfigDefaultsNoProxyWhenProxyConfigured(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+[model]
+provider = "fake"
+
+[proxy]
+https_proxy = "http://proxy.example:18443"
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Proxy.NoProxy != DefaultNoProxy {
+		t.Fatalf("Proxy.NoProxy = %q, want %q", cfg.Proxy.NoProxy, DefaultNoProxy)
+	}
+}
+
+func TestLoadConfigKeepsNoProxyEmptyWithoutProxyURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+[model]
+provider = "fake"
+
+[proxy]
+no_proxy = ""
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Proxy.NoProxy != "" {
+		t.Fatalf("Proxy.NoProxy = %q, want empty", cfg.Proxy.NoProxy)
 	}
 }
 

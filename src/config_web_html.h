@@ -206,7 +206,7 @@ static const char* CONFIG_WEB_HTML =
     "            <div class=\"field wide\"><label>http_proxy</label><input id=\"proxy_http_proxy\" data-section=\"proxy\" placeholder=\"http://127.0.0.1:7890\"></div>\n"
     "            <div class=\"field wide\"><label>https_proxy</label><input id=\"proxy_https_proxy\" data-section=\"proxy\" placeholder=\"http://127.0.0.1:7890\"></div>\n"
     "            <div class=\"field wide\"><label>all_proxy</label><input id=\"proxy_all_proxy\" data-section=\"proxy\" placeholder=\"socks5://127.0.0.1:7891\"></div>\n"
-    "            <div class=\"field wide\"><label>no_proxy</label><input id=\"proxy_no_proxy\" data-section=\"proxy\" placeholder=\"localhost,127.0.0.1,192.168.0.0/16\"></div>\n"
+    "            <div class=\"field wide\"><label>no_proxy</label><input id=\"proxy_no_proxy\" data-section=\"proxy\" placeholder=\"localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16\"></div>\n"
     "          </div>\n"
     "        </div>\n"
     "        <div class=\"section-card\" id=\"section-search\">\n"

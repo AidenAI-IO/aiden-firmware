@@ -73,6 +73,7 @@ const char* kLoopbackBindAddress = "127.0.0.1";
 const size_t kMaxHttpHeaderSize = 8 * 1024;
 const size_t kMaxHttpBodySize = 64 * 1024;
 const int kClientReadTimeoutSeconds = 5;
+const char* kDefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -106,6 +107,12 @@ std::string trim_copy(const std::string& input) {
 
 bool starts_with(const std::string& text, const std::string& prefix) {
     return text.compare(0, prefix.size(), prefix) == 0;
+}
+
+bool has_proxy_url(const aiden::ProxyToml& proxy) {
+    return !trim_copy(proxy.http_proxy).empty() ||
+           !trim_copy(proxy.https_proxy).empty() ||
+           !trim_copy(proxy.all_proxy).empty();
 }
 
 bool consume_prefix(const char* arg, const char* prefix, std::string* out) {
@@ -516,6 +523,9 @@ void load_current_agent_config(const Options& options,
         if (aiden::load_agent_toml(options.agent_config_path.c_str(), loaded, &err)) {
             if (loaded.search.provider.empty()) {
                 loaded.search.provider = "duckduckgo";
+            }
+            if (has_proxy_url(loaded.proxy) && loaded.proxy.no_proxy.empty()) {
+                loaded.proxy.no_proxy = kDefaultNoProxy;
             }
             *config = loaded;
         } else if (load_error) {
@@ -1362,7 +1372,47 @@ std::string build_curl_proxy_arg(const aiden::ProxyToml& proxy) {
     if (url.empty()) url = trim_copy(proxy.http_proxy);
     if (url.empty()) url = trim_copy(proxy.all_proxy);
     if (url.empty()) return "";
-    return " -x " + shell_quote(url) + " ";
+    std::string arg = " -x " + shell_quote(url) + " ";
+    std::string no_proxy = trim_copy(proxy.no_proxy);
+    if (no_proxy.empty()) {
+        no_proxy = kDefaultNoProxy;
+    }
+    arg += "--noproxy " + shell_quote(no_proxy) + " ";
+    return arg;
+}
+
+std::string build_proxy_env_exports(const aiden::ProxyToml& proxy) {
+    std::string http_proxy = trim_copy(proxy.http_proxy);
+    std::string https_proxy = trim_copy(proxy.https_proxy);
+    std::string all_proxy = trim_copy(proxy.all_proxy);
+    std::string no_proxy = trim_copy(proxy.no_proxy);
+    if (http_proxy.empty() && https_proxy.empty() && all_proxy.empty()) {
+        return "";
+    }
+    if (no_proxy.empty()) {
+        no_proxy = kDefaultNoProxy;
+    }
+
+    std::string exports = "unset http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY && ";
+    auto append_export = [&exports](const char* key, const std::string& value) {
+        if (!value.empty()) {
+            exports += "export ";
+            exports += key;
+            exports += "=";
+            exports += shell_quote(value);
+            exports += " && ";
+        }
+    };
+
+    append_export("http_proxy", http_proxy);
+    append_export("HTTP_PROXY", http_proxy);
+    append_export("https_proxy", https_proxy);
+    append_export("HTTPS_PROXY", https_proxy);
+    append_export("all_proxy", all_proxy);
+    append_export("ALL_PROXY", all_proxy);
+    append_export("no_proxy", no_proxy);
+    append_export("NO_PROXY", no_proxy);
+    return exports;
 }
 
 ApiResponse handle_config_test(const Options& options, const std::string& body) {
@@ -1392,6 +1442,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     std::string config_error;
     load_current_agent_config(options, &current_config, &config_error);
     std::string curl_proxy_arg = build_curl_proxy_arg(current_config.proxy);
+    std::string curl_env_exports = build_proxy_env_exports(current_config.proxy);
 
     if (section == "proxy") {
         const char* proxy_keys[] = {"http_proxy", "https_proxy", "all_proxy", NULL};
@@ -1428,7 +1479,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             cJSON_AddStringToObject(r, "detail", "no URL to test (provider unknown and base_url empty)");
             all_passed = false;
         } else {
-            std::string cmd = "curl -sI --max-time 6 " + curl_proxy_arg + shell_quote(url) + " 2>&1 | head -1";
+            std::string cmd = curl_env_exports + "curl -sI --max-time 6 " + curl_proxy_arg + shell_quote(url) + " 2>&1 | head -1";
             CommandResult cr = run_shell_command(cmd);
             bool reachable = cr.exit_code == 0 && cr.output.find("HTTP") != std::string::npos;
             cJSON_AddBoolToObject(r, "passed", reachable ? 1 : 0);
@@ -1496,6 +1547,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
                     std::string response_path = response_path_template;
 
                     std::string cmd =
+                        curl_env_exports +
                         std::string("curl -sS --max-time 12 ") +
                         curl_proxy_arg +
                         "-o " + shell_quote(response_path) + " -w '%{http_code}' " +
@@ -1868,12 +1920,16 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         std::string state = "{\"status\":\"running\",\"suite\":\"" + suite_path + "\"}";
         FILE* sf = fopen("/userdata/agent/benchmark/state.json", "w");
         if (sf) { fputs(state.c_str(), sf); fclose(sf); }
+
+        aiden::AgentToml current_config;
+        std::string config_error;
+        load_current_agent_config(options, &current_config, &config_error);
+        std::string proxy_env_exports = build_proxy_env_exports(current_config.proxy);
+
         // Launch runner in background
         std::string cmd = "cd /userdata/agent/benchmark && "
             "export OPENROUTER_API_KEY=$(grep 'api_key.*sk-or' /userdata/agent/agent.toml | sed 's/.*\"\\(sk-or[^\"]*\\)\".*/\\1/') && "
-            "export http_proxy=http://192.168.31.142:7897 && "
-            "export https_proxy=http://192.168.31.142:7897 && "
-            "export no_proxy=127.0.0.1,localhost && "
+            + proxy_env_exports +
             "python3 -c 'import sys;sys.path.insert(0,\".\");from runner.main import cli;sys.exit(cli())' "
             "run --suite " + shell_quote(suite_path) + " "
             "--agent-url http://127.0.0.1:8080 "

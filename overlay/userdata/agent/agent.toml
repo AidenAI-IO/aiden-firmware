@@ -42,8 +42,8 @@ api_key = "OPENROUTER_API_KEY"
 temperature = 0.2
 max_tokens = 1000
 
-# Optional request proxy configuration for outbound Agent HTTP requests.
-# Leave all fields blank to use the process environment (HTTP_PROXY / HTTPS_PROXY / NO_PROXY).
+# Optional request proxy configuration for outbound Agent HTTP requests and shell tool commands.
+# Leave all fields blank to use the process environment.
 [proxy]
 http_proxy = ""
 https_proxy = ""

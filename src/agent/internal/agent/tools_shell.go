@@ -24,7 +24,9 @@ const (
 	shellDefaultPTYCols        = 120
 )
 
-type ShellTool struct{}
+type ShellTool struct {
+	proxy ProxyConfig
+}
 
 func (t *ShellTool) Name() string { return "shell" }
 
@@ -53,7 +55,7 @@ func (t *ShellTool) Call(ctx context.Context, input string) (string, error) {
 	}
 
 	if shellBoolArg(arguments, "background") || shellHasAction(arguments) {
-		return shellExecuteBackground(ctx, arguments)
+		return shellExecuteBackground(ctx, arguments, t.proxy)
 	}
 
 	command, ok := arguments["command"].(string)
@@ -75,7 +77,7 @@ func (t *ShellTool) Call(ctx context.Context, input string) (string, error) {
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSecs*float64(time.Second)))
 	defer cancel()
 
-	result, runErr := shellRunForeground(execCtx, command, workdir, usePTY)
+	result, runErr := shellRunForeground(execCtx, command, workdir, usePTY, t.proxy)
 	if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
 		return shellErrorString(fmt.Sprintf("Error: command timed out after %.0f seconds", timeoutSecs)), nil
 	}
@@ -85,11 +87,11 @@ func (t *ShellTool) Call(ctx context.Context, input string) (string, error) {
 	return result, nil
 }
 
-func shellExecuteBackground(ctx context.Context, arguments map[string]interface{}) (string, error) {
+func shellExecuteBackground(ctx context.Context, arguments map[string]interface{}, proxy ProxyConfig) (string, error) {
 	action := shellStringArg(arguments, "action", "start")
 	switch action {
 	case "start":
-		return shellStartBackground(ctx, arguments)
+		return shellStartBackground(ctx, arguments, proxy)
 	case "poll":
 		return shellPollBackground(arguments)
 	case "write":
@@ -107,7 +109,7 @@ func shellExecuteBackground(ctx context.Context, arguments map[string]interface{
 	}
 }
 
-func shellStartBackground(ctx context.Context, arguments map[string]interface{}) (string, error) {
+func shellStartBackground(ctx context.Context, arguments map[string]interface{}, proxy ProxyConfig) (string, error) {
 	command := shellStringArg(arguments, "command", "")
 	if command == "" {
 		return shellErrorString("Missing required parameter: command"), nil
@@ -128,7 +130,7 @@ func shellStartBackground(ctx context.Context, arguments map[string]interface{})
 		sessionCtx, cancel = context.WithCancel(context.Background())
 	}
 
-	cmd, err := shellBuildCommand(sessionCtx, command)
+	cmd, err := shellBuildCommand(sessionCtx, command, proxy)
 	if err != nil {
 		cancel()
 		return shellErrorString(err.Error()), nil
@@ -147,7 +149,7 @@ func shellStartBackground(ctx context.Context, arguments map[string]interface{})
 	}
 
 	if usePTY {
-		if err = shellStartPTYBackground(sessionCtx, session, arguments); err != nil {
+		if err = shellStartPTYBackground(sessionCtx, session, arguments, proxy); err != nil {
 			cancel()
 			return shellErrorString(err.Error()), nil
 		}
@@ -371,34 +373,34 @@ func shellStopBackground(arguments map[string]interface{}) (string, error) {
 	}), nil
 }
 
-func shellBuildCommand(ctx context.Context, command string) (*exec.Cmd, error) {
+func shellBuildCommand(ctx context.Context, command string, proxy ProxyConfig) (*exec.Cmd, error) {
 	cmd := exec.CommandContext(ctx, shellPlatformShell(), shellPlatformShellArg(), command)
-	cmd.Env = shellCommandEnv(false)
+	cmd.Env = shellCommandEnv(false, proxy)
 	shellSetProcessGroup(cmd)
 	return cmd, nil
 }
 
-func shellBuildPtyCommand(ctx context.Context, command string) (gopty.Pty, *gopty.Cmd, error) {
+func shellBuildPtyCommand(ctx context.Context, command string, proxy ProxyConfig) (gopty.Pty, *gopty.Cmd, error) {
 	ptmx, err := gopty.New()
 	if err != nil {
 		return nil, nil, err
 	}
 	cmd := ptmx.CommandContext(ctx, shellPlatformShell(), shellPlatformShellArg(), command)
-	cmd.Env = shellCommandEnv(true)
+	cmd.Env = shellCommandEnv(true, proxy)
 	shellSetProcessGroupPty(cmd)
 	return ptmx, cmd, nil
 }
 
-func shellRunForeground(ctx context.Context, command string, workdir string, usePTY bool) (string, error) {
+func shellRunForeground(ctx context.Context, command string, workdir string, usePTY bool, proxy ProxyConfig) (string, error) {
 	if !usePTY {
-		return shellRunForegroundCmd(ctx, command, workdir)
+		return shellRunForegroundCmd(ctx, command, workdir, proxy)
 	}
-	return shellRunForegroundPTY(ctx, command, workdir)
+	return shellRunForegroundPTY(ctx, command, workdir, proxy)
 }
 
-func shellRunForegroundCmd(ctx context.Context, command string, workdir string) (string, error) {
+func shellRunForegroundCmd(ctx context.Context, command string, workdir string, proxy ProxyConfig) (string, error) {
 	cmd := exec.Command(shellPlatformShell(), shellPlatformShellArg(), command)
-	cmd.Env = shellCommandEnv(false)
+	cmd.Env = shellCommandEnv(false, proxy)
 	shellSetProcessGroup(cmd)
 	if workdir != "" {
 		cmd.Dir = workdir
@@ -454,8 +456,8 @@ func shellRunForegroundCmd(ctx context.Context, command string, workdir string) 
 	}
 }
 
-func shellRunForegroundPTY(ctx context.Context, command string, workdir string) (string, error) {
-	ptmx, ptyCmd, err := shellBuildPtyCommand(ctx, command)
+func shellRunForegroundPTY(ctx context.Context, command string, workdir string, proxy ProxyConfig) (string, error) {
+	ptmx, ptyCmd, err := shellBuildPtyCommand(ctx, command, proxy)
 	if err != nil {
 		return fmt.Sprintf("Error: %s", err.Error()), err
 	}
@@ -514,8 +516,8 @@ func shellRunForegroundPTY(ctx context.Context, command string, workdir string) 
 	}
 }
 
-func shellStartPTYBackground(ctx context.Context, session *shellSession, arguments map[string]interface{}) error {
-	ptmx, ptyCmd, err := shellBuildPtyCommand(ctx, session.command)
+func shellStartPTYBackground(ctx context.Context, session *shellSession, arguments map[string]interface{}, proxy ProxyConfig) error {
+	ptmx, ptyCmd, err := shellBuildPtyCommand(ctx, session.command, proxy)
 	if err != nil {
 		return err
 	}

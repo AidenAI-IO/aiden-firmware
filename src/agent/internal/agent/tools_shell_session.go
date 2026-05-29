@@ -322,8 +322,9 @@ func shellPlatformShellArg() string {
 	return "-c"
 }
 
-func shellCommandEnv(usePTY bool) []string {
+func shellCommandEnv(usePTY bool, proxy ProxyConfig) []string {
 	env := os.Environ()
+	env = shellApplyProxyEnv(env, proxy)
 	if usePTY {
 		env = shellEnsureEnv(env, "TERM", "dumb")
 		env = shellEnsureEnv(env, "NO_COLOR", "1")
@@ -334,6 +335,49 @@ func shellCommandEnv(usePTY bool) []string {
 		env = shellEnsureEnv(env, "PAGER", "cat")
 	}
 	return env
+}
+
+func shellApplyProxyEnv(env []string, proxy ProxyConfig) []string {
+	proxy = proxy.WithDefaults()
+	if !proxy.HasProxyURL() {
+		return env
+	}
+
+	for _, key := range []string{
+		"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+	} {
+		env = shellRemoveEnv(env, key)
+	}
+
+	if value := strings.TrimSpace(proxy.HTTPProxy); value != "" {
+		env = shellEnsureEnv(env, "http_proxy", value)
+		env = shellEnsureEnv(env, "HTTP_PROXY", value)
+	}
+	if value := strings.TrimSpace(proxy.HTTPSProxy); value != "" {
+		env = shellEnsureEnv(env, "https_proxy", value)
+		env = shellEnsureEnv(env, "HTTPS_PROXY", value)
+	}
+	if value := strings.TrimSpace(proxy.AllProxy); value != "" {
+		env = shellEnsureEnv(env, "all_proxy", value)
+		env = shellEnsureEnv(env, "ALL_PROXY", value)
+	}
+	if value := strings.TrimSpace(proxy.NoProxy); value != "" {
+		env = shellEnsureEnv(env, "no_proxy", value)
+		env = shellEnsureEnv(env, "NO_PROXY", value)
+	}
+	return env
+}
+
+func shellRemoveEnv(env []string, key string) []string {
+	prefix := key + "="
+	filtered := env[:0]
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 func shellEnsureEnv(env []string, key string, value string) []string {
