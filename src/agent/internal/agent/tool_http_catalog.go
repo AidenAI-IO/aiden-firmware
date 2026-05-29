@@ -41,11 +41,6 @@ type toolCatalogEntry struct {
 }
 
 var builtInToolCatalog = map[string]toolCatalogEntry{
-	"activate_skill": {
-		Category:     "skills",
-		InputMode:    toolInputModeText,
-		ExampleInput: "planner",
-	},
 	"audio_volume": {
 		Category:     "audio",
 		InputMode:    toolInputModeJSON,
@@ -96,6 +91,21 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"command":"pwd"}`,
 	},
+	"skill_list": {
+		Category:     "skills",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"query":"planner","include_archived":false}`,
+	},
+	"skill_mark_used": {
+		Category:     "skills",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"name":"planner"}`,
+	},
+	"skill_read": {
+		Category:     "skills",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"name":"planner"}`,
+	},
 	"touch_gesture": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
@@ -109,10 +119,7 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 }
 
 func (r *Runtime) OwnedTools() []langtools.Tool {
-	owned := make([]langtools.Tool, 0, len(r.tools.tools)+1)
-	if r.hasLoadedSkills() {
-		owned = append(owned, NewActivateSkillTool(r.skills))
-	}
+	owned := make([]langtools.Tool, 0, len(r.tools.tools))
 	owned = append(owned, r.tools.All()...)
 	sort.Slice(owned, func(i, j int) bool {
 		return owned[i].Name() < owned[j].Name()
@@ -129,9 +136,6 @@ func (r *Runtime) ToolDescriptors() []ToolDescriptor {
 		}
 		meta := builtInToolCatalog[tool.Name()]
 		exampleInput := meta.ExampleInput
-		if tool.Name() == "activate_skill" {
-			exampleInput = r.defaultActivateSkillExample()
-		}
 		descriptors = append(descriptors, ToolDescriptor{
 			Name:         tool.Name(),
 			Category:     defaultString(meta.Category, "general"),
@@ -264,16 +268,4 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-func (r *Runtime) defaultActivateSkillExample() string {
-	if r == nil || r.skills == nil || r.skills.GetIndex() == nil {
-		return ""
-	}
-	names := r.skills.GetIndex().Names()
-	sort.Strings(names)
-	if len(names) == 0 {
-		return ""
-	}
-	return names[0]
 }

@@ -171,14 +171,15 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 	toolSet.RegisterMemoryTools(memoryDir, profileFn, extractionCfg.SummaryMaxChunks, debouncer)
 
-	// Register skill tools
+	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithMemoryLogger(logger)), toolSet, skillIndex)
+
+	// Register skill tools after the runtime exists so skill_manage can mark the
+	// skill index dirty. The updated index is reloaded at the start of the next run.
 	if cfg.ConfigDir != "" {
 		skillsDir := filepath.Join(cfg.ConfigDir, "skills")
 		manifestPath := filepath.Join(cfg.ConfigDir, "skill-state", ".bundled_manifest.json")
-		toolSet.RegisterSkillTools(skillsDir, manifestPath)
+		toolSet.RegisterSkillTools(skillsDir, manifestPath, rt.MarkSkillsDirty)
 	}
-
-	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithMemoryLogger(logger)), toolSet, skillIndex)
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
 	rt.sleep = sleepController
@@ -206,12 +207,16 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 			}
 		}
 	}
+	skillManager := NewSkillManager(skillIndex)
+	if cfg.ConfigDir != "" {
+		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
+	}
 	return &Runtime{
 		config:       cfg,
 		models:       models,
 		memories:     memories,
 		tools:        tools,
-		skills:       NewSkillManager(skillIndex),
+		skills:       skillManager,
 		skillsLoaded: skillIndex != nil && len(skillIndex.Names()) > 0,
 		sleep:        sleepController,
 	}
@@ -394,10 +399,6 @@ func (r *Runtime) ClearAllMemory(ctx context.Context) error {
 func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 	available := make([]langtools.Tool, 0)
 
-	if r.hasLoadedSkills() && skills.manager != nil {
-		available = append(available, NewActivateSkillTool(skills.manager))
-	}
-
 	if skills.HasToolRestriction {
 		for toolName := range skills.AllowedTools {
 			if strings.HasPrefix(toolName, "delegate_") {
@@ -419,14 +420,27 @@ func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 				continue
 			}
 		}
-		if tool, ok := r.tools.Get(name); ok {
-			if !toolAlreadyIncluded(available, name) {
-				available = append(available, tool)
-			}
-		}
+		available = r.appendToolIfAvailable(available, name)
+	}
+
+	// Keep non-mutating skill meta-tools available even when an active skill has
+	// allowed_tools restrictions. Otherwise the Hermes-like flow breaks: the
+	// prompt can show Available skills, but the model cannot skill_read the
+	// matching SKILL.md. skill_manage remains excluded unless explicitly allowed.
+	for _, name := range []string{"skill_list", "skill_read", "skill_mark_used"} {
+		available = r.appendToolIfAvailable(available, name)
 	}
 
 	return available
+}
+
+func (r *Runtime) appendToolIfAvailable(tools []langtools.Tool, name string) []langtools.Tool {
+	if tool, ok := r.tools.Get(name); ok {
+		if !toolAlreadyIncluded(tools, name) {
+			return append(tools, tool)
+		}
+	}
+	return tools
 }
 
 func toolAlreadyIncluded(tools []langtools.Tool, name string) bool {

@@ -1,6 +1,6 @@
 ---
 name: planner
-description: Task decomposition and delegation.
+description: Use when decomposing a complex task, planning steps, or delegating focused research.
 metadata:
   preferred_model: primary
   allowed_tools: [calculator, delegate_researcher]

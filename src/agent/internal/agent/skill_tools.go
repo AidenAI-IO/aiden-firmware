@@ -9,7 +9,10 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
+
+const maxSkillReadBytes = 64 * 1024
 
 type SkillListTool struct {
 	skillsDir string
@@ -27,7 +30,12 @@ func NewSkillListTool(skillsDir string, usagePath ...string) *SkillListTool {
 func (t *SkillListTool) Name() string { return "skill_list" }
 
 func (t *SkillListTool) Description() string {
-	return `List installed skills from the user skills directory. Input: optional query string, or JSON with query, state, include_archived, and limit.`
+	return strings.Join([]string{
+		"List available skills by name and description, similar to Hermes skills_list.",
+		"Use when the user asks what skills exist, when you need to browse/search skills, or when the Available skills catalog is insufficient.",
+		"For ordinary task execution, prefer the Available skills catalog and call skill_read directly for the matching skill.",
+		`Input: optional query string, or JSON with query, state, include_archived, and limit.`,
+	}, " ")
 }
 
 func (t *SkillListTool) Call(_ context.Context, input string) (string, error) {
@@ -173,45 +181,187 @@ func NewSkillReadTool(skillsDir string, usagePath ...string) *SkillReadTool {
 func (t *SkillReadTool) Name() string { return "skill_read" }
 
 func (t *SkillReadTool) Description() string {
-	return "Read the full SKILL.md content for a skill. Input: skill name."
+	return strings.Join([]string{
+		"Load the full SKILL.md instructions for an available skill, similar to Hermes skill_view.",
+		"Use this before acting when the user's task matches an Available skills entry and the skill is not already fully active.",
+		"Also use it when the user explicitly asks to inspect a skill, or before patching a skill with skill_manage.",
+		"Do not read every skill; choose only relevant skills. Reads UTF-8 text files only; binary assets are rejected. Input: skill name or JSON with name and optional file_path.",
+	}, " ")
+}
+
+type skillReadInput struct {
+	Name     string `json:"name"`
+	FilePath string `json:"file_path"`
 }
 
 func (t *SkillReadTool) Call(_ context.Context, input string) (string, error) {
-	name := strings.TrimSpace(input)
+	req := parseSkillReadInput(input)
+	name := req.Name
 	if name == "" {
 		return "", fmt.Errorf("skill name is required")
 	}
 	if !isValidSkillName(name) {
 		return "", fmt.Errorf("invalid skill name %q", name)
 	}
-	path := filepath.Join(t.skillsDir, name, "SKILL.md")
-	data, err := os.ReadFile(path)
+	filePath := strings.TrimSpace(req.FilePath)
+	if filePath == "" {
+		filePath = "SKILL.md"
+	}
+	path, err := safeSkillReadPath(t.skillsDir, name, filePath)
 	if err != nil {
-		return "", fmt.Errorf("skill %q not found", name)
+		return "", err
+	}
+	data, err := readSkillTextFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if filePath == "SKILL.md" {
+				return "", fmt.Errorf("skill %q not found", name)
+			}
+			return "", fmt.Errorf("skill %q file %q not found", name, filePath)
+		}
+		return "", err
 	}
 	recordSkillViewed(t.usagePath, name)
-	return string(data), nil
+	content := string(data)
+	if filePath == "SKILL.md" {
+		content = appendLinkedFilesSection(content, t.skillsDir, name)
+	}
+	return content, nil
+}
+
+func appendLinkedFilesSection(content, skillsDir, name string) string {
+	files := listSkillLinkedFiles(skillsDir, name)
+	if len(files) == 0 {
+		return content
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(content, "\n"))
+	b.WriteString("\n\n---\nLinked files available via skill_read {\"name\":\"")
+	b.WriteString(name)
+	b.WriteString("\",\"file_path\":...}:\n")
+	for _, file := range files {
+		b.WriteString("- ")
+		b.WriteString(file)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func listSkillLinkedFiles(skillsDir, name string) []string {
+	skillDir := filepath.Join(skillsDir, name)
+	var files []string
+	for dir := range allowedSubDirs {
+		root := filepath.Join(skillDir, dir)
+		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			rel, err := filepath.Rel(skillDir, path)
+			if err != nil {
+				return nil
+			}
+			files = append(files, filepath.ToSlash(rel))
+			return nil
+		})
+	}
+	sort.Strings(files)
+	return files
+}
+
+func readSkillTextFile(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxSkillReadBytes {
+		return nil, fmt.Errorf("skill file %q is too large (%d bytes > %d bytes)", path, info.Size(), maxSkillReadBytes)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxSkillReadBytes {
+		return nil, fmt.Errorf("skill file %q is too large (%d bytes > %d bytes)", path, len(data), maxSkillReadBytes)
+	}
+	if !utf8.Valid(data) {
+		return nil, fmt.Errorf("skill file %q is not valid UTF-8 text", path)
+	}
+	return data, nil
+}
+
+func parseSkillReadInput(input string) skillReadInput {
+	trimmed := strings.TrimSpace(input)
+	if strings.HasPrefix(trimmed, "{") {
+		var req skillReadInput
+		if err := json.Unmarshal([]byte(trimmed), &req); err == nil {
+			req.Name = strings.TrimSpace(req.Name)
+			req.FilePath = strings.TrimSpace(req.FilePath)
+			return req
+		}
+	}
+	return skillReadInput{Name: trimmed}
+}
+
+func safeSkillReadPath(skillsDir, name, filePath string) (string, error) {
+	skillDir := filepath.Join(skillsDir, name)
+	if filePath == "SKILL.md" {
+		return safeResolvedSkillPath(skillDir, "SKILL.md")
+	}
+	clean := filepath.Clean(filePath)
+	if clean == "." || filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") || strings.Contains(clean, string(filepath.Separator)+".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid file_path %q", filePath)
+	}
+	parts := strings.Split(clean, string(filepath.Separator))
+	if len(parts) < 2 || !allowedSubDirs[parts[0]] {
+		return "", fmt.Errorf("file_path must be SKILL.md or under references/, templates/, scripts/, or assets/")
+	}
+	return safeResolvedSkillPath(skillDir, clean)
+}
+
+func safeResolvedSkillPath(skillDir, filePath string) (string, error) {
+	path := filepath.Join(skillDir, filePath)
+	resolvedSkillDir, err := filepath.EvalSymlinks(skillDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve skill directory: %w", err)
+	}
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return path, nil
+		}
+		return "", fmt.Errorf("resolve skill file %q: %w", filePath, err)
+	}
+	rel, err := filepath.Rel(resolvedSkillDir, resolvedPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("file_path %q escapes skill directory", filePath)
+	}
+	return resolvedPath, nil
 }
 
 type SkillManageTool struct {
 	skillsDir    string
 	manifestPath string
 	usagePath    string
+	onModify     func()
 }
 
-func NewSkillManageTool(skillsDir, manifestPath string) *SkillManageTool {
-	return &SkillManageTool{skillsDir: skillsDir, manifestPath: manifestPath, usagePath: usagePathForManifest(manifestPath)}
+func NewSkillManageTool(skillsDir, manifestPath string, onModify ...func()) *SkillManageTool {
+	tool := &SkillManageTool{skillsDir: skillsDir, manifestPath: manifestPath, usagePath: usagePathForManifest(manifestPath)}
+	if len(onModify) > 0 {
+		tool.onModify = onModify[0]
+	}
+	return tool
 }
 
 func (t *SkillManageTool) Name() string { return "skill_manage" }
 
 func (t *SkillManageTool) Description() string {
-	return `Create, edit, patch, or delete skills. Input: JSON with fields:
-- action: "create"|"edit"|"patch"|"delete"|"write_file"|"remove_file"
+	return `Create, edit, patch, delete, archive, or restore skills, similar to Hermes skill_manage. Use only when the user asks to create/update/delete skills, or after reading a skill with skill_read and deciding a maintenance change is needed. Input: JSON with fields:
+- action: "create"|"edit"|"patch"|"delete"|"write_file"|"remove_file"|"mark_stale"|"archive"|"restore_archive"
 - name: skill name
 - content: full SKILL.md (for create/edit)
 - old_string, new_string: for patch
-- file_path, file_content: for write_file/remove_file
+- file_path, file_content: for write_file/remove_file under references/, templates/, scripts/, or assets/
 - reason: why this change is being made`
 }
 
@@ -439,6 +589,9 @@ func (t *SkillManageTool) setLifecycleState(req skillManageInput, state, message
 
 func (t *SkillManageTool) recordModify(name string) {
 	recordSkillModified(t.usagePath, name)
+	if t.onModify != nil {
+		t.onModify()
+	}
 }
 
 func (t *SkillManageTool) updateManifestOnModify(name string, clearFailedMerge bool) {

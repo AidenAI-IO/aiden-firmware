@@ -17,6 +17,11 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 		"Default behavior:",
 		"{{.default_behavior}}",
 		"",
+		"{{.skill_behavior}}",
+		"",
+		"Available skills:",
+		"{{.skill_catalog}}",
+		"",
 		"Active skills:",
 		"{{.skill_instructions}}",
 		"",
@@ -52,6 +57,8 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 			"agent_name":         agentName,
 			"agent_instruction":  combinedAgentInstruction(cfg),
 			"default_behavior":   defaultAgentBehavior(),
+			"skill_behavior":     skillBehavior(),
+			"skill_catalog":      skills.CatalogSummary(),
 			"skill_instructions": skills.CombinedInstructions(),
 			"tool_names":         joinToolNames(availableTools),
 			"tool_descriptions":  describeTools(availableTools),
@@ -67,6 +74,11 @@ func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, ava
 		"",
 		"Default behavior:",
 		defaultAgentBehavior(),
+		"",
+		skillBehavior(),
+		"",
+		"Available skills:",
+		skills.CatalogSummary(),
 		"",
 		"Active skills:",
 		skills.CombinedInstructions(),
@@ -106,6 +118,30 @@ func defaultAgentBehavior() string {
 		"- 用户明确要求“拨打”才真正点下呼叫；如果只要求准备拨号，或号码/联系人信息不够，就先停在确认步骤或追问。",
 		"- 调用工具时，description 要用用户语言写一句简短口语化的话，说明马上要做什么；语音客户端可能会在工具执行时朗读。",
 		"- 手机边缘手势必须从物理边缘附近开始，参数不要保守。返回优先用 touch_gesture 的 type \"back\"；回主屏优先用 type \"home\"。如果手写 swipe，左边缘返回用 start.x=0.001 左右，底边回主页用 start.y=0.999 左右。",
+	}, "\n")
+}
+
+func skillBehavior() string {
+	return strings.Join([]string{
+		"## Skills",
+		"Skills 是可复用的操作流程，不是 memory。它适合 App 操作、排障、设备流程、表单/授权/支付、重复任务和已验证的工具使用模式。",
+		"",
+		"### 可用信息",
+		"- Available skills 列出当前可用 skill 的名称和描述；Active skills 列出本轮已激活并注入的完整说明。",
+		"- skill_list 用于浏览或搜索 skills，skill_read 用于加载相关 skill 的 SKILL.md 或链接文件，skill_manage 用于创建、编辑、归档或维护 skill，skill_mark_used 用于记录实际使用。",
+		"",
+		"### 使用规则",
+		"- 行动前先查看 Available skills；对可复用流程、App 操作、排障、设备设置、表单提交、支付/授权或已知重复任务，优先匹配 skill。",
+		"- 如果 Available skills 不够判断，再用 skill_list 搜索；找到相关 skill 后，先 skill_read，再执行。",
+		"- 不要读取所有 skill。只读取和当前任务相关的 skill；如果相关 skill 已在 Active skills 中，优先按已激活说明执行，只有需要完整 SKILL.md 细节时才再次 skill_read。",
+		"- 已加载 skill 是本次任务 SOP；除非它和用户指令、安全规则、当前屏幕状态或工具结果冲突。skill 过时或部分错误时，基于当前证据调整本次执行。",
+		"- 实际按某个 skill 执行后，如果有 skill_mark_used 工具，就用该 skill 名称调用它。",
+		"",
+		"### 维护规则",
+		"- 只有可复用流程才写入或更新 skill；不要保存一次性进度、临时状态、秘密、原始日志或个人事实。",
+		"- 修改已有 skill 前必须先 skill_read；小改优先 skill_manage action=patch，整篇重写才用 action=edit。",
+		"- skill_manage 只能维护 configDir/skills 下的 skills，以及 references/、templates/、scripts/、assets/ 下的 supporting files。",
+		"- 不要直接修改 bundled source 或 configDir/skill-state 文件。",
 	}, "\n")
 }
 

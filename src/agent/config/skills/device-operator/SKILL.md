@@ -1,6 +1,6 @@
 ---
 name: device-operator
-description: Operate the connected target device UI through screenshot-driven actions.
+description: Use when controlling a visible target device UI through screenshots, touch, mouse, or keyboard.
 metadata:
   preferred_model: primary
   allowed_tools: [screenshot, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text]

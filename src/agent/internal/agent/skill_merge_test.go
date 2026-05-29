@@ -646,6 +646,126 @@ func testAgentCreatedSkill(name string) string {
 	return "---\nname: " + name + "\ndescription: Agent-created skill\nsource: agent\ncreated_by: agent\n---\n\nDo agent things.\n"
 }
 
+func TestSkillReadToolDescriptionFramesSkillViewUsage(t *testing.T) {
+	desc := NewSkillReadTool(t.TempDir()).Description()
+	for _, want := range []string{
+		"similar to Hermes skill_view",
+		"Use this before acting when the user's task matches an Available skills entry",
+		"Do not read every skill",
+		"UTF-8 text files only",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("skill_read description missing %q: %s", want, desc)
+		}
+	}
+}
+
+func TestSkillReadToolReadsLinkedFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeSKILL(t, dir, "alpha", testSkillA)
+	refDir := filepath.Join(dir, "alpha", "references")
+	if err := os.MkdirAll(refDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(refDir, "notes.md"), []byte("reference notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewSkillReadTool(dir)
+
+	mainContent, err := tool.Call(context.Background(), `{"name":"alpha"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(mainContent, "Linked files available") || !strings.Contains(mainContent, "references/notes.md") {
+		t.Fatalf("expected main SKILL.md read to list linked files, got:\n%s", mainContent)
+	}
+
+	got, err := tool.Call(context.Background(), `{"name":"alpha","file_path":"references/notes.md"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "reference notes" {
+		t.Fatalf("unexpected linked file content: %q", got)
+	}
+
+	if _, err := tool.Call(context.Background(), `{"name":"alpha","file_path":"../secret"}`); err == nil {
+		t.Fatalf("expected traversal path to be rejected")
+	}
+}
+
+func TestSkillReadToolRejectsSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows")
+	}
+	dir := t.TempDir()
+	writeSKILL(t, dir, "alpha", testSkillA)
+	refDir := filepath.Join(dir, "alpha", "references")
+	if err := os.MkdirAll(refDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsidePath := filepath.Join(dir, "secret.md")
+	if err := os.WriteFile(outsidePath, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsidePath, filepath.Join(refDir, "secret.md")); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewSkillReadTool(dir)
+
+	if _, err := tool.Call(context.Background(), `{"name":"alpha","file_path":"references/secret.md"}`); err == nil {
+		t.Fatalf("expected symlink escape to be rejected")
+	}
+}
+
+func TestSkillReadToolRejectsLargeAndNonUTF8Files(t *testing.T) {
+	dir := t.TempDir()
+	writeSKILL(t, dir, "alpha", testSkillA)
+	refDir := filepath.Join(dir, "alpha", "references")
+	if err := os.MkdirAll(refDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	large := strings.Repeat("x", maxSkillReadBytes+1)
+	if err := os.WriteFile(filepath.Join(refDir, "large.md"), []byte(large), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(refDir, "binary.md"), []byte{0xff, 0xfe, 0xfd}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewSkillReadTool(dir)
+	if _, err := tool.Call(context.Background(), `{"name":"alpha","file_path":"references/large.md"}`); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected too large error, got %v", err)
+	}
+	if _, err := tool.Call(context.Background(), `{"name":"alpha","file_path":"references/binary.md"}`); err == nil || !strings.Contains(err.Error(), "UTF-8") {
+		t.Fatalf("expected UTF-8 error, got %v", err)
+	}
+}
+
+func TestSkillToolDescriptionsMirrorHermesRoles(t *testing.T) {
+	dir := t.TempDir()
+	for _, tt := range []struct {
+		name string
+		desc string
+		want []string
+	}{
+		{
+			name: "skill_list",
+			desc: NewSkillListTool(dir).Description(),
+			want: []string{"similar to Hermes skills_list", "List available skills", "call skill_read directly"},
+		},
+		{
+			name: "skill_manage",
+			desc: NewSkillManageTool(dir, "").Description(),
+			want: []string{"similar to Hermes skill_manage", "Create, edit, patch, delete", "write_file"},
+		},
+	} {
+		for _, want := range tt.want {
+			if !strings.Contains(tt.desc, want) {
+				t.Fatalf("%s description missing %q: %s", tt.name, want, tt.desc)
+			}
+		}
+	}
+}
+
 func TestSkillManageTool_CreateAndPatch(t *testing.T) {
 	dir := t.TempDir()
 	tool := NewSkillManageTool(dir, "")
