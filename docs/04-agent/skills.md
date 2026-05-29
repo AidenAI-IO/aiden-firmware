@@ -1,6 +1,6 @@
 # Skills 机制
 
-Agent 支持从配置目录中自动发现 `SKILL.md`，并在运行时通过 `activate_skill` 工具激活。
+Agent 支持从配置目录中自动发现 `SKILL.md`，在 system prompt 中展示 Available skills catalog，并通过 `skill_read` 按需加载相关 skill 的完整说明。
 
 ## 目录
 
@@ -34,10 +34,11 @@ Prefer describing what you see before clicking.
 ## 当前已实现能力
 
 - 自动发现 `SKILL.md`；
-- 通过 `activate_skill` 运行时激活；
+- 在 prompt 中展示 Available skills，并通过 `skill_read` 运行时加载完整 `SKILL.md`；
 - 将 skill instructions 注入 system prompt；
-- 支持 `allowed_tools` 限制可用工具；
+- 支持 `allowed_tools` 限制普通任务工具；`skill_list` / `skill_read` / `skill_manage` / `skill_mark_used` 作为 skill meta-tools 默认保留；
 - 提供 `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used`；
+- `skill_read` 支持读取 `SKILL.md`，以及 `references/`、`templates/`、`scripts/`、`assets/` 下的 UTF-8 supporting files；
 - 记录 `usage.json` 中的 view/use/modify 统计；
 - 支持 `active` / `stale` / `archived` lifecycle 状态，`skill_list` 默认过滤 archived；
 - 对 `source: agent` 或 `created_by: agent` 的 skill，`skill_list` 会按最近使用时间自动执行 lifecycle：90 天未使用进入 `stale`，180 天未使用进入 `archived`；该自动扫描最多 24 小时运行一次；
@@ -65,7 +66,8 @@ GET /api/tool-skills
 - skill 内容应描述高层策略，不要硬编码易变坐标；
 - 对 UI 操作类 skill，建议要求先截图再点击；
 - `allowed_tools` 应尽量收敛，避免无关工具被激活；
-- `allowed_tools` 只能引用当前已注册工具，或 `delegate_<child>` 形式的子 Agent 委派 pseudo-tool。
+- `allowed_tools` 只能引用当前已注册工具，或 `delegate_<child>` 形式的子 Agent 委派 pseudo-tool；
+- 不要把一次性任务进度、临时状态、秘密、原始日志或个人事实写进 skill；这些不属于可复用流程。
 
 ## 后续设计：内置同步 + LLM 合并
 

@@ -1,6 +1,6 @@
 # 工具 HTTP API
 
-Agent 在 Web UI 模式下暴露所有 Agent-owned tools，供浏览器 Tool Lab、外部 Agent 或手工调用。
+Agent 在 Web UI 模式下暴露可通过 HTTP 安全调用的 Agent-owned tools，供浏览器 Tool Lab、外部 Agent 或手工调用。维护型内部工具（如 `skill_manage`）不通过 HTTP 暴露。
 
 ## 端点
 
@@ -28,11 +28,11 @@ JSON 对象输入：
 }
 ```
 
-纯文本工具（如 `activate_skill`）：
+需要传原始字符串时可使用 `raw_input`。多数工具（包括 skill tools）在 catalog 中以 JSON 示例描述输入：
 
 ```json
 {
-  "input": "planner"
+  "raw_input": "planner"
 }
 ```
 
@@ -69,7 +69,6 @@ JSON 对象输入：
 
 | 工具 | 类别 | 输入示例 |
 | --- | --- | --- |
-| `activate_skill` | skills | `"planner"` |
 | `audio_volume` | audio | `{}` |
 | `current_time` | system | `{"timezone":"Asia/Shanghai"}` |
 | `enter_sleep` | system | `{"reason":"user asked me to sleep"}` |
@@ -80,8 +79,13 @@ JSON 对象输入：
 | `mouse_scroll` | input | `{"delta":-3}` |
 | `screenshot` | observation | `{}` |
 | `shell` | system | `{"command":"pwd"}` |
+| `skill_list` | skills | `{"query":"planner","include_archived":false}` |
+| `skill_mark_used` | skills | `{"name":"planner"}` |
+| `skill_read` | skills | `{"name":"planner"}` |
 | `touch_gesture` | input | `{"type":"tap","point":{"x":0.5,"y":0.5}}` / `{"type":"back"}` / `{"type":"home"}` |
 | `weather` | system | `{"location":"Shanghai"}` |
+
+`skill_manage` 是运行时 Agent 内部可用的 skill 维护工具，不通过 HTTP Tool API 暴露。
 
 ## curl 示例
 

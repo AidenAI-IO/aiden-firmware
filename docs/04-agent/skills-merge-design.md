@@ -1212,6 +1212,8 @@ skill_mark_used
 
 其中 `skill_manage` 可以创建、修改、删除 `configDir/skills/` 下的任意 effective skill，管理 supporting files，并维护 lifecycle 状态。`skill_mark_used` 用于把“实际使用过某个 skill”和“只是读取过 skill”区分开。
 
+这些 skill meta-tools 默认随 runtime 注册。即使某个 active skill 使用 `allowed_tools` 收敛普通任务工具，`skill_list` / `skill_read` / `skill_manage` / `skill_mark_used` 仍保持可用，避免 prompt 要求读取或维护 skill 时模型没有对应工具。HTTP Tool API 只暴露非维护型 skill tools；`skill_manage` 不通过 HTTP 暴露。
+
 注意：
 
 ```text
@@ -1256,32 +1258,36 @@ skill-state/ 由同步/合并系统维护，不能被 skill_manage 直接修改�
 传 state=active/stale/archived 可按 lifecycle 状态过滤。
 ```
 
-Agent 在遇到可复用流程、App 操作、排查步骤、设备设置、登录、支付确认、表单填写等任务时，应先调用 `skill_list` 查找相关 skill。
+Agent 在遇到可复用流程、App 操作、排查步骤、设备设置、登录、支付确认、表单填写等任务时，应先查看 prompt 中的 Available skills catalog；如果 catalog 不足以判断，或需要按关键词/状态搜索，再调用 `skill_list` 查找相关 skill。
 
 ### 18.2 `skill_read`
 
-用途：读取某个 skill 的完整 `SKILL.md`。
+用途：读取某个 skill 的完整 `SKILL.md`，或读取该 skill 下允许的 linked/supporting file。
 
 输入示例：
 
 ```json
 {
-  "name": "payment-confirm"
+  "name": "payment-confirm",
+  "file_path": "references/merchant-checklist.md"
 }
 ```
 
+如果省略 `file_path`，默认读取 `SKILL.md`。输出为 UTF-8 文本本身，不再包一层 JSON；读取 `SKILL.md` 时会在尾部追加可通过 `skill_read {"name":"...","file_path":"..."}` 读取的 linked files 列表。
+
 输出示例：
 
-```json
-{
-  "name": "payment-confirm",
-  "path": "configDir/skills/payment-confirm/SKILL.md",
-  "content": "---
+```markdown
+---
 name: payment-confirm
 description: ...
 ---
-..."
-}
+
+...
+
+---
+Linked files available via skill_read {"name":"payment-confirm","file_path":...}:
+- references/merchant-checklist.md
 ```
 
 规则：
@@ -1290,6 +1296,9 @@ description: ...
 如果 skill_list 返回相关 skill，Agent 必须先 skill_read 再执行。
 不要一次性读取所有 skill。
 修改已有 skill 前，必须先 skill_read 当前内容。
+file_path 只能是 SKILL.md，或 references/、templates/、scripts/、assets/ 下的相对路径。
+读取内容必须是 UTF-8 文本，单个文件最大 64KB；二进制 assets 不通过 skill_read 直接读取。
+路径解析必须同时锚定 configDir/skills 根目录和目标 skill 目录；拒绝 ../、绝对路径、supporting file symlink 逃逸，以及 configDir/skills/<name> 本身的 symlink 逃逸。
 ```
 
 ### 18.3 `skill_manage`
@@ -1571,37 +1580,30 @@ last_used_at = now。
 
 建议加入 Aiden system prompt：
 
-```text
+```markdown
 ## Skills
 
-Skills are reusable SOPs for app operations, troubleshooting workflows, device procedures, and learned tool usage. They are not memory. Use memory for stable facts and user preferences; use skills for repeatable procedures.
+Skills 是可复用的操作流程，不是 memory。它适合 App 操作、排障、设备流程、表单/授权/支付、重复任务和已验证的工具使用模式。
 
-Available skill tools:
-- skill_list: list installed skills from configDir/skills.
-- skill_read: read a full SKILL.md from configDir/skills.
-- skill_manage: create, edit, patch, delete skills and manage supporting files under configDir/skills.
-- skill_mark_used: mark a skill as actually used after following it.
+### 可用信息
+- Available skills 列出当前可用 skill 的名称和描述；Active skills 列出本轮已激活并注入的完整说明。
+- skill_list 用于浏览或搜索 skills，skill_read 用于加载相关 skill 的 SKILL.md 或链接文件，skill_manage 用于创建、编辑、归档或维护 skill，skill_mark_used 用于记录实际使用。
 
-Skill usage rules:
-1. configDir/skills is the runtime source of truth. Skills in this directory are effective installed skills.
-2. Before planning a reusable procedure, app operation, troubleshooting workflow, payment/authorization flow, form submission, device setting change, or known repeated task, call skill_list.
-3. If skill_list returns a relevant skill, call skill_read before acting.
-4. Do not load all skills. Search metadata first, then read only relevant skills.
-5. Treat a loaded skill as the task SOP. Follow it unless it conflicts with user instructions, safety policy, current screen state, or observed tool results.
-6. If a skill is stale or partially wrong, adapt during the current task based on evidence.
-7. After actually following a skill for the task, call skill_mark_used.
-8. When a reusable procedure should be saved or corrected, use skill_manage.
-9. skill_manage may create or modify any skill under configDir/skills, including local copies originally seeded from bundled skills.
-10. skill_manage must never modify bundled source files such as /usr/share/aiden/skills or src/agent/config/skills.
-11. skill_manage must never directly modify configDir/skill-state files.
-12. Before modifying an existing skill, call skill_read first.
-13. Prefer action=patch for small corrections. Use action=edit only when rewriting the whole skill is necessary.
-14. Use action=delete only when the user explicitly requests deletion or the current task is skill cleanup.
-15. Use write_file/remove_file only for supporting files under references/, templates/, scripts/, or assets/.
-16. Use mark_stale/archive/restore_archive only for lifecycle state changes; these do not edit SKILL.md.
-17. Do not store one-off task progress, transient state, secrets, raw logs, or personal facts in skills.
-18. Create/update skills only for reusable procedures, app operation workflows, troubleshooting steps, tool usage patterns, and verified recurring processes.
+### 使用规则
+- 行动前先查看 Available skills；对可复用流程、App 操作、排障、设备设置、表单提交、支付/授权或已知重复任务，优先匹配 skill。
+- 如果 Available skills 不够判断，再用 skill_list 搜索；找到相关 skill 后，先 skill_read，再执行。
+- 不要读取所有 skill。只读取和当前任务相关的 skill；如果相关 skill 已在 Active skills 中，优先按已激活说明执行，只有需要完整 SKILL.md 细节时才再次 skill_read。
+- 已加载 skill 是本次任务 SOP；除非它和用户指令、安全规则、当前屏幕状态或工具结果冲突。skill 过时或部分错误时，基于当前证据调整本次执行。
+- 实际按某个 skill 执行后，如果有 skill_mark_used 工具，就用该 skill 名称调用它。
+
+### 维护规则
+- 只有可复用流程才写入或更新 skill；不要保存一次性进度、临时状态、秘密、原始日志或个人事实。
+- 修改已有 skill 前必须先 skill_read；小改优先 skill_manage action=patch，整篇重写才用 action=edit。
+- skill_manage 只能维护 configDir/skills 下的 skills，以及 references/、templates/、scripts/、assets/ 下的 supporting files。
+- 不要直接修改 bundled source 或 configDir/skill-state 文件。
 ```
+
+这段 prompt 可以保持静态，因为 skill meta-tools 在 runtime 中默认注册，并且不会被 active skill 的 `allowed_tools` 收敛掉。
 
 ### 18.9 Skill 统计与使用记录
 
@@ -1897,7 +1899,7 @@ bundled skills
   ↓ seed/sync/merge
 configDir/skills 作为运行时唯一真源
   ↓
-Agent 自动发现和 activate_skill 使用
+Agent 在 prompt 中展示 Available skills，并通过 skill_read 按需加载完整流程
 ```
 
 同步策略参考 Hermes：
