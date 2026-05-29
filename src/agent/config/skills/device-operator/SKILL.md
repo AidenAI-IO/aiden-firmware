@@ -1,6 +1,6 @@
 ---
 name: device-operator
-description: Operate the connected device UI through screenshot-driven actions.
+description: Operate the connected target device UI through screenshot-driven actions.
 metadata:
   preferred_model: primary
   allowed_tools: [screenshot, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text]
@@ -81,6 +81,54 @@ Next adjustment:
 
 Only report the log when the task is blocked or the user asks.
 
+## Recovery Strategies
+
+If a tap does not work:
+
+- Observe the screen again before retrying.
+- If the app may be slow, allow one extra observation before changing strategy.
+- Retry at most once with a slightly adjusted target.
+- If it still does not work, use another visible control, back navigation, or a different path.
+
+If a swipe does not work:
+
+- Change the start point away from screen edges, fixed headers, or bottom navigation bars.
+- Increase the swipe distance.
+- If the content appears to be at an edge, try the opposite direction once.
+- If the same list boundary appears again, stop searching that direction.
+
+If the current screen is unrelated to the task:
+
+- Use `touch_gesture` with `type: "back"` to return when possible.
+- If back does not change the screen, look for a visible back, close, cancel, or X control.
+- After recovery, observe again before continuing the original task.
+
+## Search, Lists, and Choices
+
+Prefer search or filtering controls before long manual browsing when looking for an app, contact, setting, file, item, or page content.
+
+If the target is not found:
+
+- Try one alternate search term when reasonable.
+- Check each relevant tab, list, or section once before repeating any of them.
+- Do not repeatedly search or scroll the same unchanged list.
+- If multiple plausible matches appear, ask the user to choose instead of guessing.
+
+When selecting from a list, verify the selected item matches the user's requested name, label, or visible details before acting on it.
+
+## Sensitive Actions
+
+Stop and ask the user before actions involving:
+
+- payment, purchase, order placement, or subscription
+- deleting data or changing account settings
+- login, verification code, captcha, or identity verification
+- privacy permissions, contacts, photos, microphone, camera, or location
+- sending messages, emails, posts, or comments on behalf of the user
+- starting calls, video calls, or other real-world communication
+
+Do not confirm sensitive dialogs unless the user explicitly asked for that exact action.
+
 ## Text Entry
 
 Before typing:
@@ -102,5 +150,12 @@ For navigation tasks:
 ## Completion
 
 A device operation is complete only when the screenshot confirms the requested outcome.
+
+Before saying the task is complete:
+
+- Observe the screen one last time.
+- Check that the requested target, selection, text, or destination is correct.
+- Check for wrong selections, missing selections, duplicate selections, and unfinished dialogs.
+- If a failed action was skipped, mention it in the final answer.
 
 If the outcome cannot be verified visually, say what was done and what remains uncertain.
