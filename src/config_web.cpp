@@ -1468,36 +1468,47 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
                 cJSON_Delete(req);
 
                 std::string auth_header = "Authorization: Bearer " + api_key;
-                std::string cmd =
-                    std::string("curl -sS --max-time 12 ") +
-                    "-o /tmp/.config_test_body -w '%{http_code}' " +
-                    "-H " + shell_quote("Content-Type: application/json") + " " +
-                    "-H " + shell_quote(auth_header) + " " +
-                    "-d " + shell_quote(req_body) + " " +
-                    shell_quote(chat_url) + " 2>&1";
-
-                CommandResult cr = run_shell_command(cmd);
-                std::string http_code = trim_copy(cr.output);
-                std::string resp_body = read_file_contents("/tmp/.config_test_body", 4096);
-                resp_body = trim_trailing_newlines(resp_body);
-                if (resp_body.size() > 400) {
-                    resp_body = resp_body.substr(0, 400) + "...";
-                }
-                run_shell_command("rm -f /tmp/.config_test_body");
-
-                bool key_ok = (http_code == "200");
-                cJSON_AddBoolToObject(r3, "passed", key_ok ? 1 : 0);
-
-                std::string detail;
-                if (cr.exit_code != 0 && http_code.empty()) {
-                    detail = "request failed: " + cr.output;
-                } else if (key_ok) {
-                    detail = "HTTP 200 - key works (model: " + model_name + ")";
+                char response_path_template[] = "/tmp/config_test_body.XXXXXX";
+                int response_fd = mkstemp(response_path_template);
+                if (response_fd < 0) {
+                    cJSON_AddBoolToObject(r3, "passed", 0);
+                    cJSON_AddStringToObject(r3, "detail", "failed to create temporary response file");
+                    all_passed = false;
                 } else {
-                    detail = "HTTP " + http_code + " - " + resp_body;
+                    close(response_fd);
+                    std::string response_path = response_path_template;
+
+                    std::string cmd =
+                        std::string("curl -sS --max-time 12 ") +
+                        "-o " + shell_quote(response_path) + " -w '%{http_code}' " +
+                        "-H " + shell_quote("Content-Type: application/json") + " " +
+                        "-H " + shell_quote(auth_header) + " " +
+                        "-d " + shell_quote(req_body) + " " +
+                        shell_quote(chat_url) + " 2>&1";
+
+                    CommandResult cr = run_shell_command(cmd);
+                    std::string http_code = trim_copy(cr.output);
+                    std::string resp_body = read_file_contents(response_path.c_str(), 4096);
+                    resp_body = trim_trailing_newlines(resp_body);
+                    if (resp_body.size() > 400) {
+                        resp_body = resp_body.substr(0, 400) + "...";
+                    }
+                    unlink(response_path.c_str());
+
+                    bool key_ok = (http_code == "200");
+                    cJSON_AddBoolToObject(r3, "passed", key_ok ? 1 : 0);
+
+                    std::string detail;
+                    if (cr.exit_code != 0 && http_code.empty()) {
+                        detail = "request failed: " + cr.output;
+                    } else if (key_ok) {
+                        detail = "HTTP 200 - key works (model: " + model_name + ")";
+                    } else {
+                        detail = "HTTP " + http_code + " - " + resp_body;
+                    }
+                    if (!key_ok) all_passed = false;
+                    cJSON_AddStringToObject(r3, "detail", detail.c_str());
                 }
-                if (!key_ok) all_passed = false;
-                cJSON_AddStringToObject(r3, "detail", detail.c_str());
             }
             cJSON_AddItemToArray(results, r3);
         }
