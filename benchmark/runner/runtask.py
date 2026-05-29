@@ -6,7 +6,7 @@ import shutil
 import time
 from pathlib import Path
 from runner.agent_client import AgentClient, AgentTimeoutError
-from runner.assertions import evaluate_hard_assertions
+from runner.assertions import evaluate_expected_answer, evaluate_hard_assertions
 from runner.capture import take_screenshot, write_step_screenshot
 from runner.judge import judge_task, JudgeConfig
 from runner.models import TaskResult, RubricVerdict, HardAssertionResults
@@ -106,6 +106,20 @@ def run_one_task(
         base.status = "timeout" if timed_out else "failed"
         base.finished_at = now_iso()
         return base
+    if task.expected_answer is not None:
+        answer_outcome = evaluate_expected_answer(
+            trace.final_response, task.expected_answer, task.answer_format or "option_letter"
+        )
+        base.metrics.update({
+            "expected_answer": answer_outcome.expected_answer,
+            "predicted_answer": answer_outcome.predicted_answer,
+            "expected_answer_match": answer_outcome.passed,
+        })
+        base.hard_assertions.expected_answer = answer_outcome.passed
+        if not answer_outcome.passed:
+            base.status = "failed"
+            base.finished_at = now_iso()
+            return base
     if judge_cfg is None:
         base.status = "passed"
         base.finished_at = now_iso()

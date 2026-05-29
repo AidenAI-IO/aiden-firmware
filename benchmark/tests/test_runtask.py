@@ -8,6 +8,9 @@ from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec
 
 
 class FakeClient:
+    def __init__(self, response="ok"):
+        self.response = response
+
     def clear_history(self):
         pass
 
@@ -23,8 +26,8 @@ class FakeClient:
 
     def chat(self, message, timeout_sec=None, attachments=None):
         return ChatResponse(
-            response="ok",
-            history=[{"type": "assistant", "content": "ok"}],
+            response=self.response,
+            history=[{"type": "assistant", "content": self.response}],
         )
 
 
@@ -51,3 +54,38 @@ def test_run_one_task_passes_without_judge_when_hard_assertions_pass(tmp_path: P
 
     assert result.status == "passed"
     assert result.hard_assertions.response_exists is True
+
+
+def test_run_one_task_fails_without_judge_when_expected_answer_is_wrong(tmp_path: Path):
+    suite = Suite(
+        name="persona",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="personamem_case",
+        category="memory",
+        description_for_judge="Choose the personalized option.",
+        prompt="Choose one option.",
+        rubric=[RubricItem(id="chooses_correct", check="Agent chooses correct option.")],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=0),
+        expected_answer="(c)",
+        answer_format="option_letter",
+    )
+
+    result = run_one_task(
+        FakeClient("I choose <final_answer>(b)</final_answer>"),
+        suite,
+        task,
+        1,
+        tmp_path / "artifacts",
+        None,
+        None,
+        "run-1",
+    )
+
+    assert result.status == "failed"
+    assert result.metrics["expected_answer_match"] is False
+    assert result.metrics["predicted_answer"] == "(b)"

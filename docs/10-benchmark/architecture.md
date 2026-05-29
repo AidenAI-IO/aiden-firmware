@@ -40,6 +40,8 @@ Agent benchmark 采用 **HTTP API 驱动 + 离线判分** 的架构，将任务�
 
 采用 **硬断言 + LLM judge** 两段式：
 
+对于 PersonaMem 这类多选题，任务可以声明 `expected_answer` 和 `answer_format: "option_letter"`。Runner 会从最终回复中提取 `(a)`/`(b)`/`(c)`/`(d)` 并先做确定性判分；不匹配时直接失败，匹配后可继续进入 LLM judge 评估解释质量。
+
 #### 硬断言 (Hard Assertions)
 
 用于快速失败，避免浪费 judge 成本：

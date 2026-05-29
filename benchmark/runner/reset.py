@@ -1,7 +1,7 @@
 from __future__ import annotations
 import time
 from typing import Any
-from runner.agent_client import AgentClient, AgentTimeoutError
+from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
 
 
 class ResetError(RuntimeError):
@@ -21,7 +21,10 @@ def run_tool_sequence(client: AgentClient, sequence: list[dict[str, Any]]) -> No
             continue
         if not tool:
             raise ResetError(f"reset step missing 'tool': {step!r}")
-        result = client.invoke_tool(tool, args)
+        try:
+            result = client.invoke_tool(tool, args)
+        except AgentRequestError as e:
+            raise ResetError(f"tool {tool} failed: {e}") from e
         if result.is_error:
             raise ResetError(f"tool {tool} failed: {result.output}")
 
@@ -50,6 +53,8 @@ def per_task_setup(client: AgentClient, setup: dict[str, Any] | None) -> None:
             client.chat(prompt, timeout_sec=timeout)
         except AgentTimeoutError as e:
             raise ResetError(f"setup agent_prompt timed out: {e}") from e
+        except AgentRequestError as e:
+            raise ResetError(f"setup agent_prompt failed: {e}") from e
         # Clear the setup conversation so it does not pollute the actual task chat.
         client.clear_history()
         return
