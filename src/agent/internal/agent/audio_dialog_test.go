@@ -92,7 +92,7 @@ func TestNewAudioDialogAudioWakeupUsesDirectAudioPath(t *testing.T) {
 	dialog, err := NewAudioDialog(Config{
 		Model:       ModelConfig{Provider: "fake"},
 		TTS:         TTSConfig{Provider: "minimax"},
-		Audio:       AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 32000},
+		Audio:       AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000},
 		InputMode:   "audio",
 		TriggerMode: "wakeup",
 	})
@@ -109,8 +109,8 @@ func TestNewAudioDialogAudioWakeupUsesDirectAudioPath(t *testing.T) {
 	if dialog.vad.alwaysBuffer {
 		t.Fatal("wakeup trigger mode should use normal VAD buffering")
 	}
-	if got := dialog.VADFrameSamples(); got != 960 {
-		t.Fatalf("VADFrameSamples() = %d, want 960 for 32kHz", got)
+	if got := dialog.VADFrameSamples(); got != 512 {
+		t.Fatalf("VADFrameSamples() = %d, want 512 for Silero RKNN VAD", got)
 	}
 }
 

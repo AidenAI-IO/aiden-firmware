@@ -131,10 +131,15 @@ void UdsServer::handle_client(int fd) {
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 
-    UdsMessage request;
-    FrameServiceStatus read_status = read_uds_message(fd, &request);
-    if (read_status == FrameServiceStatus::OK && handler_) {
-        handler_(request, fd);
+    while (true) {
+        UdsMessage request;
+        FrameServiceStatus read_status = read_uds_message(fd, &request);
+        if (read_status != FrameServiceStatus::OK) {
+            break;
+        }
+        if (handler_) {
+            handler_(request, fd);
+        }
     }
     ::close(fd);
 }

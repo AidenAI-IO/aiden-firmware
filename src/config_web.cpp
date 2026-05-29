@@ -457,7 +457,10 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
         "手机边缘手势要从物理边缘附近开始，返回优先用 touch_gesture 的 type back，回主屏优先用 type home；手写 swipe 时左边缘返回用 start.x=0.001 左右，底边回主页用 start.y=0.999 左右。";
     cfg.input_mode = "text";
     cfg.trigger_mode = "manual";
-    cfg.energy_threshold = 500;
+    cfg.vad_backend = "rknn";
+    cfg.vad_model_path = "/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
+    cfg.vad_helper_path = "/oem/usr/bin/rknn_vad";
+    cfg.vad_speech_threshold = 0.5;
     cfg.silence_ms = 650;
     cfg.min_speech_ms = 300;
     cfg.voice_session_enabled = true;
@@ -602,7 +605,10 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddStringToObject(agent, "additional_prompt", config.additional_prompt.c_str());
     cJSON_AddStringToObject(agent, "input_mode", config.input_mode.c_str());
     cJSON_AddStringToObject(agent, "trigger_mode", config.trigger_mode.c_str());
-    cJSON_AddNumberToObject(agent, "energy_threshold", config.energy_threshold);
+    cJSON_AddStringToObject(agent, "vad_backend", config.vad_backend.c_str());
+    cJSON_AddStringToObject(agent, "vad_model_path", config.vad_model_path.c_str());
+    cJSON_AddStringToObject(agent, "vad_helper_path", config.vad_helper_path.c_str());
+    cJSON_AddNumberToObject(agent, "vad_speech_threshold", config.vad_speech_threshold);
     cJSON_AddNumberToObject(agent, "silence_ms", config.silence_ms);
     cJSON_AddNumberToObject(agent, "min_speech_ms", config.min_speech_ms);
     cJSON_AddBoolToObject(agent, "voice_session_enabled", config.voice_session_enabled ? 1 : 0);
@@ -773,7 +779,10 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->additional_prompt, agent, "additional_prompt");
         set_json_str(&config->input_mode, agent, "input_mode");
         set_json_str(&config->trigger_mode, agent, "trigger_mode");
-        set_json_int(&config->energy_threshold, agent, "energy_threshold");
+        set_json_str(&config->vad_backend, agent, "vad_backend");
+        set_json_str(&config->vad_model_path, agent, "vad_model_path");
+        set_json_str(&config->vad_helper_path, agent, "vad_helper_path");
+        set_json_double(&config->vad_speech_threshold, agent, "vad_speech_threshold");
         set_json_int(&config->silence_ms, agent, "silence_ms");
         set_json_int(&config->min_speech_ms, agent, "min_speech_ms");
         set_json_bool(&config->voice_session_enabled, agent, "voice_session_enabled");
@@ -789,6 +798,9 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
 }
 
 std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
+    if (config.vad_speech_threshold < 0.0 || config.vad_speech_threshold > 1.0) {
+        return "vad_speech_threshold must be in range [0.0, 1.0]";
+    }
     if (config.voice_followup_timeout_ms < 0) {
         return "voice_followup_timeout_ms must be >= 0";
     }
@@ -1242,6 +1254,94 @@ ApiResponse handle_wifi_scan(const Options& options) {
     return make_json_ok(root);
 }
 
+std::string benchmark_html_page() {
+    return R"HTML(<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aiden Benchmark</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f5f5f5;padding:24px;color:#333}
+h1{font-size:20px;margin-bottom:16px}
+.card{background:#fff;border-radius:8px;padding:16px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+select,button{font-size:14px;padding:8px 16px;border-radius:6px;border:1px solid #ddd}
+button{background:#2563eb;color:#fff;border:none;cursor:pointer}
+button:disabled{background:#94a3b8;cursor:not-allowed}
+button:hover:not(:disabled){background:#1d4ed8}
+.status{margin-top:8px;font-size:13px;color:#666}
+.status.running{color:#d97706}
+.status.done{color:#16a34a}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #eee}
+th{font-weight:600;color:#666}
+a{color:#2563eb;text-decoration:none}
+a:hover{text-decoration:underline}
+.pass{color:#16a34a;font-weight:600}
+.fail{color:#dc2626;font-weight:600}
+</style></head><body>
+<h1>Aiden Benchmark</h1>
+<div class="card">
+<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+<select id="suiteSelect"><option value="">Loading...</option></select>
+<button id="runBtn" onclick="startRun()">Run</button>
+<span id="statusText" class="status">idle</span>
+</div></div>
+<div class="card"><h2 style="font-size:15px;margin-bottom:8px">History</h2>
+<table><thead><tr><th>Run ID</th><th>Suite</th><th>Passed</th><th>Failed</th><th>Report</th></tr></thead>
+<tbody id="historyBody"><tr><td colspan="5">Loading...</td></tr></tbody></table></div>
+<script>
+var polling=null;
+function load(){loadSuites();loadRuns();loadStatus()}
+function loadSuites(){
+fetch('/benchmark/suites').then(r=>r.json()).then(d=>{
+var s=document.getElementById('suiteSelect');s.innerHTML='';
+d.forEach(function(x){var o=document.createElement('option');o.value=x.path;o.textContent=x.name;s.appendChild(o)});
+})}
+function loadRuns(){
+fetch('/benchmark/runs').then(r=>r.json()).then(d=>{
+var tb=document.getElementById('historyBody');tb.innerHTML='';
+if(!d.length){tb.innerHTML='<tr><td colspan="5">No runs yet</td></tr>';return}
+d.forEach(function(r){
+var t=r.totals||{};var suite=r.suite||'';
+var sn=suite.split('/').pop().replace('.json','');
+var tr=document.createElement('tr');
+tr.innerHTML='<td>'+r.run_id+'</td><td>'+sn+'</td>'
++'<td class="pass">'+(t.passed||0)+'</td><td class="fail">'+(t.failed||0)+'</td>'
++'<td><a href="/benchmark/report/'+r.run_id+'">View</a></td>';
+tb.appendChild(tr)});
+})}
+function loadStatus(){
+fetch('/benchmark/status').then(r=>r.json()).then(d=>{
+var el=document.getElementById('statusText');
+var btn=document.getElementById('runBtn');
+el.textContent=d.status||'idle';
+el.className='status '+(d.status||'');
+btn.disabled=(d.status==='running');
+if(d.status==='running'&&!polling)polling=setInterval(pollStatus,3000);
+})}
+function pollStatus(){
+fetch('/benchmark/status').then(r=>r.json()).then(d=>{
+var el=document.getElementById('statusText');
+var btn=document.getElementById('runBtn');
+el.textContent=d.status||'idle';
+el.className='status '+(d.status||'');
+btn.disabled=(d.status==='running');
+if(d.status!=='running'){clearInterval(polling);polling=null;loadRuns()}
+})}
+function startRun(){
+var suite=document.getElementById('suiteSelect').value;
+if(!suite){alert('Select a suite');return}
+document.getElementById('runBtn').disabled=true;
+document.getElementById('statusText').textContent='running';
+document.getElementById('statusText').className='status running';
+fetch('/benchmark/run',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({suite:suite})}).then(r=>r.json()).then(function(){
+polling=setInterval(pollStatus,3000)});
+}
+load();
+</script></body></html>)HTML";
+}
+
 ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     if (request.error_status_code != 0) {
         ApiResponse response;
@@ -1258,6 +1358,167 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         response.body = CONFIG_WEB_HTML;
         return response;
     }
+
+    // ===== Benchmark routes =====
+    if (request.method == "GET" && request.path == "/benchmark") {
+        ApiResponse response;
+        response.content_type = "text/html; charset=utf-8";
+        response.body = benchmark_html_page();
+        return response;
+    }
+
+    if (request.method == "GET" && request.path == "/benchmark/suites") {
+        ApiResponse response;
+        cJSON* root = cJSON_CreateArray();
+        FILE* pipe = popen("find /userdata/agent/benchmark/suites -name '*.json' ! -name '._*' 2>/dev/null | sort", "r");
+        if (pipe) {
+            char line[512];
+            while (fgets(line, sizeof(line), pipe)) {
+                std::string path = trim_copy(line);
+                if (path.empty()) continue;
+                size_t pos = path.rfind('/');
+                std::string name = (pos != std::string::npos) ? path.substr(pos + 1) : path;
+                if (name.size() > 5) name = name.substr(0, name.size() - 5);
+                cJSON* item = cJSON_CreateObject();
+                cJSON_AddStringToObject(item, "name", name.c_str());
+                cJSON_AddStringToObject(item, "path", path.c_str());
+                cJSON_AddItemToArray(root, item);
+            }
+            pclose(pipe);
+        }
+        char* out = cJSON_PrintUnformatted(root);
+        response.body = out ? out : "[]";
+        if (out) free(out);
+        cJSON_Delete(root);
+        return response;
+    }
+
+    if (request.method == "GET" && request.path == "/benchmark/runs") {
+        ApiResponse response;
+        cJSON* root = cJSON_CreateArray();
+        FILE* pipe = popen("ls -1d /userdata/agent/benchmark/runs/2* 2>/dev/null | sort -r | head -20", "r");
+        if (pipe) {
+            char line[512];
+            while (fgets(line, sizeof(line), pipe)) {
+                std::string dir = trim_copy(line);
+                if (dir.empty()) continue;
+                size_t pos = dir.rfind('/');
+                std::string run_id = (pos != std::string::npos) ? dir.substr(pos + 1) : dir;
+                std::string manifest_path = dir + "/manifest.json";
+                cJSON* item = cJSON_CreateObject();
+                cJSON_AddStringToObject(item, "run_id", run_id.c_str());
+                FILE* mf = fopen(manifest_path.c_str(), "r");
+                if (mf) {
+                    fseek(mf, 0, SEEK_END);
+                    long sz = ftell(mf);
+                    fseek(mf, 0, SEEK_SET);
+                    if (sz > 0 && sz < 64 * 1024) {
+                        std::string buf(sz, '\0');
+                        fread(&buf[0], 1, sz, mf);
+                        cJSON* manifest = cJSON_Parse(buf.c_str());
+                        if (manifest) {
+                            cJSON* totals = cJSON_GetObjectItem(manifest, "totals");
+                            if (totals) cJSON_AddItemToObject(item, "totals", cJSON_Duplicate(totals, 1));
+                            cJSON* suite = cJSON_GetObjectItem(manifest, "suite_path");
+                            if (suite) cJSON_AddStringToObject(item, "suite", suite->valuestring);
+                            cJSON_Delete(manifest);
+                        }
+                    }
+                    fclose(mf);
+                }
+                cJSON_AddItemToArray(root, item);
+            }
+            pclose(pipe);
+        }
+        char* out = cJSON_PrintUnformatted(root);
+        response.body = out ? out : "[]";
+        if (out) free(out);
+        cJSON_Delete(root);
+        return response;
+    }
+
+    if (request.method == "GET" && starts_with(request.path, "/benchmark/report/")) {
+        std::string run_id = request.path.substr(18);
+        std::string safe_id;
+        for (char c : run_id) {
+            if (isalnum(c) || c == '-' || c == '_') safe_id.push_back(c);
+        }
+        std::string path = "/userdata/agent/benchmark/runs/" + safe_id + "/report.html";
+        ApiResponse response;
+        response.content_type = "text/html; charset=utf-8";
+        FILE* fp = fopen(path.c_str(), "r");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long sz = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            if (sz > 0 && sz < 512 * 1024) {
+                std::string buf(sz, '\0');
+                fread(&buf[0], 1, sz, fp);
+                response.body = std::move(buf);
+            } else {
+                response.status_code = 500;
+                response.body = "report too large or empty";
+            }
+            fclose(fp);
+        } else {
+            response.status_code = 404;
+            response.body = "<html><body><h2>Report not found</h2></body></html>";
+        }
+        return response;
+    }
+
+    if (request.method == "GET" && request.path == "/benchmark/status") {
+        ApiResponse response;
+        std::string path = "/userdata/agent/benchmark/state.json";
+        FILE* fp = fopen(path.c_str(), "r");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long sz = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            if (sz > 0 && sz < 8192) {
+                std::string buf(sz, '\0');
+                fread(&buf[0], 1, sz, fp);
+                response.body = std::move(buf);
+            }
+            fclose(fp);
+        } else {
+            response.body = "{\"status\":\"idle\"}";
+        }
+        return response;
+    }
+
+    if (request.method == "POST" && request.path == "/benchmark/run") {
+        ApiResponse response;
+        cJSON* req_body = cJSON_Parse(request.body.c_str());
+        if (!req_body || !json_is_string(cJSON_GetObjectItem(req_body, "suite"))) {
+            response.status_code = 400;
+            response.body = "{\"error\":\"missing suite field\"}";
+            if (req_body) cJSON_Delete(req_body);
+            return response;
+        }
+        std::string suite_path = cJSON_GetObjectItem(req_body, "suite")->valuestring;
+        cJSON_Delete(req_body);
+        // Write state.json
+        std::string state = "{\"status\":\"running\",\"suite\":\"" + suite_path + "\"}";
+        FILE* sf = fopen("/userdata/agent/benchmark/state.json", "w");
+        if (sf) { fputs(state.c_str(), sf); fclose(sf); }
+        // Launch runner in background
+        std::string cmd = "cd /userdata/agent/benchmark && "
+            "export OPENROUTER_API_KEY=$(grep 'api_key.*sk-or' /userdata/agent/agent.toml | sed 's/.*\"\\(sk-or[^\"]*\\)\".*/\\1/') && "
+            "export http_proxy=http://192.168.31.142:7897 && "
+            "export https_proxy=http://192.168.31.142:7897 && "
+            "export no_proxy=127.0.0.1,localhost && "
+            "python3 -c 'import sys;sys.path.insert(0,\".\");from runner.main import cli;sys.exit(cli())' "
+            "run --suite " + shell_quote(suite_path) + " "
+            "--agent-url http://127.0.0.1:8080 "
+            "--judge-model bytedance-seed/seed-2.0-lite "
+            "> /tmp/benchmark_run.log 2>&1; "
+            "echo '{\"status\":\"idle\"}' > /userdata/agent/benchmark/state.json &";
+        system(cmd.c_str());
+        response.body = "{\"ok\":true,\"status\":\"running\"}";
+        return response;
+    }
+    // ===== End benchmark routes =====
 
     if (request.method == "GET" && request.path == "/api/config") {
         return handle_get_config(options);

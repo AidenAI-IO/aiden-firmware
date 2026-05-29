@@ -27,7 +27,10 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.instruction = "Hello \"world\"";
     cfg.input_mode = "stt";
     cfg.trigger_mode = "manual";
-    cfg.energy_threshold = 500;
+    cfg.vad_backend = "cpu";
+    cfg.vad_model_path = "/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
+    cfg.vad_helper_path = "/oem/usr/bin/rknn_vad";
+    cfg.vad_speech_threshold = 0.5;
     cfg.silence_ms = 1000;
     cfg.min_speech_ms = 250;
     cfg.voice_session_enabled = false;
@@ -86,7 +89,10 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.instruction == "Hello \"world\"");
     CHECK(loaded.input_mode == "stt");
     CHECK(loaded.trigger_mode == "manual");
-    CHECK(loaded.energy_threshold == 500);
+    CHECK(loaded.vad_backend == "cpu");
+    CHECK(loaded.vad_model_path == "/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn");
+    CHECK(loaded.vad_helper_path == "/oem/usr/bin/rknn_vad");
+    CHECK(loaded.vad_speech_threshold == doctest::Approx(0.5));
     CHECK(loaded.silence_ms == 1000);
     CHECK(loaded.min_speech_ms == 250);
     CHECK(loaded.voice_session_enabled == false);
@@ -166,7 +172,7 @@ TEST_CASE("agent_toml strips inline comments after unquoted scalars") {
     std::string path = make_temp_path("comments.toml");
     {
         std::ofstream out(path);
-        out << "energy_threshold = 500   # threshold comment\n"
+        out << "vad_speech_threshold = 0.5   # threshold comment\n"
             << "[model]\n"
             << "provider = \"openrouter\"   # inline\n"
             << "model = \"x/y\"  # ok\n";
@@ -176,7 +182,7 @@ TEST_CASE("agent_toml strips inline comments after unquoted scalars") {
     std::string err;
     REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
     REQUIRE(err.empty());
-    CHECK(cfg.energy_threshold == 500);
+    CHECK(cfg.vad_speech_threshold == doctest::Approx(0.5));
     CHECK(cfg.model.provider == "openrouter");
     CHECK(cfg.model.model == "x/y");
 
