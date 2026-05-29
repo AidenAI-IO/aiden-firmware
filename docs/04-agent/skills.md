@@ -1,6 +1,6 @@
-# Skills 机制
+# Skills 和 RoleProfile 机制
 
-Agent 支持从配置目录中自动发现 `SKILL.md`，在 system prompt 中展示 Available skills catalog，并通过 `skill_read` 按需加载相关 skill 的完整说明。
+Agent 支持从配置目录中自动发现 `SKILL.md`，在 system prompt 中展示 Available skills catalog，并通过 `skill_read` 按需加载相关 skill 的完整说明。激活后的 skill 进入多角色 `RoleProfile`：`planner`、`executor`、`verifier`。
 
 ## 目录
 
@@ -35,7 +35,7 @@ Prefer describing what you see before clicking.
 
 - 自动发现 `SKILL.md`；
 - 在 prompt 中展示 Available skills，并通过 `skill_read` 运行时加载完整 `SKILL.md`；
-- 将 skill instructions 注入 system prompt；
+- 将 skill instructions 注入多角色 `RoleProfile` 的 system prompt；
 - 支持 `allowed_tools` 限制普通任务工具；`skill_list` / `skill_read` / `skill_manage` / `skill_mark_used` 作为 skill meta-tools 默认保留；
 - 提供 `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used`；
 - `skill_read` 支持读取 `SKILL.md`，以及 `references/`、`templates/`、`scripts/`、`assets/` 下的 UTF-8 supporting files；
@@ -43,6 +43,15 @@ Prefer describing what you see before clicking.
 - 支持 `active` / `stale` / `archived` lifecycle 状态，`skill_list` 默认过滤 archived；
 - 对 `source: agent` 或 `created_by: agent` 的 skill，`skill_list` 会按最近使用时间自动执行 lifecycle：90 天未使用进入 `stale`，180 天未使用进入 `archived`；该自动扫描最多 24 小时运行一次；
 - `skill_mark_used` 会把 `stale` / `archived` skill 自动恢复为 `active`。
+
+## 角色权限
+
+- `planner`：唯一允许创建或修改计划的角色，输出当前计划和下一步；
+- `executor`：只能执行 planner 给出的下一步，最多发起一个工具调用，不能修改计划或决定结束；
+- `verifier`：唯一允许决定本轮是否可以结束的角色，最终回复必须由它确认；它会在最终判定前重新看到原始任务和完成条件；
+- `reflector`：只在循环疑似卡住、重复执行，或多次未通过 verifier 时介入，供下一轮 planner 参考。
+
+只有 `executor` 会收到可调用的 function tools；其他角色只看到 executor 工具目录，用于规划和复核。这样 planner 能优先规划 `audio_volume` 这类直接工具，但不能自己调用工具。
 
 ## 已解析但未完全执行的字段
 

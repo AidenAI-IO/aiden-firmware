@@ -9,7 +9,7 @@ import (
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
-const postActionScreenshotDelay = 500 * time.Millisecond
+const postActionScreenshotDelay = time.Second
 
 type postActionScreenshotResult struct {
 	screenshotResult
@@ -35,7 +35,7 @@ func (t *postActionScreenshotTool) Name() string {
 }
 
 func (t *postActionScreenshotTool) Description() string {
-	return t.inner.Description() + " On successful execution, waits 500ms and returns a post-action screenshot observation."
+	return t.inner.Description() + " On successful execution, waits 1s and returns a post-action screenshot observation."
 }
 
 func (t *postActionScreenshotTool) ReturnsVisualObservation() bool {

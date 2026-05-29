@@ -74,6 +74,7 @@ type RunMetrics struct {
 
 type RunEvent struct {
 	Type        string    `json:"type"`
+	Role        string    `json:"role,omitempty"`
 	ToolName    string    `json:"tool_name,omitempty"`
 	ToolInput   string    `json:"tool_input,omitempty"`
 	Description string    `json:"description,omitempty"`
@@ -287,7 +288,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		callOptions = append(callOptions, chains.WithMaxTokens(req.MaxTokens))
 	}
 	var streamCallbackHandler *runtimeCallbackHandler
-	var agentCallbackHandler callbacks.Handler
 	if req.StreamWriter != nil || req.EventHandler != nil || r.logger != nil {
 		streamCallbackHandler = &runtimeCallbackHandler{
 			writer:       req.StreamWriter,
@@ -297,23 +297,16 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			eventHandler: req.EventHandler,
 		}
 	}
-	if req.StreamWriter != nil {
-		agentCallbackHandler = streamCallbackHandler
-		callOptions = append(callOptions, chains.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
-			streamCallbackHandler.HandleStreamingFunc(ctx, chunk)
-			return nil
-		}))
-	}
 	if streamCallbackHandler != nil {
 		availableTools = wrapToolsWithCallbacks(availableTools, streamCallbackHandler)
 	}
 
-	agent := r.buildAgent(model, resolvedSkills, availableTools, req.Attachments, agentCallbackHandler)
 	var executorHandler callbacks.Handler
 	if streamCallbackHandler != nil {
 		executorHandler = streamCallbackHandler
 	}
-	executor := newParallelToolExecutor(agent, memoryHandle.Memory, maxIterations, executorHandler)
+	profiles := r.buildRoleProfiles(resolvedSkills, availableTools)
+	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, memoryHandle.Memory, maxIterations, req.Attachments, executorHandler)
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
@@ -509,6 +502,34 @@ func (r *Runtime) buildAgent(
 	)
 }
 
+func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []langtools.Tool) RoleProfiles {
+	return buildRoleProfiles(
+		AgentConfig{
+			Instruction:      r.config.Instruction,
+			AdditionalPrompt: r.config.AdditionalPrompt,
+		},
+		skills,
+		availableTools,
+		r.memoryContextForPrompt(),
+	)
+}
+
+func (r *Runtime) memoryContextForPrompt() string {
+	if r.config.ConfigDir == "" {
+		return ""
+	}
+	var parts []string
+	sessionSummary, _ := os.ReadFile(filepath.Join(r.config.ConfigDir, "memory", "session", "summary.md"))
+	if len(sessionSummary) > 0 {
+		parts = append(parts, string(sessionSummary))
+	}
+	profile, _ := os.ReadFile(filepath.Join(r.config.ConfigDir, "memory", "long_term", "profile.md"))
+	if len(profile) > 0 {
+		parts = append(parts, string(profile))
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 // runtimeCallbackHandler implements callbacks.Handler for streaming output and
 // tool/agent observability.
 type runtimeCallbackHandler struct {
@@ -686,6 +707,21 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 }
 
 func (h *runtimeCallbackHandler) HandleAgentFinish(ctx context.Context, finish schema.AgentFinish) {}
+
+func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, content string) {
+	content = strings.TrimSpace(content)
+	if h.logger != nil {
+		h.logger.Info("Role output: role=%s content=%s", role, truncateForLog(content, 1000))
+	}
+	if h.eventHandler != nil {
+		h.eventHandler(RunEvent{
+			Type:      "role_output",
+			Role:      role,
+			Content:   content,
+			Timestamp: time.Now(),
+		})
+	}
+}
 
 func (h *runtimeCallbackHandler) HandleRetrieverStart(ctx context.Context, query string) {}
 
