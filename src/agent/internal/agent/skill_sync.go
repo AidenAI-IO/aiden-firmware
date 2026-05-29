@@ -130,25 +130,33 @@ func syncOneSkill(name, bundledPath, userSkillsDir, stateDir string, manifest *B
 
 	case userExists && !hasManifest:
 		// §9.7: same name but no manifest — need two-way merge
-		userContent, _ := os.ReadFile(userPath)
-		if userContent != nil {
-			localHash := hashContent(userContent)
-			mergeKey := computeMergeKey(MergeTwoWay, name, "", bundledHash, localHash)
-			report.MergeNeeded = append(report.MergeNeeded, SkillMergeJob{
-				SkillName:    name,
-				Mode:         MergeTwoWay,
-				Upstream:     string(bundledContent),
-				Local:        string(userContent),
-				LocalHash:    localHash,
-				UpstreamHash: bundledHash,
-				MergeKey:     mergeKey,
-				UserPath:     userPath,
-				BasePath:     basePathForSkill(stateDir, name),
-				StateDir:     stateDir,
-			})
-		} else {
-			report.KeptUser = append(report.KeptUser, name)
+		userContent, err := os.ReadFile(userPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				report.KeptUser = append(report.KeptUser, name)
+				return
+			}
+			log.Printf("[skill_sync] read user %s for two-way merge: %v", name, err)
+			return
 		}
+		if len(userContent) == 0 {
+			report.KeptUser = append(report.KeptUser, name)
+			return
+		}
+		localHash := hashContent(userContent)
+		mergeKey := computeMergeKey(MergeTwoWay, name, "", bundledHash, localHash)
+		report.MergeNeeded = append(report.MergeNeeded, SkillMergeJob{
+			SkillName:    name,
+			Mode:         MergeTwoWay,
+			Upstream:     string(bundledContent),
+			Local:        string(userContent),
+			LocalHash:    localHash,
+			UpstreamHash: bundledHash,
+			MergeKey:     mergeKey,
+			UserPath:     userPath,
+			BasePath:     basePathForSkill(stateDir, name),
+			StateDir:     stateDir,
+		})
 
 	case userExists && hasManifest:
 		syncExistingSkill(name, userPath, bundledContent, bundledHash, entry, stateDir, manifest, report)

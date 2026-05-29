@@ -1102,20 +1102,19 @@ src/agent/internal/agent/skill_sync_test.go
 
 ```go
 type SkillSyncOptions struct {
-    ConfigDir         string
+    ConfigDir        string
     BundledSkillsDir string
-    Quiet             bool
-    MergeWithLLM      bool
+    MergeModel       SkillMergeModel
+    Quiet            bool
 }
 
 type SkillSyncReport struct {
     Copied        []string
     Updated       []string
-    Merged        []string
     KeptUser      []string
     DeletedByUser []string
+    Stale         []string
     MergeNeeded   []SkillMergeJob
-    MergeFailed   []string
 }
 
 func SyncBundledSkills(ctx context.Context, opts SkillSyncOptions) (*SkillSyncReport, error)
@@ -1129,8 +1128,8 @@ func SyncBundledSkills(ctx context.Context, opts SkillSyncOptions) (*SkillSyncRe
 SyncBundledSkills(ctx, SkillSyncOptions{
     ConfigDir: cfg.ConfigDir,
     BundledSkillsDir: bundledSkillsDir,
+    MergeModel: cfg.SkillMergeModel,
     Quiet: true,
-    MergeWithLLM: true,
 })
 ```
 

@@ -169,7 +169,7 @@ func shouldAutoManageSkill(skillPath string) bool {
 }
 
 func skillLifecycleReferenceTime(entry SkillUsageEntry) (time.Time, bool) {
-	return latestRFC3339Time(entry.LastUsedAt, entry.LastModifiedAt, entry.LastViewedAt, entry.StateChangedAt)
+	return latestRFC3339Time(entry.LastUsedAt, entry.LastModifiedAt, entry.LastViewedAt)
 }
 
 func latestRFC3339Time(values ...string) (time.Time, bool) {

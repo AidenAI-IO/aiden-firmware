@@ -86,9 +86,10 @@ func (w *MergeWorker) Start(ctx context.Context) {
 }
 
 func (w *MergeWorker) Stop() {
-	if w.cancel != nil {
-		w.cancel()
+	if w.cancel == nil {
+		return
 	}
+	w.cancel()
 	<-w.done
 }
 
@@ -298,10 +299,11 @@ func computeMergeKey(mode SkillMergeMode, skillName, baseHash, upstreamHash, loc
 }
 
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
-	return s[:max]
+	return string(runes[:max])
 }
 
 func moveFile(src, dst string) error {

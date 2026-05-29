@@ -63,7 +63,7 @@ SKILLS_DEST="$DEST_OVERLAY/usr/share/aiden/skills"
 if [ -d "$SKILLS_SRC" ]; then
     mkdir -p "$SKILLS_DEST"
     rsync -a --delete "$SKILLS_SRC/" "$SKILLS_DEST/"
-    skill_count=$(find "$SKILLS_DEST" -name SKILL.md | wc -l | tr -d ' ')
+    skill_count=$(find "$SKILLS_DEST" -mindepth 2 -maxdepth 2 -type f -name SKILL.md | wc -l | tr -d ' ')
     if [ "$skill_count" -lt 1 ]; then
         echo "  ✗ Error: no SKILL.md staged in $SKILLS_DEST" >&2
         exit 1

@@ -326,8 +326,8 @@ func (t *SkillManageTool) edit(req skillManageInput) (string, error) {
 }
 
 func (t *SkillManageTool) patch(req skillManageInput) (string, error) {
-	if req.OldString == "" || req.NewString == "" {
-		return "", fmt.Errorf("old_string and new_string are required for patch")
+	if req.OldString == "" {
+		return "", fmt.Errorf("old_string is required for patch")
 	}
 	skillPath := filepath.Join(t.skillsDir, req.Name, "SKILL.md")
 	data, err := os.ReadFile(skillPath)
@@ -382,8 +382,8 @@ func (t *SkillManageTool) deleteSkill(req skillManageInput) (string, error) {
 }
 
 func (t *SkillManageTool) writeFile(req skillManageInput) (string, error) {
-	if req.FilePath == "" || req.FileContent == "" {
-		return "", fmt.Errorf("file_path and file_content required for write_file")
+	if req.FilePath == "" {
+		return "", fmt.Errorf("file_path required for write_file")
 	}
 	if !isAllowedSubPath(req.FilePath) {
 		return "", fmt.Errorf("file_path must be under references/, templates/, scripts/, or assets/")
