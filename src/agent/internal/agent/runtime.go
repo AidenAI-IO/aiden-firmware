@@ -423,11 +423,10 @@ func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 		available = r.appendToolIfAvailable(available, name)
 	}
 
-	// Keep non-mutating skill meta-tools available even when an active skill has
-	// allowed_tools restrictions. Otherwise the Hermes-like flow breaks: the
-	// prompt can show Available skills, but the model cannot skill_read the
-	// matching SKILL.md. skill_manage remains excluded unless explicitly allowed.
-	for _, name := range []string{"skill_list", "skill_read", "skill_mark_used"} {
+	// Keep skill meta-tools available even when an active skill has allowed_tools
+	// restrictions. Otherwise the Hermes-like flow breaks: the prompt can show
+	// Available skills, but the model cannot read or maintain the matching skill.
+	for _, name := range []string{"skill_list", "skill_read", "skill_manage", "skill_mark_used"} {
 		available = r.appendToolIfAvailable(available, name)
 	}
 

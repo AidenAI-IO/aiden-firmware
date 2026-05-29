@@ -202,12 +202,12 @@ func TestResolveToolsKeepsSkillMetaToolsWhenRestricted(t *testing.T) {
 	for _, tool := range resolvedTools {
 		names[tool.Name()] = true
 	}
-	for _, name := range []string{"screenshot", "skill_list", "skill_read", "skill_mark_used"} {
+	for _, name := range []string{"screenshot", "skill_list", "skill_read", "skill_manage", "skill_mark_used"} {
 		if !names[name] {
 			t.Fatalf("expected %s to be available under tool restrictions; got %#v", name, names)
 		}
 	}
-	for _, name := range []string{"skill_manage", "recall_memory"} {
+	for _, name := range []string{"recall_memory"} {
 		if names[name] {
 			t.Fatalf("did not expect %s without explicit allowed_tools entry; got %#v", name, names)
 		}

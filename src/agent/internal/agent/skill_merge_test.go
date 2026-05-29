@@ -717,6 +717,32 @@ func TestSkillReadToolRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestSkillReadToolRejectsSkillDirectorySymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows")
+	}
+	dir := t.TempDir()
+	skillsDir := filepath.Join(dir, "skills")
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	externalDir := filepath.Join(dir, "external-alpha")
+	if err := os.MkdirAll(externalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(externalDir, "SKILL.md"), []byte(testSkillA), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalDir, filepath.Join(skillsDir, "alpha")); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewSkillReadTool(skillsDir)
+
+	if _, err := tool.Call(context.Background(), `{"name":"alpha"}`); err == nil {
+		t.Fatalf("expected skill directory symlink escape to be rejected")
+	}
+}
+
 func TestSkillReadToolRejectsLargeAndNonUTF8Files(t *testing.T) {
 	dir := t.TempDir()
 	writeSKILL(t, dir, "alpha", testSkillA)

@@ -305,7 +305,7 @@ func parseSkillReadInput(input string) skillReadInput {
 func safeSkillReadPath(skillsDir, name, filePath string) (string, error) {
 	skillDir := filepath.Join(skillsDir, name)
 	if filePath == "SKILL.md" {
-		return safeResolvedSkillPath(skillDir, "SKILL.md")
+		return safeResolvedSkillPath(skillsDir, skillDir, "SKILL.md")
 	}
 	clean := filepath.Clean(filePath)
 	if clean == "." || filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") || strings.Contains(clean, string(filepath.Separator)+".."+string(filepath.Separator)) {
@@ -315,14 +315,27 @@ func safeSkillReadPath(skillsDir, name, filePath string) (string, error) {
 	if len(parts) < 2 || !allowedSubDirs[parts[0]] {
 		return "", fmt.Errorf("file_path must be SKILL.md or under references/, templates/, scripts/, or assets/")
 	}
-	return safeResolvedSkillPath(skillDir, clean)
+	return safeResolvedSkillPath(skillsDir, skillDir, clean)
 }
 
-func safeResolvedSkillPath(skillDir, filePath string) (string, error) {
+func safeResolvedSkillPath(skillsDir, skillDir, filePath string) (string, error) {
 	path := filepath.Join(skillDir, filePath)
+	resolvedSkillsRoot, err := filepath.EvalSymlinks(skillsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return path, nil
+		}
+		return "", fmt.Errorf("resolve skills directory: %w", err)
+	}
 	resolvedSkillDir, err := filepath.EvalSymlinks(skillDir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return path, nil
+		}
 		return "", fmt.Errorf("resolve skill directory: %w", err)
+	}
+	if !pathWithin(resolvedSkillsRoot, resolvedSkillDir) {
+		return "", fmt.Errorf("skill directory %q escapes skills directory", filepath.Base(skillDir))
 	}
 	resolvedPath, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -331,11 +344,15 @@ func safeResolvedSkillPath(skillDir, filePath string) (string, error) {
 		}
 		return "", fmt.Errorf("resolve skill file %q: %w", filePath, err)
 	}
-	rel, err := filepath.Rel(resolvedSkillDir, resolvedPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+	if !pathWithin(resolvedSkillDir, resolvedPath) {
 		return "", fmt.Errorf("file_path %q escapes skill directory", filePath)
 	}
 	return resolvedPath, nil
+}
+
+func pathWithin(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 type SkillManageTool struct {
