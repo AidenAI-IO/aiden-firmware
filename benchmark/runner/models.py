@@ -28,6 +28,7 @@ class HardAssertionResults:
     max_tool_calls: bool | None = None
     timeout: bool = True
     response_exists: bool = False
+    expected_answer: bool | None = None
 
 @dc.dataclass
 class TaskResult:

@@ -2,6 +2,7 @@ from __future__ import annotations
 import dataclasses as dc
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,8 @@ class TaskSpec:
     setup: dict[str, Any] | None = None
     repeats: int = 1
     input_screenshot: str | None = None
+    expected_answer: str | None = None
+    answer_format: str | None = None
 
 @dc.dataclass
 class Suite:
@@ -95,6 +98,18 @@ def load_suite(path: Path) -> Suite:
             repeats = 1
         elif repeats > 100:
             raise SuiteValidationError(f"task {tid}: repeats {repeats} exceeds max 100")
+        expected_answer = raw.get("expected_answer")
+        answer_format = raw.get("answer_format")
+        if expected_answer is not None:
+            if not isinstance(expected_answer, str):
+                raise SuiteValidationError(f"task {tid}: expected_answer must be string")
+            answer_format = answer_format or "option_letter"
+            if answer_format == "option_letter" and not re.search(
+                r"\(([a-dA-D])\)|\b([a-dA-D])\b", expected_answer
+            ):
+                raise SuiteValidationError(f"task {tid}: invalid expected option answer {expected_answer!r}")
+        if answer_format is not None and answer_format != "option_letter":
+            raise SuiteValidationError(f"task {tid}: unsupported answer_format {answer_format!r}")
         tasks.append(TaskSpec(
             id=tid, category=cat,
             description_for_judge=raw["description_for_judge"],
@@ -103,6 +118,8 @@ def load_suite(path: Path) -> Suite:
             setup=raw.get("setup"),
             repeats=repeats,
             input_screenshot=raw.get("input_screenshot"),
+            expected_answer=expected_answer,
+            answer_format=answer_format,
         ))
     return Suite(
         name=data.get("name", Path(path).stem),

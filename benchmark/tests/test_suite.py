@@ -28,6 +28,42 @@ def test_load_suite_returns_parsed(tmp_path: Path):
     assert suite.tasks[0].category == "single_step"
     assert suite.tasks[0].rubric[0].id == "in_settings"
 
+def test_load_suite_parses_expected_option_answer(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "expected_answer": "(c)",
+                "answer_format": "option_letter",
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+
+    assert suite.tasks[0].expected_answer == "(c)"
+    assert suite.tasks[0].answer_format == "option_letter"
+
+def test_load_suite_rejects_invalid_expected_option_answer(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "expected_answer": "z",
+                "answer_format": "option_letter",
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError):
+        load_suite(p)
+
 def test_load_suite_missing_tasks_raises(tmp_path: Path):
     p = tmp_path / "s.json"
     p.write_text(json.dumps({"name": "x"}), encoding="utf-8")
@@ -96,3 +132,35 @@ def test_memory_suite_global_reset_tolerates_missing_memory_dir():
 
     assert "mkdir -p /userdata/agent/memory" in command
     assert "ls /userdata/agent/memory/ 2>/dev/null || true" in command
+
+
+def test_personamem_lt_recall_suite_uses_deterministic_answers():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "personamem_lt_recall_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+    expected_tasks = {
+        "personamem_music_recall_fact",
+        "personamem_music_update_reason",
+        "personamem_music_preference_evolution",
+        "personamem_cooking_generalization",
+        "personamem_music_creative_getaway",
+        "personamem_music_new_expression",
+        "personamem_food_fusion_cuisine",
+        "personamem_therapy_yoga_acknowledge",
+        "personamem_therapy_games_dislike",
+        "personamem_writing_style_discrimination",
+        "personamem_book_recommendation_preference",
+        "personamem_travel_planning_preference",
+        "personamem_online_shopping_preference",
+        "personamem_sports_recommendation_preference",
+        "personamem_study_consultation_generalization",
+        "personamem_family_relations_update_reason",
+    }
+
+    assert suite.name == "personamem_lt_recall_v1"
+    assert expected_tasks <= set(task_by_id)
+    assert len(suite.tasks) >= 16
+    assert all(task.category == "memory" for task in suite.tasks)
+    assert all(task.setup and task.setup["tool_sequence"] for task in suite.tasks)
+    assert all(task.expected_answer for task in suite.tasks)
+    assert all(task.answer_format == "option_letter" for task in suite.tasks)

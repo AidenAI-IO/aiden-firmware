@@ -1,3 +1,4 @@
+import runner.assertions as assertions
 from runner.assertions import evaluate_hard_assertions, AssertionOutcome
 from runner.suite import HardAssertions
 from runner.models import Trace, ToolCall
@@ -36,3 +37,23 @@ def test_missing_response_fails_when_required():
     out = evaluate_hard_assertions(make_trace(1, response=""), spec, timed_out=False)
     assert out.all_passed is False
     assert out.results.response_exists is False
+
+def test_expected_option_answer_matches_tagged_final_answer():
+    result = assertions.evaluate_expected_answer(
+        "Reasoning text. <final_answer>(c)</final_answer>", "(C)", "option_letter"
+    )
+
+    assert result.passed is True
+    assert result.predicted_answer == "(c)"
+
+def test_expected_option_answer_fails_for_wrong_answer():
+    result = assertions.evaluate_expected_answer("I choose (b).", "(c)", "option_letter")
+
+    assert result.passed is False
+    assert result.predicted_answer == "(b)"
+
+def test_expected_option_answer_rejects_invalid_expected_answer():
+    result = assertions.evaluate_expected_answer("No option selected.", "z", "option_letter")
+
+    assert result.passed is False
+    assert result.expected_answer is None
