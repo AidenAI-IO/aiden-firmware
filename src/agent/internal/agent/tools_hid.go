@@ -43,6 +43,10 @@ const (
 
 	// defaultDirectionalSwipeDistance is the normalized travel for swipe_left/right/up/down.
 	defaultDirectionalSwipeDistance = 0.40
+	directionalSwipeLargeDistance   = 0.55
+	directionalSwipeMediumDistance  = 0.30
+	directionalSwipeSmallDistance   = 0.10
+	directionalSwipeTinyDistance    = 0.04
 
 	phoneBackStartX = 0.001
 	phoneBackEndX   = 0.75
@@ -71,13 +75,13 @@ const (
 	// from being sent.
 	defaultHIDWriteTimeout = 750 * time.Millisecond
 
-	// dragReleaseReportCount repeats the button-up report for drag/swipe
-	// gestures. On phone USB HID hosts a single final button=0 report can be
-	// missed or coalesced with the final move, leaving the UI in a dragged
-	// state. Repeating the release is harmless for normal hosts and gives the
-	// target several polling frames to observe button-up.
-	dragReleaseReportCount   = 3
-	dragReleaseReportDelayMs = 15
+	// touchReleaseReportCount repeats the button-up/touch-up report for touch-like
+	// gestures. On phone USB HID hosts a single final release report can be missed
+	// or coalesced with the final move, leaving the UI in a pressed/dragged state.
+	// Repeating the release is harmless for normal hosts and gives the target
+	// several polling frames to observe button-up.
+	touchReleaseReportCount   = 3
+	touchReleaseReportDelayMs = 15
 )
 
 var hidKeyboardMap = map[string]uint8{
@@ -583,7 +587,8 @@ func (t *TouchGestureTool) Description() string {
 		`coord_space defaults to "normalized" (x/y in [0,1]) and also supports "pixel" and "absolute". ` +
 		`pointer_mode absolute (default, iOS): every gesture moves to absolute coordinates before pressing; choose tap targets from the latest screenshot center and prefer normalized coordinates. ` +
 		`pointer_mode touchscreen (Android): gestures are sent as single-finger touch down/move/up reports. ` +
-		`Directional swipes accept optional "distance" (normalized 0..1 travel, default 0.4) and "anchor" (fixed-axis coordinate, default 0.5). ` +
+		`Directional swipes accept optional "distance" (normalized 0..1 travel, default 0.4), "anchor" (fixed-axis coordinate, default 0.5), and "strength" ("large", "medium", "small", "tiny"). ` +
+		`For precise controls, first probe with medium/large, observe the screenshot, then use small/tiny near the target; if you overshoot, reverse direction and reduce strength. ` +
 		`Absolute-mode gestures wait for iOS HID-cursor smoothing to settle before pressing. ` +
 		`Tap and double_tap accept an optional "hold_ms" (dwell between press and release, default 60ms). ` +
 		`Swipe defaults to a slower 700ms / 24-step motion, applies "hold_before_ms" of 80ms after the press, and releases immediately at the destination by default; pass "hold_after_ms" only when a drag-like end dwell is required. ` +
@@ -606,6 +611,7 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		Steps        *int          `json:"steps"`
 		Distance     *float64      `json:"distance"`
 		Anchor       *float64      `json:"anchor"`
+		Strength     string        `json:"strength"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return fmt.Sprintf("error: invalid input: %v", err), nil
@@ -655,12 +661,23 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		if err := pressPointer(t.pc, point.x, point.y, button); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
+		released := false
+		defer func() {
+			if !released {
+				_ = releasePointerRepeated(t.pc, point.x, point.y, touchReleaseReportCount, touchReleaseReportDelayMs)
+			}
+		}()
 		sleepMs(intOrDefault(args.DurationMs, 500))
-		if err := releasePointer(t.pc, point.x, point.y); err != nil {
+		if err := releasePointerRepeated(t.pc, point.x, point.y, touchReleaseReportCount, touchReleaseReportDelayMs); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
+		released = true
 	case "swipe_left", "swipe_right", "swipe_up", "swipe_down":
-		start, end, err := directionalSwipeEndpoints(gestureType, args.Distance, args.Anchor)
+		preset, err := directionalSwipePreset(args.Strength)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		start, end, err := directionalSwipeEndpoints(gestureType, args.Distance, args.Anchor, preset)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
@@ -669,10 +686,10 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 			start,
 			end,
 			button,
-			intOrDefault(args.DurationMs, defaultSwipeDurationMs),
-			intOrDefault(args.HoldBeforeMs, defaultSwipeHoldBeforeMs),
-			intOrDefault(args.HoldAfterMs, defaultSwipeHoldAfterMs),
-			positiveIntOrDefault(args.Steps, defaultSwipeSteps),
+			intOrDefault(args.DurationMs, preset.durationMs),
+			intOrDefault(args.HoldBeforeMs, preset.holdBeforeMs),
+			intOrDefault(args.HoldAfterMs, preset.holdAfterMs),
+			positiveIntOrDefault(args.Steps, preset.steps),
 		); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
@@ -1066,7 +1083,7 @@ func tapPointerWithHold(pc *pointerController, x, y int, button uint8, holdMs in
 		return err
 	}
 	sleepMs(holdMs)
-	return releasePointer(pc, x, y)
+	return releasePointerRepeated(pc, x, y, touchReleaseReportCount, touchReleaseReportDelayMs)
 }
 
 func settlePointer(pc *pointerController, x, y int) error {
@@ -1133,8 +1150,36 @@ func runPositionedDragGesture(pc *pointerController, start, end resolvedPointerP
 	return dragPointer(pc, start, end, button, durationMs, holdBeforeMs, holdAfterMs, steps)
 }
 
-func directionalSwipeEndpoints(gestureType string, distance, anchor *float64) (resolvedPointerPoint, resolvedPointerPoint, error) {
-	travel := defaultDirectionalSwipeDistance
+type directionalSwipeSettings struct {
+	distance     float64
+	durationMs   int
+	steps        int
+	holdBeforeMs int
+	holdAfterMs  int
+}
+
+func directionalSwipePreset(strength string) (directionalSwipeSettings, error) {
+	switch strings.ToLower(strings.TrimSpace(strength)) {
+	case "", "default":
+		return directionalSwipeSettings{distance: defaultDirectionalSwipeDistance, durationMs: defaultSwipeDurationMs, steps: defaultSwipeSteps, holdBeforeMs: defaultSwipeHoldBeforeMs, holdAfterMs: defaultSwipeHoldAfterMs}, nil
+	case "large":
+		return directionalSwipeSettings{distance: directionalSwipeLargeDistance, durationMs: 800, steps: 28, holdBeforeMs: 90, holdAfterMs: 300}, nil
+	case "medium":
+		return directionalSwipeSettings{distance: directionalSwipeMediumDistance, durationMs: 650, steps: 22, holdBeforeMs: 90, holdAfterMs: 300}, nil
+	case "small":
+		return directionalSwipeSettings{distance: directionalSwipeSmallDistance, durationMs: 420, steps: 14, holdBeforeMs: 100, holdAfterMs: 300}, nil
+	case "tiny":
+		return directionalSwipeSettings{distance: directionalSwipeTinyDistance, durationMs: 320, steps: 10, holdBeforeMs: 100, holdAfterMs: 300}, nil
+	default:
+		return directionalSwipeSettings{}, fmt.Errorf("unsupported strength: %q", strength)
+	}
+}
+
+func directionalSwipeEndpoints(gestureType string, distance, anchor *float64, preset directionalSwipeSettings) (resolvedPointerPoint, resolvedPointerPoint, error) {
+	travel := preset.distance
+	if travel <= 0 {
+		travel = defaultDirectionalSwipeDistance
+	}
 	if distance != nil && *distance > 0 {
 		travel = clampFloat(*distance, 0.05, 1)
 	}
@@ -1189,7 +1234,7 @@ func dragPointer(pc *pointerController, start, end resolvedPointerPoint, button 
 	}
 
 	defer func() {
-		relErr := releasePointerRepeated(pc, end.x, end.y, dragReleaseReportCount, dragReleaseReportDelayMs)
+		relErr := releasePointerRepeated(pc, end.x, end.y, touchReleaseReportCount, touchReleaseReportDelayMs)
 		if dragErr == nil {
 			dragErr = relErr
 		}
