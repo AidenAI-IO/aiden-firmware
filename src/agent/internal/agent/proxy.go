@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 )
 
@@ -22,9 +21,6 @@ func newProxyTransport(proxy ProxyConfig) http.RoundTripper {
 func proxyFunc(proxy ProxyConfig) func(*http.Request) (*url.URL, error) {
 	proxy = proxy.WithDefaults()
 	if !proxy.HasProxyURL() {
-		if strings.TrimSpace(proxy.NoProxy) != "" {
-			return envProxyFunc(proxy.NoProxy)
-		}
 		return http.ProxyFromEnvironment
 	}
 
@@ -52,45 +48,6 @@ func proxyFunc(proxy ProxyConfig) func(*http.Request) (*url.URL, error) {
 		}
 		return parseProxyURL(proxyURL)
 	}
-}
-
-func envProxyFunc(noProxy string) func(*http.Request) (*url.URL, error) {
-	return func(req *http.Request) (*url.URL, error) {
-		if req == nil || req.URL == nil {
-			return nil, nil
-		}
-		if bypassProxy(req.URL.Hostname(), req.URL.Port(), noProxy) {
-			return nil, nil
-		}
-		proxyURL := envProxyURLForScheme(req.URL.Scheme)
-		if strings.TrimSpace(proxyURL) == "" {
-			return nil, nil
-		}
-		return parseProxyURL(proxyURL)
-	}
-}
-
-func envProxyURLForScheme(scheme string) string {
-	switch strings.ToLower(scheme) {
-	case "http":
-		if v := getenvAny("HTTP_PROXY", "http_proxy"); strings.TrimSpace(v) != "" {
-			return v
-		}
-	case "https":
-		if v := getenvAny("HTTPS_PROXY", "https_proxy"); strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return getenvAny("ALL_PROXY", "all_proxy")
-}
-
-func getenvAny(keys ...string) string {
-	for _, key := range keys {
-		if value := os.Getenv(key); strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func validateProxyURL(raw string) error {

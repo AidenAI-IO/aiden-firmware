@@ -340,10 +340,6 @@ func shellCommandEnv(usePTY bool, proxy ProxyConfig) []string {
 func shellApplyProxyEnv(env []string, proxy ProxyConfig) []string {
 	proxy = proxy.WithDefaults()
 	if !proxy.HasProxyURL() {
-		if value := strings.TrimSpace(proxy.NoProxy); value != "" {
-			env = shellEnsureEnv(env, "no_proxy", value)
-			env = shellEnsureEnv(env, "NO_PROXY", value)
-		}
 		return env
 	}
 

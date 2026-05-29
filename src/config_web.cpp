@@ -109,6 +109,12 @@ bool starts_with(const std::string& text, const std::string& prefix) {
     return text.compare(0, prefix.size(), prefix) == 0;
 }
 
+bool has_proxy_url(const aiden::ProxyToml& proxy) {
+    return !trim_copy(proxy.http_proxy).empty() ||
+           !trim_copy(proxy.https_proxy).empty() ||
+           !trim_copy(proxy.all_proxy).empty();
+}
+
 bool consume_prefix(const char* arg, const char* prefix, std::string* out) {
     size_t prefix_len = strlen(prefix);
     if (strncmp(arg, prefix, prefix_len) != 0) {
@@ -496,8 +502,6 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.hid.mouse_device = "/dev/hidg1";
     cfg.hid.frame_socket = "/run/frame_service/frame_service.sock";
 
-    cfg.proxy.no_proxy = kDefaultNoProxy;
-
     cfg.search.provider = "duckduckgo";
 }
 
@@ -520,7 +524,7 @@ void load_current_agent_config(const Options& options,
             if (loaded.search.provider.empty()) {
                 loaded.search.provider = "duckduckgo";
             }
-            if (loaded.proxy.no_proxy.empty()) {
+            if (has_proxy_url(loaded.proxy) && loaded.proxy.no_proxy.empty()) {
                 loaded.proxy.no_proxy = kDefaultNoProxy;
             }
             *config = loaded;
@@ -1382,11 +1386,11 @@ std::string build_proxy_env_exports(const aiden::ProxyToml& proxy) {
     std::string https_proxy = trim_copy(proxy.https_proxy);
     std::string all_proxy = trim_copy(proxy.all_proxy);
     std::string no_proxy = trim_copy(proxy.no_proxy);
+    if (http_proxy.empty() && https_proxy.empty() && all_proxy.empty()) {
+        return "";
+    }
     if (no_proxy.empty()) {
         no_proxy = kDefaultNoProxy;
-    }
-    if (http_proxy.empty() && https_proxy.empty() && all_proxy.empty()) {
-        return "export no_proxy=" + shell_quote(no_proxy) + " && export NO_PROXY=" + shell_quote(no_proxy) + " && ";
     }
 
     std::string exports = "unset http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY && ";

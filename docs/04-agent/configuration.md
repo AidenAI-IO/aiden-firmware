@@ -32,7 +32,7 @@ max_tokens = 1000
 http_proxy = ""
 https_proxy = ""
 all_proxy = ""
-no_proxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+no_proxy = ""
 
 [audio]
 socket = "/run/audio_service/audio_service.sock"
@@ -139,14 +139,14 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 ## `[proxy]`
 
-可选。用于 Agent 发起的外部 HTTP 请求（OpenAI-compatible / OpenRouter / Ollama 模型请求、OpenAI Whisper STT、Minimax TTS），并会注入到 Agent `shell` 工具启动的子进程环境中。`http_proxy` / `https_proxy` / `all_proxy` 留空时使用进程环境变量中的代理设置。
+可选。用于 Agent 发起的外部 HTTP 请求（OpenAI-compatible / OpenRouter / Ollama 模型请求、OpenAI Whisper STT、Minimax TTS），并会注入到 Agent `shell` 工具启动的子进程环境中。所有字段留空时使用进程环境变量中的代理设置。
 
 | 字段 | 说明 |
 | --- | --- |
 | `http_proxy` | HTTP 请求代理，例如 `http://127.0.0.1:7890` |
 | `https_proxy` | HTTPS 请求代理，通常也填写 HTTP 代理地址，例如 `http://127.0.0.1:7890` |
 | `all_proxy` | HTTP/HTTPS 未分别配置时使用的通用代理，支持 `http://`、`https://`、`socks5://` |
-| `no_proxy` | 逗号/空格分隔的直连规则；支持主机名、域名后缀、`host:port`、CIDR 和 `*`；默认 `localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` |
+| `no_proxy` | 逗号/空格分隔的直连规则；支持主机名、域名后缀、`host:port`、CIDR 和 `*`；当显式配置了 `http_proxy` / `https_proxy` / `all_proxy` 且本字段留空时，默认 `localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` |
 
 ## `[audio]`
 

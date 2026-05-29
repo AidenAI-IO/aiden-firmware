@@ -49,6 +49,28 @@ https_proxy = "http://proxy.example:18443"
 	}
 }
 
+func TestLoadConfigKeepsNoProxyEmptyWithoutProxyURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+[model]
+provider = "fake"
+
+[proxy]
+no_proxy = ""
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Proxy.NoProxy != "" {
+		t.Fatalf("Proxy.NoProxy = %q, want empty", cfg.Proxy.NoProxy)
+	}
+}
+
 func TestConfigValidateRejectsInvalidTriggerMode(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},

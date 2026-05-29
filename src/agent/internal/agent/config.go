@@ -98,7 +98,7 @@ func (p ProxyConfig) HasProxyURL() bool {
 }
 
 func (p ProxyConfig) WithDefaults() ProxyConfig {
-	if strings.TrimSpace(p.NoProxy) == "" {
+	if p.HasProxyURL() && strings.TrimSpace(p.NoProxy) == "" {
 		p.NoProxy = DefaultNoProxy
 	}
 	return p

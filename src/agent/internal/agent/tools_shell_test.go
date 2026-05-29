@@ -113,10 +113,11 @@ func TestShellApplyProxyEnvDefaultsNoProxy(t *testing.T) {
 	}
 }
 
-func TestShellApplyProxyEnvKeepsEnvironmentWhenOnlyNoProxyConfigured(t *testing.T) {
+func TestShellApplyProxyEnvKeepsEnvironmentWhenNoProxyURLConfigured(t *testing.T) {
 	env := shellApplyProxyEnv([]string{
 		"PATH=/bin",
 		"HTTPS_PROXY=http://inherited-proxy",
+		"NO_PROXY=internal.example",
 	}, ProxyConfig{
 		NoProxy: DefaultNoProxy,
 	})
@@ -132,8 +133,11 @@ func TestShellApplyProxyEnvKeepsEnvironmentWhenOnlyNoProxyConfigured(t *testing.
 	if got["HTTPS_PROXY"] != "http://inherited-proxy" {
 		t.Fatalf("HTTPS_PROXY = %q, want inherited proxy preserved", got["HTTPS_PROXY"])
 	}
-	if got["no_proxy"] != DefaultNoProxy || got["NO_PROXY"] != DefaultNoProxy {
-		t.Fatalf("no_proxy = %q / %q, want configured default", got["no_proxy"], got["NO_PROXY"])
+	if _, ok := got["no_proxy"]; ok {
+		t.Fatalf("no_proxy = %q, want unset", got["no_proxy"])
+	}
+	if got["NO_PROXY"] != "internal.example" {
+		t.Fatalf("NO_PROXY = %q, want inherited value", got["NO_PROXY"])
 	}
 }
 

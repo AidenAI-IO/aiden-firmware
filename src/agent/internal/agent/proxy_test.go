@@ -2,6 +2,8 @@ package agent
 
 import (
 	"net/http"
+	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -84,35 +86,11 @@ func TestProxyFuncAppliesDefaultNoProxy(t *testing.T) {
 	}
 }
 
-func TestProxyFuncUsesEnvironmentProxyWithDefaultNoProxy(t *testing.T) {
-	t.Setenv("HTTPS_PROXY", "http://env-proxy.example:18443")
-	t.Setenv("https_proxy", "")
-	t.Setenv("ALL_PROXY", "")
-	t.Setenv("all_proxy", "")
-
+func TestProxyFuncUsesEnvironmentWhenNoProxyURLConfigured(t *testing.T) {
 	fn := proxyFunc(ProxyConfig{})
-	req, err := http.NewRequest(http.MethodGet, "https://api.openai.com/v1/models", nil)
-	if err != nil {
-		t.Fatalf("NewRequest: %v", err)
-	}
-	proxyURL, err := fn(req)
-	if err != nil {
-		t.Fatalf("proxyFunc() error = %v", err)
-	}
-	if proxyURL == nil || proxyURL.String() != "http://env-proxy.example:18443" {
-		t.Fatalf("proxyFunc() = %v, want environment proxy", proxyURL)
-	}
-
-	localReq, err := http.NewRequest(http.MethodGet, "https://192.168.42.1/status", nil)
-	if err != nil {
-		t.Fatalf("NewRequest local: %v", err)
-	}
-	proxyURL, err = fn(localReq)
-	if err != nil {
-		t.Fatalf("proxyFunc(local) error = %v", err)
-	}
-	if proxyURL != nil {
-		t.Fatalf("proxyFunc(local) = %v, want default no_proxy bypass", proxyURL)
+	got := runtime.FuncForPC(reflect.ValueOf(fn).Pointer()).Name()
+	if got != "net/http.ProxyFromEnvironment" {
+		t.Fatalf("proxyFunc() = %s, want net/http.ProxyFromEnvironment", got)
 	}
 }
 
