@@ -29,6 +29,114 @@ func TestShellToolForegroundEcho(t *testing.T) {
 	}
 }
 
+func TestShellToolForegroundInjectsProxyEnv(t *testing.T) {
+	skipOnWindows(t)
+	tool := &ShellTool{proxy: ProxyConfig{
+		HTTPProxy:  "http://proxy.example:18080",
+		HTTPSProxy: "http://proxy.example:18443",
+		AllProxy:   "socks5://proxy.example:18081",
+		NoProxy:    "localhost,127.0.0.1",
+	}}
+
+	out, err := tool.Call(context.Background(), `{"command":"printf '%s|%s|%s|%s|%s|%s|%s|%s' \"$http_proxy\" \"$HTTP_PROXY\" \"$https_proxy\" \"$HTTPS_PROXY\" \"$all_proxy\" \"$ALL_PROXY\" \"$no_proxy\" \"$NO_PROXY\""}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	want := strings.Join([]string{
+		"http://proxy.example:18080",
+		"http://proxy.example:18080",
+		"http://proxy.example:18443",
+		"http://proxy.example:18443",
+		"socks5://proxy.example:18081",
+		"socks5://proxy.example:18081",
+		"localhost,127.0.0.1",
+		"localhost,127.0.0.1",
+	}, "|")
+	if out != want {
+		t.Fatalf("Call output = %q, want %q", out, want)
+	}
+}
+
+func TestShellApplyProxyEnvReplacesInheritedProxy(t *testing.T) {
+	env := shellApplyProxyEnv([]string{
+		"PATH=/bin",
+		"http_proxy=http://old-http",
+		"HTTP_PROXY=http://old-http",
+		"https_proxy=http://old-https",
+		"HTTPS_PROXY=http://old-https",
+		"NO_PROXY=old.local",
+	}, ProxyConfig{
+		HTTPSProxy: " http://new-https ",
+		NoProxy:    " localhost,127.0.0.1 ",
+	})
+
+	got := map[string]string{}
+	for _, entry := range env {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) == 2 {
+			got[parts[0]] = parts[1]
+		}
+	}
+
+	if got["PATH"] != "/bin" {
+		t.Fatalf("PATH = %q, want preserved /bin", got["PATH"])
+	}
+	if _, ok := got["http_proxy"]; ok {
+		t.Fatalf("http_proxy was preserved from inherited env: %q", got["http_proxy"])
+	}
+	if _, ok := got["HTTP_PROXY"]; ok {
+		t.Fatalf("HTTP_PROXY was preserved from inherited env: %q", got["HTTP_PROXY"])
+	}
+	if got["https_proxy"] != "http://new-https" || got["HTTPS_PROXY"] != "http://new-https" {
+		t.Fatalf("https proxy env not replaced: https_proxy=%q HTTPS_PROXY=%q", got["https_proxy"], got["HTTPS_PROXY"])
+	}
+	if got["no_proxy"] != "localhost,127.0.0.1" || got["NO_PROXY"] != "localhost,127.0.0.1" {
+		t.Fatalf("no_proxy env not replaced: no_proxy=%q NO_PROXY=%q", got["no_proxy"], got["NO_PROXY"])
+	}
+}
+
+func TestShellApplyProxyEnvDefaultsNoProxy(t *testing.T) {
+	env := shellApplyProxyEnv([]string{"PATH=/bin"}, ProxyConfig{
+		HTTPSProxy: "http://proxy.example:18443",
+	})
+
+	got := map[string]string{}
+	for _, entry := range env {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) == 2 {
+			got[parts[0]] = parts[1]
+		}
+	}
+
+	if got["no_proxy"] != DefaultNoProxy || got["NO_PROXY"] != DefaultNoProxy {
+		t.Fatalf("default no_proxy not injected: no_proxy=%q NO_PROXY=%q", got["no_proxy"], got["NO_PROXY"])
+	}
+}
+
+func TestShellApplyProxyEnvKeepsEnvironmentWhenOnlyNoProxyConfigured(t *testing.T) {
+	env := shellApplyProxyEnv([]string{
+		"PATH=/bin",
+		"HTTPS_PROXY=http://inherited-proxy",
+	}, ProxyConfig{
+		NoProxy: DefaultNoProxy,
+	})
+
+	got := map[string]string{}
+	for _, entry := range env {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) == 2 {
+			got[parts[0]] = parts[1]
+		}
+	}
+
+	if got["HTTPS_PROXY"] != "http://inherited-proxy" {
+		t.Fatalf("HTTPS_PROXY = %q, want inherited proxy preserved", got["HTTPS_PROXY"])
+	}
+	if got["no_proxy"] != DefaultNoProxy || got["NO_PROXY"] != DefaultNoProxy {
+		t.Fatalf("no_proxy = %q / %q, want configured default", got["no_proxy"], got["NO_PROXY"])
+	}
+}
+
 func TestShellToolForegroundWorkdir(t *testing.T) {
 	skipOnWindows(t)
 	dir := t.TempDir()

@@ -89,6 +89,21 @@ type ProxyConfig struct {
 	NoProxy    string `toml:"no_proxy,omitempty"`
 }
 
+const DefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
+func (p ProxyConfig) HasProxyURL() bool {
+	return strings.TrimSpace(p.HTTPProxy) != "" ||
+		strings.TrimSpace(p.HTTPSProxy) != "" ||
+		strings.TrimSpace(p.AllProxy) != ""
+}
+
+func (p ProxyConfig) WithDefaults() ProxyConfig {
+	if strings.TrimSpace(p.NoProxy) == "" {
+		p.NoProxy = DefaultNoProxy
+	}
+	return p
+}
+
 func (p ProxyConfig) IsZero() bool {
 	return strings.TrimSpace(p.HTTPProxy) == "" &&
 		strings.TrimSpace(p.HTTPSProxy) == "" &&
@@ -228,6 +243,8 @@ func LoadConfig(path string) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
 	}
+
+	cfg.Proxy = cfg.Proxy.WithDefaults()
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
