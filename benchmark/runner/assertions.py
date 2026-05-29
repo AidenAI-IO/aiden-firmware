@@ -67,6 +67,8 @@ def evaluate_expected_recalled_memory_ids(
             payload = json.loads(content)
         except (TypeError, json.JSONDecodeError):
             continue
+        if not isinstance(payload, dict):
+            continue
         for item in payload.get("results") or []:
             if not isinstance(item, dict):
                 continue

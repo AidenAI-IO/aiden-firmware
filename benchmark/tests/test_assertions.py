@@ -92,3 +92,17 @@ def test_expected_recalled_memory_ids_fail_when_expected_id_absent():
 
     assert result.passed is False
     assert result.recalled_memory_ids == ["personamem_campfire_storytelling"]
+
+def test_expected_recalled_memory_ids_ignores_non_object_json_payload():
+    history = [
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": "[]",
+        },
+    ]
+
+    result = assertions.evaluate_expected_recalled_memory_ids(history, ["personamem_solo_travel"])
+
+    assert result.passed is False
+    assert result.recalled_memory_ids == []

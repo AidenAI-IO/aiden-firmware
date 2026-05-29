@@ -193,6 +193,34 @@ func TestLongTermMemorySearchDoesNotReturnTypeOnlyMatchesForTopicalQuery(t *test
 	}
 }
 
+func TestLongTermMemorySearchTreatsWhitespaceOnlyTagsAsEmptyQuery(t *testing.T) {
+	ctx := context.Background()
+	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))
+
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:         "mem_general_preference",
+		Type:       "preference",
+		Priority:   80,
+		Confidence: 0.9,
+		Tags:       []string{"general"},
+		Title:      "General preference",
+		Content:    "The user prefers concise replies.",
+		EvidenceExcerpts: []string{
+			"The user asked for concise replies.",
+		},
+	}); err != nil {
+		t.Fatalf("AddMemory() error = %v", err)
+	}
+
+	results, err := store.Search(ctx, MemoryQuery{Tags: []string{" \t"}, Limit: 1})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(results) != 1 || results[0].ID != "mem_general_preference" {
+		t.Fatalf("expected whitespace-only tags to behave like empty query, got %#v", results)
+	}
+}
+
 func TestLongTermMemoryForgetExcludesMemoryFromSearch(t *testing.T) {
 	ctx := context.Background()
 	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))

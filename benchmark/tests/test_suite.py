@@ -80,6 +80,30 @@ def test_load_suite_rejects_invalid_expected_recalled_memory_ids(tmp_path: Path)
     with pytest.raises(SuiteValidationError):
         load_suite(p)
 
+def test_load_suite_rejects_falsy_invalid_expected_recalled_memory_ids(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "expected_recalled_memory_ids": "",
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError):
+        load_suite(p)
+
+def test_load_suite_rejects_non_string_prompt_prefix(tmp_path: Path):
+    fixture = {**FIXTURE, "prompt_prefix": ["recall_memory"]}
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError):
+        load_suite(p)
+
 def test_load_suite_rejects_invalid_expected_option_answer(tmp_path: Path):
     fixture = {
         **FIXTURE,

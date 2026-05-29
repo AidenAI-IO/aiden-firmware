@@ -117,7 +117,7 @@ def load_suite(path: Path) -> Suite:
                     )
         if answer_format is not None and answer_format != "option_letter":
             raise SuiteValidationError(f"task {tid}: unsupported answer_format {answer_format!r}")
-        expected_recalled_memory_ids = raw.get("expected_recalled_memory_ids") or []
+        expected_recalled_memory_ids = raw.get("expected_recalled_memory_ids", [])
         if not isinstance(expected_recalled_memory_ids, list) or not all(
             isinstance(item, str) and item.strip() for item in expected_recalled_memory_ids
         ):
@@ -134,11 +134,15 @@ def load_suite(path: Path) -> Suite:
             answer_format=answer_format,
             expected_recalled_memory_ids=expected_recalled_memory_ids,
         ))
+    prompt_prefix = data.get("prompt_prefix", "")
+    if not isinstance(prompt_prefix, str):
+        raise SuiteValidationError("suite prompt_prefix must be a string")
+
     return Suite(
         name=data.get("name", Path(path).stem),
         global_reset=data.get("global_reset") or {},
         tasks=tasks,
         sha256=sha,
         source_path=Path(path),
-        prompt_prefix=data.get("prompt_prefix") or "",
+        prompt_prefix=prompt_prefix,
     )

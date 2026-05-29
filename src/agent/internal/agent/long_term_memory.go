@@ -715,7 +715,12 @@ func memoryQueryIsEmpty(query MemoryQuery) bool {
 }
 
 func memoryQueryHasTopicalTerms(query MemoryQuery) bool {
-	return len(query.Tags) > 0 || len(nonGenericMemoryEntities(query.Entities)) > 0
+	for _, tag := range query.Tags {
+		if normalizeMemorySearchTerm(tag) != "" {
+			return true
+		}
+	}
+	return len(nonGenericMemoryEntities(query.Entities)) > 0
 }
 
 func scoreMemoryEntry(query MemoryQuery, entry memoryIndexEntry, parsed parsedMemoryMarkdown) int {
