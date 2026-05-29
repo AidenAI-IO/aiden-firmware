@@ -52,17 +52,28 @@ restore_docker_output_ownership() {
   fi
 }
 
-docker run \
-  --platform linux/amd64 \
-  --privileged \
-  -u 0:0 \
-  --rm \
-  -e OTA_PUBLIC_KEY_PATH \
-  "${docker_go_args[@]}" \
-  -v "$(pwd):/home" \
-  "${docker_ota_key_args[@]}" \
-  -w /home \
-  luckfoxtech/luckfox_pico:1.0 \
+docker_run_args=(
+  --platform linux/amd64
+  --privileged
+  -u 0:0
+  --rm
+  -e OTA_PUBLIC_KEY_PATH
+)
+if [ "${#docker_go_args[@]}" -gt 0 ]; then
+  docker_run_args+=("${docker_go_args[@]}")
+fi
+docker_run_args+=(-v "$(pwd):/home")
+if [ "${#docker_ota_key_args[@]}" -gt 0 ]; then
+  docker_run_args+=("${docker_ota_key_args[@]}")
+fi
+docker_run_args+=(
+  -w /home
+  luckfoxtech/luckfox_pico:1.0
   /bin/bash -c 'export PATH="/usr/local/go/bin:$PATH"; exec "$@"' _ "${docker_command[@]}"
+)
+
+docker_status=0
+docker run "${docker_run_args[@]}" || docker_status=$?
 
 restore_docker_output_ownership
+exit "$docker_status"

@@ -68,5 +68,5 @@ LLM tool call → Go HID tool → /dev/hidg0 or /dev/hidg1 → target device
 ### 语音交互
 
 ```text
-audio_service recording → VAD → STT or audio attachment → LLM → TTS → audio_service playback
+audio_service recording → RKNN Silero VAD → STT or audio attachment → LLM → TTS → audio_service playback
 ```

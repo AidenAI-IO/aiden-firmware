@@ -28,6 +28,7 @@ type AudioDialog struct {
 	vad          *AudioVAD
 	recordActive bool
 	sessionID    uint64
+	recordReader *AudioRecordChunkReader
 	speechMu     sync.Mutex
 }
 
@@ -52,11 +53,6 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 		return nil, err
 	}
 
-	// Create VAD
-	energyThreshold := cfg.EnergyThreshold
-	if energyThreshold == 0 {
-		energyThreshold = 500
-	}
 	silenceMs := cfg.SilenceMs
 	if silenceMs == 0 {
 		silenceMs = 650
@@ -67,13 +63,19 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 	}
 
 	alwaysBuffer := cfg.TriggerModeOrDefault() == "manual"
-	vad := NewAudioVAD(
-		cfg.Audio.SampleRateOrDefault(),
-		energyThreshold,
-		silenceMs,
-		minSpeechMs,
-		alwaysBuffer,
-	)
+	vad, err := NewAudioVAD(AudioVADConfig{
+		SampleRate:      cfg.Audio.SampleRateOrDefault(),
+		SilenceMs:       silenceMs,
+		MinSpeechMs:     minSpeechMs,
+		AlwaysBuffer:    alwaysBuffer,
+		Backend:         cfg.VADBackend,
+		ModelPath:       cfg.VADModelPath,
+		HelperPath:      cfg.VADHelperPath,
+		SpeechThreshold: cfg.VADSpeechThreshold,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	return &AudioDialog{
 		config:      cfg,
@@ -104,6 +106,11 @@ func (d *AudioDialog) StartRecording() error {
 		return fmt.Errorf("start recording: %w", err)
 	}
 	d.sessionID = result.SessionID
+	if reader, err := d.audioClient.OpenRecordChunkReader(result.SessionID); err == nil {
+		d.recordReader = reader
+	} else {
+		log.Printf("[audio] Persistent record reader unavailable, using per-request reads: %v\n", err)
+	}
 	d.recordActive = true
 	return nil
 }
@@ -153,8 +160,14 @@ func (d *AudioDialog) StopRecording() error {
 	}
 
 	sessionID := d.sessionID
+	reader := d.recordReader
 	d.recordActive = false
 	d.sessionID = 0
+	d.recordReader = nil
+
+	if reader != nil {
+		_ = reader.Close()
+	}
 
 	if err := d.audioClient.StopRecording(sessionID); err != nil {
 		return fmt.Errorf("stop recording: %w", err)
@@ -173,11 +186,20 @@ func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, erro
 	if !d.recordActive || d.sessionID == 0 {
 		return nil, fmt.Errorf("recording is not active")
 	}
+	if d.recordReader != nil {
+		chunk, err := d.recordReader.Read(timeoutMs)
+		if err == nil {
+			return chunk, nil
+		}
+		log.Printf("[audio] Persistent record reader failed, falling back to per-request reads: %v\n", err)
+		_ = d.recordReader.Close()
+		d.recordReader = nil
+	}
 	return d.audioClient.ReadRecordChunk(d.sessionID, timeoutMs)
 }
 
-// ProcessVADFrame processes an audio frame through VAD
-func (d *AudioDialog) ProcessVADFrame(samples []int16) []int16 {
+// ProcessVADFrame processes an audio frame through VAD.
+func (d *AudioDialog) ProcessVADFrame(samples []int16) ([]int16, error) {
 	return d.vad.Process(samples)
 }
 
@@ -188,7 +210,9 @@ func (d *AudioDialog) FlushVAD() []int16 {
 
 // ResetVAD resets the VAD state
 func (d *AudioDialog) ResetVAD() {
-	d.vad.Reset()
+	if err := d.vad.Reset(); err != nil {
+		log.Printf("[vad] reset failed: %v\n", err)
+	}
 }
 
 // VADFrameSamples returns the number of samples to feed into each VAD frame.
@@ -448,21 +472,43 @@ func pcm16MonoToWAV(samples []int16, sampleRate int) []byte {
 
 // AppendPCM16Samples converts PCM bytes to int16 samples
 func AppendPCM16Samples(pcmBytes []byte, samples *[]int16, hasPending *bool, pending *byte) {
+	if len(pcmBytes) == 0 {
+		return
+	}
+
 	i := 0
+	dst := *samples
 
 	// Handle pending byte from previous chunk
-	if *hasPending && len(pcmBytes) > 0 {
+	if *hasPending {
 		word := uint16(*pending) | (uint16(pcmBytes[0]) << 8)
-		*samples = append(*samples, int16(word))
+		dst = append(dst, int16(word))
 		*hasPending = false
 		i = 1
 	}
 
-	// Process pairs of bytes
-	for i+1 < len(pcmBytes) {
-		word := binary.LittleEndian.Uint16(pcmBytes[i : i+2])
-		*samples = append(*samples, int16(word))
-		i += 2
+	pairCount := (len(pcmBytes) - i) / 2
+	if pairCount > 0 {
+		oldLen := len(dst)
+		needed := oldLen + pairCount
+		if needed > cap(dst) {
+			newCap := cap(dst) * 2
+			if newCap < needed {
+				newCap = needed
+			}
+			if newCap == 0 {
+				newCap = pairCount
+			}
+			grown := make([]int16, oldLen, newCap)
+			copy(grown, dst)
+			dst = grown
+		}
+		dst = dst[:needed]
+		for j := 0; j < pairCount; j++ {
+			offset := i + j*2
+			dst[oldLen+j] = int16(binary.LittleEndian.Uint16(pcmBytes[offset : offset+2]))
+		}
+		i += pairCount * 2
 	}
 
 	// Save odd byte for next chunk
@@ -470,4 +516,5 @@ func AppendPCM16Samples(pcmBytes []byte, samples *[]int16, hasPending *bool, pen
 		*pending = pcmBytes[i]
 		*hasPending = true
 	}
+	*samples = dst
 }

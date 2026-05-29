@@ -8,11 +8,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestResolvePointerPositionNormalized(t *testing.T) {
@@ -343,6 +346,52 @@ func TestHIDDeviceWriteReturnsNonRetryableError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "permission denied") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHIDDeviceWriteTimesOutWhenFDWouldBlock(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires Linux nonblocking pipe semantics")
+	}
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	if err := unix.SetNonblock(int(readFile.Fd()), true); err != nil {
+		t.Fatalf("SetNonblock(read): %v", err)
+	}
+	if err := unix.SetNonblock(int(writeFile.Fd()), true); err != nil {
+		t.Fatalf("SetNonblock(write): %v", err)
+	}
+	defer readFile.Close()
+	defer writeFile.Close()
+
+	buf := make([]byte, 4096)
+	for {
+		_, err := unix.Write(int(writeFile.Fd()), buf)
+		if err == unix.EAGAIN {
+			break
+		}
+		if err != nil {
+			t.Fatalf("fill pipe: %v", err)
+		}
+	}
+
+	dev := &HIDDevice{
+		path:         "blocked-hid",
+		file:         writeFile,
+		writeTimeout: 20 * time.Millisecond,
+	}
+	start := time.Now()
+	err = dev.Write([]byte{1})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("error = %v, want timeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("blocked write returned after %v, want bounded timeout", elapsed)
 	}
 }
 

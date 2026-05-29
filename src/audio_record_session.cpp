@@ -7,35 +7,70 @@
 
 namespace aiden {
 
-// Down-mix stereo int16 to mono by averaging L+R.
-static std::vector<int16_t> stereo_to_mono(const int16_t* src, size_t stereo_samples) {
-    size_t mono_samples = stereo_samples / 2;
-    std::vector<int16_t> out(mono_samples);
-    for (size_t i = 0; i < mono_samples; i++) {
-        int32_t mixed = (int32_t)src[i * 2] + (int32_t)src[i * 2 + 1];
-        out[i] = (int16_t)(mixed / 2);
+static int16_t mono_sample_at(const int16_t* src, size_t frame_index, int channels) {
+    if (channels == 2) {
+        const int32_t left = src[frame_index * 2];
+        const int32_t right = src[frame_index * 2 + 1];
+        return static_cast<int16_t>((left + right) / 2);
     }
-    return out;
+    return src[frame_index];
 }
 
-// Resample int16 mono from src_rate to dst_rate with linear interpolation.
-static std::vector<int16_t> resample_linear(const int16_t* src, size_t count,
-                                            int src_rate, int dst_rate) {
-    if (!src || count == 0 || src_rate <= 0 || dst_rate <= 0) return {};
-    if (src_rate == dst_rate) return std::vector<int16_t>(src, src + count);
-    double ratio = static_cast<double>(src_rate) / static_cast<double>(dst_rate);
-    size_t out_count = static_cast<size_t>(count / ratio);
+static void write_i16_le(std::vector<uint8_t>* out, size_t sample_index, int16_t sample) {
+    const uint16_t value = static_cast<uint16_t>(sample);
+    const size_t offset = sample_index * sizeof(int16_t);
+    (*out)[offset] = static_cast<uint8_t>(value & 0xffu);
+    (*out)[offset + 1] = static_cast<uint8_t>((value >> 8) & 0xffu);
+}
+
+// Convert captured PCM to the requested mono PCM16 stream in one pass.
+static std::vector<uint8_t> convert_to_target_mono_pcm16(const int16_t* src,
+                                                         size_t total_samples,
+                                                         int channels,
+                                                         int src_rate,
+                                                         int dst_rate) {
+    if (!src || total_samples == 0 || src_rate <= 0 || dst_rate <= 0) return {};
+    if (channels != 2) channels = 1;
+    const size_t source_frames = (channels == 2 && total_samples >= 2)
+                                     ? (total_samples / 2)
+                                     : total_samples;
+    if (source_frames == 0) return {};
+
+    if (channels == 1 && src_rate == dst_rate) {
+        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(src);
+        return std::vector<uint8_t>(bytes, bytes + source_frames * sizeof(int16_t));
+    }
+
+    if (channels == 2 && src_rate == dst_rate) {
+        std::vector<uint8_t> out(source_frames * sizeof(int16_t));
+        for (size_t i = 0; i < source_frames; ++i) {
+            write_i16_le(&out, i, mono_sample_at(src, i, channels));
+        }
+        return out;
+    }
+
+    if (channels == 2 && src_rate == dst_rate * 2) {
+        const size_t out_count = source_frames / 2;
+        std::vector<uint8_t> out(out_count * sizeof(int16_t));
+        for (size_t i = 0; i < out_count; ++i) {
+            write_i16_le(&out, i, mono_sample_at(src, i * 2, channels));
+        }
+        return out;
+    }
+
+    const double ratio = static_cast<double>(src_rate) / static_cast<double>(dst_rate);
+    size_t out_count = static_cast<size_t>(static_cast<double>(source_frames) / ratio);
     if (out_count == 0) out_count = 1;
-    std::vector<int16_t> out(out_count);
-    for (size_t i = 0; i < out_count; i++) {
+    std::vector<uint8_t> out(out_count * sizeof(int16_t));
+    for (size_t i = 0; i < out_count; ++i) {
         double pos = static_cast<double>(i) * ratio;
         size_t idx = static_cast<size_t>(pos);
-        if (idx >= count) idx = count - 1;
-        size_t idx_next = (idx + 1 < count) ? (idx + 1) : idx;
+        if (idx >= source_frames) idx = source_frames - 1;
+        size_t idx_next = (idx + 1 < source_frames) ? (idx + 1) : idx;
         double frac = pos - static_cast<double>(idx);
-        double v = static_cast<double>(src[idx]) * (1.0 - frac) +
-                   static_cast<double>(src[idx_next]) * frac;
-        out[i] = static_cast<int16_t>(v);
+        double a = static_cast<double>(mono_sample_at(src, idx, channels));
+        double b = static_cast<double>(mono_sample_at(src, idx_next, channels));
+        write_i16_le(&out, i, static_cast<int16_t>(a * (1.0 - frac) + b * frac));
     }
     return out;
 }
@@ -185,22 +220,8 @@ void AudioRecordSession::capture_loop() {
                 (hw_channels_ == 2 && total_samples >= 2) ? (total_samples / 2) : total_samples;
             maybe_update_hw_sample_rate(frame.timestamp, frame_samples_per_channel);
 
-            // Step 1: down-mix stereo to mono if needed.
-            std::vector<int16_t> mono;
-            if (hw_channels_ == 2) {
-                mono = stereo_to_mono(src, total_samples);
-            } else {
-                mono.assign(src, src + total_samples);
-            }
-
-            // Step 2: resample to target rate if needed.
-            std::vector<int16_t> resampled = resample_linear(
-                mono.data(), mono.size(),
-                hw_sample_rate_, static_cast<int>(fmt_.sample_rate));
-
-            // Step 3: push as raw bytes.
-            const uint8_t* out_bytes = reinterpret_cast<const uint8_t*>(resampled.data());
-            std::vector<uint8_t> chunk(out_bytes, out_bytes + resampled.size() * sizeof(int16_t));
+            std::vector<uint8_t> chunk = convert_to_target_mono_pcm16(
+                src, total_samples, hw_channels_, hw_sample_rate_, static_cast<int>(fmt_.sample_rate));
 
             std::unique_lock<std::mutex> lock(mutex_);
             if (queue_.size() < kMaxQueueChunks) {
