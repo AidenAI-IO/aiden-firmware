@@ -7,12 +7,25 @@
 
 GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid
 USB_MODE_PATH=/proc/device-tree/usbdrd/usb@ffb00000/dr_mode
+AGENT_TOML=/userdata/agent/agent.toml
 
 USB0_ADDR=192.168.42.1
 USB0_NETMASK=255.255.255.0
 # Locally-administered MACs (0x02 bit set, not multicast).
 ECM_HOST_MAC=02:aa:bb:cc:dd:01
 ECM_DEV_MAC=02:aa:bb:cc:dd:02
+
+read_pointer_mode() {
+	POINTER_MODE=absolute
+	if [ ! -f "$AGENT_TOML" ]; then
+		return
+	fi
+	line=$(grep -E '^[[:space:]]*pointer_mode[[:space:]]*=' "$AGENT_TOML" | tail -n1)
+	case "$line" in
+		*\"touchscreen\"*|*\'touchscreen\'*|*touchscreen*) POINTER_MODE=touchscreen ;;
+		*\"absolute\"*|*\'absolute\'*|*absolute*) POINTER_MODE=absolute ;;
+	esac
+}
 
 start() {
 	echo "Setting up Aiden USB composite gadget (HID + ECM)..."
@@ -83,13 +96,20 @@ start() {
 	printf '\x05\x01\x09\x06\xa1\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x01\x95\x06\x75\x08\x15\x00\x25\x65\x05\x07\x19\x00\x29\x65\x81\x00\xc0' \
 		> "$GADGET_DIR/functions/hid.usb0/report_desc"
 
-	# Touch / Absolute Mouse HID function (6-byte report)
+	# Touch / mouse HID function (report format follows agent.toml pointer_mode)
 	mkdir -p "$GADGET_DIR/functions/hid.usb1"
 	echo 0 > "$GADGET_DIR/functions/hid.usb1/protocol"
 	echo 0 > "$GADGET_DIR/functions/hid.usb1/subclass"
-	echo 6 > "$GADGET_DIR/functions/hid.usb1/report_length"
-	printf '\x05\x01\x09\x02\xa1\x01\x09\x01\xa1\x00\x05\x09\x19\x01\x29\x08\x15\x00\x25\x01\x95\x08\x75\x01\x81\x02\x05\x01\x09\x30\x09\x31\x16\x00\x00\x26\xff\x7f\x75\x10\x95\x02\x81\x02\x09\x38\x15\x81\x25\x7f\x75\x08\x95\x01\x81\x06\xc0\xc0' \
-		> "$GADGET_DIR/functions/hid.usb1/report_desc"
+	read_pointer_mode
+	if [ "$POINTER_MODE" = "touchscreen" ]; then
+		echo 6 > "$GADGET_DIR/functions/hid.usb1/report_length"
+		printf '\x05\x0d\x09\x04\xa1\x01\x09\x22\xa1\x02\x05\x0d\x09\x42\x09\x32\x15\x00\x25\x01\x75\x01\x95\x02\x81\x02\x75\x06\x95\x01\x81\x03\x09\x51\x75\x08\x95\x01\x15\x00\x25\x0f\x81\x02\x05\x01\x09\x30\x09\x31\x16\x00\x00\x26\xff\x7f\x75\x10\x95\x02\x81\x02\xc0\xc0' \
+			> "$GADGET_DIR/functions/hid.usb1/report_desc"
+	else
+		echo 6 > "$GADGET_DIR/functions/hid.usb1/report_length"
+		printf '\x05\x01\x09\x02\xa1\x01\x09\x01\xa1\x00\x05\x09\x19\x01\x29\x08\x15\x00\x25\x01\x95\x08\x75\x01\x81\x02\x05\x01\x09\x30\x09\x31\x16\x00\x00\x26\xff\x7f\x75\x10\x95\x02\x81\x02\x09\x38\x15\x81\x25\x7f\x75\x08\x95\x01\x81\x06\xc0\xc0' \
+			> "$GADGET_DIR/functions/hid.usb1/report_desc"
+	fi
 
 	# CDC ECM function (usb0 network interface)
 	mkdir -p "$GADGET_DIR/functions/ecm.usb0"
@@ -118,7 +138,7 @@ start() {
 		echo "usb0 did not appear; ECM may not be bound"
 	fi
 
-	echo "Aiden USB composite ready: /dev/hidg0 (keyboard) /dev/hidg1 (touch) usb0 (ECM)"
+	echo "Aiden USB composite ready: /dev/hidg0 (keyboard) /dev/hidg1 (pointer:$POINTER_MODE) usb0 (ECM)"
 }
 
 stop() {
