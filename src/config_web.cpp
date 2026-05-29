@@ -1346,9 +1346,9 @@ std::string provider_default_url(const std::string& provider) {
 }
 
 std::string build_curl_proxy_arg(const aiden::ProxyToml& proxy) {
-    std::string url = proxy.all_proxy;
-    if (url.empty()) url = proxy.https_proxy;
-    if (url.empty()) url = proxy.http_proxy;
+    std::string url = trim_copy(proxy.https_proxy);
+    if (url.empty()) url = trim_copy(proxy.http_proxy);
+    if (url.empty()) url = trim_copy(proxy.all_proxy);
     if (url.empty()) return "";
     return " -x " + shell_quote(url) + " ";
 }
@@ -1375,6 +1375,11 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     cJSON* response = cJSON_CreateObject();
     cJSON* results = add_array(response, "results");
     bool all_passed = true;
+
+    aiden::AgentToml current_config;
+    std::string config_error;
+    load_current_agent_config(options, &current_config, &config_error);
+    std::string curl_proxy_arg = build_curl_proxy_arg(current_config.proxy);
 
     if (section == "proxy") {
         const char* proxy_keys[] = {"http_proxy", "https_proxy", "all_proxy", NULL};
@@ -1411,7 +1416,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             cJSON_AddStringToObject(r, "detail", "no URL to test (provider unknown and base_url empty)");
             all_passed = false;
         } else {
-            std::string cmd = "curl -sI --max-time 6 " + shell_quote(url) + " 2>&1 | head -1";
+            std::string cmd = "curl -sI --max-time 6 " + curl_proxy_arg + shell_quote(url) + " 2>&1 | head -1";
             CommandResult cr = run_shell_command(cmd);
             bool reachable = cr.exit_code == 0 && cr.output.find("HTTP") != std::string::npos;
             cJSON_AddBoolToObject(r, "passed", reachable ? 1 : 0);
@@ -1480,6 +1485,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
 
                     std::string cmd =
                         std::string("curl -sS --max-time 12 ") +
+                        curl_proxy_arg +
                         "-o " + shell_quote(response_path) + " -w '%{http_code}' " +
                         "-H " + shell_quote("Content-Type: application/json") + " " +
                         "-H " + shell_quote(auth_header) + " " +
