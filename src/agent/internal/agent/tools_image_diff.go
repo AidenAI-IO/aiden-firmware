@@ -73,7 +73,11 @@ func (t *ImageDiffTool) Call(_ context.Context, input string) (string, error) {
 
 	bounds := fullBounds
 	if args.Region != nil {
-		bounds = args.Region.toPixelRect(fullBounds)
+		var err error
+		bounds, err = args.Region.toPixelRect(fullBounds)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
 	}
 
 	result, err := computeImageDiff(beforeImg, afterImg, bounds)
@@ -92,20 +96,25 @@ type imageDiffRegion struct {
 	H float64 `json:"h"`
 }
 
-func (r *imageDiffRegion) toPixelRect(full image.Rectangle) image.Rectangle {
+func (r *imageDiffRegion) toPixelRect(full image.Rectangle) (image.Rectangle, error) {
+	if !finiteNormalized(r.X) || !finiteNormalized(r.Y) || !finiteNormalized(r.W) || !finiteNormalized(r.H) {
+		return image.Rectangle{}, fmt.Errorf("region x/y/w/h must be finite normalized values in [0,1]")
+	}
+	if r.W <= 0 || r.H <= 0 {
+		return image.Rectangle{}, fmt.Errorf("region w/h must be greater than 0")
+	}
+
 	w := full.Dx()
 	h := full.Dy()
-	x0 := full.Min.X + int(math.Round(r.X*float64(w)))
-	y0 := full.Min.Y + int(math.Round(r.Y*float64(h)))
-	x1 := full.Min.X + int(math.Round((r.X+r.W)*float64(w)))
-	y1 := full.Min.Y + int(math.Round((r.Y+r.H)*float64(h)))
-	if x1 > full.Max.X {
-		x1 = full.Max.X
-	}
-	if y1 > full.Max.Y {
-		y1 = full.Max.Y
-	}
-	return image.Rect(x0, y0, x1, y1)
+	x0 := clampInt(full.Min.X+int(math.Round(r.X*float64(w))), full.Min.X, full.Max.X)
+	y0 := clampInt(full.Min.Y+int(math.Round(r.Y*float64(h))), full.Min.Y, full.Max.Y)
+	x1 := clampInt(full.Min.X+int(math.Round((r.X+r.W)*float64(w))), full.Min.X, full.Max.X)
+	y1 := clampInt(full.Min.Y+int(math.Round((r.Y+r.H)*float64(h))), full.Min.Y, full.Max.Y)
+	return image.Rect(x0, y0, x1, y1), nil
+}
+
+func finiteNormalized(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 1
 }
 
 type imageDiffResult struct {
