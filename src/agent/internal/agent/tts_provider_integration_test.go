@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -22,6 +23,50 @@ func TestTTSPlaybackFormatUsesProviderOnlySampleRate(t *testing.T) {
 	}
 	if format.Channels != 1 || format.BitWidth != 16 {
 		t.Fatalf("unexpected PCM format: %#v", format)
+	}
+}
+
+func TestManagedTTSResamplesProviderOnly24kToConfiguredPlaybackRate(t *testing.T) {
+	provider := &formatCheckingTTSProvider{
+		name:       "provider-only-24k",
+		caps:       ttsmodule.Capabilities{SupportedSampleRates: []int{24000}},
+		wantFormat: ttsmodule.AudioFormat{SampleRate: 24000, Channels: 1, BitWidth: 16},
+	}
+
+	var startRate uint32
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_playback":
+			startRate = req.SampleRate
+			return audioResponse{Status: "OK", SessionID: stringUint64(7)}, nil
+		case "write_play_chunk":
+			return audioResponse{Status: "OK"}, nil
+		case "health":
+			return audioResponse{Status: "OK", PlaybackSessions: 0}, nil
+		case "stop_playback":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "INTERNAL_ERROR"}, nil
+		}
+	})
+
+	server := &Server{
+		runtime: NewRuntimeWithDeps(
+			Config{Model: ModelConfig{Provider: "fake"}, Audio: AudioConfig{SampleRate: 16000}},
+			&testModelResolver{model: &scriptedModel{}},
+			NewMemoryManager(""),
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+			NewSkillIndex(),
+		),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+		audioClient: NewAudioServiceClient(socketPath),
+	}
+
+	if err := server.speakText(context.Background(), "hello", 0); err != nil {
+		t.Fatalf("speakText() error = %v", err)
+	}
+	if startRate != 16000 {
+		t.Fatalf("start_playback sample_rate = %d, want configured playback rate 16000", startRate)
 	}
 }
 
@@ -113,6 +158,33 @@ func TestTTSProviderAliasesAreNotRegistered(t *testing.T) {
 	}
 }
 
+func TestVolcengineTTSProviderIsRegistered(t *testing.T) {
+	provider, err := ttsmodule.New(ttsmodule.ProviderConfig{
+		Provider: "volcengine",
+		APIKey:   "test-key",
+		Voice:    "test-speaker",
+	})
+	if err != nil {
+		t.Fatalf("tts.New(volcengine) error = %v", err)
+	}
+	defer provider.Close()
+	if provider.Name() != "volcengine" {
+		t.Fatalf("provider.Name() = %q, want volcengine", provider.Name())
+	}
+	if !containsProviderName(ttsmodule.AvailableProviders(), "volcengine") {
+		t.Fatalf("AvailableProviders() missing volcengine: %#v", ttsmodule.AvailableProviders())
+	}
+}
+
+func containsProviderName(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestAudioDialogRunAgentTurnStreamsThroughProviderManager(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "streamed answer"}}}}}
 	runtime := NewRuntimeWithDeps(
@@ -154,6 +226,49 @@ func (s *failingStreamSession) WriteText(string) error { return nil }
 func (s *failingStreamSession) Flush() error           { return nil }
 func (s *failingStreamSession) Close() error           { return s.closeErr }
 func (s *failingStreamSession) Err() error             { return s.closeErr }
+
+type formatCheckingTTSProvider struct {
+	name       string
+	caps       ttsmodule.Capabilities
+	wantFormat ttsmodule.AudioFormat
+}
+
+func (p *formatCheckingTTSProvider) Name() string { return p.name }
+
+func (p *formatCheckingTTSProvider) Capabilities() ttsmodule.Capabilities { return p.caps }
+
+func (p *formatCheckingTTSProvider) BeginStream(ctx context.Context, sink ttsmodule.AudioSink) (ttsmodule.StreamSession, error) {
+	format := sink.Format()
+	if format != p.wantFormat {
+		return nil, fmt.Errorf("sink format = %#v, want %#v", format, p.wantFormat)
+	}
+	return &formatCheckingTTSSession{sink: sink}, nil
+}
+
+func (p *formatCheckingTTSProvider) Close() error { return nil }
+
+type formatCheckingTTSSession struct {
+	sink ttsmodule.AudioSink
+	err  error
+}
+
+func (s *formatCheckingTTSSession) WriteText(string) error { return nil }
+
+func (s *formatCheckingTTSSession) Flush() error { return nil }
+
+func (s *formatCheckingTTSSession) Close() error {
+	if err := s.sink.WritePCM([]byte{0, 0, 1, 0, 2, 0}); err != nil {
+		s.err = err
+		return err
+	}
+	if err := s.sink.Drain(context.Background()); err != nil {
+		s.err = err
+		return err
+	}
+	return nil
+}
+
+func (s *formatCheckingTTSSession) Err() error { return s.err }
 
 type recordingTTSProvider struct {
 	name string

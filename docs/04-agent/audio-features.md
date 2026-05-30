@@ -1,6 +1,6 @@
 # 语音能力：VAD / STT / TTS
 
-Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go`、`audio_dialog.go`、`vad.go`、`stt.go`、`tts.go` 组成。
+Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go`、`audio_dialog.go`、`vad.go`、`stt.go` 和 `tts/` provider 组成。
 
 ## 架构
 
@@ -27,7 +27,7 @@ Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go
 | Audio client | `audio_client.go` | 连接 `audio_service`，启动录音/播放 session，读写 PCM chunk |
 | VAD | `vad.go` | 基于能量阈值的语音活动检测 |
 | STT | `stt.go` | OpenAI Whisper / OpenRouter 实现；Tencent ASR 字段已预留 |
-| TTS | `tts.go` | Minimax TTS，使用 `ffmpeg` 转 PCM 后播放 |
+| TTS | `tts/`、`tts_helpers.go` | 可插拔 TTS provider，输出 PCM 后通过 `audio_service` 播放；必要时自动重采样到设备播放采样率 |
 | Dialog manager | `audio_dialog.go` | 编排录音、VAD、STT/LLM/TTS 流程 |
 
 ## 输入模式
@@ -97,10 +97,66 @@ model = "whisper-1"
 # model = "qwen/qwen3-asr-flash-2026-02-10"
 
 [tts]
-provider = "minimax-ws"
+provider = "alicloud"
 api_key = "..."
+model = "qwen3-tts-flash-realtime"
+voice_id = "Cherry"
+emotion = "happy"
+speed = 1.0
+```
+
+## TTS provider 使用方式
+
+`[tts]` 的通用字段是 `provider`、`api_key`、`model`、`voice_id`、`emotion`、`speed` 和 `reference_id`。不同 provider 对字段的解释不同，完整说明见 [Agent 配置参考](configuration.md#stt-和-tts)。
+
+```toml
+# Minimax HTTP streaming
+[tts]
+provider = "minimax"
+api_key = "MINIMAX_API_KEY"
+model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
+speed = 1.0
+```
+
+```toml
+# Minimax WebSocket
+[tts]
+provider = "minimax-ws"
+api_key = "MINIMAX_API_KEY"
+model = "speech-2.8-hd"
+voice_id = "male-qn-qingse"
+emotion = "happy"
+speed = 1.0
+```
+
+```toml
+# Fish Audio WebSocket
+[tts]
+provider = "fish-audio"
+api_key = "FISH_AUDIO_API_KEY"
+reference_id = "FISH_REFERENCE_ID"
+speed = 1.0
+```
+
+```toml
+# 阿里云 Qwen-TTS Realtime
+[tts]
+provider = "alicloud"
+api_key = "DASHSCOPE_API_KEY"
+model = "qwen3-tts-flash-realtime"
+voice_id = "Cherry"
+speed = 1.0
+```
+
+```toml
+# 火山引擎 WebSocket 双向流式 V3
+[tts]
+provider = "volcengine"
+api_key = "VOLCENGINE_X_API_KEY"
+model = "seed-tts-2.0"
+voice_id = "zh_female_vv_uranus_bigtts"
 speed = 1.0
 ```
 

@@ -111,7 +111,7 @@ func New(cfg ProviderConfig) (TTSProvider, error) {
 }
 ```
 
-Adapter 通过 `tts.Register(...)` 注册。当前实现只包含 canonical provider 名：`minimax`、`minimax-ws`、`fish-audio`、`alicloud`。不提供 alias。
+Adapter 通过 `tts.Register(...)` 注册。当前实现只包含 canonical provider 名：`minimax`、`minimax-ws`、`fish-audio`、`alicloud`、`volcengine`。不提供 alias。
 
 ## 目录结构
 
@@ -126,7 +126,8 @@ tts/
 └── adapters/
     ├── minimax/     # 内部 buffer 到句子边界
     ├── fishaudio/   # 真流式
-    └── alicloud/    # 阿里云 Qwen-TTS
+    ├── alicloud/    # 阿里云 Qwen-TTS
+    └── volcengine/  # 火山引擎 WebSocket 双向流式 V3
 ```
 
 ## 迁移路径

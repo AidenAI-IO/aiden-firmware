@@ -171,7 +171,114 @@ TTS：
 - `provider = "minimax"`：Minimax HTTP streaming；
 - `provider = "minimax-ws"`：Minimax WebSocket；
 - `provider = "fish-audio"`：Fish Audio WebSocket；
-- `provider = "alicloud"`：阿里云 Qwen-TTS Realtime。
+- `provider = "alicloud"`：阿里云 Qwen-TTS Realtime；
+- `provider = "volcengine"`：火山引擎 WebSocket 双向流式 V3。当前仅支持新控制台 `X-Api-Key` 鉴权，`api_key` 对应 `X-Api-Key`，`model` 对应 `X-Api-Resource-Id`（默认 `seed-tts-2.0`），`voice_id` 对应 speaker。
+
+`[tts]` 通用字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `provider` | 必填。可选 `minimax`、`minimax-ws`、`fish-audio`、`alicloud`、`volcengine` |
+| `api_key` | 必填。各 provider 的鉴权密钥 |
+| `model` | 可选。Minimax 模型名、阿里云 Realtime 模型名、火山 `X-Api-Resource-Id` |
+| `voice_id` | 可选。Minimax voice id、阿里云 voice、火山 speaker；Fish Audio 可用它作为 reference id |
+| `reference_id` | 可选。Fish Audio reference id；填写后优先于 `voice_id` |
+| `emotion` | 可选。Minimax emotion；火山会透传为 `audio_params.emotion`，需音色支持 |
+| `speed` | 可选。语速，默认 `1.0`；不同 provider 支持范围以官方文档为准 |
+| `use_websocket` | 可选。仅 `provider = "minimax"` 时生效，设为 `true` 会改用 `minimax-ws` adapter |
+
+Minimax HTTP streaming：
+
+```toml
+[tts]
+provider = "minimax"
+api_key = "MINIMAX_API_KEY"
+model = "speech-2.8-hd"
+voice_id = "male-qn-qingse"
+emotion = "happy"
+speed = 1.0
+```
+
+Minimax WebSocket：
+
+```toml
+[tts]
+provider = "minimax-ws"
+api_key = "MINIMAX_API_KEY"
+model = "speech-2.8-hd"
+voice_id = "male-qn-qingse"
+emotion = "happy"
+speed = 1.0
+```
+
+Fish Audio WebSocket：
+
+```toml
+[tts]
+provider = "fish-audio"
+api_key = "FISH_AUDIO_API_KEY"
+reference_id = "FISH_REFERENCE_ID"
+speed = 1.0
+```
+
+Fish Audio 也接受 `voice_id` 作为 reference id；如果同时设置 `reference_id` 和 `voice_id`，使用 `reference_id`。Fish Audio 的公网 endpoint 在部分网络环境可能需要在 `[proxy]` 配置 `all_proxy`。
+
+阿里云 Qwen-TTS Realtime：
+
+```toml
+[tts]
+provider = "alicloud"
+api_key = "DASHSCOPE_API_KEY"
+model = "qwen3-tts-flash-realtime"
+voice_id = "Cherry"
+speed = 1.0
+```
+
+阿里云 adapter 使用 DashScope WebSocket Realtime endpoint，输出固定 24 kHz PCM；设备播放采样率不同时会自动重采样。
+
+火山引擎 WebSocket 双向流式 V3：
+
+```toml
+[tts]
+provider = "volcengine"
+api_key = "VOLCENGINE_X_API_KEY"
+model = "seed-tts-2.0"
+voice_id = "zh_female_vv_uranus_bigtts"
+speed = 1.0
+```
+
+火山引擎 `api_key` 是新控制台的 `X-Api-Key`，`model` 是 `X-Api-Resource-Id`，`voice_id` 是 speaker。`voice_id` 必须和 `model` 对应资源匹配；不匹配时服务端会返回 `resource ID is mismatched with speaker related resource`。`seed-tts-2.0` 已验证可用音色示例为 `zh_female_vv_uranus_bigtts`。
+
+运行时切换 provider：
+
+```bash
+curl -X POST http://<device-ip>:8080/api/settings/tts \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"volcengine","voice":"zh_female_vv_uranus_bigtts"}'
+```
+
+如果需要在同一份配置里保存多个 provider 的密钥，可以使用 per-provider credentials。运行时 POST 切换 provider 时会优先读取对应 credentials，再用请求 body 覆盖。
+
+```toml
+[tts]
+provider = "minimax-ws"
+api_key = "MINIMAX_API_KEY"
+voice_id = "male-qn-qingse"
+
+[tts.credentials.fish-audio]
+api_key = "FISH_AUDIO_API_KEY"
+reference_id = "FISH_REFERENCE_ID"
+
+[tts.credentials.alicloud]
+api_key = "DASHSCOPE_API_KEY"
+model = "qwen3-tts-flash-realtime"
+voice_id = "Cherry"
+
+[tts.credentials.volcengine]
+api_key = "VOLCENGINE_X_API_KEY"
+model = "seed-tts-2.0"
+voice_id = "zh_female_vv_uranus_bigtts"
+```
 
 ## 已知限制
 

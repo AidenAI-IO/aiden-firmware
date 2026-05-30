@@ -22,6 +22,7 @@ import (
 	_ "aiden-agent/internal/agent/tts/adapters/alicloud"
 	_ "aiden-agent/internal/agent/tts/adapters/fishaudio"
 	_ "aiden-agent/internal/agent/tts/adapters/minimax"
+	_ "aiden-agent/internal/agent/tts/adapters/volcengine"
 )
 
 // Server provides HTTP API for agent interactions

@@ -111,7 +111,7 @@ func New(cfg ProviderConfig) (TTSProvider, error) {
 }
 ```
 
-Adapter 通过 `init()` 调用 `tts.Register(...)` 注册。当前只注册 canonical provider 名：`minimax`、`minimax-ws`、`fish-audio`、`alicloud`。不提供 alias。
+Adapter 通过 `init()` 调用 `tts.Register(...)` 注册。当前只注册 canonical provider 名：`minimax`、`minimax-ws`、`fish-audio`、`alicloud`、`volcengine`。不提供 alias。
 
 ## 运行时切换
 
@@ -340,12 +340,14 @@ tts/
 ├── manager.go       # ProviderManager
 ├── factory.go       # New()
 ├── sink.go          # AudioServiceSink
+├── resampling_sink.go # PCM16 mono 线性重采样
 ├── errors.go
 │
 ├── adapters/
 │   ├── minimax/     # 内部 buffer 到句子边界
 │   ├── fishaudio/   # 真流式 token 推送
 │   ├── alicloud/    # 阿里云 Qwen-TTS
+│   ├── volcengine/  # 火山引擎 WebSocket 双向流式 V3
 │
 └── testing/
     ├── mock.go
@@ -437,14 +439,8 @@ func TestHolder_SwapSafe(t *testing.T) {
 [tts]
 provider = "fish-audio"
 api_key = "xxx"
-voice = "male-qn-qingse"
-language = "zh-CN"
-sample_rate = 16000
-speed_ratio = 1.0
-
-[tts.extra]
-emotion = "neutral"
 reference_id = "xxx"
+speed = 1.0
 
 [proxy]
 all_proxy = "socks5://192.168.31.142:7897"

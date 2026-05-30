@@ -192,5 +192,5 @@ WebSocket 通信流程：
 查看实现细节：
 
 - WebSocket adapter：`src/agent/internal/agent/tts/adapters/minimax/websocket.go`
-- HTTP 客户端（对比）：`src/agent/internal/agent/tts.go`
+- HTTP adapter（对比）：`src/agent/internal/agent/tts/adapters/minimax/http.go`
 - 配置加载：`src/agent/internal/agent/input_processing.go`

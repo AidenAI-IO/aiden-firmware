@@ -43,7 +43,7 @@ aiden-hardware-demo/
 | `internal/agent/server.go` | HTTP server / Web UI / 工具 API |
 | `internal/agent/tools*.go` | HID、截图、音频、shell 等内置工具 |
 | `internal/agent/audio_*.go` | 设备侧语音链路和 audio_service client |
-| `internal/agent/stt.go` / `tts.go` / `vad.go` | STT、TTS、VAD 实现 |
+| `internal/agent/stt.go` / `internal/agent/tts/` / `vad.go` | STT、可插拔 TTS provider、VAD 实现 |
 | `internal/agent/skills*.go` | Skill 加载、激活与工具限制 |
 | `config/agent.toml` | Agent 配置示例 |
 

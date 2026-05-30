@@ -104,6 +104,14 @@ func ttsPlaybackFormat(cfg Config, caps tts.Capabilities) tts.AudioFormat {
 	}
 }
 
+func ttsPlaybackTargetFormat(cfg Config, source tts.AudioFormat) tts.AudioFormat {
+	target := source
+	if configuredRate := cfg.Audio.SampleRateOrDefault(); configuredRate > 0 {
+		target.SampleRate = configuredRate
+	}
+	return target
+}
+
 func containsInt(values []int, target int) bool {
 	for _, value := range values {
 		if value == target {
@@ -118,12 +126,14 @@ func beginManagedTTSStream(ctx context.Context, manager *tts.ProviderManager, au
 		ctx = context.Background()
 	}
 	holder := manager.Holder()
-	sink := tts.NewAudioServiceSink(newAudioBackend(audio), ttsPlaybackFormat(cfg, holder.Capabilities()))
-	session, err := holder.BeginStream(ctx, sink)
+	sourceFormat := ttsPlaybackFormat(cfg, holder.Capabilities())
+	targetSink := tts.NewAudioServiceSink(newAudioBackend(audio), ttsPlaybackTargetFormat(cfg, sourceFormat))
+	providerSink := tts.NewResamplingSink(sourceFormat, targetSink)
+	session, err := holder.BeginStream(ctx, providerSink)
 	if err != nil {
 		return nil, err
 	}
-	return &streamSessionWriter{session: session, sink: sink}, nil
+	return &streamSessionWriter{session: session, sink: targetSink}, nil
 }
 
 func speakWithTTSManager(ctx context.Context, manager *tts.ProviderManager, audio *AudioServiceClient, cfg Config, text string) (bool, error) {
