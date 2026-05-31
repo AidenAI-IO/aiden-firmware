@@ -112,6 +112,15 @@ func (s *wsSession) synthesizeChunk(text string) error {
 		return s.ctx.Err()
 	default:
 	}
+	format := s.sink.Format()
+	sampleRate := format.SampleRate
+	if sampleRate <= 0 {
+		sampleRate = defaultSampleRate
+	}
+	channels := format.Channels
+	if channels <= 0 {
+		channels = defaultChannels
+	}
 
 	conn, err := s.dial()
 	if err != nil {
@@ -131,9 +140,9 @@ func (s *wsSession) synthesizeChunk(text string) error {
 			"emotion":  s.cfg.emotion,
 		},
 		"audio_setting": map[string]any{
-			"sample_rate": defaultSampleRate,
+			"sample_rate": sampleRate,
 			"format":      "pcm",
-			"channel":     defaultChannels,
+			"channel":     channels,
 		},
 	}
 	if err := conn.WriteJSON(startMsg); err != nil {

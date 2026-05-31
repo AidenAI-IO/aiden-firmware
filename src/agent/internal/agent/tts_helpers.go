@@ -23,10 +23,6 @@ func newTTSProviderManagerFromConfig(cfg Config, logger *Logger) (*tts.ProviderM
 // per-provider values override the top-level [tts] fallbacks.
 func buildTTSProviderConfig(cfg Config) tts.ProviderConfig {
 	provider := cfg.TTS.Provider
-	// Honor use_websocket for Minimax by routing to the WebSocket adapter.
-	if provider == "minimax" && cfg.TTS.UseWebSocket {
-		provider = "minimax-ws"
-	}
 	return buildTTSProviderConfigFor(cfg, provider)
 }
 

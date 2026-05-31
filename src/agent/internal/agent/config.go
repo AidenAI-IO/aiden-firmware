@@ -53,14 +53,13 @@ type Config struct {
 }
 
 type TTSConfig struct {
-	Provider     string  `toml:"provider"` // "minimax", "minimax-ws", "fish-audio", "alicloud"
-	APIKey       string  `toml:"api_key,omitempty"`
-	Model        string  `toml:"model,omitempty"`
-	VoiceID      string  `toml:"voice_id,omitempty"`
-	Emotion      string  `toml:"emotion,omitempty"`
-	Speed        float64 `toml:"speed,omitempty"`
-	UseWebSocket bool    `toml:"use_websocket,omitempty"` // Use WebSocket for Minimax
-	ReferenceID  string  `toml:"reference_id,omitempty"`  // Fish Audio voice reference ID
+	Provider    string  `toml:"provider"` // "minimax-ws", "fish-audio", "alicloud", "volcengine"
+	APIKey      string  `toml:"api_key,omitempty"`
+	Model       string  `toml:"model,omitempty"`
+	VoiceID     string  `toml:"voice_id,omitempty"`
+	Emotion     string  `toml:"emotion,omitempty"`
+	Speed       float64 `toml:"speed,omitempty"`
+	ReferenceID string  `toml:"reference_id,omitempty"` // Fish Audio voice reference ID
 
 	// Credentials lets you store per-provider settings so the app can switch
 	// providers at runtime without losing each one's API key/voice. Keys are
@@ -68,7 +67,7 @@ type TTSConfig struct {
 	//
 	// Example agent.toml:
 	//   [tts]
-	//   provider = "minimax"
+	//   provider = "minimax-ws"
 	//   api_key = "<minimax-key>"   # used as fallback for any provider
 	//
 	//   [tts.credentials.fish-audio]

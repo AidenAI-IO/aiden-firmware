@@ -26,6 +26,7 @@ import (
 const (
 	ProviderName    = "fish-audio"
 	defaultEndpoint = "wss://api.fish.audio/v1/tts/live"
+	defaultModel    = "s2-pro"
 	connectTimeout  = 10 * time.Second
 )
 
@@ -37,6 +38,7 @@ func init() {
 type Adapter struct {
 	apiKey      string
 	referenceID string
+	model       string
 	endpoint    string
 	proxyURL    string
 	speed       float64
@@ -58,6 +60,10 @@ func New(cfg tts.ProviderConfig) (tts.TTSProvider, error) {
 	if extra, ok := cfg.Extra["reference_id"].(string); ok && extra != "" {
 		referenceID = extra
 	}
+	model := defaultModel
+	if extra, ok := cfg.Extra["model"].(string); ok && extra != "" {
+		model = extra
+	}
 	speed := cfg.SpeedRatio
 	if speed == 0 {
 		speed = 1.0
@@ -65,6 +71,7 @@ func New(cfg tts.ProviderConfig) (tts.TTSProvider, error) {
 	return &Adapter{
 		apiKey:      cfg.APIKey,
 		referenceID: referenceID,
+		model:       model,
 		endpoint:    endpoint,
 		proxyURL:    cfg.Proxy.AllProxy,
 		speed:       speed,
@@ -122,6 +129,7 @@ func (a *Adapter) dial(ctx context.Context) (*websocket.Conn, error) {
 
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+a.apiKey)
+	header.Set("model", a.model)
 
 	connCtx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
@@ -175,17 +183,33 @@ type session struct {
 }
 
 func (s *session) sendStart(referenceID string, format tts.AudioFormat, speed float64) error {
+	request := map[string]any{
+		"text":                         "",
+		"chunk_length":                 200,
+		"format":                       "pcm",
+		"sample_rate":                  format.SampleRate,
+		"mp3_bitrate":                  128,
+		"opus_bitrate":                 32,
+		"references":                   []any{},
+		"normalize":                    true,
+		"latency":                      "balanced",
+		"top_p":                        0.7,
+		"temperature":                  0.7,
+		"max_new_tokens":               1024,
+		"repetition_penalty":           1.2,
+		"min_chunk_length":             50,
+		"condition_on_previous_chunks": true,
+		"early_stop_threshold":         1.0,
+	}
+	if referenceID != "" {
+		request["reference_id"] = referenceID
+	}
+	if speed != 1.0 {
+		request["prosody"] = map[string]any{"speed": speed, "volume": 0.0}
+	}
 	msg := map[string]any{
-		"event": "start",
-		"request": map[string]any{
-			"reference_id": referenceID,
-			"format":       "pcm",
-			"sample_rate":  format.SampleRate,
-			"channels":     format.Channels,
-			"normalize":    true,
-			"latency":      "normal",
-			"speed":        speed,
-		},
+		"event":   "start",
+		"request": request,
 	}
 	return s.writeMsg(msg)
 }

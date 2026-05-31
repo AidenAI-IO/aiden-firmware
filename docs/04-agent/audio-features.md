@@ -98,7 +98,6 @@ model = "whisper-1"
 
 [tts]
 provider = "alicloud"
-api_key = "..."
 model = "qwen3-tts-flash-realtime"
 voice_id = "Cherry"
 emotion = "happy"
@@ -107,24 +106,14 @@ speed = 1.0
 
 ## TTS provider 使用方式
 
-`[tts]` 的通用字段是 `provider`、`api_key`、`model`、`voice_id`、`emotion`、`speed` 和 `reference_id`。不同 provider 对字段的解释不同，完整说明见 [Agent 配置参考](configuration.md#stt-和-tts)。
+`[tts]` 的通用字段是 `provider`、`api_key`、`model`、`voice_id`、`emotion`、`speed` 和 `reference_id`。不同 provider 对字段的解释不同，完整说明见 [Agent 配置参考](configuration.md#stt-和-tts)。以下示例省略 `api_key`，只展示 adapter 行为相关配置。
 
-```toml
-# Minimax HTTP streaming
-[tts]
-provider = "minimax"
-api_key = "MINIMAX_API_KEY"
-model = "speech-2.8-hd"
-voice_id = "male-qn-qingse"
-emotion = "happy"
-speed = 1.0
-```
+所有 TTS provider 都通过统一的 streaming session 调用：Agent 把 LLM 输出片段写入 adapter，adapter 再决定何时向后端发送。Fish Audio、阿里云和火山引擎是真流式 WebSocket 链路；Minimax WebSocket adapter 会在内部按句子边界缓冲后发送，上层不需要区分“真流式”或“句子级流式”。运行时可通过 `POST /api/settings/tts` 切换 provider，已开始的播放会继续使用旧 provider，后续请求使用新 provider。
 
 ```toml
 # Minimax WebSocket
 [tts]
 provider = "minimax-ws"
-api_key = "MINIMAX_API_KEY"
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
@@ -135,8 +124,8 @@ speed = 1.0
 # Fish Audio WebSocket
 [tts]
 provider = "fish-audio"
-api_key = "FISH_AUDIO_API_KEY"
-reference_id = "FISH_REFERENCE_ID"
+model = "s2-pro"
+reference_id = "98655a12fa944e26b274c535e5e03842"
 speed = 1.0
 ```
 
@@ -144,7 +133,6 @@ speed = 1.0
 # 阿里云 Qwen-TTS Realtime
 [tts]
 provider = "alicloud"
-api_key = "DASHSCOPE_API_KEY"
 model = "qwen3-tts-flash-realtime"
 voice_id = "Cherry"
 speed = 1.0
@@ -154,7 +142,6 @@ speed = 1.0
 # 火山引擎 WebSocket 双向流式 V3
 [tts]
 provider = "volcengine"
-api_key = "VOLCENGINE_X_API_KEY"
 model = "seed-tts-2.0"
 voice_id = "zh_female_vv_uranus_bigtts"
 speed = 1.0

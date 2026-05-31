@@ -475,7 +475,7 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.model.temperature = 0.2;
     cfg.model.max_tokens = 1000;
 
-    cfg.tts.provider = "minimax";
+    cfg.tts.provider = "minimax-ws";
     cfg.tts.voice_id = "male-qn-qingse";
     cfg.tts.emotion = "happy";
     cfg.tts.speed = 1.0;

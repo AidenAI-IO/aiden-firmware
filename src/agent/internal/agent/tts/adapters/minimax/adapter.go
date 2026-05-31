@@ -6,16 +6,13 @@
 // boundary is reached, then performs a full task_start/task_continue/task_finish
 // cycle for that sentence.
 //
-// Two transport modes:
-//   - HTTP (provider name "minimax"): one HTTPS POST per sentence
-//   - WebSocket (provider name "minimax-ws"): persistent ws connection,
-//     reconnected as needed since server closes after task_finish.
+// The only supported provider name is "minimax-ws". The adapter opens a
+// WebSocket connection per sentence because the server closes after task_finish.
 package minimax
 
 import "aiden-agent/internal/agent/tts"
 
 func init() {
-	tts.Register("minimax", NewHTTP)
 	tts.Register("minimax-ws", NewWebSocket)
 }
 
