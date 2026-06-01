@@ -68,3 +68,36 @@ TEST_CASE("config web agent status review constraints") {
     CHECK(source.find("status.port_host = parse_agent_host(addr)") != std::string::npos);
     CHECK(source.find("check_tcp_port(status.port_host, status.port)") != std::string::npos);
 }
+
+TEST_CASE("config web exposes live agent logs") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("\"/api/agent/logs\"") != std::string::npos);
+    CHECK(source.find("handle_get_agent_log") != std::string::npos);
+    CHECK(source.find("read_agent_log_snapshot") != std::string::npos);
+    CHECK(source.find("\"agent_log\"") != std::string::npos);
+    CHECK(source.find("\"size_bytes\"") != std::string::npos);
+    CHECK(source.find("\"truncated\"") != std::string::npos);
+    CHECK(source.find("tail -f") == std::string::npos);
+
+    CHECK(html.find("Agent 实时日志") != std::string::npos);
+    CHECK(html.find("agentLogText") != std::string::npos);
+    CHECK(html.find("agentLogMeta") != std::string::npos);
+    CHECK(html.find("refreshAgentLog") != std::string::npos);
+    CHECK(html.find("/api/agent/logs") != std::string::npos);
+    CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
+}

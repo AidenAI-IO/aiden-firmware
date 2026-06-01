@@ -84,6 +84,15 @@ struct AgentRuntimeStatus {
     std::string startup_error;
 };
 
+struct AgentLogSnapshot {
+    bool exists = false;
+    bool truncated = false;
+    long size_bytes = 0;
+    std::string path;
+    std::string log;
+    std::string error;
+};
+
 struct TcpPortStatus {
     bool reachable = false;
     std::string detail;
@@ -100,6 +109,8 @@ const int kDefaultAgentPort = 8080;
 const int kAgentStatusCommandTimeoutMs = 1500;
 const size_t kAgentStatusLogReadSize = 16 * 1024;
 const size_t kAgentStatusLogDisplaySize = 4096;
+const size_t kAgentLogReadSize = 64 * 1024;
+const size_t kAgentLogDisplaySize = 48 * 1024;
 const size_t kMaxHttpHeaderSize = 8 * 1024;
 const size_t kMaxHttpBodySize = 64 * 1024;
 const int kClientReadTimeoutSeconds = 5;
@@ -1294,6 +1305,69 @@ std::string trim_for_display(const std::string& text, size_t max_size) {
     return trimmed.substr(start);
 }
 
+AgentLogSnapshot read_agent_log_snapshot() {
+    AgentLogSnapshot snapshot;
+    snapshot.path = kAgentLogPath;
+
+    FILE* f = fopen(kAgentLogPath, "r");
+    if (!f) {
+        snapshot.error = strerror(errno);
+        return snapshot;
+    }
+    snapshot.exists = true;
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+        snapshot.error = std::string("seek failed: ") + strerror(errno);
+        fclose(f);
+        return snapshot;
+    }
+
+    long file_size = ftell(f);
+    if (file_size < 0) {
+        snapshot.error = std::string("stat failed: ") + strerror(errno);
+        fclose(f);
+        return snapshot;
+    }
+
+    snapshot.size_bytes = file_size;
+    long offset = 0;
+    if (static_cast<size_t>(file_size) > kAgentLogReadSize) {
+        offset = file_size - static_cast<long>(kAgentLogReadSize);
+        snapshot.truncated = true;
+    }
+
+    if (fseek(f, offset, SEEK_SET) != 0) {
+        snapshot.error = std::string("seek failed: ") + strerror(errno);
+        fclose(f);
+        return snapshot;
+    }
+
+    std::string contents;
+    contents.reserve(static_cast<size_t>(file_size - offset));
+    char buf[1024];
+    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
+        contents.append(buf, n);
+    }
+
+    if (ferror(f)) {
+        snapshot.error = std::string("read failed: ") + strerror(errno);
+    }
+    fclose(f);
+
+    if (offset > 0) {
+        size_t first_newline = contents.find('\n');
+        if (first_newline != std::string::npos) {
+            contents.erase(0, first_newline + 1);
+        }
+    }
+
+    if (contents.size() > kAgentLogDisplaySize) {
+        snapshot.truncated = true;
+    }
+    snapshot.log = trim_for_display(contents, kAgentLogDisplaySize);
+    return snapshot;
+}
+
 std::string lowercase_copy(const std::string& text) {
     std::string out = text;
     for (size_t i = 0; i < out.size(); ++i) {
@@ -1558,6 +1632,17 @@ cJSON* agent_status_to_json(const AgentRuntimeStatus& status) {
     return root;
 }
 
+cJSON* agent_log_to_json(const AgentLogSnapshot& snapshot) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "path", snapshot.path.c_str());
+    cJSON_AddBoolToObject(root, "exists", snapshot.exists ? 1 : 0);
+    cJSON_AddNumberToObject(root, "size_bytes", snapshot.size_bytes);
+    cJSON_AddBoolToObject(root, "truncated", snapshot.truncated ? 1 : 0);
+    cJSON_AddStringToObject(root, "log", snapshot.log.c_str());
+    cJSON_AddStringToObject(root, "error", snapshot.error.c_str());
+    return root;
+}
+
 cJSON* firmware_info_to_json(const Options& options) {
     cJSON* fw = cJSON_CreateObject();
     if (!file_exists(options.ota_state_path.c_str())) {
@@ -1624,6 +1709,13 @@ ApiResponse handle_get_agent_status() {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
     cJSON_AddItemToObject(root, "agent_status", agent_status_to_json(query_agent_status()));
+    return make_json_ok(root);
+}
+
+ApiResponse handle_get_agent_log() {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON_AddItemToObject(root, "agent_log", agent_log_to_json(read_agent_log_snapshot()));
     return make_json_ok(root);
 }
 
@@ -2460,6 +2552,10 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "GET" && request.path == "/api/agent/status") {
         return handle_get_agent_status();
+    }
+
+    if (request.method == "GET" && request.path == "/api/agent/logs") {
+        return handle_get_agent_log();
     }
 
     if (request.method == "GET" && request.path == "/api/config") {
