@@ -1429,28 +1429,6 @@ bool save_system_env_content(const std::string& path,
     return atomic_write_file(path, content, 0600, error);
 }
 
-bool is_system_proxy_env_key(const std::string& key) {
-    return key == "http_proxy" || key == "HTTP_PROXY" ||
-           key == "https_proxy" || key == "HTTPS_PROXY" ||
-           key == "all_proxy" || key == "ALL_PROXY" ||
-           key == "no_proxy" || key == "NO_PROXY";
-}
-
-bool is_system_proxy_assignment_line(const std::string& line) {
-    std::string trimmed = trim_copy(line);
-    if (trimmed == kManagedSystemProxyComment) {
-        return true;
-    }
-    if (starts_with(trimmed, "export ")) {
-        trimmed = trim_copy(trimmed.substr(7));
-    }
-    size_t eq = trimmed.find('=');
-    if (eq == std::string::npos) {
-        return false;
-    }
-    return is_system_proxy_env_key(trim_copy(trimmed.substr(0, eq)));
-}
-
 void append_system_env_assignment(std::ostringstream& out,
                                   const char* key,
                                   const std::string& value) {
@@ -1490,17 +1468,15 @@ bool save_system_env_with_proxy(const std::string& path,
     }
 
     std::string existing = read_file_contents(path.c_str(), kMaxSystemEnvSize);
-    std::ostringstream out;
-    std::istringstream input(existing);
-    std::string line;
-    while (std::getline(input, line)) {
-        if (is_system_proxy_assignment_line(line)) {
-            continue;
-        }
-        out << line << "\n";
+    std::string content;
+    if (!aiden::render_system_env_without_proxy_assignments(
+            existing,
+            kManagedSystemProxyComment,
+            &content,
+            error)) {
+        return false;
     }
 
-    std::string content = out.str();
     std::string block = render_system_proxy_env_block(proxy);
     if (!block.empty()) {
         if (!content.empty() && content[content.size() - 1] != '\n') {

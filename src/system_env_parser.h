@@ -24,4 +24,9 @@ bool parse_system_env_content(const std::string& content,
                               SystemEnvProxy* proxy,
                               std::string* error);
 
+bool render_system_env_without_proxy_assignments(const std::string& content,
+                                                 const std::string& managed_proxy_comment,
+                                                 std::string* rendered,
+                                                 std::string* error);
+
 }  // namespace aiden

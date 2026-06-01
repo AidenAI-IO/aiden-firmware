@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 
+#include <algorithm>
 #include <map>
 #include <sstream>
 #include <string>
@@ -79,6 +80,59 @@ bool is_unsafe_unquoted_value_char(char c) {
     default:
         return false;
     }
+}
+
+bool is_safe_unquoted_value(const std::string& value) {
+    if (value.empty()) {
+        return false;
+    }
+    for (size_t i = 0; i < value.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(value[i]);
+        if (c >= 0x80 || isspace(c) || is_unsafe_unquoted_value_char(static_cast<char>(c))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool is_system_proxy_env_key(const std::string& key) {
+    return key == "http_proxy" || key == "HTTP_PROXY" ||
+           key == "https_proxy" || key == "HTTPS_PROXY" ||
+           key == "all_proxy" || key == "ALL_PROXY" ||
+           key == "no_proxy" || key == "NO_PROXY";
+}
+
+bool quote_env_value(const std::string& value, std::string* quoted, std::string* error) {
+    if (is_safe_unquoted_value(value)) {
+        *quoted = value;
+        return true;
+    }
+    if (value.find('\'') == std::string::npos) {
+        *quoted = "'" + value + "'";
+        return true;
+    }
+    if (value.find('"') == std::string::npos &&
+        value.find('$') == std::string::npos &&
+        value.find('`') == std::string::npos &&
+        value.find('\\') == std::string::npos) {
+        *quoted = "\"" + value + "\"";
+        return true;
+    }
+    if (error) {
+        *error = "cannot render assignment value without unsupported shell syntax";
+    }
+    return false;
+}
+
+bool append_env_assignment(std::ostringstream& out,
+                           const EnvAssignment& assignment,
+                           std::string* error) {
+    std::string quoted;
+    if (!quote_env_value(assignment.value, &quoted, error)) {
+        return false;
+    }
+    out << assignment.key << "=" << quoted << "\n";
+    return true;
 }
 
 bool parse_value(const std::string& line,
@@ -237,6 +291,24 @@ bool has_duplicate_proxy_scheme(const std::string& url) {
     return trimmed.find("://", first + 3) != std::string::npos;
 }
 
+bool is_hex_digit(char c) {
+    unsigned char u = static_cast<unsigned char>(c);
+    return isxdigit(u) != 0;
+}
+
+std::string invalid_percent_escape(const std::string& value) {
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (value[i] != '%') {
+            continue;
+        }
+        if (i + 2 >= value.size() || !is_hex_digit(value[i + 1]) || !is_hex_digit(value[i + 2])) {
+            return value.substr(i, std::min<size_t>(3, value.size() - i));
+        }
+        i += 2;
+    }
+    return "";
+}
+
 bool has_proxy_whitespace(const std::string& url) {
     for (unsigned char c : url) {
         if (c >= 0x80 || isspace(c)) {
@@ -302,6 +374,10 @@ std::string validate_system_proxy_url(const std::string& url) {
     if (has_duplicate_proxy_scheme(trimmed)) {
         return "duplicate scheme in proxy URL";
     }
+    std::string bad_escape = invalid_percent_escape(trimmed);
+    if (!bad_escape.empty()) {
+        return "invalid URL escape \"" + bad_escape + "\"";
+    }
 
     size_t scheme_end = trimmed.find("://");
     if (scheme_end == std::string::npos || scheme_end == 0 || !proxy_host_present(trimmed)) {
@@ -346,6 +422,67 @@ bool parse_system_env_content(const std::string& content,
         proxy->all_proxy = first_upper_or_lower(values_by_key, "ALL_PROXY", "all_proxy");
         proxy->no_proxy = first_upper_or_lower(values_by_key, "NO_PROXY", "no_proxy");
     }
+    return true;
+}
+
+bool render_system_env_without_proxy_assignments(const std::string& content,
+                                                 const std::string& managed_proxy_comment,
+                                                 std::string* rendered,
+                                                 std::string* error) {
+    if (!rendered) {
+        if (error) *error = "rendered output is null";
+        return false;
+    }
+    rendered->clear();
+
+    std::ostringstream out;
+    std::istringstream input(content);
+    std::string line;
+    size_t line_number = 1;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line[line.size() - 1] == '\r') {
+            line.resize(line.size() - 1);
+        }
+
+        std::string trimmed = trim_copy(line);
+        if (!managed_proxy_comment.empty() && trimmed == managed_proxy_comment) {
+            ++line_number;
+            continue;
+        }
+        if (trimmed.empty() || trimmed[0] == '#') {
+            out << line << "\n";
+            ++line_number;
+            continue;
+        }
+
+        std::vector<EnvAssignment> line_assignments;
+        std::map<std::string, std::string> values_by_key;
+        if (!parse_assignment_line(line, line_number, &line_assignments, &values_by_key, error)) {
+            return false;
+        }
+
+        bool has_proxy_assignment = false;
+        for (size_t i = 0; i < line_assignments.size(); ++i) {
+            if (is_system_proxy_env_key(line_assignments[i].key)) {
+                has_proxy_assignment = true;
+                break;
+            }
+        }
+        if (!has_proxy_assignment) {
+            out << line << "\n";
+            ++line_number;
+            continue;
+        }
+        for (size_t i = 0; i < line_assignments.size(); ++i) {
+            if (!is_system_proxy_env_key(line_assignments[i].key) &&
+                !append_env_assignment(out, line_assignments[i], error)) {
+                return false;
+            }
+        }
+        ++line_number;
+    }
+
+    *rendered = out.str();
     return true;
 }
 

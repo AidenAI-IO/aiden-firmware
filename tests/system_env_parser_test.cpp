@@ -32,4 +32,28 @@ TEST_CASE("system proxy URL validation matches runtime proxy rules") {
     CHECK(aiden::validate_system_proxy_url("socks4://127.0.0.1:7890").find("unsupported proxy URL scheme") != std::string::npos);
     CHECK(aiden::validate_system_proxy_url("socks5://127.0.0.1:7890").empty());
     CHECK(aiden::validate_system_proxy_url("http://proxy.example:7893 http_proxy=http://proxy.example:7893").find("whitespace") != std::string::npos);
+    CHECK(aiden::validate_system_proxy_url("http://%zz").find("invalid URL escape") != std::string::npos);
+}
+
+TEST_CASE("system env proxy filtering preserves unrelated assignments on mixed lines") {
+    std::string rendered;
+    std::string error;
+
+    const std::string content =
+        "# custom env\n"
+        "export HTTP_PROXY=http://proxy.example:7890 OPENAI_API_KEY=sk-example\n"
+        "AIDEN_MODE=dev\n"
+        "# Managed by config_web: system proxy\n";
+
+    REQUIRE(aiden::render_system_env_without_proxy_assignments(
+        content,
+        "# Managed by config_web: system proxy",
+        &rendered,
+        &error));
+
+    CHECK(rendered.find("HTTP_PROXY=") == std::string::npos);
+    CHECK(rendered.find("OPENAI_API_KEY=sk-example") != std::string::npos);
+    CHECK(rendered.find("AIDEN_MODE=dev") != std::string::npos);
+    CHECK(rendered.find("# custom env") != std::string::npos);
+    CHECK(rendered.find("# Managed by config_web: system proxy") == std::string::npos);
 }

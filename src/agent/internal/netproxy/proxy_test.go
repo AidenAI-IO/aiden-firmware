@@ -46,6 +46,16 @@ func TestParseRejectsMissingHost(t *testing.T) {
 	}
 }
 
+func TestParseRejectsMalformedAuthority(t *testing.T) {
+	_, err := Parse("http://%zz", "http", "https", "socks5")
+	if err == nil {
+		t.Fatal("Parse() error = nil, want malformed authority error")
+	}
+	if !strings.Contains(err.Error(), "invalid URL escape") {
+		t.Fatalf("Parse() error = %v, want invalid URL escape", err)
+	}
+}
+
 func TestProxyFromEnvironmentBypassesLoopbackByDefault(t *testing.T) {
 	clearProxyEnv(t)
 	t.Setenv("HTTP_PROXY", "http://proxy.example:7890")
