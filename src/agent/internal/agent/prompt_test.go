@@ -106,7 +106,7 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 		"shell、本地文件、进程和系统命令只作用于 Aiden 硬件控制器",
 		"不要根据宿主机的 OS 或架构推断目标设备信息",
 		"不要用本地系统命令代替目标控制工具",
-		"目标设备和目标 OS 根据截图、连接元数据、谨慎行为探测或用户输入推断",
+		"目标设备和目标 OS 根据截图、连接元数据、进行行为探测或用户输入推断",
 		"弱先验，不是已检测事实",
 		"shell 工具只在 Aiden 硬件控制器上执行",
 		"不会操作截图中的目标 UI",
@@ -149,6 +149,7 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 		"不一定是截图中显示的设备",
 		"kernel=",
 		"宿主机的 OS、内核或架构",
+		"谨慎行为探测或用户输入推断",
 	} {
 		if strings.Contains(msg, unwanted) {
 			t.Fatalf("system message should not contain old localized guidance %q:\n%s", unwanted, msg)
