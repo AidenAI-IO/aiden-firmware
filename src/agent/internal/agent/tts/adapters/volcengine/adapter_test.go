@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -13,13 +15,13 @@ import (
 )
 
 func TestVolcengineStreamsTextAndAudio(t *testing.T) {
-	var sawAPIKey, sawResourceID bool
+	var sawAPIKey, sawResourceID atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Api-Key") == "test-key" {
-			sawAPIKey = true
+			sawAPIKey.Store(true)
 		}
 		if r.Header.Get("X-Api-Resource-Id") == "seed-tts-2.0" {
-			sawResourceID = true
+			sawResourceID.Store(true)
 		}
 		conn, err := websocket.Upgrade(w, r, nil, 1024, 1024)
 		if err != nil {
@@ -105,11 +107,113 @@ func TestVolcengineStreamsTextAndAudio(t *testing.T) {
 	if err := session.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	if !sawAPIKey || !sawResourceID {
-		t.Fatalf("headers saw api_key=%v resource_id=%v", sawAPIKey, sawResourceID)
+	if !sawAPIKey.Load() || !sawResourceID.Load() {
+		t.Fatalf("headers saw api_key=%v resource_id=%v", sawAPIKey.Load(), sawResourceID.Load())
 	}
 	if string(sink.pcm) != string([]byte{1, 2, 3, 4}) || !sink.drained {
 		t.Fatalf("sink pcm=%v drained=%v", sink.pcm, sink.drained)
+	}
+}
+
+func TestVolcengineBeginStreamHonorsContextWhileWaitingForHandshake(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Upgrade(w, r, nil, 1024, 1024)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	defer server.CloseClientConnections()
+
+	provider, err := New(tts.ProviderConfig{Provider: ProviderName, APIKey: "test-key", Endpoint: "ws" + strings.TrimPrefix(server.URL, "http")})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := provider.BeginStream(ctx, &recordingSink{format: tts.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("BeginStream() error = nil, want context cancellation")
+		}
+	case <-time.After(500 * time.Millisecond):
+		server.CloseClientConnections()
+		t.Fatal("BeginStream() blocked after context cancellation")
+	}
+}
+
+func TestVolcengineCloseReturnsWhenServerNeverFinishesSession(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Upgrade(w, r, nil, 1024, 1024)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg, err := parseServerFrame(raw)
+		if err != nil || msg.event != eventStartConnection {
+			t.Errorf("start connection = %#v err=%v", msg, err)
+			return
+		}
+		_ = conn.WriteMessage(websocket.BinaryMessage, encodeServerJSONFrame(eventConnectionStarted, "conn-1", "", []byte("{}")))
+
+		_, raw, err = conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg, err = parseServerFrame(raw)
+		if err != nil || msg.event != eventStartSession {
+			t.Errorf("start session = %#v err=%v", msg, err)
+			return
+		}
+		_ = conn.WriteMessage(websocket.BinaryMessage, encodeServerJSONFrame(eventSessionStarted, "", msg.sessionID, []byte(`{"status_code":20000000,"message":"ok"}`)))
+
+		_, raw, err = conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg, err = parseServerFrame(raw)
+		if err != nil || msg.event != eventFinishSession {
+			t.Errorf("finish session = %#v err=%v", msg, err)
+			return
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	defer server.CloseClientConnections()
+
+	provider, err := New(tts.ProviderConfig{Provider: ProviderName, APIKey: "test-key", Endpoint: "ws" + strings.TrimPrefix(server.URL, "http")})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	session, err := provider.BeginStream(ctx, &recordingSink{format: tts.AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}})
+	if err != nil {
+		t.Fatalf("BeginStream() error = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- session.Close() }()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		server.CloseClientConnections()
+		t.Fatal("Close() blocked waiting for session_finished")
 	}
 }
 

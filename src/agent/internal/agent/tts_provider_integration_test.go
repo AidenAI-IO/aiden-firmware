@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
@@ -33,11 +34,11 @@ func TestManagedTTSResamplesProviderOnly24kToConfiguredPlaybackRate(t *testing.T
 		wantFormat: ttsmodule.AudioFormat{SampleRate: 24000, Channels: 1, BitWidth: 16},
 	}
 
-	var startRate uint32
+	var startRate atomic.Uint32
 	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
 		switch req.Op {
 		case "start_playback":
-			startRate = req.SampleRate
+			startRate.Store(req.SampleRate)
 			return audioResponse{Status: "OK", SessionID: stringUint64(7)}, nil
 		case "write_play_chunk":
 			return audioResponse{Status: "OK"}, nil
@@ -65,8 +66,8 @@ func TestManagedTTSResamplesProviderOnly24kToConfiguredPlaybackRate(t *testing.T
 	if err := server.speakText(context.Background(), "hello", 0); err != nil {
 		t.Fatalf("speakText() error = %v", err)
 	}
-	if startRate != 16000 {
-		t.Fatalf("start_playback sample_rate = %d, want configured playback rate 16000", startRate)
+	if got := startRate.Load(); got != 16000 {
+		t.Fatalf("start_playback sample_rate = %d, want configured playback rate 16000", got)
 	}
 }
 

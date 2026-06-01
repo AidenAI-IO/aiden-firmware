@@ -87,13 +87,18 @@ func (h *ProviderHolder) BeginStream(ctx context.Context, sink AudioSink) (Strea
 
 func (h *ProviderHolder) Close() error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.current == nil {
+	old := h.current
+	oldWG := h.activeWG
+	if old == nil {
+		h.mu.Unlock()
 		return nil
 	}
-	err := h.current.Close()
 	h.current = nil
-	return err
+	h.activeWG = &sync.WaitGroup{}
+	h.mu.Unlock()
+
+	oldWG.Wait()
+	return old.Close()
 }
 
 // Compile-time check.

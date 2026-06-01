@@ -21,3 +21,16 @@ func TestAvailableProvidersSorted(t *testing.T) {
 		}
 	}
 }
+
+func TestRegisterPanicsOnNilFactory(t *testing.T) {
+	old := factories
+	t.Cleanup(func() { factories = old })
+	factories = map[string]Factory{}
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Register() did not panic for nil factory")
+		}
+	}()
+	Register("nil-provider", nil)
+}

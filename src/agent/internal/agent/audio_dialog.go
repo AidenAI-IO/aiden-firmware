@@ -52,7 +52,7 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 	// Create pluggable TTS manager if configured.
 	ttsManager, err := newTTSProviderManagerFromConfig(cfg, nil)
 	if err != nil {
-		return nil, err
+		log.Printf("[tts] init failed, continuing without TTS: %v\n", err)
 	}
 
 	silenceMs := cfg.SilenceMs

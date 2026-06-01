@@ -235,6 +235,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := r.Context()
+
 	// Add user message to history
 	s.appendHistory(Message{
 		Type:        "user",
@@ -275,7 +277,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
 		if ttsManager != nil {
-			stream, err := beginManagedTTSStream(context.Background(), ttsManager, s.audioClient, s.runtime.config)
+			stream, err := beginManagedTTSStream(ctx, ttsManager, s.audioClient, s.runtime.config)
 			if err != nil {
 				if s.logger != nil {
 					s.logger.Warn("TTS BeginStream failed: %v", err)
@@ -287,7 +289,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := s.runtime.Run(context.Background(), runReq)
+	result, err := s.runtime.Run(ctx, runReq)
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil {

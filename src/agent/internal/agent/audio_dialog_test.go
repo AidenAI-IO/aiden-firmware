@@ -114,6 +114,21 @@ func TestNewAudioDialogAudioWakeupUsesDirectAudioPath(t *testing.T) {
 	}
 }
 
+func TestNewAudioDialogIgnoresInvalidOptionalTTS(t *testing.T) {
+	dialog, err := NewAudioDialog(Config{
+		Model:     ModelConfig{Provider: "fake"},
+		TTS:       TTSConfig{Provider: "missing-provider", APIKey: "test-key"},
+		Audio:     AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000},
+		InputMode: "audio",
+	})
+	if err != nil {
+		t.Fatalf("NewAudioDialog() error = %v", err)
+	}
+	if dialog.ttsManager != nil {
+		t.Fatalf("ttsManager = %#v, want nil after optional TTS init failure", dialog.ttsManager)
+	}
+}
+
 func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{

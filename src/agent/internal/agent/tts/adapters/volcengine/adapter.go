@@ -107,7 +107,7 @@ func (a *Adapter) BeginStream(ctx context.Context, sink tts.AudioSink) (tts.Stre
 		conn.Close()
 		return nil, fmt.Errorf("start connection: %w", err)
 	}
-	if err := s.waitForEvent(eventConnectionStarted); err != nil {
+	if err := s.waitForEvent(ctx, eventConnectionStarted); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("connection started: %w", err)
 	}
@@ -115,7 +115,7 @@ func (a *Adapter) BeginStream(ctx context.Context, sink tts.AudioSink) (tts.Stre
 		conn.Close()
 		return nil, fmt.Errorf("start session: %w", err)
 	}
-	if err := s.waitForEvent(eventSessionStarted); err != nil {
+	if err := s.waitForEvent(ctx, eventSessionStarted); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("session started: %w", err)
 	}
@@ -124,7 +124,7 @@ func (a *Adapter) BeginStream(ctx context.Context, sink tts.AudioSink) (tts.Stre
 }
 
 func (a *Adapter) dial(ctx context.Context) (*websocket.Conn, error) {
-	dialer := websocket.Dialer{TLSClientConfig: &tls.Config{}, HandshakeTimeout: connectTimeout}
+	dialer := websocket.Dialer{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, HandshakeTimeout: connectTimeout}
 	if err := configureProxy(&dialer, a.proxy); err != nil {
 		return nil, err
 	}
@@ -196,25 +196,27 @@ func (s *session) Flush() error { return nil }
 
 func (s *session) Close() error {
 	s.closeOnce.Do(func() {
+		closeCtx, cancel := context.WithTimeout(s.ctx, connectTimeout)
+		defer cancel()
+
 		if err := s.sendEvent(eventFinishSession, s.sessionID, []byte("{}")); err != nil {
 			s.recordErr(fmt.Errorf("finish session: %w", err))
 		}
-		if err := <-s.readDone; err != nil {
+		if err := s.waitReadDone(closeCtx); err != nil {
 			s.recordErr(err)
 		}
-		if err := s.sink.Drain(context.Background()); err != nil {
+		drainCtx, drainCancel := context.WithTimeout(s.ctx, connectTimeout)
+		if err := s.sink.Drain(drainCtx); err != nil {
 			s.recordErr(fmt.Errorf("drain: %w", err))
 		}
+		drainCancel()
 		if err := s.sendEvent(eventFinishConnection, "", []byte("{}")); err != nil {
 			s.recordErr(fmt.Errorf("finish connection: %w", err))
 		}
-		_ = s.waitForEvent(eventConnectionFinished)
-		s.writeMu.Lock()
-		if s.conn != nil {
-			s.conn.Close()
-			s.conn = nil
+		if err := s.waitForEvent(closeCtx, eventConnectionFinished); err != nil {
+			s.recordErr(fmt.Errorf("connection finished: %w", err))
 		}
-		s.writeMu.Unlock()
+		s.closeConn()
 	})
 	return s.Err()
 }
@@ -234,8 +236,8 @@ func (s *session) sendEvent(event int32, sessionID string, payload []byte) error
 	return s.conn.WriteMessage(websocket.BinaryMessage, encodeClientEvent(event, sessionID, payload))
 }
 
-func (s *session) waitForEvent(want int32) error {
-	_, raw, err := s.conn.ReadMessage()
+func (s *session) waitForEvent(ctx context.Context, want int32) error {
+	_, raw, err := s.readMessage(ctx)
 	if err != nil {
 		return err
 	}
@@ -254,8 +256,11 @@ func (s *session) waitForEvent(want int32) error {
 
 func (s *session) readLoop() {
 	for {
-		_, raw, err := s.conn.ReadMessage()
+		_, raw, err := s.readMessage(s.ctx)
 		if err != nil {
+			if s.ctx.Err() != nil {
+				err = s.ctx.Err()
+			}
 			s.readDone <- err
 			return
 		}
@@ -285,6 +290,49 @@ func (s *session) readLoop() {
 				return
 			}
 		}
+	}
+}
+
+func (s *session) readMessage(ctx context.Context) (int, []byte, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, nil, err
+	}
+	conn := s.conn
+	if conn == nil {
+		return 0, nil, tts.ErrSessionClosed
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.SetReadDeadline(time.Now())
+		case <-done:
+		}
+	}()
+	messageType, raw, err := conn.ReadMessage()
+	close(done)
+	if ctx.Err() != nil {
+		return messageType, raw, ctx.Err()
+	}
+	return messageType, raw, err
+}
+
+func (s *session) waitReadDone(ctx context.Context) error {
+	select {
+	case err := <-s.readDone:
+		return err
+	case <-ctx.Done():
+		s.closeConn()
+		return ctx.Err()
+	}
+}
+
+func (s *session) closeConn() {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if s.conn != nil {
+		_ = s.conn.Close()
+		s.conn = nil
 	}
 }
 

@@ -124,23 +124,31 @@ func parseServerFrame(frame []byte) (serverMessage, error) {
 			off = next
 		}
 	case messageTypeFullServerResponse:
+		fields, err := readFields(frame, off)
+		if err != nil {
+			return serverMessage{}, err
+		}
+		if len(fields) == 0 {
+			return serverMessage{}, fmt.Errorf("missing payload")
+		}
+		ids := fields[:len(fields)-1]
+		msg.payload = fields[len(fields)-1]
 		if msg.event == eventConnectionStarted || msg.event == eventConnectionFailed || msg.event == eventConnectionFinished {
-			if looksLikeSizedString(frame, off) {
-				value, next, err := readString(frame, off)
-				if err != nil {
-					return serverMessage{}, err
-				}
-				msg.connectionID = value
-				off = next
+			if len(ids) > 0 {
+				msg.connectionID = string(ids[0])
+			}
+			if len(ids) > 1 {
+				msg.sessionID = string(ids[1])
 			}
 		} else {
-			value, next, err := readString(frame, off)
-			if err != nil {
-				return serverMessage{}, err
+			if len(ids) == 1 {
+				msg.sessionID = string(ids[0])
+			} else if len(ids) > 1 {
+				msg.connectionID = string(ids[0])
+				msg.sessionID = string(ids[1])
 			}
-			msg.sessionID = value
-			off = next
 		}
+		return msg, nil
 	case messageTypeAudioOnlyResponse:
 		value, next, err := readString(frame, off)
 		if err != nil {
@@ -159,17 +167,22 @@ func parseServerFrame(frame []byte) (serverMessage, error) {
 	return msg, nil
 }
 
-func looksLikeSizedString(frame []byte, off int) bool {
-	if len(frame) < off+8 {
-		return false
-	}
-	n := int(binary.BigEndian.Uint32(frame[off : off+4]))
-	return n > 0 && len(frame) >= off+4+n+4
-}
-
 func readString(frame []byte, off int) (string, int, error) {
 	data, next, err := readBytes(frame, off)
 	return string(data), next, err
+}
+
+func readFields(frame []byte, off int) ([][]byte, error) {
+	fields := [][]byte{}
+	for off < len(frame) {
+		data, next, err := readBytes(frame, off)
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, data)
+		off = next
+	}
+	return fields, nil
 }
 
 func readBytes(frame []byte, off int) ([]byte, int, error) {

@@ -24,6 +24,9 @@ func Register(name string, f Factory) {
 	if name == "" {
 		panic("tts: Register called with empty name")
 	}
+	if f == nil {
+		panic("tts: Register called with nil factory")
+	}
 	if _, exists := factories[name]; exists {
 		panic(fmt.Sprintf("tts: duplicate provider registration: %s", name))
 	}

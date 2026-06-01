@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -78,8 +80,13 @@ func TestWebSocketRequestsSinkSampleRate(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	if got := <-sampleRates; got != 32000 {
-		t.Fatalf("sample_rate = %d, want sink sample rate 32000", got)
+	select {
+	case got := <-sampleRates:
+		if got != 32000 {
+			t.Fatalf("sample_rate = %d, want sink sample rate 32000", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for sample_rate from websocket server")
 	}
 }
 
@@ -100,6 +107,120 @@ func TestWebSocketDialerUsesConfiguredProxy(t *testing.T) {
 	}
 	if proxyURL == nil || proxyURL.String() != "http://127.0.0.1:7890" {
 		t.Fatalf("proxy URL = %v, want http://127.0.0.1:7890", proxyURL)
+	}
+}
+
+func TestWebSocketDialerFallsBackToHTTPProxy(t *testing.T) {
+	dialer, err := websocketDialerForConfig(commonConfig{
+		proxy: tts.ProxyConfig{HTTPProxy: "http://127.0.0.1:7890"},
+	})
+	if err != nil {
+		t.Fatalf("websocketDialerForConfig() error = %v", err)
+	}
+	if dialer.Proxy == nil {
+		t.Fatal("expected websocket dialer proxy to be configured")
+	}
+
+	proxyURL, err := dialer.Proxy(&http.Request{URL: mustURL(t, "wss://api.minimaxi.com/ws/v1/t2a_v2")})
+	if err != nil {
+		t.Fatalf("Proxy() error = %v", err)
+	}
+	if proxyURL == nil || proxyURL.String() != "http://127.0.0.1:7890" {
+		t.Fatalf("proxy URL = %v, want http://127.0.0.1:7890", proxyURL)
+	}
+}
+
+func TestWebSocketRejectsInvalidAudioHex(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		if err := conn.WriteJSON(map[string]any{"event": "connected_success"}); err != nil {
+			t.Errorf("write connected_success: %v", err)
+			return
+		}
+		var start map[string]any
+		if err := conn.ReadJSON(&start); err != nil {
+			t.Errorf("read task_start: %v", err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{"event": "task_started"}); err != nil {
+			t.Errorf("write task_started: %v", err)
+			return
+		}
+		var cont map[string]any
+		if err := conn.ReadJSON(&cont); err != nil {
+			t.Errorf("read task_continue: %v", err)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"data": map[string]any{"audio": "zz"}, "is_final": true})
+	}))
+	defer server.Close()
+
+	provider, err := NewWebSocket(tts.ProviderConfig{APIKey: "test-key", Endpoint: "ws" + server.URL[len("http"):]})
+	if err != nil {
+		t.Fatalf("NewWebSocket() error = %v", err)
+	}
+	session, err := provider.BeginStream(context.Background(), noopSink{format: tts.AudioFormat{SampleRate: 32000, Channels: 1, BitWidth: 16}})
+	if err != nil {
+		t.Fatalf("BeginStream() error = %v", err)
+	}
+	if err := session.WriteText("this sentence is long enough."); err == nil || !strings.Contains(err.Error(), "decode audio hex") {
+		t.Fatalf("WriteText() error = %v, want decode audio hex", err)
+	}
+}
+
+func TestWebSocketReadAudioHonorsContextCancellation(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		_ = conn.WriteJSON(map[string]any{"event": "connected_success"})
+		var start map[string]any
+		if err := conn.ReadJSON(&start); err != nil {
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"event": "task_started"})
+		var cont map[string]any
+		if err := conn.ReadJSON(&cont); err != nil {
+			return
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	defer server.CloseClientConnections()
+
+	provider, err := NewWebSocket(tts.ProviderConfig{APIKey: "test-key", Endpoint: "ws" + server.URL[len("http"):]})
+	if err != nil {
+		t.Fatalf("NewWebSocket() error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	session, err := provider.BeginStream(ctx, noopSink{format: tts.AudioFormat{SampleRate: 32000, Channels: 1, BitWidth: 16}})
+	if err != nil {
+		t.Fatalf("BeginStream() error = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- session.WriteText("this sentence is long enough.") }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("WriteText() error = nil, want context cancellation")
+		}
+	case <-time.After(500 * time.Millisecond):
+		server.CloseClientConnections()
+		t.Fatal("WriteText() blocked after context cancellation")
 	}
 }
 

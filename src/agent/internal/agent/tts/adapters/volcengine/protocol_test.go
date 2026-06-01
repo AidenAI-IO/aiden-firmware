@@ -49,3 +49,16 @@ func TestVolcengineProtocolParsesAudioFrame(t *testing.T) {
 		t.Fatalf("parsed message = %#v", msg)
 	}
 }
+
+func TestVolcengineProtocolParsesFullServerResponseWithConnectionAndSessionIDs(t *testing.T) {
+	payload := []byte(`{"status_code":20000000,"message":"ok"}`)
+	frame := encodeServerJSONFrame(eventSessionStarted, "conn-1", "session-1", payload)
+
+	msg, err := parseServerFrame(frame)
+	if err != nil {
+		t.Fatalf("parseServerFrame() error = %v", err)
+	}
+	if msg.connectionID != "conn-1" || msg.sessionID != "session-1" || !bytes.Equal(msg.payload, payload) {
+		t.Fatalf("parsed message = %#v, want both IDs and payload %s", msg, payload)
+	}
+}

@@ -120,7 +120,9 @@ func (a *Adapter) BeginStream(ctx context.Context, sink tts.AudioSink) (tts.Stre
 
 func (a *Adapter) dial(ctx context.Context) (*websocket.Conn, error) {
 	dialer := websocket.Dialer{
-		TLSClientConfig:  &tls.Config{},
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
 		HandshakeTimeout: connectTimeout,
 	}
 	if err := configureProxy(&dialer, a.proxyURL); err != nil {
@@ -240,8 +242,16 @@ func (s *session) writeMsg(msg map[string]any) error {
 
 func (s *session) readLoop() {
 	for {
-		_, raw, err := s.conn.ReadMessage()
+		conn := s.conn
+		if conn == nil {
+			s.readDone <- tts.ErrSessionClosed
+			return
+		}
+		_, raw, err := conn.ReadMessage()
 		if err != nil {
+			if s.ctx.Err() != nil {
+				err = s.ctx.Err()
+			}
 			s.readDone <- err
 			return
 		}
@@ -282,23 +292,41 @@ func (s *session) Close() error {
 		_ = s.writeMsg(map[string]any{"event": "stop"})
 
 		// Wait for the read loop to drain.
-		if err := <-s.readDone; err != nil {
+		waitCtx, cancel := context.WithTimeout(s.ctx, connectTimeout)
+		if err := s.waitReadDone(waitCtx); err != nil {
 			s.recordErr(err)
 		}
+		cancel()
 
 		// Drain the playback buffer (waits until audio fully plays).
-		if err := s.sink.Drain(context.Background()); err != nil {
+		drainCtx, cancel := context.WithTimeout(s.ctx, connectTimeout)
+		if err := s.sink.Drain(drainCtx); err != nil {
 			s.recordErr(fmt.Errorf("drain: %w", err))
 		}
+		cancel()
 
-		s.writeMu.Lock()
-		if s.conn != nil {
-			s.conn.Close()
-			s.conn = nil
-		}
-		s.writeMu.Unlock()
+		s.closeConn()
 	})
 	return s.Err()
+}
+
+func (s *session) waitReadDone(ctx context.Context) error {
+	select {
+	case err := <-s.readDone:
+		return err
+	case <-ctx.Done():
+		s.closeConn()
+		return ctx.Err()
+	}
+}
+
+func (s *session) closeConn() {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if s.conn != nil {
+		_ = s.conn.Close()
+		s.conn = nil
+	}
 }
 
 func (s *session) recordErr(err error) {

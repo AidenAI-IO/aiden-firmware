@@ -24,7 +24,9 @@ func httpClientForConfig(cfg commonConfig) *http.Client {
 
 func websocketDialerForConfig(cfg commonConfig) (websocket.Dialer, error) {
 	dialer := websocket.Dialer{
-		TLSClientConfig:  &tls.Config{},
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
 		HandshakeTimeout: wsConnTimeout,
 	}
 	if err := configureWebSocketProxy(&dialer, cfg.proxy); err != nil {
@@ -37,6 +39,8 @@ func configureWebSocketProxy(dialer *websocket.Dialer, cfg tts.ProxyConfig) erro
 	proxyURL := strings.TrimSpace(cfg.AllProxy)
 	if strings.TrimSpace(cfg.HTTPSProxy) != "" {
 		proxyURL = cfg.HTTPSProxy
+	} else if strings.TrimSpace(cfg.HTTPProxy) != "" {
+		proxyURL = cfg.HTTPProxy
 	}
 	if strings.TrimSpace(proxyURL) == "" {
 		return nil

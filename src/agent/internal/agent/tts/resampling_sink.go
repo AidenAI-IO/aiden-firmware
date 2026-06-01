@@ -33,7 +33,11 @@ type resamplingSink struct {
 func (s *resamplingSink) Format() AudioFormat { return s.sourceFormat }
 
 func (s *resamplingSink) WritePCM(data []byte) error {
-	return s.target.WritePCM(s.resampler.Write(data))
+	out := s.resampler.Write(data)
+	if len(out) == 0 {
+		return nil
+	}
+	return s.target.WritePCM(out)
 }
 
 func (s *resamplingSink) Drain(ctx context.Context) error { return s.target.Drain(ctx) }

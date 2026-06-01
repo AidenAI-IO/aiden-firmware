@@ -148,7 +148,9 @@ func (a *Adapter) dial(ctx context.Context) (*websocket.Conn, error) {
 	u.RawQuery = q.Encode()
 
 	dialer := websocket.Dialer{
-		TLSClientConfig:  &tls.Config{},
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
 		HandshakeTimeout: connectTimeout,
 	}
 

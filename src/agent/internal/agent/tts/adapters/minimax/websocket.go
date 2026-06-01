@@ -2,6 +2,7 @@ package minimax
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"sync"
@@ -85,7 +86,7 @@ func (s *wsSession) Close() error {
 	if err := s.Flush(); err != nil {
 		return err
 	}
-	if err := s.sink.Drain(context.Background()); err != nil {
+	if err := s.sink.Drain(s.ctx); err != nil {
 		s.recordErr(err)
 	}
 	return s.Err()
@@ -149,7 +150,7 @@ func (s *wsSession) synthesizeChunk(text string) error {
 		return fmt.Errorf("write task_start: %w", err)
 	}
 	var startResp map[string]any
-	if err := conn.ReadJSON(&startResp); err != nil {
+	if err := readJSONWithContext(s.ctx, conn, &startResp); err != nil {
 		return fmt.Errorf("read task_started: %w", err)
 	}
 	if event, _ := startResp["event"].(string); event != "task_started" {
@@ -169,12 +170,15 @@ func (s *wsSession) synthesizeChunk(text string) error {
 		default:
 		}
 		var resp map[string]any
-		if err := conn.ReadJSON(&resp); err != nil {
+		if err := readJSONWithContext(s.ctx, conn, &resp); err != nil {
 			return fmt.Errorf("read audio: %w", err)
 		}
 		if data, ok := resp["data"].(map[string]any); ok {
 			if audioHex, ok := data["audio"].(string); ok && audioHex != "" {
-				pcm := hexDecode(audioHex)
+				pcm, err := hex.DecodeString(audioHex)
+				if err != nil {
+					return fmt.Errorf("decode audio hex: %w", err)
+				}
 				if len(pcm) > 0 {
 					if err := s.sink.WritePCM(pcm); err != nil {
 						return err
@@ -191,7 +195,7 @@ func (s *wsSession) synthesizeChunk(text string) error {
 	_ = conn.WriteJSON(map[string]any{"event": "task_finish"})
 	// read and discard task_finished response
 	var finishResp map[string]any
-	_ = conn.ReadJSON(&finishResp)
+	_ = readJSONWithContext(s.ctx, conn, &finishResp)
 
 	log.Printf("[tts] minimax-ws: synthesized %d chars\n", len(text))
 	return nil
@@ -214,7 +218,7 @@ func (s *wsSession) dial() (*websocket.Conn, error) {
 	}
 	// Wait for connected_success
 	var connResp map[string]any
-	if err := conn.ReadJSON(&connResp); err != nil {
+	if err := readJSONWithContext(s.ctx, conn, &connResp); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("read connected: %w", err)
 	}
@@ -225,24 +229,22 @@ func (s *wsSession) dial() (*websocket.Conn, error) {
 	return conn, nil
 }
 
-// hexDecode decodes a hex string into bytes.
-func hexDecode(hex string) []byte {
-	out := make([]byte, 0, len(hex)/2)
-	for i := 0; i+1 < len(hex); i += 2 {
-		b := (hexNibble(hex[i]) << 4) | hexNibble(hex[i+1])
-		out = append(out, b)
+func readJSONWithContext(ctx context.Context, conn *websocket.Conn, v any) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return out
-}
-
-func hexNibble(c byte) byte {
-	switch {
-	case c >= '0' && c <= '9':
-		return c - '0'
-	case c >= 'a' && c <= 'f':
-		return c - 'a' + 10
-	case c >= 'A' && c <= 'F':
-		return c - 'A' + 10
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.SetReadDeadline(time.Now())
+		case <-done:
+		}
+	}()
+	err := conn.ReadJSON(v)
+	close(done)
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
-	return 0
+	return err
 }

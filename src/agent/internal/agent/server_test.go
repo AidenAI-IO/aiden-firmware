@@ -211,6 +211,59 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
+	model := &cancelAwareModel{seen: make(chan error, 1)}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello"}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		server.handleChat(rec, req)
+		close(done)
+	}()
+	cancel()
+
+	select {
+	case err := <-model.seen:
+		if err == nil {
+			t.Fatal("model saw nil context error, want request cancellation")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("runtime did not receive request context cancellation")
+	}
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("handleChat did not return after request cancellation")
+	}
+}
+
+type cancelAwareModel struct {
+	seen chan error
+}
+
+func (m *cancelAwareModel) GenerateContent(ctx context.Context, _ []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	<-ctx.Done()
+	err := ctx.Err()
+	m.seen <- err
+	return nil, err
+}
+
+func (m *cancelAwareModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	panic("unexpected Call invocation")
+}
+
 type blockingTTSProvider struct {
 	started   chan struct{}
 	blockText string

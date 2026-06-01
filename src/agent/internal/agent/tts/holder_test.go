@@ -46,9 +46,58 @@ func TestProviderHolderSwapWaitsForOldSessionClose(t *testing.T) {
 	}
 }
 
+func TestProviderHolderCloseWaitsForActiveSessionClose(t *testing.T) {
+	provider := &blockingProvider{name: "current", started: make(chan *blockingSession, 1), closed: make(chan struct{})}
+	holder := NewProviderHolder(provider)
+
+	session, err := holder.BeginStream(context.Background(), noopSink{})
+	if err != nil {
+		t.Fatalf("BeginStream() error = %v", err)
+	}
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("provider did not start a session")
+	}
+
+	closedErr := make(chan error, 1)
+	go func() {
+		closedErr <- holder.Close()
+	}()
+
+	select {
+	case <-provider.closed:
+		t.Fatal("provider closed before active session closed")
+	case <-closedErr:
+		t.Fatal("holder.Close returned before active session closed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := holder.Name(); got != "" {
+		t.Fatalf("holder.Name() = %q while Close is waiting, want empty", got)
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	select {
+	case <-provider.closed:
+	case <-time.After(time.Second):
+		t.Fatal("provider did not close after active session closed")
+	}
+	select {
+	case err := <-closedErr:
+		if err != nil {
+			t.Fatalf("holder.Close() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("holder.Close did not return after active session closed")
+	}
+}
+
 type blockingProvider struct {
 	name    string
 	started chan *blockingSession
+	closed  chan struct{}
 }
 
 func (p *blockingProvider) Name() string { return p.name }
@@ -61,7 +110,12 @@ func (p *blockingProvider) BeginStream(context.Context, AudioSink) (StreamSessio
 	return s, nil
 }
 
-func (p *blockingProvider) Close() error { return nil }
+func (p *blockingProvider) Close() error {
+	if p.closed != nil {
+		close(p.closed)
+	}
+	return nil
+}
 
 type blockingSession struct{}
 
