@@ -3,9 +3,31 @@ package agent
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestFunctionAgentSystemMessageIncludesDefaultChinesePhoneAndGestureGuidance(t *testing.T) {
+func TestPromptIncludesCurrentChineseDate(t *testing.T) {
+	originalNow := promptNow
+	promptNow = func() time.Time {
+		return time.Date(2026, time.June, 1, 8, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	}
+	t.Cleanup(func() { promptNow = originalNow })
+
+	want := "今天的日期是: 2026年06月01日 星期一"
+	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{}, nil)
+	if !strings.Contains(msg, want) {
+		t.Fatalf("function system message missing current date %q:\n%s", want, msg)
+	}
+
+	prompt := buildPrompt("aiden", AgentConfig{}, ResolvedSkills{}, nil)
+	if !strings.Contains(prompt.Template, "{{.current_date}}") {
+		t.Fatalf("ReAct prompt template should include current_date variable:\n%s", prompt.Template)
+	}
+	if got := prompt.PartialVariables["current_date"]; got != want {
+		t.Fatalf("current_date partial = %q, want %q", got, want)
+	}
+}
+func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 	msg := buildFunctionAgentSystemMessage(
 		AgentConfig{
 			Instruction:      "base instruction",
@@ -19,20 +41,30 @@ func TestFunctionAgentSystemMessageIncludesDefaultChinesePhoneAndGestureGuidance
 		"base instruction",
 		"extra prompt",
 		"默认用简体中文回答",
+		"Aiden 硬件控制器",
+		"运行时 OS 是 Linux",
+		"不一定是截图中显示的设备",
+		"shell、本地文件、进程和系统命令只作用于 Aiden 硬件控制器",
+		"不要因为运行时是 Linux 就推断目标设备也是 Linux",
+		"不要用本地系统命令代替目标控制工具",
+		"目标设备和目标 OS 根据截图、连接元数据、谨慎行为探测或用户输入推断",
+		"弱先验，不是已检测事实",
+		"shell 工具只在 Aiden 硬件控制器上执行",
+		"不会操作截图中的目标 UI",
 		"recall_memory",
-		"不要直接凭常识",
-		"TTS",
-		"拨打电话",
-		"没有单独的拨打电话工具",
-		"不要连续重复同一个点击",
-		"优先使用系统搜索",
-		"不能直接输入中文",
+		"不要直接凭常识回答",
+		"适合 TTS",
+		"device-operator",
+		"可见目标 UI",
+		"不要重复同一个点击",
+		"优先使用搜索",
+		"US-keyboard ASCII",
 		"优先使用 coord_space:\"normalized\"",
-		"不要使用 coord_space:\"pixel\"",
+		"仅在已校准时使用 coord_space:\"pixel\"",
 		"type \"back\"",
 		"type \"home\"",
-		"start.x=0.001",
-		"start.y=0.999",
+		"先请求确认",
+		"滑动操作策略",
 		"精准滑动闭环",
 		"先用 medium 做一次试探滑动",
 		"strength/direction -> UI移动量",
@@ -45,8 +77,33 @@ func TestFunctionAgentSystemMessageIncludesDefaultChinesePhoneAndGestureGuidance
 		}
 	}
 
+	for _, unwanted := range []string{
+		"默认用简洁自然的英文回答",
+		"需要中文时，改用拼音",
+		"不要因为没有单独的拨打电话工具就说做不到",
+		"osascript",
+		"AppleScript",
+		"PowerShell",
+		"xdotool",
+		"平台包管理器",
+	} {
+		if strings.Contains(msg, unwanted) {
+			t.Fatalf("system message should not contain old localized guidance %q:\n%s", unwanted, msg)
+		}
+	}
+
 	if strings.Contains(msg, "Use long-term memory if relevant") {
 		t.Fatalf("system message should not contain benchmark-specific memory trigger:\n%s", msg)
+	}
+}
+
+func TestReActPromptRequiresJSONToolInput(t *testing.T) {
+	prompt := buildPrompt("aiden", AgentConfig{}, ResolvedSkills{}, nil)
+	if !strings.Contains(prompt.Template, "Action Input: a valid JSON string for the selected tool") {
+		t.Fatalf("ReAct prompt should require JSON tool input:\n%s", prompt.Template)
+	}
+	if strings.Contains(prompt.Template, "Action Input: a plain string input") {
+		t.Fatalf("ReAct prompt should not describe tool input as plain string:\n%s", prompt.Template)
 	}
 }
 
