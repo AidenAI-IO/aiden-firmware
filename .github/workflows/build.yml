@@ -103,5 +103,6 @@ jobs:
       with:
         name: ${{ steps.release_info.outputs.release_name }}
         tag_name: ${{ steps.release_info.outputs.tag_name }}
+        target_commitish: ${{ github.sha }}
         files: pico-sdk/output/image/*
         fail_on_unmatched_files: true
