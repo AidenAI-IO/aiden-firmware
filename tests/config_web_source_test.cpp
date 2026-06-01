@@ -119,19 +119,30 @@ TEST_CASE("config web persists proxy through system env") {
     html_buffer << html_in.rdbuf();
     const std::string html = html_buffer.str();
 
+    const std::string parser_path = std::string(AIDEN_SOURCE_DIR) + "/src/system_env_parser.cpp";
+    std::ifstream parser_in(parser_path.c_str());
+    REQUIRE(parser_in.good());
+
+    std::ostringstream parser_buffer;
+    parser_buffer << parser_in.rdbuf();
+    const std::string parser = parser_buffer.str();
+
     CHECK(source.find("system_env_path = \"/userdata/system/env\"") != std::string::npos);
-    CHECK(source.find("struct SystemProxy") != std::string::npos);
+    CHECK(source.find("using SystemProxy = aiden::SystemEnvProxy") != std::string::npos);
     CHECK(source.find("load_system_env_proxy") != std::string::npos);
     CHECK(source.find("save_system_env_with_proxy") != std::string::npos);
     CHECK(source.find("clear_agent_proxy_for_system_env") == std::string::npos);
     CHECK(source.find("loaded.proxy") == std::string::npos);
     CHECK(source.find("\"system_env\"") != std::string::npos);
     CHECK(source.find("--system-env=") != std::string::npos);
-    CHECK(source.find("has_duplicate_proxy_scheme") != std::string::npos);
-    CHECK(source.find("has_proxy_whitespace") != std::string::npos);
-    CHECK(source.find("has_embedded_proxy_assignment") != std::string::npos);
-    CHECK(source.find("duplicate scheme") != std::string::npos);
-    CHECK(source.find("proxy URL contains whitespace") != std::string::npos);
+    CHECK(source.find("load_system_env_proxy(tmp_template") == std::string::npos);
+    CHECK(source.find("sh -n") == std::string::npos);
+    CHECK(parser.find("parse_system_env_content") != std::string::npos);
+    CHECK(parser.find("has_duplicate_proxy_scheme") != std::string::npos);
+    CHECK(parser.find("has_proxy_whitespace") != std::string::npos);
+    CHECK(parser.find("has_embedded_proxy_assignment") != std::string::npos);
+    CHECK(parser.find("duplicate scheme") != std::string::npos);
+    CHECK(parser.find("proxy URL contains whitespace") != std::string::npos);
 
     CHECK(html.find("system_env") != std::string::npos);
     CHECK(html.find("system_env_content") != std::string::npos);

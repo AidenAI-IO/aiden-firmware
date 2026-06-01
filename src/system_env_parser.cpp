@@ -1,0 +1,352 @@
+#include "system_env_parser.h"
+
+#include <ctype.h>
+
+#include <map>
+#include <sstream>
+#include <string>
+
+namespace aiden {
+namespace {
+
+std::string trim_copy(const std::string& input) {
+    size_t start = 0;
+    while (start < input.size() && isspace(static_cast<unsigned char>(input[start]))) {
+        ++start;
+    }
+
+    size_t end = input.size();
+    while (end > start && isspace(static_cast<unsigned char>(input[end - 1]))) {
+        --end;
+    }
+    return input.substr(start, end - start);
+}
+
+bool starts_with(const std::string& text, const std::string& prefix) {
+    return text.compare(0, prefix.size(), prefix) == 0;
+}
+
+std::string lower_copy(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        out.push_back(static_cast<char>(tolower(static_cast<unsigned char>(text[i]))));
+    }
+    return out;
+}
+
+bool is_env_name_start(char c) {
+    unsigned char u = static_cast<unsigned char>(c);
+    return c == '_' || isalpha(u);
+}
+
+bool is_env_name_char(char c) {
+    unsigned char u = static_cast<unsigned char>(c);
+    return c == '_' || isalnum(u);
+}
+
+bool is_env_name(const std::string& name) {
+    if (name.empty() || !is_env_name_start(name[0])) {
+        return false;
+    }
+    for (size_t i = 1; i < name.size(); ++i) {
+        if (!is_env_name_char(name[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool is_ascii_space(char c) {
+    return isspace(static_cast<unsigned char>(c)) != 0;
+}
+
+bool is_unsafe_unquoted_value_char(char c) {
+    switch (c) {
+    case ';':
+    case '&':
+    case '|':
+    case '<':
+    case '>':
+    case '(':
+    case ')':
+    case '`':
+    case '$':
+    case '\\':
+    case '\'':
+    case '"':
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool parse_value(const std::string& line,
+                 size_t line_number,
+                 size_t* pos,
+                 std::string* value,
+                 std::string* error) {
+    if (*pos >= line.size()) {
+        value->clear();
+        return true;
+    }
+
+    char quote = line[*pos];
+    if (quote == '\'' || quote == '"') {
+        ++(*pos);
+        std::string out;
+        while (*pos < line.size() && line[*pos] != quote) {
+            char c = line[*pos];
+            if (quote == '"' && (c == '$' || c == '`' || c == '\\')) {
+                if (error) {
+                    *error = "line " + std::to_string(line_number) + ": unsupported shell expansion in quoted value";
+                }
+                return false;
+            }
+            out.push_back(c);
+            ++(*pos);
+        }
+        if (*pos >= line.size()) {
+            if (error) *error = "line " + std::to_string(line_number) + ": unterminated quoted value";
+            return false;
+        }
+        ++(*pos);
+        *value = out;
+        return true;
+    }
+
+    std::string out;
+    while (*pos < line.size() && !is_ascii_space(line[*pos])) {
+        char c = line[*pos];
+        if (is_unsafe_unquoted_value_char(c)) {
+            if (error) {
+                *error = "line " + std::to_string(line_number) + ": unsupported shell syntax in assignment value";
+            }
+            return false;
+        }
+        out.push_back(c);
+        ++(*pos);
+    }
+    *value = out;
+    return true;
+}
+
+void skip_spaces(const std::string& line, size_t* pos) {
+    while (*pos < line.size() && is_ascii_space(line[*pos])) {
+        ++(*pos);
+    }
+}
+
+bool parse_assignment_line(const std::string& raw_line,
+                           size_t line_number,
+                           std::vector<EnvAssignment>* assignments,
+                           std::map<std::string, std::string>* values_by_key,
+                           std::string* error) {
+    std::string line = trim_copy(raw_line);
+    if (line.empty() || line[0] == '#') {
+        return true;
+    }
+
+    bool saw_export = false;
+    if (line == "export") {
+        if (error) *error = "line " + std::to_string(line_number) + ": export requires assignments";
+        return false;
+    }
+    if (starts_with(line, "export ") || starts_with(line, "export\t")) {
+        saw_export = true;
+    }
+
+    size_t pos = saw_export ? 6 : 0;
+    skip_spaces(line, &pos);
+    bool saw_assignment = false;
+    while (pos < line.size()) {
+        if (line[pos] == '#') {
+            break;
+        }
+
+        size_t key_start = pos;
+        if (!is_env_name_start(line[pos])) {
+            if (error) *error = "line " + std::to_string(line_number) + ": unsupported system env statement";
+            return false;
+        }
+        ++pos;
+        while (pos < line.size() && is_env_name_char(line[pos])) {
+            ++pos;
+        }
+        std::string key = line.substr(key_start, pos - key_start);
+        if (pos >= line.size() || line[pos] != '=') {
+            if (error) *error = "line " + std::to_string(line_number) + ": unsupported system env statement";
+            return false;
+        }
+        ++pos;
+
+        std::string value;
+        if (!parse_value(line, line_number, &pos, &value, error)) {
+            return false;
+        }
+        if (!is_env_name(key)) {
+            if (error) *error = "line " + std::to_string(line_number) + ": invalid environment variable name";
+            return false;
+        }
+
+        if (assignments) {
+            EnvAssignment assignment;
+            assignment.key = key;
+            assignment.value = value;
+            assignments->push_back(assignment);
+        }
+        (*values_by_key)[key] = value;
+        saw_assignment = true;
+
+        if (pos < line.size() && !is_ascii_space(line[pos])) {
+            if (error) {
+                *error = "line " + std::to_string(line_number) + ": expected whitespace after assignment";
+            }
+            return false;
+        }
+        skip_spaces(line, &pos);
+    }
+
+    if (!saw_assignment) {
+        if (error) *error = "line " + std::to_string(line_number) + ": unsupported system env statement";
+        return false;
+    }
+    return true;
+}
+
+std::string first_upper_or_lower(const std::map<std::string, std::string>& values,
+                                 const char* upper,
+                                 const char* lower) {
+    std::map<std::string, std::string>::const_iterator it = values.find(upper);
+    if (it != values.end() && !trim_copy(it->second).empty()) {
+        return trim_copy(it->second);
+    }
+    it = values.find(lower);
+    if (it != values.end()) {
+        return trim_copy(it->second);
+    }
+    return "";
+}
+
+bool has_duplicate_proxy_scheme(const std::string& url) {
+    std::string trimmed = trim_copy(url);
+    size_t first = trimmed.find("://");
+    if (first == std::string::npos) {
+        return false;
+    }
+    return trimmed.find("://", first + 3) != std::string::npos;
+}
+
+bool has_proxy_whitespace(const std::string& url) {
+    for (unsigned char c : url) {
+        if (c >= 0x80 || isspace(c)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool has_embedded_proxy_assignment(const std::string& url) {
+    const char* fragments[] = {
+        "http_proxy=", "https_proxy=", "all_proxy=",
+        "HTTP_PROXY=", "HTTPS_PROXY=", "ALL_PROXY=",
+        NULL,
+    };
+    std::string lower = lower_copy(url);
+    for (int i = 0; fragments[i]; ++i) {
+        size_t pos = lower.find(lower_copy(fragments[i]));
+        if (pos != std::string::npos && pos > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool proxy_host_present(const std::string& trimmed) {
+    size_t scheme = trimmed.find("://");
+    if (scheme == std::string::npos) {
+        return false;
+    }
+    size_t host_start = scheme + 3;
+    size_t host_end = trimmed.find_first_of("/?#", host_start);
+    std::string authority = trimmed.substr(
+        host_start,
+        host_end == std::string::npos ? std::string::npos : host_end - host_start);
+    size_t at = authority.rfind('@');
+    std::string host_port = at == std::string::npos ? authority : authority.substr(at + 1);
+    if (host_port.empty()) {
+        return false;
+    }
+    if (host_port[0] == '[') {
+        size_t close = host_port.find(']');
+        return close != std::string::npos && close > 1;
+    }
+    size_t colon = host_port.find(':');
+    std::string host = colon == std::string::npos ? host_port : host_port.substr(0, colon);
+    return !host.empty();
+}
+
+}  // namespace
+
+std::string validate_system_proxy_url(const std::string& url) {
+    std::string trimmed = trim_copy(url);
+    if (trimmed.empty()) {
+        return "";
+    }
+    if (has_proxy_whitespace(trimmed)) {
+        return "proxy URL contains whitespace; use one export assignment per line";
+    }
+    if (has_embedded_proxy_assignment(trimmed)) {
+        return "proxy URL contains another proxy assignment; use one export assignment per line";
+    }
+    if (has_duplicate_proxy_scheme(trimmed)) {
+        return "duplicate scheme in proxy URL";
+    }
+
+    size_t scheme_end = trimmed.find("://");
+    if (scheme_end == std::string::npos || scheme_end == 0 || !proxy_host_present(trimmed)) {
+        return "expected absolute proxy URL, for example http://127.0.0.1:7890";
+    }
+
+    std::string scheme = lower_copy(trimmed.substr(0, scheme_end));
+    if (scheme == "http" || scheme == "https" || scheme == "socks5") {
+        return "";
+    }
+    return "unsupported proxy URL scheme \"" + trimmed.substr(0, scheme_end) + "\"";
+}
+
+bool parse_system_env_content(const std::string& content,
+                              std::vector<EnvAssignment>* assignments,
+                              SystemEnvProxy* proxy,
+                              std::string* error) {
+    if (assignments) {
+        assignments->clear();
+    }
+    if (proxy) {
+        *proxy = SystemEnvProxy();
+    }
+
+    std::map<std::string, std::string> values_by_key;
+    std::istringstream input(content);
+    std::string line;
+    size_t line_number = 1;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line[line.size() - 1] == '\r') {
+            line.resize(line.size() - 1);
+        }
+        if (!parse_assignment_line(line, line_number, assignments, &values_by_key, error)) {
+            return false;
+        }
+        ++line_number;
+    }
+
+    if (proxy) {
+        proxy->http_proxy = first_upper_or_lower(values_by_key, "HTTP_PROXY", "http_proxy");
+        proxy->https_proxy = first_upper_or_lower(values_by_key, "HTTPS_PROXY", "https_proxy");
+        proxy->all_proxy = first_upper_or_lower(values_by_key, "ALL_PROXY", "all_proxy");
+        proxy->no_proxy = first_upper_or_lower(values_by_key, "NO_PROXY", "no_proxy");
+    }
+    return true;
+}
+
+}  // namespace aiden

@@ -77,8 +77,13 @@ func ProxyFromEnvironment(req *http.Request, allowedSchemes ...string) (*url.URL
 	if raw == "" {
 		return nil, nil
 	}
-	if req != nil && req.URL != nil && Bypass(req.URL.Hostname(), req.URL.Port(), NoProxyFromEnvironment()) {
-		return nil, nil
+	if req != nil && req.URL != nil {
+		if bypassLocalhostOrLoopback(req.URL.Hostname()) {
+			return nil, nil
+		}
+		if Bypass(req.URL.Hostname(), req.URL.Port(), NoProxyFromEnvironment()) {
+			return nil, nil
+		}
 	}
 	proxyURL, err := Parse(raw, allowedSchemes...)
 	if err != nil {
@@ -118,6 +123,15 @@ func hasEmbeddedProxyAssignment(value string) bool {
 		}
 	}
 	return false
+}
+
+func bypassLocalhostOrLoopback(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func Bypass(host, port, noProxy string) bool {

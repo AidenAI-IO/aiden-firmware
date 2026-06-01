@@ -74,6 +74,23 @@ func TestOTAProxyFromEnvironmentFallsBackToAllProxy(t *testing.T) {
 	}
 }
 
+func TestOTAProxyFromEnvironmentBypassesLoopbackByDefault(t *testing.T) {
+	clearProxyEnv(t)
+	t.Setenv("HTTP_PROXY", "http://proxy.example:7890")
+
+	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:8080/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyURL, err := otaProxyFromEnvironment(req)
+	if err != nil {
+		t.Fatalf("otaProxyFromEnvironment() error = %v", err)
+	}
+	if proxyURL != nil {
+		t.Fatalf("otaProxyFromEnvironment() = %v, want loopback bypass", proxyURL)
+	}
+}
+
 func clearProxyEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"} {

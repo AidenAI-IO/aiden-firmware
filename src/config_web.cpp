@@ -1,5 +1,6 @@
 #include "agent_toml.h"
 #include "config_web_html.h"
+#include "system_env_parser.h"
 #include "wifi_config.h"
 
 #include "cJSON/cJSON.h"
@@ -95,12 +96,7 @@ struct AgentLogSnapshot {
     std::string error;
 };
 
-struct SystemProxy {
-    std::string http_proxy;
-    std::string https_proxy;
-    std::string all_proxy;
-    std::string no_proxy;
-};
+using SystemProxy = aiden::SystemEnvProxy;
 
 struct TcpPortStatus {
     bool reachable = false;
@@ -128,6 +124,7 @@ const int kSystemEnvCommandTimeoutMs = 1500;
 const size_t kMaxSystemEnvSize = 64 * 1024;
 const char* kManagedSystemProxyComment = "# Managed by config_web: system proxy";
 
+std::string read_file_contents(const char* path, size_t max_size);
 std::string validate_proxy_url(const std::string& url);
 
 enum ReadStatus {
@@ -434,27 +431,14 @@ bool load_system_env_proxy(const std::string& path, SystemProxy* proxy) {
         return false;
     }
 
-    const std::string script =
-        "set -a\n"
-        ". \"$AIDEN_SYSTEM_ENV\" >/dev/null 2>&1 || exit 2\n"
-        "printf '%s\\n' "
-        "\"${http_proxy:-}\" \"${HTTP_PROXY:-}\" "
-        "\"${https_proxy:-}\" \"${HTTPS_PROXY:-}\" "
-        "\"${all_proxy:-}\" \"${ALL_PROXY:-}\" "
-        "\"${no_proxy:-}\" \"${NO_PROXY:-}\"";
-    CommandResult result = run_shell_command_with_timeout(
-        "env -i AIDEN_SYSTEM_ENV=" + shell_quote(path) + " /bin/sh -c " + shell_quote(script),
-        kSystemEnvCommandTimeoutMs);
-    if (result.exit_code != 0 || result.timed_out) {
+    std::string content = read_file_contents(path.c_str(), kMaxSystemEnvSize);
+    std::vector<aiden::EnvAssignment> assignments;
+    SystemProxy loaded;
+    std::string error;
+    if (!aiden::parse_system_env_content(content, &assignments, &loaded, &error)) {
         return false;
     }
 
-    std::vector<std::string> lines = split_lines(result.output);
-    SystemProxy loaded;
-    loaded.http_proxy = !line_or_empty(lines, 1).empty() ? line_or_empty(lines, 1) : line_or_empty(lines, 0);
-    loaded.https_proxy = !line_or_empty(lines, 3).empty() ? line_or_empty(lines, 3) : line_or_empty(lines, 2);
-    loaded.all_proxy = !line_or_empty(lines, 5).empty() ? line_or_empty(lines, 5) : line_or_empty(lines, 4);
-    loaded.no_proxy = !line_or_empty(lines, 7).empty() ? line_or_empty(lines, 7) : line_or_empty(lines, 6);
     if (has_proxy_url(loaded) && loaded.no_proxy.empty()) {
         loaded.no_proxy = kDefaultNoProxy;
     }
@@ -1380,46 +1364,12 @@ bool validate_system_proxy_values(const SystemProxy& proxy, std::string* error) 
 }
 
 bool validate_system_env_content(const std::string& content, std::string* error) {
-    char tmp_template[] = "/tmp/config_web_system_env_XXXXXX";
-    int fd = mkstemp(tmp_template);
-    if (fd < 0) {
-        if (error) *error = std::string("mkstemp failed: ") + strerror(errno);
-        return false;
-    }
-    bool ok = write_all(fd, content.data(), content.size());
-    if (close(fd) != 0) {
-        ok = false;
-    }
-    if (!ok) {
-        if (error) *error = std::string("write temp system env failed: ") + strerror(errno);
-        unlink(tmp_template);
-        return false;
-    }
-
-    CommandResult result = run_shell_command_with_timeout(
-        "sh -n " + shell_quote(tmp_template) + " 2>&1",
-        kSystemEnvCommandTimeoutMs);
-    if (result.exit_code != 0 || result.timed_out) {
-        unlink(tmp_template);
-        if (error) {
-            *error = result.timed_out ? "system env syntax check timed out"
-                                      : trim_trailing_newlines(result.output);
-            if (error->empty()) {
-                *error = "system env syntax check failed";
-            }
-        }
-        return false;
-    }
-
+    std::vector<aiden::EnvAssignment> assignments;
     SystemProxy proxy;
-    if (load_system_env_proxy(tmp_template, &proxy) &&
-        !validate_system_proxy_values(proxy, error)) {
-        unlink(tmp_template);
+    if (!aiden::parse_system_env_content(content, &assignments, &proxy, error)) {
         return false;
     }
-
-    unlink(tmp_template);
-    return true;
+    return validate_system_proxy_values(proxy, error);
 }
 
 bool atomic_write_file(const std::string& path,
@@ -2295,43 +2245,8 @@ load();
 </script></body></html>)HTML";
 }
 
-bool has_duplicate_proxy_scheme(const std::string& url) {
-    std::string trimmed = trim_copy(url);
-    size_t first = trimmed.find("://");
-    if (first == std::string::npos) {
-        return false;
-    }
-    return trimmed.find("://", first + 3) != std::string::npos;
-}
-
-bool has_proxy_whitespace(const std::string& url) {
-    if (url.find("\xC2\xA0") != std::string::npos) return true;
-    for (unsigned char c : url) {
-        if (c >= 0x80) return true;
-        if (::isspace(c)) return true;
-    }
-    return false;
-}
-
-bool has_embedded_proxy_assignment(const std::string& url) {
-    const char* fragments[] = {"http_proxy=", "HTTP_PROXY=", "https_proxy=", "HTTPS_PROXY=", "all_proxy=", "ALL_PROXY=", NULL};
-    for (int i = 0; fragments[i]; ++i) {
-        size_t pos = url.find(fragments[i]);
-        if (pos != std::string::npos && pos > 0) return true;
-    }
-    return false;
-}
-
 std::string validate_proxy_url(const std::string& url) {
-    if (url.empty()) return "";
-    if (has_proxy_whitespace(url)) return "proxy URL contains whitespace; use one export assignment per line";
-    if (has_embedded_proxy_assignment(url)) return "proxy URL contains another proxy assignment; use one export assignment per line";
-    if (has_duplicate_proxy_scheme(url)) return "duplicate scheme in proxy URL";
-    return starts_with(url, "http://") || starts_with(url, "https://") ||
-           starts_with(url, "socks5://") || starts_with(url, "socks4://") ||
-           starts_with(url, "socks4a://")
-        ? ""
-        : "invalid scheme (allowed: http, https, socks5, socks4)";
+    return aiden::validate_system_proxy_url(url);
 }
 
 bool is_valid_proxy_scheme(const std::string& url) {
