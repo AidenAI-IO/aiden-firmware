@@ -3,14 +3,18 @@ package agent
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/tmc/langchaingo/prompts"
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
+var promptNow = time.Now
+
 func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool) prompts.PromptTemplate {
 	template := strings.Join([]string{
 		"You are agent {{.agent_name}}.",
+		"{{.current_date}}",
 		"Base instruction:",
 		"{{.agent_instruction}}",
 		"",
@@ -55,6 +59,7 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 		InputVariables: []string{"input", "history", "agent_scratchpad"},
 		PartialVariables: map[string]any{
 			"agent_name":         agentName,
+			"current_date":       currentDateContext(),
 			"agent_instruction":  combinedAgentInstruction(cfg),
 			"default_behavior":   defaultAgentBehavior(),
 			"skill_behavior":     skillBehavior(),
@@ -69,6 +74,7 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool) string {
 	parts := []string{
 		"You are agent.",
+		currentDateContext(),
 		"Base instruction:",
 		combinedAgentInstruction(cfg),
 		"",
@@ -89,6 +95,15 @@ func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, ava
 		"If no tool is needed, answer directly.",
 	}
 	return strings.Join(parts, "\n")
+}
+
+func currentDateContext() string {
+	return formatChineseDate(promptNow())
+}
+
+func formatChineseDate(t time.Time) string {
+	weekdays := []string{"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}
+	return "今天的日期是: " + t.Format("2006年01月02日") + " " + weekdays[t.Weekday()]
 }
 
 func combinedAgentInstruction(cfg AgentConfig) string {
@@ -112,10 +127,10 @@ func defaultAgentBehavior() string {
 		"- shell、本地文件、进程和系统命令只作用于 Aiden 硬件控制器，不会操作截图中的目标 UI。shell 工具只在 Aiden 硬件控制器上执行；只在控制器诊断，或用户明确要求在 Aiden 控制器上执行命令时使用 shell。",
 		"- 目标设备和目标 OS 根据截图、连接元数据、谨慎行为探测或用户输入推断。",
 		"- Aiden 主要用于控制连接的手机或移动 OS；这只是弱先验，不是已检测事实。当截图、工具结果或失败动作与该假设冲突时，必须修正判断。",
-		"- 使用 osascript、AppleScript、PowerShell、xdotool、adb 或平台包管理器等系统特定自动化前，先确认请求针对的是运行时 OS，而不是连接的目标 UI。",
+		"- 不要因为运行时是 Linux 就推断目标设备也是 Linux；操作目标 UI 时，不要用本地系统命令代替目标控制工具。",
 		"",
 		"## 默认行为",
-		"- 默认用简洁自然的英文回答；用户明确使用其他语言时跟随用户语言。最终回复要简短、适合 TTS 播放；除非用户要求，避免 Markdown 表格或长列表。",
+		"- 默认用简体中文回答；用户明确使用其他语言时跟随用户语言。最终回复要简短、自然、适合 TTS 播放；除非用户要求，避免 Markdown 表格或长列表。",
 		"- 当回答依赖已保存的长期偏好、规则、流程或事实时，先调用 recall_memory；不要直接凭常识回答。普通问题不要为了使用工具而使用工具。",
 		"- 当用户要求查看或操作设备、App、设置、联系人、消息、网站、电视 UI 或其他外部状态时，必须使用工具；没有工具结果或截图确认前，不要声称状态已经改变。",
 		"- 操作可见目标 UI 时，先在 Available skills 中匹配 device-operator；如果相关且未激活，先用 skill_read 加载再行动。详细 UI playbook 放在 skills 中，不要复制进默认 prompt。",

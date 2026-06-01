@@ -17,7 +17,7 @@ TOML 是当前支持的配置格式；JSON 配置已废弃。
 ## Web UI 最小配置
 
 ```toml
-instruction = "回答要简洁、自然、有帮助。默认用英文回答，除非用户明确使用其他语言。Aiden 通常用于控制连接的手机或移动 UI，但必须根据截图、工具结果和用户输入推断当前可见目标，不要假设。"
+instruction = "回答要简洁、自然、有帮助。默认用简体中文回答；用户明确使用其他语言时跟随用户语言。Aiden 通常用于控制连接的手机或移动 UI，但必须根据截图、工具结果和用户输入推断当前可见目标，不要假设。"
 max_iterations = -1
 input_mode = "text"
 
@@ -51,7 +51,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 ## STT 语音模式最小配置
 
 ```toml
-instruction = "回答要简洁、自然、有帮助。默认用英文回答，除非用户明确使用其他语言。Aiden 通常用于控制连接的手机或移动 UI，但必须根据截图、工具结果和用户输入推断当前可见目标，不要假设。"
+instruction = "回答要简洁、自然、有帮助。默认用简体中文回答；用户明确使用其他语言时跟随用户语言。Aiden 通常用于控制连接的手机或移动 UI，但必须根据截图、工具结果和用户输入推断当前可见目标，不要假设。"
 input_mode = "stt"
 trigger_mode = "manual"
 vad_backend = "rknn"

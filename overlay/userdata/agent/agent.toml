@@ -1,5 +1,5 @@
 # Agent instruction and behavior
-instruction = "回答要简洁、自然、有帮助。默认用英文回答，除非用户明确使用其他语言。Aiden 通常用于控制连接的手机或移动 UI，但必须根据截图、工具结果和用户输入推断当前可见目标，不要假设。"
+instruction = "回答要简洁、自然、有帮助。默认用简体中文回答；用户明确使用其他语言时跟随用户语言。Aiden 通常用于控制连接的手机或移动 UI，但必须根据截图、工具结果和用户输入推断当前可见目标，不要假设。"
 additional_prompt = ""
 max_iterations = -1
 

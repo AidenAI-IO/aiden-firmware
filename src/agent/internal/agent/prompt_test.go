@@ -3,8 +3,30 @@ package agent
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
+func TestPromptIncludesCurrentChineseDate(t *testing.T) {
+	originalNow := promptNow
+	promptNow = func() time.Time {
+		return time.Date(2026, time.June, 1, 8, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	}
+	t.Cleanup(func() { promptNow = originalNow })
+
+	want := "今天的日期是: 2026年06月01日 星期一"
+	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{}, nil)
+	if !strings.Contains(msg, want) {
+		t.Fatalf("function system message missing current date %q:\n%s", want, msg)
+	}
+
+	prompt := buildPrompt("aiden", AgentConfig{}, ResolvedSkills{}, nil)
+	if !strings.Contains(prompt.Template, "{{.current_date}}") {
+		t.Fatalf("ReAct prompt template should include current_date variable:\n%s", prompt.Template)
+	}
+	if got := prompt.PartialVariables["current_date"]; got != want {
+		t.Fatalf("current_date partial = %q, want %q", got, want)
+	}
+}
 func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 	msg := buildFunctionAgentSystemMessage(
 		AgentConfig{
@@ -18,11 +40,13 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 	for _, want := range []string{
 		"base instruction",
 		"extra prompt",
-		"默认用简洁自然的英文回答",
+		"默认用简体中文回答",
 		"Aiden 硬件控制器",
 		"运行时 OS 是 Linux",
 		"不一定是截图中显示的设备",
 		"shell、本地文件、进程和系统命令只作用于 Aiden 硬件控制器",
+		"不要因为运行时是 Linux 就推断目标设备也是 Linux",
+		"不要用本地系统命令代替目标控制工具",
 		"目标设备和目标 OS 根据截图、连接元数据、谨慎行为探测或用户输入推断",
 		"弱先验，不是已检测事实",
 		"shell 工具只在 Aiden 硬件控制器上执行",
@@ -32,9 +56,6 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 		"适合 TTS",
 		"device-operator",
 		"可见目标 UI",
-		"系统特定自动化",
-		"osascript",
-		"PowerShell",
 		"不要重复同一个点击",
 		"优先使用搜索",
 		"US-keyboard ASCII",
@@ -50,8 +71,14 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 	}
 
 	for _, unwanted := range []string{
+		"默认用简洁自然的英文回答",
 		"需要中文时，改用拼音",
 		"不要因为没有单独的拨打电话工具就说做不到",
+		"osascript",
+		"AppleScript",
+		"PowerShell",
+		"xdotool",
+		"平台包管理器",
 	} {
 		if strings.Contains(msg, unwanted) {
 			t.Fatalf("system message should not contain old localized guidance %q:\n%s", unwanted, msg)
