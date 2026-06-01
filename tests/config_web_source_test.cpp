@@ -41,9 +41,30 @@ TEST_CASE("config web exposes agent runtime status") {
     CHECK(source.find("check_tcp_port") != std::string::npos);
     CHECK(source.find("/var/log/agent/agent.log") != std::string::npos);
 
-    CHECK(html.find("Agent 状态") != std::string::npos);
+    CHECK(html.find("<h2>Agent") != std::string::npos);
     CHECK(html.find("agentProcessStatus") != std::string::npos);
     CHECK(html.find("agentPortStatus") != std::string::npos);
     CHECK(html.find("renderAgentStatus") != std::string::npos);
     CHECK(html.find("startup_error") != std::string::npos);
+}
+
+TEST_CASE("config web agent status review constraints") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("run_shell_command_with_timeout") != std::string::npos);
+    CHECK(source.find("kAgentStatusCommandTimeoutMs") != std::string::npos);
+    CHECK(source.find("agent status command timed out") != std::string::npos);
+    CHECK(source.find("run_shell_command(std::string(kAgentInitScript) + \" status 2>&1\")") == std::string::npos);
+
+    CHECK(source.find("lower.find(\"waiting for\")") == std::string::npos);
+
+    CHECK(source.find("parse_agent_host") != std::string::npos);
+    CHECK(source.find("status.port_host = parse_agent_host(addr)") != std::string::npos);
+    CHECK(source.find("check_tcp_port(status.port_host, status.port)") != std::string::npos);
 }

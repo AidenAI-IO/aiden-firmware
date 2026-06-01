@@ -57,6 +57,7 @@ struct ApiResponse {
 
 struct CommandResult {
     int exit_code = -1;
+    bool timed_out = false;
     std::string output;
 };
 
@@ -96,6 +97,7 @@ const char* kAgentInitScript = "/etc/init.d/S53agent";
 const char* kAgentLogPath = "/var/log/agent/agent.log";
 const char* kAgentPortHost = "127.0.0.1";
 const int kDefaultAgentPort = 8080;
+const int kAgentStatusCommandTimeoutMs = 1500;
 const size_t kAgentStatusLogReadSize = 16 * 1024;
 const size_t kAgentStatusLogDisplaySize = 4096;
 const size_t kMaxHttpHeaderSize = 8 * 1024;
@@ -199,6 +201,32 @@ std::string shell_quote(const std::string& text) {
     return out;
 }
 
+long long current_time_ms() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return static_cast<long long>(tv.tv_sec) * 1000LL + tv.tv_usec / 1000;
+}
+
+void read_available_output(int fd, std::string* output, bool* pipe_open) {
+    char buffer[512];
+    while (*pipe_open) {
+        ssize_t n = read(fd, buffer, sizeof(buffer));
+        if (n > 0) {
+            output->append(buffer, static_cast<size_t>(n));
+        } else if (n == 0) {
+            *pipe_open = false;
+        } else if (errno == EINTR) {
+            continue;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            break;
+        } else {
+            output->append("read failed: ");
+            output->append(strerror(errno));
+            *pipe_open = false;
+        }
+    }
+}
+
 CommandResult run_shell_command(const std::string& command) {
     CommandResult result;
     FILE* pipe = popen(command.c_str(), "r");
@@ -217,6 +245,117 @@ CommandResult run_shell_command(const std::string& command) {
         result.exit_code = WEXITSTATUS(status);
     } else {
         result.exit_code = status;
+    }
+    return result;
+}
+
+CommandResult run_shell_command_with_timeout(const std::string& command, int timeout_ms) {
+    if (timeout_ms <= 0) {
+        return run_shell_command(command);
+    }
+
+    CommandResult result;
+    int pipe_fds[2];
+    if (pipe(pipe_fds) != 0) {
+        result.output = std::string("pipe failed: ") + strerror(errno);
+        return result;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        result.output = std::string("fork failed: ") + strerror(errno);
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return result;
+    }
+
+    if (pid == 0) {
+        setpgid(0, 0);
+        close(pipe_fds[0]);
+        dup2(pipe_fds[1], STDOUT_FILENO);
+        dup2(pipe_fds[1], STDERR_FILENO);
+        if (pipe_fds[1] > STDERR_FILENO) {
+            close(pipe_fds[1]);
+        }
+        execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char*>(NULL));
+        _exit(127);
+    }
+
+    setpgid(pid, pid);
+    close(pipe_fds[1]);
+
+    int flags = fcntl(pipe_fds[0], F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(pipe_fds[0], F_SETFL, flags | O_NONBLOCK);
+    }
+
+    const long long deadline = current_time_ms() + timeout_ms;
+    bool pipe_open = true;
+    bool child_done = false;
+    int child_status = -1;
+
+    while (pipe_open || !child_done) {
+        if (pipe_open) {
+            read_available_output(pipe_fds[0], &result.output, &pipe_open);
+        }
+
+        if (!child_done) {
+            pid_t waited = waitpid(pid, &child_status, WNOHANG);
+            if (waited == pid) {
+                child_done = true;
+            } else if (waited < 0 && errno != EINTR) {
+                child_done = true;
+            }
+        }
+
+        if (!pipe_open && child_done) {
+            break;
+        }
+
+        long long now = current_time_ms();
+        if (now >= deadline) {
+            kill(-pid, SIGKILL);
+            kill(pid, SIGKILL);
+            for (int i = 0; i < 20; ++i) {
+                pid_t waited = waitpid(pid, &child_status, WNOHANG);
+                if (waited == pid || (waited < 0 && errno != EINTR)) {
+                    break;
+                }
+                usleep(1000);
+            }
+            close(pipe_fds[0]);
+            result.exit_code = -1;
+            result.timed_out = true;
+            result.output = "agent status command timed out after " + std::to_string(timeout_ms) + " ms";
+            return result;
+        }
+
+        int wait_ms = 50;
+        long long remaining_ms = deadline - now;
+        if (remaining_ms < wait_ms) {
+            wait_ms = remaining_ms > 0 ? static_cast<int>(remaining_ms) : 0;
+        }
+
+        if (pipe_open && wait_ms > 0) {
+            fd_set read_fds;
+            FD_ZERO(&read_fds);
+            FD_SET(pipe_fds[0], &read_fds);
+            struct timeval timeout;
+            timeout.tv_sec = wait_ms / 1000;
+            timeout.tv_usec = (wait_ms % 1000) * 1000;
+            select(pipe_fds[0] + 1, &read_fds, NULL, NULL, &timeout);
+        } else if (wait_ms > 0) {
+            usleep(static_cast<useconds_t>(wait_ms) * 1000);
+        }
+    }
+
+    close(pipe_fds[0]);
+    if (child_status >= 0 && WIFEXITED(child_status)) {
+        result.exit_code = WEXITSTATUS(child_status);
+    } else if (child_status >= 0 && WIFSIGNALED(child_status)) {
+        result.exit_code = 128 + WTERMSIG(child_status);
+    } else {
+        result.exit_code = child_status;
     }
     return result;
 }
@@ -1210,6 +1349,24 @@ std::string parse_status_addr(const std::string& line) {
     return line.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
 }
 
+std::string parse_agent_host(const std::string& addr) {
+    std::string candidate = trim_copy(addr);
+    if (candidate.empty()) {
+        return kAgentPortHost;
+    }
+
+    size_t colon = candidate.rfind(':');
+    if (colon == std::string::npos || colon == 0) {
+        return kAgentPortHost;
+    }
+
+    std::string host = candidate.substr(0, colon);
+    if (host.size() >= 2 && host[0] == '[' && host[host.size() - 1] == ']') {
+        host = host.substr(1, host.size() - 2);
+    }
+    return host.empty() ? kAgentPortHost : host;
+}
+
 int parse_agent_port(const std::string& addr) {
     if (addr.empty()) {
         return kDefaultAgentPort;
@@ -1314,7 +1471,6 @@ bool log_excerpt_looks_like_startup_failure(const std::string& log) {
            lower.find("error") != std::string::npos ||
            lower.find("failed") != std::string::npos ||
            lower.find("not found") != std::string::npos ||
-           lower.find("waiting for") != std::string::npos ||
            lower.find("panic") != std::string::npos;
 }
 
@@ -1329,31 +1485,38 @@ AgentRuntimeStatus query_agent_status() {
         status.detail = std::string("agent init script not found: ") + kAgentInitScript;
         status.startup_error = status.detail;
     } else {
-        CommandResult script_status = run_shell_command(std::string(kAgentInitScript) + " status 2>&1");
+        CommandResult script_status = run_shell_command_with_timeout(
+            std::string(kAgentInitScript) + " status 2>&1", kAgentStatusCommandTimeoutMs);
         status.detail = trim_trailing_newlines(script_status.output);
 
-        std::istringstream lines(script_status.output);
-        std::string line;
-        while (std::getline(lines, line)) {
-            line = trim_copy(line);
-            if (starts_with(line, "watchdog=running")) {
-                status.watchdog_running = true;
-                status.watchdog_pid = parse_status_pid(line);
-            } else if (starts_with(line, "agent=running")) {
-                status.process_running = true;
-                status.pid = parse_status_pid(line);
-                std::string addr = parse_status_addr(line);
-                if (!addr.empty()) {
-                    status.addr = addr;
-                    status.port = parse_agent_port(addr);
+        if (script_status.timed_out) {
+            status.state = "unknown";
+            status.startup_error = status.detail;
+        } else {
+            std::istringstream lines(script_status.output);
+            std::string line;
+            while (std::getline(lines, line)) {
+                line = trim_copy(line);
+                if (starts_with(line, "watchdog=running")) {
+                    status.watchdog_running = true;
+                    status.watchdog_pid = parse_status_pid(line);
+                } else if (starts_with(line, "agent=running")) {
+                    status.process_running = true;
+                    status.pid = parse_status_pid(line);
+                    std::string addr = parse_status_addr(line);
+                    if (!addr.empty()) {
+                        status.addr = addr;
+                        status.port_host = parse_agent_host(addr);
+                        status.port = parse_agent_port(addr);
+                    }
+                } else if (starts_with(line, "agent=stopped")) {
+                    status.process_running = false;
                 }
-            } else if (starts_with(line, "agent=stopped")) {
-                status.process_running = false;
             }
-        }
 
-        if (script_status.exit_code != 0 && status.detail.empty()) {
-            status.detail = "agent status command failed";
+            if (script_status.exit_code != 0 && status.detail.empty()) {
+                status.detail = "agent status command failed";
+            }
         }
     }
 
