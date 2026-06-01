@@ -35,14 +35,17 @@ func TestPromptIncludesRealHostRuntimeInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Hostname() error = %v", err)
 	}
-	kernelVersion := mustUname(t, "-r")
+	operatingSystem := mustUname(t, "-s")
 	architecture := mustUname(t, "-m")
-	wantLine := "宿主机: kernel=" + kernelVersion + ", hostname=" + hostname + ", arch=" + architecture
-	wantEnvironmentLine := "- 你运行在 Aiden 硬件控制器上（" + wantLine + "）；不一定是截图中显示的设备。"
+	wantLine := "宿主机: os=" + operatingSystem + ", hostname=" + hostname + ", arch=" + architecture
+	wantEnvironmentLine := "- 你运行在 Aiden 硬件控制器上（" + wantLine + "）；不是截图中显示的设备。"
 
 	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{}, nil)
 	if !strings.Contains(msg, wantEnvironmentLine) {
 		t.Fatalf("function system message missing host info in environment guidance %q:\n%s", wantEnvironmentLine, msg)
+	}
+	if strings.Contains(msg, "kernel=") {
+		t.Fatalf("system message should not include kernel info:\n%s", msg)
 	}
 
 	prompt := buildPrompt("aiden", AgentConfig{}, ResolvedSkills{}, nil)
@@ -58,6 +61,16 @@ func TestPromptIncludesRealHostRuntimeInfo(t *testing.T) {
 	}
 	if !strings.Contains(defaultBehavior, wantEnvironmentLine) {
 		t.Fatalf("default_behavior partial missing host info in environment guidance %q:\n%s", wantEnvironmentLine, defaultBehavior)
+	}
+}
+
+func TestFunctionAgentSystemMessageIdentifiesAidenAI(t *testing.T) {
+	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{}, nil)
+	if !strings.HasPrefix(msg, "You are Aiden AI agent.\n") {
+		t.Fatalf("system message should identify Aiden AI agent, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "You are agent.\n") {
+		t.Fatalf("system message should not use generic agent identity:\n%s", msg)
 	}
 }
 
@@ -89,9 +102,9 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 		"extra prompt",
 		"默认用简体中文回答",
 		"Aiden 硬件控制器",
-		"不一定是截图中显示的设备",
+		"不是截图中显示的设备",
 		"shell、本地文件、进程和系统命令只作用于 Aiden 硬件控制器",
-		"不要根据宿主机的 OS、内核或架构推断目标设备信息",
+		"不要根据宿主机的 OS 或架构推断目标设备信息",
 		"不要用本地系统命令代替目标控制工具",
 		"目标设备和目标 OS 根据截图、连接元数据、谨慎行为探测或用户输入推断",
 		"弱先验，不是已检测事实",
@@ -133,6 +146,9 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 		"xdotool",
 		"平台包管理器",
 		"运行时 OS 是 Linux",
+		"不一定是截图中显示的设备",
+		"kernel=",
+		"宿主机的 OS、内核或架构",
 	} {
 		if strings.Contains(msg, unwanted) {
 			t.Fatalf("system message should not contain old localized guidance %q:\n%s", unwanted, msg)
