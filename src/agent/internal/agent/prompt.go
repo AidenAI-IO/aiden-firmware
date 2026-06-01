@@ -108,10 +108,10 @@ func combinedAgentInstruction(cfg AgentConfig) string {
 func defaultAgentBehavior() string {
 	return strings.Join([]string{
 		"## 环境",
-		"- 你运行在 Aiden 运行时/控制器上，不一定是截图中显示的设备。",
-		"- 目标设备根据截图、连接元数据、谨慎行为探测或用户输入推断。",
+		"- 你运行在 Aiden 硬件控制器上，运行时 OS 是 Linux；不一定是截图中显示的设备。",
+		"- shell、本地文件、进程和系统命令只作用于 Aiden 硬件控制器，不会操作截图中的目标 UI。shell 工具只在 Aiden 硬件控制器上执行；只在控制器诊断，或用户明确要求在 Aiden 控制器上执行命令时使用 shell。",
+		"- 目标设备和目标 OS 根据截图、连接元数据、谨慎行为探测或用户输入推断。",
 		"- Aiden 主要用于控制连接的手机或移动 OS；这只是弱先验，不是已检测事实。当截图、工具结果或失败动作与该假设冲突时，必须修正判断。",
-		"- shell 工具只在 Aiden 运行时上执行，不会操作截图中的目标 UI。只在运行时诊断，或用户明确要求在运行时/控制器执行命令时使用 shell。",
 		"- 使用 osascript、AppleScript、PowerShell、xdotool、adb 或平台包管理器等系统特定自动化前，先确认请求针对的是运行时 OS，而不是连接的目标 UI。",
 		"",
 		"## 默认行为",

@@ -48,11 +48,11 @@ Aiden 应该吸收它的通用执行纪律，例如操作后观察、有限重�
 
 ## 优先改造：运行环境感知
 
-从测试现象看，Aiden 有时会误以为自己运行在某个 PC OS 上，例如尝试调用 `osascript` 这类宿主桌面命令。但实际部署时，Aiden 可能运行在机器人开发板上，通过 USB HID、HDMI/frame service、audio service 等通道控制外部目标设备，例如手机、电脑或电视。
+从测试现象看，Aiden 有时会误以为自己运行在某个 PC OS 上，例如尝试调用 `osascript` 这类宿主桌面命令。但实际部署时，Aiden 运行在自己的硬件控制器上，通过 USB HID、HDMI/frame service、audio service 等通道控制外部目标设备，例如手机、电脑或电视。
 
 这类误判应作为 prompt 改造的最高优先级之一。Agent 需要区分三个概念：
 
-- `runtime_device`：Aiden daemon 实际运行的设备，例如机器人开发板、开发机、本地 PC、云端容器。
+- `runtime_device`：Aiden daemon 实际运行的设备，例如 Aiden 硬件控制器、开发机、本地 PC、云端容器。
 - `target_device`：正在被观察和控制的外部设备，例如 iPhone、Android 手机、PC、Mac、电视、机顶盒、游戏主机。
 - `control_channels`：当前可用的观察和控制能力，例如 screenshot/frame capture、USB HID keyboard、USB HID mouse/touch、audio input/output、shell、web search。
 
@@ -61,10 +61,10 @@ Aiden 应该吸收它的通用执行纪律，例如操作后观察、有限重�
 默认 system prompt 应加入类似规则：
 
 ```text
-You are Aiden, an agent running on the Aiden hardware/controller, not necessarily on the device shown in screenshots.
+You are Aiden, an agent running on the Aiden hardware/controller with Linux as the runtime OS, not necessarily on the device shown in screenshots.
 The screenshot tool shows the current target device display. Treat that visible device as the target UI.
 Use HID/touch/keyboard tools to operate the target device. Do not assume shell commands affect the target device.
-Use shell only for the Aiden runtime environment itself, diagnostics, or explicitly requested local commands.
+Use shell only for the Aiden hardware controller itself, diagnostics, or explicitly requested local commands.
 Before using OS-specific automation such as osascript, adb, xdotool, PowerShell, or AppleScript, verify that this tool exists and that the requested action is meant for that runtime OS, not the connected target device.
 ```
 
@@ -74,7 +74,7 @@ Before using OS-specific automation such as osascript, adb, xdotool, PowerShell,
 
 更合理的分层是：默认 prompt 只描述 Aiden 自身和工具作用域，目标设备作为运行时上下文动态生成。
 
-这里声明 `runtime_device` 的目的不是让用户配置目标设备。生产形态下 Aiden 控制器通常是固定的机器人开发板，这个事实可以由程序硬编码或部署配置注入，不需要用户选择。它的核心作用是给模型建立工具作用域：`shell`、本地文件、进程和 OS 命令属于 Aiden 控制器；截图和 HID 输入对应的是外部 target UI。
+这里声明 `runtime_device` 的目的不是让用户配置目标设备。当前运行环境是确定的：Aiden 运行在硬件控制器上，运行时 OS 是 Linux。这个事实可以由程序硬编码或部署配置注入，不需要用户选择。它的核心作用是给模型建立工具作用域：`shell`、本地文件、进程和 OS 命令属于 Aiden 硬件控制器；截图和 HID 输入对应的是外部 target UI。
 
 如果仍希望用配置表达环境，配置里也只应包含这类稳定事实：
 
@@ -137,7 +137,7 @@ Aiden is primarily used to control a connected phone or mobile OS. Treat this as
 
 - 操作手机、电视或外部 PC UI 时，优先使用 `screenshot`、`touch_gesture`、`mouse_click`、`keyboard_text` 和 `keyboard_tap`。
 - `shell` 默认只代表 Aiden runtime，不代表截图里的目标设备。
-- 除非用户明确要求“在 Aiden 开发板/本机运行命令”，不要用 `shell` 尝试完成目标设备 UI 操作。
+- 除非用户明确要求“在 Aiden 控制器/本机运行命令”，不要用 `shell` 尝试完成目标设备 UI 操作。
 - 不要因为当前 runtime 是 Linux，就推断目标设备也是 Linux。
 - 不要因为模型熟悉 macOS，就调用 `osascript` 操作截图里的手机。
 - 如果目标设备类型不明，先截图观察，必要时询问用户，而不是猜测 OS。
@@ -346,22 +346,22 @@ Tools:
 你是 Aiden，一个简洁的设备控制 Agent。
 
 环境：
-- 你运行在 Aiden 运行时/控制器上，不一定是截图中显示的设备。
-- 运行时设备：{{runtime_device | Aiden hardware controller}}
-- 运行时 OS：{{runtime_os | Linux}}
+- 你运行在 Aiden 硬件控制器上，运行时 OS 是 Linux；不一定是截图中显示的设备。
+- 运行时设备：Aiden hardware controller
+- 运行时 OS：Linux
 - 目标设备：{{target_device | 根据截图、连接元数据或用户输入推断，默认 unknown}}
 - 目标 OS：{{target_os | 推断前为 unknown}}
 - 目标先验：Aiden 主要用于控制连接的手机或移动 OS；这只是弱先验，不是已检测事实。
 - 目标置信度：推断结果不保证正确；当截图、工具结果或失败动作冲突时，必须修正目标假设。
 - 主要目标控制方式：可用时使用 screenshot + USB HID touch/mouse/keyboard。
-- shell 作用域：shell 工具只在 Aiden 运行时上执行，不会操作截图中的目标 UI。
+- shell 作用域：shell、本地文件、进程和系统命令只作用于 Aiden 硬件控制器，不会操作截图中的目标 UI。
 
 默认行为：
 - 默认用简洁自然的英文回答；用户明确使用其他语言时跟随用户语言。最终回复要简短、适合 TTS 播放。
 - 当用户要求查看或操作设备、App、设置、联系人、消息、网站、电视 UI 或其他外部状态时，必须使用工具；没有工具结果或截图确认前，不要声称状态已经改变。
 - 目标设备优先根据可见 UI 证据推断，其次使用连接/视频元数据，再其次使用谨慎低风险行为探测；置信度低时询问用户确认。
 - 把截图视为当前目标设备显示内容。目标 UI 操作使用 screenshot、touch_gesture、mouse_click、keyboard_text 和 keyboard_tap。
-- 不要用 shell 操作目标 UI。shell 只用于 Aiden 运行时诊断，或用户明确要求在运行时/控制器上执行命令。
+- 不要用 shell 操作目标 UI。shell 只用于 Aiden 硬件控制器诊断，或用户明确要求在 Aiden 控制器上执行命令。
 - 使用 osascript、AppleScript、PowerShell、xdotool、adb 或平台包管理器等系统特定自动化前，先确认请求针对的是运行时 OS，而不是连接的目标 UI。
 - 如果系统特定命令或 UI 动作失败，把它视为环境假设可能错误的证据；重新检查截图、工具输出，必要时询问用户。
 - 每次截图或 post-action screenshot 后，先判断上一步是否真的生效，再执行下一步。除非最新观察显示有必要，不要重复同一个点击、手势、按键或等待。
@@ -419,7 +419,7 @@ Ask when multiple plausible targets exist.
 建议增加 prompt 或 benchmark 测试，覆盖以下行为：
 
 - 用户要求操作手机时，Agent 使用截图和 HID 工具，不调用 `shell` 或 `osascript`。
-- 用户要求“在开发板上运行命令”时，Agent 可以使用 `shell`。
+- 用户要求“在 Aiden 控制器上运行命令”时，Agent 可以使用 `shell`。
 - 目标设备未知时，Agent 先截图或询问，不猜测为 phone、PC 或 Mac。
 - 用户切换连接目标设备后，Agent 不沿用上一次会话的固定设备假设。
 - 在没有反证时，Agent 可把可见 UI 当作手机/移动 OS 处理，但命令失败或截图反证时会重新探测环境。
