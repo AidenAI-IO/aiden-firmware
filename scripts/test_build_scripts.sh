@@ -52,7 +52,8 @@ if ! grep -Fq 'BENCHMARK_SRC="$SCRIPT_DIR/benchmark"' "$ROOT_DIR/_build_image.sh
    ! grep -Fq -- "--exclude '*.pyc'" "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq -- "--exclude '._*'" "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq 'rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/runner/" "$BENCHMARK_DEST/runner/"' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq 'rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/suites/" "$BENCHMARK_DEST/suites/"' "$ROOT_DIR/_build_image.sh"; then
+   ! grep -Fq 'rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/suites/" "$BENCHMARK_DEST/suites/"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'rm -f "$BENCHMARK_DEST/pyproject.toml"' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must stage benchmark runner and suites into userdata" >&2
     exit 1
 fi

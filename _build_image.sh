@@ -51,6 +51,8 @@ rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/runner/" "$BE
 rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/suites/" "$BENCHMARK_DEST/suites/"
 if [ -f "$BENCHMARK_SRC/pyproject.toml" ]; then
     cp "$BENCHMARK_SRC/pyproject.toml" "$BENCHMARK_DEST/pyproject.toml"
+else
+    rm -f "$BENCHMARK_DEST/pyproject.toml"
 fi
 echo "  ✓ Benchmark runner and suites staged to overlay/userdata/agent/benchmark"
 
