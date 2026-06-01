@@ -34,18 +34,20 @@ type roleCollaborativeExecutor struct {
 const roleModelCallTimeout = 120 * time.Second
 
 type plannerDecision struct {
-	Objective          string   `json:"objective,omitempty"`
-	CompletionCriteria []string `json:"completion_criteria,omitempty"`
-	Plan               []string `json:"plan"`
-	NextStep           string   `json:"next_step"`
-	Reason             string   `json:"reason,omitempty"`
+	Objective          string             `json:"objective,omitempty"`
+	CompletionCriteria []string           `json:"completion_criteria,omitempty"`
+	Plan               []string           `json:"plan"`
+	NextStep           string             `json:"next_step"`
+	Reason             string             `json:"reason,omitempty"`
+	ObservedState      observedWorldState `json:"observed_state,omitempty"`
 }
 
 type verifierDecision struct {
-	CanFinish   bool   `json:"can_finish"`
-	FinalAnswer string `json:"final_answer,omitempty"`
-	NeedsReplan bool   `json:"needs_replan,omitempty"`
-	Reason      string `json:"reason,omitempty"`
+	CanFinish     bool               `json:"can_finish"`
+	FinalAnswer   string             `json:"final_answer,omitempty"`
+	NeedsReplan   bool               `json:"needs_replan,omitempty"`
+	Reason        string             `json:"reason,omitempty"`
+	ObservedState observedWorldState `json:"observed_state,omitempty"`
 }
 
 type roleExecutionResult struct {
@@ -68,6 +70,7 @@ type roleLoopState struct {
 
 type worldState struct {
 	LatestScreenshot *worldScreenshot
+	Observation      *worldStateObservation
 }
 
 type worldScreenshot struct {
@@ -80,6 +83,21 @@ type worldScreenshot struct {
 	Size         int
 	Data         []byte
 	StepNumber   int
+}
+
+type observedWorldState struct {
+	AppName     string   `json:"app_name,omitempty" yaml:"app_name,omitempty"`
+	PageName    string   `json:"page_name,omitempty" yaml:"page_name,omitempty"`
+	VisibleText []string `json:"visible_text,omitempty" yaml:"visible_text,omitempty"`
+	Dialogs     []string `json:"dialogs,omitempty" yaml:"dialogs,omitempty"`
+	Confidence  float64  `json:"confidence,omitempty" yaml:"confidence,omitempty"`
+}
+
+type worldStateObservation struct {
+	observedWorldState
+	SourceRole     RoleName
+	ObservedAt     time.Time
+	ScreenshotStep int
 }
 
 var _ chains.Chain = (*roleCollaborativeExecutor)(nil)
@@ -132,6 +150,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 			return nil, err
 		}
 		state.applyPlannerDecision(plan)
+		state.World.UpdateObservedState(plan.ObservedState, RolePlanner)
 		if e.Recorder != nil {
 			e.Recorder.RecordPlannerDecision(plan)
 		}
@@ -153,6 +172,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 		if err != nil {
 			return nil, err
 		}
+		state.World.UpdateObservedState(verification.ObservedState, RoleVerifier)
 		state.VerifierResults = append(state.VerifierResults, verification)
 		if e.Recorder != nil {
 			e.Recorder.RecordVerifierDecision(verification)
@@ -396,27 +416,60 @@ func writeWorldState(builder *strings.Builder, world worldState) {
 	builder.WriteString("\n\nWorld State (shared across planner, executor, and verifier):\n")
 	if world.LatestScreenshot == nil {
 		builder.WriteString("- Latest screenshot: none yet.\n")
-		return
+	} else {
+		screenshot := world.LatestScreenshot
+		builder.WriteString(fmt.Sprintf(
+			"- Latest screenshot: step=%d source_tool=%s size=%dx%d format=%s bytes=%d. The current screenshot image is attached to this message.\n",
+			screenshot.StepNumber,
+			screenshot.SourceTool,
+			screenshot.Width,
+			screenshot.Height,
+			screenshot.Format,
+			screenshot.Size,
+		))
+		if input := strings.TrimSpace(screenshot.ToolInput); input != "" {
+			builder.WriteString("- Screenshot source input: ")
+			builder.WriteString(input)
+			builder.WriteByte('\n')
+		}
+		if actionOutput := strings.TrimSpace(screenshot.ActionOutput); actionOutput != "" {
+			builder.WriteString("- Post-action output before screenshot: ")
+			builder.WriteString(compactToolObservation(actionOutput))
+			builder.WriteByte('\n')
+		}
 	}
-	screenshot := world.LatestScreenshot
-	builder.WriteString(fmt.Sprintf(
-		"- Latest screenshot: step=%d source_tool=%s size=%dx%d format=%s bytes=%d. The current screenshot image is attached to this message.\n",
-		screenshot.StepNumber,
-		screenshot.SourceTool,
-		screenshot.Width,
-		screenshot.Height,
-		screenshot.Format,
-		screenshot.Size,
-	))
-	if input := strings.TrimSpace(screenshot.ToolInput); input != "" {
-		builder.WriteString("- Screenshot source input: ")
-		builder.WriteString(input)
-		builder.WriteByte('\n')
-	}
-	if actionOutput := strings.TrimSpace(screenshot.ActionOutput); actionOutput != "" {
-		builder.WriteString("- Post-action output before screenshot: ")
-		builder.WriteString(compactToolObservation(actionOutput))
-		builder.WriteByte('\n')
+	if world.Observation != nil {
+		obs := world.Observation
+		label := strings.TrimSpace(obs.AppName)
+		if page := strings.TrimSpace(obs.PageName); page != "" {
+			if label != "" {
+				label += " / "
+			}
+			label += page
+		}
+		if label != "" {
+			builder.WriteString(fmt.Sprintf("- Observed app/page: %s", label))
+			if obs.Confidence > 0 {
+				builder.WriteString(fmt.Sprintf(" confidence=%.2f", obs.Confidence))
+			}
+			if obs.SourceRole != "" {
+				builder.WriteString(fmt.Sprintf(" source_role=%s", obs.SourceRole))
+			}
+			if obs.ScreenshotStep > 0 {
+				builder.WriteString(fmt.Sprintf(" screenshot_step=%d", obs.ScreenshotStep))
+			}
+			builder.WriteByte('\n')
+		}
+		if len(obs.VisibleText) > 0 {
+			builder.WriteString("- Visible text: ")
+			builder.WriteString(truncateForLog(strings.Join(obs.VisibleText, " | "), 240))
+			builder.WriteByte('\n')
+		}
+		if len(obs.Dialogs) > 0 {
+			builder.WriteString("- Dialogs: ")
+			builder.WriteString(truncateForLog(strings.Join(obs.Dialogs, " | "), 160))
+			builder.WriteByte('\n')
+		}
 	}
 }
 
@@ -533,6 +586,44 @@ func (s *worldState) UpdateFromStep(step schema.AgentStep, stepNumber int) {
 	s.LatestScreenshot = &screenshot
 }
 
+func (s *worldState) UpdateObservedState(observed observedWorldState, source RoleName) {
+	observed = normalizeObservedWorldState(observed)
+	if observed.IsEmpty() {
+		return
+	}
+	step := 0
+	if s.LatestScreenshot != nil {
+		step = s.LatestScreenshot.StepNumber
+	}
+	s.Observation = &worldStateObservation{
+		observedWorldState: observed,
+		SourceRole:         source,
+		ObservedAt:         time.Now(),
+		ScreenshotStep:     step,
+	}
+}
+
+func (o observedWorldState) IsEmpty() bool {
+	return strings.TrimSpace(o.AppName) == "" &&
+		strings.TrimSpace(o.PageName) == "" &&
+		len(uniqueNonEmpty(o.VisibleText)) == 0 &&
+		len(uniqueNonEmpty(o.Dialogs)) == 0
+}
+
+func normalizeObservedWorldState(observed observedWorldState) observedWorldState {
+	observed.AppName = strings.TrimSpace(observed.AppName)
+	observed.PageName = strings.TrimSpace(observed.PageName)
+	observed.VisibleText = uniqueNonEmpty(observed.VisibleText)
+	observed.Dialogs = uniqueNonEmpty(observed.Dialogs)
+	if observed.Confidence < 0 {
+		observed.Confidence = 0
+	}
+	if observed.Confidence > 1 {
+		observed.Confidence = 1
+	}
+	return observed
+}
+
 func screenshotFromStep(step schema.AgentStep, stepNumber int) (worldScreenshot, bool) {
 	var result postActionScreenshotResult
 	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
@@ -591,6 +682,7 @@ func parsePlannerDecision(raw, fallbackStep string) plannerDecision {
 		decision.Plan = uniqueNonEmpty(decision.Plan)
 		decision.NextStep = strings.TrimSpace(decision.NextStep)
 		decision.Reason = strings.TrimSpace(decision.Reason)
+		decision.ObservedState = normalizeObservedWorldState(decision.ObservedState)
 		return decision
 	}
 
@@ -612,6 +704,7 @@ func parseVerifierDecision(raw, fallbackAnswer string) verifierDecision {
 	if decodeRoleJSON(raw, &decision) == nil {
 		decision.FinalAnswer = strings.TrimSpace(decision.FinalAnswer)
 		decision.Reason = strings.TrimSpace(decision.Reason)
+		decision.ObservedState = normalizeObservedWorldState(decision.ObservedState)
 		return decision
 	}
 

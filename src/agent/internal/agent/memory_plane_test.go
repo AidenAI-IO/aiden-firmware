@@ -245,6 +245,71 @@ func TestRuntimeRunWritesTaskEpisodeTrace(t *testing.T) {
 	}
 }
 
+func TestRuntimeRetrieveUsesAutomaticScreenHints(t *testing.T) {
+	ctx := context.Background()
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
+	for _, item := range []MemoryItem{
+		{
+			ID:               "mem_matching_context",
+			Type:             "procedure",
+			Priority:         80,
+			Confidence:       0.9,
+			Tags:             []string{"登录"},
+			Entities:         []string{"微信App"},
+			Title:            "matching context",
+			Content:          "This procedure applies to 640x1200.",
+			Applicability:    map[string]string{"screen": "640x1200"},
+			EvidenceExcerpts: []string{"matched evidence"},
+		},
+		{
+			ID:               "mem_wrong_screen_runtime",
+			Type:             "procedure",
+			Priority:         100,
+			Confidence:       0.9,
+			Tags:             []string{"登录"},
+			Entities:         []string{"微信App"},
+			Title:            "wrong screen",
+			Content:          "This should not apply to 640x1200.",
+			Applicability:    map[string]string{"screen": "320x240"},
+			EvidenceExcerpts: []string{"wrong screen evidence"},
+		},
+	} {
+		if _, err := longTerm.AddMemory(ctx, item); err != nil {
+			t.Fatalf("AddMemory(%s): %v", item.ID, err)
+		}
+	}
+
+	screen := &screenState{}
+	screen.Update(640, 1200)
+	model := &scriptedModel{responses: roleDirectResponses("done")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:   configDir,
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Answer directly.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(memoryDir),
+		&ToolSet{tools: map[string]langtools.Tool{}, screen: screen},
+		NewSkillIndex(),
+	)
+	if _, err := runtime.Run(ctx, RunRequest{Input: "登录微信App"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	plannerPrompt := messageText(model.messages[0])
+	if !strings.Contains(plannerPrompt, "mem_matching_context") {
+		t.Fatalf("planner prompt missing matching memory:\n%s", plannerPrompt)
+	}
+	for _, unexpected := range []string{"mem_wrong_screen_runtime"} {
+		if strings.Contains(plannerPrompt, unexpected) {
+			t.Fatalf("planner prompt should not contain %s:\n%s", unexpected, plannerPrompt)
+		}
+	}
+}
+
 func TestLongTermMemorySearchSkipsExpiredMemory(t *testing.T) {
 	ctx := context.Background()
 	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))

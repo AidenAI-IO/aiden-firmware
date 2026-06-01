@@ -59,24 +59,25 @@ type TaskEpisodeOutcome struct {
 }
 
 type TaskEpisodeEvent struct {
-	EventID            string   `json:"event_id" yaml:"event_id"`
-	Ts                 string   `json:"ts" yaml:"ts"`
-	Type               string   `json:"type" yaml:"type"`
-	Role               string   `json:"role,omitempty" yaml:"role,omitempty"`
-	Objective          string   `json:"objective,omitempty" yaml:"objective,omitempty"`
-	CompletionCriteria []string `json:"completion_criteria,omitempty" yaml:"completion_criteria,omitempty"`
-	Plan               []string `json:"plan,omitempty" yaml:"plan,omitempty"`
-	NextStep           string   `json:"next_step,omitempty" yaml:"next_step,omitempty"`
-	ToolName           string   `json:"tool_name,omitempty" yaml:"tool_name,omitempty"`
-	ToolInput          string   `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
-	Content            string   `json:"content,omitempty" yaml:"content,omitempty"`
-	Observation        string   `json:"observation,omitempty" yaml:"observation,omitempty"`
-	ScreenshotRef      string   `json:"screenshot_ref,omitempty" yaml:"screenshot_ref,omitempty"`
-	CanFinish          *bool    `json:"can_finish,omitempty" yaml:"can_finish,omitempty"`
-	NeedsReplan        bool     `json:"needs_replan,omitempty" yaml:"needs_replan,omitempty"`
-	Reason             string   `json:"reason,omitempty" yaml:"reason,omitempty"`
-	IsError            bool     `json:"is_error,omitempty" yaml:"is_error,omitempty"`
-	RawObservation     string   `json:"-" yaml:"-"`
+	EventID            string              `json:"event_id" yaml:"event_id"`
+	Ts                 string              `json:"ts" yaml:"ts"`
+	Type               string              `json:"type" yaml:"type"`
+	Role               string              `json:"role,omitempty" yaml:"role,omitempty"`
+	Objective          string              `json:"objective,omitempty" yaml:"objective,omitempty"`
+	CompletionCriteria []string            `json:"completion_criteria,omitempty" yaml:"completion_criteria,omitempty"`
+	Plan               []string            `json:"plan,omitempty" yaml:"plan,omitempty"`
+	NextStep           string              `json:"next_step,omitempty" yaml:"next_step,omitempty"`
+	ToolName           string              `json:"tool_name,omitempty" yaml:"tool_name,omitempty"`
+	ToolInput          string              `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
+	Content            string              `json:"content,omitempty" yaml:"content,omitempty"`
+	Observation        string              `json:"observation,omitempty" yaml:"observation,omitempty"`
+	ScreenshotRef      string              `json:"screenshot_ref,omitempty" yaml:"screenshot_ref,omitempty"`
+	CanFinish          *bool               `json:"can_finish,omitempty" yaml:"can_finish,omitempty"`
+	NeedsReplan        bool                `json:"needs_replan,omitempty" yaml:"needs_replan,omitempty"`
+	Reason             string              `json:"reason,omitempty" yaml:"reason,omitempty"`
+	IsError            bool                `json:"is_error,omitempty" yaml:"is_error,omitempty"`
+	ObservedState      *observedWorldState `json:"observed_state,omitempty" yaml:"observed_state,omitempty"`
+	RawObservation     string              `json:"-" yaml:"-"`
 }
 
 type EpisodeQuery struct {
@@ -149,7 +150,7 @@ func (r *EpisodeRecorder) RecordPlannerDecision(decision plannerDecision) {
 	if r == nil {
 		return
 	}
-	r.append(TaskEpisodeEvent{
+	event := TaskEpisodeEvent{
 		Type:               "planner_decision",
 		Role:               string(RolePlanner),
 		Objective:          decision.Objective,
@@ -157,7 +158,11 @@ func (r *EpisodeRecorder) RecordPlannerDecision(decision plannerDecision) {
 		Plan:               append([]string(nil), decision.Plan...),
 		NextStep:           decision.NextStep,
 		Reason:             decision.Reason,
-	})
+	}
+	if observed := normalizeObservedWorldState(decision.ObservedState); !observed.IsEmpty() {
+		event.ObservedState = &observed
+	}
+	r.append(event)
 }
 
 func (r *EpisodeRecorder) RecordExecution(result roleExecutionResult) {
@@ -200,14 +205,18 @@ func (r *EpisodeRecorder) RecordVerifierDecision(decision verifierDecision) {
 		return
 	}
 	canFinish := decision.CanFinish
-	r.append(TaskEpisodeEvent{
+	event := TaskEpisodeEvent{
 		Type:        "verifier_decision",
 		Role:        string(RoleVerifier),
 		CanFinish:   &canFinish,
 		NeedsReplan: decision.NeedsReplan,
 		Content:     decision.FinalAnswer,
 		Reason:      decision.Reason,
-	})
+	}
+	if observed := normalizeObservedWorldState(decision.ObservedState); !observed.IsEmpty() {
+		event.ObservedState = &observed
+	}
+	r.append(event)
 }
 
 func (r *EpisodeRecorder) Finish(output string, metrics *RunMetrics, runErr error, tags []string, entities []string) TaskEpisode {
@@ -257,6 +266,7 @@ func (r *EpisodeRecorder) Finish(output string, metrics *RunMetrics, runErr erro
 		}
 	}
 	episode.Outcome.FinalState = inferEpisodeFinalState(episode.Events)
+	episode.DeviceScope = mergeEpisodeDeviceScope(episode.DeviceScope, episode.Events)
 	episode.ReusableLessons = inferReusableLessons(episode)
 	return episode
 }
@@ -285,6 +295,21 @@ func (r *EpisodeRecorder) deviceScope() map[string]string {
 	}
 	if language := strings.TrimSpace(r.request.CurrentHints.Language); language != "" {
 		scope["language"] = language
+	}
+	if len(scope) == 0 {
+		return nil
+	}
+	return scope
+}
+
+func mergeEpisodeDeviceScope(scope map[string]string, events []TaskEpisodeEvent) map[string]string {
+	if len(scope) == 0 {
+		scope = map[string]string{}
+	}
+	if _, ok := scope["screen"]; !ok {
+		if screen := inferEpisodeScreen(events); screen != "" {
+			scope["screen"] = screen
+		}
 	}
 	if len(scope) == 0 {
 		return nil

@@ -78,6 +78,8 @@ type MemoryHit struct {
 	EvidenceRefs  []MemorySourceRef `json:"evidence_refs,omitempty"`
 }
 
+const defaultMemoryDeviceID = "default"
+
 type memorySearchQuery struct {
 	Terms    []string
 	Tags     []string
@@ -421,7 +423,7 @@ func (p *FilesystemMemoryPlane) extractDeviceLessons(ctx context.Context, episod
 	if p.device == nil || !episodeHasTaskTrace(episode) {
 		return nil
 	}
-	deviceID := firstNonEmptyString([]string{episode.DeviceScope["device_id"], "default"})
+	deviceID := firstNonEmptyString([]string{episode.DeviceScope["device_id"], defaultMemoryDeviceID})
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if screen := inferEpisodeScreen(episode.Events); screen != "" {
 		if _, err := p.device.Upsert(ctx, DeviceMemoryItem{
@@ -965,6 +967,17 @@ func inferEpisodeApps(episode TaskEpisode) []string {
 				apps = append(apps, value)
 			}
 		}
+	}
+	for _, event := range episode.Events {
+		if event.ObservedState == nil {
+			continue
+		}
+		app := strings.TrimSpace(event.ObservedState.AppName)
+		if app == "" || seen[app] {
+			continue
+		}
+		seen[app] = true
+		apps = append(apps, app)
 	}
 	return apps
 }

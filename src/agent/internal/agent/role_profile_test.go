@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -454,6 +455,67 @@ func TestWorldStateUpdatesFromPostActionScreenshot(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("world state text missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestRoleCollaborativeExecutorUpdatesWorldStateFromObservedState(t *testing.T) {
+	jpegBytes := []byte("observed-state-jpeg")
+	encodedImage := base64.StdEncoding.EncodeToString(jpegBytes)
+	observedVerifier, _ := json.Marshal(map[string]any{
+		"can_finish":   false,
+		"needs_replan": true,
+		"reason":       "need act on observed page",
+		"observed_state": map[string]any{
+			"app_name":     "微信",
+			"page_name":    "聊天列表",
+			"visible_text": []string{"微信", "通讯录"},
+			"dialogs":      []string{"权限提示"},
+			"confidence":   0.82,
+		},
+	})
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			plannerResponse("inspect screen"),
+			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
+			contentResponse(string(observedVerifier)),
+			plannerResponse("answer from observed page"),
+			contentResponse("candidate"),
+			verifierFinishResponse("done"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"screenshot": &stubTool{
+				name:        "screenshot",
+				description: "Capture screen.",
+				visual:      true,
+				output:      `{"width":320,"height":240,"format":"jpeg","size":19,"data":"` + encodedImage + `"}`,
+			},
+		}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "inspect current app"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	secondPlannerPrompt := messageText(model.messages[3])
+	for _, want := range []string{
+		"Observed app/page: 微信 / 聊天列表 confidence=0.82 source_role=verifier screenshot_step=1",
+		"Visible text: 微信 | 通讯录",
+		"Dialogs: 权限提示",
+	} {
+		if !strings.Contains(secondPlannerPrompt, want) {
+			t.Fatalf("second planner prompt missing %q:\n%s", want, secondPlannerPrompt)
+		}
+	}
+
+	secondExecutorPrompt := messageText(model.messages[4])
+	if !strings.Contains(secondExecutorPrompt, "Observed app/page: 微信 / 聊天列表") {
+		t.Fatalf("executor should receive structured observed world state:\n%s", secondExecutorPrompt)
 	}
 }
 

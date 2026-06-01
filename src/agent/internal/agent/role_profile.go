@@ -51,7 +51,8 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 				"No other role can change the plan, so include the current next step explicitly.",
 				"Use the executor tool catalog when planning. If a direct executor tool covers the request, plan that tool instead of a UI workaround.",
 				"Keep objective and completion_criteria tied to the original user request, not just the current step.",
-				"Return only JSON: {\"objective\":\"original task in one sentence\",\"completion_criteria\":[\"criterion\"],\"plan\":[\"step\"],\"next_step\":\"step to execute now\",\"reason\":\"brief rationale\"}.",
+				"If the current screenshot clearly identifies the app/page, include observed_state with app_name, page_name, visible_text, dialogs, and confidence; otherwise leave it empty.",
+				"Return only JSON: {\"objective\":\"original task in one sentence\",\"completion_criteria\":[\"criterion\"],\"plan\":[\"step\"],\"next_step\":\"step to execute now\",\"reason\":\"brief rationale\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}.",
 			},
 		),
 		Executor: buildRoleProfile(
@@ -79,7 +80,8 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 				"You are the only role allowed to decide whether the run can end.",
 				"Check the original user request, completion criteria, executor actions, candidate answers, and observations. Finish only when the answer is supported by the available evidence.",
 				"Never approve completion from the latest executor result alone; every explicit requirement in the original request must be proven.",
-				"Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\"}.",
+				"If the current screenshot clearly identifies the app/page, include observed_state with app_name, page_name, visible_text, dialogs, and confidence; otherwise leave it empty.",
+				"Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}.",
 			},
 		),
 	}

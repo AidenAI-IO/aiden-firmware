@@ -3,13 +3,16 @@ package agent
 import (
 	"path/filepath"
 	"sort"
+	"strings"
+	"time"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
 // ToolSet is a fixed collection of built-in tools, keyed by name.
 type ToolSet struct {
-	tools map[string]langtools.Tool
+	tools  map[string]langtools.Tool
+	screen *screenState
 }
 
 // NewBuiltinToolSet returns all built-in tools. Tools are not configurable;
@@ -61,7 +64,7 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 		tools["enter_sleep"] = NewEnterSleepTool(toolOptions.sleepController)
 	}
 
-	return &ToolSet{tools: tools}
+	return &ToolSet{tools: tools, screen: screen}
 }
 
 func (s *ToolSet) Get(name string) (langtools.Tool, bool) {
@@ -87,6 +90,23 @@ func (s *ToolSet) Names() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func (s *ToolSet) CurrentEnvironmentHints(maxAge time.Duration) CurrentEnvironmentHints {
+	if s == nil || s.screen == nil {
+		return CurrentEnvironmentHints{}
+	}
+	width, height, age, ok := s.screen.DimensionsWithAge()
+	if !ok {
+		return CurrentEnvironmentHints{}
+	}
+	if maxAge > 0 && age > maxAge {
+		return CurrentEnvironmentHints{}
+	}
+	return CurrentEnvironmentHints{
+		ScreenshotWidth:  width,
+		ScreenshotHeight: height,
+	}
 }
 
 func (s *ToolSet) RegisterMemoryTools(memoryDir string, profileFn ProfileFn, summaryMaxChunks int, debouncer *ProfileDebouncer) {

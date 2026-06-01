@@ -30,6 +30,8 @@ func effectiveMaxIterations(configured int) int {
 	return configured
 }
 
+const currentEnvironmentHintMaxAge = 10 * time.Minute
+
 type Runtime struct {
 	config           Config
 	models           ModelResolver
@@ -287,11 +289,12 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	availableTools := r.resolveTools(resolvedSkills)
 	retrieveReq := MemoryRetrieveRequest{
-		Input:       normalizedInput,
-		Attachments: req.Attachments,
-		Skills:      skillNames,
-		ToolNames:   toolNamesFromTools(availableTools),
-		DeviceID:    "default",
+		Input:        normalizedInput,
+		Attachments:  req.Attachments,
+		Skills:       skillNames,
+		ToolNames:    toolNamesFromTools(availableTools),
+		DeviceID:     defaultMemoryDeviceID,
+		CurrentHints: r.currentEnvironmentHints(),
 	}
 	memoryContext := MemoryContext{}
 	if r.memoryPlane != nil {
@@ -382,6 +385,13 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		SleepRequested: sleepRequested,
 		SleepReason:    sleepReason,
 	}, nil
+}
+
+func (r *Runtime) currentEnvironmentHints() CurrentEnvironmentHints {
+	if r.tools != nil {
+		return r.tools.CurrentEnvironmentHints(currentEnvironmentHintMaxAge)
+	}
+	return CurrentEnvironmentHints{}
 }
 
 func (r *Runtime) ClearMemory(ctx context.Context) error {
