@@ -58,7 +58,7 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 			cfg,
 			skills,
 			availableTools,
-			memoryContext,
+			"",
 			RoleCapabilities{CanExecuteStep: true, CanUseTools: true},
 			[]string{
 				"Execute only the current next_step supplied by the planner.",
@@ -72,11 +72,11 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 			cfg,
 			skills,
 			availableTools,
-			memoryContext,
+			"",
 			RoleCapabilities{CanDecideFinish: true},
 			[]string{
 				"You are the only role allowed to decide whether the run can end.",
-				"Check the original user request, completion criteria, current plan, executor result, and observations. Finish only when the answer is supported by the available evidence.",
+				"Check the original user request, completion criteria, executor actions, candidate answers, and observations. Finish only when the answer is supported by the available evidence.",
 				"Never approve completion from the latest executor result alone; every explicit requirement in the original request must be proven.",
 				"Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\"}.",
 			},

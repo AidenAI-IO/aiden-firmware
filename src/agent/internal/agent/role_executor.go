@@ -274,7 +274,7 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		Parts: []llms.ContentPart{llms.TextPart(profile.SystemPrompt)},
 	}}
 
-	if len(state.ToolSteps) > 0 {
+	if roleSeesToolScratchpad(profile.Name) && len(state.ToolSteps) > 0 {
 		scratchpad := (&FunctionAgent{Tools: e.Tools}).constructFunctionScratchPad(state.ToolSteps)
 		messages = append(messages, scratchpad...)
 	}
@@ -287,9 +287,70 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	return messages
 }
 
+func roleSeesToolScratchpad(role RoleName) bool {
+	return role == RolePlanner || role == RoleVerifier
+}
+
 func buildRoleStatePrompt(role RoleName, inputs map[string]string, state roleLoopState, task string) string {
+	switch role {
+	case RolePlanner:
+		return buildPlannerStatePrompt(inputs, state, task)
+	case RoleExecutor:
+		return buildExecutorStatePrompt(state, task)
+	case RoleVerifier:
+		return buildVerifierStatePrompt(inputs, state, task)
+	default:
+		return buildPlannerStatePrompt(inputs, state, task)
+	}
+}
+
+func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
 	var builder strings.Builder
 	builder.WriteString(task)
+	writeRequestObjectiveAndCriteria(&builder, inputs, state)
+	if history := strings.TrimSpace(inputs["history"]); history != "" {
+		builder.WriteString("\n\nConversation history:\n")
+		builder.WriteString(history)
+	}
+	writeCurrentPlan(&builder, state)
+	writeExecutorResults(&builder, state)
+	writeVerifierFeedback(&builder, state)
+	return strings.TrimSpace(builder.String())
+}
+
+func buildExecutorStatePrompt(state roleLoopState, task string) string {
+	var builder strings.Builder
+	builder.WriteString(task)
+	builder.WriteString("\n\nPlanner-approved next_step:\n")
+	if next := strings.TrimSpace(state.NextStep); next != "" {
+		builder.WriteString(next)
+	} else {
+		builder.WriteString("(none)")
+	}
+	if result, ok := state.latestExecutionResult(); ok {
+		builder.WriteString("\n\nLocal execution context (latest prior result only):\n")
+		writeExecutionResultLine(&builder, 1, result)
+	}
+	builder.WriteString("\n\nThe full plan, original request, verifier feedback, and broader history are intentionally not available to executor. Execute only the approved next_step.")
+	return strings.TrimSpace(builder.String())
+}
+
+func buildVerifierStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
+	var builder strings.Builder
+	builder.WriteString(task)
+	writeRequestObjectiveAndCriteria(&builder, inputs, state)
+	writeExecutorEvidence(&builder, state)
+	builder.WriteString("\nVerifier mandatory checklist:\n")
+	builder.WriteString("- Re-read the original user request and completion criteria immediately before deciding.\n")
+	builder.WriteString("- Do not finish merely because the latest executor step succeeded.\n")
+	builder.WriteString("- Finish only if the accumulated observations prove every explicit requirement is satisfied.\n")
+	builder.WriteString("- If any requested item is incomplete, uncertain, or no longer visible in context, return can_finish=false and explain the missing evidence.\n")
+	builder.WriteString("\nOriginal user request repeated for final verification:\n")
+	builder.WriteString(inputs["input"])
+	return strings.TrimSpace(builder.String())
+}
+
+func writeRequestObjectiveAndCriteria(builder *strings.Builder, inputs map[string]string, state roleLoopState) {
 	builder.WriteString("\n\nOriginal user request (authoritative; do not replace it with a subtask):\n")
 	builder.WriteString(inputs["input"])
 	builder.WriteString("\n\nCurrent objective:\n")
@@ -301,78 +362,78 @@ func buildRoleStatePrompt(role RoleName, inputs map[string]string, state roleLoo
 	builder.WriteString("\n\nCompletion criteria:\n")
 	if len(state.CompletionCriteria) == 0 {
 		builder.WriteString("- Satisfy every explicit requirement in the original user request.\n")
-	} else {
-		for _, criterion := range state.CompletionCriteria {
-			if criterion = strings.TrimSpace(criterion); criterion != "" {
-				builder.WriteString("- ")
-				builder.WriteString(criterion)
-				builder.WriteByte('\n')
-			}
-		}
+		return
 	}
-	if history := strings.TrimSpace(inputs["history"]); history != "" {
-		builder.WriteString("\n\nConversation history:\n")
-		builder.WriteString(history)
-	}
-	if role == RoleExecutor {
-		builder.WriteString("\n\nPlanner-approved next_step:\n")
-		if next := strings.TrimSpace(state.NextStep); next != "" {
-			builder.WriteString(next)
-		} else {
-			builder.WriteString("(none)")
-		}
-		builder.WriteString("\n\nThe full plan is intentionally not available to executor. Execute only this next_step.")
-	} else {
-		builder.WriteString("\n\nCurrent plan:\n")
-		if len(state.Plan) == 0 {
-			builder.WriteString("(none yet)")
-		} else {
-			for i, step := range state.Plan {
-				builder.WriteString(fmt.Sprintf("%d. %s\n", i+1, step))
-			}
-		}
-		if next := strings.TrimSpace(state.NextStep); next != "" {
-			builder.WriteString("\nCurrent next_step:\n")
-			builder.WriteString(next)
-		}
-		if reason := strings.TrimSpace(state.PlannerReason); reason != "" {
-			builder.WriteString("\n\nPlanner reason:\n")
-			builder.WriteString(reason)
-		}
-	}
-	if len(state.ExecutionResults) > 0 {
-		builder.WriteString("\n\nExecutor results:\n")
-		for i, result := range state.ExecutionResults {
-			builder.WriteString(fmt.Sprintf("%d. ", i+1))
-			if result.Action != nil {
-				builder.WriteString(fmt.Sprintf("tool=%s input=%s", result.Action.Tool, result.Action.ToolInput))
-			} else {
-				builder.WriteString("candidate_answer=")
-				builder.WriteString(result.CandidateAnswer)
-			}
-			if result.Step != nil {
-				builder.WriteString(" observation=")
-				builder.WriteString(compactToolObservation(result.Step.Observation))
-			}
+	for _, criterion := range state.CompletionCriteria {
+		if criterion = strings.TrimSpace(criterion); criterion != "" {
+			builder.WriteString("- ")
+			builder.WriteString(criterion)
 			builder.WriteByte('\n')
 		}
 	}
+}
+
+func writeCurrentPlan(builder *strings.Builder, state roleLoopState) {
+	builder.WriteString("\n\nCurrent plan:\n")
+	if len(state.Plan) == 0 {
+		builder.WriteString("(none yet)")
+	} else {
+		for i, step := range state.Plan {
+			builder.WriteString(fmt.Sprintf("%d. %s\n", i+1, step))
+		}
+	}
+	if next := strings.TrimSpace(state.NextStep); next != "" {
+		builder.WriteString("\nCurrent next_step:\n")
+		builder.WriteString(next)
+	}
+	if reason := strings.TrimSpace(state.PlannerReason); reason != "" {
+		builder.WriteString("\n\nPlanner reason:\n")
+		builder.WriteString(reason)
+	}
+}
+
+func writeExecutorResults(builder *strings.Builder, state roleLoopState) {
+	if len(state.ExecutionResults) > 0 {
+		builder.WriteString("\n\nExecutor results:\n")
+		for i, result := range state.ExecutionResults {
+			writeExecutionResultLine(builder, i+1, result)
+		}
+	}
+}
+
+func writeExecutorEvidence(builder *strings.Builder, state roleLoopState) {
+	if len(state.ExecutionResults) == 0 {
+		builder.WriteString("\n\nExecutor evidence:\n(none yet)")
+		return
+	}
+	builder.WriteString("\n\nExecutor evidence:\n")
+	for i, result := range state.ExecutionResults {
+		writeExecutionResultLine(builder, i+1, result)
+	}
+}
+
+func writeExecutionResultLine(builder *strings.Builder, index int, result roleExecutionResult) {
+	builder.WriteString(fmt.Sprintf("%d. ", index))
+	if result.Action != nil {
+		builder.WriteString(fmt.Sprintf("tool=%s input=%s", result.Action.Tool, result.Action.ToolInput))
+	} else {
+		builder.WriteString("candidate_answer=")
+		builder.WriteString(result.CandidateAnswer)
+	}
+	if result.Step != nil {
+		builder.WriteString(" observation=")
+		builder.WriteString(compactToolObservation(result.Step.Observation))
+	}
+	builder.WriteByte('\n')
+}
+
+func writeVerifierFeedback(builder *strings.Builder, state roleLoopState) {
 	if len(state.VerifierResults) > 0 {
 		builder.WriteString("\nVerifier feedback:\n")
 		for i, result := range state.VerifierResults {
 			builder.WriteString(fmt.Sprintf("%d. can_finish=%v needs_replan=%v reason=%s\n", i+1, result.CanFinish, result.NeedsReplan, result.Reason))
 		}
 	}
-	if role == RoleVerifier {
-		builder.WriteString("\nVerifier mandatory checklist:\n")
-		builder.WriteString("- Re-read the original user request and completion criteria immediately before deciding.\n")
-		builder.WriteString("- Do not finish merely because the latest executor step succeeded.\n")
-		builder.WriteString("- Finish only if the accumulated observations prove every explicit requirement is satisfied.\n")
-		builder.WriteString("- If any requested item is incomplete, uncertain, or no longer visible in context, return can_finish=false and explain the missing evidence.\n")
-		builder.WriteString("\nOriginal user request repeated for final verification:\n")
-		builder.WriteString(inputs["input"])
-	}
-	return strings.TrimSpace(builder.String())
 }
 
 func (s *roleLoopState) applyPlannerDecision(decision plannerDecision) {
@@ -385,6 +446,13 @@ func (s *roleLoopState) applyPlannerDecision(decision plannerDecision) {
 	s.Plan = append([]string{}, decision.Plan...)
 	s.NextStep = strings.TrimSpace(decision.NextStep)
 	s.PlannerReason = strings.TrimSpace(decision.Reason)
+}
+
+func (s roleLoopState) latestExecutionResult() (roleExecutionResult, bool) {
+	if len(s.ExecutionResults) == 0 {
+		return roleExecutionResult{}, false
+	}
+	return s.ExecutionResults[len(s.ExecutionResults)-1], true
 }
 
 func (s roleLoopState) lastCandidateAnswer() string {

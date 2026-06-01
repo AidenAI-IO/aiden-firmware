@@ -34,11 +34,17 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	}
 
 	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor, profiles.Verifier} {
-		for _, want := range []string{"base", "extra", "[ui] inspect before acting", "MEMORY CONTEXT"} {
+		for _, want := range []string{"base", "extra", "[ui] inspect before acting"} {
 			if !strings.Contains(profile.SystemPrompt, want) {
 				t.Fatalf("%s profile missing %q:\n%s", profile.Name, want, profile.SystemPrompt)
 			}
 		}
+	}
+	if !strings.Contains(profiles.Planner.SystemPrompt, "MEMORY CONTEXT") {
+		t.Fatalf("planner profile should receive memory context:\n%s", profiles.Planner.SystemPrompt)
+	}
+	if strings.Contains(profiles.Executor.SystemPrompt, "MEMORY CONTEXT") || strings.Contains(profiles.Verifier.SystemPrompt, "MEMORY CONTEXT") {
+		t.Fatalf("memory context should be planner-only: executor=%q verifier=%q", profiles.Executor.SystemPrompt, profiles.Verifier.SystemPrompt)
 	}
 	if !strings.Contains(profiles.Executor.SystemPrompt, "Execute only the current next_step") {
 		t.Fatalf("executor prompt missing next_step constraint:\n%s", profiles.Executor.SystemPrompt)
@@ -279,6 +285,71 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 	if model.callCount != 9 {
 		t.Fatalf("model call count = %d, want 9", model.callCount)
 	}
+
+	secondPlannerPrompt := messageText(model.messages[3])
+	for _, want := range []string{
+		"Current plan:",
+		"Executor results:",
+		"Verifier feedback:",
+		"not enough progress",
+	} {
+		if !strings.Contains(secondPlannerPrompt, want) {
+			t.Fatalf("second planner prompt missing %q:\n%s", want, secondPlannerPrompt)
+		}
+	}
+
+	secondExecutorMessages := model.messages[4]
+	secondExecutorPrompt := messageText(secondExecutorMessages)
+	for _, want := range []string{
+		"Planner-approved next_step:\nrepeat same tool",
+		"Local execution context (latest prior result only):",
+		"tool=echo input=same",
+	} {
+		if !strings.Contains(secondExecutorPrompt, want) {
+			t.Fatalf("second executor prompt missing %q:\n%s", want, secondExecutorPrompt)
+		}
+	}
+	for _, unexpected := range []string{
+		"do not get stuck",
+		"Current plan:",
+		"Completion criteria:",
+		"Verifier feedback:",
+		"not enough progress",
+	} {
+		if strings.Contains(secondExecutorPrompt, unexpected) {
+			t.Fatalf("second executor prompt should not contain %q:\n%s", unexpected, secondExecutorPrompt)
+		}
+	}
+	if hasMessageRole(secondExecutorMessages, llms.ChatMessageTypeTool) {
+		t.Fatalf("executor should not receive prior tool scratchpad messages: %#v", secondExecutorMessages)
+	}
+
+	finalVerifierPrompt := messageText(model.messages[8])
+	for _, want := range []string{
+		"Original user request",
+		"do not get stuck",
+		"Executor evidence:",
+		"tool=echo input=same",
+		"candidate_answer=candidate",
+	} {
+		if !strings.Contains(finalVerifierPrompt, want) {
+			t.Fatalf("final verifier prompt missing %q:\n%s", want, finalVerifierPrompt)
+		}
+	}
+	for _, unexpected := range []string{
+		"Current plan:",
+		"Planner reason:",
+		"Verifier feedback:",
+		"not enough progress",
+		"still stuck",
+	} {
+		if strings.Contains(finalVerifierPrompt, unexpected) {
+			t.Fatalf("final verifier prompt should not contain %q:\n%s", unexpected, finalVerifierPrompt)
+		}
+	}
+	if !hasMessageRole(model.messages[8], llms.ChatMessageTypeTool) {
+		t.Fatalf("verifier should receive tool scratchpad messages as operation evidence: %#v", model.messages[8])
+	}
 }
 
 func messageText(messages []llms.MessageContent) string {
@@ -292,4 +363,13 @@ func messageText(messages []llms.MessageContent) string {
 		}
 	}
 	return builder.String()
+}
+
+func hasMessageRole(messages []llms.MessageContent, role llms.ChatMessageType) bool {
+	for _, msg := range messages {
+		if msg.Role == role {
+			return true
+		}
+	}
+	return false
 }
