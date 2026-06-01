@@ -67,6 +67,13 @@ netstat -lntp | grep 8080
 - 模型配置和 API key 可用；
 - 防火墙、USB 网络或 Wi-Fi IP 正确。
 
+## Wi-Fi 连接不稳定
+
+处理：
+
+- 接上外接 2.4 GHz 天线，天线接口采用 IPEX1 代；
+- 或尝试切换 Wi-Fi 信道，避开干扰较强的信道。
+
 ## 语音模式没有声音或录不到音
 
 检查：
@@ -119,6 +126,24 @@ sudo ./build/bin/example_usb_hid setup composite
 ```
 
 iOS 目标设备请确认 AssistiveTouch 已开启。
+
+## iPhone 16e 无法获取屏幕
+
+原因：iPhone 16e 的 USB-C 接口存在兼容性问题。
+
+处理：
+
+- 当前暂时无法支持 iPhone 16e 获取屏幕；
+- 更换其他兼容机型进行测试。
+
+## 板子插上手机后频繁重启
+
+原因：供电不足。
+
+处理：
+
+- 换用供电能力更好的 USB hub；
+- 或使用支持外部供电的 USB hub。
 
 ## HTTP Tool API 访问异常
 
