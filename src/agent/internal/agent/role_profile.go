@@ -10,10 +10,9 @@ import (
 type RoleName string
 
 const (
-	RolePlanner   RoleName = "planner"
-	RoleExecutor  RoleName = "executor"
-	RoleVerifier  RoleName = "verifier"
-	RoleReflector RoleName = "reflector"
+	RolePlanner  RoleName = "planner"
+	RoleExecutor RoleName = "executor"
+	RoleVerifier RoleName = "verifier"
 )
 
 type RoleCapabilities struct {
@@ -21,7 +20,6 @@ type RoleCapabilities struct {
 	CanExecuteStep  bool
 	CanUseTools     bool
 	CanDecideFinish bool
-	CanReflect      bool
 }
 
 type RoleProfile struct {
@@ -33,10 +31,9 @@ type RoleProfile struct {
 }
 
 type RoleProfiles struct {
-	Planner   RoleProfile
-	Executor  RoleProfile
-	Verifier  RoleProfile
-	Reflector RoleProfile
+	Planner  RoleProfile
+	Executor RoleProfile
+	Verifier RoleProfile
 }
 
 func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool, memoryContext string) RoleProfiles {
@@ -49,7 +46,7 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 			memoryContext,
 			RoleCapabilities{CanModifyPlan: true},
 			[]string{
-				"You own the plan. Create or revise the ordered plan from the user request, prior tool observations, verifier feedback, and reflector notes.",
+				"You own the plan. Create or revise the ordered plan from the user request, prior tool observations, and verifier feedback.",
 				"No other role can change the plan, so include the current next step explicitly.",
 				"Use the executor tool catalog when planning. If a direct executor tool covers the request, plan that tool instead of a UI workaround.",
 				"Keep objective and completion_criteria tied to the original user request, not just the current step.",
@@ -82,20 +79,6 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 				"Check the original user request, completion criteria, current plan, executor result, and observations. Finish only when the answer is supported by the available evidence.",
 				"Never approve completion from the latest executor result alone; every explicit requirement in the original request must be proven.",
 				"Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\"}.",
-			},
-		),
-		Reflector: buildRoleProfile(
-			RoleReflector,
-			cfg,
-			skills,
-			availableTools,
-			memoryContext,
-			RoleCapabilities{CanReflect: true},
-			[]string{
-				"Reflect only when the loop is stuck, repeating, or has failed verification multiple times.",
-				"Reflect on why the verifier did not finish and what the planner should consider next.",
-				"Do not modify the plan. Do not execute tools. Do not decide completion.",
-				"Return concise feedback only.",
 			},
 		),
 	}

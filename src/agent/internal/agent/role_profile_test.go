@@ -32,11 +32,8 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	if !profiles.Verifier.Capabilities.CanDecideFinish || profiles.Executor.Capabilities.CanDecideFinish {
 		t.Fatalf("only verifier should decide finish: verifier=%#v executor=%#v", profiles.Verifier.Capabilities, profiles.Executor.Capabilities)
 	}
-	if !profiles.Reflector.Capabilities.CanReflect || profiles.Reflector.Capabilities.CanModifyPlan || profiles.Reflector.Capabilities.CanDecideFinish {
-		t.Fatalf("reflector should only reflect: %#v", profiles.Reflector.Capabilities)
-	}
 
-	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor, profiles.Verifier, profiles.Reflector} {
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor, profiles.Verifier} {
 		for _, want := range []string{"base", "extra", "[ui] inspect before acting", "MEMORY CONTEXT"} {
 			if !strings.Contains(profile.SystemPrompt, want) {
 				t.Fatalf("%s profile missing %q:\n%s", profile.Name, want, profile.SystemPrompt)
@@ -231,7 +228,7 @@ func TestRoleCollaborativeExecutorRepeatsOriginalRequestForVerifier(t *testing.T
 	}
 }
 
-func TestRoleCollaborativeExecutorReflectsOnlyWhenStuck(t *testing.T) {
+func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			plannerResponse("repeat same tool"),
@@ -240,7 +237,6 @@ func TestRoleCollaborativeExecutorReflectsOnlyWhenStuck(t *testing.T) {
 			plannerResponse("repeat same tool"),
 			toolCallResponse("call_2", "echo", `{"__arg1":"same"}`),
 			verifierContinueResponse("still stuck"),
-			reflectorResponse("stop repeating the same tool"),
 			plannerResponse("answer directly"),
 			contentResponse("candidate"),
 			verifierFinishResponse("done"),
@@ -270,14 +266,18 @@ func TestRoleCollaborativeExecutorReflectsOnlyWhenStuck(t *testing.T) {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
 
-	var reflectorCount int
 	for _, event := range events {
-		if event.Type == "role_output" && event.Role == "reflector" {
-			reflectorCount++
+		if event.Type != "role_output" {
+			continue
+		}
+		switch event.Role {
+		case string(RolePlanner), string(RoleExecutor), string(RoleVerifier):
+		default:
+			t.Fatalf("unexpected role output event: %#v", event)
 		}
 	}
-	if reflectorCount != 1 {
-		t.Fatalf("reflector output count = %d, want 1; events=%#v", reflectorCount, events)
+	if model.callCount != 9 {
+		t.Fatalf("model call count = %d, want 9", model.callCount)
 	}
 }
 

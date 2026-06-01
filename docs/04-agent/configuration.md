@@ -287,5 +287,5 @@ voice_id = "zh_female_vv_uranus_bigtts"
 - Web UI 模式和设备侧语音模式互斥；
 - Tencent ASR 仍未完整实现；
 - `preferred_model`、`allowed_children`、`model_text` 当前解析但未完全接入执行；
-- Agent loop 已拆为 `planner`、`executor`、`verifier`、`reflector` 四个 RoleProfile；skill instructions 会进入各角色 profile，function tools 只暴露给 executor，工具目录会给其他角色做规划/复核参考；`verifier` 会按原始任务和完成条件验收，`reflector` 只在卡住/重复/多次未通过时介入；
+- Agent loop 已拆为 `planner`、`executor`、`verifier` 三个 RoleProfile；skill instructions 会进入各角色 profile，function tools 只暴露给 executor，工具目录会给其他角色做规划/复核参考；`verifier` 会按原始任务和完成条件验收；
 - 示例 skills 可能引用旧工具，生产使用前需检查。

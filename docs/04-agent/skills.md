@@ -35,7 +35,7 @@ Prefer describing what you see before clicking.
 
 - 自动发现 `SKILL.md`；
 - 在 prompt 中展示 Available skills，并通过 `skill_read` 运行时加载完整 `SKILL.md`；
-- 将 skill instructions 注入多角色 `RoleProfile` 的 system prompt；
+- 将 skill instructions 注入三个角色的 `RoleProfile` 的 system prompt；
 - 支持 `allowed_tools` 限制普通任务工具；`skill_list` / `skill_read` / `skill_manage` / `skill_mark_used` 作为 skill meta-tools 默认保留；
 - 提供 `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used`；
 - `skill_read` 支持读取 `SKILL.md`，以及 `references/`、`templates/`、`scripts/`、`assets/` 下的 UTF-8 supporting files；
@@ -49,7 +49,6 @@ Prefer describing what you see before clicking.
 - `planner`：唯一允许创建或修改计划的角色，输出当前计划和下一步；
 - `executor`：只能执行 planner 给出的下一步，最多发起一个工具调用，不能修改计划或决定结束；
 - `verifier`：唯一允许决定本轮是否可以结束的角色，最终回复必须由它确认；它会在最终判定前重新看到原始任务和完成条件；
-- `reflector`：只在循环疑似卡住、重复执行，或多次未通过 verifier 时介入，供下一轮 planner 参考。
 
 只有 `executor` 会收到可调用的 function tools；其他角色只看到 executor 工具目录，用于规划和复核。这样 planner 能优先规划 `audio_volume` 这类直接工具，但不能自己调用工具。
 

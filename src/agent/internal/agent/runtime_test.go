@@ -408,10 +408,6 @@ func verifierContinueResponse(reason string) *llms.ContentResponse {
 	return contentResponse(string(payload))
 }
 
-func reflectorResponse(feedback string) *llms.ContentResponse {
-	return contentResponse(feedback)
-}
-
 func toolCallResponse(id, name, arguments string) *llms.ContentResponse {
 	return &llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{

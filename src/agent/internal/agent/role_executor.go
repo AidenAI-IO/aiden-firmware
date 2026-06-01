@@ -61,7 +61,6 @@ type roleLoopState struct {
 	ToolSteps          []schema.AgentStep
 	ExecutionResults   []roleExecutionResult
 	VerifierResults    []verifierDecision
-	Reflections        []string
 }
 
 var _ chains.Chain = (*roleCollaborativeExecutor)(nil)
@@ -142,15 +141,6 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 			return map[string]any{e.OutputKey: finalAnswer}, nil
 		}
 
-		if state.shouldCallReflector() {
-			reflection, err := e.callReflector(ctx, inputs, state, options...)
-			if err != nil {
-				return nil, err
-			}
-			if reflection != "" {
-				state.Reflections = append(state.Reflections, reflection)
-			}
-		}
 	}
 
 	if e.CallbacksHandler != nil {
@@ -244,17 +234,6 @@ func (e *roleCollaborativeExecutor) callVerifier(ctx context.Context, inputs map
 	}
 	e.emitRoleOutput(ctx, RoleVerifier, roleResponseDebugText(res))
 	return parseVerifierDecision(contentResponseText(res), state.lastCandidateAnswer()), nil
-}
-
-func (e *roleCollaborativeExecutor) callReflector(ctx context.Context, inputs map[string]string, state roleLoopState, options ...chains.ChainCallOption) (string, error) {
-	messages := e.roleMessages(e.Profiles.Reflector, inputs, state, "Reflector task: provide feedback for the planner. Do not modify the plan.")
-	res, err := e.generateRoleContent(ctx, RoleReflector, messages, chains.GetLLMCallOptions(options...)...)
-	if err != nil {
-		return "", err
-	}
-	reflection := strings.TrimSpace(contentResponseText(res))
-	e.emitRoleOutput(ctx, RoleReflector, roleResponseDebugText(res))
-	return reflection, nil
 }
 
 func (e *roleCollaborativeExecutor) generateRoleContent(ctx context.Context, role RoleName, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -384,12 +363,6 @@ func buildRoleStatePrompt(role RoleName, inputs map[string]string, state roleLoo
 			builder.WriteString(fmt.Sprintf("%d. can_finish=%v needs_replan=%v reason=%s\n", i+1, result.CanFinish, result.NeedsReplan, result.Reason))
 		}
 	}
-	if len(state.Reflections) > 0 {
-		builder.WriteString("\nReflector notes:\n")
-		for i, reflection := range state.Reflections {
-			builder.WriteString(fmt.Sprintf("%d. %s\n", i+1, reflection))
-		}
-	}
 	if role == RoleVerifier {
 		builder.WriteString("\nVerifier mandatory checklist:\n")
 		builder.WriteString("- Re-read the original user request and completion criteria immediately before deciding.\n")
@@ -412,35 +385,6 @@ func (s *roleLoopState) applyPlannerDecision(decision plannerDecision) {
 	s.Plan = append([]string{}, decision.Plan...)
 	s.NextStep = strings.TrimSpace(decision.NextStep)
 	s.PlannerReason = strings.TrimSpace(decision.Reason)
-}
-
-func (s roleLoopState) shouldCallReflector() bool {
-	failures := len(s.VerifierResults)
-	if failures < 2 {
-		return false
-	}
-	if s.lastTwoExecutionsSame() {
-		return true
-	}
-	return failures%3 == 0
-}
-
-func (s roleLoopState) lastTwoExecutionsSame() bool {
-	if len(s.ExecutionResults) < 2 {
-		return false
-	}
-	a := s.ExecutionResults[len(s.ExecutionResults)-1]
-	b := s.ExecutionResults[len(s.ExecutionResults)-2]
-	if a.Action == nil || b.Action == nil {
-		return false
-	}
-	if a.Action.Tool != b.Action.Tool || normalizeToolInput(a.Action.ToolInput) != normalizeToolInput(b.Action.ToolInput) {
-		return false
-	}
-	if a.Step == nil || b.Step == nil {
-		return true
-	}
-	return strings.TrimSpace(a.Step.Observation) == strings.TrimSpace(b.Step.Observation)
 }
 
 func (s roleLoopState) lastCandidateAnswer() string {
