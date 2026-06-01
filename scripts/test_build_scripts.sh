@@ -3,6 +3,7 @@ set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD_SH="$ROOT_DIR/_build.sh"
+LOCAL_BUILD_SH="$ROOT_DIR/build.sh"
 BUILD_IMAGE_SH="$ROOT_DIR/build_image.sh"
 WORKFLOW="$ROOT_DIR/.github/workflows/build.yml"
 REPACK_SCRIPT="$ROOT_DIR/scripts/repack_ota_update_image.sh"
@@ -24,6 +25,23 @@ fi
 
 if ! grep -q 'command -v go' "$BUILD_SH"; then
     echo "_build.sh must clearly require go in PATH" >&2
+    exit 1
+fi
+
+if ! grep -q 'GO_TARBALL_SHA256' "$LOCAL_BUILD_SH" || \
+   ! grep -q 'go.dev/dl' "$LOCAL_BUILD_SH" || \
+   ! grep -Eq 'sha256sum|shasum -a 256' "$LOCAL_BUILD_SH"; then
+    echo "build.sh must install a verified linux/amd64 Go toolchain for Docker builds" >&2
+    exit 1
+fi
+
+if ! grep -Eq -- '-v .*:/usr/local/go:ro' "$LOCAL_BUILD_SH"; then
+    echo "build.sh must mount the verified Go toolchain read-only into Docker" >&2
+    exit 1
+fi
+
+if ! grep -q '/usr/local/go/bin:$PATH' "$LOCAL_BUILD_SH"; then
+    echo "build.sh must prepend the mounted Go toolchain to Docker PATH" >&2
     exit 1
 fi
 

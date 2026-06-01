@@ -2,6 +2,7 @@
 /build/
 /build-*/
 /output/
+.toolchains/
 .worktrees/
 .claude/
 *.pcm
