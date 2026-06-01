@@ -33,6 +33,9 @@ TEST_CASE("system proxy URL validation matches runtime proxy rules") {
     CHECK(aiden::validate_system_proxy_url("socks5://127.0.0.1:7890").empty());
     CHECK(aiden::validate_system_proxy_url("http://proxy.example:7893 http_proxy=http://proxy.example:7893").find("whitespace") != std::string::npos);
     CHECK(aiden::validate_system_proxy_url("http://%zz").find("invalid URL escape") != std::string::npos);
+    CHECK_FALSE(aiden::validate_system_proxy_url("http://proxy.example:bad").empty());
+    CHECK_FALSE(aiden::validate_system_proxy_url("http://[::1]zzz").empty());
+    CHECK_FALSE(aiden::validate_system_proxy_url(std::string("http://proxy.example") + std::string(1, '\x01')).empty());
 }
 
 TEST_CASE("system env proxy filtering preserves unrelated assignments on mixed lines") {

@@ -334,12 +334,32 @@ bool has_embedded_proxy_assignment(const std::string& url) {
     return false;
 }
 
-bool proxy_host_present(const std::string& trimmed) {
-    size_t scheme = trimmed.find("://");
-    if (scheme == std::string::npos) {
+bool has_ascii_control(const std::string& value) {
+    for (unsigned char c : value) {
+        if (c < 0x20 || c == 0x7f) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool is_valid_optional_port(const std::string& tail) {
+    if (tail.empty()) {
+        return true;
+    }
+    if (tail[0] != ':') {
         return false;
     }
-    size_t host_start = scheme + 3;
+    for (size_t i = 1; i < tail.size(); ++i) {
+        if (!isdigit(static_cast<unsigned char>(tail[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string validate_proxy_authority(const std::string& trimmed, size_t scheme_end) {
+    size_t host_start = scheme_end + 3;
     size_t host_end = trimmed.find_first_of("/?#", host_start);
     std::string authority = trimmed.substr(
         host_start,
@@ -347,15 +367,36 @@ bool proxy_host_present(const std::string& trimmed) {
     size_t at = authority.rfind('@');
     std::string host_port = at == std::string::npos ? authority : authority.substr(at + 1);
     if (host_port.empty()) {
-        return false;
+        return "expected absolute proxy URL, for example http://127.0.0.1:7890";
     }
+
     if (host_port[0] == '[') {
         size_t close = host_port.find(']');
-        return close != std::string::npos && close > 1;
+        if (close == std::string::npos || close == 1) {
+            return "invalid proxy URL authority";
+        }
+        if (!is_valid_optional_port(host_port.substr(close + 1))) {
+            return "invalid proxy URL port";
+        }
+        return "";
     }
+
+    if (host_port.find(']') != std::string::npos || host_port.find('[') != std::string::npos) {
+        return "invalid proxy URL authority";
+    }
+
     size_t colon = host_port.find(':');
     std::string host = colon == std::string::npos ? host_port : host_port.substr(0, colon);
-    return !host.empty();
+    if (host.empty()) {
+        return "expected absolute proxy URL, for example http://127.0.0.1:7890";
+    }
+    if (colon != std::string::npos && !is_valid_optional_port(host_port.substr(colon))) {
+        return "invalid proxy URL port";
+    }
+    if (colon != std::string::npos && host_port.find(':', colon + 1) != std::string::npos) {
+        return "invalid proxy URL authority";
+    }
+    return "";
 }
 
 }  // namespace
@@ -371,6 +412,9 @@ std::string validate_system_proxy_url(const std::string& url) {
     if (has_embedded_proxy_assignment(trimmed)) {
         return "proxy URL contains another proxy assignment; use one export assignment per line";
     }
+    if (has_ascii_control(trimmed)) {
+        return "invalid control character in proxy URL";
+    }
     if (has_duplicate_proxy_scheme(trimmed)) {
         return "duplicate scheme in proxy URL";
     }
@@ -380,8 +424,12 @@ std::string validate_system_proxy_url(const std::string& url) {
     }
 
     size_t scheme_end = trimmed.find("://");
-    if (scheme_end == std::string::npos || scheme_end == 0 || !proxy_host_present(trimmed)) {
+    if (scheme_end == std::string::npos || scheme_end == 0) {
         return "expected absolute proxy URL, for example http://127.0.0.1:7890";
+    }
+    std::string authority_error = validate_proxy_authority(trimmed, scheme_end);
+    if (!authority_error.empty()) {
+        return authority_error;
     }
 
     std::string scheme = lower_copy(trimmed.substr(0, scheme_end));
