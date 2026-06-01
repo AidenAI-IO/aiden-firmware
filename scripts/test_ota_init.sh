@@ -29,6 +29,7 @@ chmod +x "$OTA_BIN"
 mkdir -p "$USERDATA_DIR" "$RUN_DIR"
 
 OTA_BIN="$OTA_BIN" \
+ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
 LOG_PATH="$LOG_PATH" \
 PID_FILE="$PID_FILE" \
 WATCHDOG_PID_FILE="$WATCHDOG_PID_FILE" \
@@ -63,6 +64,7 @@ service_pid=$(cat "$PID_FILE")
 watchdog_pid=$(cat "$WATCHDOG_PID_FILE")
 
 OTA_BIN="$OTA_BIN" \
+ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
 LOG_PATH="$LOG_PATH" \
 PID_FILE="$PID_FILE" \
 WATCHDOG_PID_FILE="$WATCHDOG_PID_FILE" \

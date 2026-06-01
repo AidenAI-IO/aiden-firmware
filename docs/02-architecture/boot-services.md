@@ -59,7 +59,7 @@ WATCHDOG_PID_FILE=/run/audio_service/audio_service_watchdog.pid
 默认启动命令：
 
 ```bash
-/oem/usr/bin/agent -config /userdata/agent -addr :8080
+/oem/usr/bin/aiden-env-run /oem/usr/bin/agent -config /userdata/agent -addr :8080
 ```
 
 运行时目录：
@@ -79,7 +79,7 @@ WATCHDOG_PID_FILE=/run/audio_service/audio_service_watchdog.pid
 默认启动命令：
 
 ```bash
-/oem/usr/bin/ota daemon
+/oem/usr/bin/aiden-env-run /oem/usr/bin/ota daemon
 ```
 
 运行时目录：
@@ -100,10 +100,14 @@ WATCHDOG_PID_FILE=/run/audio_service/audio_service_watchdog.pid
 默认启动命令：
 
 ```bash
-/oem/usr/bin/config_web --config=/userdata/agent/agent.toml --wifi-config=/userdata/wpa_supplicant.conf
+/oem/usr/bin/aiden-env-run /oem/usr/bin/config_web --config=/userdata/agent/agent.toml --wifi-config=/userdata/wpa_supplicant.conf --system-env=/userdata/system/env
 ```
 
 用途：通过网页维护 Agent 配置和 Wi-Fi 配置。默认 bind / port 见 [Config Web](../03-services/config-web.md)。
+
+## System Environment
+
+`/userdata/system/env` is the device-wide environment file. `aiden-env-run` loads it before starting services, and SSH login shells load the same file through `/etc/profile.d/aiden-env.sh`. Proxy variables, API keys, and other shell-style environment values can live there instead of in `agent.toml`.
 
 ## 开发调试建议
 

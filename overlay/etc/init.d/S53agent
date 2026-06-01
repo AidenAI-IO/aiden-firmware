@@ -3,6 +3,7 @@
 # Provides HTTP API and web UI for agent interactions.
 
 AGENT_BIN=/oem/usr/bin/agent
+ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
 CONFIG_DIR=/userdata/agent
 ADDR=:8080
 LOG_PATH=/var/log/agent/agent.log
@@ -93,7 +94,7 @@ start() {
             fi
 
             echo "[agent] starting $AGENT_BIN -config $CONFIG_DIR -addr $ADDR" >> "$LOG_PATH"
-            "$AGENT_BIN" -config "$CONFIG_DIR" -addr "$ADDR" >> "$LOG_PATH" 2>&1 &
+            "$ENV_RUN_BIN" "$AGENT_BIN" -config "$CONFIG_DIR" -addr "$ADDR" >> "$LOG_PATH" 2>&1 &
             child="$!"
             echo "$child" > "$PID_FILE"
             wait "$child"

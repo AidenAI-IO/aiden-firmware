@@ -28,12 +28,6 @@ token_env = "OPENROUTER_API_KEY"
 temperature = 0.2
 max_tokens = 1000
 
-[proxy]
-http_proxy = ""
-https_proxy = ""
-all_proxy = ""
-no_proxy = ""
-
 [audio]
 socket = "/run/audio_service/audio_service.sock"
 sample_rate = 16000
@@ -137,16 +131,23 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `temperature` | 采样温度 |
 | `max_tokens` | 最大输出 token |
 
-## `[proxy]`
+## System Environment Variables
 
-可选。用于 Agent 发起的外部 HTTP/WebSocket 请求（OpenAI-compatible / OpenRouter / Ollama 模型请求、OpenAI Whisper STT、TTS adapters），并会注入到 Agent `shell` 工具启动的子进程环境中。所有字段留空时使用进程环境变量中的代理设置。
+The Agent no longer reads `[proxy]` from `agent.toml`. Outbound HTTP/WebSocket requests, shell tool subprocesses, the OTA daemon, and SSH login shells all use environment variables from `/userdata/system/env`. The file is loaded with shell syntax, for example:
 
-| 字段 | 说明 |
+```sh
+HTTP_PROXY=http://127.0.0.1:7890
+HTTPS_PROXY=http://127.0.0.1:7890
+NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+OPENROUTER_API_KEY=...
+```
+
+| Variable | Description |
 | --- | --- |
-| `http_proxy` | HTTP 请求代理，例如 `http://127.0.0.1:7890` |
-| `https_proxy` | HTTPS 请求代理，通常也填写 HTTP 代理地址，例如 `http://127.0.0.1:7890` |
-| `all_proxy` | HTTP/HTTPS 未分别配置时使用的通用代理，支持 `http://`、`https://`、`socks5://` |
-| `no_proxy` | 逗号/空格分隔的直连规则；支持主机名、域名后缀、`host:port`、CIDR 和 `*`；当显式配置了 `http_proxy` / `https_proxy` / `all_proxy` 且本字段留空时，默认 `localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` |
+| `HTTP_PROXY` / `http_proxy` | HTTP proxy URL, for example `http://127.0.0.1:7890` |
+| `HTTPS_PROXY` / `https_proxy` | HTTPS proxy URL, usually the same HTTP proxy endpoint |
+| `ALL_PROXY` / `all_proxy` | Generic proxy used by HTTP clients and some WebSocket adapters |
+| `NO_PROXY` / `no_proxy` | Comma-separated bypass rules; when a proxy URL is set and no bypass value is present, the launcher injects the default private-network bypass list |
 
 ## `[audio]`
 
@@ -226,7 +227,7 @@ reference_id = "98655a12fa944e26b274c535e5e03842"
 speed = 1.0
 ```
 
-Fish Audio `model` 默认是 `s2-pro`，会作为 WebSocket 握手 header 发送；也接受 `voice_id` 作为 reference id。如果同时设置 `reference_id` 和 `voice_id`，使用 `reference_id`。Fish Audio 的公网 endpoint 在部分网络环境可能需要在 `[proxy]` 配置 `all_proxy`。
+Fish Audio `model` defaults to `s2-pro` and is sent as a WebSocket handshake header. `voice_id` is also accepted as the reference id. If both `reference_id` and `voice_id` are set, `reference_id` wins. In some networks, the public Fish Audio endpoint may require `ALL_PROXY` or `HTTPS_PROXY` in `/userdata/system/env`.
 
 阿里云 Qwen-TTS Realtime：
 

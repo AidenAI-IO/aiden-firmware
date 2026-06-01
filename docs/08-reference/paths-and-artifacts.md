@@ -35,6 +35,7 @@
 | `/userdata/agent/agent.toml` | Agent 主配置 |
 | `/userdata/agent/skills/` | Agent skills 目录 |
 | `/userdata/agent/memory/` | Agent 记忆持久化目录 |
+| `/userdata/system/env` | Device-wide environment file loaded by service launchers and SSH login shells |
 | `/userdata/ota/` | OTA 配置、状态、下载缓存和 health marker |
 | `/oem/etc/ota_pubkey.pem` | OTA manifest Ed25519 public key |
 | `/userdata/wpa_supplicant.conf` | Wi-Fi 配置 |
@@ -52,8 +53,11 @@
 | `overlay/etc/aiden_audio_service.conf` | Audio Service init 配置模板 |
 | `overlay/etc/init.d/S20oemslot` | Slot-aware `/oem` 挂载脚本 |
 | `overlay/etc/init.d/S54ota` | OTA daemon watchdog |
+| `overlay/etc/profile.d/aiden-env.sh` | SSH/login shell environment loader snippet |
+| `overlay/oem/usr/bin/aiden-env-run` | Service environment launcher |
 | `overlay/oem/usr/model/` | VAD 模型和 weights，随 OEM 分区更新 |
 | `overlay/userdata/agent/agent.toml` | Agent 默认配置模板 |
+| `overlay/userdata/system/env` | Default system environment template |
 | `overlay/userdata/wpa_supplicant.conf` | Wi-Fi 默认配置模板 |
 
 ## 常用命令
