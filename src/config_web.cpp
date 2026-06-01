@@ -7,6 +7,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ctype.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
@@ -14,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -55,6 +57,7 @@ struct ApiResponse {
 
 struct CommandResult {
     int exit_code = -1;
+    bool timed_out = false;
     std::string output;
 };
 
@@ -66,10 +69,37 @@ struct WifiRuntimeStatus {
     std::string detail;
 };
 
+struct AgentRuntimeStatus {
+    bool watchdog_running = false;
+    bool process_running = false;
+    int watchdog_pid = 0;
+    int pid = 0;
+    std::string addr = ":8080";
+    std::string state = "unknown";
+    std::string detail;
+    std::string port_host = "127.0.0.1";
+    int port = 8080;
+    bool port_reachable = false;
+    std::string port_detail;
+    std::string startup_error;
+};
+
+struct TcpPortStatus {
+    bool reachable = false;
+    std::string detail;
+};
+
 volatile sig_atomic_t g_should_stop = 0;
 
 const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
+const char* kAgentInitScript = "/etc/init.d/S53agent";
+const char* kAgentLogPath = "/var/log/agent/agent.log";
+const char* kAgentPortHost = "127.0.0.1";
+const int kDefaultAgentPort = 8080;
+const int kAgentStatusCommandTimeoutMs = 1500;
+const size_t kAgentStatusLogReadSize = 16 * 1024;
+const size_t kAgentStatusLogDisplaySize = 4096;
 const size_t kMaxHttpHeaderSize = 8 * 1024;
 const size_t kMaxHttpBodySize = 64 * 1024;
 const int kClientReadTimeoutSeconds = 5;
@@ -171,6 +201,32 @@ std::string shell_quote(const std::string& text) {
     return out;
 }
 
+long long current_time_ms() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return static_cast<long long>(tv.tv_sec) * 1000LL + tv.tv_usec / 1000;
+}
+
+void read_available_output(int fd, std::string* output, bool* pipe_open) {
+    char buffer[512];
+    while (*pipe_open) {
+        ssize_t n = read(fd, buffer, sizeof(buffer));
+        if (n > 0) {
+            output->append(buffer, static_cast<size_t>(n));
+        } else if (n == 0) {
+            *pipe_open = false;
+        } else if (errno == EINTR) {
+            continue;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            break;
+        } else {
+            output->append("read failed: ");
+            output->append(strerror(errno));
+            *pipe_open = false;
+        }
+    }
+}
+
 CommandResult run_shell_command(const std::string& command) {
     CommandResult result;
     FILE* pipe = popen(command.c_str(), "r");
@@ -189,6 +245,117 @@ CommandResult run_shell_command(const std::string& command) {
         result.exit_code = WEXITSTATUS(status);
     } else {
         result.exit_code = status;
+    }
+    return result;
+}
+
+CommandResult run_shell_command_with_timeout(const std::string& command, int timeout_ms) {
+    if (timeout_ms <= 0) {
+        return run_shell_command(command);
+    }
+
+    CommandResult result;
+    int pipe_fds[2];
+    if (pipe(pipe_fds) != 0) {
+        result.output = std::string("pipe failed: ") + strerror(errno);
+        return result;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        result.output = std::string("fork failed: ") + strerror(errno);
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return result;
+    }
+
+    if (pid == 0) {
+        setpgid(0, 0);
+        close(pipe_fds[0]);
+        dup2(pipe_fds[1], STDOUT_FILENO);
+        dup2(pipe_fds[1], STDERR_FILENO);
+        if (pipe_fds[1] > STDERR_FILENO) {
+            close(pipe_fds[1]);
+        }
+        execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char*>(NULL));
+        _exit(127);
+    }
+
+    setpgid(pid, pid);
+    close(pipe_fds[1]);
+
+    int flags = fcntl(pipe_fds[0], F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(pipe_fds[0], F_SETFL, flags | O_NONBLOCK);
+    }
+
+    const long long deadline = current_time_ms() + timeout_ms;
+    bool pipe_open = true;
+    bool child_done = false;
+    int child_status = -1;
+
+    while (pipe_open || !child_done) {
+        if (pipe_open) {
+            read_available_output(pipe_fds[0], &result.output, &pipe_open);
+        }
+
+        if (!child_done) {
+            pid_t waited = waitpid(pid, &child_status, WNOHANG);
+            if (waited == pid) {
+                child_done = true;
+            } else if (waited < 0 && errno != EINTR) {
+                child_done = true;
+            }
+        }
+
+        if (!pipe_open && child_done) {
+            break;
+        }
+
+        long long now = current_time_ms();
+        if (now >= deadline) {
+            kill(-pid, SIGKILL);
+            kill(pid, SIGKILL);
+            for (int i = 0; i < 20; ++i) {
+                pid_t waited = waitpid(pid, &child_status, WNOHANG);
+                if (waited == pid || (waited < 0 && errno != EINTR)) {
+                    break;
+                }
+                usleep(1000);
+            }
+            close(pipe_fds[0]);
+            result.exit_code = -1;
+            result.timed_out = true;
+            result.output = "agent status command timed out after " + std::to_string(timeout_ms) + " ms";
+            return result;
+        }
+
+        int wait_ms = 50;
+        long long remaining_ms = deadline - now;
+        if (remaining_ms < wait_ms) {
+            wait_ms = remaining_ms > 0 ? static_cast<int>(remaining_ms) : 0;
+        }
+
+        if (pipe_open && wait_ms > 0) {
+            fd_set read_fds;
+            FD_ZERO(&read_fds);
+            FD_SET(pipe_fds[0], &read_fds);
+            struct timeval timeout;
+            timeout.tv_sec = wait_ms / 1000;
+            timeout.tv_usec = (wait_ms % 1000) * 1000;
+            select(pipe_fds[0] + 1, &read_fds, NULL, NULL, &timeout);
+        } else if (wait_ms > 0) {
+            usleep(static_cast<useconds_t>(wait_ms) * 1000);
+        }
+    }
+
+    close(pipe_fds[0]);
+    if (child_status >= 0 && WIFEXITED(child_status)) {
+        result.exit_code = WEXITSTATUS(child_status);
+    } else if (child_status >= 0 && WIFSIGNALED(child_status)) {
+        result.exit_code = 128 + WTERMSIG(child_status);
+    } else {
+        result.exit_code = child_status;
     }
     return result;
 }
@@ -1072,6 +1239,325 @@ std::string read_file_contents(const char* path, size_t max_size = 64 * 1024) {
     return contents;
 }
 
+std::string read_file_tail(const char* path, size_t max_size) {
+    FILE* f = fopen(path, "r");
+    if (!f) {
+        return "";
+    }
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return "";
+    }
+    long file_size = ftell(f);
+    if (file_size <= 0) {
+        fclose(f);
+        return "";
+    }
+
+    long offset = 0;
+    if (static_cast<size_t>(file_size) > max_size) {
+        offset = file_size - static_cast<long>(max_size);
+    }
+    if (fseek(f, offset, SEEK_SET) != 0) {
+        fclose(f);
+        return "";
+    }
+
+    std::string contents;
+    contents.reserve(static_cast<size_t>(file_size - offset));
+    char buf[1024];
+    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
+        contents.append(buf, n);
+    }
+    fclose(f);
+
+    if (offset > 0) {
+        size_t first_newline = contents.find('\n');
+        if (first_newline != std::string::npos) {
+            contents.erase(0, first_newline + 1);
+        }
+    }
+    return contents;
+}
+
+std::string trim_for_display(const std::string& text, size_t max_size) {
+    std::string trimmed = trim_trailing_newlines(text);
+    if (trimmed.size() <= max_size) {
+        return trimmed;
+    }
+    size_t start = trimmed.size() - max_size;
+    size_t newline = trimmed.find('\n', start);
+    if (newline != std::string::npos && newline + 1 < trimmed.size()) {
+        start = newline + 1;
+    }
+    return trimmed.substr(start);
+}
+
+std::string lowercase_copy(const std::string& text) {
+    std::string out = text;
+    for (size_t i = 0; i < out.size(); ++i) {
+        out[i] = static_cast<char>(tolower(static_cast<unsigned char>(out[i])));
+    }
+    return out;
+}
+
+bool parse_decimal(const std::string& text, int min_value, int max_value, int* value) {
+    if (!value) {
+        return false;
+    }
+    std::string trimmed = trim_copy(text);
+    if (trimmed.empty()) {
+        return false;
+    }
+
+    errno = 0;
+    char* end = NULL;
+    long parsed = strtol(trimmed.c_str(), &end, 10);
+    if (errno != 0 || !end || *end != '\0' || parsed < min_value || parsed > max_value) {
+        return false;
+    }
+
+    *value = static_cast<int>(parsed);
+    return true;
+}
+
+int parse_status_pid(const std::string& line) {
+    size_t pos = line.find("pid=");
+    if (pos == std::string::npos) {
+        return 0;
+    }
+    pos += 4;
+    size_t end = pos;
+    while (end < line.size() && isdigit(static_cast<unsigned char>(line[end]))) {
+        ++end;
+    }
+    int pid = 0;
+    if (end > pos && parse_decimal(line.substr(pos, end - pos), 1, 999999, &pid)) {
+        return pid;
+    }
+    return 0;
+}
+
+std::string parse_status_addr(const std::string& line) {
+    size_t pos = line.find("addr=");
+    if (pos == std::string::npos) {
+        return "";
+    }
+    pos += 5;
+    size_t end = line.find_first_of(" \t\r\n", pos);
+    return line.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+}
+
+std::string parse_agent_host(const std::string& addr) {
+    std::string candidate = trim_copy(addr);
+    if (candidate.empty()) {
+        return kAgentPortHost;
+    }
+
+    size_t colon = candidate.rfind(':');
+    if (colon == std::string::npos || colon == 0) {
+        return kAgentPortHost;
+    }
+
+    std::string host = candidate.substr(0, colon);
+    if (host.size() >= 2 && host[0] == '[' && host[host.size() - 1] == ']') {
+        host = host.substr(1, host.size() - 2);
+    }
+    return host.empty() ? kAgentPortHost : host;
+}
+
+int parse_agent_port(const std::string& addr) {
+    if (addr.empty()) {
+        return kDefaultAgentPort;
+    }
+
+    std::string candidate = addr;
+    size_t colon = candidate.rfind(':');
+    if (colon != std::string::npos) {
+        candidate = candidate.substr(colon + 1);
+    }
+
+    int port = 0;
+    if (parse_decimal(candidate, 1, 65535, &port)) {
+        return port;
+    }
+    return kDefaultAgentPort;
+}
+
+TcpPortStatus check_tcp_port(const std::string& host, int port) {
+    TcpPortStatus status;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        status.detail = std::string("socket failed: ") + strerror(errno);
+        return status;
+    }
+
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+
+    sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+        status.detail = "invalid host: " + host;
+        close(fd);
+        return status;
+    }
+
+    int rc = connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    if (rc == 0) {
+        status.reachable = true;
+        status.detail = "connected";
+        close(fd);
+        return status;
+    }
+
+    if (errno != EINPROGRESS) {
+        status.detail = strerror(errno);
+        close(fd);
+        return status;
+    }
+
+    fd_set write_fds;
+    FD_ZERO(&write_fds);
+    FD_SET(fd, &write_fds);
+    struct timeval timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 700 * 1000;
+
+    rc = select(fd + 1, NULL, &write_fds, NULL, &timeout);
+    if (rc > 0 && FD_ISSET(fd, &write_fds)) {
+        int socket_error = 0;
+        socklen_t len = sizeof(socket_error);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &len) == 0 && socket_error == 0) {
+            status.reachable = true;
+            status.detail = "connected";
+        } else {
+            status.detail = strerror(socket_error == 0 ? errno : socket_error);
+        }
+    } else if (rc == 0) {
+        status.detail = "connect timed out";
+    } else {
+        status.detail = std::string("select failed: ") + strerror(errno);
+    }
+
+    close(fd);
+    return status;
+}
+
+std::string recent_agent_startup_log() {
+    std::string log = read_file_tail(kAgentLogPath, kAgentStatusLogReadSize);
+    if (log.empty()) {
+        return "";
+    }
+
+    size_t marker = log.rfind("[agent] starting ");
+    if (marker == std::string::npos) {
+        marker = log.rfind("[agent] waiting for ");
+    }
+    if (marker != std::string::npos) {
+        log = log.substr(marker);
+    }
+    return trim_for_display(log, kAgentStatusLogDisplaySize);
+}
+
+bool log_excerpt_looks_like_startup_failure(const std::string& log) {
+    std::string lower = lowercase_copy(log);
+    return lower.find("exited with status") != std::string::npos ||
+           lower.find("error") != std::string::npos ||
+           lower.find("failed") != std::string::npos ||
+           lower.find("not found") != std::string::npos ||
+           lower.find("panic") != std::string::npos;
+}
+
+AgentRuntimeStatus query_agent_status() {
+    AgentRuntimeStatus status;
+    status.addr = ":8080";
+    status.port_host = kAgentPortHost;
+    status.port = kDefaultAgentPort;
+
+    if (!file_exists(kAgentInitScript)) {
+        status.state = "unknown";
+        status.detail = std::string("agent init script not found: ") + kAgentInitScript;
+        status.startup_error = status.detail;
+    } else {
+        CommandResult script_status = run_shell_command_with_timeout(
+            std::string(kAgentInitScript) + " status 2>&1", kAgentStatusCommandTimeoutMs);
+        status.detail = trim_trailing_newlines(script_status.output);
+
+        if (script_status.timed_out) {
+            status.state = "unknown";
+            status.startup_error = status.detail;
+        } else {
+            std::istringstream lines(script_status.output);
+            std::string line;
+            while (std::getline(lines, line)) {
+                line = trim_copy(line);
+                if (starts_with(line, "watchdog=running")) {
+                    status.watchdog_running = true;
+                    status.watchdog_pid = parse_status_pid(line);
+                } else if (starts_with(line, "agent=running")) {
+                    status.process_running = true;
+                    status.pid = parse_status_pid(line);
+                    std::string addr = parse_status_addr(line);
+                    if (!addr.empty()) {
+                        status.addr = addr;
+                        status.port_host = parse_agent_host(addr);
+                        status.port = parse_agent_port(addr);
+                    }
+                } else if (starts_with(line, "agent=stopped")) {
+                    status.process_running = false;
+                }
+            }
+
+            if (script_status.exit_code != 0 && status.detail.empty()) {
+                status.detail = "agent status command failed";
+            }
+        }
+    }
+
+    TcpPortStatus port_status = check_tcp_port(status.port_host, status.port);
+    status.port_reachable = port_status.reachable;
+    status.port_detail = port_status.detail;
+
+    if (status.process_running) {
+        status.state = status.port_reachable ? "running" : "port_unreachable";
+    } else if (status.watchdog_running) {
+        std::string log = recent_agent_startup_log();
+        if (!log.empty()) {
+            status.startup_error = log;
+        }
+        status.state = log_excerpt_looks_like_startup_failure(log) ? "error" : "starting";
+    } else if (status.state == "unknown") {
+        // Keep the unknown state set above.
+    } else {
+        status.state = "stopped";
+    }
+
+    return status;
+}
+
+cJSON* agent_status_to_json(const AgentRuntimeStatus& status) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "state", status.state.c_str());
+    cJSON_AddBoolToObject(root, "watchdog_running", status.watchdog_running ? 1 : 0);
+    cJSON_AddNumberToObject(root, "watchdog_pid", status.watchdog_pid);
+    cJSON_AddBoolToObject(root, "process_running", status.process_running ? 1 : 0);
+    cJSON_AddNumberToObject(root, "pid", status.pid);
+    cJSON_AddStringToObject(root, "addr", status.addr.c_str());
+    cJSON_AddStringToObject(root, "port_host", status.port_host.c_str());
+    cJSON_AddNumberToObject(root, "port", status.port);
+    cJSON_AddBoolToObject(root, "port_reachable", status.port_reachable ? 1 : 0);
+    cJSON_AddStringToObject(root, "port_detail", status.port_detail.c_str());
+    cJSON_AddStringToObject(root, "detail", status.detail.c_str());
+    cJSON_AddStringToObject(root, "startup_error", status.startup_error.c_str());
+    return root;
+}
+
 cJSON* firmware_info_to_json(const Options& options) {
     cJSON* fw = cJSON_CreateObject();
     if (!file_exists(options.ota_state_path.c_str())) {
@@ -1105,6 +1591,7 @@ ApiResponse handle_get_config(const Options& options) {
     aiden::AgentToml config;
     aiden::WifiNetworkConfig wifi;
     WifiRuntimeStatus wifi_status = query_wifi_status(options);
+    AgentRuntimeStatus agent_status = query_agent_status();
     std::string config_error;
     std::string wifi_error;
     load_current_agent_config(options, &config, &config_error);
@@ -1115,6 +1602,7 @@ ApiResponse handle_get_config(const Options& options) {
     cJSON_AddItemToObject(root, "config", config_to_json(config));
     cJSON_AddItemToObject(root, "wifi", wifi_to_json(wifi));
     cJSON_AddItemToObject(root, "wifi_status", wifi_status_to_json(wifi_status));
+    cJSON_AddItemToObject(root, "agent_status", agent_status_to_json(agent_status));
     cJSON_AddItemToObject(root, "firmware", firmware_info_to_json(options));
 
     cJSON* paths = add_object(root, "paths");
@@ -1129,6 +1617,13 @@ ApiResponse handle_get_config(const Options& options) {
         cJSON_AddStringToObject(root, "wifi_error", wifi_error.c_str());
     }
 
+    return make_json_ok(root);
+}
+
+ApiResponse handle_get_agent_status() {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON_AddItemToObject(root, "agent_status", agent_status_to_json(query_agent_status()));
     return make_json_ok(root);
 }
 
@@ -1962,6 +2457,10 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         return response;
     }
     // ===== End benchmark routes =====
+
+    if (request.method == "GET" && request.path == "/api/agent/status") {
+        return handle_get_agent_status();
+    }
 
     if (request.method == "GET" && request.path == "/api/config") {
         return handle_get_config(options);
