@@ -108,6 +108,7 @@ volatile sig_atomic_t g_should_stop = 0;
 const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
+const char* kOtaInitScript = "/etc/init.d/S54ota";
 const char* kAgentLogPath = "/var/log/agent/agent.log";
 const char* kAgentPortHost = "127.0.0.1";
 const int kDefaultAgentPort = 8080;
@@ -1157,9 +1158,21 @@ void restart_wpa_supplicant(const Options& options, std::ostringstream& log) {
         << " -c " << options.wifi_config_path << "\n" << start.output;
 }
 
-void schedule_agent_restart() {
-    int rc = system("/etc/init.d/S53agent restart >/dev/null 2>&1 &");
+void schedule_init_script_restart(const char* init_script) {
+    if (!init_script || init_script[0] == '\0') {
+        return;
+    }
+    std::string cmd = shell_quote(init_script) + " restart >/dev/null 2>&1 &";
+    int rc = system(cmd.c_str());
     (void)rc;
+}
+
+void schedule_agent_restart() {
+    schedule_init_script_restart(kAgentInitScript);
+}
+
+void schedule_ota_restart() {
+    schedule_init_script_restart(kOtaInitScript);
 }
 
 CommandResult apply_wifi_config(const Options& options) {
@@ -1976,17 +1989,26 @@ ApiResponse handle_post_system_env(const Options& options, const std::string& bo
     std::string system_env = env_item->valuestring;
     cJSON_Delete(root);
 
+    std::string original_system_env = read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize);
     std::string save_error;
     if (!save_system_env_content(options.system_env_path, system_env, &save_error)) {
         return make_json_error(400, save_error);
     }
 
+    std::string updated_system_env = read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize);
+    bool system_env_changed = original_system_env != updated_system_env;
     schedule_agent_restart();
+    if (system_env_changed) {
+        schedule_ota_restart();
+    }
 
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddStringToObject(response, "message", "system env saved; agent restarting");
+    cJSON_AddStringToObject(response, "message",
+                            system_env_changed ? "system env saved; services restarting"
+                                               : "system env saved; agent restarting");
     cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
+    cJSON_AddBoolToObject(response, "ota_restart_scheduled", system_env_changed ? 1 : 0);
     cJSON_AddStringToObject(response, "system_env",
                             read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize).c_str());
     cJSON* paths = add_object(response, "paths");
@@ -2033,6 +2055,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
 
     cJSON_Delete(root);
 
+    std::string original_system_env = read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize);
     std::string save_error;
     if (!save_system_env_with_proxy(options.system_env_path, system_proxy, &save_error)) {
         return make_json_error(400, save_error);
@@ -2047,12 +2070,20 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         return make_json_error(500, save_error);
     }
 
+    std::string updated_system_env = read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize);
+    bool system_env_changed = original_system_env != updated_system_env;
     schedule_agent_restart();
+    if (system_env_changed) {
+        schedule_ota_restart();
+    }
 
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddStringToObject(response, "message", "config saved; agent restarting");
+    cJSON_AddStringToObject(response, "message",
+                            system_env_changed ? "config saved; agent and ota restarting"
+                                               : "config saved; agent restarting");
     cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
+    cJSON_AddBoolToObject(response, "ota_restart_scheduled", system_env_changed ? 1 : 0);
     cJSON_AddItemToObject(response, "config", config_to_json(config, system_proxy));
 
     cJSON* paths = add_object(response, "paths");
