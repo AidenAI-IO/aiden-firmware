@@ -80,8 +80,8 @@ api_key = "OPENROUTER_API_KEY"
 model = "qwen/qwen3-asr-flash-2026-02-10"
 
 [tts]
-provider = "minimax"
-api_key = "..."
+provider = "minimax-ws"
+model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
 speed = 1.0
@@ -139,7 +139,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 ## `[proxy]`
 
-可选。用于 Agent 发起的外部 HTTP 请求（OpenAI-compatible / OpenRouter / Ollama 模型请求、OpenAI Whisper STT、Minimax TTS），并会注入到 Agent `shell` 工具启动的子进程环境中。所有字段留空时使用进程环境变量中的代理设置。
+可选。用于 Agent 发起的外部 HTTP/WebSocket 请求（OpenAI-compatible / OpenRouter / Ollama 模型请求、OpenAI Whisper STT、TTS adapters），并会注入到 Agent `shell` 工具启动的子进程环境中。所有字段留空时使用进程环境变量中的代理设置。
 
 | 字段 | 说明 |
 | --- | --- |
@@ -177,8 +177,109 @@ STT：
 
 TTS：
 
-- `provider = "minimax"`：当前实现；
-- 依赖 `ffmpeg` 将 MP3 转为 PCM 并流式写入 `audio_service`。
+- `provider = "minimax-ws"`：Minimax WebSocket；
+- `provider = "fish-audio"`：Fish Audio WebSocket；
+- `provider = "alicloud"`：阿里云 Qwen-TTS Realtime；
+- `provider = "volcengine"`：火山引擎 WebSocket 双向流式 V3。当前仅支持新控制台 `X-Api-Key` 鉴权，`api_key` 对应 `X-Api-Key`，`model` 对应 `X-Api-Resource-Id`（默认 `seed-tts-2.0`），`voice_id` 对应 speaker。
+
+`[tts]` 通用字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `provider` | 必填。可选 `minimax-ws`、`fish-audio`、`alicloud`、`volcengine` |
+| `api_key` | 必填。各 provider 的鉴权密钥；下面示例省略该字段，避免把密钥写入文档 |
+| `model` | 可选。Minimax 模型名、Fish Audio model header、阿里云 Realtime 模型名、火山 `X-Api-Resource-Id` |
+| `voice_id` | 可选。Minimax voice id、阿里云 voice、火山 speaker；Fish Audio 可用它作为 reference id |
+| `reference_id` | 可选。Fish Audio reference id；填写后优先于 `voice_id` |
+| `emotion` | 可选。Minimax emotion；火山会透传为 `audio_params.emotion`，需音色支持 |
+| `speed` | 可选。语速，默认 `1.0`；不同 provider 支持范围以官方文档为准 |
+
+以下配置示例只展示 adapter 行为相关的非密钥字段；实际运行时仍需要在设备配置中通过 `[tts]` 或 `[tts.credentials.<provider>]` 提供对应 `api_key`。
+
+TTS adapter 常用配置：
+
+| Provider | `model` 示例 | 音色/引用字段 | 说明 |
+| --- | --- | --- | --- |
+| `minimax-ws` | `speech-2.8-hd` | `voice_id = "male-qn-qingse"` | Minimax WebSocket；`emotion` 会透传给 Minimax |
+| `fish-audio` | `s2-pro` | `reference_id = "98655a12fa944e26b274c535e5e03842"` | WebSocket live TTS；`model` 通过握手 header 发送，`reference_id` 优先于 `voice_id` |
+| `alicloud` | `qwen3-tts-flash-realtime` | `voice_id = "Cherry"` | DashScope Realtime；adapter 输出 24 kHz PCM，采样率不同时会自动重采样 |
+| `volcengine` | `seed-tts-2.0` | `voice_id = "zh_female_vv_uranus_bigtts"` | `model` 对应 `X-Api-Resource-Id`，`voice_id` 对应 speaker，二者必须匹配 |
+
+Minimax WebSocket：
+
+```toml
+[tts]
+provider = "minimax-ws"
+model = "speech-2.8-hd"
+voice_id = "male-qn-qingse"
+emotion = "happy"
+speed = 1.0
+```
+
+Fish Audio WebSocket：
+
+```toml
+[tts]
+provider = "fish-audio"
+model = "s2-pro"
+reference_id = "98655a12fa944e26b274c535e5e03842"
+speed = 1.0
+```
+
+Fish Audio `model` 默认是 `s2-pro`，会作为 WebSocket 握手 header 发送；也接受 `voice_id` 作为 reference id。如果同时设置 `reference_id` 和 `voice_id`，使用 `reference_id`。Fish Audio 的公网 endpoint 在部分网络环境可能需要在 `[proxy]` 配置 `all_proxy`。
+
+阿里云 Qwen-TTS Realtime：
+
+```toml
+[tts]
+provider = "alicloud"
+model = "qwen3-tts-flash-realtime"
+voice_id = "Cherry"
+speed = 1.0
+```
+
+阿里云 adapter 使用 DashScope WebSocket Realtime endpoint，输出固定 24 kHz PCM；设备播放采样率不同时会自动重采样。
+
+火山引擎 WebSocket 双向流式 V3：
+
+```toml
+[tts]
+provider = "volcengine"
+model = "seed-tts-2.0"
+voice_id = "zh_female_vv_uranus_bigtts"
+speed = 1.0
+```
+
+火山引擎 `api_key` 是新控制台的 `X-Api-Key`，`model` 是 `X-Api-Resource-Id`，`voice_id` 是 speaker。`voice_id` 必须和 `model` 对应资源匹配；不匹配时服务端会返回 `resource ID is mismatched with speaker related resource`。`seed-tts-2.0` 已验证可用音色示例为 `zh_female_vv_uranus_bigtts`。
+
+运行时切换 provider：
+
+```bash
+curl -X POST http://<device-ip>:8080/api/settings/tts \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"volcengine","voice":"zh_female_vv_uranus_bigtts"}'
+```
+
+如果需要在同一份配置里保存多个 provider 的密钥，可以使用 per-provider credentials。运行时 POST 切换 provider 时会优先读取对应 credentials，再用请求 body 覆盖。
+
+```toml
+[tts]
+provider = "minimax-ws"
+model = "speech-2.8-hd"
+voice_id = "male-qn-qingse"
+
+[tts.credentials.fish-audio]
+model = "s2-pro"
+reference_id = "98655a12fa944e26b274c535e5e03842"
+
+[tts.credentials.alicloud]
+model = "qwen3-tts-flash-realtime"
+voice_id = "Cherry"
+
+[tts.credentials.volcengine]
+model = "seed-tts-2.0"
+voice_id = "zh_female_vv_uranus_bigtts"
+```
 
 ## 已知限制
 

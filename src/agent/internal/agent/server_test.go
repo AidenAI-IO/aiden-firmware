@@ -19,6 +19,8 @@ import (
 	"github.com/tmc/langchaingo/llms"
 	fakellm "github.com/tmc/langchaingo/llms/fake"
 	langtools "github.com/tmc/langchaingo/tools"
+
+	ttsmodule "aiden-agent/internal/agent/tts"
 )
 
 type stubSTTClient struct {
@@ -58,10 +60,12 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 		description: "Get the current audio playback volume.",
 		output:      `{"volume":42}`,
 	}
+	streamingDisabled := false
 	runtime := NewRuntimeWithDeps(
 		Config{
-			Model:       ModelConfig{Provider: "fake"},
-			Instruction: "Use tools when external state is requested.",
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Use tools when external state is requested.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
 		},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
@@ -113,22 +117,23 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 }
 
 func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
-	tts := &fakeTTSClient{}
+	provider := &recordingTTSProvider{name: "server-provider"}
 	server := &Server{
-		ttsClient:   tts,
-		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
+		runtime: NewRuntimeWithDeps(
+			Config{Model: ModelConfig{Provider: "fake"}, Audio: AudioConfig{SampleRate: 16000}},
+			&testModelResolver{model: &scriptedModel{}},
+			NewMemoryManager(""),
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+			NewSkillIndex(),
+		),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 	}
 
 	server.speakToolDescription(context.Background(), " 我先读取当前音量。 ")
 
-	if len(tts.texts) != 1 || tts.texts[0] != "我先读取当前音量。" {
-		t.Fatalf("unexpected TTS texts: %#v", tts.texts)
-	}
-	if len(tts.deadlineSet) != 1 || !tts.deadlineSet[0] {
-		t.Fatalf("tool description TTS should use a deadline, got %#v", tts.deadlineSet)
-	}
-	if tts.audio != server.audioClient {
-		t.Fatal("expected server audio client to be used for tool description TTS")
+	if got := provider.texts(); len(got) != 1 || got[0] != "我先读取当前音量。" {
+		t.Fatalf("unexpected TTS texts: %#v", got)
 	}
 }
 
@@ -154,10 +159,12 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
 			},
 		},
 	}
+	streamingDisabled := false
 	runtime := NewRuntimeWithDeps(
 		Config{
-			Model:       ModelConfig{Provider: "fake"},
-			Instruction: "Use tools when external state is requested.",
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Use tools when external state is requested.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
 		},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
@@ -171,8 +178,8 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
 		NewSkillIndex(),
 	)
 	server := NewServer(runtime, ":0")
-	tts := &blockingUntilContextTTS{started: make(chan struct{}), blockText: "我先读取当前音量。"}
-	server.ttsClient = tts
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
 	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -195,7 +202,7 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
 		t.Fatal("handleChat waited for tool description TTS")
 	}
 	select {
-	case <-tts.started:
+	case <-provider.started:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("tool description TTS was not started")
 	}
@@ -204,21 +211,98 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
 	}
 }
 
-type blockingUntilContextTTS struct {
+func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
+	model := &cancelAwareModel{seen: make(chan error, 1)}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello"}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		server.handleChat(rec, req)
+		close(done)
+	}()
+	cancel()
+
+	select {
+	case err := <-model.seen:
+		if err == nil {
+			t.Fatal("model saw nil context error, want request cancellation")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("runtime did not receive request context cancellation")
+	}
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("handleChat did not return after request cancellation")
+	}
+}
+
+type cancelAwareModel struct {
+	seen chan error
+}
+
+func (m *cancelAwareModel) GenerateContent(ctx context.Context, _ []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	<-ctx.Done()
+	err := ctx.Err()
+	m.seen <- err
+	return nil, err
+}
+
+func (m *cancelAwareModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	panic("unexpected Call invocation")
+}
+
+type blockingTTSProvider struct {
 	started   chan struct{}
 	blockText string
 	once      sync.Once
 }
 
-func (t *blockingUntilContextTTS) TextToSpeechStream(ctx context.Context, text string, audio *AudioServiceClient) error {
-	if text != t.blockText {
-		return nil
+func (p *blockingTTSProvider) Name() string { return "blocking" }
+
+func (p *blockingTTSProvider) Capabilities() ttsmodule.Capabilities {
+	return ttsmodule.Capabilities{SupportedSampleRates: []int{16000}}
+}
+
+func (p *blockingTTSProvider) BeginStream(ctx context.Context, sink ttsmodule.AudioSink) (ttsmodule.StreamSession, error) {
+	return &blockingTTSSession{ctx: ctx, provider: p}, nil
+}
+
+func (p *blockingTTSProvider) Close() error { return nil }
+
+type blockingTTSSession struct {
+	ctx      context.Context
+	provider *blockingTTSProvider
+}
+
+func (s *blockingTTSSession) WriteText(text string) error {
+	if text == s.provider.blockText {
+		s.provider.once.Do(func() { close(s.provider.started) })
 	}
-	t.once.Do(func() {
-		close(t.started)
-	})
-	<-ctx.Done()
-	return ctx.Err()
+	return nil
+}
+
+func (s *blockingTTSSession) Flush() error { return nil }
+
+func (s *blockingTTSSession) Close() error {
+	<-s.ctx.Done()
+	return s.ctx.Err()
+}
+
+func (s *blockingTTSSession) Err() error {
+	return s.ctx.Err()
 }
 
 func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
