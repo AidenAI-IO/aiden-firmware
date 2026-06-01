@@ -26,7 +26,7 @@ func FetchLatestReleaseAssets(ctx context.Context, baseAPIURL string, bearerToke
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := defaultOTAHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

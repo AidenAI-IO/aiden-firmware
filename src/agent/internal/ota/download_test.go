@@ -149,3 +149,36 @@ func TestDownloadFailsWhenResumedResponseExceedsExpectedSize(t *testing.T) {
 		t.Fatalf("part size = %d, want bounded write", info.Size())
 	}
 }
+
+func TestDownloadReportsProgressAndCompletion(t *testing.T) {
+	content := "progress body"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "13")
+		_, _ = w.Write([]byte(content))
+	}))
+	defer server.Close()
+
+	dst := filepath.Join(t.TempDir(), "image.img")
+	var reports []DownloadProgress
+	err := DownloadFileWithOptions(context.Background(), server.URL, dst, int64(len(content)), DownloadOptions{
+		Progress: func(progress DownloadProgress) {
+			reports = append(reports, progress)
+		},
+	})
+	if err != nil {
+		t.Fatalf("DownloadFileWithOptions() error = %v", err)
+	}
+	if len(reports) == 0 {
+		t.Fatalf("no progress reports")
+	}
+	last := reports[len(reports)-1]
+	if !last.Complete {
+		t.Fatalf("last progress report = %+v, want Complete", last)
+	}
+	if last.Bytes != int64(len(content)) || last.Total != int64(len(content)) {
+		t.Fatalf("last progress report = %+v, want full byte count", last)
+	}
+	if last.Path != dst || last.URL != server.URL {
+		t.Fatalf("last progress report path/url = %q/%q", last.Path, last.URL)
+	}
+}
