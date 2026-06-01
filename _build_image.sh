@@ -6,6 +6,24 @@ OVERLAY="$SCRIPT_DIR/overlay"
 PICO_SDK="$SCRIPT_DIR/pico-sdk"
 DEST_OVERLAY="$PICO_SDK/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buildroot-aiden"
 
+require_rknnmrt_version() {
+    local runtime="$1"
+    local version major minor
+
+    version="$(strings "$runtime" | sed -n 's/^librknnmrt version: \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
+    if [ -z "$version" ]; then
+        echo "  ✗ Error: cannot read RKNN runtime version from $runtime" >&2
+        exit 1
+    fi
+    major="${version%%.*}"
+    minor="${version#*.}"
+    minor="${minor%%.*}"
+    if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 3 ]; }; then
+        echo "  ✗ Error: RKNN runtime $version is too old for silero_vad_rv1106.rknn; use librknnmrt >= 2.3.x" >&2
+        exit 1
+    fi
+}
+
 echo "=== Aiden Hardware Demo - Image Builder ==="
 echo ""
 
@@ -17,9 +35,23 @@ cd "$SCRIPT_DIR"
 
 # Step 2: 准备 overlay 目录
 echo "[2/6] Preparing overlay directories..."
-mkdir -p "$OVERLAY/oem/usr/bin" "$OVERLAY/oem/etc"
+mkdir -p "$OVERLAY/oem/usr/bin" "$OVERLAY/oem/usr/lib" "$OVERLAY/oem/etc"
 cp -a "$SCRIPT_DIR/build/bin"/. "$OVERLAY/oem/usr/bin/"
 echo "  ✓ Binaries copied to overlay/oem/usr/bin"
+
+RKNNMRT_OVERLAY="$OVERLAY/oem/usr/lib/librknnmrt.so"
+RKNNMRT_SOURCE="$PICO_SDK/media/iva/iva/librockiva/rockiva-rv1106-Linux/lib/librknnmrt.so"
+if [ -f "$RKNNMRT_OVERLAY" ]; then
+    echo "  ✓ RKNN runtime already present in overlay/oem/usr/lib"
+else
+    if [ ! -f "$RKNNMRT_SOURCE" ]; then
+        echo "  ✗ Error: RKNN runtime not found: $RKNNMRT_SOURCE"
+        exit 1
+    fi
+    cp "$RKNNMRT_SOURCE" "$RKNNMRT_OVERLAY"
+    echo "  ✓ RKNN runtime copied to overlay/oem/usr/lib"
+fi
+require_rknnmrt_version "$RKNNMRT_OVERLAY"
 
 KEY_SOURCE="${OTA_PUBLIC_KEY_PATH:-}"
 if [ -n "$KEY_SOURCE" ]; then
@@ -42,8 +74,8 @@ fi
 cp "$KEY_SOURCE" "$OVERLAY/oem/etc/ota_pubkey.pem"
 echo "  ✓ OTA public key copied to overlay/oem/etc/ota_pubkey.pem"
 
-# Step 3: 同步 etc 等目录到 buildroot overlay（排除 oem 和 userdata）
-echo "[3/6] Syncing overlay (etc) to buildroot overlay..."
+# Step 3: 同步 etc 与内置 skills 到 buildroot overlay（rootfs）
+echo "[3/6] Syncing overlay (etc + bundled skills) to buildroot overlay..."
 if [ ! -d "$DEST_OVERLAY" ]; then
     echo "  ✗ Error: destination directory not found at $DEST_OVERLAY"
     exit 1
@@ -54,6 +86,23 @@ if [ -d "$OVERLAY/etc" ]; then
     mkdir -p "$DEST_OVERLAY/etc"
     rsync -a --delete "$OVERLAY/etc/" "$DEST_OVERLAY/etc/"
     echo "  ✓ etc directory synced"
+fi
+
+# Bundled agent skills: src/agent/config/skills/ 是单一源，固件里要落到
+# /usr/share/aiden/skills/ 才能被 agent 的 resolveBundledSkillsDir() 找到。
+SKILLS_SRC="$SCRIPT_DIR/src/agent/config/skills"
+SKILLS_DEST="$DEST_OVERLAY/usr/share/aiden/skills"
+if [ -d "$SKILLS_SRC" ]; then
+    mkdir -p "$SKILLS_DEST"
+    rsync -a --delete "$SKILLS_SRC/" "$SKILLS_DEST/"
+    skill_count=$(find "$SKILLS_DEST" -mindepth 2 -maxdepth 2 -type f -name SKILL.md | wc -l | tr -d ' ')
+    if [ "$skill_count" -lt 1 ]; then
+        echo "  ✗ Error: no SKILL.md staged in $SKILLS_DEST" >&2
+        exit 1
+    fi
+    echo "  ✓ bundled skills synced ($skill_count skill(s))"
+else
+    echo "  ⚠ Warning: $SKILLS_SRC not found; skipping bundled skills" >&2
 fi
 
 # Step 4: 运行 pico-sdk 构建，overlay 注入后只打包一次 firmware，避免 A/B 大镜像重复生成。

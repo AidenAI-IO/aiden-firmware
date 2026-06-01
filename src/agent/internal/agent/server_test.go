@@ -579,7 +579,7 @@ func TestServerToolInvokeEndpointAcceptsStructuredJSON(t *testing.T) {
 	}
 }
 
-func TestServerToolInvokeEndpointAcceptsPlainStringInput(t *testing.T) {
+func TestServerDoesNotExposeActivateSkillOverHTTP(t *testing.T) {
 	index := NewSkillIndex()
 	index.skills["planner"] = &SkillDefinition{
 		Name:         "planner",
@@ -595,29 +595,57 @@ func TestServerToolInvokeEndpointAcceptsPlainStringInput(t *testing.T) {
 	)
 	server := NewServer(runtime, ":0")
 
+	catalogReq := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
+	catalogRec := httptest.NewRecorder()
+	server.handleToolCatalog(catalogRec, catalogReq)
+	if catalogRec.Code != http.StatusOK {
+		t.Fatalf("unexpected catalog status: %d body=%s", catalogRec.Code, catalogRec.Body.String())
+	}
+	if bytes.Contains(catalogRec.Body.Bytes(), []byte("activate_skill")) {
+		t.Fatalf("activate_skill should not be advertised over HTTP: %s", catalogRec.Body.String())
+	}
+
 	body := bytes.NewBufferString(`{"input":"planner"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/tools/activate_skill", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-
 	server.handleToolInvoke(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected activate_skill HTTP invoke to be blocked, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+func TestServerDoesNotExposeSkillManageOverHTTP(t *testing.T) {
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"skill_manage": NewSkillManageTool(t.TempDir(), ""),
+			"skill_list":   NewSkillListTool(t.TempDir()),
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	catalogReq := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
+	catalogRec := httptest.NewRecorder()
+	server.handleToolCatalog(catalogRec, catalogReq)
+	if catalogRec.Code != http.StatusOK {
+		t.Fatalf("unexpected catalog status: %d body=%s", catalogRec.Code, catalogRec.Body.String())
+	}
+	if bytes.Contains(catalogRec.Body.Bytes(), []byte("skill_manage")) {
+		t.Fatalf("skill_manage should not be advertised over HTTP: %s", catalogRec.Body.String())
+	}
+	if !bytes.Contains(catalogRec.Body.Bytes(), []byte("skill_list")) {
+		t.Fatalf("expected non-mutating skill tool to remain exposed: %s", catalogRec.Body.String())
 	}
 
-	var resp ToolInvokeResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if resp.RawInput != "planner" {
-		t.Fatalf("expected raw input planner, got %#v", resp)
-	}
-	if resp.Tool.Name != "activate_skill" {
-		t.Fatalf("unexpected tool name: %#v", resp.Tool)
-	}
-	if resp.IsError {
-		t.Fatalf("expected successful activation, got %#v", resp)
+	invokeReq := httptest.NewRequest(http.MethodPost, "/api/tools/skill_manage", bytes.NewBufferString(`{"raw_input":"{}"}`))
+	invokeRec := httptest.NewRecorder()
+	server.handleToolInvoke(invokeRec, invokeReq)
+	if invokeRec.Code != http.StatusNotFound {
+		t.Fatalf("expected skill_manage HTTP invoke to be blocked, got %d body=%s", invokeRec.Code, invokeRec.Body.String())
 	}
 }
 

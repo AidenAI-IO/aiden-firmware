@@ -1,11 +1,8 @@
 package agent
 
 import (
-	"context"
-	"fmt"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -52,7 +49,7 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 		"touch_gesture": newPostActionScreenshotTool(&TouchGestureTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
 		"screenshot":    screenshot,
 		"audio_volume":  NewAudioVolumeTool(audioCfg.SocketOrDefault()),
-		"shell":         &ShellTool{},
+		"shell":         &ShellTool{proxy: proxyCfg},
 		"current_time":  NewCurrentTimeTool(),
 		"weather":       NewWeatherTool(proxyCfg),
 		"web_search":    NewWebSearchTool(searchCfg, proxyCfg),
@@ -104,54 +101,17 @@ func (s *ToolSet) RegisterMemoryTools(memoryDir string, profileFn ProfileFn, sum
 	s.tools["forget_memory"] = NewForgetMemoryTool(longTermStore)
 }
 
-// ActivateSkillTool allows the LLM to activate skills at runtime.
-type ActivateSkillTool struct {
-	skillManager *SkillManager
+func (s *ToolSet) RegisterSkillTools(skillsDir, manifestPath string, onModify ...func()) {
+	usagePath := usagePathForManifest(manifestPath)
+	s.tools["skill_list"] = NewSkillListTool(skillsDir, usagePath)
+	s.tools["skill_read"] = NewSkillReadTool(skillsDir, usagePath)
+	s.tools["skill_manage"] = NewSkillManageTool(skillsDir, manifestPath, onModify...)
+	s.tools["skill_mark_used"] = NewSkillMarkUsedTool(skillsDir, usagePath)
 }
 
-func NewActivateSkillTool(skillManager *SkillManager) *ActivateSkillTool {
-	return &ActivateSkillTool{skillManager: skillManager}
-}
-
-func (t *ActivateSkillTool) Name() string { return "activate_skill" }
-
-func (t *ActivateSkillTool) Description() string {
-	index := t.skillManager.GetIndex()
-	skills := index.All()
-
-	if len(skills) == 0 {
-		return "No skills available to activate."
+func usagePathForManifest(manifestPath string) string {
+	if manifestPath == "" {
+		return ""
 	}
-
-	var builder strings.Builder
-	builder.WriteString("Activate a skill to gain specialized capabilities. Available skills:\n")
-	names := make([]string, 0, len(skills))
-	for name := range skills {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		skill := skills[name]
-		builder.WriteString(fmt.Sprintf("- %s: %s\n", name, skill.Description))
-	}
-	builder.WriteString("\nInput: skill name to activate")
-	return builder.String()
-}
-
-func (t *ActivateSkillTool) Call(ctx context.Context, input string) (string, error) {
-	skillName := strings.TrimSpace(input)
-	if skillName == "" {
-		return "", fmt.Errorf("skill name is required")
-	}
-
-	if err := t.skillManager.Activate(ctx, skillName); err != nil {
-		return "", err
-	}
-
-	skill, ok := t.skillManager.GetIndex().Get(skillName)
-	if !ok {
-		return "", fmt.Errorf("skill %q not found", skillName)
-	}
-
-	return fmt.Sprintf("Skill %q activated. Instructions:\n%s", skillName, skill.Instructions), nil
+	return filepath.Join(filepath.Dir(manifestPath), "usage.json")
 }

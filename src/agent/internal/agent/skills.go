@@ -3,14 +3,22 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
+)
+
+const (
+	maxSkillCatalogEntries          = 30
+	maxSkillCatalogDescriptionRunes = 160
 )
 
 type SkillManager struct {
 	index           *SkillIndex
 	mu              sync.RWMutex
 	activatedSkills map[string]*SkillDefinition
+	usagePath       string
 }
 
 type ResolvedSkills struct {
@@ -21,6 +29,13 @@ type ResolvedSkills struct {
 	AllowedChildren     map[string]struct{}
 	HasToolRestriction  bool
 	HasChildRestriction bool
+	manager             *SkillManager
+}
+
+func (m *SkillManager) SetUsagePath(path string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.usagePath = strings.TrimSpace(path)
 }
 
 func NewSkillManager(index *SkillIndex) *SkillManager {
@@ -32,7 +47,38 @@ func NewSkillManager(index *SkillIndex) *SkillManager {
 
 // GetIndex returns the skill index for discovery
 func (m *SkillManager) GetIndex() *SkillIndex {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.index
+}
+
+func (m *SkillManager) ReplaceIndex(index *SkillIndex) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.index = index
+	for name := range m.activatedSkills {
+		if skill, ok := index.Get(name); ok {
+			m.activatedSkills[name] = skill
+		} else {
+			delete(m.activatedSkills, name)
+		}
+	}
+}
+
+func (m *SkillManager) Snapshot() *SkillManager {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	activated := make(map[string]*SkillDefinition, len(m.activatedSkills))
+	for name, skill := range m.activatedSkills {
+		activated[name] = skill
+	}
+	return &SkillManager{
+		index:           m.index,
+		activatedSkills: activated,
+		usagePath:       m.usagePath,
+	}
 }
 
 // Activate loads the full instructions for a skill by name
@@ -65,6 +111,7 @@ func (m *SkillManager) Resolve(names []string) (ResolvedSkills, error) {
 		Names:           uniqueNonEmpty(names),
 		AllowedTools:    map[string]struct{}{},
 		AllowedChildren: map[string]struct{}{},
+		manager:         m,
 	}
 
 	for _, name := range resolved.Names {
@@ -109,6 +156,62 @@ func (m *SkillManager) GetActivatedSkills() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+func (r ResolvedSkills) CatalogSummary() string {
+	if r.manager == nil {
+		return "No skills available."
+	}
+	return r.manager.CatalogSummary()
+}
+
+func (m *SkillManager) CatalogSummary() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.index == nil || len(m.index.skills) == 0 {
+		return "No skills available."
+	}
+	usage := map[string]SkillUsageEntry{}
+	if m.usagePath != "" {
+		usage = loadSkillUsage(m.usagePath)
+	}
+	names := m.index.Names()
+	sort.Strings(names)
+	lines := make([]string, 0, minInt(maxSkillCatalogEntries, len(names)))
+	hidden := 0
+	for _, name := range names {
+		if normalizeSkillUsageState(usage[name].State) == SkillUsageStateArchived {
+			continue
+		}
+		skill, ok := m.index.Get(name)
+		if !ok {
+			continue
+		}
+		if len(lines) >= maxSkillCatalogEntries {
+			hidden++
+			continue
+		}
+		desc := truncateRunes(strings.TrimSpace(skill.Description), maxSkillCatalogDescriptionRunes)
+		if desc == "" {
+			desc = "(no description)"
+		}
+		lines = append(lines, fmt.Sprintf("- %s: %s", name, desc))
+	}
+	if len(lines) == 0 {
+		return "No skills available."
+	}
+	if hidden > 0 {
+		lines = append(lines, fmt.Sprintf("... %d more skills hidden. Use skill_list to search.", hidden))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func truncateRunes(s string, max int) string {
+	if max <= 0 || utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:max]) + "..."
 }
 
 func (r ResolvedSkills) CombinedInstructions() string {

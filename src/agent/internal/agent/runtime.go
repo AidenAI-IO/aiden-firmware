@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -36,6 +37,9 @@ type Runtime struct {
 	tools            *ToolSet
 	skills           *SkillManager
 	skillsLoaded     bool
+	skillsReloadMu   sync.Mutex
+	skillsDirty      bool
+	mergeWorker      *MergeWorker
 	logger           *Logger
 	profileDebouncer *ProfileDebouncer
 	sleep            *SleepController
@@ -96,6 +100,29 @@ func (m *usageTrackingModel) Call(ctx context.Context, prompt string, options ..
 }
 
 func NewRuntime(cfg Config) (*Runtime, error) {
+	var mergeNeeded []SkillMergeJob
+
+	// Sync bundled skills into user directory before loading
+	if cfg.BundledSkillsDir != "" && cfg.ConfigDir != "" {
+		report, err := SyncBundledSkills(context.Background(), SkillSyncOptions{
+			ConfigDir:        cfg.ConfigDir,
+			BundledSkillsDir: cfg.BundledSkillsDir,
+			MergeModel:       cfg.SkillMergeModel,
+			Quiet:            false,
+		})
+		if err != nil {
+			log.Printf("[skill_sync] sync failed (non-fatal): %v", err)
+		} else {
+			mergeNeeded = report.MergeNeeded
+		}
+	}
+	if cfg.ConfigDir != "" {
+		skillsDir := filepath.Join(cfg.ConfigDir, "skills")
+		if info, err := os.Stat(skillsDir); err == nil && info.IsDir() {
+			cfg.SkillsDirs = []string{skillsDir}
+		}
+	}
+
 	// Load skills from configured directories
 	var skillIndex *SkillIndex
 	var err error
@@ -143,10 +170,31 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	toolSet.RegisterMemoryTools(memoryDir, profileFn, extractionCfg.SummaryMaxChunks, debouncer)
+
 	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithMemoryLogger(logger)), toolSet, skillIndex)
+
+	// Register skill tools after the runtime exists so skill_manage can mark the
+	// skill index dirty. The updated index is reloaded at the start of the next run.
+	if cfg.ConfigDir != "" {
+		skillsDir := filepath.Join(cfg.ConfigDir, "skills")
+		manifestPath := filepath.Join(cfg.ConfigDir, "skill-state", ".bundled_manifest.json")
+		toolSet.RegisterSkillTools(skillsDir, manifestPath, rt.MarkSkillsDirty)
+	}
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
 	rt.sleep = sleepController
+
+	if len(mergeNeeded) > 0 && cfg.SkillMergeModel != nil {
+		manifestPath := filepath.Join(cfg.ConfigDir, "skill-state", ".bundled_manifest.json")
+		worker := NewMergeWorker(cfg.SkillMergeModel, manifestPath)
+		worker.onSuccess = func(SkillMergeJob) {
+			rt.MarkSkillsDirty()
+		}
+		worker.Enqueue(mergeNeeded)
+		worker.Start(context.Background())
+		rt.mergeWorker = worker
+	}
+
 	return rt, nil
 }
 
@@ -159,12 +207,16 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 			}
 		}
 	}
+	skillManager := NewSkillManager(skillIndex)
+	if cfg.ConfigDir != "" {
+		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
+	}
 	return &Runtime{
 		config:       cfg,
 		models:       models,
 		memories:     memories,
 		tools:        tools,
-		skills:       NewSkillManager(skillIndex),
+		skills:       skillManager,
 		skillsLoaded: skillIndex != nil && len(skillIndex.Names()) > 0,
 		sleep:        sleepController,
 	}
@@ -186,10 +238,15 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, errors.New("input is required")
 	}
 
+	if err := r.reloadSkillsIfDirty(); err != nil {
+		return RunResult{}, err
+	}
+	runSkills := r.skills.Snapshot()
+
 	// Activate skills
 	skillNames := uniqueNonEmpty(req.Skills)
 	for _, skillName := range skillNames {
-		if err := r.skills.Activate(ctx, skillName); err != nil {
+		if err := runSkills.Activate(ctx, skillName); err != nil {
 			if r.logger != nil {
 				r.logger.Error("Failed to activate skill %q: %v", skillName, err)
 			}
@@ -201,7 +258,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		r.logger.Info("Activated skills: %v", skillNames)
 	}
 
-	resolvedSkills, err := r.skills.Resolve(skillNames)
+	resolvedSkills, err := runSkills.Resolve(skillNames)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -289,7 +346,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	sleepRequested, sleepReason := r.sleep.Consume()
 	return RunResult{
 		Output:         output,
-		Skills:         r.skills.GetActivatedSkills(),
+		Skills:         runSkills.GetActivatedSkills(),
 		Memory:         memorySnapshot,
 		Metrics:        metrics,
 		SleepRequested: sleepRequested,
@@ -301,16 +358,46 @@ func (r *Runtime) ClearMemory(ctx context.Context) error {
 	return r.memories.ClearSession(ctx, "default")
 }
 
+func (r *Runtime) MarkSkillsDirty() {
+	r.skillsReloadMu.Lock()
+	defer r.skillsReloadMu.Unlock()
+	r.skillsDirty = true
+}
+
+func (r *Runtime) reloadSkillsIfDirty() error {
+	r.skillsReloadMu.Lock()
+	defer r.skillsReloadMu.Unlock()
+
+	if !r.skillsDirty {
+		return nil
+	}
+	if len(r.config.SkillsDirs) == 0 {
+		r.skillsDirty = false
+		return nil
+	}
+
+	index, err := LoadSkillsFromDirs(r.config.SkillsDirs)
+	if err != nil {
+		return fmt.Errorf("reload skills: %w", err)
+	}
+	r.skills.ReplaceIndex(index)
+	r.skillsLoaded = len(index.Names()) > 0
+	r.skillsDirty = false
+	return nil
+}
+
+func (r *Runtime) hasLoadedSkills() bool {
+	r.skillsReloadMu.Lock()
+	defer r.skillsReloadMu.Unlock()
+	return r.skillsLoaded
+}
+
 func (r *Runtime) ClearAllMemory(ctx context.Context) error {
 	return r.memories.ClearAll(ctx, "default")
 }
 
 func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 	available := make([]langtools.Tool, 0)
-
-	if r.skillsLoaded {
-		available = append(available, NewActivateSkillTool(r.skills))
-	}
 
 	if skills.HasToolRestriction {
 		for toolName := range skills.AllowedTools {
@@ -333,14 +420,26 @@ func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 				continue
 			}
 		}
-		if tool, ok := r.tools.Get(name); ok {
-			if !toolAlreadyIncluded(available, name) {
-				available = append(available, tool)
-			}
-		}
+		available = r.appendToolIfAvailable(available, name)
+	}
+
+	// Keep skill meta-tools available even when an active skill has allowed_tools
+	// restrictions. Otherwise the Hermes-like flow breaks: the prompt can show
+	// Available skills, but the model cannot read or maintain the matching skill.
+	for _, name := range []string{"skill_list", "skill_read", "skill_manage", "skill_mark_used"} {
+		available = r.appendToolIfAvailable(available, name)
 	}
 
 	return available
+}
+
+func (r *Runtime) appendToolIfAvailable(tools []langtools.Tool, name string) []langtools.Tool {
+	if tool, ok := r.tools.Get(name); ok {
+		if !toolAlreadyIncluded(tools, name) {
+			return append(tools, tool)
+		}
+	}
+	return tools
 }
 
 func toolAlreadyIncluded(tools []langtools.Tool, name string) bool {
@@ -706,6 +805,9 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	if r.mergeWorker != nil {
+		r.mergeWorker.Stop()
+	}
 	if r.memories != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if err := r.memories.WaitMaintenance(ctx); err != nil && r.logger != nil {

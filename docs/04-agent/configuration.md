@@ -36,7 +36,7 @@ no_proxy = ""
 
 [audio]
 socket = "/run/audio_service/audio_service.sock"
-sample_rate = 32000
+sample_rate = 16000
 channels = 1
 bit_width = 16
 
@@ -54,7 +54,10 @@ frame_socket = "/run/frame_service/frame_service.sock"
 instruction = "默认用简体中文回答，语气要像真人说话，简短自然，适合 TTS 播放。需要读取或改变手机、外部设备或服务状态时必须使用工具；可以连续组合多个工具完成任务。每次截图或输入工具返回 post-action screenshot 后，都要先根据最新画面判断上一步是否已经生效、焦点是否改变、页面是否跳转；不要连续重复同一个点击、手势或按键。在手机上打开 App、查找联系人、设置项、商品或页面内容时，优先使用系统搜索、App 内搜索或页面上的搜索框；不要先靠连续滑动、翻页来碰运气。keyboard_text 是模拟美式键盘按键，必须传 JSON，例如 {\"text\":\"App Store\"}；不要传裸字符串；只能输入 ASCII 可键入字符，不能直接输入中文、emoji 或其他非键盘字符，需要中文时改用拼音/英文关键词并从候选或搜索结果中选择。点击要以最新截图为准，选择可见目标的中心点，并优先使用 coord_space:\"normalized\" 的 0..1 坐标；手机投屏/截图可能被缩放，pixel 坐标容易和实际触控坐标偏移。除非用户明确要求或坐标系已经校准，不要使用 coord_space:\"pixel\"。坐标不确定时先截图确认，不要用大概位置连续试点。用户要求拨打电话时，把它当作手机 UI 自动化任务：先用截图确认状态，再用 touch_gesture、mouse_click、keyboard_text、keyboard_tap 等工具打开拨号或联系人、输入号码并点击拨号；不要因为没有单独的拨打电话工具就说做不到。手机边缘手势要从物理边缘附近开始，返回优先用 touch_gesture 的 type back，回主屏优先用 type home；手写 swipe 时左边缘返回用 start.x=0.001 左右，底边回主页用 start.y=0.999 左右。"
 input_mode = "stt"
 trigger_mode = "manual"
-energy_threshold = 500
+vad_backend = "rknn"
+vad_model_path = "/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
+vad_helper_path = "/oem/usr/bin/rknn_vad"
+vad_speech_threshold = 0.5
 silence_ms = 650
 min_speech_ms = 300
 voice_session_enabled = true
@@ -104,7 +107,10 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `max_iterations` | `-1` | 单次运行最大工具调用循环次数；`-1` 表示不限制 |
 | `input_mode` | `text` / `stt` / `audio` | 输入模式 |
 | `trigger_mode` | `manual` / `wakeup` | 语音模式触发方式 |
-| `energy_threshold` | `500` | VAD 能量阈值 |
+| `vad_backend` | `rknn` | VAD 后端：`rknn` 使用 NPU encoder + CPU LSTM/decoder，`cpu` 使用纯 CPU helper |
+| `vad_model_path` | `/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder 模型路径；`vad_backend="cpu"` 时不使用 |
+| `vad_helper_path` | `/oem/usr/bin/rknn_vad` | VAD helper 可执行文件路径；CPU 后端默认 `/oem/usr/bin/cpu_vad` |
+| `vad_speech_threshold` | `0.5` | Silero VAD 语音概率阈值 |
 | `silence_ms` | `650` | 多少毫秒静音后认为一句话结束 |
 | `min_speech_ms` | `300` | 最短有效语音时长 |
 | `voice_session_enabled` | `true` | wakeup 模式下启用一次唤醒后的连续对话；设为 `false` 保持一轮一唤醒 |
@@ -115,6 +121,9 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `voice_streaming_tts_enabled` | `true` | LLM 流式输出时按句送入 TTS，降低首句播放等待 |
 | `voice_tool_call_speech` | `true` | 是否异步朗读工具调用说明；默认开启以避免工具执行期间长时间沉默 |
 | `voice_max_response_tokens` | `400` | 语音回复的单次输出 token 上限（需 `>= 0`） |
+
+`vad_model_path` 指向的模型需要先在 PC 端用 `silero-vad/convert_silero_vad_to_rknn.py` 从 Silero ONNX 转成 RV1106 RKNN，再放到设备对应路径。CPU 后端需要 `silero_vad_6_2_lstm_decoder_weights.bin` 包含 Conv1d encoder 扩展，可用 `silero-vad/export_silero_vad_v6_2_weights.py` 从随仓库提供的 TorchScript 文件生成。
+当 `vad_helper_path` 仍是内置默认值时，切换 `vad_backend` 会自动切换 helper；只有设置成自定义路径时才按自定义路径执行。
 
 ## `[model]`
 
@@ -130,14 +139,14 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 ## `[proxy]`
 
-可选。用于 Agent 发起的外部 HTTP/WebSocket 请求（OpenAI-compatible / OpenRouter / Ollama 模型请求、OpenAI Whisper STT、TTS adapters）。留空时使用进程环境变量中的 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`。
+可选。用于 Agent 发起的外部 HTTP/WebSocket 请求（OpenAI-compatible / OpenRouter / Ollama 模型请求、OpenAI Whisper STT、TTS adapters），并会注入到 Agent `shell` 工具启动的子进程环境中。所有字段留空时使用进程环境变量中的代理设置。
 
 | 字段 | 说明 |
 | --- | --- |
 | `http_proxy` | HTTP 请求代理，例如 `http://127.0.0.1:7890` |
 | `https_proxy` | HTTPS 请求代理，通常也填写 HTTP 代理地址，例如 `http://127.0.0.1:7890` |
 | `all_proxy` | HTTP/HTTPS 未分别配置时使用的通用代理，支持 `http://`、`https://`、`socks5://` |
-| `no_proxy` | 逗号/空格分隔的直连规则；支持主机名、域名后缀、`host:port`、CIDR 和 `*` |
+| `no_proxy` | 逗号/空格分隔的直连规则；支持主机名、域名后缀、`host:port`、CIDR 和 `*`；当显式配置了 `http_proxy` / `https_proxy` / `all_proxy` 且本字段留空时，默认 `localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` |
 
 ## `[audio]`
 

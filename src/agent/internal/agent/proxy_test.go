@@ -2,6 +2,8 @@ package agent
 
 import (
 	"net/http"
+	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -46,6 +48,49 @@ func TestProxyFuncHonorsNoProxy(t *testing.T) {
 		if proxyURL != nil {
 			t.Fatalf("proxyFunc(%s) = %v, want bypass", target, proxyURL)
 		}
+	}
+}
+
+func TestProxyFuncHonorsIPv6NoProxy(t *testing.T) {
+	fn := proxyFunc(ProxyConfig{
+		AllProxy: "http://127.0.0.1:7890",
+		NoProxy:  "::1",
+	})
+	req, err := http.NewRequest(http.MethodGet, "http://[::1]:8080/status", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	proxyURL, err := fn(req)
+	if err != nil {
+		t.Fatalf("proxyFunc() error = %v", err)
+	}
+	if proxyURL != nil {
+		t.Fatalf("proxyFunc() = %v, want IPv6 no_proxy bypass", proxyURL)
+	}
+}
+
+func TestProxyFuncAppliesDefaultNoProxy(t *testing.T) {
+	fn := proxyFunc(ProxyConfig{
+		AllProxy: "http://127.0.0.1:7890",
+	})
+	req, err := http.NewRequest(http.MethodGet, "http://192.168.42.1/status", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	proxyURL, err := fn(req)
+	if err != nil {
+		t.Fatalf("proxyFunc() error = %v", err)
+	}
+	if proxyURL != nil {
+		t.Fatalf("proxyFunc() = %v, want default no_proxy bypass", proxyURL)
+	}
+}
+
+func TestProxyFuncUsesEnvironmentWhenNoProxyURLConfigured(t *testing.T) {
+	fn := proxyFunc(ProxyConfig{})
+	got := runtime.FuncForPC(reflect.ValueOf(fn).Pointer()).Name()
+	if got != "net/http.ProxyFromEnvironment" {
+		t.Fatalf("proxyFunc() = %s, want net/http.ProxyFromEnvironment", got)
 	}
 }
 

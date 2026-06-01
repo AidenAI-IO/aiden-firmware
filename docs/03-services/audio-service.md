@@ -72,7 +72,7 @@ bit_width = 16
 
 1. 启动录音 session；
 2. 读取 PCM chunk；
-3. VAD 判断语音边界；
+3. RKNN Silero VAD 判断语音边界；
 4. 需要播放时启动 playback session 并写入 PCM。
 
 ## 音量

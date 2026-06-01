@@ -24,32 +24,37 @@ func (s SearchConfig) ProviderOrDefault() string {
 }
 
 type Config struct {
-	Model                    ModelConfig  `toml:"model"`
-	ModelText                ModelConfig  `toml:"model_text,omitempty"` // Override for STT-then-text mode
-	TTS                      TTSConfig    `toml:"tts,omitempty"`
-	STT                      STTConfig    `toml:"stt,omitempty"`
-	HID                      HIDConfig    `toml:"hid"`
-	Audio                    AudioConfig  `toml:"audio,omitempty"`
-	Proxy                    ProxyConfig  `toml:"proxy,omitempty"`
-	Search                   SearchConfig `toml:"search,omitempty"`
-	Instruction              string       `toml:"instruction"`
-	AdditionalPrompt         string       `toml:"additional_prompt,omitempty"`
-	InputMode                string       `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
-	TriggerMode              string       `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
-	EnergyThreshold          int          `toml:"energy_threshold,omitempty"`
-	SilenceMs                int          `toml:"silence_ms,omitempty"`
-	MinSpeechMs              int          `toml:"min_speech_ms,omitempty"`
-	VoiceSessionEnabled      *bool        `toml:"voice_session_enabled,omitempty"`
-	VoiceFollowupTimeoutMs   int          `toml:"voice_followup_timeout_ms,omitempty"`
-	VoiceFirstTurnTimeoutMs  int          `toml:"voice_first_turn_timeout_ms,omitempty"`
-	VoiceMaxTurns            int          `toml:"voice_max_turns,omitempty"`
-	VoiceInterruptOnWakeup   *bool        `toml:"voice_interrupt_on_wakeup,omitempty"`
-	VoiceStreamingTTSEnabled *bool        `toml:"voice_streaming_tts_enabled,omitempty"`
-	VoiceToolCallSpeech      *bool        `toml:"voice_tool_call_speech,omitempty"`
-	VoiceMaxResponseTokens   int          `toml:"voice_max_response_tokens,omitempty"`
-	MaxIterations            int          `toml:"max_iterations,omitempty"`
-	SkillsDirs               []string     `toml:"skills_dirs"`
-	ConfigDir                string       `toml:"-"`
+	Model                    ModelConfig     `toml:"model"`
+	ModelText                ModelConfig     `toml:"model_text,omitempty"` // Override for STT-then-text mode
+	TTS                      TTSConfig       `toml:"tts,omitempty"`
+	STT                      STTConfig       `toml:"stt,omitempty"`
+	HID                      HIDConfig       `toml:"hid"`
+	Audio                    AudioConfig     `toml:"audio,omitempty"`
+	Proxy                    ProxyConfig     `toml:"proxy,omitempty"`
+	Search                   SearchConfig    `toml:"search,omitempty"`
+	Instruction              string          `toml:"instruction"`
+	AdditionalPrompt         string          `toml:"additional_prompt,omitempty"`
+	InputMode                string          `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
+	TriggerMode              string          `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
+	VADBackend               string          `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
+	VADModelPath             string          `toml:"vad_model_path,omitempty"`
+	VADHelperPath            string          `toml:"vad_helper_path,omitempty"`
+	VADSpeechThreshold       float64         `toml:"vad_speech_threshold,omitempty"`
+	SilenceMs                int             `toml:"silence_ms,omitempty"`
+	MinSpeechMs              int             `toml:"min_speech_ms,omitempty"`
+	VoiceSessionEnabled      *bool           `toml:"voice_session_enabled,omitempty"`
+	VoiceFollowupTimeoutMs   int             `toml:"voice_followup_timeout_ms,omitempty"`
+	VoiceFirstTurnTimeoutMs  int             `toml:"voice_first_turn_timeout_ms,omitempty"`
+	VoiceMaxTurns            int             `toml:"voice_max_turns,omitempty"`
+	VoiceInterruptOnWakeup   *bool           `toml:"voice_interrupt_on_wakeup,omitempty"`
+	VoiceStreamingTTSEnabled *bool           `toml:"voice_streaming_tts_enabled,omitempty"`
+	VoiceToolCallSpeech      *bool           `toml:"voice_tool_call_speech,omitempty"`
+	VoiceMaxResponseTokens   int             `toml:"voice_max_response_tokens,omitempty"`
+	MaxIterations            int             `toml:"max_iterations,omitempty"`
+	SkillsDirs               []string        `toml:"skills_dirs"`
+	BundledSkillsDir         string          `toml:"bundled_skills_dir,omitempty"`
+	SkillMergeModel          SkillMergeModel `toml:"-"`
+	ConfigDir                string          `toml:"-"`
 }
 
 type TTSConfig struct {
@@ -114,6 +119,21 @@ type ProxyConfig struct {
 	HTTPSProxy string `toml:"https_proxy,omitempty"`
 	AllProxy   string `toml:"all_proxy,omitempty"`
 	NoProxy    string `toml:"no_proxy,omitempty"`
+}
+
+const DefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
+func (p ProxyConfig) HasProxyURL() bool {
+	return strings.TrimSpace(p.HTTPProxy) != "" ||
+		strings.TrimSpace(p.HTTPSProxy) != "" ||
+		strings.TrimSpace(p.AllProxy) != ""
+}
+
+func (p ProxyConfig) WithDefaults() ProxyConfig {
+	if p.HasProxyURL() && strings.TrimSpace(p.NoProxy) == "" {
+		p.NoProxy = DefaultNoProxy
+	}
+	return p
 }
 
 func (p ProxyConfig) IsZero() bool {
@@ -237,7 +257,26 @@ func LoadConfigFromDir(configDir string) (Config, error) {
 		cfg.SkillsDirs = []string{}
 	}
 
+	if cfg.BundledSkillsDir == "" {
+		cfg.BundledSkillsDir = resolveBundledSkillsDir()
+	}
+
 	return cfg, nil
+}
+
+func resolveBundledSkillsDir() string {
+	if v := os.Getenv("AIDEN_BUNDLED_SKILLS_DIR"); v != "" {
+		return v
+	}
+	candidates := []string{
+		"/usr/share/aiden/skills",
+	}
+	for _, c := range candidates {
+		if info, err := os.Stat(c); err == nil && info.IsDir() {
+			return c
+		}
+	}
+	return ""
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -255,6 +294,8 @@ func LoadConfig(path string) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
 	}
+
+	cfg.Proxy = cfg.Proxy.WithDefaults()
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -331,6 +372,13 @@ func (c Config) Validate() error {
 		}
 	}
 
+	if _, err := normalizeVADBackend(c.VADBackend); err != nil {
+		return err
+	}
+	if c.VADSpeechThreshold != 0 && (c.VADSpeechThreshold < 0 || c.VADSpeechThreshold > 1) {
+		return fmt.Errorf("vad_speech_threshold must be in [0,1] when set, got %v", c.VADSpeechThreshold)
+	}
+
 	if c.VoiceFollowupTimeoutMs < 0 {
 		return fmt.Errorf("voice_followup_timeout_ms must be >= 0, got %d", c.VoiceFollowupTimeoutMs)
 	}
@@ -363,6 +411,14 @@ func (c Config) TriggerModeOrDefault() string {
 		return "manual"
 	}
 	return strings.ToLower(mode)
+}
+
+func (c Config) VADBackendOrDefault() string {
+	backend, err := normalizeVADBackend(c.VADBackend)
+	if err != nil {
+		return defaultVADBackend
+	}
+	return backend
 }
 
 func (c Config) VoiceSessionEnabledOrDefault() bool {

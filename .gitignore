@@ -2,12 +2,30 @@
 /build/
 /build-*/
 /output/
+.worktrees/
+.claude/
 *.pcm
 /pico-sdk/
 /overlay/oem/usr/bin/*
 !/overlay/oem/usr/bin/.gitkeep
 !/overlay/oem/usr/bin/RkLunch.sh
+/overlay/oem/usr/lib/*
+!/overlay/oem/usr/lib/librknnmrt.so
+
+# Secrets
+agent.conf
 /ota_ed25519_private_key.pem
 /ota_ed25519_public_key.pem
+
+# Debug artifacts
+screen-memory-debug-*/
+capture.md
 /update.img
-/.claude/
+
+# Python (uv)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+benchmark/runs/
+benchmark/artifacts/

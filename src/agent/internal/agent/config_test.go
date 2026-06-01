@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +27,50 @@ func TestConfigValidateAcceptsAudioWakeup(t *testing.T) {
 	}
 }
 
+func TestLoadConfigDefaultsNoProxyWhenProxyConfigured(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+[model]
+provider = "fake"
+
+[proxy]
+https_proxy = "http://proxy.example:18443"
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Proxy.NoProxy != DefaultNoProxy {
+		t.Fatalf("Proxy.NoProxy = %q, want %q", cfg.Proxy.NoProxy, DefaultNoProxy)
+	}
+}
+
+func TestLoadConfigKeepsNoProxyEmptyWithoutProxyURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+[model]
+provider = "fake"
+
+[proxy]
+no_proxy = ""
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Proxy.NoProxy != "" {
+		t.Fatalf("Proxy.NoProxy = %q, want empty", cfg.Proxy.NoProxy)
+	}
+}
+
 func TestConfigValidateRejectsInvalidTriggerMode(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},
@@ -39,6 +85,59 @@ func TestConfigValidateRejectsInvalidTriggerMode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid trigger_mode") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConfigVADBackendDefaultsAndValidation(t *testing.T) {
+	cfg := Config{Model: ModelConfig{Provider: "fake"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if got := cfg.VADBackendOrDefault(); got != "rknn" {
+		t.Fatalf("VADBackendOrDefault() = %q, want rknn", got)
+	}
+
+	cfg.VADBackend = " cpu "
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() with cpu backend error = %v", err)
+	}
+	if got := cfg.VADBackendOrDefault(); got != "cpu" {
+		t.Fatalf("VADBackendOrDefault() = %q, want cpu", got)
+	}
+	if got := DefaultVADHelperPathForBackend("cpu"); got != "/oem/usr/bin/cpu_vad" {
+		t.Fatalf("DefaultVADHelperPathForBackend(cpu) = %q", got)
+	}
+	if got := ResolveVADHelperPath("cpu", DefaultVADHelperPath()); got != "/oem/usr/bin/cpu_vad" {
+		t.Fatalf("ResolveVADHelperPath(cpu, rknn default) = %q", got)
+	}
+	if got := ResolveVADHelperPath("cpu", "/custom/vad"); got != "/custom/vad" {
+		t.Fatalf("ResolveVADHelperPath(cpu, custom) = %q", got)
+	}
+
+	cfg.VADBackend = "npu"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected invalid vad_backend error")
+	}
+	if !strings.Contains(err.Error(), "invalid vad_backend") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConfigValidateRejectsInvalidVADSpeechThreshold(t *testing.T) {
+	for _, threshold := range []float64{-0.1, 1.1} {
+		cfg := Config{
+			Model:              ModelConfig{Provider: "fake"},
+			VADSpeechThreshold: threshold,
+		}
+
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatalf("Validate() error = nil for threshold %v, want error", threshold)
+		}
+		if !strings.Contains(err.Error(), "vad_speech_threshold") {
+			t.Fatalf("Validate() error = %v, want vad_speech_threshold", err)
+		}
 	}
 }
 
