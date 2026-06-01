@@ -2,6 +2,9 @@ package agent
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -10,6 +13,13 @@ import (
 )
 
 var promptNow = time.Now
+var promptHostRuntimeInfo = detectHostRuntimeInfo
+
+type hostRuntimeInfo struct {
+	OperatingSystem string
+	Hostname        string
+	Architecture    string
+}
 
 func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool) prompts.PromptTemplate {
 	template := strings.Join([]string{
@@ -73,7 +83,7 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 
 func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool) string {
 	parts := []string{
-		"You are agent.",
+		"You are Aiden AI agent.",
 		currentDateContext(),
 		"Base instruction:",
 		combinedAgentInstruction(cfg),
@@ -101,6 +111,57 @@ func currentDateContext() string {
 	return formatChineseDate(promptNow())
 }
 
+func hostRuntimeInfoContext() string {
+	infoFn := promptHostRuntimeInfo
+	if infoFn == nil {
+		infoFn = detectHostRuntimeInfo
+	}
+	return formatHostRuntimeInfo(infoFn())
+}
+
+func formatHostRuntimeInfo(info hostRuntimeInfo) string {
+	return fmt.Sprintf(
+		"宿主机: os=%s, hostname=%s, arch=%s",
+		hostInfoValue(info.OperatingSystem),
+		hostInfoValue(info.Hostname),
+		hostInfoValue(info.Architecture),
+	)
+}
+
+func detectHostRuntimeInfo() hostRuntimeInfo {
+	hostname, _ := os.Hostname()
+	operatingSystem := unameValue("-s")
+	if strings.TrimSpace(operatingSystem) == "" {
+		operatingSystem = runtime.GOOS
+	}
+	architecture := unameValue("-m")
+	if strings.TrimSpace(architecture) == "" {
+		architecture = runtime.GOARCH
+	}
+
+	return hostRuntimeInfo{
+		OperatingSystem: operatingSystem,
+		Hostname:        hostname,
+		Architecture:    architecture,
+	}
+}
+
+func unameValue(flag string) string {
+	out, err := exec.Command("uname", flag).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func hostInfoValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
+
 func formatChineseDate(t time.Time) string {
 	weekdays := []string{"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}
 	return "今天的日期是: " + t.Format("2006年01月02日") + " " + weekdays[t.Weekday()]
@@ -123,11 +184,11 @@ func combinedAgentInstruction(cfg AgentConfig) string {
 func defaultAgentBehavior() string {
 	return strings.Join([]string{
 		"## 环境",
-		"- 你运行在 Aiden 硬件控制器上，运行时 OS 是 Linux；不一定是截图中显示的设备。",
+		"- 你运行在 Aiden 硬件控制器上（" + hostRuntimeInfoContext() + "）；不是截图中显示的设备。",
 		"- shell、本地文件、进程和系统命令只作用于 Aiden 硬件控制器，不会操作截图中的目标 UI。shell 工具只在 Aiden 硬件控制器上执行；只在控制器诊断，或用户明确要求在 Aiden 控制器上执行命令时使用 shell。",
-		"- 目标设备和目标 OS 根据截图、连接元数据、谨慎行为探测或用户输入推断。",
+		"- 目标设备和目标 OS 根据截图、连接元数据、进行行为探测或用户输入推断。",
 		"- Aiden 主要用于控制连接的手机或移动 OS；这只是弱先验，不是已检测事实。当截图、工具结果或失败动作与该假设冲突时，必须修正判断。",
-		"- 不要因为运行时是 Linux 就推断目标设备也是 Linux；操作目标 UI 时，不要用本地系统命令代替目标控制工具。",
+		"- 不要根据宿主机的 OS 或架构推断目标设备信息；操作目标 UI 时，不要用本地系统命令代替目标控制工具。",
 		"",
 		"## 默认行为",
 		"- 默认用简体中文回答；用户明确使用其他语言时跟随用户语言。最终回复要简短、自然、适合 TTS 播放；除非用户要求，避免 Markdown 表格或长列表。",

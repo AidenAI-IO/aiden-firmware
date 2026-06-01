@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +29,64 @@ func TestPromptIncludesCurrentChineseDate(t *testing.T) {
 		t.Fatalf("current_date partial = %q, want %q", got, want)
 	}
 }
+
+func TestPromptIncludesRealHostRuntimeInfo(t *testing.T) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("Hostname() error = %v", err)
+	}
+	operatingSystem := mustUname(t, "-s")
+	architecture := mustUname(t, "-m")
+	wantLine := "宿主机: os=" + operatingSystem + ", hostname=" + hostname + ", arch=" + architecture
+	wantEnvironmentLine := "- 你运行在 Aiden 硬件控制器上（" + wantLine + "）；不是截图中显示的设备。"
+
+	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{}, nil)
+	if !strings.Contains(msg, wantEnvironmentLine) {
+		t.Fatalf("function system message missing host info in environment guidance %q:\n%s", wantEnvironmentLine, msg)
+	}
+	if strings.Contains(msg, "kernel=") {
+		t.Fatalf("system message should not include kernel info:\n%s", msg)
+	}
+
+	prompt := buildPrompt("aiden", AgentConfig{}, ResolvedSkills{}, nil)
+	if strings.Contains(prompt.Template, "{{.host_runtime_info}}") {
+		t.Fatalf("ReAct prompt template should not keep a separate host_runtime_info variable:\n%s", prompt.Template)
+	}
+	if _, ok := prompt.PartialVariables["host_runtime_info"]; ok {
+		t.Fatalf("host_runtime_info should be folded into default_behavior partial: %#v", prompt.PartialVariables["host_runtime_info"])
+	}
+	defaultBehavior, ok := prompt.PartialVariables["default_behavior"].(string)
+	if !ok {
+		t.Fatalf("default_behavior partial has type %T, want string", prompt.PartialVariables["default_behavior"])
+	}
+	if !strings.Contains(defaultBehavior, wantEnvironmentLine) {
+		t.Fatalf("default_behavior partial missing host info in environment guidance %q:\n%s", wantEnvironmentLine, defaultBehavior)
+	}
+}
+
+func TestFunctionAgentSystemMessageIdentifiesAidenAI(t *testing.T) {
+	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{}, nil)
+	if !strings.HasPrefix(msg, "You are Aiden AI agent.\n") {
+		t.Fatalf("system message should identify Aiden AI agent, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "You are agent.\n") {
+		t.Fatalf("system message should not use generic agent identity:\n%s", msg)
+	}
+}
+
+func mustUname(t *testing.T, flag string) string {
+	t.Helper()
+	out, err := exec.Command("uname", flag).Output()
+	if err != nil {
+		t.Fatalf("uname %s error = %v", flag, err)
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "" {
+		t.Fatalf("uname %s returned empty output", flag)
+	}
+	return value
+}
+
 func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 	msg := buildFunctionAgentSystemMessage(
 		AgentConfig{
@@ -42,12 +102,11 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 		"extra prompt",
 		"默认用简体中文回答",
 		"Aiden 硬件控制器",
-		"运行时 OS 是 Linux",
-		"不一定是截图中显示的设备",
+		"不是截图中显示的设备",
 		"shell、本地文件、进程和系统命令只作用于 Aiden 硬件控制器",
-		"不要因为运行时是 Linux 就推断目标设备也是 Linux",
+		"不要根据宿主机的 OS 或架构推断目标设备信息",
 		"不要用本地系统命令代替目标控制工具",
-		"目标设备和目标 OS 根据截图、连接元数据、谨慎行为探测或用户输入推断",
+		"目标设备和目标 OS 根据截图、连接元数据、进行行为探测或用户输入推断",
 		"弱先验，不是已检测事实",
 		"shell 工具只在 Aiden 硬件控制器上执行",
 		"不会操作截图中的目标 UI",
@@ -86,6 +145,11 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 		"PowerShell",
 		"xdotool",
 		"平台包管理器",
+		"运行时 OS 是 Linux",
+		"不一定是截图中显示的设备",
+		"kernel=",
+		"宿主机的 OS、内核或架构",
+		"谨慎行为探测或用户输入推断",
 	} {
 		if strings.Contains(msg, unwanted) {
 			t.Fatalf("system message should not contain old localized guidance %q:\n%s", unwanted, msg)
