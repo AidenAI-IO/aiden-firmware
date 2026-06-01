@@ -15,6 +15,7 @@ type DownloadOptions struct {
 	BearerToken      string
 	Progress         func(DownloadProgress)
 	ProgressInterval time.Duration
+	HTTPClient       *http.Client
 }
 
 type DownloadProgress struct {
@@ -68,7 +69,11 @@ func DownloadFileWithOptions(ctx context.Context, url string, dst string, expect
 	if resumeAt > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeAt))
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := options.HTTPClient
+	if client == nil {
+		client = defaultOTAHTTPClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

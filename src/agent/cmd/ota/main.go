@@ -135,6 +135,7 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	jitter := fs.Duration("jitter", 0, "daemon check jitter")
 	healthTimeout := fs.Duration("health-timeout", 0, "pending health timeout")
 	httpTimeout := fs.Duration("http-timeout", 0, "HTTP request timeout")
+	httpResponseHeaderTimeout := fs.Duration("http-response-header-timeout", 0, "HTTP response header timeout")
 	switchTries := fs.Uint("switch-tries", 0, "tries remaining when switching slots")
 	targetSlot := fs.String("target-slot", "", "test override for target slot: a or b")
 	flags, _ := partitionFlagArgs(args)
@@ -178,6 +179,9 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	}
 	if *httpTimeout != 0 {
 		config.HTTPTimeout = *httpTimeout
+	}
+	if *httpResponseHeaderTimeout != 0 {
+		config.HTTPResponseHeaderTimeout = *httpResponseHeaderTimeout
 	}
 	if *switchTries != 0 {
 		if *switchTries > uint(ota.MaxTries) {
@@ -244,7 +248,7 @@ func flagIsBool(name string) bool {
 
 func flagTakesValue(name string) bool {
 	switch name {
-	case "config", "state-dir", "misc", "block-dir", "repo", "channel", "api-base", "public-key", "interval", "jitter", "health-timeout", "target-slot", "http-timeout", "switch-tries":
+	case "config", "state-dir", "misc", "block-dir", "repo", "channel", "api-base", "public-key", "interval", "jitter", "health-timeout", "target-slot", "http-timeout", "http-response-header-timeout", "switch-tries":
 		return true
 	default:
 		return false
