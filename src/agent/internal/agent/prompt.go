@@ -2,6 +2,9 @@ package agent
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -10,11 +13,19 @@ import (
 )
 
 var promptNow = time.Now
+var promptHostRuntimeInfo = detectHostRuntimeInfo
+
+type hostRuntimeInfo struct {
+	KernelVersion string
+	Hostname      string
+	Architecture  string
+}
 
 func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool) prompts.PromptTemplate {
 	template := strings.Join([]string{
 		"You are agent {{.agent_name}}.",
 		"{{.current_date}}",
+		"{{.host_runtime_info}}",
 		"Base instruction:",
 		"{{.agent_instruction}}",
 		"",
@@ -60,6 +71,7 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 		PartialVariables: map[string]any{
 			"agent_name":         agentName,
 			"current_date":       currentDateContext(),
+			"host_runtime_info":  hostRuntimeInfoContext(),
 			"agent_instruction":  combinedAgentInstruction(cfg),
 			"default_behavior":   defaultAgentBehavior(),
 			"skill_behavior":     skillBehavior(),
@@ -75,6 +87,7 @@ func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, ava
 	parts := []string{
 		"You are agent.",
 		currentDateContext(),
+		hostRuntimeInfoContext(),
 		"Base instruction:",
 		combinedAgentInstruction(cfg),
 		"",
@@ -99,6 +112,65 @@ func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, ava
 
 func currentDateContext() string {
 	return formatChineseDate(promptNow())
+}
+
+func hostRuntimeInfoContext() string {
+	infoFn := promptHostRuntimeInfo
+	if infoFn == nil {
+		infoFn = detectHostRuntimeInfo
+	}
+	return formatHostRuntimeInfo(infoFn())
+}
+
+func formatHostRuntimeInfo(info hostRuntimeInfo) string {
+	return fmt.Sprintf(
+		"宿主机: kernel=%s, hostname=%s, arch=%s",
+		hostInfoValue(info.KernelVersion),
+		hostInfoValue(info.Hostname),
+		hostInfoValue(info.Architecture),
+	)
+}
+
+func detectHostRuntimeInfo() hostRuntimeInfo {
+	hostname, _ := os.Hostname()
+	kernelVersion := readKernelVersion()
+	architecture := unameValue("-m")
+	if strings.TrimSpace(architecture) == "" {
+		architecture = runtime.GOARCH
+	}
+
+	return hostRuntimeInfo{
+		KernelVersion: kernelVersion,
+		Hostname:      hostname,
+		Architecture:  architecture,
+	}
+}
+
+func readKernelVersion() string {
+	if runtime.GOOS == "linux" {
+		if data, err := os.ReadFile("/proc/sys/kernel/osrelease"); err == nil {
+			if value := strings.TrimSpace(string(data)); value != "" {
+				return value
+			}
+		}
+	}
+	return unameValue("-r")
+}
+
+func unameValue(flag string) string {
+	out, err := exec.Command("uname", flag).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func hostInfoValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func formatChineseDate(t time.Time) string {

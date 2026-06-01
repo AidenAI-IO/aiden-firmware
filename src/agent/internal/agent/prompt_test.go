@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +29,47 @@ func TestPromptIncludesCurrentChineseDate(t *testing.T) {
 		t.Fatalf("current_date partial = %q, want %q", got, want)
 	}
 }
+
+func TestPromptIncludesRealHostRuntimeInfo(t *testing.T) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("Hostname() error = %v", err)
+	}
+	kernelVersion := mustUname(t, "-r")
+	architecture := mustUname(t, "-m")
+	wantLine := "宿主机: kernel=" + kernelVersion + ", hostname=" + hostname + ", arch=" + architecture
+
+	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{}, nil)
+	if !strings.Contains(msg, wantLine) {
+		t.Fatalf("function system message missing compact host info %q:\n%s", wantLine, msg)
+	}
+
+	prompt := buildPrompt("aiden", AgentConfig{}, ResolvedSkills{}, nil)
+	if !strings.Contains(prompt.Template, "{{.host_runtime_info}}") {
+		t.Fatalf("ReAct prompt template should include host_runtime_info variable:\n%s", prompt.Template)
+	}
+	info, ok := prompt.PartialVariables["host_runtime_info"].(string)
+	if !ok {
+		t.Fatalf("host_runtime_info partial has type %T, want string", prompt.PartialVariables["host_runtime_info"])
+	}
+	if info != wantLine {
+		t.Fatalf("host_runtime_info partial = %q, want %q", info, wantLine)
+	}
+}
+
+func mustUname(t *testing.T, flag string) string {
+	t.Helper()
+	out, err := exec.Command("uname", flag).Output()
+	if err != nil {
+		t.Fatalf("uname %s error = %v", flag, err)
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "" {
+		t.Fatalf("uname %s returned empty output", flag)
+	}
+	return value
+}
+
 func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 	msg := buildFunctionAgentSystemMessage(
 		AgentConfig{
