@@ -137,6 +137,10 @@ if [ -d "$OVERLAY/oem" ]; then
     echo "  ✓ OEM content copied"
 fi
 
+# VAD models live in /oem/usr/model so OTA updates can replace them with the
+# oem partition. Remove stale copies from reused userdata package directories.
+rm -rf "$RK_PROJECT_PACKAGE_USERDATA_DIR/agent/model"
+
 # 复制 userdata 内容
 if [ -d "$OVERLAY/userdata" ] && [ "$(ls -A "$OVERLAY/userdata" 2>/dev/null)" ]; then
     echo "  → Copying userdata content..."

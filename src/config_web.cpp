@@ -465,7 +465,7 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.input_mode = "text";
     cfg.trigger_mode = "manual";
     cfg.vad_backend = "rknn";
-    cfg.vad_model_path = "/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
+    cfg.vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
     cfg.vad_helper_path = "/oem/usr/bin/rknn_vad";
     cfg.vad_speech_threshold = 0.5;
     cfg.silence_ms = 650;
