@@ -28,6 +28,7 @@ type roleCollaborativeExecutor struct {
 	MaxIterations    int
 	InputAttachments []InputAttachment
 	OutputKey        string
+	Recorder         *EpisodeRecorder
 }
 
 const roleModelCallTimeout = 120 * time.Second
@@ -96,6 +97,7 @@ func newRoleCollaborativeExecutor(
 	maxIterations int,
 	attachments []InputAttachment,
 	handler callbacks.Handler,
+	recorder *EpisodeRecorder,
 ) *roleCollaborativeExecutor {
 	if mem == nil {
 		mem = memory.NewSimple()
@@ -109,6 +111,7 @@ func newRoleCollaborativeExecutor(
 		InputAttachments: append([]InputAttachment{}, attachments...),
 		CallbacksHandler: handler,
 		OutputKey:        "output",
+		Recorder:         recorder,
 	}
 }
 
@@ -129,12 +132,18 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 			return nil, err
 		}
 		state.applyPlannerDecision(plan)
+		if e.Recorder != nil {
+			e.Recorder.RecordPlannerDecision(plan)
+		}
 
 		execution, err := e.callExecutor(ctx, inputs, state, nameToTool, options...)
 		if err != nil {
 			return nil, err
 		}
 		state.ExecutionResults = append(state.ExecutionResults, execution)
+		if e.Recorder != nil {
+			e.Recorder.RecordExecution(execution)
+		}
 		if execution.Step != nil {
 			state.ToolSteps = append(state.ToolSteps, *execution.Step)
 			state.World.UpdateFromStep(*execution.Step, len(state.ToolSteps))
@@ -145,6 +154,9 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 			return nil, err
 		}
 		state.VerifierResults = append(state.VerifierResults, verification)
+		if e.Recorder != nil {
+			e.Recorder.RecordVerifierDecision(verification)
+		}
 		if verification.CanFinish {
 			finalAnswer := strings.TrimSpace(verification.FinalAnswer)
 			if finalAnswer == "" {

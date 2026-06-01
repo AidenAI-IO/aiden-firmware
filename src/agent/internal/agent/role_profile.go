@@ -36,14 +36,15 @@ type RoleProfiles struct {
 	Verifier RoleProfile
 }
 
-func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool, memoryContext string) RoleProfiles {
+func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool, memoryContext interface{}) RoleProfiles {
+	roleMemory := normalizeMemoryContext(memoryContext)
 	return RoleProfiles{
 		Planner: buildRoleProfile(
 			RolePlanner,
 			cfg,
 			skills,
 			availableTools,
-			memoryContext,
+			roleMemory.RenderForRole(RolePlanner),
 			RoleCapabilities{CanModifyPlan: true},
 			[]string{
 				"You own the plan. Create or revise the ordered plan from the user request, prior tool observations, and verifier feedback.",
@@ -72,7 +73,7 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 			cfg,
 			skills,
 			availableTools,
-			"",
+			roleMemory.RenderForRole(RoleVerifier),
 			RoleCapabilities{CanDecideFinish: true},
 			[]string{
 				"You are the only role allowed to decide whether the run can end.",

@@ -43,6 +43,7 @@ type Runtime struct {
 	logger           *Logger
 	profileDebouncer *ProfileDebouncer
 	sleep            *SleepController
+	memoryPlane      MemoryPlane
 }
 
 type RunRequest struct {
@@ -200,6 +201,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		rt.mergeWorker = worker
 	}
 
+	rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger)
 	return rt, nil
 }
 
@@ -216,7 +218,7 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 	if cfg.ConfigDir != "" {
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
 	}
-	return &Runtime{
+	rt := &Runtime{
 		config:       cfg,
 		models:       models,
 		memories:     memories,
@@ -225,6 +227,10 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		skillsLoaded: skillIndex != nil && len(skillIndex.Names()) > 0,
 		sleep:        sleepController,
 	}
+	if cfg.ConfigDir != "" {
+		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
+	}
+	return rt
 }
 
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
@@ -280,6 +286,28 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 
 	availableTools := r.resolveTools(resolvedSkills)
+	retrieveReq := MemoryRetrieveRequest{
+		Input:       normalizedInput,
+		Attachments: req.Attachments,
+		Skills:      skillNames,
+		ToolNames:   toolNamesFromTools(availableTools),
+		DeviceID:    "default",
+	}
+	memoryContext := MemoryContext{}
+	if r.memoryPlane != nil {
+		retrieved, retrieveErr := r.memoryPlane.Retrieve(ctx, retrieveReq)
+		if retrieveErr != nil {
+			if r.logger != nil {
+				r.logger.Warn("[memory] retrieve failed: %v", retrieveErr)
+			}
+		} else {
+			memoryContext = retrieved
+		}
+	}
+	var episodeRecorder *EpisodeRecorder
+	if r.memoryPlane != nil {
+		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
+	}
 
 	maxIterations := effectiveMaxIterations(r.config.MaxIterations)
 
@@ -305,8 +333,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if streamCallbackHandler != nil {
 		executorHandler = streamCallbackHandler
 	}
-	profiles := r.buildRoleProfiles(resolvedSkills, availableTools)
-	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, memoryHandle.Memory, maxIterations, req.Attachments, executorHandler)
+	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext)
+	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, memoryHandle.Memory, maxIterations, req.Attachments, executorHandler, episodeRecorder)
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
@@ -321,6 +349,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			}
 		}
 		if err != nil {
+			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
 			return RunResult{}, err
 		}
 	}
@@ -328,17 +357,21 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
 	r.memories.SetLastPromptTokens(metrics.PromptTokens)
 	if err := r.memories.AppendExchange(ctx, "default", normalizedInput, output); err != nil {
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
 		return RunResult{}, err
 	}
 
 	memorySnapshot, err := r.memories.Snapshot(ctx, "default")
 	if err != nil {
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
 		return RunResult{}, err
 	}
 	if err := r.memories.SaveSnapshot(ctx, "default", memorySnapshot); err != nil {
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
 		return RunResult{}, err
 	}
 	r.memories.RequestMaintenance()
+	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil)
 
 	sleepRequested, sleepReason := r.sleep.Consume()
 	return RunResult{
@@ -410,7 +443,7 @@ func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 		available = append(available, r.tools.All()...)
 	}
 
-	memoryTools := []string{"recall_session_chunks", "recall_memory", "save_memory", "forget_memory"}
+	memoryTools := []string{"recall_session_chunks", "recall_memory", "save_memory", "forget_memory", "recall_device_memory", "inspect_episode"}
 	for _, name := range memoryTools {
 		if skills.HasToolRestriction {
 			if _, allowed := skills.AllowedTools[name]; !allowed {
@@ -446,6 +479,37 @@ func toolAlreadyIncluded(tools []langtools.Tool, name string) bool {
 		}
 	}
 	return false
+}
+
+func toolNamesFromTools(tools []langtools.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		names = append(names, tool.Name())
+	}
+	return uniqueNonEmpty(names)
+}
+
+func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error) {
+	if recorder == nil || r.memoryPlane == nil {
+		return
+	}
+	cfg := DefaultMemoryExtractionConfig()
+	if r.memories != nil {
+		cfg = r.memories.extraction
+	} else if r.config.ConfigDir != "" {
+		cfg = LoadMemoryExtractionConfig(r.config.ConfigDir)
+	}
+	tags := cfg.extractTagsFromText(input)
+	entities := cfg.extractEntitiesFromText(input)
+	episode := recorder.Finish(output, metrics, runErr, tags, entities)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := r.memoryPlane.CommitEpisode(ctx, episode); err != nil && r.logger != nil {
+		r.logger.Warn("[memory] commit episode failed: %v", err)
+	}
 }
 
 func wrapToolsWithCallbacks(tools []langtools.Tool, handler callbacks.Handler) []langtools.Tool {
@@ -502,7 +566,10 @@ func (r *Runtime) buildAgent(
 	)
 }
 
-func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []langtools.Tool) RoleProfiles {
+func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []langtools.Tool, memoryContext MemoryContext) RoleProfiles {
+	if memoryContext.IsEmpty() && r.config.ConfigDir != "" {
+		memoryContext = normalizeMemoryContext(r.memoryContextForPrompt())
+	}
 	return buildRoleProfiles(
 		AgentConfig{
 			Instruction:      r.config.Instruction,
@@ -510,7 +577,7 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 		},
 		skills,
 		availableTools,
-		r.memoryContextForPrompt(),
+		memoryContext,
 	)
 }
 

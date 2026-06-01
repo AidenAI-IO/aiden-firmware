@@ -1,0 +1,401 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	langtools "github.com/tmc/langchaingo/tools"
+)
+
+func TestMemoryPlaneRetrieveRoutesExperienceByRole(t *testing.T) {
+	ctx := context.Background()
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_open_wechat",
+		Type:             "procedure",
+		Priority:         80,
+		Confidence:       0.9,
+		Tags:             []string{"登录"},
+		Entities:         []string{"微信App"},
+		Title:            "微信打开路径",
+		Content:          "打开微信App时优先使用系统搜索。",
+		EvidenceExcerpts: []string{"成功用系统搜索打开微信。"},
+	}); err != nil {
+		t.Fatalf("AddMemory procedure: %v", err)
+	}
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_wechat_failure",
+		Type:             "failure",
+		Priority:         90,
+		Confidence:       0.95,
+		Tags:             []string{"登录"},
+		Entities:         []string{"微信App"},
+		Title:            "微信失败模式",
+		Content:          "直接输入中文联系人容易失败，应使用拼音候选并用截图确认。",
+		EvidenceExcerpts: []string{"中文输入未生效。"},
+	}); err != nil {
+		t.Fatalf("AddMemory failure: %v", err)
+	}
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_wrong_language",
+		Type:             "procedure",
+		Priority:         100,
+		Confidence:       0.99,
+		Tags:             []string{"登录"},
+		Entities:         []string{"微信App"},
+		Title:            "Wrong language procedure",
+		Content:          "This should not apply to zh-CN.",
+		Applicability:    map[string]string{"language": "en-US"},
+		EvidenceExcerpts: []string{"English-only evidence."},
+	}); err != nil {
+		t.Fatalf("AddMemory wrong language: %v", err)
+	}
+	for _, item := range []MemoryItem{
+		{
+			ID:               "mem_conflict_a",
+			Type:             "procedure",
+			Priority:         90,
+			Tags:             []string{"登录"},
+			Entities:         []string{"微信App"},
+			Title:            "冲突流程 A",
+			Content:          "登录微信App时总是直接输入中文。",
+			EvidenceExcerpts: []string{"A"},
+		},
+		{
+			ID:               "mem_conflict_b",
+			Type:             "procedure",
+			Priority:         90,
+			Tags:             []string{"登录"},
+			Entities:         []string{"微信App"},
+			Title:            "冲突流程 B",
+			Content:          "登录微信App时不能直接输入中文。",
+			EvidenceExcerpts: []string{"B"},
+		},
+	} {
+		if _, err := longTerm.AddMemory(ctx, item); err != nil {
+			t.Fatalf("AddMemory conflict item %s: %v", item.ID, err)
+		}
+	}
+	if err := longTerm.MarkConflict(ctx, "mem_conflict_a", "mem_conflict_b", "contradictory procedures"); err != nil {
+		t.Fatalf("MarkConflict: %v", err)
+	}
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_expired_conflict",
+		Type:             "procedure",
+		Status:           "conflicted",
+		Priority:         100,
+		Tags:             []string{"登录"},
+		Entities:         []string{"微信App"},
+		Title:            "过期冲突流程",
+		Content:          "这条冲突已经过期，不应进入 verifier。",
+		EvidenceExcerpts: []string{"expired"},
+		ExpiresAt:        "2000-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("AddMemory expired conflict: %v", err)
+	}
+	episodes := NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
+	if _, err := episodes.AddEpisode(ctx, TaskEpisode{
+		ID:        "ep_success",
+		Status:    "active",
+		StartedAt: "2026-06-01T00:00:00Z",
+		EndedAt:   "2026-06-01T00:00:10Z",
+		UserGoal:  "打开微信App",
+		Tags:      []string{"登录"},
+		Entities:  []string{"微信App"},
+		Outcome:   TaskEpisodeOutcome{Success: true, VerifierReason: "已打开"},
+		Events: []TaskEpisodeEvent{
+			{EventID: "evt_1", Type: "tool_call", ToolName: "touch_gesture"},
+		},
+	}); err != nil {
+		t.Fatalf("AddEpisode success: %v", err)
+	}
+	if _, err := episodes.AddEpisode(ctx, TaskEpisode{
+		ID:        "ep_failure",
+		Status:    "active",
+		StartedAt: "2026-06-01T00:01:00Z",
+		EndedAt:   "2026-06-01T00:01:10Z",
+		UserGoal:  "打开微信App",
+		Tags:      []string{"登录"},
+		Entities:  []string{"微信App"},
+		Outcome:   TaskEpisodeOutcome{Success: false, FailureReason: "未找到入口"},
+		Events: []TaskEpisodeEvent{
+			{EventID: "evt_2", Type: "verifier_decision", Reason: "未找到入口"},
+		},
+	}); err != nil {
+		t.Fatalf("AddEpisode failure: %v", err)
+	}
+
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	got, err := plane.Retrieve(ctx, MemoryRetrieveRequest{
+		Input:    "登录微信App",
+		DeviceID: "default",
+		CurrentHints: CurrentEnvironmentHints{
+			Language: "zh-CN",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Retrieve() error = %v", err)
+	}
+
+	if len(got.Planner.Procedures) == 0 || got.Planner.Procedures[0].ID != "mem_open_wechat" {
+		t.Fatalf("planner procedures = %#v", got.Planner.Procedures)
+	}
+	for _, hit := range got.Planner.Procedures {
+		if hit.ID == "mem_wrong_language" || hit.ID == "mem_conflict_a" || hit.ID == "mem_conflict_b" {
+			t.Fatalf("ineligible memory reached planner: %#v", got.Planner.Procedures)
+		}
+	}
+	if len(got.Planner.SimilarEpisodes) == 0 || got.Planner.SimilarEpisodes[0].ID != "ep_success" {
+		t.Fatalf("planner episodes = %#v", got.Planner.SimilarEpisodes)
+	}
+	if len(got.Verifier.FailureModes) < 2 {
+		t.Fatalf("verifier failure modes = %#v", got.Verifier.FailureModes)
+	}
+	if len(got.Verifier.Conflicts) == 0 {
+		t.Fatalf("expected conflicts to be routed to verifier")
+	}
+	for _, hit := range got.Verifier.Conflicts {
+		if hit.ID == "mem_expired_conflict" {
+			t.Fatalf("expired conflict reached verifier: %#v", got.Verifier.Conflicts)
+		}
+	}
+	renderedPlanner := got.RenderForRole(RolePlanner)
+	renderedVerifier := got.RenderForRole(RoleVerifier)
+	if !strings.Contains(renderedPlanner, "Retrieved Device Experience") || !strings.Contains(renderedPlanner, "mem_open_wechat") {
+		t.Fatalf("planner memory prompt missing retrieved experience:\n%s", renderedPlanner)
+	}
+	if !strings.Contains(renderedVerifier, "Known Failure Modes") || !strings.Contains(renderedVerifier, "mem_wechat_failure") {
+		t.Fatalf("verifier memory prompt missing failure memory:\n%s", renderedVerifier)
+	}
+}
+
+func TestRuntimeRunWritesTaskEpisodeTrace(t *testing.T) {
+	ctx := context.Background()
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	model := &scriptedModel{
+		responses: roleToolResponses("echo", `{"__arg1":"ok"}`, "done"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(memoryDir),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"echo": &stubTool{name: "echo", description: "Echo.", output: "ok"},
+		}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(ctx, RunRequest{Input: "登录微信App"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("output = %q", result.Output)
+	}
+
+	indexData, err := os.ReadFile(filepath.Join(memoryDir, "episodes", "index.yaml"))
+	if err != nil {
+		t.Fatalf("read episode index: %v", err)
+	}
+	if !strings.Contains(string(indexData), "登录微信App") || !strings.Contains(string(indexData), "success: true") {
+		t.Fatalf("unexpected episode index:\n%s", indexData)
+	}
+
+	eventPaths, err := filepath.Glob(filepath.Join(memoryDir, "episodes", "*", "*", "events.jsonl"))
+	if err != nil || len(eventPaths) != 1 {
+		t.Fatalf("episode events glob paths=%#v err=%v", eventPaths, err)
+	}
+	data, err := os.ReadFile(eventPaths[0])
+	if err != nil {
+		t.Fatalf("read episode events: %v", err)
+	}
+	var sawPlanner, sawToolCall, sawVerifier bool
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var event TaskEpisodeEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decode event %q: %v", line, err)
+		}
+		switch event.Type {
+		case "planner_decision":
+			sawPlanner = true
+		case "tool_call":
+			if event.ToolName == "echo" {
+				sawToolCall = true
+			}
+		case "verifier_decision":
+			sawVerifier = true
+		}
+	}
+	if !sawPlanner || !sawToolCall || !sawVerifier {
+		t.Fatalf("missing events planner=%v tool=%v verifier=%v\n%s", sawPlanner, sawToolCall, sawVerifier, data)
+	}
+	procedureFiles, err := filepath.Glob(filepath.Join(memoryDir, "device", "procedures", "*.yaml"))
+	if err != nil || len(procedureFiles) != 1 {
+		t.Fatalf("expected extracted device procedure, paths=%#v err=%v", procedureFiles, err)
+	}
+	appFiles, err := filepath.Glob(filepath.Join(memoryDir, "device", "apps", "*.yaml"))
+	if err != nil || len(appFiles) != 1 {
+		t.Fatalf("expected extracted app profile, paths=%#v err=%v", appFiles, err)
+	}
+}
+
+func TestLongTermMemorySearchSkipsExpiredMemory(t *testing.T) {
+	ctx := context.Background()
+	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:               "mem_expired",
+		Type:             "procedure",
+		Priority:         90,
+		Tags:             []string{"登录"},
+		Title:            "过期流程",
+		Content:          "旧流程。",
+		EvidenceExcerpts: []string{"旧证据"},
+		ExpiresAt:        "2000-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("AddMemory expired: %v", err)
+	}
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:               "mem_active",
+		Type:             "procedure",
+		Priority:         80,
+		Tags:             []string{"登录"},
+		Title:            "有效流程",
+		Content:          "新流程。",
+		EvidenceExcerpts: []string{"新证据"},
+		TTL:              "1d",
+	}); err != nil {
+		t.Fatalf("AddMemory active: %v", err)
+	}
+
+	results, err := store.Search(ctx, MemoryQuery{Tags: []string{"登录"}, Limit: 10})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(results) != 1 || results[0].ID != "mem_active" {
+		t.Fatalf("expected only active result, got %#v", results)
+	}
+}
+
+func TestMemoryPlaneUpdatesReferencedMemoryOutcomes(t *testing.T) {
+	ctx := context.Background()
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_proc",
+		Type:             "procedure",
+		Status:           "active",
+		Priority:         80,
+		Confidence:       0.8,
+		Tags:             []string{"登录"},
+		Entities:         []string{"微信App"},
+		Title:            "旧流程",
+		Content:          "使用旧流程。",
+		EvidenceExcerpts: []string{"旧流程曾成功。"},
+		TTL:              "45d",
+	}); err != nil {
+		t.Fatalf("AddMemory procedure: %v", err)
+	}
+	device := NewDeviceMemoryStore(filepath.Join(memoryDir, "device"))
+	if _, err := device.Upsert(ctx, DeviceMemoryItem{
+		ID:         "dev_proc",
+		Type:       "procedure",
+		Status:     "active",
+		Title:      "设备旧流程",
+		Content:    "设备上的旧流程。",
+		DeviceID:   "default",
+		Tags:       []string{"登录"},
+		Entities:   []string{"微信App"},
+		Confidence: 0.8,
+		TTL:        "45d",
+	}); err != nil {
+		t.Fatalf("Upsert device procedure: %v", err)
+	}
+
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	for _, episodeID := range []string{"ep_fail_1", "ep_fail_2"} {
+		if err := plane.CommitEpisode(ctx, TaskEpisode{
+			ID:                  episodeID,
+			Status:              "active",
+			StartedAt:           "2026-06-01T00:00:00Z",
+			EndedAt:             "2026-06-01T00:00:10Z",
+			UserGoal:            "登录微信App",
+			Tags:                []string{"登录"},
+			Entities:            []string{"微信App"},
+			RetrievedMemoryRefs: []string{"mem_proc", "dev_proc"},
+			Outcome:             TaskEpisodeOutcome{Success: false, FailureReason: "旧流程失败"},
+			Events: []TaskEpisodeEvent{
+				{EventID: episodeID + "_tool", Type: "tool_call", ToolName: "echo"},
+			},
+		}); err != nil {
+			t.Fatalf("CommitEpisode(%s): %v", episodeID, err)
+		}
+	}
+	proc, err := readMemoryMarkdown(longTerm.memoryPath("mem_proc"))
+	if err != nil {
+		t.Fatalf("read mem_proc: %v", err)
+	}
+	if proc.Item.Status != "conflicted" || proc.Item.FailureCount != 2 || proc.Item.Confidence >= 0.8 {
+		t.Fatalf("expected referenced procedure to be conflicted with lower confidence, got %#v", proc.Item)
+	}
+	devHits, err := device.Search(ctx, DeviceMemoryQuery{Terms: []string{"设备旧流程"}, Limit: 10})
+	if err != nil {
+		t.Fatalf("device search: %v", err)
+	}
+	if len(devHits) == 0 || devHits[0].ID != "dev_proc" || devHits[0].Type != "conflict" {
+		t.Fatalf("expected device procedure to become conflict, got %#v", devHits)
+	}
+
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_fail_fresh",
+		Type:             "failure",
+		Status:           "active",
+		Priority:         80,
+		Confidence:       0.8,
+		Tags:             []string{"登录"},
+		Entities:         []string{"微信App"},
+		Title:            "旧失败模式",
+		Content:          "这个目标会失败。",
+		EvidenceExcerpts: []string{"旧失败证据。"},
+	}); err != nil {
+		t.Fatalf("AddMemory fresh failure: %v", err)
+	}
+
+	if err := plane.CommitEpisode(ctx, TaskEpisode{
+		ID:                  "ep_success",
+		Status:              "active",
+		StartedAt:           "2026-06-01T00:01:00Z",
+		EndedAt:             "2026-06-01T00:01:10Z",
+		UserGoal:            "登录微信App",
+		Tags:                []string{"登录"},
+		Entities:            []string{"微信App"},
+		RetrievedMemoryRefs: []string{"mem_fail_fresh"},
+		Outcome:             TaskEpisodeOutcome{Success: true, VerifierReason: "成功完成"},
+		Events: []TaskEpisodeEvent{
+			{EventID: "ep_success_tool", Type: "tool_call", ToolName: "echo"},
+		},
+	}); err != nil {
+		t.Fatalf("CommitEpisode success: %v", err)
+	}
+	fail, err := readMemoryMarkdown(longTerm.memoryPath("mem_fail_fresh"))
+	if err != nil {
+		t.Fatalf("read mem_fail_fresh: %v", err)
+	}
+	if fail.Item.Status != "conflicted" || !containsMemoryPlaneString(fail.Item.ConflictsWith, "ep_success") {
+		t.Fatalf("expected success to conflict with failure memory, got %#v", fail.Item)
+	}
+}
+
+func containsMemoryPlaneString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}

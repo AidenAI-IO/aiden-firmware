@@ -95,10 +95,14 @@ func (s *ToolSet) RegisterMemoryTools(memoryDir string, profileFn ProfileFn, sum
 	}
 	sessionStore := NewSessionMemoryStore(filepath.Join(memoryDir, "session"), summaryMaxChunks)
 	longTermStore := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")), WithStoreProfileFn(profileFn), WithProfileDebouncer(debouncer))
+	deviceStore := NewDeviceMemoryStore(filepath.Join(memoryDir, "device"))
+	episodeStore := NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
 	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(sessionStore)
 	s.tools["recall_memory"] = NewRecallMemoryTool(longTermStore)
 	s.tools["save_memory"] = NewSaveMemoryTool(longTermStore)
 	s.tools["forget_memory"] = NewForgetMemoryTool(longTermStore)
+	s.tools["recall_device_memory"] = NewRecallDeviceMemoryTool(deviceStore)
+	s.tools["inspect_episode"] = NewInspectEpisodeTool(episodeStore)
 }
 
 func (s *ToolSet) RegisterSkillTools(skillsDir, manifestPath string, onModify ...func()) {

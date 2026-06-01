@@ -23,6 +23,14 @@ type ForgetMemoryTool struct {
 	store *LongTermMemoryStore
 }
 
+type RecallDeviceMemoryTool struct {
+	store *DeviceMemoryStore
+}
+
+type InspectEpisodeTool struct {
+	store *TaskEpisodeStore
+}
+
 func NewRecallSessionChunksTool(store *SessionMemoryStore) *RecallSessionChunksTool {
 	return &RecallSessionChunksTool{store: store}
 }
@@ -214,4 +222,67 @@ func (t *ForgetMemoryTool) Call(ctx context.Context, input string) (string, erro
 		return "", err
 	}
 	return encodeToolJSON(map[string]string{"status": "deleted", "id": req.ID})
+}
+
+func NewRecallDeviceMemoryTool(store *DeviceMemoryStore) *RecallDeviceMemoryTool {
+	return &RecallDeviceMemoryTool{store: store}
+}
+
+func (t *RecallDeviceMemoryTool) Name() string { return "recall_device_memory" }
+
+func (t *RecallDeviceMemoryTool) Description() string {
+	return strings.Join([]string{
+		"Debug recall for device memory: device profiles, app profiles, procedures, calibration notes, failures, and conflicts.",
+		"The runtime automatically retrieves relevant device memory before planning; use this tool only when inspecting memory state is explicitly useful.",
+		`Input JSON: {"terms":["微信"],"tags":["登录"],"entities":["微信App"],"types":["procedure","failure"],"device_id":"default","limit":5}`,
+	}, " ")
+}
+
+func (t *RecallDeviceMemoryTool) Call(ctx context.Context, input string) (string, error) {
+	if t.store == nil {
+		return "", fmt.Errorf("device memory store is not configured")
+	}
+	var query DeviceMemoryQuery
+	if err := json.Unmarshal([]byte(input), &query); err != nil {
+		return "", fmt.Errorf("decode recall_device_memory input: %w", err)
+	}
+	results, err := t.store.Search(ctx, query)
+	if err != nil {
+		return "", err
+	}
+	return encodeToolJSON(map[string]any{"results": results})
+}
+
+func NewInspectEpisodeTool(store *TaskEpisodeStore) *InspectEpisodeTool {
+	return &InspectEpisodeTool{store: store}
+}
+
+func (t *InspectEpisodeTool) Name() string { return "inspect_episode" }
+
+func (t *InspectEpisodeTool) Description() string {
+	return strings.Join([]string{
+		"Debug inspect a stored task episode by ID, including metadata and compact event trace.",
+		"The runtime writes task episodes automatically after runs; use this only for memory debugging or explicit user requests.",
+		`Input JSON: {"id":"ep_..."}`,
+	}, " ")
+}
+
+func (t *InspectEpisodeTool) Call(ctx context.Context, input string) (string, error) {
+	if t.store == nil {
+		return "", fmt.Errorf("episode store is not configured")
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(input), &req); err != nil {
+		return "", fmt.Errorf("decode inspect_episode input: %w", err)
+	}
+	if strings.TrimSpace(req.ID) == "" {
+		return "", fmt.Errorf("episode id is required")
+	}
+	episode, err := t.store.Get(ctx, req.ID)
+	if err != nil {
+		return "", err
+	}
+	return encodeToolJSON(map[string]any{"episode": episode})
 }
