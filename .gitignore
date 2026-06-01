@@ -13,6 +13,7 @@
 !/overlay/oem/usr/bin/RkLunch.sh
 /overlay/oem/usr/lib/*
 !/overlay/oem/usr/lib/librknnmrt.so
+/overlay/userdata/agent/benchmark/
 
 # Secrets
 agent.conf
