@@ -148,3 +148,23 @@ TEST_CASE("config web persists proxy through system env") {
     CHECK(html.find("system_env_content") != std::string::npos);
     CHECK(html.find("saveSystemEnv") != std::string::npos);
 }
+
+TEST_CASE("config web restarts ota only when system env changes") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("kAgentInitScript") != std::string::npos);
+    CHECK(source.find("kOtaInitScript") != std::string::npos);
+    CHECK(source.find("schedule_agent_restart") != std::string::npos);
+    CHECK(source.find("schedule_ota_restart") != std::string::npos);
+    CHECK(source.find("bool system_env_changed = original_system_env != updated_system_env;") != std::string::npos);
+    CHECK(source.find("if (system_env_changed)") != std::string::npos);
+    CHECK(source.find("system env saved; services restarting") != std::string::npos);
+    CHECK(source.find("config saved; agent restarting") != std::string::npos);
+    CHECK(source.find("config saved; agent and ota restarting") != std::string::npos);
+}

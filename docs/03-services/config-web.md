@@ -54,14 +54,14 @@ config_web [--bind=IP] [--port=PORT] [--config=PATH] [--wifi-config=PATH] [--sys
 - `system_env`: general shell-style environment text written to `/userdata/system/env`
 - Wi-Fi：SSID / PSK 等（写入 `/userdata/wpa_supplicant.conf`）
 
-## 使用建议
+## Runtime apply behavior
 
-1. 通过 USB 网络或 Wi-Fi 访问设备 IP；
-2. 在网页中修改 Agent 配置；
-3. 保存后重启 Agent：
+Config Web writes Agent, Wi-Fi, and system environment files. Saving Agent
+config still schedules an Agent restart. OTA is restarted only when the
+effective `/userdata/system/env` file changes, because OTA reads proxy settings
+from that file at process startup:
 
 ```bash
 /etc/init.d/S53agent restart
+/etc/init.d/S54ota restart  # only when /userdata/system/env changes
 ```
-
-Config Web 本身只负责配置文件写入，不替代对应服务的重启逻辑。
