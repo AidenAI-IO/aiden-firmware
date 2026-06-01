@@ -216,11 +216,7 @@ func (s *DeviceMemoryStore) itemPath(item DeviceMemoryItem) string {
 	case "device_profile":
 		return filepath.Join(s.rootDir, "profile.yaml")
 	case "app_profile":
-		id := item.AppID
-		if strings.TrimSpace(id) == "" {
-			id = item.ID
-		}
-		return filepath.Join(s.rootDir, "apps", safePathName(id)+".yaml")
+		return filepath.Join(s.rootDir, "apps", safePathName(item.ID)+".yaml")
 	case "procedure":
 		return filepath.Join(s.rootDir, "procedures", safePathName(item.ID)+".yaml")
 	case "calibration":
