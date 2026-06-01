@@ -1660,8 +1660,29 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             cJSON_AddItemToArray(results, r);
         }
 
+        cJSON* vad_item = cJSON_GetObjectItem(values, "vad_speech_threshold");
+        cJSON* vad_r = cJSON_CreateObject();
+        cJSON_AddStringToObject(vad_r, "check", "vad_speech_threshold");
+        if (json_is_number(vad_item)) {
+            double n = vad_item->valuedouble;
+            if (n < 0.0 || n > 1.0) {
+                cJSON_AddBoolToObject(vad_r, "passed", 0);
+                std::string msg = "must be in range [0.0, 1.0], got " + std::to_string(n);
+                cJSON_AddStringToObject(vad_r, "detail", msg.c_str());
+                all_passed = false;
+            } else {
+                cJSON_AddBoolToObject(vad_r, "passed", 1);
+                cJSON_AddStringToObject(vad_r, "detail", std::to_string(n).c_str());
+            }
+        } else {
+            cJSON_AddBoolToObject(vad_r, "passed", 0);
+            cJSON_AddStringToObject(vad_r, "detail", "not a number");
+            all_passed = false;
+        }
+        cJSON_AddItemToArray(results, vad_r);
+
         const char* numeric_keys[] = {
-            "energy_threshold", "silence_ms", "min_speech_ms",
+            "silence_ms", "min_speech_ms",
             "voice_followup_timeout_ms", "voice_first_turn_timeout_ms",
             "voice_max_turns", "voice_max_response_tokens", NULL
         };
