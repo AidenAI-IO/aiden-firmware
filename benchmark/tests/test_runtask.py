@@ -2,7 +2,7 @@ import base64
 import json
 from pathlib import Path
 
-from runner.agent_client import ChatResponse, ToolInvokeResult
+from runner.agent_client import AgentTimeoutError, ChatResponse, ToolInvokeResult
 from runner.runtask import run_one_task
 from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec
 
@@ -120,3 +120,45 @@ def test_run_one_task_applies_suite_prompt_prefix(tmp_path: Path):
     assert client.messages == [
         "You must call recall_memory before answering.\n\nChoose one option."
     ]
+
+
+class TimeoutClient(FakeClient):
+    def __init__(self):
+        super().__init__()
+        self.history = [
+            {"type": "tool_call", "tool_name": "screenshot", "tool_input": "{}"},
+            {"type": "tool_result", "content": "{}"},
+        ]
+
+    def chat(self, message, timeout_sec=None, attachments=None):
+        raise AgentTimeoutError("deadline exceeded")
+
+    def get_history(self):
+        return self.history
+
+
+def test_run_one_task_preserves_history_after_timeout(tmp_path: Path):
+    suite = Suite(
+        name="phone",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="slow_task",
+        category="phone",
+        description_for_judge="Times out after using a tool.",
+        prompt="do something slow",
+        rubric=[RubricItem(id="done", check="Done.")],
+        hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=4),
+    )
+
+    result = run_one_task(
+        TimeoutClient(), suite, task, 1, tmp_path / "artifacts", None, None, "run-1"
+    )
+
+    assert result.status == "timeout"
+    assert result.metrics["tool_calls"] == 1
+    history = json.loads((tmp_path / "artifacts" / "history.json").read_text())
+    assert history[0]["tool_name"] == "screenshot"

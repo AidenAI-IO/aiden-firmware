@@ -211,6 +211,69 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatSkipsToolDescriptionTTSWhenDisabled(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "audio_volume",
+							Arguments: `{"__arg1":"{}","description":"我先读取当前音量。"}`,
+						},
+					}},
+				}},
+			},
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "The current audio volume is 42.",
+				}},
+			},
+		},
+	}
+	streamingDisabled := false
+	toolSpeechDisabled := false
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Use tools when external state is requested.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceToolCallSpeech:      &toolSpeechDisabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": &stubTool{
+				name:        "audio_volume",
+				description: "Get the current audio playback volume.",
+				output:      `{"volume":42}`,
+			},
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
+	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-provider.started:
+		t.Fatal("tool description TTS started despite voice_tool_call_speech=false")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
 	model := &cancelAwareModel{seen: make(chan error, 1)}
 	runtime := NewRuntimeWithDeps(

@@ -1,7 +1,9 @@
 from __future__ import annotations
 import argparse
 import os
+import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from runner.agent_client import AgentClient
@@ -14,6 +16,32 @@ from runner.suite import load_suite
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def wait_for_agent_clock(
+    client: AgentClient,
+    min_year: int | None = None,
+    timeout_sec: int = 180,
+    poll_sec: int = 2,
+) -> bool:
+    if min_year is None:
+        min_year = datetime.now(timezone.utc).year
+    deadline = time.monotonic() + max(0, timeout_sec)
+
+    while True:
+        try:
+            result = client.invoke_tool("shell", {"command": "date +%Y", "timeout": 5})
+            if not result.is_error:
+                match = re.search(r"\b(19\d{2}|20\d{2})\b", result.output or "")
+                if match and int(match.group(1)) >= min_year:
+                    return True
+        except Exception:
+            pass
+
+        now = time.monotonic()
+        if now >= deadline:
+            return False
+        time.sleep(min(max(0, poll_sec), max(0, deadline - now)))
+
+
 def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="benchmark.runner")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -24,6 +52,8 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--no-judge", action="store_true")
     p_run.add_argument("--repeats", type=int, default=None)
     p_run.add_argument("--out", default=str(REPO_ROOT / "benchmark" / "runs"))
+    p_run.add_argument("--skip-clock-wait", action="store_true")
+    p_run.add_argument("--clock-timeout-sec", type=int, default=180)
     p_rejudge = sub.add_parser("rejudge")
     p_rejudge.add_argument("--run-dir", required=True)
     p_rejudge.add_argument("--judge-model", default="claude-sonnet-4-6")
@@ -48,6 +78,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
     client = AgentClient(base_url=args.agent_url)
     if not client.health():
         print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)
+        return 2
+    if not args.skip_clock_wait and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec):
+        print("agent board clock did not sync before benchmark start", file=sys.stderr)
+        client.close()
         return 2
     judge_cfg = None if args.no_judge else JudgeConfig(model=args.judge_model)
     judge_cache = run_dir / "_judge_cache"

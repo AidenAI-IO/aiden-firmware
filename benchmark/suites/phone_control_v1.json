@@ -1,11 +1,14 @@
 {
   "name": "phone_control_v1",
   "description": "Agent-driven phone control benchmark v1.",
+  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的 iPhone，不是 macOS、Linux 或桌面系统。只能通过截图、touch_gesture、mouse_click、keyboard_text、keyboard_tap 等手机 UI 工具操作目标设备；不要使用 shell、open、osascript 或桌面命令来打开目标手机上的 App。每次工具返回截图后，先判断页面是否变化、是否已经进入目标页面，再继续下一步；如果截图没有变化，不要反复点击同一坐标。打开系统设置或时钟时，优先点击当前 iPhone 主屏幕上可见的图标，或使用 iPhone 搜索。",
   "global_reset": {
     "tool_sequence": [
-      { "tool": "keyboard_tap", "args": { "keys": ["escape"] } },
-      { "tool": "keyboard_tap", "args": { "keys": ["home"] } },
-      { "tool": "wait_ms", "args": { "ms": 800 } }
+      { "tool": "wait_ms", "args": { "ms": 3000 } },
+      { "tool": "touch_gesture", "args": { "type": "home" } },
+      { "tool": "wait_ms", "args": { "ms": 1200 } },
+      { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.83, "y": 0.035 } } },
+      { "tool": "wait_ms", "args": { "ms": 1200 } }
     ]
   },
   "tasks": [
@@ -58,7 +61,7 @@
       "prompt": "请返回上一层。",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "打开系统设置，并进入'显示'或任意一个二级子页面。完成后停在该子页面。",
+        "prompt": "在 iPhone 上打开系统设置，并进入'显示与亮度'或任意一个可见的设置二级菜单。不要使用 shell、open、osascript 或桌面命令；先根据截图确认当前位置，若在主屏幕且看到'设置'齿轮图标就点击它，进入设置后点击'显示与亮度'等二级菜单。完成后必须停在该二级菜单页面，不要停在主屏幕、搜索页或设置首页。",
         "timeout_sec": 120
       },
       "rubric": [

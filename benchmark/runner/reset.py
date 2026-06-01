@@ -23,6 +23,8 @@ def run_tool_sequence(client: AgentClient, sequence: list[dict[str, Any]]) -> No
             raise ResetError(f"reset step missing 'tool': {step!r}")
         try:
             result = client.invoke_tool(tool, args)
+        except AgentTimeoutError as e:
+            raise ResetError(f"tool {tool} timed out: {e}") from e
         except AgentRequestError as e:
             raise ResetError(f"tool {tool} failed: {e}") from e
         if result.is_error:

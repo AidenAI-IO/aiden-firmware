@@ -173,9 +173,7 @@ def run_one_task(
 
 def client_history_or_empty(client: AgentClient) -> list[dict]:
     try:
-        r = client._client.get("/api/history", timeout=5)
-        if r.status_code == 200:
-            return r.json()
+        return client.get_history()
     except Exception:
         pass
     return []

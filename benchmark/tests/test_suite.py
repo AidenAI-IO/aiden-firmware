@@ -174,6 +174,52 @@ def test_load_suite_duplicate_ids_raise(tmp_path: Path):
     with pytest.raises(SuiteValidationError):
         load_suite(p)
 
+
+def test_phone_control_suite_uses_touch_home_for_global_reset():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    sequence = suite.global_reset["tool_sequence"]
+
+    home_steps = [
+        step
+        for step in sequence
+        if step.get("tool") == "touch_gesture" and step.get("args", {}).get("type") == "home"
+    ]
+    assert len(home_steps) == 1
+    assert any(
+        step.get("tool") == "touch_gesture" and step.get("args", {}).get("type") == "home"
+        for step in sequence
+    )
+    assert any(
+        step.get("tool") == "touch_gesture"
+        and step.get("args", {}).get("type") == "tap"
+        and step.get("args", {}).get("point", {}).get("x", 0) > 0.75
+        and step.get("args", {}).get("point", {}).get("y", 1) < 0.08
+        for step in sequence
+    )
+    assert all(step.get("tool") != "keyboard_tap" for step in sequence)
+
+
+def test_phone_control_suite_constrains_agent_to_iphone_ui():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+
+    assert "iPhone" in suite.prompt_prefix
+    assert "macOS" in suite.prompt_prefix
+    assert "shell" in suite.prompt_prefix
+    assert "osascript" in suite.prompt_prefix
+
+
+def test_phone_control_tap_back_setup_is_iphone_specific():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+    setup_prompt = task_by_id["tap_back"].setup["prompt"]
+
+    assert "iPhone" in setup_prompt
+    assert "显示与亮度" in setup_prompt
+    assert "shell" in setup_prompt
+
 def test_memory_suite_covers_representative_memory_behaviors():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "memory_v1.json"
     suite = load_suite(suite_path)

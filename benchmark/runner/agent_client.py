@@ -87,6 +87,13 @@ class AgentClient:
     def clear_history(self) -> None:
         self._post("/api/clear", timeout=10)
 
+    def get_history(self) -> list[dict[str, Any]]:
+        status, body_bytes = self._get("/api/history", timeout=5)
+        if status != 200:
+            raise AgentRequestError(f"history returned {status}")
+        body = json.loads(body_bytes)
+        return body if isinstance(body, list) else []
+
     def chat(self, message: str, timeout_sec: int | None = None,
              attachments: list[dict[str, str]] | None = None) -> ChatResponse:
         payload: dict[str, Any] = {"message": message}
@@ -105,7 +112,7 @@ class AgentClient:
 
     def invoke_tool(self, name: str, args: dict[str, Any]) -> ToolInvokeResult:
         status, body_bytes = self._post(
-            f"/api/tools/{name}", {"input": args}, timeout=30
+            f"/api/tools/{name}", {"input": args}, timeout=90
         )
         if status != 200:
             raise AgentRequestError(f"invoke {name} returned {status}")

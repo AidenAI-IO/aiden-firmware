@@ -60,6 +60,17 @@ def test_chat_returns_response_and_history():
     assert resp.history == history
 
 
+def test_get_history_returns_current_history():
+    history = [{"type": "tool_call", "tool_name": "screenshot"}]
+    seen = {}
+    client = AgentClient(base_url="http://test")
+    with patch("urllib.request.urlopen", _captured(seen, body=history)):
+        result = client.get_history()
+    assert seen["method"] == "GET"
+    assert seen["url"].endswith("/api/history")
+    assert result == history
+
+
 def test_chat_timeout_raises():
     def fake_urlopen(req, timeout=None):
         raise socket.timeout("read timed out")
@@ -77,6 +88,7 @@ def test_invoke_tool_returns_output():
         out = client.invoke_tool("keyboard_tap", {"keys": ["escape"]})
     assert seen["url"].endswith("/api/tools/keyboard_tap")
     assert "escape" in seen["body"]
+    assert seen["timeout"] == 90
     assert out.is_error is False
     assert out.duration_ms == 12
 

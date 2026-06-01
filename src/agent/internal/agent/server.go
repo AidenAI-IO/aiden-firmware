@@ -266,7 +266,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				Timestamp:   event.Timestamp,
 				IsError:     event.IsError,
 			})
-			if event.Type == "tool_call" {
+			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(r.Context(), event.Description)
 			}
 		},
