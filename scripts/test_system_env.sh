@@ -43,6 +43,23 @@ if [ "$output" != "from-system-env|http://proxy.example:18080|$expected_no_proxy
     exit 1
 fi
 
+ERREXIT_ENV_FILE="$TMP_DIR/errexit-system.env"
+cat > "$ERREXIT_ENV_FILE" <<'EOF'
+AIDEN_TEST_VALUE=before-false
+false
+AIDEN_TEST_AFTER_FALSE=after-false
+EOF
+
+errexit_output=$(
+    AIDEN_SYSTEM_ENV="$ERREXIT_ENV_FILE" "$ENV_RUN" sh -c 'printf "%s|%s" "$AIDEN_TEST_VALUE" "$AIDEN_TEST_AFTER_FALSE"'
+)
+
+if [ "$errexit_output" != "before-false|after-false" ]; then
+    echo "aiden-env-run did not isolate errexit while sourcing system env" >&2
+    echo "got: $errexit_output" >&2
+    exit 1
+fi
+
 profile_output=$(
     AIDEN_SYSTEM_ENV="$ENV_FILE" sh -c '. "$1"; printf "%s|%s" "$AIDEN_TEST_VALUE" "$NO_PROXY"' sh "$PROFILE_SNIPPET"
 )

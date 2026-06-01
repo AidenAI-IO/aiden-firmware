@@ -16,6 +16,26 @@ func TestParseRejectsDuplicateScheme(t *testing.T) {
 	}
 }
 
+func TestParseAcceptsUppercaseScheme(t *testing.T) {
+	u, err := Parse("HTTP://proxy.example:7893", "http", "https", "socks5")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if u.String() != "http://proxy.example:7893" {
+		t.Fatalf("Parse() = %q, want normalized HTTP URL", u.String())
+	}
+}
+
+func TestParseRejectsLeadingWhitespace(t *testing.T) {
+	_, err := Parse(" http://proxy.example:7893", "http", "https", "socks5")
+	if err == nil {
+		t.Fatal("Parse() error = nil, want whitespace error")
+	}
+	if !strings.Contains(err.Error(), "whitespace") {
+		t.Fatalf("Parse() error = %v, want whitespace", err)
+	}
+}
+
 func TestParseRejectsEmbeddedProxyAssignmentWithNonBreakingSpace(t *testing.T) {
 	_, err := Parse("http://proxy.example:7893\u00a0http_proxy=http://proxy.example:7893", "http", "https", "socks5")
 	if err == nil {

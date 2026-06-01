@@ -127,6 +127,16 @@ func TestProxyConfigValidateRejectsRelativeURL(t *testing.T) {
 	}
 }
 
+func TestProxyConfigValidateRejectsWhitespace(t *testing.T) {
+	err := (ProxyConfig{HTTPProxy: " http://proxy.example:7893"}).Validate()
+	if err == nil {
+		t.Fatal("expected invalid whitespace proxy URL")
+	}
+	if !strings.Contains(err.Error(), "whitespace") {
+		t.Fatalf("Validate() error = %v, want whitespace", err)
+	}
+}
+
 func TestProxyConfigValidateRejectsDuplicateScheme(t *testing.T) {
 	err := (ProxyConfig{HTTPSProxy: "http://http://proxy.example:7893"}).Validate()
 	if err == nil {

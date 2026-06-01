@@ -41,6 +41,11 @@ start() {
         return 1
     fi
 
+    if [ ! -x "$ENV_RUN_BIN" ]; then
+        echo "Environment wrapper not found at $ENV_RUN_BIN"
+        return 1
+    fi
+
     mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$SYSTEM_ENV_PATH")"
 
     "$ENV_RUN_BIN" "$BIN" --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" --system-env="$SYSTEM_ENV_PATH" &

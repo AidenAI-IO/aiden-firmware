@@ -69,6 +69,25 @@ func TestProxyConfigFromEnvironmentPrefersUppercase(t *testing.T) {
 	}
 }
 
+func TestProxyConfigFromEnvironmentPreservesRawWhitespace(t *testing.T) {
+	t.Setenv("HTTP_PROXY", " http://proxy.example:18080")
+	t.Setenv("http_proxy", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("https_proxy", "")
+	t.Setenv("ALL_PROXY", "")
+	t.Setenv("all_proxy", "")
+	t.Setenv("NO_PROXY", " example.com ")
+	t.Setenv("no_proxy", "")
+
+	proxy := ProxyConfigFromEnvironment()
+	if proxy.HTTPProxy != " http://proxy.example:18080" {
+		t.Fatalf("HTTPProxy = %q, want raw env value", proxy.HTTPProxy)
+	}
+	if proxy.NoProxy != " example.com " {
+		t.Fatalf("NoProxy = %q, want raw env value", proxy.NoProxy)
+	}
+}
+
 func TestConfigValidateRejectsInvalidTriggerMode(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},

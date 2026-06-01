@@ -272,12 +272,12 @@ std::string first_upper_or_lower(const std::map<std::string, std::string>& value
                                  const char* upper,
                                  const char* lower) {
     std::map<std::string, std::string>::const_iterator it = values.find(upper);
-    if (it != values.end() && !trim_copy(it->second).empty()) {
-        return trim_copy(it->second);
+    if (it != values.end() && !it->second.empty()) {
+        return it->second;
     }
     it = values.find(lower);
     if (it != values.end()) {
-        return trim_copy(it->second);
+        return it->second;
     }
     return "";
 }
@@ -296,6 +296,19 @@ bool is_hex_digit(char c) {
     return isxdigit(u) != 0;
 }
 
+int hex_value(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
 std::string invalid_percent_escape(const std::string& value) {
     for (size_t i = 0; i < value.size(); ++i) {
         if (value[i] != '%') {
@@ -303,6 +316,20 @@ std::string invalid_percent_escape(const std::string& value) {
         }
         if (i + 2 >= value.size() || !is_hex_digit(value[i + 1]) || !is_hex_digit(value[i + 2])) {
             return value.substr(i, std::min<size_t>(3, value.size() - i));
+        }
+        i += 2;
+    }
+    return "";
+}
+
+std::string invalid_host_percent_escape(const std::string& host) {
+    for (size_t i = 0; i < host.size(); ++i) {
+        if (host[i] != '%') {
+            continue;
+        }
+        int escaped = hex_value(host[i + 1]) * 16 + hex_value(host[i + 2]);
+        if (host.substr(i, 3) != "%25" && escaped < 0x80) {
+            return host.substr(i, 3);
         }
         i += 2;
     }
@@ -358,6 +385,57 @@ bool is_valid_optional_port(const std::string& tail) {
     return true;
 }
 
+bool is_valid_proxy_host_char(char c) {
+    unsigned char u = static_cast<unsigned char>(c);
+    if (isalnum(u)) {
+        return true;
+    }
+    switch (c) {
+    case '-':
+    case '.':
+    case '_':
+    case '~':
+    case '%':
+    case '!':
+    case '$':
+    case '&':
+    case '\'':
+    case '(':
+    case ')':
+    case '*':
+    case '+':
+    case ',':
+    case ';':
+    case '=':
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool is_valid_proxy_host(const std::string& host) {
+    if (host.empty()) {
+        return false;
+    }
+    for (size_t i = 0; i < host.size(); ++i) {
+        if (!is_valid_proxy_host_char(host[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string validate_proxy_host(const std::string& host) {
+    if (!is_valid_proxy_host(host)) {
+        return "invalid proxy URL host";
+    }
+    std::string bad_escape = invalid_host_percent_escape(host);
+    if (!bad_escape.empty()) {
+        return "invalid URL escape \"" + bad_escape + "\"";
+    }
+    return "";
+}
+
 std::string validate_proxy_authority(const std::string& trimmed, size_t scheme_end) {
     size_t host_start = scheme_end + 3;
     size_t host_end = trimmed.find_first_of("/?#", host_start);
@@ -390,6 +468,10 @@ std::string validate_proxy_authority(const std::string& trimmed, size_t scheme_e
     if (host.empty()) {
         return "expected absolute proxy URL, for example http://127.0.0.1:7890";
     }
+    std::string host_error = validate_proxy_host(host);
+    if (!host_error.empty()) {
+        return host_error;
+    }
     if (colon != std::string::npos && !is_valid_optional_port(host_port.substr(colon))) {
         return "invalid proxy URL port";
     }
@@ -402,12 +484,15 @@ std::string validate_proxy_authority(const std::string& trimmed, size_t scheme_e
 }  // namespace
 
 std::string validate_system_proxy_url(const std::string& url) {
-    std::string trimmed = trim_copy(url);
-    if (trimmed.empty()) {
+    if (url.empty()) {
         return "";
     }
-    if (has_proxy_whitespace(trimmed)) {
+    if (has_proxy_whitespace(url)) {
         return "proxy URL contains whitespace; use one export assignment per line";
+    }
+    std::string trimmed = trim_copy(url);
+    if (trimmed.empty()) {
+        return "expected absolute proxy URL, for example http://127.0.0.1:7890";
     }
     if (has_embedded_proxy_assignment(trimmed)) {
         return "proxy URL contains another proxy assignment; use one export assignment per line";

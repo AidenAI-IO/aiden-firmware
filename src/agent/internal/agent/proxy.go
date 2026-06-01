@@ -54,7 +54,7 @@ func proxyFunc(proxy ProxyConfig) func(*http.Request) (*url.URL, error) {
 }
 
 func validateProxyURL(raw string) error {
-	if strings.TrimSpace(raw) == "" {
+	if raw == "" {
 		return nil
 	}
 	_, err := parseProxyURL(raw)

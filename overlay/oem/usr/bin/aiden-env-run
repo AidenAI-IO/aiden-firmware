@@ -14,8 +14,18 @@ if [ -r "$AIDEN_ENV_FILE" ]; then
         *a*) AIDEN_ENV_RESTORE_ALLEXPORT=1 ;;
         *) AIDEN_ENV_RESTORE_ALLEXPORT=0 ;;
     esac
+    case "$-" in
+        *e*) AIDEN_ENV_RESTORE_ERREXIT=1 ;;
+        *) AIDEN_ENV_RESTORE_ERREXIT=0 ;;
+    esac
     set -a
+    set +e
     . "$AIDEN_ENV_FILE"
+    if [ "$AIDEN_ENV_RESTORE_ERREXIT" = "1" ]; then
+        set -e
+    else
+        set +e
+    fi
     if [ "$AIDEN_ENV_RESTORE_ALLEXPORT" != "1" ]; then
         set +a
     fi
@@ -28,5 +38,5 @@ if [ -n "${HTTP_PROXY:-}${http_proxy:-}${HTTPS_PROXY:-}${https_proxy:-}${ALL_PRO
     export NO_PROXY no_proxy
 fi
 
-unset AIDEN_ENV_DEFAULT_NO_PROXY AIDEN_ENV_FILE AIDEN_ENV_RESTORE_ALLEXPORT
+unset AIDEN_ENV_DEFAULT_NO_PROXY AIDEN_ENV_FILE AIDEN_ENV_RESTORE_ALLEXPORT AIDEN_ENV_RESTORE_ERREXIT
 exec "$@"

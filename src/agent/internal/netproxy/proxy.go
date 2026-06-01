@@ -17,12 +17,15 @@ var proxyAssignmentFragments = []string{
 }
 
 func Parse(raw string, allowedSchemes ...string) (*url.URL, error) {
+	if raw == "" {
+		return nil, fmt.Errorf("expected absolute proxy URL, for example http://127.0.0.1:7890")
+	}
+	if hasProxyWhitespace(raw) {
+		return nil, fmt.Errorf("proxy URL contains whitespace; use one export assignment per line")
+	}
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return nil, fmt.Errorf("expected absolute proxy URL, for example http://127.0.0.1:7890")
-	}
-	if hasProxyWhitespace(trimmed) {
-		return nil, fmt.Errorf("proxy URL contains whitespace; use one export assignment per line")
 	}
 	if hasEmbeddedProxyAssignment(trimmed) {
 		return nil, fmt.Errorf("proxy URL contains another proxy assignment; use one export assignment per line")
@@ -34,7 +37,7 @@ func Parse(raw string, allowedSchemes ...string) (*url.URL, error) {
 	if u.Scheme == "" || u.Host == "" || u.Hostname() == "" {
 		return nil, fmt.Errorf("expected absolute proxy URL, for example http://127.0.0.1:7890")
 	}
-	if strings.Contains(strings.TrimPrefix(trimmed, u.Scheme+"://"), "://") {
+	if strings.Contains(strings.TrimPrefix(strings.ToLower(trimmed), u.Scheme+"://"), "://") {
 		return nil, fmt.Errorf("duplicate scheme in proxy URL")
 	}
 
@@ -51,7 +54,7 @@ func Parse(raw string, allowedSchemes ...string) (*url.URL, error) {
 }
 
 func Validate(raw string, allowedSchemes ...string) error {
-	if strings.TrimSpace(raw) == "" {
+	if raw == "" {
 		return nil
 	}
 	_, err := Parse(raw, allowedSchemes...)
@@ -99,7 +102,7 @@ func NoProxyFromEnvironment() string {
 
 func firstEnv(keys ...string) (string, string) {
 	for _, key := range keys {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		if value := os.Getenv(key); value != "" {
 			return key, value
 		}
 	}

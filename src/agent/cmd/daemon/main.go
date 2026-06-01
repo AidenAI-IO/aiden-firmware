@@ -42,7 +42,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg.SkillMergeModel = agent.NewLLMSkillMergeModel(agent.NewModelManager(cfg.Model, agent.ProxyConfigFromEnvironment()))
+	proxyConfig := agent.ProxyConfigFromEnvironment()
+	if err := proxyConfig.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "proxy environment: %v\n", err)
+		os.Exit(1)
+	}
+	cfg.SkillMergeModel = agent.NewLLMSkillMergeModel(agent.NewModelManager(cfg.Model, proxyConfig))
 
 	runtime, err := agent.NewRuntime(cfg)
 	if err != nil {
