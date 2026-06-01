@@ -119,6 +119,7 @@ select { padding: 8px; background: #333; border: 1px solid #444; border-radius: 
 let autoTimer = null;
 let captureInFlight = false;
 let imgNaturalW = 1920, imgNaturalH = 1080;
+let activeArea = null;
 const STANDARD_COORD_MAX = 32767;
 const DEFAULT_COORDS_TEXT = 'Click the screenshot to send a left click';
 
@@ -165,13 +166,17 @@ function normalizeCoordinate(pixelCoord, size) {
 }
 
 function screenshotToStandardCoords(imgX, imgY) {
-    const pixelX = clamp(Math.round(imgX), 0, Math.max(0, imgNaturalW - 1));
-    const pixelY = clamp(Math.round(imgY), 0, Math.max(0, imgNaturalH - 1));
+    const area = activeArea || {x: 0, y: 0, width: imgNaturalW, height: imgNaturalH};
+    if (imgX < area.x || imgY < area.y || imgX > area.x + area.width - 1 || imgY > area.y + area.height - 1) {
+        return null;
+    }
+    const pixelX = clamp(Math.round(imgX), area.x, area.x + area.width - 1);
+    const pixelY = clamp(Math.round(imgY), area.y, area.y + area.height - 1);
     return {
         imgX: pixelX,
         imgY: pixelY,
-        x: normalizeCoordinate(pixelX, imgNaturalW),
-        y: normalizeCoordinate(pixelY, imgNaturalH)
+        x: normalizeCoordinate(pixelX - area.x, area.width),
+        y: normalizeCoordinate(pixelY - area.y, area.height)
     };
 }
 
@@ -208,6 +213,11 @@ async function captureScreenshot() {
             if (r.ok) {
                 imgNaturalW = r.width;
                 imgNaturalH = r.height;
+                if (r.active_area && r.active_area.valid) {
+                    activeArea = r.active_area;
+                } else {
+                    activeArea = null;
+                }
                 img.src = '/screenshot.jpg?t=' + Date.now();
                 img.style.display = 'block';
                 document.getElementById('placeholder').style.display = 'none';

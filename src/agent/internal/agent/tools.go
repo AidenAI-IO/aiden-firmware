@@ -35,19 +35,19 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 	}
 
 	kbDev := NewHIDDevice(hidCfg.KeyboardDeviceOrDefault())
-	mouseDev := NewHIDDevice(hidCfg.MouseDeviceOrDefault())
 	screen := &screenState{}
-	pointer := &pointerState{}
+	pointer := newPointerController(hidCfg)
 	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 
 	tools := map[string]langtools.Tool{
 		"keyboard_tap":  newPostActionScreenshotTool(&KeyboardTapTool{dev: kbDev}, screenshot, postActionScreenshotDelay),
 		"keyboard_text": newPostActionScreenshotTool(&KeyboardTextTool{dev: kbDev}, screenshot, postActionScreenshotDelay),
-		"mouse_click":   newPostActionScreenshotTool(&MouseClickTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
-		"mouse_move":    newPostActionScreenshotTool(&MouseMoveTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
-		"mouse_scroll":  newPostActionScreenshotTool(&MouseScrollTool{dev: mouseDev, state: pointer}, screenshot, postActionScreenshotDelay),
-		"touch_gesture": newPostActionScreenshotTool(&TouchGestureTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
+		"mouse_click":   newPostActionScreenshotTool(&MouseClickTool{pc: pointer, screen: screen}, screenshot, postActionScreenshotDelay),
+		"mouse_move":    newPostActionScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen}, screenshot, postActionScreenshotDelay),
+		"mouse_scroll":  newPostActionScreenshotTool(&MouseScrollTool{pc: pointer}, screenshot, postActionScreenshotDelay),
+		"touch_gesture": newPostActionScreenshotTool(&TouchGestureTool{pc: pointer, screen: screen}, screenshot, postActionScreenshotDelay),
 		"screenshot":    screenshot,
+		"image_diff":    &ImageDiffTool{},
 		"audio_volume":  NewAudioVolumeTool(audioCfg.SocketOrDefault()),
 		"shell":         &ShellTool{proxy: proxyCfg},
 		"current_time":  NewCurrentTimeTool(),

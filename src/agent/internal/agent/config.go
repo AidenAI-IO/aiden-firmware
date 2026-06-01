@@ -58,12 +58,42 @@ type Config struct {
 }
 
 type TTSConfig struct {
-	Provider string  `toml:"provider"` // "minimax"
-	APIKey   string  `toml:"api_key,omitempty"`
-	Model    string  `toml:"model,omitempty"`
-	VoiceID  string  `toml:"voice_id,omitempty"`
-	Emotion  string  `toml:"emotion,omitempty"`
-	Speed    float64 `toml:"speed,omitempty"`
+	Provider    string  `toml:"provider"` // "minimax-ws", "fish-audio", "alicloud", "volcengine"
+	APIKey      string  `toml:"api_key,omitempty"`
+	Model       string  `toml:"model,omitempty"`
+	VoiceID     string  `toml:"voice_id,omitempty"`
+	Emotion     string  `toml:"emotion,omitempty"`
+	Speed       float64 `toml:"speed,omitempty"`
+	ReferenceID string  `toml:"reference_id,omitempty"` // Fish Audio voice reference ID
+
+	// Credentials lets you store per-provider settings so the app can switch
+	// providers at runtime without losing each one's API key/voice. Keys are
+	// matched case-insensitively against the provider name passed to switch.
+	//
+	// Example agent.toml:
+	//   [tts]
+	//   provider = "minimax-ws"
+	//   api_key = "<minimax-key>"   # used as fallback for any provider
+	//
+	//   [tts.credentials.fish-audio]
+	//   api_key = "<fish-key>"
+	//   voice_id = "<fish-reference-id>"
+	//
+	//   [tts.credentials.cartesia]
+	//   api_key = "<cartesia-key>"
+	//   voice_id = "<cartesia-voice>"
+	Credentials map[string]TTSProviderCredentials `toml:"credentials,omitempty"`
+}
+
+// TTSProviderCredentials holds per-provider override settings.
+// Any field left blank falls back to the top-level [tts] values.
+type TTSProviderCredentials struct {
+	APIKey      string  `toml:"api_key,omitempty"`
+	VoiceID     string  `toml:"voice_id,omitempty"`
+	Emotion     string  `toml:"emotion,omitempty"`
+	Model       string  `toml:"model,omitempty"`
+	Speed       float64 `toml:"speed,omitempty"`
+	ReferenceID string  `toml:"reference_id,omitempty"`
 }
 
 type STTConfig struct {
@@ -158,6 +188,9 @@ type HIDConfig struct {
 	KeyboardDevice string `toml:"keyboard_device,omitempty"`
 	MouseDevice    string `toml:"mouse_device,omitempty"`
 	FrameSocket    string `toml:"frame_socket,omitempty"`
+	// PointerMode selects the hid.usb1 report format: "absolute" (iOS AssistiveTouch)
+	// or "touchscreen" (Android HID digitizer).
+	PointerMode string `toml:"pointer_mode,omitempty"`
 }
 
 func (h HIDConfig) KeyboardDeviceOrDefault() string {
@@ -179,6 +212,19 @@ func (h HIDConfig) FrameSocketOrDefault() string {
 		return h.FrameSocket
 	}
 	return "/tmp/frame_service.sock"
+}
+
+func (h HIDConfig) PointerModeOrDefault() string {
+	switch strings.ToLower(strings.TrimSpace(h.PointerMode)) {
+	case "touchscreen":
+		return "touchscreen"
+	default:
+		return "absolute"
+	}
+}
+
+func (h HIDConfig) PointerTouchscreen() bool {
+	return h.PointerModeOrDefault() == "touchscreen"
 }
 
 type ModelConfig struct {
