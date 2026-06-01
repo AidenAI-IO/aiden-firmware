@@ -25,7 +25,6 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 	template := strings.Join([]string{
 		"You are agent {{.agent_name}}.",
 		"{{.current_date}}",
-		"{{.host_runtime_info}}",
 		"Base instruction:",
 		"{{.agent_instruction}}",
 		"",
@@ -71,7 +70,6 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 		PartialVariables: map[string]any{
 			"agent_name":         agentName,
 			"current_date":       currentDateContext(),
-			"host_runtime_info":  hostRuntimeInfoContext(),
 			"agent_instruction":  combinedAgentInstruction(cfg),
 			"default_behavior":   defaultAgentBehavior(),
 			"skill_behavior":     skillBehavior(),
@@ -87,7 +85,6 @@ func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, ava
 	parts := []string{
 		"You are agent.",
 		currentDateContext(),
-		hostRuntimeInfoContext(),
 		"Base instruction:",
 		combinedAgentInstruction(cfg),
 		"",
@@ -195,11 +192,11 @@ func combinedAgentInstruction(cfg AgentConfig) string {
 func defaultAgentBehavior() string {
 	return strings.Join([]string{
 		"## 环境",
-		"- 你运行在 Aiden 硬件控制器上，运行时 OS 是 Linux；不一定是截图中显示的设备。",
+		"- 你运行在 Aiden 硬件控制器上（" + hostRuntimeInfoContext() + "）；不一定是截图中显示的设备。",
 		"- shell、本地文件、进程和系统命令只作用于 Aiden 硬件控制器，不会操作截图中的目标 UI。shell 工具只在 Aiden 硬件控制器上执行；只在控制器诊断，或用户明确要求在 Aiden 控制器上执行命令时使用 shell。",
 		"- 目标设备和目标 OS 根据截图、连接元数据、谨慎行为探测或用户输入推断。",
 		"- Aiden 主要用于控制连接的手机或移动 OS；这只是弱先验，不是已检测事实。当截图、工具结果或失败动作与该假设冲突时，必须修正判断。",
-		"- 不要因为运行时是 Linux 就推断目标设备也是 Linux；操作目标 UI 时，不要用本地系统命令代替目标控制工具。",
+		"- 不要根据宿主机的 OS、内核或架构推断目标设备信息；操作目标 UI 时，不要用本地系统命令代替目标控制工具。",
 		"",
 		"## 默认行为",
 		"- 默认用简体中文回答；用户明确使用其他语言时跟随用户语言。最终回复要简短、自然、适合 TTS 播放；除非用户要求，避免 Markdown 表格或长列表。",

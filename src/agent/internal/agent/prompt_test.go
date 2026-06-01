@@ -38,22 +38,26 @@ func TestPromptIncludesRealHostRuntimeInfo(t *testing.T) {
 	kernelVersion := mustUname(t, "-r")
 	architecture := mustUname(t, "-m")
 	wantLine := "宿主机: kernel=" + kernelVersion + ", hostname=" + hostname + ", arch=" + architecture
+	wantEnvironmentLine := "- 你运行在 Aiden 硬件控制器上（" + wantLine + "）；不一定是截图中显示的设备。"
 
 	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{}, nil)
-	if !strings.Contains(msg, wantLine) {
-		t.Fatalf("function system message missing compact host info %q:\n%s", wantLine, msg)
+	if !strings.Contains(msg, wantEnvironmentLine) {
+		t.Fatalf("function system message missing host info in environment guidance %q:\n%s", wantEnvironmentLine, msg)
 	}
 
 	prompt := buildPrompt("aiden", AgentConfig{}, ResolvedSkills{}, nil)
-	if !strings.Contains(prompt.Template, "{{.host_runtime_info}}") {
-		t.Fatalf("ReAct prompt template should include host_runtime_info variable:\n%s", prompt.Template)
+	if strings.Contains(prompt.Template, "{{.host_runtime_info}}") {
+		t.Fatalf("ReAct prompt template should not keep a separate host_runtime_info variable:\n%s", prompt.Template)
 	}
-	info, ok := prompt.PartialVariables["host_runtime_info"].(string)
+	if _, ok := prompt.PartialVariables["host_runtime_info"]; ok {
+		t.Fatalf("host_runtime_info should be folded into default_behavior partial: %#v", prompt.PartialVariables["host_runtime_info"])
+	}
+	defaultBehavior, ok := prompt.PartialVariables["default_behavior"].(string)
 	if !ok {
-		t.Fatalf("host_runtime_info partial has type %T, want string", prompt.PartialVariables["host_runtime_info"])
+		t.Fatalf("default_behavior partial has type %T, want string", prompt.PartialVariables["default_behavior"])
 	}
-	if info != wantLine {
-		t.Fatalf("host_runtime_info partial = %q, want %q", info, wantLine)
+	if !strings.Contains(defaultBehavior, wantEnvironmentLine) {
+		t.Fatalf("default_behavior partial missing host info in environment guidance %q:\n%s", wantEnvironmentLine, defaultBehavior)
 	}
 }
 
@@ -85,10 +89,9 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 		"extra prompt",
 		"默认用简体中文回答",
 		"Aiden 硬件控制器",
-		"运行时 OS 是 Linux",
 		"不一定是截图中显示的设备",
 		"shell、本地文件、进程和系统命令只作用于 Aiden 硬件控制器",
-		"不要因为运行时是 Linux 就推断目标设备也是 Linux",
+		"不要根据宿主机的 OS、内核或架构推断目标设备信息",
 		"不要用本地系统命令代替目标控制工具",
 		"目标设备和目标 OS 根据截图、连接元数据、谨慎行为探测或用户输入推断",
 		"弱先验，不是已检测事实",
@@ -129,6 +132,7 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 		"PowerShell",
 		"xdotool",
 		"平台包管理器",
+		"运行时 OS 是 Linux",
 	} {
 		if strings.Contains(msg, unwanted) {
 			t.Fatalf("system message should not contain old localized guidance %q:\n%s", unwanted, msg)
