@@ -28,7 +28,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.input_mode = "stt";
     cfg.trigger_mode = "manual";
     cfg.vad_backend = "cpu";
-    cfg.vad_model_path = "/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
+    cfg.vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
     cfg.vad_helper_path = "/oem/usr/bin/rknn_vad";
     cfg.vad_speech_threshold = 0.5;
     cfg.silence_ms = 1000;
@@ -90,7 +90,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.input_mode == "stt");
     CHECK(loaded.trigger_mode == "manual");
     CHECK(loaded.vad_backend == "cpu");
-    CHECK(loaded.vad_model_path == "/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn");
+    CHECK(loaded.vad_model_path == "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn");
     CHECK(loaded.vad_helper_path == "/oem/usr/bin/rknn_vad");
     CHECK(loaded.vad_speech_threshold == doctest::Approx(0.5));
     CHECK(loaded.silence_ms == 1000);

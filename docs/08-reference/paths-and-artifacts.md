@@ -31,6 +31,7 @@
 | 路径 | 说明 |
 | --- | --- |
 | `/oem/usr/bin/` | 应用二进制安装目录 |
+| `/oem/usr/model/` | 随 OEM/OTA 更新的 VAD 模型和 weights |
 | `/userdata/agent/agent.toml` | Agent 主配置 |
 | `/userdata/agent/skills/` | Agent skills 目录 |
 | `/userdata/agent/memory/` | Agent 记忆持久化目录 |
@@ -51,6 +52,7 @@
 | `overlay/etc/aiden_audio_service.conf` | Audio Service init 配置模板 |
 | `overlay/etc/init.d/S20oemslot` | Slot-aware `/oem` 挂载脚本 |
 | `overlay/etc/init.d/S54ota` | OTA daemon watchdog |
+| `overlay/oem/usr/model/` | VAD 模型和 weights，随 OEM 分区更新 |
 | `overlay/userdata/agent/agent.toml` | Agent 默认配置模板 |
 | `overlay/userdata/wpa_supplicant.conf` | Wi-Fi 默认配置模板 |
 

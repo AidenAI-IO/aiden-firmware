@@ -69,7 +69,7 @@ Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go
 input_mode = "stt"
 trigger_mode = "wakeup"
 vad_backend = "rknn"
-vad_model_path = "/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
+vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
 vad_helper_path = "/oem/usr/bin/rknn_vad"
 vad_speech_threshold = 0.5
 silence_ms = 650
@@ -161,8 +161,8 @@ speed = 1.0
 可在板端直接验证 VAD helper：
 
 ```bash
-/oem/usr/bin/rknn_vad --model /userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn --weights /userdata/agent/model/silero_vad_6_2_lstm_decoder_weights.bin --self-test
-/oem/usr/bin/cpu_vad --weights /userdata/agent/model/silero_vad_6_2_lstm_decoder_weights.bin --self-test
+/oem/usr/bin/rknn_vad --model /oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn --weights /oem/usr/model/silero_vad_6_2_lstm_decoder_weights.bin --self-test
+/oem/usr/bin/cpu_vad --weights /oem/usr/model/silero_vad_6_2_lstm_decoder_weights.bin --self-test
 ```
 
 成功时会输出一行 `P <probability>`；如果仍有 RKNN 输入配置问题，会直接输出 `ERR ...`。

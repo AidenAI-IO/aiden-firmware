@@ -55,7 +55,7 @@ instruction = "默认用简体中文回答，语气要像真人说话，简短�
 input_mode = "stt"
 trigger_mode = "manual"
 vad_backend = "rknn"
-vad_model_path = "/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
+vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
 vad_helper_path = "/oem/usr/bin/rknn_vad"
 vad_speech_threshold = 0.5
 silence_ms = 650
@@ -108,7 +108,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `input_mode` | `text` / `stt` / `audio` | 输入模式 |
 | `trigger_mode` | `manual` / `wakeup` | 语音模式触发方式 |
 | `vad_backend` | `rknn` | VAD 后端：`rknn` 使用 NPU encoder + CPU LSTM/decoder，`cpu` 使用纯 CPU helper |
-| `vad_model_path` | `/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder 模型路径；`vad_backend="cpu"` 时不使用 |
+| `vad_model_path` | `/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder 模型路径；`vad_backend="cpu"` 时不使用 |
 | `vad_helper_path` | `/oem/usr/bin/rknn_vad` | VAD helper 可执行文件路径；CPU 后端默认 `/oem/usr/bin/cpu_vad` |
 | `vad_speech_threshold` | `0.5` | Silero VAD 语音概率阈值 |
 | `silence_ms` | `650` | 多少毫秒静音后认为一句话结束 |
