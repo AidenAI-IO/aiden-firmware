@@ -7,6 +7,7 @@ LOCAL_BUILD_SH="$ROOT_DIR/build.sh"
 BUILD_IMAGE_SH="$ROOT_DIR/build_image.sh"
 WORKFLOW="$ROOT_DIR/.github/workflows/build.yml"
 REPACK_SCRIPT="$ROOT_DIR/scripts/repack_ota_update_image.sh"
+GITIGNORE="$ROOT_DIR/.gitignore"
 
 if grep -Eq 'go\.dev/dl|wget .*go|curl .*go|tar .*go\$|GO_TARBALL|GO_TARBALL_SHA256' "$BUILD_SH" "$BUILD_IMAGE_SH"; then
     echo "build scripts must not download or extract Go toolchains" >&2
@@ -60,6 +61,29 @@ if ! grep -q './build.sh sysdrv' "$ROOT_DIR/_build_image.sh" || \
    ! grep -q './build.sh app' "$ROOT_DIR/_build_image.sh" || \
    ! grep -q './build.sh firmware' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must build components first, inject overlay, then package firmware once" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'BENCHMARK_SRC="$SCRIPT_DIR/benchmark"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'BENCHMARK_DEST="$OVERLAY/userdata/agent/benchmark"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq -- "--exclude '__pycache__/'" "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq -- "--exclude '*.pyc'" "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq -- "--exclude '.DS_Store'" "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq -- "--exclude '._*'" "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/runner/" "$BENCHMARK_DEST/runner/"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/suites/" "$BENCHMARK_DEST/suites/"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'rm -f "$BENCHMARK_DEST/pyproject.toml"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must stage benchmark runner and suites into userdata" >&2
+    exit 1
+fi
+
+if ! grep -q 'overlay/userdata' "$BUILD_IMAGE_SH"; then
+    echo "build_image.sh must restore ownership of Docker-staged overlay userdata" >&2
+    exit 1
+fi
+
+if ! grep -q '^/overlay/userdata/agent/benchmark/$' "$GITIGNORE"; then
+    echo "generated benchmark userdata staging directory must be gitignored" >&2
     exit 1
 fi
 
