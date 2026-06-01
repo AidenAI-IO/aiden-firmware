@@ -170,6 +170,7 @@ func NewUpdater(config UpdaterConfig, reboot func() error) (*Updater, error) {
 }
 
 func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
+	u.logf("ota check: start repo=%s channel=%s", logValue(u.config.Repo, "<direct-api>"), logValue(u.config.Channel, "stable"))
 	if err := u.ProcessPendingHealth(ctx); err != nil {
 		u.recordError("health", err)
 		return UpdateResult{}, err
@@ -209,22 +210,26 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 	}
+	u.logf("ota check: active_slot=%s target_slot=%s", slotLogName(active), slotLogName(target))
 	releaseURL, err := u.releaseURL()
 	if err != nil {
 		u.recordError("release", err)
 		return UpdateResult{}, err
 	}
 	token := u.githubToken()
+	u.logf("ota release: fetching %s", releaseURL)
 	assetsByName, err := u.fetchLatestReleaseAssets(ctx, releaseURL, token)
 	if err != nil {
 		u.recordError("release", err)
 		return UpdateResult{}, err
 	}
+	u.logf("ota release: found %d assets", len(assetsByName))
 	manifestURL, err := requiredAssetURL(assetsByName, u.config.ManifestAsset)
 	if err != nil {
 		u.recordError("manifest", err)
 		return UpdateResult{}, err
 	}
+	u.logf("ota manifest: downloading %s from %s", u.config.ManifestAsset, manifestURL)
 	manifestBytes, err := u.fetchBytesWithTokenLimit(ctx, manifestURL, token, MaxRemoteManifestBytes)
 	if err != nil {
 		u.recordError("manifest", err)
@@ -240,6 +245,7 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 		u.recordError("manifest", err)
 		return UpdateResult{}, err
 	}
+	u.logf("ota manifest: verified version=%s channel=%s build_time=%s parts=%d", manifest.Version, logValue(manifest.Channel, "<unset>"), manifest.BuildTime, len(manifest.Parts))
 	manifestChannel := releaseManifestChannel(u.config.Channel)
 	if manifest.Channel != "" && manifestChannel != "" && manifest.Channel != manifestChannel {
 		err := fmt.Errorf("manifest channel %q, want %q", manifest.Channel, manifestChannel)
@@ -251,6 +257,7 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 		return UpdateResult{}, err
 	}
 	if isNoUpdate(state, manifest) {
+		u.logf("ota check: no update version=%s build_time=%s", manifest.Version, manifest.BuildTime)
 		return UpdateResult{NoUpdate: true, Version: manifest.Version, TargetSlot: target}, nil
 	}
 	if err := state.ValidateSelectiveUpdate(manifest, target); err != nil {
@@ -281,6 +288,7 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 			u.recordError("download", err)
 			return UpdateResult{}, err
 		}
+		u.logf("ota download: %s start size=%s url=%s dst=%s", asset.Name, formatBytes(asset.Size), assetURL, dst)
 		if err := u.downloadFileWithToken(ctx, assetURL, dst, asset.Size, token); err != nil {
 			u.recordError("download", err)
 			return UpdateResult{}, err
@@ -289,10 +297,12 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 			u.recordError("verify", err)
 			return UpdateResult{}, err
 		}
+		u.logf("ota verify: %s sha256 ok", asset.Name)
 		selectedAssets[part.Name] = asset
 		downloaded[part.Name] = dst
 	}
 	if u.config.DryRun {
+		u.logf("ota check: dry-run complete version=%s target_slot=%s", manifest.Version, slotLogName(target))
 		return UpdateResult{Updated: true, Version: manifest.Version, TargetSlot: target}, nil
 	}
 	state.Phase = "writing"
@@ -323,7 +333,13 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 
 	writer := PartitionWriter{BlockDir: u.config.BlockDir, ActiveSlot: active, PartitionSizes: u.partitionSizes()}
 	for part, image := range downloaded {
-		if err := writer.WritePart(part, target, image); err != nil {
+		blockName, err := writer.ResolveBlockName(part, target)
+		if err != nil {
+			u.recordError("write", err)
+			return UpdateResult{}, err
+		}
+		u.logf("ota write: %s -> %s start image=%s", part, blockName, image)
+		if err := writer.WritePartWithProgress(part, target, image, u.logWriteProgress); err != nil {
 			u.recordError("write", err)
 			return UpdateResult{}, err
 		}
@@ -359,7 +375,9 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 		u.recordError("misc", err)
 		return UpdateResult{}, err
 	}
+	u.logf("ota misc: switched active slot to %s tries=%d", slotLogName(target), u.config.SwitchTries)
 	if u.reboot != nil {
+		u.logf("ota reboot: requested after switching to slot %s", slotLogName(target))
 		if err := u.reboot(); err != nil {
 			u.recordError("reboot", err)
 			return UpdateResult{}, err
@@ -380,6 +398,7 @@ func (u *Updater) ProcessPendingHealth(ctx context.Context) error {
 	if err := json.Unmarshal(data, &pending); err != nil {
 		return err
 	}
+	u.logf("ota health: pending slot=%s version=%s timeout=%s", pending.TargetSlot, pending.TargetVersion, u.config.HealthTimeout)
 	pendingSlot, err := parseSlotName(pending.TargetSlot)
 	if err != nil {
 		return err
@@ -403,11 +422,14 @@ func (u *Updater) ProcessPendingHealth(ctx context.Context) error {
 	}
 	bootID := currentBootID()
 	if err := ValidateHealthMarker(u.healthPath(), pending, bootID); err == nil {
+		u.logf("ota health: marker valid, committing slot=%s", pending.TargetSlot)
 		return u.commitPendingHealth(pending)
 	}
+	u.logf("ota health: waiting for marker path=%s", u.healthPath())
 	if err := WaitForHealth(ctx, u.healthPath(), pending, bootID, u.config.HealthTimeout, u.config.HealthPollInterval, u.reboot); err != nil {
 		return err
 	}
+	u.logf("ota health: marker received, committing slot=%s", pending.TargetSlot)
 	return u.commitPendingHealth(pending)
 }
 
@@ -492,6 +514,7 @@ func (u *Updater) commitPendingHealth(pending PendingBoot) error {
 }
 
 func (u *Updater) RunDaemon(ctx context.Context) error {
+	u.logf("ota daemon: started interval=%s jitter=%s", u.config.Interval, u.config.Jitter)
 	if err := u.ProcessPendingHealth(ctx); err != nil {
 		u.logf("ota health: %v", err)
 		u.recordError("health", err)
@@ -502,6 +525,7 @@ func (u *Updater) RunDaemon(ctx context.Context) error {
 			u.recordError("check", err)
 		}
 		wait := u.config.Interval + randomJitter(u.config.Jitter)
+		u.logf("ota daemon: next check in %s", wait)
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
@@ -685,7 +709,10 @@ func (u *Updater) fetchBytesWithTokenLimit(parent context.Context, url string, t
 func (u *Updater) downloadFileWithToken(parent context.Context, url string, dst string, expectedSize int64, token string) error {
 	ctx, cancel := u.httpContext(parent)
 	defer cancel()
-	return DownloadFileWithToken(ctx, url, dst, expectedSize, token)
+	return DownloadFileWithOptions(ctx, url, dst, expectedSize, DownloadOptions{
+		BearerToken: token,
+		Progress:    u.logDownloadProgress,
+	})
 }
 
 func (u *Updater) githubToken() string {
@@ -717,6 +744,82 @@ func (u *Updater) logf(format string, args ...any) {
 	if u.config.Logger != nil {
 		u.config.Logger.Printf(format, args...)
 	}
+}
+
+func (u *Updater) logDownloadProgress(progress DownloadProgress) {
+	if u.config.Logger == nil {
+		return
+	}
+	name := filepath.Base(progress.Path)
+	amount := formatDownloadAmount(progress.Bytes, progress.Total)
+	if progress.Complete {
+		u.logf("ota download: %s complete %s", name, amount)
+		return
+	}
+	resume := ""
+	if progress.ResumedFrom > 0 {
+		resume = fmt.Sprintf(" resumed_from=%s", formatBytes(progress.ResumedFrom))
+	}
+	percent := ""
+	if progress.Total > 0 {
+		percent = fmt.Sprintf(" (%d%%)", progress.Bytes*100/progress.Total)
+	}
+	u.logf("ota download: %s progress %s%s%s", name, amount, percent, resume)
+}
+
+func (u *Updater) logWriteProgress(progress WriteProgress) {
+	if u.config.Logger == nil {
+		return
+	}
+	amount := formatDownloadAmount(progress.Bytes, progress.Total)
+	if progress.Complete {
+		u.logf("ota write: %s -> %s complete %s", progress.Part, progress.BlockName, amount)
+		return
+	}
+	percent := ""
+	if progress.Total > 0 {
+		percent = fmt.Sprintf(" (%d%%)", progress.Bytes*100/progress.Total)
+	}
+	u.logf("ota write: %s -> %s progress %s%s", progress.Part, progress.BlockName, amount, percent)
+}
+
+func formatDownloadAmount(bytes int64, total int64) string {
+	if total >= 0 {
+		return fmt.Sprintf("%s/%s", formatBytes(bytes), formatBytes(total))
+	}
+	return formatBytes(bytes)
+}
+
+func formatBytes(bytes int64) string {
+	if bytes < 0 {
+		return "unknown"
+	}
+	if bytes < 1024 {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	value := float64(bytes)
+	for _, unit := range []string{"KiB", "MiB", "GiB"} {
+		value /= 1024
+		if value < 1024 || unit == "GiB" {
+			return fmt.Sprintf("%.1f %s", value, unit)
+		}
+	}
+	return fmt.Sprintf("%.1f GiB", value)
+}
+
+func slotLogName(slot Slot) string {
+	name, err := slotName(slot)
+	if err != nil {
+		return fmt.Sprint(slot)
+	}
+	return name
+}
+
+func logValue(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func requiredAssetURL(assets map[string]string, name string) (string, error) {

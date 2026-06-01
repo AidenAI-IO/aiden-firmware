@@ -6,13 +6,35 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 )
 
+const defaultProgressInterval = 5 * time.Second
+
+type DownloadOptions struct {
+	BearerToken      string
+	Progress         func(DownloadProgress)
+	ProgressInterval time.Duration
+}
+
+type DownloadProgress struct {
+	URL         string
+	Path        string
+	Bytes       int64
+	Total       int64
+	ResumedFrom int64
+	Complete    bool
+}
+
 func DownloadFile(ctx context.Context, url string, dst string, expectedSize int64) error {
-	return DownloadFileWithToken(ctx, url, dst, expectedSize, "")
+	return DownloadFileWithOptions(ctx, url, dst, expectedSize, DownloadOptions{})
 }
 
 func DownloadFileWithToken(ctx context.Context, url string, dst string, expectedSize int64, bearerToken string) error {
+	return DownloadFileWithOptions(ctx, url, dst, expectedSize, DownloadOptions{BearerToken: bearerToken})
+}
+
+func DownloadFileWithOptions(ctx context.Context, url string, dst string, expectedSize int64, options DownloadOptions) error {
 	part := dst + ".part"
 	resumeAt := int64(0)
 	if info, err := os.Stat(part); err == nil {
@@ -25,7 +47,11 @@ func DownloadFileWithToken(ctx context.Context, url string, dst string, expected
 			if err := os.Rename(part, dst); err != nil {
 				return err
 			}
-			return fsyncDirFor(dst)
+			if err := fsyncDirFor(dst); err != nil {
+				return err
+			}
+			reportDownloadProgress(options.Progress, url, dst, resumeAt, expectedSize, resumeAt, true)
+			return nil
 		}
 		if resumeAt > expectedSize {
 			return fmt.Errorf("download size %d exceeds expected %d", resumeAt, expectedSize)
@@ -36,8 +62,8 @@ func DownloadFileWithToken(ctx context.Context, url string, dst string, expected
 	if err != nil {
 		return err
 	}
-	if bearerToken != "" {
-		req.Header.Set("Authorization", "Bearer "+bearerToken)
+	if options.BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+options.BearerToken)
 	}
 	if resumeAt > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeAt))
@@ -58,20 +84,27 @@ func DownloadFileWithToken(ctx context.Context, url string, dst string, expected
 		flags |= os.O_TRUNC
 		resumeAt = 0
 	}
+	reporter := newDownloadProgressReporter(options.Progress, url, dst, expectedSize, resumeAt, options.ProgressInterval)
 	f, err := os.OpenFile(part, flags, 0o644)
 	if err != nil {
 		return err
 	}
 	copyErr := error(nil)
 	var copied int64
+	body := &cumulativeProgressReader{
+		reader: resp.Body,
+		onRead: func(n int64) {
+			reporter.maybeReport(resumeAt + n)
+		},
+	}
 	if expectedSize >= 0 {
 		remaining := expectedSize - resumeAt
-		copied, copyErr = io.Copy(f, io.LimitReader(resp.Body, remaining+1))
+		copied, copyErr = io.Copy(f, io.LimitReader(body, remaining+1))
 		if copyErr == nil && copied > remaining {
 			copyErr = fmt.Errorf("download size exceeds expected %d", expectedSize)
 		}
 	} else {
-		copied, copyErr = io.Copy(f, resp.Body)
+		copied, copyErr = io.Copy(f, body)
 	}
 	if copyErr == nil {
 		copyErr = f.Sync()
@@ -94,5 +127,91 @@ func DownloadFileWithToken(ctx context.Context, url string, dst string, expected
 	if err := os.Rename(part, dst); err != nil {
 		return err
 	}
-	return fsyncDirFor(dst)
+	if err := fsyncDirFor(dst); err != nil {
+		return err
+	}
+	reporter.complete(info.Size())
+	return nil
+}
+
+type cumulativeProgressReader struct {
+	reader io.Reader
+	onRead func(int64)
+	read   int64
+}
+
+func (r *cumulativeProgressReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		r.read += int64(n)
+		r.onRead(r.read)
+	}
+	return n, err
+}
+
+type downloadProgressReporter struct {
+	progress    func(DownloadProgress)
+	url         string
+	path        string
+	total       int64
+	resumedFrom int64
+	interval    time.Duration
+	lastReport  time.Time
+	nextPercent int64
+}
+
+func newDownloadProgressReporter(progress func(DownloadProgress), url string, path string, total int64, resumedFrom int64, interval time.Duration) *downloadProgressReporter {
+	if interval <= 0 {
+		interval = defaultProgressInterval
+	}
+	return &downloadProgressReporter{
+		progress:    progress,
+		url:         url,
+		path:        path,
+		total:       total,
+		resumedFrom: resumedFrom,
+		interval:    interval,
+		lastReport:  time.Now(),
+		nextPercent: 10,
+	}
+}
+
+func (r *downloadProgressReporter) maybeReport(bytes int64) {
+	if r.progress == nil {
+		return
+	}
+	now := time.Now()
+	shouldReport := now.Sub(r.lastReport) >= r.interval
+	if r.total > 0 {
+		percent := bytes * 100 / r.total
+		if percent >= r.nextPercent && percent < 100 {
+			shouldReport = true
+			for r.nextPercent <= percent {
+				r.nextPercent += 10
+			}
+		}
+	}
+	if !shouldReport {
+		return
+	}
+	r.lastReport = now
+	reportDownloadProgress(r.progress, r.url, r.path, bytes, r.total, r.resumedFrom, false)
+}
+
+func (r *downloadProgressReporter) complete(bytes int64) {
+	reportDownloadProgress(r.progress, r.url, r.path, bytes, r.total, r.resumedFrom, true)
+}
+
+func reportDownloadProgress(progress func(DownloadProgress), url string, path string, bytes int64, total int64, resumedFrom int64, complete bool) {
+	if progress == nil {
+		return
+	}
+	progress(DownloadProgress{
+		URL:         url,
+		Path:        path,
+		Bytes:       bytes,
+		Total:       total,
+		ResumedFrom: resumedFrom,
+		Complete:    complete,
+	})
 }
