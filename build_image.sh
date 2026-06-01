@@ -41,7 +41,7 @@ restore_docker_output_ownership() {
   fi
 
   paths=()
-  for path in build overlay/oem pico-sdk/output; do
+  for path in build overlay/oem overlay/userdata pico-sdk/output; do
     if [ -e "$path" ]; then
       paths+=("$path")
     fi
