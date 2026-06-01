@@ -35,6 +35,10 @@ copy_if_missing() {
 generate_host_key() {
 	type="$1"
 	path="$2"
+	if [ ! -x "$SSH_KEYGEN_BIN" ]; then
+		echo "ssh-keygen not found: $SSH_KEYGEN_BIN" >&2
+		return 1
+	fi
 	case "$type" in
 		rsa) "$SSH_KEYGEN_BIN" -t rsa -b 3072 -N '' -f "$path" >/dev/null 2>&1 ;;
 		ecdsa) "$SSH_KEYGEN_BIN" -t ecdsa -N '' -f "$path" >/dev/null 2>&1 ;;
@@ -57,7 +61,10 @@ ensure_persistent_ssh_state() {
 		copy_if_missing "$etc_key-cert.pub" "$persistent_key-cert.pub"
 
 		if [ ! -f "$persistent_key" ]; then
-			generate_host_key "$type" "$persistent_key" || true
+			if ! generate_host_key "$type" "$persistent_key"; then
+				echo "failed to generate SSH host key: $persistent_key" >&2
+				return 1
+			fi
 		fi
 
 		if [ -f "$persistent_key" ]; then
@@ -77,9 +84,23 @@ ensure_persistent_ssh_state() {
 		return 1
 	fi
 
-	copy_if_missing "$ROOT_HOME/.ssh/authorized_keys" "$PERSISTENT_ROOT_DIR/authorized_keys"
-	touch "$PERSISTENT_ROOT_DIR/authorized_keys"
-	ln -sf "$PERSISTENT_ROOT_DIR/authorized_keys" "$ROOT_HOME/.ssh/authorized_keys"
+	if [ -f "$ROOT_HOME/.ssh/authorized_keys" ] && [ ! -f "$PERSISTENT_ROOT_DIR/authorized_keys" ]; then
+		if ! copy_if_missing "$ROOT_HOME/.ssh/authorized_keys" "$PERSISTENT_ROOT_DIR/authorized_keys" ||
+			[ ! -f "$PERSISTENT_ROOT_DIR/authorized_keys" ]; then
+			echo "failed to persist authorized_keys" >&2
+			return 1
+		fi
+	fi
+	if [ ! -f "$PERSISTENT_ROOT_DIR/authorized_keys" ]; then
+		if ! touch "$PERSISTENT_ROOT_DIR/authorized_keys"; then
+			echo "failed to create persistent authorized_keys: $PERSISTENT_ROOT_DIR/authorized_keys" >&2
+			return 1
+		fi
+	fi
+	if ! ln -sf "$PERSISTENT_ROOT_DIR/authorized_keys" "$ROOT_HOME/.ssh/authorized_keys"; then
+		echo "failed to link persistent authorized_keys" >&2
+		return 1
+	fi
 
 	chmod 600 "$PERSISTENT_HOST_DIR"/ssh_host_*_key "$PERSISTENT_ROOT_DIR/authorized_keys" 2>/dev/null || true
 	chmod 644 "$PERSISTENT_HOST_DIR"/ssh_host_*_key.pub "$PERSISTENT_HOST_DIR"/ssh_host_*_key-cert.pub 2>/dev/null || true
@@ -108,10 +129,6 @@ start() {
 
 	if [ ! -x "$SSHD_BIN" ]; then
 		echo "sshd binary not found: $SSHD_BIN"
-		return 1
-	fi
-	if [ ! -x "$SSH_KEYGEN_BIN" ]; then
-		echo "ssh-keygen not found: $SSH_KEYGEN_BIN"
 		return 1
 	fi
 
