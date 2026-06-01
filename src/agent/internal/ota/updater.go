@@ -28,38 +28,36 @@ const (
 )
 
 type UpdaterConfig struct {
-	ConfigPath                    string                       `json:"-"`
-	StateDir                      string                       `json:"state_dir,omitempty"`
-	DownloadDir                   string                       `json:"download_dir,omitempty"`
-	MiscPath                      string                       `json:"misc_path,omitempty"`
-	BlockDir                      string                       `json:"block_dir,omitempty"`
-	Repo                          string                       `json:"repo,omitempty"`
-	Channel                       string                       `json:"channel,omitempty"`
-	APIBase                       string                       `json:"api_base,omitempty"`
-	ManifestAsset                 string                       `json:"manifest_asset,omitempty"`
-	PublicKeyPath                 string                       `json:"public_key_path,omitempty"`
-	PublicKey                     ed25519.PublicKey            `json:"-"`
-	FactoryVersion                string                       `json:"factory_version,omitempty"`
-	FactoryBuildTime              string                       `json:"factory_build_time,omitempty"`
-	FactoryPartitionHashes        map[string]map[string]string `json:"factory_partition_hashes,omitempty"`
-	PartitionSizes                map[string]int64             `json:"partition_sizes,omitempty"`
-	GitHubToken                   string                       `json:"github_token,omitempty"`
-	GitHubTokenPath               string                       `json:"github_token_path,omitempty"`
-	Interval                      time.Duration                `json:"-"`
-	Jitter                        time.Duration                `json:"-"`
-	IntervalSeconds               int                          `json:"interval_seconds,omitempty"`
-	JitterSeconds                 int                          `json:"jitter_seconds,omitempty"`
-	SwitchTries                   uint8                        `json:"switch_tries,omitempty"`
-	HealthTimeout                 time.Duration                `json:"-"`
-	HealthTimeoutSecs             int                          `json:"health_timeout_seconds,omitempty"`
-	HealthPollInterval            time.Duration                `json:"-"`
-	HTTPTimeout                   time.Duration                `json:"-"`
-	HTTPTimeoutSecs               int                          `json:"http_timeout_seconds,omitempty"`
-	HTTPResponseHeaderTimeout     time.Duration                `json:"-"`
-	HTTPResponseHeaderTimeoutSecs int                          `json:"http_response_header_timeout_seconds,omitempty"`
-	DryRun                        bool                         `json:"dry_run,omitempty"`
-	TargetSlotOverride            string                       `json:"target_slot_override,omitempty"`
-	Logger                        *log.Logger                  `json:"-"`
+	ConfigPath             string                       `json:"-"`
+	StateDir               string                       `json:"state_dir,omitempty"`
+	DownloadDir            string                       `json:"download_dir,omitempty"`
+	MiscPath               string                       `json:"misc_path,omitempty"`
+	BlockDir               string                       `json:"block_dir,omitempty"`
+	Repo                   string                       `json:"repo,omitempty"`
+	Channel                string                       `json:"channel,omitempty"`
+	APIBase                string                       `json:"api_base,omitempty"`
+	ManifestAsset          string                       `json:"manifest_asset,omitempty"`
+	PublicKeyPath          string                       `json:"public_key_path,omitempty"`
+	PublicKey              ed25519.PublicKey            `json:"-"`
+	FactoryVersion         string                       `json:"factory_version,omitempty"`
+	FactoryBuildTime       string                       `json:"factory_build_time,omitempty"`
+	FactoryPartitionHashes map[string]map[string]string `json:"factory_partition_hashes,omitempty"`
+	PartitionSizes         map[string]int64             `json:"partition_sizes,omitempty"`
+	GitHubToken            string                       `json:"github_token,omitempty"`
+	GitHubTokenPath        string                       `json:"github_token_path,omitempty"`
+	Interval               time.Duration                `json:"-"`
+	Jitter                 time.Duration                `json:"-"`
+	IntervalSeconds        int                          `json:"interval_seconds,omitempty"`
+	JitterSeconds          int                          `json:"jitter_seconds,omitempty"`
+	SwitchTries            uint8                        `json:"switch_tries,omitempty"`
+	HealthTimeout          time.Duration                `json:"-"`
+	HealthTimeoutSecs      int                          `json:"health_timeout_seconds,omitempty"`
+	HealthPollInterval     time.Duration                `json:"-"`
+	HTTPTimeout            time.Duration                `json:"-"`
+	HTTPTimeoutSecs        int                          `json:"http_timeout_seconds,omitempty"`
+	DryRun                 bool                         `json:"dry_run,omitempty"`
+	TargetSlotOverride     string                       `json:"target_slot_override,omitempty"`
+	Logger                 *log.Logger                  `json:"-"`
 }
 
 type UpdateResult struct {
@@ -74,7 +72,6 @@ type Updater struct {
 	reboot      func() error
 	writeABData func(ABData) error
 	currentSlot func() (Slot, bool, error)
-	httpClient  *http.Client
 }
 
 func LoadUpdaterConfig(path string) (UpdaterConfig, error) {
@@ -157,13 +154,6 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 			config.HTTPTimeout = DefaultHTTPRequestLimit
 		}
 	}
-	if config.HTTPResponseHeaderTimeout <= 0 {
-		if config.HTTPResponseHeaderTimeoutSecs > 0 {
-			config.HTTPResponseHeaderTimeout = time.Duration(config.HTTPResponseHeaderTimeoutSecs) * time.Second
-		} else {
-			config.HTTPResponseHeaderTimeout = DefaultHTTPResponseHeaderTimeout
-		}
-	}
 	if config.SwitchTries > MaxTries {
 		return UpdaterConfig{}, fmt.Errorf("switch_tries %d exceeds %d", config.SwitchTries, MaxTries)
 	}
@@ -179,7 +169,6 @@ func NewUpdater(config UpdaterConfig, reboot func() error) (*Updater, error) {
 		config:      config,
 		reboot:      reboot,
 		currentSlot: currentSlotFromProcCmdline,
-		httpClient:  newOTAHTTPClient(config.HTTPResponseHeaderTimeout),
 	}
 	u.writeABData = u.writeABDataFile
 	return u, nil
@@ -567,7 +556,7 @@ func (u *Updater) Status() (State, ABData, error) {
 func (u *Updater) VerifyManifestFile(path string) (Manifest, error) {
 	ctx, cancel := u.httpContext(context.Background())
 	defer cancel()
-	data, err := readLocalOrRemoteManifest(ctx, u.httpClient, path)
+	data, err := readLocalOrRemoteManifest(ctx, path)
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -586,10 +575,10 @@ func (u *Updater) httpContext(parent context.Context) (context.Context, context.
 	return context.WithTimeout(parent, timeout)
 }
 
-func readLocalOrRemoteManifest(ctx context.Context, client *http.Client, path string) ([]byte, error) {
+func readLocalOrRemoteManifest(ctx context.Context, path string) ([]byte, error) {
 	parsed, err := url.Parse(path)
 	if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
-		return fetchBytesWithTokenLimitWithClient(ctx, client, path, "", MaxRemoteManifestBytes)
+		return fetchBytesWithTokenLimit(ctx, path, "", MaxRemoteManifestBytes)
 	}
 	return os.ReadFile(path)
 }
@@ -713,13 +702,13 @@ func (u *Updater) partitionSizes() map[string]int64 {
 func (u *Updater) fetchLatestReleaseAssets(parent context.Context, releaseURL string, token string) (map[string]string, error) {
 	ctx, cancel := u.httpContext(parent)
 	defer cancel()
-	return FetchLatestReleaseAssetsWithClient(ctx, u.httpClient, releaseURL, token)
+	return FetchLatestReleaseAssets(ctx, releaseURL, token)
 }
 
 func (u *Updater) fetchBytesWithTokenLimit(parent context.Context, url string, token string, limit int64) ([]byte, error) {
 	ctx, cancel := u.httpContext(parent)
 	defer cancel()
-	return fetchBytesWithTokenLimitWithClient(ctx, u.httpClient, url, token, limit)
+	return fetchBytesWithTokenLimit(ctx, url, token, limit)
 }
 
 func (u *Updater) downloadFileWithToken(parent context.Context, url string, dst string, expectedSize int64, token string) error {
@@ -728,7 +717,6 @@ func (u *Updater) downloadFileWithToken(parent context.Context, url string, dst 
 	return DownloadFileWithOptions(ctx, url, dst, expectedSize, DownloadOptions{
 		BearerToken: token,
 		Progress:    u.logDownloadProgress,
-		HTTPClient:  u.httpClient,
 	})
 }
 
@@ -763,18 +751,15 @@ func (u *Updater) logf(format string, args ...any) {
 	}
 }
 
-var defaultOTAHTTPClient = newOTAHTTPClient(DefaultHTTPResponseHeaderTimeout)
+var defaultOTAHTTPClient = newOTAHTTPClient()
 
-func newOTAHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
-	if responseHeaderTimeout <= 0 {
-		responseHeaderTimeout = DefaultHTTPResponseHeaderTimeout
-	}
+func newOTAHTTPClient() *http.Client {
 	transport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		return &http.Client{Transport: http.DefaultTransport}
 	}
 	clone := transport.Clone()
-	clone.ResponseHeaderTimeout = responseHeaderTimeout
+	clone.ResponseHeaderTimeout = DefaultHTTPResponseHeaderTimeout
 	return &http.Client{Transport: clone}
 }
 
@@ -871,10 +856,6 @@ func fetchBytesWithToken(ctx context.Context, url string, bearerToken string) ([
 }
 
 func fetchBytesWithTokenLimit(ctx context.Context, url string, bearerToken string, limit int64) ([]byte, error) {
-	return fetchBytesWithTokenLimitWithClient(ctx, defaultOTAHTTPClient, url, bearerToken, limit)
-}
-
-func fetchBytesWithTokenLimitWithClient(ctx context.Context, client *http.Client, url string, bearerToken string, limit int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -882,10 +863,7 @@ func fetchBytesWithTokenLimitWithClient(ctx context.Context, client *http.Client
 	if bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+bearerToken)
 	}
-	if client == nil {
-		client = defaultOTAHTTPClient
-	}
-	resp, err := client.Do(req)
+	resp, err := defaultOTAHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

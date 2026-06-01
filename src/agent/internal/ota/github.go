@@ -17,10 +17,6 @@ type githubAsset struct {
 }
 
 func FetchLatestReleaseAssets(ctx context.Context, baseAPIURL string, bearerToken string) (map[string]string, error) {
-	return FetchLatestReleaseAssetsWithClient(ctx, defaultOTAHTTPClient, baseAPIURL, bearerToken)
-}
-
-func FetchLatestReleaseAssetsWithClient(ctx context.Context, client *http.Client, baseAPIURL string, bearerToken string) (map[string]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseAPIURL, nil)
 	if err != nil {
 		return nil, err
@@ -30,10 +26,7 @@ func FetchLatestReleaseAssetsWithClient(ctx context.Context, client *http.Client
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	if client == nil {
-		client = defaultOTAHTTPClient
-	}
-	resp, err := client.Do(req)
+	resp, err := defaultOTAHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

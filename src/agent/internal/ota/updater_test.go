@@ -86,6 +86,16 @@ func TestDefaultHTTPResponseHeaderTimeoutIsShort(t *testing.T) {
 	}
 }
 
+func TestOTAHTTPClientUsesDefaultResponseHeaderTimeout(t *testing.T) {
+	transport, ok := newOTAHTTPClient().Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("newOTAHTTPClient transport = %T, want *http.Transport", newOTAHTTPClient().Transport)
+	}
+	if transport.ResponseHeaderTimeout != DefaultHTTPResponseHeaderTimeout {
+		t.Fatalf("ResponseHeaderTimeout = %s, want %s", transport.ResponseHeaderTimeout, DefaultHTTPResponseHeaderTimeout)
+	}
+}
+
 func TestUpdaterUsesPerRequestHTTPTimeout(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	env.config.HTTPTimeout = 120 * time.Millisecond
@@ -131,28 +141,6 @@ func TestUpdaterUsesPerRequestHTTPTimeout(t *testing.T) {
 
 	if _, err := env.updater().CheckOnce(context.Background()); err != nil {
 		t.Fatalf("CheckOnce() error = %v", err)
-	}
-}
-
-func TestUpdaterUsesResponseHeaderTimeout(t *testing.T) {
-	env := newUpdaterTestEnv(t)
-	env.config.HTTPTimeout = 5 * time.Second
-	env.config.HTTPResponseHeaderTimeout = 25 * time.Millisecond
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(200 * time.Millisecond)
-		_, _ = w.Write([]byte(`{"assets":[]}`))
-	}))
-	t.Cleanup(server.Close)
-	env.config.APIBase = server.URL
-
-	start := time.Now()
-	_, err := env.updater().CheckOnce(context.Background())
-	elapsed := time.Since(start)
-	if err == nil || !strings.Contains(err.Error(), "timeout") {
-		t.Fatalf("CheckOnce() error = %v, want response header timeout", err)
-	}
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("CheckOnce() elapsed = %s, want response header timeout before total request timeout", elapsed)
 	}
 }
 
