@@ -33,6 +33,12 @@ func TestFunctionAgentSystemMessageIncludesDefaultChinesePhoneAndGestureGuidance
 		"type \"home\"",
 		"start.x=0.001",
 		"start.y=0.999",
+		"精准滑动闭环",
+		"先用 medium 做一次试探滑动",
+		"strength/direction -> UI移动量",
+		"接近目标必须降档",
+		"反复横跳，只用 tiny",
+		"save_memory 记录 app 名、控件位置、方向、strength/distance、对应变化量",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("system message missing %q:\n%s", want, msg)

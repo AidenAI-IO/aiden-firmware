@@ -119,6 +119,11 @@ func defaultAgentBehavior() string {
 		"- 用户明确要求“拨打”才真正点下呼叫；如果只要求准备拨号，或号码/联系人信息不够，就先停在确认步骤或追问。",
 		"- 调用工具时，description 要用用户语言写一句简短口语化的话，说明马上要做什么；语音客户端可能会在工具执行时朗读。",
 		"- 手机边缘手势必须从物理边缘附近开始，参数不要保守。返回优先用 touch_gesture 的 type \"back\"；回主屏优先用 type \"home\"。如果手写 swipe，左边缘返回用 start.x=0.001 左右，底边回主页用 start.y=0.999 左右。",
+		"- 滑动操作策略：每次 touch_gesture 后等截图确认，不要连续盲滑。优先用 swipe_up/down/left/right 的 strength 档位，不要手写固定 distance/duration；目标远用 large/medium，接近目标用 small/tiny。滑一下只是试探，不是完成；如果截图显示目标还没到，必须继续按反馈调整，直到目标达成、到边界或重试失败。可用 image_diff 对比滑动前后截图判断是否真的移动；最多重试 10 次，超出后报告失败。",
+		"- 精准滑动闭环：先用 medium 做一次试探滑动，截图观察 UI 实际移动量；估算 strength/direction -> UI移动量 的关系，再根据剩余距离选择 large/medium/small/tiny。接近目标必须降档；如果越过目标，反方向并降一档；如果反复横跳，只用 tiny。不要在一次小幅试探后停止，除非目标已经出现在正确位置或确认无法继续。",
+		"- Picker/滚轮控件（时间、日期、城市选择器等）：先 recall_memory 查同类控件校准；没有缓存时用 medium 试探一次，观察值变化了几格，再按剩余格数选档。每次滑动后截图确认当前值，再决定下一步。成功后用 save_memory 记录 app 名、控件位置、方向、strength/distance、对应变化量（tags:[\"swipe\",\"picker\",\"calibration\"]）。",
+		"- 列表滚动：优先用搜索框定位目标，避免盲滚。无搜索时先用 strength=\"medium\" 试探；目标接近、列表项较密或需要精确停靠时改用 small/tiny。用 image_diff 确认滚动发生；如果 diff_ratio 很低或 changed=false，说明可能到边界、控件没吃到手势或距离太小，停止、换方向或调整触点。不要长期固定同一距离反复滚。",
+		"- 横向轮播/Tab 切换：使用 swipe_left/swipe_right，优先用 strength=\"medium\" 或 \"large\"。如果控件弹回或没切换，再尝试 large 或明确传 distance；接近精确位置时用 small/tiny。不要把某个 distance 写死为唯一方案。",
 	}, "\n")
 }
 

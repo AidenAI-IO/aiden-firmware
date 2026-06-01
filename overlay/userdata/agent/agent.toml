@@ -98,6 +98,8 @@ speed = 1.0                   # Speech speed: 0.5 - 2.0
 keyboard_device = "/dev/hidg0"
 mouse_device = "/dev/hidg1"
 frame_socket = "/run/frame_service/frame_service.sock"
+# pointer_mode = "absolute"     # default, iOS AssistiveTouch / absolute mouse
+# pointer_mode = "touchscreen"  # Android HID touch screen / digitizer
 
 # Web search tool configuration
 # provider: "duckduckgo" (free, no key) or "tavily" (better results, needs api_key)

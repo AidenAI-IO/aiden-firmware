@@ -188,6 +188,9 @@ type HIDConfig struct {
 	KeyboardDevice string `toml:"keyboard_device,omitempty"`
 	MouseDevice    string `toml:"mouse_device,omitempty"`
 	FrameSocket    string `toml:"frame_socket,omitempty"`
+	// PointerMode selects the hid.usb1 report format: "absolute" (iOS AssistiveTouch)
+	// or "touchscreen" (Android HID digitizer).
+	PointerMode string `toml:"pointer_mode,omitempty"`
 }
 
 func (h HIDConfig) KeyboardDeviceOrDefault() string {
@@ -209,6 +212,19 @@ func (h HIDConfig) FrameSocketOrDefault() string {
 		return h.FrameSocket
 	}
 	return "/tmp/frame_service.sock"
+}
+
+func (h HIDConfig) PointerModeOrDefault() string {
+	switch strings.ToLower(strings.TrimSpace(h.PointerMode)) {
+	case "touchscreen":
+		return "touchscreen"
+	default:
+		return "absolute"
+	}
+}
+
+func (h HIDConfig) PointerTouchscreen() bool {
+	return h.PointerModeOrDefault() == "touchscreen"
 }
 
 type ModelConfig struct {
