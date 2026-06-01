@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,9 +59,26 @@ type roleLoopState struct {
 	Plan               []string
 	NextStep           string
 	PlannerReason      string
+	World              worldState
 	ToolSteps          []schema.AgentStep
 	ExecutionResults   []roleExecutionResult
 	VerifierResults    []verifierDecision
+}
+
+type worldState struct {
+	LatestScreenshot *worldScreenshot
+}
+
+type worldScreenshot struct {
+	SourceTool   string
+	ToolInput    string
+	ActionOutput string
+	Width        int
+	Height       int
+	Format       string
+	Size         int
+	Data         []byte
+	StepNumber   int
 }
 
 var _ chains.Chain = (*roleCollaborativeExecutor)(nil)
@@ -119,6 +137,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 		state.ExecutionResults = append(state.ExecutionResults, execution)
 		if execution.Step != nil {
 			state.ToolSteps = append(state.ToolSteps, *execution.Step)
+			state.World.UpdateFromStep(*execution.Step, len(state.ToolSteps))
 		}
 
 		verification, err := e.callVerifier(ctx, inputs, state, options...)
@@ -282,7 +301,7 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	statePrompt := buildRoleStatePrompt(profile.Name, inputs, state, task)
 	messages = append(messages, llms.MessageContent{
 		Role:  llms.ChatMessageTypeHuman,
-		Parts: buildUserMessageParts(statePrompt, e.InputAttachments),
+		Parts: buildRoleUserMessageParts(statePrompt, e.InputAttachments, state.World),
 	})
 	return messages
 }
@@ -307,6 +326,7 @@ func buildRoleStatePrompt(role RoleName, inputs map[string]string, state roleLoo
 func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
 	var builder strings.Builder
 	builder.WriteString(task)
+	writeWorldState(&builder, state.World)
 	writeRequestObjectiveAndCriteria(&builder, inputs, state)
 	if history := strings.TrimSpace(inputs["history"]); history != "" {
 		builder.WriteString("\n\nConversation history:\n")
@@ -321,6 +341,7 @@ func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task
 func buildExecutorStatePrompt(state roleLoopState, task string) string {
 	var builder strings.Builder
 	builder.WriteString(task)
+	writeWorldState(&builder, state.World)
 	builder.WriteString("\n\nPlanner-approved next_step:\n")
 	if next := strings.TrimSpace(state.NextStep); next != "" {
 		builder.WriteString(next)
@@ -338,6 +359,7 @@ func buildExecutorStatePrompt(state roleLoopState, task string) string {
 func buildVerifierStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
 	var builder strings.Builder
 	builder.WriteString(task)
+	writeWorldState(&builder, state.World)
 	writeRequestObjectiveAndCriteria(&builder, inputs, state)
 	writeExecutorEvidence(&builder, state)
 	builder.WriteString("\nVerifier mandatory checklist:\n")
@@ -348,6 +370,42 @@ func buildVerifierStatePrompt(inputs map[string]string, state roleLoopState, tas
 	builder.WriteString("\nOriginal user request repeated for final verification:\n")
 	builder.WriteString(inputs["input"])
 	return strings.TrimSpace(builder.String())
+}
+
+func buildRoleUserMessageParts(input string, attachments []InputAttachment, world worldState) []llms.ContentPart {
+	parts := buildUserMessageParts(input, attachments)
+	if world.LatestScreenshot == nil || len(world.LatestScreenshot.Data) == 0 {
+		return parts
+	}
+	return append(parts, buildImagePart(world.LatestScreenshot.MIMEType(), world.LatestScreenshot.Data))
+}
+
+func writeWorldState(builder *strings.Builder, world worldState) {
+	builder.WriteString("\n\nWorld State (shared across planner, executor, and verifier):\n")
+	if world.LatestScreenshot == nil {
+		builder.WriteString("- Latest screenshot: none yet.\n")
+		return
+	}
+	screenshot := world.LatestScreenshot
+	builder.WriteString(fmt.Sprintf(
+		"- Latest screenshot: step=%d source_tool=%s size=%dx%d format=%s bytes=%d. The current screenshot image is attached to this message.\n",
+		screenshot.StepNumber,
+		screenshot.SourceTool,
+		screenshot.Width,
+		screenshot.Height,
+		screenshot.Format,
+		screenshot.Size,
+	))
+	if input := strings.TrimSpace(screenshot.ToolInput); input != "" {
+		builder.WriteString("- Screenshot source input: ")
+		builder.WriteString(input)
+		builder.WriteByte('\n')
+	}
+	if actionOutput := strings.TrimSpace(screenshot.ActionOutput); actionOutput != "" {
+		builder.WriteString("- Post-action output before screenshot: ")
+		builder.WriteString(compactToolObservation(actionOutput))
+		builder.WriteByte('\n')
+	}
 }
 
 func writeRequestObjectiveAndCriteria(builder *strings.Builder, inputs map[string]string, state roleLoopState) {
@@ -453,6 +511,55 @@ func (s roleLoopState) latestExecutionResult() (roleExecutionResult, bool) {
 		return roleExecutionResult{}, false
 	}
 	return s.ExecutionResults[len(s.ExecutionResults)-1], true
+}
+
+func (s *worldState) UpdateFromStep(step schema.AgentStep, stepNumber int) {
+	screenshot, ok := screenshotFromStep(step, stepNumber)
+	if !ok {
+		return
+	}
+	s.LatestScreenshot = &screenshot
+}
+
+func screenshotFromStep(step schema.AgentStep, stepNumber int) (worldScreenshot, bool) {
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
+		return worldScreenshot{}, false
+	}
+	if result.Width <= 0 || result.Height <= 0 || result.Data == "" {
+		return worldScreenshot{}, false
+	}
+	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
+	if err != nil || len(imageBytes) == 0 {
+		return worldScreenshot{}, false
+	}
+	format := strings.TrimSpace(result.Format)
+	if format == "" {
+		format = "jpeg"
+	}
+	size := result.Size
+	if size <= 0 {
+		size = len(imageBytes)
+	}
+	return worldScreenshot{
+		SourceTool:   step.Action.Tool,
+		ToolInput:    normalizeToolInput(step.Action.ToolInput),
+		ActionOutput: strings.TrimSpace(result.ActionOutput),
+		Width:        result.Width,
+		Height:       result.Height,
+		Format:       format,
+		Size:         size,
+		Data:         imageBytes,
+		StepNumber:   stepNumber,
+	}, true
+}
+
+func (s worldScreenshot) MIMEType() string {
+	format := strings.TrimSpace(s.Format)
+	if format == "" {
+		format = "jpeg"
+	}
+	return "image/" + format
 }
 
 func (s roleLoopState) lastCandidateAnswer() string {

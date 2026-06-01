@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
+	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
@@ -352,6 +354,109 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 	}
 }
 
+func TestRoleCollaborativeExecutorSharesScreenshotWorldStateAcrossRoles(t *testing.T) {
+	jpegBytes := []byte("world-state-jpeg")
+	encodedImage := base64.StdEncoding.EncodeToString(jpegBytes)
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			plannerResponse("inspect screen"),
+			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
+			verifierContinueResponse("need act on visible UI"),
+			plannerResponse("answer from current screen"),
+			contentResponse("candidate"),
+			verifierFinishResponse("done"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"screenshot": &stubTool{
+				name:        "screenshot",
+				description: "Capture screen.",
+				visual:      true,
+				output:      `{"width":320,"height":240,"format":"jpeg","size":16,"data":"` + encodedImage + `"}`,
+			},
+		}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "inspect and continue"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if model.callCount != 6 {
+		t.Fatalf("model call count = %d, want 6", model.callCount)
+	}
+
+	for _, idx := range []int{2, 3, 4, 5} {
+		prompt := messageText(model.messages[idx])
+		for _, want := range []string{
+			"World State (shared across planner, executor, and verifier):",
+			"Latest screenshot: step=1 source_tool=screenshot size=320x240 format=jpeg bytes=16",
+			"The current screenshot image is attached to this message.",
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("model call %d missing world state %q:\n%s", idx, want, prompt)
+			}
+		}
+		if !hasImageURL(model.messages[idx], "data:image/jpeg;base64,"+encodedImage) {
+			t.Fatalf("model call %d missing world-state screenshot image: %#v", idx, model.messages[idx])
+		}
+		if !finalHumanMessageHasTextBeforeImage(model.messages[idx], "data:image/jpeg;base64,"+encodedImage) {
+			t.Fatalf("model call %d should place text before world-state screenshot image: %#v", idx, model.messages[idx])
+		}
+	}
+
+	secondExecutorPrompt := messageText(model.messages[4])
+	if strings.Contains(secondExecutorPrompt, "Original user request") || strings.Contains(secondExecutorPrompt, "Verifier feedback") {
+		t.Fatalf("executor should see world state without broader planning context:\n%s", secondExecutorPrompt)
+	}
+	if hasMessageRole(model.messages[4], llms.ChatMessageTypeTool) {
+		t.Fatalf("executor should receive world-state screenshot without prior tool scratchpad: %#v", model.messages[4])
+	}
+}
+
+func TestWorldStateUpdatesFromPostActionScreenshot(t *testing.T) {
+	jpegBytes := []byte("post-action-jpeg")
+	state := worldState{}
+	state.UpdateFromStep(schema.AgentStep{
+		Action: schema.AgentAction{
+			Tool:      "keyboard_tap",
+			ToolInput: `{"keys":["enter"]}`,
+		},
+		Observation: `{"action_output":"ok","width":640,"height":480,"format":"jpeg","size":16,"data":"` +
+			base64.StdEncoding.EncodeToString(jpegBytes) + `"}`,
+	}, 3)
+
+	if state.LatestScreenshot == nil {
+		t.Fatal("expected world state screenshot")
+	}
+	if state.LatestScreenshot.SourceTool != "keyboard_tap" ||
+		state.LatestScreenshot.ActionOutput != "ok" ||
+		state.LatestScreenshot.Width != 640 ||
+		state.LatestScreenshot.Height != 480 {
+		t.Fatalf("unexpected world screenshot: %#v", state.LatestScreenshot)
+	}
+
+	var builder strings.Builder
+	writeWorldState(&builder, state)
+	text := builder.String()
+	for _, want := range []string{
+		"source_tool=keyboard_tap",
+		"size=640x480",
+		"Post-action output before screenshot: ok",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("world state text missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func messageText(messages []llms.MessageContent) string {
 	var builder strings.Builder
 	for _, msg := range messages {
@@ -370,6 +475,39 @@ func hasMessageRole(messages []llms.MessageContent, role llms.ChatMessageType) b
 		if msg.Role == role {
 			return true
 		}
+	}
+	return false
+}
+
+func hasImageURL(messages []llms.MessageContent, want string) bool {
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			image, ok := part.(llms.ImageURLContent)
+			if ok && image.URL == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func finalHumanMessageHasTextBeforeImage(messages []llms.MessageContent, imageURL string) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != llms.ChatMessageTypeHuman {
+			continue
+		}
+		textIndex := -1
+		imageIndex := -1
+		for j, part := range messages[i].Parts {
+			if _, ok := part.(llms.TextContent); ok && textIndex < 0 {
+				textIndex = j
+			}
+			image, ok := part.(llms.ImageURLContent)
+			if ok && image.URL == imageURL && imageIndex < 0 {
+				imageIndex = j
+			}
+		}
+		return textIndex >= 0 && imageIndex >= 0 && textIndex < imageIndex
 	}
 	return false
 }
