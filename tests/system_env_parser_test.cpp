@@ -51,6 +51,10 @@ TEST_CASE("system proxy URL validation matches runtime proxy rules") {
     CHECK_FALSE(aiden::validate_system_proxy_url("http://foo%2fbar").empty());
     CHECK_FALSE(aiden::validate_system_proxy_url("http://foo%00bar").empty());
     CHECK(aiden::validate_system_proxy_url("http://foo%25bar").empty());
+    CHECK_FALSE(aiden::validate_system_proxy_url("http://[zzzz]:7890").empty());
+    CHECK_FALSE(aiden::validate_system_proxy_url("http://[v1.foo]:7890").empty());
+    CHECK_FALSE(aiden::validate_system_proxy_url("http://[127.0.0.1]:7890").empty());
+    CHECK(aiden::validate_system_proxy_url("http://[::1]:7890").empty());
 }
 
 TEST_CASE("system env proxy filtering preserves unrelated assignments on mixed lines") {

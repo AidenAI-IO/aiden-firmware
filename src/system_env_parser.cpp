@@ -1,5 +1,6 @@
 #include "system_env_parser.h"
 
+#include <arpa/inet.h>
 #include <ctype.h>
 
 #include <algorithm>
@@ -385,6 +386,27 @@ bool is_valid_optional_port(const std::string& tail) {
     return true;
 }
 
+bool is_valid_bracketed_ipv6_literal(const std::string& literal) {
+    if (literal.empty()) {
+        return false;
+    }
+
+    std::string address = literal;
+    size_t zone = literal.find("%25");
+    if (zone != std::string::npos) {
+        if (zone == 0 || zone + 3 >= literal.size()) {
+            return false;
+        }
+        address = literal.substr(0, zone);
+    }
+    if (address.find('%') != std::string::npos) {
+        return false;
+    }
+
+    struct in6_addr parsed;
+    return inet_pton(AF_INET6, address.c_str(), &parsed) == 1;
+}
+
 bool is_valid_proxy_host_char(char c) {
     unsigned char u = static_cast<unsigned char>(c);
     if (isalnum(u)) {
@@ -452,6 +474,9 @@ std::string validate_proxy_authority(const std::string& trimmed, size_t scheme_e
         size_t close = host_port.find(']');
         if (close == std::string::npos || close == 1) {
             return "invalid proxy URL authority";
+        }
+        if (!is_valid_bracketed_ipv6_literal(host_port.substr(1, close - 1))) {
+            return "invalid proxy URL host";
         }
         if (!is_valid_optional_port(host_port.substr(close + 1))) {
             return "invalid proxy URL port";
