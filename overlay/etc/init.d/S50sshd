@@ -1,7 +1,17 @@
 #!/bin/sh
 # Aiden override: optional sshd startup.
 
-BOOT_CONF=/etc/aiden_boot.conf
+BOOT_CONF=${BOOT_CONF:-/etc/aiden_boot.conf}
+SSHD_BIN=${SSHD_BIN:-/usr/sbin/sshd}
+SSH_KEYGEN_BIN=${SSH_KEYGEN_BIN:-/usr/bin/ssh-keygen}
+PIDOF_BIN=${PIDOF_BIN:-pidof}
+KILLALL_BIN=${KILLALL_BIN:-killall}
+ETC_SSH_DIR=${ETC_SSH_DIR:-/etc/ssh}
+ROOT_HOME=${ROOT_HOME:-/root}
+PERSISTENT_SSH_DIR=${PERSISTENT_SSH_DIR:-/userdata/ssh}
+PERSISTENT_HOST_DIR=${PERSISTENT_HOST_DIR:-$PERSISTENT_SSH_DIR/host}
+PERSISTENT_ROOT_DIR=${PERSISTENT_ROOT_DIR:-$PERSISTENT_SSH_DIR/root}
+LOCK_FILE=${LOCK_FILE:-/var/lock/sshd}
 
 if [ -f "$BOOT_CONF" ]; then
 	. "$BOOT_CONF"
@@ -11,7 +21,78 @@ fi
 umask 077
 
 is_running() {
-	pidof sshd >/dev/null 2>&1
+	"$PIDOF_BIN" sshd >/dev/null 2>&1
+}
+
+copy_if_missing() {
+	src="$1"
+	dst="$2"
+	if [ ! -f "$dst" ] && [ -f "$src" ]; then
+		cp -p "$src" "$dst" 2>/dev/null || cp "$src" "$dst"
+	fi
+}
+
+generate_host_key() {
+	type="$1"
+	path="$2"
+	case "$type" in
+		rsa) "$SSH_KEYGEN_BIN" -t rsa -b 3072 -N '' -f "$path" >/dev/null 2>&1 ;;
+		ecdsa) "$SSH_KEYGEN_BIN" -t ecdsa -N '' -f "$path" >/dev/null 2>&1 ;;
+		ed25519) "$SSH_KEYGEN_BIN" -t ed25519 -N '' -f "$path" >/dev/null 2>&1 ;;
+		*) return 1 ;;
+	esac
+}
+
+ensure_persistent_ssh_state() {
+	mkdir -p "$PERSISTENT_HOST_DIR" "$PERSISTENT_ROOT_DIR" "$ETC_SSH_DIR" "$ROOT_HOME/.ssh"
+	chmod 700 "$PERSISTENT_SSH_DIR" "$PERSISTENT_HOST_DIR" "$PERSISTENT_ROOT_DIR" "$ROOT_HOME/.ssh" 2>/dev/null || true
+
+	for type in rsa ecdsa ed25519; do
+		name="ssh_host_${type}_key"
+		persistent_key="$PERSISTENT_HOST_DIR/$name"
+		etc_key="$ETC_SSH_DIR/$name"
+
+		copy_if_missing "$etc_key" "$persistent_key"
+		copy_if_missing "$etc_key.pub" "$persistent_key.pub"
+		copy_if_missing "$etc_key-cert.pub" "$persistent_key-cert.pub"
+
+		if [ ! -f "$persistent_key" ]; then
+			generate_host_key "$type" "$persistent_key" || true
+		fi
+
+		if [ -f "$persistent_key" ]; then
+			ln -sf "$persistent_key" "$etc_key"
+			[ -f "$persistent_key.pub" ] && ln -sf "$persistent_key.pub" "$etc_key.pub"
+			[ -f "$persistent_key-cert.pub" ] && ln -sf "$persistent_key-cert.pub" "$etc_key-cert.pub"
+		fi
+	done
+
+	host_key_count=0
+	for key in "$PERSISTENT_HOST_DIR"/ssh_host_*_key; do
+		[ -f "$key" ] || continue
+		host_key_count=$((host_key_count + 1))
+	done
+	if [ "$host_key_count" -eq 0 ]; then
+		echo "no SSH host keys available in $PERSISTENT_HOST_DIR"
+		return 1
+	fi
+
+	copy_if_missing "$ROOT_HOME/.ssh/authorized_keys" "$PERSISTENT_ROOT_DIR/authorized_keys"
+	touch "$PERSISTENT_ROOT_DIR/authorized_keys"
+	ln -sf "$PERSISTENT_ROOT_DIR/authorized_keys" "$ROOT_HOME/.ssh/authorized_keys"
+
+	chmod 600 "$PERSISTENT_HOST_DIR"/ssh_host_*_key "$PERSISTENT_ROOT_DIR/authorized_keys" 2>/dev/null || true
+	chmod 644 "$PERSISTENT_HOST_DIR"/ssh_host_*_key.pub "$PERSISTENT_HOST_DIR"/ssh_host_*_key-cert.pub 2>/dev/null || true
+	chown -R root:root "$PERSISTENT_SSH_DIR" "$ROOT_HOME/.ssh" 2>/dev/null || true
+}
+
+host_certificate_options() {
+	opts=""
+	for cert in "$PERSISTENT_HOST_DIR"/ssh_host_*_key-cert.pub; do
+		[ -f "$cert" ] || continue
+		opts="$opts -o HostCertificate=$cert"
+	done
+	echo "$opts"
 }
 
 start() {
@@ -25,19 +106,23 @@ start() {
 		return 0
 	fi
 
-	if [ ! -x /usr/sbin/sshd ]; then
-		echo "sshd binary not found: /usr/sbin/sshd"
+	if [ ! -x "$SSHD_BIN" ]; then
+		echo "sshd binary not found: $SSHD_BIN"
 		return 1
 	fi
-	if [ ! -x /usr/bin/ssh-keygen ]; then
-		echo "ssh-keygen not found: /usr/bin/ssh-keygen"
+	if [ ! -x "$SSH_KEYGEN_BIN" ]; then
+		echo "ssh-keygen not found: $SSH_KEYGEN_BIN"
 		return 1
 	fi
 
 	chown root:root /var/empty/ 2>/dev/null || true
-	/usr/bin/ssh-keygen -A >/dev/null 2>&1 || true
+	if ! ensure_persistent_ssh_state; then
+		echo "FAIL (persistent ssh state)"
+		return 1
+	fi
+	host_cert_opts=$(host_certificate_options)
 	printf "Starting sshd: "
-	/usr/sbin/sshd >/dev/null 2>&1
+	"$SSHD_BIN" $host_cert_opts >/dev/null 2>&1
 	rc="$?"
 	if [ "$rc" -ne 0 ]; then
 		echo "FAIL (exit=$rc)"
@@ -47,7 +132,7 @@ start() {
 		echo "FAIL (not running after start)"
 		return 1
 	fi
-	touch /var/lock/sshd
+	touch "$LOCK_FILE" 2>/dev/null || true
 	echo "OK"
 	return 0
 }
@@ -55,10 +140,10 @@ start() {
 stop() {
 	printf "Stopping sshd: "
 	if is_running; then
-		killall sshd 2>/dev/null || true
+		"$KILLALL_BIN" sshd 2>/dev/null || true
 		sleep 1
 	fi
-	rm -f /var/lock/sshd
+	rm -f "$LOCK_FILE"
 	if is_running; then
 		echo "FAIL (still running)"
 		return 1
