@@ -101,3 +101,39 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("/api/agent/logs") != std::string::npos);
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
+
+TEST_CASE("config web persists proxy through system env") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("system_env_path = \"/userdata/system/env\"") != std::string::npos);
+    CHECK(source.find("struct SystemProxy") != std::string::npos);
+    CHECK(source.find("load_system_env_proxy") != std::string::npos);
+    CHECK(source.find("save_system_env_with_proxy") != std::string::npos);
+    CHECK(source.find("clear_agent_proxy_for_system_env") == std::string::npos);
+    CHECK(source.find("loaded.proxy") == std::string::npos);
+    CHECK(source.find("\"system_env\"") != std::string::npos);
+    CHECK(source.find("--system-env=") != std::string::npos);
+    CHECK(source.find("has_duplicate_proxy_scheme") != std::string::npos);
+    CHECK(source.find("has_proxy_whitespace") != std::string::npos);
+    CHECK(source.find("has_embedded_proxy_assignment") != std::string::npos);
+    CHECK(source.find("duplicate scheme") != std::string::npos);
+    CHECK(source.find("proxy URL contains whitespace") != std::string::npos);
+
+    CHECK(html.find("system_env") != std::string::npos);
+    CHECK(html.find("system_env_content") != std::string::npos);
+    CHECK(html.find("saveSystemEnv") != std::string::npos);
+}

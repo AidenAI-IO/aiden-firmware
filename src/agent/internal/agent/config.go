@@ -30,7 +30,6 @@ type Config struct {
 	STT                      STTConfig       `toml:"stt,omitempty"`
 	HID                      HIDConfig       `toml:"hid"`
 	Audio                    AudioConfig     `toml:"audio,omitempty"`
-	Proxy                    ProxyConfig     `toml:"proxy,omitempty"`
 	Search                   SearchConfig    `toml:"search,omitempty"`
 	Instruction              string          `toml:"instruction"`
 	AdditionalPrompt         string          `toml:"additional_prompt,omitempty"`
@@ -115,10 +114,10 @@ type AudioConfig struct {
 }
 
 type ProxyConfig struct {
-	HTTPProxy  string `toml:"http_proxy,omitempty"`
-	HTTPSProxy string `toml:"https_proxy,omitempty"`
-	AllProxy   string `toml:"all_proxy,omitempty"`
-	NoProxy    string `toml:"no_proxy,omitempty"`
+	HTTPProxy  string
+	HTTPSProxy string
+	AllProxy   string
+	NoProxy    string
 }
 
 const DefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
@@ -134,6 +133,25 @@ func (p ProxyConfig) WithDefaults() ProxyConfig {
 		p.NoProxy = DefaultNoProxy
 	}
 	return p
+}
+
+func ProxyConfigFromEnvironment() ProxyConfig {
+	p := ProxyConfig{
+		HTTPProxy:  firstEnv("HTTP_PROXY", "http_proxy"),
+		HTTPSProxy: firstEnv("HTTPS_PROXY", "https_proxy"),
+		AllProxy:   firstEnv("ALL_PROXY", "all_proxy"),
+		NoProxy:    firstEnv("NO_PROXY", "no_proxy"),
+	}
+	return p.WithDefaults()
+}
+
+func firstEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (p ProxyConfig) IsZero() bool {
@@ -311,8 +329,6 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
 	}
 
-	cfg.Proxy = cfg.Proxy.WithDefaults()
-
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -321,10 +337,6 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if err := c.Proxy.Validate(); err != nil {
-		return err
-	}
-
 	switch c.Search.ProviderOrDefault() {
 	case "duckduckgo":
 	case "tavily":

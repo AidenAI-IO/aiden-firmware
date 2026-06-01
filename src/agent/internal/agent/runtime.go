@@ -152,9 +152,13 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	sleepController := NewSleepController()
-	toolSet := NewBuiltinToolSet(cfg.HID, cfg.Audio, cfg.Search, cfg.Proxy, WithSleepController(sleepController))
+	proxy := ProxyConfigFromEnvironment()
+	if err := proxy.Validate(); err != nil {
+		return nil, fmt.Errorf("proxy environment: %w", err)
+	}
+	toolSet := NewBuiltinToolSet(cfg.HID, cfg.Audio, cfg.Search, proxy, WithSleepController(sleepController))
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
-	modelManager := NewModelManager(cfg.Model, cfg.Proxy)
+	modelManager := NewModelManager(cfg.Model, proxy)
 	summarizeFn := buildLLMSummarizeFn(modelManager)
 	profileFn := buildLLMProfileFn(modelManager)
 	contextWindowFn := func() int { return modelManager.Spec().ContextWindow }

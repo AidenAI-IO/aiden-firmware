@@ -2,6 +2,7 @@
 # Production OTA daemon watchdog. Runs in the background and never blocks boot.
 
 OTA_BIN=${OTA_BIN:-/oem/usr/bin/ota}
+ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
 LOG_PATH=${LOG_PATH:-/var/log/ota/ota.log}
 PID_FILE=${PID_FILE:-/run/ota/ota.pid}
 WATCHDOG_PID_FILE=${WATCHDOG_PID_FILE:-/run/ota/ota_watchdog.pid}
@@ -78,7 +79,7 @@ start() {
             fi
 
             echo "[ota] starting $OTA_BIN daemon" >> "$LOG_PATH"
-            "$OTA_BIN" daemon >> "$LOG_PATH" 2>&1 &
+            "$ENV_RUN_BIN" "$OTA_BIN" daemon >> "$LOG_PATH" 2>&1 &
             child="$!"
             echo "$child" > "$PID_FILE"
             wait "$child"

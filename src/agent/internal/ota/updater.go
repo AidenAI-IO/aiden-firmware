@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"aiden-agent/internal/netproxy"
 )
 
 const (
@@ -760,7 +762,12 @@ func newOTAHTTPClient() *http.Client {
 	}
 	clone := transport.Clone()
 	clone.ResponseHeaderTimeout = DefaultHTTPResponseHeaderTimeout
+	clone.Proxy = otaProxyFromEnvironment
 	return &http.Client{Transport: clone}
+}
+
+func otaProxyFromEnvironment(req *http.Request) (*url.URL, error) {
+	return netproxy.ProxyFromEnvironment(req, "http", "https", "socks5")
 }
 
 func (u *Updater) logDownloadProgress(progress DownloadProgress) {

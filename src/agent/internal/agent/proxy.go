@@ -1,11 +1,12 @@
 package agent
 
 import (
-	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"aiden-agent/internal/netproxy"
 )
 
 func newProxyHTTPClient(proxy ProxyConfig) *http.Client {
@@ -21,7 +22,9 @@ func newProxyTransport(proxy ProxyConfig) http.RoundTripper {
 func proxyFunc(proxy ProxyConfig) func(*http.Request) (*url.URL, error) {
 	proxy = proxy.WithDefaults()
 	if !proxy.HasProxyURL() {
-		return http.ProxyFromEnvironment
+		return func(req *http.Request) (*url.URL, error) {
+			return netproxy.ProxyFromEnvironment(req, "http", "https", "socks5")
+		}
 	}
 
 	return func(req *http.Request) (*url.URL, error) {
@@ -59,18 +62,7 @@ func validateProxyURL(raw string) error {
 }
 
 func parseProxyURL(raw string) (*url.URL, error) {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return nil, err
-	}
-	if u.Scheme == "" || u.Host == "" {
-		return nil, fmt.Errorf("expected absolute proxy URL, for example http://127.0.0.1:7890")
-	}
-	scheme := strings.ToLower(u.Scheme)
-	if scheme != "http" && scheme != "https" && scheme != "socks5" {
-		return nil, fmt.Errorf("unsupported proxy URL scheme %q", u.Scheme)
-	}
-	return u, nil
+	return netproxy.Parse(raw, "http", "https", "socks5")
 }
 
 func bypassProxy(host, port, noProxy string) bool {

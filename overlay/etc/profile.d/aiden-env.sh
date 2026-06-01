@@ -1,0 +1,25 @@
+# Load device-wide environment variables for interactive login shells.
+
+AIDEN_ENV_DEFAULT_NO_PROXY="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+AIDEN_ENV_FILE="${AIDEN_SYSTEM_ENV:-/userdata/system/env}"
+
+if [ -r "$AIDEN_ENV_FILE" ]; then
+    case "$-" in
+        *a*) AIDEN_ENV_RESTORE_ALLEXPORT=1 ;;
+        *) AIDEN_ENV_RESTORE_ALLEXPORT=0 ;;
+    esac
+    set -a
+    . "$AIDEN_ENV_FILE"
+    if [ "$AIDEN_ENV_RESTORE_ALLEXPORT" != "1" ]; then
+        set +a
+    fi
+fi
+
+if [ -n "${HTTP_PROXY:-}${http_proxy:-}${HTTPS_PROXY:-}${https_proxy:-}${ALL_PROXY:-}${all_proxy:-}" ] &&
+   [ -z "${NO_PROXY:-}" ] && [ -z "${no_proxy:-}" ]; then
+    NO_PROXY="$AIDEN_ENV_DEFAULT_NO_PROXY"
+    no_proxy="$AIDEN_ENV_DEFAULT_NO_PROXY"
+    export NO_PROXY no_proxy
+fi
+
+unset AIDEN_ENV_DEFAULT_NO_PROXY AIDEN_ENV_FILE AIDEN_ENV_RESTORE_ALLEXPORT

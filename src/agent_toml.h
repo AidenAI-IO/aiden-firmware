@@ -47,13 +47,6 @@ struct HIDToml {
     std::string frame_socket;
 };
 
-struct ProxyToml {
-    std::string http_proxy;
-    std::string https_proxy;
-    std::string all_proxy;
-    std::string no_proxy;
-};
-
 struct SearchToml {
     std::string provider;
     std::string api_key;
@@ -66,7 +59,6 @@ struct AgentToml {
     STTToml stt;
     AudioToml audio;
     HIDToml hid;
-    ProxyToml proxy;
     SearchToml search;
 
     std::string instruction;

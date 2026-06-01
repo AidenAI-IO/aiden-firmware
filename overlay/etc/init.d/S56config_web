@@ -3,9 +3,11 @@
 # Maintains /userdata/agent/agent.toml for the Go agent daemon.
 
 BIN=/oem/usr/bin/config_web
+ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
 PID_FILE=/run/config_web.pid
 CONFIG_PATH=/userdata/agent/agent.toml
 WIFI_CONFIG_PATH=/userdata/wpa_supplicant.conf
+SYSTEM_ENV_PATH=${SYSTEM_ENV_PATH:-/userdata/system/env}
 
 is_running() {
     pid="$1"
@@ -39,9 +41,9 @@ start() {
         return 1
     fi
 
-    mkdir -p "$(dirname "$CONFIG_PATH")"
+    mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$SYSTEM_ENV_PATH")"
 
-    "$BIN" --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" &
+    "$ENV_RUN_BIN" "$BIN" --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" --system-env="$SYSTEM_ENV_PATH" &
     child_pid=$!
     echo "$child_pid" > "$PID_FILE"
     sleep 1

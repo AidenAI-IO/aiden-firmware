@@ -2,8 +2,7 @@ package agent
 
 import (
 	"net/http"
-	"reflect"
-	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -29,13 +28,13 @@ func TestProxyFuncUsesConfiguredHTTPSProxy(t *testing.T) {
 func TestProxyFuncHonorsNoProxy(t *testing.T) {
 	fn := proxyFunc(ProxyConfig{
 		AllProxy: "http://127.0.0.1:7890",
-		NoProxy:  "localhost,*.invalid,api.openai.com,192.168.0.0/16",
+		NoProxy:  "localhost,*.invalid,api.openai.com,203.0.113.0/24",
 	})
 
 	for _, target := range []string{
 		"https://api.openai.com/v1/models",
 		"https://api.invalid/v1/models",
-		"http://192.168.1.10/status",
+		"http://203.0.113.10/status",
 	} {
 		req, err := http.NewRequest(http.MethodGet, target, nil)
 		if err != nil {
@@ -73,7 +72,7 @@ func TestProxyFuncAppliesDefaultNoProxy(t *testing.T) {
 	fn := proxyFunc(ProxyConfig{
 		AllProxy: "http://127.0.0.1:7890",
 	})
-	req, err := http.NewRequest(http.MethodGet, "http://192.168.42.1/status", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://localhost/status", nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -87,15 +86,75 @@ func TestProxyFuncAppliesDefaultNoProxy(t *testing.T) {
 }
 
 func TestProxyFuncUsesEnvironmentWhenNoProxyURLConfigured(t *testing.T) {
+	clearAgentProxyEnv(t)
+	t.Setenv("HTTPS_PROXY", "http://proxy.example:7893")
+
 	fn := proxyFunc(ProxyConfig{})
-	got := runtime.FuncForPC(reflect.ValueOf(fn).Pointer()).Name()
-	if got != "net/http.ProxyFromEnvironment" {
-		t.Fatalf("proxyFunc() = %s, want net/http.ProxyFromEnvironment", got)
+	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/owner/repo/releases/latest", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyURL, err := fn(req)
+	if err != nil {
+		t.Fatalf("proxyFunc() error = %v", err)
+	}
+	if proxyURL == nil || proxyURL.String() != "http://proxy.example:7893" {
+		t.Fatalf("proxyURL = %v, want environment proxy", proxyURL)
+	}
+}
+
+func TestProxyFuncRejectsInvalidEnvironmentProxy(t *testing.T) {
+	clearAgentProxyEnv(t)
+	t.Setenv("HTTPS_PROXY", "http://http://proxy.example:7893")
+
+	fn := proxyFunc(ProxyConfig{})
+	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/owner/repo/releases/latest", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fn(req)
+	if err == nil {
+		t.Fatal("proxyFunc() error = nil, want duplicate scheme error")
+	}
+	if !strings.Contains(err.Error(), "HTTPS_PROXY") || !strings.Contains(err.Error(), "duplicate scheme") {
+		t.Fatalf("proxyFunc() error = %v, want env name and duplicate scheme", err)
 	}
 }
 
 func TestProxyConfigValidateRejectsRelativeURL(t *testing.T) {
 	if err := (ProxyConfig{HTTPProxy: "127.0.0.1:7890"}).Validate(); err == nil {
 		t.Fatal("expected invalid relative proxy URL")
+	}
+}
+
+func TestProxyConfigValidateRejectsDuplicateScheme(t *testing.T) {
+	err := (ProxyConfig{HTTPSProxy: "http://http://proxy.example:7893"}).Validate()
+	if err == nil {
+		t.Fatal("expected invalid duplicate scheme proxy URL")
+	}
+	if !strings.Contains(err.Error(), "duplicate scheme") {
+		t.Fatalf("Validate() error = %v, want duplicate scheme", err)
+	}
+}
+
+func TestProxyFuncRejectsDuplicateScheme(t *testing.T) {
+	fn := proxyFunc(ProxyConfig{HTTPSProxy: "http://http://proxy.example:7893"})
+	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/owner/repo/releases/latest", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fn(req)
+	if err == nil {
+		t.Fatal("proxyFunc() error = nil, want duplicate scheme error")
+	}
+	if !strings.Contains(err.Error(), "duplicate scheme") {
+		t.Fatalf("proxyFunc() error = %v, want duplicate scheme", err)
+	}
+}
+
+func clearAgentProxyEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"} {
+		t.Setenv(key, "")
 	}
 }

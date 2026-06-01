@@ -56,7 +56,7 @@ go run ./cmd/daemon -config ./config -addr :8080
 设备服务：
 
 ```bash
-/oem/usr/bin/agent -config /userdata/agent -addr :8080
+/oem/usr/bin/aiden-env-run /oem/usr/bin/agent -config /userdata/agent -addr :8080
 ```
 
 CLI demo：

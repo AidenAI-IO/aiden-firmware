@@ -42,7 +42,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg.SkillMergeModel = agent.NewLLMSkillMergeModel(agent.NewModelManager(cfg.Model, cfg.Proxy))
+	cfg.SkillMergeModel = agent.NewLLMSkillMergeModel(agent.NewModelManager(cfg.Model, agent.ProxyConfigFromEnvironment()))
 
 	runtime, err := agent.NewRuntime(cfg)
 	if err != nil {

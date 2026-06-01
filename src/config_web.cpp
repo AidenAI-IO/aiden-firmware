@@ -16,6 +16,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -37,6 +38,7 @@ struct Options {
     std::string wifi_config_path = "/userdata/wpa_supplicant.conf";
     std::string wifi_interface = "wlan0";
     std::string ota_state_path = "/userdata/ota/state.json";
+    std::string system_env_path = "/userdata/system/env";
 };
 
 struct HttpRequest {
@@ -93,6 +95,13 @@ struct AgentLogSnapshot {
     std::string error;
 };
 
+struct SystemProxy {
+    std::string http_proxy;
+    std::string https_proxy;
+    std::string all_proxy;
+    std::string no_proxy;
+};
+
 struct TcpPortStatus {
     bool reachable = false;
     std::string detail;
@@ -115,6 +124,11 @@ const size_t kMaxHttpHeaderSize = 8 * 1024;
 const size_t kMaxHttpBodySize = 64 * 1024;
 const int kClientReadTimeoutSeconds = 5;
 const char* kDefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
+const int kSystemEnvCommandTimeoutMs = 1500;
+const size_t kMaxSystemEnvSize = 64 * 1024;
+const char* kManagedSystemProxyComment = "# Managed by config_web: system proxy";
+
+std::string validate_proxy_url(const std::string& url);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -150,7 +164,7 @@ bool starts_with(const std::string& text, const std::string& prefix) {
     return text.compare(0, prefix.size(), prefix) == 0;
 }
 
-bool has_proxy_url(const aiden::ProxyToml& proxy) {
+bool has_proxy_url(const SystemProxy& proxy) {
     return !trim_copy(proxy.http_proxy).empty() ||
            !trim_copy(proxy.https_proxy).empty() ||
            !trim_copy(proxy.all_proxy).empty();
@@ -396,6 +410,60 @@ std::string trim_trailing_newlines(const std::string& text) {
         --end;
     }
     return text.substr(0, end);
+}
+
+std::vector<std::string> split_lines(const std::string& text) {
+    std::vector<std::string> lines;
+    std::istringstream input(text);
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line[line.size() - 1] == '\r') {
+            line.resize(line.size() - 1);
+        }
+        lines.push_back(line);
+    }
+    return lines;
+}
+
+std::string line_or_empty(const std::vector<std::string>& lines, size_t index) {
+    return index < lines.size() ? trim_copy(lines[index]) : "";
+}
+
+bool load_system_env_proxy(const std::string& path, SystemProxy* proxy) {
+    if (!proxy || path.empty() || !file_exists(path.c_str())) {
+        return false;
+    }
+
+    const std::string script =
+        "set -a\n"
+        ". \"$AIDEN_SYSTEM_ENV\" >/dev/null 2>&1 || exit 2\n"
+        "printf '%s\\n' "
+        "\"${http_proxy:-}\" \"${HTTP_PROXY:-}\" "
+        "\"${https_proxy:-}\" \"${HTTPS_PROXY:-}\" "
+        "\"${all_proxy:-}\" \"${ALL_PROXY:-}\" "
+        "\"${no_proxy:-}\" \"${NO_PROXY:-}\"";
+    CommandResult result = run_shell_command_with_timeout(
+        "env -i AIDEN_SYSTEM_ENV=" + shell_quote(path) + " /bin/sh -c " + shell_quote(script),
+        kSystemEnvCommandTimeoutMs);
+    if (result.exit_code != 0 || result.timed_out) {
+        return false;
+    }
+
+    std::vector<std::string> lines = split_lines(result.output);
+    SystemProxy loaded;
+    loaded.http_proxy = !line_or_empty(lines, 1).empty() ? line_or_empty(lines, 1) : line_or_empty(lines, 0);
+    loaded.https_proxy = !line_or_empty(lines, 3).empty() ? line_or_empty(lines, 3) : line_or_empty(lines, 2);
+    loaded.all_proxy = !line_or_empty(lines, 5).empty() ? line_or_empty(lines, 5) : line_or_empty(lines, 4);
+    loaded.no_proxy = !line_or_empty(lines, 7).empty() ? line_or_empty(lines, 7) : line_or_empty(lines, 6);
+    if (has_proxy_url(loaded) && loaded.no_proxy.empty()) {
+        loaded.no_proxy = kDefaultNoProxy;
+    }
+
+    bool has_values = has_proxy_url(loaded) || !trim_copy(loaded.no_proxy).empty();
+    if (has_values) {
+        *proxy = loaded;
+    }
+    return has_values;
 }
 
 std::string find_key_value_line(const std::string& text, const std::string& key) {
@@ -702,9 +770,6 @@ void load_current_agent_config(const Options& options,
             if (loaded.search.provider.empty()) {
                 loaded.search.provider = "duckduckgo";
             }
-            if (has_proxy_url(loaded.proxy) && loaded.proxy.no_proxy.empty()) {
-                loaded.proxy.no_proxy = kDefaultNoProxy;
-            }
             *config = loaded;
         } else if (load_error) {
             *load_error = err;
@@ -728,7 +793,7 @@ void load_current_wifi_config(const Options& options,
     }
 }
 
-cJSON* config_to_json(const aiden::AgentToml& config) {
+cJSON* config_to_json(const aiden::AgentToml& config, const SystemProxy& system_proxy) {
     cJSON* root = cJSON_CreateObject();
 
     cJSON* model = add_object(root, "model");
@@ -779,10 +844,10 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
 
     cJSON* proxy = add_object(root, "proxy");
-    cJSON_AddStringToObject(proxy, "http_proxy", config.proxy.http_proxy.c_str());
-    cJSON_AddStringToObject(proxy, "https_proxy", config.proxy.https_proxy.c_str());
-    cJSON_AddStringToObject(proxy, "all_proxy", config.proxy.all_proxy.c_str());
-    cJSON_AddStringToObject(proxy, "no_proxy", config.proxy.no_proxy.c_str());
+    cJSON_AddStringToObject(proxy, "http_proxy", system_proxy.http_proxy.c_str());
+    cJSON_AddStringToObject(proxy, "https_proxy", system_proxy.https_proxy.c_str());
+    cJSON_AddStringToObject(proxy, "all_proxy", system_proxy.all_proxy.c_str());
+    cJSON_AddStringToObject(proxy, "no_proxy", system_proxy.no_proxy.c_str());
 
     cJSON* search = add_object(root, "search");
     cJSON_AddStringToObject(search, "provider", config.search.provider.c_str());
@@ -899,7 +964,7 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_int(&m->max_tokens, obj, "max_tokens");
 }
 
-void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
+void update_config_from_json(cJSON* root, aiden::AgentToml* config, SystemProxy* system_proxy) {
     if (!root || !config) {
         return;
     }
@@ -945,11 +1010,11 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     }
 
     cJSON* proxy = cJSON_GetObjectItem(root, "proxy");
-    if (json_is_object(proxy)) {
-        set_json_str(&config->proxy.http_proxy, proxy, "http_proxy");
-        set_json_str(&config->proxy.https_proxy, proxy, "https_proxy");
-        set_json_str(&config->proxy.all_proxy, proxy, "all_proxy");
-        set_json_str(&config->proxy.no_proxy, proxy, "no_proxy");
+    if (json_is_object(proxy) && system_proxy) {
+        set_json_str(&system_proxy->http_proxy, proxy, "http_proxy");
+        set_json_str(&system_proxy->https_proxy, proxy, "https_proxy");
+        set_json_str(&system_proxy->all_proxy, proxy, "all_proxy");
+        set_json_str(&system_proxy->no_proxy, proxy, "no_proxy");
     }
 
     cJSON* search = cJSON_GetObjectItem(root, "search");
@@ -1248,6 +1313,252 @@ std::string read_file_contents(const char* path, size_t max_size = 64 * 1024) {
     }
     fclose(f);
     return contents;
+}
+
+bool mkdir_p(const std::string& dir, std::string* error) {
+    if (dir.empty()) {
+        return true;
+    }
+    std::string current;
+    size_t index = 0;
+    if (dir[0] == '/') {
+        current = "/";
+        index = 1;
+    }
+    while (index <= dir.size()) {
+        size_t next = dir.find('/', index);
+        std::string part = dir.substr(index, next == std::string::npos ? std::string::npos : next - index);
+        if (!part.empty()) {
+            if (current.empty() || current == "/") {
+                current += part;
+            } else {
+                current += "/" + part;
+            }
+            if (mkdir(current.c_str(), 0755) != 0 && errno != EEXIST) {
+                if (error) *error = "mkdir " + current + ": " + strerror(errno);
+                return false;
+            }
+        }
+        if (next == std::string::npos) {
+            break;
+        }
+        index = next + 1;
+    }
+    return true;
+}
+
+std::string parent_dir(const std::string& path) {
+    size_t pos = path.find_last_of('/');
+    if (pos == std::string::npos) {
+        return "";
+    }
+    if (pos == 0) {
+        return "/";
+    }
+    return path.substr(0, pos);
+}
+
+bool validate_system_proxy_values(const SystemProxy& proxy, std::string* error) {
+    struct Field {
+        const char* name;
+        const std::string* value;
+    };
+    const Field fields[] = {
+        {"http_proxy", &proxy.http_proxy},
+        {"https_proxy", &proxy.https_proxy},
+        {"all_proxy", &proxy.all_proxy},
+    };
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
+        std::string value = trim_copy(*fields[i].value);
+        std::string validation = validate_proxy_url(value);
+        if (!validation.empty()) {
+            if (error) *error = std::string(fields[i].name) + ": " + validation + ": " + value;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool validate_system_env_content(const std::string& content, std::string* error) {
+    char tmp_template[] = "/tmp/config_web_system_env_XXXXXX";
+    int fd = mkstemp(tmp_template);
+    if (fd < 0) {
+        if (error) *error = std::string("mkstemp failed: ") + strerror(errno);
+        return false;
+    }
+    bool ok = write_all(fd, content.data(), content.size());
+    if (close(fd) != 0) {
+        ok = false;
+    }
+    if (!ok) {
+        if (error) *error = std::string("write temp system env failed: ") + strerror(errno);
+        unlink(tmp_template);
+        return false;
+    }
+
+    CommandResult result = run_shell_command_with_timeout(
+        "sh -n " + shell_quote(tmp_template) + " 2>&1",
+        kSystemEnvCommandTimeoutMs);
+    if (result.exit_code != 0 || result.timed_out) {
+        unlink(tmp_template);
+        if (error) {
+            *error = result.timed_out ? "system env syntax check timed out"
+                                      : trim_trailing_newlines(result.output);
+            if (error->empty()) {
+                *error = "system env syntax check failed";
+            }
+        }
+        return false;
+    }
+
+    SystemProxy proxy;
+    if (load_system_env_proxy(tmp_template, &proxy) &&
+        !validate_system_proxy_values(proxy, error)) {
+        unlink(tmp_template);
+        return false;
+    }
+
+    unlink(tmp_template);
+    return true;
+}
+
+bool atomic_write_file(const std::string& path,
+                       const std::string& content,
+                       mode_t mode,
+                       std::string* error) {
+    if (!mkdir_p(parent_dir(path), error)) {
+        return false;
+    }
+
+    std::string tmp = path + ".tmp";
+    int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (fd < 0) {
+        if (error) *error = "open " + tmp + ": " + strerror(errno);
+        return false;
+    }
+    if (fchmod(fd, mode) != 0) {
+        if (error) *error = "chmod " + tmp + ": " + strerror(errno);
+        close(fd);
+        unlink(tmp.c_str());
+        return false;
+    }
+    if (!write_all(fd, content.data(), content.size())) {
+        if (error) *error = "write " + tmp + ": " + strerror(errno);
+        close(fd);
+        unlink(tmp.c_str());
+        return false;
+    }
+    fsync(fd);
+    if (close(fd) != 0) {
+        if (error) *error = "close " + tmp + ": " + strerror(errno);
+        unlink(tmp.c_str());
+        return false;
+    }
+    if (rename(tmp.c_str(), path.c_str()) != 0) {
+        if (error) *error = "rename " + tmp + " -> " + path + ": " + strerror(errno);
+        unlink(tmp.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool save_system_env_content(const std::string& path,
+                             const std::string& content,
+                             std::string* error) {
+    if (path.empty()) {
+        if (error) *error = "system env path is empty";
+        return false;
+    }
+    if (content.size() > kMaxSystemEnvSize) {
+        if (error) *error = "system env is too large";
+        return false;
+    }
+    if (!validate_system_env_content(content, error)) {
+        return false;
+    }
+    return atomic_write_file(path, content, 0600, error);
+}
+
+bool is_system_proxy_env_key(const std::string& key) {
+    return key == "http_proxy" || key == "HTTP_PROXY" ||
+           key == "https_proxy" || key == "HTTPS_PROXY" ||
+           key == "all_proxy" || key == "ALL_PROXY" ||
+           key == "no_proxy" || key == "NO_PROXY";
+}
+
+bool is_system_proxy_assignment_line(const std::string& line) {
+    std::string trimmed = trim_copy(line);
+    if (trimmed == kManagedSystemProxyComment) {
+        return true;
+    }
+    if (starts_with(trimmed, "export ")) {
+        trimmed = trim_copy(trimmed.substr(7));
+    }
+    size_t eq = trimmed.find('=');
+    if (eq == std::string::npos) {
+        return false;
+    }
+    return is_system_proxy_env_key(trim_copy(trimmed.substr(0, eq)));
+}
+
+void append_system_env_assignment(std::ostringstream& out,
+                                  const char* key,
+                                  const std::string& value) {
+    std::string trimmed = trim_copy(value);
+    if (trimmed.empty()) {
+        return;
+    }
+    out << key << "=" << shell_quote(trimmed) << "\n";
+}
+
+std::string render_system_proxy_env_block(SystemProxy proxy) {
+    if (has_proxy_url(proxy) && trim_copy(proxy.no_proxy).empty()) {
+        proxy.no_proxy = kDefaultNoProxy;
+    }
+    if (!has_proxy_url(proxy) && trim_copy(proxy.no_proxy).empty()) {
+        return "";
+    }
+
+    std::ostringstream out;
+    out << kManagedSystemProxyComment << "\n";
+    append_system_env_assignment(out, "http_proxy", proxy.http_proxy);
+    append_system_env_assignment(out, "HTTP_PROXY", proxy.http_proxy);
+    append_system_env_assignment(out, "https_proxy", proxy.https_proxy);
+    append_system_env_assignment(out, "HTTPS_PROXY", proxy.https_proxy);
+    append_system_env_assignment(out, "all_proxy", proxy.all_proxy);
+    append_system_env_assignment(out, "ALL_PROXY", proxy.all_proxy);
+    append_system_env_assignment(out, "no_proxy", proxy.no_proxy);
+    append_system_env_assignment(out, "NO_PROXY", proxy.no_proxy);
+    return out.str();
+}
+
+bool save_system_env_with_proxy(const std::string& path,
+                                const SystemProxy& proxy,
+                                std::string* error) {
+    if (!validate_system_proxy_values(proxy, error)) {
+        return false;
+    }
+
+    std::string existing = read_file_contents(path.c_str(), kMaxSystemEnvSize);
+    std::ostringstream out;
+    std::istringstream input(existing);
+    std::string line;
+    while (std::getline(input, line)) {
+        if (is_system_proxy_assignment_line(line)) {
+            continue;
+        }
+        out << line << "\n";
+    }
+
+    std::string content = out.str();
+    std::string block = render_system_proxy_env_block(proxy);
+    if (!block.empty()) {
+        if (!content.empty() && content[content.size() - 1] != '\n') {
+            content.push_back('\n');
+        }
+        content += block;
+    }
+    return save_system_env_content(path, content, error);
 }
 
 std::string read_file_tail(const char* path, size_t max_size) {
@@ -1675,25 +1986,30 @@ cJSON* firmware_info_to_json(const Options& options) {
 ApiResponse handle_get_config(const Options& options) {
     aiden::AgentToml config;
     aiden::WifiNetworkConfig wifi;
+    SystemProxy system_proxy;
     WifiRuntimeStatus wifi_status = query_wifi_status(options);
     AgentRuntimeStatus agent_status = query_agent_status();
     std::string config_error;
     std::string wifi_error;
     load_current_agent_config(options, &config, &config_error);
     load_current_wifi_config(options, &wifi, &wifi_error);
+    load_system_env_proxy(options.system_env_path, &system_proxy);
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
-    cJSON_AddItemToObject(root, "config", config_to_json(config));
+    cJSON_AddItemToObject(root, "config", config_to_json(config, system_proxy));
     cJSON_AddItemToObject(root, "wifi", wifi_to_json(wifi));
     cJSON_AddItemToObject(root, "wifi_status", wifi_status_to_json(wifi_status));
     cJSON_AddItemToObject(root, "agent_status", agent_status_to_json(agent_status));
     cJSON_AddItemToObject(root, "firmware", firmware_info_to_json(options));
+    cJSON_AddStringToObject(root, "system_env",
+                            read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize).c_str());
 
     cJSON* paths = add_object(root, "paths");
     cJSON_AddStringToObject(paths, "agent_config", options.agent_config_path.c_str());
     cJSON_AddStringToObject(paths, "wifi_config", options.wifi_config_path.c_str());
     cJSON_AddStringToObject(paths, "wifi_interface", options.wifi_interface.c_str());
+    cJSON_AddStringToObject(paths, "system_env", options.system_env_path.c_str());
 
     if (!config_error.empty()) {
         cJSON_AddStringToObject(root, "config_error", config_error.c_str());
@@ -1719,6 +2035,39 @@ ApiResponse handle_get_agent_log() {
     return make_json_ok(root);
 }
 
+ApiResponse handle_post_system_env(const Options& options, const std::string& body) {
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+        return make_json_error(400, "invalid JSON body");
+    }
+
+    cJSON* env_item = cJSON_GetObjectItem(root, "system_env");
+    if (!json_is_string(env_item)) {
+        cJSON_Delete(root);
+        return make_json_error(400, "missing system_env string");
+    }
+
+    std::string system_env = env_item->valuestring;
+    cJSON_Delete(root);
+
+    std::string save_error;
+    if (!save_system_env_content(options.system_env_path, system_env, &save_error)) {
+        return make_json_error(400, save_error);
+    }
+
+    schedule_agent_restart();
+
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", 1);
+    cJSON_AddStringToObject(response, "message", "system env saved; agent restarting");
+    cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
+    cJSON_AddStringToObject(response, "system_env",
+                            read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize).c_str());
+    cJSON* paths = add_object(response, "paths");
+    cJSON_AddStringToObject(paths, "system_env", options.system_env_path.c_str());
+    return make_json_ok(response);
+}
+
 ApiResponse handle_post_config(const Options& options, const std::string& body) {
     cJSON* root = cJSON_Parse(body.c_str());
     if (!root) {
@@ -1727,13 +2076,15 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
 
     aiden::AgentToml config;
     aiden::WifiNetworkConfig wifi;
+    SystemProxy system_proxy;
     std::string ignore_error;
     load_current_agent_config(options, &config, &ignore_error);
     load_current_wifi_config(options, &wifi, &ignore_error);
+    load_system_env_proxy(options.system_env_path, &system_proxy);
 
     cJSON* config_json = cJSON_GetObjectItem(root, "config");
     if (json_is_object(config_json)) {
-        update_config_from_json(config_json, &config);
+        update_config_from_json(config_json, &config, &system_proxy);
     }
 
     cJSON* wifi_json = cJSON_GetObjectItem(root, "wifi");
@@ -1757,6 +2108,10 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON_Delete(root);
 
     std::string save_error;
+    if (!save_system_env_with_proxy(options.system_env_path, system_proxy, &save_error)) {
+        return make_json_error(400, save_error);
+    }
+
     if (!aiden::save_agent_toml(options.agent_config_path.c_str(), config, &save_error)) {
         return make_json_error(500, save_error);
     }
@@ -1772,11 +2127,12 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON_AddBoolToObject(response, "ok", 1);
     cJSON_AddStringToObject(response, "message", "config saved; agent restarting");
     cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
-    cJSON_AddItemToObject(response, "config", config_to_json(config));
+    cJSON_AddItemToObject(response, "config", config_to_json(config, system_proxy));
 
     cJSON* paths = add_object(response, "paths");
     cJSON_AddStringToObject(paths, "agent_config", options.agent_config_path.c_str());
     cJSON_AddStringToObject(paths, "wifi_config", options.wifi_config_path.c_str());
+    cJSON_AddStringToObject(paths, "system_env", options.system_env_path.c_str());
 
     if (apply_wifi && should_save_wifi) {
         CommandResult wifi_apply = apply_wifi_config(options);
@@ -1939,11 +2295,47 @@ load();
 </script></body></html>)HTML";
 }
 
-bool is_valid_proxy_scheme(const std::string& url) {
-    if (url.empty()) return true;
+bool has_duplicate_proxy_scheme(const std::string& url) {
+    std::string trimmed = trim_copy(url);
+    size_t first = trimmed.find("://");
+    if (first == std::string::npos) {
+        return false;
+    }
+    return trimmed.find("://", first + 3) != std::string::npos;
+}
+
+bool has_proxy_whitespace(const std::string& url) {
+    if (url.find("\xC2\xA0") != std::string::npos) return true;
+    for (unsigned char c : url) {
+        if (c >= 0x80) return true;
+        if (::isspace(c)) return true;
+    }
+    return false;
+}
+
+bool has_embedded_proxy_assignment(const std::string& url) {
+    const char* fragments[] = {"http_proxy=", "HTTP_PROXY=", "https_proxy=", "HTTPS_PROXY=", "all_proxy=", "ALL_PROXY=", NULL};
+    for (int i = 0; fragments[i]; ++i) {
+        size_t pos = url.find(fragments[i]);
+        if (pos != std::string::npos && pos > 0) return true;
+    }
+    return false;
+}
+
+std::string validate_proxy_url(const std::string& url) {
+    if (url.empty()) return "";
+    if (has_proxy_whitespace(url)) return "proxy URL contains whitespace; use one export assignment per line";
+    if (has_embedded_proxy_assignment(url)) return "proxy URL contains another proxy assignment; use one export assignment per line";
+    if (has_duplicate_proxy_scheme(url)) return "duplicate scheme in proxy URL";
     return starts_with(url, "http://") || starts_with(url, "https://") ||
            starts_with(url, "socks5://") || starts_with(url, "socks4://") ||
-           starts_with(url, "socks4a://");
+           starts_with(url, "socks4a://")
+        ? ""
+        : "invalid scheme (allowed: http, https, socks5, socks4)";
+}
+
+bool is_valid_proxy_scheme(const std::string& url) {
+    return validate_proxy_url(url).empty();
 }
 
 std::string provider_default_url(const std::string& provider) {
@@ -1954,7 +2346,7 @@ std::string provider_default_url(const std::string& provider) {
     return "";
 }
 
-std::string build_curl_proxy_arg(const aiden::ProxyToml& proxy) {
+std::string build_curl_proxy_arg(const SystemProxy& proxy) {
     std::string url = trim_copy(proxy.https_proxy);
     if (url.empty()) url = trim_copy(proxy.http_proxy);
     if (url.empty()) url = trim_copy(proxy.all_proxy);
@@ -1968,7 +2360,7 @@ std::string build_curl_proxy_arg(const aiden::ProxyToml& proxy) {
     return arg;
 }
 
-std::string build_proxy_env_exports(const aiden::ProxyToml& proxy) {
+std::string build_proxy_env_exports(const SystemProxy& proxy) {
     std::string http_proxy = trim_copy(proxy.http_proxy);
     std::string https_proxy = trim_copy(proxy.https_proxy);
     std::string all_proxy = trim_copy(proxy.all_proxy);
@@ -2025,11 +2417,10 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     cJSON* results = add_array(response, "results");
     bool all_passed = true;
 
-    aiden::AgentToml current_config;
-    std::string config_error;
-    load_current_agent_config(options, &current_config, &config_error);
-    std::string curl_proxy_arg = build_curl_proxy_arg(current_config.proxy);
-    std::string curl_env_exports = build_proxy_env_exports(current_config.proxy);
+    SystemProxy current_proxy;
+    load_system_env_proxy(options.system_env_path, &current_proxy);
+    std::string curl_proxy_arg = build_curl_proxy_arg(current_proxy);
+    std::string curl_env_exports = build_proxy_env_exports(current_proxy);
 
     if (section == "proxy") {
         const char* proxy_keys[] = {"http_proxy", "https_proxy", "all_proxy", NULL};
@@ -2041,12 +2432,12 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             if (val.empty()) {
                 cJSON_AddBoolToObject(r, "passed", 1);
                 cJSON_AddStringToObject(r, "detail", "empty (ok)");
-            } else if (is_valid_proxy_scheme(val)) {
+            } else if (validate_proxy_url(val).empty()) {
                 cJSON_AddBoolToObject(r, "passed", 1);
                 cJSON_AddStringToObject(r, "detail", val.c_str());
             } else {
                 cJSON_AddBoolToObject(r, "passed", 0);
-                std::string msg = "invalid scheme in: " + val + " (allowed: http, https, socks5, socks4)";
+                std::string msg = validate_proxy_url(val) + ": " + val;
                 cJSON_AddStringToObject(r, "detail", msg.c_str());
                 all_passed = false;
             }
@@ -2529,10 +2920,9 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         FILE* sf = fopen("/userdata/agent/benchmark/state.json", "w");
         if (sf) { fputs(state.c_str(), sf); fclose(sf); }
 
-        aiden::AgentToml current_config;
-        std::string config_error;
-        load_current_agent_config(options, &current_config, &config_error);
-        std::string proxy_env_exports = build_proxy_env_exports(current_config.proxy);
+        SystemProxy current_proxy;
+        load_system_env_proxy(options.system_env_path, &current_proxy);
+        std::string proxy_env_exports = build_proxy_env_exports(current_proxy);
 
         // Launch runner in background
         std::string cmd = "cd /userdata/agent/benchmark && "
@@ -2564,6 +2954,10 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "POST" && request.path == "/api/config") {
         return handle_post_config(options, request.body);
+    }
+
+    if (request.method == "POST" && request.path == "/api/system/env") {
+        return handle_post_system_env(options, request.body);
     }
 
     if (request.method == "POST" && request.path == "/api/wifi/scan") {
@@ -2604,7 +2998,8 @@ bool parse_int(const char* text, int min_value, int max_value, int* value) {
 
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0 << " [--bind=IP] [--port=PORT]"
-              << " [--config=PATH] [--wifi-config=PATH] [--wifi-iface=NAME]" << std::endl;
+              << " [--config=PATH] [--wifi-config=PATH] [--wifi-iface=NAME]"
+              << " [--system-env=PATH]" << std::endl;
 }
 
 bool parse_args(int argc, char** argv, Options* options) {
@@ -2623,6 +3018,7 @@ bool parse_args(int argc, char** argv, Options* options) {
         } else if (consume_prefix(arg, "--config=", &options->agent_config_path)) {
         } else if (consume_prefix(arg, "--wifi-config=", &options->wifi_config_path)) {
         } else if (consume_prefix(arg, "--wifi-iface=", &options->wifi_interface)) {
+        } else if (consume_prefix(arg, "--system-env=", &options->system_env_path)) {
         } else {
             return false;
         }
@@ -2694,6 +3090,7 @@ int main(int argc, char** argv) {
               << options.port << std::endl;
     std::cout << "agent.toml -> " << options.agent_config_path << std::endl;
     std::cout << "wifi.conf  -> " << options.wifi_config_path << std::endl;
+    std::cout << "system env -> " << options.system_env_path << std::endl;
 
     while (!g_should_stop) {
         sockaddr_in client_addr;
