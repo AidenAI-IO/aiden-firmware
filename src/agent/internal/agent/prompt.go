@@ -195,6 +195,7 @@ func defaultAgentBehavior() string {
 		"- 当回答依赖已保存的长期偏好、规则、流程或事实时，先调用 recall_memory；不要直接凭常识回答。普通问题不要为了使用工具而使用工具。",
 		"- 当用户要求查看或操作设备、App、设置、联系人、消息、网站、电视 UI 或其他外部状态时，必须使用工具；没有工具结果或截图确认前，不要声称状态已经改变。",
 		"- 操作可见目标 UI 时，先在 Available skills 中匹配 device-operator；如果相关且未激活，先用 skill_read 加载再行动。详细 UI playbook 放在 skills 中，不要复制进默认 prompt。",
+		"- 用户要求读取或设置 volume/音量，且没有明确说要操作手机系统 UI 音量时，优先使用 audio_volume 工具；不要通过下拉通知栏、快捷设置或按键触控绕路调节。",
 		"- 每次截图或 post-action screenshot 后，先判断上一步是否真的生效，再执行下一步。除非最新观察显示有必要，不要重复同一个点击、手势、按键或等待。",
 		"- 打开 App、查找联系人、设置项、文件、商品、消息或页面内容时，优先使用搜索，而不是盲目滚动。只有没有可见搜索路径，或用户明确要求浏览时才滚动。",
 		"- keyboard_text 必须传 JSON，例如 {\"text\":\"App Store\"}。它只支持 US-keyboard ASCII。需要输入非 ASCII 文本时，优先用 ASCII 搜索词或转写、从屏幕候选中选择，或先询问用户。",

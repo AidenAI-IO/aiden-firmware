@@ -65,7 +65,15 @@ type MemoryItem struct {
 	TimeScope        string            `yaml:"time_scope"`
 	CreatedAt        string            `yaml:"created_at"`
 	UpdatedAt        string            `yaml:"updated_at"`
+	TTL              string            `yaml:"ttl,omitempty"`
+	ExpiresAt        string            `yaml:"expires_at,omitempty"`
+	Applicability    map[string]string `yaml:"applicability,omitempty"`
 	SourceRefs       []MemorySourceRef `yaml:"source_refs,omitempty"`
+	EvidenceRefs     []MemorySourceRef `yaml:"evidence_refs,omitempty"`
+	LastValidatedAt  string            `yaml:"last_validated_at,omitempty"`
+	SuccessCount     int               `yaml:"success_count,omitempty"`
+	FailureCount     int               `yaml:"failure_count,omitempty"`
+	ConflictsWith    []string          `yaml:"conflicts_with,omitempty"`
 	Supersedes       string            `yaml:"supersedes,omitempty"`
 	SupersededBy     string            `yaml:"superseded_by,omitempty"`
 	Traceability     string            `yaml:"traceability"`
@@ -82,17 +90,20 @@ type MemoryQuery struct {
 }
 
 type MemoryResult struct {
-	ID         string   `json:"id"`
-	Type       string   `json:"type"`
-	Status     string   `json:"status"`
-	Title      string   `json:"title"`
-	Summary    string   `json:"summary"`
-	Content    string   `json:"content"`
-	Priority   int      `json:"priority"`
-	Confidence float64  `json:"confidence"`
-	Tags       []string `json:"tags,omitempty"`
-	Entities   []string `json:"entities,omitempty"`
-	FilePath   string   `json:"file_path"`
+	ID            string            `json:"id"`
+	Type          string            `json:"type"`
+	Status        string            `json:"status"`
+	Title         string            `json:"title"`
+	Summary       string            `json:"summary"`
+	Content       string            `json:"content"`
+	Priority      int               `json:"priority"`
+	Confidence    float64           `json:"confidence"`
+	Tags          []string          `json:"tags,omitempty"`
+	Entities      []string          `json:"entities,omitempty"`
+	FilePath      string            `json:"file_path"`
+	Applicability map[string]string `json:"applicability,omitempty"`
+	SourceRefs    []MemorySourceRef `json:"source_refs,omitempty"`
+	EvidenceRefs  []MemorySourceRef `json:"evidence_refs,omitempty"`
 }
 
 type memoryIndex struct {
@@ -185,22 +196,28 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 		if err != nil {
 			return nil, err
 		}
+		if memoryItemExpired(parsed.Item, time.Now().UTC()) {
+			continue
+		}
 		score := scoreMemoryEntry(query, entry, parsed)
 		if score == 0 && !matchAll {
 			continue
 		}
 		matches = append(matches, scoredMemoryResult{Score: score, Result: MemoryResult{
-			ID:         entry.ID,
-			Type:       entry.Type,
-			Status:     entry.Status,
-			Title:      parsed.Title,
-			Summary:    entry.Summary,
-			Content:    parsed.Content,
-			Priority:   entry.Priority,
-			Confidence: entry.Confidence,
-			Tags:       append([]string(nil), entry.Tags...),
-			Entities:   append([]string(nil), entry.Entities...),
-			FilePath:   path,
+			ID:            entry.ID,
+			Type:          entry.Type,
+			Status:        entry.Status,
+			Title:         parsed.Title,
+			Summary:       entry.Summary,
+			Content:       parsed.Content,
+			Priority:      entry.Priority,
+			Confidence:    entry.Confidence,
+			Tags:          append([]string(nil), entry.Tags...),
+			Entities:      append([]string(nil), entry.Entities...),
+			FilePath:      path,
+			Applicability: cloneStringMap(parsed.Item.Applicability),
+			SourceRefs:    append([]MemorySourceRef(nil), parsed.Item.SourceRefs...),
+			EvidenceRefs:  append([]MemorySourceRef(nil), parsed.Item.EvidenceRefs...),
 		}})
 	}
 	sort.SliceStable(matches, func(i, j int) bool {
@@ -299,6 +316,37 @@ func (s *LongTermMemoryStore) MarkConflict(ctx context.Context, aID string, bID 
 			parsed.Item.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			_ = writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644)
 		}
+	}
+	return s.RebuildIndex(ctx)
+}
+
+func (s *LongTermMemoryStore) UpdateMemory(ctx context.Context, id string, update func(*MemoryItem)) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if update == nil {
+		return nil
+	}
+	path := s.memoryPath(id)
+	parsed, err := readMemoryMarkdown(path)
+	if err != nil {
+		if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	update(&parsed.Item)
+	parsed.Item.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if parsed.Item.Title == "" {
+		parsed.Item.Title = parsed.Title
+	}
+	if parsed.Item.Content == "" {
+		parsed.Item.Content = parsed.Content
+	}
+	if err := writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644); err != nil {
+		return err
 	}
 	return s.RebuildIndex(ctx)
 }
@@ -601,6 +649,12 @@ func normalizeMemoryItem(item MemoryItem, now time.Time) MemoryItem {
 	item.UpdatedAt = now.Format(time.RFC3339Nano)
 	if item.Traceability == "" {
 		item.Traceability = "full"
+	}
+	if item.ExpiresAt == "" {
+		item.ExpiresAt = ttlExpiresAt(now, item.TTL)
+	}
+	if len(item.EvidenceRefs) == 0 && len(item.SourceRefs) > 0 {
+		item.EvidenceRefs = append([]MemorySourceRef(nil), item.SourceRefs...)
 	}
 	if item.Title == "" {
 		item.Title = item.ID

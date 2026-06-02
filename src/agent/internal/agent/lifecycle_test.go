@@ -419,6 +419,162 @@ func TestVerifyRebuildsCorruptedIndex(t *testing.T) {
 	}
 }
 
+func TestVerifyMarksExpiredLongTermMemory(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store := NewLongTermMemoryStore(filepath.Join(root, "long_term"))
+
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:               "mem_expired_verify",
+		Type:             "procedure",
+		Status:           "active",
+		Priority:         80,
+		Tags:             []string{"登录"},
+		Title:            "过期流程",
+		Content:          "旧流程。",
+		EvidenceExcerpts: []string{"旧证据"},
+		ExpiresAt:        "2000-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("AddMemory() error = %v", err)
+	}
+
+	lm := NewLifecycleManager(root)
+	report, err := lm.Verify(ctx)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if report.ExpiredMemories != 1 {
+		t.Fatalf("expected one expired memory, got %#v", report)
+	}
+
+	parsed, err := readMemoryMarkdown(store.memoryPath("mem_expired_verify"))
+	if err != nil {
+		t.Fatalf("read expired memory: %v", err)
+	}
+	if parsed.Item.Status != "expired" {
+		t.Fatalf("expected status expired, got %s", parsed.Item.Status)
+	}
+	indexData, err := os.ReadFile(store.indexPath())
+	if err != nil {
+		t.Fatalf("read index: %v", err)
+	}
+	if !strings.Contains(string(indexData), "status: expired") {
+		t.Fatalf("expected rebuilt index to include expired status:\n%s", indexData)
+	}
+	results, err := store.Search(ctx, MemoryQuery{Tags: []string{"登录"}, Limit: 10})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected expired memory excluded from search, got %#v", results)
+	}
+}
+
+func TestVerifyPrunesOldUnreferencedEpisodeTrace(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "lifecycle"), 0o755); err != nil {
+		t.Fatalf("mkdir lifecycle: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "lifecycle", "retention.yaml"), []byte("event_compact_after: 1s\n"), 0o644); err != nil {
+		t.Fatalf("write retention: %v", err)
+	}
+
+	episodes := NewTaskEpisodeStore(filepath.Join(root, "episodes"))
+	for _, episode := range []TaskEpisode{
+		{
+			ID:        "ep_old_unreferenced",
+			Status:    "active",
+			StartedAt: "2000-01-01T00:00:00Z",
+			EndedAt:   "2000-01-01T00:00:10Z",
+			UserGoal:  "打开微信App",
+			Outcome:   TaskEpisodeOutcome{Success: true, FinalState: "已打开"},
+			Events:    []TaskEpisodeEvent{{EventID: "evt_old", Type: "tool_call", ToolName: "touch_gesture"}},
+		},
+		{
+			ID:        "ep_old_referenced",
+			Status:    "active",
+			StartedAt: "2000-01-01T00:01:00Z",
+			EndedAt:   "2000-01-01T00:01:10Z",
+			UserGoal:  "打开通讯录",
+			Outcome:   TaskEpisodeOutcome{Success: true, FinalState: "已打开"},
+			Events:    []TaskEpisodeEvent{{EventID: "evt_ref", Type: "tool_call", ToolName: "touch_gesture"}},
+		},
+	} {
+		if _, err := episodes.AddEpisode(ctx, episode); err != nil {
+			t.Fatalf("AddEpisode(%s): %v", episode.ID, err)
+		}
+	}
+
+	oldDir := filepath.Join(root, "episodes", "2000", "ep_old_unreferenced")
+	refDir := filepath.Join(root, "episodes", "2000", "ep_old_referenced")
+	if err := os.WriteFile(filepath.Join(oldDir, "artifacts", "step_001.jpg"), []byte("image"), 0o644); err != nil {
+		t.Fatalf("write old artifact: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(refDir, "artifacts", "step_001.jpg"), []byte("image"), 0o644); err != nil {
+		t.Fatalf("write referenced artifact: %v", err)
+	}
+
+	store := NewLongTermMemoryStore(filepath.Join(root, "long_term"))
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:               "mem_refs_episode",
+		Type:             "procedure",
+		Status:           "active",
+		Title:            "引用 episode 的流程",
+		Content:          "通讯录打开流程仍需保留 trace。",
+		EvidenceExcerpts: []string{"episode trace"},
+		SourceRefs:       []MemorySourceRef{{Type: "episode", ID: "ep_old_referenced"}},
+	}); err != nil {
+		t.Fatalf("AddMemory() error = %v", err)
+	}
+
+	lm := NewLifecycleManager(root)
+	report, err := lm.Verify(ctx)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if report.PrunedEpisodeTraces != 1 {
+		t.Fatalf("expected one pruned episode trace, got %#v", report)
+	}
+	if _, err := os.Stat(filepath.Join(oldDir, "episode.yaml")); err != nil {
+		t.Fatalf("expected unreferenced episode metadata to remain: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(oldDir, "events.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("expected unreferenced events to be pruned, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(oldDir, "artifacts")); !os.IsNotExist(err) {
+		t.Fatalf("expected unreferenced artifacts to be pruned, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(refDir, "events.jsonl")); err != nil {
+		t.Fatalf("expected referenced events to remain: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(refDir, "artifacts", "step_001.jpg")); err != nil {
+		t.Fatalf("expected referenced artifact to remain: %v", err)
+	}
+
+	index, err := episodes.loadIndex()
+	if err != nil {
+		t.Fatalf("load episode index: %v", err)
+	}
+	var sawPrunedMetadata, sawReferencedEvents bool
+	for _, entry := range index.Episodes {
+		switch entry.ID {
+		case "ep_old_unreferenced":
+			sawPrunedMetadata = true
+			if entry.EventsFile != "" {
+				t.Fatalf("expected pruned episode events_file empty, got %q", entry.EventsFile)
+			}
+		case "ep_old_referenced":
+			if entry.EventsFile != "" {
+				sawReferencedEvents = true
+			}
+		}
+	}
+	if !sawPrunedMetadata || !sawReferencedEvents {
+		t.Fatalf("unexpected episode index after prune: %#v", index.Episodes)
+	}
+}
+
 func TestMemoryExtractionConfigCompressThresholds(t *testing.T) {
 	cfg := DefaultMemoryExtractionConfig()
 	if cfg.ContextWindow != 32000 {

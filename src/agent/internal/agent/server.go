@@ -73,7 +73,8 @@ type MessageAttachment struct {
 
 // Message represents a chat message or tool call
 type Message struct {
-	Type        string              `json:"type"` // "user", "assistant", "tool_call", "tool_result"
+	Type        string              `json:"type"` // "user", "assistant", "tool_call", "tool_result", "role_output"
+	Role        string              `json:"role,omitempty"`
 	Content     string              `json:"content"`
 	ToolName    string              `json:"tool_name,omitempty"`
 	ToolInput   string              `json:"tool_input,omitempty"`
@@ -94,6 +95,14 @@ type ChatRequest struct {
 type ChatResponse struct {
 	Response string    `json:"response"`
 	History  []Message `json:"history"`
+}
+
+type ChatStreamEvent struct {
+	Type     string    `json:"type"`
+	Message  *Message  `json:"message,omitempty"`
+	Response string    `json:"response,omitempty"`
+	History  []Message `json:"history,omitempty"`
+	Error    string    `json:"error,omitempty"`
 }
 
 type ToolCatalogResponse struct {
@@ -222,6 +231,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if wantsChatStream(r) {
+		s.handleChatStream(w, r)
+		return
+	}
 
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -259,6 +272,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		EventHandler: func(event RunEvent) {
 			s.appendHistory(Message{
 				Type:        event.Type,
+				Role:        event.Role,
 				Content:     event.Content,
 				ToolName:    event.ToolName,
 				ToolInput:   event.ToolInput,
@@ -336,6 +350,135 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Response: result.Output,
 		History:  historySnapshot,
 	})
+}
+
+func wantsChatStream(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "application/x-ndjson") ||
+		strings.EqualFold(r.Header.Get("X-Aiden-Stream"), "ndjson") ||
+		r.URL.Query().Get("stream") == "1"
+}
+
+func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
+	var req ChatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	inputText, runAttachments, historyAttachments, err := s.resolveRequestInput(req)
+	if err != nil {
+		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	stream, ok := newChatStreamWriter(w)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	userMessage := Message{
+		Type:        "user",
+		Content:     inputText,
+		Attachments: historyAttachments,
+		Timestamp:   time.Now(),
+	}
+	s.appendHistory(userMessage)
+
+	if s.logger != nil {
+		s.logger.Info("Chat request: %s attachments=%d stream=ndjson", inputText, len(runAttachments))
+	}
+
+	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
+
+	ctx := r.Context()
+
+	result, err := s.runtime.Run(ctx, RunRequest{
+		Input:       inputText,
+		Attachments: runAttachments,
+		Skills:      req.Skills,
+		EventHandler: func(event RunEvent) {
+			message := Message{
+				Type:        event.Type,
+				Role:        event.Role,
+				Content:     event.Content,
+				ToolName:    event.ToolName,
+				ToolInput:   event.ToolInput,
+				Description: event.Description,
+				Timestamp:   event.Timestamp,
+				IsError:     event.IsError,
+			}
+			s.appendHistory(message)
+			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
+			if event.Type == "tool_call" {
+				go s.speakToolDescription(ctx, event.Description)
+			}
+		},
+	})
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("Agent run failed: %v", err)
+		}
+		stream.Write(ChatStreamEvent{Type: "error", Error: err.Error(), History: s.historySnapshot()})
+		return
+	}
+
+	assistantMessage := Message{
+		Type:      "assistant",
+		Content:   result.Output,
+		Timestamp: time.Now(),
+	}
+	s.appendHistory(assistantMessage)
+	stream.Write(ChatStreamEvent{Type: "message", Message: &assistantMessage})
+	historySnapshot := s.historySnapshot()
+
+	if s.audioClient != nil && result.Output != "" && !result.SpeechStreamed {
+		go func(text string) {
+			if s.logger != nil {
+				s.logger.Info("TTS playback: %q", text)
+			}
+			if err := s.speakText(context.Background(), text, 0); err != nil {
+				if s.logger != nil {
+					s.logger.Error("TTS playback failed: %v", err)
+				}
+			}
+		}(result.Output)
+	}
+
+	stream.Write(ChatStreamEvent{
+		Type:     "done",
+		Response: result.Output,
+		History:  historySnapshot,
+	})
+}
+
+type chatStreamWriter struct {
+	encoder *json.Encoder
+	flusher http.Flusher
+	mu      sync.Mutex
+}
+
+func newChatStreamWriter(w http.ResponseWriter) (*chatStreamWriter, bool) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return nil, false
+	}
+	header := w.Header()
+	header.Set("Content-Type", "application/x-ndjson")
+	header.Set("Cache-Control", "no-cache")
+	header.Set("X-Accel-Buffering", "no")
+	return &chatStreamWriter{
+		encoder: json.NewEncoder(w),
+		flusher: flusher,
+	}, true
+}
+
+func (w *chatStreamWriter) Write(event ChatStreamEvent) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.encoder.Encode(event); err == nil {
+		w.flusher.Flush()
+	}
 }
 
 func (s *Server) speakToolDescription(ctx context.Context, description string) {
@@ -1331,6 +1474,7 @@ const webUI = `<!DOCTYPE html>
         }
 
         .message.tool_call .message-body,
+        .message.role_output .message-body,
         .message.tool_result .message-body {
             flex: 1;
             background: rgba(255, 255, 255, 0.68);
@@ -1338,6 +1482,10 @@ const webUI = `<!DOCTYPE html>
             border-radius: 18px;
             padding: 14px 15px;
             box-shadow: var(--shadow-soft);
+        }
+
+        .message.role_output .message-body {
+            background: rgba(248, 251, 255, 0.82);
         }
 
         .message-avatar {
@@ -2258,7 +2406,11 @@ const webUI = `<!DOCTYPE html>
             try {
                 const res = await fetch('/api/chat', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/x-ndjson',
+                        'X-Aiden-Stream': 'ndjson'
+                    },
                     body: JSON.stringify({
                         message: message,
                         attachments: attachments
@@ -2270,8 +2422,7 @@ const webUI = `<!DOCTYPE html>
                     throw new Error(errorText || 'Request failed');
                 }
 
-                const data = await res.json();
-                renderHistory(data.history || []);
+                await consumeChatStream(res);
             } catch (err) {
                 console.error('Failed to send message:', err);
                 try {
@@ -2287,6 +2438,93 @@ const webUI = `<!DOCTYPE html>
                 setComposerState(false);
                 scrollToBottom();
             }
+        }
+
+        async function consumeChatStream(res) {
+            let sawDone = false;
+            if (!res.body) {
+                sawDone = consumeChatStreamText(await res.text());
+                if (!sawDone) {
+                    throw new Error('Chat stream ended before done event.');
+                }
+                return;
+            }
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const chunk = await reader.read();
+                if (chunk.done) break;
+                buffer += decoder.decode(chunk.value, { stream: true });
+                const result = consumeChatStreamLines(buffer);
+                buffer = result.buffer;
+                sawDone = sawDone || result.sawDone;
+            }
+
+            buffer += decoder.decode();
+            const result = consumeChatStreamLines(buffer, true);
+            sawDone = sawDone || result.sawDone;
+            if (!sawDone) {
+                throw new Error('Chat stream ended before done event.');
+            }
+        }
+
+        function consumeChatStreamText(text) {
+            const trimmed = text.trim();
+            if (!trimmed) return false;
+            try {
+                const payload = JSON.parse(trimmed);
+                if (payload.history || payload.response) {
+                    renderHistory(payload.history || []);
+                    return true;
+                }
+                if (payload.type) {
+                    return handleChatStreamEvent(payload);
+                }
+            } catch (_) {
+                // Not a single JSON response; parse it below as NDJSON.
+            }
+            return consumeChatStreamLines(text, true).sawDone;
+        }
+
+        function consumeChatStreamLines(buffer, flush) {
+            const lines = buffer.split('\n');
+            if (!flush) {
+                buffer = lines.pop() || '';
+            } else {
+                buffer = '';
+            }
+
+            let sawDone = false;
+            lines.forEach(function(line) {
+                line = line.trim();
+                if (!line) return;
+                let event;
+                try {
+                    event = JSON.parse(line);
+                } catch (err) {
+                    throw new Error('Invalid chat stream event: ' + err.message);
+                }
+                sawDone = handleChatStreamEvent(event) || sawDone;
+            });
+
+            return { buffer, sawDone };
+        }
+
+        function handleChatStreamEvent(event) {
+            if (event.type === 'message' && event.message) {
+                addMessage(event.message);
+                return false;
+            }
+            if (event.type === 'done') {
+                return true;
+            }
+            if (event.type === 'error') {
+                throw new Error(event.error || 'Agent error');
+            }
+            return false;
         }
 
         async function clearHistory() {
@@ -2351,7 +2589,7 @@ const webUI = `<!DOCTYPE html>
 
             const role = document.createElement('div');
             role.className = 'message-role';
-            role.textContent = getRoleLabel(msg.type, msg.tool_name);
+            role.textContent = getRoleLabel(msg.type, msg.tool_name, msg.role);
             body.appendChild(role);
 
             if (msg.type === 'tool_call') {
@@ -2408,8 +2646,9 @@ const webUI = `<!DOCTYPE html>
             return type || 'assistant';
         }
 
-        function getRoleLabel(type, toolName) {
+        function getRoleLabel(type, toolName, role) {
             if (type === 'user') return 'You';
+            if (type === 'role_output') return 'Role · ' + (role || 'agent');
             if (type === 'tool_call') return toolName ? 'Tool Call · ' + toolName : 'Tool Call';
             if (type === 'tool_result') return toolName ? 'Tool Result · ' + toolName : 'Tool Result';
             return 'Aiden';
@@ -2417,6 +2656,7 @@ const webUI = `<!DOCTYPE html>
 
         function getAvatarLabel(type) {
             if (type === 'user') return 'You';
+            if (type === 'role_output') return 'Role';
             if (type === 'tool_call') return 'Call';
             if (type === 'tool_result') return 'Tool';
             return 'AI';

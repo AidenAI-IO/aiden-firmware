@@ -131,13 +131,7 @@ func TestNewAudioDialogIgnoresInvalidOptionalTTS(t *testing.T) {
 
 func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "heard it",
-				}},
-			},
-		},
+		responses: roleDirectResponses("heard it"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -166,11 +160,11 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
 		t.Fatalf("ProcessUtterance() error = %v", err)
 	}
-	if len(model.messages) != 1 {
-		t.Fatalf("expected one model call, got %d", len(model.messages))
+	if len(model.messages) != 3 {
+		t.Fatalf("expected three role model calls, got %d", len(model.messages))
 	}
 
-	userMessage := model.messages[0][len(model.messages[0])-1]
+	userMessage := model.messages[1][len(model.messages[1])-1]
 	var text string
 	var audio []byte
 	for _, part := range userMessage.Parts {
@@ -197,25 +191,7 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 
 func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "audio_volume",
-							Arguments: `{"__arg1":"{}","description":"我先检查当前音量。"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "当前音量是 42。",
-				}},
-			},
-		},
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先检查当前音量。"}`, "当前音量是 42。"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -282,25 +258,7 @@ func TestAudioDialogDoesNotSpeakEnterSleepToolDescription(t *testing.T) {
 
 func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "enter_sleep",
-							Arguments: `{"__arg1":"{\"reason\":\"user asked\"}"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "I will wait for the next wakeup.",
-				}},
-			},
-		},
+		responses: roleToolResponses("enter_sleep", `{"__arg1":"{\"reason\":\"user asked\"}"}`, "I will wait for the next wakeup."),
 	}
 	controller := NewSleepController()
 	runtime := NewRuntimeWithDeps(
