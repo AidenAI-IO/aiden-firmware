@@ -58,7 +58,7 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version-file: src/agent/go.mod
-        cache-dependency-path: src/agent/go.sum
+        cache: false  # Disabled on self-hosted; HOME not set in runner service env
 
     - name: Prepare OTA public key
       env:
@@ -128,3 +128,11 @@ jobs:
         target_commitish: ${{ github.sha }}
         files: pico-sdk/output/image/*
         fail_on_unmatched_files: true
+
+    # Deinit submodules again before job cleanup to avoid Post Checkout warnings.
+    # The Post step runs 'git submodule foreach --recursive' which fails on
+    # pico-sdk's malformed nested submodule if pico-sdk is still registered.
+    - name: Clean submodule state for next run
+      if: always()
+      continue-on-error: true
+      run: git submodule deinit --all -f 2>/dev/null || true
