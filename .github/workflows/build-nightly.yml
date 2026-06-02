@@ -2,14 +2,40 @@ name: Build (nightly / self-hosted)
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Run at 00:00 UTC every day
+    - cron: '17 * * * *'  # hourly, off the top of the hour to avoid GitHub scheduler congestion
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  check:
+    runs-on: self-hosted
+    outputs:
+      should_run: ${{ steps.should_run.outputs.should_run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: should_run
+        name: Skip scheduled run if no new commit in the last hour
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          # Manual dispatch always builds; scheduled runs build only when HEAD is recent.
+          if [ "$EVENT_NAME" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -n "$(git rev-list --after='1 hour' -n 1 "$HEAD_SHA")" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No new commit in the last hour; skipping build."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: check
+    if: ${{ needs.check.outputs.should_run == 'true' }}
     uses: ./.github/workflows/build.yml
     with:
       runner: self-hosted
