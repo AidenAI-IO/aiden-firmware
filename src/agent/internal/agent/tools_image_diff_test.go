@@ -10,10 +10,10 @@ import (
 func TestImageDiffRegionRejectsInvalidValues(t *testing.T) {
 	full := image.Rect(0, 0, 100, 200)
 	tests := []imageDiffRegion{
-		{X: -0.1, Y: 0, W: 0.5, H: 0.5},
-		{X: 0, Y: 1.1, W: 0.5, H: 0.5},
-		{X: 0, Y: 0, W: 0, H: 0.5},
-		{X: 0, Y: 0, W: 0.5, H: -0.1},
+		{X: -100, Y: 0, W: 500, H: 500},
+		{X: 0, Y: 1100, W: 500, H: 500},
+		{X: 0, Y: 0, W: 0, H: 500},
+		{X: 0, Y: 0, W: 500, H: -100},
 	}
 
 	for _, tt := range tests {
@@ -26,7 +26,7 @@ func TestImageDiffRegionRejectsInvalidValues(t *testing.T) {
 
 func TestImageDiffRegionClampsToImageBounds(t *testing.T) {
 	full := image.Rect(10, 20, 110, 220)
-	got, err := (&imageDiffRegion{X: 0.8, Y: 0.75, W: 0.5, H: 0.5}).toPixelRect(full)
+	got, err := (&imageDiffRegion{X: 800, Y: 750, W: 500, H: 500}).toPixelRect(full)
 	if err != nil {
 		t.Fatalf("toPixelRect returned error: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestImageDiffRegionClampsToImageBounds(t *testing.T) {
 
 func TestImageDiffRegionRejectsNonFiniteValues(t *testing.T) {
 	full := image.Rect(0, 0, 100, 100)
-	_, err := (&imageDiffRegion{X: 0, Y: 0, W: 0.5, H: math.NaN()}).toPixelRect(full)
+	_, err := (&imageDiffRegion{X: 0, Y: 0, W: 500, H: math.NaN()}).toPixelRect(full)
 	if err == nil {
 		t.Fatal("expected error for non-finite region")
 	}

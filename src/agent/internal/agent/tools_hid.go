@@ -42,19 +42,20 @@ const (
 	defaultSwipeSteps      = 24
 
 	// defaultDirectionalSwipeDistance is the normalized travel for swipe_left/right/up/down.
-	defaultDirectionalSwipeDistance = 0.50
-	directionalSwipeLargeDistance   = 0.70
-	directionalSwipeMediumDistance  = 0.50
-	directionalSwipeSmallDistance   = 0.20
-	directionalSwipeTinyDistance    = 0.04
+	// Coordinates use 0-1000 normalized scale.
+	defaultDirectionalSwipeDistance = 500.0
+	directionalSwipeLargeDistance   = 700.0
+	directionalSwipeMediumDistance  = 500.0
+	directionalSwipeSmallDistance   = 200.0
+	directionalSwipeTinyDistance    = 40.0
 
-	phoneBackStartX = 0.001
-	phoneBackEndX   = 0.75
-	phoneBackY      = 0.50
+	phoneBackStartX = 1
+	phoneBackEndX   = 750
+	phoneBackY      = 500
 
-	phoneHomeX      = 0.50
-	phoneHomeStartY = 0.999
-	phoneHomeEndY   = 0.18
+	phoneHomeX      = 500
+	phoneHomeStartY = 999
+	phoneHomeEndY   = 180
 
 	// defaultCursorSettleMs is the dwell between positioning the HID absolute
 	// cursor and pressing a button at that position. iOS HID cursor mode
@@ -502,8 +503,9 @@ type MouseClickTool struct {
 func (t *MouseClickTool) Name() string { return "mouse_click" }
 
 func (t *MouseClickTool) Description() string {
-	return `Move mouse to a position and click. Input JSON: {"x": 0.5, "y": 0.3, "button": "left", "coord_space": "normalized"}. ` +
-		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": x/y in [0,1] are treated as normalized, otherwise pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
+	return `Move mouse to a position and click. Input JSON: {"x": 500, "y": 300, "button": "left", "coord_space": "normalized"}. ` +
+		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": x/y in [0,1000] are treated as normalized, otherwise pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
+		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
 		`pointer_mode absolute (default): moves to absolute HID coordinates, waits for iOS cursor smoothing, then clicks. ` +
 		`pointer_mode touchscreen (Android): sends a finger down/up at the resolved coordinate. ` +
 		`Use coord_space:"pixel" only when calibrated; pixel coordinates require a recent screenshot, are stale after 30s, and are rejected if outside cached bounds. ` +
@@ -544,8 +546,9 @@ type MouseMoveTool struct {
 func (t *MouseMoveTool) Name() string { return "mouse_move" }
 
 func (t *MouseMoveTool) Description() string {
-	return `Move mouse to a position without clicking. Input JSON: {"x": 0.5, "y": 0.3, "coord_space": "normalized"}. ` +
-		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": x/y in [0,1] are treated as normalized, otherwise pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
+	return `Move mouse to a position without clicking. Input JSON: {"x": 500, "y": 300, "coord_space": "normalized"}. ` +
+		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": x/y in [0,1000] are treated as normalized, otherwise pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
+		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
 		`pointer_mode absolute (default): writes absolute HID coordinates directly. ` +
 		`pointer_mode touchscreen (Android): moves the logical touch point without pressing.`
 }
@@ -582,17 +585,18 @@ func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
 func (t *TouchGestureTool) Description() string {
 	return `Perform a touch-like gesture using the pointer HID device (absolute mouse or touchscreen depending on agent pointer_mode). ` +
-		`Input JSON examples: {"type":"tap","point":{"x":0.5,"y":0.5}}, {"type":"swipe","start":{"x":0.2,"y":0.5},"end":{"x":0.8,"y":0.5},"duration_ms":700,"steps":24}, {"type":"swipe_left"}, {"type":"back"}, {"type":"home"}. ` +
+		`Input JSON examples: {"type":"tap","point":{"x":500,"y":500}}, {"type":"swipe","start":{"x":200,"y":500},"end":{"x":800,"y":500},"duration_ms":700,"steps":24}, {"type":"swipe_left"}, {"type":"back"}, {"type":"home"}. ` +
 		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back" (left-edge back), "home" (bottom-edge home). ` +
-		`coord_space defaults to "normalized" (x/y in [0,1]) and also supports "pixel" and "absolute". ` +
+		`coord_space defaults to "normalized" (x/y in [0,1000]) and also supports "pixel" and "absolute". ` +
+		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
 		`pointer_mode absolute (default, iOS): every gesture moves to absolute coordinates before pressing; choose tap targets from the latest screenshot center and prefer normalized coordinates. ` +
 		`pointer_mode touchscreen (Android): gestures are sent as single-finger touch down/move/up reports. ` +
-		`Directional swipes accept optional "distance" (normalized 0..1 travel, default 0.4), "anchor" (fixed-axis coordinate, default 0.5), and "strength" ("large", "medium", "small", "tiny"). ` +
+		`Directional swipes accept optional "distance" (normalized 0-1000 travel, default 500), "anchor" (fixed-axis coordinate 0-1000, default 500), and "strength" ("large", "medium", "small", "tiny"). ` +
 		`For precise vertical or horizontal controls, first probe with medium/large, observe the screenshot, then use small/tiny near the target; if you overshoot, reverse direction and reduce strength. ` +
 		`Absolute-mode gestures wait for iOS HID-cursor smoothing to settle before pressing. ` +
 		`Tap and double_tap accept an optional "hold_ms" (dwell between press and release, default 60ms). ` +
 		`Swipe defaults to a slower 700ms / 24-step motion, applies "hold_before_ms" of 80ms after the press, and releases immediately at the destination by default; pass "hold_after_ms" only when a drag-like end dwell is required. ` +
-		`For phone edge gestures, do not use conservative inset coordinates such as 0.05-0.10: "back" starts at normalized x=0.001 and "home" starts at normalized y=0.999. Drag keeps the previous 250ms / 12-step motion with 0ms hold defaults to avoid unintended long-press behaviour during slow content drag.`
+		`For phone edge gestures, do not use conservative inset coordinates such as 50-100: "back" starts at normalized x=1 and "home" starts at normalized y=999. Drag keeps the previous 250ms / 12-step motion with 0ms hold defaults to avoid unintended long-press behaviour during slow content drag.`
 }
 
 func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error) {
@@ -779,52 +783,6 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		}
 	default:
 		return fmt.Sprintf("error: unsupported gesture type: %q", args.Type), nil
-	}
-
-	return "ok", nil
-}
-
-// TouchClickPercentTool clicks using 0-1000 normalized coordinates (industry standard).
-type TouchClickPercentTool struct {
-	pc     *pointerController
-	screen *screenState
-}
-
-func (t *TouchClickPercentTool) Name() string { return "touch_click_percent" }
-
-func (t *TouchClickPercentTool) Description() string {
-	return `Tap screen using 0-1000 coordinate system (industry standard used by Open-AutoGLM, MobileAgent). Input JSON: {"x": 500, "y": 600}. ` +
-		`x and y are integers in range 0-1000, where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
-		`This coordinate system is resolution-independent: x=500 always means 50% of screen width regardless of actual pixel resolution. ` +
-		`Examples: tap center = {"x": 500, "y": 500}, tap top-right corner = {"x": 900, "y": 100}. ` +
-		`Coordinates are automatically converted to HID absolute range 0-32767 before sending to device.`
-}
-
-func (t *TouchClickPercentTool) Call(_ context.Context, input string) (string, error) {
-	var args struct {
-		X int `json:"x"`
-		Y int `json:"y"`
-	}
-	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v", err), nil
-	}
-
-	// Validate range
-	if args.X < 0 || args.X > 1000 {
-		return fmt.Sprintf("error: x must be in range 0-1000, got %d", args.X), nil
-	}
-	if args.Y < 0 || args.Y > 1000 {
-		return fmt.Sprintf("error: y must be in range 0-1000, got %d", args.Y), nil
-	}
-
-	// Convert 0-1000 -> 0-32767
-	// Formula: absolute_x = (x / 1000.0) * 32767
-	absX := int(float64(args.X) / 1000.0 * float64(absMouseMaxPos))
-	absY := int(float64(args.Y) / 1000.0 * float64(absMouseMaxPos))
-
-	btn := mouseButtonByte("")
-	if err := tapPointer(t.pc, absX, absY, btn); err != nil {
-		return fmt.Sprintf("error: %v", err), nil
 	}
 
 	return "ok", nil
@@ -1061,7 +1019,7 @@ func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string
 }
 
 func looksLikeNormalizedPoint(x, y float64) bool {
-	return x >= 0 && x <= 1 && y >= 0 && y <= 1
+	return x >= 0 && x <= 1000 && y >= 0 && y <= 1000
 }
 
 func normalizeCoordinateSpace(coordSpace string, defaultSpace string) (string, error) {
@@ -1079,7 +1037,7 @@ func normalizeCoordinateSpace(coordSpace string, defaultSpace string) (string, e
 }
 
 func normalizedToAbsolutePoint(x, y float64) (int, int) {
-	return int(math.Round(clampFloat(x, 0, 1) * absMouseMaxPos)), int(math.Round(clampFloat(y, 0, 1) * absMouseMaxPos))
+	return int(math.Round(clampFloat(x, 0, 1000) / 1000.0 * absMouseMaxPos)), int(math.Round(clampFloat(y, 0, 1000) / 1000.0 * absMouseMaxPos))
 }
 
 func pixelToAbsolutePoint(x, y float64, width, height int, active screenActiveArea) (int, int, error) {
@@ -1227,11 +1185,11 @@ func directionalSwipeEndpoints(gestureType string, distance, anchor *float64, pr
 		travel = defaultDirectionalSwipeDistance
 	}
 	if distance != nil && *distance > 0 {
-		travel = clampFloat(*distance, 0.05, 1)
+		travel = clampFloat(*distance, 50, 1000)
 	}
-	center := 0.5
+	center := 500.0
 	if anchor != nil {
-		center = clampFloat(*anchor, 0, 1)
+		center = clampFloat(*anchor, 0, 1000)
 	}
 	half := travel / 2
 

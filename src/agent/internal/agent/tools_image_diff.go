@@ -20,9 +20,9 @@ func (t *ImageDiffTool) Name() string { return "image_diff" }
 
 func (t *ImageDiffTool) Description() string {
 	return `Compare two JPEG screenshots and return pixel-level difference metrics. ` +
-		`Input JSON: {"before": "<base64 JPEG>", "after": "<base64 JPEG>", "region": {"x": 0.3, "y": 0.2, "w": 0.4, "h": 0.6}}. ` +
+		`Input JSON: {"before": "<base64 JPEG>", "after": "<base64 JPEG>", "region": {"x": 300, "y": 200, "w": 400, "h": 600}}. ` +
 		`"before" and "after" are the "data" fields from screenshot tool results. ` +
-		`"region" is optional normalized coordinates (0-1) to restrict comparison to a sub-region — use this to focus on the scrollable area and ignore static UI chrome. ` +
+		`"region" is optional normalized coordinates (0-1000) to restrict comparison to a sub-region — use this to focus on the scrollable area and ignore static UI chrome. ` +
 		`Returns: ` +
 		`"changed" (bool, true when diff_ratio > 0.01), ` +
 		`"diff_ratio" (0-1 fraction of pixels that changed significantly), ` +
@@ -98,7 +98,7 @@ type imageDiffRegion struct {
 
 func (r *imageDiffRegion) toPixelRect(full image.Rectangle) (image.Rectangle, error) {
 	if !finiteNormalized(r.X) || !finiteNormalized(r.Y) || !finiteNormalized(r.W) || !finiteNormalized(r.H) {
-		return image.Rectangle{}, fmt.Errorf("region x/y/w/h must be finite normalized values in [0,1]")
+		return image.Rectangle{}, fmt.Errorf("region x/y/w/h must be finite normalized values in [0,1000]")
 	}
 	if r.W <= 0 || r.H <= 0 {
 		return image.Rectangle{}, fmt.Errorf("region w/h must be greater than 0")
@@ -106,15 +106,15 @@ func (r *imageDiffRegion) toPixelRect(full image.Rectangle) (image.Rectangle, er
 
 	w := full.Dx()
 	h := full.Dy()
-	x0 := clampInt(full.Min.X+int(math.Round(r.X*float64(w))), full.Min.X, full.Max.X)
-	y0 := clampInt(full.Min.Y+int(math.Round(r.Y*float64(h))), full.Min.Y, full.Max.Y)
-	x1 := clampInt(full.Min.X+int(math.Round((r.X+r.W)*float64(w))), full.Min.X, full.Max.X)
-	y1 := clampInt(full.Min.Y+int(math.Round((r.Y+r.H)*float64(h))), full.Min.Y, full.Max.Y)
+	x0 := clampInt(full.Min.X+int(math.Round(r.X/1000.0*float64(w))), full.Min.X, full.Max.X)
+	y0 := clampInt(full.Min.Y+int(math.Round(r.Y/1000.0*float64(h))), full.Min.Y, full.Max.Y)
+	x1 := clampInt(full.Min.X+int(math.Round((r.X+r.W)/1000.0*float64(w))), full.Min.X, full.Max.X)
+	y1 := clampInt(full.Min.Y+int(math.Round((r.Y+r.H)/1000.0*float64(h))), full.Min.Y, full.Max.Y)
 	return image.Rect(x0, y0, x1, y1), nil
 }
 
 func finiteNormalized(value float64) bool {
-	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 1
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 1000
 }
 
 type imageDiffResult struct {
