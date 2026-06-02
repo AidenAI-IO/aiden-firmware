@@ -20,6 +20,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ inputs.runner != 'self-hosted' || (github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target') }}
     runs-on: ${{ inputs.runner }}
 
     steps:
