@@ -1632,6 +1632,52 @@ func TestRuntimeRunInjectsMemoryFilesIntoSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunIncludesRuntimeContextInSystemMessage(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "ok",
+				}},
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	runtimeContext := "Phone bridge status:\n- connected: true"
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello", RuntimeContext: runtimeContext}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) != 1 || len(model.messages[0]) == 0 {
+		t.Fatalf("expected one model call with messages, got %#v", model.messages)
+	}
+
+	systemMessage := model.messages[0][0]
+	if systemMessage.Role != llms.ChatMessageTypeSystem {
+		t.Fatalf("expected first message to be system, got %q", systemMessage.Role)
+	}
+	var systemText strings.Builder
+	for _, part := range systemMessage.Parts {
+		text, ok := part.(llms.TextContent)
+		if ok {
+			systemText.WriteString(text.Text)
+		}
+	}
+	if !strings.Contains(systemText.String(), "Runtime context:\n"+runtimeContext) {
+		t.Fatalf("system message missing runtime context:\n%s", systemText.String())
+	}
+}
+
 func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{

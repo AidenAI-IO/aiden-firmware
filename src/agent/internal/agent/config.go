@@ -260,6 +260,7 @@ type ModelConfig struct {
 type AgentConfig struct {
 	Instruction      string
 	AdditionalPrompt string
+	RuntimeContext   string
 }
 
 // MemoryConfig is used internally by the memory manager.

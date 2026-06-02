@@ -122,6 +122,20 @@ else
     echo "  ⚠ Warning: $SKILLS_SRC not found; skipping bundled skills" >&2
 fi
 
+# Bundled phone-bridge app mapping: src/agent/internal/agent/app_mapping.json 是
+# Go embed 的单一源，固件里同步落到 /usr/share/aiden/app_mapping.json，方便运维
+# 不重新 build 二进制就能更新映射（agent 启动时优先读 configDir，再读这里，最后
+# 回退到二进制内嵌副本）。
+APP_MAPPING_SRC="$SCRIPT_DIR/src/agent/internal/agent/app_mapping.json"
+APP_MAPPING_DEST="$DEST_OVERLAY/usr/share/aiden/app_mapping.json"
+if [ -f "$APP_MAPPING_SRC" ]; then
+    mkdir -p "$(dirname "$APP_MAPPING_DEST")"
+    cp "$APP_MAPPING_SRC" "$APP_MAPPING_DEST"
+    echo "  ✓ phone-bridge app mapping synced"
+else
+    echo "  ⚠ Warning: $APP_MAPPING_SRC not found; skipping app mapping" >&2
+fi
+
 # Step 4: 运行 pico-sdk 构建，overlay 注入后只打包一次 firmware，避免 A/B 大镜像重复生成。
 echo "[4/6] Running pico-sdk build stages..."
 cd "$PICO_SDK"

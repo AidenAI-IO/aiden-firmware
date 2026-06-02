@@ -46,12 +46,15 @@ type Runtime struct {
 }
 
 type RunRequest struct {
-	Input        string
-	Attachments  []InputAttachment
-	Skills       []string
-	StreamWriter io.Writer
-	MaxTokens    int
-	EventHandler func(RunEvent)
+	Input       string
+	Attachments []InputAttachment
+	Skills      []string
+	// RuntimeContext is dynamic per-turn system context, such as connected
+	// hardware/app state. It is not persisted as user configuration.
+	RuntimeContext string
+	StreamWriter   io.Writer
+	MaxTokens      int
+	EventHandler   func(RunEvent)
 }
 
 type RunResult struct {
@@ -308,7 +311,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		availableTools = wrapToolsWithCallbacks(availableTools, streamCallbackHandler)
 	}
 
-	agent := r.buildAgent(model, resolvedSkills, availableTools, req.Attachments, agentCallbackHandler)
+	agent := r.buildAgent(model, resolvedSkills, availableTools, req.Attachments, req.RuntimeContext, agentCallbackHandler)
 	var executorHandler callbacks.Handler
 	if streamCallbackHandler != nil {
 		executorHandler = streamCallbackHandler
@@ -474,12 +477,14 @@ func (r *Runtime) buildAgent(
 	skills ResolvedSkills,
 	availableTools []langtools.Tool,
 	attachments []InputAttachment,
+	runtimeContext string,
 	callbackHandler callbacks.Handler,
 ) agents.Agent {
 	systemMessage := buildFunctionAgentSystemMessage(
 		AgentConfig{
 			Instruction:      r.config.Instruction,
 			AdditionalPrompt: r.config.AdditionalPrompt,
+			RuntimeContext:   runtimeContext,
 		},
 		skills,
 		availableTools,

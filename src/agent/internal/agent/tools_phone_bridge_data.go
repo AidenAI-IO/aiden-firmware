@@ -1,0 +1,274 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// nextBridgeCmdID builds a unique command id for a bridge command type. It
+// reuses openAppCmdSeq so every outbound bridge command shares one counter.
+func nextBridgeCmdID(prefix string) string {
+	return fmt.Sprintf("%s_%d_%d", prefix, time.Now().UnixMilli(), openAppCmdSeq.Add(1))
+}
+
+func bridgeNotConnected() string {
+	return jsonString(map[string]interface{}{
+		"ok":    false,
+		"error": "phone bridge not connected",
+	})
+}
+
+func bridgeRespError(err error) string {
+	return jsonString(map[string]interface{}{"ok": false, "error": err.Error()})
+}
+
+// ClipboardTool reads and writes the connected phone's system clipboard.
+type ClipboardTool struct {
+	bridge *PhoneBridge
+}
+
+func NewClipboardTool(bridge *PhoneBridge) *ClipboardTool {
+	return &ClipboardTool{bridge: bridge}
+}
+
+func (t *ClipboardTool) Name() string { return "clipboard" }
+
+func (t *ClipboardTool) Description() string {
+	return `Read or write the connected phone's system clipboard via the phone bridge. ` +
+		`Input JSON: {"action":"read"} returns {"ok":true,"text":"..."}; ` +
+		`{"action":"write","text":"content"} sets the clipboard and returns {"ok":true}. ` +
+		`Use this as a fast cross-app content channel instead of HID copy/paste when the phone bridge is connected. ` +
+		`If the phone bridge is not connected, this tool fails and there is no HID fallback for clipboard access.`
+}
+
+type clipboardArgs struct {
+	Action string `json:"action"`
+	Text   string `json:"text"`
+}
+
+func (t *ClipboardTool) Call(ctx context.Context, input string) (string, error) {
+	if !t.bridge.Connected() {
+		return bridgeNotConnected(), nil
+	}
+
+	var args clipboardArgs
+	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
+		return fmt.Sprintf("error: invalid input: %v", err), nil
+	}
+
+	action := strings.ToLower(strings.TrimSpace(args.Action))
+	switch action {
+	case "read":
+		return t.read(ctx)
+	case "write":
+		return t.write(ctx, args.Text)
+	default:
+		return fmt.Sprintf("error: unknown action %q, expected \"read\" or \"write\"", args.Action), nil
+	}
+}
+
+func (t *ClipboardTool) read(ctx context.Context) (string, error) {
+	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+		ID:        nextBridgeCmdID("clip_read"),
+		Type:      "clipboard_read",
+		TimeoutMs: 5000,
+	})
+	if err != nil {
+		return bridgeRespError(err), nil
+	}
+	result := map[string]interface{}{"ok": resp.OK}
+	if !resp.OK {
+		result["error"] = resp.Error
+		return jsonString(result), nil
+	}
+	var data struct {
+		Text string `json:"text"`
+	}
+	if len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			result["ok"] = false
+			result["error"] = fmt.Sprintf("decode clipboard data: %v", err)
+			return jsonString(result), nil
+		}
+	}
+	result["text"] = data.Text
+	return jsonString(result), nil
+}
+
+func (t *ClipboardTool) write(ctx context.Context, text string) (string, error) {
+	payload, _ := json.Marshal(map[string]string{"text": text})
+	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+		ID:        nextBridgeCmdID("clip_write"),
+		Type:      "clipboard_write",
+		Payload:   payload,
+		TimeoutMs: 5000,
+	})
+	if err != nil {
+		return bridgeRespError(err), nil
+	}
+	result := map[string]interface{}{"ok": resp.OK}
+	if !resp.OK {
+		result["error"] = resp.Error
+	}
+	return jsonString(result), nil
+}
+
+// CalendarTool creates, queries, and deletes system calendar events on the
+// connected phone via the phone bridge.
+type CalendarTool struct {
+	bridge *PhoneBridge
+}
+
+func NewCalendarTool(bridge *PhoneBridge) *CalendarTool {
+	return &CalendarTool{bridge: bridge}
+}
+
+func (t *CalendarTool) Name() string { return "calendar" }
+
+func (t *CalendarTool) Description() string {
+	return `Create, query, or delete system calendar events on the connected phone via the phone bridge. ` +
+		`Times are RFC3339 strings with timezone offset, e.g. "2026-06-02T15:00:00+08:00". Use current_time first if you need the timezone or "now". ` +
+		`Create: {"action":"create","title":"Dentist","start_at":"2026-06-02T15:00:00+08:00","end_at":"2026-06-02T16:00:00+08:00","all_day":false,"location":"Clinic","notes":"...","alarm_minutes_before":30} -> {"ok":true,"event_id":"..."}. ` +
+		`Query: {"action":"query","from":"2026-06-02T00:00:00+08:00","to":"2026-06-03T00:00:00+08:00"} -> {"ok":true,"events":[{"event_id","title","start_at","end_at","location"}]}. ` +
+		`Delete: {"action":"delete","event_id":"..."} -> {"ok":true}. ` +
+		`Confirm details with the user before creating or deleting events. If the phone bridge is not connected, this tool fails and there is no HID fallback.`
+}
+
+type calendarArgs struct {
+	Action             string `json:"action"`
+	EventID            string `json:"event_id"`
+	Title              string `json:"title"`
+	StartAt            string `json:"start_at"`
+	EndAt              string `json:"end_at"`
+	From               string `json:"from"`
+	To                 string `json:"to"`
+	AllDay             bool   `json:"all_day"`
+	Location           string `json:"location"`
+	Notes              string `json:"notes"`
+	AlarmMinutesBefore int    `json:"alarm_minutes_before"`
+}
+
+func (t *CalendarTool) Call(ctx context.Context, input string) (string, error) {
+	if !t.bridge.Connected() {
+		return bridgeNotConnected(), nil
+	}
+
+	var args calendarArgs
+	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
+		return fmt.Sprintf("error: invalid input: %v", err), nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(args.Action)) {
+	case "create":
+		return t.create(ctx, args)
+	case "query":
+		return t.query(ctx, args)
+	case "delete":
+		return t.delete(ctx, args)
+	default:
+		return fmt.Sprintf("error: unknown action %q, expected \"create\", \"query\", or \"delete\"", args.Action), nil
+	}
+}
+
+func (t *CalendarTool) create(ctx context.Context, args calendarArgs) (string, error) {
+	if strings.TrimSpace(args.Title) == "" {
+		return "error: create requires a title", nil
+	}
+	if strings.TrimSpace(args.StartAt) == "" {
+		return "error: create requires a start_at time (RFC3339)", nil
+	}
+	payload, _ := json.Marshal(map[string]interface{}{
+		"title":                args.Title,
+		"start_at":             args.StartAt,
+		"end_at":               args.EndAt,
+		"all_day":              args.AllDay,
+		"location":             args.Location,
+		"notes":                args.Notes,
+		"alarm_minutes_before": args.AlarmMinutesBefore,
+	})
+	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+		ID:        nextBridgeCmdID("cal_create"),
+		Type:      "calendar_create",
+		Payload:   payload,
+		TimeoutMs: 8000,
+	})
+	if err != nil {
+		return bridgeRespError(err), nil
+	}
+	result := map[string]interface{}{"ok": resp.OK}
+	if !resp.OK {
+		result["error"] = resp.Error
+		return jsonString(result), nil
+	}
+	var data struct {
+		EventID string `json:"event_id"`
+	}
+	if len(resp.Data) > 0 {
+		_ = json.Unmarshal(resp.Data, &data)
+	}
+	result["event_id"] = data.EventID
+	return jsonString(result), nil
+}
+
+func (t *CalendarTool) query(ctx context.Context, args calendarArgs) (string, error) {
+	if strings.TrimSpace(args.From) == "" || strings.TrimSpace(args.To) == "" {
+		return "error: query requires both from and to times (RFC3339)", nil
+	}
+	payload, _ := json.Marshal(map[string]string{"from": args.From, "to": args.To})
+	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+		ID:        nextBridgeCmdID("cal_query"),
+		Type:      "calendar_query",
+		Payload:   payload,
+		TimeoutMs: 8000,
+	})
+	if err != nil {
+		return bridgeRespError(err), nil
+	}
+	result := map[string]interface{}{"ok": resp.OK}
+	if !resp.OK {
+		result["error"] = resp.Error
+		return jsonString(result), nil
+	}
+	var data struct {
+		Events []map[string]interface{} `json:"events"`
+	}
+	if len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			result["ok"] = false
+			result["error"] = fmt.Sprintf("decode calendar data: %v", err)
+			return jsonString(result), nil
+		}
+	}
+	if data.Events == nil {
+		data.Events = []map[string]interface{}{}
+	}
+	result["events"] = data.Events
+	return jsonString(result), nil
+}
+
+func (t *CalendarTool) delete(ctx context.Context, args calendarArgs) (string, error) {
+	if strings.TrimSpace(args.EventID) == "" {
+		return "error: delete requires an event_id", nil
+	}
+	payload, _ := json.Marshal(map[string]string{"event_id": args.EventID})
+	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+		ID:        nextBridgeCmdID("cal_delete"),
+		Type:      "calendar_delete",
+		Payload:   payload,
+		TimeoutMs: 8000,
+	})
+	if err != nil {
+		return bridgeRespError(err), nil
+	}
+	result := map[string]interface{}{"ok": resp.OK}
+	if !resp.OK {
+		result["error"] = resp.Error
+	}
+	return jsonString(result), nil
+}
+
+
+

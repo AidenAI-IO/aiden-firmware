@@ -152,7 +152,12 @@ func (r *Runtime) ToolDescriptors() []ToolDescriptor {
 }
 
 func isHTTPToolExposed(name string) bool {
-	return name != "skill_manage"
+	switch name {
+	case "skill_manage", "open_app", "clipboard", "calendar":
+		return false
+	default:
+		return true
+	}
 }
 
 func (r *Runtime) ToolDescriptorByName(name string) (ToolDescriptor, bool) {

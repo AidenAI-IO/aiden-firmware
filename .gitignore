@@ -15,6 +15,9 @@
 !/overlay/oem/usr/lib/librknnmrt.so
 /overlay/userdata/agent/benchmark/
 
+# Cross-compiled agent binary
+/src/agent/aiden-agent
+
 # Secrets
 agent.conf
 /ota_ed25519_private_key.pem
