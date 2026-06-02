@@ -14,7 +14,15 @@ jobs:
     outputs:
       should_run: ${{ steps.should_run.outputs.should_run }}
     steps:
+      - name: Clean leftover submodule state
+        continue-on-error: true
+        run: |
+          cd "${{ github.workspace }}" 2>/dev/null || exit 0
+          git submodule deinit --all -f 2>/dev/null || true
+
       - uses: actions/checkout@v4
+        with:
+          submodules: false
       - id: should_run
         name: Skip scheduled run if no new commit in the last hour
         env:
