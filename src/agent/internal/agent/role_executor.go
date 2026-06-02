@@ -209,7 +209,7 @@ func (e *roleCollaborativeExecutor) callPlanner(ctx context.Context, inputs map[
 		return plannerDecision{}, err
 	}
 	e.emitRoleOutput(ctx, RolePlanner, roleResponseDebugText(res))
-	decision := parsePlannerDecision(contentResponseText(res), inputs["input"])
+	decision := parsePlannerDecision(res, inputs["input"])
 	if len(decision.Plan) == 0 {
 		decision.Plan = append([]string{}, state.Plan...)
 	}
@@ -674,7 +674,10 @@ func (s roleLoopState) lastCandidateAnswer() string {
 	return ""
 }
 
-func parsePlannerDecision(raw, fallbackStep string) plannerDecision {
+func parsePlannerDecision(res *llms.ContentResponse, fallbackStep string) plannerDecision {
+	raw := contentResponseText(res)
+
+	// Try JSON parsing first
 	var decision plannerDecision
 	if decodeRoleJSON(raw, &decision) == nil {
 		decision.Objective = strings.TrimSpace(decision.Objective)
@@ -686,6 +689,46 @@ func parsePlannerDecision(raw, fallbackStep string) plannerDecision {
 		return decision
 	}
 
+	// If planner incorrectly returned tool calls, extract the description as next_step
+	if res != nil && len(res.Choices) > 0 && res.Choices[0] != nil {
+		choice := res.Choices[0]
+		var toolDesc string
+
+		// Check for tool calls in the response
+		for _, toolCall := range choice.ToolCalls {
+			if toolCall.FunctionCall != nil {
+				var toolInput map[string]interface{}
+				if err := json.Unmarshal([]byte(toolCall.FunctionCall.Arguments), &toolInput); err == nil {
+					if desc, ok := toolInput["description"].(string); ok && desc != "" {
+						toolDesc = desc
+						break
+					}
+				}
+			}
+		}
+
+		// Check legacy FuncCall format
+		if toolDesc == "" && choice.FuncCall != nil {
+			var toolInput map[string]interface{}
+			if err := json.Unmarshal([]byte(choice.FuncCall.Arguments), &toolInput); err == nil {
+				if desc, ok := toolInput["description"].(string); ok && desc != "" {
+					toolDesc = desc
+				}
+			}
+		}
+
+		if toolDesc != "" {
+			return plannerDecision{
+				Objective:          strings.TrimSpace(fallbackStep),
+				CompletionCriteria: uniqueNonEmpty([]string{"Satisfy every explicit requirement in the original user request."}),
+				Plan:               uniqueNonEmpty([]string{toolDesc}),
+				NextStep:           toolDesc,
+				Reason:             "planner incorrectly returned tool_call instead of JSON; extracted description field as next_step",
+			}
+		}
+	}
+
+	// Final fallback: use text content or user input
 	text := strings.TrimSpace(extractFinalAnswer(raw))
 	if text == "" {
 		text = strings.TrimSpace(fallbackStep)

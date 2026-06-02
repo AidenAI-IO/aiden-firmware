@@ -112,7 +112,7 @@ func TestRoleJSONFenceIsParsedAndLoggedAsCompactJSON(t *testing.T) {
 		`{"objective":"在美团中找到最近的蜜雪冰城","completion_criteria":["进入店铺","加购两杯"],"plan":["点加号","加入购物车"],"next_step":"点击 +","reason":"需要两杯"}` +
 		"\n```"
 
-	decision := parsePlannerDecision(raw, "fallback")
+	decision := parsePlannerDecision(contentResponse(raw), "fallback")
 	if decision.Objective != "在美团中找到最近的蜜雪冰城" {
 		t.Fatalf("objective = %q", decision.Objective)
 	}
