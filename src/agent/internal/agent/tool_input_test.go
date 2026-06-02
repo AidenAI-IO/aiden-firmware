@@ -213,3 +213,91 @@ func TestDecodeDeviceMemoryQueryToleratesStringifiedArgs(t *testing.T) {
 		t.Errorf("decodeDeviceMemoryQuery(%q) = %#v, want %#v", input, got, want)
 	}
 }
+
+func TestDecodeSaveMemoryRequestToleratesStringifiedArgs(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  SaveMemoryRequest
+	}{
+		{
+			name:  "stringified arrays and int",
+			input: `{"type":"preference","title":"Test","content":"Content","tags":"[\"tag1\",\"tag2\"]","entities":"[\"App\"]","evidence":"[\"quote\"]","priority":"80"}`,
+			want: SaveMemoryRequest{
+				Type:     "preference",
+				Title:    "Test",
+				Content:  "Content",
+				Tags:     []string{"tag1", "tag2"},
+				Entities: []string{"App"},
+				Evidence: []string{"quote"},
+				Priority: 80,
+			},
+		},
+		{
+			name:  "empty stringified arrays",
+			input: `{"type":"rule","title":"Test","content":"Content","tags":"[]","entities":"[]","evidence":"[]","priority":"60"}`,
+			want: SaveMemoryRequest{
+				Type:     "rule",
+				Title:    "Test",
+				Content:  "Content",
+				Tags:     []string{},
+				Entities: []string{},
+				Evidence: []string{},
+				Priority: 60,
+			},
+		},
+		{
+			name:  "bare single strings converted to arrays",
+			input: `{"type":"fact","title":"Test","content":"Content","tags":"important","entities":"Gmail","evidence":"user said so","priority":"90"}`,
+			want: SaveMemoryRequest{
+				Type:     "fact",
+				Title:    "Test",
+				Content:  "Content",
+				Tags:     []string{"important"},
+				Entities: []string{"Gmail"},
+				Evidence: []string{"user said so"},
+				Priority: 90,
+			},
+		},
+		{
+			name:  "well-formed input still works",
+			input: `{"type":"procedure","title":"Test","content":"Content","tags":["step1","step2"],"entities":["WeChat"],"evidence":["observed"],"priority":70}`,
+			want: SaveMemoryRequest{
+				Type:     "procedure",
+				Title:    "Test",
+				Content:  "Content",
+				Tags:     []string{"step1", "step2"},
+				Entities: []string{"WeChat"},
+				Evidence: []string{"observed"},
+				Priority: 70,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := decodeSaveMemoryRequest(tt.input)
+			if err != nil {
+				t.Fatalf("decodeSaveMemoryRequest(%q) error = %v; want success", tt.input, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("decodeSaveMemoryRequest(%q) = %#v, want %#v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecodeForgetMemoryRequestWorks(t *testing.T) {
+	input := `{"id":"mem_123","reason":"user requested"}`
+	got, err := decodeForgetMemoryRequest(input)
+	if err != nil {
+		t.Fatalf("decodeForgetMemoryRequest(%q) error = %v; want success", input, err)
+	}
+	want := ForgetMemoryRequest{
+		ID:     "mem_123",
+		Reason: "user requested",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("decodeForgetMemoryRequest(%q) = %#v, want %#v", input, got, want)
+	}
+}

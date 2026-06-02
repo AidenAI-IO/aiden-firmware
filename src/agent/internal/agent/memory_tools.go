@@ -134,16 +134,8 @@ func (t *SaveMemoryTool) Call(ctx context.Context, input string) (string, error)
 	if t.store == nil {
 		return "", fmt.Errorf("long-term memory store is not configured")
 	}
-	var req struct {
-		Type     string   `json:"type"`
-		Title    string   `json:"title"`
-		Content  string   `json:"content"`
-		Tags     []string `json:"tags"`
-		Entities []string `json:"entities"`
-		Evidence []string `json:"evidence"`
-		Priority int      `json:"priority"`
-	}
-	if err := json.Unmarshal([]byte(input), &req); err != nil {
+	req, err := decodeSaveMemoryRequest(input)
+	if err != nil {
 		return "", fmt.Errorf("decode save_memory input: %w", err)
 	}
 	if strings.TrimSpace(req.Content) == "" {
@@ -205,11 +197,8 @@ func (t *ForgetMemoryTool) Call(ctx context.Context, input string) (string, erro
 	if t.store == nil {
 		return "", fmt.Errorf("long-term memory store is not configured")
 	}
-	var req struct {
-		ID     string `json:"id"`
-		Reason string `json:"reason"`
-	}
-	if err := json.Unmarshal([]byte(input), &req); err != nil {
+	req, err := decodeForgetMemoryRequest(input)
+	if err != nil {
 		return "", fmt.Errorf("decode forget_memory input: %w", err)
 	}
 	if strings.TrimSpace(req.ID) == "" {

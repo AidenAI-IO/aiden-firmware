@@ -170,3 +170,54 @@ func decodeDeviceMemoryQuery(input string) (DeviceMemoryQuery, error) {
 		Limit:    int(flex.Limit),
 	}, nil
 }
+
+// SaveMemoryRequest represents the input for save_memory tool.
+type SaveMemoryRequest struct {
+	Type     string
+	Title    string
+	Content  string
+	Tags     []string
+	Entities []string
+	Evidence []string
+	Priority int
+}
+
+// decodeSaveMemoryRequest tolerantly decodes a save_memory argument.
+func decodeSaveMemoryRequest(input string) (SaveMemoryRequest, error) {
+	var flex struct {
+		Type     string          `json:"type"`
+		Title    string          `json:"title"`
+		Content  string          `json:"content"`
+		Tags     flexStringSlice `json:"tags"`
+		Entities flexStringSlice `json:"entities"`
+		Evidence flexStringSlice `json:"evidence"`
+		Priority flexInt         `json:"priority"`
+	}
+	if err := json.Unmarshal([]byte(input), &flex); err != nil {
+		return SaveMemoryRequest{}, err
+	}
+	return SaveMemoryRequest{
+		Type:     flex.Type,
+		Title:    flex.Title,
+		Content:  flex.Content,
+		Tags:     flex.Tags,
+		Entities: flex.Entities,
+		Evidence: flex.Evidence,
+		Priority: int(flex.Priority),
+	}, nil
+}
+
+// ForgetMemoryRequest represents the input for forget_memory tool.
+type ForgetMemoryRequest struct {
+	ID     string
+	Reason string
+}
+
+// decodeForgetMemoryRequest tolerantly decodes a forget_memory argument.
+func decodeForgetMemoryRequest(input string) (ForgetMemoryRequest, error) {
+	var req ForgetMemoryRequest
+	if err := json.Unmarshal([]byte(input), &req); err != nil {
+		return ForgetMemoryRequest{}, err
+	}
+	return req, nil
+}
