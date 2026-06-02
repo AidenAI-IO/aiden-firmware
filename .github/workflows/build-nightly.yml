@@ -14,6 +14,20 @@ jobs:
     outputs:
       should_run: ${{ steps.should_run.outputs.should_run }}
     steps:
+      - name: Repair stale pico-sdk submodule metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk_dir="$GITHUB_WORKSPACE/pico-sdk"
+          if [ ! -d "$sdk_dir" ]; then
+            exit 0
+          fi
+
+          if git -C "$sdk_dir" ls-files -s sysdrv/tools/board/ubuntu 2>/dev/null | grep -q '^160000 '; then
+            git -C "$sdk_dir" config -f .gitmodules submodule.ubuntu.path sysdrv/tools/board/ubuntu
+            git -C "$sdk_dir" config -f .gitmodules submodule.ubuntu.url https://github.com/luckfox-eng33/pico_ubuntu.git
+          fi
+
       - uses: actions/checkout@v4
       - id: should_run
         name: Skip scheduled run if no new commit in the last hour
