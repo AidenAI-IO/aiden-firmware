@@ -77,8 +77,6 @@ func main() {
 	fmt.Printf("📂 Config directory: %s\n", *configDir)
 	if _, port, err := net.SplitHostPort(*addr); err == nil && port != "" {
 		fmt.Printf("🌐 Web UI: http://localhost:%s\n", port)
-	} else {
-		fmt.Printf("🌐 Web UI: http://localhost%s\n", *addr)
 	}
 	fmt.Printf("📝 Logs: %s/log/\n", *configDir)
 
