@@ -1,6 +1,6 @@
-import io
 import json
 import socket
+import time
 from unittest.mock import patch
 
 import pytest
@@ -69,6 +69,38 @@ def test_get_history_returns_current_history():
     assert seen["method"] == "GET"
     assert seen["url"].endswith("/api/history")
     assert result == history
+
+
+def test_chat_includes_skills_when_provided():
+    seen = {}
+    client = AgentClient(base_url="http://test")
+    with patch("urllib.request.urlopen",
+               _captured(seen, body={"response": "ok", "history": []})):
+        client.chat("请打开设置", skills=["device-operator"])
+    body = json.loads(seen["body"])
+    assert body["skills"] == ["device-operator"]
+
+
+def test_recover_after_timeout_waits_until_clear_succeeds(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    class RecoverClient:
+        def __init__(self):
+            self.attempts = 0
+
+        def health(self) -> bool:
+            return True
+
+        def clear_history(self, timeout: int = 30) -> None:
+            self.attempts += 1
+            if self.attempts < 2:
+                raise AgentTimeoutError("busy")
+
+    client = RecoverClient()
+    assert AgentClient.recover_after_timeout(client, timeout_sec=10, poll_sec=1) is True
+    assert client.attempts == 2
+    assert sleeps == [1]
 
 
 def test_chat_timeout_raises():

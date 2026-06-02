@@ -10,7 +10,8 @@ from runner.agent_client import AgentClient
 from runner.html_report import generate_report_html, upload_report
 from runner.judge import JudgeConfig
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
-from runner.runtask import run_one_task
+from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
+from runner.runtask import run_one_task, skipped_task_result
 from runner.suite import load_suite
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -54,6 +55,10 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--out", default=str(REPO_ROOT / "benchmark" / "runs"))
     p_run.add_argument("--skip-clock-wait", action="store_true")
     p_run.add_argument("--clock-timeout-sec", type=int, default=180)
+    p_run.add_argument("--agent-ready-timeout-sec", type=int, default=120)
+    p_run.add_argument("--agent-recovery-timeout-sec", type=int, default=90,
+                       help="Extra wait after timeout/skipped before next task")
+    p_run.add_argument("--inter-task-cooldown-sec", type=float, default=2.0)
     p_rejudge = sub.add_parser("rejudge")
     p_rejudge.add_argument("--run-dir", required=True)
     p_rejudge.add_argument("--judge-model", default="claude-sonnet-4-6")
@@ -98,13 +103,47 @@ def _cmd_run(args: argparse.Namespace) -> int:
             if n <= 0:
                 n = 1
             for attempt in range(1, n + 1):
+                if not wait_for_agent_ready(
+                    client, timeout_sec=args.agent_ready_timeout_sec
+                ):
+                    print(
+                        f"SKIPPED    {task.id} attempt={attempt} "
+                        f"rubric=0/{len(task.rubric)} wall=Nonems "
+                        f"(agent not ready)",
+                        flush=True,
+                    )
+                    results.append(
+                        skipped_task_result(
+                            suite, task, attempt,
+                            run_dir / "tasks" / task.id
+                            / (f"attempt_{attempt}" if n > 1 else ""),
+                            run_id,
+                            f"agent not ready within {args.agent_ready_timeout_sec}s",
+                        )
+                    )
+                    continue
+
                 art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if n > 1 else "")
-                r = run_one_task(client, suite, task, attempt, art_dir,
-                                 judge_cfg, judge_cache, run_id)
+                try:
+                    r = run_one_task(client, suite, task, attempt, art_dir,
+                                     judge_cfg, judge_cache, run_id)
+                except Exception as e:
+                    print(f"ERROR      {task.id} attempt={attempt} — {e}", flush=True)
+                    r = skipped_task_result(suite, task, attempt, art_dir, run_id, str(e))
                 print(f"{r.status.upper():10s} {task.id} attempt={attempt} "
                       f"rubric={r.rubric_pass_count}/{r.rubric_total} "
                       f"wall={r.metrics.get('wall_ms')}ms", flush=True)
                 results.append(r)
+
+                if r.status in {"timeout", "skipped", "judge_error", "failed"}:
+                    if not recover_agent_after_timeout(
+                        client, timeout_sec=args.agent_recovery_timeout_sec
+                    ):
+                        wait_for_agent_ready(
+                            client, timeout_sec=args.agent_recovery_timeout_sec
+                        )
+                if args.inter_task_cooldown_sec > 0:
+                    time.sleep(args.inter_task_cooldown_sec)
     finally:
         client.close()
     manifest = {

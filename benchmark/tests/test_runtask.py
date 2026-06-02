@@ -12,8 +12,14 @@ class FakeClient:
         self.response = response
         self.messages = []
 
-    def clear_history(self):
+    def health(self):
+        return True
+
+    def clear_history(self, timeout=30):
         pass
+
+    def recover_after_timeout(self, timeout_sec=90, poll_sec=3.0):
+        return True
 
     def invoke_tool(self, name, args):
         assert name == "screenshot"
@@ -25,7 +31,7 @@ class FakeClient:
         }
         return ToolInvokeResult(output=json.dumps(payload), is_error=False, duration_ms=1)
 
-    def chat(self, message, timeout_sec=None, attachments=None):
+    def chat(self, message, timeout_sec=None, attachments=None, skills=None):
         self.messages.append(message)
         return ChatResponse(
             response=self.response,
@@ -130,7 +136,7 @@ class TimeoutClient(FakeClient):
             {"type": "tool_result", "content": "{}"},
         ]
 
-    def chat(self, message, timeout_sec=None, attachments=None):
+    def chat(self, message, timeout_sec=None, attachments=None, skills=None):
         raise AgentTimeoutError("deadline exceeded")
 
     def get_history(self):

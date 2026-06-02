@@ -17,6 +17,12 @@ class RubricItem:
     check: str
 
 @dc.dataclass
+class TraceObservationSpec:
+    id: str
+    description: str
+    skill_name: str
+
+@dc.dataclass
 class HardAssertions:
     min_tool_calls: int = 0
     max_tool_calls: int = 50
@@ -46,6 +52,7 @@ class Suite:
     sha256: str
     source_path: Path
     prompt_prefix: str = ""
+    trace_observations: list[TraceObservationSpec] = dc.field(default_factory=list)
 
 def load_suite(path: Path) -> Suite:
     raw_bytes = Path(path).read_bytes()
@@ -138,6 +145,21 @@ def load_suite(path: Path) -> Suite:
     if not isinstance(prompt_prefix, str):
         raise SuiteValidationError("suite prompt_prefix must be a string")
 
+    trace_observations: list[TraceObservationSpec] = []
+    for raw_obs in data.get("trace_observations") or []:
+        if not isinstance(raw_obs, dict):
+            raise SuiteValidationError("trace_observations entries must be objects")
+        obs_id = raw_obs.get("id")
+        description = raw_obs.get("description")
+        skill_name = raw_obs.get("skill_name")
+        if not obs_id or not description or not skill_name:
+            raise SuiteValidationError(
+                "trace_observations entries require id, description, and skill_name"
+            )
+        trace_observations.append(
+            TraceObservationSpec(id=obs_id, description=description, skill_name=skill_name)
+        )
+
     return Suite(
         name=data.get("name", Path(path).stem),
         global_reset=data.get("global_reset") or {},
@@ -145,4 +167,5 @@ def load_suite(path: Path) -> Suite:
         sha256=sha,
         source_path=Path(path),
         prompt_prefix=prompt_prefix,
+        trace_observations=trace_observations,
     )
