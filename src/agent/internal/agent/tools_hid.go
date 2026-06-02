@@ -42,10 +42,10 @@ const (
 	defaultSwipeSteps      = 24
 
 	// defaultDirectionalSwipeDistance is the normalized travel for swipe_left/right/up/down.
-	defaultDirectionalSwipeDistance = 0.40
-	directionalSwipeLargeDistance   = 0.55
-	directionalSwipeMediumDistance  = 0.30
-	directionalSwipeSmallDistance   = 0.10
+	defaultDirectionalSwipeDistance = 0.50
+	directionalSwipeLargeDistance   = 0.70
+	directionalSwipeMediumDistance  = 0.50
+	directionalSwipeSmallDistance   = 0.20
 	directionalSwipeTinyDistance    = 0.04
 
 	phoneBackStartX = 0.001
@@ -779,6 +779,52 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		}
 	default:
 		return fmt.Sprintf("error: unsupported gesture type: %q", args.Type), nil
+	}
+
+	return "ok", nil
+}
+
+// TouchClickPercentTool clicks using 0-1000 normalized coordinates (industry standard).
+type TouchClickPercentTool struct {
+	pc     *pointerController
+	screen *screenState
+}
+
+func (t *TouchClickPercentTool) Name() string { return "touch_click_percent" }
+
+func (t *TouchClickPercentTool) Description() string {
+	return `Tap screen using 0-1000 coordinate system (industry standard used by Open-AutoGLM, MobileAgent). Input JSON: {"x": 500, "y": 600}. ` +
+		`x and y are integers in range 0-1000, where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
+		`This coordinate system is resolution-independent: x=500 always means 50% of screen width regardless of actual pixel resolution. ` +
+		`Examples: tap center = {"x": 500, "y": 500}, tap top-right corner = {"x": 900, "y": 100}. ` +
+		`Coordinates are automatically converted to HID absolute range 0-32767 before sending to device.`
+}
+
+func (t *TouchClickPercentTool) Call(_ context.Context, input string) (string, error) {
+	var args struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+	}
+	if err := json.Unmarshal([]byte(input), &args); err != nil {
+		return fmt.Sprintf("error: invalid input: %v", err), nil
+	}
+
+	// Validate range
+	if args.X < 0 || args.X > 1000 {
+		return fmt.Sprintf("error: x must be in range 0-1000, got %d", args.X), nil
+	}
+	if args.Y < 0 || args.Y > 1000 {
+		return fmt.Sprintf("error: y must be in range 0-1000, got %d", args.Y), nil
+	}
+
+	// Convert 0-1000 -> 0-32767
+	// Formula: absolute_x = (x / 1000.0) * 32767
+	absX := int(float64(args.X) / 1000.0 * float64(absMouseMaxPos))
+	absY := int(float64(args.Y) / 1000.0 * float64(absMouseMaxPos))
+
+	btn := mouseButtonByte("")
+	if err := tapPointer(t.pc, absX, absY, btn); err != nil {
+		return fmt.Sprintf("error: %v", err), nil
 	}
 
 	return "ok", nil

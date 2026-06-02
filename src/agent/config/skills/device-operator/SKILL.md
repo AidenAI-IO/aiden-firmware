@@ -92,8 +92,15 @@ If a tap does not work:
 
 If a swipe does not work:
 
+- If the target is a partial scrollable region (picker, embedded list, modal, or in-page scroll area), place both start and end points well inside the visible bounds of that region. A gesture that starts on a fixed header, bottom navigation bar, or outside the scrollable area will be consumed by the outer container and the inner control will not move.
+- For list scrolling and search results, use calibrated strength:
+  1. Start with `strength: "medium"` and take a screenshot immediately after.
+  2. Use `image_diff` or visual inspection to confirm scrolling occurred and estimate rows moved.
+  3. If far from target: use `large`. If close: use `small` or `tiny`.
+  4. If you overshoot, reverse direction and drop one strength level.
+  5. If the screen did not move at all (same content, no diff), the gesture likely missed the scrollable area — adjust the start point inward, not just the distance.
+  6. Do not repeat the same `distance` or `strength` if it failed once. Change one variable per attempt.
 - Change the start point away from screen edges, fixed headers, or bottom navigation bars.
-- Increase the swipe distance.
 - If the content appears to be at an edge, try the opposite direction once.
 - If the same list boundary appears again, stop searching that direction.
 
@@ -146,6 +153,38 @@ For navigation tasks:
 - Prefer visible buttons and semantic gestures.
 - After back, home, or navigation, verify the destination.
 - If navigation loops or returns to the same screen twice, stop and reassess.
+
+## App Switching
+
+When the task requires switching to a different app or opening the recents/task switcher:
+
+**Step 1 — recall cached method first.**
+Call `recall_memory` with tags `["app-switch", "device"]`. If a record exists for the current device, use it directly and skip probing.
+
+**Step 2 — if no cache, identify OS from the screenshot:**
+- iOS/iPadOS: home bar at bottom, no nav buttons
+- Android gesture nav: thin gesture bar, no buttons
+- Android 3-button nav: visible Back / Home / Recents buttons at bottom
+- Unknown: treat as gesture nav and probe
+
+**Step 3 — probe for the task switcher. Try in order, stop at first success:**
+
+1. Bottom-edge swipe and hold: `type: "swipe"`, start y≈0.99, end y≈0.55, `hold_after_ms: 500`. Take a screenshot — if the task switcher appeared, this is the method.
+2. If 3-button nav is visible: tap the Recents button (bottom-right square icon).
+3. If still on the same app screen, try home first (`type: "home"`), then retry method 1 from the home screen.
+
+After each probe take a screenshot to confirm whether the switcher appeared before trying the next method.
+
+**Step 4 — once the switcher is open:**
+- If the target app card is visible, tap its center.
+- If not visible, swipe left/right in the switcher to find it.
+- If still not found, dismiss the switcher (`type: "home"`) and find the app icon on the home screen or via system search (Spotlight swipe-down on iOS, app drawer swipe-up on Android).
+
+**Step 5 — save on success.**
+After successfully opening the switcher, call `save_memory` with: device name or model (from screenshot or prior context), OS, the method that worked, and the exact gesture parameters used. Tags: `["app-switch", "device"]`.
+
+**If switching fails after all probes:**
+- Do not loop. Report the blocker to the user and suggest they open the target app manually.
 
 ## Completion
 
