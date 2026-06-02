@@ -477,19 +477,20 @@ superseded_by: ""
 `Runtime.Run` 中，在 `r.buildRoleProfiles(...)` 之前执行：
 
 ```go
-memoryContext, _ := r.memoryPlane.Retrieve(ctx, MemoryRetrieveRequest{
-    Input: normalizedInput,
+retrieveReq := MemoryRetrieveRequest{
+    Input:       normalizedInput,
     Attachments: req.Attachments,
-    Skills: skillNames,
-    ToolNames: toolNames(availableTools),
-})
+    Skills:      skillNames,
+    ToolNames:   toolNames(availableTools),
+}
+memoryContext, _ := r.memoryPlane.Retrieve(ctx, retrieveReq)
 recorder := r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
 ```
 
 然后把 `memoryContext` 传给 `buildRoleProfiles`。run 结束后：
 
 ```go
-episode := recorder.Finish(output, metrics, err)
+episode := recorder.Finish(output, metrics, err, tags, entities)
 go r.memoryPlane.CommitEpisode(context.Background(), episode)
 ```
 
@@ -507,7 +508,7 @@ go r.memoryPlane.CommitEpisode(context.Background(), episode)
 
 ### Role profiles
 
-当前 `buildRoleProfiles(..., memoryContext string)` 应改为传结构：
+`buildRoleProfiles` 接收结构化的 `MemoryContext` 并返回 `RoleProfiles`：
 
 ```go
 func buildRoleProfiles(..., memory MemoryContext) RoleProfiles
@@ -638,7 +639,7 @@ planner prompt 拼 `memory.Planner` 和 `memory.Common`，verifier prompt 拼 `m
 #### 目录结构
 
 已实现完整目录布局：
-```
+```text
 memory/device/
 ├── profile.yaml           # 设备 profile
 ├── apps/                  # app profile（累积更新）

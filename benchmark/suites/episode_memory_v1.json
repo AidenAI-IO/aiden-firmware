@@ -30,7 +30,7 @@
         },
         {
           "id": "does_not_require_manual_recall_tool",
-          "check": "The trace does not need a recall_memory or recall_session_chunks tool call to answer; automatic retrieved memory is sufficient."
+          "check": "The trace does not need a recall_memory, recall_session_chunks, recall_device_memory, or inspect_episode tool call to answer; automatic retrieved memory is sufficient."
         },
         {
           "id": "answer_is_memory_based",

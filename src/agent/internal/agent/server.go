@@ -391,7 +391,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 
-	result, err := s.runtime.Run(context.Background(), RunRequest{
+	ctx := r.Context()
+
+	result, err := s.runtime.Run(ctx, RunRequest{
 		Input:       inputText,
 		Attachments: runAttachments,
 		Skills:      req.Skills,
@@ -409,7 +411,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			s.appendHistory(message)
 			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
 			if event.Type == "tool_call" {
-				go s.speakToolDescription(r.Context(), event.Description)
+				go s.speakToolDescription(ctx, event.Description)
 			}
 		},
 	})

@@ -264,7 +264,11 @@ func (e *roleCollaborativeExecutor) callExecutor(
 	}
 
 	action := actions[0]
-	if e.CallbacksHandler != nil {
+	// Only emit the agent-action callback when the tool actually exists. The
+	// runtime callback handler tracks a pending action per HandleAgentAction and
+	// clears it on the matching tool-end callback; an unknown tool never reaches
+	// the tool wrapper, so emitting here would leave a dangling pending action.
+	if _, ok := nameToTool[strings.ToUpper(action.Tool)]; ok && e.CallbacksHandler != nil {
 		e.CallbacksHandler.HandleAgentAction(ctx, action)
 	}
 	step, err := e.callTool(ctx, nameToTool, action)

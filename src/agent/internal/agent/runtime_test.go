@@ -84,7 +84,7 @@ func TestRuntimeRunIncludesAvailableSkillCatalog(t *testing.T) {
 		Description:  "Plan before acting",
 		Instructions: "Make a plan.",
 	}
-	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "ok"}}}}}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
 		&testModelResolver{model: model},
@@ -119,7 +119,7 @@ func TestRuntimeRunOmitsArchivedSkillsFromAvailableCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "ok"}}}}}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
 	runtime := NewRuntimeWithDeps(
 		Config{ConfigDir: configDir, SkillsDirs: []string{skillsDir}, Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
 		&testModelResolver{model: model},
@@ -225,10 +225,7 @@ func TestRuntimeRunReloadsSkillsWhenMarkedDirty(t *testing.T) {
 	}
 
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{Choices: []*llms.ContentChoice{{Content: "first"}}},
-			{Choices: []*llms.ContentChoice{{Content: "second"}}},
-		},
+		responses: append(roleDirectResponses("first"), roleDirectResponses("second")...),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -257,10 +254,13 @@ func TestRuntimeRunReloadsSkillsWhenMarkedDirty(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello again", Skills: []string{"alpha"}}); err != nil {
 		t.Fatalf("second Run() error = %v", err)
 	}
-	if !runtimeModelCallContains(model.messages[1], "Use alpha v2.") {
+	// Each run issues planner/executor/verifier calls, so the second run's planner
+	// prompt is the fourth recorded model call (index 3).
+	secondRunPlannerPrompt := model.messages[3]
+	if !runtimeModelCallContains(secondRunPlannerPrompt, "Use alpha v2.") {
 		t.Fatalf("second run missing reloaded v2 skill instructions")
 	}
-	if runtimeModelCallContains(model.messages[1], "Use alpha v1.") {
+	if runtimeModelCallContains(secondRunPlannerPrompt, "Use alpha v1.") {
 		t.Fatalf("second run still contains stale v1 skill instructions")
 	}
 }

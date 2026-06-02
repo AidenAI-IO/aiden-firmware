@@ -56,6 +56,11 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"reason":"user asked me to sleep"}`,
 	},
+	"inspect_episode": {
+		Category:     "memory",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"id":"ep_..."}`,
+	},
 	"keyboard_tap": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
@@ -80,6 +85,11 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"delta":-3}`,
+	},
+	"recall_device_memory": {
+		Category:     "memory",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"terms":["微信"],"tags":["登录"],"entities":["微信App"],"types":["procedure","failure"],"device_id":"default","limit":5}`,
 	},
 	"screenshot": {
 		Category:     "observation",

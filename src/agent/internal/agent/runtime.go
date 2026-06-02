@@ -73,6 +73,12 @@ type RunMetrics struct {
 	CompletionTokens int     `json:"completion_tokens,omitempty"`
 	TotalTokens      int     `json:"total_tokens,omitempty"`
 	FirstTokenTime   float64 `json:"first_token_time_ms,omitempty"`
+	// LastPromptTokens holds the prompt-token count of the most recent LLM call.
+	// PromptTokens/CompletionTokens/TotalTokens accumulate across the multiple
+	// planner/executor/verifier calls in a single run, but the compression
+	// heuristic needs the size of one prompt relative to the context window, not
+	// the cumulative sum, so that single-call value is tracked separately.
+	LastPromptTokens int `json:"-"`
 }
 
 type RunEvent struct {
@@ -358,7 +364,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
-	r.memories.SetLastPromptTokens(metrics.PromptTokens)
+	r.memories.SetLastPromptTokens(metrics.LastPromptTokens)
 	if err := r.memories.AppendExchange(ctx, "default", normalizedInput, output); err != nil {
 		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
 		return RunResult{}, err
@@ -639,23 +645,24 @@ func recordUsageMetrics(metrics *RunMetrics, res *llms.ContentResponse) {
 	if res == nil || metrics == nil || len(res.Choices) == 0 {
 		return
 	}
-	metrics.PromptTokens = 0
-	metrics.CompletionTokens = 0
-	metrics.TotalTokens = 0
-
 	info := res.Choices[0].GenerationInfo
 	if info == nil {
 		return
 	}
 
+	// A single run makes several LLM calls (planner, executor, verifier, and any
+	// tool-assisted iterations). Accumulate token counts across calls so the run
+	// metrics reflect the whole run rather than only the last call. LastPromptTokens
+	// keeps the most recent single-call prompt size for the compression heuristic.
 	if v, ok := usageMetricInt(info["prompt_tokens"]); ok {
-		metrics.PromptTokens = v
+		metrics.PromptTokens += v
+		metrics.LastPromptTokens = v
 	}
 	if v, ok := usageMetricInt(info["completion_tokens"]); ok {
-		metrics.CompletionTokens = v
+		metrics.CompletionTokens += v
 	}
 	if v, ok := usageMetricInt(info["total_tokens"]); ok {
-		metrics.TotalTokens = v
+		metrics.TotalTokens += v
 	}
 }
 

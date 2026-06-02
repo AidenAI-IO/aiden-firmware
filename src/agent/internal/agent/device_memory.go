@@ -100,6 +100,14 @@ func (s *DeviceMemoryStore) Search(ctx context.Context, query DeviceMemoryQuery)
 	var hits []MemoryHit
 	for _, item := range items {
 		conflicted := item.Status == "conflicted"
+		// Conflicted records are surfaced under the synthetic "conflict" type, so
+		// type filtering must run against the effective type, not the stored one.
+		// Otherwise a conflicted procedure still matches query.Types=["procedure"]
+		// and can never be retrieved via query.Types=["conflict"].
+		effectiveType := item.Type
+		if conflicted {
+			effectiveType = "conflict"
+		}
 		if item.Status != "" && item.Status != "active" && !conflicted {
 			continue
 		}
@@ -109,7 +117,7 @@ func (s *DeviceMemoryStore) Search(ctx context.Context, query DeviceMemoryQuery)
 		if query.DeviceID != "" && item.DeviceID != "" && query.DeviceID != item.DeviceID {
 			continue
 		}
-		if !matchesAny(query.Types, []string{item.Type}) {
+		if !matchesAny(query.Types, []string{effectiveType}) {
 			continue
 		}
 		if len(query.Tags) > 0 && !matchesAny(query.Tags, item.Tags) {
@@ -122,9 +130,7 @@ func (s *DeviceMemoryStore) Search(ctx context.Context, query DeviceMemoryQuery)
 			continue
 		}
 		hit := deviceMemoryToHit(item)
-		if conflicted {
-			hit.Type = "conflict"
-		}
+		hit.Type = effectiveType
 		hits = append(hits, hit)
 	}
 	sort.SliceStable(hits, func(i, j int) bool {
@@ -193,9 +199,19 @@ func (s *DeviceMemoryStore) Update(ctx context.Context, id string, update func(*
 		if item.ID != id {
 			continue
 		}
+		oldPath := s.itemPath(item)
 		update(&item)
 		item.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		newPath := s.itemPath(item)
 		_, err := s.Upsert(ctx, item)
+		// Upsert writes to a type-specific path. If the callback changed item.Type,
+		// the old YAML would otherwise linger and readAll() would surface a stale
+		// duplicate ID, so remove it once the new file is written.
+		if err == nil && oldPath != newPath {
+			if removeErr := os.Remove(oldPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				return removeErr
+			}
+		}
 		return err
 	}
 	return nil

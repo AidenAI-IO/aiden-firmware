@@ -113,6 +113,17 @@ func TestFlexInt(t *testing.T) {
 	}
 }
 
+// TestFlexIntRejectsNonIntegralFloat ensures fractional values fail loudly
+// instead of being silently truncated (e.g. 3.7 -> 3).
+func TestFlexIntRejectsNonIntegralFloat(t *testing.T) {
+	for _, input := range []string{`3.7`, `"3.7"`, `0.5`, `"-2.25"`} {
+		var got flexInt
+		if err := json.Unmarshal([]byte(input), &got); err == nil {
+			t.Errorf("Unmarshal(%q) = %d, want error for non-integral float", input, int(got))
+		}
+	}
+}
+
 // TestDecodeChunkRecallQueryToleratesStringifiedArgs verifies the exact
 // failure mode from the logs: tags and limit provided as JSON strings.
 func TestDecodeChunkRecallQueryToleratesStringifiedArgs(t *testing.T) {

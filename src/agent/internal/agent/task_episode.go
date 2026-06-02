@@ -259,9 +259,12 @@ func (r *EpisodeRecorder) Finish(output string, metrics *RunMetrics, runErr erro
 		evt := r.events[i]
 		if evt.Type == "verifier_decision" {
 			episode.Outcome.VerifierReason = evt.Reason
-			if evt.CanFinish != nil && *evt.CanFinish {
-				episode.Outcome.Success = runErr == nil
-				if strings.TrimSpace(evt.Content) != "" {
+			if evt.CanFinish != nil {
+				// The last verifier decision is authoritative: a clean run that the
+				// verifier rejected (can_finish=false) must not be stored as success,
+				// otherwise it feeds wrong lessons back into memory.
+				episode.Outcome.Success = runErr == nil && *evt.CanFinish
+				if *evt.CanFinish && strings.TrimSpace(evt.Content) != "" {
 					episode.Outcome.FinalAnswer = strings.TrimSpace(evt.Content)
 				}
 			}

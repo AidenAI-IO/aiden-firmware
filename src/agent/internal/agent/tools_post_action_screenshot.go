@@ -35,7 +35,11 @@ func (t *postActionScreenshotTool) Name() string {
 }
 
 func (t *postActionScreenshotTool) Description() string {
-	return t.inner.Description() + " On successful execution, waits 1s and returns a post-action screenshot observation."
+	return fmt.Sprintf(
+		"%s On successful execution, waits %s and returns a post-action screenshot observation.",
+		t.inner.Description(),
+		t.delay,
+	)
 }
 
 func (t *postActionScreenshotTool) ReturnsVisualObservation() bool {

@@ -260,10 +260,8 @@ func (t *InspectEpisodeTool) Call(ctx context.Context, input string) (string, er
 	if t.store == nil {
 		return "", fmt.Errorf("episode store is not configured")
 	}
-	var req struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal([]byte(input), &req); err != nil {
+	req, err := decodeInspectEpisodeRequest(input)
+	if err != nil {
 		return "", fmt.Errorf("decode inspect_episode input: %w", err)
 	}
 	if strings.TrimSpace(req.ID) == "" {

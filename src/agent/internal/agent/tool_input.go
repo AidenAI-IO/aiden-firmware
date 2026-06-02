@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -94,6 +95,9 @@ func (f *flexInt) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(trimmed, &n); err != nil {
 		return fmt.Errorf("cannot decode %s into int", trimmed)
 	}
+	if n != math.Trunc(n) {
+		return fmt.Errorf("cannot decode %s into int: value is not an integer", trimmed)
+	}
 	*f = flexInt(int(n))
 	return nil
 }
@@ -103,6 +107,9 @@ func parseFlexInt(s string) (int, error) {
 		return n, nil
 	}
 	if ff, err := strconv.ParseFloat(s, 64); err == nil {
+		if ff != math.Trunc(ff) {
+			return 0, fmt.Errorf("cannot decode %q into int: value is not an integer", s)
+		}
 		return int(ff), nil
 	}
 	return 0, fmt.Errorf("cannot decode %q into int", s)
@@ -219,5 +226,29 @@ func decodeForgetMemoryRequest(input string) (ForgetMemoryRequest, error) {
 	if err := json.Unmarshal([]byte(input), &req); err != nil {
 		return ForgetMemoryRequest{}, err
 	}
+	return req, nil
+}
+
+// InspectEpisodeRequest represents the input for inspect_episode tool.
+type InspectEpisodeRequest struct {
+	ID string `json:"id"`
+}
+
+// decodeInspectEpisodeRequest tolerantly decodes an inspect_episode argument,
+// tolerating a bare string id ("ep_123") in addition to the JSON object form.
+func decodeInspectEpisodeRequest(input string) (InspectEpisodeRequest, error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed != "" && trimmed[0] == '"' {
+		var id string
+		if err := json.Unmarshal([]byte(trimmed), &id); err != nil {
+			return InspectEpisodeRequest{}, err
+		}
+		return InspectEpisodeRequest{ID: strings.TrimSpace(id)}, nil
+	}
+	var req InspectEpisodeRequest
+	if err := json.Unmarshal([]byte(input), &req); err != nil {
+		return InspectEpisodeRequest{}, err
+	}
+	req.ID = strings.TrimSpace(req.ID)
 	return req, nil
 }
