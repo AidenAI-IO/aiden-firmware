@@ -263,3 +263,17 @@ def test_personamem_lt_recall_suite_uses_deterministic_answers():
             command = step["args"]["command"]
             assert "<<'EOF'" in command
             assert "\nEOF" in command
+
+
+def test_episode_memory_suite_guards_against_setup_context_leakage():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "episode_memory_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+    task = task_by_id["reuse_success_episode_for_planning"]
+
+    assert task.setup["type"] == "agent_prompt"
+    assert task.setup["clear_history_after"] is True
+    assert any(
+        "recall_device_memory" in item.check and "inspect_episode" in item.check
+        for item in task.rubric
+    )

@@ -2441,9 +2441,12 @@ const webUI = `<!DOCTYPE html>
         }
 
         async function consumeChatStream(res) {
+            let sawDone = false;
             if (!res.body) {
-                const data = await res.json();
-                renderHistory(data.history || []);
+                sawDone = consumeChatStreamText(await res.text());
+                if (!sawDone) {
+                    throw new Error('Chat stream ended before done event.');
+                }
                 return;
             }
 
@@ -2455,11 +2458,35 @@ const webUI = `<!DOCTYPE html>
                 const chunk = await reader.read();
                 if (chunk.done) break;
                 buffer += decoder.decode(chunk.value, { stream: true });
-                buffer = consumeChatStreamLines(buffer);
+                const result = consumeChatStreamLines(buffer);
+                buffer = result.buffer;
+                sawDone = sawDone || result.sawDone;
             }
 
             buffer += decoder.decode();
-            consumeChatStreamLines(buffer, true);
+            const result = consumeChatStreamLines(buffer, true);
+            sawDone = sawDone || result.sawDone;
+            if (!sawDone) {
+                throw new Error('Chat stream ended before done event.');
+            }
+        }
+
+        function consumeChatStreamText(text) {
+            const trimmed = text.trim();
+            if (!trimmed) return false;
+            try {
+                const payload = JSON.parse(trimmed);
+                if (payload.history || payload.response) {
+                    renderHistory(payload.history || []);
+                    return true;
+                }
+                if (payload.type) {
+                    return handleChatStreamEvent(payload);
+                }
+            } catch (_) {
+                // Not a single JSON response; parse it below as NDJSON.
+            }
+            return consumeChatStreamLines(text, true).sawDone;
         }
 
         function consumeChatStreamLines(buffer, flush) {
@@ -2470,6 +2497,7 @@ const webUI = `<!DOCTYPE html>
                 buffer = '';
             }
 
+            let sawDone = false;
             lines.forEach(function(line) {
                 line = line.trim();
                 if (!line) return;
@@ -2477,26 +2505,26 @@ const webUI = `<!DOCTYPE html>
                 try {
                     event = JSON.parse(line);
                 } catch (err) {
-                    console.error('Invalid chat stream event:', line, err);
-                    return;
+                    throw new Error('Invalid chat stream event: ' + err.message);
                 }
-                handleChatStreamEvent(event);
+                sawDone = handleChatStreamEvent(event) || sawDone;
             });
 
-            return buffer;
+            return { buffer, sawDone };
         }
 
         function handleChatStreamEvent(event) {
             if (event.type === 'message' && event.message) {
                 addMessage(event.message);
-                return;
+                return false;
             }
             if (event.type === 'done') {
-                return;
+                return true;
             }
             if (event.type === 'error') {
                 throw new Error(event.error || 'Agent error');
             }
+            return false;
         }
 
         async function clearHistory() {

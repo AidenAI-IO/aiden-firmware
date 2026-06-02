@@ -55,7 +55,11 @@ def per_task_setup(client: AgentClient, setup: dict[str, Any] | None) -> None:
             raise ResetError(f"setup agent_prompt timed out: {e}") from e
         except AgentRequestError as e:
             raise ResetError(f"setup agent_prompt failed: {e}") from e
-        # Clear the setup conversation so it does not pollute the actual task chat.
-        client.clear_history()
+        clear_history_after = setup.get("clear_history_after", True)
+        if not isinstance(clear_history_after, bool):
+            raise ResetError(f"clear_history_after must be boolean: {clear_history_after!r}")
+        if clear_history_after:
+            # Clear the setup conversation so it does not pollute the actual task chat.
+            client.clear_history()
         return
     raise ResetError(f"unsupported setup form: {setup!r}")

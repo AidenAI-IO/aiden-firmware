@@ -752,25 +752,36 @@ func parseVerifierDecision(raw, fallbackAnswer string) verifierDecision {
 		decision.FinalAnswer = strings.TrimSpace(decision.FinalAnswer)
 		decision.Reason = strings.TrimSpace(decision.Reason)
 		decision.ObservedState = normalizeObservedWorldState(decision.ObservedState)
+		if decision.CanFinish && decision.FinalAnswer == "" {
+			decision.CanFinish = false
+			decision.NeedsReplan = true
+			if decision.Reason == "" {
+				decision.Reason = "verifier approved finish without final_answer"
+			}
+		}
 		return decision
 	}
 
-	text := strings.TrimSpace(extractFinalAnswer(raw))
-	if text == "" {
-		text = strings.TrimSpace(fallbackAnswer)
-	}
+	text := strings.TrimSpace(extractMarkedFinalAnswer(raw))
 	if text == "" {
 		return verifierDecision{
 			CanFinish:   false,
 			NeedsReplan: true,
-			Reason:      "verifier returned empty content",
+			Reason:      "verifier returned non-JSON content without explicit final answer",
 		}
 	}
 	return verifierDecision{
 		CanFinish:   true,
 		FinalAnswer: text,
-		Reason:      "verifier returned non-JSON content",
+		Reason:      "verifier returned explicit non-JSON final answer",
 	}
+}
+
+func extractMarkedFinalAnswer(content string) string {
+	if idx := strings.LastIndex(content, "Final Answer:"); idx >= 0 {
+		return strings.TrimSpace(content[idx+len("Final Answer:"):])
+	}
+	return ""
 }
 
 func decodeRoleJSON(raw string, out any) error {

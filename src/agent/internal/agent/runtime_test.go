@@ -162,6 +162,28 @@ func TestToolDescriptorsIncludeSkillToolMetadata(t *testing.T) {
 	}
 }
 
+func TestToolDescriptorsIncludeMemoryToolMetadata(t *testing.T) {
+	tools := &ToolSet{tools: map[string]langtools.Tool{}}
+	tools.RegisterMemoryTools(t.TempDir(), nil, 3, nil)
+	runtime := NewRuntimeWithDeps(Config{}, nil, nil, tools, NewSkillIndex())
+
+	for _, name := range []string{"recall_device_memory", "inspect_episode"} {
+		desc, ok := runtime.ToolDescriptorByName(name)
+		if !ok {
+			t.Fatalf("expected descriptor for %s", name)
+		}
+		if desc.Category != "memory" {
+			t.Fatalf("%s category = %q, want memory", name, desc.Category)
+		}
+		if desc.InputMode != toolInputModeJSON {
+			t.Fatalf("%s input mode = %q, want json", name, desc.InputMode)
+		}
+		if strings.TrimSpace(desc.ExampleInput) == "" {
+			t.Fatalf("%s missing example input", name)
+		}
+	}
+}
+
 func TestSkillCatalogSummaryLimitsEntriesAndDescriptionLength(t *testing.T) {
 	index := NewSkillIndex()
 	longDesc := strings.Repeat("长", maxSkillCatalogDescriptionRunes+10)
@@ -1291,9 +1313,10 @@ func TestNewRuntimeLoadsBundledSkillsSeededOnFirstStartup(t *testing.T) {
 
 func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 	configDir := t.TempDir()
+	response := `{"objective":"test objective","completion_criteria":["test request is satisfied"],"plan":["answer directly"],"next_step":"answer directly","can_finish":true,"final_answer":"ok","reason":"test verified"}`
 	responses := make([]string, 90)
 	for i := range responses {
-		responses[i] = "ok"
+		responses[i] = response
 	}
 	runtime, err := NewRuntime(Config{
 		ConfigDir:     configDir,

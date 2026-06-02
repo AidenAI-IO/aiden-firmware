@@ -83,3 +83,36 @@ func TestParsePlannerDecisionFallsBackOnEmptyResponse(t *testing.T) {
 		t.Errorf("objective = %q, want fallback %q", decision.Objective, "original task")
 	}
 }
+
+func TestParseVerifierDecisionRejectsMalformedText(t *testing.T) {
+	decision := parseVerifierDecision("need more evidence", "candidate answer")
+
+	if decision.CanFinish {
+		t.Fatalf("malformed verifier text should not finish: %#v", decision)
+	}
+	if !decision.NeedsReplan {
+		t.Fatalf("malformed verifier text should request replan: %#v", decision)
+	}
+}
+
+func TestParseVerifierDecisionRejectsAnswerlessJSONFinish(t *testing.T) {
+	decision := parseVerifierDecision(`{"can_finish":true,"reason":"looks good"}`, "candidate answer")
+
+	if decision.CanFinish {
+		t.Fatalf("answerless verifier JSON should not finish: %#v", decision)
+	}
+	if !decision.NeedsReplan {
+		t.Fatalf("answerless verifier JSON should request replan: %#v", decision)
+	}
+}
+
+func TestParseVerifierDecisionAcceptsExplicitTextFinalAnswer(t *testing.T) {
+	decision := parseVerifierDecision("Final Answer: done", "")
+
+	if !decision.CanFinish {
+		t.Fatalf("explicit final answer should finish: %#v", decision)
+	}
+	if decision.FinalAnswer != "done" {
+		t.Fatalf("final answer = %q, want done", decision.FinalAnswer)
+	}
+}
