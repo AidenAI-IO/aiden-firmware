@@ -27,7 +27,7 @@ var wakeupGPIOPins = []int{33, 32}
 func main() {
 	var (
 		configDir = flag.String("config", "", "path to config directory (required)")
-		addr      = flag.String("addr", ":8080", "HTTP server address")
+		addr      = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
 	)
 	flag.Parse()
 

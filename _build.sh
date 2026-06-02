@@ -36,6 +36,11 @@ export GOMODCACHE="/tmp/go-mod"
 export GOPATH="/tmp/gopath"
 export GOTOOLCHAIN=local
 
+# Drop host proxy env (Mac clash on 127.0.0.1:7890 is unreachable from container).
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy
+export GOPROXY="${GOPROXY:-https://goproxy.cn,https://proxy.golang.org,direct}"
+export GOSUMDB="${GOSUMDB:-sum.golang.google.cn}"
+
 cd src/agent
 GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -o "../../${BUILD_DIR}/bin/agent" ./cmd/daemon
 GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -o "../../${BUILD_DIR}/bin/ota" ./cmd/ota
