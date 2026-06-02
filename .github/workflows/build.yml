@@ -25,6 +25,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        submodules: false
 
     - name: Fetch pico-sdk submodule
       run: git submodule update --init --depth=1 pico-sdk
