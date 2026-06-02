@@ -154,6 +154,11 @@ if ! grep -Eq -- '-u 0:0|--user 0:0' "$BUILD_IMAGE_SH"; then
     exit 1
 fi
 
+if ! grep -q 'TAR_OPTIONS=--no-same-owner' "$BUILD_IMAGE_SH"; then
+    echo "build_image.sh must prevent tar from restoring archived owners in Dockerized Buildroot" >&2
+    exit 1
+fi
+
 if ! grep -q '/usr/local/go/bin:$PATH' "$BUILD_IMAGE_SH"; then
     echo "build_image.sh must prepend mounted Go to Docker PATH" >&2
     exit 1
