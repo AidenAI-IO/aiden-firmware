@@ -76,6 +76,10 @@ type MemoryHit struct {
 	FilePath      string            `json:"file_path,omitempty"`
 	Applicability map[string]string `json:"applicability,omitempty"`
 	EvidenceRefs  []MemorySourceRef `json:"evidence_refs,omitempty"`
+	// 新增 procedure/导航相关结构化字段，用于 Planner 渲染
+	Steps    []ProcedureStep `json:"steps,omitempty"`
+	AppName  string          `json:"app_name,omitempty"`
+	PageName string          `json:"page_name,omitempty"`
 }
 
 const defaultMemoryDeviceID = "default"
@@ -333,7 +337,7 @@ func (p *FilesystemMemoryPlane) routeHit(ctx *MemoryContext, hit MemoryHit) {
 		ctx.Planner.DeviceProfile = append(ctx.Planner.DeviceProfile, hit)
 	case "app_profile":
 		ctx.Planner.AppProfiles = append(ctx.Planner.AppProfiles, hit)
-	case "procedure":
+	case "procedure", "navigation":
 		ctx.Planner.Procedures = append(ctx.Planner.Procedures, hit)
 	case "calibration":
 		ctx.Planner.CalibrationNotes = append(ctx.Planner.CalibrationNotes, hit)
@@ -425,114 +429,293 @@ func (p *FilesystemMemoryPlane) extractDeviceLessons(ctx context.Context, episod
 	}
 	deviceID := firstNonEmptyString([]string{episode.DeviceScope["device_id"], defaultMemoryDeviceID})
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if screen := inferEpisodeScreen(episode.Events); screen != "" {
+
+	if err := p.recordDeviceProfile(ctx, episode, deviceID, now); err != nil {
+		return err
+	}
+	if err := p.recordAppProfiles(ctx, episode, deviceID, now); err != nil {
+		return err
+	}
+
+	if !episode.Outcome.Success {
+		return p.recordDeviceFailure(ctx, episode, deviceID, now)
+	}
+
+	if err := p.recordVerifiedProcedure(ctx, episode, deviceID, now); err != nil {
+		return err
+	}
+	if err := p.recordNavigationFacts(ctx, episode, deviceID, now); err != nil {
+		return err
+	}
+	if err := p.recordCoordinateCalibration(ctx, episode, deviceID, now); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *FilesystemMemoryPlane) recordDeviceProfile(ctx context.Context, episode TaskEpisode, deviceID, now string) error {
+	screen := inferEpisodeScreen(episode.Events)
+	if screen == "" {
+		return nil
+	}
+	_, err := p.device.Upsert(ctx, DeviceMemoryItem{
+		ID:         "device_" + safePathName(deviceID),
+		Type:       "device_profile",
+		Status:     "active",
+		Title:      "Observed device profile",
+		Content:    "Observed screenshot size " + screen + " during task execution.",
+		DeviceID:   deviceID,
+		Tags:       []string{"device", "screen"},
+		Confidence: 0.7,
+		TTL:        "90d",
+		UpdatedAt:  now,
+		Applicability: map[string]string{
+			"screen": screen,
+		},
+		EvidenceRefs: []MemorySourceRef{{Type: "episode", ID: episode.ID}},
+	})
+	return err
+}
+
+func (p *FilesystemMemoryPlane) recordAppProfiles(ctx context.Context, episode TaskEpisode, deviceID, now string) error {
+	pagesByApp := observedPagesByApp(episode.Events)
+	toolsByApp := observedToolsByApp(episode.Events)
+
+	// 后备：如果没有从 verifier observed_state 中抽到 app，退回到老的 inferEpisodeApps
+	// 逻辑（基于 entities），这样没有 observed_state 的测试仍能写入 app_profile。
+	if len(pagesByApp) == 0 && len(toolsByApp) == 0 {
+		for _, app := range inferEpisodeApps(episode) {
+			toolsByApp[app] = episodeToolSequence(episode.Events)
+		}
+	}
+
+	if len(pagesByApp) == 0 && len(toolsByApp) == 0 {
+		return nil
+	}
+	allApps := make(map[string]bool)
+	for app := range pagesByApp {
+		allApps[app] = true
+	}
+	for app := range toolsByApp {
+		allApps[app] = true
+	}
+	for app := range allApps {
+		appID := "app_" + stableMemoryID(app)
+		existing, found, err := p.device.Get(ctx, appID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			existing = DeviceMemoryItem{
+				ID:       appID,
+				Type:     "app_profile",
+				Status:   "active",
+				Title:    "App profile: " + app,
+				DeviceID: deviceID,
+				AppID:    app,
+				AppName:  app,
+				Entities: []string{app},
+				Aliases:  []string{app},
+				TTL:      "60d",
+			}
+		}
+		existing.PagesSeen = mergeUniqueStrings(existing.PagesSeen, pagesByApp[app])
+		existing.ToolsUsed = mergeUniqueStrings(existing.ToolsUsed, toolsByApp[app])
+		existing.Confidence = clampConfidence(existing.Confidence + 0.05)
+		if existing.Confidence == 0 {
+			existing.Confidence = 0.7
+		}
+		existing.UpdatedAt = now
+		existing.EvidenceRefs = appendUniqueMemoryRef(existing.EvidenceRefs, MemorySourceRef{Type: "episode", ID: episode.ID})
+
+		var content strings.Builder
+		if len(existing.PagesSeen) > 0 {
+			content.WriteString("Pages observed: ")
+			content.WriteString(strings.Join(existing.PagesSeen, ", "))
+			content.WriteString("\n")
+		}
+		if len(existing.ToolsUsed) > 0 {
+			content.WriteString("Tools used: ")
+			content.WriteString(strings.Join(existing.ToolsUsed, ", "))
+			content.WriteString("\n")
+		}
+		existing.Content = strings.TrimSpace(content.String())
+		if existing.Content == "" {
+			existing.Content = "App was referenced in task goal or extracted entities: " + app
+		}
+
+		if episode.Outcome.Success {
+			existing.SuccessCount++
+		} else {
+			failureNote := firstNonEmptyString([]string{episode.Outcome.FailureReason, "task did not complete"})
+			existing.KnownIssues = appendUniqueString(existing.KnownIssues, failureNote)
+		}
+
+		if _, err := p.device.Upsert(ctx, existing); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *FilesystemMemoryPlane) recordVerifiedProcedure(ctx context.Context, episode TaskEpisode, deviceID, now string) error {
+	steps := episodeProcedureSteps(episode.Events)
+	if len(steps) == 0 {
+		return nil
+	}
+	toolNames := make([]string, len(steps))
+	for i, step := range steps {
+		toolNames[i] = step.Tool
+	}
+	primaryApp, primaryPage := "", ""
+	for _, step := range steps {
+		if step.AppName != "" {
+			primaryApp = step.AppName
+		}
+		if step.PageName != "" {
+			primaryPage = step.PageName
+		}
+		if primaryApp != "" && primaryPage != "" {
+			break
+		}
+	}
+	tags := append([]string(nil), episode.Tags...)
+	entities := append([]string(nil), episode.Entities...)
+	if primaryPage != "" {
+		tags = appendUniqueString(tags, "page:"+primaryPage)
+		entities = appendUniqueString(entities, primaryPage)
+	}
+	procID := "proc_" + stableMemoryID(primaryApp, primaryPage, episode.UserGoal)
+	content := fmt.Sprintf("Goal: %q\nVerified tool path: %s\n\nSteps:\n%s",
+		truncateForLog(episode.UserGoal, 120),
+		strings.Join(toolNames, " → "),
+		summarizeProcedureSteps(steps, 8),
+	)
+	_, err := p.device.Upsert(ctx, DeviceMemoryItem{
+		ID:           procID,
+		Type:         "procedure",
+		Status:       "active",
+		Title:        "Verified procedure",
+		Content:      content,
+		DeviceID:     deviceID,
+		AppName:      primaryApp,
+		PageName:     primaryPage,
+		Tags:         tags,
+		Entities:     entities,
+		Steps:        steps,
+		Confidence:   0.75,
+		Priority:     70,
+		TTL:          "45d",
+		UpdatedAt:    now,
+		EvidenceRefs: []MemorySourceRef{{Type: "episode", ID: episode.ID}},
+	})
+	return err
+}
+
+func (p *FilesystemMemoryPlane) recordDeviceFailure(ctx context.Context, episode TaskEpisode, deviceID, now string) error {
+	reason := firstNonEmptyString([]string{episode.Outcome.FailureReason, firstNonEmptyString(episode.FailureCauses), "task did not complete"})
+	content := fmt.Sprintf("Goal %q failed: %s. Verifier should require fresh evidence before approving similar tasks.", episode.UserGoal, reason)
+	_, err := p.device.Upsert(ctx, DeviceMemoryItem{
+		ID:           "fail_" + stableMemoryID(episode.UserGoal, reason),
+		Type:         "failure",
+		Status:       "active",
+		Title:        "Observed task failure",
+		Content:      content,
+		DeviceID:     deviceID,
+		Tags:         append([]string(nil), episode.Tags...),
+		Entities:     append([]string(nil), episode.Entities...),
+		Confidence:   0.8,
+		Priority:     80,
+		TTL:          "60d",
+		UpdatedAt:    now,
+		EvidenceRefs: []MemorySourceRef{{Type: "episode", ID: episode.ID}},
+	})
+	return err
+}
+
+func (p *FilesystemMemoryPlane) recordNavigationFacts(ctx context.Context, episode TaskEpisode, deviceID, now string) error {
+	transitions := pageTransitions(episode.Events)
+	for _, trans := range transitions {
+		fromLabel := trans.FromApp
+		if trans.FromPage != "" {
+			fromLabel = trans.FromApp + "/" + trans.FromPage
+		}
+		toLabel := trans.ToApp
+		if trans.ToPage != "" {
+			toLabel = trans.ToApp + "/" + trans.ToPage
+		}
+		navID := "nav_" + stableMemoryID(trans.FromApp, trans.FromPage, trans.ToApp, trans.ToPage)
+		var contentParts []string
+		contentParts = append(contentParts, fmt.Sprintf("%s → %s", fromLabel, toLabel))
+		contentParts = append(contentParts, "Tool: "+trans.Tool)
+		if trans.Description != "" {
+			contentParts = append(contentParts, "Action: "+trans.Description)
+		}
+		if trans.Coords != "" {
+			contentParts = append(contentParts, "Coords: "+trans.Coords)
+		}
+		if trans.Text != "" {
+			contentParts = append(contentParts, "Text: "+truncateForLog(trans.Text, 40))
+		}
+		content := strings.Join(contentParts, "\n")
+		tags := []string{"navigation"}
+		if trans.FromApp != "" {
+			tags = appendUniqueString(tags, trans.FromApp)
+		}
+		if trans.ToApp != "" && trans.ToApp != trans.FromApp {
+			tags = appendUniqueString(tags, trans.ToApp)
+		}
+		entities := []string{}
+		if trans.FromPage != "" {
+			entities = appendUniqueString(entities, trans.FromPage)
+		}
+		if trans.ToPage != "" && trans.ToPage != trans.FromPage {
+			entities = appendUniqueString(entities, trans.ToPage)
+		}
 		if _, err := p.device.Upsert(ctx, DeviceMemoryItem{
-			ID:         "device_" + safePathName(deviceID),
-			Type:       "device_profile",
-			Status:     "active",
-			Title:      "Observed device profile",
-			Content:    "Observed screenshot size " + screen + " during task execution.",
-			DeviceID:   deviceID,
-			Tags:       []string{"device", "screen"},
-			Confidence: 0.7,
-			TTL:        "90d",
-			UpdatedAt:  now,
-			Applicability: map[string]string{
-				"screen": screen,
-			},
+			ID:           navID,
+			Type:         "navigation",
+			Status:       "active",
+			Title:        fmt.Sprintf("%s → %s", fromLabel, toLabel),
+			Content:      content,
+			DeviceID:     deviceID,
+			AppName:      trans.ToApp,
+			PageName:     trans.ToPage,
+			Tags:         tags,
+			Entities:     entities,
+			Confidence:   0.7,
+			Priority:     65,
+			TTL:          "30d",
+			UpdatedAt:    now,
 			EvidenceRefs: []MemorySourceRef{{Type: "episode", ID: episode.ID}},
 		}); err != nil {
 			return err
 		}
 	}
-	for _, app := range inferEpisodeApps(episode) {
-		if _, err := p.device.Upsert(ctx, DeviceMemoryItem{
-			ID:         "app_" + stableMemoryID(app),
-			Type:       "app_profile",
-			Status:     "active",
-			Title:      "Observed app profile: " + app,
-			Content:    "App was referenced in task goal or extracted entities: " + app,
-			DeviceID:   deviceID,
-			AppID:      app,
-			Entities:   []string{app},
-			Aliases:    []string{app},
-			Confidence: 0.65,
-			TTL:        "30d",
-			UpdatedAt:  now,
-			EvidenceRefs: []MemorySourceRef{
-				{Type: "episode", ID: episode.ID},
-			},
-		}); err != nil {
-			return err
-		}
-	}
-	if episode.Outcome.Success {
-		tools := episodeToolSequence(episode.Events)
-		if len(tools) > 0 {
-			content := fmt.Sprintf("For goal %q, verified tool path: %s.", episode.UserGoal, strings.Join(tools, " -> "))
-			if _, err := p.device.Upsert(ctx, DeviceMemoryItem{
-				ID:         "proc_" + stableMemoryID(episode.UserGoal, strings.Join(tools, "|")),
-				Type:       "procedure",
-				Status:     "active",
-				Title:      "Verified task procedure",
-				Content:    content,
-				DeviceID:   deviceID,
-				Tags:       append([]string(nil), episode.Tags...),
-				Entities:   append([]string(nil), episode.Entities...),
-				Confidence: 0.75,
-				Priority:   70,
-				TTL:        "45d",
-				UpdatedAt:  now,
-				EvidenceRefs: []MemorySourceRef{
-					{Type: "episode", ID: episode.ID},
-				},
-			}); err != nil {
-				return err
-			}
-		}
-		if episodeUsesNormalizedCoordinates(episode.Events) {
-			if _, err := p.device.Upsert(ctx, DeviceMemoryItem{
-				ID:         "cal_normalized_coordinates",
-				Type:       "calibration",
-				Status:     "active",
-				Title:      "Prefer normalized coordinates",
-				Content:    "A successful task used normalized coordinates; keep preferring normalized coordinates unless current calibration contradicts it.",
-				DeviceID:   deviceID,
-				Tags:       []string{"calibration", "coordinates"},
-				Confidence: 0.8,
-				Priority:   75,
-				TTL:        "30d",
-				UpdatedAt:  now,
-				EvidenceRefs: []MemorySourceRef{
-					{Type: "episode", ID: episode.ID},
-				},
-			}); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	reason := firstNonEmptyString([]string{episode.Outcome.FailureReason, firstNonEmptyString(episode.FailureCauses), "task did not complete"})
-	content := fmt.Sprintf("Goal %q failed: %s. Verifier should require fresh evidence before approving similar tasks.", episode.UserGoal, reason)
-	_, err := p.device.Upsert(ctx, DeviceMemoryItem{
-		ID:         "fail_" + stableMemoryID(episode.UserGoal, reason),
-		Type:       "failure",
-		Status:     "active",
-		Title:      "Observed task failure",
-		Content:    content,
-		DeviceID:   deviceID,
-		Tags:       append([]string(nil), episode.Tags...),
-		Entities:   append([]string(nil), episode.Entities...),
-		Confidence: 0.8,
-		Priority:   80,
-		TTL:        "60d",
-		UpdatedAt:  now,
-		EvidenceRefs: []MemorySourceRef{
-			{Type: "episode", ID: episode.ID},
-		},
-	})
-	return err
+	return nil
 }
+
+func (p *FilesystemMemoryPlane) recordCoordinateCalibration(ctx context.Context, episode TaskEpisode, deviceID, now string) error {
+	if episodeUsesNormalizedCoordinates(episode.Events) {
+		_, err := p.device.Upsert(ctx, DeviceMemoryItem{
+			ID:           "cal_normalized_coordinates",
+			Type:         "calibration",
+			Status:       "active",
+			Title:        "Prefer normalized coordinates",
+			Content:      "A successful task used normalized coordinates; keep preferring normalized coordinates unless current calibration contradicts it.",
+			DeviceID:     deviceID,
+			Tags:         []string{"calibration", "coordinates"},
+			Confidence:   0.8,
+			Priority:     75,
+			TTL:          "30d",
+			UpdatedAt:    now,
+			EvidenceRefs: []MemorySourceRef{{Type: "episode", ID: episode.ID}},
+		})
+		return err
+	}
+	return nil
+}
+
 
 func (p *FilesystemMemoryPlane) updateReferencedMemoryOutcomes(ctx context.Context, episode TaskEpisode) error {
 	refs := uniqueNonEmpty(episode.RetrievedMemoryRefs)
@@ -738,11 +921,26 @@ func renderMemoryHitLine(hit MemoryHit) string {
 	if hit.Confidence > 0 {
 		attrs = append(attrs, fmt.Sprintf("confidence=%.2f", hit.Confidence))
 	}
+	if hit.PageName != "" {
+		attrs = append(attrs, "page="+hit.PageName)
+	}
 	prefix := "[" + label
 	if len(attrs) > 0 {
 		prefix += " " + strings.Join(attrs, " ")
 	}
 	prefix += "] "
+
+	// procedure/navigation 有 Steps 时做结构化渲染
+	if (hit.Type == "procedure" || hit.Type == "navigation") && len(hit.Steps) > 0 {
+		title := firstNonEmptyString([]string{hit.Title, hit.Summary})
+		stepSummary := summarizeProcedureSteps(hit.Steps, 5)
+		body := title
+		if stepSummary != "" {
+			body += "\n" + stepSummary
+		}
+		return prefix + body
+	}
+
 	body := firstNonEmptyString([]string{hit.Summary, hit.Content, hit.Title})
 	body = strings.ReplaceAll(body, "\n", " ")
 	return prefix + truncateForLog(body, 280)
@@ -1040,3 +1238,21 @@ func appendUniqueString(values []string, value string) []string {
 	}
 	return append(values, value)
 }
+
+func mergeUniqueStrings(a, b []string) []string {
+	out := append([]string(nil), a...)
+	for _, v := range b {
+		out = appendUniqueString(out, v)
+	}
+	return out
+}
+
+func appendUniqueMemoryRef(refs []MemorySourceRef, ref MemorySourceRef) []MemorySourceRef {
+	for _, existing := range refs {
+		if existing.Type == ref.Type && existing.ID == ref.ID {
+			return refs
+		}
+	}
+	return append(refs, ref)
+}
+

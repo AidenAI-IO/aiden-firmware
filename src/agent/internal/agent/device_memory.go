@@ -34,6 +34,8 @@ type DeviceMemoryItem struct {
 	Summary         string            `yaml:"summary,omitempty"`
 	DeviceID        string            `yaml:"device_id,omitempty"`
 	AppID           string            `yaml:"app_id,omitempty"`
+	AppName         string            `yaml:"app_name,omitempty"`
+	PageName        string            `yaml:"page_name,omitempty"`
 	Tags            []string          `yaml:"tags,omitempty"`
 	Entities        []string          `yaml:"entities,omitempty"`
 	Aliases         []string          `yaml:"aliases,omitempty"`
@@ -48,6 +50,29 @@ type DeviceMemoryItem struct {
 	Applicability   map[string]string `yaml:"applicability,omitempty"`
 	EvidenceRefs    []MemorySourceRef `yaml:"evidence_refs,omitempty"`
 	ConflictsWith   []string          `yaml:"conflicts_with,omitempty"`
+
+	// Procedure-specific fields (改进 1): records the exact tool sequence with
+	// per-step parameters and observations so Planner can replay the path.
+	Steps []ProcedureStep `yaml:"steps,omitempty"`
+
+	// App profile累积字段 (改进 5): 跨多次成功 episode 累积该 app 的使用知识。
+	PagesSeen     []string `yaml:"pages_seen,omitempty"`
+	ToolsUsed     []string `yaml:"tools_used,omitempty"`
+	ProcedureRefs []string `yaml:"procedure_refs,omitempty"`
+	KnownIssues   []string `yaml:"known_issues,omitempty"`
+}
+
+// ProcedureStep 记录 procedure 中的一步动作详情，足以让 Planner 复用具体路径
+// 而不只是工具名。坐标和文本来自工具调用参数；OutcomeNote 来自 verifier 紧随
+// 的观察（page_name 变化等）。
+type ProcedureStep struct {
+	Tool        string `yaml:"tool"`
+	Description string `yaml:"description,omitempty"`
+	Coords      string `yaml:"coords,omitempty"`
+	Text        string `yaml:"text,omitempty"`
+	AppName     string `yaml:"app_name,omitempty"`
+	PageName    string `yaml:"page_name,omitempty"`
+	OutcomeNote string `yaml:"outcome_note,omitempty"`
 }
 
 func NewDeviceMemoryStore(rootDir string) *DeviceMemoryStore {
@@ -176,6 +201,30 @@ func (s *DeviceMemoryStore) Update(ctx context.Context, id string, update func(*
 	return nil
 }
 
+// Get returns the stored item with the given ID. The second return value is
+// false when no such item exists (without an error), so callers can decide
+// whether to create a fresh record.
+func (s *DeviceMemoryStore) Get(ctx context.Context, id string) (DeviceMemoryItem, bool, error) {
+	select {
+	case <-ctx.Done():
+		return DeviceMemoryItem{}, false, ctx.Err()
+	default:
+	}
+	if s == nil || s.rootDir == "" || strings.TrimSpace(id) == "" {
+		return DeviceMemoryItem{}, false, nil
+	}
+	items, err := s.readAll()
+	if err != nil {
+		return DeviceMemoryItem{}, false, err
+	}
+	for _, item := range items {
+		if item.ID == id {
+			return item, true, nil
+		}
+	}
+	return DeviceMemoryItem{}, false, nil
+}
+
 func (s *DeviceMemoryStore) readAll() ([]DeviceMemoryItem, error) {
 	if _, err := os.Stat(s.rootDir); err != nil {
 		if os.IsNotExist(err) {
@@ -219,6 +268,10 @@ func (s *DeviceMemoryStore) itemPath(item DeviceMemoryItem) string {
 		return filepath.Join(s.rootDir, "apps", safePathName(item.ID)+".yaml")
 	case "procedure":
 		return filepath.Join(s.rootDir, "procedures", safePathName(item.ID)+".yaml")
+	case "navigation":
+		return filepath.Join(s.rootDir, "navigation", safePathName(item.ID)+".yaml")
+	case "ui_anchor":
+		return filepath.Join(s.rootDir, "ui_anchors", safePathName(item.ID)+".yaml")
 	case "calibration":
 		return filepath.Join(s.rootDir, "calibration", safePathName(item.ID)+".yaml")
 	case "failure":
@@ -243,6 +296,9 @@ func deviceMemoryToHit(item DeviceMemoryItem) MemoryHit {
 		Source:        "device",
 		Applicability: cloneStringMap(item.Applicability),
 		EvidenceRefs:  append([]MemorySourceRef(nil), item.EvidenceRefs...),
+		Steps:         append([]ProcedureStep(nil), item.Steps...),
+		AppName:       item.AppName,
+		PageName:      item.PageName,
 	}
 }
 

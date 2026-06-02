@@ -561,3 +561,156 @@ planner prompt 拼 `memory.Planner` 和 `memory.Common`，verifier prompt 拼 `m
 - 过期、冲突、适用条件不匹配的记忆不会进入 planner 普通经验。
 - 任务失败也会产生 episode，并能提取可检索的 failure memory。
 - 写入 memory 失败不会让用户任务失败，但必须有日志。
+
+---
+
+## 实现进展 (2026-06-02)
+
+### 已完成：第一阶段 + 第二阶段核心
+
+#### Episode 记录与检索 (第一阶段)
+
+✅ 已实现完整的 episode 记录：
+- `TaskEpisodeStore` 和 `EpisodeRecorder` 完整实现
+- 记录 planner/tool/verifier trace，生成结构化 `events.jsonl`
+- `MemoryPlane.Retrieve` 从 `long_term`、`device`、`episodes` 召回并按角色分流
+- planner/verifier 分角色注入 retrieved context
+
+#### 设备记忆类型 (第二阶段核心)
+
+✅ 已实现所有设备记忆类型：
+
+**1. Device Profile**  
+- 自动记录屏幕尺寸、语言等设备信息
+- 从 episode 中推断并更新 device profile
+
+**2. App Profile（增强版）**  
+- **累积式更新**：跨多次 episode 积累 `pages_seen`、`tools_used`、`success_count`
+- **失败追踪**：记录 `known_issues` 列表
+- **可读内容**：渲染为 "Pages observed: 首页, 购物车 / Tools used: launch_app, touch_gesture"
+- 支持 ASCII 安全路径（处理中文 app 名）
+
+**3. Procedure（增强版）**  
+- **动作详情存储**：新增 `ProcedureStep` 结构，记录每步的：
+  - 工具名、description（从 tool_call arguments 自动提取）
+  - 坐标（`x=0.50,y=0.85`）、输入文本
+  - app_name、page_name、outcome_note
+- **按页面索引**：procedure ID 改为 `proc_<hash(app, page, goal)>`，page_name 进入 entities/tags
+- **结构化渲染**：在 prompt 中展开前 5 步，显示完整操作路径
+
+**4. Navigation Memory（新增）**  
+- 抽取**页面间转移规则**：`美团/首页 → 美团/购物车`
+- 记录工具、坐标、描述，与具体任务目标解耦
+- 与 procedure 同级路由到 Planner
+
+**5. Calibration Memory**  
+- 记录归一化坐标偏好等校准信息
+- 带 applicability 条件和 evidence refs
+
+**6. Failure Memory**  
+- 失败时写入 failure 类型记忆
+- 路由到 Verifier 提示已知失败模式
+
+#### 数据抽取能力
+
+新增 `episode_extraction.go`，提供完整的 episode 事件解析：
+
+- **工具调用解析**：
+  - `extractToolCallDescription`：从 JSON 提取 description 字段
+  - `extractToolCallCoords`：解析 tap/swipe 坐标
+  - `extractToolCallText`：提取输入文本参数
+
+- **步骤抽取**：
+  - `episodeProcedureSteps`：配对 tool_call 与 tool_result，吸收 verifier observed_state
+  - `summarizeProcedureSteps`：生成 LLM 友好的多行摘要
+
+- **统计分析**：
+  - `observedPagesByApp`：收集每个 app 出现过的页面
+  - `observedToolsByApp`：统计每个 app 用到的工具
+  - `pageTransitions`：抽取页面转移规则
+
+#### 检索与渲染
+
+- ✅ `routeHit`：按 memory 类型路由到 Planner/Verifier 的不同字段
+- ✅ `renderMemoryHitLine`：procedure/navigation 展开 Steps 渲染
+- ✅ `RenderForRole`：按角色生成不同的 memory context
+
+#### 目录结构
+
+已实现完整目录布局：
+```
+memory/device/
+├── profile.yaml           # 设备 profile
+├── apps/                  # app profile（累积更新）
+├── procedures/            # 任务 procedure（带 Steps）
+├── navigation/            # 页面转移规则 (新增)
+├── calibration/
+└── failures/
+
+memory/episodes/
+├── index.yaml
+└── <yyyy>/<episode_id>/
+    ├── episode.yaml
+    └── events.jsonl
+```
+
+#### 测试覆盖
+
+新增 `device_memory_enhancements_test.go`，覆盖：
+- ✅ Procedure Steps 提取、坐标解析、description 保留
+- ✅ Page_name 索引和 entities 包含 page
+- ✅ Navigation 规则抽取
+- ✅ App profile 跨 episode 累积
+- ✅ 失败时记录 known_issues
+
+所有既有测试通过。
+
+### 待完成：第三阶段 + 第四阶段
+
+#### 冲突与生命周期 (第三阶段)
+
+🔲 基础字段已添加（`success_count`、`failure_count`、`conflicts_with`、`last_validated_at`），但自动冲突检测逻辑待增强：
+- ⏳ 根据多次失败自动标记 conflicted
+- ⏳ 检索时硬过滤 conflicted/expired memory
+- ⏳ 更新已引用 memory 的 confidence（部分实现在 `updateReferencedMemoryOutcomes`）
+
+#### Benchmark (第四阶段)
+
+🔲 待增加自动化 benchmark：
+- ⏳ 同类任务第二次执行减少工具步数
+- ⏳ 失败经验防止 verifier 误判
+- ⏳ 设备环境变化后旧经验不污染
+
+### 变更文件
+
+| 文件 | 变更内容 |
+|------|---------|
+| `device_memory.go` | 扩展 `DeviceMemoryItem`（Steps、AppName、PageName、PagesSeen、ToolsUsed、KnownIssues）；新增 `ProcedureStep`；新增 `Get()` 方法；支持 navigation/ui_anchor 目录 |
+| `memory_plane.go` | 重写 `extractDeviceLessons`，新增 6 个辅助函数；扩展 `routeHit` 和 `renderMemoryHitLine`；新增 `mergeUniqueStrings`、`appendUniqueMemoryRef` |
+| `task_episode.go` | `TaskEpisodeEvent` 新增 `ToolDescription`；`RecordExecution` 提取 description |
+| `episode_extraction.go` | **新文件**：完整的工具调用解析、步骤抽取、页面/工具统计、转移规则抽取 |
+| `device_memory_enhancements_test.go` | **新文件**：5 个测试用例覆盖全部增强点 |
+
+### 效果对比
+
+| 场景 | 设计目标 | 当前实现 |
+|------|---------|---------|
+| 相似任务复用 | "在美团点蜜雪冰城"后再执行"在美团点星巴克"能复用导航 | ✅ 命中"美团/首页→购物车"navigation + "购物车"页 procedure |
+| Planner 看到的 procedure | 详细的步骤、坐标、页面转移 | ✅ "step 1: launch_app(美团)→首页 / step 2: touch_gesture(@0.5,0.85)→购物车" |
+| App 先验知识 | 首次使用某 app 能看到常用页面和工具 | ✅ app_profile 累积 pages_seen、tools_used |
+| 失败经验追踪 | 失败模式进入 verifier | ✅ failure memory 路由到 Verifier.FailureModes |
+| 页面级索引 | 按 page_name 检索 procedure | ✅ procedure ID 包含 page，page_name 在 entities/tags |
+
+### 与设计文档的差异
+
+1. **UI Anchor 未实现**：预留了目录和类型，但尚未实现"从成功 tap 累积归一化坐标"逻辑
+2. **冲突检测部分实现**：基础字段齐全，自动检测逻辑在 `updateReferencedMemoryOutcomes` 有部分实现，需进一步完善
+3. **Query Normalizer 简化**：当前直接用关键词匹配 + inferEpisodeApps，未引入独立的 LLM query normalizer
+
+### 下一步优化方向
+
+1. **UI anchor 实现**：从成功的 tap 中累积归一化坐标，记录"某 app/page 下某元素通常在 (x,y)"
+2. **增强冲突检测**：设备环境变化（语言/分辨率）时主动降低旧 procedure 的 confidence
+3. **语义检索**：接入轻量 embedding 提高召回精度
+4. **Benchmark 覆盖**：验证 memory 对任务成功率和步数的实际影响
+

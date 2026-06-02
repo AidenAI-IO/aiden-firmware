@@ -69,6 +69,7 @@ type TaskEpisodeEvent struct {
 	NextStep           string              `json:"next_step,omitempty" yaml:"next_step,omitempty"`
 	ToolName           string              `json:"tool_name,omitempty" yaml:"tool_name,omitempty"`
 	ToolInput          string              `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
+	ToolDescription    string              `json:"tool_description,omitempty" yaml:"tool_description,omitempty"`
 	Content            string              `json:"content,omitempty" yaml:"content,omitempty"`
 	Observation        string              `json:"observation,omitempty" yaml:"observation,omitempty"`
 	ScreenshotRef      string              `json:"screenshot_ref,omitempty" yaml:"screenshot_ref,omitempty"`
@@ -177,11 +178,13 @@ func (r *EpisodeRecorder) RecordExecution(result roleExecutionResult) {
 		})
 	}
 	if result.Action != nil {
+		input := normalizeToolInput(result.Action.ToolInput)
 		r.append(TaskEpisodeEvent{
-			Type:      "tool_call",
-			Role:      string(RoleExecutor),
-			ToolName:  result.Action.Tool,
-			ToolInput: normalizeToolInput(result.Action.ToolInput),
+			Type:            "tool_call",
+			Role:            string(RoleExecutor),
+			ToolName:        result.Action.Tool,
+			ToolInput:       input,
+			ToolDescription: extractToolCallDescription(input),
 		})
 	}
 	if result.Step != nil {
