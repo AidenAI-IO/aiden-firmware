@@ -58,6 +58,7 @@ docker_run_args=(
   -u 0:0
   --rm
   -e OTA_PUBLIC_KEY_PATH
+  -e TAR_OPTIONS=--no-same-owner
 )
 if [ "${#docker_go_args[@]}" -gt 0 ]; then
   docker_run_args+=("${docker_go_args[@]}")

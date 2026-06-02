@@ -102,7 +102,7 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
-TEST_CASE("config web persists proxy through system env") {
+TEST_CASE("config web exposes a single system env editor backed by the env file") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
     REQUIRE(source_in.good());
@@ -128,12 +128,15 @@ TEST_CASE("config web persists proxy through system env") {
     const std::string parser = parser_buffer.str();
 
     CHECK(source.find("system_env_path = \"/userdata/system/env\"") != std::string::npos);
-    CHECK(source.find("using SystemProxy = aiden::SystemEnvProxy") != std::string::npos);
-    CHECK(source.find("load_system_env_proxy") != std::string::npos);
-    CHECK(source.find("save_system_env_with_proxy") != std::string::npos);
+    CHECK(source.find("save_system_env_with_proxy") == std::string::npos);
+    CHECK(source.find("cJSON* proxy = add_object(root, \"proxy\")") == std::string::npos);
+    CHECK(source.find("SystemProxy* system_proxy") == std::string::npos);
+    CHECK(source.find("section == \"proxy\"") == std::string::npos);
+    CHECK(source.find("proxy_keys") == std::string::npos);
     CHECK(source.find("clear_agent_proxy_for_system_env") == std::string::npos);
     CHECK(source.find("loaded.proxy") == std::string::npos);
     CHECK(source.find("\"system_env\"") != std::string::npos);
+    CHECK(source.find("read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize)") != std::string::npos);
     CHECK(source.find("--system-env=") != std::string::npos);
     CHECK(source.find("load_system_env_proxy(tmp_template") == std::string::npos);
     CHECK(source.find("sh -n") == std::string::npos);
@@ -147,6 +150,13 @@ TEST_CASE("config web persists proxy through system env") {
     CHECK(html.find("system_env") != std::string::npos);
     CHECK(html.find("system_env_content") != std::string::npos);
     CHECK(html.find("saveSystemEnv") != std::string::npos);
+    CHECK(html.find("system_proxy") == std::string::npos);
+    CHECK(html.find("section-proxy") == std::string::npos);
+    CHECK(html.find("proxy_http_proxy") == std::string::npos);
+    CHECK(html.find("proxy:[[") == std::string::npos);
+    CHECK(html.find("Proxy example") == std::string::npos);
+    CHECK(html.find("http_proxy=http://127.0.0.1:7890") == std::string::npos);
+    CHECK(html.find("NO_PROXY=localhost,127.0.0.1,::1") == std::string::npos);
 }
 
 TEST_CASE("config web restarts ota only when system env changes") {
@@ -166,5 +176,5 @@ TEST_CASE("config web restarts ota only when system env changes") {
     CHECK(source.find("if (system_env_changed)") != std::string::npos);
     CHECK(source.find("system env saved; services restarting") != std::string::npos);
     CHECK(source.find("config saved; agent restarting") != std::string::npos);
-    CHECK(source.find("config saved; agent and ota restarting") != std::string::npos);
+    CHECK(source.find("config saved; agent and ota restarting") == std::string::npos);
 }

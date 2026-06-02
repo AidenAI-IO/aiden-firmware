@@ -50,8 +50,7 @@ config_web [--bind=IP] [--port=PORT] [--config=PATH] [--wifi-config=PATH] [--sys
 - `tts`：provider、api_key、model、voice_id、emotion、speed
 - `audio`：socket、sample_rate、channels、bit_width
 - `hid`：keyboard_device、mouse_device、frame_socket
-- `system_proxy`: HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, and NO_PROXY values written to `/userdata/system/env`
-- `system_env`: general shell-style environment text written to `/userdata/system/env`
+- `env`: shell-style environment text written to `/userdata/system/env`, including optional proxy variables such as `http_proxy`, `HTTPS_PROXY`, and `NO_PROXY`
 - Wi-Fi：SSID / PSK 等（写入 `/userdata/wpa_supplicant.conf`）
 
 ## Runtime apply behavior
