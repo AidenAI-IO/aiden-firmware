@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -74,7 +75,11 @@ func main() {
 
 	fmt.Printf("🚀 Aiden Agent daemon starting on %s\n", *addr)
 	fmt.Printf("📂 Config directory: %s\n", *configDir)
-	fmt.Printf("🌐 Web UI: http://localhost%s\n", *addr)
+	if _, port, err := net.SplitHostPort(*addr); err == nil && port != "" {
+		fmt.Printf("🌐 Web UI: http://localhost:%s\n", port)
+	} else {
+		fmt.Printf("🌐 Web UI: http://localhost%s\n", *addr)
+	}
 	fmt.Printf("📝 Logs: %s/log/\n", *configDir)
 
 	if err := server.Start(); err != nil {
