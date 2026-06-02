@@ -23,10 +23,23 @@ jobs:
     runs-on: ${{ inputs.runner }}
 
     steps:
+    # Self-hosted runners reuse the workspace across runs. The pico-sdk
+    # submodule has a malformed nested entry (sysdrv/tools/board/ubuntu is a
+    # gitlink with no .gitmodules URL), which makes actions/checkout's
+    # "git submodule foreach --recursive" auth step fail. Deinitializing all
+    # submodules before checkout avoids that recursion. Harmless on hosted
+    # runners where the workspace is empty.
+    - name: Clean leftover submodule state
+      continue-on-error: true
+      run: |
+        cd "${{ github.workspace }}" 2>/dev/null || exit 0
+        git submodule deinit --all -f 2>/dev/null || true
+
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         submodules: false
+        clean: true
 
     - name: Fetch pico-sdk submodule
       run: git submodule update --init --depth=1 pico-sdk
