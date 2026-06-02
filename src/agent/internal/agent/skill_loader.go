@@ -76,7 +76,8 @@ func (idx *SkillIndex) scanDirectory(dir string) error {
 
 		skill, err := loadSkillMetadata(path)
 		if err != nil {
-			return fmt.Errorf("load skill from %q: %w", path, err)
+			log.Printf("[skill_loader] skipping %q: %v", path, err)
+			return nil
 		}
 
 		if _, exists := idx.skills[skill.Name]; exists {
