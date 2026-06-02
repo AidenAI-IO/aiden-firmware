@@ -14,6 +14,14 @@ class FailingToolClient:
         raise AgentRequestError("HTTP 404: unknown tool")
 
 
+class FailingClearHistoryClient:
+    def chat(self, message, timeout_sec=None):
+        return None
+
+    def clear_history(self):
+        raise AgentRequestError("HTTP 500: clear failed")
+
+
 class RecordingSetupClient:
     def __init__(self):
         self.calls = []
@@ -37,6 +45,13 @@ def test_tool_sequence_wraps_tool_errors_as_reset_error():
 
     with pytest.raises(ResetError, match="tool missing_tool failed"):
         per_task_setup(FailingToolClient(), setup)
+
+
+def test_agent_prompt_setup_wraps_clear_history_errors_as_reset_error():
+    setup = {"type": "agent_prompt", "prompt": "remember this", "timeout_sec": 5}
+
+    with pytest.raises(ResetError, match="setup agent_prompt clear_history failed"):
+        per_task_setup(FailingClearHistoryClient(), setup)
 
 
 def test_agent_prompt_setup_clears_history_by_default():
