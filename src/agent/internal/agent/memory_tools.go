@@ -54,8 +54,8 @@ func (t *RecallSessionChunksTool) Call(ctx context.Context, input string) (strin
 	if t.store == nil {
 		return "", fmt.Errorf("session memory store is not configured")
 	}
-	var query ChunkRecallQuery
-	if err := json.Unmarshal([]byte(input), &query); err != nil {
+	query, err := decodeChunkRecallQuery(input)
+	if err != nil {
 		return "", fmt.Errorf("decode recall_session_chunks input: %w", err)
 	}
 	results, err := t.store.RecallChunks(ctx, query)
@@ -90,8 +90,8 @@ func (t *RecallMemoryTool) Call(ctx context.Context, input string) (string, erro
 	if t.store == nil {
 		return "", fmt.Errorf("long-term memory store is not configured")
 	}
-	var query MemoryQuery
-	if err := json.Unmarshal([]byte(input), &query); err != nil {
+	query, err := decodeMemoryQuery(input)
+	if err != nil {
 		return "", fmt.Errorf("decode recall_memory input: %w", err)
 	}
 	results, err := t.store.Search(ctx, query)
@@ -242,8 +242,8 @@ func (t *RecallDeviceMemoryTool) Call(ctx context.Context, input string) (string
 	if t.store == nil {
 		return "", fmt.Errorf("device memory store is not configured")
 	}
-	var query DeviceMemoryQuery
-	if err := json.Unmarshal([]byte(input), &query); err != nil {
+	query, err := decodeDeviceMemoryQuery(input)
+	if err != nil {
 		return "", fmt.Errorf("decode recall_device_memory input: %w", err)
 	}
 	results, err := t.store.Search(ctx, query)
