@@ -353,6 +353,9 @@ func (s *TaskEpisodeStore) AddEpisode(ctx context.Context, episode TaskEpisode) 
 			return "", err
 		}
 	}
+	if inferred := inferEpisodeFinalState(events); inferred != "" {
+		episode.Outcome.FinalState = inferred
+	}
 	episode.Events = nil
 	if err := writeYAMLAtomic(filepath.Join(dir, "episode.yaml"), episode); err != nil {
 		return "", fmt.Errorf("write episode metadata: %w", err)
@@ -760,10 +763,36 @@ func inferEpisodeFinalState(events []TaskEpisodeEvent) string {
 	for i := len(events) - 1; i >= 0; i-- {
 		evt := events[i]
 		if evt.Type == "tool_result" && strings.TrimSpace(evt.Observation) != "" {
-			return compactToolObservation(evt.Observation)
+			return compactEpisodeObservation(evt.Observation)
 		}
 	}
 	return ""
+}
+
+func compactEpisodeObservation(observation string) string {
+	observation = strings.TrimSpace(observation)
+	if observation == "" {
+		return ""
+	}
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(observation), &result); err == nil && result.Data != "" {
+		format := strings.TrimSpace(result.Format)
+		if format == "" {
+			format = "jpeg"
+		}
+		compact := map[string]interface{}{
+			"width":  result.Width,
+			"height": result.Height,
+			"format": format,
+			"size":   result.Size,
+		}
+		if strings.TrimSpace(result.ActionOutput) != "" {
+			compact["action_output"] = strings.TrimSpace(result.ActionOutput)
+		}
+		data, _ := json.Marshal(compact)
+		return string(data)
+	}
+	return compactToolObservation(observation)
 }
 
 func inferReusableLessons(episode TaskEpisode) []string {

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -242,6 +243,56 @@ func TestRuntimeRunWritesTaskEpisodeTrace(t *testing.T) {
 	appFiles, err := filepath.Glob(filepath.Join(memoryDir, "device", "apps", "*.yaml"))
 	if err != nil || len(appFiles) != 1 {
 		t.Fatalf("expected extracted app profile, paths=%#v err=%v", appFiles, err)
+	}
+}
+
+func TestTaskEpisodeIndexSummaryOmitsScreenshotBase64(t *testing.T) {
+	ctx := context.Background()
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	store := NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
+	image := base64.StdEncoding.EncodeToString([]byte("jpeg bytes"))
+
+	if _, err := store.AddEpisode(ctx, TaskEpisode{
+		ID:        "ep_screenshot_summary",
+		Status:    "active",
+		StartedAt: "2026-06-02T00:00:00Z",
+		EndedAt:   "2026-06-02T00:00:10Z",
+		UserGoal:  "截图任务",
+		Outcome: TaskEpisodeOutcome{
+			Success:    true,
+			FinalState: `{"width":447,"height":972,"format":"jpeg","size":29392,"data":"` + image + `"}`,
+		},
+		Events: []TaskEpisodeEvent{
+			{
+				EventID:        "evt_tool",
+				Type:           "tool_call",
+				ToolName:       "screenshot",
+				RawObservation: "",
+			},
+			{
+				EventID:        "evt_result",
+				Type:           "tool_result",
+				ToolName:       "screenshot",
+				Observation:    `{"width":447,"height":972,"format":"jpeg","size":29392,"data":"` + image + `"}`,
+				RawObservation: `{"width":447,"height":972,"format":"jpeg","size":29392,"data":"` + image + `"}`,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("AddEpisode: %v", err)
+	}
+
+	for _, rel := range []string{
+		filepath.Join("episodes", "index.yaml"),
+		filepath.Join("episodes", "2026", "ep_screenshot_summary", "episode.yaml"),
+		filepath.Join("episodes", "2026", "ep_screenshot_summary", "events.jsonl"),
+	} {
+		data, err := os.ReadFile(filepath.Join(memoryDir, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		if strings.Contains(string(data), `"data"`) || strings.Contains(string(data), image) {
+			t.Fatalf("%s should not contain screenshot base64:\n%s", rel, data)
+		}
 	}
 }
 
