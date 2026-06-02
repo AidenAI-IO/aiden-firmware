@@ -1,25 +1,38 @@
-name: Build All
+name: Build (reusable)
 
 on:
-  schedule:
-    - cron: '0 0 * * *'  # Run at 00:00 UTC every day
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'Runner to execute the build on (runs-on value)'
+        type: string
+        required: true
+      free_disk_space:
+        description: 'Free up disk space before building (hosted runners only)'
+        type: boolean
+        default: false
+    secrets:
+      OTA_ED25519_PRIVATE_KEY:
+        required: true
 
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        submodules: false
 
     - name: Fetch pico-sdk submodule
       run: git submodule update --init --depth=1 pico-sdk
 
     - name: Free hosted runner disk space
+      if: ${{ inputs.free_disk_space }}
       run: |
         df -h
         sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
@@ -27,9 +40,6 @@ jobs:
         sudo apt-get clean
         docker system prune -af || true
         df -h
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
 
     - name: Set up Go
       uses: actions/setup-go@v5
@@ -67,7 +77,6 @@ jobs:
 
     - name: Run build script
       run: ./build_image.sh
-
     - name: Generate OTA manifest
       env:
         OTA_ED25519_PRIVATE_KEY: ${{ secrets.OTA_ED25519_PRIVATE_KEY }}

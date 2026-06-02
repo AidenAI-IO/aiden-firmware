@@ -123,7 +123,6 @@ const int kClientReadTimeoutSeconds = 5;
 const char* kDefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
 const int kSystemEnvCommandTimeoutMs = 1500;
 const size_t kMaxSystemEnvSize = 64 * 1024;
-const char* kManagedSystemProxyComment = "# Managed by config_web: system proxy";
 
 std::string read_file_contents(const char* path, size_t max_size);
 std::string validate_proxy_url(const std::string& url);
@@ -778,7 +777,7 @@ void load_current_wifi_config(const Options& options,
     }
 }
 
-cJSON* config_to_json(const aiden::AgentToml& config, const SystemProxy& system_proxy) {
+cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON* root = cJSON_CreateObject();
 
     cJSON* model = add_object(root, "model");
@@ -827,12 +826,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, const SystemProxy& system_
     cJSON_AddStringToObject(hid, "keyboard_device", config.hid.keyboard_device.c_str());
     cJSON_AddStringToObject(hid, "mouse_device", config.hid.mouse_device.c_str());
     cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
-
-    cJSON* proxy = add_object(root, "proxy");
-    cJSON_AddStringToObject(proxy, "http_proxy", system_proxy.http_proxy.c_str());
-    cJSON_AddStringToObject(proxy, "https_proxy", system_proxy.https_proxy.c_str());
-    cJSON_AddStringToObject(proxy, "all_proxy", system_proxy.all_proxy.c_str());
-    cJSON_AddStringToObject(proxy, "no_proxy", system_proxy.no_proxy.c_str());
 
     cJSON* search = add_object(root, "search");
     cJSON_AddStringToObject(search, "provider", config.search.provider.c_str());
@@ -949,7 +942,7 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_int(&m->max_tokens, obj, "max_tokens");
 }
 
-void update_config_from_json(cJSON* root, aiden::AgentToml* config, SystemProxy* system_proxy) {
+void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     if (!root || !config) {
         return;
     }
@@ -992,14 +985,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config, SystemProxy*
         set_json_str(&config->hid.keyboard_device, hid, "keyboard_device");
         set_json_str(&config->hid.mouse_device, hid, "mouse_device");
         set_json_str(&config->hid.frame_socket, hid, "frame_socket");
-    }
-
-    cJSON* proxy = cJSON_GetObjectItem(root, "proxy");
-    if (json_is_object(proxy) && system_proxy) {
-        set_json_str(&system_proxy->http_proxy, proxy, "http_proxy");
-        set_json_str(&system_proxy->https_proxy, proxy, "https_proxy");
-        set_json_str(&system_proxy->all_proxy, proxy, "all_proxy");
-        set_json_str(&system_proxy->no_proxy, proxy, "no_proxy");
     }
 
     cJSON* search = cJSON_GetObjectItem(root, "search");
@@ -1442,64 +1427,6 @@ bool save_system_env_content(const std::string& path,
     return atomic_write_file(path, content, 0600, error);
 }
 
-void append_system_env_assignment(std::ostringstream& out,
-                                  const char* key,
-                                  const std::string& value) {
-    std::string trimmed = trim_copy(value);
-    if (trimmed.empty()) {
-        return;
-    }
-    out << key << "=" << shell_quote(trimmed) << "\n";
-}
-
-std::string render_system_proxy_env_block(SystemProxy proxy) {
-    if (has_proxy_url(proxy) && trim_copy(proxy.no_proxy).empty()) {
-        proxy.no_proxy = kDefaultNoProxy;
-    }
-    if (!has_proxy_url(proxy) && trim_copy(proxy.no_proxy).empty()) {
-        return "";
-    }
-
-    std::ostringstream out;
-    out << kManagedSystemProxyComment << "\n";
-    append_system_env_assignment(out, "http_proxy", proxy.http_proxy);
-    append_system_env_assignment(out, "HTTP_PROXY", proxy.http_proxy);
-    append_system_env_assignment(out, "https_proxy", proxy.https_proxy);
-    append_system_env_assignment(out, "HTTPS_PROXY", proxy.https_proxy);
-    append_system_env_assignment(out, "all_proxy", proxy.all_proxy);
-    append_system_env_assignment(out, "ALL_PROXY", proxy.all_proxy);
-    append_system_env_assignment(out, "no_proxy", proxy.no_proxy);
-    append_system_env_assignment(out, "NO_PROXY", proxy.no_proxy);
-    return out.str();
-}
-
-bool save_system_env_with_proxy(const std::string& path,
-                                const SystemProxy& proxy,
-                                std::string* error) {
-    if (!validate_system_proxy_values(proxy, error)) {
-        return false;
-    }
-
-    std::string existing = read_file_contents(path.c_str(), kMaxSystemEnvSize);
-    std::string content;
-    if (!aiden::render_system_env_without_proxy_assignments(
-            existing,
-            kManagedSystemProxyComment,
-            &content,
-            error)) {
-        return false;
-    }
-
-    std::string block = render_system_proxy_env_block(proxy);
-    if (!block.empty()) {
-        if (!content.empty() && content[content.size() - 1] != '\n') {
-            content.push_back('\n');
-        }
-        content += block;
-    }
-    return save_system_env_content(path, content, error);
-}
-
 std::string read_file_tail(const char* path, size_t max_size) {
     FILE* f = fopen(path, "r");
     if (!f) {
@@ -1925,18 +1852,16 @@ cJSON* firmware_info_to_json(const Options& options) {
 ApiResponse handle_get_config(const Options& options) {
     aiden::AgentToml config;
     aiden::WifiNetworkConfig wifi;
-    SystemProxy system_proxy;
     WifiRuntimeStatus wifi_status = query_wifi_status(options);
     AgentRuntimeStatus agent_status = query_agent_status();
     std::string config_error;
     std::string wifi_error;
     load_current_agent_config(options, &config, &config_error);
     load_current_wifi_config(options, &wifi, &wifi_error);
-    load_system_env_proxy(options.system_env_path, &system_proxy);
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
-    cJSON_AddItemToObject(root, "config", config_to_json(config, system_proxy));
+    cJSON_AddItemToObject(root, "config", config_to_json(config));
     cJSON_AddItemToObject(root, "wifi", wifi_to_json(wifi));
     cJSON_AddItemToObject(root, "wifi_status", wifi_status_to_json(wifi_status));
     cJSON_AddItemToObject(root, "agent_status", agent_status_to_json(agent_status));
@@ -2024,15 +1949,13 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
 
     aiden::AgentToml config;
     aiden::WifiNetworkConfig wifi;
-    SystemProxy system_proxy;
     std::string ignore_error;
     load_current_agent_config(options, &config, &ignore_error);
     load_current_wifi_config(options, &wifi, &ignore_error);
-    load_system_env_proxy(options.system_env_path, &system_proxy);
 
     cJSON* config_json = cJSON_GetObjectItem(root, "config");
     if (json_is_object(config_json)) {
-        update_config_from_json(config_json, &config, &system_proxy);
+        update_config_from_json(config_json, &config);
     }
 
     cJSON* wifi_json = cJSON_GetObjectItem(root, "wifi");
@@ -2055,12 +1978,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
 
     cJSON_Delete(root);
 
-    std::string original_system_env = read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize);
     std::string save_error;
-    if (!save_system_env_with_proxy(options.system_env_path, system_proxy, &save_error)) {
-        return make_json_error(400, save_error);
-    }
-
     if (!aiden::save_agent_toml(options.agent_config_path.c_str(), config, &save_error)) {
         return make_json_error(500, save_error);
     }
@@ -2070,21 +1988,14 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         return make_json_error(500, save_error);
     }
 
-    std::string updated_system_env = read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize);
-    bool system_env_changed = original_system_env != updated_system_env;
     schedule_agent_restart();
-    if (system_env_changed) {
-        schedule_ota_restart();
-    }
 
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddStringToObject(response, "message",
-                            system_env_changed ? "config saved; agent and ota restarting"
-                                               : "config saved; agent restarting");
+    cJSON_AddStringToObject(response, "message", "config saved; agent restarting");
     cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
-    cJSON_AddBoolToObject(response, "ota_restart_scheduled", system_env_changed ? 1 : 0);
-    cJSON_AddItemToObject(response, "config", config_to_json(config, system_proxy));
+    cJSON_AddBoolToObject(response, "ota_restart_scheduled", 0);
+    cJSON_AddItemToObject(response, "config", config_to_json(config));
 
     cJSON* paths = add_object(response, "paths");
     cJSON_AddStringToObject(paths, "agent_config", options.agent_config_path.c_str());
@@ -2256,10 +2167,6 @@ std::string validate_proxy_url(const std::string& url) {
     return aiden::validate_system_proxy_url(url);
 }
 
-bool is_valid_proxy_scheme(const std::string& url) {
-    return validate_proxy_url(url).empty();
-}
-
 std::string provider_default_url(const std::string& provider) {
     if (provider == "openrouter") return "https://openrouter.ai/api/v1";
     if (provider == "openai" || provider == "openai-whisper") return "https://api.openai.com/v1";
@@ -2344,28 +2251,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     std::string curl_proxy_arg = build_curl_proxy_arg(current_proxy);
     std::string curl_env_exports = build_proxy_env_exports(current_proxy);
 
-    if (section == "proxy") {
-        const char* proxy_keys[] = {"http_proxy", "https_proxy", "all_proxy", NULL};
-        for (int i = 0; proxy_keys[i]; ++i) {
-            cJSON* item = cJSON_GetObjectItem(values, proxy_keys[i]);
-            std::string val = json_is_string(item) ? trim_copy(item->valuestring) : "";
-            cJSON* r = cJSON_CreateObject();
-            cJSON_AddStringToObject(r, "check", proxy_keys[i]);
-            if (val.empty()) {
-                cJSON_AddBoolToObject(r, "passed", 1);
-                cJSON_AddStringToObject(r, "detail", "empty (ok)");
-            } else if (validate_proxy_url(val).empty()) {
-                cJSON_AddBoolToObject(r, "passed", 1);
-                cJSON_AddStringToObject(r, "detail", val.c_str());
-            } else {
-                cJSON_AddBoolToObject(r, "passed", 0);
-                std::string msg = validate_proxy_url(val) + ": " + val;
-                cJSON_AddStringToObject(r, "detail", msg.c_str());
-                all_passed = false;
-            }
-            cJSON_AddItemToArray(results, r);
-        }
-    } else if (section == "model" || section == "tts" || section == "stt") {
+    if (section == "model" || section == "tts" || section == "stt") {
         cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
         cJSON* base_url_item = cJSON_GetObjectItem(values, "base_url");
         std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
