@@ -1,8 +1,6 @@
 package agent
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -27,47 +25,66 @@ func TestConfigValidateAcceptsAudioWakeup(t *testing.T) {
 	}
 }
 
-func TestLoadConfigDefaultsNoProxyWhenProxyConfigured(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.toml")
-	if err := os.WriteFile(path, []byte(`
-[model]
-provider = "fake"
+func TestProxyConfigFromEnvironment(t *testing.T) {
+	t.Setenv("http_proxy", "http://proxy.example:18080")
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("https_proxy", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("all_proxy", "")
+	t.Setenv("ALL_PROXY", "")
+	t.Setenv("no_proxy", "")
+	t.Setenv("NO_PROXY", "")
 
-[proxy]
-https_proxy = "http://proxy.example:18443"
-`), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+	proxy := ProxyConfigFromEnvironment()
+	if proxy.HTTPProxy != "http://proxy.example:18080" {
+		t.Fatalf("HTTPProxy = %q", proxy.HTTPProxy)
 	}
-
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
-	}
-	if cfg.Proxy.NoProxy != DefaultNoProxy {
-		t.Fatalf("Proxy.NoProxy = %q, want %q", cfg.Proxy.NoProxy, DefaultNoProxy)
+	if proxy.NoProxy != DefaultNoProxy {
+		t.Fatalf("NoProxy = %q, want default", proxy.NoProxy)
 	}
 }
 
-func TestLoadConfigKeepsNoProxyEmptyWithoutProxyURL(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.toml")
-	if err := os.WriteFile(path, []byte(`
-[model]
-provider = "fake"
+func TestProxyConfigFromEnvironmentPrefersUppercase(t *testing.T) {
+	t.Setenv("http_proxy", "http://lower.example:18080")
+	t.Setenv("HTTP_PROXY", "http://upper.example:18080")
+	t.Setenv("https_proxy", "http://lower.example:18081")
+	t.Setenv("HTTPS_PROXY", "http://upper.example:18081")
+	t.Setenv("all_proxy", "http://lower.example:18082")
+	t.Setenv("ALL_PROXY", "http://upper.example:18082")
+	t.Setenv("no_proxy", "lower.example")
+	t.Setenv("NO_PROXY", "upper.example")
 
-[proxy]
-no_proxy = ""
-`), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+	proxy := ProxyConfigFromEnvironment()
+	if proxy.HTTPProxy != "http://upper.example:18080" {
+		t.Fatalf("HTTPProxy = %q, want uppercase value", proxy.HTTPProxy)
 	}
+	if proxy.HTTPSProxy != "http://upper.example:18081" {
+		t.Fatalf("HTTPSProxy = %q, want uppercase value", proxy.HTTPSProxy)
+	}
+	if proxy.AllProxy != "http://upper.example:18082" {
+		t.Fatalf("AllProxy = %q, want uppercase value", proxy.AllProxy)
+	}
+	if proxy.NoProxy != "upper.example" {
+		t.Fatalf("NoProxy = %q, want uppercase value", proxy.NoProxy)
+	}
+}
 
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
+func TestProxyConfigFromEnvironmentPreservesRawWhitespace(t *testing.T) {
+	t.Setenv("HTTP_PROXY", " http://proxy.example:18080")
+	t.Setenv("http_proxy", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("https_proxy", "")
+	t.Setenv("ALL_PROXY", "")
+	t.Setenv("all_proxy", "")
+	t.Setenv("NO_PROXY", " example.com ")
+	t.Setenv("no_proxy", "")
+
+	proxy := ProxyConfigFromEnvironment()
+	if proxy.HTTPProxy != " http://proxy.example:18080" {
+		t.Fatalf("HTTPProxy = %q, want raw env value", proxy.HTTPProxy)
 	}
-	if cfg.Proxy.NoProxy != "" {
-		t.Fatalf("Proxy.NoProxy = %q, want empty", cfg.Proxy.NoProxy)
+	if proxy.NoProxy != " example.com " {
+		t.Fatalf("NoProxy = %q, want raw env value", proxy.NoProxy)
 	}
 }
 

@@ -4,14 +4,15 @@ Tasks chosen one per group (save / use / lifecycle / negative).
 Skips the LLM judge; uses hard assertions only for fast feedback.
 """
 import json
+import os
 import sys
 import time
 import urllib.request
 import subprocess
 from pathlib import Path
 
-AGENT_URL = "http://192.168.31.107:8080"
-SSH_HOST = "root@192.168.31.107"
+AGENT_URL = os.environ.get("AIDEN_BENCH_AGENT_URL", "http://device.example:8080")
+SSH_HOST = os.environ.get("AIDEN_BENCH_SSH_HOST", "root@device.example")
 MEMORY_DIR = "/userdata/agent/memory"
 
 

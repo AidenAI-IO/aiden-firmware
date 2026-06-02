@@ -180,6 +180,7 @@ endforeach()
 add_executable(config_web
     src/config_web.cpp
     src/agent_toml.cpp
+    src/system_env_parser.cpp
     src/wifi_config.cpp
 )
 target_link_libraries(config_web PRIVATE cjson)

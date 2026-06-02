@@ -20,6 +20,7 @@ import (
 	"golang.org/x/net/proxy"
 
 	"aiden-agent/internal/agent/tts"
+	"aiden-agent/internal/netproxy"
 )
 
 const (
@@ -366,7 +367,7 @@ func configureProxy(dialer *websocket.Dialer, cfg tts.ProxyConfig) error {
 	if proxyURL == "" {
 		return nil
 	}
-	u, err := url.Parse(proxyURL)
+	u, err := netproxy.Parse(proxyURL, "http", "https", "socks5", "socks5h")
 	if err != nil {
 		return err
 	}

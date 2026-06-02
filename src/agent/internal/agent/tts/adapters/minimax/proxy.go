@@ -14,6 +14,7 @@ import (
 	"golang.org/x/net/proxy"
 
 	"aiden-agent/internal/agent/tts"
+	"aiden-agent/internal/netproxy"
 )
 
 func httpClientForConfig(cfg commonConfig) *http.Client {
@@ -112,19 +113,11 @@ func proxyConfigIsZero(cfg tts.ProxyConfig) bool {
 }
 
 func parseProxyURL(raw string) (*url.URL, error) {
-	u, err := url.Parse(strings.TrimSpace(raw))
+	u, err := netproxy.Parse(raw, "http", "https", "socks5", "socks5h")
 	if err != nil {
 		return nil, err
 	}
-	if u.Scheme == "" || u.Host == "" {
-		return nil, fmt.Errorf("expected absolute proxy URL")
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "http", "https", "socks5", "socks5h":
-		return u, nil
-	default:
-		return nil, fmt.Errorf("unsupported proxy URL scheme %q", u.Scheme)
-	}
+	return u, nil
 }
 
 func bypassProxy(host, port, noProxy string) bool {

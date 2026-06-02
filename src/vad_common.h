@@ -405,8 +405,8 @@ struct SileroWeights {
             !read_pod(file, &input_size, "input size", err)) {
             return false;
         }
-        if (version != 1) {
-            if (err) *err = "unsupported weights version";
+        if (version != 1 && version != 2) {
+            if (err) *err = "unsupported weights version: " + std::to_string(version);
             return false;
         }
         if (hidden != kHidden || input_size != kHidden) {

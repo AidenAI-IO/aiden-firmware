@@ -41,7 +41,7 @@ restore_docker_output_ownership() {
   fi
 
   paths=()
-  for path in build overlay/oem pico-sdk/output; do
+  for path in build overlay/oem overlay/userdata pico-sdk/output; do
     if [ -e "$path" ]; then
       paths+=("$path")
     fi
@@ -58,6 +58,7 @@ docker_run_args=(
   -u 0:0
   --rm
   -e OTA_PUBLIC_KEY_PATH
+  -e TAR_OPTIONS=--no-same-owner
 )
 if [ "${#docker_go_args[@]}" -gt 0 ]; then
   docker_run_args+=("${docker_go_args[@]}")

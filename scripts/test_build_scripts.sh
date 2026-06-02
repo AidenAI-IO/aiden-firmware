@@ -3,9 +3,11 @@ set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD_SH="$ROOT_DIR/_build.sh"
+LOCAL_BUILD_SH="$ROOT_DIR/build.sh"
 BUILD_IMAGE_SH="$ROOT_DIR/build_image.sh"
 WORKFLOW="$ROOT_DIR/.github/workflows/build.yml"
 REPACK_SCRIPT="$ROOT_DIR/scripts/repack_ota_update_image.sh"
+GITIGNORE="$ROOT_DIR/.gitignore"
 
 if grep -Eq 'go\.dev/dl|wget .*go|curl .*go|tar .*go\$|GO_TARBALL|GO_TARBALL_SHA256' "$BUILD_SH" "$BUILD_IMAGE_SH"; then
     echo "build scripts must not download or extract Go toolchains" >&2
@@ -27,6 +29,23 @@ if ! grep -q 'command -v go' "$BUILD_SH"; then
     exit 1
 fi
 
+if ! grep -q 'GO_TARBALL_SHA256' "$LOCAL_BUILD_SH" || \
+   ! grep -q 'go.dev/dl' "$LOCAL_BUILD_SH" || \
+   ! grep -Eq 'sha256sum|shasum -a 256' "$LOCAL_BUILD_SH"; then
+    echo "build.sh must install a verified linux/amd64 Go toolchain for Docker builds" >&2
+    exit 1
+fi
+
+if ! grep -Eq -- '-v .*:/usr/local/go:ro' "$LOCAL_BUILD_SH"; then
+    echo "build.sh must mount the verified Go toolchain read-only into Docker" >&2
+    exit 1
+fi
+
+if ! grep -q '/usr/local/go/bin:$PATH' "$LOCAL_BUILD_SH"; then
+    echo "build.sh must prepend the mounted Go toolchain to Docker PATH" >&2
+    exit 1
+fi
+
 if grep -q 'build.sh firmware .*|| true' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must not mask firmware rebuild failures" >&2
     exit 1
@@ -42,6 +61,29 @@ if ! grep -q './build.sh sysdrv' "$ROOT_DIR/_build_image.sh" || \
    ! grep -q './build.sh app' "$ROOT_DIR/_build_image.sh" || \
    ! grep -q './build.sh firmware' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must build components first, inject overlay, then package firmware once" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'BENCHMARK_SRC="$SCRIPT_DIR/benchmark"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'BENCHMARK_DEST="$OVERLAY/userdata/agent/benchmark"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq -- "--exclude '__pycache__/'" "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq -- "--exclude '*.pyc'" "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq -- "--exclude '.DS_Store'" "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq -- "--exclude '._*'" "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/runner/" "$BENCHMARK_DEST/runner/"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/suites/" "$BENCHMARK_DEST/suites/"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'rm -f "$BENCHMARK_DEST/pyproject.toml"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must stage benchmark runner and suites into userdata" >&2
+    exit 1
+fi
+
+if ! grep -q 'overlay/userdata' "$BUILD_IMAGE_SH"; then
+    echo "build_image.sh must restore ownership of Docker-staged overlay userdata" >&2
+    exit 1
+fi
+
+if ! grep -q '^/overlay/userdata/agent/benchmark/$' "$GITIGNORE"; then
+    echo "generated benchmark userdata staging directory must be gitignored" >&2
     exit 1
 fi
 
@@ -109,6 +151,11 @@ fi
 
 if ! grep -Eq -- '-u 0:0|--user 0:0' "$BUILD_IMAGE_SH"; then
     echo "build_image.sh must run Docker packaging as root so image ownership normalization works" >&2
+    exit 1
+fi
+
+if ! grep -q 'TAR_OPTIONS=--no-same-owner' "$BUILD_IMAGE_SH"; then
+    echo "build_image.sh must prevent tar from restoring archived owners in Dockerized Buildroot" >&2
     exit 1
 fi
 

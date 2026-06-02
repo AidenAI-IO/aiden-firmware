@@ -70,6 +70,7 @@ func buildTTSProviderConfigFor(cfg Config, provider string) tts.ProviderConfig {
 		extra["reference_id"] = referenceID
 	}
 
+	proxy := ProxyConfigFromEnvironment()
 	return tts.ProviderConfig{
 		Provider:   provider,
 		APIKey:     apiKey,
@@ -77,10 +78,10 @@ func buildTTSProviderConfigFor(cfg Config, provider string) tts.ProviderConfig {
 		SampleRate: cfg.Audio.SampleRateOrDefault(),
 		SpeedRatio: speed,
 		Proxy: tts.ProxyConfig{
-			HTTPProxy:  cfg.Proxy.HTTPProxy,
-			HTTPSProxy: cfg.Proxy.HTTPSProxy,
-			AllProxy:   cfg.Proxy.AllProxy,
-			NoProxy:    cfg.Proxy.NoProxy,
+			HTTPProxy:  proxy.HTTPProxy,
+			HTTPSProxy: proxy.HTTPSProxy,
+			AllProxy:   proxy.AllProxy,
+			NoProxy:    proxy.NoProxy,
 		},
 		Extra: extra,
 	}

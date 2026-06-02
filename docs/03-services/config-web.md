@@ -1,6 +1,6 @@
 # Config Web：设备配置网页
 
-`config_web` 是 C++ 实现的轻量 Web 服务，用于维护设备上的 Agent 配置和 Wi-Fi 配置。
+`config_web` is a lightweight C++ web service for maintaining the device Agent configuration, system environment variables, and Wi-Fi configuration.
 
 ## 默认部署
 
@@ -13,7 +13,7 @@
 默认命令：
 
 ```bash
-/oem/usr/bin/config_web --config=/userdata/agent/agent.toml --wifi-config=/userdata/wpa_supplicant.conf
+/oem/usr/bin/aiden-env-run /oem/usr/bin/config_web --config=/userdata/agent/agent.toml --wifi-config=/userdata/wpa_supplicant.conf --system-env=/userdata/system/env
 ```
 
 常用命令：
@@ -29,7 +29,7 @@
 源码中的 usage：
 
 ```text
-config_web [--bind=IP] [--port=PORT] [--config=PATH] [--wifi-config=PATH]
+config_web [--bind=IP] [--port=PORT] [--config=PATH] [--wifi-config=PATH] [--system-env=PATH]
 ```
 
 | 参数 | 说明 |
@@ -38,6 +38,7 @@ config_web [--bind=IP] [--port=PORT] [--config=PATH] [--wifi-config=PATH]
 | `--port=PORT` | 监听端口 |
 | `--config=PATH` | Agent TOML 配置路径 |
 | `--wifi-config=PATH` | `wpa_supplicant.conf` 路径 |
+| `--system-env=PATH` | System environment file path |
 
 ## 可配置内容
 
@@ -49,17 +50,17 @@ config_web [--bind=IP] [--port=PORT] [--config=PATH] [--wifi-config=PATH]
 - `tts`：provider、api_key、model、voice_id、emotion、speed
 - `audio`：socket、sample_rate、channels、bit_width
 - `hid`：keyboard_device、mouse_device、frame_socket
-- `proxy`：http_proxy、https_proxy、all_proxy、no_proxy（Agent 外部请求代理）
+- `env`: shell-style environment text written to `/userdata/system/env`, including optional proxy variables such as `http_proxy`, `HTTPS_PROXY`, and `NO_PROXY`
 - Wi-Fi：SSID / PSK 等（写入 `/userdata/wpa_supplicant.conf`）
 
-## 使用建议
+## Runtime apply behavior
 
-1. 通过 USB 网络或 Wi-Fi 访问设备 IP；
-2. 在网页中修改 Agent 配置；
-3. 保存后重启 Agent：
+Config Web writes Agent, Wi-Fi, and system environment files. Saving Agent
+config still schedules an Agent restart. OTA is restarted only when the
+effective `/userdata/system/env` file changes, because OTA reads proxy settings
+from that file at process startup:
 
 ```bash
 /etc/init.d/S53agent restart
+/etc/init.d/S54ota restart  # only when /userdata/system/env changes
 ```
-
-Config Web 本身只负责配置文件写入，不替代对应服务的重启逻辑。

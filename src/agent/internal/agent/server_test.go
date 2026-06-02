@@ -783,7 +783,7 @@ func TestServerToolSkillsEndpointReturnsGeneratedSkills(t *testing.T) {
 	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodGet, "https://device.example/api/tool-skills", nil)
-	req.Header.Set("X-Forwarded-Host", "192.168.50.57:8080")
+	req.Header.Set("X-Forwarded-Host", "203.0.113.57:8080")
 	req.Header.Set("X-Forwarded-Proto", "http")
 	rec := httptest.NewRecorder()
 
@@ -811,7 +811,7 @@ func TestServerToolSkillsEndpointReturnsGeneratedSkills(t *testing.T) {
 	if !bytes.Contains([]byte(skill.Markdown), []byte("/api/tools/{tool_name}")) {
 		t.Fatalf("unexpected skill markdown: %q", skill.Markdown)
 	}
-	if !bytes.Contains([]byte(skill.Markdown), []byte("http://192.168.50.57:8080")) {
+	if !bytes.Contains([]byte(skill.Markdown), []byte("http://203.0.113.57:8080")) {
 		t.Fatalf("expected forwarded base URL in markdown: %q", skill.Markdown)
 	}
 	if !bytes.Contains([]byte(skill.Markdown), []byte("NO_PROXY")) {

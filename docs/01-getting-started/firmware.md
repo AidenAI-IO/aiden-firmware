@@ -35,7 +35,7 @@
 2. 将 `build/bin/` 复制到 `overlay/oem/usr/bin/`；
 3. 同步 `overlay/etc/` 到 `pico-sdk` 的 Buildroot overlay；
 4. 执行 `pico-sdk/build.sh all`；
-5. 将 `overlay/oem`、`overlay/userdata` 注入输出目录；
+5. 将 `overlay/oem`、`overlay/userdata` 注入输出目录；VAD 模型位于 `overlay/oem/usr/model/`，会随 OEM 分区进入 OTA；
 6. 生成 A/B 分区镜像和完整 USB 首刷包。
 
 构建结束后，镜像位于：

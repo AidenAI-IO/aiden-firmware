@@ -1,6 +1,7 @@
 package ota
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -8,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -75,6 +77,22 @@ func TestUpdaterHappyPathDownloadsWritesSwitchesAndReboots(t *testing.T) {
 func TestDefaultHTTPTimeoutAllowsLargeImageDownloads(t *testing.T) {
 	if DefaultHTTPRequestLimit < 30*time.Minute {
 		t.Fatalf("DefaultHTTPRequestLimit = %s, want at least 30m", DefaultHTTPRequestLimit)
+	}
+}
+
+func TestDefaultHTTPResponseHeaderTimeoutIsShort(t *testing.T) {
+	if DefaultHTTPResponseHeaderTimeout != 30*time.Second {
+		t.Fatalf("DefaultHTTPResponseHeaderTimeout = %s, want 30s", DefaultHTTPResponseHeaderTimeout)
+	}
+}
+
+func TestOTAHTTPClientUsesDefaultResponseHeaderTimeout(t *testing.T) {
+	transport, ok := newOTAHTTPClient().Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("newOTAHTTPClient transport = %T, want *http.Transport", newOTAHTTPClient().Transport)
+	}
+	if transport.ResponseHeaderTimeout != DefaultHTTPResponseHeaderTimeout {
+		t.Fatalf("ResponseHeaderTimeout = %s, want %s", transport.ResponseHeaderTimeout, DefaultHTTPResponseHeaderTimeout)
 	}
 }
 
@@ -485,6 +503,50 @@ func TestUpdaterUsesGitHubTokenForManifestAndImageDownloads(t *testing.T) {
 	}
 	if !result.Updated {
 		t.Fatalf("CheckOnce() = %+v, want update", result)
+	}
+}
+
+func TestUpdaterLogsVisibleCheckProgress(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	var logs bytes.Buffer
+	env.config.Logger = log.New(&logs, "", 0)
+	manifest := env.signedManifest(map[string][]byte{
+		"boot_a.img": []byte("boot-a-v2"),
+		"boot_b.img": []byte("boot-b-v2"),
+		"oem_a.img":  []byte("oem-a-v2"),
+		"oem_b.img":  []byte("oem-b-v2"),
+		"rootfs.img": []byte("rootfs-v2"),
+	}, nil)
+	server := env.releaseServer(t, manifest, map[string][]byte{
+		"boot_b.img": []byte("boot-b-v2"),
+		"oem_b.img":  []byte("oem-b-v2"),
+		"rootfs.img": []byte("rootfs-v2"),
+	})
+	env.config.APIBase = server.URL
+
+	result, err := env.updater().CheckOnce(context.Background())
+	if err != nil {
+		t.Fatalf("CheckOnce() error = %v", err)
+	}
+	if !result.Updated {
+		t.Fatalf("CheckOnce() = %+v, want update", result)
+	}
+
+	output := logs.String()
+	for _, want := range []string{
+		"ota check: start repo=owner/repo channel=stable",
+		"ota release: fetching",
+		"ota manifest: verified version=20260521-120000-abcdef0",
+		"ota download: boot_b.img start size=9 B",
+		"ota download: boot_b.img complete 9 B/9 B",
+		"ota verify: boot_b.img sha256 ok",
+		"ota write: boot -> boot_b start",
+		"ota write: boot -> boot_b complete",
+		"ota reboot: requested after switching to slot b",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("logs missing %q:\n%s", want, output)
+		}
 	}
 }
 
