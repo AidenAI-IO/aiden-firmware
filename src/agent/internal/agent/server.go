@@ -430,12 +430,12 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	stream.Write(ChatStreamEvent{Type: "message", Message: &assistantMessage})
 	historySnapshot := s.historySnapshot()
 
-	if s.ttsClient != nil && s.audioClient != nil && result.Output != "" {
+	if s.audioClient != nil && result.Output != "" && !result.SpeechStreamed {
 		go func(text string) {
 			if s.logger != nil {
 				s.logger.Info("TTS playback: %q", text)
 			}
-			if err := s.ttsClient.TextToSpeechStream(context.Background(), text, s.audioClient); err != nil {
+			if err := s.speakText(context.Background(), text, 0); err != nil {
 				if s.logger != nil {
 					s.logger.Error("TTS playback failed: %v", err)
 				}

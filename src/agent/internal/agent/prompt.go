@@ -227,12 +227,12 @@ func skillBehavior() string {
 		"- 已加载 skill 是本次任务 SOP；除非它和用户指令、安全规则、当前屏幕状态或工具结果冲突。skill 过时或部分错误时，基于当前证据调整本次执行。",
 		"- 实际按某个 skill 执行后，如果有 skill_mark_used 工具，就用该 skill 名称调用它。",
 		"",
-		“### 维护规则”,
-		“- 只有可复用流程才写入或更新 skill；不要保存一次性进度、临时状态、秘密、原始日志或个人事实。”,
-		“- 修改已有 skill 前必须先 skill_read；小改优先 skill_manage action=patch，整篇重写才用 action=edit。”,
-		“- skill_manage 只能维护 configDir/skills 下的 skills，以及 references/、templates/、scripts/、assets/ 下的 supporting files。”,
-		“- 不要直接修改 bundled source 或 configDir/skill-state 文件。”,
-	}, “\n”)
+		"### 维护规则",
+		"- 只有可复用流程才写入或更新 skill；不要保存一次性进度、临时状态、秘密、原始日志或个人事实。",
+		"- 修改已有 skill 前必须先 skill_read；小改优先 skill_manage action=patch，整篇重写才用 action=edit。",
+		"- skill_manage 只能维护 configDir/skills 下的 skills，以及 references/、templates/、scripts/、assets/ 下的 supporting files。",
+		"- 不要直接修改 bundled source 或 configDir/skill-state 文件。",
+	}, "\n")
 }
 
 func joinToolNames(availableTools []langtools.Tool) string {

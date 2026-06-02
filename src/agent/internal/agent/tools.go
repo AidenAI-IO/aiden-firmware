@@ -3,7 +3,6 @@ package agent
 import (
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	langtools "github.com/tmc/langchaingo/tools"
