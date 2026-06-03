@@ -3,6 +3,7 @@ set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 WORKFLOW="$ROOT_DIR/.github/workflows/build.yml"
+SCHEDULED_WORKFLOW="$ROOT_DIR/.github/workflows/build-scheduled.yml"
 CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
 
 if ! grep -q 'scripts/create_github_release.sh' "$WORKFLOW"; then
@@ -27,6 +28,11 @@ fi
 
 if ! grep -q 'GH_DEBUG' "$WORKFLOW"; then
     echo "build workflow must enable GitHub CLI debug output for release creation" >&2
+    exit 1
+fi
+
+if ! grep -q 'cancel-in-progress: false' "$SCHEDULED_WORKFLOW"; then
+    echo "scheduled build workflow must not cancel an in-progress release build" >&2
     exit 1
 fi
 

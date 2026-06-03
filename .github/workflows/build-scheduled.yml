@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: scheduled-build
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   check:
