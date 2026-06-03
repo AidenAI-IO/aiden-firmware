@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   check:
-    if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+    if: ${{ startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
     runs-on: self-hosted
     outputs:
       should_run: ${{ steps.should_run.outputs.should_run }}
