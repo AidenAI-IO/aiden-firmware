@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"os"
 	"strconv"
@@ -246,7 +247,7 @@ func NewHIDDevice(path string) *HIDDevice {
 		path:         path,
 		writeTimeout: defaultHIDWriteTimeout,
 		open: func(path string) (io.WriteCloser, error) {
-			return os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+			return os.OpenFile(path, os.O_WRONLY, 0)
 		},
 	}
 }
@@ -289,6 +290,10 @@ func (d *HIDDevice) writeLocked(data []byte, after func()) error {
 	}
 	if after != nil {
 		after()
+	}
+	// Sync to ensure data is flushed to USB gadget driver
+	if f, ok := d.file.(*os.File); ok {
+		_ = f.Sync()
 	}
 	return nil
 }
@@ -478,17 +483,26 @@ func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error)
 		return fmt.Sprintf("error: keyboard_text supports only US-keyboard ASCII characters; unsupported characters: %q", string(unsupported)), nil
 	}
 
-	for _, ch := range text {
-		modifier, code, _ := charToHIDKey(byte(ch))
+	releaseReport := make([]byte, 8)
+	for i, ch := range text {
+		modifier, code, ok := charToHIDKey(byte(ch))
+		if !ok {
+			continue
+		}
+		log.Printf("[keyboard_text] char %d/%d: %q -> modifier=0x%02x code=0x%02x", i, len(text), ch, modifier, code)
 		report := make([]byte, 8)
 		report[0] = modifier
 		report[2] = code
+		// Press
 		if err := t.dev.Write(report); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
-		if err := t.dev.Write(make([]byte, 8)); err != nil {
+		sleepMs(200)
+		// Release
+		if err := t.dev.Write(releaseReport); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
+		sleepMs(50)
 	}
 
 	return "ok", nil
@@ -586,6 +600,7 @@ func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 func (t *TouchGestureTool) Description() string {
 	return `Perform a touch-like gesture using the pointer HID device (absolute mouse or touchscreen depending on agent pointer_mode). ` +
 		`Input JSON examples: {"type":"tap","point":{"x":500,"y":500}}, {"type":"swipe","start":{"x":200,"y":500},"end":{"x":800,"y":500},"duration_ms":700,"steps":24}, {"type":"swipe_left"}, {"type":"back"}, {"type":"home"}. ` +
+		`IMPORTANT: "point", "start", and "end" must be objects with named keys "x" and "y". NEVER omit the key names: {"x":500,"y":300} is correct, {500,300} is invalid and will error. ` +
 		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back" (left-edge back), "home" (bottom-edge home). ` +
 		`coord_space defaults to "normalized" (x/y in [0,1000]) and also supports "pixel" and "absolute". ` +
 		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +

@@ -186,6 +186,24 @@ bool extract_json_int_field(const std::string& json,
     return true;
 }
 
+bool extract_json_double_field(const std::string& json,
+                               const std::string& field,
+                               double* value) {
+    size_t pos = 0;
+    if (!value || !find_json_field_value(json, field, &pos)) {
+        return false;
+    }
+
+    char* end = nullptr;
+    double parsed = std::strtod(json.c_str() + pos, &end);
+    if (end == json.c_str() + pos) {
+        return false;
+    }
+
+    *value = parsed;
+    return true;
+}
+
 bool extract_json_bool_field(const std::string& json,
                              const std::string& field,
                              bool* value) {
@@ -711,6 +729,144 @@ ApiResponse handle_capture_request(const std::string& body) {
     return response;
 }
 
+static uint64_t now_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * 1000ULL +
+           static_cast<uint64_t>(ts.tv_nsec) / 1000000ULL;
+}
+
+// Compute mean per-channel absolute difference between two same-size RGB mats.
+// Returns average difference in the range [0, 255].
+static double frame_diff(const cv::Mat& a, const cv::Mat& b) {
+    cv::Mat diff;
+    cv::absdiff(a, b, diff);
+    cv::Scalar mean_val = cv::mean(diff);
+    return (mean_val[0] + mean_val[1] + mean_val[2]) / 3.0;
+}
+
+ApiResponse handle_wait_stable_request(const std::string& body) {
+    int timeout_ms = 3000;
+    int stable_ms = 500;
+    double diff_threshold = 5.0;
+
+    extract_json_int_field(body, "timeout_ms", &timeout_ms);
+    extract_json_int_field(body, "stable_ms", &stable_ms);
+    extract_json_double_field(body, "diff_threshold", &diff_threshold);
+
+    if (timeout_ms <= 0) timeout_ms = 3000;
+    if (stable_ms <= 0) stable_ms = 500;
+    if (stable_ms > timeout_ms) stable_ms = timeout_ms;
+    if (diff_threshold < 0.0) diff_threshold = 5.0;
+
+    const char* socket_path = std::getenv("FRAME_SERVICE_SOCKET");
+    if (!socket_path || socket_path[0] == '\0') {
+        socket_path = "/tmp/frame_service.sock";
+    }
+
+    aiden::FrameServiceClient client(socket_path);
+
+    const uint64_t start_ms = now_ms();
+    const uint64_t deadline_ms = start_ms + static_cast<uint64_t>(timeout_ms);
+
+    aiden::FrameResult prev_frame;
+    uint64_t prev_seq = 0;
+    {
+        aiden::FrameServiceStatus s = client.latest_frame(0, 0, &prev_frame);
+        if (s != aiden::FrameServiceStatus::OK) {
+            return make_json_error(500, std::string("frame service error: ") +
+                                        aiden::frame_service_status_to_string(s));
+        }
+        prev_seq = prev_frame.metadata.seq;
+    }
+
+    std::vector<uint8_t> prev_rgb;
+    if (!aiden::convert_frame_to_rgb(prev_frame.metadata, prev_frame.data, &prev_rgb)) {
+        return make_json_error(500, "unsupported pixel format");
+    }
+
+    int prev_w = static_cast<int>(prev_frame.metadata.width);
+    int prev_h = static_cast<int>(prev_frame.metadata.height);
+    if (prev_w <= 0 || prev_h <= 0 ||
+        prev_rgb.size() < static_cast<size_t>(prev_w) * static_cast<size_t>(prev_h) * 3U) {
+        return make_json_error(500, "incomplete rgb buffer");
+    }
+    cv::Mat prev_mat(prev_h, prev_w, CV_8UC3, prev_rgb.data());
+
+    uint64_t stable_since_ms = now_ms();
+
+    bool stable = false;
+    while (true) {
+        uint64_t cur_ms = now_ms();
+        if (cur_ms >= deadline_ms) {
+            stable = (cur_ms - stable_since_ms) >= static_cast<uint64_t>(stable_ms);
+            break;
+        }
+        if ((cur_ms - stable_since_ms) >= static_cast<uint64_t>(stable_ms)) {
+            stable = true;
+            break;
+        }
+
+        uint32_t remaining = static_cast<uint32_t>(deadline_ms - cur_ms);
+        uint32_t poll_ms = remaining < 200 ? remaining : 200;
+
+        aiden::FrameResult next_frame;
+        aiden::FrameServiceStatus s = client.latest_frame(prev_seq, poll_ms, &next_frame);
+
+        if (s == aiden::FrameServiceStatus::TIMEOUT) {
+            continue;
+        }
+        if (s != aiden::FrameServiceStatus::OK) {
+            return make_json_error(500, std::string("frame service error: ") +
+                                        aiden::frame_service_status_to_string(s));
+        }
+        if (next_frame.metadata.stale || next_frame.metadata.seq <= prev_seq) {
+            usleep(50 * 1000);
+            continue;
+        }
+
+        std::vector<uint8_t> next_rgb;
+        if (!aiden::convert_frame_to_rgb(next_frame.metadata, next_frame.data, &next_rgb)) {
+            prev_seq = next_frame.metadata.seq;
+            continue;
+        }
+
+        const int nw = static_cast<int>(next_frame.metadata.width);
+        const int nh = static_cast<int>(next_frame.metadata.height);
+        if (nw <= 0 || nh <= 0 ||
+            next_rgb.size() < static_cast<size_t>(nw) * static_cast<size_t>(nh) * 3U) {
+            prev_seq = next_frame.metadata.seq;
+            stable_since_ms = now_ms();
+            continue;
+        }
+
+        cv::Mat next_mat(nh, nw, CV_8UC3, next_rgb.data());
+
+        double diff = 0.0;
+        if (nw == prev_w && nh == prev_h) {
+            diff = frame_diff(prev_mat, next_mat);
+        } else {
+            diff = diff_threshold + 1.0;
+        }
+
+        if (diff > diff_threshold) {
+            stable_since_ms = now_ms();
+        }
+
+        prev_seq = next_frame.metadata.seq;
+        prev_rgb = std::move(next_rgb);
+        prev_w = nw;
+        prev_h = nh;
+        prev_mat = cv::Mat(nh, nw, CV_8UC3, prev_rgb.data());
+    }
+
+    uint64_t elapsed = now_ms() - start_ms;
+    ApiResponse response;
+    response.body = "{\"ok\":true,\"stable\":" + std::string(stable ? "true" : "false") +
+                    ",\"elapsed_ms\":" + std::to_string(elapsed) + "}";
+    return response;
+}
+
 ApiResponse handle_api_request(const std::string& path,
                                const std::string& body,
                                const std::vector<std::string>& hid_command_prefix) {
@@ -806,6 +962,10 @@ ApiResponse handle_api_request(const std::string& path,
 
     if (path == "/api/capture") {
         return handle_capture_request(body);
+    }
+
+    if (path == "/api/wait_stable") {
+        return handle_wait_stable_request(body);
     }
 
     return make_json_error(400, "unknown endpoint");

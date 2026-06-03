@@ -18,13 +18,19 @@ type postActionScreenshotResult struct {
 
 type postActionScreenshotTool struct {
 	inner      langtools.Tool
+	waitStable langtools.Tool
 	screenshot langtools.Tool
 	delay      time.Duration
 }
 
 func newPostActionScreenshotTool(inner langtools.Tool, screenshot langtools.Tool, delay time.Duration) langtools.Tool {
+	return newPostActionStableScreenshotTool(inner, nil, screenshot, delay)
+}
+
+func newPostActionStableScreenshotTool(inner langtools.Tool, waitStable langtools.Tool, screenshot langtools.Tool, delay time.Duration) langtools.Tool {
 	return &postActionScreenshotTool{
 		inner:      inner,
+		waitStable: waitStable,
 		screenshot: screenshot,
 		delay:      delay,
 	}
@@ -35,6 +41,9 @@ func (t *postActionScreenshotTool) Name() string {
 }
 
 func (t *postActionScreenshotTool) Description() string {
+	if t.waitStable != nil {
+		return t.inner.Description() + " On successful execution, waits for the screen to become stable and returns a post-action screenshot observation."
+	}
 	return fmt.Sprintf(
 		"%s On successful execution, waits %s and returns a post-action screenshot observation.",
 		t.inner.Description(),
@@ -55,7 +64,15 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 		return actionOutput, nil
 	}
 
-	if err := waitForPostActionScreenshot(ctx, t.delay); err != nil {
+	if t.waitStable != nil {
+		waitOutput, err := t.waitStable.Call(ctx, `{"timeout_ms":3000,"stable_ms":500,"diff_threshold":5}`)
+		if err != nil {
+			return "", err
+		}
+		if toolOutputLooksLikeError(waitOutput) {
+			return fmt.Sprintf("error: %s completed with output %q, but stable-screen wait failed: %s", t.inner.Name(), actionOutput, waitOutput), nil
+		}
+	} else if err := waitForPostActionScreenshot(ctx, t.delay); err != nil {
 		return "", err
 	}
 
