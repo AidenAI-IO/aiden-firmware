@@ -338,9 +338,15 @@ func (s *Server) handleChatAsync(
 	// Run agent in background goroutine
 	go func() {
 		defer func() {
-			s.pendingResultsMu.Lock()
-			delete(s.pendingResults, requestID)
-			s.pendingResultsMu.Unlock()
+			// Keep the completed result available for polling for 60s,
+			// then clean up. The client (PhoneBridge) polls /api/chat/result
+			// every ~1s; immediate deletion creates a race where the app
+			// gets status="not_found" and hangs forever waiting for "complete".
+			time.AfterFunc(60*time.Second, func() {
+				s.pendingResultsMu.Lock()
+				delete(s.pendingResults, requestID)
+				s.pendingResultsMu.Unlock()
+			})
 		}()
 
 		bgCtx := context.Background()
