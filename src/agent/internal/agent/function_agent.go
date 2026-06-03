@@ -16,12 +16,13 @@ import (
 )
 
 type FunctionAgent struct {
-	LLM              llms.Model
-	Prompt           prompts.FormatPrompter
-	Tools            []langtools.Tool
-	InputAttachments []InputAttachment
-	OutputKey        string
-	CallbacksHandler callbacks.Handler
+	LLM               llms.Model
+	Prompt            prompts.FormatPrompter
+	Tools             []langtools.Tool
+	InputAttachments  []InputAttachment
+	OutputKey         string
+	CallbacksHandler  callbacks.Handler
+	ScreenshotPruning ScreenshotPruningConfig
 }
 
 type visualObservationTool interface {
@@ -30,7 +31,35 @@ type visualObservationTool interface {
 
 const toolActionLogVersion = 1
 const maxToolObservationRunes = 4000
-const maxScreenshotContextImages = 3
+const defaultScreenshotKeepN = 3
+const defaultScreenshotPruneInterval = 25
+
+type ScreenshotPruningConfig struct {
+	KeepN    int
+	Interval int
+}
+
+func (c ScreenshotPruningConfig) WithDefaults() ScreenshotPruningConfig {
+	if c.KeepN <= 0 {
+		c.KeepN = defaultScreenshotKeepN
+	}
+	if c.Interval <= 0 {
+		c.Interval = defaultScreenshotPruneInterval
+	}
+	return c
+}
+
+func (c ScreenshotPruningConfig) PrunedCount(total int) int {
+	c = c.WithDefaults()
+	if total <= c.KeepN+c.Interval {
+		return 0
+	}
+	pruned := ((total - c.KeepN - 1) / c.Interval) * c.Interval
+	if maxPruned := total - c.KeepN; pruned > maxPruned {
+		return maxPruned
+	}
+	return pruned
+}
 
 type toolActionLog struct {
 	Version         int    `json:"aiden_action_log_version"`
@@ -57,12 +86,13 @@ func NewFunctionAgent(
 	messageFormatters = append(messageFormatters, extraMessages...)
 
 	return &FunctionAgent{
-		LLM:              llm,
-		Prompt:           prompts.NewChatPromptTemplate(messageFormatters),
-		Tools:            tools,
-		InputAttachments: append([]InputAttachment{}, inputAttachments...),
-		OutputKey:        "output",
-		CallbacksHandler: callbackHandler,
+		LLM:               llm,
+		Prompt:            prompts.NewChatPromptTemplate(messageFormatters),
+		Tools:             tools,
+		InputAttachments:  append([]InputAttachment{}, inputAttachments...),
+		OutputKey:         "output",
+		CallbacksHandler:  callbackHandler,
+		ScreenshotPruning: ScreenshotPruningConfig{}.WithDefaults(),
 	}
 }
 
@@ -234,6 +264,7 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 
 	messages := make([]llms.MessageContent, 0, len(steps)*3)
 	visualObservationCount := a.countVisualObservations(steps)
+	prunedVisualObservationCount := a.ScreenshotPruning.PrunedCount(visualObservationCount)
 	visualObservationIndex := 0
 
 	for i := 0; i < len(steps); {
@@ -265,7 +296,7 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 			includeVisual := true
 			if a.hasVisualObservation(steps[j]) {
 				visualObservationIndex++
-				includeVisual = visualObservationIndex > visualObservationCount-maxScreenshotContextImages
+				includeVisual = visualObservationIndex > prunedVisualObservationCount
 			}
 			toolContent, followups := a.observationMessagesForStep(steps[j], includeVisual)
 			if steps[j].Action.ToolID != "" {
@@ -318,7 +349,7 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 	mimeType := "image/jpeg"
 	imageAvailability := "The image is attached in the next message."
 	if !includeVisual {
-		imageAvailability = fmt.Sprintf("This older screenshot image is omitted from the current context; only the latest %d screenshot observations are attached.", maxScreenshotContextImages)
+		imageAvailability = "The image is replaced with a placeholder in the next message."
 	}
 	toolContent := fmt.Sprintf(
 		"%s returned a screenshot observation: format=%s width=%d height=%d size=%d bytes. %s",
@@ -345,14 +376,21 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 	if result.Format != "" && result.Format != "jpeg" {
 		mimeType = "image/" + result.Format
 	}
+	caption := fmt.Sprintf("This image is the screenshot observation returned by the %s tool. Use it when answering the original request.", step.Action.Tool)
 	if !includeVisual {
-		return toolContent, nil
+		return toolContent, []llms.MessageContent{{
+			Role: llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{
+				llms.TextPart(caption),
+				llms.TextPart("[Image omitted]"),
+			},
+		}}
 	}
 
 	return toolContent, []llms.MessageContent{{
 		Role: llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{
-			llms.TextPart(fmt.Sprintf("This image is the screenshot observation returned by the %s tool. Use it when answering the original request.", step.Action.Tool)),
+			llms.TextPart(caption),
 			buildImagePart(mimeType, imageBytes),
 		},
 	}}

@@ -458,6 +458,38 @@ func TestWorldStateUpdatesFromPostActionScreenshot(t *testing.T) {
 	}
 }
 
+func TestExecutionResultLineSummarizesScreenshotObservationWithoutBase64(t *testing.T) {
+	image := base64.StdEncoding.EncodeToString([]byte("raw-screenshot-bytes"))
+	result := roleExecutionResult{
+		Action: &schema.AgentAction{
+			Tool:      "screenshot",
+			ToolInput: "{}",
+		},
+		Step: &schema.AgentStep{
+			Action:      schema.AgentAction{Tool: "screenshot"},
+			Observation: `{"width":320,"height":240,"format":"jpeg","size":20,"data":"` + image + `"}`,
+		},
+	}
+
+	var builder strings.Builder
+	writeExecutionResultLine(&builder, 1, result)
+	text := builder.String()
+	for _, want := range []string{
+		"tool=screenshot input={}",
+		"screenshot returned a screenshot observation: format=jpeg width=320 height=240 size=20 bytes",
+		"Image data omitted from text summary.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("execution result summary missing %q:\n%s", want, text)
+		}
+	}
+	for _, unexpected := range []string{`"data"`, image} {
+		if strings.Contains(text, unexpected) {
+			t.Fatalf("execution result summary leaked screenshot payload %q:\n%s", unexpected, text)
+		}
+	}
+}
+
 func TestRoleCollaborativeExecutorUpdatesWorldStateFromObservedState(t *testing.T) {
 	jpegBytes := []byte("observed-state-jpeg")
 	encodedImage := base64.StdEncoding.EncodeToString(jpegBytes)

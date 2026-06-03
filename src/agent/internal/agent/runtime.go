@@ -343,7 +343,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		executorHandler = streamCallbackHandler
 	}
 	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext)
-	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, memoryHandle.Memory, maxIterations, req.Attachments, executorHandler, episodeRecorder)
+	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, memoryHandle.Memory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault())
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
@@ -567,7 +567,7 @@ func (r *Runtime) buildAgent(
 			systemMessage += "\n\n" + string(profile)
 		}
 	}
-	return NewFunctionAgent(
+	agent := NewFunctionAgent(
 		model,
 		availableTools,
 		systemMessage,
@@ -580,6 +580,8 @@ func (r *Runtime) buildAgent(
 		attachments,
 		callbackHandler,
 	)
+	agent.ScreenshotPruning = r.config.ScreenshotPruningOrDefault()
+	return agent
 }
 
 func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []langtools.Tool, memoryContext MemoryContext) RoleProfiles {

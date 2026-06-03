@@ -102,6 +102,36 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
+TEST_CASE("config web exposes screenshot pruning config fields") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("\"screenshot_keep_n\"") != std::string::npos);
+    CHECK(source.find("\"screenshot_prune_interval\"") != std::string::npos);
+    CHECK(source.find("config.screenshot_keep_n") != std::string::npos);
+    CHECK(source.find("config.screenshot_prune_interval") != std::string::npos);
+    CHECK(source.find("screenshot_keep_n must be >= 0") != std::string::npos);
+    CHECK(source.find("screenshot_prune_interval must be >= 0") != std::string::npos);
+
+    CHECK(html.find("agent_screenshot_keep_n") != std::string::npos);
+    CHECK(html.find("agent_screenshot_prune_interval") != std::string::npos);
+    CHECK(html.find("['screenshot_keep_n','number']") != std::string::npos);
+    CHECK(html.find("['screenshot_prune_interval','number']") != std::string::npos);
+}
+
 TEST_CASE("config web exposes a single system env editor backed by the env file") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
