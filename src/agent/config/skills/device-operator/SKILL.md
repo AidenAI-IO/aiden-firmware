@@ -169,7 +169,7 @@ Call `recall_memory` with tags `["app-switch", "device"]`. If a record exists fo
 
 **Step 3 — probe for the task switcher. Try in order, stop at first success:**
 
-1. Bottom-edge swipe and hold: `type: "swipe"`, start y≈0.99, end y≈0.55, `hold_after_ms: 500`. Take a screenshot — if the task switcher appeared, this is the method.
+1. Bottom-edge swipe and hold: `type: "swipe"`, start y≈990, end y≈550, `hold_after_ms: 500`. Take a screenshot — if the task switcher appeared, this is the method.
 2. If 3-button nav is visible: tap the Recents button (bottom-right square icon).
 3. If still on the same app screen, try home first (`type: "home"`), then retry method 1 from the home screen.
 

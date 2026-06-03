@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"os"
 	"strconv"
@@ -247,7 +246,7 @@ func NewHIDDevice(path string) *HIDDevice {
 		path:         path,
 		writeTimeout: defaultHIDWriteTimeout,
 		open: func(path string) (io.WriteCloser, error) {
-			return os.OpenFile(path, os.O_WRONLY, 0)
+			return os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
 		},
 	}
 }
@@ -484,12 +483,11 @@ func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error)
 	}
 
 	releaseReport := make([]byte, 8)
-	for i, ch := range text {
+	for _, ch := range text {
 		modifier, code, ok := charToHIDKey(byte(ch))
 		if !ok {
 			continue
 		}
-		log.Printf("[keyboard_text] char %d/%d: %q -> modifier=0x%02x code=0x%02x", i, len(text), ch, modifier, code)
 		report := make([]byte, 8)
 		report[0] = modifier
 		report[2] = code
@@ -1200,7 +1198,7 @@ func directionalSwipeEndpoints(gestureType string, distance, anchor *float64, pr
 		travel = defaultDirectionalSwipeDistance
 	}
 	if distance != nil && *distance > 0 {
-		travel = clampFloat(*distance, 50, 1000)
+		travel = clampFloat(*distance, 1, 1000)
 	}
 	center := 500.0
 	if anchor != nil {

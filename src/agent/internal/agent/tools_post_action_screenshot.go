@@ -72,6 +72,13 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 		if toolOutputLooksLikeError(waitOutput) {
 			return fmt.Sprintf("error: %s completed with output %q, but stable-screen wait failed: %s", t.inner.Name(), actionOutput, waitOutput), nil
 		}
+		var waitResult waitStableScreenResult
+		if err := json.Unmarshal([]byte(waitOutput), &waitResult); err != nil {
+			return fmt.Sprintf("error: %s completed with output %q, but stable-screen wait returned invalid JSON: %v", t.inner.Name(), actionOutput, err), nil
+		}
+		if !waitResult.OK || !waitResult.Stable {
+			return fmt.Sprintf("error: %s completed with output %q, but screen did not stabilize: %s", t.inner.Name(), actionOutput, waitOutput), nil
+		}
 	} else if err := waitForPostActionScreenshot(ctx, t.delay); err != nil {
 		return "", err
 	}

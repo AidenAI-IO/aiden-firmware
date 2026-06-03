@@ -828,6 +828,7 @@ ApiResponse handle_wait_stable_request(const std::string& body) {
         std::vector<uint8_t> next_rgb;
         if (!aiden::convert_frame_to_rgb(next_frame.metadata, next_frame.data, &next_rgb)) {
             prev_seq = next_frame.metadata.seq;
+            stable_since_ms = now_ms();
             continue;
         }
 
