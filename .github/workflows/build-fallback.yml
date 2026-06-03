@@ -1,4 +1,4 @@
-name: Build (manual / hosted)
+name: Build (fallback / hosted)
 
 on:
   workflow_dispatch:
