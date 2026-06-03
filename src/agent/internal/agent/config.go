@@ -60,16 +60,16 @@ type Config struct {
 }
 
 type TelemetryConfig struct {
-	Enabled            *bool    `toml:"enabled,omitempty"`
-	Provider           string   `toml:"provider,omitempty"`
-	BaseURL            string   `toml:"base_url,omitempty"`
-	PublicKeyEnv       string   `toml:"public_key_env,omitempty"`
-	SecretKeyEnv       string   `toml:"secret_key_env,omitempty"`
-	UploadScreenshots  *bool    `toml:"upload_screenshots,omitempty"`
-	UploadTimeoutSec   int      `toml:"upload_timeout_sec,omitempty"`
-	MaxRetry           int      `toml:"max_retry,omitempty"`
-	Tags               []string `toml:"tags,omitempty"`
-	Environment        string   `toml:"environment,omitempty"`
+	Enabled           *bool    `toml:"enabled,omitempty"`
+	Provider          string   `toml:"provider,omitempty"`
+	BaseURL           string   `toml:"base_url,omitempty"`
+	PublicKey         string   `toml:"public_key,omitempty"`
+	SecretKey         string   `toml:"secret_key,omitempty"`
+	UploadScreenshots *bool    `toml:"upload_screenshots,omitempty"`
+	UploadTimeoutSec  int      `toml:"upload_timeout_sec,omitempty"`
+	MaxRetry          int      `toml:"max_retry,omitempty"`
+	Tags              []string `toml:"tags,omitempty"`
+	Environment       string   `toml:"environment,omitempty"`
 }
 
 type TTSConfig struct {
@@ -456,6 +456,12 @@ func (t TelemetryConfig) Validate() error {
 	if strings.TrimSpace(t.BaseURL) == "" {
 		return errors.New("telemetry.base_url is required when telemetry.enabled=true")
 	}
+	if strings.TrimSpace(t.PublicKey) == "" {
+		return errors.New("telemetry.public_key is required when telemetry.enabled=true")
+	}
+	if strings.TrimSpace(t.SecretKey) == "" {
+		return errors.New("telemetry.secret_key is required when telemetry.enabled=true")
+	}
 	switch t.ProviderOrDefault() {
 	case "langfuse":
 	default:
@@ -503,22 +509,6 @@ func (t TelemetryConfig) MaxRetryOrDefault() int {
 		return t.MaxRetry
 	}
 	return 2
-}
-
-func (t TelemetryConfig) PublicKey() string {
-	env := strings.TrimSpace(t.PublicKeyEnv)
-	if env == "" {
-		env = "LANGFUSE_PUBLIC_KEY"
-	}
-	return os.Getenv(env)
-}
-
-func (t TelemetryConfig) SecretKey() string {
-	env := strings.TrimSpace(t.SecretKeyEnv)
-	if env == "" {
-		env = "LANGFUSE_SECRET_KEY"
-	}
-	return os.Getenv(env)
 }
 
 func (t TelemetryConfig) EnvironmentOrDefault() string {

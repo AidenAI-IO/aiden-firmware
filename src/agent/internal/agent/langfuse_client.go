@@ -23,8 +23,8 @@ type langfuseClient struct {
 func newLangfuseClient(cfg TelemetryConfig) *langfuseClient {
 	return &langfuseClient{
 		baseURL:   strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
-		publicKey: cfg.PublicKey(),
-		secretKey: cfg.SecretKey(),
+		publicKey: strings.TrimSpace(cfg.PublicKey),
+		secretKey: strings.TrimSpace(cfg.SecretKey),
 		httpClient: &http.Client{
 			Timeout: cfg.UploadTimeoutOrDefault(),
 		},

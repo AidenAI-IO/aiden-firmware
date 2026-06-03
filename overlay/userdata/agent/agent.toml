@@ -106,13 +106,13 @@ provider = "duckduckgo"
 api_key = ""
 
 # Episode telemetry (Langfuse). Disabled by default.
-# Set enabled = true and configure base_url + LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY env vars.
+# Set enabled = true and configure base_url + public_key + secret_key.
 # [telemetry]
 # enabled = false
 # provider = "langfuse"
 # base_url = "http://langfuse.example.com:3000"
-# public_key_env = "LANGFUSE_PUBLIC_KEY"
-# secret_key_env = "LANGFUSE_SECRET_KEY"
+# public_key = "pk-lf-..."
+# secret_key = "sk-lf-..."
 # upload_screenshots = true
 # upload_timeout_sec = 30
 # max_retry = 2

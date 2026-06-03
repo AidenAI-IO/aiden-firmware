@@ -45,6 +45,25 @@ func TestConfigValidateTelemetryRequiresBaseURL(t *testing.T) {
 	}
 }
 
+func TestConfigValidateTelemetryRequiresKeys(t *testing.T) {
+	enabled := true
+	cfg := Config{
+		Model: ModelConfig{Provider: "fake"},
+		Telemetry: TelemetryConfig{
+			Enabled: &enabled,
+			BaseURL: "http://langfuse.test",
+		},
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "telemetry.public_key") {
+		t.Fatalf("Validate() = %v, want telemetry.public_key error", err)
+	}
+
+	cfg.Telemetry.PublicKey = "pk-test"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "telemetry.secret_key") {
+		t.Fatalf("Validate() = %v, want telemetry.secret_key error", err)
+	}
+}
+
 func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	canFinish := true
@@ -64,19 +83,19 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 		},
 		Events: []TaskEpisodeEvent{
 			{
-				EventID:  "evt1",
-				Ts:       start.Format(time.RFC3339Nano),
-				Type:     "planner_decision",
-				Role:     "planner",
+				EventID:   "evt1",
+				Ts:        start.Format(time.RFC3339Nano),
+				Type:      "planner_decision",
+				Role:      "planner",
 				Objective: "打开系统设置",
-				Plan:     []string{"打开系统设置"},
-				NextStep: "点击设置图标",
+				Plan:      []string{"打开系统设置"},
+				NextStep:  "点击设置图标",
 			},
 			{
-				EventID:  "evt2",
-				Ts:       start.Add(2 * time.Second).Format(time.RFC3339Nano),
-				Type:     "tool_call",
-				ToolName: "mouse_click",
+				EventID:   "evt2",
+				Ts:        start.Add(2 * time.Second).Format(time.RFC3339Nano),
+				Type:      "tool_call",
+				ToolName:  "mouse_click",
 				ToolInput: `{"x":100,"y":200}`,
 			},
 			{
@@ -99,9 +118,9 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 	}
 
 	exporter := NewEpisodeExporter(TelemetryConfig{
-		Enabled:  boolPtr(true),
-		BaseURL:  "http://langfuse.test",
-		Tags:     []string{"aiden-hardware"},
+		Enabled: boolPtr(true),
+		BaseURL: "http://langfuse.test",
+		Tags:    []string{"aiden-hardware"},
 	}, nil)
 	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
 	if err != nil {
@@ -220,11 +239,11 @@ outcome:
 		t.Fatalf("write screenshot: %v", err)
 	}
 
-	t.Setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
-	t.Setenv("LANGFUSE_SECRET_KEY", "sk-test")
 	exporter := NewEpisodeExporter(TelemetryConfig{
 		Enabled:           boolPtr(true),
 		BaseURL:           server.URL,
+		PublicKey:         "pk-test",
+		SecretKey:         "sk-test",
 		UploadScreenshots: boolPtr(true),
 		MaxRetry:          0,
 	}, nil)

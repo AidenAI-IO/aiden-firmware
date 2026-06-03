@@ -46,10 +46,10 @@ func TestUploadMediaCompletesWithPatch(t *testing.T) {
 	defer langfuseServer.Close()
 
 	client := newLangfuseClient(TelemetryConfig{
-		BaseURL: langfuseServer.URL,
+		BaseURL:   langfuseServer.URL,
+		PublicKey: "pk-test",
+		SecretKey: "sk-test",
 	})
-	client.publicKey = "pk-test"
-	client.secretKey = "sk-test"
 
 	mediaID, err := client.uploadMedia(context.Background(), "trace-1", "image/jpeg", []byte("jpeg-bytes"), "output")
 	if err != nil {

@@ -202,6 +202,10 @@ bool json_is_number(cJSON* item) {
     return json_is_type(item, cJSON_Number);
 }
 
+bool json_is_array(cJSON* item) {
+    return json_is_type(item, cJSON_Array);
+}
+
 bool json_is_bool(cJSON* item) {
     return json_is_type(item, cJSON_True) || json_is_type(item, cJSON_False);
 }
@@ -216,6 +220,13 @@ cJSON* add_array(cJSON* parent, const char* key) {
     cJSON* child = cJSON_CreateArray();
     cJSON_AddItemToObject(parent, key, child);
     return child;
+}
+
+void add_string_array_to_object(cJSON* parent, const char* key, const std::vector<std::string>& values) {
+    cJSON* array = add_array(parent, key);
+    for (size_t i = 0; i < values.size(); ++i) {
+        cJSON_AddItemToArray(array, cJSON_CreateString(values[i].c_str()));
+    }
 }
 
 std::string shell_quote(const std::string& text) {
@@ -846,6 +857,18 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddStringToObject(search, "provider", config.search.provider.c_str());
     cJSON_AddBoolToObject(search, "has_api_key", !config.search.api_key.empty());
 
+    cJSON* telemetry = add_object(root, "telemetry");
+    cJSON_AddBoolToObject(telemetry, "enabled", config.telemetry.enabled ? 1 : 0);
+    cJSON_AddStringToObject(telemetry, "provider", config.telemetry.provider.c_str());
+    cJSON_AddStringToObject(telemetry, "base_url", config.telemetry.base_url.c_str());
+    cJSON_AddStringToObject(telemetry, "public_key", config.telemetry.public_key.c_str());
+    cJSON_AddStringToObject(telemetry, "secret_key", config.telemetry.secret_key.c_str());
+    cJSON_AddBoolToObject(telemetry, "upload_screenshots", config.telemetry.upload_screenshots ? 1 : 0);
+    cJSON_AddNumberToObject(telemetry, "upload_timeout_sec", config.telemetry.upload_timeout_sec);
+    cJSON_AddNumberToObject(telemetry, "max_retry", config.telemetry.max_retry);
+    add_string_array_to_object(telemetry, "tags", config.telemetry.tags);
+    cJSON_AddStringToObject(telemetry, "environment", config.telemetry.environment.c_str());
+
     cJSON* agent = add_object(root, "agent");
     cJSON_AddStringToObject(agent, "instruction", config.instruction.c_str());
     cJSON_AddStringToObject(agent, "additional_prompt", config.additional_prompt.c_str());
@@ -948,6 +971,45 @@ void set_json_bool(bool* dst, cJSON* obj, const char* key) {
     }
 }
 
+void set_json_string_vector(std::vector<std::string>* dst, cJSON* obj, const char* key) {
+    cJSON* item = cJSON_GetObjectItem(obj, key);
+    if (!dst) {
+        return;
+    }
+    if (json_is_array(item)) {
+        std::vector<std::string> values;
+        int count = cJSON_GetArraySize(item);
+        for (int i = 0; i < count; ++i) {
+            cJSON* child = cJSON_GetArrayItem(item, i);
+            if (json_is_string(child)) {
+                std::string value = trim_copy(child->valuestring);
+                if (!value.empty()) {
+                    values.push_back(value);
+                }
+            }
+        }
+        *dst = values;
+        return;
+    }
+    if (json_is_string(item)) {
+        std::vector<std::string> values;
+        std::string text = item->valuestring;
+        size_t start = 0;
+        while (start <= text.size()) {
+            size_t comma = text.find(',', start);
+            std::string part = trim_copy(text.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+            if (!part.empty()) {
+                values.push_back(part);
+            }
+            if (comma == std::string::npos) {
+                break;
+            }
+            start = comma + 1;
+        }
+        *dst = values;
+    }
+}
+
 void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     if (!json_is_object(obj) || !m) return;
     set_json_str(&m->provider, obj, "provider");
@@ -1014,6 +1076,20 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         }
     }
 
+    cJSON* telemetry = cJSON_GetObjectItem(root, "telemetry");
+    if (json_is_object(telemetry)) {
+        set_json_bool(&config->telemetry.enabled, telemetry, "enabled");
+        set_json_str(&config->telemetry.provider, telemetry, "provider");
+        set_json_str(&config->telemetry.base_url, telemetry, "base_url");
+        set_json_str(&config->telemetry.public_key, telemetry, "public_key");
+        set_json_str(&config->telemetry.secret_key, telemetry, "secret_key");
+        set_json_bool(&config->telemetry.upload_screenshots, telemetry, "upload_screenshots");
+        set_json_int(&config->telemetry.upload_timeout_sec, telemetry, "upload_timeout_sec");
+        set_json_int(&config->telemetry.max_retry, telemetry, "max_retry");
+        set_json_string_vector(&config->telemetry.tags, telemetry, "tags");
+        set_json_str(&config->telemetry.environment, telemetry, "environment");
+    }
+
     cJSON* agent = cJSON_GetObjectItem(root, "agent");
     if (json_is_object(agent)) {
         set_json_str(&config->instruction, agent, "instruction");
@@ -1068,6 +1144,25 @@ std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
     std::string pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
     if (pointer_mode != "absolute" && pointer_mode != "touchscreen") {
         return "hid.pointer_mode must be absolute or touchscreen";
+    }
+    std::string telemetry_provider = trim_copy(config.telemetry.provider);
+    if (!telemetry_provider.empty() && telemetry_provider != "langfuse") {
+        return "telemetry.provider must be langfuse";
+    }
+    if (config.telemetry.enabled && trim_copy(config.telemetry.base_url).empty()) {
+        return "telemetry.base_url is required when telemetry.enabled is true";
+    }
+    if (config.telemetry.enabled && trim_copy(config.telemetry.public_key).empty()) {
+        return "telemetry.public_key is required when telemetry.enabled is true";
+    }
+    if (config.telemetry.enabled && trim_copy(config.telemetry.secret_key).empty()) {
+        return "telemetry.secret_key is required when telemetry.enabled is true";
+    }
+    if (config.telemetry.upload_timeout_sec < 0) {
+        return "telemetry.upload_timeout_sec must be >= 0";
+    }
+    if (config.telemetry.max_retry < 0) {
+        return "telemetry.max_retry must be >= 0";
     }
     return "";
 }
@@ -2585,6 +2680,93 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             all_passed = false;
         }
         cJSON_AddItemToArray(results, iter_r);
+    } else if (section == "telemetry") {
+        cJSON* enabled_item = cJSON_GetObjectItem(values, "enabled");
+        bool enabled = json_is_bool(enabled_item) && json_is_type(enabled_item, cJSON_True);
+
+        cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
+        std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
+        cJSON* provider_r = cJSON_CreateObject();
+        cJSON_AddStringToObject(provider_r, "check", "provider");
+        if (provider.empty() || provider == "langfuse") {
+            cJSON_AddBoolToObject(provider_r, "passed", 1);
+            cJSON_AddStringToObject(provider_r, "detail", provider.empty() ? "empty; defaults to langfuse" : provider.c_str());
+        } else {
+            cJSON_AddBoolToObject(provider_r, "passed", 0);
+            std::string msg = "got '" + provider + "', allowed: langfuse";
+            cJSON_AddStringToObject(provider_r, "detail", msg.c_str());
+            all_passed = false;
+        }
+        cJSON_AddItemToArray(results, provider_r);
+
+        cJSON* base_url_item = cJSON_GetObjectItem(values, "base_url");
+        std::string base_url = json_is_string(base_url_item) ? trim_copy(base_url_item->valuestring) : "";
+        cJSON* base_r = cJSON_CreateObject();
+        cJSON_AddStringToObject(base_r, "check", "base_url");
+        if (enabled && base_url.empty()) {
+            cJSON_AddBoolToObject(base_r, "passed", 0);
+            cJSON_AddStringToObject(base_r, "detail", "required when telemetry.enabled is true");
+            all_passed = false;
+        } else {
+            cJSON_AddBoolToObject(base_r, "passed", 1);
+            cJSON_AddStringToObject(base_r, "detail", base_url.empty() ? "empty; telemetry disabled or not configured" : base_url.c_str());
+        }
+        cJSON_AddItemToArray(results, base_r);
+
+        if (!base_url.empty()) {
+            cJSON* endpoint_r = cJSON_CreateObject();
+            cJSON_AddStringToObject(endpoint_r, "check", "endpoint_reachable");
+            std::string cmd = curl_env_exports + "curl -sI --max-time 6 " + curl_proxy_arg + shell_quote(base_url) + " 2>&1 | head -1";
+            CommandResult cr = run_shell_command(cmd);
+            bool reachable = cr.exit_code == 0 && cr.output.find("HTTP") != std::string::npos;
+            cJSON_AddBoolToObject(endpoint_r, "passed", reachable ? 1 : 0);
+            std::string detail = base_url + " -> " + trim_trailing_newlines(cr.output);
+            cJSON_AddStringToObject(endpoint_r, "detail", detail.c_str());
+            if (!reachable) all_passed = false;
+            cJSON_AddItemToArray(results, endpoint_r);
+        }
+
+        const char* key_fields[] = {"public_key", "secret_key", NULL};
+        for (int i = 0; key_fields[i]; ++i) {
+            cJSON* item = cJSON_GetObjectItem(values, key_fields[i]);
+            std::string key_value = json_is_string(item) ? trim_copy(item->valuestring) : "";
+            cJSON* r = cJSON_CreateObject();
+            cJSON_AddStringToObject(r, "check", key_fields[i]);
+            if (enabled && key_value.empty()) {
+                cJSON_AddBoolToObject(r, "passed", 0);
+                cJSON_AddStringToObject(r, "detail", "required when telemetry.enabled is true");
+                all_passed = false;
+            } else {
+                cJSON_AddBoolToObject(r, "passed", 1);
+                cJSON_AddStringToObject(r, "detail", key_value.empty() ? "empty; telemetry disabled or not configured" : "set");
+            }
+            cJSON_AddItemToArray(results, r);
+        }
+
+        const char* numeric_keys[] = {"upload_timeout_sec", "max_retry", NULL};
+        for (int i = 0; numeric_keys[i]; ++i) {
+            cJSON* item = cJSON_GetObjectItem(values, numeric_keys[i]);
+            cJSON* r = cJSON_CreateObject();
+            cJSON_AddStringToObject(r, "check", numeric_keys[i]);
+            if (json_is_number(item)) {
+                int n = item->valueint;
+                if (n < 0) {
+                    cJSON_AddBoolToObject(r, "passed", 0);
+                    std::string msg = "must be >= 0, got ";
+                    msg += std::to_string(n);
+                    cJSON_AddStringToObject(r, "detail", msg.c_str());
+                    all_passed = false;
+                } else {
+                    cJSON_AddBoolToObject(r, "passed", 1);
+                    cJSON_AddStringToObject(r, "detail", std::to_string(n).c_str());
+                }
+            } else {
+                cJSON_AddBoolToObject(r, "passed", 0);
+                cJSON_AddStringToObject(r, "detail", "not a number");
+                all_passed = false;
+            }
+            cJSON_AddItemToArray(results, r);
+        }
     } else if (section == "search") {
         cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
         std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";

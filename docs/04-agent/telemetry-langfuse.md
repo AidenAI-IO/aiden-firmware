@@ -11,8 +11,8 @@ Aiden Agent 在每次任务结束后，可将完整的 task episode（元数据�
 enabled = true
 provider = "langfuse"
 base_url = "http://langfuse.example.com:3000"
-public_key_env = "LANGFUSE_PUBLIC_KEY"
-secret_key_env = "LANGFUSE_SECRET_KEY"
+public_key = "pk-lf-..."
+secret_key = "sk-lf-..."
 upload_screenshots = true
 upload_timeout_sec = 30
 max_retry = 2
@@ -24,19 +24,14 @@ tags = ["aiden-hardware"]
 | --- | --- |
 | `enabled` | 总开关，`false` 时零开销 |
 | `base_url` | Langfuse Web 地址（不含路径） |
-| `public_key_env` / `secret_key_env` | 环境变量名，存放 Langfuse API 密钥 |
+| `public_key` / `secret_key` | Langfuse API 密钥 |
 | `upload_screenshots` | 是否上传 `artifacts/step_*.jpeg` 截图 |
 | `upload_timeout_sec` | 单次上报超时 |
 | `max_retry` | 失败后重试次数 |
 | `environment` | Langfuse trace 环境标签 |
 | `tags` | 附加到每条 trace 的标签 |
 
-密钥通过环境变量注入，例如设备侧 `/userdata/system/env`：
-
-```bash
-export LANGFUSE_PUBLIC_KEY=pk-lf-...
-export LANGFUSE_SECRET_KEY=sk-lf-...
-```
+密钥直接写入 `agent.toml` 的 `[telemetry]` 段。
 
 ## 数据流
 
