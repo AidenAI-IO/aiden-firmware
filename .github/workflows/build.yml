@@ -135,5 +135,6 @@ jobs:
           --tag-name "${{ steps.release_info.outputs.tag_name }}" \
           --target-commitish "${{ github.sha }}" \
           --asset-glob 'pico-sdk/output/image/*' \
+          --required-assets 'boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img update.img manifest.json' \
           --retry-count 5 \
-          --retry-delay-seconds 20
+          --retry-delay-seconds 30

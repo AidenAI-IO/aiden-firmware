@@ -12,6 +12,9 @@ mkdir -p "$assets_dir" "$fake_bin" "$state_dir"
 
 printf 'firmware image\n' > "$assets_dir/update.img"
 printf '{"version":"v-test"}\n' > "$assets_dir/manifest.json"
+for image in boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img; do
+  printf '%s\n' "$image" > "$assets_dir/$image"
+done
 
 cat > "$fake_bin/gh" <<'SH'
 #!/usr/bin/env bash
@@ -86,7 +89,7 @@ case "${2:-}" in
     count=$((count + 1))
     printf '%s\n' "$count" > "$count_file"
     printf 'upload:%s:%s\n' "$name" "$count" >> "$state_dir/events"
-    if [ "$name" = "update.img" ] && [ "$count" -eq 1 ]; then
+    if [ "$name" = "update.img" ] && [ "$count" -le 2 ]; then
       echo "write EPIPE" >&2
       exit 1
     fi
@@ -100,7 +103,18 @@ esac
 SH
 chmod +x "$fake_bin/gh"
 
+cat > "$fake_bin/sleep" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir="${FAKE_GH_STATE_DIR:?}"
+printf '%s\n' "$*" >> "$state_dir/sleeps"
+SH
+chmod +x "$fake_bin/sleep"
+
 log_file="$tmp_dir/release.log"
+target_commitish="$(git -C "$repo_root" rev-parse HEAD)"
+expected_commit_title="$(git -C "$repo_root" show -s --format=%s "$target_commitish")"
 if ! PATH="$fake_bin:$PATH" \
   FAKE_GH_STATE_DIR="$state_dir" \
   GH_TOKEN="test-token" \
@@ -108,10 +122,11 @@ if ! PATH="$fake_bin:$PATH" \
     "$repo_root/scripts/create_github_release.sh" \
       --tag-name v-test \
       --release-name "Test Release" \
-      --target-commitish abc123 \
+      --target-commitish "$target_commitish" \
       --asset-glob "$assets_dir/*" \
-      --retry-count 3 \
-      --retry-delay-seconds 0 \
+      --required-assets 'boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img update.img manifest.json' \
+      --retry-count 4 \
+      --retry-delay-seconds 15 \
       >"$log_file" 2>&1; then
   cat "$log_file" >&2
   exit 1
@@ -132,13 +147,36 @@ if ! grep -q 'Retrying release asset upload.*update.img' "$log_file"; then
   exit 1
 fi
 
-if [ "$(grep -c '^upload:update.img:' "$state_dir/events")" -ne 2 ]; then
-  echo "release script must retry failed update.img upload once" >&2
+if [ "$(grep -c '^upload:update.img:' "$state_dir/events")" -ne 3 ]; then
+  echo "release script must retry failed update.img upload until it succeeds" >&2
+  exit 1
+fi
+
+if ! grep -q 'waiting 15s before attempt 2/4' "$log_file" || \
+   ! grep -q 'waiting 30s before attempt 3/4' "$log_file"; then
+  echo "release script must increase retry delay between failed upload attempts" >&2
+  exit 1
+fi
+
+if [ "$(cat "$state_dir/sleeps")" != "$(printf '15\n30')" ]; then
+  echo "release script must sleep with increasing retry delays" >&2
   exit 1
 fi
 
 if [ "$(grep -c '^upload:manifest.json:' "$state_dir/events")" -ne 1 ]; then
   echo "release script must not retry successful manifest upload" >&2
+  exit 1
+fi
+
+for image in boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img; do
+  if [ "$(grep -c "^upload:$image:" "$state_dir/events")" -ne 1 ]; then
+    echo "release script must upload required OTA image: $image" >&2
+    exit 1
+  fi
+done
+
+if ! grep -F -q -- "--notes Automated build for $expected_commit_title" "$state_dir/calls"; then
+  echo "release script must include the target commit title in release notes" >&2
   exit 1
 fi
 
@@ -154,7 +192,7 @@ if [ "$publish_line" -le "$last_upload_line" ]; then
   exit 1
 fi
 
-rm -f "$state_dir/events" "$state_dir/calls" "$state_dir/release-exists" "$state_dir"/upload-* "$state_dir/create-count"
+rm -f "$state_dir/events" "$state_dir/calls" "$state_dir/sleeps" "$state_dir/release-exists" "$state_dir"/upload-* "$state_dir/create-count"
 if ! PATH="$fake_bin:$PATH" \
   FAKE_GH_STATE_DIR="$state_dir" \
   FAKE_GH_CREATE_PARTIAL_FAILURE=1 \
@@ -165,6 +203,7 @@ if ! PATH="$fake_bin:$PATH" \
       --release-name "Test Release" \
       --target-commitish abc123 \
       --asset-glob "$assets_dir/*" \
+      --required-assets 'boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img update.img manifest.json' \
       --retry-count 3 \
       --retry-delay-seconds 0 \
       >"$log_file" 2>&1; then
@@ -184,6 +223,34 @@ fi
 
 if ! grep -q '^publish:v-test$' "$state_dir/events"; then
   echo "release script must continue and publish after recovering an existing draft release" >&2
+  exit 1
+fi
+
+rm -f "$assets_dir/oem_b.img" "$state_dir/events" "$state_dir/calls" "$state_dir/release-exists" "$state_dir"/upload-* "$state_dir/create-count"
+if PATH="$fake_bin:$PATH" \
+  FAKE_GH_STATE_DIR="$state_dir" \
+  GH_TOKEN="test-token" \
+  GITHUB_REPOSITORY="owner/repo" \
+    "$repo_root/scripts/create_github_release.sh" \
+      --tag-name v-test \
+      --release-name "Test Release" \
+      --target-commitish abc123 \
+      --asset-glob "$assets_dir/*" \
+      --required-assets 'boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img update.img manifest.json' \
+      --retry-count 3 \
+      --retry-delay-seconds 0 \
+      >"$log_file" 2>&1; then
+  echo "release script must fail when a required OTA image is missing" >&2
+  exit 1
+fi
+
+if ! grep -q 'missing required release asset: oem_b.img' "$log_file"; then
+  echo "release script must identify the missing required OTA image" >&2
+  exit 1
+fi
+
+if [ -f "$state_dir/events" ]; then
+  echo "release script must fail before creating a release when required assets are missing" >&2
   exit 1
 fi
 

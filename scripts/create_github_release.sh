@@ -9,6 +9,7 @@ Usage:
     --release-name NAME \
     --target-commitish SHA \
     --asset-glob 'path/to/assets/*' \
+    [--required-assets 'FILE ...'] \
     [--retry-count N] \
     [--retry-delay-seconds N]
 EOF
@@ -23,10 +24,13 @@ die() {
   exit 1
 }
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 tag_name=""
 release_name=""
 target_commitish=""
 asset_glob=""
+required_assets=""
 retry_count=5
 retry_delay_seconds=20
 
@@ -46,6 +50,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --asset-glob)
       asset_glob="${2:-}"
+      shift 2
+      ;;
+    --required-assets)
+      required_assets="${2:-}"
       shift 2
       ;;
     --retry-count)
@@ -107,6 +115,30 @@ if [ "${#asset_files[@]}" -eq 0 ]; then
   die "no release assets matched: $asset_glob"
 fi
 
+asset_file_for_name() {
+  local name="$1"
+  local asset
+
+  for asset in "${asset_files[@]}"; do
+    if [ "$(basename "$asset")" = "$name" ]; then
+      printf '%s' "$asset"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+validate_required_assets() {
+  local required_asset
+
+  for required_asset in $required_assets; do
+    if ! asset_file_for_name "$required_asset" >/dev/null; then
+      die "missing required release asset: $required_asset"
+    fi
+  done
+}
+
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -117,12 +149,30 @@ sha256_of() {
   fi
 }
 
+release_notes_for_target() {
+  local commit_title=""
+
+  if command -v git >/dev/null 2>&1; then
+    commit_title="$(git -C "$repo_root" show -s --format=%s "$target_commitish" 2>/dev/null || true)"
+  fi
+
+  if [ -n "$commit_title" ]; then
+    printf 'Automated build for %s' "$commit_title"
+  else
+    printf 'Automated build for %s' "$target_commitish"
+  fi
+}
+
+release_notes="$(release_notes_for_target)"
+validate_required_assets
+
 log "Release upload context"
 log "  repository: ${GITHUB_REPOSITORY:-unknown}"
 log "  tag_name: $tag_name"
 log "  release_name: $release_name"
 log "  target_commitish: $target_commitish"
 log "  asset_glob: $asset_glob"
+log "  required_assets: ${required_assets:-none}"
 log "  retry_count: $retry_count"
 log "  retry_delay_seconds: $retry_delay_seconds"
 log "  gh_debug: ${GH_DEBUG:-unset}"
@@ -148,6 +198,7 @@ run_with_retry() {
   local status=0
   local tmp_base="${RUNNER_TEMP:-/tmp}"
   local err_file
+  local retry_wait_seconds
 
   while true; do
     err_file="$(mktemp "$tmp_base/github-release.XXXXXX")"
@@ -164,10 +215,11 @@ run_with_retry() {
       return "$status"
     fi
 
-    log "Retrying $label after failure; waiting ${retry_delay_seconds}s before attempt $((attempt + 1))/$retry_count"
+    retry_wait_seconds=$((retry_delay_seconds * attempt))
+    log "Retrying $label after failure; waiting ${retry_wait_seconds}s before attempt $((attempt + 1))/$retry_count"
     rm -f "$err_file"
-    if [ "$retry_delay_seconds" -gt 0 ]; then
-      sleep "$retry_delay_seconds"
+    if [ "$retry_wait_seconds" -gt 0 ]; then
+      sleep "$retry_wait_seconds"
     fi
     attempt=$((attempt + 1))
   done
@@ -183,6 +235,7 @@ ensure_release() {
   local status=0
   local tmp_base="${RUNNER_TEMP:-/tmp}"
   local err_file
+  local retry_wait_seconds
 
   while true; do
     err_file="$(mktemp "$tmp_base/github-release.XXXXXX")"
@@ -191,7 +244,7 @@ ensure_release() {
       --draft \
       --title "$release_name" \
       --target "$target_commitish" \
-      --notes "Automated build for $target_commitish" \
+      --notes "$release_notes" \
       2> >(tee "$err_file" >&2); then
       rm -f "$err_file"
       return 0
@@ -210,10 +263,11 @@ ensure_release() {
       return "$status"
     fi
 
-    log "Retrying release draft creation $tag_name after failure; waiting ${retry_delay_seconds}s before attempt $((attempt + 1))/$retry_count"
+    retry_wait_seconds=$((retry_delay_seconds * attempt))
+    log "Retrying release draft creation $tag_name after failure; waiting ${retry_wait_seconds}s before attempt $((attempt + 1))/$retry_count"
     rm -f "$err_file"
-    if [ "$retry_delay_seconds" -gt 0 ]; then
-      sleep "$retry_delay_seconds"
+    if [ "$retry_wait_seconds" -gt 0 ]; then
+      sleep "$retry_wait_seconds"
     fi
     attempt=$((attempt + 1))
   done

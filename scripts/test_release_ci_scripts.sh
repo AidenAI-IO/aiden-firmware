@@ -26,6 +26,23 @@ if ! grep -q -- '--retry-count' "$WORKFLOW" || ! grep -q -- '--retry-delay-secon
     exit 1
 fi
 
+if ! grep -q -- '--retry-delay-seconds 30' "$WORKFLOW"; then
+    echo "build workflow must use a longer release upload retry base delay" >&2
+    exit 1
+fi
+
+if ! grep -q -- '--required-assets' "$WORKFLOW"; then
+    echo "build workflow must require OTA release assets before publishing" >&2
+    exit 1
+fi
+
+for asset in boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img update.img manifest.json; do
+    if ! grep -q "$asset" "$WORKFLOW"; then
+        echo "build workflow must require release asset: $asset" >&2
+        exit 1
+    fi
+done
+
 if ! grep -q 'GH_DEBUG' "$WORKFLOW"; then
     echo "build workflow must enable GitHub CLI debug output for release creation" >&2
     exit 1
