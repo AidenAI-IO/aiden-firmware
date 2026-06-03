@@ -20,15 +20,16 @@ import (
 )
 
 type roleCollaborativeExecutor struct {
-	Model            llms.Model
-	Profiles         RoleProfiles
-	Tools            []langtools.Tool
-	Memory           schema.Memory
-	CallbacksHandler callbacks.Handler
-	MaxIterations    int
-	InputAttachments []InputAttachment
-	OutputKey        string
-	Recorder         *EpisodeRecorder
+	Model             llms.Model
+	Profiles          RoleProfiles
+	Tools             []langtools.Tool
+	Memory            schema.Memory
+	CallbacksHandler  callbacks.Handler
+	MaxIterations     int
+	InputAttachments  []InputAttachment
+	OutputKey         string
+	Recorder          *EpisodeRecorder
+	ScreenshotPruning ScreenshotPruningConfig
 }
 
 const roleModelCallTimeout = 120 * time.Second
@@ -116,20 +117,22 @@ func newRoleCollaborativeExecutor(
 	attachments []InputAttachment,
 	handler callbacks.Handler,
 	recorder *EpisodeRecorder,
+	screenshotPruning ScreenshotPruningConfig,
 ) *roleCollaborativeExecutor {
 	if mem == nil {
 		mem = memory.NewSimple()
 	}
 	return &roleCollaborativeExecutor{
-		Model:            model,
-		Profiles:         profiles,
-		Tools:            append([]langtools.Tool{}, tools...),
-		Memory:           mem,
-		MaxIterations:    maxIterations,
-		InputAttachments: append([]InputAttachment{}, attachments...),
-		CallbacksHandler: handler,
-		OutputKey:        "output",
-		Recorder:         recorder,
+		Model:             model,
+		Profiles:          profiles,
+		Tools:             append([]langtools.Tool{}, tools...),
+		Memory:            mem,
+		MaxIterations:     maxIterations,
+		InputAttachments:  append([]InputAttachment{}, attachments...),
+		CallbacksHandler:  handler,
+		OutputKey:         "output",
+		Recorder:          recorder,
+		ScreenshotPruning: screenshotPruning.WithDefaults(),
 	}
 }
 
@@ -330,7 +333,7 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	}}
 
 	if roleSeesToolScratchpad(profile.Name) && len(state.ToolSteps) > 0 {
-		scratchpad := (&FunctionAgent{Tools: e.Tools}).constructFunctionScratchPad(state.ToolSteps)
+		scratchpad := (&FunctionAgent{Tools: e.Tools, ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.ToolSteps)
 		messages = append(messages, scratchpad...)
 	}
 
@@ -549,9 +552,65 @@ func writeExecutionResultLine(builder *strings.Builder, index int, result roleEx
 	}
 	if result.Step != nil {
 		builder.WriteString(" observation=")
-		builder.WriteString(compactToolObservation(result.Step.Observation))
+		builder.WriteString(compactExecutionObservation(result.Action, *result.Step))
 	}
 	builder.WriteByte('\n')
+}
+
+func compactExecutionObservation(action *schema.AgentAction, step schema.AgentStep) string {
+	toolName := ""
+	if action != nil {
+		toolName = action.Tool
+	}
+	if strings.TrimSpace(toolName) == "" {
+		toolName = step.Action.Tool
+	}
+	if summary, ok := compactScreenshotObservation(toolName, step.Observation); ok {
+		return summary
+	}
+	return compactToolObservation(step.Observation)
+}
+
+func compactScreenshotObservation(toolName, observation string) (string, bool) {
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(observation), &result); err != nil {
+		return "", false
+	}
+	if result.Data == "" || result.Width <= 0 || result.Height <= 0 {
+		return "", false
+	}
+	if strings.TrimSpace(toolName) == "" {
+		toolName = "tool"
+	}
+	format := strings.TrimSpace(result.Format)
+	if format == "" {
+		format = "jpeg"
+	}
+	size := result.Size
+	if size <= 0 {
+		if imageBytes, err := base64.StdEncoding.DecodeString(result.Data); err == nil {
+			size = len(imageBytes)
+		}
+	}
+	if strings.TrimSpace(result.ActionOutput) != "" {
+		return fmt.Sprintf(
+			"%s completed with output %q, then returned a screenshot observation after the action settled: format=%s width=%d height=%d size=%d bytes. Image data omitted from text summary.",
+			toolName,
+			compactToolObservation(result.ActionOutput),
+			format,
+			result.Width,
+			result.Height,
+			size,
+		), true
+	}
+	return fmt.Sprintf(
+		"%s returned a screenshot observation: format=%s width=%d height=%d size=%d bytes. Image data omitted from text summary.",
+		toolName,
+		format,
+		result.Width,
+		result.Height,
+		size,
+	), true
 }
 
 func writeVerifierFeedback(builder *strings.Builder, state roleLoopState) {

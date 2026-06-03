@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/base64"
 	"encoding/json"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -154,12 +155,107 @@ func TestFunctionAgentScratchpadReplaysFallbackToolDescription(t *testing.T) {
 	}
 }
 
-func TestFunctionAgentScratchpadKeepsOnlyLatestThreeScreenshotImages(t *testing.T) {
+func TestFunctionAgentScratchpadKeepsScreenshotsUntilBatchThreshold(t *testing.T) {
 	agent := &FunctionAgent{
 		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
 	}
-	steps := make([]schema.AgentStep, 0, 5)
-	for i := 1; i <= 5; i++ {
+	steps := screenshotSteps(5)
+
+	messages := agent.constructFunctionScratchPad(steps)
+	imageURLs := scratchpadImageURLs(messages)
+
+	if got := scratchpadToolResponseCount(messages); got != 5 {
+		t.Fatalf("expected all 5 tool responses to remain, got %d", got)
+	}
+	if got := scratchpadImagePlaceholderCount(messages); got != 0 {
+		t.Fatalf("expected no image placeholders before batch threshold, got %d", got)
+	}
+	if len(imageURLs) != 5 {
+		t.Fatalf("expected 5 screenshot images in context, got %d (%#v)", len(imageURLs), imageURLs)
+	}
+	for i, url := range imageURLs {
+		expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("image-"+strconv.Itoa(i+1)))
+		if url != expected {
+			t.Fatalf("image %d = %q, want %q", i, url, expected)
+		}
+	}
+}
+
+func TestFunctionAgentScratchpadPrunesScreenshotsInBatches(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
+	}
+
+	messages29 := agent.constructFunctionScratchPad(screenshotSteps(29))
+	imageURLs29 := scratchpadImageURLs(messages29)
+	if got := scratchpadToolResponseCount(messages29); got != 29 {
+		t.Fatalf("expected all 29 tool responses to remain, got %d", got)
+	}
+	if got := scratchpadImagePlaceholderCount(messages29); got != 25 {
+		t.Fatalf("expected first prune batch to replace 25 images, got %d", got)
+	}
+	if len(imageURLs29) != 4 {
+		t.Fatalf("expected 4 full images after first prune batch, got %d (%#v)", len(imageURLs29), imageURLs29)
+	}
+	for i, url := range imageURLs29 {
+		expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("image-"+strconv.Itoa(i+26)))
+		if url != expected {
+			t.Fatalf("image %d = %q, want %q", i, url, expected)
+		}
+	}
+
+	messages30 := agent.constructFunctionScratchPad(screenshotSteps(30))
+	if !reflect.DeepEqual(messages29, messages30[:len(messages29)]) {
+		t.Fatalf("message prefix changed between batch pruning events")
+	}
+	if got := scratchpadImagePlaceholderCount(messages30); got != 25 {
+		t.Fatalf("expected placeholder count to remain stable between prune batches, got %d", got)
+	}
+	if len(scratchpadImageURLs(messages30)) != 5 {
+		t.Fatalf("expected one appended full image between prune batches")
+	}
+
+	messages54 := agent.constructFunctionScratchPad(screenshotSteps(54))
+	imageURLs54 := scratchpadImageURLs(messages54)
+	if got := scratchpadImagePlaceholderCount(messages54); got != 50 {
+		t.Fatalf("expected second prune batch to replace 50 total images, got %d", got)
+	}
+	if len(imageURLs54) != 4 {
+		t.Fatalf("expected 4 full images after second prune batch, got %d (%#v)", len(imageURLs54), imageURLs54)
+	}
+	for i, url := range imageURLs54 {
+		expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("image-"+strconv.Itoa(i+51)))
+		if url != expected {
+			t.Fatalf("second batch image %d = %q, want %q", i, url, expected)
+		}
+	}
+}
+
+func TestFunctionAgentScratchpadUsesConfiguredScreenshotPruning(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools:             []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
+		ScreenshotPruning: ScreenshotPruningConfig{KeepN: 2, Interval: 4},
+	}
+
+	messages := agent.constructFunctionScratchPad(screenshotSteps(7))
+	if got := scratchpadImagePlaceholderCount(messages); got != 4 {
+		t.Fatalf("expected configured prune batch to replace 4 images, got %d", got)
+	}
+	imageURLs := scratchpadImageURLs(messages)
+	if len(imageURLs) != 3 {
+		t.Fatalf("expected 3 full images after configured prune batch, got %d (%#v)", len(imageURLs), imageURLs)
+	}
+	for i, url := range imageURLs {
+		expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("image-"+strconv.Itoa(i+5)))
+		if url != expected {
+			t.Fatalf("configured image %d = %q, want %q", i, url, expected)
+		}
+	}
+}
+
+func screenshotSteps(count int) []schema.AgentStep {
+	steps := make([]schema.AgentStep, 0, count)
+	for i := 1; i <= count; i++ {
 		label := strconv.Itoa(i)
 		steps = append(steps, schema.AgentStep{
 			Action: schema.AgentAction{
@@ -171,41 +267,43 @@ func TestFunctionAgentScratchpadKeepsOnlyLatestThreeScreenshotImages(t *testing.
 				base64.StdEncoding.EncodeToString([]byte("image-"+label)) + `"}`,
 		})
 	}
+	return steps
+}
 
-	messages := agent.constructFunctionScratchPad(steps)
-
+func scratchpadImageURLs(messages []llms.MessageContent) []string {
 	var imageURLs []string
-	var toolResponses int
-	var omittedNotices int
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
-			switch p := part.(type) {
-			case llms.ImageURLContent:
-				imageURLs = append(imageURLs, p.URL)
-			case llms.ToolCallResponse:
-				toolResponses++
-				if strings.Contains(p.Content, "only the latest 3 screenshot observations are attached") {
-					omittedNotices++
-				}
+			if image, ok := part.(llms.ImageURLContent); ok {
+				imageURLs = append(imageURLs, image.URL)
 			}
 		}
 	}
+	return imageURLs
+}
 
-	if toolResponses != 5 {
-		t.Fatalf("expected all 5 tool responses to remain, got %d", toolResponses)
-	}
-	if omittedNotices != 2 {
-		t.Fatalf("expected 2 older screenshot omission notices, got %d", omittedNotices)
-	}
-	if len(imageURLs) != 3 {
-		t.Fatalf("expected 3 screenshot images in context, got %d (%#v)", len(imageURLs), imageURLs)
-	}
-	for i, url := range imageURLs {
-		expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("image-"+strconv.Itoa(i+3)))
-		if url != expected {
-			t.Fatalf("image %d = %q, want %q", i, url, expected)
+func scratchpadImagePlaceholderCount(messages []llms.MessageContent) int {
+	count := 0
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			if text, ok := part.(llms.TextContent); ok && text.Text == "[Image omitted]" {
+				count++
+			}
 		}
 	}
+	return count
+}
+
+func scratchpadToolResponseCount(messages []llms.MessageContent) int {
+	count := 0
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			if _, ok := part.(llms.ToolCallResponse); ok {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func TestFunctionAgentToolsAsLLMRequiresDescriptionParameter(t *testing.T) {
