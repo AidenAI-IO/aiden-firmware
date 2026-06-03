@@ -523,11 +523,34 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 	tags := cfg.extractTagsFromText(input)
 	entities := cfg.extractEntitiesFromText(input)
 	episode := recorder.Finish(output, metrics, runErr, tags, entities)
+	enrichEpisodeTelemetry(&episode, r.config)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := r.memoryPlane.CommitEpisode(ctx, episode); err != nil && r.logger != nil {
 		r.logger.Warn("[memory] commit episode failed: %v", err)
+		return
 	}
+	r.exportEpisodeBestEffort(episode)
+}
+
+func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode) {
+	if !r.config.Telemetry.EnabledOrDefault() || strings.TrimSpace(episode.UserGoal) == "" {
+		return
+	}
+	if r.config.ConfigDir == "" {
+		return
+	}
+	exporter := NewEpisodeExporter(r.config.Telemetry, r.logger)
+	episodesRoot := filepath.Join(r.config.ConfigDir, "memory", "episodes")
+	episodeDir := EpisodeDirectory(episodesRoot, episode)
+	timeout := r.config.Telemetry.UploadTimeoutOrDefault()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if err := exporter.ExportEpisodeDir(ctx, episodeDir, episode); err != nil && r.logger != nil {
+			r.logger.Warn("[telemetry] export episode failed: %v", err)
+		}
+	}()
 }
 
 func wrapToolsWithCallbacks(tools []langtools.Tool, handler callbacks.Handler) []langtools.Tool {

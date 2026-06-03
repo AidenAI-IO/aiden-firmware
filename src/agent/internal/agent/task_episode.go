@@ -559,6 +559,12 @@ func (s *TaskEpisodeStore) episodeDir(episode TaskEpisode) string {
 	return filepath.Join(s.rootDir, year, safePathName(episode.ID))
 }
 
+// EpisodeDirectory returns the on-disk directory for a committed episode.
+func EpisodeDirectory(episodesRoot string, episode TaskEpisode) string {
+	store := &TaskEpisodeStore{rootDir: episodesRoot}
+	return store.episodeDir(episode)
+}
+
 func (s *TaskEpisodeStore) indexPath() string {
 	return filepath.Join(s.rootDir, "index.yaml")
 }
