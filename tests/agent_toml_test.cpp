@@ -70,6 +70,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.hid.keyboard_device = "/dev/hidg0";
     cfg.hid.mouse_device = "/dev/hidg1";
     cfg.hid.frame_socket = "/run/frame_service/frame_service.sock";
+    cfg.hid.pointer_mode = "touchscreen";
 
     cfg.search.provider = "duckduckgo";
     cfg.search.api_key = "tvly-test";
@@ -129,6 +130,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.hid.keyboard_device == "/dev/hidg0");
     CHECK(loaded.hid.mouse_device == "/dev/hidg1");
     CHECK(loaded.hid.frame_socket == "/run/frame_service/frame_service.sock");
+    CHECK(loaded.hid.pointer_mode == "touchscreen");
 
     CHECK(loaded.search.provider == "duckduckgo");
     CHECK(loaded.search.api_key == "tvly-test");
