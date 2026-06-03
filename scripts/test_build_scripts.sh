@@ -225,9 +225,14 @@ if ! grep -q 'GH_DEBUG' "$WORKFLOW"; then
     exit 1
 fi
 
-if ! grep -q 'scripts/test_build_scripts.sh' "$CI_WORKFLOW" || \
+if grep -q 'git submodule update.*pico-sdk' "$CI_WORKFLOW"; then
+    echo "CI release script checks must not fetch the large pico-sdk submodule" >&2
+    exit 1
+fi
+
+if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW"; then
-    echo "CI must run build workflow and release upload script tests" >&2
+    echo "CI must run repo-only release workflow and upload script tests" >&2
     exit 1
 fi
 
