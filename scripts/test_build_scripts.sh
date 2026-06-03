@@ -6,6 +6,7 @@ BUILD_SH="$ROOT_DIR/_build.sh"
 LOCAL_BUILD_SH="$ROOT_DIR/build.sh"
 BUILD_IMAGE_SH="$ROOT_DIR/build_image.sh"
 WORKFLOW="$ROOT_DIR/.github/workflows/build.yml"
+CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
 REPACK_SCRIPT="$ROOT_DIR/scripts/repack_ota_update_image.sh"
 GITIGNORE="$ROOT_DIR/.gitignore"
 
@@ -196,6 +197,37 @@ release_line=$(grep -n 'Create Release' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
 if [ -z "$manifest_line" ] || [ -z "$config_line" ] || [ -z "$repack_line" ] || [ -z "$release_line" ] || \
     [ "$manifest_line" -ge "$config_line" ] || [ "$config_line" -ge "$repack_line" ] || [ "$repack_line" -ge "$release_line" ]; then
     echo "workflow must generate manifest, write device config, repack update.img, then create release" >&2
+    exit 1
+fi
+
+if ! grep -q 'scripts/create_github_release.sh' "$WORKFLOW"; then
+    echo "build workflow must create releases through the retry-capable local script" >&2
+    exit 1
+fi
+
+if grep -q 'softprops/action-gh-release' "$WORKFLOW"; then
+    echo "build workflow must not rely on action-gh-release for release uploads" >&2
+    exit 1
+fi
+
+if [ ! -x "$ROOT_DIR/scripts/create_github_release.sh" ]; then
+    echo "release creation script must exist and be executable" >&2
+    exit 1
+fi
+
+if ! grep -q -- '--retry-count' "$WORKFLOW" || ! grep -q -- '--retry-delay-seconds' "$WORKFLOW"; then
+    echo "build workflow must configure release upload retry count and delay" >&2
+    exit 1
+fi
+
+if ! grep -q 'GH_DEBUG' "$WORKFLOW"; then
+    echo "build workflow must enable GitHub CLI debug output for release creation" >&2
+    exit 1
+fi
+
+if ! grep -q 'scripts/test_build_scripts.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW"; then
+    echo "CI must run build workflow and release upload script tests" >&2
     exit 1
 fi
 
