@@ -1,4 +1,5 @@
-from runner.trace import extract_trace, extract_step_screenshots
+from runner.models import ToolCall, Trace
+from runner.trace import extract_trace, extract_step_screenshots, trace_has_skill_read
 
 HISTORY = [
     {"type": "user", "content": "请打开设置"},
@@ -40,3 +41,18 @@ def test_extract_trace_handles_malformed_input_gracefully():
     assert trace.total_tool_calls == 1
     assert trace.tool_calls[0].input == {}
     assert trace.tool_calls[0].has_screenshot is False
+
+
+def test_trace_has_skill_read_detects_matching_tool_call():
+    trace = Trace(
+        tool_calls=[
+            ToolCall(step=1, tool="skill_list", input={}),
+            ToolCall(step=2, tool="skill_read", input={"name": "device-operator"}),
+        ],
+        final_response="ok",
+        total_tool_calls=2,
+        total_duration_ms=0,
+    )
+
+    assert trace_has_skill_read(trace, "device-operator") is True
+    assert trace_has_skill_read(trace, "other-skill") is False

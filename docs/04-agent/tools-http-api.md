@@ -114,7 +114,7 @@ curl -X POST http://127.0.0.1:8080/api/tools/weather \
 ```
 
 `screenshot` 成功输出通常包含 `width`、`height`、`format`、`size` 和 base64 JPEG `data`。
-`keyboard_tap`、`keyboard_text`、`mouse_click`、`mouse_move`、`mouse_scroll` 和 `touch_gesture` 成功执行后，会等待 500ms 再自动截屏；其 `output` 为 JSON，包含原动作结果 `action_output`，以及截图的 `width`、`height`、`format`、`size` 和 base64 JPEG `data`。
+`keyboard_tap`、`keyboard_text`、`mouse_click`、`mouse_move`、`mouse_scroll` 和 `touch_gesture` 成功执行后，会等待 1s 再自动截屏；其 `output` 为 JSON，包含原动作结果 `action_output`，以及截图的 `width`、`height`、`format`、`size` 和 base64 JPEG `data`。
 `touch_gesture` 的 `back` 会从左物理边缘附近开始滑动，`home` 会从底部物理边缘附近开始上滑；需要手写 `swipe` 时也应使用贴边起点，例如 `start.x=0.001` 或 `start.y=0.999`。
 `current_time` 支持 IANA 时区名（如 `Asia/Shanghai`、`America/New_York`）、`UTC`、`local` 和 UTC offset（如 `+08:00`）。
 `weather` 支持地点名或经纬度，运行时通过 Open-Meteo 获取 geocoding、当前天气和短期预报。

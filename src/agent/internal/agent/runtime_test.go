@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -59,9 +60,7 @@ func TestRuntimeRun(t *testing.T) {
 	}
 
 	resolver := &testModelResolver{
-		model: fakellm.NewFakeLLM([]string{
-			"completed",
-		}),
+		model: &scriptedModel{responses: roleDirectResponses("completed")},
 	}
 
 	runtime := NewRuntimeWithDeps(cfg, resolver, NewMemoryManager(""), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}), NewSkillIndex())
@@ -85,7 +84,7 @@ func TestRuntimeRunIncludesAvailableSkillCatalog(t *testing.T) {
 		Description:  "Plan before acting",
 		Instructions: "Make a plan.",
 	}
-	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "ok"}}}}}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
 		&testModelResolver{model: model},
@@ -120,7 +119,7 @@ func TestRuntimeRunOmitsArchivedSkillsFromAvailableCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "ok"}}}}}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
 	runtime := NewRuntimeWithDeps(
 		Config{ConfigDir: configDir, SkillsDirs: []string{skillsDir}, Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
 		&testModelResolver{model: model},
@@ -153,6 +152,28 @@ func TestToolDescriptorsIncludeSkillToolMetadata(t *testing.T) {
 		}
 		if desc.Category != "skills" {
 			t.Fatalf("%s category = %q, want skills", name, desc.Category)
+		}
+		if desc.InputMode != toolInputModeJSON {
+			t.Fatalf("%s input mode = %q, want json", name, desc.InputMode)
+		}
+		if strings.TrimSpace(desc.ExampleInput) == "" {
+			t.Fatalf("%s missing example input", name)
+		}
+	}
+}
+
+func TestToolDescriptorsIncludeMemoryToolMetadata(t *testing.T) {
+	tools := &ToolSet{tools: map[string]langtools.Tool{}}
+	tools.RegisterMemoryTools(t.TempDir(), nil, 3, nil)
+	runtime := NewRuntimeWithDeps(Config{}, nil, nil, tools, NewSkillIndex())
+
+	for _, name := range []string{"recall_device_memory", "inspect_episode"} {
+		desc, ok := runtime.ToolDescriptorByName(name)
+		if !ok {
+			t.Fatalf("expected descriptor for %s", name)
+		}
+		if desc.Category != "memory" {
+			t.Fatalf("%s category = %q, want memory", name, desc.Category)
 		}
 		if desc.InputMode != toolInputModeJSON {
 			t.Fatalf("%s input mode = %q, want json", name, desc.InputMode)
@@ -226,10 +247,7 @@ func TestRuntimeRunReloadsSkillsWhenMarkedDirty(t *testing.T) {
 	}
 
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{Choices: []*llms.ContentChoice{{Content: "first"}}},
-			{Choices: []*llms.ContentChoice{{Content: "second"}}},
-		},
+		responses: append(roleDirectResponses("first"), roleDirectResponses("second")...),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -258,10 +276,13 @@ func TestRuntimeRunReloadsSkillsWhenMarkedDirty(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello again", Skills: []string{"alpha"}}); err != nil {
 		t.Fatalf("second Run() error = %v", err)
 	}
-	if !runtimeModelCallContains(model.messages[1], "Use alpha v2.") {
+	// Each run issues planner/executor/verifier calls, so the second run's planner
+	// prompt is the fourth recorded model call (index 3).
+	secondRunPlannerPrompt := model.messages[3]
+	if !runtimeModelCallContains(secondRunPlannerPrompt, "Use alpha v2.") {
 		t.Fatalf("second run missing reloaded v2 skill instructions")
 	}
-	if runtimeModelCallContains(model.messages[1], "Use alpha v1.") {
+	if runtimeModelCallContains(secondRunPlannerPrompt, "Use alpha v1.") {
 		t.Fatalf("second run still contains stale v1 skill instructions")
 	}
 }
@@ -361,6 +382,103 @@ func (m *scriptedModel) Call(context.Context, string, ...llms.CallOption) (strin
 	panic("unexpected Call invocation")
 }
 
+func contentResponse(content string) *llms.ContentResponse {
+	return contentResponseWithInfo(content, nil)
+}
+
+func contentResponseWithInfo(content string, info map[string]any) *llms.ContentResponse {
+	return &llms.ContentResponse{
+		Choices: []*llms.ContentChoice{{
+			Content:        content,
+			GenerationInfo: info,
+		}},
+	}
+}
+
+func plannerResponse(nextStep string, plan ...string) *llms.ContentResponse {
+	if len(plan) == 0 {
+		plan = []string{nextStep}
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"objective":           "test objective",
+		"completion_criteria": []string{"test request is satisfied"},
+		"plan":                plan,
+		"next_step":           nextStep,
+		"reason":              "test plan",
+	})
+	return contentResponse(string(payload))
+}
+
+func verifierFinishResponse(finalAnswer string) *llms.ContentResponse {
+	return verifierFinishResponseWithInfo(finalAnswer, nil)
+}
+
+func verifierFinishResponseWithInfo(finalAnswer string, info map[string]any) *llms.ContentResponse {
+	payload, _ := json.Marshal(map[string]any{
+		"can_finish":   true,
+		"final_answer": finalAnswer,
+		"reason":       "test verified",
+	})
+	return contentResponseWithInfo(string(payload), info)
+}
+
+func verifierContinueResponse(reason string) *llms.ContentResponse {
+	payload, _ := json.Marshal(map[string]any{
+		"can_finish":   false,
+		"needs_replan": true,
+		"reason":       reason,
+	})
+	return contentResponse(string(payload))
+}
+
+func toolCallResponse(id, name, arguments string) *llms.ContentResponse {
+	return &llms.ContentResponse{
+		Choices: []*llms.ContentChoice{{
+			ToolCalls: []llms.ToolCall{{
+				ID:   id,
+				Type: "function",
+				FunctionCall: &llms.FunctionCall{
+					Name:      name,
+					Arguments: arguments,
+				},
+			}},
+		}},
+	}
+}
+
+func multiToolCallResponse(calls ...llms.ToolCall) *llms.ContentResponse {
+	return &llms.ContentResponse{
+		Choices: []*llms.ContentChoice{{
+			ToolCalls: calls,
+		}},
+	}
+}
+
+func roleDirectResponses(finalAnswer string) []*llms.ContentResponse {
+	return []*llms.ContentResponse{
+		plannerResponse("answer directly"),
+		contentResponse(finalAnswer),
+		verifierFinishResponse(finalAnswer),
+	}
+}
+
+func roleToolResponses(toolName, arguments, finalAnswer string) []*llms.ContentResponse {
+	return []*llms.ContentResponse{
+		plannerResponse("use " + toolName),
+		toolCallResponse("call_1", toolName, arguments),
+		verifierFinishResponse(finalAnswer),
+	}
+}
+
+func firstRunEventOfType(events []RunEvent, eventType string) (RunEvent, bool) {
+	for _, event := range events {
+		if event.Type == eventType {
+			return event, true
+		}
+	}
+	return RunEvent{}, false
+}
+
 type stubTool struct {
 	name        string
 	description string
@@ -386,25 +504,7 @@ func (t *stubTool) Call(_ context.Context, input string) (string, error) {
 
 func TestRuntimeRunOpenRouterUsesToolsWithoutStreaming(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "audio_volume",
-							Arguments: `{"__arg1":"{}"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "The current audio volume is 42.",
-				}},
-			},
-		},
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}"}`, "The current audio volume is 42."),
 	}
 	tool := &stubTool{
 		name:        "audio_volume",
@@ -435,32 +535,14 @@ func TestRuntimeRunOpenRouterUsesToolsWithoutStreaming(t *testing.T) {
 	if len(tool.inputs) != 1 || tool.inputs[0] != "{}" {
 		t.Fatalf("unexpected tool inputs: %#v", tool.inputs)
 	}
-	if len(model.sawStreaming) != 2 || model.sawStreaming[0] || model.sawStreaming[1] {
+	if len(model.sawStreaming) != 3 || model.sawStreaming[0] || model.sawStreaming[1] || model.sawStreaming[2] {
 		t.Fatalf("expected non-streaming tool calls, got %#v", model.sawStreaming)
 	}
 }
 
 func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "audio_volume",
-							Arguments: `{"__arg1":"{}"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "The current audio volume is 42.",
-				}},
-			},
-		},
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}"}`, "The current audio volume is 42."),
 	}
 	tool := &stubTool{
 		name:        "audio_volume",
@@ -496,33 +578,26 @@ func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{
-						{
-							ID:   "call_1",
-							Type: "function",
-							FunctionCall: &llms.FunctionCall{
-								Name:      "slow_a",
-								Arguments: `{"__arg1":"{}"}`,
-							},
-						},
-						{
-							ID:   "call_2",
-							Type: "function",
-							FunctionCall: &llms.FunctionCall{
-								Name:      "slow_b",
-								Arguments: `{"__arg1":"{}"}`,
-							},
-						},
+			plannerResponse("use slow_a"),
+			multiToolCallResponse(
+				llms.ToolCall{
+					ID:   "call_1",
+					Type: "function",
+					FunctionCall: &llms.FunctionCall{
+						Name:      "slow_a",
+						Arguments: `{"__arg1":"{}"}`,
 					},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "done",
-				}},
-			},
+				},
+				llms.ToolCall{
+					ID:   "call_2",
+					Type: "function",
+					FunctionCall: &llms.FunctionCall{
+						Name:      "slow_b",
+						Arguments: `{"__arg1":"{}"}`,
+					},
+				},
+			),
+			verifierFinishResponse("done"),
 		},
 	}
 	toolA := &stubTool{name: "slow_a", description: "First tool.", output: `{"ok":true}`}
@@ -554,11 +629,11 @@ func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
 	if len(toolB.inputs) != 0 {
 		t.Fatalf("second tool inputs = %#v, want no calls", toolB.inputs)
 	}
-	if len(model.messages) < 2 {
-		t.Fatalf("model calls = %d, want at least 2", len(model.messages))
+	if len(model.messages) < 3 {
+		t.Fatalf("model calls = %d, want at least 3", len(model.messages))
 	}
 	var toolCallNames []string
-	for _, msg := range model.messages[1] {
+	for _, msg := range model.messages[2] {
 		for _, part := range msg.Parts {
 			toolCall, ok := part.(llms.ToolCall)
 			if !ok || toolCall.FunctionCall == nil {
@@ -574,25 +649,7 @@ func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
 
 func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "screenshot",
-							Arguments: `{"__arg1":"{}"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "屏幕暂时获取失败，frame service 正在恢复。",
-				}},
-			},
-		},
+		responses: roleToolResponses("screenshot", `{"__arg1":"{}"}`, "屏幕暂时获取失败，frame service 正在恢复。"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -625,11 +682,11 @@ func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
 	if result.Output != "屏幕暂时获取失败，frame service 正在恢复。" {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if len(model.messages) < 2 {
-		t.Fatalf("expected second model call with tool observation, got %d calls", len(model.messages))
+	if len(model.messages) < 3 {
+		t.Fatalf("expected verifier model call with tool observation, got %d calls", len(model.messages))
 	}
 	var toolObservation string
-	for _, msg := range model.messages[1] {
+	for _, msg := range model.messages[2] {
 		if msg.Role != llms.ChatMessageTypeTool {
 			continue
 		}
@@ -642,7 +699,8 @@ func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
 	if !strings.Contains(toolObservation, "error: screenshot failed: frame service: SERVICE_RECOVERING") {
 		t.Fatalf("unexpected tool observation: %q", toolObservation)
 	}
-	if len(events) < 2 || events[1].Type != "tool_result" || !events[1].IsError {
+	toolResult, ok := firstRunEventOfType(events, "tool_result")
+	if !ok || !toolResult.IsError {
 		t.Fatalf("expected error tool_result event, got %#v", events)
 	}
 }
@@ -650,35 +708,12 @@ func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
 func TestRuntimeAllowsNearRepeatedMouseClick(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "mouse_click",
-							Arguments: `{"x":"0.5","y":"0.08","coord_space":"normalized"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_2",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "mouse_click",
-							Arguments: `{"x":0.5,"y":0.12,"coord_space":"normalized"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "我会换一个方式继续。",
-				}},
-			},
+			plannerResponse("click first point"),
+			toolCallResponse("call_1", "mouse_click", `{"x":"0.5","y":"0.08","coord_space":"normalized"}`),
+			verifierContinueResponse("need a second click"),
+			plannerResponse("click nearby point"),
+			toolCallResponse("call_2", "mouse_click", `{"x":0.5,"y":0.12,"coord_space":"normalized"}`),
+			verifierFinishResponse("我会换一个方式继续。"),
 		},
 	}
 	tool := &stubTool{
@@ -739,35 +774,12 @@ func TestRuntimeAllowsNearRepeatedMouseClick(t *testing.T) {
 func TestRuntimeAllowsRepeatedKeyboardText(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "keyboard_text",
-							Arguments: `{"text":"yuanshen"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_2",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "keyboard_text",
-							Arguments: `{"text":"yuanshen"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "我不会重复输入。",
-				}},
-			},
+			plannerResponse("type first time"),
+			toolCallResponse("call_1", "keyboard_text", `{"text":"yuanshen"}`),
+			verifierContinueResponse("need a repeated input"),
+			plannerResponse("type second time"),
+			toolCallResponse("call_2", "keyboard_text", `{"text":"yuanshen"}`),
+			verifierFinishResponse("我不会重复输入。"),
 		},
 	}
 	tool := &stubTool{
@@ -802,25 +814,7 @@ func TestRuntimeAllowsRepeatedKeyboardText(t *testing.T) {
 
 func TestRuntimeRunReportsEnterSleepToolRequest(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "enter_sleep",
-							Arguments: `{"__arg1":"{\"reason\":\"user asked\"}"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "I will wait for the next wakeup.",
-				}},
-			},
-		},
+		responses: roleToolResponses("enter_sleep", `{"__arg1":"{\"reason\":\"user asked\"}"}`, "I will wait for the next wakeup."),
 	}
 	controller := NewSleepController()
 	runtime := NewRuntimeWithDeps(
@@ -850,25 +844,7 @@ func TestRuntimeRunReportsEnterSleepToolRequest(t *testing.T) {
 
 func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "audio_volume",
-							Arguments: `{"__arg1":"{}","description":"我先读取当前音量。"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "The current audio volume is 42.",
-				}},
-			},
-		},
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
 	}
 	tool := &stubTool{
 		name:        "audio_volume",
@@ -905,14 +881,15 @@ func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 	if len(tool.inputs) != 1 || tool.inputs[0] != "{}" {
 		t.Fatalf("unexpected tool inputs: %#v", tool.inputs)
 	}
-	if len(events) < 1 || events[0].Type != "tool_call" {
-		t.Fatalf("expected first event to be tool_call, got %#v", events)
+	toolCall, ok := firstRunEventOfType(events, "tool_call")
+	if !ok {
+		t.Fatalf("expected tool_call event, got %#v", events)
 	}
-	if events[0].Description != "我先读取当前音量。" || events[0].Content != events[0].Description {
-		t.Fatalf("unexpected tool description event: %#v", events[0])
+	if toolCall.Description != "我先读取当前音量。" || toolCall.Content != toolCall.Description {
+		t.Fatalf("unexpected tool description event: %#v", toolCall)
 	}
-	if events[0].ToolInput != "{}" {
-		t.Fatalf("tool_call event input = %q, want stripped input", events[0].ToolInput)
+	if toolCall.ToolInput != "{}" {
+		t.Fatalf("tool_call event input = %q, want stripped input", toolCall.ToolInput)
 	}
 }
 
@@ -932,13 +909,7 @@ func TestRuntimeCallbackRemovesPendingActionWithNormalizedToolInput(t *testing.T
 
 func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "completed",
-				}},
-			},
-		},
+		responses: roleDirectResponses("completed"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -963,10 +934,10 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 	if result.Output != "completed" {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if len(model.sawStreaming) != 1 || !model.sawStreaming[0] {
-		t.Fatalf("expected streaming call, got %#v", model.sawStreaming)
+	if len(model.sawStreaming) != 3 || model.sawStreaming[0] || model.sawStreaming[1] || model.sawStreaming[2] {
+		t.Fatalf("expected internal role calls to avoid provider streaming, got %#v", model.sawStreaming)
 	}
-	if stream.String() != "chunk:completed" {
+	if stream.String() != "completed" {
 		t.Fatalf("unexpected stream output: %q", stream.String())
 	}
 }
@@ -974,25 +945,7 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 	jpegBytes := []byte("fake-jpeg-binary")
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "screenshot",
-							Arguments: `{"__arg1":"{}"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "The screenshot shows a UI.",
-				}},
-			},
-		},
+		responses: roleToolResponses("screenshot", `{"__arg1":"{}"}`, "The screenshot shows a UI."),
 	}
 	tool := &stubTool{
 		name:        "screenshot",
@@ -1021,11 +974,11 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 	if result.Output != "The screenshot shows a UI." {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if len(model.messages) != 2 {
-		t.Fatalf("expected 2 model calls, got %d", len(model.messages))
+	if len(model.messages) != 3 {
+		t.Fatalf("expected 3 role model calls, got %d", len(model.messages))
 	}
 
-	secondCall := model.messages[1]
+	secondCall := model.messages[2]
 	var foundToolResponse bool
 	var foundImageURL bool
 
@@ -1063,25 +1016,7 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 	jpegBytes := []byte("fake-jpeg-binary")
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "screenshot",
-							Arguments: `{"__arg1":"{}"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "The screenshot shows a UI.",
-				}},
-			},
-		},
+		responses: roleToolResponses("screenshot", `{"__arg1":"{}"}`, "The screenshot shows a UI."),
 	}
 	tool := &stubTool{
 		name:        "screenshot",
@@ -1111,12 +1046,12 @@ func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if len(model.messages) != 2 {
-		t.Fatalf("expected 2 model calls, got %d", len(model.messages))
+	if len(model.messages) != 3 {
+		t.Fatalf("expected 3 role model calls, got %d", len(model.messages))
 	}
 
 	var foundToolResponse, foundImageURL bool
-	for _, msg := range model.messages[1] {
+	for _, msg := range model.messages[2] {
 		for _, part := range msg.Parts {
 			switch p := part.(type) {
 			case llms.ToolCallResponse:
@@ -1146,25 +1081,7 @@ func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 func TestRuntimeRunKeyboardToolAddsPostActionImageObservation(t *testing.T) {
 	jpegBytes := []byte("keyboard-post-action-jpeg")
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "keyboard_tap",
-							Arguments: `{"keys":["enter"]}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "The keyboard action updated the UI.",
-				}},
-			},
-		},
+		responses: roleToolResponses("keyboard_tap", `{"keys":["enter"]}`, "The keyboard action updated the UI."),
 	}
 	tool := &stubTool{
 		name:        "keyboard_tap",
@@ -1195,7 +1112,7 @@ func TestRuntimeRunKeyboardToolAddsPostActionImageObservation(t *testing.T) {
 	}
 
 	var foundToolResponse, foundImageURL bool
-	for _, msg := range model.messages[1] {
+	for _, msg := range model.messages[2] {
 		for _, part := range msg.Parts {
 			switch p := part.(type) {
 			case llms.ToolCallResponse:
@@ -1246,16 +1163,15 @@ func TestRuntimeCallbackHandlerCapturesUsageMetrics(t *testing.T) {
 
 func TestRuntimeRunCapturesUsageMetricsFromDirectModelCall(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{{
-			Choices: []*llms.ContentChoice{{
-				Content: "completed",
-				GenerationInfo: map[string]any{
-					"prompt_tokens":     600,
-					"completion_tokens": 40,
-					"total_tokens":      640,
-				},
-			}},
-		}},
+		responses: []*llms.ContentResponse{
+			plannerResponse("answer directly"),
+			contentResponse("completed"),
+			verifierFinishResponseWithInfo("completed", map[string]any{
+				"prompt_tokens":     600,
+				"completion_tokens": 40,
+				"total_tokens":      640,
+			}),
+		},
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
@@ -1279,19 +1195,14 @@ func TestRuntimeRunResetsPromptTokensWhenUsageUnavailable(t *testing.T) {
 	manager := NewMemoryManager("")
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "with usage",
-					GenerationInfo: map[string]any{
-						"prompt_tokens": 600,
-					},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "without usage",
-				}},
-			},
+			plannerResponse("answer first"),
+			contentResponse("with usage"),
+			verifierFinishResponseWithInfo("with usage", map[string]any{
+				"prompt_tokens": 600,
+			}),
+			plannerResponse("answer second"),
+			contentResponse("without usage"),
+			verifierFinishResponse("without usage"),
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -1333,7 +1244,7 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	defer firstRuntime.Close()
 
 	firstRuntime.models = &testModelResolver{
-		model: fakellm.NewFakeLLM([]string{"first"}),
+		model: &scriptedModel{responses: roleDirectResponses("first")},
 	}
 
 	firstResult, err := firstRuntime.Run(context.Background(), RunRequest{Input: "hello"})
@@ -1362,7 +1273,7 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	defer secondRuntime.Close()
 
 	secondRuntime.models = &testModelResolver{
-		model: fakellm.NewFakeLLM([]string{"second"}),
+		model: &scriptedModel{responses: roleDirectResponses("second")},
 	}
 
 	secondResult, err := secondRuntime.Run(context.Background(), RunRequest{Input: "again"})
@@ -1402,9 +1313,10 @@ func TestNewRuntimeLoadsBundledSkillsSeededOnFirstStartup(t *testing.T) {
 
 func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 	configDir := t.TempDir()
-	responses := make([]string, 30)
+	response := `{"objective":"test objective","completion_criteria":["test request is satisfied"],"plan":["answer directly"],"next_step":"answer directly","can_finish":true,"final_answer":"ok","reason":"test verified"}`
+	responses := make([]string, 90)
 	for i := range responses {
-		responses[i] = "ok"
+		responses[i] = response
 	}
 	runtime, err := NewRuntime(Config{
 		ConfigDir:     configDir,
@@ -1477,7 +1389,7 @@ func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
 
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
-		&testModelResolver{model: fakellm.NewFakeLLM([]string{"ok"})},
+		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("ok")}},
 		manager,
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
@@ -1585,13 +1497,7 @@ func TestRuntimeRunInjectsMemoryFilesIntoSystemPrompt(t *testing.T) {
 	}
 
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "ok",
-				}},
-			},
-		},
+		responses: roleDirectResponses("ok"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -1609,8 +1515,8 @@ func TestRuntimeRunInjectsMemoryFilesIntoSystemPrompt(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(model.messages) != 1 || len(model.messages[0]) == 0 {
-		t.Fatalf("expected one model call with messages, got %#v", model.messages)
+	if len(model.messages) != 3 || len(model.messages[0]) == 0 {
+		t.Fatalf("expected three role model calls with messages, got %#v", model.messages)
 	}
 
 	systemMessage := model.messages[0][0]
@@ -1634,13 +1540,7 @@ func TestRuntimeRunInjectsMemoryFilesIntoSystemPrompt(t *testing.T) {
 
 func TestRuntimeRunIncludesRuntimeContextInSystemMessage(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "ok",
-				}},
-			},
-		},
+		responses: roleDirectResponses("ok"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -1658,8 +1558,8 @@ func TestRuntimeRunIncludesRuntimeContextInSystemMessage(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello", RuntimeContext: runtimeContext}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(model.messages) != 1 || len(model.messages[0]) == 0 {
-		t.Fatalf("expected one model call with messages, got %#v", model.messages)
+	if len(model.messages) != 3 || len(model.messages[0]) == 0 {
+		t.Fatalf("expected three role model calls with messages, got %#v", model.messages)
 	}
 
 	systemMessage := model.messages[0][0]
@@ -1680,13 +1580,7 @@ func TestRuntimeRunIncludesRuntimeContextInSystemMessage(t *testing.T) {
 
 func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "processed",
-				}},
-			},
-		},
+		responses: roleDirectResponses("processed"),
 	}
 
 	runtime := NewRuntimeWithDeps(
@@ -1723,11 +1617,11 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	if result.Output != "processed" {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if len(model.messages) != 1 {
-		t.Fatalf("expected 1 model call, got %d", len(model.messages))
+	if len(model.messages) != 3 {
+		t.Fatalf("expected 3 role model calls, got %d", len(model.messages))
 	}
 
-	lastCall := model.messages[0]
+	lastCall := model.messages[1]
 	if len(lastCall) == 0 {
 		t.Fatalf("expected messages in model call")
 	}
@@ -1776,7 +1670,7 @@ func TestRuntimeClearMemoryRemovesPersistedFile(t *testing.T) {
 	defer runtime.Close()
 
 	runtime.models = &testModelResolver{
-		model: fakellm.NewFakeLLM([]string{"first"}),
+		model: &scriptedModel{responses: roleDirectResponses("first")},
 	}
 
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {

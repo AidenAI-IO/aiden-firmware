@@ -118,6 +118,7 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 		"不要重复同一个点击",
 		"优先使用搜索",
 		"US-keyboard ASCII",
+		"优先使用 audio_volume",
 		"优先使用 coord_space:\"normalized\"",
 		"仅在已校准时使用 coord_space:\"pixel\"",
 		"type \"back\"",

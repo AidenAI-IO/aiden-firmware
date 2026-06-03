@@ -154,6 +154,7 @@ def test_load_suite_rejects_answer_format_without_expected_answer(tmp_path: Path
     with pytest.raises(SuiteValidationError):
         load_suite(p)
 
+
 def test_load_suite_missing_tasks_raises(tmp_path: Path):
     p = tmp_path / "s.json"
     p.write_text(json.dumps({"name": "x"}), encoding="utf-8")
@@ -173,6 +174,60 @@ def test_load_suite_duplicate_ids_raise(tmp_path: Path):
     p.write_text(json.dumps(bad), encoding="utf-8")
     with pytest.raises(SuiteValidationError):
         load_suite(p)
+
+
+def test_phone_control_suite_uses_cmd_h_for_global_reset():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    sequence = suite.global_reset["tool_sequence"]
+
+    cmd_h_steps = [
+        step
+        for step in sequence
+        if step.get("tool") == "keyboard_tap" and step.get("args", {}).get("keys") == ["meta", "h"]
+    ]
+    assert len(cmd_h_steps) == 2
+    assert all(
+        not (step.get("tool") == "touch_gesture" and step.get("args", {}).get("type") == "home")
+        for step in sequence
+    )
+
+
+def test_phone_control_suite_constrains_agent_to_iphone_ui():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+
+    assert "iPhone" in suite.prompt_prefix
+    assert "macOS" in suite.prompt_prefix
+    assert "shell" in suite.prompt_prefix
+    assert "osascript" in suite.prompt_prefix
+
+
+def test_phone_control_tap_back_setup_is_iphone_specific():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+    setup = task_by_id["tap_back"].setup
+
+    assert setup.get("tool_sequence")
+    tools = [step.get("tool") for step in setup["tool_sequence"]]
+    assert "touch_gesture" in tools
+    assert "keyboard_text" in tools
+    assert any(
+        step.get("args", {}).get("text") == "设置"
+        for step in setup["tool_sequence"]
+        if step.get("tool") == "keyboard_text"
+    )
+
+
+def test_phone_control_bluetooth_task_uses_chinese_keyword():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    task = next(task for task in suite.tasks if task.id == "settings_search_bluetooth")
+
+    assert "蓝牙" in task.prompt
+    assert "Bluetooth" not in task.prompt
+    assert any("蓝牙" in item.check for item in task.rubric)
 
 def test_memory_suite_covers_representative_memory_behaviors():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "memory_v1.json"
@@ -263,3 +318,17 @@ def test_personamem_lt_recall_suite_uses_deterministic_answers():
             command = step["args"]["command"]
             assert "<<'EOF'" in command
             assert "\nEOF" in command
+
+
+def test_episode_memory_suite_guards_against_setup_context_leakage():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "episode_memory_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+    task = task_by_id["reuse_success_episode_for_planning"]
+
+    assert task.setup["type"] == "agent_prompt"
+    assert task.setup["clear_history_after"] is True
+    assert any(
+        "recall_device_memory" in item.check and "inspect_episode" in item.check
+        for item in task.rubric
+    )

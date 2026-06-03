@@ -250,6 +250,29 @@ func TestDirectionalSwipeDistanceOverridesStrength(t *testing.T) {
 	}
 }
 
+func TestDirectionalSwipeStrengthDefaultsToImmediateRelease(t *testing.T) {
+	dev, w := newTimedHIDDevice()
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"swipe_left","strength":"medium","steps":2,"duration_ms":0,"hold_before_ms":0}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	times := w.writeTimes()
+	if len(times) != 2+2+touchReleaseReportCount {
+		t.Fatalf("len(times) = %d, want %d", len(times), 2+2+touchReleaseReportCount)
+	}
+	firstRelease := len(times) - touchReleaseReportCount
+	releaseDelay := times[firstRelease].Sub(times[firstRelease-1])
+	if releaseDelay > 200*time.Millisecond {
+		t.Fatalf("directional swipe final-move-to-release gap = %v, want no default hold_after_ms delay", releaseDelay)
+	}
+}
+
 func TestDirectionalSwipeRejectsInvalidStrength(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}

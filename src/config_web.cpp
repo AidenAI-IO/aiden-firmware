@@ -709,6 +709,8 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.voice_tool_call_speech = true;
     cfg.voice_max_response_tokens = 400;
     cfg.max_iterations = -1;
+    cfg.screenshot_keep_n = 3;
+    cfg.screenshot_prune_interval = 25;
 
     cfg.model.provider = "openrouter";
     cfg.model.model = "bytedance-seed/seed-2.0-lite";
@@ -851,6 +853,8 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddBoolToObject(agent, "voice_tool_call_speech", config.voice_tool_call_speech ? 1 : 0);
     cJSON_AddNumberToObject(agent, "voice_max_response_tokens", config.voice_max_response_tokens);
     cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
+    cJSON_AddNumberToObject(agent, "screenshot_keep_n", config.screenshot_keep_n);
+    cJSON_AddNumberToObject(agent, "screenshot_prune_interval", config.screenshot_prune_interval);
 
     return root;
 }
@@ -1017,6 +1021,8 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_bool(&config->voice_tool_call_speech, agent, "voice_tool_call_speech");
         set_json_int(&config->voice_max_response_tokens, agent, "voice_max_response_tokens");
         set_json_int(&config->max_iterations, agent, "max_iterations");
+        set_json_int(&config->screenshot_keep_n, agent, "screenshot_keep_n");
+        set_json_int(&config->screenshot_prune_interval, agent, "screenshot_prune_interval");
     }
 }
 
@@ -1038,6 +1044,12 @@ std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
     }
     if (config.max_iterations < -1) {
         return "max_iterations must be >= -1";
+    }
+    if (config.screenshot_keep_n < 0) {
+        return "screenshot_keep_n must be >= 0";
+    }
+    if (config.screenshot_prune_interval < 0) {
+        return "screenshot_prune_interval must be >= 0";
     }
     return "";
 }
@@ -2470,7 +2482,8 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         const char* numeric_keys[] = {
             "silence_ms", "min_speech_ms",
             "voice_followup_timeout_ms", "voice_first_turn_timeout_ms",
-            "voice_max_turns", "voice_max_response_tokens", NULL
+            "voice_max_turns", "voice_max_response_tokens",
+            "screenshot_keep_n", "screenshot_prune_interval", NULL
         };
         for (int i = 0; numeric_keys[i]; ++i) {
             cJSON* item = cJSON_GetObjectItem(values, numeric_keys[i]);

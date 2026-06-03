@@ -56,6 +56,11 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"reason":"user asked me to sleep"}`,
 	},
+	"inspect_episode": {
+		Category:     "memory",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"id":"ep_..."}`,
+	},
 	"keyboard_tap": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
@@ -80,6 +85,11 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"delta":-3}`,
+	},
+	"recall_device_memory": {
+		Category:     "memory",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"terms":["微信"],"tags":["登录"],"entities":["微信App"],"types":["procedure","failure"],"device_id":"default","limit":5}`,
 	},
 	"screenshot": {
 		Category:     "observation",
@@ -232,7 +242,7 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 	builder.WriteString("- For private device URLs, suspect proxy interference first if the TCP port is reachable but HTTP returns gateway/proxy errors.\n\n")
 	builder.WriteString("Recommended workflow:\n")
 	builder.WriteString("- Start with `GET /api/tools` if you need to confirm the tool list or example payloads.\n")
-	builder.WriteString("- Use `screenshot` before input actions when you need current screen context; keyboard, mouse, and touch tools automatically wait 500ms and return a post-action screenshot on success.\n")
+	builder.WriteString("- Use `screenshot` before input actions when you need current screen context; keyboard, mouse, and touch tools automatically wait 1s and return a post-action screenshot on success.\n")
 	builder.WriteString("- After any screenshot or post-action screenshot, inspect the current screen before choosing the next action; do not repeat the same click, gesture, or key unless the image proves the previous action did not take effect.\n")
 	builder.WriteString("- When opening apps or finding contacts, settings, products, or page content on a phone, prefer system search, in-app search, or visible search fields before scrolling through pages or lists.\n")
 	builder.WriteString("- `keyboard_text` simulates a US keyboard: call it with JSON like `{\"text\":\"App Store\"}` and only ASCII text. Do not send Chinese or emoji directly; use pinyin/English search terms and select on-screen candidates when needed.\n")
@@ -244,7 +254,7 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 		if descriptor.Name == "screenshot" {
 			builder.WriteString("  Successful output JSON includes `width`, `height`, `format`, `size`, and base64 JPEG `data`.\n")
 		} else if descriptor.Category == "input" {
-			builder.WriteString("  On successful execution, output JSON includes `action_output`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from a screenshot captured 500ms after the action.\n")
+			builder.WriteString("  On successful execution, output JSON includes `action_output`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from a screenshot captured 1s after the action.\n")
 		}
 		if strings.TrimSpace(descriptor.ExampleInput) != "" {
 			builder.WriteString(fmt.Sprintf("  Example input: `%s`\n", descriptor.ExampleInput))

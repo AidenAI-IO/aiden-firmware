@@ -42,6 +42,8 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.voice_tool_call_speech = false;
     cfg.voice_max_response_tokens = 240;
     cfg.max_iterations = 6;
+    cfg.screenshot_keep_n = 5;
+    cfg.screenshot_prune_interval = 40;
 
     cfg.model.provider = "openrouter";
     cfg.model.model = "openai/gpt-4o-mini";
@@ -96,9 +98,11 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.voice_max_turns == 4);
     CHECK(loaded.voice_interrupt_on_wakeup == false);
     CHECK(loaded.voice_streaming_tts_enabled == false);
-    CHECK(loaded.voice_tool_call_speech == false);
-    CHECK(loaded.voice_max_response_tokens == 240);
-    CHECK(loaded.max_iterations == 6);
+	CHECK(loaded.voice_tool_call_speech == false);
+	CHECK(loaded.voice_max_response_tokens == 240);
+	CHECK(loaded.max_iterations == 6);
+	CHECK(loaded.screenshot_keep_n == 5);
+	CHECK(loaded.screenshot_prune_interval == 40);
 
     CHECK(loaded.model.provider == "openrouter");
     CHECK(loaded.model.model == "openai/gpt-4o-mini");
