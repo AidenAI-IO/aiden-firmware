@@ -30,6 +30,11 @@ type MemoryHandle struct {
 // summary of the events being archived into a chunk.
 type SummarizeFn func(ctx context.Context, events []SessionEvent) string
 
+// StructuredSummarizeFn generates typed chunk metadata from a list of session
+// events. It augments, but does not replace, the plain text summary so older
+// data and prompt rendering remain compatible.
+type StructuredSummarizeFn func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary
+
 // ContextWindowFn returns the current model's context window in tokens. The
 // memory manager calls it on every compression decision so model swaps take
 // effect at runtime without restart. Implementations should return 0 when the
@@ -37,18 +42,19 @@ type SummarizeFn func(ctx context.Context, events []SessionEvent) string
 type ContextWindowFn func() int
 
 type MemoryManager struct {
-	mu               sync.Mutex
-	handles          map[string]*MemoryHandle
-	eventCount       map[string]int
-	storageDir       string
-	extraction       MemoryExtractionConfig
-	lastPromptTokens int
-	summarizeFn      SummarizeFn
-	profileFn        ProfileFn
-	contextWindowFn  ContextWindowFn
-	profileDebouncer *ProfileDebouncer
-	lockTimeout      time.Duration
-	logger           *Logger
+	mu                    sync.Mutex
+	handles               map[string]*MemoryHandle
+	eventCount            map[string]int
+	storageDir            string
+	extraction            MemoryExtractionConfig
+	lastPromptTokens      int
+	summarizeFn           SummarizeFn
+	structuredSummarizeFn StructuredSummarizeFn
+	profileFn             ProfileFn
+	contextWindowFn       ContextWindowFn
+	profileDebouncer      *ProfileDebouncer
+	lockTimeout           time.Duration
+	logger                *Logger
 
 	maintenanceMu      sync.Mutex
 	maintenanceRunning bool
@@ -82,6 +88,10 @@ func WithExtractionConfig(cfg MemoryExtractionConfig) MemoryManagerOption {
 
 func WithSummarizeFn(fn SummarizeFn) MemoryManagerOption {
 	return func(m *MemoryManager) { m.summarizeFn = fn }
+}
+
+func WithStructuredSummarizeFn(fn StructuredSummarizeFn) MemoryManagerOption {
+	return func(m *MemoryManager) { m.structuredSummarizeFn = fn }
 }
 
 func WithProfileFn(fn ProfileFn) MemoryManagerOption {
@@ -572,7 +582,25 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	hotEvents := append([]SessionEvent(nil), events[compactCount:]...)
 
 	summary := summarizeSessionEvents(compactEvents)
-	if m.summarizeFn != nil {
+	structured := ChunkStructuredSummary{}
+	usedStructured := false
+	if m.structuredSummarizeFn != nil {
+		if m.logger != nil {
+			m.logger.Info("[memory] generating structured LLM summary for %d events", len(compactEvents))
+		}
+		if llmStructured := m.structuredSummarizeFn(ctx, compactEvents); strings.TrimSpace(llmStructured.Summary) != "" {
+			structured = llmStructured
+			structured.Summary = strings.TrimSpace(structured.Summary)
+			usedStructured = true
+			summary = structured.Summary
+			if m.logger != nil {
+				m.logger.Info("[memory] structured LLM summary generated: %s", truncateForLog(summary, 80))
+			}
+		} else if m.logger != nil {
+			m.logger.Info("[memory] structured LLM summary failed, falling back to plain summarizer")
+		}
+	}
+	if !usedStructured && m.summarizeFn != nil {
 		if m.logger != nil {
 			m.logger.Info("[memory] generating LLM summary for %d events", len(compactEvents))
 		}
@@ -587,9 +615,10 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	}
 
 	chunkSummary, err := session.compressEvents(ctx, compactEvents, CompressOption{
-		Summary:  summary,
-		Tags:     m.extraction.extractMemoryTags(compactEvents),
-		Entities: m.extraction.extractMemoryEntities(compactEvents),
+		Summary:    summary,
+		Structured: structured,
+		Tags:       m.extraction.extractMemoryTags(compactEvents),
+		Entities:   m.extraction.extractMemoryEntities(compactEvents),
 	})
 	if err != nil {
 		if m.logger != nil {

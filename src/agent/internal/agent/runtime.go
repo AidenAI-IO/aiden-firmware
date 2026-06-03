@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -156,6 +157,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
 	modelManager := NewModelManager(cfg.Model, cfg.Proxy)
 	summarizeFn := buildLLMSummarizeFn(modelManager)
+	structuredSummarizeFn := buildLLMStructuredSummarizeFn(modelManager)
 	profileFn := buildLLMProfileFn(modelManager)
 	contextWindowFn := func() int { return modelManager.Spec().ContextWindow }
 
@@ -171,7 +173,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 	toolSet.RegisterMemoryTools(memoryDir, profileFn, extractionCfg.SummaryMaxChunks, debouncer)
 
-	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithMemoryLogger(logger)), toolSet, skillIndex)
+	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithStructuredSummarizeFn(structuredSummarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithMemoryLogger(logger)), toolSet, skillIndex)
 
 	// Register skill tools after the runtime exists so skill_manage can mark the
 	// skill index dirty. The updated index is reloaded at the start of the next run.
@@ -769,6 +771,112 @@ func buildLLMSummarizeFn(models ModelResolver) SummarizeFn {
 		}
 		return strings.TrimSpace(result)
 	}
+}
+
+const structuredSummarizerPrompt = `Summarize this conversation chunk as STRICT JSON only. Do not wrap in markdown.
+Schema:
+{
+  "summary": "1 concise sentence in the same language as the conversation",
+  "user_goals": [],
+  "confirmed_facts": [],
+  "decisions": [],
+  "proposals": [],
+  "open_tasks": [],
+  "risks_or_pitfalls": [],
+  "memory_candidates": []
+}
+Rules:
+- Distinguish implemented/verified facts from proposals.
+- Put assistant suggestions or unimplemented designs in proposals, not confirmed_facts.
+- Put only explicit user-approved choices or clearly completed outcomes in decisions.
+- Put unfinished work in open_tasks.
+- memory_candidates must be durable user/project facts worth future recall; omit transient todos and assistant speculation.
+- Keep each list item short. Empty lists are allowed.
+
+Transcript:
+`
+
+const (
+	structuredSummaryMaxItems       = 16
+	structuredSummaryMaxItemRunes   = 240
+	structuredSummaryMaxSummaryRune = 480
+)
+
+func buildLLMStructuredSummarizeFn(models ModelResolver) StructuredSummarizeFn {
+	return func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary {
+		model, err := models.Get()
+		if err != nil {
+			return ChunkStructuredSummary{}
+		}
+		var transcript strings.Builder
+		for _, evt := range events {
+			content := strings.TrimSpace(evt.Content)
+			if content == "" {
+				continue
+			}
+			transcript.WriteString(fmt.Sprintf("[%s:%s] %s\n", evt.Role, evt.Type, content))
+		}
+		if transcript.Len() == 0 {
+			return ChunkStructuredSummary{}
+		}
+		result, err := llms.GenerateFromSinglePrompt(ctx, model, structuredSummarizerPrompt+transcript.String(), llms.WithMaxTokens(800))
+		if err != nil {
+			return ChunkStructuredSummary{}
+		}
+		structured, err := parseChunkStructuredSummaryJSON(result)
+		if err != nil {
+			return ChunkStructuredSummary{}
+		}
+		return structured
+	}
+}
+
+func parseChunkStructuredSummaryJSON(text string) (ChunkStructuredSummary, error) {
+	jsonText := strings.TrimSpace(text)
+	var structured ChunkStructuredSummary
+	decoder := json.NewDecoder(strings.NewReader(jsonText))
+	if err := decoder.Decode(&structured); err != nil {
+		return ChunkStructuredSummary{}, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return ChunkStructuredSummary{}, fmt.Errorf("structured summary must contain a single JSON object")
+	}
+	structured.Summary = capRunes(strings.TrimSpace(structured.Summary), structuredSummaryMaxSummaryRune)
+	structured.UserGoals = cleanStringList(structured.UserGoals)
+	structured.ConfirmedFacts = cleanStringList(structured.ConfirmedFacts)
+	structured.Decisions = cleanStringList(structured.Decisions)
+	structured.Proposals = cleanStringList(structured.Proposals)
+	structured.OpenTasks = cleanStringList(structured.OpenTasks)
+	structured.RisksOrPitfalls = cleanStringList(structured.RisksOrPitfalls)
+	structured.MemoryCandidates = cleanStringList(structured.MemoryCandidates)
+	return structured, nil
+}
+
+func cleanStringList(values []string) []string {
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		value = capRunes(strings.TrimSpace(value), structuredSummaryMaxItemRunes)
+		if value == "" {
+			continue
+		}
+		cleaned = append(cleaned, value)
+		if len(cleaned) >= structuredSummaryMaxItems {
+			break
+		}
+	}
+	return cleaned
+}
+
+func capRunes(text string, max int) string {
+	if max <= 0 || text == "" {
+		return text
+	}
+	if utf8.RuneCountInString(text) <= max {
+		return text
+	}
+	runes := []rune(text)
+	return string(runes[:max])
 }
 
 func buildLLMProfileFn(models ModelResolver) ProfileFn {
