@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -27,7 +28,7 @@ var wakeupGPIOPins = []int{33, 32}
 func main() {
 	var (
 		configDir = flag.String("config", "", "path to config directory (required)")
-		addr      = flag.String("addr", ":8080", "HTTP server address")
+		addr      = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
 	)
 	flag.Parse()
 
@@ -74,7 +75,9 @@ func main() {
 
 	fmt.Printf("🚀 Aiden Agent daemon starting on %s\n", *addr)
 	fmt.Printf("📂 Config directory: %s\n", *configDir)
-	fmt.Printf("🌐 Web UI: http://localhost%s\n", *addr)
+	if _, port, err := net.SplitHostPort(*addr); err == nil && port != "" {
+		fmt.Printf("🌐 Web UI: http://localhost:%s\n", port)
+	}
 	fmt.Printf("📝 Logs: %s/log/\n", *configDir)
 
 	if err := server.Start(); err != nil {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -17,7 +18,6 @@ import (
 	"time"
 
 	"github.com/tmc/langchaingo/llms"
-	fakellm "github.com/tmc/langchaingo/llms/fake"
 	langtools "github.com/tmc/langchaingo/tools"
 
 	ttsmodule "aiden-agent/internal/agent/tts"
@@ -33,27 +33,18 @@ func (s *stubSTTClient) TranscribeWAV(wavData []byte) (string, error) {
 	return s.transcript, nil
 }
 
+func firstMessageOfType(messages []Message, messageType string) (Message, bool) {
+	for _, message := range messages {
+		if message.Type == messageType {
+			return message, true
+		}
+	}
+	return Message{}, false
+}
+
 func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "audio_volume",
-							Arguments: `{"__arg1":"{}","description":"我先读取当前音量。"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "The current audio volume is 42.",
-				}},
-			},
-		},
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
 	}
 	tool := &stubTool{
 		name:        "audio_volume",
@@ -95,24 +86,107 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if resp.Response != "The current audio volume is 42." {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
-	if len(resp.History) != 4 {
-		t.Fatalf("expected 4 history entries, got %d", len(resp.History))
+	if len(resp.History) != 7 {
+		t.Fatalf("expected 7 history entries including role outputs, got %d", len(resp.History))
 	}
 
 	if resp.History[0].Type != "user" || resp.History[0].Content != "当前音量是多少？" {
 		t.Fatalf("unexpected first history message: %#v", resp.History[0])
 	}
-	if resp.History[1].Type != "tool_call" || resp.History[1].ToolName != "audio_volume" || resp.History[1].ToolInput != "{}" {
-		t.Fatalf("unexpected tool_call message: %#v", resp.History[1])
+	roleOutput, ok := firstMessageOfType(resp.History, "role_output")
+	if !ok || roleOutput.Role != "planner" {
+		t.Fatalf("expected planner role_output in history: %#v", resp.History)
 	}
-	if resp.History[1].Description != "我先读取当前音量。" || resp.History[1].Content != "我先读取当前音量。" {
-		t.Fatalf("unexpected tool_call description: %#v", resp.History[1])
+	toolCall, ok := firstMessageOfType(resp.History, "tool_call")
+	if !ok || toolCall.ToolName != "audio_volume" || toolCall.ToolInput != "{}" {
+		t.Fatalf("unexpected tool_call message: %#v", resp.History)
 	}
-	if resp.History[2].Type != "tool_result" || resp.History[2].ToolName != "audio_volume" || resp.History[2].Content != `{"volume":42}` {
-		t.Fatalf("unexpected tool_result message: %#v", resp.History[2])
+	if toolCall.Description != "我先读取当前音量。" || toolCall.Content != "我先读取当前音量。" {
+		t.Fatalf("unexpected tool_call description: %#v", toolCall)
 	}
-	if resp.History[3].Type != "assistant" || resp.History[3].Content != "The current audio volume is 42." {
-		t.Fatalf("unexpected assistant message: %#v", resp.History[3])
+	toolResult, ok := firstMessageOfType(resp.History, "tool_result")
+	if !ok || toolResult.ToolName != "audio_volume" || toolResult.Content != `{"volume":42}` {
+		t.Fatalf("unexpected tool_result message: %#v", resp.History)
+	}
+	assistant, ok := firstMessageOfType(resp.History, "assistant")
+	if !ok || assistant.Content != "The current audio volume is 42." {
+		t.Fatalf("unexpected assistant message: %#v", resp.History)
+	}
+}
+
+func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools when external state is requested.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": &stubTool{
+				name:        "audio_volume",
+				description: "Get the current audio playback volume.",
+				output:      `{"volume":42}`,
+			},
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	req.Header.Set("X-Aiden-Stream", "ndjson")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if contentType := rec.Header().Get("Content-Type"); contentType != "application/x-ndjson" {
+		t.Fatalf("Content-Type = %q, want application/x-ndjson", contentType)
+	}
+
+	var events []ChatStreamEvent
+	scanner := bufio.NewScanner(strings.NewReader(rec.Body.String()))
+	for scanner.Scan() {
+		var event ChatStreamEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("decode stream event %q: %v", scanner.Text(), err)
+		}
+		events = append(events, event)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan stream: %v", err)
+	}
+
+	var sawPlanner, sawToolCall, sawToolResult, sawAssistant, sawDone bool
+	for _, event := range events {
+		if event.Type == "message" && event.Message != nil {
+			switch event.Message.Type {
+			case "role_output":
+				if event.Message.Role == "planner" {
+					sawPlanner = true
+				}
+			case "tool_call":
+				sawToolCall = event.Message.ToolName == "audio_volume"
+			case "tool_result":
+				sawToolResult = event.Message.ToolName == "audio_volume" && event.Message.Content == `{"volume":42}`
+			case "assistant":
+				sawAssistant = event.Message.Content == "The current audio volume is 42."
+			}
+		}
+		if event.Type == "done" && event.Response == "The current audio volume is 42." {
+			sawDone = true
+		}
+	}
+	if !sawPlanner || !sawToolCall || !sawToolResult || !sawAssistant || !sawDone {
+		t.Fatalf("missing expected stream events: planner=%v tool_call=%v tool_result=%v assistant=%v done=%v events=%#v",
+			sawPlanner, sawToolCall, sawToolResult, sawAssistant, sawDone, events)
 	}
 }
 
@@ -139,25 +213,7 @@ func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
 
 func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "audio_volume",
-							Arguments: `{"__arg1":"{}","description":"我先读取当前音量。"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "The current audio volume is 42.",
-				}},
-			},
-		},
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
 	}
 	streamingDisabled := false
 	runtime := NewRuntimeWithDeps(
@@ -456,7 +512,7 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Answer directly.",
 		},
-		&testModelResolver{model: fakellm.NewFakeLLM([]string{"已处理"})},
+		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("已处理")}},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
@@ -500,14 +556,21 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	if resp.Response != "已处理" {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
-	if len(resp.History) != 2 {
-		t.Fatalf("expected 2 history entries, got %d", len(resp.History))
+	if len(resp.History) != 5 {
+		t.Fatalf("expected 5 history entries including role outputs, got %d", len(resp.History))
 	}
 	if resp.History[0].Content != "你好，帮我总结一下" {
 		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
 	}
 	if len(resp.History[0].Attachments) != 1 || resp.History[0].Attachments[0].Transcript != "你好，帮我总结一下" {
 		t.Fatalf("expected transcript on audio attachment, got %#v", resp.History[0].Attachments)
+	}
+	if _, ok := firstMessageOfType(resp.History, "role_output"); !ok {
+		t.Fatalf("expected role output messages in history: %#v", resp.History)
+	}
+	assistant, ok := firstMessageOfType(resp.History, "assistant")
+	if !ok || assistant.Content != "已处理" {
+		t.Fatalf("unexpected assistant message: %#v", resp.History)
 	}
 }
 

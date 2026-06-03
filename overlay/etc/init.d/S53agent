@@ -5,7 +5,7 @@
 AGENT_BIN=/oem/usr/bin/agent
 ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
 CONFIG_DIR=/userdata/agent
-ADDR=:8080
+ADDR=0.0.0.0:8080
 LOG_PATH=/var/log/agent/agent.log
 PID_FILE=/run/agent/agent.pid
 WATCHDOG_PID_FILE=/run/agent/agent_watchdog.pid

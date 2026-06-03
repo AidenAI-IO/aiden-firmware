@@ -1,0 +1,50 @@
+package agent
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestDeviceMemoryAppProfilePathUsesASCIIID(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "device")
+	store := NewDeviceMemoryStore(root)
+
+	apps := []string{"微信", "支付宝"}
+	for _, app := range apps {
+		id := "app_" + stableMemoryID(app)
+		if _, err := store.Upsert(ctx, DeviceMemoryItem{
+			ID:     id,
+			Type:   "app_profile",
+			Status: "active",
+			AppID:  app,
+		}); err != nil {
+			t.Fatalf("Upsert(%s): %v", app, err)
+		}
+		path := filepath.Join(root, "apps", id+".yaml")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("expected ASCII app profile path %s: %v", path, err)
+		}
+		if !strings.Contains(string(data), "app_id: "+app) {
+			t.Fatalf("app profile should preserve original app_id in YAML:\n%s", data)
+		}
+	}
+
+	files, err := filepath.Glob(filepath.Join(root, "apps", "*.yaml"))
+	if err != nil {
+		t.Fatalf("glob app profiles: %v", err)
+	}
+	if len(files) != len(apps) {
+		t.Fatalf("files=%#v, want %d", files, len(apps))
+	}
+	for _, path := range files {
+		name := filepath.Base(path)
+		if strings.HasPrefix(name, "_") {
+			t.Fatalf("app profile path should not be underscore-derived: %s", name)
+		}
+	}
+}
