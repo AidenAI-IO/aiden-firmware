@@ -29,6 +29,7 @@ build/bin/agent
 - HTTP Tool API，供 Web UI、外部 Agent 或手工调用；
 - 从 `SKILL.md` 自动发现并运行时激活 skills；
 - conversation memory 持久化；
+- Device / Task Episode memory 设计见 [Memory Plane 设计](memory-plane.md)；
 - Web UI：聊天历史、浏览器录音、附件、Tool Lab、Skill Export；
 - 设备侧语音链路：VAD / STT / TTS。
 
@@ -56,7 +57,7 @@ go run ./cmd/daemon -config ./config -addr :8080
 设备服务：
 
 ```bash
-/oem/usr/bin/agent -config /userdata/agent -addr :8080
+/oem/usr/bin/aiden-env-run /oem/usr/bin/agent -config /userdata/agent -addr :8080
 ```
 
 CLI demo：

@@ -2,15 +2,18 @@
 /build/
 /build-*/
 /output/
+.toolchains/
 .worktrees/
 .claude/
 *.pcm
 /pico-sdk/
 /overlay/oem/usr/bin/*
 !/overlay/oem/usr/bin/.gitkeep
+!/overlay/oem/usr/bin/aiden-env-run
 !/overlay/oem/usr/bin/RkLunch.sh
 /overlay/oem/usr/lib/*
 !/overlay/oem/usr/lib/librknnmrt.so
+/overlay/userdata/agent/benchmark/
 
 # Secrets
 agent.conf

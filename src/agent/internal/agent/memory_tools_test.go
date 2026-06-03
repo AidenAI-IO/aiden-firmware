@@ -100,6 +100,12 @@ func TestToolSetRegistersMemoryRecallTools(t *testing.T) {
 	if _, ok := tools.Get("recall_memory"); !ok {
 		t.Fatalf("expected recall_memory tool to be registered")
 	}
+	if _, ok := tools.Get("recall_device_memory"); !ok {
+		t.Fatalf("expected recall_device_memory tool to be registered")
+	}
+	if _, ok := tools.Get("inspect_episode"); !ok {
+		t.Fatalf("expected inspect_episode tool to be registered")
+	}
 }
 
 func TestRecallToolDescriptionsGuideAgentUsage(t *testing.T) {

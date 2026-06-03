@@ -41,6 +41,7 @@ struct Options {
     int device_bcd = 0x0100;
     int usb_bcd = 0x0200;
     bool force = false;
+    bool pointer_touchscreen = false;
 };
 
 struct ParsedKey {
@@ -113,6 +114,41 @@ const uint8_t kTouchDescriptor[] = {
     0x95, 0x01,             //     Report Count (1)
     0x81, 0x06,             //     Input (Data, Variable, Relative)
     0xc0,                   //   End Collection (Physical)
+    0xc0,                   // End Collection (Application)
+};
+
+const uint8_t kTouchscreenDescriptor[] = {
+    0x05, 0x0d,             // Usage Page (Digitizers)
+    0x09, 0x04,             // Usage (Touch Screen)
+    0xa1, 0x01,             // Collection (Application)
+    0x09, 0x22,             //   Usage (Finger)
+    0xa1, 0x02,             //   Collection (Logical)
+    0x05, 0x0d,             //     Usage Page (Digitizers)
+    0x09, 0x42,             //     Usage (Tip Switch)
+    0x09, 0x32,             //     Usage (In Range)
+    0x15, 0x00,             //     Logical Minimum (0)
+    0x25, 0x01,             //     Logical Maximum (1)
+    0x75, 0x01,             //     Report Size (1)
+    0x95, 0x02,             //     Report Count (2)
+    0x81, 0x02,             //     Input (Data,Var,Abs)
+    0x75, 0x06,             //     Report Size (6)
+    0x95, 0x01,             //     Report Count (1)
+    0x81, 0x03,             //     Input (Const,Var,Abs)
+    0x09, 0x51,             //     Usage (Contact Identifier)
+    0x75, 0x08,             //     Report Size (8)
+    0x95, 0x01,             //     Report Count (1)
+    0x15, 0x00,             //     Logical Minimum (0)
+    0x25, 0x0f,             //     Logical Maximum (15)
+    0x81, 0x02,             //     Input (Data,Var,Abs)
+    0x05, 0x01,             //     Usage Page (Generic Desktop)
+    0x09, 0x30,             //     Usage (X)
+    0x09, 0x31,             //     Usage (Y)
+    0x16, 0x00, 0x00,       //     Logical Minimum (0)
+    0x26, 0xff, 0x7f,       //     Logical Maximum (32767)
+    0x75, 0x10,             //     Report Size (16)
+    0x95, 0x02,             //     Report Count (2)
+    0x81, 0x02,             //     Input (Data,Var,Abs)
+    0xc0,                   //   End Collection (Logical)
     0xc0,                   // End Collection (Application)
 };
 
@@ -460,13 +496,18 @@ void setup_keyboard_function(const std::string& gadget) {
     ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb0");
 }
 
-void setup_touch_function(const std::string& gadget) {
+void setup_touch_function(const std::string& gadget, const Options& options) {
     std::string function_path = gadget + "/functions/hid.usb1";
     ensure_dir(function_path);
-    write_text_file(function_path + "/protocol", "0");  // None protocol
-    write_text_file(function_path + "/subclass", "0");  // No subclass
-    write_text_file(function_path + "/report_length", "6");
-    write_binary_file(function_path + "/report_desc", kTouchDescriptor, sizeof(kTouchDescriptor));
+    write_text_file(function_path + "/protocol", "0");
+    write_text_file(function_path + "/subclass", "0");
+    if (options.pointer_touchscreen) {
+        write_text_file(function_path + "/report_length", "6");
+        write_binary_file(function_path + "/report_desc", kTouchscreenDescriptor, sizeof(kTouchscreenDescriptor));
+    } else {
+        write_text_file(function_path + "/report_length", "6");
+        write_binary_file(function_path + "/report_desc", kTouchDescriptor, sizeof(kTouchDescriptor));
+    }
     ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb1");
 }
 
@@ -538,7 +579,7 @@ void setup_gadget(const Options& options, const std::string& mode) {
         setup_keyboard_function(gadget);
     }
     if (mode == "touch" || mode == "composite") {
-        setup_touch_function(gadget);
+        setup_touch_function(gadget, options);
     }
 
     std::string udc = options.udc.empty() ? first_udc_name() : options.udc;
@@ -577,6 +618,7 @@ void print_usage() {
         << "  --width <INT>\n"
         << "  --height <INT>\n"
         << "  --duration-ms <INT>\n"
+        << "  --pointer-mode <absolute|touchscreen>\n"
         << "  --force\n"
         << "\n"
         << "Examples:\n"
@@ -621,6 +663,15 @@ Options parse_global_options(std::vector<std::string>& args) {
             options.height = parse_int(args.at(++i));
         } else if (arg == "--duration-ms") {
             options.duration_ms = parse_int(args.at(++i));
+        } else if (arg == "--pointer-mode") {
+            const std::string mode = args.at(++i);
+            if (mode == "touchscreen") {
+                options.pointer_touchscreen = true;
+            } else if (mode == "absolute") {
+                options.pointer_touchscreen = false;
+            } else {
+                throw std::runtime_error("pointer-mode must be absolute or touchscreen");
+            }
         } else if (arg == "--force") {
             options.force = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -630,6 +681,15 @@ Options parse_global_options(std::vector<std::string>& args) {
             throw std::runtime_error("unknown option: " + arg);
         } else {
             remaining.push_back(arg);
+        }
+    }
+
+    const char* env_mode = getenv("AIDEN_POINTER_MODE");
+    if (env_mode != nullptr) {
+        if (std::string(env_mode) == "touchscreen") {
+            options.pointer_touchscreen = true;
+        } else if (std::string(env_mode) == "absolute") {
+            options.pointer_touchscreen = false;
         }
     }
 
@@ -787,8 +847,57 @@ int parse_mouse_button(const std::string& arg) {
     return parse_int(arg);
 }
 
+int clamp_int(int value, int min_value, int max_value) {
+    if (value < min_value) {
+        return min_value;
+    }
+    if (value > max_value) {
+        return max_value;
+    }
+    return value;
+}
+
+void load_pointer_xy(const Options& options, int* x, int* y) {
+    std::vector<uint8_t> state = load_state(touch_state_path(options), 4);
+    if (state.size() >= 4) {
+        *x = static_cast<int>(state[0]) | (static_cast<int>(state[1]) << 8);
+        *y = static_cast<int>(state[2]) | (static_cast<int>(state[3]) << 8);
+        return;
+    }
+    *x = options.width / 2;
+    *y = options.height / 2;
+}
+
+void save_pointer_xy(const Options& options, int x, int y) {
+    std::vector<uint8_t> state(4, 0);
+    state[0] = static_cast<uint8_t>(x & 0xff);
+    state[1] = static_cast<uint8_t>((x >> 8) & 0xff);
+    state[2] = static_cast<uint8_t>(y & 0xff);
+    state[3] = static_cast<uint8_t>((y >> 8) & 0xff);
+    save_state(touch_state_path(options), state);
+}
+
+void send_touchscreen_report(const Options& options, bool touching, int x, int y) {
+    x = clamp_coordinate(x, options.width);
+    y = clamp_coordinate(y, options.height);
+    std::vector<uint8_t> report(6, 0);
+    report[0] = touching ? 0x03 : 0x00;
+    report[1] = 0x01;
+    report[2] = static_cast<uint8_t>(x & 0xff);
+    report[3] = static_cast<uint8_t>((x >> 8) & 0xff);
+    report[4] = static_cast<uint8_t>(y & 0xff);
+    report[5] = static_cast<uint8_t>((y >> 8) & 0xff);
+    write_report(options.touch_dev, report);
+    save_pointer_xy(options, x, y);
+}
+
 // Send absolute mouse report: [buttons][X_lo][X_hi][Y_lo][Y_hi][wheel]
 void send_mouse_report(const Options& options, uint8_t buttons, int x, int y, int wheel) {
+    if (options.pointer_touchscreen) {
+        send_touchscreen_report(options, buttons != 0, x, y);
+        return;
+    }
+
     x = clamp_coordinate(x, options.width);
     y = clamp_coordinate(y, options.height);
     std::vector<uint8_t> report(6, 0);
@@ -799,6 +908,14 @@ void send_mouse_report(const Options& options, uint8_t buttons, int x, int y, in
     report[4] = static_cast<uint8_t>((y >> 8) & 0xff);
     report[5] = static_cast<uint8_t>(static_cast<int8_t>(std::max(-127, std::min(127, wheel))));
     write_report(options.touch_dev, report);
+    save_pointer_xy(options, x, y);
+}
+
+void send_mouse_report_at_current_position(const Options& options, uint8_t buttons, int wheel) {
+    int x = 0;
+    int y = 0;
+    load_pointer_xy(options, &x, &y);
+    send_mouse_report(options, buttons, x, y, wheel);
 }
 
 void handle_touch(const Options& options, const std::vector<std::string>& args) {
@@ -842,9 +959,17 @@ void handle_touch(const Options& options, const std::vector<std::string>& args) 
             send_mouse_report(options, 0x00, x, y, 0);
         }
 
-        send_mouse_report(options, button, x, y, 0);
+        if (has_coords) {
+            send_mouse_report(options, button, x, y, 0);
+        } else {
+            send_mouse_report_at_current_position(options, button, 0);
+        }
         sleep_ms(options.duration_ms);
-        send_mouse_report(options, 0x00, x, y, 0);
+        if (has_coords) {
+            send_mouse_report(options, 0x00, x, y, 0);
+        } else {
+            send_mouse_report_at_current_position(options, 0x00, 0);
+        }
         return;
     }
 
@@ -853,12 +978,12 @@ void handle_touch(const Options& options, const std::vector<std::string>& args) 
         if (args.size() >= 3) {
             button = parse_mouse_button(args[2]);
         }
-        send_mouse_report(options, button, 0, 0, 0);
+        send_mouse_report_at_current_position(options, button, 0);
         return;
     }
 
     if (action == "up") {
-        send_mouse_report(options, 0x00, 0, 0, 0);
+        send_mouse_report_at_current_position(options, 0x00, 0);
         return;
     }
 
@@ -866,7 +991,7 @@ void handle_touch(const Options& options, const std::vector<std::string>& args) 
         if (args.size() != 3) {
             throw std::runtime_error("touch scroll requires amount (-127 to 127)");
         }
-        send_mouse_report(options, 0x00, 0, 0, parse_int(args[2]));
+        send_mouse_report_at_current_position(options, 0x00, parse_int(args[2]));
         return;
     }
 

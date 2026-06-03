@@ -39,6 +39,23 @@ mkdir -p "$OVERLAY/oem/usr/bin" "$OVERLAY/oem/usr/lib" "$OVERLAY/oem/etc"
 cp -a "$SCRIPT_DIR/build/bin"/. "$OVERLAY/oem/usr/bin/"
 echo "  ✓ Binaries copied to overlay/oem/usr/bin"
 
+BENCHMARK_SRC="$SCRIPT_DIR/benchmark"
+BENCHMARK_DEST="$OVERLAY/userdata/agent/benchmark"
+BENCHMARK_RSYNC_EXCLUDES=(--exclude '__pycache__/' --exclude '*.pyc' --exclude '.DS_Store' --exclude '._*')
+if [ ! -d "$BENCHMARK_SRC/runner" ] || [ ! -d "$BENCHMARK_SRC/suites" ]; then
+    echo "  ✗ Error: benchmark runner or suites missing under $BENCHMARK_SRC" >&2
+    exit 1
+fi
+mkdir -p "$BENCHMARK_DEST/runner" "$BENCHMARK_DEST/suites"
+rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/runner/" "$BENCHMARK_DEST/runner/"
+rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/suites/" "$BENCHMARK_DEST/suites/"
+if [ -f "$BENCHMARK_SRC/pyproject.toml" ]; then
+    cp "$BENCHMARK_SRC/pyproject.toml" "$BENCHMARK_DEST/pyproject.toml"
+else
+    rm -f "$BENCHMARK_DEST/pyproject.toml"
+fi
+echo "  ✓ Benchmark runner and suites staged to overlay/userdata/agent/benchmark"
+
 RKNNMRT_OVERLAY="$OVERLAY/oem/usr/lib/librknnmrt.so"
 RKNNMRT_SOURCE="$PICO_SDK/media/iva/iva/librockiva/rockiva-rv1106-Linux/lib/librknnmrt.so"
 if [ -f "$RKNNMRT_OVERLAY" ]; then
@@ -136,6 +153,10 @@ if [ -d "$OVERLAY/oem" ]; then
     rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"
     echo "  ✓ OEM content copied"
 fi
+
+# VAD models live in /oem/usr/model so OTA updates can replace them with the
+# oem partition. Remove stale copies from reused userdata package directories.
+rm -rf "$RK_PROJECT_PACKAGE_USERDATA_DIR/agent/model"
 
 # 复制 userdata 内容
 if [ -d "$OVERLAY/userdata" ] && [ "$(ls -A "$OVERLAY/userdata" 2>/dev/null)" ]; then

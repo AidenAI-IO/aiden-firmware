@@ -30,7 +30,6 @@ type Config struct {
 	STT                      STTConfig       `toml:"stt,omitempty"`
 	HID                      HIDConfig       `toml:"hid"`
 	Audio                    AudioConfig     `toml:"audio,omitempty"`
-	Proxy                    ProxyConfig     `toml:"proxy,omitempty"`
 	Search                   SearchConfig    `toml:"search,omitempty"`
 	Instruction              string          `toml:"instruction"`
 	AdditionalPrompt         string          `toml:"additional_prompt,omitempty"`
@@ -51,6 +50,8 @@ type Config struct {
 	VoiceToolCallSpeech      *bool           `toml:"voice_tool_call_speech,omitempty"`
 	VoiceMaxResponseTokens   int             `toml:"voice_max_response_tokens,omitempty"`
 	MaxIterations            int             `toml:"max_iterations,omitempty"`
+	ScreenshotKeepN          int             `toml:"screenshot_keep_n,omitempty"`
+	ScreenshotPruneInterval  int             `toml:"screenshot_prune_interval,omitempty"`
 	SkillsDirs               []string        `toml:"skills_dirs"`
 	BundledSkillsDir         string          `toml:"bundled_skills_dir,omitempty"`
 	SkillMergeModel          SkillMergeModel `toml:"-"`
@@ -58,12 +59,42 @@ type Config struct {
 }
 
 type TTSConfig struct {
-	Provider string  `toml:"provider"` // "minimax"
-	APIKey   string  `toml:"api_key,omitempty"`
-	Model    string  `toml:"model,omitempty"`
-	VoiceID  string  `toml:"voice_id,omitempty"`
-	Emotion  string  `toml:"emotion,omitempty"`
-	Speed    float64 `toml:"speed,omitempty"`
+	Provider    string  `toml:"provider"` // "minimax-ws", "fish-audio", "alicloud", "volcengine"
+	APIKey      string  `toml:"api_key,omitempty"`
+	Model       string  `toml:"model,omitempty"`
+	VoiceID     string  `toml:"voice_id,omitempty"`
+	Emotion     string  `toml:"emotion,omitempty"`
+	Speed       float64 `toml:"speed,omitempty"`
+	ReferenceID string  `toml:"reference_id,omitempty"` // Fish Audio voice reference ID
+
+	// Credentials lets you store per-provider settings so the app can switch
+	// providers at runtime without losing each one's API key/voice. Keys are
+	// matched case-insensitively against the provider name passed to switch.
+	//
+	// Example agent.toml:
+	//   [tts]
+	//   provider = "minimax-ws"
+	//   api_key = "<minimax-key>"   # used as fallback for any provider
+	//
+	//   [tts.credentials.fish-audio]
+	//   api_key = "<fish-key>"
+	//   voice_id = "<fish-reference-id>"
+	//
+	//   [tts.credentials.cartesia]
+	//   api_key = "<cartesia-key>"
+	//   voice_id = "<cartesia-voice>"
+	Credentials map[string]TTSProviderCredentials `toml:"credentials,omitempty"`
+}
+
+// TTSProviderCredentials holds per-provider override settings.
+// Any field left blank falls back to the top-level [tts] values.
+type TTSProviderCredentials struct {
+	APIKey      string  `toml:"api_key,omitempty"`
+	VoiceID     string  `toml:"voice_id,omitempty"`
+	Emotion     string  `toml:"emotion,omitempty"`
+	Model       string  `toml:"model,omitempty"`
+	Speed       float64 `toml:"speed,omitempty"`
+	ReferenceID string  `toml:"reference_id,omitempty"`
 }
 
 type STTConfig struct {
@@ -85,10 +116,10 @@ type AudioConfig struct {
 }
 
 type ProxyConfig struct {
-	HTTPProxy  string `toml:"http_proxy,omitempty"`
-	HTTPSProxy string `toml:"https_proxy,omitempty"`
-	AllProxy   string `toml:"all_proxy,omitempty"`
-	NoProxy    string `toml:"no_proxy,omitempty"`
+	HTTPProxy  string
+	HTTPSProxy string
+	AllProxy   string
+	NoProxy    string
 }
 
 const DefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
@@ -104,6 +135,25 @@ func (p ProxyConfig) WithDefaults() ProxyConfig {
 		p.NoProxy = DefaultNoProxy
 	}
 	return p
+}
+
+func ProxyConfigFromEnvironment() ProxyConfig {
+	p := ProxyConfig{
+		HTTPProxy:  firstEnv("HTTP_PROXY", "http_proxy"),
+		HTTPSProxy: firstEnv("HTTPS_PROXY", "https_proxy"),
+		AllProxy:   firstEnv("ALL_PROXY", "all_proxy"),
+		NoProxy:    firstEnv("NO_PROXY", "no_proxy"),
+	}
+	return p.WithDefaults()
+}
+
+func firstEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (p ProxyConfig) IsZero() bool {
@@ -158,6 +208,9 @@ type HIDConfig struct {
 	KeyboardDevice string `toml:"keyboard_device,omitempty"`
 	MouseDevice    string `toml:"mouse_device,omitempty"`
 	FrameSocket    string `toml:"frame_socket,omitempty"`
+	// PointerMode selects the hid.usb1 report format: "absolute" (iOS AssistiveTouch)
+	// or "touchscreen" (Android HID digitizer).
+	PointerMode string `toml:"pointer_mode,omitempty"`
 }
 
 func (h HIDConfig) KeyboardDeviceOrDefault() string {
@@ -179,6 +232,19 @@ func (h HIDConfig) FrameSocketOrDefault() string {
 		return h.FrameSocket
 	}
 	return "/tmp/frame_service.sock"
+}
+
+func (h HIDConfig) PointerModeOrDefault() string {
+	switch strings.ToLower(strings.TrimSpace(h.PointerMode)) {
+	case "touchscreen":
+		return "touchscreen"
+	default:
+		return "absolute"
+	}
+}
+
+func (h HIDConfig) PointerTouchscreen() bool {
+	return h.PointerModeOrDefault() == "touchscreen"
 }
 
 type ModelConfig struct {
@@ -265,8 +331,6 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
 	}
 
-	cfg.Proxy = cfg.Proxy.WithDefaults()
-
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -275,10 +339,6 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if err := c.Proxy.Validate(); err != nil {
-		return err
-	}
-
 	switch c.Search.ProviderOrDefault() {
 	case "duckduckgo":
 	case "tavily":
@@ -361,6 +421,12 @@ func (c Config) Validate() error {
 	if c.VoiceMaxResponseTokens < 0 {
 		return fmt.Errorf("voice_max_response_tokens must be >= 0, got %d", c.VoiceMaxResponseTokens)
 	}
+	if c.ScreenshotKeepN < 0 {
+		return fmt.Errorf("screenshot_keep_n must be >= 0, got %d", c.ScreenshotKeepN)
+	}
+	if c.ScreenshotPruneInterval < 0 {
+		return fmt.Errorf("screenshot_prune_interval must be >= 0, got %d", c.ScreenshotPruneInterval)
+	}
 
 	return nil
 }
@@ -438,4 +504,11 @@ func (c Config) VoiceMaxResponseTokensOrDefault() int {
 		return c.VoiceMaxResponseTokens
 	}
 	return 400
+}
+
+func (c Config) ScreenshotPruningOrDefault() ScreenshotPruningConfig {
+	return ScreenshotPruningConfig{
+		KeepN:    c.ScreenshotKeepN,
+		Interval: c.ScreenshotPruneInterval,
+	}.WithDefaults()
 }

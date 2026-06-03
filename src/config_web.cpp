@@ -1,5 +1,6 @@
 #include "agent_toml.h"
 #include "config_web_html.h"
+#include "system_env_parser.h"
 #include "wifi_config.h"
 
 #include "cJSON/cJSON.h"
@@ -7,6 +8,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ctype.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
@@ -14,6 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -35,6 +39,7 @@ struct Options {
     std::string wifi_config_path = "/userdata/wpa_supplicant.conf";
     std::string wifi_interface = "wlan0";
     std::string ota_state_path = "/userdata/ota/state.json";
+    std::string system_env_path = "/userdata/system/env";
 };
 
 struct HttpRequest {
@@ -55,6 +60,7 @@ struct ApiResponse {
 
 struct CommandResult {
     int exit_code = -1;
+    bool timed_out = false;
     std::string output;
 };
 
@@ -66,14 +72,60 @@ struct WifiRuntimeStatus {
     std::string detail;
 };
 
+struct AgentRuntimeStatus {
+    bool watchdog_running = false;
+    bool process_running = false;
+    int watchdog_pid = 0;
+    int pid = 0;
+    std::string addr = ":8080";
+    std::string state = "unknown";
+    std::string detail;
+    std::string port_host = "127.0.0.1";
+    int port = 8080;
+    bool port_reachable = false;
+    std::string port_detail;
+    std::string startup_error;
+};
+
+struct AgentLogSnapshot {
+    bool exists = false;
+    bool truncated = false;
+    long size_bytes = 0;
+    std::string path;
+    std::string log;
+    std::string error;
+};
+
+using SystemProxy = aiden::SystemEnvProxy;
+
+struct TcpPortStatus {
+    bool reachable = false;
+    std::string detail;
+};
+
 volatile sig_atomic_t g_should_stop = 0;
 
 const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
+const char* kAgentInitScript = "/etc/init.d/S53agent";
+const char* kOtaInitScript = "/etc/init.d/S54ota";
+const char* kAgentLogPath = "/var/log/agent/agent.log";
+const char* kAgentPortHost = "127.0.0.1";
+const int kDefaultAgentPort = 8080;
+const int kAgentStatusCommandTimeoutMs = 1500;
+const size_t kAgentStatusLogReadSize = 16 * 1024;
+const size_t kAgentStatusLogDisplaySize = 4096;
+const size_t kAgentLogReadSize = 64 * 1024;
+const size_t kAgentLogDisplaySize = 48 * 1024;
 const size_t kMaxHttpHeaderSize = 8 * 1024;
 const size_t kMaxHttpBodySize = 64 * 1024;
 const int kClientReadTimeoutSeconds = 5;
 const char* kDefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
+const int kSystemEnvCommandTimeoutMs = 1500;
+const size_t kMaxSystemEnvSize = 64 * 1024;
+
+std::string read_file_contents(const char* path, size_t max_size);
+std::string validate_proxy_url(const std::string& url);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -109,7 +161,7 @@ bool starts_with(const std::string& text, const std::string& prefix) {
     return text.compare(0, prefix.size(), prefix) == 0;
 }
 
-bool has_proxy_url(const aiden::ProxyToml& proxy) {
+bool has_proxy_url(const SystemProxy& proxy) {
     return !trim_copy(proxy.http_proxy).empty() ||
            !trim_copy(proxy.https_proxy).empty() ||
            !trim_copy(proxy.all_proxy).empty();
@@ -171,6 +223,32 @@ std::string shell_quote(const std::string& text) {
     return out;
 }
 
+long long current_time_ms() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return static_cast<long long>(tv.tv_sec) * 1000LL + tv.tv_usec / 1000;
+}
+
+void read_available_output(int fd, std::string* output, bool* pipe_open) {
+    char buffer[512];
+    while (*pipe_open) {
+        ssize_t n = read(fd, buffer, sizeof(buffer));
+        if (n > 0) {
+            output->append(buffer, static_cast<size_t>(n));
+        } else if (n == 0) {
+            *pipe_open = false;
+        } else if (errno == EINTR) {
+            continue;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            break;
+        } else {
+            output->append("read failed: ");
+            output->append(strerror(errno));
+            *pipe_open = false;
+        }
+    }
+}
+
 CommandResult run_shell_command(const std::string& command) {
     CommandResult result;
     FILE* pipe = popen(command.c_str(), "r");
@@ -189,6 +267,117 @@ CommandResult run_shell_command(const std::string& command) {
         result.exit_code = WEXITSTATUS(status);
     } else {
         result.exit_code = status;
+    }
+    return result;
+}
+
+CommandResult run_shell_command_with_timeout(const std::string& command, int timeout_ms) {
+    if (timeout_ms <= 0) {
+        return run_shell_command(command);
+    }
+
+    CommandResult result;
+    int pipe_fds[2];
+    if (pipe(pipe_fds) != 0) {
+        result.output = std::string("pipe failed: ") + strerror(errno);
+        return result;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        result.output = std::string("fork failed: ") + strerror(errno);
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return result;
+    }
+
+    if (pid == 0) {
+        setpgid(0, 0);
+        close(pipe_fds[0]);
+        dup2(pipe_fds[1], STDOUT_FILENO);
+        dup2(pipe_fds[1], STDERR_FILENO);
+        if (pipe_fds[1] > STDERR_FILENO) {
+            close(pipe_fds[1]);
+        }
+        execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char*>(NULL));
+        _exit(127);
+    }
+
+    setpgid(pid, pid);
+    close(pipe_fds[1]);
+
+    int flags = fcntl(pipe_fds[0], F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(pipe_fds[0], F_SETFL, flags | O_NONBLOCK);
+    }
+
+    const long long deadline = current_time_ms() + timeout_ms;
+    bool pipe_open = true;
+    bool child_done = false;
+    int child_status = -1;
+
+    while (pipe_open || !child_done) {
+        if (pipe_open) {
+            read_available_output(pipe_fds[0], &result.output, &pipe_open);
+        }
+
+        if (!child_done) {
+            pid_t waited = waitpid(pid, &child_status, WNOHANG);
+            if (waited == pid) {
+                child_done = true;
+            } else if (waited < 0 && errno != EINTR) {
+                child_done = true;
+            }
+        }
+
+        if (!pipe_open && child_done) {
+            break;
+        }
+
+        long long now = current_time_ms();
+        if (now >= deadline) {
+            kill(-pid, SIGKILL);
+            kill(pid, SIGKILL);
+            for (int i = 0; i < 20; ++i) {
+                pid_t waited = waitpid(pid, &child_status, WNOHANG);
+                if (waited == pid || (waited < 0 && errno != EINTR)) {
+                    break;
+                }
+                usleep(1000);
+            }
+            close(pipe_fds[0]);
+            result.exit_code = -1;
+            result.timed_out = true;
+            result.output = "agent status command timed out after " + std::to_string(timeout_ms) + " ms";
+            return result;
+        }
+
+        int wait_ms = 50;
+        long long remaining_ms = deadline - now;
+        if (remaining_ms < wait_ms) {
+            wait_ms = remaining_ms > 0 ? static_cast<int>(remaining_ms) : 0;
+        }
+
+        if (pipe_open && wait_ms > 0) {
+            fd_set read_fds;
+            FD_ZERO(&read_fds);
+            FD_SET(pipe_fds[0], &read_fds);
+            struct timeval timeout;
+            timeout.tv_sec = wait_ms / 1000;
+            timeout.tv_usec = (wait_ms % 1000) * 1000;
+            select(pipe_fds[0] + 1, &read_fds, NULL, NULL, &timeout);
+        } else if (wait_ms > 0) {
+            usleep(static_cast<useconds_t>(wait_ms) * 1000);
+        }
+    }
+
+    close(pipe_fds[0]);
+    if (child_status >= 0 && WIFEXITED(child_status)) {
+        result.exit_code = WEXITSTATUS(child_status);
+    } else if (child_status >= 0 && WIFSIGNALED(child_status)) {
+        result.exit_code = 128 + WTERMSIG(child_status);
+    } else {
+        result.exit_code = child_status;
     }
     return result;
 }
@@ -218,6 +407,47 @@ std::string trim_trailing_newlines(const std::string& text) {
         --end;
     }
     return text.substr(0, end);
+}
+
+std::vector<std::string> split_lines(const std::string& text) {
+    std::vector<std::string> lines;
+    std::istringstream input(text);
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line[line.size() - 1] == '\r') {
+            line.resize(line.size() - 1);
+        }
+        lines.push_back(line);
+    }
+    return lines;
+}
+
+std::string line_or_empty(const std::vector<std::string>& lines, size_t index) {
+    return index < lines.size() ? trim_copy(lines[index]) : "";
+}
+
+bool load_system_env_proxy(const std::string& path, SystemProxy* proxy) {
+    if (!proxy || path.empty() || !file_exists(path.c_str())) {
+        return false;
+    }
+
+    std::string content = read_file_contents(path.c_str(), kMaxSystemEnvSize);
+    std::vector<aiden::EnvAssignment> assignments;
+    SystemProxy loaded;
+    std::string error;
+    if (!aiden::parse_system_env_content(content, &assignments, &loaded, &error)) {
+        return false;
+    }
+
+    if (has_proxy_url(loaded) && loaded.no_proxy.empty()) {
+        loaded.no_proxy = kDefaultNoProxy;
+    }
+
+    bool has_values = has_proxy_url(loaded) || !trim_copy(loaded.no_proxy).empty();
+    if (has_values) {
+        *proxy = loaded;
+    }
+    return has_values;
 }
 
 std::string find_key_value_line(const std::string& text, const std::string& key) {
@@ -465,7 +695,7 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.input_mode = "text";
     cfg.trigger_mode = "manual";
     cfg.vad_backend = "rknn";
-    cfg.vad_model_path = "/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
+    cfg.vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
     cfg.vad_helper_path = "/oem/usr/bin/rknn_vad";
     cfg.vad_speech_threshold = 0.5;
     cfg.silence_ms = 650;
@@ -479,13 +709,15 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.voice_tool_call_speech = true;
     cfg.voice_max_response_tokens = 400;
     cfg.max_iterations = -1;
+    cfg.screenshot_keep_n = 3;
+    cfg.screenshot_prune_interval = 25;
 
     cfg.model.provider = "openrouter";
     cfg.model.model = "bytedance-seed/seed-2.0-lite";
     cfg.model.temperature = 0.2;
     cfg.model.max_tokens = 1000;
 
-    cfg.tts.provider = "minimax";
+    cfg.tts.provider = "minimax-ws";
     cfg.tts.voice_id = "male-qn-qingse";
     cfg.tts.emotion = "happy";
     cfg.tts.speed = 1.0;
@@ -523,9 +755,6 @@ void load_current_agent_config(const Options& options,
         if (aiden::load_agent_toml(options.agent_config_path.c_str(), loaded, &err)) {
             if (loaded.search.provider.empty()) {
                 loaded.search.provider = "duckduckgo";
-            }
-            if (has_proxy_url(loaded.proxy) && loaded.proxy.no_proxy.empty()) {
-                loaded.proxy.no_proxy = kDefaultNoProxy;
             }
             *config = loaded;
         } else if (load_error) {
@@ -600,12 +829,6 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddStringToObject(hid, "mouse_device", config.hid.mouse_device.c_str());
     cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
 
-    cJSON* proxy = add_object(root, "proxy");
-    cJSON_AddStringToObject(proxy, "http_proxy", config.proxy.http_proxy.c_str());
-    cJSON_AddStringToObject(proxy, "https_proxy", config.proxy.https_proxy.c_str());
-    cJSON_AddStringToObject(proxy, "all_proxy", config.proxy.all_proxy.c_str());
-    cJSON_AddStringToObject(proxy, "no_proxy", config.proxy.no_proxy.c_str());
-
     cJSON* search = add_object(root, "search");
     cJSON_AddStringToObject(search, "provider", config.search.provider.c_str());
     cJSON_AddBoolToObject(search, "has_api_key", !config.search.api_key.empty());
@@ -630,6 +853,8 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddBoolToObject(agent, "voice_tool_call_speech", config.voice_tool_call_speech ? 1 : 0);
     cJSON_AddNumberToObject(agent, "voice_max_response_tokens", config.voice_max_response_tokens);
     cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
+    cJSON_AddNumberToObject(agent, "screenshot_keep_n", config.screenshot_keep_n);
+    cJSON_AddNumberToObject(agent, "screenshot_prune_interval", config.screenshot_prune_interval);
 
     return root;
 }
@@ -766,14 +991,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->hid.frame_socket, hid, "frame_socket");
     }
 
-    cJSON* proxy = cJSON_GetObjectItem(root, "proxy");
-    if (json_is_object(proxy)) {
-        set_json_str(&config->proxy.http_proxy, proxy, "http_proxy");
-        set_json_str(&config->proxy.https_proxy, proxy, "https_proxy");
-        set_json_str(&config->proxy.all_proxy, proxy, "all_proxy");
-        set_json_str(&config->proxy.no_proxy, proxy, "no_proxy");
-    }
-
     cJSON* search = cJSON_GetObjectItem(root, "search");
     if (json_is_object(search)) {
         set_json_str(&config->search.provider, search, "provider");
@@ -804,6 +1021,8 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_bool(&config->voice_tool_call_speech, agent, "voice_tool_call_speech");
         set_json_int(&config->voice_max_response_tokens, agent, "voice_max_response_tokens");
         set_json_int(&config->max_iterations, agent, "max_iterations");
+        set_json_int(&config->screenshot_keep_n, agent, "screenshot_keep_n");
+        set_json_int(&config->screenshot_prune_interval, agent, "screenshot_prune_interval");
     }
 }
 
@@ -825,6 +1044,12 @@ std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
     }
     if (config.max_iterations < -1) {
         return "max_iterations must be >= -1";
+    }
+    if (config.screenshot_keep_n < 0) {
+        return "screenshot_keep_n must be >= 0";
+    }
+    if (config.screenshot_prune_interval < 0) {
+        return "screenshot_prune_interval must be >= 0";
     }
     return "";
 }
@@ -930,9 +1155,21 @@ void restart_wpa_supplicant(const Options& options, std::ostringstream& log) {
         << " -c " << options.wifi_config_path << "\n" << start.output;
 }
 
-void schedule_agent_restart() {
-    int rc = system("/etc/init.d/S53agent restart >/dev/null 2>&1 &");
+void schedule_init_script_restart(const char* init_script) {
+    if (!init_script || init_script[0] == '\0') {
+        return;
+    }
+    std::string cmd = shell_quote(init_script) + " restart >/dev/null 2>&1 &";
+    int rc = system(cmd.c_str());
     (void)rc;
+}
+
+void schedule_agent_restart() {
+    schedule_init_script_restart(kAgentInitScript);
+}
+
+void schedule_ota_restart() {
+    schedule_init_script_restart(kOtaInitScript);
 }
 
 CommandResult apply_wifi_config(const Options& options) {
@@ -1072,6 +1309,529 @@ std::string read_file_contents(const char* path, size_t max_size = 64 * 1024) {
     return contents;
 }
 
+bool mkdir_p(const std::string& dir, std::string* error) {
+    if (dir.empty()) {
+        return true;
+    }
+    std::string current;
+    size_t index = 0;
+    if (dir[0] == '/') {
+        current = "/";
+        index = 1;
+    }
+    while (index <= dir.size()) {
+        size_t next = dir.find('/', index);
+        std::string part = dir.substr(index, next == std::string::npos ? std::string::npos : next - index);
+        if (!part.empty()) {
+            if (current.empty() || current == "/") {
+                current += part;
+            } else {
+                current += "/" + part;
+            }
+            if (mkdir(current.c_str(), 0755) != 0 && errno != EEXIST) {
+                if (error) *error = "mkdir " + current + ": " + strerror(errno);
+                return false;
+            }
+        }
+        if (next == std::string::npos) {
+            break;
+        }
+        index = next + 1;
+    }
+    return true;
+}
+
+std::string parent_dir(const std::string& path) {
+    size_t pos = path.find_last_of('/');
+    if (pos == std::string::npos) {
+        return "";
+    }
+    if (pos == 0) {
+        return "/";
+    }
+    return path.substr(0, pos);
+}
+
+bool validate_system_proxy_values(const SystemProxy& proxy, std::string* error) {
+    struct Field {
+        const char* name;
+        const std::string* value;
+    };
+    const Field fields[] = {
+        {"http_proxy", &proxy.http_proxy},
+        {"https_proxy", &proxy.https_proxy},
+        {"all_proxy", &proxy.all_proxy},
+    };
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
+        std::string value = trim_copy(*fields[i].value);
+        std::string validation = validate_proxy_url(value);
+        if (!validation.empty()) {
+            if (error) *error = std::string(fields[i].name) + ": " + validation + ": " + value;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool validate_system_env_content(const std::string& content, std::string* error) {
+    std::vector<aiden::EnvAssignment> assignments;
+    SystemProxy proxy;
+    if (!aiden::parse_system_env_content(content, &assignments, &proxy, error)) {
+        return false;
+    }
+    return validate_system_proxy_values(proxy, error);
+}
+
+bool atomic_write_file(const std::string& path,
+                       const std::string& content,
+                       mode_t mode,
+                       std::string* error) {
+    if (!mkdir_p(parent_dir(path), error)) {
+        return false;
+    }
+
+    std::string tmp = path + ".tmp";
+    int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (fd < 0) {
+        if (error) *error = "open " + tmp + ": " + strerror(errno);
+        return false;
+    }
+    if (fchmod(fd, mode) != 0) {
+        if (error) *error = "chmod " + tmp + ": " + strerror(errno);
+        close(fd);
+        unlink(tmp.c_str());
+        return false;
+    }
+    if (!write_all(fd, content.data(), content.size())) {
+        if (error) *error = "write " + tmp + ": " + strerror(errno);
+        close(fd);
+        unlink(tmp.c_str());
+        return false;
+    }
+    fsync(fd);
+    if (close(fd) != 0) {
+        if (error) *error = "close " + tmp + ": " + strerror(errno);
+        unlink(tmp.c_str());
+        return false;
+    }
+    if (rename(tmp.c_str(), path.c_str()) != 0) {
+        if (error) *error = "rename " + tmp + " -> " + path + ": " + strerror(errno);
+        unlink(tmp.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool save_system_env_content(const std::string& path,
+                             const std::string& content,
+                             std::string* error) {
+    if (path.empty()) {
+        if (error) *error = "system env path is empty";
+        return false;
+    }
+    if (content.size() > kMaxSystemEnvSize) {
+        if (error) *error = "system env is too large";
+        return false;
+    }
+    if (!validate_system_env_content(content, error)) {
+        return false;
+    }
+    return atomic_write_file(path, content, 0600, error);
+}
+
+std::string read_file_tail(const char* path, size_t max_size) {
+    FILE* f = fopen(path, "r");
+    if (!f) {
+        return "";
+    }
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return "";
+    }
+    long file_size = ftell(f);
+    if (file_size <= 0) {
+        fclose(f);
+        return "";
+    }
+
+    long offset = 0;
+    if (static_cast<size_t>(file_size) > max_size) {
+        offset = file_size - static_cast<long>(max_size);
+    }
+    if (fseek(f, offset, SEEK_SET) != 0) {
+        fclose(f);
+        return "";
+    }
+
+    std::string contents;
+    contents.reserve(static_cast<size_t>(file_size - offset));
+    char buf[1024];
+    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
+        contents.append(buf, n);
+    }
+    fclose(f);
+
+    if (offset > 0) {
+        size_t first_newline = contents.find('\n');
+        if (first_newline != std::string::npos) {
+            contents.erase(0, first_newline + 1);
+        }
+    }
+    return contents;
+}
+
+std::string trim_for_display(const std::string& text, size_t max_size) {
+    std::string trimmed = trim_trailing_newlines(text);
+    if (trimmed.size() <= max_size) {
+        return trimmed;
+    }
+    size_t start = trimmed.size() - max_size;
+    size_t newline = trimmed.find('\n', start);
+    if (newline != std::string::npos && newline + 1 < trimmed.size()) {
+        start = newline + 1;
+    }
+    return trimmed.substr(start);
+}
+
+AgentLogSnapshot read_agent_log_snapshot() {
+    AgentLogSnapshot snapshot;
+    snapshot.path = kAgentLogPath;
+
+    FILE* f = fopen(kAgentLogPath, "r");
+    if (!f) {
+        snapshot.error = strerror(errno);
+        return snapshot;
+    }
+    snapshot.exists = true;
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+        snapshot.error = std::string("seek failed: ") + strerror(errno);
+        fclose(f);
+        return snapshot;
+    }
+
+    long file_size = ftell(f);
+    if (file_size < 0) {
+        snapshot.error = std::string("stat failed: ") + strerror(errno);
+        fclose(f);
+        return snapshot;
+    }
+
+    snapshot.size_bytes = file_size;
+    long offset = 0;
+    if (static_cast<size_t>(file_size) > kAgentLogReadSize) {
+        offset = file_size - static_cast<long>(kAgentLogReadSize);
+        snapshot.truncated = true;
+    }
+
+    if (fseek(f, offset, SEEK_SET) != 0) {
+        snapshot.error = std::string("seek failed: ") + strerror(errno);
+        fclose(f);
+        return snapshot;
+    }
+
+    std::string contents;
+    contents.reserve(static_cast<size_t>(file_size - offset));
+    char buf[1024];
+    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
+        contents.append(buf, n);
+    }
+
+    if (ferror(f)) {
+        snapshot.error = std::string("read failed: ") + strerror(errno);
+    }
+    fclose(f);
+
+    if (offset > 0) {
+        size_t first_newline = contents.find('\n');
+        if (first_newline != std::string::npos) {
+            contents.erase(0, first_newline + 1);
+        }
+    }
+
+    if (contents.size() > kAgentLogDisplaySize) {
+        snapshot.truncated = true;
+    }
+    snapshot.log = trim_for_display(contents, kAgentLogDisplaySize);
+    return snapshot;
+}
+
+std::string lowercase_copy(const std::string& text) {
+    std::string out = text;
+    for (size_t i = 0; i < out.size(); ++i) {
+        out[i] = static_cast<char>(tolower(static_cast<unsigned char>(out[i])));
+    }
+    return out;
+}
+
+bool parse_decimal(const std::string& text, int min_value, int max_value, int* value) {
+    if (!value) {
+        return false;
+    }
+    std::string trimmed = trim_copy(text);
+    if (trimmed.empty()) {
+        return false;
+    }
+
+    errno = 0;
+    char* end = NULL;
+    long parsed = strtol(trimmed.c_str(), &end, 10);
+    if (errno != 0 || !end || *end != '\0' || parsed < min_value || parsed > max_value) {
+        return false;
+    }
+
+    *value = static_cast<int>(parsed);
+    return true;
+}
+
+int parse_status_pid(const std::string& line) {
+    size_t pos = line.find("pid=");
+    if (pos == std::string::npos) {
+        return 0;
+    }
+    pos += 4;
+    size_t end = pos;
+    while (end < line.size() && isdigit(static_cast<unsigned char>(line[end]))) {
+        ++end;
+    }
+    int pid = 0;
+    if (end > pos && parse_decimal(line.substr(pos, end - pos), 1, 999999, &pid)) {
+        return pid;
+    }
+    return 0;
+}
+
+std::string parse_status_addr(const std::string& line) {
+    size_t pos = line.find("addr=");
+    if (pos == std::string::npos) {
+        return "";
+    }
+    pos += 5;
+    size_t end = line.find_first_of(" \t\r\n", pos);
+    return line.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+}
+
+std::string parse_agent_host(const std::string& addr) {
+    std::string candidate = trim_copy(addr);
+    if (candidate.empty()) {
+        return kAgentPortHost;
+    }
+
+    size_t colon = candidate.rfind(':');
+    if (colon == std::string::npos || colon == 0) {
+        return kAgentPortHost;
+    }
+
+    std::string host = candidate.substr(0, colon);
+    if (host.size() >= 2 && host[0] == '[' && host[host.size() - 1] == ']') {
+        host = host.substr(1, host.size() - 2);
+    }
+    return host.empty() ? kAgentPortHost : host;
+}
+
+int parse_agent_port(const std::string& addr) {
+    if (addr.empty()) {
+        return kDefaultAgentPort;
+    }
+
+    std::string candidate = addr;
+    size_t colon = candidate.rfind(':');
+    if (colon != std::string::npos) {
+        candidate = candidate.substr(colon + 1);
+    }
+
+    int port = 0;
+    if (parse_decimal(candidate, 1, 65535, &port)) {
+        return port;
+    }
+    return kDefaultAgentPort;
+}
+
+TcpPortStatus check_tcp_port(const std::string& host, int port) {
+    TcpPortStatus status;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        status.detail = std::string("socket failed: ") + strerror(errno);
+        return status;
+    }
+
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+
+    sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+        status.detail = "invalid host: " + host;
+        close(fd);
+        return status;
+    }
+
+    int rc = connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    if (rc == 0) {
+        status.reachable = true;
+        status.detail = "connected";
+        close(fd);
+        return status;
+    }
+
+    if (errno != EINPROGRESS) {
+        status.detail = strerror(errno);
+        close(fd);
+        return status;
+    }
+
+    fd_set write_fds;
+    FD_ZERO(&write_fds);
+    FD_SET(fd, &write_fds);
+    struct timeval timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 700 * 1000;
+
+    rc = select(fd + 1, NULL, &write_fds, NULL, &timeout);
+    if (rc > 0 && FD_ISSET(fd, &write_fds)) {
+        int socket_error = 0;
+        socklen_t len = sizeof(socket_error);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &len) == 0 && socket_error == 0) {
+            status.reachable = true;
+            status.detail = "connected";
+        } else {
+            status.detail = strerror(socket_error == 0 ? errno : socket_error);
+        }
+    } else if (rc == 0) {
+        status.detail = "connect timed out";
+    } else {
+        status.detail = std::string("select failed: ") + strerror(errno);
+    }
+
+    close(fd);
+    return status;
+}
+
+std::string recent_agent_startup_log() {
+    std::string log = read_file_tail(kAgentLogPath, kAgentStatusLogReadSize);
+    if (log.empty()) {
+        return "";
+    }
+
+    size_t marker = log.rfind("[agent] starting ");
+    if (marker == std::string::npos) {
+        marker = log.rfind("[agent] waiting for ");
+    }
+    if (marker != std::string::npos) {
+        log = log.substr(marker);
+    }
+    return trim_for_display(log, kAgentStatusLogDisplaySize);
+}
+
+bool log_excerpt_looks_like_startup_failure(const std::string& log) {
+    std::string lower = lowercase_copy(log);
+    return lower.find("exited with status") != std::string::npos ||
+           lower.find("error") != std::string::npos ||
+           lower.find("failed") != std::string::npos ||
+           lower.find("not found") != std::string::npos ||
+           lower.find("panic") != std::string::npos;
+}
+
+AgentRuntimeStatus query_agent_status() {
+    AgentRuntimeStatus status;
+    status.addr = ":8080";
+    status.port_host = kAgentPortHost;
+    status.port = kDefaultAgentPort;
+
+    if (!file_exists(kAgentInitScript)) {
+        status.state = "unknown";
+        status.detail = std::string("agent init script not found: ") + kAgentInitScript;
+        status.startup_error = status.detail;
+    } else {
+        CommandResult script_status = run_shell_command_with_timeout(
+            std::string(kAgentInitScript) + " status 2>&1", kAgentStatusCommandTimeoutMs);
+        status.detail = trim_trailing_newlines(script_status.output);
+
+        if (script_status.timed_out) {
+            status.state = "unknown";
+            status.startup_error = status.detail;
+        } else {
+            std::istringstream lines(script_status.output);
+            std::string line;
+            while (std::getline(lines, line)) {
+                line = trim_copy(line);
+                if (starts_with(line, "watchdog=running")) {
+                    status.watchdog_running = true;
+                    status.watchdog_pid = parse_status_pid(line);
+                } else if (starts_with(line, "agent=running")) {
+                    status.process_running = true;
+                    status.pid = parse_status_pid(line);
+                    std::string addr = parse_status_addr(line);
+                    if (!addr.empty()) {
+                        status.addr = addr;
+                        status.port_host = parse_agent_host(addr);
+                        status.port = parse_agent_port(addr);
+                    }
+                } else if (starts_with(line, "agent=stopped")) {
+                    status.process_running = false;
+                }
+            }
+
+            if (script_status.exit_code != 0 && status.detail.empty()) {
+                status.detail = "agent status command failed";
+            }
+        }
+    }
+
+    TcpPortStatus port_status = check_tcp_port(status.port_host, status.port);
+    status.port_reachable = port_status.reachable;
+    status.port_detail = port_status.detail;
+
+    if (status.process_running) {
+        status.state = status.port_reachable ? "running" : "port_unreachable";
+    } else if (status.watchdog_running) {
+        std::string log = recent_agent_startup_log();
+        if (!log.empty()) {
+            status.startup_error = log;
+        }
+        status.state = log_excerpt_looks_like_startup_failure(log) ? "error" : "starting";
+    } else if (status.state == "unknown") {
+        // Keep the unknown state set above.
+    } else {
+        status.state = "stopped";
+    }
+
+    return status;
+}
+
+cJSON* agent_status_to_json(const AgentRuntimeStatus& status) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "state", status.state.c_str());
+    cJSON_AddBoolToObject(root, "watchdog_running", status.watchdog_running ? 1 : 0);
+    cJSON_AddNumberToObject(root, "watchdog_pid", status.watchdog_pid);
+    cJSON_AddBoolToObject(root, "process_running", status.process_running ? 1 : 0);
+    cJSON_AddNumberToObject(root, "pid", status.pid);
+    cJSON_AddStringToObject(root, "addr", status.addr.c_str());
+    cJSON_AddStringToObject(root, "port_host", status.port_host.c_str());
+    cJSON_AddNumberToObject(root, "port", status.port);
+    cJSON_AddBoolToObject(root, "port_reachable", status.port_reachable ? 1 : 0);
+    cJSON_AddStringToObject(root, "port_detail", status.port_detail.c_str());
+    cJSON_AddStringToObject(root, "detail", status.detail.c_str());
+    cJSON_AddStringToObject(root, "startup_error", status.startup_error.c_str());
+    return root;
+}
+
+cJSON* agent_log_to_json(const AgentLogSnapshot& snapshot) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "path", snapshot.path.c_str());
+    cJSON_AddBoolToObject(root, "exists", snapshot.exists ? 1 : 0);
+    cJSON_AddNumberToObject(root, "size_bytes", snapshot.size_bytes);
+    cJSON_AddBoolToObject(root, "truncated", snapshot.truncated ? 1 : 0);
+    cJSON_AddStringToObject(root, "log", snapshot.log.c_str());
+    cJSON_AddStringToObject(root, "error", snapshot.error.c_str());
+    return root;
+}
+
 cJSON* firmware_info_to_json(const Options& options) {
     cJSON* fw = cJSON_CreateObject();
     if (!file_exists(options.ota_state_path.c_str())) {
@@ -1105,6 +1865,7 @@ ApiResponse handle_get_config(const Options& options) {
     aiden::AgentToml config;
     aiden::WifiNetworkConfig wifi;
     WifiRuntimeStatus wifi_status = query_wifi_status(options);
+    AgentRuntimeStatus agent_status = query_agent_status();
     std::string config_error;
     std::string wifi_error;
     load_current_agent_config(options, &config, &config_error);
@@ -1115,12 +1876,16 @@ ApiResponse handle_get_config(const Options& options) {
     cJSON_AddItemToObject(root, "config", config_to_json(config));
     cJSON_AddItemToObject(root, "wifi", wifi_to_json(wifi));
     cJSON_AddItemToObject(root, "wifi_status", wifi_status_to_json(wifi_status));
+    cJSON_AddItemToObject(root, "agent_status", agent_status_to_json(agent_status));
     cJSON_AddItemToObject(root, "firmware", firmware_info_to_json(options));
+    cJSON_AddStringToObject(root, "system_env",
+                            read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize).c_str());
 
     cJSON* paths = add_object(root, "paths");
     cJSON_AddStringToObject(paths, "agent_config", options.agent_config_path.c_str());
     cJSON_AddStringToObject(paths, "wifi_config", options.wifi_config_path.c_str());
     cJSON_AddStringToObject(paths, "wifi_interface", options.wifi_interface.c_str());
+    cJSON_AddStringToObject(paths, "system_env", options.system_env_path.c_str());
 
     if (!config_error.empty()) {
         cJSON_AddStringToObject(root, "config_error", config_error.c_str());
@@ -1130,6 +1895,62 @@ ApiResponse handle_get_config(const Options& options) {
     }
 
     return make_json_ok(root);
+}
+
+ApiResponse handle_get_agent_status() {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON_AddItemToObject(root, "agent_status", agent_status_to_json(query_agent_status()));
+    return make_json_ok(root);
+}
+
+ApiResponse handle_get_agent_log() {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON_AddItemToObject(root, "agent_log", agent_log_to_json(read_agent_log_snapshot()));
+    return make_json_ok(root);
+}
+
+ApiResponse handle_post_system_env(const Options& options, const std::string& body) {
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+        return make_json_error(400, "invalid JSON body");
+    }
+
+    cJSON* env_item = cJSON_GetObjectItem(root, "system_env");
+    if (!json_is_string(env_item)) {
+        cJSON_Delete(root);
+        return make_json_error(400, "missing system_env string");
+    }
+
+    std::string system_env = env_item->valuestring;
+    cJSON_Delete(root);
+
+    std::string original_system_env = read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize);
+    std::string save_error;
+    if (!save_system_env_content(options.system_env_path, system_env, &save_error)) {
+        return make_json_error(400, save_error);
+    }
+
+    std::string updated_system_env = read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize);
+    bool system_env_changed = original_system_env != updated_system_env;
+    schedule_agent_restart();
+    if (system_env_changed) {
+        schedule_ota_restart();
+    }
+
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", 1);
+    cJSON_AddStringToObject(response, "message",
+                            system_env_changed ? "system env saved; services restarting"
+                                               : "system env saved; agent restarting");
+    cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
+    cJSON_AddBoolToObject(response, "ota_restart_scheduled", system_env_changed ? 1 : 0);
+    cJSON_AddStringToObject(response, "system_env",
+                            read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize).c_str());
+    cJSON* paths = add_object(response, "paths");
+    cJSON_AddStringToObject(paths, "system_env", options.system_env_path.c_str());
+    return make_json_ok(response);
 }
 
 ApiResponse handle_post_config(const Options& options, const std::string& body) {
@@ -1185,11 +2006,13 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON_AddBoolToObject(response, "ok", 1);
     cJSON_AddStringToObject(response, "message", "config saved; agent restarting");
     cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
+    cJSON_AddBoolToObject(response, "ota_restart_scheduled", 0);
     cJSON_AddItemToObject(response, "config", config_to_json(config));
 
     cJSON* paths = add_object(response, "paths");
     cJSON_AddStringToObject(paths, "agent_config", options.agent_config_path.c_str());
     cJSON_AddStringToObject(paths, "wifi_config", options.wifi_config_path.c_str());
+    cJSON_AddStringToObject(paths, "system_env", options.system_env_path.c_str());
 
     if (apply_wifi && should_save_wifi) {
         CommandResult wifi_apply = apply_wifi_config(options);
@@ -1352,11 +2175,8 @@ load();
 </script></body></html>)HTML";
 }
 
-bool is_valid_proxy_scheme(const std::string& url) {
-    if (url.empty()) return true;
-    return starts_with(url, "http://") || starts_with(url, "https://") ||
-           starts_with(url, "socks5://") || starts_with(url, "socks4://") ||
-           starts_with(url, "socks4a://");
+std::string validate_proxy_url(const std::string& url) {
+    return aiden::validate_system_proxy_url(url);
 }
 
 std::string provider_default_url(const std::string& provider) {
@@ -1367,7 +2187,7 @@ std::string provider_default_url(const std::string& provider) {
     return "";
 }
 
-std::string build_curl_proxy_arg(const aiden::ProxyToml& proxy) {
+std::string build_curl_proxy_arg(const SystemProxy& proxy) {
     std::string url = trim_copy(proxy.https_proxy);
     if (url.empty()) url = trim_copy(proxy.http_proxy);
     if (url.empty()) url = trim_copy(proxy.all_proxy);
@@ -1381,7 +2201,7 @@ std::string build_curl_proxy_arg(const aiden::ProxyToml& proxy) {
     return arg;
 }
 
-std::string build_proxy_env_exports(const aiden::ProxyToml& proxy) {
+std::string build_proxy_env_exports(const SystemProxy& proxy) {
     std::string http_proxy = trim_copy(proxy.http_proxy);
     std::string https_proxy = trim_copy(proxy.https_proxy);
     std::string all_proxy = trim_copy(proxy.all_proxy);
@@ -1438,34 +2258,12 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     cJSON* results = add_array(response, "results");
     bool all_passed = true;
 
-    aiden::AgentToml current_config;
-    std::string config_error;
-    load_current_agent_config(options, &current_config, &config_error);
-    std::string curl_proxy_arg = build_curl_proxy_arg(current_config.proxy);
-    std::string curl_env_exports = build_proxy_env_exports(current_config.proxy);
+    SystemProxy current_proxy;
+    load_system_env_proxy(options.system_env_path, &current_proxy);
+    std::string curl_proxy_arg = build_curl_proxy_arg(current_proxy);
+    std::string curl_env_exports = build_proxy_env_exports(current_proxy);
 
-    if (section == "proxy") {
-        const char* proxy_keys[] = {"http_proxy", "https_proxy", "all_proxy", NULL};
-        for (int i = 0; proxy_keys[i]; ++i) {
-            cJSON* item = cJSON_GetObjectItem(values, proxy_keys[i]);
-            std::string val = json_is_string(item) ? trim_copy(item->valuestring) : "";
-            cJSON* r = cJSON_CreateObject();
-            cJSON_AddStringToObject(r, "check", proxy_keys[i]);
-            if (val.empty()) {
-                cJSON_AddBoolToObject(r, "passed", 1);
-                cJSON_AddStringToObject(r, "detail", "empty (ok)");
-            } else if (is_valid_proxy_scheme(val)) {
-                cJSON_AddBoolToObject(r, "passed", 1);
-                cJSON_AddStringToObject(r, "detail", val.c_str());
-            } else {
-                cJSON_AddBoolToObject(r, "passed", 0);
-                std::string msg = "invalid scheme in: " + val + " (allowed: http, https, socks5, socks4)";
-                cJSON_AddStringToObject(r, "detail", msg.c_str());
-                all_passed = false;
-            }
-            cJSON_AddItemToArray(results, r);
-        }
-    } else if (section == "model" || section == "tts" || section == "stt") {
+    if (section == "model" || section == "tts" || section == "stt") {
         cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
         cJSON* base_url_item = cJSON_GetObjectItem(values, "base_url");
         std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
@@ -1660,10 +2458,32 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             cJSON_AddItemToArray(results, r);
         }
 
+        cJSON* vad_item = cJSON_GetObjectItem(values, "vad_speech_threshold");
+        cJSON* vad_r = cJSON_CreateObject();
+        cJSON_AddStringToObject(vad_r, "check", "vad_speech_threshold");
+        if (json_is_number(vad_item)) {
+            double n = vad_item->valuedouble;
+            if (n < 0.0 || n > 1.0) {
+                cJSON_AddBoolToObject(vad_r, "passed", 0);
+                std::string msg = "must be in range [0.0, 1.0], got " + std::to_string(n);
+                cJSON_AddStringToObject(vad_r, "detail", msg.c_str());
+                all_passed = false;
+            } else {
+                cJSON_AddBoolToObject(vad_r, "passed", 1);
+                cJSON_AddStringToObject(vad_r, "detail", std::to_string(n).c_str());
+            }
+        } else {
+            cJSON_AddBoolToObject(vad_r, "passed", 0);
+            cJSON_AddStringToObject(vad_r, "detail", "not a number");
+            all_passed = false;
+        }
+        cJSON_AddItemToArray(results, vad_r);
+
         const char* numeric_keys[] = {
-            "energy_threshold", "silence_ms", "min_speech_ms",
+            "silence_ms", "min_speech_ms",
             "voice_followup_timeout_ms", "voice_first_turn_timeout_ms",
-            "voice_max_turns", "voice_max_response_tokens", NULL
+            "voice_max_turns", "voice_max_response_tokens",
+            "screenshot_keep_n", "screenshot_prune_interval", NULL
         };
         for (int i = 0; numeric_keys[i]; ++i) {
             cJSON* item = cJSON_GetObjectItem(values, numeric_keys[i]);
@@ -1921,10 +2741,9 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         FILE* sf = fopen("/userdata/agent/benchmark/state.json", "w");
         if (sf) { fputs(state.c_str(), sf); fclose(sf); }
 
-        aiden::AgentToml current_config;
-        std::string config_error;
-        load_current_agent_config(options, &current_config, &config_error);
-        std::string proxy_env_exports = build_proxy_env_exports(current_config.proxy);
+        SystemProxy current_proxy;
+        load_system_env_proxy(options.system_env_path, &current_proxy);
+        std::string proxy_env_exports = build_proxy_env_exports(current_proxy);
 
         // Launch runner in background
         std::string cmd = "cd /userdata/agent/benchmark && "
@@ -1942,12 +2761,24 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     }
     // ===== End benchmark routes =====
 
+    if (request.method == "GET" && request.path == "/api/agent/status") {
+        return handle_get_agent_status();
+    }
+
+    if (request.method == "GET" && request.path == "/api/agent/logs") {
+        return handle_get_agent_log();
+    }
+
     if (request.method == "GET" && request.path == "/api/config") {
         return handle_get_config(options);
     }
 
     if (request.method == "POST" && request.path == "/api/config") {
         return handle_post_config(options, request.body);
+    }
+
+    if (request.method == "POST" && request.path == "/api/system/env") {
+        return handle_post_system_env(options, request.body);
     }
 
     if (request.method == "POST" && request.path == "/api/wifi/scan") {
@@ -1988,7 +2819,8 @@ bool parse_int(const char* text, int min_value, int max_value, int* value) {
 
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0 << " [--bind=IP] [--port=PORT]"
-              << " [--config=PATH] [--wifi-config=PATH] [--wifi-iface=NAME]" << std::endl;
+              << " [--config=PATH] [--wifi-config=PATH] [--wifi-iface=NAME]"
+              << " [--system-env=PATH]" << std::endl;
 }
 
 bool parse_args(int argc, char** argv, Options* options) {
@@ -2007,6 +2839,7 @@ bool parse_args(int argc, char** argv, Options* options) {
         } else if (consume_prefix(arg, "--config=", &options->agent_config_path)) {
         } else if (consume_prefix(arg, "--wifi-config=", &options->wifi_config_path)) {
         } else if (consume_prefix(arg, "--wifi-iface=", &options->wifi_interface)) {
+        } else if (consume_prefix(arg, "--system-env=", &options->system_env_path)) {
         } else {
             return false;
         }
@@ -2078,6 +2911,7 @@ int main(int argc, char** argv) {
               << options.port << std::endl;
     std::cout << "agent.toml -> " << options.agent_config_path << std::endl;
     std::cout << "wifi.conf  -> " << options.wifi_config_path << std::endl;
+    std::cout << "system env -> " << options.system_env_path << std::endl;
 
     while (!g_should_stop) {
         sockaddr_in client_addr;

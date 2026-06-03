@@ -31,6 +31,8 @@ func effectiveMaxIterations(configured int) int {
 	return configured
 }
 
+const currentEnvironmentHintMaxAge = 10 * time.Minute
+
 type Runtime struct {
 	config           Config
 	models           ModelResolver
@@ -44,6 +46,7 @@ type Runtime struct {
 	logger           *Logger
 	profileDebouncer *ProfileDebouncer
 	sleep            *SleepController
+	memoryPlane      MemoryPlane
 }
 
 type RunRequest struct {
@@ -71,10 +74,17 @@ type RunMetrics struct {
 	CompletionTokens int     `json:"completion_tokens,omitempty"`
 	TotalTokens      int     `json:"total_tokens,omitempty"`
 	FirstTokenTime   float64 `json:"first_token_time_ms,omitempty"`
+	// LastPromptTokens holds the prompt-token count of the most recent LLM call.
+	// PromptTokens/CompletionTokens/TotalTokens accumulate across the multiple
+	// planner/executor/verifier calls in a single run, but the compression
+	// heuristic needs the size of one prompt relative to the context window, not
+	// the cumulative sum, so that single-call value is tracked separately.
+	LastPromptTokens int `json:"-"`
 }
 
 type RunEvent struct {
 	Type        string    `json:"type"`
+	Role        string    `json:"role,omitempty"`
 	ToolName    string    `json:"tool_name,omitempty"`
 	ToolInput   string    `json:"tool_input,omitempty"`
 	Description string    `json:"description,omitempty"`
@@ -153,9 +163,13 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	sleepController := NewSleepController()
-	toolSet := NewBuiltinToolSet(cfg.HID, cfg.Audio, cfg.Search, cfg.Proxy, WithSleepController(sleepController))
+	proxy := ProxyConfigFromEnvironment()
+	if err := proxy.Validate(); err != nil {
+		return nil, fmt.Errorf("proxy environment: %w", err)
+	}
+	toolSet := NewBuiltinToolSet(cfg.HID, cfg.Audio, cfg.Search, proxy, WithSleepController(sleepController))
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
-	modelManager := NewModelManager(cfg.Model, cfg.Proxy)
+	modelManager := NewModelManager(cfg.Model, proxy)
 	summarizeFn := buildLLMSummarizeFn(modelManager)
 	structuredSummarizeFn := buildLLMStructuredSummarizeFn(modelManager)
 	profileFn := buildLLMProfileFn(modelManager)
@@ -197,6 +211,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		rt.mergeWorker = worker
 	}
 
+	rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger)
 	return rt, nil
 }
 
@@ -213,7 +228,7 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 	if cfg.ConfigDir != "" {
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
 	}
-	return &Runtime{
+	rt := &Runtime{
 		config:       cfg,
 		models:       models,
 		memories:     memories,
@@ -222,6 +237,10 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		skillsLoaded: skillIndex != nil && len(skillIndex.Names()) > 0,
 		sleep:        sleepController,
 	}
+	if cfg.ConfigDir != "" {
+		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
+	}
+	return rt
 }
 
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
@@ -277,6 +296,29 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 
 	availableTools := r.resolveTools(resolvedSkills)
+	retrieveReq := MemoryRetrieveRequest{
+		Input:        normalizedInput,
+		Attachments:  req.Attachments,
+		Skills:       skillNames,
+		ToolNames:    toolNamesFromTools(availableTools),
+		DeviceID:     defaultMemoryDeviceID,
+		CurrentHints: r.currentEnvironmentHints(),
+	}
+	memoryContext := MemoryContext{}
+	if r.memoryPlane != nil {
+		retrieved, retrieveErr := r.memoryPlane.Retrieve(ctx, retrieveReq)
+		if retrieveErr != nil {
+			if r.logger != nil {
+				r.logger.Warn("[memory] retrieve failed: %v", retrieveErr)
+			}
+		} else {
+			memoryContext = retrieved
+		}
+	}
+	var episodeRecorder *EpisodeRecorder
+	if r.memoryPlane != nil {
+		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
+	}
 
 	maxIterations := effectiveMaxIterations(r.config.MaxIterations)
 
@@ -285,7 +327,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		callOptions = append(callOptions, chains.WithMaxTokens(req.MaxTokens))
 	}
 	var streamCallbackHandler *runtimeCallbackHandler
-	var agentCallbackHandler callbacks.Handler
 	if req.StreamWriter != nil || req.EventHandler != nil || r.logger != nil {
 		streamCallbackHandler = &runtimeCallbackHandler{
 			writer:       req.StreamWriter,
@@ -295,23 +336,16 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			eventHandler: req.EventHandler,
 		}
 	}
-	if req.StreamWriter != nil {
-		agentCallbackHandler = streamCallbackHandler
-		callOptions = append(callOptions, chains.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
-			streamCallbackHandler.HandleStreamingFunc(ctx, chunk)
-			return nil
-		}))
-	}
 	if streamCallbackHandler != nil {
 		availableTools = wrapToolsWithCallbacks(availableTools, streamCallbackHandler)
 	}
 
-	agent := r.buildAgent(model, resolvedSkills, availableTools, req.Attachments, agentCallbackHandler)
 	var executorHandler callbacks.Handler
 	if streamCallbackHandler != nil {
 		executorHandler = streamCallbackHandler
 	}
-	executor := newParallelToolExecutor(agent, memoryHandle.Memory, maxIterations, executorHandler)
+	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext)
+	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, memoryHandle.Memory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault())
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
@@ -326,24 +360,29 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			}
 		}
 		if err != nil {
+			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
 			return RunResult{}, err
 		}
 	}
 
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
-	r.memories.SetLastPromptTokens(metrics.PromptTokens)
+	r.memories.SetLastPromptTokens(metrics.LastPromptTokens)
 	if err := r.memories.AppendExchange(ctx, "default", normalizedInput, output); err != nil {
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
 		return RunResult{}, err
 	}
 
 	memorySnapshot, err := r.memories.Snapshot(ctx, "default")
 	if err != nil {
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
 		return RunResult{}, err
 	}
 	if err := r.memories.SaveSnapshot(ctx, "default", memorySnapshot); err != nil {
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
 		return RunResult{}, err
 	}
 	r.memories.RequestMaintenance()
+	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil)
 
 	sleepRequested, sleepReason := r.sleep.Consume()
 	return RunResult{
@@ -354,6 +393,13 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		SleepRequested: sleepRequested,
 		SleepReason:    sleepReason,
 	}, nil
+}
+
+func (r *Runtime) currentEnvironmentHints() CurrentEnvironmentHints {
+	if r.tools != nil {
+		return r.tools.CurrentEnvironmentHints(currentEnvironmentHintMaxAge)
+	}
+	return CurrentEnvironmentHints{}
 }
 
 func (r *Runtime) ClearMemory(ctx context.Context) error {
@@ -415,7 +461,7 @@ func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 		available = append(available, r.tools.All()...)
 	}
 
-	memoryTools := []string{"recall_session_chunks", "recall_memory", "save_memory", "forget_memory"}
+	memoryTools := []string{"recall_session_chunks", "recall_memory", "save_memory", "forget_memory", "recall_device_memory", "inspect_episode"}
 	for _, name := range memoryTools {
 		if skills.HasToolRestriction {
 			if _, allowed := skills.AllowedTools[name]; !allowed {
@@ -451,6 +497,37 @@ func toolAlreadyIncluded(tools []langtools.Tool, name string) bool {
 		}
 	}
 	return false
+}
+
+func toolNamesFromTools(tools []langtools.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		names = append(names, tool.Name())
+	}
+	return uniqueNonEmpty(names)
+}
+
+func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error) {
+	if recorder == nil || r.memoryPlane == nil {
+		return
+	}
+	cfg := DefaultMemoryExtractionConfig()
+	if r.memories != nil {
+		cfg = r.memories.extraction
+	} else if r.config.ConfigDir != "" {
+		cfg = LoadMemoryExtractionConfig(r.config.ConfigDir)
+	}
+	tags := cfg.extractTagsFromText(input)
+	entities := cfg.extractEntitiesFromText(input)
+	episode := recorder.Finish(output, metrics, runErr, tags, entities)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := r.memoryPlane.CommitEpisode(ctx, episode); err != nil && r.logger != nil {
+		r.logger.Warn("[memory] commit episode failed: %v", err)
+	}
 }
 
 func wrapToolsWithCallbacks(tools []langtools.Tool, handler callbacks.Handler) []langtools.Tool {
@@ -492,7 +569,7 @@ func (r *Runtime) buildAgent(
 			systemMessage += "\n\n" + string(profile)
 		}
 	}
-	return NewFunctionAgent(
+	agent := NewFunctionAgent(
 		model,
 		availableTools,
 		systemMessage,
@@ -505,6 +582,39 @@ func (r *Runtime) buildAgent(
 		attachments,
 		callbackHandler,
 	)
+	agent.ScreenshotPruning = r.config.ScreenshotPruningOrDefault()
+	return agent
+}
+
+func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []langtools.Tool, memoryContext MemoryContext) RoleProfiles {
+	if memoryContext.IsEmpty() && r.config.ConfigDir != "" {
+		memoryContext = normalizeMemoryContext(r.memoryContextForPrompt())
+	}
+	return buildRoleProfiles(
+		AgentConfig{
+			Instruction:      r.config.Instruction,
+			AdditionalPrompt: r.config.AdditionalPrompt,
+		},
+		skills,
+		availableTools,
+		memoryContext,
+	)
+}
+
+func (r *Runtime) memoryContextForPrompt() string {
+	if r.config.ConfigDir == "" {
+		return ""
+	}
+	var parts []string
+	sessionSummary, _ := os.ReadFile(filepath.Join(r.config.ConfigDir, "memory", "session", "summary.md"))
+	if len(sessionSummary) > 0 {
+		parts = append(parts, string(sessionSummary))
+	}
+	profile, _ := os.ReadFile(filepath.Join(r.config.ConfigDir, "memory", "long_term", "profile.md"))
+	if len(profile) > 0 {
+		parts = append(parts, string(profile))
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // runtimeCallbackHandler implements callbacks.Handler for streaming output and
@@ -539,23 +649,24 @@ func recordUsageMetrics(metrics *RunMetrics, res *llms.ContentResponse) {
 	if res == nil || metrics == nil || len(res.Choices) == 0 {
 		return
 	}
-	metrics.PromptTokens = 0
-	metrics.CompletionTokens = 0
-	metrics.TotalTokens = 0
-
 	info := res.Choices[0].GenerationInfo
 	if info == nil {
 		return
 	}
 
+	// A single run makes several LLM calls (planner, executor, verifier, and any
+	// tool-assisted iterations). Accumulate token counts across calls so the run
+	// metrics reflect the whole run rather than only the last call. LastPromptTokens
+	// keeps the most recent single-call prompt size for the compression heuristic.
 	if v, ok := usageMetricInt(info["prompt_tokens"]); ok {
-		metrics.PromptTokens = v
+		metrics.PromptTokens += v
+		metrics.LastPromptTokens = v
 	}
 	if v, ok := usageMetricInt(info["completion_tokens"]); ok {
-		metrics.CompletionTokens = v
+		metrics.CompletionTokens += v
 	}
 	if v, ok := usageMetricInt(info["total_tokens"]); ok {
-		metrics.TotalTokens = v
+		metrics.TotalTokens += v
 	}
 }
 
@@ -684,6 +795,21 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 }
 
 func (h *runtimeCallbackHandler) HandleAgentFinish(ctx context.Context, finish schema.AgentFinish) {}
+
+func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, content string) {
+	content = strings.TrimSpace(content)
+	if h.logger != nil {
+		h.logger.Info("Role output: role=%s content=%s", role, truncateForLog(content, 1000))
+	}
+	if h.eventHandler != nil {
+		h.eventHandler(RunEvent{
+			Type:      "role_output",
+			Role:      role,
+			Content:   content,
+			Timestamp: time.Now(),
+		})
+	}
+}
 
 func (h *runtimeCallbackHandler) HandleRetrieverStart(ctx context.Context, query string) {}
 

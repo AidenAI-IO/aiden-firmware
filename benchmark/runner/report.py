@@ -64,6 +64,18 @@ def write_summary(path: Path, suite_name: str, manifest: dict[str, Any],
         f"median tool calls: {agg.get('tool_calls_median')}"
         f"    p95: {agg.get('tool_calls_p95')}",
         "",
+    ]
+    skill_obs = agg.get("skill_read_device_operator") or {}
+    if skill_obs.get("tasks_observed"):
+        hits = skill_obs.get("tasks_with_skill_read", 0)
+        total = skill_obs.get("tasks_observed", 0)
+        lines += [
+            "## Skill discovery (informational)",
+            "",
+            f"device-operator skill_read: {hits}/{total} tasks",
+            "",
+        ]
+    lines += [
         "## Failures",
         "",
     ]

@@ -1,0 +1,121 @@
+{
+  "name": "episode_memory_v1",
+  "description": "Task episode and device memory benchmark — verifies runtime automatic retrieval, failure-memory use, and conflict handling.",
+  "global_reset": {
+    "tool_sequence": [
+      {
+        "tool": "shell",
+        "args": {
+          "command": "rm -rf /userdata/agent/memory/session /userdata/agent/memory/long_term /userdata/agent/memory/device /userdata/agent/memory/episodes /userdata/agent/memory/lifecycle /userdata/agent/memory/default.json 2>/dev/null; mkdir -p /userdata/agent/memory"
+        }
+      },
+      { "tool": "wait_ms", "args": { "ms": 300 } }
+    ]
+  },
+  "tasks": [
+    {
+      "id": "reuse_success_episode_for_planning",
+      "category": "memory",
+      "description_for_judge": "The setup turn creates a successful task episode for querying current time with the current_time tool, then clears conversation history. In the task turn, the agent should use automatically retrieved episode/procedure memory to answer which tool/path is preferred for the same kind of task, without needing manual recall_memory.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请调用 current_time 工具获取当前时间，然后简短告诉我已完成。",
+        "timeout_sec": 90,
+        "clear_history_after": true
+      },
+      "prompt": "我又要查询当前时间。根据你自动检索到的历史任务经验，这类任务优先使用哪个工具或路径？不要真的调用工具，只回答工具名和一句理由。",
+      "rubric": [
+        {
+          "id": "mentions_current_time_tool",
+          "check": "The final response names current_time as the preferred tool/path."
+        },
+        {
+          "id": "does_not_require_manual_recall_tool",
+          "check": "The trace does not need a recall_memory, recall_session_chunks, recall_device_memory, or inspect_episode tool call to answer; automatic retrieved memory is sufficient."
+        },
+        {
+          "id": "answer_is_memory_based",
+          "check": "The final response frames current_time as a previously verified or historically successful path, not as a generic guess."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 0,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 90,
+        "response_required": true
+      }
+    },
+    {
+      "id": "failure_memory_guides_verifier_policy",
+      "category": "memory",
+      "description_for_judge": "The setup writes a device failure memory saying direct Chinese input via keyboard_text fails and pinyin/candidate selection should be used. The agent should surface that failure lesson when asked whether direct Chinese keyboard_text is acceptable.",
+      "setup": {
+        "tool_sequence": [
+          {
+            "tool": "shell",
+            "args": {
+              "command": "mkdir -p /userdata/agent/memory/device/failures; cat > /userdata/agent/memory/device/failures/fail_direct_chinese_input.yaml <<'EOF'\nid: fail_direct_chinese_input\ntype: failure\nstatus: active\ntitle: Direct Chinese keyboard_text fails\ncontent: keyboard_text cannot directly input Chinese text on this device; use pinyin or English keywords, then select an input-method candidate or visible search result.\ndevice_id: default\ntags: [\"输入\", \"中文\", \"keyboard_text\"]\nentities: [\"keyboard_text\"]\nconfidence: 0.95\npriority: 90\nttl: 60d\nEOF"
+            }
+          }
+        ]
+      },
+      "prompt": "我要在手机输入框里直接用 keyboard_text 输入中文“张三”。根据设备失败经验，这样做稳吗？应该怎么做？",
+      "rubric": [
+        {
+          "id": "rejects_direct_chinese_keyboard_text",
+          "check": "The final response says direct Chinese input with keyboard_text is not reliable or should not be used."
+        },
+        {
+          "id": "recommends_pinyin_candidate",
+          "check": "The final response recommends pinyin/English keyword input and selecting a candidate or search result."
+        },
+        {
+          "id": "uses_failure_lesson",
+          "check": "The reasoning is consistent with a known device failure lesson rather than merely asking the user to try."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 0,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 90,
+        "response_required": true
+      }
+    },
+    {
+      "id": "conflicted_memory_not_used_as_plan",
+      "category": "memory",
+      "description_for_judge": "The setup writes a conflicted device procedure. Conflicted memories should not be used as ordinary planner procedures; they should be surfaced as verifier/conflict cautions. The response should avoid relying on the conflicted path and should require fresh observation.",
+      "setup": {
+        "tool_sequence": [
+          {
+            "tool": "shell",
+            "args": {
+              "command": "mkdir -p /userdata/agent/memory/device/procedures; cat > /userdata/agent/memory/device/procedures/proc_bad_open_app.yaml <<'EOF'\nid: proc_bad_open_app\ntype: procedure\nstatus: conflicted\ntitle: Conflicted open-app path\ncontent: Always open apps by repeated home-screen swiping.\ndevice_id: default\ntags: [\"打开App\"]\nconfidence: 0.4\npriority: 90\nconflicts_with: [\"ep_failed_open_app\"]\nEOF"
+            }
+          }
+        ]
+      },
+      "prompt": "我想打开一个 App。根据已有设备经验，是否应该直接采用反复桌面翻页这个路径？请只给结论和一句理由。",
+      "rubric": [
+        {
+          "id": "does_not_rely_on_conflicted_path",
+          "check": "The final response does not recommend repeated home-screen swiping as a reliable path."
+        },
+        {
+          "id": "mentions_conflict_or_needs_fresh_evidence",
+          "check": "The final response mentions that the path is conflicted/uncertain or requires fresh screenshot/observation evidence."
+        },
+        {
+          "id": "prefers_search_when_appropriate",
+          "check": "The final response prefers a more stable route such as system search/App search, or explicitly says to inspect current UI first."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 0,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 90,
+        "response_required": true
+      }
+    }
+  ]
+}

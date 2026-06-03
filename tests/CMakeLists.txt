@@ -85,14 +85,22 @@ add_executable(aiden_tests
     frame_processing_test.cpp
     terminal_input_test.cpp
     service_status_test.cpp
+    vad_common_test.cpp
+    config_web_source_test.cpp
+    system_env_parser_test.cpp
     audio_service_protocol_test.cpp
     audio_service_client_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/system_env_parser.cpp
     ${AIDEN_IMAGE_TEST_SOURCES}
     ${AIDEN_TEST_SOURCES}
 )
 
 target_include_directories(aiden_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+)
+
+target_compile_definitions(aiden_tests PRIVATE
+    AIDEN_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
 target_link_libraries(aiden_tests PRIVATE doctest)

@@ -186,6 +186,10 @@ void apply_kv(AgentToml& cfg,
             if (!assign_int(&cfg.voice_max_response_tokens, raw, &sub_err)) fail(sub_err);
         } else if (key == "max_iterations") {
             if (!assign_int(&cfg.max_iterations, raw, &sub_err)) fail(sub_err);
+        } else if (key == "screenshot_keep_n") {
+            if (!assign_int(&cfg.screenshot_keep_n, raw, &sub_err)) fail(sub_err);
+        } else if (key == "screenshot_prune_interval") {
+            if (!assign_int(&cfg.screenshot_prune_interval, raw, &sub_err)) fail(sub_err);
         }
         // Unknown top-level keys are ignored to remain forward-compatible.
         return;
@@ -234,12 +238,6 @@ void apply_kv(AgentToml& cfg,
         if (key == "keyboard_device") assign_string(&cfg.hid.keyboard_device, raw, &sub_err);
         else if (key == "mouse_device") assign_string(&cfg.hid.mouse_device, raw, &sub_err);
         else if (key == "frame_socket") assign_string(&cfg.hid.frame_socket, raw, &sub_err);
-        if (!sub_err.empty()) fail(sub_err);
-    } else if (section == "proxy") {
-        if (key == "http_proxy") assign_string(&cfg.proxy.http_proxy, raw, &sub_err);
-        else if (key == "https_proxy") assign_string(&cfg.proxy.https_proxy, raw, &sub_err);
-        else if (key == "all_proxy") assign_string(&cfg.proxy.all_proxy, raw, &sub_err);
-        else if (key == "no_proxy") assign_string(&cfg.proxy.no_proxy, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "search") {
         if (key == "provider") assign_string(&cfg.search.provider, raw, &sub_err);
@@ -424,6 +422,8 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     emit_bool(out, "voice_tool_call_speech", cfg.voice_tool_call_speech);
     if (cfg.voice_max_response_tokens != 0) emit_int(out, "voice_max_response_tokens", cfg.voice_max_response_tokens);
     if (cfg.max_iterations != 0) emit_int(out, "max_iterations", cfg.max_iterations);
+    if (cfg.screenshot_keep_n != 0) emit_int(out, "screenshot_keep_n", cfg.screenshot_keep_n);
+    if (cfg.screenshot_prune_interval != 0) emit_int(out, "screenshot_prune_interval", cfg.screenshot_prune_interval);
     out << "\n";
 
     emit_model(out, "model", cfg.model);
@@ -462,13 +462,6 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     emit_string(out, "keyboard_device", cfg.hid.keyboard_device);
     emit_string(out, "mouse_device", cfg.hid.mouse_device);
     emit_string(out, "frame_socket", cfg.hid.frame_socket);
-    out << "\n";
-
-    out << "[proxy]\n";
-    emit_string(out, "http_proxy", cfg.proxy.http_proxy);
-    emit_string(out, "https_proxy", cfg.proxy.https_proxy);
-    emit_string(out, "all_proxy", cfg.proxy.all_proxy);
-    emit_string(out, "no_proxy", cfg.proxy.no_proxy);
     out << "\n";
 
     out << "[search]\n";

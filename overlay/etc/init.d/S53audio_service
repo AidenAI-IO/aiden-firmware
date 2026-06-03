@@ -8,6 +8,7 @@ CONFIG_FILE=/etc/aiden_audio_service.conf
 BOOT_CONF=/etc/aiden_boot.conf
 
 AUDIO_SERVICE_BIN=/oem/usr/bin/audio_service
+ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
 SOCKET_PATH=/run/audio_service/audio_service.sock
 LOG_PATH=/var/log/audio_service/audio_service.log
 PID_FILE=/run/audio_service/audio_service.pid
@@ -100,7 +101,7 @@ start() {
             fi
 
             echo "[audio_service] starting $AUDIO_SERVICE_BIN --socket $SOCKET_PATH" >> "$LOG_PATH"
-            "$AUDIO_SERVICE_BIN" --socket "$SOCKET_PATH" >> "$LOG_PATH" 2>&1 &
+            "$ENV_RUN_BIN" "$AUDIO_SERVICE_BIN" --socket "$SOCKET_PATH" >> "$LOG_PATH" 2>&1 &
             child="$!"
             echo "$child" > "$PID_FILE"
             wait "$child"

@@ -44,6 +44,38 @@ func TestWriterWritesOnlyInactiveCanonicalPartitions(t *testing.T) {
 	}
 }
 
+func TestWriterReportsProgressAndCompletion(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "boot_b"), []byte{}, 0o644); err != nil {
+		t.Fatalf("WriteFile(block) error = %v", err)
+	}
+	src := filepath.Join(dir, "boot_b.img")
+	if err := os.WriteFile(src, []byte("boot image"), 0o644); err != nil {
+		t.Fatalf("WriteFile(src) error = %v", err)
+	}
+	w := PartitionWriter{BlockDir: dir, ActiveSlot: SlotA, PartitionSizes: map[string]int64{"boot_b": 100}}
+	var reports []WriteProgress
+	err := w.WritePartWithProgress("boot", SlotB, src, func(progress WriteProgress) {
+		reports = append(reports, progress)
+	})
+	if err != nil {
+		t.Fatalf("WritePartWithProgress() error = %v", err)
+	}
+	if len(reports) == 0 {
+		t.Fatalf("no progress reports")
+	}
+	last := reports[len(reports)-1]
+	if !last.Complete {
+		t.Fatalf("last progress report = %+v, want Complete", last)
+	}
+	if last.Part != "boot" || last.BlockName != "boot_b" || last.ImagePath != src {
+		t.Fatalf("last progress report identity = %+v", last)
+	}
+	if last.Bytes != int64(len("boot image")) || last.Total != int64(len("boot image")) {
+		t.Fatalf("last progress report = %+v, want full byte count", last)
+	}
+}
+
 func TestWriterRejectsMissingPartitionPath(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "boot_b.img")

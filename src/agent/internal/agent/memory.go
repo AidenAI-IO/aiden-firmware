@@ -520,6 +520,8 @@ func (m *MemoryManager) removeAllPersisted(agentName string) error {
 	for _, path := range []string{
 		filepath.Join(m.storageDir, "session"),
 		filepath.Join(m.storageDir, "long_term"),
+		filepath.Join(m.storageDir, "device"),
+		filepath.Join(m.storageDir, "episodes"),
 		filepath.Join(m.storageDir, "lifecycle"),
 	} {
 		if err := os.RemoveAll(path); err != nil {

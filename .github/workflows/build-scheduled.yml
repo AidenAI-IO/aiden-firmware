@@ -1,0 +1,104 @@
+name: Build (scheduled / self-hosted)
+
+on:
+  schedule:
+    - cron: '17 * * * *'  # hourly, off the top of the hour to avoid GitHub scheduler congestion
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scheduled-build
+  cancel-in-progress: true
+
+jobs:
+  check:
+    if: ${{ startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+    runs-on: self-hosted
+    outputs:
+      should_run: ${{ steps.should_run.outputs.should_run }}
+    steps:
+      - id: should_run
+        name: Skip scheduled run if no new commit since last release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CURRENT_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          # Manual dispatch always builds; scheduled runs build only when there are new commits.
+          if [ "$EVENT_NAME" != "schedule" ]; then
+            echo "Manual dispatch triggered; running build."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Checking for new commits since last release..."
+          # Compare against the release tag rather than targetCommitish: GitHub may
+          # normalize targetCommitish to a branch name (e.g. "main"), which never
+          # equals a commit SHA and would defeat the skip check. The tag is immutable
+          # and always resolves back to the exact commit the release was built from.
+          err_log="$RUNNER_TEMP/gh_err"
+          LATEST_TAG=$(gh release view --json tagName -q .tagName 2>"$err_log") || {
+            echo "gh release view failed; running build to be safe:"
+            cat "$err_log" || true
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No previous release found; running build."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Resolve the tag ref to a SHA via the API (no checkout required).
+          # Use gh's built-in -q (jq) expressions so no external jq binary is needed
+          # on the self-hosted runner.
+          OBJ_TYPE=$(gh api "repos/$GH_REPO/git/refs/tags/$LATEST_TAG" -q '.object.type' 2>"$err_log") || {
+            echo "Could not resolve tag '$LATEST_TAG' to a ref; running build to be safe:"
+            cat "$err_log" || true
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          LATEST_RELEASE_SHA=$(gh api "repos/$GH_REPO/git/refs/tags/$LATEST_TAG" -q '.object.sha' 2>"$err_log") || {
+            echo "Could not resolve tag '$LATEST_TAG' to a SHA; running build to be safe:"
+            cat "$err_log" || true
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          # Annotated tags point at a tag object; dereference it to the commit SHA.
+          if [ "$OBJ_TYPE" = "tag" ]; then
+            LATEST_RELEASE_SHA=$(gh api "repos/$GH_REPO/git/tags/$LATEST_RELEASE_SHA" -q '.object.sha' 2>"$err_log") || {
+              echo "Could not dereference annotated tag '$LATEST_TAG'; running build to be safe:"
+              cat "$err_log" || true
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+          fi
+
+          if [ -z "$LATEST_RELEASE_SHA" ] || [ "$LATEST_RELEASE_SHA" = "null" ]; then
+            echo "Empty SHA for tag '$LATEST_TAG'; running build to be safe."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$CURRENT_SHA" = "$LATEST_RELEASE_SHA" ]; then
+            echo "No new commits since last release (tag=$LATEST_TAG sha=$LATEST_RELEASE_SHA); skipping build."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New commits detected (current=$CURRENT_SHA, last release=$LATEST_RELEASE_SHA); running build."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: ${{ needs.check.outputs.should_run == 'true' }}
+    uses: ./.github/workflows/build.yml
+    with:
+      runner: self-hosted
+      free_disk_space: false
+    secrets: inherit

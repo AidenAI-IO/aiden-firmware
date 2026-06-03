@@ -42,8 +42,7 @@ aiden-hardware-demo/
 | `internal/agent/runtime.go` | Agent runtime、模型调用和工具循环 |
 | `internal/agent/server.go` | HTTP server / Web UI / 工具 API |
 | `internal/agent/tools*.go` | HID、截图、音频、shell 等内置工具 |
-| `internal/agent/audio_*.go` | 设备侧语音链路和 audio_service client |
-| `internal/agent/stt.go` / `tts.go` / `vad.go` | STT、TTS、RKNN VAD 编排 |
+| `internal/agent/stt.go` / `internal/agent/tts/` / `vad.go` | STT、可插拔 TTS provider、RKNN/CPU VAD 编排 |
 | `internal/agent/skills*.go` | Skill 加载、激活与工具限制 |
 | `config/agent.toml` | Agent 配置示例 |
 
@@ -57,9 +56,10 @@ overlay/
 │   ├── dnsmasq.d/usb0.conf
 │   └── init.d/S*
 ├── oem/usr/bin/
+├── oem/usr/model/
 └── userdata/
     ├── agent/agent.toml
     └── wpa_supplicant.conf
 ```
 
-`_build_image.sh` 会把应用二进制复制到 `overlay/oem/usr/bin/`，并将 overlay 同步/注入到 `pico-sdk` 输出镜像。
+`_build_image.sh` 会把应用二进制复制到 `overlay/oem/usr/bin/`，把 VAD 模型随 `overlay/oem/usr/model/` 注入 OEM 分区，并将 overlay 同步/注入到 `pico-sdk` 输出镜像。

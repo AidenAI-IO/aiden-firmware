@@ -3,13 +3,15 @@ package agent
 import (
 	"path/filepath"
 	"sort"
+	"time"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
 // ToolSet is a fixed collection of built-in tools, keyed by name.
 type ToolSet struct {
-	tools map[string]langtools.Tool
+	tools  map[string]langtools.Tool
+	screen *screenState
 }
 
 // NewBuiltinToolSet returns all built-in tools. Tools are not configurable;
@@ -35,19 +37,19 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 	}
 
 	kbDev := NewHIDDevice(hidCfg.KeyboardDeviceOrDefault())
-	mouseDev := NewHIDDevice(hidCfg.MouseDeviceOrDefault())
 	screen := &screenState{}
-	pointer := &pointerState{}
+	pointer := newPointerController(hidCfg)
 	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 
 	tools := map[string]langtools.Tool{
 		"keyboard_tap":  newPostActionScreenshotTool(&KeyboardTapTool{dev: kbDev}, screenshot, postActionScreenshotDelay),
 		"keyboard_text": newPostActionScreenshotTool(&KeyboardTextTool{dev: kbDev}, screenshot, postActionScreenshotDelay),
-		"mouse_click":   newPostActionScreenshotTool(&MouseClickTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
-		"mouse_move":    newPostActionScreenshotTool(&MouseMoveTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
-		"mouse_scroll":  newPostActionScreenshotTool(&MouseScrollTool{dev: mouseDev, state: pointer}, screenshot, postActionScreenshotDelay),
-		"touch_gesture": newPostActionScreenshotTool(&TouchGestureTool{dev: mouseDev, screen: screen, state: pointer}, screenshot, postActionScreenshotDelay),
+		"mouse_click":   newPostActionScreenshotTool(&MouseClickTool{pc: pointer, screen: screen}, screenshot, postActionScreenshotDelay),
+		"mouse_move":    newPostActionScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen}, screenshot, postActionScreenshotDelay),
+		"mouse_scroll":  newPostActionScreenshotTool(&MouseScrollTool{pc: pointer}, screenshot, postActionScreenshotDelay),
+		"touch_gesture": newPostActionScreenshotTool(&TouchGestureTool{pc: pointer, screen: screen}, screenshot, postActionScreenshotDelay),
 		"screenshot":    screenshot,
+		"image_diff":    &ImageDiffTool{},
 		"audio_volume":  NewAudioVolumeTool(audioCfg.SocketOrDefault()),
 		"shell":         &ShellTool{proxy: proxyCfg},
 		"current_time":  NewCurrentTimeTool(),
@@ -61,7 +63,7 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 		tools["enter_sleep"] = NewEnterSleepTool(toolOptions.sleepController)
 	}
 
-	return &ToolSet{tools: tools}
+	return &ToolSet{tools: tools, screen: screen}
 }
 
 func (s *ToolSet) Get(name string) (langtools.Tool, bool) {
@@ -89,16 +91,37 @@ func (s *ToolSet) Names() []string {
 	return names
 }
 
+func (s *ToolSet) CurrentEnvironmentHints(maxAge time.Duration) CurrentEnvironmentHints {
+	if s == nil || s.screen == nil {
+		return CurrentEnvironmentHints{}
+	}
+	width, height, age, ok := s.screen.DimensionsWithAge()
+	if !ok {
+		return CurrentEnvironmentHints{}
+	}
+	if maxAge > 0 && age > maxAge {
+		return CurrentEnvironmentHints{}
+	}
+	return CurrentEnvironmentHints{
+		ScreenshotWidth:  width,
+		ScreenshotHeight: height,
+	}
+}
+
 func (s *ToolSet) RegisterMemoryTools(memoryDir string, profileFn ProfileFn, summaryMaxChunks int, debouncer *ProfileDebouncer) {
 	if memoryDir == "" {
 		return
 	}
 	sessionStore := NewSessionMemoryStore(filepath.Join(memoryDir, "session"), summaryMaxChunks)
 	longTermStore := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")), WithStoreProfileFn(profileFn), WithProfileDebouncer(debouncer))
+	deviceStore := NewDeviceMemoryStore(filepath.Join(memoryDir, "device"))
+	episodeStore := NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
 	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(sessionStore)
 	s.tools["recall_memory"] = NewRecallMemoryTool(longTermStore)
 	s.tools["save_memory"] = NewSaveMemoryTool(longTermStore)
 	s.tools["forget_memory"] = NewForgetMemoryTool(longTermStore)
+	s.tools["recall_device_memory"] = NewRecallDeviceMemoryTool(deviceStore)
+	s.tools["inspect_episode"] = NewInspectEpisodeTool(episodeStore)
 }
 
 func (s *ToolSet) RegisterSkillTools(skillsDir, manifestPath string, onModify ...func()) {

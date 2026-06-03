@@ -1,0 +1,7 @@
+# Device-wide environment variables loaded by aiden-env-run and login shells.
+# Configure outbound proxies here if needed.
+# Example:
+# HTTP_PROXY=http://proxy.example:7890
+# HTTPS_PROXY=http://proxy.example:7890
+# ALL_PROXY=socks5://proxy.example:7891
+# NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16

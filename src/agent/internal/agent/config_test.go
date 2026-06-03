@@ -1,8 +1,6 @@
 package agent
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +9,7 @@ import (
 func TestConfigValidateAcceptsAudioWakeup(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},
-		TTS:         TTSConfig{Provider: "minimax"},
+		TTS:         TTSConfig{Provider: "minimax-ws"},
 		InputMode:   " audio ",
 		TriggerMode: " wakeup ",
 	}
@@ -27,54 +25,114 @@ func TestConfigValidateAcceptsAudioWakeup(t *testing.T) {
 	}
 }
 
-func TestLoadConfigDefaultsNoProxyWhenProxyConfigured(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.toml")
-	if err := os.WriteFile(path, []byte(`
-[model]
-provider = "fake"
-
-[proxy]
-https_proxy = "http://proxy.example:18443"
-`), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+func TestConfigScreenshotPruningDefaultsAndOverrides(t *testing.T) {
+	cfg := Config{Model: ModelConfig{Provider: "fake"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	pruning := cfg.ScreenshotPruningOrDefault()
+	if pruning.KeepN != 3 || pruning.Interval != 25 {
+		t.Fatalf("default screenshot pruning = %#v, want keep_n=3 interval=25", pruning)
 	}
 
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
+	cfg.ScreenshotKeepN = 5
+	cfg.ScreenshotPruneInterval = 40
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() with screenshot pruning overrides error = %v", err)
 	}
-	if cfg.Proxy.NoProxy != DefaultNoProxy {
-		t.Fatalf("Proxy.NoProxy = %q, want %q", cfg.Proxy.NoProxy, DefaultNoProxy)
+	pruning = cfg.ScreenshotPruningOrDefault()
+	if pruning.KeepN != 5 || pruning.Interval != 40 {
+		t.Fatalf("configured screenshot pruning = %#v, want keep_n=5 interval=40", pruning)
 	}
 }
 
-func TestLoadConfigKeepsNoProxyEmptyWithoutProxyURL(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.toml")
-	if err := os.WriteFile(path, []byte(`
-[model]
-provider = "fake"
-
-[proxy]
-no_proxy = ""
-`), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+func TestConfigValidateRejectsNegativeScreenshotPruning(t *testing.T) {
+	cfg := Config{
+		Model:           ModelConfig{Provider: "fake"},
+		ScreenshotKeepN: -1,
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "screenshot_keep_n") {
+		t.Fatalf("expected screenshot_keep_n validation error, got %v", err)
 	}
 
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
+	cfg = Config{
+		Model:                   ModelConfig{Provider: "fake"},
+		ScreenshotPruneInterval: -1,
 	}
-	if cfg.Proxy.NoProxy != "" {
-		t.Fatalf("Proxy.NoProxy = %q, want empty", cfg.Proxy.NoProxy)
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "screenshot_prune_interval") {
+		t.Fatalf("expected screenshot_prune_interval validation error, got %v", err)
+	}
+}
+
+func TestProxyConfigFromEnvironment(t *testing.T) {
+	t.Setenv("http_proxy", "http://proxy.example:18080")
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("https_proxy", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("all_proxy", "")
+	t.Setenv("ALL_PROXY", "")
+	t.Setenv("no_proxy", "")
+	t.Setenv("NO_PROXY", "")
+
+	proxy := ProxyConfigFromEnvironment()
+	if proxy.HTTPProxy != "http://proxy.example:18080" {
+		t.Fatalf("HTTPProxy = %q", proxy.HTTPProxy)
+	}
+	if proxy.NoProxy != DefaultNoProxy {
+		t.Fatalf("NoProxy = %q, want default", proxy.NoProxy)
+	}
+}
+
+func TestProxyConfigFromEnvironmentPrefersUppercase(t *testing.T) {
+	t.Setenv("http_proxy", "http://lower.example:18080")
+	t.Setenv("HTTP_PROXY", "http://upper.example:18080")
+	t.Setenv("https_proxy", "http://lower.example:18081")
+	t.Setenv("HTTPS_PROXY", "http://upper.example:18081")
+	t.Setenv("all_proxy", "http://lower.example:18082")
+	t.Setenv("ALL_PROXY", "http://upper.example:18082")
+	t.Setenv("no_proxy", "lower.example")
+	t.Setenv("NO_PROXY", "upper.example")
+
+	proxy := ProxyConfigFromEnvironment()
+	if proxy.HTTPProxy != "http://upper.example:18080" {
+		t.Fatalf("HTTPProxy = %q, want uppercase value", proxy.HTTPProxy)
+	}
+	if proxy.HTTPSProxy != "http://upper.example:18081" {
+		t.Fatalf("HTTPSProxy = %q, want uppercase value", proxy.HTTPSProxy)
+	}
+	if proxy.AllProxy != "http://upper.example:18082" {
+		t.Fatalf("AllProxy = %q, want uppercase value", proxy.AllProxy)
+	}
+	if proxy.NoProxy != "upper.example" {
+		t.Fatalf("NoProxy = %q, want uppercase value", proxy.NoProxy)
+	}
+}
+
+func TestProxyConfigFromEnvironmentPreservesRawWhitespace(t *testing.T) {
+	t.Setenv("HTTP_PROXY", " http://proxy.example:18080")
+	t.Setenv("http_proxy", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("https_proxy", "")
+	t.Setenv("ALL_PROXY", "")
+	t.Setenv("all_proxy", "")
+	t.Setenv("NO_PROXY", " example.com ")
+	t.Setenv("no_proxy", "")
+
+	proxy := ProxyConfigFromEnvironment()
+	if proxy.HTTPProxy != " http://proxy.example:18080" {
+		t.Fatalf("HTTPProxy = %q, want raw env value", proxy.HTTPProxy)
+	}
+	if proxy.NoProxy != " example.com " {
+		t.Fatalf("NoProxy = %q, want raw env value", proxy.NoProxy)
 	}
 }
 
 func TestConfigValidateRejectsInvalidTriggerMode(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},
-		TTS:         TTSConfig{Provider: "minimax"},
+		TTS:         TTSConfig{Provider: "minimax-ws"},
 		InputMode:   "audio",
 		TriggerMode: "gpio",
 	}
@@ -213,7 +271,7 @@ func TestConfigValidateRejectsUnsupportedAudioFormatForVoiceInput(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Config{
 				Model:       ModelConfig{Provider: "fake"},
-				TTS:         TTSConfig{Provider: "minimax"},
+				TTS:         TTSConfig{Provider: "minimax-ws"},
 				Audio:       tt.audio,
 				InputMode:   "audio",
 				TriggerMode: "wakeup",

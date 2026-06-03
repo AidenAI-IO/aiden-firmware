@@ -1,0 +1,28 @@
+import time
+
+from runner.agent_client import ToolInvokeResult
+import runner.main as main
+
+
+class FakeClockClient:
+    def __init__(self, years):
+        self.years = list(years)
+        self.calls = []
+
+    def invoke_tool(self, name, args):
+        self.calls.append((name, args))
+        year = self.years.pop(0)
+        return ToolInvokeResult(output=f"{year}\n", is_error=False, duration_ms=1)
+
+
+def test_wait_for_agent_clock_retries_until_board_clock_is_current(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(seconds))
+    client = FakeClockClient([2021, 2021, 2026])
+
+    assert hasattr(main, "wait_for_agent_clock")
+    assert main.wait_for_agent_clock(client, min_year=2026, timeout_sec=10, poll_sec=2) is True
+
+    assert [call[0] for call in client.calls] == ["shell", "shell", "shell"]
+    assert all(call[1]["command"] == "date +%Y" for call in client.calls)
+    assert sleeps == [2, 2]

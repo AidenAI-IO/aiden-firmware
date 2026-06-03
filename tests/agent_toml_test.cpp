@@ -28,7 +28,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.input_mode = "stt";
     cfg.trigger_mode = "manual";
     cfg.vad_backend = "cpu";
-    cfg.vad_model_path = "/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
+    cfg.vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
     cfg.vad_helper_path = "/oem/usr/bin/rknn_vad";
     cfg.vad_speech_threshold = 0.5;
     cfg.silence_ms = 1000;
@@ -42,6 +42,8 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.voice_tool_call_speech = false;
     cfg.voice_max_response_tokens = 240;
     cfg.max_iterations = 6;
+    cfg.screenshot_keep_n = 5;
+    cfg.screenshot_prune_interval = 40;
 
     cfg.model.provider = "openrouter";
     cfg.model.model = "openai/gpt-4o-mini";
@@ -50,7 +52,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.model.temperature = 0.2;
     cfg.model.max_tokens = 1000;
 
-    cfg.tts.provider = "minimax";
+    cfg.tts.provider = "minimax-ws";
     cfg.tts.api_key = "mx-test";
     cfg.tts.voice_id = "male-qn-qingse";
     cfg.tts.emotion = "happy";
@@ -69,11 +71,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.hid.mouse_device = "/dev/hidg1";
     cfg.hid.frame_socket = "/run/frame_service/frame_service.sock";
 
-    cfg.proxy.http_proxy = "http://127.0.0.1:7890";
-    cfg.proxy.https_proxy = "http://127.0.0.1:7890";
-    cfg.proxy.all_proxy = "socks5://127.0.0.1:7891";
-    cfg.proxy.no_proxy = "localhost,127.0.0.1,192.168.0.0/16";
-
     cfg.search.provider = "duckduckgo";
     cfg.search.api_key = "tvly-test";
 
@@ -90,7 +87,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.input_mode == "stt");
     CHECK(loaded.trigger_mode == "manual");
     CHECK(loaded.vad_backend == "cpu");
-    CHECK(loaded.vad_model_path == "/userdata/agent/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn");
+    CHECK(loaded.vad_model_path == "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn");
     CHECK(loaded.vad_helper_path == "/oem/usr/bin/rknn_vad");
     CHECK(loaded.vad_speech_threshold == doctest::Approx(0.5));
     CHECK(loaded.silence_ms == 1000);
@@ -101,9 +98,11 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.voice_max_turns == 4);
     CHECK(loaded.voice_interrupt_on_wakeup == false);
     CHECK(loaded.voice_streaming_tts_enabled == false);
-    CHECK(loaded.voice_tool_call_speech == false);
-    CHECK(loaded.voice_max_response_tokens == 240);
-    CHECK(loaded.max_iterations == 6);
+	CHECK(loaded.voice_tool_call_speech == false);
+	CHECK(loaded.voice_max_response_tokens == 240);
+	CHECK(loaded.max_iterations == 6);
+	CHECK(loaded.screenshot_keep_n == 5);
+	CHECK(loaded.screenshot_prune_interval == 40);
 
     CHECK(loaded.model.provider == "openrouter");
     CHECK(loaded.model.model == "openai/gpt-4o-mini");
@@ -112,7 +111,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.model.temperature == doctest::Approx(0.2));
     CHECK(loaded.model.max_tokens == 1000);
 
-    CHECK(loaded.tts.provider == "minimax");
+    CHECK(loaded.tts.provider == "minimax-ws");
     CHECK(loaded.tts.api_key == "mx-test");
     CHECK(loaded.tts.voice_id == "male-qn-qingse");
     CHECK(loaded.tts.emotion == "happy");
@@ -131,13 +130,26 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.hid.mouse_device == "/dev/hidg1");
     CHECK(loaded.hid.frame_socket == "/run/frame_service/frame_service.sock");
 
-    CHECK(loaded.proxy.http_proxy == "http://127.0.0.1:7890");
-    CHECK(loaded.proxy.https_proxy == "http://127.0.0.1:7890");
-    CHECK(loaded.proxy.all_proxy == "socks5://127.0.0.1:7891");
-    CHECK(loaded.proxy.no_proxy == "localhost,127.0.0.1,192.168.0.0/16");
-
     CHECK(loaded.search.provider == "duckduckgo");
     CHECK(loaded.search.api_key == "tvly-test");
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("agent_toml no longer writes legacy proxy section") {
+    aiden::AgentToml cfg;
+    cfg.model.provider = "fake";
+    cfg.search.provider = "duckduckgo";
+
+    std::string path = make_temp_path("no_proxy.toml");
+    std::string err;
+    REQUIRE(aiden::save_agent_toml(path.c_str(), cfg, &err));
+
+    std::ifstream in(path);
+    REQUIRE(in.good());
+    std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(contents.find("[proxy]") == std::string::npos);
+    CHECK(contents.find("http_proxy") == std::string::npos);
 
     std::remove(path.c_str());
 }
