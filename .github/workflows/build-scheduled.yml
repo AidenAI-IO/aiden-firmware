@@ -1,4 +1,4 @@
-name: Build (nightly / self-hosted)
+name: Build (scheduled / self-hosted)
 
 on:
   schedule:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: nightly-build
+  group: scheduled-build
   cancel-in-progress: true
 
 jobs:
