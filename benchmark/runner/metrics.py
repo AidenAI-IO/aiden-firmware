@@ -30,6 +30,20 @@ def aggregate(results: list[TaskResult]) -> dict[str, object]:
     walls = [r.metrics.get("wall_ms", 0) for r in results if r.metrics.get("wall_ms")]
     tool_counts = [r.metrics.get("tool_calls", 0) for r in results
                    if r.metrics.get("tool_calls") is not None]
+    skill_read_hits = sum(
+        1
+        for r in results
+        for obs in r.metrics.get("trace_observations") or []
+        if obs.get("id") == "skill_read_device_operator" and obs.get("passed")
+    )
+    skill_read_total = sum(
+        1
+        for r in results
+        if any(
+            obs.get("id") == "skill_read_device_operator"
+            for obs in (r.metrics.get("trace_observations") or [])
+        )
+    )
     return {
         "tasks": len(results),
         "passed": pass_count,
@@ -39,6 +53,10 @@ def aggregate(results: list[TaskResult]) -> dict[str, object]:
         "wall_ms_p95": int(_percentile(walls, 95)) if walls else None,
         "tool_calls_median": int(statistics.median(tool_counts)) if tool_counts else None,
         "tool_calls_p95": int(_percentile(tool_counts, 95)) if tool_counts else None,
+        "skill_read_device_operator": {
+            "tasks_with_skill_read": skill_read_hits,
+            "tasks_observed": skill_read_total,
+        },
     }
 
 def _percentile(values: list[float], pct: float) -> float:
