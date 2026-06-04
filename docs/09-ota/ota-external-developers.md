@@ -272,10 +272,10 @@ Configure devices to only accept specific channels:
 
 ### Check OTA logs
 ```bash
-# OTA daemon logs to stderr, captured by the init system
-# On systems using busybox init, check system logs:
-dmesg | grep "ota:"
-# Or check the init system's log if available
+# The OTA daemon writes to stderr, which S54ota redirects to a log file
+tail -f /var/log/ota/ota.log
+
+# When running `ota check-now` manually, logs go to stderr (your terminal)
 ```
 
 ### Verify manifest signature manually
@@ -353,6 +353,6 @@ echo "  ota check-now --manifest-url $BASE_URL/manifest.json --public-key /path/
 ## Support
 
 For issues or questions:
-- Check OTA logs via `dmesg | grep "ota:"` (logs to stderr)
+- Check the daemon log at `/var/log/ota/ota.log` (S54ota redirects the daemon's stderr there)
 - Use `--dry-run` for testing
 - Join community discussions
