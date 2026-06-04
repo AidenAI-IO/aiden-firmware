@@ -295,8 +295,14 @@ for asset in "${asset_files[@]}"; do
     gh release upload "$tag_name" "$asset" --clobber
 done
 
-run_with_retry \
-  "release publish $tag_name" \
-  gh release edit "$tag_name" --draft=false --latest
+if [ "$prerelease" = "true" ]; then
+  run_with_retry \
+    "release publish $tag_name" \
+    gh release edit "$tag_name" --draft=false
+else
+  run_with_retry \
+    "release publish $tag_name" \
+    gh release edit "$tag_name" --draft=false --latest
+fi
 
 log "Release upload completed for $tag_name"
