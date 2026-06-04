@@ -611,19 +611,15 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 	s.recordMu.Lock()
 	if s.webRecording != nil {
 		stale := s.webRecording
-		s.recordMu.Unlock()
+		s.webRecording = nil
 		if s.logger != nil {
 			s.logger.Warn("Clearing stale web audio recording before start")
 		}
-		if err := s.endWebRecording(stale); err != nil && s.logger != nil {
+		if err := s.endStaleWebRecording(stale); err != nil && s.logger != nil {
 			s.logger.Warn("Stale web audio recording cleanup failed: %v", err)
 		}
-		s.recordMu.Lock()
-		if s.webRecording == stale {
-			s.webRecording = nil
-		}
 	}
-	defer s.recordMu.Unlock()
+	s.recordMu.Unlock()
 
 	if err := playPromptSound(context.Background(), s.audioClient, promptSoundRecordingStart, true); err != nil {
 		if s.logger != nil {
@@ -651,7 +647,19 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 		done:       make(chan struct{}),
 		samples:    make([]int16, 0, sampleRate),
 	}
+
+	s.recordMu.Lock()
+	if s.webRecording != nil {
+		s.recordMu.Unlock()
+		if err := s.endWebRecording(recording); err != nil && s.logger != nil {
+			s.logger.Warn("Orphaned web audio recording cleanup failed: %v", err)
+		}
+		http.Error(w, "audio recording is already active", http.StatusConflict)
+		return
+	}
 	s.webRecording = recording
+	s.recordMu.Unlock()
+
 	go s.readWebAudioRecording(recording)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -713,7 +721,20 @@ func (s *Server) handleAudioRecordStop(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(AudioRecordStopResponse{Attachment: attachment})
 }
 
+const (
+	webRecordingDrainTimeout       = 7 * time.Second
+	webRecordingStaleCleanupTimeout = 200 * time.Millisecond
+)
+
 func (s *Server) endWebRecording(recording *webAudioRecording) error {
+	return s.endWebRecordingWithTimeout(recording, webRecordingDrainTimeout)
+}
+
+func (s *Server) endStaleWebRecording(recording *webAudioRecording) error {
+	return s.endWebRecordingWithTimeout(recording, webRecordingStaleCleanupTimeout)
+}
+
+func (s *Server) endWebRecordingWithTimeout(recording *webAudioRecording, timeout time.Duration) error {
 	if recording == nil {
 		return nil
 	}
@@ -721,7 +742,7 @@ func (s *Server) endWebRecording(recording *webAudioRecording) error {
 	stopErr := s.audioClient.StopRecording(recording.sessionID)
 	select {
 	case <-recording.done:
-	case <-time.After(7 * time.Second):
+	case <-time.After(timeout):
 		if stopErr == nil {
 			stopErr = fmt.Errorf("timed out waiting for audio recording to drain")
 		}
@@ -2396,7 +2417,7 @@ const webUI = `<!DOCTYPE html>
 
         async function sendMessage() {
             if (sendBtn.disabled) return;
-            if (recorderState.isRecording) {
+            if (recorderState.isRecording || recorderState.isStopping) {
                 await stopRecording();
             }
 
@@ -2641,9 +2662,9 @@ const webUI = `<!DOCTYPE html>
         }
 
         function setComposerState(isLoading) {
-            sendBtn.disabled = isLoading;
-            imageBtn.disabled = isLoading || recorderState.isRecording;
-            recordBtn.disabled = isLoading;
+            sendBtn.disabled = isLoading || recorderState.isStopping;
+            imageBtn.disabled = isLoading || recorderState.isRecording || recorderState.isStopping;
+            recordBtn.disabled = isLoading || recorderState.isStopping;
             loadingDiv.classList.toggle('active', isLoading);
             updateRecordButton();
         }
@@ -2734,6 +2755,7 @@ const webUI = `<!DOCTYPE html>
             if (startedOnServer) {
                 recorderState = {
                     isRecording: true,
+                    isStopping: false,
                     mode: 'server',
                     stream: null,
                     context: null,
@@ -2772,6 +2794,7 @@ const webUI = `<!DOCTYPE html>
 
             recorderState = {
                 isRecording: true,
+                isStopping: false,
                 mode: 'browser',
                 stream: stream,
                 context: context,
@@ -2786,10 +2809,10 @@ const webUI = `<!DOCTYPE html>
         }
 
         async function stopRecording() {
-            if (!recorderState.isRecording) return;
+            if (!recorderState.isRecording || recorderState.isStopping) return;
 
             const mode = recorderState.mode;
-            recorderState.isRecording = false;
+            recorderState.isStopping = true;
             updateRecordButton();
 
             try {
@@ -2826,6 +2849,8 @@ const webUI = `<!DOCTYPE html>
                     preview_url: URL.createObjectURL(wavBlob)
                 });
             } finally {
+                recorderState.isRecording = false;
+                recorderState.isStopping = false;
                 updateRecordButton();
             }
         }
@@ -2856,7 +2881,7 @@ const webUI = `<!DOCTYPE html>
             }
             if (!res.ok) {
                 const detail = await res.text() || 'Device audio recording failed to start.';
-                if (detail.indexOf('audio_service') !== -1 || detail.indexOf('no such file') !== -1) {
+                if (detail.indexOf('audio service') !== -1 || detail.indexOf('audio_service') !== -1 || detail.indexOf('no such file') !== -1) {
                     throw new Error('Audio service is not running. Run: /etc/init.d/S53audio_service start');
                 }
                 throw new Error(detail);
@@ -2920,6 +2945,7 @@ const webUI = `<!DOCTYPE html>
         function createRecorderState() {
             return {
                 isRecording: false,
+                isStopping: false,
                 mode: '',
                 stream: null,
                 context: null,
@@ -2932,8 +2958,13 @@ const webUI = `<!DOCTYPE html>
         }
 
         function updateRecordButton() {
-            recordBtn.classList.toggle('recording', recorderState.isRecording);
-            recordBtn.textContent = recorderState.isRecording ? 'Stop recording' : 'Record audio';
+            const active = recorderState.isRecording;
+            recordBtn.classList.toggle('recording', active);
+            if (recorderState.isStopping) {
+                recordBtn.textContent = 'Processing recording...';
+            } else {
+                recordBtn.textContent = active ? 'Stop recording' : 'Record audio';
+            }
         }
 
         function renderDraftAttachments() {

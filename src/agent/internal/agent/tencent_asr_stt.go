@@ -86,9 +86,9 @@ func (s *TencentASRSTT) TranscribeWAV(wavData []byte) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
+	req.Host = tencentASRHost
 	req.Header.Set("Authorization", authorization)
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	req.Header.Set("Host", tencentASRHost)
 	req.Header.Set("X-TC-Action", tencentASRAction)
 	req.Header.Set("X-TC-Version", tencentASRVersion)
 	req.Header.Set("X-TC-Timestamp", fmt.Sprintf("%d", timestamp))
