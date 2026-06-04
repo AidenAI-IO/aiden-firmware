@@ -5,16 +5,29 @@
 ## 适用范围
 
 - 目标硬件：Luckfox Pico Zero / RV1106 + eMMC。
-- 分发方式：GitHub Release，发布资产包含 `manifest.json`、A/B 分区镜像和 USB 首刷用 `update.img`。
+- 分发方式：GitHub Release，发布资产包含 `manifest.json`、`boot_a.img`、`boot_b.img`、`oem.img`、`rootfs.img`、`userdata.img` 和 `update.img`（自 PR #112 起使用中性资源，历史版本使用 `oem_a.img`、`oem_b.img`、`rootfs_a.img`、`rootfs_b.img`）。
 - 更新方式：设备端 `/oem/usr/bin/ota` 拉取 manifest、验签、校验 SHA256、写 inactive slot、切换 `misc` 并重启。
 - 回滚方式：Rockchip SPL A/B metadata 控制 boot tries；应用健康确认后才 mark successful。
 
 ## 文档索引
 
+### 核心文档
+
 - [OTA 架构与运行时](architecture.md)
 - [OTA 密钥管理](key-management.md)
 - [设备验收流程](device-acceptance.md)
 - [A/B 与 `abctl` 验证](verification.md)
+
+### 开放性与外部开发者
+
+- [OTA 开放性改进](OTA_OPEN_SOURCES.md) - manifest 支持直接 URL、外部开发者分发固件
+- [外部开发者指南](ota-external-developers.md) - 如何使用自定义源分发固件
+- [快速示例](ota-quick-examples.md) - GitHub Releases、自建后端、混合模式示例
+- [发布渠道策略](ota-release-channels.md) - 分支与渠道隔离机制
+
+### 技术分析
+
+- [中性资源兼容性分析](OTA_COMPATIBILITY_ANALYSIS.md) - PR #112 向后兼容性评估
 
 ## 核心约束
 
@@ -53,4 +66,4 @@ mount | grep ' /oem '
 | `scripts/generate_ota_manifest.sh` | 生成签名 OTA manifest |
 | `scripts/generate_ota_device_config.sh` | 从 manifest 生成首刷配置 |
 | `scripts/repack_ota_update_image.sh` | 把首刷 OTA 配置重新打入 `userdata.img` 和 `update.img` |
-| [`pico-sdk/project/scripts/mk-ab-misc.py`](../../pico-sdk/project/scripts/mk-ab-misc.py) | 生成 factory `misc.img` A/B metadata |
+| `pico-sdk/project/scripts/mk-ab-misc.py` | 生成 factory `misc.img` A/B metadata |

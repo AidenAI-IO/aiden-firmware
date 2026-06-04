@@ -253,18 +253,22 @@ Now the device will automatically check your custom source every hour.
 
 ## Channel Strategy
 
-Recommended channel naming:
+The `channel` field in a manifest is a human-readable label. The OTA client only
+validates its format (`[A-Za-z0-9._-]`); it does not filter or reject manifests
+by channel, and `channel` is not a field in the device `config.json`. Recommended
+naming for your own bookkeeping:
 
 - `stable` - Official releases from main branch
 - `beta` - Pre-release testing
 - `dev` - Development builds (your custom builds)
 - `internal` - Enterprise/private builds
 
-Configure devices to only accept specific channels:
+To control which firmware a device installs, point it at a specific manifest via
+`manifest_url` (and trust only the matching signing key):
 ```json
 {
-  "channel": "dev",
-  "manifest_url": "https://your-server.com/firmware/dev/manifest.json"
+  "manifest_url": "https://your-server.com/firmware/dev/manifest.json",
+  "public_key_path": "/userdata/ota/dev_pubkey.pem"
 }
 ```
 
@@ -272,7 +276,10 @@ Configure devices to only accept specific channels:
 
 ### Check OTA logs
 ```bash
+# The OTA daemon writes to stderr, which S54ota redirects to a log file
 tail -f /var/log/ota/ota.log
+
+# When running `ota check-now` manually, logs go to stderr (your terminal)
 ```
 
 ### Verify manifest signature manually
@@ -292,9 +299,10 @@ ota check-now --manifest-url URL --public-key KEY --dry-run
 - Manifest was modified after signing
 - Private key doesn't match public key
 
-**"manifest channel mismatch"**
-- Device expects different channel
-- Solution: Match channel in device config or use `--channel` parameter
+**"invalid channel"**
+- The manifest's `channel` field contains characters outside `[A-Za-z0-9._-]`
+- The client only validates the channel string format; it does not match it against an expected channel
+- Solution: Use a valid channel name when generating the manifest
 
 **"missing required release asset"**
 - Using GitHub Release without `--base-url`
@@ -350,6 +358,6 @@ echo "  ota check-now --manifest-url $BASE_URL/manifest.json --public-key /path/
 ## Support
 
 For issues or questions:
-- Check logs in `/var/log/ota/ota.log`
+- Check the daemon log at `/var/log/ota/ota.log` (S54ota redirects the daemon's stderr there)
 - Use `--dry-run` for testing
 - Join community discussions
