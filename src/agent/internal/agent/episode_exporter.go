@@ -29,7 +29,7 @@ func NewEpisodeExporter(cfg TelemetryConfig, logger *Logger) *EpisodeExporter {
 	}
 }
 
-func (e *EpisodeExporter) ExportEpisodeDir(ctx context.Context, episodeDir string, episode TaskEpisode) error {
+func (e *EpisodeExporter) ExportEpisodeDir(ctx context.Context, episodeDir string, episode TaskEpisode, promptCalls ...[]telemetryPromptCall) error {
 	if e == nil || !e.cfg.EnabledOrDefault() {
 		return nil
 	}
@@ -57,7 +57,11 @@ func (e *EpisodeExporter) ExportEpisodeDir(ctx context.Context, episodeDir strin
 	if strings.TrimSpace(stored.ID) == "" {
 		stored.ID = episode.ID
 	}
-	batch, err := e.buildLangfuseBatch(ctx, stored, episodeDir)
+	var prompts []telemetryPromptCall
+	if len(promptCalls) > 0 {
+		prompts = promptCalls[0]
+	}
+	batch, err := e.buildLangfuseBatch(ctx, stored, episodeDir, prompts)
 	if err != nil {
 		return err
 	}
@@ -93,7 +97,7 @@ func (e *EpisodeExporter) ingestWithRetry(ctx context.Context, batch []langfuseI
 	return lastErr
 }
 
-func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEpisode, episodeDir string) ([]langfuseIngestionEvent, error) {
+func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEpisode, episodeDir string, promptCalls ...[]telemetryPromptCall) ([]langfuseIngestionEvent, error) {
 	traceID := episode.ID
 	if _, err := uuid.Parse(traceID); err != nil {
 		traceID = uuid.NewSHA1(uuid.NameSpaceURL, []byte(episode.ID)).String()
@@ -123,12 +127,31 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 	}
 
 	batch := []langfuseIngestionEvent{traceEvent}
+	var prompts []telemetryPromptCall
+	if len(promptCalls) > 0 {
+		prompts = promptCalls[0]
+	}
+	if len(prompts) > 0 {
+		for index, call := range prompts {
+			usageEvent, err := newLangfuseEvent("generation-create", call.StartedAt, e.promptGenerationBody(episode, traceID, call, index))
+			if err != nil {
+				return nil, err
+			}
+			batch = append(batch, usageEvent)
+		}
+	} else if usageBody := e.traceUsageGenerationBody(episode, traceID, startTime, endTime); usageBody != nil {
+		usageEvent, err := newLangfuseEvent("generation-create", startTime, usageBody)
+		if err != nil {
+			return nil, err
+		}
+		batch = append(batch, usageEvent)
+	}
 	if episode.Outcome.Success {
 		scoreBody := map[string]interface{}{
-			"id":      uuid.NewString(),
-			"traceId": traceID,
-			"name":    "success",
-			"value":   1,
+			"id":       uuid.NewString(),
+			"traceId":  traceID,
+			"name":     "success",
+			"value":    1,
 			"dataType": "BOOLEAN",
 		}
 		scoreEvent, err := newLangfuseEvent("score-create", endTime, scoreBody)
@@ -299,6 +322,90 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 	return batch, nil
 }
 
+func (e *EpisodeExporter) promptGenerationBody(episode TaskEpisode, traceID string, call telemetryPromptCall, index int) map[string]interface{} {
+	name := strings.TrimSpace(call.Role)
+	if name == "" {
+		name = "llm"
+	}
+	if call.EndedAt.IsZero() {
+		call.EndedAt = call.StartedAt
+	}
+	body := map[string]interface{}{
+		"id":        call.ID,
+		"traceId":   traceID,
+		"name":      fmt.Sprintf("%s_prompt_%d", name, index+1),
+		"startTime": langfuseRFC3339(call.StartedAt),
+		"endTime":   langfuseRFC3339(call.EndedAt),
+		"input":     call.Input,
+		"output":    call.Output,
+		"metadata": map[string]interface{}{
+			"role":         call.Role,
+			"prompt_index": index + 1,
+		},
+	}
+	if call.ID == "" {
+		body["id"] = uuid.NewString()
+	}
+	if len(call.UsageDetails) > 0 {
+		body["usageDetails"] = call.UsageDetails
+	}
+	if call.Error != "" {
+		body["level"] = "ERROR"
+		body["statusMessage"] = call.Error
+	}
+	if model := extraString(episode.Extra, "model"); model != "" {
+		body["model"] = model
+	}
+	return body
+}
+
+func (e *EpisodeExporter) traceUsageGenerationBody(episode TaskEpisode, traceID string, startTime, endTime time.Time) map[string]interface{} {
+	promptTokens, completionTokens, totalTokens, ok := episodeTokenUsage(episode)
+	if !ok {
+		return nil
+	}
+	body := map[string]interface{}{
+		"id":        uuid.NewString(),
+		"traceId":   traceID,
+		"name":      "aiden-run-usage",
+		"startTime": langfuseRFC3339(startTime),
+		"endTime":   langfuseRFC3339(endTime),
+		"input":     episode.UserGoal,
+		"output":    episode.Outcome.FinalAnswer,
+		"usageDetails": map[string]interface{}{
+			"input":  promptTokens,
+			"output": completionTokens,
+			"total":  totalTokens,
+		},
+		"metadata": map[string]interface{}{
+			"usage_source": "episode.extra",
+		},
+	}
+	if model := extraString(episode.Extra, "model"); model != "" {
+		body["model"] = model
+	}
+	return body
+}
+
+func episodeTokenUsage(episode TaskEpisode) (promptTokens, completionTokens, totalTokens int, ok bool) {
+	if episode.Extra == nil {
+		return 0, 0, 0, false
+	}
+	if v, found := usageMetricInt(episode.Extra["prompt_tokens"]); found {
+		promptTokens = v
+	}
+	if v, found := usageMetricInt(episode.Extra["completion_tokens"]); found {
+		completionTokens = v
+	}
+	if v, found := usageMetricInt(episode.Extra["total_tokens"]); found {
+		totalTokens = v
+	}
+	if totalTokens == 0 && (promptTokens > 0 || completionTokens > 0) {
+		totalTokens = promptTokens + completionTokens
+	}
+	return promptTokens, completionTokens, totalTokens, promptTokens > 0 || completionTokens > 0 || totalTokens > 0
+}
+
 func (e *EpisodeExporter) uploadScreenshot(ctx context.Context, traceID, episodeDir, screenshotRef string) (string, error) {
 	path := filepath.Join(episodeDir, filepath.FromSlash(screenshotRef))
 	data, err := os.ReadFile(path)
@@ -438,10 +545,10 @@ func toolCallInput(event TaskEpisodeEvent) map[string]interface{} {
 
 func verifierOutput(event TaskEpisodeEvent) map[string]interface{} {
 	return map[string]interface{}{
-		"content":      event.Content,
-		"can_finish":   event.CanFinish,
-		"needs_replan": event.NeedsReplan,
-		"reason":       event.Reason,
+		"content":        event.Content,
+		"can_finish":     event.CanFinish,
+		"needs_replan":   event.NeedsReplan,
+		"reason":         event.Reason,
 		"observed_state": event.ObservedState,
 	}
 }

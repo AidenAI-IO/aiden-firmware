@@ -297,6 +297,7 @@ func (e *roleCollaborativeExecutor) callVerifier(ctx context.Context, inputs map
 func (e *roleCollaborativeExecutor) generateRoleContent(ctx context.Context, role RoleName, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	callCtx, cancel := context.WithTimeout(ctx, roleModelCallTimeout)
 	defer cancel()
+	callCtx = contextWithTelemetryRole(callCtx, role)
 	res, err := e.Model.GenerateContent(callCtx, messages, options...)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return nil, fmt.Errorf("%s role model call timed out after %s", role, roleModelCallTimeout)

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
@@ -40,5 +41,37 @@ func TestRecordUsageMetricsAccumulatesAcrossCalls(t *testing.T) {
 	}
 	if metrics.LastPromptTokens != 90 {
 		t.Errorf("LastPromptTokens = %d, want 90 (last call only)", metrics.LastPromptTokens)
+	}
+}
+
+func TestUsageTrackingModelCapturesFullPromptForTelemetry(t *testing.T) {
+	capture := newTelemetryPromptCapture(true)
+	model := &usageTrackingModel{
+		inner:         &scriptedModel{responses: []*llms.ContentResponse{usageResponse(10, 5, 15)}},
+		metrics:       &RunMetrics{},
+		promptCapture: capture,
+	}
+	messages := []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("full system prompt")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("full user prompt")}},
+	}
+
+	_, err := model.GenerateContent(contextWithTelemetryRole(context.Background(), RolePlanner), messages)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	snapshot := capture.Snapshot()
+	if len(snapshot) != 1 {
+		t.Fatalf("captured prompts = %d, want 1", len(snapshot))
+	}
+	if snapshot[0].Role != string(RolePlanner) {
+		t.Fatalf("captured role = %q, want planner", snapshot[0].Role)
+	}
+	parts, ok := snapshot[0].Input[0]["parts"].([]map[string]interface{})
+	if !ok || len(parts) != 1 || parts[0]["text"] != "full system prompt" {
+		t.Fatalf("captured system prompt = %#v", snapshot[0].Input[0]["parts"])
+	}
+	if snapshot[0].UsageDetails["input"] != 10 || snapshot[0].UsageDetails["output"] != 5 || snapshot[0].UsageDetails["total"] != 15 {
+		t.Fatalf("captured usage = %#v, want input/output/total 10/5/15", snapshot[0].UsageDetails)
 	}
 }
