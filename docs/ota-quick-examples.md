@@ -20,7 +20,41 @@ ota check-now \
   --public-key /userdata/ota/your_pubkey.pem
 ```
 
-## Example 2: Self-Hosted Firmware Server
+## Example 2: GitHub Release with Direct URLs (Faster, Bypasses API)
+
+```bash
+# 1. Build firmware locally
+./build_image.sh
+
+# 2. Generate manifest with GitHub direct download URLs
+TAG="v1.0.0-custom"
+REPO="YOUR_USERNAME/aiden-hardware-demo"
+BASE_URL="https://github.com/$REPO/releases/download/$TAG"
+
+scripts/generate_ota_manifest.sh \
+  --version "v1.0.0-custom" \
+  --channel "custom" \
+  --build-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --sign-key ota_private_key.pem \
+  --image-dir pico-sdk/output/image \
+  --output pico-sdk/output/image/manifest.json \
+  --base-url "$BASE_URL"
+
+# 3. Create GitHub Release
+gh release create "$TAG" \
+  --title "Custom Firmware v1.0.0" \
+  --notes "Custom build" \
+  pico-sdk/output/image/*.img \
+  pico-sdk/output/image/manifest.json
+
+# 4. Device updates directly (no Release API calls)
+MANIFEST_URL="https://github.com/$REPO/releases/download/$TAG/manifest.json"
+ota check-now \
+  --manifest-url "$MANIFEST_URL" \
+  --public-key /userdata/ota/your_pubkey.pem
+```
+
+## Example 3: Self-Hosted Firmware Server
 
 ```bash
 # 1. Build firmware locally
@@ -51,7 +85,7 @@ ota check-now \
   --public-key /userdata/ota/company_pubkey.pem
 ```
 
-## Example 3: Development Testing with Local Server
+## Example 4: Development Testing with Local Server
 
 ```bash
 # 1. Build firmware

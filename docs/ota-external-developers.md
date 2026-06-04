@@ -67,9 +67,106 @@ ota check-now \
   --public-key /userdata/ota/custom_pubkey.pem
 ```
 
-## Method 2: Direct URLs (Recommended for Private/Internal)
+## Method 2: GitHub Release with Direct URLs (Recommended for CDN/Faster Downloads)
 
-This method allows you to host firmware on any web server without implementing GitHub API.
+This method uses GitHub Releases but embeds direct download URLs in the manifest, allowing you to optionally use CDN or direct GitHub asset URLs for faster downloads.
+
+### Why Use This Method?
+- Bypass GitHub Release API lookup (faster)
+- Use CDN for better download performance
+- Works even if GitHub API rate limits are hit
+- Still uses GitHub for hosting (no extra infrastructure)
+
+### Requirements
+- GitHub repository (can be a fork)
+- Ed25519 key pair for signing
+- Optional: CDN setup (or use GitHub's direct URLs)
+
+### Steps
+
+1. **Build firmware and generate manifest with direct URLs:**
+```bash
+# Build firmware
+./build_image.sh
+
+# Option A: Use GitHub's direct download URLs
+# Format: https://github.com/OWNER/REPO/releases/download/TAG/FILENAME
+TAG="v1.0.0-custom"
+REPO="YOUR_USERNAME/aiden-hardware-demo"
+BASE_URL="https://github.com/$REPO/releases/download/$TAG"
+
+# Option B: Use CDN that mirrors GitHub releases
+# BASE_URL="https://cdn.example.com/github/$REPO/$TAG"
+
+scripts/generate_ota_manifest.sh \
+  --version "20260604-custom-$(git rev-parse --short HEAD)" \
+  --channel "custom" \
+  --build-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --sign-key ota_private_key.pem \
+  --image-dir pico-sdk/output/image \
+  --output pico-sdk/output/image/manifest.json \
+  --base-url "$BASE_URL"
+```
+
+This generates a manifest like:
+```json
+{
+  "schema_version": 1,
+  "channel": "custom",
+  "version": "20260604-custom-abc123",
+  "build_time": "2026-06-04T12:00:00Z",
+  "parts": [
+    {
+      "name": "boot",
+      "asset_a": {
+        "name": "boot_a.img",
+        "url": "https://github.com/YOUR_USERNAME/aiden-hardware-demo/releases/download/v1.0.0-custom/boot_a.img",
+        "size": 12345678,
+        "sha256": "abc..."
+      },
+      ...
+    }
+  ],
+  "signature": {...}
+}
+```
+
+2. **Create GitHub Release with the manifest:**
+```bash
+# Create release with manifest that has embedded URLs
+gh release create v1.0.0-custom \
+  --title "Custom Firmware v1.0.0" \
+  --notes "Custom build with XYZ features" \
+  pico-sdk/output/image/boot_a.img \
+  pico-sdk/output/image/boot_b.img \
+  pico-sdk/output/image/oem.img \
+  pico-sdk/output/image/rootfs.img \
+  pico-sdk/output/image/manifest.json
+
+# Get the direct manifest URL
+MANIFEST_URL="https://github.com/YOUR_USERNAME/aiden-hardware-demo/releases/download/v1.0.0-custom/manifest.json"
+```
+
+3. **Update device using direct manifest URL:**
+```bash
+# Copy public key to device
+scp ota_public_key.pem root@192.168.50.188:/userdata/ota/custom_pubkey.pem
+
+# On device, update using direct manifest URL (bypasses Release API)
+ota check-now \
+  --manifest-url "https://github.com/YOUR_USERNAME/aiden-hardware-demo/releases/download/v1.0.0-custom/manifest.json" \
+  --public-key /userdata/ota/custom_pubkey.pem
+```
+
+### Benefits of This Approach
+- **No Release API calls**: Faster, no rate limiting issues
+- **Works with private repos**: Direct URLs work if user has access
+- **CDN-friendly**: Easy to mirror releases to CDN
+- **GitHub Actions compatible**: Easy to automate in CI/CD
+
+## Method 3: Self-Hosted Server (For Internal/Enterprise)
+
+For complete control over hosting (internal networks, air-gapped environments, etc.).
 
 ### Requirements
 - Web server (Nginx, Apache, S3, CDN, etc.)
@@ -82,7 +179,7 @@ This method allows you to host firmware on any web server without implementing G
 # Build firmware
 ./build_image.sh
 
-# Generate manifest with direct URLs
+# Generate manifest with your server URLs
 BASE_URL="https://firmware.example.com/aiden/v1.0.0"
 
 scripts/generate_ota_manifest.sh \
@@ -93,29 +190,6 @@ scripts/generate_ota_manifest.sh \
   --image-dir pico-sdk/output/image \
   --output pico-sdk/output/image/manifest.json \
   --base-url "$BASE_URL"
-```
-
-This generates a manifest like:
-```json
-{
-  "schema_version": 1,
-  "channel": "internal",
-  "version": "20260604-internal-001",
-  "build_time": "2026-06-04T12:00:00Z",
-  "parts": [
-    {
-      "name": "boot",
-      "asset_a": {
-        "name": "boot_a.img",
-        "url": "https://firmware.example.com/aiden/v1.0.0/boot_a.img",
-        "size": 12345678,
-        "sha256": "abc..."
-      },
-      ...
-    }
-  ],
-  "signature": {...}
-}
 ```
 
 2. **Upload firmware to your server:**
@@ -154,7 +228,7 @@ ota check-now \
   --public-key /userdata/ota/custom_pubkey.pem
 ```
 
-## Method 3: Local Development
+## Method 4: Local Development
 
 For development and testing, you can use a local HTTP server.
 
