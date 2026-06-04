@@ -254,9 +254,10 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			batch = append(batch, toolEvent)
 
 		case "tool_result":
+			resultSpanID := uuid.NewString()
 			var output interface{} = event.Observation
 			if e.cfg.UploadScreenshotsOrDefault() && strings.TrimSpace(event.ScreenshotRef) != "" {
-				mediaRef, err := e.uploadScreenshot(ctx, traceID, episodeDir, event.ScreenshotRef)
+				mediaRef, err := e.uploadScreenshot(ctx, traceID, resultSpanID, episodeDir, event.ScreenshotRef)
 				if err != nil && e.logger != nil {
 					e.logger.Warn("[telemetry] screenshot upload failed (%s): %v", event.ScreenshotRef, err)
 				} else if mediaRef != "" {
@@ -267,7 +268,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 				}
 			}
 			body := map[string]interface{}{
-				"id":        uuid.NewString(),
+				"id":        resultSpanID,
 				"traceId":   traceID,
 				"name":      "tool_result/" + strings.TrimSpace(event.ToolName),
 				"startTime": langfuseRFC3339(eventTime),
@@ -406,14 +407,14 @@ func episodeTokenUsage(episode TaskEpisode) (promptTokens, completionTokens, tot
 	return promptTokens, completionTokens, totalTokens, promptTokens > 0 || completionTokens > 0 || totalTokens > 0
 }
 
-func (e *EpisodeExporter) uploadScreenshot(ctx context.Context, traceID, episodeDir, screenshotRef string) (string, error) {
+func (e *EpisodeExporter) uploadScreenshot(ctx context.Context, traceID, observationID, episodeDir, screenshotRef string) (string, error) {
 	path := filepath.Join(episodeDir, filepath.FromSlash(screenshotRef))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
 	contentType := screenshotContentType(path)
-	mediaID, err := e.client.uploadMedia(ctx, traceID, contentType, data, "output")
+	mediaID, err := e.client.uploadMedia(ctx, traceID, observationID, contentType, data, "output")
 	if err != nil {
 		return "", err
 	}

@@ -51,7 +51,7 @@ func TestUploadMediaCompletesWithPatch(t *testing.T) {
 		SecretKey: "sk-test",
 	})
 
-	mediaID, err := client.uploadMedia(context.Background(), "trace-1", "image/jpeg", []byte("jpeg-bytes"), "output")
+	mediaID, err := client.uploadMedia(context.Background(), "trace-1", "observation-1", "image/jpeg", []byte("jpeg-bytes"), "output")
 	if err != nil {
 		t.Fatalf("uploadMedia() error = %v", err)
 	}

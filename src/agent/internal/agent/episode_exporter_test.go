@@ -270,6 +270,8 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 
 func TestExportEpisodeDirUploadsToLangfuse(t *testing.T) {
 	var ingestionCalls int
+	var mediaObservationID string
+	var toolResultID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/public/ingestion":
@@ -286,9 +288,36 @@ func TestExportEpisodeDirUploadsToLangfuse(t *testing.T) {
 			if len(req.Batch) == 0 {
 				t.Fatal("expected non-empty ingestion batch")
 			}
+			for _, event := range req.Batch {
+				if event.Type != "span-create" {
+					continue
+				}
+				var body map[string]interface{}
+				if err := json.Unmarshal(event.Body, &body); err != nil {
+					t.Fatalf("decode span body: %v", err)
+				}
+				if body["name"] != "tool_result/screenshot" {
+					continue
+				}
+				toolResultID, _ = body["id"].(string)
+				output, ok := body["output"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("tool result output = %#v, want object with screenshot", body["output"])
+				}
+				screenshot, _ := output["screenshot"].(string)
+				if !strings.Contains(screenshot, "id=media-123") {
+					t.Fatalf("tool result screenshot = %q, want media token", screenshot)
+				}
+			}
 			w.WriteHeader(http.StatusMultiStatus)
 			_, _ = w.Write([]byte(`{"successes":[{"id":"ok","status":201}],"errors":[]}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/public/media":
+			body, _ := io.ReadAll(r.Body)
+			var req langfuseMediaCreateRequest
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Fatalf("decode media create request: %v", err)
+			}
+			mediaObservationID = req.ObservationID
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"mediaId":"media-123","uploadUrl":null}`))
 		default:
@@ -361,5 +390,11 @@ outcome:
 	}
 	if ingestionCalls == 0 {
 		t.Fatal("expected ingestion request")
+	}
+	if strings.TrimSpace(mediaObservationID) == "" {
+		t.Fatal("expected media create request to include observationId")
+	}
+	if mediaObservationID != toolResultID {
+		t.Fatalf("media observationId = %q, want tool result id %q", mediaObservationID, toolResultID)
 	}
 }

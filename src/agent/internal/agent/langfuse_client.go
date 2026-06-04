@@ -109,6 +109,7 @@ func (c *langfuseClient) ingest(ctx context.Context, batch []langfuseIngestionEv
 
 type langfuseMediaCreateRequest struct {
 	TraceID       string `json:"traceId"`
+	ObservationID string `json:"observationId,omitempty"`
 	ContentType   string `json:"contentType"`
 	ContentLength int    `json:"contentLength"`
 	SHA256Hash    string `json:"sha256Hash"`
@@ -127,7 +128,7 @@ type langfuseMediaPatchRequest struct {
 	UploadTimeMs     *int64  `json:"uploadTimeMs,omitempty"`
 }
 
-func (c *langfuseClient) uploadMedia(ctx context.Context, traceID, contentType string, data []byte, field string) (string, error) {
+func (c *langfuseClient) uploadMedia(ctx context.Context, traceID, observationID, contentType string, data []byte, field string) (string, error) {
 	if len(data) == 0 {
 		return "", nil
 	}
@@ -142,6 +143,7 @@ func (c *langfuseClient) uploadMedia(ctx context.Context, traceID, contentType s
 
 	createBody, err := json.Marshal(langfuseMediaCreateRequest{
 		TraceID:       traceID,
+		ObservationID: strings.TrimSpace(observationID),
 		ContentType:   contentType,
 		ContentLength: len(data),
 		SHA256Hash:    hashB64,
