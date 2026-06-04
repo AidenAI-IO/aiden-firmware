@@ -269,25 +269,7 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
 
 func TestServerHandleChatSkipsToolDescriptionTTSWhenDisabled(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			{
-				Choices: []*llms.ContentChoice{{
-					ToolCalls: []llms.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      "audio_volume",
-							Arguments: `{"__arg1":"{}","description":"我先读取当前音量。"}`,
-						},
-					}},
-				}},
-			},
-			{
-				Choices: []*llms.ContentChoice{{
-					Content: "The current audio volume is 42.",
-				}},
-			},
-		},
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
 	}
 	streamingDisabled := false
 	toolSpeechDisabled := false

@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   build:
-    if: ${{ inputs.runner != 'self-hosted' || (github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target') }}
+    if: ${{ inputs.runner != 'self-hosted' || (startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target') }}
     runs-on: ${{ inputs.runner }}
 
     steps:
@@ -126,10 +126,15 @@ jobs:
       run: ./build_image.sh bash ./scripts/repack_ota_update_image.sh
 
     - name: Create Release
-      uses: softprops/action-gh-release@v2
-      with:
-        name: ${{ steps.release_info.outputs.release_name }}
-        tag_name: ${{ steps.release_info.outputs.tag_name }}
-        target_commitish: ${{ github.sha }}
-        files: pico-sdk/output/image/*
-        fail_on_unmatched_files: true
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_DEBUG: api
+      run: |
+        bash scripts/create_github_release.sh \
+          --release-name "${{ steps.release_info.outputs.release_name }}" \
+          --tag-name "${{ steps.release_info.outputs.tag_name }}" \
+          --target-commitish "${{ github.sha }}" \
+          --asset-glob 'pico-sdk/output/image/*' \
+          --required-assets 'boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img update.img manifest.json' \
+          --retry-count 5 \
+          --retry-delay-seconds 30

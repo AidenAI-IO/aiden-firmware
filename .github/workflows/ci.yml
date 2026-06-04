@@ -16,3 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify self-hosted runner safety
         run: bash scripts/test_github_actions_self_hosted_safety.sh
+      - name: Verify release scripts
+        run: |
+          sh scripts/test_release_ci_scripts.sh
+          bash scripts/test_github_release_upload.sh

@@ -29,18 +29,20 @@ def self_hosted_capable?(runs_on)
   values.include?("self-hosted") || dynamic_self_hosted_capable?(runs_on)
 end
 
-def main_only_guarded?(condition, dynamic_runner)
+def repo_branch_guarded?(condition, dynamic_runner)
   normalized = condition.gsub(/\s+/, " ")
   blocks_pr_events =
     normalized.include?("github.event_name != 'pull_request'") &&
     normalized.include?("github.event_name != 'pull_request_target'")
-  requires_main = normalized.include?("github.ref == 'refs/heads/main'")
+  requires_repo_branch =
+    normalized.include?("startsWith(github.ref, 'refs/heads/')") ||
+    normalized.include?('startsWith(github.ref, "refs/heads/")')
   runner_guard =
     !dynamic_runner ||
     normalized.include?("inputs.runner != 'self-hosted'") ||
     normalized.include?("inputs.runner == 'self-hosted'")
 
-  blocks_pr_events && requires_main && runner_guard
+  blocks_pr_events && requires_repo_branch && runner_guard
 end
 
 failures = []
@@ -55,10 +57,10 @@ Dir.glob(File.join(workflow_dir, "*.{yml,yaml}")).sort.each do |file|
 
     dynamic_runner = dynamic_self_hosted_capable?(runs_on)
     condition = job["if"].to_s
-    next if main_only_guarded?(condition, dynamic_runner)
+    next if repo_branch_guarded?(condition, dynamic_runner)
 
     relative_file = file.delete_prefix("#{repo_root}/")
-    failures << "#{relative_file}:#{job_name} can run on self-hosted without a job-level main-only guard"
+    failures << "#{relative_file}:#{job_name} can run on self-hosted without a job-level repo-branch guard"
   end
 end
 
@@ -68,5 +70,5 @@ if failures.any?
   exit 1
 end
 
-puts "GitHub Actions self-hosted main-only safety check passed."
+puts "GitHub Actions self-hosted repo-branch safety check passed."
 RUBY

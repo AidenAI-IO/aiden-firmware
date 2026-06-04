@@ -25,21 +25,45 @@ type SessionMemoryStore struct {
 }
 
 type CompressOption struct {
-	ChunkID   string
-	Summary   string
-	Tags      []string
-	Entities  []string
-	RiskTypes []string
+	ChunkID    string
+	Summary    string
+	Structured ChunkStructuredSummary
+	Tags       []string
+	Entities   []string
+	RiskTypes  []string
+}
+
+type ChunkStructuredSummary struct {
+	Summary          string   `json:"summary,omitempty" yaml:"summary,omitempty"`
+	UserGoals        []string `json:"user_goals,omitempty" yaml:"user_goals,omitempty"`
+	ConfirmedFacts   []string `json:"confirmed_facts,omitempty" yaml:"confirmed_facts,omitempty"`
+	Decisions        []string `json:"decisions,omitempty" yaml:"decisions,omitempty"`
+	Proposals        []string `json:"proposals,omitempty" yaml:"proposals,omitempty"`
+	OpenTasks        []string `json:"open_tasks,omitempty" yaml:"open_tasks,omitempty"`
+	RisksOrPitfalls  []string `json:"risks_or_pitfalls,omitempty" yaml:"risks_or_pitfalls,omitempty"`
+	MemoryCandidates []string `json:"memory_candidates,omitempty" yaml:"memory_candidates,omitempty"`
+}
+
+func (s ChunkStructuredSummary) Empty() bool {
+	return strings.TrimSpace(s.Summary) == "" &&
+		len(s.UserGoals) == 0 &&
+		len(s.ConfirmedFacts) == 0 &&
+		len(s.Decisions) == 0 &&
+		len(s.Proposals) == 0 &&
+		len(s.OpenTasks) == 0 &&
+		len(s.RisksOrPitfalls) == 0 &&
+		len(s.MemoryCandidates) == 0
 }
 
 type ChunkSummary struct {
-	ID         string   `json:"id"`
-	Summary    string   `json:"summary"`
-	Tags       []string `json:"tags,omitempty"`
-	Entities   []string `json:"entities,omitempty"`
-	RiskTypes  []string `json:"risk_types,omitempty"`
-	EventCount int      `json:"event_count"`
-	Checksum   string   `json:"checksum"`
+	ID         string                  `json:"id"`
+	Summary    string                  `json:"summary"`
+	Structured *ChunkStructuredSummary `json:"structured,omitempty"`
+	Tags       []string                `json:"tags,omitempty"`
+	Entities   []string                `json:"entities,omitempty"`
+	RiskTypes  []string                `json:"risk_types,omitempty"`
+	EventCount int                     `json:"event_count"`
+	Checksum   string                  `json:"checksum"`
 }
 
 type ChunkRecallQuery struct {
@@ -51,9 +75,10 @@ type ChunkRecallQuery struct {
 }
 
 type ChunkRecallResult struct {
-	ChunkID  string         `json:"chunk_id"`
-	Summary  string         `json:"summary"`
-	Evidence []SessionEvent `json:"evidence"`
+	ChunkID    string                  `json:"chunk_id"`
+	Summary    string                  `json:"summary"`
+	Structured *ChunkStructuredSummary `json:"structured,omitempty"`
+	Evidence   []SessionEvent          `json:"evidence"`
 }
 
 type chunkIndex struct {
@@ -63,16 +88,17 @@ type chunkIndex struct {
 }
 
 type chunkIndexEntry struct {
-	ID         string   `yaml:"id"`
-	File       string   `yaml:"file"`
-	Status     string   `yaml:"status"`
-	Summary    string   `yaml:"summary"`
-	AppName    string   `yaml:"app_name,omitempty"`
-	Tags       []string `yaml:"tags,omitempty"`
-	Entities   []string `yaml:"entities,omitempty"`
-	RiskTypes  []string `yaml:"risk_types,omitempty"`
-	EventCount int      `yaml:"event_count"`
-	Checksum   string   `yaml:"checksum"`
+	ID         string                  `yaml:"id"`
+	File       string                  `yaml:"file"`
+	Status     string                  `yaml:"status"`
+	Summary    string                  `yaml:"summary"`
+	Structured *ChunkStructuredSummary `yaml:"structured,omitempty"`
+	AppName    string                  `yaml:"app_name,omitempty"`
+	Tags       []string                `yaml:"tags,omitempty"`
+	Entities   []string                `yaml:"entities,omitempty"`
+	RiskTypes  []string                `yaml:"risk_types,omitempty"`
+	EventCount int                     `yaml:"event_count"`
+	Checksum   string                  `yaml:"checksum"`
 }
 
 const defaultSummaryMaxChunks = 10
@@ -161,6 +187,7 @@ func (s *SessionMemoryStore) compressEvents(ctx context.Context, events []Sessio
 		File:       opt.ChunkID + ".jsonl",
 		Status:     "active",
 		Summary:    opt.Summary,
+		Structured: structuredOrNil(opt.Structured),
 		AppName:    firstNonEmptyAppName(events),
 		Tags:       append([]string(nil), opt.Tags...),
 		Entities:   append([]string(nil), opt.Entities...),
@@ -190,6 +217,7 @@ func (s *SessionMemoryStore) compressEvents(ctx context.Context, events []Sessio
 	return ChunkSummary{
 		ID:         entry.ID,
 		Summary:    entry.Summary,
+		Structured: entry.Structured,
 		Tags:       append([]string(nil), entry.Tags...),
 		Entities:   append([]string(nil), entry.Entities...),
 		RiskTypes:  append([]string(nil), entry.RiskTypes...),
@@ -246,7 +274,7 @@ func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecall
 			if err != nil {
 				return nil, err
 			}
-			results = append(results, ChunkRecallResult{ChunkID: entry.ID, Summary: entry.Summary, Evidence: events})
+			results = append(results, ChunkRecallResult{ChunkID: entry.ID, Summary: entry.Summary, Structured: entry.Structured, Evidence: events})
 		}
 		return results, nil
 	}
@@ -285,7 +313,7 @@ func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecall
 		if err != nil {
 			return nil, err
 		}
-		results = append(results, ChunkRecallResult{ChunkID: entry.ID, Summary: entry.Summary, Evidence: events})
+		results = append(results, ChunkRecallResult{ChunkID: entry.ID, Summary: entry.Summary, Structured: entry.Structured, Evidence: events})
 	}
 	return results, nil
 }
@@ -467,6 +495,13 @@ func formatSessionSummaryWithWindow(existingSummary []byte, existingArchive []by
 	archived = append(archived, overflow...)
 
 	return renderSummaryMD(keep), renderArchiveMD(archived)
+}
+
+func structuredOrNil(s ChunkStructuredSummary) *ChunkStructuredSummary {
+	if s.Empty() {
+		return nil
+	}
+	return &s
 }
 
 func minInt(a int, b int) int {
