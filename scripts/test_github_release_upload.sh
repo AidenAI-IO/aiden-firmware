@@ -12,9 +12,12 @@ mkdir -p "$assets_dir" "$fake_bin" "$state_dir"
 
 printf 'firmware image\n' > "$assets_dir/update.img"
 printf '{"version":"v-test"}\n' > "$assets_dir/manifest.json"
-for image in boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img; do
+# Create real image files (neutral resources for OTA)
+for image in boot_a.img boot_b.img oem.img rootfs.img userdata.img; do
   printf '%s\n' "$image" > "$assets_dir/$image"
 done
+# Note: symlinks oem_a/oem_b/rootfs_a/rootfs_b should NOT exist
+# (they're cleaned up after update.img packaging in build.sh)
 
 cat > "$fake_bin/gh" <<'SH'
 #!/usr/bin/env bash
@@ -124,7 +127,7 @@ if ! PATH="$fake_bin:$PATH" \
       --release-name "Test Release" \
       --target-commitish "$target_commitish" \
       --asset-glob "$assets_dir/*" \
-      --required-assets 'boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img update.img manifest.json' \
+      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img userdata.img update.img manifest.json' \
       --retry-count 4 \
       --retry-delay-seconds 15 \
       >"$log_file" 2>&1; then
@@ -168,7 +171,7 @@ if [ "$(grep -c '^upload:manifest.json:' "$state_dir/events")" -ne 1 ]; then
   exit 1
 fi
 
-for image in boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img; do
+for image in boot_a.img boot_b.img oem.img rootfs.img userdata.img; do
   if [ "$(grep -c "^upload:$image:" "$state_dir/events")" -ne 1 ]; then
     echo "release script must upload required OTA image: $image" >&2
     exit 1
@@ -203,7 +206,7 @@ if ! PATH="$fake_bin:$PATH" \
       --release-name "Test Release" \
       --target-commitish abc123 \
       --asset-glob "$assets_dir/*" \
-      --required-assets 'boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img update.img manifest.json' \
+      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img userdata.img update.img manifest.json' \
       --retry-count 3 \
       --retry-delay-seconds 0 \
       >"$log_file" 2>&1; then
@@ -226,7 +229,7 @@ if ! grep -q '^publish:v-test$' "$state_dir/events"; then
   exit 1
 fi
 
-rm -f "$assets_dir/oem_b.img" "$state_dir/events" "$state_dir/calls" "$state_dir/release-exists" "$state_dir"/upload-* "$state_dir/create-count"
+rm -f "$assets_dir/oem.img" "$state_dir/events" "$state_dir/calls" "$state_dir/release-exists" "$state_dir"/upload-* "$state_dir/create-count"
 if PATH="$fake_bin:$PATH" \
   FAKE_GH_STATE_DIR="$state_dir" \
   GH_TOKEN="test-token" \
@@ -236,7 +239,7 @@ if PATH="$fake_bin:$PATH" \
       --release-name "Test Release" \
       --target-commitish abc123 \
       --asset-glob "$assets_dir/*" \
-      --required-assets 'boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img update.img manifest.json' \
+      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img userdata.img update.img manifest.json' \
       --retry-count 3 \
       --retry-delay-seconds 0 \
       >"$log_file" 2>&1; then
@@ -244,7 +247,7 @@ if PATH="$fake_bin:$PATH" \
   exit 1
 fi
 
-if ! grep -q 'missing required release asset: oem_b.img' "$log_file"; then
+if ! grep -q 'missing required release asset: oem.img' "$log_file"; then
   echo "release script must identify the missing required OTA image" >&2
   exit 1
 fi
