@@ -46,6 +46,33 @@ scripts/generate_ota_manifest.sh \
 
 自动在每个 asset 中注入完整下载 URL。
 
+### 4. 官方仓库区分 main 和非 main 分支
+
+官方仓库的 CI/CD 现在根据分支自动区分发布渠道：
+
+| 分支 | Channel | GitHub Release | 默认 OTA 行为 |
+|------|---------|---------------|--------------|
+| `main` | `stable` | 正常 Release | ✅ 自动升级 |
+| 其他分支 | `dev-{分支名}` | Prerelease | ❌ 不会升级 |
+
+**双重保护机制**：
+
+1. **Channel 校验**：设备默认 `channel: stable`，OTA 会拒绝 channel 不匹配的 manifest
+2. **Prerelease 标记**：`releases/latest` API 只返回正式 Release，不返回 prerelease
+
+这样非 main 分支的固件即使发布也不会影响生产设备的正常 OTA 升级。
+
+**测试非 main 分支固件**：
+
+```bash
+# 通过 manifest-url 手动指定 dev 分支的 release（标记为 Pre-release）
+ota check-now \
+  --manifest-url "https://github.com/AidenAI-IO/aiden-hardware-demo/releases/download/TAG/manifest.json" \
+  --public-key /oem/etc/ota_pubkey.pem
+```
+
+详见 [ota-release-channels.md](ota-release-channels.md)。
+
 ## 向后兼容
 
 所有改动都是**可选和增量**的：
@@ -58,8 +85,16 @@ scripts/generate_ota_manifest.sh \
 ### 场景 1：开发者 Fork 仓库
 
 ```bash
-# 开发者在自己的 GitHub 仓库发布定制固件
-ota check-now --repo developer/aiden-custom \
+# 开发者在自己的 GitHub 仓库构建并发布固件
+# 生成带 GitHub 直接 URL 的 manifest
+TAG="v1.0.0-custom"
+REPO="developer/aiden-custom"
+scripts/generate_ota_manifest.sh ... \
+  --base-url "https://github.com/$REPO/releases/download/$TAG"
+
+# 设备从开发者的 release 更新
+ota check-now \
+  --manifest-url "https://github.com/$REPO/releases/download/$TAG/manifest.json" \
   --public-key /path/to/developer_pubkey.pem
 ```
 
@@ -100,6 +135,8 @@ ota check-now --manifest-url http://192.168.1.100:8000/manifest.json \
 - `src/agent/internal/ota/updater.go` - 支持直接 URL 和 manifest-url 参数
 - `src/agent/cmd/ota/main.go` - 添加 --manifest-url CLI 参数
 - `scripts/generate_ota_manifest.sh` - 添加 --base-url 选项
+- `scripts/create_github_release.sh` - 添加 --prerelease 选项
+- `.github/workflows/build.yml` - 区分 main 和非 main 分支的 channel 与发布策略
 
 ### 测试
 - `src/agent/internal/ota/manifest_test.go` - 新增 URL 字段测试
@@ -108,6 +145,7 @@ ota check-now --manifest-url http://192.168.1.100:8000/manifest.json \
 ### 文档
 - `docs/ota-external-developers.md` - 完整开发者指南
 - `docs/ota-quick-examples.md` - 快速使用示例
+- `docs/ota-release-channels.md` - 发布渠道与分支区分说明
 
 ## 安全性
 
