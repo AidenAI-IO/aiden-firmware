@@ -2224,11 +2224,15 @@ std::string validate_proxy_url(const std::string& url) {
     return aiden::validate_system_proxy_url(url);
 }
 
+static bool is_tencent_asr_provider(const std::string& provider) {
+    return provider == "tencent" || provider == "tencent_asr";
+}
+
 std::string provider_default_url(const std::string& provider) {
     if (provider == "openrouter") return "https://openrouter.ai/api/v1";
     if (provider == "openai" || provider == "openai-whisper") return "https://api.openai.com/v1";
-    if (provider == "minimax") return "https://api.minimax.chat";
-    if (provider == "tencent") return "https://asr.cloud.tencent.com";
+    if (provider == "minimax" || provider == "minimax-ws") return "https://api.minimax.chat";
+    if (is_tencent_asr_provider(provider)) return "https://asr.tencentcloudapi.com";
     return "";
 }
 
@@ -2314,6 +2318,13 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
         std::string base_url = json_is_string(base_url_item) ? trim_copy(base_url_item->valuestring) : "";
         std::string url = base_url.empty() ? provider_default_url(provider) : base_url;
+        const bool tencent_stt = section == "stt" && is_tencent_asr_provider(provider);
+        if (tencent_stt && url.empty()) {
+            url = "https://asr.tencentcloudapi.com";
+        }
+
+        cJSON* api_key_item = cJSON_GetObjectItem(values, "api_key");
+        std::string api_key = json_is_string(api_key_item) ? trim_copy(api_key_item->valuestring) : "";
 
         cJSON* r = cJSON_CreateObject();
         cJSON_AddStringToObject(r, "check", "endpoint_reachable");
@@ -2332,14 +2343,33 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         }
         cJSON_AddItemToArray(results, r);
 
-        cJSON* api_key_item = cJSON_GetObjectItem(values, "api_key");
-        std::string api_key = json_is_string(api_key_item) ? trim_copy(api_key_item->valuestring) : "";
-        cJSON* r2 = cJSON_CreateObject();
-        cJSON_AddStringToObject(r2, "check", "api_key_present");
-        cJSON_AddBoolToObject(r2, "passed", !api_key.empty() ? 1 : 0);
-        cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "api_key is empty" : "api_key is set");
-        if (api_key.empty()) all_passed = false;
-        cJSON_AddItemToArray(results, r2);
+        if (tencent_stt) {
+            cJSON* secret_id_item = cJSON_GetObjectItem(values, "secret_id");
+            cJSON* secret_key_item = cJSON_GetObjectItem(values, "secret_key");
+            std::string secret_id = json_is_string(secret_id_item) ? trim_copy(secret_id_item->valuestring) : "";
+            std::string secret_key = json_is_string(secret_key_item) ? trim_copy(secret_key_item->valuestring) : "";
+
+            cJSON* r_sid = cJSON_CreateObject();
+            cJSON_AddStringToObject(r_sid, "check", "secret_id_present");
+            cJSON_AddBoolToObject(r_sid, "passed", !secret_id.empty() ? 1 : 0);
+            cJSON_AddStringToObject(r_sid, "detail", secret_id.empty() ? "secret_id is empty" : "secret_id is set");
+            if (secret_id.empty()) all_passed = false;
+            cJSON_AddItemToArray(results, r_sid);
+
+            cJSON* r_skey = cJSON_CreateObject();
+            cJSON_AddStringToObject(r_skey, "check", "secret_key_present");
+            cJSON_AddBoolToObject(r_skey, "passed", !secret_key.empty() ? 1 : 0);
+            cJSON_AddStringToObject(r_skey, "detail", secret_key.empty() ? "secret_key is empty" : "secret_key is set");
+            if (secret_key.empty()) all_passed = false;
+            cJSON_AddItemToArray(results, r_skey);
+        } else {
+            cJSON* r2 = cJSON_CreateObject();
+            cJSON_AddStringToObject(r2, "check", "api_key_present");
+            cJSON_AddBoolToObject(r2, "passed", !api_key.empty() ? 1 : 0);
+            cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "api_key is empty" : "api_key is set");
+            if (api_key.empty()) all_passed = false;
+            cJSON_AddItemToArray(results, r2);
+        }
 
         bool endpoint_ok = false;
         {
