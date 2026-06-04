@@ -278,6 +278,180 @@ App 应每隔 10-15 秒发送一次心跳消息 (id 为 `"heartbeat"` 或 `"ping
 
 ---
 
+### 7. `contacts_query`
+
+查询通讯录联系人。
+
+**请求**:
+```json
+{
+  "id": "contacts_query_001",
+  "type": "contacts_query",
+  "payload": {
+    "query": "张三",
+    "limit": 20
+  },
+  "timeout_ms": 8000
+}
+```
+
+**字段说明**:
+- `query` (可选): 搜索关键词，匹配姓名或电话号码
+- `limit` (可选): 最多返回数量，默认 20
+
+**iOS 实现**: 使用 `CNContactStore` 查询，需要 `NSContactsUsageDescription` 权限。  
+**Android 实现**: 查询 `ContactsContract` API，需要 `READ_CONTACTS` 权限。
+
+**响应**:
+```json
+{
+  "id": "contacts_query_001",
+  "ok": true,
+  "data": {
+    "contacts": [
+      {
+        "contact_id": "contact_123",
+        "name": "张三",
+        "phone_numbers": ["+86 138 1234 5678"],
+        "emails": ["zhangsan@example.com"]
+      }
+    ]
+  }
+}
+```
+
+无匹配联系人时返回空数组 `"contacts": []`。
+
+---
+
+### 8. `contacts_create`
+
+新增联系人。
+
+**请求**:
+```json
+{
+  "id": "contacts_create_001",
+  "type": "contacts_create",
+  "payload": {
+    "name": "李四",
+    "phone_numbers": ["+86 139 8765 4321"],
+    "emails": ["lisi@example.com"],
+    "organization": "公司名",
+    "notes": "备注信息"
+  },
+  "timeout_ms": 8000
+}
+```
+
+**字段说明**:
+- `name` (必需): 联系人姓名
+- `phone_numbers` (可选): 电话号码数组
+- `emails` (可选): 邮箱地址数组
+- `organization` (可选): 公司/组织名称
+- `notes` (可选): 备注信息
+
+**iOS 实现**: 使用 `CNContactStore.add(CNSaveRequest)` 创建，需要 `NSContactsUsageDescription` 权限。  
+**Android 实现**: 使用 `ContentResolver.insert(ContactsContract.RawContacts.CONTENT_URI)`，需要 `WRITE_CONTACTS` 权限。
+
+**响应**:
+```json
+{
+  "id": "contacts_create_001",
+  "ok": true,
+  "data": {
+    "contact_id": "new_contact_id_123"
+  }
+}
+```
+
+`contact_id` 是平台返回的联系人唯一标识，用于后续更新。
+
+---
+
+### 9. `contacts_update`
+
+修改已有联系人。
+
+**请求**:
+```json
+{
+  "id": "contacts_update_001",
+  "type": "contacts_update",
+  "payload": {
+    "contact_id": "contact_123",
+    "name": "李四（更新）",
+    "phone_numbers": ["+86 139 8765 4321", "+86 010 1234 5678"],
+    "emails": ["lisi_new@example.com"]
+  },
+  "timeout_ms": 8000
+}
+```
+
+**字段说明**:
+- `contact_id` (必需): 要更新的联系人 ID
+- 其他字段同 `contacts_create`，提供的字段会覆盖原有值
+
+**iOS 实现**: 使用 `CNContactStore.execute(CNSaveRequest)` 更新联系人。  
+**Android 实现**: 使用 `ContentResolver.update()` 更新 `ContactsContract.Data` 表。
+
+**响应**:
+```json
+{
+  "id": "contacts_update_001",
+  "ok": true
+}
+```
+
+如果联系人不存在，返回 `ok: false, error: "Contact not found"`。
+
+---
+
+### 10. `notification_send`
+
+发送本地通知。
+
+**请求**:
+```json
+{
+  "id": "notification_001",
+  "type": "notification_send",
+  "payload": {
+    "title": "提醒",
+    "body": "该吃药了",
+    "schedule_at": "2026-06-04T18:00:00+08:00",
+    "sound": true,
+    "badge": 1
+  },
+  "timeout_ms": 5000
+}
+```
+
+**字段说明**:
+- `title` (必需): 通知标题
+- `body` (可选): 通知正文
+- `schedule_at` (可选): 定时发送时间 (RFC3339)，不填则立即发送
+- `sound` (可选): 是否播放声音，默认 true
+- `badge` (可选): 应用角标数字 (iOS)
+
+**iOS 实现**: 使用 `UNUserNotificationCenter` 发送本地通知，需要用户授权。  
+**Android 实现**: 使用 `NotificationManager` 和 `AlarmManager` (定时)，Android 13+ 需要 `POST_NOTIFICATIONS` 权限。
+
+**响应**:
+```json
+{
+  "id": "notification_001",
+  "ok": true,
+  "data": {
+    "notification_id": "notification_123"
+  }
+}
+```
+
+`notification_id` 可用于后续取消通知（未来扩展）。
+
+---
+
 ## 错误处理
 
 当 App 无法执行命令时，应返回 `ok: false` 和 `error` 字段:
@@ -291,10 +465,11 @@ App 应每隔 10-15 秒发送一次心跳消息 (id 为 `"heartbeat"` 或 `"ping
 ```
 
 常见错误场景:
-- 权限未授予: `"需要日历权限"` / `"需要剪贴板权限"`
+- 权限未授予: `"需要日历权限"` / `"需要剪贴板权限"` / `"需要通讯录权限"` / `"需要通知权限"`
 - App 未安装: `"App not installed"`
 - 无效参数: `"Invalid start time format"`
-- 系统 API 失败: `"Calendar API error: ..."`
+- 系统 API 失败: `"Calendar API error: ..."` / `"Contacts API error: ..."`
+- 联系人不存在: `"Contact not found"`
 
 ## 超时与重连
 
@@ -321,6 +496,12 @@ App 应每隔 10-15 秒发送一次心跳消息 (id 为 `"heartbeat"` 或 `"ping
   <string>用于快速创建和管理日历事件</string>
   ```
   iOS 17+ 细分为 `NSCalendarsFullAccessUsageDescription` (读写) 和 `NSCalendarsWriteOnlyAccessUsageDescription` (只写)。
+- **通讯录**: 必须在 `Info.plist` 添加:
+  ```xml
+  <key>NSContactsUsageDescription</key>
+  <string>用于查询和管理联系人</string>
+  ```
+- **通知**: 需要通过 `UNUserNotificationCenter.requestAuthorization` 请求用户授权。
 
 ### Android
 
@@ -331,12 +512,21 @@ App 应每隔 10-15 秒发送一次心跳消息 (id 为 `"heartbeat"` 或 `"ping
   <uses-permission android:name="android.permission.WRITE_CALENDAR" />
   ```
   首次调用时弹授权框，拒绝后返回 `ok: false, error: "需要日历权限"`。
+- **通讯录**: 需要运行时权限:
+  ```xml
+  <uses-permission android:name="android.permission.READ_CONTACTS" />
+  <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+  ```
+- **通知**: Android 13+ 需要运行时权限:
+  ```xml
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  ```
 
 ## 测试建议
 
 1. **Mock 测试**: App 可在 WebSocket 连接失败时进入 mock 模式，本地模拟命令响应，便于开发调试。
 2. **超时场景**: 测试权限弹框期间超时，确认 App 正确处理用户授权后的后续命令。
-3. **边界情况**: 空剪贴板、无日历事件、无效 `event_id`、全天事件、跨时区查询等。
+3. **边界情况**: 空剪贴板、无日历事件、无效 `event_id`、全天事件、跨时区查询、空通讯录查询、重复联系人、无效 `contact_id`、定时通知取消等。
 
 ## 版本兼容
 

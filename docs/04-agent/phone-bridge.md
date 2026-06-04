@@ -338,6 +338,118 @@ WebSocket 的核心价值：
 }
 ```
 
+##### 7. `contacts_query` — 查询通讯录
+
+```json
+{
+  "id": "contacts_query_001",
+  "type": "contacts_query",
+  "payload": {
+    "query": "张三",
+    "limit": 20
+  },
+  "timeout_ms": 8000
+}
+```
+
+回复:
+```json
+{
+  "id": "contacts_query_001",
+  "ok": true,
+  "data": {
+    "contacts": [
+      {
+        "contact_id": "contact_123",
+        "name": "张三",
+        "phone_numbers": ["+86 138 1234 5678"],
+        "emails": ["zhangsan@example.com"]
+      }
+    ]
+  }
+}
+```
+
+##### 8. `contacts_create` — 新增联系人
+
+```json
+{
+  "id": "contacts_create_001",
+  "type": "contacts_create",
+  "payload": {
+    "name": "李四",
+    "phone_numbers": ["+86 139 8765 4321"],
+    "emails": ["lisi@example.com"],
+    "organization": "公司名",
+    "notes": "备注信息"
+  },
+  "timeout_ms": 8000
+}
+```
+
+回复:
+```json
+{
+  "id": "contacts_create_001",
+  "ok": true,
+  "data": {
+    "contact_id": "new_contact_id_123"
+  }
+}
+```
+
+##### 9. `contacts_update` — 修改联系人
+
+```json
+{
+  "id": "contacts_update_001",
+  "type": "contacts_update",
+  "payload": {
+    "contact_id": "contact_123",
+    "name": "李四（更新）",
+    "phone_numbers": ["+86 139 8765 4321", "+86 010 1234 5678"],
+    "emails": ["lisi_new@example.com"]
+  },
+  "timeout_ms": 8000
+}
+```
+
+回复:
+```json
+{
+  "id": "contacts_update_001",
+  "ok": true
+}
+```
+
+##### 10. `notification_send` — 发送通知
+
+```json
+{
+  "id": "notification_001",
+  "type": "notification_send",
+  "payload": {
+    "title": "提醒",
+    "body": "该吃药了",
+    "schedule_at": "2026-06-04T18:00:00+08:00",
+    "sound": true,
+    "badge": 1
+  },
+  "timeout_ms": 5000
+}
+```
+
+回复:
+```json
+{
+  "id": "notification_001",
+  "ok": true,
+  "data": {
+    "notification_id": "notification_123"
+  }
+}
+```
+
 ### 时间格式
 
 所有时间字段统一用 **RFC3339 with offset**，例如：
@@ -350,6 +462,8 @@ WebSocket 的核心价值：
 
 - **剪贴板读取**: iOS 16+ 会弹一次性授权横幅，频繁读会影响体验。Android 10+ 要求前台 app 或 foreground service。
 - **日历读写**: iOS 和 Android 都需要运行时权限，首次调用时弹授权框。App 收到命令时如果权限未授予，应返回 `ok:false, error:"需要日历权限"`，超时由板子侧 `timeout_ms` 控制。
+- **通讯录读写**: iOS 需要 `NSContactsUsageDescription` 权限，Android 需要 `READ_CONTACTS` 和 `WRITE_CONTACTS` 权限。未授权时返回 `ok:false, error:"需要通讯录权限"`。
+- **通知权限**: iOS 需要通过 `UNUserNotificationCenter` 请求授权，Android 13+ 需要 `POST_NOTIFICATIONS` 权限。未授权时返回 `ok:false, error:"需要通知权限"`。
 
 ### 实施注意
 

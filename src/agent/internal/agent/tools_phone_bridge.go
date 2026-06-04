@@ -223,4 +223,6 @@ func (s *ToolSet) RegisterPhoneBridge(bridge *PhoneBridge) {
 	s.tools["open_app"] = NewOpenAppTool(bridge)
 	s.tools["clipboard"] = NewClipboardTool(bridge)
 	s.tools["calendar"] = NewCalendarTool(bridge)
+	s.tools["contacts"] = NewContactsTool(bridge)
+	s.tools["notification"] = NewNotificationTool(bridge)
 }

@@ -250,7 +250,7 @@ func TestPhoneBridgeRuntimeContextConnected(t *testing.T) {
 		"- last_heartbeat_at: 2026-06-01T02:03:04Z",
 		"The phone companion app is connected",
 		"Use open_app as the primary path",
-		"clipboard and calendar tools are available",
+		"clipboard, calendar, contacts, and notification tools are available",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)
@@ -265,7 +265,7 @@ func TestPhoneBridgeRuntimeContextDisconnected(t *testing.T) {
 		"Phone bridge status:",
 		"- connected: false",
 		"The phone companion app is not connected",
-		"Do not assume open_app, clipboard, or calendar tools can control the phone",
+		"Do not assume open_app, clipboard, calendar, contacts, or notification tools can control the phone",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)

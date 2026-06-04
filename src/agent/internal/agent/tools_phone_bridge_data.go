@@ -274,5 +274,235 @@ func (t *CalendarTool) delete(ctx context.Context, args calendarArgs) (string, e
 	return jsonString(result), nil
 }
 
+// ContactsTool queries, creates, and updates contacts on the connected phone.
+type ContactsTool struct {
+	bridge *PhoneBridge
+}
 
+func NewContactsTool(bridge *PhoneBridge) *ContactsTool {
+	return &ContactsTool{bridge: bridge}
+}
 
+func (t *ContactsTool) Name() string { return "contacts" }
+
+func (t *ContactsTool) Description() string {
+	return `Query, create, or update contacts on the connected phone via the phone bridge. ` +
+		`Query: {"action":"query","query":"张三","limit":20} -> {"ok":true,"contacts":[{"contact_id","name","phone_numbers","emails"}]}. ` +
+		`Create: {"action":"create","name":"李四","phone_numbers":["+86 139 8765 4321"],"emails":["lisi@example.com"],"organization":"公司","notes":"备注"} -> {"ok":true,"contact_id":"..."}. ` +
+		`Update: {"action":"update","contact_id":"...","name":"新名字","phone_numbers":[...],"emails":[...]} -> {"ok":true}. ` +
+		`Confirm details with the user before creating or updating contacts. If the phone bridge is not connected, this tool fails.`
+}
+
+type contactsArgs struct {
+	Action       string   `json:"action"`
+	ContactID    string   `json:"contact_id"`
+	Query        string   `json:"query"`
+	Limit        int      `json:"limit"`
+	Name         string   `json:"name"`
+	PhoneNumbers []string `json:"phone_numbers"`
+	Emails       []string `json:"emails"`
+	Organization string   `json:"organization"`
+	Notes        string   `json:"notes"`
+}
+
+func (t *ContactsTool) Call(ctx context.Context, input string) (string, error) {
+	if !t.bridge.Connected() {
+		return bridgeNotConnected(), nil
+	}
+
+	var args contactsArgs
+	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
+		return fmt.Sprintf("error: invalid input: %v", err), nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(args.Action)) {
+	case "query":
+		return t.query(ctx, args)
+	case "create":
+		return t.create(ctx, args)
+	case "update":
+		return t.update(ctx, args)
+	default:
+		return fmt.Sprintf("error: unknown action %q, expected \"query\", \"create\", or \"update\"", args.Action), nil
+	}
+}
+
+func (t *ContactsTool) query(ctx context.Context, args contactsArgs) (string, error) {
+	payload, _ := json.Marshal(map[string]interface{}{
+		"query": args.Query,
+		"limit": args.Limit,
+	})
+	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+		ID:        nextBridgeCmdID("contacts_query"),
+		Type:      "contacts_query",
+		Payload:   payload,
+		TimeoutMs: 8000,
+	})
+	if err != nil {
+		return bridgeRespError(err), nil
+	}
+	result := map[string]interface{}{"ok": resp.OK}
+	if !resp.OK {
+		result["error"] = resp.Error
+		return jsonString(result), nil
+	}
+	var data struct {
+		Contacts []map[string]interface{} `json:"contacts"`
+	}
+	if len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			result["ok"] = false
+			result["error"] = fmt.Sprintf("decode contacts data: %v", err)
+			return jsonString(result), nil
+		}
+	}
+	if data.Contacts == nil {
+		data.Contacts = []map[string]interface{}{}
+	}
+	result["contacts"] = data.Contacts
+	return jsonString(result), nil
+}
+
+func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, error) {
+	if strings.TrimSpace(args.Name) == "" {
+		return "error: create requires a name", nil
+	}
+	payload, _ := json.Marshal(map[string]interface{}{
+		"name":          args.Name,
+		"phone_numbers": args.PhoneNumbers,
+		"emails":        args.Emails,
+		"organization":  args.Organization,
+		"notes":         args.Notes,
+	})
+	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+		ID:        nextBridgeCmdID("contacts_create"),
+		Type:      "contacts_create",
+		Payload:   payload,
+		TimeoutMs: 8000,
+	})
+	if err != nil {
+		return bridgeRespError(err), nil
+	}
+	result := map[string]interface{}{"ok": resp.OK}
+	if !resp.OK {
+		result["error"] = resp.Error
+		return jsonString(result), nil
+	}
+	var data struct {
+		ContactID string `json:"contact_id"`
+	}
+	if len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			result["ok"] = false
+			result["error"] = fmt.Sprintf("decode contacts data: %v", err)
+			return jsonString(result), nil
+		}
+	}
+	result["contact_id"] = data.ContactID
+	return jsonString(result), nil
+}
+
+func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, error) {
+	if strings.TrimSpace(args.ContactID) == "" {
+		return "error: update requires a contact_id", nil
+	}
+	payload, _ := json.Marshal(map[string]interface{}{
+		"contact_id":    args.ContactID,
+		"name":          args.Name,
+		"phone_numbers": args.PhoneNumbers,
+		"emails":        args.Emails,
+		"organization":  args.Organization,
+		"notes":         args.Notes,
+	})
+	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+		ID:        nextBridgeCmdID("contacts_update"),
+		Type:      "contacts_update",
+		Payload:   payload,
+		TimeoutMs: 8000,
+	})
+	if err != nil {
+		return bridgeRespError(err), nil
+	}
+	result := map[string]interface{}{"ok": resp.OK}
+	if !resp.OK {
+		result["error"] = resp.Error
+	}
+	return jsonString(result), nil
+}
+
+// NotificationTool sends local notifications on the connected phone.
+type NotificationTool struct {
+	bridge *PhoneBridge
+}
+
+func NewNotificationTool(bridge *PhoneBridge) *NotificationTool {
+	return &NotificationTool{bridge: bridge}
+}
+
+func (t *NotificationTool) Name() string { return "notification" }
+
+func (t *NotificationTool) Description() string {
+	return `Send local notifications on the connected phone via the phone bridge. ` +
+		`Input JSON: {"title":"提醒","body":"该吃药了","schedule_at":"2026-06-04T18:00:00+08:00","sound":true,"badge":1}. ` +
+		`The schedule_at field is optional (RFC3339 with timezone); if omitted, the notification is sent immediately. ` +
+		`Returns {"ok":true,"notification_id":"..."} on success. ` +
+		`Use this to remind the user or bring the companion app back to foreground. ` +
+		`If the phone bridge is not connected, this tool fails.`
+}
+
+type notificationArgs struct {
+	Title      string `json:"title"`
+	Body       string `json:"body"`
+	ScheduleAt string `json:"schedule_at"`
+	Sound      bool   `json:"sound"`
+	Badge      int    `json:"badge"`
+}
+
+func (t *NotificationTool) Call(ctx context.Context, input string) (string, error) {
+	if !t.bridge.Connected() {
+		return bridgeNotConnected(), nil
+	}
+
+	var args notificationArgs
+	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
+		return fmt.Sprintf("error: invalid input: %v", err), nil
+	}
+
+	if strings.TrimSpace(args.Title) == "" {
+		return "error: notification requires a title", nil
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"title":       args.Title,
+		"body":        args.Body,
+		"schedule_at": args.ScheduleAt,
+		"sound":       args.Sound,
+		"badge":       args.Badge,
+	})
+	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+		ID:        nextBridgeCmdID("notification"),
+		Type:      "notification_send",
+		Payload:   payload,
+		TimeoutMs: 5000,
+	})
+	if err != nil {
+		return bridgeRespError(err), nil
+	}
+	result := map[string]interface{}{"ok": resp.OK}
+	if !resp.OK {
+		result["error"] = resp.Error
+		return jsonString(result), nil
+	}
+	var data struct {
+		NotificationID string `json:"notification_id"`
+	}
+	if len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			result["ok"] = false
+			result["error"] = fmt.Sprintf("decode notification data: %v", err)
+			return jsonString(result), nil
+		}
+	}
+	result["notification_id"] = data.NotificationID
+	return jsonString(result), nil
+}

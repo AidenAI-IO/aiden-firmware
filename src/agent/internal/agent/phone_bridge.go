@@ -288,11 +288,11 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 			builder.WriteByte('\n')
 		}
 		builder.WriteString("- The phone companion app is connected. Use open_app as the primary path for opening apps, URLs, deeplinks, and phone dialer screens before falling back to screenshot/HID navigation.\n")
-		builder.WriteString("- clipboard and calendar tools are available through the companion app: prefer them over manual UI navigation for reading/writing the system clipboard or creating/querying/deleting system calendar events.\n")
+		builder.WriteString("- clipboard, calendar, contacts, and notification tools are available through the companion app: prefer them over manual UI navigation for reading/writing the system clipboard, creating/querying/deleting system calendar events, managing contacts, or sending notifications.\n")
 		builder.WriteString("- If open_app returns {\"ok\":true}, treat the app launch as complete unless the user requested additional in-app actions.")
 		return builder.String()
 	}
 	builder.WriteString("- connected: false\n")
-	builder.WriteString("- The phone companion app is not connected. Do not assume open_app, clipboard, or calendar tools can control the phone; use screenshot plus HID/touch fallback for phone UI tasks, and tell the user when calendar/clipboard cannot be completed without the companion app.")
+	builder.WriteString("- The phone companion app is not connected. Do not assume open_app, clipboard, calendar, contacts, or notification tools can control the phone; use screenshot plus HID/touch fallback for phone UI tasks, and tell the user when calendar/clipboard/contacts/notification actions cannot be completed without the companion app.")
 	return builder.String()
 }
