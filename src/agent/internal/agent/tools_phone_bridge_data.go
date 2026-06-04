@@ -328,9 +328,13 @@ func (t *ContactsTool) Call(ctx context.Context, input string) (string, error) {
 }
 
 func (t *ContactsTool) query(ctx context.Context, args contactsArgs) (string, error) {
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 20
+	}
 	payload, _ := json.Marshal(map[string]interface{}{
 		"query": args.Query,
-		"limit": args.Limit,
+		"limit": limit,
 	})
 	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
 		ID:        nextBridgeCmdID("contacts_query"),
