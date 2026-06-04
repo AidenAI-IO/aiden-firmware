@@ -10,6 +10,7 @@ Usage:
     --target-commitish SHA \
     --asset-glob 'path/to/assets/*' \
     [--required-assets 'FILE ...'] \
+    [--prerelease] \
     [--retry-count N] \
     [--retry-delay-seconds N]
 EOF
@@ -31,6 +32,7 @@ release_name=""
 target_commitish=""
 asset_glob=""
 required_assets=""
+prerelease="false"
 retry_count=5
 retry_delay_seconds=20
 
@@ -55,6 +57,10 @@ while [ "$#" -gt 0 ]; do
     --required-assets)
       required_assets="${2:-}"
       shift 2
+      ;;
+    --prerelease)
+      prerelease="true"
+      shift 1
       ;;
     --retry-count)
       retry_count="${2:-}"
@@ -240,12 +246,20 @@ ensure_release() {
   while true; do
     err_file="$(mktemp "$tmp_base/github-release.XXXXXX")"
     log "release draft creation $tag_name attempt $attempt/$retry_count"
-    if gh release create "$tag_name" \
-      --draft \
-      --title "$release_name" \
-      --target "$target_commitish" \
-      --notes "$release_notes" \
-      2> >(tee "$err_file" >&2); then
+
+    local create_args=(
+      "$tag_name"
+      --draft
+      --title "$release_name"
+      --target "$target_commitish"
+      --notes "$release_notes"
+    )
+
+    if [ "$prerelease" = "true" ]; then
+      create_args+=(--prerelease)
+    fi
+
+    if gh release create "${create_args[@]}" 2> >(tee "$err_file" >&2); then
       rm -f "$err_file"
       return 0
     fi
