@@ -182,4 +182,3 @@ go test ./internal/ota -v
 
 - 详细指南：[ota-external-developers.md](ota-external-developers.md)
 - 快速示例：[ota-quick-examples.md](ota-quick-examples.md)
-- 实现计划：[../.plan/open-ota-sources.md](../.plan/open-ota-sources.md)

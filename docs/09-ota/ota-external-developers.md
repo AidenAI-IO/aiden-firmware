@@ -272,7 +272,10 @@ Configure devices to only accept specific channels:
 
 ### Check OTA logs
 ```bash
-tail -f /var/log/ota/ota.log
+# OTA daemon logs to stderr, captured by the init system
+# On systems using busybox init, check system logs:
+dmesg | grep "ota:"
+# Or check the init system's log if available
 ```
 
 ### Verify manifest signature manually
@@ -292,9 +295,9 @@ ota check-now --manifest-url URL --public-key KEY --dry-run
 - Manifest was modified after signing
 - Private key doesn't match public key
 
-**"manifest channel mismatch"**
-- Device expects different channel
-- Solution: Match channel in device config or use `--channel` parameter
+**"manifest channel mismatch"** or channel validation errors
+- Device config expects a different channel than what's in the manifest
+- Solution: Update device config.json to match the manifest's channel, or use a different manifest
 
 **"missing required release asset"**
 - Using GitHub Release without `--base-url`
@@ -350,6 +353,6 @@ echo "  ota check-now --manifest-url $BASE_URL/manifest.json --public-key /path/
 ## Support
 
 For issues or questions:
-- Check logs in `/var/log/ota/ota.log`
+- Check OTA logs via `dmesg | grep "ota:"` (logs to stderr)
 - Use `--dry-run` for testing
 - Join community discussions
