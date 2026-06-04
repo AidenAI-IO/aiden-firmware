@@ -156,8 +156,8 @@ ota check-now --manifest-url http://192.168.1.100:8000/manifest.json \
 4. 所有现有安全检查保持不变
 
 **新增的灵活性**：
-- 允许 HTTP（用于本地测试，会记录警告）
-- 推荐生产环境使用 HTTPS
+- 允许 HTTP（仅测试环境建议，生产环境必须使用 HTTPS）
+- URL 验证确保使用 HTTP 或 HTTPS 协议
 
 ## 测试验证
 
@@ -180,6 +180,6 @@ go test ./internal/ota -v
 
 ## 参考文档
 
-- 详细指南：[docs/ota-external-developers.md](docs/ota-external-developers.md)
-- 快速示例：[docs/ota-quick-examples.md](docs/ota-quick-examples.md)
-- 实现计划：[.plan/open-ota-sources.md](.plan/open-ota-sources.md)
+- 详细指南：[ota-external-developers.md](ota-external-developers.md)
+- 快速示例：[ota-quick-examples.md](ota-quick-examples.md)
+- 实现计划：[../.plan/open-ota-sources.md](../.plan/open-ota-sources.md)

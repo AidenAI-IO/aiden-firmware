@@ -78,6 +78,8 @@ while [ "$#" -gt 0 ]; do
     --base-url)
       [ "$#" -ge 2 ] || die "--base-url requires a value"
       base_url="$2"
+      [[ "$base_url" =~ ^https?:// ]] || die "--base-url must start with http:// or https://"
+      [[ "$base_url" =~ [[:space:]] ]] && die "--base-url must not contain whitespace"
       shift 2
       ;;
     *)

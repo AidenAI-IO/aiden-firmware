@@ -10,9 +10,11 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type Manifest struct {
@@ -148,10 +150,17 @@ func validateManifestAsset(field string, asset ManifestAsset, expectedName strin
 		return fmt.Errorf("%s name %q, want %q", field, asset.Name, expectedName)
 	}
 	if asset.URL != "" {
-		if !strings.HasPrefix(asset.URL, "http://") && !strings.HasPrefix(asset.URL, "https://") {
+		parsed, err := url.ParseRequestURI(asset.URL)
+		if err != nil {
+			return fmt.Errorf("%s has malformed URL: %w", field, err)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
 			return fmt.Errorf("%s has invalid URL scheme (must be http or https): %q", field, asset.URL)
 		}
-		if strings.Contains(asset.URL, " ") {
+		if parsed.Host == "" {
+			return fmt.Errorf("%s URL missing host: %q", field, asset.URL)
+		}
+		if strings.IndexFunc(asset.URL, unicode.IsSpace) != -1 {
 			return fmt.Errorf("%s URL contains whitespace: %q", field, asset.URL)
 		}
 	}

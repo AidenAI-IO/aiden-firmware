@@ -225,8 +225,12 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 	token := u.githubToken()
 
 	if u.config.ManifestURL != "" {
-		u.logf("ota manifest: downloading from direct URL %s", u.config.ManifestURL)
-		manifestBytes, err = u.fetchBytesWithTokenLimit(ctx, u.config.ManifestURL, token, MaxRemoteManifestBytes)
+		u.logf("ota manifest: downloading from direct URL %s", sanitizeURLForLog(u.config.ManifestURL))
+		directToken := ""
+		if isGitHubURL(u.config.ManifestURL) {
+			directToken = token
+		}
+		manifestBytes, err = u.fetchBytesWithTokenLimit(ctx, u.config.ManifestURL, directToken, MaxRemoteManifestBytes)
 		if err != nil {
 			u.recordError("manifest", err)
 			return UpdateResult{}, err
@@ -300,9 +304,13 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 		var assetURL string
+		var assetToken string
 		if asset.URL != "" {
 			assetURL = asset.URL
 			u.logf("ota asset: %s using direct URL from manifest", asset.Name)
+			if isGitHubURL(assetURL) {
+				assetToken = token
+			}
 		} else {
 			var err error
 			assetURL, err = requiredAssetURL(assetsByName, asset.Name)
@@ -311,14 +319,15 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 				return UpdateResult{}, err
 			}
 			u.logf("ota asset: %s using URL from release API", asset.Name)
+			assetToken = token
 		}
 		dst := filepath.Join(u.config.DownloadDir, asset.Name)
 		if err := os.MkdirAll(u.config.DownloadDir, 0o755); err != nil {
 			u.recordError("download", err)
 			return UpdateResult{}, err
 		}
-		u.logf("ota download: %s start size=%s url=%s dst=%s", asset.Name, formatBytes(asset.Size), assetURL, dst)
-		if err := u.downloadFileWithToken(ctx, assetURL, dst, asset.Size, token); err != nil {
+		u.logf("ota download: %s start size=%s url=%s dst=%s", asset.Name, formatBytes(asset.Size), sanitizeURLForLog(assetURL), dst)
+		if err := u.downloadFileWithToken(ctx, assetURL, dst, asset.Size, assetToken); err != nil {
 			u.recordError("download", err)
 			return UpdateResult{}, err
 		}
@@ -695,6 +704,25 @@ func releaseManifestChannel(channel string) string {
 		return "stable"
 	}
 	return channel
+}
+
+func sanitizeURLForLog(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "<malformed-url>"
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+func isGitHubURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Host)
+	return host == "api.github.com" || host == "github.com" || strings.HasSuffix(host, ".github.com")
 }
 
 func (u *Updater) validateAssetFitsPartition(partName string, target Slot, asset ManifestAsset) error {
