@@ -207,7 +207,11 @@ func (t *CalendarTool) create(ctx context.Context, args calendarArgs) (string, e
 		EventID string `json:"event_id"`
 	}
 	if len(resp.Data) > 0 {
-		_ = json.Unmarshal(resp.Data, &data)
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			result["ok"] = false
+			result["error"] = fmt.Sprintf("decode calendar data: %v", err)
+			return jsonString(result), nil
+		}
 	}
 	result["event_id"] = data.EventID
 	return jsonString(result), nil

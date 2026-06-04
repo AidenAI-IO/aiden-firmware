@@ -179,8 +179,8 @@ App 应每隔 10-15 秒发送一次心跳消息 (id 为 `"heartbeat"` 或 `"ping
 
 **字段说明**:
 - `title` (必需): 事件标题
-- `start` (必需): 开始时间 (RFC3339 格式，带时区)
-- `end` (可选): 结束时间，未提供时默认 start + 1 小时
+- `start_at` (必需): 开始时间 (RFC3339 格式，带时区)
+- `end_at` (可选): 结束时间，未提供时默认 start_at + 1 小时
 - `all_day` (可选): 是否全天事件，默认 false
 - `location` (可选): 地点
 - `notes` (可选): 备注
@@ -221,7 +221,7 @@ App 应每隔 10-15 秒发送一次心跳消息 (id 为 `"heartbeat"` 或 `"ping
 }
 ```
 
-**iOS 实现**: `EKEventStore.events(matching:)` 查询 `start` 到 `end` 范围。  
+**iOS 实现**: `EKEventStore.events(matching:)` 查询 `start_at` 到 `end_at` 范围。  
 **Android 实现**: 查询 `CalendarContract.Instances` 表，需要 `READ_CALENDAR` 权限。
 
 **响应**:

@@ -12,6 +12,15 @@ import (
 	"nhooyr.io/websocket"
 )
 
+const (
+	// heartbeatTimeout matches the protocol contract: a connection that goes
+	// this long without a heartbeat is considered dead. The app sends one every
+	// 10-15s, so 60s tolerates a few missed beats before we tear down.
+	heartbeatTimeout = 60 * time.Second
+	// heartbeatCheckInterval is how often the monitor re-checks liveness.
+	heartbeatCheckInterval = 15 * time.Second
+)
+
 type BridgeCommand struct {
 	ID              string          `json:"id"`
 	Type            string          `json:"type"`
@@ -60,9 +69,12 @@ func NewPhoneBridge(logger *Logger) *PhoneBridge {
 }
 
 func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true,
-	})
+	// Leave origin verification on (the library default): a request with an
+	// empty Origin header — i.e. the native companion app — is accepted, while
+	// a cross-origin browser handshake is rejected. This blocks cross-site
+	// WebSocket hijacking, where a malicious page would otherwise connect and
+	// impersonate the app by sending BridgeCommandResponse messages.
+	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		if pb.logger != nil {
 			pb.logger.Error("phone-bridge: websocket accept failed: %v", err)
@@ -91,7 +103,35 @@ func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		pb.logger.Info("phone-bridge: client connected (platform=%s)", platform)
 	}
 
+	go pb.monitorHeartbeat(conn, done)
 	pb.readLoop(conn, done)
+}
+
+// monitorHeartbeat tears down a connection that stops sending heartbeats. The
+// readLoop's blocking conn.Read never returns on a half-open socket, so without
+// this the bridge would keep reporting connected:true while every command
+// silently times out. Closing the conn here unblocks readLoop, which performs
+// the actual cleanup in its deferred handler.
+func (pb *PhoneBridge) monitorHeartbeat(conn *websocket.Conn, done chan struct{}) {
+	ticker := time.NewTicker(heartbeatCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			pb.mu.Lock()
+			stale := pb.conn == conn && time.Since(pb.lastHeartbeatAt) > heartbeatTimeout
+			pb.mu.Unlock()
+			if stale {
+				if pb.logger != nil {
+					pb.logger.Error("phone-bridge: heartbeat timeout, closing connection")
+				}
+				conn.Close(websocket.StatusGoingAway, "heartbeat timeout")
+				return
+			}
+		}
+	}
 }
 
 func (pb *PhoneBridge) readLoop(conn *websocket.Conn, done chan struct{}) {
@@ -156,10 +196,17 @@ func (pb *PhoneBridge) readLoop(conn *websocket.Conn, done chan struct{}) {
 }
 
 func (pb *PhoneBridge) SendCommand(ctx context.Context, cmd BridgeCommand) (BridgeCommandResponse, error) {
+	if cmd.ID == "" {
+		return BridgeCommandResponse{}, fmt.Errorf("command ID must not be empty")
+	}
 	pb.mu.Lock()
 	if !pb.connected || pb.conn == nil {
 		pb.mu.Unlock()
 		return BridgeCommandResponse{}, fmt.Errorf("phone bridge not connected")
+	}
+	if _, exists := pb.pendingCmds[cmd.ID]; exists {
+		pb.mu.Unlock()
+		return BridgeCommandResponse{}, fmt.Errorf("duplicate command ID %q already in flight", cmd.ID)
 	}
 	ch := make(chan BridgeCommandResponse, 1)
 	pb.pendingCmds[cmd.ID] = ch

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -319,12 +320,20 @@ func (s *Server) handleChatAsync(
 		s.logger.Info("Chat request (async): %s request_id=%s attachments=%d", inputText, requestID, len(runAttachments))
 	}
 
-	// Create a pending result slot for this request
+	// Create a pending result slot for this request. Reject a request_id that
+	// already has an active slot rather than overwriting it — otherwise the
+	// in-flight run's poller loses its result stream and the two goroutines can
+	// delete each other's state on exit.
 	pending := &chatPendingResult{
 		messages: make([]Message, 0),
 		history:  []Message{userMsg},
 	}
 	s.pendingResultsMu.Lock()
+	if _, exists := s.pendingResults[requestID]; exists {
+		s.pendingResultsMu.Unlock()
+		http.Error(w, "request_id already in use", http.StatusConflict)
+		return
+	}
 	s.pendingResults[requestID] = pending
 	s.pendingResultsMu.Unlock()
 
@@ -474,7 +483,12 @@ func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
 
 	offset := 0
 	if offStr := r.URL.Query().Get("offset"); offStr != "" {
-		fmt.Sscanf(offStr, "%d", &offset)
+		n, err := strconv.Atoi(offStr)
+		if err != nil || n < 0 {
+			http.Error(w, "invalid offset", http.StatusBadRequest)
+			return
+		}
+		offset = n
 	}
 
 	s.pendingResultsMu.Lock()
