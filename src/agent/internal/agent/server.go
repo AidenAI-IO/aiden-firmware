@@ -651,7 +651,7 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 	s.recordMu.Lock()
 	if s.webRecording != nil {
 		s.recordMu.Unlock()
-		if err := s.endWebRecording(recording); err != nil && s.logger != nil {
+		if err := s.endStaleWebRecording(recording); err != nil && s.logger != nil {
 			s.logger.Warn("Orphaned web audio recording cleanup failed: %v", err)
 		}
 		http.Error(w, "audio recording is already active", http.StatusConflict)
@@ -2813,7 +2813,7 @@ const webUI = `<!DOCTYPE html>
 
             const mode = recorderState.mode;
             recorderState.isStopping = true;
-            updateRecordButton();
+            setComposerState(loadingDiv.classList.contains('active'));
 
             try {
                 if (mode === 'server') {
@@ -2851,7 +2851,7 @@ const webUI = `<!DOCTYPE html>
             } finally {
                 recorderState.isRecording = false;
                 recorderState.isStopping = false;
-                updateRecordButton();
+                setComposerState(loadingDiv.classList.contains('active'));
             }
         }
 
