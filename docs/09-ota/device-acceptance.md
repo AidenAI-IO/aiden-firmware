@@ -5,7 +5,7 @@
 ## 前置条件
 
 - 生产镜像使用生产 Ed25519 public key 构建。
-- GitHub Release 包含 `manifest.json`、`boot_a.img`、`boot_b.img`、`oem_a.img`、`oem_b.img`、`rootfs_a.img`、`rootfs_b.img` 和 `update.img`。
+- GitHub Release 包含 `manifest.json`、`boot_a.img`、`boot_b.img`、`oem.img`、`rootfs.img`、`userdata.img` 和 `update.img`（自 PR #112 起使用中性资源）。
 - 发布版 `update.img` 已内置 `/userdata/ota/config.json`。
 - 有 UART 时建议同时记录 SPL rollback 日志。
 
@@ -32,7 +32,7 @@ mount | grep ' /oem '
 
 - factory boot 在 slot A。
 - `/proc/cmdline` 包含 `aiden.slot_suffix=_a` 和 `root=PARTLABEL=rootfs_a`。
-- `/oem` 挂载自 `oem_a`。
+- `/oem` 挂载自 `/dev/block/by-name/oem_a`。
 - `misc` metadata 能从 byte offset `2048` 正常解析，slot A successful。
 - `/userdata/ota/config.json` 存在，`ota status` 不报 missing factory baseline。
 
@@ -57,7 +57,7 @@ mount | grep ' /oem '
 期望：
 
 - `/proc/cmdline` 包含 `aiden.slot_suffix=_b` 和 `root=PARTLABEL=rootfs_b`。
-- `/oem` 挂载自 `oem_b`。
+- `/oem` 挂载自 `/dev/block/by-name/oem_b`。
 - slot B 在 mark successful 前有 remaining tries。
 
 ## 3. Mark successful

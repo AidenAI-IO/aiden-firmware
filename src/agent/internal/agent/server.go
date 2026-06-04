@@ -2156,7 +2156,7 @@ const webUI = `<!DOCTYPE html>
         toolSelectEl.addEventListener('change', syncSelectedTool);
         skillSelectEl.addEventListener('change', syncSelectedSkill);
         inputEl.addEventListener('keydown', function(event) {
-            if (event.key === 'Enter' && !event.shiftKey) {
+            if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
                 event.preventDefault();
                 sendMessage();
             }

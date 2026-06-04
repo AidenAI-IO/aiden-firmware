@@ -34,7 +34,7 @@ OTA 由三层配合完成：`pico-sdk` 生成 A/B 镜像和 factory `misc.img`�
 ## 更新流程
 
 1. `ota` 读取 `/userdata/ota/config.json` 和 `/oem/etc/ota_pubkey.pem`。
-2. 按配置查询 GitHub Release。`stable` channel 使用 latest release，`tag:<name>` 使用指定 tag。
+2. 获取 manifest：配置了 `manifest_url` 时直接拉取该 URL；否则查询 GitHub Release `releases/latest` 端点（即 `DefaultReleaseURL`，可由 config 的 release URL 覆盖），从 release assets 里取 `manifest.json`。
 3. 下载 `manifest.json`，删除 `signature.value` 后做 canonical JSON Ed25519 验签。
 4. 拒绝旧 `build_time` 或同 build time 不同 version 的 downgrade。
 5. 选择 inactive slot，解析 manifest 中对应 slot 的 asset。
@@ -76,14 +76,21 @@ Manifest 中 `parts[].name` 只能是 `boot`、`oem`、`rootfs`。每个 part �
 
 `config.json` 至少包含：
 
-- `repo`
-- `channel`
-- `factory_version`
-- `factory_build_time`
-- `factory_partition_hashes.a.boot|oem|rootfs`
-- `factory_partition_hashes.b.boot|oem|rootfs`
+- `factory_version` - 首刷版本号，用于防止降级和选择性更新验证
+- `factory_build_time` - 首刷构建时间
+- `factory_partition_hashes.a.boot|oem|rootfs` - slot A 各分区的 SHA256
+- `factory_partition_hashes.b.boot|oem|rootfs` - slot B 各分区的 SHA256
+
+可选配置字段：
+
+- `manifest_url` - 直接指定 manifest URL（跳过 GitHub Release API）
+- `public_key_path` - 覆盖默认公钥路径（默认 `/oem/etc/ota_pubkey.pem`）
+- `interval_seconds` - OTA 检查间隔（默认 3600 秒）
+- `github_token_path` - GitHub token 文件路径（私有仓库需要）
 
 Factory baseline 必须 slot-aware，因为 `boot_a.img` 和 `boot_b.img` hash 不同。缺失 baseline 时 OTA 初始化必须失败，不应猜测当前分区版本。
+
+注：`generate_ota_device_config.sh` 生成的 config.json 还包含 `repo` 和 `channel` 字段，但这些字段仅用于人类可读性，不被 OTA 代码读取。实际的 channel 验证来自 manifest 本身。
 
 ## 私有仓库 token
 

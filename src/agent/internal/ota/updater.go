@@ -23,7 +23,7 @@ import (
 const (
 	DefaultOTAConfigPath             = "/userdata/ota/config.json"
 	DefaultOTAStateDir               = "/userdata/ota"
-	DefaultGitHubAPIBase             = "https://api.github.com"
+	DefaultReleaseURL                = "https://api.github.com/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
 	MaxRemoteManifestBytes           = 1 << 20
 	DefaultHTTPRequestLimit          = 30 * time.Minute
 	DefaultHTTPResponseHeaderTimeout = 30 * time.Second
@@ -35,10 +35,8 @@ type UpdaterConfig struct {
 	DownloadDir            string                       `json:"download_dir,omitempty"`
 	MiscPath               string                       `json:"misc_path,omitempty"`
 	BlockDir               string                       `json:"block_dir,omitempty"`
-	Repo                   string                       `json:"repo,omitempty"`
-	Channel                string                       `json:"channel,omitempty"`
-	APIBase                string                       `json:"api_base,omitempty"`
-	ManifestAsset          string                       `json:"manifest_asset,omitempty"`
+	ManifestURL            string                       `json:"manifest_url,omitempty"`
+	ReleaseURL             string                       `json:"-"` // Test override for default release URL
 	PublicKeyPath          string                       `json:"public_key_path,omitempty"`
 	PublicKey              ed25519.PublicKey            `json:"-"`
 	FactoryVersion         string                       `json:"factory_version,omitempty"`
@@ -114,12 +112,6 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 	if config.BlockDir == "" {
 		config.BlockDir = "/dev/block/by-name"
 	}
-	if config.APIBase == "" {
-		config.APIBase = DefaultGitHubAPIBase
-	}
-	if config.ManifestAsset == "" {
-		config.ManifestAsset = "manifest.json"
-	}
 	if config.PublicKeyPath == "" {
 		config.PublicKeyPath = "/oem/etc/ota_pubkey.pem"
 	}
@@ -177,7 +169,7 @@ func NewUpdater(config UpdaterConfig, reboot func() error) (*Updater, error) {
 }
 
 func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
-	u.logf("ota check: start repo=%s channel=%s", logValue(u.config.Repo, "<direct-api>"), logValue(u.config.Channel, "stable"))
+	u.logf("ota check: start")
 	if err := u.ProcessPendingHealth(ctx); err != nil {
 		u.recordError("health", err)
 		return UpdateResult{}, err
@@ -218,29 +210,45 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 		}
 	}
 	u.logf("ota check: active_slot=%s target_slot=%s", slotLogName(active), slotLogName(target))
-	releaseURL, err := u.releaseURL()
-	if err != nil {
-		u.recordError("release", err)
-		return UpdateResult{}, err
-	}
+
+	var assetsByName map[string]string
+	var manifestBytes []byte
 	token := u.githubToken()
-	u.logf("ota release: fetching %s", releaseURL)
-	assetsByName, err := u.fetchLatestReleaseAssets(ctx, releaseURL, token)
-	if err != nil {
-		u.recordError("release", err)
-		return UpdateResult{}, err
-	}
-	u.logf("ota release: found %d assets", len(assetsByName))
-	manifestURL, err := requiredAssetURL(assetsByName, u.config.ManifestAsset)
-	if err != nil {
-		u.recordError("manifest", err)
-		return UpdateResult{}, err
-	}
-	u.logf("ota manifest: downloading %s from %s", u.config.ManifestAsset, manifestURL)
-	manifestBytes, err := u.fetchBytesWithTokenLimit(ctx, manifestURL, token, MaxRemoteManifestBytes)
-	if err != nil {
-		u.recordError("manifest", err)
-		return UpdateResult{}, err
+
+	if u.config.ManifestURL != "" {
+		u.logf("ota manifest: downloading from direct URL %s", sanitizeURLForLog(u.config.ManifestURL))
+		directToken := ""
+		if isGitHubURL(u.config.ManifestURL) {
+			directToken = token
+		}
+		manifestBytes, err = u.fetchBytesWithTokenLimit(ctx, u.config.ManifestURL, directToken, MaxRemoteManifestBytes)
+		if err != nil {
+			u.recordError("manifest", err)
+			return UpdateResult{}, err
+		}
+	} else {
+		releaseURL := u.config.ReleaseURL
+		if releaseURL == "" {
+			releaseURL = DefaultReleaseURL
+		}
+		u.logf("ota release: fetching %s", releaseURL)
+		assetsByName, err = u.fetchLatestReleaseAssets(ctx, releaseURL, token)
+		if err != nil {
+			u.recordError("release", err)
+			return UpdateResult{}, err
+		}
+		u.logf("ota release: found %d assets", len(assetsByName))
+		manifestURL, err := requiredAssetURL(assetsByName, "manifest.json")
+		if err != nil {
+			u.recordError("manifest", err)
+			return UpdateResult{}, err
+		}
+		u.logf("ota manifest: downloading manifest.json from %s", manifestURL)
+		manifestBytes, err = u.fetchBytesWithTokenLimit(ctx, manifestURL, token, MaxRemoteManifestBytes)
+		if err != nil {
+			u.recordError("manifest", err)
+			return UpdateResult{}, err
+		}
 	}
 	publicKey, err := u.publicKey()
 	if err != nil {
@@ -253,12 +261,6 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 		return UpdateResult{}, err
 	}
 	u.logf("ota manifest: verified version=%s channel=%s build_time=%s parts=%d", manifest.Version, logValue(manifest.Channel, "<unset>"), manifest.BuildTime, len(manifest.Parts))
-	manifestChannel := releaseManifestChannel(u.config.Channel)
-	if manifest.Channel != "" && manifestChannel != "" && manifest.Channel != manifestChannel {
-		err := fmt.Errorf("manifest channel %q, want %q", manifest.Channel, manifestChannel)
-		u.recordError("manifest", err)
-		return UpdateResult{}, err
-	}
 	if err := state.RejectDowngrade(manifest); err != nil {
 		u.recordError("policy", err)
 		return UpdateResult{}, err
@@ -285,18 +287,42 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 			u.recordError("asset", err)
 			return UpdateResult{}, err
 		}
-		assetURL, err := requiredAssetURL(assetsByName, asset.Name)
-		if err != nil {
-			u.recordError("asset", err)
-			return UpdateResult{}, err
+		var assetURL string
+		var assetToken string
+		if asset.URL != "" {
+			assetURL = asset.URL
+			u.logf("ota asset: %s using direct URL from manifest", asset.Name)
+			if isGitHubURL(assetURL) {
+				assetToken = token
+			}
+		} else if u.config.ManifestURL != "" {
+			var err error
+			assetURL, err = deriveAssetURL(u.config.ManifestURL, asset.Name)
+			if err != nil {
+				u.recordError("asset", err)
+				return UpdateResult{}, err
+			}
+			u.logf("ota asset: %s using URL derived from manifest URL", asset.Name)
+			if isGitHubURL(assetURL) {
+				assetToken = token
+			}
+		} else {
+			var err error
+			assetURL, err = requiredAssetURL(assetsByName, asset.Name)
+			if err != nil {
+				u.recordError("asset", err)
+				return UpdateResult{}, err
+			}
+			u.logf("ota asset: %s using URL from release API", asset.Name)
+			assetToken = token
 		}
 		dst := filepath.Join(u.config.DownloadDir, asset.Name)
 		if err := os.MkdirAll(u.config.DownloadDir, 0o755); err != nil {
 			u.recordError("download", err)
 			return UpdateResult{}, err
 		}
-		u.logf("ota download: %s start size=%s url=%s dst=%s", asset.Name, formatBytes(asset.Size), assetURL, dst)
-		if err := u.downloadFileWithToken(ctx, assetURL, dst, asset.Size, token); err != nil {
+		u.logf("ota download: %s start size=%s url=%s dst=%s", asset.Name, formatBytes(asset.Size), sanitizeURLForLog(assetURL), dst)
+		if err := u.downloadFileWithToken(ctx, assetURL, dst, asset.Size, assetToken); err != nil {
 			u.recordError("download", err)
 			return UpdateResult{}, err
 		}
@@ -649,30 +675,46 @@ func (u *Updater) publicKey() (ed25519.PublicKey, error) {
 	return ParseEd25519PublicKeyPEM(data)
 }
 
-func (u *Updater) releaseURL() (string, error) {
-	if u.config.Repo == "" {
-		return u.config.APIBase, nil
+func sanitizeURLForLog(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "<malformed-url>"
 	}
-	base := strings.TrimRight(u.config.APIBase, "/")
-	if _, err := url.ParseRequestURI(base); err != nil {
-		return "", err
-	}
-	channel := strings.TrimSpace(u.config.Channel)
-	if channel == "" || channel == "latest" || channel == "stable" {
-		return base + "/repos/" + strings.Trim(u.config.Repo, "/") + "/releases/latest", nil
-	}
-	if tag, ok := strings.CutPrefix(channel, "tag:"); ok && tag != "" {
-		return base + "/repos/" + strings.Trim(u.config.Repo, "/") + "/releases/tags/" + url.PathEscape(tag), nil
-	}
-	return "", fmt.Errorf("unsupported release channel %q: use stable, latest, or tag:<name>", u.config.Channel)
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
 }
 
-func releaseManifestChannel(channel string) string {
-	channel = strings.TrimSpace(channel)
-	if channel == "" || channel == "latest" || channel == "stable" || strings.HasPrefix(channel, "tag:") {
-		return "stable"
+func deriveAssetURL(manifestURL, assetName string) (string, error) {
+	parsed, err := url.Parse(manifestURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid manifest URL: %w", err)
 	}
-	return channel
+
+	// Extract directory from manifest path
+	// Example: /repos/owner/repo/releases/download/tag/manifest.json
+	//       -> /repos/owner/repo/releases/download/tag/
+	lastSlash := strings.LastIndex(parsed.Path, "/")
+	if lastSlash < 0 {
+		return "", fmt.Errorf("manifest URL has no directory component: %s", manifestURL)
+	}
+	baseDir := parsed.Path[:lastSlash+1]
+
+	// Construct asset URL by replacing manifest filename with asset name
+	parsed.Path = baseDir + assetName
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+
+	return parsed.String(), nil
+}
+
+func isGitHubURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Host)
+	return host == "api.github.com" || host == "github.com" || strings.HasSuffix(host, ".github.com")
 }
 
 func (u *Updater) validateAssetFitsPartition(partName string, target Slot, asset ManifestAsset) error {
