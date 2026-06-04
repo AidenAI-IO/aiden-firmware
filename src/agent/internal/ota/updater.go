@@ -39,6 +39,7 @@ type UpdaterConfig struct {
 	Channel                string                       `json:"channel,omitempty"`
 	APIBase                string                       `json:"api_base,omitempty"`
 	ManifestAsset          string                       `json:"manifest_asset,omitempty"`
+	ManifestURL            string                       `json:"manifest_url,omitempty"`
 	PublicKeyPath          string                       `json:"public_key_path,omitempty"`
 	PublicKey              ed25519.PublicKey            `json:"-"`
 	FactoryVersion         string                       `json:"factory_version,omitempty"`
@@ -218,29 +219,42 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 		}
 	}
 	u.logf("ota check: active_slot=%s target_slot=%s", slotLogName(active), slotLogName(target))
-	releaseURL, err := u.releaseURL()
-	if err != nil {
-		u.recordError("release", err)
-		return UpdateResult{}, err
-	}
+
+	var assetsByName map[string]string
+	var manifestBytes []byte
 	token := u.githubToken()
-	u.logf("ota release: fetching %s", releaseURL)
-	assetsByName, err := u.fetchLatestReleaseAssets(ctx, releaseURL, token)
-	if err != nil {
-		u.recordError("release", err)
-		return UpdateResult{}, err
-	}
-	u.logf("ota release: found %d assets", len(assetsByName))
-	manifestURL, err := requiredAssetURL(assetsByName, u.config.ManifestAsset)
-	if err != nil {
-		u.recordError("manifest", err)
-		return UpdateResult{}, err
-	}
-	u.logf("ota manifest: downloading %s from %s", u.config.ManifestAsset, manifestURL)
-	manifestBytes, err := u.fetchBytesWithTokenLimit(ctx, manifestURL, token, MaxRemoteManifestBytes)
-	if err != nil {
-		u.recordError("manifest", err)
-		return UpdateResult{}, err
+
+	if u.config.ManifestURL != "" {
+		u.logf("ota manifest: downloading from direct URL %s", u.config.ManifestURL)
+		manifestBytes, err = u.fetchBytesWithTokenLimit(ctx, u.config.ManifestURL, token, MaxRemoteManifestBytes)
+		if err != nil {
+			u.recordError("manifest", err)
+			return UpdateResult{}, err
+		}
+	} else {
+		releaseURL, err := u.releaseURL()
+		if err != nil {
+			u.recordError("release", err)
+			return UpdateResult{}, err
+		}
+		u.logf("ota release: fetching %s", releaseURL)
+		assetsByName, err = u.fetchLatestReleaseAssets(ctx, releaseURL, token)
+		if err != nil {
+			u.recordError("release", err)
+			return UpdateResult{}, err
+		}
+		u.logf("ota release: found %d assets", len(assetsByName))
+		manifestURL, err := requiredAssetURL(assetsByName, u.config.ManifestAsset)
+		if err != nil {
+			u.recordError("manifest", err)
+			return UpdateResult{}, err
+		}
+		u.logf("ota manifest: downloading %s from %s", u.config.ManifestAsset, manifestURL)
+		manifestBytes, err = u.fetchBytesWithTokenLimit(ctx, manifestURL, token, MaxRemoteManifestBytes)
+		if err != nil {
+			u.recordError("manifest", err)
+			return UpdateResult{}, err
+		}
 	}
 	publicKey, err := u.publicKey()
 	if err != nil {
@@ -285,10 +299,18 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 			u.recordError("asset", err)
 			return UpdateResult{}, err
 		}
-		assetURL, err := requiredAssetURL(assetsByName, asset.Name)
-		if err != nil {
-			u.recordError("asset", err)
-			return UpdateResult{}, err
+		var assetURL string
+		if asset.URL != "" {
+			assetURL = asset.URL
+			u.logf("ota asset: %s using direct URL from manifest", asset.Name)
+		} else {
+			var err error
+			assetURL, err = requiredAssetURL(assetsByName, asset.Name)
+			if err != nil {
+				u.recordError("asset", err)
+				return UpdateResult{}, err
+			}
+			u.logf("ota asset: %s using URL from release API", asset.Name)
 		}
 		dst := filepath.Join(u.config.DownloadDir, asset.Name)
 		if err := os.MkdirAll(u.config.DownloadDir, 0o755); err != nil {

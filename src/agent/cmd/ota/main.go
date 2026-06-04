@@ -128,6 +128,7 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	repo := fs.String("repo", "", "GitHub owner/repo")
 	channel := fs.String("channel", "", "release channel or tag")
 	apiBase := fs.String("api-base", "", "GitHub API base URL")
+	manifestURL := fs.String("manifest-url", "", "direct manifest URL (skips release API)")
 	publicKeyPath := fs.String("public-key", "", "Ed25519 public key PEM path")
 	dryRun := fs.Bool("dry-run", false, "download and verify without switching misc or rebooting")
 	testMode := fs.Bool("test", false, "use test-friendly short intervals")
@@ -163,6 +164,9 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	}
 	if *apiBase != "" {
 		config.APIBase = *apiBase
+	}
+	if *manifestURL != "" {
+		config.ManifestURL = *manifestURL
 	}
 	if *publicKeyPath != "" {
 		config.PublicKeyPath = *publicKeyPath
@@ -244,7 +248,7 @@ func flagIsBool(name string) bool {
 
 func flagTakesValue(name string) bool {
 	switch name {
-	case "config", "state-dir", "misc", "block-dir", "repo", "channel", "api-base", "public-key", "interval", "jitter", "health-timeout", "target-slot", "http-timeout", "switch-tries":
+	case "config", "state-dir", "misc", "block-dir", "repo", "channel", "api-base", "manifest-url", "public-key", "interval", "jitter", "health-timeout", "target-slot", "http-timeout", "switch-tries":
 		return true
 	default:
 		return false

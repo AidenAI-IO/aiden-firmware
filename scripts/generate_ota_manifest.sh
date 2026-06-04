@@ -16,6 +16,10 @@ Required options:
   --output        Output manifest path
   --help          Show this help
 
+Optional:
+  --base-url      Base URL for direct asset downloads (e.g. https://example.com/firmware/v1.0.0)
+                  If provided, full asset URLs will be embedded in the manifest
+
 Required images:
   boot_a.img and boot_b.img are always required.
   For oem/rootfs, either NAME.img or both NAME_a.img and NAME_b.img are required.
@@ -33,6 +37,7 @@ build_time=""
 sign_key=""
 image_dir=""
 output=""
+base_url=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -68,6 +73,11 @@ while [ "$#" -gt 0 ]; do
     --output)
       [ "$#" -ge 2 ] || die "--output requires a value"
       output="$2"
+      shift 2
+      ;;
+    --base-url)
+      [ "$#" -ge 2 ] || die "--base-url requires a value"
+      base_url="$2"
       shift 2
       ;;
     *)
@@ -120,11 +130,24 @@ asset_json() {
   local file="$1"
   local path="$image_dir/$file"
   [ -f "$path" ] || die "missing required image: $path"
-  jq -n \
-    --arg name "$file" \
-    --argjson size "$(file_size "$path")" \
-    --arg sha256 "$(file_sha256 "$path")" \
-    '{name:$name,size:$size,sha256:$sha256}'
+  local size sha256
+  size="$(file_size "$path")"
+  sha256="$(file_sha256 "$path")"
+  if [ -n "$base_url" ]; then
+    local url="${base_url%/}/$file"
+    jq -n \
+      --arg name "$file" \
+      --arg url "$url" \
+      --argjson size "$size" \
+      --arg sha256 "$sha256" \
+      '{name:$name,url:$url,size:$size,sha256:$sha256}'
+  else
+    jq -n \
+      --arg name "$file" \
+      --argjson size "$size" \
+      --arg sha256 "$sha256" \
+      '{name:$name,size:$size,sha256:$sha256}'
+  fi
 }
 
 part_json() {
