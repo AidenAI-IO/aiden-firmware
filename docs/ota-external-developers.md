@@ -61,8 +61,6 @@ ota check-now \
 
 ## Hosting Options
 
-## Hosting Options
-
 ### Option 1: GitHub Releases (Recommended)
 
 Most developers will use GitHub to build and host firmware.
@@ -108,8 +106,6 @@ ota check-now \
 - Automatic CI/CD with GitHub Actions  
 - Works with private repositories
 - No extra infrastructure needed
-
-### Option 2: Self-Hosted Server
 
 ### Option 2: Self-Hosted Server
 

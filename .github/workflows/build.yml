@@ -84,6 +84,8 @@ jobs:
 
     - name: Generate release name
       id: release_info
+      env:
+        GITHUB_REF_NAME: ${{ github.ref_name }}
       run: |
         COMMIT_HASH=$(git rev-parse --short HEAD)
         TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
@@ -91,10 +93,11 @@ jobs:
         RELEASE_NAME="${TIMESTAMP}-${COMMIT_HASH}"
 
         # Determine channel based on branch
-        if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+        if [ "$GITHUB_REF_NAME" = "main" ]; then
           CHANNEL="stable"
         else
-          BRANCH_NAME=$(echo "${{ github.ref }}" | sed 's/refs\/heads\///' | sed 's/\//-/g')
+          # Sanitize branch name: replace / with - and remove any unsafe characters
+          BRANCH_NAME=$(echo "$GITHUB_REF_NAME" | sed 's/\//-/g' | sed 's/[^a-zA-Z0-9._-]/-/g')
           CHANNEL="dev-${BRANCH_NAME}"
         fi
 
