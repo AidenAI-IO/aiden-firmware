@@ -36,7 +36,7 @@ if ! grep -q -- '--required-assets' "$WORKFLOW"; then
     exit 1
 fi
 
-for asset in boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img update.img manifest.json; do
+for asset in boot_a.img boot_b.img oem.img rootfs.img userdata.img update.img manifest.json; do
     if ! grep -q "$asset" "$WORKFLOW"; then
         echo "build workflow must require release asset: $asset" >&2
         exit 1
