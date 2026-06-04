@@ -311,6 +311,17 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 			if isGitHubURL(assetURL) {
 				assetToken = token
 			}
+		} else if u.config.ManifestURL != "" {
+			var err error
+			assetURL, err = deriveAssetURL(u.config.ManifestURL, asset.Name)
+			if err != nil {
+				u.recordError("asset", err)
+				return UpdateResult{}, err
+			}
+			u.logf("ota asset: %s using URL derived from manifest URL", asset.Name)
+			if isGitHubURL(assetURL) {
+				assetToken = token
+			}
 		} else {
 			var err error
 			assetURL, err = requiredAssetURL(assetsByName, asset.Name)
@@ -714,6 +725,29 @@ func sanitizeURLForLog(rawURL string) string {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String()
+}
+
+func deriveAssetURL(manifestURL, assetName string) (string, error) {
+	parsed, err := url.Parse(manifestURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid manifest URL: %w", err)
+	}
+
+	// Extract directory from manifest path
+	// Example: /repos/owner/repo/releases/download/tag/manifest.json
+	//       -> /repos/owner/repo/releases/download/tag/
+	lastSlash := strings.LastIndex(parsed.Path, "/")
+	if lastSlash < 0 {
+		return "", fmt.Errorf("manifest URL has no directory component: %s", manifestURL)
+	}
+	baseDir := parsed.Path[:lastSlash+1]
+
+	// Construct asset URL by replacing manifest filename with asset name
+	parsed.Path = baseDir + assetName
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+
+	return parsed.String(), nil
 }
 
 func isGitHubURL(rawURL string) bool {

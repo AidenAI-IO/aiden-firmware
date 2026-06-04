@@ -1232,3 +1232,117 @@ func writeMiscFile(path string, ab ABData) error {
 	defer f.Close()
 	return WriteABDataAt(f, ab)
 }
+
+func TestDeriveAssetURLFromManifestURL(t *testing.T) {
+	tests := []struct {
+		name        string
+		manifestURL string
+		assetName   string
+		want        string
+		wantErr     bool
+	}{
+		{
+			name:        "GitHub release download URL",
+			manifestURL: "https://github.com/owner/repo/releases/download/v1.2.3/manifest.json",
+			assetName:   "boot_a.img",
+			want:        "https://github.com/owner/repo/releases/download/v1.2.3/boot_a.img",
+			wantErr:     false,
+		},
+		{
+			name:        "Custom CDN with query params",
+			manifestURL: "https://cdn.example.com/firmware/v1.0.0/manifest.json?token=abc",
+			assetName:   "rootfs.img",
+			want:        "https://cdn.example.com/firmware/v1.0.0/rootfs.img",
+			wantErr:     false,
+		},
+		{
+			name:        "Nested path",
+			manifestURL: "https://example.com/releases/2024/06/manifest.json",
+			assetName:   "oem_b.img",
+			want:        "https://example.com/releases/2024/06/oem_b.img",
+			wantErr:     false,
+		},
+		{
+			name:        "URL with fragment",
+			manifestURL: "https://example.com/path/manifest.json#section",
+			assetName:   "boot_b.img",
+			want:        "https://example.com/path/boot_b.img",
+			wantErr:     false,
+		},
+		{
+			name:        "Malformed URL",
+			manifestURL: "://invalid",
+			assetName:   "boot_a.img",
+			want:        "",
+			wantErr:     true,
+		},
+		{
+			name:        "No directory component",
+			manifestURL: "https://example.com/manifest.json",
+			assetName:   "boot_a.img",
+			want:        "https://example.com/boot_a.img",
+			wantErr:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := deriveAssetURL(tt.manifestURL, tt.assetName)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("deriveAssetURL() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("deriveAssetURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUpdaterUsesManifestURLToDeriveAssetURLs(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	
+	// Create manifest without asset URLs (use slot-specific assets for oem)
+	manifest := env.signedManifest(map[string][]byte{
+		"boot_a.img": []byte("boot-a-v2"),
+		"boot_b.img": []byte("boot-b-v2"),
+		"oem_a.img":  []byte("oem-a-v2"),
+		"oem_b.img":  []byte("oem-b-v2"),
+		"rootfs.img": []byte("rootfs-v2"),
+	}, nil)
+
+	// Serve manifest and assets from same base URL
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases/20240604-abc123/manifest.json":
+			w.Write(manifest)
+		case "/releases/20240604-abc123/boot_b.img":
+			w.Write([]byte("boot-b-v2"))
+		case "/releases/20240604-abc123/oem_b.img":
+			w.Write([]byte("oem-b-v2"))
+		case "/releases/20240604-abc123/rootfs.img":
+			w.Write([]byte("rootfs-v2"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	// Use ManifestURL mode (no Repo/Channel)
+	env.config.Repo = ""
+	env.config.Channel = ""
+	env.config.ManifestURL = server.URL + "/releases/20240604-abc123/manifest.json"
+
+	result, err := env.updater().CheckOnce(context.Background())
+	if err != nil {
+		t.Fatalf("CheckOnce() error = %v", err)
+	}
+	if !result.Updated {
+		t.Fatalf("CheckOnce() Updated = false, want true")
+	}
+
+	// Verify assets were downloaded and written
+	assertFileContent(t, filepath.Join(env.blockDir, "boot_b"), "boot-b-v2")
+	assertFileContent(t, filepath.Join(env.blockDir, "oem_b"), "oem-b-v2")
+	assertFileContent(t, filepath.Join(env.blockDir, "rootfs_b"), "rootfs-v2")
+}
