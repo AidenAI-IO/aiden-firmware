@@ -23,7 +23,7 @@ import (
 const (
 	DefaultOTAConfigPath             = "/userdata/ota/config.json"
 	DefaultOTAStateDir               = "/userdata/ota"
-	DefaultGitHubAPIBase             = "https://api.github.com"
+	DefaultReleaseURL                = "https://api.github.com/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
 	MaxRemoteManifestBytes           = 1 << 20
 	DefaultHTTPRequestLimit          = 30 * time.Minute
 	DefaultHTTPResponseHeaderTimeout = 30 * time.Second
@@ -35,11 +35,8 @@ type UpdaterConfig struct {
 	DownloadDir            string                       `json:"download_dir,omitempty"`
 	MiscPath               string                       `json:"misc_path,omitempty"`
 	BlockDir               string                       `json:"block_dir,omitempty"`
-	Repo                   string                       `json:"repo,omitempty"`
-	Channel                string                       `json:"channel,omitempty"`
-	APIBase                string                       `json:"api_base,omitempty"`
-	ManifestAsset          string                       `json:"manifest_asset,omitempty"`
 	ManifestURL            string                       `json:"manifest_url,omitempty"`
+	ReleaseURL             string                       `json:"-"` // Test override for default release URL
 	PublicKeyPath          string                       `json:"public_key_path,omitempty"`
 	PublicKey              ed25519.PublicKey            `json:"-"`
 	FactoryVersion         string                       `json:"factory_version,omitempty"`
@@ -115,12 +112,6 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 	if config.BlockDir == "" {
 		config.BlockDir = "/dev/block/by-name"
 	}
-	if config.APIBase == "" {
-		config.APIBase = DefaultGitHubAPIBase
-	}
-	if config.ManifestAsset == "" {
-		config.ManifestAsset = "manifest.json"
-	}
 	if config.PublicKeyPath == "" {
 		config.PublicKeyPath = "/oem/etc/ota_pubkey.pem"
 	}
@@ -178,7 +169,7 @@ func NewUpdater(config UpdaterConfig, reboot func() error) (*Updater, error) {
 }
 
 func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
-	u.logf("ota check: start repo=%s channel=%s", logValue(u.config.Repo, "<direct-api>"), logValue(u.config.Channel, "stable"))
+	u.logf("ota check: start")
 	if err := u.ProcessPendingHealth(ctx); err != nil {
 		u.recordError("health", err)
 		return UpdateResult{}, err
@@ -236,10 +227,9 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 	} else {
-		releaseURL, err := u.releaseURL()
-		if err != nil {
-			u.recordError("release", err)
-			return UpdateResult{}, err
+		releaseURL := u.config.ReleaseURL
+		if releaseURL == "" {
+			releaseURL = DefaultReleaseURL
 		}
 		u.logf("ota release: fetching %s", releaseURL)
 		assetsByName, err = u.fetchLatestReleaseAssets(ctx, releaseURL, token)
@@ -248,12 +238,12 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 		u.logf("ota release: found %d assets", len(assetsByName))
-		manifestURL, err := requiredAssetURL(assetsByName, u.config.ManifestAsset)
+		manifestURL, err := requiredAssetURL(assetsByName, "manifest.json")
 		if err != nil {
 			u.recordError("manifest", err)
 			return UpdateResult{}, err
 		}
-		u.logf("ota manifest: downloading %s from %s", u.config.ManifestAsset, manifestURL)
+		u.logf("ota manifest: downloading manifest.json from %s", manifestURL)
 		manifestBytes, err = u.fetchBytesWithTokenLimit(ctx, manifestURL, token, MaxRemoteManifestBytes)
 		if err != nil {
 			u.recordError("manifest", err)
@@ -271,16 +261,6 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 		return UpdateResult{}, err
 	}
 	u.logf("ota manifest: verified version=%s channel=%s build_time=%s parts=%d", manifest.Version, logValue(manifest.Channel, "<unset>"), manifest.BuildTime, len(manifest.Parts))
-	// Channel matching only guards against picking the wrong release in Release API
-	// mode. With a direct manifest URL the target is already pinned, so skip the check.
-	if u.config.ManifestURL == "" {
-		manifestChannel := releaseManifestChannel(u.config.Channel)
-		if manifest.Channel != "" && manifestChannel != "" && manifest.Channel != manifestChannel {
-			err := fmt.Errorf("manifest channel %q, want %q", manifest.Channel, manifestChannel)
-			u.recordError("manifest", err)
-			return UpdateResult{}, err
-		}
-	}
 	if err := state.RejectDowngrade(manifest); err != nil {
 		u.recordError("policy", err)
 		return UpdateResult{}, err
@@ -693,32 +673,6 @@ func (u *Updater) publicKey() (ed25519.PublicKey, error) {
 		return nil, err
 	}
 	return ParseEd25519PublicKeyPEM(data)
-}
-
-func (u *Updater) releaseURL() (string, error) {
-	if u.config.Repo == "" {
-		return u.config.APIBase, nil
-	}
-	base := strings.TrimRight(u.config.APIBase, "/")
-	if _, err := url.ParseRequestURI(base); err != nil {
-		return "", err
-	}
-	channel := strings.TrimSpace(u.config.Channel)
-	if channel == "" || channel == "latest" || channel == "stable" {
-		return base + "/repos/" + strings.Trim(u.config.Repo, "/") + "/releases/latest", nil
-	}
-	if tag, ok := strings.CutPrefix(channel, "tag:"); ok && tag != "" {
-		return base + "/repos/" + strings.Trim(u.config.Repo, "/") + "/releases/tags/" + url.PathEscape(tag), nil
-	}
-	return "", fmt.Errorf("unsupported release channel %q: use stable, latest, or tag:<name>", u.config.Channel)
-}
-
-func releaseManifestChannel(channel string) string {
-	channel = strings.TrimSpace(channel)
-	if channel == "" || channel == "latest" || channel == "stable" || strings.HasPrefix(channel, "tag:") {
-		return "stable"
-	}
-	return channel
 }
 
 func sanitizeURLForLog(rawURL string) string {

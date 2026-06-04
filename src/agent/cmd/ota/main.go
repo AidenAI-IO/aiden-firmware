@@ -125,9 +125,6 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	stateDir := fs.String("state-dir", "", "OTA state directory")
 	miscPath := fs.String("misc", "", "misc partition path")
 	blockDir := fs.String("block-dir", "", "block device by-name directory")
-	repo := fs.String("repo", "", "GitHub owner/repo")
-	channel := fs.String("channel", "", "release channel or tag")
-	apiBase := fs.String("api-base", "", "GitHub API base URL")
 	manifestURL := fs.String("manifest-url", "", "direct manifest URL (skips release API)")
 	publicKeyPath := fs.String("public-key", "", "Ed25519 public key PEM path")
 	dryRun := fs.Bool("dry-run", false, "download and verify without switching misc or rebooting")
@@ -155,15 +152,6 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	}
 	if *blockDir != "" {
 		config.BlockDir = *blockDir
-	}
-	if *repo != "" {
-		config.Repo = *repo
-	}
-	if *channel != "" {
-		config.Channel = *channel
-	}
-	if *apiBase != "" {
-		config.APIBase = *apiBase
 	}
 	if *manifestURL != "" {
 		config.ManifestURL = *manifestURL
@@ -248,7 +236,7 @@ func flagIsBool(name string) bool {
 
 func flagTakesValue(name string) bool {
 	switch name {
-	case "config", "state-dir", "misc", "block-dir", "repo", "channel", "api-base", "manifest-url", "public-key", "interval", "jitter", "health-timeout", "target-slot", "http-timeout", "switch-tries":
+	case "config", "state-dir", "misc", "block-dir", "manifest-url", "public-key", "interval", "jitter", "health-timeout", "target-slot", "http-timeout", "switch-tries":
 		return true
 	default:
 		return false

@@ -45,11 +45,11 @@ func TestSplitCommandAndFlagsDefaultsToDaemon(t *testing.T) {
 }
 
 func TestSplitCommandAndFlagsConsumesFlagValuesBeforeCommand(t *testing.T) {
-	command, rest := splitCommandAndFlags([]string{"--channel", "status", "check-now"})
+	command, rest := splitCommandAndFlags([]string{"--manifest-url", "https://example.com/manifest.json", "check-now"})
 	if command != "check-now" {
 		t.Fatalf("command = %q, want check-now", command)
 	}
-	want := []string{"--channel", "status"}
+	want := []string{"--manifest-url", "https://example.com/manifest.json"}
 	if len(rest) != len(want) || rest[0] != want[0] || rest[1] != want[1] {
 		t.Fatalf("rest = %#v, want %#v", rest, want)
 	}
@@ -57,8 +57,8 @@ func TestSplitCommandAndFlagsConsumesFlagValuesBeforeCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseConfigFlags() error = %v", err)
 	}
-	if config.Channel != "status" {
-		t.Fatalf("channel = %q, want status", config.Channel)
+	if config.ManifestURL != "https://example.com/manifest.json" {
+		t.Fatalf("manifest_url = %q, want https://example.com/manifest.json", config.ManifestURL)
 	}
 }
 
