@@ -45,6 +45,7 @@ struct HIDToml {
     std::string keyboard_device;
     std::string mouse_device;
     std::string frame_socket;
+    std::string pointer_mode;
 };
 
 struct SearchToml {

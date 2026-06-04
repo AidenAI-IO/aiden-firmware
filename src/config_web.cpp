@@ -157,6 +157,14 @@ std::string trim_copy(const std::string& input) {
     return input.substr(start, end - start);
 }
 
+std::string normalize_pointer_mode(const std::string& value) {
+    std::string mode = trim_copy(value);
+    for (size_t i = 0; i < mode.size(); ++i) {
+        mode[i] = static_cast<char>(tolower(static_cast<unsigned char>(mode[i])));
+    }
+    return mode.empty() ? "absolute" : mode;
+}
+
 bool starts_with(const std::string& text, const std::string& prefix) {
     return text.compare(0, prefix.size(), prefix) == 0;
 }
@@ -733,6 +741,7 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.hid.keyboard_device = "/dev/hidg0";
     cfg.hid.mouse_device = "/dev/hidg1";
     cfg.hid.frame_socket = "/run/frame_service/frame_service.sock";
+    cfg.hid.pointer_mode = "absolute";
 
     cfg.search.provider = "duckduckgo";
 }
@@ -755,6 +764,9 @@ void load_current_agent_config(const Options& options,
         if (aiden::load_agent_toml(options.agent_config_path.c_str(), loaded, &err)) {
             if (loaded.search.provider.empty()) {
                 loaded.search.provider = "duckduckgo";
+            }
+            if (loaded.hid.pointer_mode.empty()) {
+                loaded.hid.pointer_mode = "absolute";
             }
             *config = loaded;
         } else if (load_error) {
@@ -828,6 +840,7 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddStringToObject(hid, "keyboard_device", config.hid.keyboard_device.c_str());
     cJSON_AddStringToObject(hid, "mouse_device", config.hid.mouse_device.c_str());
     cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
+    cJSON_AddStringToObject(hid, "pointer_mode", normalize_pointer_mode(config.hid.pointer_mode).c_str());
 
     cJSON* search = add_object(root, "search");
     cJSON_AddStringToObject(search, "provider", config.search.provider.c_str());
@@ -989,6 +1002,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->hid.keyboard_device, hid, "keyboard_device");
         set_json_str(&config->hid.mouse_device, hid, "mouse_device");
         set_json_str(&config->hid.frame_socket, hid, "frame_socket");
+        set_json_str(&config->hid.pointer_mode, hid, "pointer_mode");
     }
 
     cJSON* search = cJSON_GetObjectItem(root, "search");
@@ -1050,6 +1064,10 @@ std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
     }
     if (config.screenshot_prune_interval < 0) {
         return "screenshot_prune_interval must be >= 0";
+    }
+    std::string pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
+    if (pointer_mode != "absolute" && pointer_mode != "touchscreen") {
+        return "hid.pointer_mode must be absolute or touchscreen";
     }
     return "";
 }
@@ -1170,6 +1188,11 @@ void schedule_agent_restart() {
 
 void schedule_ota_restart() {
     schedule_init_script_restart(kOtaInitScript);
+}
+
+void schedule_poweroff() {
+    int rc = system("(PATH=/sbin:/bin:/usr/sbin:/usr/bin; sync; sleep 1; poweroff) >/dev/null 2>&1 &");
+    (void)rc;
 }
 
 CommandResult apply_wifi_config(const Options& options) {
@@ -1964,6 +1987,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     std::string ignore_error;
     load_current_agent_config(options, &config, &ignore_error);
     load_current_wifi_config(options, &wifi, &ignore_error);
+    std::string original_pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
 
     cJSON* config_json = cJSON_GetObjectItem(root, "config");
     if (json_is_object(config_json)) {
@@ -1989,6 +2013,8 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     }
 
     cJSON_Delete(root);
+    config.hid.pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
+    bool usbhid_restart_scheduled = original_pointer_mode != config.hid.pointer_mode;
 
     std::string save_error;
     if (!aiden::save_agent_toml(options.agent_config_path.c_str(), config, &save_error)) {
@@ -2000,12 +2026,21 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         return make_json_error(500, save_error);
     }
 
-    schedule_agent_restart();
+    bool agent_restart_scheduled = !usbhid_restart_scheduled;
+    if (agent_restart_scheduled) {
+        schedule_agent_restart();
+    }
 
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddStringToObject(response, "message", "config saved; agent restarting");
-    cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
+    cJSON_AddStringToObject(response, "message",
+                            usbhid_restart_scheduled
+                                ? "config saved; reboot required for usb hid pointer_mode"
+                                : "config saved; agent restarting");
+    cJSON_AddBoolToObject(response, "agent_restart_scheduled", agent_restart_scheduled ? 1 : 0);
+    cJSON_AddBoolToObject(response, "usbhid_restart_scheduled", 0);
+    cJSON_AddBoolToObject(response, "usbhid_restart_required", usbhid_restart_scheduled ? 1 : 0);
+    cJSON_AddBoolToObject(response, "reboot_required", usbhid_restart_scheduled ? 1 : 0);
     cJSON_AddBoolToObject(response, "ota_restart_scheduled", 0);
     cJSON_AddItemToObject(response, "config", config_to_json(config));
 
@@ -2026,6 +2061,16 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         cJSON_AddItemToObject(response, "wifi_status", wifi_status_to_json(query_wifi_status(options)));
     }
 
+    return make_json_ok(response);
+}
+
+ApiResponse handle_post_poweroff() {
+    schedule_poweroff();
+
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", 1);
+    cJSON_AddStringToObject(response, "message", "poweroff scheduled");
+    cJSON_AddBoolToObject(response, "poweroff_scheduled", 1);
     return make_json_ok(response);
 }
 
@@ -2421,6 +2466,16 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             }
             cJSON_AddItemToArray(results, r);
         }
+        cJSON* pointer_item = cJSON_GetObjectItem(values, "pointer_mode");
+        std::string pointer_mode = json_is_string(pointer_item) ? normalize_pointer_mode(pointer_item->valuestring) : "absolute";
+        cJSON* r = cJSON_CreateObject();
+        cJSON_AddStringToObject(r, "check", "pointer_mode");
+        bool valid = pointer_mode == "absolute" || pointer_mode == "touchscreen";
+        cJSON_AddBoolToObject(r, "passed", valid ? 1 : 0);
+        std::string detail = valid ? "effective mode: " + pointer_mode : "must be absolute or touchscreen";
+        cJSON_AddStringToObject(r, "detail", detail.c_str());
+        if (!valid) all_passed = false;
+        cJSON_AddItemToArray(results, r);
     } else if (section == "agent") {
         struct Check {
             const char* key;
@@ -2779,6 +2834,10 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "POST" && request.path == "/api/system/env") {
         return handle_post_system_env(options, request.body);
+    }
+
+    if (request.method == "POST" && request.path == "/api/poweroff") {
+        return handle_post_poweroff();
     }
 
     if (request.method == "POST" && request.path == "/api/wifi/scan") {
