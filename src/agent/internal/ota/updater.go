@@ -271,11 +271,15 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 		return UpdateResult{}, err
 	}
 	u.logf("ota manifest: verified version=%s channel=%s build_time=%s parts=%d", manifest.Version, logValue(manifest.Channel, "<unset>"), manifest.BuildTime, len(manifest.Parts))
-	manifestChannel := releaseManifestChannel(u.config.Channel)
-	if manifest.Channel != "" && manifestChannel != "" && manifest.Channel != manifestChannel {
-		err := fmt.Errorf("manifest channel %q, want %q", manifest.Channel, manifestChannel)
-		u.recordError("manifest", err)
-		return UpdateResult{}, err
+	// Channel matching only guards against picking the wrong release in Release API
+	// mode. With a direct manifest URL the target is already pinned, so skip the check.
+	if u.config.ManifestURL == "" {
+		manifestChannel := releaseManifestChannel(u.config.Channel)
+		if manifest.Channel != "" && manifestChannel != "" && manifest.Channel != manifestChannel {
+			err := fmt.Errorf("manifest channel %q, want %q", manifest.Channel, manifestChannel)
+			u.recordError("manifest", err)
+			return UpdateResult{}, err
+		}
 	}
 	if err := state.RejectDowngrade(manifest); err != nil {
 		u.recordError("policy", err)

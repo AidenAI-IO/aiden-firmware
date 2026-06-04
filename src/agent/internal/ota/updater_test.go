@@ -1302,14 +1302,17 @@ func TestDeriveAssetURLFromManifestURL(t *testing.T) {
 func TestUpdaterUsesManifestURLToDeriveAssetURLs(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	
-	// Create manifest without asset URLs (use slot-specific assets for oem)
+	// Create manifest without asset URLs (use slot-specific assets for oem).
+	// Set a dev channel to verify the channel check is skipped in manifest-url mode.
 	manifest := env.signedManifest(map[string][]byte{
 		"boot_a.img": []byte("boot-a-v2"),
 		"boot_b.img": []byte("boot-b-v2"),
 		"oem_a.img":  []byte("oem-a-v2"),
 		"oem_b.img":  []byte("oem-b-v2"),
 		"rootfs.img": []byte("rootfs-v2"),
-	}, nil)
+	}, func(m *Manifest) {
+		m.Channel = "dev-feat-ota-open-sources"
+	})
 
 	// Serve manifest and assets from same base URL
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1328,7 +1331,8 @@ func TestUpdaterUsesManifestURLToDeriveAssetURLs(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	// Use ManifestURL mode (no Repo/Channel)
+	// Use ManifestURL mode with no Repo/Channel: a dev-channel manifest must
+	// still install because the channel check is skipped for direct URLs.
 	env.config.Repo = ""
 	env.config.Channel = ""
 	env.config.ManifestURL = server.URL + "/releases/20240604-abc123/manifest.json"
