@@ -15,23 +15,28 @@ For example:
 - `main` → channel `stable`, normal release
 - `feat/new-feature` → channel `dev-feat-new-feature`, prerelease
 
+The `channel` value is recorded in the manifest as a human-readable label. The
+OTA client does **not** match it against an expected channel (it only validates
+the channel string format). Isolation comes entirely from the prerelease
+mechanism described below.
+
 ## How It Prevents Interference
 
-Non-main branch builds are protected from affecting production OTA by two independent mechanisms:
+Non-main branch builds are protected from affecting production OTA by their
+**prerelease** status on GitHub.
 
-### 1. Channel Validation
+Non-main branch releases are marked as **prerelease**. A device's normal update
+check uses the `releases/latest` API, which only returns the newest
+non-prerelease release, so `stable` devices never even discover development
+builds. The `dev-*` channel name is just a label that makes the manifest easy to
+identify; it is not what keeps the build off production devices.
 
-Devices are configured with `channel: stable` by default. The OTA updater validates that a manifest's channel matches the expected channel. A `dev-*` manifest is rejected by a `stable` device, even if it is somehow fetched.
-
-### 2. Prerelease Marking
-
-Non-main branch releases are marked as **prerelease** on GitHub. The `releases/latest` API only returns the newest non-prerelease release, so `stable` devices never even discover development builds during their normal update checks.
-
-This means you can safely push experimental branches and let CI build them, without any risk to devices running production firmware.
+This means you can safely push experimental branches and let CI build them,
+without any risk to devices running production firmware.
 
 ## Testing a Development Branch Build
 
-When you want to flash a development branch build onto a device for testing, fetch its manifest directly by URL. This bypasses the `releases/latest` lookup and the channel must still match, so point the device at the dev release explicitly.
+When you want to flash a development branch build onto a device for testing, fetch its manifest directly by URL. This bypasses the `releases/latest` lookup, so point the device at the dev release explicitly.
 
 ```bash
 # 1. Find the release tag for your branch build on the Releases page
@@ -51,7 +56,7 @@ Notes:
 
 ## Why Branch Builds Are Safe to Publish
 
-Because development releases are isolated by both channel and prerelease status, they:
+Because development releases are published as prereleases, they:
 
 - **Do not** appear as the latest stable release
 - **Do not** auto-update production devices

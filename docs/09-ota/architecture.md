@@ -34,7 +34,7 @@ OTA 由三层配合完成：`pico-sdk` 生成 A/B 镜像和 factory `misc.img`�
 ## 更新流程
 
 1. `ota` 读取 `/userdata/ota/config.json` 和 `/oem/etc/ota_pubkey.pem`。
-2. 按配置查询 GitHub Release。`stable` channel 使用 latest release，`tag:<name>` 使用指定 tag。
+2. 获取 manifest：配置了 `manifest_url` 时直接拉取该 URL；否则查询 GitHub Release `releases/latest` 端点（即 `DefaultReleaseURL`，可由 config 的 release URL 覆盖），从 release assets 里取 `manifest.json`。
 3. 下载 `manifest.json`，删除 `signature.value` 后做 canonical JSON Ed25519 验签。
 4. 拒绝旧 `build_time` 或同 build time 不同 version 的 downgrade。
 5. 选择 inactive slot，解析 manifest 中对应 slot 的 asset。

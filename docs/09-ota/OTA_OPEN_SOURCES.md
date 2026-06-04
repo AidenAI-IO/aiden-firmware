@@ -55,10 +55,11 @@ scripts/generate_ota_manifest.sh \
 | `main` | `stable` | 正常 Release | ✅ 自动升级 |
 | 其他分支 | `dev-{分支名}` | Prerelease | ❌ 不会升级 |
 
-**双重保护机制**：
+**隔离机制**：
 
-1. **Channel 校验**：设备默认 `channel: stable`，OTA 会拒绝 channel 不匹配的 manifest
-2. **Prerelease 标记**：`releases/latest` API 只返回正式 Release，不返回 prerelease
+非 main 分支的 Release 被标记为 **Prerelease**，而设备常规更新走 `releases/latest` API，该接口只返回正式 Release，不返回 prerelease。因此 `stable` 设备根本不会在常规检查中发现非 main 分支的固件。
+
+注：manifest 里的 `channel` 字段仅作为人类可读标签（CI 会为非 main 分支写入 `dev-{分支名}`），OTA 客户端只校验其字符串格式，并不会拿它和某个期望 channel 做匹配。真正起隔离作用的是上述 prerelease 机制。
 
 这样非 main 分支的固件即使发布也不会影响生产设备的正常 OTA 升级。
 

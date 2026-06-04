@@ -253,18 +253,22 @@ Now the device will automatically check your custom source every hour.
 
 ## Channel Strategy
 
-Recommended channel naming:
+The `channel` field in a manifest is a human-readable label. The OTA client only
+validates its format (`[A-Za-z0-9._-]`); it does not filter or reject manifests
+by channel, and `channel` is not a field in the device `config.json`. Recommended
+naming for your own bookkeeping:
 
 - `stable` - Official releases from main branch
 - `beta` - Pre-release testing
 - `dev` - Development builds (your custom builds)
 - `internal` - Enterprise/private builds
 
-Configure devices to only accept specific channels:
+To control which firmware a device installs, point it at a specific manifest via
+`manifest_url` (and trust only the matching signing key):
 ```json
 {
-  "channel": "dev",
-  "manifest_url": "https://your-server.com/firmware/dev/manifest.json"
+  "manifest_url": "https://your-server.com/firmware/dev/manifest.json",
+  "public_key_path": "/userdata/ota/dev_pubkey.pem"
 }
 ```
 
@@ -295,9 +299,10 @@ ota check-now --manifest-url URL --public-key KEY --dry-run
 - Manifest was modified after signing
 - Private key doesn't match public key
 
-**"manifest channel mismatch"** or channel validation errors
-- Device config expects a different channel than what's in the manifest
-- Solution: Update device config.json to match the manifest's channel, or use a different manifest
+**"invalid channel"**
+- The manifest's `channel` field contains characters outside `[A-Za-z0-9._-]`
+- The client only validates the channel string format; it does not match it against an expected channel
+- Solution: Use a valid channel name when generating the manifest
 
 **"missing required release asset"**
 - Using GitHub Release without `--base-url`
