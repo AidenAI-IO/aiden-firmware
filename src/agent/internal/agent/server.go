@@ -216,6 +216,11 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
 	mux.HandleFunc("/api/phone-bridge", s.bridge.HandleWebSocket)
 	mux.HandleFunc("/api/phone-bridge/status", s.handleBridgeStatus)
+	mux.HandleFunc("/api/screenshot.jpg", s.handleScreenshotJPEG)
+
+	// Coordinate debug tool
+	mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
+	mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
@@ -2333,6 +2338,7 @@ const webUI = `<!DOCTYPE html>
             <header class="topbar">
                 <h1>Aiden Agent</h1>
                 <div class="topbar-actions">
+                    <a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 坐标调试</a>
                     <button type="button" class="new-chat-btn" onclick="clearHistory()">New chat</button>
                     <button type="button" class="new-chat-btn" onclick="resetAllMemory()" style="background:#c0392b;">Reset all memory</button>
                 </div>
