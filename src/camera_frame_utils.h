@@ -15,12 +15,42 @@ inline void set_default_camera_config(aiden::CameraConfig* config) {
     }
 
     config->device_name = "/dev/video0";
-    config->width = 1920;
-    config->height = 1080;
+
+    // Allow environment variables to override default resolution
+    const char* env_width = std::getenv("AIDEN_DEFAULT_WIDTH");
+    const char* env_height = std::getenv("AIDEN_DEFAULT_HEIGHT");
+
+    if (env_width && env_height) {
+        char* end = nullptr;
+        long width = std::strtol(env_width, &end, 10);
+        if (end && *end == '\0' && width > 0) {
+            config->width = static_cast<int>(width);
+        } else {
+            config->width = 1920;
+        }
+
+        end = nullptr;
+        long height = std::strtol(env_height, &end, 10);
+        if (end && *end == '\0' && height > 0) {
+            config->height = static_cast<int>(height);
+        } else {
+            config->height = 1080;
+        }
+    } else {
+        // Default to 720p for better device compatibility
+        // Pixel 8 and many devices only support up to 720p
+        config->width = 1280;
+        config->height = 720;
+    }
+
     config->camera_id = 0;
     config->pixel_format = "uyvy";
     config->subdev_device = "/dev/v4l-subdev2";
-    config->edid_path = nullptr;
+
+    // Allow environment variable to override default EDID path
+    const char* env_edid = std::getenv("AIDEN_DEFAULT_EDID");
+    config->edid_path = env_edid ? env_edid : nullptr;
+
     config->skip_frames = 1;
     config->trigger_retries = 0;
     config->trigger_delay_ms = 1000;
