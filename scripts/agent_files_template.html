@@ -118,9 +118,11 @@ pre.block-body { margin: 0; white-space: pre-wrap; word-break: break-word; font-
 <div class="tabs">
   <button class="tab active" data-tab="memory">Memory</button>
   <button class="tab skills-tab" data-tab="skills">Skills</button>
+  <button class="tab" data-tab="skill-state" style="background:color-mix(in oklch,oklch(58% 0.18 150) 8%,white);border-color:color-mix(in oklch,oklch(58% 0.18 150) 32%,var(--border))">Skill State</button>
 </div>
 <div id="memory-content" class="tab-content active"></div>
 <div id="skills-content" class="tab-content"></div>
+<div id="skill-state-content" class="tab-content"></div>
 </main>
 <div class="drawer-backdrop" id="backdrop"></div>
 <aside class="drawer" id="drawer">
@@ -134,6 +136,7 @@ pre.block-body { margin: 0; white-space: pre-wrap; word-break: break-word; font-
 <script>
 const MEMORY_DATA = {{MEMORY_JSON}};
 const SKILLS_DATA = {{SKILLS_JSON}};
+const SKILL_STATE_DATA = {{SKILL_STATE_JSON}};
 
 const backdrop = document.getElementById("backdrop");
 const closeBtn = document.getElementById("closeBtn");
@@ -151,9 +154,7 @@ function formatSize(bytes) {
 }
 
 function renderMemoryContent() {
-  console.log('[Memory] Starting render...');
   const files = MEMORY_DATA.files || [];
-  console.log('[Memory] Files count:', files.length);
 
   if (files.length === 0) {
     document.getElementById("memory-content").innerHTML = '<section class="panel"><div class="empty-state">No memory files found at ' + esc(MEMORY_DATA.path) + '</div></section>';
@@ -174,8 +175,6 @@ function renderMemoryContent() {
       dirTree['_root'].push(file);
     }
   });
-
-  console.log('[Memory] Directories:', Object.keys(dirTree).length);
 
   let html = '<section class="panel">';
   html += '<div class="panel-header">';
@@ -224,13 +223,9 @@ function renderMemoryContent() {
   });
 
   html += '</section>';
-  console.log('[Memory] Generated HTML length:', html.length);
   document.getElementById("memory-content").innerHTML = html;
-  console.log('[Memory] HTML set, calling attachFileListeners...');
   attachFileListeners();
-  console.log('[Memory] Calling attachDirToggle for memory...');
   attachDirToggle('memory-content');
-  console.log('[Memory] Render complete');
 }
 
 function renderSkillsContent() {
@@ -307,6 +302,80 @@ function renderSkillsContent() {
   attachDirToggle('skills-content');
 }
 
+function renderSkillStateContent() {
+  const files = SKILL_STATE_DATA.files || [];
+  if (files.length === 0) {
+    document.getElementById("skill-state-content").innerHTML = '<section class="panel"><div class="empty-state">No skill-state files found at ' + esc(SKILL_STATE_DATA.path) + '</div></section>';
+    return;
+  }
+
+  // Group files by directory
+  const dirTree = {};
+  files.forEach((file, idx) => {
+    file._index = idx;
+    const parts = file.relative_path.split('/');
+    if (parts.length > 1) {
+      const dir = parts.slice(0, -1).join('/');
+      if (!dirTree[dir]) dirTree[dir] = [];
+      dirTree[dir].push(file);
+    } else {
+      if (!dirTree['_root']) dirTree['_root'] = [];
+      dirTree['_root'].push(file);
+    }
+  });
+
+  let html = '<section class="panel">';
+  html += '<div class="panel-header">';
+  html += '<div><h3 class="panel-title">Skill State Directory</h3><span style="color:var(--muted);font-size:11px;font-family:var(--font-mono)">' + esc(SKILL_STATE_DATA.path) + '</span></div>';
+  html += '<div style="display:flex;gap:6px"><button class="toggle-all-btn" data-target="skill-state-content" data-state="expanded" style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);cursor:pointer;font-size:11px">Collapse All</button></div>';
+  html += '</div>';
+
+  // Sort directories
+  const sortedDirs = Object.keys(dirTree).sort((a, b) => {
+    if (a === '_root') return -1;
+    if (b === '_root') return 1;
+    return a.localeCompare(b);
+  });
+
+  sortedDirs.forEach(dir => {
+    const dirFiles = dirTree[dir];
+    if (dir === '_root') {
+      html += '<ul class="file-list">';
+    } else {
+      html += '<div class="dir-header" data-dir="' + esc(dir) + '" style="background:linear-gradient(to right,color-mix(in oklch,oklch(58% 0.18 150) 8%,white),color-mix(in oklch,oklch(58% 0.18 150) 3%,white));border-top-color:color-mix(in oklch,oklch(58% 0.18 150) 20%,var(--border))">';
+      html += '<span class="dir-icon" style="color:oklch(58% 0.18 150)">▼</span>';
+      html += '<span class="dir-folder-icon" style="color:oklch(58% 0.18 150)">📁</span>';
+      html += '<span class="dir-name">' + esc(dir) + '</span>';
+      html += '<span class="dir-count">' + dirFiles.length + ' files</span>';
+      html += '</div>';
+      html += '<ul class="file-list" data-dir-list="' + esc(dir) + '">';
+    }
+
+    dirFiles.forEach(file => {
+      const filename = file.relative_path.split('/').pop();
+      html += '<li class="file-item" data-type="skill-state" data-idx="' + file._index + '">';
+      html += '<div><div class="file-name">' + esc(filename);
+      if (file.is_hidden) html += '<span class="badge hidden">hidden</span>';
+      if (file.type === 'text') html += '<span class="badge text">text</span>';
+      if (file.json) html += '<span class="badge json">json</span>';
+      if (file.jsonl) html += '<span class="badge" style="background:color-mix(in oklch,oklch(58% 0.18 150) 8%,white);border-color:color-mix(in oklch,oklch(58% 0.18 150) 32%,var(--border));color:oklch(58% 0.18 150)">jsonl</span>';
+      if (file.references && file.references.length > 0) {
+        html += '<span class="badge" style="background:color-mix(in oklch,oklch(58% 0.18 150) 8%,white);border-color:color-mix(in oklch,oklch(58% 0.18 150) 32%,var(--border));color:oklch(58% 0.18 150)">' + file.references.length + ' refs</span>';
+      }
+      html += '</div><div class="file-meta">' + formatSize(file.size) + ' &middot; ' + file.modified + '</div></div>';
+      html += '<span style="color:var(--muted);font-size:11px">' + formatSize(file.size) + '</span>';
+      html += '</li>';
+    });
+
+    html += '</ul>';
+  });
+
+  html += '</section>';
+  document.getElementById("skill-state-content").innerHTML = html;
+  attachFileListeners();
+  attachDirToggle('skill-state-content');
+}
+
 function attachDirToggle(containerId) {
   const container = document.getElementById(containerId);
   if (!container) return;
@@ -361,7 +430,7 @@ function attachFileListeners() {
 }
 
 function openDrawer(type, idx) {
-  const data = type === "memory" ? MEMORY_DATA : SKILLS_DATA;
+  const data = type === "memory" ? MEMORY_DATA : (type === "skills" ? SKILLS_DATA : SKILL_STATE_DATA);
   const file = data.files[idx];
 
   document.getElementById("dTitle").textContent = file.relative_path;
@@ -495,6 +564,12 @@ try {
 } catch (e) {
   console.error('renderSkillsContent error:', e);
   document.getElementById("skills-content").innerHTML = '<div style="padding:20px;color:red">Error: ' + e.message + '</div>';
+}
+try {
+  renderSkillStateContent();
+} catch (e) {
+  console.error('renderSkillStateContent error:', e);
+  document.getElementById("skill-state-content").innerHTML = '<div style="padding:20px;color:red">Error: ' + e.message + '</div>';
 }
 </script>
 </body>

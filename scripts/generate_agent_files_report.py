@@ -47,7 +47,7 @@ def scan_directory(base_path: Path, show_hidden: bool = True) -> dict:
 
                 # Try to read text content
                 try:
-                    if item.suffix in ['.md', '.txt', '.json', '.toml', '.yaml', '.yml', '']:
+                    if item.suffix in ['.md', '.txt', '.json', '.jsonl', '.toml', '.yaml', '.yml', '']:
                         content = item.read_text('utf-8')
                         file_info['content'] = content
                         file_info['type'] = 'text'
@@ -56,7 +56,8 @@ def scan_directory(base_path: Path, show_hidden: bool = True) -> dict:
                         if item.suffix == '.json':
                             try:
                                 file_info['json'] = json.loads(content)
-                            except:
+                            except (json.JSONDecodeError, ValueError):
+                                # Invalid JSON, skip parsing
                                 pass
 
                         # Parse JSONL (JSON Lines)
@@ -68,12 +69,14 @@ def scan_directory(base_path: Path, show_hidden: bool = True) -> dict:
                                         lines.append(json.loads(line))
                                 file_info['jsonl'] = lines
                                 file_info['jsonl_count'] = len(lines)
-                            except:
+                            except (json.JSONDecodeError, ValueError):
+                                # Invalid JSONL, skip parsing
                                 pass
 
                         # Extract references from YAML-like content
                         file_info['references'] = extract_references(content, str(relative_path))
-                except:
+                except (UnicodeDecodeError, IOError):
+                    # Binary file or read error, mark as binary
                     file_info['type'] = 'binary'
 
                 result['files'].append(file_info)
@@ -185,6 +188,11 @@ def main():
         help='Skills directory path (default: /userdata/agent/skills)'
     )
     parser.add_argument(
+        '--skill-state-dir',
+        default='/userdata/agent/skill-state',
+        help='Skill-state directory path (default: /userdata/agent/skill-state)'
+    )
+    parser.add_argument(
         '--output',
         '-o',
         default='/userdata/agent/files_report.html',
@@ -216,6 +224,9 @@ def main():
     print(f"Scanning skills directory: {args.skills_dir}")
     skills_data = scan_directory(Path(args.skills_dir), args.show_hidden)
 
+    print(f"Scanning skill-state directory: {args.skill_state_dir}")
+    skill_state_data = scan_directory(Path(args.skill_state_dir), args.show_hidden)
+
     # Generate HTML
     html = generate_html_report(memory_data, skills_data)
 
@@ -228,8 +239,10 @@ def main():
 
     memory_json = json.dumps(memory_data, ensure_ascii=False, indent=2).replace('</', r'<\/')
     skills_json = json.dumps(skills_data, ensure_ascii=False, indent=2).replace('</', r'<\/')
+    skill_state_json = json.dumps(skill_state_data, ensure_ascii=False, indent=2).replace('</', r'<\/')
     html = html.replace('{{MEMORY_JSON}}', memory_json)
     html = html.replace('{{SKILLS_JSON}}', skills_json)
+    html = html.replace('{{SKILL_STATE_JSON}}', skill_state_json)
 
     # Write output
     output_path = Path(args.output)
@@ -239,6 +252,7 @@ def main():
     print(f"\n✓ Report generated: {output_path.absolute()}")
     print(f"  Memory files: {len(memory_data.get('files', []))} ({format_size(memory_data.get('total_size', 0))})")
     print(f"  Skills files: {len(skills_data.get('files', []))} ({format_size(skills_data.get('total_size', 0))})")
+    print(f"  Skill-state files: {len(skill_state_data.get('files', []))} ({format_size(skill_state_data.get('total_size', 0))})")
 
     if not memory_data.get('exists'):
         print(f"  ⚠ Memory directory not found: {args.memory_dir}")
