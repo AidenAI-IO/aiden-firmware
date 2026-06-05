@@ -14,7 +14,7 @@ import (
 
 type TurnInput = AudioInputResult
 
-const toolDescriptionSpeechTimeout = 5 * time.Second
+const toolDescriptionSpeechTimeout = 15 * time.Second
 
 var (
 	recordingStartRetryTimeout  = 5 * time.Second

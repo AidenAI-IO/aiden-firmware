@@ -521,7 +521,7 @@ func TestBuildLLMStructuredSummarizeFnParsesStrictJSON(t *testing.T) {
 		"risks_or_pitfalls":["不要替换主模型"],
 		"memory_candidates":["语音模型和 VLM 分离配置"]
 	}`}}}}}
-	fn := buildLLMStructuredSummarizeFn(&testModelResolver{model: model})
+	fn := buildLLMStructuredSummarizeFn(&testModelResolver{model: model}, nil)
 	got := fn(context.Background(), []SessionEvent{{Role: "user", Content: "测试 MiniCPM"}})
 	if got.Summary != "讨论 MiniCPM 局域网 VLM" {
 		t.Fatalf("summary = %q", got.Summary)
@@ -533,7 +533,7 @@ func TestBuildLLMStructuredSummarizeFnParsesStrictJSON(t *testing.T) {
 
 func TestBuildLLMStructuredSummarizeFnFallsBackOnInvalidJSON(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: `not json`}}}}}
-	fn := buildLLMStructuredSummarizeFn(&testModelResolver{model: model})
+	fn := buildLLMStructuredSummarizeFn(&testModelResolver{model: model}, nil)
 	got := fn(context.Background(), []SessionEvent{{Role: "user", Content: "hello"}})
 	if !got.Empty() {
 		t.Fatalf("expected empty structured summary on invalid JSON, got %#v", got)

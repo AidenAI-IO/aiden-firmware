@@ -197,7 +197,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
 	modelManager := NewModelManager(cfg.Model, proxy)
 	summarizeFn := buildLLMSummarizeFn(modelManager)
-	structuredSummarizeFn := buildLLMStructuredSummarizeFn(modelManager)
+	structuredSummarizeFn := buildLLMStructuredSummarizeFn(modelManager, logger)
 	profileFn := buildLLMProfileFn(modelManager)
 	contextWindowFn := func() int { return modelManager.Spec().ContextWindow }
 
@@ -1015,10 +1015,13 @@ const (
 	structuredSummaryMaxSummaryRune = 480
 )
 
-func buildLLMStructuredSummarizeFn(models ModelResolver) StructuredSummarizeFn {
+func buildLLMStructuredSummarizeFn(models ModelResolver, logger *Logger) StructuredSummarizeFn {
 	return func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary {
 		model, err := models.Get()
 		if err != nil {
+			if logger != nil {
+				logger.Warn("[memory] structured summary: failed to get model: %v", err)
+			}
 			return ChunkStructuredSummary{}
 		}
 		var transcript strings.Builder
@@ -1034,10 +1037,16 @@ func buildLLMStructuredSummarizeFn(models ModelResolver) StructuredSummarizeFn {
 		}
 		result, err := llms.GenerateFromSinglePrompt(ctx, model, structuredSummarizerPrompt+transcript.String(), llms.WithMaxTokens(800))
 		if err != nil {
+			if logger != nil {
+				logger.Warn("[memory] structured summary: LLM generation failed: %v", err)
+			}
 			return ChunkStructuredSummary{}
 		}
 		structured, err := parseChunkStructuredSummaryJSON(result)
 		if err != nil {
+			if logger != nil {
+				logger.Warn("[memory] structured summary: JSON parse failed: %v", err)
+			}
 			return ChunkStructuredSummary{}
 		}
 		return structured
