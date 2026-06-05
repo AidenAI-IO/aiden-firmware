@@ -50,12 +50,15 @@ type Runtime struct {
 }
 
 type RunRequest struct {
-	Input        string
-	Attachments  []InputAttachment
-	Skills       []string
-	StreamWriter io.Writer
-	MaxTokens    int
-	EventHandler func(RunEvent)
+	Input       string
+	Attachments []InputAttachment
+	Skills      []string
+	// RuntimeContext is dynamic per-turn system context, such as connected
+	// hardware/app state. It is not persisted as user configuration.
+	RuntimeContext string
+	StreamWriter   io.Writer
+	MaxTokens      int
+	EventHandler   func(RunEvent)
 }
 
 type RunResult struct {
@@ -344,7 +347,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if streamCallbackHandler != nil {
 		executorHandler = streamCallbackHandler
 	}
-	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext)
+	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
 	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, memoryHandle.Memory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault())
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
@@ -549,12 +552,14 @@ func (r *Runtime) buildAgent(
 	skills ResolvedSkills,
 	availableTools []langtools.Tool,
 	attachments []InputAttachment,
+	runtimeContext string,
 	callbackHandler callbacks.Handler,
 ) agents.Agent {
 	systemMessage := buildFunctionAgentSystemMessage(
 		AgentConfig{
 			Instruction:      r.config.Instruction,
 			AdditionalPrompt: r.config.AdditionalPrompt,
+			RuntimeContext:   runtimeContext,
 		},
 		skills,
 		availableTools,
@@ -586,7 +591,7 @@ func (r *Runtime) buildAgent(
 	return agent
 }
 
-func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []langtools.Tool, memoryContext MemoryContext) RoleProfiles {
+func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []langtools.Tool, memoryContext MemoryContext, runtimeContext string) RoleProfiles {
 	if memoryContext.IsEmpty() && r.config.ConfigDir != "" {
 		memoryContext = normalizeMemoryContext(r.memoryContextForPrompt())
 	}
@@ -594,6 +599,7 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 		AgentConfig{
 			Instruction:      r.config.Instruction,
 			AdditionalPrompt: r.config.AdditionalPrompt,
+			RuntimeContext:   runtimeContext,
 		},
 		skills,
 		availableTools,

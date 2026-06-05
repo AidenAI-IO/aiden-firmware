@@ -39,6 +39,9 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 		"Active skills:",
 		"{{.skill_instructions}}",
 		"",
+		"Runtime context:",
+		"{{.runtime_context}}",
+		"",
 		"Conversation history:",
 		"{{.history}}",
 		"",
@@ -75,6 +78,7 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 			"skill_behavior":     skillBehavior(),
 			"skill_catalog":      skills.CatalogSummary(),
 			"skill_instructions": skills.CombinedInstructions(),
+			"runtime_context":    runtimeContextOrNone(cfg),
 			"tool_names":         joinToolNames(availableTools),
 			"tool_descriptions":  describeTools(availableTools),
 		},
@@ -98,12 +102,21 @@ func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, ava
 		"",
 		"Active skills:",
 		skills.CombinedInstructions(),
+	}
+	if text := strings.TrimSpace(cfg.RuntimeContext); text != "" {
+		parts = append(parts,
+			"",
+			"Runtime context:",
+			text,
+		)
+	}
+	parts = append(parts,
 		"",
 		"You can use the following tools:",
 		describeTools(availableTools),
 		"",
 		"If no tool is needed, answer directly.",
-	}
+	)
 	return strings.Join(parts, "\n")
 }
 
@@ -179,6 +192,13 @@ func combinedAgentInstruction(cfg AgentConfig) string {
 		return "(none)"
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func runtimeContextOrNone(cfg AgentConfig) string {
+	if text := strings.TrimSpace(cfg.RuntimeContext); text != "" {
+		return text
+	}
+	return "(none)"
 }
 
 func defaultAgentBehavior() string {

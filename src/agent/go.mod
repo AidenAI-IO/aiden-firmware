@@ -9,6 +9,7 @@ require (
 	github.com/tmc/langchaingo v0.1.14
 	golang.org/x/sys v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
+	nhooyr.io/websocket v1.8.7
 )
 
 require (
@@ -33,6 +34,7 @@ require (
 	github.com/imdario/mergo v0.3.13 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/kennygrant/sanitize v1.2.4 // indirect
+	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/mitchellh/copystructure v1.0.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
