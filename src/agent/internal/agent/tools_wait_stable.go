@@ -51,10 +51,10 @@ type WaitStableScreenTool struct {
 }
 
 type waitStableScreenResult struct {
-	OK        bool    `json:"ok"`
-	Stable    bool    `json:"stable"`
-	ElapsedMs int64   `json:"elapsed_ms"`
-	LastDiff  float64 `json:"last_diff,omitempty"`
+	OK        bool     `json:"ok"`
+	Stable    bool     `json:"stable"`
+	ElapsedMs int64    `json:"elapsed_ms"`
+	LastDiff  *float64 `json:"last_diff,omitempty"`
 }
 
 func NewWaitStableScreenTool(socketPath string, defaults ScreenStableDefaults) *WaitStableScreenTool {
@@ -132,7 +132,7 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 	}
 	prevSeq := prevMeta.Seq
 	stableSince := time.Now()
-	lastDiff := 0.0
+	var lastDiff *float64
 
 	for {
 		now := time.Now()
@@ -170,7 +170,7 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 		}
 
 		diff := meanRGBAbsDiff(prevMeta, prevRGB, meta, rgb)
-		lastDiff = diff
+		lastDiff = &diff
 		if diff > diffThreshold {
 			stableSince = time.Now()
 		}

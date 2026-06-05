@@ -105,10 +105,9 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 	if t.waitStable != nil {
 		stable := waitResult.Stable
 		elapsed := waitResult.ElapsedMs
-		lastDiff := waitResult.LastDiff
 		payload.ScreenStable = &stable
 		payload.StableWaitMs = &elapsed
-		payload.LastDiff = &lastDiff
+		payload.LastDiff = waitResult.LastDiff
 	}
 
 	out, _ := json.Marshal(payload)
