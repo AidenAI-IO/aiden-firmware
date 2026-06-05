@@ -2846,6 +2846,56 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     }
     // ===== End benchmark routes =====
 
+    // ===== User files routes =====
+    if (request.method == "GET" && request.path == "/user_files") {
+        ApiResponse response;
+        response.content_type = "text/html; charset=utf-8";
+        std::string path = "/userdata/agent/files_report.html";
+        FILE* fp = fopen(path.c_str(), "r");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long sz = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            if (sz > 0 && sz < 2 * 1024 * 1024) {  // Max 2MB
+                std::string buf(sz, '\0');
+                fread(&buf[0], 1, sz, fp);
+                response.body = std::move(buf);
+            } else {
+                response.status_code = 500;
+                response.body = "report too large or empty";
+            }
+            fclose(fp);
+        } else {
+            response.status_code = 404;
+            response.body = "<html><body>"
+                "<h1>Files Report Not Found</h1>"
+                "<p>The files report has not been generated yet.</p>"
+                "<p>To generate it, SSH to the device and run:</p>"
+                "<pre>cd /userdata/agent_tools && ./view_agent_files.sh</pre>"
+                "</body></html>";
+        }
+        return response;
+    }
+
+    if (request.method == "POST" && request.path == "/user_files/regenerate") {
+        ApiResponse response;
+        response.content_type = "application/json; charset=utf-8";
+
+        // Regenerate report in background
+        std::string cmd = "cd /userdata/agent_tools && "
+                         "./view_agent_files.sh > /tmp/user_files_regenerate.log 2>&1 &";
+        int ret = system(cmd.c_str());
+
+        if (ret == 0) {
+            response.body = "{\"status\":\"ok\",\"message\":\"Report regeneration started\"}";
+        } else {
+            response.status_code = 500;
+            response.body = "{\"status\":\"error\",\"message\":\"Failed to start regeneration\"}";
+        }
+        return response;
+    }
+    // ===== End user files routes =====
+
     if (request.method == "GET" && request.path == "/api/agent/status") {
         return handle_get_agent_status();
     }

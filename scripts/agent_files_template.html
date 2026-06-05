@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Files - Memory & Skills</title>
+<style>
+:root {
+  --bg: oklch(99% 0.002 240);
+  --surface: oklch(100% 0 0);
+  --fg: oklch(18% 0.012 250);
+  --muted: oklch(54% 0.012 250);
+  --border: oklch(92% 0.005 250);
+  --accent: oklch(58% 0.18 255);
+  --accent-purple: oklch(58% 0.18 290);
+  --font-body: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0 }
+html { background: var(--bg); color: var(--fg); font-family: var(--font-body); -webkit-font-smoothing: antialiased }
+body { min-height: 100vh; background: linear-gradient(to bottom, var(--surface), var(--bg) 360px) }
+.page { width: min(1200px, calc(100vw - 48px)); margin: 0 auto; padding: 24px 0 56px }
+.topbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px }
+.brand { display: flex; align-items: center; gap: 10px }
+.mark { width: 24px; height: 24px; border-radius: 6px; background: var(--fg); position: relative }
+.mark::before,.mark::after { content: ""; position: absolute; left: 6px; right: 6px; height: 2px; border-radius: 999px; background: white }
+.mark::before { top: 7px } .mark::after { bottom: 7px }
+.brand strong { font-size: 14px; letter-spacing: -0.01em }
+.meta-info { color: var(--muted); font-size: 12px }
+.summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px }
+.summary-card { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 14px }
+.summary-card .label { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase }
+.summary-card .value { margin-top: 10px; font-size: 28px; font-weight: 700; letter-spacing: -0.03em }
+.tabs { display: flex; gap: 8px; margin-bottom: 16px; border-bottom: 1px solid var(--border) }
+.tab { padding: 10px 16px; border: none; background: none; color: var(--muted); cursor: pointer; font-size: 13px; font-weight: 600; border-bottom: 2px solid transparent; transition: all 150ms }
+.tab:hover { color: var(--fg) }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent) }
+.tab.active.skills-tab { color: var(--accent-purple); border-bottom-color: var(--accent-purple) }
+.tab-content { display: none }
+.tab-content.active { display: block }
+.panel { border: 1px solid var(--border); border-radius: 16px; background: var(--surface); overflow: hidden }
+.panel-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border); background: color-mix(in oklch, var(--bg) 80%, white) }
+.panel-title { font-size: 14px; font-weight: 650 }
+.file-list { list-style: none }
+.file-item { padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 120ms; display: flex; justify-content: space-between; align-items: center }
+.file-item:hover { background: color-mix(in oklch, var(--accent) 4%, white) }
+.file-item:last-child { border-bottom: none }
+.file-name { font-family: var(--font-mono); font-size: 13px; font-weight: 600 }
+.file-meta { color: var(--muted); font-size: 11px; margin-top: 4px }
+.dir-header {
+  padding: 12px 16px;
+  background: linear-gradient(to right, color-mix(in oklch, var(--accent) 8%, white), color-mix(in oklch, var(--accent) 3%, white));
+  border-top: 1px solid color-mix(in oklch, var(--accent) 20%, var(--border));
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--fg);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 150ms;
+}
+.dir-header:hover { background: linear-gradient(to right, color-mix(in oklch, var(--accent) 12%, white), color-mix(in oklch, var(--accent) 6%, white)) }
+.dir-header.skills-dir { background: linear-gradient(to right, color-mix(in oklch, var(--accent-purple) 8%, white), color-mix(in oklch, var(--accent-purple) 3%, white)); border-top-color: color-mix(in oklch, var(--accent-purple) 20%, var(--border)) }
+.dir-header.skills-dir:hover { background: linear-gradient(to right, color-mix(in oklch, var(--accent-purple) 12%, white), color-mix(in oklch, var(--accent-purple) 6%, white)) }
+.dir-icon { display: inline-block; width: 14px; transition: transform 200ms; color: var(--accent); font-size: 10px }
+.dir-header.skills-dir .dir-icon { color: var(--accent-purple) }
+.dir-header.collapsed .dir-icon { transform: rotate(-90deg) }
+.dir-name { flex: 1; font-family: var(--font-mono); letter-spacing: 0.01em }
+.dir-folder-icon { color: var(--accent); font-size: 14px }
+.dir-header.skills-dir .dir-folder-icon { color: var(--accent-purple) }
+.dir-count { font-size: 11px; color: var(--muted); font-weight: 600; padding: 2px 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 999px }
+.file-list.collapsed { display: none }
+.file-list .file-item { padding-left: 32px }
+.badge { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); font-size: 10px; font-weight: 700; margin-left: 6px }
+.badge.hidden { color: oklch(48% 0.12 75); border-color: color-mix(in oklch, oklch(70% 0.14 75) 34%, var(--border)); background: color-mix(in oklch, oklch(70% 0.14 75) 10%, white) }
+.badge.json { color: oklch(42% 0.13 150); border-color: color-mix(in oklch, oklch(58% 0.16 145) 32%, var(--border)); background: color-mix(in oklch, oklch(58% 0.16 145) 8%, white) }
+.badge.text { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 32%, var(--border)); background: color-mix(in oklch, var(--accent) 8%, white) }
+.drawer-backdrop { position: fixed; inset: 0; z-index: 40; background: color-mix(in oklch, var(--fg) 18%, transparent); opacity: 0; pointer-events: none; transition: opacity 180ms ease }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 50; width: min(720px, 100vw); background: var(--surface); border-left: 1px solid var(--border); box-shadow: -24px 0 80px color-mix(in oklch, var(--fg) 10%, transparent); transform: translateX(100%); transition: transform 220ms ease; display: flex; flex-direction: column }
+body.open .drawer-backdrop { opacity: 1; pointer-events: auto }
+body.open .drawer { transform: translateX(0) }
+.drawer-top { padding: 18px; border-bottom: 1px solid var(--border); background: linear-gradient(to bottom, color-mix(in oklch, var(--bg) 72%, white), var(--surface)); flex-shrink: 0; position: relative }
+.drawer-top h2 { font-size: 18px; letter-spacing: -0.02em; margin-bottom: 8px; font-family: var(--font-mono); padding-right: 40px; word-break: break-all }
+.drawer-chips { display: flex; flex-wrap: wrap; gap: 6px }
+.chip { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: 11px }
+.close-btn { position: absolute; top: 16px; right: 16px; width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--fg); font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center }
+.drawer-body { flex: 1; min-height: 0; overflow-y: scroll; -webkit-overflow-scrolling: touch; padding: 16px }
+.block { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); margin-bottom: 12px }
+.block:last-child { margin-bottom: 0 }
+.block-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--border); background: color-mix(in oklch, var(--bg) 72%, white) }
+.block-head strong { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase }
+.block-head span { color: var(--muted); font-family: var(--font-mono); font-size: 10px }
+.block-body { padding: 12px 14px; font-size: 13px; line-height: 1.6 }
+pre.block-body { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: 12px; line-height: 1.65; max-height: 600px; overflow-y: auto }
+.empty-state { padding: 40px; text-align: center; color: var(--muted) }
+@media (max-width: 768px) {
+  .summary { grid-template-columns: repeat(2, 1fr) }
+  .drawer { width: 100vw }
+  .page { width: calc(100vw - 24px) }
+}
+</style>
+</head>
+<body>
+<main class="page">
+<header class="topbar">
+  <div class="brand"><div class="mark"></div><strong>Agent Files Browser</strong></div>
+  <div class="meta-info">{{TIMESTAMP}}</div>
+</header>
+<section class="summary">
+  <article class="summary-card"><div class="label">Memory Files</div><div class="value">{{MEMORY_COUNT}}</div></article>
+  <article class="summary-card"><div class="label">Memory Size</div><div class="value">{{MEMORY_SIZE}}</div></article>
+  <article class="summary-card"><div class="label">Skills Files</div><div class="value">{{SKILLS_COUNT}}</div></article>
+  <article class="summary-card"><div class="label">Skills Size</div><div class="value">{{SKILLS_SIZE}}</div></article>
+</section>
+<div class="tabs">
+  <button class="tab active" data-tab="memory">Memory</button>
+  <button class="tab skills-tab" data-tab="skills">Skills</button>
+</div>
+<div id="memory-content" class="tab-content active"></div>
+<div id="skills-content" class="tab-content"></div>
+</main>
+<div class="drawer-backdrop" id="backdrop"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-top">
+    <h2 id="dTitle">—</h2>
+    <div class="drawer-chips" id="dChips"></div>
+    <button class="close-btn" id="closeBtn">&times;</button>
+  </div>
+  <div class="drawer-body" id="dBody"></div>
+</aside>
+<script>
+const MEMORY_DATA = {{MEMORY_JSON}};
+const SKILLS_DATA = {{SKILLS_JSON}};
+
+const backdrop = document.getElementById("backdrop");
+const closeBtn = document.getElementById("closeBtn");
+
+function esc(s) { var d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
+function formatSize(bytes) {
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = bytes;
+  let unitIdx = 0;
+  while (size >= 1024 && unitIdx < units.length - 1) {
+    size /= 1024;
+    unitIdx++;
+  }
+  return size.toFixed(1) + ' ' + units[unitIdx];
+}
+
+function renderMemoryContent() {
+  console.log('[Memory] Starting render...');
+  const files = MEMORY_DATA.files || [];
+  console.log('[Memory] Files count:', files.length);
+
+  if (files.length === 0) {
+    document.getElementById("memory-content").innerHTML = '<section class="panel"><div class="empty-state">No memory files found at ' + esc(MEMORY_DATA.path) + '</div></section>';
+    return;
+  }
+
+  // Group files by directory
+  const dirTree = {};
+  files.forEach((file, idx) => {
+    file._index = idx;
+    const parts = file.relative_path.split('/');
+    if (parts.length > 1) {
+      const dir = parts.slice(0, -1).join('/');
+      if (!dirTree[dir]) dirTree[dir] = [];
+      dirTree[dir].push(file);
+    } else {
+      if (!dirTree['_root']) dirTree['_root'] = [];
+      dirTree['_root'].push(file);
+    }
+  });
+
+  console.log('[Memory] Directories:', Object.keys(dirTree).length);
+
+  let html = '<section class="panel">';
+  html += '<div class="panel-header">';
+  html += '<div><h3 class="panel-title">Memory Directory</h3><span style="color:var(--muted);font-size:11px;font-family:var(--font-mono)">' + esc(MEMORY_DATA.path) + '</span></div>';
+  html += '<div style="display:flex;gap:6px"><button class="toggle-all-btn" data-target="memory-content" data-state="expanded" style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);cursor:pointer;font-size:11px">Collapse All</button></div>';
+  html += '</div>';
+
+  // Sort directories
+  const sortedDirs = Object.keys(dirTree).sort((a, b) => {
+    if (a === '_root') return -1;
+    if (b === '_root') return 1;
+    return a.localeCompare(b);
+  });
+
+  sortedDirs.forEach(dir => {
+    const dirFiles = dirTree[dir];
+    if (dir === '_root') {
+      html += '<ul class="file-list">';
+    } else {
+      html += '<div class="dir-header" data-dir="' + esc(dir) + '">';
+      html += '<span class="dir-icon">▼</span>';
+      html += '<span class="dir-folder-icon">📁</span>';
+      html += '<span class="dir-name">' + esc(dir) + '</span>';
+      html += '<span class="dir-count">' + dirFiles.length + ' files</span>';
+      html += '</div>';
+      html += '<ul class="file-list" data-dir-list="' + esc(dir) + '">';
+    }
+
+    dirFiles.forEach(file => {
+      const filename = file.relative_path.split('/').pop();
+      html += '<li class="file-item" data-type="memory" data-idx="' + file._index + '">';
+      html += '<div><div class="file-name">' + esc(filename);
+      if (file.is_hidden) html += '<span class="badge hidden">hidden</span>';
+      if (file.type === 'text') html += '<span class="badge text">text</span>';
+      if (file.json) html += '<span class="badge json">json</span>';
+      if (file.jsonl) html += '<span class="badge" style="background:color-mix(in oklch,oklch(58% 0.18 150) 8%,white);border-color:color-mix(in oklch,oklch(58% 0.18 150) 32%,var(--border));color:oklch(58% 0.18 150)">jsonl</span>';
+      if (file.references && file.references.length > 0) {
+        html += '<span class="badge" style="background:color-mix(in oklch,var(--accent) 8%,white);border-color:color-mix(in oklch,var(--accent) 32%,var(--border));color:var(--accent)">' + file.references.length + ' refs</span>';
+      }
+      html += '</div><div class="file-meta">' + formatSize(file.size) + ' &middot; ' + file.modified + '</div></div>';
+      html += '<span style="color:var(--muted);font-size:11px">' + formatSize(file.size) + '</span>';
+      html += '</li>';
+    });
+
+    html += '</ul>';
+  });
+
+  html += '</section>';
+  console.log('[Memory] Generated HTML length:', html.length);
+  document.getElementById("memory-content").innerHTML = html;
+  console.log('[Memory] HTML set, calling attachFileListeners...');
+  attachFileListeners();
+  console.log('[Memory] Calling attachDirToggle for memory...');
+  attachDirToggle('memory-content');
+  console.log('[Memory] Render complete');
+}
+
+function renderSkillsContent() {
+  const files = SKILLS_DATA.files || [];
+  if (files.length === 0) {
+    document.getElementById("skills-content").innerHTML = '<section class="panel"><div class="empty-state">No skills files found at ' + esc(SKILLS_DATA.path) + '</div></section>';
+    return;
+  }
+
+  // Group files by directory
+  const dirTree = {};
+  files.forEach((file, idx) => {
+    file._index = idx;
+    const parts = file.relative_path.split('/');
+    if (parts.length > 1) {
+      const dir = parts.slice(0, -1).join('/');
+      if (!dirTree[dir]) dirTree[dir] = [];
+      dirTree[dir].push(file);
+    } else {
+      if (!dirTree['_root']) dirTree['_root'] = [];
+      dirTree['_root'].push(file);
+    }
+  });
+
+  let html = '<section class="panel">';
+  html += '<div class="panel-header">';
+  html += '<div><h3 class="panel-title">Skills Directory</h3><span style="color:var(--muted);font-size:11px;font-family:var(--font-mono)">' + esc(SKILLS_DATA.path) + '</span></div>';
+  html += '<div style="display:flex;gap:6px"><button class="toggle-all-btn" data-target="skills-content" data-state="expanded" style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);cursor:pointer;font-size:11px">Collapse All</button></div>';
+  html += '</div>';
+
+  // Sort directories
+  const sortedDirs = Object.keys(dirTree).sort((a, b) => {
+    if (a === '_root') return -1;
+    if (b === '_root') return 1;
+    return a.localeCompare(b);
+  });
+
+  sortedDirs.forEach(dir => {
+    const dirFiles = dirTree[dir];
+    if (dir === '_root') {
+      html += '<ul class="file-list">';
+    } else {
+      html += '<div class="dir-header skills-dir" data-dir="' + esc(dir) + '">';
+      html += '<span class="dir-icon">▼</span>';
+      html += '<span class="dir-folder-icon">📁</span>';
+      html += '<span class="dir-name">' + esc(dir) + '</span>';
+      html += '<span class="dir-count">' + dirFiles.length + ' files</span>';
+      html += '</div>';
+      html += '<ul class="file-list" data-dir-list="' + esc(dir) + '">';
+    }
+
+    dirFiles.forEach(file => {
+      const filename = file.relative_path.split('/').pop();
+      html += '<li class="file-item" data-type="skills" data-idx="' + file._index + '">';
+      html += '<div><div class="file-name">' + esc(filename);
+      if (file.is_hidden) html += '<span class="badge hidden">hidden</span>';
+      if (file.type === 'text') html += '<span class="badge text">text</span>';
+      if (file.json) html += '<span class="badge json">json</span>';
+      if (file.jsonl) html += '<span class="badge" style="background:color-mix(in oklch,oklch(58% 0.18 150) 8%,white);border-color:color-mix(in oklch,oklch(58% 0.18 150) 32%,var(--border));color:oklch(58% 0.18 150)">jsonl</span>';
+      if (file.references && file.references.length > 0) {
+        html += '<span class="badge" style="background:color-mix(in oklch,var(--accent-purple) 8%,white);border-color:color-mix(in oklch,var(--accent-purple) 32%,var(--border));color:var(--accent-purple)">' + file.references.length + ' refs</span>';
+      }
+      html += '</div><div class="file-meta">' + formatSize(file.size) + ' &middot; ' + file.modified + '</div></div>';
+      html += '<span style="color:var(--muted);font-size:11px">' + formatSize(file.size) + '</span>';
+      html += '</li>';
+    });
+
+    html += '</ul>';
+  });
+
+  html += '</section>';
+  document.getElementById("skills-content").innerHTML = html;
+  attachFileListeners();
+  attachDirToggle('skills-content');
+}
+
+function attachDirToggle(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  // Attach dir-header click handlers
+  container.querySelectorAll('.dir-header').forEach(header => {
+    header.addEventListener('click', () => {
+      const dir = header.dataset.dir;
+      const list = container.querySelector('[data-dir-list="' + dir + '"]');
+      if (list) {
+        header.classList.toggle('collapsed');
+        list.classList.toggle('collapsed');
+      }
+    });
+  });
+
+  // Attach toggle-all button handler
+  const btn = container.querySelector('.toggle-all-btn');
+  if (btn) {
+    // Remove old listener if exists (clone and replace)
+    const newBtn = btn.cloneNode(true);
+    btn.parentNode.replaceChild(newBtn, btn);
+
+    newBtn.addEventListener('click', () => {
+      const state = newBtn.dataset.state;
+      const headers = container.querySelectorAll('.dir-header');
+      const lists = container.querySelectorAll('[data-dir-list]');
+
+      if (state === 'expanded') {
+        headers.forEach(h => h.classList.add('collapsed'));
+        lists.forEach(l => l.classList.add('collapsed'));
+        newBtn.dataset.state = 'collapsed';
+        newBtn.textContent = 'Expand All';
+      } else {
+        headers.forEach(h => h.classList.remove('collapsed'));
+        lists.forEach(l => l.classList.remove('collapsed'));
+        newBtn.dataset.state = 'expanded';
+        newBtn.textContent = 'Collapse All';
+      }
+    });
+  }
+}
+
+function attachFileListeners() {
+  document.querySelectorAll(".file-item").forEach(item => {
+    item.addEventListener("click", () => {
+      const type = item.dataset.type;
+      const idx = parseInt(item.dataset.idx);
+      openDrawer(type, idx);
+    });
+  });
+}
+
+function openDrawer(type, idx) {
+  const data = type === "memory" ? MEMORY_DATA : SKILLS_DATA;
+  const file = data.files[idx];
+
+  document.getElementById("dTitle").textContent = file.relative_path;
+
+  let chips = '<span class="chip">' + formatSize(file.size) + '</span>';
+  chips += '<span class="chip">' + file.modified + '</span>';
+  if (file.is_hidden) chips += '<span class="chip">hidden</span>';
+  if (file.type) chips += '<span class="chip">' + file.type + '</span>';
+  document.getElementById("dChips").innerHTML = chips;
+
+  let body = '';
+  body += '<div class="block"><div class="block-head"><strong>File Path</strong></div><pre class="block-body">' + esc(file.path) + '</pre></div>';
+
+  if (file.json) {
+    body += '<div class="block"><div class="block-head"><strong>JSON Data</strong><span>parsed</span></div><pre class="block-body">' + esc(JSON.stringify(file.json, null, 2)) + '</pre></div>';
+  }
+
+  if (file.jsonl) {
+    body += '<div class="block"><div class="block-head"><strong>JSONL Data</strong><span>' + file.jsonl_count + ' lines</span></div>';
+    body += '<div class="block-body" style="display:flex;flex-direction:column;gap:8px;max-height:500px;overflow-y:auto">';
+    file.jsonl.forEach((line, idx) => {
+      body += '<details style="border:1px solid var(--border);border-radius:8px;padding:8px">';
+      body += '<summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--muted);user-select:none">Line ' + (idx + 1) + '</summary>';
+      body += '<pre style="margin-top:8px;font-size:11px;overflow-x:auto;max-height:300px;overflow-y:auto">' + esc(JSON.stringify(line, null, 2)) + '</pre>';
+      body += '</details>';
+    });
+    body += '</div></div>';
+  }
+
+  if (file.content) {
+    const lines = file.content.split('\\n').length;
+    body += '<div class="block"><div class="block-head"><strong>Content</strong><span>' + lines + ' lines</span></div><pre class="block-body">' + esc(file.content) + '</pre></div>';
+  } else if (file.type === 'binary') {
+    body += '<div class="block"><div class="block-head"><strong>Binary File</strong></div><div class="block-body">Cannot display binary content</div></div>';
+  }
+
+  // Display references
+  if (file.references && file.references.length > 0) {
+    let refsHtml = '<div style="display:flex;flex-direction:column;gap:8px">';
+    file.references.forEach(ref => {
+      const typeColors = {
+        'episode': 'var(--accent)',
+        'procedure': 'var(--accent-purple)',
+        'app': 'oklch(58% 0.18 150)',
+        'failure': 'oklch(58% 0.18 28)'
+      };
+      const color = typeColors[ref.type] || 'var(--muted)';
+      refsHtml += '<div style="padding:8px;border:1px solid var(--border);border-radius:8px;display:flex;justify-content:space-between;align-items:center">';
+      refsHtml += '<div><span style="font-size:10px;color:' + color + ';text-transform:uppercase;font-weight:700">' + esc(ref.type) + '</span>';
+      refsHtml += '<div style="font-family:var(--font-mono);font-size:12px;margin-top:2px">' + esc(ref.id) + '</div>';
+      refsHtml += '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + esc(ref.path) + '</div></div>';
+      refsHtml += '<button class="ref-jump-btn" data-path="' + esc(ref.path) + '" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);cursor:pointer;font-size:11px">Jump</button>';
+      refsHtml += '</div>';
+    });
+    refsHtml += '</div>';
+    body += '<div class="block"><div class="block-head"><strong>References</strong><span>' + file.references.length + ' found</span></div><div class="block-body">' + refsHtml + '</div></div>';
+  }
+
+  document.getElementById("dBody").innerHTML = body;
+
+  // Add event listeners for reference jump buttons
+  document.querySelectorAll('.ref-jump-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const targetPath = btn.dataset.path;
+      jumpToFile(targetPath);
+    });
+  });
+
+  document.body.classList.add("open");
+}
+
+function jumpToFile(targetPath) {
+  // Try to find matching file in current tab
+  const currentTab = document.querySelector('.tab.active').dataset.tab;
+  const data = currentTab === 'memory' ? MEMORY_DATA : SKILLS_DATA;
+
+  // Handle wildcard paths like "episodes/*/ep_xxx/*"
+  const pathPattern = targetPath.replace(/\*/g, '.*');
+  const regex = new RegExp('^' + pathPattern + '$');
+
+  for (let i = 0; i < data.files.length; i++) {
+    const file = data.files[i];
+    if (regex.test(file.relative_path) || file.relative_path.includes(targetPath.replace(/\*/g, ''))) {
+      closeDrawer();
+      setTimeout(() => {
+        const fileItem = document.querySelector('.file-item[data-type="' + currentTab + '"][data-idx="' + i + '"]');
+        if (fileItem) {
+          fileItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          fileItem.style.background = 'color-mix(in oklch, var(--accent) 12%, white)';
+          setTimeout(() => {
+            fileItem.style.background = '';
+          }, 2000);
+          fileItem.click();
+        }
+      }, 300);
+      return;
+    }
+  }
+
+  // If not found, show message
+  alert('Referenced file not found in current directory: ' + targetPath);
+}
+
+function closeDrawer() { document.body.classList.remove("open"); }
+
+// Tab switching
+document.querySelectorAll(".tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    const target = tab.dataset.tab;
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
+    tab.classList.add("active");
+    document.getElementById(target + "-content").classList.add("active");
+  });
+});
+
+backdrop.addEventListener("click", closeDrawer);
+closeBtn.addEventListener("click", closeDrawer);
+window.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+
+// Initial render
+try {
+  renderMemoryContent();
+} catch (e) {
+  console.error('renderMemoryContent error:', e);
+  document.getElementById("memory-content").innerHTML = '<div style="padding:20px;color:red">Error: ' + e.message + '</div>';
+}
+try {
+  renderSkillsContent();
+} catch (e) {
+  console.error('renderSkillsContent error:', e);
+  document.getElementById("skills-content").innerHTML = '<div style="padding:20px;color:red">Error: ' + e.message + '</div>';
+}
+</script>
+</body>
+</html>
