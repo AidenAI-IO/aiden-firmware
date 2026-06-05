@@ -170,6 +170,11 @@ if ! grep -q 'chown -R' "$BUILD_IMAGE_SH" || ! grep -q 'pico-sdk/output' "$BUILD
     exit 1
 fi
 
+if ! grep -Eq '^trap[[:space:]]+restore_docker_output_ownership[[:space:]]+EXIT' "$BUILD_IMAGE_SH"; then
+    echo "build_image.sh must restore Docker output ownership in an EXIT trap so signal-killed builds do not leave root-owned files for the next CI checkout" >&2
+    exit 1
+fi
+
 if ! grep -q 'exec "\$@"' "$BUILD_IMAGE_SH"; then
     echo "build_image.sh must allow CI to run a Dockerized repack command" >&2
     exit 1

@@ -48,9 +48,20 @@ restore_docker_output_ownership() {
   done
 
   if [ "${#paths[@]}" -gt 0 ]; then
-    sudo chown -R "$(id -u):$(id -g)" "${paths[@]}"
+    # Errors here must not mask the original docker exit status, hence `|| true`.
+    sudo chown -R "$(id -u):$(id -g)" "${paths[@]}" || true
   fi
 }
+
+# Always restore ownership on exit, even when the script is interrupted by a
+# signal (CI cancellation, runner restart, ^C). Without this, root-owned build
+# artifacts get left behind and the next actions/checkout clean step fails with
+# EACCES. Forwarding SIGINT/SIGTERM/SIGHUP through `exit` ensures the EXIT trap
+# fires for signal-induced terminations as well as normal returns.
+trap restore_docker_output_ownership EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 docker_run_args=(
   --platform linux/amd64
@@ -76,5 +87,5 @@ docker_run_args+=(
 docker_status=0
 docker run "${docker_run_args[@]}" || docker_status=$?
 
-restore_docker_output_ownership
+# Ownership restore happens in the EXIT trap above.
 exit "$docker_status"

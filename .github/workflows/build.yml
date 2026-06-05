@@ -24,6 +24,23 @@ jobs:
     runs-on: ${{ inputs.runner }}
 
     steps:
+    - name: Reclaim workspace ownership (self-hosted)
+      # The Docker build runs as root and a normal exit hands ownership back to
+      # the runner user via build_image.sh's EXIT trap. Trap handlers cannot run
+      # if the previous build was killed by SIGKILL or the host crashed, leaving
+      # root-owned files that block actions/checkout's clean phase with EACCES.
+      # This step is a defence-in-depth no-op when the trap already ran.
+      if: ${{ inputs.runner == 'self-hosted' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -z "${GITHUB_WORKSPACE:-}" ] || [ ! -d "$GITHUB_WORKSPACE" ]; then
+          exit 0
+        fi
+        # Use numeric uid:gid so this does not depend on the runner user's
+        # account name being resolvable inside any nested context.
+        sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+
     - name: Repair stale pico-sdk submodule metadata
       if: ${{ inputs.runner == 'self-hosted' }}
       shell: bash
