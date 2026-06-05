@@ -163,13 +163,6 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes:.1f} TB"
 
 
-def generate_html_report(memory_data: dict, skills_data: dict) -> str:
-    """Generate self-contained HTML report."""
-    # Don't use .format() since template contains CSS with braces
-    # Instead, we'll do simple string replacement in main()
-    return HTML_TEMPLATE
-
-
 def main():
     """Main entry point."""
     import argparse
@@ -214,8 +207,7 @@ def main():
         print(f"Error: Template not found at {template_path}", file=sys.stderr)
         sys.exit(1)
 
-    global HTML_TEMPLATE
-    HTML_TEMPLATE = template_path.read_text('utf-8')
+    html_template = template_path.read_text('utf-8')
 
     # Scan directories
     print(f"Scanning memory directory: {args.memory_dir}")
@@ -227,8 +219,8 @@ def main():
     print(f"Scanning skill-state directory: {args.skill_state_dir}")
     skill_state_data = scan_directory(Path(args.skill_state_dir), args.show_hidden)
 
-    # Generate HTML
-    html = generate_html_report(memory_data, skills_data)
+    # Generate HTML from template
+    html = html_template
 
     # Replace placeholders
     html = html.replace('{{TIMESTAMP}}', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
@@ -260,7 +252,6 @@ def main():
         print(f"  ⚠ Skills directory not found: {args.skills_dir}")
 
 
-HTML_TEMPLATE = None  # Will be loaded from file
 
 
 if __name__ == '__main__':
