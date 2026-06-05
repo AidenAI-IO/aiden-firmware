@@ -2437,7 +2437,14 @@ bool generate_suite_with_llm(const Options& options, const std::string& user_pro
         model = "anthropic/claude-3.5-sonnet";  // fallback
     }
 
-    std::string api_endpoint = base_url.empty() ? "https://openrouter.ai/api/v1/chat/completions" : base_url;
+    std::string api_endpoint = base_url.empty() ? "https://openrouter.ai/api/v1" : base_url;
+    // Strip trailing slashes and append /chat/completions if not already present
+    while (!api_endpoint.empty() && api_endpoint.back() == '/') {
+        api_endpoint.pop_back();
+    }
+    if (api_endpoint.find("/chat/completions") == std::string::npos) {
+        api_endpoint += "/chat/completions";
+    }
 
     // Fetch agent tools dynamically
     std::string tools_list = "";
@@ -2571,18 +2578,45 @@ bool generate_suite_with_llm(const Options& options, const std::string& user_pro
     std::string proxy_arg = build_curl_proxy_arg(proxy);
 
     // Build curl command
-    std::string temp_payload_file = "/tmp/gen_suite_payload.json";
-    FILE* f = fopen(temp_payload_file.c_str(), "w");
-    if (!f) {
-        *error = "Failed to create temp file";
+    // Use mkstemp for both payload and auth header to avoid symlink attacks and
+    // prevent the API key from appearing in `ps aux` output.
+    char payload_template[] = "/tmp/gen_suite_payload.XXXXXX";
+    int payload_fd = mkstemp(payload_template);
+    if (payload_fd < 0) {
+        *error = "Failed to create payload temp file";
         return false;
     }
-    fwrite(payload.c_str(), 1, payload.size(), f);
-    fclose(f);
+    std::string temp_payload_file = payload_template;
+    ssize_t pn = write(payload_fd, payload.data(), payload.size());
+    close(payload_fd);
+    if (pn < 0 || static_cast<size_t>(pn) != payload.size()) {
+        unlink(temp_payload_file.c_str());
+        *error = "Failed to write payload";
+        return false;
+    }
+
+    char header_template[] = "/tmp/gen_suite_auth.XXXXXX";
+    int header_fd = mkstemp(header_template);
+    if (header_fd < 0) {
+        unlink(temp_payload_file.c_str());
+        *error = "Failed to create auth temp file";
+        return false;
+    }
+    std::string header_file = header_template;
+    fchmod(header_fd, 0600);
+    std::string auth_header = "Authorization: Bearer " + api_key + "\n";
+    ssize_t hn = write(header_fd, auth_header.data(), auth_header.size());
+    close(header_fd);
+    if (hn < 0 || static_cast<size_t>(hn) != auth_header.size()) {
+        unlink(temp_payload_file.c_str());
+        unlink(header_file.c_str());
+        *error = "Failed to write auth header";
+        return false;
+    }
 
     std::string curl_cmd = "curl -k -s --max-time 60 -X POST " + shell_quote(api_endpoint) +
                            " -H 'Content-Type: application/json'" +
-                           " -H 'Authorization: Bearer " + api_key + "'" +
+                           " -H @" + shell_quote(header_file) +
                            proxy_arg +
                            " -d @" + temp_payload_file +
                            " 2>&1";
@@ -2590,6 +2624,7 @@ bool generate_suite_with_llm(const Options& options, const std::string& user_pro
     FILE* pipe = popen(curl_cmd.c_str(), "r");
     if (!pipe) {
         unlink(temp_payload_file.c_str());
+        unlink(header_file.c_str());
         *error = "Failed to execute curl";
         return false;
     }
@@ -2601,6 +2636,7 @@ bool generate_suite_with_llm(const Options& options, const std::string& user_pro
     }
     int exit_code = pclose(pipe);
     unlink(temp_payload_file.c_str());
+    unlink(header_file.c_str());
 
     if (exit_code != 0) {
         *error = "curl failed: " + response;
