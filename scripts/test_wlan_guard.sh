@@ -25,6 +25,26 @@ if ! grep -q 'WLAN_GUARD_IFACE:-wlan0' "$GUARD_SCRIPT"; then
     exit 1
 fi
 
+if ! grep -q 'WLAN_GUARD_INTERVAL:-10' "$GUARD_SCRIPT"; then
+    echo "wlan_guard must check connectivity every 10 seconds by default" >&2
+    exit 1
+fi
+
+if ! grep -q 'WLAN_GUARD_FAIL_THRESHOLD:-5' "$GUARD_SCRIPT"; then
+    echo "wlan_guard must recover only after 5 failed checks by default" >&2
+    exit 1
+fi
+
+if ! grep -q 'WLAN_GUARD_PING_COUNT:-3' "$GUARD_SCRIPT"; then
+    echo "wlan_guard must use multi-packet reachability checks" >&2
+    exit 1
+fi
+
+if ! grep -q 'WLAN_GUARD_PING_TIMEOUT:-1' "$GUARD_SCRIPT"; then
+    echo "wlan_guard must set a per-packet ping timeout" >&2
+    exit 1
+fi
+
 if ! grep -q 'ip route show default' "$GUARD_SCRIPT"; then
     echo "wlan_guard must derive gateway from the routing table" >&2
     exit 1
@@ -42,6 +62,11 @@ fi
 
 if ! grep -q 'iw dev "$IFACE" set power_save off' "$GUARD_SCRIPT"; then
     echo "wlan_guard must disable WLAN power save" >&2
+    exit 1
+fi
+
+if ! grep -q 'ping -c "$PING_COUNT" -W "$PING_TIMEOUT" -I "$IFACE" "$host"' "$GUARD_SCRIPT"; then
+    echo "wlan_guard must use configured multi-packet ping checks" >&2
     exit 1
 fi
 

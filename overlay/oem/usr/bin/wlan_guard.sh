@@ -1,8 +1,10 @@
 #!/bin/sh
 
 IFACE="${WLAN_GUARD_IFACE:-wlan0}"
-CHECK_INTERVAL="${WLAN_GUARD_INTERVAL:-30}"
-FAIL_THRESHOLD="${WLAN_GUARD_FAIL_THRESHOLD:-2}"
+CHECK_INTERVAL="${WLAN_GUARD_INTERVAL:-10}"
+FAIL_THRESHOLD="${WLAN_GUARD_FAIL_THRESHOLD:-5}"
+PING_COUNT="${WLAN_GUARD_PING_COUNT:-3}"
+PING_TIMEOUT="${WLAN_GUARD_PING_TIMEOUT:-1}"
 RECOVER_COOLDOWN="${WLAN_GUARD_RECOVER_COOLDOWN:-20}"
 PIDFILE="/tmp/wlan_guard.pid"
 LOGFILE="/tmp/wlan_guard.log"
@@ -46,7 +48,7 @@ target_reachable() {
 		return 1
 	fi
 
-	ping -c 1 -W 1 -I "$IFACE" "$host" >/dev/null 2>&1
+	ping -c "$PING_COUNT" -W "$PING_TIMEOUT" -I "$IFACE" "$host" >/dev/null 2>&1
 }
 
 recover_wlan() {
