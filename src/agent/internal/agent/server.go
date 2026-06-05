@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -27,17 +28,20 @@ import (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime      *Runtime
-	addr         string
-	logger       *Logger
-	mu           sync.Mutex
-	history      []Message
-	sttClient    STTClient
-	ttsManager   *tts.ProviderManager
-	ttsMu        sync.RWMutex
-	audioClient  *AudioServiceClient
-	recordMu     sync.Mutex
-	webRecording *webAudioRecording
+	runtime          *Runtime
+	addr             string
+	logger           *Logger
+	mu               sync.Mutex
+	history          []Message
+	sttClient        STTClient
+	ttsManager       *tts.ProviderManager
+	ttsMu            sync.RWMutex
+	audioClient      *AudioServiceClient
+	recordMu         sync.Mutex
+	webRecording     *webAudioRecording
+	bridge           *PhoneBridge
+	pendingResults   map[string]*chatPendingResult
+	pendingResultsMu sync.Mutex
 }
 
 type webAudioRecording struct {
@@ -89,12 +93,34 @@ type ChatRequest struct {
 	Message     string              `json:"message"`
 	Skills      []string            `json:"skills,omitempty"`
 	Attachments []MessageAttachment `json:"attachments,omitempty"`
+	RequestID   string              `json:"request_id,omitempty"`
 }
 
 // ChatResponse represents a chat response
 type ChatResponse struct {
 	Response string    `json:"response"`
 	History  []Message `json:"history"`
+}
+
+// chatPendingResult stores intermediate results for async chat requests.
+// The agent goroutine appends tool_call / assistant messages as they occur;
+// the polling endpoint reads them back with an offset cursor.
+type chatPendingResult struct {
+	mu       sync.Mutex
+	messages []Message
+	done     bool
+	err      string
+	// Per-request history (separate from server-level history)
+	history []Message
+}
+
+// ChatResultResponse is the JSON shape for GET /api/chat/result.
+type ChatResultResponse struct {
+	Status   string    `json:"status"`
+	Messages []Message `json:"messages,omitempty"`
+	Response string    `json:"response,omitempty"`
+	History  []Message `json:"history,omitempty"`
+	Error    string    `json:"error,omitempty"`
 }
 
 type ChatStreamEvent struct {
@@ -130,12 +156,17 @@ type ToolInvokeResponse struct {
 
 // NewServer creates a new HTTP server
 func NewServer(runtime *Runtime, addr string) *Server {
+	bridge := NewPhoneBridge(runtime.logger)
 	s := &Server{
-		runtime: runtime,
-		addr:    addr,
-		logger:  runtime.logger,
-		history: make([]Message, 0),
+		runtime:        runtime,
+		addr:           addr,
+		logger:         runtime.logger,
+		history:        make([]Message, 0),
+		bridge:         bridge,
+		pendingResults: make(map[string]*chatPendingResult),
 	}
+	loadAppMappingForConfig(runtime.config.ConfigDir, runtime.logger)
+	runtime.tools.RegisterPhoneBridge(bridge)
 	s.loadHistoryFromDisk()
 
 	// Initialize speech clients if configured.
@@ -172,6 +203,7 @@ func (s *Server) Start() error {
 
 	// API endpoints
 	mux.HandleFunc("/api/chat", s.handleChat)
+	mux.HandleFunc("/api/chat/result", s.handleChatResult)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/clear", s.handleClear)
 	mux.HandleFunc("/api/clear-all", s.handleClearAll)
@@ -183,6 +215,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/audio/record/stop", s.handleAudioRecordStop)
 	mux.HandleFunc("/api/settings/tts", s.handleTTSSettings)
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
+	mux.HandleFunc("/api/phone-bridge", s.bridge.HandleWebSocket)
+	mux.HandleFunc("/api/phone-bridge/status", s.handleBridgeStatus)
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
@@ -226,7 +260,10 @@ func (s *Server) Start() error {
 	}
 }
 
-// handleChat handles chat requests
+// handleChat handles chat requests.
+// When req.RequestID is present, runs asynchronously: returns {request_id} immediately,
+// agent runs in a background goroutine, and intermediate tool_call messages become
+// available via GET /api/chat/result?request_id=xxx&offset=N.
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -249,27 +286,294 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-
 	// Add user message to history
-	s.appendHistory(Message{
+	userMsg := Message{
 		Type:        "user",
 		Content:     inputText,
 		Attachments: historyAttachments,
 		Timestamp:   time.Now(),
-	})
+	}
+	s.appendHistory(userMsg)
+
+	// Async path — when the client provides a request_id
+	if req.RequestID != "" {
+		s.handleChatAsync(w, r, req, inputText, runAttachments, userMsg)
+		return
+	}
+
+	// Sync path — legacy behaviour for web UI and clients without request_id
+	s.handleChatSync(w, r, req, inputText, runAttachments)
+}
+
+// handleChatAsync runs the agent in a background goroutine and returns
+// {request_id} immediately. Intermediate results are pushed into
+// chatPendingResult and served by handleChatResult.
+func (s *Server) handleChatAsync(
+	w http.ResponseWriter,
+	r *http.Request,
+	req ChatRequest,
+	inputText string,
+	runAttachments []InputAttachment,
+	userMsg Message,
+) {
+	requestID := req.RequestID
+	if s.logger != nil {
+		s.logger.Info("Chat request (async): %s request_id=%s attachments=%d", inputText, requestID, len(runAttachments))
+	}
+
+	// Create a pending result slot for this request. Reject a request_id that
+	// already has an active slot rather than overwriting it — otherwise the
+	// in-flight run's poller loses its result stream and the two goroutines can
+	// delete each other's state on exit.
+	pending := &chatPendingResult{
+		messages: make([]Message, 0),
+		history:  []Message{userMsg},
+	}
+	s.pendingResultsMu.Lock()
+	if _, exists := s.pendingResults[requestID]; exists {
+		s.pendingResultsMu.Unlock()
+		http.Error(w, "request_id already in use", http.StatusConflict)
+		return
+	}
+	s.pendingResults[requestID] = pending
+	s.pendingResultsMu.Unlock()
+
+	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
+
+	// Return {request_id} immediately
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"request_id": requestID})
+
+	// Run agent in background goroutine
+	go func() {
+		defer func() {
+			// Keep the completed result available for polling for 60s,
+			// then clean up. The client (PhoneBridge) polls /api/chat/result
+			// every ~1s; immediate deletion creates a race where the app
+			// gets status="not_found" and hangs forever waiting for "complete".
+			time.AfterFunc(60*time.Second, func() {
+				s.pendingResultsMu.Lock()
+				delete(s.pendingResults, requestID)
+				s.pendingResultsMu.Unlock()
+			})
+		}()
+
+		bgCtx := context.Background()
+
+		// Event handler pushes intermediate messages into the pending result
+		// so the client can poll them in near-realtime.
+		eventHandler := func(event RunEvent) {
+			msg := Message{
+				Type:        event.Type,
+				Role:        event.Role,
+				Content:     event.Content,
+				ToolName:    event.ToolName,
+				ToolInput:   event.ToolInput,
+				Description: event.Description,
+				Timestamp:   event.Timestamp,
+				IsError:     event.IsError,
+			}
+			s.appendHistory(msg)
+			pending.mu.Lock()
+			pending.history = append(pending.history, msg)
+			pending.messages = append(pending.messages, msg)
+			pending.mu.Unlock()
+
+			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
+				go s.speakToolDescription(bgCtx, event.Description)
+			}
+		}
+
+		runReq := RunRequest{
+			Input:          inputText,
+			Attachments:    runAttachments,
+			Skills:         req.Skills,
+			RuntimeContext: s.runtimeContext(),
+			EventHandler:   eventHandler,
+		}
+
+		var newStream *streamSessionWriter
+		ttsManager := s.currentTTSManager()
+
+		if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
+			if ttsManager != nil {
+				stream, err := beginManagedTTSStream(bgCtx, ttsManager, s.audioClient, s.runtime.config)
+				if err != nil {
+					if s.logger != nil {
+						s.logger.Warn("TTS BeginStream failed: %v", err)
+					}
+				} else {
+					newStream = stream
+					runReq.StreamWriter = newStream
+				}
+			}
+		}
+
+		result, err := s.runtime.Run(bgCtx, runReq)
+		if newStream != nil {
+			closeErr := newStream.closeAndWait()
+			if closeErr != nil && s.logger != nil {
+				s.logger.Error("new TTS stream failed: %v", closeErr)
+			}
+			result.SpeechStreamed = closeErr == nil && newStream.spoke
+		}
+
+		pending.mu.Lock()
+		if err != nil {
+			pending.err = err.Error()
+			pending.done = true
+			pending.mu.Unlock()
+			if s.logger != nil {
+				s.logger.Error("Agent run failed: request_id=%s error=%v", requestID, err)
+			}
+			return
+		}
+
+		// Add assistant message
+		assistantMsg := Message{
+			Type:      "assistant",
+			Content:   result.Output,
+			Timestamp: time.Now(),
+		}
+		s.appendHistory(assistantMsg)
+		pending.history = append(pending.history, assistantMsg)
+		pending.messages = append(pending.messages, assistantMsg)
+		pending.done = true
+		pending.mu.Unlock()
+
+		if s.logger != nil {
+			s.logger.Info("Chat request completed: request_id=%s output_len=%d", requestID, len(result.Output))
+		}
+
+		// Play TTS in background
+		if s.audioClient != nil && result.Output != "" && !result.SpeechStreamed {
+			go func(text string) {
+				if s.logger != nil {
+					s.logger.Info("TTS playback: %q", text)
+				}
+				if err := s.speakText(bgCtx, text, 0); err != nil && s.logger != nil {
+					s.logger.Error("TTS playback failed: %v", err)
+				}
+			}(result.Output)
+		}
+	}()
+}
+
+// handleChatResult serves incremental results for an async chat request.
+// GET /api/chat/result?request_id=xxx&offset=N
+//
+// When the agent is still running, returns:
+//
+//	{"status":"running","messages":[...messages since offset...]}
+//
+// When complete, returns:
+//
+//	{"status":"complete","response":"...","history":[...]}
+func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	requestID := r.URL.Query().Get("request_id")
+	if requestID == "" {
+		http.Error(w, "missing request_id", http.StatusBadRequest)
+		return
+	}
+
+	offset := 0
+	if offStr := r.URL.Query().Get("offset"); offStr != "" {
+		n, err := strconv.Atoi(offStr)
+		if err != nil || n < 0 {
+			http.Error(w, "invalid offset", http.StatusBadRequest)
+			return
+		}
+		offset = n
+	}
+
+	s.pendingResultsMu.Lock()
+	pending := s.pendingResults[requestID]
+	s.pendingResultsMu.Unlock()
+
+	if pending == nil {
+		// Request not found — may have completed and been cleaned up,
+		// or may never have existed.
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ChatResultResponse{Status: "not_found"})
+		return
+	}
+
+	pending.mu.Lock()
+	defer pending.mu.Unlock()
+
+	if pending.err != "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ChatResultResponse{
+			Status: "error",
+			Error:  pending.err,
+		})
+		return
+	}
+
+	// Return messages since the client's offset
+	msgs := pending.messages
+	if offset < len(msgs) {
+		msgs = msgs[offset:]
+	} else {
+		msgs = nil
+	}
+
+	if pending.done {
+		// Build a full ChatResponse-compatible shape
+		historySnapshot := make([]Message, len(pending.history))
+		copy(historySnapshot, pending.history)
+		// Extract the assistant text from the last assistant message
+		response := ""
+		for i := len(pending.history) - 1; i >= 0; i-- {
+			if pending.history[i].Type == "assistant" {
+				response = pending.history[i].Content
+				break
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ChatResultResponse{
+			Status:   "complete",
+			Response: response,
+			History:  historySnapshot,
+			Messages: msgs,
+		})
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ChatResultResponse{
+			Status:   "running",
+			Messages: msgs,
+		})
+	}
+}
+
+// handleChatSync is the original synchronous chat handler, kept for the web UI
+// and any clients that don't provide a request_id.
+func (s *Server) handleChatSync(
+	w http.ResponseWriter,
+	r *http.Request,
+	req ChatRequest,
+	inputText string,
+	runAttachments []InputAttachment,
+) {
+	ctx := r.Context()
 
 	if s.logger != nil {
-		s.logger.Info("Chat request: %s attachments=%d", inputText, len(runAttachments))
+		s.logger.Info("Chat request (sync): %s attachments=%d", inputText, len(runAttachments))
 	}
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 
-	// Run agent with streaming TTS if configured
 	runReq := RunRequest{
-		Input:       inputText,
-		Attachments: runAttachments,
-		Skills:      req.Skills,
+		Input:          inputText,
+		Attachments:    runAttachments,
+		Skills:         req.Skills,
+		RuntimeContext: s.runtimeContext(),
 		EventHandler: func(event RunEvent) {
 			s.appendHistory(Message{
 				Type:        event.Type,
@@ -281,7 +585,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				Timestamp:   event.Timestamp,
 				IsError:     event.IsError,
 			})
-			if event.Type == "tool_call" {
+			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(r.Context(), event.Description)
 			}
 		},
@@ -307,10 +611,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	result, err := s.runtime.Run(ctx, runReq)
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
-		if closeErr != nil {
-			if s.logger != nil {
-				s.logger.Error("new TTS stream failed: %v", closeErr)
-			}
+		if closeErr != nil && s.logger != nil {
+			s.logger.Error("new TTS stream failed: %v", closeErr)
 		}
 		result.SpeechStreamed = closeErr == nil && newStream.spoke
 	}
@@ -323,7 +625,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add assistant response to history
 	s.appendHistory(Message{
 		Type:      "assistant",
 		Content:   result.Output,
@@ -331,26 +632,29 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	})
 	historySnapshot := s.historySnapshot()
 
-	// Play TTS in background if configured and not already streamed
 	if s.audioClient != nil && result.Output != "" && !result.SpeechStreamed {
 		go func(text string) {
 			if s.logger != nil {
 				s.logger.Info("TTS playback: %q", text)
 			}
-			if err := s.speakText(context.Background(), text, 0); err != nil {
-				if s.logger != nil {
-					s.logger.Error("TTS playback failed: %v", err)
-				}
+			if err := s.speakText(context.Background(), text, 0); err != nil && s.logger != nil {
+				s.logger.Error("TTS playback failed: %v", err)
 			}
 		}(result.Output)
 	}
 
-	// Return response
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ChatResponse{
 		Response: result.Output,
 		History:  historySnapshot,
 	})
+}
+
+func (s *Server) runtimeContext() string {
+	if s.bridge == nil {
+		return ""
+	}
+	return phoneBridgeRuntimeContext(s.bridge.Status())
 }
 
 func wantsChatStream(r *http.Request) bool {
@@ -395,9 +699,10 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	result, err := s.runtime.Run(ctx, RunRequest{
-		Input:       inputText,
-		Attachments: runAttachments,
-		Skills:      req.Skills,
+		Input:          inputText,
+		Attachments:    runAttachments,
+		Skills:         req.Skills,
+		RuntimeContext: s.runtimeContext(),
 		EventHandler: func(event RunEvent) {
 			message := Message{
 				Type:        event.Type,
@@ -411,7 +716,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			}
 			s.appendHistory(message)
 			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
-			if event.Type == "tool_call" {
+			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(ctx, event.Description)
 			}
 		},
@@ -629,12 +934,17 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 	}
 
 	s.recordMu.Lock()
-	defer s.recordMu.Unlock()
-
 	if s.webRecording != nil {
-		http.Error(w, "audio recording is already active", http.StatusConflict)
-		return
+		stale := s.webRecording
+		s.webRecording = nil
+		if s.logger != nil {
+			s.logger.Warn("Clearing stale web audio recording before start")
+		}
+		if err := s.endStaleWebRecording(stale); err != nil && s.logger != nil {
+			s.logger.Warn("Stale web audio recording cleanup failed: %v", err)
+		}
 	}
+	s.recordMu.Unlock()
 
 	if err := playPromptSound(context.Background(), s.audioClient, promptSoundRecordingStart, true); err != nil {
 		if s.logger != nil {
@@ -662,7 +972,19 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 		done:       make(chan struct{}),
 		samples:    make([]int16, 0, sampleRate),
 	}
+
+	s.recordMu.Lock()
+	if s.webRecording != nil {
+		s.recordMu.Unlock()
+		if err := s.endStaleWebRecording(recording); err != nil && s.logger != nil {
+			s.logger.Warn("Orphaned web audio recording cleanup failed: %v", err)
+		}
+		http.Error(w, "audio recording is already active", http.StatusConflict)
+		return
+	}
 	s.webRecording = recording
+	s.recordMu.Unlock()
+
 	go s.readWebAudioRecording(recording)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -689,17 +1011,19 @@ func (s *Server) handleAudioRecordStop(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "audio recording is not active", http.StatusBadRequest)
 		return
 	}
-	recording.setStopping()
 	s.recordMu.Unlock()
 
-	stopErr := s.audioClient.StopRecording(recording.sessionID)
-
-	select {
-	case <-recording.done:
-	case <-time.After(7 * time.Second):
-		if stopErr == nil {
-			stopErr = fmt.Errorf("timed out waiting for audio recording to drain")
+	if err := s.endWebRecording(recording); err != nil {
+		if s.logger != nil {
+			s.logger.Error("Web audio recording stop failed: %v", err)
 		}
+		http.Error(w, "stop device audio recording: "+err.Error(), http.StatusInternalServerError)
+		s.recordMu.Lock()
+		if s.webRecording == recording {
+			s.webRecording = nil
+		}
+		s.recordMu.Unlock()
+		return
 	}
 
 	s.recordMu.Lock()
@@ -707,21 +1031,6 @@ func (s *Server) handleAudioRecordStop(w http.ResponseWriter, r *http.Request) {
 		s.webRecording = nil
 	}
 	s.recordMu.Unlock()
-
-	if stopErr != nil {
-		if s.logger != nil {
-			s.logger.Error("Web audio recording stop failed: %v", stopErr)
-		}
-		http.Error(w, "stop device audio recording: "+stopErr.Error(), http.StatusInternalServerError)
-		return
-	}
-	if err := recording.readError(); err != nil {
-		if s.logger != nil {
-			s.logger.Error("Web audio recording read failed: %v", err)
-		}
-		http.Error(w, "read device audio recording: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
 
 	samples := recording.snapshotSamples()
 	wavData := pcm16MonoToWAV(samples, recording.sampleRate)
@@ -735,6 +1044,38 @@ func (s *Server) handleAudioRecordStop(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(AudioRecordStopResponse{Attachment: attachment})
+}
+
+const (
+	webRecordingDrainTimeout       = 7 * time.Second
+	webRecordingStaleCleanupTimeout = 200 * time.Millisecond
+)
+
+func (s *Server) endWebRecording(recording *webAudioRecording) error {
+	return s.endWebRecordingWithTimeout(recording, webRecordingDrainTimeout)
+}
+
+func (s *Server) endStaleWebRecording(recording *webAudioRecording) error {
+	return s.endWebRecordingWithTimeout(recording, webRecordingStaleCleanupTimeout)
+}
+
+func (s *Server) endWebRecordingWithTimeout(recording *webAudioRecording, timeout time.Duration) error {
+	if recording == nil {
+		return nil
+	}
+	recording.setStopping()
+	stopErr := s.audioClient.StopRecording(recording.sessionID)
+	select {
+	case <-recording.done:
+	case <-time.After(timeout):
+		if stopErr == nil {
+			stopErr = fmt.Errorf("timed out waiting for audio recording to drain")
+		}
+	}
+	if err := recording.readError(); err != nil {
+		return err
+	}
+	return stopErr
 }
 
 func (s *Server) readWebAudioRecording(recording *webAudioRecording) {
@@ -1113,6 +1454,19 @@ func splitAudioAttachment(attachments []InputAttachment) (*InputAttachment, []In
 	}
 
 	return audio, others, nil
+}
+
+func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if s.bridge == nil {
+		json.NewEncoder(w).Encode(PhoneBridgeStatus{})
+		return
+	}
+	json.NewEncoder(w).Encode(s.bridge.Status())
 }
 
 // handleIndex serves the web UI
@@ -2140,7 +2494,7 @@ const webUI = `<!DOCTYPE html>
         toolSelectEl.addEventListener('change', syncSelectedTool);
         skillSelectEl.addEventListener('change', syncSelectedSkill);
         inputEl.addEventListener('keydown', function(event) {
-            if (event.key === 'Enter' && !event.shiftKey) {
+            if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
                 event.preventDefault();
                 sendMessage();
             }
@@ -2401,7 +2755,7 @@ const webUI = `<!DOCTYPE html>
 
         async function sendMessage() {
             if (sendBtn.disabled) return;
-            if (recorderState.isRecording) {
+            if (recorderState.isRecording || recorderState.isStopping) {
                 await stopRecording();
             }
 
@@ -2646,9 +3000,9 @@ const webUI = `<!DOCTYPE html>
         }
 
         function setComposerState(isLoading) {
-            sendBtn.disabled = isLoading;
-            imageBtn.disabled = isLoading || recorderState.isRecording;
-            recordBtn.disabled = isLoading;
+            sendBtn.disabled = isLoading || recorderState.isStopping;
+            imageBtn.disabled = isLoading || recorderState.isRecording || recorderState.isStopping;
+            recordBtn.disabled = isLoading || recorderState.isStopping;
             loadingDiv.classList.toggle('active', isLoading);
             updateRecordButton();
         }
@@ -2739,6 +3093,7 @@ const webUI = `<!DOCTYPE html>
             if (startedOnServer) {
                 recorderState = {
                     isRecording: true,
+                    isStopping: false,
                     mode: 'server',
                     stream: null,
                     context: null,
@@ -2777,6 +3132,7 @@ const webUI = `<!DOCTYPE html>
 
             recorderState = {
                 isRecording: true,
+                isStopping: false,
                 mode: 'browser',
                 stream: stream,
                 context: context,
@@ -2791,40 +3147,58 @@ const webUI = `<!DOCTYPE html>
         }
 
         async function stopRecording() {
-            if (!recorderState.isRecording) return;
+            if (!recorderState.isRecording || recorderState.isStopping) return;
 
-            if (recorderState.mode === 'server') {
-                recorderState.isRecording = false;
-                const attachment = await stopServerRecording();
-                await teardownRecorder();
+            const mode = recorderState.mode;
+            recorderState.isStopping = true;
+            setComposerState(loadingDiv.classList.contains('active'));
+
+            try {
+                if (mode === 'server') {
+                    const attachment = await stopServerRecording();
+                    await teardownRecorder({ forceServerStop: false });
+                    if (attachment) {
+                        upsertAudioAttachment({
+                            id: nextAttachmentId++,
+                            kind: attachment.kind || 'audio',
+                            name: attachment.name || 'recording.wav',
+                            mime_type: attachment.mime_type || 'audio/wav',
+                            data: attachment.data || '',
+                            size: attachment.size || 0
+                        });
+                    }
+                    return;
+                }
+
+                const chunks = recorderState.chunks.slice();
+                const sampleRate = recorderState.sampleRate;
+                await teardownRecorder({ forceServerStop: false });
+
+                const wavBlob = createWavBlob(chunks, sampleRate, targetAudioSampleRate);
+                const dataUrl = await readBlobAsDataURL(wavBlob);
+
                 upsertAudioAttachment({
                     id: nextAttachmentId++,
-                    kind: attachment.kind || 'audio',
-                    name: attachment.name || 'recording.wav',
-                    mime_type: attachment.mime_type || 'audio/wav',
-                    data: attachment.data || '',
-                    size: attachment.size || 0
+                    kind: 'audio',
+                    name: 'recording.wav',
+                    mime_type: 'audio/wav',
+                    data: extractBase64(dataUrl),
+                    size: wavBlob.size,
+                    preview_url: URL.createObjectURL(wavBlob)
                 });
-                return;
+            } finally {
+                recorderState.isRecording = false;
+                recorderState.isStopping = false;
+                setComposerState(loadingDiv.classList.contains('active'));
             }
+        }
 
-            recorderState.isRecording = false;
-            const chunks = recorderState.chunks.slice();
-            const sampleRate = recorderState.sampleRate;
-            await teardownRecorder();
-
-            const wavBlob = createWavBlob(chunks, sampleRate, targetAudioSampleRate);
-            const dataUrl = await readBlobAsDataURL(wavBlob);
-
-            upsertAudioAttachment({
-                id: nextAttachmentId++,
-                kind: 'audio',
-                name: 'recording.wav',
-                mime_type: 'audio/wav',
-                data: extractBase64(dataUrl),
-                size: wavBlob.size,
-                preview_url: URL.createObjectURL(wavBlob)
-            });
+        async function forceStopServerRecording() {
+            try {
+                await fetch('/api/audio/record/stop', { method: 'POST' });
+            } catch (err) {
+                console.warn('Force stop device recording failed:', err);
+            }
         }
 
         async function startServerRecording() {
@@ -2832,14 +3206,32 @@ const webUI = `<!DOCTYPE html>
             if (res.status === 404) {
                 return false;
             }
+            if (res.status === 409) {
+                await forceStopServerRecording();
+                const retry = await fetch('/api/audio/record/start', { method: 'POST' });
+                if (retry.status === 404) {
+                    return false;
+                }
+                if (!retry.ok) {
+                    throw new Error(await retry.text() || 'Device audio recording failed to start.');
+                }
+                return true;
+            }
             if (!res.ok) {
-                throw new Error(await res.text() || 'Device audio recording failed to start.');
+                const detail = await res.text() || 'Device audio recording failed to start.';
+                if (detail.indexOf('audio service') !== -1 || detail.indexOf('audio_service') !== -1 || detail.indexOf('no such file') !== -1) {
+                    throw new Error('Audio service is not running. Run: /etc/init.d/S53audio_service start');
+                }
+                throw new Error(detail);
             }
             return true;
         }
 
         async function stopServerRecording() {
             const res = await fetch('/api/audio/record/stop', { method: 'POST' });
+            if (res.status === 400) {
+                return null;
+            }
             if (!res.ok) {
                 throw new Error(await res.text() || 'Device audio recording failed to stop.');
             }
@@ -2864,7 +3256,9 @@ const webUI = `<!DOCTYPE html>
             renderDraftAttachments();
         }
 
-        async function teardownRecorder() {
+        async function teardownRecorder(options) {
+            const opts = options || {};
+            const wasServerMode = recorderState.mode === 'server';
             if (recorderState.processor) {
                 recorderState.processor.disconnect();
             }
@@ -2881,11 +3275,15 @@ const webUI = `<!DOCTYPE html>
                 await recorderState.context.close();
             }
             recorderState = createRecorderState();
+            if (wasServerMode && opts.forceServerStop !== false) {
+                await forceStopServerRecording();
+            }
         }
 
         function createRecorderState() {
             return {
                 isRecording: false,
+                isStopping: false,
                 mode: '',
                 stream: null,
                 context: null,
@@ -2898,8 +3296,13 @@ const webUI = `<!DOCTYPE html>
         }
 
         function updateRecordButton() {
-            recordBtn.classList.toggle('recording', recorderState.isRecording);
-            recordBtn.textContent = recorderState.isRecording ? 'Stop recording' : 'Record audio';
+            const active = recorderState.isRecording;
+            recordBtn.classList.toggle('recording', active);
+            if (recorderState.isStopping) {
+                recordBtn.textContent = 'Processing recording...';
+            } else {
+                recordBtn.textContent = active ? 'Stop recording' : 'Record audio';
+            }
         }
 
         function renderDraftAttachments() {

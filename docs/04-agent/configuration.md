@@ -19,6 +19,8 @@ TOML 是当前支持的配置格式；JSON 配置已废弃。
 ```toml
 instruction = "回答要简洁、自然、有帮助。默认用简体中文回答；用户明确使用其他语言时跟随用户语言。Aiden 通常用于控制连接的手机或移动 UI，但必须根据截图、工具结果和用户输入推断当前可见目标，不要假设。"
 max_iterations = -1
+screenshot_keep_n = 3
+screenshot_prune_interval = 25
 input_mode = "text"
 
 [model]
@@ -99,6 +101,8 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `instruction` | - | Agent deployment/persona instruction；默认只放简短语气、语言和目标设备软默认。工具边界、环境感知、UI 操作约束和 skill 策略由运行时默认 prompt 提供，避免在配置中重复长规则 |
 | `additional_prompt` | - | 额外 prompt 字段；运行时会追加到 `instruction` 后面 |
 | `max_iterations` | `-1` | 单次运行最大工具调用循环次数；`-1` 表示不限制 |
+| `screenshot_keep_n` | `3` | LLM 上下文中截图裁剪的最近保留数量；未设置或 `0` 使用默认值 |
+| `screenshot_prune_interval` | `25` | 截图超过 `screenshot_keep_n + screenshot_prune_interval` 后，按批次把旧截图替换为占位符；未设置或 `0` 使用默认值 |
 | `input_mode` | `text` / `stt` / `audio` | 输入模式 |
 | `trigger_mode` | `manual` / `wakeup` | 语音模式触发方式 |
 | `vad_backend` | `rknn` | VAD 后端：`rknn` 使用 NPU encoder + CPU LSTM/decoder，`cpu` 使用纯 CPU helper |
@@ -174,7 +178,7 @@ STT：
 
 - `provider = "openai-whisper"`：当前可用；
 - `provider = "openrouter"`：当前可用，默认 endpoint 为 `https://openrouter.ai/api/v1/audio/transcriptions`，请求体使用 base64 WAV；
-- `provider = "tencent"`：字段已声明，Tencent ASR 仍属于待完善项。
+- `provider = "tencent"` 或 `tencent_asr`：腾讯云一句话识别（SentenceRecognition），使用 `secret_id` / `secret_key`，无需 `base_url`。
 
 TTS：
 
@@ -280,6 +284,24 @@ voice_id = "Cherry"
 [tts.credentials.volcengine]
 model = "seed-tts-2.0"
 voice_id = "zh_female_vv_uranus_bigtts"
+```
+
+## Episode 遥测（Langfuse）
+
+可选。任务结束后将完整 episode 异步上报到 Langfuse，详见 [telemetry-langfuse.md](./telemetry-langfuse.md)。
+
+```toml
+[telemetry]
+enabled = false
+provider = "langfuse"
+base_url = "http://langfuse.example.com:3000"
+public_key = "pk-lf-..."
+secret_key = "sk-lf-..."
+upload_screenshots = true
+upload_timeout_sec = 30
+max_retry = 2
+environment = "default"
+tags = ["aiden-hardware"]
 ```
 
 ## 已知限制

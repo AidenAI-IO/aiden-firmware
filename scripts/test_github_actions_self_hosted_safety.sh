@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+build_workflow="$repo_root/.github/workflows/build.yml"
 
 ruby - "$repo_root" <<'RUBY'
 require "yaml"
@@ -29,18 +30,20 @@ def self_hosted_capable?(runs_on)
   values.include?("self-hosted") || dynamic_self_hosted_capable?(runs_on)
 end
 
-def main_only_guarded?(condition, dynamic_runner)
+def repo_branch_guarded?(condition, dynamic_runner)
   normalized = condition.gsub(/\s+/, " ")
   blocks_pr_events =
     normalized.include?("github.event_name != 'pull_request'") &&
     normalized.include?("github.event_name != 'pull_request_target'")
-  requires_main = normalized.include?("github.ref == 'refs/heads/main'")
+  requires_repo_branch =
+    normalized.include?("startsWith(github.ref, 'refs/heads/')") ||
+    normalized.include?('startsWith(github.ref, "refs/heads/")')
   runner_guard =
     !dynamic_runner ||
     normalized.include?("inputs.runner != 'self-hosted'") ||
     normalized.include?("inputs.runner == 'self-hosted'")
 
-  blocks_pr_events && requires_main && runner_guard
+  blocks_pr_events && requires_repo_branch && runner_guard
 end
 
 failures = []
@@ -55,10 +58,10 @@ Dir.glob(File.join(workflow_dir, "*.{yml,yaml}")).sort.each do |file|
 
     dynamic_runner = dynamic_self_hosted_capable?(runs_on)
     condition = job["if"].to_s
-    next if main_only_guarded?(condition, dynamic_runner)
+    next if repo_branch_guarded?(condition, dynamic_runner)
 
     relative_file = file.delete_prefix("#{repo_root}/")
-    failures << "#{relative_file}:#{job_name} can run on self-hosted without a job-level main-only guard"
+    failures << "#{relative_file}:#{job_name} can run on self-hosted without a job-level repo-branch guard"
   end
 end
 
@@ -68,5 +71,19 @@ if failures.any?
   exit 1
 end
 
-puts "GitHub Actions self-hosted main-only safety check passed."
+puts "GitHub Actions self-hosted repo-branch safety check passed."
 RUBY
+
+sanitize_line="$(grep -n 'Remove unusable pico-sdk submodule checkout' "$build_workflow" | sed 's/:.*//' | head -n 1 || true)"
+checkout_line="$(grep -n 'uses: actions/checkout@v4' "$build_workflow" | sed 's/:.*//' | head -n 1 || true)"
+if [[ -z "$sanitize_line" || -z "$checkout_line" || "$sanitize_line" -ge "$checkout_line" ]]; then
+  echo "self-hosted build workflow must remove unusable pico-sdk submodule checkouts before actions/checkout" >&2
+  exit 1
+fi
+
+if ! grep -Fq 'git -C "$sdk_dir" rev-parse --verify HEAD' "$build_workflow" || \
+   ! grep -Fq 'sdk_git_dir="$GITHUB_WORKSPACE/.git/modules/pico-sdk"' "$build_workflow" || \
+   ! grep -Fq 'rm -rf -- "$sdk_dir" "$sdk_git_dir"' "$build_workflow"; then
+  echo "self-hosted build workflow must detect and remove pico-sdk checkouts whose current revision is unavailable" >&2
+  exit 1
+fi

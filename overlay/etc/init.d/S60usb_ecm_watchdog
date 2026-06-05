@@ -1,0 +1,154 @@
+#!/bin/sh
+# Aiden USB ECM half-up watchdog.
+#
+# After iPhone lock screen (and occasionally after Mac sleep), USB ECM enters
+# a "half-up" state: the gadget UDC is still configured, usb0 is UP, but no
+# traffic flows in either direction. The host loses its DHCP lease and the
+# phone bridge stays disconnected indefinitely. Unbinding and rebinding the
+# gadget UDC forces the host to re-enumerate and recover, without an actual
+# cable unplug. This script monitors usb0 RX bytes and triggers that recovery
+# automatically.
+
+GADGET_UDC=/sys/kernel/config/usb_gadget/aiden_hid/UDC
+UDC_NAME=ffb00000.usb
+UDC_STATE=/sys/class/udc/${UDC_NAME}/state
+LOG_FILE=/var/log/aiden_usb_ecm_watchdog.log
+PID_FILE=/run/aiden_usb_ecm_watchdog.pid
+
+CHECK_INTERVAL=15      # poll usb0 RX every N seconds
+STALL_THRESHOLD=90     # rebind if RX unchanged for this many seconds
+COOLDOWN=180           # do not rebind more than once per this many seconds
+
+log() {
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
+}
+
+read_rx_bytes() {
+    awk '/^[[:space:]]*usb0:/ { gsub(":", " ", $0); print $2; exit }' /proc/net/dev 2>/dev/null
+}
+
+is_configured() {
+    state=$(cat "$UDC_STATE" 2>/dev/null)
+    [ "$state" = "configured" ]
+}
+
+rebind_udc() {
+    log "rebinding UDC ($UDC_NAME)"
+    # Note: configfs UDC requires a non-empty write (newline is fine) to
+    # trigger unbind. `: > FILE` truncates to 0 bytes which the gadget driver
+    # treats as a no-op, leaving UDC bound; the subsequent rebind then fails
+    # with EBUSY. Use `echo` to ensure a newline byte reaches the driver.
+    if ! echo "" > "$GADGET_UDC" 2>>"$LOG_FILE"; then
+        log "unbind FAILED (write to $GADGET_UDC returned error)"
+        return 1
+    fi
+    # Wait for the driver to actually drop the binding. State should leave
+    # 'configured'; on RV1106 this typically takes <500ms but can spike.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        cur=$(cat "$GADGET_UDC" 2>/dev/null)
+        if [ -z "$cur" ]; then
+            break
+        fi
+        sleep 1
+    done
+    cur=$(cat "$GADGET_UDC" 2>/dev/null)
+    if [ -n "$cur" ]; then
+        log "unbind did not take effect (UDC still=$cur after 10s); aborting rebind"
+        return 1
+    fi
+    if ! echo "$UDC_NAME" > "$GADGET_UDC" 2>>"$LOG_FILE"; then
+        log "rebind FAILED (write $UDC_NAME to $GADGET_UDC returned error; udc state=$(cat "$UDC_STATE" 2>/dev/null))"
+        return 1
+    fi
+    log "rebind complete (udc state=$(cat "$UDC_STATE" 2>/dev/null))"
+}
+
+watchdog_main() {
+    last_rx=
+    last_rx_change=$(date +%s)
+    last_rebind=0
+
+    while :; do
+        sleep "$CHECK_INTERVAL"
+        now=$(date +%s)
+
+        if ! is_configured; then
+            # Host disconnected or USB in transient state. Reset stall
+            # tracking so we don't trigger a stale rebind right after replug.
+            last_rx=
+            last_rx_change=$now
+            continue
+        fi
+
+        rx=$(read_rx_bytes)
+        : "${rx:=0}"
+
+        if [ "$rx" != "$last_rx" ]; then
+            last_rx=$rx
+            last_rx_change=$now
+            continue
+        fi
+
+        # RX unchanged this round.
+        if [ $((now - last_rebind)) -lt $COOLDOWN ]; then
+            continue
+        fi
+
+        stalled=$((now - last_rx_change))
+        if [ $stalled -ge $STALL_THRESHOLD ]; then
+            log "ECM stall detected (usb0 rx=$rx unchanged for ${stalled}s) — rebinding"
+            if rebind_udc; then
+                last_rebind=$now
+            fi
+            last_rx=
+            last_rx_change=$now
+        fi
+    done
+}
+
+start() {
+    if [ -f "$PID_FILE" ]; then
+        pid=$(cat "$PID_FILE" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "aiden_usb_ecm_watchdog already running (pid $pid)"
+            return 0
+        fi
+        rm -f "$PID_FILE"
+    fi
+
+    mkdir -p "$(dirname "$LOG_FILE")"
+    log "starting (interval=${CHECK_INTERVAL}s threshold=${STALL_THRESHOLD}s cooldown=${COOLDOWN}s)"
+    watchdog_main &
+    pid=$!
+    echo "$pid" > "$PID_FILE"
+    echo "aiden_usb_ecm_watchdog started (pid $pid)"
+}
+
+stop() {
+    if [ -f "$PID_FILE" ]; then
+        pid=$(cat "$PID_FILE" 2>/dev/null)
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null
+        fi
+        rm -f "$PID_FILE"
+    fi
+    log "stopped"
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; sleep 1; start ;;
+    status)
+        if [ -f "$PID_FILE" ]; then
+            pid=$(cat "$PID_FILE" 2>/dev/null)
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                echo "running (pid $pid)"
+                exit 0
+            fi
+        fi
+        echo "stopped"
+        exit 1
+        ;;
+    *) echo "Usage: $0 {start|stop|restart|status}" >&2; exit 1 ;;
+esac

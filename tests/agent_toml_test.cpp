@@ -42,6 +42,10 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.voice_tool_call_speech = false;
     cfg.voice_max_response_tokens = 240;
     cfg.max_iterations = 6;
+    cfg.screenshot_keep_n = 5;
+    cfg.screenshot_prune_interval = 40;
+    cfg.screen_stable_timeout_ms = 4500;
+    cfg.screen_stable_ms = 700;
 
     cfg.model.provider = "openrouter";
     cfg.model.model = "openai/gpt-4o-mini";
@@ -68,9 +72,22 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.hid.keyboard_device = "/dev/hidg0";
     cfg.hid.mouse_device = "/dev/hidg1";
     cfg.hid.frame_socket = "/run/frame_service/frame_service.sock";
+    cfg.hid.pointer_mode = "touchscreen";
 
     cfg.search.provider = "duckduckgo";
     cfg.search.api_key = "tvly-test";
+
+    cfg.telemetry.enabled = true;
+    cfg.telemetry.provider = "langfuse";
+    cfg.telemetry.base_url = "http://langfuse.example.com:3000";
+    cfg.telemetry.public_key = "pk-lf-test";
+    cfg.telemetry.secret_key = "sk-lf-test";
+    cfg.telemetry.upload_screenshots = false;
+    cfg.telemetry.upload_timeout_sec = 45;
+    cfg.telemetry.max_retry = 3;
+    cfg.telemetry.tags.push_back("aiden-hardware");
+    cfg.telemetry.tags.push_back("field-test");
+    cfg.telemetry.environment = "staging";
 
     std::string path = make_temp_path("roundtrip.toml");
     std::string err;
@@ -96,9 +113,13 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.voice_max_turns == 4);
     CHECK(loaded.voice_interrupt_on_wakeup == false);
     CHECK(loaded.voice_streaming_tts_enabled == false);
-    CHECK(loaded.voice_tool_call_speech == false);
-    CHECK(loaded.voice_max_response_tokens == 240);
-    CHECK(loaded.max_iterations == 6);
+	CHECK(loaded.voice_tool_call_speech == false);
+	CHECK(loaded.voice_max_response_tokens == 240);
+	CHECK(loaded.max_iterations == 6);
+	CHECK(loaded.screenshot_keep_n == 5);
+	CHECK(loaded.screenshot_prune_interval == 40);
+	CHECK(loaded.screen_stable_timeout_ms == 4500);
+	CHECK(loaded.screen_stable_ms == 700);
 
     CHECK(loaded.model.provider == "openrouter");
     CHECK(loaded.model.model == "openai/gpt-4o-mini");
@@ -125,9 +146,23 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.hid.keyboard_device == "/dev/hidg0");
     CHECK(loaded.hid.mouse_device == "/dev/hidg1");
     CHECK(loaded.hid.frame_socket == "/run/frame_service/frame_service.sock");
+    CHECK(loaded.hid.pointer_mode == "touchscreen");
 
     CHECK(loaded.search.provider == "duckduckgo");
     CHECK(loaded.search.api_key == "tvly-test");
+
+    CHECK(loaded.telemetry.enabled == true);
+    CHECK(loaded.telemetry.provider == "langfuse");
+    CHECK(loaded.telemetry.base_url == "http://langfuse.example.com:3000");
+    CHECK(loaded.telemetry.public_key == "pk-lf-test");
+    CHECK(loaded.telemetry.secret_key == "sk-lf-test");
+    CHECK(loaded.telemetry.upload_screenshots == false);
+    CHECK(loaded.telemetry.upload_timeout_sec == 45);
+    CHECK(loaded.telemetry.max_retry == 3);
+    REQUIRE(loaded.telemetry.tags.size() == 2);
+    CHECK(loaded.telemetry.tags[0] == "aiden-hardware");
+    CHECK(loaded.telemetry.tags[1] == "field-test");
+    CHECK(loaded.telemetry.environment == "staging");
 
     std::remove(path.c_str());
 }

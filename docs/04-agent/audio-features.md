@@ -26,7 +26,7 @@ Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go
 | --- | --- | --- |
 | Audio client | `audio_client.go` | 连接 `audio_service`，启动录音/播放 session，读写 PCM chunk |
 | VAD | `vad.go` + `/oem/usr/bin/rknn_vad` 或 `/oem/usr/bin/cpu_vad` | Silero VAD 推理；输入固定为 16 kHz、512 samples/32 ms，并在 helper 中维护 `state` 状态 |
-| STT | `stt.go` | OpenAI Whisper / OpenRouter 实现；Tencent ASR 字段已预留 |
+| STT | `stt.go`, `tencent_asr_stt.go` | OpenAI Whisper / OpenRouter / 腾讯云 ASR（`tencent` 或 `tencent_asr`） |
 | TTS | `tts/`、`tts_helpers.go` | 可插拔 TTS provider，输出 PCM 后通过 `audio_service` 播放；必要时自动重采样到设备播放采样率 |
 | Dialog manager | `audio_dialog.go` | 编排录音、VAD、STT/LLM/TTS 流程 |
 

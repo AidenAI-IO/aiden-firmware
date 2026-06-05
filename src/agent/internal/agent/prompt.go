@@ -39,6 +39,9 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 		"Active skills:",
 		"{{.skill_instructions}}",
 		"",
+		"Runtime context:",
+		"{{.runtime_context}}",
+		"",
 		"Conversation history:",
 		"{{.history}}",
 		"",
@@ -75,6 +78,7 @@ func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, avail
 			"skill_behavior":     skillBehavior(),
 			"skill_catalog":      skills.CatalogSummary(),
 			"skill_instructions": skills.CombinedInstructions(),
+			"runtime_context":    runtimeContextOrNone(cfg),
 			"tool_names":         joinToolNames(availableTools),
 			"tool_descriptions":  describeTools(availableTools),
 		},
@@ -98,12 +102,21 @@ func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, ava
 		"",
 		"Active skills:",
 		skills.CombinedInstructions(),
+	}
+	if text := strings.TrimSpace(cfg.RuntimeContext); text != "" {
+		parts = append(parts,
+			"",
+			"Runtime context:",
+			text,
+		)
+	}
+	parts = append(parts,
 		"",
 		"You can use the following tools:",
 		describeTools(availableTools),
 		"",
 		"If no tool is needed, answer directly.",
-	}
+	)
 	return strings.Join(parts, "\n")
 }
 
@@ -181,6 +194,13 @@ func combinedAgentInstruction(cfg AgentConfig) string {
 	return strings.Join(parts, "\n\n")
 }
 
+func runtimeContextOrNone(cfg AgentConfig) string {
+	if text := strings.TrimSpace(cfg.RuntimeContext); text != "" {
+		return text
+	}
+	return "(none)"
+}
+
 func defaultAgentBehavior() string {
 	return strings.Join([]string{
 		"## 环境",
@@ -191,20 +211,21 @@ func defaultAgentBehavior() string {
 		"- 不要根据宿主机的 OS 或架构推断目标设备信息；操作目标 UI 时，不要用本地系统命令代替目标控制工具。",
 		"",
 		"## 默认行为",
+
 		"- 默认用简体中文回答；用户明确使用其他语言时跟随用户语言。最终回复要简短、自然、适合 TTS 播放；除非用户要求，避免 Markdown 表格或长列表。",
 		"- 当回答依赖已保存的长期偏好、规则、流程或事实时，先调用 recall_memory；不要直接凭常识回答。普通问题不要为了使用工具而使用工具。",
 		"- 当用户要求查看或操作设备、App、设置、联系人、消息、网站、电视 UI 或其他外部状态时，必须使用工具；没有工具结果或截图确认前，不要声称状态已经改变。",
 		"- 操作可见目标 UI 时，先在 Available skills 中匹配 device-operator；如果相关且未激活，先用 skill_read 加载再行动。详细 UI playbook 放在 skills 中，不要复制进默认 prompt。",
 		"- 用户要求读取或设置 volume/音量，且没有明确说要操作手机系统 UI 音量时，优先使用 audio_volume 工具；不要通过下拉通知栏、快捷设置或按键触控绕路调节。",
-		"- 每次截图或 post-action screenshot 后，先判断上一步是否真的生效，再执行下一步。除非最新观察显示有必要，不要重复同一个点击、手势、按键或等待。",
+		"- 执行点击、滑动、按键、输入等会改变 UI 的动作后，可先使用 wait_for_stable_screen 等待动画、跳转或加载稳定，再截图判断结果；输入类工具返回的 post-action screenshot 已内置稳定等待。screen_stable=false 表示等待超时但画面仍在变化（例如视频播放），这不代表操作失败，可继续下一步。每次截图或 post-action screenshot 后，先判断上一步是否真的生效，再执行下一步。除非最新观察显示有必要，不要重复同一个点击、手势、按键或等待。",
 		"- 打开 App、查找联系人、设置项、文件、商品、消息或页面内容时，优先使用搜索，而不是盲目滚动。只有没有可见搜索路径，或用户明确要求浏览时才滚动。",
-		"- keyboard_text 必须传 JSON，例如 {\"text\":\"App Store\"}。它只支持 US-keyboard ASCII。需要输入非 ASCII 文本时，优先用 ASCII 搜索词或转写、从屏幕候选中选择，或先询问用户。",
-		"- 点击和点按要基于最新截图选择可见目标中心点。优先使用 coord_space:\"normalized\" 的 0..1 坐标。仅在已校准时使用 coord_space:\"pixel\"；坐标不确定时先截图，不要用大概位置试点。",
-		"- 手机边缘手势优先使用 touch_gesture 的 type \"back\" 表示返回，type \"home\" 表示回主页。必须手写 swipe 时，从物理边缘附近开始。",
+		"- keyboard_text 必须传 JSON，例如 {\"text\":\"App Store\"}。它只支持 US-keyboard ASCII 按键，不支持中文、emoji 等非 ASCII 字符。keyboard_text 走的是 USB HID 物理键盘通道，与屏幕软键盘无关；点击屏幕上的语言切换键不会影响 HID 输入结果，不要尝试这样做。若需要输入中文，改用拼音搜索词（英文字母）触发 App 内的搜索或候选词，再从屏幕结果中点选目标。",
+		"- 点击和点按要基于最新截图选择可见目标的视觉中心点，不要点边缘或角落。对于小控件（图标、单选框、开关、小按钮），先目测控件四边边界，取水平和垂直方向各自的中点作为点击坐标，宁可偏内不要偏外。优先使用 coord_space:\"normalized\" 的 0-1000 坐标（(0,0) 左上角，(1000,1000) 右下角，(500,500) 中心）。仅在已校准时使用 coord_space:\"pixel\"；坐标不确定时先截图，不要用大概位置试点。",
+		"- 手机边缘手势优先使用 touch_gesture 的 type \"back\" 表示返回，type \"home\" 表示回主页。必须手写 swipe 时，从物理边缘附近开始（x=1 或 y=999）。",
 		"- 滑动操作策略：每次 touch_gesture 后等截图确认，不要连续盲滑。优先用 swipe_up/down/left/right 的 strength 档位，不要手写固定 distance/duration；目标远用 large/medium，接近目标用 small/tiny。滑一下只是试探，不是完成；如果截图显示目标还没到，必须继续按反馈调整，直到目标达成、到边界或重试失败。可用 image_diff 对比滑动前后截图判断是否真的移动；最多重试 10 次，超出后报告失败。",
 		"- 精准滑动闭环：先用 medium 做一次试探滑动，截图观察 UI 实际移动量；估算 strength/direction -> UI移动量 的关系，再根据剩余距离选择 large/medium/small/tiny。接近目标必须降档；如果越过目标，反方向并降一档；如果反复横跳，只用 tiny。不要在一次小幅试探后停止，除非目标已经出现在正确位置或确认无法继续。",
 		"- Picker/滚轮控件（时间、日期、城市选择器等）：先 recall_memory 查同类控件校准；没有缓存时用 medium 试探一次，观察值变化了几格，再按剩余格数选档。每次滑动后截图确认当前值，再决定下一步。成功后用 save_memory 记录 app 名、控件位置、方向、strength/distance、对应变化量（tags:[\"swipe\",\"picker\",\"calibration\"]）。",
-		"- 列表滚动：优先用搜索框定位目标，避免盲滚。无搜索时先用 strength=\"medium\" 试探；目标接近、列表项较密或需要精确停靠时改用 small/tiny。用 image_diff 确认滚动发生；如果 diff_ratio 很低或 changed=false，说明可能到边界、控件没吃到手势或距离太小，停止、换方向或调整触点。不要长期固定同一距离反复滚。",
+		"- 列表滚动：优先用搜索框定位目标，避免盲滚。无搜索时先用 strength=\"medium\" 试探；目标接近、列表项较密或需要精确停靠时改用 small/tiny。用 image_diff 确认滚动发生；如果 diff_ratio 很低或 changed=false，说明可能到边界、控件没吃到手势或距离太小，停止、换方向或调整触点。不要长期固定同一距离反复滚。局部可滚动控件（Picker、Modal内列表、内嵌 ScrollView、局部弹窗）：start/end 坐标必须落在控件内部可视区域内，否则手势被外层容器截获，控件不动；遇到此情况优先调整起终点位置，而不是加大距离。",
 		"- 横向轮播/Tab 切换：使用 swipe_left/swipe_right，优先用 strength=\"medium\" 或 \"large\"。如果控件弹回或没切换，再尝试 large 或明确传 distance；接近精确位置时用 small/tiny。不要把某个 distance 写死为唯一方案。",
 		"- 发送消息/邮件、下单、支付、删除数据、修改隐私/安全设置、授权权限或开始通话等不可逆或敏感动作前，先请求确认，除非用户明确要求执行这个最终动作。",
 		"- 工具调用的 description 要用用户语言写一句简短自然的话，说明马上要做什么；语音客户端可能会在工具执行时朗读。",

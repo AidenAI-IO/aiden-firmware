@@ -10,8 +10,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/tmc/langchaingo/llms"
-
 	ttsmodule "aiden-agent/internal/agent/tts"
 )
 
@@ -211,7 +209,7 @@ func containsProviderName(values []string, target string) bool {
 }
 
 func TestAudioDialogRunAgentTurnStreamsThroughProviderManager(t *testing.T) {
-	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "streamed answer"}}}}}
+	model := &scriptedModel{responses: roleDirectResponses("streamed answer")}
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: model},
@@ -238,8 +236,8 @@ func TestAudioDialogRunAgentTurnStreamsThroughProviderManager(t *testing.T) {
 	if !result.SpeechStreamed {
 		t.Fatal("SpeechStreamed = false, want true when provider manager streamed audio")
 	}
-	if got := provider.texts(); len(got) != 1 || got[0] != "chunk:streamed answer" {
-		t.Fatalf("provider texts = %#v, want streamed chunk", got)
+	if got := provider.texts(); len(got) != 1 || got[0] != "streamed answer" {
+		t.Fatalf("provider texts = %#v, want streamed answer", got)
 	}
 }
 

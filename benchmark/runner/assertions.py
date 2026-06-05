@@ -4,7 +4,8 @@ import json
 import re
 from typing import Any
 from runner.models import HardAssertionResults, Trace
-from runner.suite import HardAssertions
+from runner.suite import HardAssertions, TraceObservationSpec
+from runner.trace import trace_has_skill_read
 
 @dc.dataclass
 class AssertionOutcome:
@@ -23,6 +24,36 @@ class ExpectedRecallResult:
     passed: bool
     expected_memory_ids: list[str]
     recalled_memory_ids: list[str]
+
+@dc.dataclass
+class TraceObservationResult:
+    id: str
+    description: str
+    passed: bool
+    reason: str
+
+
+def evaluate_trace_observations(
+    trace: Trace, specs: list[TraceObservationSpec]
+) -> list[TraceObservationResult]:
+    results: list[TraceObservationResult] = []
+    for spec in specs:
+        passed = trace_has_skill_read(trace, spec.skill_name)
+        reason = (
+            f"Trace contains skill_read for {spec.skill_name!r}."
+            if passed
+            else f"No skill_read call for {spec.skill_name!r} in trace."
+        )
+        results.append(
+            TraceObservationResult(
+                id=spec.id,
+                description=spec.description,
+                passed=passed,
+                reason=reason,
+            )
+        )
+    return results
+
 
 def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool) -> AssertionOutcome:
     results = HardAssertionResults(

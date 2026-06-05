@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/chains"
@@ -33,28 +35,32 @@ func effectiveMaxIterations(configured int) int {
 const currentEnvironmentHintMaxAge = 10 * time.Minute
 
 type Runtime struct {
-	config           Config
-	models           ModelResolver
-	memories         *MemoryManager
-	tools            *ToolSet
-	skills           *SkillManager
-	skillsLoaded     bool
-	skillsReloadMu   sync.Mutex
-	skillsDirty      bool
-	mergeWorker      *MergeWorker
-	logger           *Logger
-	profileDebouncer *ProfileDebouncer
-	sleep            *SleepController
-	memoryPlane      MemoryPlane
+	config             Config
+	models             ModelResolver
+	memories           *MemoryManager
+	tools              *ToolSet
+	skills             *SkillManager
+	skillsLoaded       bool
+	skillsReloadMu     sync.Mutex
+	skillsDirty        bool
+	mergeWorker        *MergeWorker
+	logger             *Logger
+	profileDebouncer   *ProfileDebouncer
+	sleep              *SleepController
+	memoryPlane        MemoryPlane
+	telemetrySessionID string
 }
 
 type RunRequest struct {
-	Input        string
-	Attachments  []InputAttachment
-	Skills       []string
-	StreamWriter io.Writer
-	MaxTokens    int
-	EventHandler func(RunEvent)
+	Input       string
+	Attachments []InputAttachment
+	Skills      []string
+	// RuntimeContext is dynamic per-turn system context, such as connected
+	// hardware/app state. It is not persisted as user configuration.
+	RuntimeContext string
+	StreamWriter   io.Writer
+	MaxTokens      int
+	EventHandler   func(RunEvent)
 }
 
 type RunResult struct {
@@ -93,20 +99,34 @@ type RunEvent struct {
 }
 
 type usageTrackingModel struct {
-	inner   llms.Model
-	metrics *RunMetrics
+	inner         llms.Model
+	metrics       *RunMetrics
+	promptCapture *telemetryPromptCapture
 }
 
 func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	startedAt := time.Now()
 	res, err := m.inner.GenerateContent(ctx, messages, options...)
 	if err == nil {
 		recordUsageMetrics(m.metrics, res)
+	}
+	if m.promptCapture != nil {
+		m.promptCapture.Record(ctx, startedAt, time.Now(), messages, options, res, err)
 	}
 	return res, err
 }
 
 func (m *usageTrackingModel) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
-	return m.inner.Call(ctx, prompt, options...)
+	startedAt := time.Now()
+	out, err := m.inner.Call(ctx, prompt, options...)
+	if m.promptCapture != nil {
+		res := &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: out}}}
+		m.promptCapture.Record(ctx, startedAt, time.Now(), []llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart(prompt)},
+		}}, options, res, err)
+	}
+	return out, err
 }
 
 func NewRuntime(cfg Config) (*Runtime, error) {
@@ -166,10 +186,18 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err := proxy.Validate(); err != nil {
 		return nil, fmt.Errorf("proxy environment: %w", err)
 	}
-	toolSet := NewBuiltinToolSet(cfg.HID, cfg.Audio, cfg.Search, proxy, WithSleepController(sleepController))
+	toolSet := NewBuiltinToolSet(
+		cfg.HID,
+		cfg.Audio,
+		cfg.Search,
+		proxy,
+		WithSleepController(sleepController),
+		WithScreenStableDefaults(cfg.ScreenStableDefaults()),
+	)
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
 	modelManager := NewModelManager(cfg.Model, proxy)
 	summarizeFn := buildLLMSummarizeFn(modelManager)
+	structuredSummarizeFn := buildLLMStructuredSummarizeFn(modelManager)
 	profileFn := buildLLMProfileFn(modelManager)
 	contextWindowFn := func() int { return modelManager.Spec().ContextWindow }
 
@@ -185,7 +213,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 	toolSet.RegisterMemoryTools(memoryDir, profileFn, extractionCfg.SummaryMaxChunks, debouncer)
 
-	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithMemoryLogger(logger)), toolSet, skillIndex)
+	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithStructuredSummarizeFn(structuredSummarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithMemoryLogger(logger)), toolSet, skillIndex)
 
 	// Register skill tools after the runtime exists so skill_manage can mark the
 	// skill index dirty. The updated index is reloaded at the start of the next run.
@@ -227,13 +255,14 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
 	}
 	rt := &Runtime{
-		config:       cfg,
-		models:       models,
-		memories:     memories,
-		tools:        tools,
-		skills:       skillManager,
-		skillsLoaded: skillIndex != nil && len(skillIndex.Names()) > 0,
-		sleep:        sleepController,
+		config:             cfg,
+		models:             models,
+		memories:           memories,
+		tools:              tools,
+		skills:             skillManager,
+		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
+		sleep:              sleepController,
+		telemetrySessionID: uuid.NewString(),
 	}
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
@@ -286,7 +315,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
-	model = &usageTrackingModel{inner: model, metrics: metrics}
+	promptCapture := newTelemetryPromptCapture(r.config.Telemetry.EnabledOrDefault())
+	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture}
 
 	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
 	if err != nil {
@@ -342,8 +372,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if streamCallbackHandler != nil {
 		executorHandler = streamCallbackHandler
 	}
-	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext)
-	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, memoryHandle.Memory, maxIterations, req.Attachments, executorHandler, episodeRecorder)
+	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
+	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, memoryHandle.Memory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault())
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
@@ -358,7 +388,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			}
 		}
 		if err != nil {
-			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
+			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
 			return RunResult{}, err
 		}
 	}
@@ -366,21 +396,21 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
 	r.memories.SetLastPromptTokens(metrics.LastPromptTokens)
 	if err := r.memories.AppendExchange(ctx, "default", normalizedInput, output); err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
 		return RunResult{}, err
 	}
 
 	memorySnapshot, err := r.memories.Snapshot(ctx, "default")
 	if err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
 		return RunResult{}, err
 	}
 	if err := r.memories.SaveSnapshot(ctx, "default", memorySnapshot); err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
 		return RunResult{}, err
 	}
 	r.memories.RequestMaintenance()
-	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil)
+	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture)
 
 	sleepRequested, sleepReason := r.sleep.Consume()
 	return RunResult{
@@ -508,7 +538,7 @@ func toolNamesFromTools(tools []langtools.Tool) []string {
 	return uniqueNonEmpty(names)
 }
 
-func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error) {
+func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture) {
 	if recorder == nil || r.memoryPlane == nil {
 		return
 	}
@@ -521,11 +551,67 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 	tags := cfg.extractTagsFromText(input)
 	entities := cfg.extractEntitiesFromText(input)
 	episode := recorder.Finish(output, metrics, runErr, tags, entities)
+	enrichEpisodeTelemetry(&episode, r.config)
+	r.enrichEpisodeRuntimeTelemetry(&episode)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := r.memoryPlane.CommitEpisode(ctx, episode); err != nil && r.logger != nil {
 		r.logger.Warn("[memory] commit episode failed: %v", err)
+		return
 	}
+	r.exportEpisodeBestEffort(episode, promptCapture)
+}
+
+func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
+	if r == nil || episode == nil {
+		return
+	}
+	if episode.Extra == nil {
+		episode.Extra = map[string]interface{}{}
+	}
+	if extraString(episode.Extra, "session_id") == "" && r.telemetrySessionID != "" {
+		episode.Extra["session_id"] = r.telemetrySessionID
+	}
+	if _, ok := episode.Extra["model_parameters"]; !ok {
+		if params := telemetryModelParametersFromModelConfig(r.config.Model); len(params) > 0 {
+			episode.Extra["model_parameters"] = params
+		}
+	}
+}
+
+func telemetryModelParametersFromModelConfig(cfg ModelConfig) map[string]interface{} {
+	params := map[string]interface{}{}
+	if cfg.Temperature != 0 {
+		params["temperature"] = cfg.Temperature
+	}
+	if cfg.MaxTokens > 0 {
+		params["max_tokens"] = cfg.MaxTokens
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	return params
+}
+
+func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *telemetryPromptCapture) {
+	if !r.config.Telemetry.EnabledOrDefault() || strings.TrimSpace(episode.UserGoal) == "" {
+		return
+	}
+	if r.config.ConfigDir == "" {
+		return
+	}
+	exporter := NewEpisodeExporter(r.config.Telemetry, r.logger)
+	promptCalls := promptCapture.Snapshot()
+	episodesRoot := filepath.Join(r.config.ConfigDir, "memory", "episodes")
+	episodeDir := EpisodeDirectory(episodesRoot, episode)
+	timeout := r.config.Telemetry.UploadTimeoutOrDefault()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if err := exporter.ExportEpisodeDir(ctx, episodeDir, episode, promptCalls); err != nil && r.logger != nil {
+			r.logger.Warn("[telemetry] export episode failed: %v", err)
+		}
+	}()
 }
 
 func wrapToolsWithCallbacks(tools []langtools.Tool, handler callbacks.Handler) []langtools.Tool {
@@ -547,12 +633,14 @@ func (r *Runtime) buildAgent(
 	skills ResolvedSkills,
 	availableTools []langtools.Tool,
 	attachments []InputAttachment,
+	runtimeContext string,
 	callbackHandler callbacks.Handler,
 ) agents.Agent {
 	systemMessage := buildFunctionAgentSystemMessage(
 		AgentConfig{
 			Instruction:      r.config.Instruction,
 			AdditionalPrompt: r.config.AdditionalPrompt,
+			RuntimeContext:   runtimeContext,
 		},
 		skills,
 		availableTools,
@@ -567,7 +655,7 @@ func (r *Runtime) buildAgent(
 			systemMessage += "\n\n" + string(profile)
 		}
 	}
-	return NewFunctionAgent(
+	agent := NewFunctionAgent(
 		model,
 		availableTools,
 		systemMessage,
@@ -580,9 +668,11 @@ func (r *Runtime) buildAgent(
 		attachments,
 		callbackHandler,
 	)
+	agent.ScreenshotPruning = r.config.ScreenshotPruningOrDefault()
+	return agent
 }
 
-func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []langtools.Tool, memoryContext MemoryContext) RoleProfiles {
+func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []langtools.Tool, memoryContext MemoryContext, runtimeContext string) RoleProfiles {
 	if memoryContext.IsEmpty() && r.config.ConfigDir != "" {
 		memoryContext = normalizeMemoryContext(r.memoryContextForPrompt())
 	}
@@ -590,6 +680,7 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 		AgentConfig{
 			Instruction:      r.config.Instruction,
 			AdditionalPrompt: r.config.AdditionalPrompt,
+			RuntimeContext:   runtimeContext,
 		},
 		skills,
 		availableTools,
@@ -893,6 +984,112 @@ func buildLLMSummarizeFn(models ModelResolver) SummarizeFn {
 		}
 		return strings.TrimSpace(result)
 	}
+}
+
+const structuredSummarizerPrompt = `Summarize this conversation chunk as STRICT JSON only. Do not wrap in markdown.
+Schema:
+{
+  "summary": "1 concise sentence in the same language as the conversation",
+  "user_goals": [],
+  "confirmed_facts": [],
+  "decisions": [],
+  "proposals": [],
+  "open_tasks": [],
+  "risks_or_pitfalls": [],
+  "memory_candidates": []
+}
+Rules:
+- Distinguish implemented/verified facts from proposals.
+- Put assistant suggestions or unimplemented designs in proposals, not confirmed_facts.
+- Put only explicit user-approved choices or clearly completed outcomes in decisions.
+- Put unfinished work in open_tasks.
+- memory_candidates must be durable user/project facts worth future recall; omit transient todos and assistant speculation.
+- Keep each list item short. Empty lists are allowed.
+
+Transcript:
+`
+
+const (
+	structuredSummaryMaxItems       = 16
+	structuredSummaryMaxItemRunes   = 240
+	structuredSummaryMaxSummaryRune = 480
+)
+
+func buildLLMStructuredSummarizeFn(models ModelResolver) StructuredSummarizeFn {
+	return func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary {
+		model, err := models.Get()
+		if err != nil {
+			return ChunkStructuredSummary{}
+		}
+		var transcript strings.Builder
+		for _, evt := range events {
+			content := strings.TrimSpace(evt.Content)
+			if content == "" {
+				continue
+			}
+			transcript.WriteString(fmt.Sprintf("[%s:%s] %s\n", evt.Role, evt.Type, content))
+		}
+		if transcript.Len() == 0 {
+			return ChunkStructuredSummary{}
+		}
+		result, err := llms.GenerateFromSinglePrompt(ctx, model, structuredSummarizerPrompt+transcript.String(), llms.WithMaxTokens(800))
+		if err != nil {
+			return ChunkStructuredSummary{}
+		}
+		structured, err := parseChunkStructuredSummaryJSON(result)
+		if err != nil {
+			return ChunkStructuredSummary{}
+		}
+		return structured
+	}
+}
+
+func parseChunkStructuredSummaryJSON(text string) (ChunkStructuredSummary, error) {
+	jsonText := strings.TrimSpace(text)
+	var structured ChunkStructuredSummary
+	decoder := json.NewDecoder(strings.NewReader(jsonText))
+	if err := decoder.Decode(&structured); err != nil {
+		return ChunkStructuredSummary{}, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return ChunkStructuredSummary{}, fmt.Errorf("structured summary must contain a single JSON object")
+	}
+	structured.Summary = capRunes(strings.TrimSpace(structured.Summary), structuredSummaryMaxSummaryRune)
+	structured.UserGoals = cleanStringList(structured.UserGoals)
+	structured.ConfirmedFacts = cleanStringList(structured.ConfirmedFacts)
+	structured.Decisions = cleanStringList(structured.Decisions)
+	structured.Proposals = cleanStringList(structured.Proposals)
+	structured.OpenTasks = cleanStringList(structured.OpenTasks)
+	structured.RisksOrPitfalls = cleanStringList(structured.RisksOrPitfalls)
+	structured.MemoryCandidates = cleanStringList(structured.MemoryCandidates)
+	return structured, nil
+}
+
+func cleanStringList(values []string) []string {
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		value = capRunes(strings.TrimSpace(value), structuredSummaryMaxItemRunes)
+		if value == "" {
+			continue
+		}
+		cleaned = append(cleaned, value)
+		if len(cleaned) >= structuredSummaryMaxItems {
+			break
+		}
+	}
+	return cleaned
+}
+
+func capRunes(text string, max int) string {
+	if max <= 0 || text == "" {
+		return text
+	}
+	if utf8.RuneCountInString(text) <= max {
+		return text
+	}
+	runes := []rune(text)
+	return string(runes[:max])
 }
 
 func buildLLMProfileFn(models ModelResolver) ProfileFn {

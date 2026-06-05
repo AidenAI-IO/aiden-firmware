@@ -102,6 +102,46 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
+TEST_CASE("config web exposes screenshot pruning config fields") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("\"screenshot_keep_n\"") != std::string::npos);
+    CHECK(source.find("\"screenshot_prune_interval\"") != std::string::npos);
+    CHECK(source.find("\"screen_stable_timeout_ms\"") != std::string::npos);
+    CHECK(source.find("\"screen_stable_ms\"") != std::string::npos);
+    CHECK(source.find("config.screenshot_keep_n") != std::string::npos);
+    CHECK(source.find("config.screenshot_prune_interval") != std::string::npos);
+    CHECK(source.find("config.screen_stable_timeout_ms") != std::string::npos);
+    CHECK(source.find("config.screen_stable_ms") != std::string::npos);
+    CHECK(source.find("screenshot_keep_n must be >= 0") != std::string::npos);
+    CHECK(source.find("screenshot_prune_interval must be >= 0") != std::string::npos);
+    CHECK(source.find("screen_stable_timeout_ms must be >= 0") != std::string::npos);
+    CHECK(source.find("screen_stable_ms must be >= 0") != std::string::npos);
+
+    CHECK(html.find("agent_screenshot_keep_n") != std::string::npos);
+    CHECK(html.find("agent_screenshot_prune_interval") != std::string::npos);
+    CHECK(html.find("agent_screen_stable_timeout_ms") != std::string::npos);
+    CHECK(html.find("agent_screen_stable_ms") != std::string::npos);
+    CHECK(html.find("['screenshot_keep_n','number']") != std::string::npos);
+    CHECK(html.find("['screenshot_prune_interval','number']") != std::string::npos);
+    CHECK(html.find("['screen_stable_timeout_ms','number']") != std::string::npos);
+    CHECK(html.find("['screen_stable_ms','number']") != std::string::npos);
+}
+
 TEST_CASE("config web exposes a single system env editor backed by the env file") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
@@ -159,6 +199,47 @@ TEST_CASE("config web exposes a single system env editor backed by the env file"
     CHECK(html.find("NO_PROXY=localhost,127.0.0.1,::1") == std::string::npos);
 }
 
+TEST_CASE("config web exposes telemetry settings section") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("config.telemetry.enabled") != std::string::npos);
+    CHECK(source.find("add_string_array_to_object(telemetry, \"tags\", config.telemetry.tags)") != std::string::npos);
+    CHECK(source.find("set_json_string_vector(&config->telemetry.tags, telemetry, \"tags\")") != std::string::npos);
+    CHECK(source.find("telemetry.base_url is required when telemetry.enabled is true") != std::string::npos);
+    CHECK(source.find("telemetry.public_key is required when telemetry.enabled is true") != std::string::npos);
+    CHECK(source.find("std::string telemetry_provider = lowercase_copy(trim_copy(config.telemetry.provider));") != std::string::npos);
+    CHECK(source.find("std::string provider_original = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : \"\";") != std::string::npos);
+    CHECK(source.find("std::string provider = lowercase_copy(provider_original);") != std::string::npos);
+    CHECK(source.find("public_key_env") == std::string::npos);
+    CHECK(source.find("secret_key_env") == std::string::npos);
+    CHECK(source.find("section == \"telemetry\"") != std::string::npos);
+
+    CHECK(html.find("section-telemetry") != std::string::npos);
+    CHECK(html.find("<h3>[telemetry]</h3>") != std::string::npos);
+    CHECK(html.find("telemetry_base_url") != std::string::npos);
+    CHECK(html.find("telemetry_public_key") != std::string::npos);
+    CHECK(html.find("telemetry_secret_key") != std::string::npos);
+    CHECK(html.find("telemetry_tags") != std::string::npos);
+    CHECK(html.find("public_key_env") == std::string::npos);
+    CHECK(html.find("secret_key_env") == std::string::npos);
+    CHECK(html.find("parseListValue") != std::string::npos);
+    CHECK(html.find("['tags','list']") != std::string::npos);
+}
+
 TEST_CASE("config web restarts ota only when system env changes") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
@@ -177,4 +258,108 @@ TEST_CASE("config web restarts ota only when system env changes") {
     CHECK(source.find("system env saved; services restarting") != std::string::npos);
     CHECK(source.find("config saved; agent restarting") != std::string::npos);
     CHECK(source.find("config saved; agent and ota restarting") == std::string::npos);
+}
+
+TEST_CASE("config web custom benchmark suite import endpoints") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    // Endpoints registered.
+    CHECK(source.find("\"/benchmark/suites/import\"") != std::string::npos);
+    CHECK(source.find("\"/benchmark/suites/delete\"") != std::string::npos);
+
+    // Custom suites isolated under suites/custom/ and listing flags them.
+    CHECK(source.find("/userdata/agent/benchmark/suites/custom") != std::string::npos);
+    CHECK(source.find("/suites/custom/") != std::string::npos);
+    CHECK(source.find("\"custom\"") != std::string::npos);
+
+    // Validation delegated to runner.suite.load_suite (single source of truth).
+    CHECK(source.find("from runner.suite import load_suite") != std::string::npos);
+
+    // Name sanitisation: only [A-Za-z0-9_-], length-bounded.
+    CHECK(source.find("isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_'") != std::string::npos);
+    CHECK(source.find("safe_name.size() > 64") != std::string::npos);
+
+    // Delete must only touch suites/custom/ (no arbitrary path).
+    const std::string del_marker = "std::string dest_path = \"/userdata/agent/benchmark/suites/custom/\" + safe_name + \".json\";";
+    CHECK(source.find(del_marker) != std::string::npos);
+}
+
+TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhid") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const std::string toml_header_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.h";
+    std::ifstream toml_header_in(toml_header_path.c_str());
+    REQUIRE(toml_header_in.good());
+
+    std::ostringstream toml_header_buffer;
+    toml_header_buffer << toml_header_in.rdbuf();
+    const std::string toml_header = toml_header_buffer.str();
+
+    const std::string toml_source_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.cpp";
+    std::ifstream toml_source_in(toml_source_path.c_str());
+    REQUIRE(toml_source_in.good());
+
+    std::ostringstream toml_source_buffer;
+    toml_source_buffer << toml_source_in.rdbuf();
+    const std::string toml_source = toml_source_buffer.str();
+
+    CHECK(toml_header.find("pointer_mode") != std::string::npos);
+    CHECK(toml_source.find("\"pointer_mode\"") != std::string::npos);
+    CHECK(source.find("kUsbHidInitScript = \"/etc/init.d/S49usbhid\"") == std::string::npos);
+    CHECK(source.find("schedule_usbhid_restart") == std::string::npos);
+    CHECK(source.find("usbhid_restart_scheduled") != std::string::npos);
+    CHECK(source.find("usbhid_restart_required") != std::string::npos);
+    CHECK(source.find("reboot_required") != std::string::npos);
+    CHECK(source.find("schedule_poweroff") != std::string::npos);
+    CHECK(source.find("\"/api/poweroff\"") != std::string::npos);
+    CHECK(source.find("hid.pointer_mode must be absolute or touchscreen") != std::string::npos);
+    CHECK(html.find("hid_pointer_mode") != std::string::npos);
+    CHECK(html.find("['pointer_mode','text']") != std::string::npos);
+    CHECK(html.find("pointer_mode 需要关机重启后生效") != std::string::npos);
+    CHECK(html.find("window.confirm") != std::string::npos);
+    CHECK(html.find("/api/poweroff") != std::string::npos);
+    CHECK(html.find("poweroff 指令已下发") != std::string::npos);
+}
+
+TEST_CASE("config web usbhid init script does not orchestrate dependent service restarts") {
+    const std::string script_path = std::string(AIDEN_SOURCE_DIR) + "/overlay/etc/init.d/S49usbhid";
+    std::ifstream script_in(script_path.c_str());
+    REQUIRE(script_in.good());
+
+    std::ostringstream script_buffer;
+    script_buffer << script_in.rdbuf();
+    const std::string script = script_buffer.str();
+
+    CHECK(script.find("CONFIG_WEB_INIT") == std::string::npos);
+    CHECK(script.find("USB_DHCP_INIT") == std::string::npos);
+    CHECK(script.find("AGENT_INIT") == std::string::npos);
+    CHECK(script.find("S56config_web") == std::string::npos);
+    CHECK(script.find("S55aiden_usb_dhcp") == std::string::npos);
+    CHECK(script.find("S53agent") == std::string::npos);
+    CHECK(script.find("AIDEN_USBHID_ALLOW_HOT_REBIND") == std::string::npos);
+    CHECK(script.find("force-restart") == std::string::npos);
+    CHECK(script.find("USB HID hot restart is unsafe") != std::string::npos);
+    CHECK(script.find("use poweroff") != std::string::npos);
+    CHECK(script.find("restart|reload) restart") != std::string::npos);
+    CHECK(script.find("restart|reload) stop; start") == std::string::npos);
 }

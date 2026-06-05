@@ -216,6 +216,141 @@ func TestMemoryManagerSaveCompactsHotWindow(t *testing.T) {
 	}
 }
 
+func TestSessionMemoryCompressStoresStructuredSummaryInIndexAndRecall(t *testing.T) {
+	ctx := context.Background()
+	session := NewSessionMemoryStore(filepath.Join(t.TempDir(), "session"))
+	if _, err := session.AppendEvent(ctx, SessionEvent{EventID: "evt_1", Type: "user_input", Role: "user", Content: "我想测试 MiniCPM 作为板子的局域网 VLM"}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+	structured := ChunkStructuredSummary{
+		Summary:          "讨论 MiniCPM 局域网 VLM 接入方案。",
+		UserGoals:        []string{"测试 MiniCPM 作为板子的局域网 VLM"},
+		ConfirmedFacts:   []string{"主模型仍承担语音链路"},
+		Decisions:        []string{"VLM 使用独立 model_vision 配置"},
+		Proposals:        []string{"screen_memory_summarizer 优先读取 model_vision"},
+		OpenTasks:        []string{"实现 model_vision 配置解析"},
+		RisksOrPitfalls:  []string{"不要把主 model 直接替换成 VLM"},
+		MemoryCandidates: []string{"Aiden 的主语音模型和屏幕 VLM 应分离配置"},
+	}
+	chunk, err := session.Compress(ctx, CompressOption{ChunkID: "chunk_structured", Summary: structured.Summary, Structured: structured})
+	if err != nil {
+		t.Fatalf("Compress() error = %v", err)
+	}
+	if chunk.Structured.Decisions[0] != structured.Decisions[0] {
+		t.Fatalf("Compress() missing structured summary: %#v", chunk.Structured)
+	}
+
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{ChunkIDs: []string{"chunk_structured"}})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected one recalled chunk, got %#v", chunks)
+	}
+	if chunks[0].Structured.OpenTasks[0] != structured.OpenTasks[0] {
+		t.Fatalf("recalled chunk missing structured summary: %#v", chunks[0].Structured)
+	}
+
+	index, err := session.loadChunkIndex()
+	if err != nil {
+		t.Fatalf("loadChunkIndex() error = %v", err)
+	}
+	if len(index.Chunks) != 1 || index.Chunks[0].Structured.ConfirmedFacts[0] != structured.ConfirmedFacts[0] {
+		t.Fatalf("index missing structured summary: %#v", index.Chunks)
+	}
+}
+
+func TestMaintainFilesystemMemoryUsesStructuredSummarizerAndFallsBackToPlain(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.HotWindowEvents = 4
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg), WithStructuredSummarizeFn(func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary {
+		return ChunkStructuredSummary{
+			Summary:        "结构化摘要主文",
+			Decisions:      []string{"保留主语音模型"},
+			OpenTasks:      []string{"增加 model_vision"},
+			ConfirmedFacts: []string{"压缩事件数量大于热窗口"},
+		}
+	}))
+
+	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	var msgs []llms.ChatMessage
+	for i := 0; i < 8; i++ {
+		msgs = append(msgs, llms.HumanChatMessage{Content: fmt.Sprintf("message %d", i)})
+	}
+	if err := handle.History.SetMessages(ctx, msgs); err != nil {
+		t.Fatalf("SetMessages() error = %v", err)
+	}
+	if err := manager.Save(ctx, "default"); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 1})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected one chunk, got %#v", chunks)
+	}
+	if chunks[0].Summary != "结构化摘要主文" {
+		t.Fatalf("expected plain summary from structured result, got %q", chunks[0].Summary)
+	}
+	if chunks[0].Structured == nil || chunks[0].Structured.Decisions[0] != "保留主语音模型" {
+		t.Fatalf("expected structured decisions, got %#v", chunks[0].Structured)
+	}
+}
+
+func TestMaintainFilesystemMemoryFallsBackWhenStructuredSummaryIsMissing(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.HotWindowEvents = 4
+	plainCalled := false
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg), WithStructuredSummarizeFn(func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary {
+		return ChunkStructuredSummary{Decisions: []string{"保留主语音模型"}}
+	}), WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+		plainCalled = true
+		return "plain fallback summary"
+	}))
+
+	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	var msgs []llms.ChatMessage
+	for i := 0; i < 8; i++ {
+		msgs = append(msgs, llms.HumanChatMessage{Content: fmt.Sprintf("message %d", i)})
+	}
+	if err := handle.History.SetMessages(ctx, msgs); err != nil {
+		t.Fatalf("SetMessages() error = %v", err)
+	}
+	if err := manager.Save(ctx, "default"); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if !plainCalled {
+		t.Fatalf("expected SummarizeFn to be called when structured summary text is missing")
+	}
+
+	chunks, err := NewSessionMemoryStore(filepath.Join(storageDir, "session")).RecallChunks(ctx, ChunkRecallQuery{Limit: 1})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected one chunk, got %#v", chunks)
+	}
+	if chunks[0].Summary != "plain fallback summary" {
+		t.Fatalf("expected plain fallback summary, got %q", chunks[0].Summary)
+	}
+	if chunks[0].Structured != nil {
+		t.Fatalf("expected structured summary to be omitted when summary text is missing, got %#v", chunks[0].Structured)
+	}
+}
+
 func TestMaintainFilesystemMemoryUsesLLMSummary(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
@@ -669,5 +804,247 @@ func TestSummaryMaxChunksConfigDefaultAndCustom(t *testing.T) {
 	loaded := LoadMemoryExtractionConfig(dir)
 	if loaded.SummaryMaxChunks != 5 {
 		t.Fatalf("expected loaded SummaryMaxChunks=5, got %d", loaded.SummaryMaxChunks)
+	}
+}
+
+func TestSessionMemoryBackwardCompatLoadsOldIndexWithoutStructured(t *testing.T) {
+	ctx := context.Background()
+	sessionDir := filepath.Join(t.TempDir(), "session")
+	chunksDir := filepath.Join(sessionDir, "chunks")
+	if err := os.MkdirAll(chunksDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll chunks: %v", err)
+	}
+
+	// Write a chunk file
+	chunkData := `{"event_id":"evt_1","ts":"2026-06-01T10:00:00Z","type":"user_input","role":"user","content":"old message"}
+`
+	chunkPath := filepath.Join(chunksDir, "chunk_old.jsonl")
+	if err := os.WriteFile(chunkPath, []byte(chunkData), 0o644); err != nil {
+		t.Fatalf("WriteFile chunk: %v", err)
+	}
+
+	// Write an old index.yaml WITHOUT the structured: field
+	oldIndexYAML := `version: 1
+updated_at: "2026-06-01T10:00:00Z"
+chunks:
+  - id: chunk_old
+    file: chunk_old.jsonl
+    status: active
+    summary: Old chunk without structured field
+    tags:
+      - legacy
+    entities:
+      - OldApp
+    event_count: 1
+    checksum: sha256:abc123
+`
+	indexPath := filepath.Join(chunksDir, "index.yaml")
+	if err := os.WriteFile(indexPath, []byte(oldIndexYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile index: %v", err)
+	}
+
+	// Load and recall
+	session := NewSessionMemoryStore(sessionDir)
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{ChunkIDs: []string{"chunk_old"}})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(chunks))
+	}
+	if chunks[0].Summary != "Old chunk without structured field" {
+		t.Fatalf("summary = %q", chunks[0].Summary)
+	}
+	if chunks[0].Structured != nil {
+		t.Fatalf("expected nil structured for old chunk, got %#v", chunks[0].Structured)
+	}
+	if len(chunks[0].Evidence) != 1 || chunks[0].Evidence[0].Content != "old message" {
+		t.Fatalf("unexpected evidence: %#v", chunks[0].Evidence)
+	}
+
+	// Compress a new chunk and verify old entry is preserved
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_2",
+		Type:    "user_input",
+		Role:    "user",
+		Content: "new message",
+	}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+	newChunk, err := session.Compress(ctx, CompressOption{
+		ChunkID: "chunk_new",
+		Summary: "New chunk",
+		Structured: ChunkStructuredSummary{
+			Summary:   "New chunk with structured",
+			Decisions: []string{"use structured"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compress() error = %v", err)
+	}
+	if newChunk.Structured == nil || newChunk.Structured.Decisions[0] != "use structured" {
+		t.Fatalf("new chunk missing structured: %#v", newChunk)
+	}
+
+	// Verify old chunk still loads without structured
+	allChunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks() all error = %v", err)
+	}
+	if len(allChunks) != 2 {
+		t.Fatalf("expected 2 chunks after compress, got %d", len(allChunks))
+	}
+	var oldChunk, newChunkRecalled *ChunkRecallResult
+	for i := range allChunks {
+		if allChunks[i].ChunkID == "chunk_old" {
+			oldChunk = &allChunks[i]
+		}
+		if allChunks[i].ChunkID == "chunk_new" {
+			newChunkRecalled = &allChunks[i]
+		}
+	}
+	if oldChunk == nil || newChunkRecalled == nil {
+		t.Fatalf("missing old or new chunk in recall: %#v", allChunks)
+	}
+	if oldChunk.Structured != nil {
+		t.Fatalf("old chunk grew structured field after round-trip: %#v", oldChunk.Structured)
+	}
+	if newChunkRecalled.Structured == nil {
+		t.Fatalf("new chunk lost structured field: %#v", newChunkRecalled)
+	}
+}
+
+func TestRecallSessionChunksToolReturnsStructuredFieldInJSONOutput(t *testing.T) {
+	ctx := context.Background()
+	sessionDir := filepath.Join(t.TempDir(), "session")
+	session := NewSessionMemoryStore(sessionDir)
+
+	// Create chunk with structured summary
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_1",
+		Type:    "user_input",
+		Role:    "user",
+		Content: "test event",
+	}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+	structured := ChunkStructuredSummary{
+		Summary:        "Tool output test",
+		Decisions:      []string{"decision A"},
+		OpenTasks:      []string{"task B"},
+		ConfirmedFacts: []string{"fact C"},
+	}
+	if _, err := session.Compress(ctx, CompressOption{
+		ChunkID:    "chunk_tool_test",
+		Summary:    structured.Summary,
+		Structured: structured,
+	}); err != nil {
+		t.Fatalf("Compress() error = %v", err)
+	}
+
+	// Create chunk without structured (old format simulation) - start fresh events
+	if err := session.replaceEvents(nil); err != nil {
+		t.Fatalf("replaceEvents() error = %v", err)
+	}
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_2",
+		Type:    "user_input",
+		Role:    "user",
+		Content: "old event",
+	}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+	if _, err := session.Compress(ctx, CompressOption{
+		ChunkID: "chunk_old_format",
+		Summary: "Old chunk no structured",
+	}); err != nil {
+		t.Fatalf("Compress() old error = %v", err)
+	}
+
+	// Call the tool
+	tool := NewRecallSessionChunksTool(session)
+	output, err := tool.Call(ctx, `{"chunk_ids":["chunk_tool_test","chunk_old_format"]}`)
+	if err != nil {
+		t.Fatalf("tool.Call() error = %v", err)
+	}
+
+	// Parse JSON output
+	var toolResult struct {
+		Results []struct {
+			ChunkID    string `json:"chunk_id"`
+			Summary    string `json:"summary"`
+			Structured *struct {
+				Summary        string   `json:"summary"`
+				Decisions      []string `json:"decisions"`
+				OpenTasks      []string `json:"open_tasks"`
+				ConfirmedFacts []string `json:"confirmed_facts"`
+			} `json:"structured,omitempty"`
+			Evidence []struct {
+				EventID string `json:"event_id"`
+				Content string `json:"content"`
+			} `json:"evidence"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(output), &toolResult); err != nil {
+		t.Fatalf("unmarshal tool output: %v\noutput: %s", err, output)
+	}
+
+	if len(toolResult.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(toolResult.Results))
+	}
+
+	// Find each chunk
+	var withStructured, withoutStructured *struct {
+		ChunkID    string `json:"chunk_id"`
+		Summary    string `json:"summary"`
+		Structured *struct {
+			Summary        string   `json:"summary"`
+			Decisions      []string `json:"decisions"`
+			OpenTasks      []string `json:"open_tasks"`
+			ConfirmedFacts []string `json:"confirmed_facts"`
+		} `json:"structured,omitempty"`
+		Evidence []struct {
+			EventID string `json:"event_id"`
+			Content string `json:"content"`
+		} `json:"evidence"`
+	}
+	for i := range toolResult.Results {
+		if toolResult.Results[i].ChunkID == "chunk_tool_test" {
+			withStructured = &toolResult.Results[i]
+		}
+		if toolResult.Results[i].ChunkID == "chunk_old_format" {
+			withoutStructured = &toolResult.Results[i]
+		}
+	}
+	if withStructured == nil || withoutStructured == nil {
+		t.Fatalf("missing chunks in tool output: %s", output)
+	}
+
+	// Verify structured chunk has all fields
+	if withStructured.Structured == nil {
+		t.Fatalf("chunk_tool_test missing structured in JSON output")
+	}
+	if withStructured.Structured.Decisions[0] != "decision A" {
+		t.Fatalf("structured.Decisions = %v, want [decision A]", withStructured.Structured.Decisions)
+	}
+	if withStructured.Structured.OpenTasks[0] != "task B" {
+		t.Fatalf("structured.OpenTasks = %v, want [task B]", withStructured.Structured.OpenTasks)
+	}
+	if withStructured.Structured.ConfirmedFacts[0] != "fact C" {
+		t.Fatalf("structured.ConfirmedFacts = %v, want [fact C]", withStructured.Structured.ConfirmedFacts)
+	}
+	if len(withStructured.Evidence) != 1 || withStructured.Evidence[0].Content != "test event" {
+		t.Fatalf("unexpected evidence: %#v", withStructured.Evidence)
+	}
+
+	// Verify old chunk has nil structured (omitempty skips it in JSON)
+	if withoutStructured.Structured != nil {
+		t.Fatalf("chunk_old_format should have nil structured in JSON output, got %#v", withoutStructured.Structured)
+	}
+	if withoutStructured.Summary != "Old chunk no structured" {
+		t.Fatalf("summary = %q", withoutStructured.Summary)
+	}
+	if len(withoutStructured.Evidence) != 1 || withoutStructured.Evidence[0].Content != "old event" {
+		t.Fatalf("unexpected evidence: %#v", withoutStructured.Evidence)
 	}
 }

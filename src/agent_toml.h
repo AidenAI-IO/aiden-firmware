@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace aiden {
 
@@ -45,11 +46,25 @@ struct HIDToml {
     std::string keyboard_device;
     std::string mouse_device;
     std::string frame_socket;
+    std::string pointer_mode;
 };
 
 struct SearchToml {
     std::string provider;
     std::string api_key;
+};
+
+struct TelemetryToml {
+    bool enabled = false;
+    std::string provider = "langfuse";
+    std::string base_url;
+    std::string public_key;
+    std::string secret_key;
+    bool upload_screenshots = true;
+    int upload_timeout_sec = 30;
+    int max_retry = 2;
+    std::vector<std::string> tags;
+    std::string environment = "default";
 };
 
 struct AgentToml {
@@ -60,6 +75,7 @@ struct AgentToml {
     AudioToml audio;
     HIDToml hid;
     SearchToml search;
+    TelemetryToml telemetry;
 
     std::string instruction;
     std::string additional_prompt;
@@ -77,9 +93,13 @@ struct AgentToml {
     int voice_max_turns = 0;
     bool voice_interrupt_on_wakeup = true;
     bool voice_streaming_tts_enabled = true;
-    bool voice_tool_call_speech = true;
-    int voice_max_response_tokens = 400;
-    int max_iterations = -1;
+	bool voice_tool_call_speech = true;
+	int voice_max_response_tokens = 400;
+	int max_iterations = -1;
+	int screenshot_keep_n = 3;
+	int screenshot_prune_interval = 25;
+	int screen_stable_timeout_ms = 3000;
+	int screen_stable_ms = 500;
 };
 
 bool load_agent_toml(const char* path, AgentToml& config, std::string* error = nullptr);

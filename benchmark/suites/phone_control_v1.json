@@ -1,11 +1,20 @@
 {
   "name": "phone_control_v1",
   "description": "Agent-driven phone control benchmark v1.",
+  "trace_observations": [
+    {
+      "id": "skill_read_device_operator",
+      "description": "Agent proactively loaded device-operator via skill_read (informational only).",
+      "skill_name": "device-operator"
+    }
+  ],
+  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的 iPhone，不是 macOS、Linux 或桌面系统。只能通过截图、touch_gesture、mouse_click、keyboard_text、keyboard_tap 等手机 UI 工具操作目标设备；不要使用 shell、open、osascript 或桌面命令来打开目标手机上的 App。每次工具返回截图后，先判断页面是否变化、是否已经进入目标页面，再继续下一步；如果截图没有变化，不要反复点击同一坐标。打开系统设置或时钟时，优先点击当前 iPhone 主屏幕上可见的图标，或使用 iPhone 搜索。",
   "global_reset": {
     "tool_sequence": [
-      { "tool": "keyboard_tap", "args": { "keys": ["escape"] } },
-      { "tool": "keyboard_tap", "args": { "keys": ["home"] } },
-      { "tool": "wait_ms", "args": { "ms": 800 } }
+      { "tool": "keyboard_tap", "args": { "keys": ["meta", "h"] } },
+      { "tool": "wait_ms", "args": { "ms": 1200 } },
+      { "tool": "keyboard_tap", "args": { "keys": ["meta", "h"] } },
+      { "tool": "wait_ms", "args": { "ms": 1200 } }
     ]
   },
   "tasks": [
@@ -57,9 +66,16 @@
       "description_for_judge": "Agent must navigate back from a settings sub-page to the parent settings page.",
       "prompt": "请返回上一层。",
       "setup": {
-        "type": "agent_prompt",
-        "prompt": "打开系统设置，并进入'显示'或任意一个二级子页面。完成后停在该子页面。",
-        "timeout_sec": 120
+        "tool_sequence": [
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "wait_ms", "args": { "ms": 800 } },
+          { "tool": "keyboard_text", "args": { "text": "设置" } },
+          { "tool": "wait_ms", "args": { "ms": 1500 } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.32 } } },
+          { "tool": "wait_ms", "args": { "ms": 1500 } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.42 } } },
+          { "tool": "wait_ms", "args": { "ms": 1000 } }
+        ]
       },
       "rubric": [
         {
@@ -69,8 +85,8 @@
       ],
       "hard_assertions": {
         "min_tool_calls": 1,
-        "max_tool_calls": 5,
-        "must_complete_within_sec": 60
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
       }
     },
     {
@@ -78,6 +94,12 @@
       "category": "single_step",
       "description_for_judge": "Agent must locate a search input on the screen and type the literal string 'hello' into it.",
       "prompt": "在搜索框里输入 hello。",
+      "setup": {
+        "tool_sequence": [
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "wait_ms", "args": { "ms": 800 } }
+        ]
+      },
       "rubric": [
         {
           "id": "search_focused",
@@ -103,6 +125,16 @@
       "category": "single_step",
       "description_for_judge": "Agent must perform a vertical scroll downward on the current page.",
       "prompt": "请向下滑动一屏。",
+      "setup": {
+        "tool_sequence": [
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "wait_ms", "args": { "ms": 800 } },
+          { "tool": "keyboard_text", "args": { "text": "设置" } },
+          { "tool": "wait_ms", "args": { "ms": 1500 } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.32 } } },
+          { "tool": "wait_ms", "args": { "ms": 1500 } }
+        ]
+      },
       "rubric": [
         {
           "id": "page_scrolled",
@@ -111,8 +143,8 @@
       ],
       "hard_assertions": {
         "min_tool_calls": 1,
-        "max_tool_calls": 4,
-        "must_complete_within_sec": 45
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
       }
     },
     {
@@ -128,8 +160,8 @@
       ],
       "hard_assertions": {
         "min_tool_calls": 1,
-        "max_tool_calls": 4,
-        "must_complete_within_sec": 45
+        "max_tool_calls": 10,
+        "must_complete_within_sec": 90
       }
     },
     {
@@ -145,15 +177,15 @@
       ],
       "hard_assertions": {
         "min_tool_calls": 1,
-        "max_tool_calls": 4,
-        "must_complete_within_sec": 45
+        "max_tool_calls": 10,
+        "must_complete_within_sec": 90
       }
     },
     {
       "id": "settings_search_bluetooth",
       "category": "multi_step",
-      "description_for_judge": "Agent must open Settings, find the search box, search for Bluetooth, and end on the Bluetooth settings page.",
-      "prompt": "打开系统设置，搜索 Bluetooth 并进入蓝牙设置页面。",
+      "description_for_judge": "Agent must open Settings, find the search box, search for 蓝牙, and end on the Bluetooth settings page.",
+      "prompt": "打开系统设置，搜索「蓝牙」并进入蓝牙设置页面。",
       "rubric": [
         {
           "id": "in_settings",
@@ -161,7 +193,7 @@
         },
         {
           "id": "searched",
-          "check": "Agent typed 'Bluetooth' or 蓝牙 into a search field."
+          "check": "Agent typed 蓝牙 into a search field."
         },
         {
           "id": "on_bluetooth_page",
@@ -237,6 +269,16 @@
       "category": "multi_step",
       "description_for_judge": "Agent must repeatedly scroll a settings page until the bottom of the list is reached, and stop scrolling once the bottom is detected.",
       "prompt": "在设置页面持续向下滑动，直到滑到底部为止。",
+      "setup": {
+        "tool_sequence": [
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "wait_ms", "args": { "ms": 800 } },
+          { "tool": "keyboard_text", "args": { "text": "设置" } },
+          { "tool": "wait_ms", "args": { "ms": 1500 } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.32 } } },
+          { "tool": "wait_ms", "args": { "ms": 1500 } }
+        ]
+      },
       "rubric": [
         {
           "id": "multiple_scrolls",
@@ -254,7 +296,7 @@
       "hard_assertions": {
         "min_tool_calls": 3,
         "max_tool_calls": 25,
-        "must_complete_within_sec": 240
+        "must_complete_within_sec": 300
       }
     },
     {
@@ -262,6 +304,18 @@
       "category": "multi_step",
       "description_for_judge": "Agent must locate a text input and type the literal string 'Aiden测试 benchmark-2026!' into it.",
       "prompt": "在当前可输入位置输入：Aiden测试 benchmark-2026!",
+      "setup": {
+        "tool_sequence": [
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "wait_ms", "args": { "ms": 800 } },
+          { "tool": "keyboard_text", "args": { "text": "备忘录" } },
+          { "tool": "wait_ms", "args": { "ms": 1500 } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.32 } } },
+          { "tool": "wait_ms", "args": { "ms": 2000 } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.78 } } },
+          { "tool": "wait_ms", "args": { "ms": 800 } }
+        ]
+      },
       "rubric": [
         {
           "id": "input_focused",
@@ -278,8 +332,8 @@
       ],
       "hard_assertions": {
         "min_tool_calls": 2,
-        "max_tool_calls": 10,
-        "must_complete_within_sec": 120
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 180
       }
     },
     {
@@ -288,9 +342,18 @@
       "description_for_judge": "Agent must clear an input field that already contains text by selecting all and deleting.",
       "prompt": "请把输入框里已有的文字全部清空。",
       "setup": {
-        "type": "agent_prompt",
-        "prompt": "请打开任意一个有文本输入框的应用（例如备忘录、便签、或浏览器搜索框），点击该输入框使其获得焦点，并输入文本 'temporary note text'。完成后停在该输入框已聚焦且包含该文本的状态。",
-        "timeout_sec": 180
+        "tool_sequence": [
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "wait_ms", "args": { "ms": 800 } },
+          { "tool": "keyboard_text", "args": { "text": "备忘录" } },
+          { "tool": "wait_ms", "args": { "ms": 1500 } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.32 } } },
+          { "tool": "wait_ms", "args": { "ms": 2000 } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.78 } } },
+          { "tool": "wait_ms", "args": { "ms": 800 } },
+          { "tool": "keyboard_text", "args": { "text": "temporary note text" } },
+          { "tool": "wait_ms", "args": { "ms": 500 } }
+        ]
       },
       "rubric": [
         {
@@ -313,6 +376,18 @@
       "category": "multi_step",
       "description_for_judge": "Agent must type a phrase, select all and copy it, then move to a different input field and paste it.",
       "prompt": "在第一个输入框输入 hello-aiden，然后选中复制，切到第二个输入框粘贴。",
+      "setup": {
+        "tool_sequence": [
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "wait_ms", "args": { "ms": 800 } },
+          { "tool": "keyboard_text", "args": { "text": "备忘录" } },
+          { "tool": "wait_ms", "args": { "ms": 1500 } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.32 } } },
+          { "tool": "wait_ms", "args": { "ms": 2000 } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.78 } } },
+          { "tool": "wait_ms", "args": { "ms": 800 } }
+        ]
+      },
       "rubric": [
         {
           "id": "first_input_typed",

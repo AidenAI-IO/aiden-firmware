@@ -46,7 +46,7 @@ func (t *RecallSessionChunksTool) Description() string {
 		"  - PREFERRED: pass chunk_ids to retrieve specific chunks by ID (works for both active and archived chunks).",
 		"  - FALLBACK: pass tags (content/topic keywords like 'payment', 'login') to search all chunks. Use empty tags [] for recent history.",
 		`Input JSON: {"chunk_ids":["chunk_xxx"]} or {"tags":["topic"],"limit":3}`,
-		"Returns JSON with matching conversation chunks and their full original events.",
+		"Returns JSON with matching conversation chunks, structured summary fields, and their full original events.",
 	}, " ")
 }
 

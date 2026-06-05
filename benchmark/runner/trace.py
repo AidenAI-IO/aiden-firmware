@@ -43,6 +43,20 @@ def extract_trace(history: list[dict[str, Any]]) -> Trace:
     )
 
 
+def trace_has_skill_read(trace: Trace, skill_name: str) -> bool:
+    target = skill_name.strip()
+    if not target:
+        return False
+    for tc in trace.tool_calls:
+        if tc.tool != "skill_read":
+            continue
+        inp = tc.input if isinstance(tc.input, dict) else {}
+        name = str(inp.get("name") or inp.get("skill") or "").strip()
+        if name == target:
+            return True
+    return False
+
+
 def extract_step_screenshots(history: list[dict[str, Any]]) -> list[tuple[str, str]]:
     """Returns list of (tool_name, base64_jpeg) pairs from tool_result messages."""
     result: list[tuple[str, str]] = []

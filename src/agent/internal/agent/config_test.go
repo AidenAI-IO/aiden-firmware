@@ -25,6 +25,78 @@ func TestConfigValidateAcceptsAudioWakeup(t *testing.T) {
 	}
 }
 
+func TestConfigScreenshotPruningDefaultsAndOverrides(t *testing.T) {
+	cfg := Config{Model: ModelConfig{Provider: "fake"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	pruning := cfg.ScreenshotPruningOrDefault()
+	if pruning.KeepN != 3 || pruning.Interval != 25 {
+		t.Fatalf("default screenshot pruning = %#v, want keep_n=3 interval=25", pruning)
+	}
+
+	cfg.ScreenshotKeepN = 5
+	cfg.ScreenshotPruneInterval = 40
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() with screenshot pruning overrides error = %v", err)
+	}
+	pruning = cfg.ScreenshotPruningOrDefault()
+	if pruning.KeepN != 5 || pruning.Interval != 40 {
+		t.Fatalf("configured screenshot pruning = %#v, want keep_n=5 interval=40", pruning)
+	}
+}
+
+func TestConfigScreenStableDefaults(t *testing.T) {
+	cfg := Config{
+		ScreenStableTimeoutMs: 7000,
+		ScreenStableMs:        800,
+	}
+	defaults := cfg.ScreenStableDefaults().Resolved()
+	if defaults.TimeoutMs != 7000 || defaults.StableMs != 800 {
+		t.Fatalf("resolved defaults = %#v, want timeout=7000 stable=800", defaults)
+	}
+}
+
+func TestConfigValidateRejectsNegativeScreenStableSettings(t *testing.T) {
+	cfg := Config{
+		Model:                 ModelConfig{Provider: "fake"},
+		ScreenStableTimeoutMs: -1,
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "screen_stable_timeout_ms") {
+		t.Fatalf("expected screen_stable_timeout_ms validation error, got %v", err)
+	}
+
+	cfg = Config{
+		Model:          ModelConfig{Provider: "fake"},
+		ScreenStableMs: -1,
+	}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "screen_stable_ms") {
+		t.Fatalf("expected screen_stable_ms validation error, got %v", err)
+	}
+}
+
+func TestConfigValidateRejectsNegativeScreenshotPruning(t *testing.T) {
+	cfg := Config{
+		Model:           ModelConfig{Provider: "fake"},
+		ScreenshotKeepN: -1,
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "screenshot_keep_n") {
+		t.Fatalf("expected screenshot_keep_n validation error, got %v", err)
+	}
+
+	cfg = Config{
+		Model:                   ModelConfig{Provider: "fake"},
+		ScreenshotPruneInterval: -1,
+	}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "screenshot_prune_interval") {
+		t.Fatalf("expected screenshot_prune_interval validation error, got %v", err)
+	}
+}
+
 func TestProxyConfigFromEnvironment(t *testing.T) {
 	t.Setenv("http_proxy", "http://proxy.example:18080")
 	t.Setenv("HTTP_PROXY", "")

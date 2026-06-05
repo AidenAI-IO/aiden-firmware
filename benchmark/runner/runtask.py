@@ -5,19 +5,50 @@ import json
 import shutil
 import time
 from pathlib import Path
-from runner.agent_client import AgentClient, AgentTimeoutError
+from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
 from runner.assertions import (
     evaluate_expected_answer,
     evaluate_expected_recalled_memory_ids,
     evaluate_hard_assertions,
+    evaluate_trace_observations,
 )
 from runner.capture import take_screenshot, write_step_screenshot
 from runner.judge import judge_task, JudgeConfig
 from runner.models import TaskResult, RubricVerdict, HardAssertionResults
-from runner.reset import global_reset, per_task_setup, ResetError
+from runner.recovery import prepare_task_isolation, recover_agent_after_timeout
+from runner.reset import ResetError
 from runner.suite import Suite, TaskSpec
 from runner.trace import extract_trace, extract_step_screenshots
 from runner.report import now_iso
+
+
+def skipped_task_result(
+    suite: Suite,
+    task: TaskSpec,
+    attempt: int,
+    artifact_dir: Path,
+    run_id: str,
+    error: str,
+) -> TaskResult:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    started = now_iso()
+    return TaskResult(
+        suite=suite.name,
+        run_id=run_id,
+        task_id=task.id,
+        category=task.category,
+        attempt=attempt,
+        status="skipped",
+        rubric=[],
+        rubric_pass_count=0,
+        rubric_total=len(task.rubric),
+        artifact_dir=str(artifact_dir),
+        started_at=started,
+        finished_at=started,
+        description_for_judge=task.description_for_judge,
+        rubric_spec=[dc.asdict(r) for r in task.rubric],
+        metrics={"error": error},
+    )
 
 
 def run_one_task(
@@ -42,13 +73,8 @@ def run_one_task(
         rubric_spec=[dc.asdict(r) for r in task.rubric],
     )
     try:
-        client.clear_history()
-        # Skip global reset and setup for perception tasks (static screenshot input)
-        if not task.input_screenshot:
-            if suite.global_reset.get("tool_sequence"):
-                global_reset(client, suite.global_reset)
-            per_task_setup(client, task.setup)
-    except ResetError as e:
+        prepare_task_isolation(client, suite, task)
+    except (ResetError, AgentTimeoutError, AgentRequestError) as e:
         base.status = "skipped"
         base.metrics = {"error": f"setup: {e}"}
         base.finished_at = now_iso()
@@ -76,13 +102,17 @@ def run_one_task(
         prompt = task.prompt
         if suite.prompt_prefix:
             prompt = f"{suite.prompt_prefix.rstrip()}\n\n{task.prompt}"
-        chat = client.chat(prompt,
-                            timeout_sec=task.hard_assertions.must_complete_within_sec,
-                            attachments=attachments)
+        chat = client.chat(
+            prompt,
+            timeout_sec=task.hard_assertions.must_complete_within_sec,
+            attachments=attachments,
+        )
         history = chat.history
     except AgentTimeoutError:
         timed_out = True
         history = client_history_or_empty(client)
+        if not recover_agent_after_timeout(client):
+            base.metrics["recovery_failed"] = True
     except Exception as e:
         history = client_history_or_empty(client)
         base.metrics["agent_error"] = str(e)[:300]
@@ -90,6 +120,17 @@ def run_one_task(
         json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
     trace = extract_trace(history)
     wall_ms = int((time.monotonic() - started_mono) * 1000)
+    if suite.trace_observations:
+        observation_results = evaluate_trace_observations(trace, suite.trace_observations)
+        base.metrics["trace_observations"] = [
+            {
+                "id": item.id,
+                "description": item.description,
+                "passed": item.passed,
+                "reason": item.reason,
+            }
+            for item in observation_results
+        ]
     trace_dict = {
         "tool_calls": [dc.asdict(tc) for tc in trace.tool_calls],
         "final_response": trace.final_response,
@@ -173,9 +214,7 @@ def run_one_task(
 
 def client_history_or_empty(client: AgentClient) -> list[dict]:
     try:
-        r = client._client.get("/api/history", timeout=5)
-        if r.status_code == 200:
-            return r.json()
+        return client.get_history()
     except Exception:
         pass
     return []

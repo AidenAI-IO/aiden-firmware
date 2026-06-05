@@ -87,6 +87,14 @@ def generate_report_html(run_dir: Path) -> str:
             "response": trace_data.get("final_response", ""),
             "tool_calls_detail": tool_calls_str.strip(),
             "rubric": rubric_js,
+            "trace_observations": [
+                [
+                    obs.get("id", ""),
+                    obs.get("reason", obs.get("description", "")),
+                    "yes" if obs.get("passed") else "no",
+                ]
+                for obs in r.get("metrics", {}).get("trace_observations") or []
+            ],
         })
 
     tasks_json = json.dumps(tasks_js_items, ensure_ascii=False, indent=2)
@@ -284,6 +292,13 @@ function openDrawer(i) {{
       return '<div class="rubric-row"><div><div class="rid">' + esc(r[0]) + '</div><div class="reason">' + esc(r[1]) + '</div></div><b class="' + cls + '">' + r[2] + '</b></div>';
     }}).join("");
     body += '<div class="block"><div class="block-head"><strong>Rubric</strong><span>' + t.rubric_pass + '/' + t.rubric_total + '</span></div><div class="block-body">' + rb + '</div></div>';
+  }}
+  if (t.trace_observations && t.trace_observations.length) {{
+    var ob = t.trace_observations.map(function(r) {{
+      var cls = r[2] === "yes" ? "yes" : "no";
+      return '<div class="rubric-row"><div><div class="rid">' + esc(r[0]) + '</div><div class="reason">' + esc(r[1]) + '</div></div><b class="' + cls + '">' + r[2] + '</b></div>';
+    }}).join("");
+    body += '<div class="block"><div class="block-head"><strong>Trace observations</strong><span>informational</span></div><div class="block-body">' + ob + '</div></div>';
   }}
   document.getElementById("dBody").innerHTML = body;
   rows.forEach(function(r) {{ r.classList.toggle("active", Number(r.dataset.task) === i); }});

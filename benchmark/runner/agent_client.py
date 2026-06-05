@@ -2,6 +2,7 @@ from __future__ import annotations
 import dataclasses as dc
 import json
 import socket
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -62,6 +63,8 @@ class AgentClient:
             if isinstance(e.reason, socket.timeout):
                 raise AgentTimeoutError(str(e)) from e
             raise AgentRequestError(str(e)) from e
+        except (ConnectionResetError, ConnectionError, OSError) as e:
+            raise AgentRequestError(str(e)) from e
 
     def _get(self, path: str, timeout: int = 5) -> tuple[int, bytes]:
         req = urllib.request.Request(f"{self.base_url}{path}", method="GET")
@@ -76,6 +79,8 @@ class AgentClient:
             if isinstance(e.reason, socket.timeout):
                 raise AgentTimeoutError(str(e)) from e
             raise AgentRequestError(str(e)) from e
+        except (ConnectionResetError, ConnectionError, OSError) as e:
+            raise AgentRequestError(str(e)) from e
 
     def health(self) -> bool:
         try:
@@ -84,14 +89,28 @@ class AgentClient:
         except (AgentRequestError, AgentTimeoutError):
             return False
 
-    def clear_history(self) -> None:
-        self._post("/api/clear", timeout=10)
+    def clear_history(self, timeout: int = 30) -> None:
+        self._post("/api/clear", timeout=timeout)
 
-    def chat(self, message: str, timeout_sec: int | None = None,
-             attachments: list[dict[str, str]] | None = None) -> ChatResponse:
+    def get_history(self) -> list[dict[str, Any]]:
+        status, body_bytes = self._get("/api/history", timeout=5)
+        if status != 200:
+            raise AgentRequestError(f"history returned {status}")
+        body = json.loads(body_bytes)
+        return body if isinstance(body, list) else []
+
+    def chat(
+        self,
+        message: str,
+        timeout_sec: int | None = None,
+        attachments: list[dict[str, str]] | None = None,
+        skills: list[str] | None = None,
+    ) -> ChatResponse:
         payload: dict[str, Any] = {"message": message}
         if attachments:
             payload["attachments"] = attachments
+        if skills:
+            payload["skills"] = skills
         status, body_bytes = self._post(
             "/api/chat", payload, timeout=timeout_sec or self._default_timeout
         )
@@ -105,7 +124,7 @@ class AgentClient:
 
     def invoke_tool(self, name: str, args: dict[str, Any]) -> ToolInvokeResult:
         status, body_bytes = self._post(
-            f"/api/tools/{name}", {"input": args}, timeout=30
+            f"/api/tools/{name}", {"input": args}, timeout=90
         )
         if status != 200:
             raise AgentRequestError(f"invoke {name} returned {status}")
@@ -115,6 +134,30 @@ class AgentClient:
             is_error=bool(body.get("is_error")),
             duration_ms=int(body.get("duration_ms", 0)),
         )
+
+    def recover_after_timeout(
+        self,
+        timeout_sec: int = 90,
+        poll_sec: float = 3.0,
+    ) -> bool:
+        """Wait until the agent accepts clear/history again after a timed-out chat."""
+        deadline = time.monotonic() + max(0, timeout_sec)
+        while True:
+            if not self.health():
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(min(poll_sec, max(0, deadline - time.monotonic())))
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            try:
+                self.clear_history(timeout=min(15, max(1, int(remaining))))
+                return True
+            except (AgentTimeoutError, AgentRequestError):
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(min(poll_sec, max(0, deadline - time.monotonic())))
 
     def close(self) -> None:
         # urllib doesn't keep persistent connections by default; nothing to clean up.

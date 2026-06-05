@@ -150,9 +150,14 @@ stop() {
 	fi
 }
 
+restart() {
+	echo "USB HID hot restart is unsafe; use poweroff and reconnect power to apply changes." >&2
+	exit 1
+}
+
 case "$1" in
   start) start ;;
   stop) stop ;;
-  restart|reload) stop; start ;;
-  *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+  restart|reload) restart ;;
+  *) echo "Usage: $0 {start|stop|restart|reload}"; exit 1 ;;
 esac

@@ -178,34 +178,3 @@ func (s *OpenRouterSTT) TranscribeWAV(wavData []byte) (string, error) {
 	return result.Text, nil
 }
 
-// TencentASRSTT implements STT using Tencent Cloud ASR
-type TencentASRSTT struct {
-	secretID        string
-	secretKey       string
-	region          string
-	engineModelType string
-}
-
-// NewTencentASRSTT creates a new Tencent ASR STT client
-func NewTencentASRSTT(secretID, secretKey, region, engineModelType string) *TencentASRSTT {
-	if region == "" {
-		region = "ap-guangzhou"
-	}
-	if engineModelType == "" {
-		engineModelType = "16k_zh"
-	}
-	return &TencentASRSTT{
-		secretID:        secretID,
-		secretKey:       secretKey,
-		region:          region,
-		engineModelType: engineModelType,
-	}
-}
-
-// TranscribeWAV transcribes a WAV file to text using Tencent ASR
-func (s *TencentASRSTT) TranscribeWAV(wavData []byte) (string, error) {
-	// TODO: Implement Tencent ASR API call
-	// This requires Tencent Cloud SDK and signature v3 authentication
-	// For now, return a placeholder error
-	return "", fmt.Errorf("Tencent ASR not yet implemented")
-}

@@ -250,6 +250,9 @@ func (r *EpisodeRecorder) Finish(output string, metrics *RunMetrics, runErr erro
 			"completion_tokens": metrics.CompletionTokens,
 			"total_tokens":      metrics.TotalTokens,
 		}
+		if metrics.FirstTokenTime > 0 {
+			episode.Extra["first_token_time_ms"] = metrics.FirstTokenTime
+		}
 	}
 	if runErr != nil {
 		episode.Outcome.FailureReason = runErr.Error()
@@ -557,6 +560,12 @@ func (s *TaskEpisodeStore) episodeDir(episode TaskEpisode) string {
 		year = parsed.UTC().Format("2006")
 	}
 	return filepath.Join(s.rootDir, year, safePathName(episode.ID))
+}
+
+// EpisodeDirectory returns the on-disk directory for a committed episode.
+func EpisodeDirectory(episodesRoot string, episode TaskEpisode) string {
+	store := &TaskEpisodeStore{rootDir: episodesRoot}
+	return store.episodeDir(episode)
 }
 
 func (s *TaskEpisodeStore) indexPath() string {

@@ -221,3 +221,54 @@ func TestFunctionAgentSystemMessageGuidesSkillCatalogAndPreloadedSkills(t *testi
 		}
 	}
 }
+
+func TestFunctionAgentSystemMessageIncludesRuntimeContext(t *testing.T) {
+	runtimeContext := "Phone bridge status:\n- connected: true"
+	msg := buildFunctionAgentSystemMessage(
+		AgentConfig{RuntimeContext: runtimeContext},
+		ResolvedSkills{},
+		nil,
+	)
+
+	if !strings.Contains(msg, "Runtime context:\n"+runtimeContext) {
+		t.Fatalf("system message missing runtime context:\n%s", msg)
+	}
+}
+
+func TestPhoneBridgeRuntimeContextConnected(t *testing.T) {
+	lastHeartbeat := time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)
+	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{
+		Connected:       true,
+		Platform:        "ios",
+		LastHeartbeatAt: &lastHeartbeat,
+	})
+
+	for _, want := range []string{
+		"Phone bridge status:",
+		"- connected: true",
+		"- platform: ios",
+		"- last_heartbeat_at: 2026-06-01T02:03:04Z",
+		"The phone companion app is connected",
+		"Use open_app as the primary path",
+		"clipboard, calendar, contacts, and notification tools are available",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("runtime context missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestPhoneBridgeRuntimeContextDisconnected(t *testing.T) {
+	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{})
+
+	for _, want := range []string{
+		"Phone bridge status:",
+		"- connected: false",
+		"The phone companion app is not connected",
+		"Do not assume open_app, clipboard, calendar, contacts, or notification tools can control the phone",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("runtime context missing %q:\n%s", want, got)
+		}
+	}
+}
