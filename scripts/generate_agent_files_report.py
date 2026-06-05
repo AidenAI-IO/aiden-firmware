@@ -192,12 +192,13 @@ def main():
         help='Output HTML file path (default: /userdata/agent/files_report.html)'
     )
     parser.add_argument(
-        '--show-hidden',
-        action='store_true',
-        default=True,
-        help='Show hidden files (default: true)'
+        '--no-show-hidden',
+        action='store_false',
+        dest='show_hidden',
+        help='Hide hidden files (default: show hidden files)'
     )
     args = parser.parse_args()
+    parser.set_defaults(show_hidden=True)
 
     # Load HTML template
     script_dir = Path(__file__).parent
@@ -220,26 +221,26 @@ def main():
     skill_state_data = scan_directory(Path(args.skill_state_dir), args.show_hidden)
 
     # Generate HTML from template
-    html = html_template
+    output_html = html_template
 
     # Replace placeholders
-    html = html.replace('{{TIMESTAMP}}', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-    html = html.replace('{{MEMORY_COUNT}}', str(len(memory_data.get('files', []))))
-    html = html.replace('{{SKILLS_COUNT}}', str(len(skills_data.get('files', []))))
-    html = html.replace('{{MEMORY_SIZE}}', format_size(memory_data.get('total_size', 0)))
-    html = html.replace('{{SKILLS_SIZE}}', format_size(skills_data.get('total_size', 0)))
+    output_html = output_html.replace('{{TIMESTAMP}}', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    output_html = output_html.replace('{{MEMORY_COUNT}}', str(len(memory_data.get('files', []))))
+    output_html = output_html.replace('{{SKILLS_COUNT}}', str(len(skills_data.get('files', []))))
+    output_html = output_html.replace('{{MEMORY_SIZE}}', format_size(memory_data.get('total_size', 0)))
+    output_html = output_html.replace('{{SKILLS_SIZE}}', format_size(skills_data.get('total_size', 0)))
 
     memory_json = json.dumps(memory_data, ensure_ascii=False, indent=2).replace('</', r'<\/')
     skills_json = json.dumps(skills_data, ensure_ascii=False, indent=2).replace('</', r'<\/')
     skill_state_json = json.dumps(skill_state_data, ensure_ascii=False, indent=2).replace('</', r'<\/')
-    html = html.replace('{{MEMORY_JSON}}', memory_json)
-    html = html.replace('{{SKILLS_JSON}}', skills_json)
-    html = html.replace('{{SKILL_STATE_JSON}}', skill_state_json)
+    output_html = output_html.replace('{{MEMORY_JSON}}', memory_json)
+    output_html = output_html.replace('{{SKILLS_JSON}}', skills_json)
+    output_html = output_html.replace('{{SKILL_STATE_JSON}}', skill_state_json)
 
     # Write output
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(html, encoding='utf-8')
+    output_path.write_text(output_html, encoding='utf-8')
 
     print(f"\n✓ Report generated: {output_path.absolute()}")
     print(f"  Memory files: {len(memory_data.get('files', []))} ({format_size(memory_data.get('total_size', 0))})")
