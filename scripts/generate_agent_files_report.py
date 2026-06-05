@@ -94,7 +94,7 @@ def extract_references(content: str, current_file: str) -> list:
     # Get current file's ID (e.g., "proc_832cbf216c9e" from "device/procedures/proc_832cbf216c9e.yaml")
     import re
     current_id = None
-    id_match = re.search(r'(ep_\d+_[a-f0-9]+|proc_[a-f0-9]+|app_[a-f0-9]+|fail_[a-f0-9]+)', current_file)
+    id_match = re.search(r'(ep_\d+_[a-f0-9]+|proc_[a-f0-9]+|app_[a-f0-9]+|fail_[a-z_]+)', current_file)
     if id_match:
         current_id = id_match.group(1)
 
@@ -138,8 +138,8 @@ def extract_references(content: str, current_file: str) -> list:
                 'path': f'device/apps/{app_id}.yaml'
             })
 
-    # Extract failure references: fail_XXXXX
-    fail_pattern = r'fail_[a-f0-9]+'
+    # Extract failure references: fail_<name_with_underscores>
+    fail_pattern = r'fail_[a-z_]+'
     for match in re.finditer(fail_pattern, content):
         fail_id = match.group(0)
         if fail_id == current_id:
