@@ -130,6 +130,21 @@ if [ -z "$setup_go_line" ] || [ -z "$run_build_line" ] || [ "$setup_go_line" -ge
     exit 1
 fi
 
+if grep -Fq 'sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"' "$WORKFLOW"; then
+    echo "self-hosted workspace reclaim must not require sudo unconditionally" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'owner="$(id -u):$(id -g)"' "$WORKFLOW" || \
+   ! grep -Fq 'command -v sudo >/dev/null 2>&1' "$WORKFLOW" || \
+   ! grep -Fq 'sudo chown -R "$owner" "$GITHUB_WORKSPACE"' "$WORKFLOW" || \
+   ! grep -Fq '[ "$(id -u)" -eq 0 ]' "$WORKFLOW" || \
+   ! grep -Eq '^[[:space:]]+chown -R "\$owner" "\$GITHUB_WORKSPACE"' "$WORKFLOW" || \
+   ! grep -Fq '::warning::Skipping workspace ownership reclaim' "$WORKFLOW"; then
+    echo "self-hosted workspace reclaim must handle sudo, root, and non-root runners without failing" >&2
+    exit 1
+fi
+
 if ! grep -q 'go env GOROOT' "$BUILD_IMAGE_SH"; then
     echo "build_image.sh must discover the host Go root with go env GOROOT" >&2
     exit 1
