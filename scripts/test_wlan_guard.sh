@@ -92,6 +92,26 @@ if ! grep -q 'ip route show default' "$GUARD_SCRIPT"; then
     exit 1
 fi
 
+if ! grep -q 'wlan not associated; waiting' "$GUARD_SCRIPT"; then
+    echo "wlan_guard must wait without recovery when Wi-Fi is not associated" >&2
+    exit 1
+fi
+
+if ! grep -q 'no default gateway for $IFACE; waiting' "$GUARD_SCRIPT"; then
+    echo "wlan_guard must wait without recovery when no WLAN gateway is available" >&2
+    exit 1
+fi
+
+if ! grep -q 'gateway .* unreachable' "$GUARD_SCRIPT"; then
+    echo "wlan_guard must only count failures when an associated WLAN cannot ping its gateway" >&2
+    exit 1
+fi
+
+if grep -q 'if wlan_associated && target_reachable' "$GUARD_SCRIPT"; then
+    echo "wlan_guard must not recover merely because Wi-Fi is disconnected" >&2
+    exit 1
+fi
+
 if grep -q '192\.168\.50\.1' "$GUARD_SCRIPT"; then
     echo "wlan_guard must not hard-code a default gateway" >&2
     exit 1

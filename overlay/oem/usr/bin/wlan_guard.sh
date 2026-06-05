@@ -111,7 +111,10 @@ wlan_associated() {
 }
 
 target_reachable() {
-	host="$(target_host)"
+	host="${1:-}"
+	if [ -z "$host" ]; then
+		host="$(target_host)"
+	fi
 	if [ -z "$host" ]; then
 		log "no default gateway for $IFACE"
 		return 1
@@ -152,20 +155,38 @@ watch_loop() {
 		log "watchdog started for $IFACE without default gateway"
 	fi
 	fail_count=0
+	wait_reason=""
 
 	while true; do
-		if wlan_associated && target_reachable; then
-			if [ "$fail_count" -ne 0 ]; then
-				log "connectivity healthy again"
+		if ! wlan_associated; then
+			if [ "$wait_reason" != "not_associated" ]; then
+				log "wlan not associated; waiting"
 			fi
+			wait_reason="not_associated"
 			fail_count=0
 		else
-			fail_count=$((fail_count + 1))
-			log "connectivity check failed ($fail_count/$FAIL_THRESHOLD)"
-			if [ "$fail_count" -ge "$FAIL_THRESHOLD" ]; then
-				recover_wlan
+			host="$(target_host)"
+			if [ -z "$host" ]; then
+				if [ "$wait_reason" != "no_gateway" ]; then
+					log "no default gateway for $IFACE; waiting"
+				fi
+				wait_reason="no_gateway"
 				fail_count=0
-				sleep "$RECOVER_COOLDOWN"
+			elif target_reachable "$host"; then
+				wait_reason=""
+				if [ "$fail_count" -ne 0 ]; then
+					log "connectivity healthy again"
+				fi
+				fail_count=0
+			else
+				wait_reason=""
+				fail_count=$((fail_count + 1))
+				log "gateway $host unreachable ($fail_count/$FAIL_THRESHOLD)"
+				if [ "$fail_count" -ge "$FAIL_THRESHOLD" ]; then
+					recover_wlan
+					fail_count=0
+					sleep "$RECOVER_COOLDOWN"
+				fi
 			fi
 		fi
 
