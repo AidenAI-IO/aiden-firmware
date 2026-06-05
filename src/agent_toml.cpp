@@ -7,6 +7,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -118,6 +119,85 @@ bool parse_bool(const std::string& raw, bool* out, std::string* err) {
     return false;
 }
 
+bool parse_string_array(const std::string& raw, std::vector<std::string>* out, std::string* err) {
+    if (!out) {
+        if (err) *err = "null string array target";
+        return false;
+    }
+    if (raw.size() < 2 || raw.front() != '[') {
+        if (err) *err = "expected string array";
+        return false;
+    }
+
+    std::vector<std::string> values;
+    size_t i = 1;
+    while (i < raw.size()) {
+        while (i < raw.size() && (raw[i] == ' ' || raw[i] == '\t' || raw[i] == '\r')) ++i;
+        if (i < raw.size() && raw[i] == ']') {
+            ++i;
+            while (i < raw.size() && (raw[i] == ' ' || raw[i] == '\t' || raw[i] == '\r')) ++i;
+            if (i != raw.size()) {
+                if (err) *err = "unexpected trailing content after array";
+                return false;
+            }
+            *out = values;
+            return true;
+        }
+        if (i >= raw.size() || raw[i] != '"') {
+            if (err) *err = "expected double-quoted string in array";
+            return false;
+        }
+
+        size_t start = i;
+        ++i;
+        bool closed = false;
+        while (i < raw.size()) {
+            if (raw[i] == '\\') {
+                if (i + 1 >= raw.size()) {
+                    if (err) *err = "trailing backslash in array string";
+                    return false;
+                }
+                i += 2;
+                continue;
+            }
+            if (raw[i] == '"') {
+                ++i;
+                closed = true;
+                break;
+            }
+            ++i;
+        }
+        if (!closed) {
+            if (err) *err = "unterminated string in array";
+            return false;
+        }
+
+        std::string value;
+        if (!unquote(raw.substr(start, i - start), &value, err)) {
+            return false;
+        }
+        values.push_back(value);
+
+        while (i < raw.size() && (raw[i] == ' ' || raw[i] == '\t' || raw[i] == '\r')) ++i;
+        if (i < raw.size() && raw[i] == ',') {
+            ++i;
+            continue;
+        }
+        if (i < raw.size() && raw[i] == ']') {
+            continue;
+        }
+        if (i >= raw.size()) {
+            if (err) *err = "missing closing bracket in array";
+        } else {
+            if (err) *err = "expected comma or closing bracket in array";
+        }
+        return false;
+    }
+
+    if (err) *err = "missing closing bracket in array";
+    return false;
+}
+
 bool assign_string(std::string* dst, const std::string& raw, std::string* err) {
     return unquote(raw, dst, err);
 }
@@ -132,6 +212,10 @@ bool assign_double(double* dst, const std::string& raw, std::string* err) {
 
 bool assign_bool(bool* dst, const std::string& raw, std::string* err) {
     return parse_bool(raw, dst, err);
+}
+
+bool assign_string_array(std::vector<std::string>* dst, const std::string& raw, std::string* err) {
+    return parse_string_array(raw, dst, err);
 }
 
 void apply_kv(AgentToml& cfg,
@@ -244,6 +328,18 @@ void apply_kv(AgentToml& cfg,
         if (key == "provider") assign_string(&cfg.search.provider, raw, &sub_err);
         else if (key == "api_key") assign_string(&cfg.search.api_key, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "telemetry") {
+        if (key == "enabled") assign_bool(&cfg.telemetry.enabled, raw, &sub_err);
+        else if (key == "provider") assign_string(&cfg.telemetry.provider, raw, &sub_err);
+        else if (key == "base_url") assign_string(&cfg.telemetry.base_url, raw, &sub_err);
+        else if (key == "public_key") assign_string(&cfg.telemetry.public_key, raw, &sub_err);
+        else if (key == "secret_key") assign_string(&cfg.telemetry.secret_key, raw, &sub_err);
+        else if (key == "upload_screenshots") assign_bool(&cfg.telemetry.upload_screenshots, raw, &sub_err);
+        else if (key == "upload_timeout_sec") assign_int(&cfg.telemetry.upload_timeout_sec, raw, &sub_err);
+        else if (key == "max_retry") assign_int(&cfg.telemetry.max_retry, raw, &sub_err);
+        else if (key == "tags") assign_string_array(&cfg.telemetry.tags, raw, &sub_err);
+        else if (key == "environment") assign_string(&cfg.telemetry.environment, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
     }
     // Unknown sections / keys are ignored.
 }
@@ -294,6 +390,15 @@ void emit_double(std::ostringstream& out, const char* key, double value) {
 
 void emit_bool(std::ostringstream& out, const char* key, bool value) {
     out << key << " = " << (value ? "true" : "false") << "\n";
+}
+
+void emit_string_array(std::ostringstream& out, const char* key, const std::vector<std::string>& values) {
+    out << key << " = [";
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i) out << ", ";
+        out << quote(values[i]);
+    }
+    out << "]\n";
 }
 
 void emit_model(std::ostringstream& out, const char* section, const ModelToml& m) {
@@ -469,6 +574,19 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     out << "[search]\n";
     emit_string(out, "provider", cfg.search.provider);
     emit_string(out, "api_key", cfg.search.api_key);
+    out << "\n";
+
+    out << "[telemetry]\n";
+    emit_bool(out, "enabled", cfg.telemetry.enabled);
+    emit_string(out, "provider", cfg.telemetry.provider);
+    if (!cfg.telemetry.base_url.empty()) emit_string(out, "base_url", cfg.telemetry.base_url);
+    emit_string(out, "public_key", cfg.telemetry.public_key);
+    emit_string(out, "secret_key", cfg.telemetry.secret_key);
+    emit_bool(out, "upload_screenshots", cfg.telemetry.upload_screenshots);
+    if (cfg.telemetry.upload_timeout_sec != 0) emit_int(out, "upload_timeout_sec", cfg.telemetry.upload_timeout_sec);
+    if (cfg.telemetry.max_retry != 0) emit_int(out, "max_retry", cfg.telemetry.max_retry);
+    if (!cfg.telemetry.tags.empty()) emit_string_array(out, "tags", cfg.telemetry.tags);
+    if (!cfg.telemetry.environment.empty()) emit_string(out, "environment", cfg.telemetry.environment);
     out << "\n";
 
     return atomic_write(path, out.str(), error);

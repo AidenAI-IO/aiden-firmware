@@ -189,6 +189,47 @@ TEST_CASE("config web exposes a single system env editor backed by the env file"
     CHECK(html.find("NO_PROXY=localhost,127.0.0.1,::1") == std::string::npos);
 }
 
+TEST_CASE("config web exposes telemetry settings section") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("config.telemetry.enabled") != std::string::npos);
+    CHECK(source.find("add_string_array_to_object(telemetry, \"tags\", config.telemetry.tags)") != std::string::npos);
+    CHECK(source.find("set_json_string_vector(&config->telemetry.tags, telemetry, \"tags\")") != std::string::npos);
+    CHECK(source.find("telemetry.base_url is required when telemetry.enabled is true") != std::string::npos);
+    CHECK(source.find("telemetry.public_key is required when telemetry.enabled is true") != std::string::npos);
+    CHECK(source.find("std::string telemetry_provider = lowercase_copy(trim_copy(config.telemetry.provider));") != std::string::npos);
+    CHECK(source.find("std::string provider_original = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : \"\";") != std::string::npos);
+    CHECK(source.find("std::string provider = lowercase_copy(provider_original);") != std::string::npos);
+    CHECK(source.find("public_key_env") == std::string::npos);
+    CHECK(source.find("secret_key_env") == std::string::npos);
+    CHECK(source.find("section == \"telemetry\"") != std::string::npos);
+
+    CHECK(html.find("section-telemetry") != std::string::npos);
+    CHECK(html.find("<h3>[telemetry]</h3>") != std::string::npos);
+    CHECK(html.find("telemetry_base_url") != std::string::npos);
+    CHECK(html.find("telemetry_public_key") != std::string::npos);
+    CHECK(html.find("telemetry_secret_key") != std::string::npos);
+    CHECK(html.find("telemetry_tags") != std::string::npos);
+    CHECK(html.find("public_key_env") == std::string::npos);
+    CHECK(html.find("secret_key_env") == std::string::npos);
+    CHECK(html.find("parseListValue") != std::string::npos);
+    CHECK(html.find("['tags','list']") != std::string::npos);
+}
+
 TEST_CASE("config web restarts ota only when system env changes") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());

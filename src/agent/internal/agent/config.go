@@ -55,7 +55,21 @@ type Config struct {
 	SkillsDirs               []string        `toml:"skills_dirs"`
 	BundledSkillsDir         string          `toml:"bundled_skills_dir,omitempty"`
 	SkillMergeModel          SkillMergeModel `toml:"-"`
+	Telemetry                TelemetryConfig `toml:"telemetry,omitempty"`
 	ConfigDir                string          `toml:"-"`
+}
+
+type TelemetryConfig struct {
+	Enabled           *bool    `toml:"enabled,omitempty"`
+	Provider          string   `toml:"provider,omitempty"`
+	BaseURL           string   `toml:"base_url,omitempty"`
+	PublicKey         string   `toml:"public_key,omitempty"`
+	SecretKey         string   `toml:"secret_key,omitempty"`
+	UploadScreenshots *bool    `toml:"upload_screenshots,omitempty"`
+	UploadTimeoutSec  int      `toml:"upload_timeout_sec,omitempty"`
+	MaxRetry          int      `toml:"max_retry,omitempty"`
+	Tags              []string `toml:"tags,omitempty"`
+	Environment       string   `toml:"environment,omitempty"`
 }
 
 type TTSConfig struct {
@@ -429,7 +443,80 @@ func (c Config) Validate() error {
 		return fmt.Errorf("screenshot_prune_interval must be >= 0, got %d", c.ScreenshotPruneInterval)
 	}
 
+	if err := c.Telemetry.Validate(); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+func (t TelemetryConfig) Validate() error {
+	if !t.EnabledOrDefault() {
+		return nil
+	}
+	if strings.TrimSpace(t.BaseURL) == "" {
+		return errors.New("telemetry.base_url is required when telemetry.enabled=true")
+	}
+	if strings.TrimSpace(t.PublicKey) == "" {
+		return errors.New("telemetry.public_key is required when telemetry.enabled=true")
+	}
+	if strings.TrimSpace(t.SecretKey) == "" {
+		return errors.New("telemetry.secret_key is required when telemetry.enabled=true")
+	}
+	switch t.ProviderOrDefault() {
+	case "langfuse":
+	default:
+		return fmt.Errorf("invalid telemetry.provider: %s (expected langfuse)", t.Provider)
+	}
+	if t.UploadTimeoutSec < 0 {
+		return fmt.Errorf("telemetry.upload_timeout_sec must be >= 0, got %d", t.UploadTimeoutSec)
+	}
+	if t.MaxRetry < 0 {
+		return fmt.Errorf("telemetry.max_retry must be >= 0, got %d", t.MaxRetry)
+	}
+	return nil
+}
+
+func (t TelemetryConfig) EnabledOrDefault() bool {
+	if t.Enabled != nil {
+		return *t.Enabled
+	}
+	return false
+}
+
+func (t TelemetryConfig) ProviderOrDefault() string {
+	if strings.TrimSpace(t.Provider) != "" {
+		return strings.ToLower(strings.TrimSpace(t.Provider))
+	}
+	return "langfuse"
+}
+
+func (t TelemetryConfig) UploadScreenshotsOrDefault() bool {
+	if t.UploadScreenshots != nil {
+		return *t.UploadScreenshots
+	}
+	return true
+}
+
+func (t TelemetryConfig) UploadTimeoutOrDefault() time.Duration {
+	if t.UploadTimeoutSec > 0 {
+		return time.Duration(t.UploadTimeoutSec) * time.Second
+	}
+	return 30 * time.Second
+}
+
+func (t TelemetryConfig) MaxRetryOrDefault() int {
+	if t.MaxRetry > 0 {
+		return t.MaxRetry
+	}
+	return 2
+}
+
+func (t TelemetryConfig) EnvironmentOrDefault() string {
+	if strings.TrimSpace(t.Environment) != "" {
+		return strings.TrimSpace(t.Environment)
+	}
+	return "default"
 }
 
 // InputModeOrDefault returns the input mode or "text" as default

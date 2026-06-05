@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/chains"
@@ -34,19 +35,20 @@ func effectiveMaxIterations(configured int) int {
 const currentEnvironmentHintMaxAge = 10 * time.Minute
 
 type Runtime struct {
-	config           Config
-	models           ModelResolver
-	memories         *MemoryManager
-	tools            *ToolSet
-	skills           *SkillManager
-	skillsLoaded     bool
-	skillsReloadMu   sync.Mutex
-	skillsDirty      bool
-	mergeWorker      *MergeWorker
-	logger           *Logger
-	profileDebouncer *ProfileDebouncer
-	sleep            *SleepController
-	memoryPlane      MemoryPlane
+	config             Config
+	models             ModelResolver
+	memories           *MemoryManager
+	tools              *ToolSet
+	skills             *SkillManager
+	skillsLoaded       bool
+	skillsReloadMu     sync.Mutex
+	skillsDirty        bool
+	mergeWorker        *MergeWorker
+	logger             *Logger
+	profileDebouncer   *ProfileDebouncer
+	sleep              *SleepController
+	memoryPlane        MemoryPlane
+	telemetrySessionID string
 }
 
 type RunRequest struct {
@@ -97,20 +99,34 @@ type RunEvent struct {
 }
 
 type usageTrackingModel struct {
-	inner   llms.Model
-	metrics *RunMetrics
+	inner         llms.Model
+	metrics       *RunMetrics
+	promptCapture *telemetryPromptCapture
 }
 
 func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	startedAt := time.Now()
 	res, err := m.inner.GenerateContent(ctx, messages, options...)
 	if err == nil {
 		recordUsageMetrics(m.metrics, res)
+	}
+	if m.promptCapture != nil {
+		m.promptCapture.Record(ctx, startedAt, time.Now(), messages, options, res, err)
 	}
 	return res, err
 }
 
 func (m *usageTrackingModel) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
-	return m.inner.Call(ctx, prompt, options...)
+	startedAt := time.Now()
+	out, err := m.inner.Call(ctx, prompt, options...)
+	if m.promptCapture != nil {
+		res := &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: out}}}
+		m.promptCapture.Record(ctx, startedAt, time.Now(), []llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart(prompt)},
+		}}, options, res, err)
+	}
+	return out, err
 }
 
 func NewRuntime(cfg Config) (*Runtime, error) {
@@ -232,13 +248,14 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
 	}
 	rt := &Runtime{
-		config:       cfg,
-		models:       models,
-		memories:     memories,
-		tools:        tools,
-		skills:       skillManager,
-		skillsLoaded: skillIndex != nil && len(skillIndex.Names()) > 0,
-		sleep:        sleepController,
+		config:             cfg,
+		models:             models,
+		memories:           memories,
+		tools:              tools,
+		skills:             skillManager,
+		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
+		sleep:              sleepController,
+		telemetrySessionID: uuid.NewString(),
 	}
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
@@ -291,7 +308,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
-	model = &usageTrackingModel{inner: model, metrics: metrics}
+	promptCapture := newTelemetryPromptCapture(r.config.Telemetry.EnabledOrDefault())
+	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture}
 
 	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
 	if err != nil {
@@ -363,7 +381,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			}
 		}
 		if err != nil {
-			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
+			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
 			return RunResult{}, err
 		}
 	}
@@ -371,21 +389,21 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
 	r.memories.SetLastPromptTokens(metrics.LastPromptTokens)
 	if err := r.memories.AppendExchange(ctx, "default", normalizedInput, output); err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
 		return RunResult{}, err
 	}
 
 	memorySnapshot, err := r.memories.Snapshot(ctx, "default")
 	if err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
 		return RunResult{}, err
 	}
 	if err := r.memories.SaveSnapshot(ctx, "default", memorySnapshot); err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
 		return RunResult{}, err
 	}
 	r.memories.RequestMaintenance()
-	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil)
+	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture)
 
 	sleepRequested, sleepReason := r.sleep.Consume()
 	return RunResult{
@@ -513,7 +531,7 @@ func toolNamesFromTools(tools []langtools.Tool) []string {
 	return uniqueNonEmpty(names)
 }
 
-func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error) {
+func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture) {
 	if recorder == nil || r.memoryPlane == nil {
 		return
 	}
@@ -526,11 +544,67 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 	tags := cfg.extractTagsFromText(input)
 	entities := cfg.extractEntitiesFromText(input)
 	episode := recorder.Finish(output, metrics, runErr, tags, entities)
+	enrichEpisodeTelemetry(&episode, r.config)
+	r.enrichEpisodeRuntimeTelemetry(&episode)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := r.memoryPlane.CommitEpisode(ctx, episode); err != nil && r.logger != nil {
 		r.logger.Warn("[memory] commit episode failed: %v", err)
+		return
 	}
+	r.exportEpisodeBestEffort(episode, promptCapture)
+}
+
+func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
+	if r == nil || episode == nil {
+		return
+	}
+	if episode.Extra == nil {
+		episode.Extra = map[string]interface{}{}
+	}
+	if extraString(episode.Extra, "session_id") == "" && r.telemetrySessionID != "" {
+		episode.Extra["session_id"] = r.telemetrySessionID
+	}
+	if _, ok := episode.Extra["model_parameters"]; !ok {
+		if params := telemetryModelParametersFromModelConfig(r.config.Model); len(params) > 0 {
+			episode.Extra["model_parameters"] = params
+		}
+	}
+}
+
+func telemetryModelParametersFromModelConfig(cfg ModelConfig) map[string]interface{} {
+	params := map[string]interface{}{}
+	if cfg.Temperature != 0 {
+		params["temperature"] = cfg.Temperature
+	}
+	if cfg.MaxTokens > 0 {
+		params["max_tokens"] = cfg.MaxTokens
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	return params
+}
+
+func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *telemetryPromptCapture) {
+	if !r.config.Telemetry.EnabledOrDefault() || strings.TrimSpace(episode.UserGoal) == "" {
+		return
+	}
+	if r.config.ConfigDir == "" {
+		return
+	}
+	exporter := NewEpisodeExporter(r.config.Telemetry, r.logger)
+	promptCalls := promptCapture.Snapshot()
+	episodesRoot := filepath.Join(r.config.ConfigDir, "memory", "episodes")
+	episodeDir := EpisodeDirectory(episodesRoot, episode)
+	timeout := r.config.Telemetry.UploadTimeoutOrDefault()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if err := exporter.ExportEpisodeDir(ctx, episodeDir, episode, promptCalls); err != nil && r.logger != nil {
+			r.logger.Warn("[telemetry] export episode failed: %v", err)
+		}
+	}()
 }
 
 func wrapToolsWithCallbacks(tools []langtools.Tool, handler callbacks.Handler) []langtools.Tool {

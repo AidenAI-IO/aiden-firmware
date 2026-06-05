@@ -286,6 +286,24 @@ model = "seed-tts-2.0"
 voice_id = "zh_female_vv_uranus_bigtts"
 ```
 
+## Episode 遥测（Langfuse）
+
+可选。任务结束后将完整 episode 异步上报到 Langfuse，详见 [telemetry-langfuse.md](./telemetry-langfuse.md)。
+
+```toml
+[telemetry]
+enabled = false
+provider = "langfuse"
+base_url = "http://langfuse.example.com:3000"
+public_key = "pk-lf-..."
+secret_key = "sk-lf-..."
+upload_screenshots = true
+upload_timeout_sec = 30
+max_retry = 2
+environment = "default"
+tags = ["aiden-hardware"]
+```
+
 ## 已知限制
 
 - Web UI 模式和设备侧语音模式互斥；
