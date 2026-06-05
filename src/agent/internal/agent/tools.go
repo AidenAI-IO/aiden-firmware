@@ -65,6 +65,9 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 		tools["enter_sleep"] = NewEnterSleepTool(toolOptions.sleepController)
 	}
 
+	// Always register human handoff tool - no callback needed for non-blocking version
+	tools["request_human_handoff"] = NewHumanHandoffTool()
+
 	return &ToolSet{tools: tools, screen: screen}
 }
 
