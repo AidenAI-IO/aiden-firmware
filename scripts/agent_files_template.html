@@ -514,7 +514,7 @@ function jumpToFile(targetPath) {
 
   for (let i = 0; i < data.files.length; i++) {
     const file = data.files[i];
-    if (regex.test(file.relative_path) || file.relative_path.includes(targetPath.replace(/\*/g, ''))) {
+    if (regex.test(file.relative_path)) {
       closeDrawer();
       setTimeout(() => {
         const fileItem = document.querySelector('.file-item[data-type="' + currentTab + '"][data-idx="' + i + '"]');

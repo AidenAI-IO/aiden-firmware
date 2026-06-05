@@ -2882,15 +2882,18 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         response.content_type = "application/json; charset=utf-8";
 
         // Regenerate report in background
+        // Note: system() with '&' returns 0 if the shell spawns successfully,
+        // not if the background script succeeds. Actual success/failure will
+        // only be visible in /tmp/user_files_regenerate.log.
         std::string cmd = "cd /userdata/agent_tools && "
                          "./view_agent_files.sh > /tmp/user_files_regenerate.log 2>&1 &";
         int ret = system(cmd.c_str());
 
         if (ret == 0) {
-            response.body = "{\"status\":\"ok\",\"message\":\"Report regeneration started\"}";
+            response.body = "{\"status\":\"ok\",\"message\":\"Background regeneration started\"}";
         } else {
             response.status_code = 500;
-            response.body = "{\"status\":\"error\",\"message\":\"Failed to start regeneration\"}";
+            response.body = "{\"status\":\"error\",\"message\":\"Failed to spawn regeneration process\"}";
         }
         return response;
     }

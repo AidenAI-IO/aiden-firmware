@@ -146,7 +146,7 @@ fail_pattern = r'fail_[a-f0-9]+'           # Failure IDs
 从设备提取的实际引用示例：
 
 - `device/profile.yaml` → 引用 `ep_1780625339372268063_07145689`
-- `device/procedures/proc_832cbf216c9e.yaml` → 引用 episode 和 recall_memory
+- `device/procedures/proc_832cbf216c9e.yaml` → 引用多个 episodes
 - `device/apps/app_512a6dfaaf7b.yaml` → 引用 episode
 
 共检测到 39 处引用关系分布在 47 个 memory 文件中。

@@ -8,18 +8,55 @@ Serves files directly from /userdata/agent/ without depending on config_web.
 - /benchmark        -> latest benchmark report or list
 - /benchmark/<run>  -> specific benchmark run report
 """
+import html
 import http.server
 import socketserver
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
+from urllib.parse import quote
 
 PROXY_PORT = 8090
 AGENT_DIR = Path('/userdata/agent')
 FILES_REPORT = AGENT_DIR / 'files_report.html'
 BENCHMARK_DIR = AGENT_DIR / 'benchmark'
 TOOLS_DIR = Path('/userdata/agent_tools')
+REPORT_MAX_AGE_SECONDS = 300  # 5 minutes
+
+
+def _ensure_report_exists():
+    """Generate report if missing or stale. Returns True if report is ready."""
+    if FILES_REPORT.exists():
+        age = time.time() - FILES_REPORT.stat().st_mtime
+        if age < REPORT_MAX_AGE_SECONDS:
+            return True
+
+    # Report missing or stale - regenerate synchronously
+    script = TOOLS_DIR / 'generate_agent_files_report.py'
+    template = TOOLS_DIR / 'agent_files_template.html'
+
+    if not script.exists() or not template.exists():
+        return False
+
+    try:
+        subprocess.run(
+            [
+                'python3', str(script),
+                '--memory-dir', '/userdata/agent/memory',
+                '--skills-dir', '/userdata/agent/skills',
+                '--skill-state-dir', '/userdata/agent/skill-state',
+                '--output', str(FILES_REPORT)
+            ],
+            cwd=str(TOOLS_DIR),
+            timeout=30,
+            capture_output=True,
+            check=True
+        )
+        return True
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError):
+        return False
 
 
 def _serve_html(handler, path: Path):
@@ -45,21 +82,28 @@ def _serve_benchmark_index(handler):
         handler.send_error(404, 'No benchmark runs found')
         return
 
-    runs = sorted([d.name for d in runs_dir.iterdir() if d.is_dir()], reverse=True)
+    try:
+        runs = sorted([d.name for d in runs_dir.iterdir() if d.is_dir()], reverse=True)
+    except OSError as e:
+        handler.send_error(500, f'List error: {e}')
+        return
+
     rows = []
     for run_id in runs:
         report = runs_dir / run_id / 'report.html'
-        link = f'<a href="/benchmark/{run_id}">{run_id}</a>' if report.exists() else run_id
+        safe_text = html.escape(run_id)
+        safe_href = quote(run_id, safe='')
+        link = f'<a href="/benchmark/{safe_href}">{safe_text}</a>' if report.exists() else safe_text
         rows.append(f'<tr><td>{link}</td></tr>')
 
-    html = f'''<!DOCTYPE html>
+    html_content = f'''<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Benchmark Runs</title>
 <style>body{{font-family:system-ui;max-width:900px;margin:40px auto;padding:0 20px}}
 table{{width:100%;border-collapse:collapse}}td{{padding:10px;border-bottom:1px solid #eee}}
 a{{color:#2563eb;text-decoration:none}}a:hover{{text-decoration:underline}}</style>
 </head><body><h1>Benchmark Runs ({len(runs)})</h1>
 <table>{''.join(rows)}</table></body></html>'''
-    data = html.encode('utf-8')
+    data = html_content.encode('utf-8')
     handler.send_response(200)
     handler.send_header('Content-Type', 'text/html; charset=utf-8')
     handler.send_header('Content-Length', str(len(data)))
@@ -72,6 +116,10 @@ class FilesHandler(http.server.BaseHTTPRequestHandler):
         path = self.path.split('?', 1)[0]
 
         if path == '/user_files':
+            # Auto-generate report if missing or stale
+            if not _ensure_report_exists():
+                self.send_error(500, 'Failed to generate report')
+                return
             _serve_html(self, FILES_REPORT)
             return
 
@@ -88,32 +136,6 @@ class FilesHandler(http.server.BaseHTTPRequestHandler):
 
         self.send_error(404, 'Not Found')
 
-    def do_POST(self):
-        if self.path == '/user_files/regenerate':
-            script = TOOLS_DIR / 'view_agent_files.sh'
-            if not script.exists():
-                self.send_error(500, f'Script not found: {script}')
-                return
-            try:
-                subprocess.Popen(
-                    ['/bin/sh', str(script)],
-                    cwd=str(TOOLS_DIR),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-                body = b'{"status":"ok","message":"Regeneration started"}'
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            except OSError as e:
-                self.send_error(500, f'Spawn failed: {e}')
-            return
-
-        self.send_error(404, 'Not Found')
-
     def log_message(self, format, *args):
         sys.stderr.write(f"[files-proxy] {self.address_string()} - {format % args}\n")
 
@@ -126,10 +148,10 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 def main():
     server = ThreadedHTTPServer(('0.0.0.0', PROXY_PORT), FilesHandler)
     print(f"Listening on 0.0.0.0:{PROXY_PORT}", flush=True)
-    print(f"  GET  /user_files            -> {FILES_REPORT}", flush=True)
-    print(f"  POST /user_files/regenerate -> {TOOLS_DIR}/view_agent_files.sh", flush=True)
-    print(f"  GET  /benchmark             -> list of runs", flush=True)
-    print(f"  GET  /benchmark/<run_id>    -> {BENCHMARK_DIR}/runs/<run_id>/report.html", flush=True)
+    print(f"  GET  /user_files          -> {FILES_REPORT} (auto-generated if missing/stale)", flush=True)
+    print(f"  GET  /benchmark           -> list of runs", flush=True)
+    print(f"  GET  /benchmark/<run_id>  -> {BENCHMARK_DIR}/runs/<run_id>/report.html", flush=True)
+    print(f"  Report max age: {REPORT_MAX_AGE_SECONDS}s", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
