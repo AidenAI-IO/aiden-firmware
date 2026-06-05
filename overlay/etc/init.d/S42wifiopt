@@ -1,5 +1,7 @@
 #!/bin/sh
-# Aiden override: optional Wi-Fi optimization hook.
+# Aiden override: Wi-Fi driver load fallback during baseline network startup.
+# Skips when early boot (RkLunch/insmod_ko.sh) already brought up wlan0.
+# Interface bring-up and DHCP remain in S40network / S41dhcpcd.
 
 BOOT_CONF=/etc/aiden_boot.conf
 
@@ -8,7 +10,29 @@ if [ -f "$BOOT_CONF" ]; then
 fi
 : "${ENABLE_WIFIOPT:=1}"
 
-WIFI_OPT_SCRIPT=/oem/usr/bin/wifi_opt.sh
+INSMOD_WIFI=/oem/usr/ko/insmod_wifi.sh
+
+wifi_driver_loaded() {
+	if [ -d /sys/class/net/wlan0 ]; then
+		return 0
+	fi
+	if lsmod 2>/dev/null | grep -q '^aic8800_fdrv'; then
+		return 0
+	fi
+	return 1
+}
+
+load_wifi_driver() {
+	if wifi_driver_loaded; then
+		return 0
+	fi
+	if [ ! -x "$INSMOD_WIFI" ]; then
+		echo "Wi-Fi driver loader not found: $INSMOD_WIFI"
+		return 1
+	fi
+	cd /oem/usr/ko || return 1
+	sh "$INSMOD_WIFI"
+}
 
 start() {
 	if [ "$ENABLE_WIFIOPT" != "1" ]; then
@@ -16,33 +40,16 @@ start() {
 		return 0
 	fi
 
-	if [ -x "$WIFI_OPT_SCRIPT" ]; then
-		"$WIFI_OPT_SCRIPT" start >/dev/null 2>&1
-		rc="$?"
-		if [ "$rc" -ne 0 ]; then
-			"$WIFI_OPT_SCRIPT" >/dev/null 2>&1
-			rc="$?"
-		fi
-		if [ "$rc" -ne 0 ]; then
-			echo "Wi-Fi optimization script failed (exit=$rc)"
-			return "$rc"
-		fi
-		echo "Ran Wi-Fi optimization script"
+	if load_wifi_driver; then
+		echo "Wi-Fi driver ready"
 		return 0
 	fi
 
-	echo "Wi-Fi optimization script not found, skipping"
-	return 0
+	echo "Wi-Fi driver load failed"
+	return 1
 }
 
 stop() {
-	if [ -x "$WIFI_OPT_SCRIPT" ]; then
-		"$WIFI_OPT_SCRIPT" stop >/dev/null 2>&1 || {
-			echo "Wi-Fi optimization stop failed"
-			return 1
-		}
-	fi
-	echo "Stopped Wi-Fi optimization hook"
 	return 0
 }
 
