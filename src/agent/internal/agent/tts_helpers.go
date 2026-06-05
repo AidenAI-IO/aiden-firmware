@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"time"
 
 	"aiden-agent/internal/agent/tts"
 )
@@ -138,18 +139,73 @@ func speakWithTTSManager(ctx context.Context, manager *tts.ProviderManager, audi
 	if text == "" || manager == nil || audio == nil {
 		return false, nil
 	}
-	stream, err := beginManagedTTSStream(ctx, manager, audio, cfg)
-	if err != nil {
-		return false, err
+
+	// Retry transient network errors
+	maxRetries := 2
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// Short backoff between retries
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-time.After(time.Duration(attempt) * 500 * time.Millisecond):
+			}
+		}
+
+		stream, err := beginManagedTTSStream(ctx, manager, audio, cfg)
+		if err != nil {
+			lastErr = err
+			if isTransientTTSError(err) && attempt < maxRetries {
+				continue
+			}
+			return false, err
+		}
+
+		if _, err := stream.Write([]byte(text)); err != nil {
+			_ = stream.closeAndWait()
+			lastErr = err
+			if isTransientTTSError(err) && attempt < maxRetries {
+				continue
+			}
+			return false, err
+		}
+
+		if err := stream.closeAndWait(); err != nil {
+			lastErr = err
+			if isTransientTTSError(err) && attempt < maxRetries {
+				continue
+			}
+			return false, err
+		}
+
+		return stream.spoke, nil
 	}
-	if _, err := stream.Write([]byte(text)); err != nil {
-		_ = stream.closeAndWait()
-		return false, err
+	return false, lastErr
+}
+
+// isTransientTTSError checks if an error is transient and should be retried.
+func isTransientTTSError(err error) bool {
+	if err == nil {
+		return false
 	}
-	if err := stream.closeAndWait(); err != nil {
-		return false, err
+	msg := strings.ToLower(err.Error())
+	for _, fragment := range []string{
+		"connection refused",
+		"connection reset by peer",
+		"broken pipe",
+		"temporary failure",
+		"temporarily unavailable",
+		"i/o timeout",
+		"eof",
+		"dial tcp",
+		"context deadline exceeded",
+	} {
+		if strings.Contains(msg, fragment) {
+			return true
+		}
 	}
-	return stream.spoke, nil
+	return false
 }
 
 // lookupCredentials does a case-insensitive map lookup so users don't have to
