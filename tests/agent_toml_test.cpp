@@ -77,6 +77,18 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.search.provider = "duckduckgo";
     cfg.search.api_key = "tvly-test";
 
+    cfg.telemetry.enabled = true;
+    cfg.telemetry.provider = "langfuse";
+    cfg.telemetry.base_url = "http://langfuse.example.com:3000";
+    cfg.telemetry.public_key = "pk-lf-test";
+    cfg.telemetry.secret_key = "sk-lf-test";
+    cfg.telemetry.upload_screenshots = false;
+    cfg.telemetry.upload_timeout_sec = 45;
+    cfg.telemetry.max_retry = 3;
+    cfg.telemetry.tags.push_back("aiden-hardware");
+    cfg.telemetry.tags.push_back("field-test");
+    cfg.telemetry.environment = "staging";
+
     std::string path = make_temp_path("roundtrip.toml");
     std::string err;
     REQUIRE(aiden::save_agent_toml(path.c_str(), cfg, &err));
@@ -138,6 +150,19 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
 
     CHECK(loaded.search.provider == "duckduckgo");
     CHECK(loaded.search.api_key == "tvly-test");
+
+    CHECK(loaded.telemetry.enabled == true);
+    CHECK(loaded.telemetry.provider == "langfuse");
+    CHECK(loaded.telemetry.base_url == "http://langfuse.example.com:3000");
+    CHECK(loaded.telemetry.public_key == "pk-lf-test");
+    CHECK(loaded.telemetry.secret_key == "sk-lf-test");
+    CHECK(loaded.telemetry.upload_screenshots == false);
+    CHECK(loaded.telemetry.upload_timeout_sec == 45);
+    CHECK(loaded.telemetry.max_retry == 3);
+    REQUIRE(loaded.telemetry.tags.size() == 2);
+    CHECK(loaded.telemetry.tags[0] == "aiden-hardware");
+    CHECK(loaded.telemetry.tags[1] == "field-test");
+    CHECK(loaded.telemetry.environment == "staging");
 
     std::remove(path.c_str());
 }

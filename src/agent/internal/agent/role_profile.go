@@ -110,9 +110,15 @@ func buildRoleProfile(
 		"",
 		"Active skills:",
 		skills.CombinedInstructions(),
-		"",
-		"Role rules:",
 	}
+	if text := strings.TrimSpace(cfg.RuntimeContext); text != "" {
+		parts = append(parts,
+			"",
+			"Runtime context:",
+			text,
+		)
+	}
+	parts = append(parts, "", "Role rules:")
 	for _, rule := range roleRules {
 		parts = append(parts, "- "+rule)
 	}

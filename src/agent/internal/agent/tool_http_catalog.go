@@ -167,7 +167,15 @@ func (r *Runtime) ToolDescriptors() []ToolDescriptor {
 }
 
 func isHTTPToolExposed(name string) bool {
-	return name != "skill_manage"
+	switch name {
+	// Phone-bridge tools route AI commands to the companion app over the
+	// WebSocket bridge; they are not standalone HTTP operations on the board,
+	// so keep the whole set out of the HTTP catalog/skill suite.
+	case "skill_manage", "open_app", "clipboard", "calendar", "contacts", "notification":
+		return false
+	default:
+		return true
+	}
 }
 
 func (r *Runtime) ToolDescriptorByName(name string) (ToolDescriptor, bool) {

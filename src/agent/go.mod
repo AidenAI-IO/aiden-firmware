@@ -6,9 +6,14 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/gocolly/colly v1.2.0
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/tmc/langchaingo v0.1.14
+	github.com/vmihailenco/msgpack/v5 v5.4.1
+	golang.org/x/net v0.55.0
 	golang.org/x/sys v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
+	nhooyr.io/websocket v1.8.7
 )
 
 require (
@@ -26,13 +31,12 @@ require (
 	github.com/gobwas/glob v0.2.3 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/goph/emperror v0.17.2 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/huandu/xstrings v1.3.3 // indirect
 	github.com/imdario/mergo v0.3.13 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/kennygrant/sanitize v1.2.4 // indirect
+	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/mitchellh/copystructure v1.0.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
@@ -47,13 +51,11 @@ require (
 	github.com/spf13/cast v1.3.1 // indirect
 	github.com/temoto/robotstxt v1.1.2 // indirect
 	github.com/u-root/u-root v0.16.0 // indirect
-	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/yargevad/filepathx v1.0.0 // indirect
 	go.starlark.net v0.0.0-20230302034142-4b1e35fe2254 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394 // indirect
-	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect
 	google.golang.org/protobuf v1.36.3 // indirect

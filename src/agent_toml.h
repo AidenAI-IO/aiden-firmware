@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace aiden {
 
@@ -53,6 +54,19 @@ struct SearchToml {
     std::string api_key;
 };
 
+struct TelemetryToml {
+    bool enabled = false;
+    std::string provider = "langfuse";
+    std::string base_url;
+    std::string public_key;
+    std::string secret_key;
+    bool upload_screenshots = true;
+    int upload_timeout_sec = 30;
+    int max_retry = 2;
+    std::vector<std::string> tags;
+    std::string environment = "default";
+};
+
 struct AgentToml {
     ModelToml model;
     ModelToml model_text;
@@ -61,6 +75,7 @@ struct AgentToml {
     AudioToml audio;
     HIDToml hid;
     SearchToml search;
+    TelemetryToml telemetry;
 
     std::string instruction;
     std::string additional_prompt;
