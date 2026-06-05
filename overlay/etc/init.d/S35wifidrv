@@ -1,5 +1,5 @@
 #!/bin/sh
-# Aiden override: Wi-Fi driver load fallback during baseline network startup.
+# Aiden override: Wi-Fi driver load fallback before baseline network bring-up.
 # Skips when early boot (RkLunch/insmod_ko.sh) already brought up wlan0.
 # Interface bring-up and DHCP remain in S40network / S41dhcpcd.
 
@@ -8,7 +8,7 @@ BOOT_CONF=/etc/aiden_boot.conf
 if [ -f "$BOOT_CONF" ]; then
 	. "$BOOT_CONF"
 fi
-: "${ENABLE_WIFIOPT:=1}"
+: "${ENABLE_WIFIDRV:=${ENABLE_WIFIOPT:-1}}"
 
 INSMOD_WIFI=/oem/usr/ko/insmod_wifi.sh
 
@@ -35,8 +35,8 @@ load_wifi_driver() {
 }
 
 start() {
-	if [ "$ENABLE_WIFIOPT" != "1" ]; then
-		echo "wifiopt disabled by config (ENABLE_WIFIOPT=$ENABLE_WIFIOPT)"
+	if [ "$ENABLE_WIFIDRV" != "1" ]; then
+		echo "wifidrv disabled by config (ENABLE_WIFIDRV=$ENABLE_WIFIDRV)"
 		return 0
 	fi
 
