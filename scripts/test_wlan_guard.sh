@@ -15,6 +15,11 @@ if [ ! -x "$GUARD_INIT" ]; then
     exit 1
 fi
 
+if ! sh -n "$GUARD_SCRIPT"; then
+    echo "wlan_guard.sh must be valid POSIX shell syntax" >&2
+    exit 1
+fi
+
 if grep -R "wifi_opt" "$GUARD_SCRIPT" "$GUARD_INIT"; then
     echo "wlan_guard must not use legacy wifi_opt naming" >&2
     exit 1
@@ -42,6 +47,31 @@ fi
 
 if ! grep -q 'WLAN_GUARD_PING_TIMEOUT:-1' "$GUARD_SCRIPT"; then
     echo "wlan_guard must set a per-packet ping timeout" >&2
+    exit 1
+fi
+
+if ! grep -q 'sanitize_positive_int()' "$GUARD_SCRIPT"; then
+    echo "wlan_guard must sanitize numeric environment settings" >&2
+    exit 1
+fi
+
+if ! grep -q 'invalid .*; using default' "$GUARD_SCRIPT"; then
+    echo "wlan_guard must log when numeric settings fall back to defaults" >&2
+    exit 1
+fi
+
+if ! grep -q 'validate_config' "$GUARD_SCRIPT"; then
+    echo "wlan_guard must validate config before running checks" >&2
+    exit 1
+fi
+
+if ! grep -q '/proc/$pid/cmdline' "$GUARD_SCRIPT"; then
+    echo "wlan_guard must verify PID identity before treating it as running" >&2
+    exit 1
+fi
+
+if ! grep -q 'wlan_guard.sh' "$GUARD_SCRIPT"; then
+    echo "wlan_guard PID identity check must match wlan_guard.sh" >&2
     exit 1
 fi
 

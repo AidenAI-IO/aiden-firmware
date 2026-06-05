@@ -15,9 +15,78 @@ log() {
 	printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$msg" >> "$LOGFILE"
 }
 
+strip_leading_zeroes() {
+	value="$1"
+	while [ "${value#0}" != "$value" ]; do
+		value="${value#0}"
+	done
+	[ -n "$value" ] || value=0
+	echo "$value"
+}
+
+greater_than() {
+	left="$(strip_leading_zeroes "$1")"
+	right="$(strip_leading_zeroes "$2")"
+	if [ "${#left}" -gt "${#right}" ]; then
+		return 0
+	fi
+	if [ "${#left}" -lt "${#right}" ]; then
+		return 1
+	fi
+	[ "$left" -gt "$right" ]
+}
+
+sanitize_positive_int() {
+	name="$1"
+	value="$2"
+	default_value="$3"
+	max_value="$4"
+
+	case "$value" in
+		''|*[!0-9]*)
+			log "invalid $name=$value; using default $default_value"
+			echo "$default_value"
+			return
+			;;
+	esac
+
+	value="$(strip_leading_zeroes "$value")"
+	if [ "$value" = "0" ] || greater_than "$value" "$max_value"; then
+		log "invalid $name=$2; using default $default_value"
+		echo "$default_value"
+		return
+	fi
+
+	echo "$value"
+}
+
+validate_config() {
+	CHECK_INTERVAL="$(sanitize_positive_int WLAN_GUARD_INTERVAL "$CHECK_INTERVAL" 10 3600)"
+	FAIL_THRESHOLD="$(sanitize_positive_int WLAN_GUARD_FAIL_THRESHOLD "$FAIL_THRESHOLD" 5 100)"
+	PING_COUNT="$(sanitize_positive_int WLAN_GUARD_PING_COUNT "$PING_COUNT" 3 10)"
+	PING_TIMEOUT="$(sanitize_positive_int WLAN_GUARD_PING_TIMEOUT "$PING_TIMEOUT" 1 30)"
+	RECOVER_COOLDOWN="$(sanitize_positive_int WLAN_GUARD_RECOVER_COOLDOWN "$RECOVER_COOLDOWN" 20 3600)"
+}
+
+is_wlan_guard_process() {
+	pid="$1"
+	cmdline_path="/proc/$pid/cmdline"
+	[ -r "$cmdline_path" ] || return 1
+
+	cmdline="$(tr '\000' ' ' < "$cmdline_path" 2>/dev/null)" || return 1
+	case "$cmdline" in
+		*wlan_guard.sh*) return 0 ;;
+	esac
+	return 1
+}
+
 is_running() {
 	pid="$1"
-	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+	case "$pid" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	kill -0 "$pid" 2>/dev/null || return 1
+	is_wlan_guard_process "$pid"
 }
 
 default_gateway() {
@@ -74,6 +143,7 @@ recover_wlan() {
 }
 
 watch_loop() {
+	validate_config
 	tune_radio
 	initial_target="$(target_host)"
 	if [ -n "$initial_target" ]; then
@@ -112,6 +182,7 @@ start() {
 		fi
 	fi
 
+	validate_config
 	watch_loop >/dev/null 2>&1 &
 	echo "$!" > "$PIDFILE"
 	echo "started wlan_guard: $(sed -n '1p' "$PIDFILE")"
@@ -146,6 +217,7 @@ case "$1" in
 	restart|reload) stop; start ;;
 	status) status ;;
 	once)
+		validate_config
 		tune_radio
 		if wlan_associated && target_reachable; then
 			echo "healthy"
