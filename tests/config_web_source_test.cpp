@@ -260,6 +260,36 @@ TEST_CASE("config web restarts ota only when system env changes") {
     CHECK(source.find("config saved; agent and ota restarting") == std::string::npos);
 }
 
+TEST_CASE("config web custom benchmark suite import endpoints") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    // Endpoints registered.
+    CHECK(source.find("\"/benchmark/suites/import\"") != std::string::npos);
+    CHECK(source.find("\"/benchmark/suites/delete\"") != std::string::npos);
+
+    // Custom suites isolated under suites/custom/ and listing flags them.
+    CHECK(source.find("/userdata/agent/benchmark/suites/custom") != std::string::npos);
+    CHECK(source.find("/suites/custom/") != std::string::npos);
+    CHECK(source.find("\"custom\"") != std::string::npos);
+
+    // Validation delegated to runner.suite.load_suite (single source of truth).
+    CHECK(source.find("from runner.suite import load_suite") != std::string::npos);
+
+    // Name sanitisation: only [A-Za-z0-9_-], length-bounded.
+    CHECK(source.find("isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_'") != std::string::npos);
+    CHECK(source.find("safe_name.size() > 64") != std::string::npos);
+
+    // Delete must only touch suites/custom/ (no arbitrary path).
+    const std::string del_marker = "std::string dest_path = \"/userdata/agent/benchmark/suites/custom/\" + safe_name + \".json\";";
+    CHECK(source.find(del_marker) != std::string::npos);
+}
+
 TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhid") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
