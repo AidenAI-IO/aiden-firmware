@@ -493,6 +493,79 @@ func TestPostActionScreenshotToolReturnsScreenshotJSON(t *testing.T) {
 	}
 }
 
+func TestPostActionScreenshotToolFallsBackScreenshotWhenScreenUnstable(t *testing.T) {
+	action := &stubTool{name: "touch_gesture", output: "ok"}
+	waitStable := &stubTool{
+		name:   "wait_for_stable_screen",
+		output: `{"ok":true,"stable":false,"elapsed_ms":3001,"last_diff":18.5}`,
+	}
+	screenshot := &stubTool{
+		name:   "screenshot",
+		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
+	}
+	tool := newPostActionStableScreenshotTool(action, waitStable, screenshot, 0, ScreenStableDefaults{TimeoutMs: 3000, StableMs: 500})
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if strings.HasPrefix(out, "error:") {
+		t.Fatalf("Call output = %q, want success with fallback screenshot", out)
+	}
+
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("output is not valid post-action screenshot JSON: %v", err)
+	}
+	if result.ActionOutput != "ok" {
+		t.Fatalf("ActionOutput = %q, want ok", result.ActionOutput)
+	}
+	if result.ScreenStable == nil || *result.ScreenStable {
+		t.Fatalf("ScreenStable = %#v, want false", result.ScreenStable)
+	}
+	if result.StableWaitMs == nil || *result.StableWaitMs != 3001 {
+		t.Fatalf("StableWaitMs = %#v, want 3001", result.StableWaitMs)
+	}
+	if result.LastDiff == nil || *result.LastDiff != 18.5 {
+		t.Fatalf("LastDiff = %#v, want 18.5", result.LastDiff)
+	}
+	if result.Data != "ZmFrZQ==" {
+		t.Fatalf("screenshot data = %q, want fallback capture", result.Data)
+	}
+	if len(waitStable.inputs) != 1 || waitStable.inputs[0] != `{"timeout_ms":3000,"stable_ms":500,"diff_threshold":5}` {
+		t.Fatalf("wait stable inputs = %#v", waitStable.inputs)
+	}
+	if len(screenshot.inputs) != 1 {
+		t.Fatalf("screenshot should still be called, got inputs %#v", screenshot.inputs)
+	}
+}
+
+func TestPostActionScreenshotToolOmitsLastDiffWhenStableWaitOmitsIt(t *testing.T) {
+	action := &stubTool{name: "touch_gesture", output: "ok"}
+	waitStable := &stubTool{
+		name:   "wait_for_stable_screen",
+		output: `{"ok":true,"stable":true,"elapsed_ms":600}`,
+	}
+	screenshot := &stubTool{
+		name:   "screenshot",
+		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
+	}
+	tool := newPostActionStableScreenshotTool(action, waitStable, screenshot, 0, ScreenStableDefaults{})
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("output is not valid post-action screenshot JSON: %v", err)
+	}
+	if result.LastDiff != nil {
+		t.Fatalf("LastDiff = %#v, want omitted", result.LastDiff)
+	}
+}
+
 func TestPostActionScreenshotToolSkipsScreenshotOnActionErrorOutput(t *testing.T) {
 	action := &stubTool{name: "mouse_click", output: "error: invalid input"}
 	screenshot := &stubTool{

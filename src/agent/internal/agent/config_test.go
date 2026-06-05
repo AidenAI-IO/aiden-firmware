@@ -46,6 +46,37 @@ func TestConfigScreenshotPruningDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestConfigScreenStableDefaults(t *testing.T) {
+	cfg := Config{
+		ScreenStableTimeoutMs: 7000,
+		ScreenStableMs:        800,
+	}
+	defaults := cfg.ScreenStableDefaults().Resolved()
+	if defaults.TimeoutMs != 7000 || defaults.StableMs != 800 {
+		t.Fatalf("resolved defaults = %#v, want timeout=7000 stable=800", defaults)
+	}
+}
+
+func TestConfigValidateRejectsNegativeScreenStableSettings(t *testing.T) {
+	cfg := Config{
+		Model:                 ModelConfig{Provider: "fake"},
+		ScreenStableTimeoutMs: -1,
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "screen_stable_timeout_ms") {
+		t.Fatalf("expected screen_stable_timeout_ms validation error, got %v", err)
+	}
+
+	cfg = Config{
+		Model:          ModelConfig{Provider: "fake"},
+		ScreenStableMs: -1,
+	}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "screen_stable_ms") {
+		t.Fatalf("expected screen_stable_ms validation error, got %v", err)
+	}
+}
+
 func TestConfigValidateRejectsNegativeScreenshotPruning(t *testing.T) {
 	cfg := Config{
 		Model:           ModelConfig{Provider: "fake"},

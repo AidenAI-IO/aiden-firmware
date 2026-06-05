@@ -186,7 +186,14 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err := proxy.Validate(); err != nil {
 		return nil, fmt.Errorf("proxy environment: %w", err)
 	}
-	toolSet := NewBuiltinToolSet(cfg.HID, cfg.Audio, cfg.Search, proxy, WithSleepController(sleepController))
+	toolSet := NewBuiltinToolSet(
+		cfg.HID,
+		cfg.Audio,
+		cfg.Search,
+		proxy,
+		WithSleepController(sleepController),
+		WithScreenStableDefaults(cfg.ScreenStableDefaults()),
+	)
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
 	modelManager := NewModelManager(cfg.Model, proxy)
 	summarizeFn := buildLLMSummarizeFn(modelManager)

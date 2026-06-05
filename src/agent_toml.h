@@ -98,6 +98,8 @@ struct AgentToml {
 	int max_iterations = -1;
 	int screenshot_keep_n = 3;
 	int screenshot_prune_interval = 25;
+	int screen_stable_timeout_ms = 3000;
+	int screen_stable_ms = 500;
 };
 
 bool load_agent_toml(const char* path, AgentToml& config, std::string* error = nullptr);

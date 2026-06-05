@@ -44,6 +44,8 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.max_iterations = 6;
     cfg.screenshot_keep_n = 5;
     cfg.screenshot_prune_interval = 40;
+    cfg.screen_stable_timeout_ms = 4500;
+    cfg.screen_stable_ms = 700;
 
     cfg.model.provider = "openrouter";
     cfg.model.model = "openai/gpt-4o-mini";
@@ -116,6 +118,8 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
 	CHECK(loaded.max_iterations == 6);
 	CHECK(loaded.screenshot_keep_n == 5);
 	CHECK(loaded.screenshot_prune_interval == 40);
+	CHECK(loaded.screen_stable_timeout_ms == 4500);
+	CHECK(loaded.screen_stable_ms == 700);
 
     CHECK(loaded.model.provider == "openrouter");
     CHECK(loaded.model.model == "openai/gpt-4o-mini");

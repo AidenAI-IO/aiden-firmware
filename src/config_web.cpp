@@ -731,6 +731,8 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.max_iterations = -1;
     cfg.screenshot_keep_n = 3;
     cfg.screenshot_prune_interval = 25;
+    cfg.screen_stable_timeout_ms = 3000;
+    cfg.screen_stable_ms = 500;
 
     cfg.model.provider = "openrouter";
     cfg.model.model = "bytedance-seed/seed-2.0-lite";
@@ -892,6 +894,8 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
     cJSON_AddNumberToObject(agent, "screenshot_keep_n", config.screenshot_keep_n);
     cJSON_AddNumberToObject(agent, "screenshot_prune_interval", config.screenshot_prune_interval);
+    cJSON_AddNumberToObject(agent, "screen_stable_timeout_ms", config.screen_stable_timeout_ms);
+    cJSON_AddNumberToObject(agent, "screen_stable_ms", config.screen_stable_ms);
 
     return root;
 }
@@ -1114,6 +1118,8 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->max_iterations, agent, "max_iterations");
         set_json_int(&config->screenshot_keep_n, agent, "screenshot_keep_n");
         set_json_int(&config->screenshot_prune_interval, agent, "screenshot_prune_interval");
+        set_json_int(&config->screen_stable_timeout_ms, agent, "screen_stable_timeout_ms");
+        set_json_int(&config->screen_stable_ms, agent, "screen_stable_ms");
     }
 }
 
@@ -1141,6 +1147,12 @@ std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
     }
     if (config.screenshot_prune_interval < 0) {
         return "screenshot_prune_interval must be >= 0";
+    }
+    if (config.screen_stable_timeout_ms < 0) {
+        return "screen_stable_timeout_ms must be >= 0";
+    }
+    if (config.screen_stable_ms < 0) {
+        return "screen_stable_ms must be >= 0";
     }
     std::string pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
     if (pointer_mode != "absolute" && pointer_mode != "touchscreen") {
@@ -2664,7 +2676,8 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             "silence_ms", "min_speech_ms",
             "voice_followup_timeout_ms", "voice_first_turn_timeout_ms",
             "voice_max_turns", "voice_max_response_tokens",
-            "screenshot_keep_n", "screenshot_prune_interval", NULL
+            "screenshot_keep_n", "screenshot_prune_interval",
+            "screen_stable_timeout_ms", "screen_stable_ms", NULL
         };
         for (int i = 0; numeric_keys[i]; ++i) {
             cJSON* item = cJSON_GetObjectItem(values, numeric_keys[i]);
