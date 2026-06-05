@@ -48,6 +48,23 @@ jobs:
           echo "::warning::Skipping workspace ownership reclaim because sudo is unavailable and the current user is not root"
         fi
 
+    - name: Remove unusable pico-sdk submodule checkout
+      if: ${{ inputs.runner == 'self-hosted' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        sdk_dir="$GITHUB_WORKSPACE/pico-sdk"
+        sdk_git_dir="$GITHUB_WORKSPACE/.git/modules/pico-sdk"
+        if [ ! -e "$sdk_dir" ] && [ ! -e "$sdk_git_dir" ]; then
+          exit 0
+        fi
+
+        if [ -d "$sdk_dir" ] && git -C "$sdk_dir" rev-parse --verify HEAD >/dev/null 2>&1; then
+          exit 0
+        fi
+
+        rm -rf -- "$sdk_dir" "$sdk_git_dir"
+
     - name: Repair stale pico-sdk submodule metadata
       if: ${{ inputs.runner == 'self-hosted' }}
       shell: bash
