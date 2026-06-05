@@ -25,6 +25,17 @@ func bridgeRespError(err error) string {
 	return jsonString(map[string]interface{}{"ok": false, "error": err.Error()})
 }
 
+// bridgeMsgError returns a JSON envelope for a tool-level error string. Keeps
+// every branch of these tools on the same {"ok":false,"error":"..."} contract
+// so callers do not have to special-case plain strings vs JSON.
+func bridgeMsgError(format string, a ...interface{}) string {
+	msg := format
+	if len(a) > 0 {
+		msg = fmt.Sprintf(format, a...)
+	}
+	return jsonString(map[string]interface{}{"ok": false, "error": msg})
+}
+
 // ClipboardTool reads and writes the connected phone's system clipboard.
 type ClipboardTool struct {
 	bridge *PhoneBridge
@@ -56,7 +67,7 @@ func (t *ClipboardTool) Call(ctx context.Context, input string) (string, error) 
 
 	var args clipboardArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v", err), nil
+		return bridgeMsgError("invalid input: %v", err), nil
 	}
 
 	action := strings.ToLower(strings.TrimSpace(args.Action))
@@ -66,7 +77,7 @@ func (t *ClipboardTool) Call(ctx context.Context, input string) (string, error) 
 	case "write":
 		return t.write(ctx, args.Text)
 	default:
-		return fmt.Sprintf("error: unknown action %q, expected \"read\" or \"write\"", args.Action), nil
+		return bridgeMsgError("unknown action %q, expected \"read\" or \"write\"", args.Action), nil
 	}
 }
 
@@ -158,7 +169,7 @@ func (t *CalendarTool) Call(ctx context.Context, input string) (string, error) {
 
 	var args calendarArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v", err), nil
+		return bridgeMsgError("invalid input: %v", err), nil
 	}
 
 	switch strings.ToLower(strings.TrimSpace(args.Action)) {
@@ -169,16 +180,16 @@ func (t *CalendarTool) Call(ctx context.Context, input string) (string, error) {
 	case "delete":
 		return t.delete(ctx, args)
 	default:
-		return fmt.Sprintf("error: unknown action %q, expected \"create\", \"query\", or \"delete\"", args.Action), nil
+		return bridgeMsgError("unknown action %q, expected \"create\", \"query\", or \"delete\"", args.Action), nil
 	}
 }
 
 func (t *CalendarTool) create(ctx context.Context, args calendarArgs) (string, error) {
 	if strings.TrimSpace(args.Title) == "" {
-		return "error: create requires a title", nil
+		return bridgeMsgError("create requires a title"), nil
 	}
 	if strings.TrimSpace(args.StartAt) == "" {
-		return "error: create requires a start_at time (RFC3339)", nil
+		return bridgeMsgError("create requires a start_at time (RFC3339)"), nil
 	}
 	payload, _ := json.Marshal(map[string]interface{}{
 		"title":                args.Title,
@@ -219,7 +230,7 @@ func (t *CalendarTool) create(ctx context.Context, args calendarArgs) (string, e
 
 func (t *CalendarTool) query(ctx context.Context, args calendarArgs) (string, error) {
 	if strings.TrimSpace(args.From) == "" || strings.TrimSpace(args.To) == "" {
-		return "error: query requires both from and to times (RFC3339)", nil
+		return bridgeMsgError("query requires both from and to times (RFC3339)"), nil
 	}
 	payload, _ := json.Marshal(map[string]string{"from": args.From, "to": args.To})
 	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
@@ -255,7 +266,7 @@ func (t *CalendarTool) query(ctx context.Context, args calendarArgs) (string, er
 
 func (t *CalendarTool) delete(ctx context.Context, args calendarArgs) (string, error) {
 	if strings.TrimSpace(args.EventID) == "" {
-		return "error: delete requires an event_id", nil
+		return bridgeMsgError("delete requires an event_id"), nil
 	}
 	payload, _ := json.Marshal(map[string]string{"event_id": args.EventID})
 	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
@@ -312,7 +323,7 @@ func (t *ContactsTool) Call(ctx context.Context, input string) (string, error) {
 
 	var args contactsArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v", err), nil
+		return bridgeMsgError("invalid input: %v", err), nil
 	}
 
 	switch strings.ToLower(strings.TrimSpace(args.Action)) {
@@ -323,7 +334,7 @@ func (t *ContactsTool) Call(ctx context.Context, input string) (string, error) {
 	case "update":
 		return t.update(ctx, args)
 	default:
-		return fmt.Sprintf("error: unknown action %q, expected \"query\", \"create\", or \"update\"", args.Action), nil
+		return bridgeMsgError("unknown action %q, expected \"query\", \"create\", or \"update\"", args.Action), nil
 	}
 }
 
@@ -369,7 +380,7 @@ func (t *ContactsTool) query(ctx context.Context, args contactsArgs) (string, er
 
 func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, error) {
 	if strings.TrimSpace(args.Name) == "" {
-		return "error: create requires a name", nil
+		return bridgeMsgError("create requires a name"), nil
 	}
 	payload, _ := json.Marshal(map[string]interface{}{
 		"name":          args.Name,
@@ -408,7 +419,7 @@ func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, e
 
 func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, error) {
 	if strings.TrimSpace(args.ContactID) == "" {
-		return "error: update requires a contact_id", nil
+		return bridgeMsgError("update requires a contact_id"), nil
 	}
 	payload, _ := json.Marshal(map[string]interface{}{
 		"contact_id":    args.ContactID,
@@ -469,11 +480,11 @@ func (t *NotificationTool) Call(ctx context.Context, input string) (string, erro
 
 	var args notificationArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v", err), nil
+		return bridgeMsgError("invalid input: %v", err), nil
 	}
 
 	if strings.TrimSpace(args.Title) == "" {
-		return "error: notification requires a title", nil
+		return bridgeMsgError("notification requires a title"), nil
 	}
 
 	payload, _ := json.Marshal(map[string]interface{}{
