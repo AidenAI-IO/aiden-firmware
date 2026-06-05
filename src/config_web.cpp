@@ -126,6 +126,7 @@ const size_t kMaxSystemEnvSize = 64 * 1024;
 
 std::string read_file_contents(const char* path, size_t max_size);
 std::string validate_proxy_url(const std::string& url);
+std::string lowercase_copy(const std::string& text);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -1145,7 +1146,7 @@ std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
     if (pointer_mode != "absolute" && pointer_mode != "touchscreen") {
         return "hid.pointer_mode must be absolute or touchscreen";
     }
-    std::string telemetry_provider = trim_copy(config.telemetry.provider);
+    std::string telemetry_provider = lowercase_copy(trim_copy(config.telemetry.provider));
     if (!telemetry_provider.empty() && telemetry_provider != "langfuse") {
         return "telemetry.provider must be langfuse";
     }
@@ -2685,15 +2686,16 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         bool enabled = json_is_bool(enabled_item) && json_is_type(enabled_item, cJSON_True);
 
         cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
-        std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
+        std::string provider_original = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
+        std::string provider = lowercase_copy(provider_original);
         cJSON* provider_r = cJSON_CreateObject();
         cJSON_AddStringToObject(provider_r, "check", "provider");
         if (provider.empty() || provider == "langfuse") {
             cJSON_AddBoolToObject(provider_r, "passed", 1);
-            cJSON_AddStringToObject(provider_r, "detail", provider.empty() ? "empty; defaults to langfuse" : provider.c_str());
+            cJSON_AddStringToObject(provider_r, "detail", provider_original.empty() ? "empty; defaults to langfuse" : provider_original.c_str());
         } else {
             cJSON_AddBoolToObject(provider_r, "passed", 0);
-            std::string msg = "got '" + provider + "', allowed: langfuse";
+            std::string msg = "got '" + provider_original + "', allowed: langfuse";
             cJSON_AddStringToObject(provider_r, "detail", msg.c_str());
             all_passed = false;
         }

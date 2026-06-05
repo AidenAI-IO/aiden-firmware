@@ -211,6 +211,9 @@ TEST_CASE("config web exposes telemetry settings section") {
     CHECK(source.find("set_json_string_vector(&config->telemetry.tags, telemetry, \"tags\")") != std::string::npos);
     CHECK(source.find("telemetry.base_url is required when telemetry.enabled is true") != std::string::npos);
     CHECK(source.find("telemetry.public_key is required when telemetry.enabled is true") != std::string::npos);
+    CHECK(source.find("std::string telemetry_provider = lowercase_copy(trim_copy(config.telemetry.provider));") != std::string::npos);
+    CHECK(source.find("std::string provider_original = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : \"\";") != std::string::npos);
+    CHECK(source.find("std::string provider = lowercase_copy(provider_original);") != std::string::npos);
     CHECK(source.find("public_key_env") == std::string::npos);
     CHECK(source.find("secret_key_env") == std::string::npos);
     CHECK(source.find("section == \"telemetry\"") != std::string::npos);
