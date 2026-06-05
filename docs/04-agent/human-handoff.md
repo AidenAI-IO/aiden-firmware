@@ -355,4 +355,3 @@ Agent: "登录成功。正在搜索《三体》..."
 - `src/agent/internal/agent/tools_human_handoff.go` - 核心实现
 - `src/agent/internal/agent/tools_human_handoff_test.go` - 单元测试
 - `src/agent/internal/agent/tools.go` - ToolSet 集成
-- `docs/04-agent/human-handoff-examples.go` - 集成示例（已过期，待更新）

@@ -83,11 +83,12 @@ func (t *HumanHandoffTool) Call(ctx context.Context, input string) (string, erro
 		return "", fmt.Errorf("invalid input: %w", err)
 	}
 
-	// Validate required fields
-	if args.Reason == "" {
+	// Validate required fields. Trim first so whitespace-only values are
+	// rejected as missing rather than slipping through to the reason allowlist.
+	if strings.TrimSpace(args.Reason) == "" {
 		return "", fmt.Errorf("reason is required")
 	}
-	if args.Details == "" {
+	if strings.TrimSpace(args.Details) == "" {
 		return "", fmt.Errorf("details is required")
 	}
 

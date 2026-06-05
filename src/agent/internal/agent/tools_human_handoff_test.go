@@ -136,6 +136,39 @@ func TestHumanHandoffTool_Call_MissingDetails(t *testing.T) {
 	}
 }
 
+func TestHumanHandoffTool_Call_WhitespaceOnlyRequiredFields(t *testing.T) {
+	tool := NewHumanHandoffTool()
+
+	tests := []struct {
+		name      string
+		input     string
+		wantInErr string
+	}{
+		{
+			name:      "whitespace reason",
+			input:     `{"reason":"   ","details":"some details"}`,
+			wantInErr: "reason",
+		},
+		{
+			name:      "whitespace details",
+			input:     `{"reason":"authentication","details":"   "}`,
+			wantInErr: "details",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tool.Call(context.Background(), tt.input)
+			if err == nil {
+				t.Fatalf("Call() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantInErr) {
+				t.Errorf("Error message doesn't mention %q: %v", tt.wantInErr, err)
+			}
+		})
+	}
+}
+
 func TestHumanHandoffTool_Call_InvalidReason(t *testing.T) {
 	tool := NewHumanHandoffTool()
 
@@ -196,8 +229,8 @@ func TestHumanHandoffTool_Call_OptionalFields(t *testing.T) {
 
 func TestHumanHandoffTool_Call_DefaultInstructions(t *testing.T) {
 	tests := []struct {
-		reason           string
-		expectedPhrase   string
+		reason         string
+		expectedPhrase string
 	}{
 		{"authentication", "enter their credentials"},
 		{"captcha", "complete the verification"},
