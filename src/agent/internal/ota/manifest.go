@@ -10,9 +10,11 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type Manifest struct {
@@ -39,6 +41,7 @@ type ManifestPart struct {
 
 type ManifestAsset struct {
 	Name   string `json:"name"`
+	URL    string `json:"url,omitempty"`
 	Size   int64  `json:"size"`
 	SHA256 string `json:"sha256"`
 }
@@ -145,6 +148,21 @@ func validateManifestAsset(field string, asset ManifestAsset, expectedName strin
 	}
 	if asset.Name != expectedName {
 		return fmt.Errorf("%s name %q, want %q", field, asset.Name, expectedName)
+	}
+	if asset.URL != "" {
+		parsed, err := url.ParseRequestURI(asset.URL)
+		if err != nil {
+			return fmt.Errorf("%s has malformed URL: %w", field, err)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("%s has invalid URL scheme (must be http or https): %q", field, asset.URL)
+		}
+		if parsed.Host == "" {
+			return fmt.Errorf("%s URL missing host: %q", field, asset.URL)
+		}
+		if strings.IndexFunc(asset.URL, unicode.IsSpace) != -1 {
+			return fmt.Errorf("%s URL contains whitespace: %q", field, asset.URL)
+		}
 	}
 	if asset.Size <= 0 {
 		return fmt.Errorf("%s size %d must be positive", field, asset.Size)

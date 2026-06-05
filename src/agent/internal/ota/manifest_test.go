@@ -405,3 +405,77 @@ func validTestManifest() Manifest {
 		Signature: ManifestSignature{Algorithm: "ed25519"},
 	}
 }
+
+func TestManifestAssetWithURL(t *testing.T) {
+	manifest := validTestManifest()
+	manifest.Parts[0].AssetA.URL = "https://example.com/boot_a.img"
+	manifest.Parts[0].AssetB.URL = "https://example.com/boot_b.img"
+	
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("Validate() with URLs error = %v", err)
+	}
+}
+
+func TestManifestAssetURLValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"valid https", "https://example.com/file.img", false},
+		{"valid http", "http://example.com/file.img", false},
+		{"invalid ftp", "ftp://example.com/file.img", true},
+		{"invalid file", "file:///path/to/file.img", true},
+		{"with whitespace", "https://example.com/file .img", true},
+		{"empty is ok", "", false},
+	}
+	
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			asset := ManifestAsset{
+				Name:   "boot_a.img",
+				URL:    tt.url,
+				Size:   12345,
+				SHA256: testHashA,
+			}
+			err := validateManifestAsset("test", asset, "boot_a.img")
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateManifestAsset() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestManifestWithURLsSignatureVerification(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	
+	manifest := validTestManifest()
+	manifest.Parts[0].AssetA.URL = "https://cdn.example.com/firmware/boot_a.img"
+	manifest.Parts[0].AssetB.URL = "https://cdn.example.com/firmware/boot_b.img"
+	
+	canonical, err := CanonicalManifestJSON(manifest)
+	if err != nil {
+		t.Fatalf("CanonicalManifestJSON() error = %v", err)
+	}
+	manifest.Signature = ManifestSignature{
+		Algorithm: "ed25519",
+		Value:     hex.EncodeToString(ed25519.Sign(priv, canonical)),
+	}
+	
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("Marshal(manifest) error = %v", err)
+	}
+	
+	verified, err := VerifyManifestJSON(manifestBytes, pub)
+	if err != nil {
+		t.Fatalf("VerifyManifestJSON() error = %v", err)
+	}
+	
+	if verified.Parts[0].AssetA.URL != "https://cdn.example.com/firmware/boot_a.img" {
+		t.Errorf("URL not preserved: got %q", verified.Parts[0].AssetA.URL)
+	}
+}

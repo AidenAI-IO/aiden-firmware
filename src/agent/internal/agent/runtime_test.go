@@ -162,6 +162,14 @@ func TestToolDescriptorsIncludeSkillToolMetadata(t *testing.T) {
 	}
 }
 
+func TestParseChunkStructuredSummaryJSONRejectsProseWrappedJSON(t *testing.T) {
+	_, err := parseChunkStructuredSummaryJSON(`Here is the JSON:
+{"summary":"summary","decisions":["decision"]}`)
+	if err == nil {
+		t.Fatalf("expected prose-wrapped structured summary JSON to be rejected")
+	}
+}
+
 func TestToolDescriptorsIncludeMemoryToolMetadata(t *testing.T) {
 	tools := &ToolSet{tools: map[string]langtools.Tool{}}
 	tools.RegisterMemoryTools(t.TempDir(), nil, 3, nil)
@@ -500,6 +508,36 @@ func (t *stubTool) Call(_ context.Context, input string) (string, error) {
 		return "", t.err
 	}
 	return t.output, nil
+}
+
+func TestBuildLLMStructuredSummarizeFnParsesStrictJSON(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: `{
+		"summary":"讨论 MiniCPM 局域网 VLM",
+		"user_goals":["测试局域网 VLM"],
+		"confirmed_facts":["主模型负责语音链路"],
+		"decisions":["VLM 使用 model_vision"],
+		"proposals":["screen_memory_summarizer 优先读取 model_vision"],
+		"open_tasks":["实现配置解析"],
+		"risks_or_pitfalls":["不要替换主模型"],
+		"memory_candidates":["语音模型和 VLM 分离配置"]
+	}`}}}}}
+	fn := buildLLMStructuredSummarizeFn(&testModelResolver{model: model})
+	got := fn(context.Background(), []SessionEvent{{Role: "user", Content: "测试 MiniCPM"}})
+	if got.Summary != "讨论 MiniCPM 局域网 VLM" {
+		t.Fatalf("summary = %q", got.Summary)
+	}
+	if got.Decisions[0] != "VLM 使用 model_vision" || got.OpenTasks[0] != "实现配置解析" {
+		t.Fatalf("unexpected structured summary: %#v", got)
+	}
+}
+
+func TestBuildLLMStructuredSummarizeFnFallsBackOnInvalidJSON(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: `not json`}}}}}
+	fn := buildLLMStructuredSummarizeFn(&testModelResolver{model: model})
+	got := fn(context.Background(), []SessionEvent{{Role: "user", Content: "hello"}})
+	if !got.Empty() {
+		t.Fatalf("expected empty structured summary on invalid JSON, got %#v", got)
+	}
 }
 
 func TestRuntimeRunOpenRouterUsesToolsWithoutStreaming(t *testing.T) {

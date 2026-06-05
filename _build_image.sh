@@ -202,7 +202,7 @@ ls -lh "$RK_PROJECT_OUTPUT_IMAGE"/*.img 2>/dev/null | awk '{print "  " $9 " (" $
 echo ""
 
 missing=0
-for img in misc.img boot_a.img boot_b.img oem_a.img oem_b.img rootfs_a.img rootfs_b.img userdata.img update.img; do
+for img in misc.img boot_a.img boot_b.img oem.img rootfs.img userdata.img update.img; do
     if [ ! -s "$RK_PROJECT_OUTPUT_IMAGE/$img" ]; then
         echo "  ✗ Missing expected image: $RK_PROJECT_OUTPUT_IMAGE/$img" >&2
         missing=1

@@ -7,7 +7,7 @@
 离线生成生产 Ed25519 私钥和公钥：
 
 ```bash
-openssl genpkey -algorithm ED25519 -out ota_ed25519_private_key.pem
+openssl genpkey -algorithm ed25519 -out ota_ed25519_private_key.pem
 openssl pkey -in ota_ed25519_private_key.pem -pubout -out ota_pubkey.pem
 ```
 

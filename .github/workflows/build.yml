@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   build:
-    if: ${{ inputs.runner != 'self-hosted' || (github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target') }}
+    if: ${{ inputs.runner != 'self-hosted' || (startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target') }}
     runs-on: ${{ inputs.runner }}
 
     steps:
@@ -84,14 +84,27 @@ jobs:
 
     - name: Generate release name
       id: release_info
+      env:
+        GITHUB_REF_NAME: ${{ github.ref_name }}
       run: |
         COMMIT_HASH=$(git rev-parse --short HEAD)
         TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
         BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
         RELEASE_NAME="${TIMESTAMP}-${COMMIT_HASH}"
+
+        # Determine channel based on branch
+        if [ "$GITHUB_REF_NAME" = "main" ]; then
+          CHANNEL="stable"
+        else
+          # Sanitize branch name: replace / with - and remove any unsafe characters
+          BRANCH_NAME=$(echo "$GITHUB_REF_NAME" | sed 's/\//-/g' | sed 's/[^a-zA-Z0-9._-]/-/g')
+          CHANNEL="dev-${BRANCH_NAME}"
+        fi
+
         echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
         echo "tag_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
         echo "build_time=${BUILD_TIME}" >> "$GITHUB_OUTPUT"
+        echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
 
     - name: Run build script
       run: ./build_image.sh
@@ -108,7 +121,7 @@ jobs:
         chmod 600 "$private_key"
         scripts/generate_ota_manifest.sh \
           --version "${{ steps.release_info.outputs.release_name }}" \
-          --channel stable \
+          --channel "${{ steps.release_info.outputs.channel }}" \
           --build-time "${{ steps.release_info.outputs.build_time }}" \
           --sign-key "$private_key" \
           --image-dir pico-sdk/output/image \
@@ -119,17 +132,28 @@ jobs:
         bash scripts/generate_ota_device_config.sh \
           --manifest pico-sdk/output/image/manifest.json \
           --repo "$GITHUB_REPOSITORY" \
-          --channel stable \
+          --channel "${{ steps.release_info.outputs.channel }}" \
           --output pico-sdk/output/out/userdata/ota/config.json
 
     - name: Repack update image with OTA config
       run: ./build_image.sh bash ./scripts/repack_ota_update_image.sh
 
     - name: Create Release
-      uses: softprops/action-gh-release@v2
-      with:
-        name: ${{ steps.release_info.outputs.release_name }}
-        tag_name: ${{ steps.release_info.outputs.tag_name }}
-        target_commitish: ${{ github.sha }}
-        files: pico-sdk/output/image/*
-        fail_on_unmatched_files: true
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_DEBUG: api
+      run: |
+        PRERELEASE_FLAG=""
+        if [ "${{ steps.release_info.outputs.channel }}" != "stable" ]; then
+          PRERELEASE_FLAG="--prerelease"
+        fi
+
+        bash scripts/create_github_release.sh \
+          --release-name "${{ steps.release_info.outputs.release_name }}" \
+          --tag-name "${{ steps.release_info.outputs.tag_name }}" \
+          --target-commitish "${{ github.sha }}" \
+          --asset-glob 'pico-sdk/output/image/*' \
+          --required-assets 'boot_a.img boot_b.img oem.img rootfs.img userdata.img update.img manifest.json' \
+          --retry-count 5 \
+          --retry-delay-seconds 30 \
+          $PRERELEASE_FLAG

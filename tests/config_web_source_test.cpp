@@ -208,3 +208,77 @@ TEST_CASE("config web restarts ota only when system env changes") {
     CHECK(source.find("config saved; agent restarting") != std::string::npos);
     CHECK(source.find("config saved; agent and ota restarting") == std::string::npos);
 }
+
+TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhid") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const std::string toml_header_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.h";
+    std::ifstream toml_header_in(toml_header_path.c_str());
+    REQUIRE(toml_header_in.good());
+
+    std::ostringstream toml_header_buffer;
+    toml_header_buffer << toml_header_in.rdbuf();
+    const std::string toml_header = toml_header_buffer.str();
+
+    const std::string toml_source_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.cpp";
+    std::ifstream toml_source_in(toml_source_path.c_str());
+    REQUIRE(toml_source_in.good());
+
+    std::ostringstream toml_source_buffer;
+    toml_source_buffer << toml_source_in.rdbuf();
+    const std::string toml_source = toml_source_buffer.str();
+
+    CHECK(toml_header.find("pointer_mode") != std::string::npos);
+    CHECK(toml_source.find("\"pointer_mode\"") != std::string::npos);
+    CHECK(source.find("kUsbHidInitScript = \"/etc/init.d/S49usbhid\"") == std::string::npos);
+    CHECK(source.find("schedule_usbhid_restart") == std::string::npos);
+    CHECK(source.find("usbhid_restart_scheduled") != std::string::npos);
+    CHECK(source.find("usbhid_restart_required") != std::string::npos);
+    CHECK(source.find("reboot_required") != std::string::npos);
+    CHECK(source.find("schedule_poweroff") != std::string::npos);
+    CHECK(source.find("\"/api/poweroff\"") != std::string::npos);
+    CHECK(source.find("hid.pointer_mode must be absolute or touchscreen") != std::string::npos);
+    CHECK(html.find("hid_pointer_mode") != std::string::npos);
+    CHECK(html.find("['pointer_mode','text']") != std::string::npos);
+    CHECK(html.find("pointer_mode 需要关机重启后生效") != std::string::npos);
+    CHECK(html.find("window.confirm") != std::string::npos);
+    CHECK(html.find("/api/poweroff") != std::string::npos);
+    CHECK(html.find("poweroff 指令已下发") != std::string::npos);
+}
+
+TEST_CASE("config web usbhid init script does not orchestrate dependent service restarts") {
+    const std::string script_path = std::string(AIDEN_SOURCE_DIR) + "/overlay/etc/init.d/S49usbhid";
+    std::ifstream script_in(script_path.c_str());
+    REQUIRE(script_in.good());
+
+    std::ostringstream script_buffer;
+    script_buffer << script_in.rdbuf();
+    const std::string script = script_buffer.str();
+
+    CHECK(script.find("CONFIG_WEB_INIT") == std::string::npos);
+    CHECK(script.find("USB_DHCP_INIT") == std::string::npos);
+    CHECK(script.find("AGENT_INIT") == std::string::npos);
+    CHECK(script.find("S56config_web") == std::string::npos);
+    CHECK(script.find("S55aiden_usb_dhcp") == std::string::npos);
+    CHECK(script.find("S53agent") == std::string::npos);
+    CHECK(script.find("AIDEN_USBHID_ALLOW_HOT_REBIND") == std::string::npos);
+    CHECK(script.find("force-restart") == std::string::npos);
+    CHECK(script.find("USB HID hot restart is unsafe") != std::string::npos);
+    CHECK(script.find("use poweroff") != std::string::npos);
+    CHECK(script.find("restart|reload) restart") != std::string::npos);
+    CHECK(script.find("restart|reload) stop; start") == std::string::npos);
+}
