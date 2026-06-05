@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+build_workflow="$repo_root/.github/workflows/build.yml"
 
 ruby - "$repo_root" <<'RUBY'
 require "yaml"
@@ -72,3 +73,17 @@ end
 
 puts "GitHub Actions self-hosted repo-branch safety check passed."
 RUBY
+
+sanitize_line="$(grep -n 'Remove unusable pico-sdk submodule checkout' "$build_workflow" | sed 's/:.*//' | head -n 1 || true)"
+checkout_line="$(grep -n 'uses: actions/checkout@v4' "$build_workflow" | sed 's/:.*//' | head -n 1 || true)"
+if [[ -z "$sanitize_line" || -z "$checkout_line" || "$sanitize_line" -ge "$checkout_line" ]]; then
+  echo "self-hosted build workflow must remove unusable pico-sdk submodule checkouts before actions/checkout" >&2
+  exit 1
+fi
+
+if ! grep -Fq 'git -C "$sdk_dir" rev-parse --verify HEAD' "$build_workflow" || \
+   ! grep -Fq 'sdk_git_dir="$GITHUB_WORKSPACE/.git/modules/pico-sdk"' "$build_workflow" || \
+   ! grep -Fq 'rm -rf -- "$sdk_dir" "$sdk_git_dir"' "$build_workflow"; then
+  echo "self-hosted build workflow must detect and remove pico-sdk checkouts whose current revision is unavailable" >&2
+  exit 1
+fi
