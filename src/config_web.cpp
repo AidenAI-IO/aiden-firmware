@@ -33,7 +33,7 @@
 namespace {
 
 struct Options {
-    std::string bind_address = "192.168.42.1";
+    std::string bind_address = "0.0.0.0";
     int port = 80;
     std::string agent_config_path = "/userdata/agent/agent.toml";
     std::string wifi_config_path = "/userdata/wpa_supplicant.conf";
@@ -105,6 +105,7 @@ struct TcpPortStatus {
 
 volatile sig_atomic_t g_should_stop = 0;
 
+const char* kAnyBindAddress = "0.0.0.0";
 const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
@@ -610,7 +611,7 @@ bool parse_size(const std::string& text, size_t* value) {
 }
 
 bool is_allowed_bind_address(const std::string& bind_address) {
-    return bind_address == kUsbBindAddress || bind_address == kLoopbackBindAddress;
+    return bind_address == kAnyBindAddress || bind_address == kUsbBindAddress || bind_address == kLoopbackBindAddress;
 }
 
 bool set_socket_recv_timeout(int fd, int timeout_seconds) {
@@ -3690,8 +3691,8 @@ int main(int argc, char** argv) {
 
     if (!is_allowed_bind_address(options.bind_address)) {
         std::cerr << "Refusing to bind config_web to " << options.bind_address
-                  << "; allowed addresses are " << kUsbBindAddress
-                  << " and " << kLoopbackBindAddress << std::endl;
+                  << "; allowed addresses are " << kAnyBindAddress
+                  << ", " << kUsbBindAddress << " and " << kLoopbackBindAddress << std::endl;
         return 1;
     }
 
