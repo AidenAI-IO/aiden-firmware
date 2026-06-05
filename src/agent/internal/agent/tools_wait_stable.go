@@ -9,14 +9,45 @@ import (
 )
 
 const (
-	defaultStableWaitTimeout = 3 * time.Second
-	defaultStableDuration    = 500 * time.Millisecond
-	defaultDiffThreshold     = 5.0
-	stableWaitPollInterval   = 200 * time.Millisecond
+	defaultStableWaitTimeoutMs = 3000
+	defaultStableDurationMs    = 500
+	defaultDiffThreshold       = 5.0
+	stableWaitPollInterval     = 200 * time.Millisecond
 )
 
+type ScreenStableDefaults struct {
+	TimeoutMs int
+	StableMs  int
+}
+
+func (d ScreenStableDefaults) Resolved() ScreenStableDefaults {
+	timeout := d.TimeoutMs
+	if timeout <= 0 {
+		timeout = defaultStableWaitTimeoutMs
+	}
+	stable := d.StableMs
+	if stable <= 0 {
+		stable = defaultStableDurationMs
+	}
+	if stable > timeout {
+		stable = timeout
+	}
+	return ScreenStableDefaults{TimeoutMs: timeout, StableMs: stable}
+}
+
+func (d ScreenStableDefaults) InputJSON() string {
+	resolved := d.Resolved()
+	return fmt.Sprintf(
+		`{"timeout_ms":%d,"stable_ms":%d,"diff_threshold":%g}`,
+		resolved.TimeoutMs,
+		resolved.StableMs,
+		defaultDiffThreshold,
+	)
+}
+
 type WaitStableScreenTool struct {
-	client *FrameServiceClient
+	client   *FrameServiceClient
+	defaults ScreenStableDefaults
 }
 
 type waitStableScreenResult struct {
@@ -26,17 +57,28 @@ type waitStableScreenResult struct {
 	LastDiff  float64 `json:"last_diff,omitempty"`
 }
 
-func NewWaitStableScreenTool(socketPath string) *WaitStableScreenTool {
-	return &WaitStableScreenTool{client: NewFrameServiceClient(socketPath)}
+func NewWaitStableScreenTool(socketPath string, defaults ScreenStableDefaults) *WaitStableScreenTool {
+	return &WaitStableScreenTool{
+		client:   NewFrameServiceClient(socketPath),
+		defaults: defaults,
+	}
 }
 
 func (t *WaitStableScreenTool) Name() string { return "wait_for_stable_screen" }
 
 func (t *WaitStableScreenTool) Description() string {
-	return `Wait until the connected display stops changing before taking a screenshot or judging UI result. ` +
-		`Input JSON: {"timeout_ms":3000,"stable_ms":500,"diff_threshold":5}. ` +
-		`The screen is stable when consecutive frames stay below diff_threshold for stable_ms. ` +
-		`Returns {"ok":true,"stable":true/false,"elapsed_ms":N}. Use this after input actions when animations, page loads, or navigation may still be in progress.`
+	resolved := t.defaults.Resolved()
+	return fmt.Sprintf(
+		`Wait until the connected display stops changing before taking a screenshot or judging UI result. `+
+			`Input JSON: {"timeout_ms":%d,"stable_ms":%d,"diff_threshold":%g}. `+
+			`Omitted fields use agent config defaults. `+
+			`The screen is stable when consecutive frames stay below diff_threshold for stable_ms. `+
+			`Returns {"ok":true,"stable":true/false,"elapsed_ms":N}. `+
+			`stable=false means the wait timed out while the screen was still changing (for example video playback); that is not an error and you may continue operating.`,
+		resolved.TimeoutMs,
+		resolved.StableMs,
+		defaultDiffThreshold,
+	)
 }
 
 func (t *WaitStableScreenTool) Call(ctx context.Context, input string) (string, error) {
@@ -60,11 +102,12 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 		}
 	}
 
-	timeout := defaultStableWaitTimeout
+	defaults := t.defaults.Resolved()
+	timeout := time.Duration(defaults.TimeoutMs) * time.Millisecond
 	if args.TimeoutMs > 0 {
 		timeout = time.Duration(args.TimeoutMs) * time.Millisecond
 	}
-	stableFor := defaultStableDuration
+	stableFor := time.Duration(defaults.StableMs) * time.Millisecond
 	if args.StableMs > 0 {
 		stableFor = time.Duration(args.StableMs) * time.Millisecond
 	}

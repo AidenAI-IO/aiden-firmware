@@ -52,6 +52,8 @@ type Config struct {
 	MaxIterations            int             `toml:"max_iterations,omitempty"`
 	ScreenshotKeepN          int             `toml:"screenshot_keep_n,omitempty"`
 	ScreenshotPruneInterval  int             `toml:"screenshot_prune_interval,omitempty"`
+	ScreenStableTimeoutMs    int             `toml:"screen_stable_timeout_ms,omitempty"`
+	ScreenStableMs           int             `toml:"screen_stable_ms,omitempty"`
 	SkillsDirs               []string        `toml:"skills_dirs"`
 	BundledSkillsDir         string          `toml:"bundled_skills_dir,omitempty"`
 	SkillMergeModel          SkillMergeModel `toml:"-"`
@@ -427,6 +429,12 @@ func (c Config) Validate() error {
 	if c.ScreenshotPruneInterval < 0 {
 		return fmt.Errorf("screenshot_prune_interval must be >= 0, got %d", c.ScreenshotPruneInterval)
 	}
+	if c.ScreenStableTimeoutMs < 0 {
+		return fmt.Errorf("screen_stable_timeout_ms must be >= 0, got %d", c.ScreenStableTimeoutMs)
+	}
+	if c.ScreenStableMs < 0 {
+		return fmt.Errorf("screen_stable_ms must be >= 0, got %d", c.ScreenStableMs)
+	}
 
 	return nil
 }
@@ -511,4 +519,11 @@ func (c Config) ScreenshotPruningOrDefault() ScreenshotPruningConfig {
 		KeepN:    c.ScreenshotKeepN,
 		Interval: c.ScreenshotPruneInterval,
 	}.WithDefaults()
+}
+
+func (c Config) ScreenStableDefaults() ScreenStableDefaults {
+	return ScreenStableDefaults{
+		TimeoutMs: c.ScreenStableTimeoutMs,
+		StableMs:  c.ScreenStableMs,
+	}
 }
