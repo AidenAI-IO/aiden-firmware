@@ -40,24 +40,26 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 	screen := &screenState{}
 	pointer := newPointerController(hidCfg)
 	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
+	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault())
 
 	tools := map[string]langtools.Tool{
-		"keyboard_tap":  newPostActionScreenshotTool(&KeyboardTapTool{dev: kbDev}, screenshot, postActionScreenshotDelay),
-		"keyboard_text": newPostActionScreenshotTool(&KeyboardTextTool{dev: kbDev}, screenshot, postActionScreenshotDelay),
-		"mouse_click":   newPostActionScreenshotTool(&MouseClickTool{pc: pointer, screen: screen}, screenshot, postActionScreenshotDelay),
-		"mouse_move":    newPostActionScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen}, screenshot, postActionScreenshotDelay),
-		"mouse_scroll":  newPostActionScreenshotTool(&MouseScrollTool{pc: pointer}, screenshot, postActionScreenshotDelay),
-		"touch_gesture": newPostActionScreenshotTool(&TouchGestureTool{pc: pointer, screen: screen}, screenshot, postActionScreenshotDelay),
-		"screenshot":    screenshot,
-		"image_diff":    &ImageDiffTool{},
-		"audio_volume":  NewAudioVolumeTool(audioCfg.SocketOrDefault()),
-		"shell":         &ShellTool{proxy: proxyCfg},
-		"current_time":  NewCurrentTimeTool(),
-		"weather":       NewWeatherTool(proxyCfg),
-		"web_search":    NewWebSearchTool(searchCfg, proxyCfg),
-		"wikipedia":     NewWikipediaTool(proxyCfg),
-		"calculator":    NewCalculatorTool(),
-		"web_scraper":   NewWebScraperTool(proxyCfg),
+		"keyboard_tap":           newPostActionStableScreenshotTool(&KeyboardTapTool{dev: kbDev}, waitStable, screenshot, postActionScreenshotDelay),
+		"keyboard_text":          newPostActionStableScreenshotTool(&KeyboardTextTool{dev: kbDev}, waitStable, screenshot, postActionScreenshotDelay),
+		"mouse_click":            newPostActionStableScreenshotTool(&MouseClickTool{pc: pointer, screen: screen}, waitStable, screenshot, postActionScreenshotDelay),
+		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen}, waitStable, screenshot, postActionScreenshotDelay),
+		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer}, waitStable, screenshot, postActionScreenshotDelay),
+		"touch_gesture":          newPostActionStableScreenshotTool(&TouchGestureTool{pc: pointer, screen: screen}, waitStable, screenshot, postActionScreenshotDelay),
+		"screenshot":             screenshot,
+		"wait_for_stable_screen": waitStable,
+		"image_diff":             &ImageDiffTool{},
+		"audio_volume":           NewAudioVolumeTool(audioCfg.SocketOrDefault()),
+		"shell":                  &ShellTool{proxy: proxyCfg},
+		"current_time":           NewCurrentTimeTool(),
+		"weather":                NewWeatherTool(proxyCfg),
+		"web_search":             NewWebSearchTool(searchCfg, proxyCfg),
+		"wikipedia":              NewWikipediaTool(proxyCfg),
+		"calculator":             NewCalculatorTool(),
+		"web_scraper":            NewWebScraperTool(proxyCfg),
 	}
 	if toolOptions.sleepController != nil {
 		tools["enter_sleep"] = NewEnterSleepTool(toolOptions.sleepController)

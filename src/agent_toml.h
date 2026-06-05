@@ -45,6 +45,7 @@ struct HIDToml {
     std::string keyboard_device;
     std::string mouse_device;
     std::string frame_socket;
+    std::string pointer_mode;
 };
 
 struct SearchToml {
@@ -77,9 +78,11 @@ struct AgentToml {
     int voice_max_turns = 0;
     bool voice_interrupt_on_wakeup = true;
     bool voice_streaming_tts_enabled = true;
-    bool voice_tool_call_speech = true;
-    int voice_max_response_tokens = 400;
-    int max_iterations = -1;
+	bool voice_tool_call_speech = true;
+	int voice_max_response_tokens = 400;
+	int max_iterations = -1;
+	int screenshot_keep_n = 3;
+	int screenshot_prune_interval = 25;
 };
 
 bool load_agent_toml(const char* path, AgentToml& config, std::string* error = nullptr);

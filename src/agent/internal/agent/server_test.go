@@ -267,6 +267,51 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatSkipsToolDescriptionTTSWhenDisabled(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
+	}
+	streamingDisabled := false
+	toolSpeechDisabled := false
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Use tools when external state is requested.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceToolCallSpeech:      &toolSpeechDisabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": &stubTool{
+				name:        "audio_volume",
+				description: "Get the current audio playback volume.",
+				output:      `{"volume":42}`,
+			},
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
+	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-provider.started:
+		t.Fatal("tool description TTS started despite voice_tool_call_speech=false")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
 	model := &cancelAwareModel{seen: make(chan error, 1)}
 	runtime := NewRuntimeWithDeps(
@@ -607,6 +652,63 @@ func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 	}
 	if len(wavData) != 48 {
 		t.Fatalf("expected 2 PCM16 samples in WAV, got %d bytes", len(wavData))
+	}
+}
+
+func TestServerDeviceAudioRecordingStartRecoversStaleSession(t *testing.T) {
+	stopCh := make(chan struct{})
+	var stopOnce sync.Once
+
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_playback":
+			return audioResponse{Status: "OK", SessionID: stringUint64(7)}, nil
+		case "write_play_chunk":
+			return audioResponse{Status: "OK"}, nil
+		case "health":
+			return audioResponse{Status: "OK"}, nil
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		case "read_record_chunk":
+			select {
+			case <-stopCh:
+				return audioResponse{Status: "OK", EndOfStream: true}, nil
+			default:
+				return audioResponse{Status: "OK"}, []byte{1, 0}
+			}
+		case "stop_recording":
+			stopOnce.Do(func() { close(stopCh) })
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "INTERNAL_ERROR"}, nil
+		}
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			Audio: AudioConfig{Socket: socketPath, SampleRate: 16000},
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	server.webRecording = &webAudioRecording{
+		sessionID:  99,
+		sampleRate: 16000,
+		done:       make(chan struct{}),
+	}
+
+	startReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/start", nil)
+	startRec := httptest.NewRecorder()
+	server.handleAudioRecordStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("unexpected start status after stale recovery: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+	if server.webRecording == nil || server.webRecording.sessionID != 42 {
+		t.Fatalf("webRecording = %#v, want new session 42", server.webRecording)
 	}
 }
 

@@ -6,6 +6,7 @@ BUILD_SH="$ROOT_DIR/_build.sh"
 LOCAL_BUILD_SH="$ROOT_DIR/build.sh"
 BUILD_IMAGE_SH="$ROOT_DIR/build_image.sh"
 WORKFLOW="$ROOT_DIR/.github/workflows/build.yml"
+CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
 REPACK_SCRIPT="$ROOT_DIR/scripts/repack_ota_update_image.sh"
 GITIGNORE="$ROOT_DIR/.gitignore"
 
@@ -129,6 +130,21 @@ if [ -z "$setup_go_line" ] || [ -z "$run_build_line" ] || [ "$setup_go_line" -ge
     exit 1
 fi
 
+if grep -Fq 'sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"' "$WORKFLOW"; then
+    echo "self-hosted workspace reclaim must not require sudo unconditionally" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'owner="$(id -u):$(id -g)"' "$WORKFLOW" || \
+   ! grep -Fq 'command -v sudo >/dev/null 2>&1' "$WORKFLOW" || \
+   ! grep -Fq 'sudo chown -R "$owner" "$GITHUB_WORKSPACE"' "$WORKFLOW" || \
+   ! grep -Fq '[ "$(id -u)" -eq 0 ]' "$WORKFLOW" || \
+   ! grep -Eq '^[[:space:]]+chown -R "\$owner" "\$GITHUB_WORKSPACE"' "$WORKFLOW" || \
+   ! grep -Fq '::warning::Skipping workspace ownership reclaim' "$WORKFLOW"; then
+    echo "self-hosted workspace reclaim must handle sudo, root, and non-root runners without failing" >&2
+    exit 1
+fi
+
 if ! grep -q 'go env GOROOT' "$BUILD_IMAGE_SH"; then
     echo "build_image.sh must discover the host Go root with go env GOROOT" >&2
     exit 1
@@ -169,6 +185,11 @@ if ! grep -q 'chown -R' "$BUILD_IMAGE_SH" || ! grep -q 'pico-sdk/output' "$BUILD
     exit 1
 fi
 
+if ! grep -Eq '^trap[[:space:]]+restore_docker_output_ownership[[:space:]]+EXIT' "$BUILD_IMAGE_SH"; then
+    echo "build_image.sh must restore Docker output ownership in an EXIT trap so signal-killed builds do not leave root-owned files for the next CI checkout" >&2
+    exit 1
+fi
+
 if ! grep -q 'exec "\$@"' "$BUILD_IMAGE_SH"; then
     echo "build_image.sh must allow CI to run a Dockerized repack command" >&2
     exit 1
@@ -196,6 +217,42 @@ release_line=$(grep -n 'Create Release' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
 if [ -z "$manifest_line" ] || [ -z "$config_line" ] || [ -z "$repack_line" ] || [ -z "$release_line" ] || \
     [ "$manifest_line" -ge "$config_line" ] || [ "$config_line" -ge "$repack_line" ] || [ "$repack_line" -ge "$release_line" ]; then
     echo "workflow must generate manifest, write device config, repack update.img, then create release" >&2
+    exit 1
+fi
+
+if ! grep -q 'scripts/create_github_release.sh' "$WORKFLOW"; then
+    echo "build workflow must create releases through the retry-capable local script" >&2
+    exit 1
+fi
+
+if grep -q 'softprops/action-gh-release' "$WORKFLOW"; then
+    echo "build workflow must not rely on action-gh-release for release uploads" >&2
+    exit 1
+fi
+
+if [ ! -x "$ROOT_DIR/scripts/create_github_release.sh" ]; then
+    echo "release creation script must exist and be executable" >&2
+    exit 1
+fi
+
+if ! grep -q -- '--retry-count' "$WORKFLOW" || ! grep -q -- '--retry-delay-seconds' "$WORKFLOW"; then
+    echo "build workflow must configure release upload retry count and delay" >&2
+    exit 1
+fi
+
+if ! grep -q 'GH_DEBUG' "$WORKFLOW"; then
+    echo "build workflow must enable GitHub CLI debug output for release creation" >&2
+    exit 1
+fi
+
+if grep -q 'git submodule update.*pico-sdk' "$CI_WORKFLOW"; then
+    echo "CI release script checks must not fetch the large pico-sdk submodule" >&2
+    exit 1
+fi
+
+if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW"; then
+    echo "CI must run repo-only release workflow and upload script tests" >&2
     exit 1
 fi
 

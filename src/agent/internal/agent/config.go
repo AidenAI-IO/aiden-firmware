@@ -50,6 +50,8 @@ type Config struct {
 	VoiceToolCallSpeech      *bool           `toml:"voice_tool_call_speech,omitempty"`
 	VoiceMaxResponseTokens   int             `toml:"voice_max_response_tokens,omitempty"`
 	MaxIterations            int             `toml:"max_iterations,omitempty"`
+	ScreenshotKeepN          int             `toml:"screenshot_keep_n,omitempty"`
+	ScreenshotPruneInterval  int             `toml:"screenshot_prune_interval,omitempty"`
 	SkillsDirs               []string        `toml:"skills_dirs"`
 	BundledSkillsDir         string          `toml:"bundled_skills_dir,omitempty"`
 	SkillMergeModel          SkillMergeModel `toml:"-"`
@@ -96,7 +98,7 @@ type TTSProviderCredentials struct {
 }
 
 type STTConfig struct {
-	Provider        string `toml:"provider"` // "openai", "openai-whisper", "openrouter", "tencent"
+	Provider        string `toml:"provider"` // "openai", "openai-whisper", "openrouter", "tencent", "tencent_asr"
 	APIKey          string `toml:"api_key,omitempty"`
 	Model           string `toml:"model,omitempty"`
 	BaseURL         string `toml:"base_url,omitempty"`
@@ -419,6 +421,12 @@ func (c Config) Validate() error {
 	if c.VoiceMaxResponseTokens < 0 {
 		return fmt.Errorf("voice_max_response_tokens must be >= 0, got %d", c.VoiceMaxResponseTokens)
 	}
+	if c.ScreenshotKeepN < 0 {
+		return fmt.Errorf("screenshot_keep_n must be >= 0, got %d", c.ScreenshotKeepN)
+	}
+	if c.ScreenshotPruneInterval < 0 {
+		return fmt.Errorf("screenshot_prune_interval must be >= 0, got %d", c.ScreenshotPruneInterval)
+	}
 
 	return nil
 }
@@ -496,4 +504,11 @@ func (c Config) VoiceMaxResponseTokensOrDefault() int {
 		return c.VoiceMaxResponseTokens
 	}
 	return 400
+}
+
+func (c Config) ScreenshotPruningOrDefault() ScreenshotPruningConfig {
+	return ScreenshotPruningConfig{
+		KeepN:    c.ScreenshotKeepN,
+		Interval: c.ScreenshotPruneInterval,
+	}.WithDefaults()
 }
