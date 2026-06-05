@@ -56,7 +56,8 @@ func TestUsageTrackingModelCapturesFullPromptForTelemetry(t *testing.T) {
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("full user prompt")}},
 	}
 
-	_, err := model.GenerateContent(contextWithTelemetryRole(context.Background(), RolePlanner), messages)
+	_, err := model.GenerateContent(contextWithTelemetryRole(context.Background(), RolePlanner), messages,
+		llms.WithTemperature(0.3), llms.WithMaxTokens(123))
 	if err != nil {
 		t.Fatalf("GenerateContent() error = %v", err)
 	}
@@ -73,5 +74,8 @@ func TestUsageTrackingModelCapturesFullPromptForTelemetry(t *testing.T) {
 	}
 	if snapshot[0].UsageDetails["input"] != 10 || snapshot[0].UsageDetails["output"] != 5 || snapshot[0].UsageDetails["total"] != 15 {
 		t.Fatalf("captured usage = %#v, want input/output/total 10/5/15", snapshot[0].UsageDetails)
+	}
+	if snapshot[0].ModelParameters["temperature"] != 0.3 || snapshot[0].ModelParameters["max_tokens"] != 123 {
+		t.Fatalf("captured model parameters = %#v, want temperature/max_tokens", snapshot[0].ModelParameters)
 	}
 }

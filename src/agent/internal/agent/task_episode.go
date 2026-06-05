@@ -250,6 +250,9 @@ func (r *EpisodeRecorder) Finish(output string, metrics *RunMetrics, runErr erro
 			"completion_tokens": metrics.CompletionTokens,
 			"total_tokens":      metrics.TotalTokens,
 		}
+		if metrics.FirstTokenTime > 0 {
+			episode.Extra["first_token_time_ms"] = metrics.FirstTokenTime
+		}
 	}
 	if runErr != nil {
 		episode.Outcome.FailureReason = runErr.Error()

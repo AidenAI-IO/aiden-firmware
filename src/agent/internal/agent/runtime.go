@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/chains"
@@ -34,19 +35,20 @@ func effectiveMaxIterations(configured int) int {
 const currentEnvironmentHintMaxAge = 10 * time.Minute
 
 type Runtime struct {
-	config           Config
-	models           ModelResolver
-	memories         *MemoryManager
-	tools            *ToolSet
-	skills           *SkillManager
-	skillsLoaded     bool
-	skillsReloadMu   sync.Mutex
-	skillsDirty      bool
-	mergeWorker      *MergeWorker
-	logger           *Logger
-	profileDebouncer *ProfileDebouncer
-	sleep            *SleepController
-	memoryPlane      MemoryPlane
+	config             Config
+	models             ModelResolver
+	memories           *MemoryManager
+	tools              *ToolSet
+	skills             *SkillManager
+	skillsLoaded       bool
+	skillsReloadMu     sync.Mutex
+	skillsDirty        bool
+	mergeWorker        *MergeWorker
+	logger             *Logger
+	profileDebouncer   *ProfileDebouncer
+	sleep              *SleepController
+	memoryPlane        MemoryPlane
+	telemetrySessionID string
 }
 
 type RunRequest struct {
@@ -106,7 +108,7 @@ func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llm
 		recordUsageMetrics(m.metrics, res)
 	}
 	if m.promptCapture != nil {
-		m.promptCapture.Record(ctx, startedAt, time.Now(), messages, res, err)
+		m.promptCapture.Record(ctx, startedAt, time.Now(), messages, options, res, err)
 	}
 	return res, err
 }
@@ -119,7 +121,7 @@ func (m *usageTrackingModel) Call(ctx context.Context, prompt string, options ..
 		m.promptCapture.Record(ctx, startedAt, time.Now(), []llms.MessageContent{{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextPart(prompt)},
-		}}, res, err)
+		}}, options, res, err)
 	}
 	return out, err
 }
@@ -243,13 +245,14 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
 	}
 	rt := &Runtime{
-		config:       cfg,
-		models:       models,
-		memories:     memories,
-		tools:        tools,
-		skills:       skillManager,
-		skillsLoaded: skillIndex != nil && len(skillIndex.Names()) > 0,
-		sleep:        sleepController,
+		config:             cfg,
+		models:             models,
+		memories:           memories,
+		tools:              tools,
+		skills:             skillManager,
+		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
+		sleep:              sleepController,
+		telemetrySessionID: uuid.NewString(),
 	}
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
@@ -539,6 +542,7 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 	entities := cfg.extractEntitiesFromText(input)
 	episode := recorder.Finish(output, metrics, runErr, tags, entities)
 	enrichEpisodeTelemetry(&episode, r.config)
+	r.enrichEpisodeRuntimeTelemetry(&episode)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := r.memoryPlane.CommitEpisode(ctx, episode); err != nil && r.logger != nil {
@@ -546,6 +550,37 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 		return
 	}
 	r.exportEpisodeBestEffort(episode, promptCapture)
+}
+
+func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
+	if r == nil || episode == nil {
+		return
+	}
+	if episode.Extra == nil {
+		episode.Extra = map[string]interface{}{}
+	}
+	if extraString(episode.Extra, "session_id") == "" && r.telemetrySessionID != "" {
+		episode.Extra["session_id"] = r.telemetrySessionID
+	}
+	if _, ok := episode.Extra["model_parameters"]; !ok {
+		if params := telemetryModelParametersFromModelConfig(r.config.Model); len(params) > 0 {
+			episode.Extra["model_parameters"] = params
+		}
+	}
+}
+
+func telemetryModelParametersFromModelConfig(cfg ModelConfig) map[string]interface{} {
+	params := map[string]interface{}{}
+	if cfg.Temperature != 0 {
+		params["temperature"] = cfg.Temperature
+	}
+	if cfg.MaxTokens > 0 {
+		params["max_tokens"] = cfg.MaxTokens
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	return params
 }
 
 func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *telemetryPromptCapture) {

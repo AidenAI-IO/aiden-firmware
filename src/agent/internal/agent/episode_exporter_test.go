@@ -179,6 +179,147 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 	}
 }
 
+func TestBuildLangfuseBatchAddsTraceIdentityAndFailureScore(t *testing.T) {
+	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
+	episode := TaskEpisode{
+		ID:          "ep_failure_001",
+		StartedAt:   start.Format(time.RFC3339Nano),
+		EndedAt:     start.Add(time.Second).Format(time.RFC3339Nano),
+		UserGoal:    "打开设置",
+		DeviceScope: map[string]string{"device_id": "device-a"},
+		Outcome: TaskEpisodeOutcome{
+			Success:       false,
+			FailureReason: "verifier rejected completion",
+		},
+		Extra: map[string]interface{}{
+			"session_id": "session-a",
+		},
+	}
+
+	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
+	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
+	if err != nil {
+		t.Fatalf("buildLangfuseBatch() error = %v", err)
+	}
+
+	var traceBody map[string]interface{}
+	var scoreBody map[string]interface{}
+	for _, event := range batch {
+		var body map[string]interface{}
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		switch event.Type {
+		case "trace-create":
+			traceBody = body
+		case "score-create":
+			scoreBody = body
+		}
+	}
+	if traceBody["userId"] != "device-a" {
+		t.Fatalf("trace userId = %v, want device-a", traceBody["userId"])
+	}
+	if traceBody["sessionId"] != "session-a" {
+		t.Fatalf("trace sessionId = %v, want session-a", traceBody["sessionId"])
+	}
+	if traceBody["public"] != false {
+		t.Fatalf("trace public = %v, want false", traceBody["public"])
+	}
+	if scoreBody["value"] != float64(0) {
+		t.Fatalf("failure score value = %v, want 0", scoreBody["value"])
+	}
+	if scoreBody["comment"] != "verifier rejected completion" {
+		t.Fatalf("failure score comment = %v", scoreBody["comment"])
+	}
+}
+
+func TestBuildLangfuseBatchParentsGenerationsAndToolResults(t *testing.T) {
+	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
+	episode := TaskEpisode{
+		ID:        "ep_parenting_001",
+		StartedAt: start.Format(time.RFC3339Nano),
+		EndedAt:   start.Add(8 * time.Second).Format(time.RFC3339Nano),
+		UserGoal:  "打开设置",
+		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "done"},
+		Events: []TaskEpisodeEvent{
+			{
+				EventID: "evt_plan",
+				Ts:      start.Add(2 * time.Second).Format(time.RFC3339Nano),
+				Type:    "planner_decision",
+				Plan:    []string{"点击设置"},
+			},
+			{
+				EventID:   "evt_tool",
+				Ts:        start.Add(3 * time.Second).Format(time.RFC3339Nano),
+				Type:      "tool_call",
+				ToolName:  "mouse_click",
+				ToolInput: `{"x":1,"y":2}`,
+			},
+			{
+				EventID:     "evt_result",
+				Ts:          start.Add(5 * time.Second).Format(time.RFC3339Nano),
+				Type:        "tool_result",
+				ToolName:    "mouse_click",
+				Observation: `{"ok":true}`,
+			},
+		},
+	}
+	promptCalls := []telemetryPromptCall{
+		{
+			ID:        "22222222-2222-2222-2222-222222222222",
+			Role:      string(RolePlanner),
+			StartedAt: start.Add(time.Second),
+			EndedAt:   start.Add(1500 * time.Millisecond),
+			Input:     []map[string]interface{}{{"role": "human"}},
+			Output:    map[string]interface{}{"choices": []map[string]interface{}{{"content": "plan"}}},
+		},
+	}
+
+	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
+	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir(), promptCalls)
+	if err != nil {
+		t.Fatalf("buildLangfuseBatch() error = %v", err)
+	}
+
+	var iterationID string
+	var generationParent string
+	var toolID string
+	var toolEndTime string
+	var resultParent string
+	for _, event := range batch {
+		var body map[string]interface{}
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		switch body["name"] {
+		case "iteration_1":
+			iterationID, _ = body["id"].(string)
+		case "planner_prompt_1":
+			generationParent, _ = body["parentObservationId"].(string)
+		case "tool/mouse_click":
+			toolID, _ = body["id"].(string)
+			toolEndTime, _ = body["endTime"].(string)
+		case "tool_result/mouse_click":
+			resultParent, _ = body["parentObservationId"].(string)
+		}
+	}
+	if iterationID == "" {
+		t.Fatal("missing iteration span")
+	}
+	if generationParent != iterationID {
+		t.Fatalf("generation parent = %q, want iteration %q", generationParent, iterationID)
+	}
+	if toolID == "" {
+		t.Fatal("missing tool span")
+	}
+	if resultParent != toolID {
+		t.Fatalf("tool result parent = %q, want tool %q", resultParent, toolID)
+	}
+	if toolEndTime != langfuseRFC3339(start.Add(5*time.Second)) {
+		t.Fatalf("tool endTime = %q, want result time", toolEndTime)
+	}
+}
+
 func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	episode := TaskEpisode{
@@ -218,6 +359,11 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 				"choices": []map[string]interface{}{{"content": "planner output"}},
 			},
 			UsageDetails: map[string]int{"input": 10, "output": 2, "total": 12},
+			CostDetails:  map[string]float64{"total": 0.0012},
+			ModelParameters: map[string]interface{}{
+				"temperature": 0.2,
+				"max_tokens":  128,
+			},
 		},
 	}
 
@@ -265,6 +411,14 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	}
 	if usageDetails["input"] != float64(10) || usageDetails["output"] != float64(2) || usageDetails["total"] != float64(12) {
 		t.Fatalf("usageDetails = %#v, want 10/2/12", usageDetails)
+	}
+	costDetails, ok := generations[0]["costDetails"].(map[string]interface{})
+	if !ok || costDetails["total"] != 0.0012 {
+		t.Fatalf("costDetails = %#v, want total cost", generations[0]["costDetails"])
+	}
+	modelParameters, ok := generations[0]["modelParameters"].(map[string]interface{})
+	if !ok || modelParameters["temperature"] != 0.2 || modelParameters["max_tokens"] != float64(128) {
+		t.Fatalf("modelParameters = %#v, want temperature/max_tokens", generations[0]["modelParameters"])
 	}
 }
 

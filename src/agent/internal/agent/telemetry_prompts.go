@@ -30,14 +30,16 @@ type telemetryPromptCapture struct {
 }
 
 type telemetryPromptCall struct {
-	ID           string
-	Role         string
-	StartedAt    time.Time
-	EndedAt      time.Time
-	Input        []map[string]interface{}
-	Output       map[string]interface{}
-	UsageDetails map[string]int
-	Error        string
+	ID              string
+	Role            string
+	StartedAt       time.Time
+	EndedAt         time.Time
+	Input           []map[string]interface{}
+	Output          map[string]interface{}
+	UsageDetails    map[string]int
+	CostDetails     map[string]float64
+	ModelParameters map[string]interface{}
+	Error           string
 }
 
 func newTelemetryPromptCapture(enabled bool) *telemetryPromptCapture {
@@ -47,18 +49,20 @@ func newTelemetryPromptCapture(enabled bool) *telemetryPromptCapture {
 	return &telemetryPromptCapture{}
 }
 
-func (c *telemetryPromptCapture) Record(ctx context.Context, startedAt, endedAt time.Time, messages []llms.MessageContent, res *llms.ContentResponse, err error) {
+func (c *telemetryPromptCapture) Record(ctx context.Context, startedAt, endedAt time.Time, messages []llms.MessageContent, options []llms.CallOption, res *llms.ContentResponse, err error) {
 	if c == nil {
 		return
 	}
 	call := telemetryPromptCall{
-		ID:           uuid.NewString(),
-		Role:         telemetryRoleFromContext(ctx),
-		StartedAt:    startedAt.UTC(),
-		EndedAt:      endedAt.UTC(),
-		Input:        telemetryMessageInput(messages),
-		Output:       telemetryContentResponse(res),
-		UsageDetails: telemetryUsageDetails(res),
+		ID:              uuid.NewString(),
+		Role:            telemetryRoleFromContext(ctx),
+		StartedAt:       startedAt.UTC(),
+		EndedAt:         endedAt.UTC(),
+		Input:           telemetryMessageInput(messages),
+		Output:          telemetryContentResponse(res),
+		UsageDetails:    telemetryUsageDetails(res),
+		CostDetails:     telemetryCostDetails(res),
+		ModelParameters: telemetryModelParameters(options),
 	}
 	if err != nil {
 		call.Error = err.Error()
@@ -195,4 +199,118 @@ func telemetryUsageDetails(res *llms.ContentResponse) map[string]int {
 		return nil
 	}
 	return usage
+}
+
+func telemetryCostDetails(res *llms.ContentResponse) map[string]float64 {
+	if res == nil || len(res.Choices) == 0 || res.Choices[0] == nil {
+		return nil
+	}
+	info := res.Choices[0].GenerationInfo
+	if info == nil {
+		return nil
+	}
+	return telemetryCostDetailsFromMap(info)
+}
+
+func telemetryCostDetailsFromMap(info map[string]any) map[string]float64 {
+	if len(info) == 0 {
+		return nil
+	}
+	cost := map[string]float64{}
+	if v, ok := costMetricFloat(firstMapValue(info, "input_cost", "prompt_cost")); ok {
+		cost["input"] = v
+	}
+	if v, ok := costMetricFloat(firstMapValue(info, "output_cost", "completion_cost")); ok {
+		cost["output"] = v
+	}
+	if v, ok := costMetricFloat(firstMapValue(info, "total_cost", "cost", "estimated_cost", "cost_usd")); ok {
+		cost["total"] = v
+	}
+	if cost["total"] == 0 && (cost["input"] > 0 || cost["output"] > 0) {
+		cost["total"] = cost["input"] + cost["output"]
+	}
+	if len(cost) == 0 {
+		return nil
+	}
+	return cost
+}
+
+func telemetryModelParameters(options []llms.CallOption) map[string]interface{} {
+	var opts llms.CallOptions
+	for _, option := range options {
+		if option != nil {
+			option(&opts)
+		}
+	}
+	return telemetryModelParametersFromCallOptions(opts)
+}
+
+func telemetryModelParametersFromCallOptions(opts llms.CallOptions) map[string]interface{} {
+	params := map[string]interface{}{}
+	if opts.MaxTokens > 0 {
+		params["max_tokens"] = opts.MaxTokens
+	}
+	if opts.Temperature != 0 {
+		params["temperature"] = opts.Temperature
+	}
+	if opts.TopP != 0 {
+		params["top_p"] = opts.TopP
+	}
+	if opts.TopK != 0 {
+		params["top_k"] = opts.TopK
+	}
+	if opts.Seed != 0 {
+		params["seed"] = opts.Seed
+	}
+	if opts.CandidateCount > 0 {
+		params["candidate_count"] = opts.CandidateCount
+	}
+	if opts.N > 0 {
+		params["n"] = opts.N
+	}
+	if opts.JSONMode {
+		params["json"] = true
+	}
+	if opts.ResponseMIMEType != "" {
+		params["response_mime_type"] = opts.ResponseMIMEType
+	}
+	if len(opts.StopWords) > 0 {
+		params["stop_words"] = append([]string(nil), opts.StopWords...)
+	}
+	if len(opts.Tools) > 0 {
+		params["tools_count"] = len(opts.Tools)
+	}
+	if opts.ToolChoice != nil {
+		params["tool_choice"] = fmt.Sprint(opts.ToolChoice)
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	return params
+}
+
+func firstMapValue(values map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value, ok := values[key]; ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func costMetricFloat(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float32:
+		return float64(typed), true
+	case float64:
+		return typed, true
+	case int:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	default:
+		return 0, false
+	}
 }

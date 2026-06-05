@@ -49,11 +49,11 @@ Runtime.Run()
 | --- | --- |
 | `TaskEpisode` | Trace (`aiden-episode`) |
 | `planner_decision` | Span `planner`（嵌套在 `iteration_N` 下） |
-| `tool_call` / `tool_result` | Span `tool/{name}` + `tool_result/{name}` |
+| `tool_call` / `tool_result` | Span `tool/{name}` + 子 Span `tool_result/{name}`，并记录工具耗时 |
 | `verifier_decision` | Span `verifier` |
-| `Outcome.Success` | Score `success=1` |
+| `Outcome.Success` | Boolean Score `success=1/0` |
 | `artifacts/*.jpeg` | Media upload + observation 引用 |
-| `Extra` metrics | Trace metadata |
+| `Extra` metrics | Trace metadata + generation model/cost/usage fields |
 
 本地 episode 仍写入 `/userdata/agent/memory/episodes/`，Langfuse 为额外副本，用于集中分析和数据集管理。
 
@@ -81,7 +81,8 @@ docker compose up -d
    - 存在 `aiden-episode` trace
    - 含 planner / tool / verifier spans
    - 截图可在 tool_result observation 中预览
-   - metadata 含 `total_duration_ms`、token 统计
+   - metadata 含 `total_duration_ms`、`first_token_time_ms`、token 统计、tool/error/replan 计数
+   - trace 含 `userId`（设备 ID）和 `sessionId`（runtime 会话 ID）
 
 ## Trace → Dataset → Benchmark 工作流
 
@@ -146,6 +147,11 @@ Langfuse 支持导出 dataset items（UI 或 [Public API](https://langfuse.com/d
 | `metadata.model` | LLM 模型（如 `openrouter/google/gemini-3.5-flash`） |
 | `metadata` | 上述全部字段 + episode metrics |
 | `tags` | 配置 tags + `model:{provider/model}` |
+| `userId` | `device_scope.device_id`，或 `extra.user_id` |
+| `sessionId` | runtime 会话 ID，或 `extra.session_id` |
+| generation `modelParameters` | `temperature`、`max_tokens`、tool count 等调用参数 |
+| generation `usageDetails` / `costDetails` | token 用量与 provider/本地估算成本 |
+| score `success` | 每次任务都写入，成功为 `1`，失败为 `0` |
 
 **Langfuse Dataset → Benchmark 字段对应：**
 
