@@ -1,0 +1,66 @@
+#!/bin/sh
+# Aiden override: Wi-Fi driver load fallback before baseline network bring-up.
+# Skips when early boot (RkLunch/insmod_ko.sh) already brought up wlan0.
+# Interface bring-up and DHCP remain in S40network / S41dhcpcd.
+
+BOOT_CONF=/etc/aiden_boot.conf
+
+if [ -f "$BOOT_CONF" ]; then
+	. "$BOOT_CONF"
+fi
+: "${ENABLE_WIFIDRV:=${ENABLE_WIFIOPT:-1}}"
+
+INSMOD_WIFI=/oem/usr/ko/insmod_wifi.sh
+
+wifi_driver_loaded() {
+	if [ -d /sys/class/net/wlan0 ]; then
+		return 0
+	fi
+	if lsmod 2>/dev/null | grep -q '^aic8800_fdrv'; then
+		return 0
+	fi
+	return 1
+}
+
+load_wifi_driver() {
+	if wifi_driver_loaded; then
+		return 0
+	fi
+	if [ ! -r "$INSMOD_WIFI" ]; then
+		echo "Wi-Fi driver loader not found or unreadable: $INSMOD_WIFI"
+		return 1
+	fi
+	cd /oem/usr/ko || return 1
+	sh "$INSMOD_WIFI"
+}
+
+start() {
+	if [ "$ENABLE_WIFIDRV" != "1" ]; then
+		echo "wifidrv disabled by config (ENABLE_WIFIDRV=$ENABLE_WIFIDRV)"
+		return 0
+	fi
+
+	if load_wifi_driver; then
+		echo "Wi-Fi driver ready"
+		return 0
+	fi
+
+	echo "Wi-Fi driver load failed"
+	return 1
+}
+
+stop() {
+	return 0
+}
+
+restart() {
+	stop
+	start
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart|reload) restart ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
