@@ -461,7 +461,7 @@ function openDrawer(type, idx) {
   }
 
   if (file.content) {
-    const lines = file.content.split('\\n').length;
+    const lines = file.content.split('\n').length;
     body += '<div class="block"><div class="block-head"><strong>Content</strong><span>' + lines + ' lines</span></div><pre class="block-body">' + esc(file.content) + '</pre></div>';
   } else if (file.type === 'binary') {
     body += '<div class="block"><div class="block-head"><strong>Binary File</strong></div><div class="block-body">Cannot display binary content</div></div>';
