@@ -655,6 +655,63 @@ func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 	}
 }
 
+func TestServerDeviceAudioRecordingStartRecoversStaleSession(t *testing.T) {
+	stopCh := make(chan struct{})
+	var stopOnce sync.Once
+
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_playback":
+			return audioResponse{Status: "OK", SessionID: stringUint64(7)}, nil
+		case "write_play_chunk":
+			return audioResponse{Status: "OK"}, nil
+		case "health":
+			return audioResponse{Status: "OK"}, nil
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		case "read_record_chunk":
+			select {
+			case <-stopCh:
+				return audioResponse{Status: "OK", EndOfStream: true}, nil
+			default:
+				return audioResponse{Status: "OK"}, []byte{1, 0}
+			}
+		case "stop_recording":
+			stopOnce.Do(func() { close(stopCh) })
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "INTERNAL_ERROR"}, nil
+		}
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			Audio: AudioConfig{Socket: socketPath, SampleRate: 16000},
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	server.webRecording = &webAudioRecording{
+		sessionID:  99,
+		sampleRate: 16000,
+		done:       make(chan struct{}),
+	}
+
+	startReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/start", nil)
+	startRec := httptest.NewRecorder()
+	server.handleAudioRecordStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("unexpected start status after stale recovery: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+	if server.webRecording == nil || server.webRecording.sessionID != 42 {
+		t.Fatalf("webRecording = %#v, want new session 42", server.webRecording)
+	}
+}
+
 func TestServerToolCatalogEndpoint(t *testing.T) {
 	tool := &stubTool{
 		name:        "shell",
