@@ -175,6 +175,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/clear", s.handleClear)
 	mux.HandleFunc("/api/clear-all", s.handleClearAll)
+	mux.HandleFunc("/api/skills/reload", s.handleSkillsReload)
 	mux.HandleFunc("/api/tools", s.handleTools)
 	mux.HandleFunc("/api/tools/", s.handleTools)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
@@ -592,6 +593,25 @@ func (s *Server) handleClearAll(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	if s.logger != nil {
 		s.logger.Info("All memory cleared")
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleSkillsReload marks the skill index as dirty so the next agent run
+// reloads SKILL.md files from disk. Used by external tooling (e.g.
+// benchmark/runner/skillopt) that swaps skill files without going through
+// the agent's own skill_manage tool.
+func (s *Server) handleSkillsReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.runtime.MarkSkillsDirty()
+	if s.logger != nil {
+		s.logger.Info("Skills marked dirty; will reload on next run")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
