@@ -311,5 +311,4 @@ TEST_CASE("config web usbhid init script does not orchestrate dependent service 
     CHECK(script.find("use poweroff") != std::string::npos);
     CHECK(script.find("restart|reload) restart") != std::string::npos);
     CHECK(script.find("restart|reload) stop; start") == std::string::npos);
->>>>>>> origin/main
 }
