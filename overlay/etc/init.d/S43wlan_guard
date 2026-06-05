@@ -1,0 +1,43 @@
+#!/bin/sh
+
+GUARD_SCRIPT=/oem/usr/bin/wlan_guard.sh
+BOOT_CONF=/etc/aiden_boot.conf
+
+if [ -f "$BOOT_CONF" ]; then
+	. "$BOOT_CONF"
+fi
+: "${ENABLE_WLAN_GUARD:=1}"
+
+start() {
+	if [ "$ENABLE_WLAN_GUARD" != "1" ]; then
+		echo "wlan_guard disabled by config (ENABLE_WLAN_GUARD=$ENABLE_WLAN_GUARD)"
+		return 0
+	fi
+
+	if [ -x "$GUARD_SCRIPT" ]; then
+		"$GUARD_SCRIPT" start
+		return $?
+	fi
+
+	echo "wlan_guard script not found, skipping"
+	return 0
+}
+
+stop() {
+	if [ -x "$GUARD_SCRIPT" ]; then
+		"$GUARD_SCRIPT" stop
+	fi
+	return 0
+}
+
+restart() {
+	stop
+	start
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart|reload) restart ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
