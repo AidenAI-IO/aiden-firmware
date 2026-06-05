@@ -199,31 +199,9 @@ stop() {
 	echo "stopped wlan_guard"
 }
 
-status() {
-	if [ -f "$PIDFILE" ]; then
-		old_pid="$(sed -n '1p' "$PIDFILE" 2>/dev/null)"
-		if is_running "$old_pid"; then
-			echo "running: $old_pid"
-			return 0
-		fi
-	fi
-	echo "stopped"
-	return 1
-}
-
 case "$1" in
-	start|"") start ;;
+	start) start ;;
 	stop) stop ;;
 	restart|reload) stop; start ;;
-	status) status ;;
-	once)
-		validate_config
-		tune_radio
-		if wlan_associated && target_reachable; then
-			echo "healthy"
-		else
-			recover_wlan
-		fi
-		;;
-	*) echo "Usage: $0 {start|stop|restart|status|once}"; exit 1 ;;
+	*) echo "Usage: $0 {start|stop|restart|reload}"; exit 1 ;;
 esac

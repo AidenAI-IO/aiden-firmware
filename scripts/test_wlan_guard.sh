@@ -4,6 +4,8 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 GUARD_SCRIPT="$ROOT_DIR/overlay/oem/usr/bin/wlan_guard.sh"
 GUARD_INIT="$ROOT_DIR/overlay/etc/init.d/S43wlan_guard"
+BOOT_CONF="$ROOT_DIR/overlay/etc/aiden_boot.conf"
+BOOT_DOC="$ROOT_DIR/docs/02-architecture/boot-services.md"
 
 if [ ! -x "$GUARD_SCRIPT" ]; then
     echo "missing executable wlan_guard.sh" >&2
@@ -70,6 +72,16 @@ if ! grep -q '/proc/$pid/cmdline' "$GUARD_SCRIPT"; then
     exit 1
 fi
 
+if grep -q 'once)' "$GUARD_SCRIPT" || grep -q 'status)' "$GUARD_SCRIPT"; then
+    echo "wlan_guard must only expose lifecycle commands; checks run in the watchdog loop" >&2
+    exit 1
+fi
+
+if grep -q '{start|stop|restart|status|once}' "$GUARD_SCRIPT"; then
+    echo "wlan_guard usage must not advertise one-shot/status commands" >&2
+    exit 1
+fi
+
 if ! grep -q 'wlan_guard.sh' "$GUARD_SCRIPT"; then
     echo "wlan_guard PID identity check must match wlan_guard.sh" >&2
     exit 1
@@ -107,6 +119,16 @@ fi
 
 if ! grep -q 'ENABLE_WLAN_GUARD:=1' "$GUARD_INIT"; then
     echo "S43wlan_guard must default to enabled via ENABLE_WLAN_GUARD" >&2
+    exit 1
+fi
+
+if ! grep -q '^ENABLE_WLAN_GUARD=1$' "$BOOT_CONF"; then
+    echo "aiden_boot.conf must expose ENABLE_WLAN_GUARD" >&2
+    exit 1
+fi
+
+if ! grep -q '`S43wlan_guard`' "$BOOT_DOC"; then
+    echo "boot services documentation must include S43wlan_guard" >&2
     exit 1
 fi
 
