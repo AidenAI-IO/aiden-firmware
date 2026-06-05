@@ -30,11 +30,10 @@
 
 **实现示例**:
 
-```
+```yaml
 File: device/apps/app_512a6dfaaf7b.yaml
-References: 2
+References: 1
   - episode: ep_1780625339372268063_07145689
-  - app: app_512a6dfaaf7b
 ```
 
 ### 3. Web 路由（待编译）⏳
