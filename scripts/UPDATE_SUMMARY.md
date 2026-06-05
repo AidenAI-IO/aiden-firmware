@@ -51,7 +51,7 @@ References: 2
 ### 在设备上生成报告
 
 ```bash
-ssh root@192.168.31.107
+ssh root@<DEVICE_IP>
 cd /userdata/agent_tools
 ./view_agent_files.sh
 ```
@@ -61,14 +61,14 @@ cd /userdata/agent_tools
 1. 下载到本地查看：
 
 ```bash
-scp root@192.168.31.107:/userdata/agent/files_report.html ~/Desktop/
+scp root@<DEVICE_IP>:/userdata/agent/files_report.html ~/Desktop/
 open ~/Desktop/files_report.html
 ```
 
 2. 或通过 SSH 下载（已测试）：
 
 ```bash
-ssh root@192.168.31.107 "cat /userdata/agent/files_report.html" > report.html
+ssh root@<DEVICE_IP> "cat /userdata/agent/files_report.html" > report.html
 ```
 
 ### 浏览关联关系
@@ -132,7 +132,7 @@ fail_pattern = r'fail_[a-f0-9]+'           # Failure IDs
 1. 交叉编译 `config_web.cpp`
 2. 部署到设备 `/oem/usr/bin/config_web`
 3. 重启 config_web 服务
-4. 访问 `http://192.168.31.107/user_files`
+4. 访问 `http://<DEVICE_IP>/user_files`
 
 ### 可能的增强
 
