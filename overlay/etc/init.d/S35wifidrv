@@ -26,8 +26,8 @@ load_wifi_driver() {
 	if wifi_driver_loaded; then
 		return 0
 	fi
-	if [ ! -x "$INSMOD_WIFI" ]; then
-		echo "Wi-Fi driver loader not found: $INSMOD_WIFI"
+	if [ ! -r "$INSMOD_WIFI" ]; then
+		echo "Wi-Fi driver loader not found or unreadable: $INSMOD_WIFI"
 		return 1
 	fi
 	cd /oem/usr/ko || return 1
