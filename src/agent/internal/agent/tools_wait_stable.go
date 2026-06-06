@@ -9,15 +9,16 @@ import (
 )
 
 const (
-	defaultStableWaitTimeoutMs = 3000
+	defaultStableWaitTimeoutMs = 3500
 	defaultStableDurationMs    = 500
-	defaultDiffThreshold       = 5.0
+	defaultDiffThreshold       = 2.0
 	stableWaitPollInterval     = 200 * time.Millisecond
 )
 
 type ScreenStableDefaults struct {
-	TimeoutMs int
-	StableMs  int
+	TimeoutMs     int
+	StableMs      int
+	DiffThreshold float64
 }
 
 func (d ScreenStableDefaults) Resolved() ScreenStableDefaults {
@@ -32,7 +33,15 @@ func (d ScreenStableDefaults) Resolved() ScreenStableDefaults {
 	if stable > timeout {
 		stable = timeout
 	}
-	return ScreenStableDefaults{TimeoutMs: timeout, StableMs: stable}
+	diffThreshold := d.DiffThreshold
+	if diffThreshold <= 0 {
+		diffThreshold = defaultDiffThreshold
+	}
+	return ScreenStableDefaults{
+		TimeoutMs:     timeout,
+		StableMs:      stable,
+		DiffThreshold: diffThreshold,
+	}
 }
 
 func (d ScreenStableDefaults) InputJSON() string {
@@ -41,7 +50,7 @@ func (d ScreenStableDefaults) InputJSON() string {
 		`{"timeout_ms":%d,"stable_ms":%d,"diff_threshold":%g}`,
 		resolved.TimeoutMs,
 		resolved.StableMs,
-		defaultDiffThreshold,
+		resolved.DiffThreshold,
 	)
 }
 
@@ -77,7 +86,7 @@ func (t *WaitStableScreenTool) Description() string {
 			`stable=false means the wait timed out while the screen was still changing (for example video playback); that is not an error and you may continue operating.`,
 		resolved.TimeoutMs,
 		resolved.StableMs,
-		defaultDiffThreshold,
+		resolved.DiffThreshold,
 	)
 }
 
@@ -102,12 +111,12 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 		}
 	}
 
-	defaults := t.defaults.Resolved()
-	timeout := time.Duration(defaults.TimeoutMs) * time.Millisecond
+	resolvedDefaults := t.defaults.Resolved()
+	timeout := time.Duration(resolvedDefaults.TimeoutMs) * time.Millisecond
 	if args.TimeoutMs > 0 {
 		timeout = time.Duration(args.TimeoutMs) * time.Millisecond
 	}
-	stableFor := time.Duration(defaults.StableMs) * time.Millisecond
+	stableFor := time.Duration(resolvedDefaults.StableMs) * time.Millisecond
 	if args.StableMs > 0 {
 		stableFor = time.Duration(args.StableMs) * time.Millisecond
 	}
@@ -116,7 +125,7 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 	}
 	diffThreshold := args.DiffThreshold
 	if diffThreshold <= 0 {
-		diffThreshold = defaultDiffThreshold
+		diffThreshold = resolvedDefaults.DiffThreshold
 	}
 
 	start := time.Now()
