@@ -791,10 +791,7 @@ func (s *Server) speakToolDescription(ctx context.Context, description string) {
 	if description == "" || s.audioClient == nil {
 		return
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ttsCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
+	ttsCtx, cancel := context.WithTimeout(context.Background(), toolDescriptionSpeechTimeout)
 	defer cancel()
 	if s.logger != nil {
 		s.logger.Info("Tool description TTS playback: %q", description)
@@ -926,12 +923,6 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 	}
 	s.recordMu.Unlock()
 
-	if err := playPromptSound(context.Background(), s.audioClient, promptSoundRecordingStart, true); err != nil {
-		if s.logger != nil {
-			s.logger.Error("Recording prompt sound failed: %v", err)
-		}
-	}
-
 	sampleRate := s.runtime.config.Audio.SampleRateOrDefault()
 	result, err := s.audioClient.StartRecording(AudioFormat{
 		SampleRate: uint32(sampleRate),
@@ -945,6 +936,11 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "start device audio recording: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	go func() {
+		if err := playPromptSound(context.Background(), s.audioClient, promptSoundRecordingStart, true); err != nil && s.logger != nil {
+			s.logger.Error("Recording prompt sound failed: %v", err)
+		}
+	}()
 
 	recording := &webAudioRecording{
 		sessionID:  result.SessionID,
