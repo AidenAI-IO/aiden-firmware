@@ -59,12 +59,14 @@ type PhoneBridge struct {
 	pendingCmds     map[string]chan BridgeCommandResponse
 	logger          *Logger
 	done            chan struct{}
+	queue           *CommandQueue // HTTP queue for background-compatible commands
 }
 
 func NewPhoneBridge(logger *Logger) *PhoneBridge {
 	return &PhoneBridge{
 		pendingCmds: make(map[string]chan BridgeCommandResponse),
 		logger:      logger,
+		queue:       NewCommandQueue(logger),
 	}
 }
 
