@@ -748,7 +748,7 @@ static double frame_diff(const cv::Mat& a, const cv::Mat& b) {
 ApiResponse handle_wait_stable_request(const std::string& body) {
     int timeout_ms = 3000;
     int stable_ms = 500;
-    double diff_threshold = 5.0;
+    double diff_threshold = 2.0;
 
     extract_json_int_field(body, "timeout_ms", &timeout_ms);
     extract_json_int_field(body, "stable_ms", &stable_ms);
@@ -757,7 +757,7 @@ ApiResponse handle_wait_stable_request(const std::string& body) {
     if (timeout_ms <= 0) timeout_ms = 3000;
     if (stable_ms <= 0) stable_ms = 500;
     if (stable_ms > timeout_ms) stable_ms = timeout_ms;
-    if (diff_threshold < 0.0) diff_threshold = 5.0;
+    if (diff_threshold < 0.0) diff_threshold = 2.0;
 
     const char* socket_path = std::getenv("FRAME_SERVICE_SOCKET");
     if (!socket_path || socket_path[0] == '\0') {
