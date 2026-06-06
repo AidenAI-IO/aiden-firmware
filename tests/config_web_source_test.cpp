@@ -146,23 +146,28 @@ TEST_CASE("config web exposes screenshot pruning config fields") {
     CHECK(source.find("\"screenshot_prune_interval\"") != std::string::npos);
     CHECK(source.find("\"screen_stable_timeout_ms\"") != std::string::npos);
     CHECK(source.find("\"screen_stable_ms\"") != std::string::npos);
+    CHECK(source.find("\"screen_stable_diff_threshold\"") != std::string::npos);
     CHECK(source.find("config.screenshot_keep_n") != std::string::npos);
     CHECK(source.find("config.screenshot_prune_interval") != std::string::npos);
     CHECK(source.find("config.screen_stable_timeout_ms") != std::string::npos);
     CHECK(source.find("config.screen_stable_ms") != std::string::npos);
+    CHECK(source.find("config.screen_stable_diff_threshold") != std::string::npos);
     CHECK(source.find("screenshot_keep_n must be >= 0") != std::string::npos);
     CHECK(source.find("screenshot_prune_interval must be >= 0") != std::string::npos);
     CHECK(source.find("screen_stable_timeout_ms must be >= 0") != std::string::npos);
     CHECK(source.find("screen_stable_ms must be >= 0") != std::string::npos);
+    CHECK(source.find("screen_stable_diff_threshold must be >= 0") != std::string::npos);
 
     CHECK(html.find("agent_screenshot_keep_n") != std::string::npos);
     CHECK(html.find("agent_screenshot_prune_interval") != std::string::npos);
     CHECK(html.find("agent_screen_stable_timeout_ms") != std::string::npos);
     CHECK(html.find("agent_screen_stable_ms") != std::string::npos);
+    CHECK(html.find("agent_screen_stable_diff_threshold") != std::string::npos);
     CHECK(html.find("['screenshot_keep_n','number']") != std::string::npos);
     CHECK(html.find("['screenshot_prune_interval','number']") != std::string::npos);
     CHECK(html.find("['screen_stable_timeout_ms','number']") != std::string::npos);
     CHECK(html.find("['screen_stable_ms','number']") != std::string::npos);
+    CHECK(html.find("['screen_stable_diff_threshold','number']") != std::string::npos);
 }
 
 TEST_CASE("config web exposes a single system env editor backed by the env file") {
