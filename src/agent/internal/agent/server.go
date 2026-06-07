@@ -217,6 +217,10 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
 	mux.HandleFunc("/api/phone-bridge", s.bridge.HandleWebSocket)
 	mux.HandleFunc("/api/phone-bridge/status", s.handleBridgeStatus)
+	// HTTP queue endpoints for iOS background compatibility
+	mux.HandleFunc("/api/phone-bridge/commands", s.handlePhoneBridgeCommands)
+	mux.HandleFunc("/api/phone-bridge/results", s.handlePhoneBridgeResults)
+	mux.HandleFunc("/api/phone-bridge/results/", s.handlePhoneBridgeResults)
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
@@ -1467,6 +1471,45 @@ func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(s.bridge.Status())
+}
+
+// handlePhoneBridgeCommands routes /api/phone-bridge/commands
+func (s *Server) handlePhoneBridgeCommands(w http.ResponseWriter, r *http.Request) {
+	if s.bridge == nil {
+		http.Error(w, `{"error":"phone bridge not initialized"}`, http.StatusServiceUnavailable)
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		s.bridge.handleEnqueueCommand(w, r)
+	case http.MethodGet:
+		s.bridge.handlePollCommands(w, r)
+	default:
+		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+// handlePhoneBridgeResults routes /api/phone-bridge/results and /api/phone-bridge/results/:id
+func (s *Server) handlePhoneBridgeResults(w http.ResponseWriter, r *http.Request) {
+	if s.bridge == nil {
+		http.Error(w, `{"error":"phone bridge not initialized"}`, http.StatusServiceUnavailable)
+		return
+	}
+	if r.URL.Path == "/api/phone-bridge/results" {
+		if r.Method == http.MethodPost {
+			s.bridge.handleSubmitResult(w, r)
+		} else {
+			http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		}
+	} else if strings.HasPrefix(r.URL.Path, "/api/phone-bridge/results/") {
+		if r.Method == http.MethodGet {
+			s.bridge.handleQueryResult(w, r)
+		} else {
+			http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		}
+	} else {
+		http.NotFound(w, r)
+	}
 }
 
 // handleIndex serves the web UI

@@ -13,7 +13,7 @@
 默认命令：
 
 ```bash
-/oem/usr/bin/aiden-env-run /oem/usr/bin/config_web --config=/userdata/agent/agent.toml --wifi-config=/userdata/wpa_supplicant.conf --system-env=/userdata/system/env
+/oem/usr/bin/aiden-env-run /oem/usr/bin/config_web --bind=0.0.0.0 --config=/userdata/agent/agent.toml --wifi-config=/userdata/wpa_supplicant.conf --system-env=/userdata/system/env
 ```
 
 常用命令：
@@ -34,7 +34,7 @@ config_web [--bind=IP] [--port=PORT] [--config=PATH] [--wifi-config=PATH] [--sys
 
 | 参数 | 说明 |
 | --- | --- |
-| `--bind=IP` | 监听地址 |
+| `--bind=IP` | Bind address, default `0.0.0.0` |
 | `--port=PORT` | 监听端口 |
 | `--config=PATH` | Agent TOML 配置路径 |
 | `--wifi-config=PATH` | `wpa_supplicant.conf` 路径 |

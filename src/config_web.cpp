@@ -33,7 +33,7 @@
 namespace {
 
 struct Options {
-    std::string bind_address = "192.168.42.1";
+    std::string bind_address = "0.0.0.0";
     int port = 80;
     std::string agent_config_path = "/userdata/agent/agent.toml";
     std::string wifi_config_path = "/userdata/wpa_supplicant.conf";
@@ -105,6 +105,7 @@ struct TcpPortStatus {
 
 volatile sig_atomic_t g_should_stop = 0;
 
+const char* kAnyBindAddress = "0.0.0.0";
 const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
@@ -610,7 +611,7 @@ bool parse_size(const std::string& text, size_t* value) {
 }
 
 bool is_allowed_bind_address(const std::string& bind_address) {
-    return bind_address == kUsbBindAddress || bind_address == kLoopbackBindAddress;
+    return bind_address == kAnyBindAddress || bind_address == kUsbBindAddress || bind_address == kLoopbackBindAddress;
 }
 
 bool set_socket_recv_timeout(int fd, int timeout_seconds) {
@@ -3589,6 +3590,59 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     // ===== End benchmark routes =====
 
+    // ===== User files routes =====
+    if (request.method == "GET" && request.path == "/user_files") {
+        ApiResponse response;
+        response.content_type = "text/html; charset=utf-8";
+        std::string path = "/userdata/agent/files_report.html";
+        FILE* fp = fopen(path.c_str(), "r");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long sz = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            if (sz > 0 && sz < 2 * 1024 * 1024) {  // Max 2MB
+                std::string buf(sz, '\0');
+                fread(&buf[0], 1, sz, fp);
+                response.body = std::move(buf);
+            } else {
+                response.status_code = 500;
+                response.body = "report too large or empty";
+            }
+            fclose(fp);
+        } else {
+            response.status_code = 404;
+            response.body = "<html><body>"
+                "<h1>Files Report Not Found</h1>"
+                "<p>The files report has not been generated yet.</p>"
+                "<p>To generate it, SSH to the device and run:</p>"
+                "<pre>cd /userdata/agent_tools && ./view_agent_files.sh</pre>"
+                "</body></html>";
+        }
+        return response;
+    }
+
+    if (request.method == "POST" && request.path == "/user_files/regenerate") {
+        ApiResponse response;
+        response.content_type = "application/json; charset=utf-8";
+
+        // Regenerate report in background
+        // Note: system() with '&' returns 0 if the shell spawns successfully,
+        // not if the background script succeeds. Actual success/failure will
+        // only be visible in /tmp/user_files_regenerate.log.
+        std::string cmd = "cd /userdata/agent_tools && "
+                         "./view_agent_files.sh > /tmp/user_files_regenerate.log 2>&1 &";
+        int ret = system(cmd.c_str());
+
+        if (ret == 0) {
+            response.body = "{\"status\":\"ok\",\"message\":\"Background regeneration started\"}";
+        } else {
+            response.status_code = 500;
+            response.body = "{\"status\":\"error\",\"message\":\"Failed to spawn regeneration process\"}";
+        }
+        return response;
+    }
+    // ===== End user files routes =====
+
     if (request.method == "GET" && request.path == "/api/agent/status") {
         return handle_get_agent_status();
     }
@@ -3690,8 +3744,8 @@ int main(int argc, char** argv) {
 
     if (!is_allowed_bind_address(options.bind_address)) {
         std::cerr << "Refusing to bind config_web to " << options.bind_address
-                  << "; allowed addresses are " << kUsbBindAddress
-                  << " and " << kLoopbackBindAddress << std::endl;
+                  << "; allowed addresses are " << kAnyBindAddress
+                  << ", " << kUsbBindAddress << " and " << kLoopbackBindAddress << std::endl;
         return 1;
     }
 

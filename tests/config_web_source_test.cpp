@@ -48,6 +48,29 @@ TEST_CASE("config web exposes agent runtime status") {
     CHECK(html.find("startup_error") != std::string::npos);
 }
 
+TEST_CASE("config web listens on all interfaces by default") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string script_path = std::string(AIDEN_SOURCE_DIR) + "/overlay/etc/init.d/S56config_web";
+    std::ifstream script_in(script_path.c_str());
+    REQUIRE(script_in.good());
+
+    std::ostringstream script_buffer;
+    script_buffer << script_in.rdbuf();
+    const std::string script = script_buffer.str();
+
+    CHECK(source.find("std::string bind_address = \"0.0.0.0\"") != std::string::npos);
+    CHECK(source.find("const char* kAnyBindAddress = \"0.0.0.0\"") != std::string::npos);
+    CHECK(source.find("bind_address == kAnyBindAddress") != std::string::npos);
+    CHECK(script.find("--bind=0.0.0.0") != std::string::npos);
+}
+
 TEST_CASE("config web agent status review constraints") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
