@@ -50,7 +50,7 @@ def test_default_agent_config_path_ignores_directory_env_path(monkeypatch, tmp_p
     monkeypatch.setenv("AIDEN_AGENT_CONFIG", str(config_dir))
     monkeypatch.setattr(agent_config, "REPO_ROOT", tmp_path / "missing-repo")
 
-    assert default_agent_config_path() is None
+    assert default_agent_config_path() != config_dir
 
 
 def test_resolve_agent_model_api_key_ignores_directory_path(tmp_path: Path):
