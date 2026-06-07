@@ -11,6 +11,8 @@ echo "Generating agent files report..."
 python3 "$SCRIPT_DIR/generate_agent_files_report.py" \
     --memory-dir /userdata/agent/memory \
     --skills-dir /userdata/agent/skills \
+    --skill-state-dir /userdata/agent/skill-state \
+    --skillopt-dir /userdata/agent/benchmark/runs/skillopt \
     --output "$OUTPUT"
 
 if [ $? -eq 0 ]; then
