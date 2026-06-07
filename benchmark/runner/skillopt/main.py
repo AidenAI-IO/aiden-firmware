@@ -13,6 +13,7 @@ The suite is split into train (70%) and selection (30%) by default.
 """
 from __future__ import annotations
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -23,6 +24,22 @@ from runner.skillopt.orchestrator import optimize_skill, OptimizationConfig
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _resolve_skill_path(skill_name: str) -> Path:
+    roots: list[Path] = []
+    if env_root := os.environ.get("AIDEN_SKILLS_DIR"):
+        roots.append(Path(env_root))
+    roots.extend([
+        REPO_ROOT / "src" / "agent" / "config" / "skills",
+        REPO_ROOT / "skills",
+    ])
+
+    for root in roots:
+        path = root / skill_name / "SKILL.md"
+        if path.exists():
+            return path
+    return roots[0] / skill_name / "SKILL.md"
 
 
 def cli(argv: list[str] | None = None) -> int:
@@ -73,8 +90,7 @@ def cli(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # Resolve skill path
-    skill_dir = REPO_ROOT / "src" / "agent" / "config" / "skills" / args.skill
-    skill_path = skill_dir / "SKILL.md"
+    skill_path = _resolve_skill_path(args.skill)
     if not skill_path.exists():
         print(f"Error: skill not found: {skill_path}", file=sys.stderr)
         return 2

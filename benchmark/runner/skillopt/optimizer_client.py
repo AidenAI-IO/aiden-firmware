@@ -7,10 +7,11 @@ in this repo. Used by reflect.py to invoke the analyst (optimizer) model.
 from __future__ import annotations
 import dataclasses as dc
 import json
-import os
 import socket
 import urllib.error
 import urllib.request
+
+from runner.agent_config import resolve_api_key
 
 
 @dc.dataclass
@@ -18,6 +19,7 @@ class OptimizerConfig:
     provider: str = "openrouter"
     model: str = "anthropic/claude-opus-4-7"
     api_key_env: str = "OPENROUTER_API_KEY"
+    agent_config_path: str | None = None
     max_tokens: int = 4096
     timeout_sec: int = 180
 
@@ -37,7 +39,7 @@ def chat_optimizer(
     the response body is the caller's responsibility (analyst prompts
     request a JSON object directly).
     """
-    api_key = os.environ.get(cfg.api_key_env)
+    api_key = resolve_api_key(cfg.api_key_env, agent_config_path=cfg.agent_config_path)
     if not api_key:
         raise OptimizerError(f"missing env var {cfg.api_key_env}")
 

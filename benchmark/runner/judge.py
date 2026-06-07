@@ -3,13 +3,13 @@ import base64
 import dataclasses as dc
 import hashlib
 import json
-import os
 import socket
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
+from runner.agent_config import resolve_api_key
 from runner.models import RubricVerdict
 from runner.suite import RubricItem
 
@@ -20,6 +20,7 @@ class JudgeConfig:
     provider: str = "openrouter"
     model: str = "anthropic/claude-sonnet-4-6"
     api_key_env: str = "OPENROUTER_API_KEY"
+    agent_config_path: str | None = None
 
 @dc.dataclass
 class JudgeOutput:
@@ -114,7 +115,9 @@ def judge_task(
         {"type": "text", "text": f"FINAL RESPONSE:\n{final_response}"},
     ]
     # Use OpenRouter's OpenAI-compatible chat completions endpoint
-    api_key = os.environ[cfg.api_key_env]
+    api_key = resolve_api_key(cfg.api_key_env, agent_config_path=cfg.agent_config_path)
+    if not api_key:
+        raise RuntimeError(f"missing env var {cfg.api_key_env}")
     payload = json.dumps({
         "model": cfg.model,
         "messages": [{"role": "user", "content": user_content}],
