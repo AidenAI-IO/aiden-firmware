@@ -94,12 +94,14 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
     original = skill_path.read_text(encoding="utf-8")
     current = original
     client = AgentClient(base_url=cfg.agent_url)
+    run_root = cfg.artifact_root / cfg.run_id
+    run_root.mkdir(parents=True, exist_ok=True)
 
     # Baseline eval on selection split
     print(f"[baseline] Evaluating original skill on {len(cfg.selection_tasks)} selection tasks...")
     _, sel_rollouts = _rollout_tasks(
         client, cfg.suite, cfg.selection_tasks, cfg.skill_name,
-        cfg.run_id, "baseline_selection", cfg.artifact_root, cfg.judge_cfg,
+        cfg.run_id, "baseline_selection", run_root, cfg.judge_cfg,
     )
     current_score = aggregate_score(sel_rollouts)
     print(f"[baseline] hard={current_score.hard:.3f} soft={current_score.soft:.3f} ({current_score.n_passed}/{current_score.n})")
@@ -114,7 +116,7 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
         print(f"\n[step {step_idx}] Train rollout on {len(cfg.train_tasks)} tasks...")
         _, train_rollouts = _rollout_tasks(
             client, cfg.suite, cfg.train_tasks, cfg.skill_name,
-            cfg.run_id, f"step_{step_idx:02d}_train", cfg.artifact_root, cfg.judge_cfg,
+            cfg.run_id, f"step_{step_idx:02d}_train", run_root, cfg.judge_cfg,
         )
         train_score = aggregate_score(train_rollouts)
         print(f"[step {step_idx}] train: hard={train_score.hard:.3f} soft={train_score.soft:.3f}")
@@ -142,7 +144,7 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
 
         # Apply
         candidate, reports = apply_patch_with_report(current, patch)
-        step_artifact = cfg.artifact_root / f"step_{step_idx:02d}"
+        step_artifact = run_root / f"step_{step_idx:02d}"
         step_artifact.mkdir(parents=True, exist_ok=True)
         (step_artifact / "candidate.md").write_text(candidate, encoding="utf-8")
         (step_artifact / "patch.json").write_text(
@@ -157,7 +159,7 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
         with with_skill_override(client, skill_path, candidate):
             _, cand_rollouts = _rollout_tasks(
                 client, cfg.suite, cfg.selection_tasks, cfg.skill_name,
-                cfg.run_id, f"step_{step_idx:02d}_selection", cfg.artifact_root, cfg.judge_cfg,
+                cfg.run_id, f"step_{step_idx:02d}_selection", run_root, cfg.judge_cfg,
             )
         candidate_score_agg = aggregate_score(cand_rollouts)
         print(f"[step {step_idx}] candidate: hard={candidate_score_agg.hard:.3f} soft={candidate_score_agg.soft:.3f}")
@@ -175,7 +177,7 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
             if current_score.primary > best_score.primary:
                 best = current
                 best_score = current_score
-                (cfg.artifact_root / "best_skill.md").write_text(best, encoding="utf-8")
+                (run_root / "best_skill.md").write_text(best, encoding="utf-8")
             no_improvement_count = 0
             steps.append(StepDecision(
                 step=step_idx,

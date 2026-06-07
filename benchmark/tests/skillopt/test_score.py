@@ -1,4 +1,6 @@
 """Unit tests for score.py."""
+import pytest
+
 from runner.models import HardAssertionResults, RubricVerdict, TaskResult
 from runner.skillopt.score import (
     aggregate_score,
@@ -98,3 +100,11 @@ def test_validation_gate_reject_below_min_delta():
     decision = validation_gate(cand, cur, min_delta=0.03)
     # delta = 0.01, below min_delta
     assert not decision.accepted
+
+
+def test_validation_gate_rejects_negative_min_delta():
+    cur = aggregate_score([_mk_task_result("a", "passed")])
+    cand = aggregate_score([_mk_task_result("a", "failed")])
+
+    with pytest.raises(ValueError, match="min_delta must be non-negative"):
+        validation_gate(cand, cur, min_delta=-0.5)

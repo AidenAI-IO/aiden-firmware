@@ -6,7 +6,9 @@ orchestrator to evaluate candidate skills without permanently modifying
 the skill index.
 """
 from __future__ import annotations
+import os
 import shutil
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -30,9 +32,16 @@ def with_skill_override(
     The agent's /api/skills/reload endpoint is called after writing the
     candidate, forcing the next Run to load fresh from disk.
     """
-    backup_path = skill_path.with_suffix(".md.backup")
     if not skill_path.exists():
         raise FileNotFoundError(f"skill file not found: {skill_path}")
+
+    backup_fd, backup_name = tempfile.mkstemp(
+        prefix=f"{skill_path.stem}.",
+        suffix=".backup",
+        dir=str(skill_path.parent),
+    )
+    os.close(backup_fd)
+    backup_path = Path(backup_name)
 
     # Backup original
     shutil.copy2(skill_path, backup_path)
@@ -48,5 +57,5 @@ def with_skill_override(
         # Reload again so future calls see the restored skill
         try:
             client._post("/api/skills/reload", timeout=5)
-        except Exception:
-            pass  # Best-effort; original is already restored on disk
+        except Exception as exc:
+            raise RuntimeError("skill reload failed after disk restore") from exc

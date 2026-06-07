@@ -4,6 +4,7 @@ from runner.skillopt import main
 
 
 def test_resolve_skill_path_uses_packaged_board_skills(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("AIDEN_SKILLS_DIR", raising=False)
     skill_path = tmp_path / "skills" / "device-operator" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("---\nname: device-operator\n---\n", encoding="utf-8")

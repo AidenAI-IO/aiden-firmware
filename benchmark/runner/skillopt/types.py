@@ -12,6 +12,13 @@ from typing import Any, Literal
 EditOp = Literal["append", "insert_after", "replace", "delete"]
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dc.dataclass
 class Edit:
     """A single edit operation on a skill document.
@@ -89,7 +96,7 @@ class FailureSummaryEntry:
     def from_dict(cls, d: dict) -> FailureSummaryEntry:
         return cls(
             failure_type=d.get("failure_type", ""),
-            count=int(d.get("count", 0)),
+            count=_safe_int(d.get("count", 0)),
             description=d.get("description", ""),
         )
 
@@ -120,9 +127,11 @@ class RawPatch:
         return cls(
             patch=Patch.from_dict(inner),
             source_type=d.get("source_type", "failure"),
-            batch_size=int(d.get("batch_size", 0)),
+            batch_size=_safe_int(d.get("batch_size", 0)),
             failure_summary=[
-                FailureSummaryEntry.from_dict(fs) for fs in d.get("failure_summary", []) or []
+                FailureSummaryEntry.from_dict(fs)
+                for fs in d.get("failure_summary", []) or []
+                if isinstance(fs, dict)
             ],
         )
 

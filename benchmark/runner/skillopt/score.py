@@ -113,6 +113,9 @@ def validation_gate(
         compress in v1; future: accept if candidate skill is shorter)
       candidate.primary <  current.primary             -> reject (regression)
     """
+    if min_delta < 0:
+        raise ValueError(f"min_delta must be non-negative, got {min_delta}")
+
     delta = candidate.primary - current.primary
     if delta > min_delta:
         return GateDecision(

@@ -50,7 +50,7 @@ git commit -m "skillopt: improve device-operator (phone_control_v1, 65% → 78%)
 
 参考 `microsoft/SkillOpt` 仓库主干 commit。需要 port 到本工程的核心逻辑：
 
-```
+```text
 skillopt/optimizer/skill.py        → benchmark/runner/skillopt/patch.py
   apply_edit / apply_patch_with_report
   支持 op: append / insert_after / replace / delete
@@ -214,7 +214,7 @@ def optimize_skill(skill_name, skill_content, suite, budget):
 
 ## 模块组织
 
-```
+```text
 benchmark/runner/skillopt/
 ├── __init__.py
 ├── main.py              # CLI 入口
@@ -235,7 +235,7 @@ benchmark/runner/skillopt/
 
 ## 产出
 
-```
+```text
 runs/skillopt-<run_id>/
 ├── manifest.json                 # 运行元信息（skill, suite, budget, model）
 ├── result.json                   # 优化结果（initial_score, best_score, accepted/rejected）
