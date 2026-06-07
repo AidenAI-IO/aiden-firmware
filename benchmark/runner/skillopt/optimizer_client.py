@@ -65,16 +65,22 @@ def chat_optimizer(
         with urllib.request.urlopen(req, timeout=cfg.timeout_sec) as resp:
             if resp.status != 200:
                 raise OptimizerError(f"optimizer HTTP {resp.status}")
-            body = json.loads(resp.read())
+            try:
+                body = json.loads(resp.read())
+            except json.JSONDecodeError as e:
+                raise OptimizerError(f"optimizer returned non-JSON body: {e}") from e
     except urllib.error.HTTPError as e:
         raise OptimizerError(f"optimizer HTTP {e.code}: {e.read()[:200]!r}") from e
     except (socket.timeout, urllib.error.URLError) as e:
         raise OptimizerError(f"optimizer network error: {e}") from e
 
     try:
-        return body["choices"][0]["message"]["content"]
+        content = body["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as e:
         raise OptimizerError(f"unexpected optimizer response shape: {e}") from e
+    if not isinstance(content, str):
+        raise OptimizerError("unexpected optimizer content type (expected string)")
+    return content
 
 
 def extract_json(raw: str) -> dict:

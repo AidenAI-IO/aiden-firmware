@@ -68,3 +68,43 @@ def test_chat_optimizer_uses_agent_toml_api_key_when_env_missing(monkeypatch, tm
 
     assert chat_optimizer(OptimizerConfig(agent_config_path=str(config)), "system", "user") == "{}"
     assert seen == {"authorization": "Bearer sk-agent", "timeout": 180}
+
+
+def test_chat_optimizer_non_json_body_raises_optimizer_error(monkeypatch):
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b"not json"
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-env")
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: FakeResponse())
+
+    with pytest.raises(OptimizerError, match="optimizer returned non-JSON body"):
+        chat_optimizer(OptimizerConfig(), "system", "user")
+
+
+def test_chat_optimizer_non_string_content_raises_optimizer_error(monkeypatch):
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": {"not": "string"}}}]}).encode("utf-8")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-env")
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: FakeResponse())
+
+    with pytest.raises(OptimizerError, match="unexpected optimizer content type"):
+        chat_optimizer(OptimizerConfig(), "system", "user")

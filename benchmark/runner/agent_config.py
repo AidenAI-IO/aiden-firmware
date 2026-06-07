@@ -60,7 +60,7 @@ def default_agent_config_path() -> Path | None:
         REPO_ROOT / "src" / "agent" / "config" / "agent.toml",
     ])
     for path in candidates:
-        if path.exists():
+        if path.is_file():
             return path
     return None
 
@@ -74,7 +74,7 @@ def resolve_agent_model_api_key(
         env = os.environ
     if path is None:
         path = default_agent_config_path()
-    if path is None or not path.exists():
+    if path is None or not path.is_file():
         return None
 
     configured = load_agent_model_config(path).get("api_key", "").strip()

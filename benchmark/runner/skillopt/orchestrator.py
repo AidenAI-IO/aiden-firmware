@@ -96,121 +96,122 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
     client = AgentClient(base_url=cfg.agent_url)
     run_root = cfg.artifact_root / cfg.run_id
     run_root.mkdir(parents=True, exist_ok=True)
-
-    # Baseline eval on selection split
-    print(f"[baseline] Evaluating original skill on {len(cfg.selection_tasks)} selection tasks...")
-    _, sel_rollouts = _rollout_tasks(
-        client, cfg.suite, cfg.selection_tasks, cfg.skill_name,
-        cfg.run_id, "baseline_selection", run_root, cfg.judge_cfg,
-    )
-    current_score = aggregate_score(sel_rollouts)
-    print(f"[baseline] hard={current_score.hard:.3f} soft={current_score.soft:.3f} ({current_score.n_passed}/{current_score.n})")
-
-    best = current
-    best_score = current_score
-    steps: list[StepDecision] = []
-    rejected: list[Edit] = []
-    no_improvement_count = 0
-
-    for step_idx in range(1, cfg.budget + 1):
-        print(f"\n[step {step_idx}] Train rollout on {len(cfg.train_tasks)} tasks...")
-        _, train_rollouts = _rollout_tasks(
-            client, cfg.suite, cfg.train_tasks, cfg.skill_name,
-            cfg.run_id, f"step_{step_idx:02d}_train", run_root, cfg.judge_cfg,
+    try:
+        # Baseline eval on selection split
+        print(f"[baseline] Evaluating original skill on {len(cfg.selection_tasks)} selection tasks...")
+        _, sel_rollouts = _rollout_tasks(
+            client, cfg.suite, cfg.selection_tasks, cfg.skill_name,
+            cfg.run_id, "baseline_selection", run_root, cfg.judge_cfg,
         )
-        train_score = aggregate_score(train_rollouts)
-        print(f"[step {step_idx}] train: hard={train_score.hard:.3f} soft={train_score.soft:.3f}")
+        current_score = aggregate_score(sel_rollouts)
+        print(f"[baseline] hard={current_score.hard:.3f} soft={current_score.soft:.3f} ({current_score.n_passed}/{current_score.n})")
 
-        # Reflect
-        print(f"[step {step_idx}] Reflect (calling optimizer LLM)...")
-        rejected_ctx = format_rejected_context(rejected)
-        raw_patches = run_reflect(
-            cfg.optimizer_cfg,
-            current,
-            train_rollouts,
-            edit_budget=cfg.edit_budget,
-            rejected_context=rejected_ctx,
-        )
-        if not raw_patches:
-            print(f"[step {step_idx}] no patches produced by reflect; stopping.")
-            break
+        best = current
+        best_score = current_score
+        steps: list[StepDecision] = []
+        rejected: list[Edit] = []
+        no_improvement_count = 0
 
-        # Aggregate
-        patch = aggregate(raw_patches, edit_budget=cfg.edit_budget)
-        if not patch.edits:
-            print(f"[step {step_idx}] aggregate produced 0 edits after dedup; stopping.")
-            break
-        print(f"[step {step_idx}] {len(patch.edits)} edits: {[e.op for e in patch.edits]}")
-
-        # Apply
-        candidate, reports = apply_patch_with_report(current, patch)
-        step_artifact = run_root / f"step_{step_idx:02d}"
-        step_artifact.mkdir(parents=True, exist_ok=True)
-        (step_artifact / "candidate.md").write_text(candidate, encoding="utf-8")
-        (step_artifact / "patch.json").write_text(
-            json.dumps(patch.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        (step_artifact / "patch_reports.json").write_text(
-            json.dumps(reports, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
-        # Selection eval with candidate
-        print(f"[step {step_idx}] Selection eval with candidate...")
-        with with_skill_override(client, skill_path, candidate):
-            _, cand_rollouts = _rollout_tasks(
-                client, cfg.suite, cfg.selection_tasks, cfg.skill_name,
-                cfg.run_id, f"step_{step_idx:02d}_selection", run_root, cfg.judge_cfg,
+        for step_idx in range(1, cfg.budget + 1):
+            print(f"\n[step {step_idx}] Train rollout on {len(cfg.train_tasks)} tasks...")
+            _, train_rollouts = _rollout_tasks(
+                client, cfg.suite, cfg.train_tasks, cfg.skill_name,
+                cfg.run_id, f"step_{step_idx:02d}_train", run_root, cfg.judge_cfg,
             )
-        candidate_score_agg = aggregate_score(cand_rollouts)
-        print(f"[step {step_idx}] candidate: hard={candidate_score_agg.hard:.3f} soft={candidate_score_agg.soft:.3f}")
+            train_score = aggregate_score(train_rollouts)
+            print(f"[step {step_idx}] train: hard={train_score.hard:.3f} soft={train_score.soft:.3f}")
 
-        # Gate
-        decision = validation_gate(candidate_score_agg, current_score, cfg.min_delta)
-        print(f"[step {step_idx}] gate: {decision.reason}")
-        (step_artifact / "decision.json").write_text(
-            json.dumps(dc.asdict(decision), ensure_ascii=False, indent=2), encoding="utf-8"
+            # Reflect
+            print(f"[step {step_idx}] Reflect (calling optimizer LLM)...")
+            rejected_ctx = format_rejected_context(rejected)
+            raw_patches = run_reflect(
+                cfg.optimizer_cfg,
+                current,
+                train_rollouts,
+                edit_budget=cfg.edit_budget,
+                rejected_context=rejected_ctx,
+            )
+            if not raw_patches:
+                print(f"[step {step_idx}] no patches produced by reflect; stopping.")
+                break
+
+            # Aggregate
+            patch = aggregate(raw_patches, edit_budget=cfg.edit_budget)
+            if not patch.edits:
+                print(f"[step {step_idx}] aggregate produced 0 edits after dedup; stopping.")
+                break
+            print(f"[step {step_idx}] {len(patch.edits)} edits: {[e.op for e in patch.edits]}")
+
+            # Apply
+            candidate, reports = apply_patch_with_report(current, patch)
+            step_artifact = run_root / f"step_{step_idx:02d}"
+            step_artifact.mkdir(parents=True, exist_ok=True)
+            (step_artifact / "candidate.md").write_text(candidate, encoding="utf-8")
+            (step_artifact / "patch.json").write_text(
+                json.dumps(patch.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            (step_artifact / "patch_reports.json").write_text(
+                json.dumps(reports, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+            # Selection eval with candidate
+            print(f"[step {step_idx}] Selection eval with candidate...")
+            with with_skill_override(client, skill_path, candidate):
+                _, cand_rollouts = _rollout_tasks(
+                    client, cfg.suite, cfg.selection_tasks, cfg.skill_name,
+                    cfg.run_id, f"step_{step_idx:02d}_selection", run_root, cfg.judge_cfg,
+                )
+            candidate_score_agg = aggregate_score(cand_rollouts)
+            print(f"[step {step_idx}] candidate: hard={candidate_score_agg.hard:.3f} soft={candidate_score_agg.soft:.3f}")
+
+            # Gate
+            decision = validation_gate(candidate_score_agg, current_score, cfg.min_delta)
+            print(f"[step {step_idx}] gate: {decision.reason}")
+            (step_artifact / "decision.json").write_text(
+                json.dumps(dc.asdict(decision), ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+            if decision.accepted:
+                current = candidate
+                current_score = candidate_score_agg
+                if current_score.primary > best_score.primary:
+                    best = current
+                    best_score = current_score
+                    (run_root / "best_skill.md").write_text(best, encoding="utf-8")
+                no_improvement_count = 0
+                steps.append(StepDecision(
+                    step=step_idx,
+                    candidate_score=decision.candidate_score,
+                    current_score=decision.current_score,
+                    accepted=True,
+                    reason=decision.reason,
+                    edits_applied=patch.edits,
+                ))
+            else:
+                rejected.extend(patch.edits)
+                no_improvement_count += 1
+                steps.append(StepDecision(
+                    step=step_idx,
+                    candidate_score=decision.candidate_score,
+                    current_score=decision.current_score,
+                    accepted=False,
+                    reason=decision.reason,
+                    edits_rejected=patch.edits,
+                ))
+
+            # Early stop
+            if no_improvement_count >= cfg.early_stop_patience:
+                print(f"[step {step_idx}] no improvement for {cfg.early_stop_patience} steps; stopping.")
+                break
+
+        return OptimizationResult(
+            skill_name=cfg.skill_name,
+            initial_score=aggregate_score(sel_rollouts).primary,
+            best_score=best_score.primary,
+            best_skill=best,
+            steps=steps,
+            accepted_count=sum(1 for s in steps if s.accepted),
+            rejected_count=sum(1 for s in steps if not s.accepted),
         )
-
-        if decision.accepted:
-            current = candidate
-            current_score = candidate_score_agg
-            if current_score.primary > best_score.primary:
-                best = current
-                best_score = current_score
-                (run_root / "best_skill.md").write_text(best, encoding="utf-8")
-            no_improvement_count = 0
-            steps.append(StepDecision(
-                step=step_idx,
-                candidate_score=decision.candidate_score,
-                current_score=decision.current_score,
-                accepted=True,
-                reason=decision.reason,
-                edits_applied=patch.edits,
-            ))
-        else:
-            rejected.extend(patch.edits)
-            no_improvement_count += 1
-            steps.append(StepDecision(
-                step=step_idx,
-                candidate_score=decision.candidate_score,
-                current_score=decision.current_score,
-                accepted=False,
-                reason=decision.reason,
-                edits_rejected=patch.edits,
-            ))
-
-        # Early stop
-        if no_improvement_count >= cfg.early_stop_patience:
-            print(f"[step {step_idx}] no improvement for {cfg.early_stop_patience} steps; stopping.")
-            break
-
-    client.close()
-    return OptimizationResult(
-        skill_name=cfg.skill_name,
-        initial_score=aggregate_score(sel_rollouts).primary,
-        best_score=best_score.primary,
-        best_skill=best,
-        steps=steps,
-        accepted_count=sum(1 for s in steps if s.accepted),
-        rejected_count=sum(1 for s in steps if not s.accepted),
-    )
+    finally:
+        client.close()

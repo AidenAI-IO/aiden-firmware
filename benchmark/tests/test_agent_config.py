@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from runner.agent_config import load_agent_model_config, resolve_agent_model_api_key
+from runner import agent_config
+from runner.agent_config import default_agent_config_path, load_agent_model_config, resolve_agent_model_api_key
 
 
 def test_load_agent_model_config_reads_model_section(tmp_path: Path):
@@ -41,3 +42,19 @@ def test_resolve_agent_model_api_key_does_not_treat_missing_env_name_as_secret(t
     config.write_text('[model]\napi_key = "OPENROUTER_API_KEY"\n', encoding="utf-8")
 
     assert resolve_agent_model_api_key(config, env={}) is None
+
+
+def test_default_agent_config_path_ignores_directory_env_path(monkeypatch, tmp_path: Path):
+    config_dir = tmp_path / "agent.toml"
+    config_dir.mkdir()
+    monkeypatch.setenv("AIDEN_AGENT_CONFIG", str(config_dir))
+    monkeypatch.setattr(agent_config, "REPO_ROOT", tmp_path / "missing-repo")
+
+    assert default_agent_config_path() is None
+
+
+def test_resolve_agent_model_api_key_ignores_directory_path(tmp_path: Path):
+    config_dir = tmp_path / "agent.toml"
+    config_dir.mkdir()
+
+    assert resolve_agent_model_api_key(config_dir, env={}) is None

@@ -83,3 +83,38 @@ def test_optimize_skill_scopes_artifacts_by_run_id(monkeypatch, tmp_path):
     ]
     assert (run_root / "step_01" / "candidate.md").exists()
     assert (run_root / "best_skill.md").exists()
+
+
+def test_optimize_skill_closes_client_when_rollout_raises(monkeypatch, tmp_path):
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text("base", encoding="utf-8")
+    clients = []
+
+    class CapturedClient(DummyClient):
+        def __init__(self, base_url: str):
+            super().__init__(base_url)
+            clients.append(self)
+
+    def failing_rollout_tasks(*args, **kwargs):
+        raise RuntimeError("rollout failed")
+
+    monkeypatch.setattr(orchestrator, "AgentClient", CapturedClient)
+    monkeypatch.setattr(orchestrator, "_rollout_tasks", failing_rollout_tasks)
+
+    cfg = orchestrator.OptimizationConfig(
+        skill_name="device-operator",
+        skill_path=skill_path,
+        suite=_suite(tmp_path),
+        train_tasks=[_task("train")],
+        selection_tasks=[_task("selection")],
+        budget=1,
+        run_id="run-001",
+        artifact_root=tmp_path / "runs" / "skillopt",
+    )
+
+    import pytest
+    with pytest.raises(RuntimeError, match="rollout failed"):
+        orchestrator.optimize_skill(cfg)
+
+    assert len(clients) == 1
+    assert clients[0].closed
