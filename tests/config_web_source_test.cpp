@@ -192,7 +192,8 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("OTA 更新已开始，等待日志输出...") != std::string::npos);
     CHECK(html.find("setOtaLogPending('OTA 更新已开始，等待日志输出...',Number(payload.ota_log_start_size_bytes||0));") != std::string::npos);
     CHECK(html.find("renderOtaLog(snapshot, {preservePending:true})") != std::string::npos);
-    CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');showOtaLogPanel();") != std::string::npos);
+    CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');setOtaLogPending(") != std::string::npos);
+    CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');showOtaLogPanel();") == std::string::npos);
     CHECK(html.find("otaLogText") != std::string::npos);
     CHECK(html.find("otaLogMeta") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate") != std::string::npos);
