@@ -14,7 +14,7 @@ import (
 
 type TurnInput = AudioInputResult
 
-const toolDescriptionSpeechTimeout = 5 * time.Second
+const toolDescriptionSpeechTimeout = 15 * time.Second
 
 var (
 	recordingStartRetryTimeout  = 5 * time.Second
@@ -94,8 +94,6 @@ func (d *AudioDialog) StartRecording() error {
 		return nil
 	}
 
-	d.playPromptSound(promptSoundRecordingStart, "recording", true)
-
 	log.Println("[audio] Opening record session...")
 	format := AudioFormat{
 		SampleRate: uint32(d.config.Audio.SampleRateOrDefault()),
@@ -114,6 +112,13 @@ func (d *AudioDialog) StartRecording() error {
 		log.Printf("[audio] Persistent record reader unavailable, using per-request reads: %v\n", err)
 	}
 	d.recordActive = true
+	if d.vad != nil {
+		if err := d.vad.Reset(); err != nil {
+			log.Printf("[vad] reset failed: %v\n", err)
+		}
+	}
+	// Open the mic before the cue tone so speech right after Enter is captured.
+	d.playPromptSoundAsync(promptSoundRecordingStart, "recording")
 	return nil
 }
 
@@ -208,6 +213,29 @@ func (d *AudioDialog) ProcessVADFrame(samples []int16) ([]int16, error) {
 // FlushVAD flushes any buffered audio from VAD
 func (d *AudioDialog) FlushVAD() []int16 {
 	return d.vad.Flush()
+}
+
+// FinishManualUtterance flushes VAD state and appends any tail samples that were
+// not yet aligned to a full Silero frame (legacy C++ agent_main behavior).
+func (d *AudioDialog) FinishManualUtterance(pending []int16) []int16 {
+	frameSamples := d.VADFrameSamples()
+	consumed := 0
+	for consumed+frameSamples <= len(pending) {
+		if _, err := d.ProcessVADFrame(pending[consumed : consumed+frameSamples]); err != nil {
+			log.Printf("[vad] finish manual utterance failed: %v\n", err)
+			break
+		}
+		consumed += frameSamples
+	}
+	tail := pending[consumed:]
+	utterance := d.FlushVAD()
+	if len(tail) == 0 {
+		return utterance
+	}
+	if len(utterance) == 0 {
+		return append([]int16(nil), tail...)
+	}
+	return append(utterance, tail...)
 }
 
 // ResetVAD resets the VAD state
@@ -311,18 +339,17 @@ func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
 		return
 	}
 	description := event.Description
-	go d.SpeakToolDescription(ctx, description)
+	go d.SpeakToolDescription(description)
 }
 
-func (d *AudioDialog) SpeakToolDescription(ctx context.Context, description string) {
+func (d *AudioDialog) SpeakToolDescription(description string) {
 	description = strings.TrimSpace(description)
 	if description == "" {
 		return
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := d.speak(ctx, description, nil, toolDescriptionSpeechTimeout); err != nil {
+	// Detached from the agent turn context so tool TTS is not cut off when
+	// runtime.Run returns or the parent context is cancelled.
+	if err := d.speak(context.Background(), description, nil, toolDescriptionSpeechTimeout); err != nil {
 		log.Printf("[error] Tool description TTS failed: %v", err)
 	}
 }

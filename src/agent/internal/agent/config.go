@@ -54,6 +54,7 @@ type Config struct {
 	ScreenshotPruneInterval  int             `toml:"screenshot_prune_interval,omitempty"`
 	ScreenStableTimeoutMs    int             `toml:"screen_stable_timeout_ms,omitempty"`
 	ScreenStableMs           int             `toml:"screen_stable_ms,omitempty"`
+	ScreenStableDiffThreshold float64        `toml:"screen_stable_diff_threshold,omitempty"`
 	SkillsDirs               []string        `toml:"skills_dirs"`
 	BundledSkillsDir         string          `toml:"bundled_skills_dir,omitempty"`
 	SkillMergeModel          SkillMergeModel `toml:"-"`
@@ -450,6 +451,9 @@ func (c Config) Validate() error {
 	if c.ScreenStableMs < 0 {
 		return fmt.Errorf("screen_stable_ms must be >= 0, got %d", c.ScreenStableMs)
 	}
+	if c.ScreenStableDiffThreshold < 0 {
+		return fmt.Errorf("screen_stable_diff_threshold must be >= 0, got %g", c.ScreenStableDiffThreshold)
+	}
 
 	if err := c.Telemetry.Validate(); err != nil {
 		return err
@@ -611,7 +615,8 @@ func (c Config) ScreenshotPruningOrDefault() ScreenshotPruningConfig {
 
 func (c Config) ScreenStableDefaults() ScreenStableDefaults {
 	return ScreenStableDefaults{
-		TimeoutMs: c.ScreenStableTimeoutMs,
-		StableMs:  c.ScreenStableMs,
+		TimeoutMs:     c.ScreenStableTimeoutMs,
+		StableMs:      c.ScreenStableMs,
+		DiffThreshold: c.ScreenStableDiffThreshold,
 	}
 }

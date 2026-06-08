@@ -48,6 +48,29 @@ TEST_CASE("config web exposes agent runtime status") {
     CHECK(html.find("startup_error") != std::string::npos);
 }
 
+TEST_CASE("config web listens on all interfaces by default") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string script_path = std::string(AIDEN_SOURCE_DIR) + "/overlay/etc/init.d/S56config_web";
+    std::ifstream script_in(script_path.c_str());
+    REQUIRE(script_in.good());
+
+    std::ostringstream script_buffer;
+    script_buffer << script_in.rdbuf();
+    const std::string script = script_buffer.str();
+
+    CHECK(source.find("std::string bind_address = \"0.0.0.0\"") != std::string::npos);
+    CHECK(source.find("const char* kAnyBindAddress = \"0.0.0.0\"") != std::string::npos);
+    CHECK(source.find("bind_address == kAnyBindAddress") != std::string::npos);
+    CHECK(script.find("--bind=0.0.0.0") != std::string::npos);
+}
+
 TEST_CASE("config web agent status review constraints") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
@@ -123,23 +146,28 @@ TEST_CASE("config web exposes screenshot pruning config fields") {
     CHECK(source.find("\"screenshot_prune_interval\"") != std::string::npos);
     CHECK(source.find("\"screen_stable_timeout_ms\"") != std::string::npos);
     CHECK(source.find("\"screen_stable_ms\"") != std::string::npos);
+    CHECK(source.find("\"screen_stable_diff_threshold\"") != std::string::npos);
     CHECK(source.find("config.screenshot_keep_n") != std::string::npos);
     CHECK(source.find("config.screenshot_prune_interval") != std::string::npos);
     CHECK(source.find("config.screen_stable_timeout_ms") != std::string::npos);
     CHECK(source.find("config.screen_stable_ms") != std::string::npos);
+    CHECK(source.find("config.screen_stable_diff_threshold") != std::string::npos);
     CHECK(source.find("screenshot_keep_n must be >= 0") != std::string::npos);
     CHECK(source.find("screenshot_prune_interval must be >= 0") != std::string::npos);
     CHECK(source.find("screen_stable_timeout_ms must be >= 0") != std::string::npos);
     CHECK(source.find("screen_stable_ms must be >= 0") != std::string::npos);
+    CHECK(source.find("screen_stable_diff_threshold must be >= 0") != std::string::npos);
 
     CHECK(html.find("agent_screenshot_keep_n") != std::string::npos);
     CHECK(html.find("agent_screenshot_prune_interval") != std::string::npos);
     CHECK(html.find("agent_screen_stable_timeout_ms") != std::string::npos);
     CHECK(html.find("agent_screen_stable_ms") != std::string::npos);
+    CHECK(html.find("agent_screen_stable_diff_threshold") != std::string::npos);
     CHECK(html.find("['screenshot_keep_n','number']") != std::string::npos);
     CHECK(html.find("['screenshot_prune_interval','number']") != std::string::npos);
     CHECK(html.find("['screen_stable_timeout_ms','number']") != std::string::npos);
     CHECK(html.find("['screen_stable_ms','number']") != std::string::npos);
+    CHECK(html.find("['screen_stable_diff_threshold','number']") != std::string::npos);
 }
 
 TEST_CASE("config web exposes a single system env editor backed by the env file") {

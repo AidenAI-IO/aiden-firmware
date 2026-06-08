@@ -33,7 +33,7 @@
 namespace {
 
 struct Options {
-    std::string bind_address = "192.168.42.1";
+    std::string bind_address = "0.0.0.0";
     int port = 80;
     std::string agent_config_path = "/userdata/agent/agent.toml";
     std::string wifi_config_path = "/userdata/wpa_supplicant.conf";
@@ -105,6 +105,7 @@ struct TcpPortStatus {
 
 volatile sig_atomic_t g_should_stop = 0;
 
+const char* kAnyBindAddress = "0.0.0.0";
 const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
@@ -610,7 +611,7 @@ bool parse_size(const std::string& text, size_t* value) {
 }
 
 bool is_allowed_bind_address(const std::string& bind_address) {
-    return bind_address == kUsbBindAddress || bind_address == kLoopbackBindAddress;
+    return bind_address == kAnyBindAddress || bind_address == kUsbBindAddress || bind_address == kLoopbackBindAddress;
 }
 
 bool set_socket_recv_timeout(int fd, int timeout_seconds) {
@@ -731,8 +732,9 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.max_iterations = -1;
     cfg.screenshot_keep_n = 3;
     cfg.screenshot_prune_interval = 25;
-    cfg.screen_stable_timeout_ms = 3000;
+    cfg.screen_stable_timeout_ms = 3500;
     cfg.screen_stable_ms = 500;
+    cfg.screen_stable_diff_threshold = 2.0;
 
     cfg.model.provider = "openrouter";
     cfg.model.model = "bytedance-seed/seed-2.0-lite";
@@ -896,6 +898,7 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddNumberToObject(agent, "screenshot_prune_interval", config.screenshot_prune_interval);
     cJSON_AddNumberToObject(agent, "screen_stable_timeout_ms", config.screen_stable_timeout_ms);
     cJSON_AddNumberToObject(agent, "screen_stable_ms", config.screen_stable_ms);
+    cJSON_AddNumberToObject(agent, "screen_stable_diff_threshold", config.screen_stable_diff_threshold);
 
     return root;
 }
@@ -1120,6 +1123,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->screenshot_prune_interval, agent, "screenshot_prune_interval");
         set_json_int(&config->screen_stable_timeout_ms, agent, "screen_stable_timeout_ms");
         set_json_int(&config->screen_stable_ms, agent, "screen_stable_ms");
+        set_json_double(&config->screen_stable_diff_threshold, agent, "screen_stable_diff_threshold");
     }
 }
 
@@ -1153,6 +1157,9 @@ std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
     }
     if (config.screen_stable_ms < 0) {
         return "screen_stable_ms must be >= 0";
+    }
+    if (config.screen_stable_diff_threshold < 0.0) {
+        return "screen_stable_diff_threshold must be >= 0";
     }
     std::string pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
     if (pointer_mode != "absolute" && pointer_mode != "touchscreen") {
@@ -3096,6 +3103,27 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         }
         cJSON_AddItemToArray(results, vad_r);
 
+        cJSON* diff_item = cJSON_GetObjectItem(values, "screen_stable_diff_threshold");
+        cJSON* diff_r = cJSON_CreateObject();
+        cJSON_AddStringToObject(diff_r, "check", "screen_stable_diff_threshold");
+        if (json_is_number(diff_item)) {
+            double n = diff_item->valuedouble;
+            if (n < 0.0) {
+                cJSON_AddBoolToObject(diff_r, "passed", 0);
+                std::string msg = "must be >= 0, got " + std::to_string(n);
+                cJSON_AddStringToObject(diff_r, "detail", msg.c_str());
+                all_passed = false;
+            } else {
+                cJSON_AddBoolToObject(diff_r, "passed", 1);
+                cJSON_AddStringToObject(diff_r, "detail", std::to_string(n).c_str());
+            }
+        } else {
+            cJSON_AddBoolToObject(diff_r, "passed", 0);
+            cJSON_AddStringToObject(diff_r, "detail", "not a number");
+            all_passed = false;
+        }
+        cJSON_AddItemToArray(results, diff_r);
+
         const char* numeric_keys[] = {
             "silence_ms", "min_speech_ms",
             "voice_followup_timeout_ms", "voice_first_turn_timeout_ms",
@@ -3589,6 +3617,59 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     // ===== End benchmark routes =====
 
+    // ===== User files routes =====
+    if (request.method == "GET" && request.path == "/user_files") {
+        ApiResponse response;
+        response.content_type = "text/html; charset=utf-8";
+        std::string path = "/userdata/agent/files_report.html";
+        FILE* fp = fopen(path.c_str(), "r");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long sz = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            if (sz > 0 && sz < 2 * 1024 * 1024) {  // Max 2MB
+                std::string buf(sz, '\0');
+                fread(&buf[0], 1, sz, fp);
+                response.body = std::move(buf);
+            } else {
+                response.status_code = 500;
+                response.body = "report too large or empty";
+            }
+            fclose(fp);
+        } else {
+            response.status_code = 404;
+            response.body = "<html><body>"
+                "<h1>Files Report Not Found</h1>"
+                "<p>The files report has not been generated yet.</p>"
+                "<p>To generate it, SSH to the device and run:</p>"
+                "<pre>cd /userdata/agent_tools && ./view_agent_files.sh</pre>"
+                "</body></html>";
+        }
+        return response;
+    }
+
+    if (request.method == "POST" && request.path == "/user_files/regenerate") {
+        ApiResponse response;
+        response.content_type = "application/json; charset=utf-8";
+
+        // Regenerate report in background
+        // Note: system() with '&' returns 0 if the shell spawns successfully,
+        // not if the background script succeeds. Actual success/failure will
+        // only be visible in /tmp/user_files_regenerate.log.
+        std::string cmd = "cd /userdata/agent_tools && "
+                         "./view_agent_files.sh > /tmp/user_files_regenerate.log 2>&1 &";
+        int ret = system(cmd.c_str());
+
+        if (ret == 0) {
+            response.body = "{\"status\":\"ok\",\"message\":\"Background regeneration started\"}";
+        } else {
+            response.status_code = 500;
+            response.body = "{\"status\":\"error\",\"message\":\"Failed to spawn regeneration process\"}";
+        }
+        return response;
+    }
+    // ===== End user files routes =====
+
     if (request.method == "GET" && request.path == "/api/agent/status") {
         return handle_get_agent_status();
     }
@@ -3690,8 +3771,8 @@ int main(int argc, char** argv) {
 
     if (!is_allowed_bind_address(options.bind_address)) {
         std::cerr << "Refusing to bind config_web to " << options.bind_address
-                  << "; allowed addresses are " << kUsbBindAddress
-                  << " and " << kLoopbackBindAddress << std::endl;
+                  << "; allowed addresses are " << kAnyBindAddress
+                  << ", " << kUsbBindAddress << " and " << kLoopbackBindAddress << std::endl;
         return 1;
     }
 

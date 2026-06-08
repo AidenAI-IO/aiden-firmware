@@ -8,9 +8,8 @@ import (
 )
 
 const (
-	drainPollInterval = 50 * time.Millisecond
-	drainTimeout      = 30 * time.Second
-	chunkBytes        = 4096 // 2048 samples @ 16kHz s16le mono ≈ 128ms
+	drainTimeout = 30 * time.Second
+	chunkBytes   = 4096 // 2048 samples @ 16kHz s16le mono ≈ 128ms
 )
 
 // AudioServiceSink implements AudioSink by writing PCM to AudioServiceClient.
@@ -29,7 +28,6 @@ type AudioServiceBackend interface {
 	StartPlayback(format AudioFormat) (sessionID uint64, err error)
 	WritePlayChunk(sessionID uint64, data []byte, isFinal bool) error
 	StopPlayback(sessionID uint64) error
-	PlaybackSessionCount() (int, error)
 }
 
 // NewAudioServiceSink creates a sink that opens a playback session on first write.
@@ -77,24 +75,16 @@ func (s *AudioServiceSink) Drain(ctx context.Context) error {
 	}
 	s.stopped = true
 
-	// Wait for playback to drain.
-	deadline := time.Now().Add(drainTimeout)
-	ticker := time.NewTicker(drainPollInterval)
-	defer ticker.Stop()
-	for {
-		count, err := s.audio.PlaybackSessionCount()
-		if err == nil && count == 0 {
-			return nil
+	wait := EstimatedPlaybackDrainDuration(s.format, s.pcmBytes)
+	waitCtx, cancel := context.WithTimeout(ctx, drainTimeout)
+	defer cancel()
+	if err := waitForEstimatedDrain(waitCtx, wait); err != nil {
+		if waitCtx.Err() != nil && ctx.Err() == nil {
+			return fmt.Errorf("drain timeout after %s", drainTimeout)
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			if time.Now().After(deadline) {
-				return fmt.Errorf("drain timeout after %s", drainTimeout)
-			}
-		}
+		return err
 	}
+	return nil
 }
 
 func (s *AudioServiceSink) Stop() error {
