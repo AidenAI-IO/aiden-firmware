@@ -111,7 +111,7 @@ config->height = 1080;
    - 如果 `require_exact_resolution = true`（默认），检测值必须与请求值完全匹配
    - 如果 `require_exact_resolution = false`（`--allow-resolution-mismatch`），接受任何检测值
 4. **EDID 重新触发**（如果不匹配）：
-   - 推送 EDID（默认使用内置的 1080p30 EDID）
+   - 推送 EDID（默认使用内置的 1080p60 EDID）
    - 重新查询 timings
    - 重试 `trigger_retries + 1` 次
 
@@ -162,7 +162,7 @@ config->height = 1080;
 Initializing camera capture...
 Capture device: /dev/video0
 Requested format: 1920x1080 uyvy
-HDMI sync: enabled, subdev=/dev/v4l-subdev2, EDID=built-in 1080p30-only CTA, force_trigger=no
+HDMI sync: enabled, subdev=/dev/v4l-subdev2, EDID=built-in 1080p60-only CTA, force_trigger=no
 ```
 
 如果失败，会显示具体错误位置。
