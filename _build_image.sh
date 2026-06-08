@@ -32,8 +32,6 @@ require_rknnmrt_version() {
 echo "=== Aiden Hardware Demo - Image Builder ==="
 echo ""
 
-"$SCRIPT_DIR/scripts/apply_pico_sdk_rootfs_reproducibility_patch.sh" "$PICO_SDK"
-
 # Step 1: 编译应用程序. _build.sh requires a verified Go in PATH and disables
 # automatic Go toolchain downloads.
 echo "[1/6] Building applications..."

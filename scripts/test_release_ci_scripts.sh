@@ -7,8 +7,6 @@ SCHEDULED_WORKFLOW="$ROOT_DIR/.github/workflows/build-scheduled.yml"
 CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
 BUILD_IMAGE_SCRIPT="$ROOT_DIR/_build_image.sh"
 DOCKER_BUILD_SCRIPT="$ROOT_DIR/build_image.sh"
-ROOTFS_REPRO_SCRIPT="$ROOT_DIR/scripts/apply_pico_sdk_rootfs_reproducibility_patch.sh"
-ROOTFS_REPRO_PATCH="$ROOT_DIR/scripts/patches/pico-sdk-rootfs-reproducible-build.patch"
 
 if ! grep -q 'scripts/create_github_release.sh' "$WORKFLOW"; then
     echo "build workflow must create releases through the retry-capable local script" >&2
@@ -52,49 +50,16 @@ if ! grep -q 'GH_DEBUG' "$WORKFLOW"; then
     exit 1
 fi
 
-if [ ! -x "$ROOTFS_REPRO_SCRIPT" ]; then
-    echo "rootfs reproducibility patch script must exist and be executable" >&2
-    exit 1
-fi
-
-if [ ! -f "$ROOTFS_REPRO_PATCH" ]; then
-    echo "rootfs reproducibility patch file must exist" >&2
-    exit 1
-fi
-
 if ! grep -q 'SOURCE_DATE_EPOCH' "$DOCKER_BUILD_SCRIPT" || \
    ! grep -q 'SOURCE_DATE_EPOCH' "$BUILD_IMAGE_SCRIPT"; then
     echo "image build scripts must set and propagate SOURCE_DATE_EPOCH" >&2
     exit 1
 fi
 
-patch_line=$(grep -n 'apply_pico_sdk_rootfs_reproducibility_patch.sh' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
-sysdrv_line=$(grep -n './build.sh sysdrv' "$BUILD_IMAGE_SCRIPT" | sed 's/:.*//' | head -n 1)
-if [ -z "$patch_line" ] || [ -z "$sysdrv_line" ] || [ "$patch_line" -ge "$sysdrv_line" ]; then
-    echo "_build_image.sh must apply the pico-sdk rootfs reproducibility patch before building sysdrv" >&2
-    exit 1
-fi
-
-for required in \
-    'SOURCE_DATE_EPOCH ?= 0' \
-    '--sort=name' \
-    '--mtime="@$(SOURCE_DATE_EPOCH)"' \
-    'Build Time:  $(reproducible_build_utc)' \
-    'find "$dir" -xdev -exec touch -h -d "@$epoch"' \
-    'lazy_itable_init=0,lazy_journal_init=0' \
-    '^metadata_csum' \
-    '-U "${AIDEN_EXT4_UUID:-00000000-0000-4000-8000-000000000000}"' \
-    'write_ext4_le32 "$dst" 44 "$source_date_epoch"' \
-    'write_ext4_le32 "$dst" 264 "$source_date_epoch"'; do
-    if ! grep -Fq -- "$required" "$ROOTFS_REPRO_PATCH"; then
-        echo "rootfs reproducibility patch missing required content: $required" >&2
-        exit 1
-    fi
-done
-
-if ! grep -q 'git -C "$PICO_SDK_DIR" apply --unidiff-zero --check "$PATCH_FILE"' "$ROOTFS_REPRO_SCRIPT" || \
-   ! grep -q 'apply --unidiff-zero --reverse --check' "$ROOTFS_REPRO_SCRIPT"; then
-    echo "rootfs reproducibility patch script must apply the patch idempotently" >&2
+if grep -q 'apply_pico_sdk_rootfs_reproducibility_patch.sh' "$BUILD_IMAGE_SCRIPT" || \
+   [ -e "$ROOT_DIR/scripts/apply_pico_sdk_rootfs_reproducibility_patch.sh" ] || \
+   [ -e "$ROOT_DIR/scripts/patches/pico-sdk-rootfs-reproducible-build.patch" ]; then
+    echo "rootfs reproducibility support must live in the pico-sdk submodule, not a build-time patch" >&2
     exit 1
 fi
 
