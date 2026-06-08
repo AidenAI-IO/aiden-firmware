@@ -350,6 +350,35 @@ func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
+	server := &Server{activeRuns: make(map[string]context.CancelFunc)}
+	ctx, cancel := context.WithCancel(context.Background())
+	server.registerActiveRun("req-1", cancel)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"req-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChatCancel(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("active run was not canceled")
+	}
+
+	var resp ChatCancelResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Status != "canceled" || resp.RequestID != "req-1" {
+		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+}
+
 type cancelAwareModel struct {
 	seen chan error
 }
