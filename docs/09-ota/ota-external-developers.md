@@ -209,6 +209,8 @@ When you use `--base-url`, the manifest includes direct download URLs:
 }
 ```
 
+Compressed assets can use a `.img.tar.gz` name. For those assets, `size` and `sha256` identify the downloaded archive, and the required `image_sha256` field identifies the extracted `.img` that is written to the partition. Use `image_sha256` in `requires_partitions`.
+
 ## Persistent Configuration
 
 Instead of passing parameters every time, configure the device permanently:

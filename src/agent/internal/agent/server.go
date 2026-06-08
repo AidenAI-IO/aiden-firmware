@@ -34,6 +34,8 @@ type Server struct {
 	logger           *Logger
 	mu               sync.Mutex
 	history          []Message
+	historyStore     *ChatHistoryStore
+	episodeStore     *TaskEpisodeStore
 	sttClient        STTClient
 	ttsManager       *tts.ProviderManager
 	ttsMu            sync.RWMutex
@@ -82,6 +84,9 @@ type MessageAttachment struct {
 type Message struct {
 	Type        string              `json:"type"` // "user", "assistant", "tool_call", "tool_result", "role_output"
 	Role        string              `json:"role,omitempty"`
+	EpisodeID   string              `json:"episode_id,omitempty"`
+	RequestID   string              `json:"request_id,omitempty"`
+	Status      string              `json:"status,omitempty"`
 	Content     string              `json:"content"`
 	ToolName    string              `json:"tool_name,omitempty"`
 	ToolInput   string              `json:"tool_input,omitempty"`
@@ -143,6 +148,10 @@ type ChatStreamEvent struct {
 	Error    string    `json:"error,omitempty"`
 }
 
+type EpisodeResponse struct {
+	Episode TaskEpisode `json:"episode"`
+}
+
 type ToolCatalogResponse struct {
 	Tools []ToolDescriptor `json:"tools"`
 }
@@ -177,6 +186,11 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		bridge:         bridge,
 		pendingResults: make(map[string]*chatPendingResult),
 		activeRuns:     make(map[string]context.CancelFunc),
+	}
+	if runtime.config.ConfigDir != "" {
+		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
+		s.historyStore = NewChatHistoryStore(filepath.Join(memoryDir, "chat_history"))
+		s.episodeStore = NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
 	}
 	loadAppMappingForConfig(runtime.config.ConfigDir, runtime.logger)
 	runtime.tools.RegisterPhoneBridge(bridge)
@@ -219,6 +233,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/chat/cancel", s.handleChatCancel)
 	mux.HandleFunc("/api/chat/result", s.handleChatResult)
 	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
 	mux.HandleFunc("/api/clear", s.handleClear)
 	mux.HandleFunc("/api/clear-all", s.handleClearAll)
 	mux.HandleFunc("/api/tools", s.handleTools)
@@ -324,9 +339,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	episodeID := s.runtime.NewEpisodeID()
 
 	userMsg := Message{
 		Type:        "user",
+		EpisodeID:   episodeID,
+		RequestID:   req.RequestID,
 		Content:     inputText,
 		Attachments: historyAttachments,
 		Timestamp:   time.Now(),
@@ -339,8 +357,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sync path — legacy behaviour for web UI and clients without request_id
-	s.appendHistory(userMsg)
-	s.handleChatSync(w, r, req, inputText, runAttachments)
+	s.handleChatSync(w, r, req, inputText, runAttachments, userMsg.EpisodeID)
 }
 
 func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
@@ -478,9 +495,15 @@ func (s *Server) handleChatAsync(
 		// Event handler pushes intermediate messages into the pending result
 		// so the client can poll them in near-realtime.
 		eventHandler := func(event RunEvent) {
+			episodeID := event.EpisodeID
+			if episodeID == "" {
+				episodeID = userMsg.EpisodeID
+			}
 			msg := Message{
 				Type:        event.Type,
 				Role:        event.Role,
+				EpisodeID:   episodeID,
+				RequestID:   requestID,
 				Content:     event.Content,
 				ToolName:    event.ToolName,
 				ToolInput:   event.ToolInput,
@@ -503,6 +526,7 @@ func (s *Server) handleChatAsync(
 			Input:          inputText,
 			Attachments:    runAttachments,
 			Skills:         req.Skills,
+			EpisodeID:      userMsg.EpisodeID,
 			RuntimeContext: s.runtimeContext(),
 			EventHandler:   eventHandler,
 		}
@@ -538,6 +562,18 @@ func (s *Server) handleChatAsync(
 			if errors.Is(runCtx.Err(), context.Canceled) {
 				pending.err = "request canceled"
 			} else {
+				errorMsg := Message{
+					Type:      "episode_status",
+					EpisodeID: userMsg.EpisodeID,
+					RequestID: requestID,
+					Status:    "failed",
+					Content:   "Agent error: " + err.Error(),
+					Timestamp: time.Now(),
+					IsError:   true,
+				}
+				s.appendHistory(errorMsg)
+				pending.history = append(pending.history, errorMsg)
+				pending.messages = append(pending.messages, errorMsg)
 				pending.err = err.Error()
 			}
 			pending.done = true
@@ -551,6 +587,9 @@ func (s *Server) handleChatAsync(
 		// Add assistant message
 		assistantMsg := Message{
 			Type:      "assistant",
+			EpisodeID: firstNonEmptyString([]string{result.EpisodeID, userMsg.EpisodeID}),
+			RequestID: requestID,
+			Status:    "completed",
 			Content:   result.Output,
 			Timestamp: time.Now(),
 		}
@@ -678,6 +717,7 @@ func (s *Server) handleChatSync(
 	req ChatRequest,
 	inputText string,
 	runAttachments []InputAttachment,
+	episodeID string,
 ) {
 	ctx := r.Context()
 
@@ -691,11 +731,17 @@ func (s *Server) handleChatSync(
 		Input:          inputText,
 		Attachments:    runAttachments,
 		Skills:         req.Skills,
+		EpisodeID:      episodeID,
 		RuntimeContext: s.runtimeContext(),
 		EventHandler: func(event RunEvent) {
+			eventEpisodeID := event.EpisodeID
+			if eventEpisodeID == "" {
+				eventEpisodeID = episodeID
+			}
 			s.appendHistory(Message{
 				Type:        event.Type,
 				Role:        event.Role,
+				EpisodeID:   eventEpisodeID,
 				Content:     event.Content,
 				ToolName:    event.ToolName,
 				ToolInput:   event.ToolInput,
@@ -736,6 +782,14 @@ func (s *Server) handleChatSync(
 	}
 
 	if err != nil {
+		s.appendHistory(Message{
+			Type:      "episode_status",
+			EpisodeID: episodeID,
+			Status:    "failed",
+			Content:   "Agent error: " + err.Error(),
+			Timestamp: time.Now(),
+			IsError:   true,
+		})
 		if s.logger != nil {
 			s.logger.Error("Agent run failed: %v", err)
 		}
@@ -745,6 +799,8 @@ func (s *Server) handleChatSync(
 
 	s.appendHistory(Message{
 		Type:      "assistant",
+		EpisodeID: firstNonEmptyString([]string{result.EpisodeID, episodeID}),
+		Status:    "completed",
 		Content:   result.Output,
 		Timestamp: time.Now(),
 	})
@@ -801,8 +857,10 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	episodeID := s.runtime.NewEpisodeID()
 	userMessage := Message{
 		Type:        "user",
+		EpisodeID:   episodeID,
 		Content:     inputText,
 		Attachments: historyAttachments,
 		Timestamp:   time.Now(),
@@ -834,11 +892,17 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		Input:          inputText,
 		Attachments:    runAttachments,
 		Skills:         req.Skills,
+		EpisodeID:      episodeID,
 		RuntimeContext: s.runtimeContext(),
 		EventHandler: func(event RunEvent) {
+			eventEpisodeID := event.EpisodeID
+			if eventEpisodeID == "" {
+				eventEpisodeID = episodeID
+			}
 			message := Message{
 				Type:        event.Type,
 				Role:        event.Role,
+				EpisodeID:   eventEpisodeID,
 				Content:     event.Content,
 				ToolName:    event.ToolName,
 				ToolInput:   event.ToolInput,
@@ -854,6 +918,16 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
+		errorMessage := Message{
+			Type:      "episode_status",
+			EpisodeID: episodeID,
+			Status:    "failed",
+			Content:   "Agent error: " + err.Error(),
+			Timestamp: time.Now(),
+			IsError:   true,
+		}
+		s.appendHistory(errorMessage)
+		stream.Write(ChatStreamEvent{Type: "message", Message: &errorMessage})
 		if s.logger != nil {
 			s.logger.Error("Agent run failed: %v", err)
 		}
@@ -863,6 +937,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	assistantMessage := Message{
 		Type:      "assistant",
+		EpisodeID: firstNonEmptyString([]string{result.EpisodeID, episodeID}),
+		Status:    "completed",
 		Content:   result.Output,
 		Timestamp: time.Now(),
 	}
@@ -985,6 +1061,34 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(historySnapshot)
 }
 
+func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	store := s.episodeStore
+	if store == nil && s.runtime != nil && s.runtime.config.ConfigDir != "" {
+		store = NewTaskEpisodeStore(filepath.Join(s.runtime.config.ConfigDir, "memory", "episodes"))
+	}
+	if store == nil {
+		http.Error(w, "Episode store is not configured", http.StatusNotFound)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/episodes/")
+	id = strings.Trim(id, "/")
+	if id == "" || strings.Contains(id, "/") {
+		http.Error(w, "Invalid episode id", http.StatusBadRequest)
+		return
+	}
+	episode, err := store.Get(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(EpisodeResponse{Episode: episode})
+}
+
 // handleClear clears the conversation history
 func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -998,6 +1102,15 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 
 	if s.logger != nil {
 		s.logger.Info("Conversation history cleared")
+	}
+	if s.historyStore != nil {
+		if err := s.historyStore.Clear(); err != nil {
+			if s.logger != nil {
+				s.logger.Error("Clear chat history failed: %v", err)
+			}
+			http.Error(w, fmt.Sprintf("Clear chat history failed: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 	if err := s.runtime.ClearMemory(r.Context()); err != nil {
 		if s.logger != nil {
@@ -1028,6 +1141,15 @@ func (s *Server) handleClearAll(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.history = make([]Message, 0)
 	s.mu.Unlock()
+	if s.historyStore != nil {
+		if err := s.historyStore.Clear(); err != nil {
+			if s.logger != nil {
+				s.logger.Error("Clear chat history failed: %v", err)
+			}
+			http.Error(w, fmt.Sprintf("Clear chat history failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
 	if s.logger != nil {
 		s.logger.Info("All memory cleared")
 	}
@@ -1419,8 +1541,13 @@ func toolOutputLooksLikeError(output string) bool {
 
 func (s *Server) appendHistory(message Message) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.history = append(s.history, message)
+	s.mu.Unlock()
+	if s.historyStore != nil {
+		if err := s.historyStore.Append(context.Background(), message); err != nil && s.logger != nil {
+			s.logger.Warn("Persist chat history failed: %v", err)
+		}
+	}
 }
 
 func (s *Server) historySnapshot() []Message {
@@ -1435,6 +1562,13 @@ func (s *Server) loadHistoryFromDisk() {
 	if s.runtime.config.ConfigDir == "" {
 		return
 	}
+	if s.historyStore != nil {
+		messages, err := s.historyStore.Load(context.Background())
+		if err == nil && len(messages) > 0 {
+			s.history = append(s.history, messages...)
+			return
+		}
+	}
 	eventsPath := filepath.Join(s.runtime.config.ConfigDir, "memory", "session", "events.jsonl")
 	store := NewSessionMemoryStore(filepath.Join(s.runtime.config.ConfigDir, "memory", "session"))
 	events, err := store.readEvents(eventsPath)
@@ -1443,12 +1577,19 @@ func (s *Server) loadHistoryFromDisk() {
 	}
 	for _, evt := range events {
 		msgType := "user"
-		if evt.Role == "assistant" {
+		switch evt.Role {
+		case "assistant":
 			msgType = "assistant"
+		case "tool":
+			msgType = "tool_result"
+		case "system":
+			msgType = "system"
 		}
 		ts, _ := time.Parse(time.RFC3339Nano, evt.Ts)
 		s.history = append(s.history, Message{
 			Type:      msgType,
+			ToolName:  evt.Source,
+			ToolInput: evt.ToolCallID,
 			Content:   evt.Content,
 			Timestamp: ts,
 		})
@@ -2247,6 +2388,62 @@ const webUI = `<!DOCTYPE html>
             font-size: 0.84rem;
         }
 
+        .episode-link {
+            margin-top: 0.65rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 0.42rem 0.7rem;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.82);
+            color: var(--muted-strong);
+            cursor: pointer;
+            font-size: 0.78rem;
+            font-weight: 600;
+        }
+
+        .episode-panel {
+            margin-top: 0.7rem;
+            padding: 12px;
+            border-radius: 14px;
+            background: var(--surface-soft);
+            border: 1px solid rgba(52, 56, 49, 0.08);
+            display: grid;
+            gap: 10px;
+        }
+
+        .episode-meta {
+            color: var(--muted);
+            font-size: 0.78rem;
+        }
+
+        .episode-events {
+            display: grid;
+            gap: 8px;
+        }
+
+        .episode-event {
+            padding: 9px 10px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.78);
+            border: 1px solid rgba(52, 56, 49, 0.06);
+        }
+
+        .episode-event-title {
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--muted-strong);
+        }
+
+        .episode-event-content {
+            margin-top: 0.35rem;
+            font-size: 0.82rem;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
         .composer {
             padding: 10px 18px 18px;
             border-top: 1px solid rgba(52, 56, 49, 0.08);
@@ -2662,6 +2859,7 @@ const webUI = `<!DOCTYPE html>
         let currentChatRequestId = '';
         let currentChatAbortController = null;
         let currentChatCancelRequested = false;
+        let episodeCache = {};
 
         loadHistory();
         loadToolCatalog();
@@ -3207,6 +3405,11 @@ const webUI = `<!DOCTYPE html>
                 }
             }
 
+            const episodeLink = renderEpisodeLink(msg);
+            if (episodeLink) {
+                body.appendChild(episodeLink);
+            }
+
             const timeDiv = document.createElement('div');
             timeDiv.className = 'message-time';
             timeDiv.textContent = formatTime(msg.timestamp);
@@ -3216,6 +3419,106 @@ const webUI = `<!DOCTYPE html>
             shell.appendChild(body);
             card.appendChild(shell);
             return card;
+        }
+
+        function renderEpisodeLink(msg) {
+            if (!msg.episode_id) return null;
+            if (msg.type !== 'user' && msg.type !== 'assistant' && msg.type !== 'episode_status') return null;
+
+            const wrap = document.createElement('div');
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'episode-link';
+            button.textContent = 'Trace' + (msg.status ? ' · ' + msg.status : '');
+            wrap.appendChild(button);
+
+            let panel = null;
+            button.addEventListener('click', async function() {
+                if (panel) {
+                    panel.classList.toggle('hidden');
+                    return;
+                }
+                panel = document.createElement('div');
+                panel.className = 'episode-panel';
+                panel.textContent = 'Loading trace...';
+                wrap.appendChild(panel);
+
+                try {
+                    const episode = await loadEpisode(msg.episode_id);
+                    renderEpisodePanel(panel, episode);
+                } catch (err) {
+                    panel.textContent = 'Trace unavailable: ' + err.message;
+                }
+            });
+            return wrap;
+        }
+
+        async function loadEpisode(id) {
+            if (episodeCache[id]) return episodeCache[id];
+            const res = await fetch('/api/episodes/' + encodeURIComponent(id));
+            if (!res.ok) {
+                throw new Error(await res.text() || 'Episode not found');
+            }
+            const data = await res.json();
+            episodeCache[id] = data.episode;
+            return data.episode;
+        }
+
+        function renderEpisodePanel(panel, episode) {
+            panel.innerHTML = '';
+            const meta = document.createElement('div');
+            meta.className = 'episode-meta';
+            const outcome = episode.outcome || {};
+            meta.textContent = [
+                episode.id || 'episode',
+                episode.status || 'unknown',
+                outcome.success ? 'success' : (outcome.failure_reason ? 'failed' : 'pending')
+            ].join(' · ');
+            panel.appendChild(meta);
+
+            const events = (episode.events || []).slice(-12);
+            if (events.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'episode-meta';
+                empty.textContent = 'No trace events recorded.';
+                panel.appendChild(empty);
+                return;
+            }
+
+            const list = document.createElement('div');
+            list.className = 'episode-events';
+            events.forEach(function(event) {
+                list.appendChild(renderEpisodeEvent(event));
+            });
+            panel.appendChild(list);
+        }
+
+        function renderEpisodeEvent(event) {
+            const item = document.createElement('div');
+            item.className = 'episode-event';
+
+            const title = document.createElement('div');
+            title.className = 'episode-event-title';
+            const parts = [event.type || 'event'];
+            if (event.role) parts.push(event.role);
+            if (event.tool_name) parts.push(event.tool_name);
+            title.textContent = parts.join(' · ');
+            item.appendChild(title);
+
+            const content = document.createElement('div');
+            content.className = 'episode-event-content';
+            content.textContent = episodeEventText(event);
+            item.appendChild(content);
+            return item;
+        }
+
+        function episodeEventText(event) {
+            if (event.next_step) return event.next_step;
+            if (event.content) return event.content;
+            if (event.observation) return formatToolPayload(event.observation);
+            if (event.reason) return event.reason;
+            if (event.plan && event.plan.length) return event.plan.join('\n');
+            return '';
         }
 
         function updateEmptyState() {
@@ -3247,6 +3550,7 @@ const webUI = `<!DOCTYPE html>
 
         function getRoleLabel(type, toolName, role) {
             if (type === 'user') return 'You';
+            if (type === 'episode_status') return 'Task Trace';
             if (type === 'role_output') return 'Role · ' + (role || 'agent');
             if (type === 'tool_call') return toolName ? 'Tool Call · ' + toolName : 'Tool Call';
             if (type === 'tool_result') return toolName ? 'Tool Result · ' + toolName : 'Tool Result';
@@ -3255,6 +3559,7 @@ const webUI = `<!DOCTYPE html>
 
         function getAvatarLabel(type) {
             if (type === 'user') return 'You';
+            if (type === 'episode_status') return 'Task';
             if (type === 'role_output') return 'Role';
             if (type === 'tool_call') return 'Call';
             if (type === 'tool_result') return 'Tool';

@@ -114,6 +114,79 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	}
 }
 
+func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	model := &scriptedModel{
+		responses: roleDirectResponses("已完成"),
+	}
+	streamingDisabled := false
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:                configDir,
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceToolCallSpeech:      &streamingDisabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(memoryDir),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"做一个任务"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleChat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp ChatResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	assistant, ok := firstMessageOfType(resp.History, "assistant")
+	if !ok || assistant.EpisodeID == "" {
+		t.Fatalf("assistant missing episode reference: %#v", resp.History)
+	}
+	if resp.History[0].EpisodeID != assistant.EpisodeID {
+		t.Fatalf("user and assistant episode ids differ: %#v", resp.History)
+	}
+
+	reloaded := NewServer(runtime, ":0")
+	historyReq := httptest.NewRequest(http.MethodGet, "/api/history", nil)
+	historyRec := httptest.NewRecorder()
+	reloaded.handleHistory(historyRec, historyReq)
+	if historyRec.Code != http.StatusOK {
+		t.Fatalf("unexpected history status: %d body=%s", historyRec.Code, historyRec.Body.String())
+	}
+	var restored []Message
+	if err := json.NewDecoder(historyRec.Body).Decode(&restored); err != nil {
+		t.Fatalf("decode restored history: %v", err)
+	}
+	restoredAssistant, ok := firstMessageOfType(restored, "assistant")
+	if !ok || restoredAssistant.EpisodeID != assistant.EpisodeID {
+		t.Fatalf("restored assistant missing episode reference: %#v", restored)
+	}
+
+	episodeReq := httptest.NewRequest(http.MethodGet, "/api/episodes/"+assistant.EpisodeID, nil)
+	episodeRec := httptest.NewRecorder()
+	server.handleEpisodes(episodeRec, episodeReq)
+	if episodeRec.Code != http.StatusOK {
+		t.Fatalf("unexpected episode status: %d body=%s", episodeRec.Code, episodeRec.Body.String())
+	}
+	var episodeResp EpisodeResponse
+	if err := json.NewDecoder(episodeRec.Body).Decode(&episodeResp); err != nil {
+		t.Fatalf("decode episode response: %v", err)
+	}
+	if episodeResp.Episode.ID != assistant.EpisodeID || len(episodeResp.Episode.Events) == 0 {
+		t.Fatalf("unexpected episode response: %#v", episodeResp.Episode)
+	}
+}
+
 func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),

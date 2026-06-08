@@ -71,9 +71,7 @@ func (e *EpisodeExporter) ExportEpisodeDir(ctx context.Context, episodeDir strin
 		return fmt.Errorf("read episode events: %w", err)
 	}
 	stored.Events = events
-	if strings.TrimSpace(stored.ID) == "" {
-		stored.ID = episode.ID
-	}
+	stored = mergeEpisodeForExport(stored, episode)
 	var prompts []telemetryPromptCall
 	if len(promptCalls) > 0 {
 		prompts = promptCalls[0]
@@ -112,6 +110,50 @@ func (e *EpisodeExporter) ingestWithRetry(ctx context.Context, batch []langfuseI
 		}
 	}
 	return lastErr
+}
+
+func mergeEpisodeForExport(stored TaskEpisode, supplied TaskEpisode) TaskEpisode {
+	if strings.TrimSpace(stored.ID) == "" {
+		stored.ID = supplied.ID
+	}
+	if strings.TrimSpace(stored.Status) == "" {
+		stored.Status = supplied.Status
+	}
+	if strings.TrimSpace(stored.StartedAt) == "" {
+		stored.StartedAt = supplied.StartedAt
+	}
+	if strings.TrimSpace(stored.EndedAt) == "" {
+		stored.EndedAt = supplied.EndedAt
+	}
+	if strings.TrimSpace(stored.UserGoal) == "" {
+		stored.UserGoal = supplied.UserGoal
+	}
+	if len(stored.NormalizedGoal) == 0 {
+		stored.NormalizedGoal = cloneStringMap(supplied.NormalizedGoal)
+	}
+	if len(stored.DeviceScope) == 0 {
+		stored.DeviceScope = cloneStringMap(supplied.DeviceScope)
+	}
+	if len(stored.Tags) == 0 {
+		stored.Tags = append([]string(nil), supplied.Tags...)
+	} else if len(supplied.Tags) > 0 {
+		stored.Tags = uniqueNonEmpty(append(stored.Tags, supplied.Tags...))
+	}
+	if len(stored.Entities) == 0 {
+		stored.Entities = append([]string(nil), supplied.Entities...)
+	} else if len(supplied.Entities) > 0 {
+		stored.Entities = uniqueNonEmpty(append(stored.Entities, supplied.Entities...))
+	}
+	if len(stored.Events) == 0 {
+		stored.Events = append([]TaskEpisodeEvent(nil), supplied.Events...)
+	}
+	if stored.Extra == nil && supplied.Extra != nil {
+		stored.Extra = map[string]interface{}{}
+	}
+	for key, value := range supplied.Extra {
+		stored.Extra[key] = value
+	}
+	return stored
 }
 
 func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEpisode, episodeDir string, promptCalls ...[]telemetryPromptCall) ([]langfuseIngestionEvent, error) {
@@ -791,6 +833,12 @@ func (e *EpisodeExporter) uploadScreenshot(ctx context.Context, traceID, observa
 func (e *EpisodeExporter) traceTags(episode TaskEpisode) []string {
 	tags := append([]string(nil), e.cfg.Tags...)
 	tags = append(tags, episode.Tags...)
+	if status := strings.TrimSpace(episode.Status); status != "" {
+		tags = append(tags, "status:"+status)
+		if status == "interrupted" {
+			tags = append(tags, "interrupted")
+		}
+	}
 	if model := extraString(episode.Extra, "model"); model != "" {
 		tags = append(tags, "model:"+model)
 	}
@@ -805,6 +853,9 @@ func (e *EpisodeExporter) traceTags(episode TaskEpisode) []string {
 func (e *EpisodeExporter) traceMetadata(episode TaskEpisode) map[string]interface{} {
 	meta := map[string]interface{}{
 		"episode_id":       episode.ID,
+		"status":           episode.Status,
+		"started_at":       episode.StartedAt,
+		"ended_at":         episode.EndedAt,
 		"normalized_goal":  episode.NormalizedGoal,
 		"device_scope":     episode.DeviceScope,
 		"failure_reason":   episode.Outcome.FailureReason,

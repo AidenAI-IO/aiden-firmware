@@ -36,12 +36,26 @@ if ! grep -q -- '--required-assets' "$WORKFLOW"; then
     exit 1
 fi
 
-for asset in boot_a.img boot_b.img oem.img rootfs.img userdata.img update.img manifest.json; do
-    if ! grep -q "$asset" "$WORKFLOW"; then
-        echo "build workflow must require release asset: $asset" >&2
-        exit 1
-    fi
-done
+release_assets='boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json'
+if ! grep -q -- "--required-assets '$release_assets'" "$WORKFLOW"; then
+    echo "build workflow must require only allowlisted release assets" >&2
+    exit 1
+fi
+
+if ! grep -q -- '--upload-assets' "$WORKFLOW"; then
+    echo "build workflow must pass an explicit release upload asset allowlist" >&2
+    exit 1
+fi
+
+if ! grep -q -- "--upload-assets '$release_assets'" "$WORKFLOW"; then
+    echo "build workflow must upload only allowlisted release assets" >&2
+    exit 1
+fi
+
+if grep -q 'userdata.img' "$WORKFLOW"; then
+    echo "build workflow must not upload userdata.img to GitHub releases" >&2
+    exit 1
+fi
 
 if ! grep -q 'GH_DEBUG' "$WORKFLOW"; then
     echo "build workflow must enable GitHub CLI debug output for release creation" >&2
