@@ -109,9 +109,13 @@ for required in \
     'find "$dir" -xdev -exec touch -h -d "@$epoch"' \
     'lazy_itable_init=0,lazy_journal_init=0' \
     '^metadata_csum' \
+    '^orphan_file' \
+    '^quota' \
     '-U "${AIDEN_EXT4_UUID:-00000000-0000-4000-8000-000000000000}"' \
-    'write_ext4_le32 "$dst" 44 "$source_date_epoch"' \
-    'write_ext4_le32 "$dst" 264 "$source_date_epoch"'; do
+    'write_ext4_le32_at "$image" "$((sb_offset + 44))" "$source_date_epoch"' \
+    'write_ext4_le32_at "$image" "$((sb_offset + 264))" "$source_date_epoch"' \
+    'write_at($fh, $inode_offset + 100, "\0" x 4)' \
+    'normalize ext4 inode metadata'; do
     if ! grep -Fq -- "$required" "$ROOT_DIR/pico-sdk/project/build.sh" \
        && ! grep -Fq -- "$required" "$ROOT_DIR/pico-sdk/sysdrv/Makefile" \
        && ! grep -Fq -- "$required" "$ROOT_DIR/pico-sdk/sysdrv/tools/pc/e2fsprogs/mkfs_ext4.sh"; then

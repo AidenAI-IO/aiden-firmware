@@ -7,7 +7,13 @@ PICO_SDK="$SCRIPT_DIR/pico-sdk"
 DEST_OVERLAY="$PICO_SDK/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buildroot-aiden"
 
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
-    SOURCE_DATE_EPOCH="$(git -C "$SCRIPT_DIR" log -1 --format=%ct 2>/dev/null || printf '0')"
+    # Keep filesystem image metadata stable across releases when their payloads
+    # did not change. Callers can still set SOURCE_DATE_EPOCH explicitly.
+    SOURCE_DATE_EPOCH="${AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-0}"
+fi
+if ! [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
+    echo "SOURCE_DATE_EPOCH must be an unsigned Unix timestamp: $SOURCE_DATE_EPOCH" >&2
+    exit 1
 fi
 export SOURCE_DATE_EPOCH
 
