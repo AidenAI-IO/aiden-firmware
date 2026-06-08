@@ -6,6 +6,11 @@ OVERLAY="$SCRIPT_DIR/overlay"
 PICO_SDK="$SCRIPT_DIR/pico-sdk"
 DEST_OVERLAY="$PICO_SDK/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buildroot-aiden"
 
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+    SOURCE_DATE_EPOCH="$(git -C "$SCRIPT_DIR" log -1 --format=%ct 2>/dev/null || printf '0')"
+fi
+export SOURCE_DATE_EPOCH
+
 require_rknnmrt_version() {
     local runtime="$1"
     local version major minor
@@ -26,6 +31,8 @@ require_rknnmrt_version() {
 
 echo "=== Aiden Hardware Demo - Image Builder ==="
 echo ""
+
+"$SCRIPT_DIR/scripts/apply_pico_sdk_rootfs_reproducibility_patch.sh" "$PICO_SDK"
 
 # Step 1: 编译应用程序. _build.sh requires a verified Go in PATH and disables
 # automatic Go toolchain downloads.

@@ -35,6 +35,11 @@ if [ "$#" -gt 0 ]; then
   docker_command=("$@")
 fi
 
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+  SOURCE_DATE_EPOCH="$(git -C "$(pwd)" log -1 --format=%ct 2>/dev/null || printf '0')"
+fi
+export SOURCE_DATE_EPOCH
+
 restore_docker_output_ownership() {
   if [ "$(uname -s)" != Linux ] || ! command -v sudo >/dev/null 2>&1; then
     return 0
@@ -69,6 +74,7 @@ docker_run_args=(
   -u 0:0
   --rm
   -e OTA_PUBLIC_KEY_PATH
+  -e SOURCE_DATE_EPOCH
   -e TAR_OPTIONS=--no-same-owner
 )
 if [ "${#docker_go_args[@]}" -gt 0 ]; then
