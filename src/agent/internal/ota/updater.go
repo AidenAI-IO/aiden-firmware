@@ -794,6 +794,9 @@ func isGitHubURL(rawURL string) bool {
 }
 
 func (u *Updater) validateAssetFitsPartition(partName string, target Slot, asset ManifestAsset) error {
+	if isCompressedImageAssetName(asset.Name) {
+		return nil
+	}
 	blockName := partitionBlockName(partName, target)
 	if max, ok := u.partitionSizes()[blockName]; ok && asset.Size > max {
 		return fmt.Errorf("asset %s size %d is larger than partition %s size %d", asset.Name, asset.Size, blockName, max)

@@ -44,6 +44,50 @@ func TestWriterWritesOnlyInactiveCanonicalPartitions(t *testing.T) {
 	}
 }
 
+func TestWriterExtractsTarGzImageBeforeWriting(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "rootfs_b"), []byte{}, 0o644); err != nil {
+		t.Fatalf("WriteFile(block) error = %v", err)
+	}
+	src := filepath.Join(dir, "rootfs.img.tar.gz")
+	if err := os.WriteFile(src, testTarGzImage(t, "rootfs.img", []byte("rootfs image")), 0o644); err != nil {
+		t.Fatalf("WriteFile(src) error = %v", err)
+	}
+	w := PartitionWriter{BlockDir: dir, ActiveSlot: SlotA, PartitionSizes: map[string]int64{"rootfs_b": 100}}
+	if err := w.WritePart("rootfs", SlotB, src); err != nil {
+		t.Fatalf("WritePart() error = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "rootfs_b"))
+	if err != nil {
+		t.Fatalf("ReadFile(block) error = %v", err)
+	}
+	if string(got) != "rootfs image" {
+		t.Fatalf("block content = %q", got)
+	}
+}
+
+func TestWriterRejectsOversizedTarGzImageByExtractedSize(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "boot_b"), []byte("old boot"), 0o644); err != nil {
+		t.Fatalf("WriteFile(block) error = %v", err)
+	}
+	src := filepath.Join(dir, "boot_b.img.tar.gz")
+	if err := os.WriteFile(src, testTarGzImage(t, "boot_b.img", []byte("12345")), 0o644); err != nil {
+		t.Fatalf("WriteFile(src) error = %v", err)
+	}
+	w := PartitionWriter{BlockDir: dir, ActiveSlot: SlotA, PartitionSizes: map[string]int64{"boot_b": 4}}
+	if err := w.WritePart("boot", SlotB, src); err == nil || !strings.Contains(err.Error(), "larger than partition") {
+		t.Fatalf("WritePart() error = %v, want extracted size rejection", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "boot_b"))
+	if err != nil {
+		t.Fatalf("ReadFile(block) error = %v", err)
+	}
+	if string(got) != "old boot" {
+		t.Fatalf("block content = %q, want unchanged", got)
+	}
+}
+
 func TestWriterReportsProgressAndCompletion(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "boot_b"), []byte{}, 0o644); err != nil {

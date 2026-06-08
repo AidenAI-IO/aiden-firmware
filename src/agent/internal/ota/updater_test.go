@@ -1,7 +1,9 @@
 package ota
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -72,6 +74,49 @@ func TestUpdaterHappyPathDownloadsWritesSwitchesAndReboots(t *testing.T) {
 	}
 	if pending.TargetSlot != "b" || pending.TargetVersion != env.version || pending.Nonce == "" {
 		t.Fatalf("pending boot = %+v", pending)
+	}
+}
+
+func TestUpdaterDownloadsTarGzAssetsAndWritesExtractedImages(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	bootImage := []byte("boot-b-v2")
+	oemImage := []byte("oem-b-v2")
+	rootfsImage := []byte("rootfs-v2")
+	bootArchive := testTarGzImage(t, "boot_b.img", bootImage)
+	oemArchive := testTarGzImage(t, "oem_b.img", oemImage)
+	rootfsArchive := testTarGzImage(t, "rootfs.img", rootfsImage)
+	manifest := env.signedManifest(map[string][]byte{
+		"boot_a.img": []byte("boot-a-v2"),
+		"boot_b.img": bootImage,
+		"oem_a.img":  []byte("oem-a-v2"),
+		"oem_b.img":  oemImage,
+		"rootfs.img": rootfsImage,
+	}, func(m *Manifest) {
+		m.Parts[0].AssetB = testManifestAsset("boot_b.img.tar.gz", bootArchive)
+		m.Parts[1].AssetB = testManifestAsset("oem_b.img.tar.gz", oemArchive)
+		m.Parts[2].Asset = testManifestAsset("rootfs.img.tar.gz", rootfsArchive)
+	})
+	server := env.releaseServer(t, manifest, map[string][]byte{
+		"boot_b.img.tar.gz": bootArchive,
+		"oem_b.img.tar.gz":  oemArchive,
+		"rootfs.img.tar.gz": rootfsArchive,
+	})
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+
+	result, err := env.updater().CheckOnce(context.Background())
+	if err != nil {
+		t.Fatalf("CheckOnce() error = %v", err)
+	}
+	if !result.Updated || result.TargetSlot != SlotB {
+		t.Fatalf("CheckOnce() = %+v, want update to slot B", result)
+	}
+	assertFileContent(t, filepath.Join(env.blockDir, "boot_b"), string(bootImage))
+	assertFileContent(t, filepath.Join(env.blockDir, "oem_b"), string(oemImage))
+	assertFileContent(t, filepath.Join(env.blockDir, "rootfs_b"), string(rootfsImage))
+	if got, err := os.ReadFile(filepath.Join(env.downloadDir, "rootfs.img.tar.gz")); err != nil {
+		t.Fatalf("ReadFile(downloaded archive) error = %v", err)
+	} else if !bytes.Equal(got, rootfsArchive) {
+		t.Fatalf("downloaded archive was modified before verification")
 	}
 }
 
@@ -1154,6 +1199,31 @@ func (e *updaterTestEnv) manifestValue(assetBytes map[string][]byte, mutate func
 	}
 	manifest.Signature.Value = hex.EncodeToString(ed25519.Sign(e.priv, canonical))
 	return manifest
+}
+
+func testManifestAsset(name string, body []byte) *ManifestAsset {
+	sum := sha256.Sum256(body)
+	return &ManifestAsset{Name: name, Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:])}
+}
+
+func testTarGzImage(t *testing.T, imageName string, image []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: imageName, Mode: 0o644, Size: int64(len(image))}); err != nil {
+		t.Fatalf("WriteHeader(%s) error = %v", imageName, err)
+	}
+	if _, err := tw.Write(image); err != nil {
+		t.Fatalf("Write(%s) error = %v", imageName, err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close(tar) error = %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("Close(gzip) error = %v", err)
+	}
+	return buf.Bytes()
 }
 
 func (e *updaterTestEnv) releaseServer(t *testing.T, manifest []byte, assets map[string][]byte) *httptest.Server {

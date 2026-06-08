@@ -1,10 +1,13 @@
 package ota
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -51,26 +54,23 @@ func (w PartitionWriter) WritePartWithProgress(part string, targetSlot Slot, ima
 		targetSlotName, _ := slotName(targetSlot)
 		return fmt.Errorf("refusing to write active slot %s", targetSlotName)
 	}
-	info, err := os.Stat(imagePath)
+	src, imageSize, err := openPartitionImage(imagePath)
 	if err != nil {
 		return err
 	}
-	if max, ok := w.partitionSizes()[blockName]; ok && info.Size() > max {
-		return fmt.Errorf("image %s size %d is larger than partition %s size %d", imagePath, info.Size(), blockName, max)
+	if max, ok := w.partitionSizes()[blockName]; ok && imageSize > max {
+		_ = src.Close()
+		return fmt.Errorf("image %s size %d is larger than partition %s size %d", imagePath, imageSize, blockName, max)
 	}
 
-	src, err := os.Open(imagePath)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
 	dstPath := filepath.Join(w.BlockDir, blockName)
 	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
+		_ = src.Close()
 		return fmt.Errorf("open target partition %s: %w", dstPath, err)
 	}
 	copyErr := error(nil)
-	reporter := newWriteProgressReporter(progress, part, blockName, imagePath, info.Size(), defaultProgressInterval)
+	reporter := newWriteProgressReporter(progress, part, blockName, imagePath, imageSize, defaultProgressInterval)
 	reader := &cumulativeProgressReader{
 		reader: src,
 		onRead: reporter.maybeReport,
@@ -78,15 +78,142 @@ func (w PartitionWriter) WritePartWithProgress(part string, targetSlot Slot, ima
 	if _, copyErr = io.Copy(dst, reader); copyErr == nil {
 		copyErr = dst.Sync()
 	}
+	srcCloseErr := src.Close()
 	closeErr := dst.Close()
 	if copyErr != nil {
 		return copyErr
 	}
+	if srcCloseErr != nil {
+		return srcCloseErr
+	}
 	if closeErr != nil {
 		return closeErr
 	}
-	reporter.complete(info.Size())
+	reporter.complete(imageSize)
 	return nil
+}
+
+func openPartitionImage(path string) (io.ReadCloser, int64, error) {
+	if isTarGzImagePath(path) {
+		return openTarGzPartitionImage(path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	src, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	return src, info.Size(), nil
+}
+
+func isTarGzImagePath(path string) bool {
+	return strings.HasSuffix(strings.ToLower(path), ".tar.gz")
+}
+
+func openTarGzPartitionImage(path string) (io.ReadCloser, int64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		_ = file.Close()
+		return nil, 0, fmt.Errorf("open gzip image %s: %w", path, err)
+	}
+	tr := tar.NewReader(gz)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			_ = gz.Close()
+			_ = file.Close()
+			return nil, 0, fmt.Errorf("tar.gz image %s contains no .img file", path)
+		}
+		if err != nil {
+			_ = gz.Close()
+			_ = file.Close()
+			return nil, 0, fmt.Errorf("read tar.gz image %s: %w", path, err)
+		}
+		if header.FileInfo().IsDir() {
+			continue
+		}
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+			_ = gz.Close()
+			_ = file.Close()
+			return nil, 0, fmt.Errorf("tar.gz image %s contains unsupported entry %q", path, header.Name)
+		}
+		if !strings.HasSuffix(strings.ToLower(filepath.Base(header.Name)), ".img") {
+			_ = gz.Close()
+			_ = file.Close()
+			return nil, 0, fmt.Errorf("tar.gz image %s entry %q is not an .img file", path, header.Name)
+		}
+		return &tarGzImageReader{path: path, file: file, gz: gz, tar: tr}, header.Size, nil
+	}
+}
+
+type tarGzImageReader struct {
+	path       string
+	file       *os.File
+	gz         *gzip.Reader
+	tar        *tar.Reader
+	done       bool
+	pendingErr error
+}
+
+func (r *tarGzImageReader) Read(p []byte) (int, error) {
+	if r.pendingErr != nil {
+		err := r.pendingErr
+		r.pendingErr = nil
+		return 0, err
+	}
+	if r.done {
+		return 0, io.EOF
+	}
+	n, err := r.tar.Read(p)
+	if err != io.EOF {
+		return n, err
+	}
+	r.done = true
+	if tailErr := r.ensureNoExtraRegularFiles(); tailErr != nil {
+		if n > 0 {
+			r.pendingErr = tailErr
+			return n, nil
+		}
+		return 0, tailErr
+	}
+	if n > 0 {
+		return n, nil
+	}
+	return 0, io.EOF
+}
+
+func (r *tarGzImageReader) Close() error {
+	gzipErr := r.gz.Close()
+	fileErr := r.file.Close()
+	if gzipErr != nil {
+		return gzipErr
+	}
+	return fileErr
+}
+
+func (r *tarGzImageReader) ensureNoExtraRegularFiles() error {
+	for {
+		header, err := r.tar.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read tar.gz image %s: %w", r.path, err)
+		}
+		if header.FileInfo().IsDir() {
+			continue
+		}
+		if header.Typeflag == tar.TypeReg || header.Typeflag == tar.TypeRegA {
+			return fmt.Errorf("tar.gz image %s contains multiple image files", r.path)
+		}
+		return fmt.Errorf("tar.gz image %s contains unsupported entry %q", r.path, header.Name)
+	}
 }
 
 func (w PartitionWriter) partitionSizes() map[string]int64 {

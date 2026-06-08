@@ -146,8 +146,8 @@ func validateManifestAsset(field string, asset ManifestAsset, expectedName strin
 	if asset.Name == "" || !assetNameRE.MatchString(asset.Name) || strings.Contains(asset.Name, "..") || strings.HasPrefix(asset.Name, "/") {
 		return fmt.Errorf("%s has invalid name %q", field, asset.Name)
 	}
-	if asset.Name != expectedName {
-		return fmt.Errorf("%s name %q, want %q", field, asset.Name, expectedName)
+	if asset.Name != expectedName && asset.Name != compressedManifestAssetName(expectedName) {
+		return fmt.Errorf("%s name %q, want %q or %q", field, asset.Name, expectedName, compressedManifestAssetName(expectedName))
 	}
 	if asset.URL != "" {
 		parsed, err := url.ParseRequestURI(asset.URL)
@@ -177,6 +177,14 @@ func validateManifestAsset(field string, asset ManifestAsset, expectedName strin
 		return fmt.Errorf("%s has invalid sha256: %w", field, err)
 	}
 	return nil
+}
+
+func compressedManifestAssetName(name string) string {
+	return name + ".tar.gz"
+}
+
+func isCompressedImageAssetName(name string) bool {
+	return strings.HasSuffix(strings.ToLower(name), ".img.tar.gz")
 }
 
 func VerifyManifestJSON(encoded []byte, publicKey ed25519.PublicKey) (Manifest, error) {
