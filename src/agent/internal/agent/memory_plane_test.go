@@ -246,6 +246,54 @@ func TestRuntimeRunWritesTaskEpisodeTrace(t *testing.T) {
 	}
 }
 
+func TestPersistentEpisodeRecorderWritesIncrementalEventsAndMarksInterrupted(t *testing.T) {
+	ctx := context.Background()
+	store := NewTaskEpisodeStore(filepath.Join(t.TempDir(), "episodes"))
+	recorder := NewPersistentEpisodeRecorder(MemoryRetrieveRequest{
+		Input:     "打开设置",
+		EpisodeID: "ep_incremental",
+	}, MemoryContext{}, store)
+
+	if err := recorder.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	recorder.RecordPlannerDecision(plannerDecision{
+		Objective: "打开设置",
+		Plan:      []string{"打开设置"},
+		NextStep:  "点击设置",
+	})
+
+	eventPaths, err := filepath.Glob(filepath.Join(store.rootDir, "*", "ep_incremental", "events.jsonl"))
+	if err != nil || len(eventPaths) != 1 {
+		t.Fatalf("episode events glob paths=%#v err=%v", eventPaths, err)
+	}
+	data, err := os.ReadFile(eventPaths[0])
+	if err != nil {
+		t.Fatalf("read incremental events: %v", err)
+	}
+	if !strings.Contains(string(data), `"planner_decision"`) {
+		t.Fatalf("incremental event not persisted:\n%s", data)
+	}
+
+	marked, err := store.MarkRunningEpisodesInterrupted(ctx, "restart")
+	if err != nil {
+		t.Fatalf("MarkRunningEpisodesInterrupted() error = %v", err)
+	}
+	if marked != 1 {
+		t.Fatalf("marked = %d, want 1", marked)
+	}
+	episode, err := store.Get(ctx, "ep_incremental")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if episode.Status != "interrupted" || episode.Outcome.FailureReason != "restart" {
+		t.Fatalf("episode not marked interrupted: %#v", episode)
+	}
+	if len(episode.Events) != 1 || episode.Events[0].Type != "planner_decision" {
+		t.Fatalf("unexpected persisted events: %#v", episode.Events)
+	}
+}
+
 func TestTaskEpisodeIndexSummaryOmitsScreenshotBase64(t *testing.T) {
 	ctx := context.Background()
 	memoryDir := filepath.Join(t.TempDir(), "memory")

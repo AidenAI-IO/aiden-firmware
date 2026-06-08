@@ -114,11 +114,15 @@ type episodeIndexEntry struct {
 
 type EpisodeRecorder struct {
 	mu        sync.Mutex
+	id        string
 	startedAt time.Time
 	request   MemoryRetrieveRequest
 	retrieved MemoryContext
 	events    []TaskEpisodeEvent
 	counter   int
+	store     *TaskEpisodeStore
+	started   bool
+	startErr  error
 }
 
 func NewTaskEpisodeStore(rootDir string) *TaskEpisodeStore {
@@ -140,11 +144,66 @@ func (w *TaskEpisodeWriter) Write(ctx context.Context, episode TaskEpisode) erro
 }
 
 func NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {
+	return newEpisodeRecorder(req, retrieved, nil)
+}
+
+func NewPersistentEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext, store *TaskEpisodeStore) *EpisodeRecorder {
+	return newEpisodeRecorder(req, retrieved, store)
+}
+
+func newEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext, store *TaskEpisodeStore) *EpisodeRecorder {
+	startedAt := time.Now().UTC()
+	id := strings.TrimSpace(req.EpisodeID)
+	if id == "" {
+		id = newTaskEpisodeID(startedAt)
+	}
 	return &EpisodeRecorder{
-		startedAt: time.Now().UTC(),
+		id:        id,
+		startedAt: startedAt,
 		request:   req,
 		retrieved: retrieved,
+		store:     store,
 	}
+}
+
+func newTaskEpisodeID(ts time.Time) string {
+	return "ep_" + strconvTimeID(ts)
+}
+
+func (r *EpisodeRecorder) ID() string {
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.id
+}
+
+func (r *EpisodeRecorder) Start(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	if r.started {
+		err := r.startErr
+		r.mu.Unlock()
+		return err
+	}
+	r.started = true
+	if r.store == nil {
+		r.mu.Unlock()
+		return nil
+	}
+	episode := r.baseEpisodeLocked("running", time.Time{})
+	r.mu.Unlock()
+
+	if _, err := r.store.StartEpisode(ctx, episode); err != nil {
+		r.mu.Lock()
+		r.startErr = err
+		r.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (r *EpisodeRecorder) RecordPlannerDecision(decision plannerDecision) {
@@ -230,19 +289,10 @@ func (r *EpisodeRecorder) Finish(output string, metrics *RunMetrics, runErr erro
 	defer r.mu.Unlock()
 
 	now := time.Now().UTC()
-	episode := TaskEpisode{
-		ID:                  "ep_" + strconvTimeID(r.startedAt),
-		Status:              "active",
-		StartedAt:           r.startedAt.Format(time.RFC3339Nano),
-		EndedAt:             now.Format(time.RFC3339Nano),
-		UserGoal:            strings.TrimSpace(r.request.Input),
-		DeviceScope:         r.deviceScope(),
-		Outcome:             TaskEpisodeOutcome{Success: runErr == nil, FinalAnswer: strings.TrimSpace(output)},
-		RetrievedMemoryRefs: r.retrieved.ReferenceIDs(),
-		Tags:                uniqueNonEmpty(tags),
-		Entities:            uniqueNonEmpty(entities),
-		Events:              append([]TaskEpisodeEvent(nil), r.events...),
-	}
+	episode := r.baseEpisodeLocked("active", now)
+	episode.Outcome = TaskEpisodeOutcome{Success: runErr == nil, FinalAnswer: strings.TrimSpace(output)}
+	episode.Tags = uniqueNonEmpty(tags)
+	episode.Entities = uniqueNonEmpty(entities)
 	if metrics != nil {
 		episode.Extra = map[string]interface{}{
 			"total_duration_ms": metrics.TotalDuration,
@@ -282,7 +332,6 @@ func (r *EpisodeRecorder) Finish(output string, metrics *RunMetrics, runErr erro
 
 func (r *EpisodeRecorder) append(event TaskEpisodeEvent) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.counter++
 	now := time.Now().UTC()
 	if event.EventID == "" {
@@ -292,6 +341,30 @@ func (r *EpisodeRecorder) append(event TaskEpisodeEvent) {
 		event.Ts = now.Format(time.RFC3339Nano)
 	}
 	r.events = append(r.events, event)
+	store := r.store
+	episode := r.baseEpisodeLocked("running", time.Time{})
+	step := len(r.events)
+	r.mu.Unlock()
+
+	if store != nil {
+		_ = store.AppendEpisodeEvent(context.Background(), episode, event, step)
+	}
+}
+
+func (r *EpisodeRecorder) baseEpisodeLocked(status string, endedAt time.Time) TaskEpisode {
+	episode := TaskEpisode{
+		ID:                  r.id,
+		Status:              status,
+		StartedAt:           r.startedAt.Format(time.RFC3339Nano),
+		UserGoal:            strings.TrimSpace(r.request.Input),
+		DeviceScope:         r.deviceScope(),
+		RetrievedMemoryRefs: r.retrieved.ReferenceIDs(),
+		Events:              append([]TaskEpisodeEvent(nil), r.events...),
+	}
+	if !endedAt.IsZero() {
+		episode.EndedAt = endedAt.Format(time.RFC3339Nano)
+	}
+	return episode
 }
 
 func (r *EpisodeRecorder) deviceScope() map[string]string {
@@ -376,6 +449,174 @@ func (s *TaskEpisodeStore) AddEpisode(ctx context.Context, episode TaskEpisode) 
 		return "", err
 	}
 	return episode.ID, nil
+}
+
+func (s *TaskEpisodeStore) StartEpisode(ctx context.Context, episode TaskEpisode) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+	if s == nil || s.rootDir == "" {
+		return "", nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	if strings.TrimSpace(episode.ID) == "" {
+		episode.ID = newTaskEpisodeID(now)
+	}
+	if strings.TrimSpace(episode.Status) == "" {
+		episode.Status = "running"
+	}
+	if strings.TrimSpace(episode.StartedAt) == "" {
+		episode.StartedAt = now.Format(time.RFC3339Nano)
+	}
+
+	dir := s.episodeDir(episode)
+	if err := os.MkdirAll(filepath.Join(dir, "artifacts"), 0o755); err != nil {
+		return "", fmt.Errorf("create episode dir: %w", err)
+	}
+	episode.Events = nil
+	if err := writeYAMLAtomic(filepath.Join(dir, "episode.yaml"), episode); err != nil {
+		return "", fmt.Errorf("write episode metadata: %w", err)
+	}
+	if err := writeEpisodeEventsJSONL(filepath.Join(dir, "events.jsonl"), nil); err != nil {
+		return "", err
+	}
+	if err := s.upsertIndexEntry(episode, dir, nil); err != nil {
+		return "", err
+	}
+	return episode.ID, nil
+}
+
+func (s *TaskEpisodeStore) AppendEpisodeEvent(ctx context.Context, episode TaskEpisode, event TaskEpisodeEvent, step int) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if s == nil || s.rootDir == "" || strings.TrimSpace(episode.ID) == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if strings.TrimSpace(episode.Status) == "" {
+		episode.Status = "running"
+	}
+	if strings.TrimSpace(episode.StartedAt) == "" {
+		episode.StartedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	dir := s.episodeDir(episode)
+	if err := os.MkdirAll(filepath.Join(dir, "artifacts"), 0o755); err != nil {
+		return fmt.Errorf("create episode dir: %w", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "episode.yaml")); os.IsNotExist(err) {
+		episode.Events = nil
+		if err := writeYAMLAtomic(filepath.Join(dir, "episode.yaml"), episode); err != nil {
+			return fmt.Errorf("write episode metadata: %w", err)
+		}
+		if err := s.upsertIndexEntry(episode, dir, nil); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+
+	if step <= 0 {
+		step = 1
+	}
+	if err := s.materializeEventArtifact(dir, &event, step); err != nil {
+		return err
+	}
+	event.RawObservation = ""
+	file, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open episode events: %w", err)
+	}
+	defer file.Close()
+	if err := json.NewEncoder(file).Encode(event); err != nil {
+		return fmt.Errorf("append episode event: %w", err)
+	}
+	return nil
+}
+
+func (s *TaskEpisodeStore) MarkRunningEpisodesInterrupted(ctx context.Context, reason string) (int, error) {
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	default:
+	}
+	if s == nil || s.rootDir == "" {
+		return 0, nil
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "agent stopped before the task episode completed"
+	}
+	if _, err := os.Stat(s.indexPath()); os.IsNotExist(err) {
+		if err := s.RebuildIndex(ctx); err != nil {
+			return 0, err
+		}
+	} else if err != nil {
+		return 0, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	index, err := s.loadIndex()
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	changed := false
+	count := 0
+	for i := range index.Episodes {
+		entry := index.Episodes[i]
+		if entry.Status != "running" {
+			continue
+		}
+		path := filepath.Join(s.rootDir, entry.File)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return count, err
+		}
+		var episode TaskEpisode
+		if err := yaml.Unmarshal(data, &episode); err != nil {
+			return count, err
+		}
+		episode.Status = "interrupted"
+		episode.EndedAt = now
+		episode.Outcome.Success = false
+		if strings.TrimSpace(episode.Outcome.FailureReason) == "" {
+			episode.Outcome.FailureReason = reason
+		}
+		if len(episode.FailureCauses) == 0 {
+			episode.FailureCauses = []string{reason}
+		}
+		dir := filepath.Dir(path)
+		eventsPath := filepath.Join(dir, "events.jsonl")
+		var events []TaskEpisodeEvent
+		if _, err := os.Stat(eventsPath); err == nil {
+			events, _ = readEpisodeEvents(eventsPath)
+		}
+		episode.Events = nil
+		if err := writeYAMLAtomic(path, episode); err != nil {
+			return count, err
+		}
+		index.Episodes[i] = s.indexEntryForEpisode(episode, dir, events)
+		count++
+		changed = true
+	}
+	if changed {
+		index.UpdatedAt = now
+		if err := writeYAMLAtomic(s.indexPath(), index); err != nil {
+			return count, err
+		}
+	}
+	return count, nil
 }
 
 func (s *TaskEpisodeStore) Search(ctx context.Context, query EpisodeQuery) ([]MemoryHit, error) {
@@ -702,6 +943,8 @@ func readEpisodeEvents(path string) ([]TaskEpisodeEvent, error) {
 	}
 	defer file.Close()
 	var events []TaskEpisodeEvent
+	validData := make([]byte, 0)
+	repairedTruncatedTail := false
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0), 1<<20)
 	for scanner.Scan() {
@@ -711,11 +954,23 @@ func readEpisodeEvents(path string) ([]TaskEpisodeEvent, error) {
 		}
 		var event TaskEpisodeEvent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			if isTruncatedJSONLineError(err) {
+				repairedTruncatedTail = true
+				break
+			}
 			return nil, err
 		}
+		validData = append(validData, line...)
+		validData = append(validData, '\n')
 		events = append(events, event)
 	}
-	return events, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if repairedTruncatedTail {
+		_ = writeFileAtomic(path, validData, 0o644)
+	}
+	return events, nil
 }
 
 func summarizeEpisodeForIndex(episode TaskEpisode, events []TaskEpisodeEvent) string {

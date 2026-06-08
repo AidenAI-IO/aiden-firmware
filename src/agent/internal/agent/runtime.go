@@ -55,6 +55,7 @@ type RunRequest struct {
 	Input       string
 	Attachments []InputAttachment
 	Skills      []string
+	EpisodeID   string
 	// RuntimeContext is dynamic per-turn system context, such as connected
 	// hardware/app state. It is not persisted as user configuration.
 	RuntimeContext string
@@ -66,6 +67,7 @@ type RunRequest struct {
 type RunResult struct {
 	Output         string          `json:"output"`
 	Skills         []string        `json:"skills"`
+	EpisodeID      string          `json:"episode_id,omitempty"`
 	Memory         []MessageRecord `json:"memory,omitempty"`
 	Metrics        *RunMetrics     `json:"metrics,omitempty"`
 	SleepRequested bool            `json:"sleep_requested,omitempty"`
@@ -90,6 +92,7 @@ type RunMetrics struct {
 type RunEvent struct {
 	Type        string    `json:"type"`
 	Role        string    `json:"role,omitempty"`
+	EpisodeID   string    `json:"episode_id,omitempty"`
 	ToolName    string    `json:"tool_name,omitempty"`
 	ToolInput   string    `json:"tool_input,omitempty"`
 	Description string    `json:"description,omitempty"`
@@ -238,6 +241,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger)
+	rt.markInterruptedEpisodesBestEffort()
 	return rt, nil
 }
 
@@ -266,8 +270,30 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 	}
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
+		rt.markInterruptedEpisodesBestEffort()
 	}
 	return rt
+}
+
+func (r *Runtime) NewEpisodeID() string {
+	if r == nil || r.memoryPlane == nil {
+		return ""
+	}
+	return newTaskEpisodeID(time.Now().UTC())
+}
+
+func (r *Runtime) markInterruptedEpisodesBestEffort() {
+	plane, ok := r.memoryPlane.(*FilesystemMemoryPlane)
+	if !ok || plane == nil || plane.episodes == nil {
+		return
+	}
+	if count, err := plane.episodes.MarkRunningEpisodesInterrupted(context.Background(), "agent restarted before the task episode completed"); err != nil {
+		if r.logger != nil {
+			r.logger.Warn("[memory] mark interrupted episodes failed: %v", err)
+		}
+	} else if count > 0 && r.logger != nil {
+		r.logger.Warn("[memory] marked %d running task episode(s) as interrupted", count)
+	}
 }
 
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
@@ -329,6 +355,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Attachments:  req.Attachments,
 		Skills:       skillNames,
 		ToolNames:    toolNamesFromTools(availableTools),
+		EpisodeID:    req.EpisodeID,
 		DeviceID:     defaultMemoryDeviceID,
 		CurrentHints: r.currentEnvironmentHints(),
 	}
@@ -346,6 +373,16 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	var episodeRecorder *EpisodeRecorder
 	if r.memoryPlane != nil {
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
+		if episodeRecorder != nil {
+			retrieveReq.EpisodeID = episodeRecorder.ID()
+			if err := episodeRecorder.Start(context.Background()); err != nil && r.logger != nil {
+				r.logger.Warn("[memory] start episode failed: %v", err)
+			}
+		}
+	}
+	episodeID := ""
+	if episodeRecorder != nil {
+		episodeID = episodeRecorder.ID()
 	}
 
 	maxIterations := effectiveMaxIterations(r.config.MaxIterations)
@@ -362,6 +399,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			startTime:    startTime,
 			logger:       r.logger,
 			eventHandler: req.EventHandler,
+			episodeID:    episodeID,
 		}
 	}
 	if streamCallbackHandler != nil {
@@ -416,6 +454,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	return RunResult{
 		Output:         output,
 		Skills:         runSkills.GetActivatedSkills(),
+		EpisodeID:      episodeID,
 		Memory:         memorySnapshot,
 		Metrics:        metrics,
 		SleepRequested: sleepRequested,
@@ -713,6 +752,7 @@ type runtimeCallbackHandler struct {
 	firstTokenSeen bool
 	logger         *Logger
 	eventHandler   func(RunEvent)
+	episodeID      string
 	mu             sync.Mutex
 	pendingActions []schema.AgentAction
 }
@@ -791,6 +831,7 @@ func (h *runtimeCallbackHandler) HandleToolEnd(ctx context.Context, output strin
 		if ok {
 			h.eventHandler(RunEvent{
 				Type:      "tool_result",
+				EpisodeID: h.episodeID,
 				ToolName:  action.Tool,
 				ToolInput: normalizeToolInput(action.ToolInput),
 				Content:   output,
@@ -809,6 +850,7 @@ func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error)
 		if ok {
 			h.eventHandler(RunEvent{
 				Type:      "tool_result",
+				EpisodeID: h.episodeID,
 				ToolName:  action.Tool,
 				ToolInput: normalizeToolInput(action.ToolInput),
 				Content:   "error: " + err.Error(),
@@ -830,6 +872,7 @@ func (h *runtimeCallbackHandler) HandleNamedToolEnd(ctx context.Context, name, i
 	if h.eventHandler != nil {
 		h.eventHandler(RunEvent{
 			Type:      "tool_result",
+			EpisodeID: h.episodeID,
 			ToolName:  name,
 			ToolInput: input,
 			Content:   output,
@@ -848,6 +891,7 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 	if h.eventHandler != nil {
 		h.eventHandler(RunEvent{
 			Type:      "tool_result",
+			EpisodeID: h.episodeID,
 			ToolName:  name,
 			ToolInput: input,
 			Content:   "error: " + err.Error(),
@@ -872,6 +916,7 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 		h.pushPendingAction(action)
 		h.eventHandler(RunEvent{
 			Type:        "tool_call",
+			EpisodeID:   h.episodeID,
 			ToolName:    action.Tool,
 			ToolInput:   action.ToolInput,
 			Description: description,
@@ -892,6 +937,7 @@ func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, con
 		h.eventHandler(RunEvent{
 			Type:      "role_output",
 			Role:      role,
+			EpisodeID: h.episodeID,
 			Content:   content,
 			Timestamp: time.Now(),
 		})
