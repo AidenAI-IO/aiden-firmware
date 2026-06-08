@@ -10,6 +10,7 @@ Usage:
     --target-commitish SHA \
     --asset-glob 'path/to/assets/*' \
     [--required-assets 'FILE ...'] \
+    [--upload-assets 'FILE ...'] \
     [--prerelease] \
     [--retry-count N] \
     [--retry-delay-seconds N]
@@ -32,6 +33,7 @@ release_name=""
 target_commitish=""
 asset_glob=""
 required_assets=""
+upload_assets=""
 prerelease="false"
 retry_count=5
 retry_delay_seconds=20
@@ -56,6 +58,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --required-assets)
       required_assets="${2:-}"
+      shift 2
+      ;;
+    --upload-assets)
+      upload_assets="${2:-}"
       shift 2
       ;;
     --prerelease)
@@ -145,6 +151,24 @@ validate_required_assets() {
   done
 }
 
+upload_files=()
+select_upload_assets() {
+  local upload_asset
+  local upload_file
+
+  if [ -z "$upload_assets" ]; then
+    upload_files=("${asset_files[@]}")
+    return 0
+  fi
+
+  for upload_asset in $upload_assets; do
+    if ! upload_file="$(asset_file_for_name "$upload_asset")"; then
+      die "missing release upload asset: $upload_asset"
+    fi
+    upload_files+=("$upload_file")
+  done
+}
+
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -171,6 +195,7 @@ release_notes_for_target() {
 
 release_notes="$(release_notes_for_target)"
 validate_required_assets
+select_upload_assets
 
 log "Release upload context"
 log "  repository: ${GITHUB_REPOSITORY:-unknown}"
@@ -179,6 +204,7 @@ log "  release_name: $release_name"
 log "  target_commitish: $target_commitish"
 log "  asset_glob: $asset_glob"
 log "  required_assets: ${required_assets:-none}"
+log "  upload_assets: ${upload_assets:-all matched assets}"
 log "  retry_count: $retry_count"
 log "  retry_delay_seconds: $retry_delay_seconds"
 log "  gh_debug: ${GH_DEBUG:-unset}"
@@ -194,6 +220,11 @@ for asset in "${asset_files[@]}"; do
   size_bytes="$(wc -c < "$asset" | tr -d '[:space:]')"
   checksum="$(sha256_of "$asset")"
   log "  $(basename "$asset") size=${size_bytes} sha256=${checksum}"
+done
+
+log "Release upload assets"
+for asset in "${upload_files[@]}"; do
+  log "  $(basename "$asset")"
 done
 
 run_with_retry() {
@@ -289,7 +320,7 @@ ensure_release() {
 
 ensure_release
 
-for asset in "${asset_files[@]}"; do
+for asset in "${upload_files[@]}"; do
   run_with_retry \
     "release asset upload $(basename "$asset")" \
     gh release upload "$tag_name" "$asset" --clobber

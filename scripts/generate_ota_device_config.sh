@@ -74,14 +74,20 @@ jq -e -S \
   --arg channel "$channel" \
   '
   def part($name): .parts[] | select(.name == $name);
+  def partition_hash($asset):
+    if ($asset.image_sha256 // "") != "" then
+      $asset.image_sha256
+    else
+      $asset.sha256
+    end;
   def hash_for($name; $slot):
     (part($name)) as $part |
     if $part.asset != null then
-      $part.asset.sha256
+      partition_hash($part.asset)
     elif $slot == "a" and $part.asset_a != null then
-      $part.asset_a.sha256
+      partition_hash($part.asset_a)
     elif $slot == "b" and $part.asset_b != null then
-      $part.asset_b.sha256
+      partition_hash($part.asset_b)
     else
       error("missing asset hash for " + $name + " slot " + $slot)
     end;

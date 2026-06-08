@@ -19,9 +19,9 @@ cat > "$TMP_DIR/manifest.json" <<'JSON'
   "version": "20260523-120000-abcdef0",
   "build_time": "2026-05-23T12:00:00Z",
   "parts": [
-    {"name":"boot","asset_a":{"name":"boot_a.img","size":1,"sha256":"boot-a-hash"},"asset_b":{"name":"boot_b.img","size":1,"sha256":"boot-b-hash"}},
+    {"name":"boot","asset_a":{"name":"boot_a.img","size":1,"sha256":"boot-a-hash"},"asset_b":{"name":"boot_b.img.tar.gz","size":1,"sha256":"boot-b-archive-hash","image_sha256":"boot-b-image-hash"}},
     {"name":"oem","asset_a":{"name":"oem_a.img","size":1,"sha256":"oem-a-hash"},"asset_b":{"name":"oem_b.img","size":1,"sha256":"oem-b-hash"}},
-    {"name":"rootfs","asset":{"name":"rootfs.img","size":1,"sha256":"rootfs-neutral-hash"}}
+    {"name":"rootfs","asset":{"name":"rootfs.img.tar.gz","size":1,"sha256":"rootfs-archive-hash","image_sha256":"rootfs-image-hash"}}
   ],
   "signature": {"algorithm":"ed25519","value":"unused"}
 }
@@ -40,10 +40,10 @@ jq -e '
   .factory_build_time == "2026-05-23T12:00:00Z" and
   .factory_partition_hashes.a.boot == "boot-a-hash" and
   .factory_partition_hashes.a.oem == "oem-a-hash" and
-  .factory_partition_hashes.a.rootfs == "rootfs-neutral-hash" and
-  .factory_partition_hashes.b.boot == "boot-b-hash" and
+  .factory_partition_hashes.a.rootfs == "rootfs-image-hash" and
+  .factory_partition_hashes.b.boot == "boot-b-image-hash" and
   .factory_partition_hashes.b.oem == "oem-b-hash" and
-  .factory_partition_hashes.b.rootfs == "rootfs-neutral-hash"
+  .factory_partition_hashes.b.rootfs == "rootfs-image-hash"
 ' "$TMP_DIR/config.json" >/dev/null
 
 for repo in \
