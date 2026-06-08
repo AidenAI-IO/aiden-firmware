@@ -27,7 +27,7 @@
 直接指定 manifest URL，跳过 Release API：
 
 ```bash
-ota check-now --manifest-url https://example.com/firmware/manifest.json \
+ota update --manifest-url https://example.com/firmware/manifest.json \
   --public-key /path/to/pubkey.pem
 ```
 
@@ -67,7 +67,7 @@ scripts/generate_ota_manifest.sh \
 
 ```bash
 # 通过 manifest-url 手动指定 dev 分支的 release（标记为 Pre-release）
-ota check-now \
+ota update \
   --manifest-url "https://github.com/AidenAI-IO/aiden-hardware-demo/releases/download/TAG/manifest.json" \
   --public-key /oem/etc/ota_pubkey.pem
 ```
@@ -94,7 +94,7 @@ scripts/generate_ota_manifest.sh ... \
   --base-url "https://github.com/$REPO/releases/download/$TAG"
 
 # 设备从开发者的 release 更新
-ota check-now \
+ota update \
   --manifest-url "https://github.com/$REPO/releases/download/$TAG/manifest.json" \
   --public-key /path/to/developer_pubkey.pem
 ```
@@ -110,7 +110,7 @@ scripts/generate_ota_manifest.sh ... \
 rsync -avz output/image/*.img manifest.json user@server:/var/www/firmware/
 
 # 设备直接从服务器更新
-ota check-now --manifest-url https://firmware.mycompany.com/aiden/v1.0.0/manifest.json \
+ota update --manifest-url https://firmware.mycompany.com/aiden/v1.0.0/manifest.json \
   --public-key /userdata/ota/company_pubkey.pem
 ```
 
@@ -125,7 +125,7 @@ scripts/generate_ota_manifest.sh ... \
 cd output/image && python3 -m http.server 8000
 
 # 测试（不实际刷写）
-ota check-now --manifest-url http://192.168.1.100:8000/manifest.json \
+ota update --manifest-url http://192.168.1.100:8000/manifest.json \
   --public-key /path/to/dev_pubkey.pem --dry-run
 ```
 
@@ -144,9 +144,9 @@ ota check-now --manifest-url http://192.168.1.100:8000/manifest.json \
 - 所有现有测试通过 ✅
 
 ### 文档
-- `docs/ota-external-developers.md` - 完整开发者指南
-- `docs/ota-quick-examples.md` - 快速使用示例
-- `docs/ota-release-channels.md` - 发布渠道与分支区分说明
+- `docs/09-ota/ota-external-developers.md` - 完整开发者指南
+- `docs/09-ota/ota-quick-examples.md` - 快速使用示例
+- `docs/09-ota/ota-release-channels.md` - 发布渠道与分支区分说明
 
 ## 安全性
 

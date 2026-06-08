@@ -45,9 +45,9 @@ func TestSplitCommandAndFlagsDefaultsToDaemon(t *testing.T) {
 }
 
 func TestSplitCommandAndFlagsConsumesFlagValuesBeforeCommand(t *testing.T) {
-	command, rest := splitCommandAndFlags([]string{"--manifest-url", "https://example.com/manifest.json", "check-now"})
-	if command != "check-now" {
-		t.Fatalf("command = %q, want check-now", command)
+	command, rest := splitCommandAndFlags([]string{"--manifest-url", "https://example.com/manifest.json", "update"})
+	if command != "update" {
+		t.Fatalf("command = %q, want update", command)
 	}
 	want := []string{"--manifest-url", "https://example.com/manifest.json"}
 	if len(rest) != len(want) || rest[0] != want[0] || rest[1] != want[1] {
@@ -62,9 +62,21 @@ func TestSplitCommandAndFlagsConsumesFlagValuesBeforeCommand(t *testing.T) {
 	}
 }
 
+func TestSplitCommandAndFlagsKeepsCheckNowAlias(t *testing.T) {
+	command, rest := splitCommandAndFlags([]string{"--manifest-url", "https://example.com/manifest.json", "check-now"})
+	if command != "check-now" {
+		t.Fatalf("command = %q, want check-now", command)
+	}
+	want := []string{"--manifest-url", "https://example.com/manifest.json"}
+	if len(rest) != len(want) || rest[0] != want[0] || rest[1] != want[1] {
+		t.Fatalf("rest = %#v, want %#v", rest, want)
+	}
+}
+
 func TestRunRejectsExtraPositionalsForNonManifestCommands(t *testing.T) {
 	for _, args := range [][]string{
 		{"daemon", "extra"},
+		{"update", "extra", "--dry-run"},
 		{"check-now", "extra", "--dry-run"},
 		{"status", "extra"},
 	} {
@@ -86,6 +98,197 @@ func TestDefaultRebootIsRealUnlessDryRun(t *testing.T) {
 	}
 	if err := dryRunReboot(); err != nil {
 		t.Fatalf("dry-run reboot error = %v", err)
+	}
+}
+
+func TestShouldRestartDaemonAfterUpdate(t *testing.T) {
+	tests := []struct {
+		name   string
+		config ota.UpdaterConfig
+		result ota.UpdateResult
+		err    error
+		want   bool
+	}{
+		{name: "check failure", err: errForcedUpdateCheckFailure, want: true},
+		{name: "already running", err: ota.ErrUpdateAlreadyRunning, want: false},
+		{name: "no update", result: ota.UpdateResult{NoUpdate: true}, want: true},
+		{name: "dry run", config: ota.UpdaterConfig{DryRun: true}, result: ota.UpdateResult{Updated: true}, want: true},
+		{name: "real update success", result: ota.UpdateResult{Updated: true}, want: false},
+	}
+
+	for _, tt := range tests {
+		if got := shouldRestartDaemonAfterUpdate(tt.config, tt.result, tt.err); got != tt.want {
+			t.Fatalf("%s: shouldRestartDaemonAfterUpdate() = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+var errForcedUpdateCheckFailure = &forcedUpdateCheckFailureError{}
+
+type forcedUpdateCheckFailureError struct{}
+
+func (*forcedUpdateCheckFailureError) Error() string {
+	return "forced update check failure"
+}
+
+func TestUpdateRestartsRunningDaemonWhenNoUpdate(t *testing.T) {
+	fixture := newNoUpdateFixture(t)
+
+	stopCalls := 0
+	startCalls := 0
+	oldStop := stopRunningDaemon
+	oldStart := startRunningDaemon
+	stopRunningDaemon = func() error {
+		stopCalls++
+		return nil
+	}
+	startRunningDaemon = func() error {
+		startCalls++
+		return nil
+	}
+	t.Cleanup(func() {
+		stopRunningDaemon = oldStop
+		startRunningDaemon = oldStart
+	})
+
+	var out bytes.Buffer
+	err := run([]string{
+		"update",
+		"--state-dir", fixture.stateDir,
+		"--misc", fixture.miscPath,
+		"--manifest-url", fixture.manifestURL,
+		"--public-key", fixture.keyPath,
+	}, &out)
+	if err != nil {
+		t.Fatalf("run(update) error = %v", err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("stopCalls = %d, want 1", stopCalls)
+	}
+	if startCalls != 1 {
+		t.Fatalf("startCalls = %d, want 1", startCalls)
+	}
+	if !strings.Contains(out.String(), `"NoUpdate":true`) {
+		t.Fatalf("output = %q, want no update", out.String())
+	}
+}
+
+func TestUpdateRestartsRunningDaemonAfterCheckFailure(t *testing.T) {
+	fixture := newNoUpdateFixture(t)
+	badServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("not a manifest"))
+	}))
+	t.Cleanup(badServer.Close)
+
+	stopCalls := 0
+	startCalls := 0
+	oldStop := stopRunningDaemon
+	oldStart := startRunningDaemon
+	stopRunningDaemon = func() error {
+		stopCalls++
+		return nil
+	}
+	startRunningDaemon = func() error {
+		startCalls++
+		return nil
+	}
+	t.Cleanup(func() {
+		stopRunningDaemon = oldStop
+		startRunningDaemon = oldStart
+	})
+
+	err := run([]string{
+		"update",
+		"--state-dir", fixture.stateDir,
+		"--misc", fixture.miscPath,
+		"--manifest-url", badServer.URL + "/manifest.json",
+		"--public-key", fixture.keyPath,
+	}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatalf("run(update) error = nil, want manifest failure")
+	}
+	if stopCalls != 1 {
+		t.Fatalf("stopCalls = %d, want 1", stopCalls)
+	}
+	if startCalls != 1 {
+		t.Fatalf("startCalls = %d, want 1", startCalls)
+	}
+}
+
+type noUpdateFixture struct {
+	stateDir    string
+	miscPath    string
+	keyPath     string
+	manifestURL string
+}
+
+func newNoUpdateFixture(t *testing.T) noUpdateFixture {
+	t.Helper()
+
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	miscPath := filepath.Join(tmp, "misc.img")
+	keyPath := filepath.Join(tmp, "ota_pubkey.pem")
+	version := "20260521-120000-abcdef0"
+	buildTime := "2026-05-21T12:00:00Z"
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey() error = %v", err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0o644); err != nil {
+		t.Fatalf("WriteFile(pubkey) error = %v", err)
+	}
+	if err := ota.CreateMiscImage(miscPath, ota.DefaultMiscSize); err != nil {
+		t.Fatalf("CreateMiscImage() error = %v", err)
+	}
+	state := ota.State{
+		LastCommittedVersion:   version,
+		LastCommittedBuildTime: buildTime,
+		Slots:                  map[string]ota.SlotPartitionInfo{},
+	}
+	if err := ota.SaveState(filepath.Join(stateDir, "state.json"), state); err != nil {
+		t.Fatalf("SaveState() error = %v", err)
+	}
+
+	manifest := ota.Manifest{
+		SchemaVersion: 1,
+		Channel:       "stable",
+		Version:       version,
+		BuildTime:     buildTime,
+		Parts: []ota.ManifestPart{{
+			Name:   "boot",
+			AssetA: &ota.ManifestAsset{Name: "boot_a.img", Size: 1, SHA256: strings.Repeat("a", 64)},
+			AssetB: &ota.ManifestAsset{Name: "boot_b.img", Size: 1, SHA256: strings.Repeat("b", 64)},
+		}},
+		Signature: ota.ManifestSignature{Algorithm: "ed25519"},
+	}
+	canonical, err := ota.CanonicalManifestJSON(manifest)
+	if err != nil {
+		t.Fatalf("CanonicalManifestJSON() error = %v", err)
+	}
+	manifest.Signature.Value = hex.EncodeToString(ed25519.Sign(priv, canonical))
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("Marshal(manifest) error = %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/manifest.json" {
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+		_, _ = w.Write(manifestBytes)
+	}))
+	t.Cleanup(server.Close)
+
+	return noUpdateFixture{
+		stateDir:    stateDir,
+		miscPath:    miscPath,
+		keyPath:     keyPath,
+		manifestURL: server.URL + "/manifest.json",
 	}
 }
 

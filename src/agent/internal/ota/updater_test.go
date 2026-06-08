@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -173,6 +174,94 @@ func TestUpdaterNoUpdateReturnsNoop(t *testing.T) {
 	if env.reboots != 0 {
 		t.Fatalf("reboots = %d, want 0", env.reboots)
 	}
+}
+
+func TestUpdaterCheckOnceRejectsConcurrentUpdateLock(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	env.state.LastCommittedVersion = env.version
+	env.state.LastCommittedBuildTime = env.buildTime
+	env.saveState(t)
+	manifest := env.signedManifest(map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}, nil)
+	server := env.releaseServer(t, manifest, map[string][]byte{"boot_b.img": []byte("boot-b-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")})
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+
+	lockFile, err := os.OpenFile(filepath.Join(env.stateDir, "update.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("OpenFile(lock) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	})
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("Flock(lock) error = %v", err)
+	}
+
+	_, err = env.updater().CheckOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "ota update already running") {
+		t.Fatalf("CheckOnce() error = %v, want ota update already running", err)
+	}
+}
+
+func TestUpdaterSkipsAssetDownloadWhenCachedFileMatchesSHA256(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	assetBytes := map[string][]byte{
+		"boot_a.img": []byte("boot-a-v2"),
+		"boot_b.img": []byte("boot-b-v2"),
+		"oem_a.img":  []byte("oem-a-v2"),
+		"oem_b.img":  []byte("oem-b-v2"),
+		"rootfs.img": []byte("rootfs-v2"),
+	}
+	manifest := env.signedManifest(assetBytes, nil)
+	if err := os.MkdirAll(env.downloadDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(downloadDir) error = %v", err)
+	}
+	for _, name := range []string{"boot_b.img", "oem_b.img", "rootfs.img"} {
+		if err := os.WriteFile(filepath.Join(env.downloadDir, name), assetBytes[name], 0o644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+
+	assetRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest") {
+			var release struct {
+				Assets []githubAsset `json:"assets"`
+			}
+			release.Assets = append(release.Assets, githubAsset{Name: "manifest.json", BrowserDownloadURL: "http://" + r.Host + "/assets/manifest.json"})
+			for _, name := range []string{"boot_b.img", "oem_b.img", "rootfs.img"} {
+				release.Assets = append(release.Assets, githubAsset{Name: name, BrowserDownloadURL: "http://" + r.Host + "/assets/" + name})
+			}
+			_ = json.NewEncoder(w).Encode(release)
+			return
+		}
+		if r.URL.Path == "/assets/manifest.json" {
+			_, _ = w.Write(manifest)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			assetRequests++
+			http.Error(w, "asset download should be skipped", http.StatusInternalServerError)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+
+	result, err := env.updater().CheckOnce(context.Background())
+	if err != nil {
+		t.Fatalf("CheckOnce() error = %v", err)
+	}
+	if !result.Updated || result.TargetSlot != SlotB {
+		t.Fatalf("CheckOnce() = %+v", result)
+	}
+	if assetRequests != 0 {
+		t.Fatalf("assetRequests = %d, want 0", assetRequests)
+	}
+	assertFileContent(t, filepath.Join(env.blockDir, "boot_b"), "boot-b-v2")
+	assertFileContent(t, filepath.Join(env.blockDir, "oem_b"), "oem-b-v2")
+	assertFileContent(t, filepath.Join(env.blockDir, "rootfs_b"), "rootfs-v2")
 }
 
 func TestUpdaterInitializesMissingStateFromFactoryConfig(t *testing.T) {
@@ -385,7 +474,6 @@ func TestUpdaterRejectsOversizedAssetWithDefaultPartitionSizes(t *testing.T) {
 		t.Fatalf("reboots = %d, want 0", env.reboots)
 	}
 }
-
 
 func TestUpdaterRejectsBadSignature(t *testing.T) {
 	env := newUpdaterTestEnv(t)
@@ -1229,7 +1317,7 @@ func TestDeriveAssetURLFromManifestURL(t *testing.T) {
 
 func TestUpdaterUsesManifestURLToDeriveAssetURLs(t *testing.T) {
 	env := newUpdaterTestEnv(t)
-	
+
 	// Create manifest without asset URLs (use slot-specific assets for oem).
 	// Set a dev channel to verify the channel check is skipped in manifest-url mode.
 	manifest := env.signedManifest(map[string][]byte{

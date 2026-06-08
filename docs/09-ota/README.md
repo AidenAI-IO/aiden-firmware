@@ -44,7 +44,7 @@
 /oem/usr/bin/ota status
 
 # 立即检查并执行一次 OTA
-/oem/usr/bin/ota check-now
+/oem/usr/bin/ota update
 
 # 查看 A/B metadata
 /oem/usr/bin/abctl read /dev/block/by-name/misc
@@ -53,6 +53,8 @@
 cat /proc/cmdline
 mount | grep ' /oem '
 ```
+
+`check-now` 仍作为兼容别名保留；新脚本和文档应使用 `update`。
 
 ## 相关源码
 

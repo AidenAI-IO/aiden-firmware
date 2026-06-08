@@ -125,6 +125,68 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
+TEST_CASE("config web exposes ota update and live ota logs") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("\"/api/ota/update\"") != std::string::npos);
+    CHECK(source.find("\"/api/ota/check-now\"") != std::string::npos);
+    CHECK(source.find("\"/api/ota/logs\"") != std::string::npos);
+    CHECK(source.find("handle_post_ota_update") != std::string::npos);
+    CHECK(source.find("handle_get_ota_log") != std::string::npos);
+    CHECK(source.find("read_ota_log_snapshot") != std::string::npos);
+    CHECK(source.find("/var/log/ota/ota.log") != std::string::npos);
+    CHECK(source.find("/oem/usr/bin/ota") != std::string::npos);
+    CHECK(source.find(" update") != std::string::npos);
+    CHECK(source.find("kOtaWebUpdateLockPath") != std::string::npos);
+    CHECK(source.find("flock(lock_fd, LOCK_EX | LOCK_NB)") != std::string::npos);
+    CHECK(source.find("ota update already running") != std::string::npos);
+    CHECK(source.find("close(lock_fd)") != std::string::npos);
+    CHECK(source.find("tail -f") == std::string::npos);
+
+    CHECK(html.find("OTA 更新") != std::string::npos);
+    CHECK(html.find("otaUpdateBtn") != std::string::npos);
+    CHECK(html.find("OTA 实时日志") != std::string::npos);
+    CHECK(html.find("otaLogText") != std::string::npos);
+    CHECK(html.find("otaLogMeta") != std::string::npos);
+    CHECK(html.find("triggerOtaUpdate") != std::string::npos);
+    CHECK(html.find("refreshOtaLog") != std::string::npos);
+    CHECK(html.find("/api/ota/update") != std::string::npos);
+    CHECK(html.find("/api/ota/check-now") == std::string::npos);
+    CHECK(html.find("/api/ota/logs") != std::string::npos);
+    CHECK(html.find("setInterval(function(){refreshOtaLog(false);},2000)") != std::string::npos);
+}
+
+TEST_CASE("ota open sources documentation references current docs paths") {
+    const std::string doc_path = std::string(AIDEN_SOURCE_DIR) + "/docs/09-ota/OTA_OPEN_SOURCES.md";
+    std::ifstream doc_in(doc_path.c_str());
+    REQUIRE(doc_in.good());
+
+    std::ostringstream doc_buffer;
+    doc_buffer << doc_in.rdbuf();
+    const std::string doc = doc_buffer.str();
+
+    CHECK(doc.find("docs/09-ota/ota-external-developers.md") != std::string::npos);
+    CHECK(doc.find("docs/09-ota/ota-quick-examples.md") != std::string::npos);
+    CHECK(doc.find("docs/09-ota/ota-release-channels.md") != std::string::npos);
+    CHECK(doc.find("docs/ota-external-developers.md") == std::string::npos);
+    CHECK(doc.find("docs/ota-quick-examples.md") == std::string::npos);
+    CHECK(doc.find("docs/ota-release-channels.md") == std::string::npos);
+}
+
 TEST_CASE("config web exposes screenshot pruning config fields") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
