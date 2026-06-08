@@ -317,6 +317,11 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 			assetToken = token
 		}
 		dst := filepath.Join(u.config.DownloadDir, asset.Name)
+		if u.cachedDownloadVerified(dst, asset) {
+			selectedAssets[part.Name] = asset
+			downloaded[part.Name] = dst
+			continue
+		}
 		if err := os.MkdirAll(u.config.DownloadDir, 0o755); err != nil {
 			u.recordError("download", err)
 			return UpdateResult{}, err
@@ -417,6 +422,17 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 		}
 	}
 	return UpdateResult{Updated: true, Version: manifest.Version, TargetSlot: target}, nil
+}
+
+func (u *Updater) cachedDownloadVerified(path string, asset ManifestAsset) bool {
+	if err := VerifyFile(path, asset.Size, asset.SHA256); err != nil {
+		if !os.IsNotExist(err) {
+			u.logf("ota download: %s cached file ignored: %v", asset.Name, err)
+		}
+		return false
+	}
+	u.logf("ota download: %s skipped; cached file verified dst=%s", asset.Name, path)
+	return true
 }
 
 func (u *Updater) ProcessPendingHealth(ctx context.Context) error {

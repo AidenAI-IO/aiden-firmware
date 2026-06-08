@@ -15,6 +15,10 @@ import (
 	"aiden-agent/internal/ota"
 )
 
+const otaInitScriptPath = "/etc/init.d/S54ota"
+
+var stopRunningDaemon = stopRunningDaemonWithInitScript
+
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -42,6 +46,9 @@ func run(args []string, out io.Writer) error {
 	case "daemon":
 		return updater.RunDaemon(ctx)
 	case "check-now":
+		if err := stopRunningDaemon(); err != nil {
+			return err
+		}
 		result, err := updater.CheckOnce(ctx)
 		if err != nil {
 			return err
@@ -89,6 +96,19 @@ func platformReboot() error {
 		}
 	}
 	return fmt.Errorf("reboot binary not found in trusted paths")
+}
+
+func stopRunningDaemonWithInitScript() error {
+	if _, err := os.Stat(otaInitScriptPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := exec.Command(otaInitScriptPath, "stop").Run(); err != nil {
+		return fmt.Errorf("stop ota daemon: %w", err)
+	}
+	return nil
 }
 
 func splitCommandAndFlags(args []string) (string, []string) {

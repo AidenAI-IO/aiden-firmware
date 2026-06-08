@@ -111,6 +111,9 @@ const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
 const char* kOtaInitScript = "/etc/init.d/S54ota";
 const char* kAgentLogPath = "/var/log/agent/agent.log";
+const char* kOtaBin = "/oem/usr/bin/ota";
+const char* kEnvRunBin = "/oem/usr/bin/aiden-env-run";
+const char* kOtaLogPath = "/var/log/ota/ota.log";
 const char* kAgentPortHost = "127.0.0.1";
 const int kDefaultAgentPort = 8080;
 const int kAgentStatusCommandTimeoutMs = 1500;
@@ -118,6 +121,8 @@ const size_t kAgentStatusLogReadSize = 16 * 1024;
 const size_t kAgentStatusLogDisplaySize = 4096;
 const size_t kAgentLogReadSize = 64 * 1024;
 const size_t kAgentLogDisplaySize = 48 * 1024;
+const size_t kOtaLogReadSize = 128 * 1024;
+const size_t kOtaLogDisplaySize = 96 * 1024;
 const size_t kMaxHttpHeaderSize = 8 * 1024;
 const size_t kMaxHttpBodySize = 64 * 1024;
 const int kClientReadTimeoutSeconds = 5;
@@ -1299,6 +1304,31 @@ void schedule_ota_restart() {
     schedule_init_script_restart(kOtaInitScript);
 }
 
+bool schedule_ota_check_now(std::string* error) {
+    std::string log_path = kOtaLogPath;
+    std::string log_dir = log_path.substr(0, log_path.rfind('/'));
+    std::string cmd =
+        "(mkdir -p " + shell_quote(log_dir) + "; "
+        "echo '[config_web] ota check-now requested' >> " + shell_quote(log_path) + "; "
+        "if [ -x " + shell_quote(kEnvRunBin) + " ]; then "
+        + shell_quote(kEnvRunBin) + " " + shell_quote(kOtaBin) + " check-now >> " + shell_quote(log_path) + " 2>&1; "
+        "else "
+        + shell_quote(kOtaBin) + " check-now >> " + shell_quote(log_path) + " 2>&1; "
+        "fi; "
+        "rc=$?; echo \"[config_web] ota check-now exited rc=$rc\" >> " + shell_quote(log_path) +
+        ") >/dev/null 2>&1 &";
+    int rc = system(cmd.c_str());
+    if (rc != 0) {
+        if (error) {
+            std::ostringstream oss;
+            oss << "failed to start ota check-now: system rc=" << rc;
+            *error = oss.str();
+        }
+        return false;
+    }
+    return true;
+}
+
 void schedule_poweroff() {
     int rc = system("(PATH=/sbin:/bin:/usr/sbin:/usr/bin; sync; sleep 1; poweroff) >/dev/null 2>&1 &");
     (void)rc;
@@ -1626,11 +1656,11 @@ std::string trim_for_display(const std::string& text, size_t max_size) {
     return trimmed.substr(start);
 }
 
-AgentLogSnapshot read_agent_log_snapshot() {
+AgentLogSnapshot read_log_snapshot(const char* path, size_t read_size, size_t display_size) {
     AgentLogSnapshot snapshot;
-    snapshot.path = kAgentLogPath;
+    snapshot.path = path ? path : "";
 
-    FILE* f = fopen(kAgentLogPath, "r");
+    FILE* f = fopen(snapshot.path.c_str(), "r");
     if (!f) {
         snapshot.error = strerror(errno);
         return snapshot;
@@ -1652,8 +1682,8 @@ AgentLogSnapshot read_agent_log_snapshot() {
 
     snapshot.size_bytes = file_size;
     long offset = 0;
-    if (static_cast<size_t>(file_size) > kAgentLogReadSize) {
-        offset = file_size - static_cast<long>(kAgentLogReadSize);
+    if (static_cast<size_t>(file_size) > read_size) {
+        offset = file_size - static_cast<long>(read_size);
         snapshot.truncated = true;
     }
 
@@ -1682,11 +1712,19 @@ AgentLogSnapshot read_agent_log_snapshot() {
         }
     }
 
-    if (contents.size() > kAgentLogDisplaySize) {
+    if (contents.size() > display_size) {
         snapshot.truncated = true;
     }
-    snapshot.log = trim_for_display(contents, kAgentLogDisplaySize);
+    snapshot.log = trim_for_display(contents, display_size);
     return snapshot;
+}
+
+AgentLogSnapshot read_agent_log_snapshot() {
+    return read_log_snapshot(kAgentLogPath, kAgentLogReadSize, kAgentLogDisplaySize);
+}
+
+AgentLogSnapshot read_ota_log_snapshot() {
+    return read_log_snapshot(kOtaLogPath, kOtaLogReadSize, kOtaLogDisplaySize);
 }
 
 std::string lowercase_copy(const std::string& text) {
@@ -1953,7 +1991,7 @@ cJSON* agent_status_to_json(const AgentRuntimeStatus& status) {
     return root;
 }
 
-cJSON* agent_log_to_json(const AgentLogSnapshot& snapshot) {
+cJSON* log_snapshot_to_json(const AgentLogSnapshot& snapshot) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "path", snapshot.path.c_str());
     cJSON_AddBoolToObject(root, "exists", snapshot.exists ? 1 : 0);
@@ -1962,6 +2000,14 @@ cJSON* agent_log_to_json(const AgentLogSnapshot& snapshot) {
     cJSON_AddStringToObject(root, "log", snapshot.log.c_str());
     cJSON_AddStringToObject(root, "error", snapshot.error.c_str());
     return root;
+}
+
+cJSON* agent_log_to_json(const AgentLogSnapshot& snapshot) {
+    return log_snapshot_to_json(snapshot);
+}
+
+cJSON* ota_log_to_json(const AgentLogSnapshot& snapshot) {
+    return log_snapshot_to_json(snapshot);
 }
 
 cJSON* firmware_info_to_json(const Options& options) {
@@ -2041,6 +2087,27 @@ ApiResponse handle_get_agent_log() {
     cJSON_AddBoolToObject(root, "ok", 1);
     cJSON_AddItemToObject(root, "agent_log", agent_log_to_json(read_agent_log_snapshot()));
     return make_json_ok(root);
+}
+
+ApiResponse handle_get_ota_log() {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON_AddItemToObject(root, "ota_log", ota_log_to_json(read_ota_log_snapshot()));
+    return make_json_ok(root);
+}
+
+ApiResponse handle_post_ota_check_now() {
+    std::string error;
+    if (!schedule_ota_check_now(&error)) {
+        return make_json_error(500, error.empty() ? "failed to start ota check-now" : error);
+    }
+
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", 1);
+    cJSON_AddBoolToObject(response, "ota_check_now_started", 1);
+    cJSON_AddStringToObject(response, "message", "ota check-now started");
+    cJSON_AddItemToObject(response, "ota_log", ota_log_to_json(read_ota_log_snapshot()));
+    return make_json_ok(response);
 }
 
 ApiResponse handle_post_system_env(const Options& options, const std::string& body) {
@@ -3649,6 +3716,14 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "GET" && request.path == "/api/agent/logs") {
         return handle_get_agent_log();
+    }
+
+    if (request.method == "GET" && request.path == "/api/ota/logs") {
+        return handle_get_ota_log();
+    }
+
+    if (request.method == "POST" && request.path == "/api/ota/check-now") {
+        return handle_post_ota_check_now();
     }
 
     if (request.method == "GET" && request.path == "/api/config") {

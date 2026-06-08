@@ -89,6 +89,93 @@ func TestDefaultRebootIsRealUnlessDryRun(t *testing.T) {
 	}
 }
 
+func TestCheckNowStopsRunningDaemonBeforeChecking(t *testing.T) {
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	miscPath := filepath.Join(tmp, "misc.img")
+	keyPath := filepath.Join(tmp, "ota_pubkey.pem")
+	version := "20260521-120000-abcdef0"
+	buildTime := "2026-05-21T12:00:00Z"
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey() error = %v", err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0o644); err != nil {
+		t.Fatalf("WriteFile(pubkey) error = %v", err)
+	}
+	if err := ota.CreateMiscImage(miscPath, ota.DefaultMiscSize); err != nil {
+		t.Fatalf("CreateMiscImage() error = %v", err)
+	}
+	state := ota.State{
+		LastCommittedVersion:   version,
+		LastCommittedBuildTime: buildTime,
+		Slots:                  map[string]ota.SlotPartitionInfo{},
+	}
+	if err := ota.SaveState(filepath.Join(stateDir, "state.json"), state); err != nil {
+		t.Fatalf("SaveState() error = %v", err)
+	}
+
+	manifest := ota.Manifest{
+		SchemaVersion: 1,
+		Channel:       "stable",
+		Version:       version,
+		BuildTime:     buildTime,
+		Parts: []ota.ManifestPart{{
+			Name:   "boot",
+			AssetA: &ota.ManifestAsset{Name: "boot_a.img", Size: 1, SHA256: strings.Repeat("a", 64)},
+			AssetB: &ota.ManifestAsset{Name: "boot_b.img", Size: 1, SHA256: strings.Repeat("b", 64)},
+		}},
+		Signature: ota.ManifestSignature{Algorithm: "ed25519"},
+	}
+	canonical, err := ota.CanonicalManifestJSON(manifest)
+	if err != nil {
+		t.Fatalf("CanonicalManifestJSON() error = %v", err)
+	}
+	manifest.Signature.Value = hex.EncodeToString(ed25519.Sign(priv, canonical))
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("Marshal(manifest) error = %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/manifest.json" {
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+		_, _ = w.Write(manifestBytes)
+	}))
+	t.Cleanup(server.Close)
+
+	stopCalls := 0
+	oldStop := stopRunningDaemon
+	stopRunningDaemon = func() error {
+		stopCalls++
+		return nil
+	}
+	t.Cleanup(func() { stopRunningDaemon = oldStop })
+
+	var out bytes.Buffer
+	err = run([]string{
+		"check-now",
+		"--state-dir", stateDir,
+		"--misc", miscPath,
+		"--manifest-url", server.URL + "/manifest.json",
+		"--public-key", keyPath,
+	}, &out)
+	if err != nil {
+		t.Fatalf("run(check-now) error = %v", err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("stopCalls = %d, want 1", stopCalls)
+	}
+	if !strings.Contains(out.String(), `"NoUpdate":true`) {
+		t.Fatalf("output = %q, want no update", out.String())
+	}
+}
+
 func TestParseConfigFlagsRejectsInvalidUpdaterConfig(t *testing.T) {
 	err := run([]string{"status", "--config", filepath.Join(t.TempDir(), "missing.json"), "--switch-tries", "16"}, &bytes.Buffer{})
 	if err == nil {

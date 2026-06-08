@@ -125,6 +125,45 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
+TEST_CASE("config web exposes ota check-now and live ota logs") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("\"/api/ota/check-now\"") != std::string::npos);
+    CHECK(source.find("\"/api/ota/logs\"") != std::string::npos);
+    CHECK(source.find("handle_post_ota_check_now") != std::string::npos);
+    CHECK(source.find("handle_get_ota_log") != std::string::npos);
+    CHECK(source.find("read_ota_log_snapshot") != std::string::npos);
+    CHECK(source.find("/var/log/ota/ota.log") != std::string::npos);
+    CHECK(source.find("/oem/usr/bin/ota") != std::string::npos);
+    CHECK(source.find("check-now") != std::string::npos);
+    CHECK(source.find("tail -f") == std::string::npos);
+
+    CHECK(html.find("OTA 更新") != std::string::npos);
+    CHECK(html.find("otaCheckNowBtn") != std::string::npos);
+    CHECK(html.find("OTA 实时日志") != std::string::npos);
+    CHECK(html.find("otaLogText") != std::string::npos);
+    CHECK(html.find("otaLogMeta") != std::string::npos);
+    CHECK(html.find("triggerOtaCheckNow") != std::string::npos);
+    CHECK(html.find("refreshOtaLog") != std::string::npos);
+    CHECK(html.find("/api/ota/check-now") != std::string::npos);
+    CHECK(html.find("/api/ota/logs") != std::string::npos);
+    CHECK(html.find("setInterval(function(){refreshOtaLog(false);},2000)") != std::string::npos);
+}
+
 TEST_CASE("config web exposes screenshot pruning config fields") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
