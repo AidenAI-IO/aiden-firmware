@@ -99,3 +99,22 @@ TEST_CASE("SileroWeights rejects unknown SVLW versions with the version number")
 
     std::remove(path.c_str());
 }
+
+TEST_CASE("SileroLSTMDecoder uses PyTorch LSTMCell gate order") {
+    aiden_vad::RecurrentWeights weights;
+    weights.lstm_B[0] = 10.0f;                         // input gate
+    weights.lstm_B[aiden_vad::kHidden] = -10.0f;        // forget gate
+    weights.lstm_B[2 * aiden_vad::kHidden] = 1.0f;      // cell gate
+    weights.lstm_B[3 * aiden_vad::kHidden] = 10.0f;     // output gate
+    weights.dec_weight[0] = 10.0f;
+    weights.dec_bias = -5.0f;
+
+    aiden_vad::SileroLSTMDecoder decoder;
+    std::string err;
+    REQUIRE(decoder.init(&weights, &err));
+
+    std::vector<float> encoder_out(aiden_vad::kHidden, 0.0f);
+    const float probability = decoder.infer(encoder_out.data());
+
+    CHECK(probability > 0.5f);
+}
