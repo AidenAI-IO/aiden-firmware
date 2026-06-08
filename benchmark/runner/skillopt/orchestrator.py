@@ -44,6 +44,8 @@ class OptimizationConfig:
     suite: Suite
     train_tasks: list[TaskSpec]
     selection_tasks: list[TaskSpec]
+    train_suite: Suite | None = None
+    selection_suite: Suite | None = None
     budget: int = 10                     # max optimization steps
     edit_budget: int = 4                 # edits per step
     min_delta: float = DEFAULT_MIN_DELTA
@@ -96,11 +98,13 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
     client = AgentClient(base_url=cfg.agent_url)
     run_root = cfg.artifact_root / cfg.run_id
     run_root.mkdir(parents=True, exist_ok=True)
+    train_suite = cfg.train_suite or cfg.suite
+    selection_suite = cfg.selection_suite or cfg.suite
     try:
         # Baseline eval on selection split
         print(f"[baseline] Evaluating original skill on {len(cfg.selection_tasks)} selection tasks...")
         _, sel_rollouts = _rollout_tasks(
-            client, cfg.suite, cfg.selection_tasks, cfg.skill_name,
+            client, selection_suite, cfg.selection_tasks, cfg.skill_name,
             cfg.run_id, "baseline_selection", run_root, cfg.judge_cfg,
         )
         current_score = aggregate_score(sel_rollouts)
@@ -115,7 +119,7 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
         for step_idx in range(1, cfg.budget + 1):
             print(f"\n[step {step_idx}] Train rollout on {len(cfg.train_tasks)} tasks...")
             _, train_rollouts = _rollout_tasks(
-                client, cfg.suite, cfg.train_tasks, cfg.skill_name,
+                client, train_suite, cfg.train_tasks, cfg.skill_name,
                 cfg.run_id, f"step_{step_idx:02d}_train", run_root, cfg.judge_cfg,
             )
             train_score = aggregate_score(train_rollouts)
@@ -158,7 +162,7 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
             print(f"[step {step_idx}] Selection eval with candidate...")
             with with_skill_override(client, skill_path, candidate):
                 _, cand_rollouts = _rollout_tasks(
-                    client, cfg.suite, cfg.selection_tasks, cfg.skill_name,
+                    client, selection_suite, cfg.selection_tasks, cfg.skill_name,
                     cfg.run_id, f"step_{step_idx:02d}_selection", run_root, cfg.judge_cfg,
                 )
             candidate_score_agg = aggregate_score(cand_rollouts)

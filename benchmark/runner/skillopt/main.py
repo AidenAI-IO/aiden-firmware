@@ -42,13 +42,25 @@ def _resolve_skill_path(skill_name: str) -> Path:
     return roots[0] / skill_name / "SKILL.md"
 
 
+def _resolve_suite_path(suite_name: str) -> Path:
+    rel = suite_name if suite_name.endswith(".json") else f"{suite_name}.json"
+    return REPO_ROOT / "benchmark" / "suites" / rel
+
+
 def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m runner.skillopt",
         description="SkillOpt: optimize an Aiden skill through rollout reflection.",
     )
     parser.add_argument("--skill", required=True, help="Skill name (e.g. device-operator)")
-    parser.add_argument("--suite", required=True, help="Suite name (e.g. phone_control_v1)")
+    parser.add_argument("--suite", help="Suite name to split 70/30 (e.g. phone_control_v1)")
+    parser.add_argument("--train-suite", help="Explicit train suite name (e.g. skillopt/device_operator_skillopt_v1)")
+    parser.add_argument(
+        "--selection-suite",
+        "--validation-suite",
+        dest="selection_suite",
+        help="Explicit selection/validation suite name",
+    )
     parser.add_argument("--budget", type=int, default=10, help="Max optimization steps")
     parser.add_argument("--edit-budget", type=int, default=4, help="Edits per step")
     parser.add_argument("--min-delta", type=float, default=0.03, help="Validation gate threshold")
@@ -88,6 +100,12 @@ def cli(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    if args.suite and (args.train_suite or args.selection_suite):
+        parser.error("--suite cannot be combined with --train-suite/--selection-suite")
+    if bool(args.train_suite) != bool(args.selection_suite):
+        parser.error("--train-suite and --selection-suite must be provided together")
+    if not args.suite and not args.train_suite:
+        parser.error("either --suite or --train-suite/--selection-suite is required")
 
     # Resolve skill path
     skill_path = _resolve_skill_path(args.skill)
@@ -95,25 +113,53 @@ def cli(argv: list[str] | None = None) -> int:
         print(f"Error: skill not found: {skill_path}", file=sys.stderr)
         return 2
 
-    # Load suite
-    suite_path = REPO_ROOT / "benchmark" / "suites" / f"{args.suite}.json"
-    if not suite_path.exists():
-        print(f"Error: suite not found: {suite_path}", file=sys.stderr)
-        return 2
-    suite = load_suite(suite_path)
+    train_suite = None
+    selection_suite = None
+    if args.train_suite:
+        train_suite_path = _resolve_suite_path(args.train_suite)
+        selection_suite_path = _resolve_suite_path(args.selection_suite)
+        if not train_suite_path.exists():
+            print(f"Error: train suite not found: {train_suite_path}", file=sys.stderr)
+            return 2
+        if not selection_suite_path.exists():
+            print(f"Error: selection suite not found: {selection_suite_path}", file=sys.stderr)
+            return 2
+        train_suite = load_suite(train_suite_path)
+        selection_suite = load_suite(selection_suite_path)
+        suite = train_suite
+        train_tasks = train_suite.tasks
+        selection_tasks = selection_suite.tasks
+        if not train_tasks:
+            print("Error: train suite has no tasks", file=sys.stderr)
+            return 2
+        if not selection_tasks:
+            print("Error: selection suite has no tasks", file=sys.stderr)
+            return 2
+    else:
+        # Load suite and split train/selection (70/30)
+        suite_path = _resolve_suite_path(args.suite)
+        if not suite_path.exists():
+            print(f"Error: suite not found: {suite_path}", file=sys.stderr)
+            return 2
+        suite = load_suite(suite_path)
 
-    # Split train/selection (70/30)
-    n_train = int(len(suite.tasks) * 0.7)
-    if n_train == 0:
-        n_train = max(1, len(suite.tasks) - 1)
-    train_tasks = suite.tasks[:n_train]
-    selection_tasks = suite.tasks[n_train:]
-    if not selection_tasks:
-        print("Error: suite too small to split train/selection", file=sys.stderr)
-        return 2
+        n_train = int(len(suite.tasks) * 0.7)
+        if n_train == 0:
+            n_train = max(1, len(suite.tasks) - 1)
+        train_tasks = suite.tasks[:n_train]
+        selection_tasks = suite.tasks[n_train:]
+        if not selection_tasks:
+            print("Error: suite too small to split train/selection", file=sys.stderr)
+            return 2
 
     print(f"Skill: {args.skill}")
-    print(f"Suite: {args.suite} ({len(train_tasks)} train, {len(selection_tasks)} selection)")
+    if args.train_suite:
+        print(
+            f"Suites: train={args.train_suite} ({len(train_tasks)} tasks), "
+            f"selection={args.selection_suite} ({len(selection_tasks)} tasks)"
+        )
+    else:
+        print(f"Suite: {args.suite} ({len(train_tasks)} train, {len(selection_tasks)} selection)")
     print(f"Budget: {args.budget} steps, {args.edit_budget} edits/step, min_delta={args.min_delta}")
     print(f"Optimizer: {args.optimizer_model}")
     print(f"Judge: {args.judge_model if not args.no_judge else 'disabled'}")
@@ -129,6 +175,8 @@ def cli(argv: list[str] | None = None) -> int:
         suite=suite,
         train_tasks=train_tasks,
         selection_tasks=selection_tasks,
+        train_suite=train_suite,
+        selection_suite=selection_suite,
         budget=args.budget,
         edit_budget=args.edit_budget,
         min_delta=args.min_delta,

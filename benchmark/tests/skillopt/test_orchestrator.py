@@ -27,13 +27,13 @@ def _task(task_id: str) -> TaskSpec:
     )
 
 
-def _suite(tmp_path: Path) -> Suite:
+def _suite(tmp_path: Path, name: str = "s") -> Suite:
     return Suite(
-        name="s",
+        name=name,
         global_reset={},
         tasks=[],
         sha256="sha",
-        source_path=tmp_path / "suite.json",
+        source_path=tmp_path / f"{name}.json",
     )
 
 
@@ -118,3 +118,37 @@ def test_optimize_skill_closes_client_when_rollout_raises(monkeypatch, tmp_path)
 
     assert len(clients) == 1
     assert clients[0].closed
+
+
+def test_optimize_skill_uses_explicit_train_and_selection_suites(monkeypatch, tmp_path):
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text("base", encoding="utf-8")
+    seen = []
+
+    def fake_rollout_tasks(client, suite, tasks, skill_name, rollout_run_id, phase, phase_artifact_root, judge_cfg):
+        seen.append((phase, suite.name, [task.id for task in tasks]))
+        return [], [RolloutResult(id=phase, hard=0, soft=0.0)]
+
+    monkeypatch.setattr(orchestrator, "AgentClient", DummyClient)
+    monkeypatch.setattr(orchestrator, "_rollout_tasks", fake_rollout_tasks)
+    monkeypatch.setattr(orchestrator, "run_reflect", lambda *args, **kwargs: [])
+
+    cfg = orchestrator.OptimizationConfig(
+        skill_name="device-operator",
+        skill_path=skill_path,
+        suite=_suite(tmp_path, "train_suite"),
+        train_suite=_suite(tmp_path, "train_suite"),
+        selection_suite=_suite(tmp_path, "validation_suite"),
+        train_tasks=[_task("train_task")],
+        selection_tasks=[_task("validation_task")],
+        budget=1,
+        run_id="run-001",
+        artifact_root=tmp_path / "runs" / "skillopt",
+    )
+
+    orchestrator.optimize_skill(cfg)
+
+    assert seen == [
+        ("baseline_selection", "validation_suite", ["validation_task"]),
+        ("step_01_train", "train_suite", ["train_task"]),
+    ]

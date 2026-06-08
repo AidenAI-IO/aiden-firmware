@@ -1,6 +1,7 @@
 """Unit tests for skill_override.py."""
 import pytest
 
+from runner.agent_client import AgentRequestError
 from runner.skillopt.skill_override import with_skill_override
 
 
@@ -18,6 +19,17 @@ class RestoreFailingClient(RecordingClient):
         self.calls += 1
         if self.calls == 2:
             raise RuntimeError("reload unavailable")
+        return {"path": path, "timeout": timeout}
+
+
+class ReloadNotFoundClient:
+    def __init__(self):
+        self.paths: list[str] = []
+
+    def _post(self, path: str, timeout: int):
+        self.paths.append(path)
+        if path == "/api/skills/reload":
+            raise AgentRequestError("HTTP 404: endpoint not found")
         return {"path": path, "timeout": timeout}
 
 
@@ -45,3 +57,20 @@ def test_restore_reload_failure_is_reported_after_disk_restore(tmp_path):
             assert skill_path.read_text(encoding="utf-8") == "candidate"
 
     assert skill_path.read_text(encoding="utf-8") == "original"
+
+
+def test_reload_falls_back_to_clear_when_reload_endpoint_missing(tmp_path):
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text("original", encoding="utf-8")
+    client = ReloadNotFoundClient()
+
+    with with_skill_override(client, skill_path, "candidate"):
+        assert skill_path.read_text(encoding="utf-8") == "candidate"
+
+    assert skill_path.read_text(encoding="utf-8") == "original"
+    assert client.paths == [
+        "/api/skills/reload",
+        "/api/clear",
+        "/api/skills/reload",
+        "/api/clear",
+    ]

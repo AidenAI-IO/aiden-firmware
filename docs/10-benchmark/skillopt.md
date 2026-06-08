@@ -33,7 +33,8 @@ cd src/agent
 cd benchmark
 python -m runner.skillopt \
     --skill device-operator \
-    --suite phone_control_v1 \
+    --train-suite skillopt/device_operator_skillopt_v1 \
+    --validation-suite skillopt/device_operator_skillopt_validation_v1 \
     --budget 10 \
     --output /tmp/device-operator-optimized.md
 
@@ -121,7 +122,8 @@ def with_candidate_skill(skill_path: Path, candidate: str):
 
 **Phase 1 直接复用现有 benchmark suite**，不让 LLM 生成：
 
-- `benchmark/suites/phone_control_v1.json` — 用于优化 device-operator
+- `benchmark/suites/skillopt/device_operator_skillopt_v1.json` — 用于优化 device-operator
+- `benchmark/suites/skillopt/device_operator_skillopt_validation_v1.json` — device-operator held-out validation
 - `benchmark/suites/memory_v1.json` — 用于优化 memory 相关 skill
 - 其他 suite 按需
 
@@ -138,8 +140,8 @@ selection_tasks = suite.tasks[int(len(suite.tasks) * 0.7):]
 ```bash
 python -m runner.skillopt \
     --skill device-operator \
-    --train-suite phone_control_v1 \
-    --selection-suite phone_control_v1_held_out \
+    --train-suite skillopt/device_operator_skillopt_v1 \
+    --validation-suite skillopt/device_operator_skillopt_validation_v1 \
     ...
 ```
 
@@ -258,7 +260,7 @@ runs/skillopt-<run_id>/
 ```bash
 python -m runner.skillopt \
     --skill <skill-name> \
-    --suite <suite-name> \
+    [--suite <suite-name> | --train-suite <suite-name> --validation-suite <suite-name>] \
     [--budget 10] \
     [--edit-budget 4] \
     [--min-delta 0.05] \

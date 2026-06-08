@@ -12,7 +12,18 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from runner.agent_client import AgentClient
+from runner.agent_client import AgentClient, AgentRequestError
+
+
+def _reload_skills(client: AgentClient) -> None:
+    try:
+        client._post("/api/skills/reload", timeout=5)
+    except AgentRequestError as exc:
+        if "HTTP 404" not in str(exc):
+            raise
+        # Older board agents do not expose /api/skills/reload, but clearing the
+        # run state makes the next skill_read observe the updated on-disk skill.
+        client._post("/api/clear", timeout=30)
 
 
 @contextmanager
@@ -49,13 +60,13 @@ def with_skill_override(
         # Write candidate
         skill_path.write_text(candidate_content, encoding="utf-8")
         # Trigger reload so the next chat sees the candidate
-        client._post("/api/skills/reload", timeout=5)
+        _reload_skills(client)
         yield
     finally:
         # Restore original
         shutil.move(str(backup_path), str(skill_path))
         # Reload again so future calls see the restored skill
         try:
-            client._post("/api/skills/reload", timeout=5)
+            _reload_skills(client)
         except Exception as exc:
             raise RuntimeError("skill reload failed after disk restore") from exc
