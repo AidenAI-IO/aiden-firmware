@@ -1,6 +1,9 @@
 package ota
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,6 +113,65 @@ func TestWriterRejectsTarGzImageNameMismatch(t *testing.T) {
 	}
 }
 
+func TestWriterRejectsMultiEntryTarGzBeforeWriting(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "rootfs_b"), []byte("old rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile(block) error = %v", err)
+	}
+	src := filepath.Join(dir, "rootfs.img.tar.gz")
+	archive := testTarGzWithEntries(t, []testTarEntry{
+		{name: "rootfs.img", body: []byte("rootfs image")},
+		{name: "extra.img", body: []byte("extra image")},
+	})
+	if err := os.WriteFile(src, archive, 0o644); err != nil {
+		t.Fatalf("WriteFile(src) error = %v", err)
+	}
+	w := PartitionWriter{BlockDir: dir, ActiveSlot: SlotA, PartitionSizes: map[string]int64{"rootfs_b": 100}}
+	if err := w.WritePart("rootfs", SlotB, src); err == nil || !strings.Contains(err.Error(), "multiple image files") {
+		t.Fatalf("WritePart() error = %v, want multiple image rejection", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "rootfs_b"))
+	if err != nil {
+		t.Fatalf("ReadFile(block) error = %v", err)
+	}
+	if string(got) != "old rootfs" {
+		t.Fatalf("block content = %q, want unchanged", got)
+	}
+}
+
+func TestWriterRejectsShortRawImageRead(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "boot_b"), []byte{}, 0o644); err != nil {
+		t.Fatalf("WriteFile(block) error = %v", err)
+	}
+	src := filepath.Join(dir, "boot_b.img")
+	image := bytes.Repeat([]byte("x"), 100*1024)
+	if err := os.WriteFile(src, image, 0o644); err != nil {
+		t.Fatalf("WriteFile(src) error = %v", err)
+	}
+	w := PartitionWriter{BlockDir: dir, ActiveSlot: SlotA, PartitionSizes: map[string]int64{"boot_b": int64(len(image))}}
+	truncated := false
+	var reports []WriteProgress
+	err := w.WritePartWithProgress("boot", SlotB, src, func(progress WriteProgress) {
+		reports = append(reports, progress)
+		if progress.Complete || truncated {
+			return
+		}
+		truncated = true
+		if truncateErr := os.Truncate(src, progress.Bytes); truncateErr != nil {
+			t.Fatalf("Truncate(src) error = %v", truncateErr)
+		}
+	})
+	if err == nil || !strings.Contains(err.Error(), "written bytes") {
+		t.Fatalf("WritePartWithProgress() error = %v, want written byte mismatch", err)
+	}
+	for _, report := range reports {
+		if report.Complete {
+			t.Fatalf("progress report = %+v, want no completion on short read", report)
+		}
+	}
+}
+
 func TestWriterReportsProgressAndCompletion(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "boot_b"), []byte{}, 0o644); err != nil {
@@ -210,4 +272,31 @@ func TestWriterPreservesDefaultLimitsWithPartialOverrides(t *testing.T) {
 	if err := w.WritePart("boot", SlotB, src); err == nil || !strings.Contains(err.Error(), "larger than partition") {
 		t.Fatalf("partial override oversize error = %v", err)
 	}
+}
+
+type testTarEntry struct {
+	name string
+	body []byte
+}
+
+func testTarGzWithEntries(t *testing.T, entries []testTarEntry) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, entry := range entries {
+		if err := tw.WriteHeader(&tar.Header{Name: entry.name, Mode: 0o644, Size: int64(len(entry.body))}); err != nil {
+			t.Fatalf("WriteHeader(%s) error = %v", entry.name, err)
+		}
+		if _, err := tw.Write(entry.body); err != nil {
+			t.Fatalf("Write(%s) error = %v", entry.name, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close(tar) error = %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("Close(gzip) error = %v", err)
+	}
+	return buf.Bytes()
 }
