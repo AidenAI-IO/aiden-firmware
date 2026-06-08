@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -221,6 +222,14 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/phone-bridge/results", s.handlePhoneBridgeResults)
 	mux.HandleFunc("/api/phone-bridge/results/", s.handlePhoneBridgeResults)
 
+	if isLoopbackServerAddr(s.addr) {
+		mux.HandleFunc("/api/screenshot.jpg", s.handleScreenshotJPEG)
+
+		// Coordinate debug tool exposes live screen data, so keep it local-only.
+		mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
+		mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
+	}
+
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
 
@@ -261,6 +270,19 @@ func (s *Server) Start() error {
 		}
 		return <-errCh
 	}
+}
+
+func isLoopbackServerAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // handleChat handles chat requests.
@@ -1027,7 +1049,7 @@ func (s *Server) handleAudioRecordStop(w http.ResponseWriter, r *http.Request) {
 }
 
 const (
-	webRecordingDrainTimeout       = 7 * time.Second
+	webRecordingDrainTimeout        = 7 * time.Second
 	webRecordingStaleCleanupTimeout = 200 * time.Millisecond
 )
 
@@ -1496,8 +1518,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(webUI))
+	html := webUI
+	if !isLoopbackServerAddr(s.addr) {
+		html = strings.ReplaceAll(html, coordinateDebugNavLink, "")
+	}
+	w.Write([]byte(html))
 }
+
+const coordinateDebugNavLink = `<a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 坐标调试</a>`
 
 const webUI = `<!DOCTYPE html>
 <html lang="en">
@@ -2372,6 +2400,7 @@ const webUI = `<!DOCTYPE html>
             <header class="topbar">
                 <h1>Aiden Agent</h1>
                 <div class="topbar-actions">
+                    <a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 坐标调试</a>
                     <button type="button" class="new-chat-btn" onclick="clearHistory()">New chat</button>
                     <button type="button" class="new-chat-btn" onclick="resetAllMemory()" style="background:#c0392b;">Reset all memory</button>
                 </div>
