@@ -355,7 +355,7 @@ func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	server.registerActiveRun("req-1", cancel)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"req-1"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":" req-1 "}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -376,6 +376,78 @@ func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
 	}
 	if resp.Status != "canceled" || resp.RequestID != "req-1" {
 		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+}
+
+func TestServerHandleChatAsyncDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
+	server := &Server{
+		activeRuns:     make(map[string]context.CancelFunc),
+		pendingResults: map[string]*chatPendingResult{"req-1": {}},
+		history:        make([]Message, 0),
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":" req-1 "}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := server.historySnapshot(); len(got) != 0 {
+		t.Fatalf("duplicate request appended history: %#v", got)
+	}
+}
+
+func TestServerHandleChatStreamDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
+	server := &Server{
+		activeRuns: make(map[string]context.CancelFunc),
+		history:    make([]Message, 0),
+	}
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.registerActiveRun("req-1", cancel)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":" req-1 "}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := server.historySnapshot(); len(got) != 0 {
+		t.Fatalf("duplicate stream request appended history: %#v", got)
+	}
+}
+
+func TestServerSpeakToolDescriptionUsesCallerContext(t *testing.T) {
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	server := &Server{
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		server.speakToolDescription(ctx, "我先读取当前音量。")
+		close(done)
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(500 * time.Millisecond):
+		cancel()
+		t.Fatal("tool description TTS was not started")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("tool description TTS did not stop after caller context cancellation")
 	}
 }
 

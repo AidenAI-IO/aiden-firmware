@@ -317,6 +317,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
+	req.RequestID = strings.TrimSpace(req.RequestID)
 
 	inputText, runAttachments, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
@@ -324,14 +325,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add user message to history
 	userMsg := Message{
 		Type:        "user",
 		Content:     inputText,
 		Attachments: historyAttachments,
 		Timestamp:   time.Now(),
 	}
-	s.appendHistory(userMsg)
 
 	// Async path — when the client provides a request_id
 	if req.RequestID != "" {
@@ -340,6 +339,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sync path — legacy behaviour for web UI and clients without request_id
+	s.appendHistory(userMsg)
 	s.handleChatSync(w, r, req, inputText, runAttachments)
 }
 
@@ -453,6 +453,7 @@ func (s *Server) handleChatAsync(
 		http.Error(w, "request_id already in use", http.StatusConflict)
 		return
 	}
+	s.appendHistory(userMsg)
 
 	// Return {request_id} immediately
 	w.Header().Set("Content-Type", "application/json")
@@ -474,8 +475,6 @@ func (s *Server) handleChatAsync(
 			})
 		}()
 
-		bgCtx := context.Background()
-
 		// Event handler pushes intermediate messages into the pending result
 		// so the client can poll them in near-realtime.
 		eventHandler := func(event RunEvent) {
@@ -496,7 +495,7 @@ func (s *Server) handleChatAsync(
 			pending.mu.Unlock()
 
 			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
-				go s.speakToolDescription(bgCtx, event.Description)
+				go s.speakToolDescription(runCtx, event.Description)
 			}
 		}
 
@@ -513,7 +512,7 @@ func (s *Server) handleChatAsync(
 
 		if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
 			if ttsManager != nil {
-				stream, err := beginManagedTTSStream(bgCtx, ttsManager, s.audioClient, s.runtime.config)
+				stream, err := beginManagedTTSStream(runCtx, ttsManager, s.audioClient, s.runtime.config)
 				if err != nil {
 					if s.logger != nil {
 						s.logger.Warn("TTS BeginStream failed: %v", err)
@@ -571,7 +570,7 @@ func (s *Server) handleChatAsync(
 				if s.logger != nil {
 					s.logger.Info("TTS playback: %q", text)
 				}
-				if err := s.speakText(bgCtx, text, 0); err != nil && s.logger != nil {
+				if err := s.speakText(runCtx, text, 0); err != nil && s.logger != nil {
 					s.logger.Error("TTS playback failed: %v", err)
 				}
 			}(result.Output)
@@ -788,6 +787,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
+	req.RequestID = strings.TrimSpace(req.RequestID)
 
 	inputText, runAttachments, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
@@ -807,7 +807,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		Attachments: historyAttachments,
 		Timestamp:   time.Now(),
 	}
-	s.appendHistory(userMessage)
 
 	if s.logger != nil {
 		s.logger.Info("Chat request: %s attachments=%d stream=ndjson", inputText, len(runAttachments))
@@ -829,6 +828,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		}()
 		ctx = runCtx
 	}
+	s.appendHistory(userMessage)
 
 	result, err := s.runtime.Run(ctx, RunRequest{
 		Input:          inputText,
@@ -924,7 +924,10 @@ func (s *Server) speakToolDescription(ctx context.Context, description string) {
 	if description == "" || s.audioClient == nil {
 		return
 	}
-	ttsCtx, cancel := context.WithTimeout(context.Background(), toolDescriptionSpeechTimeout)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ttsCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
 	defer cancel()
 	if s.logger != nil {
 		s.logger.Info("Tool description TTS playback: %q", description)
