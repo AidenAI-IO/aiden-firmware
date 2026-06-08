@@ -165,13 +165,27 @@ func TestManifestValidationAllowsOnlyCanonicalPartNames(t *testing.T) {
 func TestManifestValidationAllowsTarGzCompressedImageAssets(t *testing.T) {
 	manifest := validTestManifest()
 	manifest.Parts[0].AssetA.Name = "boot_a.img.tar.gz"
+	manifest.Parts[0].AssetA.ImageSHA256 = testHashA
 	manifest.Parts[0].AssetB.Name = "boot_b.img.tar.gz"
+	manifest.Parts[0].AssetB.ImageSHA256 = testHashB
 	manifest.Parts[1].AssetA.Name = "oem_a.img.tar.gz"
+	manifest.Parts[1].AssetA.ImageSHA256 = testHashA
 	manifest.Parts[1].AssetB.Name = "oem_b.img.tar.gz"
+	manifest.Parts[1].AssetB.ImageSHA256 = testHashB
 	manifest.Parts[2].Asset.Name = "rootfs.img.tar.gz"
+	manifest.Parts[2].Asset.ImageSHA256 = testHashC
 
 	if err := manifest.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestManifestValidationRequiresImageSHA256ForTarGzAssets(t *testing.T) {
+	manifest := validTestManifest()
+	manifest.Parts[0].AssetB.Name = "boot_b.img.tar.gz"
+
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "image_sha256") {
+		t.Fatalf("Validate() error = %v, want missing image_sha256 rejection", err)
 	}
 }
 

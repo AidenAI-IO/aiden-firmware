@@ -336,6 +336,10 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		}
 		dst := filepath.Join(u.config.DownloadDir, asset.Name)
 		if u.cachedDownloadVerified(dst, asset) {
+			if err := u.verifyDownloadedImage(dst, asset); err != nil {
+				u.recordError("verify", err)
+				return UpdateResult{}, err
+			}
 			selectedAssets[part.Name] = asset
 			downloaded[part.Name] = dst
 			continue
@@ -354,6 +358,10 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 		u.logf("ota verify: %s sha256 ok", asset.Name)
+		if err := u.verifyDownloadedImage(dst, asset); err != nil {
+			u.recordError("verify", err)
+			return UpdateResult{}, err
+		}
 		selectedAssets[part.Name] = asset
 		downloaded[part.Name] = dst
 	}
@@ -369,7 +377,7 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 	state.DownloadedAssets = downloaded
 	state.DownloadedHashes = map[string]string{}
 	for part, asset := range selectedAssets {
-		state.DownloadedHashes[part] = asset.SHA256
+		state.DownloadedHashes[part] = partitionSHA256ForAsset(asset)
 	}
 	if state.Slots == nil {
 		state.Slots = map[string]SlotPartitionInfo{}
@@ -480,6 +488,17 @@ func (u *Updater) cachedDownloadVerified(path string, asset ManifestAsset) bool 
 	}
 	u.logf("ota download: %s skipped; cached file verified dst=%s", asset.Name, path)
 	return true
+}
+
+func (u *Updater) verifyDownloadedImage(path string, asset ManifestAsset) error {
+	if asset.ImageSHA256 == "" {
+		return nil
+	}
+	if err := verifyPartitionImage(path, asset.ImageSHA256); err != nil {
+		return fmt.Errorf("%s image_sha256: %w", asset.Name, err)
+	}
+	u.logf("ota verify: %s image_sha256 ok", asset.Name)
+	return nil
 }
 
 func (u *Updater) ProcessPendingHealth(ctx context.Context) error {

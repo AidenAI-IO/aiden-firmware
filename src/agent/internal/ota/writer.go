@@ -3,6 +3,8 @@ package ota
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -117,6 +119,11 @@ func openTarGzPartitionImage(path string) (io.ReadCloser, int64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	expectedImageName := expectedTarGzImageName(path)
+	if !strings.HasSuffix(strings.ToLower(expectedImageName), ".img") {
+		_ = file.Close()
+		return nil, 0, fmt.Errorf("tar.gz image %s does not name an .img file", path)
+	}
 	gz, err := gzip.NewReader(file)
 	if err != nil {
 		_ = file.Close()
@@ -143,13 +150,40 @@ func openTarGzPartitionImage(path string) (io.ReadCloser, int64, error) {
 			_ = file.Close()
 			return nil, 0, fmt.Errorf("tar.gz image %s contains unsupported entry %q", path, header.Name)
 		}
-		if !strings.HasSuffix(strings.ToLower(filepath.Base(header.Name)), ".img") {
+		if filepath.Base(header.Name) != expectedImageName {
 			_ = gz.Close()
 			_ = file.Close()
-			return nil, 0, fmt.Errorf("tar.gz image %s entry %q is not an .img file", path, header.Name)
+			return nil, 0, fmt.Errorf("tar.gz image %s entry %q, want %s", path, header.Name, expectedImageName)
 		}
 		return &tarGzImageReader{path: path, file: file, gz: gz, tar: tr}, header.Size, nil
 	}
+}
+
+func expectedTarGzImageName(path string) string {
+	base := filepath.Base(path)
+	return base[:len(base)-len(".tar.gz")]
+}
+
+func verifyPartitionImage(path string, expectedSHA256 string) error {
+	src, _, err := openPartitionImage(path)
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	copyErr := error(nil)
+	if _, copyErr = io.Copy(h, src); copyErr == nil {
+		copyErr = src.Close()
+	} else {
+		_ = src.Close()
+	}
+	if copyErr != nil {
+		return copyErr
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if got != expectedSHA256 {
+		return fmt.Errorf("image sha256 %s, want %s", got, expectedSHA256)
+	}
+	return nil
 }
 
 type tarGzImageReader struct {
