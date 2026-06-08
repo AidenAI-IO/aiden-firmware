@@ -298,6 +298,7 @@ func (r *Runtime) markInterruptedEpisodesBestEffort() {
 		return
 	}
 	r.persistInterruptedEpisodeHistoryBestEffort(plane, episodes)
+	r.exportInterruptedEpisodesBestEffort(episodes)
 	if r.logger != nil {
 		r.logger.Warn("[memory] marked %d running task episode(s) as interrupted", len(episodes))
 	}
@@ -312,6 +313,21 @@ func (r *Runtime) persistInterruptedEpisodeHistoryBestEffort(plane *FilesystemMe
 		if err := store.Append(context.Background(), interruptedEpisodeStatusMessage(episode)); err != nil && r.logger != nil {
 			r.logger.Warn("[memory] persist interrupted episode history failed: episode_id=%s error=%v", episode.ID, err)
 		}
+	}
+}
+
+func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
+	if len(episodes) == 0 {
+		return
+	}
+	for _, episode := range episodes {
+		enrichEpisodeTelemetry(&episode, r.config)
+		r.enrichEpisodeRuntimeTelemetry(&episode)
+		if episode.Extra == nil {
+			episode.Extra = map[string]interface{}{}
+		}
+		episode.Extra["interruption_source"] = "agent_restart"
+		r.exportEpisodeBestEffort(episode, nil)
 	}
 }
 
