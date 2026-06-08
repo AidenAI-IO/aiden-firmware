@@ -544,23 +544,28 @@ func (s *TaskEpisodeStore) AppendEpisodeEvent(ctx context.Context, episode TaskE
 }
 
 func (s *TaskEpisodeStore) MarkRunningEpisodesInterrupted(ctx context.Context, reason string) (int, error) {
+	episodes, err := s.MarkRunningEpisodesInterruptedWithDetails(ctx, reason)
+	return len(episodes), err
+}
+
+func (s *TaskEpisodeStore) MarkRunningEpisodesInterruptedWithDetails(ctx context.Context, reason string) ([]TaskEpisode, error) {
 	select {
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return nil, ctx.Err()
 	default:
 	}
 	if s == nil || s.rootDir == "" {
-		return 0, nil
+		return nil, nil
 	}
 	if strings.TrimSpace(reason) == "" {
 		reason = "agent stopped before the task episode completed"
 	}
 	if _, err := os.Stat(s.indexPath()); os.IsNotExist(err) {
 		if err := s.RebuildIndex(ctx); err != nil {
-			return 0, err
+			return nil, err
 		}
 	} else if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	s.mu.Lock()
@@ -568,11 +573,11 @@ func (s *TaskEpisodeStore) MarkRunningEpisodesInterrupted(ctx context.Context, r
 
 	index, err := s.loadIndex()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	changed := false
-	count := 0
+	var interrupted []TaskEpisode
 	for i := range index.Episodes {
 		entry := index.Episodes[i]
 		if entry.Status != "running" {
@@ -581,11 +586,11 @@ func (s *TaskEpisodeStore) MarkRunningEpisodesInterrupted(ctx context.Context, r
 		path := filepath.Join(s.rootDir, entry.File)
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return count, err
+			return interrupted, err
 		}
 		var episode TaskEpisode
 		if err := yaml.Unmarshal(data, &episode); err != nil {
-			return count, err
+			return interrupted, err
 		}
 		episode.Status = "interrupted"
 		episode.EndedAt = now
@@ -602,21 +607,23 @@ func (s *TaskEpisodeStore) MarkRunningEpisodesInterrupted(ctx context.Context, r
 		if _, err := os.Stat(eventsPath); err == nil {
 			events, _ = readEpisodeEvents(eventsPath)
 		}
+		record := episode
+		record.Events = append([]TaskEpisodeEvent(nil), events...)
 		episode.Events = nil
 		if err := writeYAMLAtomic(path, episode); err != nil {
-			return count, err
+			return interrupted, err
 		}
 		index.Episodes[i] = s.indexEntryForEpisode(episode, dir, events)
-		count++
+		interrupted = append(interrupted, record)
 		changed = true
 	}
 	if changed {
 		index.UpdatedAt = now
 		if err := writeYAMLAtomic(s.indexPath(), index); err != nil {
-			return count, err
+			return interrupted, err
 		}
 	}
-	return count, nil
+	return interrupted, nil
 }
 
 func (s *TaskEpisodeStore) Search(ctx context.Context, query EpisodeQuery) ([]MemoryHit, error) {

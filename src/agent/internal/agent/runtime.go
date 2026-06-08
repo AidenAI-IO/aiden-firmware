@@ -287,12 +287,31 @@ func (r *Runtime) markInterruptedEpisodesBestEffort() {
 	if !ok || plane == nil || plane.episodes == nil {
 		return
 	}
-	if count, err := plane.episodes.MarkRunningEpisodesInterrupted(context.Background(), "agent restarted before the task episode completed"); err != nil {
+	episodes, err := plane.episodes.MarkRunningEpisodesInterruptedWithDetails(context.Background(), "agent restarted before the task episode completed")
+	if err != nil {
 		if r.logger != nil {
 			r.logger.Warn("[memory] mark interrupted episodes failed: %v", err)
 		}
-	} else if count > 0 && r.logger != nil {
-		r.logger.Warn("[memory] marked %d running task episode(s) as interrupted", count)
+		return
+	}
+	if len(episodes) == 0 {
+		return
+	}
+	r.persistInterruptedEpisodeHistoryBestEffort(plane, episodes)
+	if r.logger != nil {
+		r.logger.Warn("[memory] marked %d running task episode(s) as interrupted", len(episodes))
+	}
+}
+
+func (r *Runtime) persistInterruptedEpisodeHistoryBestEffort(plane *FilesystemMemoryPlane, episodes []TaskEpisode) {
+	if plane == nil || strings.TrimSpace(plane.memoryDir) == "" || len(episodes) == 0 {
+		return
+	}
+	store := NewChatHistoryStore(filepath.Join(plane.memoryDir, "chat_history"))
+	for _, episode := range episodes {
+		if err := store.Append(context.Background(), interruptedEpisodeStatusMessage(episode)); err != nil && r.logger != nil {
+			r.logger.Warn("[memory] persist interrupted episode history failed: episode_id=%s error=%v", episode.ID, err)
+		}
 	}
 }
 
@@ -411,7 +430,11 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		executorHandler = streamCallbackHandler
 	}
 	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
-	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, memoryHandle.Memory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault())
+	plannerMemory := memoryHandle.Memory
+	if historyStore := chatHistoryStoreForConfigDir(r.config.ConfigDir); historyStore != nil {
+		plannerMemory = newChatHistoryPlannerMemory(plannerMemory, historyStore)
+	}
+	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault())
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
