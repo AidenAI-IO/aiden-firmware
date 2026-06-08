@@ -114,8 +114,8 @@ const char* kOtaInitScript = "/etc/init.d/S54ota";
 const char* kAgentLogPath = "/var/log/agent/agent.log";
 const char* kOtaBin = "/oem/usr/bin/ota";
 const char* kEnvRunBin = "/oem/usr/bin/aiden-env-run";
-const char* kOtaLogPath = "/var/log/ota/ota.log";
 const char* kOtaWebUpdateLockPath = "/tmp/config_web_ota_update.lock";
+const char* kOtaWebUpdateLogPath = "/tmp/config_web_ota_update.log";
 const char* kAgentPortHost = "127.0.0.1";
 const int kDefaultAgentPort = 8080;
 const int kAgentStatusCommandTimeoutMs = 1500;
@@ -137,7 +137,7 @@ std::string validate_proxy_url(const std::string& url);
 std::string lowercase_copy(const std::string& text);
 std::string parent_dir(const std::string& path);
 bool mkdir_p(const std::string& dir, std::string* error);
-bool prepare_append_log_file(const std::string& path, std::string* error);
+bool prepare_ota_update_log_file(const std::string& path, std::string* error);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -1342,8 +1342,8 @@ bool schedule_ota_update(std::string* error) {
     if (lock_fd < 0) {
         return false;
     }
-    std::string log_path = kOtaLogPath;
-    if (!prepare_append_log_file(log_path, error)) {
+    std::string log_path = kOtaWebUpdateLogPath;
+    if (!prepare_ota_update_log_file(log_path, error)) {
         close(lock_fd);
         return false;
     }
@@ -1555,11 +1555,11 @@ std::string parent_dir(const std::string& path) {
     return path.substr(0, pos);
 }
 
-bool prepare_append_log_file(const std::string& path, std::string* error) {
+bool prepare_ota_update_log_file(const std::string& path, std::string* error) {
     if (!mkdir_p(parent_dir(path), error)) {
         return false;
     }
-    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         if (error) *error = "open " + path + ": " + strerror(errno);
         return false;
@@ -1781,7 +1781,7 @@ AgentLogSnapshot read_agent_log_snapshot() {
 }
 
 AgentLogSnapshot read_ota_log_snapshot() {
-    return read_log_snapshot(kOtaLogPath, kOtaLogReadSize, kOtaLogDisplaySize);
+    return read_log_snapshot(kOtaWebUpdateLogPath, kOtaLogReadSize, kOtaLogDisplaySize);
 }
 
 std::string lowercase_copy(const std::string& text) {
@@ -2154,7 +2154,6 @@ ApiResponse handle_get_ota_log() {
 }
 
 ApiResponse handle_post_ota_update() {
-    AgentLogSnapshot start_log = read_ota_log_snapshot();
     std::string error;
     if (!schedule_ota_update(&error)) {
         return make_json_error(500, error.empty() ? "failed to start ota update" : error);
@@ -2164,7 +2163,7 @@ ApiResponse handle_post_ota_update() {
     cJSON_AddBoolToObject(response, "ok", 1);
     cJSON_AddBoolToObject(response, "ota_update_started", 1);
     cJSON_AddStringToObject(response, "message", "ota update started");
-    cJSON_AddNumberToObject(response, "ota_log_start_size_bytes", start_log.size_bytes);
+    cJSON_AddNumberToObject(response, "ota_log_start_size_bytes", 0);
     return make_json_ok(response);
 }
 
