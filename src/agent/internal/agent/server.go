@@ -166,6 +166,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		pendingResults: make(map[string]*chatPendingResult),
 	}
 	loadAppMappingForConfig(runtime.config.ConfigDir, runtime.logger)
+	loadQuickActionsForConfig(runtime.config.ConfigDir, runtime.logger)
 	runtime.tools.RegisterPhoneBridge(bridge)
 	s.loadHistoryFromDisk()
 

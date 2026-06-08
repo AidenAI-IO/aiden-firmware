@@ -136,6 +136,16 @@ else
     echo "  ⚠ Warning: $APP_MAPPING_SRC not found; skipping app mapping" >&2
 fi
 
+QUICK_ACTIONS_SRC="$SCRIPT_DIR/src/agent/internal/agent/quick_actions.json"
+QUICK_ACTIONS_DEST="$DEST_OVERLAY/usr/share/aiden/quick_actions.json"
+if [ -f "$QUICK_ACTIONS_SRC" ]; then
+    mkdir -p "$(dirname "$QUICK_ACTIONS_DEST")"
+    cp "$QUICK_ACTIONS_SRC" "$QUICK_ACTIONS_DEST"
+    echo "  ✓ quick actions mapping synced"
+else
+    echo "  ⚠ Warning: $QUICK_ACTIONS_SRC not found; skipping quick actions" >&2
+fi
+
 # Step 4: 运行 pico-sdk 构建，overlay 注入后只打包一次 firmware，避免 A/B 大镜像重复生成。
 echo "[4/6] Running pico-sdk build stages..."
 cd "$PICO_SDK"

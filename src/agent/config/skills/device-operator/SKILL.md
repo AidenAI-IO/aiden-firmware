@@ -22,17 +22,14 @@ Do not perform multiple blind UI actions in a row.
 
 ## Action Choice
 
-Prefer higher-level touch actions before raw pointer actions:
-
-- Use `touch_gesture` for taps, swipes, back, home, drag, and mobile-style navigation.
+- Use `touch_gesture` for taps, swipes, drag, and mobile-style navigation.
 - Use `keyboard_text` for entering text after confirming the input field is focused.
 - Use `keyboard_tap` for keys such as enter, escape, tab, arrows, or shortcuts.
 - Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch gestures are not appropriate.
 
 Prefer semantic gestures when available:
 
-- Use `touch_gesture` with `type: "back"` for back navigation.
-- Use `touch_gesture` with `type: "home"` for home navigation.
+- Use `touch_gesture` with `type: "back"` or `type: "home"` before custom edge swipes.
 - Use scroll or swipe instead of repeatedly tapping uncertain controls.
 
 ## Coordinate Discipline

@@ -83,6 +83,13 @@ const (
 	// several polling frames to observe button-up.
 	touchReleaseReportCount   = 3
 	touchReleaseReportDelayMs = 15
+
+	// defaultKeyboardTapHoldMs matches example_usb_hid's default tap duration.
+	// Zero hold often fails on macOS/iOS hosts that miss sub-frame modifier chords.
+	defaultKeyboardTapHoldMs = 50
+	// keyboardModifierTapHoldMs keeps modifier chords pressed long enough for
+	// macOS/iOS hosts to register shortcuts like Cmd+Q.
+	keyboardModifierTapHoldMs = 120
 )
 
 var hidKeyboardMap = map[string]uint8{
@@ -412,12 +419,14 @@ func (t *KeyboardTapTool) Description() string {
 		`Supports: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, ` +
 		`up, down, left, right, home, end, pageup, pagedown, insert, printscreen. ` +
 		`Modifiers: ctrl, shift, alt, meta/super/win/cmd. ` +
-		`Multiple keys are pressed simultaneously (e.g. ctrl+c).`
+		`Multiple keys are pressed simultaneously (e.g. ctrl+c). ` +
+		`Optional hold_ms keeps the chord pressed before release (default 50ms, 120ms when modifiers are used).`
 }
 
 func (t *KeyboardTapTool) Call(_ context.Context, input string) (string, error) {
 	var args struct {
-		Keys []string `json:"keys"`
+		Keys   []string `json:"keys"`
+		HoldMs int      `json:"hold_ms"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return fmt.Sprintf("error: invalid input: %v", err), nil
@@ -438,7 +447,25 @@ func (t *KeyboardTapTool) Call(_ context.Context, input string) (string, error) 
 			return fmt.Sprintf("error: unknown key: %q", k), nil
 		}
 	}
+	if len(keys) == 0 {
+		return "error: at least one non-modifier key is required", nil
+	}
 
+	holdMs := args.HoldMs
+	if holdMs <= 0 {
+		holdMs = defaultKeyboardTapHoldMs
+		if modifier != 0 {
+			holdMs = keyboardModifierTapHoldMs
+		}
+	}
+
+	if err := t.tapKeyboardChord(modifier, keys, holdMs); err != nil {
+		return fmt.Sprintf("error: %v", err), nil
+	}
+	return "ok", nil
+}
+
+func (t *KeyboardTapTool) tapKeyboardChord(modifier uint8, keys []uint8, holdMs int) error {
 	// HID keyboard report: [modifier, reserved, key1..key6]
 	report := make([]byte, 8)
 	report[0] = modifier
@@ -446,16 +473,13 @@ func (t *KeyboardTapTool) Call(_ context.Context, input string) (string, error) 
 		report[2+i] = keys[i]
 	}
 
-	// Press
 	if err := t.dev.Write(report); err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return err
 	}
-	// Release
-	if err := t.dev.Write(make([]byte, 8)); err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+	if holdMs > 0 {
+		time.Sleep(time.Duration(holdMs) * time.Millisecond)
 	}
-
-	return "ok", nil
+	return t.dev.Write(make([]byte, 8))
 }
 
 // KeyboardTextTool types a string character by character via HID.

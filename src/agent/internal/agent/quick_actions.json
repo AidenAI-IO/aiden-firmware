@@ -1,0 +1,888 @@
+{
+  "version": 1,
+  "actions": {
+    "back": {
+      "label": "Back",
+      "aliases": ["返回", "go_back", "navigate_back"],
+      "category": "navigation",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": { "type": "back" }
+        },
+        "android": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["escape"] },
+          "note": "external keyboard back",
+          "alternatives": [
+            {
+              "status": "active",
+              "tool": "keyboard_tap",
+              "input": { "keys": ["alt", "left"] },
+              "note": "external keyboard fallback"
+            }
+          ]
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: use in-app UI or mouse"
+        }
+      }
+    },
+    "home": {
+      "label": "Home",
+      "aliases": ["主屏", "home_screen", "go_home"],
+      "category": "navigation",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "h"] },
+          "note": "external keyboard home",
+          "alternatives": [
+            {
+              "status": "active",
+              "tool": "touch_gesture",
+              "input": { "type": "home" },
+              "note": "bottom edge swipe"
+            }
+          ]
+        },
+        "android": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta"] },
+          "note": "external keyboard home"
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "h"] },
+          "note": "macOS hide app (Cmd+H); not show desktop"
+        }
+      }
+    },
+    "app_switch": {
+      "label": "App Switcher",
+      "aliases": ["多任务", "recents", "task_switcher", "switch_app"],
+      "category": "navigation",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": {
+            "type": "swipe",
+            "start": { "x": 500, "y": 1000 },
+            "end": { "x": 500, "y": 500 },
+            "duration_ms": 900,
+            "hold_before_ms": 250,
+            "hold_after_ms": 600,
+            "steps": 18
+          },
+          "note": "verified: bottom edge swipe up to mid-screen, pause before release"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "pending verification: bottom-hold swipe and Alt+Tab not working yet"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: Cmd+Tab needs key hold"
+        }
+      }
+    },
+    "quick_app_switch_left": {
+      "label": "Quick App Switch Left",
+      "aliases": ["快速切换上一个", "无缝切换左", "quick_switch_left", "switch_prev_app"],
+      "category": "navigation",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": {
+            "type": "swipe",
+            "start": { "x": 500, "y": 1000 },
+            "end": { "x": 0, "y": 1000 },
+            "duration_ms": 400,
+            "hold_before_ms": 80,
+            "steps": 14
+          },
+          "note": "verified: swipe left from bottom center to left edge"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "pending verification: gesture varies by launcher"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: Cmd+Shift+Tab needs key hold"
+        }
+      }
+    },
+    "quick_app_switch_right": {
+      "label": "Quick App Switch Right",
+      "aliases": ["快速切换下一个", "无缝切换右", "quick_switch_right", "switch_next_app"],
+      "category": "navigation",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": {
+            "type": "swipe",
+            "start": { "x": 500, "y": 1000 },
+            "end": { "x": 1000, "y": 1000 },
+            "duration_ms": 400,
+            "hold_before_ms": 80,
+            "steps": 14
+          },
+          "note": "verified: swipe right from bottom center to right edge"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "pending verification: gesture varies by launcher"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: Cmd+Tab needs key hold"
+        }
+      }
+    },
+    "notification_center": {
+      "label": "Notification Center",
+      "aliases": ["通知", "notifications", "notification_shade"],
+      "category": "system_panel",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": {
+            "type": "swipe",
+            "start": { "x": 100, "y": 0 },
+            "end": { "x": 100, "y": 700 },
+            "duration_ms": 500,
+            "hold_before_ms": 80,
+            "steps": 16
+          },
+          "note": "verified: swipe down from top-left area"
+        },
+        "android": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": { "type": "swipe_down", "strength": "medium", "anchor": 500 }
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "pending verification: no phone-style notification shade on Mac"
+        }
+      }
+    },
+    "control_center": {
+      "label": "Control Center",
+      "aliases": ["快捷设置", "control_center", "quick_settings"],
+      "category": "system_panel",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": {
+            "type": "swipe",
+            "start": { "x": 950, "y": 10 },
+            "end": { "x": 950, "y": 500 }
+          }
+        },
+        "android": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": { "type": "swipe_down", "strength": "medium", "anchor": 500 },
+          "note": "same entry as notifications; may need a second swipe to expand quick settings"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "pending verification"
+        }
+      }
+    },
+    "spotlight_search": {
+      "label": "Global Search",
+      "aliases": ["搜索", "spotlight", "global_search"],
+      "category": "system_panel",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": { "type": "swipe_down", "strength": "medium", "anchor": 500 },
+          "note": "swipe down on home screen"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "pending verification: no universal global search gesture"
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "space"] },
+          "note": "Spotlight (Cmd+Space)"
+        }
+      }
+    },
+    "app_drawer": {
+      "label": "App Drawer",
+      "aliases": ["应用列表", "app_drawer", "all_apps"],
+      "category": "system_panel",
+      "platforms": {
+        "ios": {
+          "status": "reserved",
+          "note": "iOS has no app drawer; do not use on iOS"
+        },
+        "android": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": { "type": "swipe_up", "strength": "large", "anchor": 500 },
+          "note": "swipe up from bottom on home screen"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: F4/Launchpad needs function-key mode"
+        }
+      }
+    },
+    "dismiss_panel": {
+      "label": "Dismiss Panel",
+      "aliases": ["关闭面板", "dismiss_panel", "close_panel"],
+      "category": "system_panel",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": {
+            "type": "swipe",
+            "start": { "x": 500, "y": 1000 },
+            "end": { "x": 500, "y": 500 },
+            "duration_ms": 400,
+            "hold_before_ms": 80,
+            "hold_after_ms": 0,
+            "steps": 12
+          },
+          "note": "verified: swipe up from bottom center to mid-screen"
+        },
+        "android": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": { "type": "swipe_up", "strength": "medium", "anchor": 500 }
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["escape"] },
+          "note": "close dialog, Spotlight, or sheet"
+        }
+      }
+    },
+    "copy": {
+      "label": "Copy",
+      "aliases": ["复制", "copy"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "c"] },
+          "note": "external keyboard"
+        },
+        "android": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["ctrl", "c"] },
+          "note": "external keyboard"
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "c"] }
+        }
+      }
+    },
+    "paste": {
+      "label": "Paste",
+      "aliases": ["粘贴", "paste"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "v"] }
+        },
+        "android": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["ctrl", "v"] }
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "v"] }
+        }
+      }
+    },
+    "cut": {
+      "label": "Cut",
+      "aliases": ["剪切", "cut"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "x"] }
+        },
+        "android": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["ctrl", "x"] }
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "x"] }
+        }
+      }
+    },
+    "undo": {
+      "label": "Undo",
+      "aliases": ["撤销", "undo"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "z"] }
+        },
+        "android": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["ctrl", "z"] }
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "z"] }
+        }
+      }
+    },
+    "redo": {
+      "label": "Redo",
+      "aliases": ["重做", "redo"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "shift", "z"] }
+        },
+        "android": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["ctrl", "shift", "z"] }
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "shift", "z"] }
+        }
+      }
+    },
+    "select_all": {
+      "label": "Select All",
+      "aliases": ["全选", "select_all"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "a"] }
+        },
+        "android": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["ctrl", "a"] }
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "a"] }
+        }
+      }
+    },
+    "find": {
+      "label": "Find",
+      "aliases": ["搜索文本", "find", "find_in_page"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "f"] }
+        },
+        "android": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["ctrl", "f"] }
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "f"] }
+        }
+      }
+    },
+    "save": {
+      "label": "Save",
+      "aliases": ["保存", "save"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": {
+          "status": "reserved",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "s"] },
+          "note": "pending verification: only some apps support this"
+        },
+        "android": {
+          "status": "reserved",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["ctrl", "s"] },
+          "note": "pending verification: only some apps support this"
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "s"] }
+        }
+      }
+    },
+    "browser_new_tab": {
+      "label": "Browser New Tab",
+      "aliases": ["新建标签", "new_tab"],
+      "category": "browser",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "t"] }
+        },
+        "android": {
+          "status": "reserved",
+          "note": "disabled: browser shortcuts not working on Android"
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "t"] }
+        }
+      }
+    },
+    "browser_close_tab": {
+      "label": "Browser Close Tab",
+      "aliases": ["关闭标签", "close_tab"],
+      "category": "browser",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "w"] }
+        },
+        "android": {
+          "status": "reserved",
+          "note": "disabled: browser shortcuts not working on Android"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "Cmd+W unreliable via HID; use quit_app (Cmd+Q) to exit"
+        }
+      }
+    },
+    "browser_refresh": {
+      "label": "Browser Refresh",
+      "aliases": ["刷新页面", "refresh", "reload"],
+      "category": "browser",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "r"] }
+        },
+        "android": {
+          "status": "reserved",
+          "note": "disabled: browser shortcuts not working on Android"
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "r"] }
+        }
+      }
+    },
+    "browser_address_bar": {
+      "label": "Browser Address Bar",
+      "aliases": ["地址栏", "address_bar", "focus_url"],
+      "category": "browser",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "l"] }
+        },
+        "android": {
+          "status": "reserved",
+          "note": "disabled: browser shortcuts not working on Android"
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "l"] }
+        }
+      }
+    },
+    "quit_app": {
+      "label": "Quit App",
+      "aliases": ["关闭应用", "quit_app"],
+      "category": "app_management",
+      "platforms": {
+        "ios": {
+          "status": "reserved",
+          "note": "not supported on iOS; use close_app_from_recents after opening app_switch"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "pending verification: swipe up card in recents on some devices"
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "q"], "hold_ms": 150 },
+          "note": "fully quit app (Cmd+Q), not close tab"
+        }
+      }
+    },
+    "close_app_from_recents": {
+      "label": "Close App From Recents",
+      "aliases": ["强制关闭", "kill_app", "close_from_recents"],
+      "category": "app_management",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": {
+            "type": "swipe",
+            "start": { "x": 500, "y": 500 },
+            "end": { "x": 500, "y": 120 },
+            "duration_ms": 300,
+            "hold_before_ms": 80,
+            "hold_after_ms": 0,
+            "steps": 10
+          },
+          "note": "open recents first, press center of card and quick flick up"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "pending verification: requires app_switch first"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "use Cmd+Q or Dock quit on Mac"
+        }
+      }
+    },
+    "recents_browse_left": {
+      "label": "Recents Browse Left",
+      "aliases": ["切换上一个应用", "recents_left"],
+      "category": "app_management",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": { "type": "swipe_left", "strength": "medium" },
+          "note": "when recents is already open"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "pending verification: requires app_switch first"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: Cmd+Shift+Tab needs key hold"
+        }
+      }
+    },
+    "recents_browse_right": {
+      "label": "Recents Browse Right",
+      "aliases": ["切换下一个应用", "recents_right"],
+      "category": "app_management",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "touch_gesture",
+          "input": { "type": "swipe_right", "strength": "medium" },
+          "note": "when recents is already open"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "pending verification: requires app_switch first"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: Cmd+Tab needs key hold"
+        }
+      }
+    },
+    "hide_app": {
+      "label": "Hide App",
+      "aliases": ["隐藏应用", "hide_window", "hide_app"],
+      "category": "navigation",
+      "platforms": {
+        "ios": {
+          "status": "reserved",
+          "note": "use home on iOS"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "use home on Android"
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "h"] },
+          "note": "macOS Hide Application (Cmd+H)"
+        }
+      }
+    },
+    "show_desktop": {
+      "label": "Show Desktop",
+      "aliases": ["显示桌面", "show_desktop", "desktop"],
+      "category": "navigation",
+      "platforms": {
+        "ios": {
+          "status": "reserved",
+          "note": "use home on iOS"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "use home on Android"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: F11 needs function-key mode"
+        }
+      }
+    },
+    "mission_control": {
+      "label": "Mission Control",
+      "aliases": ["调度中心", "mission_control", "expose_all"],
+      "category": "navigation",
+      "platforms": {
+        "ios": {
+          "status": "reserved",
+          "note": "use app_switch on iOS"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "use app_switch on Android"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: F3/Control+Up needs function-key mode"
+        }
+      }
+    },
+    "switch_window": {
+      "label": "Switch Window",
+      "aliases": ["切换窗口", "switch_window", "cycle_window"],
+      "category": "navigation",
+      "platforms": {
+        "ios": {
+          "status": "reserved",
+          "note": "not applicable on iOS"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "not applicable on Android"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: grave key varies by keyboard layout"
+        }
+      }
+    },
+    "minimize_window": {
+      "label": "Minimize Window",
+      "aliases": ["最小化", "minimize_window", "minimize"],
+      "category": "navigation",
+      "platforms": {
+        "ios": {
+          "status": "reserved",
+          "note": "not applicable on iOS"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "not applicable on Android"
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "m"] },
+          "note": "minimize front window to Dock (Cmd+M)"
+        }
+      }
+    },
+    "force_quit": {
+      "label": "Force Quit",
+      "aliases": ["强制退出", "force_quit", "kill_app_dialog"],
+      "category": "app_management",
+      "platforms": {
+        "ios": {
+          "status": "reserved",
+          "note": "not supported on iOS"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "not supported on Android"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: Option+Cmd+Esc triple-modifier"
+        }
+      }
+    },
+    "close_window": {
+      "label": "Close Window",
+      "aliases": ["关闭窗口", "close_window"],
+      "category": "navigation",
+      "platforms": {
+        "ios": {
+          "status": "reserved",
+          "note": "not applicable on iOS"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "not applicable on Android"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "Cmd+W unreliable via HID; use quit_app (Cmd+Q)"
+        }
+      }
+    },
+    "hide_other_apps": {
+      "label": "Hide Other Apps",
+      "aliases": ["隐藏其他应用", "hide_others"],
+      "category": "navigation",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: Option+Cmd+H triple-modifier"
+        }
+      }
+    },
+    "switch_input": {
+      "label": "Switch Input Source",
+      "aliases": ["切换输入法", "switch_input", "input_source"],
+      "category": "system_panel",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["ctrl", "space"] },
+          "note": "switch keyboard/input source (Ctrl+Space)"
+        }
+      }
+    },
+    "lock_screen": {
+      "label": "Lock Screen",
+      "aliases": ["锁定屏幕", "lock_screen"],
+      "category": "system_panel",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: Control+Cmd+Q triple-modifier"
+        }
+      }
+    },
+    "toggle_fullscreen": {
+      "label": "Toggle Fullscreen",
+      "aliases": ["全屏", "toggle_fullscreen", "fullscreen"],
+      "category": "system_panel",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: Control+Cmd+F triple-modifier"
+        }
+      }
+    },
+    "toggle_dock": {
+      "label": "Toggle Dock",
+      "aliases": ["显示隐藏程序坞", "toggle_dock"],
+      "category": "system_panel",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "reserved",
+          "note": "unreliable via HID: Option+Cmd+D triple-modifier"
+        }
+      }
+    },
+    "screenshot_full": {
+      "label": "Screenshot Full Screen",
+      "aliases": ["全屏截图", "screenshot_full"],
+      "category": "system_panel",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["shift", "meta", "3"] },
+          "note": "save full-screen screenshot to desktop (Shift+Cmd+3)"
+        }
+      }
+    },
+    "screenshot_region": {
+      "label": "Screenshot Region",
+      "aliases": ["区域截图", "screenshot_region"],
+      "category": "system_panel",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["shift", "meta", "4"] },
+          "note": "capture selected region to desktop (Shift+Cmd+4)"
+        }
+      }
+    },
+    "screenshot_toolbar": {
+      "label": "Screenshot Toolbar",
+      "aliases": ["截图工具栏", "screenshot_toolbar", "screen_record"],
+      "category": "system_panel",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["shift", "meta", "5"] },
+          "note": "open screenshot/screen-record toolbar (Shift+Cmd+5)"
+        }
+      }
+    }
+  }
+}

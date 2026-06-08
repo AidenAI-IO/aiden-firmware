@@ -86,6 +86,11 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"delta":-3}`,
 	},
+	"quick_action": {
+		Category:     "input",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"list":true,"platform":"ios"}`,
+	},
 	"recall_device_memory": {
 		Category:     "memory",
 		InputMode:    toolInputModeJSON,
@@ -176,6 +181,20 @@ func isHTTPToolExposed(name string) bool {
 	default:
 		return true
 	}
+}
+
+// agentExperimentalTools stay available in Tool Lab (HTTP invoke) but are
+// withheld from the conversational agent until bindings are verified.
+var agentExperimentalTools = map[string]struct{}{
+	"quick_action": {},
+}
+
+func isAgentToolExposed(name string) bool {
+	if !isHTTPToolExposed(name) {
+		return false
+	}
+	_, withheld := agentExperimentalTools[name]
+	return !withheld
 }
 
 func (r *Runtime) ToolDescriptorByName(name string) (ToolDescriptor, bool) {
