@@ -151,6 +151,10 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(source.find("/var/log/ota/ota.log") != std::string::npos);
     CHECK(source.find("/oem/usr/bin/ota") != std::string::npos);
     CHECK(source.find(" update") != std::string::npos);
+    CHECK(source.find("kOtaWebUpdateLockPath") != std::string::npos);
+    CHECK(source.find("flock(lock_fd, LOCK_EX | LOCK_NB)") != std::string::npos);
+    CHECK(source.find("ota update already running") != std::string::npos);
+    CHECK(source.find("close(lock_fd)") != std::string::npos);
     CHECK(source.find("tail -f") == std::string::npos);
 
     CHECK(html.find("OTA 更新") != std::string::npos);

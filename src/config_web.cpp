@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/stat.h>
@@ -114,6 +115,7 @@ const char* kAgentLogPath = "/var/log/agent/agent.log";
 const char* kOtaBin = "/oem/usr/bin/ota";
 const char* kEnvRunBin = "/oem/usr/bin/aiden-env-run";
 const char* kOtaLogPath = "/var/log/ota/ota.log";
+const char* kOtaWebUpdateLockPath = "/tmp/config_web_ota_update.lock";
 const char* kAgentPortHost = "127.0.0.1";
 const int kDefaultAgentPort = 8080;
 const int kAgentStatusCommandTimeoutMs = 1500;
@@ -1310,7 +1312,33 @@ void schedule_ota_restart() {
     schedule_init_script_restart(kOtaInitScript);
 }
 
+int acquire_ota_update_launch_lock(std::string* error) {
+    int lock_fd = open(kOtaWebUpdateLockPath, O_CREAT | O_RDWR, 0600);
+    if (lock_fd < 0) {
+        if (error) {
+            *error = std::string("open ota update launch lock: ") + strerror(errno);
+        }
+        return -1;
+    }
+    if (flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
+        if (error) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                *error = "ota update already running";
+            } else {
+                *error = std::string("lock ota update launch: ") + strerror(errno);
+            }
+        }
+        close(lock_fd);
+        return -1;
+    }
+    return lock_fd;
+}
+
 bool schedule_ota_update(std::string* error) {
+    int lock_fd = acquire_ota_update_launch_lock(error);
+    if (lock_fd < 0) {
+        return false;
+    }
     std::string log_path = kOtaLogPath;
     std::string log_dir = log_path.substr(0, log_path.rfind('/'));
     std::string cmd =
@@ -1325,6 +1353,7 @@ bool schedule_ota_update(std::string* error) {
         ") >/dev/null 2>&1 &";
     int rc = system(cmd.c_str());
     if (rc != 0) {
+        close(lock_fd);
         if (error) {
             std::ostringstream oss;
             oss << "failed to start ota update: system rc=" << rc;
@@ -1332,6 +1361,7 @@ bool schedule_ota_update(std::string* error) {
         }
         return false;
     }
+    close(lock_fd);
     return true;
 }
 
