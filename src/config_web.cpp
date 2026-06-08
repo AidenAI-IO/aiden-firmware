@@ -1342,8 +1342,9 @@ bool schedule_ota_update(std::string* error) {
     std::string log_path = kOtaLogPath;
     std::string log_dir = log_path.substr(0, log_path.rfind('/'));
     std::string cmd =
-        "(mkdir -p " + shell_quote(log_dir) + "; "
-        "echo '[config_web] ota update requested' >> " + shell_quote(log_path) + "; "
+        "mkdir -p " + shell_quote(log_dir) + " && "
+        "echo '[config_web] ota update requested' >> " + shell_quote(log_path) + " && "
+        "("
         "if [ -x " + shell_quote(kEnvRunBin) + " ]; then "
         + shell_quote(kEnvRunBin) + " " + shell_quote(kOtaBin) + " update >> " + shell_quote(log_path) + " 2>&1; "
         "else "
