@@ -158,8 +158,23 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(source.find("tail -f") == std::string::npos);
 
     CHECK(html.find("OTA 更新") != std::string::npos);
+    CHECK(html.find("fwActions") != std::string::npos);
     CHECK(html.find("otaUpdateBtn") != std::string::npos);
+    const std::string::size_type fw_actions_pos = html.find("id=\\\"fwActions\\\"");
+    const std::string::size_type ota_button_pos = html.find("id=\\\"otaUpdateBtn\\\"");
+    const std::string::size_type wifi_heading_pos = html.find("Wi-Fi 配置");
+    REQUIRE(fw_actions_pos != std::string::npos);
+    REQUIRE(ota_button_pos != std::string::npos);
+    REQUIRE(wifi_heading_pos != std::string::npos);
+    CHECK(fw_actions_pos < ota_button_pos);
+    CHECK(ota_button_pos < wifi_heading_pos);
     CHECK(html.find("OTA 实时日志") != std::string::npos);
+    CHECK(html.find("otaLogPanel") != std::string::npos);
+    CHECK(html.find("id=\\\"otaLogPanel\\\" class=\\\"card ota-log-panel\\\"") != std::string::npos);
+    CHECK(html.find(".ota-log-panel{display:none}") != std::string::npos);
+    CHECK(html.find("showOtaLogPanel") != std::string::npos);
+    CHECK(html.find("if(!appState.otaLogVisible&&!showBanner){return;}") != std::string::npos);
+    CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');showOtaLogPanel();") != std::string::npos);
     CHECK(html.find("otaLogText") != std::string::npos);
     CHECK(html.find("otaLogMeta") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate") != std::string::npos);
@@ -167,6 +182,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("/api/ota/update") != std::string::npos);
     CHECK(html.find("/api/ota/check-now") == std::string::npos);
     CHECK(html.find("/api/ota/logs") != std::string::npos);
+    CHECK(html.find("await refreshOtaLog(false)") == std::string::npos);
     CHECK(html.find("setInterval(function(){refreshOtaLog(false);},2000)") != std::string::npos);
 }
 
