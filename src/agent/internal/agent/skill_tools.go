@@ -379,8 +379,12 @@ func (t *SkillManageTool) Description() string {
 - content: full SKILL.md (for create/edit)
 - old_string, new_string: for patch
 - file_path, file_content: for write_file/remove_file under references/, templates/, scripts/, or assets/
-- reason: why this change is being made`
+- reason: why this change is being made
+Patch example: {"action":"patch","name":"device-operator","old_string":"old instructions","new_string":"new instructions","reason":"add recovery steps"}
+When using a function-call wrapper, put that JSON object as the __arg1 string and do not leave __arg1 empty.`
 }
+
+const skillManageInputExample = `{"action":"patch","name":"device-operator","old_string":"old instructions","new_string":"new instructions","reason":"add recovery steps"}`
 
 type skillManageInput struct {
 	Action      string `json:"action"`
@@ -394,9 +398,12 @@ type skillManageInput struct {
 }
 
 func (t *SkillManageTool) Call(_ context.Context, input string) (string, error) {
+	if strings.TrimSpace(input) == "" {
+		return "", fmt.Errorf("skill_manage input must be a JSON object, for example %s", skillManageInputExample)
+	}
 	var req skillManageInput
 	if err := json.Unmarshal([]byte(input), &req); err != nil {
-		return "", fmt.Errorf("invalid JSON input: %w", err)
+		return "", fmt.Errorf("skill_manage input must be a JSON object, for example %s: invalid JSON input: %w", skillManageInputExample, err)
 	}
 	if req.Name == "" {
 		return "", fmt.Errorf("name is required")

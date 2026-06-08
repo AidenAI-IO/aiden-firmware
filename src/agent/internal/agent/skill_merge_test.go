@@ -792,6 +792,54 @@ func TestSkillToolDescriptionsMirrorHermesRoles(t *testing.T) {
 	}
 }
 
+func TestSkillManageToolDescriptionShowsPatchJSONExample(t *testing.T) {
+	desc := NewSkillManageTool(t.TempDir(), "").Description()
+	for _, want := range []string{
+		`{"action":"patch"`,
+		`"name":"device-operator"`,
+		`"old_string"`,
+		`"new_string"`,
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("skill_manage description missing patch example fragment %q:\n%s", want, desc)
+		}
+	}
+}
+
+func TestSkillManageToolEmptyInputExplainsJSONContract(t *testing.T) {
+	_, err := NewSkillManageTool(t.TempDir(), "").Call(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected empty skill_manage input to fail")
+	}
+	for _, want := range []string{
+		"skill_manage input must be a JSON object",
+		`{"action":"patch"`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("empty input error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestBundledDeviceOperatorSkillDocumentsScreenshotFailureRecovery(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "config", "skills", "device-operator", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		"## Screenshot Failure Recovery",
+		"SERVICE_RECOVERING",
+		"frame_service_cli --socket /run/frame_service/frame_service.sock health",
+		"frame_service_cli --socket /run/frame_service/frame_service.sock restart",
+		"/etc/init.d/S52frame_service restart",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("device-operator skill missing screenshot recovery fragment %q", want)
+		}
+	}
+}
+
 func TestSkillManageTool_CreateAndPatch(t *testing.T) {
 	dir := t.TempDir()
 	tool := NewSkillManageTool(dir, "")
