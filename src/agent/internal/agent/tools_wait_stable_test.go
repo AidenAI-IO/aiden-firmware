@@ -25,8 +25,8 @@ func TestScreenStableDefaultsResolved(t *testing.T) {
 func TestScreenStableDefaultsInputJSON(t *testing.T) {
 	t.Parallel()
 
-	got := ScreenStableDefaults{TimeoutMs: 4500, StableMs: 600}.InputJSON()
-	want := `{"timeout_ms":4500,"stable_ms":600,"diff_threshold":5}`
+	got := ScreenStableDefaults{TimeoutMs: 4500, StableMs: 600, DiffThreshold: 2.5}.InputJSON()
+	want := `{"timeout_ms":4500,"stable_ms":600,"diff_threshold":2.5}`
 	if got != want {
 		t.Fatalf("InputJSON() = %q, want %q", got, want)
 	}
