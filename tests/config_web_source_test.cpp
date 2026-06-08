@@ -154,6 +154,10 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(source.find("kOtaWebUpdateLockPath") != std::string::npos);
     CHECK(source.find("flock(lock_fd, LOCK_EX | LOCK_NB)") != std::string::npos);
     CHECK(source.find("ota update already running") != std::string::npos);
+    CHECK(source.find("AgentLogSnapshot start_log = read_ota_log_snapshot();") != std::string::npos);
+    CHECK(source.find("ota_log_start_size_bytes") != std::string::npos);
+    CHECK(source.find("cJSON_AddItemToObject(response, \"ota_log\"") == std::string::npos);
+    CHECK(source.find("echo '[config_web] ota update requested'") == std::string::npos);
     CHECK(source.find("close(lock_fd)") != std::string::npos);
     CHECK(source.find("tail -f") == std::string::npos);
 
@@ -174,9 +178,13 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find(".ota-log-panel{display:none}") != std::string::npos);
     CHECK(html.find("showOtaLogPanel") != std::string::npos);
     CHECK(html.find("if(!appState.otaLogVisible&&!showBanner){return;}") != std::string::npos);
+    CHECK(html.find("otaLogPending:false") != std::string::npos);
+    CHECK(html.find("otaLogStartSize:0") != std::string::npos);
+    CHECK(html.find("otaLogHasNewProgress") != std::string::npos);
     CHECK(html.find("setOtaLogPending") != std::string::npos);
-    CHECK(html.find("OTA 更新请求已发送，等待日志写入...") != std::string::npos);
-    CHECK(html.find("setOtaLogPending('OTA 更新请求已发送，等待日志写入...');") != std::string::npos);
+    CHECK(html.find("OTA 更新已开始，等待日志输出...") != std::string::npos);
+    CHECK(html.find("setOtaLogPending('OTA 更新已开始，等待日志输出...',Number(payload.ota_log_start_size_bytes||0));") != std::string::npos);
+    CHECK(html.find("renderOtaLog(payload.ota_log||{}, {preservePending:true})") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');showOtaLogPanel();") != std::string::npos);
     CHECK(html.find("otaLogText") != std::string::npos);
     CHECK(html.find("otaLogMeta") != std::string::npos);
@@ -185,7 +193,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("/api/ota/update") != std::string::npos);
     CHECK(html.find("/api/ota/check-now") == std::string::npos);
     CHECK(html.find("/api/ota/logs") != std::string::npos);
-    CHECK(html.find("await refreshOtaLog(false)") != std::string::npos);
+    CHECK(html.find("await refreshOtaLog(false)") == std::string::npos);
     CHECK(html.find("setInterval(function(){refreshOtaLog(false);},2000)") != std::string::npos);
 }
 
