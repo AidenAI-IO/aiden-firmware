@@ -101,7 +101,129 @@ func TestDefaultRebootIsRealUnlessDryRun(t *testing.T) {
 	}
 }
 
-func TestUpdateStopsRunningDaemonBeforeChecking(t *testing.T) {
+func TestShouldRestartDaemonAfterUpdate(t *testing.T) {
+	tests := []struct {
+		name   string
+		config ota.UpdaterConfig
+		result ota.UpdateResult
+		err    error
+		want   bool
+	}{
+		{name: "check failure", err: errForcedUpdateCheckFailure, want: true},
+		{name: "no update", result: ota.UpdateResult{NoUpdate: true}, want: true},
+		{name: "dry run", config: ota.UpdaterConfig{DryRun: true}, result: ota.UpdateResult{Updated: true}, want: true},
+		{name: "real update success", result: ota.UpdateResult{Updated: true}, want: false},
+	}
+
+	for _, tt := range tests {
+		if got := shouldRestartDaemonAfterUpdate(tt.config, tt.result, tt.err); got != tt.want {
+			t.Fatalf("%s: shouldRestartDaemonAfterUpdate() = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+var errForcedUpdateCheckFailure = &forcedUpdateCheckFailureError{}
+
+type forcedUpdateCheckFailureError struct{}
+
+func (*forcedUpdateCheckFailureError) Error() string {
+	return "forced update check failure"
+}
+
+func TestUpdateRestartsRunningDaemonWhenNoUpdate(t *testing.T) {
+	fixture := newNoUpdateFixture(t)
+
+	stopCalls := 0
+	startCalls := 0
+	oldStop := stopRunningDaemon
+	oldStart := startRunningDaemon
+	stopRunningDaemon = func() error {
+		stopCalls++
+		return nil
+	}
+	startRunningDaemon = func() error {
+		startCalls++
+		return nil
+	}
+	t.Cleanup(func() {
+		stopRunningDaemon = oldStop
+		startRunningDaemon = oldStart
+	})
+
+	var out bytes.Buffer
+	err := run([]string{
+		"update",
+		"--state-dir", fixture.stateDir,
+		"--misc", fixture.miscPath,
+		"--manifest-url", fixture.manifestURL,
+		"--public-key", fixture.keyPath,
+	}, &out)
+	if err != nil {
+		t.Fatalf("run(update) error = %v", err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("stopCalls = %d, want 1", stopCalls)
+	}
+	if startCalls != 1 {
+		t.Fatalf("startCalls = %d, want 1", startCalls)
+	}
+	if !strings.Contains(out.String(), `"NoUpdate":true`) {
+		t.Fatalf("output = %q, want no update", out.String())
+	}
+}
+
+func TestUpdateRestartsRunningDaemonAfterCheckFailure(t *testing.T) {
+	fixture := newNoUpdateFixture(t)
+	badServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("not a manifest"))
+	}))
+	t.Cleanup(badServer.Close)
+
+	stopCalls := 0
+	startCalls := 0
+	oldStop := stopRunningDaemon
+	oldStart := startRunningDaemon
+	stopRunningDaemon = func() error {
+		stopCalls++
+		return nil
+	}
+	startRunningDaemon = func() error {
+		startCalls++
+		return nil
+	}
+	t.Cleanup(func() {
+		stopRunningDaemon = oldStop
+		startRunningDaemon = oldStart
+	})
+
+	err := run([]string{
+		"update",
+		"--state-dir", fixture.stateDir,
+		"--misc", fixture.miscPath,
+		"--manifest-url", badServer.URL + "/manifest.json",
+		"--public-key", fixture.keyPath,
+	}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatalf("run(update) error = nil, want manifest failure")
+	}
+	if stopCalls != 1 {
+		t.Fatalf("stopCalls = %d, want 1", stopCalls)
+	}
+	if startCalls != 1 {
+		t.Fatalf("startCalls = %d, want 1", startCalls)
+	}
+}
+
+type noUpdateFixture struct {
+	stateDir    string
+	miscPath    string
+	keyPath     string
+	manifestURL string
+}
+
+func newNoUpdateFixture(t *testing.T) noUpdateFixture {
+	t.Helper()
+
 	tmp := t.TempDir()
 	stateDir := filepath.Join(tmp, "state")
 	miscPath := filepath.Join(tmp, "misc.img")
@@ -161,30 +283,11 @@ func TestUpdateStopsRunningDaemonBeforeChecking(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	stopCalls := 0
-	oldStop := stopRunningDaemon
-	stopRunningDaemon = func() error {
-		stopCalls++
-		return nil
-	}
-	t.Cleanup(func() { stopRunningDaemon = oldStop })
-
-	var out bytes.Buffer
-	err = run([]string{
-		"update",
-		"--state-dir", stateDir,
-		"--misc", miscPath,
-		"--manifest-url", server.URL + "/manifest.json",
-		"--public-key", keyPath,
-	}, &out)
-	if err != nil {
-		t.Fatalf("run(update) error = %v", err)
-	}
-	if stopCalls != 1 {
-		t.Fatalf("stopCalls = %d, want 1", stopCalls)
-	}
-	if !strings.Contains(out.String(), `"NoUpdate":true`) {
-		t.Fatalf("output = %q, want no update", out.String())
+	return noUpdateFixture{
+		stateDir:    stateDir,
+		miscPath:    miscPath,
+		keyPath:     keyPath,
+		manifestURL: server.URL + "/manifest.json",
 	}
 }
 

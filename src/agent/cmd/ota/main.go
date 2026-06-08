@@ -17,7 +17,10 @@ import (
 
 const otaInitScriptPath = "/etc/init.d/S54ota"
 
-var stopRunningDaemon = stopRunningDaemonWithInitScript
+var (
+	stopRunningDaemon  = stopRunningDaemonWithInitScript
+	startRunningDaemon = startRunningDaemonWithInitScript
+)
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
@@ -50,6 +53,14 @@ func run(args []string, out io.Writer) error {
 			return err
 		}
 		result, err := updater.CheckOnce(ctx)
+		if shouldRestartDaemonAfterUpdate(config, result, err) {
+			if restartErr := startRunningDaemon(); restartErr != nil {
+				if err != nil {
+					return fmt.Errorf("%w; restart ota daemon: %v", err, restartErr)
+				}
+				return fmt.Errorf("restart ota daemon after unsuccessful update: %w", restartErr)
+			}
+		}
 		if err != nil {
 			return err
 		}
@@ -98,15 +109,33 @@ func platformReboot() error {
 	return fmt.Errorf("reboot binary not found in trusted paths")
 }
 
+func shouldRestartDaemonAfterUpdate(config ota.UpdaterConfig, result ota.UpdateResult, err error) bool {
+	if err != nil {
+		return true
+	}
+	if config.DryRun {
+		return true
+	}
+	return !result.Updated
+}
+
 func stopRunningDaemonWithInitScript() error {
+	return runOtaInitScriptIfExists("stop")
+}
+
+func startRunningDaemonWithInitScript() error {
+	return runOtaInitScriptIfExists("start")
+}
+
+func runOtaInitScriptIfExists(action string) error {
 	if _, err := os.Stat(otaInitScriptPath); err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
-	if err := exec.Command(otaInitScriptPath, "stop").Run(); err != nil {
-		return fmt.Errorf("stop ota daemon: %w", err)
+	if err := exec.Command(otaInitScriptPath, action).Run(); err != nil {
+		return fmt.Errorf("%s ota daemon: %w", action, err)
 	}
 	return nil
 }
