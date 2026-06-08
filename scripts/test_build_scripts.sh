@@ -101,6 +101,25 @@ if ! grep -q 'normalize_image_tree_ownership' "$ROOT_DIR/pico-sdk/project/build.
     exit 1
 fi
 
+for required in \
+    'SOURCE_DATE_EPOCH ?= 0' \
+    '--sort=name' \
+    '--mtime="@$(SOURCE_DATE_EPOCH)"' \
+    'Build Time:  $(reproducible_build_utc)' \
+    'find "$dir" -xdev -exec touch -h -d "@$epoch"' \
+    'lazy_itable_init=0,lazy_journal_init=0' \
+    '^metadata_csum' \
+    '-U "${AIDEN_EXT4_UUID:-00000000-0000-4000-8000-000000000000}"' \
+    'write_ext4_le32 "$dst" 44 "$source_date_epoch"' \
+    'write_ext4_le32 "$dst" 264 "$source_date_epoch"'; do
+    if ! grep -Fq -- "$required" "$ROOT_DIR/pico-sdk/project/build.sh" \
+       && ! grep -Fq -- "$required" "$ROOT_DIR/pico-sdk/sysdrv/Makefile" \
+       && ! grep -Fq -- "$required" "$ROOT_DIR/pico-sdk/sysdrv/tools/pc/e2fsprogs/mkfs_ext4.sh"; then
+        echo "pico-sdk rootfs reproducibility support missing required content: $required" >&2
+        exit 1
+    fi
+done
+
 if ! grep -q 'chown -hR 0:0 "\$USERDATA_DIR"' "$REPACK_SCRIPT"; then
     echo "OTA update repack must normalize userdata ownership before rebuilding userdata.img" >&2
     exit 1

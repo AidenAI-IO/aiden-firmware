@@ -5,6 +5,8 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 WORKFLOW="$ROOT_DIR/.github/workflows/build.yml"
 SCHEDULED_WORKFLOW="$ROOT_DIR/.github/workflows/build-scheduled.yml"
 CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
+BUILD_IMAGE_SCRIPT="$ROOT_DIR/_build_image.sh"
+DOCKER_BUILD_SCRIPT="$ROOT_DIR/build_image.sh"
 
 if ! grep -q 'scripts/create_github_release.sh' "$WORKFLOW"; then
     echo "build workflow must create releases through the retry-capable local script" >&2
@@ -59,6 +61,19 @@ fi
 
 if ! grep -q 'GH_DEBUG' "$WORKFLOW"; then
     echo "build workflow must enable GitHub CLI debug output for release creation" >&2
+    exit 1
+fi
+
+if ! grep -q 'SOURCE_DATE_EPOCH' "$DOCKER_BUILD_SCRIPT" || \
+   ! grep -q 'SOURCE_DATE_EPOCH' "$BUILD_IMAGE_SCRIPT"; then
+    echo "image build scripts must set and propagate SOURCE_DATE_EPOCH" >&2
+    exit 1
+fi
+
+if grep -q 'apply_pico_sdk_rootfs_reproducibility_patch.sh' "$BUILD_IMAGE_SCRIPT" || \
+   [ -e "$ROOT_DIR/scripts/apply_pico_sdk_rootfs_reproducibility_patch.sh" ] || \
+   [ -e "$ROOT_DIR/scripts/patches/pico-sdk-rootfs-reproducible-build.patch" ]; then
+    echo "rootfs reproducibility support must live in the pico-sdk submodule, not a build-time patch" >&2
     exit 1
 fi
 
