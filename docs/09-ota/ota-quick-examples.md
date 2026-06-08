@@ -32,7 +32,7 @@ gh release create "$TAG" \
 
 # 5. Update device
 MANIFEST_URL="https://github.com/$REPO/releases/download/$TAG/manifest.json"
-ota check-now \
+ota update \
   --manifest-url "$MANIFEST_URL" \
   --public-key /userdata/ota/your_pubkey.pem
 ```
@@ -59,7 +59,7 @@ rsync -avz pico-sdk/output/image/*.img \
   user@server:/var/www/firmware/aiden/v1.0.0/
 
 # 4. Update device
-ota check-now \
+ota update \
   --manifest-url "https://firmware.mycompany.com/aiden/v1.0.0/manifest.json" \
   --public-key /userdata/ota/company_pubkey.pem
 ```
@@ -81,7 +81,7 @@ scripts/generate_ota_manifest.sh \
 cd pico-sdk/output/image && python3 -m http.server 8000
 
 # 3. Test on device (without flashing)
-ota check-now \
+ota update \
   --manifest-url "http://192.168.1.100:8000/manifest.json" \
   --public-key /userdata/ota/dev_pubkey.pem \
   --dry-run

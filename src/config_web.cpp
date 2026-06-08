@@ -1304,24 +1304,24 @@ void schedule_ota_restart() {
     schedule_init_script_restart(kOtaInitScript);
 }
 
-bool schedule_ota_check_now(std::string* error) {
+bool schedule_ota_update(std::string* error) {
     std::string log_path = kOtaLogPath;
     std::string log_dir = log_path.substr(0, log_path.rfind('/'));
     std::string cmd =
         "(mkdir -p " + shell_quote(log_dir) + "; "
-        "echo '[config_web] ota check-now requested' >> " + shell_quote(log_path) + "; "
+        "echo '[config_web] ota update requested' >> " + shell_quote(log_path) + "; "
         "if [ -x " + shell_quote(kEnvRunBin) + " ]; then "
-        + shell_quote(kEnvRunBin) + " " + shell_quote(kOtaBin) + " check-now >> " + shell_quote(log_path) + " 2>&1; "
+        + shell_quote(kEnvRunBin) + " " + shell_quote(kOtaBin) + " update >> " + shell_quote(log_path) + " 2>&1; "
         "else "
-        + shell_quote(kOtaBin) + " check-now >> " + shell_quote(log_path) + " 2>&1; "
+        + shell_quote(kOtaBin) + " update >> " + shell_quote(log_path) + " 2>&1; "
         "fi; "
-        "rc=$?; echo \"[config_web] ota check-now exited rc=$rc\" >> " + shell_quote(log_path) +
+        "rc=$?; echo \"[config_web] ota update exited rc=$rc\" >> " + shell_quote(log_path) +
         ") >/dev/null 2>&1 &";
     int rc = system(cmd.c_str());
     if (rc != 0) {
         if (error) {
             std::ostringstream oss;
-            oss << "failed to start ota check-now: system rc=" << rc;
+            oss << "failed to start ota update: system rc=" << rc;
             *error = oss.str();
         }
         return false;
@@ -2096,16 +2096,16 @@ ApiResponse handle_get_ota_log() {
     return make_json_ok(root);
 }
 
-ApiResponse handle_post_ota_check_now() {
+ApiResponse handle_post_ota_update() {
     std::string error;
-    if (!schedule_ota_check_now(&error)) {
-        return make_json_error(500, error.empty() ? "failed to start ota check-now" : error);
+    if (!schedule_ota_update(&error)) {
+        return make_json_error(500, error.empty() ? "failed to start ota update" : error);
     }
 
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddBoolToObject(response, "ota_check_now_started", 1);
-    cJSON_AddStringToObject(response, "message", "ota check-now started");
+    cJSON_AddBoolToObject(response, "ota_update_started", 1);
+    cJSON_AddStringToObject(response, "message", "ota update started");
     cJSON_AddItemToObject(response, "ota_log", ota_log_to_json(read_ota_log_snapshot()));
     return make_json_ok(response);
 }
@@ -3722,8 +3722,8 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         return handle_get_ota_log();
     }
 
-    if (request.method == "POST" && request.path == "/api/ota/check-now") {
-        return handle_post_ota_check_now();
+    if (request.method == "POST" && (request.path == "/api/ota/update" || request.path == "/api/ota/check-now")) {
+        return handle_post_ota_update();
     }
 
     if (request.method == "GET" && request.path == "/api/config") {

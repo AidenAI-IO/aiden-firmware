@@ -29,7 +29,7 @@ func main() {
 func run(args []string, out io.Writer) error {
 	command, args := splitCommandAndFlags(args)
 	positional := flagArgs(args)
-	if (command == "daemon" || command == "check-now" || command == "status") && len(positional) != 0 {
+	if (command == "daemon" || command == "update" || command == "check-now" || command == "status") && len(positional) != 0 {
 		return usage()
 	}
 	config, err := parseConfigFlags(args)
@@ -45,7 +45,7 @@ func run(args []string, out io.Writer) error {
 	switch command {
 	case "daemon":
 		return updater.RunDaemon(ctx)
-	case "check-now":
+	case "update", "check-now":
 		if err := stopRunningDaemon(); err != nil {
 			return err
 		}
@@ -114,6 +114,7 @@ func stopRunningDaemonWithInitScript() error {
 func splitCommandAndFlags(args []string) (string, []string) {
 	commands := map[string]bool{
 		"daemon":          true,
+		"update":          true,
 		"check-now":       true,
 		"status":          true,
 		"verify-manifest": true,
@@ -264,5 +265,5 @@ func flagTakesValue(name string) bool {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: ota [flags] [daemon|check-now|status|verify-manifest <manifest>]")
+	return fmt.Errorf("usage: ota [flags] [daemon|update|check-now|status|verify-manifest <manifest>]")
 }

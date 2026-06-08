@@ -45,9 +45,9 @@ func TestSplitCommandAndFlagsDefaultsToDaemon(t *testing.T) {
 }
 
 func TestSplitCommandAndFlagsConsumesFlagValuesBeforeCommand(t *testing.T) {
-	command, rest := splitCommandAndFlags([]string{"--manifest-url", "https://example.com/manifest.json", "check-now"})
-	if command != "check-now" {
-		t.Fatalf("command = %q, want check-now", command)
+	command, rest := splitCommandAndFlags([]string{"--manifest-url", "https://example.com/manifest.json", "update"})
+	if command != "update" {
+		t.Fatalf("command = %q, want update", command)
 	}
 	want := []string{"--manifest-url", "https://example.com/manifest.json"}
 	if len(rest) != len(want) || rest[0] != want[0] || rest[1] != want[1] {
@@ -62,9 +62,21 @@ func TestSplitCommandAndFlagsConsumesFlagValuesBeforeCommand(t *testing.T) {
 	}
 }
 
+func TestSplitCommandAndFlagsKeepsCheckNowAlias(t *testing.T) {
+	command, rest := splitCommandAndFlags([]string{"--manifest-url", "https://example.com/manifest.json", "check-now"})
+	if command != "check-now" {
+		t.Fatalf("command = %q, want check-now", command)
+	}
+	want := []string{"--manifest-url", "https://example.com/manifest.json"}
+	if len(rest) != len(want) || rest[0] != want[0] || rest[1] != want[1] {
+		t.Fatalf("rest = %#v, want %#v", rest, want)
+	}
+}
+
 func TestRunRejectsExtraPositionalsForNonManifestCommands(t *testing.T) {
 	for _, args := range [][]string{
 		{"daemon", "extra"},
+		{"update", "extra", "--dry-run"},
 		{"check-now", "extra", "--dry-run"},
 		{"status", "extra"},
 	} {
@@ -89,7 +101,7 @@ func TestDefaultRebootIsRealUnlessDryRun(t *testing.T) {
 	}
 }
 
-func TestCheckNowStopsRunningDaemonBeforeChecking(t *testing.T) {
+func TestUpdateStopsRunningDaemonBeforeChecking(t *testing.T) {
 	tmp := t.TempDir()
 	stateDir := filepath.Join(tmp, "state")
 	miscPath := filepath.Join(tmp, "misc.img")
@@ -159,14 +171,14 @@ func TestCheckNowStopsRunningDaemonBeforeChecking(t *testing.T) {
 
 	var out bytes.Buffer
 	err = run([]string{
-		"check-now",
+		"update",
 		"--state-dir", stateDir,
 		"--misc", miscPath,
 		"--manifest-url", server.URL + "/manifest.json",
 		"--public-key", keyPath,
 	}, &out)
 	if err != nil {
-		t.Fatalf("run(check-now) error = %v", err)
+		t.Fatalf("run(update) error = %v", err)
 	}
 	if stopCalls != 1 {
 		t.Fatalf("stopCalls = %d, want 1", stopCalls)
