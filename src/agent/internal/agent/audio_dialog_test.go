@@ -16,6 +16,36 @@ import (
 	ttsmodule "aiden-agent/internal/agent/tts"
 )
 
+func TestAudioDialogFinishManualUtterancePreservesTail(t *testing.T) {
+	vad, err := NewAudioVADWithScorer(AudioVADConfig{
+		SampleRate:      16000,
+		SilenceMs:       650,
+		MinSpeechMs:     300,
+		AlwaysBuffer:    true,
+		SpeechThreshold: 0.5,
+	}, &sequenceScorer{probabilities: []float64{0.1}})
+	if err != nil {
+		t.Fatalf("NewAudioVADWithScorer() error = %v", err)
+	}
+
+	dialog := &AudioDialog{vad: vad}
+	frame := make([]int16, vad.FrameSamples())
+	for i := range frame {
+		frame[i] = 1000
+	}
+	if _, err := dialog.ProcessVADFrame(frame); err != nil {
+		t.Fatalf("ProcessVADFrame() error = %v", err)
+	}
+
+	got := dialog.FinishManualUtterance([]int16{7, 8, 9})
+	if len(got) != len(frame)+3 {
+		t.Fatalf("FinishManualUtterance() len = %d, want %d", len(got), len(frame)+3)
+	}
+	if got[len(got)-3] != 7 || got[len(got)-2] != 8 || got[len(got)-1] != 9 {
+		t.Fatalf("FinishManualUtterance() tail = %#v, want [7 8 9]", got[len(got)-3:])
+	}
+}
+
 func TestAudioDialogReadRecordChunkRequiresActiveRecording(t *testing.T) {
 	dialog := &AudioDialog{}
 

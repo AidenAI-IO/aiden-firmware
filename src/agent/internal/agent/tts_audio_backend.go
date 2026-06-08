@@ -29,11 +29,3 @@ func (a *audioBackend) WritePlayChunk(sessionID uint64, data []byte, isFinal boo
 func (a *audioBackend) StopPlayback(sessionID uint64) error {
 	return a.c.StopPlayback(sessionID)
 }
-
-func (a *audioBackend) PlaybackSessionCount() (int, error) {
-	h, err := a.c.Health()
-	if err != nil {
-		return 0, err
-	}
-	return int(h.PlaybackSessions), nil
-}
