@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -110,6 +111,9 @@ func platformReboot() error {
 }
 
 func shouldRestartDaemonAfterUpdate(config ota.UpdaterConfig, result ota.UpdateResult, err error) bool {
+	if errors.Is(err, ota.ErrUpdateAlreadyRunning) {
+		return false
+	}
 	if err != nil {
 		return true
 	}
@@ -196,6 +200,7 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	if *stateDir != "" {
 		config.StateDir = *stateDir
 		config.DownloadDir = ""
+		config.UpdateLockPath = ""
 	}
 	if *miscPath != "" {
 		config.MiscPath = *miscPath

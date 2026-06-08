@@ -110,6 +110,7 @@ func TestShouldRestartDaemonAfterUpdate(t *testing.T) {
 		want   bool
 	}{
 		{name: "check failure", err: errForcedUpdateCheckFailure, want: true},
+		{name: "already running", err: ota.ErrUpdateAlreadyRunning, want: false},
 		{name: "no update", result: ota.UpdateResult{NoUpdate: true}, want: true},
 		{name: "dry run", config: ota.UpdaterConfig{DryRun: true}, result: ota.UpdateResult{Updated: true}, want: true},
 		{name: "real update success", result: ota.UpdateResult{Updated: true}, want: false},

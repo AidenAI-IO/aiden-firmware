@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"aiden-agent/internal/netproxy"
@@ -23,16 +24,20 @@ import (
 const (
 	DefaultOTAConfigPath             = "/userdata/ota/config.json"
 	DefaultOTAStateDir               = "/userdata/ota"
+	DefaultOTAUpdateLockName         = "update.lock"
 	DefaultReleaseURL                = "https://api.github.com/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
 	MaxRemoteManifestBytes           = 1 << 20
 	DefaultHTTPRequestLimit          = 30 * time.Minute
 	DefaultHTTPResponseHeaderTimeout = 30 * time.Second
 )
 
+var ErrUpdateAlreadyRunning = errors.New("ota update already running")
+
 type UpdaterConfig struct {
 	ConfigPath             string                       `json:"-"`
 	StateDir               string                       `json:"state_dir,omitempty"`
 	DownloadDir            string                       `json:"download_dir,omitempty"`
+	UpdateLockPath         string                       `json:"update_lock_path,omitempty"`
 	MiscPath               string                       `json:"misc_path,omitempty"`
 	BlockDir               string                       `json:"block_dir,omitempty"`
 	ManifestURL            string                       `json:"manifest_url,omitempty"`
@@ -106,6 +111,9 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 	if config.DownloadDir == "" {
 		config.DownloadDir = filepath.Join(config.StateDir, "downloads")
 	}
+	if config.UpdateLockPath == "" {
+		config.UpdateLockPath = filepath.Join(config.StateDir, DefaultOTAUpdateLockName)
+	}
 	if config.MiscPath == "" {
 		config.MiscPath = "/dev/block/by-name/misc"
 	}
@@ -169,6 +177,16 @@ func NewUpdater(config UpdaterConfig, reboot func() error) (*Updater, error) {
 }
 
 func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
+	unlock, err := u.acquireUpdateLock()
+	if err != nil {
+		u.logf("ota check: %v", err)
+		return UpdateResult{}, err
+	}
+	defer unlock()
+	return u.checkOnceLocked(ctx)
+}
+
+func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 	u.logf("ota check: start")
 	if err := u.ProcessPendingHealth(ctx); err != nil {
 		u.recordError("health", err)
@@ -424,6 +442,35 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 	return UpdateResult{Updated: true, Version: manifest.Version, TargetSlot: target}, nil
 }
 
+func (u *Updater) acquireUpdateLock() (func(), error) {
+	lockPath := u.config.UpdateLockPath
+	if lockPath == "" {
+		lockPath = filepath.Join(u.config.StateDir, DefaultOTAUpdateLockName)
+	}
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return nil, fmt.Errorf("create ota update lock dir: %w", err)
+	}
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open ota update lock: %w", err)
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lockFile.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, fmt.Errorf("%w: %s", ErrUpdateAlreadyRunning, lockPath)
+		}
+		return nil, fmt.Errorf("lock ota update: %w", err)
+	}
+	if err := lockFile.Truncate(0); err == nil {
+		_, _ = lockFile.Seek(0, 0)
+		_, _ = fmt.Fprintf(lockFile, "%d\n", os.Getpid())
+	}
+	return func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	}, nil
+}
+
 func (u *Updater) cachedDownloadVerified(path string, asset ManifestAsset) bool {
 	if err := VerifyFile(path, asset.Size, asset.SHA256); err != nil {
 		if !os.IsNotExist(err) {
@@ -564,14 +611,18 @@ func (u *Updater) commitPendingHealth(pending PendingBoot) error {
 
 func (u *Updater) RunDaemon(ctx context.Context) error {
 	u.logf("ota daemon: started interval=%s jitter=%s", u.config.Interval, u.config.Jitter)
-	if err := u.ProcessPendingHealth(ctx); err != nil {
+	if err := u.processPendingHealthWithLock(ctx); err != nil {
 		u.logf("ota health: %v", err)
-		u.recordError("health", err)
+		if !errors.Is(err, ErrUpdateAlreadyRunning) {
+			u.recordError("health", err)
+		}
 	}
 	for {
 		if _, err := u.CheckOnce(ctx); err != nil {
 			u.logf("ota check: %v", err)
-			u.recordError("check", err)
+			if !errors.Is(err, ErrUpdateAlreadyRunning) {
+				u.recordError("check", err)
+			}
 		}
 		wait := u.config.Interval + randomJitter(u.config.Jitter)
 		u.logf("ota daemon: next check in %s", wait)
@@ -583,6 +634,15 @@ func (u *Updater) RunDaemon(ctx context.Context) error {
 		case <-timer.C:
 		}
 	}
+}
+
+func (u *Updater) processPendingHealthWithLock(ctx context.Context) error {
+	unlock, err := u.acquireUpdateLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return u.ProcessPendingHealth(ctx)
 }
 
 func (u *Updater) Status() (State, ABData, error) {

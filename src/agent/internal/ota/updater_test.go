@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -172,6 +173,33 @@ func TestUpdaterNoUpdateReturnsNoop(t *testing.T) {
 	}
 	if env.reboots != 0 {
 		t.Fatalf("reboots = %d, want 0", env.reboots)
+	}
+}
+
+func TestUpdaterCheckOnceRejectsConcurrentUpdateLock(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	env.state.LastCommittedVersion = env.version
+	env.state.LastCommittedBuildTime = env.buildTime
+	env.saveState(t)
+	manifest := env.signedManifest(map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}, nil)
+	server := env.releaseServer(t, manifest, map[string][]byte{"boot_b.img": []byte("boot-b-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")})
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+
+	lockFile, err := os.OpenFile(filepath.Join(env.stateDir, "update.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("OpenFile(lock) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	})
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("Flock(lock) error = %v", err)
+	}
+
+	_, err = env.updater().CheckOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "ota update already running") {
+		t.Fatalf("CheckOnce() error = %v, want ota update already running", err)
 	}
 }
 

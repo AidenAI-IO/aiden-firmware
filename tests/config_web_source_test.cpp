@@ -166,6 +166,23 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("setInterval(function(){refreshOtaLog(false);},2000)") != std::string::npos);
 }
 
+TEST_CASE("ota open sources documentation references current docs paths") {
+    const std::string doc_path = std::string(AIDEN_SOURCE_DIR) + "/docs/09-ota/OTA_OPEN_SOURCES.md";
+    std::ifstream doc_in(doc_path.c_str());
+    REQUIRE(doc_in.good());
+
+    std::ostringstream doc_buffer;
+    doc_buffer << doc_in.rdbuf();
+    const std::string doc = doc_buffer.str();
+
+    CHECK(doc.find("docs/09-ota/ota-external-developers.md") != std::string::npos);
+    CHECK(doc.find("docs/09-ota/ota-quick-examples.md") != std::string::npos);
+    CHECK(doc.find("docs/09-ota/ota-release-channels.md") != std::string::npos);
+    CHECK(doc.find("docs/ota-external-developers.md") == std::string::npos);
+    CHECK(doc.find("docs/ota-quick-examples.md") == std::string::npos);
+    CHECK(doc.find("docs/ota-release-channels.md") == std::string::npos);
+}
+
 TEST_CASE("config web exposes screenshot pruning config fields") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
