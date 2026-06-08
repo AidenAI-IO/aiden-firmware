@@ -24,10 +24,11 @@ import (
 )
 
 const (
-	ProviderName    = "fish-audio"
-	defaultEndpoint = "wss://api.fish.audio/v1/tts/live"
-	defaultModel    = "s2-pro"
-	connectTimeout  = 10 * time.Second
+	ProviderName     = "fish-audio"
+	defaultEndpoint  = "wss://api.fish.audio/v1/tts/live"
+	defaultModel     = "s2-pro"
+	connectTimeout   = 10 * time.Second
+	synthesisTimeout = 60 * time.Second
 )
 
 func init() {
@@ -292,18 +293,16 @@ func (s *session) Close() error {
 		_ = s.writeMsg(map[string]any{"event": "stop"})
 
 		// Wait for the read loop to drain.
-		waitCtx, cancel := context.WithTimeout(s.ctx, connectTimeout)
+		waitCtx, cancel := context.WithTimeout(s.ctx, synthesisTimeout)
 		if err := s.waitReadDone(waitCtx); err != nil {
 			s.recordErr(err)
 		}
 		cancel()
 
 		// Drain the playback buffer (waits until audio fully plays).
-		drainCtx, cancel := context.WithTimeout(s.ctx, connectTimeout)
-		if err := s.sink.Drain(drainCtx); err != nil {
+		if err := s.sink.Drain(s.ctx); err != nil {
 			s.recordErr(fmt.Errorf("drain: %w", err))
 		}
-		cancel()
 
 		s.closeConn()
 	})
