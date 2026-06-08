@@ -36,7 +36,13 @@ if [ "$#" -gt 0 ]; then
 fi
 
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
-  SOURCE_DATE_EPOCH="$(git -C "$(pwd)" log -1 --format=%ct 2>/dev/null || printf '0')"
+  # Keep rootfs/oem image metadata stable across releases when their payloads
+  # did not change. Callers can still set SOURCE_DATE_EPOCH explicitly.
+  SOURCE_DATE_EPOCH="${AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-0}"
+fi
+if ! [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
+  echo "SOURCE_DATE_EPOCH must be an unsigned Unix timestamp: $SOURCE_DATE_EPOCH" >&2
+  exit 1
 fi
 export SOURCE_DATE_EPOCH
 
