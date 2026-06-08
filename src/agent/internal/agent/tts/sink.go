@@ -84,8 +84,11 @@ func (s *AudioServiceSink) flushPending() error {
 		return nil
 	}
 	pending := s.pending
+	if err := s.writePCMChunks(pending); err != nil {
+		return err
+	}
 	s.pending = nil
-	return s.writePCMChunks(pending)
+	return nil
 }
 
 func (s *AudioServiceSink) prebufferBytes() int {
@@ -147,17 +150,21 @@ func (s *AudioServiceSink) Stop() error {
 	if s.stopped {
 		return nil
 	}
-	s.stopped = true
-	s.pending = nil
 	if !s.started {
+		s.pending = nil
+		s.stopped = true
 		return nil
 	}
 	err := s.audio.StopPlayback(s.sessionID)
 	if err == nil {
+		s.pending = nil
+		s.stopped = true
 		return nil
 	}
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "session_not_found") || strings.Contains(msg, "not found") {
+		s.pending = nil
+		s.stopped = true
 		return nil
 	}
 	return err
