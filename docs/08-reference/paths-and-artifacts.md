@@ -98,9 +98,11 @@ curl http://<device-ip>:8080/api/tools
 `edid/` 目录包含常用 EDID：
 
 - `1080p30.hex`
+- `1080p60.hex`
 - `720p30.hex`
 - `720p60.hex`
 - `hdmi_1080p30_cta.hex`
+- `hdmi_1080p60_cta.hex`
 - `hdmi_720p60_cta.hex`
 - `hdmi_720p60_1080p30_cta.hex`
 - `phone_vrt_552x1200p30.hex`
