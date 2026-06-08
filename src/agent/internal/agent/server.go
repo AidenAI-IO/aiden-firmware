@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -216,11 +217,13 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
 	mux.HandleFunc("/api/phone-bridge", s.bridge.HandleWebSocket)
 	mux.HandleFunc("/api/phone-bridge/status", s.handleBridgeStatus)
-	mux.HandleFunc("/api/screenshot.jpg", s.handleScreenshotJPEG)
+	if isLoopbackServerAddr(s.addr) {
+		mux.HandleFunc("/api/screenshot.jpg", s.handleScreenshotJPEG)
 
-	// Coordinate debug tool
-	mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
-	mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
+		// Coordinate debug tool exposes live screen data, so keep it local-only.
+		mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
+		mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
+	}
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
@@ -262,6 +265,19 @@ func (s *Server) Start() error {
 		}
 		return <-errCh
 	}
+}
+
+func isLoopbackServerAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // handleChat handles chat requests.
@@ -1032,7 +1048,7 @@ func (s *Server) handleAudioRecordStop(w http.ResponseWriter, r *http.Request) {
 }
 
 const (
-	webRecordingDrainTimeout       = 7 * time.Second
+	webRecordingDrainTimeout        = 7 * time.Second
 	webRecordingStaleCleanupTimeout = 200 * time.Millisecond
 )
 
@@ -1462,8 +1478,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(webUI))
+	html := webUI
+	if !isLoopbackServerAddr(s.addr) {
+		html = strings.ReplaceAll(html, coordinateDebugNavLink, "")
+	}
+	w.Write([]byte(html))
 }
+
+const coordinateDebugNavLink = `<a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 坐标调试</a>`
 
 const webUI = `<!DOCTYPE html>
 <html lang="en">

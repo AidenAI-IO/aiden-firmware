@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 )
 
@@ -18,7 +19,12 @@ func (s *Server) handleScreenshotJPEG(w http.ResponseWriter, r *http.Request) {
 	client := NewFrameServiceClient(socketPath)
 	meta, jpegData, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
 	if err != nil {
-		http.Error(w, "capture failed: "+err.Error(), http.StatusInternalServerError)
+		if s.logger != nil {
+			s.logger.Error("Coordinate debug screenshot capture failed: %v", err)
+		} else {
+			log.Printf("[ERROR] Coordinate debug screenshot capture failed: %v", err)
+		}
+		http.Error(w, "capture failed", http.StatusInternalServerError)
 		return
 	}
 	if meta.PixelFormat != "jpeg" {

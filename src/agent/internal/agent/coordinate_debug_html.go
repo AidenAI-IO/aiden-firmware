@@ -106,6 +106,10 @@ const loadDeviceBtn = document.getElementById('loadDeviceBtn');
 const autoRefresh = document.getElementById('autoRefresh');
 const deviceStatus = document.getElementById('deviceStatus');
 
+function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+}
+
 uploadArea.addEventListener('click', () => fileInput.click());
 uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.classList.add('drag-over'); });
 uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('drag-over'));
@@ -182,10 +186,12 @@ canvas.addEventListener('click', (e) => {
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
-    const pixelX = Math.round((e.clientX - rect.left) * scaleX);
-    const pixelY = Math.round((e.clientY - rect.top) * scaleY);
-    const normalizedX = Math.round((pixelX / canvas.width) * 1000);
-    const normalizedY = Math.round((pixelY / canvas.height) * 1000);
+    const maxPixelX = canvas.width - 1;
+    const maxPixelY = canvas.height - 1;
+    const pixelX = clamp(Math.round((e.clientX - rect.left) * scaleX), 0, maxPixelX);
+    const pixelY = clamp(Math.round((e.clientY - rect.top) * scaleY), 0, maxPixelY);
+    const normalizedX = clamp(Math.round((pixelX / Math.max(maxPixelX, 1)) * 1000), 0, 1000);
+    const normalizedY = clamp(Math.round((pixelY / Math.max(maxPixelY, 1)) * 1000), 0, 1000);
     document.getElementById('clickPixel').textContent = 'X: ' + pixelX + ', Y: ' + pixelY;
     document.getElementById('normalizedCoord').textContent = 'X: ' + normalizedX + ', Y: ' + normalizedY;
     coordX.value = normalizedX;
@@ -200,8 +206,8 @@ showCoordBtn.addEventListener('click', () => {
         alert('请输入有效的坐标值 (0-1000)！');
         return;
     }
-    const pixelX = Math.round((x / 1000) * canvas.width);
-    const pixelY = Math.round((y / 1000) * canvas.height);
+    const pixelX = clamp(Math.round((x / 1000) * Math.max(canvas.width - 1, 0)), 0, canvas.width - 1);
+    const pixelY = clamp(Math.round((y / 1000) * Math.max(canvas.height - 1, 0)), 0, canvas.height - 1);
     showMarker(pixelX, pixelY);
     document.getElementById('normalizedCoord').textContent = 'X: ' + x + ', Y: ' + y;
 });
@@ -231,6 +237,7 @@ function showMarker(pixelX, pixelY) {
 
 document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        if (!navigator.clipboard || typeof navigator.clipboard.read !== 'function') return;
         navigator.clipboard.read().then(items => {
             for (const item of items) {
                 for (const type of item.types) {
