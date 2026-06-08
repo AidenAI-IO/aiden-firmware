@@ -560,6 +560,54 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 	}
 }
 
+func TestServerHandleSkillsReloadMarksDirty(t *testing.T) {
+	storageDir := t.TempDir()
+	server := &Server{
+		runtime: NewRuntimeWithDeps(
+			Config{Model: ModelConfig{Provider: "fake"}},
+			&testModelResolver{model: &scriptedModel{}},
+			NewMemoryManager(storageDir),
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+			NewSkillIndex(),
+		),
+	}
+
+	if server.runtime.skillsDirty {
+		t.Fatalf("expected skillsDirty=false initially")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/skills/reload", nil)
+	rec := httptest.NewRecorder()
+	server.handleSkillsReload(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !server.runtime.skillsDirty {
+		t.Fatalf("expected skillsDirty=true after reload request")
+	}
+}
+
+func TestServerHandleSkillsReloadRejectsGet(t *testing.T) {
+	server := &Server{
+		runtime: NewRuntimeWithDeps(
+			Config{Model: ModelConfig{Provider: "fake"}},
+			&testModelResolver{model: &scriptedModel{}},
+			NewMemoryManager(t.TempDir()),
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+			NewSkillIndex(),
+		),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/skills/reload", nil)
+	rec := httptest.NewRecorder()
+	server.handleSkillsReload(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rec.Code)
+	}
+}
+
 func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	stt := &stubSTTClient{transcript: "你好，帮我总结一下"}
 	runtime := NewRuntimeWithDeps(

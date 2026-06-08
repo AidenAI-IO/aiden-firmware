@@ -131,6 +131,9 @@ const int kClientReadTimeoutSeconds = 5;
 const char* kDefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
 const int kSystemEnvCommandTimeoutMs = 1500;
 const size_t kMaxSystemEnvSize = 64 * 1024;
+const char* kUserFilesReportPath = "/userdata/agent/files_report.html";
+const char* kUserFilesToolsDir = "/userdata/agent_tools";
+const int kUserFilesGenerateCommandTimeoutMs = 30000;
 
 std::string read_file_contents(const char* path, size_t max_size);
 std::string validate_proxy_url(const std::string& url);
@@ -430,6 +433,33 @@ bool command_exists(const char* name) {
     bool ok = result.exit_code == 0;
     cache[key] = ok;
     return ok;
+}
+
+bool ensure_user_files_report(std::string* error) {
+    if (file_exists(kUserFilesReportPath)) {
+        return true;
+    }
+
+    std::string cmd = "cd ";
+    cmd += shell_quote(kUserFilesToolsDir);
+    cmd += " && ./view_agent_files.sh 2>&1";
+    CommandResult result = run_shell_command_with_timeout(cmd, kUserFilesGenerateCommandTimeoutMs);
+    if (result.exit_code == 0 && !result.timed_out && file_exists(kUserFilesReportPath)) {
+        return true;
+    }
+
+    if (error) {
+        if (result.timed_out) {
+            *error = "user files report generation timed out";
+        } else {
+            *error = "user files report generation failed";
+        }
+        if (!result.output.empty()) {
+            *error += ": ";
+            *error += result.output.substr(0, 1000);
+        }
+    }
+    return false;
 }
 
 std::string trim_trailing_newlines(const std::string& text) {
@@ -3739,7 +3769,18 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     if (request.method == "GET" && request.path == "/user_files") {
         ApiResponse response;
         response.content_type = "text/html; charset=utf-8";
-        std::string path = "/userdata/agent/files_report.html";
+        std::string path = kUserFilesReportPath;
+        std::string generate_error;
+        if (!ensure_user_files_report(&generate_error)) {
+            response.status_code = 500;
+            response.body = "<html><body>"
+                "<h1>Files Report Generation Failed</h1>"
+                "<p>The files report could not be generated.</p>"
+                "<p>Expected tools under <code>/userdata/agent_tools</code>.</p>"
+                "<pre>" + generate_error + "</pre>"
+                "</body></html>";
+            return response;
+        }
         FILE* fp = fopen(path.c_str(), "r");
         if (fp) {
             fseek(fp, 0, SEEK_END);
@@ -3775,7 +3816,7 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         // not if the background script succeeds. Actual success/failure will
         // only be visible in /tmp/user_files_regenerate.log.
         std::string cmd = "cd /userdata/agent_tools && "
-                         "./view_agent_files.sh > /tmp/user_files_regenerate.log 2>&1 &";
+                          "./view_agent_files.sh > /tmp/user_files_regenerate.log 2>&1 &";
         int ret = system(cmd.c_str());
 
         if (ret == 0) {

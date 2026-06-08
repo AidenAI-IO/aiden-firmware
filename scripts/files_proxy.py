@@ -47,6 +47,7 @@ def _ensure_report_exists():
                 '--memory-dir', '/userdata/agent/memory',
                 '--skills-dir', '/userdata/agent/skills',
                 '--skill-state-dir', '/userdata/agent/skill-state',
+                '--skillopt-dir', '/userdata/agent/benchmark/runs/skillopt',
                 '--output', str(FILES_REPORT)
             ],
             cwd=str(TOOLS_DIR),

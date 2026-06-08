@@ -415,6 +415,43 @@ TEST_CASE("config web custom benchmark suite import endpoints") {
     CHECK(source.find(del_marker) != std::string::npos);
 }
 
+TEST_CASE("user files route generates report before serving it") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string route_marker = "request.method == \"GET\" && request.path == \"/user_files\"";
+    const size_t route_pos = source.find(route_marker);
+    REQUIRE(route_pos != std::string::npos);
+
+    const size_t generate_pos = source.find("ensure_user_files_report", route_pos);
+    const size_t read_pos = source.find("fopen(path.c_str(), \"r\")", route_pos);
+    REQUIRE(read_pos != std::string::npos);
+
+    CHECK(source.find("kUserFilesGenerateCommandTimeoutMs") != std::string::npos);
+    CHECK(generate_pos != std::string::npos);
+    CHECK(generate_pos < read_pos);
+}
+
+TEST_CASE("build image packages user files report tools") {
+    const std::string build_path = std::string(AIDEN_SOURCE_DIR) + "/_build_image.sh";
+    std::ifstream build_in(build_path.c_str());
+    REQUIRE(build_in.good());
+
+    std::ostringstream build_buffer;
+    build_buffer << build_in.rdbuf();
+    const std::string build_script = build_buffer.str();
+
+    CHECK(build_script.find("agent_tools") != std::string::npos);
+    CHECK(build_script.find("generate_agent_files_report.py") != std::string::npos);
+    CHECK(build_script.find("agent_files_template.html") != std::string::npos);
+    CHECK(build_script.find("view_agent_files.sh") != std::string::npos);
+}
+
 TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhid") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());

@@ -61,6 +61,14 @@ else
 fi
 echo "  ✓ Benchmark runner and suites staged to overlay/userdata/agent/benchmark"
 
+AGENT_TOOLS_DEST="$OVERLAY/userdata/agent_tools"
+mkdir -p "$AGENT_TOOLS_DEST"
+cp "$SCRIPT_DIR/scripts/generate_agent_files_report.py" "$AGENT_TOOLS_DEST/"
+cp "$SCRIPT_DIR/scripts/agent_files_template.html" "$AGENT_TOOLS_DEST/"
+cp "$SCRIPT_DIR/scripts/view_agent_files.sh" "$AGENT_TOOLS_DEST/"
+chmod +x "$AGENT_TOOLS_DEST/generate_agent_files_report.py" "$AGENT_TOOLS_DEST/view_agent_files.sh"
+echo "  ✓ Agent files report tools staged to overlay/userdata/agent_tools"
+
 RKNNMRT_OVERLAY="$OVERLAY/oem/usr/lib/librknnmrt.so"
 RKNNMRT_SOURCE="$PICO_SDK/media/iva/iva/librockiva/rockiva-rv1106-Linux/lib/librknnmrt.so"
 if [ -f "$RKNNMRT_OVERLAY" ]; then
