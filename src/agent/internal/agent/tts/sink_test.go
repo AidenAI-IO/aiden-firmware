@@ -2,6 +2,7 @@ package tts
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -98,6 +99,54 @@ func TestAudioServiceSinkStopDropsBufferedPlayback(t *testing.T) {
 	}
 }
 
+func TestAudioServiceSinkDrainWaitsForOwnPCMSOnly(t *testing.T) {
+	backend := &countingBackend{activeOthers: 1}
+	format := AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}
+	sink := NewAudioServiceSink(backend, format)
+
+	pcm := make([]byte, pcmBytesForDuration(format, time.Second))
+	if err := sink.WritePCM(pcm); err != nil {
+		t.Fatalf("WritePCM() error = %v", err)
+	}
+
+	started := time.Now()
+	if err := sink.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain() error = %v", err)
+	}
+	elapsed := time.Since(started)
+	if elapsed < 1900*time.Millisecond {
+		t.Fatalf("Drain() returned too early: %s", elapsed)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("Drain() took too long: %s", elapsed)
+	}
+	if got := atomic.LoadInt32(&backend.finalCalls); got != 1 {
+		t.Fatalf("finalCalls = %d, want 1", got)
+	}
+}
+
+func TestAudioServiceSinkDrainRespectsContextCancel(t *testing.T) {
+	backend := &countingBackend{}
+	sink := NewAudioServiceSink(backend, AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16})
+	if err := sink.WritePCM(make([]byte, 16000*4)); err != nil {
+		t.Fatalf("WritePCM() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := sink.Drain(ctx); err == nil {
+		t.Fatal("Drain() error = nil, want context deadline exceeded")
+	}
+}
+
+func TestEstimatedPlaybackDrainDuration(t *testing.T) {
+	got := EstimatedPlaybackDrainDuration(AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}, 32000)
+	want := time.Second + playbackDrainGrace + playbackDrainMargin
+	if got != want {
+		t.Fatalf("EstimatedPlaybackDrainDuration() = %s, want %s", got, want)
+	}
+}
+
 func pcmBytesForDuration(format AudioFormat, d time.Duration) int {
 	bytesPerSample := format.BitWidth / 8
 	return int((int64(format.SampleRate) * int64(format.Channels) * int64(bytesPerSample) * int64(d)) / int64(time.Second))
@@ -130,8 +179,6 @@ func (b *recordingAudioBackend) WritePlayChunk(_ uint64, data []byte, isFinal bo
 
 func (b *recordingAudioBackend) StopPlayback(uint64) error { return nil }
 
-func (b *recordingAudioBackend) PlaybackSessionCount() (int, error) { return 0, nil }
-
 func (b *recordingAudioBackend) totalWrittenBytes() int {
 	total := 0
 	for _, write := range b.writes {
@@ -150,3 +197,23 @@ func (b *recordingAudioBackend) dataAfterOffset(offset int) []byte {
 	}
 	return all[offset:]
 }
+
+type countingBackend struct {
+	activeOthers int32
+	startCalls   int32
+	finalCalls   int32
+}
+
+func (b *countingBackend) StartPlayback(format AudioFormat) (uint64, error) {
+	atomic.AddInt32(&b.startCalls, 1)
+	return 1, nil
+}
+
+func (b *countingBackend) WritePlayChunk(sessionID uint64, data []byte, isFinal bool) error {
+	if isFinal {
+		atomic.AddInt32(&b.finalCalls, 1)
+	}
+	return nil
+}
+
+func (b *countingBackend) StopPlayback(sessionID uint64) error { return nil }

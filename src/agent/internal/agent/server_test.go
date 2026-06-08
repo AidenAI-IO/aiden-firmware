@@ -622,6 +622,15 @@ func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 	if startRec.Code != http.StatusOK {
 		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
 	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&startPlaybackCount) > 0 &&
+			atomic.LoadInt32(&writePlayChunkCount) > 0 &&
+			atomic.LoadInt32(&healthCount) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if atomic.LoadInt32(&startPlaybackCount) == 0 ||
 		atomic.LoadInt32(&writePlayChunkCount) == 0 ||
 		atomic.LoadInt32(&healthCount) == 0 {
