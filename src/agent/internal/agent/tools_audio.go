@@ -37,7 +37,7 @@ func (t *AudioVolumeTool) Call(_ context.Context, input string) (string, error) 
 	trimmed := strings.TrimSpace(input)
 	if trimmed != "" {
 		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
-			return fmt.Sprintf("error: invalid input: %v", err), nil
+			return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"volume\": 70} or {} to read current volume. Volume must be a number between 0 and 100", err), nil
 		}
 	}
 
