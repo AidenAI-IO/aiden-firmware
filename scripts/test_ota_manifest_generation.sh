@@ -82,4 +82,33 @@ if ! jq -e '.signature.value' "$manifest_output" >/dev/null; then
   exit 1
 fi
 
+tar -czf "$image_dir/oem.img.tar.gz" -C "$image_dir" oem.img
+compressed_manifest_output="$tmp_dir/manifest-compressed.json"
+"$repo_root/scripts/generate_ota_manifest.sh" \
+  --version "test-version" \
+  --channel "test" \
+  --build-time "2026-01-01T00:00:00Z" \
+  --sign-key "$private_key" \
+  --image-dir "$image_dir" \
+  --output "$compressed_manifest_output"
+
+oem_image_sha="$(if command -v sha256sum >/dev/null 2>&1; then sha256sum "$image_dir/oem.img"; else shasum -a 256 "$image_dir/oem.img"; fi | awk '{print $1}')"
+oem_archive_sha="$(if command -v sha256sum >/dev/null 2>&1; then sha256sum "$image_dir/oem.img.tar.gz"; else shasum -a 256 "$image_dir/oem.img.tar.gz"; fi | awk '{print $1}')"
+oem_archive_size="$(if stat -c%s "$image_dir/oem.img.tar.gz" >/dev/null 2>&1; then stat -c%s "$image_dir/oem.img.tar.gz"; else stat -f%z "$image_dir/oem.img.tar.gz"; fi)"
+
+if ! jq -e \
+  --arg archive_sha "$oem_archive_sha" \
+  --arg image_sha "$oem_image_sha" \
+  --argjson archive_size "$oem_archive_size" \
+  '.parts[] | select(.name=="oem") | .asset |
+    .name == "oem.img.tar.gz" and
+    .size == $archive_size and
+    .sha256 == $archive_sha and
+    .image_sha256 == $image_sha' \
+  "$compressed_manifest_output" >/dev/null; then
+  echo "manifest must prefer local compressed image assets and include image_sha256" >&2
+  jq '.parts[] | select(.name=="oem") | .asset' "$compressed_manifest_output" >&2
+  exit 1
+fi
+
 echo "OTA manifest generation test passed (neutral resources correctly used)."
