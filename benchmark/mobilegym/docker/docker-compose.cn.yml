@@ -9,7 +9,7 @@ services:
       target: mobilegym-base
     container_name: aiden-mobilegym
     ports:
-      - "4173:4173"
+      - "${MOBILEGYM_PORT:-4173}:4173"
     networks:
       - aiden-net
     healthcheck:
@@ -25,7 +25,7 @@ services:
       target: daemon-runtime
     container_name: aiden-daemon
     ports:
-      - "8080:8080"
+      - "${AIDEN_DAEMON_PORT:-8080}:8080"
     volumes:
       - ../config:/config:ro
       - daemon-logs:/app/log
@@ -49,10 +49,12 @@ services:
     volumes:
       - ../../runs:/app/benchmark/runs
       - ../config:/config:ro
+      - ../suites:/app/suites:ro
     environment:
       - MOBILEGYM_ROOT=/mobilegym
       - AIDEN_DAEMON_URL=http://daemon:8080
       - AIDEN_CONTROL_TOKEN_FILE=/config/control_token
+      - AIDEN_BRIDGE_BIND_HOST=0.0.0.0
     networks:
       - aiden-net
     depends_on:
@@ -60,6 +62,13 @@ services:
         condition: service_healthy
     profiles:
       - test
+    command: >
+      --mobilegym-root /mobilegym
+      --suite all
+      --env-url http://mobilegym:4173
+      --aiden-daemon-url http://daemon:8080
+      --parallel 1
+      --headless
 
 networks:
   aiden-net:

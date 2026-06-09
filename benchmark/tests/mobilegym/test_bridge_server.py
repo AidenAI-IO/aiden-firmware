@@ -198,6 +198,24 @@ def expected_screenshot(payload=b"fake-screenshot", fmt="png"):
     }
 
 
+def test_bridge_base_url_uses_public_host_override():
+    with OwnerLoop() as owner:
+        env = FakeEnv(owner.loop)
+        state = BridgeEpisodeState(env, owner_loop=owner.loop)
+        server = BridgeServer(
+            state,
+            BridgeTokens(control_token="control-token", device_token="device-token"),
+            host="127.0.0.1",
+            port=0,
+            public_host="bridge-container",
+        )
+        try:
+            base_url = server.start()
+            assert base_url.startswith("http://bridge-container:")
+        finally:
+            server.stop()
+
+
 def test_health_and_runner_endpoints_require_control_token_before_env_mutation():
     with RunningBridge() as bridge:
         status, body = request_json(bridge.base_url, "GET", "/health")

@@ -81,6 +81,21 @@ def test_resolve_mobilegym_root_precedence(monkeypatch, tmp_path):
     assert source == "MOBILEGYM_ROOT"
 
 
+def test_default_aiden_control_token_reads_env_or_file(monkeypatch, tmp_path):
+    module = load_run_aiden_module()
+    token_file = tmp_path / "control_token"
+    token_file.write_text("file-token\n")
+
+    monkeypatch.delenv("AIDEN_CONTROL_TOKEN", raising=False)
+    monkeypatch.setenv("AIDEN_CONTROL_TOKEN_FILE", str(token_file))
+
+    assert module.default_aiden_control_token() == "file-token"
+
+    monkeypatch.setenv("AIDEN_CONTROL_TOKEN", "env-token")
+
+    assert module.default_aiden_control_token() == "env-token"
+
+
 def test_prepare_import_paths_keeps_local_mobilegym_before_vendor(monkeypatch, tmp_path):
     module = load_run_aiden_module()
     vendor_root = tmp_path / "vendor" / "mobilegym"

@@ -20,11 +20,12 @@ docker compose up -d
 docker compose ps
 ```
 
-应该看到 3 个服务：
+应该看到 2 个常驻服务：
 
 - `aiden-mobilegym` - 模拟器 (4173端口)
 - `aiden-daemon` - Go Agent (8080端口)
-- `aiden-test` - 测试运行器（按需启动）
+
+`aiden-test` 是测试运行器，通过 `docker compose run --rm test ...` 按需启动。
 
 ### 2. 运行单个任务测试
 
@@ -94,7 +95,7 @@ docker compose down
 ## 验证清单
 
 - [ ] 镜像构建成功（`docker images | grep feature-mobilegym`）
-- [ ] 服务启动成功（`docker compose ps` 显示 3/3 healthy）
+- [ ] 服务启动成功（`docker compose ps` 显示 `mobilegym` 和 `daemon` healthy）
 - [ ] 单任务测试运行
 - [ ] 自定义套件运行
 - [ ] 结果正确保存到 `../../runs/mobilegym/`

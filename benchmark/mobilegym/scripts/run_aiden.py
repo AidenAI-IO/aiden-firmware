@@ -51,8 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     aiden.add_argument(
         "--aiden-control-token",
-        default=os.getenv("AIDEN_CONTROL_TOKEN", ""),
-        help="Bearer token for Aiden daemon control endpoints. Can also use AIDEN_CONTROL_TOKEN.",
+        default=default_aiden_control_token(),
+        help=(
+            "Bearer token for Aiden daemon control endpoints. Can also use AIDEN_CONTROL_TOKEN "
+            "or AIDEN_CONTROL_TOKEN_FILE."
+        ),
     )
     aiden.add_argument("--chat-timeout-sec", type=float, default=300.0, help="Timeout for one Aiden /api/chat episode.")
     aiden.add_argument("--episode-timeout-sec", type=float, default=30.0, help="Timeout for episode cleanup calls.")
@@ -66,6 +69,19 @@ def resolve_mobilegym_root(cli_root: str | Path | None) -> tuple[Path, str]:
     if env_root:
         return Path(env_root).expanduser(), "MOBILEGYM_ROOT"
     return DEFAULT_MOBILEGYM_ROOT, "benchmark/mobilegym/vendor/mobilegym"
+
+
+def default_aiden_control_token() -> str:
+    token = os.getenv("AIDEN_CONTROL_TOKEN")
+    if token:
+        return token
+    token_file = os.getenv("AIDEN_CONTROL_TOKEN_FILE")
+    if not token_file:
+        return ""
+    try:
+        return Path(token_file).read_text().strip()
+    except OSError:
+        return ""
 
 
 def prepare_import_paths(mobilegym_root: str | Path) -> None:
@@ -171,6 +187,8 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
         bridge = BridgeServer(
             bridge_state,
             BridgeTokens(control_token=bridge_control_token, device_token=bridge_device_token),
+            host=os.getenv("AIDEN_BRIDGE_BIND_HOST", "127.0.0.1"),
+            public_host=os.getenv("AIDEN_BRIDGE_PUBLIC_HOST") or None,
         )
         bridge_url = bridge.start()
 
