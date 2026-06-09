@@ -722,6 +722,44 @@ func newTestHIDDevice(t *testing.T) (*HIDDevice, string) {
 	return NewHIDDevice(path), path
 }
 
+func TestKeyboardTapSendsModifierOnly(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev}
+
+	out, err := tool.Call(context.Background(), `{"keys":["meta"]}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	dev.Close()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(data) != 16 {
+		t.Fatalf("report bytes = %d, want 16 (modifier + release)", len(data))
+	}
+
+	chord := data[0:8]
+	release := data[8:16]
+	if chord[0] != 0x08 {
+		t.Fatalf("chord modifier = 0x%02x, want 0x08", chord[0])
+	}
+	for i := 2; i < 8; i++ {
+		if chord[i] != 0 {
+			t.Fatalf("chord key slot [%d] = 0x%02x, want 0", i, chord[i])
+		}
+	}
+	for i := range release {
+		if release[i] != 0 {
+			t.Fatalf("release report = %v, want all zeros", release)
+		}
+	}
+}
+
 func TestKeyboardTapSendsModifierChordWithHold(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &KeyboardTapTool{dev: dev}

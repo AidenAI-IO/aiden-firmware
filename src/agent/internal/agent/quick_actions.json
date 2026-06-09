@@ -15,7 +15,7 @@
           "status": "active",
           "tool": "keyboard_tap",
           "input": { "keys": ["escape"] },
-          "note": "external keyboard back",
+          "note": "verified: Esc back / dismiss",
           "alternatives": [
             {
               "status": "active",
@@ -26,8 +26,10 @@
           ]
         },
         "mac": {
-          "status": "reserved",
-          "note": "unreliable via HID: use in-app UI or mouse"
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["escape"] },
+          "note": "dismiss dialog/sheet/Spotlight; browser back use browser_back (Cmd+[)"
         }
       }
     },
@@ -40,8 +42,14 @@
           "status": "active",
           "tool": "keyboard_tap",
           "input": { "keys": ["meta", "h"] },
-          "note": "external keyboard home",
+          "note": "external keyboard: Cmd+H return to Home Screen (HID meta=0x08, h=0x0b)",
           "alternatives": [
+            {
+              "status": "active",
+              "tool": "keyboard_tap",
+              "input": { "keys": ["meta", "q"] },
+              "note": "external keyboard: Cmd+Q exit app / return home (iPadOS behavior varies)"
+            },
             {
               "status": "active",
               "tool": "touch_gesture",
@@ -51,16 +59,12 @@
           ]
         },
         "android": {
-          "status": "active",
-          "tool": "keyboard_tap",
-          "input": { "keys": ["meta"] },
-          "note": "external keyboard home"
+          "status": "reserved",
+          "note": "no verified keyboard home shortcut; Meta alone opens app search (see spotlight_search)"
         },
         "mac": {
-          "status": "active",
-          "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "h"] },
-          "note": "macOS hide app (Cmd+H); not show desktop"
+          "status": "reserved",
+          "note": "macOS has no keyboard Home; use hide_app (Cmd+H) or show_desktop (F11 unavailable via HID)"
         }
       }
     },
@@ -84,12 +88,16 @@
           "note": "verified: bottom edge swipe up to mid-screen, pause before release"
         },
         "android": {
-          "status": "reserved",
-          "note": "pending verification: bottom-hold swipe and Alt+Tab not working yet"
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "tab"], "hold_ms": 120 },
+          "note": "verified: Meta+Tab open app management center / recents"
         },
         "mac": {
-          "status": "reserved",
-          "note": "unreliable via HID: Cmd+Tab needs key hold"
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "tab"], "hold_ms": 120 },
+          "note": "opens App Switcher overlay; cannot cycle apps without held Cmd (HID tap limitation)"
         }
       }
     },
@@ -211,13 +219,23 @@
       "platforms": {
         "ios": {
           "status": "active",
-          "tool": "touch_gesture",
-          "input": { "type": "swipe_down", "strength": "medium", "anchor": 500 },
-          "note": "swipe down on home screen"
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "space"] },
+          "note": "external keyboard: Cmd+Space Spotlight Search (HID meta=0x08, space=0x2c)",
+          "alternatives": [
+            {
+              "status": "active",
+              "tool": "touch_gesture",
+              "input": { "type": "swipe_down", "strength": "medium", "anchor": 500 },
+              "note": "touch fallback: swipe down on home screen"
+            }
+          ]
         },
         "android": {
-          "status": "reserved",
-          "note": "pending verification: no universal global search gesture"
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta"] },
+          "note": "verified: Meta alone opens app / global search"
         },
         "mac": {
           "status": "active",
@@ -436,6 +454,31 @@
         }
       }
     },
+    "send": {
+      "label": "Send",
+      "aliases": ["发送", "enter", "submit", "press_enter", "send_message"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["enter"] },
+          "note": "external keyboard: Enter send/submit in text fields (HID 0x28)"
+        },
+        "android": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["enter"] },
+          "note": "external keyboard: Enter send/submit"
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["enter"] },
+          "note": "Return/Enter key"
+        }
+      }
+    },
     "save": {
       "label": "Save",
       "aliases": ["保存", "save"],
@@ -496,8 +539,10 @@
           "note": "disabled: browser shortcuts not working on Android"
         },
         "mac": {
-          "status": "reserved",
-          "note": "Cmd+W unreliable via HID; use quit_app (Cmd+Q) to exit"
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "w"], "hold_ms": 120 },
+          "note": "close tab or window (Cmd+W); use quit_app (Cmd+Q) to fully quit app"
         }
       }
     },
@@ -549,12 +594,16 @@
       "category": "app_management",
       "platforms": {
         "ios": {
-          "status": "reserved",
-          "note": "not supported on iOS; use close_app_from_recents after opening app_switch"
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "q"], "hold_ms": 120 },
+          "note": "external keyboard: Cmd+Q exit app (HID meta=0x08, q=0x14); for Home Screen prefer home (Cmd+H)"
         },
         "android": {
-          "status": "reserved",
-          "note": "pending verification: swipe up card in recents on some devices"
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "h"], "hold_ms": 120 },
+          "note": "verified: Meta+H exit current app"
         },
         "mac": {
           "status": "active",
@@ -675,6 +724,48 @@
         }
       }
     },
+    "home_screen_left": {
+      "label": "Home Screen Left",
+      "aliases": ["主屏左", "home_screen_left", "switch_home_left", "prev_home_screen"],
+      "category": "navigation",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "left"], "hold_ms": 120 },
+          "note": "external keyboard: Cmd+Left switch to previous Home Screen page (HID meta=0x08, left=0x50)"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "not applicable on Android"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "Cmd+Left is not Home Screen on macOS"
+        }
+      }
+    },
+    "home_screen_right": {
+      "label": "Home Screen Right",
+      "aliases": ["主屏右", "home_screen_right", "switch_home_right", "next_home_screen"],
+      "category": "navigation",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "right"], "hold_ms": 120 },
+          "note": "external keyboard: Cmd+Right switch to next Home Screen page (HID meta=0x08, right=0x4f)"
+        },
+        "android": {
+          "status": "reserved",
+          "note": "not applicable on Android"
+        },
+        "mac": {
+          "status": "reserved",
+          "note": "Cmd+Right is not Home Screen on macOS"
+        }
+      }
+    },
     "mission_control": {
       "label": "Mission Control",
       "aliases": ["调度中心", "mission_control", "expose_all"],
@@ -708,8 +799,10 @@
           "note": "not applicable on Android"
         },
         "mac": {
-          "status": "reserved",
-          "note": "unreliable via HID: grave key varies by keyboard layout"
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "grave"], "hold_ms": 120 },
+          "note": "cycle windows of front app (Cmd+`); US keyboard grave/backtick key"
         }
       }
     },
@@ -767,8 +860,10 @@
           "note": "not applicable on Android"
         },
         "mac": {
-          "status": "reserved",
-          "note": "Cmd+W unreliable via HID; use quit_app (Cmd+Q)"
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "w"], "hold_ms": 120 },
+          "note": "close front window (Cmd+W)"
         }
       }
     },
@@ -844,7 +939,12 @@
       "aliases": ["全屏截图", "screenshot_full"],
       "category": "system_panel",
       "platforms": {
-        "ios": { "status": "reserved" },
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["shift", "meta", "3"], "hold_ms": 120 },
+          "note": "external keyboard: Cmd+Shift+3 full-screen screenshot (HID shift=0x02, meta=0x08, 3=0x20)"
+        },
         "android": { "status": "reserved" },
         "mac": {
           "status": "active",
@@ -859,7 +959,12 @@
       "aliases": ["区域截图", "screenshot_region"],
       "category": "system_panel",
       "platforms": {
-        "ios": { "status": "reserved" },
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["shift", "meta", "4"], "hold_ms": 120 },
+          "note": "external keyboard: Cmd+Shift+4 region screenshot + markup (HID shift=0x02, meta=0x08, 4=0x21)"
+        },
         "android": { "status": "reserved" },
         "mac": {
           "status": "active",
@@ -881,6 +986,296 @@
           "tool": "keyboard_tap",
           "input": { "keys": ["shift", "meta", "5"] },
           "note": "open screenshot/screen-record toolbar (Shift+Cmd+5)"
+        }
+      }
+    },
+    "new_document": {
+      "label": "New Document",
+      "aliases": ["新建", "new", "new_document", "new_file"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": { "status": "reserved", "note": "app-specific; not universal on iOS" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "n"] },
+          "note": "new document/window (Cmd+N)"
+        }
+      }
+    },
+    "open_file": {
+      "label": "Open File",
+      "aliases": ["打开", "open", "open_file"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "o"] },
+          "note": "open file dialog (Cmd+O)"
+        }
+      }
+    },
+    "print": {
+      "label": "Print",
+      "aliases": ["打印", "print"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "p"] },
+          "note": "print dialog (Cmd+P)"
+        }
+      }
+    },
+    "preferences": {
+      "label": "Preferences",
+      "aliases": ["偏好设置", "settings", "preferences", "preferences_menu"],
+      "category": "system_panel",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "comma"] },
+          "note": "app preferences (Cmd+,)"
+        }
+      }
+    },
+    "find_next": {
+      "label": "Find Next",
+      "aliases": ["查找下一个", "find_next", "find_again"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "g"] },
+          "note": "find next / jump to selection (Cmd+G)"
+        }
+      }
+    },
+    "find_previous": {
+      "label": "Find Previous",
+      "aliases": ["查找上一个", "find_previous"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "shift", "g"] },
+          "note": "find previous (Cmd+Shift+G)"
+        }
+      }
+    },
+    "browser_back": {
+      "label": "Browser Back",
+      "aliases": ["浏览器后退", "browser_back", "navigate_back_browser"],
+      "category": "browser",
+      "platforms": {
+        "ios": {
+          "status": "reserved",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "leftbrace"] },
+          "note": "pending verification: Cmd+[ in Safari"
+        },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "leftbrace"] },
+          "note": "browser back (Cmd+[)"
+        }
+      }
+    },
+    "browser_forward": {
+      "label": "Browser Forward",
+      "aliases": ["浏览器前进", "browser_forward"],
+      "category": "browser",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "rightbrace"] },
+          "note": "browser forward (Cmd+])"
+        }
+      }
+    },
+    "browser_next_tab": {
+      "label": "Browser Next Tab",
+      "aliases": ["下一标签", "browser_next_tab", "next_tab"],
+      "category": "browser",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["ctrl", "tab"], "hold_ms": 120 },
+          "note": "next tab in browser (Ctrl+Tab)"
+        }
+      }
+    },
+    "browser_prev_tab": {
+      "label": "Browser Previous Tab",
+      "aliases": ["上一标签", "browser_prev_tab", "prev_tab"],
+      "category": "browser",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["ctrl", "shift", "tab"], "hold_ms": 120 },
+          "note": "previous tab in browser (Ctrl+Shift+Tab)"
+        }
+      }
+    },
+    "zoom_in": {
+      "label": "Zoom In",
+      "aliases": ["放大", "zoom_in"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "equal"] },
+          "note": "zoom in (Cmd+=)"
+        }
+      }
+    },
+    "zoom_out": {
+      "label": "Zoom Out",
+      "aliases": ["缩小", "zoom_out"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "minus"] },
+          "note": "zoom out (Cmd+-)"
+        }
+      }
+    },
+    "zoom_reset": {
+      "label": "Zoom Reset",
+      "aliases": ["重置缩放", "zoom_reset", "actual_size"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "0"] },
+          "note": "reset zoom to 100% (Cmd+0)"
+        }
+      }
+    },
+    "duplicate": {
+      "label": "Duplicate",
+      "aliases": ["复制一份", "duplicate"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "d"] },
+          "note": "duplicate selection/file in supported apps (Cmd+D)"
+        }
+      }
+    },
+    "line_start": {
+      "label": "Line Start",
+      "aliases": ["行首", "line_start", "beginning_of_line"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "left"], "hold_ms": 120 },
+          "note": "move cursor to line/start of document (Cmd+Left)"
+        }
+      }
+    },
+    "line_end": {
+      "label": "Line End",
+      "aliases": ["行尾", "line_end", "end_of_line"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["meta", "right"], "hold_ms": 120 },
+          "note": "move cursor to line/end of document (Cmd+Right)"
+        }
+      }
+    },
+    "page_up": {
+      "label": "Page Up",
+      "aliases": ["上翻页", "page_up"],
+      "category": "navigation",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["pageup"] },
+          "note": "page up (Page Up key)"
+        }
+      }
+    },
+    "page_down": {
+      "label": "Page Down",
+      "aliases": ["下翻页", "page_down"],
+      "category": "navigation",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["pagedown"] },
+          "note": "page down (Page Down key)"
+        }
+      }
+    },
+    "delete_forward": {
+      "label": "Delete Forward",
+      "aliases": ["向前删除", "delete_forward", "forward_delete"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": { "status": "reserved" },
+        "android": { "status": "reserved" },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["delete"] },
+          "note": "forward delete (Delete key)"
         }
       }
     }

@@ -16,10 +16,31 @@ func TestQuickActionsResolveAliasAndPlatform(t *testing.T) {
 	if _, ok := table.resolveActionID("copy"); !ok {
 		t.Fatal("expected action id to resolve")
 	}
+	if id, ok := table.resolveActionID("go back"); !ok || id != "back" {
+		t.Fatalf("expected natural phrase to resolve to back, got %q ok=%v", id, ok)
+	}
+	if id, ok := table.resolveActionID("browser back"); !ok || id != "browser_back" {
+		t.Fatalf("expected spaced action to resolve to browser_back, got %q ok=%v", id, ok)
+	}
+	if id, ok := table.resolveActionID("quick-switch-left"); !ok || id != "quick_app_switch_left" {
+		t.Fatalf("expected hyphenated alias to resolve to quick_app_switch_left, got %q ok=%v", id, ok)
+	}
 
 	platform, err := normalizeQuickActionPlatform("iPadOS")
 	if err != nil || platform != "ios" {
 		t.Fatalf("expected ios platform, got %q err=%v", platform, err)
+	}
+}
+
+func TestQuickActionsSuggestUnknownAction(t *testing.T) {
+	table := newQuickActionsTable()
+	suggestions := table.suggestActionIDs("go browser backward", 3)
+	if len(suggestions) == 0 {
+		t.Fatal("expected suggestions for related unknown action")
+	}
+	joined := strings.Join(suggestions, ",")
+	if !strings.Contains(joined, "browser_back") && !strings.Contains(joined, "back") {
+		t.Fatalf("expected back-related suggestions, got %v", suggestions)
 	}
 }
 
@@ -134,7 +155,7 @@ func TestQuickActionAlternativeBinding(t *testing.T) {
 
 func TestQuickActionUnknownAction(t *testing.T) {
 	tool := &QuickActionTool{}
-	out, err := tool.Call(context.Background(), `{"action":"does_not_exist","platform":"ios"}`)
+	out, err := tool.Call(context.Background(), `{"action":"browser backward","platform":"ios"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -148,6 +169,9 @@ func TestQuickActionUnknownAction(t *testing.T) {
 	errText, _ := payload["error"].(string)
 	if !strings.Contains(errText, "unknown action") {
 		t.Fatalf("unexpected output: %s", out)
+	}
+	if !strings.Contains(errText, "suggested actions") {
+		t.Fatalf("expected suggested actions, got %s", out)
 	}
 }
 

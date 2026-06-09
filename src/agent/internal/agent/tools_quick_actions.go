@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 //go:embed quick_actions.json
@@ -31,18 +32,18 @@ const (
 var supportedQuickActionPlatforms = []string{"ios", "android", "mac"}
 
 type quickActionBinding struct {
-	Status        string                   `json:"status"`
-	Tool          string                   `json:"tool"`
-	Input         json.RawMessage          `json:"input"`
-	Note          string                   `json:"note,omitempty"`
-	Alternatives  []quickActionBinding     `json:"alternatives,omitempty"`
+	Status       string               `json:"status"`
+	Tool         string               `json:"tool"`
+	Input        json.RawMessage      `json:"input"`
+	Note         string               `json:"note,omitempty"`
+	Alternatives []quickActionBinding `json:"alternatives,omitempty"`
 }
 
 type quickActionDefinition struct {
-	Label     string                            `json:"label"`
-	Aliases   []string                          `json:"aliases,omitempty"`
-	Category  string                            `json:"category"`
-	Platforms map[string]quickActionBinding     `json:"platforms"`
+	Label     string                        `json:"label"`
+	Aliases   []string                      `json:"aliases,omitempty"`
+	Category  string                        `json:"category"`
+	Platforms map[string]quickActionBinding `json:"platforms"`
 }
 
 type quickActionsDocument struct {
@@ -54,6 +55,7 @@ type quickActionsTable struct {
 	mu       sync.RWMutex
 	document quickActionsDocument
 	aliasMap map[string]string
+	matchMap map[string]string
 	source   string
 }
 
@@ -64,6 +66,7 @@ func newQuickActionsTable() *quickActionsTable {
 	if err := t.loadFromBytes(defaultQuickActionsJSON, "embedded"); err != nil {
 		t.document = quickActionsDocument{Actions: map[string]quickActionDefinition{}}
 		t.aliasMap = map[string]string{}
+		t.matchMap = map[string]string{}
 		t.source = "embedded(invalid)"
 	}
 	return t
@@ -78,16 +81,18 @@ func (t *quickActionsTable) loadFromBytes(data []byte, source string) error {
 		doc.Actions = map[string]quickActionDefinition{}
 	}
 	aliasMap := make(map[string]string)
+	matchMap := make(map[string]string)
 	for id, action := range doc.Actions {
-		aliasMap[normalizeQuickActionKey(id)] = id
-		aliasMap[normalizeQuickActionKey(action.Label)] = id
+		addQuickActionAlias(aliasMap, matchMap, id, id)
+		addQuickActionAlias(aliasMap, matchMap, id, action.Label)
 		for _, alias := range action.Aliases {
-			aliasMap[normalizeQuickActionKey(alias)] = id
+			addQuickActionAlias(aliasMap, matchMap, id, alias)
 		}
 	}
 	t.mu.Lock()
 	t.document = doc
 	t.aliasMap = aliasMap
+	t.matchMap = matchMap
 	t.source = source
 	t.mu.Unlock()
 	return nil
@@ -103,6 +108,34 @@ func (t *quickActionsTable) loadFromFile(path string) error {
 
 func normalizeQuickActionKey(key string) string {
 	return strings.ToLower(strings.TrimSpace(key))
+}
+
+func normalizeQuickActionMatchKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	var builder strings.Builder
+	lastUnderscore := false
+	for _, r := range key {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			builder.WriteRune(r)
+			lastUnderscore = false
+		case unicode.IsSpace(r) || r == '_' || r == '-' || r == '/' || r == '.':
+			if builder.Len() > 0 && !lastUnderscore {
+				builder.WriteRune('_')
+				lastUnderscore = true
+			}
+		}
+	}
+	return strings.Trim(builder.String(), "_")
+}
+
+func addQuickActionAlias(aliasMap, matchMap map[string]string, id, alias string) {
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		return
+	}
+	aliasMap[normalizeQuickActionKey(alias)] = id
+	matchMap[normalizeQuickActionMatchKey(alias)] = id
 }
 
 func normalizeQuickActionPlatform(platform string) (string, error) {
@@ -125,7 +158,80 @@ func (t *quickActionsTable) resolveActionID(action string) (string, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	id, ok := t.aliasMap[normalizeQuickActionKey(action)]
+	if ok {
+		return id, true
+	}
+	id, ok = t.matchMap[normalizeQuickActionMatchKey(action)]
 	return id, ok
+}
+
+func (t *quickActionsTable) suggestActionIDs(action string, limit int) []string {
+	query := normalizeQuickActionMatchKey(action)
+	if query == "" || limit <= 0 {
+		return nil
+	}
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	scores := map[string]int{}
+	for alias, id := range t.matchMap {
+		if alias == "" {
+			continue
+		}
+		score := quickActionSuggestionScore(query, alias, id)
+		if score <= 0 {
+			continue
+		}
+		if score > scores[id] {
+			scores[id] = score
+		}
+	}
+
+	ids := make([]string, 0, len(scores))
+	for id := range scores {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		if scores[ids[i]] == scores[ids[j]] {
+			return ids[i] < ids[j]
+		}
+		return scores[ids[i]] > scores[ids[j]]
+	})
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	return ids
+}
+
+func quickActionSuggestionScore(query, alias, id string) int {
+	switch {
+	case query == alias || query == id:
+		return 100
+	case strings.Contains(alias, query):
+		return 80 - len(alias) + len(query)
+	case strings.Contains(query, alias):
+		return 70 - len(query) + len(alias)
+	}
+
+	queryParts := strings.Split(query, "_")
+	aliasParts := strings.Split(alias, "_")
+	shared := 0
+	for _, qp := range queryParts {
+		if qp == "" {
+			continue
+		}
+		for _, ap := range aliasParts {
+			if qp == ap {
+				shared++
+				break
+			}
+		}
+	}
+	if shared == 0 {
+		return 0
+	}
+	return 10 + shared*10
 }
 
 func (t *quickActionsTable) lookup(actionID, platform string) (quickActionDefinition, quickActionBinding, bool) {
@@ -217,13 +323,14 @@ func (t *QuickActionTool) Name() string { return "quick_action" }
 
 func (t *QuickActionTool) Description() string {
 	return strings.TrimSpace(`Execute a predefined platform shortcut or system gesture from quick_actions.json. ` +
-		`Prefer this tool over ad-hoc keyboard_tap or touch_gesture when the requested operation matches a catalog entry. ` +
+		`Prefer this tool first when the requested operation matches a catalog entry. ` +
 		`Input JSON examples: {"action":"back","platform":"ios"}, {"action":"copy","platform":"android"}, {"list":true,"platform":"ios"}. ` +
 		`Supported platforms: ios, android, mac. ` +
 		`Use list=true to inspect available actions and their status (active or reserved). ` +
-		`If an action is reserved on a platform, do not improvise a different shortcut; report the blocker or ask the user. ` +
-		`After a failed quick_action, you may retry with alternative=true to use the configured fallback binding. ` +
-		`Common actions: back, home, app_switch, notification_center, control_center, spotlight_search, app_drawer, copy, paste, cut, undo, redo, select_all, find, browser_new_tab, browser_close_tab, browser_refresh, browser_address_bar.`)
+		`If quick_action returns ok=false, status=reserved, the screen did not change, or the outcome is wrong: do not retry the same binding more than once. ` +
+		`Try alternative=true when alternatives are listed; otherwise fall back immediately to keyboard_tap, touch_gesture, or mouse tools and continue the task. ` +
+		`Do not debate shortcut policy with the user—move on after one failed quick_action attempt unless an alternative binding exists. ` +
+		quickActionBehaviorSummary())
 }
 
 type quickActionArgs struct {
@@ -259,7 +366,12 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 
 	actionID, ok := globalQuickActions.resolveActionID(args.Action)
 	if !ok {
-		return t.errorJSON(fmt.Sprintf("unknown action %q; use {\"list\":true,\"platform\":\"%s\"}", args.Action, platform)), nil
+		suggestions := globalQuickActions.suggestActionIDs(args.Action, 5)
+		message := fmt.Sprintf("unknown action %q; use {\"list\":true,\"platform\":\"%s\"}", args.Action, platform)
+		if len(suggestions) > 0 {
+			message = fmt.Sprintf("%s; suggested actions: %s", message, strings.Join(suggestions, ", "))
+		}
+		return t.errorJSON(message), nil
 	}
 
 	action, binding, ok := globalQuickActions.lookup(actionID, platform)
@@ -466,10 +578,11 @@ func (t *QuickActionTool) errorJSON(message string) string {
 
 func quickActionBehaviorSummary() string {
 	return strings.Join([]string{
-		"- For common navigation, text editing, browser, and system-panel operations, prefer quick_action over ad-hoc keyboard_tap or touch_gesture.",
-		"- Infer the target platform from screenshot/context and pass platform=ios/android/mac.",
-		"- Use {\"list\":true,\"platform\":\"...\"} to check whether an action is active; if status=reserved, do not improvise a different shortcut.",
-		"- If quick_action fails and alternatives are returned, retry with alternative=true or alternative_index.",
-		"- Maintain bindings in quick_actions.json; after verification, change status from reserved to active.",
+		"Common actions: back, home, hide_app, quit_app, app_switch, spotlight_search, copy, paste, cut, undo, redo, select_all, find, send, browser_new_tab, browser_close_tab, browser_refresh, browser_address_bar, screenshot_full, screenshot_region.",
+		"- Infer platform from screenshot/context and pass platform=ios/android/mac.",
+		"- Prefer quick_action before ad-hoc keyboard_tap or touch_gesture when an active catalog entry exists.",
+		"- If status=reserved or ok=false: skip quick_action and use direct input tools instead.",
+		"- If ok=true but the screenshot shows no expected change: treat as ineffective, try alternative=true once or switch tools.",
+		"- Never loop on the same quick_action binding; change tool or strategy after one failed attempt.",
 	}, "\n")
 }

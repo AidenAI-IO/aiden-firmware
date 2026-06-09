@@ -419,6 +419,7 @@ func (t *KeyboardTapTool) Description() string {
 		`Supports: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, ` +
 		`up, down, left, right, home, end, pageup, pagedown, insert, printscreen. ` +
 		`Modifiers: ctrl, shift, alt, meta/super/win/cmd. ` +
+		`Modifier-only taps are supported (e.g. {"keys":["meta"]} for Android Home). ` +
 		`Multiple keys are pressed simultaneously (e.g. ctrl+c). ` +
 		`Optional hold_ms keeps the chord pressed before release (default 50ms, 120ms when modifiers are used).`
 }
@@ -447,8 +448,8 @@ func (t *KeyboardTapTool) Call(_ context.Context, input string) (string, error) 
 			return fmt.Sprintf("error: unknown key: %q", k), nil
 		}
 	}
-	if len(keys) == 0 {
-		return "error: at least one non-modifier key is required", nil
+	if modifier == 0 && len(keys) == 0 {
+		return "error: at least one key or modifier is required", nil
 	}
 
 	holdMs := args.HoldMs

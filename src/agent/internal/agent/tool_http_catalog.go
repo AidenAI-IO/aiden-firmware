@@ -183,18 +183,8 @@ func isHTTPToolExposed(name string) bool {
 	}
 }
 
-// agentExperimentalTools stay available in Tool Lab (HTTP invoke) but are
-// withheld from the conversational agent until bindings are verified.
-var agentExperimentalTools = map[string]struct{}{
-	"quick_action": {},
-}
-
 func isAgentToolExposed(name string) bool {
-	if !isHTTPToolExposed(name) {
-		return false
-	}
-	_, withheld := agentExperimentalTools[name]
-	return !withheld
+	return isHTTPToolExposed(name)
 }
 
 func (r *Runtime) ToolDescriptorByName(name string) (ToolDescriptor, bool) {
