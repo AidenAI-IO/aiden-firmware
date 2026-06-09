@@ -48,7 +48,7 @@ start() {
 
     mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$SYSTEM_ENV_PATH")"
 
-    "$ENV_RUN_BIN" "$BIN" --bind=0.0.0.0 --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" --system-env="$SYSTEM_ENV_PATH" &
+    "$ENV_RUN_BIN" "$BIN" --bind=0.0.0.0 --port=80 --config="$CONFIG_PATH" --wifi-config="$WIFI_CONFIG_PATH" --system-env="$SYSTEM_ENV_PATH" &
     child_pid=$!
     echo "$child_pid" > "$PID_FILE"
     sleep 1
