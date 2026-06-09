@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/stat.h>
@@ -111,6 +112,10 @@ const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
 const char* kOtaInitScript = "/etc/init.d/S54ota";
 const char* kAgentLogPath = "/var/log/agent/agent.log";
+const char* kOtaBin = "/oem/usr/bin/ota";
+const char* kEnvRunBin = "/oem/usr/bin/aiden-env-run";
+const char* kOtaWebUpdateLockPath = "/tmp/config_web_ota_update.lock";
+const char* kOtaWebUpdateLogPath = "/tmp/config_web_ota_update.log";
 const char* kAgentPortHost = "127.0.0.1";
 const int kDefaultAgentPort = 8080;
 const int kAgentStatusCommandTimeoutMs = 1500;
@@ -118,16 +123,24 @@ const size_t kAgentStatusLogReadSize = 16 * 1024;
 const size_t kAgentStatusLogDisplaySize = 4096;
 const size_t kAgentLogReadSize = 64 * 1024;
 const size_t kAgentLogDisplaySize = 48 * 1024;
+const size_t kOtaLogReadSize = 128 * 1024;
+const size_t kOtaLogDisplaySize = 96 * 1024;
 const size_t kMaxHttpHeaderSize = 8 * 1024;
 const size_t kMaxHttpBodySize = 64 * 1024;
 const int kClientReadTimeoutSeconds = 5;
 const char* kDefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
 const int kSystemEnvCommandTimeoutMs = 1500;
 const size_t kMaxSystemEnvSize = 64 * 1024;
+const char* kUserFilesReportPath = "/userdata/agent/files_report.html";
+const char* kUserFilesToolsDir = "/userdata/agent_tools";
+const int kUserFilesGenerateCommandTimeoutMs = 30000;
 
 std::string read_file_contents(const char* path, size_t max_size);
 std::string validate_proxy_url(const std::string& url);
 std::string lowercase_copy(const std::string& text);
+std::string parent_dir(const std::string& path);
+bool mkdir_p(const std::string& dir, std::string* error);
+bool prepare_ota_update_log_file(const std::string& path, std::string* error);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -420,6 +433,33 @@ bool command_exists(const char* name) {
     bool ok = result.exit_code == 0;
     cache[key] = ok;
     return ok;
+}
+
+bool ensure_user_files_report(std::string* error) {
+    if (file_exists(kUserFilesReportPath)) {
+        return true;
+    }
+
+    std::string cmd = "cd ";
+    cmd += shell_quote(kUserFilesToolsDir);
+    cmd += " && ./view_agent_files.sh 2>&1";
+    CommandResult result = run_shell_command_with_timeout(cmd, kUserFilesGenerateCommandTimeoutMs);
+    if (result.exit_code == 0 && !result.timed_out && file_exists(kUserFilesReportPath)) {
+        return true;
+    }
+
+    if (error) {
+        if (result.timed_out) {
+            *error = "user files report generation timed out";
+        } else {
+            *error = "user files report generation failed";
+        }
+        if (!result.output.empty()) {
+            *error += ": ";
+            *error += result.output.substr(0, 1000);
+        }
+    }
+    return false;
 }
 
 std::string trim_trailing_newlines(const std::string& text) {
@@ -732,8 +772,9 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.max_iterations = -1;
     cfg.screenshot_keep_n = 3;
     cfg.screenshot_prune_interval = 25;
-    cfg.screen_stable_timeout_ms = 3000;
+    cfg.screen_stable_timeout_ms = 3500;
     cfg.screen_stable_ms = 500;
+    cfg.screen_stable_diff_threshold = 2.0;
 
     cfg.model.provider = "openrouter";
     cfg.model.model = "bytedance-seed/seed-2.0-lite";
@@ -897,6 +938,7 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddNumberToObject(agent, "screenshot_prune_interval", config.screenshot_prune_interval);
     cJSON_AddNumberToObject(agent, "screen_stable_timeout_ms", config.screen_stable_timeout_ms);
     cJSON_AddNumberToObject(agent, "screen_stable_ms", config.screen_stable_ms);
+    cJSON_AddNumberToObject(agent, "screen_stable_diff_threshold", config.screen_stable_diff_threshold);
 
     return root;
 }
@@ -1121,6 +1163,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->screenshot_prune_interval, agent, "screenshot_prune_interval");
         set_json_int(&config->screen_stable_timeout_ms, agent, "screen_stable_timeout_ms");
         set_json_int(&config->screen_stable_ms, agent, "screen_stable_ms");
+        set_json_double(&config->screen_stable_diff_threshold, agent, "screen_stable_diff_threshold");
     }
 }
 
@@ -1154,6 +1197,9 @@ std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
     }
     if (config.screen_stable_ms < 0) {
         return "screen_stable_ms must be >= 0";
+    }
+    if (config.screen_stable_diff_threshold < 0.0) {
+        return "screen_stable_diff_threshold must be >= 0";
     }
     std::string pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
     if (pointer_mode != "absolute" && pointer_mode != "touchscreen") {
@@ -1297,6 +1343,61 @@ void schedule_agent_restart() {
 
 void schedule_ota_restart() {
     schedule_init_script_restart(kOtaInitScript);
+}
+
+int acquire_ota_update_launch_lock(std::string* error) {
+    int lock_fd = open(kOtaWebUpdateLockPath, O_CREAT | O_RDWR, 0600);
+    if (lock_fd < 0) {
+        if (error) {
+            *error = std::string("open ota update launch lock: ") + strerror(errno);
+        }
+        return -1;
+    }
+    if (flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
+        if (error) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                *error = "ota update already running";
+            } else {
+                *error = std::string("lock ota update launch: ") + strerror(errno);
+            }
+        }
+        close(lock_fd);
+        return -1;
+    }
+    return lock_fd;
+}
+
+bool schedule_ota_update(std::string* error) {
+    int lock_fd = acquire_ota_update_launch_lock(error);
+    if (lock_fd < 0) {
+        return false;
+    }
+    std::string log_path = kOtaWebUpdateLogPath;
+    if (!prepare_ota_update_log_file(log_path, error)) {
+        close(lock_fd);
+        return false;
+    }
+    std::string cmd =
+        "("
+        "if [ -x " + shell_quote(kEnvRunBin) + " ]; then "
+        + shell_quote(kEnvRunBin) + " " + shell_quote(kOtaBin) + " update; "
+        "else "
+        + shell_quote(kOtaBin) + " update; "
+        "fi; "
+        "rc=$?; echo \"[config_web] ota update exited rc=$rc\""
+        ") >> " + shell_quote(log_path) + " 2>&1 &";
+    int rc = system(cmd.c_str());
+    if (rc != 0) {
+        close(lock_fd);
+        if (error) {
+            std::ostringstream oss;
+            oss << "failed to start ota update: system rc=" << rc;
+            *error = oss.str();
+        }
+        return false;
+    }
+    close(lock_fd);
+    return true;
 }
 
 void schedule_poweroff() {
@@ -1484,6 +1585,22 @@ std::string parent_dir(const std::string& path) {
     return path.substr(0, pos);
 }
 
+bool prepare_ota_update_log_file(const std::string& path, std::string* error) {
+    if (!mkdir_p(parent_dir(path), error)) {
+        return false;
+    }
+    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        if (error) *error = "open " + path + ": " + strerror(errno);
+        return false;
+    }
+    if (close(fd) != 0) {
+        if (error) *error = "close " + path + ": " + strerror(errno);
+        return false;
+    }
+    return true;
+}
+
 bool validate_system_proxy_values(const SystemProxy& proxy, std::string* error) {
     struct Field {
         const char* name;
@@ -1626,11 +1743,11 @@ std::string trim_for_display(const std::string& text, size_t max_size) {
     return trimmed.substr(start);
 }
 
-AgentLogSnapshot read_agent_log_snapshot() {
+AgentLogSnapshot read_log_snapshot(const char* path, size_t read_size, size_t display_size) {
     AgentLogSnapshot snapshot;
-    snapshot.path = kAgentLogPath;
+    snapshot.path = path ? path : "";
 
-    FILE* f = fopen(kAgentLogPath, "r");
+    FILE* f = fopen(snapshot.path.c_str(), "r");
     if (!f) {
         snapshot.error = strerror(errno);
         return snapshot;
@@ -1652,8 +1769,8 @@ AgentLogSnapshot read_agent_log_snapshot() {
 
     snapshot.size_bytes = file_size;
     long offset = 0;
-    if (static_cast<size_t>(file_size) > kAgentLogReadSize) {
-        offset = file_size - static_cast<long>(kAgentLogReadSize);
+    if (static_cast<size_t>(file_size) > read_size) {
+        offset = file_size - static_cast<long>(read_size);
         snapshot.truncated = true;
     }
 
@@ -1682,11 +1799,19 @@ AgentLogSnapshot read_agent_log_snapshot() {
         }
     }
 
-    if (contents.size() > kAgentLogDisplaySize) {
+    if (contents.size() > display_size) {
         snapshot.truncated = true;
     }
-    snapshot.log = trim_for_display(contents, kAgentLogDisplaySize);
+    snapshot.log = trim_for_display(contents, display_size);
     return snapshot;
+}
+
+AgentLogSnapshot read_agent_log_snapshot() {
+    return read_log_snapshot(kAgentLogPath, kAgentLogReadSize, kAgentLogDisplaySize);
+}
+
+AgentLogSnapshot read_ota_log_snapshot() {
+    return read_log_snapshot(kOtaWebUpdateLogPath, kOtaLogReadSize, kOtaLogDisplaySize);
 }
 
 std::string lowercase_copy(const std::string& text) {
@@ -1953,7 +2078,7 @@ cJSON* agent_status_to_json(const AgentRuntimeStatus& status) {
     return root;
 }
 
-cJSON* agent_log_to_json(const AgentLogSnapshot& snapshot) {
+cJSON* log_snapshot_to_json(const AgentLogSnapshot& snapshot) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "path", snapshot.path.c_str());
     cJSON_AddBoolToObject(root, "exists", snapshot.exists ? 1 : 0);
@@ -1962,6 +2087,14 @@ cJSON* agent_log_to_json(const AgentLogSnapshot& snapshot) {
     cJSON_AddStringToObject(root, "log", snapshot.log.c_str());
     cJSON_AddStringToObject(root, "error", snapshot.error.c_str());
     return root;
+}
+
+cJSON* agent_log_to_json(const AgentLogSnapshot& snapshot) {
+    return log_snapshot_to_json(snapshot);
+}
+
+cJSON* ota_log_to_json(const AgentLogSnapshot& snapshot) {
+    return log_snapshot_to_json(snapshot);
 }
 
 cJSON* firmware_info_to_json(const Options& options) {
@@ -2041,6 +2174,27 @@ ApiResponse handle_get_agent_log() {
     cJSON_AddBoolToObject(root, "ok", 1);
     cJSON_AddItemToObject(root, "agent_log", agent_log_to_json(read_agent_log_snapshot()));
     return make_json_ok(root);
+}
+
+ApiResponse handle_get_ota_log() {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON_AddItemToObject(root, "ota_log", ota_log_to_json(read_ota_log_snapshot()));
+    return make_json_ok(root);
+}
+
+ApiResponse handle_post_ota_update() {
+    std::string error;
+    if (!schedule_ota_update(&error)) {
+        return make_json_error(500, error.empty() ? "failed to start ota update" : error);
+    }
+
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", 1);
+    cJSON_AddBoolToObject(response, "ota_update_started", 1);
+    cJSON_AddStringToObject(response, "message", "ota update started");
+    cJSON_AddNumberToObject(response, "ota_log_start_size_bytes", 0);
+    return make_json_ok(response);
 }
 
 ApiResponse handle_post_system_env(const Options& options, const std::string& body) {
@@ -3097,6 +3251,27 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         }
         cJSON_AddItemToArray(results, vad_r);
 
+        cJSON* diff_item = cJSON_GetObjectItem(values, "screen_stable_diff_threshold");
+        cJSON* diff_r = cJSON_CreateObject();
+        cJSON_AddStringToObject(diff_r, "check", "screen_stable_diff_threshold");
+        if (json_is_number(diff_item)) {
+            double n = diff_item->valuedouble;
+            if (n < 0.0) {
+                cJSON_AddBoolToObject(diff_r, "passed", 0);
+                std::string msg = "must be >= 0, got " + std::to_string(n);
+                cJSON_AddStringToObject(diff_r, "detail", msg.c_str());
+                all_passed = false;
+            } else {
+                cJSON_AddBoolToObject(diff_r, "passed", 1);
+                cJSON_AddStringToObject(diff_r, "detail", std::to_string(n).c_str());
+            }
+        } else {
+            cJSON_AddBoolToObject(diff_r, "passed", 0);
+            cJSON_AddStringToObject(diff_r, "detail", "not a number");
+            all_passed = false;
+        }
+        cJSON_AddItemToArray(results, diff_r);
+
         const char* numeric_keys[] = {
             "silence_ms", "min_speech_ms",
             "voice_followup_timeout_ms", "voice_first_turn_timeout_ms",
@@ -3242,7 +3417,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
         cJSON* r = cJSON_CreateObject();
         cJSON_AddStringToObject(r, "check", "provider");
-        const char* allowed[] = {"duckduckgo", "tavily", "google", "bing", NULL};
+        const char* allowed[] = {"duckduckgo", "brave", "brave-free", "tavily", "google", "bing", NULL};
         bool ok = false;
         std::string allowed_list;
         for (int i = 0; allowed[i]; ++i) {
@@ -3269,10 +3444,21 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         std::string api_key = json_is_string(api_key_item) ? trim_copy(api_key_item->valuestring) : "";
         cJSON* r2 = cJSON_CreateObject();
         cJSON_AddStringToObject(r2, "check", "api_key");
-        cJSON_AddBoolToObject(r2, "passed", 1);
         if (provider == "duckduckgo") {
+            cJSON_AddBoolToObject(r2, "passed", 1);
             cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "not required for duckduckgo" : "set (not required for duckduckgo)");
+        } else if (provider == "brave" || provider == "brave-free" || provider == "tavily") {
+            if (api_key.empty()) {
+                cJSON_AddBoolToObject(r2, "passed", 0);
+                std::string msg = "required for " + provider;
+                cJSON_AddStringToObject(r2, "detail", msg.c_str());
+                all_passed = false;
+            } else {
+                cJSON_AddBoolToObject(r2, "passed", 1);
+                cJSON_AddStringToObject(r2, "detail", "set");
+            }
         } else {
+            cJSON_AddBoolToObject(r2, "passed", 1);
             cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "empty (may be required for paid providers)" : "set");
         }
         cJSON_AddItemToArray(results, r2);
@@ -3594,7 +3780,18 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     if (request.method == "GET" && request.path == "/user_files") {
         ApiResponse response;
         response.content_type = "text/html; charset=utf-8";
-        std::string path = "/userdata/agent/files_report.html";
+        std::string path = kUserFilesReportPath;
+        std::string generate_error;
+        if (!ensure_user_files_report(&generate_error)) {
+            response.status_code = 500;
+            response.body = "<html><body>"
+                "<h1>Files Report Generation Failed</h1>"
+                "<p>The files report could not be generated.</p>"
+                "<p>Expected tools under <code>/userdata/agent_tools</code>.</p>"
+                "<pre>" + generate_error + "</pre>"
+                "</body></html>";
+            return response;
+        }
         FILE* fp = fopen(path.c_str(), "r");
         if (fp) {
             fseek(fp, 0, SEEK_END);
@@ -3630,7 +3827,7 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         // not if the background script succeeds. Actual success/failure will
         // only be visible in /tmp/user_files_regenerate.log.
         std::string cmd = "cd /userdata/agent_tools && "
-                         "./view_agent_files.sh > /tmp/user_files_regenerate.log 2>&1 &";
+                          "./view_agent_files.sh > /tmp/user_files_regenerate.log 2>&1 &";
         int ret = system(cmd.c_str());
 
         if (ret == 0) {
@@ -3649,6 +3846,14 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "GET" && request.path == "/api/agent/logs") {
         return handle_get_agent_log();
+    }
+
+    if (request.method == "GET" && request.path == "/api/ota/logs") {
+        return handle_get_ota_log();
+    }
+
+    if (request.method == "POST" && (request.path == "/api/ota/update" || request.path == "/api/ota/check-now")) {
+        return handle_post_ota_update();
     }
 
     if (request.method == "GET" && request.path == "/api/config") {

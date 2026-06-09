@@ -40,10 +40,11 @@ type ManifestPart struct {
 }
 
 type ManifestAsset struct {
-	Name   string `json:"name"`
-	URL    string `json:"url,omitempty"`
-	Size   int64  `json:"size"`
-	SHA256 string `json:"sha256"`
+	Name        string `json:"name"`
+	URL         string `json:"url,omitempty"`
+	Size        int64  `json:"size"`
+	SHA256      string `json:"sha256"`
+	ImageSHA256 string `json:"image_sha256,omitempty"`
 }
 
 var (
@@ -146,8 +147,8 @@ func validateManifestAsset(field string, asset ManifestAsset, expectedName strin
 	if asset.Name == "" || !assetNameRE.MatchString(asset.Name) || strings.Contains(asset.Name, "..") || strings.HasPrefix(asset.Name, "/") {
 		return fmt.Errorf("%s has invalid name %q", field, asset.Name)
 	}
-	if asset.Name != expectedName {
-		return fmt.Errorf("%s name %q, want %q", field, asset.Name, expectedName)
+	if asset.Name != expectedName && asset.Name != compressedManifestAssetName(expectedName) {
+		return fmt.Errorf("%s name %q, want %q or %q", field, asset.Name, expectedName, compressedManifestAssetName(expectedName))
 	}
 	if asset.URL != "" {
 		parsed, err := url.ParseRequestURI(asset.URL)
@@ -167,16 +168,50 @@ func validateManifestAsset(field string, asset ManifestAsset, expectedName strin
 	if asset.Size <= 0 {
 		return fmt.Errorf("%s size %d must be positive", field, asset.Size)
 	}
-	if len(asset.SHA256) != 64 {
-		return fmt.Errorf("%s sha256 length %d, want 64", field, len(asset.SHA256))
+	if err := validateSHA256Hex(field+".sha256", asset.SHA256); err != nil {
+		return err
 	}
-	if asset.SHA256 != strings.ToLower(asset.SHA256) {
-		return fmt.Errorf("%s sha256 must be lowercase", field)
+	if asset.Name == compressedManifestAssetName(expectedName) {
+		if asset.ImageSHA256 == "" {
+			return fmt.Errorf("%s image_sha256 is required for compressed image assets", field)
+		}
+		if err := validateSHA256Hex(field+".image_sha256", asset.ImageSHA256); err != nil {
+			return err
+		}
+		return nil
 	}
-	if _, err := hex.DecodeString(asset.SHA256); err != nil {
-		return fmt.Errorf("%s has invalid sha256: %w", field, err)
+	if asset.ImageSHA256 != "" {
+		return fmt.Errorf("%s image_sha256 is only allowed for compressed image assets", field)
 	}
 	return nil
+}
+
+func validateSHA256Hex(field string, value string) error {
+	if len(value) != 64 {
+		return fmt.Errorf("%s length %d, want 64", field, len(value))
+	}
+	if value != strings.ToLower(value) {
+		return fmt.Errorf("%s must be lowercase", field)
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return fmt.Errorf("%s is invalid: %w", field, err)
+	}
+	return nil
+}
+
+func compressedManifestAssetName(name string) string {
+	return name + ".tar.gz"
+}
+
+func isCompressedImageAssetName(name string) bool {
+	return strings.HasSuffix(strings.ToLower(name), ".img.tar.gz")
+}
+
+func partitionSHA256ForAsset(asset ManifestAsset) string {
+	if asset.ImageSHA256 != "" {
+		return asset.ImageSHA256
+	}
+	return asset.SHA256
 }
 
 func VerifyManifestJSON(encoded []byte, publicKey ed25519.PublicKey) (Manifest, error) {

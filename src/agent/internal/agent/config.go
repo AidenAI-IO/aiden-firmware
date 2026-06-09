@@ -16,11 +16,45 @@ type SearchConfig struct {
 	APIKey   string `toml:"api_key,omitempty"`
 }
 
+const (
+	searchProviderDuckDuckGo = "duckduckgo"
+	searchProviderTavily     = "tavily"
+	searchProviderBrave      = "brave"
+
+	braveSearchAPIKeyEnv = "BRAVE_SEARCH_API_KEY"
+)
+
 func (s SearchConfig) ProviderOrDefault() string {
-	if strings.TrimSpace(s.Provider) != "" {
-		return strings.ToLower(strings.TrimSpace(s.Provider))
+	return normalizeSearchProvider(s.Provider)
+}
+
+func normalizeSearchProvider(provider string) string {
+	normalized := strings.ToLower(strings.TrimSpace(provider))
+	if normalized == "" {
+		return searchProviderDuckDuckGo
 	}
-	return "duckduckgo"
+	alias := strings.NewReplacer("_", "-", " ", "-").Replace(normalized)
+	switch alias {
+	case searchProviderDuckDuckGo:
+		return searchProviderDuckDuckGo
+	case searchProviderTavily:
+		return searchProviderTavily
+	case searchProviderBrave, "brave-search", "brave-free":
+		return searchProviderBrave
+	}
+	return normalized
+}
+
+func searchAPIKeyOrEnv(configured string, envKeys ...string) string {
+	if key := strings.TrimSpace(configured); key != "" {
+		return key
+	}
+	for _, envKey := range envKeys {
+		if key := strings.TrimSpace(os.Getenv(envKey)); key != "" {
+			return key
+		}
+	}
+	return ""
 }
 
 type Config struct {
@@ -54,6 +88,7 @@ type Config struct {
 	ScreenshotPruneInterval  int             `toml:"screenshot_prune_interval,omitempty"`
 	ScreenStableTimeoutMs    int             `toml:"screen_stable_timeout_ms,omitempty"`
 	ScreenStableMs           int             `toml:"screen_stable_ms,omitempty"`
+	ScreenStableDiffThreshold float64        `toml:"screen_stable_diff_threshold,omitempty"`
 	SkillsDirs               []string        `toml:"skills_dirs"`
 	BundledSkillsDir         string          `toml:"bundled_skills_dir,omitempty"`
 	SkillMergeModel          SkillMergeModel `toml:"-"`
@@ -357,13 +392,17 @@ func LoadConfig(path string) (Config, error) {
 
 func (c Config) Validate() error {
 	switch c.Search.ProviderOrDefault() {
-	case "duckduckgo":
-	case "tavily":
-		if strings.TrimSpace(c.Search.APIKey) == "" {
+	case searchProviderDuckDuckGo:
+	case searchProviderTavily:
+		if searchAPIKeyOrEnv(c.Search.APIKey) == "" {
 			return errors.New("search.api_key is required when search.provider=tavily")
 		}
+	case searchProviderBrave:
+		if searchAPIKeyOrEnv(c.Search.APIKey, braveSearchAPIKeyEnv) == "" {
+			return errors.New("search.api_key or BRAVE_SEARCH_API_KEY is required when search.provider=brave")
+		}
 	default:
-		return fmt.Errorf("invalid search.provider: %s (expected duckduckgo or tavily)", c.Search.Provider)
+		return fmt.Errorf("invalid search.provider: %s (expected duckduckgo, brave, or tavily)", c.Search.Provider)
 	}
 
 	if strings.TrimSpace(c.Model.Provider) == "" {
@@ -449,6 +488,9 @@ func (c Config) Validate() error {
 	}
 	if c.ScreenStableMs < 0 {
 		return fmt.Errorf("screen_stable_ms must be >= 0, got %d", c.ScreenStableMs)
+	}
+	if c.ScreenStableDiffThreshold < 0 {
+		return fmt.Errorf("screen_stable_diff_threshold must be >= 0, got %g", c.ScreenStableDiffThreshold)
 	}
 
 	if err := c.Telemetry.Validate(); err != nil {
@@ -611,7 +653,8 @@ func (c Config) ScreenshotPruningOrDefault() ScreenshotPruningConfig {
 
 func (c Config) ScreenStableDefaults() ScreenStableDefaults {
 	return ScreenStableDefaults{
-		TimeoutMs: c.ScreenStableTimeoutMs,
-		StableMs:  c.ScreenStableMs,
+		TimeoutMs:     c.ScreenStableTimeoutMs,
+		StableMs:      c.ScreenStableMs,
+		DiffThreshold: c.ScreenStableDiffThreshold,
 	}
 }

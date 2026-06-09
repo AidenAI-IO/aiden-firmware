@@ -3,7 +3,7 @@ name: device-operator
 description: Use when controlling a visible target device UI through screenshots, touch, mouse, or keyboard.
 metadata:
   preferred_model: primary
-  allowed_tools: [screenshot, quick_action, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text]
+  allowed_tools: [screenshot, quick_action, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text, shell]
 ---
 
 Use this skill when interacting with the connected device screen, app UI, keyboard, touch input, or mouse pointer.
@@ -19,6 +19,38 @@ Always operate through a visual feedback loop:
 5. Continue only after confirming what changed.
 
 Do not perform multiple blind UI actions in a row.
+
+## Screenshot Failure Recovery
+
+If `screenshot` fails, a post-action screenshot fails, or the tool output mentions `SERVICE_RECOVERING`, socket errors, empty image data, or invalid screenshot JSON, stop UI actions. Do not tap, type, swipe, or guess from stale visual state.
+
+Recovery sequence:
+
+1. Retry `screenshot` once if the error suggests transient recovery, such as `SERVICE_RECOVERING`.
+2. If the second screenshot fails, diagnose the frame service with `shell`:
+   ```bash
+   /etc/init.d/S52frame_service status
+   frame_service_cli --socket /run/frame_service/frame_service.sock health
+   ls -l /run/frame_service/frame_service.sock
+   ```
+3. If health reports a bad state or the service is recovering, request a capture-manager restart first:
+   ```bash
+   frame_service_cli --socket /run/frame_service/frame_service.sock restart
+   ```
+4. Verify recovery with `health`, then call `screenshot` again.
+5. If CLI restart fails, the socket is missing, or the service is not running, restart the init service:
+   ```bash
+   /etc/init.d/S52frame_service restart
+   ```
+6. After service restart, verify in order: `status`, `health`, then `screenshot`.
+
+If recovery still fails, inspect recent logs before asking the user to intervene:
+
+```bash
+tail -n 80 /var/log/frame_service/frame_service.log
+```
+
+When reporting a blocker, include the screenshot error, which recovery commands were tried, and the latest `health` or log signal. Do not claim the device UI task is complete without a fresh screenshot confirming the target screen.
 
 ## Action Choice
 

@@ -552,3 +552,140 @@ outcome:
 		t.Fatalf("media observationId = %q, want tool result id %q", mediaObservationID, toolResultID)
 	}
 }
+
+func TestRuntimeStartupExportsInterruptedEpisodeToLangfuse(t *testing.T) {
+	ctx := context.Background()
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	store := NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
+	recorder := NewPersistentEpisodeRecorder(MemoryRetrieveRequest{
+		Input:     "打开设置",
+		EpisodeID: "ep_langfuse_interrupted",
+	}, MemoryContext{}, store)
+
+	if err := recorder.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	recorder.RecordPlannerDecision(plannerDecision{
+		Objective: "打开设置",
+		Plan:      []string{"打开设置"},
+		NextStep:  "点击设置",
+	})
+
+	done := make(chan map[string]interface{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/public/ingestion" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "pk-test" || pass != "sk-test" {
+			t.Errorf("unexpected auth: ok=%v user=%q pass=%q", ok, user, pass)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var req langfuseIngestionRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("decode ingestion request: %v", err)
+		}
+		var traceBody map[string]interface{}
+		var scoreBody map[string]interface{}
+		for _, event := range req.Batch {
+			var eventBody map[string]interface{}
+			if err := json.Unmarshal(event.Body, &eventBody); err != nil {
+				t.Errorf("decode event body: %v", err)
+				continue
+			}
+			switch event.Type {
+			case "trace-create":
+				traceBody = eventBody
+			case "score-create":
+				scoreBody = eventBody
+			}
+		}
+		select {
+		case done <- map[string]interface{}{"trace": traceBody, "score": scoreBody}:
+		default:
+		}
+		w.WriteHeader(http.StatusMultiStatus)
+		_, _ = w.Write([]byte(`{"successes":[{"id":"ok","status":201}],"errors":[]}`))
+	}))
+	defer server.Close()
+
+	NewRuntimeWithDeps(
+		Config{
+			ConfigDir: configDir,
+			Model: ModelConfig{
+				Provider: "fake",
+				Model:    "test-model",
+			},
+			Telemetry: TelemetryConfig{
+				Enabled:   boolPtr(true),
+				BaseURL:   server.URL,
+				PublicKey: "pk-test",
+				SecretKey: "sk-test",
+				MaxRetry:  0,
+			},
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(memoryDir),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var payload map[string]interface{}
+	select {
+	case payload = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for langfuse ingestion")
+	}
+
+	traceBody, ok := payload["trace"].(map[string]interface{})
+	if !ok || traceBody == nil {
+		t.Fatalf("missing trace-create body: %#v", payload)
+	}
+	scoreBody, ok := payload["score"].(map[string]interface{})
+	if !ok || scoreBody == nil {
+		t.Fatalf("missing score-create body: %#v", payload)
+	}
+	meta, ok := traceBody["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("trace metadata = %#v", traceBody["metadata"])
+	}
+	if meta["episode_id"] != "ep_langfuse_interrupted" {
+		t.Fatalf("metadata.episode_id = %v", meta["episode_id"])
+	}
+	if meta["status"] != "interrupted" {
+		t.Fatalf("metadata.status = %v", meta["status"])
+	}
+	if meta["failure_reason"] != "agent restarted before the task episode completed" {
+		t.Fatalf("metadata.failure_reason = %v", meta["failure_reason"])
+	}
+	if meta["model"] != "fake/test-model" {
+		t.Fatalf("metadata.model = %v", meta["model"])
+	}
+	if meta["interruption_source"] != "agent_restart" {
+		t.Fatalf("metadata.interruption_source = %v", meta["interruption_source"])
+	}
+	if scoreBody["value"] != float64(0) {
+		t.Fatalf("score value = %v, want 0", scoreBody["value"])
+	}
+	tags, ok := traceBody["tags"].([]interface{})
+	if !ok {
+		t.Fatalf("trace tags = %#v", traceBody["tags"])
+	}
+	for _, want := range []string{"interrupted", "status:interrupted", "failure"} {
+		if !jsonListContains(tags, want) {
+			t.Fatalf("trace tags missing %q: %#v", want, tags)
+		}
+	}
+}
+
+func jsonListContains(values []interface{}, want string) bool {
+	for _, value := range values {
+		if got, _ := value.(string); got == want {
+			return true
+		}
+	}
+	return false
+}

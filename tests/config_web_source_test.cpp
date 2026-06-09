@@ -125,6 +125,103 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
+TEST_CASE("config web exposes ota update and live ota logs") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("\"/api/ota/update\"") != std::string::npos);
+    CHECK(source.find("\"/api/ota/check-now\"") != std::string::npos);
+    CHECK(source.find("\"/api/ota/logs\"") != std::string::npos);
+    CHECK(source.find("handle_post_ota_update") != std::string::npos);
+    CHECK(source.find("handle_get_ota_log") != std::string::npos);
+    CHECK(source.find("read_ota_log_snapshot") != std::string::npos);
+    CHECK(source.find("kOtaWebUpdateLogPath") != std::string::npos);
+    CHECK(source.find("/tmp/config_web_ota_update.log") != std::string::npos);
+    CHECK(source.find("/var/log/ota/ota.log") == std::string::npos);
+    CHECK(source.find("/oem/usr/bin/ota") != std::string::npos);
+    CHECK(source.find(" update") != std::string::npos);
+    CHECK(source.find("kOtaWebUpdateLockPath") != std::string::npos);
+    CHECK(source.find("flock(lock_fd, LOCK_EX | LOCK_NB)") != std::string::npos);
+    CHECK(source.find("ota update already running") != std::string::npos);
+    CHECK(source.find("prepare_ota_update_log_file") != std::string::npos);
+    CHECK(source.find("ota_log_start_size_bytes") != std::string::npos);
+    CHECK(source.find("cJSON_AddNumberToObject(response, \"ota_log_start_size_bytes\", 0)") != std::string::npos);
+    CHECK(source.find("cJSON_AddItemToObject(response, \"ota_log\"") == std::string::npos);
+    CHECK(source.find("echo '[config_web] ota update requested'") == std::string::npos);
+    CHECK(source.find("close(lock_fd)") != std::string::npos);
+    CHECK(source.find("tail -f") == std::string::npos);
+
+    CHECK(html.find("OTA 更新") != std::string::npos);
+    CHECK(html.find("fwActions") != std::string::npos);
+    CHECK(html.find("otaUpdateBtn") != std::string::npos);
+    const std::string::size_type fw_actions_pos = html.find("id=\\\"fwActions\\\"");
+    const std::string::size_type ota_button_pos = html.find("id=\\\"otaUpdateBtn\\\"");
+    const std::string::size_type wifi_heading_pos = html.find("Wi-Fi 配置");
+    REQUIRE(fw_actions_pos != std::string::npos);
+    REQUIRE(ota_button_pos != std::string::npos);
+    REQUIRE(wifi_heading_pos != std::string::npos);
+    CHECK(fw_actions_pos < ota_button_pos);
+    CHECK(ota_button_pos < wifi_heading_pos);
+    CHECK(html.find("OTA 实时日志") != std::string::npos);
+    CHECK(html.find("otaLogPanel") != std::string::npos);
+    CHECK(html.find("id=\\\"otaLogPanel\\\" class=\\\"card ota-log-panel\\\"") != std::string::npos);
+    CHECK(html.find(".ota-log-panel{display:none}") != std::string::npos);
+    CHECK(html.find("showOtaLogPanel") != std::string::npos);
+    CHECK(html.find("if(!appState.otaLogVisible&&!showBanner){return;}") != std::string::npos);
+    CHECK(html.find("otaLogPending:false") != std::string::npos);
+    CHECK(html.find("otaLogStartSize:0") != std::string::npos);
+    CHECK(html.find("otaLogHasNewProgress") != std::string::npos);
+    CHECK(html.find("extractOtaExitCode") != std::string::npos);
+    CHECK(html.find("[config_web] ota update exited rc=") != std::string::npos);
+    CHECK(html.find("OTA 更新失败（rc=") != std::string::npos);
+    CHECK(html.find("最近 OTA 日志：\\\\n") != std::string::npos);
+    CHECK(html.find("setOtaLogPending") != std::string::npos);
+    CHECK(html.find("OTA 更新已开始，等待日志输出...") != std::string::npos);
+    CHECK(html.find("setOtaLogPending('OTA 更新已开始，等待日志输出...',Number(payload.ota_log_start_size_bytes||0));") != std::string::npos);
+    CHECK(html.find("renderOtaLog(snapshot, {preservePending:true})") != std::string::npos);
+    CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');setOtaLogPending(") != std::string::npos);
+    CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');showOtaLogPanel();") == std::string::npos);
+    CHECK(html.find("otaLogText") != std::string::npos);
+    CHECK(html.find("otaLogMeta") != std::string::npos);
+    CHECK(html.find("triggerOtaUpdate") != std::string::npos);
+    CHECK(html.find("refreshOtaLog") != std::string::npos);
+    CHECK(html.find("/api/ota/update") != std::string::npos);
+    CHECK(html.find("/api/ota/check-now") == std::string::npos);
+    CHECK(html.find("/api/ota/logs") != std::string::npos);
+    CHECK(html.find("await refreshOtaLog(false)") == std::string::npos);
+    CHECK(html.find("setInterval(function(){refreshOtaLog(false);},2000)") != std::string::npos);
+}
+
+TEST_CASE("ota open sources documentation references current docs paths") {
+    const std::string doc_path = std::string(AIDEN_SOURCE_DIR) + "/docs/09-ota/OTA_OPEN_SOURCES.md";
+    std::ifstream doc_in(doc_path.c_str());
+    REQUIRE(doc_in.good());
+
+    std::ostringstream doc_buffer;
+    doc_buffer << doc_in.rdbuf();
+    const std::string doc = doc_buffer.str();
+
+    CHECK(doc.find("docs/09-ota/ota-external-developers.md") != std::string::npos);
+    CHECK(doc.find("docs/09-ota/ota-quick-examples.md") != std::string::npos);
+    CHECK(doc.find("docs/09-ota/ota-release-channels.md") != std::string::npos);
+    CHECK(doc.find("docs/ota-external-developers.md") == std::string::npos);
+    CHECK(doc.find("docs/ota-quick-examples.md") == std::string::npos);
+    CHECK(doc.find("docs/ota-release-channels.md") == std::string::npos);
+}
+
 TEST_CASE("config web exposes screenshot pruning config fields") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
@@ -146,23 +243,51 @@ TEST_CASE("config web exposes screenshot pruning config fields") {
     CHECK(source.find("\"screenshot_prune_interval\"") != std::string::npos);
     CHECK(source.find("\"screen_stable_timeout_ms\"") != std::string::npos);
     CHECK(source.find("\"screen_stable_ms\"") != std::string::npos);
+    CHECK(source.find("\"screen_stable_diff_threshold\"") != std::string::npos);
     CHECK(source.find("config.screenshot_keep_n") != std::string::npos);
     CHECK(source.find("config.screenshot_prune_interval") != std::string::npos);
     CHECK(source.find("config.screen_stable_timeout_ms") != std::string::npos);
     CHECK(source.find("config.screen_stable_ms") != std::string::npos);
+    CHECK(source.find("config.screen_stable_diff_threshold") != std::string::npos);
     CHECK(source.find("screenshot_keep_n must be >= 0") != std::string::npos);
     CHECK(source.find("screenshot_prune_interval must be >= 0") != std::string::npos);
     CHECK(source.find("screen_stable_timeout_ms must be >= 0") != std::string::npos);
     CHECK(source.find("screen_stable_ms must be >= 0") != std::string::npos);
+    CHECK(source.find("screen_stable_diff_threshold must be >= 0") != std::string::npos);
 
     CHECK(html.find("agent_screenshot_keep_n") != std::string::npos);
     CHECK(html.find("agent_screenshot_prune_interval") != std::string::npos);
     CHECK(html.find("agent_screen_stable_timeout_ms") != std::string::npos);
     CHECK(html.find("agent_screen_stable_ms") != std::string::npos);
+    CHECK(html.find("agent_screen_stable_diff_threshold") != std::string::npos);
     CHECK(html.find("['screenshot_keep_n','number']") != std::string::npos);
     CHECK(html.find("['screenshot_prune_interval','number']") != std::string::npos);
     CHECK(html.find("['screen_stable_timeout_ms','number']") != std::string::npos);
     CHECK(html.find("['screen_stable_ms','number']") != std::string::npos);
+    CHECK(html.find("['screen_stable_diff_threshold','number']") != std::string::npos);
+}
+
+TEST_CASE("config web exposes brave search provider") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("\"brave\"") != std::string::npos);
+    CHECK(source.find("\"brave-free\"") != std::string::npos);
+    CHECK(source.find("provider == \"brave\" || provider == \"brave-free\"") != std::string::npos);
+    CHECK(html.find("duckduckgo / brave / tavily") != std::string::npos);
 }
 
 TEST_CASE("config web exposes a single system env editor backed by the env file") {
@@ -311,6 +436,43 @@ TEST_CASE("config web custom benchmark suite import endpoints") {
     // Delete must only touch suites/custom/ (no arbitrary path).
     const std::string del_marker = "std::string dest_path = \"/userdata/agent/benchmark/suites/custom/\" + safe_name + \".json\";";
     CHECK(source.find(del_marker) != std::string::npos);
+}
+
+TEST_CASE("user files route generates report before serving it") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string route_marker = "request.method == \"GET\" && request.path == \"/user_files\"";
+    const size_t route_pos = source.find(route_marker);
+    REQUIRE(route_pos != std::string::npos);
+
+    const size_t generate_pos = source.find("ensure_user_files_report", route_pos);
+    const size_t read_pos = source.find("fopen(path.c_str(), \"r\")", route_pos);
+    REQUIRE(read_pos != std::string::npos);
+
+    CHECK(source.find("kUserFilesGenerateCommandTimeoutMs") != std::string::npos);
+    CHECK(generate_pos != std::string::npos);
+    CHECK(generate_pos < read_pos);
+}
+
+TEST_CASE("build image packages user files report tools") {
+    const std::string build_path = std::string(AIDEN_SOURCE_DIR) + "/_build_image.sh";
+    std::ifstream build_in(build_path.c_str());
+    REQUIRE(build_in.good());
+
+    std::ostringstream build_buffer;
+    build_buffer << build_in.rdbuf();
+    const std::string build_script = build_buffer.str();
+
+    CHECK(build_script.find("agent_tools") != std::string::npos);
+    CHECK(build_script.find("generate_agent_files_report.py") != std::string::npos);
+    CHECK(build_script.find("agent_files_template.html") != std::string::npos);
+    CHECK(build_script.find("view_agent_files.sh") != std::string::npos);
 }
 
 TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhid") {

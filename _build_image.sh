@@ -6,6 +6,17 @@ OVERLAY="$SCRIPT_DIR/overlay"
 PICO_SDK="$SCRIPT_DIR/pico-sdk"
 DEST_OVERLAY="$PICO_SDK/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buildroot-aiden"
 
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+    # Keep filesystem image metadata stable across releases when their payloads
+    # did not change. Callers can still set SOURCE_DATE_EPOCH explicitly.
+    SOURCE_DATE_EPOCH="${AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-0}"
+fi
+if ! [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
+    echo "SOURCE_DATE_EPOCH must be an unsigned Unix timestamp: $SOURCE_DATE_EPOCH" >&2
+    exit 1
+fi
+export SOURCE_DATE_EPOCH
+
 require_rknnmrt_version() {
     local runtime="$1"
     local version major minor
@@ -55,6 +66,14 @@ else
     rm -f "$BENCHMARK_DEST/pyproject.toml"
 fi
 echo "  ✓ Benchmark runner and suites staged to overlay/userdata/agent/benchmark"
+
+AGENT_TOOLS_DEST="$OVERLAY/userdata/agent_tools"
+mkdir -p "$AGENT_TOOLS_DEST"
+cp "$SCRIPT_DIR/scripts/generate_agent_files_report.py" "$AGENT_TOOLS_DEST/"
+cp "$SCRIPT_DIR/scripts/agent_files_template.html" "$AGENT_TOOLS_DEST/"
+cp "$SCRIPT_DIR/scripts/view_agent_files.sh" "$AGENT_TOOLS_DEST/"
+chmod +x "$AGENT_TOOLS_DEST/generate_agent_files_report.py" "$AGENT_TOOLS_DEST/view_agent_files.sh"
+echo "  ✓ Agent files report tools staged to overlay/userdata/agent_tools"
 
 RKNNMRT_OVERLAY="$OVERLAY/oem/usr/lib/librknnmrt.so"
 RKNNMRT_SOURCE="$PICO_SDK/media/iva/iva/librockiva/rockiva-rv1106-Linux/lib/librknnmrt.so"

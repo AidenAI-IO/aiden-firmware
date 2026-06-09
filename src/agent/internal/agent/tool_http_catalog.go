@@ -134,7 +134,7 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 	"wait_for_stable_screen": {
 		Category:     "observation",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"timeout_ms":3000,"stable_ms":500,"diff_threshold":5}`,
+		ExampleInput: `{"timeout_ms":3500,"stable_ms":500,"diff_threshold":2}`,
 	},
 }
 

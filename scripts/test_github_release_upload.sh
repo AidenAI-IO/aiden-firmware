@@ -16,6 +16,7 @@ printf '{"version":"v-test"}\n' > "$assets_dir/manifest.json"
 for image in boot_a.img boot_b.img oem.img rootfs.img userdata.img; do
   printf '%s\n' "$image" > "$assets_dir/$image"
 done
+printf 'extra debug asset\n' > "$assets_dir/debug.log"
 # Note: symlinks oem_a/oem_b/rootfs_a/rootfs_b should NOT exist
 # (they're cleaned up after update.img packaging in build.sh)
 
@@ -127,7 +128,8 @@ if ! PATH="$fake_bin:$PATH" \
       --release-name "Test Release" \
       --target-commitish "$target_commitish" \
       --asset-glob "$assets_dir/*" \
-      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img userdata.img update.img manifest.json' \
+      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+      --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
       --retry-count 4 \
       --retry-delay-seconds 15 \
       >"$log_file" 2>&1; then
@@ -171,9 +173,16 @@ if [ "$(grep -c '^upload:manifest.json:' "$state_dir/events")" -ne 1 ]; then
   exit 1
 fi
 
-for image in boot_a.img boot_b.img oem.img rootfs.img userdata.img; do
+for image in boot_a.img boot_b.img oem.img rootfs.img; do
   if [ "$(grep -c "^upload:$image:" "$state_dir/events")" -ne 1 ]; then
     echo "release script must upload required OTA image: $image" >&2
+    exit 1
+  fi
+done
+
+for skipped_asset in userdata.img debug.log; do
+  if grep -q "^upload:$skipped_asset:" "$state_dir/events"; then
+    echo "release script must skip non-allowlisted release asset: $skipped_asset" >&2
     exit 1
   fi
 done
@@ -206,7 +215,8 @@ if ! PATH="$fake_bin:$PATH" \
       --release-name "Test Release" \
       --target-commitish abc123 \
       --asset-glob "$assets_dir/*" \
-      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img userdata.img update.img manifest.json' \
+      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+      --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
       --retry-count 3 \
       --retry-delay-seconds 0 \
       >"$log_file" 2>&1; then
@@ -239,7 +249,8 @@ if PATH="$fake_bin:$PATH" \
       --release-name "Test Release" \
       --target-commitish abc123 \
       --asset-glob "$assets_dir/*" \
-      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img userdata.img update.img manifest.json' \
+      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+      --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
       --retry-count 3 \
       --retry-delay-seconds 0 \
       >"$log_file" 2>&1; then

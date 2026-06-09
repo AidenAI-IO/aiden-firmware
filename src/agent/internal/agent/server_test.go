@@ -114,6 +114,79 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	}
 }
 
+func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	model := &scriptedModel{
+		responses: roleDirectResponses("已完成"),
+	}
+	streamingDisabled := false
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:                configDir,
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceToolCallSpeech:      &streamingDisabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(memoryDir),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"做一个任务"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleChat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp ChatResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	assistant, ok := firstMessageOfType(resp.History, "assistant")
+	if !ok || assistant.EpisodeID == "" {
+		t.Fatalf("assistant missing episode reference: %#v", resp.History)
+	}
+	if resp.History[0].EpisodeID != assistant.EpisodeID {
+		t.Fatalf("user and assistant episode ids differ: %#v", resp.History)
+	}
+
+	reloaded := NewServer(runtime, ":0")
+	historyReq := httptest.NewRequest(http.MethodGet, "/api/history", nil)
+	historyRec := httptest.NewRecorder()
+	reloaded.handleHistory(historyRec, historyReq)
+	if historyRec.Code != http.StatusOK {
+		t.Fatalf("unexpected history status: %d body=%s", historyRec.Code, historyRec.Body.String())
+	}
+	var restored []Message
+	if err := json.NewDecoder(historyRec.Body).Decode(&restored); err != nil {
+		t.Fatalf("decode restored history: %v", err)
+	}
+	restoredAssistant, ok := firstMessageOfType(restored, "assistant")
+	if !ok || restoredAssistant.EpisodeID != assistant.EpisodeID {
+		t.Fatalf("restored assistant missing episode reference: %#v", restored)
+	}
+
+	episodeReq := httptest.NewRequest(http.MethodGet, "/api/episodes/"+assistant.EpisodeID, nil)
+	episodeRec := httptest.NewRecorder()
+	server.handleEpisodes(episodeRec, episodeReq)
+	if episodeRec.Code != http.StatusOK {
+		t.Fatalf("unexpected episode status: %d body=%s", episodeRec.Code, episodeRec.Body.String())
+	}
+	var episodeResp EpisodeResponse
+	if err := json.NewDecoder(episodeRec.Body).Decode(&episodeResp); err != nil {
+		t.Fatalf("decode episode response: %v", err)
+	}
+	if episodeResp.Episode.ID != assistant.EpisodeID || len(episodeResp.Episode.Events) == 0 {
+		t.Fatalf("unexpected episode response: %#v", episodeResp.Episode)
+	}
+}
+
 func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
@@ -350,6 +423,108 @@ func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
+	server := &Server{activeRuns: make(map[string]context.CancelFunc)}
+	ctx, cancel := context.WithCancel(context.Background())
+	server.registerActiveRun("req-1", cancel)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":" req-1 "}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChatCancel(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("active run was not canceled")
+	}
+
+	var resp ChatCancelResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Status != "canceled" || resp.RequestID != "req-1" {
+		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+}
+
+func TestServerHandleChatAsyncDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
+	server := &Server{
+		activeRuns:     make(map[string]context.CancelFunc),
+		pendingResults: map[string]*chatPendingResult{"req-1": {}},
+		history:        make([]Message, 0),
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":" req-1 "}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := server.historySnapshot(); len(got) != 0 {
+		t.Fatalf("duplicate request appended history: %#v", got)
+	}
+}
+
+func TestServerHandleChatStreamDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
+	server := &Server{
+		activeRuns: make(map[string]context.CancelFunc),
+		history:    make([]Message, 0),
+	}
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.registerActiveRun("req-1", cancel)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":" req-1 "}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	req.Header.Set("X-Aiden-Stream", "ndjson")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := server.historySnapshot(); len(got) != 0 {
+		t.Fatalf("duplicate stream request appended history: %#v", got)
+	}
+}
+
+func TestServerSpeakToolDescriptionUsesCallerContext(t *testing.T) {
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	server := &Server{
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		server.speakToolDescription(ctx, "我先读取当前音量。")
+		close(done)
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(500 * time.Millisecond):
+		cancel()
+		t.Fatal("tool description TTS was not started")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("tool description TTS did not stop after caller context cancellation")
+	}
+}
+
 type cancelAwareModel struct {
 	seen chan error
 }
@@ -487,6 +662,54 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 	}
 }
 
+func TestServerHandleSkillsReloadMarksDirty(t *testing.T) {
+	storageDir := t.TempDir()
+	server := &Server{
+		runtime: NewRuntimeWithDeps(
+			Config{Model: ModelConfig{Provider: "fake"}},
+			&testModelResolver{model: &scriptedModel{}},
+			NewMemoryManager(storageDir),
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+			NewSkillIndex(),
+		),
+	}
+
+	if server.runtime.skillsDirty {
+		t.Fatalf("expected skillsDirty=false initially")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/skills/reload", nil)
+	rec := httptest.NewRecorder()
+	server.handleSkillsReload(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !server.runtime.skillsDirty {
+		t.Fatalf("expected skillsDirty=true after reload request")
+	}
+}
+
+func TestServerHandleSkillsReloadRejectsGet(t *testing.T) {
+	server := &Server{
+		runtime: NewRuntimeWithDeps(
+			Config{Model: ModelConfig{Provider: "fake"}},
+			&testModelResolver{model: &scriptedModel{}},
+			NewMemoryManager(t.TempDir()),
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+			NewSkillIndex(),
+		),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/skills/reload", nil)
+	rec := httptest.NewRecorder()
+	server.handleSkillsReload(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rec.Code)
+	}
+}
+
 func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	stt := &stubSTTClient{transcript: "你好，帮我总结一下"}
 	runtime := NewRuntimeWithDeps(
@@ -621,6 +844,15 @@ func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 	server.handleAudioRecordStart(startRec, startReq)
 	if startRec.Code != http.StatusOK {
 		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&startPlaybackCount) > 0 &&
+			atomic.LoadInt32(&writePlayChunkCount) > 0 &&
+			atomic.LoadInt32(&healthCount) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if atomic.LoadInt32(&startPlaybackCount) == 0 ||
 		atomic.LoadInt32(&writePlayChunkCount) == 0 ||

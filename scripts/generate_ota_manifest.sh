@@ -19,6 +19,11 @@ Required options:
 Optional:
   --base-url      Base URL for direct asset downloads (e.g. https://example.com/firmware/v1.0.0)
                   If provided, full asset URLs will be embedded in the manifest
+  --asset-url     Exact asset download URL in FILE=URL form; may be repeated
+                  Takes precedence over --base-url for the named file
+  --asset-metadata
+                  Exact manifest asset JSON in FILE=JSON form; may be repeated
+                  Takes precedence over --asset-url and --base-url for the named file
 
 Required images:
   boot_a.img and boot_b.img are always required.
@@ -38,6 +43,10 @@ sign_key=""
 image_dir=""
 output=""
 base_url=""
+asset_url_files=()
+asset_url_values=()
+asset_metadata_files=()
+asset_metadata_values=()
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -80,6 +89,38 @@ while [ "$#" -gt 0 ]; do
       base_url="$2"
       [[ "$base_url" =~ ^https?:// ]] || die "--base-url must start with http:// or https://"
       [[ "$base_url" =~ [[:space:]] ]] && die "--base-url must not contain whitespace"
+      shift 2
+      ;;
+    --asset-url)
+      [ "$#" -ge 2 ] || die "--asset-url requires a value"
+      asset_url_pair="$2"
+      asset_url_file="${asset_url_pair%%=*}"
+      asset_url_value="${asset_url_pair#*=}"
+      [ "$asset_url_file" != "$asset_url_pair" ] || die "--asset-url must use FILE=URL"
+      [ -n "$asset_url_file" ] || die "--asset-url file must not be empty"
+      [ -n "$asset_url_value" ] || die "--asset-url URL must not be empty"
+      case "$asset_url_file" in
+        */*|*[[:space:]]*) die "--asset-url file must be a release asset name: $asset_url_file" ;;
+      esac
+      [[ "$asset_url_value" =~ ^https?:// ]] || die "--asset-url URL must start with http:// or https://"
+      [[ "$asset_url_value" =~ [[:space:]] ]] && die "--asset-url URL must not contain whitespace"
+      asset_url_files+=("$asset_url_file")
+      asset_url_values+=("$asset_url_value")
+      shift 2
+      ;;
+    --asset-metadata)
+      [ "$#" -ge 2 ] || die "--asset-metadata requires a value"
+      asset_metadata_pair="$2"
+      asset_metadata_file="${asset_metadata_pair%%=*}"
+      asset_metadata_value="${asset_metadata_pair#*=}"
+      [ "$asset_metadata_file" != "$asset_metadata_pair" ] || die "--asset-metadata must use FILE=JSON"
+      [ -n "$asset_metadata_file" ] || die "--asset-metadata file must not be empty"
+      [ -n "$asset_metadata_value" ] || die "--asset-metadata JSON must not be empty"
+      case "$asset_metadata_file" in
+        */*|*[[:space:]]*) die "--asset-metadata file must be a release asset name: $asset_metadata_file" ;;
+      esac
+      asset_metadata_files+=("$asset_metadata_file")
+      asset_metadata_values+=("$asset_metadata_value")
       shift 2
       ;;
     *)
@@ -128,15 +169,100 @@ file_sha256() {
   fi
 }
 
+asset_url_for_file() {
+  local file="$1"
+  local index
+
+  for index in "${!asset_url_files[@]}"; do
+    if [ "${asset_url_files[$index]}" = "$file" ]; then
+      printf '%s' "${asset_url_values[$index]}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+asset_metadata_for_file() {
+  local file="$1"
+  local index
+
+  for index in "${!asset_metadata_files[@]}"; do
+    if [ "${asset_metadata_files[$index]}" = "$file" ]; then
+      printf '%s' "${asset_metadata_values[$index]}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+asset_metadata_json() {
+  local file="$1"
+  local path="$image_dir/$file"
+  local metadata="$2"
+  local image_sha256 compressed_name
+
+  image_sha256="$(file_sha256 "$path")"
+  compressed_name="${file}.tar.gz"
+
+  if ! printf '%s' "$metadata" | jq -e \
+    --arg file "$file" \
+    --arg compressed_name "$compressed_name" \
+    --arg image_sha256 "$image_sha256" \
+    '
+      type == "object" and
+      (.name == $file or .name == $compressed_name) and
+      (.url | type == "string" and test("^https?://") and (test("[[:space:]]") | not)) and
+      (.size | type == "number" and . > 0) and
+      (.sha256 | type == "string" and test("^[A-Fa-f0-9]{64}$")) and
+      (
+        if .name == $compressed_name then
+          (.image_sha256 | type == "string" and test("^[A-Fa-f0-9]{64}$") and (ascii_downcase == ($image_sha256 | ascii_downcase)))
+        else
+          ((.image_sha256 // "") == "" and ((.sha256 | ascii_downcase) == ($image_sha256 | ascii_downcase)))
+        end
+      )
+    ' >/dev/null; then
+    die "invalid --asset-metadata for $file"
+  fi
+
+  printf '%s' "$metadata" | jq -c \
+    --arg compressed_name "$compressed_name" \
+    '
+      {
+        name: .name,
+        url: .url,
+        size: .size,
+        sha256: (.sha256 | ascii_downcase)
+      } +
+      if .name == $compressed_name then
+        {image_sha256: (.image_sha256 | ascii_downcase)}
+      else
+        {}
+      end
+    '
+}
+
 asset_json() {
   local file="$1"
   local path="$image_dir/$file"
   [ -f "$path" ] || die "missing required image: $path"
-  local size sha256
+  local size sha256 url metadata
+  if metadata="$(asset_metadata_for_file "$file")"; then
+    asset_metadata_json "$file" "$metadata"
+    return
+  fi
+
   size="$(file_size "$path")"
   sha256="$(file_sha256 "$path")"
-  if [ -n "$base_url" ]; then
-    local url="${base_url%/}/$file"
+  if ! url="$(asset_url_for_file "$file")"; then
+    url=""
+  fi
+  if [ -z "$url" ] && [ -n "$base_url" ]; then
+    url="${base_url%/}/$file"
+  fi
+  if [ -n "$url" ]; then
     jq -n \
       --arg name "$file" \
       --arg url "$url" \
