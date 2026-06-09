@@ -74,12 +74,42 @@ def generate_report_html(run_dir: Path) -> str:
             for s in rubric_spec:
                 rubric_js.append([s.get("id",""), s.get("check",""), "\u2014"])
 
+        # Extract hard assertions
+        hard_assertions = r.get("hard_assertions", {})
+        ha_failures = []
+        if hard_assertions:
+            if hard_assertions.get("timeout") is False:
+                ha_failures.append(["Timeout", "Task did not complete within time limit", "no"])
+            if hard_assertions.get("response_exists") is False:
+                ha_failures.append(["Response Exists", "Agent did not produce a response", "no"])
+            if hard_assertions.get("min_tool_calls") is False:
+                ha_failures.append(["Min Tool Calls", "Did not meet minimum tool call requirement", "no"])
+            if hard_assertions.get("max_tool_calls") is False:
+                ha_failures.append(["Max Tool Calls", "Exceeded maximum tool call limit", "no"])
+            if hard_assertions.get("expected_answer") is False:
+                expected = r.get("metrics", {}).get("expected_answer", "")
+                predicted = r.get("metrics", {}).get("predicted_answer", "")
+                ha_failures.append(["Expected Answer", f"Expected: {expected}, Got: {predicted}", "no"])
+            if hard_assertions.get("expected_recalled_memory") is False:
+                ha_failures.append(["Expected Recalled Memory", "Did not recall expected memory items", "no"])
+
+        # Extract errors
+        errors = []
+        metrics = r.get("metrics", {})
+        if "error" in metrics:
+            errors.append(["Error", metrics["error"]])
+        if "agent_error" in metrics:
+            errors.append(["Agent Error", metrics["agent_error"]])
+        if "judge_error" in metrics:
+            errors.append(["Judge Error", metrics["judge_error"]])
+
         tasks_js_items.append({
             "id": tid,
             "category": r.get("category", ""),
             "status": status,
             "wall_ms": r.get("metrics", {}).get("wall_ms", 0),
             "tool_calls_count": r.get("metrics", {}).get("tool_calls", 0),
+            "screenshots_taken": r.get("metrics", {}).get("screenshots_taken", 0),
             "rubric_pass": r.get("rubric_pass_count", 0),
             "rubric_total": r.get("rubric_total", 0),
             "description": r.get("description_for_judge", ""),
@@ -87,6 +117,8 @@ def generate_report_html(run_dir: Path) -> str:
             "response": trace_data.get("final_response", ""),
             "tool_calls_detail": tool_calls_str.strip(),
             "rubric": rubric_js,
+            "hard_assertions": ha_failures,
+            "errors": errors,
             "trace_observations": [
                 [
                     obs.get("id", ""),
@@ -222,6 +254,14 @@ pre.block-body {{ margin: 0; white-space: pre-wrap; word-break: break-word; font
 .rubric-row b {{ text-align: right; font-variant-numeric: tabular-nums }}
 .rubric-row b.yes {{ color: oklch(42% 0.13 150) }}
 .rubric-row b.no {{ color: oklch(48% 0.16 28) }}
+.error-block {{ border-color: color-mix(in oklch, oklch(60% 0.18 28) 28%, var(--border)) }}
+.error-block .block-head {{ background: color-mix(in oklch, oklch(60% 0.18 28) 7%, white); border-bottom-color: color-mix(in oklch, oklch(60% 0.18 28) 20%, var(--border)) }}
+.error-item {{ padding: 8px 0; border-bottom: 1px solid var(--border) }}
+.error-item:last-child {{ border-bottom: 0 }}
+.error-type {{ font-weight: 650; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: oklch(48% 0.16 28); margin-bottom: 4px }}
+.error-msg {{ font-family: var(--font-mono); font-size: 12px; color: var(--muted); line-height: 1.5 }}
+.warning-block {{ border-color: color-mix(in oklch, oklch(70% 0.14 75) 34%, var(--border)) }}
+.warning-block .block-head {{ background: color-mix(in oklch, oklch(70% 0.14 75) 10%, white); border-bottom-color: color-mix(in oklch, oklch(70% 0.14 75) 25%, var(--border)) }}
 .pager {{ padding: 12px 16px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border) }}
 @media (max-width: 768px) {{
   .summary {{ grid-template-columns: repeat(2, 1fr) }}
@@ -278,7 +318,8 @@ function openDrawer(i) {{
     '<span class="chip">' + t.category + '</span>' +
     '<span class="chip">' + t.status + '</span>' +
     '<span class="chip">' + t.tool_calls_count + ' tools</span>' +
-    '<span class="chip">' + t.wall_ms + 'ms</span>';
+    '<span class="chip">' + t.wall_ms + 'ms</span>' +
+    (t.screenshots_taken ? '<span class="chip">' + t.screenshots_taken + ' screenshots</span>' : '');
   var body = "";
   body += '<div class="block"><div class="block-head"><strong>Prompt</strong><span>user input</span></div><pre class="block-body">' + esc(t.prompt) + '</pre></div>';
   body += '<div class="block"><div class="block-head"><strong>Task Description</strong><span>for judge</span></div><div class="block-body">' + esc(t.description) + '</div></div>';
@@ -286,6 +327,18 @@ function openDrawer(i) {{
     body += '<div class="block"><div class="block-head"><strong>Tool Calls</strong><span>' + t.tool_calls_count + ' calls</span></div><pre class="block-body">' + esc(t.tool_calls_detail) + '</pre></div>';
   }}
   body += '<div class="block"><div class="block-head"><strong>Agent Response</strong><span>final reply</span></div><pre class="block-body">' + esc(t.response) + '</pre></div>';
+  if (t.errors && t.errors.length) {{
+    var err = t.errors.map(function(e) {{
+      return '<div class="error-item"><div class="error-type">' + esc(e[0]) + '</div><div class="error-msg">' + esc(e[1]) + '</div></div>';
+    }}).join("");
+    body += '<div class="block error-block"><div class="block-head"><strong>❌ Errors</strong><span>' + t.errors.length + ' error(s)</span></div><div class="block-body">' + err + '</div></div>';
+  }}
+  if (t.hard_assertions && t.hard_assertions.length) {{
+    var ha = t.hard_assertions.map(function(r) {{
+      return '<div class="rubric-row"><div><div class="rid">' + esc(r[0]) + '</div><div class="reason">' + esc(r[1]) + '</div></div><b class="no">' + r[2] + '</b></div>';
+    }}).join("");
+    body += '<div class="block warning-block"><div class="block-head"><strong>⚠️ Hard Assertion Failures</strong><span>' + t.hard_assertions.length + ' failure(s)</span></div><div class="block-body">' + ha + '</div></div>';
+  }}
   if (t.rubric && t.rubric.length) {{
     var rb = t.rubric.map(function(r) {{
       var cls = r[2] === "yes" ? "yes" : r[2] === "no" ? "no" : "";
