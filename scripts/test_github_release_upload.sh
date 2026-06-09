@@ -16,6 +16,9 @@ printf '{"version":"v-test"}\n' > "$assets_dir/manifest.json"
 for image in boot_a.img boot_b.img oem.img rootfs.img userdata.img; do
   printf '%s\n' "$image" > "$assets_dir/$image"
 done
+for image in boot_a.img boot_b.img oem.img rootfs.img update.img; do
+  printf 'compressed %s\n' "$image" > "$assets_dir/$image.tar.gz"
+done
 printf 'extra debug asset\n' > "$assets_dir/debug.log"
 # Note: symlinks oem_a/oem_b/rootfs_a/rootfs_b should NOT exist
 # (they're cleaned up after update.img packaging in build.sh)
@@ -40,6 +43,14 @@ fi
 case "${2:-}" in
   view)
     if [ -f "$state_dir/release-exists" ]; then
+      case " $* " in
+        *" --json assets "*)
+          if [ -f "$state_dir/remote-assets" ]; then
+            cat "$state_dir/remote-assets"
+          fi
+          exit 0
+          ;;
+      esac
       echo "release exists"
       exit 0
     fi
@@ -97,6 +108,17 @@ case "${2:-}" in
       echo "write EPIPE" >&2
       exit 1
     fi
+    if [ "${FAKE_GH_DROP_ONCE_ASSET:-}" = "$name" ] && [ ! -f "$state_dir/dropped-$name" ]; then
+      touch "$state_dir/dropped-$name"
+      exit 0
+    fi
+    {
+      if [ -f "$state_dir/remote-assets" ]; then
+        cat "$state_dir/remote-assets"
+      fi
+      printf '%s\n' "$name"
+    } | sort -u > "$state_dir/remote-assets.tmp"
+    mv "$state_dir/remote-assets.tmp" "$state_dir/remote-assets"
     exit 0
     ;;
   *)
@@ -239,7 +261,46 @@ if ! grep -q '^publish:v-test$' "$state_dir/events"; then
   exit 1
 fi
 
-rm -f "$assets_dir/oem.img" "$state_dir/events" "$state_dir/calls" "$state_dir/release-exists" "$state_dir"/upload-* "$state_dir/create-count"
+rm -f "$state_dir/events" "$state_dir/calls" "$state_dir/sleeps" "$state_dir/release-exists" "$state_dir"/upload-* "$state_dir/create-count" "$state_dir/remote-assets" "$state_dir"/dropped-*
+if ! PATH="$fake_bin:$PATH" \
+  FAKE_GH_STATE_DIR="$state_dir" \
+  FAKE_GH_DROP_ONCE_ASSET=boot_b.img.tar.gz \
+  GH_TOKEN="test-token" \
+  GITHUB_REPOSITORY="owner/repo" \
+    "$repo_root/scripts/create_github_release.sh" \
+      --tag-name v-test \
+      --release-name "Test Release" \
+      --target-commitish abc123 \
+      --asset-glob "$assets_dir/*" \
+      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+      --upload-assets 'boot_a.img.tar.gz boot_b.img.tar.gz oem.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json' \
+      --retry-count 3 \
+      --retry-delay-seconds 0 \
+      >"$log_file" 2>&1; then
+  cat "$log_file" >&2
+  exit 1
+fi
+
+if [ "$(grep -c '^upload:boot_b.img.tar.gz:' "$state_dir/events")" -ne 2 ]; then
+  echo "release script must re-upload assets that are missing from the release asset list" >&2
+  cat "$state_dir/events" >&2
+  exit 1
+fi
+
+if ! grep -q 'Release asset verification found missing assets: boot_b.img.tar.gz' "$log_file"; then
+  echo "release script must log missing assets discovered by post-upload verification" >&2
+  cat "$log_file" >&2
+  exit 1
+fi
+
+last_boot_b_upload_line="$(grep -n '^upload:boot_b.img.tar.gz:' "$state_dir/events" | tail -n 1 | cut -d: -f1)"
+publish_line="$(grep -n '^publish:v-test$' "$state_dir/events" | cut -d: -f1)"
+if [ "$publish_line" -le "$last_boot_b_upload_line" ]; then
+  echo "release script must publish only after missing assets are re-uploaded" >&2
+  exit 1
+fi
+
+rm -f "$assets_dir/oem.img" "$state_dir/events" "$state_dir/calls" "$state_dir/sleeps" "$state_dir/release-exists" "$state_dir"/upload-* "$state_dir/create-count" "$state_dir/remote-assets" "$state_dir"/dropped-*
 if PATH="$fake_bin:$PATH" \
   FAKE_GH_STATE_DIR="$state_dir" \
   GH_TOKEN="test-token" \

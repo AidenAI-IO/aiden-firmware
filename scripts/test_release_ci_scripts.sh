@@ -28,6 +28,16 @@ if ! grep -q -- '--retry-count' "$WORKFLOW" || ! grep -q -- '--retry-delay-secon
     exit 1
 fi
 
+if ! grep -q -- '--retry-count 10' "$WORKFLOW"; then
+    echo "build workflow must use doubled release upload retry attempts" >&2
+    exit 1
+fi
+
+if ! grep -q '^retry_count=10$' "$ROOT_DIR/scripts/create_github_release.sh"; then
+    echo "release script default retry count must stay doubled" >&2
+    exit 1
+fi
+
 if ! grep -q -- '--retry-delay-seconds 30' "$WORKFLOW"; then
     echo "build workflow must use a longer release upload retry base delay" >&2
     exit 1

@@ -240,6 +240,6 @@ jobs:
           --asset-glob 'pico-sdk/output/image/*' \
           --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
           --upload-assets "$upload_assets" \
-          --retry-count 5 \
+          --retry-count 10 \
           --retry-delay-seconds 30 \
           $PRERELEASE_FLAG
