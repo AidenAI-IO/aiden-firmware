@@ -1,8 +1,45 @@
 # MobileGym Docker 一键测试
 
-新人在纯净环境也能跑通。
+在纯净环境一键启动 MobileGym + Aiden Agent 测试。
 
-## 🚀 快速开始（5 步）
+## 🚀 两种启动方式
+
+| 方式                    | 命令                                                 | 时间      | 适用         |
+| ----------------------- | ---------------------------------------------------- | --------- | ------------ |
+| **A. CI 预构建镜像** ⭐ | `docker compose -f docker-compose.prebuilt.yml pull` | 1-2 分钟  | 仅运行测试   |
+| **B. 本地构建**         | `docker compose build`                               | 5-10 分钟 | 改代码后测试 |
+
+## A. CI 预构建镜像（推荐）⭐
+
+CI 已自动构建并推送到 GHCR，直接拉取：
+
+```bash
+cd benchmark/mobilegym/docker
+
+# 1. 一键初始化
+./init.sh
+
+# 2. 编辑 LLM 配置
+vim ../config/agent.toml
+
+# 3. 拉取预构建镜像
+docker compose -f docker-compose.prebuilt.yml pull
+
+# 4. 启动并测试
+docker compose -f docker-compose.prebuilt.yml up -d
+docker compose -f docker-compose.prebuilt.yml run --rm test \
+  --task-id clock.ToggleAlarm \
+  --aiden-control-token "$(cat ../config/control_token)"
+
+# 5. 停止
+docker compose -f docker-compose.prebuilt.yml down
+```
+
+> 💡 拉取私有镜像前，先 `echo $GH_TOKEN | docker login ghcr.io -u <user> --password-stdin`
+
+## B. 本地构建（开发者）
+
+如果改了代码需要测试：
 
 ### 1. 进入 docker 目录
 
@@ -17,6 +54,7 @@ cd benchmark/mobilegym/docker
 ```
 
 这会自动：
+
 - ✅ 生成 `control_token` 和 `bridge_token`
 - ✅ 从模板创建 `agent.toml`（自动填充容器内路径）
 - ✅ 创建 `.env` 默认配置
@@ -28,6 +66,7 @@ vim ../config/agent.toml
 ```
 
 修改 `[model]` 部分：
+
 ```toml
 [model]
 provider = "openrouter"  # 或 openai/anthropic
@@ -45,6 +84,7 @@ vim .env
 ```
 
 取消注释：
+
 ```bash
 HTTPS_PROXY=http://host.docker.internal:7897
 HTTP_PROXY=http://host.docker.internal:7897
@@ -95,22 +135,23 @@ docker compose down
 
 ## 📁 文件说明
 
-| 文件 | 说明 | 是否在 git |
-|------|------|----------|
-| `Dockerfile` | 镜像构建 | ✅ |
-| `docker-compose.yml` | 服务编排 | ✅ |
-| `daemon-entrypoint.sh` | Daemon 启动脚本 | ✅ |
-| `init.sh` | 一键初始化 | ✅ |
-| `.env.example` | 配置模板 | ✅ |
-| `.dockerignore` | 构建排除 | ✅ |
-| `.env` | 实际配置（含代理）| ❌ ignored |
-| `../config/agent.toml` | LLM 配置 | ❌ ignored（含 API key）|
-| `../config/control_token` | 认证 token | ❌ ignored |
-| `../config/bridge_token` | 认证 token | ❌ ignored |
+| 文件                      | 说明               | 是否在 git               |
+| ------------------------- | ------------------ | ------------------------ |
+| `Dockerfile`              | 镜像构建           | ✅                       |
+| `docker-compose.yml`      | 服务编排           | ✅                       |
+| `daemon-entrypoint.sh`    | Daemon 启动脚本    | ✅                       |
+| `init.sh`                 | 一键初始化         | ✅                       |
+| `.env.example`            | 配置模板           | ✅                       |
+| `.dockerignore`           | 构建排除           | ✅                       |
+| `.env`                    | 实际配置（含代理） | ❌ ignored               |
+| `../config/agent.toml`    | LLM 配置           | ❌ ignored（含 API key） |
+| `../config/control_token` | 认证 token         | ❌ ignored               |
+| `../config/bridge_token`  | 认证 token         | ❌ ignored               |
 
 ## 🔧 端口冲突？
 
 修改 `.env`:
+
 ```bash
 MOBILEGYM_PORT=14173
 AIDEN_DAEMON_PORT=18080
@@ -121,6 +162,7 @@ AIDEN_DAEMON_PORT=18080
 ### 构建失败（拉取镜像超时）
 
 需要配置 Docker Desktop 代理：
+
 - Docker Desktop → Settings → Resources → Proxies
 - 填入：`http://127.0.0.1:7897`
 
@@ -148,12 +190,12 @@ HTTPS_PROXY=http://host.docker.internal:7897
 
 ## 🆚 与本地开发对比
 
-| 方式 | 命令 | 适用 |
-|------|------|------|
-| Docker（推荐） | `docker compose up -d` | 所有人 |
-| 本地（已废弃） | - | 已统一用 Docker |
+| 方式           | 命令                   | 适用            |
+| -------------- | ---------------------- | --------------- |
+| Docker（推荐） | `docker compose up -d` | 所有人          |
+| 本地（已废弃） | -                      | 已统一用 Docker |
 
-## ✅ 验证清单（新人参考）
+## ✅ 验证清单
 
 - [ ] `./init.sh` 执行成功
 - [ ] `agent.toml` 中填入了真实 API key
