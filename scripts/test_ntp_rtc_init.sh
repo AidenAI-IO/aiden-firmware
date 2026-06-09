@@ -8,6 +8,7 @@ DHCPCD_INIT="$ROOT_DIR/overlay/etc/init.d/S41dhcpcd"
 UDHCPC_HOOK="$ROOT_DIR/overlay/etc/udhcpc/aiden.script"
 BOOT_CONF="$ROOT_DIR/overlay/etc/aiden_boot.conf"
 NTP_CONF="$ROOT_DIR/overlay/etc/ntp.conf"
+CONFIG_WEB="$ROOT_DIR/src/config_web.cpp"
 
 for script in "$NTP_INIT" "$RTC_INIT" "$DHCPCD_INIT" "$UDHCPC_HOOK"; do
     if [ ! -x "$script" ]; then
@@ -19,6 +20,11 @@ for script in "$NTP_INIT" "$RTC_INIT" "$DHCPCD_INIT" "$UDHCPC_HOOK"; do
         exit 1
     fi
 done
+
+if [ -e "$ROOT_DIR/overlay/etc/init.d/S39rtcinit" ]; then
+    echo "rtc init must remain S99rtcinit so it overrides the SDK default script" >&2
+    exit 1
+fi
 
 # S49ntp must NOT block on network readiness anymore — udhcpc hook handles
 # the post-DHCP step now. The script should also no longer rely on hostname
@@ -73,6 +79,11 @@ if ! grep -q 'udhcpc .*-s /etc/udhcpc/aiden.script' "$DHCPCD_INIT"; then
     exit 1
 fi
 
+if ! grep -q -- '-s /etc/udhcpc/aiden.script' "$CONFIG_WEB"; then
+    echo "config_web DHCP path must use -s /etc/udhcpc/aiden.script" >&2
+    exit 1
+fi
+
 # Boot conf must carry the new IP-based default and must not carry the
 # obsolete NTP_WAIT_* knobs.
 if ! grep -Eq '^NTP_FALLBACK_SERVER=([0-9]{1,3}\.){3}[0-9]{1,3}$' "$BOOT_CONF"; then
@@ -106,6 +117,11 @@ fi
 
 if ! grep -q 'RTC_DEFAULT_DATE:=2026-06-09' "$RTC_INIT"; then
     echo "S99rtcinit must default invalid RTC values to 2026-06-09" >&2
+    exit 1
+fi
+
+if ! grep -q 'system_date_before_default' "$RTC_INIT"; then
+    echo "S99rtcinit must not clobber an already-sane system clock" >&2
     exit 1
 fi
 

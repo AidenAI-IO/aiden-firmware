@@ -1,7 +1,13 @@
 #!/bin/sh
-# Aiden override: seed invalid RTC values with a current baseline date.
+# Aiden override: replace the SDK S99rtcinit baseline with a current date.
 
 : "${RTC_DEFAULT_DATE:=2026-06-09}"
+
+system_date_before_default() {
+	current_date="$(date +%Y%m%d 2>/dev/null || echo 19700101)"
+	default_date="$(printf '%s' "$RTC_DEFAULT_DATE" | tr -d '-')"
+	[ "$current_date" -lt "$default_date" ] 2>/dev/null
+}
 
 start() {
 	if ! command -v hwclock >/dev/null 2>&1; then
@@ -12,8 +18,12 @@ start() {
 	rtc_time="$(hwclock 2>/dev/null || true)"
 	case "$rtc_time" in
 		*1969*|*1970*)
-			echo "RTC time calibration to $RTC_DEFAULT_DATE"
-			date -s "$RTC_DEFAULT_DATE" >/dev/null 2>&1 || return 1
+			if system_date_before_default; then
+				echo "RTC time calibration to $RTC_DEFAULT_DATE"
+				date -s "$RTC_DEFAULT_DATE" >/dev/null 2>&1 || return 1
+			else
+				echo "RTC invalid; preserving current system time"
+			fi
 			hwclock -w
 			;;
 		*)

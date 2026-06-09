@@ -13,7 +13,7 @@
 /etc/init.d/S53audio_service   # Audio Service watchdog
 /etc/init.d/S53agent           # Go Agent watchdog
 /etc/init.d/S56config_web      # 配置网页
-/etc/init.d/S99rtcinit         # RTC 默认时间校准
+/etc/init.d/S99rtcinit         # RTC 默认时间校准，覆盖 SDK 默认脚本
 /etc/udhcpc/aiden.script       # udhcpc hook：DHCP bound 后触发 NTP step
 /userdata/agent/agent.toml     # Agent 默认配置
 /userdata/wpa_supplicant.conf  # Wi-Fi 默认配置
@@ -43,7 +43,8 @@ scp build/bin/agent root@<device-ip>:/oem/usr/bin/
 5. `S53audio_service` 提供音频录放服务；
 6. `S53agent` 启动 Go Agent；
 7. `S56config_web` 提供配置页面；
-8. `S55aiden_usb_dhcp` / `S99usb0config` 配置 USB 网络相关能力。
+8. `S55aiden_usb_dhcp` / `S99usb0config` 配置 USB 网络相关能力；
+9. `S99rtcinit` 覆盖 SDK 默认 RTC 脚本；RTC 异常时只在系统时间仍早于基线日期时写入默认时间，避免覆盖已经由 NTP 校准过的系统时间。
 
 ## 常用服务命令
 
