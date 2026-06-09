@@ -365,6 +365,9 @@ func TestUpdaterSkipsDownloadAndWriteWhenTargetPartitionHashMatches(t *testing.T
 		"rootfs.img": []byte("rootfs-v2"),
 	}
 	oemHash := testSHA256Hex(assetBytes["oem_b.img"])
+	if err := os.WriteFile(filepath.Join(env.blockDir, "oem_b"), assetBytes["oem_b.img"], 0o644); err != nil {
+		t.Fatalf("WriteFile(oem_b) error = %v", err)
+	}
 	env.state.Slots["b"] = SlotPartitionInfo{Partitions: map[string]PartitionVersion{
 		"boot":   {Version: "factory", Hash: testHashA},
 		"oem":    {Version: "previous", Hash: oemHash},
@@ -420,7 +423,7 @@ func TestUpdaterSkipsDownloadAndWriteWhenTargetPartitionHashMatches(t *testing.T
 		t.Fatalf("oem_b.img cache exists after partition skip: %v", err)
 	}
 	assertFileContent(t, filepath.Join(env.blockDir, "boot_b"), "boot-b-v2")
-	assertFileContent(t, filepath.Join(env.blockDir, "oem_b"), "old-oem-b")
+	assertFileContent(t, filepath.Join(env.blockDir, "oem_b"), "oem-b-v2")
 	assertFileContent(t, filepath.Join(env.blockDir, "rootfs_b"), "rootfs-v2")
 
 	state, err := LoadState(filepath.Join(env.stateDir, "state.json"))
