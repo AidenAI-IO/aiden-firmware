@@ -59,6 +59,11 @@ if ! grep -q -- '--upload-assets "$upload_assets"' "$WORKFLOW"; then
     exit 1
 fi
 
+if ! grep -q -- '--channel "${{ steps.release_info.outputs.channel }}"' "$WORKFLOW"; then
+    echo "build workflow must pass the current release channel to the rootfs reuse resolver" >&2
+    exit 1
+fi
+
 if grep -q 'userdata.img' "$WORKFLOW"; then
     echo "build workflow must not upload userdata.img to GitHub releases" >&2
     exit 1

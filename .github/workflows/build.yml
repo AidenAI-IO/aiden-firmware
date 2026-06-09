@@ -157,6 +157,7 @@ jobs:
       run: |
         scripts/resolve_reusable_rootfs_asset.sh \
           --image-dir pico-sdk/output/image \
+          --channel "${{ steps.release_info.outputs.channel }}" \
           --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
           --output "$GITHUB_OUTPUT"
 

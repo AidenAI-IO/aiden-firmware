@@ -6,10 +6,11 @@ usage() {
 Usage:
   resolve_reusable_rootfs_asset.sh \
     --image-dir DIR \
+    [--channel CHANNEL] \
     --upload-assets 'FILE ...' \
     [--output FILE]
 
-Resolve whether rootfs.img can reuse the previous GitHub release asset.
+Resolve whether rootfs.img can reuse a previous same-channel GitHub release asset.
 
 Outputs:
   rootfs_reused=true|false
@@ -29,6 +30,7 @@ die() {
 }
 
 image_dir=""
+channel=""
 upload_assets=""
 output="${GITHUB_OUTPUT:-}"
 rootfs_asset_name="rootfs.img"
@@ -37,6 +39,10 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --image-dir)
       image_dir="${2:-}"
+      shift 2
+      ;;
+    --channel)
+      channel="${2:-}"
       shift 2
       ;;
     --upload-assets)
@@ -62,6 +68,9 @@ done
 [ -n "$upload_assets" ] || die "missing --upload-assets"
 [ -d "$image_dir" ] || die "missing image directory: $image_dir"
 [ -f "$image_dir/$rootfs_asset_name" ] || die "missing rootfs image: $image_dir/$rootfs_asset_name"
+case "$channel" in
+  *[!A-Za-z0-9._-]*) die "invalid --channel: $channel" ;;
+esac
 
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -137,6 +146,31 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 err_file="$tmp_dir/gh.err"
 
+candidate_tag=""
+candidate_manifest_api_url=""
+candidate_manifest=""
+
+load_manifest_for_release() {
+  local release="$1"
+
+  candidate_tag="$(printf '%s' "$release" | jq -r '.tag_name // .tagName // "unknown"')"
+  candidate_manifest_api_url="$(printf '%s' "$release" | jq -r '.assets[]? | select(.name == "manifest.json") | .url // empty' | head -n 1)"
+  candidate_manifest=""
+
+  if [ -z "$candidate_manifest_api_url" ]; then
+    log "Rootfs reuse skipped: release $candidate_tag has no manifest.json asset"
+    return 1
+  fi
+
+  if ! candidate_manifest="$(gh api -H "Accept: application/octet-stream" "$candidate_manifest_api_url" 2>"$err_file")"; then
+    log "Rootfs reuse skipped: failed to download manifest.json from release $candidate_tag"
+    sed 's/^/  /' "$err_file" >&2 || true
+    return 1
+  fi
+
+  return 0
+}
+
 release_json=""
 if ! release_json="$(gh api "repos/$repo/releases?per_page=20" 2>"$err_file")"; then
   log "Rootfs reuse disabled: failed to query previous GitHub releases"
@@ -145,26 +179,62 @@ if ! release_json="$(gh api "repos/$repo/releases?per_page=20" 2>"$err_file")"; 
   exit 0
 fi
 
-previous_release=""
-if ! previous_release="$(printf '%s' "$release_json" | jq -c 'map(select(.draft != true)) | .[0] // empty')"; then
+published_releases_file="$tmp_dir/published-releases.ndjson"
+if ! printf '%s' "$release_json" | jq -c 'if type == "array" then .[] | select(.draft != true) else error("expected releases array") end' > "$published_releases_file"; then
   disable_reuse "previous release JSON is invalid"
 fi
 
-if [ -z "$previous_release" ] || [ "$previous_release" = "null" ]; then
+if [ ! -s "$published_releases_file" ]; then
   disable_reuse "no previous published release found"
 fi
 
-previous_tag="$(printf '%s' "$previous_release" | jq -r '.tag_name // .tagName // "unknown"')"
-previous_manifest_api_url="$(printf '%s' "$previous_release" | jq -r '.assets[]? | select(.name == "manifest.json") | .url // empty' | head -n 1)"
+previous_release=""
+previous_tag=""
+previous_manifest_api_url=""
+previous_manifest=""
 
-if [ -z "$previous_manifest_api_url" ]; then
-  disable_reuse "previous release $previous_tag has no manifest.json asset"
+if [ -z "$channel" ]; then
+  previous_release="$(head -n 1 "$published_releases_file")"
+  if ! load_manifest_for_release "$previous_release"; then
+    log "Rootfs reuse disabled: no usable manifest.json found on latest published release"
+    finish
+    exit 0
+  fi
+  previous_tag="$candidate_tag"
+  previous_manifest_api_url="$candidate_manifest_api_url"
+  previous_manifest="$candidate_manifest"
+else
+  selected_previous_release="false"
+  while IFS= read -r candidate_release; do
+    if ! load_manifest_for_release "$candidate_release"; then
+      continue
+    fi
+
+    if ! candidate_channel="$(printf '%s' "$candidate_manifest" | jq -r '.channel // empty')"; then
+      log "Rootfs reuse skipped: release $candidate_tag manifest.json is invalid"
+      continue
+    fi
+
+    if [ "$candidate_channel" != "$channel" ]; then
+      log "Rootfs reuse skipped: release $candidate_tag channel ${candidate_channel:-<empty>} does not match current channel $channel"
+      continue
+    fi
+
+    previous_release="$candidate_release"
+    previous_tag="$candidate_tag"
+    previous_manifest_api_url="$candidate_manifest_api_url"
+    previous_manifest="$candidate_manifest"
+    selected_previous_release="true"
+    break
+  done < "$published_releases_file"
+
+  if [ "$selected_previous_release" != "true" ]; then
+    disable_reuse "no previous published release found for channel $channel"
+  fi
 fi
 
-previous_manifest=""
-if ! previous_manifest="$(gh api -H "Accept: application/octet-stream" "$previous_manifest_api_url" 2>"$err_file")"; then
-  log "Rootfs reuse disabled: failed to download previous manifest.json from release $previous_tag"
-  sed 's/^/  /' "$err_file" >&2 || true
+if [ -z "$previous_manifest_api_url" ] || [ -z "$previous_manifest" ]; then
+  log "Rootfs reuse disabled: no usable previous manifest.json found"
   finish
   exit 0
 fi

@@ -76,6 +76,12 @@ if [ "${1:-}" = "api" ]; then
     https://api.github.com/repos/owner/repo/releases/assets/manifest)
       cat "$state_dir/previous_manifest.json"
       ;;
+    https://api.github.com/repos/owner/repo/releases/assets/manifest-dev)
+      cat "$state_dir/previous_manifest_dev.json"
+      ;;
+    https://api.github.com/repos/owner/repo/releases/assets/manifest-stable)
+      cat "$state_dir/previous_manifest_stable.json"
+      ;;
     *)
       echo "unexpected gh api endpoint: $endpoint" >&2
       exit 2
@@ -345,6 +351,53 @@ fi
 
 if [ "$(output_value upload_assets "$outputs_file")" != "boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json" ]; then
   echo "rootfs asset resolver must keep rootfs.img in the upload list when sha256 differs" >&2
+  exit 1
+fi
+
+rm -f "$outputs_file" "$state_dir/events"
+dev_rootfs_url="https://downloads.example.test/releases/dev/rootfs.img"
+stable_rootfs_url="https://downloads.example.test/releases/stable/rootfs.img"
+
+jq -n \
+  '[{draft:false,prerelease:true,tag_name:"v-dev",assets:[
+    {name:"manifest.json",url:"https://api.github.com/repos/owner/repo/releases/assets/manifest-dev",browser_download_url:"https://github.example.test/owner/repo/releases/download/v-dev/manifest.json"},
+    {name:"rootfs.img",url:"https://api.github.com/repos/owner/repo/releases/assets/rootfs-dev",browser_download_url:"https://github.example.test/owner/repo/releases/download/v-dev/rootfs.img"}
+  ]},
+  {draft:false,prerelease:false,tag_name:"v-stable",assets:[
+    {name:"manifest.json",url:"https://api.github.com/repos/owner/repo/releases/assets/manifest-stable",browser_download_url:"https://github.example.test/owner/repo/releases/download/v-stable/manifest.json"},
+    {name:"rootfs.img",url:"https://api.github.com/repos/owner/repo/releases/assets/rootfs-stable",browser_download_url:"https://github.example.test/owner/repo/releases/download/v-stable/rootfs.img"}
+  ]}]' > "$state_dir/releases.json"
+
+jq -n \
+  --arg sha "$current_rootfs_sha" \
+  --arg url "$dev_rootfs_url" \
+  '{schema_version:1,channel:"dev-feature",parts:[{name:"rootfs",asset:{name:"rootfs.img",size:20,sha256:$sha,url:$url}}]}' \
+  > "$state_dir/previous_manifest_dev.json"
+
+jq -n \
+  --arg sha "$current_rootfs_sha" \
+  --arg url "$stable_rootfs_url" \
+  '{schema_version:1,channel:"stable",parts:[{name:"rootfs",asset:{name:"rootfs.img",size:20,sha256:$sha,url:$url}}]}' \
+  > "$state_dir/previous_manifest_stable.json"
+
+PATH="$fake_bin:$PATH" \
+  FAKE_GH_STATE_DIR="$state_dir" \
+  GH_TOKEN="test-token" \
+  GITHUB_REPOSITORY="owner/repo" \
+  "$resolver_script" \
+    --image-dir "$assets_dir" \
+    --channel stable \
+    --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+    --output "$outputs_file"
+
+if [ "$(output_value rootfs_reused "$outputs_file")" != "true" ]; then
+  echo "stable rootfs asset resolver must keep scanning after a newer dev prerelease" >&2
+  exit 1
+fi
+
+if [ "$(output_value rootfs_asset_url "$outputs_file")" != "$stable_rootfs_url" ]; then
+  echo "stable rootfs asset resolver must not reuse a dev prerelease asset" >&2
+  echo "got: $(output_value rootfs_asset_url "$outputs_file")" >&2
   exit 1
 fi
 
