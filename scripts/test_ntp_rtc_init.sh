@@ -7,6 +7,7 @@ RTC_INIT="$ROOT_DIR/overlay/etc/init.d/S99rtcinit"
 DHCPCD_INIT="$ROOT_DIR/overlay/etc/init.d/S41dhcpcd"
 UDHCPC_HOOK="$ROOT_DIR/overlay/etc/udhcpc/aiden.script"
 BOOT_CONF="$ROOT_DIR/overlay/etc/aiden_boot.conf"
+NTP_CONF="$ROOT_DIR/overlay/etc/ntp.conf"
 
 for script in "$NTP_INIT" "$RTC_INIT" "$DHCPCD_INIT" "$UDHCPC_HOOK"; do
     if [ ! -x "$script" ]; then
@@ -37,8 +38,15 @@ if ! grep -Eq '^[[:space:]]*step\)' "$NTP_INIT"; then
     exit 1
 fi
 
-if ! grep -q 'ntpd -nq' "$NTP_INIT"; then
-    echo "S49ntp 'step' must invoke 'ntpd -nq' for query-and-exit sync" >&2
+if ! grep -Eq 'ntpd -gq -c' "$NTP_INIT"; then
+    echo "S49ntp 'step' must invoke 'ntpd -gq -c <conf>' for query-and-exit sync" >&2
+    exit 1
+fi
+
+# Reference ntpd (4.2.x) is the implementation on this SDK: -p is "pidfile"
+# in that impl, so the server MUST come via -c <conf>, never on argv.
+if grep -Eq 'ntpd .* -p ' "$NTP_INIT"; then
+    echo "S49ntp must not pass servers via -p (reference ntpd treats -p as pidfile)" >&2
     exit 1
 fi
 
@@ -78,6 +86,23 @@ for stale in NTP_WAIT_NETWORK NTP_WAIT_TIMEOUT NTP_WAIT_INTERVAL NTP_WAIT_DNS_HO
         exit 1
     fi
 done
+
+# overlay must ship an IP-only /etc/ntp.conf to override the SDK's
+# pool.ntp.org default — DNS may not be up at the time ntpd starts.
+if [ ! -f "$NTP_CONF" ]; then
+    echo "overlay/etc/ntp.conf must exist (IP-based override of SDK default)" >&2
+    exit 1
+fi
+
+if grep -Eq '^[[:space:]]*server[[:space:]]+[a-zA-Z]' "$NTP_CONF"; then
+    echo "overlay/etc/ntp.conf must not reference servers by hostname" >&2
+    exit 1
+fi
+
+if ! grep -Eq '^[[:space:]]*server[[:space:]]+([0-9]{1,3}\.){3}[0-9]{1,3}\b' "$NTP_CONF"; then
+    echo "overlay/etc/ntp.conf must list at least one IPv4 server line" >&2
+    exit 1
+fi
 
 if ! grep -q 'RTC_DEFAULT_DATE:=2026-06-09' "$RTC_INIT"; then
     echo "S99rtcinit must default invalid RTC values to 2026-06-09" >&2

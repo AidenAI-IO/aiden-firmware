@@ -3,11 +3,15 @@
 #
 # ntpd is launched early in daemon mode so it can pick up the network as
 # soon as it appears. The first big step (RTC may be many years off) is
-# handled by passing -g, which busybox ntpd interprets as "allow the first
-# adjustment to be unrestricted". DHCP-driven re-sync is wired through the
-# udhcpc hook (/etc/udhcpc/aiden.script), which calls `S49ntp step` on
-# every bound/renew so the clock catches up the moment a lease lands —
+# handled with -g so the panic gate does not abort the first sample.
+# DHCP-driven re-sync is wired through the udhcpc hook
+# (/etc/udhcpc/aiden.script), which calls `S49ntp step` on every
+# bound/renew so the clock catches up the moment a lease lands —
 # no init-time polling, no DNS dependency.
+#
+# Important: the SDK ships ntp.org reference ntpd (not busybox). Servers
+# must be passed via the config file; -p is "pidfile" in this impl, NOT
+# "peer", so we never put a server name on the command line.
 
 BOOT_CONF=/etc/aiden_boot.conf
 
@@ -15,12 +19,32 @@ if [ -f "$BOOT_CONF" ]; then
 	. "$BOOT_CONF"
 fi
 : "${ENABLE_NTP:=1}"
-# Use a numeric IP so ntpd does not depend on DNS being up. 120.25.115.20
+# Use a numeric IP so ntpd does not depend on DNS being up. 203.107.6.88
 # is one of Alibaba Cloud's public NTP service addresses (ntp.aliyun.com).
-: "${NTP_FALLBACK_SERVER:=120.25.115.20}"
+: "${NTP_FALLBACK_SERVER:=203.107.6.88}"
+
+NTP_RUNTIME_CONF=/run/aiden/ntp.conf
 
 is_running() {
 	pidof ntpd >/dev/null 2>&1
+}
+
+# Pick the active config. If /etc/ntp.conf exists (the overlay ships an
+# IP-only one), use it. Otherwise synthesise a tiny conf in /run from
+# NTP_FALLBACK_SERVER so we never have to put the server on the cmdline.
+active_conf() {
+	if [ -f /etc/ntp.conf ]; then
+		echo /etc/ntp.conf
+		return 0
+	fi
+	mkdir -p /run/aiden
+	cat > "$NTP_RUNTIME_CONF" <<EOF
+server $NTP_FALLBACK_SERVER iburst
+restrict default nomodify nopeer noquery limited kod
+restrict 127.0.0.1
+restrict [::1]
+EOF
+	echo "$NTP_RUNTIME_CONF"
 }
 
 start() {
@@ -39,11 +63,9 @@ start() {
 		return 1
 	fi
 
-	if [ -f /etc/ntp.conf ]; then
-		/usr/sbin/ntpd -g -c /etc/ntp.conf >/dev/null 2>&1
-	else
-		/usr/sbin/ntpd -g -p "$NTP_FALLBACK_SERVER" >/dev/null 2>&1
-	fi
+	mkdir -p /run/aiden
+	conf="$(active_conf)"
+	/usr/sbin/ntpd -g -c "$conf" >/dev/null 2>&1
 	rc="$?"
 	if [ "$rc" -ne 0 ]; then
 		echo "Failed to start ntpd (exit=$rc)"
@@ -53,7 +75,7 @@ start() {
 		echo "Failed to start ntpd (not running after start)"
 		return 1
 	fi
-	echo "Started ntpd"
+	echo "Started ntpd (config=$conf)"
 	return 0
 }
 
@@ -75,10 +97,14 @@ restart() {
 	start
 }
 
-# Run a single foreground sync against the configured server, then exit.
-# Intended to be invoked from the udhcpc hook the moment a DHCP lease is
-# acquired so the system clock is corrected even when the daemon's poll
-# interval is long. Safe to run while the daemon is up.
+# Run a single foreground sync, then return. Intended to be invoked
+# from the udhcpc hook the moment a DHCP lease is acquired so the
+# system clock is corrected even when the daemon's poll interval is
+# long. The reference ntpd shipped on this SDK binds UDP/123 in any
+# mode (including -q), so we must stop the daemon, run a one-shot
+# step, and bring the daemon back up. The whole cycle is fast (~1-2s
+# on a healthy network) and is serialized via /run/aiden/ntp_step.lock
+# so concurrent DHCP renews don't pile up.
 step() {
 	if [ "$ENABLE_NTP" != "1" ]; then
 		return 0
@@ -86,11 +112,42 @@ step() {
 	if [ ! -x /usr/sbin/ntpd ]; then
 		return 0
 	fi
-	if [ -f /etc/ntp.conf ]; then
-		/usr/sbin/ntpd -nq -g -c /etc/ntp.conf >/dev/null 2>&1
-	else
-		/usr/sbin/ntpd -nq -g -p "$NTP_FALLBACK_SERVER" >/dev/null 2>&1
+	mkdir -p /run/aiden
+	# Best-effort lock — if another step is already running, skip.
+	# busybox sh has no `flock`, so we use a mkdir-based mutex.
+	if ! mkdir /run/aiden/ntp_step.lock 2>/dev/null; then
+		return 0
 	fi
+	trap 'rmdir /run/aiden/ntp_step.lock 2>/dev/null' EXIT INT TERM
+
+	conf="$(active_conf)"
+	was_running=0
+	if is_running; then
+		was_running=1
+		killall ntpd 2>/dev/null
+		# Wait up to ~3s for the daemon to release UDP/123.
+		i=0
+		while is_running && [ "$i" -lt 30 ]; do
+			sleep 0.1 2>/dev/null || sleep 1
+			i=$((i + 1))
+		done
+	fi
+
+	/usr/sbin/ntpd -gq -c "$conf" >/dev/null 2>&1
+	rc="$?"
+
+	if [ "$was_running" = "1" ] || [ "$rc" -eq 0 ]; then
+		# Always relaunch the daemon if it was running before, and also
+		# start it if step succeeded — that way a successful first step
+		# brings the daemon up even on a freshly-booted device.
+		if ! is_running; then
+			/usr/sbin/ntpd -g -c "$conf" >/dev/null 2>&1 || true
+		fi
+	fi
+
+	rmdir /run/aiden/ntp_step.lock 2>/dev/null
+	trap - EXIT INT TERM
+	return "$rc"
 }
 
 case "$1" in
