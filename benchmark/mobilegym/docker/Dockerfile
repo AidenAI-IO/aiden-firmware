@@ -13,7 +13,7 @@ ENV HTTP_PROXY=${HTTP_PROXY} \
 
 WORKDIR /mobilegym
 
-# Install system dependencies for Playwright + git
+# Install system dependencies for Playwright + git + CJK fonts
 RUN apt-get update && apt-get install -y \
     git \
     python3 \
@@ -33,6 +33,9 @@ RUN apt-get update && apt-get install -y \
     libxrandr2 \
     libgbm1 \
     libpango-1.0-0 \
+    fonts-noto-cjk \
+    fonts-noto-color-emoji \
+    fonts-noto-core \
     libcairo2 \
     libasound2 \
     && rm -rf /var/lib/apt/lists/*
@@ -129,6 +132,9 @@ RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libcairo2 \
     libasound2 \
+    fonts-noto-cjk \
+    fonts-noto-color-emoji \
+    fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv (先升级 pip)
