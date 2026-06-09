@@ -136,7 +136,14 @@ archive_matches_source() {
   local source="$1"
   local archive="$2"
   local entry_name="$3"
-  local source_sha archive_sha
+  local source_sha archive_sha entries
+
+  if ! entries="$(tar -tzf "$archive" 2>/dev/null)"; then
+    return 1
+  fi
+  if [ "$entries" != "$entry_name" ]; then
+    return 1
+  fi
 
   source_sha="$(sha256_file "$source")" || return 1
   if ! archive_sha="$(tar -xOzf "$archive" "$entry_name" 2>/dev/null | sha256_stream)"; then

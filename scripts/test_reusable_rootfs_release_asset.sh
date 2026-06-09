@@ -101,7 +101,23 @@ case "${2:-}" in
       case " $* " in
         *" --json assets "*)
           if [ -f "$state_dir/remote-assets" ]; then
-            cat "$state_dir/remote-assets"
+            jq_expr=""
+            previous=""
+            for arg in "$@"; do
+              if [ "$previous" = "--jq" ]; then
+                jq_expr="$arg"
+                break
+              fi
+              previous="$arg"
+            done
+            case "$jq_expr" in
+              '.assets[].name')
+                cut -f1 "$state_dir/remote-assets"
+                ;;
+              *)
+                cat "$state_dir/remote-assets"
+                ;;
+            esac
           fi
           exit 0
           ;;
@@ -124,12 +140,13 @@ case "${2:-}" in
   upload)
     asset="${4:-}"
     name="${asset##*/}"
+    size="$(wc -c < "$asset" | tr -d '[:space:]')"
     printf 'upload:%s\n' "$name" >> "$state_dir/events"
     {
       if [ -f "$state_dir/remote-assets" ]; then
-        cat "$state_dir/remote-assets"
+        awk -F '\t' -v name="$name" '$1 != name' "$state_dir/remote-assets"
       fi
-      printf '%s\n' "$name"
+      printf '%s\t%s\n' "$name" "$size"
     } | sort -u > "$state_dir/remote-assets.tmp"
     mv "$state_dir/remote-assets.tmp" "$state_dir/remote-assets"
     exit 0

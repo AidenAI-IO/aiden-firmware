@@ -77,6 +77,19 @@ if [ -f "$image_dir/manifest.json.tar.gz" ]; then
   exit 1
 fi
 
+printf 'extra file\n' > "$image_dir/extra.txt"
+tar -czf "$image_dir/boot_a.img.tar.gz" -C "$image_dir" boot_a.img extra.txt
+SOURCE_DATE_EPOCH=0 "$compress_script" \
+  --image-dir "$image_dir" \
+  --assets 'boot_a.img' \
+  --output "$outputs_file"
+
+if [ "$(tar -tzf "$image_dir/boot_a.img.tar.gz")" != "boot_a.img" ]; then
+  echo "compression script must refresh archives with extra entries" >&2
+  tar -tzf "$image_dir/boot_a.img.tar.gz" >&2
+  exit 1
+fi
+
 printf 'updated rootfs image\n' > "$image_dir/rootfs.img"
 SOURCE_DATE_EPOCH=0 "$compress_script" \
   --image-dir "$image_dir" \

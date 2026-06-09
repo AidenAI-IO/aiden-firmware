@@ -262,18 +262,24 @@ run_with_retry() {
   done
 }
 
-contains_line() {
+asset_size_for_name() {
   local needle="$1"
-  local haystack="$2"
-  local line
+  local records="$2"
+  local name
+  local size
 
-  while IFS= read -r line; do
-    if [ "$line" = "$needle" ]; then
+  while IFS=$'\t' read -r name size _; do
+    if [ "$name" = "$needle" ]; then
+      printf '%s' "$size"
       return 0
     fi
-  done <<< "$haystack"
+  done <<< "$records"
 
   return 1
+}
+
+file_size_bytes() {
+  wc -c < "$1" | tr -d '[:space:]'
 }
 
 verify_uploaded_assets() {
@@ -282,45 +288,77 @@ verify_uploaded_assets() {
   local tmp_base="${RUNNER_TEMP:-/tmp}"
   local err_file
   local retry_wait_seconds
-  local release_asset_names
+  local release_asset_records
   local asset
   local asset_name
+  local local_size
+  local remote_size
   local missing_files
   local missing_names
+  local missing_count
+  local mismatched_files
+  local mismatched_names
+  local mismatched_count
 
   while true; do
     err_file="$(mktemp "$tmp_base/github-release.XXXXXX")"
     log "release asset verification $tag_name attempt $attempt/$retry_count"
 
-    if release_asset_names="$(gh release view "$tag_name" --json assets --jq '.assets[].name' 2> >(tee "$err_file" >&2))"; then
+    if release_asset_records="$(gh release view "$tag_name" --json assets --jq '.assets[] | [.name, (.size | tostring)] | @tsv' 2> >(tee "$err_file" >&2))"; then
       rm -f "$err_file"
       missing_files=()
       missing_names=()
+      missing_count=0
+      mismatched_files=()
+      mismatched_names=()
+      mismatched_count=0
 
       for asset in "${upload_files[@]}"; do
         asset_name="$(basename "$asset")"
-        if ! contains_line "$asset_name" "$release_asset_names"; then
+        if ! remote_size="$(asset_size_for_name "$asset_name" "$release_asset_records")"; then
           missing_files+=("$asset")
           missing_names+=("$asset_name")
+          missing_count=$((missing_count + 1))
+          continue
+        fi
+        local_size="$(file_size_bytes "$asset")"
+        if [ "$remote_size" != "$local_size" ]; then
+          mismatched_files+=("$asset")
+          mismatched_names+=("$asset_name")
+          mismatched_count=$((mismatched_count + 1))
         fi
       done
 
-      if [ "${#missing_files[@]}" -eq 0 ]; then
+      if [ "$missing_count" -eq 0 ] && [ "$mismatched_count" -eq 0 ]; then
         log "Release asset verification succeeded for $tag_name"
         return 0
       fi
 
-      log "Release asset verification found missing assets: ${missing_names[*]}"
+      if [ "$missing_count" -gt 0 ]; then
+        log "Release asset verification found missing assets: ${missing_names[*]}"
+      fi
+      if [ "$mismatched_count" -gt 0 ]; then
+        log "Release asset verification found size mismatches: ${mismatched_names[*]}"
+      fi
       if [ "$attempt" -ge "$retry_count" ]; then
         log "release asset verification $tag_name failed after $attempt attempt(s)"
         return 1
       fi
 
-      for asset in "${missing_files[@]}"; do
-        run_with_retry \
-          "release missing asset re-upload $(basename "$asset")" \
-          gh release upload "$tag_name" "$asset" --clobber
-      done
+      if [ "$missing_count" -gt 0 ]; then
+        for asset in "${missing_files[@]}"; do
+          run_with_retry \
+            "release missing asset re-upload $(basename "$asset")" \
+            gh release upload "$tag_name" "$asset" --clobber
+        done
+      fi
+      if [ "$mismatched_count" -gt 0 ]; then
+        for asset in "${mismatched_files[@]}"; do
+          run_with_retry \
+            "release size-mismatched asset re-upload $(basename "$asset")" \
+            gh release upload "$tag_name" "$asset" --clobber
+        done
+      fi
     else
       status=$?
       rm -f "$err_file"
