@@ -8,6 +8,7 @@
 | --- | --- |
 | `S20oemslot` | 根据 `aiden.slot_suffix` 挂载 slot-specific `/oem` |
 | `S43wlan_guard` | WLAN connectivity guard |
+| `S49ntp` | 等待网络 ready 后启动 `ntpd` |
 | `S49usbhid` | 初始化 USB HID gadget |
 | `S50usbdevice` | USB device 相关初始化 |
 | `S52frame_service` | 启动并守护 HDMI 帧服务 |
@@ -16,6 +17,7 @@
 | `S54ota` | 启动并守护 OTA daemon |
 | `S55aiden_usb_dhcp` | USB 网络 DHCP / dnsmasq 相关服务 |
 | `S56config_web` | 启动配置网页 |
+| `S99rtcinit` | RTC 异常时写入默认基线日期 |
 | `S99usb0config` | USB 网络接口后置配置 |
 
 ## Frame Service

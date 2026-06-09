@@ -7,11 +7,13 @@
 ```text
 /oem/usr/bin/                  # 应用二进制
 /etc/init.d/S43wlan_guard      # WLAN connectivity guard
+/etc/init.d/S49ntp             # NTP startup after network readiness
 /etc/init.d/S49usbhid          # USB HID gadget 初始化
 /etc/init.d/S52frame_service   # Frame Service watchdog
 /etc/init.d/S53audio_service   # Audio Service watchdog
 /etc/init.d/S53agent           # Go Agent watchdog
 /etc/init.d/S56config_web      # 配置网页
+/etc/init.d/S99rtcinit         # RTC 默认时间校准
 /userdata/agent/agent.toml     # Agent 默认配置
 /userdata/wpa_supplicant.conf  # Wi-Fi 默认配置
 ```
@@ -34,12 +36,13 @@ scp build/bin/agent root@<device-ip>:/oem/usr/bin/
 随固件启动时，主要服务关系如下：
 
 1. `S43wlan_guard` monitors WLAN connectivity and recovers automatically;
-2. `S49usbhid` / `S50usbdevice` 配置 USB gadget；
-3. `S52frame_service` 独占 `/dev/video0` 并提供截图/帧服务；
-4. `S53audio_service` 提供音频录放服务；
-5. `S53agent` 启动 Go Agent；
-6. `S56config_web` 提供配置页面；
-7. `S55aiden_usb_dhcp` / `S99usb0config` 配置 USB 网络相关能力。
+2. `S49ntp` waits for network readiness before launching `ntpd`;
+3. `S49usbhid` / `S50usbdevice` 配置 USB gadget；
+4. `S52frame_service` 独占 `/dev/video0` 并提供截图/帧服务；
+5. `S53audio_service` 提供音频录放服务；
+6. `S53agent` 启动 Go Agent；
+7. `S56config_web` 提供配置页面；
+8. `S55aiden_usb_dhcp` / `S99usb0config` 配置 USB 网络相关能力。
 
 ## 常用服务命令
 

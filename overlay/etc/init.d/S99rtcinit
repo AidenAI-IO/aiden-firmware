@@ -1,0 +1,30 @@
+#!/bin/sh
+# Aiden override: seed invalid RTC values with a current baseline date.
+
+: "${RTC_DEFAULT_DATE:=2026-06-09}"
+
+start() {
+	if ! command -v hwclock >/dev/null 2>&1; then
+		echo "hwclock binary not found"
+		return 0
+	fi
+
+	rtc_time="$(hwclock 2>/dev/null || true)"
+	case "$rtc_time" in
+		*1969*|*1970*)
+			echo "RTC time calibration to $RTC_DEFAULT_DATE"
+			date -s "$RTC_DEFAULT_DATE" >/dev/null 2>&1 || return 1
+			hwclock -w
+			;;
+		*)
+			echo "RTC does not require time calibration"
+			;;
+	esac
+}
+
+case "$1" in
+	start) start ;;
+	stop) exit 0 ;;
+	restart|reload) start ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
