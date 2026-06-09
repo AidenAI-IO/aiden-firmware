@@ -9,6 +9,8 @@ UDHCPC_HOOK="$ROOT_DIR/overlay/etc/udhcpc/aiden.script"
 BOOT_CONF="$ROOT_DIR/overlay/etc/aiden_boot.conf"
 NTP_CONF="$ROOT_DIR/overlay/etc/ntp.conf"
 CONFIG_WEB="$ROOT_DIR/src/config_web.cpp"
+IPV4_OCTET='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+IPV4_RE="${IPV4_OCTET}(\\.${IPV4_OCTET}){3}"
 
 for script in "$NTP_INIT" "$RTC_INIT" "$DHCPCD_INIT" "$UDHCPC_HOOK"; do
     if [ ! -x "$script" ]; then
@@ -26,6 +28,11 @@ if [ -e "$ROOT_DIR/overlay/etc/init.d/S39rtcinit" ]; then
     exit 1
 fi
 
+if [ ! -r "$BOOT_CONF" ]; then
+    echo "aiden_boot.conf not found or unreadable" >&2
+    exit 1
+fi
+
 # S49ntp must NOT block on network readiness anymore — udhcpc hook handles
 # the post-DHCP step now. The script should also no longer rely on hostname
 # resolution: NTP_FALLBACK_SERVER defaults to a numeric IP.
@@ -34,7 +41,7 @@ if grep -q 'wait_for_network' "$NTP_INIT"; then
     exit 1
 fi
 
-if ! grep -Eq '^: "\$\{NTP_FALLBACK_SERVER:=([0-9]{1,3}\.){3}[0-9]{1,3}\}"$' "$NTP_INIT"; then
+if ! grep -Eq "^: \"\\$\\{NTP_FALLBACK_SERVER:=${IPV4_RE}\\}\"$" "$NTP_INIT"; then
     echo "S49ntp NTP_FALLBACK_SERVER default must be an IPv4 literal" >&2
     exit 1
 fi
@@ -51,7 +58,7 @@ fi
 
 # Reference ntpd (4.2.x) is the implementation on this SDK: -p is "pidfile"
 # in that impl, so the server MUST come via -c <conf>, never on argv.
-if grep -Eq 'ntpd .* -p ' "$NTP_INIT"; then
+if sed 's/[[:space:]]*#.*//' "$NTP_INIT" | grep -Eq '^[[:space:]]*/usr/sbin/ntpd([[:space:]].*)?[[:space:]]-p([[:space:]]|$)'; then
     echo "S49ntp must not pass servers via -p (reference ntpd treats -p as pidfile)" >&2
     exit 1
 fi
@@ -79,6 +86,16 @@ if ! grep -q 'udhcpc .*-s /etc/udhcpc/aiden.script' "$DHCPCD_INIT"; then
     exit 1
 fi
 
+if ! grep -q 'udhcpc hook missing or not executable' "$DHCPCD_INIT"; then
+    echo "S41dhcpcd must fail clearly when the udhcpc hook is missing" >&2
+    exit 1
+fi
+
+if grep -Eq '^[[:space:]]*/sbin/udhcpc .*[|][|][[:space:]]*true' "$DHCPCD_INIT"; then
+    echo "S41dhcpcd must not hide udhcpc launch failures" >&2
+    exit 1
+fi
+
 if ! grep -q -- '-s /etc/udhcpc/aiden.script' "$CONFIG_WEB"; then
     echo "config_web DHCP path must use -s /etc/udhcpc/aiden.script" >&2
     exit 1
@@ -86,7 +103,7 @@ fi
 
 # Boot conf must carry the new IP-based default and must not carry the
 # obsolete NTP_WAIT_* knobs.
-if ! grep -Eq '^NTP_FALLBACK_SERVER=([0-9]{1,3}\.){3}[0-9]{1,3}$' "$BOOT_CONF"; then
+if ! grep -Eq "^NTP_FALLBACK_SERVER=${IPV4_RE}$" "$BOOT_CONF"; then
     echo "aiden_boot.conf must define NTP_FALLBACK_SERVER as an IPv4 literal" >&2
     exit 1
 fi
@@ -110,7 +127,7 @@ if grep -Eq '^[[:space:]]*server[[:space:]]+[a-zA-Z]' "$NTP_CONF"; then
     exit 1
 fi
 
-if ! grep -Eq '^[[:space:]]*server[[:space:]]+([0-9]{1,3}\.){3}[0-9]{1,3}\b' "$NTP_CONF"; then
+if ! grep -Eq "^[[:space:]]*server[[:space:]]+${IPV4_RE}([[:space:]]|$)" "$NTP_CONF"; then
     echo "overlay/etc/ntp.conf must list at least one IPv4 server line" >&2
     exit 1
 fi
@@ -132,6 +149,11 @@ fi
 
 if ! grep -q 'hwclock -w' "$RTC_INIT"; then
     echo "S99rtcinit must write the calibrated date back to RTC" >&2
+    exit 1
+fi
+
+if ! grep -q 'RTC write-back failed' "$RTC_INIT"; then
+    echo "S99rtcinit must fail clearly when RTC write-back fails" >&2
     exit 1
 fi
 

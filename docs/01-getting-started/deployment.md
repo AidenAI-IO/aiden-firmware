@@ -42,9 +42,10 @@ scp build/bin/agent root@<device-ip>:/oem/usr/bin/
 4. `S52frame_service` 独占 `/dev/video0` 并提供截图/帧服务；
 5. `S53audio_service` 提供音频录放服务；
 6. `S53agent` 启动 Go Agent；
-7. `S56config_web` 提供配置页面；
-8. `S55aiden_usb_dhcp` / `S99usb0config` 配置 USB 网络相关能力；
+7. `S55aiden_usb_dhcp` 配置 USB 网络 DHCP / dnsmasq 相关能力；
+8. `S56config_web` 提供配置页面；
 9. `S99rtcinit` 覆盖 SDK 默认 RTC 脚本；RTC 异常时只在系统时间仍早于基线日期时写入默认时间，避免覆盖已经由 NTP 校准过的系统时间。
+10. `S99usb0config` 执行 USB 网络接口后置配置。
 
 ## 常用服务命令
 

@@ -24,7 +24,10 @@ start() {
 			else
 				echo "RTC invalid; preserving current system time"
 			fi
-			hwclock -w
+			if ! hwclock -w >/dev/null 2>&1; then
+				echo "RTC write-back failed"
+				return 1
+			fi
 			;;
 		*)
 			echo "RTC does not require time calibration"
