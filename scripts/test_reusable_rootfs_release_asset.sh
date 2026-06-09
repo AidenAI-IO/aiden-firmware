@@ -2,6 +2,13 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+resolver_script="$repo_root/scripts/resolve_reusable_rootfs_asset.sh"
+if [ ! -x "$resolver_script" ]; then
+  echo "resolve_reusable_rootfs_asset.sh is missing or not executable: $resolver_script" >&2
+  echo "Check repo_root detection and script permissions." >&2
+  exit 1
+fi
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -136,7 +143,7 @@ PATH="$fake_bin:$PATH" \
   FAKE_GH_STATE_DIR="$state_dir" \
   GH_TOKEN="test-token" \
   GITHUB_REPOSITORY="owner/repo" \
-  "$repo_root/scripts/resolve_reusable_rootfs_asset.sh" \
+  "$resolver_script" \
     --image-dir "$assets_dir" \
     --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
     --output "$outputs_file"
@@ -236,7 +243,7 @@ PATH="$fake_bin:$PATH" \
   FAKE_GH_STATE_DIR="$state_dir" \
   GH_TOKEN="test-token" \
   GITHUB_REPOSITORY="owner/repo" \
-  "$repo_root/scripts/resolve_reusable_rootfs_asset.sh" \
+  "$resolver_script" \
     --image-dir "$assets_dir" \
     --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
     --output "$outputs_file"
@@ -301,7 +308,7 @@ PATH="$fake_bin:$PATH" \
   FAKE_GH_STATE_DIR="$state_dir" \
   GH_TOKEN="test-token" \
   GITHUB_REPOSITORY="owner/repo" \
-  "$repo_root/scripts/resolve_reusable_rootfs_asset.sh" \
+  "$resolver_script" \
     --image-dir "$assets_dir" \
     --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
     --output "$outputs_file"
@@ -321,7 +328,7 @@ PATH="$fake_bin:$PATH" \
   FAKE_GH_STATE_DIR="$state_dir" \
   GH_TOKEN="test-token" \
   GITHUB_REPOSITORY="owner/repo" \
-  "$repo_root/scripts/resolve_reusable_rootfs_asset.sh" \
+  "$resolver_script" \
     --image-dir "$assets_dir" \
     --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
     --output "$outputs_file"
