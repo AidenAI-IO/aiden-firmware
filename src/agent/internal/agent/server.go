@@ -45,6 +45,8 @@ type Server struct {
 	bridge           *PhoneBridge
 	pendingResults   map[string]*chatPendingResult
 	pendingResultsMu sync.Mutex
+	activeRuns       map[string]context.CancelFunc
+	activeRunsMu     sync.Mutex
 }
 
 type webAudioRecording struct {
@@ -100,6 +102,15 @@ type ChatRequest struct {
 	Skills      []string            `json:"skills,omitempty"`
 	Attachments []MessageAttachment `json:"attachments,omitempty"`
 	RequestID   string              `json:"request_id,omitempty"`
+}
+
+type ChatCancelRequest struct {
+	RequestID string `json:"request_id"`
+}
+
+type ChatCancelResponse struct {
+	RequestID string `json:"request_id"`
+	Status    string `json:"status"`
 }
 
 // ChatResponse represents a chat response
@@ -174,6 +185,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		history:        make([]Message, 0),
 		bridge:         bridge,
 		pendingResults: make(map[string]*chatPendingResult),
+		activeRuns:     make(map[string]context.CancelFunc),
 	}
 	if runtime.config.ConfigDir != "" {
 		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
@@ -218,6 +230,7 @@ func (s *Server) Start() error {
 
 	// API endpoints
 	mux.HandleFunc("/api/chat", s.handleChat)
+	mux.HandleFunc("/api/chat/cancel", s.handleChatCancel)
 	mux.HandleFunc("/api/chat/result", s.handleChatResult)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
@@ -320,6 +333,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
+	req.RequestID = strings.TrimSpace(req.RequestID)
 
 	inputText, runAttachments, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
@@ -328,7 +342,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	episodeID := s.runtime.NewEpisodeID()
 
-	// Add user message to history
 	userMsg := Message{
 		Type:        "user",
 		EpisodeID:   episodeID,
@@ -337,7 +350,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Attachments: historyAttachments,
 		Timestamp:   time.Now(),
 	}
-	s.appendHistory(userMsg)
 
 	// Async path — when the client provides a request_id
 	if req.RequestID != "" {
@@ -347,6 +359,72 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	// Sync path — legacy behaviour for web UI and clients without request_id
 	s.handleChatSync(w, r, req, inputText, runAttachments, userMsg.EpisodeID)
+}
+
+func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req ChatCancelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		http.Error(w, "missing request_id", http.StatusBadRequest)
+		return
+	}
+
+	if s.cancelActiveRun(requestID) {
+		if s.logger != nil {
+			s.logger.Info("Chat request canceled: request_id=%s", requestID)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ChatCancelResponse{RequestID: requestID, Status: "canceled"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ChatCancelResponse{RequestID: requestID, Status: "not_running"})
+}
+
+func (s *Server) registerActiveRun(requestID string, cancel context.CancelFunc) bool {
+	if requestID == "" {
+		return true
+	}
+	s.activeRunsMu.Lock()
+	defer s.activeRunsMu.Unlock()
+	if s.activeRuns == nil {
+		s.activeRuns = make(map[string]context.CancelFunc)
+	}
+	if _, exists := s.activeRuns[requestID]; exists {
+		return false
+	}
+	s.activeRuns[requestID] = cancel
+	return true
+}
+
+func (s *Server) unregisterActiveRun(requestID string) {
+	if requestID == "" {
+		return
+	}
+	s.activeRunsMu.Lock()
+	delete(s.activeRuns, requestID)
+	s.activeRunsMu.Unlock()
+}
+
+func (s *Server) cancelActiveRun(requestID string) bool {
+	s.activeRunsMu.Lock()
+	cancel := s.activeRuns[requestID]
+	s.activeRunsMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
 }
 
 // handleChatAsync runs the agent in a background goroutine and returns
@@ -384,6 +462,17 @@ func (s *Server) handleChatAsync(
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 
+	runCtx, cancel := context.WithCancel(context.Background())
+	if !s.registerActiveRun(requestID, cancel) {
+		cancel()
+		s.pendingResultsMu.Lock()
+		delete(s.pendingResults, requestID)
+		s.pendingResultsMu.Unlock()
+		http.Error(w, "request_id already in use", http.StatusConflict)
+		return
+	}
+	s.appendHistory(userMsg)
+
 	// Return {request_id} immediately
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -392,6 +481,7 @@ func (s *Server) handleChatAsync(
 	// Run agent in background goroutine
 	go func() {
 		defer func() {
+			s.unregisterActiveRun(requestID)
 			// Keep the completed result available for polling for 60s,
 			// then clean up. The client (PhoneBridge) polls /api/chat/result
 			// every ~1s; immediate deletion creates a race where the app
@@ -402,8 +492,6 @@ func (s *Server) handleChatAsync(
 				s.pendingResultsMu.Unlock()
 			})
 		}()
-
-		bgCtx := context.Background()
 
 		// Event handler pushes intermediate messages into the pending result
 		// so the client can poll them in near-realtime.
@@ -431,7 +519,7 @@ func (s *Server) handleChatAsync(
 			pending.mu.Unlock()
 
 			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
-				go s.speakToolDescription(bgCtx, event.Description)
+				go s.speakToolDescription(runCtx, event.Description)
 			}
 		}
 
@@ -449,7 +537,7 @@ func (s *Server) handleChatAsync(
 
 		if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
 			if ttsManager != nil {
-				stream, err := beginManagedTTSStream(bgCtx, ttsManager, s.audioClient, s.runtime.config)
+				stream, err := beginManagedTTSStream(runCtx, ttsManager, s.audioClient, s.runtime.config)
 				if err != nil {
 					if s.logger != nil {
 						s.logger.Warn("TTS BeginStream failed: %v", err)
@@ -461,7 +549,7 @@ func (s *Server) handleChatAsync(
 			}
 		}
 
-		result, err := s.runtime.Run(bgCtx, runReq)
+		result, err := s.runtime.Run(runCtx, runReq)
 		if newStream != nil {
 			closeErr := newStream.closeAndWait()
 			if closeErr != nil && s.logger != nil {
@@ -472,19 +560,23 @@ func (s *Server) handleChatAsync(
 
 		pending.mu.Lock()
 		if err != nil {
-			errorMsg := Message{
-				Type:      "episode_status",
-				EpisodeID: userMsg.EpisodeID,
-				RequestID: requestID,
-				Status:    "failed",
-				Content:   "Agent error: " + err.Error(),
-				Timestamp: time.Now(),
-				IsError:   true,
+			if errors.Is(runCtx.Err(), context.Canceled) {
+				pending.err = "request canceled"
+			} else {
+				errorMsg := Message{
+					Type:      "episode_status",
+					EpisodeID: userMsg.EpisodeID,
+					RequestID: requestID,
+					Status:    "failed",
+					Content:   "Agent error: " + err.Error(),
+					Timestamp: time.Now(),
+					IsError:   true,
+				}
+				s.appendHistory(errorMsg)
+				pending.history = append(pending.history, errorMsg)
+				pending.messages = append(pending.messages, errorMsg)
+				pending.err = err.Error()
 			}
-			s.appendHistory(errorMsg)
-			pending.history = append(pending.history, errorMsg)
-			pending.messages = append(pending.messages, errorMsg)
-			pending.err = err.Error()
 			pending.done = true
 			pending.mu.Unlock()
 			if s.logger != nil {
@@ -518,7 +610,7 @@ func (s *Server) handleChatAsync(
 				if s.logger != nil {
 					s.logger.Info("TTS playback: %q", text)
 				}
-				if err := s.speakText(bgCtx, text, 0); err != nil && s.logger != nil {
+				if err := s.speakText(runCtx, text, 0); err != nil && s.logger != nil {
 					s.logger.Error("TTS playback failed: %v", err)
 				}
 			}(result.Output)
@@ -752,6 +844,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
+	req.RequestID = strings.TrimSpace(req.RequestID)
 
 	inputText, runAttachments, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
@@ -773,7 +866,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		Attachments: historyAttachments,
 		Timestamp:   time.Now(),
 	}
-	s.appendHistory(userMessage)
 
 	if s.logger != nil {
 		s.logger.Info("Chat request: %s attachments=%d stream=ndjson", inputText, len(runAttachments))
@@ -782,6 +874,20 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 
 	ctx := r.Context()
+	if req.RequestID != "" {
+		runCtx, cancel := context.WithCancel(ctx)
+		if !s.registerActiveRun(req.RequestID, cancel) {
+			cancel()
+			http.Error(w, "request_id already in use", http.StatusConflict)
+			return
+		}
+		defer func() {
+			s.unregisterActiveRun(req.RequestID)
+			cancel()
+		}()
+		ctx = runCtx
+	}
+	s.appendHistory(userMessage)
 
 	result, err := s.runtime.Run(ctx, RunRequest{
 		Input:          inputText,
@@ -895,7 +1001,10 @@ func (s *Server) speakToolDescription(ctx context.Context, description string) {
 	if description == "" || s.audioClient == nil {
 		return
 	}
-	ttsCtx, cancel := context.WithTimeout(context.Background(), toolDescriptionSpeechTimeout)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ttsCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
 	defer cancel()
 	if s.logger != nil {
 		s.logger.Info("Tool description TTS playback: %q", description)
@@ -2521,6 +2630,22 @@ const webUI = `<!DOCTYPE html>
             font-size: 0.82rem;
         }
 
+        .stop-run-btn {
+            padding: 0.32rem 0.62rem;
+            border: 1px solid rgba(185, 28, 28, 0.26);
+            border-radius: 999px;
+            background: rgba(220, 38, 38, 0.08);
+            color: #b91c1c;
+            font-size: 0.76rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .stop-run-btn:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
         .loading.active {
             visibility: visible;
             opacity: 1;
@@ -2637,6 +2762,7 @@ const webUI = `<!DOCTYPE html>
             <div class="loading" id="loading">
                 <span class="spinner" aria-hidden="true"></span>
                 <span>Working on it...</span>
+                <button type="button" class="stop-run-btn" id="stopRunBtn" onclick="cancelCurrentRun()" disabled>Stop</button>
             </div>
 
             <form class="composer" onsubmit="event.preventDefault(); sendMessage();">
@@ -2726,6 +2852,7 @@ const webUI = `<!DOCTYPE html>
         const recordBtn = document.getElementById('recordBtn');
         const draftAttachmentsEl = document.getElementById('draftAttachments');
         const loadingDiv = document.getElementById('loading');
+        const stopRunBtn = document.getElementById('stopRunBtn');
         const emptyStateEl = document.getElementById('emptyState');
         const toolSelectEl = document.getElementById('toolSelect');
         const toolDescriptionEl = document.getElementById('toolDescription');
@@ -2749,6 +2876,9 @@ const webUI = `<!DOCTYPE html>
         let recorderState = createRecorderState();
         let toolCatalog = [];
         let toolSkills = [];
+        let currentChatRequestId = '';
+        let currentChatAbortController = null;
+        let currentChatCancelRequested = false;
         let episodeCache = {};
 
         loadHistory();
@@ -3036,6 +3166,9 @@ const webUI = `<!DOCTYPE html>
             autoResizeInput();
             setComposerState(true);
             clearDraftAttachments();
+            currentChatRequestId = createRequestId();
+            currentChatAbortController = new AbortController();
+            currentChatCancelRequested = false;
 
             addMessage({
                 type: 'user',
@@ -3052,9 +3185,11 @@ const webUI = `<!DOCTYPE html>
                         'Accept': 'application/x-ndjson',
                         'X-Aiden-Stream': 'ndjson'
                     },
+                    signal: currentChatAbortController.signal,
                     body: JSON.stringify({
                         message: message,
-                        attachments: attachments
+                        attachments: attachments,
+                        request_id: currentChatRequestId
                     })
                 });
 
@@ -3065,6 +3200,14 @@ const webUI = `<!DOCTYPE html>
 
                 await consumeChatStream(res);
             } catch (err) {
+                if (currentChatCancelRequested || err.name === 'AbortError') {
+                    addMessage({
+                        type: 'assistant',
+                        content: 'Interrupted.',
+                        timestamp: new Date().toISOString()
+                    });
+                    return;
+                }
                 console.error('Failed to send message:', err);
                 try {
                     await loadHistory();
@@ -3076,10 +3219,41 @@ const webUI = `<!DOCTYPE html>
                     timestamp: new Date().toISOString()
                 });
             } finally {
+                currentChatRequestId = '';
+                currentChatAbortController = null;
+                currentChatCancelRequested = false;
                 setComposerState(false);
                 scrollToBottom();
             }
         }
+
+        function createRequestId() {
+            if (window.crypto && window.crypto.randomUUID) {
+                return window.crypto.randomUUID();
+            }
+            return 'web-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+        }
+
+        async function cancelCurrentRun() {
+            if (!currentChatRequestId) return;
+            const requestId = currentChatRequestId;
+            currentChatCancelRequested = true;
+            stopRunBtn.disabled = true;
+            stopRunBtn.textContent = 'Stopping...';
+
+			if (currentChatAbortController) {
+				currentChatAbortController.abort();
+			}
+
+			fetch('/api/chat/cancel', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ request_id: requestId }),
+				keepalive: true
+			}).catch(function(err) {
+				console.error('Failed to cancel chat request:', err);
+			});
+		}
 
         async function consumeChatStream(res) {
             let sawDone = false;
@@ -3375,6 +3549,8 @@ const webUI = `<!DOCTYPE html>
             sendBtn.disabled = isLoading || recorderState.isStopping;
             imageBtn.disabled = isLoading || recorderState.isRecording || recorderState.isStopping;
             recordBtn.disabled = isLoading || recorderState.isStopping;
+            stopRunBtn.disabled = !isLoading;
+            stopRunBtn.textContent = 'Stop';
             loadingDiv.classList.toggle('active', isLoading);
             updateRecordButton();
         }
