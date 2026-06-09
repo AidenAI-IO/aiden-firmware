@@ -3417,7 +3417,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
         cJSON* r = cJSON_CreateObject();
         cJSON_AddStringToObject(r, "check", "provider");
-        const char* allowed[] = {"duckduckgo", "tavily", "google", "bing", NULL};
+        const char* allowed[] = {"duckduckgo", "brave", "brave-free", "tavily", "google", "bing", NULL};
         bool ok = false;
         std::string allowed_list;
         for (int i = 0; allowed[i]; ++i) {
@@ -3444,10 +3444,21 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         std::string api_key = json_is_string(api_key_item) ? trim_copy(api_key_item->valuestring) : "";
         cJSON* r2 = cJSON_CreateObject();
         cJSON_AddStringToObject(r2, "check", "api_key");
-        cJSON_AddBoolToObject(r2, "passed", 1);
         if (provider == "duckduckgo") {
+            cJSON_AddBoolToObject(r2, "passed", 1);
             cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "not required for duckduckgo" : "set (not required for duckduckgo)");
+        } else if (provider == "brave" || provider == "brave-free" || provider == "tavily") {
+            if (api_key.empty()) {
+                cJSON_AddBoolToObject(r2, "passed", 0);
+                std::string msg = "required for " + provider;
+                cJSON_AddStringToObject(r2, "detail", msg.c_str());
+                all_passed = false;
+            } else {
+                cJSON_AddBoolToObject(r2, "passed", 1);
+                cJSON_AddStringToObject(r2, "detail", "set");
+            }
         } else {
+            cJSON_AddBoolToObject(r2, "passed", 1);
             cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "empty (may be required for paid providers)" : "set");
         }
         cJSON_AddItemToArray(results, r2);

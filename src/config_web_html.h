@@ -273,7 +273,7 @@ static const char* CONFIG_WEB_HTML =
     "            </div>\n"
     "          </div>\n"
     "          <div class=\"grid\">\n"
-    "            <div class=\"field\"><label>provider</label><input id=\"search_provider\" data-section=\"search\" placeholder=\"duckduckgo / tavily\"></div>\n"
+    "            <div class=\"field\"><label>provider</label><input id=\"search_provider\" data-section=\"search\" placeholder=\"duckduckgo / brave / tavily\"></div>\n"
     "            <div class=\"field wide\"><label>api_key</label><input id=\"search_api_key\" type=\"password\" autocomplete=\"off\" data-section=\"search\"></div>\n"
     "          </div>\n"
     "        </div>\n"
