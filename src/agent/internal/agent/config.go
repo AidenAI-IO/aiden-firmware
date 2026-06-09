@@ -63,6 +63,7 @@ type Config struct {
 	TTS                      TTSConfig       `toml:"tts,omitempty"`
 	STT                      STTConfig       `toml:"stt,omitempty"`
 	HID                      HIDConfig       `toml:"hid"`
+	Device                   DeviceConfig    `toml:"device,omitempty"`
 	Audio                    AudioConfig     `toml:"audio,omitempty"`
 	Search                   SearchConfig    `toml:"search,omitempty"`
 	Instruction              string          `toml:"instruction"`
@@ -264,6 +265,25 @@ type HIDConfig struct {
 	PointerMode string `toml:"pointer_mode,omitempty"`
 }
 
+type DeviceConfig struct {
+	Backend          string   `toml:"backend,omitempty"`
+	BridgeURL        string   `toml:"bridge_url,omitempty"`
+	BridgeTokenFile  string   `toml:"bridge_token_file,omitempty"`
+	ControlTokenFile string   `toml:"control_token_file,omitempty"`
+	ToolAllowlist    []string `toml:"tool_allowlist,omitempty"`
+}
+
+func (d DeviceConfig) BackendOrDefault() string {
+	switch strings.ToLower(strings.TrimSpace(d.Backend)) {
+	case "", "hdmi", "hardware":
+		return "hdmi"
+	case "mobilegym":
+		return "mobilegym"
+	default:
+		return strings.ToLower(strings.TrimSpace(d.Backend))
+	}
+}
+
 func (h HIDConfig) KeyboardDeviceOrDefault() string {
 	if h.KeyboardDevice != "" {
 		return h.KeyboardDevice
@@ -411,6 +431,11 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Model.Model) == "" && strings.ToLower(c.Model.Provider) != "fake" {
 		return errors.New("model.model is required")
+	}
+	switch c.Device.BackendOrDefault() {
+	case "hdmi", "mobilegym":
+	default:
+		return fmt.Errorf("invalid device.backend: %s (expected hdmi or mobilegym)", c.Device.Backend)
 	}
 
 	// Validate input_mode

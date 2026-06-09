@@ -1,0 +1,15 @@
+instruction = "You are controlling an Android-like MobileGym simulator. Use screenshot and touch tools."
+input_mode = "text"
+max_iterations = 20
+
+[model]
+provider = "{{MODEL_PROVIDER}}"
+model = "{{MODEL_NAME}}"
+base_url = "{{MODEL_BASE_URL}}"
+api_key = "{{MODEL_API_KEY}}"
+
+[device]
+backend = "mobilegym"
+bridge_url = "{{BRIDGE_URL}}"
+bridge_token_file = "{{BRIDGE_TOKEN_FILE}}"
+control_token_file = "{{CONTROL_TOKEN_FILE}}"

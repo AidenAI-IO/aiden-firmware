@@ -1,0 +1,39 @@
+# Git
+.git/
+.gitignore
+.gitmodules
+
+# Build artifacts
+build/
+build-*/
+output/
+bin/
+.mobilegym_run/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+benchmark/runs/
+benchmark/artifacts/
+
+# Go
+*.test
+*.out
+
+# Secrets
+*.pem
+agent.conf
+benchmark/mobilegym/config/agent.toml
+
+# MobileGym runtime
+benchmark/mobilegym/config/memory/
+benchmark/mobilegym/config/log/
+
+# Development
+.DS_Store
+.claude/
+.worktrees/
+docs/superpowers/
+capture.md
