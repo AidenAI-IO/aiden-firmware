@@ -142,7 +142,7 @@ recover_wlan() {
 	sleep 2
 	wpa_cli -i "$IFACE" reassociate >/dev/null 2>&1 || true
 	sleep 8
-	udhcpc -n -q -i "$IFACE" >/dev/null 2>&1 || true
+	udhcpc -n -q -i "$IFACE" -s /etc/udhcpc/aiden.script >/dev/null 2>&1 || true
 }
 
 watch_loop() {
