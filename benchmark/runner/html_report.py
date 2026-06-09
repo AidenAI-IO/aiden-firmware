@@ -28,10 +28,20 @@ def generate_report_html(run_dir: Path) -> str:
     total = totals.get("tasks", len(results))
     failed = totals.get("failed", 0)
     skipped = totals.get("skipped", 0)
+    timeout = totals.get("timeout", 0)
+    judge_error = totals.get("judge_error", 0)
+    # completed = everything that produced a result (the whole run is finished by report time)
+    completed = total
     agent_url = manifest.get("agent_url", "")
     started = manifest.get("started_at", "")[:19]
     finished = manifest.get("finished_at", "")[:19]
     pass_rate = f"{passed/total*100:.1f}%" if total else "0%"
+    # Progress bar segment widths (% of total)
+    def _pct(n: int) -> float:
+        return (n / total * 100) if total else 0.0
+    pass_pct = f"{_pct(passed):.4f}"
+    fail_pct = f"{_pct(failed + timeout + judge_error):.4f}"
+    skip_pct = f"{_pct(skipped):.4f}"
 
     tasks_js_items = []
     for r in results:
@@ -152,6 +162,8 @@ def generate_report_html(run_dir: Path) -> str:
         failed=failed, skipped=skipped, pass_rate=pass_rate,
         agent_url=agent_url, started=started, finished=finished,
         rows_html=rows_html, tasks_json=tasks_json,
+        completed=completed, timeout=timeout, judge_error=judge_error,
+        pass_pct=pass_pct, fail_pct=fail_pct, skip_pct=skip_pct,
     )
 
 
@@ -214,6 +226,21 @@ body {{ min-height: 100vh; background: linear-gradient(to bottom, var(--surface)
 .summary-card {{ border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 14px }}
 .summary-card .label {{ color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase }}
 .summary-card .value {{ margin-top: 10px; font-size: 28px; font-weight: 700; letter-spacing: -0.03em }}
+.progress {{ border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 14px 16px; margin-bottom: 20px }}
+.progress-head {{ display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px }}
+.progress-head .label {{ color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase }}
+.progress-head .count {{ font-family: var(--font-mono); font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums }}
+.progress-bar {{ display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: color-mix(in oklch, var(--bg) 60%, var(--border)) }}
+.progress-bar .seg {{ height: 100% }}
+.progress-bar .seg.pass {{ background: oklch(58% 0.16 145) }}
+.progress-bar .seg.fail {{ background: oklch(60% 0.18 28) }}
+.progress-bar .seg.skip {{ background: oklch(70% 0.14 75) }}
+.progress-legend {{ display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 12px; color: var(--muted) }}
+.progress-legend span {{ display: inline-flex; align-items: center; gap: 5px }}
+.progress-legend i {{ width: 9px; height: 9px; border-radius: 3px; display: inline-block }}
+.progress-legend i.pass {{ background: oklch(58% 0.16 145) }}
+.progress-legend i.fail {{ background: oklch(60% 0.18 28) }}
+.progress-legend i.skip {{ background: oklch(70% 0.14 75) }}
 .panel {{ border: 1px solid var(--border); border-radius: 16px; background: var(--surface); overflow: hidden }}
 .panel-header {{ display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border) }}
 .panel-title {{ font-size: 14px; font-weight: 650 }}
@@ -281,6 +308,24 @@ pre.block-body {{ margin: 0; white-space: pre-wrap; word-break: break-word; font
   <article class="summary-card"><div class="label">Pass Rate</div><div class="value">{pass_rate}</div></article>
   <article class="summary-card"><div class="label">Failed</div><div class="value">{failed}</div></article>
   <article class="summary-card"><div class="label">Skipped</div><div class="value">{skipped}</div></article>
+</section>
+<section class="progress">
+  <div class="progress-head">
+    <span class="label">Execution Progress</span>
+    <span class="count">{completed}/{total}</span>
+  </div>
+  <div class="progress-bar">
+    <div class="seg pass" style="width:{pass_pct}%"></div>
+    <div class="seg fail" style="width:{fail_pct}%"></div>
+    <div class="seg skip" style="width:{skip_pct}%"></div>
+  </div>
+  <div class="progress-legend">
+    <span><i class="pass"></i>Passed {passed}</span>
+    <span><i class="fail"></i>Failed {failed}</span>
+    <span><i class="skip"></i>Skipped {skipped}</span>
+    <span><i class="fail"></i>Timeout {timeout}</span>
+    <span><i class="fail"></i>Judge Error {judge_error}</span>
+  </div>
 </section>
 <section class="panel">
   <div class="panel-header">
