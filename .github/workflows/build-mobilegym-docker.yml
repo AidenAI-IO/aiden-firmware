@@ -8,6 +8,14 @@ on:
   # 手动触发
   workflow_dispatch:
 
+  # 临时：push 到 feature/mobilegym 时触发（验证 CI，验证后移除）
+  push:
+    branches:
+      - feature/mobilegym
+    paths:
+      - 'benchmark/mobilegym/docker/**'
+      - '.github/workflows/build-mobilegym-docker.yml'
+
 permissions:
   contents: write
   packages: write
@@ -23,7 +31,7 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
-    if: ${{ github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/mobilegym' }}
     outputs:
       should_run: ${{ steps.should_run.outputs.should_run }}
       release_name: ${{ steps.release_info.outputs.release_name }}
