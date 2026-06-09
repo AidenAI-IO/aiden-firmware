@@ -78,13 +78,22 @@ if ! grep -Fq 'BENCHMARK_SRC="$SCRIPT_DIR/benchmark"' "$ROOT_DIR/_build_image.sh
     exit 1
 fi
 
-if ! grep -Fq 'SKILLS_DEST="$OVERLAY/oem/usr/share/aiden/skills"' "$ROOT_DIR/_build_image.sh"; then
-    echo "_build_image.sh must stage bundled skills into the OEM partition" >&2
+if grep -Fq 'SKILLS_DEST="$OVERLAY/oem/usr/share/aiden/skills"' "$ROOT_DIR/_build_image.sh" || \
+   grep -Fq 'SKILLS_DEST="$DEST_OVERLAY/usr/share/aiden/skills"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must not stage bundled skills through repo overlay directories" >&2
     exit 1
 fi
 
-if grep -Fq 'SKILLS_DEST="$DEST_OVERLAY/usr/share/aiden/skills"' "$ROOT_DIR/_build_image.sh"; then
-    echo "_build_image.sh must not stage bundled skills into the rootfs overlay" >&2
+if ! grep -Fq 'SKILLS_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/skills"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'rsync -a --delete "$SKILLS_SRC/" "$SKILLS_DEST/"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must sync bundled skills directly into final OEM staging with delete semantics" >&2
+    exit 1
+fi
+
+oem_dir_line=$(grep -n 'RK_PROJECT_PACKAGE_OEM_DIR="${RK_PROJECT_OUTPUT}/oem"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+skills_dest_line=$(grep -n 'SKILLS_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/skills"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+if [ -z "$oem_dir_line" ] || [ -z "$skills_dest_line" ] || [ "$skills_dest_line" -le "$oem_dir_line" ]; then
+    echo "_build_image.sh must resolve final OEM staging before setting bundled skills destination" >&2
     exit 1
 fi
 

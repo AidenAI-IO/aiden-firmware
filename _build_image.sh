@@ -124,23 +124,6 @@ if [ -d "$OVERLAY/etc" ]; then
     echo "  ✓ etc directory synced"
 fi
 
-# Bundled agent skills use src/agent/config/skills as the single source and
-# ship with the agent in the OEM partition.
-SKILLS_SRC="$SCRIPT_DIR/src/agent/config/skills"
-SKILLS_DEST="$OVERLAY/oem/usr/share/aiden/skills"
-if [ -d "$SKILLS_SRC" ]; then
-    mkdir -p "$SKILLS_DEST"
-    rsync -a --delete "$SKILLS_SRC/" "$SKILLS_DEST/"
-    skill_count=$(find "$SKILLS_DEST" -mindepth 2 -maxdepth 2 -type f -name SKILL.md | wc -l | tr -d ' ')
-    if [ "$skill_count" -lt 1 ]; then
-        echo "  ✗ Error: no SKILL.md staged in $SKILLS_DEST" >&2
-        exit 1
-    fi
-    echo "  ✓ bundled skills synced ($skill_count skill(s))"
-else
-    echo "  ⚠ Warning: $SKILLS_SRC not found; skipping bundled skills" >&2
-fi
-
 # Bundled phone-bridge app mapping: src/agent/internal/agent/app_mapping.json 是
 # Go embed 的单一源，固件里同步落到 /usr/share/aiden/app_mapping.json，方便运维
 # 不重新 build 二进制就能更新映射（agent 启动时优先读 configDir，再读这里，最后
@@ -185,6 +168,23 @@ if [ -d "$OVERLAY/oem" ]; then
     mkdir -p "$RK_PROJECT_PACKAGE_OEM_DIR"
     rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"
     echo "  ✓ OEM content copied"
+fi
+
+# Bundled agent skills use src/agent/config/skills as the single source and
+# ship with the agent in the OEM partition.
+SKILLS_SRC="$SCRIPT_DIR/src/agent/config/skills"
+SKILLS_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/skills"
+if [ -d "$SKILLS_SRC" ]; then
+    mkdir -p "$SKILLS_DEST"
+    rsync -a --delete "$SKILLS_SRC/" "$SKILLS_DEST/"
+    skill_count=$(find "$SKILLS_DEST" -mindepth 2 -maxdepth 2 -type f -name SKILL.md | wc -l | tr -d ' ')
+    if [ "$skill_count" -lt 1 ]; then
+        echo "  ✗ Error: no SKILL.md staged in $SKILLS_DEST" >&2
+        exit 1
+    fi
+    echo "  ✓ bundled skills synced to OEM staging ($skill_count skill(s))"
+else
+    echo "  ⚠ Warning: $SKILLS_SRC not found; skipping bundled skills" >&2
 fi
 
 # VAD models live in /oem/usr/model so OTA updates can replace them with the
