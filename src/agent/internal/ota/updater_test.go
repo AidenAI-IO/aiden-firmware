@@ -355,6 +355,114 @@ func TestUpdaterSkipsAssetDownloadWhenCachedFileMatchesSHA256(t *testing.T) {
 	assertFileContent(t, filepath.Join(env.blockDir, "rootfs_b"), "rootfs-v2")
 }
 
+func TestUpdaterSkipsDownloadAndWriteWhenTargetPartitionHashMatches(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	assetBytes := map[string][]byte{
+		"boot_a.img": []byte("boot-a-v2"),
+		"boot_b.img": []byte("boot-b-v2"),
+		"oem_a.img":  []byte("oem-a-v2"),
+		"oem_b.img":  []byte("oem-b-v2"),
+		"rootfs.img": []byte("rootfs-v2"),
+	}
+	oemHash := testSHA256Hex(assetBytes["oem_b.img"])
+	if err := os.WriteFile(filepath.Join(env.blockDir, "oem_b"), assetBytes["oem_b.img"], 0o644); err != nil {
+		t.Fatalf("WriteFile(oem_b) error = %v", err)
+	}
+	env.state.Slots["b"] = SlotPartitionInfo{Partitions: map[string]PartitionVersion{
+		"boot":   {Version: "factory", Hash: testHashA},
+		"oem":    {Version: "previous", Hash: oemHash},
+		"rootfs": {Version: "factory", Hash: testHashA},
+	}}
+	env.saveState(t)
+	manifest := env.signedManifest(assetBytes, nil)
+
+	oemRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest") {
+			var release struct {
+				Assets []githubAsset `json:"assets"`
+			}
+			release.Assets = append(release.Assets, githubAsset{Name: "manifest.json", BrowserDownloadURL: "http://" + r.Host + "/assets/manifest.json"})
+			for _, name := range []string{"boot_b.img", "oem_b.img", "rootfs.img"} {
+				release.Assets = append(release.Assets, githubAsset{Name: name, BrowserDownloadURL: "http://" + r.Host + "/assets/" + name})
+			}
+			_ = json.NewEncoder(w).Encode(release)
+			return
+		}
+		if r.URL.Path == "/assets/manifest.json" {
+			_, _ = w.Write(manifest)
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, "/assets/")
+		if name == "oem_b.img" {
+			oemRequests++
+			http.Error(w, "matching partition should not be downloaded", http.StatusInternalServerError)
+			return
+		}
+		if b, ok := assetBytes[name]; ok {
+			w.Header().Set("Content-Length", fmt.Sprint(len(b)))
+			_, _ = w.Write(b)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+
+	result, err := env.updater().CheckOnce(context.Background())
+	if err != nil {
+		t.Fatalf("CheckOnce() error = %v", err)
+	}
+	if !result.Updated || result.TargetSlot != SlotB {
+		t.Fatalf("CheckOnce() = %+v", result)
+	}
+	if oemRequests != 0 {
+		t.Fatalf("oemRequests = %d, want 0", oemRequests)
+	}
+	if _, err := os.Stat(filepath.Join(env.downloadDir, "oem_b.img")); !os.IsNotExist(err) {
+		t.Fatalf("oem_b.img cache exists after partition skip: %v", err)
+	}
+	assertFileContent(t, filepath.Join(env.blockDir, "boot_b"), "boot-b-v2")
+	assertFileContent(t, filepath.Join(env.blockDir, "oem_b"), "oem-b-v2")
+	assertFileContent(t, filepath.Join(env.blockDir, "rootfs_b"), "rootfs-v2")
+
+	state, err := LoadState(filepath.Join(env.stateDir, "state.json"))
+	if err != nil {
+		t.Fatalf("LoadState() error = %v", err)
+	}
+	if got := state.DownloadedHashes["oem"]; got != oemHash {
+		t.Fatalf("DownloadedHashes[oem] = %s, want %s", got, oemHash)
+	}
+	pendingBytes, err := os.ReadFile(filepath.Join(env.stateDir, "pending_boot.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(pending_boot.json) error = %v", err)
+	}
+	var pending PendingBoot
+	if err := json.Unmarshal(pendingBytes, &pending); err != nil {
+		t.Fatalf("Unmarshal(PendingBoot) error = %v", err)
+	}
+	marker := HealthMarker{Slot: "b", Version: env.version, BuildTime: env.buildTime, Nonce: pending.Nonce, BootID: currentBootID()}
+	data, err := json.Marshal(marker)
+	if err != nil {
+		t.Fatalf("Marshal(HealthMarker) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(env.stateDir, "health.ok"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(health.ok) error = %v", err)
+	}
+	updater := env.updater()
+	updater.currentSlot = func() (Slot, bool, error) { return SlotB, true, nil }
+	if err := updater.ProcessPendingHealth(context.Background()); err != nil {
+		t.Fatalf("ProcessPendingHealth() error = %v", err)
+	}
+	state, err = LoadState(filepath.Join(env.stateDir, "state.json"))
+	if err != nil {
+		t.Fatalf("LoadState(committed) error = %v", err)
+	}
+	if got := state.Slots["b"].Partitions["oem"]; got.Version != env.version || got.Hash != oemHash {
+		t.Fatalf("committed oem partition = %+v, want %s/%s", got, env.version, oemHash)
+	}
+}
+
 func TestUpdaterInitializesMissingStateFromFactoryConfig(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	statePath := filepath.Join(env.stateDir, "state.json")
@@ -585,7 +693,7 @@ func TestUpdaterRejectsBadSignature(t *testing.T) {
 func TestUpdaterRejectsHashMismatchBeforeWriting(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	assets := map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}
-	manifest := env.signedManifest(assets, func(m *Manifest) { m.Parts[0].AssetB.SHA256 = testHashA })
+	manifest := env.signedManifest(assets, func(m *Manifest) { m.Parts[0].AssetB.SHA256 = testHashC })
 	server := env.releaseServer(t, manifest, assets)
 	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
 
