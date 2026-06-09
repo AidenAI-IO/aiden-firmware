@@ -46,15 +46,9 @@
           "alternatives": [
             {
               "status": "active",
-              "tool": "keyboard_tap",
-              "input": { "keys": ["meta", "q"] },
-              "note": "external keyboard: Cmd+Q exit app / return home (iPadOS behavior varies)"
-            },
-            {
-              "status": "active",
               "tool": "touch_gesture",
               "input": { "type": "home" },
-              "note": "bottom edge swipe"
+              "note": "bottom edge swipe fallback"
             }
           ]
         },
@@ -201,10 +195,8 @@
           }
         },
         "android": {
-          "status": "active",
-          "tool": "touch_gesture",
-          "input": { "type": "swipe_down", "strength": "medium", "anchor": 500 },
-          "note": "same entry as notifications; may need a second swipe to expand quick settings"
+          "status": "reserved",
+          "note": "requires two-step swipe; single swipe lands in notifications"
         },
         "mac": {
           "status": "reserved",

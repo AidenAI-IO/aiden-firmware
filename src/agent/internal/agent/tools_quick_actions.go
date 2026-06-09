@@ -356,7 +356,7 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 	}
 
 	platform, err := normalizeQuickActionPlatform(args.Platform)
-	if err != nil && !args.List {
+	if err != nil {
 		return t.errorJSON(err.Error()), nil
 	}
 
