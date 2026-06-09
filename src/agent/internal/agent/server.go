@@ -251,15 +251,12 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/phone-bridge/results", s.handlePhoneBridgeResults)
 	mux.HandleFunc("/api/phone-bridge/results/", s.handlePhoneBridgeResults)
 
-	// Coordinate debug tool and its screenshot feed expose the live device
-	// screen. Available on loopback by default; on non-loopback addresses
-	// (e.g., 0.0.0.0:8080) require explicit opt-in via
-	// coordinate_debug_public_enabled in agent.toml.
-	if isLoopbackServerAddr(s.addr) || s.runtime.config.CoordinateDebugPublicEnabledOrDefault() {
-		mux.HandleFunc("/api/screenshot.jpg", s.handleScreenshotJPEG)
-		mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
-		mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
-	}
+	// Coordinate debug tool and its screenshot feed. Exposes live screen data,
+	// so it is intentionally available on all listen addresses (including the
+	// 0.0.0.0:8080 web UI) per deployment requirement.
+	mux.HandleFunc("/api/screenshot.jpg", s.handleScreenshotJPEG)
+	mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
+	mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
