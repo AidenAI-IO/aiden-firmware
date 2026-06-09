@@ -11,6 +11,10 @@ import html
 import sys
 
 
+SKILLOPT_JSON_MAX_BYTES = 32 * 1024
+SKILLOPT_RAW_KEYS = {'content', 'json', 'jsonl'}
+
+
 def escape(s: str) -> str:
     """HTML escape a string."""
     return html.escape(str(s)) if s else ""
@@ -85,6 +89,36 @@ def scan_directory(base_path: Path, show_hidden: bool = True) -> dict:
         result['error'] = str(e)
 
     return result
+
+
+def summarize_file_payloads(data: dict) -> dict:
+    """Drop raw file payload fields while preserving SkillOpt file metadata."""
+    summarized = dict(data)
+    files = []
+    for file_info in data.get('files', []) or []:
+        if not isinstance(file_info, dict):
+            continue
+        omitted = [key for key in SKILLOPT_RAW_KEYS if key in file_info]
+        compact = {key: value for key, value in file_info.items() if key not in SKILLOPT_RAW_KEYS}
+        if omitted:
+            compact['content_omitted'] = True
+            compact['omitted_fields'] = omitted
+        files.append(compact)
+    summarized['files'] = files
+    return summarized
+
+
+def template_json(data: dict, *, compact: bool = False) -> str:
+    if compact:
+        return json.dumps(data, ensure_ascii=False, separators=(',', ':')).replace('</', r'<\/')
+    return json.dumps(data, ensure_ascii=False, indent=2).replace('</', r'<\/')
+
+
+def bounded_skillopt_json(skillopt_data: dict) -> str:
+    skillopt_json = template_json(skillopt_data)
+    if len(skillopt_json.encode('utf-8')) <= SKILLOPT_JSON_MAX_BYTES:
+        return skillopt_json
+    return template_json(summarize_file_payloads(skillopt_data), compact=True)
 
 
 def extract_references(content: str, current_file: str) -> list:
@@ -186,6 +220,11 @@ def main():
         help='Skill-state directory path (default: /userdata/agent/skill-state)'
     )
     parser.add_argument(
+        '--skillopt-dir',
+        default='/userdata/agent/benchmark/runs/skillopt',
+        help='SkillOpt results directory path (default: /userdata/agent/benchmark/runs/skillopt)'
+    )
+    parser.add_argument(
         '--output',
         '-o',
         default='/userdata/agent/files_report.html',
@@ -220,6 +259,9 @@ def main():
     print(f"Scanning skill-state directory: {args.skill_state_dir}")
     skill_state_data = scan_directory(Path(args.skill_state_dir), args.show_hidden)
 
+    print(f"Scanning SkillOpt directory: {args.skillopt_dir}")
+    skillopt_data = scan_directory(Path(args.skillopt_dir), args.show_hidden)
+
     # Generate HTML from template
     output_html = html_template
 
@@ -229,13 +271,17 @@ def main():
     output_html = output_html.replace('{{SKILLS_COUNT}}', str(len(skills_data.get('files', []))))
     output_html = output_html.replace('{{MEMORY_SIZE}}', format_size(memory_data.get('total_size', 0)))
     output_html = output_html.replace('{{SKILLS_SIZE}}', format_size(skills_data.get('total_size', 0)))
+    output_html = output_html.replace('{{SKILLOPT_COUNT}}', str(len(skillopt_data.get('files', []))))
+    output_html = output_html.replace('{{SKILLOPT_SIZE}}', format_size(skillopt_data.get('total_size', 0)))
 
-    memory_json = json.dumps(memory_data, ensure_ascii=False, indent=2).replace('</', r'<\/')
-    skills_json = json.dumps(skills_data, ensure_ascii=False, indent=2).replace('</', r'<\/')
-    skill_state_json = json.dumps(skill_state_data, ensure_ascii=False, indent=2).replace('</', r'<\/')
+    memory_json = template_json(memory_data)
+    skills_json = template_json(skills_data)
+    skill_state_json = template_json(skill_state_data)
+    skillopt_json = bounded_skillopt_json(skillopt_data)
     output_html = output_html.replace('{{MEMORY_JSON}}', memory_json)
     output_html = output_html.replace('{{SKILLS_JSON}}', skills_json)
     output_html = output_html.replace('{{SKILL_STATE_JSON}}', skill_state_json)
+    output_html = output_html.replace('{{SKILLOPT_JSON}}', skillopt_json)
 
     # Write output
     output_path = Path(args.output)
@@ -246,15 +292,19 @@ def main():
     print(f"  Memory files: {len(memory_data.get('files', []))} ({format_size(memory_data.get('total_size', 0))})")
     print(f"  Skills files: {len(skills_data.get('files', []))} ({format_size(skills_data.get('total_size', 0))})")
     print(f"  Skill-state files: {len(skill_state_data.get('files', []))} ({format_size(skill_state_data.get('total_size', 0))})")
+    print(f"  SkillOpt files: {len(skillopt_data.get('files', []))} ({format_size(skillopt_data.get('total_size', 0))})")
 
     if not memory_data.get('exists'):
         print(f"  ⚠ Memory directory not found: {args.memory_dir}")
     if not skills_data.get('exists'):
         print(f"  ⚠ Skills directory not found: {args.skills_dir}")
+    if not skill_state_data.get('exists'):
+        print(f"  ⚠ Skill-state directory not found: {args.skill_state_dir}")
+    if not skillopt_data.get('exists'):
+        print(f"  ⚠ SkillOpt directory not found: {args.skillopt_dir}")
 
 
 
 
 if __name__ == '__main__':
     main()
-

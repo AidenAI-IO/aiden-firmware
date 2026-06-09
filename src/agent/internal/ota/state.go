@@ -222,7 +222,7 @@ func (s *State) CommitUpdate(manifest Manifest, targetSlot Slot, assets map[stri
 		slotState.Partitions = map[string]PartitionVersion{}
 	}
 	for part, asset := range assets {
-		slotState.Partitions[part] = PartitionVersion{Version: manifest.Version, Hash: asset.SHA256}
+		slotState.Partitions[part] = PartitionVersion{Version: manifest.Version, Hash: partitionSHA256ForAsset(asset)}
 	}
 	s.Slots[slot] = slotState
 	s.LastCommittedVersion = manifest.Version

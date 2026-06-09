@@ -99,7 +99,7 @@ cat /userdata/ota/config.json
 执行一次 OTA：
 
 ```bash
-/oem/usr/bin/ota check-now
+/oem/usr/bin/ota update
 ```
 
 期望流程：

@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/stat.h>
@@ -111,6 +112,10 @@ const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
 const char* kOtaInitScript = "/etc/init.d/S54ota";
 const char* kAgentLogPath = "/var/log/agent/agent.log";
+const char* kOtaBin = "/oem/usr/bin/ota";
+const char* kEnvRunBin = "/oem/usr/bin/aiden-env-run";
+const char* kOtaWebUpdateLockPath = "/tmp/config_web_ota_update.lock";
+const char* kOtaWebUpdateLogPath = "/tmp/config_web_ota_update.log";
 const char* kAgentPortHost = "127.0.0.1";
 const int kDefaultAgentPort = 8080;
 const int kAgentStatusCommandTimeoutMs = 1500;
@@ -118,16 +123,24 @@ const size_t kAgentStatusLogReadSize = 16 * 1024;
 const size_t kAgentStatusLogDisplaySize = 4096;
 const size_t kAgentLogReadSize = 64 * 1024;
 const size_t kAgentLogDisplaySize = 48 * 1024;
+const size_t kOtaLogReadSize = 128 * 1024;
+const size_t kOtaLogDisplaySize = 96 * 1024;
 const size_t kMaxHttpHeaderSize = 8 * 1024;
 const size_t kMaxHttpBodySize = 64 * 1024;
 const int kClientReadTimeoutSeconds = 5;
 const char* kDefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
 const int kSystemEnvCommandTimeoutMs = 1500;
 const size_t kMaxSystemEnvSize = 64 * 1024;
+const char* kUserFilesReportPath = "/userdata/agent/files_report.html";
+const char* kUserFilesToolsDir = "/userdata/agent_tools";
+const int kUserFilesGenerateCommandTimeoutMs = 30000;
 
 std::string read_file_contents(const char* path, size_t max_size);
 std::string validate_proxy_url(const std::string& url);
 std::string lowercase_copy(const std::string& text);
+std::string parent_dir(const std::string& path);
+bool mkdir_p(const std::string& dir, std::string* error);
+bool prepare_ota_update_log_file(const std::string& path, std::string* error);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -420,6 +433,33 @@ bool command_exists(const char* name) {
     bool ok = result.exit_code == 0;
     cache[key] = ok;
     return ok;
+}
+
+bool ensure_user_files_report(std::string* error) {
+    if (file_exists(kUserFilesReportPath)) {
+        return true;
+    }
+
+    std::string cmd = "cd ";
+    cmd += shell_quote(kUserFilesToolsDir);
+    cmd += " && ./view_agent_files.sh 2>&1";
+    CommandResult result = run_shell_command_with_timeout(cmd, kUserFilesGenerateCommandTimeoutMs);
+    if (result.exit_code == 0 && !result.timed_out && file_exists(kUserFilesReportPath)) {
+        return true;
+    }
+
+    if (error) {
+        if (result.timed_out) {
+            *error = "user files report generation timed out";
+        } else {
+            *error = "user files report generation failed";
+        }
+        if (!result.output.empty()) {
+            *error += ": ";
+            *error += result.output.substr(0, 1000);
+        }
+    }
+    return false;
 }
 
 std::string trim_trailing_newlines(const std::string& text) {
@@ -1305,6 +1345,61 @@ void schedule_ota_restart() {
     schedule_init_script_restart(kOtaInitScript);
 }
 
+int acquire_ota_update_launch_lock(std::string* error) {
+    int lock_fd = open(kOtaWebUpdateLockPath, O_CREAT | O_RDWR, 0600);
+    if (lock_fd < 0) {
+        if (error) {
+            *error = std::string("open ota update launch lock: ") + strerror(errno);
+        }
+        return -1;
+    }
+    if (flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
+        if (error) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                *error = "ota update already running";
+            } else {
+                *error = std::string("lock ota update launch: ") + strerror(errno);
+            }
+        }
+        close(lock_fd);
+        return -1;
+    }
+    return lock_fd;
+}
+
+bool schedule_ota_update(std::string* error) {
+    int lock_fd = acquire_ota_update_launch_lock(error);
+    if (lock_fd < 0) {
+        return false;
+    }
+    std::string log_path = kOtaWebUpdateLogPath;
+    if (!prepare_ota_update_log_file(log_path, error)) {
+        close(lock_fd);
+        return false;
+    }
+    std::string cmd =
+        "("
+        "if [ -x " + shell_quote(kEnvRunBin) + " ]; then "
+        + shell_quote(kEnvRunBin) + " " + shell_quote(kOtaBin) + " update; "
+        "else "
+        + shell_quote(kOtaBin) + " update; "
+        "fi; "
+        "rc=$?; echo \"[config_web] ota update exited rc=$rc\""
+        ") >> " + shell_quote(log_path) + " 2>&1 &";
+    int rc = system(cmd.c_str());
+    if (rc != 0) {
+        close(lock_fd);
+        if (error) {
+            std::ostringstream oss;
+            oss << "failed to start ota update: system rc=" << rc;
+            *error = oss.str();
+        }
+        return false;
+    }
+    close(lock_fd);
+    return true;
+}
+
 void schedule_poweroff() {
     int rc = system("(PATH=/sbin:/bin:/usr/sbin:/usr/bin; sync; sleep 1; poweroff) >/dev/null 2>&1 &");
     (void)rc;
@@ -1490,6 +1585,22 @@ std::string parent_dir(const std::string& path) {
     return path.substr(0, pos);
 }
 
+bool prepare_ota_update_log_file(const std::string& path, std::string* error) {
+    if (!mkdir_p(parent_dir(path), error)) {
+        return false;
+    }
+    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        if (error) *error = "open " + path + ": " + strerror(errno);
+        return false;
+    }
+    if (close(fd) != 0) {
+        if (error) *error = "close " + path + ": " + strerror(errno);
+        return false;
+    }
+    return true;
+}
+
 bool validate_system_proxy_values(const SystemProxy& proxy, std::string* error) {
     struct Field {
         const char* name;
@@ -1632,11 +1743,11 @@ std::string trim_for_display(const std::string& text, size_t max_size) {
     return trimmed.substr(start);
 }
 
-AgentLogSnapshot read_agent_log_snapshot() {
+AgentLogSnapshot read_log_snapshot(const char* path, size_t read_size, size_t display_size) {
     AgentLogSnapshot snapshot;
-    snapshot.path = kAgentLogPath;
+    snapshot.path = path ? path : "";
 
-    FILE* f = fopen(kAgentLogPath, "r");
+    FILE* f = fopen(snapshot.path.c_str(), "r");
     if (!f) {
         snapshot.error = strerror(errno);
         return snapshot;
@@ -1658,8 +1769,8 @@ AgentLogSnapshot read_agent_log_snapshot() {
 
     snapshot.size_bytes = file_size;
     long offset = 0;
-    if (static_cast<size_t>(file_size) > kAgentLogReadSize) {
-        offset = file_size - static_cast<long>(kAgentLogReadSize);
+    if (static_cast<size_t>(file_size) > read_size) {
+        offset = file_size - static_cast<long>(read_size);
         snapshot.truncated = true;
     }
 
@@ -1688,11 +1799,19 @@ AgentLogSnapshot read_agent_log_snapshot() {
         }
     }
 
-    if (contents.size() > kAgentLogDisplaySize) {
+    if (contents.size() > display_size) {
         snapshot.truncated = true;
     }
-    snapshot.log = trim_for_display(contents, kAgentLogDisplaySize);
+    snapshot.log = trim_for_display(contents, display_size);
     return snapshot;
+}
+
+AgentLogSnapshot read_agent_log_snapshot() {
+    return read_log_snapshot(kAgentLogPath, kAgentLogReadSize, kAgentLogDisplaySize);
+}
+
+AgentLogSnapshot read_ota_log_snapshot() {
+    return read_log_snapshot(kOtaWebUpdateLogPath, kOtaLogReadSize, kOtaLogDisplaySize);
 }
 
 std::string lowercase_copy(const std::string& text) {
@@ -1959,7 +2078,7 @@ cJSON* agent_status_to_json(const AgentRuntimeStatus& status) {
     return root;
 }
 
-cJSON* agent_log_to_json(const AgentLogSnapshot& snapshot) {
+cJSON* log_snapshot_to_json(const AgentLogSnapshot& snapshot) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "path", snapshot.path.c_str());
     cJSON_AddBoolToObject(root, "exists", snapshot.exists ? 1 : 0);
@@ -1968,6 +2087,14 @@ cJSON* agent_log_to_json(const AgentLogSnapshot& snapshot) {
     cJSON_AddStringToObject(root, "log", snapshot.log.c_str());
     cJSON_AddStringToObject(root, "error", snapshot.error.c_str());
     return root;
+}
+
+cJSON* agent_log_to_json(const AgentLogSnapshot& snapshot) {
+    return log_snapshot_to_json(snapshot);
+}
+
+cJSON* ota_log_to_json(const AgentLogSnapshot& snapshot) {
+    return log_snapshot_to_json(snapshot);
 }
 
 cJSON* firmware_info_to_json(const Options& options) {
@@ -2047,6 +2174,27 @@ ApiResponse handle_get_agent_log() {
     cJSON_AddBoolToObject(root, "ok", 1);
     cJSON_AddItemToObject(root, "agent_log", agent_log_to_json(read_agent_log_snapshot()));
     return make_json_ok(root);
+}
+
+ApiResponse handle_get_ota_log() {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON_AddItemToObject(root, "ota_log", ota_log_to_json(read_ota_log_snapshot()));
+    return make_json_ok(root);
+}
+
+ApiResponse handle_post_ota_update() {
+    std::string error;
+    if (!schedule_ota_update(&error)) {
+        return make_json_error(500, error.empty() ? "failed to start ota update" : error);
+    }
+
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", 1);
+    cJSON_AddBoolToObject(response, "ota_update_started", 1);
+    cJSON_AddStringToObject(response, "message", "ota update started");
+    cJSON_AddNumberToObject(response, "ota_log_start_size_bytes", 0);
+    return make_json_ok(response);
 }
 
 ApiResponse handle_post_system_env(const Options& options, const std::string& body) {
@@ -3621,7 +3769,18 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     if (request.method == "GET" && request.path == "/user_files") {
         ApiResponse response;
         response.content_type = "text/html; charset=utf-8";
-        std::string path = "/userdata/agent/files_report.html";
+        std::string path = kUserFilesReportPath;
+        std::string generate_error;
+        if (!ensure_user_files_report(&generate_error)) {
+            response.status_code = 500;
+            response.body = "<html><body>"
+                "<h1>Files Report Generation Failed</h1>"
+                "<p>The files report could not be generated.</p>"
+                "<p>Expected tools under <code>/userdata/agent_tools</code>.</p>"
+                "<pre>" + generate_error + "</pre>"
+                "</body></html>";
+            return response;
+        }
         FILE* fp = fopen(path.c_str(), "r");
         if (fp) {
             fseek(fp, 0, SEEK_END);
@@ -3657,7 +3816,7 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         // not if the background script succeeds. Actual success/failure will
         // only be visible in /tmp/user_files_regenerate.log.
         std::string cmd = "cd /userdata/agent_tools && "
-                         "./view_agent_files.sh > /tmp/user_files_regenerate.log 2>&1 &";
+                          "./view_agent_files.sh > /tmp/user_files_regenerate.log 2>&1 &";
         int ret = system(cmd.c_str());
 
         if (ret == 0) {
@@ -3676,6 +3835,14 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "GET" && request.path == "/api/agent/logs") {
         return handle_get_agent_log();
+    }
+
+    if (request.method == "GET" && request.path == "/api/ota/logs") {
+        return handle_get_ota_log();
+    }
+
+    if (request.method == "POST" && (request.path == "/api/ota/update" || request.path == "/api/ota/check-now")) {
+        return handle_post_ota_update();
     }
 
     if (request.method == "GET" && request.path == "/api/config") {

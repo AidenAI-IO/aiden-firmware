@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"aiden-agent/internal/netproxy"
@@ -23,16 +24,20 @@ import (
 const (
 	DefaultOTAConfigPath             = "/userdata/ota/config.json"
 	DefaultOTAStateDir               = "/userdata/ota"
+	DefaultOTAUpdateLockName         = "update.lock"
 	DefaultReleaseURL                = "https://api.github.com/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
 	MaxRemoteManifestBytes           = 1 << 20
 	DefaultHTTPRequestLimit          = 30 * time.Minute
 	DefaultHTTPResponseHeaderTimeout = 30 * time.Second
 )
 
+var ErrUpdateAlreadyRunning = errors.New("ota update already running")
+
 type UpdaterConfig struct {
 	ConfigPath             string                       `json:"-"`
 	StateDir               string                       `json:"state_dir,omitempty"`
 	DownloadDir            string                       `json:"download_dir,omitempty"`
+	UpdateLockPath         string                       `json:"update_lock_path,omitempty"`
 	MiscPath               string                       `json:"misc_path,omitempty"`
 	BlockDir               string                       `json:"block_dir,omitempty"`
 	ManifestURL            string                       `json:"manifest_url,omitempty"`
@@ -106,6 +111,9 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 	if config.DownloadDir == "" {
 		config.DownloadDir = filepath.Join(config.StateDir, "downloads")
 	}
+	if config.UpdateLockPath == "" {
+		config.UpdateLockPath = filepath.Join(config.StateDir, DefaultOTAUpdateLockName)
+	}
 	if config.MiscPath == "" {
 		config.MiscPath = "/dev/block/by-name/misc"
 	}
@@ -169,6 +177,16 @@ func NewUpdater(config UpdaterConfig, reboot func() error) (*Updater, error) {
 }
 
 func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
+	unlock, err := u.acquireUpdateLock()
+	if err != nil {
+		u.logf("ota check: %v", err)
+		return UpdateResult{}, err
+	}
+	defer unlock()
+	return u.checkOnceLocked(ctx)
+}
+
+func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 	u.logf("ota check: start")
 	if err := u.ProcessPendingHealth(ctx); err != nil {
 		u.recordError("health", err)
@@ -317,6 +335,15 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 			assetToken = token
 		}
 		dst := filepath.Join(u.config.DownloadDir, asset.Name)
+		if u.cachedDownloadVerified(dst, asset) {
+			if err := u.verifyDownloadedImage(dst, asset); err != nil {
+				u.recordError("verify", err)
+				return UpdateResult{}, err
+			}
+			selectedAssets[part.Name] = asset
+			downloaded[part.Name] = dst
+			continue
+		}
 		if err := os.MkdirAll(u.config.DownloadDir, 0o755); err != nil {
 			u.recordError("download", err)
 			return UpdateResult{}, err
@@ -331,6 +358,10 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 		u.logf("ota verify: %s sha256 ok", asset.Name)
+		if err := u.verifyDownloadedImage(dst, asset); err != nil {
+			u.recordError("verify", err)
+			return UpdateResult{}, err
+		}
 		selectedAssets[part.Name] = asset
 		downloaded[part.Name] = dst
 	}
@@ -346,7 +377,7 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 	state.DownloadedAssets = downloaded
 	state.DownloadedHashes = map[string]string{}
 	for part, asset := range selectedAssets {
-		state.DownloadedHashes[part] = asset.SHA256
+		state.DownloadedHashes[part] = partitionSHA256ForAsset(asset)
 	}
 	if state.Slots == nil {
 		state.Slots = map[string]SlotPartitionInfo{}
@@ -417,6 +448,57 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 		}
 	}
 	return UpdateResult{Updated: true, Version: manifest.Version, TargetSlot: target}, nil
+}
+
+func (u *Updater) acquireUpdateLock() (func(), error) {
+	lockPath := u.config.UpdateLockPath
+	if lockPath == "" {
+		lockPath = filepath.Join(u.config.StateDir, DefaultOTAUpdateLockName)
+	}
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return nil, fmt.Errorf("create ota update lock dir: %w", err)
+	}
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open ota update lock: %w", err)
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lockFile.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, fmt.Errorf("%w: %s", ErrUpdateAlreadyRunning, lockPath)
+		}
+		return nil, fmt.Errorf("lock ota update: %w", err)
+	}
+	if err := lockFile.Truncate(0); err == nil {
+		_, _ = lockFile.Seek(0, 0)
+		_, _ = fmt.Fprintf(lockFile, "%d\n", os.Getpid())
+	}
+	return func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	}, nil
+}
+
+func (u *Updater) cachedDownloadVerified(path string, asset ManifestAsset) bool {
+	if err := VerifyFile(path, asset.Size, asset.SHA256); err != nil {
+		if !os.IsNotExist(err) {
+			u.logf("ota download: %s cached file ignored: %v", asset.Name, err)
+		}
+		return false
+	}
+	u.logf("ota download: %s skipped; cached file verified dst=%s", asset.Name, path)
+	return true
+}
+
+func (u *Updater) verifyDownloadedImage(path string, asset ManifestAsset) error {
+	if asset.ImageSHA256 == "" {
+		return nil
+	}
+	if err := verifyPartitionImage(path, asset.ImageSHA256); err != nil {
+		return fmt.Errorf("%s image_sha256: %w", asset.Name, err)
+	}
+	u.logf("ota verify: %s image_sha256 ok", asset.Name)
+	return nil
 }
 
 func (u *Updater) ProcessPendingHealth(ctx context.Context) error {
@@ -548,14 +630,18 @@ func (u *Updater) commitPendingHealth(pending PendingBoot) error {
 
 func (u *Updater) RunDaemon(ctx context.Context) error {
 	u.logf("ota daemon: started interval=%s jitter=%s", u.config.Interval, u.config.Jitter)
-	if err := u.ProcessPendingHealth(ctx); err != nil {
+	if err := u.processPendingHealthWithLock(ctx); err != nil {
 		u.logf("ota health: %v", err)
-		u.recordError("health", err)
+		if !errors.Is(err, ErrUpdateAlreadyRunning) {
+			u.recordError("health", err)
+		}
 	}
 	for {
 		if _, err := u.CheckOnce(ctx); err != nil {
 			u.logf("ota check: %v", err)
-			u.recordError("check", err)
+			if !errors.Is(err, ErrUpdateAlreadyRunning) {
+				u.recordError("check", err)
+			}
 		}
 		wait := u.config.Interval + randomJitter(u.config.Jitter)
 		u.logf("ota daemon: next check in %s", wait)
@@ -567,6 +653,15 @@ func (u *Updater) RunDaemon(ctx context.Context) error {
 		case <-timer.C:
 		}
 	}
+}
+
+func (u *Updater) processPendingHealthWithLock(ctx context.Context) error {
+	unlock, err := u.acquireUpdateLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return u.ProcessPendingHealth(ctx)
 }
 
 func (u *Updater) Status() (State, ABData, error) {
@@ -718,6 +813,9 @@ func isGitHubURL(rawURL string) bool {
 }
 
 func (u *Updater) validateAssetFitsPartition(partName string, target Slot, asset ManifestAsset) error {
+	if isCompressedImageAssetName(asset.Name) {
+		return nil
+	}
 	blockName := partitionBlockName(partName, target)
 	if max, ok := u.partitionSizes()[blockName]; ok && asset.Size > max {
 		return fmt.Errorf("asset %s size %d is larger than partition %s size %d", asset.Name, asset.Size, blockName, max)

@@ -547,9 +547,9 @@ public:
         }
         for (int i = 0; i < kHidden; ++i) {
             const float ig = sigmoid(gates_[i]);
-            const float og = sigmoid(gates_[kHidden + i]);
-            const float fg = sigmoid(gates_[2 * kHidden + i]);
-            const float cg = std::tanh(gates_[3 * kHidden + i]);
+            const float fg = sigmoid(gates_[kHidden + i]);
+            const float cg = std::tanh(gates_[2 * kHidden + i]);
+            const float og = sigmoid(gates_[3 * kHidden + i]);
             c_[i] = fg * c_[i] + ig * cg;
             h_[i] = og * std::tanh(c_[i]);
             relu_h_[i] = h_[i] > 0.0f ? h_[i] : 0.0f;

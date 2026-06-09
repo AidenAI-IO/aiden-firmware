@@ -35,6 +35,17 @@ if [ "$#" -gt 0 ]; then
   docker_command=("$@")
 fi
 
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+  # Keep rootfs/oem image metadata stable across releases when their payloads
+  # did not change. Callers can still set SOURCE_DATE_EPOCH explicitly.
+  SOURCE_DATE_EPOCH="${AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-0}"
+fi
+if ! [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
+  echo "SOURCE_DATE_EPOCH must be an unsigned Unix timestamp: $SOURCE_DATE_EPOCH" >&2
+  exit 1
+fi
+export SOURCE_DATE_EPOCH
+
 restore_docker_output_ownership() {
   if [ "$(uname -s)" != Linux ] || ! command -v sudo >/dev/null 2>&1; then
     return 0
@@ -69,6 +80,7 @@ docker_run_args=(
   -u 0:0
   --rm
   -e OTA_PUBLIC_KEY_PATH
+  -e SOURCE_DATE_EPOCH
   -e TAR_OPTIONS=--no-same-owner
 )
 if [ "${#docker_go_args[@]}" -gt 0 ]; then

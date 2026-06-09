@@ -1,7 +1,9 @@
 package ota
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -15,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -71,6 +74,95 @@ func TestUpdaterHappyPathDownloadsWritesSwitchesAndReboots(t *testing.T) {
 	}
 	if pending.TargetSlot != "b" || pending.TargetVersion != env.version || pending.Nonce == "" {
 		t.Fatalf("pending boot = %+v", pending)
+	}
+}
+
+func TestUpdaterDownloadsTarGzAssetsAndWritesExtractedImages(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	bootImage := []byte("boot-b-v2")
+	oemImage := []byte("oem-b-v2")
+	rootfsImage := []byte("rootfs-v2")
+	bootArchive := testTarGzImage(t, "boot_b.img", bootImage)
+	oemArchive := testTarGzImage(t, "oem_b.img", oemImage)
+	rootfsArchive := testTarGzImage(t, "rootfs.img", rootfsImage)
+	manifest := env.signedManifest(map[string][]byte{
+		"boot_a.img": []byte("boot-a-v2"),
+		"boot_b.img": bootImage,
+		"oem_a.img":  []byte("oem-a-v2"),
+		"oem_b.img":  oemImage,
+		"rootfs.img": rootfsImage,
+	}, func(m *Manifest) {
+		m.Parts[0].AssetB = testCompressedManifestAsset("boot_b.img.tar.gz", bootArchive, bootImage)
+		m.Parts[1].AssetB = testCompressedManifestAsset("oem_b.img.tar.gz", oemArchive, oemImage)
+		m.Parts[2].Asset = testCompressedManifestAsset("rootfs.img.tar.gz", rootfsArchive, rootfsImage)
+	})
+	server := env.releaseServer(t, manifest, map[string][]byte{
+		"boot_b.img.tar.gz": bootArchive,
+		"oem_b.img.tar.gz":  oemArchive,
+		"rootfs.img.tar.gz": rootfsArchive,
+	})
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+
+	result, err := env.updater().CheckOnce(context.Background())
+	if err != nil {
+		t.Fatalf("CheckOnce() error = %v", err)
+	}
+	if !result.Updated || result.TargetSlot != SlotB {
+		t.Fatalf("CheckOnce() = %+v, want update to slot B", result)
+	}
+	assertFileContent(t, filepath.Join(env.blockDir, "boot_b"), string(bootImage))
+	assertFileContent(t, filepath.Join(env.blockDir, "oem_b"), string(oemImage))
+	assertFileContent(t, filepath.Join(env.blockDir, "rootfs_b"), string(rootfsImage))
+	if got, err := os.ReadFile(filepath.Join(env.downloadDir, "rootfs.img.tar.gz")); err != nil {
+		t.Fatalf("ReadFile(downloaded archive) error = %v", err)
+	} else if !bytes.Equal(got, rootfsArchive) {
+		t.Fatalf("downloaded archive was modified before verification")
+	}
+	state, err := LoadState(filepath.Join(env.stateDir, "state.json"))
+	if err != nil {
+		t.Fatalf("LoadState() error = %v", err)
+	}
+	if got := state.DownloadedHashes["boot"]; got != testSHA256Hex(bootImage) {
+		t.Fatalf("state.DownloadedHashes[boot] = %s, want extracted image hash", got)
+	}
+	if got := state.DownloadedHashes["oem"]; got != testSHA256Hex(oemImage) {
+		t.Fatalf("state.DownloadedHashes[oem] = %s, want extracted image hash", got)
+	}
+	if got := state.DownloadedHashes["rootfs"]; got != testSHA256Hex(rootfsImage) {
+		t.Fatalf("state.DownloadedHashes[rootfs] = %s, want extracted image hash", got)
+	}
+}
+
+func TestUpdaterRejectsTarGzImageSHA256MismatchBeforeWriting(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	bootImage := []byte("boot-b-v2")
+	bootArchive := testTarGzImage(t, "boot_b.img", bootImage)
+	manifest := env.signedManifest(map[string][]byte{
+		"boot_a.img": []byte("boot-a-v2"),
+		"boot_b.img": bootImage,
+		"oem_a.img":  []byte("oem-a-v2"),
+		"oem_b.img":  []byte("oem-b-v2"),
+		"rootfs.img": []byte("rootfs-v2"),
+	}, func(m *Manifest) {
+		m.Parts[0].AssetB = testCompressedManifestAsset("boot_b.img.tar.gz", bootArchive, bootImage)
+		m.Parts[0].AssetB.ImageSHA256 = strings.Repeat("d", 64)
+	})
+	server := env.releaseServer(t, manifest, map[string][]byte{
+		"boot_b.img.tar.gz": bootArchive,
+		"oem_b.img":         []byte("oem-b-v2"),
+		"rootfs.img":        []byte("rootfs-v2"),
+	})
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+
+	_, err := env.updater().CheckOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "image_sha256") {
+		t.Fatalf("CheckOnce() error = %v, want image_sha256 mismatch", err)
+	}
+	assertFileContent(t, filepath.Join(env.blockDir, "boot_b"), "old-boot-b")
+	assertFileContent(t, filepath.Join(env.blockDir, "oem_b"), "old-oem-b")
+	assertFileContent(t, filepath.Join(env.blockDir, "rootfs_b"), "old-rootfs-b")
+	if env.reboots != 0 {
+		t.Fatalf("reboots = %d, want 0", env.reboots)
 	}
 }
 
@@ -173,6 +265,94 @@ func TestUpdaterNoUpdateReturnsNoop(t *testing.T) {
 	if env.reboots != 0 {
 		t.Fatalf("reboots = %d, want 0", env.reboots)
 	}
+}
+
+func TestUpdaterCheckOnceRejectsConcurrentUpdateLock(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	env.state.LastCommittedVersion = env.version
+	env.state.LastCommittedBuildTime = env.buildTime
+	env.saveState(t)
+	manifest := env.signedManifest(map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}, nil)
+	server := env.releaseServer(t, manifest, map[string][]byte{"boot_b.img": []byte("boot-b-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")})
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+
+	lockFile, err := os.OpenFile(filepath.Join(env.stateDir, "update.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("OpenFile(lock) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	})
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("Flock(lock) error = %v", err)
+	}
+
+	_, err = env.updater().CheckOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "ota update already running") {
+		t.Fatalf("CheckOnce() error = %v, want ota update already running", err)
+	}
+}
+
+func TestUpdaterSkipsAssetDownloadWhenCachedFileMatchesSHA256(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	assetBytes := map[string][]byte{
+		"boot_a.img": []byte("boot-a-v2"),
+		"boot_b.img": []byte("boot-b-v2"),
+		"oem_a.img":  []byte("oem-a-v2"),
+		"oem_b.img":  []byte("oem-b-v2"),
+		"rootfs.img": []byte("rootfs-v2"),
+	}
+	manifest := env.signedManifest(assetBytes, nil)
+	if err := os.MkdirAll(env.downloadDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(downloadDir) error = %v", err)
+	}
+	for _, name := range []string{"boot_b.img", "oem_b.img", "rootfs.img"} {
+		if err := os.WriteFile(filepath.Join(env.downloadDir, name), assetBytes[name], 0o644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+
+	assetRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest") {
+			var release struct {
+				Assets []githubAsset `json:"assets"`
+			}
+			release.Assets = append(release.Assets, githubAsset{Name: "manifest.json", BrowserDownloadURL: "http://" + r.Host + "/assets/manifest.json"})
+			for _, name := range []string{"boot_b.img", "oem_b.img", "rootfs.img"} {
+				release.Assets = append(release.Assets, githubAsset{Name: name, BrowserDownloadURL: "http://" + r.Host + "/assets/" + name})
+			}
+			_ = json.NewEncoder(w).Encode(release)
+			return
+		}
+		if r.URL.Path == "/assets/manifest.json" {
+			_, _ = w.Write(manifest)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			assetRequests++
+			http.Error(w, "asset download should be skipped", http.StatusInternalServerError)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+
+	result, err := env.updater().CheckOnce(context.Background())
+	if err != nil {
+		t.Fatalf("CheckOnce() error = %v", err)
+	}
+	if !result.Updated || result.TargetSlot != SlotB {
+		t.Fatalf("CheckOnce() = %+v", result)
+	}
+	if assetRequests != 0 {
+		t.Fatalf("assetRequests = %d, want 0", assetRequests)
+	}
+	assertFileContent(t, filepath.Join(env.blockDir, "boot_b"), "boot-b-v2")
+	assertFileContent(t, filepath.Join(env.blockDir, "oem_b"), "oem-b-v2")
+	assertFileContent(t, filepath.Join(env.blockDir, "rootfs_b"), "rootfs-v2")
 }
 
 func TestUpdaterInitializesMissingStateFromFactoryConfig(t *testing.T) {
@@ -385,7 +565,6 @@ func TestUpdaterRejectsOversizedAssetWithDefaultPartitionSizes(t *testing.T) {
 		t.Fatalf("reboots = %d, want 0", env.reboots)
 	}
 }
-
 
 func TestUpdaterRejectsBadSignature(t *testing.T) {
 	env := newUpdaterTestEnv(t)
@@ -1068,6 +1247,41 @@ func (e *updaterTestEnv) manifestValue(assetBytes map[string][]byte, mutate func
 	return manifest
 }
 
+func testManifestAsset(name string, body []byte) *ManifestAsset {
+	return &ManifestAsset{Name: name, Size: int64(len(body)), SHA256: testSHA256Hex(body)}
+}
+
+func testCompressedManifestAsset(name string, archive []byte, image []byte) *ManifestAsset {
+	asset := testManifestAsset(name, archive)
+	asset.ImageSHA256 = testSHA256Hex(image)
+	return asset
+}
+
+func testSHA256Hex(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func testTarGzImage(t *testing.T, imageName string, image []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: imageName, Mode: 0o644, Size: int64(len(image))}); err != nil {
+		t.Fatalf("WriteHeader(%s) error = %v", imageName, err)
+	}
+	if _, err := tw.Write(image); err != nil {
+		t.Fatalf("Write(%s) error = %v", imageName, err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close(tar) error = %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("Close(gzip) error = %v", err)
+	}
+	return buf.Bytes()
+}
+
 func (e *updaterTestEnv) releaseServer(t *testing.T, manifest []byte, assets map[string][]byte) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1229,7 +1443,7 @@ func TestDeriveAssetURLFromManifestURL(t *testing.T) {
 
 func TestUpdaterUsesManifestURLToDeriveAssetURLs(t *testing.T) {
 	env := newUpdaterTestEnv(t)
-	
+
 	// Create manifest without asset URLs (use slot-specific assets for oem).
 	// Set a dev channel to verify the channel check is skipped in manifest-url mode.
 	manifest := env.signedManifest(map[string][]byte{

@@ -68,6 +68,8 @@ Manifest 中 `parts[].name` 只能是 `boot`、`oem`、`rootfs`。每个 part �
 - `asset`：slot-neutral `{name,size,sha256}`，只适用于两边字节完全一致的镜像。
 - `asset_a` 和 `asset_b`：slot-specific `{name,size,sha256}`。
 
+For `.img.tar.gz` assets, `size` and `sha256` describe the downloaded archive. The required `image_sha256` field describes the extracted `.img`; OTA state and `requires_partitions` compare this extracted image hash.
+
 `boot` 必须使用 `asset_a` 和 `asset_b`，因为 boot image 内包含 slot-specific DTB bootargs。`oem` 和 `rootfs` 可以使用 slot-specific assets，也可以在确认为 byte-identical 时使用 slot-neutral asset。
 
 ## Factory baseline

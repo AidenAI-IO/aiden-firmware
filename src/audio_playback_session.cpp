@@ -4,12 +4,6 @@
 #include <thread>
 
 namespace aiden {
-namespace {
-// AO uses a small internal queue (configured as 4 * 1024 samples in AudioPlayer).
-// After the final chunk is dequeued from our userspace queue, give the driver a
-// short grace period to finish rendering buffered tail samples before teardown.
-static const int kPlaybackDrainGraceMs = 300;
-}  // namespace
 
 AudioPlaybackSession::AudioPlaybackSession(uint64_t session_id, const AudioFormat& fmt)
     : session_id_(session_id), fmt_(fmt), stopped_(false), final_received_(false) {}
@@ -75,6 +69,7 @@ void AudioPlaybackSession::wait_until_done() {
 }
 
 void AudioPlaybackSession::playback_loop() {
+    size_t last_played_chunk_bytes = 0;
     while (!stopped_.load()) {
         std::vector<uint8_t> chunk;
         bool final_and_drained = false;
@@ -98,7 +93,8 @@ void AudioPlaybackSession::playback_loop() {
         }
 
         if (final_and_drained) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(kPlaybackDrainGraceMs));
+            std::this_thread::sleep_for(
+                playback_tail_drain_grace(fmt_, last_played_chunk_bytes));
             break;
         }
 
@@ -108,6 +104,8 @@ void AudioPlaybackSession::playback_loop() {
                         "[audio_service] playback session %llu: AudioPlayer::play failed (chunk=%zu)\n",
                         static_cast<unsigned long long>(session_id_),
                         chunk.size());
+            } else {
+                last_played_chunk_bytes = chunk.size();
             }
         }
     }

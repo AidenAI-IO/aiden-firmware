@@ -45,7 +45,7 @@ TAG="20260604-120000-abc1234"
 REPO="AidenAI-IO/aiden-hardware-demo"
 
 # 2. Update the device using the dev release manifest URL
-ota check-now \
+ota update \
   --manifest-url "https://github.com/$REPO/releases/download/$TAG/manifest.json" \
   --public-key /oem/etc/ota_pubkey.pem
 ```

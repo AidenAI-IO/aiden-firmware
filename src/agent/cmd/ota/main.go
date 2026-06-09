@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,6 +16,13 @@ import (
 	"aiden-agent/internal/ota"
 )
 
+const otaInitScriptPath = "/etc/init.d/S54ota"
+
+var (
+	stopRunningDaemon  = stopRunningDaemonWithInitScript
+	startRunningDaemon = startRunningDaemonWithInitScript
+)
+
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -25,7 +33,7 @@ func main() {
 func run(args []string, out io.Writer) error {
 	command, args := splitCommandAndFlags(args)
 	positional := flagArgs(args)
-	if (command == "daemon" || command == "check-now" || command == "status") && len(positional) != 0 {
+	if (command == "daemon" || command == "update" || command == "check-now" || command == "status") && len(positional) != 0 {
 		return usage()
 	}
 	config, err := parseConfigFlags(args)
@@ -41,8 +49,19 @@ func run(args []string, out io.Writer) error {
 	switch command {
 	case "daemon":
 		return updater.RunDaemon(ctx)
-	case "check-now":
+	case "update", "check-now":
+		if err := stopRunningDaemon(); err != nil {
+			return err
+		}
 		result, err := updater.CheckOnce(ctx)
+		if shouldRestartDaemonAfterUpdate(config, result, err) {
+			if restartErr := startRunningDaemon(); restartErr != nil {
+				if err != nil {
+					return fmt.Errorf("%w; restart ota daemon: %v", err, restartErr)
+				}
+				return fmt.Errorf("restart ota daemon after unsuccessful update: %w", restartErr)
+			}
+		}
 		if err != nil {
 			return err
 		}
@@ -91,9 +110,44 @@ func platformReboot() error {
 	return fmt.Errorf("reboot binary not found in trusted paths")
 }
 
+func shouldRestartDaemonAfterUpdate(config ota.UpdaterConfig, result ota.UpdateResult, err error) bool {
+	if errors.Is(err, ota.ErrUpdateAlreadyRunning) {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	if config.DryRun {
+		return true
+	}
+	return !result.Updated
+}
+
+func stopRunningDaemonWithInitScript() error {
+	return runOtaInitScriptIfExists("stop")
+}
+
+func startRunningDaemonWithInitScript() error {
+	return runOtaInitScriptIfExists("start")
+}
+
+func runOtaInitScriptIfExists(action string) error {
+	if _, err := os.Stat(otaInitScriptPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := exec.Command(otaInitScriptPath, action).Run(); err != nil {
+		return fmt.Errorf("%s ota daemon: %w", action, err)
+	}
+	return nil
+}
+
 func splitCommandAndFlags(args []string) (string, []string) {
 	commands := map[string]bool{
 		"daemon":          true,
+		"update":          true,
 		"check-now":       true,
 		"status":          true,
 		"verify-manifest": true,
@@ -146,6 +200,7 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	if *stateDir != "" {
 		config.StateDir = *stateDir
 		config.DownloadDir = ""
+		config.UpdateLockPath = ""
 	}
 	if *miscPath != "" {
 		config.MiscPath = *miscPath
@@ -244,5 +299,5 @@ func flagTakesValue(name string) bool {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: ota [flags] [daemon|check-now|status|verify-manifest <manifest>]")
+	return fmt.Errorf("usage: ota [flags] [daemon|update|check-now|status|verify-manifest <manifest>]")
 }
