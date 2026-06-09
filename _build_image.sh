@@ -110,8 +110,8 @@ fi
 cp "$KEY_SOURCE" "$OVERLAY/oem/etc/ota_pubkey.pem"
 echo "  ✓ OTA public key copied to overlay/oem/etc/ota_pubkey.pem"
 
-# Step 3: 同步 etc 与内置 skills 到 buildroot overlay（rootfs）
-echo "[3/6] Syncing overlay (etc + bundled skills) to buildroot overlay..."
+# Step 3: Sync rootfs overlay assets.
+echo "[3/6] Syncing rootfs overlay assets..."
 if [ ! -d "$DEST_OVERLAY" ]; then
     echo "  ✗ Error: destination directory not found at $DEST_OVERLAY"
     exit 1
@@ -124,10 +124,10 @@ if [ -d "$OVERLAY/etc" ]; then
     echo "  ✓ etc directory synced"
 fi
 
-# Bundled agent skills: src/agent/config/skills/ 是单一源，固件里要落到
-# /usr/share/aiden/skills/ 才能被 agent 的 resolveBundledSkillsDir() 找到。
+# Bundled agent skills use src/agent/config/skills as the single source and
+# ship with the agent in the OEM partition.
 SKILLS_SRC="$SCRIPT_DIR/src/agent/config/skills"
-SKILLS_DEST="$DEST_OVERLAY/usr/share/aiden/skills"
+SKILLS_DEST="$OVERLAY/oem/usr/share/aiden/skills"
 if [ -d "$SKILLS_SRC" ]; then
     mkdir -p "$SKILLS_DEST"
     rsync -a --delete "$SKILLS_SRC/" "$SKILLS_DEST/"

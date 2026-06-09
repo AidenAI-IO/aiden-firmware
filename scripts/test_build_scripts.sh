@@ -78,6 +78,16 @@ if ! grep -Fq 'BENCHMARK_SRC="$SCRIPT_DIR/benchmark"' "$ROOT_DIR/_build_image.sh
     exit 1
 fi
 
+if ! grep -Fq 'SKILLS_DEST="$OVERLAY/oem/usr/share/aiden/skills"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must stage bundled skills into the OEM partition" >&2
+    exit 1
+fi
+
+if grep -Fq 'SKILLS_DEST="$DEST_OVERLAY/usr/share/aiden/skills"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must not stage bundled skills into the rootfs overlay" >&2
+    exit 1
+fi
+
 if ! grep -q 'overlay/userdata' "$BUILD_IMAGE_SH"; then
     echo "build_image.sh must restore ownership of Docker-staged overlay userdata" >&2
     exit 1
