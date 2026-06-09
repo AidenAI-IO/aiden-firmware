@@ -55,6 +55,12 @@ type Config struct {
 	ScreenStableTimeoutMs    int             `toml:"screen_stable_timeout_ms,omitempty"`
 	ScreenStableMs           int             `toml:"screen_stable_ms,omitempty"`
 	ScreenStableDiffThreshold float64        `toml:"screen_stable_diff_threshold,omitempty"`
+	// CoordinateDebugPublicEnabled gates the coordinate-debug page, its
+	// /api/screenshot.jpg feed, and the sidebar nav link. The page exposes
+	// the live device screen, so by default it is only registered when the
+	// agent listens on a loopback address. Set this to true to opt-in on
+	// non-loopback addresses (e.g., 0.0.0.0:8080).
+	CoordinateDebugPublicEnabled *bool          `toml:"coordinate_debug_public_enabled,omitempty"`
 	SkillsDirs               []string        `toml:"skills_dirs"`
 	BundledSkillsDir         string          `toml:"bundled_skills_dir,omitempty"`
 	SkillMergeModel          SkillMergeModel `toml:"-"`
@@ -590,6 +596,17 @@ func (c Config) VoiceStreamingTTSEnabledOrDefault() bool {
 		return *c.VoiceStreamingTTSEnabled
 	}
 	return true
+}
+
+// CoordinateDebugPublicEnabledOrDefault reports whether the coordinate-debug
+// tool (and its screenshot feed / nav link) should be registered when the
+// agent is listening on a non-loopback address. Defaults to false because
+// the page exposes the live device screen.
+func (c Config) CoordinateDebugPublicEnabledOrDefault() bool {
+	if c.CoordinateDebugPublicEnabled != nil {
+		return *c.CoordinateDebugPublicEnabled
+	}
+	return false
 }
 
 func (c Config) VoiceToolCallSpeechOrDefault() bool {
