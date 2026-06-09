@@ -1,5 +1,6 @@
 from __future__ import annotations
 import argparse
+import json
 import os
 import re
 import sys
@@ -53,6 +54,7 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--no-judge", action="store_true")
     p_run.add_argument("--repeats", type=int, default=None)
     p_run.add_argument("--out", default=str(REPO_ROOT / "benchmark" / "runs"))
+    p_run.add_argument("--state-file", default=os.environ.get("BENCHMARK_STATE_FILE"))
     p_run.add_argument("--skip-clock-wait", action="store_true")
     p_run.add_argument("--clock-timeout-sec", type=int, default=180)
     p_run.add_argument("--agent-ready-timeout-sec", type=int, default=120)
@@ -78,10 +80,12 @@ def cli(argv: list[str] | None = None) -> int:
     return 2
 
 
-def _log_task_result(task_id: str, attempt: int, result, verbose: bool = False) -> None:
+def _log_task_result(task_id: str, attempt: int, result, verbose: bool = False,
+                     progress: str = "") -> None:
     """Print task execution result with optional detailed rubric information."""
+    prefix = f"[{progress}] " if progress else ""
     status_line = (
-        f"{result.status.upper():10s} {task_id} attempt={attempt} "
+        f"{prefix}{result.status.upper():10s} {task_id} attempt={attempt} "
         f"rubric={result.rubric_pass_count}/{result.rubric_total} "
         f"wall={result.metrics.get('wall_ms')}ms"
     )
@@ -140,6 +144,19 @@ def _log_task_result(task_id: str, attempt: int, result, verbose: bool = False) 
         print(f"  ❌ Judge Error: {result.metrics['judge_error']}", flush=True)
 
 
+def _write_state(path: str | None, payload: dict) -> None:
+    if not path:
+        return
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(p)
+    except Exception as e:
+        print(f"warning: failed to write benchmark state: {e}", file=sys.stderr, flush=True)
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     suite = load_suite(Path(args.suite))
     run_id = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
@@ -161,17 +178,42 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.repeats is not None and args.repeats <= 0:
         print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
         return 2
+    # Compute total number of executions (accounting for repeats) for progress display
+    total_runs = 0
+    for task in suite.tasks:
+        n = args.repeats if args.repeats is not None else task.repeats
+        total_runs += n if n > 0 else 1
+    completed = 0
+    base_state = {
+        "status": "running",
+        "suite": str(suite.source_path),
+        "run_id": run_id,
+        "total": total_runs,
+        "completed": 0,
+        "started_at": started,
+    }
+    _write_state(args.state_file, base_state)
     try:
         for task in suite.tasks:
             n = args.repeats if args.repeats is not None else task.repeats
             if n <= 0:
                 n = 1
             for attempt in range(1, n + 1):
+                current_index = completed + 1
+                progress = f"{current_index}/{total_runs}"
+                _write_state(args.state_file, {
+                    **base_state,
+                    "completed": completed,
+                    "current": current_index,
+                    "current_task": task.id,
+                    "current_attempt": attempt,
+                })
+                print(f"[{progress}] RUNNING    {task.id} attempt={attempt}", flush=True)
                 if not wait_for_agent_ready(
                     client, timeout_sec=args.agent_ready_timeout_sec
                 ):
                     print(
-                        f"SKIPPED    {task.id} attempt={attempt} "
+                        f"[{progress}] SKIPPED    {task.id} attempt={attempt} "
                         f"rubric=0/{len(task.rubric)} wall=Nonems "
                         f"(agent not ready)",
                         flush=True,
@@ -185,6 +227,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
                             f"agent not ready within {args.agent_ready_timeout_sec}s",
                         )
                     )
+                    completed += 1
+                    _write_state(args.state_file, {
+                        **base_state,
+                        "completed": completed,
+                        "current": current_index,
+                        "current_task": task.id,
+                        "current_attempt": attempt,
+                        "last_result": "skipped",
+                    })
                     continue
 
                 art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if n > 1 else "")
@@ -192,10 +243,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     r = run_one_task(client, suite, task, attempt, art_dir,
                                      judge_cfg, judge_cache, run_id)
                 except Exception as e:
-                    print(f"ERROR      {task.id} attempt={attempt} — {e}", flush=True)
+                    print(f"[{progress}] ERROR      {task.id} attempt={attempt} — {e}", flush=True)
                     r = skipped_task_result(suite, task, attempt, art_dir, run_id, str(e))
-                _log_task_result(task.id, attempt, r, verbose=args.verbose)
+                _log_task_result(task.id, attempt, r, verbose=args.verbose, progress=progress)
                 results.append(r)
+                completed += 1
+                _write_state(args.state_file, {
+                    **base_state,
+                    "completed": completed,
+                    "current": current_index,
+                    "current_task": task.id,
+                    "current_attempt": attempt,
+                    "last_result": r.status,
+                })
 
                 if r.status in {"timeout", "skipped", "judge_error", "failed"}:
                     if not recover_agent_after_timeout(
