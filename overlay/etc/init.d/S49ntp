@@ -1,5 +1,13 @@
 #!/bin/sh
 # Aiden override: optional NTP sync service startup.
+#
+# ntpd is launched early in daemon mode so it can pick up the network as
+# soon as it appears. The first big step (RTC may be many years off) is
+# handled by passing -g, which busybox ntpd interprets as "allow the first
+# adjustment to be unrestricted". DHCP-driven re-sync is wired through the
+# udhcpc hook (/etc/udhcpc/aiden.script), which calls `S49ntp step` on
+# every bound/renew so the clock catches up the moment a lease lands —
+# no init-time polling, no DNS dependency.
 
 BOOT_CONF=/etc/aiden_boot.conf
 
@@ -7,83 +15,12 @@ if [ -f "$BOOT_CONF" ]; then
 	. "$BOOT_CONF"
 fi
 : "${ENABLE_NTP:=1}"
-: "${NTP_WAIT_NETWORK:=1}"
-: "${NTP_WAIT_TIMEOUT:=60}"
-: "${NTP_WAIT_INTERVAL:=2}"
-: "${NTP_WAIT_DNS_HOST:=ntp.aliyun.com}"
-: "${NTP_FALLBACK_SERVER:=ntp.aliyun.com}"
+# Use a numeric IP so ntpd does not depend on DNS being up. 120.25.115.20
+# is one of Alibaba Cloud's public NTP service addresses (ntp.aliyun.com).
+: "${NTP_FALLBACK_SERVER:=120.25.115.20}"
 
 is_running() {
 	pidof ntpd >/dev/null 2>&1
-}
-
-sanitize_positive_int() {
-	value="$1"
-	default_value="$2"
-	case "$value" in
-		''|*[!0-9]*) echo "$default_value"; return ;;
-	esac
-	if [ "$value" -eq 0 ]; then
-		echo "$default_value"
-	else
-		echo "$value"
-	fi
-}
-
-default_route_iface() {
-	ip route show default 2>/dev/null | sed -n 's/^default .* dev \([^ ]*\).*/\1/p' | sed -n '1p'
-}
-
-iface_has_ipv4() {
-	iface="$1"
-	[ -n "$iface" ] || return 1
-	ip addr show "$iface" 2>/dev/null | grep -q ' inet '
-}
-
-dns_ready() {
-	[ -n "$NTP_WAIT_DNS_HOST" ] || return 0
-	if command -v nslookup >/dev/null 2>&1; then
-		RES_OPTIONS=attempts:1\ timeout:1 nslookup "$NTP_WAIT_DNS_HOST" >/dev/null 2>&1
-		return $?
-	fi
-	return 0
-}
-
-network_ready() {
-	if ! command -v ip >/dev/null 2>&1; then
-		return 0
-	fi
-	iface="$(default_route_iface)"
-	[ -n "$iface" ] || return 1
-	iface_has_ipv4 "$iface" || return 1
-	dns_ready || return 1
-}
-
-wait_for_network() {
-	if [ "$NTP_WAIT_NETWORK" != "1" ]; then
-		return 0
-	fi
-
-	timeout="$(sanitize_positive_int "$NTP_WAIT_TIMEOUT" 60)"
-	interval="$(sanitize_positive_int "$NTP_WAIT_INTERVAL" 2)"
-	elapsed=0
-
-	while [ "$elapsed" -lt "$timeout" ]; do
-		if network_ready; then
-			echo "NTP network ready after ${elapsed}s"
-			return 0
-		fi
-		sleep "$interval"
-		elapsed=$((elapsed + interval))
-	done
-
-	if network_ready; then
-		echo "NTP network ready after ${timeout}s"
-		return 0
-	fi
-
-	echo "NTP network not ready after ${timeout}s; starting ntpd anyway"
-	return 0
 }
 
 start() {
@@ -97,28 +34,27 @@ start() {
 		return 0
 	fi
 
-	if [ -x /usr/sbin/ntpd ]; then
-		wait_for_network
-		if [ -f /etc/ntp.conf ]; then
-			/usr/sbin/ntpd -g -c /etc/ntp.conf >/dev/null 2>&1
-		else
-			/usr/sbin/ntpd -g "$NTP_FALLBACK_SERVER" >/dev/null 2>&1
-		fi
-		rc="$?"
-		if [ "$rc" -ne 0 ]; then
-			echo "Failed to start ntpd (exit=$rc)"
-			return "$rc"
-		fi
-		if ! is_running; then
-			echo "Failed to start ntpd (not running after start)"
-			return 1
-		fi
-		echo "Started ntpd"
-		return 0
+	if [ ! -x /usr/sbin/ntpd ]; then
+		echo "ntpd binary not found"
+		return 1
 	fi
 
-	echo "ntpd binary not found"
-	return 1
+	if [ -f /etc/ntp.conf ]; then
+		/usr/sbin/ntpd -g -c /etc/ntp.conf >/dev/null 2>&1
+	else
+		/usr/sbin/ntpd -g -p "$NTP_FALLBACK_SERVER" >/dev/null 2>&1
+	fi
+	rc="$?"
+	if [ "$rc" -ne 0 ]; then
+		echo "Failed to start ntpd (exit=$rc)"
+		return "$rc"
+	fi
+	if ! is_running; then
+		echo "Failed to start ntpd (not running after start)"
+		return 1
+	fi
+	echo "Started ntpd"
+	return 0
 }
 
 stop() {
@@ -139,9 +75,28 @@ restart() {
 	start
 }
 
+# Run a single foreground sync against the configured server, then exit.
+# Intended to be invoked from the udhcpc hook the moment a DHCP lease is
+# acquired so the system clock is corrected even when the daemon's poll
+# interval is long. Safe to run while the daemon is up.
+step() {
+	if [ "$ENABLE_NTP" != "1" ]; then
+		return 0
+	fi
+	if [ ! -x /usr/sbin/ntpd ]; then
+		return 0
+	fi
+	if [ -f /etc/ntp.conf ]; then
+		/usr/sbin/ntpd -nq -g -c /etc/ntp.conf >/dev/null 2>&1
+	else
+		/usr/sbin/ntpd -nq -g -p "$NTP_FALLBACK_SERVER" >/dev/null 2>&1
+	fi
+}
+
 case "$1" in
 	start) start ;;
 	stop) stop ;;
 	restart|reload) restart ;;
-	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+	step) step ;;
+	*) echo "Usage: $0 {start|stop|restart|step}"; exit 1 ;;
 esac

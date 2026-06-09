@@ -4,9 +4,11 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 NTP_INIT="$ROOT_DIR/overlay/etc/init.d/S49ntp"
 RTC_INIT="$ROOT_DIR/overlay/etc/init.d/S99rtcinit"
+DHCPCD_INIT="$ROOT_DIR/overlay/etc/init.d/S41dhcpcd"
+UDHCPC_HOOK="$ROOT_DIR/overlay/etc/udhcpc/aiden.script"
 BOOT_CONF="$ROOT_DIR/overlay/etc/aiden_boot.conf"
 
-for script in "$NTP_INIT" "$RTC_INIT"; do
+for script in "$NTP_INIT" "$RTC_INIT" "$DHCPCD_INIT" "$UDHCPC_HOOK"; do
     if [ ! -x "$script" ]; then
         echo "missing executable $(basename "$script")" >&2
         exit 1
@@ -17,41 +19,62 @@ for script in "$NTP_INIT" "$RTC_INIT"; do
     fi
 done
 
-if ! grep -q 'wait_for_network' "$NTP_INIT"; then
-    echo "S49ntp must wait for network readiness before starting ntpd" >&2
+# S49ntp must NOT block on network readiness anymore — udhcpc hook handles
+# the post-DHCP step now. The script should also no longer rely on hostname
+# resolution: NTP_FALLBACK_SERVER defaults to a numeric IP.
+if grep -q 'wait_for_network' "$NTP_INIT"; then
+    echo "S49ntp must not poll for network readiness (use udhcpc hook instead)" >&2
     exit 1
 fi
 
-if ! grep -q 'ip route show default' "$NTP_INIT"; then
-    echo "S49ntp must check for a default route" >&2
+if ! grep -Eq '^: "\$\{NTP_FALLBACK_SERVER:=([0-9]{1,3}\.){3}[0-9]{1,3}\}"$' "$NTP_INIT"; then
+    echo "S49ntp NTP_FALLBACK_SERVER default must be an IPv4 literal" >&2
     exit 1
 fi
 
-if ! grep -q 'ip addr show "$iface"' "$NTP_INIT"; then
-    echo "S49ntp must check that the routed interface has IPv4" >&2
+if ! grep -Eq '^[[:space:]]*step\)' "$NTP_INIT"; then
+    echo "S49ntp must expose a 'step' subcommand for one-shot sync" >&2
     exit 1
 fi
 
-if ! grep -q 'nslookup "$NTP_WAIT_DNS_HOST"' "$NTP_INIT"; then
-    echo "S49ntp must check DNS readiness" >&2
+if ! grep -q 'ntpd -nq' "$NTP_INIT"; then
+    echo "S49ntp 'step' must invoke 'ntpd -nq' for query-and-exit sync" >&2
     exit 1
 fi
 
-wait_line=$(grep -n 'wait_for_network' "$NTP_INIT" | tail -1 | cut -d: -f1)
-start_line=$(grep -n '/usr/sbin/ntpd -g' "$NTP_INIT" | head -1 | cut -d: -f1)
-if [ "$wait_line" -ge "$start_line" ]; then
-    echo "S49ntp must wait before launching ntpd" >&2
+# udhcpc hook must delegate to the system default script (so DHCP-driven IP /
+# route / DNS configuration still happens) AND kick the NTP step on bound.
+if ! grep -q '/usr/share/udhcpc/default.script' "$UDHCPC_HOOK"; then
+    echo "udhcpc hook must delegate to /usr/share/udhcpc/default.script" >&2
     exit 1
 fi
 
-for setting in \
-    '^NTP_WAIT_NETWORK=1$' \
-    '^NTP_WAIT_TIMEOUT=60$' \
-    '^NTP_WAIT_INTERVAL=2$' \
-    '^NTP_WAIT_DNS_HOST=ntp.aliyun.com$'
-do
-    if ! grep -q "$setting" "$BOOT_CONF"; then
-        echo "aiden_boot.conf missing $setting" >&2
+if ! grep -q 'S49ntp step' "$UDHCPC_HOOK"; then
+    echo "udhcpc hook must call 'S49ntp step' on lease events" >&2
+    exit 1
+fi
+
+if ! grep -Eq 'bound\||\|bound|^[[:space:]]*bound\)' "$UDHCPC_HOOK"; then
+    echo "udhcpc hook must handle the 'bound' event" >&2
+    exit 1
+fi
+
+# S41dhcpcd must wire udhcpc to the aiden hook via -s.
+if ! grep -q 'udhcpc .*-s /etc/udhcpc/aiden.script' "$DHCPCD_INIT"; then
+    echo "S41dhcpcd must launch udhcpc with -s /etc/udhcpc/aiden.script" >&2
+    exit 1
+fi
+
+# Boot conf must carry the new IP-based default and must not carry the
+# obsolete NTP_WAIT_* knobs.
+if ! grep -Eq '^NTP_FALLBACK_SERVER=([0-9]{1,3}\.){3}[0-9]{1,3}$' "$BOOT_CONF"; then
+    echo "aiden_boot.conf must define NTP_FALLBACK_SERVER as an IPv4 literal" >&2
+    exit 1
+fi
+
+for stale in NTP_WAIT_NETWORK NTP_WAIT_TIMEOUT NTP_WAIT_INTERVAL NTP_WAIT_DNS_HOST; do
+    if grep -q "^${stale}=" "$BOOT_CONF"; then
+        echo "aiden_boot.conf still carries obsolete $stale setting" >&2
         exit 1
     fi
 done

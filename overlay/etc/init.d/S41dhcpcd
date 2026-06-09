@@ -15,8 +15,8 @@ start() {
 	fi
 
 	if [ -x /sbin/udhcpc ]; then
-		/sbin/udhcpc -b -i eth0 >/dev/null 2>&1 || true
-		/sbin/udhcpc -b -i wlan0 >/dev/null 2>&1 || true
+		/sbin/udhcpc -b -i eth0 -s /etc/udhcpc/aiden.script >/dev/null 2>&1 || true
+		/sbin/udhcpc -b -i wlan0 -s /etc/udhcpc/aiden.script >/dev/null 2>&1 || true
 		echo "Started udhcpc on eth0/wlan0"
 		return 0
 	fi
