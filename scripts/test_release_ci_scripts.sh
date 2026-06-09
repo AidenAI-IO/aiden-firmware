@@ -50,7 +50,17 @@ if ! grep -q -- '--upload-assets' "$WORKFLOW"; then
 fi
 
 if ! grep -q -- "--upload-assets '$release_assets'" "$WORKFLOW"; then
-    echo "build workflow must upload only allowlisted release assets" >&2
+    echo "build workflow must pass the full release asset allowlist to the rootfs reuse resolver" >&2
+    exit 1
+fi
+
+if ! grep -q -- '--upload-assets "$upload_assets"' "$WORKFLOW"; then
+    echo "build workflow must upload the resolver-adjusted release asset allowlist" >&2
+    exit 1
+fi
+
+if ! grep -q -- '--channel "${{ steps.release_info.outputs.channel }}"' "$WORKFLOW"; then
+    echo "build workflow must pass the current release channel to the rootfs reuse resolver" >&2
     exit 1
 fi
 
@@ -93,8 +103,25 @@ if grep -q 'scripts/test_build_scripts.sh' "$CI_WORKFLOW"; then
 fi
 
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW"; then
+   ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_reusable_rootfs_release_asset.sh' "$CI_WORKFLOW"; then
     echo "CI must run repo-only release workflow and upload script tests" >&2
+    exit 1
+fi
+
+if ! grep -q 'Resolve reusable rootfs release asset' "$WORKFLOW"; then
+    echo "build workflow must resolve reusable rootfs release assets before manifest generation" >&2
+    exit 1
+fi
+
+if ! grep -q 'rootfs_asset.outputs.upload_assets' "$WORKFLOW"; then
+    echo "build workflow must pass the resolved release upload asset list to the release script" >&2
+    exit 1
+fi
+
+if ! grep -q 'rootfs_asset.outputs.rootfs_asset_metadata' "$WORKFLOW" || \
+   ! grep -q -- '--asset-metadata' "$WORKFLOW"; then
+    echo "build workflow must pass full reused rootfs asset metadata into manifest generation" >&2
     exit 1
 fi
 
