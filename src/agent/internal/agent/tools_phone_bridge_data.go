@@ -67,7 +67,7 @@ func (t *ClipboardTool) Call(ctx context.Context, input string) (string, error) 
 
 	var args clipboardArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return bridgeMsgError("invalid input: %v", err), nil
+		return bridgeMsgError("invalid input: %v. Expected JSON format: {\"action\":\"read\"} or {\"action\":\"write\",\"text\":\"content\"}. Common mistakes: action must be \"read\" or \"write\", missing quotes around field names", err), nil
 	}
 
 	action := strings.ToLower(strings.TrimSpace(args.Action))
@@ -169,7 +169,7 @@ func (t *CalendarTool) Call(ctx context.Context, input string) (string, error) {
 
 	var args calendarArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return bridgeMsgError("invalid input: %v", err), nil
+		return bridgeMsgError("invalid input: %v. Expected JSON format: {\"action\":\"create\",\"title\":\"...\",\"start_at\":\"2026-06-02T15:00:00+08:00\",...} or {\"action\":\"query\",\"from\":\"...\",\"to\":\"...\"} or {\"action\":\"delete\",\"event_id\":\"...\"}. Times must be RFC3339 format with timezone", err), nil
 	}
 
 	switch strings.ToLower(strings.TrimSpace(args.Action)) {
@@ -323,7 +323,7 @@ func (t *ContactsTool) Call(ctx context.Context, input string) (string, error) {
 
 	var args contactsArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return bridgeMsgError("invalid input: %v", err), nil
+		return bridgeMsgError("invalid input: %v. Expected JSON format: {\"action\":\"query\",\"query\":\"name\",\"limit\":20} or {\"action\":\"create\",\"name\":\"...\",\"phone_numbers\":[\"...\"],\"emails\":[\"...\"]} or {\"action\":\"update\",\"contact_id\":\"...\",\"name\":\"...\"}. Arrays must use square brackets", err), nil
 	}
 
 	switch strings.ToLower(strings.TrimSpace(args.Action)) {
@@ -480,7 +480,7 @@ func (t *NotificationTool) Call(ctx context.Context, input string) (string, erro
 
 	var args notificationArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return bridgeMsgError("invalid input: %v", err), nil
+		return bridgeMsgError("invalid input: %v. Expected JSON format: {\"title\":\"Reminder\",\"body\":\"Take medicine\",\"schedule_at\":\"2026-06-04T18:00:00+08:00\",\"sound\":true,\"badge\":1}. schedule_at is optional, sound and badge are boolean/number", err), nil
 	}
 
 	if strings.TrimSpace(args.Title) == "" {

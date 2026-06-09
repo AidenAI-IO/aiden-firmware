@@ -44,7 +44,7 @@ func (t *CurrentTimeTool) Call(ctx context.Context, input string) (string, error
 			Timezone string `json:"timezone"`
 		}
 		if err := json.Unmarshal([]byte(timezone), &args); err != nil {
-			return fmt.Sprintf("error: invalid input: %v", err), nil
+			return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"timezone\": \"Asia/Shanghai\"} or a bare timezone string like \"UTC\" or \"+08:00\"", err), nil
 		}
 		timezone = strings.TrimSpace(args.Timezone)
 	}
@@ -549,7 +549,7 @@ func (t *EnterSleepTool) Call(ctx context.Context, input string) (string, error)
 			Reason string `json:"reason"`
 		}
 		if err := json.Unmarshal([]byte(reason), &args); err != nil {
-			return fmt.Sprintf("error: invalid input: %v", err), nil
+			return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"reason\": \"task completed\"} or a bare string describing the reason for entering sleep mode", err), nil
 		}
 		reason = strings.TrimSpace(args.Reason)
 	}
