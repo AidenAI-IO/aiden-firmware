@@ -267,6 +267,29 @@ TEST_CASE("config web exposes screenshot pruning config fields") {
     CHECK(html.find("['screen_stable_diff_threshold','number']") != std::string::npos);
 }
 
+TEST_CASE("config web exposes brave search provider") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("\"brave\"") != std::string::npos);
+    CHECK(source.find("\"brave-free\"") != std::string::npos);
+    CHECK(source.find("provider == \"brave\" || provider == \"brave-free\"") != std::string::npos);
+    CHECK(html.find("duckduckgo / brave / tavily") != std::string::npos);
+}
+
 TEST_CASE("config web exposes a single system env editor backed by the env file") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
