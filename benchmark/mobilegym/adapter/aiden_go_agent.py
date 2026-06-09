@@ -155,6 +155,10 @@ class AidenGoAgent(_MobileGymBaseAgent):
                 },
             )
             daemon_bound = True
+            # Clear daemon history so prior tasks' conversation/screenshots
+            # don't bleed into this episode's context window. Mirrors what
+            # benchmark/runner/recovery.py does for the HDMI backend.
+            self._post_daemon("/api/clear", {}, timeout=self.episode_timeout_sec)
             chat_started = True
             chat_result = self._post_daemon(
                 "/api/chat",
