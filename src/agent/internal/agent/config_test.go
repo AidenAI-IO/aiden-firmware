@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,13 @@ func TestConfigValidateAcceptsAudioWakeup(t *testing.T) {
 	}
 	if got := cfg.TriggerModeOrDefault(); got != "wakeup" {
 		t.Fatalf("TriggerModeOrDefault() = %q, want wakeup", got)
+	}
+}
+
+func TestBundledSkillsDirCandidatesUseOEMOnly(t *testing.T) {
+	want := []string{"/oem/usr/share/aiden/skills"}
+	if got := bundledSkillsDirCandidates(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("bundledSkillsDirCandidates() = %#v, want %#v", got, want)
 	}
 }
 
