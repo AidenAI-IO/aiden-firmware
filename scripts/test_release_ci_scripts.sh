@@ -104,6 +104,8 @@ fi
 
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_compress_release_images.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_ota_manifest_generation.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_reusable_rootfs_release_asset.sh' "$CI_WORKFLOW"; then
     echo "CI must run repo-only release workflow and upload script tests" >&2
     exit 1
@@ -122,6 +124,22 @@ fi
 if ! grep -q 'rootfs_asset.outputs.rootfs_asset_metadata' "$WORKFLOW" || \
    ! grep -q -- '--asset-metadata' "$WORKFLOW"; then
     echo "build workflow must pass full reused rootfs asset metadata into manifest generation" >&2
+    exit 1
+fi
+
+if ! grep -q 'Compress OTA manifest images' "$WORKFLOW" || \
+   ! grep -q 'Compress release upload images' "$WORKFLOW"; then
+    echo "build workflow must compress OTA image assets before publishing releases" >&2
+    exit 1
+fi
+
+if ! grep -q 'release_upload_assets.outputs.upload_assets' "$WORKFLOW"; then
+    echo "build workflow must upload compressed release image assets" >&2
+    exit 1
+fi
+
+if ! grep -q 'scripts/compress_release_images.sh' "$WORKFLOW"; then
+    echo "build workflow must use the shared release image compression script" >&2
     exit 1
 fi
 

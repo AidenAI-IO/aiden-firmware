@@ -248,9 +248,40 @@ asset_json() {
   local file="$1"
   local path="$image_dir/$file"
   [ -f "$path" ] || die "missing required image: $path"
-  local size sha256 url metadata
+  local size sha256 image_sha256 url metadata compressed_file compressed_path
   if metadata="$(asset_metadata_for_file "$file")"; then
     asset_metadata_json "$file" "$metadata"
+    return
+  fi
+
+  compressed_file="${file}.tar.gz"
+  compressed_path="$image_dir/$compressed_file"
+  if [ -f "$compressed_path" ]; then
+    size="$(file_size "$compressed_path")"
+    sha256="$(file_sha256 "$compressed_path")"
+    image_sha256="$(file_sha256 "$path")"
+    if ! url="$(asset_url_for_file "$compressed_file")"; then
+      url=""
+    fi
+    if [ -z "$url" ] && [ -n "$base_url" ]; then
+      url="${base_url%/}/$compressed_file"
+    fi
+    if [ -n "$url" ]; then
+      jq -n \
+        --arg name "$compressed_file" \
+        --arg url "$url" \
+        --argjson size "$size" \
+        --arg sha256 "$sha256" \
+        --arg image_sha256 "$image_sha256" \
+        '{name:$name,url:$url,size:$size,sha256:$sha256,image_sha256:$image_sha256}'
+    else
+      jq -n \
+        --arg name "$compressed_file" \
+        --argjson size "$size" \
+        --arg sha256 "$sha256" \
+        --arg image_sha256 "$image_sha256" \
+        '{name:$name,size:$size,sha256:$sha256,image_sha256:$image_sha256}'
+    fi
     return
   fi
 
