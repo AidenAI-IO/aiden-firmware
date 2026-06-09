@@ -22,14 +22,14 @@ benchmark/artifacts/
 *.test
 *.out
 
-# Secrets
+# Secrets and runtime config
 *.pem
 agent.conf
 benchmark/mobilegym/config/agent.toml
 benchmark/mobilegym/config/control_token
 benchmark/mobilegym/config/bridge_token
 
-# MobileGym runtime
+# MobileGym runtime state
 benchmark/mobilegym/config/memory/
 benchmark/mobilegym/config/log/
 

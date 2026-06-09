@@ -1,7 +1,7 @@
 # Aiden MobileGym Docker Setup
 
 # ============ MobileGym Simulator ============
-FROM node:18-bullseye AS mobilegym-base
+FROM node:22-bullseye AS mobilegym-base
 
 # 支持构建时代理
 ARG HTTP_PROXY
@@ -89,15 +89,16 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o daemon ./cmd/daemon
 
 FROM debian:bullseye-slim AS daemon-runtime
 
-# daemon 是静态二进制，不需要安装额外包
-# RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
 
 COPY --from=daemon-builder /build/daemon /usr/local/bin/daemon
+COPY benchmark/mobilegym/docker/daemon-entrypoint.sh /usr/local/bin/daemon-entrypoint
+RUN chmod +x /usr/local/bin/daemon-entrypoint
 
 WORKDIR /app
 EXPOSE 8080
 
-CMD ["daemon", "-config", "/config", "-addr", "0.0.0.0:8080"]
+CMD ["daemon-entrypoint"]
 
 
 # ============ Test Runner ============
@@ -106,18 +107,41 @@ FROM python:3.11-slim AS test-runner
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ENV HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY}
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libdbus-1-3 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install uv (先升级 pip)
 RUN pip install --upgrade pip && pip install uv
+
+COPY --from=mobilegym-base /mobilegym /mobilegym
+COPY --from=mobilegym-base /root/.cache/ms-playwright /root/.cache/ms-playwright
 
 # Copy benchmark requirements
 COPY benchmark/pyproject.toml benchmark/uv.lock /app/benchmark/
 
 # Install dependencies
-RUN cd /app/benchmark && uv sync
+RUN cd /app/benchmark && uv sync && uv run pip install -r /mobilegym/bench_env/requirements.txt
 
 # Copy test code and adapter
 COPY benchmark/mobilegym /app/benchmark/mobilegym

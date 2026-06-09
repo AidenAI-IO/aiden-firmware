@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,12 +23,14 @@ class BridgeServer:
         tokens: BridgeTokens,
         host: str = "127.0.0.1",
         port: int = 0,
+        public_host: str | None = None,
         request_timeout_sec: float = 30,
     ):
         self.state = state
         self.tokens = tokens
         self.host = host
         self.port = port
+        self.public_host = public_host
         self.request_timeout_sec = request_timeout_sec
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -40,10 +43,17 @@ class BridgeServer:
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self._httpd.daemon_threads = True
         host, port = self._httpd.server_address[:2]
-        self.base_url = f"http://{host}:{port}"
+        self.base_url = f"http://{self._public_host(host)}:{port}"
         self._thread = threading.Thread(target=self._httpd.serve_forever, name="mobilegym-bridge-http", daemon=True)
         self._thread.start()
         return self.base_url
+
+    def _public_host(self, bound_host: str) -> str:
+        if self.public_host:
+            return self.public_host
+        if bound_host in {"", "0.0.0.0", "::"}:
+            return socket.gethostname()
+        return bound_host
 
     def stop(self) -> None:
         if self._httpd is None:
