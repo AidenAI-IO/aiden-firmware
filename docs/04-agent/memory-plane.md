@@ -594,7 +594,7 @@ planner prompt 拼 `memory.Planner` 和 `memory.Common`，verifier prompt 拼 `m
 **3. Procedure（增强版）**  
 - **动作详情存储**：新增 `ProcedureStep` 结构，记录每步的：
   - 工具名、description（从 tool_call arguments 自动提取）
-  - 坐标（`x=0.50,y=0.85`）、输入文本
+  - 坐标（`x=500,y=850`）、输入文本
   - app_name、page_name、outcome_note
 - **按页面索引**：procedure ID 改为 `proc_<hash(app, page, goal)>`，page_name 进入 entities/tags
 - **结构化渲染**：在 prompt 中展开前 5 步，显示完整操作路径
@@ -697,7 +697,7 @@ memory/episodes/
 | 场景 | 设计目标 | 当前实现 |
 |------|---------|---------|
 | 相似任务复用 | "在美团点蜜雪冰城"后再执行"在美团点星巴克"能复用导航 | ✅ 命中"美团/首页→购物车"navigation + "购物车"页 procedure |
-| Planner 看到的 procedure | 详细的步骤、坐标、页面转移 | ✅ "step 1: launch_app(美团)→首页 / step 2: touch_gesture(@0.5,0.85)→购物车" |
+| Planner 看到的 procedure | 详细的步骤、坐标、页面转移 | ✅ "step 1: launch_app(美团)→首页 / step 2: touch_gesture(@x=500,y=850)→购物车" |
 | App 先验知识 | 首次使用某 app 能看到常用页面和工具 | ✅ app_profile 累积 pages_seen、tools_used |
 | 失败经验追踪 | 失败模式进入 verifier | ✅ failure memory 路由到 Verifier.FailureModes |
 | 页面级索引 | 按 page_name 检索 procedure | ✅ procedure ID 包含 page，page_name 在 entities/tags |
@@ -714,4 +714,3 @@ memory/episodes/
 2. **增强冲突检测**：设备环境变化（语言/分辨率）时主动降低旧 procedure 的 confidence
 3. **语义检索**：接入轻量 embedding 提高召回精度
 4. **Benchmark 覆盖**：验证 memory 对任务成功率和步数的实际影响
-
