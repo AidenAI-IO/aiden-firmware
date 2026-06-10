@@ -115,6 +115,21 @@ func findValidSessionCutPoints(events []SessionEvent, start, end int) []int {
 	return cuts
 }
 
+// findNextValidSessionCutPoint returns the first legal cut point after idx and
+// before end. It is used when pinning the root user_input would otherwise leave
+// no non-root events to compact.
+func findNextValidSessionCutPoint(events []SessionEvent, idx, end int) int {
+	if end > len(events) {
+		end = len(events)
+	}
+	for i := idx + 1; i < end; i++ {
+		if classifySessionCutEligibility(events[i]) != cutForbidden {
+			return i
+		}
+	}
+	return -1
+}
+
 // findSessionTurnStartIndex walks backwards from idx (inclusive) to find the
 // user_input that opens the turn containing idx. Returns -1 when no turn start
 // exists at or before idx within [start, idx].
@@ -253,6 +268,59 @@ func snapToLegalCutAtOrBefore(events []SessionEvent, start, end, target int) int
 		break
 	}
 	return best
+}
+
+// findRootUserInputIndex returns the earliest user_input in the live event
+// stream. This is the root task objective for long multi-step sessions and is
+// pinned in the hot window across compactions instead of being entrusted solely
+// to chunk summaries.
+func findRootUserInputIndex(events []SessionEvent) int {
+	for i, event := range events {
+		if classifySessionCutEligibility(event) == cutTurnBoundary {
+			return i
+		}
+	}
+	return -1
+}
+
+// copySessionEventRangeExcludingIndex copies events[start:end], optionally
+// skipping excludeIndex when it falls inside that range.
+func copySessionEventRangeExcludingIndex(events []SessionEvent, start, end, excludeIndex int) []SessionEvent {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(events) {
+		end = len(events)
+	}
+	if start >= end {
+		return nil
+	}
+	out := make([]SessionEvent, 0, end-start)
+	for i := start; i < end; i++ {
+		if i == excludeIndex {
+			continue
+		}
+		out = append(out, events[i])
+	}
+	return out
+}
+
+// prependPinnedRootUserInput returns hotEvents with root pinned at the front.
+func prependPinnedRootUserInput(hotEvents []SessionEvent, root SessionEvent) []SessionEvent {
+	out := make([]SessionEvent, 0, len(hotEvents)+1)
+	out = append(out, root)
+	out = append(out, hotEvents...)
+	return out
+}
+
+// firstKeptEventID returns the first non-empty EventID in events.
+func firstKeptEventID(events []SessionEvent) string {
+	for _, event := range events {
+		if id := strings.TrimSpace(event.EventID); id != "" {
+			return id
+		}
+	}
+	return ""
 }
 
 // clampTokenBudgets bounds the reserve and keep-recent token budgets so they

@@ -306,8 +306,8 @@ func TestMemoryManagerSaveCompactsHotWindow(t *testing.T) {
 	}
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
-	if len(events) > 20 {
-		t.Fatalf("expected session events to be compacted to hot window <= 20, got %d", len(events))
+	if len(events) > cfg.HotWindowEvents+1 {
+		t.Fatalf("expected session events to fit hot window plus pinned root <= %d, got %d", cfg.HotWindowEvents+1, len(events))
 	}
 
 	chunks, err := NewSessionMemoryStore(filepath.Join(storageDir, "session")).RecallChunks(ctx, ChunkRecallQuery{Tags: []string{"报销"}, Entities: []string{"蓝海报销App"}, Limit: 1})
@@ -846,6 +846,9 @@ func TestMaintainFilesystemMemorySplitsLongSingleTurnWithoutOrphanToolResult(t *
 	if hot[0].Type == "tool_result" {
 		t.Fatalf("hot window must not open on an orphan tool_result: %#v", hot[0])
 	}
+	if hot[0].EventID != "evt_000" || hot[0].Type != "user_input" || !strings.Contains(hot[0].Content, goalMarker) {
+		t.Fatalf("root user goal must be pinned as the first hot event, got %#v", hot[0])
+	}
 
 	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 1})
 	if err != nil {
@@ -854,8 +857,13 @@ func TestMaintainFilesystemMemorySplitsLongSingleTurnWithoutOrphanToolResult(t *
 	if len(chunks) != 1 {
 		t.Fatalf("expected one compacted chunk, got %d", len(chunks))
 	}
-	if !strings.Contains(chunks[0].Summary, goalMarker) {
-		t.Fatalf("chunk summary lost the user goal %q:\n%s", goalMarker, chunks[0].Summary)
+	for _, event := range chunks[0].Evidence {
+		if event.EventID == "evt_000" {
+			t.Fatalf("root user goal must not be compressed into chunk evidence: %#v", event)
+		}
+	}
+	if strings.Contains(chunks[0].Summary, goalMarker) {
+		t.Fatalf("root user goal must not depend on chunk summary:\n%s", chunks[0].Summary)
 	}
 
 	// The split-turn cut metadata should be recorded on the index entry.
@@ -868,6 +876,81 @@ func TestMaintainFilesystemMemorySplitsLongSingleTurnWithoutOrphanToolResult(t *
 	}
 	if !index.Chunks[0].CutMeta.IsSplitTurn {
 		t.Fatalf("expected split-turn cut metadata, got %#v", index.Chunks[0].CutMeta)
+	}
+}
+
+func TestMaintainFilesystemMemoryPinsRootUserInputInHotWindow(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 8000
+	cfg.CompressAtPercent = 50
+	cfg.HotWindowEvents = 1000
+	cfg.KeepRecentTokens = 4000
+
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg),
+		WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+			var b strings.Builder
+			for _, e := range events {
+				b.WriteString(e.Content)
+				b.WriteString(" ")
+			}
+			return strings.TrimSpace(b.String())
+		}))
+
+	sessionDir := filepath.Join(storageDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir session: %v", err)
+	}
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+
+	const rootGoal = "ROOT_USER_GOAL_BOOK_FLIGHT_42"
+	mustAppend := func(typ, role, content string, i int) {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%03d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    typ, Role: role, Content: content,
+		}); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+	mustAppend("user_input", "user", rootGoal, 0)
+	for i := 1; i <= 12; i++ {
+		mustAppend("assistant_output", "assistant", strings.Repeat("a", 3200), i)
+	}
+
+	manager.SetLastPromptTokens(6000)
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory: %v", err)
+	}
+
+	hot := readSessionEvents(t, session.eventsPath())
+	foundPinnedRoot := false
+	for _, event := range hot {
+		if event.EventID == "evt_000" && event.Type == "user_input" && event.Role == "user" && event.Content == rootGoal {
+			foundPinnedRoot = true
+			break
+		}
+	}
+	if !foundPinnedRoot {
+		t.Fatalf("root user_input must stay pinned in the hot window; hot=%#v", hot)
+	}
+
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 1})
+	if err != nil {
+		t.Fatalf("RecallChunks: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected one compacted chunk, got %d", len(chunks))
+	}
+	for _, event := range chunks[0].Evidence {
+		if event.EventID == "evt_000" {
+			t.Fatalf("root user_input must not be compressed into chunk evidence: %#v", event)
+		}
+	}
+	if strings.Contains(chunks[0].Summary, rootGoal) {
+		t.Fatalf("root user_input must not rely on chunk summary for recall:\n%s", chunks[0].Summary)
 	}
 }
 
@@ -959,6 +1042,9 @@ func TestMaintainFilesystemMemoryChineseCountFallbackNoOrphanToolResult(t *testi
 	if hot[0].Type == "tool_result" {
 		t.Fatalf("hot window opened on an orphan tool_result: %#v", hot[0])
 	}
+	if hot[0].EventID != "evt_000" || hot[0].Type != "user_input" || !strings.Contains(hot[0].Content, goalMarker) {
+		t.Fatalf("root user goal must be pinned as the first hot event, got %#v", hot[0])
+	}
 
 	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 1})
 	if err != nil {
@@ -967,8 +1053,13 @@ func TestMaintainFilesystemMemoryChineseCountFallbackNoOrphanToolResult(t *testi
 	if len(chunks) != 1 {
 		t.Fatalf("expected one compacted chunk, got %d", len(chunks))
 	}
-	if !strings.Contains(chunks[0].Summary, goalMarker) {
-		t.Fatalf("chunk summary lost the user goal %q:\n%s", goalMarker, chunks[0].Summary)
+	for _, event := range chunks[0].Evidence {
+		if event.EventID == "evt_000" {
+			t.Fatalf("root user goal must not be compressed into chunk evidence: %#v", event)
+		}
+	}
+	if strings.Contains(chunks[0].Summary, goalMarker) {
+		t.Fatalf("root user goal must not depend on chunk summary:\n%s", chunks[0].Summary)
 	}
 }
 
