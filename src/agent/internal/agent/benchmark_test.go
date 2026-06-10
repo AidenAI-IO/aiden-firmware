@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveBenchmarkDir_FlagWins(t *testing.T) {
@@ -208,5 +210,77 @@ func TestHandleBenchmarkReport_NotFound(t *testing.T) {
 	s.handleBenchmarkReport(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestHandleBenchmarkStatus_PassThroughIdle(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "state.json"), []byte(`{"status":"idle"}`), 0o644)
+	s := &Server{benchmarkDir: root}
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/status", nil)
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkStatus(rec, req)
+	if !strings.Contains(rec.Body.String(), `"status":"idle"`) {
+		t.Errorf("body = %s", rec.Body.String())
+	}
+}
+
+func TestHandleBenchmarkStatus_SelfHealStaleRunning(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	os.WriteFile(statePath, []byte(`{"status":"running","suite":"x"}`), 0o644)
+	old := time.Now().Add(-30 * time.Second)
+	os.Chtimes(statePath, old, old)
+	pidFile := filepath.Join(t.TempDir(), "runner.pid")
+	os.WriteFile(pidFile, []byte("99999999"), 0o644)
+	s := &Server{benchmarkDir: root, benchmarkPIDFile: pidFile}
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/status", nil)
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkStatus(rec, req)
+	if !strings.Contains(rec.Body.String(), `"recovered":true`) {
+		t.Errorf("body = %s", rec.Body.String())
+	}
+	data, _ := os.ReadFile(statePath)
+	if !strings.Contains(string(data), `"idle"`) {
+		t.Errorf("state.json after self-heal: %s", data)
+	}
+}
+
+func TestHandleBenchmarkStatus_GracePeriod(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "state.json"), []byte(`{"status":"running"}`), 0o644)
+	pidFile := filepath.Join(t.TempDir(), "runner.pid")
+	os.WriteFile(pidFile, []byte("99999999"), 0o644)
+	s := &Server{benchmarkDir: root, benchmarkPIDFile: pidFile}
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/status", nil)
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkStatus(rec, req)
+	if !strings.Contains(rec.Body.String(), `"running"`) {
+		t.Errorf("expected to keep running within grace; got %s", rec.Body.String())
+	}
+}
+
+func TestHandleBenchmarkLog_TailsLast64KB(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "log")
+	os.WriteFile(logPath, []byte(strings.Repeat("a", 100*1024)), 0o644)
+	s := &Server{benchmarkLogPath: logPath}
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/log", nil)
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkLog(rec, req)
+	if rec.Body.Len() > 64*1024 {
+		t.Errorf("body len = %d, want <= 64KB", rec.Body.Len())
+	}
+	if rec.Body.Len() < 60*1024 {
+		t.Errorf("body len = %d, expected ~64KB", rec.Body.Len())
+	}
+}
+
+func TestHandleBenchmarkLog_MissingReturnsEmpty(t *testing.T) {
+	s := &Server{benchmarkLogPath: filepath.Join(t.TempDir(), "nonexistent")}
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/log", nil)
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkLog(rec, req)
+	if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
+		t.Errorf("code=%d len=%d", rec.Code, rec.Body.Len())
 	}
 }

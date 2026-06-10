@@ -33,6 +33,8 @@ type Server struct {
 	addr             string
 	logger           *Logger
 	benchmarkDir     string
+	benchmarkPIDFile string
+	benchmarkLogPath string
 	mu               sync.Mutex
 	history          []Message
 	historyStore     *ChatHistoryStore
@@ -180,14 +182,15 @@ type ToolInvokeResponse struct {
 func NewServer(runtime *Runtime, addr string, benchmarkDir string) *Server {
 	bridge := NewPhoneBridge(runtime.logger)
 	s := &Server{
-		runtime:        runtime,
-		addr:           addr,
-		logger:         runtime.logger,
-		benchmarkDir:   benchmarkDir,
-		history:        make([]Message, 0),
-		bridge:         bridge,
-		pendingResults: make(map[string]*chatPendingResult),
-		activeRuns:     make(map[string]context.CancelFunc),
+		runtime:          runtime,
+		addr:             addr,
+		logger:           runtime.logger,
+		benchmarkDir:     benchmarkDir,
+		benchmarkPIDFile: "/tmp/benchmark_runner.pid",
+		history:          make([]Message, 0),
+		bridge:           bridge,
+		pendingResults:   make(map[string]*chatPendingResult),
+		activeRuns:       make(map[string]context.CancelFunc),
 	}
 	if runtime.config.ConfigDir != "" {
 		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
@@ -264,6 +267,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/benchmark/suites", s.handleBenchmarkSuites)
 	mux.HandleFunc("/benchmark/runs", s.handleBenchmarkRuns)
 	mux.HandleFunc("/benchmark/report/", s.handleBenchmarkReport)
+	mux.HandleFunc("/benchmark/status", s.handleBenchmarkStatus)
+	mux.HandleFunc("/benchmark/log", s.handleBenchmarkLog)
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)

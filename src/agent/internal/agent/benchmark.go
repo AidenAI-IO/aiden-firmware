@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // ResolveBenchmarkDir picks the first existing benchmark root from this
@@ -161,4 +164,96 @@ func sanitizeRunID(id string) string {
 		}
 	}
 	return b.String()
+}
+
+const benchmarkStartupGraceSec = 10
+
+func (s *Server) handleBenchmarkStatus(w http.ResponseWriter, r *http.Request) {
+	if s.benchmarkDir == "" {
+		http.Error(w, `{"error":"benchmark directory not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	statePath := filepath.Join(s.benchmarkDir, "state.json")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"idle"}`))
+		return
+	}
+	body := string(data)
+	if strings.Contains(body, `"running"`) {
+		info, _ := os.Stat(statePath)
+		ageSec := int64(-1)
+		if info != nil {
+			ageSec = int64(time.Since(info.ModTime()).Seconds())
+		}
+		past := ageSec < 0 || ageSec > benchmarkStartupGraceSec
+		if past && !s.benchmarkRunnerAlive() {
+			body = `{"status":"idle","recovered":true}`
+			os.WriteFile(statePath, []byte(`{"status":"idle"}`), 0o644)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(body))
+}
+
+func (s *Server) benchmarkRunnerAlive() bool {
+	pidFile := s.benchmarkPIDFile
+	if pidFile == "" {
+		pidFile = "/tmp/benchmark_runner.pid"
+	}
+	if data, err := os.ReadFile(pidFile); err == nil {
+		var pid int
+		if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil && pid > 0 {
+			if proc, err := os.FindProcess(pid); err == nil {
+				if err := proc.Signal(syscall.Signal(0)); err == nil {
+					return true
+				}
+			}
+		}
+	}
+	out, err := exec.Command("sh", "-c",
+		"ps -w 2>/dev/null | grep -F 'runner.main' | grep -v grep | head -1").Output()
+	if err != nil {
+		return true
+	}
+	return len(strings.TrimSpace(string(out))) > 0
+}
+
+const benchmarkLogTailBytes = 64 * 1024
+
+func (s *Server) handleBenchmarkLog(w http.ResponseWriter, r *http.Request) {
+	logPath := s.benchmarkLogPath
+	if logPath == "" {
+		logPath = "/tmp/benchmark_run.log"
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		// File doesn't exist or can't read - return empty
+		return
+	}
+
+	// If file is larger than 64KB, take the last 64KB
+	if len(data) > benchmarkLogTailBytes {
+		// Find first newline after the cut point to avoid partial lines
+		start := len(data) - benchmarkLogTailBytes
+		foundNewline := false
+		for start < len(data) && data[start] != '\n' {
+			start++
+			if start-len(data)+benchmarkLogTailBytes > 1024 {
+				// Searched 1KB without finding newline, just use the cut point
+				start = len(data) - benchmarkLogTailBytes
+				foundNewline = true
+				break
+			}
+		}
+		if !foundNewline && start < len(data) {
+			start++ // Skip the newline itself
+		}
+		data = data[start:]
+	}
+
+	w.Write(data)
 }
