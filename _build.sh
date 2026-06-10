@@ -36,10 +36,14 @@ export GOMODCACHE="/tmp/go-mod"
 export GOPATH="/tmp/gopath"
 export GOTOOLCHAIN=local
 
+AGENT_COMMIT="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+AGENT_BUILD_VERSION="$(date -u +"%Y%m%d-%H%M%S")-${AGENT_COMMIT}"
+AGENT_LDFLAGS="-X aiden-agent/internal/agent.buildCommit=${AGENT_COMMIT} -X aiden-agent/internal/agent.buildVersion=${AGENT_BUILD_VERSION}"
+
 cd src/agent
-GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -o "../../${BUILD_DIR}/bin/agent" ./cmd/daemon
-GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -o "../../${BUILD_DIR}/bin/ota" ./cmd/ota
-GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -o "../../${BUILD_DIR}/bin/abctl" ./cmd/abctl
+GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -ldflags "${AGENT_LDFLAGS}" -o "../../${BUILD_DIR}/bin/agent" ./cmd/daemon
+GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -ldflags "${AGENT_LDFLAGS}" -o "../../${BUILD_DIR}/bin/ota" ./cmd/ota
+GOOS=linux GOARCH=arm GOARM=7 go build -buildvcs=false -ldflags "${AGENT_LDFLAGS}" -o "../../${BUILD_DIR}/bin/abctl" ./cmd/abctl
 cd ../..
 
 echo "Go binaries built:"

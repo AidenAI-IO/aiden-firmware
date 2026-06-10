@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/chains"
@@ -34,33 +35,39 @@ func effectiveMaxIterations(configured int) int {
 const currentEnvironmentHintMaxAge = 10 * time.Minute
 
 type Runtime struct {
-	config           Config
-	models           ModelResolver
-	memories         *MemoryManager
-	tools            *ToolSet
-	skills           *SkillManager
-	skillsLoaded     bool
-	skillsReloadMu   sync.Mutex
-	skillsDirty      bool
-	mergeWorker      *MergeWorker
-	logger           *Logger
-	profileDebouncer *ProfileDebouncer
-	sleep            *SleepController
-	memoryPlane      MemoryPlane
+	config             Config
+	models             ModelResolver
+	memories           *MemoryManager
+	tools              *ToolSet
+	skills             *SkillManager
+	skillsLoaded       bool
+	skillsReloadMu     sync.Mutex
+	skillsDirty        bool
+	mergeWorker        *MergeWorker
+	logger             *Logger
+	profileDebouncer   *ProfileDebouncer
+	sleep              *SleepController
+	memoryPlane        MemoryPlane
+	telemetrySessionID string
 }
 
 type RunRequest struct {
-	Input        string
-	Attachments  []InputAttachment
-	Skills       []string
-	StreamWriter io.Writer
-	MaxTokens    int
-	EventHandler func(RunEvent)
+	Input       string
+	Attachments []InputAttachment
+	Skills      []string
+	EpisodeID   string
+	// RuntimeContext is dynamic per-turn system context, such as connected
+	// hardware/app state. It is not persisted as user configuration.
+	RuntimeContext string
+	StreamWriter   io.Writer
+	MaxTokens      int
+	EventHandler   func(RunEvent)
 }
 
 type RunResult struct {
 	Output         string          `json:"output"`
 	Skills         []string        `json:"skills"`
+	EpisodeID      string          `json:"episode_id,omitempty"`
 	Memory         []MessageRecord `json:"memory,omitempty"`
 	Metrics        *RunMetrics     `json:"metrics,omitempty"`
 	SleepRequested bool            `json:"sleep_requested,omitempty"`
@@ -85,6 +92,7 @@ type RunMetrics struct {
 type RunEvent struct {
 	Type        string    `json:"type"`
 	Role        string    `json:"role,omitempty"`
+	EpisodeID   string    `json:"episode_id,omitempty"`
 	ToolName    string    `json:"tool_name,omitempty"`
 	ToolInput   string    `json:"tool_input,omitempty"`
 	Description string    `json:"description,omitempty"`
@@ -94,20 +102,34 @@ type RunEvent struct {
 }
 
 type usageTrackingModel struct {
-	inner   llms.Model
-	metrics *RunMetrics
+	inner         llms.Model
+	metrics       *RunMetrics
+	promptCapture *telemetryPromptCapture
 }
 
 func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	startedAt := time.Now()
 	res, err := m.inner.GenerateContent(ctx, messages, options...)
 	if err == nil {
 		recordUsageMetrics(m.metrics, res)
+	}
+	if m.promptCapture != nil {
+		m.promptCapture.Record(ctx, startedAt, time.Now(), messages, options, res, err)
 	}
 	return res, err
 }
 
 func (m *usageTrackingModel) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
-	return m.inner.Call(ctx, prompt, options...)
+	startedAt := time.Now()
+	out, err := m.inner.Call(ctx, prompt, options...)
+	if m.promptCapture != nil {
+		res := &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: out}}}
+		m.promptCapture.Record(ctx, startedAt, time.Now(), []llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart(prompt)},
+		}}, options, res, err)
+	}
+	return out, err
 }
 
 func NewRuntime(cfg Config) (*Runtime, error) {
@@ -167,11 +189,18 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err := proxy.Validate(); err != nil {
 		return nil, fmt.Errorf("proxy environment: %w", err)
 	}
-	toolSet := NewBuiltinToolSet(cfg.HID, cfg.Audio, cfg.Search, proxy, WithSleepController(sleepController))
+	toolSet := NewBuiltinToolSet(
+		cfg.HID,
+		cfg.Audio,
+		cfg.Search,
+		proxy,
+		WithSleepController(sleepController),
+		WithScreenStableDefaults(cfg.ScreenStableDefaults()),
+	)
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
 	modelManager := NewModelManager(cfg.Model, proxy)
 	summarizeFn := buildLLMSummarizeFn(modelManager)
-	structuredSummarizeFn := buildLLMStructuredSummarizeFn(modelManager)
+	structuredSummarizeFn := buildLLMStructuredSummarizeFn(modelManager, logger)
 	profileFn := buildLLMProfileFn(modelManager)
 	contextWindowFn := func() int { return modelManager.Spec().ContextWindow }
 
@@ -212,6 +241,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger)
+	rt.markInterruptedEpisodesBestEffort()
 	return rt, nil
 }
 
@@ -229,18 +259,76 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
 	}
 	rt := &Runtime{
-		config:       cfg,
-		models:       models,
-		memories:     memories,
-		tools:        tools,
-		skills:       skillManager,
-		skillsLoaded: skillIndex != nil && len(skillIndex.Names()) > 0,
-		sleep:        sleepController,
+		config:             cfg,
+		models:             models,
+		memories:           memories,
+		tools:              tools,
+		skills:             skillManager,
+		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
+		sleep:              sleepController,
+		telemetrySessionID: uuid.NewString(),
 	}
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
+		rt.markInterruptedEpisodesBestEffort()
 	}
 	return rt
+}
+
+func (r *Runtime) NewEpisodeID() string {
+	if r == nil || r.memoryPlane == nil {
+		return ""
+	}
+	return newTaskEpisodeID(time.Now().UTC())
+}
+
+func (r *Runtime) markInterruptedEpisodesBestEffort() {
+	plane, ok := r.memoryPlane.(*FilesystemMemoryPlane)
+	if !ok || plane == nil || plane.episodes == nil {
+		return
+	}
+	episodes, err := plane.episodes.MarkRunningEpisodesInterruptedWithDetails(context.Background(), "agent restarted before the task episode completed")
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("[memory] mark interrupted episodes failed: %v", err)
+		}
+		return
+	}
+	if len(episodes) == 0 {
+		return
+	}
+	r.persistInterruptedEpisodeHistoryBestEffort(plane, episodes)
+	r.exportInterruptedEpisodesBestEffort(episodes)
+	if r.logger != nil {
+		r.logger.Warn("[memory] marked %d running task episode(s) as interrupted", len(episodes))
+	}
+}
+
+func (r *Runtime) persistInterruptedEpisodeHistoryBestEffort(plane *FilesystemMemoryPlane, episodes []TaskEpisode) {
+	if plane == nil || strings.TrimSpace(plane.memoryDir) == "" || len(episodes) == 0 {
+		return
+	}
+	store := NewChatHistoryStore(filepath.Join(plane.memoryDir, "chat_history"))
+	for _, episode := range episodes {
+		if err := store.Append(context.Background(), interruptedEpisodeStatusMessage(episode)); err != nil && r.logger != nil {
+			r.logger.Warn("[memory] persist interrupted episode history failed: episode_id=%s error=%v", episode.ID, err)
+		}
+	}
+}
+
+func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
+	if len(episodes) == 0 {
+		return
+	}
+	for _, episode := range episodes {
+		enrichEpisodeTelemetry(&episode, r.config)
+		r.enrichEpisodeRuntimeTelemetry(&episode)
+		if episode.Extra == nil {
+			episode.Extra = map[string]interface{}{}
+		}
+		episode.Extra["interruption_source"] = "agent_restart"
+		r.exportEpisodeBestEffort(episode, nil)
+	}
 }
 
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
@@ -288,7 +376,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
-	model = &usageTrackingModel{inner: model, metrics: metrics}
+	promptCapture := newTelemetryPromptCapture(r.config.Telemetry.EnabledOrDefault())
+	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture}
 
 	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
 	if err != nil {
@@ -301,6 +390,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Attachments:  req.Attachments,
 		Skills:       skillNames,
 		ToolNames:    toolNamesFromTools(availableTools),
+		EpisodeID:    req.EpisodeID,
 		DeviceID:     defaultMemoryDeviceID,
 		CurrentHints: r.currentEnvironmentHints(),
 	}
@@ -318,6 +408,16 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	var episodeRecorder *EpisodeRecorder
 	if r.memoryPlane != nil {
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
+		if episodeRecorder != nil {
+			retrieveReq.EpisodeID = episodeRecorder.ID()
+			if err := episodeRecorder.Start(context.Background()); err != nil && r.logger != nil {
+				r.logger.Warn("[memory] start episode failed: %v", err)
+			}
+		}
+	}
+	episodeID := ""
+	if episodeRecorder != nil {
+		episodeID = episodeRecorder.ID()
 	}
 
 	maxIterations := effectiveMaxIterations(r.config.MaxIterations)
@@ -334,6 +434,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			startTime:    startTime,
 			logger:       r.logger,
 			eventHandler: req.EventHandler,
+			episodeID:    episodeID,
 		}
 	}
 	if streamCallbackHandler != nil {
@@ -344,8 +445,12 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if streamCallbackHandler != nil {
 		executorHandler = streamCallbackHandler
 	}
-	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext)
-	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, memoryHandle.Memory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault())
+	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
+	plannerMemory := memoryHandle.Memory
+	if historyStore := chatHistoryStoreForConfigDir(r.config.ConfigDir); historyStore != nil {
+		plannerMemory = newChatHistoryPlannerMemory(plannerMemory, historyStore)
+	}
+	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault())
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
@@ -360,7 +465,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			}
 		}
 		if err != nil {
-			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
+			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
 			return RunResult{}, err
 		}
 	}
@@ -368,26 +473,27 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
 	r.memories.SetLastPromptTokens(metrics.LastPromptTokens)
 	if err := r.memories.AppendExchange(ctx, "default", normalizedInput, output); err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
 		return RunResult{}, err
 	}
 
 	memorySnapshot, err := r.memories.Snapshot(ctx, "default")
 	if err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
 		return RunResult{}, err
 	}
 	if err := r.memories.SaveSnapshot(ctx, "default", memorySnapshot); err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
 		return RunResult{}, err
 	}
 	r.memories.RequestMaintenance()
-	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil)
+	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture)
 
 	sleepRequested, sleepReason := r.sleep.Consume()
 	return RunResult{
 		Output:         output,
 		Skills:         runSkills.GetActivatedSkills(),
+		EpisodeID:      episodeID,
 		Memory:         memorySnapshot,
 		Metrics:        metrics,
 		SleepRequested: sleepRequested,
@@ -510,7 +616,7 @@ func toolNamesFromTools(tools []langtools.Tool) []string {
 	return uniqueNonEmpty(names)
 }
 
-func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error) {
+func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture) {
 	if recorder == nil || r.memoryPlane == nil {
 		return
 	}
@@ -523,11 +629,67 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 	tags := cfg.extractTagsFromText(input)
 	entities := cfg.extractEntitiesFromText(input)
 	episode := recorder.Finish(output, metrics, runErr, tags, entities)
+	enrichEpisodeTelemetry(&episode, r.config)
+	r.enrichEpisodeRuntimeTelemetry(&episode)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := r.memoryPlane.CommitEpisode(ctx, episode); err != nil && r.logger != nil {
 		r.logger.Warn("[memory] commit episode failed: %v", err)
+		return
 	}
+	r.exportEpisodeBestEffort(episode, promptCapture)
+}
+
+func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
+	if r == nil || episode == nil {
+		return
+	}
+	if episode.Extra == nil {
+		episode.Extra = map[string]interface{}{}
+	}
+	if extraString(episode.Extra, "session_id") == "" && r.telemetrySessionID != "" {
+		episode.Extra["session_id"] = r.telemetrySessionID
+	}
+	if _, ok := episode.Extra["model_parameters"]; !ok {
+		if params := telemetryModelParametersFromModelConfig(r.config.Model); len(params) > 0 {
+			episode.Extra["model_parameters"] = params
+		}
+	}
+}
+
+func telemetryModelParametersFromModelConfig(cfg ModelConfig) map[string]interface{} {
+	params := map[string]interface{}{}
+	if cfg.Temperature != 0 {
+		params["temperature"] = cfg.Temperature
+	}
+	if cfg.MaxTokens > 0 {
+		params["max_tokens"] = cfg.MaxTokens
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	return params
+}
+
+func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *telemetryPromptCapture) {
+	if !r.config.Telemetry.EnabledOrDefault() || strings.TrimSpace(episode.UserGoal) == "" {
+		return
+	}
+	if r.config.ConfigDir == "" {
+		return
+	}
+	exporter := NewEpisodeExporter(r.config.Telemetry, r.logger)
+	promptCalls := promptCapture.Snapshot()
+	episodesRoot := filepath.Join(r.config.ConfigDir, "memory", "episodes")
+	episodeDir := EpisodeDirectory(episodesRoot, episode)
+	timeout := r.config.Telemetry.UploadTimeoutOrDefault()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if err := exporter.ExportEpisodeDir(ctx, episodeDir, episode, promptCalls); err != nil && r.logger != nil {
+			r.logger.Warn("[telemetry] export episode failed: %v", err)
+		}
+	}()
 }
 
 func wrapToolsWithCallbacks(tools []langtools.Tool, handler callbacks.Handler) []langtools.Tool {
@@ -549,12 +711,14 @@ func (r *Runtime) buildAgent(
 	skills ResolvedSkills,
 	availableTools []langtools.Tool,
 	attachments []InputAttachment,
+	runtimeContext string,
 	callbackHandler callbacks.Handler,
 ) agents.Agent {
 	systemMessage := buildFunctionAgentSystemMessage(
 		AgentConfig{
 			Instruction:      r.config.Instruction,
 			AdditionalPrompt: r.config.AdditionalPrompt,
+			RuntimeContext:   runtimeContext,
 		},
 		skills,
 		availableTools,
@@ -586,7 +750,7 @@ func (r *Runtime) buildAgent(
 	return agent
 }
 
-func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []langtools.Tool, memoryContext MemoryContext) RoleProfiles {
+func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []langtools.Tool, memoryContext MemoryContext, runtimeContext string) RoleProfiles {
 	if memoryContext.IsEmpty() && r.config.ConfigDir != "" {
 		memoryContext = normalizeMemoryContext(r.memoryContextForPrompt())
 	}
@@ -594,6 +758,7 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 		AgentConfig{
 			Instruction:      r.config.Instruction,
 			AdditionalPrompt: r.config.AdditionalPrompt,
+			RuntimeContext:   runtimeContext,
 		},
 		skills,
 		availableTools,
@@ -626,6 +791,7 @@ type runtimeCallbackHandler struct {
 	firstTokenSeen bool
 	logger         *Logger
 	eventHandler   func(RunEvent)
+	episodeID      string
 	mu             sync.Mutex
 	pendingActions []schema.AgentAction
 }
@@ -704,6 +870,7 @@ func (h *runtimeCallbackHandler) HandleToolEnd(ctx context.Context, output strin
 		if ok {
 			h.eventHandler(RunEvent{
 				Type:      "tool_result",
+				EpisodeID: h.episodeID,
 				ToolName:  action.Tool,
 				ToolInput: normalizeToolInput(action.ToolInput),
 				Content:   output,
@@ -722,6 +889,7 @@ func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error)
 		if ok {
 			h.eventHandler(RunEvent{
 				Type:      "tool_result",
+				EpisodeID: h.episodeID,
 				ToolName:  action.Tool,
 				ToolInput: normalizeToolInput(action.ToolInput),
 				Content:   "error: " + err.Error(),
@@ -743,6 +911,7 @@ func (h *runtimeCallbackHandler) HandleNamedToolEnd(ctx context.Context, name, i
 	if h.eventHandler != nil {
 		h.eventHandler(RunEvent{
 			Type:      "tool_result",
+			EpisodeID: h.episodeID,
 			ToolName:  name,
 			ToolInput: input,
 			Content:   output,
@@ -761,6 +930,7 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 	if h.eventHandler != nil {
 		h.eventHandler(RunEvent{
 			Type:      "tool_result",
+			EpisodeID: h.episodeID,
 			ToolName:  name,
 			ToolInput: input,
 			Content:   "error: " + err.Error(),
@@ -785,6 +955,7 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 		h.pushPendingAction(action)
 		h.eventHandler(RunEvent{
 			Type:        "tool_call",
+			EpisodeID:   h.episodeID,
 			ToolName:    action.Tool,
 			ToolInput:   action.ToolInput,
 			Description: description,
@@ -805,6 +976,7 @@ func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, con
 		h.eventHandler(RunEvent{
 			Type:      "role_output",
 			Role:      role,
+			EpisodeID: h.episodeID,
 			Content:   content,
 			Timestamp: time.Now(),
 		})
@@ -928,10 +1100,13 @@ const (
 	structuredSummaryMaxSummaryRune = 480
 )
 
-func buildLLMStructuredSummarizeFn(models ModelResolver) StructuredSummarizeFn {
+func buildLLMStructuredSummarizeFn(models ModelResolver, logger *Logger) StructuredSummarizeFn {
 	return func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary {
 		model, err := models.Get()
 		if err != nil {
+			if logger != nil {
+				logger.Warn("[memory] structured summary: failed to get model: %v", err)
+			}
 			return ChunkStructuredSummary{}
 		}
 		var transcript strings.Builder
@@ -947,10 +1122,16 @@ func buildLLMStructuredSummarizeFn(models ModelResolver) StructuredSummarizeFn {
 		}
 		result, err := llms.GenerateFromSinglePrompt(ctx, model, structuredSummarizerPrompt+transcript.String(), llms.WithMaxTokens(800))
 		if err != nil {
+			if logger != nil {
+				logger.Warn("[memory] structured summary: LLM generation failed: %v", err)
+			}
 			return ChunkStructuredSummary{}
 		}
 		structured, err := parseChunkStructuredSummaryJSON(result)
 		if err != nil {
+			if logger != nil {
+				logger.Warn("[memory] structured summary: JSON parse failed: %v", err)
+			}
 			return ChunkStructuredSummary{}
 		}
 		return structured

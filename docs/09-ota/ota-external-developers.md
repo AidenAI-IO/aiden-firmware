@@ -7,7 +7,7 @@ This guide explains how external developers can distribute custom firmware using
 The OTA system supports distributing firmware from any source using `--manifest-url`:
 
 ```bash
-ota check-now \
+ota update \
   --manifest-url "https://example.com/path/to/manifest.json" \
   --public-key /path/to/your_pubkey.pem
 ```
@@ -54,7 +54,7 @@ Upload the manifest and images to any web server that can serve static files.
 scp ota_public_key.pem root@192.168.50.188:/userdata/ota/custom_pubkey.pem
 
 # On device, update from your manifest
-ota check-now \
+ota update \
   --manifest-url "https://your-server.com/firmware/v1.0.0/manifest.json" \
   --public-key /userdata/ota/custom_pubkey.pem
 ```
@@ -96,7 +96,7 @@ gh release create "$TAG" \
 ```bash
 MANIFEST_URL="https://github.com/$REPO/releases/download/$TAG/manifest.json"
 
-ota check-now \
+ota update \
   --manifest-url "$MANIFEST_URL" \
   --public-key /userdata/ota/custom_pubkey.pem
 ```
@@ -144,7 +144,7 @@ rsync -avz pico-sdk/output/image/*.img \
 
 3. **Update devices:**
 ```bash
-ota check-now \
+ota update \
   --manifest-url "https://firmware.mycompany.com/aiden/v1.0.0/manifest.json" \
   --public-key /userdata/ota/company_pubkey.pem
 ```
@@ -169,7 +169,7 @@ cd pico-sdk/output/image
 python3 -m http.server 8000
 
 # Test on device (use --dry-run to avoid flashing)
-ota check-now \
+ota update \
   --manifest-url "http://192.168.1.100:8000/manifest.json" \
   --public-key /userdata/ota/dev_pubkey.pem \
   --dry-run
@@ -208,6 +208,8 @@ When you use `--base-url`, the manifest includes direct download URLs:
   }
 }
 ```
+
+Compressed assets can use a `.img.tar.gz` name. For those assets, `size` and `sha256` identify the downloaded archive, and the required `image_sha256` field identifies the extracted `.img` that is written to the partition. Use `image_sha256` in `requires_partitions`.
 
 ## Persistent Configuration
 
@@ -279,7 +281,7 @@ To control which firmware a device installs, point it at a specific manifest via
 # The OTA daemon writes to stderr, which S54ota redirects to a log file
 tail -f /var/log/ota/ota.log
 
-# When running `ota check-now` manually, logs go to stderr (your terminal)
+# When running `ota update` manually, logs go to stderr (your terminal)
 ```
 
 ### Verify manifest signature manually
@@ -289,7 +291,7 @@ ota verify-manifest /path/to/manifest.json --public-key /path/to/pubkey.pem
 
 ### Test download without flashing
 ```bash
-ota check-now --manifest-url URL --public-key KEY --dry-run
+ota update --manifest-url URL --public-key KEY --dry-run
 ```
 
 ### Common Issues
@@ -352,7 +354,7 @@ aws s3 cp latest.txt s3://my-firmware-bucket/aiden-firmware/latest.txt
 
 echo "Firmware published!"
 echo "Users can update with:"
-echo "  ota check-now --manifest-url $BASE_URL/manifest.json --public-key /path/to/pubkey.pem"
+echo "  ota update --manifest-url $BASE_URL/manifest.json --public-key /path/to/pubkey.pem"
 ```
 
 ## Support

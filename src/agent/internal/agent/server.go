@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -27,17 +29,24 @@ import (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime      *Runtime
-	addr         string
-	logger       *Logger
-	mu           sync.Mutex
-	history      []Message
-	sttClient    STTClient
-	ttsManager   *tts.ProviderManager
-	ttsMu        sync.RWMutex
-	audioClient  *AudioServiceClient
-	recordMu     sync.Mutex
-	webRecording *webAudioRecording
+	runtime          *Runtime
+	addr             string
+	logger           *Logger
+	mu               sync.Mutex
+	history          []Message
+	historyStore     *ChatHistoryStore
+	episodeStore     *TaskEpisodeStore
+	sttClient        STTClient
+	ttsManager       *tts.ProviderManager
+	ttsMu            sync.RWMutex
+	audioClient      *AudioServiceClient
+	recordMu         sync.Mutex
+	webRecording     *webAudioRecording
+	bridge           *PhoneBridge
+	pendingResults   map[string]*chatPendingResult
+	pendingResultsMu sync.Mutex
+	activeRuns       map[string]context.CancelFunc
+	activeRunsMu     sync.Mutex
 }
 
 type webAudioRecording struct {
@@ -75,6 +84,9 @@ type MessageAttachment struct {
 type Message struct {
 	Type        string              `json:"type"` // "user", "assistant", "tool_call", "tool_result", "role_output"
 	Role        string              `json:"role,omitempty"`
+	EpisodeID   string              `json:"episode_id,omitempty"`
+	RequestID   string              `json:"request_id,omitempty"`
+	Status      string              `json:"status,omitempty"`
 	Content     string              `json:"content"`
 	ToolName    string              `json:"tool_name,omitempty"`
 	ToolInput   string              `json:"tool_input,omitempty"`
@@ -89,6 +101,16 @@ type ChatRequest struct {
 	Message     string              `json:"message"`
 	Skills      []string            `json:"skills,omitempty"`
 	Attachments []MessageAttachment `json:"attachments,omitempty"`
+	RequestID   string              `json:"request_id,omitempty"`
+}
+
+type ChatCancelRequest struct {
+	RequestID string `json:"request_id"`
+}
+
+type ChatCancelResponse struct {
+	RequestID string `json:"request_id"`
+	Status    string `json:"status"`
 }
 
 // ChatResponse represents a chat response
@@ -97,12 +119,37 @@ type ChatResponse struct {
 	History  []Message `json:"history"`
 }
 
+// chatPendingResult stores intermediate results for async chat requests.
+// The agent goroutine appends tool_call / assistant messages as they occur;
+// the polling endpoint reads them back with an offset cursor.
+type chatPendingResult struct {
+	mu       sync.Mutex
+	messages []Message
+	done     bool
+	err      string
+	// Per-request history (separate from server-level history)
+	history []Message
+}
+
+// ChatResultResponse is the JSON shape for GET /api/chat/result.
+type ChatResultResponse struct {
+	Status   string    `json:"status"`
+	Messages []Message `json:"messages,omitempty"`
+	Response string    `json:"response,omitempty"`
+	History  []Message `json:"history,omitempty"`
+	Error    string    `json:"error,omitempty"`
+}
+
 type ChatStreamEvent struct {
 	Type     string    `json:"type"`
 	Message  *Message  `json:"message,omitempty"`
 	Response string    `json:"response,omitempty"`
 	History  []Message `json:"history,omitempty"`
 	Error    string    `json:"error,omitempty"`
+}
+
+type EpisodeResponse struct {
+	Episode TaskEpisode `json:"episode"`
 }
 
 type ToolCatalogResponse struct {
@@ -130,12 +177,23 @@ type ToolInvokeResponse struct {
 
 // NewServer creates a new HTTP server
 func NewServer(runtime *Runtime, addr string) *Server {
+	bridge := NewPhoneBridge(runtime.logger)
 	s := &Server{
-		runtime: runtime,
-		addr:    addr,
-		logger:  runtime.logger,
-		history: make([]Message, 0),
+		runtime:        runtime,
+		addr:           addr,
+		logger:         runtime.logger,
+		history:        make([]Message, 0),
+		bridge:         bridge,
+		pendingResults: make(map[string]*chatPendingResult),
+		activeRuns:     make(map[string]context.CancelFunc),
 	}
+	if runtime.config.ConfigDir != "" {
+		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
+		s.historyStore = NewChatHistoryStore(filepath.Join(memoryDir, "chat_history"))
+		s.episodeStore = NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
+	}
+	loadAppMappingForConfig(runtime.config.ConfigDir, runtime.logger)
+	runtime.tools.RegisterPhoneBridge(bridge)
 	s.loadHistoryFromDisk()
 
 	// Initialize speech clients if configured.
@@ -172,9 +230,13 @@ func (s *Server) Start() error {
 
 	// API endpoints
 	mux.HandleFunc("/api/chat", s.handleChat)
+	mux.HandleFunc("/api/chat/cancel", s.handleChatCancel)
+	mux.HandleFunc("/api/chat/result", s.handleChatResult)
 	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
 	mux.HandleFunc("/api/clear", s.handleClear)
 	mux.HandleFunc("/api/clear-all", s.handleClearAll)
+	mux.HandleFunc("/api/skills/reload", s.handleSkillsReload)
 	mux.HandleFunc("/api/tools", s.handleTools)
 	mux.HandleFunc("/api/tools/", s.handleTools)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
@@ -182,6 +244,20 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/audio/record/stop", s.handleAudioRecordStop)
 	mux.HandleFunc("/api/settings/tts", s.handleTTSSettings)
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
+	mux.HandleFunc("/api/phone-bridge", s.bridge.HandleWebSocket)
+	mux.HandleFunc("/api/phone-bridge/status", s.handleBridgeStatus)
+	// HTTP queue endpoints for iOS background compatibility
+	mux.HandleFunc("/api/phone-bridge/commands", s.handlePhoneBridgeCommands)
+	mux.HandleFunc("/api/phone-bridge/results", s.handlePhoneBridgeResults)
+	mux.HandleFunc("/api/phone-bridge/results/", s.handlePhoneBridgeResults)
+
+	if isLoopbackServerAddr(s.addr) {
+		mux.HandleFunc("/api/screenshot.jpg", s.handleScreenshotJPEG)
+
+		// Coordinate debug tool exposes live screen data, so keep it local-only.
+		mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
+		mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
+	}
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
@@ -225,7 +301,23 @@ func (s *Server) Start() error {
 	}
 }
 
-// handleChat handles chat requests
+func isLoopbackServerAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// handleChat handles chat requests.
+// When req.RequestID is present, runs asynchronously: returns {request_id} immediately,
+// agent runs in a background goroutine, and intermediate tool_call messages become
+// available via GET /api/chat/result?request_id=xxx&offset=N.
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -241,38 +333,416 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
+	req.RequestID = strings.TrimSpace(req.RequestID)
 
 	inputText, runAttachments, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
 		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	episodeID := s.runtime.NewEpisodeID()
 
-	ctx := r.Context()
-
-	// Add user message to history
-	s.appendHistory(Message{
+	userMsg := Message{
 		Type:        "user",
+		EpisodeID:   episodeID,
+		RequestID:   req.RequestID,
 		Content:     inputText,
 		Attachments: historyAttachments,
 		Timestamp:   time.Now(),
-	})
+	}
+
+	// Async path — when the client provides a request_id
+	if req.RequestID != "" {
+		s.handleChatAsync(w, r, req, inputText, runAttachments, userMsg)
+		return
+	}
+
+	// Sync path — legacy behaviour for web UI and clients without request_id
+	s.handleChatSync(w, r, req, inputText, runAttachments, userMsg.EpisodeID)
+}
+
+func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req ChatCancelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		http.Error(w, "missing request_id", http.StatusBadRequest)
+		return
+	}
+
+	if s.cancelActiveRun(requestID) {
+		if s.logger != nil {
+			s.logger.Info("Chat request canceled: request_id=%s", requestID)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ChatCancelResponse{RequestID: requestID, Status: "canceled"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ChatCancelResponse{RequestID: requestID, Status: "not_running"})
+}
+
+func (s *Server) registerActiveRun(requestID string, cancel context.CancelFunc) bool {
+	if requestID == "" {
+		return true
+	}
+	s.activeRunsMu.Lock()
+	defer s.activeRunsMu.Unlock()
+	if s.activeRuns == nil {
+		s.activeRuns = make(map[string]context.CancelFunc)
+	}
+	if _, exists := s.activeRuns[requestID]; exists {
+		return false
+	}
+	s.activeRuns[requestID] = cancel
+	return true
+}
+
+func (s *Server) unregisterActiveRun(requestID string) {
+	if requestID == "" {
+		return
+	}
+	s.activeRunsMu.Lock()
+	delete(s.activeRuns, requestID)
+	s.activeRunsMu.Unlock()
+}
+
+func (s *Server) cancelActiveRun(requestID string) bool {
+	s.activeRunsMu.Lock()
+	cancel := s.activeRuns[requestID]
+	s.activeRunsMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+// handleChatAsync runs the agent in a background goroutine and returns
+// {request_id} immediately. Intermediate results are pushed into
+// chatPendingResult and served by handleChatResult.
+func (s *Server) handleChatAsync(
+	w http.ResponseWriter,
+	r *http.Request,
+	req ChatRequest,
+	inputText string,
+	runAttachments []InputAttachment,
+	userMsg Message,
+) {
+	requestID := req.RequestID
+	if s.logger != nil {
+		s.logger.Info("Chat request (async): %s request_id=%s attachments=%d", inputText, requestID, len(runAttachments))
+	}
+
+	// Create a pending result slot for this request. Reject a request_id that
+	// already has an active slot rather than overwriting it — otherwise the
+	// in-flight run's poller loses its result stream and the two goroutines can
+	// delete each other's state on exit.
+	pending := &chatPendingResult{
+		messages: make([]Message, 0),
+		history:  []Message{userMsg},
+	}
+	s.pendingResultsMu.Lock()
+	if _, exists := s.pendingResults[requestID]; exists {
+		s.pendingResultsMu.Unlock()
+		http.Error(w, "request_id already in use", http.StatusConflict)
+		return
+	}
+	s.pendingResults[requestID] = pending
+	s.pendingResultsMu.Unlock()
+
+	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	if !s.registerActiveRun(requestID, cancel) {
+		cancel()
+		s.pendingResultsMu.Lock()
+		delete(s.pendingResults, requestID)
+		s.pendingResultsMu.Unlock()
+		http.Error(w, "request_id already in use", http.StatusConflict)
+		return
+	}
+	s.appendHistory(userMsg)
+
+	// Return {request_id} immediately
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"request_id": requestID})
+
+	// Run agent in background goroutine
+	go func() {
+		defer func() {
+			s.unregisterActiveRun(requestID)
+			// Keep the completed result available for polling for 60s,
+			// then clean up. The client (PhoneBridge) polls /api/chat/result
+			// every ~1s; immediate deletion creates a race where the app
+			// gets status="not_found" and hangs forever waiting for "complete".
+			time.AfterFunc(60*time.Second, func() {
+				s.pendingResultsMu.Lock()
+				delete(s.pendingResults, requestID)
+				s.pendingResultsMu.Unlock()
+			})
+		}()
+
+		// Event handler pushes intermediate messages into the pending result
+		// so the client can poll them in near-realtime.
+		eventHandler := func(event RunEvent) {
+			episodeID := event.EpisodeID
+			if episodeID == "" {
+				episodeID = userMsg.EpisodeID
+			}
+			msg := Message{
+				Type:        event.Type,
+				Role:        event.Role,
+				EpisodeID:   episodeID,
+				RequestID:   requestID,
+				Content:     event.Content,
+				ToolName:    event.ToolName,
+				ToolInput:   event.ToolInput,
+				Description: event.Description,
+				Timestamp:   event.Timestamp,
+				IsError:     event.IsError,
+			}
+			s.appendHistory(msg)
+			pending.mu.Lock()
+			pending.history = append(pending.history, msg)
+			pending.messages = append(pending.messages, msg)
+			pending.mu.Unlock()
+
+			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
+				go s.speakToolDescription(runCtx, event.Description)
+			}
+		}
+
+		runReq := RunRequest{
+			Input:          inputText,
+			Attachments:    runAttachments,
+			Skills:         req.Skills,
+			EpisodeID:      userMsg.EpisodeID,
+			RuntimeContext: s.runtimeContext(),
+			EventHandler:   eventHandler,
+		}
+
+		var newStream *streamSessionWriter
+		ttsManager := s.currentTTSManager()
+
+		if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
+			if ttsManager != nil {
+				stream, err := beginManagedTTSStream(runCtx, ttsManager, s.audioClient, s.runtime.config)
+				if err != nil {
+					if s.logger != nil {
+						s.logger.Warn("TTS BeginStream failed: %v", err)
+					}
+				} else {
+					newStream = stream
+					runReq.StreamWriter = newStream
+				}
+			}
+		}
+
+		result, err := s.runtime.Run(runCtx, runReq)
+		if newStream != nil {
+			closeErr := newStream.closeAndWait()
+			if closeErr != nil && s.logger != nil {
+				s.logger.Error("new TTS stream failed: %v", closeErr)
+			}
+			result.SpeechStreamed = closeErr == nil && newStream.spoke
+		}
+
+		pending.mu.Lock()
+		if err != nil {
+			if errors.Is(runCtx.Err(), context.Canceled) {
+				pending.err = "request canceled"
+			} else {
+				errorMsg := Message{
+					Type:      "episode_status",
+					EpisodeID: userMsg.EpisodeID,
+					RequestID: requestID,
+					Status:    "failed",
+					Content:   "Agent error: " + err.Error(),
+					Timestamp: time.Now(),
+					IsError:   true,
+				}
+				s.appendHistory(errorMsg)
+				pending.history = append(pending.history, errorMsg)
+				pending.messages = append(pending.messages, errorMsg)
+				pending.err = err.Error()
+			}
+			pending.done = true
+			pending.mu.Unlock()
+			if s.logger != nil {
+				s.logger.Error("Agent run failed: request_id=%s error=%v", requestID, err)
+			}
+			return
+		}
+
+		// Add assistant message
+		assistantMsg := Message{
+			Type:      "assistant",
+			EpisodeID: firstNonEmptyString([]string{result.EpisodeID, userMsg.EpisodeID}),
+			RequestID: requestID,
+			Status:    "completed",
+			Content:   result.Output,
+			Timestamp: time.Now(),
+		}
+		s.appendHistory(assistantMsg)
+		pending.history = append(pending.history, assistantMsg)
+		pending.messages = append(pending.messages, assistantMsg)
+		pending.done = true
+		pending.mu.Unlock()
+
+		if s.logger != nil {
+			s.logger.Info("Chat request completed: request_id=%s output_len=%d", requestID, len(result.Output))
+		}
+
+		// Play TTS in background
+		if s.audioClient != nil && result.Output != "" && !result.SpeechStreamed {
+			go func(text string) {
+				if s.logger != nil {
+					s.logger.Info("TTS playback: %q", text)
+				}
+				if err := s.speakText(runCtx, text, 0); err != nil && s.logger != nil {
+					s.logger.Error("TTS playback failed: %v", err)
+				}
+			}(result.Output)
+		}
+	}()
+}
+
+// handleChatResult serves incremental results for an async chat request.
+// GET /api/chat/result?request_id=xxx&offset=N
+//
+// When the agent is still running, returns:
+//
+//	{"status":"running","messages":[...messages since offset...]}
+//
+// When complete, returns:
+//
+//	{"status":"complete","response":"...","history":[...]}
+func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	requestID := r.URL.Query().Get("request_id")
+	if requestID == "" {
+		http.Error(w, "missing request_id", http.StatusBadRequest)
+		return
+	}
+
+	offset := 0
+	if offStr := r.URL.Query().Get("offset"); offStr != "" {
+		n, err := strconv.Atoi(offStr)
+		if err != nil || n < 0 {
+			http.Error(w, "invalid offset", http.StatusBadRequest)
+			return
+		}
+		offset = n
+	}
+
+	s.pendingResultsMu.Lock()
+	pending := s.pendingResults[requestID]
+	s.pendingResultsMu.Unlock()
+
+	if pending == nil {
+		// Request not found — may have completed and been cleaned up,
+		// or may never have existed.
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ChatResultResponse{Status: "not_found"})
+		return
+	}
+
+	pending.mu.Lock()
+	defer pending.mu.Unlock()
+
+	if pending.err != "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ChatResultResponse{
+			Status: "error",
+			Error:  pending.err,
+		})
+		return
+	}
+
+	// Return messages since the client's offset
+	msgs := pending.messages
+	if offset < len(msgs) {
+		msgs = msgs[offset:]
+	} else {
+		msgs = nil
+	}
+
+	if pending.done {
+		// Build a full ChatResponse-compatible shape
+		historySnapshot := make([]Message, len(pending.history))
+		copy(historySnapshot, pending.history)
+		// Extract the assistant text from the last assistant message
+		response := ""
+		for i := len(pending.history) - 1; i >= 0; i-- {
+			if pending.history[i].Type == "assistant" {
+				response = pending.history[i].Content
+				break
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ChatResultResponse{
+			Status:   "complete",
+			Response: response,
+			History:  historySnapshot,
+			Messages: msgs,
+		})
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ChatResultResponse{
+			Status:   "running",
+			Messages: msgs,
+		})
+	}
+}
+
+// handleChatSync is the original synchronous chat handler, kept for the web UI
+// and any clients that don't provide a request_id.
+func (s *Server) handleChatSync(
+	w http.ResponseWriter,
+	r *http.Request,
+	req ChatRequest,
+	inputText string,
+	runAttachments []InputAttachment,
+	episodeID string,
+) {
+	ctx := r.Context()
 
 	if s.logger != nil {
-		s.logger.Info("Chat request: %s attachments=%d", inputText, len(runAttachments))
+		s.logger.Info("Chat request (sync): %s attachments=%d", inputText, len(runAttachments))
 	}
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 
-	// Run agent with streaming TTS if configured
 	runReq := RunRequest{
-		Input:       inputText,
-		Attachments: runAttachments,
-		Skills:      req.Skills,
+		Input:          inputText,
+		Attachments:    runAttachments,
+		Skills:         req.Skills,
+		EpisodeID:      episodeID,
+		RuntimeContext: s.runtimeContext(),
 		EventHandler: func(event RunEvent) {
+			eventEpisodeID := event.EpisodeID
+			if eventEpisodeID == "" {
+				eventEpisodeID = episodeID
+			}
 			s.appendHistory(Message{
 				Type:        event.Type,
 				Role:        event.Role,
+				EpisodeID:   eventEpisodeID,
 				Content:     event.Content,
 				ToolName:    event.ToolName,
 				ToolInput:   event.ToolInput,
@@ -306,15 +776,21 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	result, err := s.runtime.Run(ctx, runReq)
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
-		if closeErr != nil {
-			if s.logger != nil {
-				s.logger.Error("new TTS stream failed: %v", closeErr)
-			}
+		if closeErr != nil && s.logger != nil {
+			s.logger.Error("new TTS stream failed: %v", closeErr)
 		}
 		result.SpeechStreamed = closeErr == nil && newStream.spoke
 	}
 
 	if err != nil {
+		s.appendHistory(Message{
+			Type:      "episode_status",
+			EpisodeID: episodeID,
+			Status:    "failed",
+			Content:   "Agent error: " + err.Error(),
+			Timestamp: time.Now(),
+			IsError:   true,
+		})
 		if s.logger != nil {
 			s.logger.Error("Agent run failed: %v", err)
 		}
@@ -322,34 +798,38 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add assistant response to history
 	s.appendHistory(Message{
 		Type:      "assistant",
+		EpisodeID: firstNonEmptyString([]string{result.EpisodeID, episodeID}),
+		Status:    "completed",
 		Content:   result.Output,
 		Timestamp: time.Now(),
 	})
 	historySnapshot := s.historySnapshot()
 
-	// Play TTS in background if configured and not already streamed
 	if s.audioClient != nil && result.Output != "" && !result.SpeechStreamed {
 		go func(text string) {
 			if s.logger != nil {
 				s.logger.Info("TTS playback: %q", text)
 			}
-			if err := s.speakText(context.Background(), text, 0); err != nil {
-				if s.logger != nil {
-					s.logger.Error("TTS playback failed: %v", err)
-				}
+			if err := s.speakText(context.Background(), text, 0); err != nil && s.logger != nil {
+				s.logger.Error("TTS playback failed: %v", err)
 			}
 		}(result.Output)
 	}
 
-	// Return response
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ChatResponse{
 		Response: result.Output,
 		History:  historySnapshot,
 	})
+}
+
+func (s *Server) runtimeContext() string {
+	if s.bridge == nil {
+		return ""
+	}
+	return phoneBridgeRuntimeContext(s.bridge.Status())
 }
 
 func wantsChatStream(r *http.Request) bool {
@@ -364,6 +844,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
+	req.RequestID = strings.TrimSpace(req.RequestID)
 
 	inputText, runAttachments, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
@@ -377,13 +858,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	episodeID := s.runtime.NewEpisodeID()
 	userMessage := Message{
 		Type:        "user",
+		EpisodeID:   episodeID,
 		Content:     inputText,
 		Attachments: historyAttachments,
 		Timestamp:   time.Now(),
 	}
-	s.appendHistory(userMessage)
 
 	if s.logger != nil {
 		s.logger.Info("Chat request: %s attachments=%d stream=ndjson", inputText, len(runAttachments))
@@ -392,15 +874,36 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 
 	ctx := r.Context()
+	if req.RequestID != "" {
+		runCtx, cancel := context.WithCancel(ctx)
+		if !s.registerActiveRun(req.RequestID, cancel) {
+			cancel()
+			http.Error(w, "request_id already in use", http.StatusConflict)
+			return
+		}
+		defer func() {
+			s.unregisterActiveRun(req.RequestID)
+			cancel()
+		}()
+		ctx = runCtx
+	}
+	s.appendHistory(userMessage)
 
 	result, err := s.runtime.Run(ctx, RunRequest{
-		Input:       inputText,
-		Attachments: runAttachments,
-		Skills:      req.Skills,
+		Input:          inputText,
+		Attachments:    runAttachments,
+		Skills:         req.Skills,
+		EpisodeID:      episodeID,
+		RuntimeContext: s.runtimeContext(),
 		EventHandler: func(event RunEvent) {
+			eventEpisodeID := event.EpisodeID
+			if eventEpisodeID == "" {
+				eventEpisodeID = episodeID
+			}
 			message := Message{
 				Type:        event.Type,
 				Role:        event.Role,
+				EpisodeID:   eventEpisodeID,
 				Content:     event.Content,
 				ToolName:    event.ToolName,
 				ToolInput:   event.ToolInput,
@@ -410,12 +913,22 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			}
 			s.appendHistory(message)
 			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
-			if event.Type == "tool_call" {
+			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(ctx, event.Description)
 			}
 		},
 	})
 	if err != nil {
+		errorMessage := Message{
+			Type:      "episode_status",
+			EpisodeID: episodeID,
+			Status:    "failed",
+			Content:   "Agent error: " + err.Error(),
+			Timestamp: time.Now(),
+			IsError:   true,
+		}
+		s.appendHistory(errorMessage)
+		stream.Write(ChatStreamEvent{Type: "message", Message: &errorMessage})
 		if s.logger != nil {
 			s.logger.Error("Agent run failed: %v", err)
 		}
@@ -425,6 +938,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	assistantMessage := Message{
 		Type:      "assistant",
+		EpisodeID: firstNonEmptyString([]string{result.EpisodeID, episodeID}),
+		Status:    "completed",
 		Content:   result.Output,
 		Timestamp: time.Now(),
 	}
@@ -547,6 +1062,34 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(historySnapshot)
 }
 
+func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	store := s.episodeStore
+	if store == nil && s.runtime != nil && s.runtime.config.ConfigDir != "" {
+		store = NewTaskEpisodeStore(filepath.Join(s.runtime.config.ConfigDir, "memory", "episodes"))
+	}
+	if store == nil {
+		http.Error(w, "Episode store is not configured", http.StatusNotFound)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/episodes/")
+	id = strings.Trim(id, "/")
+	if id == "" || strings.Contains(id, "/") {
+		http.Error(w, "Invalid episode id", http.StatusBadRequest)
+		return
+	}
+	episode, err := store.Get(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(EpisodeResponse{Episode: episode})
+}
+
 // handleClear clears the conversation history
 func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -560,6 +1103,15 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 
 	if s.logger != nil {
 		s.logger.Info("Conversation history cleared")
+	}
+	if s.historyStore != nil {
+		if err := s.historyStore.Clear(); err != nil {
+			if s.logger != nil {
+				s.logger.Error("Clear chat history failed: %v", err)
+			}
+			http.Error(w, fmt.Sprintf("Clear chat history failed: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 	if err := s.runtime.ClearMemory(r.Context()); err != nil {
 		if s.logger != nil {
@@ -590,8 +1142,36 @@ func (s *Server) handleClearAll(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.history = make([]Message, 0)
 	s.mu.Unlock()
+	if s.historyStore != nil {
+		if err := s.historyStore.Clear(); err != nil {
+			if s.logger != nil {
+				s.logger.Error("Clear chat history failed: %v", err)
+			}
+			http.Error(w, fmt.Sprintf("Clear chat history failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
 	if s.logger != nil {
 		s.logger.Info("All memory cleared")
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleSkillsReload marks the skill index as dirty so the next agent run
+// reloads SKILL.md files from disk. Used by external tooling (e.g.
+// benchmark/runner/skillopt) that swaps skill files without going through
+// the agent's own skill_manage tool.
+func (s *Server) handleSkillsReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.runtime.MarkSkillsDirty()
+	if s.logger != nil {
+		s.logger.Info("Skills marked dirty; will reload on next run")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -621,12 +1201,6 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 	}
 	s.recordMu.Unlock()
 
-	if err := playPromptSound(context.Background(), s.audioClient, promptSoundRecordingStart, true); err != nil {
-		if s.logger != nil {
-			s.logger.Error("Recording prompt sound failed: %v", err)
-		}
-	}
-
 	sampleRate := s.runtime.config.Audio.SampleRateOrDefault()
 	result, err := s.audioClient.StartRecording(AudioFormat{
 		SampleRate: uint32(sampleRate),
@@ -640,6 +1214,11 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "start device audio recording: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	go func() {
+		if err := playPromptSound(context.Background(), s.audioClient, promptSoundRecordingStart, true); err != nil && s.logger != nil {
+			s.logger.Error("Recording prompt sound failed: %v", err)
+		}
+	}()
 
 	recording := &webAudioRecording{
 		sessionID:  result.SessionID,
@@ -722,7 +1301,7 @@ func (s *Server) handleAudioRecordStop(w http.ResponseWriter, r *http.Request) {
 }
 
 const (
-	webRecordingDrainTimeout       = 7 * time.Second
+	webRecordingDrainTimeout        = 7 * time.Second
 	webRecordingStaleCleanupTimeout = 200 * time.Millisecond
 )
 
@@ -982,8 +1561,13 @@ func toolOutputLooksLikeError(output string) bool {
 
 func (s *Server) appendHistory(message Message) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.history = append(s.history, message)
+	s.mu.Unlock()
+	if s.historyStore != nil {
+		if err := s.historyStore.Append(context.Background(), message); err != nil && s.logger != nil {
+			s.logger.Warn("Persist chat history failed: %v", err)
+		}
+	}
 }
 
 func (s *Server) historySnapshot() []Message {
@@ -998,6 +1582,13 @@ func (s *Server) loadHistoryFromDisk() {
 	if s.runtime.config.ConfigDir == "" {
 		return
 	}
+	if s.historyStore != nil {
+		messages, err := s.historyStore.Load(context.Background())
+		if err == nil && len(messages) > 0 {
+			s.history = append(s.history, messages...)
+			return
+		}
+	}
 	eventsPath := filepath.Join(s.runtime.config.ConfigDir, "memory", "session", "events.jsonl")
 	store := NewSessionMemoryStore(filepath.Join(s.runtime.config.ConfigDir, "memory", "session"))
 	events, err := store.readEvents(eventsPath)
@@ -1006,12 +1597,19 @@ func (s *Server) loadHistoryFromDisk() {
 	}
 	for _, evt := range events {
 		msgType := "user"
-		if evt.Role == "assistant" {
+		switch evt.Role {
+		case "assistant":
 			msgType = "assistant"
+		case "tool":
+			msgType = "tool_result"
+		case "system":
+			msgType = "system"
 		}
 		ts, _ := time.Parse(time.RFC3339Nano, evt.Ts)
 		s.history = append(s.history, Message{
 			Type:      msgType,
+			ToolName:  evt.Source,
+			ToolInput: evt.ToolCallID,
 			Content:   evt.Content,
 			Timestamp: ts,
 		})
@@ -1131,6 +1729,58 @@ func splitAudioAttachment(attachments []InputAttachment) (*InputAttachment, []In
 	return audio, others, nil
 }
 
+func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if s.bridge == nil {
+		json.NewEncoder(w).Encode(PhoneBridgeStatus{})
+		return
+	}
+	json.NewEncoder(w).Encode(s.bridge.Status())
+}
+
+// handlePhoneBridgeCommands routes /api/phone-bridge/commands
+func (s *Server) handlePhoneBridgeCommands(w http.ResponseWriter, r *http.Request) {
+	if s.bridge == nil {
+		http.Error(w, `{"error":"phone bridge not initialized"}`, http.StatusServiceUnavailable)
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		s.bridge.handleEnqueueCommand(w, r)
+	case http.MethodGet:
+		s.bridge.handlePollCommands(w, r)
+	default:
+		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+// handlePhoneBridgeResults routes /api/phone-bridge/results and /api/phone-bridge/results/:id
+func (s *Server) handlePhoneBridgeResults(w http.ResponseWriter, r *http.Request) {
+	if s.bridge == nil {
+		http.Error(w, `{"error":"phone bridge not initialized"}`, http.StatusServiceUnavailable)
+		return
+	}
+	if r.URL.Path == "/api/phone-bridge/results" {
+		if r.Method == http.MethodPost {
+			s.bridge.handleSubmitResult(w, r)
+		} else {
+			http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		}
+	} else if strings.HasPrefix(r.URL.Path, "/api/phone-bridge/results/") {
+		if r.Method == http.MethodGet {
+			s.bridge.handleQueryResult(w, r)
+		} else {
+			http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		}
+	} else {
+		http.NotFound(w, r)
+	}
+}
+
 // handleIndex serves the web UI
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
@@ -1139,8 +1789,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(webUI))
+	html := webUI
+	if !isLoopbackServerAddr(s.addr) {
+		html = strings.ReplaceAll(html, coordinateDebugNavLink, "")
+	}
+	w.Write([]byte(html))
 }
+
+const coordinateDebugNavLink = `<a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 坐标调试</a>`
 
 const webUI = `<!DOCTYPE html>
 <html lang="en">
@@ -1752,6 +2408,62 @@ const webUI = `<!DOCTYPE html>
             font-size: 0.84rem;
         }
 
+        .episode-link {
+            margin-top: 0.65rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 0.42rem 0.7rem;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.82);
+            color: var(--muted-strong);
+            cursor: pointer;
+            font-size: 0.78rem;
+            font-weight: 600;
+        }
+
+        .episode-panel {
+            margin-top: 0.7rem;
+            padding: 12px;
+            border-radius: 14px;
+            background: var(--surface-soft);
+            border: 1px solid rgba(52, 56, 49, 0.08);
+            display: grid;
+            gap: 10px;
+        }
+
+        .episode-meta {
+            color: var(--muted);
+            font-size: 0.78rem;
+        }
+
+        .episode-events {
+            display: grid;
+            gap: 8px;
+        }
+
+        .episode-event {
+            padding: 9px 10px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.78);
+            border: 1px solid rgba(52, 56, 49, 0.06);
+        }
+
+        .episode-event-title {
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--muted-strong);
+        }
+
+        .episode-event-content {
+            margin-top: 0.35rem;
+            font-size: 0.82rem;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
         .composer {
             padding: 10px 18px 18px;
             border-top: 1px solid rgba(52, 56, 49, 0.08);
@@ -1918,6 +2630,22 @@ const webUI = `<!DOCTYPE html>
             font-size: 0.82rem;
         }
 
+        .stop-run-btn {
+            padding: 0.32rem 0.62rem;
+            border: 1px solid rgba(185, 28, 28, 0.26);
+            border-radius: 999px;
+            background: rgba(220, 38, 38, 0.08);
+            color: #b91c1c;
+            font-size: 0.76rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .stop-run-btn:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
         .loading.active {
             visibility: visible;
             opacity: 1;
@@ -2015,6 +2743,7 @@ const webUI = `<!DOCTYPE html>
             <header class="topbar">
                 <h1>Aiden Agent</h1>
                 <div class="topbar-actions">
+                    <a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 坐标调试</a>
                     <button type="button" class="new-chat-btn" onclick="clearHistory()">New chat</button>
                     <button type="button" class="new-chat-btn" onclick="resetAllMemory()" style="background:#c0392b;">Reset all memory</button>
                 </div>
@@ -2033,6 +2762,7 @@ const webUI = `<!DOCTYPE html>
             <div class="loading" id="loading">
                 <span class="spinner" aria-hidden="true"></span>
                 <span>Working on it...</span>
+                <button type="button" class="stop-run-btn" id="stopRunBtn" onclick="cancelCurrentRun()" disabled>Stop</button>
             </div>
 
             <form class="composer" onsubmit="event.preventDefault(); sendMessage();">
@@ -2122,6 +2852,7 @@ const webUI = `<!DOCTYPE html>
         const recordBtn = document.getElementById('recordBtn');
         const draftAttachmentsEl = document.getElementById('draftAttachments');
         const loadingDiv = document.getElementById('loading');
+        const stopRunBtn = document.getElementById('stopRunBtn');
         const emptyStateEl = document.getElementById('emptyState');
         const toolSelectEl = document.getElementById('toolSelect');
         const toolDescriptionEl = document.getElementById('toolDescription');
@@ -2145,6 +2876,10 @@ const webUI = `<!DOCTYPE html>
         let recorderState = createRecorderState();
         let toolCatalog = [];
         let toolSkills = [];
+        let currentChatRequestId = '';
+        let currentChatAbortController = null;
+        let currentChatCancelRequested = false;
+        let episodeCache = {};
 
         loadHistory();
         loadToolCatalog();
@@ -2431,6 +3166,9 @@ const webUI = `<!DOCTYPE html>
             autoResizeInput();
             setComposerState(true);
             clearDraftAttachments();
+            currentChatRequestId = createRequestId();
+            currentChatAbortController = new AbortController();
+            currentChatCancelRequested = false;
 
             addMessage({
                 type: 'user',
@@ -2447,9 +3185,11 @@ const webUI = `<!DOCTYPE html>
                         'Accept': 'application/x-ndjson',
                         'X-Aiden-Stream': 'ndjson'
                     },
+                    signal: currentChatAbortController.signal,
                     body: JSON.stringify({
                         message: message,
-                        attachments: attachments
+                        attachments: attachments,
+                        request_id: currentChatRequestId
                     })
                 });
 
@@ -2460,6 +3200,14 @@ const webUI = `<!DOCTYPE html>
 
                 await consumeChatStream(res);
             } catch (err) {
+                if (currentChatCancelRequested || err.name === 'AbortError') {
+                    addMessage({
+                        type: 'assistant',
+                        content: 'Interrupted.',
+                        timestamp: new Date().toISOString()
+                    });
+                    return;
+                }
                 console.error('Failed to send message:', err);
                 try {
                     await loadHistory();
@@ -2471,10 +3219,41 @@ const webUI = `<!DOCTYPE html>
                     timestamp: new Date().toISOString()
                 });
             } finally {
+                currentChatRequestId = '';
+                currentChatAbortController = null;
+                currentChatCancelRequested = false;
                 setComposerState(false);
                 scrollToBottom();
             }
         }
+
+        function createRequestId() {
+            if (window.crypto && window.crypto.randomUUID) {
+                return window.crypto.randomUUID();
+            }
+            return 'web-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+        }
+
+        async function cancelCurrentRun() {
+            if (!currentChatRequestId) return;
+            const requestId = currentChatRequestId;
+            currentChatCancelRequested = true;
+            stopRunBtn.disabled = true;
+            stopRunBtn.textContent = 'Stopping...';
+
+			if (currentChatAbortController) {
+				currentChatAbortController.abort();
+			}
+
+			fetch('/api/chat/cancel', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ request_id: requestId }),
+				keepalive: true
+			}).catch(function(err) {
+				console.error('Failed to cancel chat request:', err);
+			});
+		}
 
         async function consumeChatStream(res) {
             let sawDone = false;
@@ -2646,6 +3425,11 @@ const webUI = `<!DOCTYPE html>
                 }
             }
 
+            const episodeLink = renderEpisodeLink(msg);
+            if (episodeLink) {
+                body.appendChild(episodeLink);
+            }
+
             const timeDiv = document.createElement('div');
             timeDiv.className = 'message-time';
             timeDiv.textContent = formatTime(msg.timestamp);
@@ -2657,6 +3441,106 @@ const webUI = `<!DOCTYPE html>
             return card;
         }
 
+        function renderEpisodeLink(msg) {
+            if (!msg.episode_id) return null;
+            if (msg.type !== 'user' && msg.type !== 'assistant' && msg.type !== 'episode_status') return null;
+
+            const wrap = document.createElement('div');
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'episode-link';
+            button.textContent = 'Trace' + (msg.status ? ' · ' + msg.status : '');
+            wrap.appendChild(button);
+
+            let panel = null;
+            button.addEventListener('click', async function() {
+                if (panel) {
+                    panel.classList.toggle('hidden');
+                    return;
+                }
+                panel = document.createElement('div');
+                panel.className = 'episode-panel';
+                panel.textContent = 'Loading trace...';
+                wrap.appendChild(panel);
+
+                try {
+                    const episode = await loadEpisode(msg.episode_id);
+                    renderEpisodePanel(panel, episode);
+                } catch (err) {
+                    panel.textContent = 'Trace unavailable: ' + err.message;
+                }
+            });
+            return wrap;
+        }
+
+        async function loadEpisode(id) {
+            if (episodeCache[id]) return episodeCache[id];
+            const res = await fetch('/api/episodes/' + encodeURIComponent(id));
+            if (!res.ok) {
+                throw new Error(await res.text() || 'Episode not found');
+            }
+            const data = await res.json();
+            episodeCache[id] = data.episode;
+            return data.episode;
+        }
+
+        function renderEpisodePanel(panel, episode) {
+            panel.innerHTML = '';
+            const meta = document.createElement('div');
+            meta.className = 'episode-meta';
+            const outcome = episode.outcome || {};
+            meta.textContent = [
+                episode.id || 'episode',
+                episode.status || 'unknown',
+                outcome.success ? 'success' : (outcome.failure_reason ? 'failed' : 'pending')
+            ].join(' · ');
+            panel.appendChild(meta);
+
+            const events = (episode.events || []).slice(-12);
+            if (events.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'episode-meta';
+                empty.textContent = 'No trace events recorded.';
+                panel.appendChild(empty);
+                return;
+            }
+
+            const list = document.createElement('div');
+            list.className = 'episode-events';
+            events.forEach(function(event) {
+                list.appendChild(renderEpisodeEvent(event));
+            });
+            panel.appendChild(list);
+        }
+
+        function renderEpisodeEvent(event) {
+            const item = document.createElement('div');
+            item.className = 'episode-event';
+
+            const title = document.createElement('div');
+            title.className = 'episode-event-title';
+            const parts = [event.type || 'event'];
+            if (event.role) parts.push(event.role);
+            if (event.tool_name) parts.push(event.tool_name);
+            title.textContent = parts.join(' · ');
+            item.appendChild(title);
+
+            const content = document.createElement('div');
+            content.className = 'episode-event-content';
+            content.textContent = episodeEventText(event);
+            item.appendChild(content);
+            return item;
+        }
+
+        function episodeEventText(event) {
+            if (event.next_step) return event.next_step;
+            if (event.content) return event.content;
+            if (event.observation) return formatToolPayload(event.observation);
+            if (event.reason) return event.reason;
+            if (event.plan && event.plan.length) return event.plan.join('\n');
+            return '';
+        }
+
         function updateEmptyState() {
             emptyStateEl.classList.toggle('hidden', messagesDiv.children.length > 0);
         }
@@ -2665,6 +3549,8 @@ const webUI = `<!DOCTYPE html>
             sendBtn.disabled = isLoading || recorderState.isStopping;
             imageBtn.disabled = isLoading || recorderState.isRecording || recorderState.isStopping;
             recordBtn.disabled = isLoading || recorderState.isStopping;
+            stopRunBtn.disabled = !isLoading;
+            stopRunBtn.textContent = 'Stop';
             loadingDiv.classList.toggle('active', isLoading);
             updateRecordButton();
         }
@@ -2684,6 +3570,7 @@ const webUI = `<!DOCTYPE html>
 
         function getRoleLabel(type, toolName, role) {
             if (type === 'user') return 'You';
+            if (type === 'episode_status') return 'Task Trace';
             if (type === 'role_output') return 'Role · ' + (role || 'agent');
             if (type === 'tool_call') return toolName ? 'Tool Call · ' + toolName : 'Tool Call';
             if (type === 'tool_result') return toolName ? 'Tool Result · ' + toolName : 'Tool Result';
@@ -2692,6 +3579,7 @@ const webUI = `<!DOCTYPE html>
 
         function getAvatarLabel(type) {
             if (type === 'user') return 'You';
+            if (type === 'episode_status') return 'Task';
             if (type === 'role_output') return 'Role';
             if (type === 'tool_call') return 'Call';
             if (type === 'tool_result') return 'Tool';

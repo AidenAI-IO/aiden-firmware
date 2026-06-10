@@ -144,6 +144,26 @@ func (d *fakeAudioDialog) FlushVAD() []int16 {
 	return nil
 }
 
+func (d *fakeAudioDialog) FinishManualUtterance(pending []int16) []int16 {
+	frameSamples := d.VADFrameSamples()
+	consumed := 0
+	for consumed+frameSamples <= len(pending) {
+		if _, err := d.ProcessVADFrame(pending[consumed : consumed+frameSamples]); err != nil {
+			break
+		}
+		consumed += frameSamples
+	}
+	tail := pending[consumed:]
+	utterance := d.FlushVAD()
+	if len(tail) == 0 {
+		return utterance
+	}
+	if len(utterance) == 0 {
+		return append([]int16(nil), tail...)
+	}
+	return append(utterance, tail...)
+}
+
 func (d *fakeAudioDialog) ResetVAD() {
 	d.ops = append(d.ops, "reset")
 	d.resets++
@@ -343,7 +363,7 @@ func TestProcessAudioLoopStopsRecordingBeforeProcessingUtterance(t *testing.T) {
 	}
 	recording := true
 
-	processAudioLoop(dialog, nil, &recording, context.Background())
+	processAudioLoop(dialog, nil, &recording, context.Background(), nil)
 
 	if processedWhileRecording {
 		t.Fatal("processed utterance while recording was still active")
@@ -353,6 +373,33 @@ func TestProcessAudioLoopStopsRecordingBeforeProcessingUtterance(t *testing.T) {
 	}
 	if recording {
 		t.Fatal("recording flag still true after utterance")
+	}
+}
+
+func TestProcessAudioLoopFlushesManualTailOnStop(t *testing.T) {
+	vad := newTestAudioVAD(t, true, []float64{0.1, 0.1, 0.1})
+	dialog := &fakeAudioDialog{
+		vad:             vad,
+		recordingActive: true,
+		chunks: []*agent.AudioChunkResult{
+			{PCM: pcm16BytesFromSamples(1, 2, 3)},
+		},
+		repeatEmpty: true,
+		readDelay:   5 * time.Millisecond,
+	}
+	recording := true
+	manualStop := make(chan manualStopResult, 1)
+	go processAudioLoop(dialog, nil, &recording, context.Background(), manualStop)
+
+	time.Sleep(20 * time.Millisecond)
+	recording = false
+
+	result := <-manualStop
+	if result.vadHandled {
+		t.Fatal("expected manual stop flush, got vadHandled")
+	}
+	if len(result.utterance) != 3 {
+		t.Fatalf("utterance = %#v, want 3 tail samples preserved", result.utterance)
 	}
 }
 
@@ -367,7 +414,7 @@ func TestProcessAudioLoopStopsRecordingOnVADError(t *testing.T) {
 	}
 	recording := true
 
-	processAudioLoop(dialog, nil, &recording, context.Background())
+	processAudioLoop(dialog, nil, &recording, context.Background(), nil)
 
 	if recording {
 		t.Fatal("recording flag still true after VAD error")

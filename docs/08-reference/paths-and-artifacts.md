@@ -89,7 +89,7 @@ curl http://<device-ip>:8080/api/tools
 
 # OTA
 /oem/usr/bin/ota status
-/oem/usr/bin/ota check-now
+/oem/usr/bin/ota update
 /oem/usr/bin/abctl read /dev/block/by-name/misc
 ```
 

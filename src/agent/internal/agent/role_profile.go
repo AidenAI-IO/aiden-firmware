@@ -52,6 +52,7 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 				"Use the executor tool catalog when planning. If a direct executor tool covers the request, plan that tool instead of a UI workaround.",
 				"Keep objective and completion_criteria tied to the original user request, not just the current step.",
 				"If the current screenshot clearly identifies the app/page, include observed_state with app_name, page_name, visible_text, dialogs, and confidence; otherwise leave it empty.",
+				"Plan a request_human_handoff step when the task requires credentials, verification, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Do not guess.",
 				"You must NEVER call tools directly. Your role is planning only. Return planning decisions as JSON, not tool calls.",
 				"Return only JSON: {\"objective\":\"original task in one sentence\",\"completion_criteria\":[\"criterion\"],\"plan\":[\"step\"],\"next_step\":\"step to execute now\",\"reason\":\"brief rationale\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}.",
 			},
@@ -110,9 +111,15 @@ func buildRoleProfile(
 		"",
 		"Active skills:",
 		skills.CombinedInstructions(),
-		"",
-		"Role rules:",
 	}
+	if text := strings.TrimSpace(cfg.RuntimeContext); text != "" {
+		parts = append(parts,
+			"",
+			"Runtime context:",
+			text,
+		)
+	}
+	parts = append(parts, "", "Role rules:")
 	for _, rule := range roleRules {
 		parts = append(parts, "- "+rule)
 	}

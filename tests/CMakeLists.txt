@@ -90,6 +90,7 @@ add_executable(aiden_tests
     system_env_parser_test.cpp
     audio_service_protocol_test.cpp
     audio_service_client_test.cpp
+    audio_playback_session_test.cpp
     ${CMAKE_SOURCE_DIR}/src/system_env_parser.cpp
     ${AIDEN_IMAGE_TEST_SOURCES}
     ${AIDEN_TEST_SOURCES}

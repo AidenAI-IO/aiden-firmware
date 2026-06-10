@@ -129,7 +129,7 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 	"wait_for_stable_screen": {
 		Category:     "observation",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"timeout_ms":3000,"stable_ms":500,"diff_threshold":5}`,
+		ExampleInput: `{"timeout_ms":3500,"stable_ms":500,"diff_threshold":2}`,
 	},
 }
 
@@ -167,7 +167,15 @@ func (r *Runtime) ToolDescriptors() []ToolDescriptor {
 }
 
 func isHTTPToolExposed(name string) bool {
-	return name != "skill_manage"
+	switch name {
+	// Phone-bridge tools route AI commands to the companion app over the
+	// WebSocket bridge; they are not standalone HTTP operations on the board,
+	// so keep the whole set out of the HTTP catalog/skill suite.
+	case "skill_manage", "open_app", "clipboard", "calendar", "contacts", "notification":
+		return false
+	default:
+		return true
+	}
 }
 
 func (r *Runtime) ToolDescriptorByName(name string) (ToolDescriptor, bool) {
@@ -242,8 +250,8 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 	builder.WriteString("- For private device URLs, suspect proxy interference first if the TCP port is reachable but HTTP returns gateway/proxy errors.\n\n")
 	builder.WriteString("Recommended workflow:\n")
 	builder.WriteString("- Start with `GET /api/tools` if you need to confirm the tool list or example payloads.\n")
-	builder.WriteString("- Use `screenshot` before input actions when you need current screen context; keyboard, mouse, and touch tools automatically wait for screen stability and return a post-action screenshot on success.\n")
-	builder.WriteString("- After actions that may animate, navigate, or load content, call `wait_for_stable_screen` before taking a separate screenshot or judging the result.\n")
+	builder.WriteString("- Use `screenshot` before input actions when you need current screen context; keyboard, mouse, and touch tools automatically wait for screen stability (or until the configured timeout) and return a post-action screenshot.\n")
+	builder.WriteString("- After actions that may animate, navigate, or load content, call `wait_for_stable_screen` before taking a separate screenshot or judging the result. `stable=false` means the screen kept changing (for example video playback); continue operating and treat the screenshot as a best-effort observation.\n")
 	builder.WriteString("- After any screenshot or post-action screenshot, inspect the current screen before choosing the next action; do not repeat the same click, gesture, or key unless the image proves the previous action did not take effect.\n")
 	builder.WriteString("- When opening apps or finding contacts, settings, products, or page content on a phone, prefer system search, in-app search, or visible search fields before scrolling through pages or lists.\n")
 	builder.WriteString("- `keyboard_text` simulates a US keyboard: call it with JSON like `{\"text\":\"App Store\"}` and only ASCII text. Do not send Chinese or emoji directly; use pinyin/English search terms and select on-screen candidates when needed.\n")
@@ -257,7 +265,7 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 		} else if descriptor.Name == "wait_for_stable_screen" {
 			builder.WriteString("  Successful output JSON includes `ok`, `stable`, `elapsed_ms`, and may include `last_diff`.\n")
 		} else if descriptor.Category == "input" {
-			builder.WriteString("  On successful execution, output JSON includes `action_output`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from a screenshot captured after the screen becomes stable.\n")
+			builder.WriteString("  On successful execution, output JSON includes `action_output`, `screen_stable`, `stable_wait_ms`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from a post-action screenshot. `screen_stable=false` is not a failure.\n")
 		}
 		if strings.TrimSpace(descriptor.ExampleInput) != "" {
 			builder.WriteString(fmt.Sprintf("  Example input: `%s`\n", descriptor.ExampleInput))
@@ -266,7 +274,7 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 	builder.WriteString("\nExecution rules:\n")
 	builder.WriteString("- Treat `is_error=true` or outputs that start with `error:` as failures.\n")
 	builder.WriteString("- Avoid pixel-based pointer actions unless calibrated; if you must use them, call `screenshot` first because stale or mismatched screen dimensions will be rejected.\n")
-	builder.WriteString("- For successful keyboard, mouse, and touch calls, inspect the returned post-action screenshot before deciding the next step. For separate observations after an action, call `wait_for_stable_screen` before `screenshot`.\n")
+	builder.WriteString("- For successful keyboard, mouse, and touch calls, inspect the returned post-action screenshot before deciding the next step. `screen_stable=false` means the wait timed out while the screen kept changing; continue if the screenshot is still useful. For separate observations after an action, call `wait_for_stable_screen` before `screenshot`.\n")
 	builder.WriteString("- Do not use repeated scrolling as the first search strategy on phone UIs; try available search controls first.\n")
 	builder.WriteString("- Keep tool input minimal and deterministic; prefer the example payloads as a starting point.\n")
 	return builder.String()

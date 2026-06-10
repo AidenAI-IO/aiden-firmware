@@ -6,6 +6,17 @@ OVERLAY="$SCRIPT_DIR/overlay"
 PICO_SDK="$SCRIPT_DIR/pico-sdk"
 DEST_OVERLAY="$PICO_SDK/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buildroot-aiden"
 
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+    # Keep filesystem image metadata stable across releases when their payloads
+    # did not change. Callers can still set SOURCE_DATE_EPOCH explicitly.
+    SOURCE_DATE_EPOCH="${AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-0}"
+fi
+if ! [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
+    echo "SOURCE_DATE_EPOCH must be an unsigned Unix timestamp: $SOURCE_DATE_EPOCH" >&2
+    exit 1
+fi
+export SOURCE_DATE_EPOCH
+
 require_rknnmrt_version() {
     local runtime="$1"
     local version major minor
@@ -55,6 +66,14 @@ else
     rm -f "$BENCHMARK_DEST/pyproject.toml"
 fi
 echo "  ✓ Benchmark runner and suites staged to overlay/userdata/agent/benchmark"
+
+AGENT_TOOLS_DEST="$OVERLAY/userdata/agent_tools"
+mkdir -p "$AGENT_TOOLS_DEST"
+cp "$SCRIPT_DIR/scripts/generate_agent_files_report.py" "$AGENT_TOOLS_DEST/"
+cp "$SCRIPT_DIR/scripts/agent_files_template.html" "$AGENT_TOOLS_DEST/"
+cp "$SCRIPT_DIR/scripts/view_agent_files.sh" "$AGENT_TOOLS_DEST/"
+chmod +x "$AGENT_TOOLS_DEST/generate_agent_files_report.py" "$AGENT_TOOLS_DEST/view_agent_files.sh"
+echo "  ✓ Agent files report tools staged to overlay/userdata/agent_tools"
 
 RKNNMRT_OVERLAY="$OVERLAY/oem/usr/lib/librknnmrt.so"
 RKNNMRT_SOURCE="$PICO_SDK/media/iva/iva/librockiva/rockiva-rv1106-Linux/lib/librknnmrt.so"
@@ -120,6 +139,20 @@ if [ -d "$SKILLS_SRC" ]; then
     echo "  ✓ bundled skills synced ($skill_count skill(s))"
 else
     echo "  ⚠ Warning: $SKILLS_SRC not found; skipping bundled skills" >&2
+fi
+
+# Bundled phone-bridge app mapping: src/agent/internal/agent/app_mapping.json 是
+# Go embed 的单一源，固件里同步落到 /usr/share/aiden/app_mapping.json，方便运维
+# 不重新 build 二进制就能更新映射（agent 启动时优先读 configDir，再读这里，最后
+# 回退到二进制内嵌副本）。
+APP_MAPPING_SRC="$SCRIPT_DIR/src/agent/internal/agent/app_mapping.json"
+APP_MAPPING_DEST="$DEST_OVERLAY/usr/share/aiden/app_mapping.json"
+if [ -f "$APP_MAPPING_SRC" ]; then
+    mkdir -p "$(dirname "$APP_MAPPING_DEST")"
+    cp "$APP_MAPPING_SRC" "$APP_MAPPING_DEST"
+    echo "  ✓ phone-bridge app mapping synced"
+else
+    echo "  ⚠ Warning: $APP_MAPPING_SRC not found; skipping app mapping" >&2
 fi
 
 # Step 4: 运行 pico-sdk 构建，overlay 注入后只打包一次 firmware，避免 A/B 大镜像重复生成。

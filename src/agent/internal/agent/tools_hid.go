@@ -491,16 +491,13 @@ func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error)
 		report := make([]byte, 8)
 		report[0] = modifier
 		report[2] = code
-		// Press
+		// Press then release immediately, same as keyboard_tap.
 		if err := t.dev.Write(report); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
-		sleepMs(200)
-		// Release
 		if err := t.dev.Write(releaseReport); err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
-		sleepMs(50)
 	}
 
 	return "ok", nil

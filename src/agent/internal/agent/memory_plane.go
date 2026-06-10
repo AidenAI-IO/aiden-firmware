@@ -33,6 +33,7 @@ type MemoryRetrieveRequest struct {
 	Attachments  []InputAttachment
 	Skills       []string
 	ToolNames    []string
+	EpisodeID    string
 	DeviceID     string
 	CurrentHints CurrentEnvironmentHints
 }
@@ -185,7 +186,7 @@ func (p *FilesystemMemoryPlane) Retrieve(ctx context.Context, req MemoryRetrieve
 }
 
 func (p *FilesystemMemoryPlane) NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {
-	return NewEpisodeRecorder(req, retrieved)
+	return NewPersistentEpisodeRecorder(req, retrieved, p.episodes)
 }
 
 func (p *FilesystemMemoryPlane) CommitEpisode(ctx context.Context, episode TaskEpisode) error {
@@ -715,7 +716,6 @@ func (p *FilesystemMemoryPlane) recordCoordinateCalibration(ctx context.Context,
 	}
 	return nil
 }
-
 
 func (p *FilesystemMemoryPlane) updateReferencedMemoryOutcomes(ctx context.Context, episode TaskEpisode) error {
 	refs := uniqueNonEmpty(episode.RetrievedMemoryRefs)
@@ -1255,4 +1255,3 @@ func appendUniqueMemoryRef(refs []MemorySourceRef, ref MemorySourceRef) []Memory
 	}
 	return append(refs, ref)
 }
-

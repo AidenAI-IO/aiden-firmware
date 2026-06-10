@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/stat.h>
@@ -33,7 +34,7 @@
 namespace {
 
 struct Options {
-    std::string bind_address = "192.168.42.1";
+    std::string bind_address = "0.0.0.0";
     int port = 80;
     std::string agent_config_path = "/userdata/agent/agent.toml";
     std::string wifi_config_path = "/userdata/wpa_supplicant.conf";
@@ -105,11 +106,16 @@ struct TcpPortStatus {
 
 volatile sig_atomic_t g_should_stop = 0;
 
+const char* kAnyBindAddress = "0.0.0.0";
 const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
 const char* kOtaInitScript = "/etc/init.d/S54ota";
 const char* kAgentLogPath = "/var/log/agent/agent.log";
+const char* kOtaBin = "/oem/usr/bin/ota";
+const char* kEnvRunBin = "/oem/usr/bin/aiden-env-run";
+const char* kOtaWebUpdateLockPath = "/tmp/config_web_ota_update.lock";
+const char* kOtaWebUpdateLogPath = "/tmp/config_web_ota_update.log";
 const char* kAgentPortHost = "127.0.0.1";
 const int kDefaultAgentPort = 8080;
 const int kAgentStatusCommandTimeoutMs = 1500;
@@ -117,15 +123,24 @@ const size_t kAgentStatusLogReadSize = 16 * 1024;
 const size_t kAgentStatusLogDisplaySize = 4096;
 const size_t kAgentLogReadSize = 64 * 1024;
 const size_t kAgentLogDisplaySize = 48 * 1024;
+const size_t kOtaLogReadSize = 128 * 1024;
+const size_t kOtaLogDisplaySize = 96 * 1024;
 const size_t kMaxHttpHeaderSize = 8 * 1024;
 const size_t kMaxHttpBodySize = 64 * 1024;
 const int kClientReadTimeoutSeconds = 5;
 const char* kDefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
 const int kSystemEnvCommandTimeoutMs = 1500;
 const size_t kMaxSystemEnvSize = 64 * 1024;
+const char* kUserFilesReportPath = "/userdata/agent/files_report.html";
+const char* kUserFilesToolsDir = "/userdata/agent_tools";
+const int kUserFilesGenerateCommandTimeoutMs = 30000;
 
 std::string read_file_contents(const char* path, size_t max_size);
 std::string validate_proxy_url(const std::string& url);
+std::string lowercase_copy(const std::string& text);
+std::string parent_dir(const std::string& path);
+bool mkdir_p(const std::string& dir, std::string* error);
+bool prepare_ota_update_log_file(const std::string& path, std::string* error);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -202,6 +217,10 @@ bool json_is_number(cJSON* item) {
     return json_is_type(item, cJSON_Number);
 }
 
+bool json_is_array(cJSON* item) {
+    return json_is_type(item, cJSON_Array);
+}
+
 bool json_is_bool(cJSON* item) {
     return json_is_type(item, cJSON_True) || json_is_type(item, cJSON_False);
 }
@@ -216,6 +235,13 @@ cJSON* add_array(cJSON* parent, const char* key) {
     cJSON* child = cJSON_CreateArray();
     cJSON_AddItemToObject(parent, key, child);
     return child;
+}
+
+void add_string_array_to_object(cJSON* parent, const char* key, const std::vector<std::string>& values) {
+    cJSON* array = add_array(parent, key);
+    for (size_t i = 0; i < values.size(); ++i) {
+        cJSON_AddItemToArray(array, cJSON_CreateString(values[i].c_str()));
+    }
 }
 
 std::string shell_quote(const std::string& text) {
@@ -409,6 +435,33 @@ bool command_exists(const char* name) {
     return ok;
 }
 
+bool ensure_user_files_report(std::string* error) {
+    if (file_exists(kUserFilesReportPath)) {
+        return true;
+    }
+
+    std::string cmd = "cd ";
+    cmd += shell_quote(kUserFilesToolsDir);
+    cmd += " && ./view_agent_files.sh 2>&1";
+    CommandResult result = run_shell_command_with_timeout(cmd, kUserFilesGenerateCommandTimeoutMs);
+    if (result.exit_code == 0 && !result.timed_out && file_exists(kUserFilesReportPath)) {
+        return true;
+    }
+
+    if (error) {
+        if (result.timed_out) {
+            *error = "user files report generation timed out";
+        } else {
+            *error = "user files report generation failed";
+        }
+        if (!result.output.empty()) {
+            *error += ": ";
+            *error += result.output.substr(0, 1000);
+        }
+    }
+    return false;
+}
+
 std::string trim_trailing_newlines(const std::string& text) {
     size_t end = text.size();
     while (end > 0 && (text[end - 1] == '\n' || text[end - 1] == '\r')) {
@@ -598,7 +651,7 @@ bool parse_size(const std::string& text, size_t* value) {
 }
 
 bool is_allowed_bind_address(const std::string& bind_address) {
-    return bind_address == kUsbBindAddress || bind_address == kLoopbackBindAddress;
+    return bind_address == kAnyBindAddress || bind_address == kUsbBindAddress || bind_address == kLoopbackBindAddress;
 }
 
 bool set_socket_recv_timeout(int fd, int timeout_seconds) {
@@ -719,6 +772,9 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.max_iterations = -1;
     cfg.screenshot_keep_n = 3;
     cfg.screenshot_prune_interval = 25;
+    cfg.screen_stable_timeout_ms = 3500;
+    cfg.screen_stable_ms = 500;
+    cfg.screen_stable_diff_threshold = 2.0;
 
     cfg.model.provider = "openrouter";
     cfg.model.model = "bytedance-seed/seed-2.0-lite";
@@ -846,6 +902,18 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddStringToObject(search, "provider", config.search.provider.c_str());
     cJSON_AddBoolToObject(search, "has_api_key", !config.search.api_key.empty());
 
+    cJSON* telemetry = add_object(root, "telemetry");
+    cJSON_AddBoolToObject(telemetry, "enabled", config.telemetry.enabled ? 1 : 0);
+    cJSON_AddStringToObject(telemetry, "provider", config.telemetry.provider.c_str());
+    cJSON_AddStringToObject(telemetry, "base_url", config.telemetry.base_url.c_str());
+    cJSON_AddStringToObject(telemetry, "public_key", config.telemetry.public_key.c_str());
+    cJSON_AddStringToObject(telemetry, "secret_key", config.telemetry.secret_key.c_str());
+    cJSON_AddBoolToObject(telemetry, "upload_screenshots", config.telemetry.upload_screenshots ? 1 : 0);
+    cJSON_AddNumberToObject(telemetry, "upload_timeout_sec", config.telemetry.upload_timeout_sec);
+    cJSON_AddNumberToObject(telemetry, "max_retry", config.telemetry.max_retry);
+    add_string_array_to_object(telemetry, "tags", config.telemetry.tags);
+    cJSON_AddStringToObject(telemetry, "environment", config.telemetry.environment.c_str());
+
     cJSON* agent = add_object(root, "agent");
     cJSON_AddStringToObject(agent, "instruction", config.instruction.c_str());
     cJSON_AddStringToObject(agent, "additional_prompt", config.additional_prompt.c_str());
@@ -868,6 +936,9 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
     cJSON_AddNumberToObject(agent, "screenshot_keep_n", config.screenshot_keep_n);
     cJSON_AddNumberToObject(agent, "screenshot_prune_interval", config.screenshot_prune_interval);
+    cJSON_AddNumberToObject(agent, "screen_stable_timeout_ms", config.screen_stable_timeout_ms);
+    cJSON_AddNumberToObject(agent, "screen_stable_ms", config.screen_stable_ms);
+    cJSON_AddNumberToObject(agent, "screen_stable_diff_threshold", config.screen_stable_diff_threshold);
 
     return root;
 }
@@ -948,6 +1019,45 @@ void set_json_bool(bool* dst, cJSON* obj, const char* key) {
     }
 }
 
+void set_json_string_vector(std::vector<std::string>* dst, cJSON* obj, const char* key) {
+    cJSON* item = cJSON_GetObjectItem(obj, key);
+    if (!dst) {
+        return;
+    }
+    if (json_is_array(item)) {
+        std::vector<std::string> values;
+        int count = cJSON_GetArraySize(item);
+        for (int i = 0; i < count; ++i) {
+            cJSON* child = cJSON_GetArrayItem(item, i);
+            if (json_is_string(child)) {
+                std::string value = trim_copy(child->valuestring);
+                if (!value.empty()) {
+                    values.push_back(value);
+                }
+            }
+        }
+        *dst = values;
+        return;
+    }
+    if (json_is_string(item)) {
+        std::vector<std::string> values;
+        std::string text = item->valuestring;
+        size_t start = 0;
+        while (start <= text.size()) {
+            size_t comma = text.find(',', start);
+            std::string part = trim_copy(text.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+            if (!part.empty()) {
+                values.push_back(part);
+            }
+            if (comma == std::string::npos) {
+                break;
+            }
+            start = comma + 1;
+        }
+        *dst = values;
+    }
+}
+
 void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     if (!json_is_object(obj) || !m) return;
     set_json_str(&m->provider, obj, "provider");
@@ -1014,6 +1124,20 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         }
     }
 
+    cJSON* telemetry = cJSON_GetObjectItem(root, "telemetry");
+    if (json_is_object(telemetry)) {
+        set_json_bool(&config->telemetry.enabled, telemetry, "enabled");
+        set_json_str(&config->telemetry.provider, telemetry, "provider");
+        set_json_str(&config->telemetry.base_url, telemetry, "base_url");
+        set_json_str(&config->telemetry.public_key, telemetry, "public_key");
+        set_json_str(&config->telemetry.secret_key, telemetry, "secret_key");
+        set_json_bool(&config->telemetry.upload_screenshots, telemetry, "upload_screenshots");
+        set_json_int(&config->telemetry.upload_timeout_sec, telemetry, "upload_timeout_sec");
+        set_json_int(&config->telemetry.max_retry, telemetry, "max_retry");
+        set_json_string_vector(&config->telemetry.tags, telemetry, "tags");
+        set_json_str(&config->telemetry.environment, telemetry, "environment");
+    }
+
     cJSON* agent = cJSON_GetObjectItem(root, "agent");
     if (json_is_object(agent)) {
         set_json_str(&config->instruction, agent, "instruction");
@@ -1037,6 +1161,9 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->max_iterations, agent, "max_iterations");
         set_json_int(&config->screenshot_keep_n, agent, "screenshot_keep_n");
         set_json_int(&config->screenshot_prune_interval, agent, "screenshot_prune_interval");
+        set_json_int(&config->screen_stable_timeout_ms, agent, "screen_stable_timeout_ms");
+        set_json_int(&config->screen_stable_ms, agent, "screen_stable_ms");
+        set_json_double(&config->screen_stable_diff_threshold, agent, "screen_stable_diff_threshold");
     }
 }
 
@@ -1065,9 +1192,37 @@ std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
     if (config.screenshot_prune_interval < 0) {
         return "screenshot_prune_interval must be >= 0";
     }
+    if (config.screen_stable_timeout_ms < 0) {
+        return "screen_stable_timeout_ms must be >= 0";
+    }
+    if (config.screen_stable_ms < 0) {
+        return "screen_stable_ms must be >= 0";
+    }
+    if (config.screen_stable_diff_threshold < 0.0) {
+        return "screen_stable_diff_threshold must be >= 0";
+    }
     std::string pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
     if (pointer_mode != "absolute" && pointer_mode != "touchscreen") {
         return "hid.pointer_mode must be absolute or touchscreen";
+    }
+    std::string telemetry_provider = lowercase_copy(trim_copy(config.telemetry.provider));
+    if (!telemetry_provider.empty() && telemetry_provider != "langfuse") {
+        return "telemetry.provider must be langfuse";
+    }
+    if (config.telemetry.enabled && trim_copy(config.telemetry.base_url).empty()) {
+        return "telemetry.base_url is required when telemetry.enabled is true";
+    }
+    if (config.telemetry.enabled && trim_copy(config.telemetry.public_key).empty()) {
+        return "telemetry.public_key is required when telemetry.enabled is true";
+    }
+    if (config.telemetry.enabled && trim_copy(config.telemetry.secret_key).empty()) {
+        return "telemetry.secret_key is required when telemetry.enabled is true";
+    }
+    if (config.telemetry.upload_timeout_sec < 0) {
+        return "telemetry.upload_timeout_sec must be >= 0";
+    }
+    if (config.telemetry.max_retry < 0) {
+        return "telemetry.max_retry must be >= 0";
     }
     return "";
 }
@@ -1188,6 +1343,61 @@ void schedule_agent_restart() {
 
 void schedule_ota_restart() {
     schedule_init_script_restart(kOtaInitScript);
+}
+
+int acquire_ota_update_launch_lock(std::string* error) {
+    int lock_fd = open(kOtaWebUpdateLockPath, O_CREAT | O_RDWR, 0600);
+    if (lock_fd < 0) {
+        if (error) {
+            *error = std::string("open ota update launch lock: ") + strerror(errno);
+        }
+        return -1;
+    }
+    if (flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
+        if (error) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                *error = "ota update already running";
+            } else {
+                *error = std::string("lock ota update launch: ") + strerror(errno);
+            }
+        }
+        close(lock_fd);
+        return -1;
+    }
+    return lock_fd;
+}
+
+bool schedule_ota_update(std::string* error) {
+    int lock_fd = acquire_ota_update_launch_lock(error);
+    if (lock_fd < 0) {
+        return false;
+    }
+    std::string log_path = kOtaWebUpdateLogPath;
+    if (!prepare_ota_update_log_file(log_path, error)) {
+        close(lock_fd);
+        return false;
+    }
+    std::string cmd =
+        "("
+        "if [ -x " + shell_quote(kEnvRunBin) + " ]; then "
+        + shell_quote(kEnvRunBin) + " " + shell_quote(kOtaBin) + " update; "
+        "else "
+        + shell_quote(kOtaBin) + " update; "
+        "fi; "
+        "rc=$?; echo \"[config_web] ota update exited rc=$rc\""
+        ") >> " + shell_quote(log_path) + " 2>&1 &";
+    int rc = system(cmd.c_str());
+    if (rc != 0) {
+        close(lock_fd);
+        if (error) {
+            std::ostringstream oss;
+            oss << "failed to start ota update: system rc=" << rc;
+            *error = oss.str();
+        }
+        return false;
+    }
+    close(lock_fd);
+    return true;
 }
 
 void schedule_poweroff() {
@@ -1375,6 +1585,22 @@ std::string parent_dir(const std::string& path) {
     return path.substr(0, pos);
 }
 
+bool prepare_ota_update_log_file(const std::string& path, std::string* error) {
+    if (!mkdir_p(parent_dir(path), error)) {
+        return false;
+    }
+    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        if (error) *error = "open " + path + ": " + strerror(errno);
+        return false;
+    }
+    if (close(fd) != 0) {
+        if (error) *error = "close " + path + ": " + strerror(errno);
+        return false;
+    }
+    return true;
+}
+
 bool validate_system_proxy_values(const SystemProxy& proxy, std::string* error) {
     struct Field {
         const char* name;
@@ -1517,11 +1743,11 @@ std::string trim_for_display(const std::string& text, size_t max_size) {
     return trimmed.substr(start);
 }
 
-AgentLogSnapshot read_agent_log_snapshot() {
+AgentLogSnapshot read_log_snapshot(const char* path, size_t read_size, size_t display_size) {
     AgentLogSnapshot snapshot;
-    snapshot.path = kAgentLogPath;
+    snapshot.path = path ? path : "";
 
-    FILE* f = fopen(kAgentLogPath, "r");
+    FILE* f = fopen(snapshot.path.c_str(), "r");
     if (!f) {
         snapshot.error = strerror(errno);
         return snapshot;
@@ -1543,8 +1769,8 @@ AgentLogSnapshot read_agent_log_snapshot() {
 
     snapshot.size_bytes = file_size;
     long offset = 0;
-    if (static_cast<size_t>(file_size) > kAgentLogReadSize) {
-        offset = file_size - static_cast<long>(kAgentLogReadSize);
+    if (static_cast<size_t>(file_size) > read_size) {
+        offset = file_size - static_cast<long>(read_size);
         snapshot.truncated = true;
     }
 
@@ -1573,11 +1799,19 @@ AgentLogSnapshot read_agent_log_snapshot() {
         }
     }
 
-    if (contents.size() > kAgentLogDisplaySize) {
+    if (contents.size() > display_size) {
         snapshot.truncated = true;
     }
-    snapshot.log = trim_for_display(contents, kAgentLogDisplaySize);
+    snapshot.log = trim_for_display(contents, display_size);
     return snapshot;
+}
+
+AgentLogSnapshot read_agent_log_snapshot() {
+    return read_log_snapshot(kAgentLogPath, kAgentLogReadSize, kAgentLogDisplaySize);
+}
+
+AgentLogSnapshot read_ota_log_snapshot() {
+    return read_log_snapshot(kOtaWebUpdateLogPath, kOtaLogReadSize, kOtaLogDisplaySize);
 }
 
 std::string lowercase_copy(const std::string& text) {
@@ -1844,7 +2078,7 @@ cJSON* agent_status_to_json(const AgentRuntimeStatus& status) {
     return root;
 }
 
-cJSON* agent_log_to_json(const AgentLogSnapshot& snapshot) {
+cJSON* log_snapshot_to_json(const AgentLogSnapshot& snapshot) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "path", snapshot.path.c_str());
     cJSON_AddBoolToObject(root, "exists", snapshot.exists ? 1 : 0);
@@ -1853,6 +2087,14 @@ cJSON* agent_log_to_json(const AgentLogSnapshot& snapshot) {
     cJSON_AddStringToObject(root, "log", snapshot.log.c_str());
     cJSON_AddStringToObject(root, "error", snapshot.error.c_str());
     return root;
+}
+
+cJSON* agent_log_to_json(const AgentLogSnapshot& snapshot) {
+    return log_snapshot_to_json(snapshot);
+}
+
+cJSON* ota_log_to_json(const AgentLogSnapshot& snapshot) {
+    return log_snapshot_to_json(snapshot);
 }
 
 cJSON* firmware_info_to_json(const Options& options) {
@@ -1932,6 +2174,27 @@ ApiResponse handle_get_agent_log() {
     cJSON_AddBoolToObject(root, "ok", 1);
     cJSON_AddItemToObject(root, "agent_log", agent_log_to_json(read_agent_log_snapshot()));
     return make_json_ok(root);
+}
+
+ApiResponse handle_get_ota_log() {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON_AddItemToObject(root, "ota_log", ota_log_to_json(read_ota_log_snapshot()));
+    return make_json_ok(root);
+}
+
+ApiResponse handle_post_ota_update() {
+    std::string error;
+    if (!schedule_ota_update(&error)) {
+        return make_json_error(500, error.empty() ? "failed to start ota update" : error);
+    }
+
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", 1);
+    cJSON_AddBoolToObject(response, "ota_update_started", 1);
+    cJSON_AddStringToObject(response, "message", "ota update started");
+    cJSON_AddNumberToObject(response, "ota_log_start_size_bytes", 0);
+    return make_json_ok(response);
 }
 
 ApiResponse handle_post_system_env(const Options& options, const std::string& body) {
@@ -2156,25 +2419,76 @@ a{color:#2563eb;text-decoration:none}
 a:hover{text-decoration:underline}
 .pass{color:#16a34a;font-weight:600}
 .fail{color:#dc2626;font-weight:600}
+.badge{display:inline-block;font-size:11px;background:#e0e7ff;color:#3730a3;padding:1px 6px;border-radius:4px;margin-left:6px}
+textarea{width:100%;min-height:200px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;padding:8px;border:1px solid #ddd;border-radius:6px;resize:vertical}
+input[type=text]{font-size:14px;padding:8px 12px;border-radius:6px;border:1px solid #ddd;width:240px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.muted{font-size:12px;color:#888}
+.err{color:#dc2626;font-size:13px;white-space:pre-wrap;margin-top:8px}
+.ok{color:#16a34a;font-size:13px;margin-top:8px}
+.del{background:#dc2626;font-size:12px;padding:4px 8px}
+.del:hover:not(:disabled){background:#b91c1c}
 </style></head><body>
 <h1>Aiden Benchmark</h1>
 <div class="card">
-<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+<div class="row">
 <select id="suiteSelect"><option value="">Loading...</option></select>
 <button id="runBtn" onclick="startRun()">Run</button>
+<button id="delBtn" class="del" onclick="deleteSuite()" style="display:none">Delete</button>
 <span id="statusText" class="status">idle</span>
 </div></div>
+<div class="card">
+<h2 style="font-size:15px;margin-bottom:8px">AI Generate Suite</h2>
+<div class="muted" style="margin-bottom:8px">Describe test scenarios in natural language. One line = one task. Supports multi-step workflows, captcha handling, login requirements, etc.</div>
+<textarea id="aiPrompt" placeholder="Examples (one per line for batch generation):
+1. 淘宝购买上月买过的牙膏 (需要登录+历史订单)
+2. 瑞幸点一杯冰的少甜生椰拿铁
+3. 大众点评给烤肉店五星评价+上传3张图片
+4. 验证码滑动测试
+5. 关闭广告页面的X按钮
+6. 微信给不存在的联系人发消息 (预期失败场景)
+7. 屏幕点击准确性测试
+
+Or single scenario: Test agent on 3 math questions (2+2, 5*3, 10-4) with multiple choice." style="min-height:160px"></textarea>
+<div class="row" style="margin-top:8px">
+<input type="text" id="aiSuiteName" placeholder="suite name (a-z, 0-9, _-)">
+<button id="aiGenBtn" onclick="generateSuite()">Generate</button>
+</div>
+<div id="aiGenMsg"></div>
+</div>
+<div class="card">
+<h2 style="font-size:15px;margin-bottom:8px">Import Custom Suite</h2>
+<div class="muted" style="margin-bottom:8px">Paste a suite JSON (or use AI Generate above). Validation runs through runner.suite.load_suite.</div>
+<div class="row">
+<input type="text" id="importName" placeholder="suite name (a-z, 0-9, _-)">
+<button onclick="formatJson()">Format</button>
+<button onclick="importSuite()">Import</button>
+</div>
+<textarea id="importJson" placeholder='{"name":"my_suite","tasks":[{"id":"t1","category":"single_step","description_for_judge":"...","prompt":"...","rubric":[{"id":"r1","check":"..."}],"hard_assertions":{}}]}'></textarea>
+<div id="importMsg"></div>
+</div>
 <div class="card"><h2 style="font-size:15px;margin-bottom:8px">History</h2>
 <table><thead><tr><th>Run ID</th><th>Suite</th><th>Passed</th><th>Failed</th><th>Report</th></tr></thead>
 <tbody id="historyBody"><tr><td colspan="5">Loading...</td></tr></tbody></table></div>
 <script>
 var polling=null;
+var suiteIndex={};
 function load(){loadSuites();loadRuns();loadStatus()}
 function loadSuites(){
 fetch('/benchmark/suites').then(r=>r.json()).then(d=>{
-var s=document.getElementById('suiteSelect');s.innerHTML='';
-d.forEach(function(x){var o=document.createElement('option');o.value=x.path;o.textContent=x.name;s.appendChild(o)});
+var s=document.getElementById('suiteSelect');s.innerHTML='';suiteIndex={};
+d.forEach(function(x){
+var o=document.createElement('option');o.value=x.path;
+o.textContent=x.name+(x.custom?' (custom)':'');
+s.appendChild(o);suiteIndex[x.path]=x;
+});
+syncDelBtn();
 })}
+function syncDelBtn(){
+var p=document.getElementById('suiteSelect').value;
+var x=suiteIndex[p];
+document.getElementById('delBtn').style.display=(x&&x.custom)?'inline-block':'none';
+}
 function loadRuns(){
 fetch('/benchmark/runs').then(r=>r.json()).then(d=>{
 var tb=document.getElementById('historyBody');tb.innerHTML='';
@@ -2216,6 +2530,82 @@ fetch('/benchmark/run',{method:'POST',headers:{'Content-Type':'application/json'
 body:JSON.stringify({suite:suite})}).then(r=>r.json()).then(function(){
 polling=setInterval(pollStatus,3000)});
 }
+function generateSuite(){
+var prompt=document.getElementById('aiPrompt').value.trim();
+var name=document.getElementById('aiSuiteName').value.trim();
+var msg=document.getElementById('aiGenMsg');msg.textContent='';msg.className='';
+var btn=document.getElementById('aiGenBtn');
+if(!prompt){msg.textContent='Describe your test scenario first';msg.className='err';return}
+if(!name){msg.textContent='Suite name required';msg.className='err';return}
+btn.disabled=true;
+msg.textContent='Generating... (10-60s depending on complexity)';msg.className='';
+fetch('/benchmark/suites/generate',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({prompt:prompt,name:name})}).then(r=>r.json().then(d=>({status:r.status,d:d}))).then(function(res){
+btn.disabled=false;
+if(res.status>=400||!res.d.ok){msg.textContent=res.d.error||'Generation failed';msg.className='err';return}
+document.getElementById('importJson').value=res.d.suite_json;
+document.getElementById('importName').value=name;
+document.getElementById('aiPrompt').value='';
+document.getElementById('aiSuiteName').value='';
+msg.textContent='Generated! Review JSON below and click Import.';msg.className='ok';
+}).catch(function(e){btn.disabled=false;msg.textContent=String(e);msg.className='err'});
+}
+function escapeCtrlInStrings(s){
+var out='',inStr=false,esc=false;
+for(var i=0;i<s.length;i++){
+var c=s[i];
+if(esc){out+=c;esc=false;continue}
+if(c==='\\'){out+=c;esc=true;continue}
+if(c==='"'){inStr=!inStr;out+=c;continue}
+if(inStr){
+if(c==='\n')out+='\\n';
+else if(c==='\r')out+='\\r';
+else if(c==='\t')out+='\\t';
+else if(c.charCodeAt(0)<0x20)out+='\\u00'+('0'+c.charCodeAt(0).toString(16)).slice(-2);
+else out+=c;
+}else{out+=c}
+}
+return out;
+}
+function formatJson(){
+var msg=document.getElementById('importMsg');msg.textContent='';msg.className='';
+var raw=document.getElementById('importJson').value;
+if(!raw.trim()){msg.textContent='Paste JSON first';msg.className='err';return}
+var obj=null,fixed=false;
+try{obj=JSON.parse(raw)}catch(e1){
+try{var sanitized=escapeCtrlInStrings(raw);obj=JSON.parse(sanitized);fixed=true}
+catch(e2){msg.textContent='Invalid JSON: '+e1.message;msg.className='err';return}
+}
+document.getElementById('importJson').value=JSON.stringify(obj,null,2);
+msg.textContent=fixed?'Formatted (fixed control chars in strings)':'Formatted & validated';
+msg.className='ok';
+}
+function importSuite(){
+var name=document.getElementById('importName').value.trim();
+var json=document.getElementById('importJson').value;
+var msg=document.getElementById('importMsg');msg.textContent='';msg.className='';
+if(!name){msg.textContent='Name required';msg.className='err';return}
+if(!json.trim()){msg.textContent='JSON required';msg.className='err';return}
+try{JSON.parse(json)}catch(e){
+try{json=escapeCtrlInStrings(json);JSON.parse(json)}
+catch(e2){msg.textContent='Invalid JSON: '+e.message+' (try Format first)';msg.className='err';return}
+}
+fetch('/benchmark/suites/import',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({name:name,json:json})}).then(r=>r.json().then(d=>({status:r.status,d:d}))).then(function(res){
+if(res.status>=400||!res.d.ok){msg.textContent=res.d.error||'Import failed';msg.className='err';return}
+msg.textContent='Imported '+res.d.name;msg.className='ok';
+document.getElementById('importJson').value='';document.getElementById('importName').value='';
+loadSuites();
+}).catch(function(e){msg.textContent=String(e);msg.className='err'});
+}
+function deleteSuite(){
+var p=document.getElementById('suiteSelect').value;
+var x=suiteIndex[p];if(!x||!x.custom)return;
+if(!confirm('Delete suite '+x.name+'?'))return;
+fetch('/benchmark/suites/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({name:x.name})}).then(function(r){return r.json()}).then(function(){loadSuites()});
+}
+document.getElementById('suiteSelect').addEventListener('change',syncDelBtn);
 load();
 </script></body></html>)HTML";
 }
@@ -2282,6 +2672,303 @@ std::string build_proxy_env_exports(const SystemProxy& proxy) {
     append_export("no_proxy", no_proxy);
     append_export("NO_PROXY", no_proxy);
     return exports;
+}
+
+bool generate_suite_with_llm(const Options& options, const std::string& user_prompt,
+                              const std::string& suite_name, std::string* out_json, std::string* error) {
+    // Load agent config to get model settings
+    aiden::AgentToml cfg;
+    if (!aiden::load_agent_toml(options.agent_config_path.c_str(), cfg, error)) {
+        *error = "Failed to load agent config";
+        return false;
+    }
+
+    std::string provider = cfg.model.provider;
+    std::string api_key = cfg.model.api_key;
+    std::string model = cfg.model.model;
+    std::string base_url = cfg.model.base_url;
+
+    if (provider != "openrouter") {
+        *error = "Only openrouter provider is supported for suite generation";
+        return false;
+    }
+    if (api_key.empty()) {
+        *error = "No API key configured";
+        return false;
+    }
+    if (model.empty()) {
+        model = "anthropic/claude-3.5-sonnet";  // fallback
+    }
+
+    std::string api_endpoint = base_url.empty() ? "https://openrouter.ai/api/v1" : base_url;
+    // Strip trailing slashes and append /chat/completions if not already present
+    while (!api_endpoint.empty() && api_endpoint.back() == '/') {
+        api_endpoint.pop_back();
+    }
+    if (api_endpoint.find("/chat/completions") == std::string::npos) {
+        api_endpoint += "/chat/completions";
+    }
+
+    // Fetch agent tools dynamically
+    std::string tools_list = "";
+    std::string tools_cmd = "curl -k -s --max-time 3 http://127.0.0.1:8080/api/tools 2>&1";
+    FILE* tools_pipe = popen(tools_cmd.c_str(), "r");
+    if (tools_pipe) {
+        std::string tools_json;
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), tools_pipe)) {
+            tools_json += buf;
+        }
+        pclose(tools_pipe);
+
+        // Parse and format tools
+        cJSON* tools_obj = cJSON_Parse(tools_json.c_str());
+        if (tools_obj) {
+            cJSON* tools_array = cJSON_GetObjectItem(tools_obj, "tools");
+            if (json_is_type(tools_array, cJSON_Array)) {
+                int count = cJSON_GetArraySize(tools_array);
+                for (int i = 0; i < count && i < 30; i++) {
+                    cJSON* tool = cJSON_GetArrayItem(tools_array, i);
+                    cJSON* name = cJSON_GetObjectItem(tool, "name");
+                    cJSON* params = cJSON_GetObjectItem(tool, "parameters");
+                    if (json_is_string(name)) {
+                        tools_list += "  - " + std::string(name->valuestring);
+                        if (json_is_type(params, cJSON_Object)) {
+                            tools_list += "(";
+                            cJSON* param = params->child;
+                            bool first = true;
+                            while (param) {
+                                if (!first) tools_list += ", ";
+                                tools_list += param->string;
+                                first = false;
+                                param = param->next;
+                            }
+                            tools_list += ")";
+                        }
+                        tools_list += "\n";
+                    }
+                }
+            }
+            cJSON_Delete(tools_obj);
+        }
+    }
+    if (tools_list.empty()) {
+        tools_list = "  - keyboard_tap(keys)\n  - keyboard_text(text)\n  - mouse_click(x, y, button, coord_space)\n  - screenshot()\n";
+    }
+
+    // Build enhanced system prompt
+    std::string system_prompt =
+"You are a benchmark suite generator for a device control agent. Output ONLY valid JSON (no markdown, no code fences, no explanation).\n"
+"\n"
+"SCHEMA:\n"
+"{\n"
+"  \"name\": \"<suite_name>\",\n"
+"  \"tasks\": [\n"
+"    {\n"
+"      \"id\": \"<unique_snake_case>\",\n"
+"      \"category\": \"single_step\" | \"multi_step\" | \"diagnostic\",\n"
+"      \"description_for_judge\": \"<what agent should accomplish>\",\n"
+"      \"prompt\": \"<instruction to agent>\",\n"
+"      \"setup\": {\"type\": \"agent_prompt\", \"prompt\": \"<pre-task setup>\", \"timeout_sec\": 30, \"clear_history_after\": true} (OPTIONAL),\n"
+"      \"expected_answer\": \"(a)\" (OPTIONAL for MCQ),\n"
+"      \"answer_format\": \"option_letter\" (OPTIONAL),\n"
+"      \"rubric\": [{\"id\": \"<check_id>\", \"check\": \"<validation criteria>\"}],\n"
+"      \"hard_assertions\": {\"min_tool_calls\": 0, \"max_tool_calls\": 50, \"must_complete_within_sec\": 180}\n"
+"    }\n"
+"  ]\n"
+"}\n"
+"\n"
+"AGENT CAPABILITIES:\n"
++ tools_list +
+"\n"
+"Agent autonomously decides which tools to call. Rubric checks can reference tool usage in trace.\n"
+"\n"
+"GENERATION RULES:\n"
+"1. BATCH MODE: If user lists multiple scenarios (numbered/bulleted), generate ONE task per scenario\n"
+"2. CATEGORY SELECTION:\n"
+"   - single_step: Simple Q&A, single action (1-5 tool calls, <60s)\n"
+"   - multi_step: Complex workflows with 3+ stages (10-50 tool calls, 60-180s)\n"
+"   - diagnostic: System checks, verification tasks\n"
+"3. TOOL USAGE VALIDATION (IMPORTANT):\n"
+"   For ALL tasks, infer which tools the agent should use and add rubric checks:\n"
+"   - UI clicking/tapping → 'Trace shows mouse_click tool was called'\n"
+"   - Swiping/sliding (captcha, scroll) → 'Trace shows swipe tool was called'\n"
+"   - Typing text → 'Trace shows keyboard_text tool was called'\n"
+"   - Taking screenshot → 'Trace shows screenshot tool was called'\n"
+"   - Memory operations → 'Trace shows save_memory/recall_memory tool was called'\n"
+"   - Web search → 'Trace shows research.search_web tool was called'\n"
+"   ALWAYS add tool validation as the FIRST rubric check, then add outcome checks.\n"
+"   Example for 'close ad X button':\n"
+"     [{\"id\": \"used_mouse_click\", \"check\": \"Trace shows mouse_click was called\"},\n"
+"      {\"id\": \"ad_closed\", \"check\": \"Post-screenshot shows ad dismissed\"}]\n"
+"4. MULTI-STEP RUBRIC: Break into checkpoints:\n"
+"   [{\"id\": \"opened_app\", \"check\": \"Trace shows app launched (visible in mid-task screenshot)\"},\n"
+"    {\"id\": \"navigated\", \"check\": \"Agent reached target screen\"},\n"
+"    {\"id\": \"completed_action\", \"check\": \"Final screenshot shows success state\"}]\n"
+"5. SETUP FIELD: Use for login/state prerequisites:\n"
+"   {\"type\": \"agent_prompt\", \"prompt\": \"Open Taobao and login if needed\", \"timeout_sec\": 30, \"clear_history_after\": true}\n"
+"6. EXPECTED FAILURES: For tasks like 'message non-existent contact', rubric checks graceful error:\n"
+"   {\"id\": \"detected_error\", \"check\": \"Agent realized contact does not exist\"},\n"
+"   {\"id\": \"no_crash\", \"check\": \"Agent did not crash, reported issue clearly\"}\n"
+"7. MULTIPLE CHOICE: End prompt with '<final_answer>(x)</final_answer>' instruction\n"
+"8. Task IDs: unique snake_case, descriptive (e.g., 'taobao_reorder_toothpaste')\n"
+"\n"
+"OUTPUT: JSON only, no explanation";
+
+
+    // Build request payload
+    std::string full_prompt = "User scenario: " + user_prompt + "\n\nSuite name: " + suite_name;
+
+    std::string payload = "{\"model\":\"" + model + "\",\"messages\":[{\"role\":\"system\",\"content\":";
+    // Escape system prompt
+    cJSON* sys_text = cJSON_CreateString(system_prompt.c_str());
+    char* sys_json = cJSON_PrintUnformatted(sys_text);
+    payload += sys_json;
+    free(sys_json);
+    cJSON_Delete(sys_text);
+
+    payload += "},{\"role\":\"user\",\"content\":";
+    cJSON* user_text = cJSON_CreateString(full_prompt.c_str());
+    char* user_json = cJSON_PrintUnformatted(user_text);
+    payload += user_json;
+    free(user_json);
+    cJSON_Delete(user_text);
+    payload += "}],\"temperature\":0.7,\"max_tokens\":4000}";
+
+    // Load proxy settings
+    SystemProxy proxy;
+    load_system_env_proxy(options.system_env_path, &proxy);
+    std::string proxy_arg = build_curl_proxy_arg(proxy);
+
+    // Build curl command
+    // Use mkstemp for both payload and auth header to avoid symlink attacks and
+    // prevent the API key from appearing in `ps aux` output.
+    char payload_template[] = "/tmp/gen_suite_payload.XXXXXX";
+    int payload_fd = mkstemp(payload_template);
+    if (payload_fd < 0) {
+        *error = "Failed to create payload temp file";
+        return false;
+    }
+    std::string temp_payload_file = payload_template;
+    ssize_t pn = write(payload_fd, payload.data(), payload.size());
+    close(payload_fd);
+    if (pn < 0 || static_cast<size_t>(pn) != payload.size()) {
+        unlink(temp_payload_file.c_str());
+        *error = "Failed to write payload";
+        return false;
+    }
+
+    char header_template[] = "/tmp/gen_suite_auth.XXXXXX";
+    int header_fd = mkstemp(header_template);
+    if (header_fd < 0) {
+        unlink(temp_payload_file.c_str());
+        *error = "Failed to create auth temp file";
+        return false;
+    }
+    std::string header_file = header_template;
+    fchmod(header_fd, 0600);
+    std::string auth_header = "Authorization: Bearer " + api_key + "\n";
+    ssize_t hn = write(header_fd, auth_header.data(), auth_header.size());
+    close(header_fd);
+    if (hn < 0 || static_cast<size_t>(hn) != auth_header.size()) {
+        unlink(temp_payload_file.c_str());
+        unlink(header_file.c_str());
+        *error = "Failed to write auth header";
+        return false;
+    }
+
+    std::string curl_cmd = "curl -k -s --max-time 60 -X POST " + shell_quote(api_endpoint) +
+                           " -H 'Content-Type: application/json'" +
+                           " -H @" + shell_quote(header_file) +
+                           proxy_arg +
+                           " -d @" + temp_payload_file +
+                           " 2>&1";
+
+    FILE* pipe = popen(curl_cmd.c_str(), "r");
+    if (!pipe) {
+        unlink(temp_payload_file.c_str());
+        unlink(header_file.c_str());
+        *error = "Failed to execute curl";
+        return false;
+    }
+
+    std::string response;
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), pipe)) {
+        response += buf;
+    }
+    int exit_code = pclose(pipe);
+    unlink(temp_payload_file.c_str());
+    unlink(header_file.c_str());
+
+    if (exit_code != 0) {
+        *error = "curl failed: " + response;
+        return false;
+    }
+
+    // Parse OpenRouter response
+    cJSON* resp_json = cJSON_Parse(response.c_str());
+    if (!resp_json) {
+        *error = "Invalid JSON response from API: " + response.substr(0, 200);
+        return false;
+    }
+
+    cJSON* choices = cJSON_GetObjectItem(resp_json, "choices");
+    if (!json_is_type(choices, cJSON_Array) || cJSON_GetArraySize(choices) == 0) {
+        cJSON* err_obj = cJSON_GetObjectItem(resp_json, "error");
+        if (err_obj) {
+            cJSON* msg = cJSON_GetObjectItem(err_obj, "message");
+            *error = json_is_string(msg) ? msg->valuestring : "API error";
+        } else {
+            *error = "No choices in API response";
+        }
+        cJSON_Delete(resp_json);
+        return false;
+    }
+
+    cJSON* first_choice = cJSON_GetArrayItem(choices, 0);
+    cJSON* message = cJSON_GetObjectItem(first_choice, "message");
+    cJSON* content = cJSON_GetObjectItem(message, "content");
+    if (!json_is_string(content)) {
+        cJSON_Delete(resp_json);
+        *error = "No content in API response";
+        return false;
+    }
+
+    std::string generated_text = content->valuestring;
+    cJSON_Delete(resp_json);
+
+    // Strip markdown code fences if present
+    size_t start = 0;
+    size_t end = generated_text.size();
+    if (generated_text.find("```json") != std::string::npos) {
+        start = generated_text.find("```json") + 7;
+        size_t fence_end = generated_text.find("```", start);
+        if (fence_end != std::string::npos) end = fence_end;
+    } else if (generated_text.find("```") != std::string::npos) {
+        start = generated_text.find("```") + 3;
+        size_t fence_end = generated_text.find("```", start);
+        if (fence_end != std::string::npos) end = fence_end;
+    }
+
+    std::string cleaned = generated_text.substr(start, end - start);
+    // Trim whitespace
+    size_t first = cleaned.find_first_not_of(" \t\n\r");
+    size_t last = cleaned.find_last_not_of(" \t\n\r");
+    if (first != std::string::npos && last != std::string::npos) {
+        cleaned = cleaned.substr(first, last - first + 1);
+    }
+
+    // Validate it's valid JSON
+    cJSON* suite_obj = cJSON_Parse(cleaned.c_str());
+    if (!suite_obj) {
+        *error = "Generated content is not valid JSON: " + cleaned.substr(0, 200);
+        return false;
+    }
+    cJSON_Delete(suite_obj);
+
+    *out_json = cleaned;
+    return true;
 }
 
 ApiResponse handle_config_test(const Options& options, const std::string& body) {
@@ -2564,11 +3251,33 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         }
         cJSON_AddItemToArray(results, vad_r);
 
+        cJSON* diff_item = cJSON_GetObjectItem(values, "screen_stable_diff_threshold");
+        cJSON* diff_r = cJSON_CreateObject();
+        cJSON_AddStringToObject(diff_r, "check", "screen_stable_diff_threshold");
+        if (json_is_number(diff_item)) {
+            double n = diff_item->valuedouble;
+            if (n < 0.0) {
+                cJSON_AddBoolToObject(diff_r, "passed", 0);
+                std::string msg = "must be >= 0, got " + std::to_string(n);
+                cJSON_AddStringToObject(diff_r, "detail", msg.c_str());
+                all_passed = false;
+            } else {
+                cJSON_AddBoolToObject(diff_r, "passed", 1);
+                cJSON_AddStringToObject(diff_r, "detail", std::to_string(n).c_str());
+            }
+        } else {
+            cJSON_AddBoolToObject(diff_r, "passed", 0);
+            cJSON_AddStringToObject(diff_r, "detail", "not a number");
+            all_passed = false;
+        }
+        cJSON_AddItemToArray(results, diff_r);
+
         const char* numeric_keys[] = {
             "silence_ms", "min_speech_ms",
             "voice_followup_timeout_ms", "voice_first_turn_timeout_ms",
             "voice_max_turns", "voice_max_response_tokens",
-            "screenshot_keep_n", "screenshot_prune_interval", NULL
+            "screenshot_keep_n", "screenshot_prune_interval",
+            "screen_stable_timeout_ms", "screen_stable_ms", NULL
         };
         for (int i = 0; numeric_keys[i]; ++i) {
             cJSON* item = cJSON_GetObjectItem(values, numeric_keys[i]);
@@ -2615,6 +3324,94 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             all_passed = false;
         }
         cJSON_AddItemToArray(results, iter_r);
+    } else if (section == "telemetry") {
+        cJSON* enabled_item = cJSON_GetObjectItem(values, "enabled");
+        bool enabled = json_is_bool(enabled_item) && json_is_type(enabled_item, cJSON_True);
+
+        cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
+        std::string provider_original = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
+        std::string provider = lowercase_copy(provider_original);
+        cJSON* provider_r = cJSON_CreateObject();
+        cJSON_AddStringToObject(provider_r, "check", "provider");
+        if (provider.empty() || provider == "langfuse") {
+            cJSON_AddBoolToObject(provider_r, "passed", 1);
+            cJSON_AddStringToObject(provider_r, "detail", provider_original.empty() ? "empty; defaults to langfuse" : provider_original.c_str());
+        } else {
+            cJSON_AddBoolToObject(provider_r, "passed", 0);
+            std::string msg = "got '" + provider_original + "', allowed: langfuse";
+            cJSON_AddStringToObject(provider_r, "detail", msg.c_str());
+            all_passed = false;
+        }
+        cJSON_AddItemToArray(results, provider_r);
+
+        cJSON* base_url_item = cJSON_GetObjectItem(values, "base_url");
+        std::string base_url = json_is_string(base_url_item) ? trim_copy(base_url_item->valuestring) : "";
+        cJSON* base_r = cJSON_CreateObject();
+        cJSON_AddStringToObject(base_r, "check", "base_url");
+        if (enabled && base_url.empty()) {
+            cJSON_AddBoolToObject(base_r, "passed", 0);
+            cJSON_AddStringToObject(base_r, "detail", "required when telemetry.enabled is true");
+            all_passed = false;
+        } else {
+            cJSON_AddBoolToObject(base_r, "passed", 1);
+            cJSON_AddStringToObject(base_r, "detail", base_url.empty() ? "empty; telemetry disabled or not configured" : base_url.c_str());
+        }
+        cJSON_AddItemToArray(results, base_r);
+
+        if (!base_url.empty()) {
+            cJSON* endpoint_r = cJSON_CreateObject();
+            cJSON_AddStringToObject(endpoint_r, "check", "endpoint_reachable");
+            std::string cmd = curl_env_exports + "curl -sI --max-time 6 " + curl_proxy_arg + shell_quote(base_url) + " 2>&1 | head -1";
+            CommandResult cr = run_shell_command(cmd);
+            bool reachable = cr.exit_code == 0 && cr.output.find("HTTP") != std::string::npos;
+            cJSON_AddBoolToObject(endpoint_r, "passed", reachable ? 1 : 0);
+            std::string detail = base_url + " -> " + trim_trailing_newlines(cr.output);
+            cJSON_AddStringToObject(endpoint_r, "detail", detail.c_str());
+            if (!reachable) all_passed = false;
+            cJSON_AddItemToArray(results, endpoint_r);
+        }
+
+        const char* key_fields[] = {"public_key", "secret_key", NULL};
+        for (int i = 0; key_fields[i]; ++i) {
+            cJSON* item = cJSON_GetObjectItem(values, key_fields[i]);
+            std::string key_value = json_is_string(item) ? trim_copy(item->valuestring) : "";
+            cJSON* r = cJSON_CreateObject();
+            cJSON_AddStringToObject(r, "check", key_fields[i]);
+            if (enabled && key_value.empty()) {
+                cJSON_AddBoolToObject(r, "passed", 0);
+                cJSON_AddStringToObject(r, "detail", "required when telemetry.enabled is true");
+                all_passed = false;
+            } else {
+                cJSON_AddBoolToObject(r, "passed", 1);
+                cJSON_AddStringToObject(r, "detail", key_value.empty() ? "empty; telemetry disabled or not configured" : "set");
+            }
+            cJSON_AddItemToArray(results, r);
+        }
+
+        const char* numeric_keys[] = {"upload_timeout_sec", "max_retry", NULL};
+        for (int i = 0; numeric_keys[i]; ++i) {
+            cJSON* item = cJSON_GetObjectItem(values, numeric_keys[i]);
+            cJSON* r = cJSON_CreateObject();
+            cJSON_AddStringToObject(r, "check", numeric_keys[i]);
+            if (json_is_number(item)) {
+                int n = item->valueint;
+                if (n < 0) {
+                    cJSON_AddBoolToObject(r, "passed", 0);
+                    std::string msg = "must be >= 0, got ";
+                    msg += std::to_string(n);
+                    cJSON_AddStringToObject(r, "detail", msg.c_str());
+                    all_passed = false;
+                } else {
+                    cJSON_AddBoolToObject(r, "passed", 1);
+                    cJSON_AddStringToObject(r, "detail", std::to_string(n).c_str());
+                }
+            } else {
+                cJSON_AddBoolToObject(r, "passed", 0);
+                cJSON_AddStringToObject(r, "detail", "not a number");
+                all_passed = false;
+            }
+            cJSON_AddItemToArray(results, r);
+        }
     } else if (section == "search") {
         cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
         std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
@@ -2702,9 +3499,11 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
                 size_t pos = path.rfind('/');
                 std::string name = (pos != std::string::npos) ? path.substr(pos + 1) : path;
                 if (name.size() > 5) name = name.substr(0, name.size() - 5);
+                bool is_custom = path.find("/suites/custom/") != std::string::npos;
                 cJSON* item = cJSON_CreateObject();
                 cJSON_AddStringToObject(item, "name", name.c_str());
                 cJSON_AddStringToObject(item, "path", path.c_str());
+                cJSON_AddBoolToObject(item, "custom", is_custom ? 1 : 0);
                 cJSON_AddItemToArray(root, item);
             }
             pclose(pipe);
@@ -2844,7 +3643,191 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         response.body = "{\"ok\":true,\"status\":\"running\"}";
         return response;
     }
+    if (request.method == "POST" && request.path == "/benchmark/suites/import") {
+        cJSON* req_body = cJSON_Parse(request.body.c_str());
+        if (!req_body) return make_json_error(400, "invalid JSON request");
+        cJSON* name_item = cJSON_GetObjectItem(req_body, "name");
+        cJSON* json_item = cJSON_GetObjectItem(req_body, "json");
+        if (!json_is_string(name_item) || !json_is_string(json_item)) {
+            cJSON_Delete(req_body);
+            return make_json_error(400, "name and json fields required");
+        }
+        std::string raw_name = name_item->valuestring;
+        std::string suite_json = json_item->valuestring;
+        cJSON_Delete(req_body);
+
+        std::string safe_name;
+        for (char c : raw_name) {
+            if (isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') {
+                safe_name.push_back(c);
+            }
+        }
+        if (safe_name.empty() || safe_name.size() > 64) {
+            return make_json_error(400, "name must be 1-64 chars of [A-Za-z0-9_-]");
+        }
+        if (suite_json.size() > 256 * 1024) {
+            return make_json_error(400, "suite JSON exceeds 256 KB");
+        }
+
+        // Parse to confirm structural validity before invoking python.
+        cJSON* parsed = cJSON_Parse(suite_json.c_str());
+        if (!parsed) return make_json_error(400, "suite is not valid JSON");
+        cJSON_Delete(parsed);
+
+        std::string tmp_path = "/tmp/suite_import_" + safe_name + ".json";
+        FILE* tf = fopen(tmp_path.c_str(), "w");
+        if (!tf) return make_json_error(500, "failed to open temp file");
+        fwrite(suite_json.data(), 1, suite_json.size(), tf);
+        fclose(tf);
+
+        std::string validate_cmd =
+            "cd /userdata/agent/benchmark && "
+            "python3 -c 'import sys; sys.path.insert(0, \".\"); "
+            "from runner.suite import load_suite; "
+            "load_suite(\"" + tmp_path + "\")' 2>&1";
+        CommandResult vr = run_shell_command(validate_cmd);
+        if (vr.exit_code != 0) {
+            unlink(tmp_path.c_str());
+            return make_json_error(400, "validation failed: " + trim_copy(vr.output));
+        }
+
+        std::string dest_dir = "/userdata/agent/benchmark/suites/custom";
+        std::string dest_path = dest_dir + "/" + safe_name + ".json";
+        std::string mv_cmd = "mkdir -p " + shell_quote(dest_dir) + " && mv " +
+                             shell_quote(tmp_path) + " " + shell_quote(dest_path);
+        CommandResult mr = run_shell_command(mv_cmd);
+        if (mr.exit_code != 0) {
+            unlink(tmp_path.c_str());
+            return make_json_error(500, "failed to save suite: " + trim_copy(mr.output));
+        }
+
+        cJSON* root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "ok", 1);
+        cJSON_AddStringToObject(root, "name", safe_name.c_str());
+        cJSON_AddStringToObject(root, "path", dest_path.c_str());
+        return make_json_ok(root);
+    }
+
+    if (request.method == "POST" && request.path == "/benchmark/suites/delete") {
+        cJSON* req_body = cJSON_Parse(request.body.c_str());
+        if (!req_body) return make_json_error(400, "invalid JSON request");
+        cJSON* name_item = cJSON_GetObjectItem(req_body, "name");
+        if (!json_is_string(name_item)) {
+            cJSON_Delete(req_body);
+            return make_json_error(400, "name field required");
+        }
+        std::string raw_name = name_item->valuestring;
+        cJSON_Delete(req_body);
+
+        std::string safe_name;
+        for (char c : raw_name) {
+            if (isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') {
+                safe_name.push_back(c);
+            }
+        }
+        if (safe_name.empty() || safe_name.size() > 64) {
+            return make_json_error(400, "invalid name");
+        }
+        std::string dest_path = "/userdata/agent/benchmark/suites/custom/" + safe_name + ".json";
+        if (unlink(dest_path.c_str()) != 0) {
+            return make_json_error(404, "suite not found");
+        }
+        cJSON* root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "ok", 1);
+        return make_json_ok(root);
+    }
+
+    if (request.method == "POST" && request.path == "/benchmark/suites/generate") {
+        cJSON* req_body = cJSON_Parse(request.body.c_str());
+        if (!req_body) return make_json_error(400, "invalid JSON request");
+        cJSON* prompt_item = cJSON_GetObjectItem(req_body, "prompt");
+        cJSON* name_item = cJSON_GetObjectItem(req_body, "name");
+        if (!json_is_string(prompt_item) || !json_is_string(name_item)) {
+            cJSON_Delete(req_body);
+            return make_json_error(400, "prompt and name required");
+        }
+        std::string user_prompt = prompt_item->valuestring;
+        std::string suite_name = name_item->valuestring;
+        cJSON_Delete(req_body);
+
+        // Call LLM to generate suite JSON
+        std::string generated_json;
+        std::string gen_error;
+        if (!generate_suite_with_llm(options, user_prompt, suite_name, &generated_json, &gen_error)) {
+            return make_json_error(500, gen_error);
+        }
+
+        cJSON* root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "ok", 1);
+        cJSON_AddStringToObject(root, "suite_json", generated_json.c_str());
+        return make_json_ok(root);
+    }
+
     // ===== End benchmark routes =====
+
+    // ===== User files routes =====
+    if (request.method == "GET" && request.path == "/user_files") {
+        ApiResponse response;
+        response.content_type = "text/html; charset=utf-8";
+        std::string path = kUserFilesReportPath;
+        std::string generate_error;
+        if (!ensure_user_files_report(&generate_error)) {
+            response.status_code = 500;
+            response.body = "<html><body>"
+                "<h1>Files Report Generation Failed</h1>"
+                "<p>The files report could not be generated.</p>"
+                "<p>Expected tools under <code>/userdata/agent_tools</code>.</p>"
+                "<pre>" + generate_error + "</pre>"
+                "</body></html>";
+            return response;
+        }
+        FILE* fp = fopen(path.c_str(), "r");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long sz = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            if (sz > 0 && sz < 2 * 1024 * 1024) {  // Max 2MB
+                std::string buf(sz, '\0');
+                fread(&buf[0], 1, sz, fp);
+                response.body = std::move(buf);
+            } else {
+                response.status_code = 500;
+                response.body = "report too large or empty";
+            }
+            fclose(fp);
+        } else {
+            response.status_code = 404;
+            response.body = "<html><body>"
+                "<h1>Files Report Not Found</h1>"
+                "<p>The files report has not been generated yet.</p>"
+                "<p>To generate it, SSH to the device and run:</p>"
+                "<pre>cd /userdata/agent_tools && ./view_agent_files.sh</pre>"
+                "</body></html>";
+        }
+        return response;
+    }
+
+    if (request.method == "POST" && request.path == "/user_files/regenerate") {
+        ApiResponse response;
+        response.content_type = "application/json; charset=utf-8";
+
+        // Regenerate report in background
+        // Note: system() with '&' returns 0 if the shell spawns successfully,
+        // not if the background script succeeds. Actual success/failure will
+        // only be visible in /tmp/user_files_regenerate.log.
+        std::string cmd = "cd /userdata/agent_tools && "
+                          "./view_agent_files.sh > /tmp/user_files_regenerate.log 2>&1 &";
+        int ret = system(cmd.c_str());
+
+        if (ret == 0) {
+            response.body = "{\"status\":\"ok\",\"message\":\"Background regeneration started\"}";
+        } else {
+            response.status_code = 500;
+            response.body = "{\"status\":\"error\",\"message\":\"Failed to spawn regeneration process\"}";
+        }
+        return response;
+    }
+    // ===== End user files routes =====
 
     if (request.method == "GET" && request.path == "/api/agent/status") {
         return handle_get_agent_status();
@@ -2852,6 +3835,14 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "GET" && request.path == "/api/agent/logs") {
         return handle_get_agent_log();
+    }
+
+    if (request.method == "GET" && request.path == "/api/ota/logs") {
+        return handle_get_ota_log();
+    }
+
+    if (request.method == "POST" && (request.path == "/api/ota/update" || request.path == "/api/ota/check-now")) {
+        return handle_post_ota_update();
     }
 
     if (request.method == "GET" && request.path == "/api/config") {
@@ -2947,8 +3938,8 @@ int main(int argc, char** argv) {
 
     if (!is_allowed_bind_address(options.bind_address)) {
         std::cerr << "Refusing to bind config_web to " << options.bind_address
-                  << "; allowed addresses are " << kUsbBindAddress
-                  << " and " << kLoopbackBindAddress << std::endl;
+                  << "; allowed addresses are " << kAnyBindAddress
+                  << ", " << kUsbBindAddress << " and " << kLoopbackBindAddress << std::endl;
         return 1;
     }
 

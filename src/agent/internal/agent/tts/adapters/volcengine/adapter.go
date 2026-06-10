@@ -29,6 +29,7 @@ const (
 	defaultResourceID = "seed-tts-2.0"
 	defaultSpeaker    = "zh_female_vv_uranus_bigtts"
 	connectTimeout    = 10 * time.Second
+	synthesisTimeout  = 60 * time.Second
 	defaultUserID     = "aiden-agent"
 	statusCodeOK      = 20000000
 )
@@ -197,26 +198,21 @@ func (s *session) Flush() error { return nil }
 
 func (s *session) Close() error {
 	s.closeOnce.Do(func() {
-		closeCtx, cancel := context.WithTimeout(s.ctx, connectTimeout)
-		defer cancel()
-
 		if err := s.sendEvent(eventFinishSession, s.sessionID, []byte("{}")); err != nil {
 			s.recordErr(fmt.Errorf("finish session: %w", err))
 		}
-		if err := s.waitReadDone(closeCtx); err != nil {
+		finishCtx, finishCancel := context.WithTimeout(s.ctx, synthesisTimeout)
+		if err := s.waitReadDone(finishCtx); err != nil {
 			s.recordErr(err)
 		}
-		drainCtx, drainCancel := context.WithTimeout(s.ctx, connectTimeout)
-		if err := s.sink.Drain(drainCtx); err != nil {
+		finishCancel()
+		if err := s.sink.Drain(s.ctx); err != nil {
 			s.recordErr(fmt.Errorf("drain: %w", err))
 		}
-		drainCancel()
-		if err := s.sendEvent(eventFinishConnection, "", []byte("{}")); err != nil {
-			s.recordErr(fmt.Errorf("finish connection: %w", err))
-		}
-		if err := s.waitForEvent(closeCtx, eventConnectionFinished); err != nil {
-			s.recordErr(fmt.Errorf("connection finished: %w", err))
-		}
+		_ = s.sendEvent(eventFinishConnection, "", []byte("{}"))
+		closeCtx, cancel := context.WithTimeout(s.ctx, connectTimeout)
+		defer cancel()
+		_ = s.waitForEvent(closeCtx, eventConnectionFinished)
 		s.closeConn()
 	})
 	return s.Err()
