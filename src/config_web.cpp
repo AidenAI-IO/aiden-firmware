@@ -143,7 +143,6 @@ bool mkdir_p(const std::string& dir, std::string* error);
 bool prepare_ota_update_log_file(const std::string& path, std::string* error);
 CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms);
 std::string validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path);
-std::string validate_agent_config_for_save_fallback(const aiden::AgentToml& config);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -1297,9 +1296,10 @@ std::string validate_agent_config_via_cli(const aiden::AgentToml& config, const 
 
     cJSON* response = cJSON_Parse(result.output.c_str());
     if (!response) {
-        // CLI failed to produce valid JSON, fall back to C++ validation
-        std::cerr << "[config] agent config-check failed, using fallback validation: " << result.output << "\n";
-        return validate_agent_config_for_save_fallback(config);
+        // CLI produced invalid JSON: fail closed rather than accepting a config
+        // we could not validate. The agent CLI is the single source of truth.
+        std::cerr << "[config] agent config-check returned invalid JSON: " << result.output << "\n";
+        return "config validation failed: validator returned an unexpected response";
     }
 
     cJSON* valid = cJSON_GetObjectItem(response, "valid");
@@ -1334,76 +1334,17 @@ std::string validate_agent_config_via_cli(const aiden::AgentToml& config, const 
     return error_msg;
 }
 
-std::string validate_agent_config_for_save_fallback(const aiden::AgentToml& config) {
-    if (config.vad_speech_threshold < 0.0 || config.vad_speech_threshold > 1.0) {
-        return "vad_speech_threshold must be in range [0.0, 1.0]";
-    }
-    if (config.voice_followup_timeout_ms < 0) {
-        return "voice_followup_timeout_ms must be >= 0";
-    }
-    if (config.voice_first_turn_timeout_ms < 0) {
-        return "voice_first_turn_timeout_ms must be >= 0";
-    }
-    if (config.voice_max_turns < 0) {
-        return "voice_max_turns must be >= 0";
-    }
-    if (config.voice_max_response_tokens < 0) {
-        return "voice_max_response_tokens must be >= 0";
-    }
-    if (config.max_iterations < -1) {
-        return "max_iterations must be >= -1";
-    }
-    if (config.screenshot_keep_n < 0) {
-        return "screenshot_keep_n must be >= 0";
-    }
-    if (config.screenshot_prune_interval < 0) {
-        return "screenshot_prune_interval must be >= 0";
-    }
-    if (config.screen_stable_timeout_ms < 0) {
-        return "screen_stable_timeout_ms must be >= 0";
-    }
-    if (config.screen_stable_ms < 0) {
-        return "screen_stable_ms must be >= 0";
-    }
-    if (config.screen_stable_diff_threshold < 0.0) {
-        return "screen_stable_diff_threshold must be >= 0";
-    }
-    std::string pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
-    if (pointer_mode != "absolute" && pointer_mode != "touchscreen") {
-        return "hid.pointer_mode must be absolute or touchscreen";
-    }
-    std::string telemetry_provider = lowercase_copy(trim_copy(config.telemetry.provider));
-    if (!telemetry_provider.empty() && telemetry_provider != "langfuse") {
-        return "telemetry.provider must be langfuse";
-    }
-    if (config.telemetry.enabled && trim_copy(config.telemetry.base_url).empty()) {
-        return "telemetry.base_url is required when telemetry.enabled is true";
-    }
-    if (config.telemetry.enabled && trim_copy(config.telemetry.public_key).empty()) {
-        return "telemetry.public_key is required when telemetry.enabled is true";
-    }
-    if (config.telemetry.enabled && trim_copy(config.telemetry.secret_key).empty()) {
-        return "telemetry.secret_key is required when telemetry.enabled is true";
-    }
-    if (config.telemetry.upload_timeout_sec < 0) {
-        return "telemetry.upload_timeout_sec must be >= 0";
-    }
-    if (config.telemetry.max_retry < 0) {
-        return "telemetry.max_retry must be >= 0";
-    }
-    return "";
-}
-
 std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
-    // Try CLI validation first
+    // The agent CLI's `config-check` is the single source of truth for config
+    // validation. If the binary is unavailable, fail closed: reject the save
+    // rather than persist a config we cannot validate.
     const char* agent_bin = "/oem/usr/bin/agent";
-    if (file_exists(agent_bin)) {
-        return validate_agent_config_via_cli(config, agent_bin);
+    if (!file_exists(agent_bin)) {
+        std::cerr << "[config] agent binary not found at " << agent_bin
+                  << ", refusing to save unvalidated config\n";
+        return "config validation unavailable: agent binary not found";
     }
-
-    // Fall back to C++ validation if CLI not available
-    std::cerr << "[config] agent binary not found, using fallback validation\n";
-    return validate_agent_config_for_save_fallback(config);
+    return validate_agent_config_via_cli(config, agent_bin);
 }
 
 void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {

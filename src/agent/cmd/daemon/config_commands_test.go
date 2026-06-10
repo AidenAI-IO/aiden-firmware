@@ -218,6 +218,107 @@ func TestConfigCheck_NegativeVoiceMaxTurns(t *testing.T) {
 	t.Logf("Negative voice_max_turns error: %s", errorMsg)
 }
 
+func TestConfigCheck_InvalidMaxIterations(t *testing.T) {
+	invalidConfig := agent.Config{
+		Model: agent.ModelConfig{
+			Provider: "openai",
+			Model:    "gpt-4",
+		},
+		Search: agent.SearchConfig{
+			Provider: "duckduckgo",
+		},
+		MaxIterations: -2, // Invalid: must be >= -1 (-1 means unlimited)
+	}
+
+	err := invalidConfig.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for max_iterations < -1, got nil")
+	}
+
+	errors := parseValidationErrors(err)
+	if len(errors) == 0 {
+		t.Fatal("expected at least one validation error")
+	}
+
+	errorMsg := errors[0].Message
+	if !strings.Contains(errorMsg, "max_iterations") {
+		t.Errorf("expected error message to mention max_iterations, got: %s", errorMsg)
+	}
+
+	t.Logf("Invalid max_iterations error: %s", errorMsg)
+}
+
+func TestConfigCheck_UnlimitedMaxIterations(t *testing.T) {
+	// -1 is the sentinel for "unlimited" and must be accepted.
+	validConfig := agent.Config{
+		Model: agent.ModelConfig{
+			Provider: "openai",
+			Model:    "gpt-4",
+		},
+		Search: agent.SearchConfig{
+			Provider: "duckduckgo",
+		},
+		MaxIterations: -1,
+	}
+
+	if err := validConfig.Validate(); err != nil {
+		t.Errorf("max_iterations=-1 (unlimited) should be valid, got: %v", err)
+	}
+}
+
+func TestConfigCheck_InvalidPointerMode(t *testing.T) {
+	invalidConfig := agent.Config{
+		Model: agent.ModelConfig{
+			Provider: "openai",
+			Model:    "gpt-4",
+		},
+		Search: agent.SearchConfig{
+			Provider: "duckduckgo",
+		},
+		HID: agent.HIDConfig{
+			PointerMode: "joystick", // Invalid: must be absolute or touchscreen
+		},
+	}
+
+	err := invalidConfig.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid hid.pointer_mode, got nil")
+	}
+
+	errors := parseValidationErrors(err)
+	if len(errors) == 0 {
+		t.Fatal("expected at least one validation error")
+	}
+
+	errorMsg := errors[0].Message
+	if !strings.Contains(errorMsg, "pointer_mode") {
+		t.Errorf("expected error message to mention pointer_mode, got: %s", errorMsg)
+	}
+
+	t.Logf("Invalid pointer_mode error: %s", errorMsg)
+}
+
+func TestConfigCheck_ValidPointerModes(t *testing.T) {
+	for _, mode := range []string{"", "absolute", "touchscreen", "Absolute", "TOUCHSCREEN"} {
+		validConfig := agent.Config{
+			Model: agent.ModelConfig{
+				Provider: "openai",
+				Model:    "gpt-4",
+			},
+			Search: agent.SearchConfig{
+				Provider: "duckduckgo",
+			},
+			HID: agent.HIDConfig{
+				PointerMode: mode,
+			},
+		}
+
+		if err := validConfig.Validate(); err != nil {
+			t.Errorf("pointer_mode=%q should be valid, got: %v", mode, err)
+		}
+	}
+}
+
 func TestParseValidationErrors_ExtractsField(t *testing.T) {
 	testCases := []struct {
 		name          string
