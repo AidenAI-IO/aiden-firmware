@@ -607,12 +607,17 @@ hot_window_events: 30
 	if cfg.HotWindowEvents != 30 {
 		t.Fatalf("expected hot_window_events=30, got %d", cfg.HotWindowEvents)
 	}
+	if cfg.MaxEventsBeforeCompression != 30 {
+		t.Fatalf("expected old hot_window_events migrated to max_events_before_compression, got %d", cfg.MaxEventsBeforeCompression)
+	}
 }
 
 func TestMaintainFilesystemMemoryOnlyArchivesNoAutoExtract(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
-	manager := NewMemoryManager(storageDir)
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.MaxEventsBeforeCompression = 20 // Lower threshold so 24 events trigger compression
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
 
 	sessionDir := filepath.Join(storageDir, "session")
 	os.MkdirAll(sessionDir, 0o755)

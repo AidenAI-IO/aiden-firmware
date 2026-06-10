@@ -10,7 +10,12 @@ import (
 type MemoryExtractionConfig struct {
 	TagCandidates   []string `yaml:"tag_candidates"`
 	EntitySuffixes  []string `yaml:"entity_suffixes"`
-	HotWindowEvents int      `yaml:"hot_window_events"`
+	HotWindowEvents int      `yaml:"hot_window_events"` // deprecated: use MaxEventsBeforeCompression
+	// MaxEventsBeforeCompression is the hard limit on uncompressed SessionEvent
+	// count. Compression triggers when event count exceeds this threshold,
+	// regardless of token usage. Acts as a safety valve for cold-start sessions
+	// with large restored history or when token metrics are unavailable.
+	MaxEventsBeforeCompression int `yaml:"max_events_before_compression"`
 	// ContextWindow is the fallback context window in tokens used by the
 	// memory manager's compression trigger when the active model is unknown
 	// to the model_specs registry. The runtime normally derives the window
@@ -21,8 +26,9 @@ type MemoryExtractionConfig struct {
 	SummaryMaxChunks  int `yaml:"summary_max_chunks"`
 	// ReserveTokens is the token headroom kept free below the model's context
 	// window. Compression triggers once prompt tokens exceed
-	// contextWindow - ReserveTokens. Clamped to at most half the active window
-	// so small-window models stay sane. Borrowed from pi's reserveTokens.
+	// contextWindow - ReserveTokens, OR when the percentage threshold is met.
+	// Reserve is clamped to at most half the active window so small-window
+	// models stay sane.
 	ReserveTokens int `yaml:"reserve_tokens"`
 	// KeepRecentTokens is the approximate token budget of recent events kept
 	// hot (uncompressed) when a token-based cut point is taken. Clamped to fit
@@ -32,8 +38,9 @@ type MemoryExtractionConfig struct {
 }
 
 const (
-	defaultReserveTokens    = 8192
-	defaultKeepRecentTokens = 20000
+	defaultReserveTokens              = 8192
+	defaultKeepRecentTokens           = 20000
+	defaultMaxEventsBeforeCompression = 100
 )
 
 func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
@@ -42,13 +49,13 @@ func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
 			"报销", "支付", "付款", "提交", "登录", "验证码",
 			"发票", "项目编码", "风险", "确认", "开发板", "agent",
 		},
-		EntitySuffixes:    []string{"App", "app", "APP"},
-		HotWindowEvents:   20,
-		ContextWindow:     32000,
-		CompressAtPercent: 50,
-		SummaryMaxChunks:  10,
-		ReserveTokens:     defaultReserveTokens,
-		KeepRecentTokens:  defaultKeepRecentTokens,
+		EntitySuffixes:             []string{"App", "app", "APP"},
+		MaxEventsBeforeCompression: defaultMaxEventsBeforeCompression,
+		ContextWindow:              32000,
+		CompressAtPercent:          50,
+		SummaryMaxChunks:           10,
+		ReserveTokens:              defaultReserveTokens,
+		KeepRecentTokens:           defaultKeepRecentTokens,
 	}
 }
 
@@ -62,9 +69,14 @@ func LoadMemoryExtractionConfig(configDir string) MemoryExtractionConfig {
 	if err != nil {
 		return cfg
 	}
+	defaultMax := cfg.MaxEventsBeforeCompression
 	_ = yaml.Unmarshal(data, &cfg)
-	if cfg.HotWindowEvents <= 0 {
-		cfg.HotWindowEvents = 20
+	// Backward compatibility: if old field is set but new field wasn't in yaml, migrate it
+	if cfg.HotWindowEvents > 0 && cfg.MaxEventsBeforeCompression == defaultMax {
+		cfg.MaxEventsBeforeCompression = cfg.HotWindowEvents
+	}
+	if cfg.MaxEventsBeforeCompression <= 0 {
+		cfg.MaxEventsBeforeCompression = defaultMaxEventsBeforeCompression
 	}
 	if cfg.ContextWindow <= 0 {
 		cfg.ContextWindow = 32000

@@ -177,7 +177,9 @@ func TestSessionMemoryRecallRejectsTruncatedChunkEvidence(t *testing.T) {
 func TestMemoryManagerSaveCompactsHotWindow(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
-	manager := NewMemoryManager(storageDir)
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.MaxEventsBeforeCompression = 20
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
 	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
@@ -264,7 +266,7 @@ func TestMaintainFilesystemMemoryUsesStructuredSummarizerAndFallsBackToPlain(t *
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	cfg := DefaultMemoryExtractionConfig()
-	cfg.HotWindowEvents = 4
+	cfg.MaxEventsBeforeCompression = 4
 	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg), WithStructuredSummarizeFn(func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary {
 		return ChunkStructuredSummary{
 			Summary:        "结构化摘要主文",
@@ -309,7 +311,7 @@ func TestMaintainFilesystemMemoryFallsBackWhenStructuredSummaryIsMissing(t *test
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	cfg := DefaultMemoryExtractionConfig()
-	cfg.HotWindowEvents = 4
+	cfg.MaxEventsBeforeCompression = 4
 	plainCalled := false
 	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg), WithStructuredSummarizeFn(func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary {
 		return ChunkStructuredSummary{Decisions: []string{"保留主语音模型"}}
@@ -355,7 +357,9 @@ func TestMaintainFilesystemMemoryUsesLLMSummary(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	called := false
-	manager := NewMemoryManager(storageDir, WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.MaxEventsBeforeCompression = 20
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg), WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
 		called = true
 		return "LLM generated summary of " + fmt.Sprintf("%d", len(events)) + " events"
 	}))
@@ -395,7 +399,7 @@ func TestMaintainFilesystemMemoryTriggersOnTokenThreshold(t *testing.T) {
 	cfg := DefaultMemoryExtractionConfig()
 	cfg.ContextWindow = 1000
 	cfg.CompressAtPercent = 50
-	cfg.HotWindowEvents = 100 // high event limit so only token threshold triggers
+	cfg.MaxEventsBeforeCompression = 100 // high event limit so only token threshold triggers
 	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
 
 	// Write 5 events (well under 100 event limit)
@@ -436,7 +440,7 @@ func TestMaintainFilesystemMemorySkipsWhenBelowTokenThreshold(t *testing.T) {
 	cfg := DefaultMemoryExtractionConfig()
 	cfg.ContextWindow = 1000
 	cfg.CompressAtPercent = 50
-	cfg.HotWindowEvents = 100 // high event limit
+	cfg.MaxEventsBeforeCompression = 100 // high event limit
 	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
 
 	sessionDir := filepath.Join(storageDir, "session")
@@ -470,6 +474,81 @@ func TestMaintainFilesystemMemorySkipsWhenBelowTokenThreshold(t *testing.T) {
 	}
 }
 
+func TestMaintainFilesystemMemoryTriggersOnReserveTokens(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 1000
+	cfg.ReserveTokens = 200
+	cfg.CompressAtPercent = 90 // high percent so only reserve triggers
+	cfg.MaxEventsBeforeCompression = 100
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
+
+	sessionDir := filepath.Join(storageDir, "session")
+	os.MkdirAll(sessionDir, 0o755)
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: "message",
+		})
+	}
+
+	// Set prompt tokens to 810 (> contextWindow - reserve = 800)
+	manager.SetLastPromptTokens(810)
+
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory() error = %v", err)
+	}
+
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(chunks) == 0 {
+		t.Fatalf("expected compression to trigger from reserve threshold, got no chunks")
+	}
+}
+
+func TestMaintainFilesystemMemoryTriggersOnEventCountWhenTokenUnavailable(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.MaxEventsBeforeCompression = 10
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
+
+	sessionDir := filepath.Join(storageDir, "session")
+	os.MkdirAll(sessionDir, 0o755)
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+	for i := 0; i < 15; i++ {
+		session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: "message",
+		})
+	}
+
+	// LastPromptTokens not set (still 0), simulating cold start
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory() error = %v", err)
+	}
+
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(chunks) == 0 {
+		t.Fatalf("expected compression to trigger from event count fallback, got no chunks")
+	}
+}
+
 func TestMemoryManagerTokenTracking(t *testing.T) {
 	manager := NewMemoryManager("")
 	manager.SetLastPromptTokens(5000)
@@ -482,7 +561,7 @@ func TestMemoryManagerTokenTrackingConcurrentAccess(t *testing.T) {
 	cfg := DefaultMemoryExtractionConfig()
 	cfg.ContextWindow = 1000
 	cfg.CompressAtPercent = 50
-	cfg.HotWindowEvents = 100
+	cfg.MaxEventsBeforeCompression = 100
 	manager := NewMemoryManager("", WithExtractionConfig(cfg))
 
 	var wg sync.WaitGroup
@@ -505,7 +584,9 @@ func TestMemoryManagerTokenTrackingConcurrentAccess(t *testing.T) {
 func TestMemoryManagerClearAllRemovesFilesystemMemoryArtifacts(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
-	manager := NewMemoryManager(storageDir)
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.MaxEventsBeforeCompression = 20
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
 	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
@@ -607,7 +688,7 @@ func TestMaintainFilesystemMemorySplitsLongSingleTurnWithoutOrphanToolResult(t *
 	cfg := DefaultMemoryExtractionConfig()
 	cfg.ContextWindow = 8000   // clamps reserve to 4000, keep_recent to 4000
 	cfg.CompressAtPercent = 50 // token-percent trigger
-	cfg.HotWindowEvents = 1000 // event-count trigger must not fire
+	cfg.MaxEventsBeforeCompression = 1000 // event-count trigger must not fire
 	cfg.KeepRecentTokens = 4000
 
 	// Summarizer echoes event contents so we can assert the user goal survives.

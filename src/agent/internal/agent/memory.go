@@ -61,7 +61,7 @@ type MemoryManager struct {
 	maintenancePending bool
 }
 
-const defaultMemoryHotWindowEvents = 20
+const defaultMemoryHotWindowEvents = 100 // deprecated: use defaultMaxEventsBeforeCompression
 
 type MessageRecord struct {
 	Role    string `json:"role"`
@@ -666,12 +666,15 @@ func (m *MemoryManager) planCompaction(events []SessionEvent, contextWindow int)
 		}
 	}
 
-	// Count-based fallback: keep the most recent hotWindow events.
-	hotWindow := m.extraction.HotWindowEvents
-	if hotWindow <= 0 {
-		hotWindow = defaultMemoryHotWindowEvents
+	// Count-based fallback: keep the most recent maxEvents events.
+	maxEvents := m.extraction.MaxEventsBeforeCompression
+	if maxEvents <= 0 {
+		maxEvents = m.extraction.HotWindowEvents // backward compat
+		if maxEvents <= 0 {
+			maxEvents = defaultMemoryHotWindowEvents
+		}
 	}
-	keepCount := hotWindow
+	keepCount := maxEvents
 	if keepCount > len(events) {
 		keepCount = len(events) / 2
 	}
@@ -774,17 +777,31 @@ func (m *MemoryManager) shouldCompress(eventCount int) bool {
 	lastPromptTokens := m.LastPromptTokens()
 	contextWindow := m.effectiveContextWindow()
 	if lastPromptTokens > 0 && contextWindow > 0 {
+		reserve := m.reserveTokens()
+		if reserve > contextWindow/2 {
+			reserve = contextWindow / 2
+		}
+		if lastPromptTokens >= contextWindow-reserve {
+			return true
+		}
 		ratio := float64(lastPromptTokens) / float64(contextWindow)
 		threshold := float64(m.extraction.CompressAtPercent) / 100.0
 		if ratio >= threshold {
 			return true
 		}
+		// Token conditions not met, fall through to event count check
 	}
-	hotWindow := m.extraction.HotWindowEvents
-	if hotWindow <= 0 {
-		hotWindow = defaultMemoryHotWindowEvents
+	// Event count fallback: used when token data unavailable (cold start,
+	// unknown model) or when token thresholds not reached but event count high
+	// (e.g., restoring a large session before first LLM call).
+	maxEvents := m.extraction.MaxEventsBeforeCompression
+	if maxEvents <= 0 {
+		maxEvents = m.extraction.HotWindowEvents // backward compat
+		if maxEvents <= 0 {
+			maxEvents = defaultMemoryHotWindowEvents
+		}
 	}
-	return eventCount > hotWindow
+	return eventCount > maxEvents
 }
 
 // effectiveContextWindow returns the context window in tokens that should be

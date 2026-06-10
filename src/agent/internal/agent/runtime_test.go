@@ -1351,6 +1351,10 @@ func TestNewRuntimeLoadsBundledSkillsSeededOnFirstStartup(t *testing.T) {
 
 func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 	configDir := t.TempDir()
+	memDir := filepath.Join(configDir, "memory")
+	os.MkdirAll(memDir, 0o755)
+	os.WriteFile(filepath.Join(memDir, "extraction.yaml"), []byte("max_events_before_compression: 20\n"), 0o644)
+
 	response := `{"objective":"test objective","completion_criteria":["test request is satisfied"],"plan":["answer directly"],"next_step":"answer directly","can_finish":true,"final_answer":"ok","reason":"test verified"}`
 	responses := make([]string, 90)
 	for i := range responses {
@@ -1387,7 +1391,7 @@ func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	cfg := DefaultMemoryExtractionConfig()
-	cfg.HotWindowEvents = 4
+	cfg.MaxEventsBeforeCompression = 4
 
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	now := time.Now().UTC()
