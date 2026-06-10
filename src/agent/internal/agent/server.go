@@ -254,6 +254,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
 	mux.HandleFunc("/api/audio/record/stop", s.handleAudioRecordStop)
+	mux.HandleFunc("/api/audio/", s.handleAudioFile)
 	mux.HandleFunc("/api/settings/tts", s.handleTTSSettings)
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
 	mux.HandleFunc("/api/phone-bridge", s.bridge.HandleWebSocket)
@@ -1452,6 +1453,61 @@ func (r *webAudioRecording) snapshotSamples() []int16 {
 	samples := make([]int16, len(r.samples))
 	copy(samples, r.samples)
 	return samples
+}
+
+func (s *Server) handleAudioFile(w http.ResponseWriter, r *http.Request) {
+	// Extract filename from URL path
+	filename := strings.TrimPrefix(r.URL.Path, "/api/audio/")
+
+	// Reject path traversal attempts in the request
+	if strings.Contains(filename, "..") || strings.Contains(filename, "/") || strings.Contains(filename, "\\") {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	// Get audio directory from config
+	audioDir := s.runtime.config.AudioArchive.StoragePathOrDefault()
+
+	// Security: only allow base filenames, no path traversal
+	filename = filepath.Base(filename)
+	fullPath := filepath.Join(audioDir, filename)
+
+	// Resolve symlinks to prevent symlink-based traversal attacks
+	resolvedAudioDir, err := filepath.EvalSymlinks(audioDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if s.logger != nil {
+			s.logger.Warn("[audio] resolve audio dir: %v", err)
+		}
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	resolvedFullPath, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "File not found", http.StatusNotFound)
+			return
+		}
+		if s.logger != nil {
+			s.logger.Warn("[audio] resolve file path: %v", err)
+		}
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Verify resolved path is within audio directory
+	if !strings.HasPrefix(resolvedFullPath, resolvedAudioDir+string(filepath.Separator)) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	// Serve file
+	w.Header().Set("Content-Type", "audio/wav")
+	http.ServeFile(w, r, resolvedFullPath)
 }
 
 func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {

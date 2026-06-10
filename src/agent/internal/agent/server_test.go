@@ -1385,3 +1385,165 @@ func TestServerHistoryStoreBroadcastsToSSE(t *testing.T) {
 		t.Fatal("timeout waiting for broadcast")
 	}
 }
+
+func TestServerHandleAudioFileServes(t *testing.T) {
+	tmpDir := t.TempDir()
+	audioDir := filepath.Join(tmpDir, "audio")
+	if err := os.MkdirAll(audioDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create test WAV file
+	testFile := filepath.Join(audioDir, "msg_123.wav")
+	if err := os.WriteFile(testFile, []byte("WAV content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		ConfigDir: tmpDir,
+		AudioArchive: AudioArchiveConfig{
+			Enabled:     true,
+			StoragePath: audioDir,
+		},
+	}
+	runtime, err := NewRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	server := NewServer(runtime, "127.0.0.1:0")
+
+	req := httptest.NewRequest("GET", "/api/audio/msg_123.wav", nil)
+	rec := httptest.NewRecorder()
+	server.handleAudioFile(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Status: got %d, want %d", rec.Code, http.StatusOK)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "audio/wav" {
+		t.Errorf("Content-Type: got %q, want %q", ct, "audio/wav")
+	}
+	if body := rec.Body.String(); body != "WAV content" {
+		t.Errorf("Body: got %q, want %q", body, "WAV content")
+	}
+}
+
+func TestServerHandleAudioFilePathTraversalBlocked(t *testing.T) {
+	tmpDir := t.TempDir()
+	audioDir := filepath.Join(tmpDir, "audio")
+	if err := os.MkdirAll(audioDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create file outside audio dir
+	secretFile := filepath.Join(tmpDir, "secret.txt")
+	if err := os.WriteFile(secretFile, []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		ConfigDir: tmpDir,
+		AudioArchive: AudioArchiveConfig{
+			Enabled:     true,
+			StoragePath: audioDir,
+		},
+	}
+	runtime, err := NewRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	server := NewServer(runtime, "127.0.0.1:0")
+
+	// Attempt path traversal
+	req := httptest.NewRequest("GET", "/api/audio/../secret.txt", nil)
+	rec := httptest.NewRecorder()
+	server.handleAudioFile(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("Path traversal: got status %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestServerHandleAudioFileNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	audioDir := filepath.Join(tmpDir, "audio")
+	if err := os.MkdirAll(audioDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		ConfigDir: tmpDir,
+		AudioArchive: AudioArchiveConfig{
+			Enabled:     true,
+			StoragePath: audioDir,
+		},
+	}
+	runtime, err := NewRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	server := NewServer(runtime, "127.0.0.1:0")
+
+	req := httptest.NewRequest("GET", "/api/audio/nonexistent.wav", nil)
+	rec := httptest.NewRecorder()
+	server.handleAudioFile(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Not found: got status %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestServerHandleAudioFileSymlinkBlocked(t *testing.T) {
+	tmpDir := t.TempDir()
+	audioDir := filepath.Join(tmpDir, "audio")
+	if err := os.MkdirAll(audioDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create file outside audio dir
+	secretFile := filepath.Join(tmpDir, "secret.txt")
+	if err := os.WriteFile(secretFile, []byte("secret data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create symlink in audio dir pointing to secret
+	symlinkPath := filepath.Join(audioDir, "msg_symlink.wav")
+	if err := os.Symlink(secretFile, symlinkPath); err != nil {
+		t.Skip("Symlink not supported:", err)
+	}
+
+	cfg := Config{
+		ConfigDir: tmpDir,
+		AudioArchive: AudioArchiveConfig{
+			Enabled:     true,
+			StoragePath: audioDir,
+		},
+	}
+	runtime, err := NewRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	server := NewServer(runtime, "127.0.0.1:0")
+
+	req := httptest.NewRequest("GET", "/api/audio/msg_symlink.wav", nil)
+	rec := httptest.NewRecorder()
+	server.handleAudioFile(rec, req)
+
+	// Should return 403 Forbidden
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("Symlink attack: got status %d, want %d (body: %s)", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	// Verify secret not leaked
+	body := rec.Body.String()
+	if strings.Contains(body, "secret data") {
+		t.Error("Symlink attack succeeded - secret data leaked")
+	}
+}
