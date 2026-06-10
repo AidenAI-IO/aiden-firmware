@@ -1,6 +1,10 @@
 package agent
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 // memory_cutpoint.go holds the pure functions that decide where to split the
 // session event stream during compression. They are kept free of I/O so they
@@ -13,15 +17,34 @@ import "strings"
 // entry tree. See the task notes for the full comparison.
 
 // estimateSessionEventTokens approximates the token cost of a single session
-// event using the conventional chars/4 heuristic. It intentionally
-// overestimates slightly so the kept window stays within budget rather than
-// creeping over it.
+// event. It splits the content by script: CJK characters are counted at
+// ~1 token each (their real tokenizer cost), while the remaining
+// (mostly Latin/ASCII) bytes use the conventional chars/4 heuristic. The plain
+// byte-based chars/4 rule underestimates CJK badly — a 3-byte UTF-8 hanzi would
+// score 0.75 tokens instead of >=1 — which would let the kept window overflow
+// the budget. The split estimate intentionally overestimates slightly so the
+// window stays within budget rather than creeping over it.
 func estimateSessionEventTokens(event SessionEvent) int {
-	chars := len(event.Content)
-	if chars == 0 {
+	if len(event.Content) == 0 {
 		return 0
 	}
-	return (chars + 3) / 4
+	cjkTokens := 0
+	nonCJKBytes := 0
+	for _, r := range event.Content {
+		if isCJK(r) {
+			cjkTokens++
+		} else {
+			nonCJKBytes += utf8.RuneLen(r)
+		}
+	}
+	return cjkTokens + (nonCJKBytes+3)/4
+}
+
+// isCJK reports whether r belongs to a CJK script (Han ideographs plus the
+// Japanese and Korean syllabaries), which tokenizers split at roughly one token
+// per character rather than the chars/4 ratio that holds for Latin text.
+func isCJK(r rune) bool {
+	return unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul)
 }
 
 // sessionCutEligibility classifies an event type for cut-point selection.

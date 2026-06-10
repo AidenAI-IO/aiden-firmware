@@ -25,6 +25,22 @@ func TestEstimateSessionEventTokensUsesCharsOverFour(t *testing.T) {
 	}
 }
 
+func TestEstimateSessionEventTokensCountsCJKPerCharacter(t *testing.T) {
+	// 10 CJK runes (30 UTF-8 bytes). The byte-based chars/4 heuristic would
+	// underestimate this at (30+3)/4 = 8 tokens; CJK is ~1 token/char, so the
+	// estimate must be at least the rune count to avoid overflowing the budget.
+	cjk := strings.Repeat("你好世界平", 2)
+	if got := estimateSessionEventTokens(evt("e1", "user_input", "user", cjk)); got != 10 {
+		t.Fatalf("CJK tokens = %d, want 10", got)
+	}
+
+	// Mixed: 5 ASCII bytes (chars/4 path) + 2 CJK runes (1 token each).
+	// want = 2 + ceil(5/4) = 2 + 2 = 4.
+	if got := estimateSessionEventTokens(evt("e2", "user_input", "user", "hello你好")); got != 4 {
+		t.Fatalf("mixed tokens = %d, want 4", got)
+	}
+}
+
 func TestFindValidSessionCutPointsSkipsToolResultAndSystem(t *testing.T) {
 	events := []SessionEvent{
 		evt("e0", "user_input", "user", "hi"),
