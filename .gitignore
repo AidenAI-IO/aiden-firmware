@@ -20,6 +20,7 @@ AGENTS.md
 
 # Cross-compiled agent binary
 /src/agent/aiden-agent
+/src/agent/daemon
 /bin/
 
 # Secrets

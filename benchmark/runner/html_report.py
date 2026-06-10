@@ -28,10 +28,20 @@ def generate_report_html(run_dir: Path) -> str:
     total = totals.get("tasks", len(results))
     failed = totals.get("failed", 0)
     skipped = totals.get("skipped", 0)
+    timeout = totals.get("timeout", 0)
+    judge_error = totals.get("judge_error", 0)
+    # completed = everything that produced a result (the whole run is finished by report time)
+    completed = total
     agent_url = manifest.get("agent_url", "")
     started = manifest.get("started_at", "")[:19]
     finished = manifest.get("finished_at", "")[:19]
     pass_rate = f"{passed/total*100:.1f}%" if total else "0%"
+    # Progress bar segment widths (% of total)
+    def _pct(n: int) -> float:
+        return (n / total * 100) if total else 0.0
+    pass_pct = f"{_pct(passed):.4f}"
+    fail_pct = f"{_pct(failed + timeout + judge_error):.4f}"
+    skip_pct = f"{_pct(skipped):.4f}"
 
     tasks_js_items = []
     for r in results:
@@ -74,12 +84,42 @@ def generate_report_html(run_dir: Path) -> str:
             for s in rubric_spec:
                 rubric_js.append([s.get("id",""), s.get("check",""), "\u2014"])
 
+        # Extract hard assertions
+        hard_assertions = r.get("hard_assertions", {})
+        ha_failures = []
+        if hard_assertions:
+            if hard_assertions.get("timeout") is False:
+                ha_failures.append(["Timeout", "Task did not complete within time limit", "no"])
+            if hard_assertions.get("response_exists") is False:
+                ha_failures.append(["Response Exists", "Agent did not produce a response", "no"])
+            if hard_assertions.get("min_tool_calls") is False:
+                ha_failures.append(["Min Tool Calls", "Did not meet minimum tool call requirement", "no"])
+            if hard_assertions.get("max_tool_calls") is False:
+                ha_failures.append(["Max Tool Calls", "Exceeded maximum tool call limit", "no"])
+            if hard_assertions.get("expected_answer") is False:
+                expected = r.get("metrics", {}).get("expected_answer", "")
+                predicted = r.get("metrics", {}).get("predicted_answer", "")
+                ha_failures.append(["Expected Answer", f"Expected: {expected}, Got: {predicted}", "no"])
+            if hard_assertions.get("expected_recalled_memory") is False:
+                ha_failures.append(["Expected Recalled Memory", "Did not recall expected memory items", "no"])
+
+        # Extract errors
+        errors = []
+        metrics = r.get("metrics", {})
+        if "error" in metrics:
+            errors.append(["Error", metrics["error"]])
+        if "agent_error" in metrics:
+            errors.append(["Agent Error", metrics["agent_error"]])
+        if "judge_error" in metrics:
+            errors.append(["Judge Error", metrics["judge_error"]])
+
         tasks_js_items.append({
             "id": tid,
             "category": r.get("category", ""),
             "status": status,
             "wall_ms": r.get("metrics", {}).get("wall_ms", 0),
             "tool_calls_count": r.get("metrics", {}).get("tool_calls", 0),
+            "screenshots_taken": r.get("metrics", {}).get("screenshots_taken", 0),
             "rubric_pass": r.get("rubric_pass_count", 0),
             "rubric_total": r.get("rubric_total", 0),
             "description": r.get("description_for_judge", ""),
@@ -87,6 +127,8 @@ def generate_report_html(run_dir: Path) -> str:
             "response": trace_data.get("final_response", ""),
             "tool_calls_detail": tool_calls_str.strip(),
             "rubric": rubric_js,
+            "hard_assertions": ha_failures,
+            "errors": errors,
             "trace_observations": [
                 [
                     obs.get("id", ""),
@@ -104,7 +146,7 @@ def generate_report_html(run_dir: Path) -> str:
     rows_html = ""
     for i, t in enumerate(tasks_js_items):
         status = t["status"]
-        badge_cls = "pass" if status == "passed" else "fail" if status == "failed" else "skip"
+        badge_cls = "pass" if status == "passed" else "fail" if status in {"failed", "timeout", "judge_error"} else "skip"
         badge_label = "Pass" if status == "passed" else "Fail" if status == "failed" else status.title()
         rows_html += f"""<tr data-task="{i}">
   <td><span class="task-id">{_esc(t['id'])}</span></td>
@@ -120,6 +162,8 @@ def generate_report_html(run_dir: Path) -> str:
         failed=failed, skipped=skipped, pass_rate=pass_rate,
         agent_url=agent_url, started=started, finished=finished,
         rows_html=rows_html, tasks_json=tasks_json,
+        completed=completed, timeout=timeout, judge_error=judge_error,
+        pass_pct=pass_pct, fail_pct=fail_pct, skip_pct=skip_pct,
     )
 
 
@@ -182,6 +226,21 @@ body {{ min-height: 100vh; background: linear-gradient(to bottom, var(--surface)
 .summary-card {{ border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 14px }}
 .summary-card .label {{ color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase }}
 .summary-card .value {{ margin-top: 10px; font-size: 28px; font-weight: 700; letter-spacing: -0.03em }}
+.progress {{ border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 14px 16px; margin-bottom: 20px }}
+.progress-head {{ display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px }}
+.progress-head .label {{ color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase }}
+.progress-head .count {{ font-family: var(--font-mono); font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums }}
+.progress-bar {{ display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: color-mix(in oklch, var(--bg) 60%, var(--border)) }}
+.progress-bar .seg {{ height: 100% }}
+.progress-bar .seg.pass {{ background: oklch(58% 0.16 145) }}
+.progress-bar .seg.fail {{ background: oklch(60% 0.18 28) }}
+.progress-bar .seg.skip {{ background: oklch(70% 0.14 75) }}
+.progress-legend {{ display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 12px; color: var(--muted) }}
+.progress-legend span {{ display: inline-flex; align-items: center; gap: 5px }}
+.progress-legend i {{ width: 9px; height: 9px; border-radius: 3px; display: inline-block }}
+.progress-legend i.pass {{ background: oklch(58% 0.16 145) }}
+.progress-legend i.fail {{ background: oklch(60% 0.18 28) }}
+.progress-legend i.skip {{ background: oklch(70% 0.14 75) }}
 .panel {{ border: 1px solid var(--border); border-radius: 16px; background: var(--surface); overflow: hidden }}
 .panel-header {{ display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border) }}
 .panel-title {{ font-size: 14px; font-weight: 650 }}
@@ -222,6 +281,14 @@ pre.block-body {{ margin: 0; white-space: pre-wrap; word-break: break-word; font
 .rubric-row b {{ text-align: right; font-variant-numeric: tabular-nums }}
 .rubric-row b.yes {{ color: oklch(42% 0.13 150) }}
 .rubric-row b.no {{ color: oklch(48% 0.16 28) }}
+.error-block {{ border-color: color-mix(in oklch, oklch(60% 0.18 28) 28%, var(--border)) }}
+.error-block .block-head {{ background: color-mix(in oklch, oklch(60% 0.18 28) 7%, white); border-bottom-color: color-mix(in oklch, oklch(60% 0.18 28) 20%, var(--border)) }}
+.error-item {{ padding: 8px 0; border-bottom: 1px solid var(--border) }}
+.error-item:last-child {{ border-bottom: 0 }}
+.error-type {{ font-weight: 650; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: oklch(48% 0.16 28); margin-bottom: 4px }}
+.error-msg {{ font-family: var(--font-mono); font-size: 12px; color: var(--muted); line-height: 1.5 }}
+.warning-block {{ border-color: color-mix(in oklch, oklch(70% 0.14 75) 34%, var(--border)) }}
+.warning-block .block-head {{ background: color-mix(in oklch, oklch(70% 0.14 75) 10%, white); border-bottom-color: color-mix(in oklch, oklch(70% 0.14 75) 25%, var(--border)) }}
 .pager {{ padding: 12px 16px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border) }}
 @media (max-width: 768px) {{
   .summary {{ grid-template-columns: repeat(2, 1fr) }}
@@ -241,6 +308,24 @@ pre.block-body {{ margin: 0; white-space: pre-wrap; word-break: break-word; font
   <article class="summary-card"><div class="label">Pass Rate</div><div class="value">{pass_rate}</div></article>
   <article class="summary-card"><div class="label">Failed</div><div class="value">{failed}</div></article>
   <article class="summary-card"><div class="label">Skipped</div><div class="value">{skipped}</div></article>
+</section>
+<section class="progress">
+  <div class="progress-head">
+    <span class="label">Execution Progress</span>
+    <span class="count">{completed}/{total}</span>
+  </div>
+  <div class="progress-bar">
+    <div class="seg pass" style="width:{pass_pct}%"></div>
+    <div class="seg fail" style="width:{fail_pct}%"></div>
+    <div class="seg skip" style="width:{skip_pct}%"></div>
+  </div>
+  <div class="progress-legend">
+    <span><i class="pass"></i>Passed {passed}</span>
+    <span><i class="fail"></i>Failed {failed}</span>
+    <span><i class="skip"></i>Skipped {skipped}</span>
+    <span><i class="fail"></i>Timeout {timeout}</span>
+    <span><i class="fail"></i>Judge Error {judge_error}</span>
+  </div>
 </section>
 <section class="panel">
   <div class="panel-header">
@@ -275,10 +360,11 @@ function openDrawer(i) {{
   var t = TASKS[i]; if (!t) return;
   document.getElementById("dTitle").textContent = t.id;
   document.getElementById("dChips").innerHTML =
-    '<span class="chip">' + t.category + '</span>' +
-    '<span class="chip">' + t.status + '</span>' +
-    '<span class="chip">' + t.tool_calls_count + ' tools</span>' +
-    '<span class="chip">' + t.wall_ms + 'ms</span>';
+    '<span class="chip">' + esc(t.category) + '</span>' +
+    '<span class="chip">' + esc(t.status) + '</span>' +
+    '<span class="chip">' + esc(String(t.tool_calls_count)) + ' tools</span>' +
+    '<span class="chip">' + esc(String(t.wall_ms)) + 'ms</span>' +
+    (t.screenshots_taken ? '<span class="chip">' + esc(String(t.screenshots_taken)) + ' screenshots</span>' : '');
   var body = "";
   body += '<div class="block"><div class="block-head"><strong>Prompt</strong><span>user input</span></div><pre class="block-body">' + esc(t.prompt) + '</pre></div>';
   body += '<div class="block"><div class="block-head"><strong>Task Description</strong><span>for judge</span></div><div class="block-body">' + esc(t.description) + '</div></div>';
@@ -286,6 +372,18 @@ function openDrawer(i) {{
     body += '<div class="block"><div class="block-head"><strong>Tool Calls</strong><span>' + t.tool_calls_count + ' calls</span></div><pre class="block-body">' + esc(t.tool_calls_detail) + '</pre></div>';
   }}
   body += '<div class="block"><div class="block-head"><strong>Agent Response</strong><span>final reply</span></div><pre class="block-body">' + esc(t.response) + '</pre></div>';
+  if (t.errors && t.errors.length) {{
+    var err = t.errors.map(function(e) {{
+      return '<div class="error-item"><div class="error-type">' + esc(e[0]) + '</div><div class="error-msg">' + esc(e[1]) + '</div></div>';
+    }}).join("");
+    body += '<div class="block error-block"><div class="block-head"><strong>❌ Errors</strong><span>' + t.errors.length + ' error(s)</span></div><div class="block-body">' + err + '</div></div>';
+  }}
+  if (t.hard_assertions && t.hard_assertions.length) {{
+    var ha = t.hard_assertions.map(function(r) {{
+      return '<div class="rubric-row"><div><div class="rid">' + esc(r[0]) + '</div><div class="reason">' + esc(r[1]) + '</div></div><b class="no">' + r[2] + '</b></div>';
+    }}).join("");
+    body += '<div class="block warning-block"><div class="block-head"><strong>⚠️ Hard Assertion Failures</strong><span>' + t.hard_assertions.length + ' failure(s)</span></div><div class="block-body">' + ha + '</div></div>';
+  }}
   if (t.rubric && t.rubric.length) {{
     var rb = t.rubric.map(function(r) {{
       var cls = r[2] === "yes" ? "yes" : r[2] === "no" ? "no" : "";

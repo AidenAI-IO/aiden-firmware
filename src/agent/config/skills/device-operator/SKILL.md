@@ -73,7 +73,7 @@ Before using coordinates:
 
 - Inspect the screenshot.
 - Identify the intended target visually.
-- Use normalized coordinates when possible.
+- Use `coord_space: "normalized"` with 0-1000 coordinates when possible: (0,0) is top-left, (1000,1000) is bottom-right, and (500,500) is center. Do not use 0-1 coordinates.
 - Avoid edges unless performing an edge gesture.
 - Do not guess a coordinate if the target is not visible.
 

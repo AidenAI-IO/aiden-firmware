@@ -65,6 +65,16 @@ if ! grep -q './build.sh sysdrv' "$ROOT_DIR/_build_image.sh" || \
     exit 1
 fi
 
+if [ ! -x "$ROOT_DIR/scripts/clean_rootfs_overlay_staging.sh" ]; then
+    echo "rootfs overlay cleanup script must exist and be executable" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'scripts/clean_rootfs_overlay_staging.sh" --dest-overlay "$DEST_OVERLAY"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must clean stale rootfs overlay staging before syncing current rootfs assets" >&2
+    exit 1
+fi
+
 if ! grep -Fq 'BENCHMARK_SRC="$SCRIPT_DIR/benchmark"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq 'BENCHMARK_DEST="$OVERLAY/userdata/agent/benchmark"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq -- "--exclude '__pycache__/'" "$ROOT_DIR/_build_image.sh" || \

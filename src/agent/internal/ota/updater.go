@@ -305,6 +305,11 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			u.recordError("asset", err)
 			return UpdateResult{}, err
 		}
+		selectedAssets[part.Name] = asset
+		if targetPartitionHashMatches(state, target, part.Name, asset) {
+			u.logf("ota partition: %s skipped; target slot %s hash matches manifest", part.Name, slotLogName(target))
+			continue
+		}
 		var assetURL string
 		var assetToken string
 		if asset.URL != "" {
@@ -340,7 +345,6 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 				u.recordError("verify", err)
 				return UpdateResult{}, err
 			}
-			selectedAssets[part.Name] = asset
 			downloaded[part.Name] = dst
 			continue
 		}
@@ -362,7 +366,6 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			u.recordError("verify", err)
 			return UpdateResult{}, err
 		}
-		selectedAssets[part.Name] = asset
 		downloaded[part.Name] = dst
 	}
 	if u.config.DryRun {
@@ -488,6 +491,19 @@ func (u *Updater) cachedDownloadVerified(path string, asset ManifestAsset) bool 
 	}
 	u.logf("ota download: %s skipped; cached file verified dst=%s", asset.Name, path)
 	return true
+}
+
+func targetPartitionHashMatches(state State, target Slot, partName string, asset ManifestAsset) bool {
+	targetName, err := slotName(target)
+	if err != nil {
+		return false
+	}
+	slotState, ok := state.Slots[targetName]
+	if !ok {
+		return false
+	}
+	local, ok := slotState.Partitions[partName]
+	return ok && local.Version != "" && local.Hash == partitionSHA256ForAsset(asset)
 }
 
 func (u *Updater) verifyDownloadedImage(path string, asset ManifestAsset) error {

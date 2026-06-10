@@ -7,14 +7,14 @@
 ```text
 /oem/usr/bin/                  # 应用二进制
 /etc/init.d/S43wlan_guard      # WLAN connectivity guard
-/etc/init.d/S49ntp             # ntpd daemon + udhcpc-driven step sync
+/etc/init.d/S49ntp             # ntpd daemon
 /etc/init.d/S49usbhid          # USB HID gadget 初始化
+/etc/init.d/S50ntp_watchdog    # NTP 同步周期检查，未同步时触发 step
 /etc/init.d/S52frame_service   # Frame Service watchdog
 /etc/init.d/S53audio_service   # Audio Service watchdog
 /etc/init.d/S53agent           # Go Agent watchdog
 /etc/init.d/S56config_web      # 配置网页
 /etc/init.d/S99rtcinit         # RTC 默认时间校准，覆盖 SDK 默认脚本
-/etc/udhcpc/aiden.script       # udhcpc hook：DHCP bound 后触发 NTP step
 /userdata/agent/agent.toml     # Agent 默认配置
 /userdata/wpa_supplicant.conf  # Wi-Fi 默认配置
 ```
@@ -37,15 +37,16 @@ scp build/bin/agent root@<device-ip>:/oem/usr/bin/
 随固件启动时，主要服务关系如下：
 
 1. `S43wlan_guard` monitors WLAN connectivity and recovers automatically;
-2. `S49ntp` 以 daemon 模式启动 `ntpd`，使用 IP 直连 NTP server（绕开 DNS 启动顺序）；DHCP bound/renew 时由 `/etc/udhcpc/aiden.script` 触发一次 `S49ntp step` 强制同步；
-3. `S49usbhid` / `S50usbdevice` 配置 USB gadget；
-4. `S52frame_service` 独占 `/dev/video0` 并提供截图/帧服务；
-5. `S53audio_service` 提供音频录放服务；
-6. `S53agent` 启动 Go Agent；
-7. `S55aiden_usb_dhcp` 配置 USB 网络 DHCP / dnsmasq 相关能力；
-8. `S56config_web` 提供配置页面；
-9. `S99rtcinit` 覆盖 SDK 默认 RTC 脚本；RTC 异常时只在系统时间仍早于基线日期时写入默认时间，避免覆盖已经由 NTP 校准过的系统时间。
-10. `S99usb0config` 执行 USB 网络接口后置配置。
+2. `S49ntp` 以 daemon 模式启动 `ntpd`，使用 IP 直连 NTP server（绕开 DNS 启动顺序）；
+3. `S50ntp_watchdog` 周期检查时钟同步状态，未同步时触发 `S49ntp step` 强制同步，同步后退出；
+4. `S49usbhid` / `S50usbdevice` 配置 USB gadget；
+5. `S52frame_service` 独占 `/dev/video0` 并提供截图/帧服务；
+6. `S53audio_service` 提供音频录放服务；
+7. `S53agent` 启动 Go Agent；
+8. `S55aiden_usb_dhcp` 配置 USB 网络 DHCP / dnsmasq 相关能力；
+9. `S56config_web` 提供配置页面；
+10. `S99rtcinit` 覆盖 SDK 默认 RTC 脚本；RTC 异常时只在系统时间仍早于基线日期时写入默认时间，避免覆盖已经由 NTP 校准过的系统时间。
+11. `S99usb0config` 执行 USB 网络接口后置配置。
 
 ## 常用服务命令
 
