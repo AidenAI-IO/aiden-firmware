@@ -11,8 +11,11 @@ import (
 )
 
 // launchBenchmarkRunner double-forks a sh script that runs the Python benchmark
-// runner. Mirrors config_web.cpp implementation so the runner side stays unchanged.
-// Writes /tmp/benchmark_runner.pid + /tmp/benchmark_run.log + updates state.json.
+// launchBenchmarkRunner double-forks a sh script that runs the Python benchmark
+// runner. Writes /tmp/benchmark_runner.pid + /tmp/benchmark_run.log + updates
+// state.json on completion. The Python runner no longer accepts --state-file
+// (removed upstream); the Go server handles state.json bookkeeping itself in
+// handleBenchmarkRun (start) and the trailing echo (end).
 func (s *Server) launchBenchmarkRunner(suitePath, judgeModel, openRouterAPIKey string) error {
 	if judgeModel == "" {
 		judgeModel = "bytedance-seed/seed-2.0-lite"
@@ -25,7 +28,6 @@ func (s *Server) launchBenchmarkRunner(suitePath, judgeModel, openRouterAPIKey s
 		`run --suite %s `+
 		`--agent-url http://127.0.0.1:8080 `+
 		`--judge-model %s `+
-		`--state-file /userdata/agent/benchmark/state.json `+
 		`>> /tmp/benchmark_run.log 2>&1 & `+
 		`runner_pid=$!; echo $runner_pid > /tmp/benchmark_runner.pid; `+
 		`wait $runner_pid; rm -f /tmp/benchmark_runner.pid; `+

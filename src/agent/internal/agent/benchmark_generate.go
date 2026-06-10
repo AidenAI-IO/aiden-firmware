@@ -180,6 +180,10 @@ func (s *Server) handleBenchmarkGeneratePerception(w http.ResponseWriter, r *htt
 		http.Error(w, fmt.Sprintf(`{"ok":false,"error":"LLM did not return valid JSON: %s","raw":%q}`, err, raw), http.StatusBadGateway)
 		return
 	}
+	// Pretty-print so the editor preview is readable.
+	if pretty, err := json.MarshalIndent(probe, "", "  "); err == nil {
+		raw = string(pretty)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true, "task_json": raw})
