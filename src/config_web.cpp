@@ -142,6 +142,8 @@ std::string lowercase_copy(const std::string& text);
 std::string parent_dir(const std::string& path);
 bool mkdir_p(const std::string& dir, std::string* error);
 bool prepare_ota_update_log_file(const std::string& path, std::string* error);
+CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms);
+std::string validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -414,6 +416,109 @@ CommandResult run_shell_command_with_timeout(const std::string& command, int tim
     } else {
         result.exit_code = child_status;
     }
+    return result;
+}
+
+CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms) {
+    CommandResult result;
+    int stdin_pipe[2];
+    int stdout_pipe[2];
+
+    if (pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0) {
+        result.output = std::string("pipe failed: ") + strerror(errno);
+        return result;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        result.output = std::string("fork failed: ") + strerror(errno);
+        close(stdin_pipe[0]);
+        close(stdin_pipe[1]);
+        close(stdout_pipe[0]);
+        close(stdout_pipe[1]);
+        return result;
+    }
+
+    if (pid == 0) {
+        // Child process
+        close(stdin_pipe[1]);
+        close(stdout_pipe[0]);
+
+        dup2(stdin_pipe[0], STDIN_FILENO);
+        dup2(stdout_pipe[1], STDOUT_FILENO);
+        dup2(stdout_pipe[1], STDERR_FILENO);
+
+        close(stdin_pipe[0]);
+        close(stdout_pipe[1]);
+
+        execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char*>(NULL));
+        _exit(127);
+    }
+
+    // Parent process
+    close(stdin_pipe[0]);
+    close(stdout_pipe[1]);
+
+    // Write input to stdin
+    if (!input.empty()) {
+        ssize_t written = write(stdin_pipe[1], input.data(), input.size());
+        if (written < 0 || static_cast<size_t>(written) != input.size()) {
+            // Non-fatal, continue
+        }
+    }
+    close(stdin_pipe[1]);
+
+    // Read output with timeout
+    time_t start_time = time(NULL);
+    time_t deadline = start_time + (timeout_ms / 1000);
+
+    while (true) {
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(stdout_pipe[0], &read_fds);
+
+        time_t now = time(NULL);
+        if (now >= deadline) {
+            result.timed_out = true;
+            kill(pid, SIGKILL);
+            break;
+        }
+
+        struct timeval timeout;
+        timeout.tv_sec = deadline - now;
+        timeout.tv_usec = 0;
+
+        int select_result = select(stdout_pipe[0] + 1, &read_fds, NULL, NULL, &timeout);
+        if (select_result > 0) {
+            char buffer[4096];
+            ssize_t bytes_read = read(stdout_pipe[0], buffer, sizeof(buffer));
+            if (bytes_read > 0) {
+                result.output.append(buffer, static_cast<size_t>(bytes_read));
+            } else {
+                break;
+            }
+        } else if (select_result == 0) {
+            result.timed_out = true;
+            kill(pid, SIGKILL);
+            break;
+        } else {
+            break;
+        }
+    }
+
+    close(stdout_pipe[0]);
+
+    int status;
+    waitpid(pid, &status, 0);
+
+    if (WIFEXITED(status)) {
+        result.exit_code = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        result.exit_code = 128 + WTERMSIG(status);
+    } else {
+        result.exit_code = -1;
+    }
+
     return result;
 }
 
@@ -1168,64 +1273,79 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     }
 }
 
+std::string validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path) {
+    // Convert config to JSON
+    cJSON* config_json = config_to_json(config);
+    char* json_str = cJSON_PrintUnformatted(config_json);
+    cJSON_Delete(config_json);
+
+    if (!json_str) {
+        return "failed to serialize config to JSON";
+    }
+
+    std::string input(json_str);
+    free(json_str);
+
+    // Call agent config-check CLI
+    std::string cmd = std::string(agent_bin_path) + " config-check --stdin --format=json";
+    CommandResult result = run_command_with_stdin(cmd, input, 2000);
+
+    // Parse the result
+    if (result.timed_out) {
+        return "config validation timed out";
+    }
+
+    cJSON* response = cJSON_Parse(result.output.c_str());
+    if (!response) {
+        // CLI produced invalid JSON: fail closed rather than accepting a config
+        // we could not validate. The agent CLI is the single source of truth.
+        std::cerr << "[config] agent config-check returned invalid JSON: " << result.output << "\n";
+        return "config validation failed: validator returned an unexpected response";
+    }
+
+    cJSON* valid = cJSON_GetObjectItem(response, "valid");
+    if (json_is_bool(valid) && json_is_type(valid, cJSON_True)) {
+        cJSON_Delete(response);
+        return "";
+    }
+
+    // Extract error messages
+    std::string error_msg;
+    cJSON* errors = cJSON_GetObjectItem(response, "errors");
+    if (json_is_type(errors, cJSON_Array)) {
+        int error_count = cJSON_GetArraySize(errors);
+        for (int i = 0; i < error_count; ++i) {
+            cJSON* error = cJSON_GetArrayItem(errors, i);
+            cJSON* message = cJSON_GetObjectItem(error, "message");
+            if (json_is_string(message)) {
+                if (!error_msg.empty()) {
+                    error_msg += "; ";
+                }
+                error_msg += message->valuestring;
+            }
+        }
+    }
+
+    cJSON_Delete(response);
+
+    if (error_msg.empty()) {
+        error_msg = "config validation failed";
+    }
+
+    return error_msg;
+}
+
 std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
-    if (config.vad_speech_threshold < 0.0 || config.vad_speech_threshold > 1.0) {
-        return "vad_speech_threshold must be in range [0.0, 1.0]";
+    // The agent CLI's `config-check` is the single source of truth for config
+    // validation. If the binary is unavailable, fail closed: reject the save
+    // rather than persist a config we cannot validate.
+    const char* agent_bin = "/oem/usr/bin/agent";
+    if (!file_exists(agent_bin)) {
+        std::cerr << "[config] agent binary not found at " << agent_bin
+                  << ", refusing to save unvalidated config\n";
+        return "config validation unavailable: agent binary not found";
     }
-    if (config.voice_followup_timeout_ms < 0) {
-        return "voice_followup_timeout_ms must be >= 0";
-    }
-    if (config.voice_first_turn_timeout_ms < 0) {
-        return "voice_first_turn_timeout_ms must be >= 0";
-    }
-    if (config.voice_max_turns < 0) {
-        return "voice_max_turns must be >= 0";
-    }
-    if (config.voice_max_response_tokens < 0) {
-        return "voice_max_response_tokens must be >= 0";
-    }
-    if (config.max_iterations < -1) {
-        return "max_iterations must be >= -1";
-    }
-    if (config.screenshot_keep_n < 0) {
-        return "screenshot_keep_n must be >= 0";
-    }
-    if (config.screenshot_prune_interval < 0) {
-        return "screenshot_prune_interval must be >= 0";
-    }
-    if (config.screen_stable_timeout_ms < 0) {
-        return "screen_stable_timeout_ms must be >= 0";
-    }
-    if (config.screen_stable_ms < 0) {
-        return "screen_stable_ms must be >= 0";
-    }
-    if (config.screen_stable_diff_threshold < 0.0) {
-        return "screen_stable_diff_threshold must be >= 0";
-    }
-    std::string pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
-    if (pointer_mode != "absolute" && pointer_mode != "touchscreen") {
-        return "hid.pointer_mode must be absolute or touchscreen";
-    }
-    std::string telemetry_provider = lowercase_copy(trim_copy(config.telemetry.provider));
-    if (!telemetry_provider.empty() && telemetry_provider != "langfuse") {
-        return "telemetry.provider must be langfuse";
-    }
-    if (config.telemetry.enabled && trim_copy(config.telemetry.base_url).empty()) {
-        return "telemetry.base_url is required when telemetry.enabled is true";
-    }
-    if (config.telemetry.enabled && trim_copy(config.telemetry.public_key).empty()) {
-        return "telemetry.public_key is required when telemetry.enabled is true";
-    }
-    if (config.telemetry.enabled && trim_copy(config.telemetry.secret_key).empty()) {
-        return "telemetry.secret_key is required when telemetry.enabled is true";
-    }
-    if (config.telemetry.upload_timeout_sec < 0) {
-        return "telemetry.upload_timeout_sec must be >= 0";
-    }
-    if (config.telemetry.max_retry < 0) {
-        return "telemetry.max_retry must be >= 0";
-    }
-    return "";
+    return validate_agent_config_via_cli(config, agent_bin);
 }
 
 void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {

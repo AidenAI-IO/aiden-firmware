@@ -249,11 +249,6 @@ TEST_CASE("config web exposes screenshot pruning config fields") {
     CHECK(source.find("config.screen_stable_timeout_ms") != std::string::npos);
     CHECK(source.find("config.screen_stable_ms") != std::string::npos);
     CHECK(source.find("config.screen_stable_diff_threshold") != std::string::npos);
-    CHECK(source.find("screenshot_keep_n must be >= 0") != std::string::npos);
-    CHECK(source.find("screenshot_prune_interval must be >= 0") != std::string::npos);
-    CHECK(source.find("screen_stable_timeout_ms must be >= 0") != std::string::npos);
-    CHECK(source.find("screen_stable_ms must be >= 0") != std::string::npos);
-    CHECK(source.find("screen_stable_diff_threshold must be >= 0") != std::string::npos);
 
     CHECK(html.find("agent_screenshot_keep_n") != std::string::npos);
     CHECK(html.find("agent_screenshot_prune_interval") != std::string::npos);
@@ -432,9 +427,6 @@ TEST_CASE("config web exposes telemetry settings section") {
     CHECK(source.find("config.telemetry.enabled") != std::string::npos);
     CHECK(source.find("add_string_array_to_object(telemetry, \"tags\", config.telemetry.tags)") != std::string::npos);
     CHECK(source.find("set_json_string_vector(&config->telemetry.tags, telemetry, \"tags\")") != std::string::npos);
-    CHECK(source.find("telemetry.base_url is required when telemetry.enabled is true") != std::string::npos);
-    CHECK(source.find("telemetry.public_key is required when telemetry.enabled is true") != std::string::npos);
-    CHECK(source.find("std::string telemetry_provider = lowercase_copy(trim_copy(config.telemetry.provider));") != std::string::npos);
     CHECK(source.find("std::string provider_original = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : \"\";") != std::string::npos);
     CHECK(source.find("std::string provider = lowercase_copy(provider_original);") != std::string::npos);
     CHECK(source.find("public_key_env") == std::string::npos);
@@ -596,7 +588,8 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("reboot_required") != std::string::npos);
     CHECK(source.find("schedule_poweroff") != std::string::npos);
     CHECK(source.find("\"/api/poweroff\"") != std::string::npos);
-    CHECK(source.find("hid.pointer_mode must be absolute or touchscreen") != std::string::npos);
+    CHECK(source.find("config-check --stdin --format=json") != std::string::npos);
+    CHECK(source.find("config validation unavailable: agent binary not found") != std::string::npos);
     CHECK(html.find("hid_pointer_mode") != std::string::npos);
     CHECK(html.find("['pointer_mode','text']") != std::string::npos);
     CHECK(html.find("pointer_mode 需要关机重启后生效") != std::string::npos);
