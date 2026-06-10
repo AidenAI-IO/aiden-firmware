@@ -1,0 +1,108 @@
+#!/bin/sh
+# Aiden NTP watchdog: periodically check if the system clock has synchronized
+# via ntpd, and fire a one-shot step if it hasn't. Exits once sync is achieved
+# or after a timeout, so it doesn't run indefinitely.
+#
+# This replaces the previous DHCP-event-driven approach (udhcpc hook calling
+# S49ntp step) which was fragile: multiple competing udhcpc instances would
+# kill each other, leaving the hook path broken. A periodic check is simpler,
+# more robust, and decouples NTP sync from DHCP lifecycle.
+
+BOOT_CONF=/etc/aiden_boot.conf
+
+if [ -f "$BOOT_CONF" ]; then
+	. "$BOOT_CONF"
+fi
+: "${ENABLE_NTP:=1}"
+: "${NTP_WATCHDOG_INTERVAL:=30}"
+: "${NTP_WATCHDOG_TIMEOUT:=600}"
+
+PIDFILE=/run/aiden_ntp_watchdog.pid
+LOGFILE=/var/log/aiden_ntp_watchdog.log
+
+log() {
+	printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOGFILE"
+}
+
+# Check if ntpd has synchronized the system clock. We consider the clock
+# synchronized if the system time is sane (>=2026) and ntpd is running.
+# A more precise check would parse `ntpq -p` or `adjtimex`, but ntpq may not
+# be present (busybox ntpd doesn't ship it), and adjtimex is overkill when a
+# simple date sanity check + daemon liveness covers 99% of cases.
+is_clock_synced() {
+	if ! pidof ntpd >/dev/null 2>&1; then
+		return 1
+	fi
+	year=$(date +%Y 2>/dev/null)
+	case "$year" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	[ "$year" -ge 2026 ]
+}
+
+watchdog_main() {
+	log "watchdog starting (interval=${NTP_WATCHDOG_INTERVAL}s timeout=${NTP_WATCHDOG_TIMEOUT}s)"
+	elapsed=0
+
+	while [ "$elapsed" -lt "$NTP_WATCHDOG_TIMEOUT" ]; do
+		if is_clock_synced; then
+			log "clock synced; exiting"
+			return 0
+		fi
+
+		log "clock not synced; triggering step"
+		if [ -x /etc/init.d/S49ntp ]; then
+			/etc/init.d/S49ntp step >/dev/null 2>&1 || true
+		fi
+
+		sleep "$NTP_WATCHDOG_INTERVAL"
+		elapsed=$((elapsed + NTP_WATCHDOG_INTERVAL))
+	done
+
+	log "timeout after ${elapsed}s; exiting"
+	return 1
+}
+
+start() {
+	if [ "$ENABLE_NTP" != "1" ]; then
+		echo "ntp watchdog disabled (ENABLE_NTP=$ENABLE_NTP)"
+		return 0
+	fi
+
+	if [ -f "$PIDFILE" ]; then
+		old_pid=$(cat "$PIDFILE" 2>/dev/null)
+		if kill -0 "$old_pid" 2>/dev/null; then
+			echo "ntp watchdog already running: $old_pid"
+			return 0
+		fi
+	fi
+
+	mkdir -p "$(dirname "$LOGFILE")"
+	watchdog_main &
+	pid=$!
+	echo "$pid" > "$PIDFILE"
+	echo "Started ntp watchdog: $pid"
+}
+
+stop() {
+	if [ -f "$PIDFILE" ]; then
+		old_pid=$(cat "$PIDFILE" 2>/dev/null)
+		if kill -0 "$old_pid" 2>/dev/null; then
+			kill "$old_pid" 2>/dev/null || true
+		fi
+		rm -f "$PIDFILE"
+	fi
+	echo "Stopped ntp watchdog"
+}
+
+restart() {
+	stop
+	start
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart|reload) restart ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

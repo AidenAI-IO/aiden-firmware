@@ -408,7 +408,7 @@ TEST_CASE("config web restarts ota only when system env changes") {
     CHECK(source.find("config saved; agent and ota restarting") == std::string::npos);
 }
 
-TEST_CASE("config web DHCP uses aiden udhcpc hook") {
+TEST_CASE("config web DHCP invokes udhcpc without hook") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
     REQUIRE(source_in.good());
@@ -417,9 +417,12 @@ TEST_CASE("config web DHCP uses aiden udhcpc hook") {
     source_buffer << source_in.rdbuf();
     const std::string source = source_buffer.str();
 
+    // Must invoke udhcpc for DHCP
     CHECK(source.find("udhcpc -i ") != std::string::npos);
-    CHECK(source.find("-s /etc/udhcpc/aiden.script") != std::string::npos);
-    CHECK(source.find("udhcpc -i \" + shell_quote(options.wifi_interface) + \" -n -q 2>&1") == std::string::npos);
+    // Must NOT reference the removed aiden.script hook
+    CHECK(source.find("-s /etc/udhcpc/aiden.script") == std::string::npos);
+    // Should use -n -q for foreground one-shot DHCP
+    CHECK(source.find("udhcpc -i \" + shell_quote(options.wifi_interface) + \" -n -q") != std::string::npos);
 }
 
 TEST_CASE("config web custom benchmark suite import endpoints") {
