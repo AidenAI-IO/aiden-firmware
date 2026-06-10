@@ -64,13 +64,8 @@ func main() {
 
 	inputMode := cfg.InputModeOrDefault()
 
-	// If input mode is audio or stt, run audio dialog loop
-	if inputMode == "audio" || inputMode == "stt" {
-		runAudioMode(cfg, runtime)
-		return
-	}
-
-	// Otherwise run HTTP server
+	// HTTP server runs in all input modes so the web UI is available even
+	// during voice (audio/stt) interactions.
 	server := agent.NewServer(runtime, *addr)
 
 	fmt.Printf("🚀 Aiden Agent daemon starting on %s\n", *addr)
@@ -80,13 +75,29 @@ func main() {
 	}
 	fmt.Printf("📝 Logs: %s/log/\n", *configDir)
 
-	if err := server.Start(); err != nil {
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- server.Start()
+	}()
+
+	if inputMode == "audio" || inputMode == "stt" {
+		go func() {
+			if err := <-serverErr; err != nil {
+				log.Printf("[server] HTTP server stopped: %v", err)
+			}
+		}()
+		runAudioMode(cfg, runtime, server)
+		return
+	}
+
+	if err := <-serverErr; err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func runAudioMode(cfg agent.Config, runtime *agent.Runtime) {
+func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server) {
+	_ = server // reserved for future wakeup/web integration wiring
 	dialog, err := agent.NewAudioDialog(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create audio dialog: %v\n", err)
