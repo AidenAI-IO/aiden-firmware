@@ -767,6 +767,107 @@ func TestMaintainFilesystemMemorySplitsLongSingleTurnWithoutOrphanToolResult(t *
 	}
 }
 
+// TestMaintainFilesystemMemoryChineseCountFallbackNoOrphanToolResult drives the
+// realistic trigger chain for the count-based fallback: a Chinese session where
+// the real prompt-token count (reported via SetLastPromptTokens) crosses the
+// compression threshold, but the chars/4 byte estimate used by the token cut
+// point stays under keep_recent — UTF-8 Chinese is ~3 bytes/char so len/4
+// underestimates true tokens badly. That makes findSessionCutPoint report no
+// cut, so planCompaction falls back to the count path. The raw count index lands
+// on a tool_result; the fix must snap it to a legal boundary instead of opening
+// the hot window on the orphan.
+func TestMaintainFilesystemMemoryChineseCountFallbackNoOrphanToolResult(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 8000
+	cfg.CompressAtPercent = 50
+	cfg.HotWindowEvents = 4 // keepCount=4 → rawCutIndex = 12-4 = 8 (a tool_result)
+	cfg.KeepRecentTokens = 4000
+
+	const goalMarker = "用户目标_报销流程_第42步"
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg),
+		WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+			var b strings.Builder
+			for _, e := range events {
+				b.WriteString(e.Content)
+				b.WriteString(" ")
+			}
+			return strings.TrimSpace(b.String())
+		}))
+
+	sessionDir := filepath.Join(storageDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir session: %v", err)
+	}
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+	mustAppend := func(typ, role, content string, i int) {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%03d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    typ, Role: role, Content: content,
+		}); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+
+	// 12 short Chinese events. Each is tiny in bytes (~30-60), so the chars/4
+	// estimate keeps the whole stream well under keep_recent (4000) and the
+	// token cut point finds nothing. Layout puts a tool_result exactly at the
+	// raw count index (8) and leaves the tail mostly tool_results so the old
+	// turn-align guard would have fallen through to the raw orphan.
+	mustAppend("user_input", "user", goalMarker+"，帮我处理一下", 0)
+	mustAppend("assistant_output", "assistant", "好的，正在查询", 1)
+	mustAppend("tool_result", "tool", "查询结果一", 2)
+	mustAppend("user_input", "user", "继续下一步", 3)
+	mustAppend("assistant_output", "assistant", "正在提交表单", 4)
+	mustAppend("tool_result", "tool", "提交结果", 5)
+	mustAppend("user_input", "user", "再确认一次", 6)
+	mustAppend("assistant_output", "assistant", "正在确认", 7)
+	mustAppend("tool_result", "tool", "确认中间态一", 8) // rawCutIndex = 8
+	mustAppend("tool_result", "tool", "确认中间态二", 9)
+	mustAppend("tool_result", "tool", "确认中间态三", 10)
+	mustAppend("assistant_output", "assistant", "已完成确认", 11)
+
+	// Real prompt token count crosses 50% of the 8k window, while the byte-based
+	// estimate of all events combined stays far below keep_recent.
+	manager.SetLastPromptTokens(6000)
+
+	// Sanity-check the premise: the token cut point really must find nothing,
+	// otherwise this test would exercise the token path instead of the fallback.
+	events, err := session.readEvents(session.eventsPath())
+	if err != nil {
+		t.Fatalf("readEvents: %v", err)
+	}
+	if cut := findSessionCutPoint(events, 0, len(events), cfg.KeepRecentTokens); cut.HasCut {
+		t.Fatalf("premise broken: token cut found a cut at %d; test no longer exercises the count fallback", cut.FirstKeptIndex)
+	}
+
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory: %v", err)
+	}
+
+	hot := readSessionEvents(t, session.eventsPath())
+	if len(hot) == 0 {
+		t.Fatalf("expected hot events to remain after compaction")
+	}
+	if hot[0].Type == "tool_result" {
+		t.Fatalf("hot window opened on an orphan tool_result: %#v", hot[0])
+	}
+
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 1})
+	if err != nil {
+		t.Fatalf("RecallChunks: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected one compacted chunk, got %d", len(chunks))
+	}
+	if !strings.Contains(chunks[0].Summary, goalMarker) {
+		t.Fatalf("chunk summary lost the user goal %q:\n%s", goalMarker, chunks[0].Summary)
+	}
+}
+
 func readSessionEvents(t *testing.T, path string) []SessionEvent {
 	t.Helper()
 	file, err := os.Open(path)

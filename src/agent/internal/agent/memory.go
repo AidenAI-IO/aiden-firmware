@@ -710,7 +710,11 @@ func (m *MemoryManager) planCompaction(events []SessionEvent, contextWindow int)
 		}
 	}
 
-	// Count-based fallback: keep the most recent maxEvents events.
+	// Count-based fallback: keep roughly the most recent maxEvents events, but
+	// snap the cut to a legal boundary so the hot window never opens on a
+	// forbidden event (tool_result/system). The raw count index is only a
+	// target; buildSessionCutPoint then derives the same split-turn metadata and
+	// leading-state merge the token path uses.
 	maxEvents := m.extraction.HotWindowEvents
 	if maxEvents <= 0 {
 		maxEvents = defaultHotWindowEvents
@@ -725,23 +729,23 @@ func (m *MemoryManager) planCompaction(events []SessionEvent, contextWindow int)
 	if keepCount >= len(events) {
 		return compactionPlan{ok: false}
 	}
-	// Align to turn boundary: find the nearest complete turn at or after cutIndex
 	rawCutIndex := len(events) - keepCount
-	cutAtTurn := findSessionCutPoint(events, rawCutIndex, len(events), 0)
-	if cutAtTurn.HasCut && cutAtTurn.FirstKeptIndex > rawCutIndex {
-		// Use turn-aligned cut point if it doesn't shrink hot window too much
-		if len(events)-cutAtTurn.FirstKeptIndex >= keepCount/2 {
-			return compactionPlan{
-				ok:             true,
-				cutIndex:       cutAtTurn.FirstKeptIndex,
-				isSplitTurn:    cutAtTurn.IsSplitTurn,
-				turnStartIndex: cutAtTurn.TurnStartIndex,
-				mode:           "count",
-			}
-		}
+	snapped := snapToLegalCutAtOrBefore(events, 0, len(events), rawCutIndex)
+	if snapped < 0 {
+		// No legal cut anywhere; compaction can't proceed without orphaning.
+		return compactionPlan{ok: false}
 	}
-	// Fall back to raw cut if turn alignment fails or shrinks too much
-	return compactionPlan{ok: true, cutIndex: rawCutIndex, mode: "count"}
+	cp := buildSessionCutPoint(events, 0, snapped)
+	if !cp.HasCut {
+		return compactionPlan{ok: false}
+	}
+	return compactionPlan{
+		ok:             true,
+		cutIndex:       cp.FirstKeptIndex,
+		isSplitTurn:    cp.IsSplitTurn,
+		turnStartIndex: cp.TurnStartIndex,
+		mode:           "count",
+	}
 }
 
 func (m *MemoryManager) reserveTokens() int {

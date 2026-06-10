@@ -145,6 +145,66 @@ func TestFindSessionCutPointNoCutWhenEverythingFitsBudget(t *testing.T) {
 	}
 }
 
+func TestPlanCompactionCountFallbackNeverOpensOnForbiddenEvent(t *testing.T) {
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.HotWindowEvents = 4
+	m := NewMemoryManager("", WithExtractionConfig(cfg))
+
+	// Tiny events so the token cut point finds nothing (everything fits the
+	// keep-recent budget) and planCompaction falls back to the count path.
+	// rawCutIndex = len(events) - keepCount = 12 - 4 = 8, which lands on a
+	// tool_result. The only legal cut in the tail (a3 @ 11) shrinks the window
+	// below keepCount/2, which previously dropped the plan onto the raw orphan.
+	events := []SessionEvent{
+		evt("u0", "user_input", "user", "hi"),
+		evt("a0", "assistant_output", "assistant", "ok"),
+		evt("t0", "tool_result", "tool", "r"),
+		evt("u1", "user_input", "user", "hi"),
+		evt("a1", "assistant_output", "assistant", "ok"),
+		evt("t1", "tool_result", "tool", "r"),
+		evt("u2", "user_input", "user", "hi"),
+		evt("a2", "assistant_output", "assistant", "ok"),
+		evt("t2", "tool_result", "tool", "r"), // rawCutIndex = 8
+		evt("t3", "tool_result", "tool", "r"),
+		evt("t4", "tool_result", "tool", "r"),
+		evt("a3", "assistant_output", "assistant", "ok"),
+	}
+
+	plan := m.planCompaction(events, 200000)
+	if !plan.ok {
+		t.Fatal("expected count-based fallback to produce a plan")
+	}
+	if plan.mode != "count" {
+		t.Fatalf("expected count mode (token path should find no cut), got %q", plan.mode)
+	}
+	if got := classifySessionCutEligibility(events[plan.cutIndex]); got == cutForbidden {
+		t.Fatalf("hot window opens on forbidden event %q at index %d", events[plan.cutIndex].Type, plan.cutIndex)
+	}
+	// Cutting inside a turn must be flagged so the turn-prefix context is
+	// prepended; otherwise the suffix dangles without its opening user_input.
+	if events[plan.cutIndex].Type != "user_input" && !plan.isSplitTurn {
+		t.Fatalf("cut at non-boundary index %d must be a split turn", plan.cutIndex)
+	}
+}
+
+func TestSnapToLegalCutAtOrBeforePrefersLargestBeforeTarget(t *testing.T) {
+	events := []SessionEvent{
+		evt("u0", "user_input", "user", "hi"),       // 0 legal
+		evt("a0", "assistant_output", "assistant", "ok"), // 1 legal
+		evt("t0", "tool_result", "tool", "r"),       // 2 forbidden
+		evt("t1", "tool_result", "tool", "r"),       // 3 forbidden
+		evt("u1", "user_input", "user", "hi"),       // 4 legal
+	}
+	// target 3 (forbidden) → largest legal cut <= 3 and > start(0) is index 1.
+	if got := snapToLegalCutAtOrBefore(events, 0, len(events), 3); got != 1 {
+		t.Fatalf("snap(target=3) = %d, want 1", got)
+	}
+	// target 0 (== start) → no legal cut in (start, target]; fall forward to 1.
+	if got := snapToLegalCutAtOrBefore(events, 0, len(events), 0); got != 1 {
+		t.Fatalf("snap(target=0) = %d, want 1 (first legal after start)", got)
+	}
+}
+
 func TestClampTokenBudgetsStableAcrossContextWindows(t *testing.T) {
 	cases := []struct {
 		window            int

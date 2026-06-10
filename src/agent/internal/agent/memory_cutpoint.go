@@ -163,6 +163,16 @@ func findSessionCutPoint(events []SessionEvent, start, end, keepRecentTokens int
 		}
 	}
 
+	return buildSessionCutPoint(events, start, cutIndex)
+}
+
+// buildSessionCutPoint turns a chosen legal cut index into a SessionCutPoint:
+// it classifies the split-turn status from the real cut event, then merges any
+// leading ambient-state events into the kept window so the hot window never
+// opens on a dangling system/screen context event. cutIndex must already be a
+// legal (non-forbidden) cut point in [start, end). Returns HasCut=false when the
+// cut collapses to start (nothing left to compact).
+func buildSessionCutPoint(events []SessionEvent, start, cutIndex int) SessionCutPoint {
 	// If the chosen cut is the very first event there is no history to compact.
 	if cutIndex <= start {
 		return SessionCutPoint{HasCut: false, FirstKeptIndex: start, TurnStartIndex: -1}
@@ -191,6 +201,35 @@ func findSessionCutPoint(events []SessionEvent, start, end, keepRecentTokens int
 		IsSplitTurn:    !isUserBoundary && turnStart != -1,
 		TurnStartIndex: turnStart,
 	}
+}
+
+// snapToLegalCutAtOrBefore returns the largest legal cut index in (start, end)
+// that is at or before target, preferring to keep more events (snap earlier).
+// When no legal cut exists at or before target it falls forward to the first
+// legal cut after target. Returns -1 when no legal cut exists in (start, end)
+// at all, i.e. compaction cannot make progress without orphaning an event.
+//
+// This lets the count-based fallback land on the same kind of legal boundary
+// the token path uses, instead of an arbitrary index that may sit on a
+// forbidden event (tool_result/system) and orphan the hot window.
+func snapToLegalCutAtOrBefore(events []SessionEvent, start, end, target int) int {
+	cuts := findValidSessionCutPoints(events, start, end)
+	best := -1
+	for _, c := range cuts {
+		if c <= start {
+			continue // index 0 leaves no history to compact
+		}
+		if c <= target {
+			best = c // keep advancing toward target; prefer the largest
+			continue
+		}
+		// c > target: only useful as a forward fallback when nothing fit before.
+		if best == -1 {
+			return c
+		}
+		break
+	}
+	return best
 }
 
 // clampTokenBudgets bounds the reserve and keep-recent token budgets so they
