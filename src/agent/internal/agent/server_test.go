@@ -1351,3 +1351,37 @@ func TestServerHandleEventsSSE(t *testing.T) {
 		t.Errorf("Response should contain message content, got: %s", body)
 	}
 }
+
+func TestServerHistoryStoreBroadcastsToSSE(t *testing.T) {
+	cfg := Config{ConfigDir: t.TempDir()}
+	runtime, err := NewRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	server := NewServer(runtime, "127.0.0.1:0")
+
+	// Subscribe to SSE
+	ch := server.eventBroadcaster.Subscribe()
+	defer server.eventBroadcaster.Unsubscribe(ch)
+
+	// Append message to history store
+	testMsg := Message{
+		Type:    "user",
+		Content: "broadcast test",
+	}
+	if err := server.historyStore.Append(context.Background(), testMsg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify broadcast received
+	select {
+	case received := <-ch:
+		if received.Content != "broadcast test" {
+			t.Errorf("got content %q, want %q", received.Content, "broadcast test")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timeout waiting for broadcast")
+	}
+}

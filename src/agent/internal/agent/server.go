@@ -197,6 +197,12 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		s.historyStore = NewChatHistoryStore(filepath.Join(memoryDir, "chat_history"))
 		s.episodeStore = NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
 	}
+	// Connect history store to event broadcaster
+	if s.historyStore != nil {
+		s.historyStore.SetOnNewMessage(func(msg Message) {
+			s.eventBroadcaster.Broadcast(msg)
+		})
+	}
 	loadAppMappingForConfig(runtime.config.ConfigDir, runtime.logger)
 	runtime.tools.RegisterPhoneBridge(bridge)
 	s.loadHistoryFromDisk()
