@@ -44,7 +44,7 @@ fi
 
 echo "→ Comparing device vs. local..."
 TMP_DIR="$(mktemp -d)"
-trap "rm -rf $TMP_DIR" EXIT
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 scp -r "${SSH_OPTS[@]}" "${DEVICE_USER}@${DEVICE}:${DEVICE_DIR}/" "$TMP_DIR/perception/" >/dev/null
 

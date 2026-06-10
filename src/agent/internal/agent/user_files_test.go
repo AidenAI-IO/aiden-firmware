@@ -43,7 +43,9 @@ func TestHandleUserFilesRegenerate_RunsAsync(t *testing.T) {
 	rpt := filepath.Join(t.TempDir(), "report.html")
 	marker := filepath.Join(t.TempDir(), "marker")
 	script := filepath.Join(tools, "view_agent_files.sh")
-	body := "#!/bin/sh\nsleep 0.1\ntouch " + marker + "\necho '<html>regen</html>' > " + rpt + "\n"
+	// 200ms sleep is long enough that a synchronous handler would not yet
+	// have created the marker by the time we check immediately afterwards.
+	body := "#!/bin/sh\nsleep 0.2\ntouch " + marker + "\necho '<html>regen</html>' > " + rpt + "\n"
 	os.WriteFile(script, []byte(body), 0o755)
 	s := &Server{userFilesReportPath: rpt, userFilesToolsDir: tools}
 	req := httptest.NewRequest(http.MethodPost, "/user_files/regenerate", nil)
@@ -51,6 +53,10 @@ func TestHandleUserFilesRegenerate_RunsAsync(t *testing.T) {
 	s.handleUserFilesRegenerate(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d", rec.Code)
+	}
+	// Handler must return before the script finishes; marker must not exist yet.
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("handler waited for script completion; expected async fire-and-forget")
 	}
 	for i := 0; i < 30; i++ {
 		if _, err := os.Stat(marker); err == nil {
