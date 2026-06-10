@@ -29,6 +29,7 @@
 
 - [Agent 概览](04-agent/overview.md)
 - [Agent 配置参考](04-agent/configuration.md)
+- [Agent Context Lifecycle](04-agent/context-lifecycle.md)
 - [Session Memory Compaction](04-agent/session-memory.md)
 - [工具 HTTP API](04-agent/tools-http-api.md)
 - [语音能力：VAD / STT / TTS](04-agent/audio-features.md)
