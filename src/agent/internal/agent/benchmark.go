@@ -85,3 +85,50 @@ func (s *Server) handleBenchmarkSuites(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(items)
 }
+
+type runListItem struct {
+	RunID  string         `json:"run_id"`
+	Suite  string         `json:"suite,omitempty"`
+	Totals map[string]int `json:"totals,omitempty"`
+}
+
+func (s *Server) handleBenchmarkRuns(w http.ResponseWriter, r *http.Request) {
+	if s.benchmarkDir == "" {
+		http.Error(w, `{"error":"benchmark directory not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	runsDir := filepath.Join(s.benchmarkDir, "runs")
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		// If runs directory doesn't exist, return empty array
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]runListItem{})
+		return
+	}
+
+	names := []string{}
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+
+	// Sort in reverse chronological order (newest first)
+	sort.Sort(sort.Reverse(sort.StringSlice(names)))
+
+	// Cap at 20 most recent runs
+	if len(names) > 20 {
+		names = names[:20]
+	}
+
+	items := make([]runListItem, 0, len(names))
+	for _, n := range names {
+		item := runListItem{RunID: n}
+		// TODO: Extract suite and totals from report.html if needed
+		// For now, totals remain empty as per the task specification
+		items = append(items, item)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(items)
+}

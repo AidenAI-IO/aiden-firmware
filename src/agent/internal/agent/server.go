@@ -262,6 +262,7 @@ func (s *Server) Start() error {
 
 	// Benchmark endpoints
 	mux.HandleFunc("/benchmark/suites", s.handleBenchmarkSuites)
+	mux.HandleFunc("/benchmark/runs", s.handleBenchmarkRuns)
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)

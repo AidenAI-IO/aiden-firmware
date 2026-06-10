@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -105,6 +106,65 @@ func TestHandleBenchmarkSuites_NoBenchmarkDir(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/benchmark/suites", nil)
 	rec := httptest.NewRecorder()
 	s.handleBenchmarkSuites(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestHandleBenchmarkRuns_ReverseSorted(t *testing.T) {
+	root := t.TempDir()
+	runs := filepath.Join(root, "runs")
+	for _, id := range []string{"2026-05-01_010101", "2026-06-10_010101", "2026-04-15_010101"} {
+		os.MkdirAll(filepath.Join(runs, id), 0o755)
+	}
+	s := &Server{benchmarkDir: root}
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/runs", nil)
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRuns(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if len(got) != 3 {
+		t.Fatalf("got %d runs, want 3: %+v", len(got), got)
+	}
+	if got[0]["run_id"] != "2026-06-10_010101" {
+		t.Errorf("first run_id = %q, want 2026-06-10_010101", got[0]["run_id"])
+	}
+	if got[1]["run_id"] != "2026-05-01_010101" {
+		t.Errorf("second run_id = %q, want 2026-05-01_010101", got[1]["run_id"])
+	}
+	if got[2]["run_id"] != "2026-04-15_010101" {
+		t.Errorf("third run_id = %q, want 2026-04-15_010101", got[2]["run_id"])
+	}
+}
+
+func TestHandleBenchmarkRuns_Caps20(t *testing.T) {
+	root := t.TempDir()
+	runs := filepath.Join(root, "runs")
+	for i := 0; i < 25; i++ {
+		os.MkdirAll(filepath.Join(runs, fmt.Sprintf("2026-06-10_%06d", i)), 0o755)
+	}
+	s := &Server{benchmarkDir: root}
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/runs", nil)
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRuns(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if len(got) != 20 {
+		t.Errorf("got %d runs, want 20", len(got))
+	}
+}
+
+func TestHandleBenchmarkRuns_NoBenchmarkDir(t *testing.T) {
+	s := &Server{benchmarkDir: ""}
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/runs", nil)
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRuns(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", rec.Code)
 	}
