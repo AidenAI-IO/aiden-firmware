@@ -2,6 +2,7 @@ package agent
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -418,6 +419,66 @@ func TestConfigVADBackendDefaultsAndValidation(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid vad_backend") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDeviceConfigBackendDefaultsToHDMI(t *testing.T) {
+	cfg := Config{Model: ModelConfig{Provider: "fake"}}
+	if got := cfg.Device.BackendOrDefault(); got != "hdmi" {
+		t.Fatalf("BackendOrDefault() = %q, want hdmi", got)
+	}
+}
+
+func TestLoadConfigAcceptsMobileGymDeviceBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	content := `
+instruction = "test"
+input_mode = "text"
+max_iterations = 20
+
+[model]
+provider = "fake"
+
+[device]
+backend = "mobilegym"
+bridge_url = "http://127.0.0.1:19001"
+bridge_token_file = "/tmp/device-token"
+control_token_file = "/tmp/control-token"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := cfg.Device.BackendOrDefault(); got != "mobilegym" {
+		t.Fatalf("backend = %q, want mobilegym", got)
+	}
+	if cfg.Instruction != "test" || cfg.InputMode != "text" || cfg.MaxIterations != 20 {
+		t.Fatalf("root config not decoded: instruction=%q input_mode=%q max_iterations=%d", cfg.Instruction, cfg.InputMode, cfg.MaxIterations)
+	}
+}
+
+func TestLoadConfigRejectsUnknownDeviceBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	content := `
+instruction = "test"
+
+[model]
+provider = "fake"
+
+[device]
+backend = "bogus"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "invalid device.backend") {
+		t.Fatalf("LoadConfig() error = %v, want invalid device.backend", err)
 	}
 }
 
