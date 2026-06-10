@@ -728,8 +728,15 @@ func TestFormatSessionSummaryWithWindowKeepsMaxChunks(t *testing.T) {
 	if !strings.Contains(summary, "chunk_004") {
 		t.Fatalf("expected summary to contain chunk_004, got:\n%s", summary)
 	}
-	if strings.Contains(summary, "chunk_001") {
-		t.Fatalf("expected summary NOT to contain chunk_001, got:\n%s", summary)
+	if !strings.Contains(summary, "## Rolling Summary") {
+		t.Fatalf("expected Rolling Summary section, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "## Recent Chunks") {
+		t.Fatalf("expected Recent Chunks section, got:\n%s", summary)
+	}
+	recentChunksPart := summary[strings.Index(summary, "## Recent Chunks"):]
+	if strings.Contains(recentChunksPart, "chunk_001") {
+		t.Fatalf("expected chunk_001 NOT in Recent Chunks section, got:\n%s", summary)
 	}
 
 	if !strings.Contains(archive, "chunk_001") {
@@ -770,8 +777,15 @@ func TestFormatSessionSummaryWithWindowAppendsToExistingArchive(t *testing.T) {
 	newChunk := chunkIndexEntry{ID: "chunk_012", Summary: "Summary 12"}
 	summary, archive := formatSessionSummaryWithWindow(existing, existingArchive, newChunk, 2)
 
-	if strings.Contains(summary, "chunk_010") {
-		t.Fatalf("expected chunk_010 to be archived out of summary, got:\n%s", summary)
+	if !strings.Contains(summary, "## Rolling Summary") {
+		t.Fatalf("expected Rolling Summary section, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "## Recent Chunks") {
+		t.Fatalf("expected Recent Chunks section, got:\n%s", summary)
+	}
+	recentChunksPart := summary[strings.Index(summary, "## Recent Chunks"):]
+	if strings.Contains(recentChunksPart, "chunk_010") {
+		t.Fatalf("expected chunk_010 NOT in Recent Chunks section, got:\n%s", summary)
 	}
 	if !strings.Contains(summary, "chunk_011") || !strings.Contains(summary, "chunk_012") {
 		t.Fatalf("expected summary to contain chunk_011 and chunk_012, got:\n%s", summary)
@@ -814,11 +828,17 @@ func TestSessionMemoryStoreCompressCreatesArchive(t *testing.T) {
 		t.Fatalf("ReadFile summary.md error = %v", err)
 	}
 	summary := string(summaryData)
-	if strings.Contains(summary, "chunk_000") {
-		t.Fatalf("expected chunk_000 to be archived out of summary.md, got:\n%s", summary)
+	if !strings.Contains(summary, "## Rolling Summary") {
+		t.Fatalf("expected summary.md to contain Rolling Summary section, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "## Recent Chunks") {
+		t.Fatalf("expected summary.md to contain Recent Chunks section, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "chunk_000") {
+		t.Fatalf("expected chunk_000 to appear in rolling summary, got:\n%s", summary)
 	}
 	if !strings.Contains(summary, "chunk_001") || !strings.Contains(summary, "chunk_002") {
-		t.Fatalf("expected summary to contain chunk_001 and chunk_002, got:\n%s", summary)
+		t.Fatalf("expected summary to contain chunk_001 and chunk_002 in recent chunks, got:\n%s", summary)
 	}
 
 	archiveData, err := os.ReadFile(filepath.Join(root, "session", "summary_archive.md"))

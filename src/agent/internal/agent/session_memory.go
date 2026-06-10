@@ -485,9 +485,37 @@ func parseChunkLines(content []byte) []chunkLine {
 	return chunks
 }
 
-func renderSummaryMD(chunks []chunkLine) string {
+func extractRollingSummary(content []byte) string {
+	if len(content) == 0 {
+		return ""
+	}
+	lines := strings.Split(string(content), "\n")
+	inSummaryBlock := false
+	var summaryLines []string
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "## Rolling Summary" {
+			inSummaryBlock = true
+			continue
+		}
+		if inSummaryBlock {
+			if strings.HasPrefix(strings.TrimSpace(line), "##") {
+				break
+			}
+			summaryLines = append(summaryLines, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(summaryLines, "\n"))
+}
+
+func renderSummaryMD(chunks []chunkLine, rollingSummary string) string {
 	var b strings.Builder
 	b.WriteString("# Session History (compressed chunks)\n\n")
+	if rollingSummary != "" {
+		b.WriteString("## Rolling Summary\n\n")
+		b.WriteString(rollingSummary)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("## Recent Chunks\n\n")
 	b.WriteString("Use recall_session_chunks with a chunk_id to retrieve full conversation details.\n\n")
 	for _, c := range chunks {
 		b.WriteString(fmt.Sprintf("- **%s**\n  %s\n", c.ID, c.Summary))
@@ -509,9 +537,10 @@ func renderArchiveMD(chunks []chunkLine) string {
 func formatSessionSummaryWithWindow(existingSummary []byte, existingArchive []byte, newChunk chunkIndexEntry, maxChunks int) (summaryContent string, archiveContent string) {
 	chunks := parseChunkLines(existingSummary)
 	chunks = append(chunks, chunkLine{ID: newChunk.ID, Summary: strings.TrimSpace(newChunk.Summary)})
+	rollingSummary := extractRollingSummary(existingSummary)
 
 	if maxChunks <= 0 || len(chunks) <= maxChunks {
-		return renderSummaryMD(chunks), ""
+		return renderSummaryMD(chunks, rollingSummary), ""
 	}
 
 	overflow := chunks[:len(chunks)-maxChunks]
@@ -520,7 +549,24 @@ func formatSessionSummaryWithWindow(existingSummary []byte, existingArchive []by
 	archived := parseChunkLines(existingArchive)
 	archived = append(archived, overflow...)
 
-	return renderSummaryMD(keep), renderArchiveMD(archived)
+	updatedRollingSummary := mergeArchivedChunksIntoRollingSummary(rollingSummary, overflow)
+	return renderSummaryMD(keep, updatedRollingSummary), renderArchiveMD(archived)
+}
+
+func mergeArchivedChunksIntoRollingSummary(existingRollingSummary string, archivedChunks []chunkLine) string {
+	if len(archivedChunks) == 0 {
+		return existingRollingSummary
+	}
+	var b strings.Builder
+	if existingRollingSummary != "" {
+		b.WriteString(existingRollingSummary)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("Archived chunks:\n")
+	for _, c := range archivedChunks {
+		b.WriteString(fmt.Sprintf("- %s: %s\n", c.ID, c.Summary))
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func structuredOrNil(s ChunkStructuredSummary) *ChunkStructuredSummary {
