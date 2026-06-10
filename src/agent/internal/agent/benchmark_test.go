@@ -169,3 +169,44 @@ func TestHandleBenchmarkRuns_NoBenchmarkDir(t *testing.T) {
 		t.Errorf("status = %d, want 503", rec.Code)
 	}
 }
+
+func TestHandleBenchmarkReport_ServesHTML(t *testing.T) {
+	root := t.TempDir()
+	id := "2026-06-10_010101"
+	os.MkdirAll(filepath.Join(root, "runs", id), 0o755)
+	body := []byte("<html><body>Hello</body></html>")
+	os.WriteFile(filepath.Join(root, "runs", id, "report.html"), body, 0o644)
+	s := &Server{benchmarkDir: root}
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/report/"+id, nil)
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkReport(rec, req)
+	if rec.Code != http.StatusOK || rec.Body.String() != string(body) {
+		t.Errorf("code=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleBenchmarkReport_RejectsTraversal(t *testing.T) {
+	root := t.TempDir()
+	s := &Server{benchmarkDir: root}
+	for _, p := range []string{
+		"/benchmark/report/../etc/passwd",
+		"/benchmark/report/foo/bar",
+	} {
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		rec := httptest.NewRecorder()
+		s.handleBenchmarkReport(rec, req)
+		if rec.Code == http.StatusOK {
+			t.Errorf("path %s: should not 200", p)
+		}
+	}
+}
+
+func TestHandleBenchmarkReport_NotFound(t *testing.T) {
+	s := &Server{benchmarkDir: t.TempDir()}
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/report/2026-06-10", nil)
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkReport(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
