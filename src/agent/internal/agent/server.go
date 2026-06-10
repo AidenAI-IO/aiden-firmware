@@ -260,6 +260,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
 	mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
 
+	// Benchmark endpoints
+	mux.HandleFunc("/benchmark/suites", s.handleBenchmarkSuites)
+
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
 
