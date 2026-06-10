@@ -127,8 +127,21 @@ func (s *Server) handleBenchmarkRuns(w http.ResponseWriter, r *http.Request) {
 	items := make([]runListItem, 0, len(names))
 	for _, n := range names {
 		item := runListItem{RunID: n}
-		// TODO: Extract suite and totals from report.html if needed
-		// For now, totals remain empty as per the task specification
+		// Read manifest.json (written by Python runner) for suite path + totals.
+		manifestPath := filepath.Join(s.benchmarkDir, "runs", n, "manifest.json")
+		if data, err := os.ReadFile(manifestPath); err == nil {
+			var raw struct {
+				SuitePath string         `json:"suite_path"`
+				Totals    map[string]int `json:"totals"`
+			}
+			if json.Unmarshal(data, &raw) == nil {
+				if raw.SuitePath != "" {
+					// Display just the basename (e.g. "perception_v1.json").
+					item.Suite = filepath.Base(raw.SuitePath)
+				}
+				item.Totals = raw.Totals
+			}
+		}
 		items = append(items, item)
 	}
 
