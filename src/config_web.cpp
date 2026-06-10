@@ -113,6 +113,25 @@ const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
 const char* kOtaInitScript = "/etc/init.d/S54ota";
 const char* kAgentLogPath = "/var/log/agent/agent.log";
+// Default path to the agent binary on device. Tests override this via the
+// AIDEN_AGENT_BIN environment variable, resolved once on first use to keep
+// production calls free of getenv overhead.
+const char* kDefaultAgentBin = "/oem/usr/bin/agent";
+
+// agent_bin_path returns the resolved path to the agent CLI. Honours the
+// AIDEN_AGENT_BIN env var if set (test-only injection point); otherwise
+// returns kDefaultAgentBin. Cached on first call, so changing the env var
+// after process start has no effect.
+const char* agent_bin_path() {
+    static const char* cached = []() -> const char* {
+        const char* override_path = std::getenv("AIDEN_AGENT_BIN");
+        if (override_path && override_path[0] != '\0') {
+            return override_path;
+        }
+        return kDefaultAgentBin;
+    }();
+    return cached;
+}
 const char* kOtaBin = "/oem/usr/bin/ota";
 const char* kEnvRunBin = "/oem/usr/bin/aiden-env-run";
 const char* kOtaWebUpdateLockPath = "/tmp/config_web_ota_update.lock";
@@ -143,7 +162,44 @@ std::string parent_dir(const std::string& path);
 bool mkdir_p(const std::string& dir, std::string* error);
 bool prepare_ota_update_log_file(const std::string& path, std::string* error);
 CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms);
-std::string validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path);
+
+// ValidationOutcome distinguishes "the user submitted something invalid" (the
+// CLI ran and rejected it -> 400) from "we could not run validation at all"
+// (CLI binary missing, timed out, or returned junk -> 503). Collapsing both
+// into a single string error masked a real bug: a missing agent binary made
+// /api/config/meta correctly return 503 while POST /api/config returned 400
+// for the same root cause, leading the UI to mislabel a server-side
+// dependency outage as a user request error.
+enum class ValidationOutcome {
+    OK,
+    INVALID,
+    UNAVAILABLE,
+};
+
+struct ValidationResult {
+    ValidationOutcome outcome = ValidationOutcome::OK;
+    std::string message;
+
+    static ValidationResult ok() {
+        ValidationResult r;
+        r.outcome = ValidationOutcome::OK;
+        return r;
+    }
+    static ValidationResult invalid(const std::string& msg) {
+        ValidationResult r;
+        r.outcome = ValidationOutcome::INVALID;
+        r.message = msg;
+        return r;
+    }
+    static ValidationResult unavailable(const std::string& msg) {
+        ValidationResult r;
+        r.outcome = ValidationOutcome::UNAVAILABLE;
+        r.message = msg;
+        return r;
+    }
+};
+
+ValidationResult validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -850,6 +906,12 @@ void send_response(int client_fd,
 }
 
 void apply_default_agent_config(aiden::AgentToml& cfg) {
+    // NOTE: The canonical defaults for these fields live in the agent's
+    // ConfigMeta() (src/agent/internal/agent/config_meta.go), which the config
+    // web UI consumes via `agent config-meta`. The numeric/string defaults here
+    // are kept in lockstep with that source of truth; this function only seeds a
+    // freshly provisioned agent.toml on the device where the Go metadata is not
+    // consulted. When changing a default, update ConfigMeta() first.
     cfg.instruction =
         "默认用简体中文回答，语气要像真人说话，简短自然，适合 TTS 播放。"
         "需要读取或改变手机、外部设备或服务状态时必须使用工具；可以连续组合多个工具完成任务。"
@@ -1080,7 +1142,11 @@ std::string cjson_to_string(cJSON* json) {
 ApiResponse make_json_error(int status_code, const std::string& message) {
     ApiResponse response;
     response.status_code = status_code;
-    response.status_text = status_code == 400 ? "Bad Request" : "Internal Server Error";
+    switch (status_code) {
+        case 400: response.status_text = "Bad Request"; break;
+        case 503: response.status_text = "Service Unavailable"; break;
+        default:  response.status_text = "Internal Server Error"; break;
+    }
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 0);
@@ -1273,14 +1339,16 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     }
 }
 
-std::string validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path) {
+ValidationResult validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path) {
     // Convert config to JSON
     cJSON* config_json = config_to_json(config);
     char* json_str = cJSON_PrintUnformatted(config_json);
     cJSON_Delete(config_json);
 
     if (!json_str) {
-        return "failed to serialize config to JSON";
+        // Server-side serialization failure: not the user's fault, treat as
+        // unavailable so the UI surfaces it as a server problem.
+        return ValidationResult::unavailable("failed to serialize config to JSON");
     }
 
     std::string input(json_str);
@@ -1290,23 +1358,24 @@ std::string validate_agent_config_via_cli(const aiden::AgentToml& config, const 
     std::string cmd = std::string(agent_bin_path) + " config-check --stdin --format=json";
     CommandResult result = run_command_with_stdin(cmd, input, 2000);
 
-    // Parse the result
     if (result.timed_out) {
-        return "config validation timed out";
+        return ValidationResult::unavailable("config validation timed out");
     }
 
     cJSON* response = cJSON_Parse(result.output.c_str());
     if (!response) {
-        // CLI produced invalid JSON: fail closed rather than accepting a config
-        // we could not validate. The agent CLI is the single source of truth.
+        // CLI produced unparseable output. We cannot tell if the config is
+        // valid; fail closed but as UNAVAILABLE so the UI distinguishes a
+        // broken validator from a rejected user input.
         std::cerr << "[config] agent config-check returned invalid JSON: " << result.output << "\n";
-        return "config validation failed: validator returned an unexpected response";
+        return ValidationResult::unavailable(
+                "config validation failed: validator returned an unexpected response");
     }
 
     cJSON* valid = cJSON_GetObjectItem(response, "valid");
     if (json_is_bool(valid) && json_is_type(valid, cJSON_True)) {
         cJSON_Delete(response);
-        return "";
+        return ValidationResult::ok();
     }
 
     // Extract error messages
@@ -1326,24 +1395,36 @@ std::string validate_agent_config_via_cli(const aiden::AgentToml& config, const 
         }
     }
 
+    bool has_valid_field = json_is_bool(valid);
     cJSON_Delete(response);
 
-    if (error_msg.empty()) {
-        error_msg = "config validation failed";
+    if (!has_valid_field) {
+        // Response parsed but did not include the required `valid` field. We
+        // cannot trust this validator's verdict; treat as unavailable.
+        return ValidationResult::unavailable(
+                "config validation failed: validator returned an unexpected response");
     }
 
-    return error_msg;
+    if (error_msg.empty()) {
+        // CLI said valid:false with no errors array — distinct from the well
+        // formed "rejected with reasons" path. Treat as unavailable rather
+        // than fabricate a user-facing reason.
+        return ValidationResult::unavailable("config validation failed without details");
+    }
+
+    return ValidationResult::invalid(error_msg);
 }
 
-std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
+ValidationResult validate_agent_config_for_save(const aiden::AgentToml& config) {
     // The agent CLI's `config-check` is the single source of truth for config
     // validation. If the binary is unavailable, fail closed: reject the save
     // rather than persist a config we cannot validate.
-    const char* agent_bin = "/oem/usr/bin/agent";
+    const char* agent_bin = agent_bin_path();
     if (!file_exists(agent_bin)) {
         std::cerr << "[config] agent binary not found at " << agent_bin
                   << ", refusing to save unvalidated config\n";
-        return "config validation unavailable: agent binary not found";
+        return ValidationResult::unavailable(
+                "config validation unavailable: agent binary not found");
     }
     return validate_agent_config_via_cli(config, agent_bin);
 }
@@ -2283,6 +2364,45 @@ ApiResponse handle_get_config(const Options& options) {
     return make_json_ok(root);
 }
 
+// handle_get_config_meta serves the config field metadata produced by the agent
+// CLI's `config-meta` subcommand. The agent binary is the single source of
+// truth for field widgets, enums, ranges, defaults, secret flags and
+// visibility rules; the UI consumes this to render the config form. Fails
+// closed (503) when the binary is missing or returns unparseable output rather
+// than letting the UI fall back to stale hard-coded metadata.
+ApiResponse handle_get_config_meta() {
+    const char* agent_bin = agent_bin_path();
+    if (!file_exists(agent_bin)) {
+        std::cerr << "[config] agent binary not found at " << agent_bin
+                  << ", cannot serve config metadata\n";
+        return make_json_error(503, "config metadata unavailable: agent binary not found");
+    }
+
+    std::string cmd = std::string(agent_bin) + " config-meta --format=json";
+    CommandResult result = run_command_with_stdin(cmd, "", 2000);
+
+    if (result.timed_out) {
+        return make_json_error(503, "config metadata timed out");
+    }
+    if (result.exit_code != 0) {
+        std::cerr << "[config] agent config-meta exited " << result.exit_code
+                  << ": " << result.output << "\n";
+        return make_json_error(503, "config metadata generation failed");
+    }
+
+    // Validate the payload is well-formed JSON before forwarding it verbatim.
+    cJSON* parsed = cJSON_Parse(result.output.c_str());
+    if (!parsed) {
+        std::cerr << "[config] agent config-meta returned invalid JSON: " << result.output << "\n";
+        return make_json_error(503, "config metadata returned an unexpected response");
+    }
+    cJSON_Delete(parsed);
+
+    ApiResponse response;
+    response.body = result.output;
+    return response;
+}
+
 ApiResponse handle_get_agent_status() {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
@@ -2389,11 +2509,17 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         apply_wifi = json_is_type(apply_wifi_json, cJSON_True);
     }
 
-    std::string validation_error = validate_agent_config_for_save(config);
-    if (!validation_error.empty()) {
-        std::cerr << "Invalid agent config: " << validation_error << "\n";
+    ValidationResult validation = validate_agent_config_for_save(config);
+    if (validation.outcome != ValidationOutcome::OK) {
+        std::cerr << "Refusing to save agent config ("
+                  << (validation.outcome == ValidationOutcome::UNAVAILABLE ? "unavailable" : "invalid")
+                  << "): " << validation.message << "\n";
         cJSON_Delete(root);
-        return make_json_error(400, validation_error);
+        // 503 when the validator itself is missing/broken: a server-side
+        // dependency outage, not a user input error. 400 only when the
+        // validator ran and rejected the user's config.
+        int status = validation.outcome == ValidationOutcome::UNAVAILABLE ? 503 : 400;
+        return make_json_error(status, validation.message);
     }
 
     cJSON_Delete(root);
@@ -4113,6 +4239,10 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         return handle_get_config(options);
     }
 
+    if (request.method == "GET" && request.path == "/api/config/meta") {
+        return handle_get_config_meta();
+    }
+
     if (request.method == "POST" && request.path == "/api/config") {
         return handle_post_config(options, request.body);
     }
@@ -4193,6 +4323,11 @@ bool parse_args(int argc, char** argv, Options* options) {
 
 }
 
+// AIDEN_CONFIG_WEB_NO_MAIN is defined by the host test build so this file can
+// be compiled into the test binary alongside the doctest main(), catching
+// signature/header regressions that would otherwise only surface during the
+// firmware cross-compile.
+#ifndef AIDEN_CONFIG_WEB_NO_MAIN
 int main(int argc, char** argv) {
     Options options;
     if (!parse_args(argc, argv, &options)) {
@@ -4286,3 +4421,4 @@ int main(int argc, char** argv) {
     close(server_fd);
     return 0;
 }
+#endif  // AIDEN_CONFIG_WEB_NO_MAIN
