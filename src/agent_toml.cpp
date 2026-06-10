@@ -292,7 +292,9 @@ void apply_kv(AgentToml& cfg,
         else if (key == "api_key") assign_string(&m.api_key, raw, &sub_err);
         else if (key == "token_env") assign_string(&m.token_env, raw, &sub_err);
         else if (key == "temperature") assign_double(&m.temperature, raw, &sub_err);
-        else if (key == "max_tokens") assign_int(&m.max_tokens, raw, &sub_err);
+        else if (key == "max_response_tokens") assign_int(&m.max_response_tokens, raw, &sub_err);
+        else if (key == "context_window") assign_int(&m.context_window, raw, &sub_err);
+        else if (key == "model_max_output_tokens") assign_int(&m.model_max_output_tokens, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     };
 
@@ -415,7 +417,9 @@ void emit_model(std::ostringstream& out, const char* section, const ModelToml& m
     emit_string(out, "api_key", m.api_key);
     if (!m.token_env.empty()) emit_string(out, "token_env", m.token_env);
     if (m.temperature != 0.0) emit_double(out, "temperature", m.temperature);
-    if (m.max_tokens != 0) emit_int(out, "max_tokens", m.max_tokens);
+    if (m.max_response_tokens != 0) emit_int(out, "max_response_tokens", m.max_response_tokens);
+    if (m.context_window != 0) emit_int(out, "context_window", m.context_window);
+    if (m.model_max_output_tokens != 0) emit_int(out, "model_max_output_tokens", m.model_max_output_tokens);
     out << "\n";
 }
 

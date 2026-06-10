@@ -43,13 +43,15 @@ type webConfigDTO struct {
 }
 
 type modelDTO struct {
-	Provider    string  `json:"provider"`
-	APIKey      string  `json:"api_key"`
-	Model       string  `json:"model"`
-	BaseURL     string  `json:"base_url"`
-	TokenEnv    string  `json:"token_env"`
-	Temperature float64 `json:"temperature"`
-	MaxTokens   int     `json:"max_tokens"`
+	Provider             string  `json:"provider"`
+	APIKey               string  `json:"api_key"`
+	Model                string  `json:"model"`
+	BaseURL              string  `json:"base_url"`
+	TokenEnv             string  `json:"token_env"`
+	Temperature          float64 `json:"temperature"`
+	MaxResponseTokens    int     `json:"max_response_tokens"`
+	ContextWindow        int     `json:"context_window"`
+	ModelMaxOutputTokens int     `json:"model_max_output_tokens"`
 }
 
 type ttsDTO struct {
@@ -147,22 +149,26 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 
 	return agent.Config{
 		Model: agent.ModelConfig{
-			Provider:    d.Model.Provider,
-			APIKey:      d.Model.APIKey,
-			Model:       d.Model.Model,
-			BaseURL:     d.Model.BaseURL,
-			TokenEnv:    d.Model.TokenEnv,
-			Temperature: d.Model.Temperature,
-			MaxTokens:   d.Model.MaxTokens,
+			Provider:             d.Model.Provider,
+			APIKey:               d.Model.APIKey,
+			Model:                d.Model.Model,
+			BaseURL:              d.Model.BaseURL,
+			TokenEnv:             d.Model.TokenEnv,
+			Temperature:          d.Model.Temperature,
+			MaxResponseTokens:    d.Model.MaxResponseTokens,
+			ContextWindow:        d.Model.ContextWindow,
+			ModelMaxOutputTokens: d.Model.ModelMaxOutputTokens,
 		},
 		ModelText: agent.ModelConfig{
-			Provider:    d.ModelText.Provider,
-			APIKey:      d.ModelText.APIKey,
-			Model:       d.ModelText.Model,
-			BaseURL:     d.ModelText.BaseURL,
-			TokenEnv:    d.ModelText.TokenEnv,
-			Temperature: d.ModelText.Temperature,
-			MaxTokens:   d.ModelText.MaxTokens,
+			Provider:             d.ModelText.Provider,
+			APIKey:               d.ModelText.APIKey,
+			Model:                d.ModelText.Model,
+			BaseURL:              d.ModelText.BaseURL,
+			TokenEnv:             d.ModelText.TokenEnv,
+			Temperature:          d.ModelText.Temperature,
+			MaxResponseTokens:    d.ModelText.MaxResponseTokens,
+			ContextWindow:        d.ModelText.ContextWindow,
+			ModelMaxOutputTokens: d.ModelText.ModelMaxOutputTokens,
 		},
 		TTS: agent.TTSConfig{
 			Provider: d.TTS.Provider,
@@ -369,6 +375,12 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "search.api_key"
 	} else if strings.Contains(errMsg, "model.provider") {
 		field = "model.provider"
+	} else if strings.Contains(errMsg, "model.max_response_tokens") {
+		field = "model.max_response_tokens"
+	} else if strings.Contains(errMsg, "model.context_window") {
+		field = "model.context_window"
+	} else if strings.Contains(errMsg, "model.model_max_output_tokens") {
+		field = "model.model_max_output_tokens"
 	} else if strings.Contains(errMsg, "model.model") {
 		field = "model.model"
 	} else if strings.Contains(errMsg, "stt.provider") {

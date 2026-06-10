@@ -49,7 +49,7 @@ func newTelemetryPromptCapture(enabled bool) *telemetryPromptCapture {
 	return &telemetryPromptCapture{}
 }
 
-func (c *telemetryPromptCapture) Record(ctx context.Context, startedAt, endedAt time.Time, messages []llms.MessageContent, options []llms.CallOption, res *llms.ContentResponse, err error) {
+func (c *telemetryPromptCapture) Record(ctx context.Context, startedAt, endedAt time.Time, messages []llms.MessageContent, options []llms.CallOption, res *llms.ContentResponse, err error, contextWindow int) {
 	if c == nil {
 		return
 	}
@@ -63,6 +63,12 @@ func (c *telemetryPromptCapture) Record(ctx context.Context, startedAt, endedAt 
 		UsageDetails:    telemetryUsageDetails(res),
 		CostDetails:     telemetryCostDetails(res),
 		ModelParameters: telemetryModelParameters(options),
+	}
+	if contextWindow > 0 {
+		if call.ModelParameters == nil {
+			call.ModelParameters = map[string]interface{}{}
+		}
+		call.ModelParameters["context_window"] = contextWindow
 	}
 	if err != nil {
 		call.Error = err.Error()

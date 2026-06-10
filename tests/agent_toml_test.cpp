@@ -53,7 +53,9 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.model.api_key = "sk-or-test";
     cfg.model.token_env = "OPENROUTER_API_KEY";
     cfg.model.temperature = 0.2;
-    cfg.model.max_tokens = 1000;
+    cfg.model.max_response_tokens = 1000;
+    cfg.model.context_window = 64000;
+    cfg.model.model_max_output_tokens = 4096;
 
     cfg.tts.provider = "minimax-ws";
     cfg.tts.api_key = "mx-test";
@@ -128,7 +130,9 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.model.api_key == "sk-or-test");
     CHECK(loaded.model.token_env == "OPENROUTER_API_KEY");
     CHECK(loaded.model.temperature == doctest::Approx(0.2));
-    CHECK(loaded.model.max_tokens == 1000);
+    CHECK(loaded.model.max_response_tokens == 1000);
+    CHECK(loaded.model.context_window == 64000);
+    CHECK(loaded.model.model_max_output_tokens == 4096);
 
     CHECK(loaded.tts.provider == "minimax-ws");
     CHECK(loaded.tts.api_key == "mx-test");

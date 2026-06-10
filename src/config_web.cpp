@@ -972,7 +972,7 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.model.provider = "openrouter";
     cfg.model.model = "bytedance-seed/seed-2.0-lite";
     cfg.model.temperature = 0.2;
-    cfg.model.max_tokens = 1000;
+    cfg.model.max_response_tokens = 1000;
 
     cfg.tts.provider = "minimax-ws";
     cfg.tts.voice_id = "male-qn-qingse";
@@ -1050,7 +1050,9 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddStringToObject(model, "base_url", config.model.base_url.c_str());
     cJSON_AddStringToObject(model, "token_env", config.model.token_env.c_str());
     cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
-    cJSON_AddNumberToObject(model, "max_tokens", config.model.max_tokens);
+    cJSON_AddNumberToObject(model, "max_response_tokens", config.model.max_response_tokens);
+    cJSON_AddNumberToObject(model, "context_window", config.model.context_window);
+    cJSON_AddNumberToObject(model, "model_max_output_tokens", config.model.model_max_output_tokens);
 
     cJSON* model_text = add_object(root, "model_text");
     cJSON_AddStringToObject(model_text, "provider", config.model_text.provider.c_str());
@@ -1059,7 +1061,9 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddStringToObject(model_text, "base_url", config.model_text.base_url.c_str());
     cJSON_AddStringToObject(model_text, "token_env", config.model_text.token_env.c_str());
     cJSON_AddNumberToObject(model_text, "temperature", config.model_text.temperature);
-    cJSON_AddNumberToObject(model_text, "max_tokens", config.model_text.max_tokens);
+    cJSON_AddNumberToObject(model_text, "max_response_tokens", config.model_text.max_response_tokens);
+    cJSON_AddNumberToObject(model_text, "context_window", config.model_text.context_window);
+    cJSON_AddNumberToObject(model_text, "model_max_output_tokens", config.model_text.model_max_output_tokens);
 
     cJSON* tts = add_object(root, "tts");
     cJSON_AddStringToObject(tts, "provider", config.tts.provider.c_str());
@@ -1263,7 +1267,9 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_str(&m->api_key, obj, "api_key");
     set_json_str(&m->token_env, obj, "token_env");
     set_json_double(&m->temperature, obj, "temperature");
-    set_json_int(&m->max_tokens, obj, "max_tokens");
+    set_json_int(&m->max_response_tokens, obj, "max_response_tokens");
+    set_json_int(&m->context_window, obj, "context_window");
+    set_json_int(&m->model_max_output_tokens, obj, "model_max_output_tokens");
 }
 
 void update_config_from_json(cJSON* root, aiden::AgentToml* config) {

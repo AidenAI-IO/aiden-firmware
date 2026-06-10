@@ -257,6 +257,36 @@ TEST_CASE("config web exposes screenshot pruning config fields") {
     CHECK(html.find("agent_screen_stable_diff_threshold") != std::string::npos);
 }
 
+TEST_CASE("config web exposes model spec override fields") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("\"context_window\"") != std::string::npos);
+    CHECK(source.find("\"max_response_tokens\"") != std::string::npos);
+    CHECK(source.find("\"model_max_output_tokens\"") != std::string::npos);
+    CHECK(source.find("config.model.context_window") != std::string::npos);
+    CHECK(source.find("config.model.max_response_tokens") != std::string::npos);
+    CHECK(source.find("config.model.model_max_output_tokens") != std::string::npos);
+
+    CHECK(html.find("model_max_response_tokens") != std::string::npos);
+    CHECK(html.find("model_context_window") != std::string::npos);
+    CHECK(html.find("model_model_max_output_tokens") != std::string::npos);
+    CHECK(html.find("0 = auto") != std::string::npos);
+}
+
 TEST_CASE("config web exposes brave search provider") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());

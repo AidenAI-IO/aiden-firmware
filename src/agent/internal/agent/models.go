@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tmc/langchaingo/chains"
@@ -22,9 +23,9 @@ import (
 type ModelResolver interface {
 	Get() (llms.Model, error)
 	CallOptions() []chains.ChainCallOption
-	// Spec returns static capabilities (context window, max output) for the
-	// configured model. Implementations return a zero-value ModelSpec for
-	// unknown models; callers must fall back to a configured default.
+	// Spec returns capabilities (context window, max output) for the configured
+	// model. Implementations return a zero-value ModelSpec for unknown models;
+	// callers must fall back to a configured default.
 	Spec() ModelSpec
 }
 
@@ -32,10 +33,31 @@ type ModelManager struct {
 	config ModelConfig
 	proxy  ProxyConfig
 	model  llms.Model
+
+	specMu                    sync.Mutex
+	providerSpec              ModelSpec
+	providerSpecLoaded        bool
+	providerSpecFetchStarted  bool
+	metadataHTTPClient        *http.Client
+	providerMetadataCachePath string
 }
 
-func NewModelManager(config ModelConfig, proxy ProxyConfig) *ModelManager {
-	return &ModelManager{config: config, proxy: proxy}
+type ModelManagerOption func(*ModelManager)
+
+func WithProviderModelMetadataCachePath(path string) ModelManagerOption {
+	return func(m *ModelManager) {
+		m.providerMetadataCachePath = strings.TrimSpace(path)
+	}
+}
+
+func NewModelManager(config ModelConfig, proxy ProxyConfig, opts ...ModelManagerOption) *ModelManager {
+	m := &ModelManager{config: config, proxy: proxy}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(m)
+		}
+	}
+	return m
 }
 
 func (m *ModelManager) Get() (llms.Model, error) {
@@ -56,14 +78,34 @@ func (m *ModelManager) CallOptions() []chains.ChainCallOption {
 	if m.config.Temperature != 0 {
 		options = append(options, chains.WithTemperature(m.config.Temperature))
 	}
-	if m.config.MaxTokens > 0 {
-		options = append(options, chains.WithMaxTokens(m.config.MaxTokens))
+	if m.config.MaxResponseTokens > 0 {
+		options = append(options, chains.WithMaxTokens(m.config.MaxResponseTokens))
 	}
 	return options
 }
 
 func (m *ModelManager) Spec() ModelSpec {
 	spec, _ := LookupModelSpec(m.config.Provider, m.config.Model)
+
+	explicitContextWindow := m.config.ContextWindow > 0
+	explicitMaxOutput := m.config.ModelMaxOutputTokens > 0
+	if explicitContextWindow {
+		spec.ContextWindow = m.config.ContextWindow
+	}
+	if explicitMaxOutput {
+		spec.MaxOutput = m.config.ModelMaxOutputTokens
+	}
+
+	needsProviderContextWindow := !explicitContextWindow && spec.ContextWindow <= 0
+	if providerSupportsModelMetadata(m.config.Provider) && needsProviderContextWindow {
+		providerSpec := m.cachedProviderModelSpec()
+		if providerSpec.ContextWindow > 0 {
+			spec.ContextWindow = providerSpec.ContextWindow
+		}
+		if !explicitMaxOutput && spec.MaxOutput <= 0 && providerSpec.MaxOutput > 0 {
+			spec.MaxOutput = providerSpec.MaxOutput
+		}
+	}
 	return spec
 }
 

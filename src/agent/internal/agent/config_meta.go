@@ -83,9 +83,9 @@ func enumOptions(values ...string) []EnumOption {
 }
 
 // eq/ne/in/notIn/truthy are small helpers for building conditions.
-func eq(field, value string) Condition  { return Condition{Field: field, Op: "eq", Value: value} }
-func ne(field, value string) Condition  { return Condition{Field: field, Op: "ne", Value: value} }
-func truthy(field string) Condition     { return Condition{Field: field, Op: "truthy"} }
+func eq(field, value string) Condition { return Condition{Field: field, Op: "eq", Value: value} }
+func ne(field, value string) Condition { return Condition{Field: field, Op: "ne", Value: value} }
+func truthy(field string) Condition    { return Condition{Field: field, Op: "truthy"} }
 func in(field string, vs ...string) Condition {
 	return Condition{Field: field, Op: "in", Values: vs}
 }
@@ -112,7 +112,9 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "base_url", Widget: WidgetText,
 						VisibleWhen: all(ne("model.provider", "openrouter"))},
 					{Key: "temperature", Widget: WidgetNumber, Default: 0.2},
-					{Key: "max_tokens", Widget: WidgetNumber, Default: 1000},
+					{Key: "max_response_tokens", Widget: WidgetNumber, Default: 1000},
+					{Key: "context_window", Widget: WidgetNumber, Default: 0},
+					{Key: "model_max_output_tokens", Widget: WidgetNumber, Default: 0},
 				},
 			},
 			{

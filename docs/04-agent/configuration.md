@@ -28,7 +28,10 @@ provider = "openrouter"
 model = "bytedance-seed/seed-2.0-lite"
 token_env = "OPENROUTER_API_KEY"
 temperature = 0.2
-max_tokens = 1000
+max_response_tokens = 1000
+# Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.
+# context_window = 128000
+# model_max_output_tokens = 8192
 
 [audio]
 socket = "/run/audio_service/audio_service.sock"
@@ -133,7 +136,9 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `api_key` | 直接填写 API key |
 | `token_env` | 从指定环境变量读取 API key；仅 `[model]` 支持 |
 | `temperature` | 采样温度 |
-| `max_tokens` | 最大输出 token |
+| `max_response_tokens` | 请求时传给模型的最大输出 token |
+| `context_window` | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback. |
+| `model_max_output_tokens` | Optional advertised max output override in tokens. Unset or `0` uses provider metadata when fetched, then the built-in registry. |
 
 ## System Environment Variables
 
