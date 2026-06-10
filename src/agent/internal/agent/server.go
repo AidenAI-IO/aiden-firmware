@@ -2865,6 +2865,32 @@ const webUI = `<!DOCTYPE html>
                 justify-content: flex-end;
             }
         }
+
+        .voice-icon {
+            margin-left: 4px;
+            font-size: 0.9em;
+        }
+
+        .audio-playback-btn {
+            margin-top: 8px;
+            padding: 6px 12px;
+            font-size: 0.85rem;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .audio-playback-btn:hover:not(:disabled) {
+            background-color: #45a049;
+        }
+
+        .audio-playback-btn:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -3010,11 +3036,13 @@ const webUI = `<!DOCTYPE html>
         let currentChatAbortController = null;
         let currentChatCancelRequested = false;
         let episodeCache = {};
+        let eventSource = null;
 
         loadHistory();
         loadToolCatalog();
         loadToolSkills();
         autoResizeInput();
+        connectSSE();
 
         inputEl.addEventListener('input', autoResizeInput);
         imageInputEl.addEventListener('change', handleImageSelection);
@@ -3036,6 +3064,44 @@ const webUI = `<!DOCTYPE html>
                 console.error('Failed to load history:', err);
             }
         }
+
+        function connectSSE() {
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            eventSource = new EventSource('/api/events');
+
+            eventSource.onopen = function() {
+                console.log('[SSE] Connected');
+            };
+
+            eventSource.onmessage = function(e) {
+                try {
+                    const data = JSON.parse(e.data);
+
+                    if (data.type === 'connected') {
+                        return;
+                    }
+
+                    if (data.type === 'user' || data.type === 'assistant') {
+                        addMessage(data);
+                    }
+                } catch (err) {
+                    console.error('[SSE] Parse error:', err);
+                }
+            };
+
+            eventSource.onerror = function(e) {
+                console.error('[SSE] Connection error, will retry...');
+            };
+        }
+
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden && (!eventSource || eventSource.readyState === EventSource.CLOSED)) {
+                connectSSE();
+            }
+        });
 
         async function loadToolCatalog() {
             try {
@@ -3535,6 +3601,16 @@ const webUI = `<!DOCTYPE html>
             const role = document.createElement('div');
             role.className = 'message-role';
             role.textContent = getRoleLabel(msg.type, msg.tool_name, msg.role);
+
+            // Add voice indicator for voice messages
+            if (msg.source === 'voice') {
+                const voiceIcon = document.createElement('span');
+                voiceIcon.className = 'voice-icon';
+                voiceIcon.textContent = ' 🎤';
+                voiceIcon.title = 'Voice message';
+                role.appendChild(voiceIcon);
+            }
+
             body.appendChild(role);
 
             if (msg.type === 'tool_call') {
@@ -3560,6 +3636,28 @@ const webUI = `<!DOCTYPE html>
                 body.appendChild(episodeLink);
             }
 
+            // Add audio playback button for voice messages with archived audio
+            if (msg.audio_file && msg.audio_file !== '') {
+                const audioBtn = document.createElement('button');
+                audioBtn.type = 'button';
+                audioBtn.className = 'audio-playback-btn';
+                audioBtn.textContent = '▶️ Play Audio';
+
+                const filename = msg.audio_file.split('/').pop();
+                const audioUrl = '/api/audio/' + encodeURIComponent(filename);
+
+                if (msg.audio_duration_ms > 0) {
+                    const durationSec = (msg.audio_duration_ms / 1000).toFixed(1);
+                    audioBtn.title = 'Duration: ' + durationSec + 's';
+                }
+
+                audioBtn.addEventListener('click', function() {
+                    playAudio(audioUrl, audioBtn);
+                });
+
+                body.appendChild(audioBtn);
+            }
+
             const timeDiv = document.createElement('div');
             timeDiv.className = 'message-time';
             timeDiv.textContent = formatTime(msg.timestamp);
@@ -3569,6 +3667,36 @@ const webUI = `<!DOCTYPE html>
             shell.appendChild(body);
             card.appendChild(shell);
             return card;
+        }
+
+        function playAudio(url, button) {
+            const audio = new Audio(url);
+
+            const originalText = button.textContent;
+            button.textContent = '⏸️ Playing...';
+            button.disabled = true;
+
+            audio.onended = function() {
+                button.textContent = originalText;
+                button.disabled = false;
+            };
+
+            audio.onerror = function() {
+                button.textContent = '❌ Error';
+                setTimeout(function() {
+                    button.textContent = originalText;
+                    button.disabled = false;
+                }, 2000);
+            };
+
+            audio.play().catch(function(err) {
+                console.error('[Audio] Play failed:', err);
+                button.textContent = '❌ Error';
+                setTimeout(function() {
+                    button.textContent = originalText;
+                    button.disabled = false;
+                }, 2000);
+            });
         }
 
         function renderEpisodeLink(msg) {
