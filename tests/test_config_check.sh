@@ -1,5 +1,12 @@
 #!/bin/bash
-# Integration test for config-check CLI integration with config_web
+# Integration test for config-check CLI integration with config_web.
+#
+# All payloads use the real wire format produced by config_web.cpp's
+# config_to_json(): snake_case keys, agent-level settings nested under an
+# "agent" object, and search reporting only has_api_key (the UI never echoes
+# the stored secret). Using the actual wire shape here is the point: the
+# earlier PascalCase fixtures bypassed the decode path and masked a contract
+# mismatch that accepted every invalid config in production.
 
 set -e
 
@@ -12,7 +19,7 @@ echo ""
 
 # Test 1: Valid config
 echo "Test 1: Valid configuration should pass"
-VALID_CONFIG='{"Model":{"Provider":"openai","Model":"gpt-4"},"Search":{"Provider":"duckduckgo"}}'
+VALID_CONFIG='{"model":{"provider":"openai","model":"gpt-4"},"search":{"provider":"duckduckgo"},"agent":{},"hid":{"pointer_mode":"absolute"}}'
 RESULT=$(echo "$VALID_CONFIG" | "$AGENT_BIN" config-check --stdin --format=json)
 if echo "$RESULT" | grep -q '"valid".*:.*true'; then
     echo "✓ Valid config passed"
@@ -25,7 +32,7 @@ echo ""
 
 # Test 2: Invalid search provider (google)
 echo "Test 2: Invalid search provider 'google' should fail"
-INVALID_CONFIG='{"Model":{"Provider":"openai","Model":"gpt-4"},"Search":{"Provider":"google"}}'
+INVALID_CONFIG='{"model":{"provider":"openai","model":"gpt-4"},"search":{"provider":"google"},"agent":{}}'
 RESULT=$(echo "$INVALID_CONFIG" | "$AGENT_BIN" config-check --stdin --format=json 2>&1 || true)
 if echo "$RESULT" | grep '"valid"' | grep -q 'false' && echo "$RESULT" | grep -q 'search.provider'; then
     echo "✓ Invalid provider 'google' rejected"
@@ -38,7 +45,7 @@ echo ""
 
 # Test 3: Invalid search provider (bing)
 echo "Test 3: Invalid search provider 'bing' should fail"
-INVALID_CONFIG='{"Model":{"Provider":"openai","Model":"gpt-4"},"Search":{"Provider":"bing"}}'
+INVALID_CONFIG='{"model":{"provider":"openai","model":"gpt-4"},"search":{"provider":"bing"},"agent":{}}'
 RESULT=$(echo "$INVALID_CONFIG" | "$AGENT_BIN" config-check --stdin --format=json 2>&1 || true)
 if echo "$RESULT" | grep '"valid"' | grep -q 'false'; then
     echo "✓ Invalid provider 'bing' rejected"
@@ -51,7 +58,7 @@ echo ""
 
 # Test 4: Missing model provider
 echo "Test 4: Missing model provider should fail"
-INVALID_CONFIG='{"Model":{"Provider":"","Model":"gpt-4"},"Search":{"Provider":"duckduckgo"}}'
+INVALID_CONFIG='{"model":{"provider":"","model":"gpt-4"},"search":{"provider":"duckduckgo"},"agent":{}}'
 RESULT=$(echo "$INVALID_CONFIG" | "$AGENT_BIN" config-check --stdin --format=json 2>&1 || true)
 if echo "$RESULT" | grep '"valid"' | grep -q 'false' && echo "$RESULT" | grep -q 'model.provider'; then
     echo "✓ Missing model provider rejected"
@@ -62,11 +69,13 @@ else
 fi
 echo ""
 
-# Test 5: Invalid VAD threshold
-echo "Test 5: Invalid VAD threshold should fail"
-INVALID_CONFIG='{"Model":{"Provider":"openai","Model":"gpt-4"},"Search":{"Provider":"duckduckgo"},"VADSpeechThreshold":1.5}'
+# Test 5: Invalid VAD threshold (nested under "agent" — the real wire position).
+# This is the case that exposes the contract: a top-level/PascalCase payload
+# would silently drop this field and report valid=true.
+echo "Test 5: Invalid VAD threshold (nested under agent) should fail"
+INVALID_CONFIG='{"model":{"provider":"openai","model":"gpt-4"},"search":{"provider":"duckduckgo"},"agent":{"vad_speech_threshold":1.5}}'
 RESULT=$(echo "$INVALID_CONFIG" | "$AGENT_BIN" config-check --stdin --format=json 2>&1 || true)
-if echo "$RESULT" | grep '"valid"' | grep -q 'false'; then
+if echo "$RESULT" | grep '"valid"' | grep -q 'false' && echo "$RESULT" | grep -q 'vad_speech_threshold'; then
     echo "✓ Invalid VAD threshold rejected"
 else
     echo "✗ Invalid VAD threshold not properly rejected"
@@ -75,27 +84,54 @@ else
 fi
 echo ""
 
-# Test 6: Valid brave provider
-echo "Test 6: Valid brave provider should pass"
-VALID_CONFIG='{"Model":{"Provider":"openai","Model":"gpt-4"},"Search":{"Provider":"brave","APIKey":"test-key"}}'
-RESULT=$(echo "$VALID_CONFIG" | "$AGENT_BIN" config-check --stdin --format=json)
-if echo "$RESULT" | grep -q '"valid".*:.*true'; then
-    echo "✓ Valid brave provider passed"
+# Test 6: Invalid pointer_mode (nested under "hid"). Same contract concern as
+# Test 5 but for a snake_case key inside a nested object.
+echo "Test 6: Invalid hid.pointer_mode (nested under hid) should fail"
+INVALID_CONFIG='{"model":{"provider":"openai","model":"gpt-4"},"search":{"provider":"duckduckgo"},"hid":{"pointer_mode":"joystick"},"agent":{}}'
+RESULT=$(echo "$INVALID_CONFIG" | "$AGENT_BIN" config-check --stdin --format=json 2>&1 || true)
+if echo "$RESULT" | grep '"valid"' | grep -q 'false' && echo "$RESULT" | grep -q 'pointer_mode'; then
+    echo "✓ Invalid pointer_mode rejected"
 else
-    echo "✗ Valid brave provider failed"
+    echo "✗ Invalid pointer_mode not properly rejected"
     echo "Result: $RESULT"
     exit 1
 fi
 echo ""
 
-# Test 7: Valid tavily provider
-echo "Test 7: Valid tavily provider should pass"
-VALID_CONFIG='{"Model":{"Provider":"openai","Model":"gpt-4"},"Search":{"Provider":"tavily","APIKey":"test-key"}}'
+# Test 7: brave with has_api_key=true should pass (UI does not echo the secret)
+echo "Test 7: brave provider with has_api_key=true should pass"
+VALID_CONFIG='{"model":{"provider":"openai","model":"gpt-4"},"search":{"provider":"brave","has_api_key":true},"agent":{}}'
 RESULT=$(echo "$VALID_CONFIG" | "$AGENT_BIN" config-check --stdin --format=json)
 if echo "$RESULT" | grep -q '"valid".*:.*true'; then
-    echo "✓ Valid tavily provider passed"
+    echo "✓ brave with key passed"
 else
-    echo "✗ Valid tavily provider failed"
+    echo "✗ brave with key failed"
+    echo "Result: $RESULT"
+    exit 1
+fi
+echo ""
+
+# Test 8: brave with has_api_key=false should fail
+echo "Test 8: brave provider with has_api_key=false should fail"
+INVALID_CONFIG='{"model":{"provider":"openai","model":"gpt-4"},"search":{"provider":"brave","has_api_key":false},"agent":{}}'
+RESULT=$(echo "$INVALID_CONFIG" | "$AGENT_BIN" config-check --stdin --format=json 2>&1 || true)
+if echo "$RESULT" | grep '"valid"' | grep -q 'false'; then
+    echo "✓ brave without key rejected"
+else
+    echo "✗ brave without key not properly rejected"
+    echo "Result: $RESULT"
+    exit 1
+fi
+echo ""
+
+# Test 9: tavily with has_api_key=true should pass
+echo "Test 9: tavily provider with has_api_key=true should pass"
+VALID_CONFIG='{"model":{"provider":"openai","model":"gpt-4"},"search":{"provider":"tavily","has_api_key":true},"agent":{}}'
+RESULT=$(echo "$VALID_CONFIG" | "$AGENT_BIN" config-check --stdin --format=json)
+if echo "$RESULT" | grep -q '"valid".*:.*true'; then
+    echo "✓ tavily with key passed"
+else
+    echo "✗ tavily with key failed"
     echo "Result: $RESULT"
     exit 1
 fi

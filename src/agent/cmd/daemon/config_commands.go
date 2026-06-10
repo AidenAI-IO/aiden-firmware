@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -20,6 +21,224 @@ type ValidationError struct {
 type ValidationResult struct {
 	Valid  bool              `json:"valid"`
 	Errors []ValidationError `json:"errors"`
+}
+
+// webConfigDTO mirrors the JSON produced by config_web.cpp's config_to_json().
+// It is the single definition of the config_web <-> agent wire contract: keys
+// are snake_case, agent-level settings live under "agent", and search reports
+// only whether a key is present (has_api_key) rather than echoing the key.
+//
+// Keep this struct in lockstep with config_to_json(); the round-trip is covered
+// by TestConfigCheck_WireFormatContract.
+type webConfigDTO struct {
+	Model     modelDTO     `json:"model"`
+	ModelText modelDTO     `json:"model_text"`
+	TTS       ttsDTO       `json:"tts"`
+	STT       sttDTO       `json:"stt"`
+	Audio     audioDTO     `json:"audio"`
+	HID       hidDTO       `json:"hid"`
+	Search    searchDTO    `json:"search"`
+	Telemetry telemetryDTO `json:"telemetry"`
+	Agent     agentDTO     `json:"agent"`
+}
+
+type modelDTO struct {
+	Provider    string  `json:"provider"`
+	APIKey      string  `json:"api_key"`
+	Model       string  `json:"model"`
+	BaseURL     string  `json:"base_url"`
+	TokenEnv    string  `json:"token_env"`
+	Temperature float64 `json:"temperature"`
+	MaxTokens   int     `json:"max_tokens"`
+}
+
+type ttsDTO struct {
+	Provider string  `json:"provider"`
+	APIKey   string  `json:"api_key"`
+	Model    string  `json:"model"`
+	VoiceID  string  `json:"voice_id"`
+	Emotion  string  `json:"emotion"`
+	Speed    float64 `json:"speed"`
+}
+
+type sttDTO struct {
+	Provider        string `json:"provider"`
+	APIKey          string `json:"api_key"`
+	Model           string `json:"model"`
+	BaseURL         string `json:"base_url"`
+	SecretID        string `json:"secret_id"`
+	SecretKey       string `json:"secret_key"`
+	Region          string `json:"region"`
+	EngineModelType string `json:"engine_model_type"`
+}
+
+type audioDTO struct {
+	Socket     string `json:"socket"`
+	SampleRate int    `json:"sample_rate"`
+	Channels   int    `json:"channels"`
+	BitWidth   int    `json:"bit_width"`
+}
+
+type hidDTO struct {
+	KeyboardDevice string `json:"keyboard_device"`
+	MouseDevice    string `json:"mouse_device"`
+	FrameSocket    string `json:"frame_socket"`
+	PointerMode    string `json:"pointer_mode"`
+}
+
+type searchDTO struct {
+	Provider  string `json:"provider"`
+	HasAPIKey bool   `json:"has_api_key"`
+}
+
+type telemetryDTO struct {
+	Enabled           bool     `json:"enabled"`
+	Provider          string   `json:"provider"`
+	BaseURL           string   `json:"base_url"`
+	PublicKey         string   `json:"public_key"`
+	SecretKey         string   `json:"secret_key"`
+	UploadScreenshots bool     `json:"upload_screenshots"`
+	UploadTimeoutSec  int      `json:"upload_timeout_sec"`
+	MaxRetry          int      `json:"max_retry"`
+	Tags              []string `json:"tags"`
+	Environment       string   `json:"environment"`
+}
+
+type agentDTO struct {
+	Instruction               string  `json:"instruction"`
+	AdditionalPrompt          string  `json:"additional_prompt"`
+	InputMode                 string  `json:"input_mode"`
+	TriggerMode               string  `json:"trigger_mode"`
+	VADBackend                string  `json:"vad_backend"`
+	VADModelPath              string  `json:"vad_model_path"`
+	VADHelperPath             string  `json:"vad_helper_path"`
+	VADSpeechThreshold        float64 `json:"vad_speech_threshold"`
+	SilenceMs                 int     `json:"silence_ms"`
+	MinSpeechMs               int     `json:"min_speech_ms"`
+	VoiceSessionEnabled       bool    `json:"voice_session_enabled"`
+	VoiceFollowupTimeoutMs    int     `json:"voice_followup_timeout_ms"`
+	VoiceFirstTurnTimeoutMs   int     `json:"voice_first_turn_timeout_ms"`
+	VoiceMaxTurns             int     `json:"voice_max_turns"`
+	VoiceInterruptOnWakeup    bool    `json:"voice_interrupt_on_wakeup"`
+	VoiceStreamingTTSEnabled  bool    `json:"voice_streaming_tts_enabled"`
+	VoiceToolCallSpeech       bool    `json:"voice_tool_call_speech"`
+	VoiceMaxResponseTokens    int     `json:"voice_max_response_tokens"`
+	MaxIterations             int     `json:"max_iterations"`
+	ScreenshotKeepN           int     `json:"screenshot_keep_n"`
+	ScreenshotPruneInterval   int     `json:"screenshot_prune_interval"`
+	ScreenStableTimeoutMs     int     `json:"screen_stable_timeout_ms"`
+	ScreenStableMs            int     `json:"screen_stable_ms"`
+	ScreenStableDiffThreshold float64 `json:"screen_stable_diff_threshold"`
+}
+
+// hasAPIKeyPlaceholder is substituted for a real key when the wire payload
+// reports has_api_key=true. config_web never echoes the stored secret, so this
+// lets Validate()'s "key is required" checks pass when a key is in fact saved,
+// without the validator ever seeing the secret value.
+const hasAPIKeyPlaceholder = "***"
+
+// toAgentConfig maps the wire DTO onto agent.Config so the canonical
+// Config.Validate() can run against it.
+func (d webConfigDTO) toAgentConfig() agent.Config {
+	searchKey := ""
+	if d.Search.HasAPIKey {
+		searchKey = hasAPIKeyPlaceholder
+	}
+
+	return agent.Config{
+		Model: agent.ModelConfig{
+			Provider:    d.Model.Provider,
+			APIKey:      d.Model.APIKey,
+			Model:       d.Model.Model,
+			BaseURL:     d.Model.BaseURL,
+			TokenEnv:    d.Model.TokenEnv,
+			Temperature: d.Model.Temperature,
+			MaxTokens:   d.Model.MaxTokens,
+		},
+		ModelText: agent.ModelConfig{
+			Provider:    d.ModelText.Provider,
+			APIKey:      d.ModelText.APIKey,
+			Model:       d.ModelText.Model,
+			BaseURL:     d.ModelText.BaseURL,
+			TokenEnv:    d.ModelText.TokenEnv,
+			Temperature: d.ModelText.Temperature,
+			MaxTokens:   d.ModelText.MaxTokens,
+		},
+		TTS: agent.TTSConfig{
+			Provider: d.TTS.Provider,
+			APIKey:   d.TTS.APIKey,
+			Model:    d.TTS.Model,
+			VoiceID:  d.TTS.VoiceID,
+			Emotion:  d.TTS.Emotion,
+			Speed:    d.TTS.Speed,
+		},
+		STT: agent.STTConfig{
+			Provider:        d.STT.Provider,
+			APIKey:          d.STT.APIKey,
+			Model:           d.STT.Model,
+			BaseURL:         d.STT.BaseURL,
+			SecretID:        d.STT.SecretID,
+			SecretKey:       d.STT.SecretKey,
+			Region:          d.STT.Region,
+			EngineModelType: d.STT.EngineModelType,
+		},
+		Audio: agent.AudioConfig{
+			Socket:     d.Audio.Socket,
+			SampleRate: d.Audio.SampleRate,
+			Channels:   d.Audio.Channels,
+			BitWidth:   d.Audio.BitWidth,
+		},
+		HID: agent.HIDConfig{
+			KeyboardDevice: d.HID.KeyboardDevice,
+			MouseDevice:    d.HID.MouseDevice,
+			FrameSocket:    d.HID.FrameSocket,
+			PointerMode:    d.HID.PointerMode,
+		},
+		Search: agent.SearchConfig{
+			Provider: d.Search.Provider,
+			APIKey:   searchKey,
+		},
+		Telemetry: agent.TelemetryConfig{
+			Enabled:           boolPtr(d.Telemetry.Enabled),
+			Provider:          d.Telemetry.Provider,
+			BaseURL:           d.Telemetry.BaseURL,
+			PublicKey:         d.Telemetry.PublicKey,
+			SecretKey:         d.Telemetry.SecretKey,
+			UploadScreenshots: boolPtr(d.Telemetry.UploadScreenshots),
+			UploadTimeoutSec:  d.Telemetry.UploadTimeoutSec,
+			MaxRetry:          d.Telemetry.MaxRetry,
+			Tags:              d.Telemetry.Tags,
+			Environment:       d.Telemetry.Environment,
+		},
+		Instruction:               d.Agent.Instruction,
+		AdditionalPrompt:          d.Agent.AdditionalPrompt,
+		InputMode:                 d.Agent.InputMode,
+		TriggerMode:               d.Agent.TriggerMode,
+		VADBackend:                d.Agent.VADBackend,
+		VADModelPath:              d.Agent.VADModelPath,
+		VADHelperPath:             d.Agent.VADHelperPath,
+		VADSpeechThreshold:        d.Agent.VADSpeechThreshold,
+		SilenceMs:                 d.Agent.SilenceMs,
+		MinSpeechMs:               d.Agent.MinSpeechMs,
+		VoiceSessionEnabled:       boolPtr(d.Agent.VoiceSessionEnabled),
+		VoiceFollowupTimeoutMs:    d.Agent.VoiceFollowupTimeoutMs,
+		VoiceFirstTurnTimeoutMs:   d.Agent.VoiceFirstTurnTimeoutMs,
+		VoiceMaxTurns:             d.Agent.VoiceMaxTurns,
+		VoiceInterruptOnWakeup:    boolPtr(d.Agent.VoiceInterruptOnWakeup),
+		VoiceStreamingTTSEnabled:  boolPtr(d.Agent.VoiceStreamingTTSEnabled),
+		VoiceToolCallSpeech:       boolPtr(d.Agent.VoiceToolCallSpeech),
+		VoiceMaxResponseTokens:    d.Agent.VoiceMaxResponseTokens,
+		MaxIterations:             d.Agent.MaxIterations,
+		ScreenshotKeepN:           d.Agent.ScreenshotKeepN,
+		ScreenshotPruneInterval:   d.Agent.ScreenshotPruneInterval,
+		ScreenStableTimeoutMs:     d.Agent.ScreenStableTimeoutMs,
+		ScreenStableMs:            d.Agent.ScreenStableMs,
+		ScreenStableDiffThreshold: d.Agent.ScreenStableDiffThreshold,
+	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 // runConfigCheck implements the `agent config-check` subcommand
@@ -44,23 +263,10 @@ func runConfigCheck(args []string) int {
 		return 1
 	}
 
-	// Read config from stdin
-	var cfg agent.Config
-	decoder := json.NewDecoder(os.Stdin)
-	if err := decoder.Decode(&cfg); err != nil {
-		writeConfigCheckError("invalid JSON input: " + err.Error())
+	result, decodeErr := checkConfig(os.Stdin)
+	if decodeErr != nil {
+		writeConfigCheckError("invalid JSON input: " + decodeErr.Error())
 		return 1
-	}
-
-	// Validate config
-	result := ValidationResult{
-		Valid:  true,
-		Errors: []ValidationError{},
-	}
-
-	if err := cfg.Validate(); err != nil {
-		result.Valid = false
-		result.Errors = parseValidationErrors(err)
 	}
 
 	// Output result as JSON
@@ -75,6 +281,63 @@ func runConfigCheck(args []string) int {
 		return 0
 	}
 	return 1
+}
+
+// checkConfig reads a config_web wire-format payload from r, maps it onto
+// agent.Config, and runs the canonical Config.Validate(). It returns the
+// structured result, or a non-nil error only when the input is not decodable
+// JSON. Splitting this out of runConfigCheck keeps the full
+// decode -> map -> validate pipeline testable without driving os.Stdin/Stdout.
+func checkConfig(r io.Reader) (ValidationResult, error) {
+	// The payload is the wire format produced by config_web.cpp's
+	// config_to_json(): snake_case keys, agent-level settings nested under an
+	// "agent" object, and search exposing only a "has_api_key" boolean instead
+	// of the raw key. agent.Config carries only TOML tags, so decoding straight
+	// into it silently drops every snake_case / nested field and validates a
+	// near-empty config. Decode into a DTO that mirrors the wire format, then
+	// map it onto agent.Config before validating.
+	var dto webConfigDTO
+	if err := json.NewDecoder(r).Decode(&dto); err != nil {
+		return ValidationResult{}, err
+	}
+	cfg := dto.toAgentConfig()
+
+	result := ValidationResult{
+		Valid:  true,
+		Errors: []ValidationError{},
+	}
+	if err := cfg.Validate(); err != nil {
+		result.Valid = false
+		result.Errors = parseValidationErrors(err)
+	}
+	return result, nil
+}
+
+// runConfigMeta implements the `agent config-meta` subcommand. It outputs the
+// config field metadata (widget, enum, range, default, secret, visibility
+// rules) as JSON for the config web UI to consume.
+func runConfigMeta(args []string) int {
+	fs := flag.NewFlagSet("config-meta", flag.ExitOnError)
+	formatFlag := fs.String("format", "json", "output format (only json supported)")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to parse flags: %v\n", err)
+		return 1
+	}
+
+	if *formatFlag != "json" {
+		fmt.Fprintln(os.Stderr, "only --format=json is supported")
+		return 1
+	}
+
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(agent.ConfigMeta()); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to encode metadata: %v\n", err)
+		return 1
+	}
+
+	return 0
 }
 
 // parseValidationErrors converts a validation error into structured field errors
@@ -116,6 +379,10 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "input_mode"
 	} else if strings.Contains(errMsg, "trigger_mode") {
 		field = "trigger_mode"
+	} else if strings.Contains(errMsg, "hid.pointer_mode") || strings.Contains(errMsg, "pointer_mode") {
+		field = "hid.pointer_mode"
+	} else if strings.Contains(errMsg, "max_iterations") {
+		field = "max_iterations"
 	} else if strings.Contains(errMsg, "vad_speech_threshold") {
 		field = "vad_speech_threshold"
 	} else if strings.Contains(errMsg, "voice_followup_timeout_ms") {
