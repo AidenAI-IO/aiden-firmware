@@ -1,7 +1,7 @@
 # Phone Bridge Protocol Contract
 
-**Version**: 1.0  
-**Date**: 2026-06-02
+**Version**: 1.1
+**Date**: 2026-06-10
 
 本文档定义硬件板子 (aiden-hardware-demo) 与手机 App (aiden-app) 之间的 WebSocket 命令协议。
 
@@ -50,6 +50,70 @@ App 应每隔 10-15 秒发送一次心跳消息 (id 为 `"heartbeat"` 或 `"ping
   data?: object;    // 返回数据 (可选，读类命令使用)
 }
 ```
+
+### AppEvent (App → 板子)
+
+App 也可以主动发送事件消息。事件复用 `BridgeCommandResponse` 外层字段，但 `id`/`method` 不对应任何板子下发的命令，板子不会把它当作 pending command 回执。
+
+当前事件:
+
+- `phone_environment`: App 在 WebSocket 连接成功、从后台回到前台时上报手机环境快照。
+
+示例:
+
+```json
+{
+  "id": "phone_environment",
+  "ok": true,
+  "method": "phone_environment",
+  "data": {
+    "captured_at": "2026-06-10T03:20:00Z",
+    "source": "aiden-app",
+    "platform": "ios",
+    "system_name": "iOS",
+    "system_version": "18.5",
+    "is_tablet": false,
+    "locale": "zh-Hans-CN",
+    "language": "zh",
+    "region": "CN",
+    "time_zone": "Asia/Shanghai",
+    "utc_offset_minutes": 480,
+    "utc_offset": "+08:00",
+    "uses_24_hour_clock": true,
+    "manufacturer": "Apple",
+    "brand": "Apple",
+    "model": "iPhone16,2",
+    "screen": {
+      "width": 393,
+      "height": 852,
+      "width_pixels": 1179,
+      "height_pixels": 2556,
+      "scale": 3
+    },
+    "battery": {
+      "level": 0.87,
+      "charging": true,
+      "state": "charging"
+    },
+    "system_apps": [
+      {"name": "Camera", "available": true, "category": "system", "availability_source": "builtin"},
+      {"name": "Contacts", "available": true, "category": "system", "availability_source": "builtin"}
+    ],
+    "third_party_apps": [
+      {"name": "WeChat", "available": true, "category": "third_party", "availability_source": "can_open_url", "ios_url": "weixin://"},
+      {"name": "Douyin", "available": false, "category": "third_party", "availability_source": "can_open_url", "ios_url": "snssdk1128://"}
+    ],
+    "available_apps": [
+      {"name": "WeChat", "available": true, "category": "third_party", "ios_url": "weixin://"},
+      {"name": "Douyin", "available": false, "category": "third_party", "ios_url": "snssdk1128://"}
+    ]
+  }
+}
+```
+
+板子会把最新完整环境写入 `GET /api/phone-bridge/status` 的 `environment` 字段。每轮 Agent runtime context 只注入精简摘要：连接状态、系统类型/版本、语言地区/时区、屏幕尺寸、已确认可打开的第三方候选 App。断开连接时清理环境，避免使用旧信息。
+
+`system_apps` 表示系统内置 App/能力，iOS 上不依赖 `canOpenURL` 判断是否存在；`third_party_apps` 表示第三方候选 App，iOS 通过 `canOpenURL`、Android 通过 package launchability 探测。`available_apps` 是兼容旧板子的第三方候选摘要，新实现应优先读取拆分后的字段。
 
 ## 命令类型
 
@@ -530,7 +594,7 @@ App 应每隔 10-15 秒发送一次心跳消息 (id 为 `"heartbeat"` 或 `"ping
 
 ## 版本兼容
 
-当前协议版本 1.0，后续扩展新命令时:
+当前协议版本 1.1，后续扩展新命令时:
 - 新增字段向后兼容 (旧版 App 忽略未知字段)
 - 新增命令类型，旧版 App 返回 `ok: false, error: "Unknown command type"`
 - 修改已有字段语义需升级版本号

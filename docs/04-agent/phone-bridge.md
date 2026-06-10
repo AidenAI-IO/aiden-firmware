@@ -160,7 +160,8 @@ WebSocket 的核心价值：
 1. 板子 agent 新增 `phone_bridge` WebSocket 通道。
 2. 中转 App 启动后自动连接 `ws://192.168.42.1:8080/api/phone-bridge`。
 3. App 定时发 heartbeat。
-4. 板子维护 `bridge_connected`、`platform`、`last_heartbeat_at` 状态。
+4. App 在连接成功、从后台回到前台时主动上报 `phone_environment`，包括系统版本、语言地区、时区、屏幕/电池、系统 App、第三方候选 App 可用性等。
+5. 板子维护 `bridge_connected`、`platform`、`last_heartbeat_at`、`environment` 状态。完整环境通过 status API 暴露；Agent runtime context 只注入系统类型/版本、语言地区/时区、屏幕尺寸、已确认可打开第三方候选 App 等摘要。
 
 ### 命令协议
 
@@ -188,6 +189,33 @@ WebSocket 的核心价值：
   "data": { }      // 可选，返回的 JSON (读剪贴板内容、日历事件列表等)
 }
 ```
+
+**App 主动事件 (App → 板子)**:
+```json
+{
+  "id": "phone_environment",
+  "ok": true,
+  "method": "phone_environment",
+  "data": {
+    "platform": "ios",
+    "system_name": "iOS",
+    "system_version": "18.5",
+    "locale": "zh-Hans-CN",
+    "time_zone": "Asia/Shanghai",
+    "utc_offset": "+08:00",
+    "manufacturer": "Apple",
+    "model": "iPhone16,2",
+    "screen": {"width_pixels": 1179, "height_pixels": 2556, "scale": 3},
+    "battery": {"level": 0.87, "charging": true},
+    "system_apps": [{"name": "Camera", "available": true, "category": "system", "availability_source": "builtin"}],
+    "third_party_apps": [{"name": "WeChat", "available": true, "category": "third_party", "availability_source": "can_open_url"}],
+    "available_apps": [{"name": "WeChat", "available": true, "category": "third_party"}]
+  }
+}
+```
+
+`phone_environment` 不对应板子命令 ID，板子只更新 bridge status，不会把它当作工具调用回执。
+`system_apps` 是系统内置 App/能力清单，`third_party_apps` 才是安装/可打开性探测结果。`available_apps` 仅保留为旧板子兼容字段。
 
 #### 命令类型
 
