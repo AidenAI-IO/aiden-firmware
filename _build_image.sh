@@ -110,8 +110,8 @@ fi
 cp "$KEY_SOURCE" "$OVERLAY/oem/etc/ota_pubkey.pem"
 echo "  ✓ OTA public key copied to overlay/oem/etc/ota_pubkey.pem"
 
-# Step 3: 同步 etc 与内置 skills 到 buildroot overlay（rootfs）
-echo "[3/6] Syncing overlay (etc + bundled skills) to buildroot overlay..."
+# Step 3: Sync rootfs overlay assets.
+echo "[3/6] Syncing rootfs overlay assets..."
 if [ ! -d "$DEST_OVERLAY" ]; then
     echo "  ✗ Error: destination directory not found at $DEST_OVERLAY"
     exit 1
@@ -122,23 +122,6 @@ if [ -d "$OVERLAY/etc" ]; then
     mkdir -p "$DEST_OVERLAY/etc"
     rsync -a --delete "$OVERLAY/etc/" "$DEST_OVERLAY/etc/"
     echo "  ✓ etc directory synced"
-fi
-
-# Bundled agent skills: src/agent/config/skills/ 是单一源，固件里要落到
-# /usr/share/aiden/skills/ 才能被 agent 的 resolveBundledSkillsDir() 找到。
-SKILLS_SRC="$SCRIPT_DIR/src/agent/config/skills"
-SKILLS_DEST="$DEST_OVERLAY/usr/share/aiden/skills"
-if [ -d "$SKILLS_SRC" ]; then
-    mkdir -p "$SKILLS_DEST"
-    rsync -a --delete "$SKILLS_SRC/" "$SKILLS_DEST/"
-    skill_count=$(find "$SKILLS_DEST" -mindepth 2 -maxdepth 2 -type f -name SKILL.md | wc -l | tr -d ' ')
-    if [ "$skill_count" -lt 1 ]; then
-        echo "  ✗ Error: no SKILL.md staged in $SKILLS_DEST" >&2
-        exit 1
-    fi
-    echo "  ✓ bundled skills synced ($skill_count skill(s))"
-else
-    echo "  ⚠ Warning: $SKILLS_SRC not found; skipping bundled skills" >&2
 fi
 
 # Bundled phone-bridge app mapping: src/agent/internal/agent/app_mapping.json 是
@@ -185,6 +168,23 @@ if [ -d "$OVERLAY/oem" ]; then
     mkdir -p "$RK_PROJECT_PACKAGE_OEM_DIR"
     rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"
     echo "  ✓ OEM content copied"
+fi
+
+# Bundled agent skills use src/agent/config/skills as the single source and
+# ship with the agent in the OEM partition.
+SKILLS_SRC="$SCRIPT_DIR/src/agent/config/skills"
+SKILLS_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/skills"
+if [ -d "$SKILLS_SRC" ]; then
+    mkdir -p "$SKILLS_DEST"
+    rsync -a --delete "$SKILLS_SRC/" "$SKILLS_DEST/"
+    skill_count=$(find "$SKILLS_DEST" -mindepth 2 -maxdepth 2 -type f -name SKILL.md | wc -l | tr -d ' ')
+    if [ "$skill_count" -lt 1 ]; then
+        echo "  ✗ Error: no SKILL.md staged in $SKILLS_DEST" >&2
+        exit 1
+    fi
+    echo "  ✓ bundled skills synced to OEM staging ($skill_count skill(s))"
+else
+    echo "  ⚠ Warning: $SKILLS_SRC not found; skipping bundled skills" >&2
 fi
 
 # VAD models live in /oem/usr/model so OTA updates can replace them with the

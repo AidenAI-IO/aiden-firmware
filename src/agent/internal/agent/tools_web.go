@@ -24,6 +24,7 @@ const defaultWebSearchMaxResults = 5
 const defaultUserAgent = "aiden-agent/1.0 (+https://github.com/AidenAI-IO)"
 const defaultWebToolTimeout = 15 * time.Second
 const maxWebToolOutputBytes = 12_000
+const braveSearchEndpoint = "https://api.search.brave.com/res/v1/web/search"
 
 // searchBackend abstracts the actual search call.
 type searchBackend interface {
@@ -45,7 +46,7 @@ func NewWebSearchTool(cfg SearchConfig, proxy ProxyConfig) *WebSearchTool {
 	httpClient.Timeout = defaultWebToolTimeout
 
 	switch provider {
-	case "duckduckgo":
+	case searchProviderDuckDuckGo:
 		inner, err := duckduckgo.New(
 			defaultWebSearchMaxResults,
 			defaultUserAgent,
@@ -54,12 +55,21 @@ func NewWebSearchTool(cfg SearchConfig, proxy ProxyConfig) *WebSearchTool {
 		if err == nil {
 			backend = &duckduckgoBackend{inner: inner}
 		}
-	case "tavily":
-		apiKey := strings.TrimSpace(cfg.APIKey)
+	case searchProviderTavily:
+		apiKey := searchAPIKeyOrEnv(cfg.APIKey)
 		if apiKey != "" {
 			backend = &tavilyBackend{
 				apiKey: apiKey,
 				client: *httpClient,
+			}
+		}
+	case searchProviderBrave:
+		apiKey := searchAPIKeyOrEnv(cfg.APIKey, braveSearchAPIKeyEnv)
+		if apiKey != "" {
+			backend = &braveBackend{
+				apiKey:   apiKey,
+				client:   *httpClient,
+				endpoint: braveSearchEndpoint,
 			}
 		}
 	}
@@ -180,6 +190,80 @@ func (r *tavilyResponse) Format() string {
 	}
 	for i, res := range r.Results {
 		sb.WriteString(fmt.Sprintf("[%d] %s\n%s\n%s\n\n", i+1, res.Title, res.URL, res.Content))
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+// --- Brave Search backend ---
+
+type braveBackend struct {
+	apiKey   string
+	client   http.Client
+	endpoint string
+}
+
+func (b *braveBackend) Search(ctx context.Context, query string) (string, error) {
+	endpoint := b.endpoint
+	if endpoint == "" {
+		endpoint = braveSearchEndpoint
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+
+	params := req.URL.Query()
+	params.Set("q", query)
+	params.Set("count", fmt.Sprintf("%d", defaultWebSearchMaxResults))
+	req.URL.RawQuery = params.Encode()
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Subscription-Token", b.apiKey)
+
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("brave search API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result braveSearchResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("parse brave search response: %w", err)
+	}
+	return result.Format(), nil
+}
+
+type braveSearchResponse struct {
+	Web struct {
+		Results []braveSearchResult `json:"results"`
+	} `json:"web"`
+}
+
+type braveSearchResult struct {
+	Title       string `json:"title"`
+	URL         string `json:"url"`
+	Description string `json:"description"`
+}
+
+func (r *braveSearchResponse) Format() string {
+	var sb strings.Builder
+	position := 1
+	for _, res := range r.Web.Results {
+		title := strings.TrimSpace(res.Title)
+		pageURL := strings.TrimSpace(res.URL)
+		description := strings.TrimSpace(res.Description)
+		if title == "" && pageURL == "" && description == "" {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("[%d] %s\n%s\n%s\n\n", position, title, pageURL, description))
+		position++
 	}
 	return strings.TrimSpace(sb.String())
 }

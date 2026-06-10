@@ -22,6 +22,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <iostream>
@@ -141,6 +142,8 @@ std::string lowercase_copy(const std::string& text);
 std::string parent_dir(const std::string& path);
 bool mkdir_p(const std::string& dir, std::string* error);
 bool prepare_ota_update_log_file(const std::string& path, std::string* error);
+CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms);
+std::string validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -413,6 +416,109 @@ CommandResult run_shell_command_with_timeout(const std::string& command, int tim
     } else {
         result.exit_code = child_status;
     }
+    return result;
+}
+
+CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms) {
+    CommandResult result;
+    int stdin_pipe[2];
+    int stdout_pipe[2];
+
+    if (pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0) {
+        result.output = std::string("pipe failed: ") + strerror(errno);
+        return result;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        result.output = std::string("fork failed: ") + strerror(errno);
+        close(stdin_pipe[0]);
+        close(stdin_pipe[1]);
+        close(stdout_pipe[0]);
+        close(stdout_pipe[1]);
+        return result;
+    }
+
+    if (pid == 0) {
+        // Child process
+        close(stdin_pipe[1]);
+        close(stdout_pipe[0]);
+
+        dup2(stdin_pipe[0], STDIN_FILENO);
+        dup2(stdout_pipe[1], STDOUT_FILENO);
+        dup2(stdout_pipe[1], STDERR_FILENO);
+
+        close(stdin_pipe[0]);
+        close(stdout_pipe[1]);
+
+        execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char*>(NULL));
+        _exit(127);
+    }
+
+    // Parent process
+    close(stdin_pipe[0]);
+    close(stdout_pipe[1]);
+
+    // Write input to stdin
+    if (!input.empty()) {
+        ssize_t written = write(stdin_pipe[1], input.data(), input.size());
+        if (written < 0 || static_cast<size_t>(written) != input.size()) {
+            // Non-fatal, continue
+        }
+    }
+    close(stdin_pipe[1]);
+
+    // Read output with timeout
+    time_t start_time = time(NULL);
+    time_t deadline = start_time + (timeout_ms / 1000);
+
+    while (true) {
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(stdout_pipe[0], &read_fds);
+
+        time_t now = time(NULL);
+        if (now >= deadline) {
+            result.timed_out = true;
+            kill(pid, SIGKILL);
+            break;
+        }
+
+        struct timeval timeout;
+        timeout.tv_sec = deadline - now;
+        timeout.tv_usec = 0;
+
+        int select_result = select(stdout_pipe[0] + 1, &read_fds, NULL, NULL, &timeout);
+        if (select_result > 0) {
+            char buffer[4096];
+            ssize_t bytes_read = read(stdout_pipe[0], buffer, sizeof(buffer));
+            if (bytes_read > 0) {
+                result.output.append(buffer, static_cast<size_t>(bytes_read));
+            } else {
+                break;
+            }
+        } else if (select_result == 0) {
+            result.timed_out = true;
+            kill(pid, SIGKILL);
+            break;
+        } else {
+            break;
+        }
+    }
+
+    close(stdout_pipe[0]);
+
+    int status;
+    waitpid(pid, &status, 0);
+
+    if (WIFEXITED(status)) {
+        result.exit_code = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        result.exit_code = 128 + WTERMSIG(status);
+    } else {
+        result.exit_code = -1;
+    }
+
     return result;
 }
 
@@ -1167,64 +1273,79 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     }
 }
 
+std::string validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path) {
+    // Convert config to JSON
+    cJSON* config_json = config_to_json(config);
+    char* json_str = cJSON_PrintUnformatted(config_json);
+    cJSON_Delete(config_json);
+
+    if (!json_str) {
+        return "failed to serialize config to JSON";
+    }
+
+    std::string input(json_str);
+    free(json_str);
+
+    // Call agent config-check CLI
+    std::string cmd = std::string(agent_bin_path) + " config-check --stdin --format=json";
+    CommandResult result = run_command_with_stdin(cmd, input, 2000);
+
+    // Parse the result
+    if (result.timed_out) {
+        return "config validation timed out";
+    }
+
+    cJSON* response = cJSON_Parse(result.output.c_str());
+    if (!response) {
+        // CLI produced invalid JSON: fail closed rather than accepting a config
+        // we could not validate. The agent CLI is the single source of truth.
+        std::cerr << "[config] agent config-check returned invalid JSON: " << result.output << "\n";
+        return "config validation failed: validator returned an unexpected response";
+    }
+
+    cJSON* valid = cJSON_GetObjectItem(response, "valid");
+    if (json_is_bool(valid) && json_is_type(valid, cJSON_True)) {
+        cJSON_Delete(response);
+        return "";
+    }
+
+    // Extract error messages
+    std::string error_msg;
+    cJSON* errors = cJSON_GetObjectItem(response, "errors");
+    if (json_is_type(errors, cJSON_Array)) {
+        int error_count = cJSON_GetArraySize(errors);
+        for (int i = 0; i < error_count; ++i) {
+            cJSON* error = cJSON_GetArrayItem(errors, i);
+            cJSON* message = cJSON_GetObjectItem(error, "message");
+            if (json_is_string(message)) {
+                if (!error_msg.empty()) {
+                    error_msg += "; ";
+                }
+                error_msg += message->valuestring;
+            }
+        }
+    }
+
+    cJSON_Delete(response);
+
+    if (error_msg.empty()) {
+        error_msg = "config validation failed";
+    }
+
+    return error_msg;
+}
+
 std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
-    if (config.vad_speech_threshold < 0.0 || config.vad_speech_threshold > 1.0) {
-        return "vad_speech_threshold must be in range [0.0, 1.0]";
+    // The agent CLI's `config-check` is the single source of truth for config
+    // validation. If the binary is unavailable, fail closed: reject the save
+    // rather than persist a config we cannot validate.
+    const char* agent_bin = "/oem/usr/bin/agent";
+    if (!file_exists(agent_bin)) {
+        std::cerr << "[config] agent binary not found at " << agent_bin
+                  << ", refusing to save unvalidated config\n";
+        return "config validation unavailable: agent binary not found";
     }
-    if (config.voice_followup_timeout_ms < 0) {
-        return "voice_followup_timeout_ms must be >= 0";
-    }
-    if (config.voice_first_turn_timeout_ms < 0) {
-        return "voice_first_turn_timeout_ms must be >= 0";
-    }
-    if (config.voice_max_turns < 0) {
-        return "voice_max_turns must be >= 0";
-    }
-    if (config.voice_max_response_tokens < 0) {
-        return "voice_max_response_tokens must be >= 0";
-    }
-    if (config.max_iterations < -1) {
-        return "max_iterations must be >= -1";
-    }
-    if (config.screenshot_keep_n < 0) {
-        return "screenshot_keep_n must be >= 0";
-    }
-    if (config.screenshot_prune_interval < 0) {
-        return "screenshot_prune_interval must be >= 0";
-    }
-    if (config.screen_stable_timeout_ms < 0) {
-        return "screen_stable_timeout_ms must be >= 0";
-    }
-    if (config.screen_stable_ms < 0) {
-        return "screen_stable_ms must be >= 0";
-    }
-    if (config.screen_stable_diff_threshold < 0.0) {
-        return "screen_stable_diff_threshold must be >= 0";
-    }
-    std::string pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
-    if (pointer_mode != "absolute" && pointer_mode != "touchscreen") {
-        return "hid.pointer_mode must be absolute or touchscreen";
-    }
-    std::string telemetry_provider = lowercase_copy(trim_copy(config.telemetry.provider));
-    if (!telemetry_provider.empty() && telemetry_provider != "langfuse") {
-        return "telemetry.provider must be langfuse";
-    }
-    if (config.telemetry.enabled && trim_copy(config.telemetry.base_url).empty()) {
-        return "telemetry.base_url is required when telemetry.enabled is true";
-    }
-    if (config.telemetry.enabled && trim_copy(config.telemetry.public_key).empty()) {
-        return "telemetry.public_key is required when telemetry.enabled is true";
-    }
-    if (config.telemetry.enabled && trim_copy(config.telemetry.secret_key).empty()) {
-        return "telemetry.secret_key is required when telemetry.enabled is true";
-    }
-    if (config.telemetry.upload_timeout_sec < 0) {
-        return "telemetry.upload_timeout_sec must be >= 0";
-    }
-    if (config.telemetry.max_retry < 0) {
-        return "telemetry.max_retry must be >= 0";
-    }
-    return "";
+    return validate_agent_config_via_cli(config, agent_bin);
 }
 
 void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {
@@ -1445,8 +1566,8 @@ CommandResult apply_wifi_config(const Options& options) {
     bool dhcp_ok = false;
     if (associated) {
         if (command_exists("udhcpc")) {
-            CommandResult dhcp = run_shell_command("udhcpc -i " + shell_quote(options.wifi_interface) + " -n -q 2>&1");
-            log << "$ udhcpc -i " << options.wifi_interface << " -n -q\n" << dhcp.output;
+            CommandResult dhcp = run_shell_command("udhcpc -i " + shell_quote(options.wifi_interface) + " -n -q -s /etc/udhcpc/aiden.script 2>&1");
+            log << "$ udhcpc -i " << options.wifi_interface << " -n -q -s /etc/udhcpc/aiden.script\n" << dhcp.output;
             dhcp_ok = dhcp.exit_code == 0;
             if (!dhcp_ok) {
                 result.exit_code = dhcp.exit_code;
@@ -2402,15 +2523,15 @@ std::string benchmark_html_page() {
 <title>Aiden Benchmark</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,-apple-system,sans-serif;background:#f5f5f5;padding:24px;color:#333}
-h1{font-size:20px;margin-bottom:16px}
-.card{background:#fff;border-radius:8px;padding:16px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f5f5f5;padding:24px;color:#333;max-width:1120px;margin:0 auto}
+h1{font-size:20px;margin-bottom:14px}
+.card{background:#fff;border-radius:8px;padding:16px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
 select,button{font-size:14px;padding:8px 16px;border-radius:6px;border:1px solid #ddd}
 button{background:#2563eb;color:#fff;border:none;cursor:pointer}
 button:disabled{background:#94a3b8;cursor:not-allowed}
 button:hover:not(:disabled){background:#1d4ed8}
-.status{margin-top:8px;font-size:13px;color:#666}
-.status.running{color:#d97706}
+.status{font-size:13px;color:#475569;background:#f1f5f9;border-radius:999px;padding:5px 10px;display:inline-flex;align-items:center;min-height:28px}
+.status.running{color:#92400e;background:#fef3c7}
 .status.done{color:#16a34a}
 table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #eee}
@@ -2420,9 +2541,14 @@ a:hover{text-decoration:underline}
 .pass{color:#16a34a;font-weight:600}
 .fail{color:#dc2626;font-weight:600}
 .badge{display:inline-block;font-size:11px;background:#e0e7ff;color:#3730a3;padding:1px 6px;border-radius:4px;margin-left:6px}
+.progress{margin-top:10px;font-size:13px;color:#444;display:none}
+.progress-bar{height:8px;background:#e5e7eb;border-radius:999px;overflow:hidden;margin-top:6px;width:100%}
+.progress-fill{height:100%;width:0;background:#2563eb;transition:width .2s}
+.terminal{background:#0f172a;color:#d1fae5;border-radius:8px;padding:12px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;min-height:180px;max-height:320px;overflow:auto;white-space:pre-wrap;word-break:break-word;border:1px solid #1e293b}
 textarea{width:100%;min-height:200px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;padding:8px;border:1px solid #ddd;border-radius:6px;resize:vertical}
 input[type=text]{font-size:14px;padding:8px 12px;border-radius:6px;border:1px solid #ddd;width:240px}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.toolbar{margin-bottom:0}
 .muted{font-size:12px;color:#888}
 .err{color:#dc2626;font-size:13px;white-space:pre-wrap;margin-top:8px}
 .ok{color:#16a34a;font-size:13px;margin-top:8px}
@@ -2431,12 +2557,20 @@ input[type=text]{font-size:14px;padding:8px 12px;border-radius:6px;border:1px so
 </style></head><body>
 <h1>Aiden Benchmark</h1>
 <div class="card">
-<div class="row">
+<div class="row toolbar">
 <select id="suiteSelect"><option value="">Loading...</option></select>
 <button id="runBtn" onclick="startRun()">Run</button>
 <button id="delBtn" class="del" onclick="deleteSuite()" style="display:none">Delete</button>
 <span id="statusText" class="status">idle</span>
-</div></div>
+</div>
+<div id="progressBox" class="progress">
+<div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+</div>
+</div>
+<div class="card">
+<h2 style="font-size:15px;margin-bottom:8px">Live Log</h2>
+<div id="logBox" class="terminal">No benchmark log yet.</div>
+</div>
 <div class="card">
 <h2 style="font-size:15px;margin-bottom:8px">AI Generate Suite</h2>
 <div class="muted" style="margin-bottom:8px">Describe test scenarios in natural language. One line = one task. Supports multi-step workflows, captcha handling, login requirements, etc.</div>
@@ -2473,6 +2607,33 @@ Or single scenario: Test agent on 3 math questions (2+2, 5*3, 10-4) with multipl
 <script>
 var polling=null;
 var suiteIndex={};
+var logPolling=null;
+function updateProgress(d){
+var box=document.getElementById('progressBox');
+var fill=document.getElementById('progressFill');
+var status=document.getElementById('statusText');
+var total=Number(d.total||0),done=Number(d.completed||0),cur=d.current_task||'';
+if(d.status==='running'&&(total||cur)){
+box.style.display='block';
+var label=(total?done+'/'+total:'running')+(cur?' · '+cur:'')+(d.current_attempt?' attempt '+d.current_attempt:'');
+status.textContent=label;
+status.className='status running';
+var shown=Number(d.current||done||0);
+fill.style.width=total?Math.max(0,Math.min(100,shown/total*100))+'%':'0';
+}else{
+box.style.display='none';
+status.textContent=d.status||'idle';
+status.className='status '+(d.status||'');
+fill.style.width='0';
+}}
+function loadLog(){
+fetch('/benchmark/log').then(r=>r.text()).then(function(t){
+var box=document.getElementById('logBox');
+var atBottom=(box.scrollTop+box.clientHeight>=box.scrollHeight-24);
+box.textContent=t||'No benchmark log yet.';
+if(atBottom)box.scrollTop=box.scrollHeight;
+}).catch(function(){});
+}
 function load(){loadSuites();loadRuns();loadStatus()}
 function loadSuites(){
 fetch('/benchmark/suites').then(r=>r.json()).then(d=>{
@@ -2504,21 +2665,24 @@ tb.appendChild(tr)});
 })}
 function loadStatus(){
 fetch('/benchmark/status').then(r=>r.json()).then(d=>{
-var el=document.getElementById('statusText');
 var btn=document.getElementById('runBtn');
-el.textContent=d.status||'idle';
-el.className='status '+(d.status||'');
 btn.disabled=(d.status==='running');
+updateProgress(d);
+loadLog();
 if(d.status==='running'&&!polling)polling=setInterval(pollStatus,3000);
+if(d.status==='running'&&!logPolling)logPolling=setInterval(loadLog,1000);
 })}
 function pollStatus(){
 fetch('/benchmark/status').then(r=>r.json()).then(d=>{
-var el=document.getElementById('statusText');
 var btn=document.getElementById('runBtn');
-el.textContent=d.status||'idle';
-el.className='status '+(d.status||'');
 btn.disabled=(d.status==='running');
-if(d.status!=='running'){clearInterval(polling);polling=null;loadRuns()}
+updateProgress(d);
+loadLog();
+if(d.status!=='running'){
+clearInterval(polling);polling=null;
+if(logPolling){clearInterval(logPolling);logPolling=null}
+loadRuns();loadLog()
+}
 })}
 function startRun(){
 var suite=document.getElementById('suiteSelect').value;
@@ -2528,7 +2692,9 @@ document.getElementById('statusText').textContent='running';
 document.getElementById('statusText').className='status running';
 fetch('/benchmark/run',{method:'POST',headers:{'Content-Type':'application/json'},
 body:JSON.stringify({suite:suite})}).then(r=>r.json()).then(function(){
-polling=setInterval(pollStatus,3000)});
+loadLog();
+polling=setInterval(pollStatus,3000);
+if(!logPolling)logPolling=setInterval(loadLog,1000)});
 }
 function generateSuite(){
 var prompt=document.getElementById('aiPrompt').value.trim();
@@ -3417,7 +3583,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
         cJSON* r = cJSON_CreateObject();
         cJSON_AddStringToObject(r, "check", "provider");
-        const char* allowed[] = {"duckduckgo", "tavily", "google", "bing", NULL};
+        const char* allowed[] = {"duckduckgo", "brave", "brave-free", "tavily", NULL};
         bool ok = false;
         std::string allowed_list;
         for (int i = 0; allowed[i]; ++i) {
@@ -3444,10 +3610,21 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         std::string api_key = json_is_string(api_key_item) ? trim_copy(api_key_item->valuestring) : "";
         cJSON* r2 = cJSON_CreateObject();
         cJSON_AddStringToObject(r2, "check", "api_key");
-        cJSON_AddBoolToObject(r2, "passed", 1);
         if (provider == "duckduckgo") {
+            cJSON_AddBoolToObject(r2, "passed", 1);
             cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "not required for duckduckgo" : "set (not required for duckduckgo)");
+        } else if (provider == "brave" || provider == "brave-free" || provider == "tavily") {
+            if (api_key.empty()) {
+                cJSON_AddBoolToObject(r2, "passed", 0);
+                std::string msg = "required for " + provider;
+                cJSON_AddStringToObject(r2, "detail", msg.c_str());
+                all_passed = false;
+            } else {
+                cJSON_AddBoolToObject(r2, "passed", 1);
+                cJSON_AddStringToObject(r2, "detail", "set");
+            }
         } else {
+            cJSON_AddBoolToObject(r2, "passed", 1);
             cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "empty (may be required for paid providers)" : "set");
         }
         cJSON_AddItemToArray(results, r2);
@@ -3460,6 +3637,38 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     cJSON_Delete(root);
     cJSON_AddBoolToObject(response, "ok", all_passed ? 1 : 0);
     return make_json_ok(response);
+}
+
+// Detects a stale benchmark "running" state. The runner is launched as a
+// background job whose only cleanup is a trailing `echo idle`; if the run is
+// interrupted (reboot, kill, crash) that cleanup never executes and state.json
+// is stuck at "running" forever. This checks whether a runner process is
+// actually alive. A short startup grace period (based on state.json mtime)
+// avoids a false "dead" verdict in the window between launch and the Python
+// process appearing in the process table.
+bool benchmark_runner_alive() {
+    FILE* pf = fopen("/tmp/benchmark_runner.pid", "r");
+    if (pf) {
+        long pid = -1;
+        if (fscanf(pf, "%ld", &pid) == 1 && pid > 0) {
+            fclose(pf);
+            if (kill((pid_t)pid, 0) == 0 || errno == EPERM) {
+                return true;
+            }
+        } else {
+            fclose(pf);
+        }
+    }
+    FILE* pipe = popen(
+        "ps -w 2>/dev/null | grep -F 'runner.main' | grep -v grep | head -1", "r");
+    if (!pipe) {
+        // Can't determine; assume alive to avoid clobbering a real run.
+        return true;
+    }
+    char buf[256];
+    bool found = (fgets(buf, sizeof(buf), pipe) != nullptr);
+    pclose(pipe);
+    return found;
 }
 
 ApiResponse handle_request(const Options& options, const HttpRequest& request) {
@@ -3603,9 +3812,59 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
                 response.body = std::move(buf);
             }
             fclose(fp);
+            // Self-heal a stale "running" state: if the file claims a run is in
+            // progress but no runner process is alive, the run was interrupted
+            // before its `echo idle` cleanup. Reconcile to idle so the panel
+            // unlocks instead of polling forever. A startup grace period guards
+            // the window between launch and the process appearing in `ps`.
+            if (response.body.find("\"running\"") != std::string::npos) {
+                struct stat st;
+                long age_sec = -1;
+                if (stat(path.c_str(), &st) == 0) {
+                    age_sec = (long)(time(nullptr) - st.st_mtime);
+                }
+                bool past_grace = (age_sec < 0 || age_sec > 10);
+                if (past_grace && !benchmark_runner_alive()) {
+                    FILE* wf = fopen(path.c_str(), "w");
+                    if (wf) {
+                        fputs("{\"status\":\"idle\"}", wf);
+                        fclose(wf);
+                    }
+                    response.body = "{\"status\":\"idle\",\"recovered\":true}";
+                }
+            }
         } else {
             response.body = "{\"status\":\"idle\"}";
         }
+        return response;
+    }
+
+    if (request.method == "GET" && request.path == "/benchmark/log") {
+        ApiResponse response;
+        response.content_type = "text/plain; charset=utf-8";
+        FILE* fp = fopen("/tmp/benchmark_run.log", "r");
+        if (!fp) {
+            response.body = "";
+            return response;
+        }
+        fseek(fp, 0, SEEK_END);
+        long sz = ftell(fp);
+        long start = sz > 64 * 1024 ? sz - 64 * 1024 : 0;
+        fseek(fp, start, SEEK_SET);
+        if (start > 0) {
+            char discard[512];
+            fgets(discard, sizeof(discard), fp);
+        }
+        std::string buf;
+        char chunk[1024];
+        while (fgets(chunk, sizeof(chunk), fp)) {
+            buf += chunk;
+            if (buf.size() > 64 * 1024) {
+                buf.erase(0, buf.size() - 64 * 1024);
+            }
+        }
+        fclose(fp);
+        response.body = std::move(buf);
         return response;
     }
 
@@ -3633,12 +3892,17 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         std::string cmd = "cd /userdata/agent/benchmark && "
             "export OPENROUTER_API_KEY=$(grep 'api_key.*sk-or' /userdata/agent/agent.toml | sed 's/.*\"\\(sk-or[^\"]*\\)\".*/\\1/') && "
             + proxy_env_exports +
+            "("
+            "echo 'Starting benchmark...' > /tmp/benchmark_run.log; "
             "python3 -c 'import sys;sys.path.insert(0,\".\");from runner.main import cli;sys.exit(cli())' "
             "run --suite " + shell_quote(suite_path) + " "
             "--agent-url http://127.0.0.1:8080 "
             "--judge-model bytedance-seed/seed-2.0-lite "
-            "> /tmp/benchmark_run.log 2>&1; "
-            "echo '{\"status\":\"idle\"}' > /userdata/agent/benchmark/state.json &";
+            "--state-file /userdata/agent/benchmark/state.json "
+            ">> /tmp/benchmark_run.log 2>&1 & "
+            "runner_pid=$!; echo $runner_pid > /tmp/benchmark_runner.pid; "
+            "wait $runner_pid; rm -f /tmp/benchmark_runner.pid; "
+            "echo '{\"status\":\"idle\"}' > /userdata/agent/benchmark/state.json) &";
         system(cmd.c_str());
         response.body = "{\"ok\":true,\"status\":\"running\"}";
         return response;

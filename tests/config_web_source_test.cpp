@@ -249,11 +249,6 @@ TEST_CASE("config web exposes screenshot pruning config fields") {
     CHECK(source.find("config.screen_stable_timeout_ms") != std::string::npos);
     CHECK(source.find("config.screen_stable_ms") != std::string::npos);
     CHECK(source.find("config.screen_stable_diff_threshold") != std::string::npos);
-    CHECK(source.find("screenshot_keep_n must be >= 0") != std::string::npos);
-    CHECK(source.find("screenshot_prune_interval must be >= 0") != std::string::npos);
-    CHECK(source.find("screen_stable_timeout_ms must be >= 0") != std::string::npos);
-    CHECK(source.find("screen_stable_ms must be >= 0") != std::string::npos);
-    CHECK(source.find("screen_stable_diff_threshold must be >= 0") != std::string::npos);
 
     CHECK(html.find("agent_screenshot_keep_n") != std::string::npos);
     CHECK(html.find("agent_screenshot_prune_interval") != std::string::npos);
@@ -265,6 +260,94 @@ TEST_CASE("config web exposes screenshot pruning config fields") {
     CHECK(html.find("['screen_stable_timeout_ms','number']") != std::string::npos);
     CHECK(html.find("['screen_stable_ms','number']") != std::string::npos);
     CHECK(html.find("['screen_stable_diff_threshold','number']") != std::string::npos);
+}
+
+TEST_CASE("config web exposes brave search provider") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("\"brave\"") != std::string::npos);
+    CHECK(source.find("\"brave-free\"") != std::string::npos);
+    CHECK(source.find("provider == \"brave\" || provider == \"brave-free\"") != std::string::npos);
+    CHECK(html.find("search:{provider:['duckduckgo','brave','brave-free','tavily']}") != std::string::npos);
+    CHECK(source.find("const char* allowed[] = {\"duckduckgo\", \"brave\", \"brave-free\", \"tavily\", NULL};") != std::string::npos);
+}
+
+TEST_CASE("config web renders finite choice fields as selects") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const char* select_ids[] = {
+        "agent_input_mode",
+        "agent_trigger_mode",
+        "agent_vad_backend",
+        "agent_vad_speech_threshold",
+        "model_provider",
+        "tts_provider",
+        "tts_speed",
+        "stt_provider",
+        "hid_pointer_mode",
+        "search_provider",
+        "telemetry_provider",
+        NULL,
+    };
+    for (int i = 0; select_ids[i]; ++i) {
+        const std::string select_marker = "<select id=\\\"" + std::string(select_ids[i]) + "\\\"";
+        const std::string input_marker = "<input id=\\\"" + std::string(select_ids[i]) + "\\\"";
+        CHECK_MESSAGE(html.find(select_marker) != std::string::npos, select_ids[i]);
+        CHECK_MESSAGE(html.find(input_marker) == std::string::npos, select_ids[i]);
+    }
+
+    CHECK(html.find("input,select,textarea") != std::string::npos);
+    CHECK(html.find("input:focus,select:focus,textarea:focus") != std::string::npos);
+    CHECK(html.find("input:disabled,select:disabled,textarea:disabled") != std::string::npos);
+    CHECK(html.find("const selectFieldOptions=") != std::string::npos);
+    CHECK(html.find("hydrateSelectOptions") != std::string::npos);
+    CHECK(html.find("ensureSelectOption") != std::string::npos);
+    CHECK(html.find("rangeOptions(0,1,0.05,2)") != std::string::npos);
+    CHECK(html.find("rangeOptions(0.5,2,0.1,1)") != std::string::npos);
+}
+
+TEST_CASE("config web updates dependent field visibility from selected values") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find(".field.hidden{display:none}") != std::string::npos);
+    CHECK(html.find("function setFieldVisible(section,key,visible)") != std::string::npos);
+    CHECK(html.find("function applyFieldVisibility()") != std::string::npos);
+    CHECK(html.find("setFieldVisible('model','base_url',modelProvider!=='openrouter')") != std::string::npos);
+    CHECK(html.find("setFieldVisible('search','api_key',searchProvider!=='duckduckgo')") != std::string::npos);
+    CHECK(html.find("const sttTencent=sttProvider==='tencent'||sttProvider==='tencent_asr'") != std::string::npos);
+    CHECK(html.find("setFieldVisible('telemetry',key,telemetryEnabled)") != std::string::npos);
+    CHECK(html.find("const voiceMode=agentMode==='stt'||agentMode==='audio'") != std::string::npos);
+    CHECK(html.find("const wakeupSession=agentMode==='stt'&&agentTrigger==='wakeup'") != std::string::npos);
+    CHECK(html.find("function bindFieldVisibility()") != std::string::npos);
+    CHECK(html.find("addEventListener('change',function(){applyFieldVisibility();})") != std::string::npos);
+    CHECK(html.find("fillConfigForm(config){Object.keys(sectionFields).forEach") != std::string::npos);
+    CHECK(html.find("applyFieldVisibility();}") != std::string::npos);
 }
 
 TEST_CASE("config web exposes a single system env editor backed by the env file") {
@@ -344,9 +427,6 @@ TEST_CASE("config web exposes telemetry settings section") {
     CHECK(source.find("config.telemetry.enabled") != std::string::npos);
     CHECK(source.find("add_string_array_to_object(telemetry, \"tags\", config.telemetry.tags)") != std::string::npos);
     CHECK(source.find("set_json_string_vector(&config->telemetry.tags, telemetry, \"tags\")") != std::string::npos);
-    CHECK(source.find("telemetry.base_url is required when telemetry.enabled is true") != std::string::npos);
-    CHECK(source.find("telemetry.public_key is required when telemetry.enabled is true") != std::string::npos);
-    CHECK(source.find("std::string telemetry_provider = lowercase_copy(trim_copy(config.telemetry.provider));") != std::string::npos);
     CHECK(source.find("std::string provider_original = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : \"\";") != std::string::npos);
     CHECK(source.find("std::string provider = lowercase_copy(provider_original);") != std::string::npos);
     CHECK(source.find("public_key_env") == std::string::npos);
@@ -383,6 +463,20 @@ TEST_CASE("config web restarts ota only when system env changes") {
     CHECK(source.find("system env saved; services restarting") != std::string::npos);
     CHECK(source.find("config saved; agent restarting") != std::string::npos);
     CHECK(source.find("config saved; agent and ota restarting") == std::string::npos);
+}
+
+TEST_CASE("config web DHCP uses aiden udhcpc hook") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("udhcpc -i ") != std::string::npos);
+    CHECK(source.find("-s /etc/udhcpc/aiden.script") != std::string::npos);
+    CHECK(source.find("udhcpc -i \" + shell_quote(options.wifi_interface) + \" -n -q 2>&1") == std::string::npos);
 }
 
 TEST_CASE("config web custom benchmark suite import endpoints") {
@@ -494,7 +588,8 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("reboot_required") != std::string::npos);
     CHECK(source.find("schedule_poweroff") != std::string::npos);
     CHECK(source.find("\"/api/poweroff\"") != std::string::npos);
-    CHECK(source.find("hid.pointer_mode must be absolute or touchscreen") != std::string::npos);
+    CHECK(source.find("config-check --stdin --format=json") != std::string::npos);
+    CHECK(source.find("config validation unavailable: agent binary not found") != std::string::npos);
     CHECK(html.find("hid_pointer_mode") != std::string::npos);
     CHECK(html.find("['pointer_mode','text']") != std::string::npos);
     CHECK(html.find("pointer_mode 需要关机重启后生效") != std::string::npos);

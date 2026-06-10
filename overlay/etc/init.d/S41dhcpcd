@@ -15,8 +15,32 @@ start() {
 	fi
 
 	if [ -x /sbin/udhcpc ]; then
-		/sbin/udhcpc -b -i eth0 >/dev/null 2>&1 || true
-		/sbin/udhcpc -b -i wlan0 >/dev/null 2>&1 || true
+		if [ ! -x /etc/udhcpc/aiden.script ]; then
+			echo "udhcpc hook missing or not executable: /etc/udhcpc/aiden.script"
+			return 1
+		fi
+
+		failed=0
+		started=0
+		for iface in eth0 wlan0; do
+			if [ ! -d "/sys/class/net/$iface" ]; then
+				echo "Skipping udhcpc on missing interface $iface"
+				continue
+			fi
+			if /sbin/udhcpc -b -i "$iface" -s /etc/udhcpc/aiden.script >/dev/null 2>&1; then
+				started=1
+			else
+				echo "Failed to start udhcpc on $iface"
+				failed=1
+			fi
+		done
+		if [ "$failed" -ne 0 ]; then
+			return 1
+		fi
+		if [ "$started" -ne 1 ]; then
+			echo "No eth0/wlan0 interface available for udhcpc"
+			return 1
+		fi
 		echo "Started udhcpc on eth0/wlan0"
 		return 0
 	fi

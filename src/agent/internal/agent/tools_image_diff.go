@@ -39,7 +39,7 @@ func (t *ImageDiffTool) Call(_ context.Context, input string) (string, error) {
 		Region *imageDiffRegion `json:"region"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v", err), nil
+		return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"before\": \"<base64>\", \"after\": \"<base64>\", \"region\": {\"x\": 300, \"y\": 200, \"w\": 400, \"h\": 600}}. Common mistakes: before/after must be base64-encoded JPEG strings, region is optional but if provided must be an object with x, y, w, h fields", err), nil
 	}
 	if args.Before == "" {
 		return "error: before is required", nil

@@ -35,7 +35,7 @@ asset_glob=""
 required_assets=""
 upload_assets=""
 prerelease="false"
-retry_count=5
+retry_count=10
 retry_delay_seconds=20
 
 while [ "$#" -gt 0 ]; do
@@ -262,6 +262,121 @@ run_with_retry() {
   done
 }
 
+asset_size_for_name() {
+  local needle="$1"
+  local records="$2"
+  local name
+  local size
+
+  while IFS=$'\t' read -r name size _; do
+    if [ "$name" = "$needle" ]; then
+      printf '%s' "$size"
+      return 0
+    fi
+  done <<< "$records"
+
+  return 1
+}
+
+file_size_bytes() {
+  wc -c < "$1" | tr -d '[:space:]'
+}
+
+verify_uploaded_assets() {
+  local attempt=1
+  local status=0
+  local tmp_base="${RUNNER_TEMP:-/tmp}"
+  local err_file
+  local retry_wait_seconds
+  local release_asset_records
+  local asset
+  local asset_name
+  local local_size
+  local remote_size
+  local missing_files
+  local missing_names
+  local missing_count
+  local mismatched_files
+  local mismatched_names
+  local mismatched_count
+
+  while true; do
+    err_file="$(mktemp "$tmp_base/github-release.XXXXXX")"
+    log "release asset verification $tag_name attempt $attempt/$retry_count"
+
+    if release_asset_records="$(gh release view "$tag_name" --json assets --jq '.assets[] | [.name, (.size | tostring)] | @tsv' 2> >(tee "$err_file" >&2))"; then
+      rm -f "$err_file"
+      missing_files=()
+      missing_names=()
+      missing_count=0
+      mismatched_files=()
+      mismatched_names=()
+      mismatched_count=0
+
+      for asset in "${upload_files[@]}"; do
+        asset_name="$(basename "$asset")"
+        if ! remote_size="$(asset_size_for_name "$asset_name" "$release_asset_records")"; then
+          missing_files+=("$asset")
+          missing_names+=("$asset_name")
+          missing_count=$((missing_count + 1))
+          continue
+        fi
+        local_size="$(file_size_bytes "$asset")"
+        if [ "$remote_size" != "$local_size" ]; then
+          mismatched_files+=("$asset")
+          mismatched_names+=("$asset_name")
+          mismatched_count=$((mismatched_count + 1))
+        fi
+      done
+
+      if [ "$missing_count" -eq 0 ] && [ "$mismatched_count" -eq 0 ]; then
+        log "Release asset verification succeeded for $tag_name"
+        return 0
+      fi
+
+      if [ "$missing_count" -gt 0 ]; then
+        log "Release asset verification found missing assets: ${missing_names[*]}"
+      fi
+      if [ "$mismatched_count" -gt 0 ]; then
+        log "Release asset verification found size mismatches: ${mismatched_names[*]}"
+      fi
+      if [ "$attempt" -ge "$retry_count" ]; then
+        log "release asset verification $tag_name failed after $attempt attempt(s)"
+        return 1
+      fi
+
+      if [ "$missing_count" -gt 0 ]; then
+        for asset in "${missing_files[@]}"; do
+          run_with_retry \
+            "release missing asset re-upload $(basename "$asset")" \
+            gh release upload "$tag_name" "$asset" --clobber
+        done
+      fi
+      if [ "$mismatched_count" -gt 0 ]; then
+        for asset in "${mismatched_files[@]}"; do
+          run_with_retry \
+            "release size-mismatched asset re-upload $(basename "$asset")" \
+            gh release upload "$tag_name" "$asset" --clobber
+        done
+      fi
+    else
+      status=$?
+      rm -f "$err_file"
+      if [ "$attempt" -ge "$retry_count" ]; then
+        log "release asset verification $tag_name failed after $attempt attempt(s)"
+        return "$status"
+      fi
+    fi
+
+    retry_wait_seconds=$((retry_delay_seconds * attempt))
+    log "Retrying release asset verification $tag_name; waiting ${retry_wait_seconds}s before attempt $((attempt + 1))/$retry_count"
+    if [ "$retry_wait_seconds" -gt 0 ]; then
+      sleep "$retry_wait_seconds"
+    fi
+    attempt=$((attempt + 1))
+  done
+}
+
 ensure_release() {
   if gh release view "$tag_name" >/dev/null 2>&1; then
     log "Release already exists for tag $tag_name; assets will be uploaded with --clobber"
@@ -325,6 +440,8 @@ for asset in "${upload_files[@]}"; do
     "release asset upload $(basename "$asset")" \
     gh release upload "$tag_name" "$asset" --clobber
 done
+
+verify_uploaded_assets
 
 if [ "$prerelease" = "true" ]; then
   run_with_retry \

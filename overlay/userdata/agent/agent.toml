@@ -100,7 +100,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 # pointer_mode = "touchscreen"  # Android HID touch screen / digitizer
 
 # Web search tool configuration
-# provider: "duckduckgo" (free, no key) or "tavily" (better results, needs api_key)
+# provider: "duckduckgo" (free, no key), "brave" (Brave Search, needs api_key), or "tavily" (needs api_key)
 [search]
 provider = "duckduckgo"
 api_key = ""

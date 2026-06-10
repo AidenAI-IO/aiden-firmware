@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,13 @@ func TestConfigValidateAcceptsAudioWakeup(t *testing.T) {
 	}
 	if got := cfg.TriggerModeOrDefault(); got != "wakeup" {
 		t.Fatalf("TriggerModeOrDefault() = %q, want wakeup", got)
+	}
+}
+
+func TestBundledSkillsDirCandidatesUseOEMOnly(t *testing.T) {
+	want := []string{"/oem/usr/share/aiden/skills"}
+	if got := bundledSkillsDirCandidates(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("bundledSkillsDirCandidates() = %#v, want %#v", got, want)
 	}
 }
 
@@ -84,6 +92,70 @@ func TestConfigValidateRejectsNegativeScreenStableSettings(t *testing.T) {
 	err = cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "screen_stable_diff_threshold") {
 		t.Fatalf("expected screen_stable_diff_threshold validation error, got %v", err)
+	}
+}
+
+func TestSearchProviderDefaultsAndAliases(t *testing.T) {
+	tests := []struct {
+		provider string
+		want     string
+	}{
+		{provider: "", want: searchProviderDuckDuckGo},
+		{provider: " DuckDuckGo ", want: searchProviderDuckDuckGo},
+		{provider: " Brave Search ", want: searchProviderBrave},
+		{provider: "brave_search", want: searchProviderBrave},
+		{provider: "brave-search", want: searchProviderBrave},
+		{provider: "brave-free", want: searchProviderBrave},
+		{provider: " tavily ", want: searchProviderTavily},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			got := (SearchConfig{Provider: tt.provider}).ProviderOrDefault()
+			if got != tt.want {
+				t.Fatalf("ProviderOrDefault() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConfigValidateAcceptsBraveSearchWithAPIKey(t *testing.T) {
+	t.Setenv(braveSearchAPIKeyEnv, "")
+
+	cfg := Config{
+		Model:  ModelConfig{Provider: "fake"},
+		Search: SearchConfig{Provider: "brave", APIKey: "BSA-token"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestConfigValidateAcceptsBraveSearchWithEnvAPIKey(t *testing.T) {
+	t.Setenv(braveSearchAPIKeyEnv, "BSA-env-token")
+
+	cfg := Config{
+		Model:  ModelConfig{Provider: "fake"},
+		Search: SearchConfig{Provider: "brave"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestConfigValidateRejectsBraveSearchWithoutAPIKey(t *testing.T) {
+	t.Setenv(braveSearchAPIKeyEnv, "")
+
+	cfg := Config{
+		Model:  ModelConfig{Provider: "fake"},
+		Search: SearchConfig{Provider: "brave"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected missing Brave Search API key error")
+	}
+	if !strings.Contains(err.Error(), braveSearchAPIKeyEnv) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

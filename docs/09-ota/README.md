@@ -5,7 +5,7 @@
 ## 适用范围
 
 - 目标硬件：Luckfox Pico Zero / RV1106 + eMMC。
-- 分发方式：GitHub Release，发布资产包含 `manifest.json`、`boot_a.img`、`boot_b.img`、`oem.img`、`rootfs.img`、`userdata.img` 和 `update.img`（自 PR #112 起使用中性资源，历史版本使用 `oem_a.img`、`oem_b.img`、`rootfs_a.img`、`rootfs_b.img`）。
+- Distribution: GitHub Releases. Published assets contain `manifest.json` plus compressed image archives: `boot_a.img.tar.gz`, `boot_b.img.tar.gz`, `oem.img.tar.gz`, `rootfs.img.tar.gz`, and `update.img.tar.gz`. The extracted images still use the slot-neutral `oem.img` and `rootfs.img` layout introduced in PR #112; older releases used `oem_a.img`, `oem_b.img`, `rootfs_a.img`, and `rootfs_b.img`.
 - 更新方式：设备端 `/oem/usr/bin/ota` 拉取 manifest、验签、校验 SHA256、写 inactive slot、切换 `misc` 并重启。
 - 回滚方式：Rockchip SPL A/B metadata 控制 boot tries；应用健康确认后才 mark successful。
 
