@@ -721,10 +721,7 @@ func (m *MemoryManager) planCompaction(events []SessionEvent, contextWindow int)
 	// forbidden event (tool_result/system). The raw count index is only a
 	// target; buildSessionCutPoint then derives the same split-turn metadata and
 	// leading-state merge the token path uses.
-	maxEvents := m.extraction.HotWindowEvents
-	if maxEvents <= 0 {
-		maxEvents = defaultHotWindowEvents
-	}
+	maxEvents := m.hotWindowEvents()
 	keepCount := maxEvents
 	if keepCount > len(events) {
 		keepCount = len(events) / 2
@@ -766,6 +763,22 @@ func (m *MemoryManager) keepRecentTokens() int {
 		return m.extraction.KeepRecentTokens
 	}
 	return defaultKeepRecentTokens
+}
+
+func (m *MemoryManager) hotWindowEvents() int {
+	if m.extraction.HotWindowEvents > 0 {
+		return m.extraction.HotWindowEvents
+	}
+	return defaultHotWindowEvents
+}
+
+func (m *MemoryManager) countCompressAfterEvents() int {
+	hotWindow := m.hotWindowEvents()
+	threshold := m.extraction.CountCompressAfterEvents
+	if threshold <= hotWindow {
+		threshold = hotWindow * 2
+	}
+	return threshold
 }
 
 // buildEventSummary runs the structured → plain → local fallback cascade over a
@@ -862,11 +875,7 @@ func (m *MemoryManager) shouldCompress(eventCount int) bool {
 	}
 	// Event count fallback: only used when token data unavailable (cold start,
 	// unknown model, or before first LLM call).
-	maxEvents := m.extraction.HotWindowEvents
-	if maxEvents <= 0 {
-		maxEvents = defaultHotWindowEvents
-	}
-	return eventCount > maxEvents
+	return eventCount > m.countCompressAfterEvents()
 }
 
 // effectiveContextWindow returns the context window in tokens that should be

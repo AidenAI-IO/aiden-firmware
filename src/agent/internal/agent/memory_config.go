@@ -8,13 +8,15 @@ import (
 )
 
 type MemoryExtractionConfig struct {
-	TagCandidates   []string `yaml:"tag_candidates"`
-	EntitySuffixes  []string `yaml:"entity_suffixes"`
-	// HotWindowEvents is the hard limit on uncompressed SessionEvent
-	// count. Compression triggers when event count exceeds this threshold,
-	// regardless of token usage. Acts as a safety valve for cold-start sessions
-	// with large restored history or when token metrics are unavailable.
+	TagCandidates  []string `yaml:"tag_candidates"`
+	EntitySuffixes []string `yaml:"entity_suffixes"`
+	// HotWindowEvents is the target size of the retained hot window when
+	// compaction falls back to an event-count cut.
 	HotWindowEvents int `yaml:"hot_window_events"`
+	// CountCompressAfterEvents is the event-count trigger used only when token
+	// metrics are unavailable. Keep it above HotWindowEvents so count-based
+	// compaction has hysteresis instead of producing tiny chunks every turn.
+	CountCompressAfterEvents int `yaml:"count_compress_after_events"`
 	// ContextWindow is the fallback context window in tokens used by the
 	// memory manager's compression trigger when the active model is unknown
 	// to the model_specs registry. The runtime normally derives the window
@@ -37,8 +39,9 @@ type MemoryExtractionConfig struct {
 }
 
 const (
-	defaultReserveTokens    = 8192
-	defaultKeepRecentTokens = 20000
+	defaultReserveTokens            = 8192
+	defaultKeepRecentTokens         = 20000
+	defaultCountCompressAfterEvents = defaultHotWindowEvents * 2
 )
 
 // DefaultMemoryExtractionConfig returns the default memory extraction
@@ -50,13 +53,14 @@ func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
 			"报销", "支付", "付款", "提交", "登录", "验证码",
 			"发票", "项目编码", "风险", "确认", "开发板", "agent",
 		},
-		EntitySuffixes:             []string{"App", "app", "APP"},
-		HotWindowEvents: defaultHotWindowEvents,
-		ContextWindow:              32000,
-		CompressAtPercent:          50,
-		SummaryMaxChunks:           10,
-		ReserveTokens:              defaultReserveTokens,
-		KeepRecentTokens:           defaultKeepRecentTokens,
+		EntitySuffixes:           []string{"App", "app", "APP"},
+		HotWindowEvents:          defaultHotWindowEvents,
+		CountCompressAfterEvents: defaultCountCompressAfterEvents,
+		ContextWindow:            32000,
+		CompressAtPercent:        50,
+		SummaryMaxChunks:         10,
+		ReserveTokens:            defaultReserveTokens,
+		KeepRecentTokens:         defaultKeepRecentTokens,
 	}
 }
 
@@ -76,6 +80,9 @@ func LoadMemoryExtractionConfig(configDir string) MemoryExtractionConfig {
 	_ = yaml.Unmarshal(data, &cfg)
 	if cfg.HotWindowEvents <= 0 {
 		cfg.HotWindowEvents = defaultHotWindowEvents
+	}
+	if cfg.CountCompressAfterEvents <= cfg.HotWindowEvents {
+		cfg.CountCompressAfterEvents = cfg.HotWindowEvents * 2
 	}
 	if cfg.ContextWindow <= 0 {
 		cfg.ContextWindow = 32000
