@@ -61,7 +61,7 @@ type MemoryManager struct {
 	maintenancePending bool
 }
 
-const defaultHotWindowEvents = 20
+const defaultHotWindowEvents = 30
 
 type MessageRecord struct {
 	Role    string `json:"role"`
