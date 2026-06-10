@@ -83,7 +83,6 @@ App 也可以主动发送事件消息。事件复用 `BridgeCommandResponse` 外
     "manufacturer": "Apple",
     "brand": "Apple",
     "model": "iPhone16,2",
-    "device_name": "Qing's iPhone",
     "screen": {
       "width": 393,
       "height": 852,
@@ -96,15 +95,25 @@ App 也可以主动发送事件消息。事件复用 `BridgeCommandResponse` 外
       "charging": true,
       "state": "charging"
     },
+    "system_apps": [
+      {"name": "Camera", "available": true, "category": "system", "availability_source": "builtin"},
+      {"name": "Contacts", "available": true, "category": "system", "availability_source": "builtin"}
+    ],
+    "third_party_apps": [
+      {"name": "WeChat", "available": true, "category": "third_party", "availability_source": "can_open_url", "ios_url": "weixin://"},
+      {"name": "Douyin", "available": false, "category": "third_party", "availability_source": "can_open_url", "ios_url": "snssdk1128://"}
+    ],
     "available_apps": [
-      {"name": "WeChat", "available": true, "ios_url": "weixin://"},
-      {"name": "Douyin", "available": false, "ios_url": "snssdk1128://"}
+      {"name": "WeChat", "available": true, "category": "third_party", "ios_url": "weixin://"},
+      {"name": "Douyin", "available": false, "category": "third_party", "ios_url": "snssdk1128://"}
     ]
   }
 }
 ```
 
-板子会把最新环境写入 `GET /api/phone-bridge/status` 的 `environment` 字段，并注入每轮 Agent runtime context。断开连接时清理环境，避免使用旧信息。
+板子会把最新完整环境写入 `GET /api/phone-bridge/status` 的 `environment` 字段。每轮 Agent runtime context 只注入精简摘要：连接状态、系统类型/版本、语言地区/时区、屏幕尺寸、已确认可打开的第三方候选 App。断开连接时清理环境，避免使用旧信息。
+
+`system_apps` 表示系统内置 App/能力，iOS 上不依赖 `canOpenURL` 判断是否存在；`third_party_apps` 表示第三方候选 App，iOS 通过 `canOpenURL`、Android 通过 package launchability 探测。`available_apps` 是兼容旧板子的第三方候选摘要，新实现应优先读取拆分后的字段。
 
 ## 命令类型
 
@@ -585,7 +594,7 @@ App 也可以主动发送事件消息。事件复用 `BridgeCommandResponse` 外
 
 ## 版本兼容
 
-当前协议版本 1.0，后续扩展新命令时:
+当前协议版本 1.1，后续扩展新命令时:
 - 新增字段向后兼容 (旧版 App 忽略未知字段)
 - 新增命令类型，旧版 App 返回 `ok: false, error: "Unknown command type"`
 - 修改已有字段语义需升级版本号

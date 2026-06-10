@@ -64,6 +64,8 @@ type PhoneEnvironment struct {
 	DeviceName       string             `json:"device_name,omitempty"`
 	Screen           PhoneScreenInfo    `json:"screen,omitempty"`
 	Battery          PhoneBatteryInfo   `json:"battery,omitempty"`
+	SystemApps       []AvailableAppInfo `json:"system_apps,omitempty"`
+	ThirdPartyApps   []AvailableAppInfo `json:"third_party_apps,omitempty"`
 	AvailableApps    []AvailableAppInfo `json:"available_apps,omitempty"`
 }
 
@@ -88,11 +90,14 @@ type PhoneBatteryInfo struct {
 }
 
 type AvailableAppInfo struct {
-	Name           string `json:"name"`
-	Available      bool   `json:"available"`
-	IOSURL         string `json:"ios_url,omitempty"`
-	AndroidPackage string `json:"android_package,omitempty"`
-	Error          string `json:"error,omitempty"`
+	Name               string `json:"name"`
+	Available          bool   `json:"available"`
+	Category           string `json:"category,omitempty"`
+	AvailabilitySource string `json:"availability_source,omitempty"`
+	IOSURL             string `json:"ios_url,omitempty"`
+	AndroidPackage     string `json:"android_package,omitempty"`
+	Note               string `json:"note,omitempty"`
+	Error              string `json:"error,omitempty"`
 }
 
 type PhoneBridgeStatus struct {
@@ -386,6 +391,12 @@ func (pb *PhoneBridge) Status() PhoneBridgeStatus {
 }
 
 func clonePhoneEnvironment(env PhoneEnvironment) PhoneEnvironment {
+	if len(env.SystemApps) > 0 {
+		env.SystemApps = append([]AvailableAppInfo(nil), env.SystemApps...)
+	}
+	if len(env.ThirdPartyApps) > 0 {
+		env.ThirdPartyApps = append([]AvailableAppInfo(nil), env.ThirdPartyApps...)
+	}
 	if len(env.AvailableApps) > 0 {
 		env.AvailableApps = append([]AvailableAppInfo(nil), env.AvailableApps...)
 	}
@@ -421,27 +432,16 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 }
 
 func appendPhoneEnvironmentContext(builder *strings.Builder, env PhoneEnvironment, updatedAt *time.Time) {
-	builder.WriteString("Phone environment:\n")
+	builder.WriteString("Phone environment summary:\n")
 	if updatedAt != nil {
 		builder.WriteString("- environment_updated_at: ")
 		builder.WriteString(updatedAt.UTC().Format(time.RFC3339))
-		builder.WriteByte('\n')
-	}
-	if text := strings.TrimSpace(env.CapturedAt); text != "" {
-		builder.WriteString("- captured_at: ")
-		builder.WriteString(text)
 		builder.WriteByte('\n')
 	}
 	appendNonEmptyLine(builder, "- system: ", joinNonEmpty(", ",
 		firstNonEmptyPhoneField(env.SystemName, env.Platform),
 		env.SystemVersion,
 		boolLabel("tablet", env.IsTablet),
-	))
-	appendNonEmptyLine(builder, "- device: ", joinNonEmpty(", ",
-		env.Manufacturer,
-		env.Brand,
-		env.Model,
-		env.DeviceName,
 	))
 	appendNonEmptyLine(builder, "- locale: ", joinNonEmpty(", ",
 		env.Locale,
@@ -452,11 +452,16 @@ func appendPhoneEnvironmentContext(builder *strings.Builder, env PhoneEnvironmen
 		boolLabel("24h_clock", env.Uses24HourClock),
 	))
 	appendNonEmptyLine(builder, "- screen: ", formatPhoneScreen(env.Screen))
-	appendNonEmptyLine(builder, "- battery: ", formatPhoneBattery(env.Battery))
-	if apps := availableAppNames(env.AvailableApps, 30); len(apps) > 0 {
-		builder.WriteString("- available_apps: ")
+	if apps := availableAppNames(env.ThirdPartyApps, 30); len(apps) > 0 {
+		builder.WriteString("- confirmed_launchable_third_party_apps: ")
 		builder.WriteString(strings.Join(apps, ", "))
 		builder.WriteByte('\n')
+		builder.WriteString("- App list is sampled from Aiden's prepared candidates; apps not listed may still be installed or openable. If the user asks for another app, try open_app by mapping/deeplink and verify with screenshot/HID if needed.\n")
+	} else if apps := availableAppNames(env.AvailableApps, 30); len(apps) > 0 {
+		builder.WriteString("- confirmed_launchable_third_party_apps: ")
+		builder.WriteString(strings.Join(apps, ", "))
+		builder.WriteByte('\n')
+		builder.WriteString("- App list is sampled from Aiden's prepared candidates; apps not listed may still be installed or openable. If the user asks for another app, try open_app by mapping/deeplink and verify with screenshot/HID if needed.\n")
 	}
 }
 

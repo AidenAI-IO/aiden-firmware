@@ -24,6 +24,13 @@ func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
 			"system_name":"iOS",
 			"system_version":"18.5",
 			"locale":"zh-Hans-CN",
+			"system_apps":[
+				{"name":"Camera","available":true,"category":"system","availability_source":"builtin"}
+			],
+			"third_party_apps":[
+				{"name":"WeChat","available":true,"category":"third_party","availability_source":"can_open_url"},
+				{"name":"Douyin","available":false,"category":"third_party","availability_source":"can_open_url"}
+			],
 			"available_apps":[
 				{"name":"WeChat","available":true},
 				{"name":"Douyin","available":false}
@@ -44,8 +51,11 @@ func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
 	if status.Environment.SystemName != "iOS" {
 		t.Fatalf("environment system_name = %q, want iOS", status.Environment.SystemName)
 	}
-	if got := len(status.Environment.AvailableApps); got != 2 {
-		t.Fatalf("available app count = %d, want 2", got)
+	if got := len(status.Environment.SystemApps); got != 1 {
+		t.Fatalf("system app count = %d, want 1", got)
+	}
+	if got := len(status.Environment.ThirdPartyApps); got != 2 {
+		t.Fatalf("third-party app count = %d, want 2", got)
 	}
 	if status.EnvironmentUpdatedAt == nil {
 		t.Fatal("expected environment_updated_at")
