@@ -49,7 +49,7 @@ func newTelemetryPromptCapture(enabled bool) *telemetryPromptCapture {
 	return &telemetryPromptCapture{}
 }
 
-func (c *telemetryPromptCapture) Record(ctx context.Context, startedAt, endedAt time.Time, messages []llms.MessageContent, options []llms.CallOption, res *llms.ContentResponse, err error) {
+func (c *telemetryPromptCapture) Record(ctx context.Context, startedAt, endedAt time.Time, messages []llms.MessageContent, options []llms.CallOption, res *llms.ContentResponse, err error, contextWindow int) {
 	if c == nil {
 		return
 	}
@@ -63,6 +63,12 @@ func (c *telemetryPromptCapture) Record(ctx context.Context, startedAt, endedAt 
 		UsageDetails:    telemetryUsageDetails(res),
 		CostDetails:     telemetryCostDetails(res),
 		ModelParameters: telemetryModelParameters(options),
+	}
+	if contextWindow > 0 {
+		if call.ModelParameters == nil {
+			call.ModelParameters = map[string]interface{}{}
+		}
+		call.ModelParameters["context_window"] = contextWindow
 	}
 	if err != nil {
 		call.Error = err.Error()
@@ -248,7 +254,7 @@ func telemetryModelParameters(options []llms.CallOption) map[string]interface{} 
 func telemetryModelParametersFromCallOptions(opts llms.CallOptions) map[string]interface{} {
 	params := map[string]interface{}{}
 	if opts.MaxTokens > 0 {
-		params["max_tokens"] = opts.MaxTokens
+		params["max_response_tokens"] = opts.MaxTokens
 	}
 	if opts.Temperature != 0 {
 		params["temperature"] = opts.Temperature

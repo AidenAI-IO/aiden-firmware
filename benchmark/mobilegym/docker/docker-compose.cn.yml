@@ -1,0 +1,85 @@
+# 国内镜像加速版本
+# 使用方法: docker compose -f docker-compose.cn.yml build
+
+services:
+  mobilegym:
+    image: aiden-mobilegym-simulator:local
+    build:
+      context: ../../..
+      dockerfile: benchmark/mobilegym/docker/Dockerfile.cn
+      target: mobilegym-base
+    ports:
+      - "${MOBILEGYM_PORT:-4173}:4173"
+    networks:
+      - aiden-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4173"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  daemon:
+    image: aiden-mobilegym-daemon:local
+    build:
+      context: ../../..
+      dockerfile: benchmark/mobilegym/docker/Dockerfile.cn
+      target: daemon-runtime
+    ports:
+      - "${AIDEN_DAEMON_PORT:-8080}:8080"
+    volumes:
+      - ${AIDEN_CONFIG_DIR:-../config}:/config:ro
+      - daemon-logs:/app/log
+    environment:
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - ALL_PROXY=${ALL_PROXY:-}
+      - NO_PROXY=localhost,127.0.0.1,daemon,mobilegym,test,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      - no_proxy=localhost,127.0.0.1,daemon,mobilegym,test,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    networks:
+      - aiden-net
+    depends_on:
+      mobilegym:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  test:
+    image: aiden-mobilegym-test-runner:local
+    build:
+      context: ../../..
+      dockerfile: benchmark/mobilegym/docker/Dockerfile.cn
+      target: test-runner
+    volumes:
+      - ../../runs:/app/benchmark/runs
+      - ${AIDEN_CONFIG_DIR:-../config}:/config:ro
+      - ../suites:/app/suites:ro
+    environment:
+      - MOBILEGYM_ROOT=/mobilegym
+      - AIDEN_DAEMON_URL=http://daemon:8080
+      - AIDEN_CONTROL_TOKEN_FILE=/config/control_token
+      - AIDEN_BRIDGE_BIND_HOST=0.0.0.0
+      - AIDEN_BRIDGE_PORT=9090
+    networks:
+      - aiden-net
+    depends_on:
+      daemon:
+        condition: service_healthy
+    profiles:
+      - test
+    command: >
+      --mobilegym-root /mobilegym
+      --suite all
+      --env-url http://mobilegym:4173
+      --aiden-daemon-url http://daemon:8080
+      --parallel 1
+      --headless
+
+networks:
+  aiden-net:
+    driver: bridge
+
+volumes:
+  daemon-logs:

@@ -12,7 +12,9 @@ struct ModelToml {
     std::string api_key;
     std::string token_env;
     double temperature = 0.0;
-    int max_tokens = 0;
+    int max_response_tokens = 0;
+    int context_window = 0;
+    int model_max_output_tokens = 0;
 };
 
 struct TTSToml {

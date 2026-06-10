@@ -336,6 +336,21 @@ func TestParseValidationErrors_ExtractsField(t *testing.T) {
 			expectedField: "model.provider",
 		},
 		{
+			name:          "model max response tokens error",
+			errorMsg:      "model.max_response_tokens must be >= 0, got -1",
+			expectedField: "model.max_response_tokens",
+		},
+		{
+			name:          "model context window error",
+			errorMsg:      "model.context_window must be >= 0, got -1",
+			expectedField: "model.context_window",
+		},
+		{
+			name:          "model max output tokens error",
+			errorMsg:      "model.model_max_output_tokens must be >= 0, got -1",
+			expectedField: "model.model_max_output_tokens",
+		},
+		{
 			name:          "vad threshold error",
 			errorMsg:      "vad_speech_threshold must be in [0,1] when set, got 1.5",
 			expectedField: "vad_speech_threshold",

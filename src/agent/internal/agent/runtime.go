@@ -49,6 +49,7 @@ type Runtime struct {
 	sleep              *SleepController
 	memoryPlane        MemoryPlane
 	telemetrySessionID string
+	mobileGym          *mobileGymSessionStore
 }
 
 type RunRequest struct {
@@ -80,6 +81,7 @@ type RunMetrics struct {
 	PromptTokens     int     `json:"prompt_tokens,omitempty"`
 	CompletionTokens int     `json:"completion_tokens,omitempty"`
 	TotalTokens      int     `json:"total_tokens,omitempty"`
+	ContextWindow    int     `json:"context_window,omitempty"`
 	FirstTokenTime   float64 `json:"first_token_time_ms,omitempty"`
 	// LastPromptTokens holds the prompt-token count of the most recent LLM call.
 	// PromptTokens/CompletionTokens/TotalTokens accumulate across the multiple
@@ -102,9 +104,10 @@ type RunEvent struct {
 }
 
 type usageTrackingModel struct {
-	inner         llms.Model
-	metrics       *RunMetrics
-	promptCapture *telemetryPromptCapture
+	inner           llms.Model
+	metrics         *RunMetrics
+	promptCapture   *telemetryPromptCapture
+	contextWindowFn func() int
 }
 
 func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -114,7 +117,7 @@ func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llm
 		recordUsageMetrics(m.metrics, res)
 	}
 	if m.promptCapture != nil {
-		m.promptCapture.Record(ctx, startedAt, time.Now(), messages, options, res, err)
+		m.promptCapture.Record(ctx, startedAt, time.Now(), messages, options, res, err, m.contextWindow())
 	}
 	return res, err
 }
@@ -127,9 +130,24 @@ func (m *usageTrackingModel) Call(ctx context.Context, prompt string, options ..
 		m.promptCapture.Record(ctx, startedAt, time.Now(), []llms.MessageContent{{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextPart(prompt)},
-		}}, options, res, err)
+		}}, options, res, err, m.contextWindow())
 	}
 	return out, err
+}
+
+func (m *usageTrackingModel) contextWindow() int {
+	if m == nil {
+		return 0
+	}
+	if m.contextWindowFn != nil {
+		if v := m.contextWindowFn(); v > 0 {
+			return v
+		}
+	}
+	if m.metrics != nil {
+		return m.metrics.ContextWindow
+	}
+	return 0
 }
 
 func NewRuntime(cfg Config) (*Runtime, error) {
@@ -189,16 +207,21 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err := proxy.Validate(); err != nil {
 		return nil, fmt.Errorf("proxy environment: %w", err)
 	}
-	toolSet := NewBuiltinToolSet(
-		cfg.HID,
-		cfg.Audio,
-		cfg.Search,
+	mobileGymStore := &mobileGymSessionStore{}
+	toolSet := NewBuiltinToolSetFromConfig(
+		cfg,
 		proxy,
+		mobileGymStore,
 		WithSleepController(sleepController),
 		WithScreenStableDefaults(cfg.ScreenStableDefaults()),
 	)
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
-	modelManager := NewModelManager(cfg.Model, proxy)
+	modelManagerOptions := []ModelManagerOption{}
+	if cfg.ConfigDir != "" {
+		modelManagerOptions = append(modelManagerOptions, WithProviderModelMetadataCachePath(filepath.Join(cfg.ConfigDir, "cache", "provider_model_metadata.json")))
+	}
+	modelManager := NewModelManager(cfg.Model, proxy, modelManagerOptions...)
+	modelManager.prefetchProviderModelSpecIfNeeded()
 	summarizeFn := buildLLMSummarizeFn(modelManager)
 	structuredSummarizeFn := buildLLMStructuredSummarizeFn(modelManager, logger)
 	profileFn := buildLLMProfileFn(modelManager)
@@ -228,6 +251,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
 	rt.sleep = sleepController
+	rt.mobileGym = mobileGymStore
 
 	if len(mergeNeeded) > 0 && cfg.SkillMergeModel != nil {
 		manifestPath := filepath.Join(cfg.ConfigDir, "skill-state", ".bundled_manifest.json")
@@ -267,6 +291,7 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
 		sleep:              sleepController,
 		telemetrySessionID: uuid.NewString(),
+		mobileGym:          &mobileGymSessionStore{},
 	}
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
@@ -376,8 +401,15 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
+	contextWindow := r.effectiveContextWindow()
+	if contextWindow > 0 {
+		metrics.ContextWindow = contextWindow
+		if r.logger != nil {
+			r.logger.Info("Resolved model context window: context_window=%d", contextWindow)
+		}
+	}
 	promptCapture := newTelemetryPromptCapture(r.config.Telemetry.EnabledOrDefault())
-	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture}
+	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: r.effectiveContextWindow}
 
 	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
 	if err != nil {
@@ -506,6 +538,21 @@ func (r *Runtime) currentEnvironmentHints() CurrentEnvironmentHints {
 		return r.tools.CurrentEnvironmentHints(currentEnvironmentHintMaxAge)
 	}
 	return CurrentEnvironmentHints{}
+}
+
+func (r *Runtime) effectiveContextWindow() int {
+	if r == nil {
+		return 0
+	}
+	if r.models != nil {
+		if spec := r.models.Spec(); spec.ContextWindow > 0 {
+			return spec.ContextWindow
+		}
+	}
+	if r.memories != nil {
+		return r.memories.effectiveContextWindow()
+	}
+	return 0
 }
 
 func (r *Runtime) ClearMemory(ctx context.Context) error {
@@ -650,10 +697,22 @@ func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
 	if extraString(episode.Extra, "session_id") == "" && r.telemetrySessionID != "" {
 		episode.Extra["session_id"] = r.telemetrySessionID
 	}
-	if _, ok := episode.Extra["model_parameters"]; !ok {
-		if params := telemetryModelParametersFromModelConfig(r.config.Model); len(params) > 0 {
-			episode.Extra["model_parameters"] = params
+	contextWindow := r.effectiveContextWindow()
+	if contextWindow > 0 {
+		episode.Extra["context_window"] = contextWindow
+	}
+	params, _ := episode.Extra["model_parameters"].(map[string]interface{})
+	if len(params) == 0 {
+		params = telemetryModelParametersFromModelConfig(r.config.Model)
+	}
+	if contextWindow > 0 {
+		if params == nil {
+			params = map[string]interface{}{}
 		}
+		params["context_window"] = contextWindow
+	}
+	if len(params) > 0 {
+		episode.Extra["model_parameters"] = params
 	}
 }
 
@@ -662,8 +721,8 @@ func telemetryModelParametersFromModelConfig(cfg ModelConfig) map[string]interfa
 	if cfg.Temperature != 0 {
 		params["temperature"] = cfg.Temperature
 	}
-	if cfg.MaxTokens > 0 {
-		params["max_tokens"] = cfg.MaxTokens
+	if cfg.MaxResponseTokens > 0 {
+		params["max_response_tokens"] = cfg.MaxResponseTokens
 	}
 	if len(params) == 0 {
 		return nil

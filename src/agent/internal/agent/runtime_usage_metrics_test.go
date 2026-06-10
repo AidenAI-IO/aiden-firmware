@@ -75,7 +75,10 @@ func TestUsageTrackingModelCapturesFullPromptForTelemetry(t *testing.T) {
 	if snapshot[0].UsageDetails["input"] != 10 || snapshot[0].UsageDetails["output"] != 5 || snapshot[0].UsageDetails["total"] != 15 {
 		t.Fatalf("captured usage = %#v, want input/output/total 10/5/15", snapshot[0].UsageDetails)
 	}
-	if snapshot[0].ModelParameters["temperature"] != 0.3 || snapshot[0].ModelParameters["max_tokens"] != 123 {
-		t.Fatalf("captured model parameters = %#v, want temperature/max_tokens", snapshot[0].ModelParameters)
+	if snapshot[0].ModelParameters["temperature"] != 0.3 || snapshot[0].ModelParameters["max_response_tokens"] != 123 {
+		t.Fatalf("captured model parameters = %#v, want temperature/max_response_tokens", snapshot[0].ModelParameters)
+	}
+	if _, ok := snapshot[0].ModelParameters["max_tokens"]; ok {
+		t.Fatalf("captured model parameters = %#v, did not expect legacy max_tokens", snapshot[0].ModelParameters)
 	}
 }

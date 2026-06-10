@@ -51,7 +51,7 @@ func TestDeviceMemoryProcedureStepsExtraction(t *testing.T) {
 			{
 				Type:            "tool_call",
 				ToolName:        "touch_gesture",
-				ToolInput:       `{"__arg1":"{\"type\":\"tap\",\"point\":{\"x\":0.5,\"y\":0.85},\"description\":\"点击购物车按钮\"}"}`,
+				ToolInput:       `{"__arg1":"{\"type\":\"tap\",\"point\":{\"x\":500,\"y\":850},\"description\":\"点击购物车按钮\"}"}`,
 				ToolDescription: "点击购物车按钮",
 			},
 			{
@@ -100,7 +100,7 @@ func TestDeviceMemoryProcedureStepsExtraction(t *testing.T) {
 		t.Errorf("procedure should contain 'steps:' field\n%s", content)
 	}
 	// 验证坐标被提取
-	if !strings.Contains(content, "x=0.50") || !strings.Contains(content, "y=0.85") {
+	if !strings.Contains(content, "x=500") || !strings.Contains(content, "y=850") {
 		t.Errorf("procedure steps should contain extracted coordinates\n%s", content)
 	}
 	// 验证 description 被保留
@@ -196,7 +196,7 @@ func TestDeviceMemoryNavigationFacts(t *testing.T) {
 			{
 				Type:            "tool_call",
 				ToolName:        "touch_gesture",
-				ToolInput:       `{"__arg1":"{\"type\":\"tap\",\"point\":{\"x\":0.8,\"y\":0.9},\"description\":\"点击购物车\"}"}`,
+				ToolInput:       `{"__arg1":"{\"type\":\"tap\",\"point\":{\"x\":800,\"y\":900},\"description\":\"点击购物车\"}"}`,
 				ToolDescription: "点击购物车",
 			},
 			{Type: "tool_result", ToolName: "touch_gesture"},
@@ -231,7 +231,7 @@ func TestDeviceMemoryNavigationFacts(t *testing.T) {
 	if !strings.Contains(content, "touch_gesture") {
 		t.Errorf("navigation should record tool used:\n%s", content)
 	}
-	if !strings.Contains(content, "x=0.80") || !strings.Contains(content, "y=0.90") {
+	if !strings.Contains(content, "x=800") || !strings.Contains(content, "y=900") {
 		t.Errorf("navigation should record coordinates:\n%s", content)
 	}
 }

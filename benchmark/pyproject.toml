@@ -3,7 +3,17 @@ name = "aiden-benchmark"
 version = "0.1.0"
 description = "Agent-driven phone-control benchmark for the Aiden hardware demo"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "playwright>=1.40.0",
+    "playwright-stealth>=1.0.6",
+    "requests>=2.31.0",
+    "aiofiles>=23.2.1",
+    "anthropic>=0.18.0",
+    "openai>=1.12.0",
+    "tenacity>=8.2.3",
+    "pillow>=10.2.0",
+    "python-dotenv>=1.0.1",
+]
 
 [dependency-groups]
 dev = [

@@ -63,6 +63,7 @@ type Config struct {
 	TTS                       TTSConfig       `toml:"tts,omitempty"`
 	STT                       STTConfig       `toml:"stt,omitempty"`
 	HID                       HIDConfig       `toml:"hid"`
+	Device                    DeviceConfig    `toml:"device,omitempty"`
 	Audio                     AudioConfig     `toml:"audio,omitempty"`
 	Benchmark                 BenchmarkConfig `toml:"benchmark,omitempty"`
 	Search                    SearchConfig    `toml:"search,omitempty"`
@@ -278,6 +279,25 @@ type HIDConfig struct {
 	PointerMode string `toml:"pointer_mode,omitempty"`
 }
 
+type DeviceConfig struct {
+	Backend          string   `toml:"backend,omitempty"`
+	BridgeURL        string   `toml:"bridge_url,omitempty"`
+	BridgeTokenFile  string   `toml:"bridge_token_file,omitempty"`
+	ControlTokenFile string   `toml:"control_token_file,omitempty"`
+	ToolAllowlist    []string `toml:"tool_allowlist,omitempty"`
+}
+
+func (d DeviceConfig) BackendOrDefault() string {
+	switch strings.ToLower(strings.TrimSpace(d.Backend)) {
+	case "", "hdmi", "hardware":
+		return "hdmi"
+	case "mobilegym":
+		return "mobilegym"
+	default:
+		return strings.ToLower(strings.TrimSpace(d.Backend))
+	}
+}
+
 func (h HIDConfig) KeyboardDeviceOrDefault() string {
 	if h.KeyboardDevice != "" {
 		return h.KeyboardDevice
@@ -313,14 +333,17 @@ func (h HIDConfig) PointerTouchscreen() bool {
 }
 
 type ModelConfig struct {
-	Provider    string   `toml:"provider"`
-	Model       string   `toml:"model"`
-	BaseURL     string   `toml:"base_url,omitempty"`
-	APIKey      string   `toml:"api_key,omitempty"`
-	TokenEnv    string   `toml:"token_env,omitempty"`
-	Temperature float64  `toml:"temperature,omitempty"`
-	MaxTokens   int      `toml:"max_tokens,omitempty"`
-	Responses   []string `toml:"responses,omitempty"`
+	Provider          string  `toml:"provider"`
+	Model             string  `toml:"model"`
+	BaseURL           string  `toml:"base_url,omitempty"`
+	APIKey            string  `toml:"api_key,omitempty"`
+	TokenEnv          string  `toml:"token_env,omitempty"`
+	Temperature       float64 `toml:"temperature,omitempty"`
+	MaxResponseTokens int     `toml:"max_response_tokens,omitempty"`
+	// These override static model metadata; zero means use the registry/fallback.
+	ContextWindow        int      `toml:"context_window,omitempty"`
+	ModelMaxOutputTokens int      `toml:"model_max_output_tokens,omitempty"`
+	Responses            []string `toml:"responses,omitempty"`
 }
 
 // AgentConfig is used internally by the runtime prompt builder.
@@ -384,10 +407,12 @@ func bundledSkillsDirCandidates() []string {
 
 func LoadConfig(path string) (Config, error) {
 	var cfg Config
+	var metadata toml.MetaData
 
 	// Determine format by file extension
 	if strings.HasSuffix(path, ".toml") {
-		if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		var err error
+		if metadata, err = toml.DecodeFile(path, &cfg); err != nil {
 			return Config{}, fmt.Errorf("decode TOML config: %w", err)
 		}
 	} else {
@@ -398,11 +423,61 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
 	}
 
+	if err := applyLegacyModelMaxTokens(path, metadata, &cfg); err != nil {
+		return Config{}, err
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 
 	return cfg, nil
+}
+
+func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config) error {
+	needsModel := metadata.IsDefined("model", "max_tokens") &&
+		!metadata.IsDefined("model", "max_response_tokens")
+	needsModelText := metadata.IsDefined("model_text", "max_tokens") &&
+		!metadata.IsDefined("model_text", "max_response_tokens")
+	if !needsModel && !needsModelText {
+		return nil
+	}
+
+	var raw map[string]interface{}
+	if _, err := toml.DecodeFile(path, &raw); err != nil {
+		return fmt.Errorf("decode legacy TOML fields: %w", err)
+	}
+	if needsModel {
+		value, err := legacyModelMaxTokens(raw, "model")
+		if err != nil {
+			return err
+		}
+		cfg.Model.MaxResponseTokens = value
+	}
+	if needsModelText {
+		value, err := legacyModelMaxTokens(raw, "model_text")
+		if err != nil {
+			return err
+		}
+		cfg.ModelText.MaxResponseTokens = value
+	}
+	return nil
+}
+
+func legacyModelMaxTokens(raw map[string]interface{}, section string) (int, error) {
+	table, ok := raw[section].(map[string]interface{})
+	if !ok {
+		return 0, fmt.Errorf("%s.max_tokens is defined but %s is not a TOML table", section, section)
+	}
+	value, ok := table["max_tokens"]
+	if !ok {
+		return 0, fmt.Errorf("%s.max_tokens is defined but could not be decoded", section)
+	}
+	tokens, ok := value.(int64)
+	if !ok {
+		return 0, fmt.Errorf("%s.max_tokens must be an integer", section)
+	}
+	return int(tokens), nil
 }
 
 func (c Config) Validate() error {
@@ -425,6 +500,33 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Model.Model) == "" && strings.ToLower(c.Model.Provider) != "fake" {
 		return errors.New("model.model is required")
+	}
+	backend := c.Device.BackendOrDefault()
+	switch backend {
+	case "hdmi", "mobilegym":
+	default:
+		return fmt.Errorf("invalid device.backend: %s (expected hdmi or mobilegym)", c.Device.Backend)
+	}
+	if backend == "mobilegym" && strings.TrimSpace(c.Device.ControlTokenFile) == "" {
+		return errors.New("device.control_token_file is required when device.backend=mobilegym")
+	}
+	if c.Model.MaxResponseTokens < 0 {
+		return fmt.Errorf("model.max_response_tokens must be >= 0, got %d", c.Model.MaxResponseTokens)
+	}
+	if c.Model.ContextWindow < 0 {
+		return fmt.Errorf("model.context_window must be >= 0, got %d", c.Model.ContextWindow)
+	}
+	if c.Model.ModelMaxOutputTokens < 0 {
+		return fmt.Errorf("model.model_max_output_tokens must be >= 0, got %d", c.Model.ModelMaxOutputTokens)
+	}
+	if c.ModelText.ContextWindow < 0 {
+		return fmt.Errorf("model_text.context_window must be >= 0, got %d", c.ModelText.ContextWindow)
+	}
+	if c.ModelText.ModelMaxOutputTokens < 0 {
+		return fmt.Errorf("model_text.model_max_output_tokens must be >= 0, got %d", c.ModelText.ModelMaxOutputTokens)
+	}
+	if c.ModelText.MaxResponseTokens < 0 {
+		return fmt.Errorf("model_text.max_response_tokens must be >= 0, got %d", c.ModelText.MaxResponseTokens)
 	}
 
 	// Validate input_mode

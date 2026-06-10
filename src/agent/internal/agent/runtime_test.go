@@ -747,10 +747,10 @@ func TestRuntimeAllowsNearRepeatedMouseClick(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			plannerResponse("click first point"),
-			toolCallResponse("call_1", "mouse_click", `{"x":"0.5","y":"0.08","coord_space":"normalized"}`),
+			toolCallResponse("call_1", "mouse_click", `{"x":"500","y":"80","coord_space":"normalized"}`),
 			verifierContinueResponse("need a second click"),
 			plannerResponse("click nearby point"),
-			toolCallResponse("call_2", "mouse_click", `{"x":0.5,"y":0.12,"coord_space":"normalized"}`),
+			toolCallResponse("call_2", "mouse_click", `{"x":500,"y":120,"coord_space":"normalized"}`),
 			verifierFinishResponse("我会换一个方式继续。"),
 		},
 	}
@@ -788,10 +788,10 @@ func TestRuntimeAllowsNearRepeatedMouseClick(t *testing.T) {
 	if len(tool.inputs) != 2 {
 		t.Fatalf("expected repeated click attempts to reach the tool, got inputs %#v", tool.inputs)
 	}
-	if !strings.Contains(tool.inputs[0], `"x":"0.5"`) {
+	if !strings.Contains(tool.inputs[0], `"x":"500"`) {
 		t.Fatalf("first click should preserve model input, got %q", tool.inputs[0])
 	}
-	if !strings.Contains(tool.inputs[1], `"x":0.5`) {
+	if !strings.Contains(tool.inputs[1], `"x":500`) {
 		t.Fatalf("second click should reach the tool, got %q", tool.inputs[1])
 	}
 

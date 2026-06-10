@@ -68,6 +68,131 @@ func TestConfigScreenStableDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadConfigParsesModelSpecOverrides(t *testing.T) {
+	configDir := t.TempDir()
+	config := `
+instruction = "test"
+
+[model]
+provider = "openrouter"
+model = "vendor/test-model"
+max_response_tokens = 1000
+context_window = 64000
+model_max_output_tokens = 4096
+`
+	if err := os.WriteFile(configDir+"/agent.toml", []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfigFromDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigFromDir() error = %v", err)
+	}
+	if cfg.Model.ContextWindow != 64_000 {
+		t.Errorf("ContextWindow = %d, want 64_000", cfg.Model.ContextWindow)
+	}
+	if cfg.Model.MaxResponseTokens != 1_000 {
+		t.Errorf("MaxResponseTokens = %d, want 1_000", cfg.Model.MaxResponseTokens)
+	}
+	if cfg.Model.ModelMaxOutputTokens != 4_096 {
+		t.Errorf("ModelMaxOutputTokens = %d, want 4_096", cfg.Model.ModelMaxOutputTokens)
+	}
+}
+
+func TestLoadConfigParsesLegacyModelMaxTokens(t *testing.T) {
+	configDir := t.TempDir()
+	config := `
+instruction = "test"
+
+[model]
+provider = "openrouter"
+model = "vendor/test-model"
+max_tokens = 777
+`
+	if err := os.WriteFile(configDir+"/agent.toml", []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfigFromDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigFromDir() error = %v", err)
+	}
+	if cfg.Model.MaxResponseTokens != 777 {
+		t.Errorf("MaxResponseTokens = %d, want legacy max_tokens value 777", cfg.Model.MaxResponseTokens)
+	}
+}
+
+func TestLoadConfigPrefersMaxResponseTokensOverLegacyMaxTokens(t *testing.T) {
+	configDir := t.TempDir()
+	config := `
+instruction = "test"
+
+[model]
+provider = "openrouter"
+model = "vendor/test-model"
+max_response_tokens = 1000
+max_tokens = 777
+`
+	if err := os.WriteFile(configDir+"/agent.toml", []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfigFromDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigFromDir() error = %v", err)
+	}
+	if cfg.Model.MaxResponseTokens != 1_000 {
+		t.Errorf("MaxResponseTokens = %d, want canonical max_response_tokens value 1_000", cfg.Model.MaxResponseTokens)
+	}
+}
+
+func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
+	cfg := Config{Model: ModelConfig{Provider: "fake", MaxResponseTokens: -1}}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model.max_response_tokens") {
+		t.Fatalf("expected model.max_response_tokens validation error, got %v", err)
+	}
+
+	cfg = Config{Model: ModelConfig{Provider: "fake", ContextWindow: -1}}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model.context_window") {
+		t.Fatalf("expected model.context_window validation error, got %v", err)
+	}
+
+	cfg = Config{Model: ModelConfig{Provider: "fake", ModelMaxOutputTokens: -1}}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model.model_max_output_tokens") {
+		t.Fatalf("expected model.model_max_output_tokens validation error, got %v", err)
+	}
+
+	cfg = Config{
+		Model:     ModelConfig{Provider: "fake"},
+		ModelText: ModelConfig{ContextWindow: -1},
+	}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model_text.context_window") {
+		t.Fatalf("expected model_text.context_window validation error, got %v", err)
+	}
+
+	cfg = Config{
+		Model:     ModelConfig{Provider: "fake"},
+		ModelText: ModelConfig{ModelMaxOutputTokens: -1},
+	}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model_text.model_max_output_tokens") {
+		t.Fatalf("expected model_text.model_max_output_tokens validation error, got %v", err)
+	}
+
+	cfg = Config{
+		Model:     ModelConfig{Provider: "fake"},
+		ModelText: ModelConfig{MaxResponseTokens: -1},
+	}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model_text.max_response_tokens") {
+		t.Fatalf("expected model_text.max_response_tokens validation error, got %v", err)
+	}
+}
+
 func TestConfigValidateRejectsNegativeScreenStableSettings(t *testing.T) {
 	cfg := Config{
 		Model:                 ModelConfig{Provider: "fake"},
@@ -294,6 +419,66 @@ func TestConfigVADBackendDefaultsAndValidation(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid vad_backend") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDeviceConfigBackendDefaultsToHDMI(t *testing.T) {
+	cfg := Config{Model: ModelConfig{Provider: "fake"}}
+	if got := cfg.Device.BackendOrDefault(); got != "hdmi" {
+		t.Fatalf("BackendOrDefault() = %q, want hdmi", got)
+	}
+}
+
+func TestLoadConfigAcceptsMobileGymDeviceBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	content := `
+instruction = "test"
+input_mode = "text"
+max_iterations = 20
+
+[model]
+provider = "fake"
+
+[device]
+backend = "mobilegym"
+bridge_url = "http://127.0.0.1:19001"
+bridge_token_file = "/tmp/device-token"
+control_token_file = "/tmp/control-token"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := cfg.Device.BackendOrDefault(); got != "mobilegym" {
+		t.Fatalf("backend = %q, want mobilegym", got)
+	}
+	if cfg.Instruction != "test" || cfg.InputMode != "text" || cfg.MaxIterations != 20 {
+		t.Fatalf("root config not decoded: instruction=%q input_mode=%q max_iterations=%d", cfg.Instruction, cfg.InputMode, cfg.MaxIterations)
+	}
+}
+
+func TestLoadConfigRejectsUnknownDeviceBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	content := `
+instruction = "test"
+
+[model]
+provider = "fake"
+
+[device]
+backend = "bogus"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "invalid device.backend") {
+		t.Fatalf("LoadConfig() error = %v, want invalid device.backend", err)
 	}
 }
 
