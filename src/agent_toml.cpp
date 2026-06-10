@@ -206,6 +206,19 @@ bool assign_int(int* dst, const std::string& raw, std::string* err) {
     return parse_int(raw, dst, err);
 }
 
+bool assign_non_negative_int(int* dst, const std::string& raw, std::string* err) {
+    int value = 0;
+    if (!assign_int(&value, raw, err)) {
+        return false;
+    }
+    if (value < 0) {
+        if (err) *err = "must be >= 0";
+        return false;
+    }
+    *dst = value;
+    return true;
+}
+
 bool assign_double(double* dst, const std::string& raw, std::string* err) {
     return parse_double(raw, dst, err);
 }
@@ -293,8 +306,8 @@ void apply_kv(AgentToml& cfg,
         else if (key == "token_env") assign_string(&m.token_env, raw, &sub_err);
         else if (key == "temperature") assign_double(&m.temperature, raw, &sub_err);
         else if (key == "max_response_tokens") assign_int(&m.max_response_tokens, raw, &sub_err);
-        else if (key == "context_window") assign_int(&m.context_window, raw, &sub_err);
-        else if (key == "model_max_output_tokens") assign_int(&m.model_max_output_tokens, raw, &sub_err);
+        else if (key == "context_window") assign_non_negative_int(&m.context_window, raw, &sub_err);
+        else if (key == "model_max_output_tokens") assign_non_negative_int(&m.model_max_output_tokens, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     };
 

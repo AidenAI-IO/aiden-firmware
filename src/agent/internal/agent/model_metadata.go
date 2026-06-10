@@ -37,14 +37,21 @@ func (m *ModelManager) prefetchProviderModelSpecIfNeeded() {
 }
 
 func (m *ModelManager) needsProviderModelMetadata() bool {
+	spec, _ := LookupModelSpec(m.config.Provider, m.config.Model)
+	return m.needsProviderModelMetadataForSpec(spec)
+}
+
+func (m *ModelManager) needsProviderModelMetadataForSpec(spec ModelSpec) bool {
+	if strings.TrimSpace(m.config.Model) == "" {
+		return false
+	}
 	if !providerSupportsModelMetadata(m.config.Provider) {
 		return false
 	}
-	if strings.TrimSpace(m.config.Model) == "" || m.config.ContextWindow > 0 {
-		return false
-	}
-	spec, _ := LookupModelSpec(m.config.Provider, m.config.Model)
-	return spec.ContextWindow <= 0
+	explicitContextWindow := m.config.ContextWindow > 0
+	explicitMaxOutput := m.config.ModelMaxOutputTokens > 0
+	return (!explicitContextWindow && spec.ContextWindow <= 0) ||
+		(!explicitMaxOutput && spec.MaxOutput <= 0)
 }
 
 func (m *ModelManager) cachedProviderModelSpec() ModelSpec {
@@ -80,6 +87,7 @@ func (m *ModelManager) fetchProviderModelSpecInBackground() {
 
 	spec, err := m.fetchProviderModelSpec(ctx)
 	if err != nil {
+		m.resetProviderModelSpecFetchStarted()
 		log.Printf("[WARN] [model-spec] fetch %s/%s metadata: %v", m.config.Provider, m.config.Model, err)
 		return
 	}
@@ -89,6 +97,14 @@ func (m *ModelManager) fetchProviderModelSpecInBackground() {
 		}
 	}
 	m.storeProviderModelSpec(spec)
+}
+
+func (m *ModelManager) resetProviderModelSpecFetchStarted() {
+	m.specMu.Lock()
+	defer m.specMu.Unlock()
+
+	m.providerSpecFetchStarted = false
+	m.providerSpecLoaded = false
 }
 
 func (m *ModelManager) storeProviderModelSpec(spec ModelSpec) {

@@ -96,10 +96,9 @@ func (m *ModelManager) Spec() ModelSpec {
 		spec.MaxOutput = m.config.ModelMaxOutputTokens
 	}
 
-	needsProviderContextWindow := !explicitContextWindow && spec.ContextWindow <= 0
-	if providerSupportsModelMetadata(m.config.Provider) && needsProviderContextWindow {
+	if m.needsProviderModelMetadataForSpec(spec) {
 		providerSpec := m.cachedProviderModelSpec()
-		if providerSpec.ContextWindow > 0 {
+		if !explicitContextWindow && spec.ContextWindow <= 0 && providerSpec.ContextWindow > 0 {
 			spec.ContextWindow = providerSpec.ContextWindow
 		}
 		if !explicitMaxOutput && spec.MaxOutput <= 0 && providerSpec.MaxOutput > 0 {

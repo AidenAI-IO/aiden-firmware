@@ -237,3 +237,33 @@ TEST_CASE("agent_toml strips inline comments after unquoted scalars") {
 
     std::remove(path.c_str());
 }
+
+TEST_CASE("agent_toml rejects negative model metadata overrides") {
+    struct Case {
+        const char* leaf;
+        const char* section;
+        const char* field;
+    };
+    const Case cases[] = {
+        {"negative_context_window.toml", "model", "context_window"},
+        {"negative_model_max_output_tokens.toml", "model_text", "model_max_output_tokens"},
+    };
+
+    for (const auto& tc : cases) {
+        std::string path = make_temp_path(tc.leaf);
+        {
+            std::ofstream out(path);
+            out << "[" << tc.section << "]\n"
+                << "provider = \"fake\"\n"
+                << tc.field << " = -1\n";
+        }
+
+        aiden::AgentToml cfg;
+        std::string err;
+        CHECK_FALSE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+        CHECK(err.find(tc.field) != std::string::npos);
+        CHECK(err.find(">= 0") != std::string::npos);
+
+        std::remove(path.c_str());
+    }
+}

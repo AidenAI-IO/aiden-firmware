@@ -116,6 +116,24 @@ func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "model.model_max_output_tokens") {
 		t.Fatalf("expected model.model_max_output_tokens validation error, got %v", err)
 	}
+
+	cfg = Config{
+		Model:     ModelConfig{Provider: "fake"},
+		ModelText: ModelConfig{ContextWindow: -1},
+	}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model_text.context_window") {
+		t.Fatalf("expected model_text.context_window validation error, got %v", err)
+	}
+
+	cfg = Config{
+		Model:     ModelConfig{Provider: "fake"},
+		ModelText: ModelConfig{ModelMaxOutputTokens: -1},
+	}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model_text.model_max_output_tokens") {
+		t.Fatalf("expected model_text.model_max_output_tokens validation error, got %v", err)
+	}
 }
 
 func TestConfigValidateRejectsNegativeScreenStableSettings(t *testing.T) {

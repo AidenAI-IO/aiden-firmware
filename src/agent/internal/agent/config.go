@@ -424,6 +424,12 @@ func (c Config) Validate() error {
 	if c.Model.ModelMaxOutputTokens < 0 {
 		return fmt.Errorf("model.model_max_output_tokens must be >= 0, got %d", c.Model.ModelMaxOutputTokens)
 	}
+	if c.ModelText.ContextWindow < 0 {
+		return fmt.Errorf("model_text.context_window must be >= 0, got %d", c.ModelText.ContextWindow)
+	}
+	if c.ModelText.ModelMaxOutputTokens < 0 {
+		return fmt.Errorf("model_text.model_max_output_tokens must be >= 0, got %d", c.ModelText.ModelMaxOutputTokens)
+	}
 
 	// Validate input_mode
 	if strings.TrimSpace(c.InputMode) != "" {

@@ -350,31 +350,91 @@ func TestModelManagerSpecReadsProviderMetadataFromFileCache(t *testing.T) {
 	}
 }
 
-func TestModelManagerSpecSkipsProviderFetchWhenContextWindowOverrideSet(t *testing.T) {
+func TestModelManagerSpecFetchesProviderMaxOutputWhenContextWindowOverrideSet(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		http.Error(w, "unexpected request", http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"data": [
+				{
+					"id": "vendor/context-override-model",
+					"context_length": 262144,
+					"top_provider": {
+						"context_length": 131072,
+						"max_completion_tokens": 16384
+					}
+				}
+			]
+		}`)
 	}))
 	defer server.Close()
 
 	mgr := NewModelManager(ModelConfig{
 		Provider:      "openrouter",
-		Model:         "vendor/new-model",
+		Model:         "vendor/context-override-model",
 		BaseURL:       server.URL + "/api/v1",
 		APIKey:        "test-token",
 		ContextWindow: 64_000,
 	}, ProxyConfig{})
 
-	spec := mgr.Spec()
+	spec := waitForModelSpec(t, mgr, ModelSpec{ContextWindow: 64_000, MaxOutput: 16_384})
 	if spec.ContextWindow != 64_000 {
 		t.Fatalf("Spec().ContextWindow = %d, want explicit override 64_000", spec.ContextWindow)
 	}
-	if spec.MaxOutput != 0 {
-		t.Fatalf("Spec().MaxOutput = %d, want 0 without registry or provider fetch", spec.MaxOutput)
+	if spec.MaxOutput != 16_384 {
+		t.Fatalf("Spec().MaxOutput = %d, want provider metadata 16_384", spec.MaxOutput)
 	}
-	if got := requests.Load(); got != 0 {
-		t.Fatalf("requests = %d, want 0", got)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests = %d, want 1", got)
+	}
+}
+
+func TestModelManagerNeedsProviderMetadataWhenOnlyMaxOutputMissing(t *testing.T) {
+	mgr := NewModelManager(ModelConfig{
+		Provider:      "openrouter",
+		Model:         "vendor/context-override-model",
+		ContextWindow: 64_000,
+	}, ProxyConfig{})
+
+	if !mgr.needsProviderModelMetadata() {
+		t.Fatal("needsProviderModelMetadata() = false, want true when max output is still auto")
+	}
+}
+
+func TestModelManagerRetriesProviderMetadataAfterFailure(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			http.Error(w, "temporary provider failure", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"data": [
+				{
+					"id": "vendor/retry-model",
+					"context_length": 262144,
+					"top_provider": {
+						"context_length": 131072,
+						"max_completion_tokens": 4096
+					}
+				}
+			]
+		}`)
+	}))
+	defer server.Close()
+
+	mgr := NewModelManager(ModelConfig{
+		Provider: "openrouter",
+		Model:    "vendor/retry-model",
+		BaseURL:  server.URL + "/api/v1",
+		APIKey:   "test-token",
+	}, ProxyConfig{})
+
+	waitForModelSpec(t, mgr, ModelSpec{ContextWindow: 131_072, MaxOutput: 4_096})
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests = %d, want 2 with retry after failure", got)
 	}
 }
 

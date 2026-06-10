@@ -125,6 +125,21 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
+TEST_CASE("config web docs list token_env in model fields") {
+    const std::string doc_path = std::string(AIDEN_SOURCE_DIR) + "/docs/03-services/config-web.md";
+    std::ifstream doc_in(doc_path.c_str());
+    REQUIRE(doc_in.good());
+
+    std::ostringstream doc_buffer;
+    doc_buffer << doc_in.rdbuf();
+    const std::string doc = doc_buffer.str();
+
+    const std::string model_fields =
+        "provider, token_env, model, api_key, base_url, temperature, max_response_tokens, context_window, model_max_output_tokens";
+    CHECK(doc.find(model_fields) != std::string::npos);
+    CHECK(doc.find("`context_window = 0` means auto-discover") != std::string::npos);
+}
+
 TEST_CASE("config web exposes ota update and live ota logs") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
