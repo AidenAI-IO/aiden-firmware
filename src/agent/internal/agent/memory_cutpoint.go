@@ -306,9 +306,13 @@ func copySessionEventRangeExcludingIndex(events []SessionEvent, start, end, excl
 }
 
 // prependPinnedRootUserInput returns hotEvents with root pinned at the front.
+// The pinned root is marked with EventSourcePinnedRoot so subsequent compactions
+// can identify it as a synthetic event and exclude it from re-summarization.
 func prependPinnedRootUserInput(hotEvents []SessionEvent, root SessionEvent) []SessionEvent {
+	pinned := root
+	pinned.Source = EventSourcePinnedRoot
 	out := make([]SessionEvent, 0, len(hotEvents)+1)
-	out = append(out, root)
+	out = append(out, pinned)
 	out = append(out, hotEvents...)
 	return out
 }

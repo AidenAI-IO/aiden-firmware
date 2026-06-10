@@ -67,6 +67,16 @@ type MemoryManager struct {
 
 const defaultHotWindowEvents = 30
 
+const (
+	// EventSourceCompactionPrefix marks synthetic events created during split-turn
+	// compaction to carry the turn prefix summary into the hot window.
+	EventSourceCompactionPrefix = "compaction_prefix"
+
+	// EventSourcePinnedRoot marks the root user_input when it is pinned at the
+	// front of the hot window to preserve the original task goal.
+	EventSourcePinnedRoot = "pinned_root"
+)
+
 // MessageRecord represents a single message in the conversation history with
 // its role and content.
 type MessageRecord struct {
@@ -655,11 +665,16 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	// retained suffix keeps the context of the half-finished turn. The root
 	// user_input is excluded from summaries when it is pinned into the hot
 	// window, so the original task goal does not depend on summary quality.
-	historyEvents := compactEvents
+	//
+	// Filter out synthetic events from previous compactions to prevent recursive
+	// summarization: a turn-prefix summary should not include the summary text
+	// from an earlier split-turn compaction, and pinned roots should not be
+	// re-summarized after being prepended with their EventSourcePinnedRoot marker.
+	historyEvents := filterSyntheticEvents(compactEvents)
 	var turnPrefixEvents []SessionEvent
 	if plan.isSplitTurn {
-		historyEvents = copySessionEventRangeExcludingIndex(events, 0, plan.turnStartIndex, rootUserIndex)
-		turnPrefixEvents = copySessionEventRangeExcludingIndex(events, plan.turnStartIndex, plan.cutIndex, rootUserIndex)
+		historyEvents = filterSyntheticEvents(copySessionEventRangeExcludingIndex(events, 0, plan.turnStartIndex, rootUserIndex))
+		turnPrefixEvents = filterSyntheticEvents(copySessionEventRangeExcludingIndex(events, plan.turnStartIndex, plan.cutIndex, rootUserIndex))
 	}
 
 	summary, structured := m.buildEventSummary(ctx, historyEvents)
@@ -912,6 +927,24 @@ func (m *MemoryManager) buildTurnPrefixSummary(ctx context.Context, events []Ses
 	return summarizeSessionEvents(events)
 }
 
+// filterSyntheticEvents returns a copy of events excluding synthetic
+// compaction-generated entries (turn prefix summaries, pinned roots). These
+// synthetic events provide context for the LLM but should not be re-summarized
+// during subsequent compactions to prevent recursive summarization and pollution.
+func filterSyntheticEvents(events []SessionEvent) []SessionEvent {
+	filtered := make([]SessionEvent, 0, len(events))
+	for _, event := range events {
+		switch event.Source {
+		case EventSourceCompactionPrefix, EventSourcePinnedRoot:
+			// Skip synthetic events created by previous compactions
+			continue
+		default:
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
+}
+
 // prependTurnPrefixContext inserts a synthetic system event carrying the
 // split-turn prefix summary at the head of the hot window, so the retained
 // events do not begin with a dangling assistant/tool result.
@@ -921,6 +954,7 @@ func prependTurnPrefixContext(hotEvents []SessionEvent, prefixSummary string) []
 		Ts:      time.Now().UTC().Format(time.RFC3339Nano),
 		Type:    "system_event",
 		Role:    "system",
+		Source:  EventSourceCompactionPrefix,
 		Content: "Turn Context (split turn):\n" + prefixSummary,
 	}
 	return append([]SessionEvent{ctxEvent}, hotEvents...)
