@@ -273,6 +273,7 @@ func (s *Server) Start() error {
 
 	// Benchmark endpoints
 	mux.HandleFunc("/benchmark", s.handleBenchmarkIndex)
+	mux.HandleFunc("/benchmark/record", s.handleBenchmarkRecord)
 	mux.HandleFunc("/benchmark/suites", s.handleBenchmarkSuites)
 	mux.HandleFunc("/benchmark/runs", s.handleBenchmarkRuns)
 	mux.HandleFunc("/benchmark/report/", s.handleBenchmarkReport)
@@ -281,6 +282,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/benchmark/run", s.handleBenchmarkRun)
 	mux.HandleFunc("/benchmark/suites/import", s.handleBenchmarkImport)
 	mux.HandleFunc("/benchmark/suites/delete", s.handleBenchmarkDelete)
+	mux.HandleFunc("/benchmark/suites/generate", s.handleBenchmarkGenerate)
+	mux.HandleFunc("/benchmark/suites/generate-perception", s.handleBenchmarkGeneratePerception)
+	mux.HandleFunc("/benchmark/suites/import-with-assets", s.handleBenchmarkImportWithAssets)
 	mux.HandleFunc("/user_files", s.handleUserFiles)
 	mux.HandleFunc("/user_files/regenerate", s.handleUserFilesRegenerate)
 

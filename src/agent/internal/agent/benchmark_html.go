@@ -258,3 +258,243 @@ load();
 setInterval(function(){if(!pollTimer)loadRuns()},10000);
 </script></body></html>
 `
+
+// benchmarkRecordHTML is the screenshot-task recorder served at /benchmark/record.
+// Reuses the image loading + normalized-coordinate logic from coordinate_debug_html.go;
+// adds rectangle drag, target name, and a "Generate with LLM" button that POSTs to
+// /benchmark/suites/generate-perception then to /benchmark/suites/import-with-assets.
+const benchmarkRecordHTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>录入截图任务</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f1ede2; color: #1e241d; padding: 20px; }
+.container { max-width: 1100px; margin: 0 auto; background: #fffbf5; border-radius: 16px; padding: 24px; box-shadow: 0 8px 22px rgba(43,47,40,0.08); }
+h1 { color: #155646; margin-bottom: 8px; font-size: 22px; }
+.back-link { color: #1f7a63; font-size: 13px; text-decoration: none; }
+input[type="text"], textarea { width: 100%; padding: 8px; border: 1px solid #d8cfbf; border-radius: 6px; font-size: 14px; background: #fffdf8; }
+textarea { min-height: 60px; font-family: inherit; }
+label { display: block; font-size: 12px; color: #43493d; margin: 12px 0 4px; font-weight: 600; }
+.btn { padding: 10px 16px; background: #1f7a63; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+.btn:hover { background: #155646; }
+.btn:disabled { background: #b9c2b6; cursor: not-allowed; }
+.btn-secondary { background: #be7d34; }
+.btn-secondary:hover { background: #9d6328; }
+.canvas-wrap { margin: 12px 0; border: 2px solid #1f7a63; border-radius: 8px; display: inline-block; max-width: 100%; }
+canvas { display: block; cursor: crosshair; max-width: 100%; height: auto; }
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.muted { color: #697063; font-size: 12px; }
+.field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.json-preview { background: #1e241d; color: #cce4d8; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 320px; overflow: auto; }
+.error { color: #be4334; font-size: 13px; margin-top: 6px; }
+.ok { color: #1f7a63; font-size: 13px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="container">
+<a class="back-link" href="/benchmark">← 返回 Benchmark</a>
+<h1>📷 录入截图任务</h1>
+
+<div class="field-grid">
+<div>
+<label for="suiteName">Suite name</label>
+<input type="text" id="suiteName" placeholder="iphone_perception">
+</div>
+<div>
+<label for="taskId">Task ID</label>
+<input type="text" id="taskId" placeholder="find_settings_iphone">
+</div>
+</div>
+
+<label>截图</label>
+<div class="row">
+<button class="btn" id="grabBtn">📷 抓取设备画面</button>
+<input type="file" id="fileInput" accept="image/*" style="display:none">
+<button class="btn btn-secondary" id="uploadBtn">📁 上传图片</button>
+<span class="muted">或 Ctrl/Cmd+V 粘贴</span>
+</div>
+<div class="canvas-wrap" id="canvasWrap" style="display:none">
+<canvas id="canvas"></canvas>
+</div>
+<div class="muted" id="rectInfo">在画面上拖拽鼠标画矩形选中目标</div>
+
+<div class="field-grid">
+<div>
+<label for="targetName">Target name</label>
+<input type="text" id="targetName" placeholder="Settings icon">
+</div>
+<div>
+<label for="userIntent">User intent</label>
+<input type="text" id="userIntent" placeholder="打开设置 app">
+</div>
+</div>
+
+<div class="row" style="margin-top:14px">
+<button class="btn" id="genBtn" disabled>✨ Generate with LLM</button>
+<button class="btn btn-secondary" id="importBtn" disabled>Import to suite</button>
+<span id="msg"></span>
+</div>
+
+<label>预览生成的 task JSON（可手动修改）</label>
+<div class="json-preview" id="jsonPreview" contenteditable="false">（点 Generate 后显示）</div>
+</div>
+
+<script>
+let img=null, rect=null, canvas, ctx, lastTaskJSON='';
+const wrap=document.getElementById('canvasWrap');
+
+function setupCanvas(){
+  canvas=document.getElementById('canvas');
+  ctx=canvas.getContext('2d');
+  let dragging=false, startX=0, startY=0;
+  canvas.addEventListener('mousedown',e=>{
+    const r=canvas.getBoundingClientRect();
+    startX=(e.clientX-r.left)*canvas.width/r.width;
+    startY=(e.clientY-r.top)*canvas.height/r.height;
+    dragging=true;
+  });
+  canvas.addEventListener('mousemove',e=>{
+    if(!dragging) return;
+    const r=canvas.getBoundingClientRect();
+    const x=(e.clientX-r.left)*canvas.width/r.width;
+    const y=(e.clientY-r.top)*canvas.height/r.height;
+    drawWithRect(startX,startY,x,y);
+  });
+  canvas.addEventListener('mouseup',e=>{
+    if(!dragging) return;
+    dragging=false;
+    const r=canvas.getBoundingClientRect();
+    const x=(e.clientX-r.left)*canvas.width/r.width;
+    const y=(e.clientY-r.top)*canvas.height/r.height;
+    rect={x1:Math.min(startX,x),y1:Math.min(startY,y),x2:Math.max(startX,x),y2:Math.max(startY,y)};
+    drawWithRect(rect.x1,rect.y1,rect.x2,rect.y2);
+    showRectInfo();
+    document.getElementById('genBtn').disabled=false;
+  });
+}
+
+function showRectInfo(){
+  if(!rect||!img){return}
+  const w=img.width-1, h=img.height-1;
+  const nx1=Math.round(rect.x1/w*1000), ny1=Math.round(rect.y1/h*1000);
+  const nx2=Math.round(rect.x2/w*1000), ny2=Math.round(rect.y2/h*1000);
+  document.getElementById('rectInfo').textContent='Normalized rectangle: ('+nx1+','+ny1+')-('+nx2+','+ny2+')';
+}
+
+function drawImage(){
+  if(!img) return;
+  canvas.width=img.width; canvas.height=img.height;
+  ctx.drawImage(img,0,0);
+}
+function drawWithRect(x1,y1,x2,y2){
+  drawImage();
+  ctx.strokeStyle='#be4334'; ctx.lineWidth=4;
+  ctx.strokeRect(Math.min(x1,x2),Math.min(y1,y2),Math.abs(x2-x1),Math.abs(y2-y1));
+}
+
+function loadImage(url, onDone){
+  const i=new Image();
+  i.onload=()=>{img=i; rect=null; setupCanvas(); drawImage(); wrap.style.display='inline-block'; if(onDone) onDone()};
+  i.src=url;
+}
+
+document.getElementById('grabBtn').addEventListener('click',async()=>{
+  const r=await fetch('/api/screenshot.jpg?t='+Date.now(),{cache:'no-store'});
+  if(!r.ok){alert('抓取失败 '+r.status); return}
+  const blob=await r.blob();
+  loadImage(URL.createObjectURL(blob));
+});
+document.getElementById('uploadBtn').addEventListener('click',()=>document.getElementById('fileInput').click());
+document.getElementById('fileInput').addEventListener('change',e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const fr=new FileReader();
+  fr.onload=ev=>loadImage(ev.target.result);
+  fr.readAsDataURL(f);
+});
+document.addEventListener('keydown',e=>{
+  if((e.ctrlKey||e.metaKey)&&e.key==='v'&&navigator.clipboard&&navigator.clipboard.read){
+    navigator.clipboard.read().then(items=>{
+      for(const it of items) for(const t of it.types) if(t.startsWith('image/')){
+        it.getType(t).then(b=>{
+          const fr=new FileReader();
+          fr.onload=ev=>loadImage(ev.target.result);
+          fr.readAsDataURL(b);
+        });
+        return;
+      }
+    }).catch(()=>{});
+  }
+});
+
+async function blobOrCanvasToB64(){
+  return new Promise((resolve,reject)=>{
+    canvas.toBlob(b=>{
+      const fr=new FileReader();
+      fr.onloadend=()=>resolve(fr.result.split(',')[1]);
+      fr.onerror=reject;
+      fr.readAsDataURL(b);
+    },'image/jpeg',0.85);
+  });
+}
+
+document.getElementById('genBtn').addEventListener('click',async()=>{
+  const msg=document.getElementById('msg');
+  msg.textContent='生成中...'; msg.className='';
+  try {
+    const w=img.width-1, h=img.height-1;
+    const box={
+      x1:Math.round(rect.x1/w*1000), y1:Math.round(rect.y1/h*1000),
+      x2:Math.round(rect.x2/w*1000), y2:Math.round(rect.y2/h*1000)
+    };
+    const b64=await blobOrCanvasToB64();
+    const resp=await fetch('/benchmark/suites/generate-perception',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        name:document.getElementById('suiteName').value.trim(),
+        task_id:document.getElementById('taskId').value.trim(),
+        user_intent:document.getElementById('userIntent').value.trim(),
+        screenshot_b64:b64,
+        target_box_normalized:box,
+        target_name:document.getElementById('targetName').value.trim()
+      })
+    });
+    const d=await resp.json();
+    if(!d.ok){msg.textContent=d.error||'生成失败'; msg.className='error'; return}
+    lastTaskJSON=d.task_json;
+    document.getElementById('jsonPreview').textContent=lastTaskJSON;
+    document.getElementById('jsonPreview').contentEditable='true';
+    document.getElementById('importBtn').disabled=false;
+    msg.textContent='已生成，预览后点 Import';msg.className='ok';
+  } catch(e) { msg.textContent=String(e); msg.className='error'; }
+});
+
+document.getElementById('importBtn').addEventListener('click',async()=>{
+  const msg=document.getElementById('msg');
+  const name=document.getElementById('suiteName').value.trim();
+  const taskId=document.getElementById('taskId').value.trim();
+  const taskRaw=document.getElementById('jsonPreview').textContent.trim();
+  let task;
+  try { task=JSON.parse(taskRaw).task; } catch(e) { msg.textContent='task JSON 解析失败: '+e; msg.className='error'; return }
+  const suiteJSON=JSON.stringify({name:name, tasks:[task]});
+  const b64=await blobOrCanvasToB64();
+  msg.textContent='导入中...';msg.className='';
+  const resp=await fetch('/benchmark/suites/import-with-assets',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      name:name, suite_json:suiteJSON,
+      assets:[{task_id:taskId, screenshot_b64:b64}]
+    })
+  });
+  const d=await resp.json();
+  if(!d.ok){msg.textContent=d.error||'导入失败'; msg.className='error'; return}
+  msg.textContent='导入成功 → '+d.path;msg.className='ok';
+});
+
+console.log('📷 录入截图任务已加载');
+</script>
+</body>
+</html>
+`

@@ -262,3 +262,8 @@ func (s *Server) handleBenchmarkIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(benchmarkIndexHTML))
 }
+
+func (s *Server) handleBenchmarkRecord(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(benchmarkRecordHTML))
+}
