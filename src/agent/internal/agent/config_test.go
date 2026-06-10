@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -515,5 +517,54 @@ func TestVoiceSessionConfigValidationRejectsNegativeValues(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want contains %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestLoadConfig_BenchmarkSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	body := `
+[model]
+provider = "openrouter"
+api_key = "x"
+model = "y"
+
+[benchmark]
+judge_model = "custom/model-v1"
+benchmark_dir = "/tmp/bench"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Benchmark.JudgeModel != "custom/model-v1" {
+		t.Errorf("JudgeModel = %q", cfg.Benchmark.JudgeModel)
+	}
+	if cfg.Benchmark.Dir != "/tmp/bench" {
+		t.Errorf("Dir = %q", cfg.Benchmark.Dir)
+	}
+}
+
+func TestLoadConfig_BenchmarkDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	body := `
+[model]
+provider = "openrouter"
+api_key = "x"
+model = "y"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Benchmark.JudgeModel != "" {
+		t.Errorf("expected empty JudgeModel default, got %q", cfg.Benchmark.JudgeModel)
 	}
 }

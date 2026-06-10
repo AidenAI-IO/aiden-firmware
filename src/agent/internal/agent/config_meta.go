@@ -83,9 +83,9 @@ func enumOptions(values ...string) []EnumOption {
 }
 
 // eq/ne/in/notIn/truthy are small helpers for building conditions.
-func eq(field, value string) Condition  { return Condition{Field: field, Op: "eq", Value: value} }
-func ne(field, value string) Condition  { return Condition{Field: field, Op: "ne", Value: value} }
-func truthy(field string) Condition     { return Condition{Field: field, Op: "truthy"} }
+func eq(field, value string) Condition { return Condition{Field: field, Op: "eq", Value: value} }
+func ne(field, value string) Condition { return Condition{Field: field, Op: "ne", Value: value} }
+func truthy(field string) Condition    { return Condition{Field: field, Op: "truthy"} }
 func in(field string, vs ...string) Condition {
 	return Condition{Field: field, Op: "in", Values: vs}
 }
@@ -159,6 +159,14 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "sample_rate", Widget: WidgetNumber, Default: 16000},
 					{Key: "channels", Widget: WidgetNumber, Default: 1},
 					{Key: "bit_width", Widget: WidgetNumber, Default: 16},
+				},
+			},
+			{
+				Name: "benchmark",
+				Fields: []FieldMeta{
+					{Key: "judge_model", Widget: WidgetText,
+						Default: "bytedance-seed/seed-2.0-lite"},
+					{Key: "benchmark_dir", Widget: WidgetText},
 				},
 			},
 			{

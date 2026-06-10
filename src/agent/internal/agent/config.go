@@ -58,42 +58,43 @@ func searchAPIKeyOrEnv(configured string, envKeys ...string) string {
 }
 
 type Config struct {
-	Model                    ModelConfig     `toml:"model"`
-	ModelText                ModelConfig     `toml:"model_text,omitempty"` // Override for STT-then-text mode
-	TTS                      TTSConfig       `toml:"tts,omitempty"`
-	STT                      STTConfig       `toml:"stt,omitempty"`
-	HID                      HIDConfig       `toml:"hid"`
-	Audio                    AudioConfig     `toml:"audio,omitempty"`
-	Search                   SearchConfig    `toml:"search,omitempty"`
-	Instruction              string          `toml:"instruction"`
-	AdditionalPrompt         string          `toml:"additional_prompt,omitempty"`
-	InputMode                string          `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
-	TriggerMode              string          `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
-	VADBackend               string          `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
-	VADModelPath             string          `toml:"vad_model_path,omitempty"`
-	VADHelperPath            string          `toml:"vad_helper_path,omitempty"`
-	VADSpeechThreshold       float64         `toml:"vad_speech_threshold,omitempty"`
-	SilenceMs                int             `toml:"silence_ms,omitempty"`
-	MinSpeechMs              int             `toml:"min_speech_ms,omitempty"`
-	VoiceSessionEnabled      *bool           `toml:"voice_session_enabled,omitempty"`
-	VoiceFollowupTimeoutMs   int             `toml:"voice_followup_timeout_ms,omitempty"`
-	VoiceFirstTurnTimeoutMs  int             `toml:"voice_first_turn_timeout_ms,omitempty"`
-	VoiceMaxTurns            int             `toml:"voice_max_turns,omitempty"`
-	VoiceInterruptOnWakeup   *bool           `toml:"voice_interrupt_on_wakeup,omitempty"`
-	VoiceStreamingTTSEnabled *bool           `toml:"voice_streaming_tts_enabled,omitempty"`
-	VoiceToolCallSpeech      *bool           `toml:"voice_tool_call_speech,omitempty"`
-	VoiceMaxResponseTokens   int             `toml:"voice_max_response_tokens,omitempty"`
-	MaxIterations            int             `toml:"max_iterations,omitempty"`
-	ScreenshotKeepN          int             `toml:"screenshot_keep_n,omitempty"`
-	ScreenshotPruneInterval  int             `toml:"screenshot_prune_interval,omitempty"`
-	ScreenStableTimeoutMs    int             `toml:"screen_stable_timeout_ms,omitempty"`
-	ScreenStableMs           int             `toml:"screen_stable_ms,omitempty"`
-	ScreenStableDiffThreshold float64        `toml:"screen_stable_diff_threshold,omitempty"`
-	SkillsDirs               []string        `toml:"skills_dirs"`
-	BundledSkillsDir         string          `toml:"bundled_skills_dir,omitempty"`
-	SkillMergeModel          SkillMergeModel `toml:"-"`
-	Telemetry                TelemetryConfig `toml:"telemetry,omitempty"`
-	ConfigDir                string          `toml:"-"`
+	Model                     ModelConfig     `toml:"model"`
+	ModelText                 ModelConfig     `toml:"model_text,omitempty"` // Override for STT-then-text mode
+	TTS                       TTSConfig       `toml:"tts,omitempty"`
+	STT                       STTConfig       `toml:"stt,omitempty"`
+	HID                       HIDConfig       `toml:"hid"`
+	Audio                     AudioConfig     `toml:"audio,omitempty"`
+	Benchmark                 BenchmarkConfig `toml:"benchmark,omitempty"`
+	Search                    SearchConfig    `toml:"search,omitempty"`
+	Instruction               string          `toml:"instruction"`
+	AdditionalPrompt          string          `toml:"additional_prompt,omitempty"`
+	InputMode                 string          `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
+	TriggerMode               string          `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
+	VADBackend                string          `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
+	VADModelPath              string          `toml:"vad_model_path,omitempty"`
+	VADHelperPath             string          `toml:"vad_helper_path,omitempty"`
+	VADSpeechThreshold        float64         `toml:"vad_speech_threshold,omitempty"`
+	SilenceMs                 int             `toml:"silence_ms,omitempty"`
+	MinSpeechMs               int             `toml:"min_speech_ms,omitempty"`
+	VoiceSessionEnabled       *bool           `toml:"voice_session_enabled,omitempty"`
+	VoiceFollowupTimeoutMs    int             `toml:"voice_followup_timeout_ms,omitempty"`
+	VoiceFirstTurnTimeoutMs   int             `toml:"voice_first_turn_timeout_ms,omitempty"`
+	VoiceMaxTurns             int             `toml:"voice_max_turns,omitempty"`
+	VoiceInterruptOnWakeup    *bool           `toml:"voice_interrupt_on_wakeup,omitempty"`
+	VoiceStreamingTTSEnabled  *bool           `toml:"voice_streaming_tts_enabled,omitempty"`
+	VoiceToolCallSpeech       *bool           `toml:"voice_tool_call_speech,omitempty"`
+	VoiceMaxResponseTokens    int             `toml:"voice_max_response_tokens,omitempty"`
+	MaxIterations             int             `toml:"max_iterations,omitempty"`
+	ScreenshotKeepN           int             `toml:"screenshot_keep_n,omitempty"`
+	ScreenshotPruneInterval   int             `toml:"screenshot_prune_interval,omitempty"`
+	ScreenStableTimeoutMs     int             `toml:"screen_stable_timeout_ms,omitempty"`
+	ScreenStableMs            int             `toml:"screen_stable_ms,omitempty"`
+	ScreenStableDiffThreshold float64         `toml:"screen_stable_diff_threshold,omitempty"`
+	SkillsDirs                []string        `toml:"skills_dirs"`
+	BundledSkillsDir          string          `toml:"bundled_skills_dir,omitempty"`
+	SkillMergeModel           SkillMergeModel `toml:"-"`
+	Telemetry                 TelemetryConfig `toml:"telemetry,omitempty"`
+	ConfigDir                 string          `toml:"-"`
 }
 
 type TelemetryConfig struct {
@@ -164,6 +165,19 @@ type AudioConfig struct {
 	SampleRate int    `toml:"sample_rate,omitempty"`
 	Channels   int    `toml:"channels,omitempty"`
 	BitWidth   int    `toml:"bit_width,omitempty"`
+}
+
+// BenchmarkConfig configures the benchmark management endpoints in the agent
+// (migrated from config_web). All fields are optional; empty strings fall back
+// to runtime defaults.
+type BenchmarkConfig struct {
+	// JudgeModel is the OpenRouter model name passed to runner.main as
+	// --judge-model. Defaults to "bytedance-seed/seed-2.0-lite" when empty.
+	JudgeModel string `toml:"judge_model,omitempty"`
+	// Dir overrides the auto-detected benchmark root. When empty, the
+	// agent probes -benchmark-dir flag, AIDEN_BENCHMARK_DIR env,
+	// /userdata/agent/benchmark, then <cwd>/benchmark.
+	Dir string `toml:"benchmark_dir,omitempty"`
 }
 
 type ProxyConfig struct {
