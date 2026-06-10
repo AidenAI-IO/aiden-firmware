@@ -88,6 +88,28 @@ func TestSessionEventsStripScreenshotData(t *testing.T) {
 	if !strings.Contains(toolEvent.Content, `"height":2400`) {
 		t.Fatalf("metadata should be preserved: %s", toolEvent.Content)
 	}
+
+	snapshotData, err := os.ReadFile(filepath.Join(storageDir, "default.json"))
+	if err != nil {
+		t.Fatalf("read legacy memory snapshot: %v", err)
+	}
+	var snapshotRecords []MessageRecord
+	if err := json.Unmarshal(snapshotData, &snapshotRecords); err != nil {
+		t.Fatalf("decode legacy memory snapshot: %v", err)
+	}
+	if len(snapshotRecords) != 3 {
+		t.Fatalf("expected 3 snapshot records, got %d", len(snapshotRecords))
+	}
+	snapshotToolContent := snapshotRecords[1].Content
+	if strings.Contains(snapshotToolContent, "dGVzdC1iYXNlNjQtc2NyZWVuc2hvdC1wYXlsb2FkCg==") {
+		t.Fatalf("legacy snapshot should strip screenshot base64 data: %s", snapshotData)
+	}
+	if strings.Contains(snapshotToolContent, `"data"`) {
+		t.Fatalf("legacy snapshot should omit data field: %s", snapshotData)
+	}
+	if !strings.Contains(snapshotToolContent, `"width":1080`) {
+		t.Fatalf("legacy snapshot should preserve metadata: %s", snapshotData)
+	}
 }
 
 func TestSessionMemoryAppendEventStripsScreenshotData(t *testing.T) {
@@ -273,7 +295,7 @@ func TestMemoryManagerSaveCompactsHotWindow(t *testing.T) {
 		llms.HumanChatMessage{Content: "记一下，以后处理蓝海报销App超过100元的提交或付款动作，必须先给风险摘要并等我确认。"},
 		llms.AIChatMessage{Content: "已记录这个高风险操作规则。"},
 	}
-	for i := 0; i < 22; i++ {
+	for i := 0; i < 39; i++ {
 		messages = append(messages, llms.HumanChatMessage{Content: "填充对话轮次"})
 	}
 	if err := handle.History.SetMessages(ctx, messages); err != nil {
@@ -363,7 +385,7 @@ func TestMaintainFilesystemMemoryUsesStructuredSummarizerAndFallsBackToPlain(t *
 		t.Fatalf("Get() error = %v", err)
 	}
 	var msgs []llms.ChatMessage
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 9; i++ {
 		msgs = append(msgs, llms.HumanChatMessage{Content: fmt.Sprintf("message %d", i)})
 	}
 	if err := handle.History.SetMessages(ctx, msgs); err != nil {
@@ -407,7 +429,7 @@ func TestMaintainFilesystemMemoryFallsBackWhenStructuredSummaryIsMissing(t *test
 		t.Fatalf("Get() error = %v", err)
 	}
 	var msgs []llms.ChatMessage
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 9; i++ {
 		msgs = append(msgs, llms.HumanChatMessage{Content: fmt.Sprintf("message %d", i)})
 	}
 	if err := handle.History.SetMessages(ctx, msgs); err != nil {
@@ -451,7 +473,7 @@ func TestMaintainFilesystemMemoryUsesLLMSummary(t *testing.T) {
 		t.Fatalf("Get() error = %v", err)
 	}
 	var msgs []llms.ChatMessage
-	for i := 0; i < 22; i++ {
+	for i := 0; i < 41; i++ {
 		msgs = append(msgs, llms.HumanChatMessage{Content: fmt.Sprintf("message %d", i)})
 	}
 	if err := handle.History.SetMessages(ctx, msgs); err != nil {
@@ -607,7 +629,7 @@ func TestMaintainFilesystemMemoryTriggersOnEventCountWhenTokenUnavailable(t *tes
 	os.MkdirAll(sessionDir, 0o755)
 	session := NewSessionMemoryStore(sessionDir)
 	now := time.Now().UTC()
-	for i := 0; i < 15; i++ {
+	for i := 0; i < 21; i++ {
 		session.AppendEvent(ctx, SessionEvent{
 			EventID: fmt.Sprintf("evt_%d", i),
 			Ts:      now.Format(time.RFC3339Nano),
@@ -676,7 +698,7 @@ func TestMemoryManagerClearAllRemovesFilesystemMemoryArtifacts(t *testing.T) {
 	messages := []llms.ChatMessage{
 		llms.HumanChatMessage{Content: "记一下，以后处理蓝海报销App超过100元必须先确认。"},
 	}
-	for i := 0; i < 22; i++ {
+	for i := 0; i < 40; i++ {
 		messages = append(messages, llms.HumanChatMessage{Content: "填充对话轮次"})
 	}
 	if err := handle.History.SetMessages(ctx, messages); err != nil {

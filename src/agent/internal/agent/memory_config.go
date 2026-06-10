@@ -36,6 +36,20 @@ type MemoryExtractionConfig struct {
 	// alongside ReserveTokens inside the active window. Borrowed from pi's
 	// keepRecentTokens.
 	KeepRecentTokens int `yaml:"keep_recent_tokens"`
+
+	countCompressAfterEventsConfigured bool
+}
+
+type rawMemoryExtractionConfig struct {
+	TagCandidates            *[]string `yaml:"tag_candidates"`
+	EntitySuffixes           *[]string `yaml:"entity_suffixes"`
+	HotWindowEvents          *int      `yaml:"hot_window_events"`
+	CountCompressAfterEvents *int      `yaml:"count_compress_after_events"`
+	ContextWindow            *int      `yaml:"context_window"`
+	CompressAtPercent        *int      `yaml:"compress_at_percent"`
+	SummaryMaxChunks         *int      `yaml:"summary_max_chunks"`
+	ReserveTokens            *int      `yaml:"reserve_tokens"`
+	KeepRecentTokens         *int      `yaml:"keep_recent_tokens"`
 }
 
 const (
@@ -64,24 +78,14 @@ func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
 	}
 }
 
-// LoadMemoryExtractionConfig loads memory extraction configuration from a YAML
-// file in the specified config directory. Falls back to defaults when the file
-// is missing or invalid, and applies sanity checks to all loaded values.
-func LoadMemoryExtractionConfig(configDir string) MemoryExtractionConfig {
-	cfg := DefaultMemoryExtractionConfig()
-	if configDir == "" {
-		return cfg
-	}
-	path := filepath.Join(configDir, "memory", "extraction.yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return cfg
-	}
-	_ = yaml.Unmarshal(data, &cfg)
+func normalizeMemoryExtractionConfig(cfg MemoryExtractionConfig) MemoryExtractionConfig {
 	if cfg.HotWindowEvents <= 0 {
 		cfg.HotWindowEvents = defaultHotWindowEvents
 	}
-	if cfg.CountCompressAfterEvents <= cfg.HotWindowEvents {
+	if !cfg.countCompressAfterEventsConfigured &&
+		(cfg.CountCompressAfterEvents == defaultCountCompressAfterEvents || cfg.CountCompressAfterEvents <= cfg.HotWindowEvents) {
+		cfg.CountCompressAfterEvents = cfg.HotWindowEvents * 2
+	} else if cfg.CountCompressAfterEvents <= cfg.HotWindowEvents {
 		cfg.CountCompressAfterEvents = cfg.HotWindowEvents * 2
 	}
 	if cfg.ContextWindow <= 0 {
@@ -100,4 +104,53 @@ func LoadMemoryExtractionConfig(configDir string) MemoryExtractionConfig {
 		cfg.KeepRecentTokens = defaultKeepRecentTokens
 	}
 	return cfg
+}
+
+// LoadMemoryExtractionConfig loads memory extraction configuration from a YAML
+// file in the specified config directory. Falls back to defaults when the file
+// is missing or invalid, and applies sanity checks to all loaded values.
+func LoadMemoryExtractionConfig(configDir string) MemoryExtractionConfig {
+	cfg := DefaultMemoryExtractionConfig()
+	if configDir == "" {
+		return cfg
+	}
+	path := filepath.Join(configDir, "memory", "extraction.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cfg
+	}
+
+	var raw rawMemoryExtractionConfig
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return cfg
+	}
+	if raw.TagCandidates != nil {
+		cfg.TagCandidates = *raw.TagCandidates
+	}
+	if raw.EntitySuffixes != nil {
+		cfg.EntitySuffixes = *raw.EntitySuffixes
+	}
+	if raw.HotWindowEvents != nil {
+		cfg.HotWindowEvents = *raw.HotWindowEvents
+	}
+	if raw.CountCompressAfterEvents != nil {
+		cfg.CountCompressAfterEvents = *raw.CountCompressAfterEvents
+		cfg.countCompressAfterEventsConfigured = true
+	}
+	if raw.ContextWindow != nil {
+		cfg.ContextWindow = *raw.ContextWindow
+	}
+	if raw.CompressAtPercent != nil {
+		cfg.CompressAtPercent = *raw.CompressAtPercent
+	}
+	if raw.SummaryMaxChunks != nil {
+		cfg.SummaryMaxChunks = *raw.SummaryMaxChunks
+	}
+	if raw.ReserveTokens != nil {
+		cfg.ReserveTokens = *raw.ReserveTokens
+	}
+	if raw.KeepRecentTokens != nil {
+		cfg.KeepRecentTokens = *raw.KeepRecentTokens
+	}
+	return normalizeMemoryExtractionConfig(cfg)
 }

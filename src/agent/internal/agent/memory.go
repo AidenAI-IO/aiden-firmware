@@ -93,7 +93,7 @@ type MemoryManagerOption func(*MemoryManager)
 
 // WithExtractionConfig sets the memory extraction configuration.
 func WithExtractionConfig(cfg MemoryExtractionConfig) MemoryManagerOption {
-	return func(m *MemoryManager) { m.extraction = cfg }
+	return func(m *MemoryManager) { m.extraction = normalizeMemoryExtractionConfig(cfg) }
 }
 
 // WithSummarizeFn sets the plain-text summarization function.
@@ -502,6 +502,7 @@ func (m *MemoryManager) persistSnapshot(agentName string, records []MessageRecor
 	}
 	defer fl.Unlock()
 
+	records = sanitizeMessageRecords(records)
 	if err := m.appendSessionEvents(agentName, records); err != nil {
 		return err
 	}
@@ -520,6 +521,15 @@ func (m *MemoryManager) persistSnapshot(agentName string, records []MessageRecor
 		return fmt.Errorf("replace memory snapshot for %q: %w", agentName, err)
 	}
 	return nil
+}
+
+func sanitizeMessageRecords(records []MessageRecord) []MessageRecord {
+	out := make([]MessageRecord, len(records))
+	for i, record := range records {
+		record.Content = stripScreenshotData(record.Content)
+		out[i] = record
+	}
+	return out
 }
 
 func (m *MemoryManager) removeSessionPersisted(agentName string) error {
@@ -1094,7 +1104,7 @@ func sessionEventFromRecord(record MessageRecord, ts time.Time, offset int) Sess
 	// base64 string that it would count as pure ASCII (chars/4). Keeps
 	// width/height/format/size metadata intact. This is the primary defense against
 	// screenshot data inflating the session events; SessionMemoryStore.AppendEvent
-	// is the secondary path (direct writes that bypass this conversion).
+	// is the secondary path for direct writes that bypass this conversion.
 	content := stripScreenshotData(record.Content)
 
 	event := SessionEvent{

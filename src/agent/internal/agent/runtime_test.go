@@ -1376,7 +1376,7 @@ func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 		"我是硬件产品经理，平时用中文沟通，关注开发板 agent 端到端行为。",
 		"记一下，以后处理蓝海报销App超过100元的提交或付款动作，必须先给风险摘要并等我确认。",
 	}
-	for i := 0; i < 21; i++ {
+	for i := 0; i < 19; i++ {
 		inputs = append(inputs, "填充对话轮次")
 	}
 	for _, input := range inputs {
@@ -1395,7 +1395,7 @@ func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
 
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	now := time.Now().UTC()
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 9; i++ {
 		if _, err := session.AppendEvent(context.Background(), SessionEvent{
 			EventID: fmt.Sprintf("evt_%d", i),
 			Ts:      now.Format(time.RFC3339Nano),

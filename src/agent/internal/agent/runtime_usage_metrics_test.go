@@ -21,7 +21,7 @@ func usageResponse(prompt, completion, total int) *llms.ContentResponse {
 
 // TestRecordUsageMetricsAccumulatesAcrossCalls verifies that the role-collaborative
 // loop's multiple LLM calls sum into the run metrics instead of overwriting, while
-// LastPromptTokens still tracks the most recent single call for the compression
+// LastPromptTokens tracks the largest single prompt in the run for the compression
 // heuristic.
 func TestRecordUsageMetricsAccumulatesAcrossCalls(t *testing.T) {
 	metrics := &RunMetrics{}
@@ -39,8 +39,8 @@ func TestRecordUsageMetricsAccumulatesAcrossCalls(t *testing.T) {
 	if metrics.TotalTokens != 400 {
 		t.Errorf("TotalTokens = %d, want 400 (120+180+100)", metrics.TotalTokens)
 	}
-	if metrics.LastPromptTokens != 90 {
-		t.Errorf("LastPromptTokens = %d, want 90 (last call only)", metrics.LastPromptTokens)
+	if metrics.LastPromptTokens != 150 {
+		t.Errorf("LastPromptTokens = %d, want 150 (max single prompt)", metrics.LastPromptTokens)
 	}
 }
 
