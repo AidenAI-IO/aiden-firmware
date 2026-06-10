@@ -287,7 +287,71 @@ TEST_CASE("config web exposes brave search provider") {
     CHECK(source.find("\"brave\"") != std::string::npos);
     CHECK(source.find("\"brave-free\"") != std::string::npos);
     CHECK(source.find("provider == \"brave\" || provider == \"brave-free\"") != std::string::npos);
-    CHECK(html.find("duckduckgo / brave / tavily") != std::string::npos);
+    CHECK(html.find("search:{provider:['duckduckgo','brave','brave-free','tavily'") != std::string::npos);
+}
+
+TEST_CASE("config web renders finite choice fields as selects") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const char* select_ids[] = {
+        "agent_input_mode",
+        "agent_trigger_mode",
+        "agent_vad_backend",
+        "agent_vad_speech_threshold",
+        "model_provider",
+        "tts_provider",
+        "tts_speed",
+        "stt_provider",
+        "hid_pointer_mode",
+        "search_provider",
+        "telemetry_provider",
+        NULL,
+    };
+    for (int i = 0; select_ids[i]; ++i) {
+        const std::string select_marker = "<select id=\\\"" + std::string(select_ids[i]) + "\\\"";
+        const std::string input_marker = "<input id=\\\"" + std::string(select_ids[i]) + "\\\"";
+        CHECK_MESSAGE(html.find(select_marker) != std::string::npos, select_ids[i]);
+        CHECK_MESSAGE(html.find(input_marker) == std::string::npos, select_ids[i]);
+    }
+
+    CHECK(html.find("input,select,textarea") != std::string::npos);
+    CHECK(html.find("input:focus,select:focus,textarea:focus") != std::string::npos);
+    CHECK(html.find("input:disabled,select:disabled,textarea:disabled") != std::string::npos);
+    CHECK(html.find("const selectFieldOptions=") != std::string::npos);
+    CHECK(html.find("hydrateSelectOptions") != std::string::npos);
+    CHECK(html.find("ensureSelectOption") != std::string::npos);
+    CHECK(html.find("rangeOptions(0,1,0.05,2)") != std::string::npos);
+    CHECK(html.find("rangeOptions(0.5,2,0.1,1)") != std::string::npos);
+}
+
+TEST_CASE("config web updates dependent field visibility from selected values") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find(".field.hidden{display:none}") != std::string::npos);
+    CHECK(html.find("function setFieldVisible(section,key,visible)") != std::string::npos);
+    CHECK(html.find("function applyFieldVisibility()") != std::string::npos);
+    CHECK(html.find("setFieldVisible('model','base_url',modelProvider!=='openrouter')") != std::string::npos);
+    CHECK(html.find("setFieldVisible('search','api_key',searchProvider!=='duckduckgo')") != std::string::npos);
+    CHECK(html.find("const sttTencent=sttProvider==='tencent'||sttProvider==='tencent_asr'") != std::string::npos);
+    CHECK(html.find("setFieldVisible('telemetry',key,telemetryEnabled)") != std::string::npos);
+    CHECK(html.find("const voiceMode=agentMode==='stt'||agentMode==='audio'") != std::string::npos);
+    CHECK(html.find("const wakeupSession=agentMode==='stt'&&agentTrigger==='wakeup'") != std::string::npos);
+    CHECK(html.find("function bindFieldVisibility()") != std::string::npos);
+    CHECK(html.find("addEventListener('change',function(){applyFieldVisibility();})") != std::string::npos);
+    CHECK(html.find("fillConfigForm(config){Object.keys(sectionFields).forEach") != std::string::npos);
+    CHECK(html.find("applyFieldVisibility();}") != std::string::npos);
 }
 
 TEST_CASE("config web exposes a single system env editor backed by the env file") {
