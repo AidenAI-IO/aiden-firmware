@@ -362,17 +362,18 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 			messages = append(messages, llms.SystemChatMessage{
 				Content: "=== Recent session context (hot window) ===\n" +
 					"The messages below are your most recent exchanges with the user. " +
-					"Earlier conversation history has been compressed into summaries. " +
-					"Prioritize responding to the user's current instruction over unfinished items in this context.",
+					"Earlier conversation history has been compressed into summaries.",
 			})
 		}
 		for _, record := range records {
 			messages = append(messages, messageFromRecord(record))
 		}
-		// Mark end of hot window
+		// Mark end of hot window and prioritize current instruction
 		if m.hasCompressedHistory() && len(records) > 0 {
 			messages = append(messages, llms.SystemChatMessage{
-				Content: "=== End of recent context ===",
+				Content: "=== End of recent context ===\n" +
+					"Prioritize responding to the user's current instruction. " +
+					"Only reference the above context if directly relevant to the current request.",
 			})
 		}
 		if err := history.SetMessages(context.Background(), messages); err != nil {
