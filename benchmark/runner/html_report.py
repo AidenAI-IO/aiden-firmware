@@ -146,7 +146,7 @@ def generate_report_html(run_dir: Path) -> str:
     rows_html = ""
     for i, t in enumerate(tasks_js_items):
         status = t["status"]
-        badge_cls = "pass" if status == "passed" else "fail" if status == "failed" else "skip"
+        badge_cls = "pass" if status == "passed" else "fail" if status in {"failed", "timeout", "judge_error"} else "skip"
         badge_label = "Pass" if status == "passed" else "Fail" if status == "failed" else status.title()
         rows_html += f"""<tr data-task="{i}">
   <td><span class="task-id">{_esc(t['id'])}</span></td>
@@ -360,11 +360,11 @@ function openDrawer(i) {{
   var t = TASKS[i]; if (!t) return;
   document.getElementById("dTitle").textContent = t.id;
   document.getElementById("dChips").innerHTML =
-    '<span class="chip">' + t.category + '</span>' +
-    '<span class="chip">' + t.status + '</span>' +
-    '<span class="chip">' + t.tool_calls_count + ' tools</span>' +
-    '<span class="chip">' + t.wall_ms + 'ms</span>' +
-    (t.screenshots_taken ? '<span class="chip">' + t.screenshots_taken + ' screenshots</span>' : '');
+    '<span class="chip">' + esc(t.category) + '</span>' +
+    '<span class="chip">' + esc(t.status) + '</span>' +
+    '<span class="chip">' + esc(String(t.tool_calls_count)) + ' tools</span>' +
+    '<span class="chip">' + esc(String(t.wall_ms)) + 'ms</span>' +
+    (t.screenshots_taken ? '<span class="chip">' + esc(String(t.screenshots_taken)) + ' screenshots</span>' : '');
   var body = "";
   body += '<div class="block"><div class="block-head"><strong>Prompt</strong><span>user input</span></div><pre class="block-body">' + esc(t.prompt) + '</pre></div>';
   body += '<div class="block"><div class="block-head"><strong>Task Description</strong><span>for judge</span></div><div class="block-body">' + esc(t.description) + '</div></div>';
