@@ -104,10 +104,12 @@ watchdog_main() {
             fi
 
             log "ECM stall detected — resetting"
+            # Start the cooldown window from the attempt itself: even if the
+            # reset fails, we don't want to hammer the gadget every interval.
+            last_reset=$now
             if reset_ecm; then
-                last_reset=$now
+                fail_count=0
             fi
-            fail_count=0
         fi
     done
 }
