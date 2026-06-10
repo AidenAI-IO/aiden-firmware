@@ -3417,7 +3417,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
         cJSON* r = cJSON_CreateObject();
         cJSON_AddStringToObject(r, "check", "provider");
-        const char* allowed[] = {"duckduckgo", "brave", "brave-free", "tavily", "google", "bing", NULL};
+        const char* allowed[] = {"duckduckgo", "brave", "brave-free", "tavily", NULL};
         bool ok = false;
         std::string allowed_list;
         for (int i = 0; allowed[i]; ++i) {
