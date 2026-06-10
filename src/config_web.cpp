@@ -113,6 +113,7 @@ const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
 const char* kOtaInitScript = "/etc/init.d/S54ota";
 const char* kAgentLogPath = "/var/log/agent/agent.log";
+const char* kAgentBin = "/oem/usr/bin/agent";
 const char* kOtaBin = "/oem/usr/bin/ota";
 const char* kEnvRunBin = "/oem/usr/bin/aiden-env-run";
 const char* kOtaWebUpdateLockPath = "/tmp/config_web_ota_update.lock";
@@ -850,6 +851,12 @@ void send_response(int client_fd,
 }
 
 void apply_default_agent_config(aiden::AgentToml& cfg) {
+    // NOTE: The canonical defaults for these fields live in the agent's
+    // ConfigMeta() (src/agent/internal/agent/config_meta.go), which the config
+    // web UI consumes via `agent config-meta`. The numeric/string defaults here
+    // are kept in lockstep with that source of truth; this function only seeds a
+    // freshly provisioned agent.toml on the device where the Go metadata is not
+    // consulted. When changing a default, update ConfigMeta() first.
     cfg.instruction =
         "默认用简体中文回答，语气要像真人说话，简短自然，适合 TTS 播放。"
         "需要读取或改变手机、外部设备或服务状态时必须使用工具；可以连续组合多个工具完成任务。"
@@ -1339,7 +1346,7 @@ std::string validate_agent_config_for_save(const aiden::AgentToml& config) {
     // The agent CLI's `config-check` is the single source of truth for config
     // validation. If the binary is unavailable, fail closed: reject the save
     // rather than persist a config we cannot validate.
-    const char* agent_bin = "/oem/usr/bin/agent";
+    const char* agent_bin = kAgentBin;
     if (!file_exists(agent_bin)) {
         std::cerr << "[config] agent binary not found at " << agent_bin
                   << ", refusing to save unvalidated config\n";
@@ -2281,6 +2288,44 @@ ApiResponse handle_get_config(const Options& options) {
     }
 
     return make_json_ok(root);
+}
+
+// handle_get_config_meta serves the config field metadata produced by the agent
+// CLI's `config-meta` subcommand. The agent binary is the single source of
+// truth for field widgets, enums, ranges, defaults, secret flags and
+// visibility rules; the UI consumes this to render the config form. Fails
+// closed (503) when the binary is missing or returns unparseable output rather
+// than letting the UI fall back to stale hard-coded metadata.
+ApiResponse handle_get_config_meta() {
+    if (!file_exists(kAgentBin)) {
+        std::cerr << "[config] agent binary not found at " << kAgentBin
+                  << ", cannot serve config metadata\n";
+        return make_json_error(503, "config metadata unavailable: agent binary not found");
+    }
+
+    std::string cmd = std::string(kAgentBin) + " config-meta --format=json";
+    CommandResult result = run_command_with_stdin(cmd, "", 2000);
+
+    if (result.timed_out) {
+        return make_json_error(503, "config metadata timed out");
+    }
+    if (result.exit_code != 0) {
+        std::cerr << "[config] agent config-meta exited " << result.exit_code
+                  << ": " << result.output << "\n";
+        return make_json_error(503, "config metadata generation failed");
+    }
+
+    // Validate the payload is well-formed JSON before forwarding it verbatim.
+    cJSON* parsed = cJSON_Parse(result.output.c_str());
+    if (!parsed) {
+        std::cerr << "[config] agent config-meta returned invalid JSON: " << result.output << "\n";
+        return make_json_error(503, "config metadata returned an unexpected response");
+    }
+    cJSON_Delete(parsed);
+
+    ApiResponse response;
+    response.body = result.output;
+    return response;
 }
 
 ApiResponse handle_get_agent_status() {
@@ -4111,6 +4156,10 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "GET" && request.path == "/api/config") {
         return handle_get_config(options);
+    }
+
+    if (request.method == "GET" && request.path == "/api/config/meta") {
+        return handle_get_config_meta();
     }
 
     if (request.method == "POST" && request.path == "/api/config") {

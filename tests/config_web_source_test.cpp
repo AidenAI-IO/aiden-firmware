@@ -255,11 +255,6 @@ TEST_CASE("config web exposes screenshot pruning config fields") {
     CHECK(html.find("agent_screen_stable_timeout_ms") != std::string::npos);
     CHECK(html.find("agent_screen_stable_ms") != std::string::npos);
     CHECK(html.find("agent_screen_stable_diff_threshold") != std::string::npos);
-    CHECK(html.find("['screenshot_keep_n','number']") != std::string::npos);
-    CHECK(html.find("['screenshot_prune_interval','number']") != std::string::npos);
-    CHECK(html.find("['screen_stable_timeout_ms','number']") != std::string::npos);
-    CHECK(html.find("['screen_stable_ms','number']") != std::string::npos);
-    CHECK(html.find("['screen_stable_diff_threshold','number']") != std::string::npos);
 }
 
 TEST_CASE("config web exposes brave search provider") {
@@ -282,7 +277,17 @@ TEST_CASE("config web exposes brave search provider") {
     CHECK(source.find("\"brave\"") != std::string::npos);
     CHECK(source.find("\"brave-free\"") != std::string::npos);
     CHECK(source.find("provider == \"brave\" || provider == \"brave-free\"") != std::string::npos);
-    CHECK(html.find("search:{provider:['duckduckgo','brave','brave-free','tavily']}") != std::string::npos);
+    // The search provider enum now lives in the agent config metadata (the
+    // single source of truth the config web UI consumes via config-meta),
+    // not a hard-coded table in the HTML.
+    const std::string meta_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent/internal/agent/config_meta.go";
+    std::ifstream meta_in(meta_path.c_str());
+    REQUIRE(meta_in.good());
+    std::ostringstream meta_buffer;
+    meta_buffer << meta_in.rdbuf();
+    const std::string meta = meta_buffer.str();
+    CHECK(meta.find("\"brave-free\"") != std::string::npos);
+    CHECK(html.find("search:{provider:['duckduckgo','brave','brave-free','tavily']}") == std::string::npos);
     CHECK(source.find("const char* allowed[] = {\"duckduckgo\", \"brave\", \"brave-free\", \"tavily\", NULL};") != std::string::npos);
 }
 
@@ -319,11 +324,19 @@ TEST_CASE("config web renders finite choice fields as selects") {
     CHECK(html.find("input,select,textarea") != std::string::npos);
     CHECK(html.find("input:focus,select:focus,textarea:focus") != std::string::npos);
     CHECK(html.find("input:disabled,select:disabled,textarea:disabled") != std::string::npos);
-    CHECK(html.find("const selectFieldOptions=") != std::string::npos);
+    // Select options are now built from the agent config-meta payload rather
+    // than a hard-coded table; the UI fetches /api/config/meta and derives
+    // enum/range options in buildConfigMeta().
+    CHECK(html.find("let selectFieldOptions=") != std::string::npos);
+    CHECK(html.find("function buildConfigMeta(meta)") != std::string::npos);
+    CHECK(html.find("loadConfigMeta") != std::string::npos);
+    CHECK(html.find("'/api/config/meta'") != std::string::npos);
     CHECK(html.find("hydrateSelectOptions") != std::string::npos);
     CHECK(html.find("ensureSelectOption") != std::string::npos);
-    CHECK(html.find("rangeOptions(0,1,0.05,2)") != std::string::npos);
-    CHECK(html.find("rangeOptions(0.5,2,0.1,1)") != std::string::npos);
+    // rangeOptions is now invoked with metadata-provided bounds, not literals.
+    CHECK(html.find("rangeOptions(field.range.min,field.range.max,field.range.step") != std::string::npos);
+    // The legacy hard-coded option table must be gone.
+    CHECK(html.find("const selectFieldOptions=") == std::string::npos);
 }
 
 TEST_CASE("config web updates dependent field visibility from selected values") {
@@ -338,16 +351,19 @@ TEST_CASE("config web updates dependent field visibility from selected values") 
     CHECK(html.find(".field.hidden{display:none}") != std::string::npos);
     CHECK(html.find("function setFieldVisible(section,key,visible)") != std::string::npos);
     CHECK(html.find("function applyFieldVisibility()") != std::string::npos);
-    CHECK(html.find("setFieldVisible('model','base_url',modelProvider!=='openrouter')") != std::string::npos);
-    CHECK(html.find("setFieldVisible('search','api_key',searchProvider!=='duckduckgo')") != std::string::npos);
-    CHECK(html.find("const sttTencent=sttProvider==='tencent'||sttProvider==='tencent_asr'") != std::string::npos);
-    CHECK(html.find("setFieldVisible('telemetry',key,telemetryEnabled)") != std::string::npos);
-    CHECK(html.find("const voiceMode=agentMode==='stt'||agentMode==='audio'") != std::string::npos);
-    CHECK(html.find("const wakeupSession=agentMode==='stt'&&agentTrigger==='wakeup'") != std::string::npos);
+    // Visibility is now driven by declarative rules from config-meta
+    // (visibleWhen), evaluated generically rather than hard-coded per field.
+    CHECK(html.find("visibilityRules.forEach") != std::string::npos);
+    CHECK(html.find("function evalCondition(cond)") != std::string::npos);
+    CHECK(html.find("function evalRule(rule)") != std::string::npos);
     CHECK(html.find("function bindFieldVisibility()") != std::string::npos);
+    CHECK(html.find("watchedFields.forEach") != std::string::npos);
     CHECK(html.find("addEventListener('change',function(){applyFieldVisibility();})") != std::string::npos);
     CHECK(html.find("fillConfigForm(config){Object.keys(sectionFields).forEach") != std::string::npos);
     CHECK(html.find("applyFieldVisibility();}") != std::string::npos);
+    // The legacy imperative visibility chain must be gone.
+    CHECK(html.find("setFieldVisible('model','base_url',modelProvider!=='openrouter')") == std::string::npos);
+    CHECK(html.find("const sttTencent=sttProvider==='tencent'") == std::string::npos);
 }
 
 TEST_CASE("config web exposes a single system env editor backed by the env file") {
@@ -442,7 +458,7 @@ TEST_CASE("config web exposes telemetry settings section") {
     CHECK(html.find("public_key_env") == std::string::npos);
     CHECK(html.find("secret_key_env") == std::string::npos);
     CHECK(html.find("parseListValue") != std::string::npos);
-    CHECK(html.find("['tags','list']") != std::string::npos);
+    CHECK(html.find("<textarea id=\\\"telemetry_tags\\\"") != std::string::npos);
 }
 
 TEST_CASE("config web restarts ota only when system env changes") {
@@ -590,8 +606,12 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("\"/api/poweroff\"") != std::string::npos);
     CHECK(source.find("config-check --stdin --format=json") != std::string::npos);
     CHECK(source.find("config validation unavailable: agent binary not found") != std::string::npos);
+    // config metadata endpoint: agent CLI is the single source of field metadata.
+    CHECK(source.find("config-meta --format=json") != std::string::npos);
+    CHECK(source.find("\"/api/config/meta\"") != std::string::npos);
+    CHECK(source.find("config metadata unavailable: agent binary not found") != std::string::npos);
     CHECK(html.find("hid_pointer_mode") != std::string::npos);
-    CHECK(html.find("['pointer_mode','text']") != std::string::npos);
+    CHECK(html.find("<select id=\\\"hid_pointer_mode\\\"") != std::string::npos);
     CHECK(html.find("pointer_mode 需要关机重启后生效") != std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
     CHECK(html.find("/api/poweroff") != std::string::npos);
