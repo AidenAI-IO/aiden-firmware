@@ -1238,3 +1238,62 @@ func startFakeAudioServiceSocket(t *testing.T, handler func(audioRequest) (audio
 
 	return socketPath
 }
+
+func TestMessageJSONWithVoiceFields(t *testing.T) {
+	msg := Message{
+		Type:            "user",
+		Content:         "Hello",
+		Timestamp:       time.Now(),
+		Source:          "voice",
+		AudioFile:       "/userdata/audio/msg_123.wav",
+		AudioDurationMs: 2500,
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var decoded Message
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if decoded.Source != "voice" {
+		t.Errorf("Source: got %q, want %q", decoded.Source, "voice")
+	}
+	if decoded.AudioFile != "/userdata/audio/msg_123.wav" {
+		t.Errorf("AudioFile: got %q, want %q", decoded.AudioFile, "/userdata/audio/msg_123.wav")
+	}
+	if decoded.AudioDurationMs != 2500 {
+		t.Errorf("AudioDurationMs: got %d, want %d", decoded.AudioDurationMs, 2500)
+	}
+}
+
+func TestMessageJSONOmitsEmptyVoiceFields(t *testing.T) {
+	msg := Message{
+		Type:      "user",
+		Content:   "Hello",
+		Timestamp: time.Now(),
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal to map failed: %v", err)
+	}
+
+	if _, exists := raw["source"]; exists {
+		t.Errorf("source field should be omitted when empty")
+	}
+	if _, exists := raw["audio_file"]; exists {
+		t.Errorf("audio_file field should be omitted when empty")
+	}
+	if _, exists := raw["audio_duration_ms"]; exists {
+		t.Errorf("audio_duration_ms field should be omitted when zero")
+	}
+}

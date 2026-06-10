@@ -82,18 +82,21 @@ type MessageAttachment struct {
 
 // Message represents a chat message or tool call
 type Message struct {
-	Type        string              `json:"type"` // "user", "assistant", "tool_call", "tool_result", "role_output"
-	Role        string              `json:"role,omitempty"`
-	EpisodeID   string              `json:"episode_id,omitempty"`
-	RequestID   string              `json:"request_id,omitempty"`
-	Status      string              `json:"status,omitempty"`
-	Content     string              `json:"content"`
-	ToolName    string              `json:"tool_name,omitempty"`
-	ToolInput   string              `json:"tool_input,omitempty"`
-	Description string              `json:"description,omitempty"`
-	Attachments []MessageAttachment `json:"attachments,omitempty"`
-	Timestamp   time.Time           `json:"timestamp"`
-	IsError     bool                `json:"is_error,omitempty"`
+	Type            string              `json:"type"` // "user", "assistant", "tool_call", "tool_result", "role_output"
+	Role            string              `json:"role,omitempty"`
+	EpisodeID       string              `json:"episode_id,omitempty"`
+	RequestID       string              `json:"request_id,omitempty"`
+	Status          string              `json:"status,omitempty"`
+	Content         string              `json:"content"`
+	ToolName        string              `json:"tool_name,omitempty"`
+	ToolInput       string              `json:"tool_input,omitempty"`
+	Description     string              `json:"description,omitempty"`
+	Attachments     []MessageAttachment `json:"attachments,omitempty"`
+	Source          string              `json:"source,omitempty"`
+	AudioFile       string              `json:"audio_file,omitempty"`
+	AudioDurationMs int64               `json:"audio_duration_ms,omitempty"`
+	Timestamp       time.Time           `json:"timestamp"`
+	IsError         bool                `json:"is_error,omitempty"`
 }
 
 // ChatRequest represents an incoming chat request
