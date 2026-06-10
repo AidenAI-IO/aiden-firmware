@@ -47,7 +47,10 @@ func TestRollingSummaryAccumulatesArchivedChunks(t *testing.T) {
 	if !strings.Contains(summary, "## Recent Chunks") {
 		t.Errorf("summary.md missing Recent Chunks section")
 	}
-	if !strings.Contains(summary, "chunk_002") && !strings.Contains(summary, "chunk_003") {
-		t.Errorf("recent chunks should show chunk_002 and chunk_003")
+	if !strings.Contains(summary, "chunk_002") {
+		t.Errorf("recent chunks should show chunk_002")
+	}
+	if !strings.Contains(summary, "chunk_003") {
+		t.Errorf("recent chunks should show chunk_003")
 	}
 }
