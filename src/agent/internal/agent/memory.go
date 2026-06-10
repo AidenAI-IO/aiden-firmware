@@ -356,7 +356,7 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 	if records, ok, err := m.loadSessionMessageRecords(agentName); err != nil {
 		return err
 	} else if ok {
-		messages := make([]llms.ChatMessage, 0, len(records)+1)
+		messages := make([]llms.ChatMessage, 0, len(records)+2)
 		// If there's compressed history, prepend a boundary marker before hot window events
 		if m.hasCompressedHistory() && len(records) > 0 {
 			messages = append(messages, llms.SystemChatMessage{
@@ -368,6 +368,12 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 		}
 		for _, record := range records {
 			messages = append(messages, messageFromRecord(record))
+		}
+		// Mark end of hot window
+		if m.hasCompressedHistory() && len(records) > 0 {
+			messages = append(messages, llms.SystemChatMessage{
+				Content: "=== End of recent context ===",
+			})
 		}
 		if err := history.SetMessages(context.Background(), messages); err != nil {
 			return fmt.Errorf("restore session events for %q: %w", agentName, err)
