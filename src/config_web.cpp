@@ -161,6 +161,7 @@ std::string lowercase_copy(const std::string& text);
 std::string parent_dir(const std::string& path);
 bool mkdir_p(const std::string& dir, std::string* error);
 bool prepare_ota_update_log_file(const std::string& path, std::string* error);
+bool set_fd_cloexec(int fd, std::string* error);
 CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms);
 
 // ValidationOutcome distinguishes "the user submitted something invalid" (the
@@ -215,6 +216,30 @@ void on_signal(int) {
 
 bool file_exists(const char* path) {
     return path && access(path, F_OK) == 0;
+}
+
+std::string env_path_or_default(const char* env_name, const char* default_path) {
+    const char* override_path = std::getenv(env_name);
+    if (override_path && override_path[0] != '\0') {
+        return override_path;
+    }
+    return default_path ? std::string(default_path) : std::string();
+}
+
+std::string ota_bin_path() {
+    return env_path_or_default("AIDEN_OTA_BIN", kOtaBin);
+}
+
+std::string env_run_bin_path() {
+    return env_path_or_default("AIDEN_ENV_RUN_BIN", kEnvRunBin);
+}
+
+std::string ota_update_lock_path() {
+    return env_path_or_default("AIDEN_CONFIG_WEB_OTA_UPDATE_LOCK", kOtaWebUpdateLockPath);
+}
+
+std::string ota_update_log_path() {
+    return env_path_or_default("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", kOtaWebUpdateLogPath);
 }
 
 std::string trim_copy(const std::string& input) {
@@ -1548,11 +1573,16 @@ void schedule_ota_restart() {
 }
 
 int acquire_ota_update_launch_lock(std::string* error) {
-    int lock_fd = open(kOtaWebUpdateLockPath, O_CREAT | O_RDWR, 0600);
+    std::string lock_path = ota_update_lock_path();
+    int lock_fd = open(lock_path.c_str(), O_CREAT | O_RDWR, 0600);
     if (lock_fd < 0) {
         if (error) {
             *error = std::string("open ota update launch lock: ") + strerror(errno);
         }
+        return -1;
+    }
+    if (!set_fd_cloexec(lock_fd, error)) {
+        close(lock_fd);
         return -1;
     }
     if (flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
@@ -1569,33 +1599,95 @@ int acquire_ota_update_launch_lock(std::string* error) {
     return lock_fd;
 }
 
+bool set_fd_cloexec(int fd, std::string* error) {
+    int flags = fcntl(fd, F_GETFD, 0);
+    if (flags < 0) {
+        if (error) *error = std::string("get fd flags: ") + strerror(errno);
+        return false;
+    }
+    if (fcntl(fd, F_SETFD, flags | FD_CLOEXEC) != 0) {
+        if (error) *error = std::string("set fd close-on-exec: ") + strerror(errno);
+        return false;
+    }
+    return true;
+}
+
+std::string build_ota_update_command(const std::string& log_path) {
+    std::string ota_bin = ota_bin_path();
+    std::string env_run_bin = env_run_bin_path();
+    std::string cmd =
+        "("
+        "if [ -x " + shell_quote(env_run_bin) + " ]; then "
+        + shell_quote(env_run_bin) + " " + shell_quote(ota_bin) + " update; "
+        "else "
+        + shell_quote(ota_bin) + " update; "
+        "fi; "
+        "rc=$?; echo \"[config_web] ota update exited rc=$rc\"; exit $rc"
+        ") >> " + shell_quote(log_path) + " 2>&1";
+    return cmd;
+}
+
+bool launch_ota_update_supervisor(int lock_fd, const std::string& log_path, std::string* error) {
+    pid_t launcher_pid = fork();
+    if (launcher_pid < 0) {
+        if (error) {
+            *error = std::string("fork ota update launcher: ") + strerror(errno);
+        }
+        return false;
+    }
+
+    if (launcher_pid == 0) {
+        pid_t supervisor_pid = fork();
+        if (supervisor_pid < 0) {
+            _exit(127);
+        }
+        if (supervisor_pid > 0) {
+            _exit(0);
+        }
+
+        setsid();
+        set_fd_cloexec(lock_fd, NULL);
+        // Keep the launch lock in this supervisor while `ota update` runs,
+        // but keep it out of the ota/update-daemon exec tree.
+        std::string cmd = build_ota_update_command(log_path);
+        int rc = system(cmd.c_str());
+        (void)rc;
+        close(lock_fd);
+        _exit(0);
+    }
+
+    int status = 0;
+    while (waitpid(launcher_pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            if (error) {
+                *error = std::string("wait ota update launcher: ") + strerror(errno);
+            }
+            return false;
+        }
+    }
+
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        if (error) {
+            *error = "failed to start ota update supervisor";
+        }
+        return false;
+    }
+
+    return true;
+}
+
 bool schedule_ota_update(std::string* error) {
     int lock_fd = acquire_ota_update_launch_lock(error);
     if (lock_fd < 0) {
         return false;
     }
-    std::string log_path = kOtaWebUpdateLogPath;
+    std::string log_path = ota_update_log_path();
     if (!prepare_ota_update_log_file(log_path, error)) {
         close(lock_fd);
         return false;
     }
-    std::string cmd =
-        "("
-        "if [ -x " + shell_quote(kEnvRunBin) + " ]; then "
-        + shell_quote(kEnvRunBin) + " " + shell_quote(kOtaBin) + " update; "
-        "else "
-        + shell_quote(kOtaBin) + " update; "
-        "fi; "
-        "rc=$?; echo \"[config_web] ota update exited rc=$rc\""
-        ") >> " + shell_quote(log_path) + " 2>&1 &";
-    int rc = system(cmd.c_str());
-    if (rc != 0) {
+    if (!launch_ota_update_supervisor(lock_fd, log_path, error)) {
         close(lock_fd);
-        if (error) {
-            std::ostringstream oss;
-            oss << "failed to start ota update: system rc=" << rc;
-            *error = oss.str();
-        }
         return false;
     }
     close(lock_fd);
@@ -2013,7 +2105,8 @@ AgentLogSnapshot read_agent_log_snapshot() {
 }
 
 AgentLogSnapshot read_ota_log_snapshot() {
-    return read_log_snapshot(kOtaWebUpdateLogPath, kOtaLogReadSize, kOtaLogDisplaySize);
+    std::string log_path = ota_update_log_path();
+    return read_log_snapshot(log_path.c_str(), kOtaLogReadSize, kOtaLogDisplaySize);
 }
 
 std::string lowercase_copy(const std::string& text) {

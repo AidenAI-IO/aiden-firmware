@@ -87,6 +87,23 @@ void write_file(const std::string& path, const std::string& content) {
     out << content;
 }
 
+bool wait_for_file_contains(const std::string& path, const std::string& needle, int timeout_ms) {
+    using clock = std::chrono::steady_clock;
+    auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (clock::now() < deadline) {
+        std::ifstream in(path);
+        if (in.good()) {
+            std::ostringstream buf;
+            buf << in.rdbuf();
+            if (buf.str().find(needle) != std::string::npos) {
+                return true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    return false;
+}
+
 bool wait_for_port(int port, int timeout_ms) {
     using clock = std::chrono::steady_clock;
     auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
@@ -399,4 +416,54 @@ TEST_CASE("config_web: both endpoints fail closed with 503 when AIDEN_AGENT_BIN 
     CHECK(save.body.find("agent binary not found") != std::string::npos);
 }
 
+TEST_CASE("config_web: failed manual OTA update releases launch lock even if a daemon keeps running") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+
+    const std::string env_run_path = tmp + "/aiden-env-run";
+    const std::string ota_path = tmp + "/ota";
+    const std::string lock_path = tmp + "/config_web_ota_update.lock";
+    const std::string log_path = tmp + "/config_web_ota_update.log";
+
+    write_file(env_run_path, "#!/bin/sh\nexec \"$@\"\n");
+    REQUIRE(::chmod(env_run_path.c_str(), 0755) == 0);
+
+    write_file(ota_path,
+               "#!/bin/sh\n"
+               "if [ \"${1:-}\" = \"update\" ]; then\n"
+               "  (sleep 3) &\n"
+               "  echo 'stub update failed' >&2\n"
+               "  exit 1\n"
+               "fi\n"
+               "exit 0\n");
+    REQUIRE(::chmod(ota_path.c_str(), 0755) == 0);
+
+    StubEnv env;
+    env.set("AIDEN_OTA_BIN", ota_path);
+    env.set("AIDEN_ENV_RUN_BIN", env_run_path);
+    env.set("AIDEN_CONFIG_WEB_OTA_UPDATE_LOCK", lock_path);
+    env.set("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", log_path);
+    auto handle = start_server(env);
+
+    HttpResponse first = http_request(handle->port, "POST", "/api/ota/update");
+    REQUIRE(first.status == 200);
+    REQUIRE(wait_for_file_contains(log_path, "[config_web] ota update exited rc=1", 2000));
+
+    HttpResponse retry;
+    bool accepted = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
+    while (std::chrono::steady_clock::now() < deadline) {
+        retry = http_request(handle->port, "POST", "/api/ota/update");
+        if (retry.status == 200) {
+            accepted = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    CHECK(accepted);
+    CHECK(retry.body.find("ota update already running") == std::string::npos);
+}
 
