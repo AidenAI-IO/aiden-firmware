@@ -476,6 +476,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
 	plannerMemory := memoryHandle.Memory
+	// Wrap the window buffer with hot-window boundary markers (injected at
+	// prompt-build time only, never persisted) when compressed history exists.
+	plannerMemory = newHotWindowBoundaryMemory(plannerMemory, r.memories.HasCompressedHistory)
 	if historyStore := chatHistoryStoreForConfigDir(r.config.ConfigDir); historyStore != nil {
 		plannerMemory = newChatHistoryPlannerMemory(plannerMemory, historyStore)
 	}

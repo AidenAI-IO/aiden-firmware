@@ -384,25 +384,16 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 	if records, ok, err := m.loadSessionMessageRecords(agentName); err != nil {
 		return err
 	} else if ok {
-		messages := make([]llms.ChatMessage, 0, len(records)+2)
-		// If there's compressed history, prepend a boundary marker before hot window events
-		if m.hasCompressedHistory() && len(records) > 0 {
-			messages = append(messages, llms.SystemChatMessage{
-				Content: "=== Recent session context (hot window) ===\n" +
-					"The messages below are your most recent exchanges with the user. " +
-					"Earlier conversation history has been compressed into summaries.",
-			})
-		}
+		// Hot-window boundary markers are NOT stored here. They are synthetic
+		// prompt-construction artifacts and must never enter the persistable
+		// ChatMessageHistory: Snapshot() reads history verbatim and
+		// appendSessionEvents() writes records by index, so a stored marker
+		// would desync eventCount from the real session events and get
+		// persisted or cause duplicate appends. Markers are injected at
+		// prompt-build time instead (see hotWindowBoundaryMemory).
+		messages := make([]llms.ChatMessage, 0, len(records))
 		for _, record := range records {
 			messages = append(messages, messageFromRecord(record))
-		}
-		// Mark end of hot window and prioritize current instruction
-		if m.hasCompressedHistory() && len(records) > 0 {
-			messages = append(messages, llms.SystemChatMessage{
-				Content: "=== End of recent context ===\n" +
-					"Prioritize responding to the user's current instruction. " +
-					"Only reference the above context if directly relevant to the current request.",
-			})
 		}
 		if err := history.SetMessages(context.Background(), messages); err != nil {
 			return fmt.Errorf("restore session events for %q: %w", agentName, err)
@@ -1013,6 +1004,16 @@ func (m *MemoryManager) hasCompressedHistory() bool {
 	summaryPath := filepath.Join(m.storageDir, "session", "summary.md")
 	_, err := os.Stat(summaryPath)
 	return err == nil
+}
+
+// HasCompressedHistory reports whether earlier conversation history has been
+// compressed into summaries, meaning the live chat history is only a hot
+// window. Callers use this to decide whether to bracket the hot window with
+// boundary markers at prompt-build time.
+func (m *MemoryManager) HasCompressedHistory() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hasCompressedHistory()
 }
 
 func (m *MemoryManager) appendSessionEvents(agentName string, records []MessageRecord) error {
