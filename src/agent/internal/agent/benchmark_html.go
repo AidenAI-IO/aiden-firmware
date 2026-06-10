@@ -265,9 +265,9 @@ load();
 `
 
 // benchmarkRecordHTML is the screenshot-task recorder served at /benchmark/record.
-// Uses the same visual style as the benchmark index (system-ui, #2563eb blue,
-// .card on #f5f5f5 background) for consistency. Auto-generates task IDs from
-// the target name + timestamp so users only need to fill 2 fields.
+// Uses the same visual style as the benchmark index. All screenshot tasks are
+// appended to the builtin perception_v1 suite; users only fill 2 fields
+// (target name + user intent). Task IDs are auto-generated.
 const benchmarkRecordHTML = `<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -278,10 +278,11 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#f5f5f5;padding:2
 h1{font-size:20px;margin-bottom:6px}
 .back{font-size:13px;color:#2563eb;text-decoration:none;display:inline-block;margin-bottom:14px}
 .back:hover{text-decoration:underline}
+.subtitle{font-size:13px;color:#888;margin-bottom:14px}
 .card{background:#fff;border-radius:8px;padding:16px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
 h2{font-size:15px;margin-bottom:8px}
 label{display:block;font-size:13px;color:#475569;margin:10px 0 4px;font-weight:500}
-input[type=text],select,textarea{font-size:14px;padding:8px 12px;border-radius:6px;border:1px solid #ddd;width:100%;background:#fff;font-family:inherit}
+input[type=text],textarea{font-size:14px;padding:8px 12px;border-radius:6px;border:1px solid #ddd;width:100%;background:#fff;font-family:inherit}
 textarea{min-height:60px;resize:vertical}
 button{font-size:14px;padding:8px 16px;border-radius:6px;border:none;background:#2563eb;color:#fff;cursor:pointer}
 button:disabled{background:#94a3b8;cursor:not-allowed}
@@ -299,25 +300,13 @@ canvas{display:block;cursor:crosshair;max-width:100%;height:auto}
 .ok{color:#16a34a;font-size:13px;margin-top:6px}
 .status-line{font-size:13px;color:#475569;margin-top:6px;min-height:18px}
 input[type=file]{display:none}
-.suite-row{display:flex;gap:8px;align-items:center}
-.suite-row select,.suite-row input{flex:1;min-width:0}
 </style></head><body>
 <a href="/benchmark" class="back">← 返回 Benchmark</a>
 <h1>📷 录入截图任务</h1>
+<div class="subtitle">截图任务会自动追加到 <code>perception_v1</code> suite，截图存到 <code>perception/screenshots/</code></div>
 
 <div class="card">
-<h2>1. 选择 / 新建 Suite</h2>
-<div class="suite-row">
-<select id="suiteSelect"><option value="">Loading suites...</option></select>
-<button class="btn-secondary" onclick="toggleNewSuite()" id="newSuiteBtn">+ 新建</button>
-</div>
-<div id="newSuiteForm" style="display:none;margin-top:8px">
-<input type="text" id="newSuiteName" placeholder="新 suite 名（仅 a-z 0-9 _ -）">
-</div>
-</div>
-
-<div class="card">
-<h2>2. 加载截图</h2>
+<h2>1. 加载截图</h2>
 <div class="row">
 <button id="grabBtn" onclick="grabFromDevice()">📷 从设备抓取</button>
 <button class="btn-secondary" onclick="document.getElementById('fileInput').click()">📁 上传图片</button>
@@ -331,7 +320,7 @@ input[type=file]{display:none}
 </div>
 
 <div class="card">
-<h2>3. 描述目标</h2>
+<h2>2. 描述目标</h2>
 <div class="field-grid">
 <div>
 <label for="targetName">目标对象 (UI 元素名)</label>
@@ -342,14 +331,13 @@ input[type=file]{display:none}
 <input type="text" id="userIntent" placeholder="例：打开设置 app">
 </div>
 </div>
-<div class="muted" style="margin-top:8px">Task ID 会根据目标对象自动生成。</div>
 </div>
 
 <div class="card">
-<h2>4. 生成 + 导入</h2>
+<h2>3. 生成 + 追加</h2>
 <div class="row">
 <button id="genBtn" onclick="generateTask()" disabled>✨ Generate with LLM</button>
-<button id="importBtn" onclick="importTask()" disabled>导入到 suite</button>
+<button id="importBtn" onclick="importTask()" disabled>追加到 perception_v1</button>
 </div>
 <div class="status-line" id="msg"></div>
 <div class="json-preview" id="jsonPreview" contenteditable="false">（点 Generate 后显示生成的 task JSON）</div>
@@ -357,39 +345,6 @@ input[type=file]{display:none}
 
 <script>
 let img=null, rect=null, canvas, ctx, lastTaskJSON='', lastTaskId='';
-
-function loadSuites(){
-  fetch('/benchmark/suites').then(r=>r.json()).then(d=>{
-    var s=document.getElementById('suiteSelect');
-    s.innerHTML='';
-    var customSuites=d.filter(x=>x.custom);
-    if(!customSuites.length){
-      s.innerHTML='<option value="">（暂无 custom suite，点新建）</option>';
-    } else {
-      customSuites.forEach(function(x){
-        var o=document.createElement('option');o.value=x.name;o.textContent=x.name;
-        s.appendChild(o);
-      });
-    }
-  }).catch(function(e){console.error(e)});
-}
-
-function toggleNewSuite(){
-  var f=document.getElementById('newSuiteForm');
-  var btn=document.getElementById('newSuiteBtn');
-  if(f.style.display==='none'){
-    f.style.display='block';btn.textContent='× 取消';
-  } else {
-    f.style.display='none';btn.textContent='+ 新建';
-    document.getElementById('newSuiteName').value='';
-  }
-}
-
-function getSuiteName(){
-  var newName=document.getElementById('newSuiteName').value.trim();
-  if(newName) return newName;
-  return document.getElementById('suiteSelect').value;
-}
 
 function generateTaskId(targetName){
   var slug=targetName.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'');
@@ -517,9 +472,7 @@ function generateTask(){
   msg.textContent='生成中...';msg.className='status-line muted';
   var targetName=document.getElementById('targetName').value.trim();
   var userIntent=document.getElementById('userIntent').value.trim();
-  var suiteName=getSuiteName();
   if(!targetName||!userIntent){msg.textContent='请填写目标对象和 agent 任务描述';msg.className='status-line err';return}
-  if(!suiteName){msg.textContent='请选择或新建一个 suite';msg.className='status-line err';return}
   if(!rect){msg.textContent='请先在画面上画矩形';msg.className='status-line err';return}
   var taskId=generateTaskId(targetName);
   lastTaskId=taskId;
@@ -533,7 +486,7 @@ function generateTask(){
     return fetch('/benchmark/suites/generate-perception',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({
-        name:suiteName,task_id:taskId,user_intent:userIntent,
+        name:'perception_v1',task_id:taskId,user_intent:userIntent,
         screenshot_b64:b64,target_box_normalized:box,target_name:targetName
       })
     });
@@ -544,7 +497,7 @@ function generateTask(){
     document.getElementById('jsonPreview').textContent=lastTaskJSON;
     document.getElementById('jsonPreview').contentEditable='true';
     document.getElementById('importBtn').disabled=false;
-    msg.textContent='已生成（task_id: '+taskId+'），可编辑后导入';
+    msg.textContent='已生成（task_id: '+taskId+'），可编辑后追加';
     msg.className='status-line ok';
   }).catch(function(e){
     document.getElementById('genBtn').disabled=false;
@@ -554,30 +507,30 @@ function generateTask(){
 
 function importTask(){
   var msg=document.getElementById('msg');
-  var suiteName=getSuiteName();
   var taskRaw=document.getElementById('jsonPreview').textContent.trim();
-  var task;
-  try{task=JSON.parse(taskRaw).task}
+  try{JSON.parse(taskRaw)}
   catch(e){msg.textContent='task JSON 解析失败: '+e;msg.className='status-line err';return}
-  msg.textContent='导入中...';msg.className='status-line muted';
-  var suiteJSON=JSON.stringify({name:suiteName,tasks:[task]});
+  msg.textContent='追加中...';msg.className='status-line muted';
+  document.getElementById('importBtn').disabled=true;
   canvasToB64().then(function(b64){
-    return fetch('/benchmark/suites/import-with-assets',{
+    return fetch('/benchmark/suites/append-perception',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({
-        name:suiteName,suite_json:suiteJSON,
-        assets:[{task_id:lastTaskId,screenshot_b64:b64}]
+        task_json:taskRaw,task_id:lastTaskId,screenshot_b64:b64
       })
     });
   }).then(function(r){return r.json()}).then(function(d){
-    if(!d.ok){msg.textContent=d.error||'导入失败';msg.className='status-line err';return}
-    msg.textContent='✓ 已导入到 '+d.path;msg.className='status-line ok';
-    loadSuites();
+    if(!d.ok){
+      msg.textContent=d.error||'追加失败';msg.className='status-line err';
+      document.getElementById('importBtn').disabled=false;
+      return;
+    }
+    msg.textContent='✓ 已追加到 perception_v1（共 '+d.tasks_count+' 个 task）';msg.className='status-line ok';
+    document.getElementById('importBtn').disabled=true;
   }).catch(function(e){
-    msg.textContent='导入失败: '+e;msg.className='status-line err';
+    msg.textContent='追加失败: '+e;msg.className='status-line err';
+    document.getElementById('importBtn').disabled=false;
   });
 }
-
-loadSuites();
 </script></body></html>
 `

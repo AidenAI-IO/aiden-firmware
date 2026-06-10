@@ -254,3 +254,131 @@ func (s *Server) handleBenchmarkImportWithAssets(w http.ResponseWriter, r *http.
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true, "name": safe, "path": dest})
 }
+
+// handleBenchmarkAppendPerception appends a single perception task to the
+// builtin perception_v1 suite. The suite lives at
+// <root>/suites/perception/perception_v1.json with screenshots in
+// <root>/suites/perception/screenshots/. The task's input_screenshot field
+// is written as "screenshots/<task_id>.jpg" relative to the suite's parent
+// directory, matching runner.suite.load_suite's resolution logic.
+func (s *Server) handleBenchmarkAppendPerception(w http.ResponseWriter, r *http.Request) {
+	if s.benchmarkDir == "" {
+		http.Error(w, `{"error":"benchmark directory not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, benchmarkImportWithAssetsMaxTotalBytes)
+	var body struct {
+		TaskJSON      string `json:"task_json"`
+		TaskID        string `json:"task_id"`
+		ScreenshotB64 string `json:"screenshot_b64"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusBadRequest)
+		return
+	}
+	if body.TaskJSON == "" || body.TaskID == "" || body.ScreenshotB64 == "" {
+		http.Error(w, `{"error":"task_json, task_id, screenshot_b64 required"}`, http.StatusBadRequest)
+		return
+	}
+
+	// task_json is a wrapper {"task": {...}}; unwrap it.
+	var wrapper struct {
+		Task json.RawMessage `json:"task"`
+	}
+	if err := json.Unmarshal([]byte(body.TaskJSON), &wrapper); err != nil {
+		http.Error(w, `{"error":"task_json invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if len(wrapper.Task) == 0 {
+		http.Error(w, `{"error":"task_json missing top-level task field"}`, http.StatusBadRequest)
+		return
+	}
+
+	suitePath := filepath.Join(s.benchmarkDir, "suites", "perception", "perception_v1.json")
+	screenshotsDir := filepath.Join(s.benchmarkDir, "suites", "perception", "screenshots")
+
+	lock := s.suiteLock("perception_v1")
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Read existing suite.
+	suiteBytes, err := os.ReadFile(suitePath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to read perception_v1.json: %s"}`, err), http.StatusInternalServerError)
+		return
+	}
+	var suite map[string]json.RawMessage
+	if err := json.Unmarshal(suiteBytes, &suite); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"perception_v1.json corrupt: %s"}`, err), http.StatusInternalServerError)
+		return
+	}
+	var tasks []json.RawMessage
+	if rawTasks, ok := suite["tasks"]; ok && len(rawTasks) > 0 {
+		if err := json.Unmarshal(rawTasks, &tasks); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"perception_v1.json tasks corrupt: %s"}`, err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Reject duplicate task IDs.
+	for _, t := range tasks {
+		var probe struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(t, &probe) == nil && probe.ID == body.TaskID {
+			http.Error(w, fmt.Sprintf(`{"error":"task id %q already exists in perception_v1"}`, body.TaskID), http.StatusConflict)
+			return
+		}
+	}
+
+	// Decode and write screenshot.
+	imgData, err := base64.StdEncoding.DecodeString(body.ScreenshotB64)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"screenshot base64 decode failed: %s"}`, err), http.StatusBadRequest)
+		return
+	}
+	if err := os.MkdirAll(screenshotsDir, 0o755); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+		return
+	}
+	imgPath := filepath.Join(screenshotsDir, body.TaskID+".jpg")
+	if err := os.WriteFile(imgPath, imgData, 0o644); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to write screenshot: %s"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	// Append task and write atomically.
+	tasks = append(tasks, wrapper.Task)
+	newTasks, err := json.Marshal(tasks)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+		return
+	}
+	suite["tasks"] = newTasks
+	out, err := json.MarshalIndent(suite, "", "  ")
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+		return
+	}
+	tmpPath := suitePath + ".tmp"
+	if err := os.WriteFile(tmpPath, out, 0o644); err != nil {
+		os.Remove(imgPath)
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+		return
+	}
+	if err := os.Rename(tmpPath, suitePath); err != nil {
+		os.Remove(imgPath)
+		os.Remove(tmpPath)
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":              true,
+		"task_id":         body.TaskID,
+		"screenshot_path": imgPath,
+		"suite_path":      suitePath,
+		"tasks_count":     len(tasks),
+	})
+}

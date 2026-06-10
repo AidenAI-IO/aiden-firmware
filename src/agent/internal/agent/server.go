@@ -285,6 +285,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/benchmark/suites/generate", s.handleBenchmarkGenerate)
 	mux.HandleFunc("/benchmark/suites/generate-perception", s.handleBenchmarkGeneratePerception)
 	mux.HandleFunc("/benchmark/suites/import-with-assets", s.handleBenchmarkImportWithAssets)
+	mux.HandleFunc("/benchmark/suites/append-perception", s.handleBenchmarkAppendPerception)
 	mux.HandleFunc("/user_files", s.handleUserFiles)
 	mux.HandleFunc("/user_files/regenerate", s.handleUserFilesRegenerate)
 
