@@ -14,7 +14,7 @@ if [ -f "$BOOT_CONF" ]; then
 	. "$BOOT_CONF"
 fi
 : "${ENABLE_NTP:=1}"
-: "${NTP_WATCHDOG_INTERVAL:=30}"
+: "${NTP_WATCHDOG_INTERVAL:=5}"
 : "${NTP_WATCHDOG_TIMEOUT:=600}"
 
 PIDFILE=/run/aiden_ntp_watchdog.pid
