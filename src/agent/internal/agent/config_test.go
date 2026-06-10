@@ -181,6 +181,15 @@ func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "model_text.model_max_output_tokens") {
 		t.Fatalf("expected model_text.model_max_output_tokens validation error, got %v", err)
 	}
+
+	cfg = Config{
+		Model:     ModelConfig{Provider: "fake"},
+		ModelText: ModelConfig{MaxResponseTokens: -1},
+	}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model_text.max_response_tokens") {
+		t.Fatalf("expected model_text.max_response_tokens validation error, got %v", err)
+	}
 }
 
 func TestConfigValidateRejectsNegativeScreenStableSettings(t *testing.T) {

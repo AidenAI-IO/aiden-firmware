@@ -91,7 +91,7 @@ func (m *ModelManager) fetchProviderModelSpecInBackground() {
 		log.Printf("[WARN] [model-spec] fetch %s/%s metadata: %v", m.config.Provider, m.config.Model, err)
 		return
 	}
-	if spec.ContextWindow > 0 {
+	if hasProviderModelSpecMetadata(spec) {
 		if err := m.writeProviderModelSpecCache(spec); err != nil {
 			log.Printf("[WARN] [model-spec] write provider metadata cache %s: %v", m.providerMetadataCachePath, err)
 		}
@@ -151,14 +151,14 @@ func (m *ModelManager) readProviderModelSpecCache() (ModelSpec, bool) {
 	}
 
 	entry, ok := cache.Entries[m.providerModelSpecCacheKey()]
-	if !ok || !m.providerModelSpecCacheEntryMatches(entry) || entry.Spec.ContextWindow <= 0 {
+	if !ok || !m.providerModelSpecCacheEntryMatches(entry) || !hasProviderModelSpecMetadata(entry.Spec) {
 		return ModelSpec{}, false
 	}
 	return entry.Spec, true
 }
 
 func (m *ModelManager) writeProviderModelSpecCache(spec ModelSpec) error {
-	if strings.TrimSpace(m.providerMetadataCachePath) == "" || spec.ContextWindow <= 0 {
+	if strings.TrimSpace(m.providerMetadataCachePath) == "" || !hasProviderModelSpecMetadata(spec) {
 		return nil
 	}
 
@@ -193,6 +193,10 @@ func (m *ModelManager) writeProviderModelSpecCache(spec ModelSpec) error {
 	}
 	encoded = append(encoded, '\n')
 	return writeFileAtomic(m.providerMetadataCachePath, encoded, 0o644)
+}
+
+func hasProviderModelSpecMetadata(spec ModelSpec) bool {
+	return spec.ContextWindow > 0 || spec.MaxOutput > 0
 }
 
 func (m *ModelManager) providerModelSpecCacheKey() string {

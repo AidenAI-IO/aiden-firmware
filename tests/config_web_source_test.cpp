@@ -134,9 +134,21 @@ TEST_CASE("config web docs list token_env in model fields") {
     doc_buffer << doc_in.rdbuf();
     const std::string doc = doc_buffer.str();
 
-    const std::string model_fields =
-        "provider, token_env, model, api_key, base_url, temperature, max_response_tokens, context_window, model_max_output_tokens";
-    CHECK(doc.find(model_fields) != std::string::npos);
+    const char* model_fields[] = {
+        "provider",
+        "token_env",
+        "model",
+        "api_key",
+        "base_url",
+        "temperature",
+        "max_response_tokens",
+        "context_window",
+        "model_max_output_tokens",
+        NULL,
+    };
+    for (int i = 0; model_fields[i]; ++i) {
+        CHECK_MESSAGE(doc.find(model_fields[i]) != std::string::npos, model_fields[i]);
+    }
     CHECK(doc.find("`context_window = 0` means auto-discover") != std::string::npos);
 }
 

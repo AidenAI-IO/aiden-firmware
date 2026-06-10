@@ -350,6 +350,26 @@ func TestModelManagerSpecReadsProviderMetadataFromFileCache(t *testing.T) {
 	}
 }
 
+func TestModelManagerSpecReadsProviderMaxOutputOnlyFromFileCache(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "provider_model_metadata.json")
+	cfg := ModelConfig{
+		Provider: "openrouter",
+		Model:    "vendor/max-output-only-cached-model",
+		BaseURL:  "http://provider.test/api/v1",
+		APIKey:   "test-token",
+	}
+
+	cacheWriter := NewModelManager(cfg, ProxyConfig{}, WithProviderModelMetadataCachePath(cachePath))
+	if err := cacheWriter.writeProviderModelSpecCache(ModelSpec{MaxOutput: 16_384}); err != nil {
+		t.Fatalf("writeProviderModelSpecCache: %v", err)
+	}
+
+	mgr := NewModelManager(cfg, ProxyConfig{}, WithProviderModelMetadataCachePath(cachePath))
+	if spec := mgr.Spec(); spec.ContextWindow != 0 || spec.MaxOutput != 16_384 {
+		t.Fatalf("Spec() = %+v, want cached max-output-only provider metadata", spec)
+	}
+}
+
 func TestModelManagerSpecFetchesProviderMaxOutputWhenContextWindowOverrideSet(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

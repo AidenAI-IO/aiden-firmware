@@ -254,7 +254,7 @@ func telemetryModelParameters(options []llms.CallOption) map[string]interface{} 
 func telemetryModelParametersFromCallOptions(opts llms.CallOptions) map[string]interface{} {
 	params := map[string]interface{}{}
 	if opts.MaxTokens > 0 {
-		params["max_tokens"] = opts.MaxTokens
+		params["max_response_tokens"] = opts.MaxTokens
 	}
 	if opts.Temperature != 0 {
 		params["temperature"] = opts.Temperature
