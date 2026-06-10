@@ -818,11 +818,11 @@ func (m *MemoryManager) shouldCompress(eventCount int) bool {
 		if ratio >= threshold {
 			return true
 		}
-		// Token conditions not met, fall through to event count check
+		// Token data available but thresholds not reached - don't compress
+		return false
 	}
-	// Event count fallback: used when token data unavailable (cold start,
-	// unknown model) or when token thresholds not reached but event count high
-	// (e.g., restoring a large session before first LLM call).
+	// Event count fallback: only used when token data unavailable (cold start,
+	// unknown model, or before first LLM call).
 	maxEvents := m.extraction.HotWindowEvents
 	if maxEvents <= 0 {
 		maxEvents = defaultHotWindowEvents
