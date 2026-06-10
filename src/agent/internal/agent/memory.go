@@ -61,7 +61,7 @@ type MemoryManager struct {
 	maintenancePending bool
 }
 
-const defaultMemoryHotWindowEvents = 100 // deprecated: use defaultMaxEventsBeforeCompression
+const defaultMaxEventsBeforeCompression = 100
 
 type MessageRecord struct {
 	Role    string `json:"role"`
@@ -669,10 +669,7 @@ func (m *MemoryManager) planCompaction(events []SessionEvent, contextWindow int)
 	// Count-based fallback: keep the most recent maxEvents events.
 	maxEvents := m.extraction.MaxEventsBeforeCompression
 	if maxEvents <= 0 {
-		maxEvents = m.extraction.HotWindowEvents // backward compat
-		if maxEvents <= 0 {
-			maxEvents = defaultMemoryHotWindowEvents
-		}
+		maxEvents = defaultMaxEventsBeforeCompression
 	}
 	keepCount := maxEvents
 	if keepCount > len(events) {
@@ -796,10 +793,7 @@ func (m *MemoryManager) shouldCompress(eventCount int) bool {
 	// (e.g., restoring a large session before first LLM call).
 	maxEvents := m.extraction.MaxEventsBeforeCompression
 	if maxEvents <= 0 {
-		maxEvents = m.extraction.HotWindowEvents // backward compat
-		if maxEvents <= 0 {
-			maxEvents = defaultMemoryHotWindowEvents
-		}
+		maxEvents = defaultMaxEventsBeforeCompression
 	}
 	return eventCount > maxEvents
 }

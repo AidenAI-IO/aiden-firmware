@@ -18,7 +18,7 @@ func TestShouldCompressUsesResolverContextWindow8k(t *testing.T) {
 	cfg := DefaultMemoryExtractionConfig()
 	cfg.ContextWindow = 32_000 // yaml fallback should be ignored
 	cfg.CompressAtPercent = 50
-	cfg.HotWindowEvents = 100 // event count must not be the trigger here
+	cfg.MaxEventsBeforeCompression = 100 // event count must not be the trigger here
 
 	mgr := NewMemoryManager("",
 		WithExtractionConfig(cfg),
@@ -47,7 +47,7 @@ func TestShouldCompressUsesResolverContextWindow32k(t *testing.T) {
 	cfg := DefaultMemoryExtractionConfig()
 	cfg.ContextWindow = 8_000 // yaml fallback should be ignored
 	cfg.CompressAtPercent = 50
-	cfg.HotWindowEvents = 100
+	cfg.MaxEventsBeforeCompression = 100
 
 	mgr := NewMemoryManager("",
 		WithExtractionConfig(cfg),
@@ -69,7 +69,7 @@ func TestShouldCompressUsesResolverContextWindow128k(t *testing.T) {
 	cfg := DefaultMemoryExtractionConfig()
 	cfg.ContextWindow = 32_000 // yaml fallback should be ignored
 	cfg.CompressAtPercent = 50
-	cfg.HotWindowEvents = 100
+	cfg.MaxEventsBeforeCompression = 100
 
 	mgr := NewMemoryManager("",
 		WithExtractionConfig(cfg),
@@ -97,7 +97,7 @@ func TestShouldCompressFallsBackToYAMLWhenResolverUnknown(t *testing.T) {
 	cfg := DefaultMemoryExtractionConfig()
 	cfg.ContextWindow = 32_000
 	cfg.CompressAtPercent = 50
-	cfg.HotWindowEvents = 100
+	cfg.MaxEventsBeforeCompression = 100
 
 	mgr := NewMemoryManager("",
 		WithExtractionConfig(cfg),
@@ -119,7 +119,7 @@ func TestShouldCompressFallsBackWhenNoResolverFnSet(t *testing.T) {
 	cfg := DefaultMemoryExtractionConfig()
 	cfg.ContextWindow = 10_000
 	cfg.CompressAtPercent = 50
-	cfg.HotWindowEvents = 100
+	cfg.MaxEventsBeforeCompression = 100
 
 	mgr := NewMemoryManager("", WithExtractionConfig(cfg))
 
@@ -140,7 +140,7 @@ func TestMaintainFilesystemMemoryUsesResolverContextWindow(t *testing.T) {
 	cfg := DefaultMemoryExtractionConfig()
 	cfg.ContextWindow = 1_000 // yaml fallback would have triggered at 600 tokens
 	cfg.CompressAtPercent = 50
-	cfg.HotWindowEvents = 100
+	cfg.MaxEventsBeforeCompression = 100
 
 	mgr := NewMemoryManager(storageDir,
 		WithExtractionConfig(cfg),

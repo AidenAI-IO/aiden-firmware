@@ -10,7 +10,6 @@ import (
 type MemoryExtractionConfig struct {
 	TagCandidates   []string `yaml:"tag_candidates"`
 	EntitySuffixes  []string `yaml:"entity_suffixes"`
-	HotWindowEvents int      `yaml:"hot_window_events"` // deprecated: use MaxEventsBeforeCompression
 	// MaxEventsBeforeCompression is the hard limit on uncompressed SessionEvent
 	// count. Compression triggers when event count exceeds this threshold,
 	// regardless of token usage. Acts as a safety valve for cold-start sessions
@@ -38,9 +37,8 @@ type MemoryExtractionConfig struct {
 }
 
 const (
-	defaultReserveTokens              = 8192
-	defaultKeepRecentTokens           = 20000
-	defaultMaxEventsBeforeCompression = 100
+	defaultReserveTokens    = 8192
+	defaultKeepRecentTokens = 20000
 )
 
 func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
@@ -69,12 +67,7 @@ func LoadMemoryExtractionConfig(configDir string) MemoryExtractionConfig {
 	if err != nil {
 		return cfg
 	}
-	defaultMax := cfg.MaxEventsBeforeCompression
 	_ = yaml.Unmarshal(data, &cfg)
-	// Backward compatibility: if old field is set but new field wasn't in yaml, migrate it
-	if cfg.HotWindowEvents > 0 && cfg.MaxEventsBeforeCompression == defaultMax {
-		cfg.MaxEventsBeforeCompression = cfg.HotWindowEvents
-	}
 	if cfg.MaxEventsBeforeCompression <= 0 {
 		cfg.MaxEventsBeforeCompression = defaultMaxEventsBeforeCompression
 	}

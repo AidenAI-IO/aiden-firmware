@@ -594,7 +594,7 @@ tag_candidates:
   - "自定义标签"
 entity_suffixes:
   - "System"
-hot_window_events: 30
+max_events_before_compression: 30
 `), 0o644)
 
 	cfg := LoadMemoryExtractionConfig(dir)
@@ -604,11 +604,8 @@ hot_window_events: 30
 	if len(cfg.EntitySuffixes) != 1 || cfg.EntitySuffixes[0] != "System" {
 		t.Fatalf("expected custom entity suffixes, got %v", cfg.EntitySuffixes)
 	}
-	if cfg.HotWindowEvents != 30 {
-		t.Fatalf("expected hot_window_events=30, got %d", cfg.HotWindowEvents)
-	}
 	if cfg.MaxEventsBeforeCompression != 30 {
-		t.Fatalf("expected old hot_window_events migrated to max_events_before_compression, got %d", cfg.MaxEventsBeforeCompression)
+		t.Fatalf("expected max_events_before_compression=30, got %d", cfg.MaxEventsBeforeCompression)
 	}
 }
 
