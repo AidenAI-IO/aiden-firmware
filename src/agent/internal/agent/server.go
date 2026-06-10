@@ -29,27 +29,33 @@ import (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime          *Runtime
-	addr             string
-	logger           *Logger
-	benchmarkDir     string
-	benchmarkPIDFile string
-	benchmarkLogPath string
-	mu               sync.Mutex
-	history          []Message
-	historyStore     *ChatHistoryStore
-	episodeStore     *TaskEpisodeStore
-	sttClient        STTClient
-	ttsManager       *tts.ProviderManager
-	ttsMu            sync.RWMutex
-	audioClient      *AudioServiceClient
-	recordMu         sync.Mutex
-	webRecording     *webAudioRecording
-	bridge           *PhoneBridge
-	pendingResults   map[string]*chatPendingResult
-	pendingResultsMu sync.Mutex
-	activeRuns       map[string]context.CancelFunc
-	activeRunsMu     sync.Mutex
+	runtime                 *Runtime
+	addr                    string
+	logger                  *Logger
+	benchmarkDir            string
+	benchmarkPIDFile        string
+	benchmarkLogPath        string
+	benchmarkStatePath      string
+	benchmarkLauncher       func(suite, judge, apiKey string) error
+	benchmarkSuiteValidator func(path string) error
+	benchmarkSuiteLocks     sync.Map
+	userFilesReportPath     string
+	userFilesToolsDir       string
+	mu                      sync.Mutex
+	history                 []Message
+	historyStore            *ChatHistoryStore
+	episodeStore            *TaskEpisodeStore
+	sttClient               STTClient
+	ttsManager              *tts.ProviderManager
+	ttsMu                   sync.RWMutex
+	audioClient             *AudioServiceClient
+	recordMu                sync.Mutex
+	webRecording            *webAudioRecording
+	bridge                  *PhoneBridge
+	pendingResults          map[string]*chatPendingResult
+	pendingResultsMu        sync.Mutex
+	activeRuns              map[string]context.CancelFunc
+	activeRunsMu            sync.Mutex
 }
 
 type webAudioRecording struct {
@@ -182,15 +188,17 @@ type ToolInvokeResponse struct {
 func NewServer(runtime *Runtime, addr string, benchmarkDir string) *Server {
 	bridge := NewPhoneBridge(runtime.logger)
 	s := &Server{
-		runtime:          runtime,
-		addr:             addr,
-		logger:           runtime.logger,
-		benchmarkDir:     benchmarkDir,
-		benchmarkPIDFile: "/tmp/benchmark_runner.pid",
-		history:          make([]Message, 0),
-		bridge:           bridge,
-		pendingResults:   make(map[string]*chatPendingResult),
-		activeRuns:       make(map[string]context.CancelFunc),
+		runtime:             runtime,
+		addr:                addr,
+		logger:              runtime.logger,
+		benchmarkDir:        benchmarkDir,
+		benchmarkPIDFile:    "/tmp/benchmark_runner.pid",
+		userFilesReportPath: "/userdata/agent/files_report.html",
+		userFilesToolsDir:   "/userdata/agent_tools",
+		history:             make([]Message, 0),
+		bridge:              bridge,
+		pendingResults:      make(map[string]*chatPendingResult),
+		activeRuns:          make(map[string]context.CancelFunc),
 	}
 	if runtime.config.ConfigDir != "" {
 		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
@@ -270,6 +278,11 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/benchmark/report/", s.handleBenchmarkReport)
 	mux.HandleFunc("/benchmark/status", s.handleBenchmarkStatus)
 	mux.HandleFunc("/benchmark/log", s.handleBenchmarkLog)
+	mux.HandleFunc("/benchmark/run", s.handleBenchmarkRun)
+	mux.HandleFunc("/benchmark/suites/import", s.handleBenchmarkImport)
+	mux.HandleFunc("/benchmark/suites/delete", s.handleBenchmarkDelete)
+	mux.HandleFunc("/user_files", s.handleUserFiles)
+	mux.HandleFunc("/user_files/regenerate", s.handleUserFilesRegenerate)
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)

@@ -308,3 +308,114 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		t.Errorf("ct = %q", ct)
 	}
 }
+
+func TestHandleBenchmarkRun_RejectsMissingSuite(t *testing.T) {
+	s := &Server{benchmarkDir: t.TempDir()}
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRun(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestHandleBenchmarkRun_WritesStateFile(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	called := false
+	s := &Server{
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkLauncher: func(suite, judge, apiKey string) error {
+			called = true
+			return nil
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run",
+		strings.NewReader(`{"suite":"/tmp/x.json"}`))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRun(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !called {
+		t.Error("launcher was not invoked")
+	}
+	data, _ := os.ReadFile(statePath)
+	if !strings.Contains(string(data), `"running"`) {
+		t.Errorf("state.json = %s", data)
+	}
+}
+
+func TestHandleBenchmarkImport_Validates(t *testing.T) {
+	s := &Server{benchmarkDir: t.TempDir()}
+	cases := []struct {
+		body   string
+		status int
+	}{
+		{`{}`, http.StatusBadRequest},
+		{`{"name":"","json":"{}"}`, http.StatusBadRequest},
+		{`{"name":"bad/name","json":"{}"}`, http.StatusBadRequest},
+		{`{"name":"ok","json":"not json"}`, http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodPost, "/benchmark/suites/import", strings.NewReader(tc.body))
+		rec := httptest.NewRecorder()
+		s.handleBenchmarkImport(rec, req)
+		if rec.Code != tc.status {
+			t.Errorf("body %s: status = %d, want %d", tc.body, rec.Code, tc.status)
+		}
+	}
+}
+
+func TestHandleBenchmarkImport_WritesCustomFile(t *testing.T) {
+	root := t.TempDir()
+	s := &Server{
+		benchmarkDir:            root,
+		benchmarkSuiteValidator: func(path string) error { return nil },
+	}
+	body := `{"name":"mine","json":"{\"name\":\"mine\",\"tasks\":[]}"}`
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/suites/import", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkImport(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "suites", "custom", "mine.json")); err != nil {
+		t.Errorf("file not written: %v", err)
+	}
+}
+
+func TestHandleBenchmarkDelete_OnlyCustom(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "suites", "custom"), 0o755)
+	os.WriteFile(filepath.Join(root, "suites", "custom", "mine.json"), []byte("{}"), 0o644)
+	s := &Server{benchmarkDir: root}
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/suites/delete",
+		strings.NewReader(`{"name":"mine"}`))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkDelete(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "suites", "custom", "mine.json")); !os.IsNotExist(err) {
+		t.Errorf("file still exists: %v", err)
+	}
+}
+
+func TestHandleBenchmarkDelete_RejectsBuiltin(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "suites"), 0o755)
+	os.WriteFile(filepath.Join(root, "suites", "perception_v1.json"), []byte("{}"), 0o644)
+	s := &Server{benchmarkDir: root}
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/suites/delete",
+		strings.NewReader(`{"name":"perception_v1"}`))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkDelete(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+	if _, err := os.Stat(filepath.Join(root, "suites", "perception_v1.json")); err != nil {
+		t.Errorf("builtin file should still exist: %v", err)
+	}
+}
