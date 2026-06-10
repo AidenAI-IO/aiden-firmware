@@ -122,11 +122,89 @@ storage_path = "/userdata/audio"  # 存储路径
 2. **清理策略**
    - 每次保存新音频后检查限额
    - 超限时按时间戳从旧到新删除
-   - 对应的 chat history 中的 `audio_file` 字段变为 broken link（前端显示"音频已过期"）
+   - **音频清理只删文件，不回写 `chat_history.jsonl`**（jsonl append-only，改老记录代价高）
+   - chat history 里 `audio_file` 字段保留原值，由"过期感知"机制兜底显示
 
 3. **存储估算**
    - 16kHz / 16-bit / 单声道 WAV ≈ 1.9 MB/分钟
    - 默认限额 500 段 × 平均 5 秒 ≈ 40 MB（可控范围）
+
+4. **过期音频感知（避免渲染失效的播放按钮）**
+
+   音频被清理后，chat history 里的 `audio_file` 还在，但文件已不存在。前端如果只看字段非空就渲染播放按钮，用户点了才会 404。需要双层兜底：
+
+   **服务端兜底 — `GET /api/history` 返回前 stat 文件：**
+
+   ```go
+   func (s *Server) decorateAudioAvailability(messages []Message) []Message {
+       audioDir := s.runtime.config.AudioArchive.StoragePath
+       for i := range messages {
+           if messages[i].AudioFile == "" {
+               continue
+           }
+           full := filepath.Join(audioDir, filepath.Base(messages[i].AudioFile))
+           if _, err := os.Stat(full); err != nil {
+               messages[i].AudioFile = ""           // 清空指针
+               messages[i].AudioExpired = true      // 标记过期
+           }
+       }
+       return messages
+   }
+   ```
+
+   - 在 `historySnapshot()` 之后、`/api/history` 写响应之前调用一次
+   - 性能：N 次 syscall，历史 < 1000 条时无感知；超长历史可加内存 LRU 缓存或只对尾部 N 条做 stat
+   - 不修改盘上数据，重启后状态自然恢复（删过的还是查不到）
+
+   **前端容错 — 长时间停留页面后清理触发：**
+
+   ```js
+   function renderMessage(msg) {
+     // ...
+     if (msg.audio_file) {
+       const playBtn = document.createElement("button");
+       playBtn.textContent = "▶️ 播放原始音频";
+       playBtn.onclick = async () => {
+         try {
+           const res = await fetch(
+             "/api/audio/" + encodeURIComponent(msg.audio_file),
+           );
+           if (!res.ok) throw new Error("not found");
+           const audio = new Audio(URL.createObjectURL(await res.blob()));
+           audio.play();
+         } catch {
+           playBtn.disabled = true;
+           playBtn.textContent = "🚫 音频已过期";
+         }
+       };
+       div.appendChild(playBtn);
+     } else if (msg.audio_expired) {
+       const span = document.createElement("span");
+       span.className = "audio-expired";
+       span.textContent = "🚫 音频已过期";
+       div.appendChild(span);
+     }
+   }
+   ```
+
+   - 服务端兜底处理"刷新页面"的主路径（按钮一开始就不渲染）
+   - 前端兜底处理"页面长开、刚被清理"的边界情况（按钮点击降级）
+
+   **新增 Message 字段：**
+
+   ```go
+   type Message struct {
+       // ... 已有字段 ...
+       AudioFile    string `json:"audio_file,omitempty"`
+       AudioExpired bool   `json:"audio_expired,omitempty"` // 服务端 stat 失败时置 true
+   }
+   ```
+
+   `AudioExpired` 不持久化（只在响应时计算），盘上仍只保留原始 `audio_file`。
+
+5. **澄清：与 `RetentionPolicy.EventCompactAfter` 无关**
+
+   现有 `internal/agent/lifecycle.go` 的 `RetentionPolicy` 是给 episode trace / memory chunk 用的（默认 7d / 30d / 90d），**与 chat_history 和音频归档是独立两套**。本设计的音频清理按"数量 / 总大小"滚动，不按时间。如果未来需要按时间清理音频，可以在 `[audio_archive]` 增加 `max_age = "30d"` 配置，与现有 `parseRetentionDuration` 复用解析逻辑。
 
 ---
 

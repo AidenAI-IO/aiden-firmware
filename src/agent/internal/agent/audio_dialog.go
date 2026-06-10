@@ -33,6 +33,7 @@ type AudioDialog struct {
 	recordReader *AudioRecordChunkReader
 	speechMu     sync.Mutex
 	historyStore *ChatHistoryStore
+	audioArchive *AudioArchiveManager
 }
 
 // NewAudioDialog creates a new audio dialog manager
@@ -81,11 +82,12 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 	}
 
 	return &AudioDialog{
-		config:      cfg,
-		audioClient: audioClient,
-		sttClient:   sttClient,
-		ttsManager:  ttsManager,
-		vad:         vad,
+		config:       cfg,
+		audioClient:  audioClient,
+		sttClient:    sttClient,
+		ttsManager:   ttsManager,
+		vad:          vad,
+		audioArchive: NewAudioArchiveManager(cfg.AudioArchive),
 	}, nil
 }
 
@@ -265,7 +267,7 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	if err != nil {
 		return err
 	}
-	d.persistVoiceTurn(input, result)
+	d.persistVoiceTurn(input, result, utterance)
 	if result.SpeechStreamed {
 		return nil
 	}
@@ -284,20 +286,29 @@ func (d *AudioDialog) SetHistoryStore(store *ChatHistoryStore) {
 // best-effort: errors are logged and never break the voice loop. Uses
 // context.Background since the caller's context may be cancelled by the time
 // we persist.
-func (d *AudioDialog) persistVoiceTurn(input TurnInput, result RunResult) {
+func (d *AudioDialog) persistVoiceTurn(input TurnInput, result RunResult, utterance []int16) {
 	if d.historyStore == nil {
 		return
 	}
 	now := time.Now()
 
+	// Save audio if archiving enabled
+	audioPath, audioDuration, err := d.audioArchive.SaveAudio(utterance, d.config.Audio.SampleRateOrDefault())
+	if err != nil {
+		log.Printf("[audio_archive] save failed: %v", err)
+		// Continue without audio file
+	}
+
 	transcript := strings.TrimSpace(input.Transcript)
 	if transcript != "" {
 		userMsg := Message{
-			Type:      "user",
-			EpisodeID: result.EpisodeID,
-			Content:   transcript,
-			Source:    "voice",
-			Timestamp: now,
+			Type:            "user",
+			EpisodeID:       result.EpisodeID,
+			Content:         transcript,
+			Source:          "voice",
+			AudioFile:       audioPath,
+			AudioDurationMs: int64(audioDuration),
+			Timestamp:       now,
 		}
 		if err := d.historyStore.Append(context.Background(), userMsg); err != nil {
 			log.Printf("[history] persist voice user message failed: %v", err)

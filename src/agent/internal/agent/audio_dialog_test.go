@@ -183,8 +183,9 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 			InputMode:                "audio",
 			VoiceStreamingTTSEnabled: boolPtr(false),
 		},
-		audioClient: audioClient,
-		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+		audioClient:  audioClient,
+		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
 	}
 
 	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
@@ -249,8 +250,9 @@ func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 			VoiceStreamingTTSEnabled: boolPtr(false),
 			VoiceToolCallSpeech:      &toolSpeech,
 		},
-		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
-		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+		audioClient:  NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
 	}
 
 	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
@@ -326,12 +328,17 @@ func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
 
 func TestAudioDialogPersistVoiceTurnWritesUserAndAssistant(t *testing.T) {
 	store := NewChatHistoryStore(t.TempDir())
-	dialog := &AudioDialog{}
+	dialog := &AudioDialog{
+		config:       Config{Audio: AudioConfig{SampleRate: 16000}},
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
 	dialog.SetHistoryStore(store)
 
+	utterance := make([]int16, 16000) // 1 second
 	dialog.persistVoiceTurn(
 		TurnInput{Transcript: "  hello there  "},
 		RunResult{EpisodeID: "ep-123", Output: "  hi back  "},
+		utterance,
 	)
 
 	messages, err := store.Load(context.Background())
@@ -358,12 +365,17 @@ func TestAudioDialogPersistVoiceTurnWritesUserAndAssistant(t *testing.T) {
 
 func TestAudioDialogPersistVoiceTurnNoTranscriptOnlyAssistant(t *testing.T) {
 	store := NewChatHistoryStore(t.TempDir())
-	dialog := &AudioDialog{}
+	dialog := &AudioDialog{
+		config:       Config{Audio: AudioConfig{SampleRate: 16000}},
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
 	dialog.SetHistoryStore(store)
 
+	utterance := make([]int16, 16000)
 	dialog.persistVoiceTurn(
 		TurnInput{Transcript: ""},
 		RunResult{EpisodeID: "ep-456", Output: "answer"},
+		utterance,
 	)
 
 	messages, err := store.Load(context.Background())
@@ -384,21 +396,31 @@ func TestAudioDialogPersistVoiceTurnNilStoreDoesNotPanic(t *testing.T) {
 			t.Fatalf("persistVoiceTurn panicked with nil store: %v", r)
 		}
 	}()
-	dialog := &AudioDialog{}
+	dialog := &AudioDialog{
+		config:       Config{Audio: AudioConfig{SampleRate: 16000}},
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
+	utterance := make([]int16, 16000)
 	dialog.persistVoiceTurn(
 		TurnInput{Transcript: "anything"},
 		RunResult{Output: "anything"},
+		utterance,
 	)
 }
 
 func TestAudioDialogPersistVoiceTurnEmptyOutputSkipsAssistant(t *testing.T) {
 	store := NewChatHistoryStore(t.TempDir())
-	dialog := &AudioDialog{}
+	dialog := &AudioDialog{
+		config:       Config{Audio: AudioConfig{SampleRate: 16000}},
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
 	dialog.SetHistoryStore(store)
 
+	utterance := make([]int16, 16000)
 	dialog.persistVoiceTurn(
 		TurnInput{Transcript: "user said this"},
 		RunResult{EpisodeID: "ep-789", Output: "   "},
+		utterance,
 	)
 
 	messages, err := store.Load(context.Background())
@@ -438,8 +460,9 @@ func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
 			InputMode:                "audio",
 			VoiceStreamingTTSEnabled: boolPtr(false),
 		},
-		audioClient: audioClient,
-		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+		audioClient:  audioClient,
+		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
 	}
 	dialog.SetHistoryStore(store)
 
@@ -457,6 +480,80 @@ func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
 	}
 	if messages[0].Type != "assistant" || messages[0].Source != "voice" || messages[0].Content != "voice reply" {
 		t.Fatalf("assistant message = %#v", messages[0])
+	}
+}
+
+func TestAudioDialogProcessUtteranceSavesAudioFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := Config{
+		ConfigDir: tmpDir,
+		InputMode: "audio",
+		Audio:     AudioConfig{SampleRate: 16000},
+		AudioArchive: AudioArchiveConfig{
+			Enabled:     true,
+			StoragePath: filepath.Join(tmpDir, "audio"),
+		},
+		Model: ModelConfig{Provider: "fake"},
+	}
+
+	dialog, err := NewAudioDialog(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	historyStore := NewChatHistoryStore(filepath.Join(tmpDir, "history"))
+	dialog.SetHistoryStore(historyStore)
+
+	// Manually call persistVoiceTurn with a transcript to test audio file saving
+	utterance := make([]int16, 16000) // 1 second
+	input := TurnInput{Transcript: "hello"}
+	result := RunResult{EpisodeID: "ep-test", Output: "hi"}
+
+	dialog.persistVoiceTurn(input, result, utterance)
+
+	// Verify audio file saved
+	files, err := os.ReadDir(filepath.Join(tmpDir, "audio"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(files) != 1 {
+		t.Fatalf("Expected 1 audio file, got %d", len(files))
+	}
+
+	if !strings.HasSuffix(files[0].Name(), ".wav") {
+		t.Errorf("Audio file should be WAV: %s", files[0].Name())
+	}
+
+	// Verify message has audio_file field
+	messages, err := historyStore.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var userMsg *Message
+	for i := range messages {
+		if messages[i].Type == "user" {
+			userMsg = &messages[i]
+			break
+		}
+	}
+
+	if userMsg == nil {
+		t.Fatal("No user message found")
+	}
+
+	if userMsg.AudioFile == "" {
+		t.Error("User message should have audio_file set")
+	}
+	if userMsg.AudioDurationMs == 0 {
+		t.Error("User message should have audio_duration_ms set")
+	}
+
+	// Verify the audio file path is absolute and exists
+	if _, err := os.Stat(userMsg.AudioFile); err != nil {
+		t.Errorf("Audio file should exist at %s: %v", userMsg.AudioFile, err)
 	}
 }
 
