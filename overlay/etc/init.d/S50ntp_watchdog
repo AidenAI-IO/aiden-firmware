@@ -16,6 +16,13 @@ fi
 : "${ENABLE_NTP:=1}"
 : "${NTP_WATCHDOG_INTERVAL:=5}"
 : "${NTP_WATCHDOG_TIMEOUT:=600}"
+: "${NTP_BASELINE_YEAR:=2026}"
+
+# Reject a non-numeric override (e.g. a typo in aiden_boot.conf) and fall back
+# to the default so is_clock_synced() always has a sane year to compare against.
+case "$NTP_BASELINE_YEAR" in
+	''|*[!0-9]*) NTP_BASELINE_YEAR=2026 ;;
+esac
 
 PIDFILE=/run/aiden_ntp_watchdog.pid
 LOGFILE=/var/log/aiden_ntp_watchdog.log
@@ -25,10 +32,10 @@ log() {
 }
 
 # Check if ntpd has synchronized the system clock. We consider the clock
-# synchronized if the system time is sane (>=2026) and ntpd is running.
-# A more precise check would parse `ntpq -p` or `adjtimex`, but ntpq may not
-# be present (busybox ntpd doesn't ship it), and adjtimex is overkill when a
-# simple date sanity check + daemon liveness covers 99% of cases.
+# synchronized if the system time is sane (>=NTP_BASELINE_YEAR) and ntpd is
+# running. A more precise check would parse `ntpq -p` or `adjtimex`, but ntpq
+# may not be present (busybox ntpd doesn't ship it), and adjtimex is overkill
+# when a simple date sanity check + daemon liveness covers 99% of cases.
 is_clock_synced() {
 	if ! pidof ntpd >/dev/null 2>&1; then
 		return 1
@@ -37,7 +44,7 @@ is_clock_synced() {
 	case "$year" in
 		''|*[!0-9]*) return 1 ;;
 	esac
-	[ "$year" -ge 2026 ]
+	[ "$year" -ge "$NTP_BASELINE_YEAR" ]
 }
 
 watchdog_main() {
