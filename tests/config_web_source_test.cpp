@@ -339,6 +339,41 @@ TEST_CASE("config web renders finite choice fields as selects") {
     CHECK(html.find("const selectFieldOptions=") == std::string::npos);
 }
 
+TEST_CASE("config web degrades gracefully when config metadata is unavailable") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    // A failed config-meta fetch must not abort the whole page: Wi-Fi, logs and
+    // polling stay live, only the agent.toml sections are disabled. The init
+    // path therefore tracks a metaOk flag instead of returning early.
+    CHECK(html.find("let metaOk=true;") != std::string::npos);
+    CHECK(html.find("metaOk=false;") != std::string::npos);
+    // The early `return` that killed Wi-Fi/log init on meta failure is gone.
+    CHECK(html.find("setDetails(err.message);return;}hydrateSelectOptions") == std::string::npos);
+    // Wi-Fi scan and agent-log refresh run regardless of metaOk.
+    CHECK(html.find("await scanWifi(false);await refreshAgentLog(false);") != std::string::npos);
+    // Only agent.toml sections are disabled on failure; system_env stays editable.
+    CHECK(html.find("function disableAgentConfigEditing()") != std::string::npos);
+    CHECK(html.find("if(card.id==='section-system_env')return;") != std::string::npos);
+    CHECK(html.find("if(!metaOk){disableAgentConfigEditing();}") != std::string::npos);
+
+    // The metadata endpoint fails closed with a 503, which must carry the
+    // correct HTTP status text (not the generic 500 reason phrase).
+    const std::string cpp_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream cpp_in(cpp_path.c_str());
+    REQUIRE(cpp_in.good());
+    std::ostringstream cpp_buffer;
+    cpp_buffer << cpp_in.rdbuf();
+    const std::string source = cpp_buffer.str();
+    CHECK(source.find("case 503: response.status_text = \"Service Unavailable\";") != std::string::npos);
+}
+
+
 TEST_CASE("config web updates dependent field visibility from selected values") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());

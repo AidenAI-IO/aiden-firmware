@@ -1087,7 +1087,11 @@ std::string cjson_to_string(cJSON* json) {
 ApiResponse make_json_error(int status_code, const std::string& message) {
     ApiResponse response;
     response.status_code = status_code;
-    response.status_text = status_code == 400 ? "Bad Request" : "Internal Server Error";
+    switch (status_code) {
+        case 400: response.status_text = "Bad Request"; break;
+        case 503: response.status_text = "Service Unavailable"; break;
+        default:  response.status_text = "Internal Server Error"; break;
+    }
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 0);
