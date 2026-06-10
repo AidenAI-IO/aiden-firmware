@@ -41,6 +41,9 @@ const (
 	defaultKeepRecentTokens = 20000
 )
 
+// DefaultMemoryExtractionConfig returns the default memory extraction
+// configuration with sensible defaults for token budgets, compression
+// thresholds, and entity extraction patterns.
 func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
 	return MemoryExtractionConfig{
 		TagCandidates: []string{
@@ -57,6 +60,9 @@ func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
 	}
 }
 
+// LoadMemoryExtractionConfig loads memory extraction configuration from a YAML
+// file in the specified config directory. Falls back to defaults when the file
+// is missing or invalid, and applies sanity checks to all loaded values.
 func LoadMemoryExtractionConfig(configDir string) MemoryExtractionConfig {
 	cfg := DefaultMemoryExtractionConfig()
 	if configDir == "" {

@@ -18,12 +18,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// SessionMemoryStore manages session event compression, chunk storage, and
+// summary generation for a single session's memory.
 type SessionMemoryStore struct {
 	mu               sync.Mutex
 	rootDir          string
 	summaryMaxChunks int
 }
 
+// CompressOption provides parameters for session event compression.
 type CompressOption struct {
 	ChunkID    string
 	Summary    string
@@ -68,6 +71,7 @@ type ChunkStructuredSummary struct {
 	MemoryCandidates []string `json:"memory_candidates,omitempty" yaml:"memory_candidates,omitempty"`
 }
 
+// Empty reports whether the structured summary contains no data.
 func (s ChunkStructuredSummary) Empty() bool {
 	return strings.TrimSpace(s.Summary) == "" &&
 		len(s.UserGoals) == 0 &&
@@ -79,6 +83,7 @@ func (s ChunkStructuredSummary) Empty() bool {
 		len(s.MemoryCandidates) == 0
 }
 
+// ChunkSummary contains metadata and summary information for a compressed chunk.
 type ChunkSummary struct {
 	ID         string                  `json:"id"`
 	Summary    string                  `json:"summary"`
@@ -90,6 +95,7 @@ type ChunkSummary struct {
 	Checksum   string                  `json:"checksum"`
 }
 
+// ChunkRecallQuery specifies criteria for recalling compressed chunks.
 type ChunkRecallQuery struct {
 	ChunkIDs []string `json:"chunk_ids,omitempty"`
 	Tags     []string `json:"tags,omitempty"`
@@ -98,6 +104,7 @@ type ChunkRecallQuery struct {
 	Limit    int      `json:"limit,omitempty"`
 }
 
+// ChunkRecallResult returns a recalled chunk with its summary and events.
 type ChunkRecallResult struct {
 	ChunkID    string                  `json:"chunk_id"`
 	Summary    string                  `json:"summary"`
@@ -128,6 +135,8 @@ type chunkIndexEntry struct {
 
 const defaultSummaryMaxChunks = 10
 
+// NewSessionMemoryStore creates a new session memory store with the specified
+// root directory and optional summary chunk limit.
 func NewSessionMemoryStore(rootDir string, summaryMaxChunks ...int) *SessionMemoryStore {
 	maxChunks := defaultSummaryMaxChunks
 	if len(summaryMaxChunks) > 0 && summaryMaxChunks[0] > 0 {
@@ -136,6 +145,7 @@ func NewSessionMemoryStore(rootDir string, summaryMaxChunks ...int) *SessionMemo
 	return &SessionMemoryStore{rootDir: rootDir, summaryMaxChunks: maxChunks}
 }
 
+// AppendEvent appends a session event to the event stream and returns its ID.
 func (s *SessionMemoryStore) AppendEvent(ctx context.Context, event SessionEvent) (string, error) {
 	select {
 	case <-ctx.Done():
@@ -171,6 +181,7 @@ func (s *SessionMemoryStore) AppendEvent(ctx context.Context, event SessionEvent
 	return event.EventID, nil
 }
 
+// Compress reads all session events and compresses them into a chunk.
 func (s *SessionMemoryStore) Compress(ctx context.Context, opt CompressOption) (ChunkSummary, error) {
 	select {
 	case <-ctx.Done():
@@ -271,6 +282,7 @@ func (s *SessionMemoryStore) replaceEvents(events []SessionEvent) error {
 	return nil
 }
 
+// RecallChunks retrieves compressed chunks matching the query criteria.
 func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecallQuery) ([]ChunkRecallResult, error) {
 	select {
 	case <-ctx.Done():

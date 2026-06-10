@@ -20,6 +20,7 @@ import (
 
 const defaultLockTimeout = 10 * time.Second
 
+// MemoryHandle wraps a langchain memory instance and its chat history.
 type MemoryHandle struct {
 	Memory  schema.Memory
 	History *langmemory.ChatMessageHistory
@@ -41,6 +42,9 @@ type StructuredSummarizeFn func(ctx context.Context, events []SessionEvent) Chun
 // window is unknown; callers fall back to the yaml-configured default.
 type ContextWindowFn func() int
 
+// MemoryManager maintains session memory, handling compression, chunk management,
+// and long-term profile generation. It coordinates between in-memory chat history
+// and persistent filesystem storage.
 type MemoryManager struct {
 	mu                    sync.Mutex
 	handles               map[string]*MemoryHandle
@@ -63,11 +67,15 @@ type MemoryManager struct {
 
 const defaultHotWindowEvents = 30
 
+// MessageRecord represents a single message in the conversation history with
+// its role and content.
 type MessageRecord struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
+// SessionEvent represents a single event in the session event stream, capturing
+// conversation turns, tool calls, and system events with metadata.
 type SessionEvent struct {
 	EventID    string `json:"event_id"`
 	Ts         string `json:"ts"`
@@ -80,28 +88,35 @@ type SessionEvent struct {
 	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
+// MemoryManagerOption configures a MemoryManager instance.
 type MemoryManagerOption func(*MemoryManager)
 
+// WithExtractionConfig sets the memory extraction configuration.
 func WithExtractionConfig(cfg MemoryExtractionConfig) MemoryManagerOption {
 	return func(m *MemoryManager) { m.extraction = cfg }
 }
 
+// WithSummarizeFn sets the plain-text summarization function.
 func WithSummarizeFn(fn SummarizeFn) MemoryManagerOption {
 	return func(m *MemoryManager) { m.summarizeFn = fn }
 }
 
+// WithStructuredSummarizeFn sets the structured summarization function.
 func WithStructuredSummarizeFn(fn StructuredSummarizeFn) MemoryManagerOption {
 	return func(m *MemoryManager) { m.structuredSummarizeFn = fn }
 }
 
+// WithProfileFn sets the long-term profile generation function.
 func WithProfileFn(fn ProfileFn) MemoryManagerOption {
 	return func(m *MemoryManager) { m.profileFn = fn }
 }
 
+// WithMemoryProfileDebouncer sets the profile rebuild debouncer.
 func WithMemoryProfileDebouncer(d *ProfileDebouncer) MemoryManagerOption {
 	return func(m *MemoryManager) { m.profileDebouncer = d }
 }
 
+// WithMemoryLogger sets the logger for memory operations.
 func WithMemoryLogger(logger *Logger) MemoryManagerOption {
 	return func(m *MemoryManager) { m.logger = logger }
 }
@@ -114,6 +129,8 @@ func WithContextWindowFn(fn ContextWindowFn) MemoryManagerOption {
 	return func(m *MemoryManager) { m.contextWindowFn = fn }
 }
 
+// NewMemoryManager creates a new MemoryManager with the specified storage
+// directory and options.
 func NewMemoryManager(storageDir string, opts ...MemoryManagerOption) *MemoryManager {
 	manager := &MemoryManager{
 		handles:     map[string]*MemoryHandle{},
@@ -130,18 +147,21 @@ func NewMemoryManager(storageDir string, opts ...MemoryManagerOption) *MemoryMan
 	return manager
 }
 
+// SetLastPromptTokens updates the token count from the most recent prompt.
 func (m *MemoryManager) SetLastPromptTokens(tokens int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastPromptTokens = tokens
 }
 
+// LastPromptTokens returns the token count from the most recent prompt.
 func (m *MemoryManager) LastPromptTokens() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.lastPromptTokens
 }
 
+// Get retrieves or creates a memory handle for the specified agent.
 func (m *MemoryManager) Get(agentName string, cfg MemoryConfig) (*MemoryHandle, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -185,6 +205,7 @@ func (m *MemoryManager) Get(agentName string, cfg MemoryConfig) (*MemoryHandle, 
 	return handle, nil
 }
 
+// Snapshot returns the current conversation history as message records.
 func (m *MemoryManager) Snapshot(ctx context.Context, agentName string) ([]MessageRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -209,6 +230,7 @@ func (m *MemoryManager) Snapshot(ctx context.Context, agentName string) ([]Messa
 	return result, nil
 }
 
+// ClearSession clears the in-memory session and removes persisted session data.
 func (m *MemoryManager) ClearSession(ctx context.Context, agentName string) error {
 	m.mu.Lock()
 	handle, ok := m.handles[agentName]
@@ -223,6 +245,7 @@ func (m *MemoryManager) ClearSession(ctx context.Context, agentName string) erro
 	return m.removeSessionPersisted(agentName)
 }
 
+// ClearAll clears all memory including session, long-term, and episodic data.
 func (m *MemoryManager) ClearAll(ctx context.Context, agentName string) error {
 	m.mu.Lock()
 	handle, ok := m.handles[agentName]
@@ -237,6 +260,7 @@ func (m *MemoryManager) ClearAll(ctx context.Context, agentName string) error {
 	return m.removeAllPersisted(agentName)
 }
 
+// Save persists the current memory snapshot and triggers maintenance.
 func (m *MemoryManager) Save(ctx context.Context, agentName string) error {
 	records, err := m.Snapshot(ctx, agentName)
 	if err != nil {
@@ -248,6 +272,7 @@ func (m *MemoryManager) Save(ctx context.Context, agentName string) error {
 	return m.maintainFilesystemMemory(ctx)
 }
 
+// SaveSnapshot persists a given snapshot of message records.
 func (m *MemoryManager) SaveSnapshot(ctx context.Context, agentName string, records []MessageRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -255,6 +280,7 @@ func (m *MemoryManager) SaveSnapshot(ctx context.Context, agentName string, reco
 	return m.persistSnapshot(agentName, records)
 }
 
+// RequestMaintenance schedules asynchronous memory maintenance.
 func (m *MemoryManager) RequestMaintenance() {
 	if m.storageDir == "" {
 		return
@@ -272,6 +298,7 @@ func (m *MemoryManager) RequestMaintenance() {
 	go m.maintenanceLoop()
 }
 
+// WaitMaintenance blocks until maintenance completes or context is cancelled.
 func (m *MemoryManager) WaitMaintenance(ctx context.Context) error {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -312,6 +339,7 @@ func (m *MemoryManager) maintenanceLoop() {
 	}
 }
 
+// AppendExchange appends a user input and assistant output pair to the session.
 func (m *MemoryManager) AppendExchange(ctx context.Context, agentName string, input string, output string) error {
 	if m.storageDir == "" {
 		return nil
