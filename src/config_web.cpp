@@ -2431,11 +2431,23 @@ input[type=text]{font-size:14px;padding:8px 12px;border-radius:6px;border:1px so
 </style></head><body>
 <h1>Aiden Benchmark</h1>
 <div class="card">
+<div class="row" style="margin-bottom:0">
+<strong style="font-size:14px">Status</strong>
+<span id="statusText" class="status">idle</span>
+</div></div>
+<div class="card">
+<h2 style="font-size:15px;margin-bottom:8px">Benchmarks</h2>
 <div class="row">
-<select id="suiteSelect"><option value="">Loading...</option></select>
+<select id="benchmarkSelect"><option value="">Loading...</option></select>
 <button id="runBtn" onclick="startRun()">Run</button>
 <button id="delBtn" class="del" onclick="deleteSuite()" style="display:none">Delete</button>
-<span id="statusText" class="status">idle</span>
+</div></div>
+<div class="card">
+<h2 style="font-size:15px;margin-bottom:8px">Unit Tests</h2>
+<div class="muted" style="margin-bottom:8px">Direct tool-level tests. Run one platform suite, or run all unit suites under suites/unit.</div>
+<div class="row">
+<select id="unitSelect"><option value="">Loading...</option></select>
+<button id="runUnitBtn" onclick="startRunUnit()">Run</button>
 </div></div>
 <div class="card">
 <h2 style="font-size:15px;margin-bottom:8px">AI Generate Suite</h2>
@@ -2473,19 +2485,32 @@ Or single scenario: Test agent on 3 math questions (2+2, 5*3, 10-4) with multipl
 <script>
 var polling=null;
 var suiteIndex={};
+var benchmarkSuiteCount=0;
+var unitSuiteCount=0;
 function load(){loadSuites();loadRuns();loadStatus()}
 function loadSuites(){
 fetch('/benchmark/suites').then(r=>r.json()).then(d=>{
-var s=document.getElementById('suiteSelect');s.innerHTML='';suiteIndex={};
+var b=document.getElementById('benchmarkSelect');
+var u=document.getElementById('unitSelect');
+b.innerHTML='';u.innerHTML='';suiteIndex={};benchmarkSuiteCount=0;unitSuiteCount=0;
 d.forEach(function(x){
 var o=document.createElement('option');o.value=x.path;
 o.textContent=x.name+(x.custom?' (custom)':'');
-s.appendChild(o);suiteIndex[x.path]=x;
+suiteIndex[x.path]=x;
+if(x.kind==='unit'){
+u.appendChild(o);unitSuiteCount++;
+}else{
+b.appendChild(o);benchmarkSuiteCount++;
+}
 });
+if(!benchmarkSuiteCount)b.innerHTML='<option value="">No benchmark suites</option>';
+if(!unitSuiteCount)u.innerHTML='<option value="">No unit suites</option>';
+document.getElementById('runBtn').disabled=(benchmarkSuiteCount===0);
+document.getElementById('runUnitBtn').disabled=(unitSuiteCount===0);
 syncDelBtn();
 })}
 function syncDelBtn(){
-var p=document.getElementById('suiteSelect').value;
+var p=document.getElementById('benchmarkSelect').value;
 var x=suiteIndex[p];
 document.getElementById('delBtn').style.display=(x&&x.custom)?'inline-block':'none';
 }
@@ -2506,24 +2531,40 @@ function loadStatus(){
 fetch('/benchmark/status').then(r=>r.json()).then(d=>{
 var el=document.getElementById('statusText');
 var btn=document.getElementById('runBtn');
+var unitBtn=document.getElementById('runUnitBtn');
 el.textContent=d.status||'idle';
 el.className='status '+(d.status||'');
-btn.disabled=(d.status==='running');
+btn.disabled=(d.status==='running'||benchmarkSuiteCount===0);
+unitBtn.disabled=(d.status==='running'||unitSuiteCount===0);
 if(d.status==='running'&&!polling)polling=setInterval(pollStatus,3000);
 })}
 function pollStatus(){
 fetch('/benchmark/status').then(r=>r.json()).then(d=>{
 var el=document.getElementById('statusText');
 var btn=document.getElementById('runBtn');
+var unitBtn=document.getElementById('runUnitBtn');
 el.textContent=d.status||'idle';
 el.className='status '+(d.status||'');
-btn.disabled=(d.status==='running');
+btn.disabled=(d.status==='running'||benchmarkSuiteCount===0);
+unitBtn.disabled=(d.status==='running'||unitSuiteCount===0);
 if(d.status!=='running'){clearInterval(polling);polling=null;loadRuns()}
 })}
 function startRun(){
-var suite=document.getElementById('suiteSelect').value;
-if(!suite){alert('Select a suite');return}
+var suite=document.getElementById('benchmarkSelect').value;
+if(!suite){alert('Select a benchmark suite');return}
 document.getElementById('runBtn').disabled=true;
+document.getElementById('runUnitBtn').disabled=true;
+document.getElementById('statusText').textContent='running';
+document.getElementById('statusText').className='status running';
+fetch('/benchmark/run',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({suite:suite})}).then(r=>r.json()).then(function(){
+polling=setInterval(pollStatus,3000)});
+}
+function startRunUnit(){
+var suite=document.getElementById('unitSelect').value;
+if(!suite){alert('Select a unit suite');return}
+document.getElementById('runBtn').disabled=true;
+document.getElementById('runUnitBtn').disabled=true;
 document.getElementById('statusText').textContent='running';
 document.getElementById('statusText').className='status running';
 fetch('/benchmark/run',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -2599,13 +2640,13 @@ loadSuites();
 }).catch(function(e){msg.textContent=String(e);msg.className='err'});
 }
 function deleteSuite(){
-var p=document.getElementById('suiteSelect').value;
+var p=document.getElementById('benchmarkSelect').value;
 var x=suiteIndex[p];if(!x||!x.custom)return;
 if(!confirm('Delete suite '+x.name+'?'))return;
 fetch('/benchmark/suites/delete',{method:'POST',headers:{'Content-Type':'application/json'},
 body:JSON.stringify({name:x.name})}).then(function(r){return r.json()}).then(function(){loadSuites()});
 }
-document.getElementById('suiteSelect').addEventListener('change',syncDelBtn);
+document.getElementById('benchmarkSelect').addEventListener('change',syncDelBtn);
 load();
 </script></body></html>)HTML";
 }
@@ -3511,9 +3552,30 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
                 std::string name = (pos != std::string::npos) ? path.substr(pos + 1) : path;
                 if (name.size() > 5) name = name.substr(0, name.size() - 5);
                 bool is_custom = path.find("/suites/custom/") != std::string::npos;
+                std::string kind = "benchmark";
+                FILE* suite_fp = fopen(path.c_str(), "r");
+                if (suite_fp) {
+                    fseek(suite_fp, 0, SEEK_END);
+                    long sz = ftell(suite_fp);
+                    fseek(suite_fp, 0, SEEK_SET);
+                    if (sz > 0 && sz < 256 * 1024) {
+                        std::string buf(sz, '\0');
+                        fread(&buf[0], 1, sz, suite_fp);
+                        cJSON* suite_json = cJSON_Parse(buf.c_str());
+                        if (suite_json) {
+                            cJSON* kind_item = cJSON_GetObjectItem(suite_json, "kind");
+                            if (json_is_string(kind_item) && std::string(kind_item->valuestring) == "unit") {
+                                kind = "unit";
+                            }
+                            cJSON_Delete(suite_json);
+                        }
+                    }
+                    fclose(suite_fp);
+                }
                 cJSON* item = cJSON_CreateObject();
                 cJSON_AddStringToObject(item, "name", name.c_str());
                 cJSON_AddStringToObject(item, "path", path.c_str());
+                cJSON_AddStringToObject(item, "kind", kind.c_str());
                 cJSON_AddBoolToObject(item, "custom", is_custom ? 1 : 0);
                 cJSON_AddItemToArray(root, item);
             }
@@ -3623,14 +3685,40 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     if (request.method == "POST" && request.path == "/benchmark/run") {
         ApiResponse response;
         cJSON* req_body = cJSON_Parse(request.body.c_str());
-        if (!req_body || !json_is_string(cJSON_GetObjectItem(req_body, "suite"))) {
+        if (!req_body || (!json_is_string(cJSON_GetObjectItem(req_body, "suite")) &&
+                          !json_is_string(cJSON_GetObjectItem(req_body, "suite_dir")))) {
             response.status_code = 400;
-            response.body = "{\"error\":\"missing suite field\"}";
+            response.body = "{\"error\":\"missing suite or suite_dir field\"}";
             if (req_body) cJSON_Delete(req_body);
             return response;
         }
-        std::string suite_path = cJSON_GetObjectItem(req_body, "suite")->valuestring;
+        bool run_suite_dir = json_is_string(cJSON_GetObjectItem(req_body, "suite_dir"));
+        std::string suite_path = run_suite_dir ?
+            cJSON_GetObjectItem(req_body, "suite_dir")->valuestring :
+            cJSON_GetObjectItem(req_body, "suite")->valuestring;
         cJSON_Delete(req_body);
+        std::string suite_kind = run_suite_dir ? "unit" : "benchmark";
+        if (!run_suite_dir) {
+            FILE* suite_fp = fopen(suite_path.c_str(), "r");
+            if (suite_fp) {
+                fseek(suite_fp, 0, SEEK_END);
+                long sz = ftell(suite_fp);
+                fseek(suite_fp, 0, SEEK_SET);
+                if (sz > 0 && sz < 256 * 1024) {
+                    std::string buf(sz, '\0');
+                    fread(&buf[0], 1, sz, suite_fp);
+                    cJSON* suite_json = cJSON_Parse(buf.c_str());
+                    if (suite_json) {
+                        cJSON* kind_item = cJSON_GetObjectItem(suite_json, "kind");
+                        if (json_is_string(kind_item) && std::string(kind_item->valuestring) == "unit") {
+                            suite_kind = "unit";
+                        }
+                        cJSON_Delete(suite_json);
+                    }
+                }
+                fclose(suite_fp);
+            }
+        }
         // Write state.json
         std::string state = "{\"status\":\"running\",\"suite\":\"" + suite_path + "\"}";
         FILE* sf = fopen("/userdata/agent/benchmark/state.json", "w");
@@ -3642,13 +3730,20 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
         // Launch runner in background
         std::string cmd = "cd /userdata/agent/benchmark && "
-            "export OPENROUTER_API_KEY=$(grep 'api_key.*sk-or' /userdata/agent/agent.toml | sed 's/.*\"\\(sk-or[^\"]*\\)\".*/\\1/') && "
-            + proxy_env_exports +
-            "python3 -c 'import sys;sys.path.insert(0,\".\");from runner.main import cli;sys.exit(cli())' "
-            "run --suite " + shell_quote(suite_path) + " "
-            "--agent-url http://127.0.0.1:8080 "
-            "--judge-model bytedance-seed/seed-2.0-lite "
-            "> /tmp/benchmark_run.log 2>&1; "
+            + proxy_env_exports;
+        if (suite_kind == "unit") {
+            std::string unit_suite_arg = run_suite_dir ? "--suite-dir " : "--suite ";
+            cmd += "python3 -c 'import sys;sys.path.insert(0,\".\");from runner.main import cli;sys.exit(cli())' "
+                "unit " + unit_suite_arg + shell_quote(suite_path) + " "
+                "--agent-url http://127.0.0.1:8080 ";
+        } else {
+            cmd += "export OPENROUTER_API_KEY=$(grep 'api_key.*sk-or' /userdata/agent/agent.toml | sed 's/.*\"\\(sk-or[^\"]*\\)\".*/\\1/') && "
+                "python3 -c 'import sys;sys.path.insert(0,\".\");from runner.main import cli;sys.exit(cli())' "
+                "run --suite " + shell_quote(suite_path) + " "
+                "--agent-url http://127.0.0.1:8080 "
+                "--judge-model bytedance-seed/seed-2.0-lite ";
+        }
+        cmd += "> /tmp/benchmark_run.log 2>&1; "
             "echo '{\"status\":\"idle\"}' > /userdata/agent/benchmark/state.json &";
         system(cmd.c_str());
         response.body = "{\"ok\":true,\"status\":\"running\"}";
@@ -3695,7 +3790,9 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
             "cd /userdata/agent/benchmark && "
             "python3 -c 'import sys; sys.path.insert(0, \".\"); "
             "from runner.suite import load_suite; "
-            "load_suite(\"" + tmp_path + "\")' 2>&1";
+            "from runner.unit import is_unit_suite; "
+            "p=\"" + tmp_path + "\"; "
+            "is_unit_suite(p) or load_suite(p)' 2>&1";
         CommandResult vr = run_shell_command(validate_cmd);
         if (vr.exit_code != 0) {
             unlink(tmp_path.c_str());
