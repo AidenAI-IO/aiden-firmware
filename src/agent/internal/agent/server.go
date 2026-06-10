@@ -359,7 +359,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sync path — legacy behaviour for web UI and clients without request_id
-	s.handleChatSync(w, r, req, inputText, runAttachments, userMsg.EpisodeID)
+	s.handleChatSync(w, r, req, inputText, runAttachments, userMsg)
 }
 
 func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
@@ -719,15 +719,17 @@ func (s *Server) handleChatSync(
 	req ChatRequest,
 	inputText string,
 	runAttachments []InputAttachment,
-	episodeID string,
+	userMsg Message,
 ) {
 	ctx := r.Context()
+	episodeID := userMsg.EpisodeID
 
 	if s.logger != nil {
 		s.logger.Info("Chat request (sync): %s attachments=%d", inputText, len(runAttachments))
 	}
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
+	s.appendHistory(userMsg)
 
 	runReq := RunRequest{
 		Input:          inputText,

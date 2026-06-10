@@ -46,7 +46,10 @@ provider = "openrouter"
 model = "google/gemini-3.5-flash"
 api_key = "OPENROUTER_API_KEY"
 temperature = 0.2
-max_tokens = 1000
+max_response_tokens = 1000
+# Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.
+# context_window = 128000
+# model_max_output_tokens = 8192
 
 # Optional future field parsed by config but not currently used by the runtime.
 # [model_text]
