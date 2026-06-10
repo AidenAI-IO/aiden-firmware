@@ -115,8 +115,8 @@ def _log_task_result(task_id: str, attempt: int, result, verbose: bool = False,
                 if len(reason_lines) > 3:
                     print(f"        → ... ({len(reason_lines) - 3} more lines)", flush=True)
 
-    # Show hard assertion failures
-    if result.hard_assertions:
+    # Show hard assertion failures (verbose mode)
+    if verbose and result.hard_assertions:
         ha = result.hard_assertions
         failures = []
         if ha.timeout is False:
@@ -135,12 +135,12 @@ def _log_task_result(task_id: str, attempt: int, result, verbose: bool = False,
         if failures:
             print(f"  ⚠️  Hard assertion failures: {', '.join(failures)}", flush=True)
 
-    # Show error messages
-    if "error" in result.metrics:
+    # Show error messages (verbose mode)
+    if verbose and "error" in result.metrics:
         print(f"  ❌ Error: {result.metrics['error']}", flush=True)
-    if "agent_error" in result.metrics:
+    if verbose and "agent_error" in result.metrics:
         print(f"  ❌ Agent Error: {result.metrics['agent_error']}", flush=True)
-    if "judge_error" in result.metrics:
+    if verbose and "judge_error" in result.metrics:
         print(f"  ❌ Judge Error: {result.metrics['judge_error']}", flush=True)
 
 
