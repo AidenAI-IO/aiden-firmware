@@ -676,6 +676,13 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		return err
 	}
 
+	// Update lastPromptTokens to the estimated size of the hot window after
+	// compression. This prevents spurious re-compression: the maintenanceLoop
+	// checks maintenancePending and may run again immediately; if we left
+	// lastPromptTokens at the pre-compression high value, shouldCompress would
+	// continue returning true and trigger redundant compaction rounds.
+	m.SetLastPromptTokens(cutMeta.KeptTokensEstimate)
+
 	longTerm := NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"), WithLifecycleDir(filepath.Join(m.storageDir, "lifecycle")), WithStoreProfileFn(m.profileFn), WithProfileDebouncer(m.profileDebouncer))
 	longTerm.RequestProfileRebuild()
 	if m.logger != nil {

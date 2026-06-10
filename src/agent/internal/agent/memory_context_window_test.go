@@ -180,3 +180,90 @@ func TestMaintainFilesystemMemoryUsesResolverContextWindow(t *testing.T) {
 		t.Fatalf("expected no compression with 100k resolver window; got %d chunks (resolver value being ignored?)", len(chunks))
 	}
 }
+
+// TestMaintainFilesystemMemoryUpdatesLastPromptTokens verifies that
+// maintainFilesystemMemory updates lastPromptTokens after compressing, so the
+// maintenanceLoop does not immediately re-compress when maintenancePending is
+// set during a prior round.
+func TestMaintainFilesystemMemoryUpdatesLastPromptTokens(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 10_000
+	cfg.CompressAtPercent = 50
+	cfg.HotWindowEvents = 6 // will keep ~6 events in hot window
+	cfg.KeepRecentTokens = 300
+
+	mgr := NewMemoryManager(storageDir,
+		WithExtractionConfig(cfg),
+		WithContextWindowFn(func() int { return 10_000 }),
+	)
+
+	sessionDir := filepath.Join(storageDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir session: %v", err)
+	}
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+
+	// Create 15 events that will trigger compression: prompt shows 5500 tokens
+	// (55% of 10k context window) which is above the 50% threshold.
+	for i := 0; i < 15; i++ {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: "message",
+		}); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+
+	// Set a high lastPromptTokens that will trigger compression.
+	mgr.SetLastPromptTokens(5500)
+
+	// First compression round: should compress and update lastPromptTokens.
+	if err := mgr.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory round 1: %v", err)
+	}
+
+	// After compression, lastPromptTokens should be updated to the estimated
+	// token count of the hot window, which is much smaller than 5500. The
+	// exact value depends on the kept events, but it should be well below the
+	// 50% threshold (5000 tokens).
+	updatedTokens := mgr.LastPromptTokens()
+	if updatedTokens >= 5000 {
+		t.Fatalf("after compression, lastPromptTokens should be updated to hot window estimate; got %d, want < 5000", updatedTokens)
+	}
+
+	// shouldCompress should now return false since the hot window is small.
+	events, err := session.readEvents(session.eventsPath())
+	if err != nil {
+		t.Fatalf("readEvents after compression: %v", err)
+	}
+	if mgr.shouldCompress(len(events)) {
+		t.Fatalf("after compression, shouldCompress should return false (lastPromptTokens=%d, event_count=%d)", updatedTokens, len(events))
+	}
+
+	// If we run maintainFilesystemMemory again (simulating maintenancePending
+	// re-triggering), it should NOT compress again.
+	chunksBefore, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 100})
+	if err != nil {
+		t.Fatalf("RecallChunks before round 2: %v", err)
+	}
+
+	if err := mgr.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory round 2: %v", err)
+	}
+
+	chunksAfter, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 100})
+	if err != nil {
+		t.Fatalf("RecallChunks after round 2: %v", err)
+	}
+
+	if len(chunksAfter) != len(chunksBefore) {
+		t.Fatalf("second maintainFilesystemMemory created new chunks (spurious re-compression); before=%d, after=%d", len(chunksBefore), len(chunksAfter))
+	}
+}
