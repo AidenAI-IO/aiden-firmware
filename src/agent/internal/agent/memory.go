@@ -697,7 +697,23 @@ func (m *MemoryManager) planCompaction(events []SessionEvent, contextWindow int)
 	if keepCount >= len(events) {
 		return compactionPlan{ok: false}
 	}
-	return compactionPlan{ok: true, cutIndex: len(events) - keepCount, mode: "count"}
+	// Align to turn boundary: find the nearest complete turn at or after cutIndex
+	rawCutIndex := len(events) - keepCount
+	cutAtTurn := findSessionCutPoint(events, rawCutIndex, len(events), 0)
+	if cutAtTurn.HasCut && cutAtTurn.FirstKeptIndex > rawCutIndex {
+		// Use turn-aligned cut point if it doesn't shrink hot window too much
+		if len(events)-cutAtTurn.FirstKeptIndex >= keepCount/2 {
+			return compactionPlan{
+				ok:             true,
+				cutIndex:       cutAtTurn.FirstKeptIndex,
+				isSplitTurn:    cutAtTurn.IsSplitTurn,
+				turnStartIndex: cutAtTurn.TurnStartIndex,
+				mode:           "count",
+			}
+		}
+	}
+	// Fall back to raw cut if turn alignment fails or shrinks too much
+	return compactionPlan{ok: true, cutIndex: rawCutIndex, mode: "count"}
 }
 
 func (m *MemoryManager) reserveTokens() int {
