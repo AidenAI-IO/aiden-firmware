@@ -601,6 +601,91 @@ func TestMemoryManagerClearSessionPreservesLongTermMemory(t *testing.T) {
 	}
 }
 
+func TestMaintainFilesystemMemorySplitsLongSingleTurnWithoutOrphanToolResult(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 8000   // clamps reserve to 4000, keep_recent to 4000
+	cfg.CompressAtPercent = 50 // token-percent trigger
+	cfg.HotWindowEvents = 1000 // event-count trigger must not fire
+	cfg.KeepRecentTokens = 4000
+
+	// Summarizer echoes event contents so we can assert the user goal survives.
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg),
+		WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+			var b strings.Builder
+			for _, e := range events {
+				b.WriteString(e.Content)
+				b.WriteString(" ")
+			}
+			return strings.TrimSpace(b.String())
+		}))
+
+	sessionDir := filepath.Join(storageDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir session: %v", err)
+	}
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+
+	const goalMarker = "USER_GOAL_REIMBURSE_FLOW_42"
+	// One single turn: a user goal, then many assistant/tool exchanges large
+	// enough to blow past keep_recent_tokens so the cut lands mid-turn.
+	mustAppend := func(typ, role, content string, i int) {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%03d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    typ, Role: role, Content: content,
+		}); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+	mustAppend("user_input", "user", goalMarker+" "+strings.Repeat("g", 100), 0)
+	idx := 1
+	for pair := 0; pair < 10; pair++ {
+		mustAppend("assistant_output", "assistant", strings.Repeat("a", 3200), idx)
+		idx++
+		mustAppend("tool_result", "tool", strings.Repeat("r", 3200), idx)
+		idx++
+	}
+
+	manager.SetLastPromptTokens(6000) // 75% of 8k window → triggers
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory: %v", err)
+	}
+
+	hot := readSessionEvents(t, session.eventsPath())
+	if len(hot) == 0 {
+		t.Fatalf("expected hot events to remain after compaction")
+	}
+	if hot[0].Type == "tool_result" {
+		t.Fatalf("hot window must not open on an orphan tool_result: %#v", hot[0])
+	}
+
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 1})
+	if err != nil {
+		t.Fatalf("RecallChunks: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected one compacted chunk, got %d", len(chunks))
+	}
+	if !strings.Contains(chunks[0].Summary, goalMarker) {
+		t.Fatalf("chunk summary lost the user goal %q:\n%s", goalMarker, chunks[0].Summary)
+	}
+
+	// The split-turn cut metadata should be recorded on the index entry.
+	index, err := session.loadChunkIndex()
+	if err != nil {
+		t.Fatalf("loadChunkIndex: %v", err)
+	}
+	if len(index.Chunks) != 1 || index.Chunks[0].CutMeta == nil {
+		t.Fatalf("expected cut metadata on chunk index entry: %#v", index.Chunks)
+	}
+	if !index.Chunks[0].CutMeta.IsSplitTurn {
+		t.Fatalf("expected split-turn cut metadata, got %#v", index.Chunks[0].CutMeta)
+	}
+}
+
 func readSessionEvents(t *testing.T, path string) []SessionEvent {
 	t.Helper()
 	file, err := os.Open(path)

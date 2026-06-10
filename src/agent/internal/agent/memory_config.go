@@ -19,7 +19,22 @@ type MemoryExtractionConfig struct {
 	ContextWindow     int `yaml:"context_window"`
 	CompressAtPercent int `yaml:"compress_at_percent"`
 	SummaryMaxChunks  int `yaml:"summary_max_chunks"`
+	// ReserveTokens is the token headroom kept free below the model's context
+	// window. Compression triggers once prompt tokens exceed
+	// contextWindow - ReserveTokens. Clamped to at most half the active window
+	// so small-window models stay sane. Borrowed from pi's reserveTokens.
+	ReserveTokens int `yaml:"reserve_tokens"`
+	// KeepRecentTokens is the approximate token budget of recent events kept
+	// hot (uncompressed) when a token-based cut point is taken. Clamped to fit
+	// alongside ReserveTokens inside the active window. Borrowed from pi's
+	// keepRecentTokens.
+	KeepRecentTokens int `yaml:"keep_recent_tokens"`
 }
+
+const (
+	defaultReserveTokens    = 8192
+	defaultKeepRecentTokens = 20000
+)
 
 func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
 	return MemoryExtractionConfig{
@@ -32,6 +47,8 @@ func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
 		ContextWindow:     32000,
 		CompressAtPercent: 50,
 		SummaryMaxChunks:  10,
+		ReserveTokens:     defaultReserveTokens,
+		KeepRecentTokens:  defaultKeepRecentTokens,
 	}
 }
 
@@ -57,6 +74,12 @@ func LoadMemoryExtractionConfig(configDir string) MemoryExtractionConfig {
 	}
 	if cfg.SummaryMaxChunks <= 0 {
 		cfg.SummaryMaxChunks = 10
+	}
+	if cfg.ReserveTokens <= 0 {
+		cfg.ReserveTokens = defaultReserveTokens
+	}
+	if cfg.KeepRecentTokens <= 0 {
+		cfg.KeepRecentTokens = defaultKeepRecentTokens
 	}
 	return cfg
 }

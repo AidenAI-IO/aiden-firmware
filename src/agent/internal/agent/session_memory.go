@@ -31,6 +31,30 @@ type CompressOption struct {
 	Tags       []string
 	Entities   []string
 	RiskTypes  []string
+	// CutMeta carries optional token-based cut-point diagnostics. It does not
+	// affect recall or summary rendering; it is persisted on the chunk index
+	// entry for debugging and benchmarking the compaction boundary.
+	CutMeta ChunkCutMetadata
+}
+
+// ChunkCutMetadata records how a token-based cut point produced this chunk.
+// All fields are optional and omitted from YAML when zero so older indexes and
+// count-based compactions remain byte-compatible.
+type ChunkCutMetadata struct {
+	FirstKeptEventID   string `json:"first_kept_event_id,omitempty" yaml:"first_kept_event_id,omitempty"`
+	TokensBefore       int    `json:"tokens_before,omitempty" yaml:"tokens_before,omitempty"`
+	KeptTokensEstimate int    `json:"kept_tokens_estimate,omitempty" yaml:"kept_tokens_estimate,omitempty"`
+	IsSplitTurn        bool   `json:"is_split_turn,omitempty" yaml:"is_split_turn,omitempty"`
+	TurnStartEventID   string `json:"turn_start_event_id,omitempty" yaml:"turn_start_event_id,omitempty"`
+}
+
+// Empty reports whether no cut metadata was recorded.
+func (c ChunkCutMetadata) Empty() bool {
+	return c.FirstKeptEventID == "" &&
+		c.TokensBefore == 0 &&
+		c.KeptTokensEstimate == 0 &&
+		!c.IsSplitTurn &&
+		c.TurnStartEventID == ""
 }
 
 type ChunkStructuredSummary struct {
@@ -99,6 +123,7 @@ type chunkIndexEntry struct {
 	RiskTypes  []string                `yaml:"risk_types,omitempty"`
 	EventCount int                     `yaml:"event_count"`
 	Checksum   string                  `yaml:"checksum"`
+	CutMeta    *ChunkCutMetadata       `yaml:"cut_meta,omitempty"`
 }
 
 const defaultSummaryMaxChunks = 10
@@ -194,6 +219,7 @@ func (s *SessionMemoryStore) compressEvents(ctx context.Context, events []Sessio
 		RiskTypes:  append([]string(nil), opt.RiskTypes...),
 		EventCount: len(events),
 		Checksum:   checksum,
+		CutMeta:    cutMetaOrNil(opt.CutMeta),
 	}
 	index, err := s.loadChunkIndex()
 	if err != nil {
@@ -502,6 +528,13 @@ func structuredOrNil(s ChunkStructuredSummary) *ChunkStructuredSummary {
 		return nil
 	}
 	return &s
+}
+
+func cutMetaOrNil(c ChunkCutMetadata) *ChunkCutMetadata {
+	if c.Empty() {
+		return nil
+	}
+	return &c
 }
 
 func minInt(a int, b int) int {

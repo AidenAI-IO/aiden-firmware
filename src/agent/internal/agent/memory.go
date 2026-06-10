@@ -564,6 +564,109 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 			len(events), promptTokens, contextWindow, m.extraction.CompressAtPercent)
 	}
 
+	plan := m.planCompaction(events, contextWindow)
+	if !plan.ok {
+		return nil
+	}
+
+	compactEvents := append([]SessionEvent(nil), events[:plan.cutIndex]...)
+	hotEvents := append([]SessionEvent(nil), events[plan.cutIndex:]...)
+
+	// History summary covers everything compacted out. When splitting a turn,
+	// the prefix (turn start → cut) is summarized separately and merged so the
+	// retained suffix keeps the context of the half-finished turn.
+	historyEvents := compactEvents
+	var turnPrefixEvents []SessionEvent
+	if plan.isSplitTurn {
+		historyEvents = append([]SessionEvent(nil), events[:plan.turnStartIndex]...)
+		turnPrefixEvents = append([]SessionEvent(nil), events[plan.turnStartIndex:plan.cutIndex]...)
+	}
+
+	summary, structured := m.buildEventSummary(ctx, historyEvents)
+	if plan.isSplitTurn && len(turnPrefixEvents) > 0 {
+		prefixSummary := m.buildTurnPrefixSummary(ctx, turnPrefixEvents)
+		if strings.TrimSpace(prefixSummary) != "" {
+			if strings.TrimSpace(summary) == "" {
+				summary = "No prior history."
+			}
+			summary = summary + "\n\n---\n\nTurn Context (split turn):\n" + prefixSummary
+			// Keep the structured summary's primary text consistent with the
+			// merged plain summary so downstream renders agree.
+			if strings.TrimSpace(structured.Summary) != "" {
+				structured.Summary = summary
+			}
+			// Prepend the prefix summary as a system event so the hot window
+			// never opens on a half-finished assistant/tool result.
+			hotEvents = prependTurnPrefixContext(hotEvents, prefixSummary)
+		}
+	}
+
+	cutMeta := ChunkCutMetadata{
+		FirstKeptEventID:   firstNonEmptyEventID(events, plan.cutIndex),
+		TokensBefore:       sumSessionEventTokens(events),
+		KeptTokensEstimate: sumSessionEventTokens(hotEvents),
+		IsSplitTurn:        plan.isSplitTurn,
+	}
+	if plan.isSplitTurn {
+		cutMeta.TurnStartEventID = firstNonEmptyEventID(events, plan.turnStartIndex)
+	}
+
+	chunkSummary, err := session.compressEvents(ctx, compactEvents, CompressOption{
+		Summary:    summary,
+		Structured: structured,
+		Tags:       m.extraction.extractMemoryTags(compactEvents),
+		Entities:   m.extraction.extractMemoryEntities(compactEvents),
+		CutMeta:    cutMeta,
+	})
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Error("[memory] compression failed: %v", err)
+		}
+		return err
+	}
+	if m.logger != nil {
+		m.logger.Info("[memory] chunk created: id=%s, compacted=%d, kept=%d, split_turn=%t, mode=%s",
+			chunkSummary.ID, len(compactEvents), len(hotEvents), plan.isSplitTurn, plan.mode)
+	}
+	if err := session.replaceEvents(hotEvents); err != nil {
+		return err
+	}
+
+	longTerm := NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"), WithLifecycleDir(filepath.Join(m.storageDir, "lifecycle")), WithStoreProfileFn(m.profileFn), WithProfileDebouncer(m.profileDebouncer))
+	longTerm.RequestProfileRebuild()
+	if m.logger != nil {
+		m.logger.Info("[memory] profile.md regenerated")
+	}
+	return nil
+}
+
+// compactionPlan describes the chosen split of the event stream.
+type compactionPlan struct {
+	ok             bool
+	cutIndex       int  // first kept event index; events[:cutIndex] are compacted
+	isSplitTurn    bool // cut falls inside a turn
+	turnStartIndex int  // user_input opening the split turn (valid when isSplitTurn)
+	mode           string
+}
+
+// planCompaction decides where to split events. It prefers a token-based cut
+// point honouring the reserve/keep-recent budgets; when no token-driven cut is
+// warranted (e.g. a few small events tripped the percentage trigger) it falls
+// back to the legacy count-based hot window so compaction still makes progress.
+func (m *MemoryManager) planCompaction(events []SessionEvent, contextWindow int) compactionPlan {
+	_, keepRecent := clampTokenBudgets(m.reserveTokens(), m.keepRecentTokens(), contextWindow)
+	cut := findSessionCutPoint(events, 0, len(events), keepRecent)
+	if cut.HasCut && cut.FirstKeptIndex > 0 && cut.FirstKeptIndex < len(events) {
+		return compactionPlan{
+			ok:             true,
+			cutIndex:       cut.FirstKeptIndex,
+			isSplitTurn:    cut.IsSplitTurn,
+			turnStartIndex: cut.TurnStartIndex,
+			mode:           "token",
+		}
+	}
+
+	// Count-based fallback: keep the most recent hotWindow events.
 	hotWindow := m.extraction.HotWindowEvents
 	if hotWindow <= 0 {
 		hotWindow = defaultMemoryHotWindowEvents
@@ -576,21 +679,41 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		keepCount = 4
 	}
 	if keepCount >= len(events) {
-		return nil
+		return compactionPlan{ok: false}
 	}
+	return compactionPlan{ok: true, cutIndex: len(events) - keepCount, mode: "count"}
+}
 
-	compactCount := len(events) - keepCount
-	compactEvents := append([]SessionEvent(nil), events[:compactCount]...)
-	hotEvents := append([]SessionEvent(nil), events[compactCount:]...)
+func (m *MemoryManager) reserveTokens() int {
+	if m.extraction.ReserveTokens > 0 {
+		return m.extraction.ReserveTokens
+	}
+	return defaultReserveTokens
+}
 
-	summary := summarizeSessionEvents(compactEvents)
+func (m *MemoryManager) keepRecentTokens() int {
+	if m.extraction.KeepRecentTokens > 0 {
+		return m.extraction.KeepRecentTokens
+	}
+	return defaultKeepRecentTokens
+}
+
+// buildEventSummary runs the structured → plain → local fallback cascade over a
+// set of events and returns the resulting plain summary plus any structured
+// summary. Empty input yields an empty summary so split-turn callers can detect
+// "no prior history".
+func (m *MemoryManager) buildEventSummary(ctx context.Context, events []SessionEvent) (string, ChunkStructuredSummary) {
+	if len(events) == 0 {
+		return "", ChunkStructuredSummary{}
+	}
+	summary := summarizeSessionEvents(events)
 	structured := ChunkStructuredSummary{}
 	usedStructured := false
 	if m.structuredSummarizeFn != nil {
 		if m.logger != nil {
-			m.logger.Info("[memory] generating structured LLM summary for %d events", len(compactEvents))
+			m.logger.Info("[memory] generating structured LLM summary for %d events", len(events))
 		}
-		if llmStructured := m.structuredSummarizeFn(ctx, compactEvents); strings.TrimSpace(llmStructured.Summary) != "" {
+		if llmStructured := m.structuredSummarizeFn(ctx, events); strings.TrimSpace(llmStructured.Summary) != "" {
 			structured = llmStructured
 			structured.Summary = strings.TrimSpace(structured.Summary)
 			usedStructured = true
@@ -604,9 +727,9 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	}
 	if !usedStructured && m.summarizeFn != nil {
 		if m.logger != nil {
-			m.logger.Info("[memory] generating LLM summary for %d events", len(compactEvents))
+			m.logger.Info("[memory] generating LLM summary for %d events", len(events))
 		}
-		if llmSummary := m.summarizeFn(ctx, compactEvents); llmSummary != "" {
+		if llmSummary := m.summarizeFn(ctx, events); llmSummary != "" {
 			summary = llmSummary
 			if m.logger != nil {
 				m.logger.Info("[memory] LLM summary generated: %s", truncateForLog(summary, 80))
@@ -615,32 +738,36 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 			m.logger.Info("[memory] LLM summary failed, using fallback")
 		}
 	}
+	return summary, structured
+}
 
-	chunkSummary, err := session.compressEvents(ctx, compactEvents, CompressOption{
-		Summary:    summary,
-		Structured: structured,
-		Tags:       m.extraction.extractMemoryTags(compactEvents),
-		Entities:   m.extraction.extractMemoryEntities(compactEvents),
-	})
-	if err != nil {
-		if m.logger != nil {
-			m.logger.Error("[memory] compression failed: %v", err)
+// buildTurnPrefixSummary summarizes the prefix of a split turn. It prefers the
+// plain summarizer (the structured prompt is tuned for whole-history context)
+// and falls back to the local heuristic summarizer.
+func (m *MemoryManager) buildTurnPrefixSummary(ctx context.Context, events []SessionEvent) string {
+	if len(events) == 0 {
+		return ""
+	}
+	if m.summarizeFn != nil {
+		if s := m.summarizeFn(ctx, events); strings.TrimSpace(s) != "" {
+			return s
 		}
-		return err
 	}
-	if m.logger != nil {
-		m.logger.Info("[memory] chunk created: id=%s, events=%d, keep=%d", chunkSummary.ID, compactCount, keepCount)
-	}
-	if err := session.replaceEvents(hotEvents); err != nil {
-		return err
-	}
+	return summarizeSessionEvents(events)
+}
 
-	longTerm := NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"), WithLifecycleDir(filepath.Join(m.storageDir, "lifecycle")), WithStoreProfileFn(m.profileFn), WithProfileDebouncer(m.profileDebouncer))
-	longTerm.RequestProfileRebuild()
-	if m.logger != nil {
-		m.logger.Info("[memory] profile.md regenerated")
+// prependTurnPrefixContext inserts a synthetic system event carrying the
+// split-turn prefix summary at the head of the hot window, so the retained
+// events do not begin with a dangling assistant/tool result.
+func prependTurnPrefixContext(hotEvents []SessionEvent, prefixSummary string) []SessionEvent {
+	ctxEvent := SessionEvent{
+		EventID: "evt_split_" + strconvTimeID(time.Now().UTC()),
+		Ts:      time.Now().UTC().Format(time.RFC3339Nano),
+		Type:    "system_event",
+		Role:    "system",
+		Content: "Turn Context (split turn):\n" + prefixSummary,
 	}
-	return nil
+	return append([]SessionEvent{ctxEvent}, hotEvents...)
 }
 
 func (m *MemoryManager) shouldCompress(eventCount int) bool {
