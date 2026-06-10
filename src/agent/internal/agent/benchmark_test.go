@@ -284,3 +284,27 @@ func TestHandleBenchmarkLog_MissingReturnsEmpty(t *testing.T) {
 		t.Errorf("code=%d len=%d", rec.Code, rec.Body.Len())
 	}
 }
+
+func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
+	s := &Server{benchmarkDir: t.TempDir()}
+	req := httptest.NewRequest(http.MethodGet, "/benchmark", nil)
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkIndex(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, marker := range []string{
+		`fetch('/benchmark/suites')`,
+		`fetch('/benchmark/runs')`,
+		`fetch('/benchmark/status')`,
+		`/benchmark/record`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Errorf("body missing %q", marker)
+		}
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("ct = %q", ct)
+	}
+}

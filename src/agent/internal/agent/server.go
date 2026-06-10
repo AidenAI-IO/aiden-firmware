@@ -264,6 +264,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
 
 	// Benchmark endpoints
+	mux.HandleFunc("/benchmark", s.handleBenchmarkIndex)
 	mux.HandleFunc("/benchmark/suites", s.handleBenchmarkSuites)
 	mux.HandleFunc("/benchmark/runs", s.handleBenchmarkRuns)
 	mux.HandleFunc("/benchmark/report/", s.handleBenchmarkReport)
