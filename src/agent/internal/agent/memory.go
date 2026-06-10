@@ -61,7 +61,7 @@ type MemoryManager struct {
 	maintenancePending bool
 }
 
-const defaultMaxEventsBeforeCompression = 100
+const defaultHotWindowEvents = 20
 
 type MessageRecord struct {
 	Role    string `json:"role"`
@@ -356,7 +356,16 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 	if records, ok, err := m.loadSessionMessageRecords(agentName); err != nil {
 		return err
 	} else if ok {
-		messages := make([]llms.ChatMessage, 0, len(records))
+		messages := make([]llms.ChatMessage, 0, len(records)+1)
+		// If there's compressed history, prepend a boundary marker before hot window events
+		if m.hasCompressedHistory() && len(records) > 0 {
+			messages = append(messages, llms.SystemChatMessage{
+				Content: "=== Recent session context (hot window) ===\n" +
+					"The messages below are your most recent exchanges with the user. " +
+					"Earlier conversation history has been compressed into summaries. " +
+					"Prioritize responding to the user's current instruction over unfinished items in this context.",
+			})
+		}
 		for _, record := range records {
 			messages = append(messages, messageFromRecord(record))
 		}
@@ -667,9 +676,9 @@ func (m *MemoryManager) planCompaction(events []SessionEvent, contextWindow int)
 	}
 
 	// Count-based fallback: keep the most recent maxEvents events.
-	maxEvents := m.extraction.MaxEventsBeforeCompression
+	maxEvents := m.extraction.HotWindowEvents
 	if maxEvents <= 0 {
-		maxEvents = defaultMaxEventsBeforeCompression
+		maxEvents = defaultHotWindowEvents
 	}
 	keepCount := maxEvents
 	if keepCount > len(events) {
@@ -791,9 +800,9 @@ func (m *MemoryManager) shouldCompress(eventCount int) bool {
 	// Event count fallback: used when token data unavailable (cold start,
 	// unknown model) or when token thresholds not reached but event count high
 	// (e.g., restoring a large session before first LLM call).
-	maxEvents := m.extraction.MaxEventsBeforeCompression
+	maxEvents := m.extraction.HotWindowEvents
 	if maxEvents <= 0 {
-		maxEvents = defaultMaxEventsBeforeCompression
+		maxEvents = defaultHotWindowEvents
 	}
 	return eventCount > maxEvents
 }
@@ -924,6 +933,15 @@ func (m *MemoryManager) memoryPath(agentName string) string {
 
 func (m *MemoryManager) sessionEventsPath() string {
 	return filepath.Join(m.storageDir, "session", "events.jsonl")
+}
+
+func (m *MemoryManager) hasCompressedHistory() bool {
+	if m.storageDir == "" {
+		return false
+	}
+	summaryPath := filepath.Join(m.storageDir, "session", "summary.md")
+	_, err := os.Stat(summaryPath)
+	return err == nil
 }
 
 func (m *MemoryManager) appendSessionEvents(agentName string, records []MessageRecord) error {

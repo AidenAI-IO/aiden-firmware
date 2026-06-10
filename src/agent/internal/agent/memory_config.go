@@ -10,11 +10,11 @@ import (
 type MemoryExtractionConfig struct {
 	TagCandidates   []string `yaml:"tag_candidates"`
 	EntitySuffixes  []string `yaml:"entity_suffixes"`
-	// MaxEventsBeforeCompression is the hard limit on uncompressed SessionEvent
+	// HotWindowEvents is the hard limit on uncompressed SessionEvent
 	// count. Compression triggers when event count exceeds this threshold,
 	// regardless of token usage. Acts as a safety valve for cold-start sessions
 	// with large restored history or when token metrics are unavailable.
-	MaxEventsBeforeCompression int `yaml:"max_events_before_compression"`
+	HotWindowEvents int `yaml:"hot_window_events"`
 	// ContextWindow is the fallback context window in tokens used by the
 	// memory manager's compression trigger when the active model is unknown
 	// to the model_specs registry. The runtime normally derives the window
@@ -48,7 +48,7 @@ func DefaultMemoryExtractionConfig() MemoryExtractionConfig {
 			"发票", "项目编码", "风险", "确认", "开发板", "agent",
 		},
 		EntitySuffixes:             []string{"App", "app", "APP"},
-		MaxEventsBeforeCompression: defaultMaxEventsBeforeCompression,
+		HotWindowEvents: defaultHotWindowEvents,
 		ContextWindow:              32000,
 		CompressAtPercent:          50,
 		SummaryMaxChunks:           10,
@@ -68,8 +68,8 @@ func LoadMemoryExtractionConfig(configDir string) MemoryExtractionConfig {
 		return cfg
 	}
 	_ = yaml.Unmarshal(data, &cfg)
-	if cfg.MaxEventsBeforeCompression <= 0 {
-		cfg.MaxEventsBeforeCompression = defaultMaxEventsBeforeCompression
+	if cfg.HotWindowEvents <= 0 {
+		cfg.HotWindowEvents = defaultHotWindowEvents
 	}
 	if cfg.ContextWindow <= 0 {
 		cfg.ContextWindow = 32000

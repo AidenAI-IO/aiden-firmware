@@ -594,7 +594,7 @@ tag_candidates:
   - "自定义标签"
 entity_suffixes:
   - "System"
-max_events_before_compression: 30
+hot_window_events: 30
 `), 0o644)
 
 	cfg := LoadMemoryExtractionConfig(dir)
@@ -604,8 +604,8 @@ max_events_before_compression: 30
 	if len(cfg.EntitySuffixes) != 1 || cfg.EntitySuffixes[0] != "System" {
 		t.Fatalf("expected custom entity suffixes, got %v", cfg.EntitySuffixes)
 	}
-	if cfg.MaxEventsBeforeCompression != 30 {
-		t.Fatalf("expected max_events_before_compression=30, got %d", cfg.MaxEventsBeforeCompression)
+	if cfg.HotWindowEvents != 30 {
+		t.Fatalf("expected hot_window_events=30, got %d", cfg.HotWindowEvents)
 	}
 }
 
@@ -613,7 +613,7 @@ func TestMaintainFilesystemMemoryOnlyArchivesNoAutoExtract(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	cfg := DefaultMemoryExtractionConfig()
-	cfg.MaxEventsBeforeCompression = 20 // Lower threshold so 24 events trigger compression
+	cfg.HotWindowEvents = 20 // Lower threshold so 24 events trigger compression
 	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
 
 	sessionDir := filepath.Join(storageDir, "session")
