@@ -1,30 +1,29 @@
 #!/bin/sh
-# Aiden USB ECM half-up watchdog.
+# Aiden USB ECM connectivity watchdog.
 #
 # After iPhone lock screen (and occasionally after Mac sleep), USB ECM enters
-# a "half-up" state: the gadget UDC is still configured, usb0 is UP, but no
-# traffic flows in either direction. The host loses its DHCP lease and the
-# phone bridge stays disconnected indefinitely. Unbinding and rebinding the
-# gadget UDC forces the host to re-enumerate and recover, without an actual
-# cable unplug. This script monitors usb0 RX bytes and triggers that recovery
-# automatically.
+# a "half-up" state: the gadget UDC is still configured, usb0 is UP, but the
+# host's IP stack stops responding to ARP. This script probes ECM connectivity
+# with arping and resets the ECM function when the host becomes unreachable,
+# forcing the host to re-enumerate without affecting HID functions.
 
 GADGET_UDC=/sys/kernel/config/usb_gadget/aiden_hid/UDC
 UDC_NAME=ffb00000.usb
 UDC_STATE=/sys/class/udc/${UDC_NAME}/state
+GADGET_CONFIG=/sys/kernel/config/usb_gadget/aiden_hid/configs/c.1
+GADGET_ECM_FUNC=/sys/kernel/config/usb_gadget/aiden_hid/functions/ecm.usb0
 LOG_FILE=/var/log/aiden_usb_ecm_watchdog.log
 PID_FILE=/run/aiden_usb_ecm_watchdog.pid
+LEASE_FILE=/tmp/dnsmasq.leases
 
-CHECK_INTERVAL=15      # poll usb0 RX every N seconds
-STALL_THRESHOLD=90     # rebind if RX unchanged for this many seconds
-COOLDOWN=180           # do not rebind more than once per this many seconds
+PROBE_INTERVAL=5       # probe ECM connectivity every N seconds
+PROBE_FAIL_THRESHOLD=2 # reset after N consecutive probe failures
+ARPING_COUNT=2         # ARP requests per probe
+ARPING_TIMEOUT=2       # seconds to wait for ARP reply
+COOLDOWN=30            # minimum seconds between resets
 
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
-}
-
-read_rx_bytes() {
-    awk '/^[[:space:]]*usb0:/ { gsub(":", " ", $0); print $2; exit }' /proc/net/dev 2>/dev/null
 }
 
 is_configured() {
@@ -32,76 +31,85 @@ is_configured() {
     [ "$state" = "configured" ]
 }
 
-rebind_udc() {
-    log "rebinding UDC ($UDC_NAME)"
-    # Note: configfs UDC requires a non-empty write (newline is fine) to
-    # trigger unbind. `: > FILE` truncates to 0 bytes which the gadget driver
-    # treats as a no-op, leaving UDC bound; the subsequent rebind then fails
-    # with EBUSY. Use `echo` to ensure a newline byte reaches the driver.
-    if ! echo "" > "$GADGET_UDC" 2>>"$LOG_FILE"; then
-        log "unbind FAILED (write to $GADGET_UDC returned error)"
-        return 1
-    fi
-    # Wait for the driver to actually drop the binding. State should leave
-    # 'configured'; on RV1106 this typically takes <500ms but can spike.
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        cur=$(cat "$GADGET_UDC" 2>/dev/null)
-        if [ -z "$cur" ]; then
-            break
+get_ecm_hosts() {
+    {
+        awk '$3 ~ /^192\.168\.42\./ && $3 != "192.168.42.1" {print $3}' "$LEASE_FILE" 2>/dev/null
+        awk '$1 ~ /^192\.168\.42\./ && $1 != "192.168.42.1" && $6 == "usb0" {print $1}' /proc/net/arp 2>/dev/null
+    } | sort -u
+}
+
+probe_ecm_connectivity() {
+    hosts=$(get_ecm_hosts)
+    [ -z "$hosts" ] && return 1
+
+    for host in $hosts; do
+        if arping -q -c "$ARPING_COUNT" -w "$ARPING_TIMEOUT" -I usb0 "$host" >/dev/null 2>&1; then
+            return 0
         fi
-        sleep 1
     done
-    cur=$(cat "$GADGET_UDC" 2>/dev/null)
-    if [ -n "$cur" ]; then
-        log "unbind did not take effect (UDC still=$cur after 10s); aborting rebind"
+    return 1
+}
+
+reset_ecm() {
+    log "resetting ECM function"
+
+    if ! rm "$GADGET_CONFIG/ecm.usb0" 2>>"$LOG_FILE"; then
+        log "ECM unlink failed"
         return 1
     fi
-    if ! echo "$UDC_NAME" > "$GADGET_UDC" 2>>"$LOG_FILE"; then
-        log "rebind FAILED (write $UDC_NAME to $GADGET_UDC returned error; udc state=$(cat "$UDC_STATE" 2>/dev/null))"
+
+    sleep 1
+
+    if ! ln -s "$GADGET_ECM_FUNC" "$GADGET_CONFIG/ecm.usb0" 2>>"$LOG_FILE"; then
+        log "ECM relink failed; UDC state may be broken"
         return 1
     fi
-    log "rebind complete (udc state=$(cat "$UDC_STATE" 2>/dev/null))"
+
+    # On this kernel, unlinking ECM unbinds the entire UDC. Re-bind explicitly.
+    cur_udc=$(cat "$GADGET_UDC" 2>/dev/null)
+    if [ -z "$cur_udc" ]; then
+        if ! echo "$UDC_NAME" > "$GADGET_UDC" 2>>"$LOG_FILE"; then
+            log "UDC rebind failed after ECM relink"
+            return 1
+        fi
+    fi
+
+    log "ECM reset complete (udc state=$(cat "$UDC_STATE" 2>/dev/null))"
 }
 
 watchdog_main() {
-    last_rx=
-    last_rx_change=$(date +%s)
-    last_rebind=0
+    fail_count=0
+    last_reset=0
 
     while :; do
-        sleep "$CHECK_INTERVAL"
+        sleep "$PROBE_INTERVAL"
         now=$(date +%s)
 
         if ! is_configured; then
-            # Host disconnected or USB in transient state. Reset stall
-            # tracking so we don't trigger a stale rebind right after replug.
-            last_rx=
-            last_rx_change=$now
+            fail_count=0
             continue
         fi
 
-        rx=$(read_rx_bytes)
-        : "${rx:=0}"
-
-        if [ "$rx" != "$last_rx" ]; then
-            last_rx=$rx
-            last_rx_change=$now
+        if probe_ecm_connectivity; then
+            fail_count=0
             continue
         fi
 
-        # RX unchanged this round.
-        if [ $((now - last_rebind)) -lt $COOLDOWN ]; then
-            continue
-        fi
+        fail_count=$((fail_count + 1))
+        log "ECM probe failed ($fail_count/$PROBE_FAIL_THRESHOLD)"
 
-        stalled=$((now - last_rx_change))
-        if [ $stalled -ge $STALL_THRESHOLD ]; then
-            log "ECM stall detected (usb0 rx=$rx unchanged for ${stalled}s) — rebinding"
-            if rebind_udc; then
-                last_rebind=$now
+        if [ $fail_count -ge $PROBE_FAIL_THRESHOLD ]; then
+            if [ $((now - last_reset)) -lt $COOLDOWN ]; then
+                continue
             fi
-            last_rx=
-            last_rx_change=$now
+
+            log "ECM stall detected — resetting"
+            # Start the cooldown window from the attempt itself: even if the
+            # reset fails, we don't want to hammer the gadget every interval.
+            last_reset=$now
+            if reset_ecm; then
+                fail_count=0
+            fi
         fi
     done
 }
@@ -117,7 +125,7 @@ start() {
     fi
 
     mkdir -p "$(dirname "$LOG_FILE")"
-    log "starting (interval=${CHECK_INTERVAL}s threshold=${STALL_THRESHOLD}s cooldown=${COOLDOWN}s)"
+    log "starting (interval=${PROBE_INTERVAL}s threshold=${PROBE_FAIL_THRESHOLD} cooldown=${COOLDOWN}s)"
     watchdog_main &
     pid=$!
     echo "$pid" > "$PID_FILE"

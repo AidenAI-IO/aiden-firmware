@@ -3,16 +3,15 @@ set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 NTP_INIT="$ROOT_DIR/overlay/etc/init.d/S49ntp"
+NTP_WATCHDOG="$ROOT_DIR/overlay/etc/init.d/S50ntp_watchdog"
 RTC_INIT="$ROOT_DIR/overlay/etc/init.d/S99rtcinit"
-DHCPCD_INIT="$ROOT_DIR/overlay/etc/init.d/S41dhcpcd"
-UDHCPC_HOOK="$ROOT_DIR/overlay/etc/udhcpc/aiden.script"
 BOOT_CONF="$ROOT_DIR/overlay/etc/aiden_boot.conf"
 NTP_CONF="$ROOT_DIR/overlay/etc/ntp.conf"
 CONFIG_WEB="$ROOT_DIR/src/config_web.cpp"
 IPV4_OCTET='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
 IPV4_RE="${IPV4_OCTET}(\\.${IPV4_OCTET}){3}"
 
-for script in "$NTP_INIT" "$RTC_INIT" "$DHCPCD_INIT" "$UDHCPC_HOOK"; do
+for script in "$NTP_INIT" "$NTP_WATCHDOG" "$RTC_INIT"; do
     if [ ! -x "$script" ]; then
         echo "missing executable $(basename "$script")" >&2
         exit 1
@@ -33,11 +32,11 @@ if [ ! -r "$BOOT_CONF" ]; then
     exit 1
 fi
 
-# S49ntp must NOT block on network readiness anymore — udhcpc hook handles
-# the post-DHCP step now. The script should also no longer rely on hostname
-# resolution: NTP_FALLBACK_SERVER defaults to a numeric IP.
+# S49ntp must NOT block on network readiness — the watchdog handles sync
+# attempts. The script should also no longer rely on hostname resolution:
+# NTP_FALLBACK_SERVER defaults to a numeric IP.
 if grep -q 'wait_for_network' "$NTP_INIT"; then
-    echo "S49ntp must not poll for network readiness (use udhcpc hook instead)" >&2
+    echo "S49ntp must not poll for network readiness (use watchdog instead)" >&2
     exit 1
 fi
 
@@ -63,57 +62,72 @@ if sed 's/[[:space:]]*#.*//' "$NTP_INIT" | grep -Eq '^[[:space:]]*/usr/sbin/ntpd
     exit 1
 fi
 
-# udhcpc hook must delegate to the system default script (so DHCP-driven IP /
-# route / DNS configuration still happens) AND kick the NTP step on bound.
-if ! grep -q '/usr/share/udhcpc/default.script' "$UDHCPC_HOOK"; then
-    echo "udhcpc hook must delegate to /usr/share/udhcpc/default.script" >&2
+# S50ntp_watchdog must periodically check clock sync status and call S49ntp step.
+if ! grep -q 'is_clock_synced' "$NTP_WATCHDOG"; then
+    echo "S50ntp_watchdog must implement clock sync status check" >&2
     exit 1
 fi
 
-if ! grep -q 'S49ntp step' "$UDHCPC_HOOK"; then
-    echo "udhcpc hook must call 'S49ntp step' on lease events" >&2
+if ! grep -q 'S49ntp step' "$NTP_WATCHDOG"; then
+    echo "S50ntp_watchdog must call 'S49ntp step' when clock is not synced" >&2
     exit 1
 fi
 
-if ! grep -Eq 'bound\||\|bound|^[[:space:]]*bound\)' "$UDHCPC_HOOK"; then
-    echo "udhcpc hook must handle the 'bound' event" >&2
+if ! grep -q 'NTP_WATCHDOG_INTERVAL' "$NTP_WATCHDOG"; then
+    echo "S50ntp_watchdog must respect NTP_WATCHDOG_INTERVAL from boot config" >&2
     exit 1
 fi
 
-# S41dhcpcd must wire udhcpc to the aiden hook via -s.
-if ! grep -q 'udhcpc .*-s /etc/udhcpc/aiden.script' "$DHCPCD_INIT"; then
-    echo "S41dhcpcd must launch udhcpc with -s /etc/udhcpc/aiden.script" >&2
+if ! grep -q 'NTP_WATCHDOG_TIMEOUT' "$NTP_WATCHDOG"; then
+    echo "S50ntp_watchdog must respect NTP_WATCHDOG_TIMEOUT from boot config" >&2
     exit 1
 fi
 
-if ! grep -q 'udhcpc hook missing or not executable' "$DHCPCD_INIT"; then
-    echo "S41dhcpcd must fail clearly when the udhcpc hook is missing" >&2
+# config_web must NOT use the aiden.script hook (it no longer exists).
+if grep -q -- '-s /etc/udhcpc/aiden.script' "$CONFIG_WEB"; then
+    echo "config_web must not reference removed aiden.script hook" >&2
     exit 1
 fi
 
-if grep -Eq '^[[:space:]]*/sbin/udhcpc .*[|][|][[:space:]]*true' "$DHCPCD_INIT"; then
-    echo "S41dhcpcd must not hide udhcpc launch failures" >&2
+if ! grep -q 'udhcpc -i .* -n -q' "$CONFIG_WEB"; then
+    echo "config_web must still invoke udhcpc for DHCP (without hook)" >&2
     exit 1
 fi
 
-if ! grep -q -- '-s /etc/udhcpc/aiden.script' "$CONFIG_WEB"; then
-    echo "config_web DHCP path must use -s /etc/udhcpc/aiden.script" >&2
+# Boot conf must carry the new watchdog settings and must not carry obsolete
+# DHCP hook or wait settings.
+if ! grep -Eq "^NTP_WATCHDOG_INTERVAL=[0-9]+$" "$BOOT_CONF"; then
+    echo "aiden_boot.conf must define NTP_WATCHDOG_INTERVAL" >&2
     exit 1
 fi
 
-# Boot conf must carry the new IP-based default and must not carry the
-# obsolete NTP_WAIT_* knobs.
+if ! grep -Eq "^NTP_WATCHDOG_TIMEOUT=[0-9]+$" "$BOOT_CONF"; then
+    echo "aiden_boot.conf must define NTP_WATCHDOG_TIMEOUT" >&2
+    exit 1
+fi
+
 if ! grep -Eq "^NTP_FALLBACK_SERVER=${IPV4_RE}$" "$BOOT_CONF"; then
     echo "aiden_boot.conf must define NTP_FALLBACK_SERVER as an IPv4 literal" >&2
     exit 1
 fi
 
-for stale in NTP_WAIT_NETWORK NTP_WAIT_TIMEOUT NTP_WAIT_INTERVAL NTP_WAIT_DNS_HOST; do
+for stale in ENABLE_DHCPCD NTP_WAIT_NETWORK NTP_WAIT_TIMEOUT NTP_WAIT_INTERVAL NTP_WAIT_DNS_HOST; do
     if grep -q "^${stale}=" "$BOOT_CONF"; then
         echo "aiden_boot.conf still carries obsolete $stale setting" >&2
         exit 1
     fi
 done
+
+# S41dhcpcd and udhcpc hook must be removed (watchdog replaces them).
+if [ -e "$ROOT_DIR/overlay/etc/init.d/S41dhcpcd" ]; then
+    echo "S41dhcpcd must be removed (watchdog replaces DHCP-driven sync)" >&2
+    exit 1
+fi
+
+if [ -e "$ROOT_DIR/overlay/etc/udhcpc/aiden.script" ]; then
+    echo "udhcpc/aiden.script must be removed (watchdog replaces hook-driven sync)" >&2
+    exit 1
+fi
 
 # overlay must ship an IP-only /etc/ntp.conf to override the SDK's
 # pool.ntp.org default — DNS may not be up at the time ntpd starts.

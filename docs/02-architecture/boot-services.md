@@ -8,8 +8,9 @@
 | --- | --- |
 | `S20oemslot` | 根据 `aiden.slot_suffix` 挂载 slot-specific `/oem` |
 | `S43wlan_guard` | WLAN connectivity guard |
-| `S49ntp` | 启动 `ntpd` daemon；DHCP bound/renew 由 udhcpc hook 触发 `S49ntp step` 同步 |
+| `S49ntp` | 启动 `ntpd` daemon；周期同步由 `S50ntp_watchdog` 触发 |
 | `S49usbhid` | 初始化 USB HID gadget |
+| `S50ntp_watchdog` | 周期检查时钟同步状态，未同步时触发 `S49ntp step` |
 | `S50usbdevice` | USB device 相关初始化 |
 | `S52frame_service` | 启动并守护 HDMI 帧服务 |
 | `S53audio_service` | 启动并守护音频服务 |

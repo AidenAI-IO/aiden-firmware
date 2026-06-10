@@ -4,10 +4,9 @@
 # ntpd is launched early in daemon mode so it can pick up the network as
 # soon as it appears. The first big step (RTC may be many years off) is
 # handled with -g so the panic gate does not abort the first sample.
-# DHCP-driven re-sync is wired through the udhcpc hook
-# (/etc/udhcpc/aiden.script), which calls `S49ntp step` on every
-# bound/renew so the clock catches up the moment a lease lands —
-# no init-time polling, no DNS dependency.
+# A watchdog (S50ntp_watchdog) periodically checks if the clock has synced
+# and calls `S49ntp step` if not, ensuring the clock catches up shortly
+# after network is available — no init-time polling, no DNS dependency.
 #
 # Important: the SDK ships ntp.org reference ntpd (not busybox). Servers
 # must be passed via the config file; -p is "pidfile" in this impl, NOT

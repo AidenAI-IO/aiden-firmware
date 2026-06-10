@@ -1739,8 +1739,8 @@ CommandResult apply_wifi_config(const Options& options) {
     bool dhcp_ok = false;
     if (associated) {
         if (command_exists("udhcpc")) {
-            CommandResult dhcp = run_shell_command("udhcpc -i " + shell_quote(options.wifi_interface) + " -n -q -s /etc/udhcpc/aiden.script 2>&1");
-            log << "$ udhcpc -i " << options.wifi_interface << " -n -q -s /etc/udhcpc/aiden.script\n" << dhcp.output;
+            CommandResult dhcp = run_shell_command("udhcpc -i " + shell_quote(options.wifi_interface) + " -n -q 2>&1");
+            log << "$ udhcpc -i " << options.wifi_interface << " -n -q\n" << dhcp.output;
             dhcp_ok = dhcp.exit_code == 0;
             if (!dhcp_ok) {
                 result.exit_code = dhcp.exit_code;
