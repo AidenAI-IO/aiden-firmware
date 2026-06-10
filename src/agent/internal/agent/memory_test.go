@@ -47,6 +47,88 @@ func TestMemoryManagerSaveWritesSessionEvents(t *testing.T) {
 	}
 }
 
+func TestSessionEventsStripScreenshotData(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+	handle, err := manager.Get("default", MemoryConfig{Type: "buffer"})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	screenshotJSON := `{"width":1080,"height":2400,"format":"jpeg","size":54321,"data":"dGVzdC1iYXNlNjQtc2NyZWVuc2hvdC1wYXlsb2FkCg=="}`
+	if err := handle.History.SetMessages(ctx, []llms.ChatMessage{
+		llms.HumanChatMessage{Content: "take screenshot"},
+		llms.ToolChatMessage{Content: screenshotJSON},
+		llms.AIChatMessage{Content: "screenshot taken"},
+	}); err != nil {
+		t.Fatalf("SetMessages() error = %v", err)
+	}
+	if err := manager.Save(ctx, "default"); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) != 3 {
+		t.Fatalf("expected 3 session events, got %d", len(events))
+	}
+	toolEvent := events[1]
+	if toolEvent.Type != "tool_result" {
+		t.Fatalf("expected tool_result, got %s", toolEvent.Type)
+	}
+	if strings.Contains(toolEvent.Content, "dGVzdC1iYXNlNjQtc2NyZWVuc2hvdC1wYXlsb2FkCg==") {
+		t.Fatalf("screenshot base64 data should be stripped: %s", toolEvent.Content)
+	}
+	if strings.Contains(toolEvent.Content, `"data"`) {
+		t.Fatalf("data field should be omitted: %s", toolEvent.Content)
+	}
+	if !strings.Contains(toolEvent.Content, `"width":1080`) {
+		t.Fatalf("metadata should be preserved: %s", toolEvent.Content)
+	}
+	if !strings.Contains(toolEvent.Content, `"height":2400`) {
+		t.Fatalf("metadata should be preserved: %s", toolEvent.Content)
+	}
+}
+
+func TestSessionMemoryAppendEventStripsScreenshotData(t *testing.T) {
+	ctx := context.Background()
+	session := NewSessionMemoryStore(t.TempDir())
+
+	screenshotJSON := `{"width":640,"height":480,"format":"jpeg","size":12345,"data":"YW5vdGhlci1iYXNlNjQtcGF5bG9hZAo=","action_output":"tap succeeded"}`
+	eventID, err := session.AppendEvent(ctx, SessionEvent{
+		Type:    "tool_result",
+		Role:    "tool",
+		Content: screenshotJSON,
+	})
+	if err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+	if eventID == "" {
+		t.Fatal("AppendEvent() returned empty ID")
+	}
+
+	events, err := session.readEvents(session.eventsPath())
+	if err != nil {
+		t.Fatalf("ReadEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	stored := events[0]
+	if strings.Contains(stored.Content, "YW5vdGhlci1iYXNlNjQtcGF5bG9hZAo=") {
+		t.Fatalf("screenshot base64 data should be stripped: %s", stored.Content)
+	}
+	if strings.Contains(stored.Content, `"data"`) {
+		t.Fatalf("data field should be omitted: %s", stored.Content)
+	}
+	if !strings.Contains(stored.Content, `"width":640`) {
+		t.Fatalf("metadata should be preserved: %s", stored.Content)
+	}
+	if !strings.Contains(stored.Content, `"action_output":"tap succeeded"`) {
+		t.Fatalf("action_output should be preserved: %s", stored.Content)
+	}
+}
+
 func TestMemoryManagerRestoresFromSessionEventsWhenSnapshotMissing(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()

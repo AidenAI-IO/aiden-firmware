@@ -1079,10 +1079,18 @@ func isTruncatedJSONLineError(err error) bool {
 }
 
 func sessionEventFromRecord(record MessageRecord, ts time.Time, offset int) SessionEvent {
+	// Strip screenshot base64 payloads before they reach events.jsonl so the
+	// hot-window token estimate (which doesn't parse JSON) never sees a several-KB
+	// base64 string that it would count as pure ASCII (chars/4). Keeps
+	// width/height/format/size metadata intact. This is the primary defense against
+	// screenshot data inflating the session events; SessionMemoryStore.AppendEvent
+	// is the secondary path (direct writes that bypass this conversion).
+	content := stripScreenshotData(record.Content)
+
 	event := SessionEvent{
 		EventID: "evt_" + strconv.FormatInt(ts.UnixNano(), 10) + "_" + strconv.Itoa(offset),
 		Ts:      ts.Format(time.RFC3339Nano),
-		Content: record.Content,
+		Content: content,
 	}
 	switch record.Role {
 	case string(llms.ChatMessageTypeAI):
