@@ -36,7 +36,7 @@ python3 scripts/aiden_benchmark.py run --suite benchmark/suites/full_smoke.json 
 
 测试运行结束后会显示格式化的汇总报告：
 
-```
+```text
 ============================================================
 📊 Benchmark Summary - Full Smoke Test
 ============================================================
@@ -59,7 +59,7 @@ python3 scripts/aiden_benchmark.py run --suite benchmark/suites/full_smoke.json
 ```
 
 输出示例：
-```
+```text
 PASSED     task_001 attempt=1 rubric=3/3 wall=2450ms (tools=5, screenshots=2)
 FAILED     task_002 attempt=1 rubric=1/3 wall=1820ms (tools=3, screenshots=1)
 ```
@@ -71,7 +71,7 @@ python3 scripts/aiden_benchmark.py run --suite benchmark/suites/full_smoke.json 
 ```
 
 输出示例：
-```
+```text
 PASSED     task_001 attempt=1 rubric=3/3 wall=2450ms (tools=5, screenshots=2)
   📋 Rubric Details:
     ✅ [1/3] correct_action: YES
