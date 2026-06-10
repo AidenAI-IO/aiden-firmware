@@ -2,7 +2,9 @@
 
 MobileGym 集成到 Aiden Agent，支持批量测试手机控制能力。
 
-## 🚀 快速开始（Docker 一键）
+> ℹ️ MobileGym 官方本身支持本地 `--parallel` 并发，并不依赖 Docker。本集成推荐 Docker，是因为当前 Aiden Go daemon 只有一个 active MobileGym session，且 conversation/memory 是 daemon 全局状态；并发 benchmark 需要用独立 daemon/config/network/volume 隔离这些状态。
+
+## 🚀 快速开始（Aiden 隔离推荐：Docker）
 
 ```bash
 cd benchmark/mobilegym/docker
@@ -43,7 +45,7 @@ benchmark/mobilegym/
 ├── config/                         # Agent 配置
 │   ├── agent.toml.template         # 配置模板
 │   └── skills/device-operator/     # MobileGym 专用 skill
-├── docker/                         # Docker 一键部署 ⭐
+├── docker/                         # Aiden 隔离运行方案 ⭐
 │   ├── README.md                   # 主入口
 │   ├── Dockerfile                  # 标准版
 │   ├── Dockerfile.cn               # 国内加速版
@@ -54,7 +56,7 @@ benchmark/mobilegym/
 │   └── parallel_run.sh             # 并发隔离 orchestrator
 ├── report.py                       # 批次/套件 HTML 报告生成器
 ├── scripts/                        # 测试脚本
-│   └── run_aiden.py                # 主入口（容器内执行）
+│   └── run_aiden.py                # 主入口（容器/本地串行执行）
 ├── suites/                         # 自定义测试套件 YAML（当前未被加载）
 │   └── aiden_smoke.yaml            # 示例套件
 └── vendor/mobilegym/               # 上游 MobileGym（submodule）
@@ -80,7 +82,7 @@ docker compose run --rm test --suite clock --limit 5
 
 ## 🚀 并发测试
 
-使用 `parallel_run.sh` 并发运行 benchmark。每个 worker 都是一套独立的 Docker Compose project，包含独立的 MobileGym 模拟器、Aiden daemon、配置/token、network、volume 和日志；只有结果根目录共享。
+使用 `parallel_run.sh` 并发运行 Aiden benchmark。每个 worker 都是一套独立的 Docker Compose project，包含独立的 MobileGym 模拟器、Aiden daemon、配置/token、network、volume 和日志；只有结果根目录共享。这样做是为了隔离 Aiden daemon 状态，不是因为 MobileGym 官方并发必须依赖 Docker。
 
 ```bash
 cd docker
@@ -107,7 +109,7 @@ COMPOSE_FILES=docker-compose.cn.yml PARALLEL=2 ./parallel_run.sh --suite clock
 - ⚠️ 资源开销：每个 worker 启动独立的 simulator + daemon 容器
 - ⚠️ 需要 Docker Compose **v2.24+**（`!reset` 语法）
 
-**注意：** `--parallel N` 参数在单容器内共享 daemon，可能导致测试间状态干扰，不推荐使用。
+**注意：** 对本集成来说，`run_aiden.py --parallel N` 会在同一 Aiden daemon 内共享 session、history 和 memory，可能导致测试间状态干扰；需要并发时优先用 `parallel_run.sh`。
 
 结果位于：
 

@@ -134,6 +134,8 @@ docker compose up -d daemon
 
 ## 🆚 单容器 vs 并发隔离
 
+MobileGym 官方支持本地 `--parallel` 并发；下表只针对 Aiden 集成。当前 Aiden Go daemon 的 MobileGym session、conversation 和 memory 是 daemon 级状态，所以同一个 daemon 内并发会互相污染。
+
 | 方式                                        | 优点                                    | 缺点                          |
 | ------------------------------------------- | --------------------------------------- | ----------------------------- |
 | 单容器 (`docker compose run --rm test ...`) | 启动快、调试友好                        | 任务间共享 daemon，状态会污染 |

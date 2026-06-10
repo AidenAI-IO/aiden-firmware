@@ -2,6 +2,8 @@
 
 在纯净环境一键启动 MobileGym + Aiden Agent 测试。
 
+> ℹ️ MobileGym 官方支持不使用 Docker 的本地并发。本目录提供的是 Aiden 集成的隔离运行方案：当前 Aiden Go daemon 只有一个 active MobileGym session，且 conversation/memory 是 daemon 全局状态；并发 benchmark 需要给每个 worker 独立 daemon、配置、网络和 volume，避免互相污染。
+
 ## 前置条件
 
 - Docker >= 20.10，Docker Compose **v2.24+**（并发模式用到 `!reset` 语法，`docker compose version` 查看）
@@ -94,7 +96,7 @@ docker compose run --rm test \
 
 ### 并发测试
 
-使用 `parallel_run.sh` 在独立 Docker Compose project 中并发运行。每个 worker 都有独立的 MobileGym 模拟器、daemon、配置/token、network、volume 和日志；只有结果根目录共享。
+使用 `parallel_run.sh` 在独立 Docker Compose project 中并发运行 Aiden benchmark。每个 worker 都有独立的 MobileGym 模拟器、daemon、配置/token、network、volume 和日志；只有结果根目录共享。
 
 ```bash
 # 每个任务独立容器
@@ -116,7 +118,7 @@ COMPOSE_FILES=docker-compose.cn.yml PARALLEL=2 ./parallel_run.sh --suite clock
 
 > ⚠️ `docker-compose.parallel.yml` 使用 `!reset` 语法重置端口，需要 **Docker Compose v2.24+**。可用 `docker compose version` 查看；老版本请升级 Docker Desktop 或 docker-compose-plugin。
 
-**注意：** `--parallel N` 在单容器内共享 daemon，可能导致状态干扰，不推荐。
+**注意：** 对本集成来说，`run_aiden.py --parallel N` 会在同一 Aiden daemon 内共享 session、history 和 memory，可能导致状态干扰；需要并发时优先用 `parallel_run.sh`。
 
 ## 四、查看结果
 
@@ -193,10 +195,10 @@ HTTPS_PROXY=http://host.docker.internal:7897
 
 ## 🆚 与本地开发对比
 
-| 方式           | 命令                   | 适用            |
-| -------------- | ---------------------- | --------------- |
-| Docker（推荐） | `docker compose up -d` | 所有人          |
-| 本地（已废弃） | -                      | 已统一用 Docker |
+| 方式             | 适用                                                                 |
+| ---------------- | -------------------------------------------------------------------- |
+| Docker（推荐）   | 完整集成验证、多人复现、并发 benchmark、需要隔离 daemon 状态的场景   |
+| 本地串行（可用） | 调试 adapter/bridge/daemon；需自备 MobileGym checkout、Playwright 依赖和 Aiden daemon，不适合共享 daemon 并发 |
 
 ## ✅ 验证清单
 

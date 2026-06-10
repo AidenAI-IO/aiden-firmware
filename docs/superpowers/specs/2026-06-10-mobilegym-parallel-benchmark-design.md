@@ -6,6 +6,8 @@ Run one or more MobileGym benchmark suites concurrently while keeping every conc
 
 ## Recommended Model
 
+MobileGym upstream supports local `--parallel` execution without Docker. This design uses one Docker Compose project per worker specifically to isolate Aiden Go daemon state: the current integration has one active MobileGym session per daemon, and conversation/memory are daemon-global.
+
 Use one Docker Compose project per worker. Each worker runs exactly one shard of one suite inside its own compose project:
 
 ```text
