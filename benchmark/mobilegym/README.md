@@ -80,10 +80,28 @@ EOF
 docker compose run --rm test --suite my_tests
 ```
 
-## ⚠️ 当前限制
+## 🚀 并发测试
 
-- 仅支持 `--parallel 1`（串行测试）
-- 并行需要 per-worker daemon 隔离（未实现）
+使用 `parallel_run.sh` 在独立容器中并发运行测试，每个测试有完全隔离的环境。
+
+```bash
+cd docker
+
+# 并发跑多个任务（每个任务独立容器）
+./parallel_run.sh clock.CountAlarms clock.ToggleAlarm phone_control_v1.MakeCall
+
+# 用多个容器跑同一个套件（任务自动分配）
+PARALLEL=4 ./parallel_run.sh --suite phone_control_v1
+```
+
+**特点：**
+
+- ✅ 完全隔离：每个容器独立的模拟器和 daemon
+- ✅ 无状态干扰：修改闹钟、联系人、设置等互不影响
+- ✅ 自动分配：MobileGym 自动分配任务到可用容器
+- ⚠️ 资源开销：每个容器启动独立的浏览器实例
+
+**注意：** `--parallel N` 参数在单容器内共享 daemon，可能导致测试间状态干扰，不推荐使用。
 
 ## ✅ 验证
 

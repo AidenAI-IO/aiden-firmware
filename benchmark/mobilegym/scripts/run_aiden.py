@@ -122,10 +122,12 @@ async def run(args: argparse.Namespace) -> int:
             "Start an Aiden Go daemon with a MobileGym agent.toml and pass --aiden-daemon-url "
             "or set AIDEN_DAEMON_URL."
         )
+
     if args.parallel != 1:
         raise LauncherError(
-            "Aiden parallel execution requires one isolated daemon and bridge per MobileGym worker. "
-            "This launcher currently supports serial external-daemon smoke runs; use --parallel 1."
+            "Parallel execution with --parallel > 1 shares a single daemon, which may cause "
+            "state interference between workers. For true isolation, use docker/parallel_run.sh "
+            "to run tasks in separate containers. Use --parallel 1 for serial execution."
         )
 
     return await _run_serial(args, config, factory, SerialRunner)

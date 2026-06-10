@@ -108,17 +108,35 @@ docker compose ps
 
 ### 6. 运行测试
 
+#### 单次测试
+
 ```bash
 # 单个任务
 docker compose run --rm test \
   --task-id clock.ToggleAlarm \
   --aiden-control-token "$(cat ../config/control_token)"
 
-# 自定义套件
+# 测试套件
 docker compose run --rm test \
   --suite aiden_smoke \
   --aiden-control-token "$(cat ../config/control_token)"
 ```
+
+#### 并发测试
+
+使用 `parallel_run.sh` 在独立容器中并发运行，完全隔离。
+
+```bash
+# 每个任务独立容器
+./parallel_run.sh clock.CountAlarms clock.ToggleAlarm
+
+# 多容器跑同一套件（任务自动分配）
+PARALLEL=4 ./parallel_run.sh --suite phone_control_v1
+```
+
+**特点：** 完全隔离（独立模拟器 + daemon），无状态干扰，适合所有测试。
+
+**注意：** `--parallel N` 在单容器内共享 daemon，可能导致状态干扰，不推荐。
 
 ### 7. 查看结果
 
