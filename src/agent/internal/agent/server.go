@@ -47,6 +47,7 @@ type Server struct {
 	pendingResultsMu sync.Mutex
 	activeRuns       map[string]context.CancelFunc
 	activeRunsMu     sync.Mutex
+	eventBroadcaster *EventBroadcaster
 }
 
 type webAudioRecording struct {
@@ -182,13 +183,14 @@ type ToolInvokeResponse struct {
 func NewServer(runtime *Runtime, addr string) *Server {
 	bridge := NewPhoneBridge(runtime.logger)
 	s := &Server{
-		runtime:        runtime,
-		addr:           addr,
-		logger:         runtime.logger,
-		history:        make([]Message, 0),
-		bridge:         bridge,
-		pendingResults: make(map[string]*chatPendingResult),
-		activeRuns:     make(map[string]context.CancelFunc),
+		runtime:          runtime,
+		addr:             addr,
+		logger:           runtime.logger,
+		history:          make([]Message, 0),
+		bridge:           bridge,
+		pendingResults:   make(map[string]*chatPendingResult),
+		activeRuns:       make(map[string]context.CancelFunc),
+		eventBroadcaster: NewEventBroadcaster(),
 	}
 	if runtime.config.ConfigDir != "" {
 		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
@@ -235,6 +237,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/chat", s.handleChat)
 	mux.HandleFunc("/api/chat/cancel", s.handleChatCancel)
 	mux.HandleFunc("/api/chat/result", s.handleChatResult)
+	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
 	mux.HandleFunc("/api/clear", s.handleClear)
@@ -1064,6 +1067,59 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(historySnapshot)
 }
 
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Check if response writer supports flushing
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	// Subscribe to events
+	ch := s.eventBroadcaster.Subscribe()
+	defer s.eventBroadcaster.Unsubscribe(ch)
+
+	// Send initial connection event
+	fmt.Fprintf(w, "data: {\"type\":\"connected\"}\n\n")
+	flusher.Flush()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			// Client disconnected
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				// Channel closed (server shutdown)
+				return
+			}
+
+			// Only send user and assistant messages
+			if msg.Type != "user" && msg.Type != "assistant" {
+				continue
+			}
+
+			data, err := json.Marshal(msg)
+			if err != nil {
+				if s.logger != nil {
+					s.logger.Warn("[sse] marshal error: %v", err)
+				}
+				continue
+			}
+
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+	}
+}
+
 func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1576,6 +1632,13 @@ func (s *Server) appendHistory(message Message) {
 // voice messages. May return nil if no config dir was provided.
 func (s *Server) HistoryStore() *ChatHistoryStore {
 	return s.historyStore
+}
+
+// BroadcastMessage sends a message to all SSE subscribers.
+func (s *Server) BroadcastMessage(msg Message) {
+	if s.eventBroadcaster != nil {
+		s.eventBroadcaster.Broadcast(msg)
+	}
 }
 
 func (s *Server) historySnapshot() []Message {

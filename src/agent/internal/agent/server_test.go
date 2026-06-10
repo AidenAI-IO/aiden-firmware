@@ -1297,3 +1297,57 @@ func TestMessageJSONOmitsEmptyVoiceFields(t *testing.T) {
 		t.Errorf("audio_duration_ms field should be omitted when zero")
 	}
 }
+
+func TestServerHandleEventsSSE(t *testing.T) {
+	// Create minimal server
+	cfg := Config{ConfigDir: t.TempDir()}
+	runtime, err := NewRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	server := NewServer(runtime, "127.0.0.1:0")
+
+	// Create request
+	req := httptest.NewRequest("GET", "/api/events", nil)
+	rec := httptest.NewRecorder()
+
+	// Start handler in goroutine (it blocks on SSE stream)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.handleEvents(rec, req)
+	}()
+
+	// Give handler time to set headers
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify SSE headers
+	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type: got %q, want %q", ct, "text/event-stream")
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control: got %q, want %q", cc, "no-cache")
+	}
+	if conn := rec.Header().Get("Connection"); conn != "keep-alive" {
+		t.Errorf("Connection: got %q, want %q", conn, "keep-alive")
+	}
+
+	// Broadcast a test message
+	server.eventBroadcaster.Broadcast(Message{
+		Type:    "user",
+		Content: "SSE test",
+	})
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify message was sent
+	body := rec.Body.String()
+	if !strings.Contains(body, "data:") {
+		t.Errorf("Response should contain SSE data, got: %s", body)
+	}
+	if !strings.Contains(body, "SSE test") {
+		t.Errorf("Response should contain message content, got: %s", body)
+	}
+}
