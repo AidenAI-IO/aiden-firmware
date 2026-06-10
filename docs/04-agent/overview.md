@@ -28,7 +28,7 @@ build/bin/agent
 - 内置工具调用：HID、截图、音频音量、shell；
 - HTTP Tool API，供 Web UI、外部 Agent 或手工调用；
 - 从 `SKILL.md` 自动发现并运行时激活 skills；
-- conversation memory 持久化；
+- conversation memory 持久化，session memory compaction 见 [Session Memory Compaction](session-memory.md)；
 - Device / Task Episode memory 设计见 [Memory Plane 设计](memory-plane.md)；
 - Web UI：聊天历史、浏览器录音、附件、Tool Lab、Skill Export；
 - 设备侧语音链路：VAD / STT / TTS。

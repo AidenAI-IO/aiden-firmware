@@ -6,10 +6,10 @@ This is separate from the [Memory Plane design](memory-plane.md). Memory Plane h
 
 ## Flow
 
-After each `MemoryManager.Save`, the runtime calls `maintainFilesystemMemory`:
+After each runtime turn, the Agent persists the hot-window events and schedules `MemoryManager.RequestMaintenance`. `MemoryManager.Save` runs the same maintenance path synchronously for callers that use it directly.
 
 ```text
-read session/events.jsonl
+read session/events.jsonl under FileLock
   |
   v
 shouldCompress? -- no --> leave events unchanged
@@ -23,6 +23,9 @@ summarize history (with split-turn prefix when needed)
   |
   v
 compressEvents --> write chunk and update summary.md / index
+  |
+  v
+re-read session/events.jsonl under FileLock and merge new appends
   |
   v
 replaceEvents --> keep only the hot window in events.jsonl
@@ -40,6 +43,16 @@ session/
     └── <chunk_id>.jsonl  # full compacted events, retrievable by recall_session_chunks
 ```
 
+## Concurrency and Event Preservation
+
+Maintenance may run asynchronously while the next turn is being appended. To avoid blocking the hot path on LLM summarization, `maintainFilesystemMemory` uses a two-phase file-lock pattern:
+
+1. Read the current `events.jsonl` snapshot under `FileLock`.
+2. Release the lock while planning the cut point and generating summaries.
+3. Re-acquire `FileLock`, re-read `events.jsonl`, and append any events added after the original snapshot to the retained hot window before replacing the file.
+
+`RequestMaintenance` coalesces concurrent requests with a pending flag, so repeated turn completions schedule another maintenance pass instead of running overlapping compactions. After a successful compaction, `lastPromptTokens` is reset to the estimated size of the retained hot window; this prevents the pending pass from immediately re-compacting the same short window with stale pre-compaction token data.
+
 ## Compression Trigger
 
 `shouldCompress` has two paths:
@@ -47,7 +60,7 @@ session/
 - With prompt-token data and a known context window, compaction triggers when either condition is true:
   - `prompt_tokens >= context_window - reserve_tokens`, after clamping reserve to at most half of the window.
   - `prompt_tokens / context_window >= compress_at_percent%`.
-- Without prompt-token data, such as cold start, unknown model, or before the first LLM call, compaction triggers when `event_count > count_compress_after_events`.
+- Without prompt-token data, such as cold start, a provider response without usage metadata, or before the first LLM call, compaction triggers when `event_count > count_compress_after_events`.
 
 The prompt-token value is the largest single LLM prompt observed in the latest run. This avoids missing compaction when the planner prompt is large but a later verifier prompt is small.
 
@@ -82,6 +95,12 @@ When the token path does not produce a useful cut, the count path targets `hot_w
 ### Leading Context Events
 
 After a cut is selected, adjacent `system_event` and `screen_context` events immediately before the cut are pulled into the hot window. This keeps the hot window from starting with detached ambient context.
+
+### Root User Input Pinning
+
+The earliest `user_input` in the live event stream is treated as the root task objective for the active session. If a cut would move that event into compressed history, maintenance pins it as the first event in the retained hot window instead.
+
+Pinned root input is excluded from the chunk evidence and from the generated summaries. The goal is to keep the original task instruction available verbatim without depending on summary quality. If pinning the root input would leave no compactable events, maintenance advances to the next legal cut point; if no useful cut remains, it skips compaction.
 
 ## Split Turns
 
