@@ -155,7 +155,7 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	trimmed := strings.TrimSpace(input)
 	if strings.HasPrefix(trimmed, "{") {
 		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
-			return fmt.Sprintf("error: invalid input: %v", err), nil
+			return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"app\": \"WeChat\"} or {\"ios_urls\": [\"url\"], \"android_packages\": [\"pkg\"]}. Common mistakes: missing quotes around field names and string values", err), nil
 		}
 	} else {
 		args.App = trimmed

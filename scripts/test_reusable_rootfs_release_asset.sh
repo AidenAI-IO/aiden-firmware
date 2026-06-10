@@ -98,6 +98,30 @@ fi
 case "${2:-}" in
   view)
     if [ -f "$state_dir/release-exists" ]; then
+      case " $* " in
+        *" --json assets "*)
+          if [ -f "$state_dir/remote-assets" ]; then
+            jq_expr=""
+            previous=""
+            for arg in "$@"; do
+              if [ "$previous" = "--jq" ]; then
+                jq_expr="$arg"
+                break
+              fi
+              previous="$arg"
+            done
+            case "$jq_expr" in
+              '.assets[].name')
+                cut -f1 "$state_dir/remote-assets"
+                ;;
+              *)
+                cat "$state_dir/remote-assets"
+                ;;
+            esac
+          fi
+          exit 0
+          ;;
+      esac
       echo "release exists"
       exit 0
     fi
@@ -115,7 +139,16 @@ case "${2:-}" in
     ;;
   upload)
     asset="${4:-}"
-    printf 'upload:%s\n' "${asset##*/}" >> "$state_dir/events"
+    name="${asset##*/}"
+    size="$(wc -c < "$asset" | tr -d '[:space:]')"
+    printf 'upload:%s\n' "$name" >> "$state_dir/events"
+    {
+      if [ -f "$state_dir/remote-assets" ]; then
+        awk -F '\t' -v name="$name" '$1 != name' "$state_dir/remote-assets"
+      fi
+      printf '%s\t%s\n' "$name" "$size"
+    } | sort -u > "$state_dir/remote-assets.tmp"
+    mv "$state_dir/remote-assets.tmp" "$state_dir/remote-assets"
     exit 0
     ;;
   *)

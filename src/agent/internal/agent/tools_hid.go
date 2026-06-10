@@ -420,7 +420,7 @@ func (t *KeyboardTapTool) Call(_ context.Context, input string) (string, error) 
 		Keys []string `json:"keys"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v", err), nil
+		return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"keys\": [\"ctrl\", \"c\"]}. Common mistakes: missing quotes around key names, incorrect comma placement in array", err), nil
 	}
 	if len(args.Keys) == 0 {
 		return "error: keys array is required", nil
@@ -530,7 +530,7 @@ func (t *MouseClickTool) Call(_ context.Context, input string) (string, error) {
 		CoordSpace string            `json:"coord_space"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v", err), nil
+		return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"button\": \"left\", \"coord_space\": \"normalized\"}. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
 	}
 
 	absX, absY, err := resolvePointerPosition(t.screen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
@@ -569,7 +569,7 @@ func (t *MouseMoveTool) Call(_ context.Context, input string) (string, error) {
 		CoordSpace string            `json:"coord_space"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v", err), nil
+		return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"coord_space\": \"normalized\"}. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
 	}
 
 	absX, absY, err := resolvePointerPosition(t.screen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
@@ -628,7 +628,7 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		Strength     string        `json:"strength"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v", err), nil
+		return fmt.Sprintf("error: invalid input: %v. Common mistakes: missing quotes around string values, incorrect comma placement, point/start/end must be objects with named keys like {\"x\":500,\"y\":300} not bare values. Example: {\"type\":\"tap\",\"point\":{\"x\":500,\"y\":500}}", err), nil
 	}
 
 	gestureType := strings.ToLower(strings.TrimSpace(args.Type))
@@ -816,7 +816,7 @@ func (t *MouseScrollTool) Call(_ context.Context, input string) (string, error) 
 		Delta int `json:"delta"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v", err), nil
+		return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"delta\": -3}. Delta must be a number between -127 and 127", err), nil
 	}
 	if args.Delta == 0 {
 		return "ok", nil

@@ -107,7 +107,7 @@ configDir/skills/**/SKILL.md
 
 ```text
 开发环境：src/agent/config/skills/
-设备环境：/usr/share/aiden/skills/
+设备环境：/oem/usr/share/aiden/skills/
 ```
 
 启动或更新时同步到：
@@ -190,7 +190,7 @@ src/agent/config/skills/
 设备安装后可以放到：
 
 ```text
-/usr/share/aiden/skills/
+/oem/usr/share/aiden/skills/
 ├── planner/SKILL.md
 ├── research/SKILL.md
 └── ...
@@ -1150,7 +1150,7 @@ src/agent/config/skills
 设备安装环境：
 
 ```text
-/usr/share/aiden/skills
+/oem/usr/share/aiden/skills
 ```
 
 MVP 可以从 build-time 常量、配置项或相对路径解析。
@@ -1463,7 +1463,7 @@ configDir/skills/<name>/assets/**
 禁止修改：
 
 ```text
-/usr/share/aiden/skills/<name>/SKILL.md
+/oem/usr/share/aiden/skills/<name>/SKILL.md
 src/agent/config/skills/<name>/SKILL.md
 configDir/skill-state/.bundled_manifest.json
 configDir/skill-state/bases/<name>/SKILL.md

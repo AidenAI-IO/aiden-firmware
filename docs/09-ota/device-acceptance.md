@@ -4,19 +4,20 @@
 
 ## 前置条件
 
-- 生产镜像使用生产 Ed25519 public key 构建。
-- GitHub Release 包含 `manifest.json`、`boot_a.img`、`boot_b.img`、`oem.img`、`rootfs.img`、`userdata.img` 和 `update.img`（自 PR #112 起使用中性资源）。
-- 发布版 `update.img` 已内置 `/userdata/ota/config.json`。
+- The production image is built with the production Ed25519 public key.
+- GitHub Release contains `manifest.json` plus compressed image archives: `boot_a.img.tar.gz`, `boot_b.img.tar.gz`, `oem.img.tar.gz`, `rootfs.img.tar.gz`, and `update.img.tar.gz`.
+- The `update.img` inside `update.img.tar.gz` has `/userdata/ota/config.json` embedded.
 - 有 UART 时建议同时记录 SPL rollback 日志。
 
 `ota` 在启动时必须先处理 `/userdata/ota/pending_boot.json` health，再做网络或 GitHub update check。不要在 pending health 处理前加入网络等待。
 
 ## 1. USB 首刷验收
 
-按正常 USB recovery 流程刷入发布版 `update.img`：
+Download the release `update.img.tar.gz`, extract `update.img`, then flash it with the normal USB recovery flow:
 
 ```bash
-./upgrade_tool/upgrade_tool uf pico-sdk/output/image/update.img
+tar -xzf update.img.tar.gz update.img
+./upgrade_tool/upgrade_tool uf ./update.img
 ```
 
 设备启动后检查：
