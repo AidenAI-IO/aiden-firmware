@@ -584,21 +584,38 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		return nil
 	}
 	session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"), m.extraction.SummaryMaxChunks)
-	if _, err := os.Stat(session.eventsPath()); err != nil {
+	eventsPath := session.eventsPath()
+
+	// Phase 1: Read events snapshot under FileLock to serialize with append paths.
+	// Lock is released before the expensive LLM summary phase to avoid blocking
+	// concurrent turn appends.
+	fl := NewFileLock(m.storageDir)
+	if err := fl.Lock(m.lockTimeout); err != nil {
+		return fmt.Errorf("lock for reading session events: %w", err)
+	}
+
+	if _, err := os.Stat(eventsPath); err != nil {
+		fl.Unlock()
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return fmt.Errorf("stat session events: %w", err)
 	}
-	events, err := session.readEvents(session.eventsPath())
+
+	events, err := session.readEvents(eventsPath)
 	if err != nil {
+		fl.Unlock()
 		return err
 	}
-	if len(events) == 0 {
+
+	originalEventCount := len(events)
+	fl.Unlock() // Release before LLM summary
+
+	if originalEventCount == 0 {
 		return nil
 	}
 
-	if !m.shouldCompress(len(events)) {
+	if !m.shouldCompress(originalEventCount) {
 		return nil
 	}
 
@@ -614,17 +631,35 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		return nil
 	}
 
-	compactEvents := append([]SessionEvent(nil), events[:plan.cutIndex]...)
+	rootUserIndex := findRootUserInputIndex(events)
+	pinRootUser := rootUserIndex >= 0 && rootUserIndex < plan.cutIndex
+	compactEvents := copySessionEventRangeExcludingIndex(events, 0, plan.cutIndex, rootUserIndex)
+	if len(compactEvents) == 0 && pinRootUser {
+		if nextCut := findNextValidSessionCutPoint(events, plan.cutIndex, len(events)); nextCut >= 0 {
+			if next := buildSessionCutPoint(events, 0, nextCut); next.HasCut {
+				plan.cutIndex = next.FirstKeptIndex
+				plan.isSplitTurn = next.IsSplitTurn
+				plan.turnStartIndex = next.TurnStartIndex
+				pinRootUser = rootUserIndex >= 0 && rootUserIndex < plan.cutIndex
+				compactEvents = copySessionEventRangeExcludingIndex(events, 0, plan.cutIndex, rootUserIndex)
+			}
+		}
+	}
+	if len(compactEvents) == 0 {
+		return nil
+	}
 	hotEvents := append([]SessionEvent(nil), events[plan.cutIndex:]...)
 
 	// History summary covers everything compacted out. When splitting a turn,
 	// the prefix (turn start → cut) is summarized separately and merged so the
-	// retained suffix keeps the context of the half-finished turn.
+	// retained suffix keeps the context of the half-finished turn. The root
+	// user_input is excluded from summaries when it is pinned into the hot
+	// window, so the original task goal does not depend on summary quality.
 	historyEvents := compactEvents
 	var turnPrefixEvents []SessionEvent
 	if plan.isSplitTurn {
-		historyEvents = append([]SessionEvent(nil), events[:plan.turnStartIndex]...)
-		turnPrefixEvents = append([]SessionEvent(nil), events[plan.turnStartIndex:plan.cutIndex]...)
+		historyEvents = copySessionEventRangeExcludingIndex(events, 0, plan.turnStartIndex, rootUserIndex)
+		turnPrefixEvents = copySessionEventRangeExcludingIndex(events, plan.turnStartIndex, plan.cutIndex, rootUserIndex)
 	}
 
 	summary, structured := m.buildEventSummary(ctx, historyEvents)
@@ -649,9 +684,12 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 			hotEvents = prependTurnPrefixContext(hotEvents, prefixSummary)
 		}
 	}
+	if pinRootUser {
+		hotEvents = prependPinnedRootUserInput(hotEvents, events[rootUserIndex])
+	}
 
 	cutMeta := ChunkCutMetadata{
-		FirstKeptEventID:   firstNonEmptyEventID(events, plan.cutIndex),
+		FirstKeptEventID:   firstKeptEventID(hotEvents),
 		TokensBefore:       sumSessionEventTokens(events),
 		KeptTokensEstimate: sumSessionEventTokens(hotEvents),
 		IsSplitTurn:        plan.isSplitTurn,
@@ -677,6 +715,31 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		m.logger.Info("[memory] chunk created: id=%s, compacted=%d, kept=%d, split_turn=%t, mode=%s",
 			chunkSummary.ID, len(compactEvents), len(hotEvents), plan.isSplitTurn, plan.mode)
 	}
+
+	// Phase 2: Write back under FileLock. Re-read events.jsonl to detect any
+	// appends that occurred during the LLM summary phase (the window between
+	// phase 1 unlock and now). If new events were appended, merge them into
+	// hotEvents before replacing the file. This prevents data loss when
+	// persistSnapshot runs concurrently with maintenance.
+	if err := fl.Lock(m.lockTimeout); err != nil {
+		return fmt.Errorf("lock for writing session events: %w", err)
+	}
+	defer fl.Unlock()
+
+	currentEvents, err := session.readEvents(eventsPath)
+	if err != nil {
+		return fmt.Errorf("re-read session events for merge: %w", err)
+	}
+
+	// Merge incremental events that were appended during compression
+	if len(currentEvents) > originalEventCount {
+		incrementalEvents := currentEvents[originalEventCount:]
+		hotEvents = append(hotEvents, incrementalEvents...)
+		if m.logger != nil {
+			m.logger.Info("[memory] merged %d incremental events appended during compression", len(incrementalEvents))
+		}
+	}
+
 	if err := session.replaceEvents(hotEvents); err != nil {
 		return err
 	}
