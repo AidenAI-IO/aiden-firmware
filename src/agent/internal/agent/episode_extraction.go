@@ -46,7 +46,7 @@ func lookupStringField(jsonText, field string) string {
 }
 
 // extractToolCallCoords 解析一个 touch/swipe 类工具的输入，给出形如
-// "x=0.50,y=0.85"（tap）或 "0.50,0.80→0.50,0.40"（swipe）的紧凑坐标摘要。
+// "x=500,y=850"（tap）或 "x=500,y=800→x=500,y=400"（swipe）的紧凑坐标摘要。
 // 找不到坐标返回空串。
 func extractToolCallCoords(toolInput string) string {
 	input := strings.TrimSpace(toolInput)
@@ -90,7 +90,7 @@ func pointSummary(point map[string]any) string {
 	if !okX || !okY {
 		return ""
 	}
-	return fmt.Sprintf("x=%.2f,y=%.2f", x, y)
+	return fmt.Sprintf("x=%.0f,y=%.0f", x, y)
 }
 
 func numericField(m map[string]any, key string) (float64, bool) {
