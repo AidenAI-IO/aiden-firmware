@@ -85,7 +85,7 @@ docker compose run --rm test --suite clock --limit 5
 使用 `parallel_run.sh` 并发运行 Aiden benchmark。每个 worker 都是一套独立的 Docker Compose project，包含独立的 MobileGym 模拟器、Aiden daemon、配置/token、network、volume 和日志；只有结果根目录共享。这样做是为了隔离 Aiden daemon 状态，不是因为 MobileGym 官方并发必须依赖 Docker。
 
 ```bash
-cd docker
+cd benchmark/mobilegym/docker
 
 # 并发跑多个任务（每个任务独立容器）
 ./parallel_run.sh clock.CountAlarms clock.ToggleAlarm phone_control_v1.MakeCall
@@ -115,8 +115,9 @@ COMPOSE_FILES=docker-compose.cn.yml PARALLEL=2 ./parallel_run.sh --suite clock
 
 ```bash
 ls ../../runs/mobilegym/
-open ../../runs/mobilegym/<batch-id>/index.html
-open ../../runs/mobilegym/<batch-id>/<suite>/index.html
+open ../../runs/mobilegym/<run-id>/index.html            # direct run 报告
+open ../../runs/mobilegym/<batch-id>/index.html          # parallel batch 总览
+open ../../runs/mobilegym/<batch-id>/<suite>/index.html  # parallel 单个 suite
 ```
 
 ## ✅ 验证

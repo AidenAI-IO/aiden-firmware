@@ -191,6 +191,7 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
     recorder = factory.create_recorder(config)
     env = await factory.create_env(config)
     bridge = None
+    run_dir = None
     try:
         bridge_control_token = secrets.token_urlsafe(32)
         bridge_device_token = secrets.token_urlsafe(32)
@@ -224,11 +225,14 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
             extra_meta=SerialRunner.build_run_meta(config, tasks),
         )
         if recorder.run_dir:
+            run_dir = recorder.run_dir
             add_log_file(recorder.run_dir / "console.log")
         runner = SerialRunner(env, agent, tasks, config, recorder, evaluator)
         await runner.run()
         return 0
     finally:
+        if run_dir is not None:
+            _generate_run_report_best_effort(run_dir)
         if bridge is not None:
             bridge.stop()
 
@@ -299,6 +303,15 @@ def _write_shard_metadata(path: Path, tasks: list[Any], *, shard_index: int, sha
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _generate_run_report_best_effort(run_dir: Path) -> None:
+    try:
+        from mobilegym.report import generate_reports
+
+        generate_reports(run_dir)
+    except Exception as exc:
+        print(f"warning: failed to generate MobileGym report for {run_dir}: {exc}", file=sys.stderr)
 
 
 def _task_id(task: Any) -> str:

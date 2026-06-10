@@ -16,6 +16,20 @@ CONFIG_TMP_ROOT="${MOBILEGYM_CONFIG_TMP_ROOT:-${TMPDIR:-/tmp}/mobilegym-parallel
 STOPPING=0
 FAILED=0
 
+require_positive_int() {
+    local name="$1"
+    local value="$2"
+    if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Error: $name must be a positive integer (got: '$value')" >&2
+        exit 2
+    fi
+}
+
+require_positive_int PARALLEL "$PARALLEL"
+if [[ -n "${MAX_JOBS:-}" ]]; then
+    require_positive_int MAX_JOBS "$MAX_JOBS"
+fi
+
 usage() {
     cat <<'EOF'
 Usage: ./parallel_run.sh <task-id> [task-id...] | --suite <suite> | --suites <suite-a,suite-b>

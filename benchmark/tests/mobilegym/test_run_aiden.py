@@ -150,3 +150,15 @@ def test_write_shard_metadata_preserves_existing_worker_fields(tmp_path):
     assert payload["exit_code"] == 99
     assert payload["selected_task_count"] == 1
     assert payload["selected_task_ids"] == ["task.A"]
+
+
+def test_generate_run_report_best_effort_writes_index(tmp_path):
+    module = load_run_aiden_module()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps({"suite": ["clock"]}))
+    (run_dir / "results.jsonl").write_text(json.dumps({"id": "clock.CountAlarms", "is_success": True}) + "\n")
+
+    module._generate_run_report_best_effort(run_dir)
+
+    assert (run_dir / "index.html").exists()

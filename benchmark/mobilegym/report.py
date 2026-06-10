@@ -16,6 +16,8 @@ def generate_reports(batch_dir: str | Path) -> dict[str, Any]:
     batch = Path(batch_dir)
     if not batch.exists() or not batch.is_dir():
         raise FileNotFoundError(f"batch directory not found: {batch}")
+    if _is_direct_run_dir(batch):
+        return _generate_direct_run_report(batch)
 
     suite_summaries = []
     all_rows: list[dict[str, Any]] = []
@@ -29,7 +31,7 @@ def generate_reports(batch_dir: str | Path) -> dict[str, Any]:
             shard_rows, metadata = _normalize_shard(shard_dir)
             rows.extend(shard_rows)
             shard_metadatas.append(metadata)
-        summary = _summary_for(suite_dir.name, rows, shard_metadatas)
+        summary = _summary_for(batch.name, suite_dir.name, rows, shard_metadatas)
         _write_suite_report(suite_dir, rows, summary)
         suite_summaries.append(summary)
         all_rows.extend(rows)
@@ -37,6 +39,82 @@ def generate_reports(batch_dir: str | Path) -> dict[str, Any]:
     batch_summary = _batch_summary(batch.name, suite_summaries, all_rows)
     _write_batch_report(batch, suite_summaries, batch_summary)
     return batch_summary
+
+
+def _is_direct_run_dir(run_dir: Path) -> bool:
+    return (run_dir / "results.jsonl").is_file() or (run_dir / "errors.jsonl").is_file()
+
+
+def _generate_direct_run_report(run_dir: Path) -> dict[str, Any]:
+    meta = _read_json(run_dir / "meta.json")
+    result_rows = {_row_task_id(row): row for row in _read_jsonl(run_dir / "results.jsonl") if _row_task_id(row)}
+    error_rows = {_row_task_id(row): row for row in _read_jsonl(run_dir / "errors.jsonl") if _row_task_id(row)}
+    task_ids = list(dict.fromkeys(_direct_meta_task_ids(meta) + sorted(set(result_rows) | set(error_rows))))
+    links = {
+        "results": ["results.jsonl"] if (run_dir / "results.jsonl").is_file() else [],
+        "errors": ["errors.jsonl"] if (run_dir / "errors.jsonl").is_file() else [],
+        "console": ["console.log"] if (run_dir / "console.log").is_file() else [],
+        "trajectory": ["trajectory/"] if (run_dir / "trajectory").is_dir() else [],
+    }
+    rows = []
+    for task_id in task_ids:
+        result = result_rows.get(task_id)
+        error = error_rows.get(task_id)
+        status, reason = _status_for(result, error)
+        rows.append(
+            {
+                "task_id": task_id,
+                "suite": _direct_suite_for_task(meta, task_id, result, error),
+                "shard": "direct",
+                "status": status,
+                "reason": reason,
+                "links": links,
+            }
+        )
+
+    suite_summaries = []
+    for suite in sorted({row["suite"] for row in rows} or {_direct_default_suite(meta)}):
+        suite_rows = [row for row in rows if row["suite"] == suite]
+        suite_summaries.append(_summary_for(run_dir.name, suite, suite_rows, [{"cleanup_failed": 0}]))
+    summary = _batch_summary(run_dir.name, suite_summaries, rows)
+    _write_direct_run_report(run_dir, rows, summary)
+    return summary
+
+
+def _direct_meta_task_ids(meta: dict[str, Any]) -> list[str]:
+    task_max_steps = meta.get("task_max_steps")
+    if isinstance(task_max_steps, dict):
+        return [str(task_id) for task_id in task_max_steps]
+    task_id = meta.get("task_id")
+    if task_id:
+        return [str(task_id)]
+    task_ids = meta.get("task_ids")
+    if isinstance(task_ids, list):
+        return [str(task_id) for task_id in task_ids]
+    return []
+
+
+def _direct_suite_for_task(meta: dict[str, Any], task_id: str, result: dict[str, Any] | None, error: dict[str, Any] | None) -> str:
+    for row in (result, error):
+        if row and row.get("suite"):
+            return str(row["suite"])
+    suite = meta.get("suite")
+    if isinstance(suite, list) and len(suite) == 1:
+        return str(suite[0])
+    if isinstance(suite, str) and suite:
+        return suite
+    if "." in task_id:
+        return task_id.split(".", 1)[0]
+    return _direct_default_suite(meta)
+
+
+def _direct_default_suite(meta: dict[str, Any]) -> str:
+    suite = meta.get("suite")
+    if isinstance(suite, list) and suite:
+        return str(suite[0])
+    if isinstance(suite, str) and suite:
+        return suite
+    return "direct"
 
 
 def _suite_shard_dirs(suite_dir: Path) -> list[Path]:
@@ -127,7 +205,11 @@ def _read_errors(raw_dir: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     rows = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return rows
+    for line in lines:
         if not line.strip():
             continue
         try:
@@ -186,8 +268,14 @@ def _row_task_id(row: dict[str, Any]) -> str:
     return ""
 
 
-def _summary_for(suite: str, rows: list[dict[str, Any]], shard_metadatas: list[dict[str, Any]]) -> dict[str, Any]:
+def _summary_for(
+    batch_id: str,
+    suite: str,
+    rows: list[dict[str, Any]],
+    shard_metadatas: list[dict[str, Any]],
+) -> dict[str, Any]:
     summary: dict[str, Any] = {
+        "batch_id": batch_id,
         "suite": suite,
         "shards": len(shard_metadatas),
         "tasks": sum(1 for row in rows if row["status"] != "empty"),
@@ -226,12 +314,27 @@ def _write_batch_report(batch_dir: Path, suite_summaries: list[dict[str, Any]], 
                 "task_id": suite["suite"],
                 "suite": suite["suite"],
                 "shard": f"{suite['shards']} shards",
-                "status": "passed" if suite.get("failed", 0) == suite.get("error", 0) == suite.get("worker_failed", 0) == 0 else "failed",
+                "status": (
+                    "passed"
+                    if suite.get("failed", 0) == 0
+                    and suite.get("error", 0) == 0
+                    and suite.get("worker_failed", 0) == 0
+                    and suite.get("unknown", 0) == 0
+                    and suite.get("cleanup_failed", 0) == 0
+                    else "failed"
+                ),
                 "reason": f"{suite['passed']}/{suite['tasks']} passed",
                 "links": {"suite": [f"{suite['suite']}/index.html"]},
             }
         )
     (batch_dir / "index.html").write_text(_html_page(summary["batch_id"], serializable, rows, batch_dir), encoding="utf-8")
+
+
+def _write_direct_run_report(run_dir: Path, rows: list[dict[str, Any]], summary: dict[str, Any]) -> None:
+    serializable = dict(summary)
+    serializable.pop("rows", None)
+    (run_dir / "summary.json").write_text(json.dumps(serializable, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    (run_dir / "index.html").write_text(_html_page(summary["batch_id"], serializable, rows, run_dir), encoding="utf-8")
 
 
 def _html_page(title: str, summary: dict[str, Any], rows: list[dict[str, Any]], base_dir: Path) -> str:

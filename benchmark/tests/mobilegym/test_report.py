@@ -64,6 +64,7 @@ def test_generate_reports_normalizes_mobilegym_results_and_missing_tasks(tmp_pat
     assert summary["cleanup_failed"] == 0
     suite_summary = read_json(batch / "clock" / "summary.json")
     assert suite_summary["pass_rate"] == 0.25
+    assert suite_summary["batch_id"] == "batch-x"
     html = (batch / "clock" / "index.html").read_text()
     assert "results.jsonl" in html
     assert "errors.jsonl" in html
@@ -123,6 +124,11 @@ def test_generate_reports_handles_fallback_fields_unknown_and_empty_shards(tmp_p
     assert summary["empty"] == 1
     assert summary["cleanup_failed"] == 1
     assert read_json(batch / "summary.json")["suites"][0]["suite"] == "phone"
+    # Suites with non-zero unknown or cleanup_failed must NOT show as passed at
+    # the batch level — that would hide incomplete or partially-broken runs.
+    batch_html = (batch / "index.html").read_text()
+    assert 'class="failed">failed' in batch_html
+    assert 'class="passed">passed' not in batch_html
 
 
 def test_generate_reports_groups_positional_tasks_under_tasks_suite(tmp_path):
@@ -151,6 +157,53 @@ def test_generate_reports_groups_positional_tasks_under_tasks_suite(tmp_path):
     assert summary["suites"][0]["suite"] == "tasks"
     assert read_json(batch / "tasks" / "summary.json")["passed"] == 1
     assert (batch / "tasks" / "index.html").exists()
+
+
+def test_generate_reports_handles_direct_mobilegym_run_directory(tmp_path):
+    from mobilegym import report
+
+    run_dir = tmp_path / "20260610_100501"
+    write_json(
+        run_dir / "meta.json",
+        {
+            "suite": ["wechat"],
+            "task_max_steps": {
+                "wechat.BlacklistContact": 45,
+                "wechat.ConditionalReplyToBoss": 30,
+            },
+        },
+    )
+    write_jsonl(
+        run_dir / "results.jsonl",
+        [
+            {"id": "wechat.BlacklistContact", "is_success": True, "execution": {"stop_reason": "complete"}},
+            {"id": "wechat.ConditionalReplyToBoss", "is_success": False, "execution": {"stop_reason": "false_complete"}},
+        ],
+    )
+    write_jsonl(
+        run_dir / "errors.jsonl",
+        [
+            {
+                "id": "wechat.ConditionalReplyToBoss",
+                "error": "AidenAdapterTimeout: Aiden /api/chat timed out",
+            }
+        ],
+    )
+    (run_dir / "console.log").write_text("console output")
+
+    summary = report.generate_reports(run_dir)
+
+    assert summary["tasks"] == 2
+    assert summary["passed"] == 1
+    assert summary["error"] == 1
+    assert summary["suites"][0]["suite"] == "wechat"
+    assert (run_dir / "index.html").exists()
+    assert read_json(run_dir / "summary.json")["pass_rate"] == 0.5
+    html = (run_dir / "index.html").read_text()
+    assert "wechat.BlacklistContact" in html
+    assert "results.jsonl" in html
+    assert "errors.jsonl" in html
+    assert "console.log" in html
 
 
 def test_report_module_cli_rejects_missing_batch_dir(tmp_path):

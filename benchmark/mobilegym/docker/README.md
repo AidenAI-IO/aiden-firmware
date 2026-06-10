@@ -124,11 +124,12 @@ COMPOSE_FILES=docker-compose.cn.yml PARALLEL=2 ./parallel_run.sh --suite clock
 
 ```bash
 ls ../../runs/mobilegym/
-open ../../runs/mobilegym/<batch-id>/index.html          # batch 总览
-open ../../runs/mobilegym/<batch-id>/<suite>/index.html  # 单个 suite
+open ../../runs/mobilegym/<run-id>/index.html            # direct run 报告
+open ../../runs/mobilegym/<batch-id>/index.html          # parallel batch 总览
+open ../../runs/mobilegym/<batch-id>/<suite>/index.html  # parallel 单个 suite
 ```
 
-每个 shard 目录里保留 `runner.log`、`compose.log`、`shard.json` 和原始 MobileGym 输出。
+普通 `docker compose run ... test` 会在 run 目录生成 `index.html`、`summary.json` 和原始 MobileGym 输出。`parallel_run.sh` 的每个 shard 目录还会保留 `runner.log`、`compose.log`、`shard.json`。
 
 ## 五、停止
 
