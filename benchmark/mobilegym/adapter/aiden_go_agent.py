@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 import json
+import logging
 import socket
 import urllib.error
 import urllib.request
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .artifacts import export_bridge_actions
+
+logger = logging.getLogger(__name__)
 
 try:
     from bench_env.agent import BaseAgent as _MobileGymBaseAgent
