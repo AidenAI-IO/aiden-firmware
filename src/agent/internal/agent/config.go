@@ -373,10 +373,12 @@ func bundledSkillsDirCandidates() []string {
 
 func LoadConfig(path string) (Config, error) {
 	var cfg Config
+	var metadata toml.MetaData
 
 	// Determine format by file extension
 	if strings.HasSuffix(path, ".toml") {
-		if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		var err error
+		if metadata, err = toml.DecodeFile(path, &cfg); err != nil {
 			return Config{}, fmt.Errorf("decode TOML config: %w", err)
 		}
 	} else {
@@ -387,11 +389,61 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
 	}
 
+	if err := applyLegacyModelMaxTokens(path, metadata, &cfg); err != nil {
+		return Config{}, err
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 
 	return cfg, nil
+}
+
+func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config) error {
+	needsModel := metadata.IsDefined("model", "max_tokens") &&
+		!metadata.IsDefined("model", "max_response_tokens")
+	needsModelText := metadata.IsDefined("model_text", "max_tokens") &&
+		!metadata.IsDefined("model_text", "max_response_tokens")
+	if !needsModel && !needsModelText {
+		return nil
+	}
+
+	var raw map[string]interface{}
+	if _, err := toml.DecodeFile(path, &raw); err != nil {
+		return fmt.Errorf("decode legacy TOML fields: %w", err)
+	}
+	if needsModel {
+		value, err := legacyModelMaxTokens(raw, "model")
+		if err != nil {
+			return err
+		}
+		cfg.Model.MaxResponseTokens = value
+	}
+	if needsModelText {
+		value, err := legacyModelMaxTokens(raw, "model_text")
+		if err != nil {
+			return err
+		}
+		cfg.ModelText.MaxResponseTokens = value
+	}
+	return nil
+}
+
+func legacyModelMaxTokens(raw map[string]interface{}, section string) (int, error) {
+	table, ok := raw[section].(map[string]interface{})
+	if !ok {
+		return 0, fmt.Errorf("%s.max_tokens is defined but %s is not a TOML table", section, section)
+	}
+	value, ok := table["max_tokens"]
+	if !ok {
+		return 0, fmt.Errorf("%s.max_tokens is defined but could not be decoded", section)
+	}
+	tokens, ok := value.(int64)
+	if !ok {
+		return 0, fmt.Errorf("%s.max_tokens must be an integer", section)
+	}
+	return int(tokens), nil
 }
 
 func (c Config) Validate() error {

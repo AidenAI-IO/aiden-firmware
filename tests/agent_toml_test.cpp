@@ -191,6 +191,45 @@ TEST_CASE("agent_toml no longer writes legacy proxy section") {
     std::remove(path.c_str());
 }
 
+TEST_CASE("agent_toml accepts legacy model max_tokens") {
+    std::string path = make_temp_path("legacy_max_tokens.toml");
+    {
+        std::ofstream out(path);
+        out << "[model]\n"
+            << "provider = \"openrouter\"\n"
+            << "model = \"vendor/test-model\"\n"
+            << "max_tokens = 777\n";
+    }
+
+    aiden::AgentToml cfg;
+    std::string err;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    REQUIRE(err.empty());
+    CHECK(cfg.model.max_response_tokens == 777);
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("agent_toml prefers max_response_tokens over legacy max_tokens") {
+    std::string path = make_temp_path("legacy_max_tokens_precedence.toml");
+    {
+        std::ofstream out(path);
+        out << "[model]\n"
+            << "provider = \"openrouter\"\n"
+            << "model = \"vendor/test-model\"\n"
+            << "max_response_tokens = 1000\n"
+            << "max_tokens = 777\n";
+    }
+
+    aiden::AgentToml cfg;
+    std::string err;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    REQUIRE(err.empty());
+    CHECK(cfg.model.max_response_tokens == 1000);
+
+    std::remove(path.c_str());
+}
+
 TEST_CASE("agent_toml ignores unknown sections and keys") {
     std::string path = make_temp_path("unknown.toml");
     {
@@ -247,6 +286,36 @@ TEST_CASE("agent_toml rejects negative model metadata overrides") {
     const Case cases[] = {
         {"negative_context_window.toml", "model", "context_window"},
         {"negative_model_max_output_tokens.toml", "model_text", "model_max_output_tokens"},
+    };
+
+    for (const auto& tc : cases) {
+        std::string path = make_temp_path(tc.leaf);
+        {
+            std::ofstream out(path);
+            out << "[" << tc.section << "]\n"
+                << "provider = \"fake\"\n"
+                << tc.field << " = -1\n";
+        }
+
+        aiden::AgentToml cfg;
+        std::string err;
+        CHECK_FALSE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+        CHECK(err.find(tc.field) != std::string::npos);
+        CHECK(err.find(">= 0") != std::string::npos);
+
+        std::remove(path.c_str());
+    }
+}
+
+TEST_CASE("agent_toml rejects negative model response token limits") {
+    struct Case {
+        const char* leaf;
+        const char* section;
+        const char* field;
+    };
+    const Case cases[] = {
+        {"negative_max_response_tokens.toml", "model", "max_response_tokens"},
+        {"negative_legacy_max_tokens.toml", "model_text", "max_tokens"},
     };
 
     for (const auto& tc : cases) {

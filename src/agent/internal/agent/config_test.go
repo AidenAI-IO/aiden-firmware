@@ -98,6 +98,53 @@ model_max_output_tokens = 4096
 	}
 }
 
+func TestLoadConfigParsesLegacyModelMaxTokens(t *testing.T) {
+	configDir := t.TempDir()
+	config := `
+instruction = "test"
+
+[model]
+provider = "openrouter"
+model = "vendor/test-model"
+max_tokens = 777
+`
+	if err := os.WriteFile(configDir+"/agent.toml", []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfigFromDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigFromDir() error = %v", err)
+	}
+	if cfg.Model.MaxResponseTokens != 777 {
+		t.Errorf("MaxResponseTokens = %d, want legacy max_tokens value 777", cfg.Model.MaxResponseTokens)
+	}
+}
+
+func TestLoadConfigPrefersMaxResponseTokensOverLegacyMaxTokens(t *testing.T) {
+	configDir := t.TempDir()
+	config := `
+instruction = "test"
+
+[model]
+provider = "openrouter"
+model = "vendor/test-model"
+max_response_tokens = 1000
+max_tokens = 777
+`
+	if err := os.WriteFile(configDir+"/agent.toml", []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfigFromDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigFromDir() error = %v", err)
+	}
+	if cfg.Model.MaxResponseTokens != 1_000 {
+		t.Errorf("MaxResponseTokens = %d, want canonical max_response_tokens value 1_000", cfg.Model.MaxResponseTokens)
+	}
+}
+
 func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
 	cfg := Config{Model: ModelConfig{Provider: "fake", MaxResponseTokens: -1}}
 	err := cfg.Validate()

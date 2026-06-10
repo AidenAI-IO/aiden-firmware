@@ -305,7 +305,7 @@ void apply_kv(AgentToml& cfg,
         else if (key == "api_key") assign_string(&m.api_key, raw, &sub_err);
         else if (key == "token_env") assign_string(&m.token_env, raw, &sub_err);
         else if (key == "temperature") assign_double(&m.temperature, raw, &sub_err);
-        else if (key == "max_response_tokens") assign_int(&m.max_response_tokens, raw, &sub_err);
+        else if (key == "max_response_tokens") assign_non_negative_int(&m.max_response_tokens, raw, &sub_err);
         else if (key == "context_window") assign_non_negative_int(&m.context_window, raw, &sub_err);
         else if (key == "model_max_output_tokens") assign_non_negative_int(&m.model_max_output_tokens, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
@@ -395,6 +395,15 @@ bool atomic_write(const std::string& path, const std::string& content, std::stri
     return true;
 }
 
+struct LegacyModelMaxTokens {
+    std::string section;
+    std::string raw;
+    int lineno = 0;
+
+    LegacyModelMaxTokens(const std::string& section_name, const std::string& raw_value, int line)
+        : section(section_name), raw(raw_value), lineno(line) {}
+};
+
 void emit_string(std::ostringstream& out, const char* key, const std::string& value) {
     out << key << " = " << quote(value) << "\n";
 }
@@ -455,6 +464,9 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
     std::string line;
     int lineno = 0;
     std::string parse_error;
+    bool model_max_response_tokens_seen = false;
+    bool model_text_max_response_tokens_seen = false;
+    std::vector<LegacyModelMaxTokens> legacy_model_max_tokens;
 
     while (std::getline(in, line)) {
         ++lineno;
@@ -510,10 +522,46 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
             }
         }
 
+        if ((section == "model" || section == "model_text") && key == "max_response_tokens") {
+            if (section == "model") {
+                model_max_response_tokens_seen = true;
+            } else {
+                model_text_max_response_tokens_seen = true;
+            }
+        }
+        if ((section == "model" || section == "model_text") && key == "max_tokens") {
+            legacy_model_max_tokens.push_back(LegacyModelMaxTokens(section, value, lineno));
+            continue;
+        }
+
         std::string apply_err;
         apply_kv(cfg, section, key, value, &apply_err);
         if (!apply_err.empty() && parse_error.empty()) {
             parse_error = "line " + std::to_string(lineno) + ": " + apply_err;
+        }
+    }
+
+    if (parse_error.empty()) {
+        for (const auto& legacy : legacy_model_max_tokens) {
+            bool canonical_seen = legacy.section == "model"
+                ? model_max_response_tokens_seen
+                : model_text_max_response_tokens_seen;
+            if (canonical_seen) {
+                continue;
+            }
+
+            int value = 0;
+            std::string legacy_error;
+            if (!assign_non_negative_int(&value, legacy.raw, &legacy_error)) {
+                parse_error = "line " + std::to_string(legacy.lineno) + ": ["
+                    + legacy.section + "] max_tokens: " + legacy_error;
+                break;
+            }
+            if (legacy.section == "model") {
+                cfg.model.max_response_tokens = value;
+            } else {
+                cfg.model_text.max_response_tokens = value;
+            }
         }
     }
 
