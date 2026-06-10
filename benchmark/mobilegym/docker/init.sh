@@ -5,10 +5,20 @@
 # 用法: ./init.sh
 
 set -e
+umask 077  # token 文件只允许当前用户读写
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 CONFIG_DIR="../config"
+
+# 生成强随机 token（优先 openssl，备选 /dev/urandom）
+gen_token() {
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 32
+    else
+        head -c 32 /dev/urandom | xxd -p -c 32
+    fi
+}
 
 echo "=== MobileGym Docker 环境初始化 ==="
 echo ""
@@ -16,14 +26,16 @@ echo ""
 # 1. 生成 token 文件
 echo "1. 生成认证 token..."
 if [ ! -f "$CONFIG_DIR/control_token" ]; then
-    echo "ctrl-$(date +%s)-$RANDOM" > "$CONFIG_DIR/control_token"
+    gen_token > "$CONFIG_DIR/control_token"
+    chmod 600 "$CONFIG_DIR/control_token"
     echo "   ✓ 创建 control_token"
 else
     echo "   - control_token 已存在"
 fi
 
 if [ ! -f "$CONFIG_DIR/bridge_token" ]; then
-    echo "bridge-$(date +%s)-$RANDOM" > "$CONFIG_DIR/bridge_token"
+    gen_token > "$CONFIG_DIR/bridge_token"
+    chmod 600 "$CONFIG_DIR/bridge_token"
     echo "   ✓ 创建 bridge_token"
 else
     echo "   - bridge_token 已存在"

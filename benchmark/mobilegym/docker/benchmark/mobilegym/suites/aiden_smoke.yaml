@@ -1,6 +1,0 @@
-name: aiden_smoke
-description: Aiden Agent 快速冒烟测试
-tasks:
-  - clock.CountAlarms
-  - clock.ToggleAlarm
-  - phone_control_v1.CheckCallHistory

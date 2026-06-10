@@ -189,9 +189,12 @@ class AidenGoAgent(_MobileGymBaseAgent):
                 timeout=self.episode_timeout_sec,
             )
             if self.artifact_dir is not None:
-                action_log = _extract_action_log(bridge_end_response)
-                if action_log:
-                    export_bridge_actions(self.artifact_dir, action_log)
+                try:
+                    action_log = _extract_action_log(bridge_end_response)
+                    if action_log:
+                        export_bridge_actions(self.artifact_dir, action_log)
+                except Exception as e:
+                    logger.warning(f"Failed to export bridge actions: {e}")
 
         if chat_error is not None:
             if chat_started:

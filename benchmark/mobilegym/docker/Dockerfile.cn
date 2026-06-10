@@ -27,11 +27,12 @@ RUN apt-get update && apt-get install -y \
 # 使用清华 PyPI 源
 RUN pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
-# Clone MobileGym
+# Clone MobileGym (用 cp -a 保留 dotfiles)
 ARG MOBILEGYM_REPO=https://github.com/Purewhiter/mobilegym.git
 ARG MOBILEGYM_BRANCH=main
 RUN git clone --depth 1 --branch ${MOBILEGYM_BRANCH} ${MOBILEGYM_REPO} /tmp/mobilegym && \
-    mv /tmp/mobilegym/* /mobilegym/ && rm -rf /tmp/mobilegym
+    cp -a /tmp/mobilegym/. /mobilegym/ && \
+    rm -rf /tmp/mobilegym
 
 # Install Python dependencies
 RUN python3 -m venv /opt/venv && \

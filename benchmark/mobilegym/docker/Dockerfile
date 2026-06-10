@@ -40,11 +40,11 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone MobileGym (直接从上游拉，避免依赖 submodule)
+# Clone MobileGym (用 cp -a 保留 dotfiles)
 ARG MOBILEGYM_REPO=https://github.com/Purewhiter/mobilegym.git
 ARG MOBILEGYM_BRANCH=main
 RUN git clone --depth 1 --branch ${MOBILEGYM_BRANCH} ${MOBILEGYM_REPO} /tmp/mobilegym && \
-    mv /tmp/mobilegym/* /tmp/mobilegym/.* /mobilegym/ 2>/dev/null || true && \
+    cp -a /tmp/mobilegym/. /mobilegym/ && \
     rm -rf /tmp/mobilegym
 
 # Install Python dependencies
