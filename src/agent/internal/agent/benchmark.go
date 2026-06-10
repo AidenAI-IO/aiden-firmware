@@ -6,14 +6,14 @@ import (
 	"path/filepath"
 )
 
-// resolveBenchmarkDir picks the first existing benchmark root from this
+// ResolveBenchmarkDir picks the first existing benchmark root from this
 // priority order:
 //  1. CLI flag value (passed in via flagValue)
 //  2. AIDEN_BENCHMARK_DIR env var
 //  3. cfg.Dir from agent.conf [benchmark] benchmark_dir
 //  4. /userdata/agent/benchmark (overridable via AIDEN_BENCHMARK_USERDATA_ROOT for tests)
 //  5. <cwd>/benchmark
-func resolveBenchmarkDir(flagValue string, cfg BenchmarkConfig) (string, error) {
+func ResolveBenchmarkDir(flagValue string, cfg BenchmarkConfig) (string, error) {
 	candidates := []string{}
 	if flagValue != "" {
 		candidates = append(candidates, flagValue)

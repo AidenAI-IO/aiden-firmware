@@ -32,6 +32,7 @@ type Server struct {
 	runtime          *Runtime
 	addr             string
 	logger           *Logger
+	benchmarkDir     string
 	mu               sync.Mutex
 	history          []Message
 	historyStore     *ChatHistoryStore
@@ -176,12 +177,13 @@ type ToolInvokeResponse struct {
 }
 
 // NewServer creates a new HTTP server
-func NewServer(runtime *Runtime, addr string) *Server {
+func NewServer(runtime *Runtime, addr string, benchmarkDir string) *Server {
 	bridge := NewPhoneBridge(runtime.logger)
 	s := &Server{
 		runtime:        runtime,
 		addr:           addr,
 		logger:         runtime.logger,
+		benchmarkDir:   benchmarkDir,
 		history:        make([]Message, 0),
 		bridge:         bridge,
 		pendingResults: make(map[string]*chatPendingResult),
