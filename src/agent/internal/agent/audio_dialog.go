@@ -32,6 +32,7 @@ type AudioDialog struct {
 	sessionID    uint64
 	recordReader *AudioRecordChunkReader
 	speechMu     sync.Mutex
+	historyStore *ChatHistoryStore
 }
 
 // NewAudioDialog creates a new audio dialog manager
@@ -264,10 +265,58 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	if err != nil {
 		return err
 	}
+	d.persistVoiceTurn(input, result)
 	if result.SpeechStreamed {
 		return nil
 	}
 	return d.Speak(ctx, result.Output, nil)
+}
+
+// SetHistoryStore wires the chat history store. When non-nil, voice user and
+// assistant messages produced during ProcessUtterance are appended with
+// Source="voice".
+func (d *AudioDialog) SetHistoryStore(store *ChatHistoryStore) {
+	d.historyStore = store
+}
+
+// persistVoiceTurn appends user (when transcript is available) and assistant
+// messages to the chat history store, tagging both with Source="voice". It is
+// best-effort: errors are logged and never break the voice loop. Uses
+// context.Background since the caller's context may be cancelled by the time
+// we persist.
+func (d *AudioDialog) persistVoiceTurn(input TurnInput, result RunResult) {
+	if d.historyStore == nil {
+		return
+	}
+	now := time.Now()
+
+	transcript := strings.TrimSpace(input.Transcript)
+	if transcript != "" {
+		userMsg := Message{
+			Type:      "user",
+			EpisodeID: result.EpisodeID,
+			Content:   transcript,
+			Source:    "voice",
+			Timestamp: now,
+		}
+		if err := d.historyStore.Append(context.Background(), userMsg); err != nil {
+			log.Printf("[history] persist voice user message failed: %v", err)
+		}
+	}
+
+	output := strings.TrimSpace(result.Output)
+	if output != "" {
+		assistantMsg := Message{
+			Type:      "assistant",
+			EpisodeID: result.EpisodeID,
+			Content:   output,
+			Source:    "voice",
+			Timestamp: now,
+		}
+		if err := d.historyStore.Append(context.Background(), assistantMsg); err != nil {
+			log.Printf("[history] persist voice assistant message failed: %v", err)
+		}
+	}
 }
 
 func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {

@@ -97,11 +97,13 @@ func main() {
 }
 
 func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server) {
-	_ = server // reserved for future wakeup/web integration wiring
 	dialog, err := agent.NewAudioDialog(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create audio dialog: %v\n", err)
 		os.Exit(1)
+	}
+	if hs := server.HistoryStore(); hs != nil {
+		dialog.SetHistoryStore(hs)
 	}
 
 	inputMode := cfg.InputModeOrDefault()

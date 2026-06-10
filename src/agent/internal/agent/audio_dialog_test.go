@@ -324,6 +324,142 @@ func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
 	}
 }
 
+func TestAudioDialogPersistVoiceTurnWritesUserAndAssistant(t *testing.T) {
+	store := NewChatHistoryStore(t.TempDir())
+	dialog := &AudioDialog{}
+	dialog.SetHistoryStore(store)
+
+	dialog.persistVoiceTurn(
+		TurnInput{Transcript: "  hello there  "},
+		RunResult{EpisodeID: "ep-123", Output: "  hi back  "},
+	)
+
+	messages, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d: %#v", len(messages), messages)
+	}
+
+	user := messages[0]
+	if user.Type != "user" || user.Content != "hello there" || user.Source != "voice" || user.EpisodeID != "ep-123" {
+		t.Fatalf("user message = %#v", user)
+	}
+	if user.Timestamp.IsZero() {
+		t.Fatalf("user message timestamp is zero")
+	}
+
+	assistant := messages[1]
+	if assistant.Type != "assistant" || assistant.Content != "hi back" || assistant.Source != "voice" || assistant.EpisodeID != "ep-123" {
+		t.Fatalf("assistant message = %#v", assistant)
+	}
+}
+
+func TestAudioDialogPersistVoiceTurnNoTranscriptOnlyAssistant(t *testing.T) {
+	store := NewChatHistoryStore(t.TempDir())
+	dialog := &AudioDialog{}
+	dialog.SetHistoryStore(store)
+
+	dialog.persistVoiceTurn(
+		TurnInput{Transcript: ""},
+		RunResult{EpisodeID: "ep-456", Output: "answer"},
+	)
+
+	messages, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d: %#v", len(messages), messages)
+	}
+	if messages[0].Type != "assistant" || messages[0].Source != "voice" || messages[0].Content != "answer" {
+		t.Fatalf("assistant message = %#v", messages[0])
+	}
+}
+
+func TestAudioDialogPersistVoiceTurnNilStoreDoesNotPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("persistVoiceTurn panicked with nil store: %v", r)
+		}
+	}()
+	dialog := &AudioDialog{}
+	dialog.persistVoiceTurn(
+		TurnInput{Transcript: "anything"},
+		RunResult{Output: "anything"},
+	)
+}
+
+func TestAudioDialogPersistVoiceTurnEmptyOutputSkipsAssistant(t *testing.T) {
+	store := NewChatHistoryStore(t.TempDir())
+	dialog := &AudioDialog{}
+	dialog.SetHistoryStore(store)
+
+	dialog.persistVoiceTurn(
+		TurnInput{Transcript: "user said this"},
+		RunResult{EpisodeID: "ep-789", Output: "   "},
+	)
+
+	messages, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
+	}
+	if messages[0].Type != "user" || messages[0].Content != "user said this" {
+		t.Fatalf("user message = %#v", messages[0])
+	}
+}
+
+func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
+	store := NewChatHistoryStore(t.TempDir())
+	model := &scriptedModel{
+		responses: roleDirectResponses("voice reply"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use attached audio.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	audioClient := NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
+	dialog := &AudioDialog{
+		config: Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Audio:                    AudioConfig{SampleRate: 16000},
+			InputMode:                "audio",
+			VoiceStreamingTTSEnabled: boolPtr(false),
+		},
+		audioClient: audioClient,
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+	}
+	dialog.SetHistoryStore(store)
+
+	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
+		t.Fatalf("ProcessUtterance() error = %v", err)
+	}
+
+	messages, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	// Audio mode does not produce a transcript, so we expect only the assistant message.
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message (assistant only, no transcript in audio mode), got %d: %#v", len(messages), messages)
+	}
+	if messages[0].Type != "assistant" || messages[0].Source != "voice" || messages[0].Content != "voice reply" {
+		t.Fatalf("assistant message = %#v", messages[0])
+	}
+}
+
 func boolPtr(value bool) *bool {
 	return &value
 }

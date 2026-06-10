@@ -1572,6 +1572,12 @@ func (s *Server) appendHistory(message Message) {
 	}
 }
 
+// HistoryStore returns the chat history store, used by audio dialog to persist
+// voice messages. May return nil if no config dir was provided.
+func (s *Server) HistoryStore() *ChatHistoryStore {
+	return s.historyStore
+}
+
 func (s *Server) historySnapshot() []Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
