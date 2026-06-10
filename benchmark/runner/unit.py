@@ -8,8 +8,10 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
+from math import ceil
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from runner.agent_client import AgentClient
 from runner.html_report import upload_report
@@ -101,7 +103,7 @@ def cmd_unit(args: argparse.Namespace) -> int:
 
     upload_client = AgentClient(base_url=args.agent_url)
     if upload_report(upload_client, report_html, run_dir):
-        print(f"Report uploaded -> http://{args.agent_url.split('//')[1].split(':')[0]}:80/benchmark")
+        print(f"Report uploaded -> {_benchmark_url(args.agent_url)}")
     else:
         print("Warning: failed to upload report to board")
     upload_client.close()
@@ -119,6 +121,12 @@ def _collect_suites(args: argparse.Namespace) -> list[Path]:
         return [path]
     root = Path(args.suite_dir)
     return sorted(p for p in root.rglob("*.json") if is_unit_suite(p))
+
+
+def _benchmark_url(agent_url: str) -> str:
+    parsed = urlparse(agent_url)
+    host = parsed.hostname or parsed.path.split(":", 1)[0] or "localhost"
+    return f"http://{host}:80/benchmark"
 
 
 def _run_suite(client: AgentClient, suite_path: Path) -> list[UnitCaseResult]:
@@ -151,7 +159,7 @@ def _run_case(
     timeout_ms = int(test.get("timeout_ms") or defaults.get("timeout_ms") or 10000)
     started = time.monotonic()
     try:
-        result = client.invoke_tool(target_name, test_input, timeout=max(1, int(timeout_ms / 1000)))
+        result = client.invoke_tool(target_name, test_input, timeout=max(1, ceil(timeout_ms / 1000)))
         normalized_output = _unwrap_tool_output(result.output)
         output_json = _parse_json(normalized_output)
         error = _check_expectation(

@@ -20,5 +20,7 @@ jobs:
         run: |
           sh scripts/test_release_ci_scripts.sh
           bash scripts/test_reproducible_rootfs_policy.sh
+          bash scripts/test_compress_release_images.sh
+          bash scripts/test_ota_manifest_generation.sh
           bash scripts/test_github_release_upload.sh
           bash scripts/test_reusable_rootfs_release_asset.sh

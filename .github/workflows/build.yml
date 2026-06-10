@@ -123,6 +123,11 @@ jobs:
         scripts/validate_ota_pubkey.sh "$public_key"
         echo "OTA_PUBLIC_KEY_PATH=/home/.ota-ci/ota_ed25519_public_key.pem" >> "$GITHUB_ENV"
 
+    - name: Clean previous build artifacts
+      run: |
+        rm -rf pico-sdk/output/image/*.img pico-sdk/output/image/*.img.tar.gz pico-sdk/output/image/manifest.json
+        rm -rf pico-sdk/output/out
+
     - name: Generate release name
       id: release_info
       env:
@@ -161,6 +166,19 @@ jobs:
           --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
           --output "$GITHUB_OUTPUT"
 
+    - name: Compress OTA manifest images
+      env:
+        ROOTFS_ASSET_METADATA: ${{ steps.rootfs_asset.outputs.rootfs_asset_metadata }}
+      run: |
+        manifest_image_assets="boot_a.img boot_b.img oem.img"
+        if [ -z "${ROOTFS_ASSET_METADATA}" ]; then
+          manifest_image_assets="$manifest_image_assets rootfs.img"
+        fi
+
+        scripts/compress_release_images.sh \
+          --image-dir pico-sdk/output/image \
+          --assets "$manifest_image_assets"
+
     - name: Generate OTA manifest
       env:
         OTA_ED25519_PRIVATE_KEY: ${{ secrets.OTA_ED25519_PRIVATE_KEY }}
@@ -197,17 +215,28 @@ jobs:
     - name: Repack update image with OTA config
       run: ./build_image.sh bash ./scripts/repack_ota_update_image.sh
 
+    - name: Compress release upload images
+      id: release_upload_assets
+      env:
+        RELEASE_UPLOAD_ASSETS: ${{ steps.rootfs_asset.outputs.upload_assets }}
+      run: |
+        upload_assets="${RELEASE_UPLOAD_ASSETS:-boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json}"
+        scripts/compress_release_images.sh \
+          --image-dir pico-sdk/output/image \
+          --assets "$upload_assets" \
+          --output "$GITHUB_OUTPUT"
+
     - name: Create Release
       env:
         GH_TOKEN: ${{ github.token }}
         GH_DEBUG: api
-        RELEASE_UPLOAD_ASSETS: ${{ steps.rootfs_asset.outputs.upload_assets }}
+        RELEASE_UPLOAD_ASSETS: ${{ steps.release_upload_assets.outputs.upload_assets }}
       run: |
         PRERELEASE_FLAG=""
         if [ "${{ steps.release_info.outputs.channel }}" != "stable" ]; then
           PRERELEASE_FLAG="--prerelease"
         fi
-        upload_assets="${RELEASE_UPLOAD_ASSETS:-boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json}"
+        upload_assets="${RELEASE_UPLOAD_ASSETS:-boot_a.img.tar.gz boot_b.img.tar.gz oem.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json}"
 
         bash scripts/create_github_release.sh \
           --release-name "${{ steps.release_info.outputs.release_name }}" \
@@ -216,6 +245,6 @@ jobs:
           --asset-glob 'pico-sdk/output/image/*' \
           --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
           --upload-assets "$upload_assets" \
-          --retry-count 5 \
+          --retry-count 10 \
           --retry-delay-seconds 30 \
           $PRERELEASE_FLAG

@@ -68,7 +68,7 @@ scripts/generate_ota_manifest.sh \
   --output pico-sdk/output/image/manifest.json
 ```
 
-脚本要求存在 `boot_a.img`、`boot_b.img`，以及 slot-specific 或 slot-neutral 的 `oem` 和 `rootfs` images。CI 上传 `pico-sdk/output/image/*`，包括 `manifest.json` 和 USB 首刷用 `update.img`。
+The script requires `boot_a.img`, `boot_b.img`, and either slot-specific or slot-neutral `oem` and `rootfs` images in `pico-sdk/output/image`. CI publishes `manifest.json` unchanged and uploads image assets as `.img.tar.gz` archives, including `update.img.tar.gz` for USB factory flashing after extraction.
 
 ## 密钥轮换
 

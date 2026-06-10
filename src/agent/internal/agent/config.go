@@ -356,15 +356,16 @@ func resolveBundledSkillsDir() string {
 	if v := os.Getenv("AIDEN_BUNDLED_SKILLS_DIR"); v != "" {
 		return v
 	}
-	candidates := []string{
-		"/usr/share/aiden/skills",
-	}
-	for _, c := range candidates {
-		if info, err := os.Stat(c); err == nil && info.IsDir() {
-			return c
+	for _, dir := range bundledSkillsDirCandidates() {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
 		}
 	}
 	return ""
+}
+
+func bundledSkillsDirCandidates() []string {
+	return []string{"/oem/usr/share/aiden/skills"}
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -491,6 +492,16 @@ func (c Config) Validate() error {
 	}
 	if c.ScreenStableDiffThreshold < 0 {
 		return fmt.Errorf("screen_stable_diff_threshold must be >= 0, got %g", c.ScreenStableDiffThreshold)
+	}
+
+	if c.MaxIterations < -1 {
+		return fmt.Errorf("max_iterations must be >= -1 (-1 means unlimited), got %d", c.MaxIterations)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(c.HID.PointerMode)) {
+	case "", "absolute", "touchscreen":
+	default:
+		return fmt.Errorf("invalid hid.pointer_mode: %s (expected absolute or touchscreen)", c.HID.PointerMode)
 	}
 
 	if err := c.Telemetry.Validate(); err != nil {

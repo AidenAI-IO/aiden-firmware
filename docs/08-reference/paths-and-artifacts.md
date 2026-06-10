@@ -52,7 +52,10 @@
 | `overlay/etc/aiden_frame_service.conf` | Frame Service init 配置模板 |
 | `overlay/etc/aiden_audio_service.conf` | Audio Service init 配置模板 |
 | `overlay/etc/init.d/S20oemslot` | Slot-aware `/oem` 挂载脚本 |
+| `overlay/etc/init.d/S49ntp` | ntpd daemon 启动 + `step` 一次性同步子命令 |
 | `overlay/etc/init.d/S54ota` | OTA daemon watchdog |
+| `overlay/etc/init.d/S99rtcinit` | RTC invalid-date calibration script replacing the SDK default |
+| `overlay/etc/udhcpc/aiden.script` | udhcpc hook：委托默认脚本 + DHCP bound 后触发 NTP step |
 | `overlay/etc/profile.d/aiden-env.sh` | SSH/login shell environment loader snippet |
 | `overlay/oem/usr/bin/aiden-env-run` | Service environment launcher |
 | `overlay/oem/usr/model/` | VAD 模型和 weights，随 OEM 分区更新 |
