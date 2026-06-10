@@ -1,5 +1,7 @@
 # MobileGym Benchmark - Docker Setup
 
+> 这是详细参考。日常使用建议先看 [README.md](README.md) 的"纯净环境快速启动"。
+
 快速启动 MobileGym 测试环境，无需安装 Node.js/Python/Playwright 等依赖。
 
 ## 🚀 快速开始
@@ -7,16 +9,13 @@
 ### 1. 前置要求
 
 - Docker >= 20.10
-- Docker Compose >= 2.0
-- 已准备好 `benchmark/mobilegym/config/agent.toml`（从 template 复制并填入 LLM 配置）
+- Docker Compose >= **v2.24**（并发模式用到 `!reset` 语法）
+- 已准备好 `benchmark/mobilegym/config/agent.toml`
 
 ```bash
-# 从模板创建配置
-cp benchmark/mobilegym/config/agent.toml.template \
-   benchmark/mobilegym/config/agent.toml
-
-# 编辑填入真实 API key
-vim benchmark/mobilegym/config/agent.toml
+cd benchmark/mobilegym/docker
+./init.sh                       # 一键生成 token、agent.toml、.env
+vim ../config/agent.toml        # 填入真实 LLM API key
 ```
 
 ### 2. 构建镜像
@@ -103,8 +102,7 @@ docker compose up -d
 │   ├── mobilegym/
 │   │   ├── config/
 │   │   │   ├── agent.toml                  # LLM 配置（你需要创建）
-│   │   │   ├── control_token               # daemon 认证 token
-│   │   │   └── bridge_token                # bridge 认证 token
+│   │   │   └── control_token               # daemon 认证 token (init.sh 生成)
 │   │   ├── adapter/                        # Python adapter
 │   │   ├── bridge/                         # Bridge server
 │   │   └── vendor/mobilegym/               # MobileGym 上游代码
@@ -134,17 +132,17 @@ docker compose build daemon
 docker compose up -d daemon
 ```
 
-## 🆚 对比本地脚本
+## 🆚 单容器 vs 并发隔离
 
-| 方式                              | 优点                      | 缺点                   |
-| --------------------------------- | ------------------------- | ---------------------- |
-| 本地脚本 (`scripts/mobilegym.sh`) | 启动快，方便调试          | 需要装依赖，环境不一致 |
-| Docker                            | 环境一致，易分享，CI 友好 | 构建慢，网络隔离复杂   |
+| 方式                                        | 优点                                    | 缺点                          |
+| ------------------------------------------- | --------------------------------------- | ----------------------------- |
+| 单容器 (`docker compose run --rm test ...`) | 启动快、调试友好                        | 任务间共享 daemon，状态会污染 |
+| 并发隔离 (`./parallel_run.sh`)              | 每 worker 独立 daemon/simulator/network | 资源占用大                    |
 
 建议：
 
-- 开发调试：用本地脚本
-- CI/生产/分享：用 Docker
+- 调试单个任务：用 `docker compose run --rm test ...`
+- 跑套件 / 多任务：用 `./parallel_run.sh`，详见 [README.md](README.md) "并发测试"
 
 ## 🔍 故障排查
 
@@ -178,4 +176,4 @@ docker compose exec daemon curl http://localhost:8080
 ## 📚 更多信息
 
 - [MobileGym 上游仓库](https://github.com/Purewhiter/mobilegym)
-- [本地脚本用法](scripts/mobilegym.sh)
+- [README.md](README.md) - 主入口（包含 init.sh、并发测试、代理配置）

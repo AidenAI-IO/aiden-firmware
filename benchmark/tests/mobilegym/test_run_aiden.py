@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -110,3 +111,42 @@ def test_prepare_import_paths_keeps_local_mobilegym_before_vendor(monkeypatch, t
     assert sys.path.count(str(BENCHMARK_ROOT)) == 1
     assert sys.path.count(str(vendor_root)) == 1
     assert "keep-me" in sys.path
+
+
+def test_shard_tasks_selects_stable_round_robin_subset():
+    module = load_run_aiden_module()
+    tasks = ["task-0", "task-1", "task-2", "task-3", "task-4"]
+
+    assert module._shard_tasks(tasks, shard_index=0, shard_count=2) == ["task-0", "task-2", "task-4"]
+    assert module._shard_tasks(tasks, shard_index=1, shard_count=2) == ["task-1", "task-3"]
+    assert module._shard_tasks(tasks, shard_index=0, shard_count=1) == tasks
+
+
+def test_write_shard_metadata_records_selected_task_ids(tmp_path):
+    module = load_run_aiden_module()
+    metadata = tmp_path / "shard.json"
+    object_task = type("Task", (), {"id": "clock.CountAlarms"})()
+    dict_task = {"id": "clock.ToggleAlarm"}
+
+    module._write_shard_metadata(metadata, [object_task, dict_task, "raw.Task"], shard_index=1, shard_count=4)
+
+    payload = json.loads(metadata.read_text())
+    assert payload["selected_task_count"] == 3
+    assert payload["selected_task_ids"] == ["clock.CountAlarms", "clock.ToggleAlarm", "raw.Task"]
+    assert payload["shard_index"] == 1
+    assert payload["shard_count"] == 4
+    assert payload["empty"] is False
+
+
+def test_write_shard_metadata_preserves_existing_worker_fields(tmp_path):
+    module = load_run_aiden_module()
+    metadata = tmp_path / "shard.json"
+    metadata.write_text('{"batch_id":"batch-x","exit_code":99}')
+
+    module._write_shard_metadata(metadata, ["task.A"], shard_index=0, shard_count=1)
+
+    payload = json.loads(metadata.read_text())
+    assert payload["batch_id"] == "batch-x"
+    assert payload["exit_code"] == 99
+    assert payload["selected_task_count"] == 1
+    assert payload["selected_task_ids"] == ["task.A"]

@@ -64,6 +64,7 @@ def test_aiden_go_agent_act_runs_one_episode_and_returns_complete_action():
     assert [call[0] for call in client.calls] == [
         "http://bridge.local/episode/start",
         "http://daemon.local/api/mobilegym/episode/start",
+        "http://daemon.local/api/clear",
         "http://daemon.local/api/chat",
         "http://daemon.local/api/mobilegym/episode/end",
         "http://bridge.local/episode/end",
@@ -76,7 +77,8 @@ def test_aiden_go_agent_act_runs_one_episode_and_returns_complete_action():
         "bridge_token": "bridge-device",
     }
     assert client.calls[1][2] == "daemon-control"
-    assert client.calls[2][1] == {"message": "count alarms", "episode_id": "ep-test"}
+    assert client.calls[2][1] == {}
+    assert client.calls[3][1] == {"message": "count alarms", "episode_id": "ep-test"}
 
 
 def test_json_http_client_classifies_urlerror_wrapped_socket_timeout(monkeypatch):

@@ -23,7 +23,7 @@ gen_token() {
 echo "=== MobileGym Docker 环境初始化 ==="
 echo ""
 
-# 1. 生成 token 文件
+# 1. 生成 control_token（bridge_token 现在由 test 容器动态发放，无需静态文件）
 echo "1. 生成认证 token..."
 if [ ! -f "$CONFIG_DIR/control_token" ]; then
     gen_token > "$CONFIG_DIR/control_token"
@@ -33,22 +33,11 @@ else
     echo "   - control_token 已存在"
 fi
 
-if [ ! -f "$CONFIG_DIR/bridge_token" ]; then
-    gen_token > "$CONFIG_DIR/bridge_token"
-    chmod 600 "$CONFIG_DIR/bridge_token"
-    echo "   ✓ 创建 bridge_token"
-else
-    echo "   - bridge_token 已存在"
-fi
-
 # 2. 检查 agent.toml
 echo ""
 echo "2. 检查 agent.toml..."
 if [ ! -f "$CONFIG_DIR/agent.toml" ]; then
     cp "$CONFIG_DIR/agent.toml.template" "$CONFIG_DIR/agent.toml"
-    # 用 Docker 容器内的路径填充
-    sed -i.bak 's|{{BRIDGE_URL}}|http://mobilegym:4173|g' "$CONFIG_DIR/agent.toml"
-    sed -i.bak 's|{{BRIDGE_TOKEN_FILE}}|/config/bridge_token|g' "$CONFIG_DIR/agent.toml"
     sed -i.bak 's|{{CONTROL_TOKEN_FILE}}|/config/control_token|g' "$CONFIG_DIR/agent.toml"
     rm -f "$CONFIG_DIR/agent.toml.bak"
     echo "   ✓ 从模板创建 agent.toml"

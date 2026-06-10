@@ -216,6 +216,47 @@ def test_bridge_base_url_uses_public_host_override():
             server.stop()
 
 
+def test_bridge_base_url_resolves_container_ip_when_bound_to_wildcard(monkeypatch):
+    from mobilegym.bridge import server as server_module
+
+    monkeypatch.setattr(server_module, "_get_container_ip", lambda: "10.20.30.40")
+    with OwnerLoop() as owner:
+        env = FakeEnv(owner.loop)
+        state = BridgeEpisodeState(env, owner_loop=owner.loop)
+        server = BridgeServer(
+            state,
+            BridgeTokens(control_token="control-token", device_token="device-token"),
+            host="0.0.0.0",
+            port=0,
+        )
+        try:
+            base_url = server.start()
+            assert base_url.startswith("http://10.20.30.40:")
+        finally:
+            server.stop()
+
+
+def test_bridge_base_url_falls_back_to_hostname_when_container_ip_unavailable(monkeypatch):
+    from mobilegym.bridge import server as server_module
+
+    monkeypatch.setattr(server_module, "_get_container_ip", lambda: None)
+    monkeypatch.setattr(server_module.socket, "gethostname", lambda: "fallback-host")
+    with OwnerLoop() as owner:
+        env = FakeEnv(owner.loop)
+        state = BridgeEpisodeState(env, owner_loop=owner.loop)
+        server = BridgeServer(
+            state,
+            BridgeTokens(control_token="control-token", device_token="device-token"),
+            host="0.0.0.0",
+            port=0,
+        )
+        try:
+            base_url = server.start()
+            assert base_url.startswith("http://fallback-host:")
+        finally:
+            server.stop()
+
+
 def test_health_and_runner_endpoints_require_control_token_before_env_mutation():
     with RunningBridge() as bridge:
         status, body = request_json(bridge.base_url, "GET", "/health")

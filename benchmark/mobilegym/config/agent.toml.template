@@ -10,6 +10,5 @@ api_key = "{{MODEL_API_KEY}}"
 
 [device]
 backend = "mobilegym"
-bridge_url = "{{BRIDGE_URL}}"
-bridge_token_file = "{{BRIDGE_TOKEN_FILE}}"
+# bridge_url 和 bridge_token 由 test 容器在 /api/mobilegym/episode/start 时动态下发
 control_token_file = "{{CONTROL_TOKEN_FILE}}"

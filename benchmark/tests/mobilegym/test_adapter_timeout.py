@@ -74,6 +74,7 @@ def test_timeout_ends_bridge_and_daemon_binding_then_stops_dirty_worker():
     assert [call[0] for call in client.calls] == [
         "http://bridge.local/episode/start",
         "http://daemon.local/api/mobilegym/episode/start",
+        "http://daemon.local/api/clear",
         "http://daemon.local/api/chat",
         "http://daemon.local/api/mobilegym/episode/end",
         "http://bridge.local/episode/end",

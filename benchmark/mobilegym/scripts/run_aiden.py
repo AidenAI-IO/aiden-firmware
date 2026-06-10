@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import secrets
 import sys
@@ -39,6 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
     execution.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR, help="Directory for MobileGym run artifacts.")
     execution.add_argument("--max-steps", type=_positive_int, help="Override MobileGym max steps per episode.")
     execution.add_argument("--quiet", "-q", action="store_true", help="Reduce MobileGym runner output.")
+    execution.add_argument("--shard-index", type=_non_negative_int, default=0, help="Zero-based task shard index.")
+    execution.add_argument("--shard-count", type=_positive_int, default=1, help="Total number of task shards.")
+    execution.add_argument("--shard-metadata-file", type=Path, help="Write selected shard task metadata to this JSON file.")
 
     mobilegym = parser.add_argument_group("MobileGym checkout")
     mobilegym.add_argument("--mobilegym-root", type=Path, help="Path to an upstream MobileGym checkout.")
@@ -178,6 +182,11 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
         tasks = tasks[: args.limit]
     if not tasks:
         raise LauncherError("No MobileGym tasks selected after applying filters and --limit.")
+    tasks = _shard_tasks(tasks, shard_index=args.shard_index, shard_count=args.shard_count)
+    if args.shard_metadata_file:
+        _write_shard_metadata(args.shard_metadata_file, tasks, shard_index=args.shard_index, shard_count=args.shard_count)
+    if not tasks:
+        return 0
 
     recorder = factory.create_recorder(config)
     env = await factory.create_env(config)
@@ -186,10 +195,12 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
         bridge_control_token = secrets.token_urlsafe(32)
         bridge_device_token = secrets.token_urlsafe(32)
         bridge_state = BridgeEpisodeState(env, asyncio.get_running_loop())
+        bridge_port = int(os.getenv("AIDEN_BRIDGE_PORT", "0"))
         bridge = BridgeServer(
             bridge_state,
             BridgeTokens(control_token=bridge_control_token, device_token=bridge_device_token),
             host=os.getenv("AIDEN_BRIDGE_BIND_HOST", "127.0.0.1"),
+            port=bridge_port,
             public_host=os.getenv("AIDEN_BRIDGE_PUBLIC_HOST") or None,
         )
         bridge_url = bridge.start()
@@ -258,6 +269,50 @@ def _runner_args(args: argparse.Namespace) -> argparse.Namespace:
 def _validate_selection(args: argparse.Namespace) -> None:
     if not args.task_id and not args.suite and not args.split:
         raise LauncherError("select at least one task with --task-id, --suite, or --split")
+    if args.shard_index >= args.shard_count:
+        raise LauncherError("--shard-index must be less than --shard-count")
+
+
+def _shard_tasks(tasks: list[Any], *, shard_index: int, shard_count: int) -> list[Any]:
+    if shard_count == 1:
+        return tasks
+    return [task for index, task in enumerate(tasks) if index % shard_count == shard_index]
+
+
+def _write_shard_metadata(path: Path, tasks: list[Any], *, shard_index: int, shard_count: int) -> None:
+    payload: dict[str, Any] = {}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                payload.update(existing)
+        except (OSError, json.JSONDecodeError):
+            pass
+    payload.update(
+        {
+            "shard_index": shard_index,
+            "shard_count": shard_count,
+            "selected_task_count": len(tasks),
+            "selected_task_ids": [_task_id(task) for task in tasks],
+            "empty": not tasks,
+        }
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _task_id(task: Any) -> str:
+    if isinstance(task, str):
+        return task
+    if isinstance(task, dict):
+        for key in ("id", "task_id", "name"):
+            if task.get(key):
+                return str(task[key])
+    for name in ("id", "task_id", "name"):
+        value = getattr(task, name, None)
+        if value:
+            return str(value)
+    return str(task)
 
 
 def _validate_mobilegym_root(path: Path, source: str) -> None:

@@ -52,7 +52,7 @@ class BridgeServer:
         if self.public_host:
             return self.public_host
         if bound_host in {"", "0.0.0.0", "::"}:
-            return socket.gethostname()
+            return _get_container_ip() or socket.gethostname()
         return bound_host
 
     def stop(self) -> None:
@@ -289,3 +289,23 @@ def _observation_value(observation: Any, name: str) -> Any:
     if callable(value):
         return value()
     return value
+
+
+def _get_container_ip() -> str | None:
+    """Return the container's outbound IP on the docker bridge network.
+
+    Parallel workers run in isolated docker-compose projects with `bind=0.0.0.0`.
+    `socket.gethostname()` returns the random container ID, which other services
+    on the user-defined network may not always resolve. The UDP-connect trick
+    forces the OS to pick the interface that would carry outbound traffic and
+    surfaces its address. No packets are sent — `connect` on a SOCK_DGRAM only
+    binds the local address.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return None

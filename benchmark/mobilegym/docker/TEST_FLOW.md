@@ -39,20 +39,22 @@ docker compose run --rm test \
   --parallel 1 --headless
 ```
 
-### 3. 运行自定义套件
+### 3. 运行内置 suite
 
 ```bash
-# 运行示例套件（3个任务）
+# 闹钟测试（限制 3 个任务跑得快）
 docker compose run --rm test \
   --mobilegym-root /mobilegym \
-  --suite aiden_smoke \
+  --suite clock --limit 3 \
   --env-url http://mobilegym:4173 \
   --aiden-daemon-url http://daemon:8080 \
   --aiden-control-token "$(cat ../config/control_token)" \
   --parallel 1 --headless
 ```
 
-### 4. 运行内置套件
+> ℹ️ `--suite` 接受的是 MobileGym 内置 suite 名（`clock`, `phone_control_v1`, `calendar`, `wechat`, ...）。仓库 `benchmark/mobilegym/suites/*.yaml` 里的自定义 YAML suite **当前版本未被加载**，请用 `--task-id` 一个个列举，或者选内置 suite。
+
+### 4. 跑多个内置 suite
 
 ```bash
 # 电话控制测试
@@ -68,9 +70,25 @@ docker compose run --rm test --suite clock --limit 5
 # 结果保存在宿主机
 ls -lh ../../runs/mobilegym/
 
-# 查看最新结果
+# 查看最新 batch 报告
 LATEST=$(ls -t ../../runs/mobilegym/ | head -1)
-cat "../../runs/mobilegym/$LATEST/results.jsonl" | python3 -m json.tool
+open "../../runs/mobilegym/$LATEST/index.html"
+
+# 查看单个 suite 报告
+open "../../runs/mobilegym/$LATEST/phone_control_v1/index.html"
+```
+
+并发运行示例：
+
+```bash
+# 单 suite 分片并发
+PARALLEL=4 ./parallel_run.sh --suite phone_control_v1
+
+# 多 suites，并限制同时运行的 compose projects
+PARALLEL=2 MAX_JOBS=2 ./parallel_run.sh --suites clock,phone_control_v1
+
+# 位置参数按单任务隔离执行
+./parallel_run.sh clock.CountAlarms clock.ToggleAlarm
 ```
 
 ### 6. 查看日志
@@ -138,26 +156,3 @@ EOF
 docker compose down
 docker compose up -d
 ```
-
-## 下一步
-
-测试成功后：
-
-1. 停止本地服务（如果还在运行）
-
-   ```bash
-   pkill -f "bin/daemon"
-   pkill -f "npm run preview"
-   ```
-
-2. 清理本地文件
-
-   ```bash
-   rm -rf .mobilegym_run/ bin/
-   ```
-
-3. 提交代码
-   ```bash
-   git add .
-   git commit -m "feat: add MobileGym Docker integration"
-   ```

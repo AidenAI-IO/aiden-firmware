@@ -37,7 +37,9 @@ docker compose build
 docker compose up -d
 
 # 运行测试
-docker compose run --rm test --suite aiden_smoke
+docker compose run --rm test \
+  --task-id clock.CountAlarms \
+  --aiden-control-token "$(cat ../config/control_token)"
 ```
 
 ## 📝 当前状态
@@ -46,25 +48,6 @@ docker compose run --rm test --suite aiden_smoke
 - ✅ .env 文件已创建
 - ⚠️ 需要配置 Docker Desktop 才能拉取基础镜像
 
-## 🔄 切换到 Docker 后的清理
+## 🔄 容器内 LLM 代理
 
-配置好 Docker 代理并测试成功后，停止本地服务：
-
-```bash
-# 停止本地 daemon
-pkill -f "bin/daemon"
-
-# 停止本地模拟器
-pkill -f "npm run preview"
-
-# 清理运行时文件
-rm -rf .mobilegym_run/
-```
-
-之后统一使用 Docker：
-
-```bash
-cd benchmark/mobilegym/docker
-docker compose up -d    # 启动
-docker compose down     # 停止
-```
+容器自身访问 LLM API 的代理由 `.env` 控制（`./init.sh` 会生成默认模板）。详见 [README.md](README.md) 的"配置代理"。

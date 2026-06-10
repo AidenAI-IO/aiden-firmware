@@ -1,11 +1,11 @@
 services:
   # MobileGym 模拟器
   mobilegym:
+    image: aiden-mobilegym-simulator:local
     build:
       context: ../../..
       dockerfile: benchmark/mobilegym/docker/Dockerfile
       target: mobilegym-base
-    container_name: aiden-mobilegym
     ports:
       - "${MOBILEGYM_PORT:-4173}:4173"
     networks:
@@ -18,20 +18,22 @@ services:
 
   # Go Agent Daemon
   daemon:
+    image: aiden-mobilegym-daemon:local
     build:
       context: ../../..
       dockerfile: benchmark/mobilegym/docker/Dockerfile
       target: daemon-runtime
-    container_name: aiden-daemon
     ports:
       - "${AIDEN_DAEMON_PORT:-8080}:8080"
     volumes:
-      - ../config:/config:ro
+      - ${AIDEN_CONFIG_DIR:-../config}:/config:ro
       - daemon-logs:/app/log
     environment:
       - HTTPS_PROXY=${HTTPS_PROXY:-}
       - HTTP_PROXY=${HTTP_PROXY:-}
       - ALL_PROXY=${ALL_PROXY:-}
+      - NO_PROXY=localhost,127.0.0.1,daemon,mobilegym,test,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      - no_proxy=localhost,127.0.0.1,daemon,mobilegym,test,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
     networks:
       - aiden-net
     depends_on:
@@ -45,19 +47,21 @@ services:
 
   # 测试运行器（按需运行）
   test:
+    image: aiden-mobilegym-test-runner:local
     build:
       context: ../../..
       dockerfile: benchmark/mobilegym/docker/Dockerfile
       target: test-runner
     volumes:
       - ../../runs:/app/benchmark/runs
-      - ../config:/config:ro
+      - ${AIDEN_CONFIG_DIR:-../config}:/config:ro
       - ../suites:/app/suites:ro  # 自定义测试套件
     environment:
       - MOBILEGYM_ROOT=/mobilegym
       - AIDEN_DAEMON_URL=http://daemon:8080
       - AIDEN_CONTROL_TOKEN_FILE=/config/control_token
       - AIDEN_BRIDGE_BIND_HOST=0.0.0.0
+      - AIDEN_BRIDGE_PORT=9090
     networks:
       - aiden-net
     depends_on:
