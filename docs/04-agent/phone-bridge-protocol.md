@@ -1,7 +1,7 @@
 # Phone Bridge Protocol Contract
 
-**Version**: 1.0  
-**Date**: 2026-06-02
+**Version**: 1.1
+**Date**: 2026-06-10
 
 本文档定义硬件板子 (aiden-hardware-demo) 与手机 App (aiden-app) 之间的 WebSocket 命令协议。
 
@@ -50,6 +50,61 @@ App 应每隔 10-15 秒发送一次心跳消息 (id 为 `"heartbeat"` 或 `"ping
   data?: object;    // 返回数据 (可选，读类命令使用)
 }
 ```
+
+### AppEvent (App → 板子)
+
+App 也可以主动发送事件消息。事件复用 `BridgeCommandResponse` 外层字段，但 `id`/`method` 不对应任何板子下发的命令，板子不会把它当作 pending command 回执。
+
+当前事件:
+
+- `phone_environment`: App 在 WebSocket 连接成功、从后台回到前台时上报手机环境快照。
+
+示例:
+
+```json
+{
+  "id": "phone_environment",
+  "ok": true,
+  "method": "phone_environment",
+  "data": {
+    "captured_at": "2026-06-10T03:20:00Z",
+    "source": "aiden-app",
+    "platform": "ios",
+    "system_name": "iOS",
+    "system_version": "18.5",
+    "is_tablet": false,
+    "locale": "zh-Hans-CN",
+    "language": "zh",
+    "region": "CN",
+    "time_zone": "Asia/Shanghai",
+    "utc_offset_minutes": 480,
+    "utc_offset": "+08:00",
+    "uses_24_hour_clock": true,
+    "manufacturer": "Apple",
+    "brand": "Apple",
+    "model": "iPhone16,2",
+    "device_name": "Qing's iPhone",
+    "screen": {
+      "width": 393,
+      "height": 852,
+      "width_pixels": 1179,
+      "height_pixels": 2556,
+      "scale": 3
+    },
+    "battery": {
+      "level": 0.87,
+      "charging": true,
+      "state": "charging"
+    },
+    "available_apps": [
+      {"name": "WeChat", "available": true, "ios_url": "weixin://"},
+      {"name": "Douyin", "available": false, "ios_url": "snssdk1128://"}
+    ]
+  }
+}
+```
+
+板子会把最新环境写入 `GET /api/phone-bridge/status` 的 `environment` 字段，并注入每轮 Agent runtime context。断开连接时清理环境，避免使用旧信息。
 
 ## 命令类型
 

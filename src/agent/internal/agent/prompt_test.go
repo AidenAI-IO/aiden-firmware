@@ -258,6 +258,52 @@ func TestPhoneBridgeRuntimeContextConnected(t *testing.T) {
 	}
 }
 
+func TestPhoneBridgeRuntimeContextIncludesPhoneEnvironment(t *testing.T) {
+	lastHeartbeat := time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)
+	environmentUpdatedAt := time.Date(2026, 6, 1, 2, 3, 5, 0, time.UTC)
+	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{
+		Connected:            true,
+		Platform:             "ios",
+		LastHeartbeatAt:      &lastHeartbeat,
+		EnvironmentUpdatedAt: &environmentUpdatedAt,
+		Environment: &PhoneEnvironment{
+			CapturedAt:      "2026-06-01T02:03:05Z",
+			Platform:        "ios",
+			SystemName:      "iOS",
+			SystemVersion:   "18.5",
+			IsTablet:        testBoolPtr(false),
+			Locale:          "zh-Hans-CN",
+			Language:        "zh",
+			Region:          "CN",
+			TimeZone:        "Asia/Shanghai",
+			UTCOffset:       "+08:00",
+			Uses24HourClock: testBoolPtr(true),
+			Manufacturer:    "Apple",
+			Brand:           "Apple",
+			Model:           "iPhone16,2",
+			DeviceName:      "Qing's iPhone",
+			Screen:          PhoneScreenInfo{WidthPixels: testIntPtr(1179), HeightPixels: testIntPtr(2556), Scale: testFloatPtr(3)},
+			Battery:         PhoneBatteryInfo{Level: testFloatPtr(0.87), Charging: testBoolPtr(true), State: "charging"},
+			AvailableApps:   []AvailableAppInfo{{Name: "WeChat", Available: true}, {Name: "Douyin", Available: false}, {Name: "Alipay", Available: true}},
+		},
+	})
+
+	for _, want := range []string{
+		"Phone environment:",
+		"- environment_updated_at: 2026-06-01T02:03:05Z",
+		"- system: iOS, 18.5, tablet=false",
+		"- device: Apple, Apple, iPhone16,2, Qing's iPhone",
+		"- locale: zh-Hans-CN, language=zh, region=CN, timezone=Asia/Shanghai, utc_offset=+08:00, 24h_clock=true",
+		"- screen: 1179x2556 px, scale=3.00",
+		"- battery: level=87%, charging=true, state=charging",
+		"- available_apps: WeChat, Alipay",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("runtime context missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestPhoneBridgeRuntimeContextDisconnected(t *testing.T) {
 	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{})
 
@@ -272,3 +318,7 @@ func TestPhoneBridgeRuntimeContextDisconnected(t *testing.T) {
 		}
 	}
 }
+
+func testBoolPtr(v bool) *bool        { return &v }
+func testIntPtr(v int) *int           { return &v }
+func testFloatPtr(v float64) *float64 { return &v }
