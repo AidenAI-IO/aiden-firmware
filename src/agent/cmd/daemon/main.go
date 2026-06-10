@@ -26,6 +26,20 @@ const (
 var wakeupGPIOPins = []int{33, 32}
 
 func main() {
+	// Check if a subcommand is provided
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "config-check":
+			os.Exit(runConfigCheck(os.Args[2:]))
+		case "config-meta":
+			fmt.Fprintln(os.Stderr, "config-meta subcommand not yet implemented")
+			os.Exit(1)
+		case "config-test":
+			fmt.Fprintln(os.Stderr, "config-test subcommand not yet implemented")
+		}
+	}
+
+	// Default: run as daemon
 	var (
 		configDir = flag.String("config", "", "path to config directory (required)")
 		addr      = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
