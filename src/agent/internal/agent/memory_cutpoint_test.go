@@ -78,6 +78,9 @@ func TestFindSessionCutPointNeverCutsAtToolResult(t *testing.T) {
 		evt("a2", "assistant_output", "assistant", tokenSizedContent(100)),
 	}
 	cut := findSessionCutPoint(events, 0, len(events), 5000)
+	if !cut.HasCut {
+		t.Fatal("expected compaction cut, got HasCut=false")
+	}
 	kept := events[cut.FirstKeptIndex]
 	if kept.Type == "tool_result" {
 		t.Fatalf("cut point landed on tool_result (index %d)", cut.FirstKeptIndex)
