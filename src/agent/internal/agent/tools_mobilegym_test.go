@@ -78,7 +78,8 @@ func TestMobileGymScreenshotToolCallsBridgeWithEpisodeAndToken(t *testing.T) {
 			EpisodeID string `json:"episode_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode request: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
 		gotEpisode = req.EpisodeID
 		w.Header().Set("Content-Type", "application/json")

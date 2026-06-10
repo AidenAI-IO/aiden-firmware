@@ -105,7 +105,10 @@ def _action_classes() -> tuple[type[Any], Any]:
 
 def _point(payload: dict[str, Any]) -> list[float]:
     point = payload.get("point", payload)
-    return [float(point["x"]), float(point["y"])]
+    try:
+        return [float(point["x"]), float(point["y"])]
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"Invalid point coordinates: {e}") from e
 
 
 def _motion_payload(payload: dict[str, Any]) -> dict[str, Any]:

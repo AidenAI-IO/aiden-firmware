@@ -95,7 +95,7 @@ docker compose up -d
 
 ## 📁 目录结构
 
-```
+```text
 ├── Dockerfile                              # 多阶段构建（simulator/daemon/test）
 ├── docker-compose.yml                      # 服务编排
 ├── .env.example                            # 环境变量示例

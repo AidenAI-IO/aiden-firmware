@@ -58,43 +58,43 @@ func searchAPIKeyOrEnv(configured string, envKeys ...string) string {
 }
 
 type Config struct {
-	Model                    ModelConfig     `toml:"model"`
-	ModelText                ModelConfig     `toml:"model_text,omitempty"` // Override for STT-then-text mode
-	TTS                      TTSConfig       `toml:"tts,omitempty"`
-	STT                      STTConfig       `toml:"stt,omitempty"`
-	HID                      HIDConfig       `toml:"hid"`
-	Device                   DeviceConfig    `toml:"device,omitempty"`
-	Audio                    AudioConfig     `toml:"audio,omitempty"`
-	Search                   SearchConfig    `toml:"search,omitempty"`
-	Instruction              string          `toml:"instruction"`
-	AdditionalPrompt         string          `toml:"additional_prompt,omitempty"`
-	InputMode                string          `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
-	TriggerMode              string          `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
-	VADBackend               string          `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
-	VADModelPath             string          `toml:"vad_model_path,omitempty"`
-	VADHelperPath            string          `toml:"vad_helper_path,omitempty"`
-	VADSpeechThreshold       float64         `toml:"vad_speech_threshold,omitempty"`
-	SilenceMs                int             `toml:"silence_ms,omitempty"`
-	MinSpeechMs              int             `toml:"min_speech_ms,omitempty"`
-	VoiceSessionEnabled      *bool           `toml:"voice_session_enabled,omitempty"`
-	VoiceFollowupTimeoutMs   int             `toml:"voice_followup_timeout_ms,omitempty"`
-	VoiceFirstTurnTimeoutMs  int             `toml:"voice_first_turn_timeout_ms,omitempty"`
-	VoiceMaxTurns            int             `toml:"voice_max_turns,omitempty"`
-	VoiceInterruptOnWakeup   *bool           `toml:"voice_interrupt_on_wakeup,omitempty"`
-	VoiceStreamingTTSEnabled *bool           `toml:"voice_streaming_tts_enabled,omitempty"`
-	VoiceToolCallSpeech      *bool           `toml:"voice_tool_call_speech,omitempty"`
-	VoiceMaxResponseTokens   int             `toml:"voice_max_response_tokens,omitempty"`
-	MaxIterations            int             `toml:"max_iterations,omitempty"`
-	ScreenshotKeepN          int             `toml:"screenshot_keep_n,omitempty"`
-	ScreenshotPruneInterval  int             `toml:"screenshot_prune_interval,omitempty"`
-	ScreenStableTimeoutMs    int             `toml:"screen_stable_timeout_ms,omitempty"`
-	ScreenStableMs           int             `toml:"screen_stable_ms,omitempty"`
-	ScreenStableDiffThreshold float64        `toml:"screen_stable_diff_threshold,omitempty"`
-	SkillsDirs               []string        `toml:"skills_dirs"`
-	BundledSkillsDir         string          `toml:"bundled_skills_dir,omitempty"`
-	SkillMergeModel          SkillMergeModel `toml:"-"`
-	Telemetry                TelemetryConfig `toml:"telemetry,omitempty"`
-	ConfigDir                string          `toml:"-"`
+	Model                     ModelConfig     `toml:"model"`
+	ModelText                 ModelConfig     `toml:"model_text,omitempty"` // Override for STT-then-text mode
+	TTS                       TTSConfig       `toml:"tts,omitempty"`
+	STT                       STTConfig       `toml:"stt,omitempty"`
+	HID                       HIDConfig       `toml:"hid"`
+	Device                    DeviceConfig    `toml:"device,omitempty"`
+	Audio                     AudioConfig     `toml:"audio,omitempty"`
+	Search                    SearchConfig    `toml:"search,omitempty"`
+	Instruction               string          `toml:"instruction"`
+	AdditionalPrompt          string          `toml:"additional_prompt,omitempty"`
+	InputMode                 string          `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
+	TriggerMode               string          `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
+	VADBackend                string          `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
+	VADModelPath              string          `toml:"vad_model_path,omitempty"`
+	VADHelperPath             string          `toml:"vad_helper_path,omitempty"`
+	VADSpeechThreshold        float64         `toml:"vad_speech_threshold,omitempty"`
+	SilenceMs                 int             `toml:"silence_ms,omitempty"`
+	MinSpeechMs               int             `toml:"min_speech_ms,omitempty"`
+	VoiceSessionEnabled       *bool           `toml:"voice_session_enabled,omitempty"`
+	VoiceFollowupTimeoutMs    int             `toml:"voice_followup_timeout_ms,omitempty"`
+	VoiceFirstTurnTimeoutMs   int             `toml:"voice_first_turn_timeout_ms,omitempty"`
+	VoiceMaxTurns             int             `toml:"voice_max_turns,omitempty"`
+	VoiceInterruptOnWakeup    *bool           `toml:"voice_interrupt_on_wakeup,omitempty"`
+	VoiceStreamingTTSEnabled  *bool           `toml:"voice_streaming_tts_enabled,omitempty"`
+	VoiceToolCallSpeech       *bool           `toml:"voice_tool_call_speech,omitempty"`
+	VoiceMaxResponseTokens    int             `toml:"voice_max_response_tokens,omitempty"`
+	MaxIterations             int             `toml:"max_iterations,omitempty"`
+	ScreenshotKeepN           int             `toml:"screenshot_keep_n,omitempty"`
+	ScreenshotPruneInterval   int             `toml:"screenshot_prune_interval,omitempty"`
+	ScreenStableTimeoutMs     int             `toml:"screen_stable_timeout_ms,omitempty"`
+	ScreenStableMs            int             `toml:"screen_stable_ms,omitempty"`
+	ScreenStableDiffThreshold float64         `toml:"screen_stable_diff_threshold,omitempty"`
+	SkillsDirs                []string        `toml:"skills_dirs"`
+	BundledSkillsDir          string          `toml:"bundled_skills_dir,omitempty"`
+	SkillMergeModel           SkillMergeModel `toml:"-"`
+	Telemetry                 TelemetryConfig `toml:"telemetry,omitempty"`
+	ConfigDir                 string          `toml:"-"`
 }
 
 type TelemetryConfig struct {
@@ -432,10 +432,14 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Model.Model) == "" && strings.ToLower(c.Model.Provider) != "fake" {
 		return errors.New("model.model is required")
 	}
-	switch c.Device.BackendOrDefault() {
+	backend := c.Device.BackendOrDefault()
+	switch backend {
 	case "hdmi", "mobilegym":
 	default:
 		return fmt.Errorf("invalid device.backend: %s (expected hdmi or mobilegym)", c.Device.Backend)
+	}
+	if backend == "mobilegym" && strings.TrimSpace(c.Device.ControlTokenFile) == "" {
+		return errors.New("device.control_token_file is required when device.backend=mobilegym")
 	}
 
 	// Validate input_mode

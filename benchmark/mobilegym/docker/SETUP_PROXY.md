@@ -11,7 +11,7 @@ Docker 构建需要从 Docker Hub 拉取镜像。你的网络需要代理访问�
 3. 左侧选择 **Resources** → **Proxies**
 4. 选择 **Manual proxy configuration**
 5. 填入代理地址：
-   ```
+   ```text
    Web Server (HTTP): http://127.0.0.1:7897
    Secure Web Server (HTTPS): http://127.0.0.1:7897
    Bypass: localhost,127.0.0.1

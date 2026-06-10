@@ -28,7 +28,7 @@ docker compose down
 
 ## 📁 目录结构
 
-```
+```text
 benchmark/mobilegym/
 ├── README.md                    # 本文件
 ├── adapter/                     # Python 适配器（AidenGoAgent）

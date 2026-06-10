@@ -209,13 +209,16 @@ def launch_daemon(
 ) -> AidenDaemonHandle:
     log_path = attempt_config.log_dir / "daemon.log"
     log_file = log_path.open("ab")
-    process = subprocess.Popen(  # noqa: S603
-        list(command),
-        env=dict(os.environ, **dict(env or {})),
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    try:
+        process = subprocess.Popen(  # noqa: S603
+            list(command),
+            env=dict(os.environ, **dict(env or {})),
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    finally:
+        log_file.close()
     return AidenDaemonHandle(
         base_url=base_url,
         control_token=attempt_config.control_token,

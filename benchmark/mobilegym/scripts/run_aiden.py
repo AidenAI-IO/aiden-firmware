@@ -143,7 +143,7 @@ def register_aiden_go() -> None:
                 "Verify --mobilegym-root/MOBILEGYM_ROOT points at an upstream MobileGym checkout "
                 "and install its Python dependencies."
             ) from exc
-        raise
+        raise LauncherError(f"Import error while registering aiden_go: {exc}") from exc
     except Exception as exc:
         raise LauncherError(f"failed to register aiden_go with MobileGym: {exc}") from exc
 

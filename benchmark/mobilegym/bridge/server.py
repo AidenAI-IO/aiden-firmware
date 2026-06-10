@@ -216,7 +216,11 @@ def _handler_for(bridge: BridgeServer):
             return True
 
         def _read_json(self) -> dict[str, Any] | None:
-            length = int(self.headers.get("Content-Length", "0") or "0")
+            try:
+                length = int(self.headers.get("Content-Length", "0") or "0")
+            except ValueError:
+                self._send_error(400, "bad_header", "invalid Content-Length")
+                return None
             raw = self.rfile.read(length) if length else b"{}"
             try:
                 payload = json.loads(raw.decode("utf-8"))

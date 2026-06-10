@@ -414,11 +414,17 @@ func normalizeMobileGymScreenshotResult(screen *screenState, result *screenshotR
 	if result.Width <= 0 || result.Height <= 0 {
 		return fmt.Errorf("mobilegym screenshot returned invalid dimensions %dx%d", result.Width, result.Height)
 	}
+	if strings.TrimSpace(result.Data) == "" {
+		return fmt.Errorf("mobilegym screenshot payload is empty")
+	}
 	if result.Format == "" {
 		result.Format = "jpeg"
 	}
 	if result.Size == 0 && result.Data != "" {
 		result.Size = len(result.Data)
+	}
+	if result.Size == 0 {
+		return fmt.Errorf("mobilegym screenshot has zero size")
 	}
 	if screen != nil {
 		screen.Update(result.Width, result.Height)
