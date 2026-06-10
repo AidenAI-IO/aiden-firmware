@@ -287,7 +287,8 @@ TEST_CASE("config web exposes brave search provider") {
     CHECK(source.find("\"brave\"") != std::string::npos);
     CHECK(source.find("\"brave-free\"") != std::string::npos);
     CHECK(source.find("provider == \"brave\" || provider == \"brave-free\"") != std::string::npos);
-    CHECK(html.find("search:{provider:['duckduckgo','brave','brave-free','tavily'") != std::string::npos);
+    CHECK(html.find("search:{provider:['duckduckgo','brave','brave-free','tavily']}") != std::string::npos);
+    CHECK(source.find("const char* allowed[] = {\"duckduckgo\", \"brave\", \"brave-free\", \"tavily\", NULL};") != std::string::npos);
 }
 
 TEST_CASE("config web renders finite choice fields as selects") {
