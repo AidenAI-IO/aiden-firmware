@@ -525,7 +525,7 @@ function importTask(){
       document.getElementById('importBtn').disabled=false;
       return;
     }
-    msg.textContent='✓ 已追加到 perception_v1（共 '+d.tasks_count+' 个 task）';msg.className='status-line ok';
+    msg.innerHTML='✓ 已追加到 perception_v1（共 '+d.tasks_count+' 个 task）<br><span class="muted">仅写入设备本地。同步回 git 仓库可在根目录执行：<code>scripts/sync_perception_from_device.sh '+location.hostname+'</code></span>';msg.className='status-line ok';
     document.getElementById('importBtn').disabled=true;
   }).catch(function(e){
     msg.textContent='追加失败: '+e;msg.className='status-line err';

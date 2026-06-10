@@ -13,7 +13,7 @@ Output ONLY a single JSON object (no markdown, no explanation, no fences) with t
     "description_for_judge": "<English explanation of what success looks like>",
     "rubric": [
       {"id": "called_click_tool", "check": "The tool trace contains at least one touch_gesture or mouse_click call."},
-      {"id": "click_targets_<slug>", "check": "The touch/click coordinates target the <target_name> area: normalized x in [PLACEHOLDER_X], y in [PLACEHOLDER_Y]."}
+      {"id": "click_targets_<slug>", "check": "The touch/click coordinates target the <target_name> area: normalized x in [PLACEHOLDER_X], y in [PLACEHOLDER_Y] (0-1000 normalized space, where 500 is center)."}
     ],
     "hard_assertions": {"min_tool_calls": 1, "max_tool_calls": 5, "must_complete_within_sec": 120, "response_required": true}
   }
