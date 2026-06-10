@@ -18,6 +18,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	// maxRollingSummaryLines caps the Rolling Summary section to prevent
+	// unbounded growth as archived chunks accumulate. When exceeded, the oldest
+	// lines are dropped and a truncation marker is added. This is a stopgap
+	// until true rolling checkpointing (re-summarizing the rolling summary
+	// itself) is implemented in phase 2.
+	maxRollingSummaryLines = 100
+)
+
 // SessionMemoryStore manages session event compression, chunk storage, and
 // summary generation for a single session's memory.
 type SessionMemoryStore struct {
@@ -578,7 +587,23 @@ func mergeArchivedChunksIntoRollingSummary(existingRollingSummary string, archiv
 	for _, c := range archivedChunks {
 		b.WriteString(fmt.Sprintf("- %s: %s\n", c.ID, c.Summary))
 	}
-	return strings.TrimSpace(b.String())
+	merged := strings.TrimSpace(b.String())
+
+	// Cap the rolling summary to prevent unbounded growth. When the line count
+	// exceeds the limit, drop the oldest lines and add a truncation marker.
+	// This is a stopgap until phase 2 implements true rolling checkpointing
+	// (re-summarizing the rolling summary itself).
+	lines := strings.Split(merged, "\n")
+	if len(lines) > maxRollingSummaryLines {
+		// Reserve 2 lines for the truncation marker and blank line separator
+		keepCount := maxRollingSummaryLines - 2
+		kept := lines[len(lines)-keepCount:]
+		var capped strings.Builder
+		capped.WriteString("[Earlier content truncated to prevent unbounded growth]\n\n")
+		capped.WriteString(strings.Join(kept, "\n"))
+		return strings.TrimSpace(capped.String())
+	}
+	return merged
 }
 
 func structuredOrNil(s ChunkStructuredSummary) *ChunkStructuredSummary {

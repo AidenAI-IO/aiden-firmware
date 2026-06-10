@@ -54,3 +54,37 @@ func TestRollingSummaryAccumulatesArchivedChunks(t *testing.T) {
 		t.Errorf("recent chunks should show chunk_003")
 	}
 }
+
+func TestRollingSummaryTruncatesWhenExceedingMaxLines(t *testing.T) {
+	// Build a rolling summary that exceeds maxRollingSummaryLines
+	existingSummary := "Initial context\n"
+	for i := 0; i < 95; i++ {
+		existingSummary += "Line " + string(rune('0'+i%10)) + "\n"
+	}
+
+	// Add archived chunks that push it over the limit
+	archivedChunks := []chunkLine{
+		{ID: "chunk_001", Summary: "First archived chunk"},
+		{ID: "chunk_002", Summary: "Second archived chunk"},
+		{ID: "chunk_003", Summary: "Third archived chunk"},
+		{ID: "chunk_004", Summary: "Fourth archived chunk"},
+		{ID: "chunk_005", Summary: "Fifth archived chunk"},
+		{ID: "chunk_006", Summary: "Sixth archived chunk"},
+	}
+
+	result := mergeArchivedChunksIntoRollingSummary(existingSummary, archivedChunks)
+	lines := strings.Split(result, "\n")
+
+	if len(lines) > maxRollingSummaryLines {
+		t.Errorf("rolling summary has %d lines, exceeds max %d", len(lines), maxRollingSummaryLines)
+	}
+
+	if !strings.Contains(result, "[Earlier content truncated to prevent unbounded growth]") {
+		t.Errorf("truncated rolling summary should contain truncation marker")
+	}
+
+	// Verify most recent archived chunks are still present
+	if !strings.Contains(result, "chunk_006") {
+		t.Errorf("most recent archived chunk should be preserved after truncation")
+	}
+}

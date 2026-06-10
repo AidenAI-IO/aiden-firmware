@@ -639,8 +639,12 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 			if strings.TrimSpace(structured.Summary) != "" {
 				structured.Summary = summary
 			}
-			// Prepend the prefix summary as a system event so the hot window
-			// never opens on a half-finished assistant/tool result.
+			// INTENTIONAL DUPLICATION: The prefix summary is written to two places:
+			// 1. Merged into the chunk's summary field (persisted to disk for recall)
+			// 2. Prepended as a system_event in the hot window (live context for LLM)
+			// This ensures both historical retrieval and immediate prompt context
+			// include the turn context, preventing the hot window from opening on
+			// a dangling assistant/tool result without the user input that triggered it.
 			hotEvents = prependTurnPrefixContext(hotEvents, prefixSummary)
 		}
 	}
@@ -705,6 +709,10 @@ type compactionPlan struct {
 // warranted (e.g. a few small events tripped the percentage trigger) it falls
 // back to the legacy count-based hot window so compaction still makes progress.
 func (m *MemoryManager) planCompaction(events []SessionEvent, contextWindow int) compactionPlan {
+	// clampTokenBudgets couples reserve and keep-recent against the window, but
+	// the cut location only depends on keep-recent: reserve is response headroom
+	// consumed by shouldCompress's trigger check, not by where we split. We take
+	// the clamped keep-recent so both call sites share one clamping rule.
 	_, keepRecent := clampTokenBudgets(m.reserveTokens(), m.keepRecentTokens(), contextWindow)
 	cut := findSessionCutPoint(events, 0, len(events), keepRecent)
 	if cut.HasCut && cut.FirstKeptIndex > 0 && cut.FirstKeptIndex < len(events) {
@@ -845,10 +853,11 @@ func (m *MemoryManager) shouldCompress(eventCount int) bool {
 	lastPromptTokens := m.LastPromptTokens()
 	contextWindow := m.effectiveContextWindow()
 	if lastPromptTokens > 0 && contextWindow > 0 {
-		reserve := m.reserveTokens()
-		if reserve > contextWindow/2 {
-			reserve = contextWindow / 2
-		}
+		// Reuse clampTokenBudgets so the reserve ceiling (never more than half
+		// the window) stays defined in one place. Only the reserve half matters
+		// for the trigger decision; keep-recent governs the cut location and is
+		// consumed by planCompaction instead.
+		reserve, _ := clampTokenBudgets(m.reserveTokens(), m.keepRecentTokens(), contextWindow)
 		if lastPromptTokens >= contextWindow-reserve {
 			return true
 		}
