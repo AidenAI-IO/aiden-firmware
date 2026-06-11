@@ -115,10 +115,16 @@ type ChunkRecallQuery struct {
 // ChunkRecallResult returns a recalled chunk with its summary and events.
 type ChunkRecallResult struct {
 	ChunkID    string                  `json:"chunk_id"`
+	Source     string                  `json:"source,omitempty"`
 	Summary    string                  `json:"summary"`
 	Structured *ChunkStructuredSummary `json:"structured,omitempty"`
 	Evidence   []SessionEvent          `json:"evidence"`
 }
+
+const (
+	chunkRecallSourceActive  = "active"
+	chunkRecallSourcePending = "pending"
+)
 
 type chunkIndex struct {
 	Version   int               `yaml:"version"`
@@ -331,7 +337,7 @@ func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecall
 			if err != nil {
 				return nil, err
 			}
-			results = append(results, ChunkRecallResult{ChunkID: entry.ID, Summary: entry.Summary, Structured: entry.Structured, Evidence: events})
+			results = append(results, ChunkRecallResult{ChunkID: entry.ID, Source: chunkRecallSourceActive, Summary: entry.Summary, Structured: entry.Structured, Evidence: events})
 		}
 		return results, nil
 	}
@@ -367,7 +373,7 @@ func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecall
 		if err != nil {
 			return nil, err
 		}
-		results = append(results, ChunkRecallResult{ChunkID: entry.ID, Summary: entry.Summary, Structured: entry.Structured, Evidence: events})
+		results = append(results, ChunkRecallResult{ChunkID: entry.ID, Source: chunkRecallSourceActive, Summary: entry.Summary, Structured: entry.Structured, Evidence: events})
 	}
 	return results, nil
 }

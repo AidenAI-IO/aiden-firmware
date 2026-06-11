@@ -893,7 +893,7 @@ func (t *sessionRecallTelemetryTool) ReturnsVisualObservation() bool {
 func countPendingRecallResults(output string) int {
 	var payload struct {
 		Results []struct {
-			ChunkID string `json:"chunk_id"`
+			Source string `json:"source"`
 		} `json:"results"`
 	}
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {
@@ -901,7 +901,7 @@ func countPendingRecallResults(output string) int {
 	}
 	count := 0
 	for _, result := range payload.Results {
-		if strings.HasPrefix(result.ChunkID, "pending-") {
+		if strings.EqualFold(strings.TrimSpace(result.Source), chunkRecallSourcePending) {
 			count++
 		}
 	}

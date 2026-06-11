@@ -1998,7 +1998,7 @@ func TestSessionRecallTelemetryCountsPendingResults(t *testing.T) {
 	tool := &sessionRecallTelemetryTool{
 		inner: &staticTool{
 			name:   "recall_session_chunks",
-			output: `{"results":[{"chunk_id":"chunk_001"},{"chunk_id":"pending-123"}]}`,
+			output: `{"results":[{"chunk_id":"chunk_001"},{"chunk_id":"pending-123","source":"pending"}]}`,
 		},
 		counter: counter,
 	}
@@ -2007,6 +2007,73 @@ func TestSessionRecallTelemetryCountsPendingResults(t *testing.T) {
 	}
 	if got := counter.Load(); got != 1 {
 		t.Fatalf("pending recall count = %d, want 1", got)
+	}
+}
+
+func TestSessionRecallTelemetryIgnoresActiveChunksWithPendingPrefix(t *testing.T) {
+	counter := &atomic.Int64{}
+	tool := &sessionRecallTelemetryTool{
+		inner: &staticTool{
+			name: "recall_session_chunks",
+			output: `{"results":[` +
+				`{"chunk_id":"pending-archived","source":"active"},` +
+				`{"chunk_id":"pending-live","source":"pending"}` +
+				`]}`,
+		},
+		counter: counter,
+	}
+	if _, err := tool.Call(context.Background(), `{}`); err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if got := counter.Load(); got != 1 {
+		t.Fatalf("pending recall count = %d, want 1", got)
+	}
+}
+
+func TestSessionRecallTelemetryIgnoresCompressedChunkWithPendingPrefix(t *testing.T) {
+	ctx := context.Background()
+	session := NewSessionMemoryStore(filepath.Join(t.TempDir(), "session"))
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_pending_consumed",
+		Type:    "user_input",
+		Role:    "user",
+		Content: "already compressed from pending file",
+	}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+	if _, err := session.Compress(ctx, CompressOption{
+		ChunkID: "pending-consumed",
+		Summary: "already compressed pending file",
+	}); err != nil {
+		t.Fatalf("Compress() error = %v", err)
+	}
+
+	counter := &atomic.Int64{}
+	tool := &sessionRecallTelemetryTool{
+		inner:   NewRecallSessionChunksTool(session),
+		counter: counter,
+	}
+	output, err := tool.Call(ctx, `{"chunk_ids":["pending-consumed"]}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	var decoded struct {
+		Results []struct {
+			ChunkID string `json:"chunk_id"`
+			Source  string `json:"source"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatalf("decode output %q: %v", output, err)
+	}
+	if len(decoded.Results) != 1 {
+		t.Fatalf("expected 1 result, got %#v", decoded.Results)
+	}
+	if decoded.Results[0].ChunkID != "pending-consumed" || decoded.Results[0].Source != chunkRecallSourceActive {
+		t.Fatalf("unexpected recall source: %#v", decoded.Results[0])
+	}
+	if got := counter.Load(); got != 0 {
+		t.Fatalf("pending recall count = %d, want 0 for active compressed chunk", got)
 	}
 }
 
