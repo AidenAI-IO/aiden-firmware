@@ -155,7 +155,7 @@ recover_wlan() {
 	sleep 2
 	wpa_cli -i "$IFACE" reassociate >/dev/null 2>&1 || true
 	sleep 8
-	udhcpc -n -q -i "$IFACE" >/dev/null 2>&1 || true
+	dhcpcd -n "$IFACE" >/dev/null 2>&1 || true
 }
 
 watch_loop() {
