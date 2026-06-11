@@ -1,8 +1,8 @@
 # 自定义测试套件
 
-> ⚠️ **当前限制：** `run_aiden.py` 直接把 `--suite` 名字交给 MobileGym 内置 registry 解析，所以这个目录下的自定义 YAML 文件**目前不会被加载**。要跑自定义任务集合，请用 `--task-id` 一次列举多个，或选用内置 suite（`clock`, `phone_control_v1`, `calendar`, `wechat`, ...）。
->
-> 如果想恢复 YAML suite 加载，需要在 `run_aiden.py` 的 `_load_tasks` 路径加一段：先尝试从 `/app/suites/<name>.yaml` 读 `tasks:` 列表展开成 `--task-id` 集合，再调 MobileGym。
+`run_aiden.py --aiden-suite <name>` 会从 `benchmark/suites/<name>.json` 加载 Aiden JSON
+suite 并即时转换为 MobileGym Task。Web UI（`/benchmark`，MobileGym 模式）也会列出
+这些 suite。本目录下的 YAML 暂不被加载。
 
 ## 当前可工作的方式
 
