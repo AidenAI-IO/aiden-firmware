@@ -37,7 +37,7 @@ tags = ["aiden-hardware"]
 
 ```text
 Runtime.Run()
-  → Planner / Executor / Verifier 循环
+  → Phased role loop（default / plan / execution）
   → EpisodeRecorder 记录事件
   → CommitEpisode 落盘 (episode.yaml + events.jsonl + artifacts/)
   → exportEpisodeBestEffort 异步上报 Langfuse
@@ -48,9 +48,11 @@ Runtime.Run()
 | Aiden Episode | Langfuse |
 | --- | --- |
 | `TaskEpisode` | Trace (`aiden-episode`) |
-| `planner_decision` | Span `planner`（嵌套在 `iteration_N` 下） |
-| `tool_call` / `tool_result` | Span `tool/{name}` + 子 Span `tool_result/{name}`，并记录工具耗时 |
-| `verifier_decision` | Span `verifier` |
+| `loop_phase` | Span `planner`（阶段切换：`default` / `plan` / `execution`） |
+| `default_finish` | Span `planner`（default 模式直结束） |
+| `planner_decision` | Span `planner`（`commit_plan` 提交计划，嵌套在 `iteration_N` 下） |
+| `tool_call` / `tool_result` | Span `tool/{name}` + 子 Span `tool_result/{name}`；planner 在 default/plan 阶段的工具调用记为 planner role |
+| `verifier_decision` | Span `verifier`（仅 execution 阶段） |
 | `Outcome.Success` | Boolean Score `success=1/0` |
 | `artifacts/*.jpeg` | Media upload + observation 引用 |
 | `Extra` metrics | Trace metadata + generation model/cost/usage fields |
