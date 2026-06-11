@@ -102,22 +102,22 @@ func TestClassifyTurnBoundary_ActionVerbStartsNewTask(t *testing.T) {
 	}
 }
 
-func TestClassifyTurnBoundary_AppDivergenceIsWeakNewSignal(t *testing.T) {
+func TestClassifyTurnBoundary_IgnoresAppDivergence(t *testing.T) {
 	cfg := DefaultBoundaryConfig()
 	now := time.Now()
 	prev := eventsAt(now.Add(-4*time.Minute), cfg.SmallSessionEventThreshold+1, "user_input", "查天气")
 	for i := range prev {
 		prev[i].AppName = "WeatherApp"
 	}
-	boundary, reason := ClassifyTurnBoundary(prev, "好的", now, cfg, BoundaryEpisodeContext{CurrentAppName: "WeChat"})
+	boundary, reason := ClassifyTurnBoundary(prev, "好的", now, cfg, BoundaryEpisodeContext{})
 	if boundary != BoundaryNew {
-		t.Fatalf("app divergence with neutral input should keep default new, got %q", boundary)
+		t.Fatalf("neutral input should keep default new, got %q", boundary)
 	}
-	if reason != BoundaryReasonAppDivergence {
-		t.Fatalf("expected app divergence reason, got %q", reason)
+	if reason != BoundaryReasonDefaultNew {
+		t.Fatalf("expected default reason, got %q", reason)
 	}
 
-	boundary, reason = ClassifyTurnBoundary(prev, "再帮我看后天的", now, cfg, BoundaryEpisodeContext{CurrentAppName: "WeChat"})
+	boundary, reason = ClassifyTurnBoundary(prev, "再帮我看后天的", now, cfg, BoundaryEpisodeContext{})
 	if boundary != BoundaryContinue {
 		t.Fatalf("continuation marker should override weak app divergence, got %q (reason=%s)", boundary, reason)
 	}

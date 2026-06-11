@@ -109,7 +109,6 @@ type ChunkRecallQuery struct {
 	ChunkIDs []string `json:"chunk_ids,omitempty"`
 	Tags     []string `json:"tags,omitempty"`
 	Entities []string `json:"entities,omitempty"`
-	AppName  string   `json:"app_name,omitempty"`
 	Limit    int      `json:"limit,omitempty"`
 }
 
@@ -339,15 +338,12 @@ func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecall
 
 	entries := make([]chunkIndexEntry, 0)
 	allActive := make([]chunkIndexEntry, 0)
-	hasFilter := query.AppName != "" || len(query.Tags) > 0 || len(query.Entities) > 0
+	hasFilter := len(query.Tags) > 0 || len(query.Entities) > 0
 	for _, entry := range index.Chunks {
 		if entry.Status != "active" {
 			continue
 		}
 		allActive = append(allActive, entry)
-		if query.AppName != "" && entry.AppName != query.AppName {
-			continue
-		}
 		if hasFilter && len(query.Tags) > 0 && !matchesAny(query.Tags, entry.Tags) {
 			continue
 		}

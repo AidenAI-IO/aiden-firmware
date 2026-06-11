@@ -21,7 +21,6 @@ const (
 	BoundaryReasonNoPrev           = "no_prev_events"
 	BoundaryReasonContinuationWord = "continuation_word"
 	BoundaryReasonActionVerb       = "action_verb"
-	BoundaryReasonAppDivergence    = "app_divergence"
 	BoundaryReasonRunningEpisode   = "running_episode"
 	BoundaryReasonActiveEpisode    = "active_episode"
 	BoundaryReasonSmallSession     = "small_session"
@@ -73,9 +72,6 @@ type BoundaryEpisodeContext struct {
 	// episode index. Neutral confirmations after completion often refer back
 	// to the just-finished task.
 	HasActive bool
-	// CurrentAppName is the app suggested by the latest environment hints. It
-	// is intentionally a weak signal because app detection can be stale.
-	CurrentAppName string
 }
 
 // continuationMarkerRe matches sentence-initial Chinese continuation cues.
@@ -157,12 +153,6 @@ func ClassifyTurnBoundary(
 			primaryReason = BoundaryReasonActionVerb
 		}
 	}
-	if primaryReason != BoundaryReasonContinuationWord && divergesFromRecentApp(prevEvents, episode.CurrentAppName) {
-		score--
-		if primaryReason == BoundaryReasonDefaultNew {
-			primaryReason = BoundaryReasonAppDivergence
-		}
-	}
 	if episode.HasRunning || episode.HasActive {
 		// An in-flight or just-finished episode means a neutral utterance is
 		// overwhelmingly a continuation. Weight equals the continue threshold
@@ -182,7 +172,7 @@ func ClassifyTurnBoundary(
 			score = cfg.ContinueScoreThreshold
 		}
 		switch primaryReason {
-		case BoundaryReasonDefaultNew, BoundaryReasonActionVerb, BoundaryReasonAppDivergence:
+		case BoundaryReasonDefaultNew, BoundaryReasonActionVerb:
 			primaryReason = BoundaryReasonSmallSession
 		}
 	}
@@ -197,21 +187,6 @@ func ClassifyTurnBoundary(
 		return BoundaryContinue, primaryReason
 	}
 	return BoundaryNew, primaryReason
-}
-
-func divergesFromRecentApp(events []SessionEvent, currentAppName string) bool {
-	currentAppName = strings.TrimSpace(currentAppName)
-	if currentAppName == "" {
-		return false
-	}
-	for i := len(events) - 1; i >= 0 && i >= len(events)-5; i-- {
-		appName := strings.TrimSpace(events[i].AppName)
-		if appName == "" {
-			continue
-		}
-		return !strings.EqualFold(appName, currentAppName)
-	}
-	return false
 }
 
 func normalizeBoundaryConfig(cfg BoundaryConfig) BoundaryConfig {

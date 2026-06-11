@@ -627,7 +627,6 @@ func (r *Runtime) handleSessionBoundary(input string, hints CurrentEnvironmentHi
 	}
 	now := time.Now().UTC()
 	episodeCtx := recentEpisodeContext(r.memoryPlane, now, time.Duration(boundaryCfg.LongGapSeconds)*time.Second)
-	episodeCtx.CurrentAppName = hints.AppName
 	boundary, reason := ClassifyTurnBoundary(events, input, now, boundaryCfg, episodeCtx)
 	telemetry.Decision = boundary
 	telemetry.Reason = reason
@@ -637,7 +636,7 @@ func (r *Runtime) handleSessionBoundary(input string, hints CurrentEnvironmentHi
 	}
 
 	if r.logger != nil {
-		r.logger.Info("[memory] session boundary detected: reason=%s app=%s", reason, hints.AppName)
+		r.logger.Info("[memory] session boundary detected: reason=%s", reason)
 	}
 	archiveDir, err := r.memories.RotateSessionEvents()
 	if err != nil {
