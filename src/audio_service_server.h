@@ -12,6 +12,7 @@ namespace aiden {
 class AudioServiceServer {
 public:
     explicit AudioServiceServer(const char* socket_path);
+    AudioServiceServer(const char* socket_path, const char* volume_state_path);
     ~AudioServiceServer();
 
     AidenServiceStatus start();

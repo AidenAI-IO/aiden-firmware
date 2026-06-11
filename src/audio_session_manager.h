@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <unordered_map>
 
@@ -21,6 +22,7 @@ public:
     static const uint32_t kSessionTimeoutMs = 30000;
 
     AudioSessionManager();
+    explicit AudioSessionManager(const char* volume_state_path);
     ~AudioSessionManager();
 
     // --- Recording ---
@@ -63,6 +65,7 @@ private:
     using Clock = std::chrono::steady_clock;
 
     uint64_t next_session_id();
+    void persist_playback_volume_if_changed(int volume);
     void reaper_loop();
     void reap_idle_sessions();
 
@@ -70,7 +73,10 @@ private:
     std::atomic<bool> stop_reaper_;
     std::thread reaper_thread_;
     std::shared_ptr<std::atomic<uint32_t>> draining_playback_count_;
+    std::string volume_state_path_;
+    std::mutex volume_set_mutex_;
     int playback_volume_;
+    int last_persisted_playback_volume_;
     uint64_t next_id_;
     std::unordered_map<uint64_t, std::shared_ptr<AudioRecordSession>>   record_sessions_;
     std::unordered_map<uint64_t, std::shared_ptr<AudioPlaybackSession>> playback_sessions_;
