@@ -6,6 +6,7 @@ import asyncio
 import dataclasses as dc
 import json
 import os
+import re
 import secrets
 import sys
 from pathlib import Path
@@ -18,6 +19,8 @@ BENCHMARK_ROOT = SCRIPT_PATH.parents[2]
 DEFAULT_MOBILEGYM_ROOT = MOBILEGYM_PACKAGE_ROOT / "vendor" / "mobilegym"
 DEFAULT_RUNS_DIR = BENCHMARK_ROOT / "runs" / "mobilegym"
 DEFAULT_ENV_URL = "http://localhost:4173"
+
+_SAFE_SUITE_NAME = re.compile(r"^[A-Za-z0-9_.\-]+$")
 
 
 @dc.dataclass
@@ -41,6 +44,11 @@ class MobileGymTaskAdapter:
 
 def _load_aiden_suite_as_mobilegym_tasks(suite_name: str) -> list[MobileGymTaskAdapter]:
     """Load benchmark/suites/<suite_name>.json and convert tasks for MobileGym."""
+    if not _SAFE_SUITE_NAME.match(suite_name):
+        raise LauncherError(
+            f"invalid suite name: {suite_name!r} "
+            "(only letters, digits, '_', '-', '.' allowed)"
+        )
     suite_path = BENCHMARK_ROOT / "suites" / f"{suite_name}.json"
     if not suite_path.exists():
         raise LauncherError(f"Aiden suite not found: {suite_path}")

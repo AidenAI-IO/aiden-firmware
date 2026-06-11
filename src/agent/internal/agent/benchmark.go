@@ -278,22 +278,25 @@ func (s *Server) handleBenchmarkStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) benchmarkRunnerAlive() bool {
+	// Check both Aiden and MobileGym pid files; either being live means a runner is active.
 	pidFile := s.benchmarkPIDFile
 	if pidFile == "" {
 		pidFile = "/tmp/benchmark_runner.pid"
 	}
-	if data, err := os.ReadFile(pidFile); err == nil {
-		var pid int
-		if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil && pid > 0 {
-			if proc, err := os.FindProcess(pid); err == nil {
-				if err := proc.Signal(syscall.Signal(0)); err == nil {
-					return true
+	for _, p := range []string{pidFile, "/tmp/mobilegym_runner.pid"} {
+		if data, err := os.ReadFile(p); err == nil {
+			var pid int
+			if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil && pid > 0 {
+				if proc, err := os.FindProcess(pid); err == nil {
+					if err := proc.Signal(syscall.Signal(0)); err == nil {
+						return true
+					}
 				}
 			}
 		}
 	}
 	out, err := exec.Command("sh", "-c",
-		"ps -w 2>/dev/null | grep -F 'runner.main' | grep -v grep | head -1").Output()
+		"ps -w 2>/dev/null | grep -E 'runner.main|parallel_run.sh' | grep -v grep | head -1").Output()
 	if err != nil {
 		return true
 	}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -115,7 +116,21 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"ok":true,"status":"running"}`))
 }
 
+var safeSuiteName = regexp.MustCompile(`^[A-Za-z0-9_.\-]+$`)
+
 func (s *Server) launchMobileGymRunner(suite, suiteType string, parallel, limit int) error {
+	script, err := buildMobileGymLaunchScript(s.benchmarkDir, suite, suiteType, parallel, limit)
+	if err != nil {
+		return err
+	}
+	return exec.Command("sh", "-c", script).Start()
+}
+
+func buildMobileGymLaunchScript(benchmarkDir, suite, suiteType string, parallel, limit int) (string, error) {
+	if !safeSuiteName.MatchString(suite) {
+		return "", fmt.Errorf("invalid suite name %q (only letters, digits, '_', '-', '.' allowed)", suite)
+	}
+
 	var suiteFlag string
 	switch suiteType {
 	case "aiden":
@@ -123,7 +138,7 @@ func (s *Server) launchMobileGymRunner(suite, suiteType string, parallel, limit 
 	case "mobilegym_builtin", "":
 		suiteFlag = fmt.Sprintf("--suite %s", shellQuote(suite))
 	default:
-		return fmt.Errorf("unknown suite_type %q", suiteType)
+		return "", fmt.Errorf("unknown suite_type %q", suiteType)
 	}
 
 	limitFlag := ""
@@ -131,15 +146,17 @@ func (s *Server) launchMobileGymRunner(suite, suiteType string, parallel, limit 
 		limitFlag = fmt.Sprintf("--limit %d", limit)
 	}
 
-	statePath := filepath.Join(s.benchmarkDir, "state.json")
+	statePath := filepath.Join(benchmarkDir, "state.json")
+	pidFile := "/tmp/mobilegym_runner.pid"
 
-	script := fmt.Sprintf(`cd %s/benchmark/mobilegym/docker && `+
+	return fmt.Sprintf(`cd %s/benchmark/mobilegym/docker && `+
 		`(`+
 		`echo 'Starting MobileGym benchmark...' > /tmp/mobilegym_run.log; `+
 		`PARALLEL=%d ./parallel_run.sh %s %s `+
-		`>> /tmp/mobilegym_run.log 2>&1; `+
+		`>> /tmp/mobilegym_run.log 2>&1 & `+
+		`runner_pid=$!; echo $runner_pid > %s; `+
+		`wait $runner_pid; rm -f %s; `+
 		`echo '{"status":"idle"}' > %s) &`,
-		s.benchmarkDir, parallel, suiteFlag, limitFlag, shellQuote(statePath))
-
-	return exec.Command("sh", "-c", script).Start()
+		shellQuote(benchmarkDir), parallel, suiteFlag, limitFlag,
+		shellQuote(pidFile), shellQuote(pidFile), shellQuote(statePath)), nil
 }

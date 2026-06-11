@@ -21,6 +21,7 @@ def run_aiden_module(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(benchmark_root))
     spec = importlib.util.spec_from_file_location("run_aiden", RUN_AIDEN_PATH)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -118,3 +119,10 @@ def test_validate_selection_accepts_aiden_suite_alone(run_aiden_module):
     )
     # Should not raise
     run_aiden_module._validate_selection(args)
+
+
+def test_load_aiden_suite_rejects_path_traversal(run_aiden_module, tmp_path, monkeypatch):
+    monkeypatch.setattr(run_aiden_module, "BENCHMARK_ROOT", tmp_path)
+    for bad in ["../etc/passwd", "foo/bar", "foo bar", "foo;rm"]:
+        with pytest.raises(run_aiden_module.LauncherError, match="invalid suite name"):
+            run_aiden_module._load_aiden_suite_as_mobilegym_tasks(bad)

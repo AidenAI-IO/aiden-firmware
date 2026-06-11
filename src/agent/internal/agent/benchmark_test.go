@@ -613,3 +613,67 @@ func TestHandleBenchmarkLog_MobileGymMode(t *testing.T) {
 		t.Fatalf("unexpected body: %s", rec.Body.String())
 	}
 }
+
+func TestBuildMobileGymLaunchScript_AidenSuite(t *testing.T) {
+	script, err := buildMobileGymLaunchScript("/bench", "memory_v1", "aiden", 4, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(script, "--aiden-suite 'memory_v1'") {
+		t.Errorf("expected --aiden-suite flag, got: %s", script)
+	}
+	if !strings.Contains(script, "PARALLEL=4") {
+		t.Errorf("expected PARALLEL=4, got: %s", script)
+	}
+	if !strings.Contains(script, "--limit 10") {
+		t.Errorf("expected --limit 10, got: %s", script)
+	}
+	if !strings.Contains(script, "/tmp/mobilegym_runner.pid") {
+		t.Errorf("expected pid file write, got: %s", script)
+	}
+}
+
+func TestBuildMobileGymLaunchScript_MobileGymBuiltin(t *testing.T) {
+	script, err := buildMobileGymLaunchScript("/bench", "clock", "mobilegym_builtin", 2, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(script, "--suite 'clock'") {
+		t.Errorf("expected --suite flag, got: %s", script)
+	}
+	if strings.Contains(script, "--aiden-suite") {
+		t.Errorf("should not have --aiden-suite for builtin: %s", script)
+	}
+	if strings.Contains(script, "--limit") {
+		t.Errorf("limit=0 should omit --limit flag: %s", script)
+	}
+}
+
+func TestBuildMobileGymLaunchScript_RejectsUnknownSuiteType(t *testing.T) {
+	_, err := buildMobileGymLaunchScript("/bench", "memory_v1", "evil", 1, 0)
+	if err == nil {
+		t.Fatal("expected error for unknown suite_type")
+	}
+	if !strings.Contains(err.Error(), "unknown suite_type") {
+		t.Errorf("expected suite_type error, got: %v", err)
+	}
+}
+
+func TestBuildMobileGymLaunchScript_RejectsBadSuiteName(t *testing.T) {
+	for _, bad := range []string{"../etc/passwd", "foo/bar", "foo;rm -rf /", "foo bar"} {
+		_, err := buildMobileGymLaunchScript("/bench", bad, "aiden", 1, 0)
+		if err == nil {
+			t.Errorf("expected error for suite name %q", bad)
+		}
+	}
+}
+
+func TestBuildMobileGymLaunchScript_QuotesBenchmarkDir(t *testing.T) {
+	script, err := buildMobileGymLaunchScript("/path with spaces", "memory_v1", "aiden", 1, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(script, "'/path with spaces'") {
+		t.Errorf("benchmarkDir should be quoted, got: %s", script)
+	}
+}
