@@ -18,12 +18,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	// maxRollingSummaryLines caps the Rolling Summary section to prevent
+	// unbounded growth as archived chunks accumulate. When exceeded, the oldest
+	// lines are dropped and a truncation marker is added. This is a stopgap
+	// until true rolling checkpointing (re-summarizing the rolling summary
+	// itself) is implemented in phase 2.
+	maxRollingSummaryLines = 100
+)
+
+// SessionMemoryStore manages session event compression, chunk storage, and
+// summary generation for a single session's memory.
 type SessionMemoryStore struct {
 	mu               sync.Mutex
 	rootDir          string
 	summaryMaxChunks int
 }
 
+// CompressOption provides parameters for session event compression.
 type CompressOption struct {
 	ChunkID    string
 	Summary    string
@@ -31,6 +43,30 @@ type CompressOption struct {
 	Tags       []string
 	Entities   []string
 	RiskTypes  []string
+	// CutMeta carries optional token-based cut-point diagnostics. It does not
+	// affect recall or summary rendering; it is persisted on the chunk index
+	// entry for debugging and benchmarking the compaction boundary.
+	CutMeta ChunkCutMetadata
+}
+
+// ChunkCutMetadata records how a token-based cut point produced this chunk.
+// All fields are optional and omitted from YAML when zero so older indexes and
+// count-based compactions remain byte-compatible.
+type ChunkCutMetadata struct {
+	FirstKeptEventID   string `json:"first_kept_event_id,omitempty" yaml:"first_kept_event_id,omitempty"`
+	TokensBefore       int    `json:"tokens_before,omitempty" yaml:"tokens_before,omitempty"`
+	KeptTokensEstimate int    `json:"kept_tokens_estimate,omitempty" yaml:"kept_tokens_estimate,omitempty"`
+	IsSplitTurn        bool   `json:"is_split_turn,omitempty" yaml:"is_split_turn,omitempty"`
+	TurnStartEventID   string `json:"turn_start_event_id,omitempty" yaml:"turn_start_event_id,omitempty"`
+}
+
+// Empty reports whether no cut metadata was recorded.
+func (c ChunkCutMetadata) Empty() bool {
+	return c.FirstKeptEventID == "" &&
+		c.TokensBefore == 0 &&
+		c.KeptTokensEstimate == 0 &&
+		!c.IsSplitTurn &&
+		c.TurnStartEventID == ""
 }
 
 type ChunkStructuredSummary struct {
@@ -44,6 +80,7 @@ type ChunkStructuredSummary struct {
 	MemoryCandidates []string `json:"memory_candidates,omitempty" yaml:"memory_candidates,omitempty"`
 }
 
+// Empty reports whether the structured summary contains no data.
 func (s ChunkStructuredSummary) Empty() bool {
 	return strings.TrimSpace(s.Summary) == "" &&
 		len(s.UserGoals) == 0 &&
@@ -55,6 +92,7 @@ func (s ChunkStructuredSummary) Empty() bool {
 		len(s.MemoryCandidates) == 0
 }
 
+// ChunkSummary contains metadata and summary information for a compressed chunk.
 type ChunkSummary struct {
 	ID         string                  `json:"id"`
 	Summary    string                  `json:"summary"`
@@ -66,6 +104,7 @@ type ChunkSummary struct {
 	Checksum   string                  `json:"checksum"`
 }
 
+// ChunkRecallQuery specifies criteria for recalling compressed chunks.
 type ChunkRecallQuery struct {
 	ChunkIDs []string `json:"chunk_ids,omitempty"`
 	Tags     []string `json:"tags,omitempty"`
@@ -74,6 +113,7 @@ type ChunkRecallQuery struct {
 	Limit    int      `json:"limit,omitempty"`
 }
 
+// ChunkRecallResult returns a recalled chunk with its summary and events.
 type ChunkRecallResult struct {
 	ChunkID    string                  `json:"chunk_id"`
 	Summary    string                  `json:"summary"`
@@ -99,10 +139,13 @@ type chunkIndexEntry struct {
 	RiskTypes  []string                `yaml:"risk_types,omitempty"`
 	EventCount int                     `yaml:"event_count"`
 	Checksum   string                  `yaml:"checksum"`
+	CutMeta    *ChunkCutMetadata       `yaml:"cut_meta,omitempty"`
 }
 
 const defaultSummaryMaxChunks = 10
 
+// NewSessionMemoryStore creates a new session memory store with the specified
+// root directory and optional summary chunk limit.
 func NewSessionMemoryStore(rootDir string, summaryMaxChunks ...int) *SessionMemoryStore {
 	maxChunks := defaultSummaryMaxChunks
 	if len(summaryMaxChunks) > 0 && summaryMaxChunks[0] > 0 {
@@ -111,6 +154,7 @@ func NewSessionMemoryStore(rootDir string, summaryMaxChunks ...int) *SessionMemo
 	return &SessionMemoryStore{rootDir: rootDir, summaryMaxChunks: maxChunks}
 }
 
+// AppendEvent appends a session event to the event stream and returns its ID.
 func (s *SessionMemoryStore) AppendEvent(ctx context.Context, event SessionEvent) (string, error) {
 	select {
 	case <-ctx.Done():
@@ -132,6 +176,14 @@ func (s *SessionMemoryStore) AppendEvent(ctx context.Context, event SessionEvent
 	if event.Role == "" {
 		event.Role = "system"
 	}
+	// Strip screenshot base64 payloads at the write boundary, regardless of
+	// origin (direct AppendEvent calls or sessionEventFromRecord). This is the
+	// second line of defense: sessionEventFromRecord already strips when
+	// converting from MessageRecord (the langchain path); AppendEvent handles
+	// direct writes. stripScreenshotData is idempotent—calling it twice on
+	// already-stripped content is safe—so we can sanitize here unconditionally.
+	event.Content = stripScreenshotData(event.Content)
+
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
 		return "", fmt.Errorf("create session directory: %w", err)
 	}
@@ -146,6 +198,7 @@ func (s *SessionMemoryStore) AppendEvent(ctx context.Context, event SessionEvent
 	return event.EventID, nil
 }
 
+// Compress reads all session events and compresses them into a chunk.
 func (s *SessionMemoryStore) Compress(ctx context.Context, opt CompressOption) (ChunkSummary, error) {
 	select {
 	case <-ctx.Done():
@@ -194,6 +247,7 @@ func (s *SessionMemoryStore) compressEvents(ctx context.Context, events []Sessio
 		RiskTypes:  append([]string(nil), opt.RiskTypes...),
 		EventCount: len(events),
 		Checksum:   checksum,
+		CutMeta:    cutMetaOrNil(opt.CutMeta),
 	}
 	index, err := s.loadChunkIndex()
 	if err != nil {
@@ -245,6 +299,7 @@ func (s *SessionMemoryStore) replaceEvents(events []SessionEvent) error {
 	return nil
 }
 
+// RecallChunks retrieves compressed chunks matching the query criteria.
 func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecallQuery) ([]ChunkRecallResult, error) {
 	select {
 	case <-ctx.Done():
@@ -459,9 +514,37 @@ func parseChunkLines(content []byte) []chunkLine {
 	return chunks
 }
 
-func renderSummaryMD(chunks []chunkLine) string {
+func extractRollingSummary(content []byte) string {
+	if len(content) == 0 {
+		return ""
+	}
+	lines := strings.Split(string(content), "\n")
+	inSummaryBlock := false
+	var summaryLines []string
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "## Rolling Summary" {
+			inSummaryBlock = true
+			continue
+		}
+		if inSummaryBlock {
+			if strings.HasPrefix(strings.TrimSpace(line), "##") {
+				break
+			}
+			summaryLines = append(summaryLines, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(summaryLines, "\n"))
+}
+
+func renderSummaryMD(chunks []chunkLine, rollingSummary string) string {
 	var b strings.Builder
 	b.WriteString("# Session History (compressed chunks)\n\n")
+	if rollingSummary != "" {
+		b.WriteString("## Rolling Summary\n\n")
+		b.WriteString(rollingSummary)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("## Recent Chunks\n\n")
 	b.WriteString("Use recall_session_chunks with a chunk_id to retrieve full conversation details.\n\n")
 	for _, c := range chunks {
 		b.WriteString(fmt.Sprintf("- **%s**\n  %s\n", c.ID, c.Summary))
@@ -483,9 +566,10 @@ func renderArchiveMD(chunks []chunkLine) string {
 func formatSessionSummaryWithWindow(existingSummary []byte, existingArchive []byte, newChunk chunkIndexEntry, maxChunks int) (summaryContent string, archiveContent string) {
 	chunks := parseChunkLines(existingSummary)
 	chunks = append(chunks, chunkLine{ID: newChunk.ID, Summary: strings.TrimSpace(newChunk.Summary)})
+	rollingSummary := extractRollingSummary(existingSummary)
 
 	if maxChunks <= 0 || len(chunks) <= maxChunks {
-		return renderSummaryMD(chunks), ""
+		return renderSummaryMD(chunks, rollingSummary), ""
 	}
 
 	overflow := chunks[:len(chunks)-maxChunks]
@@ -494,7 +578,40 @@ func formatSessionSummaryWithWindow(existingSummary []byte, existingArchive []by
 	archived := parseChunkLines(existingArchive)
 	archived = append(archived, overflow...)
 
-	return renderSummaryMD(keep), renderArchiveMD(archived)
+	updatedRollingSummary := mergeArchivedChunksIntoRollingSummary(rollingSummary, overflow)
+	return renderSummaryMD(keep, updatedRollingSummary), renderArchiveMD(archived)
+}
+
+func mergeArchivedChunksIntoRollingSummary(existingRollingSummary string, archivedChunks []chunkLine) string {
+	if len(archivedChunks) == 0 {
+		return existingRollingSummary
+	}
+	var b strings.Builder
+	if existingRollingSummary != "" {
+		b.WriteString(existingRollingSummary)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("Archived chunks:\n")
+	for _, c := range archivedChunks {
+		b.WriteString(fmt.Sprintf("- %s: %s\n", c.ID, c.Summary))
+	}
+	merged := strings.TrimSpace(b.String())
+
+	// Cap the rolling summary to prevent unbounded growth. When the line count
+	// exceeds the limit, drop the oldest lines and add a truncation marker.
+	// This is a stopgap until phase 2 implements true rolling checkpointing
+	// (re-summarizing the rolling summary itself).
+	lines := strings.Split(merged, "\n")
+	if len(lines) > maxRollingSummaryLines {
+		// Reserve 2 lines for the truncation marker and blank line separator
+		keepCount := maxRollingSummaryLines - 2
+		kept := lines[len(lines)-keepCount:]
+		var capped strings.Builder
+		capped.WriteString("[Earlier content truncated to prevent unbounded growth]\n\n")
+		capped.WriteString(strings.Join(kept, "\n"))
+		return strings.TrimSpace(capped.String())
+	}
+	return merged
 }
 
 func structuredOrNil(s ChunkStructuredSummary) *ChunkStructuredSummary {
@@ -502,6 +619,13 @@ func structuredOrNil(s ChunkStructuredSummary) *ChunkStructuredSummary {
 		return nil
 	}
 	return &s
+}
+
+func cutMetaOrNil(c ChunkCutMetadata) *ChunkCutMetadata {
+	if c.Empty() {
+		return nil
+	}
+	return &c
 }
 
 func minInt(a int, b int) int {

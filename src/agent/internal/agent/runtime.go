@@ -83,11 +83,12 @@ type RunMetrics struct {
 	TotalTokens      int     `json:"total_tokens,omitempty"`
 	ContextWindow    int     `json:"context_window,omitempty"`
 	FirstTokenTime   float64 `json:"first_token_time_ms,omitempty"`
-	// LastPromptTokens holds the prompt-token count of the most recent LLM call.
+	// LastPromptTokens holds the largest single prompt-token count in the run.
 	// PromptTokens/CompletionTokens/TotalTokens accumulate across the multiple
 	// planner/executor/verifier calls in a single run, but the compression
 	// heuristic needs the size of one prompt relative to the context window, not
-	// the cumulative sum, so that single-call value is tracked separately.
+	// the cumulative sum. Using the largest single prompt keeps a small verifier
+	// call from masking a much larger planner prompt.
 	LastPromptTokens int `json:"-"`
 }
 
@@ -479,6 +480,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
 	plannerMemory := memoryHandle.Memory
+	// Wrap the window buffer with hot-window boundary markers (injected at
+	// prompt-build time only, never persisted) when compressed history exists.
+	plannerMemory = newHotWindowBoundaryMemory(plannerMemory, r.memories.HasCompressedHistory)
 	if historyStore := chatHistoryStoreForConfigDir(r.config.ConfigDir); historyStore != nil {
 		plannerMemory = newChatHistoryPlannerMemory(plannerMemory, historyStore)
 	}
@@ -882,10 +886,12 @@ func recordUsageMetrics(metrics *RunMetrics, res *llms.ContentResponse) {
 	// A single run makes several LLM calls (planner, executor, verifier, and any
 	// tool-assisted iterations). Accumulate token counts across calls so the run
 	// metrics reflect the whole run rather than only the last call. LastPromptTokens
-	// keeps the most recent single-call prompt size for the compression heuristic.
+	// keeps the largest single-call prompt size for the compression heuristic.
 	if v, ok := usageMetricInt(info["prompt_tokens"]); ok {
 		metrics.PromptTokens += v
-		metrics.LastPromptTokens = v
+		if v > metrics.LastPromptTokens {
+			metrics.LastPromptTokens = v
+		}
 	}
 	if v, ok := usageMetricInt(info["completion_tokens"]); ok {
 		metrics.CompletionTokens += v

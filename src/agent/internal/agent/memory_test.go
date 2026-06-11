@@ -47,6 +47,110 @@ func TestMemoryManagerSaveWritesSessionEvents(t *testing.T) {
 	}
 }
 
+func TestSessionEventsStripScreenshotData(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+	handle, err := manager.Get("default", MemoryConfig{Type: "buffer"})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	screenshotJSON := `{"width":1080,"height":2400,"format":"jpeg","size":54321,"data":"dGVzdC1iYXNlNjQtc2NyZWVuc2hvdC1wYXlsb2FkCg=="}`
+	if err := handle.History.SetMessages(ctx, []llms.ChatMessage{
+		llms.HumanChatMessage{Content: "take screenshot"},
+		llms.ToolChatMessage{Content: screenshotJSON},
+		llms.AIChatMessage{Content: "screenshot taken"},
+	}); err != nil {
+		t.Fatalf("SetMessages() error = %v", err)
+	}
+	if err := manager.Save(ctx, "default"); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) != 3 {
+		t.Fatalf("expected 3 session events, got %d", len(events))
+	}
+	toolEvent := events[1]
+	if toolEvent.Type != "tool_result" {
+		t.Fatalf("expected tool_result, got %s", toolEvent.Type)
+	}
+	if strings.Contains(toolEvent.Content, "dGVzdC1iYXNlNjQtc2NyZWVuc2hvdC1wYXlsb2FkCg==") {
+		t.Fatalf("screenshot base64 data should be stripped: %s", toolEvent.Content)
+	}
+	if strings.Contains(toolEvent.Content, `"data"`) {
+		t.Fatalf("data field should be omitted: %s", toolEvent.Content)
+	}
+	if !strings.Contains(toolEvent.Content, `"width":1080`) {
+		t.Fatalf("metadata should be preserved: %s", toolEvent.Content)
+	}
+	if !strings.Contains(toolEvent.Content, `"height":2400`) {
+		t.Fatalf("metadata should be preserved: %s", toolEvent.Content)
+	}
+
+	snapshotData, err := os.ReadFile(filepath.Join(storageDir, "default.json"))
+	if err != nil {
+		t.Fatalf("read legacy memory snapshot: %v", err)
+	}
+	var snapshotRecords []MessageRecord
+	if err := json.Unmarshal(snapshotData, &snapshotRecords); err != nil {
+		t.Fatalf("decode legacy memory snapshot: %v", err)
+	}
+	if len(snapshotRecords) != 3 {
+		t.Fatalf("expected 3 snapshot records, got %d", len(snapshotRecords))
+	}
+	snapshotToolContent := snapshotRecords[1].Content
+	if strings.Contains(snapshotToolContent, "dGVzdC1iYXNlNjQtc2NyZWVuc2hvdC1wYXlsb2FkCg==") {
+		t.Fatalf("legacy snapshot should strip screenshot base64 data: %s", snapshotData)
+	}
+	if strings.Contains(snapshotToolContent, `"data"`) {
+		t.Fatalf("legacy snapshot should omit data field: %s", snapshotData)
+	}
+	if !strings.Contains(snapshotToolContent, `"width":1080`) {
+		t.Fatalf("legacy snapshot should preserve metadata: %s", snapshotData)
+	}
+}
+
+func TestSessionMemoryAppendEventStripsScreenshotData(t *testing.T) {
+	ctx := context.Background()
+	session := NewSessionMemoryStore(t.TempDir())
+
+	screenshotJSON := `{"width":640,"height":480,"format":"jpeg","size":12345,"data":"YW5vdGhlci1iYXNlNjQtcGF5bG9hZAo=","action_output":"tap succeeded"}`
+	eventID, err := session.AppendEvent(ctx, SessionEvent{
+		Type:    "tool_result",
+		Role:    "tool",
+		Content: screenshotJSON,
+	})
+	if err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+	if eventID == "" {
+		t.Fatal("AppendEvent() returned empty ID")
+	}
+
+	events, err := session.readEvents(session.eventsPath())
+	if err != nil {
+		t.Fatalf("ReadEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	stored := events[0]
+	if strings.Contains(stored.Content, "YW5vdGhlci1iYXNlNjQtcGF5bG9hZAo=") {
+		t.Fatalf("screenshot base64 data should be stripped: %s", stored.Content)
+	}
+	if strings.Contains(stored.Content, `"data"`) {
+		t.Fatalf("data field should be omitted: %s", stored.Content)
+	}
+	if !strings.Contains(stored.Content, `"width":640`) {
+		t.Fatalf("metadata should be preserved: %s", stored.Content)
+	}
+	if !strings.Contains(stored.Content, `"action_output":"tap succeeded"`) {
+		t.Fatalf("action_output should be preserved: %s", stored.Content)
+	}
+}
+
 func TestMemoryManagerRestoresFromSessionEventsWhenSnapshotMissing(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
@@ -177,7 +281,9 @@ func TestSessionMemoryRecallRejectsTruncatedChunkEvidence(t *testing.T) {
 func TestMemoryManagerSaveCompactsHotWindow(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
-	manager := NewMemoryManager(storageDir)
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.HotWindowEvents = 20
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
 	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
@@ -189,7 +295,7 @@ func TestMemoryManagerSaveCompactsHotWindow(t *testing.T) {
 		llms.HumanChatMessage{Content: "记一下，以后处理蓝海报销App超过100元的提交或付款动作，必须先给风险摘要并等我确认。"},
 		llms.AIChatMessage{Content: "已记录这个高风险操作规则。"},
 	}
-	for i := 0; i < 22; i++ {
+	for i := 0; i < 39; i++ {
 		messages = append(messages, llms.HumanChatMessage{Content: "填充对话轮次"})
 	}
 	if err := handle.History.SetMessages(ctx, messages); err != nil {
@@ -200,8 +306,8 @@ func TestMemoryManagerSaveCompactsHotWindow(t *testing.T) {
 	}
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
-	if len(events) > 20 {
-		t.Fatalf("expected session events to be compacted to hot window <= 20, got %d", len(events))
+	if len(events) > cfg.HotWindowEvents+1 {
+		t.Fatalf("expected session events to fit hot window plus pinned root <= %d, got %d", cfg.HotWindowEvents+1, len(events))
 	}
 
 	chunks, err := NewSessionMemoryStore(filepath.Join(storageDir, "session")).RecallChunks(ctx, ChunkRecallQuery{Tags: []string{"报销"}, Entities: []string{"蓝海报销App"}, Limit: 1})
@@ -279,7 +385,7 @@ func TestMaintainFilesystemMemoryUsesStructuredSummarizerAndFallsBackToPlain(t *
 		t.Fatalf("Get() error = %v", err)
 	}
 	var msgs []llms.ChatMessage
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 9; i++ {
 		msgs = append(msgs, llms.HumanChatMessage{Content: fmt.Sprintf("message %d", i)})
 	}
 	if err := handle.History.SetMessages(ctx, msgs); err != nil {
@@ -323,7 +429,7 @@ func TestMaintainFilesystemMemoryFallsBackWhenStructuredSummaryIsMissing(t *test
 		t.Fatalf("Get() error = %v", err)
 	}
 	var msgs []llms.ChatMessage
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 9; i++ {
 		msgs = append(msgs, llms.HumanChatMessage{Content: fmt.Sprintf("message %d", i)})
 	}
 	if err := handle.History.SetMessages(ctx, msgs); err != nil {
@@ -355,7 +461,9 @@ func TestMaintainFilesystemMemoryUsesLLMSummary(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	called := false
-	manager := NewMemoryManager(storageDir, WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.HotWindowEvents = 20
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg), WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
 		called = true
 		return "LLM generated summary of " + fmt.Sprintf("%d", len(events)) + " events"
 	}))
@@ -365,7 +473,7 @@ func TestMaintainFilesystemMemoryUsesLLMSummary(t *testing.T) {
 		t.Fatalf("Get() error = %v", err)
 	}
 	var msgs []llms.ChatMessage
-	for i := 0; i < 22; i++ {
+	for i := 0; i < 41; i++ {
 		msgs = append(msgs, llms.HumanChatMessage{Content: fmt.Sprintf("message %d", i)})
 	}
 	if err := handle.History.SetMessages(ctx, msgs); err != nil {
@@ -470,6 +578,81 @@ func TestMaintainFilesystemMemorySkipsWhenBelowTokenThreshold(t *testing.T) {
 	}
 }
 
+func TestMaintainFilesystemMemoryTriggersOnReserveTokens(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 1000
+	cfg.ReserveTokens = 200
+	cfg.CompressAtPercent = 90 // high percent so only reserve triggers
+	cfg.HotWindowEvents = 100
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
+
+	sessionDir := filepath.Join(storageDir, "session")
+	os.MkdirAll(sessionDir, 0o755)
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: "message",
+		})
+	}
+
+	// Set prompt tokens to 810 (> contextWindow - reserve = 800)
+	manager.SetLastPromptTokens(810)
+
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory() error = %v", err)
+	}
+
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(chunks) == 0 {
+		t.Fatalf("expected compression to trigger from reserve threshold, got no chunks")
+	}
+}
+
+func TestMaintainFilesystemMemoryTriggersOnEventCountWhenTokenUnavailable(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.HotWindowEvents = 10
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
+
+	sessionDir := filepath.Join(storageDir, "session")
+	os.MkdirAll(sessionDir, 0o755)
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+	for i := 0; i < 21; i++ {
+		session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: "message",
+		})
+	}
+
+	// LastPromptTokens not set (still 0), simulating cold start
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory() error = %v", err)
+	}
+
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(chunks) == 0 {
+		t.Fatalf("expected compression to trigger from event count fallback, got no chunks")
+	}
+}
+
 func TestMemoryManagerTokenTracking(t *testing.T) {
 	manager := NewMemoryManager("")
 	manager.SetLastPromptTokens(5000)
@@ -505,7 +688,9 @@ func TestMemoryManagerTokenTrackingConcurrentAccess(t *testing.T) {
 func TestMemoryManagerClearAllRemovesFilesystemMemoryArtifacts(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
-	manager := NewMemoryManager(storageDir)
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.HotWindowEvents = 20
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
 	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
@@ -513,7 +698,7 @@ func TestMemoryManagerClearAllRemovesFilesystemMemoryArtifacts(t *testing.T) {
 	messages := []llms.ChatMessage{
 		llms.HumanChatMessage{Content: "记一下，以后处理蓝海报销App超过100元必须先确认。"},
 	}
-	for i := 0; i < 22; i++ {
+	for i := 0; i < 40; i++ {
 		messages = append(messages, llms.HumanChatMessage{Content: "填充对话轮次"})
 	}
 	if err := handle.History.SetMessages(ctx, messages); err != nil {
@@ -601,6 +786,283 @@ func TestMemoryManagerClearSessionPreservesLongTermMemory(t *testing.T) {
 	}
 }
 
+func TestMaintainFilesystemMemorySplitsLongSingleTurnWithoutOrphanToolResult(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 8000   // clamps reserve to 4000, keep_recent to 4000
+	cfg.CompressAtPercent = 50 // token-percent trigger
+	cfg.HotWindowEvents = 1000 // event-count trigger must not fire
+	cfg.KeepRecentTokens = 4000
+
+	// Summarizer echoes event contents so we can assert the user goal survives.
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg),
+		WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+			var b strings.Builder
+			for _, e := range events {
+				b.WriteString(e.Content)
+				b.WriteString(" ")
+			}
+			return strings.TrimSpace(b.String())
+		}))
+
+	sessionDir := filepath.Join(storageDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir session: %v", err)
+	}
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+
+	const goalMarker = "USER_GOAL_REIMBURSE_FLOW_42"
+	// One single turn: a user goal, then many assistant/tool exchanges large
+	// enough to blow past keep_recent_tokens so the cut lands mid-turn.
+	mustAppend := func(typ, role, content string, i int) {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%03d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    typ, Role: role, Content: content,
+		}); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+	mustAppend("user_input", "user", goalMarker+" "+strings.Repeat("g", 100), 0)
+	idx := 1
+	for pair := 0; pair < 10; pair++ {
+		mustAppend("assistant_output", "assistant", strings.Repeat("a", 3200), idx)
+		idx++
+		mustAppend("tool_result", "tool", strings.Repeat("r", 3200), idx)
+		idx++
+	}
+
+	manager.SetLastPromptTokens(6000) // 75% of 8k window → triggers
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory: %v", err)
+	}
+
+	hot := readSessionEvents(t, session.eventsPath())
+	if len(hot) == 0 {
+		t.Fatalf("expected hot events to remain after compaction")
+	}
+	if hot[0].Type == "tool_result" {
+		t.Fatalf("hot window must not open on an orphan tool_result: %#v", hot[0])
+	}
+	if hot[0].EventID != "evt_000" || hot[0].Type != "user_input" || !strings.Contains(hot[0].Content, goalMarker) {
+		t.Fatalf("root user goal must be pinned as the first hot event, got %#v", hot[0])
+	}
+
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 1})
+	if err != nil {
+		t.Fatalf("RecallChunks: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected one compacted chunk, got %d", len(chunks))
+	}
+	for _, event := range chunks[0].Evidence {
+		if event.EventID == "evt_000" {
+			t.Fatalf("root user goal must not be compressed into chunk evidence: %#v", event)
+		}
+	}
+	if strings.Contains(chunks[0].Summary, goalMarker) {
+		t.Fatalf("root user goal must not depend on chunk summary:\n%s", chunks[0].Summary)
+	}
+
+	// The split-turn cut metadata should be recorded on the index entry.
+	index, err := session.loadChunkIndex()
+	if err != nil {
+		t.Fatalf("loadChunkIndex: %v", err)
+	}
+	if len(index.Chunks) != 1 || index.Chunks[0].CutMeta == nil {
+		t.Fatalf("expected cut metadata on chunk index entry: %#v", index.Chunks)
+	}
+	if !index.Chunks[0].CutMeta.IsSplitTurn {
+		t.Fatalf("expected split-turn cut metadata, got %#v", index.Chunks[0].CutMeta)
+	}
+}
+
+func TestMaintainFilesystemMemoryPinsRootUserInputInHotWindow(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 8000
+	cfg.CompressAtPercent = 50
+	cfg.HotWindowEvents = 1000
+	cfg.KeepRecentTokens = 4000
+
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg),
+		WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+			var b strings.Builder
+			for _, e := range events {
+				b.WriteString(e.Content)
+				b.WriteString(" ")
+			}
+			return strings.TrimSpace(b.String())
+		}))
+
+	sessionDir := filepath.Join(storageDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir session: %v", err)
+	}
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+
+	const rootGoal = "ROOT_USER_GOAL_BOOK_FLIGHT_42"
+	mustAppend := func(typ, role, content string, i int) {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%03d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    typ, Role: role, Content: content,
+		}); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+	mustAppend("user_input", "user", rootGoal, 0)
+	for i := 1; i <= 12; i++ {
+		mustAppend("assistant_output", "assistant", strings.Repeat("a", 3200), i)
+	}
+
+	manager.SetLastPromptTokens(6000)
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory: %v", err)
+	}
+
+	hot := readSessionEvents(t, session.eventsPath())
+	foundPinnedRoot := false
+	for _, event := range hot {
+		if event.EventID == "evt_000" && event.Type == "user_input" && event.Role == "user" && event.Content == rootGoal {
+			foundPinnedRoot = true
+			break
+		}
+	}
+	if !foundPinnedRoot {
+		t.Fatalf("root user_input must stay pinned in the hot window; hot=%#v", hot)
+	}
+
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 1})
+	if err != nil {
+		t.Fatalf("RecallChunks: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected one compacted chunk, got %d", len(chunks))
+	}
+	for _, event := range chunks[0].Evidence {
+		if event.EventID == "evt_000" {
+			t.Fatalf("root user_input must not be compressed into chunk evidence: %#v", event)
+		}
+	}
+	if strings.Contains(chunks[0].Summary, rootGoal) {
+		t.Fatalf("root user_input must not rely on chunk summary for recall:\n%s", chunks[0].Summary)
+	}
+}
+
+// TestMaintainFilesystemMemoryChineseCountFallbackNoOrphanToolResult drives the
+// realistic trigger chain for the count-based fallback: a Chinese session where
+// the real prompt-token count (reported via SetLastPromptTokens) crosses the
+// compression threshold, but the chars/4 byte estimate used by the token cut
+// point stays under keep_recent — UTF-8 Chinese is ~3 bytes/char so len/4
+// underestimates true tokens badly. That makes findSessionCutPoint report no
+// cut, so planCompaction falls back to the count path. The raw count index lands
+// on a tool_result; the fix must snap it to a legal boundary instead of opening
+// the hot window on the orphan.
+func TestMaintainFilesystemMemoryChineseCountFallbackNoOrphanToolResult(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 8000
+	cfg.CompressAtPercent = 50
+	cfg.HotWindowEvents = 4 // keepCount=4 → rawCutIndex = 12-4 = 8 (a tool_result)
+	cfg.KeepRecentTokens = 4000
+
+	const goalMarker = "用户目标_报销流程_第42步"
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg),
+		WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+			var b strings.Builder
+			for _, e := range events {
+				b.WriteString(e.Content)
+				b.WriteString(" ")
+			}
+			return strings.TrimSpace(b.String())
+		}))
+
+	sessionDir := filepath.Join(storageDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir session: %v", err)
+	}
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+	mustAppend := func(typ, role, content string, i int) {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%03d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    typ, Role: role, Content: content,
+		}); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+
+	// 12 short Chinese events. Each is tiny in bytes (~30-60), so the chars/4
+	// estimate keeps the whole stream well under keep_recent (4000) and the
+	// token cut point finds nothing. Layout puts a tool_result exactly at the
+	// raw count index (8) and leaves the tail mostly tool_results so the old
+	// turn-align guard would have fallen through to the raw orphan.
+	mustAppend("user_input", "user", goalMarker+"，帮我处理一下", 0)
+	mustAppend("assistant_output", "assistant", "好的，正在查询", 1)
+	mustAppend("tool_result", "tool", "查询结果一", 2)
+	mustAppend("user_input", "user", "继续下一步", 3)
+	mustAppend("assistant_output", "assistant", "正在提交表单", 4)
+	mustAppend("tool_result", "tool", "提交结果", 5)
+	mustAppend("user_input", "user", "再确认一次", 6)
+	mustAppend("assistant_output", "assistant", "正在确认", 7)
+	mustAppend("tool_result", "tool", "确认中间态一", 8) // rawCutIndex = 8
+	mustAppend("tool_result", "tool", "确认中间态二", 9)
+	mustAppend("tool_result", "tool", "确认中间态三", 10)
+	mustAppend("assistant_output", "assistant", "已完成确认", 11)
+
+	// Real prompt token count crosses 50% of the 8k window, while the byte-based
+	// estimate of all events combined stays far below keep_recent.
+	manager.SetLastPromptTokens(6000)
+
+	// Sanity-check the premise: the token cut point really must find nothing,
+	// otherwise this test would exercise the token path instead of the fallback.
+	events, err := session.readEvents(session.eventsPath())
+	if err != nil {
+		t.Fatalf("readEvents: %v", err)
+	}
+	if cut := findSessionCutPoint(events, 0, len(events), cfg.KeepRecentTokens); cut.HasCut {
+		t.Fatalf("premise broken: token cut found a cut at %d; test no longer exercises the count fallback", cut.FirstKeptIndex)
+	}
+
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory: %v", err)
+	}
+
+	hot := readSessionEvents(t, session.eventsPath())
+	if len(hot) == 0 {
+		t.Fatalf("expected hot events to remain after compaction")
+	}
+	if hot[0].Type == "tool_result" {
+		t.Fatalf("hot window opened on an orphan tool_result: %#v", hot[0])
+	}
+	if hot[0].EventID != "evt_000" || hot[0].Type != "user_input" || !strings.Contains(hot[0].Content, goalMarker) {
+		t.Fatalf("root user goal must be pinned as the first hot event, got %#v", hot[0])
+	}
+
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 1})
+	if err != nil {
+		t.Fatalf("RecallChunks: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected one compacted chunk, got %d", len(chunks))
+	}
+	for _, event := range chunks[0].Evidence {
+		if event.EventID == "evt_000" {
+			t.Fatalf("root user goal must not be compressed into chunk evidence: %#v", event)
+		}
+	}
+	if strings.Contains(chunks[0].Summary, goalMarker) {
+		t.Fatalf("root user goal must not depend on chunk summary:\n%s", chunks[0].Summary)
+	}
+}
+
 func readSessionEvents(t *testing.T, path string) []SessionEvent {
 	t.Helper()
 	file, err := os.Open(path)
@@ -643,8 +1105,15 @@ func TestFormatSessionSummaryWithWindowKeepsMaxChunks(t *testing.T) {
 	if !strings.Contains(summary, "chunk_004") {
 		t.Fatalf("expected summary to contain chunk_004, got:\n%s", summary)
 	}
-	if strings.Contains(summary, "chunk_001") {
-		t.Fatalf("expected summary NOT to contain chunk_001, got:\n%s", summary)
+	if !strings.Contains(summary, "## Rolling Summary") {
+		t.Fatalf("expected Rolling Summary section, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "## Recent Chunks") {
+		t.Fatalf("expected Recent Chunks section, got:\n%s", summary)
+	}
+	recentChunksPart := summary[strings.Index(summary, "## Recent Chunks"):]
+	if strings.Contains(recentChunksPart, "chunk_001") {
+		t.Fatalf("expected chunk_001 NOT in Recent Chunks section, got:\n%s", summary)
 	}
 
 	if !strings.Contains(archive, "chunk_001") {
@@ -685,8 +1154,15 @@ func TestFormatSessionSummaryWithWindowAppendsToExistingArchive(t *testing.T) {
 	newChunk := chunkIndexEntry{ID: "chunk_012", Summary: "Summary 12"}
 	summary, archive := formatSessionSummaryWithWindow(existing, existingArchive, newChunk, 2)
 
-	if strings.Contains(summary, "chunk_010") {
-		t.Fatalf("expected chunk_010 to be archived out of summary, got:\n%s", summary)
+	if !strings.Contains(summary, "## Rolling Summary") {
+		t.Fatalf("expected Rolling Summary section, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "## Recent Chunks") {
+		t.Fatalf("expected Recent Chunks section, got:\n%s", summary)
+	}
+	recentChunksPart := summary[strings.Index(summary, "## Recent Chunks"):]
+	if strings.Contains(recentChunksPart, "chunk_010") {
+		t.Fatalf("expected chunk_010 NOT in Recent Chunks section, got:\n%s", summary)
 	}
 	if !strings.Contains(summary, "chunk_011") || !strings.Contains(summary, "chunk_012") {
 		t.Fatalf("expected summary to contain chunk_011 and chunk_012, got:\n%s", summary)
@@ -729,11 +1205,17 @@ func TestSessionMemoryStoreCompressCreatesArchive(t *testing.T) {
 		t.Fatalf("ReadFile summary.md error = %v", err)
 	}
 	summary := string(summaryData)
-	if strings.Contains(summary, "chunk_000") {
-		t.Fatalf("expected chunk_000 to be archived out of summary.md, got:\n%s", summary)
+	if !strings.Contains(summary, "## Rolling Summary") {
+		t.Fatalf("expected summary.md to contain Rolling Summary section, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "## Recent Chunks") {
+		t.Fatalf("expected summary.md to contain Recent Chunks section, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "chunk_000") {
+		t.Fatalf("expected chunk_000 to appear in rolling summary, got:\n%s", summary)
 	}
 	if !strings.Contains(summary, "chunk_001") || !strings.Contains(summary, "chunk_002") {
-		t.Fatalf("expected summary to contain chunk_001 and chunk_002, got:\n%s", summary)
+		t.Fatalf("expected summary to contain chunk_001 and chunk_002 in recent chunks, got:\n%s", summary)
 	}
 
 	archiveData, err := os.ReadFile(filepath.Join(root, "session", "summary_archive.md"))

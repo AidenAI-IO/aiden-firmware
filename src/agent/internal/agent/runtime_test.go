@@ -1351,6 +1351,10 @@ func TestNewRuntimeLoadsBundledSkillsSeededOnFirstStartup(t *testing.T) {
 
 func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 	configDir := t.TempDir()
+	memDir := filepath.Join(configDir, "memory")
+	os.MkdirAll(memDir, 0o755)
+	os.WriteFile(filepath.Join(memDir, "extraction.yaml"), []byte("hot_window_events: 20\n"), 0o644)
+
 	response := `{"objective":"test objective","completion_criteria":["test request is satisfied"],"plan":["answer directly"],"next_step":"answer directly","can_finish":true,"final_answer":"ok","reason":"test verified"}`
 	responses := make([]string, 90)
 	for i := range responses {
@@ -1372,7 +1376,7 @@ func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 		"我是硬件产品经理，平时用中文沟通，关注开发板 agent 端到端行为。",
 		"记一下，以后处理蓝海报销App超过100元的提交或付款动作，必须先给风险摘要并等我确认。",
 	}
-	for i := 0; i < 21; i++ {
+	for i := 0; i < 19; i++ {
 		inputs = append(inputs, "填充对话轮次")
 	}
 	for _, input := range inputs {
@@ -1391,7 +1395,7 @@ func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
 
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	now := time.Now().UTC()
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 9; i++ {
 		if _, err := session.AppendEvent(context.Background(), SessionEvent{
 			EventID: fmt.Sprintf("evt_%d", i),
 			Ts:      now.Format(time.RFC3339Nano),
@@ -1480,7 +1484,7 @@ func waitForSessionCompaction(t *testing.T, configDir string) {
 		}
 		lastEventCount = len(events)
 		lastChunkCount = len(chunks)
-		if lastEventCount <= 20 && lastChunkCount == 1 {
+		if lastEventCount <= 21 && lastChunkCount == 1 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -1489,7 +1493,7 @@ func waitForSessionCompaction(t *testing.T, configDir string) {
 	if lastErr != nil {
 		t.Fatalf("waiting for session compaction: %v", lastErr)
 	}
-	t.Fatalf("expected compacted chunk and hot window events <= 20, got chunks=%d events=%d", lastChunkCount, lastEventCount)
+	t.Fatalf("expected compacted chunk and hot window events <= 21 including pinned root, got chunks=%d events=%d", lastChunkCount, lastEventCount)
 }
 
 func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {
