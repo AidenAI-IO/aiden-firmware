@@ -135,6 +135,8 @@ App 也可以主动发送事件消息。事件复用 `BridgeCommandResponse` 外
 **iOS 实现**: 调用 `UIApplication.shared.open(URL(string: ios_urls[0])!)` 尝试打开第一个 URL。  
 **Android 实现**: 调用 `packageManager.getLaunchIntentForPackage(android_packages[0])` 或解析 deeplink。
 
+浏览器入口不要绑定固定网站：打开浏览器本身时传浏览器 URL scheme / Android browser intent；打开指定网页时传具体 `http`/`https` URL（Android 使用 `android.intent.action.VIEW:<url>`）。
+
 **响应**:
 ```json
 {

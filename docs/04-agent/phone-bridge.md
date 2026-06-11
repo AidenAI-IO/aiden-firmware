@@ -240,6 +240,8 @@ WebSocket 的核心价值：
 }
 ```
 
+浏览器语义和固定网页语义分开：打开浏览器入口时使用浏览器 URL scheme / Android browser intent；打开固定网页时传具体 `http`/`https` URL（iOS 放入 `ios_urls`，Android 使用 `android.intent.action.VIEW:<url>`）。
+
 ##### 2. `clipboard_read` — 读剪贴板
 
 ```json
