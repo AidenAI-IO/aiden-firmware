@@ -295,7 +295,7 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, marker := range []string{
-		`fetch('/benchmark/suites')`,
+		`fetch('/benchmark/suites?mode='`,
 		`fetch('/benchmark/runs')`,
 		`fetch('/benchmark/status')`,
 		`/benchmark/record`,
