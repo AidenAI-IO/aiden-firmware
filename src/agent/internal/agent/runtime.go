@@ -601,14 +601,14 @@ func (r *Runtime) handleSessionBoundary(input string, hints CurrentEnvironmentHi
 	if r.logger != nil {
 		r.logger.Info("[memory] session boundary detected: reason=%s app=%s", reason, hints.AppName)
 	}
-	pendingPath, err := r.memories.RotateSessionEvents()
+	archiveDir, err := r.memories.RotateSessionEvents()
 	if err != nil {
 		if r.logger != nil {
 			r.logger.Warn("[memory] session rotation failed: %v", err)
 		}
 		return telemetry
 	}
-	if pendingPath != "" {
+	if archiveDir != "" {
 		telemetry.Rotated = true
 	}
 	return telemetry

@@ -38,9 +38,9 @@ type MemoryExtractionConfig struct {
 	KeepRecentTokens int `yaml:"keep_recent_tokens"`
 	// SessionBoundaryEnabled controls voice multi-task session detection.
 	// When true, each new user_input is classified as "continue" or "new";
-	// "new" rotates events.jsonl into a pending session so the current turn
-	// starts with a clean hot window. Compressed session summaries remain
-	// available across task boundaries as acceptable historical context.
+	// "new" archives memory/session/ into session_archive/<closed_session_id>/
+	// and recreates an empty active session. Archived sessions are not used as
+	// prompt context or active recall sources.
 	SessionBoundaryEnabled bool `yaml:"session_boundary_enabled"`
 	// SessionBoundaryShortGapSeconds is the gap below which a new turn is
 	// treated as a continuation regardless of lexical signals.

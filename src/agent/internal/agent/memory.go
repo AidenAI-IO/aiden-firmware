@@ -408,17 +408,16 @@ func (m *MemoryManager) AppendExchange(ctx context.Context, agentName string, in
 	return nil
 }
 
-// RotateSessionEvents atomically moves the current hot session event stream
-// aside so a newly detected task can start with a clean events.jsonl. The
-// rotated file is consumed later by maintenance as a closed pending session.
-// Existing compressed summaries/chunks are intentionally preserved: using task
-// summaries as cross-task historical context is acceptable, while the hot
-// window is limited to the newly detected task.
+// RotateSessionEvents atomically archives the current active session directory
+// so a newly detected session starts from empty filesystem and in-memory
+// context. Archived sessions are preserved as logs only; they are not consumed
+// by active prompt construction, HasCompressedHistory, maintenance, or chunk
+// recall.
 func (m *MemoryManager) RotateSessionEvents() (string, error) {
 	if m.storageDir == "" {
 		return "", nil
 	}
-	pendingPath, err := func() (string, error) {
+	archiveDir, err := func() (string, error) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 
@@ -431,26 +430,33 @@ func (m *MemoryManager) RotateSessionEvents() (string, error) {
 		}
 		defer fl.Unlock()
 
-		if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-			return "", fmt.Errorf("create session directory for rotation: %w", err)
-		}
-		info, err := os.Stat(eventsPath)
+		hasData, err := sessionDirHasData(sessionDir)
 		if err != nil {
-			if os.IsNotExist(err) {
-				if err := os.WriteFile(eventsPath, nil, 0o644); err != nil {
-					return "", fmt.Errorf("create empty session events after missing rotation source: %w", err)
-				}
-				return "", nil
-			}
-			return "", fmt.Errorf("stat session events for rotation: %w", err)
+			return "", fmt.Errorf("inspect active session for rotation: %w", err)
 		}
-		if info.Size() == 0 {
+		if !hasData {
+			if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+				return "", fmt.Errorf("create empty session directory after no-op rotation: %w", err)
+			}
+			if err := os.WriteFile(eventsPath, nil, 0o644); err != nil {
+				return "", fmt.Errorf("create empty session events after no-op rotation: %w", err)
+			}
 			return "", nil
 		}
 
-		pendingPath := filepath.Join(sessionDir, fmt.Sprintf("events.pending-%d.jsonl", time.Now().UTC().UnixNano()))
-		if err := os.Rename(eventsPath, pendingPath); err != nil {
-			return "", fmt.Errorf("rotate session events: %w", err)
+		archiveParent := filepath.Join(m.storageDir, "session_archive")
+		if err := os.MkdirAll(archiveParent, 0o755); err != nil {
+			return "", fmt.Errorf("create session archive directory: %w", err)
+		}
+		archiveDir, err := nextSessionArchiveDir(archiveParent, time.Now().UTC())
+		if err != nil {
+			return "", err
+		}
+		if err := os.Rename(sessionDir, archiveDir); err != nil {
+			return "", fmt.Errorf("archive active session: %w", err)
+		}
+		if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+			return "", fmt.Errorf("create active session directory after rotation: %w", err)
 		}
 		if err := os.WriteFile(eventsPath, nil, 0o644); err != nil {
 			return "", fmt.Errorf("create empty session events after rotation: %w", err)
@@ -459,24 +465,59 @@ func (m *MemoryManager) RotateSessionEvents() (string, error) {
 		for agentName := range m.eventCount {
 			m.eventCount[agentName] = 0
 		}
+		m.lastPromptTokens = 0
 		for _, handle := range m.handles {
 			if handle != nil && handle.Memory != nil {
 				_ = handle.Memory.Clear(context.Background())
 			}
 		}
-		return pendingPath, nil
+		return archiveDir, nil
 	}()
 	if err != nil {
 		return "", err
 	}
 
-	if pendingPath != "" && m.logger != nil {
-		m.logger.Info("[memory] session rotated: pending=%s", filepath.Base(pendingPath))
+	if archiveDir != "" && m.logger != nil {
+		m.logger.Info("[memory] session rotated: archive=%s", filepath.Base(archiveDir))
 	}
-	if pendingPath != "" {
-		m.RequestMaintenance()
+	return archiveDir, nil
+}
+
+func sessionDirHasData(sessionDir string) (bool, error) {
+	entries, err := os.ReadDir(sessionDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
 	}
-	return pendingPath, nil
+	for _, entry := range entries {
+		if entry.Name() != "events.jsonl" || entry.IsDir() {
+			return true, nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return false, err
+		}
+		if info.Size() > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func nextSessionArchiveDir(parent string, now time.Time) (string, error) {
+	for i := int64(0); i < 100; i++ {
+		id := strconv.FormatInt(now.UnixNano()+i, 10)
+		path := filepath.Join(parent, id)
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				return path, nil
+			}
+			return "", fmt.Errorf("stat session archive candidate: %w", err)
+		}
+	}
+	return "", fmt.Errorf("allocate session archive path: too many collisions")
 }
 
 func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHistory, agentName string) error {
@@ -713,11 +754,6 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		return nil
 	}
 	session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"), m.extraction.SummaryMaxChunks)
-	if consumed, err := m.consumePendingSessionEvents(ctx, session); err != nil {
-		return err
-	} else if consumed > 0 && m.logger != nil {
-		m.logger.Info("[memory] pending consumed: count=%d, merged=false", consumed)
-	}
 	eventsPath := session.eventsPath()
 
 	// Phase 1: Read events snapshot under FileLock to serialize with append paths.
@@ -943,78 +979,6 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		m.logger.Info("[memory] profile.md regenerated")
 	}
 	return nil
-}
-
-func (m *MemoryManager) consumePendingSessionEvents(ctx context.Context, session *SessionMemoryStore) (int, error) {
-	paths, err := session.pendingEventsPaths()
-	if err != nil {
-		return 0, fmt.Errorf("scan pending session events: %w", err)
-	}
-	consumed := 0
-	for _, path := range paths {
-		select {
-		case <-ctx.Done():
-			return consumed, ctx.Err()
-		default:
-		}
-
-		events, err := session.readEvents(path)
-		if err != nil {
-			if isPathNotExistError(err) {
-				continue
-			}
-			return consumed, fmt.Errorf("read pending session events %q: %w", path, err)
-		}
-		if len(events) == 0 {
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return consumed, fmt.Errorf("remove empty pending session events %q: %w", path, err)
-			}
-			continue
-		}
-
-		summary, structured := m.buildEventSummary(ctx, events)
-		if err := ctx.Err(); err != nil {
-			return consumed, err
-		}
-
-		fl := NewFileLock(m.storageDir)
-		if err := fl.Lock(m.lockTimeout); err != nil {
-			return consumed, fmt.Errorf("lock for consuming pending session events: %w", err)
-		}
-
-		if _, err := os.Stat(path); err != nil {
-			_ = fl.Unlock()
-			if os.IsNotExist(err) {
-				continue
-			}
-			return consumed, fmt.Errorf("stat pending session events %q: %w", path, err)
-		}
-
-		chunkSummary, err := session.compressEvents(ctx, events, CompressOption{
-			ChunkID:    pendingChunkIDFromPath(path),
-			Summary:    summary,
-			Structured: structured,
-			Tags:       m.extraction.extractMemoryTags(events),
-			Entities:   m.extraction.extractMemoryEntities(events),
-		})
-		if err != nil {
-			_ = fl.Unlock()
-			return consumed, fmt.Errorf("compress pending session events %q: %w", path, err)
-		}
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			_ = fl.Unlock()
-			return consumed, fmt.Errorf("remove consumed pending session events %q: %w", path, err)
-		}
-		if err := fl.Unlock(); err != nil {
-			return consumed, err
-		}
-
-		consumed++
-		if m.logger != nil {
-			m.logger.Info("[memory] pending chunk created: id=%s, events=%d", chunkSummary.ID, len(events))
-		}
-	}
-	return consumed, nil
 }
 
 // compactionPlan describes the chosen split of the event stream.

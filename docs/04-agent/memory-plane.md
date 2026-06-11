@@ -7,9 +7,9 @@
 现有 Go Agent 的 memory 已经有几类能力：
 
 - `MemoryManager` 维护 langchaingo 的 conversation window，并把会话事件写入 `/userdata/agent/memory/session/events.jsonl`。
-- `SessionMemoryStore` 将较老事件压缩为 chunks，生成 `session/summary.md`，并提供 `recall_session_chunks`。
+- `SessionMemoryStore` compresses older events from the active session into chunks, writes `session/summary.md`, and provides `recall_session_chunks` for active-session chunks only.
 - `LongTermMemoryStore` 将 profile、rule、preference、procedure、fact 存为 markdown frontmatter，生成 `long_term/index.yaml` 和 `long_term/profile.md`，并提供 `recall_memory`、`save_memory`、`forget_memory`。
-- `Runtime.Run` 当前只把 `session/summary.md` 和 `long_term/profile.md` 拼入 prompt。长期记忆检索主要依赖模型主动调用工具，不是每次任务规划的稳定输入。
+- `Runtime.Run` reads only the current active `session/summary.md` and `long_term/profile.md` for prompt context. Closed sessions under `session_archive/` are logs and are not prompt or recall context.
 - Agent loop 已拆成 `planner`、`executor`、`verifier`。`planner` 和 `verifier` 能看到历史、工具目录和 world state；`executor` 被刻意限制为只执行 planner 批准的 `next_step`。
 
 新设计应保留这个分层：自动检索进入 `planner` 和 `verifier`，不要把所有历史经验直接暴露给 `executor`。
@@ -32,7 +32,7 @@ RunRequest
   ▼
 MemoryPlane.Retrieve
   │
-  ├─ session summary/profile
+  ├─ active session summary/profile
   ├─ device/app/procedure/calibration/failure memory
   └─ task episode retrieval
   │
@@ -71,6 +71,8 @@ TaskEpisodeWriter
 │   ├── events.jsonl             # 现有热会话事件
 │   ├── summary.md               # 现有压缩摘要
 │   └── chunks/
+├── session_archive/
+│   └── <closed_session_id>/      # closed session logs, excluded from active context
 ├── long_term/
 │   ├── profile.md               # 现有用户 profile
 │   ├── index.yaml

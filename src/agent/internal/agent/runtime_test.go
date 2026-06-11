@@ -1476,6 +1476,7 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 	configDir := t.TempDir()
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	oldSummary := "OLD SESSION SUMMARY MUST NOT ENTER NEW PROMPT"
 	now := time.Now().UTC().Add(-2 * time.Minute)
 	for i := 0; i < 2; i++ {
 		if _, err := session.AppendEvent(context.Background(), SessionEvent{
@@ -1487,6 +1488,9 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("AppendEvent() error = %v", err)
 		}
+	}
+	if err := os.WriteFile(filepath.Join(storageDir, "session", "summary.md"), []byte(oldSummary), 0o644); err != nil {
+		t.Fatalf("WriteFile old summary.md: %v", err)
 	}
 
 	releaseMaintenance := make(chan struct{})
@@ -1533,16 +1537,39 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 	if len(active) != 2 || active[0].Content != "打开微信" {
 		t.Fatalf("expected active events to contain only current exchange, got %#v", active)
 	}
-	pendingPaths, err := filepath.Glob(filepath.Join(storageDir, "session", pendingEventsGlob))
+	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
 	if err != nil {
-		t.Fatalf("Glob pending events: %v", err)
+		t.Fatalf("Glob archived sessions: %v", err)
 	}
-	if len(pendingPaths) != 1 {
-		t.Fatalf("expected one pending rotated session, got %v", pendingPaths)
+	if len(archiveDirs) != 1 {
+		t.Fatalf("expected one archived rotated session, got %v", archiveDirs)
 	}
-	pending := readSessionEvents(t, pendingPaths[0])
-	if len(pending) != 2 || pending[0].EventID != "evt_old_0" {
-		t.Fatalf("unexpected pending events: %#v", pending)
+	archived := readSessionEvents(t, filepath.Join(archiveDirs[0], "events.jsonl"))
+	if len(archived) != 2 || archived[0].EventID != "evt_old_0" {
+		t.Fatalf("unexpected archived events: %#v", archived)
+	}
+	if _, err := os.Stat(filepath.Join(storageDir, "session", "summary.md")); !os.IsNotExist(err) {
+		t.Fatalf("active summary.md should be absent after rotation, stat err = %v", err)
+	}
+	archivedSummary, err := os.ReadFile(filepath.Join(archiveDirs[0], "summary.md"))
+	if err != nil {
+		t.Fatalf("ReadFile archived summary.md: %v", err)
+	}
+	if string(archivedSummary) != oldSummary {
+		t.Fatalf("old summary not preserved in archive: %q", archivedSummary)
+	}
+	var promptText strings.Builder
+	for _, call := range model.messages {
+		for _, message := range call {
+			for _, part := range message.Parts {
+				if text, ok := part.(llms.TextContent); ok {
+					promptText.WriteString(text.Text)
+				}
+			}
+		}
+	}
+	if strings.Contains(promptText.String(), oldSummary) {
+		t.Fatalf("new-session prompt leaked archived summary:\n%s", promptText.String())
 	}
 
 	episode, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).Get(context.Background(), result.EpisodeID)
@@ -1710,6 +1737,49 @@ func TestRuntimeRunInjectsMemoryFilesIntoSystemPrompt(t *testing.T) {
 	}
 	if !strings.Contains(systemText.String(), profile) {
 		t.Fatalf("system message missing profile:\n%s", systemText.String())
+	}
+}
+
+func TestRuntimeMemoryContextIgnoresArchivedSessionSummary(t *testing.T) {
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	archiveSummary := "ARCHIVED SESSION SUMMARY SENTINEL"
+	profile := "PROFILE STILL ACTIVE"
+
+	archiveDir := filepath.Join(memoryDir, "session_archive", "closed-session")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll archive: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(archiveDir, "summary.md"), []byte(archiveSummary), 0o644); err != nil {
+		t.Fatalf("WriteFile archive summary.md: %v", err)
+	}
+	longTermDir := filepath.Join(memoryDir, "long_term")
+	if err := os.MkdirAll(longTermDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll long_term: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(longTermDir, "profile.md"), []byte(profile), 0o644); err != nil {
+		t.Fatalf("WriteFile profile.md: %v", err)
+	}
+
+	runtime := &Runtime{config: Config{ConfigDir: configDir}}
+	promptContext := runtime.memoryContextForPrompt()
+	if strings.Contains(promptContext, archiveSummary) {
+		t.Fatalf("memoryContextForPrompt leaked archived summary:\n%s", promptContext)
+	}
+	if !strings.Contains(promptContext, profile) {
+		t.Fatalf("memoryContextForPrompt missing active profile:\n%s", promptContext)
+	}
+
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	retrieved, err := plane.Retrieve(context.Background(), MemoryRetrieveRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Retrieve() error = %v", err)
+	}
+	if strings.Contains(retrieved.Common.SessionSummary, archiveSummary) {
+		t.Fatalf("Retrieve() leaked archived summary: %q", retrieved.Common.SessionSummary)
+	}
+	if retrieved.Common.Profile != profile {
+		t.Fatalf("Retrieve() profile = %q, want %q", retrieved.Common.Profile, profile)
 	}
 }
 

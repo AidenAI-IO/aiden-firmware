@@ -1063,26 +1063,10 @@ func TestMaintainFilesystemMemoryChineseCountFallbackNoOrphanToolResult(t *testi
 	}
 }
 
-func TestSessionRotationMovesActiveEventsToPending(t *testing.T) {
+func TestSessionRotationArchivesActiveSessionDirectory(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
-	releaseMaintenance := make(chan struct{})
-	manager := NewMemoryManager(storageDir, WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
-		select {
-		case <-ctx.Done():
-			return ""
-		case <-releaseMaintenance:
-			return "rotated summary"
-		}
-	}))
-	defer func() {
-		close(releaseMaintenance)
-		waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := manager.WaitMaintenance(waitCtx); err != nil {
-			t.Fatalf("WaitMaintenance() error = %v", err)
-		}
-	}()
+	manager := NewMemoryManager(storageDir)
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	now := time.Now().UTC()
 	for i := 0; i < 5; i++ {
@@ -1096,47 +1080,76 @@ func TestSessionRotationMovesActiveEventsToPending(t *testing.T) {
 			t.Fatalf("AppendEvent() error = %v", err)
 		}
 	}
+	if _, err := session.Compress(ctx, CompressOption{
+		ChunkID:  "chunk_old_session",
+		Summary:  "OLD SESSION SUMMARY SENTINEL",
+		Tags:     []string{"old"},
+		Entities: []string{"OldApp"},
+	}); err != nil {
+		t.Fatalf("Compress() error = %v", err)
+	}
+	if !manager.HasCompressedHistory() {
+		t.Fatal("expected active session to report compressed history before rotation")
+	}
+	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 
-	pendingPath, err := manager.RotateSessionEvents()
+	archiveDir, err := manager.RotateSessionEvents()
 	if err != nil {
 		t.Fatalf("RotateSessionEvents() error = %v", err)
 	}
-	if pendingPath == "" {
-		t.Fatal("RotateSessionEvents() returned empty pending path")
+	if archiveDir == "" {
+		t.Fatal("RotateSessionEvents() returned empty archive path")
 	}
 
 	if got := readSessionEvents(t, session.eventsPath()); len(got) != 0 {
 		t.Fatalf("expected new events.jsonl to be empty, got %d events", len(got))
 	}
-	pending := readSessionEvents(t, pendingPath)
-	if len(pending) != 5 {
-		t.Fatalf("expected pending file to contain 5 old events, got %d", len(pending))
+	if manager.HasCompressedHistory() {
+		t.Fatal("old summary.md must not make the new active session report compressed history")
 	}
-	if pending[0].EventID != "evt_rotate_0" || pending[4].EventID != "evt_rotate_4" {
-		t.Fatalf("pending events not preserved in order: %#v", pending)
+	if _, err := os.Stat(filepath.Join(storageDir, "session", "summary.md")); !os.IsNotExist(err) {
+		t.Fatalf("active summary.md should be absent after rotation, stat err = %v", err)
+	}
+	archived := readSessionEvents(t, filepath.Join(archiveDir, "events.jsonl"))
+	if len(archived) != 5 {
+		t.Fatalf("expected archive to contain 5 old events, got %d", len(archived))
+	}
+	if archived[0].EventID != "evt_rotate_0" || archived[4].EventID != "evt_rotate_4" {
+		t.Fatalf("archived events not preserved in order: %#v", archived)
+	}
+	archivedSummary, err := os.ReadFile(filepath.Join(archiveDir, "summary.md"))
+	if err != nil {
+		t.Fatalf("read archived summary.md: %v", err)
+	}
+	if !strings.Contains(string(archivedSummary), "OLD SESSION SUMMARY SENTINEL") {
+		t.Fatalf("archived summary missing old summary sentinel:\n%s", archivedSummary)
+	}
+	if _, err := os.Stat(filepath.Join(archiveDir, "chunks", "index.yaml")); err != nil {
+		t.Fatalf("archived chunks/index.yaml missing: %v", err)
+	}
+	results, err := NewSessionMemoryStore(filepath.Join(storageDir, "session")).RecallChunks(ctx, ChunkRecallQuery{ChunkIDs: []string{"chunk_old_session"}})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("archived chunks must not be recalled from active session, got %#v", results)
+	}
+	messages, err := handle.History.Messages(ctx)
+	if err != nil {
+		t.Fatalf("Messages() error = %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("conversation window should be empty after rotation, got %#v", messages)
 	}
 }
 
 func TestSessionRotationAppendAfterRotateWritesNewEventsFile(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
-	releaseMaintenance := make(chan struct{})
-	manager := NewMemoryManager(storageDir, WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
-		select {
-		case <-ctx.Done():
-			return ""
-		case <-releaseMaintenance:
-			return "rotated summary"
-		}
-	}))
-	defer func() {
-		close(releaseMaintenance)
-		waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := manager.WaitMaintenance(waitCtx); err != nil {
-			t.Fatalf("WaitMaintenance() error = %v", err)
-		}
-	}()
+	manager := NewMemoryManager(storageDir)
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	now := time.Now().UTC()
 	if _, err := session.AppendEvent(ctx, SessionEvent{
@@ -1149,7 +1162,7 @@ func TestSessionRotationAppendAfterRotateWritesNewEventsFile(t *testing.T) {
 		t.Fatalf("AppendEvent() before rotate error = %v", err)
 	}
 
-	pendingPath, err := manager.RotateSessionEvents()
+	archiveDir, err := manager.RotateSessionEvents()
 	if err != nil {
 		t.Fatalf("RotateSessionEvents() error = %v", err)
 	}
@@ -1167,9 +1180,9 @@ func TestSessionRotationAppendAfterRotateWritesNewEventsFile(t *testing.T) {
 	if len(active) != 1 || active[0].EventID != "evt_after_rotate" {
 		t.Fatalf("expected only new event in active events.jsonl, got %#v", active)
 	}
-	pending := readSessionEvents(t, pendingPath)
-	if len(pending) != 1 || pending[0].EventID != "evt_before_rotate" {
-		t.Fatalf("expected old event in pending file, got %#v", pending)
+	archived := readSessionEvents(t, filepath.Join(archiveDir, "events.jsonl"))
+	if len(archived) != 1 || archived[0].EventID != "evt_before_rotate" {
+		t.Fatalf("expected old event in archive, got %#v", archived)
 	}
 }
 
@@ -1287,7 +1300,7 @@ func TestMaintainFilesystemMemorySkipsActiveWriteAfterRotation(t *testing.T) {
 	}
 }
 
-func TestSessionMemoryRecallIncludesPendingChunks(t *testing.T) {
+func TestSessionMemoryRecallIgnoresPendingFiles(t *testing.T) {
 	ctx := context.Background()
 	session := NewSessionMemoryStore(filepath.Join(t.TempDir(), "session"))
 	if err := os.MkdirAll(session.rootDir, 0o755); err != nil {
@@ -1314,21 +1327,12 @@ func TestSessionMemoryRecallIncludesPendingChunks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecallChunks() error = %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected one pending recall result, got %#v", results)
-	}
-	if results[0].ChunkID != "pending-123" {
-		t.Fatalf("expected pending chunk id, got %q", results[0].ChunkID)
-	}
-	if len(results[0].Evidence) != 1 || results[0].Evidence[0].EventID != "evt_pending_1" {
-		t.Fatalf("unexpected pending evidence: %#v", results[0].Evidence)
-	}
-	if !strings.Contains(results[0].Summary, "Pending compression") {
-		t.Fatalf("pending summary should describe pending compression, got %q", results[0].Summary)
+	if len(results) != 0 {
+		t.Fatalf("pending files must not be recalled from active session, got %#v", results)
 	}
 }
 
-func TestSessionMemoryRecallKeepsPendingSlotWhenLimitFilled(t *testing.T) {
+func TestSessionMemoryRecallDoesNotLetPendingReplaceActive(t *testing.T) {
 	ctx := context.Background()
 	session := NewSessionMemoryStore(filepath.Join(t.TempDir(), "session"))
 	for i := 0; i < 3; i++ {
@@ -1368,12 +1372,14 @@ func TestSessionMemoryRecallKeepsPendingSlotWhenLimitFilled(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %#v", results)
 	}
-	if results[1].ChunkID != "pending-999" {
-		t.Fatalf("expected pending result to keep one limited slot, got %#v", results)
+	for _, result := range results {
+		if strings.HasPrefix(result.ChunkID, "pending-") {
+			t.Fatalf("pending file replaced an active recall result: %#v", results)
+		}
 	}
 }
 
-func TestMaintainFilesystemMemoryConsumesPendingFiles(t *testing.T) {
+func TestMaintainFilesystemMemoryIgnoresPendingFiles(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
@@ -1400,21 +1406,18 @@ func TestMaintainFilesystemMemoryConsumesPendingFiles(t *testing.T) {
 	if err := manager.maintainFilesystemMemory(ctx); err != nil {
 		t.Fatalf("maintainFilesystemMemory() error = %v", err)
 	}
-	if _, err := os.Stat(pendingPath); !os.IsNotExist(err) {
-		t.Fatalf("expected pending file to be deleted after consumption, stat err = %v", err)
+	if _, err := os.Stat(pendingPath); err != nil {
+		t.Fatalf("pending file should remain inert and uncompressed, stat err = %v", err)
 	}
 	results, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
 	if err != nil {
 		t.Fatalf("RecallChunks() error = %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected one consumed chunk, got %#v", results)
+	if len(results) != 0 {
+		t.Fatalf("pending file must not be compressed into active chunks, got %#v", results)
 	}
-	if results[0].Summary != "pending summary with 2 events" {
-		t.Fatalf("unexpected consumed summary: %q", results[0].Summary)
-	}
-	if len(results[0].Evidence) != 2 {
-		t.Fatalf("expected consumed chunk evidence, got %#v", results[0].Evidence)
+	if _, err := os.Stat(filepath.Join(session.rootDir, "summary.md")); !os.IsNotExist(err) {
+		t.Fatalf("pending file must not create active summary.md, stat err = %v", err)
 	}
 }
 
