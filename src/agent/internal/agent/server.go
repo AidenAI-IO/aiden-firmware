@@ -29,24 +29,33 @@ import (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime          *Runtime
-	addr             string
-	logger           *Logger
-	mu               sync.Mutex
-	history          []Message
-	historyStore     *ChatHistoryStore
-	episodeStore     *TaskEpisodeStore
-	sttClient        STTClient
-	ttsManager       *tts.ProviderManager
-	ttsMu            sync.RWMutex
-	audioClient      *AudioServiceClient
-	recordMu         sync.Mutex
-	webRecording     *webAudioRecording
-	bridge           *PhoneBridge
-	pendingResults   map[string]*chatPendingResult
-	pendingResultsMu sync.Mutex
-	activeRuns       map[string]context.CancelFunc
-	activeRunsMu     sync.Mutex
+	runtime                 *Runtime
+	addr                    string
+	logger                  *Logger
+	benchmarkDir            string
+	benchmarkPIDFile        string
+	benchmarkLogPath        string
+	benchmarkStatePath      string
+	benchmarkLauncher       func(suite, judge, apiKey string) error
+	benchmarkSuiteValidator func(path string) error
+	benchmarkSuiteLocks     sync.Map
+	userFilesReportPath     string
+	userFilesToolsDir       string
+	mu                      sync.Mutex
+	history                 []Message
+	historyStore            *ChatHistoryStore
+	episodeStore            *TaskEpisodeStore
+	sttClient               STTClient
+	ttsManager              *tts.ProviderManager
+	ttsMu                   sync.RWMutex
+	audioClient             *AudioServiceClient
+	recordMu                sync.Mutex
+	webRecording            *webAudioRecording
+	bridge                  *PhoneBridge
+	pendingResults          map[string]*chatPendingResult
+	pendingResultsMu        sync.Mutex
+	activeRuns              map[string]context.CancelFunc
+	activeRunsMu            sync.Mutex
 }
 
 type webAudioRecording struct {
@@ -176,16 +185,20 @@ type ToolInvokeResponse struct {
 }
 
 // NewServer creates a new HTTP server
-func NewServer(runtime *Runtime, addr string) *Server {
+func NewServer(runtime *Runtime, addr string, benchmarkDir string) *Server {
 	bridge := NewPhoneBridge(runtime.logger)
 	s := &Server{
-		runtime:        runtime,
-		addr:           addr,
-		logger:         runtime.logger,
-		history:        make([]Message, 0),
-		bridge:         bridge,
-		pendingResults: make(map[string]*chatPendingResult),
-		activeRuns:     make(map[string]context.CancelFunc),
+		runtime:             runtime,
+		addr:                addr,
+		logger:              runtime.logger,
+		benchmarkDir:        benchmarkDir,
+		benchmarkPIDFile:    "/tmp/benchmark_runner.pid",
+		userFilesReportPath: "/userdata/agent/files_report.html",
+		userFilesToolsDir:   "/userdata/agent_tools",
+		history:             make([]Message, 0),
+		bridge:              bridge,
+		pendingResults:      make(map[string]*chatPendingResult),
+		activeRuns:          make(map[string]context.CancelFunc),
 	}
 	if runtime.config.ConfigDir != "" {
 		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
@@ -259,6 +272,24 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/screenshot.jpg", s.handleScreenshotJPEG)
 	mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
 	mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
+
+	// Benchmark endpoints
+	mux.HandleFunc("/benchmark", s.handleBenchmarkIndex)
+	mux.HandleFunc("/benchmark/record", s.handleBenchmarkRecord)
+	mux.HandleFunc("/benchmark/suites", s.handleBenchmarkSuites)
+	mux.HandleFunc("/benchmark/runs", s.handleBenchmarkRuns)
+	mux.HandleFunc("/benchmark/report/", s.handleBenchmarkReport)
+	mux.HandleFunc("/benchmark/status", s.handleBenchmarkStatus)
+	mux.HandleFunc("/benchmark/log", s.handleBenchmarkLog)
+	mux.HandleFunc("/benchmark/run", s.handleBenchmarkRun)
+	mux.HandleFunc("/benchmark/suites/import", s.handleBenchmarkImport)
+	mux.HandleFunc("/benchmark/suites/delete", s.handleBenchmarkDelete)
+	mux.HandleFunc("/benchmark/suites/generate", s.handleBenchmarkGenerate)
+	mux.HandleFunc("/benchmark/suites/generate-perception", s.handleBenchmarkGeneratePerception)
+	mux.HandleFunc("/benchmark/suites/import-with-assets", s.handleBenchmarkImportWithAssets)
+	mux.HandleFunc("/benchmark/suites/append-perception", s.handleBenchmarkAppendPerception)
+	mux.HandleFunc("/user_files", s.handleUserFiles)
+	mux.HandleFunc("/user_files/regenerate", s.handleUserFilesRegenerate)
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
@@ -2835,6 +2866,8 @@ const webUI = `<!DOCTYPE html>
                 <h1>Aiden Agent</h1>
                 <div class="topbar-actions">
                     <a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 坐标调试</a>
+                    <a href="/benchmark" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📋 Benchmark</a>
+                    <a href="/user_files" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📁 User files</a>
                     <button type="button" class="new-chat-btn" onclick="clearHistory()">New chat</button>
                     <button type="button" class="new-chat-btn" onclick="resetAllMemory()" style="background:#c0392b;">Reset all memory</button>
                 </div>

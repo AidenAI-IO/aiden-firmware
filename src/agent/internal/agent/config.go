@@ -65,6 +65,7 @@ type Config struct {
 	HID                       HIDConfig       `toml:"hid"`
 	Device                    DeviceConfig    `toml:"device,omitempty"`
 	Audio                     AudioConfig     `toml:"audio,omitempty"`
+	Benchmark                 BenchmarkConfig `toml:"benchmark,omitempty"`
 	Search                    SearchConfig    `toml:"search,omitempty"`
 	Instruction               string          `toml:"instruction"`
 	AdditionalPrompt          string          `toml:"additional_prompt,omitempty"`
@@ -165,6 +166,19 @@ type AudioConfig struct {
 	SampleRate int    `toml:"sample_rate,omitempty"`
 	Channels   int    `toml:"channels,omitempty"`
 	BitWidth   int    `toml:"bit_width,omitempty"`
+}
+
+// BenchmarkConfig configures the benchmark management endpoints in the agent
+// (migrated from config_web). All fields are optional; empty strings fall back
+// to runtime defaults.
+type BenchmarkConfig struct {
+	// JudgeModel is the OpenRouter model name passed to runner.main as
+	// --judge-model. Defaults to "bytedance-seed/seed-2.0-lite" when empty.
+	JudgeModel string `toml:"judge_model,omitempty"`
+	// Dir overrides the auto-detected benchmark root. When empty, the
+	// agent probes -benchmark-dir flag, AIDEN_BENCHMARK_DIR env,
+	// /userdata/agent/benchmark, then <cwd>/benchmark.
+	Dir string `toml:"benchmark_dir,omitempty"`
 }
 
 type ProxyConfig struct {
