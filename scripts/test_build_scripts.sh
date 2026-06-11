@@ -302,9 +302,23 @@ if grep -q 'git submodule update.*pico-sdk' "$CI_WORKFLOW"; then
     exit 1
 fi
 
+if grep -q 'scripts/test_reproducible_rootfs_policy.sh' "$CI_WORKFLOW"; then
+    echo "CI release script checks must not run submodule-dependent reproducible rootfs policy checks" >&2
+    exit 1
+fi
+
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW"; then
     echo "CI must run repo-only release workflow and upload script tests" >&2
+    exit 1
+fi
+
+fetch_sdk_line=$(grep -n 'Fetch pico-sdk submodule' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
+policy_line=$(grep -n 'scripts/test_reproducible_rootfs_policy.sh' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
+run_build_line=$(grep -n 'Run build script' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
+if [ -z "$fetch_sdk_line" ] || [ -z "$policy_line" ] || [ -z "$run_build_line" ] || \
+   [ "$fetch_sdk_line" -ge "$policy_line" ] || [ "$policy_line" -ge "$run_build_line" ]; then
+    echo "build workflow must verify reproducible rootfs policy after fetching pico-sdk and before building images" >&2
     exit 1
 fi
 
