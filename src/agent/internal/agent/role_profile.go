@@ -107,30 +107,31 @@ func buildRoleProfile(
 ) RoleProfile {
 	parts := []string{
 		fmt.Sprintf("You are the %s role in a multi-role Aiden agent loop.", name),
-		"Base instruction:",
+		"",
+		"## Base instruction",
 		combinedAgentInstruction(cfg),
 		"",
-		"Default behavior:",
+		"## Default behavior",
 		defaultAgentBehavior(),
 		"",
-		"Available skills:",
+		"## Available skills",
 		skills.CatalogSummary(),
 		"",
-		"Active skills:",
+		"## Active skills",
 		skills.CombinedInstructions(),
 	}
 	if text := strings.TrimSpace(cfg.RuntimeContext); text != "" {
 		parts = append(parts,
 			"",
-			"Runtime context:",
+			"## Runtime context",
 			text,
 		)
 	}
-	parts = append(parts, "", "Role rules:")
+	parts = append(parts, "", "## Role rules")
 	for _, rule := range roleRules {
 		parts = append(parts, "- "+rule)
 	}
-	parts = append(parts, "", "Available tools:")
+	parts = append(parts, "", "## Available tools")
 	if capabilities.CanUseTools {
 		parts = append(parts, describeTools(tools))
 	} else {

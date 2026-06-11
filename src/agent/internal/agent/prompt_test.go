@@ -37,8 +37,8 @@ func TestPromptIncludesRealHostRuntimeInfo(t *testing.T) {
 	}
 	operatingSystem := mustUname(t, "-s")
 	architecture := mustUname(t, "-m")
-	wantLine := "宿主机: os=" + operatingSystem + ", hostname=" + hostname + ", arch=" + architecture
-	wantEnvironmentLine := "- 你运行在 Aiden 硬件控制器上（" + wantLine + "）；不是截图中显示的设备。"
+	wantLine := "Host: os=" + operatingSystem + ", hostname=" + hostname + ", arch=" + architecture
+	wantEnvironmentLine := "- You run on the Aiden hardware controller (" + wantLine + "); you are not the device shown in screenshots."
 
 	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{}, nil)
 	if !strings.Contains(msg, wantEnvironmentLine) {
@@ -100,37 +100,41 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 	for _, want := range []string{
 		"base instruction",
 		"extra prompt",
-		"默认用简体中文回答",
-		"Aiden 硬件控制器",
-		"不是截图中显示的设备",
-		"shell、本地文件、进程和系统命令只作用于 Aiden 硬件控制器",
-		"不要根据宿主机的 OS 或架构推断目标设备信息",
-		"不要用本地系统命令代替目标控制工具",
-		"目标设备和目标 OS 根据截图、连接元数据、进行行为探测或用户输入推断",
-		"弱先验，不是已检测事实",
-		"shell 工具只在 Aiden 硬件控制器上执行",
-		"不会操作截图中的目标 UI",
+		"### Environment",
+		"### Default Behavior",
+		"Default to replying in Simplified Chinese",
+		"Aiden hardware controller",
+		"not the device shown in screenshots",
+		"shell, local files, processes, and system commands only affect the Aiden hardware controller",
+		"Do not infer target device information from the host OS or architecture",
+		"do not use local system commands instead of target control tools",
+		"Infer the target device and target OS from screenshots",
+		"weak prior, not a detected fact",
+		"Use shell only on the Aiden controller",
+		"do not operate the target UI in screenshots",
 		"recall_memory",
-		"不要直接凭常识回答",
-		"适合 TTS",
+		"do not answer from general knowledge alone",
+		"suitable for TTS",
 		"device-operator",
-		"可见目标 UI",
-		"不要重复同一个点击",
-		"优先使用搜索",
+		"visible target UI",
+		"Do not repeat the same click",
+		"prefer search over blind scrolling",
 		"US-keyboard ASCII",
-		"优先使用 audio_volume",
-		"优先使用 coord_space:\"normalized\"",
-		"仅在已校准时使用 coord_space:\"pixel\"",
-		"prefer touch_gesture type back/home before custom swipes",
-		"x=1 or y=999",
-		"先请求确认",
-		"滑动操作策略",
-		"精准滑动闭环",
-		"先用 medium 做一次试探滑动",
-		"strength/direction -> UI移动量",
-		"接近目标必须降档",
-		"反复横跳，只用 tiny",
-		"save_memory 记录 app 名、控件位置、方向、strength/distance、对应变化量",
+		"prefer the audio_volume tool",
+		"Prefer coord_space:\"normalized\"",
+		"Use coord_space:\"pixel\" only when calibrated",
+		"prefer quick_action",
+		"quick_action {\"action\":\"back\",\"platform\":\"android\"}",
+		"Fall back to lower-level tools",
+		"type back/home",
+		"request confirmation",
+		"Swipe strategy",
+		"Precision swipe loop",
+		"probe once with medium",
+		"strength/direction -> UI movement",
+		"Downshift when close to the target",
+		"if oscillating, use only tiny",
+		"save_memory with app name, control location, direction, strength/distance, and delta",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("system message missing %q:\n%s", want, msg)
@@ -138,19 +142,18 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 	}
 
 	for _, unwanted := range []string{
-		"默认用简洁自然的英文回答",
-		"需要中文时，改用拼音",
+		"## 环境",
+		"## 默认行为",
+		"宿主机:",
+		"默认用简体中文回答",
+		"Aiden 硬件控制器",
+		"滑动操作策略",
 		"不要因为没有单独的拨打电话工具就说做不到",
 		"osascript",
 		"AppleScript",
 		"PowerShell",
 		"xdotool",
-		"平台包管理器",
-		"运行时 OS 是 Linux",
-		"不一定是截图中显示的设备",
 		"kernel=",
-		"宿主机的 OS、内核或架构",
-		"谨慎行为探测或用户输入推断",
 	} {
 		if strings.Contains(msg, unwanted) {
 			t.Fatalf("system message should not contain old localized guidance %q:\n%s", unwanted, msg)
@@ -173,8 +176,8 @@ func TestReActPromptRequiresJSONToolInput(t *testing.T) {
 }
 
 func TestCombinedAgentInstructionFallsBackWhenEmpty(t *testing.T) {
-	if got := combinedAgentInstruction(AgentConfig{}); got != "(none)" {
-		t.Fatalf("combinedAgentInstruction() = %q, want (none)", got)
+	if got := combinedAgentInstruction(AgentConfig{}); got != "" {
+		t.Fatalf("combinedAgentInstruction() = %q, want empty string", got)
 	}
 }
 

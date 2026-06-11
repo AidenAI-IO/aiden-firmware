@@ -42,6 +42,20 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 				t.Fatalf("%s profile missing %q:\n%s", profile.Name, want, profile.SystemPrompt)
 			}
 		}
+		for _, want := range []string{
+			"## Base instruction",
+			"## Default behavior",
+			"### Environment",
+			"### Default Behavior",
+			"## Available skills",
+			"## Active skills",
+			"## Role rules",
+			"## Available tools",
+		} {
+			if !strings.Contains(profile.SystemPrompt, want) {
+				t.Fatalf("%s profile missing markdown section %q:\n%s", profile.Name, want, profile.SystemPrompt)
+			}
+		}
 	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "MEMORY CONTEXT") {
 		t.Fatalf("planner profile should receive memory context:\n%s", profiles.Planner.SystemPrompt)
