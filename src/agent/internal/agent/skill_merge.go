@@ -276,6 +276,7 @@ var knownToolNames = map[string]struct{}{
 	"mouse_move":            {},
 	"mouse_scroll":          {},
 	"open_app":              {},
+	"quick_action":          {},
 	"recall_memory":         {},
 	"recall_session_chunks": {},
 	"save_memory":           {},

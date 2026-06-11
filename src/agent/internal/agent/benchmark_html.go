@@ -45,16 +45,28 @@ input[type=text]{font-size:14px;padding:8px 12px;border-radius:6px;border:1px so
 <h1>Aiden Benchmark</h1>
 <a href="/benchmark/record" style="display:inline-block;font-size:13px;margin:-10px 0 14px;color:#2563eb;text-decoration:none">📷 录入截图任务 →</a>
 <div class="card">
-<div class="row toolbar">
-<select id="suiteSelect"><option value="">Loading...</option></select>
-<button id="runBtn" onclick="startRun()">Run</button>
-<button id="delBtn" class="del" onclick="deleteSuite()" style="display:none">Delete</button>
+<div class="row" style="margin-bottom:0">
+<strong style="font-size:14px">Status</strong>
 <span id="statusText" class="status">idle</span>
 </div>
 <div id="progressBox" class="progress">
 <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
 </div>
 </div>
+<div class="card">
+<h2 style="font-size:15px;margin-bottom:8px">Benchmarks</h2>
+<div class="row">
+<select id="benchmarkSelect"><option value="">Loading...</option></select>
+<button id="runBtn" onclick="startRun()">Run</button>
+<button id="delBtn" class="del" onclick="deleteSuite()" style="display:none">Delete</button>
+</div></div>
+<div class="card">
+<h2 style="font-size:15px;margin-bottom:8px">Unit Tests</h2>
+<div class="muted" style="margin-bottom:8px">Direct tool-level tests. Run one platform suite, or run all unit suites under suites/unit.</div>
+<div class="row">
+<select id="unitSelect"><option value="">Loading...</option></select>
+<button id="runUnitBtn" onclick="startRunUnit()">Run</button>
+</div></div>
 <div class="card">
 <h2 style="font-size:15px;margin-bottom:8px">Live Log</h2>
 <div id="logBox" class="terminal">No benchmark log yet.</div>
@@ -95,6 +107,8 @@ Or single scenario: Test agent on 3 math questions (2+2, 5*3, 10-4) with multipl
 <script>
 var polling=null;
 var suiteIndex={};
+var benchmarkSuiteCount=0;
+var unitSuiteCount=0;
 var logPolling=null;
 function updateProgress(d){
 var box=document.getElementById('progressBox');
@@ -125,16 +139,27 @@ if(atBottom)box.scrollTop=box.scrollHeight;
 function load(){loadSuites();loadRuns();loadStatus()}
 function loadSuites(){
 fetch('/benchmark/suites').then(r=>r.json()).then(d=>{
-var s=document.getElementById('suiteSelect');s.innerHTML='';suiteIndex={};
+var b=document.getElementById('benchmarkSelect');
+var u=document.getElementById('unitSelect');
+b.innerHTML='';u.innerHTML='';suiteIndex={};benchmarkSuiteCount=0;unitSuiteCount=0;
 d.forEach(function(x){
 var o=document.createElement('option');o.value=x.path;
 o.textContent=x.name+(x.custom?' (custom)':'');
-s.appendChild(o);suiteIndex[x.path]=x;
+suiteIndex[x.path]=x;
+if(x.kind==='unit'){
+u.appendChild(o);unitSuiteCount++;
+}else{
+b.appendChild(o);benchmarkSuiteCount++;
+}
 });
+if(!benchmarkSuiteCount)b.innerHTML='<option value="">No benchmark suites</option>';
+if(!unitSuiteCount)u.innerHTML='<option value="">No unit suites</option>';
+document.getElementById('runBtn').disabled=(benchmarkSuiteCount===0);
+document.getElementById('runUnitBtn').disabled=(unitSuiteCount===0);
 syncDelBtn();
 })}
 function syncDelBtn(){
-var p=document.getElementById('suiteSelect').value;
+var p=document.getElementById('benchmarkSelect').value;
 var x=suiteIndex[p];
 document.getElementById('delBtn').style.display=(x&&x.custom)?'inline-block':'none';
 }
@@ -154,7 +179,9 @@ tb.appendChild(tr)});
 function loadStatus(){
 fetch('/benchmark/status').then(r=>r.json()).then(d=>{
 var btn=document.getElementById('runBtn');
-btn.disabled=(d.status==='running');
+var unitBtn=document.getElementById('runUnitBtn');
+btn.disabled=(d.status==='running'||benchmarkSuiteCount===0);
+unitBtn.disabled=(d.status==='running'||unitSuiteCount===0);
 updateProgress(d);
 loadLog();
 if(d.status==='running'&&!polling)polling=setInterval(pollStatus,3000);
@@ -163,7 +190,9 @@ if(d.status==='running'&&!logPolling)logPolling=setInterval(loadLog,1000);
 function pollStatus(){
 fetch('/benchmark/status').then(r=>r.json()).then(d=>{
 var btn=document.getElementById('runBtn');
-btn.disabled=(d.status==='running');
+var unitBtn=document.getElementById('runUnitBtn');
+btn.disabled=(d.status==='running'||benchmarkSuiteCount===0);
+unitBtn.disabled=(d.status==='running'||unitSuiteCount===0);
 updateProgress(d);
 loadLog();
 if(d.status!=='running'){
@@ -173,9 +202,23 @@ loadRuns();loadLog()
 }
 })}
 function startRun(){
-var suite=document.getElementById('suiteSelect').value;
-if(!suite){alert('Select a suite');return}
+var suite=document.getElementById('benchmarkSelect').value;
+if(!suite){alert('Select a benchmark suite');return}
 document.getElementById('runBtn').disabled=true;
+document.getElementById('runUnitBtn').disabled=true;
+document.getElementById('statusText').textContent='running';
+document.getElementById('statusText').className='status running';
+fetch('/benchmark/run',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({suite:suite})}).then(r=>r.json()).then(function(){
+loadLog();
+polling=setInterval(pollStatus,3000);
+if(!logPolling)logPolling=setInterval(loadLog,1000)});
+}
+function startRunUnit(){
+var suite=document.getElementById('unitSelect').value;
+if(!suite){alert('Select a unit suite');return}
+document.getElementById('runBtn').disabled=true;
+document.getElementById('runUnitBtn').disabled=true;
 document.getElementById('statusText').textContent='running';
 document.getElementById('statusText').className='status running';
 fetch('/benchmark/run',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -253,13 +296,13 @@ loadSuites();
 }).catch(function(e){msg.textContent=String(e);msg.className='err'});
 }
 function deleteSuite(){
-var p=document.getElementById('suiteSelect').value;
+var p=document.getElementById('benchmarkSelect').value;
 var x=suiteIndex[p];if(!x||!x.custom)return;
 if(!confirm('Delete suite '+x.name+'?'))return;
 fetch('/benchmark/suites/delete',{method:'POST',headers:{'Content-Type':'application/json'},
 body:JSON.stringify({name:x.name})}).then(function(r){return r.json()}).then(function(){loadSuites()});
 }
-document.getElementById('suiteSelect').addEventListener('change',syncDelBtn);
+document.getElementById('benchmarkSelect').addEventListener('change',syncDelBtn);
 load();
 </script></body></html>
 `

@@ -78,6 +78,7 @@ func TestHandleBenchmarkSuites_ListsJSON(t *testing.T) {
 	suites := filepath.Join(root, "suites")
 	os.MkdirAll(filepath.Join(suites, "custom"), 0o755)
 	os.WriteFile(filepath.Join(suites, "perception_v1.json"), []byte(`{"name":"perception_v1","tasks":[]}`), 0o644)
+	os.WriteFile(filepath.Join(suites, "unit_smoke.json"), []byte(`{"kind":"unit","tasks":[]}`), 0o644)
 	os.WriteFile(filepath.Join(suites, "custom", "mine.json"), []byte(`{"name":"mine","tasks":[]}`), 0o644)
 	os.WriteFile(filepath.Join(suites, "._noise.json"), []byte("{}"), 0o644)
 
@@ -90,7 +91,7 @@ func TestHandleBenchmarkSuites_ListsJSON(t *testing.T) {
 	}
 	var got []map[string]any
 	json.Unmarshal(rec.Body.Bytes(), &got)
-	if len(got) != 2 {
+	if len(got) != 3 {
 		t.Fatalf("got %d suites: %+v", len(got), got)
 	}
 	for _, s := range got {
@@ -99,6 +100,9 @@ func TestHandleBenchmarkSuites_ListsJSON(t *testing.T) {
 		}
 		if s["name"].(string) == "perception_v1" && s["custom"] != false {
 			t.Errorf("expected perception_v1.custom = false")
+		}
+		if s["name"].(string) == "unit_smoke" && s["kind"] != "unit" {
+			t.Errorf("expected unit_smoke.kind = unit, got %v", s["kind"])
 		}
 	}
 }
@@ -298,6 +302,8 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		`fetch('/benchmark/suites')`,
 		`fetch('/benchmark/runs')`,
 		`fetch('/benchmark/status')`,
+		`Unit Tests`,
+		`startRunUnit()`,
 		`/benchmark/record`,
 	} {
 		if !strings.Contains(body, marker) {
@@ -326,8 +332,11 @@ func TestHandleBenchmarkRun_WritesStateFile(t *testing.T) {
 	s := &Server{
 		benchmarkDir:       root,
 		benchmarkStatePath: statePath,
-		benchmarkLauncher: func(suite, judge, apiKey string) error {
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey string) error {
 			called = true
+			if spec.Suite != "/tmp/x.json" || spec.Kind != "benchmark" {
+				t.Fatalf("launch spec = %+v", spec)
+			}
 			return nil
 		},
 	}
@@ -344,6 +353,58 @@ func TestHandleBenchmarkRun_WritesStateFile(t *testing.T) {
 	data, _ := os.ReadFile(statePath)
 	if !strings.Contains(string(data), `"running"`) {
 		t.Errorf("state.json = %s", data)
+	}
+}
+
+func TestHandleBenchmarkRun_UnitSuite(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	unitSuite := filepath.Join(root, "suites", "unit_smoke.json")
+	os.MkdirAll(filepath.Dir(unitSuite), 0o755)
+	os.WriteFile(unitSuite, []byte(`{"kind":"unit","tasks":[]}`), 0o644)
+	var got benchmarkLaunchSpec
+	s := &Server{
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey string) error {
+			got = spec
+			return nil
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run",
+		strings.NewReader(fmt.Sprintf(`{"suite":%q}`, unitSuite)))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRun(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if got.Suite != unitSuite || got.Kind != "unit" {
+		t.Fatalf("launch spec = %+v", got)
+	}
+}
+
+func TestHandleBenchmarkRun_UnitSuiteDir(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	suiteDir := filepath.Join(root, "suites", "unit")
+	var got benchmarkLaunchSpec
+	s := &Server{
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey string) error {
+			got = spec
+			return nil
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run",
+		strings.NewReader(fmt.Sprintf(`{"suite_dir":%q}`, suiteDir)))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRun(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if got.SuiteDir != suiteDir || got.Kind != "unit" {
+		t.Fatalf("launch spec = %+v", got)
 	}
 }
 

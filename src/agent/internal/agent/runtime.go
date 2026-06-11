@@ -609,13 +609,20 @@ func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 			if strings.HasPrefix(toolName, "delegate_") {
 				continue
 			}
+			if !isAgentToolExposed(toolName) {
+				continue
+			}
 			tool, ok := r.tools.Get(toolName)
 			if ok {
 				available = append(available, tool)
 			}
 		}
 	} else {
-		available = append(available, r.tools.All()...)
+		for _, tool := range r.tools.All() {
+			if isAgentToolExposed(tool.Name()) {
+				available = append(available, tool)
+			}
+		}
 	}
 
 	memoryTools := []string{"recall_session_chunks", "recall_memory", "save_memory", "forget_memory", "recall_device_memory", "inspect_episode"}

@@ -14,8 +14,12 @@
           "check": "The tool trace contains at least one touch_gesture or mouse_click call."
         },
         {
+          "id": "does_not_use_0_1_coordinates",
+          "check": "No touch_gesture, mouse_click, or mouse_move call uses 0-1 style normalized coordinates. If coord_space is normalized, coordinates should use the 0-1000 convention, not x/y values between 0 and 1."
+        },
+        {
           "id": "click_targets_settings",
-          "check": "The touch/click coordinates target the Settings icon area: normalized x in [0.75, 0.98] and y in [0.38, 0.55]."
+          "check": "The touch/click coordinates target the Settings icon area. For normalized 0-1000 coordinates, x should be roughly in [750, 980] and y in [380, 550]."
         }
       ],
       "hard_assertions": {

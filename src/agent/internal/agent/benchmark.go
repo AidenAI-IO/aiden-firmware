@@ -54,7 +54,22 @@ func ResolveBenchmarkDir(flagValue string, cfg BenchmarkConfig) (string, error) 
 type suiteListItem struct {
 	Name   string `json:"name"`
 	Path   string `json:"path"`
+	Kind   string `json:"kind"`
 	Custom bool   `json:"custom"`
+}
+
+func benchmarkSuiteKind(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) > 256*1024 {
+		return "benchmark"
+	}
+	var raw struct {
+		Kind string `json:"kind"`
+	}
+	if json.Unmarshal(data, &raw) == nil && raw.Kind == "unit" {
+		return "unit"
+	}
+	return "benchmark"
 }
 
 func (s *Server) handleBenchmarkSuites(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +91,7 @@ func (s *Server) handleBenchmarkSuites(w http.ResponseWriter, r *http.Request) {
 		items = append(items, suiteListItem{
 			Name:   strings.TrimSuffix(base, ".json"),
 			Path:   path,
+			Kind:   benchmarkSuiteKind(path),
 			Custom: strings.HasPrefix(rel, "custom"+string(filepath.Separator)),
 		})
 		return nil

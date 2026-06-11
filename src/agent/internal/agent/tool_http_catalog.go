@@ -86,6 +86,11 @@ var builtInToolCatalog = map[string]toolCatalogEntry{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"delta":-3}`,
 	},
+	"quick_action": {
+		Category:     "input",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"list":true,"platform":"ios"}`,
+	},
 	"recall_device_memory": {
 		Category:     "memory",
 		InputMode:    toolInputModeJSON,
@@ -176,6 +181,10 @@ func isHTTPToolExposed(name string) bool {
 	default:
 		return true
 	}
+}
+
+func isAgentToolExposed(name string) bool {
+	return isHTTPToolExposed(name)
 }
 
 func (r *Runtime) ToolDescriptorByName(name string) (ToolDescriptor, bool) {
