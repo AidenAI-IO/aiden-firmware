@@ -29,6 +29,10 @@ type visualObservationTool interface {
 	ReturnsVisualObservation() bool
 }
 
+type structuredInputTool interface {
+	ArgsSchema() map[string]any
+}
+
 const toolActionLogVersion = 1
 const maxToolObservationRunes = 4000
 const defaultScreenshotKeepN = 3
@@ -223,31 +227,66 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 func (a *FunctionAgent) toolsAsLLM() []llms.Tool {
 	result := make([]llms.Tool, 0, len(a.Tools))
 	for _, tool := range a.Tools {
+		parameters := legacyToolParameters()
+		if structured, ok := tool.(structuredInputTool); ok {
+			if schema := structured.ArgsSchema(); len(schema) > 0 {
+				parameters = toolParametersWithDescription(schema)
+			}
+		}
 		result = append(result, llms.Tool{
 			Type: "function",
 			Function: &llms.FunctionDefinition{
 				Name:        tool.Name(),
 				Description: tool.Description(),
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"__arg1": map[string]string{
-							"title":       "__arg1",
-							"type":        "string",
-							"description": `The plain string input for the selected tool. If the tool description says "Input JSON", pass that JSON object as this string; for example keyboard_text uses {"text":"App Store"}, not App Store.`,
-						},
-						"description": map[string]string{
-							"title":       "description",
-							"type":        "string",
-							"description": "A short first-person sentence in the user's language that says what you are about to do with this tool. Voice clients may present it while the tool runs.",
-						},
-					},
-					"required": []string{"__arg1", "description"},
-				},
+				Parameters:  parameters,
 			},
 		})
 	}
 	return result
+}
+
+func legacyToolParameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"__arg1": map[string]string{
+				"title":       "__arg1",
+				"type":        "string",
+				"description": `The plain string input for the selected tool. If the tool description says "Input JSON", pass that JSON object as this string; for example keyboard_text uses {"text":"App Store"}, not App Store.`,
+			},
+			"description": toolDescriptionParameter(),
+		},
+		"required": []string{"__arg1", "description"},
+	}
+}
+
+func toolDescriptionParameter() map[string]string {
+	return map[string]string{
+		"title":       "description",
+		"type":        "string",
+		"description": "A short first-person sentence in the user's language that says what you are about to do with this tool. Voice clients may present it while the tool runs.",
+	}
+}
+
+func toolParametersWithDescription(schema map[string]any) map[string]any {
+	parameters := make(map[string]any, len(schema)+1)
+	for key, value := range schema {
+		parameters[key] = value
+	}
+	properties, _ := parameters["properties"].(map[string]any)
+	if properties == nil {
+		properties = map[string]any{}
+	} else {
+		copied := make(map[string]any, len(properties)+1)
+		for key, value := range properties {
+			copied[key] = value
+		}
+		properties = copied
+	}
+	properties["description"] = toolDescriptionParameter()
+	parameters["type"] = "object"
+	parameters["properties"] = properties
+	return parameters
 }
 
 func chatMessageToContent(msg llms.ChatMessage) llms.MessageContent {
@@ -504,6 +543,12 @@ func extractToolInvocation(raw string) toolInvocation {
 	}
 	if description, ok := toolInputMap["description"].(string); ok {
 		invocation.Description = strings.TrimSpace(description)
+		if _, hasLegacyArg := toolInputMap["__arg1"]; !hasLegacyArg {
+			delete(toolInputMap, "description")
+			if encoded, err := json.Marshal(toolInputMap); err == nil {
+				invocation.Input = string(encoded)
+			}
+		}
 	}
 	return invocation
 }

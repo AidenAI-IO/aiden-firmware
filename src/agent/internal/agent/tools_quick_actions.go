@@ -333,6 +333,38 @@ func (t *QuickActionTool) Description() string {
 		quickActionBehaviorSummary())
 }
 
+func (t *QuickActionTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"action": map[string]any{
+				"type":        "string",
+				"description": `Action id or alias, for example "back", "copy", or "spotlight_search". Do not use "list" here; set list=true to inspect actions.`,
+			},
+			"platform": map[string]any{
+				"type":        "string",
+				"enum":        []string{"ios", "android", "mac"},
+				"description": "Target platform inferred from the observed screen or user context.",
+			},
+			"list": map[string]any{
+				"type":        "boolean",
+				"description": "Set true to list available actions for the platform instead of executing an action.",
+			},
+			"alternative": map[string]any{
+				"type":        "boolean",
+				"description": "Set true to execute an alternative binding listed by a previous quick_action result.",
+			},
+			"alternative_index": map[string]any{
+				"type":        "integer",
+				"minimum":     1,
+				"description": "1-based alternative binding index; defaults to 1 when alternative=true.",
+			},
+		},
+		"required": []string{"platform"},
+	}
+}
+
 type quickActionArgs struct {
 	Action       string `json:"action"`
 	Platform     string `json:"platform"`

@@ -60,6 +60,14 @@ func (t *postActionScreenshotTool) ReturnsVisualObservation() bool {
 	return true
 }
 
+func (t *postActionScreenshotTool) ArgsSchema() map[string]any {
+	structured, ok := t.inner.(structuredInputTool)
+	if !ok {
+		return nil
+	}
+	return structured.ArgsSchema()
+}
+
 func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (string, error) {
 	actionOutput, err := t.inner.Call(ctx, input)
 	if err != nil {

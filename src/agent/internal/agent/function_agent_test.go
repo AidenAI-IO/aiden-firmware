@@ -85,6 +85,67 @@ func TestFunctionAgentParseOutputExtractsToolDescription(t *testing.T) {
 	}
 }
 
+func TestFunctionAgentParseOutputPassesStructuredToolArguments(t *testing.T) {
+	agent := &FunctionAgent{OutputKey: "output"}
+
+	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
+		Choices: []*llms.ContentChoice{{
+			ToolCalls: []llms.ToolCall{{
+				ID:   "call_1",
+				Type: "function",
+				FunctionCall: &llms.FunctionCall{
+					Name:      "keyboard_tap",
+					Arguments: `{"keys":["enter"],"description":"我会按下回车键。"}`,
+				},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ParseOutput() error = %v", err)
+	}
+	if finish != nil {
+		t.Fatalf("expected no finish, got %#v", finish)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %#v", actions)
+	}
+	if actions[0].ToolInput != `{"keys":["enter"]}` {
+		t.Fatalf("ToolInput = %q, want structured args without description", actions[0].ToolInput)
+	}
+	if got := toolDescriptionFromAction(actions[0]); got != "我会按下回车键。" {
+		t.Fatalf("tool description = %q", got)
+	}
+}
+
+func TestFunctionAgentParseOutputKeepsLegacyArg1Compatibility(t *testing.T) {
+	agent := &FunctionAgent{OutputKey: "output"}
+
+	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
+		Choices: []*llms.ContentChoice{{
+			ToolCalls: []llms.ToolCall{{
+				ID:   "call_1",
+				Type: "function",
+				FunctionCall: &llms.FunctionCall{
+					Name:      "keyboard_tap",
+					Arguments: `{"__arg1":"{\"keys\":[\"enter\"]}","description":"我会按下回车键。"}`,
+				},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ParseOutput() error = %v", err)
+	}
+	if finish != nil {
+		t.Fatalf("expected no finish, got %#v", finish)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %#v", actions)
+	}
+	if actions[0].ToolInput != `{"keys":["enter"]}` {
+		t.Fatalf("ToolInput = %q, want legacy __arg1", actions[0].ToolInput)
+	}
+}
+
 func TestFunctionAgentParseOutputSynthesizesMissingToolDescription(t *testing.T) {
 	agent := &FunctionAgent{OutputKey: "output"}
 
@@ -345,6 +406,68 @@ func TestFunctionAgentToolsAsLLMRequiresDescriptionParameter(t *testing.T) {
 	}
 	if len(required) != 2 || required[0] != "__arg1" || required[1] != "description" {
 		t.Fatalf("required = %#v, want __arg1 and description", required)
+	}
+}
+
+type structuredStubTool struct {
+	stubTool
+	schema map[string]any
+}
+
+func (t *structuredStubTool) ArgsSchema() map[string]any { return t.schema }
+
+func TestFunctionAgentToolsAsLLMUsesStructuredSchema(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&structuredStubTool{
+			stubTool: stubTool{name: "structured", description: "Structured input."},
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"keys": map[string]any{"type": "array"},
+				},
+				"required": []string{"keys"},
+			},
+		}},
+	}
+
+	tools := agent.toolsAsLLM()
+	params, ok := tools[0].Function.Parameters.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected parameters type: %T", tools[0].Function.Parameters)
+	}
+	props, ok := params["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected properties: %#v", params["properties"])
+	}
+	if _, ok := props["keys"]; !ok {
+		t.Fatalf("missing structured keys property: %#v", props)
+	}
+	if _, ok := props["__arg1"]; ok {
+		t.Fatalf("structured schema should not expose __arg1: %#v", props)
+	}
+	if _, ok := props["description"]; !ok {
+		t.Fatalf("structured schema should keep description property: %#v", props)
+	}
+}
+
+func TestPostActionScreenshotToolForwardsStructuredSchema(t *testing.T) {
+	inner := &structuredStubTool{
+		stubTool: stubTool{name: "touch_gesture", description: "Touch."},
+		schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"type": map[string]any{"type": "string"},
+			},
+		},
+	}
+	wrapped := newPostActionScreenshotTool(inner, &stubTool{name: "screenshot", output: `{"width":1,"height":1,"format":"jpeg","size":1,"data":"YQ=="}`}, 0)
+	structured, ok := wrapped.(structuredInputTool)
+	if !ok {
+		t.Fatalf("wrapped tool does not implement structuredInputTool")
+	}
+	props := structured.ArgsSchema()["properties"].(map[string]any)
+	if _, ok := props["type"]; !ok {
+		t.Fatalf("forwarded schema missing inner properties: %#v", props)
 	}
 }
 

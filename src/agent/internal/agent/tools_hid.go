@@ -425,6 +425,30 @@ func (t *KeyboardTapTool) Description() string {
 		`Optional hold_ms keeps the chord pressed before release (default 50ms, 120ms when modifiers are used).`
 }
 
+func (t *KeyboardTapTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"keys": map[string]any{
+				"type":        "array",
+				"minItems":    1,
+				"maxItems":    6,
+				"description": "Keys pressed simultaneously, e.g. [\"ctrl\",\"c\"] or [\"meta\"].",
+				"items": map[string]any{
+					"type": "string",
+				},
+			},
+			"hold_ms": map[string]any{
+				"type":        "integer",
+				"minimum":     0,
+				"description": "Optional press duration before release.",
+			},
+		},
+		"required": []string{"keys"},
+	}
+}
+
 func (t *KeyboardTapTool) Call(_ context.Context, input string) (string, error) {
 	var args struct {
 		Keys   []string `json:"keys"`
@@ -498,6 +522,20 @@ func (t *KeyboardTextTool) Description() string {
 		`If any unsupported character is present, no characters are typed and an error is returned.`
 }
 
+func (t *KeyboardTextTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"text": map[string]any{
+				"type":        "string",
+				"description": "US-keyboard ASCII text to type.",
+			},
+		},
+		"required": []string{"text"},
+	}
+}
+
 func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error) {
 	text, errText := parseKeyboardTextInput(input)
 	if errText != "" {
@@ -546,6 +584,24 @@ func (t *MouseClickTool) Description() string {
 		`Use coord_space:"pixel" only when calibrated; pixel coordinates require a recent screenshot, are stale after 30s, and are rejected if outside cached bounds. ` +
 		`Click once and inspect the returned post-action screenshot before repeating. ` +
 		`Button options: "left" (default), "right", "middle".`
+}
+
+func (t *MouseClickTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"x": coordinateSchema("X coordinate."),
+			"y": coordinateSchema("Y coordinate."),
+			"button": map[string]any{
+				"type":        "string",
+				"enum":        []string{"left", "right", "middle"},
+				"description": "Mouse button; defaults to left.",
+			},
+			"coord_space": coordSpaceSchema(),
+		},
+		"required": []string{"x", "y"},
+	}
 }
 
 func (t *MouseClickTool) Call(_ context.Context, input string) (string, error) {
@@ -634,6 +690,79 @@ func (t *TouchGestureTool) Description() string {
 		`Tap and double_tap accept an optional "hold_ms" (dwell between press and release, default 60ms). ` +
 		`Swipe defaults to a slower 700ms / 24-step motion, applies "hold_before_ms" of 80ms after the press, and releases immediately at the destination by default; pass "hold_after_ms" only when a drag-like end dwell is required. ` +
 		`For phone edge gestures, do not use conservative inset coordinates such as 50-100: "back" starts at normalized x=1 and "home" starts at normalized y=999. Drag keeps the previous 250ms / 12-step motion with 0ms hold defaults to avoid unintended long-press behaviour during slow content drag.`
+}
+
+func (t *TouchGestureTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"type": map[string]any{
+				"type":        "string",
+				"enum":        []string{"tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back", "home"},
+				"description": "Gesture type.",
+			},
+			"point":          pointSchema("Point for tap, double_tap, or long_press."),
+			"start":          pointSchema("Start point for swipe or drag."),
+			"end":            pointSchema("End point for swipe or drag."),
+			"coord_space":    coordSpaceSchema(),
+			"button":         map[string]any{"type": "string", "enum": []string{"left", "right", "middle"}},
+			"duration_ms":    nonNegativeIntegerSchema("Gesture duration in milliseconds."),
+			"hold_before_ms": nonNegativeIntegerSchema("Optional dwell after pressing before a swipe begins."),
+			"hold_after_ms":  nonNegativeIntegerSchema("Optional dwell at the destination before release."),
+			"hold_ms":        nonNegativeIntegerSchema("Tap or long-press hold duration in milliseconds."),
+			"pause_ms":       nonNegativeIntegerSchema("Pause between taps for double_tap."),
+			"steps": map[string]any{
+				"type":        "integer",
+				"minimum":     1,
+				"description": "Number of movement steps for swipe or drag.",
+			},
+			"distance": coordinateSchema("Directional swipe travel in normalized units."),
+			"anchor":   coordinateSchema("Directional swipe fixed-axis coordinate in normalized units."),
+			"strength": map[string]any{
+				"type":        "string",
+				"enum":        []string{"large", "medium", "small", "tiny"},
+				"description": "Directional swipe preset distance.",
+			},
+		},
+		"required": []string{"type"},
+	}
+}
+
+func pointSchema(description string) map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"description":          description,
+		"properties": map[string]any{
+			"x": coordinateSchema("X coordinate."),
+			"y": coordinateSchema("Y coordinate."),
+		},
+		"required": []string{"x", "y"},
+	}
+}
+
+func coordinateSchema(description string) map[string]any {
+	return map[string]any{
+		"type":        "number",
+		"description": description,
+	}
+}
+
+func coordSpaceSchema() map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"enum":        []string{"auto", "pixel", "normalized", "absolute"},
+		"description": "Coordinate space; normalized uses 0-1000 screen coordinates.",
+	}
+}
+
+func nonNegativeIntegerSchema(description string) map[string]any {
+	return map[string]any{
+		"type":        "integer",
+		"minimum":     0,
+		"description": description,
+	}
 }
 
 func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error) {

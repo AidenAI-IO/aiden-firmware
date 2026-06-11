@@ -32,6 +32,21 @@ func TestQuickActionsResolveAliasAndPlatform(t *testing.T) {
 	}
 }
 
+func TestQuickActionExposesStructuredSchema(t *testing.T) {
+	schema := (&QuickActionTool{}).ArgsSchema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing properties: %#v", schema)
+	}
+	if props["action"] == nil || props["platform"] == nil || props["list"] == nil {
+		t.Fatalf("quick_action schema missing expected fields: %#v", props)
+	}
+	platform := props["platform"].(map[string]any)
+	if platform["type"] != "string" {
+		t.Fatalf("platform type = %#v, want string", platform["type"])
+	}
+}
+
 func TestQuickActionsSuggestUnknownAction(t *testing.T) {
 	table := newQuickActionsTable()
 	suggestions := table.suggestActionIDs("go browser backward", 3)
