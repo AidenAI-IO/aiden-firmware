@@ -227,20 +227,10 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 func (a *FunctionAgent) toolsAsLLM() []llms.Tool {
 	result := make([]llms.Tool, 0, len(a.Tools))
 	for _, tool := range a.Tools {
-		parameters := legacyToolParameters()
-		if structured, ok := tool.(structuredInputTool); ok {
-			if schema := structured.ArgsSchema(); len(schema) > 0 {
-				parameters = toolParametersWithDescription(schema)
-			}
+		if tool == nil {
+			continue
 		}
-		result = append(result, llms.Tool{
-			Type: "function",
-			Function: &llms.FunctionDefinition{
-				Name:        tool.Name(),
-				Description: tool.Description(),
-				Parameters:  parameters,
-			},
-		})
+		result = append(result, NewToolSpec(tool).LLMTool())
 	}
 	return result
 }

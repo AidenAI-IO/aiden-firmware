@@ -8,136 +8,6 @@ import (
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
-const (
-	toolInputModeJSON = "json"
-	toolInputModeText = "text"
-)
-
-type ToolHTTPBinding struct {
-	Method string `json:"method"`
-	Path   string `json:"path"`
-}
-
-type ToolDescriptor struct {
-	Name         string          `json:"name"`
-	Category     string          `json:"category"`
-	Description  string          `json:"description"`
-	InputMode    string          `json:"input_mode"`
-	ExampleInput string          `json:"example_input"`
-	HTTP         ToolHTTPBinding `json:"http"`
-}
-
-type ToolSkillDefinition struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	ToolNames   []string `json:"tool_names"`
-	Markdown    string   `json:"markdown"`
-}
-
-type toolCatalogEntry struct {
-	Category     string
-	InputMode    string
-	ExampleInput string
-}
-
-var builtInToolCatalog = map[string]toolCatalogEntry{
-	"audio_volume": {
-		Category:     "audio",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{}`,
-	},
-	"current_time": {
-		Category:     "system",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"timezone":"Asia/Shanghai"}`,
-	},
-	"enter_sleep": {
-		Category:     "system",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"reason":"user asked me to sleep"}`,
-	},
-	"inspect_episode": {
-		Category:     "memory",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"id":"ep_..."}`,
-	},
-	"keyboard_tap": {
-		Category:     "input",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"keys":["ctrl","c"]}`,
-	},
-	"keyboard_text": {
-		Category:     "input",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"text":"hello world"}`,
-	},
-	"mouse_click": {
-		Category:     "input",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"x":500,"y":500,"button":"left","coord_space":"normalized"}`,
-	},
-	"mouse_move": {
-		Category:     "input",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"x":500,"y":500,"coord_space":"normalized"}`,
-	},
-	"mouse_scroll": {
-		Category:     "input",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"delta":-3}`,
-	},
-	"quick_action": {
-		Category:     "input",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"list":true,"platform":"ios"}`,
-	},
-	"recall_device_memory": {
-		Category:     "memory",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"terms":["微信"],"tags":["登录"],"entities":["微信App"],"types":["procedure","failure"],"device_id":"default","limit":5}`,
-	},
-	"screenshot": {
-		Category:     "observation",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{}`,
-	},
-	"shell": {
-		Category:     "system",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"command":"pwd"}`,
-	},
-	"skill_list": {
-		Category:     "skills",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"query":"planner","include_archived":false}`,
-	},
-	"skill_mark_used": {
-		Category:     "skills",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"name":"planner"}`,
-	},
-	"skill_read": {
-		Category:     "skills",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"name":"planner"}`,
-	},
-	"touch_gesture": {
-		Category:     "input",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"type":"tap","point":{"x":500,"y":500}}`,
-	},
-	"weather": {
-		Category:     "system",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"location":"Shanghai"}`,
-	},
-	"wait_for_stable_screen": {
-		Category:     "observation",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"timeout_ms":3500,"stable_ms":500,"diff_threshold":2}`,
-	},
-}
-
 func (r *Runtime) OwnedTools() []langtools.Tool {
 	owned := make([]langtools.Tool, 0, len(r.tools.tools))
 	owned = append(owned, r.tools.All()...)
@@ -147,53 +17,35 @@ func (r *Runtime) OwnedTools() []langtools.Tool {
 	return owned
 }
 
+func (r *Runtime) ToolSpecs() *ToolSpecs {
+	return NewToolSpecs(r.OwnedTools())
+}
+
 func (r *Runtime) ToolDescriptors() []ToolDescriptor {
-	tools := r.OwnedTools()
-	descriptors := make([]ToolDescriptor, 0, len(tools))
-	for _, tool := range tools {
-		if !isHTTPToolExposed(tool.Name()) {
-			continue
-		}
-		meta := builtInToolCatalog[tool.Name()]
-		exampleInput := meta.ExampleInput
-		descriptors = append(descriptors, ToolDescriptor{
-			Name:         tool.Name(),
-			Category:     defaultString(meta.Category, "general"),
-			Description:  strings.TrimSpace(tool.Description()),
-			InputMode:    defaultString(meta.InputMode, toolInputModeJSON),
-			ExampleInput: exampleInput,
-			HTTP: ToolHTTPBinding{
-				Method: "POST",
-				Path:   "/api/tools/" + tool.Name(),
-			},
-		})
-	}
-	return descriptors
+	return r.ToolSpecs().Descriptors()
 }
 
 func isHTTPToolExposed(name string) bool {
-	switch name {
-	// Phone-bridge tools route AI commands to the companion app over the
-	// WebSocket bridge; they are not standalone HTTP operations on the board,
-	// so keep the whole set out of the HTTP catalog/skill suite.
-	case "skill_manage", "open_app", "clipboard", "calendar", "contacts", "notification":
-		return false
-	default:
-		return true
+	meta := builtInToolSpecMetadata[name]
+	if meta.HTTPExposed != nil {
+		return *meta.HTTPExposed
 	}
+	return true
 }
 
 func isAgentToolExposed(name string) bool {
-	return strings.TrimSpace(name) != ""
+	if strings.TrimSpace(name) == "" {
+		return false
+	}
+	meta := builtInToolSpecMetadata[name]
+	if meta.AgentExposed != nil {
+		return *meta.AgentExposed
+	}
+	return true
 }
 
 func (r *Runtime) ToolDescriptorByName(name string) (ToolDescriptor, bool) {
-	for _, descriptor := range r.ToolDescriptors() {
-		if descriptor.Name == name {
-			return descriptor, true
-		}
-	}
-	return ToolDescriptor{}, false
+	return r.ToolSpecs().DescriptorByName(name)
 }
 
 const defaultHTTPToolSkillBaseURL = "http://127.0.0.1:8080"

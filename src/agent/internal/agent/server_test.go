@@ -1042,6 +1042,46 @@ func TestServerToolInvokeEndpointAcceptsStructuredJSON(t *testing.T) {
 	}
 }
 
+func TestServerToolInvokeUsesUnifiedExecutionAndNormalizesInput(t *testing.T) {
+	tool := &stubTool{
+		name:        "shell",
+		description: "Run shell commands.",
+		output:      "ok",
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"shell": tool,
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+
+	body := bytes.NewBufferString(`{"raw_input":"{\"command\":\"pwd\"}\nObservation:"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/tools/shell", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleToolInvoke(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(tool.inputs) != 1 || tool.inputs[0] != `{"command":"pwd"}` {
+		t.Fatalf("unexpected tool input: %#v", tool.inputs)
+	}
+
+	var resp ToolInvokeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.RawInput != `{"command":"pwd"}` {
+		t.Fatalf("raw input = %q, want normalized input", resp.RawInput)
+	}
+}
+
 func TestServerMobileGymEpisodeStartEnd(t *testing.T) {
 	dir := t.TempDir()
 	tokenPath := filepath.Join(dir, "control.token")
