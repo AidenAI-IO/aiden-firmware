@@ -47,8 +47,9 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 			roleMemory.RenderForRole(RolePlanner),
 			RoleCapabilities{CanModifyPlan: true, CanUseTools: true},
 			[]string{
-				"In default mode, execute simple tasks directly with tools and return a final answer when complete.",
-				"Call enter_plan_mode when the task needs a multi-step plan, branching, or sustained tracking.",
+				"In default mode, handle only simple tasks: a direct answer, one tool call, or at most two short steps total.",
+				"If completing the request will likely need three or more steps, call enter_plan_mode first. Do not keep executing directly in default mode once you expect 3+ steps.",
+				"Also call enter_plan_mode for branching, sustained tracking, or tasks that need explicit completion criteria across multiple UI states.",
 				"In plan mode, explore with tools, maintain a draft plan, then call commit_plan to delegate execution or cancel_plan to return to default mode.",
 				"commit_plan is only available in plan mode. cancel_plan clears draft planning state and returns to default mode.",
 				"Prefer direct tools that cover the requested operation before UI workarounds. If a direct executor tool covers the request, plan or call that tool instead of a UI workaround.",

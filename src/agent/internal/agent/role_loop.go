@@ -166,7 +166,7 @@ func plannerTaskForPhase(phase loopPhase, state roleLoopState) string {
 		}
 		return task
 	default:
-		return "Default mode: execute simple tasks directly with tools and return a final answer when done. Call enter_plan_mode when the task needs a multi-step plan, branching, or sustained tracking."
+		return "Default mode: use only for simple tasks that finish in one or two steps. If completing the request will likely need three or more steps, call enter_plan_mode first instead of executing directly. You may use tools and return a final answer when done only while the task remains within the two-step limit."
 	}
 }
 
@@ -190,5 +190,6 @@ func writeLoopMode(builder *strings.Builder, state roleLoopState) {
 	if state.Phase == phaseDefault {
 		builder.WriteString("- final answers in default mode end the run directly without verifier.\n")
 		builder.WriteString("- commit_plan is not available in default mode.\n")
+		builder.WriteString("- if the task likely needs 3+ steps, call enter_plan_mode before executing further.\n")
 	}
 }

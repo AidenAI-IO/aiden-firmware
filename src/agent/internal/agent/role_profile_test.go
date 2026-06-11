@@ -76,6 +76,10 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		!strings.Contains(profiles.Planner.SystemPrompt, "enter_plan_mode:") {
 		t.Fatalf("planner prompt should expose callable tools and loop meta tools:\n%s", profiles.Planner.SystemPrompt)
 	}
+	if !strings.Contains(profiles.Planner.SystemPrompt, "three or more steps") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "call enter_plan_mode first") {
+		t.Fatalf("planner prompt should require enter_plan_mode for 3+ step tasks:\n%s", profiles.Planner.SystemPrompt)
+	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "Prefer direct tools that cover the requested operation") {
 		t.Fatalf("planner prompt should prefer direct tools:\n%s", profiles.Planner.SystemPrompt)
 	}

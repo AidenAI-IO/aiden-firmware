@@ -63,7 +63,7 @@ Loop meta tools are visible only to the planner and are intercepted by the runti
 
 After `commit_plan`, runtime owns step progression. `plan_step_index` selects the current committed step, and `next_step` is synchronized from that index before each executor turn. The executor must not reorder or rewrite the plan.
 
-Simple tasks should stay in `default`. Use `plan` only when the task needs sustained multi-step tracking, branching, or explicit completion criteria before delegation.
+Simple tasks should stay in `default` (direct answer, one tool call, or at most two short steps). If completing the request will likely need three or more steps, the planner must call `enter_plan_mode` before executing further. Also use `plan` for branching, sustained tracking, or explicit completion criteria before delegation.
 
 ## Prompt Shape
 

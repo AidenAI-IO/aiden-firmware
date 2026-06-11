@@ -49,7 +49,7 @@ Prefer describing what you see before clicking.
 Agent loop 采用 `default` / `plan` / `execution` 三阶段状态机，详见 [Agent Context Lifecycle](context-lifecycle.md)。
 
 - `planner`：
-  - 在 `default` 模式下可直接调用工具并结束任务，无需 verifier；
+  - 在 `default` 模式下仅处理简单任务（直接回答、单次工具调用或最多两步）；预计需要 **3 步及以上** 时必须先 `enter_plan_mode`，不得继续在 default 中直执；
   - 在 `plan` 模式下可探索、维护 draft plan，并通过 `commit_plan` / `cancel_plan` 切换阶段；
   - 是唯一允许创建或修改计划的角色；
   - 额外可见 loop meta tools：`enter_plan_mode`、`commit_plan`、`cancel_plan`。

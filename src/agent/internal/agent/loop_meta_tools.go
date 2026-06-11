@@ -34,7 +34,7 @@ func loopMetaTools() []langtools.Tool {
 	return []langtools.Tool{
 		&loopMetaTool{
 			name:        toolEnterPlanMode,
-			description: "Enter plan mode for complex multi-step work. Optional JSON input: {\"reason\":\"why planning is needed\"}.",
+			description: "Enter plan mode to draft and commit a multi-step plan. Required in default mode when the task will likely need 3 or more steps. Optional JSON input: {\"reason\":\"why planning is needed\"}.",
 		},
 		&loopMetaTool{
 			name:        toolCommitPlan,
