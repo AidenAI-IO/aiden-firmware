@@ -29,24 +29,33 @@ import (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime          *Runtime
-	addr             string
-	logger           *Logger
-	mu               sync.Mutex
-	history          []Message
-	historyStore     *ChatHistoryStore
-	episodeStore     *TaskEpisodeStore
-	sttClient        STTClient
-	ttsManager       *tts.ProviderManager
-	ttsMu            sync.RWMutex
-	audioClient      *AudioServiceClient
-	recordMu         sync.Mutex
-	webRecording     *webAudioRecording
-	bridge           *PhoneBridge
-	pendingResults   map[string]*chatPendingResult
-	pendingResultsMu sync.Mutex
-	activeRuns       map[string]context.CancelFunc
-	activeRunsMu     sync.Mutex
+	runtime                 *Runtime
+	addr                    string
+	logger                  *Logger
+	benchmarkDir            string
+	benchmarkPIDFile        string
+	benchmarkLogPath        string
+	benchmarkStatePath      string
+	benchmarkLauncher       func(spec benchmarkLaunchSpec, judge, apiKey string) error
+	benchmarkSuiteValidator func(path string) error
+	benchmarkSuiteLocks     sync.Map
+	userFilesReportPath     string
+	userFilesToolsDir       string
+	mu                      sync.Mutex
+	history                 []Message
+	historyStore            *ChatHistoryStore
+	episodeStore            *TaskEpisodeStore
+	sttClient               STTClient
+	ttsManager              *tts.ProviderManager
+	ttsMu                   sync.RWMutex
+	audioClient             *AudioServiceClient
+	recordMu                sync.Mutex
+	webRecording            *webAudioRecording
+	bridge                  *PhoneBridge
+	pendingResults          map[string]*chatPendingResult
+	pendingResultsMu        sync.Mutex
+	activeRuns              map[string]context.CancelFunc
+	activeRunsMu            sync.Mutex
 }
 
 type webAudioRecording struct {
@@ -176,16 +185,20 @@ type ToolInvokeResponse struct {
 }
 
 // NewServer creates a new HTTP server
-func NewServer(runtime *Runtime, addr string) *Server {
+func NewServer(runtime *Runtime, addr string, benchmarkDir string) *Server {
 	bridge := NewPhoneBridge(runtime.logger)
 	s := &Server{
-		runtime:        runtime,
-		addr:           addr,
-		logger:         runtime.logger,
-		history:        make([]Message, 0),
-		bridge:         bridge,
-		pendingResults: make(map[string]*chatPendingResult),
-		activeRuns:     make(map[string]context.CancelFunc),
+		runtime:             runtime,
+		addr:                addr,
+		logger:              runtime.logger,
+		benchmarkDir:        benchmarkDir,
+		benchmarkPIDFile:    "/tmp/benchmark_runner.pid",
+		userFilesReportPath: "/userdata/agent/files_report.html",
+		userFilesToolsDir:   "/userdata/agent_tools",
+		history:             make([]Message, 0),
+		bridge:              bridge,
+		pendingResults:      make(map[string]*chatPendingResult),
+		activeRuns:          make(map[string]context.CancelFunc),
 	}
 	if runtime.config.ConfigDir != "" {
 		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
@@ -240,6 +253,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/skills/reload", s.handleSkillsReload)
 	mux.HandleFunc("/api/tools", s.handleTools)
 	mux.HandleFunc("/api/tools/", s.handleTools)
+	mux.HandleFunc("/api/mobilegym/episode/start", s.handleMobileGymEpisodeStart)
+	mux.HandleFunc("/api/mobilegym/episode/end", s.handleMobileGymEpisodeEnd)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
 	mux.HandleFunc("/api/audio/record/stop", s.handleAudioRecordStop)
@@ -258,6 +273,24 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/screenshot.jpg", s.handleScreenshotJPEG)
 	mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
 	mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
+
+	// Benchmark endpoints
+	mux.HandleFunc("/benchmark", s.handleBenchmarkIndex)
+	mux.HandleFunc("/benchmark/record", s.handleBenchmarkRecord)
+	mux.HandleFunc("/benchmark/suites", s.handleBenchmarkSuites)
+	mux.HandleFunc("/benchmark/runs", s.handleBenchmarkRuns)
+	mux.HandleFunc("/benchmark/report/", s.handleBenchmarkReport)
+	mux.HandleFunc("/benchmark/status", s.handleBenchmarkStatus)
+	mux.HandleFunc("/benchmark/log", s.handleBenchmarkLog)
+	mux.HandleFunc("/benchmark/run", s.handleBenchmarkRun)
+	mux.HandleFunc("/benchmark/suites/import", s.handleBenchmarkImport)
+	mux.HandleFunc("/benchmark/suites/delete", s.handleBenchmarkDelete)
+	mux.HandleFunc("/benchmark/suites/generate", s.handleBenchmarkGenerate)
+	mux.HandleFunc("/benchmark/suites/generate-perception", s.handleBenchmarkGeneratePerception)
+	mux.HandleFunc("/benchmark/suites/import-with-assets", s.handleBenchmarkImportWithAssets)
+	mux.HandleFunc("/benchmark/suites/append-perception", s.handleBenchmarkAppendPerception)
+	mux.HandleFunc("/user_files", s.handleUserFiles)
+	mux.HandleFunc("/user_files/regenerate", s.handleUserFilesRegenerate)
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
@@ -358,7 +391,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sync path — legacy behaviour for web UI and clients without request_id
-	s.handleChatSync(w, r, req, inputText, runAttachments, userMsg.EpisodeID)
+	s.handleChatSync(w, r, req, inputText, runAttachments, userMsg)
 }
 
 func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
@@ -718,15 +751,17 @@ func (s *Server) handleChatSync(
 	req ChatRequest,
 	inputText string,
 	runAttachments []InputAttachment,
-	episodeID string,
+	userMsg Message,
 ) {
 	ctx := r.Context()
+	episodeID := userMsg.EpisodeID
 
 	if s.logger != nil {
 		s.logger.Info("Chat request (sync): %s attachments=%d", inputText, len(runAttachments))
 	}
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
+	s.appendHistory(userMsg)
 
 	runReq := RunRequest{
 		Input:          inputText,
@@ -1475,6 +1510,97 @@ func (s *Server) handleToolSkills(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(ToolSkillsResponse{
 		Skills: s.runtime.HTTPToolSkills(requestBaseURL(r)),
 	})
+}
+
+type mobileGymEpisodeStartRequest struct {
+	EpisodeID   string `json:"episode_id"`
+	BridgeURL   string `json:"bridge_url"`
+	BridgeToken string `json:"bridge_token"`
+}
+
+type mobileGymEpisodeEndRequest struct {
+	EpisodeID string `json:"episode_id"`
+}
+
+func (s *Server) handleMobileGymEpisodeStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorizeMobileGymControl(w, r) {
+		return
+	}
+
+	var req mobileGymEpisodeStartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.EpisodeID = strings.TrimSpace(req.EpisodeID)
+	req.BridgeURL = strings.TrimSpace(req.BridgeURL)
+	req.BridgeToken = strings.TrimSpace(req.BridgeToken)
+	if req.EpisodeID == "" || req.BridgeURL == "" || req.BridgeToken == "" {
+		http.Error(w, "episode_id, bridge_url, and bridge_token are required", http.StatusBadRequest)
+		return
+	}
+	if s.runtime.mobileGym == nil {
+		s.runtime.mobileGym = &mobileGymSessionStore{}
+	}
+	s.runtime.mobileGym.Set(mobileGymSession{EpisodeID: req.EpisodeID, BridgeURL: req.BridgeURL, BridgeToken: req.BridgeToken})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleMobileGymEpisodeEnd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorizeMobileGymControl(w, r) {
+		return
+	}
+
+	var req mobileGymEpisodeEndRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.EpisodeID = strings.TrimSpace(req.EpisodeID)
+	if req.EpisodeID == "" {
+		http.Error(w, "episode_id is required", http.StatusBadRequest)
+		return
+	}
+	if s.runtime.mobileGym != nil {
+		s.runtime.mobileGym.Clear(req.EpisodeID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) authorizeMobileGymControl(w http.ResponseWriter, r *http.Request) bool {
+	path := strings.TrimSpace(s.runtime.config.Device.ControlTokenFile)
+	if path == "" {
+		http.Error(w, "mobilegym control token is not configured", http.StatusUnauthorized)
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		http.Error(w, "mobilegym control token is unavailable", http.StatusUnauthorized)
+		return false
+	}
+	expected := strings.TrimSpace(string(data))
+	if expected == "" {
+		http.Error(w, "mobilegym control token is empty", http.StatusUnauthorized)
+		return false
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(auth, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) != expected {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	return true
 }
 
 func requestBaseURL(r *http.Request) string {
@@ -2741,6 +2867,8 @@ const webUI = `<!DOCTYPE html>
                 <h1>Aiden Agent</h1>
                 <div class="topbar-actions">
                     <a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 坐标调试</a>
+                    <a href="/benchmark" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📋 Benchmark</a>
+                    <a href="/user_files" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📁 User files</a>
                     <button type="button" class="new-chat-btn" onclick="clearHistory()">New chat</button>
                     <button type="button" class="new-chat-btn" onclick="resetAllMemory()" style="background:#c0392b;">Reset all memory</button>
                 </div>

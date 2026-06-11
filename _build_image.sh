@@ -117,6 +117,8 @@ if [ ! -d "$DEST_OVERLAY" ]; then
     exit 1
 fi
 
+"$SCRIPT_DIR/scripts/clean_rootfs_overlay_staging.sh" --dest-overlay "$DEST_OVERLAY"
+
 # 只复制 etc 目录到 buildroot overlay
 if [ -d "$OVERLAY/etc" ]; then
     mkdir -p "$DEST_OVERLAY/etc"

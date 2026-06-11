@@ -36,6 +36,17 @@ func WithScreenStableDefaults(defaults ScreenStableDefaults) BuiltinToolSetOptio
 }
 
 func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchConfig, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
+	return newHardwareToolSet(hidCfg, audioCfg, searchCfg, proxyCfg, options...)
+}
+
+func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, mobileGym *mobileGymSessionStore, options ...BuiltinToolSetOption) *ToolSet {
+	if cfg.Device.BackendOrDefault() == "mobilegym" {
+		return newMobileGymToolSet(cfg, proxyCfg, mobileGym, options...)
+	}
+	return newHardwareToolSet(cfg.HID, cfg.Audio, cfg.Search, proxyCfg, options...)
+}
+
+func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchConfig, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
 	toolOptions := builtinToolSetOptions{}
 	for _, option := range options {
 		if option != nil {

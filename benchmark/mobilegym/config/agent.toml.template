@@ -1,0 +1,14 @@
+instruction = "You are controlling an Android-like MobileGym simulator. Use screenshot and touch tools."
+input_mode = "text"
+max_iterations = 20
+
+[model]
+provider = "{{MODEL_PROVIDER}}"
+model = "{{MODEL_NAME}}"
+base_url = "{{MODEL_BASE_URL}}"
+api_key = "{{MODEL_API_KEY}}"
+
+[device]
+backend = "mobilegym"
+# bridge_url 和 bridge_token 由 test 容器在 /api/mobilegym/episode/start 时动态下发
+control_token_file = "{{CONTROL_TOKEN_FILE}}"

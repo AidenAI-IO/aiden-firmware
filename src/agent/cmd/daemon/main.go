@@ -41,8 +41,9 @@ func main() {
 
 	// Default: run as daemon
 	var (
-		configDir = flag.String("config", "", "path to config directory (required)")
-		addr      = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
+		configDir    = flag.String("config", "", "path to config directory (required)")
+		addr         = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
+		benchmarkDir = flag.String("benchmark-dir", "", "Override benchmark root directory (default: auto-detect)")
 	)
 	flag.Parse()
 
@@ -84,11 +85,21 @@ func main() {
 		return
 	}
 
+	// Resolve benchmark directory (allow override via flag, default to auto-detect)
+	resolvedBenchmarkDir, err := agent.ResolveBenchmarkDir(*benchmarkDir, cfg.Benchmark)
+	if err != nil {
+		log.Printf("[benchmark] Failed to resolve benchmark directory: %v. Benchmark routes will return 503.", err)
+		resolvedBenchmarkDir = "" // Pass empty string to NewServer
+	}
+
 	// Otherwise run HTTP server
-	server := agent.NewServer(runtime, *addr)
+	server := agent.NewServer(runtime, *addr, resolvedBenchmarkDir)
 
 	fmt.Printf("🚀 Aiden Agent daemon starting on %s\n", *addr)
 	fmt.Printf("📂 Config directory: %s\n", *configDir)
+	if resolvedBenchmarkDir != "" {
+		fmt.Printf("📊 Benchmark directory: %s\n", resolvedBenchmarkDir)
+	}
 	if _, port, err := net.SplitHostPort(*addr); err == nil && port != "" {
 		fmt.Printf("🌐 Web UI: http://localhost:%s\n", port)
 	}

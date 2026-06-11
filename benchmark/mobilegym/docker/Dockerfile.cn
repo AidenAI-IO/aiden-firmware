@@ -1,0 +1,118 @@
+# 使用国内镜像加速的 Dockerfile
+# 
+# 用法: docker compose -f docker-compose.cn.yml build
+
+# ============ MobileGym Simulator ============
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/node:22-bullseye AS mobilegym-base
+
+WORKDIR /mobilegym
+
+# 使用清华源
+RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list && \
+    sed -i 's/security.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
+
+# Install system dependencies for Playwright + git
+RUN apt-get update && apt-get install -y \
+    git \
+    python3 \
+    python3-pip \
+    python3-venv \
+    libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libdbus-1-3 libxkbcommon0 \
+    libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+    libgbm1 libpango-1.0-0 libcairo2 libasound2 \
+    fonts-noto-cjk fonts-noto-color-emoji fonts-noto-core \
+    && rm -rf /var/lib/apt/lists/*
+
+# 使用清华 PyPI 源
+RUN pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
+# Clone MobileGym (用 cp -a 保留 dotfiles)
+ARG MOBILEGYM_REPO=https://github.com/Purewhiter/mobilegym.git
+ARG MOBILEGYM_BRANCH=main
+RUN git clone --depth 1 --branch ${MOBILEGYM_BRANCH} ${MOBILEGYM_REPO} /tmp/mobilegym && \
+    cp -a /tmp/mobilegym/. /mobilegym/ && \
+    rm -rf /tmp/mobilegym
+
+# Install Python dependencies
+RUN python3 -m venv /opt/venv && \
+    . /opt/venv/bin/activate && \
+    pip install -r /mobilegym/bench_env/requirements.txt
+
+# 使用淘宝 npm 源
+RUN npm config set registry https://registry.npmmirror.com
+
+# Install Node.js dependencies and build
+RUN cd /mobilegym && npm install && npm run build
+
+# Install Playwright
+RUN . /opt/venv/bin/activate && playwright install chromium
+
+ENV PATH="/opt/venv/bin:$PATH"
+EXPOSE 4173
+CMD ["npm", "run", "preview", "--", "--host", "0.0.0.0", "--port", "4173"]
+
+# ============ Go Agent Daemon ============
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/golang:1.23 AS daemon-builder
+
+WORKDIR /build
+ENV GOPROXY=https://goproxy.cn,direct \
+    GOTOOLCHAIN=auto
+
+COPY src/agent/go.mod src/agent/go.sum ./
+RUN go mod download
+
+COPY src/agent/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -o daemon ./cmd/daemon
+
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/debian:bullseye-slim AS daemon-runtime
+
+RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=daemon-builder /build/daemon /usr/local/bin/daemon
+COPY benchmark/mobilegym/docker/daemon-entrypoint.sh /usr/local/bin/daemon-entrypoint
+RUN chmod +x /usr/local/bin/daemon-entrypoint
+
+WORKDIR /app
+EXPOSE 8080
+CMD ["daemon-entrypoint"]
+
+# ============ Test Runner ============
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.11-slim AS test-runner
+
+WORKDIR /app
+
+RUN if [ -f /etc/apt/sources.list ]; then \
+        sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list && \
+        sed -i 's/security.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list; \
+    fi && \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources && \
+        sed -i 's/security.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources; \
+    fi && \
+    apt-get update && apt-get install -y \
+    libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libdbus-1-3 libxkbcommon0 \
+    libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+    libgbm1 libpango-1.0-0 libcairo2 libasound2 \
+    fonts-noto-cjk fonts-noto-color-emoji fonts-noto-core \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip install uv
+
+COPY --from=mobilegym-base /mobilegym /mobilegym
+COPY --from=mobilegym-base /root/.cache/ms-playwright /root/.cache/ms-playwright
+
+COPY benchmark/pyproject.toml benchmark/uv.lock /app/benchmark/
+RUN cd /app/benchmark && uv sync && uv run pip install -r /mobilegym/bench_env/requirements.txt
+
+COPY benchmark/mobilegym /app/benchmark/mobilegym
+COPY benchmark/tests /app/benchmark/tests
+
+ENV PATH="/app/benchmark/.venv/bin:$PATH"
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+WORKDIR /app/benchmark
+ENTRYPOINT ["uv", "run", "python", "mobilegym/scripts/run_aiden.py"]

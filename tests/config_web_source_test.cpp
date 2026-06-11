@@ -125,6 +125,33 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
+TEST_CASE("config web docs list token_env in model fields") {
+    const std::string doc_path = std::string(AIDEN_SOURCE_DIR) + "/docs/03-services/config-web.md";
+    std::ifstream doc_in(doc_path.c_str());
+    REQUIRE(doc_in.good());
+
+    std::ostringstream doc_buffer;
+    doc_buffer << doc_in.rdbuf();
+    const std::string doc = doc_buffer.str();
+
+    const char* model_fields[] = {
+        "provider",
+        "token_env",
+        "model",
+        "api_key",
+        "base_url",
+        "temperature",
+        "max_response_tokens",
+        "context_window",
+        "model_max_output_tokens",
+        NULL,
+    };
+    for (int i = 0; model_fields[i]; ++i) {
+        CHECK_MESSAGE(doc.find(model_fields[i]) != std::string::npos, model_fields[i]);
+    }
+    CHECK(doc.find("`context_window = 0` means auto-discover") != std::string::npos);
+}
+
 TEST_CASE("config web exposes ota update and live ota logs") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
@@ -255,11 +282,36 @@ TEST_CASE("config web exposes screenshot pruning config fields") {
     CHECK(html.find("agent_screen_stable_timeout_ms") != std::string::npos);
     CHECK(html.find("agent_screen_stable_ms") != std::string::npos);
     CHECK(html.find("agent_screen_stable_diff_threshold") != std::string::npos);
-    CHECK(html.find("['screenshot_keep_n','number']") != std::string::npos);
-    CHECK(html.find("['screenshot_prune_interval','number']") != std::string::npos);
-    CHECK(html.find("['screen_stable_timeout_ms','number']") != std::string::npos);
-    CHECK(html.find("['screen_stable_ms','number']") != std::string::npos);
-    CHECK(html.find("['screen_stable_diff_threshold','number']") != std::string::npos);
+}
+
+TEST_CASE("config web exposes model spec override fields") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("\"context_window\"") != std::string::npos);
+    CHECK(source.find("\"max_response_tokens\"") != std::string::npos);
+    CHECK(source.find("\"model_max_output_tokens\"") != std::string::npos);
+    CHECK(source.find("config.model.context_window") != std::string::npos);
+    CHECK(source.find("config.model.max_response_tokens") != std::string::npos);
+    CHECK(source.find("config.model.model_max_output_tokens") != std::string::npos);
+
+    CHECK(html.find("model_max_response_tokens") != std::string::npos);
+    CHECK(html.find("model_context_window") != std::string::npos);
+    CHECK(html.find("model_model_max_output_tokens") != std::string::npos);
+    CHECK(html.find("0 = auto") != std::string::npos);
 }
 
 TEST_CASE("config web exposes brave search provider") {
@@ -282,7 +334,17 @@ TEST_CASE("config web exposes brave search provider") {
     CHECK(source.find("\"brave\"") != std::string::npos);
     CHECK(source.find("\"brave-free\"") != std::string::npos);
     CHECK(source.find("provider == \"brave\" || provider == \"brave-free\"") != std::string::npos);
-    CHECK(html.find("search:{provider:['duckduckgo','brave','brave-free','tavily']}") != std::string::npos);
+    // The search provider enum now lives in the agent config metadata (the
+    // single source of truth the config web UI consumes via config-meta),
+    // not a hard-coded table in the HTML.
+    const std::string meta_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent/internal/agent/config_meta.go";
+    std::ifstream meta_in(meta_path.c_str());
+    REQUIRE(meta_in.good());
+    std::ostringstream meta_buffer;
+    meta_buffer << meta_in.rdbuf();
+    const std::string meta = meta_buffer.str();
+    CHECK(meta.find("\"brave-free\"") != std::string::npos);
+    CHECK(html.find("search:{provider:['duckduckgo','brave','brave-free','tavily']}") == std::string::npos);
     CHECK(source.find("const char* allowed[] = {\"duckduckgo\", \"brave\", \"brave-free\", \"tavily\", NULL};") != std::string::npos);
 }
 
@@ -319,12 +381,55 @@ TEST_CASE("config web renders finite choice fields as selects") {
     CHECK(html.find("input,select,textarea") != std::string::npos);
     CHECK(html.find("input:focus,select:focus,textarea:focus") != std::string::npos);
     CHECK(html.find("input:disabled,select:disabled,textarea:disabled") != std::string::npos);
-    CHECK(html.find("const selectFieldOptions=") != std::string::npos);
+    // Select options are now built from the agent config-meta payload rather
+    // than a hard-coded table; the UI fetches /api/config/meta and derives
+    // enum/range options in buildConfigMeta().
+    CHECK(html.find("let selectFieldOptions=") != std::string::npos);
+    CHECK(html.find("function buildConfigMeta(meta)") != std::string::npos);
+    CHECK(html.find("loadConfigMeta") != std::string::npos);
+    CHECK(html.find("'/api/config/meta'") != std::string::npos);
     CHECK(html.find("hydrateSelectOptions") != std::string::npos);
     CHECK(html.find("ensureSelectOption") != std::string::npos);
-    CHECK(html.find("rangeOptions(0,1,0.05,2)") != std::string::npos);
-    CHECK(html.find("rangeOptions(0.5,2,0.1,1)") != std::string::npos);
+    // rangeOptions is now invoked with metadata-provided bounds, not literals.
+    CHECK(html.find("rangeOptions(field.range.min,field.range.max,field.range.step") != std::string::npos);
+    // The legacy hard-coded option table must be gone.
+    CHECK(html.find("const selectFieldOptions=") == std::string::npos);
 }
+
+TEST_CASE("config web degrades gracefully when config metadata is unavailable") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    // A failed config-meta fetch must not abort the whole page: Wi-Fi, logs and
+    // polling stay live, only the agent.toml sections are disabled. The init
+    // path therefore tracks a metaOk flag instead of returning early.
+    CHECK(html.find("let metaOk=true;") != std::string::npos);
+    CHECK(html.find("metaOk=false;") != std::string::npos);
+    // The early `return` that killed Wi-Fi/log init on meta failure is gone.
+    CHECK(html.find("setDetails(err.message);return;}hydrateSelectOptions") == std::string::npos);
+    // Wi-Fi scan and agent-log refresh run regardless of metaOk.
+    CHECK(html.find("await scanWifi(false);await refreshAgentLog(false);") != std::string::npos);
+    // Only agent.toml sections are disabled on failure; system_env stays editable.
+    CHECK(html.find("function disableAgentConfigEditing()") != std::string::npos);
+    CHECK(html.find("if(card.id==='section-system_env')return;") != std::string::npos);
+    CHECK(html.find("if(!metaOk){disableAgentConfigEditing();}") != std::string::npos);
+
+    // The metadata endpoint fails closed with a 503, which must carry the
+    // correct HTTP status text (not the generic 500 reason phrase).
+    const std::string cpp_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream cpp_in(cpp_path.c_str());
+    REQUIRE(cpp_in.good());
+    std::ostringstream cpp_buffer;
+    cpp_buffer << cpp_in.rdbuf();
+    const std::string source = cpp_buffer.str();
+    CHECK(source.find("case 503: response.status_text = \"Service Unavailable\";") != std::string::npos);
+}
+
 
 TEST_CASE("config web updates dependent field visibility from selected values") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
@@ -338,16 +443,19 @@ TEST_CASE("config web updates dependent field visibility from selected values") 
     CHECK(html.find(".field.hidden{display:none}") != std::string::npos);
     CHECK(html.find("function setFieldVisible(section,key,visible)") != std::string::npos);
     CHECK(html.find("function applyFieldVisibility()") != std::string::npos);
-    CHECK(html.find("setFieldVisible('model','base_url',modelProvider!=='openrouter')") != std::string::npos);
-    CHECK(html.find("setFieldVisible('search','api_key',searchProvider!=='duckduckgo')") != std::string::npos);
-    CHECK(html.find("const sttTencent=sttProvider==='tencent'||sttProvider==='tencent_asr'") != std::string::npos);
-    CHECK(html.find("setFieldVisible('telemetry',key,telemetryEnabled)") != std::string::npos);
-    CHECK(html.find("const voiceMode=agentMode==='stt'||agentMode==='audio'") != std::string::npos);
-    CHECK(html.find("const wakeupSession=agentMode==='stt'&&agentTrigger==='wakeup'") != std::string::npos);
+    // Visibility is now driven by declarative rules from config-meta
+    // (visibleWhen), evaluated generically rather than hard-coded per field.
+    CHECK(html.find("visibilityRules.forEach") != std::string::npos);
+    CHECK(html.find("function evalCondition(cond)") != std::string::npos);
+    CHECK(html.find("function evalRule(rule)") != std::string::npos);
     CHECK(html.find("function bindFieldVisibility()") != std::string::npos);
+    CHECK(html.find("watchedFields.forEach") != std::string::npos);
     CHECK(html.find("addEventListener('change',function(){applyFieldVisibility();})") != std::string::npos);
     CHECK(html.find("fillConfigForm(config){Object.keys(sectionFields).forEach") != std::string::npos);
     CHECK(html.find("applyFieldVisibility();}") != std::string::npos);
+    // The legacy imperative visibility chain must be gone.
+    CHECK(html.find("setFieldVisible('model','base_url',modelProvider!=='openrouter')") == std::string::npos);
+    CHECK(html.find("const sttTencent=sttProvider==='tencent'") == std::string::npos);
 }
 
 TEST_CASE("config web exposes a single system env editor backed by the env file") {
@@ -442,7 +550,7 @@ TEST_CASE("config web exposes telemetry settings section") {
     CHECK(html.find("public_key_env") == std::string::npos);
     CHECK(html.find("secret_key_env") == std::string::npos);
     CHECK(html.find("parseListValue") != std::string::npos);
-    CHECK(html.find("['tags','list']") != std::string::npos);
+    CHECK(html.find("<textarea id=\\\"telemetry_tags\\\"") != std::string::npos);
 }
 
 TEST_CASE("config web restarts ota only when system env changes") {
@@ -465,7 +573,7 @@ TEST_CASE("config web restarts ota only when system env changes") {
     CHECK(source.find("config saved; agent and ota restarting") == std::string::npos);
 }
 
-TEST_CASE("config web DHCP uses aiden udhcpc hook") {
+TEST_CASE("config web DHCP invokes udhcpc without hook") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
     REQUIRE(source_in.good());
@@ -474,76 +582,12 @@ TEST_CASE("config web DHCP uses aiden udhcpc hook") {
     source_buffer << source_in.rdbuf();
     const std::string source = source_buffer.str();
 
+    // Must invoke udhcpc for DHCP
     CHECK(source.find("udhcpc -i ") != std::string::npos);
-    CHECK(source.find("-s /etc/udhcpc/aiden.script") != std::string::npos);
-    CHECK(source.find("udhcpc -i \" + shell_quote(options.wifi_interface) + \" -n -q 2>&1") == std::string::npos);
-}
-
-TEST_CASE("config web custom benchmark suite import endpoints") {
-    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
-    std::ifstream source_in(source_path.c_str());
-    REQUIRE(source_in.good());
-
-    std::ostringstream source_buffer;
-    source_buffer << source_in.rdbuf();
-    const std::string source = source_buffer.str();
-
-    // Endpoints registered.
-    CHECK(source.find("\"/benchmark/suites/import\"") != std::string::npos);
-    CHECK(source.find("\"/benchmark/suites/delete\"") != std::string::npos);
-
-    // Custom suites isolated under suites/custom/ and listing flags them.
-    CHECK(source.find("/userdata/agent/benchmark/suites/custom") != std::string::npos);
-    CHECK(source.find("/suites/custom/") != std::string::npos);
-    CHECK(source.find("\"custom\"") != std::string::npos);
-
-    // Validation delegated to runner.suite.load_suite (single source of truth).
-    CHECK(source.find("from runner.suite import load_suite") != std::string::npos);
-
-    // Name sanitisation: only [A-Za-z0-9_-], length-bounded.
-    CHECK(source.find("isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_'") != std::string::npos);
-    CHECK(source.find("safe_name.size() > 64") != std::string::npos);
-
-    // Delete must only touch suites/custom/ (no arbitrary path).
-    const std::string del_marker = "std::string dest_path = \"/userdata/agent/benchmark/suites/custom/\" + safe_name + \".json\";";
-    CHECK(source.find(del_marker) != std::string::npos);
-}
-
-TEST_CASE("user files route generates report before serving it") {
-    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
-    std::ifstream source_in(source_path.c_str());
-    REQUIRE(source_in.good());
-
-    std::ostringstream source_buffer;
-    source_buffer << source_in.rdbuf();
-    const std::string source = source_buffer.str();
-
-    const std::string route_marker = "request.method == \"GET\" && request.path == \"/user_files\"";
-    const size_t route_pos = source.find(route_marker);
-    REQUIRE(route_pos != std::string::npos);
-
-    const size_t generate_pos = source.find("ensure_user_files_report", route_pos);
-    const size_t read_pos = source.find("fopen(path.c_str(), \"r\")", route_pos);
-    REQUIRE(read_pos != std::string::npos);
-
-    CHECK(source.find("kUserFilesGenerateCommandTimeoutMs") != std::string::npos);
-    CHECK(generate_pos != std::string::npos);
-    CHECK(generate_pos < read_pos);
-}
-
-TEST_CASE("build image packages user files report tools") {
-    const std::string build_path = std::string(AIDEN_SOURCE_DIR) + "/_build_image.sh";
-    std::ifstream build_in(build_path.c_str());
-    REQUIRE(build_in.good());
-
-    std::ostringstream build_buffer;
-    build_buffer << build_in.rdbuf();
-    const std::string build_script = build_buffer.str();
-
-    CHECK(build_script.find("agent_tools") != std::string::npos);
-    CHECK(build_script.find("generate_agent_files_report.py") != std::string::npos);
-    CHECK(build_script.find("agent_files_template.html") != std::string::npos);
-    CHECK(build_script.find("view_agent_files.sh") != std::string::npos);
+    // Must NOT reference the removed aiden.script hook
+    CHECK(source.find("-s /etc/udhcpc/aiden.script") == std::string::npos);
+    // Should use -n -q for foreground one-shot DHCP
+    CHECK(source.find("udhcpc -i \" + shell_quote(options.wifi_interface) + \" -n -q") != std::string::npos);
 }
 
 TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhid") {
@@ -590,8 +634,12 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("\"/api/poweroff\"") != std::string::npos);
     CHECK(source.find("config-check --stdin --format=json") != std::string::npos);
     CHECK(source.find("config validation unavailable: agent binary not found") != std::string::npos);
+    // config metadata endpoint: agent CLI is the single source of field metadata.
+    CHECK(source.find("config-meta --format=json") != std::string::npos);
+    CHECK(source.find("\"/api/config/meta\"") != std::string::npos);
+    CHECK(source.find("config metadata unavailable: agent binary not found") != std::string::npos);
     CHECK(html.find("hid_pointer_mode") != std::string::npos);
-    CHECK(html.find("['pointer_mode','text']") != std::string::npos);
+    CHECK(html.find("<select id=\\\"hid_pointer_mode\\\"") != std::string::npos);
     CHECK(html.find("pointer_mode 需要关机重启后生效") != std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
     CHECK(html.find("/api/poweroff") != std::string::npos);

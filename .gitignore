@@ -40,3 +40,23 @@ __pycache__/
 .pytest_cache/
 benchmark/runs/
 benchmark/artifacts/
+
+# MobileGym vendor checkout
+benchmark/mobilegym/vendor/
+
+# MobileGym daemon runtime state (regenerated each run)
+benchmark/mobilegym/config/agent.toml
+benchmark/mobilegym/config/agent.toml.*
+benchmark/mobilegym/config/memory/
+benchmark/mobilegym/config/log/
+benchmark/mobilegym/config/control_token
+benchmark/mobilegym/config/bridge_token
+
+# Locally built daemon binary
+/bin/
+
+# MobileGym local launcher state (PIDs/logs)
+/.mobilegym_run/
+
+# Docker
+benchmark/mobilegym/docker/.env
