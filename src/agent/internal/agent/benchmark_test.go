@@ -595,3 +595,21 @@ func TestHandleBenchmarkRun_MobileGymBuiltin(t *testing.T) {
 		t.Fatalf("unexpected mobilegym launch args: %+v", captured)
 	}
 }
+
+func TestHandleBenchmarkLog_MobileGymMode(t *testing.T) {
+	tmp := t.TempDir()
+	logFile := filepath.Join(tmp, "mobilegym_run.log")
+	os.WriteFile(logFile, []byte("hello mobilegym"), 0o644)
+
+	s := &Server{benchmarkLogPath: logFile}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/benchmark/log?mode=mobilegym", nil)
+	s.handleBenchmarkLog(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "hello mobilegym") {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+}

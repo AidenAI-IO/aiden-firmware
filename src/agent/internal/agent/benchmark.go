@@ -303,9 +303,14 @@ func (s *Server) benchmarkRunnerAlive() bool {
 const benchmarkLogTailBytes = 64 * 1024
 
 func (s *Server) handleBenchmarkLog(w http.ResponseWriter, r *http.Request) {
+	mode := r.URL.Query().Get("mode")
 	logPath := s.benchmarkLogPath
 	if logPath == "" {
-		logPath = "/tmp/benchmark_run.log"
+		if mode == "mobilegym" {
+			logPath = "/tmp/mobilegym_run.log"
+		} else {
+			logPath = "/tmp/benchmark_run.log"
+		}
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
