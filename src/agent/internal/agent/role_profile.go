@@ -79,21 +79,28 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 				"If the next step requires external state or device action, call exactly one appropriate tool. If no tool is needed, return a concise candidate answer for verifier review.",
 			},
 		),
-		Verifier: buildRoleProfile(
-			RoleVerifier,
-			cfg,
-			skills,
-			availableTools,
-			roleMemory.RenderForRole(RoleVerifier),
-			RoleCapabilities{CanDecideFinish: true},
-			[]string{
-				"You are the only role allowed to decide whether the run can end.",
-				"Check the original user request, completion criteria, executor actions, candidate answers, and observations. Finish only when the answer is supported by the available evidence.",
-				"Do not approve completion from a generic latest executor result alone; every explicit requirement in the original request must be proven. An authoritative direct tool result is sufficient evidence when it exactly covers the request, such as open_app returning ok=true for a launch-only app, URL, or dialer request. Require screenshot evidence for additional visible UI work or when a screenshot contradicts the tool result.",
-				"If the current screenshot clearly identifies the app/page or device platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence; otherwise leave unknown fields empty.",
-				"Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}.",
-			},
-		),
+		Verifier: buildVerifierRoleProfile([]string{
+			"Verify only the current executor step provided in the user message. Do not judge overall task completion unless the user message marks this as the final committed plan step.",
+			"Use the latest executor result, tool observations, screenshots, and candidate answers to decide whether that step succeeded.",
+			"An authoritative direct tool result is sufficient evidence when it exactly covers the current step, such as open_app returning ok=true for a launch-only app, URL, or dialer request. Require screenshot evidence for additional visible UI work or when a screenshot contradicts the tool result.",
+			"If the current step succeeded and more committed plan steps remain: return can_finish=false and needs_replan=false.",
+			"If the current step succeeded and this is the final committed plan step: return can_finish=true with final_answer for the user.",
+			"If the current step failed, had no effect, or evidence is insufficient: return can_finish=false and needs_replan=true with a brief reason for the planner.",
+			"If the screenshot clearly identifies app/page/platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence; otherwise leave unknown fields empty.",
+			"Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}.",
+		}),
+	}
+}
+
+func buildVerifierRoleProfile(roleRules []string) RoleProfile {
+	parts := []string{"## Role rules"}
+	for _, rule := range roleRules {
+		parts = append(parts, "- "+rule)
+	}
+	return RoleProfile{
+		Name:         RoleVerifier,
+		SystemPrompt: strings.Join(parts, "\n"),
+		Capabilities: RoleCapabilities{CanDecideFinish: true},
 	}
 }
 

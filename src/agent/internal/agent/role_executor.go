@@ -397,7 +397,7 @@ func (e *roleCollaborativeExecutor) callExecutor(
 }
 
 func (e *roleCollaborativeExecutor) callVerifier(ctx context.Context, inputs map[string]string, state roleLoopState, options ...chains.ChainCallOption) (verifierDecision, error) {
-	messages := e.roleMessages(e.Profiles.Verifier, inputs, state, "Verifier task: decide whether this run can finish. Return the required JSON.")
+	messages := e.roleMessages(e.Profiles.Verifier, inputs, state, "Verifier task: decide whether the current executor step succeeded. Return the required JSON.")
 	res, err := e.generateRoleContent(ctx, RoleVerifier, messages, chains.GetLLMCallOptions(options...)...)
 	if err != nil {
 		return verifierDecision{}, err
@@ -437,7 +437,7 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 }
 
 func roleSeesToolScratchpad(role RoleName) bool {
-	return role == RolePlanner || role == RoleVerifier
+	return role == RolePlanner
 }
 
 func buildRoleStatePrompt(role RoleName, inputs map[string]string, state roleLoopState, task string) string {
@@ -487,20 +487,42 @@ func buildExecutorStatePrompt(state roleLoopState, task string) string {
 	return strings.TrimSpace(builder.String())
 }
 
-func buildVerifierStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
+func buildVerifierStatePrompt(_ map[string]string, state roleLoopState, task string) string {
 	var builder strings.Builder
 	builder.WriteString(task)
 	writeWorldState(&builder, state.World)
-	writeRequestObjectiveAndCriteria(&builder, inputs, state)
-	writeExecutorEvidence(&builder, state)
-	builder.WriteString("\nVerifier mandatory checklist:\n")
-	builder.WriteString("- Re-read the original user request and completion criteria immediately before deciding.\n")
-	builder.WriteString("- Do not finish merely because the latest executor step succeeded.\n")
-	builder.WriteString("- Finish only if the accumulated observations prove every explicit requirement is satisfied.\n")
-	builder.WriteString("- If any requested item is incomplete, uncertain, or no longer visible in context, return can_finish=false and explain the missing evidence.\n")
-	builder.WriteString("\nOriginal user request repeated for final verification:\n")
-	builder.WriteString(inputs["input"])
+	writeCurrentStepForVerifier(&builder, state)
+	writeLatestExecutorEvidence(&builder, state)
 	return strings.TrimSpace(builder.String())
+}
+
+func writeCurrentStepForVerifier(builder *strings.Builder, state roleLoopState) {
+	builder.WriteString("\n\nCurrent step under verification:\n")
+	totalSteps := len(state.Plan)
+	stepIndex := state.PlanStepIndex + 1
+	if stepIndex < 1 {
+		stepIndex = 1
+	}
+	isFinal := totalSteps > 0 && state.PlanStepIndex >= totalSteps-1
+	builder.WriteString(fmt.Sprintf("- step_index: %d\n", stepIndex))
+	builder.WriteString(fmt.Sprintf("- total_committed_steps: %d\n", totalSteps))
+	builder.WriteString(fmt.Sprintf("- is_final_committed_step: %v\n", isFinal))
+	if next := strings.TrimSpace(state.NextStep); next != "" {
+		builder.WriteString("- step_text: ")
+		builder.WriteString(next)
+		builder.WriteByte('\n')
+	} else {
+		builder.WriteString("- step_text: (none)\n")
+	}
+}
+
+func writeLatestExecutorEvidence(builder *strings.Builder, state roleLoopState) {
+	builder.WriteString("\n\nLatest executor result for this step:\n")
+	if result, ok := state.latestExecutionResult(); ok {
+		writeExecutionResultLine(builder, 1, result)
+	} else {
+		builder.WriteString("(none)")
+	}
 }
 
 func buildRoleUserMessageParts(input string, attachments []InputAttachment, world worldState) []llms.ContentPart {

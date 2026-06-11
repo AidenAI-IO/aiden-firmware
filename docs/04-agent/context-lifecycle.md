@@ -83,7 +83,7 @@ The per-call user message is then built from the current loop state:
 
 - planner sees the current loop mode, world state, original request, conversation history, draft or committed plan, executor results, and verifier feedback;
 - executor sees the current world state and the planner-approved `next_step`;
-- verifier sees the current world state, original request, completion criteria, accumulated executor evidence, and mandatory completion checklist.
+- verifier sees the current world state, the step under verification (`step_index`, `step_text`, `is_final_committed_step`), and the latest executor result for that step only.
 
 Planner and executor receive the tool scratchpad after tools have run. The latest screenshot image is attached to the role message when the world state has screenshot bytes.
 
@@ -291,7 +291,7 @@ When a chat-history store exists, planner memory also loads a compact view of re
 - Planner owns plans and sees retrieved experience memory.
 - In `default`, planner may call tools and finish the run without verifier review.
 - In `execution`, executor executes exactly one approved step and does not receive global memory.
-- In `execution`, verifier is the only role allowed to finish the run and receives failure/conflict memory.
+- In `execution`, verifier validates only the current committed step; intermediate step success advances the plan, and `can_finish` is allowed only on the final committed step.
 - `commit_plan` is only valid in `plan`; runtime owns `plan_step_index` after commit.
 - Loop meta tools are planner-only and are handled by the runtime controller, not the device tool layer.
 - Tool results and screenshots are evidence for the current run; reusable lessons are written only after episode commit or explicit memory-tool calls.

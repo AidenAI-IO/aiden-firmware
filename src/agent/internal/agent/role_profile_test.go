@@ -36,7 +36,7 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		t.Fatalf("only verifier should decide finish: verifier=%#v executor=%#v", profiles.Verifier.Capabilities, profiles.Executor.Capabilities)
 	}
 
-	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor, profiles.Verifier} {
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
 		for _, want := range []string{"base", "extra", "[ui] inspect before acting"} {
 			if !strings.Contains(profile.SystemPrompt, want) {
 				t.Fatalf("%s profile missing %q:\n%s", profile.Name, want, profile.SystemPrompt)
@@ -50,17 +50,28 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 			"## Available skills",
 			"## Active skills",
 			"## Role rules",
+			"## Available tools",
 		} {
 			if !strings.Contains(profile.SystemPrompt, want) {
 				t.Fatalf("%s profile missing markdown section %q:\n%s", profile.Name, want, profile.SystemPrompt)
 			}
 		}
-		if profile.Name == RoleVerifier {
-			if strings.Contains(profile.SystemPrompt, "## Available tools") {
-				t.Fatalf("verifier profile should not include available tools section:\n%s", profile.SystemPrompt)
-			}
-		} else if !strings.Contains(profile.SystemPrompt, "## Available tools") {
-			t.Fatalf("%s profile missing markdown section %q:\n%s", profile.Name, "## Available tools", profile.SystemPrompt)
+	}
+	if !strings.Contains(profiles.Verifier.SystemPrompt, "## Role rules") {
+		t.Fatalf("verifier profile missing role rules:\n%s", profiles.Verifier.SystemPrompt)
+	}
+	for _, unexpected := range []string{
+		"## Base instruction",
+		"## Default behavior",
+		"## Available skills",
+		"## Active skills",
+		"## Available tools",
+		"MEMORY CONTEXT",
+		"base",
+		"extra",
+	} {
+		if strings.Contains(profiles.Verifier.SystemPrompt, unexpected) {
+			t.Fatalf("verifier profile should only keep role rules, found %q:\n%s", unexpected, profiles.Verifier.SystemPrompt)
 		}
 	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "MEMORY CONTEXT") {
@@ -68,6 +79,9 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	}
 	if strings.Contains(profiles.Executor.SystemPrompt, "MEMORY CONTEXT") {
 		t.Fatalf("memory context should not be injected into executor prompt: %q", profiles.Executor.SystemPrompt)
+	}
+	if strings.Contains(profiles.Verifier.SystemPrompt, "MEMORY CONTEXT") {
+		t.Fatalf("memory context should not be injected into verifier prompt: %q", profiles.Verifier.SystemPrompt)
 	}
 	if !strings.Contains(profiles.Executor.SystemPrompt, "Execute only the current next_step") {
 		t.Fatalf("executor prompt missing next_step constraint:\n%s", profiles.Executor.SystemPrompt)
@@ -98,8 +112,9 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		!strings.Contains(profiles.Verifier.SystemPrompt, `"platform":""`) {
 		t.Fatalf("role prompts should propagate observed platform for platform-specific tools: planner=%q executor=%q verifier=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt, profiles.Verifier.SystemPrompt)
 	}
-	if !strings.Contains(profiles.Verifier.SystemPrompt, "only role allowed to decide") {
-		t.Fatalf("verifier prompt missing finish authority:\n%s", profiles.Verifier.SystemPrompt)
+	if !strings.Contains(profiles.Verifier.SystemPrompt, "current executor step") ||
+		!strings.Contains(profiles.Verifier.SystemPrompt, "final committed plan step") {
+		t.Fatalf("verifier prompt should focus on per-step verification:\n%s", profiles.Verifier.SystemPrompt)
 	}
 }
 
@@ -238,7 +253,7 @@ func TestRoleCollaborativeExecutorIgnoresExecutorPlanMutation(t *testing.T) {
 	}
 }
 
-func TestRoleCollaborativeExecutorRepeatsOriginalRequestForVerifier(t *testing.T) {
+func TestRoleCollaborativeExecutorShowsCurrentStepForVerifier(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleCommittedExecutionResponses(
 			[]string{"use echo"},
@@ -256,24 +271,38 @@ func TestRoleCollaborativeExecutorRepeatsOriginalRequestForVerifier(t *testing.T
 		NewSkillIndex(),
 	)
 
-	const request = "open Settings, search Bluetooth, and stop only after Bluetooth settings is visible"
-	if _, err := runtime.Run(context.Background(), RunRequest{Input: request}); err != nil {
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "open Settings and use echo"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if len(model.messages) < 4 {
 		t.Fatalf("expected verifier model call, got %d calls", len(model.messages))
 	}
-	verifierMessages := model.messages[3]
-	lastMessageText := messageText([]llms.MessageContent{verifierMessages[len(verifierMessages)-1]})
+	verifierSystemPrompt := messageText(model.messages[3][:1])
+	verifierUserPrompt := messageText([]llms.MessageContent{model.messages[3][len(model.messages[3])-1]})
+	if strings.Contains(verifierSystemPrompt, "## Base instruction") ||
+		strings.Contains(verifierSystemPrompt, "## Available skills") {
+		t.Fatalf("verifier system prompt should only contain role rules:\n%s", verifierSystemPrompt)
+	}
 	for _, want := range []string{
+		"Current step under verification:",
+		"step_index:",
+		"total_committed_steps:",
+		"is_final_committed_step:",
+		"step_text: use echo",
+		"Latest executor result for this step:",
+		"tool=echo",
+	} {
+		if !strings.Contains(verifierUserPrompt, want) {
+			t.Fatalf("verifier user prompt missing %q:\n%s", want, verifierUserPrompt)
+		}
+	}
+	for _, unexpected := range []string{
 		"Verifier mandatory checklist",
 		"Original user request repeated for final verification",
-		request,
-		"Completion criteria",
-		"Do not finish merely because the latest executor step succeeded",
+		"Completion criteria:",
 	} {
-		if !strings.Contains(lastMessageText, want) {
-			t.Fatalf("verifier final prompt missing %q:\n%s", want, lastMessageText)
+		if strings.Contains(verifierUserPrompt, unexpected) {
+			t.Fatalf("verifier user prompt should not contain %q:\n%s", unexpected, verifierUserPrompt)
 		}
 	}
 }
@@ -371,10 +400,9 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 
 	finalVerifierPrompt := messageText(model.messages[9])
 	for _, want := range []string{
-		"Original user request",
-		"do not get stuck",
-		"Executor evidence:",
-		"tool=echo input=same",
+		"Current step under verification:",
+		"step_text: answer directly",
+		"Latest executor result for this step:",
 		"candidate_answer=candidate",
 	} {
 		if !strings.Contains(finalVerifierPrompt, want) {
@@ -382,8 +410,9 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 		}
 	}
 	for _, unexpected := range []string{
+		"Original user request",
 		"Current plan:",
-		"Planner reason:",
+		"Completion criteria:",
 		"Verifier feedback:",
 		"not enough progress",
 		"still stuck",
@@ -392,8 +421,8 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 			t.Fatalf("final verifier prompt should not contain %q:\n%s", unexpected, finalVerifierPrompt)
 		}
 	}
-	if !hasMessageRole(model.messages[9], llms.ChatMessageTypeTool) {
-		t.Fatalf("verifier should receive tool scratchpad messages as operation evidence: %#v", model.messages[9])
+	if hasMessageRole(model.messages[9], llms.ChatMessageTypeTool) {
+		t.Fatalf("verifier should not receive full tool scratchpad history: %#v", model.messages[9])
 	}
 }
 
