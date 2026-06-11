@@ -620,15 +620,15 @@ func (r *Runtime) handleSessionBoundary(input string, hints CurrentEnvironmentHi
 		return telemetry
 	}
 	boundaryCfg := BoundaryConfig{
-		ShortGapSeconds:        cfg.SessionBoundaryShortGapSeconds,
-		LongGapSeconds:         cfg.SessionBoundaryLongGapSeconds,
-		ContinueScoreThreshold: DefaultBoundaryConfig().ContinueScoreThreshold,
+		ShortGapSeconds:            cfg.SessionBoundaryShortGapSeconds,
+		LongGapSeconds:             cfg.SessionBoundaryLongGapSeconds,
+		SmallSessionEventThreshold: DefaultBoundaryConfig().SmallSessionEventThreshold,
+		ContinueScoreThreshold:     DefaultBoundaryConfig().ContinueScoreThreshold,
 	}
-	episodeCtx := BoundaryEpisodeContext{
-		HasRunning:     runningEpisodeExists(r.memoryPlane),
-		CurrentAppName: hints.AppName,
-	}
-	boundary, reason := ClassifyTurnBoundary(events, input, time.Now().UTC(), boundaryCfg, episodeCtx)
+	now := time.Now().UTC()
+	episodeCtx := recentEpisodeContext(r.memoryPlane, now, time.Duration(boundaryCfg.LongGapSeconds)*time.Second)
+	episodeCtx.CurrentAppName = hints.AppName
+	boundary, reason := ClassifyTurnBoundary(events, input, now, boundaryCfg, episodeCtx)
 	telemetry.Decision = boundary
 	telemetry.Reason = reason
 
@@ -675,21 +675,42 @@ func loadLastNSessionEvents(manager *MemoryManager, n int) ([]SessionEvent, erro
 	return append([]SessionEvent(nil), events[len(events)-n:]...), nil
 }
 
-func runningEpisodeExists(plane MemoryPlane) bool {
+func recentEpisodeContext(plane MemoryPlane, now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext {
+	var ctx BoundaryEpisodeContext
 	fs, ok := plane.(*FilesystemMemoryPlane)
 	if !ok || fs == nil || fs.episodes == nil {
-		return false
+		return ctx
 	}
 	index, err := fs.episodes.loadIndex()
 	if err != nil {
-		return false
+		return ctx
 	}
 	for _, entry := range index.Episodes {
-		if entry.Status == "running" {
-			return true
+		switch entry.Status {
+		case "running":
+			ctx.HasRunning = true
+		case "active":
+			if recentEpisodeEndedAt(entry.EndedAt, now, activeMaxAge) {
+				ctx.HasActive = true
+			}
+		}
+		if ctx.HasRunning && ctx.HasActive {
+			return ctx
 		}
 	}
-	return false
+	return ctx
+}
+
+func recentEpisodeEndedAt(endedAt string, now time.Time, maxAge time.Duration) bool {
+	if maxAge <= 0 {
+		return false
+	}
+	ended, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(endedAt))
+	if err != nil {
+		return false
+	}
+	age := now.Sub(ended)
+	return age >= 0 && age <= maxAge
 }
 
 func (r *Runtime) effectiveContextWindow() int {

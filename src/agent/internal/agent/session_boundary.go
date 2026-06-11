@@ -23,6 +23,8 @@ const (
 	BoundaryReasonActionVerb       = "action_verb"
 	BoundaryReasonAppDivergence    = "app_divergence"
 	BoundaryReasonRunningEpisode   = "running_episode"
+	BoundaryReasonActiveEpisode    = "active_episode"
+	BoundaryReasonSmallSession     = "small_session"
 	BoundaryReasonDefaultNew       = "default_new"
 	BoundaryReasonScoreContinue    = "score_continue"
 )
@@ -36,6 +38,11 @@ type BoundaryConfig struct {
 	// LongGapSeconds: time since last event above this threshold forces
 	// a "new" decision regardless of input content.
 	LongGapSeconds int
+	// SmallSessionEventThreshold: when the active session has no more than
+	// this many events, keep the session together in the mid-range gap even if
+	// the new input looks unrelated. Short sessions are cheap to carry and
+	// splitting them early tends to lose useful context.
+	SmallSessionEventThreshold int
 	// ContinueScoreThreshold: total score above which a "continue" decision
 	// overrides the default "new" bias in the mid-range gap. Tuned to favor
 	// false-positive continuation over false-positive new, since continuation
@@ -47,9 +54,10 @@ type BoundaryConfig struct {
 // DefaultBoundaryConfig returns the sane defaults for voice agent usage.
 func DefaultBoundaryConfig() BoundaryConfig {
 	return BoundaryConfig{
-		ShortGapSeconds:        30,
-		LongGapSeconds:         300,
-		ContinueScoreThreshold: 2,
+		ShortGapSeconds:            180,
+		LongGapSeconds:             300,
+		SmallSessionEventThreshold: 16,
+		ContinueScoreThreshold:     2,
 	}
 }
 
@@ -57,10 +65,14 @@ func DefaultBoundaryConfig() BoundaryConfig {
 // the classifier needs. Passing this in (instead of querying a recorder)
 // keeps ClassifyTurnBoundary pure and testable.
 type BoundaryEpisodeContext struct {
-	// HasRunning is true when there is an in-flight TaskEpisode whose Status
-	// is "running" or "active". A running episode biases toward "continue"
-	// because the user is mid-task and is unlikely to be opening a new one.
+	// HasRunning is true when there is an in-flight TaskEpisode. It biases
+	// toward "continue" because the user is mid-task and is unlikely to be
+	// opening a new one.
 	HasRunning bool
+	// HasActive is true when a TaskEpisode recently finished into the active
+	// episode index. Neutral confirmations after completion often refer back
+	// to the just-finished task.
+	HasActive bool
 	// CurrentAppName is the app suggested by the latest environment hints. It
 	// is intentionally a weak signal because app detection can be stale.
 	CurrentAppName string
@@ -89,7 +101,9 @@ var actionVerbStartRe = regexp.MustCompile(
 //  1. No prior events: return "new" (no context to continue).
 //  2. Time gap < ShortGapSeconds: return "continue" (rapid follow-up).
 //  3. Time gap > LongGapSeconds: return "new" (long idle = task switch).
-//  4. Mid-range: accumulate scoring signals; "continue" if score crosses
+//  4. Mid-range with few active session events: bias "continue" to avoid
+//     prematurely splitting a tiny context.
+//  5. Mid-range: accumulate scoring signals; "continue" if score crosses
 //     ContinueScoreThreshold, otherwise default "new".
 //
 // The bias deliberately favors false-positive "continue" over false-positive
@@ -128,6 +142,7 @@ func ClassifyTurnBoundary(
 	primaryReason := BoundaryReasonDefaultNew
 
 	trimmed := strings.TrimSpace(newInput)
+	smallSession := cfg.SmallSessionEventThreshold > 0 && len(prevEvents) <= cfg.SmallSessionEventThreshold
 
 	if continuationMarkerRe.MatchString(trimmed) {
 		score += 2
@@ -148,14 +163,27 @@ func ClassifyTurnBoundary(
 			primaryReason = BoundaryReasonAppDivergence
 		}
 	}
-	if episode.HasRunning {
-		// A running episode means the user is mid-task; a neutral utterance
-		// in that state is overwhelmingly a continuation. Weight equals the
-		// continue threshold so this signal alone carries the decision when
-		// no other evidence contradicts it.
+	if episode.HasRunning || episode.HasActive {
+		// An in-flight or just-finished episode means a neutral utterance is
+		// overwhelmingly a continuation. Weight equals the continue threshold
+		// so this signal alone carries the decision when no other evidence
+		// contradicts it.
 		score += 2
 		if primaryReason == BoundaryReasonDefaultNew {
-			primaryReason = BoundaryReasonRunningEpisode
+			if episode.HasRunning {
+				primaryReason = BoundaryReasonRunningEpisode
+			} else {
+				primaryReason = BoundaryReasonActiveEpisode
+			}
+		}
+	}
+	if smallSession {
+		if score < cfg.ContinueScoreThreshold {
+			score = cfg.ContinueScoreThreshold
+		}
+		switch primaryReason {
+		case BoundaryReasonDefaultNew, BoundaryReasonActionVerb, BoundaryReasonAppDivergence:
+			primaryReason = BoundaryReasonSmallSession
 		}
 	}
 
@@ -196,6 +224,9 @@ func normalizeBoundaryConfig(cfg BoundaryConfig) BoundaryConfig {
 	}
 	if cfg.LongGapSeconds <= cfg.ShortGapSeconds {
 		cfg.LongGapSeconds = cfg.ShortGapSeconds + defaults.LongGapSeconds
+	}
+	if cfg.SmallSessionEventThreshold <= 0 {
+		cfg.SmallSessionEventThreshold = defaults.SmallSessionEventThreshold
 	}
 	if cfg.ContinueScoreThreshold <= 0 {
 		cfg.ContinueScoreThreshold = defaults.ContinueScoreThreshold

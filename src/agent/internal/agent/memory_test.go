@@ -1652,8 +1652,8 @@ func TestSummaryMaxChunksConfigDefaultAndCustom(t *testing.T) {
 	if !cfg.SessionBoundaryEnabled {
 		t.Fatalf("expected session boundary detection to be enabled by default")
 	}
-	if cfg.SessionBoundaryShortGapSeconds != 30 {
-		t.Fatalf("expected default short gap 30s, got %d", cfg.SessionBoundaryShortGapSeconds)
+	if cfg.SessionBoundaryShortGapSeconds != 180 {
+		t.Fatalf("expected default short gap 180s, got %d", cfg.SessionBoundaryShortGapSeconds)
 	}
 	if cfg.SessionBoundaryLongGapSeconds != 300 {
 		t.Fatalf("expected default long gap 300s, got %d", cfg.SessionBoundaryLongGapSeconds)
