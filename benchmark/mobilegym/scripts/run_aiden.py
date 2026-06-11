@@ -92,6 +92,12 @@ def build_parser() -> argparse.ArgumentParser:
     target = parser.add_argument_group("task selection")
     target.add_argument("--task-id", help="Run one MobileGym task id, for example clock.CountAlarms.")
     target.add_argument("--suite", help="Run tasks from one or more comma-separated suites.")
+    target.add_argument(
+        "--aiden-suite",
+        help="Run an Aiden JSON suite from benchmark/suites/<name>.json. "
+             "Tasks are converted to MobileGym format on the fly. "
+             "Mutually exclusive with --task-id/--suite/--split.",
+    )
     target.add_argument("--split", help="Restrict task selection to a MobileGym split, for example test.")
     target.add_argument("--limit", type=_non_negative_int, help="Limit selected tasks for smoke runs.")
 
@@ -239,7 +245,7 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
     from mobilegym.bridge.protocol import BridgeTokens
     from mobilegym.bridge.server import BridgeServer
 
-    tasks = factory.load_tasks(config)
+    tasks = factory.load_tasks(config) if not args.aiden_suite else _load_aiden_suite_as_mobilegym_tasks(args.aiden_suite)
     if args.limit is not None:
         tasks = tasks[: args.limit]
     if not tasks:
@@ -333,8 +339,15 @@ def _runner_args(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def _validate_selection(args: argparse.Namespace) -> None:
-    if not args.task_id and not args.suite and not args.split:
-        raise LauncherError("select at least one task with --task-id, --suite, or --split")
+    selectors = [args.task_id, args.suite, args.split, args.aiden_suite]
+    if not any(selectors):
+        raise LauncherError(
+            "select at least one task with --task-id, --suite, --split, or --aiden-suite"
+        )
+    if args.aiden_suite and (args.task_id or args.suite or args.split):
+        raise LauncherError(
+            "--aiden-suite is mutually exclusive with --task-id/--suite/--split"
+        )
     if args.shard_index >= args.shard_count:
         raise LauncherError("--shard-index must be less than --shard-count")
 

@@ -98,3 +98,23 @@ def test_load_aiden_suite_missing_raises(run_aiden_module, tmp_path, monkeypatch
     monkeypatch.setattr(run_aiden_module, "BENCHMARK_ROOT", tmp_path)
     with pytest.raises(run_aiden_module.LauncherError, match="Aiden suite not found"):
         run_aiden_module._load_aiden_suite_as_mobilegym_tasks("does_not_exist")
+
+
+def test_validate_selection_rejects_combined_flags(run_aiden_module):
+    import argparse
+    args = argparse.Namespace(
+        task_id="x", suite=None, split=None, aiden_suite="demo",
+        shard_index=0, shard_count=1,
+    )
+    with pytest.raises(run_aiden_module.LauncherError, match="mutually exclusive"):
+        run_aiden_module._validate_selection(args)
+
+
+def test_validate_selection_accepts_aiden_suite_alone(run_aiden_module):
+    import argparse
+    args = argparse.Namespace(
+        task_id=None, suite=None, split=None, aiden_suite="demo",
+        shard_index=0, shard_count=1,
+    )
+    # Should not raise
+    run_aiden_module._validate_selection(args)
