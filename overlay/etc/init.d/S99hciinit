@@ -1,14 +1,18 @@
 #!/bin/sh
 
 check_hciconfig() {
-	if command -v hciattach &> /dev/null; then
+	if command -v hciattach >/dev/null 2>&1; then
 		if lsmod | grep -q "aic8800_fdrv"; then
-			hciattach -s 1500000 /dev/ttyS1 any 1500000 flow nosleep&
-			sleep 2
-			if hciconfig -a | grep -q "hci0"; then
-				hciconfig hci0 up&
+			if [ -c /dev/ttyS1 ]; then
+				hciattach -s 1500000 /dev/ttyS1 any 1500000 flow nosleep || echo "hciattach failed" &
+				sleep 2
+				if hciconfig -a | grep -q "hci0"; then
+					hciconfig hci0 up&
+				else
+					echo "hci0 not found or not available."
+				fi
 			else
-				echo "hci0 not found or not available."
+				echo "/dev/ttyS1 does not exist."
 			fi
 			# DHCP is managed by dhcpcd service (S41dhcpcd)
 			# No need to call udhcpc here to avoid conflicts
@@ -21,7 +25,7 @@ check_hciconfig() {
 
 case $1 in
 	start)
-		check_hciconfig &
+		check_hciconfig
 		;;
 	*)
 		exit 1

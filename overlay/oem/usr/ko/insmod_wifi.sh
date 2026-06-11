@@ -12,9 +12,9 @@
 # wlan_guard cycling the link every 1-2 minutes. Forcing the link down to
 # VHT/HT (he_on=0) restores reliable RX; on 2.4GHz the throughput loss vs.
 # HE is negligible.
-cmd=$(realpath $0)
-_DIR=$(dirname $cmd)
-cd $_DIR
+cmd=$(realpath "$0")
+_DIR=$(dirname "$cmd")
+cd "$_DIR" || exit 1
 
 export PATH=$PATH:/oem/usr/ko/
 
