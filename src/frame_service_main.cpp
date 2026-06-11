@@ -54,7 +54,7 @@ void usage(const char* program) {
     fprintf(stderr,
             "Usage: %s [--socket PATH] [--device PATH] [--width N] [--height N] "
             "[--pixel-format FMT] [--subdev PATH] [--edid PATH] [--ring-size N] "
-            "[--fps N] [--no-hdmi-sync]\n",
+            "[--fps N] [--no-hdmi-sync] [--require-exact-resolution]\n",
             program);
 }
 
@@ -106,6 +106,10 @@ bool parse_options(int argc, char** argv, Options* options) {
             if (!parse_double_arg(argv[++i], &options->fps) || options->fps < 0.0) return false;
         } else if (arg == "--no-hdmi-sync") {
             options->camera.enable_hdmi_sync = false;
+        } else if (arg == "--require-exact-resolution") {
+            options->camera.require_exact_resolution = true;
+        } else if (arg == "--allow-resolution-mismatch") {
+            options->camera.require_exact_resolution = false;
         } else if (arg == "--help") {
             usage(argv[0]);
             exit(0);

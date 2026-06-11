@@ -63,6 +63,22 @@ func TestResolvePointerPositionPixelUsesActiveArea(t *testing.T) {
 	}
 }
 
+func TestResolvePointerPositionPixelUses720pActiveArea(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdateActiveArea(1280, 720, screenActiveArea{X: 320, Y: 0, Width: 640, Height: 720, Valid: true})
+
+	x, y, err := resolvePointerPosition(screen, 640, 360, "pixel", coordinateSpaceAuto)
+	if err != nil {
+		t.Fatalf("resolvePointerPosition returned error: %v", err)
+	}
+	if x != 16409 {
+		t.Fatalf("x = %d, want 16409", x)
+	}
+	if y != 16406 {
+		t.Fatalf("y = %d, want 16406", y)
+	}
+}
+
 func TestResolvePointerPositionPixelRejectsBlackBar(t *testing.T) {
 	screen := &screenState{}
 	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})

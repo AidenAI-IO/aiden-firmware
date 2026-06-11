@@ -118,7 +118,7 @@ select { padding: 8px; background: #333; border: 1px solid #444; border-radius: 
 <script>
 let autoTimer = null;
 let captureInFlight = false;
-let imgNaturalW = 1920, imgNaturalH = 1080;
+let imgNaturalW = 0, imgNaturalH = 0;
 let activeArea = null;
 const STANDARD_COORD_MAX = 32767;
 const DEFAULT_COORDS_TEXT = 'Click the screenshot to send a left click';

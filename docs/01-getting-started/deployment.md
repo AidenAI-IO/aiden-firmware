@@ -21,16 +21,72 @@
 
 ## 手动复制二进制
 
-开发时可先交叉编译，再通过 `scp` 将 `build/bin/` 中的目标程序复制到设备：
+`./build.sh` 完成后，主要产物在 `build/bin/`。其中和设备常驻运行直接相关的是：
+
+- `build/bin/frame_service`
+- `build/bin/audio_service`
+- `build/bin/config_web`
+- `build/bin/agent`
+- `overlay/oem/usr/bin/aiden-env-run`
+
+如果目标设备已经刷过一版 Aiden 固件，通常 init 脚本和 `/etc/*.conf` 已经存在，此时最小部署集合就是上面 5 个文件：
 
 ```bash
 ./build.sh
+
 scp build/bin/frame_service root@<device-ip>:/oem/usr/bin/
 scp build/bin/audio_service root@<device-ip>:/oem/usr/bin/
+scp build/bin/config_web root@<device-ip>:/oem/usr/bin/
 scp build/bin/agent root@<device-ip>:/oem/usr/bin/
+scp overlay/oem/usr/bin/aiden-env-run root@<device-ip>:/oem/usr/bin/
 ```
 
-也可以复制到 `/root` 或 `/userdata` 做临时测试，但启动脚本默认从 `/oem/usr/bin/` 查找。
+如果还需要设备端排障/调试工具，可选再复制：
+
+```bash
+scp build/bin/frame_service_cli root@<device-ip>:/oem/usr/bin/
+scp build/bin/audio_service_cli root@<device-ip>:/oem/usr/bin/
+scp build/bin/ota root@<device-ip>:/oem/usr/bin/
+scp build/bin/abctl root@<device-ip>:/oem/usr/bin/
+```
+
+如果目标设备是更裸的系统，缺少 Aiden 的 init 脚本和配置文件，还需要一起复制这些运行时文件：
+
+```bash
+scp overlay/etc/init.d/S52frame_service root@<device-ip>:/etc/init.d/
+scp overlay/etc/init.d/S53audio_service root@<device-ip>:/etc/init.d/
+scp overlay/etc/init.d/S53agent root@<device-ip>:/etc/init.d/
+scp overlay/etc/init.d/S56config_web root@<device-ip>:/etc/init.d/
+
+scp overlay/etc/aiden_frame_service.conf root@<device-ip>:/etc/
+scp overlay/etc/aiden_audio_service.conf root@<device-ip>:/etc/
+```
+
+首次部署通常还要准备 `/userdata` 下的默认配置：
+
+```bash
+ssh root@<device-ip> "mkdir -p /userdata/agent /userdata/system"
+scp overlay/userdata/agent/agent.toml root@<device-ip>:/userdata/agent/
+scp overlay/userdata/system/env root@<device-ip>:/userdata/system/
+scp overlay/userdata/wpa_supplicant.conf root@<device-ip>:/userdata/
+```
+
+说明：
+
+- `config_web` 会调用 `/oem/usr/bin/agent` 的 `config-check` / `config-meta` 子命令，因此复制 `config_web` 时应同时复制 `agent`。
+- `S52frame_service`、`S53audio_service`、`S53agent`、`S56config_web` 默认都通过 `/oem/usr/bin/aiden-env-run` 启动实际二进制，因此这个 wrapper 也要在设备上。
+- 也可以把二进制先复制到 `/root` 或 `/userdata` 做临时测试，但现有 init 脚本默认查找 `/oem/usr/bin/`。
+- 如果只是更新二进制，复制完成后执行 `chmod +x /oem/usr/bin/*` 一次即可。
+
+复制完成后，常见重启命令：
+
+```bash
+ssh root@<device-ip> "chmod +x /oem/usr/bin/frame_service /oem/usr/bin/audio_service /oem/usr/bin/config_web /oem/usr/bin/agent /oem/usr/bin/aiden-env-run"
+ssh root@<device-ip> "/etc/init.d/S52frame_service restart"
+ssh root@<device-ip> "/etc/init.d/S53audio_service restart"
+ssh root@<device-ip> "/etc/init.d/S53agent restart"
+ssh root@<device-ip> "/etc/init.d/S56config_web restart"
+```
 
 ## 服务启动顺序
 

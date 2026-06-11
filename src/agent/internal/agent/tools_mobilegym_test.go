@@ -83,7 +83,7 @@ func TestMobileGymScreenshotToolCallsBridgeWithEpisodeAndToken(t *testing.T) {
 		}
 		gotEpisode = req.EpisodeID
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"width":1080,"height":2400,"format":"jpeg","size":4,"data":"/9j/"}`))
+		_, _ = w.Write([]byte(`{"width":720,"height":1280,"format":"jpeg","size":4,"data":"/9j/"}`))
 	}))
 	defer bridge.Close()
 
@@ -101,10 +101,10 @@ func TestMobileGymScreenshotToolCallsBridgeWithEpisodeAndToken(t *testing.T) {
 	if gotEpisode != "ep1" {
 		t.Fatalf("episode_id = %q", gotEpisode)
 	}
-	if !strings.Contains(out, `"width":1080`) || !strings.Contains(out, `"data":"/9j/"`) {
+	if !strings.Contains(out, `"width":720`) || !strings.Contains(out, `"height":1280`) || !strings.Contains(out, `"data":"/9j/"`) {
 		t.Fatalf("output = %s", out)
 	}
-	if width, height, ok := screen.Dimensions(); !ok || width != 1080 || height != 2400 {
+	if width, height, ok := screen.Dimensions(); !ok || width != 720 || height != 1280 {
 		t.Fatalf("screen dimensions = %dx%d ok=%v", width, height, ok)
 	}
 }
