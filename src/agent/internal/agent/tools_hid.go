@@ -416,6 +416,7 @@ func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
 
 func (t *KeyboardTapTool) Description() string {
 	return `Press and release keyboard keys. Input JSON: {"keys": ["ctrl", "c"]}. ` +
+		`For known semantic platform actions such as back, app search, app switching, copy, paste, undo, redo, select all, find, send, or browser navigation, prefer quick_action first; use keyboard_tap as a low-level fallback or for custom key input. ` +
 		`Supports: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, ` +
 		`up, down, left, right, home, end, pageup, pagedown, insert, printscreen. ` +
 		`Modifiers: ctrl, shift, alt, meta/super/win/cmd. ` +
@@ -619,6 +620,7 @@ func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
 func (t *TouchGestureTool) Description() string {
 	return `Perform a touch-like gesture using the pointer HID device (absolute mouse or touchscreen depending on agent pointer_mode). ` +
+		`For known semantic platform actions such as back, home, app search, app switching, notification shade, quick settings, and browser navigation, prefer quick_action first; use touch_gesture as a low-level fallback or for custom screen gestures. ` +
 		`Input JSON examples: {"type":"tap","point":{"x":500,"y":500}}, {"type":"swipe","start":{"x":200,"y":500},"end":{"x":800,"y":500},"duration_ms":700,"steps":24}, {"type":"swipe_left"}, {"type":"back"}, {"type":"home"}. ` +
 		`IMPORTANT: "point", "start", and "end" must be objects with named keys "x" and "y". NEVER omit the key names: {"x":500,"y":300} is correct, {500,300} is invalid and will error. ` +
 		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back" (left-edge back), "home" (bottom-edge home). ` +

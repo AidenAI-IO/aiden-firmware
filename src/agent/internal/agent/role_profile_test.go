@@ -59,6 +59,17 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	if !strings.Contains(profiles.Planner.SystemPrompt, "If a direct executor tool covers the request") {
 		t.Fatalf("planner prompt should prefer direct executor tools:\n%s", profiles.Planner.SystemPrompt)
 	}
+	if !strings.Contains(profiles.Planner.SystemPrompt, "plan quick_action first") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "action=spotlight_search platform=android") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "try quick_action first") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "fall back to keyboard_tap") {
+		t.Fatalf("role prompts should prefer quick_action before low-level fallback: planner=%q executor=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt)
+	}
+	if !strings.Contains(profiles.Planner.SystemPrompt, "observed_state.platform") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "pass it explicitly") ||
+		!strings.Contains(profiles.Verifier.SystemPrompt, `"platform":""`) {
+		t.Fatalf("role prompts should propagate observed platform for platform-specific tools: planner=%q executor=%q verifier=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt, profiles.Verifier.SystemPrompt)
+	}
 	if !strings.Contains(profiles.Verifier.SystemPrompt, "only role allowed to decide") {
 		t.Fatalf("verifier prompt missing finish authority:\n%s", profiles.Verifier.SystemPrompt)
 	}
@@ -500,6 +511,7 @@ func TestRoleCollaborativeExecutorUpdatesWorldStateFromObservedState(t *testing.
 		"observed_state": map[string]any{
 			"app_name":     "微信",
 			"page_name":    "聊天列表",
+			"platform":     "Android",
 			"visible_text": []string{"微信", "通讯录"},
 			"dialogs":      []string{"权限提示"},
 			"confidence":   0.82,
@@ -536,7 +548,7 @@ func TestRoleCollaborativeExecutorUpdatesWorldStateFromObservedState(t *testing.
 
 	secondPlannerPrompt := messageText(model.messages[3])
 	for _, want := range []string{
-		"Observed app/page: 微信 / 聊天列表 confidence=0.82 source_role=verifier screenshot_step=1",
+		"Observed app/page: 微信 / 聊天列表 platform=android confidence=0.82 source_role=verifier screenshot_step=1",
 		"Visible text: 微信 | 通讯录",
 		"Dialogs: 权限提示",
 	} {
@@ -546,7 +558,7 @@ func TestRoleCollaborativeExecutorUpdatesWorldStateFromObservedState(t *testing.
 	}
 
 	secondExecutorPrompt := messageText(model.messages[4])
-	if !strings.Contains(secondExecutorPrompt, "Observed app/page: 微信 / 聊天列表") {
+	if !strings.Contains(secondExecutorPrompt, "Observed app/page: 微信 / 聊天列表 platform=android") {
 		t.Fatalf("executor should receive structured observed world state:\n%s", secondExecutorPrompt)
 	}
 }

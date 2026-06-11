@@ -1102,7 +1102,16 @@ func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 
 func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	desc := (&TouchGestureTool{}).Description()
-	for _, want := range []string{`"back"`, `"home"`, "x=1", "y=999"} {
+	for _, want := range []string{`"back"`, `"home"`, "x=1", "y=999", "prefer quick_action first", "low-level fallback"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+}
+
+func TestKeyboardTapDescriptionDocumentsQuickActionFallback(t *testing.T) {
+	desc := (&KeyboardTapTool{}).Description()
+	for _, want := range []string{"prefer quick_action first", "low-level fallback", "custom key input"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}

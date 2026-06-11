@@ -75,6 +75,36 @@ func TestQuickActionListForPlatform(t *testing.T) {
 	}
 }
 
+func TestQuickActionListActionAlias(t *testing.T) {
+	tool := &QuickActionTool{}
+	out, err := tool.Call(context.Background(), `{"action":"list","platform":"android"}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	var payload struct {
+		OK      bool `json:"ok"`
+		Actions []struct {
+			ID string `json:"id"`
+		} `json:"actions"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !payload.OK || len(payload.Actions) == 0 {
+		t.Fatalf("expected list response, got %s", out)
+	}
+}
+
+func TestQuickActionDescriptionWarnsAgainstActionList(t *testing.T) {
+	desc := (&QuickActionTool{}).Description()
+	if !strings.Contains(desc, `{"list":true,"platform":"android"}`) {
+		t.Fatalf("description missing list=true example: %s", desc)
+	}
+	if !strings.Contains(desc, `do not pass {"action":"list"}`) {
+		t.Fatalf("description missing action=list warning: %s", desc)
+	}
+}
+
 func TestQuickActionReservedBinding(t *testing.T) {
 	tool := &QuickActionTool{}
 	out, err := tool.Call(context.Background(), `{"action":"app_drawer","platform":"ios"}`)

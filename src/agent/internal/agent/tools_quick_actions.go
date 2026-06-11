@@ -324,9 +324,9 @@ func (t *QuickActionTool) Name() string { return "quick_action" }
 func (t *QuickActionTool) Description() string {
 	return strings.TrimSpace(`Execute a predefined platform shortcut or system gesture from quick_actions.json. ` +
 		`Prefer this tool first when the requested operation matches a catalog entry. ` +
-		`Input JSON examples: {"action":"back","platform":"ios"}, {"action":"copy","platform":"android"}, {"list":true,"platform":"ios"}. ` +
+		`Input JSON examples: {"action":"back","platform":"ios"}, {"action":"copy","platform":"android"}, {"action":"spotlight_search","platform":"android"}. ` +
 		`Supported platforms: ios, android, mac. ` +
-		`Use list=true to inspect available actions and their status (active or reserved). ` +
+		`To inspect available actions, pass exactly {"list":true,"platform":"android"}; do not pass {"action":"list"}. ` +
 		`If quick_action returns ok=false, status=reserved, the screen did not change, or the outcome is wrong: do not retry the same binding more than once. ` +
 		`Try alternative=true when alternatives are listed; otherwise fall back immediately to keyboard_tap, touch_gesture, or mouse tools and continue the task. ` +
 		`Do not debate shortcut policy with the user—move on after one failed quick_action attempt unless an alternative binding exists. ` +
@@ -360,6 +360,9 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 		return t.errorJSON(err.Error()), nil
 	}
 
+	if strings.EqualFold(strings.TrimSpace(args.Action), "list") {
+		args.List = true
+	}
 	if args.List {
 		return t.listJSON(platform), nil
 	}
