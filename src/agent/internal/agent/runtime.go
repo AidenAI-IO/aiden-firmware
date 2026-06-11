@@ -44,6 +44,7 @@ type Runtime struct {
 	skillsLoaded       bool
 	skillsReloadMu     sync.Mutex
 	skillsDirty        bool
+	runGateInit        sync.Once
 	mergeWorker        *MergeWorker
 	logger             *Logger
 	profileDebouncer   *ProfileDebouncer
@@ -51,7 +52,7 @@ type Runtime struct {
 	memoryPlane        MemoryPlane
 	telemetrySessionID string
 	mobileGym          *mobileGymSessionStore
-	runMu              sync.Mutex
+	runGate            chan struct{}
 }
 
 type RunRequest struct {
@@ -307,7 +308,40 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
 		rt.markInterruptedEpisodesBestEffort()
 	}
+	rt.initRunGate()
 	return rt
+}
+
+func (r *Runtime) initRunGate() {
+	if r == nil {
+		return
+	}
+	r.runGateInit.Do(func() {
+		r.runGate = make(chan struct{}, 1)
+		r.runGate <- struct{}{}
+	})
+}
+
+func (r *Runtime) lockRun(ctx context.Context) (func(), error) {
+	if r == nil {
+		return func() {}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.initRunGate()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-r.runGate:
+		if err := ctx.Err(); err != nil {
+			r.runGate <- struct{}{}
+			return nil, err
+		}
+		return func() {
+			r.runGate <- struct{}{}
+		}, nil
+	}
 }
 
 func (r *Runtime) NewEpisodeID() string {
@@ -367,10 +401,14 @@ func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
 }
 
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
-	if r != nil {
-		r.runMu.Lock()
-		defer r.runMu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
 	}
+	unlockRun, err := r.lockRun(ctx)
+	if err != nil {
+		return RunResult{}, err
+	}
+	defer unlockRun()
 
 	startTime := time.Now()
 	metrics := &RunMetrics{}
@@ -464,7 +502,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
 		if episodeRecorder != nil {
 			retrieveReq.EpisodeID = episodeRecorder.ID()
-			if err := episodeRecorder.Start(context.Background()); err != nil && r.logger != nil {
+			if err := episodeRecorder.Start(ctx); err != nil && r.logger != nil {
 				r.logger.Warn("[memory] start episode failed: %v", err)
 			}
 		}

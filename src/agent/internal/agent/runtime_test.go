@@ -1587,6 +1587,127 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunCanceledWhileQueuedDoesNotRotateSessionOrStartEpisode(t *testing.T) {
+	configDir := t.TempDir()
+	storageDir := filepath.Join(configDir, "memory")
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC().Add(-2 * time.Minute)
+	for i := 0; i < 2; i++ {
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_old_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("查天气旧任务 %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+
+	model := &queuedCancelModel{
+		firstStarted: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+	manager := NewMemoryManager(storageDir)
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(context.Background(), RunRequest{Input: "继续查天气"})
+		firstDone <- err
+	}()
+	select {
+	case <-model.firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first run did not reach model call")
+	}
+
+	queuedCtx, cancelQueued := context.WithCancel(context.Background())
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(queuedCtx, RunRequest{Input: "打开微信"})
+		secondDone <- err
+	}()
+	cancelQueued()
+	close(model.releaseFirst)
+
+	if err := <-firstDone; err == nil || !strings.Contains(err.Error(), "first run stopped") {
+		t.Fatalf("first Run() error = %v, want first run stopped", err)
+	}
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("queued Run() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued Run() did not return after cancellation")
+	}
+
+	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
+	if err != nil {
+		t.Fatalf("Glob archived sessions: %v", err)
+	}
+	if len(archiveDirs) != 0 {
+		t.Fatalf("canceled queued run rotated session: %v", archiveDirs)
+	}
+	active := readSessionEvents(t, session.eventsPath())
+	if len(active) != 2 || active[0].EventID != "evt_old_0" {
+		t.Fatalf("canceled queued run changed active session events: %#v", active)
+	}
+
+	index, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).loadIndex()
+	if err != nil {
+		t.Fatalf("load episode index: %v", err)
+	}
+	if len(index.Episodes) != 1 {
+		t.Fatalf("episode index contains %d entries, want only the first run: %#v", len(index.Episodes), index.Episodes)
+	}
+	if index.Episodes[0].UserGoal != "继续查天气" {
+		t.Fatalf("unexpected episode goal: %#v", index.Episodes[0])
+	}
+}
+
+type queuedCancelModel struct {
+	firstStarted     chan struct{}
+	releaseFirst     chan struct{}
+	firstStartedOnce atomic.Bool
+	callCount        atomic.Int64
+}
+
+func (m *queuedCancelModel) GenerateContent(ctx context.Context, _ []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	if m.callCount.Add(1) == 1 {
+		if m.firstStartedOnce.CompareAndSwap(false, true) {
+			close(m.firstStarted)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-m.releaseFirst:
+			return nil, errors.New("first run stopped")
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, errors.New("queued run reached model")
+}
+
+func (m *queuedCancelModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	panic("unexpected Call invocation")
+}
+
 func numericExtraValue(v interface{}) int64 {
 	switch n := v.(type) {
 	case int:
