@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,19 +47,20 @@ type ContextWindowFn func() int
 // and long-term profile generation. It coordinates between in-memory chat history
 // and persistent filesystem storage.
 type MemoryManager struct {
-	mu                    sync.Mutex
-	handles               map[string]*MemoryHandle
-	eventCount            map[string]int
-	storageDir            string
-	extraction            MemoryExtractionConfig
-	lastPromptTokens      int
-	summarizeFn           SummarizeFn
-	structuredSummarizeFn StructuredSummarizeFn
-	profileFn             ProfileFn
-	contextWindowFn       ContextWindowFn
-	profileDebouncer      *ProfileDebouncer
-	lockTimeout           time.Duration
-	logger                *Logger
+	mu                             sync.Mutex
+	handles                        map[string]*MemoryHandle
+	eventCount                     map[string]int
+	storageDir                     string
+	extraction                     MemoryExtractionConfig
+	lastPromptTokens               int
+	summarizeFn                    SummarizeFn
+	structuredSummarizeFn          StructuredSummarizeFn
+	profileFn                      ProfileFn
+	contextWindowFn                ContextWindowFn
+	profileDebouncer               *ProfileDebouncer
+	lockTimeout                    time.Duration
+	logger                         *Logger
+	sessionBoundaryEnabledOverride *bool
 
 	maintenanceMu      sync.Mutex
 	maintenanceRunning bool
@@ -104,6 +106,13 @@ type MemoryManagerOption func(*MemoryManager)
 // WithExtractionConfig sets the memory extraction configuration.
 func WithExtractionConfig(cfg MemoryExtractionConfig) MemoryManagerOption {
 	return func(m *MemoryManager) { m.extraction = normalizeMemoryExtractionConfig(cfg) }
+}
+
+// WithSessionBoundaryEnabled explicitly overrides session boundary detection.
+func WithSessionBoundaryEnabled(enabled bool) MemoryManagerOption {
+	return func(m *MemoryManager) {
+		m.sessionBoundaryEnabledOverride = &enabled
+	}
 }
 
 // WithSummarizeFn sets the plain-text summarization function.
@@ -153,6 +162,11 @@ func NewMemoryManager(storageDir string, opts ...MemoryManagerOption) *MemoryMan
 	}
 	for _, opt := range opts {
 		opt(manager)
+	}
+	manager.extraction = normalizeMemoryExtractionConfig(manager.extraction)
+	if manager.sessionBoundaryEnabledOverride != nil {
+		manager.extraction.SessionBoundaryEnabled = *manager.sessionBoundaryEnabledOverride
+		manager.extraction.SessionBoundaryEnabledConfigured = true
 	}
 	return manager
 }
@@ -354,8 +368,15 @@ func (m *MemoryManager) AppendExchange(ctx context.Context, agentName string, in
 	if m.storageDir == "" {
 		return nil
 	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	fl := NewFileLock(m.storageDir)
+	if err := fl.Lock(m.lockTimeout); err != nil {
+		return fmt.Errorf("lock for appending session exchange %q: %w", agentName, err)
+	}
+	defer fl.Unlock()
 
 	if err := os.MkdirAll(filepath.Dir(m.sessionEventsPath()), 0o755); err != nil {
 		return fmt.Errorf("create session memory directory: %w", err)
@@ -385,6 +406,74 @@ func (m *MemoryManager) AppendExchange(ctx context.Context, agentName string, in
 	}
 	m.eventCount[agentName] += len(records)
 	return nil
+}
+
+// RotateSessionEvents atomically moves the current hot session event stream
+// aside so a newly detected task can start with a clean events.jsonl. The
+// rotated file is consumed later by maintenance as a closed pending session.
+func (m *MemoryManager) RotateSessionEvents() (string, error) {
+	if m.storageDir == "" {
+		return "", nil
+	}
+	pendingPath, err := func() (string, error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		sessionDir := filepath.Join(m.storageDir, "session")
+		eventsPath := filepath.Join(sessionDir, "events.jsonl")
+
+		fl := NewFileLock(m.storageDir)
+		if err := fl.Lock(m.lockTimeout); err != nil {
+			return "", fmt.Errorf("lock for rotating session events: %w", err)
+		}
+		defer fl.Unlock()
+
+		if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+			return "", fmt.Errorf("create session directory for rotation: %w", err)
+		}
+		info, err := os.Stat(eventsPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				if err := os.WriteFile(eventsPath, nil, 0o644); err != nil {
+					return "", fmt.Errorf("create empty session events after missing rotation source: %w", err)
+				}
+				return "", nil
+			}
+			return "", fmt.Errorf("stat session events for rotation: %w", err)
+		}
+		if info.Size() == 0 {
+			return "", nil
+		}
+
+		pendingPath := filepath.Join(sessionDir, fmt.Sprintf("events.pending-%d.jsonl", time.Now().UTC().UnixNano()))
+		if err := os.Rename(eventsPath, pendingPath); err != nil {
+			return "", fmt.Errorf("rotate session events: %w", err)
+		}
+		if err := os.WriteFile(eventsPath, nil, 0o644); err != nil {
+			return "", fmt.Errorf("create empty session events after rotation: %w", err)
+		}
+
+		for agentName := range m.eventCount {
+			m.eventCount[agentName] = 0
+		}
+		for _, handle := range m.handles {
+			if handle != nil && handle.Memory != nil {
+				_ = handle.Memory.Clear(context.Background())
+			}
+		}
+		return pendingPath, nil
+	}()
+	if err != nil {
+		return "", err
+	}
+
+	if pendingPath != "" && m.logger != nil {
+		m.logger.Info("[memory] session rotated: pending=%s", filepath.Base(pendingPath))
+	}
+	if pendingPath != "" {
+		m.RequestMaintenance()
+	}
+	return pendingPath, nil
 }
 
 func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHistory, agentName string) error {
@@ -522,6 +611,9 @@ func (m *MemoryManager) persistSnapshot(agentName string, records []MessageRecor
 		return fmt.Errorf("create memory directory: %w", err)
 	}
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	fl := NewFileLock(m.storageDir)
 	if err := fl.Lock(m.lockTimeout); err != nil {
 		return fmt.Errorf("lock for persisting memory %q: %w", agentName, err)
@@ -562,15 +654,22 @@ func (m *MemoryManager) removeSessionPersisted(agentName string) error {
 	if m.storageDir == "" {
 		return nil
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	fl := NewFileLock(m.storageDir)
+	if err := fl.Lock(m.lockTimeout); err != nil {
+		return fmt.Errorf("lock for removing session memory %q: %w", agentName, err)
+	}
+	defer fl.Unlock()
+
 	if err := os.Remove(m.memoryPath(agentName)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove persisted memory for %q: %w", agentName, err)
 	}
 	if err := os.RemoveAll(filepath.Join(m.storageDir, "session")); err != nil {
 		return fmt.Errorf("remove session memory for %q: %w", agentName, err)
 	}
-	m.mu.Lock()
 	m.eventCount[agentName] = 0
-	m.mu.Unlock()
 	return nil
 }
 
@@ -578,6 +677,9 @@ func (m *MemoryManager) removeAllPersisted(agentName string) error {
 	if m.storageDir == "" {
 		return nil
 	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	fl := NewFileLock(m.storageDir)
 	if err := fl.Lock(m.lockTimeout); err != nil {
@@ -599,9 +701,7 @@ func (m *MemoryManager) removeAllPersisted(agentName string) error {
 			return fmt.Errorf("remove filesystem memory path %q for %q: %w", path, agentName, err)
 		}
 	}
-	m.mu.Lock()
 	m.eventCount[agentName] = 0
-	m.mu.Unlock()
 	return nil
 }
 
@@ -610,6 +710,11 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		return nil
 	}
 	session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"), m.extraction.SummaryMaxChunks)
+	if consumed, err := m.consumePendingSessionEvents(ctx, session); err != nil {
+		return err
+	} else if consumed > 0 && m.logger != nil {
+		m.logger.Info("[memory] pending consumed: count=%d, merged=false", consumed)
+	}
 	eventsPath := session.eventsPath()
 
 	// Phase 1: Read events snapshot under FileLock to serialize with append paths.
@@ -734,14 +839,26 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	// phase 1 unlock and now). If new events were appended, merge them into
 	// hotEvents before replacing the file. This prevents data loss when
 	// persistSnapshot runs concurrently with maintenance.
+	m.mu.Lock()
 	if err := fl.Lock(m.lockTimeout); err != nil {
+		m.mu.Unlock()
 		return fmt.Errorf("lock for writing session events: %w", err)
 	}
-	defer fl.Unlock()
 
 	currentEvents, err := session.readEvents(eventsPath)
 	if err != nil {
+		fl.Unlock()
+		m.mu.Unlock()
 		return fmt.Errorf("re-read session events for merge: %w", err)
+	}
+	if !sessionEventsHavePrefix(currentEvents, events) {
+		fl.Unlock()
+		m.mu.Unlock()
+		if m.logger != nil {
+			m.logger.Info("[memory] active session changed during compression; deferring compaction")
+		}
+		m.RequestMaintenance()
+		return nil
 	}
 
 	// Merge incremental events that were appended during compression
@@ -757,6 +874,8 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	// replaceEvents succeeds. This prevents "ghost compression records" where
 	// summary/index claim compression happened but events.jsonl was never updated.
 	if err := session.replaceEvents(hotEvents); err != nil {
+		fl.Unlock()
+		m.mu.Unlock()
 		return err
 	}
 
@@ -768,6 +887,8 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		CutMeta:    cutMeta,
 	})
 	if err != nil {
+		fl.Unlock()
+		m.mu.Unlock()
 		if m.logger != nil {
 			m.logger.Error("[memory] compression metadata write failed: %v", err)
 		}
@@ -783,12 +904,10 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	// checks maintenancePending and may run again immediately; if we left
 	// lastPromptTokens at the pre-compression high value, shouldCompress would
 	// continue returning true and trigger redundant compaction rounds.
-	m.SetLastPromptTokens(cutMeta.KeptTokensEstimate)
-
 	// Sync in-memory state to match the compressed hot window on disk.
 	// Without this, eventCount and handle.History remain at pre-compression size,
 	// causing appendSessionEvents() to skip writes or use stale indices.
-	m.mu.Lock()
+	m.lastPromptTokens = cutMeta.KeptTokensEstimate
 	for agentName := range m.eventCount {
 		m.eventCount[agentName] = len(hotEvents)
 	}
@@ -804,9 +923,14 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 			messages = append(messages, messageFromRecord(record))
 		}
 		if err := handle.History.SetMessages(context.Background(), messages); err != nil {
+			fl.Unlock()
 			m.mu.Unlock()
 			return fmt.Errorf("sync in-memory history for %q after compaction: %w", agentName, err)
 		}
+	}
+	if err := fl.Unlock(); err != nil {
+		m.mu.Unlock()
+		return err
 	}
 	m.mu.Unlock()
 
@@ -816,6 +940,78 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		m.logger.Info("[memory] profile.md regenerated")
 	}
 	return nil
+}
+
+func (m *MemoryManager) consumePendingSessionEvents(ctx context.Context, session *SessionMemoryStore) (int, error) {
+	paths, err := session.pendingEventsPaths()
+	if err != nil {
+		return 0, fmt.Errorf("scan pending session events: %w", err)
+	}
+	consumed := 0
+	for _, path := range paths {
+		select {
+		case <-ctx.Done():
+			return consumed, ctx.Err()
+		default:
+		}
+
+		events, err := session.readEvents(path)
+		if err != nil {
+			if isPathNotExistError(err) {
+				continue
+			}
+			return consumed, fmt.Errorf("read pending session events %q: %w", path, err)
+		}
+		if len(events) == 0 {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return consumed, fmt.Errorf("remove empty pending session events %q: %w", path, err)
+			}
+			continue
+		}
+
+		summary, structured := m.buildEventSummary(ctx, events)
+		if err := ctx.Err(); err != nil {
+			return consumed, err
+		}
+
+		fl := NewFileLock(m.storageDir)
+		if err := fl.Lock(m.lockTimeout); err != nil {
+			return consumed, fmt.Errorf("lock for consuming pending session events: %w", err)
+		}
+
+		if _, err := os.Stat(path); err != nil {
+			_ = fl.Unlock()
+			if os.IsNotExist(err) {
+				continue
+			}
+			return consumed, fmt.Errorf("stat pending session events %q: %w", path, err)
+		}
+
+		chunkSummary, err := session.compressEvents(ctx, events, CompressOption{
+			ChunkID:    pendingChunkIDFromPath(path),
+			Summary:    summary,
+			Structured: structured,
+			Tags:       m.extraction.extractMemoryTags(events),
+			Entities:   m.extraction.extractMemoryEntities(events),
+		})
+		if err != nil {
+			_ = fl.Unlock()
+			return consumed, fmt.Errorf("compress pending session events %q: %w", path, err)
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			_ = fl.Unlock()
+			return consumed, fmt.Errorf("remove consumed pending session events %q: %w", path, err)
+		}
+		if err := fl.Unlock(); err != nil {
+			return consumed, err
+		}
+
+		consumed++
+		if m.logger != nil {
+			m.logger.Info("[memory] pending chunk created: id=%s, events=%d", chunkSummary.ID, len(events))
+		}
+	}
+	return consumed, nil
 }
 
 // compactionPlan describes the chosen split of the event stream.
@@ -1070,6 +1266,26 @@ func summarizeSessionEvents(events []SessionEvent) string {
 	return strings.Join(parts, " / ")
 }
 
+func sessionEventsHavePrefix(current []SessionEvent, prefix []SessionEvent) bool {
+	if len(current) < len(prefix) {
+		return false
+	}
+	for i := range prefix {
+		if current[i].EventID != prefix[i].EventID ||
+			current[i].Ts != prefix[i].Ts ||
+			current[i].Type != prefix[i].Type ||
+			current[i].Role != prefix[i].Role ||
+			current[i].Source != prefix[i].Source ||
+			current[i].Content != prefix[i].Content ||
+			current[i].AppName != prefix[i].AppName ||
+			current[i].RiskLevel != prefix[i].RiskLevel ||
+			current[i].ToolCallID != prefix[i].ToolCallID {
+			return false
+		}
+	}
+	return true
+}
+
 func (cfg MemoryExtractionConfig) extractMemoryTags(events []SessionEvent) []string {
 	seen := map[string]bool{}
 	var tags []string
@@ -1247,6 +1463,10 @@ func memoryFileName(agentName string) string {
 
 func isTruncatedJSONLineError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "unexpected end of JSON input")
+}
+
+func isPathNotExistError(err error) bool {
+	return os.IsNotExist(err) || errors.Is(err, os.ErrNotExist)
 }
 
 func sessionEventFromRecord(record MessageRecord, ts time.Time, offset int) SessionEvent {

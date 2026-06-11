@@ -25,6 +25,8 @@ const (
 	// until true rolling checkpointing (re-summarizing the rolling summary
 	// itself) is implemented in phase 2.
 	maxRollingSummaryLines = 100
+
+	pendingEventsGlob = "events.pending-*.jsonl"
 )
 
 // SessionMemoryStore manages session event compression, chunk storage, and
@@ -310,6 +312,7 @@ func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecall
 	if err != nil {
 		return nil, err
 	}
+	pendingChunks := s.loadPendingChunks()
 	limit := query.Limit
 	if limit <= 0 {
 		limit = 3
@@ -321,12 +324,15 @@ func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecall
 			idSet[id] = true
 		}
 		var results []ChunkRecallResult
-		for _, entry := range index.Chunks {
+		for _, entry := range append(append([]chunkIndexEntry(nil), index.Chunks...), pendingChunks...) {
 			if !idSet[entry.ID] {
 				continue
 			}
-			events, err := s.readEvents(filepath.Join(s.chunksDir(), entry.File))
+			events, err := s.readEventsForIndexEntry(entry)
 			if err != nil {
+				if entry.Status == "pending" && isPathNotExistError(err) {
+					continue
+				}
 				return nil, err
 			}
 			results = append(results, ChunkRecallResult{ChunkID: entry.ID, Summary: entry.Summary, Structured: entry.Structured, Evidence: events})
@@ -337,9 +343,12 @@ func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecall
 	entries := make([]chunkIndexEntry, 0)
 	allActive := make([]chunkIndexEntry, 0)
 	hasFilter := query.AppName != "" || len(query.Tags) > 0 || len(query.Entities) > 0
-	for _, entry := range index.Chunks {
+	usedFilterFallback := false
+	for _, entry := range append(append([]chunkIndexEntry(nil), index.Chunks...), pendingChunks...) {
 		if entry.Status != "active" {
-			continue
+			if entry.Status != "pending" {
+				continue
+			}
 		}
 		allActive = append(allActive, entry)
 		if query.AppName != "" && entry.AppName != query.AppName {
@@ -355,17 +364,38 @@ func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecall
 	}
 	if len(entries) == 0 && hasFilter {
 		entries = allActive
+		usedFilterFallback = true
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Status == "pending" && entries[j].Status != "pending" {
+			return false
+		}
+		if entries[i].Status != "pending" && entries[j].Status == "pending" {
+			return true
+		}
 		return entries[i].ID > entries[j].ID
 	})
+	if len(pendingChunks) > 0 && len(entries) >= limit && !containsPendingEntry(entries[:minInt(limit, len(entries))]) {
+		for _, pending := range pendingChunks {
+			if !hasFilter || usedFilterFallback || entryMatchesRecallQuery(pending, query, hasFilter) {
+				replaceAt := minInt(limit, len(entries)) - 1
+				if replaceAt >= 0 {
+					entries[replaceAt] = pending
+				}
+				break
+			}
+		}
+	}
 	results := make([]ChunkRecallResult, 0, minInt(limit, len(entries)))
 	for _, entry := range entries {
 		if len(results) >= limit {
 			break
 		}
-		events, err := s.readEvents(filepath.Join(s.chunksDir(), entry.File))
+		events, err := s.readEventsForIndexEntry(entry)
 		if err != nil {
+			if entry.Status == "pending" && isPathNotExistError(err) {
+				continue
+			}
 			return nil, err
 		}
 		results = append(results, ChunkRecallResult{ChunkID: entry.ID, Summary: entry.Summary, Structured: entry.Structured, Evidence: events})
@@ -373,8 +403,80 @@ func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecall
 	return results, nil
 }
 
+func containsPendingEntry(entries []chunkIndexEntry) bool {
+	for _, entry := range entries {
+		if entry.Status == "pending" {
+			return true
+		}
+	}
+	return false
+}
+
+func entryMatchesRecallQuery(entry chunkIndexEntry, query ChunkRecallQuery, hasFilter bool) bool {
+	if entry.Status != "active" && entry.Status != "pending" {
+		return false
+	}
+	if query.AppName != "" && entry.AppName != query.AppName {
+		return false
+	}
+	if hasFilter && len(query.Tags) > 0 && !matchesAny(query.Tags, entry.Tags) {
+		return false
+	}
+	if hasFilter && len(query.Entities) > 0 && !matchesAny(query.Entities, entry.Entities) {
+		return false
+	}
+	return true
+}
+
 func (s *SessionMemoryStore) eventsPath() string {
 	return filepath.Join(s.rootDir, "events.jsonl")
+}
+
+func (s *SessionMemoryStore) pendingEventsPaths() ([]string, error) {
+	paths, err := filepath.Glob(filepath.Join(s.rootDir, pendingEventsGlob))
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(paths, func(i, j int) bool {
+		return pendingEventsSortKey(paths[i]) < pendingEventsSortKey(paths[j])
+	})
+	return paths, nil
+}
+
+func (s *SessionMemoryStore) loadPendingChunks() []chunkIndexEntry {
+	paths, err := s.pendingEventsPaths()
+	if err != nil {
+		return nil
+	}
+	chunks := make([]chunkIndexEntry, 0, len(paths))
+	for _, path := range paths {
+		events, err := s.readEvents(path)
+		if err != nil || len(events) == 0 {
+			continue
+		}
+		_, checksum, err := encodeSessionEventsJSONL(events)
+		if err != nil {
+			continue
+		}
+		sessionID := pendingSessionIDFromPath(path)
+		chunks = append(chunks, chunkIndexEntry{
+			ID:         pendingChunkIDFromPath(path),
+			File:       filepath.Base(path),
+			Status:     "pending",
+			Summary:    fmt.Sprintf("[Pending compression] %d events from session %s", len(events), sessionID),
+			AppName:    firstNonEmptyAppName(events),
+			EventCount: len(events),
+			Checksum:   checksum,
+		})
+	}
+	return chunks
+}
+
+func (s *SessionMemoryStore) readEventsForIndexEntry(entry chunkIndexEntry) ([]SessionEvent, error) {
+	if entry.Status == "pending" {
+		return s.readEvents(filepath.Join(s.rootDir, filepath.Base(entry.File)))
+	}
+	return s.readEvents(filepath.Join(s.chunksDir(), entry.File))
 }
 
 func (s *SessionMemoryStore) summaryPath() string {
@@ -565,7 +667,7 @@ func renderArchiveMD(chunks []chunkLine) string {
 
 func formatSessionSummaryWithWindow(existingSummary []byte, existingArchive []byte, newChunk chunkIndexEntry, maxChunks int) (summaryContent string, archiveContent string) {
 	chunks := parseChunkLines(existingSummary)
-	chunks = append(chunks, chunkLine{ID: newChunk.ID, Summary: strings.TrimSpace(newChunk.Summary)})
+	chunks = upsertChunkLine(chunks, chunkLine{ID: newChunk.ID, Summary: strings.TrimSpace(newChunk.Summary)})
 	rollingSummary := extractRollingSummary(existingSummary)
 
 	if maxChunks <= 0 || len(chunks) <= maxChunks {
@@ -580,6 +682,16 @@ func formatSessionSummaryWithWindow(existingSummary []byte, existingArchive []by
 
 	updatedRollingSummary := mergeArchivedChunksIntoRollingSummary(rollingSummary, overflow)
 	return renderSummaryMD(keep, updatedRollingSummary), renderArchiveMD(archived)
+}
+
+func upsertChunkLine(chunks []chunkLine, next chunkLine) []chunkLine {
+	for i := range chunks {
+		if chunks[i].ID == next.ID {
+			chunks[i] = next
+			return chunks
+		}
+	}
+	return append(chunks, next)
 }
 
 func mergeArchivedChunksIntoRollingSummary(existingRollingSummary string, archivedChunks []chunkLine) string {
@@ -633,4 +745,27 @@ func minInt(a int, b int) int {
 		return a
 	}
 	return b
+}
+
+func pendingSessionIDFromPath(path string) string {
+	base := filepath.Base(path)
+	sessionID := strings.TrimSuffix(base, ".jsonl")
+	sessionID = strings.TrimPrefix(sessionID, "events.pending-")
+	return strings.TrimSpace(sessionID)
+}
+
+func pendingChunkIDFromPath(path string) string {
+	sessionID := pendingSessionIDFromPath(path)
+	if sessionID == "" {
+		return "pending-unknown"
+	}
+	return "pending-" + sessionID
+}
+
+func pendingEventsSortKey(path string) string {
+	key := pendingSessionIDFromPath(path)
+	if key == "" {
+		return filepath.Base(path)
+	}
+	return key
 }

@@ -1063,6 +1063,361 @@ func TestMaintainFilesystemMemoryChineseCountFallbackNoOrphanToolResult(t *testi
 	}
 }
 
+func TestSessionRotationMovesActiveEventsToPending(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	releaseMaintenance := make(chan struct{})
+	manager := NewMemoryManager(storageDir, WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-releaseMaintenance:
+			return "rotated summary"
+		}
+	}))
+	defer func() {
+		close(releaseMaintenance)
+		waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.WaitMaintenance(waitCtx); err != nil {
+			t.Fatalf("WaitMaintenance() error = %v", err)
+		}
+	}()
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_rotate_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("old task event %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+
+	pendingPath, err := manager.RotateSessionEvents()
+	if err != nil {
+		t.Fatalf("RotateSessionEvents() error = %v", err)
+	}
+	if pendingPath == "" {
+		t.Fatal("RotateSessionEvents() returned empty pending path")
+	}
+
+	if got := readSessionEvents(t, session.eventsPath()); len(got) != 0 {
+		t.Fatalf("expected new events.jsonl to be empty, got %d events", len(got))
+	}
+	pending := readSessionEvents(t, pendingPath)
+	if len(pending) != 5 {
+		t.Fatalf("expected pending file to contain 5 old events, got %d", len(pending))
+	}
+	if pending[0].EventID != "evt_rotate_0" || pending[4].EventID != "evt_rotate_4" {
+		t.Fatalf("pending events not preserved in order: %#v", pending)
+	}
+}
+
+func TestSessionRotationAppendAfterRotateWritesNewEventsFile(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	releaseMaintenance := make(chan struct{})
+	manager := NewMemoryManager(storageDir, WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-releaseMaintenance:
+			return "rotated summary"
+		}
+	}))
+	defer func() {
+		close(releaseMaintenance)
+		waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.WaitMaintenance(waitCtx); err != nil {
+			t.Fatalf("WaitMaintenance() error = %v", err)
+		}
+	}()
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC()
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_before_rotate",
+		Ts:      now.Format(time.RFC3339Nano),
+		Type:    "user_input",
+		Role:    "user",
+		Content: "old task",
+	}); err != nil {
+		t.Fatalf("AppendEvent() before rotate error = %v", err)
+	}
+
+	pendingPath, err := manager.RotateSessionEvents()
+	if err != nil {
+		t.Fatalf("RotateSessionEvents() error = %v", err)
+	}
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_after_rotate",
+		Ts:      now.Add(time.Second).Format(time.RFC3339Nano),
+		Type:    "user_input",
+		Role:    "user",
+		Content: "new task",
+	}); err != nil {
+		t.Fatalf("AppendEvent() after rotate error = %v", err)
+	}
+
+	active := readSessionEvents(t, session.eventsPath())
+	if len(active) != 1 || active[0].EventID != "evt_after_rotate" {
+		t.Fatalf("expected only new event in active events.jsonl, got %#v", active)
+	}
+	pending := readSessionEvents(t, pendingPath)
+	if len(pending) != 1 || pending[0].EventID != "evt_before_rotate" {
+		t.Fatalf("expected old event in pending file, got %#v", pending)
+	}
+}
+
+func TestSessionRotationDoesNotDeadlockWithMemoryLoad(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC()
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_before_deadlock_check",
+		Ts:      now.Format(time.RFC3339Nano),
+		Type:    "user_input",
+		Role:    "user",
+		Content: "old task",
+	}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+
+	done := make(chan error, 2)
+	go func() {
+		_, err := manager.RotateSessionEvents()
+		done <- err
+	}()
+	go func() {
+		_, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+		done <- err
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("concurrent operation error = %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("RotateSessionEvents and Get appear to be deadlocked")
+		}
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := manager.WaitMaintenance(waitCtx); err != nil {
+		t.Fatalf("WaitMaintenance() error = %v", err)
+	}
+}
+
+func TestMaintainFilesystemMemorySkipsActiveWriteAfterRotation(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.HotWindowEvents = 4
+	cfg.CountCompressAfterEvents = 8
+
+	summaryStarted := make(chan struct{})
+	releaseSummary := make(chan struct{})
+	var summaryStartedOnce sync.Once
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg), WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+		summaryStartedOnce.Do(func() { close(summaryStarted) })
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-releaseSummary:
+			return "old active summary"
+		}
+	}))
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC()
+	for i := 0; i < 10; i++ {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_old_active_%02d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("old active %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() old error = %v", err)
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.maintainFilesystemMemory(ctx)
+	}()
+	select {
+	case <-summaryStarted:
+	case <-time.After(time.Second):
+		t.Fatal("maintenance did not start summary")
+	}
+	if _, err := manager.RotateSessionEvents(); err != nil {
+		t.Fatalf("RotateSessionEvents() error = %v", err)
+	}
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_new_active",
+		Ts:      now.Add(time.Minute).Format(time.RFC3339Nano),
+		Type:    "user_input",
+		Role:    "user",
+		Content: "new active",
+	}); err != nil {
+		t.Fatalf("AppendEvent() new error = %v", err)
+	}
+	close(releaseSummary)
+	if err := <-done; err != nil {
+		t.Fatalf("maintainFilesystemMemory() error = %v", err)
+	}
+
+	active := readSessionEvents(t, session.eventsPath())
+	if len(active) != 1 || active[0].EventID != "evt_new_active" {
+		t.Fatalf("maintenance wrote old session back into active events: %#v", active)
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := manager.WaitMaintenance(waitCtx); err != nil {
+		t.Fatalf("WaitMaintenance() error = %v", err)
+	}
+}
+
+func TestSessionMemoryRecallIncludesPendingChunks(t *testing.T) {
+	ctx := context.Background()
+	session := NewSessionMemoryStore(filepath.Join(t.TempDir(), "session"))
+	if err := os.MkdirAll(session.rootDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll session dir: %v", err)
+	}
+	pendingPath := filepath.Join(session.rootDir, "events.pending-123.jsonl")
+	pendingEvents := []SessionEvent{{
+		EventID: "evt_pending_1",
+		Ts:      time.Now().UTC().Format(time.RFC3339Nano),
+		Type:    "user_input",
+		Role:    "user",
+		Content: "查一下明天天气",
+		AppName: "WeatherApp",
+	}}
+	data, _, err := encodeSessionEventsJSONL(pendingEvents)
+	if err != nil {
+		t.Fatalf("encode pending events: %v", err)
+	}
+	if err := os.WriteFile(pendingPath, data, 0o644); err != nil {
+		t.Fatalf("write pending file: %v", err)
+	}
+
+	results, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one pending recall result, got %#v", results)
+	}
+	if results[0].ChunkID != "pending-123" {
+		t.Fatalf("expected pending chunk id, got %q", results[0].ChunkID)
+	}
+	if len(results[0].Evidence) != 1 || results[0].Evidence[0].EventID != "evt_pending_1" {
+		t.Fatalf("unexpected pending evidence: %#v", results[0].Evidence)
+	}
+	if !strings.Contains(results[0].Summary, "Pending compression") {
+		t.Fatalf("pending summary should describe pending compression, got %q", results[0].Summary)
+	}
+}
+
+func TestSessionMemoryRecallKeepsPendingSlotWhenLimitFilled(t *testing.T) {
+	ctx := context.Background()
+	session := NewSessionMemoryStore(filepath.Join(t.TempDir(), "session"))
+	for i := 0; i < 3; i++ {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_active_%d", i),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("active %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() active error = %v", err)
+		}
+		if _, err := session.Compress(ctx, CompressOption{
+			ChunkID: fmt.Sprintf("chunk_%03d", i),
+			Summary: fmt.Sprintf("active summary %d", i),
+		}); err != nil {
+			t.Fatalf("Compress() error = %v", err)
+		}
+	}
+	pendingPath := filepath.Join(session.rootDir, "events.pending-999.jsonl")
+	data, _, err := encodeSessionEventsJSONL([]SessionEvent{{
+		EventID: "evt_pending_slot",
+		Type:    "user_input",
+		Role:    "user",
+		Content: "pending should be visible",
+	}})
+	if err != nil {
+		t.Fatalf("encode pending: %v", err)
+	}
+	if err := os.WriteFile(pendingPath, data, 0o644); err != nil {
+		t.Fatalf("write pending: %v", err)
+	}
+
+	results, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 2})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %#v", results)
+	}
+	if results[1].ChunkID != "pending-999" {
+		t.Fatalf("expected pending result to keep one limited slot, got %#v", results)
+	}
+}
+
+func TestMaintainFilesystemMemoryConsumesPendingFiles(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	if err := os.MkdirAll(session.rootDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll session dir: %v", err)
+	}
+	pendingPath := filepath.Join(session.rootDir, "events.pending-123.jsonl")
+	now := time.Now().UTC()
+	pendingEvents := []SessionEvent{
+		{EventID: "evt_pending_1", Ts: now.Format(time.RFC3339Nano), Type: "user_input", Role: "user", Content: "打开微信"},
+		{EventID: "evt_pending_2", Ts: now.Add(time.Second).Format(time.RFC3339Nano), Type: "assistant_output", Role: "assistant", Content: "已打开"},
+	}
+	data, _, err := encodeSessionEventsJSONL(pendingEvents)
+	if err != nil {
+		t.Fatalf("encode pending events: %v", err)
+	}
+	if err := os.WriteFile(pendingPath, data, 0o644); err != nil {
+		t.Fatalf("write pending file: %v", err)
+	}
+
+	manager := NewMemoryManager(storageDir, WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+		return fmt.Sprintf("pending summary with %d events", len(events))
+	}))
+	if err := manager.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory() error = %v", err)
+	}
+	if _, err := os.Stat(pendingPath); !os.IsNotExist(err) {
+		t.Fatalf("expected pending file to be deleted after consumption, stat err = %v", err)
+	}
+	results, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one consumed chunk, got %#v", results)
+	}
+	if results[0].Summary != "pending summary with 2 events" {
+		t.Fatalf("unexpected consumed summary: %q", results[0].Summary)
+	}
+	if len(results[0].Evidence) != 2 {
+		t.Fatalf("expected consumed chunk evidence, got %#v", results[0].Evidence)
+	}
+}
+
 func readSessionEvents(t *testing.T, path string) []SessionEvent {
 	t.Helper()
 	file, err := os.Open(path)
@@ -1179,6 +1534,23 @@ func TestFormatSessionSummaryWithWindowAppendsToExistingArchive(t *testing.T) {
 	}
 }
 
+func TestFormatSessionSummaryWithWindowUpsertsExistingChunk(t *testing.T) {
+	existing := []byte("# Session History (compressed chunks)\n\n" +
+		"## Recent Chunks\n\n" +
+		"- **pending-123**\n  Old summary\n")
+
+	summary, archive := formatSessionSummaryWithWindow(existing, nil, chunkIndexEntry{ID: "pending-123", Summary: "New summary"}, 10)
+	if archive != "" {
+		t.Fatalf("expected no archive, got:\n%s", archive)
+	}
+	if strings.Count(summary, "pending-123") != 1 {
+		t.Fatalf("expected pending-123 to appear once, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "New summary") || strings.Contains(summary, "Old summary") {
+		t.Fatalf("expected summary to be updated, got:\n%s", summary)
+	}
+}
+
 func TestSessionMemoryStoreCompressCreatesArchive(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -1274,18 +1646,52 @@ func TestSummaryMaxChunksConfigDefaultAndCustom(t *testing.T) {
 	if cfg.SummaryMaxChunks != 10 {
 		t.Fatalf("expected default SummaryMaxChunks=10, got %d", cfg.SummaryMaxChunks)
 	}
+	if !cfg.SessionBoundaryEnabled {
+		t.Fatalf("expected session boundary detection to be enabled by default")
+	}
+	if cfg.SessionBoundaryShortGapSeconds != 30 {
+		t.Fatalf("expected default short gap 30s, got %d", cfg.SessionBoundaryShortGapSeconds)
+	}
+	if cfg.SessionBoundaryLongGapSeconds != 300 {
+		t.Fatalf("expected default long gap 300s, got %d", cfg.SessionBoundaryLongGapSeconds)
+	}
 
 	dir := t.TempDir()
 	memDir := filepath.Join(dir, "memory")
 	if err := os.MkdirAll(memDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(memDir, "extraction.yaml"), []byte("summary_max_chunks: 5\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(memDir, "extraction.yaml"), []byte(strings.Join([]string{
+		"summary_max_chunks: 5",
+		"session_boundary_enabled: false",
+		"session_boundary_short_gap_seconds: 15",
+		"session_boundary_long_gap_seconds: 120",
+		"",
+	}, "\n")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	loaded := LoadMemoryExtractionConfig(dir)
 	if loaded.SummaryMaxChunks != 5 {
 		t.Fatalf("expected loaded SummaryMaxChunks=5, got %d", loaded.SummaryMaxChunks)
+	}
+	if loaded.SessionBoundaryEnabled {
+		t.Fatalf("expected loaded SessionBoundaryEnabled=false")
+	}
+	if loaded.SessionBoundaryShortGapSeconds != 15 || loaded.SessionBoundaryLongGapSeconds != 120 {
+		t.Fatalf("unexpected loaded session boundary gaps: short=%d long=%d",
+			loaded.SessionBoundaryShortGapSeconds, loaded.SessionBoundaryLongGapSeconds)
+	}
+}
+
+func TestWithSessionBoundaryEnabledOverridesProgrammaticConfig(t *testing.T) {
+	manager := NewMemoryManager(t.TempDir(), WithSessionBoundaryEnabled(false))
+	if manager.extraction.SessionBoundaryEnabled {
+		t.Fatalf("expected explicit programmatic override to disable session boundary")
+	}
+
+	manager = NewMemoryManager(t.TempDir(), WithSessionBoundaryEnabled(false), WithExtractionConfig(DefaultMemoryExtractionConfig()))
+	if manager.extraction.SessionBoundaryEnabled {
+		t.Fatalf("expected later normalization to preserve explicit disable")
 	}
 }
 

@@ -358,6 +358,17 @@ type scriptedModel struct {
 	tools        [][]llms.Tool
 }
 
+type staticTool struct {
+	name   string
+	output string
+}
+
+func (t *staticTool) Name() string { return t.name }
+
+func (t *staticTool) Description() string { return "static test tool" }
+
+func (t *staticTool) Call(context.Context, string) (string, error) { return t.output, nil }
+
 func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	var callOptions llms.CallOptions
 	for _, option := range options {
@@ -1459,6 +1470,128 @@ func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
 		t.Fatal("async memory maintenance did not start")
 	}
 	releaseMaintenance()
+}
+
+func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
+	configDir := t.TempDir()
+	storageDir := filepath.Join(configDir, "memory")
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC().Add(-2 * time.Minute)
+	for i := 0; i < 2; i++ {
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_old_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("查天气旧任务 %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+
+	releaseMaintenance := make(chan struct{})
+	manager := NewMemoryManager(storageDir, WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-releaseMaintenance:
+			return "old task summary"
+		}
+	}))
+	defer func() {
+		close(releaseMaintenance)
+		waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.WaitMaintenance(waitCtx); err != nil {
+			t.Fatalf("WaitMaintenance() error = %v", err)
+		}
+	}()
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(result.Memory) != 2 || result.Memory[0].Content != "打开微信" {
+		t.Fatalf("expected clean memory snapshot for new task, got %#v", result.Memory)
+	}
+
+	active := readSessionEvents(t, session.eventsPath())
+	if len(active) != 2 || active[0].Content != "打开微信" {
+		t.Fatalf("expected active events to contain only current exchange, got %#v", active)
+	}
+	pendingPaths, err := filepath.Glob(filepath.Join(storageDir, "session", pendingEventsGlob))
+	if err != nil {
+		t.Fatalf("Glob pending events: %v", err)
+	}
+	if len(pendingPaths) != 1 {
+		t.Fatalf("expected one pending rotated session, got %v", pendingPaths)
+	}
+	pending := readSessionEvents(t, pendingPaths[0])
+	if len(pending) != 2 || pending[0].EventID != "evt_old_0" {
+		t.Fatalf("unexpected pending events: %#v", pending)
+	}
+
+	episode, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).Get(context.Background(), result.EpisodeID)
+	if err != nil {
+		t.Fatalf("Get episode: %v", err)
+	}
+	if got := episode.Extra["session_boundary_decision"]; got != BoundaryNew {
+		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryNew)
+	}
+	if got := episode.Extra["session_rotated"]; got != true {
+		t.Fatalf("session_rotated = %#v, want true", got)
+	}
+	if got := numericExtraValue(episode.Extra["pending_chunks_recalled"]); got != 0 {
+		t.Fatalf("pending_chunks_recalled = %#v, want 0 without recall tool call", got)
+	}
+}
+
+func numericExtraValue(v interface{}) int64 {
+	switch n := v.(type) {
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case int32:
+		return int64(n)
+	case uint64:
+		return int64(n)
+	case float64:
+		return int64(n)
+	default:
+		return -1
+	}
+}
+
+func TestSessionRecallTelemetryCountsPendingResults(t *testing.T) {
+	counter := &atomic.Int64{}
+	tool := &sessionRecallTelemetryTool{
+		inner: &staticTool{
+			name:   "recall_session_chunks",
+			output: `{"results":[{"chunk_id":"chunk_001"},{"chunk_id":"pending-123"}]}`,
+		},
+		counter: counter,
+	}
+	if _, err := tool.Call(context.Background(), `{}`); err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if got := counter.Load(); got != 1 {
+		t.Fatalf("pending recall count = %d, want 1", got)
+	}
 }
 
 func waitForSessionCompaction(t *testing.T, configDir string) {

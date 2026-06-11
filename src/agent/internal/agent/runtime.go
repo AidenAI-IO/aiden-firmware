@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -50,6 +51,7 @@ type Runtime struct {
 	memoryPlane        MemoryPlane
 	telemetrySessionID string
 	mobileGym          *mobileGymSessionStore
+	runMu              sync.Mutex
 }
 
 type RunRequest struct {
@@ -90,6 +92,13 @@ type RunMetrics struct {
 	// the cumulative sum. Using the largest single prompt keeps a small verifier
 	// call from masking a much larger planner prompt.
 	LastPromptTokens int `json:"-"`
+}
+
+type sessionBoundaryTelemetry struct {
+	Decision             string
+	Reason               string
+	Rotated              bool
+	PendingRecallCounter *atomic.Int64
 }
 
 type RunEvent struct {
@@ -358,6 +367,11 @@ func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
 }
 
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+	if r != nil {
+		r.runMu.Lock()
+		defer r.runMu.Unlock()
+	}
+
 	startTime := time.Now()
 	metrics := &RunMetrics{}
 	normalizedInput := normalizeRunInput(req.Input, req.Attachments)
@@ -412,12 +426,19 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	promptCapture := newTelemetryPromptCapture(r.config.Telemetry.EnabledOrDefault())
 	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: r.effectiveContextWindow}
 
+	currentHints := r.currentEnvironmentHints()
+	boundaryTelemetry := r.handleSessionBoundary(normalizedInput, currentHints)
+	if boundaryTelemetry.PendingRecallCounter == nil {
+		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
+	}
+
 	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
 	if err != nil {
 		return RunResult{}, err
 	}
 
 	availableTools := r.resolveTools(resolvedSkills)
+	availableTools = wrapSessionRecallTelemetry(availableTools, boundaryTelemetry.PendingRecallCounter)
 	retrieveReq := MemoryRetrieveRequest{
 		Input:        normalizedInput,
 		Attachments:  req.Attachments,
@@ -425,7 +446,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		ToolNames:    toolNamesFromTools(availableTools),
 		EpisodeID:    req.EpisodeID,
 		DeviceID:     defaultMemoryDeviceID,
-		CurrentHints: r.currentEnvironmentHints(),
+		CurrentHints: currentHints,
 	}
 	memoryContext := MemoryContext{}
 	if r.memoryPlane != nil {
@@ -501,7 +522,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			}
 		}
 		if err != nil {
-			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
+			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
 			return RunResult{}, err
 		}
 	}
@@ -509,21 +530,21 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
 	r.memories.SetLastPromptTokens(metrics.LastPromptTokens)
 	if err := r.memories.AppendExchange(ctx, "default", normalizedInput, output); err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
 		return RunResult{}, err
 	}
 
 	memorySnapshot, err := r.memories.Snapshot(ctx, "default")
 	if err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
 		return RunResult{}, err
 	}
 	if err := r.memories.SaveSnapshot(ctx, "default", memorySnapshot); err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
 		return RunResult{}, err
 	}
 	r.memories.RequestMaintenance()
-	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture)
+	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry)
 
 	sleepRequested, sleepReason := r.sleep.Consume()
 	return RunResult{
@@ -542,6 +563,95 @@ func (r *Runtime) currentEnvironmentHints() CurrentEnvironmentHints {
 		return r.tools.CurrentEnvironmentHints(currentEnvironmentHintMaxAge)
 	}
 	return CurrentEnvironmentHints{}
+}
+
+func (r *Runtime) handleSessionBoundary(input string, hints CurrentEnvironmentHints) sessionBoundaryTelemetry {
+	var telemetry sessionBoundaryTelemetry
+	if r == nil || r.memories == nil || r.memories.storageDir == "" {
+		return telemetry
+	}
+	cfg := r.memories.extraction
+	if !cfg.SessionBoundaryEnabled {
+		return telemetry
+	}
+	events, err := loadLastNSessionEvents(r.memories, 20)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("[memory] session boundary load failed: %v", err)
+		}
+		return telemetry
+	}
+	boundaryCfg := BoundaryConfig{
+		ShortGapSeconds:        cfg.SessionBoundaryShortGapSeconds,
+		LongGapSeconds:         cfg.SessionBoundaryLongGapSeconds,
+		ContinueScoreThreshold: DefaultBoundaryConfig().ContinueScoreThreshold,
+	}
+	episodeCtx := BoundaryEpisodeContext{
+		HasRunning:     runningEpisodeExists(r.memoryPlane),
+		CurrentAppName: hints.AppName,
+	}
+	boundary, reason := ClassifyTurnBoundary(events, input, time.Now().UTC(), boundaryCfg, episodeCtx)
+	telemetry.Decision = boundary
+	telemetry.Reason = reason
+
+	if boundary != BoundaryNew || len(events) == 0 {
+		return telemetry
+	}
+
+	if r.logger != nil {
+		r.logger.Info("[memory] session boundary detected: reason=%s app=%s", reason, hints.AppName)
+	}
+	pendingPath, err := r.memories.RotateSessionEvents()
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("[memory] session rotation failed: %v", err)
+		}
+		return telemetry
+	}
+	if pendingPath != "" {
+		telemetry.Rotated = true
+	}
+	return telemetry
+}
+
+func loadLastNSessionEvents(manager *MemoryManager, n int) ([]SessionEvent, error) {
+	if manager == nil || strings.TrimSpace(manager.storageDir) == "" || n <= 0 {
+		return nil, nil
+	}
+	session := NewSessionMemoryStore(filepath.Join(manager.storageDir, "session"), manager.extraction.SummaryMaxChunks)
+	fl := NewFileLock(manager.storageDir)
+	if err := fl.Lock(manager.lockTimeout); err != nil {
+		return nil, fmt.Errorf("lock for boundary session events: %w", err)
+	}
+	defer fl.Unlock()
+	events, err := session.readEvents(session.eventsPath())
+	if err != nil {
+		if isPathNotExistError(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(events) <= n {
+		return events, nil
+	}
+	return append([]SessionEvent(nil), events[len(events)-n:]...), nil
+}
+
+func runningEpisodeExists(plane MemoryPlane) bool {
+	fs, ok := plane.(*FilesystemMemoryPlane)
+	if !ok || fs == nil || fs.episodes == nil {
+		return false
+	}
+	index, err := fs.episodes.loadIndex()
+	if err != nil {
+		return false
+	}
+	for _, entry := range index.Episodes {
+		if entry.Status == "running" {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runtime) effectiveContextWindow() int {
@@ -674,7 +784,71 @@ func toolNamesFromTools(tools []langtools.Tool) []string {
 	return uniqueNonEmpty(names)
 }
 
-func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture) {
+func wrapSessionRecallTelemetry(tools []langtools.Tool, counter *atomic.Int64) []langtools.Tool {
+	if counter == nil {
+		return tools
+	}
+	wrapped := make([]langtools.Tool, 0, len(tools))
+	for _, tool := range tools {
+		if tool != nil && tool.Name() == "recall_session_chunks" {
+			wrapped = append(wrapped, &sessionRecallTelemetryTool{inner: tool, counter: counter})
+			continue
+		}
+		wrapped = append(wrapped, tool)
+	}
+	return wrapped
+}
+
+type sessionRecallTelemetryTool struct {
+	inner   langtools.Tool
+	counter *atomic.Int64
+}
+
+func (t *sessionRecallTelemetryTool) Name() string {
+	return t.inner.Name()
+}
+
+func (t *sessionRecallTelemetryTool) Description() string {
+	return t.inner.Description()
+}
+
+func (t *sessionRecallTelemetryTool) Call(ctx context.Context, input string) (string, error) {
+	output, err := t.inner.Call(ctx, input)
+	if err != nil {
+		return "", err
+	}
+	if t.counter != nil {
+		t.counter.Add(int64(countPendingRecallResults(output)))
+	}
+	return output, nil
+}
+
+func (t *sessionRecallTelemetryTool) ReturnsVisualObservation() bool {
+	if visual, ok := t.inner.(visualObservationTool); ok {
+		return visual.ReturnsVisualObservation()
+	}
+	return false
+}
+
+func countPendingRecallResults(output string) int {
+	var payload struct {
+		Results []struct {
+			ChunkID string `json:"chunk_id"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		return 0
+	}
+	count := 0
+	for _, result := range payload.Results {
+		if strings.HasPrefix(result.ChunkID, "pending-") {
+			count++
+		}
+	}
+	return count
+}
+
+func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture, boundary sessionBoundaryTelemetry) {
 	if recorder == nil || r.memoryPlane == nil {
 		return
 	}
@@ -689,6 +863,7 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 	episode := recorder.Finish(output, metrics, runErr, tags, entities)
 	enrichEpisodeTelemetry(&episode, r.config)
 	r.enrichEpisodeRuntimeTelemetry(&episode)
+	enrichEpisodeSessionBoundaryTelemetry(&episode, boundary)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := r.memoryPlane.CommitEpisode(ctx, episode); err != nil && r.logger != nil {
@@ -696,6 +871,23 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 		return
 	}
 	r.exportEpisodeBestEffort(episode, promptCapture)
+}
+
+func enrichEpisodeSessionBoundaryTelemetry(episode *TaskEpisode, boundary sessionBoundaryTelemetry) {
+	if episode == nil || boundary.Decision == "" {
+		return
+	}
+	if episode.Extra == nil {
+		episode.Extra = map[string]interface{}{}
+	}
+	episode.Extra["session_boundary_decision"] = boundary.Decision
+	episode.Extra["session_boundary_reason"] = boundary.Reason
+	episode.Extra["session_rotated"] = boundary.Rotated
+	pendingRecalled := int64(0)
+	if boundary.PendingRecallCounter != nil {
+		pendingRecalled = boundary.PendingRecallCounter.Load()
+	}
+	episode.Extra["pending_chunks_recalled"] = pendingRecalled
 }
 
 func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
