@@ -397,12 +397,41 @@ func (s *SessionMemoryStore) chunkIndexPath() string {
 }
 
 func (s *SessionMemoryStore) readEvents(path string) ([]SessionEvent, error) {
+	result, err := readSessionEventsJSONL(path, filepath.Clean(path) == filepath.Clean(s.eventsPath()))
+	if err != nil {
+		return nil, err
+	}
+	return result.events, nil
+}
+
+func (s *SessionMemoryStore) readActiveEventsRepairingTruncatedTail() (sessionEventsReadResult, error) {
+	path := s.eventsPath()
+	result, err := readSessionEventsJSONL(path, true)
+	if err != nil {
+		return sessionEventsReadResult{}, err
+	}
+	if result.truncatedTail {
+		if err := writeFileAtomic(path, result.validData, 0o644); err != nil {
+			result.repairErr = fmt.Errorf("repair session events %q: %w", path, err)
+		}
+	}
+	return result, nil
+}
+
+type sessionEventsReadResult struct {
+	events        []SessionEvent
+	validData     []byte
+	truncatedTail bool
+	repairErr     error
+}
+
+func readSessionEventsJSONL(path string, tolerateTruncatedTail bool) (sessionEventsReadResult, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("read session events %q: %w", path, err)
+		return sessionEventsReadResult{}, fmt.Errorf("read session events %q: %w", path, err)
 	}
 	defer file.Close()
-	var events []SessionEvent
+	var result sessionEventsReadResult
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0), 1<<20)
 	for scanner.Scan() {
@@ -412,17 +441,20 @@ func (s *SessionMemoryStore) readEvents(path string) ([]SessionEvent, error) {
 		}
 		var event SessionEvent
 		if err := json.Unmarshal(line, &event); err != nil {
-			if isTruncatedJSONLineError(err) && filepath.Clean(path) == filepath.Clean(s.eventsPath()) {
+			if tolerateTruncatedTail && isTruncatedJSONLineError(err) {
+				result.truncatedTail = true
 				break
 			}
-			return nil, fmt.Errorf("decode session event %q: %w", path, err)
+			return sessionEventsReadResult{}, fmt.Errorf("decode session event %q: %w", path, err)
 		}
-		events = append(events, event)
+		result.validData = append(result.validData, line...)
+		result.validData = append(result.validData, '\n')
+		result.events = append(result.events, event)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan session events %q: %w", path, err)
+		return sessionEventsReadResult{}, fmt.Errorf("scan session events %q: %w", path, err)
 	}
-	return events, nil
+	return result, nil
 }
 
 func (s *SessionMemoryStore) loadChunkIndex() (chunkIndex, error) {

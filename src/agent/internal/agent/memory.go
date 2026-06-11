@@ -1,8 +1,6 @@
 package agent
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -593,36 +591,19 @@ func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRe
 	}
 	defer fl.Unlock()
 
-	file, err := os.Open(m.sessionEventsPath())
+	session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"), m.extraction.SummaryMaxChunks)
+	result, err := session.readActiveEventsRepairingTruncatedTail()
 	if err != nil {
-		if os.IsNotExist(err) {
+		if isPathNotExistError(err) {
 			return nil, 0, false, nil
 		}
 		return nil, 0, false, fmt.Errorf("read session events for %q: %w", agentName, err)
 	}
-	defer file.Close()
+	m.logSessionEventsRepair(agentName, result)
 
-	var records []MessageRecord
+	records := make([]MessageRecord, 0, len(result.events))
 	hotWindowTokens := 0
-	validData := make([]byte, 0)
-	repairedTruncatedTail := false
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0), 1<<20)
-	for scanner.Scan() {
-		line := bytes.Trim(scanner.Bytes(), "\x00 \t\r\n")
-		if len(line) == 0 {
-			continue
-		}
-		var event SessionEvent
-		if err := json.Unmarshal(line, &event); err != nil {
-			if isTruncatedJSONLineError(err) {
-				repairedTruncatedTail = true
-				break
-			}
-			return nil, 0, false, fmt.Errorf("decode session event for %q: %w", agentName, err)
-		}
-		validData = append(validData, line...)
-		validData = append(validData, '\n')
+	for _, event := range result.events {
 		// Accumulate the token estimate over every persisted event (not just
 		// those that become message records) so the seeded value matches
 		// sumSessionEventTokens over the same on-disk hot window.
@@ -632,19 +613,18 @@ func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRe
 			records = append(records, record)
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, 0, false, fmt.Errorf("scan session events for %q: %w", agentName, err)
-	}
-	if repairedTruncatedTail {
-		if err := writeFileAtomic(m.sessionEventsPath(), validData, 0o644); err != nil {
-			if m.logger != nil {
-				m.logger.Warn("[memory] failed to repair truncated session events for %q: %v", agentName, err)
-			}
-		} else if m.logger != nil {
-			m.logger.Warn("[memory] repaired truncated session events for %q", agentName)
-		}
-	}
 	return records, hotWindowTokens, true, nil
+}
+
+func (m *MemoryManager) logSessionEventsRepair(agentName string, result sessionEventsReadResult) {
+	if m == nil || m.logger == nil || !result.truncatedTail {
+		return
+	}
+	if result.repairErr != nil {
+		m.logger.Warn("[memory] failed to repair truncated session events for %q: %v", agentName, result.repairErr)
+		return
+	}
+	m.logger.Warn("[memory] repaired truncated session events for %q", agentName)
 }
 
 func (m *MemoryManager) persistSnapshot(agentName string, records []MessageRecord) error {

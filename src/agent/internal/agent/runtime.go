@@ -661,13 +661,15 @@ func loadLastNSessionEvents(manager *MemoryManager, n int) ([]SessionEvent, erro
 		return nil, fmt.Errorf("lock for boundary session events: %w", err)
 	}
 	defer fl.Unlock()
-	events, err := session.readEvents(session.eventsPath())
+	result, err := session.readActiveEventsRepairingTruncatedTail()
 	if err != nil {
 		if isPathNotExistError(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
+	manager.logSessionEventsRepair("boundary", result)
+	events := result.events
 	if len(events) <= n {
 		return events, nil
 	}

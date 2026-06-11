@@ -1587,6 +1587,78 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunRepairsTruncatedSessionTailBeforeBoundaryRotation(t *testing.T) {
+	configDir := t.TempDir()
+	storageDir := filepath.Join(configDir, "memory")
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC().Add(-4 * time.Minute)
+	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold+1; i++ {
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_old_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("查天气旧任务 %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+	file, err := os.OpenFile(session.eventsPath(), os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("OpenFile events.jsonl: %v", err)
+	}
+	if _, err := file.WriteString(`{"event_id":"partial_crash_tail","type":"assistant_output","role":"assistant","content":"cut`); err != nil {
+		file.Close()
+		t.Fatalf("write truncated event tail: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close events.jsonl: %v", err)
+	}
+
+	manager := NewMemoryManager(storageDir)
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("ok")}},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(result.Memory) != 2 || result.Memory[0].Content != "打开微信" {
+		t.Fatalf("expected clean memory snapshot for new task, got %#v", result.Memory)
+	}
+
+	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
+	if err != nil {
+		t.Fatalf("Glob archived sessions: %v", err)
+	}
+	if len(archiveDirs) != 1 {
+		t.Fatalf("expected one archived rotated session, got %v", archiveDirs)
+	}
+	archivedPath := filepath.Join(archiveDirs[0], "events.jsonl")
+	archivedRaw, err := os.ReadFile(archivedPath)
+	if err != nil {
+		t.Fatalf("ReadFile archived events: %v", err)
+	}
+	if strings.Contains(string(archivedRaw), "partial_crash_tail") {
+		t.Fatalf("runtime boundary rotation archived unrepaired truncated tail: %q", archivedRaw)
+	}
+	archived := readSessionEvents(t, archivedPath)
+	if len(archived) != DefaultBoundaryConfig().SmallSessionEventThreshold+1 {
+		t.Fatalf("unexpected archived events after repair: %#v", archived)
+	}
+}
+
 func TestRuntimeRunKeepsSmallSessionOnUnrelatedInput(t *testing.T) {
 	configDir := t.TempDir()
 	storageDir := filepath.Join(configDir, "memory")
