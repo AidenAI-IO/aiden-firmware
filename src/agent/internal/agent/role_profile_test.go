@@ -50,11 +50,17 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 			"## Available skills",
 			"## Active skills",
 			"## Role rules",
-			"## Available tools",
 		} {
 			if !strings.Contains(profile.SystemPrompt, want) {
 				t.Fatalf("%s profile missing markdown section %q:\n%s", profile.Name, want, profile.SystemPrompt)
 			}
+		}
+		if profile.Name == RoleVerifier {
+			if strings.Contains(profile.SystemPrompt, "## Available tools") {
+				t.Fatalf("verifier profile should not include available tools section:\n%s", profile.SystemPrompt)
+			}
+		} else if !strings.Contains(profile.SystemPrompt, "## Available tools") {
+			t.Fatalf("%s profile missing markdown section %q:\n%s", profile.Name, "## Available tools", profile.SystemPrompt)
 		}
 	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "MEMORY CONTEXT") {
