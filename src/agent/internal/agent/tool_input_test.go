@@ -166,11 +166,10 @@ func TestDecodeChunkRecallQueryWellFormed(t *testing.T) {
 			},
 		},
 		{
-			name:  "app_name filter",
+			name:  "app_name ignored",
 			input: `{"app_name":"Gmail","limit":10}`,
 			want: ChunkRecallQuery{
-				AppName: "Gmail",
-				Limit:   10,
+				Limit: 10,
 			},
 		},
 		{

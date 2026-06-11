@@ -386,7 +386,7 @@ func TestServerHandleChatSkipsToolDescriptionTTSWhenDisabled(t *testing.T) {
 }
 
 func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
-	model := &cancelAwareModel{seen: make(chan error, 1)}
+	model := &cancelAwareModel{started: make(chan struct{}), seen: make(chan error, 1)}
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: model},
@@ -406,6 +406,12 @@ func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
 		server.handleChat(rec, req)
 		close(done)
 	}()
+
+	select {
+	case <-model.started:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("runtime did not start model call")
+	}
 	cancel()
 
 	select {
@@ -526,10 +532,17 @@ func TestServerSpeakToolDescriptionUsesCallerContext(t *testing.T) {
 }
 
 type cancelAwareModel struct {
-	seen chan error
+	started chan struct{}
+	seen    chan error
+	once    sync.Once
 }
 
 func (m *cancelAwareModel) GenerateContent(ctx context.Context, _ []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	m.once.Do(func() {
+		if m.started != nil {
+			close(m.started)
+		}
+	})
 	<-ctx.Done()
 	err := ctx.Err()
 	m.seen <- err
@@ -1080,9 +1093,9 @@ func TestServerMobileGymEpisodeEndpointsRequireControlToken(t *testing.T) {
 	server := NewServer(runtime, "127.0.0.1:0", "")
 
 	for _, tt := range []struct {
-		name      string
-		auth      string
-		wantCode  int
+		name     string
+		auth     string
+		wantCode int
 	}{
 		{name: "missing", wantCode: http.StatusUnauthorized},
 		{name: "wrong", auth: "Bearer wrong", wantCode: http.StatusUnauthorized},

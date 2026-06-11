@@ -153,6 +153,9 @@ Optional. Place `memory/extraction.yaml` under the config directory to control s
 | `context_window` | `32000` | Fallback context window for compaction when the active model is not present in `model_specs`. Runtime normally derives this from `ModelResolver.Spec()`; this value is only used for unknown models. |
 | `compress_at_percent` | `50` | Percentage trigger: compaction starts when `prompt_tokens / context_window >= compress_at_percent%`. |
 | `summary_max_chunks` | `10` | Number of chunk summaries kept in the Recent Chunks section of `summary.md`. Older entries move to the archive and are folded into the Rolling Summary. |
+| `session_boundary_enabled` | `true` | Classify each new user turn as continuing the current session or starting a new one. A `new` boundary archives the current `memory/session/` directory and recreates an empty active session. |
+| `session_boundary_short_gap_seconds` | default boundary config | Gap below which a turn is treated as continuation regardless of lexical signals. |
+| `session_boundary_long_gap_seconds` | default boundary config | Gap above which a turn is treated as a fresh session regardless of lexical signals. |
 | `tag_candidates` | see defaults | Candidate keywords matched when tagging chunk summaries. |
 | `entity_suffixes` | `["App","app","APP"]` | Suffixes recognized during entity extraction. |
 
