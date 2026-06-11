@@ -86,8 +86,8 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if resp.Response != "The current audio volume is 42." {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
-	if len(resp.History) != 7 {
-		t.Fatalf("expected 7 history entries including role outputs, got %d", len(resp.History))
+	if len(resp.History) != 6 {
+		t.Fatalf("expected 6 history entries for default-mode planner tool flow, got %d", len(resp.History))
 	}
 
 	if resp.History[0].Type != "user" || resp.History[0].Content != "当前音量是多少？" {
@@ -774,8 +774,8 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	if resp.Response != "已处理" {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
-	if len(resp.History) != 5 {
-		t.Fatalf("expected 5 history entries including role outputs, got %d", len(resp.History))
+	if len(resp.History) != 3 {
+		t.Fatalf("expected 3 history entries for default-mode direct finish, got %d", len(resp.History))
 	}
 	if resp.History[0].Content != "你好，帮我总结一下" {
 		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])

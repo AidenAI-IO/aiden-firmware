@@ -190,11 +190,11 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
 		t.Fatalf("ProcessUtterance() error = %v", err)
 	}
-	if len(model.messages) != 3 {
-		t.Fatalf("expected three role model calls, got %d", len(model.messages))
+	if len(model.messages) != 1 {
+		t.Fatalf("expected one default-mode planner model call, got %d", len(model.messages))
 	}
 
-	userMessage := model.messages[1][len(model.messages[1])-1]
+	userMessage := model.messages[0][len(model.messages[0])-1]
 	var text string
 	var audio []byte
 	for _, part := range userMessage.Parts {

@@ -180,7 +180,11 @@ func TestRuntimeRunWritesTaskEpisodeTrace(t *testing.T) {
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
 	model := &scriptedModel{
-		responses: roleToolResponses("echo", `{"__arg1":"ok"}`, "done"),
+		responses: roleCommittedExecutionResponses(
+			[]string{"echo ok"},
+			toolCallResponse("call_1", "echo", `{"__arg1":"ok"}`),
+			verifierFinishResponse("done"),
+		),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{ConfigDir: configDir, Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
@@ -216,7 +220,7 @@ func TestRuntimeRunWritesTaskEpisodeTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read episode events: %v", err)
 	}
-	var sawPlanner, sawToolCall, sawVerifier bool
+	var sawPlanner, sawToolCall, sawVerifier, sawLoopPhase bool
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		var event TaskEpisodeEvent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
@@ -231,10 +235,14 @@ func TestRuntimeRunWritesTaskEpisodeTrace(t *testing.T) {
 			}
 		case "verifier_decision":
 			sawVerifier = true
+		case "loop_phase":
+			if event.Content == string(phaseExecution) {
+				sawLoopPhase = true
+			}
 		}
 	}
-	if !sawPlanner || !sawToolCall || !sawVerifier {
-		t.Fatalf("missing events planner=%v tool=%v verifier=%v\n%s", sawPlanner, sawToolCall, sawVerifier, data)
+	if !sawPlanner || !sawToolCall || !sawVerifier || !sawLoopPhase {
+		t.Fatalf("missing events planner=%v tool=%v verifier=%v loop_phase=%v\n%s", sawPlanner, sawToolCall, sawVerifier, sawLoopPhase, data)
 	}
 	procedureFiles, err := filepath.Glob(filepath.Join(memoryDir, "device", "procedures", "*.yaml"))
 	if err != nil || len(procedureFiles) != 1 {
