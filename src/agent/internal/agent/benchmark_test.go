@@ -419,3 +419,75 @@ func TestHandleBenchmarkDelete_RejectsBuiltin(t *testing.T) {
 		t.Errorf("builtin file should still exist: %v", err)
 	}
 }
+
+func TestHandleBenchmarkSuites_AidenModeOmitsBuiltins(t *testing.T) {
+	root := t.TempDir()
+	suites := filepath.Join(root, "suites")
+	os.MkdirAll(suites, 0o755)
+	os.WriteFile(filepath.Join(suites, "memory_v1.json"),
+		[]byte(`{"name":"memory_v1","tasks":[]}`), 0o644)
+
+	// MobileGym all_tasks.txt should be ignored in aiden mode
+	mgDir := filepath.Join(root, "mobilegym", "suites")
+	os.MkdirAll(mgDir, 0o755)
+	os.WriteFile(filepath.Join(mgDir, "all_tasks.txt"),
+		[]byte("clock.AddAlarm\nclock.CountAlarms\nalipay.CheckBalance\n"), 0o644)
+
+	s := &Server{benchmarkDir: root}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/benchmark/suites?mode=aiden", nil)
+	s.handleBenchmarkSuites(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	for _, item := range got {
+		if item["type"] == "mobilegym_builtin" {
+			t.Fatalf("aiden mode should not include builtins, got %+v", got)
+		}
+	}
+	if len(got) != 1 || got[0]["name"] != "memory_v1" {
+		t.Fatalf("expected only memory_v1, got %+v", got)
+	}
+}
+
+func TestHandleBenchmarkSuites_MobileGymModeIncludesBuiltins(t *testing.T) {
+	root := t.TempDir()
+	suites := filepath.Join(root, "suites")
+	os.MkdirAll(suites, 0o755)
+	os.WriteFile(filepath.Join(suites, "memory_v1.json"),
+		[]byte(`{"name":"memory_v1","tasks":[]}`), 0o644)
+
+	mgDir := filepath.Join(root, "mobilegym", "suites")
+	os.MkdirAll(mgDir, 0o755)
+	os.WriteFile(filepath.Join(mgDir, "all_tasks.txt"),
+		[]byte("clock.AddAlarm\nclock.CountAlarms\nalipay.CheckBalance\n"), 0o644)
+
+	s := &Server{benchmarkDir: root}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/benchmark/suites?mode=mobilegym", nil)
+	s.handleBenchmarkSuites(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+
+	types := map[string]int{}
+	names := map[string]int{}
+	for _, item := range got {
+		types[item["type"].(string)]++
+		names[item["name"].(string)] = int(item["task_count"].(float64))
+	}
+	if types["aiden"] != 1 {
+		t.Fatalf("expected 1 aiden suite, got %d (%+v)", types["aiden"], got)
+	}
+	if types["mobilegym_builtin"] != 2 {
+		t.Fatalf("expected 2 builtin suites (clock, alipay), got %d (%+v)",
+			types["mobilegym_builtin"], got)
+	}
+	if names["clock"] != 2 || names["alipay"] != 1 {
+		t.Fatalf("task counts wrong: %+v", names)
+	}
+}

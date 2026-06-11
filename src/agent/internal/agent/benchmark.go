@@ -52,9 +52,13 @@ func ResolveBenchmarkDir(flagValue string, cfg BenchmarkConfig) (string, error) 
 }
 
 type suiteListItem struct {
-	Name   string `json:"name"`
-	Path   string `json:"path"`
-	Custom bool   `json:"custom"`
+	Name        string `json:"name"`
+	Path        string `json:"path,omitempty"`
+	Custom      bool   `json:"custom"`
+	Type        string `json:"type"` // "aiden" | "mobilegym_builtin"
+	TaskCount   int    `json:"task_count,omitempty"`
+	Description string `json:"description,omitempty"`
+	Concurrent  bool   `json:"concurrent"`
 }
 
 func (s *Server) handleBenchmarkSuites(w http.ResponseWriter, r *http.Request) {
@@ -62,9 +66,31 @@ func (s *Server) handleBenchmarkSuites(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"benchmark directory not configured"}`, http.StatusServiceUnavailable)
 		return
 	}
-	suitesDir := filepath.Join(s.benchmarkDir, "suites")
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = "aiden"
+	}
+
+	items := []suiteListItem{}
+	items = append(items, scanAidenSuites(s.benchmarkDir, mode == "mobilegym")...)
+	if mode == "mobilegym" {
+		items = append(items, scanMobileGymBuiltinSuites(s.benchmarkDir)...)
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Type != items[j].Type {
+			return items[i].Type == "aiden"
+		}
+		return items[i].Name < items[j].Name
+	})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(items)
+}
+
+func scanAidenSuites(benchmarkDir string, concurrent bool) []suiteListItem {
+	suitesDir := filepath.Join(benchmarkDir, "suites")
 	var items []suiteListItem
-	err := filepath.Walk(suitesDir, func(path string, info os.FileInfo, err error) error {
+	filepath.Walk(suitesDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
 		}
@@ -74,19 +100,60 @@ func (s *Server) handleBenchmarkSuites(w http.ResponseWriter, r *http.Request) {
 		}
 		rel, _ := filepath.Rel(suitesDir, path)
 		items = append(items, suiteListItem{
-			Name:   strings.TrimSuffix(base, ".json"),
-			Path:   path,
-			Custom: strings.HasPrefix(rel, "custom"+string(filepath.Separator)),
+			Name:       strings.TrimSuffix(base, ".json"),
+			Path:       path,
+			Custom:     strings.HasPrefix(rel, "custom"+string(filepath.Separator)),
+			Type:       "aiden",
+			Concurrent: concurrent,
+			TaskCount:  countAidenTasks(path),
 		})
 		return nil
 	})
+	return items
+}
+
+func countAidenTasks(suitePath string) int {
+	data, err := os.ReadFile(suitePath)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"failed to list suites: %s"}`, err), http.StatusInternalServerError)
-		return
+		return 0
 	}
-	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(items)
+	var raw struct {
+		Tasks []json.RawMessage `json:"tasks"`
+	}
+	if json.Unmarshal(data, &raw) != nil {
+		return 0
+	}
+	return len(raw.Tasks)
+}
+
+func scanMobileGymBuiltinSuites(benchmarkDir string) []suiteListItem {
+	allTasks := filepath.Join(benchmarkDir, "mobilegym", "suites", "all_tasks.txt")
+	data, err := os.ReadFile(allTasks)
+	if err != nil {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		counts[parts[0]]++
+	}
+	items := make([]suiteListItem, 0, len(counts))
+	for name, n := range counts {
+		items = append(items, suiteListItem{
+			Name:       name,
+			Type:       "mobilegym_builtin",
+			TaskCount:  n,
+			Concurrent: true,
+		})
+	}
+	return items
 }
 
 type runListItem struct {
