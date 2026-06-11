@@ -573,7 +573,7 @@ TEST_CASE("config web restarts ota only when system env changes") {
     CHECK(source.find("config saved; agent and ota restarting") == std::string::npos);
 }
 
-TEST_CASE("config web DHCP invokes udhcpc without hook") {
+TEST_CASE("config web DHCP invokes dhcpcd without hook") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
     REQUIRE(source_in.good());
@@ -582,12 +582,12 @@ TEST_CASE("config web DHCP invokes udhcpc without hook") {
     source_buffer << source_in.rdbuf();
     const std::string source = source_buffer.str();
 
-    // Must invoke udhcpc for DHCP
-    CHECK(source.find("udhcpc -i ") != std::string::npos);
+    // Must invoke dhcpcd for DHCP
+    CHECK(source.find("dhcpcd -n ") != std::string::npos);
     // Must NOT reference the removed aiden.script hook
     CHECK(source.find("-s /etc/udhcpc/aiden.script") == std::string::npos);
-    // Should use -n -q for foreground one-shot DHCP
-    CHECK(source.find("udhcpc -i \" + shell_quote(options.wifi_interface) + \" -n -q") != std::string::npos);
+    // Should use -n for foreground one-shot DHCP
+    CHECK(source.find("dhcpcd -n \" + shell_quote(options.wifi_interface)") != std::string::npos);
 }
 
 TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhid") {
