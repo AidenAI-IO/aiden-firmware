@@ -411,6 +411,9 @@ func (m *MemoryManager) AppendExchange(ctx context.Context, agentName string, in
 // RotateSessionEvents atomically moves the current hot session event stream
 // aside so a newly detected task can start with a clean events.jsonl. The
 // rotated file is consumed later by maintenance as a closed pending session.
+// Existing compressed summaries/chunks are intentionally preserved: using task
+// summaries as cross-task historical context is acceptable, while the hot
+// window is limited to the newly detected task.
 func (m *MemoryManager) RotateSessionEvents() (string, error) {
 	if m.storageDir == "" {
 		return "", nil

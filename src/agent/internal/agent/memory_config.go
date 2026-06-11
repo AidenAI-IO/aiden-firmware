@@ -39,7 +39,8 @@ type MemoryExtractionConfig struct {
 	// SessionBoundaryEnabled controls voice multi-task session detection.
 	// When true, each new user_input is classified as "continue" or "new";
 	// "new" rotates events.jsonl into a pending session so the current turn
-	// starts with a clean hot window.
+	// starts with a clean hot window. Compressed session summaries remain
+	// available across task boundaries as acceptable historical context.
 	SessionBoundaryEnabled bool `yaml:"session_boundary_enabled"`
 	// SessionBoundaryShortGapSeconds is the gap below which a new turn is
 	// treated as a continuation regardless of lexical signals.

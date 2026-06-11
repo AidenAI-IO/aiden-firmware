@@ -111,6 +111,9 @@ func (p *FilesystemMemoryPlane) Retrieve(ctx context.Context, req MemoryRetrieve
 	if p == nil || p.memoryDir == "" {
 		return out, nil
 	}
+	// Session summaries can span earlier closed tasks. They are intentionally
+	// retained as compact historical context; session boundary rotation only
+	// resets the hot event window.
 	out.Common.SessionSummary = readTextFileIfExists(filepath.Join(p.memoryDir, "session", "summary.md"))
 	out.Common.Profile = readTextFileIfExists(filepath.Join(p.memoryDir, "long_term", "profile.md"))
 
