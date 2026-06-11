@@ -245,7 +245,17 @@ std::string render_wifi_config(const WifiNetworkConfig& config) {
     out += "ctrl_interface=/var/run/wpa_supplicant\n";
     out += "update_config=1\n";
     out += "country=";
-    out += config.country.empty() ? "CN" : config.country;
+    if (config.country.empty()) {
+        // Try to detect country from the target SSID before connecting
+        std::string detected = detect_country_by_ssid(config.ssid);
+        if (detected.empty()) {
+            // Fallback: try from currently connected AP
+            detected = detect_country_from_ap();
+        }
+        out += detected.empty() ? "CN" : detected;
+    } else {
+        out += config.country;
+    }
     out += "\n\n";
     out += "network={\n";
     out += "    ssid=";
@@ -308,9 +318,107 @@ bool load_wifi_config(const char* path, WifiNetworkConfig& config, std::string* 
 
     config = parsed;
     if (config.country.empty()) {
-        config.country = "CN";
+        // Try to detect from target SSID first (works before connecting)
+        config.country = detect_country_by_ssid(config.ssid);
+        if (config.country.empty()) {
+            // Fallback: try from currently connected AP
+            config.country = detect_country_from_ap();
+        }
+        if (config.country.empty()) {
+            config.country = "CN";  // Last resort fallback
+        }
     }
     return true;
+}
+
+std::string detect_country_by_ssid(const std::string& ssid, const std::string& interface) {
+    // Scan and extract the Country IE of the BSS whose SSID matches `ssid`.
+    // Works BEFORE associating, avoiding the connect-to-learn-country deadlock.
+    //
+    // Strategy: in iw scan output, within a BSS block the Country line appears
+    // after the SSID line. Set a flag when the target SSID is seen, then emit
+    // the next Country line encountered before the next "BSS" header.
+    //
+    // SSID is passed via awk -v (not interpolated into a regex) to handle
+    // values with regex metacharacters or quotes safely.
+    std::string safe_ssid;
+    for (char c : ssid) {
+        if (c == '\'') {
+            safe_ssid += "'\\''";  // shell escape: close-quote, literal quote, reopen
+        } else {
+            safe_ssid += c;
+        }
+    }
+
+    std::string awk_prog =
+        "/^BSS /{found=0} "
+        "/SSID: /{s=$0; sub(/.*SSID: /,\"\",s); if(s==target) found=1} "
+        "found && /Country:/{print $2; exit}";
+
+    std::string cmd = "iw dev " + interface + " scan 2>/dev/null | awk -v target='" +
+                      safe_ssid + "' '" + awk_prog + "'";
+
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) {
+        return "";
+    }
+
+    char buffer[16];
+    std::string country;
+    if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        country = trim_copy(std::string(buffer));
+        // Validate country code (2 uppercase letters)
+        if (country.size() == 2 &&
+            isupper(country[0]) && isupper(country[1])) {
+            pclose(pipe);
+            return country;
+        }
+    }
+    pclose(pipe);
+
+    return "";
+}
+
+std::string detect_country_from_ap(const std::string& interface) {
+    // Try to detect country code from the currently connected AP
+    std::string cmd = "iw dev " + interface + " scan 2>/dev/null | grep -A 1 '(on " + interface + ")' | grep 'Country:' | head -1 | awk '{print $2}'";
+
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) {
+        return "";
+    }
+
+    char buffer[16];
+    std::string country;
+    if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        country = trim_copy(std::string(buffer));
+        // Validate country code (2 uppercase letters)
+        if (country.size() == 2 &&
+            isupper(country[0]) && isupper(country[1])) {
+            pclose(pipe);
+            return country;
+        }
+    }
+    pclose(pipe);
+
+    // If detection failed, try reading from wpa_supplicant status
+    cmd = "wpa_cli -i " + interface + " status 2>/dev/null | grep '^country=' | cut -d= -f2";
+    pipe = popen(cmd.c_str(), "r");
+    if (!pipe) {
+        return "";
+    }
+
+    if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        country = trim_copy(std::string(buffer));
+        if (country.size() == 2 &&
+            isupper(country[0]) && isupper(country[1])) {
+            pclose(pipe);
+            return country;
+        }
+    }
+    pclose(pipe);
+
+    return "";  // Detection failed
 }
 
 bool save_wifi_config(const char* path, const WifiNetworkConfig& config, std::string* error) {
