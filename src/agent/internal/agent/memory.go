@@ -766,6 +766,31 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	// continue returning true and trigger redundant compaction rounds.
 	m.SetLastPromptTokens(cutMeta.KeptTokensEstimate)
 
+	// Sync in-memory state to match the compressed hot window on disk.
+	// Without this, eventCount and handle.History remain at pre-compression size,
+	// causing appendSessionEvents() to skip writes or use stale indices.
+	m.mu.Lock()
+	for agentName := range m.eventCount {
+		m.eventCount[agentName] = len(hotEvents)
+	}
+	for agentName, handle := range m.handles {
+		hotRecords := make([]MessageRecord, 0, len(hotEvents))
+		for _, event := range hotEvents {
+			if record, ok := messageRecordFromSessionEvent(event); ok {
+				hotRecords = append(hotRecords, record)
+			}
+		}
+		messages := make([]llms.ChatMessage, 0, len(hotRecords))
+		for _, record := range hotRecords {
+			messages = append(messages, messageFromRecord(record))
+		}
+		if err := handle.History.SetMessages(context.Background(), messages); err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("sync in-memory history for %q after compaction: %w", agentName, err)
+		}
+	}
+	m.mu.Unlock()
+
 	longTerm := NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"), WithLifecycleDir(filepath.Join(m.storageDir, "lifecycle")), WithStoreProfileFn(m.profileFn), WithProfileDebouncer(m.profileDebouncer))
 	longTerm.RequestProfileRebuild()
 	if m.logger != nil {
