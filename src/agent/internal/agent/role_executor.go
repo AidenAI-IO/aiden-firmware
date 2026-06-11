@@ -58,6 +58,11 @@ type roleExecutionResult struct {
 }
 
 type roleLoopState struct {
+	Phase              loopPhase
+	PlanStepIndex      int
+	PlanCommitted      bool
+	PlanExhausted      bool
+	DraftPlan          plannerDecision
 	Objective          string
 	CompletionCriteria []string
 	Plan               []string
@@ -147,55 +152,97 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 	}
 
 	toolSpecs := NewToolSpecs(e.Tools)
-	state := roleLoopState{}
+	state := roleLoopState{Phase: phaseDefault}
 	for i := 0; i < e.MaxIterations; i++ {
-		plan, err := e.callPlanner(ctx, inputs, state, options...)
-		if err != nil {
-			return nil, err
-		}
-		state.applyPlannerDecision(plan)
-		state.World.UpdateObservedState(plan.ObservedState, RolePlanner)
-		if e.Recorder != nil {
-			e.Recorder.RecordPlannerDecision(plan)
-		}
-
-		execution, err := e.callExecutor(ctx, inputs, state, toolSpecs, options...)
-		if err != nil {
-			return nil, err
-		}
-		state.ExecutionResults = append(state.ExecutionResults, execution)
-		if e.Recorder != nil {
-			e.Recorder.RecordExecution(execution)
-		}
-		if execution.Step != nil {
-			state.ToolSteps = append(state.ToolSteps, *execution.Step)
-			state.World.UpdateFromStep(*execution.Step, len(state.ToolSteps))
-		}
-
-		verification, err := e.callVerifier(ctx, inputs, state, options...)
-		if err != nil {
-			return nil, err
-		}
-		state.World.UpdateObservedState(verification.ObservedState, RoleVerifier)
-		state.VerifierResults = append(state.VerifierResults, verification)
-		if e.Recorder != nil {
-			e.Recorder.RecordVerifierDecision(verification)
-		}
-		if verification.CanFinish {
-			finalAnswer := strings.TrimSpace(verification.FinalAnswer)
-			if finalAnswer == "" {
-				finalAnswer = strings.TrimSpace(execution.CandidateAnswer)
+		switch state.Phase {
+		case phaseDefault, phasePlan:
+			turn, err := e.callPlannerTurn(ctx, inputs, &state, toolSpecs, options...)
+			if err != nil {
+				return nil, err
 			}
-			if e.CallbacksHandler != nil {
-				e.streamFinalAnswer(ctx, finalAnswer)
-				e.CallbacksHandler.HandleAgentFinish(ctx, schema.AgentFinish{
-					ReturnValues: map[string]any{e.OutputKey: finalAnswer},
-					Log:          verification.Reason,
-				})
+			switch turn.Kind {
+			case plannerTurnFinish:
+				if state.Phase != phaseDefault {
+					continue
+				}
+				if e.Recorder != nil {
+					e.Recorder.RecordDefaultFinish(turn.Answer)
+				}
+				return e.finishRun(ctx, turn.Answer, turn.Answer)
+			case plannerTurnEnterPlan:
+				if turn.Step != nil {
+					state.ToolSteps = append(state.ToolSteps, *turn.Step)
+				}
+				if e.Recorder != nil {
+					e.Recorder.RecordLoopPhase(phasePlan, "enter_plan_mode")
+				}
+			case plannerTurnCommitPlan:
+				if turn.Step != nil {
+					state.ToolSteps = append(state.ToolSteps, *turn.Step)
+				}
+				if e.Recorder != nil {
+					e.Recorder.RecordPlannerDecision(turn.CommittedPlan)
+					e.Recorder.RecordLoopPhase(phaseExecution, "commit_plan")
+				}
+			case plannerTurnCancelPlan:
+				if turn.Step != nil {
+					state.ToolSteps = append(state.ToolSteps, *turn.Step)
+				}
+				if e.Recorder != nil {
+					e.Recorder.RecordLoopPhase(phaseDefault, "cancel_plan")
+				}
+			case plannerTurnTool, plannerTurnInvalidMeta:
+				if turn.Step != nil {
+					state.ToolSteps = append(state.ToolSteps, *turn.Step)
+					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps))
+				}
 			}
-			return map[string]any{e.OutputKey: finalAnswer}, nil
-		}
+		case phaseExecution:
+			state.syncNextStepFromPlanIndex()
+			execution, err := e.callExecutor(ctx, inputs, state, toolSpecs, options...)
+			if err != nil {
+				return nil, err
+			}
+			state.ExecutionResults = append(state.ExecutionResults, execution)
+			if e.Recorder != nil {
+				e.Recorder.RecordExecution(execution)
+			}
+			if execution.Step != nil {
+				state.ToolSteps = append(state.ToolSteps, *execution.Step)
+				state.World.UpdateFromStep(*execution.Step, len(state.ToolSteps))
+			}
 
+			verification, err := e.callVerifier(ctx, inputs, state, options...)
+			if err != nil {
+				return nil, err
+			}
+			state.World.UpdateObservedState(verification.ObservedState, RoleVerifier)
+			state.VerifierResults = append(state.VerifierResults, verification)
+			if e.Recorder != nil {
+				e.Recorder.RecordVerifierDecision(verification)
+			}
+			if verification.CanFinish {
+				finalAnswer := strings.TrimSpace(verification.FinalAnswer)
+				if finalAnswer == "" {
+					finalAnswer = strings.TrimSpace(execution.CandidateAnswer)
+				}
+				return e.finishRun(ctx, finalAnswer, verification.Reason)
+			}
+			if verification.NeedsReplan {
+				state.Phase = phasePlan
+				state.PlanExhausted = false
+				if e.Recorder != nil {
+					e.Recorder.RecordLoopPhase(phasePlan, verification.Reason)
+				}
+				continue
+			}
+			if state.advancePlanStepOrExhaust() {
+				if e.Recorder != nil {
+					e.Recorder.RecordLoopPhase(phasePlan, "plan_exhausted")
+				}
+				continue
+			}
+		}
 	}
 
 	if e.CallbacksHandler != nil {
@@ -206,24 +253,91 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 	return map[string]any{e.OutputKey: ""}, agents.ErrNotFinished
 }
 
-func (e *roleCollaborativeExecutor) callPlanner(ctx context.Context, inputs map[string]string, state roleLoopState, options ...chains.ChainCallOption) (plannerDecision, error) {
-	messages := e.roleMessages(e.Profiles.Planner, inputs, state, "Planner task: create or update the plan and current next_step.")
-	res, err := e.generateRoleContent(ctx, RolePlanner, messages, chains.GetLLMCallOptions(options...)...)
+func (e *roleCollaborativeExecutor) callPlannerTurn(
+	ctx context.Context,
+	inputs map[string]string,
+	state *roleLoopState,
+	toolSpecs *ToolSpecs,
+	options ...chains.ChainCallOption,
+) (plannerTurnResult, error) {
+	task := plannerTaskForPhase(state.Phase, *state)
+	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
+	plannerTools := appendLoopMetaTools(e.Tools)
+	parser := &FunctionAgent{
+		Tools:     plannerTools,
+		OutputKey: e.OutputKey,
+	}
+	callOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
+	res, err := e.generateRoleContent(ctx, RolePlanner, messages, callOptions...)
 	if err != nil {
-		return plannerDecision{}, err
+		return plannerTurnResult{}, err
 	}
 	e.emitRoleOutput(ctx, RolePlanner, roleResponseDebugText(res))
-	decision := parsePlannerDecision(res, inputs["input"])
-	if len(decision.Plan) == 0 {
-		decision.Plan = append([]string{}, state.Plan...)
+
+	actions, finish, err := parser.ParseOutput(res)
+	if errors.Is(err, agents.ErrUnableToParseOutput) {
+		return plannerTurnResult{
+			Kind: plannerTurnTool,
+			Step: &schema.AgentStep{Observation: err.Error()},
+		}, nil
 	}
-	if len(decision.Plan) == 0 {
-		decision.Plan = []string{inputs["input"]}
+	if err != nil {
+		return plannerTurnResult{}, err
 	}
-	if strings.TrimSpace(decision.NextStep) == "" {
-		decision.NextStep = firstNonEmptyStep(decision.Plan, inputs["input"])
+	if len(actions) == 0 && finish == nil {
+		return plannerTurnResult{}, agents.ErrAgentNoReturn
 	}
-	return decision, nil
+	if len(actions) == 0 {
+		answer := ""
+		if finish != nil {
+			if value, ok := finish.ReturnValues[e.OutputKey].(string); ok {
+				answer = value
+			}
+		}
+		return plannerTurnResult{Kind: plannerTurnFinish, Answer: answer}, nil
+	}
+
+	action := actions[0]
+	if isLoopMetaTool(action.Tool) {
+		if e.CallbacksHandler != nil {
+			e.CallbacksHandler.HandleAgentAction(ctx, action)
+		}
+		turn := e.handlePlannerMetaTool(state.Phase, state, action)
+		if turn.InvalidMetaStep != nil {
+			turn.Step = turn.InvalidMetaStep
+		}
+		return turn, nil
+	}
+
+	toolExecution := executeToolCall(ctx, ToolCallExecution{
+		Specs:    toolSpecs,
+		Action:   action,
+		Callback: e.CallbacksHandler,
+	})
+	if toolExecution.Error != nil {
+		return plannerTurnResult{}, toolExecution.Error
+	}
+	execution := roleExecutionResult{
+		Action: &toolExecution.Step.Action,
+		Step:   &toolExecution.Step,
+	}
+	state.ExecutionResults = append(state.ExecutionResults, execution)
+	if e.Recorder != nil {
+		e.Recorder.RecordPlannerExecution(execution)
+	}
+	return plannerTurnResult{Kind: plannerTurnTool, Step: &toolExecution.Step}, nil
+}
+
+func (e *roleCollaborativeExecutor) finishRun(ctx context.Context, finalAnswer, log string) (map[string]any, error) {
+	finalAnswer = strings.TrimSpace(finalAnswer)
+	if e.CallbacksHandler != nil {
+		e.streamFinalAnswer(ctx, finalAnswer)
+		e.CallbacksHandler.HandleAgentFinish(ctx, schema.AgentFinish{
+			ReturnValues: map[string]any{e.OutputKey: finalAnswer},
+			Log:          log,
+		})
+	}
+	return map[string]any{e.OutputKey: finalAnswer}, nil
 }
 
 func (e *roleCollaborativeExecutor) callExecutor(
@@ -342,6 +456,7 @@ func buildRoleStatePrompt(role RoleName, inputs map[string]string, state roleLoo
 func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
 	var builder strings.Builder
 	builder.WriteString(task)
+	writeLoopMode(&builder, state)
 	writeWorldState(&builder, state.World)
 	writeRequestObjectiveAndCriteria(&builder, inputs, state)
 	if history := strings.TrimSpace(inputs["history"]); history != "" {
