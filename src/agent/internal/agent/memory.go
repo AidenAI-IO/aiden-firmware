@@ -391,7 +391,7 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 	if m.storageDir == "" {
 		return nil
 	}
-	if records, ok, err := m.loadSessionMessageRecords(agentName); err != nil {
+	if records, hotWindowTokens, ok, err := m.loadSessionMessageRecords(agentName); err != nil {
 		return err
 	} else if ok {
 		// Hot-window boundary markers are NOT stored here. They are synthetic
@@ -409,6 +409,17 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 			return fmt.Errorf("restore session events for %q: %w", agentName, err)
 		}
 		m.eventCount[agentName] = len(records)
+		// Cold-start seeding: a fresh process has lastPromptTokens == 0, which
+		// makes the first shouldCompress skip the token-driven branch and fall
+		// back to the coarse event-count heuristic. Seed it from the estimated
+		// size of the hot window just read off disk so token-driven compaction
+		// stays accurate on the very first turn after a restart. Only seed when
+		// no live prompt token count has been recorded yet, so we never clobber
+		// a value set by an in-flight turn. Caller holds m.mu, so assign the
+		// field directly rather than via SetLastPromptTokens (non-reentrant).
+		if m.lastPromptTokens == 0 {
+			m.lastPromptTokens = hotWindowTokens
+		}
 		return nil
 	}
 
@@ -442,23 +453,24 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 	return nil
 }
 
-func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRecord, bool, error) {
+func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRecord, int, bool, error) {
 	fl := NewFileLock(m.storageDir)
 	if err := fl.Lock(m.lockTimeout); err != nil {
-		return nil, false, fmt.Errorf("lock for loading session events %q: %w", agentName, err)
+		return nil, 0, false, fmt.Errorf("lock for loading session events %q: %w", agentName, err)
 	}
 	defer fl.Unlock()
 
 	file, err := os.Open(m.sessionEventsPath())
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, false, nil
+			return nil, 0, false, nil
 		}
-		return nil, false, fmt.Errorf("read session events for %q: %w", agentName, err)
+		return nil, 0, false, fmt.Errorf("read session events for %q: %w", agentName, err)
 	}
 	defer file.Close()
 
 	var records []MessageRecord
+	hotWindowTokens := 0
 	validData := make([]byte, 0)
 	repairedTruncatedTail := false
 	scanner := bufio.NewScanner(file)
@@ -474,17 +486,21 @@ func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRe
 				repairedTruncatedTail = true
 				break
 			}
-			return nil, false, fmt.Errorf("decode session event for %q: %w", agentName, err)
+			return nil, 0, false, fmt.Errorf("decode session event for %q: %w", agentName, err)
 		}
 		validData = append(validData, line...)
 		validData = append(validData, '\n')
+		// Accumulate the token estimate over every persisted event (not just
+		// those that become message records) so the seeded value matches
+		// sumSessionEventTokens over the same on-disk hot window.
+		hotWindowTokens += estimateSessionEventTokens(event)
 		record, ok := messageRecordFromSessionEvent(event)
 		if ok {
 			records = append(records, record)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, false, fmt.Errorf("scan session events for %q: %w", agentName, err)
+		return nil, 0, false, fmt.Errorf("scan session events for %q: %w", agentName, err)
 	}
 	if repairedTruncatedTail {
 		if err := writeFileAtomic(m.sessionEventsPath(), validData, 0o644); err != nil {
@@ -495,7 +511,7 @@ func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRe
 			m.logger.Warn("[memory] repaired truncated session events for %q", agentName)
 		}
 	}
-	return records, true, nil
+	return records, hotWindowTokens, true, nil
 }
 
 func (m *MemoryManager) persistSnapshot(agentName string, records []MessageRecord) error {
@@ -1008,8 +1024,18 @@ func (m *MemoryManager) shouldCompress(eventCount int) bool {
 		// Token data available but thresholds not reached - don't compress
 		return false
 	}
-	// Event count fallback: only used when token data unavailable (cold start,
-	// unknown model, or before first LLM call).
+	// Event-count fallback. This is a DEFENSIVE backstop, not a normal path:
+	// effectiveContextWindow always returns >= 32000 (normalizeMemoryExtractionConfig
+	// and DefaultMemoryExtractionConfig both floor it), and runtime sets
+	// lastPromptTokens via SetLastPromptTokens before requesting maintenance, so
+	// the token branch above governs every steady-state decision. Cold starts are
+	// seeded from the on-disk hot window in loadPersistedMessages, keeping them on
+	// the token branch too. This line only fires if lastPromptTokens is still 0
+	// when maintenance runs (e.g. maintenance racing ahead of the first LLM call,
+	// or a hot window that estimates to 0 tokens). It is kept as the only safety
+	// net that does not depend on any external timing contract: it counts the
+	// events in hand and guarantees the stream cannot grow without bound even if
+	// token bookkeeping is unavailable.
 	return eventCount > m.countCompressAfterEvents()
 }
 
