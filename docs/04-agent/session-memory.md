@@ -58,6 +58,19 @@ Archived sessions are preserved as logs only. They are not loaded into prompts,
 do not make `HasCompressedHistory()` true, are not compacted by active-session
 maintenance, and are not searched by `recall_session_chunks`.
 
+## Recall Result Sources
+
+`recall_session_chunks` returns each result with a `source` field. Indexed
+chunks from `memory/session/chunks/index.yaml` use `source: "active"` even when
+their `chunk_id` has a legacy or pending-derived prefix such as `pending-...`.
+Live pending-file recall paths must use `source: "pending"` until those files
+are consumed into normal indexed chunks.
+
+Telemetry uses this explicit source field. `pending_chunks_recalled` counts only
+results with `source: "pending"`; it does not infer source from the chunk ID.
+Chunk IDs are opaque identifiers and must not be used as pending/live-state
+signals.
+
 ## Session Boundary Rotation
 
 When session-boundary detection classifies a turn as `new`, `MemoryManager`
