@@ -112,6 +112,11 @@ if grep -q 'scripts/test_build_scripts.sh' "$CI_WORKFLOW"; then
     exit 1
 fi
 
+if grep -q 'scripts/test_reproducible_rootfs_policy.sh' "$CI_WORKFLOW"; then
+    echo "CI release script checks must not run submodule-dependent reproducible rootfs policy checks" >&2
+    exit 1
+fi
+
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_clean_rootfs_overlay_staging.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW" || \

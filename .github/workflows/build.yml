@@ -90,6 +90,9 @@ jobs:
         git submodule update --init --depth=1 pico-sdk
         git -C pico-sdk clean -f -- .gitmodules
 
+    - name: Verify reproducible rootfs policy
+      run: bash scripts/test_reproducible_rootfs_policy.sh
+
     - name: Free hosted runner disk space
       if: ${{ inputs.free_disk_space }}
       run: |
