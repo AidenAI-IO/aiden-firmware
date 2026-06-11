@@ -44,6 +44,11 @@ struct AudioToml {
     int bit_width = 0;
 };
 
+struct BenchmarkToml {
+    std::string judge_model;
+    std::string benchmark_dir;
+};
+
 struct HIDToml {
     std::string keyboard_device;
     std::string mouse_device;
@@ -75,6 +80,7 @@ struct AgentToml {
     TTSToml tts;
     STTToml stt;
     AudioToml audio;
+    BenchmarkToml benchmark;
     HIDToml hid;
     SearchToml search;
     TelemetryToml telemetry;
