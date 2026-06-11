@@ -1714,9 +1714,9 @@ CommandResult apply_wifi_config(const Options& options) {
 
     bool dhcp_ok = false;
     if (associated) {
-        if (command_exists("udhcpc")) {
-            CommandResult dhcp = run_shell_command("udhcpc -i " + shell_quote(options.wifi_interface) + " -n -q 2>&1");
-            log << "$ udhcpc -i " << options.wifi_interface << " -n -q\n" << dhcp.output;
+        if (command_exists("dhcpcd")) {
+            CommandResult dhcp = run_shell_command("dhcpcd -n " + shell_quote(options.wifi_interface) + " 2>&1");
+            log << "$ dhcpcd -n " << options.wifi_interface << "\n" << dhcp.output;
             dhcp_ok = dhcp.exit_code == 0;
             if (!dhcp_ok) {
                 result.exit_code = dhcp.exit_code;
@@ -1729,7 +1729,7 @@ CommandResult apply_wifi_config(const Options& options) {
                 result.exit_code = dhcp.exit_code;
             }
         } else {
-            log << "No supported DHCP client found (need udhcpc or dhclient).\n";
+            log << "No supported DHCP client found (need dhcpcd or dhclient).\n";
             if (result.exit_code == 0) {
                 result.exit_code = 127;
             }

@@ -332,30 +332,33 @@ bool load_wifi_config(const char* path, WifiNetworkConfig& config, std::string* 
 }
 
 std::string detect_country_by_ssid(const std::string& ssid, const std::string& interface) {
-    // Scan for the target SSID and extract its country code
-    // This works BEFORE connecting, avoiding the chicken-and-egg problem
-    std::string cmd = "iw dev " + interface + " scan 2>/dev/null | awk '/^BSS/{bss=$2} /SSID:/{if($0 ~ /SSID: " + ssid + "$/) print bss}' | head -1";
+    // Scan and extract the Country IE of the BSS whose SSID matches `ssid`.
+    // Works BEFORE associating, avoiding the connect-to-learn-country deadlock.
+    //
+    // Strategy: in iw scan output, within a BSS block the Country line appears
+    // after the SSID line. Set a flag when the target SSID is seen, then emit
+    // the next Country line encountered before the next "BSS" header.
+    //
+    // SSID is passed via awk -v (not interpolated into a regex) to handle
+    // values with regex metacharacters or quotes safely.
+    std::string safe_ssid;
+    for (char c : ssid) {
+        if (c == '\'') {
+            safe_ssid += "'\\''";  // shell escape: close-quote, literal quote, reopen
+        } else {
+            safe_ssid += c;
+        }
+    }
+
+    std::string awk_prog =
+        "/^BSS /{found=0} "
+        "/SSID: /{s=$0; sub(/.*SSID: /,\"\",s); if(s==target) found=1} "
+        "found && /Country:/{print $2; exit}";
+
+    std::string cmd = "iw dev " + interface + " scan 2>/dev/null | awk -v target='" +
+                      safe_ssid + "' '" + awk_prog + "'";
 
     FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) {
-        return "";
-    }
-
-    char bssid[64];
-    if (fgets(bssid, sizeof(bssid), pipe) == nullptr) {
-        pclose(pipe);
-        return "";
-    }
-    pclose(pipe);
-
-    std::string bssid_str = trim_copy(std::string(bssid));
-    if (bssid_str.empty()) {
-        return "";
-    }
-
-    // Now extract the country code for this BSSID
-    cmd = "iw dev " + interface + " scan 2>/dev/null | awk '/^BSS " + bssid_str + "/{found=1} found && /Country:/{print $2; exit}'";
-    pipe = popen(cmd.c_str(), "r");
     if (!pipe) {
         return "";
     }
