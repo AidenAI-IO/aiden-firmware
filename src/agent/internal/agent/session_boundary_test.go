@@ -49,10 +49,10 @@ func TestClassifyTurnBoundary_TimeGapShort(t *testing.T) {
 }
 
 func TestClassifyTurnBoundary_TimeGapLong(t *testing.T) {
-	// Long gap (> 5min default): strong new-session, even with a continuation marker.
+	// Long gap (> 30min default): strong new-session, even with a continuation marker.
 	cfg := DefaultBoundaryConfig()
 	now := time.Now()
-	prev := []SessionEvent{eventAt(now.Add(-10*time.Minute), "user_input", "打开微信")}
+	prev := []SessionEvent{eventAt(now.Add(-31*time.Minute), "user_input", "打开微信")}
 	boundary, reason := ClassifyTurnBoundary(prev, "对了再帮我看一下", now, cfg, BoundaryEpisodeContext{})
 	if boundary != BoundaryNew {
 		t.Fatalf("long time gap should force 'new', got %q (reason=%s)", boundary, reason)
@@ -74,6 +74,11 @@ func TestClassifyTurnBoundary_ContinuationMarker(t *testing.T) {
 		"继续往下翻",
 		"接着说",
 		"刚才那个网页打开",
+		"also check tomorrow",
+		"then scroll down",
+		"continue from there",
+		"what about next week",
+		"and open the same page",
 	}
 	for _, input := range cases {
 		boundary, reason := ClassifyTurnBoundary(prev, input, now, cfg, BoundaryEpisodeContext{})
@@ -93,11 +98,19 @@ func TestClassifyTurnBoundary_ActionVerbStartsNewTask(t *testing.T) {
 		"发消息给老婆",
 		"帮我订一张机票",
 		"找一下附近的咖啡店",
+		"open Gmail",
+		"search nearby coffee shops",
+		"send a message to Alex",
+		"book a flight",
+		"set an alarm",
 	}
 	for _, input := range cases {
 		boundary, reason := ClassifyTurnBoundary(prev, input, now, cfg, BoundaryEpisodeContext{})
 		if boundary != BoundaryNew {
 			t.Errorf("input %q should yield 'new', got %q (reason=%s)", input, boundary, reason)
+		}
+		if reason != BoundaryReasonActionVerb {
+			t.Errorf("input %q should use action verb reason, got %q", input, reason)
 		}
 	}
 }

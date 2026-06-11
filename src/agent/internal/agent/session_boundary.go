@@ -54,7 +54,7 @@ type BoundaryConfig struct {
 func DefaultBoundaryConfig() BoundaryConfig {
 	return BoundaryConfig{
 		ShortGapSeconds:            180,
-		LongGapSeconds:             300,
+		LongGapSeconds:             1800,
 		SmallSessionEventThreshold: 16,
 		ContinueScoreThreshold:     2,
 	}
@@ -74,19 +74,20 @@ type BoundaryEpisodeContext struct {
 	HasActive bool
 }
 
-// continuationMarkerRe matches sentence-initial Chinese continuation cues.
+// continuationMarkerRe matches sentence-initial continuation cues.
 // Anchored to start-of-string after optional whitespace/punctuation so the
 // same words mid-sentence (where they're unlikely to be continuation cues)
 // don't trigger.
 var continuationMarkerRe = regexp.MustCompile(
-	`^[\s,，。.!?！？]*(对了|然后|还有|继续|接着|接下来|刚才|刚刚|刚|上一个|那个|这个|把它|把那个|把刚才|再|再说|再帮|再帮我|再来|再给|再给我)`,
+	`(?i)^[\s,，。.!?！？]*(对了|然后|还有|继续|接着|接下来|刚才|刚刚|刚|上一个|那个|这个|把它|把那个|把刚才|再|再说|再帮|再帮我|再来|再给|再给我|also\b|and\b|then\b|continue\b|next\b|again\b|previous\b|same\b|that\b|this\b|what about\b|how about\b|one more\b|another\b)`,
 )
 
 // actionVerbStartRe matches sentence-initial action verbs that typically
 // kick off a new task. The match is intentionally loose: anything starting
-// with "打开/帮我/查/找/发/订" etc. is suspect of opening a new task.
+// with "打开/open/帮我/help me/查/search/发/send/订/book" etc. is suspect
+// of opening a new task.
 var actionVerbStartRe = regexp.MustCompile(
-	`^[\s,，。.!?！？]*(打开|关闭|启动|帮我|给我|查一下|查看|查询|查|找一下|找|搜一下|搜索|搜|发消息|发条|发给|发|订|预订|订一张|播放|播|定个闹钟|设置)`,
+	`(?i)^[\s,，。.!?！？]*(打开|关闭|启动|帮我|给我|查一下|查看|查询|查|找一下|找|搜一下|搜索|搜|发消息|发条|发给|发|订|预订|订一张|播放|播|定个闹钟|设置|open\b|close\b|launch\b|start\b|help me\b|show me\b|check\b|look up\b|look for\b|find\b|search\b|google\b|send\b|message\b|text\b|book\b|reserve\b|order\b|play\b|set\b|create\b|turn on\b|turn off\b)`,
 )
 
 // ClassifyTurnBoundary decides whether a new user input continues the
