@@ -32,12 +32,13 @@ fi
 
 usage() {
     cat <<'EOF'
-Usage: ./parallel_run.sh <task-id> [task-id...] | --suite <suite> | --suites <suite-a,suite-b>
+Usage: ./parallel_run.sh <task-id> [task-id...] | --suite <suite> | --suites <suite-a,suite-b> | --aiden-suite <name>
 
 Examples:
   ./parallel_run.sh clock.CountAlarms clock.ToggleAlarm
   PARALLEL=4 ./parallel_run.sh --suite phone_control_v1
   PARALLEL=2 MAX_JOBS=2 ./parallel_run.sh --suites clock,phone_control_v1
+  PARALLEL=4 ./parallel_run.sh --aiden-suite memory_v1
 EOF
 }
 
@@ -277,7 +278,19 @@ run_worker() {
     write_shard_json_initial "$shard_json" "$suite" "$shard_index" "$shard_count" "$project" "$task_id" "$task_slug"
 
     set +e
-    if [[ "$kind" == "suite" ]]; then
+    if [[ "$kind" == "aiden_suite" ]]; then
+        compose_for_worker "$project" "$config_dir" --profile test run --rm test \
+            --aiden-suite "$suite" \
+            --shard-index "$shard_index" \
+            --shard-count "$shard_count" \
+            --env-url http://mobilegym:4173 \
+            --chat-timeout-sec "$CHAT_TIMEOUT_SEC" \
+            --runs-dir "$container_raw_dir" \
+            --shard-metadata-file "$container_shard_json" \
+            --parallel 1 \
+            --headless > "$runner_log" 2>&1
+        status=$?
+    elif [[ "$kind" == "suite" ]]; then
         compose_for_worker "$project" "$config_dir" --profile test run --rm test \
             --suite "$suite" \
             --shard-index "$shard_index" \
@@ -413,7 +426,15 @@ BATCH_DIR="$HOST_RUNS_ROOT/$BATCH_ID"
 mkdir -p "$BATCH_DIR"
 
 WORK_ITEMS=()
-if [[ "$1" == "--suite" ]]; then
+if [[ "$1" == "--aiden-suite" ]]; then
+    if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "Error: --aiden-suite requires a suite name" >&2
+        exit 2
+    fi
+    for i in $(seq 0 $((PARALLEL - 1))); do
+        WORK_ITEMS+=("aiden_suite|$2|$i|$PARALLEL||shard-$i")
+    done
+elif [[ "$1" == "--suite" ]]; then
     if [[ $# -lt 2 || -z "$2" ]]; then
         echo "Error: --suite requires a suite name" >&2
         exit 1
