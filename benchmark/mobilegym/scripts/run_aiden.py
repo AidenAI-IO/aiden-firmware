@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses as dc
 import json
 import os
 import secrets
@@ -17,6 +18,67 @@ BENCHMARK_ROOT = SCRIPT_PATH.parents[2]
 DEFAULT_MOBILEGYM_ROOT = MOBILEGYM_PACKAGE_ROOT / "vendor" / "mobilegym"
 DEFAULT_RUNS_DIR = BENCHMARK_ROOT / "runs" / "mobilegym"
 DEFAULT_ENV_URL = "http://localhost:4173"
+
+
+@dc.dataclass
+class MobileGymTaskAdapter:
+    """Duck-typed Task object returned to MobileGym SerialRunner when running
+    an Aiden JSON suite. Exposes the attributes the runner and adapter read.
+    """
+    task_id: str
+    instruction: str
+    metadata: dict[Any, Any]
+    # MobileGym sometimes reads `.id` / `.goal`; alias them.
+
+    @property
+    def id(self) -> str:
+        return self.task_id
+
+    @property
+    def goal(self) -> str:
+        return self.instruction
+
+
+def _load_aiden_suite_as_mobilegym_tasks(suite_name: str) -> list[MobileGymTaskAdapter]:
+    """Load benchmark/suites/<suite_name>.json and convert tasks for MobileGym."""
+    suite_path = BENCHMARK_ROOT / "suites" / f"{suite_name}.json"
+    if not suite_path.exists():
+        raise LauncherError(f"Aiden suite not found: {suite_path}")
+
+    benchmark_root_str = str(BENCHMARK_ROOT)
+    if benchmark_root_str not in sys.path:
+        sys.path.insert(0, benchmark_root_str)
+    from runner.suite import load_suite  # type: ignore[import-not-found]
+
+    aiden_suite = load_suite(suite_path)
+    return [_convert_task(aiden_suite, t) for t in aiden_suite.tasks]
+
+
+def _convert_task(suite: Any, task: Any) -> MobileGymTaskAdapter:
+    """Convert one Aiden TaskSpec into a MobileGymTaskAdapter."""
+    full_id = f"{suite.name}.{task.id}"
+    if suite.prompt_prefix:
+        instruction = f"{suite.prompt_prefix}\n\n{task.prompt}"
+    else:
+        instruction = task.prompt
+
+    return MobileGymTaskAdapter(
+        task_id=full_id,
+        instruction=instruction,
+        metadata={
+            "category": task.category,
+            "description_for_judge": task.description_for_judge,
+            "rubric": [dc.asdict(r) for r in task.rubric],
+            "hard_assertions": dc.asdict(task.hard_assertions),
+            "setup": task.setup,
+            "global_reset": suite.global_reset,
+            "expected_answer": task.expected_answer,
+            "answer_format": task.answer_format,
+            "expected_recalled_memory_ids": task.expected_recalled_memory_ids,
+            "aiden_suite_name": suite.name,
+            "aiden_task_id": task.id,
+        },
+    )
 
 
 class LauncherError(RuntimeError):
