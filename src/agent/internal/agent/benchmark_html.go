@@ -46,7 +46,15 @@ input[type=text]{font-size:14px;padding:8px 12px;border-radius:6px;border:1px so
 <a href="/benchmark/record" style="display:inline-block;font-size:13px;margin:-10px 0 14px;color:#2563eb;text-decoration:none">📷 录入截图任务 →</a>
 <div class="card">
 <div class="row toolbar">
+<label><input type="radio" name="mode" value="aiden" checked onchange="onModeChange()"> Aiden Native</label>
+<label><input type="radio" name="mode" value="mobilegym" onchange="onModeChange()"> MobileGym</label>
+</div>
+<div class="row toolbar">
 <select id="suiteSelect"><option value="">Loading...</option></select>
+<span id="mgConfig" style="display:none">
+<label class="muted">Parallel <input type="number" id="parallelInput" value="4" min="1" max="16" style="width:60px"></label>
+<label class="muted">Limit <input type="number" id="limitInput" placeholder="(all)" min="1" style="width:80px"></label>
+</span>
 <button id="runBtn" onclick="startRun()">Run</button>
 <button id="delBtn" class="del" onclick="deleteSuite()" style="display:none">Delete</button>
 <span id="statusText" class="status">idle</span>
@@ -115,24 +123,52 @@ status.className='status '+(d.status||'');
 fill.style.width='0';
 }}
 function loadLog(){
-fetch('/benchmark/log').then(r=>r.text()).then(function(t){
+fetch('/benchmark/log?mode='+encodeURIComponent(getMode())).then(r=>r.text()).then(function(t){
 var box=document.getElementById('logBox');
 var atBottom=(box.scrollTop+box.clientHeight>=box.scrollHeight-24);
 box.textContent=t||'No benchmark log yet.';
 if(atBottom)box.scrollTop=box.scrollHeight;
 }).catch(function(){});
 }
+function getMode(){
+var els=document.getElementsByName('mode');
+for(var i=0;i<els.length;i++){if(els[i].checked)return els[i].value}
+return 'aiden';
+}
+function onModeChange(){
+var mg=getMode()==='mobilegym';
+document.getElementById('mgConfig').style.display=mg?'inline-block':'none';
+loadSuites();
+}
 function load(){loadSuites();loadRuns();loadStatus()}
 function loadSuites(){
-fetch('/benchmark/suites').then(r=>r.json()).then(d=>{
+var mode=getMode();
+fetch('/benchmark/suites?mode='+encodeURIComponent(mode)).then(r=>r.json()).then(d=>{
 var s=document.getElementById('suiteSelect');s.innerHTML='';suiteIndex={};
-d.forEach(function(x){
-var o=document.createElement('option');o.value=x.path;
-o.textContent=x.name+(x.custom?' (custom)':'');
-s.appendChild(o);suiteIndex[x.path]=x;
+if(!d || !d.length){
+var o=document.createElement('option');o.value='';o.textContent='(no suites)';s.appendChild(o);
+syncDelBtn();return;
+}
+var groups={aiden:[],mobilegym_builtin:[]};
+d.forEach(function(x){(groups[x.type]||groups.aiden).push(x)});
+function appendGroup(label,arr){
+if(!arr.length)return;
+var og=document.createElement('optgroup');og.label=label;
+arr.forEach(function(x){
+var o=document.createElement('option');
+o.value=x.path||x.name;
+var n=x.name+(x.task_count?(' ('+x.task_count+' tasks)'):'')+(x.custom?' (custom)':'');
+o.textContent=n;
+og.appendChild(o);
+suiteIndex[x.path||x.name]=x;
 });
+s.appendChild(og);
+}
+appendGroup('Aiden Suites',groups.aiden);
+if(mode==='mobilegym')appendGroup('MobileGym Built-in',groups.mobilegym_builtin);
 syncDelBtn();
-})}
+});
+}
 function syncDelBtn(){
 var p=document.getElementById('suiteSelect').value;
 var x=suiteIndex[p];
@@ -173,13 +209,28 @@ loadRuns();loadLog()
 }
 })}
 function startRun(){
-var suite=document.getElementById('suiteSelect').value;
-if(!suite){alert('Select a suite');return}
+var sel=document.getElementById('suiteSelect');
+var key=sel.value;
+if(!key){alert('Select a suite');return}
+var item=suiteIndex[key];
+var mode=getMode();
+var payload={};
+if(mode==='aiden'){
+payload.suite=item.path||key;
+payload.mode='aiden';
+} else {
+payload.suite=item.name;
+payload.suite_type=item.type;
+payload.mode='mobilegym';
+payload.parallel=Number(document.getElementById('parallelInput').value)||4;
+var lim=document.getElementById('limitInput').value;
+if(lim)payload.limit=Number(lim);
+}
 document.getElementById('runBtn').disabled=true;
 document.getElementById('statusText').textContent='running';
 document.getElementById('statusText').className='status running';
 fetch('/benchmark/run',{method:'POST',headers:{'Content-Type':'application/json'},
-body:JSON.stringify({suite:suite})}).then(r=>r.json()).then(function(){
+body:JSON.stringify(payload)}).then(r=>r.json()).then(function(){
 loadLog();
 polling=setInterval(pollStatus,3000);
 if(!logPolling)logPolling=setInterval(loadLog,1000)});
