@@ -713,24 +713,6 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		cutMeta.TurnStartEventID = firstNonEmptyEventID(events, plan.turnStartIndex)
 	}
 
-	chunkSummary, err := session.compressEvents(ctx, compactEvents, CompressOption{
-		Summary:    summary,
-		Structured: structured,
-		Tags:       m.extraction.extractMemoryTags(compactEvents),
-		Entities:   m.extraction.extractMemoryEntities(compactEvents),
-		CutMeta:    cutMeta,
-	})
-	if err != nil {
-		if m.logger != nil {
-			m.logger.Error("[memory] compression failed: %v", err)
-		}
-		return err
-	}
-	if m.logger != nil {
-		m.logger.Info("[memory] chunk created: id=%s, compacted=%d, kept=%d, split_turn=%t, mode=%s",
-			chunkSummary.ID, len(compactEvents), len(hotEvents), plan.isSplitTurn, plan.mode)
-	}
-
 	// Phase 2: Write back under FileLock. Re-read events.jsonl to detect any
 	// appends that occurred during the LLM summary phase (the window between
 	// phase 1 unlock and now). If new events were appended, merge them into
@@ -755,8 +737,29 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 		}
 	}
 
+	// Replace events.jsonl FIRST, then commit chunk/index/summary ONLY if
+	// replaceEvents succeeds. This prevents "ghost compression records" where
+	// summary/index claim compression happened but events.jsonl was never updated.
 	if err := session.replaceEvents(hotEvents); err != nil {
 		return err
+	}
+
+	chunkSummary, err := session.compressEvents(ctx, compactEvents, CompressOption{
+		Summary:    summary,
+		Structured: structured,
+		Tags:       m.extraction.extractMemoryTags(compactEvents),
+		Entities:   m.extraction.extractMemoryEntities(compactEvents),
+		CutMeta:    cutMeta,
+	})
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Error("[memory] compression metadata write failed: %v", err)
+		}
+		return err
+	}
+	if m.logger != nil {
+		m.logger.Info("[memory] chunk created: id=%s, compacted=%d, kept=%d, split_turn=%t, mode=%s",
+			chunkSummary.ID, len(compactEvents), len(hotEvents), plan.isSplitTurn, plan.mode)
 	}
 
 	// Update lastPromptTokens to the estimated size of the hot window after
