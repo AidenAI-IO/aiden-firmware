@@ -1,0 +1,96 @@
+// Temporary file for new handleBenchmarkSuites implementation
+func (s *Server) handleBenchmarkSuites(w http.ResponseWriter, r *http.Request) {
+	if s.benchmarkDir == "" {
+		http.Error(w, `{"error":"benchmark directory not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = "aiden"
+	}
+
+	items := []suiteListItem{}
+	items = append(items, scanAidenSuites(s.benchmarkDir, mode == "mobilegym")...)
+	if mode == "mobilegym" {
+		items = append(items, scanMobileGymBuiltinSuites(s.benchmarkDir)...)
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Type != items[j].Type {
+			// aiden suites first, builtins after
+			return items[i].Type == "aiden"
+		}
+		return items[i].Name < items[j].Name
+	})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(items)
+}
+
+func scanAidenSuites(benchmarkDir string, concurrent bool) []suiteListItem {
+	suitesDir := filepath.Join(benchmarkDir, "suites")
+	var items []suiteListItem
+	filepath.Walk(suitesDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		base := filepath.Base(path)
+		if strings.HasPrefix(base, "._") || !strings.HasSuffix(base, ".json") {
+			return nil
+		}
+		rel, _ := filepath.Rel(suitesDir, path)
+		items = append(items, suiteListItem{
+			Name:       strings.TrimSuffix(base, ".json"),
+			Path:       path,
+			Custom:     strings.HasPrefix(rel, "custom"+string(filepath.Separator)),
+			Type:       "aiden",
+			Concurrent: concurrent,
+			TaskCount:  countAidenTasks(path),
+		})
+		return nil
+	})
+	return items
+}
+
+func countAidenTasks(suitePath string) int {
+	data, err := os.ReadFile(suitePath)
+	if err != nil {
+		return 0
+	}
+	var raw struct {
+		Tasks []json.RawMessage `json:"tasks"`
+	}
+	if json.Unmarshal(data, &raw) != nil {
+		return 0
+	}
+	return len(raw.Tasks)
+}
+
+func scanMobileGymBuiltinSuites(benchmarkDir string) []suiteListItem {
+	allTasks := filepath.Join(benchmarkDir, "mobilegym", "suites", "all_tasks.txt")
+	data, err := os.ReadFile(allTasks)
+	if err != nil {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		counts[parts[0]]++
+	}
+	items := make([]suiteListItem, 0, len(counts))
+	for name, n := range counts {
+		items = append(items, suiteListItem{
+			Name:       name,
+			Type:       "mobilegym_builtin",
+			TaskCount:  n,
+			Concurrent: true,
+		})
+	}
+	return items
+}

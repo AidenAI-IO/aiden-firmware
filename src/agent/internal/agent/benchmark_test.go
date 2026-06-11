@@ -478,7 +478,11 @@ func TestHandleBenchmarkSuites_MobileGymModeIncludesBuiltins(t *testing.T) {
 	names := map[string]int{}
 	for _, item := range got {
 		types[item["type"].(string)]++
-		names[item["name"].(string)] = int(item["task_count"].(float64))
+		count := 0
+		if v, ok := item["task_count"].(float64); ok {
+			count = int(v)
+		}
+		names[item["name"].(string)] = count
 	}
 	if types["aiden"] != 1 {
 		t.Fatalf("expected 1 aiden suite, got %d (%+v)", types["aiden"], got)
@@ -489,5 +493,105 @@ func TestHandleBenchmarkSuites_MobileGymModeIncludesBuiltins(t *testing.T) {
 	}
 	if names["clock"] != 2 || names["alipay"] != 1 {
 		t.Fatalf("task counts wrong: %+v", names)
+	}
+}
+
+func TestHandleBenchmarkRun_AidenModeDefault(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	captured := struct {
+		called bool
+		suite  string
+	}{}
+	s := &Server{
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkLauncher: func(suite, judge, apiKey string) error {
+			captured.called = true
+			captured.suite = suite
+			return nil
+		},
+	}
+
+	body := `{"suite":"memory_v1.json"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/benchmark/run", strings.NewReader(body))
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !captured.called || captured.suite != "memory_v1.json" {
+		t.Fatalf("expected aiden launcher invoked with memory_v1.json, got %+v", captured)
+	}
+}
+
+func TestHandleBenchmarkRun_MobileGymMode(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	captured := struct {
+		called    bool
+		suite     string
+		suiteType string
+		parallel  int
+		limit     int
+	}{}
+	s := &Server{
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkMobileGymLauncher: func(suite, suiteType string, parallel, limit int) error {
+			captured.called = true
+			captured.suite = suite
+			captured.suiteType = suiteType
+			captured.parallel = parallel
+			captured.limit = limit
+			return nil
+		},
+	}
+
+	body := `{"suite":"memory_v1","suite_type":"aiden","mode":"mobilegym","parallel":4,"limit":10}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/benchmark/run", strings.NewReader(body))
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !captured.called {
+		t.Fatalf("expected mobilegym launcher invoked, got %+v", captured)
+	}
+	if captured.suite != "memory_v1" || captured.suiteType != "aiden" ||
+		captured.parallel != 4 || captured.limit != 10 {
+		t.Fatalf("unexpected mobilegym launch args: %+v", captured)
+	}
+}
+
+func TestHandleBenchmarkRun_MobileGymBuiltin(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	captured := struct {
+		suite     string
+		suiteType string
+	}{}
+	s := &Server{
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkMobileGymLauncher: func(suite, suiteType string, parallel, limit int) error {
+			captured.suite = suite
+			captured.suiteType = suiteType
+			return nil
+		},
+	}
+
+	body := `{"suite":"clock","suite_type":"mobilegym_builtin","mode":"mobilegym","parallel":2}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/benchmark/run", strings.NewReader(body))
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if captured.suite != "clock" || captured.suiteType != "mobilegym_builtin" {
+		t.Fatalf("unexpected mobilegym launch args: %+v", captured)
 	}
 }

@@ -46,35 +46,100 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Suite string `json:"suite"`
+		Suite     string `json:"suite"`
+		SuiteType string `json:"suite_type"`
+		Mode      string `json:"mode"`
+		Parallel  int    `json:"parallel"`
+		Limit     int    `json:"limit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Suite == "" {
 		http.Error(w, `{"error":"missing suite field"}`, http.StatusBadRequest)
 		return
 	}
+
+	if req.Mode == "" {
+		req.Mode = "aiden"
+	}
+
 	statePath := s.benchmarkStatePath
 	if statePath == "" {
 		statePath = filepath.Join(s.benchmarkDir, "state.json")
 	}
-	state := fmt.Sprintf(`{"status":"running","suite":%q}`, req.Suite)
-	if err := os.WriteFile(statePath, []byte(state), 0o644); err != nil {
+
+	stateJSON, _ := json.Marshal(map[string]any{
+		"status":     "running",
+		"mode":       req.Mode,
+		"suite":      req.Suite,
+		"suite_type": req.SuiteType,
+		"parallel":   req.Parallel,
+	})
+	if err := os.WriteFile(statePath, stateJSON, 0o644); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 		return
 	}
-	launch := s.benchmarkLauncher
-	if launch == nil {
-		launch = s.launchBenchmarkRunner
-	}
-	apiKey := ""
-	judge := ""
-	if s.runtime != nil {
-		apiKey = s.runtime.config.Model.APIKey
-		judge = s.runtime.config.Benchmark.JudgeModel
-	}
-	if err := launch(req.Suite, judge, apiKey); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"launch failed: %s"}`, err), http.StatusInternalServerError)
+
+	switch req.Mode {
+	case "aiden":
+		launch := s.benchmarkLauncher
+		if launch == nil {
+			launch = s.launchBenchmarkRunner
+		}
+		apiKey := ""
+		judge := ""
+		if s.runtime != nil {
+			apiKey = s.runtime.config.Model.APIKey
+			judge = s.runtime.config.Benchmark.JudgeModel
+		}
+		if err := launch(req.Suite, judge, apiKey); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"launch failed: %s"}`, err), http.StatusInternalServerError)
+			return
+		}
+	case "mobilegym":
+		if req.Parallel < 1 {
+			req.Parallel = 1
+		}
+		launch := s.benchmarkMobileGymLauncher
+		if launch == nil {
+			launch = s.launchMobileGymRunner
+		}
+		if err := launch(req.Suite, req.SuiteType, req.Parallel, req.Limit); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"mobilegym launch failed: %s"}`, err), http.StatusInternalServerError)
+			return
+		}
+	default:
+		http.Error(w, fmt.Sprintf(`{"error":"unknown mode %q"}`, req.Mode), http.StatusBadRequest)
 		return
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok":true,"status":"running"}`))
+}
+
+func (s *Server) launchMobileGymRunner(suite, suiteType string, parallel, limit int) error {
+	var suiteFlag string
+	switch suiteType {
+	case "aiden":
+		suiteFlag = fmt.Sprintf("--aiden-suite %s", shellQuote(suite))
+	case "mobilegym_builtin", "":
+		suiteFlag = fmt.Sprintf("--suite %s", shellQuote(suite))
+	default:
+		return fmt.Errorf("unknown suite_type %q", suiteType)
+	}
+
+	limitFlag := ""
+	if limit > 0 {
+		limitFlag = fmt.Sprintf("--limit %d", limit)
+	}
+
+	statePath := filepath.Join(s.benchmarkDir, "state.json")
+
+	script := fmt.Sprintf(`cd %s/benchmark/mobilegym/docker && `+
+		`(`+
+		`echo 'Starting MobileGym benchmark...' > /tmp/mobilegym_run.log; `+
+		`PARALLEL=%d ./parallel_run.sh %s %s `+
+		`>> /tmp/mobilegym_run.log 2>&1; `+
+		`echo '{"status":"idle"}' > %s) &`,
+		s.benchmarkDir, parallel, suiteFlag, limitFlag, shellQuote(statePath))
+
+	return exec.Command("sh", "-c", script).Start()
 }
