@@ -341,6 +341,7 @@ void apply_kv(AgentToml& cfg,
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "benchmark") {
         if (key == "judge_model") assign_string(&cfg.benchmark.judge_model, raw, &sub_err);
+        else if (key == "api_key") assign_string(&cfg.benchmark.api_key, raw, &sub_err);
         else if (key == "benchmark_dir") assign_string(&cfg.benchmark.benchmark_dir, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "hid") {
@@ -644,6 +645,7 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
 
     out << "[benchmark]\n";
     if (!cfg.benchmark.judge_model.empty()) emit_string(out, "judge_model", cfg.benchmark.judge_model);
+    if (!cfg.benchmark.api_key.empty()) emit_string(out, "api_key", cfg.benchmark.api_key);
     if (!cfg.benchmark.benchmark_dir.empty()) emit_string(out, "benchmark_dir", cfg.benchmark.benchmark_dir);
     out << "\n";
 

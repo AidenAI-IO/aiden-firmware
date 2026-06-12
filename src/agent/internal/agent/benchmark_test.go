@@ -329,11 +329,18 @@ func TestHandleBenchmarkRun_WritesStateFile(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(root, "state.json")
 	called := false
+	var gotJudge, gotAPIKey string
 	s := &Server{
+		runtime: &Runtime{config: Config{
+			Model:     ModelConfig{APIKey: "sk-model"},
+			Benchmark: BenchmarkConfig{JudgeModel: "judge/model", APIKey: "sk-judge"},
+		}},
 		benchmarkDir:       root,
 		benchmarkStatePath: statePath,
 		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey string) error {
 			called = true
+			gotJudge = judge
+			gotAPIKey = apiKey
 			if spec.Suite != "/tmp/x.json" || spec.Kind != "benchmark" {
 				t.Fatalf("launch spec = %+v", spec)
 			}
@@ -350,9 +357,47 @@ func TestHandleBenchmarkRun_WritesStateFile(t *testing.T) {
 	if !called {
 		t.Error("launcher was not invoked")
 	}
+	if gotJudge != "judge/model" {
+		t.Errorf("judge = %q, want judge/model", gotJudge)
+	}
+	if gotAPIKey != "sk-judge" {
+		t.Errorf("apiKey = %q, want benchmark api key", gotAPIKey)
+	}
 	data, _ := os.ReadFile(statePath)
 	if !strings.Contains(string(data), `"running"`) {
 		t.Errorf("state.json = %s", data)
+	}
+}
+
+func TestHandleBenchmarkRun_RejectsMissingJudgeAPIKey(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	called := false
+	s := &Server{
+		runtime:            &Runtime{config: Config{Benchmark: BenchmarkConfig{JudgeModel: "judge/model"}}},
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey string) error {
+			called = true
+			return nil
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run",
+		strings.NewReader(`{"suite":"/tmp/x.json"}`))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRun(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Fatal("launcher should not be invoked without benchmark api key")
+	}
+	stateData, err := os.ReadFile(statePath)
+	if err == nil && strings.Contains(string(stateData), `"status":"running"`) {
+		t.Fatalf("unexpected running state written: %s", stateData)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read state file: %v", err)
 	}
 }
 

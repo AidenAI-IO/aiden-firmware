@@ -79,6 +79,16 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 	} else if benchmarkSuiteKind(req.Suite) == "unit" {
 		spec.Kind = "unit"
 	}
+	apiKey := ""
+	judge := ""
+	if s.runtime != nil {
+		apiKey = s.runtime.config.Benchmark.APIKey
+		judge = s.runtime.config.Benchmark.JudgeModel
+	}
+	if spec.Kind == "benchmark" && strings.TrimSpace(apiKey) == "" {
+		http.Error(w, `{"error":"benchmark judge api_key is not configured"}`, http.StatusBadRequest)
+		return
+	}
 	statePath := s.benchmarkStatePath
 	if statePath == "" {
 		statePath = filepath.Join(s.benchmarkDir, "state.json")
@@ -91,12 +101,6 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 	launch := s.benchmarkLauncher
 	if launch == nil {
 		launch = s.launchBenchmarkRunner
-	}
-	apiKey := ""
-	judge := ""
-	if s.runtime != nil {
-		apiKey = s.runtime.config.Model.APIKey
-		judge = s.runtime.config.Benchmark.JudgeModel
 	}
 	if err := launch(spec, judge, apiKey); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"launch failed: %s"}`, err), http.StatusInternalServerError)

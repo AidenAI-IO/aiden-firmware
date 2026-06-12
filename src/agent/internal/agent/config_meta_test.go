@@ -97,7 +97,7 @@ func TestConfigMeta_Valid(t *testing.T) {
 		}
 	}
 
-	for _, name := range []string{"model", "tts", "stt", "audio", "hid", "search", "telemetry", "agent"} {
+	for _, name := range []string{"model", "tts", "stt", "audio", "benchmark", "hid", "search", "telemetry", "agent"} {
 		if !seenSections[name] {
 			t.Errorf("expected section %q to be present", name)
 		}
@@ -188,6 +188,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"tts", reflect.TypeOf(TTSConfig{}), map[string]bool{"reference_id": true, "credentials": true}},
 		{"stt", reflect.TypeOf(STTConfig{}), nil},
 		{"audio", reflect.TypeOf(AudioConfig{}), nil},
+		{"benchmark", reflect.TypeOf(BenchmarkConfig{}), nil},
 		{"hid", reflect.TypeOf(HIDConfig{}), nil},
 		{"search", reflect.TypeOf(SearchConfig{}), nil},
 		{"telemetry", reflect.TypeOf(TelemetryConfig{}), nil},

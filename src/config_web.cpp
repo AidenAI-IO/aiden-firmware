@@ -1010,7 +1010,7 @@ void load_current_wifi_config(const Options& options,
     }
 }
 
-cJSON* config_to_json(const aiden::AgentToml& config) {
+cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = false) {
     cJSON* root = cJSON_CreateObject();
 
     cJSON* model = add_object(root, "model");
@@ -1061,6 +1061,11 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
 
     cJSON* benchmark = add_object(root, "benchmark");
     cJSON_AddStringToObject(benchmark, "judge_model", config.benchmark.judge_model.c_str());
+    if (include_secrets) {
+        cJSON_AddStringToObject(benchmark, "api_key", config.benchmark.api_key.c_str());
+    } else {
+        cJSON_AddBoolToObject(benchmark, "has_api_key", !config.benchmark.api_key.empty());
+    }
     cJSON_AddStringToObject(benchmark, "benchmark_dir", config.benchmark.benchmark_dir.c_str());
 
     cJSON* hid = add_object(root, "hid");
@@ -1287,6 +1292,13 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     cJSON* benchmark = cJSON_GetObjectItem(root, "benchmark");
     if (json_is_object(benchmark)) {
         set_json_str(&config->benchmark.judge_model, benchmark, "judge_model");
+        cJSON* key_item = cJSON_GetObjectItem(benchmark, "api_key");
+        if (json_is_string(key_item)) {
+            std::string api_key = trim_copy(key_item->valuestring);
+            if (!api_key.empty()) {
+                config->benchmark.api_key = api_key;
+            }
+        }
         set_json_str(&config->benchmark.benchmark_dir, benchmark, "benchmark_dir");
     }
 
@@ -1352,7 +1364,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
 
 ValidationResult validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path) {
     // Convert config to JSON
-    cJSON* config_json = config_to_json(config);
+    cJSON* config_json = config_to_json(config, true);
     char* json_str = cJSON_PrintUnformatted(config_json);
     cJSON_Delete(config_json);
 
