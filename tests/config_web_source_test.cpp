@@ -606,9 +606,11 @@ TEST_CASE("config web exposes benchmark settings section") {
 
     CHECK(source.find("cJSON* benchmark = add_object(root, \"benchmark\")") != std::string::npos);
     CHECK(source.find("config.benchmark.judge_model") != std::string::npos);
+    CHECK(source.find("config.benchmark.api_key") != std::string::npos);
     CHECK(source.find("config.benchmark.benchmark_dir") != std::string::npos);
     CHECK(source.find("cJSON* benchmark = cJSON_GetObjectItem(root, \"benchmark\")") != std::string::npos);
     CHECK(source.find("set_json_str(&config->benchmark.judge_model, benchmark, \"judge_model\")") != std::string::npos);
+    CHECK(source.find("set_json_str(&config->benchmark.api_key, benchmark, \"api_key\")") != std::string::npos);
     CHECK(source.find("set_json_str(&config->benchmark.benchmark_dir, benchmark, \"benchmark_dir\")") != std::string::npos);
     CHECK(source.find("section == \"benchmark\"") != std::string::npos);
     CHECK(source.find("defaults to bytedance-seed/seed-2.0-lite") != std::string::npos);
@@ -616,6 +618,7 @@ TEST_CASE("config web exposes benchmark settings section") {
     CHECK(html.find("section-benchmark") != std::string::npos);
     CHECK(html.find("<h3>[benchmark]</h3>") != std::string::npos);
     CHECK(html.find("benchmark_judge_model") != std::string::npos);
+    CHECK(html.find("benchmark_api_key") != std::string::npos);
     CHECK(html.find("benchmark_benchmark_dir") != std::string::npos);
     CHECK(html.find("save-benchmark") != std::string::npos);
     CHECK(html.find("enterEditSection('benchmark')") != std::string::npos);

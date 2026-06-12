@@ -95,7 +95,7 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 	apiKey := ""
 	judge := ""
 	if s.runtime != nil {
-		apiKey = s.runtime.config.Model.APIKey
+		apiKey = s.runtime.config.Benchmark.APIKey
 		judge = s.runtime.config.Benchmark.JudgeModel
 	}
 	if err := launch(spec, judge, apiKey); err != nil {

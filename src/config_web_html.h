@@ -246,6 +246,7 @@ static const char* CONFIG_WEB_HTML =
     "          </div>\n"
     "          <div class=\"grid\">\n"
     "            <div class=\"field wide\"><label>judge_model</label><input id=\"benchmark_judge_model\" data-section=\"benchmark\" placeholder=\"empty = bytedance-seed/seed-2.0-lite\"></div>\n"
+    "            <div class=\"field wide\"><label>api_key</label><input id=\"benchmark_api_key\" type=\"password\" autocomplete=\"off\" data-section=\"benchmark\"></div>\n"
     "            <div class=\"field wide\"><label>benchmark_dir</label><input id=\"benchmark_benchmark_dir\" data-section=\"benchmark\" placeholder=\"empty = auto-detect benchmark root\"></div>\n"
     "          </div>\n"
     "        </div>\n"

@@ -81,6 +81,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.search.api_key = "tvly-test";
 
     cfg.benchmark.judge_model = "custom/judge-v1";
+    cfg.benchmark.api_key = "sk-judge-test";
     cfg.benchmark.benchmark_dir = "/userdata/agent/benchmark";
 
     cfg.telemetry.enabled = true;
@@ -161,6 +162,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.search.api_key == "tvly-test");
 
     CHECK(loaded.benchmark.judge_model == "custom/judge-v1");
+    CHECK(loaded.benchmark.api_key == "sk-judge-test");
     CHECK(loaded.benchmark.benchmark_dir == "/userdata/agent/benchmark");
 
     CHECK(loaded.telemetry.enabled == true);

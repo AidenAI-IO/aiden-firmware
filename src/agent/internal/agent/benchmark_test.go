@@ -329,11 +329,18 @@ func TestHandleBenchmarkRun_WritesStateFile(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(root, "state.json")
 	called := false
+	var gotJudge, gotAPIKey string
 	s := &Server{
+		runtime: &Runtime{config: Config{
+			Model:     ModelConfig{APIKey: "sk-model"},
+			Benchmark: BenchmarkConfig{JudgeModel: "judge/model", APIKey: "sk-judge"},
+		}},
 		benchmarkDir:       root,
 		benchmarkStatePath: statePath,
 		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey string) error {
 			called = true
+			gotJudge = judge
+			gotAPIKey = apiKey
 			if spec.Suite != "/tmp/x.json" || spec.Kind != "benchmark" {
 				t.Fatalf("launch spec = %+v", spec)
 			}
@@ -349,6 +356,12 @@ func TestHandleBenchmarkRun_WritesStateFile(t *testing.T) {
 	}
 	if !called {
 		t.Error("launcher was not invoked")
+	}
+	if gotJudge != "judge/model" {
+		t.Errorf("judge = %q, want judge/model", gotJudge)
+	}
+	if gotAPIKey != "sk-judge" {
+		t.Errorf("apiKey = %q, want benchmark api key", gotAPIKey)
 	}
 	data, _ := os.ReadFile(statePath)
 	if !strings.Contains(string(data), `"running"`) {

@@ -280,7 +280,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "run_id": run_id, "git_sha": sha, "git_dirty": dirty,
         "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
         "agent_url": args.agent_url,
-        "judge_config": {"provider": "anthropic", "model": args.judge_model} if judge_cfg else None,
+        "judge_config": {"provider": "openrouter", "model": args.judge_model} if judge_cfg else None,
         "judge_prompt_version": "v1",
         "started_at": started, "finished_at": now_iso(),
         "totals": {"tasks": len(results),

@@ -36,6 +36,7 @@ type webConfigDTO struct {
 	TTS       ttsDTO       `json:"tts"`
 	STT       sttDTO       `json:"stt"`
 	Audio     audioDTO     `json:"audio"`
+	Benchmark benchmarkDTO `json:"benchmark"`
 	HID       hidDTO       `json:"hid"`
 	Search    searchDTO    `json:"search"`
 	Telemetry telemetryDTO `json:"telemetry"`
@@ -79,6 +80,12 @@ type audioDTO struct {
 	SampleRate int    `json:"sample_rate"`
 	Channels   int    `json:"channels"`
 	BitWidth   int    `json:"bit_width"`
+}
+
+type benchmarkDTO struct {
+	JudgeModel   string `json:"judge_model"`
+	APIKey       string `json:"api_key"`
+	BenchmarkDir string `json:"benchmark_dir"`
 }
 
 type hidDTO struct {
@@ -193,6 +200,11 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			SampleRate: d.Audio.SampleRate,
 			Channels:   d.Audio.Channels,
 			BitWidth:   d.Audio.BitWidth,
+		},
+		Benchmark: agent.BenchmarkConfig{
+			JudgeModel: d.Benchmark.JudgeModel,
+			APIKey:     d.Benchmark.APIKey,
+			Dir:        d.Benchmark.BenchmarkDir,
 		},
 		HID: agent.HIDConfig{
 			KeyboardDevice: d.HID.KeyboardDevice,

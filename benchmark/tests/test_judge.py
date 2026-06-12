@@ -5,9 +5,7 @@ from runner.judge import JudgeConfig, judge_task
 from runner.suite import RubricItem
 
 
-def test_judge_uses_agent_toml_api_key_when_env_missing(monkeypatch, tmp_path: Path):
-    config = tmp_path / "agent.toml"
-    config.write_text('[model]\napi_key = "sk-agent"\n', encoding="utf-8")
+def test_judge_uses_configured_api_key_env(monkeypatch):
     seen = {}
 
     class FakeResponse:
@@ -32,7 +30,7 @@ def test_judge_uses_agent_toml_api_key_when_env_missing(monkeypatch, tmp_path: P
         seen["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("JUDGE_API_KEY", "sk-judge")
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
     result = judge_task(
@@ -42,8 +40,30 @@ def test_judge_uses_agent_toml_api_key_when_env_missing(monkeypatch, tmp_path: P
         post_screenshot=None,
         trace={"tool_calls": []},
         final_response="done",
-        cfg=JudgeConfig(agent_config_path=str(config)),
+        cfg=JudgeConfig(api_key_env="JUDGE_API_KEY"),
     )
 
     assert result.verdicts[0].verdict == "yes"
-    assert seen == {"authorization": "Bearer sk-agent", "timeout": 120}
+    assert seen == {"authorization": "Bearer sk-judge", "timeout": 120}
+
+
+def test_judge_does_not_fallback_to_agent_toml_api_key(monkeypatch, tmp_path: Path):
+    config = tmp_path / "agent.toml"
+    config.write_text('[model]\napi_key = "sk-agent"\n', encoding="utf-8")
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    try:
+        judge_task(
+            description="check",
+            rubric=[RubricItem(id="ok", check="pass")],
+            pre_screenshot=None,
+            post_screenshot=None,
+            trace={"tool_calls": []},
+            final_response="done",
+            cfg=JudgeConfig(),
+        )
+    except RuntimeError as e:
+        assert str(e) == "missing env var OPENROUTER_API_KEY"
+    else:
+        raise AssertionError("expected missing OPENROUTER_API_KEY error")

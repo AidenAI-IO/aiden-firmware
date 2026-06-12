@@ -1061,6 +1061,7 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
 
     cJSON* benchmark = add_object(root, "benchmark");
     cJSON_AddStringToObject(benchmark, "judge_model", config.benchmark.judge_model.c_str());
+    cJSON_AddStringToObject(benchmark, "api_key", config.benchmark.api_key.c_str());
     cJSON_AddStringToObject(benchmark, "benchmark_dir", config.benchmark.benchmark_dir.c_str());
 
     cJSON* hid = add_object(root, "hid");
@@ -1287,6 +1288,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     cJSON* benchmark = cJSON_GetObjectItem(root, "benchmark");
     if (json_is_object(benchmark)) {
         set_json_str(&config->benchmark.judge_model, benchmark, "judge_model");
+        set_json_str(&config->benchmark.api_key, benchmark, "api_key");
         set_json_str(&config->benchmark.benchmark_dir, benchmark, "benchmark_dir");
     }
 
