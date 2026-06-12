@@ -89,7 +89,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"keyboard_text": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"text":"hello world"}`,
+		ExampleInput: `{"text":"Settings"}`,
 	},
 	"mouse_click": {
 		Category:     "input",

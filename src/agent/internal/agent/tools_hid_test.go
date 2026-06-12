@@ -471,6 +471,28 @@ func TestTouchscreenSwipeWritesTouchSequence(t *testing.T) {
 	}
 }
 
+func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
+	desc := (&KeyboardTextTool{}).Description()
+	for _, want := range []string{
+		"ASCII",
+		"Do NOT pass Chinese",
+		"pinyin",
+		`{"text":"Settings"}`,
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+	for _, unexpected := range []string{
+		"Type a string of text",
+		"hello world",
+	} {
+		if strings.Contains(desc, unexpected) {
+			t.Fatalf("description should not contain misleading phrase %q:\n%s", unexpected, desc)
+		}
+	}
+}
+
 func TestKeyboardTextAcceptsBareTextFallback(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &KeyboardTextTool{dev: dev}

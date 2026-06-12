@@ -516,10 +516,11 @@ type KeyboardTextTool struct {
 func (t *KeyboardTextTool) Name() string { return "keyboard_text" }
 
 func (t *KeyboardTextTool) Description() string {
-	return `Type a string of text character by character. Input JSON: {"text": "hello world"}. ` +
-		`Bare text is accepted only as a compatibility fallback; prefer JSON. ` +
-		`Supports US-keyboard ASCII characters only. It cannot directly type Chinese, emoji, or other non-ASCII text; use pinyin/English search terms plus on-screen candidates when Chinese input is needed. ` +
-		`If any unsupported character is present, no characters are typed and an error is returned.`
+	return `US-keyboard ASCII text input only via USB HID physical keyboard (not the on-screen soft keyboard). ` +
+		`Allowed characters: a-z, A-Z, 0-9, space, and common US-keyboard punctuation. ` +
+		`Do NOT pass Chinese/CJK, emoji, or any other non-ASCII text — if any character is unsupported, the tool returns an error and types nothing. ` +
+		`For Chinese targets, never copy the Chinese string into text; use pinyin or English keywords instead (e.g. {"text":"weixin"} or {"text":"zhangsan"}), then tap the on-screen candidate or search result. ` +
+		`Input JSON: {"text":"Settings"}. Bare plain text is accepted only as a compatibility fallback; prefer JSON.`
 }
 
 func (t *KeyboardTextTool) ArgsSchema() map[string]any {
