@@ -98,6 +98,10 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		apiKey = s.runtime.config.Benchmark.APIKey
 		judge = s.runtime.config.Benchmark.JudgeModel
 	}
+	if spec.Kind == "benchmark" && strings.TrimSpace(apiKey) == "" {
+		http.Error(w, `{"error":"benchmark judge api_key is not configured"}`, http.StatusBadRequest)
+		return
+	}
 	if err := launch(spec, judge, apiKey); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"launch failed: %s"}`, err), http.StatusInternalServerError)
 		return

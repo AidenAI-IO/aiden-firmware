@@ -369,6 +369,31 @@ func TestHandleBenchmarkRun_WritesStateFile(t *testing.T) {
 	}
 }
 
+func TestHandleBenchmarkRun_RejectsMissingJudgeAPIKey(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	called := false
+	s := &Server{
+		runtime:            &Runtime{config: Config{Benchmark: BenchmarkConfig{JudgeModel: "judge/model"}}},
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey string) error {
+			called = true
+			return nil
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run",
+		strings.NewReader(`{"suite":"/tmp/x.json"}`))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRun(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Fatal("launcher should not be invoked without benchmark api key")
+	}
+}
+
 func TestHandleBenchmarkRun_UnitSuite(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(root, "state.json")

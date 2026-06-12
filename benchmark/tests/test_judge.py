@@ -51,6 +51,7 @@ def test_judge_does_not_fallback_to_agent_toml_api_key(monkeypatch, tmp_path: Pa
     config = tmp_path / "agent.toml"
     config.write_text('[model]\napi_key = "sk-agent"\n', encoding="utf-8")
 
+    monkeypatch.setenv("AIDEN_AGENT_CONFIG", str(config))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     try:
