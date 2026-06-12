@@ -1025,7 +1025,6 @@ func (r *Runtime) buildAgent(
 			RuntimeContext:   runtimeContext,
 		},
 		skills,
-		availableTools,
 	)
 	if r.config.ConfigDir != "" {
 		sessionSummary, _ := os.ReadFile(filepath.Join(r.config.ConfigDir, "memory", "session", "summary.md"))

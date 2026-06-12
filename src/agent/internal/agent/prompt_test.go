@@ -16,17 +16,9 @@ func TestPromptIncludesCurrentChineseDate(t *testing.T) {
 	t.Cleanup(func() { promptNow = originalNow })
 
 	want := "今天的日期是: 2026年06月01日 星期一"
-	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{}, nil)
+	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{})
 	if !strings.Contains(msg, want) {
 		t.Fatalf("function system message missing current date %q:\n%s", want, msg)
-	}
-
-	prompt := buildPrompt("aiden", AgentConfig{}, ResolvedSkills{}, nil)
-	if !strings.Contains(prompt.Template, "{{.current_date}}") {
-		t.Fatalf("ReAct prompt template should include current_date variable:\n%s", prompt.Template)
-	}
-	if got := prompt.PartialVariables["current_date"]; got != want {
-		t.Fatalf("current_date partial = %q, want %q", got, want)
 	}
 }
 
@@ -40,32 +32,17 @@ func TestPromptIncludesRealHostRuntimeInfo(t *testing.T) {
 	wantLine := "Host: os=" + operatingSystem + ", hostname=" + hostname + ", arch=" + architecture
 	wantEnvironmentLine := "- You run on the Aiden hardware controller (" + wantLine + "); you are not the device shown in screenshots."
 
-	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{}, nil)
+	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{})
 	if !strings.Contains(msg, wantEnvironmentLine) {
 		t.Fatalf("function system message missing host info in environment guidance %q:\n%s", wantEnvironmentLine, msg)
 	}
 	if strings.Contains(msg, "kernel=") {
 		t.Fatalf("system message should not include kernel info:\n%s", msg)
 	}
-
-	prompt := buildPrompt("aiden", AgentConfig{}, ResolvedSkills{}, nil)
-	if strings.Contains(prompt.Template, "{{.host_runtime_info}}") {
-		t.Fatalf("ReAct prompt template should not keep a separate host_runtime_info variable:\n%s", prompt.Template)
-	}
-	if _, ok := prompt.PartialVariables["host_runtime_info"]; ok {
-		t.Fatalf("host_runtime_info should be folded into default_behavior partial: %#v", prompt.PartialVariables["host_runtime_info"])
-	}
-	defaultBehavior, ok := prompt.PartialVariables["default_behavior"].(string)
-	if !ok {
-		t.Fatalf("default_behavior partial has type %T, want string", prompt.PartialVariables["default_behavior"])
-	}
-	if !strings.Contains(defaultBehavior, wantEnvironmentLine) {
-		t.Fatalf("default_behavior partial missing host info in environment guidance %q:\n%s", wantEnvironmentLine, defaultBehavior)
-	}
 }
 
 func TestFunctionAgentSystemMessageIdentifiesAidenAI(t *testing.T) {
-	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{}, nil)
+	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{})
 	if !strings.HasPrefix(msg, "You are Aiden AI agent.\n") {
 		t.Fatalf("system message should identify Aiden AI agent, got:\n%s", msg)
 	}
@@ -94,7 +71,6 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 			AdditionalPrompt: "extra prompt",
 		},
 		ResolvedSkills{},
-		nil,
 	)
 
 	for _, want := range []string{
@@ -165,16 +141,6 @@ func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t 
 	}
 }
 
-func TestReActPromptRequiresJSONToolInput(t *testing.T) {
-	prompt := buildPrompt("aiden", AgentConfig{}, ResolvedSkills{}, nil)
-	if !strings.Contains(prompt.Template, "Action Input: a valid JSON string for the selected tool") {
-		t.Fatalf("ReAct prompt should require JSON tool input:\n%s", prompt.Template)
-	}
-	if strings.Contains(prompt.Template, "Action Input: a plain string input") {
-		t.Fatalf("ReAct prompt should not describe tool input as plain string:\n%s", prompt.Template)
-	}
-}
-
 func TestCombinedAgentInstructionFallsBackWhenEmpty(t *testing.T) {
 	if got := combinedAgentInstruction(AgentConfig{}); got != "" {
 		t.Fatalf("combinedAgentInstruction() = %q, want empty string", got)
@@ -192,7 +158,7 @@ func TestFunctionAgentSystemMessageGuidesSkillCatalogAndPreloadedSkills(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg := buildFunctionAgentSystemMessage(AgentConfig{}, skills, nil)
+	msg := buildFunctionAgentSystemMessage(AgentConfig{}, skills)
 
 	for _, want := range []string{
 		"## Skills",
@@ -230,7 +196,6 @@ func TestFunctionAgentSystemMessageIncludesRuntimeContext(t *testing.T) {
 	msg := buildFunctionAgentSystemMessage(
 		AgentConfig{RuntimeContext: runtimeContext},
 		ResolvedSkills{},
-		nil,
 	)
 
 	if !strings.Contains(msg, "Runtime context:\n"+runtimeContext) {

@@ -50,11 +50,13 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 			"## Available skills",
 			"## Active skills",
 			"## Role rules",
-			"## Available tools",
 		} {
 			if !strings.Contains(profile.SystemPrompt, want) {
 				t.Fatalf("%s profile missing markdown section %q:\n%s", profile.Name, want, profile.SystemPrompt)
 			}
+		}
+		if strings.Contains(profile.SystemPrompt, "## Available tools") {
+			t.Fatalf("%s profile should not duplicate tool catalog in prompt:\n%s", profile.Name, profile.SystemPrompt)
 		}
 	}
 	if !strings.Contains(profiles.Verifier.SystemPrompt, "## Role rules") {
@@ -86,9 +88,20 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	if !strings.Contains(profiles.Executor.SystemPrompt, "Execute only the current next_step") {
 		t.Fatalf("executor prompt missing next_step constraint:\n%s", profiles.Executor.SystemPrompt)
 	}
-	if !strings.Contains(profiles.Planner.SystemPrompt, "screenshot: Capture screen.") ||
-		!strings.Contains(profiles.Planner.SystemPrompt, "enter_plan_mode:") {
-		t.Fatalf("planner prompt should expose callable tools and loop meta tools:\n%s", profiles.Planner.SystemPrompt)
+	if strings.Contains(profiles.Planner.SystemPrompt, "screenshot: Capture screen.") ||
+		strings.Contains(profiles.Planner.SystemPrompt, "enter_plan_mode:") {
+		t.Fatalf("planner prompt should not duplicate callable tool descriptions:\n%s", profiles.Planner.SystemPrompt)
+	}
+	hasProfileTool := func(profile RoleProfile, name string) bool {
+		for _, tool := range profile.Tools {
+			if tool.Name() == name {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasProfileTool(profiles.Planner, "screenshot") || !hasProfileTool(profiles.Planner, "enter_plan_mode") {
+		t.Fatalf("planner profile should retain callable tools and loop meta tools: %#v", profiles.Planner.Tools)
 	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "three or more steps") ||
 		!strings.Contains(profiles.Planner.SystemPrompt, "call enter_plan_mode first") {
@@ -118,7 +131,7 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	}
 }
 
-func TestRoleCollaborativeExecutorGivesToolsOnlyToExecutor(t *testing.T) {
+func TestRoleCollaborativeExecutorPassesToolsViaWithTools(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{\"volume\":3}"}`, "Volume set to 3."),
 	}
@@ -145,20 +158,35 @@ func TestRoleCollaborativeExecutorGivesToolsOnlyToExecutor(t *testing.T) {
 	if len(model.tools) != 2 {
 		t.Fatalf("expected two default-mode planner calls, got %d", len(model.tools))
 	}
-	if len(model.tools[0]) == 0 || model.tools[0][0].Function == nil || model.tools[0][0].Function.Name != "audio_volume" {
+	if !llmToolsContain(model.tools[0], "audio_volume") {
 		t.Fatalf("planner did not receive audio_volume function tool: %#v", model.tools[0])
+	}
+	if !llmToolsContain(model.tools[0], "enter_plan_mode") {
+		t.Fatalf("planner did not receive loop meta function tool: %#v", model.tools[0])
 	}
 	if len(model.messages) != 2 {
 		t.Fatalf("expected two planner model calls, got %d", len(model.messages))
 	}
 
 	plannerPrompt := messageText(model.messages[0])
-	if !strings.Contains(plannerPrompt, "audio_volume: Get or set audio playback volume.") {
-		t.Fatalf("planner did not see tool catalog:\n%s", plannerPrompt)
+	for _, unexpected := range []string{
+		"audio_volume: Get or set audio playback volume.",
+		"enter_plan_mode:",
+		"## Available tools",
+	} {
+		if strings.Contains(plannerPrompt, unexpected) {
+			t.Fatalf("planner prompt should not duplicate tool catalog %q:\n%s", unexpected, plannerPrompt)
+		}
 	}
-	if !strings.Contains(plannerPrompt, "enter_plan_mode:") {
-		t.Fatalf("planner did not see loop meta tools:\n%s", plannerPrompt)
+}
+
+func llmToolsContain(tools []llms.Tool, name string) bool {
+	for _, tool := range tools {
+		if tool.Function != nil && tool.Function.Name == name {
+			return true
+		}
 	}
+	return false
 }
 
 func TestRoleJSONFenceIsParsedAndLoggedAsCompactJSON(t *testing.T) {

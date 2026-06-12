@@ -142,20 +142,6 @@ func buildRoleProfile(
 	for _, rule := range roleRules {
 		parts = append(parts, "- "+rule)
 	}
-	if name != RoleVerifier {
-		parts = append(parts, "", "## Available tools")
-		if capabilities.CanUseTools {
-			parts = append(parts, describeTools(tools))
-		} else {
-			parts = append(parts, "- This role must not call tools directly.")
-			if len(tools) > 0 {
-				parts = append(parts, "- Executor tool catalog for planning/review only:")
-				parts = append(parts, describeTools(tools))
-			} else {
-				parts = append(parts, "- none")
-			}
-		}
-	}
 	if text := strings.TrimSpace(memoryContext); text != "" {
 		parts = append(parts, "", text)
 	}

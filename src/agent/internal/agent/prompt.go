@@ -7,9 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-
-	"github.com/tmc/langchaingo/prompts"
-	langtools "github.com/tmc/langchaingo/tools"
 )
 
 var promptNow = time.Now
@@ -21,71 +18,7 @@ type hostRuntimeInfo struct {
 	Architecture    string
 }
 
-func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool) prompts.PromptTemplate {
-	template := strings.Join([]string{
-		"You are agent {{.agent_name}}.",
-		"{{.current_date}}",
-		"Base instruction:",
-		"{{.agent_instruction}}",
-		"",
-		"Default behavior:",
-		"{{.default_behavior}}",
-		"",
-		"{{.skill_behavior}}",
-		"",
-		"Available skills:",
-		"{{.skill_catalog}}",
-		"",
-		"Active skills:",
-		"{{.skill_instructions}}",
-		"",
-		"Runtime context:",
-		"{{.runtime_context}}",
-		"",
-		"Conversation history:",
-		"{{.history}}",
-		"",
-		"You can use the following tools:",
-		"{{.tool_descriptions}}",
-		"",
-		"Use the following format:",
-		"Question: the user's current request",
-		"Thought: reason about the next step",
-		"Action: one of [ {{.tool_names}} ]",
-		"Action Input: a valid JSON string for the selected tool, unless that tool explicitly accepts bare text",
-		"Observation: the tool result",
-		"... (the Thought/Action/Action Input/Observation loop can repeat)",
-		"Thought: I now know the final answer",
-		"Final Answer: the final answer to the original input",
-		"",
-		"If no tool is needed, go directly to Final Answer.",
-		"",
-		"Begin!",
-		"",
-		"Question: {{.input}}",
-		"{{.agent_scratchpad}}",
-	}, "\n")
-
-	return prompts.PromptTemplate{
-		Template:       template,
-		TemplateFormat: prompts.TemplateFormatGoTemplate,
-		InputVariables: []string{"input", "history", "agent_scratchpad"},
-		PartialVariables: map[string]any{
-			"agent_name":         agentName,
-			"current_date":       currentDateContext(),
-			"agent_instruction":  combinedAgentInstruction(cfg),
-			"default_behavior":   defaultAgentBehavior(),
-			"skill_behavior":     skillBehavior(),
-			"skill_catalog":      skills.CatalogSummary(),
-			"skill_instructions": skills.CombinedInstructions(),
-			"runtime_context":    runtimeContextOrNone(cfg),
-			"tool_names":         joinToolNames(availableTools),
-			"tool_descriptions":  describeTools(availableTools),
-		},
-	}
-}
-
-func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool) string {
+func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills) string {
 	parts := []string{
 		"You are Aiden AI agent.",
 		currentDateContext(),
@@ -111,9 +44,6 @@ func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, ava
 		)
 	}
 	parts = append(parts,
-		"",
-		"You can use the following tools:",
-		describeTools(availableTools),
 		"",
 		"If no tool is needed, answer directly.",
 	)
@@ -254,27 +184,4 @@ func skillBehavior() string {
 		"- skill_manage 只能维护 configDir/skills 下的 skills，以及 references/、templates/、scripts/、assets/ 下的 supporting files。",
 		"- 不要直接修改 bundled source 或 configDir/skill-state 文件。",
 	}, "\n")
-}
-
-func joinToolNames(availableTools []langtools.Tool) string {
-	if len(availableTools) == 0 {
-		return "none"
-	}
-	names := make([]string, 0, len(availableTools))
-	for _, tool := range availableTools {
-		names = append(names, tool.Name())
-	}
-	return strings.Join(names, ", ")
-}
-
-func describeTools(availableTools []langtools.Tool) string {
-	if len(availableTools) == 0 {
-		return "- none: answer directly without using a tool"
-	}
-
-	var builder strings.Builder
-	for _, tool := range availableTools {
-		builder.WriteString(fmt.Sprintf("- %s: %s\n", tool.Name(), tool.Description()))
-	}
-	return strings.TrimRight(builder.String(), "\n")
 }
