@@ -529,10 +529,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			episodeID:    episodeID,
 		}
 	}
-	if streamCallbackHandler != nil {
-		availableTools = wrapToolsWithCallbacks(availableTools, streamCallbackHandler)
-	}
-
 	var executorHandler callbacks.Handler
 	if streamCallbackHandler != nil {
 		executorHandler = streamCallbackHandler
@@ -1014,20 +1010,6 @@ func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *te
 	}()
 }
 
-func wrapToolsWithCallbacks(tools []langtools.Tool, handler callbacks.Handler) []langtools.Tool {
-	if handler == nil {
-		return tools
-	}
-	wrapped := make([]langtools.Tool, 0, len(tools))
-	for _, tool := range tools {
-		wrapped = append(wrapped, &callbackTool{
-			inner:   tool,
-			handler: handler,
-		})
-	}
-	return wrapped
-}
-
 func (r *Runtime) buildAgent(
 	model llms.Model,
 	skills ResolvedSkills,
@@ -1260,6 +1242,63 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 			Content:   "error: " + err.Error(),
 			Timestamp: time.Now(),
 			IsError:   true,
+		})
+	}
+}
+
+func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call ToolCall) {
+	description := call.Description
+	if description == "" {
+		description = toolDescriptionOrFallback(call.Spec.Name, "")
+	}
+	if h.logger != nil {
+		if description != "" {
+			h.logger.Info("Tool call: name=%s input=%s description=%s",
+				call.Spec.Name, truncateForLog(call.Input, 240), truncateForLog(description, 240))
+		} else {
+			h.logger.Info("Tool call: name=%s input=%s",
+				call.Spec.Name, truncateForLog(call.Input, 240))
+		}
+	}
+	if h.eventHandler != nil {
+		h.eventHandler(RunEvent{
+			Type:        "tool_call",
+			EpisodeID:   h.episodeID,
+			ToolName:    call.Spec.Name,
+			ToolInput:   call.Input,
+			Description: description,
+			Content:     description,
+			Timestamp:   time.Now(),
+		})
+	}
+}
+
+func (h *runtimeCallbackHandler) BeforeToolCall(ctx context.Context, call ToolCall) (ToolResult, bool) {
+	return DefaultBeforeToolCall(ctx, call)
+}
+
+func (h *runtimeCallbackHandler) AfterToolCall(ctx context.Context, call ToolCall, result ToolResult) ToolResult {
+	return DefaultAfterToolCall(ctx, call, result)
+}
+
+func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call ToolCall, result ToolResult) {
+	output := result.EventOutput()
+	if h.logger != nil {
+		if result.IsError {
+			h.logger.Error("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
+		} else {
+			h.logger.Info("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
+		}
+	}
+	if h.eventHandler != nil {
+		h.eventHandler(RunEvent{
+			Type:      "tool_result",
+			EpisodeID: h.episodeID,
+			ToolName:  call.Spec.Name,
+			ToolInput: call.Input,
+			Content:   output,
+			Timestamp: time.Now(),
+			IsError:   result.IsError,
 		})
 	}
 }
