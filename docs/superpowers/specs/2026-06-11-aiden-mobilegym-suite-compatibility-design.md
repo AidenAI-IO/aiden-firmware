@@ -277,8 +277,6 @@ Aiden suite 中的 `setup` 和 `global_reset` 是 `tool_sequence`，针对 Aiden
 
 #### 3.5 评判处理（rubric / hard_assertions）
 
-#### 3.5 评判处理（rubric / hard_assertions）
-
 Aiden suite 的评判由 Aiden runner 的 judge（LLM-as-judge，参见 `benchmark/runner/judge.py`）和 hard_assertions 检查完成。MobileGym 自带 evaluator（`bench_env.evaluator`），与 Aiden judge 不兼容。
 
 **策略：** MobileGym 模式下跑 Aiden suite 时，禁用 MobileGym evaluator，改在 task 完成后回调 Aiden judge：

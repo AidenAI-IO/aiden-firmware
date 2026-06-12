@@ -29,7 +29,7 @@ cat > "$PLIST" <<EOF
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>-lc</string>
+    <string>-c</string>
     <string>cd "$REPO_ROOT" &amp;&amp; exec uv run --project benchmark python benchmark/mobilegym/scripts/local_launcher.py --host 127.0.0.1 --port 4174</string>
   </array>
   <key>RunAtLoad</key>

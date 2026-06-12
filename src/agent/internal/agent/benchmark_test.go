@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -417,6 +418,11 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 			t.Errorf("body should not expose %q", marker)
 		}
 	}
+	for _, marker := range []string{`tr.innerHTML='<td>'+r.run_id`, `+'<td>'+reportCell(r)+'</td>'`} {
+		if strings.Contains(body, marker) {
+			t.Errorf("history table should avoid unsafe innerHTML marker %q", marker)
+		}
+	}
 }
 
 func TestHandleBenchmarkRun_RejectsMissingSuite(t *testing.T) {
@@ -495,6 +501,65 @@ func TestHandleBenchmarkRun_RejectsMissingJudgeAPIKey(t *testing.T) {
 	}
 	if called {
 		t.Fatal("launcher should not be invoked without benchmark api key")
+	}
+	stateData, err := os.ReadFile(statePath)
+	if err == nil && strings.Contains(string(stateData), `"status":"running"`) {
+		t.Fatalf("unexpected running state written: %s", stateData)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read state file: %v", err)
+	}
+}
+
+func TestHandleBenchmarkRun_DoesNotWriteRunningStateWhenAidenLaunchFails(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	s := &Server{
+		runtime: &Runtime{config: Config{
+			Benchmark: BenchmarkConfig{APIKey: "sk-judge"},
+		}},
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error {
+			return errors.New("boom")
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run",
+		strings.NewReader(`{"suite":"/tmp/x.json"}`))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	stateData, err := os.ReadFile(statePath)
+	if err == nil && strings.Contains(string(stateData), `"status":"running"`) {
+		t.Fatalf("unexpected running state written: %s", stateData)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read state file: %v", err)
+	}
+}
+
+func TestHandleBenchmarkRun_DoesNotWriteRunningStateWhenMobileGymLaunchFails(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	s := &Server{
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkMobileGymLauncher: func(suite, suiteType string, parallel, limit int) error {
+			return errors.New("boom")
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run",
+		strings.NewReader(`{"suite":"clock","suite_type":"mobilegym_builtin","mode":"mobilegym"}`))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
 	}
 	stateData, err := os.ReadFile(statePath)
 	if err == nil && strings.Contains(string(stateData), `"status":"running"`) {

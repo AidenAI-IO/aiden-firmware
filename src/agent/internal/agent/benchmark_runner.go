@@ -114,6 +114,10 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"benchmark judge api_key is not configured"}`, http.StatusBadRequest)
 			return
 		}
+		if err := launch(spec, judge, apiKey, agentModel); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"launch failed: %s"}`, err), http.StatusInternalServerError)
+			return
+		}
 		stateJSON, _ := json.Marshal(map[string]any{
 			"status": "running",
 			"mode":   "aiden",
@@ -122,10 +126,6 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		})
 		if err := os.WriteFile(statePath, stateJSON, 0o644); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
-			return
-		}
-		if err := launch(spec, judge, apiKey, agentModel); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"launch failed: %s"}`, err), http.StatusInternalServerError)
 			return
 		}
 	case "mobilegym":
@@ -140,6 +140,14 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		if req.Parallel < 1 {
 			req.Parallel = 1
 		}
+		launch := s.benchmarkMobileGymLauncher
+		if launch == nil {
+			launch = s.launchMobileGymRunner
+		}
+		if err := launch(req.Suite, req.SuiteType, req.Parallel, req.Limit); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"mobilegym launch failed: %s"}`, err), http.StatusInternalServerError)
+			return
+		}
 		stateJSON, _ := json.Marshal(map[string]any{
 			"status":     "running",
 			"mode":       "mobilegym",
@@ -149,14 +157,6 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		})
 		if err := os.WriteFile(statePath, stateJSON, 0o644); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
-			return
-		}
-		launch := s.benchmarkMobileGymLauncher
-		if launch == nil {
-			launch = s.launchMobileGymRunner
-		}
-		if err := launch(req.Suite, req.SuiteType, req.Parallel, req.Limit); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"mobilegym launch failed: %s"}`, err), http.StatusInternalServerError)
 			return
 		}
 	default:

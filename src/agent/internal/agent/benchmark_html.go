@@ -255,12 +255,30 @@ if(p.endsWith('.json'))p=p.slice(0,-5);
 return p;
 }
 function progressText(r){return r.progress||((r.totals&&r.totals.tasks)?((r.totals.tasks)+'/'+(r.totals.tasks)):'—')}
+function appendTextCell(tr,value,className){
+var td=document.createElement('td');
+if(className)td.className=className;
+td.textContent=value==null?'':String(value);
+tr.appendChild(td);
+return td;
+}
 function reportCell(r){
+var td=document.createElement('td');
 var t=r.totals||{};
 var total=Number(t.tasks||0);
-if((r.status||'done')!=='done'||total<1)return '<span class="not-ready">Not ready</span>';
+if((r.status||'done')!=='done'||total<1){
+var span=document.createElement('span');
+span.className='not-ready';
+span.textContent='Not ready';
+td.appendChild(span);
+return td;
+}
 var reportHref=benchmarkEndpoint('/benchmark/report/')+encodeURIComponent(r.run_id);
-return '<a href="'+reportHref+'">View</a>';
+var link=document.createElement('a');
+link.href=reportHref;
+link.textContent='View';
+td.appendChild(link);
+return td;
 }
 function loadRuns(){
 fetch(benchmarkEndpoint('/benchmark/runs')).then(r=>r.json()).then(d=>{
@@ -270,13 +288,24 @@ d.forEach(function(r){
 var t=r.totals||{};var suite=r.suite||'';
 var sn=suite.split('/').pop().replace('.json','');
 var tr=document.createElement('tr');
-tr.innerHTML='<td>'+r.run_id+'</td><td>'+sn+'</td><td>'+(r.status||'done')+'</td><td>'+progressText(r)+'</td><td>'+(r.model||'—')+'</td>'
-+'<td class="pass">'+(t.passed||0)+'</td><td class="fail">'+(t.failed||0)+'</td>'
-+'<td>'+reportCell(r)+'</td>';
+appendTextCell(tr,r.run_id);
+appendTextCell(tr,sn);
+appendTextCell(tr,r.status||'done');
+appendTextCell(tr,progressText(r));
+appendTextCell(tr,r.model||'—');
+appendTextCell(tr,t.passed||0,'pass');
+appendTextCell(tr,t.failed||0,'fail');
+tr.appendChild(reportCell(r));
 tb.appendChild(tr)});
 }).catch(function(e){
 var tb=document.getElementById('historyBody');
-tb.innerHTML='<tr><td colspan="8">'+(getMode()==='mobilegym'?mobileGymLauncherMessage(e):'Failed to load runs')+'</td></tr>';
+tb.innerHTML='';
+var tr=document.createElement('tr');
+var td=document.createElement('td');
+td.colSpan=8;
+td.textContent=getMode()==='mobilegym'?mobileGymLauncherMessage(e):'Failed to load runs';
+tr.appendChild(td);
+tb.appendChild(tr);
 })}
 function loadStatus(){
 fetch(benchmarkEndpoint('/benchmark/status')).then(r=>r.json()).then(d=>{

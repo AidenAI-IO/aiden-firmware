@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import threading
 import urllib.request
 from http.server import HTTPServer
@@ -241,6 +242,8 @@ def test_local_launcher_installer_registers_launchd_service():
 
     assert "com.aiden.mobilegym-local-launcher" in script
     assert "benchmark/mobilegym/scripts/local_launcher.py" in script
+    assert "<string>-c</string>" in script
+    assert "<string>-lc</string>" not in script
     assert "--host 127.0.0.1" in script
     assert "--port 4174" in script
     assert "MOBILEGYM_DOCKER_PROXY" in script
@@ -248,3 +251,14 @@ def test_local_launcher_installer_registers_launchd_service():
     assert 'if [[ -n "${MOBILEGYM_DOCKER_PROXY:-}" ]]' in script
     assert "MOBILEGYM_PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST" in script
     assert "launchctl bootstrap gui/$UID" in script
+
+
+def test_local_launcher_uses_user_specific_temp_paths(launcher_module):
+    paths = [launcher_module.LOG_PATH, launcher_module.PID_PATH]
+
+    assert paths[0].parent == paths[1].parent
+    assert "mobilegym" in paths[0].parent.name
+    assert str(os.getuid()) in paths[0].parent.name
+    assert paths[0] != Path("/tmp/mobilegym_run.log")
+    assert paths[1] != Path("/tmp/mobilegym_runner.pid")
+    assert paths[0].parent.stat().st_mode & 0o777 == 0o700

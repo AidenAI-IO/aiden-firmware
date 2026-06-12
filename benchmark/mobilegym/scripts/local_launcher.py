@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,8 +21,11 @@ SCRIPT_PATH = Path(__file__).resolve()
 BENCHMARK_ROOT = SCRIPT_PATH.parents[2]
 HOST = "127.0.0.1"
 PORT = 4174
-LOG_PATH = Path("/tmp/mobilegym_run.log")
-PID_PATH = Path("/tmp/mobilegym_runner.pid")
+_USER_TEMP = Path(tempfile.gettempdir()) / f"mobilegym-{os.getuid()}"
+_USER_TEMP.mkdir(mode=0o700, exist_ok=True)
+_USER_TEMP.chmod(0o700)
+LOG_PATH = _USER_TEMP / "mobilegym_run.log"
+PID_PATH = _USER_TEMP / "mobilegym_runner.pid"
 STATE_NAME = "state.json"
 TAIL_BYTES = 64 * 1024
 

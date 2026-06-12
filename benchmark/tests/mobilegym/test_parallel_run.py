@@ -295,6 +295,38 @@ def test_parallel_run_shards_suite_and_writes_worker_metadata(tmp_path):
     assert (batch_dir / "phone_control_v1" / "shard-0" / "compose.log").exists()
 
 
+def test_parallel_run_rejects_unsafe_suite_names(tmp_path):
+    log_path = install_fake_docker(tmp_path)
+    env = make_env(tmp_path, log_path, PARALLEL="1")
+
+    result = subprocess.run(
+        ["./parallel_run.sh", "--suite", "../evil"],
+        cwd=DOCKER_DIR,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "invalid suite name" in result.stderr
+    assert not command_lines(log_path.read_text().splitlines(), " run --rm test ")
+
+
+def test_parallel_run_allows_nested_aiden_suite_names(tmp_path):
+    result, lines, batch_dir = run_parallel(
+        tmp_path,
+        ["--aiden-suite", "perception/perception_v1"],
+        PARALLEL="1",
+    )
+
+    assert result.returncode == 0, result.stderr
+    run_line = command_lines(lines, " run --rm test ")[0]
+    assert "--aiden-suite perception/perception_v1" in run_line
+    assert (batch_dir / "perception" / "perception_v1" / "shard-0").exists()
+
+
 def test_parallel_run_renders_agent_template_from_environment(tmp_path):
     source_config = tmp_path / "source-config"
     source_config.mkdir()

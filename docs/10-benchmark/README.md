@@ -102,5 +102,5 @@ Benchmark 支持两种执行模式：
 （clock、alipay、wechat 等）只在 MobileGym 模式可用，从 `benchmark/mobilegym/suites/all_tasks.txt`
 聚合发现。
 
-Web UI `/benchmark` 上的「Aiden Native / MobileGym」单选切换两种模式，MobileGym 模式
-下额外提供并发数与任务数限制输入框。
+Web UI `/benchmark` 上的「Aiden Native / MobileGym」单选切换两种模式。MobileGym 模式
+当前只提供并发数控制；`/benchmark` 页面暂不提供任务数限制输入框，也不会在启动 payload 中发送 `limit`。

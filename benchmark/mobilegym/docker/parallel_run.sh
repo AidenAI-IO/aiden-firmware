@@ -31,6 +31,23 @@ require_positive_int() {
     fi
 }
 
+validate_suite_name() {
+    local suite="$1"
+    local part
+    local -a parts
+    if [[ -z "$suite" || "$suite" == /* ]]; then
+        echo "Error: invalid suite name: '$suite'" >&2
+        exit 2
+    fi
+    IFS='/' read -r -a parts <<< "$suite"
+    for part in "${parts[@]}"; do
+        if [[ -z "$part" || "$part" == "." || "$part" == ".." || ! "$part" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+            echo "Error: invalid suite name: '$suite'" >&2
+            exit 2
+        fi
+    done
+}
+
 require_positive_int PARALLEL "$PARALLEL"
 if [[ -n "${MAX_JOBS:-}" ]]; then
     require_positive_int MAX_JOBS "$MAX_JOBS"
@@ -659,6 +676,7 @@ if [[ "$1" == "--aiden-suite" ]]; then
         echo "Error: --aiden-suite requires a suite name" >&2
         exit 2
     fi
+    validate_suite_name "$2"
     for i in $(seq 0 $((PARALLEL - 1))); do
         WORK_ITEMS+=("aiden_suite|$2|$i|$PARALLEL||shard-$i")
     done
@@ -667,6 +685,7 @@ elif [[ "$1" == "--suite" ]]; then
         echo "Error: --suite requires a suite name" >&2
         exit 1
     fi
+    validate_suite_name "$2"
     for i in $(seq 0 $((PARALLEL - 1))); do
         WORK_ITEMS+=("suite|$2|$i|$PARALLEL||shard-$i")
     done
@@ -677,6 +696,7 @@ elif [[ "$1" == "--suites" ]]; then
     fi
     suites="${2//,/ }"
     for suite in $suites; do
+        validate_suite_name "$suite"
         for i in $(seq 0 $((PARALLEL - 1))); do
             WORK_ITEMS+=("suite|$suite|$i|$PARALLEL||shard-$i")
         done
