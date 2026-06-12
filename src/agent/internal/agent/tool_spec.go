@@ -71,11 +71,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		InputMode:    toolInputModeText,
 		ExampleInput: `{"timezone":"Asia/Shanghai"}`,
 	},
-	"enter_sleep": {
-		Category:     "system",
-		InputMode:    toolInputModeText,
-		ExampleInput: `{"reason":"user asked me to sleep"}`,
-	},
 	"inspect_episode": {
 		Category:     "memory",
 		InputMode:    toolInputModeJSON,

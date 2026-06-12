@@ -8,7 +8,7 @@ import (
 )
 
 func TestAgentExposedToolsDoNotExposeLegacyArg1Schema(t *testing.T) {
-	toolSet := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}, WithSleepController(&SleepController{}))
+	toolSet := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
 	tools := append([]langtools.Tool{}, toolSet.All()...)
 	tools = append(tools,
 		NewRecallSessionChunksTool(nil),

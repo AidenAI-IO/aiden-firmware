@@ -266,64 +266,6 @@ func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 	}
 }
 
-func TestAudioDialogDoesNotSpeakEnterSleepToolDescription(t *testing.T) {
-	toolSpeech := true
-	provider := &recordingTTSProvider{name: "dialog-provider"}
-	dialog := &AudioDialog{
-		config: Config{
-			VoiceToolCallSpeech: &toolSpeech,
-		},
-		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
-		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
-	}
-
-	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:        "tool_call",
-		ToolName:    "enter_sleep",
-		Description: "用户让我休息，我准备进入睡眠模式。",
-	})
-
-	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
-}
-
-func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
-	model := &scriptedModel{
-		responses: roleToolResponses("enter_sleep", `{"__arg1":"{\"reason\":\"user asked\"}"}`, "I will wait for the next wakeup."),
-	}
-	controller := NewSleepController()
-	runtime := NewRuntimeWithDeps(
-		Config{
-			Model:       ModelConfig{Provider: "fake"},
-			Instruction: "Use tools when external state is requested.",
-		},
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{
-			"enter_sleep": NewEnterSleepTool(controller),
-		}},
-		NewSkillIndex(),
-	)
-	dialog := &AudioDialog{
-		config: Config{
-			Model:                    ModelConfig{Provider: "fake"},
-			VoiceStreamingTTSEnabled: boolPtr(true),
-		},
-		audioClient: NewAudioServiceClient(filepath.Join(t.TempDir(), "missing-audio.sock")),
-		ttsManager:  ttsmodule.NewProviderManager(&recordingTTSProvider{name: "dialog-provider"}, nil),
-	}
-
-	result, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "go to sleep"}, runtime)
-	if err != nil {
-		t.Fatalf("RunAgentTurn() error = %v", err)
-	}
-	if !result.SleepRequested {
-		t.Fatal("SleepRequested = false, want true even when streaming speech fails")
-	}
-	if result.SpeechStreamed {
-		t.Fatal("SpeechStreamed = true, want false when TTS playback failed before successful speech")
-	}
-}
-
 func boolPtr(value bool) *bool {
 	return &value
 }

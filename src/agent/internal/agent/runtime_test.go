@@ -904,36 +904,6 @@ func TestRuntimeAllowsRepeatedKeyboardText(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunReportsEnterSleepToolRequest(t *testing.T) {
-	model := &scriptedModel{
-		responses: roleToolResponses("enter_sleep", `{"__arg1":"{\"reason\":\"user asked\"}"}`, "I will wait for the next wakeup."),
-	}
-	controller := NewSleepController()
-	runtime := NewRuntimeWithDeps(
-		Config{
-			Model:       ModelConfig{Provider: "fake"},
-			Instruction: "Use tools when external state is requested.",
-		},
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{
-			"enter_sleep": NewEnterSleepTool(controller),
-		}},
-		NewSkillIndex(),
-	)
-
-	result, err := runtime.Run(context.Background(), RunRequest{Input: "go to sleep"})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if !result.SleepRequested || result.SleepReason != "user asked" {
-		t.Fatalf("sleep request = %v %q, want true user asked", result.SleepRequested, result.SleepReason)
-	}
-	if result.Output != "I will wait for the next wakeup." {
-		t.Fatalf("unexpected output: %q", result.Output)
-	}
-}
-
 func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),

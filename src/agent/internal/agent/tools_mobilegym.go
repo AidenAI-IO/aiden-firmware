@@ -105,12 +105,6 @@ type mobileGymPoint struct {
 }
 
 func newMobileGymToolSet(cfg Config, proxyCfg ProxyConfig, mobileGym *mobileGymSessionStore, options ...BuiltinToolSetOption) *ToolSet {
-	toolOptions := builtinToolSetOptions{}
-	for _, option := range options {
-		if option != nil {
-			option(&toolOptions)
-		}
-	}
 	if mobileGym == nil {
 		mobileGym = &mobileGymSessionStore{}
 	}
@@ -128,9 +122,6 @@ func newMobileGymToolSet(cfg Config, proxyCfg ProxyConfig, mobileGym *mobileGymS
 		"screenshot":    screenshot,
 		"current_time":  NewCurrentTimeTool(),
 		"calculator":    NewCalculatorTool(),
-	}
-	if toolOptions.sleepController != nil {
-		tools["enter_sleep"] = NewEnterSleepTool(toolOptions.sleepController)
 	}
 	return &ToolSet{tools: tools, screen: screen}
 }
