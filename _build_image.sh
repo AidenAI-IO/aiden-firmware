@@ -5,11 +5,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OVERLAY="$SCRIPT_DIR/overlay"
 PICO_SDK="$SCRIPT_DIR/pico-sdk"
 DEST_OVERLAY="$PICO_SDK/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buildroot-aiden"
+BUILD_IMAGE_ARGS=("$@")
+SDK_STAGE_CACHE_VERSION=1
+SDK_STAGE_STATE_DIR="$PICO_SDK/output/.aiden_stage_state"
 
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
-    # Keep filesystem image metadata stable across releases when their payloads
-    # did not change. Callers can still set SOURCE_DATE_EPOCH explicitly.
-    SOURCE_DATE_EPOCH="${AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-0}"
+    # Keep image metadata stable without relying on every package treating epoch 0
+    # as truthy. Callers can still set SOURCE_DATE_EPOCH explicitly, including 0.
+    SOURCE_DATE_EPOCH="${AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-1}"
 fi
 if ! [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
     echo "SOURCE_DATE_EPOCH must be an unsigned Unix timestamp: $SOURCE_DATE_EPOCH" >&2
@@ -33,6 +36,107 @@ require_rknnmrt_version() {
         echo "  ✗ Error: RKNN runtime $version is too old for silero_vad_rv1106.rknn; use librknnmrt >= 2.3.x" >&2
         exit 1
     fi
+}
+
+hash_stage_path() {
+    local path="$1"
+    local target resolved
+
+    if [ -L "$path" ]; then
+        target="$(readlink "$path")"
+        printf 'link %s -> %s\n' "$path" "$target"
+        case "$target" in
+            /*) resolved="$target" ;;
+            *) resolved="$(dirname "$path")/$target" ;;
+        esac
+        if [ -e "$resolved" ]; then
+            hash_stage_path "$resolved"
+        fi
+    elif [ -d "$path" ]; then
+        printf 'dir %s\n' "$path"
+        (
+            cd "$path"
+            find . -xdev \( -type f -o -type l \) -print0 |
+                LC_ALL=C sort -z |
+                while IFS= read -r -d '' rel_path; do
+                    if [ -L "$rel_path" ]; then
+                        printf 'link %s/%s -> %s\n' "$path" "$rel_path" "$(readlink "$rel_path")"
+                    else
+                        printf 'file %s/%s\n' "$path" "$rel_path"
+                        sha256sum "$rel_path"
+                    fi
+                done
+        )
+    elif [ -f "$path" ]; then
+        printf 'file %s\n' "$path"
+        sha256sum "$path"
+    else
+        printf 'missing %s\n' "$path"
+    fi
+}
+
+sdk_stage_state() {
+    local stage="$1"
+    shift
+
+    {
+        printf 'cache-version=%s\n' "$SDK_STAGE_CACHE_VERSION"
+        printf 'stage=%s\n' "$stage"
+        printf 'source-date-epoch=%s\n' "$SOURCE_DATE_EPOCH"
+        printf 'sdk-head=%s\n' "$(git -C "$PICO_SDK" rev-parse HEAD 2>/dev/null || echo unknown)"
+        printf 'build-arg-count=%s\n' "${#BUILD_IMAGE_ARGS[@]}"
+        for arg in "${BUILD_IMAGE_ARGS[@]}"; do
+            printf 'build-arg=%q\n' "$arg"
+        done
+        for input in "$@"; do
+            hash_stage_path "$input"
+        done
+    } | sha256sum | awk '{print $1}'
+}
+
+sdk_stage_outputs_exist() {
+    local output_list="$1"
+    local output
+
+    IFS='|' read -r -a outputs <<<"$output_list"
+    for output in "${outputs[@]}"; do
+        if [ ! -e "$output" ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+run_cached_sdk_stage() {
+    local stage="$1"
+    local output_list="$2"
+    shift 2
+    local stamp="$SDK_STAGE_STATE_DIR/$stage.sha256"
+    local state
+
+    state="$(sdk_stage_state "$stage" "$@")"
+    if sdk_stage_outputs_exist "$output_list" && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$state" ]; then
+        echo "  - Skipping pico-sdk $stage (cached outputs match inputs)"
+        return 0
+    fi
+
+    echo "  - Running pico-sdk $stage"
+    ./build.sh "$stage" "${BUILD_IMAGE_ARGS[@]}"
+    if ! sdk_stage_outputs_exist "$output_list"; then
+        echo "  ✗ Error: pico-sdk $stage completed but expected outputs are missing: $output_list" >&2
+        exit 1
+    fi
+    mkdir -p "$SDK_STAGE_STATE_DIR"
+    printf '%s\n' "$state" > "$stamp"
+}
+
+load_sdk_board_config() {
+    if [ -f "$PICO_SDK/.BoardConfig.mk" ]; then
+        source "$PICO_SDK/.BoardConfig.mk"
+    fi
+
+    : "${RK_CHIP:=rv1106}"
+    : "${RK_LIBC_TPYE:=glibc}"
 }
 
 echo "=== Aiden Hardware Demo - Image Builder ==="
@@ -153,21 +257,35 @@ fi
 # Step 4: 运行 pico-sdk 构建，overlay 注入后只打包一次 firmware，避免 A/B 大镜像重复生成。
 echo "[4/6] Running pico-sdk build stages..."
 cd "$PICO_SDK"
-./build.sh sysdrv "$@"
-./build.sh media "$@"
-./build.sh app "$@"
+load_sdk_board_config
+SDK_ROOT_DIR="$PICO_SDK"
+RK_PROJECT_OUTPUT="${SDK_ROOT_DIR}/output/out"
+RK_PROJECT_OUTPUT_IMAGE="${SDK_ROOT_DIR}/output/image"
+RK_PROJECT_PACKAGE_ROOTFS_DIR="${RK_PROJECT_OUTPUT}/rootfs_${RK_LIBC_TPYE}_${RK_CHIP}"
+RK_PROJECT_PACKAGE_OEM_DIR="${RK_PROJECT_OUTPUT}/oem"
+RK_PROJECT_PACKAGE_USERDATA_DIR="${RK_PROJECT_OUTPUT}/userdata"
+
+run_cached_sdk_stage \
+    sysdrv \
+    "$RK_PROJECT_OUTPUT/sysdrv_out|$RK_PROJECT_PACKAGE_ROOTFS_DIR|$RK_PROJECT_OUTPUT_IMAGE/idblock.img|$RK_PROJECT_OUTPUT_IMAGE/uboot.img" \
+    "$PICO_SDK/.BoardConfig.mk" \
+    "$DEST_OVERLAY"
+run_cached_sdk_stage \
+    media \
+    "$RK_PROJECT_OUTPUT/media_out" \
+    "$PICO_SDK/.BoardConfig.mk"
+run_cached_sdk_stage \
+    app \
+    "$RK_PROJECT_OUTPUT/app_out" \
+    "$PICO_SDK/.BoardConfig.mk"
 
 # Step 5: 获取输出路径并复制 oem/userdata 内容
 echo "[5/6] Injecting oem and userdata content..."
 
 # Source board config to get paths
-if [ -f "$PICO_SDK/.BoardConfig.mk" ]; then
-    source "$PICO_SDK/.BoardConfig.mk"
-fi
+load_sdk_board_config
 
 # 设置默认值
-: ${RK_CHIP:=rv1106}
-: ${RK_LIBC_TPYE:=glibc}
 SDK_ROOT_DIR="$PICO_SDK"
 RK_PROJECT_OUTPUT="${SDK_ROOT_DIR}/output/out"
 RK_PROJECT_OUTPUT_IMAGE="${SDK_ROOT_DIR}/output/image"
@@ -219,7 +337,7 @@ cd "$PICO_SDK/project"
 if [ -d "$RK_PROJECT_PACKAGE_OEM_DIR" ] && [ "$(ls -A "$RK_PROJECT_PACKAGE_OEM_DIR")" ]; then
     echo "  → Rebuilding oem.img..."
     firmware_log="$(mktemp)"
-    ./build.sh firmware "$@" > "$firmware_log" 2>&1
+    ./build.sh firmware "${BUILD_IMAGE_ARGS[@]}" > "$firmware_log" 2>&1
     grep -E "(oem|userdata|update)" "$firmware_log" || true
     rm -f "$firmware_log"
     echo "  ✓ Images rebuilt"

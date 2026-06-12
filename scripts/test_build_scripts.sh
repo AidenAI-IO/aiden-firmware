@@ -52,18 +52,133 @@ if grep -q 'build.sh firmware .*|| true' "$ROOT_DIR/_build_image.sh"; then
     exit 1
 fi
 
+if grep -Fq 'rm -rf "$BUILD_DIR"' "$BUILD_SH"; then
+    echo "_build.sh must preserve the CMake build directory for incremental rebuilds" >&2
+    exit 1
+fi
+
+if ! grep -q 'cmake --build "$BUILD_DIR" --parallel' "$BUILD_SH"; then
+    echo "_build.sh must use parallel CMake builds for changed native targets" >&2
+    exit 1
+fi
+
+if grep -Fq 'GOCACHE="/tmp/go-cache"' "$BUILD_SH" || \
+   grep -Fq 'GOMODCACHE="/tmp/go-mod"' "$BUILD_SH" || \
+   grep -Fq 'GOPATH="/tmp/gopath"' "$BUILD_SH"; then
+    echo "_build.sh must keep Go caches in a persistent workspace directory, not Docker's ephemeral /tmp" >&2
+    exit 1
+fi
+
+if grep -Eq '^ROOT_DIR="\./"?$' "$BUILD_SH"; then
+    echo "_build.sh must resolve ROOT_DIR to an absolute script directory so cache paths are valid for Go" >&2
+    exit 1
+fi
+
+tmp_build_test=$(mktemp -d)
+trap 'rm -rf "$tmp_build_test"' EXIT HUP INT TERM
+mkdir -p "$tmp_build_test/repo/src/agent" "$tmp_build_test/bin"
+cp "$BUILD_SH" "$tmp_build_test/repo/_build.sh"
+chmod +x "$tmp_build_test/repo/_build.sh"
+
+cat >"$tmp_build_test/bin/cmake" <<'EOF'
+#!/bin/sh
+set -eu
+case "$1" in
+  -S)
+    case "$2" in /*) ;; *) echo "cmake source dir must be absolute: $2" >&2; exit 1 ;; esac
+    case "$4" in /*) ;; *) echo "cmake build dir must be absolute: $4" >&2; exit 1 ;; esac
+    mkdir -p "$4/bin" "$4/lib"
+    touch "$4/lib/libaiden.a"
+    ;;
+  --build)
+    case "$2" in /*) ;; *) echo "cmake --build dir must be absolute: $2" >&2; exit 1 ;; esac
+    if [ "$3" != "--parallel" ] || [ -z "${4:-}" ]; then
+      echo "cmake build must pass --parallel with a job count" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "unexpected cmake args: $*" >&2
+    exit 1
+    ;;
+esac
+EOF
+
+cat >"$tmp_build_test/bin/go" <<'EOF'
+#!/bin/sh
+set -eu
+if [ "$1" = "build" ]; then
+  case "${GOCACHE:-}" in /*/build/.cache/go-build) ;; *) echo "GOCACHE must be an absolute workspace cache: ${GOCACHE:-}" >&2; exit 1 ;; esac
+  case "${GOMODCACHE:-}" in /*/build/.cache/go-mod) ;; *) echo "GOMODCACHE must be an absolute workspace cache: ${GOMODCACHE:-}" >&2; exit 1 ;; esac
+  case "${GOPATH:-}" in /*/build/.cache/gopath) ;; *) echo "GOPATH must be an absolute workspace cache: ${GOPATH:-}" >&2; exit 1 ;; esac
+  if [ "${GOTOOLCHAIN:-}" != "local" ]; then
+    echo "GOTOOLCHAIN must be local" >&2
+    exit 1
+  fi
+  out=
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-o" ]; then
+      shift
+      out="$1"
+      break
+    fi
+    shift
+  done
+  case "$out" in
+    /*/build/bin/agent|*/build/bin/ota|*/build/bin/abctl) ;;
+    *) echo "go output must target build/bin with an absolute or repo-local path: $out" >&2; exit 1 ;;
+  esac
+  mkdir -p "$(dirname "$out")"
+  touch "$out"
+  exit 0
+fi
+echo "unexpected go args: $*" >&2
+exit 1
+EOF
+
+cat >"$tmp_build_test/bin/git" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' testsha
+EOF
+
+chmod +x "$tmp_build_test/bin/cmake" "$tmp_build_test/bin/go" "$tmp_build_test/bin/git"
+(
+  cd "$tmp_build_test"
+  PATH="$tmp_build_test/bin:$PATH" CMAKE_BUILD_PARALLEL_LEVEL=3 "$tmp_build_test/repo/_build.sh" >/dev/null
+)
+
+if grep -Fq 'rm -rf pico-sdk/output/out' "$WORKFLOW"; then
+    echo "build workflow must preserve pico-sdk/output/out so self-hosted release builds can reuse intermediate artifacts" >&2
+    exit 1
+fi
+
+if grep -Eq 'pico-sdk/output/image/\*\.img([[:space:]\\]|$)' "$WORKFLOW"; then
+    echo "build workflow must not delete every pico-sdk output image; cached sysdrv outputs such as idblock.img and uboot.img are reused" >&2
+    exit 1
+fi
+
 if grep -q './build.sh all' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must not run build.sh all before overlay injection; it creates large A/B images twice" >&2
     exit 1
 fi
 
-if ! grep -q './build.sh sysdrv' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -q './build.sh media' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -q './build.sh app' "$ROOT_DIR/_build_image.sh" || \
+if ! grep -q 'SDK_STAGE_STATE_DIR=' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -q 'run_cached_sdk_stage' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -q 'build-arg-count=' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -q 'build-arg=%q' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -q 'Skipping pico-sdk $stage (cached outputs match inputs)' "$ROOT_DIR/_build_image.sh" || \
    ! grep -q './build.sh firmware' "$ROOT_DIR/_build_image.sh"; then
-    echo "_build_image.sh must build components first, inject overlay, then package firmware once" >&2
+    echo "_build_image.sh must cache reusable SDK stages, inject overlay, then package firmware once" >&2
     exit 1
 fi
+
+for sdk_stage in sysdrv media app; do
+    if ! grep -Eq "^[[:space:]]+$sdk_stage[[:space:]]+\\\\" "$ROOT_DIR/_build_image.sh"; then
+        echo "_build_image.sh must run pico-sdk $sdk_stage through the SDK stage cache" >&2
+        exit 1
+    fi
+done
 
 if [ ! -x "$ROOT_DIR/scripts/clean_rootfs_overlay_staging.sh" ]; then
     echo "rootfs overlay cleanup script must exist and be executable" >&2
@@ -131,7 +246,9 @@ if ! grep -q 'normalize_image_tree_ownership' "$ROOT_DIR/pico-sdk/project/build.
 fi
 
 for required in \
-    'SOURCE_DATE_EPOCH ?= 0' \
+    'SOURCE_DATE_EPOCH ?=' \
+    'local epoch="${SOURCE_DATE_EPOCH:-' \
+    'source_date_epoch="${SOURCE_DATE_EPOCH:-' \
     '--sort=name' \
     '--mtime="@$(SOURCE_DATE_EPOCH)"' \
     'Build Time:  $(reproducible_build_utc)' \

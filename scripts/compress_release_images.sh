@@ -77,7 +77,7 @@ create_tar_gz() {
   local source="$1"
   local archive="$2"
   local entry_name="$3"
-  local mtime="${SOURCE_DATE_EPOCH:-0}"
+  local mtime="${SOURCE_DATE_EPOCH:-1}"
   local tmp_archive="${archive}.tmp.$$"
 
   rm -f "$tmp_archive"

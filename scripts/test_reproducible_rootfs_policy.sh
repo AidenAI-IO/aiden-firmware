@@ -23,6 +23,17 @@ if grep -Eq 'git .*log -1 --format=%ct|git .*log -1 .*%ct' "$BUILD_IMAGE_SH" "$I
   exit 1
 fi
 
+if grep -Eq 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-0' "$BUILD_IMAGE_SH" "$INNER_BUILD_IMAGE_SH"; then
+  echo "image builds must use a non-zero default SOURCE_DATE_EPOCH so falsey-zero package bugs cannot affect releases" >&2
+  exit 1
+fi
+
+if ! grep -Eq 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-[1-9][0-9]*' "$BUILD_IMAGE_SH" || \
+   ! grep -Eq 'AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-[1-9][0-9]*' "$INNER_BUILD_IMAGE_SH"; then
+  echo "image builds must keep a deterministic non-zero default SOURCE_DATE_EPOCH" >&2
+  exit 1
+fi
+
 for defconfig in \
   "$PICO_SDK/sysdrv/tools/board/buildroot/luckfox_pico_defconfig" \
   "$PICO_SDK/sysdrv/tools/board/buildroot/luckfox_pico_w_defconfig"; do
