@@ -278,6 +278,15 @@ func TestRoleCollaborativeExecutorIgnoresExecutorPlanMutation(t *testing.T) {
 	if !strings.Contains(secondExecutorPrompt, "Planner-approved next_step:\nsecond planner step") {
 		t.Fatalf("second executor did not receive the next committed step:\n%s", secondExecutorPrompt)
 	}
+	for _, want := range []string{
+		"Prior step results",
+		"step_index=1",
+		"summary=\"candidate\"",
+	} {
+		if !strings.Contains(secondExecutorPrompt, want) {
+			t.Fatalf("second executor prompt missing prior step context %q:\n%s", want, secondExecutorPrompt)
+		}
+	}
 	if strings.Contains(secondExecutorPrompt, "Current plan:\n1. executor changed plan") {
 		t.Fatalf("executor output was treated as a plan mutation:\n%s", secondExecutorPrompt)
 	}
@@ -409,6 +418,10 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 	secondExecutorMessages := model.messages[7]
 	secondExecutorPrompt := messageText(secondExecutorMessages)
 	for _, want := range []string{
+		"Prior step results",
+		"summary=\"same\"",
+		"needs_replan=true",
+		"verifier_note=\"not enough progress\"",
 		"Planner-approved next_step:\nrepeat same tool",
 		"Current step progress:",
 		"tool=echo input=same",
@@ -422,7 +435,6 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 		"Current plan:",
 		"Completion criteria:",
 		"Verifier feedback:",
-		"not enough progress",
 	} {
 		if strings.Contains(secondExecutorPrompt, unexpected) {
 			t.Fatalf("second executor prompt should not contain %q:\n%s", unexpected, secondExecutorPrompt)

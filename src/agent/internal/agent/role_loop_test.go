@@ -194,6 +194,41 @@ func TestFinishStepEntersVerifierReview(t *testing.T) {
 	}
 }
 
+func TestFinishStepStoresKeyInfo(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+	)
+	state := &roleLoopState{
+		Phase:               phaseExecution,
+		StepExecutionActive: true,
+		NextStep:            "read the account id",
+	}
+	turn := executor.handleExecutorMetaTool(state, schema.AgentAction{
+		Tool:      toolFinishStep,
+		ToolInput: `{"summary":"account id found","key_info":["account_id=abc123","page=Account Details"]}`,
+	})
+	if turn.Kind != executorTurnFinishStep {
+		t.Fatalf("turn kind = %v", turn.Kind)
+	}
+	if state.ExecutorStepSummary != "account id found" {
+		t.Fatalf("summary = %q", state.ExecutorStepSummary)
+	}
+	if got := strings.Join(state.ExecutorStepKeyInfo, "|"); got != "account_id=abc123|page=Account Details" {
+		t.Fatalf("key info = %#v", state.ExecutorStepKeyInfo)
+	}
+	if !strings.Contains(turn.Step.Observation, "account_id=abc123") {
+		t.Fatalf("observation should include key_info: %s", turn.Step.Observation)
+	}
+}
+
 func TestAbortStepEntersVerifierReview(t *testing.T) {
 	executor := newRoleCollaborativeExecutor(
 		&scriptedModel{},
@@ -231,12 +266,71 @@ func TestBeginStepExecutionClearsStepScratchpad(t *testing.T) {
 		}},
 		ExecutorStepOutcome: "finished",
 		ExecutorStepSummary: "old",
+		ExecutorStepKeyInfo: []string{"old-id"},
 	}
 	state.beginStepExecution()
 	if len(state.StepToolSteps) != 0 || len(state.StepExecutionResults) != 0 {
 		t.Fatalf("step scratchpad not cleared: %#v", state)
 	}
-	if state.ExecutorStepOutcome != "" || state.ExecutorStepSummary != "" || !state.StepExecutionActive {
+	if state.ExecutorStepOutcome != "" || state.ExecutorStepSummary != "" || len(state.ExecutorStepKeyInfo) != 0 || !state.StepExecutionActive {
 		t.Fatalf("step execution not reset: %#v", state)
+	}
+}
+
+func TestRecordPlanStepResultSurvivesStepClear(t *testing.T) {
+	state := roleLoopState{
+		Plan:                []string{"read account id", "use account id"},
+		PlanStepIndex:       0,
+		NextStep:            "read account id",
+		ExecutorStepOutcome: "finished",
+		ExecutorStepSummary: "account id found",
+		ExecutorStepKeyInfo: []string{"account_id=abc123"},
+	}
+	state.recordPlanStepResult(verifierDecision{NeedsReplan: false, Reason: "step ok"})
+	state.clearStepExecution()
+
+	if len(state.PlanStepResults) != 1 {
+		t.Fatalf("plan step results = %#v", state.PlanStepResults)
+	}
+	record := state.PlanStepResults[0]
+	if record.StepIndex != 1 || record.StepText != "read account id" || record.Summary != "account id found" {
+		t.Fatalf("unexpected record: %#v", record)
+	}
+	if got := strings.Join(record.KeyInfo, "|"); got != "account_id=abc123" {
+		t.Fatalf("key info = %#v", record.KeyInfo)
+	}
+	if len(state.ExecutorStepKeyInfo) != 0 {
+		t.Fatalf("step key info should be cleared: %#v", state.ExecutorStepKeyInfo)
+	}
+}
+
+func TestExecutorPromptIncludesPriorPlanStepResults(t *testing.T) {
+	state := roleLoopState{
+		Plan:          []string{"read account id", "use account id"},
+		PlanStepIndex: 1,
+		NextStep:      "use account id",
+		PlanStepResults: []planStepResult{{
+			StepIndex: 1,
+			StepText:  "read account id",
+			Outcome:   "finished",
+			Summary:   "account id found",
+			KeyInfo:   []string{"account_id=abc123"},
+		}},
+	}
+
+	prompt := buildExecutorStatePrompt(state, "Executor task.")
+	for _, want := range []string{
+		"Prior step results",
+		"step_index=1",
+		"summary=\"account id found\"",
+		"key_info=[account_id=abc123]",
+		"Planner-approved next_step:\nuse account id",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("executor prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Current plan:\n") || strings.Contains(prompt, "Original user request") {
+		t.Fatalf("executor prompt should not expose full planner context:\n%s", prompt)
 	}
 }

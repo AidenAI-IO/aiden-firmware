@@ -18,7 +18,7 @@ func executorMetaTools() []langtools.Tool {
 	return []langtools.Tool{
 		&loopMetaTool{
 			name:        toolFinishStep,
-			description: "Signal the current plan step is ready for verification. Required before verifier review. Input JSON: {\"summary\":\"what was accomplished for this step\",\"reason\":\"optional\"}.",
+			description: "Signal the current plan step is ready for verification. Required before verifier review. Input JSON: {\"summary\":\"what was accomplished for this step\",\"key_info\":[\"facts, ids, values, or observations later steps may need\"],\"reason\":\"optional\"}.",
 		},
 		&loopMetaTool{
 			name:        toolAbortStep,
@@ -54,27 +54,48 @@ func isExecutorMetaTool(name string) bool {
 	}
 }
 
-func parseFinishStepInput(raw string) (summary, reason string, err error) {
+type finishStepPayload struct {
+	Summary string
+	Reason  string
+	KeyInfo []string
+}
+
+func parseFinishStepInput(raw string) (finishStepPayload, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", "", fmt.Errorf("finish_step requires a JSON payload")
+		return finishStepPayload{}, fmt.Errorf("finish_step requires a JSON payload")
 	}
 	var payload struct {
-		Summary string `json:"summary"`
-		Reason  string `json:"reason"`
+		Summary       string          `json:"summary"`
+		Result        string          `json:"result"`
+		Reason        string          `json:"reason"`
+		KeyInfo       json.RawMessage `json:"key_info"`
+		ImportantInfo json.RawMessage `json:"important_info"`
 	}
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return "", "", err
+		return finishStepPayload{}, err
 	}
-	summary = strings.TrimSpace(payload.Summary)
-	reason = strings.TrimSpace(payload.Reason)
-	if summary == "" && reason == "" {
-		return "", "", fmt.Errorf("finish_step requires summary or reason")
+	keyInfo := appendStringList(nil, parseStringList(payload.KeyInfo)...)
+	keyInfo = appendStringList(keyInfo, parseStringList(payload.ImportantInfo)...)
+	summary := strings.TrimSpace(payload.Summary)
+	if summary == "" {
+		summary = strings.TrimSpace(payload.Result)
 	}
+	reason := strings.TrimSpace(payload.Reason)
 	if summary == "" {
 		summary = reason
 	}
-	return summary, reason, nil
+	if summary == "" && len(keyInfo) > 0 {
+		summary = strings.Join(keyInfo, "; ")
+	}
+	if summary == "" && reason == "" && len(keyInfo) == 0 {
+		return finishStepPayload{}, fmt.Errorf("finish_step requires summary, key_info, or reason")
+	}
+	return finishStepPayload{
+		Summary: summary,
+		Reason:  reason,
+		KeyInfo: keyInfo,
+	}, nil
 }
 
 func parseAbortStepInput(raw string) (string, error) {
@@ -97,6 +118,25 @@ func parseAbortStepInput(raw string) (string, error) {
 	return reason, nil
 }
 
+func parseStringList(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err == nil {
+		return uniqueNonEmpty(values)
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err == nil {
+		return uniqueNonEmpty([]string{value})
+	}
+	return nil
+}
+
+func appendStringList(dst []string, values ...string) []string {
+	return uniqueNonEmpty(append(dst, values...))
+}
+
 func (e *roleCollaborativeExecutor) handleExecutorMetaTool(
 	state *roleLoopState,
 	action schema.AgentAction,
@@ -106,7 +146,7 @@ func (e *roleCollaborativeExecutor) handleExecutorMetaTool(
 
 	switch toolName {
 	case strings.ToUpper(toolFinishStep):
-		summary, reason, err := parseFinishStepInput(input)
+		finish, err := parseFinishStepInput(input)
 		if err != nil {
 			return executorTurnResult{
 				Kind: executorTurnInvalidMeta,
@@ -117,11 +157,13 @@ func (e *roleCollaborativeExecutor) handleExecutorMetaTool(
 			}
 		}
 		state.ExecutorStepOutcome = "finished"
-		state.ExecutorStepSummary = summary
-		payload, _ := json.Marshal(map[string]string{
-			"status":  "finished",
-			"summary": summary,
-			"reason":  reason,
+		state.ExecutorStepSummary = finish.Summary
+		state.ExecutorStepKeyInfo = finish.KeyInfo
+		payload, _ := json.Marshal(map[string]any{
+			"status":   "finished",
+			"summary":  finish.Summary,
+			"reason":   finish.Reason,
+			"key_info": finish.KeyInfo,
 		})
 		return executorTurnResult{
 			Kind: executorTurnFinishStep,
@@ -141,6 +183,7 @@ func (e *roleCollaborativeExecutor) handleExecutorMetaTool(
 		}
 		state.ExecutorStepOutcome = "aborted"
 		state.ExecutorStepSummary = reason
+		state.ExecutorStepKeyInfo = nil
 		payload, _ := json.Marshal(map[string]string{
 			"status": "aborted",
 			"reason": reason,

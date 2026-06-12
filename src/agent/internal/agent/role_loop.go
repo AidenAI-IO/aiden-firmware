@@ -56,6 +56,7 @@ func (s *roleLoopState) beginStepExecution() {
 	s.StepExecutionResults = nil
 	s.ExecutorStepOutcome = ""
 	s.ExecutorStepSummary = ""
+	s.ExecutorStepKeyInfo = nil
 	s.StepExecutionActive = true
 }
 
@@ -64,6 +65,7 @@ func (s *roleLoopState) clearStepExecution() {
 	s.StepExecutionResults = nil
 	s.ExecutorStepOutcome = ""
 	s.ExecutorStepSummary = ""
+	s.ExecutorStepKeyInfo = nil
 	s.StepExecutionActive = false
 }
 
@@ -116,6 +118,7 @@ func (s *roleLoopState) clearCommittedPlan() {
 	s.PlanCommitted = false
 	s.PlanExhausted = false
 	s.PlannerReason = ""
+	s.PlanStepResults = nil
 	s.DraftPlan = plannerDecision{}
 }
 

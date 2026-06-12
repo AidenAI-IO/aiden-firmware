@@ -57,6 +57,17 @@ type roleExecutionResult struct {
 	CandidateAnswer string
 }
 
+type planStepResult struct {
+	StepIndex      int
+	StepText       string
+	Outcome        string
+	Summary        string
+	KeyInfo        []string
+	CanFinish      bool
+	NeedsReplan    bool
+	VerifierReason string
+}
+
 type roleLoopState struct {
 	Phase                loopPhase
 	PlanStepIndex        int
@@ -75,6 +86,8 @@ type roleLoopState struct {
 	StepExecutionActive  bool
 	ExecutorStepOutcome  string
 	ExecutorStepSummary  string
+	ExecutorStepKeyInfo  []string
+	PlanStepResults      []planStepResult
 	ExecutionResults     []roleExecutionResult
 	VerifierResults      []verifierDecision
 }
@@ -241,12 +254,14 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				if e.Recorder != nil {
 					e.Recorder.RecordVerifierDecision(verification)
 				}
+				stepSummary := strings.TrimSpace(state.ExecutorStepSummary)
+				state.recordPlanStepResult(verification)
 				state.clearStepExecution()
 
 				if verification.CanFinish {
 					finalAnswer := strings.TrimSpace(verification.FinalAnswer)
 					if finalAnswer == "" {
-						finalAnswer = strings.TrimSpace(state.ExecutorStepSummary)
+						finalAnswer = stepSummary
 					}
 					return e.finishRun(ctx, finalAnswer, verification.Reason)
 				}
@@ -521,6 +536,7 @@ func buildExecutorStatePrompt(state roleLoopState, task string) string {
 	var builder strings.Builder
 	builder.WriteString(task)
 	writeWorldState(&builder, state.World)
+	writePriorPlanStepResults(&builder, state)
 	builder.WriteString("\n\nPlanner-approved next_step:\n")
 	if next := strings.TrimSpace(state.NextStep); next != "" {
 		builder.WriteString(next)
@@ -537,7 +553,8 @@ func buildExecutorStatePrompt(state roleLoopState, task string) string {
 	builder.WriteString("- finish_step enters verifier review when this step is ready.\n")
 	builder.WriteString("- abort_step enters verifier review when this step is blocked or failed.\n")
 	builder.WriteString("- do not return a plain-text final answer; use finish_step or abort_step.\n")
-	builder.WriteString("\nThe full plan, original request, verifier feedback, and broader history are intentionally not available to executor.")
+	builder.WriteString("- include durable facts in finish_step key_info when later steps may need them.\n")
+	builder.WriteString("\nThe full plan, original request, raw prior-step scratchpads, and broader history are intentionally not available to executor.")
 	return strings.TrimSpace(builder.String())
 }
 
@@ -582,6 +599,11 @@ func writeStepExecutorEvidence(builder *strings.Builder, state roleLoopState) {
 		builder.WriteString(summary)
 		builder.WriteByte('\n')
 	}
+	if len(state.ExecutorStepKeyInfo) > 0 {
+		builder.WriteString("- executor_key_info: ")
+		builder.WriteString(strings.Join(state.ExecutorStepKeyInfo, " | "))
+		builder.WriteByte('\n')
+	}
 	if len(state.StepExecutionResults) == 0 {
 		builder.WriteString("(no tool calls in this step)\n")
 		return
@@ -589,6 +611,67 @@ func writeStepExecutorEvidence(builder *strings.Builder, state roleLoopState) {
 	for i, result := range state.StepExecutionResults {
 		writeExecutionResultLine(builder, i+1, result)
 	}
+}
+
+func writePriorPlanStepResults(builder *strings.Builder, state roleLoopState) {
+	if len(state.PlanStepResults) == 0 {
+		return
+	}
+	builder.WriteString("\n\nPrior step results (compact context from completed or attempted plan steps):\n")
+	for i, result := range state.PlanStepResults {
+		writePlanStepResultLine(builder, i+1, result)
+	}
+}
+
+func writePlanStepResultLine(builder *strings.Builder, displayIndex int, result planStepResult) {
+	outcome := strings.TrimSpace(result.Outcome)
+	if outcome == "" {
+		outcome = "unknown"
+	}
+	builder.WriteString(fmt.Sprintf("%d. step_index=%d outcome=%s", displayIndex, result.StepIndex, outcome))
+	if step := compactPromptLine(result.StepText, 220); step != "" {
+		builder.WriteString(" step=\"")
+		builder.WriteString(step)
+		builder.WriteByte('"')
+	}
+	if summary := compactPromptLine(result.Summary, 320); summary != "" {
+		builder.WriteString(" summary=\"")
+		builder.WriteString(summary)
+		builder.WriteByte('"')
+	}
+	if len(result.KeyInfo) > 0 {
+		builder.WriteString(" key_info=")
+		builder.WriteString(compactStringList(result.KeyInfo, 480))
+	}
+	if result.NeedsReplan {
+		builder.WriteString(" needs_replan=true")
+		if reason := compactPromptLine(result.VerifierReason, 240); reason != "" {
+			builder.WriteString(" verifier_note=\"")
+			builder.WriteString(reason)
+			builder.WriteByte('"')
+		}
+	} else if result.CanFinish {
+		builder.WriteString(" can_finish=true")
+	}
+	builder.WriteByte('\n')
+}
+
+func compactStringList(values []string, max int) string {
+	values = uniqueNonEmpty(values)
+	if len(values) == 0 {
+		return "[]"
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		if line := compactPromptLine(value, 160); line != "" {
+			parts = append(parts, line)
+		}
+	}
+	return "[" + truncateForLog(strings.Join(parts, " | "), max) + "]"
+}
+
+func compactPromptLine(value string, max int) string {
+	return truncateForLog(singleLineHistoryText(value), max)
 }
 
 func buildRoleUserMessageParts(input string, attachments []InputAttachment, world worldState) []llms.ContentPart {
@@ -815,6 +898,23 @@ func (s *roleLoopState) applyPlannerDecision(decision plannerDecision) {
 	s.Plan = append([]string{}, decision.Plan...)
 	s.NextStep = strings.TrimSpace(decision.NextStep)
 	s.PlannerReason = strings.TrimSpace(decision.Reason)
+}
+
+func (s *roleLoopState) recordPlanStepResult(verification verifierDecision) {
+	stepText := strings.TrimSpace(s.NextStep)
+	if stepText == "" && s.PlanStepIndex >= 0 && s.PlanStepIndex < len(s.Plan) {
+		stepText = strings.TrimSpace(s.Plan[s.PlanStepIndex])
+	}
+	s.PlanStepResults = append(s.PlanStepResults, planStepResult{
+		StepIndex:      s.PlanStepIndex + 1,
+		StepText:       stepText,
+		Outcome:        strings.TrimSpace(s.ExecutorStepOutcome),
+		Summary:        strings.TrimSpace(s.ExecutorStepSummary),
+		KeyInfo:        uniqueNonEmpty(s.ExecutorStepKeyInfo),
+		CanFinish:      verification.CanFinish,
+		NeedsReplan:    verification.NeedsReplan,
+		VerifierReason: strings.TrimSpace(verification.Reason),
+	})
 }
 
 func (s roleLoopState) latestExecutionResult() (roleExecutionResult, bool) {
