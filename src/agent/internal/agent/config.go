@@ -363,13 +363,26 @@ type MemoryConfig struct {
 }
 
 func LoadConfigFromDir(configDir string) (Config, error) {
+	return loadConfigFromDir(configDir, LoadConfig)
+}
+
+// LoadRuntimeConfigFromDir loads the daemon-facing runtime config from a config
+// directory. It preserves the historic agent.toml -> agent.json lookup while
+// returning a config with runtime defaults resolved.
+func LoadRuntimeConfigFromDir(configDir string) (Config, error) {
+	return loadConfigFromDir(configDir, LoadRuntimeConfig)
+}
+
+type configFileLoader func(string) (Config, error)
+
+func loadConfigFromDir(configDir string, load configFileLoader) (Config, error) {
 	configPath := filepath.Join(configDir, "agent.toml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Fallback to .json for backward compatibility
 		configPath = filepath.Join(configDir, "agent.json")
 	}
 
-	cfg, err := LoadConfig(configPath)
+	cfg, err := load(configPath)
 	if err != nil {
 		return Config{}, err
 	}
@@ -410,7 +423,7 @@ func bundledSkillsDirCandidates() []string {
 func LoadConfig(path string) (Config, error) {
 	var cfg Config
 
-	if err := decodeConfigFile(path, &cfg); err != nil {
+	if _, err := decodeConfigFile(path, &cfg); err != nil {
 		return Config{}, err
 	}
 
@@ -419,6 +432,75 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// LoadRuntimeConfig loads a config file over runtime defaults and returns the
+// effective config used by the daemon. Optional speech providers remain opt-in:
+// their provider fields are not inherited from DefaultConfig unless the raw
+// config explicitly sets them.
+func LoadRuntimeConfig(path string) (Config, error) {
+	cfg := DefaultConfig()
+
+	metadata, err := decodeConfigFile(path, &cfg)
+	if err != nil {
+		return Config{}, err
+	}
+
+	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
+
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+
+	return cfg, nil
+}
+
+func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
+	if cfg == nil {
+		return
+	}
+
+	if !metadata.IsDefined("tts", "provider") || strings.TrimSpace(cfg.TTS.Provider) == "" {
+		cfg.TTS = TTSConfig{}
+	} else if normalizeTTSProvider(cfg.TTS.Provider) != defaultTTSProvider {
+		clearDefaultTTSProviderFields(cfg, metadata)
+	}
+	if !metadata.IsDefined("stt", "provider") || strings.TrimSpace(cfg.STT.Provider) == "" {
+		cfg.STT = STTConfig{}
+	} else if !usesDefaultSTTModel(cfg.STT.Provider) && !metadata.IsDefined("stt", "model") {
+		cfg.STT.Model = ""
+	}
+}
+
+func normalizeTTSProvider(provider string) string {
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+func clearDefaultTTSProviderFields(cfg *Config, metadata toml.MetaData) {
+	if !metadata.IsDefined("tts", "model") {
+		cfg.TTS.Model = ""
+	}
+	if !metadata.IsDefined("tts", "voice_id") {
+		cfg.TTS.VoiceID = ""
+	}
+	if !metadata.IsDefined("tts", "emotion") {
+		cfg.TTS.Emotion = ""
+	}
+	if !metadata.IsDefined("tts", "reference_id") {
+		cfg.TTS.ReferenceID = ""
+	}
+	if !metadata.IsDefined("tts", "speed") {
+		cfg.TTS.Speed = 0
+	}
+}
+
+func usesDefaultSTTModel(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai", defaultSTTProvider:
+		return true
+	default:
+		return false
+	}
 }
 
 // LoadResolvedConfig loads a config file over the canonical defaults and
@@ -433,7 +515,7 @@ func LoadResolvedConfig(path string) (Config, error) {
 
 	cfg := DefaultConfig()
 	if exists {
-		if err := decodeConfigFile(resolvedPath, &cfg); err != nil {
+		if _, err := decodeConfigFile(resolvedPath, &cfg); err != nil {
 			return Config{}, err
 		}
 	}
@@ -478,27 +560,27 @@ func resolveConfigPath(path string) (string, bool, error) {
 	return "", false, fmt.Errorf("read config: %w", err)
 }
 
-func decodeConfigFile(path string, cfg *Config) error {
+func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
 	var metadata toml.MetaData
 
 	// Determine format by file extension
 	if strings.HasSuffix(path, ".toml") {
 		var err error
 		if metadata, err = toml.DecodeFile(path, cfg); err != nil {
-			return fmt.Errorf("decode TOML config: %w", err)
+			return toml.MetaData{}, fmt.Errorf("decode TOML config: %w", err)
 		}
 	} else {
 		_, err := os.Stat(path)
 		if err != nil {
-			return fmt.Errorf("read config: %w", err)
+			return toml.MetaData{}, fmt.Errorf("read config: %w", err)
 		}
-		return fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
+		return toml.MetaData{}, fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
 	}
 
 	if err := applyLegacyModelMaxTokens(path, metadata, cfg); err != nil {
-		return err
+		return toml.MetaData{}, err
 	}
-	return nil
+	return metadata, nil
 }
 
 func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config) error {

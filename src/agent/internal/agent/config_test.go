@@ -146,6 +146,200 @@ max_tokens = 777
 	}
 }
 
+func TestLoadRuntimeConfigFromDirAppliesRuntimeDefaultsWithoutActivatingSpeech(t *testing.T) {
+	configDir := t.TempDir()
+	config := `
+[model]
+provider = "fake"
+`
+	if err := os.WriteFile(filepath.Join(configDir, "agent.toml"), []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfigFromDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfigFromDir() error = %v", err)
+	}
+
+	if cfg.InputMode != defaultInputMode {
+		t.Fatalf("InputMode = %q, want runtime default %q", cfg.InputMode, defaultInputMode)
+	}
+	if cfg.Audio.Socket != defaultAudioSocket {
+		t.Fatalf("Audio.Socket = %q, want runtime default %q", cfg.Audio.Socket, defaultAudioSocket)
+	}
+	if cfg.HID.FrameSocket != defaultFrameServiceSocket {
+		t.Fatalf("HID.FrameSocket = %q, want runtime default %q", cfg.HID.FrameSocket, defaultFrameServiceSocket)
+	}
+	if cfg.Benchmark.JudgeModel != defaultBenchmarkJudgeModel {
+		t.Fatalf("Benchmark.JudgeModel = %q, want runtime default %q",
+			cfg.Benchmark.JudgeModel, defaultBenchmarkJudgeModel)
+	}
+	if cfg.VoiceMaxResponseTokens != defaultVoiceMaxResponseTokens {
+		t.Fatalf("VoiceMaxResponseTokens = %d, want runtime default %d",
+			cfg.VoiceMaxResponseTokens, defaultVoiceMaxResponseTokens)
+	}
+	if cfg.ScreenStableTimeoutMs != defaultStableWaitTimeoutMs {
+		t.Fatalf("ScreenStableTimeoutMs = %d, want runtime default %d",
+			cfg.ScreenStableTimeoutMs, defaultStableWaitTimeoutMs)
+	}
+	if cfg.TTS.Provider != "" {
+		t.Fatalf("TTS.Provider = %q, want empty when text mode did not configure TTS", cfg.TTS.Provider)
+	}
+	if cfg.STT.Provider != "" {
+		t.Fatalf("STT.Provider = %q, want empty when text mode did not configure STT", cfg.STT.Provider)
+	}
+}
+
+func TestLoadRuntimeConfigKeepsSpeechProvidersOptIn(t *testing.T) {
+	dir := t.TempDir()
+
+	unconfiguredPath := filepath.Join(dir, "unconfigured.toml")
+	if err := os.WriteFile(unconfiguredPath, []byte(`
+[model]
+provider = "fake"
+
+[stt]
+
+[tts]
+`), 0o644); err != nil {
+		t.Fatalf("write unconfigured config: %v", err)
+	}
+	unconfigured, err := LoadRuntimeConfig(unconfiguredPath)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig(unconfigured) error = %v", err)
+	}
+	if unconfigured.STT.Provider != "" {
+		t.Fatalf("unconfigured STT.Provider = %q, want empty", unconfigured.STT.Provider)
+	}
+	if unconfigured.TTS.Provider != "" {
+		t.Fatalf("unconfigured TTS.Provider = %q, want empty", unconfigured.TTS.Provider)
+	}
+
+	keyOnlyPath := filepath.Join(dir, "key-only.toml")
+	if err := os.WriteFile(keyOnlyPath, []byte(`
+[model]
+provider = "fake"
+
+[stt]
+api_key = "stt-key"
+
+[tts]
+api_key = "tts-key"
+`), 0o644); err != nil {
+		t.Fatalf("write key-only config: %v", err)
+	}
+	keyOnly, err := LoadRuntimeConfig(keyOnlyPath)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig(key-only) error = %v", err)
+	}
+	if keyOnly.STT.Provider != "" {
+		t.Fatalf("key-only STT.Provider = %q, want empty", keyOnly.STT.Provider)
+	}
+	if keyOnly.TTS.Provider != "" {
+		t.Fatalf("key-only TTS.Provider = %q, want empty", keyOnly.TTS.Provider)
+	}
+
+	explicitPath := filepath.Join(dir, "explicit.toml")
+	if err := os.WriteFile(explicitPath, []byte(`
+[model]
+provider = "fake"
+
+[stt]
+provider = "openai-whisper"
+api_key = "stt-key"
+
+[tts]
+provider = "minimax-ws"
+api_key = "tts-key"
+`), 0o644); err != nil {
+		t.Fatalf("write explicit config: %v", err)
+	}
+	explicit, err := LoadRuntimeConfig(explicitPath)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig(explicit) error = %v", err)
+	}
+	if explicit.STT.Provider != defaultSTTProvider {
+		t.Fatalf("explicit STT.Provider = %q, want default %q", explicit.STT.Provider, defaultSTTProvider)
+	}
+	if explicit.STT.Model != defaultSTTModel {
+		t.Fatalf("explicit STT.Model = %q, want default %q", explicit.STT.Model, defaultSTTModel)
+	}
+	if explicit.TTS.Provider != defaultTTSProvider {
+		t.Fatalf("explicit TTS.Provider = %q, want default %q", explicit.TTS.Provider, defaultTTSProvider)
+	}
+	if explicit.TTS.VoiceID != defaultTTSVoiceID {
+		t.Fatalf("explicit TTS.VoiceID = %q, want default %q", explicit.TTS.VoiceID, defaultTTSVoiceID)
+	}
+}
+
+func TestLoadRuntimeConfigDoesNotCarryDefaultSpeechFieldsAcrossProviders(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+[model]
+provider = "fake"
+
+[stt]
+provider = "openrouter"
+api_key = "stt-key"
+
+[tts]
+provider = "volcengine"
+api_key = "tts-key"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.STT.Model != "" {
+		t.Fatalf("STT.Model = %q, want empty so provider-specific defaults can apply", cfg.STT.Model)
+	}
+	if cfg.TTS.VoiceID != "" {
+		t.Fatalf("TTS.VoiceID = %q, want empty so provider-specific defaults can apply", cfg.TTS.VoiceID)
+	}
+	if cfg.TTS.Emotion != "" {
+		t.Fatalf("TTS.Emotion = %q, want empty so provider-specific defaults can apply", cfg.TTS.Emotion)
+	}
+	if cfg.TTS.Speed != 0 {
+		t.Fatalf("TTS.Speed = %v, want zero so provider-specific defaults can apply", cfg.TTS.Speed)
+	}
+}
+
+func TestLoadRuntimeConfigRejectsVoiceModeWithoutExplicitSpeechProviders(t *testing.T) {
+	dir := t.TempDir()
+
+	sttPath := filepath.Join(dir, "stt.toml")
+	if err := os.WriteFile(sttPath, []byte(`
+input_mode = "stt"
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write stt config: %v", err)
+	}
+	_, err := LoadRuntimeConfig(sttPath)
+	if err == nil || !strings.Contains(err.Error(), "stt.provider") {
+		t.Fatalf("LoadRuntimeConfig(stt) error = %v, want stt.provider validation error", err)
+	}
+
+	audioPath := filepath.Join(dir, "audio.toml")
+	if err := os.WriteFile(audioPath, []byte(`
+input_mode = "audio"
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write audio config: %v", err)
+	}
+	_, err = LoadRuntimeConfig(audioPath)
+	if err == nil || !strings.Contains(err.Error(), "tts.provider") {
+		t.Fatalf("LoadRuntimeConfig(audio) error = %v, want tts.provider validation error", err)
+	}
+}
+
 func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
 	cfg := Config{Model: ModelConfig{Provider: "fake", MaxResponseTokens: -1}}
 	err := cfg.Validate()
