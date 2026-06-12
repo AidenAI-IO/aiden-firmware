@@ -391,6 +391,10 @@ TEST_CASE("config web renders finite choice fields as selects") {
     CHECK(html.find("'/api/config/meta'") != std::string::npos);
     CHECK(html.find("hydrateSelectOptions") != std::string::npos);
     CHECK(html.find("ensureSelectOption") != std::string::npos);
+    CHECK(html.find("let fieldDefaults=") != std::string::npos);
+    CHECK(html.find("function fieldDefaultPlaceholder") != std::string::npos);
+    CHECK(html.find("applyDefaultPlaceholder(name,field)") != std::string::npos);
+    CHECK(html.find("默认值: ") != std::string::npos);
     // rangeOptions is now invoked with metadata-provided bounds, not literals.
     CHECK(html.find("rangeOptions(field.range.min,field.range.max,field.range.step") != std::string::npos);
     // The legacy hard-coded option table must be gone.
@@ -715,8 +719,9 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("config validation unavailable: agent binary not found") != std::string::npos);
     // config metadata endpoint: agent CLI is the single source of field metadata.
     CHECK(source.find("config-meta --format=json") != std::string::npos);
-    CHECK(source.find("config-defaults --format=json") != std::string::npos);
-    CHECK(source.find("cannot load config defaults") != std::string::npos);
+    CHECK(source.find(" config --config=") != std::string::npos);
+    CHECK(source.find("config-defaults --format=json") == std::string::npos);
+    CHECK(source.find("cannot load config defaults") == std::string::npos);
     CHECK(source.find("\"/api/config/meta\"") != std::string::npos);
     CHECK(source.find("config metadata unavailable: agent binary not found") != std::string::npos);
     CHECK(html.find("hid_pointer_mode") != std::string::npos);

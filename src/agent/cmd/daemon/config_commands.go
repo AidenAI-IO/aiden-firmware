@@ -96,6 +96,7 @@ type hidDTO struct {
 }
 
 type searchDTO struct {
+	APIKey    string `json:"api_key,omitempty"`
 	Provider  string `json:"provider"`
 	HasAPIKey bool   `json:"has_api_key"`
 }
@@ -150,7 +151,9 @@ const hasAPIKeyPlaceholder = "***"
 // Config.Validate() can run against it.
 func (d webConfigDTO) toAgentConfig() agent.Config {
 	searchKey := ""
-	if d.Search.HasAPIKey {
+	if strings.TrimSpace(d.Search.APIKey) != "" {
+		searchKey = d.Search.APIKey
+	} else if d.Search.HasAPIKey {
 		searchKey = hasAPIKeyPlaceholder
 	}
 
@@ -319,6 +322,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			PointerMode:    cfg.HID.PointerModeOrDefault(),
 		},
 		Search: searchDTO{
+			APIKey:    cfg.Search.APIKey,
 			Provider:  cfg.Search.ProviderOrDefault(),
 			HasAPIKey: strings.TrimSpace(cfg.Search.APIKey) != "",
 		},
@@ -361,10 +365,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			ScreenStableDiffThreshold: cfg.ScreenStableDiffThreshold,
 		},
 	}
-}
-
-func defaultWebConfigDTO() webConfigDTO {
-	return webConfigDTOFromAgentConfig(agent.DefaultConfig())
 }
 
 // runConfigCheck implements the `agent config-check` subcommand
@@ -466,12 +466,21 @@ func runConfigMeta(args []string) int {
 	return 0
 }
 
-// runConfigDefaults implements the `agent config-defaults` subcommand. It
-// outputs the same JSON wire shape that config_web reads and writes, populated
-// with the agent's canonical default config.
-func runConfigDefaults(args []string) int {
-	fs := flag.NewFlagSet("config-defaults", flag.ExitOnError)
+func resolvedWebConfigDTO(configPath string) (webConfigDTO, error) {
+	cfg, err := agent.LoadResolvedConfig(configPath)
+	if err != nil {
+		return webConfigDTO{}, err
+	}
+	return webConfigDTOFromAgentConfig(cfg), nil
+}
+
+// runConfig implements the `agent config` subcommand. It reads the current
+// agent.toml over the canonical defaults and emits the resolved config in the
+// config_web wire format.
+func runConfig(args []string) int {
+	fs := flag.NewFlagSet("config", flag.ExitOnError)
 	formatFlag := fs.String("format", "json", "output format (only json supported)")
+	configFlag := fs.String("config", "", "path to agent.toml or config directory")
 
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to parse flags: %v\n", err)
@@ -483,10 +492,21 @@ func runConfigDefaults(args []string) int {
 		return 1
 	}
 
+	if strings.TrimSpace(*configFlag) == "" {
+		fmt.Fprintln(os.Stderr, "--config is required")
+		return 1
+	}
+
+	dto, err := resolvedWebConfigDTO(*configFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		return 1
+	}
+
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(defaultWebConfigDTO()); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to encode defaults: %v\n", err)
+	if err := encoder.Encode(dto); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to encode config: %v\n", err)
 		return 1
 	}
 

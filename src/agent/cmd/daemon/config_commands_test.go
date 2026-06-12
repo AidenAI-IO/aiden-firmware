@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -63,26 +65,68 @@ func TestConfigCheck_ValidConfig(t *testing.T) {
 	t.Logf("Valid config JSON: %s", string(configJSON))
 }
 
-func TestConfigDefaults_WireFormatIsValid(t *testing.T) {
-	defaults := defaultWebConfigDTO()
-	if defaults.HID.FrameSocket != agent.DefaultConfig().HID.FrameSocket {
-		t.Fatalf("defaults HID frame_socket = %q, want %q",
-			defaults.HID.FrameSocket, agent.DefaultConfig().HID.FrameSocket)
+func TestResolvedWebConfigDTO_MissingFileUsesDefaults(t *testing.T) {
+	dto, err := resolvedWebConfigDTO(filepath.Join(t.TempDir(), "agent.toml"))
+	if err != nil {
+		t.Fatalf("resolvedWebConfigDTO() error = %v", err)
 	}
-	if defaults.Agent.Instruction == "" {
-		t.Fatal("defaults instruction is empty")
+	if dto.HID.FrameSocket != agent.DefaultConfig().HID.FrameSocket {
+		t.Fatalf("HID frame_socket = %q, want %q",
+			dto.HID.FrameSocket, agent.DefaultConfig().HID.FrameSocket)
+	}
+	if dto.Agent.Instruction == "" {
+		t.Fatal("instruction is empty")
 	}
 
-	data, err := json.Marshal(defaults)
+	data, err := json.Marshal(dto)
 	if err != nil {
-		t.Fatalf("marshal defaults: %v", err)
+		t.Fatalf("marshal resolved config: %v", err)
 	}
 	result, err := checkConfig(bytes.NewReader(data))
 	if err != nil {
-		t.Fatalf("checkConfig(defaults) decode error: %v", err)
+		t.Fatalf("checkConfig(resolved config) decode error: %v", err)
 	}
 	if !result.Valid {
-		t.Fatalf("default config is invalid: %+v", result.Errors)
+		t.Fatalf("resolved default config is invalid: %+v", result.Errors)
+	}
+}
+
+func TestResolvedWebConfigDTO_OverlaysCurrentConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+voice_session_enabled = false
+
+[model]
+provider = "openai"
+model = "gpt-4o-mini"
+
+[hid]
+pointer_mode = "touchscreen"
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	dto, err := resolvedWebConfigDTO(path)
+	if err != nil {
+		t.Fatalf("resolvedWebConfigDTO() error = %v", err)
+	}
+	if dto.Model.Provider != "openai" || dto.Model.Model != "gpt-4o-mini" {
+		t.Fatalf("model overlay = provider %q model %q", dto.Model.Provider, dto.Model.Model)
+	}
+	if dto.HID.PointerMode != "touchscreen" {
+		t.Fatalf("hid.pointer_mode = %q, want touchscreen", dto.HID.PointerMode)
+	}
+	if dto.Agent.VoiceSessionEnabled {
+		t.Fatal("agent.voice_session_enabled = true, want false from current config")
+	}
+	if dto.HID.KeyboardDevice != agent.DefaultConfig().HID.KeyboardDevice {
+		t.Fatalf("hid.keyboard_device = %q, want default %q",
+			dto.HID.KeyboardDevice, agent.DefaultConfig().HID.KeyboardDevice)
+	}
+	if dto.Audio.Socket != agent.DefaultConfig().Audio.Socket {
+		t.Fatalf("audio.socket = %q, want default %q",
+			dto.Audio.Socket, agent.DefaultConfig().Audio.Socket)
 	}
 }
 

@@ -73,7 +73,7 @@ scp overlay/userdata/wpa_supplicant.conf root@<device-ip>:/userdata/
 
 说明：
 
-- `config_web` 会调用 `/oem/usr/bin/agent` 的 `config-check` / `config-meta` 子命令，因此复制 `config_web` 时应同时复制 `agent`。
+- Config Web calls the `/oem/usr/bin/agent` `config`, `config-check`, and `config-meta` subcommands, so copy `agent` whenever copying `config_web`.
 - `S52frame_service`、`S53audio_service`、`S53agent`、`S56config_web` 默认都通过 `/oem/usr/bin/aiden-env-run` 启动实际二进制，因此这个 wrapper 也要在设备上。
 - 也可以把二进制先复制到 `/root` 或 `/userdata` 做临时测试，但现有 init 脚本默认查找 `/oem/usr/bin/`。
 - 如果只是更新二进制，复制完成后执行 `chmod +x /oem/usr/bin/*` 一次即可。

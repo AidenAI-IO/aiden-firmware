@@ -409,23 +409,8 @@ func bundledSkillsDirCandidates() []string {
 
 func LoadConfig(path string) (Config, error) {
 	var cfg Config
-	var metadata toml.MetaData
 
-	// Determine format by file extension
-	if strings.HasSuffix(path, ".toml") {
-		var err error
-		if metadata, err = toml.DecodeFile(path, &cfg); err != nil {
-			return Config{}, fmt.Errorf("decode TOML config: %w", err)
-		}
-	} else {
-		_, err := os.Stat(path)
-		if err != nil {
-			return Config{}, fmt.Errorf("read config: %w", err)
-		}
-		return Config{}, fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
-	}
-
-	if err := applyLegacyModelMaxTokens(path, metadata, &cfg); err != nil {
+	if err := decodeConfigFile(path, &cfg); err != nil {
 		return Config{}, err
 	}
 
@@ -434,6 +419,86 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// LoadResolvedConfig loads a config file over the canonical defaults and
+// returns the effective values used by config-editing surfaces. Missing files
+// are treated as "all defaults" so first-boot config pages can render before
+// agent.toml has been created.
+func LoadResolvedConfig(path string) (Config, error) {
+	resolvedPath, exists, err := resolveConfigPath(path)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg := DefaultConfig()
+	if exists {
+		if err := decodeConfigFile(resolvedPath, &cfg); err != nil {
+			return Config{}, err
+		}
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+
+	return cfg, nil
+}
+
+func resolveConfigPath(path string) (string, bool, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", false, errors.New("config path is required")
+	}
+
+	info, err := os.Stat(path)
+	if err == nil {
+		if !info.IsDir() {
+			return path, true, nil
+		}
+
+		tomlPath := filepath.Join(path, "agent.toml")
+		if _, err := os.Stat(tomlPath); err == nil {
+			return tomlPath, true, nil
+		} else if !os.IsNotExist(err) {
+			return "", false, fmt.Errorf("read config: %w", err)
+		}
+
+		jsonPath := filepath.Join(path, "agent.json")
+		if _, err := os.Stat(jsonPath); err == nil {
+			return jsonPath, true, nil
+		} else if !os.IsNotExist(err) {
+			return "", false, fmt.Errorf("read config: %w", err)
+		}
+
+		return tomlPath, false, nil
+	}
+	if os.IsNotExist(err) {
+		return path, false, nil
+	}
+	return "", false, fmt.Errorf("read config: %w", err)
+}
+
+func decodeConfigFile(path string, cfg *Config) error {
+	var metadata toml.MetaData
+
+	// Determine format by file extension
+	if strings.HasSuffix(path, ".toml") {
+		var err error
+		if metadata, err = toml.DecodeFile(path, cfg); err != nil {
+			return fmt.Errorf("decode TOML config: %w", err)
+		}
+	} else {
+		_, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("read config: %w", err)
+		}
+		return fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
+	}
+
+	if err := applyLegacyModelMaxTokens(path, metadata, cfg); err != nil {
+		return err
+	}
+	return nil
 }
 
 func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config) error {

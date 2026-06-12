@@ -15,11 +15,10 @@
 //                                unset, prints {"valid": true, "errors": []}.
 //   AIDEN_AGENT_STUB_CHECK_EXIT  integer exit code for `config-check`
 //                                (default 0).
-//   AIDEN_AGENT_STUB_DEFAULTS_FILE path to a file whose contents are written
-//                                  verbatim to stdout for `config-defaults`.
-//                                  If unset, prints a minimal default config.
-//   AIDEN_AGENT_STUB_DEFAULTS_EXIT integer exit code for `config-defaults`
-//                                  (default 0).
+//   AIDEN_AGENT_STUB_CONFIG_FILE   path to a file whose contents are written
+//                                  verbatim to stdout for `config`.
+//                                  If unset, prints a minimal resolved config.
+//   AIDEN_AGENT_STUB_CONFIG_EXIT   integer exit code for `config` (default 0).
 //   AIDEN_AGENT_STUB_SLEEP_MS    if set, sleep this many ms before producing
 //                                output -- used to exercise the timeout path.
 //
@@ -46,7 +45,7 @@ const char* kDefaultMeta =
 
 const char* kDefaultCheck = "{\"valid\":true,\"errors\":[]}\n";
 
-const char* kDefaultDefaults =
+const char* kDefaultConfig =
     "{"
     "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"bytedance-seed/seed-2.0-lite\","
     "\"base_url\":\"\",\"token_env\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
@@ -148,13 +147,13 @@ int main(int argc, char** argv) {
         return env_int("AIDEN_AGENT_STUB_CHECK_EXIT", 0);
     }
 
-    if (sub == "config-defaults") {
+    if (sub == "config") {
         maybe_sleep();
-        if (!write_file_contents("AIDEN_AGENT_STUB_DEFAULTS_FILE", kDefaultDefaults)) {
+        if (!write_file_contents("AIDEN_AGENT_STUB_CONFIG_FILE", kDefaultConfig)) {
             return 1;
         }
         std::fflush(stdout);
-        return env_int("AIDEN_AGENT_STUB_DEFAULTS_EXIT", 0);
+        return env_int("AIDEN_AGENT_STUB_CONFIG_EXIT", 0);
     }
 
     return 99;

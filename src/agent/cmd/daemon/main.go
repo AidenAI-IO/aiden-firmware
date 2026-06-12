@@ -33,8 +33,8 @@ func main() {
 			os.Exit(runConfigCheck(os.Args[2:]))
 		case "config-meta":
 			os.Exit(runConfigMeta(os.Args[2:]))
-		case "config-defaults":
-			os.Exit(runConfigDefaults(os.Args[2:]))
+		case "config":
+			os.Exit(runConfig(os.Args[2:]))
 		case "config-test":
 			fmt.Fprintln(os.Stderr, "config-test subcommand not yet implemented")
 			os.Exit(1)
