@@ -159,6 +159,19 @@ func applyOpenAppURL(args *openAppArgs, rawURL string) error {
 	return nil
 }
 
+func hasOpenAppExplicitTargets(args openAppArgs) bool {
+	return len(args.IOSURLs) > 0 || len(args.AndroidPackages) > 0
+}
+
+func isPhoneAppAlias(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "phone", "telephone", "dial", "dialer", "电话":
+		return true
+	default:
+		return false
+	}
+}
+
 func resolveOpenAppTargets(args *openAppArgs) error {
 	if args == nil {
 		return fmt.Errorf("missing open_app args")
@@ -166,19 +179,35 @@ func resolveOpenAppTargets(args *openAppArgs) error {
 	if strings.TrimSpace(args.App) == "" && strings.TrimSpace(args.Name) != "" {
 		args.App = args.Name
 	}
+	hasApp := strings.TrimSpace(args.App) != ""
+	hasURL := strings.TrimSpace(args.URL) != ""
+	hasExplicitTargets := hasOpenAppExplicitTargets(*args)
 
 	if strings.TrimSpace(args.PhoneNumber) != "" {
+		if hasURL || hasExplicitTargets {
+			return fmt.Errorf("phone_number cannot be combined with url, ios_urls, or android_packages")
+		}
+		if hasApp && !isPhoneAppAlias(args.App) {
+			return fmt.Errorf("phone_number can only be combined with app/name when the app is phone")
+		}
 		telURL := "tel:" + strings.TrimSpace(args.PhoneNumber)
 		args.IOSURLs = []string{telURL}
 		args.AndroidPackages = []string{"android.intent.action.DIAL:" + strings.TrimSpace(args.PhoneNumber)}
 		return nil
 	}
 
-	if strings.TrimSpace(args.URL) != "" && len(args.IOSURLs) == 0 && len(args.AndroidPackages) == 0 {
+	if hasURL {
+		if hasApp || hasExplicitTargets {
+			return fmt.Errorf("url cannot be combined with app, name, ios_urls, or android_packages")
+		}
 		return applyOpenAppURL(args, args.URL)
 	}
 
-	if args.App != "" && len(args.IOSURLs) == 0 && len(args.AndroidPackages) == 0 {
+	if hasApp && hasExplicitTargets {
+		return fmt.Errorf("app/name cannot be combined with ios_urls or android_packages")
+	}
+
+	if hasApp {
 		key := strings.ToLower(strings.TrimSpace(args.App))
 		if mapped, ok := globalAppMapping.lookup(key); ok {
 			args.IOSURLs = mapped.IOSURLs
@@ -196,12 +225,61 @@ func resolveOpenAppTargets(args *openAppArgs) error {
 	return nil
 }
 
+func firstOpenAppIOSURL(args openAppArgs) string {
+	for _, target := range args.IOSURLs {
+		if value := strings.TrimSpace(target); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstOpenAppAndroidPackage(args openAppArgs) string {
+	for _, target := range args.AndroidPackages {
+		if value := strings.TrimSpace(target); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func androidActionPayload(target, prefix string) (string, bool) {
+	target = strings.TrimSpace(target)
+	if !strings.HasPrefix(strings.ToLower(target), prefix) {
+		return "", false
+	}
+	return strings.TrimSpace(target[len(prefix):]), true
+}
+
 func openAppResultMethod(args openAppArgs) string {
 	if strings.TrimSpace(args.PhoneNumber) != "" {
 		return "dial"
 	}
 	if strings.TrimSpace(args.URL) != "" || isHTTPURL(args.App) {
 		return "open_url"
+	}
+	if strings.TrimSpace(args.App) != "" {
+		return "open_app"
+	}
+	if target := firstOpenAppIOSURL(args); target != "" {
+		lower := strings.ToLower(target)
+		switch {
+		case isHTTPURL(target):
+			return "open_url"
+		case strings.HasPrefix(lower, "tel:"):
+			return "dial"
+		}
+	}
+	if target := firstOpenAppAndroidPackage(args); target != "" {
+		lower := strings.ToLower(target)
+		switch {
+		case strings.HasPrefix(lower, "android.intent.action.dial:"):
+			return "dial"
+		case strings.HasPrefix(lower, "android.intent.action.view:"):
+			if payload, ok := androidActionPayload(target, "android.intent.action.view:"); ok && isHTTPURL(payload) {
+				return "open_url"
+			}
+		}
 	}
 	return "open_app"
 }
@@ -216,11 +294,26 @@ func openAppResultTarget(args openAppArgs) string {
 	if value := strings.TrimSpace(args.App); value != "" {
 		return value
 	}
-	if len(args.IOSURLs) > 0 {
-		return strings.TrimSpace(args.IOSURLs[0])
+	if target := firstOpenAppIOSURL(args); target != "" {
+		lower := strings.ToLower(target)
+		if strings.HasPrefix(lower, "tel:") {
+			return strings.TrimPrefix(target, target[:4])
+		}
+		return target
 	}
-	if len(args.AndroidPackages) > 0 {
-		return strings.TrimSpace(args.AndroidPackages[0])
+	if target := firstOpenAppAndroidPackage(args); target != "" {
+		lower := strings.ToLower(target)
+		if strings.HasPrefix(lower, "android.intent.action.dial:") {
+			if payload, ok := androidActionPayload(target, "android.intent.action.dial:"); ok {
+				return payload
+			}
+		}
+		if strings.HasPrefix(lower, "android.intent.action.view:") {
+			if payload, ok := androidActionPayload(target, "android.intent.action.view:"); ok {
+				return payload
+			}
+		}
+		return target
 	}
 	return ""
 }

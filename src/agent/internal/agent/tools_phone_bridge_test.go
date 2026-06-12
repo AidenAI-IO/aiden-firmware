@@ -119,6 +119,55 @@ func TestResolveOpenAppTargetsAppCanBeSpecificURL(t *testing.T) {
 	}
 }
 
+func TestResolveOpenAppTargetsRejectsUnknownApp(t *testing.T) {
+	args := openAppArgs{App: "nonexistent app"}
+
+	if err := resolveOpenAppTargets(&args); err == nil {
+		t.Fatal("resolveOpenAppTargets returned nil error, want unknown app error")
+	}
+}
+
+func TestResolveOpenAppTargetsRejectsInvalidURL(t *testing.T) {
+	args := openAppArgs{URL: "not-a-url"}
+
+	if err := resolveOpenAppTargets(&args); err == nil {
+		t.Fatal("resolveOpenAppTargets returned nil error, want invalid URL error")
+	}
+}
+
+func TestResolveOpenAppTargetsRejectsWhitespaceApp(t *testing.T) {
+	args := openAppArgs{App: "  "}
+
+	if err := resolveOpenAppTargets(&args); err == nil {
+		t.Fatal("resolveOpenAppTargets returned nil error, want missing target error")
+	}
+}
+
+func TestResolveOpenAppTargetsRejectsConflictingPhoneNumber(t *testing.T) {
+	args := openAppArgs{
+		App:         "browser",
+		URL:         "https://example.com",
+		PhoneNumber: "10086",
+	}
+
+	if err := resolveOpenAppTargets(&args); err == nil {
+		t.Fatal("resolveOpenAppTargets returned nil error, want conflicting phone_number error")
+	}
+}
+
+func TestResolveOpenAppTargetsRejectsConflictingExplicitTargets(t *testing.T) {
+	tests := []openAppArgs{
+		{URL: "https://example.com", IOSURLs: []string{"weixin://"}},
+		{App: "WeChat", AndroidPackages: []string{"com.tencent.mm"}},
+	}
+
+	for _, args := range tests {
+		if err := resolveOpenAppTargets(&args); err == nil {
+			t.Fatalf("resolveOpenAppTargets(%#v) returned nil error, want conflict error", args)
+		}
+	}
+}
+
 func TestOpenAppResultMetadataForContactsShortcut(t *testing.T) {
 	args := openAppArgs{App: "Contacts"}
 	if err := resolveOpenAppTargets(&args); err != nil {
@@ -149,6 +198,34 @@ func TestOpenAppResultMetadataForSpecificURL(t *testing.T) {
 		t.Fatalf("target = %q, want requested URL", got)
 	}
 	if got := openAppResultMechanism(args, "open_url"); got != "open_url" {
+		t.Fatalf("mechanism = %q, want open_url", got)
+	}
+}
+
+func TestOpenAppResultMetadataForDirectIOSWebURL(t *testing.T) {
+	args := openAppArgs{IOSURLs: []string{"https://example.com/direct"}}
+
+	if got := openAppResultMethod(args); got != "open_url" {
+		t.Fatalf("method = %q, want open_url", got)
+	}
+	if got := openAppResultTarget(args); got != "https://example.com/direct" {
+		t.Fatalf("target = %q, want direct URL", got)
+	}
+	if got := openAppResultMechanism(args, ""); got != "open_url" {
+		t.Fatalf("mechanism = %q, want open_url", got)
+	}
+}
+
+func TestOpenAppResultMetadataForDirectAndroidActionView(t *testing.T) {
+	args := openAppArgs{AndroidPackages: []string{"android.intent.action.VIEW:https://example.com/direct"}}
+
+	if got := openAppResultMethod(args); got != "open_url" {
+		t.Fatalf("method = %q, want open_url", got)
+	}
+	if got := openAppResultTarget(args); got != "https://example.com/direct" {
+		t.Fatalf("target = %q, want direct URL", got)
+	}
+	if got := openAppResultMechanism(args, ""); got != "open_url" {
 		t.Fatalf("mechanism = %q, want open_url", got)
 	}
 }

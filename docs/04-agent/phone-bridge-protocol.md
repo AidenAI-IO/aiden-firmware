@@ -636,7 +636,7 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 {
   "id": "open_1717667890123_1",
   "ok": true,
-  "method": "open_url"
+  "method": "ios_url_scheme"
 }
 ```
 
