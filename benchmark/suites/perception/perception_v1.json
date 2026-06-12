@@ -1,6 +1,6 @@
 {
-  "name": "perception_v1",
   "global_reset": {},
+  "name": "perception_v1",
   "tasks": [
     {
       "id": "find_settings_iphone",
@@ -14,12 +14,8 @@
           "check": "The tool trace contains at least one touch_gesture or mouse_click call."
         },
         {
-          "id": "does_not_use_0_1_coordinates",
-          "check": "No touch_gesture, mouse_click, or mouse_move call uses 0-1 style normalized coordinates. If coord_space is normalized, coordinates should use the 0-1000 convention, not x/y values between 0 and 1."
-        },
-        {
           "id": "click_targets_settings",
-          "check": "The touch/click coordinates target the Settings icon area. For normalized 0-1000 coordinates, x should be roughly in [750, 980] and y in [380, 550]."
+          "check": "The touch/click coordinates target the Settings icon area: normalized x in [0.75, 0.98] and y in [0.38, 0.55]."
         }
       ],
       "hard_assertions": {
@@ -28,6 +24,213 @@
         "must_complete_within_sec": 120,
         "response_required": true
       }
+    },
+    {
+      "category": "perception",
+      "description_for_judge": "The agent should identify the 'X' close button on the advertisement banner at the bottom of the screen and tap it to dismiss the ad.",
+      "hard_assertions": {
+        "max_tool_calls": 5,
+        "min_tool_calls": 1,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      },
+      "id": "x_327",
+      "input_screenshot": "screenshots/x_327.jpg",
+      "prompt": "关闭广告",
+      "rubric": [
+        {
+          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "id": "called_click_tool"
+        },
+        {
+          "check": "The touch/click coordinates target the 广告页面的X area: normalized x in [945, 985], y in [870, 898] (0-1000 normalized space, where 500 is center).",
+          "id": "click_targets_x"
+        }
+      ]
+    },
+    {
+      "category": "perception",
+      "description_for_judge": "The agent should identify the menu icon (three dots) located in the top-right corner of the chat interface and tap it to open the chat details.",
+      "hard_assertions": {
+        "max_tool_calls": 5,
+        "min_tool_calls": 1,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      },
+      "id": "task_386",
+      "input_screenshot": "screenshots/task_386.jpg",
+      "prompt": "打开右上角的聊天详情",
+      "rubric": [
+        {
+          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "id": "called_click_tool"
+        },
+        {
+          "check": "The touch/click coordinates target the 聊天详情 area: normalized x in [905, 967], y in [82, 97] (0-1000 normalized space, where 500 is center).",
+          "id": "click_targets_"
+        }
+      ]
+    },
+    {
+      "category": "perception",
+      "description_for_judge": "The agent should tap the circular refresh icon located in the bottom navigation bar to reload the page.",
+      "hard_assertions": {
+        "max_tool_calls": 5,
+        "min_tool_calls": 1,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      },
+      "id": "task_4450",
+      "input_screenshot": "screenshots/task_4450.jpg",
+      "prompt": "点击刷新页面按钮",
+      "rubric": [
+        {
+          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "id": "called_click_tool"
+        },
+        {
+          "check": "The touch/click coordinates target the 刷新页面 area: normalized x in [685, 752], y in [916, 948] (0-1000 normalized space, where 500 is center).",
+          "id": "click_targets_"
+        }
+      ]
+    },
+    {
+      "category": "perception",
+      "description_for_judge": "The agent should identify the '从相册选择' (Select from Album) button in the bottom modal and tap it.",
+      "hard_assertions": {
+        "max_tool_calls": 5,
+        "min_tool_calls": 1,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      },
+      "id": "task_4606",
+      "input_screenshot": "screenshots/task_4606.jpg",
+      "prompt": "点击“从相册选择”",
+      "rubric": [
+        {
+          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "id": "called_click_tool"
+        },
+        {
+          "check": "The touch/click coordinates target the 从相册选择 area: normalized x in [360, 649], y in [696, 734] (0-1000 normalized space, where 500 is center).",
+          "id": "click_targets_"
+        }
+      ]
+    },
+    {
+      "category": "perception",
+      "description_for_judge": "The agent should identify the search icon located in the top-right corner of the screen and click it to initiate a search.",
+      "hard_assertions": {
+        "max_tool_calls": 5,
+        "min_tool_calls": 1,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      },
+      "id": "task_4657",
+      "input_screenshot": "screenshots/task_4657.jpg",
+      "prompt": "点击查找",
+      "rubric": [
+        {
+          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "id": "called_click_tool"
+        },
+        {
+          "check": "The touch/click coordinates target the 点击查找 area: normalized x in [902, 972], y in [79, 111] (0-1000 normalized space, where 500 is center).",
+          "id": "click_targets_"
+        }
+      ]
+    },
+    {
+      "category": "perception",
+      "description_for_judge": "The agent should identify the 'Scan' icon located in the top right corner of the screen (next to the 'Edit' button) and tap it to initiate the scanning function.",
+      "hard_assertions": {
+        "max_tool_calls": 5,
+        "min_tool_calls": 1,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      },
+      "id": "task_4724",
+      "input_screenshot": "screenshots/task_4724.jpg",
+      "prompt": "点击屏幕右上角的扫一扫图标。",
+      "rubric": [
+        {
+          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "id": "called_click_tool"
+        },
+        {
+          "check": "The touch/click coordinates target the 扫码进入 area: normalized x in [811, 889], y in [76, 115] (0-1000 normalized space, where 500 is center).",
+          "id": "click_targets_"
+        }
+      ]
+    },
+    {
+      "category": "perception",
+      "description_for_judge": "The agent should identify the close button (X) for the advertisement banner located below the navigation tabs and tap it to dismiss the ad.",
+      "hard_assertions": {
+        "max_tool_calls": 5,
+        "min_tool_calls": 1,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      },
+      "id": "task_4762",
+      "input_screenshot": "screenshots/task_4762.jpg",
+      "prompt": "关闭广告",
+      "rubric": [
+        {
+          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "id": "called_click_tool"
+        },
+        {
+          "check": "The touch/click coordinates target the 广告的关闭入口 area: normalized x in [918, 963], y in [530, 551] (0-1000 normalized space, where 500 is center).",
+          "id": "click_targets_"
+        }
+      ]
+    },
+    {
+      "category": "perception",
+      "description_for_judge": "The agent should identify the '...' icon located in the top right corner of the chat header and tap it to access chat details.",
+      "hard_assertions": {
+        "max_tool_calls": 5,
+        "min_tool_calls": 1,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      },
+      "id": "task_5022",
+      "input_screenshot": "screenshots/task_5022.jpg",
+      "prompt": "点击屏幕右上角的更多聊天详情按钮",
+      "rubric": [
+        {
+          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "id": "called_click_tool"
+        },
+        {
+          "check": "The touch/click coordinates target the 聊天详情 area: normalized x in [887, 983], y in [80, 101] (0-1000 normalized space, where 500 is center).",
+          "id": "click_targets_"
+        }
+      ]
+    },
+    {
+      "category": "perception",
+      "description_for_judge": "The agent should tap the selection checkbox located in the top-right corner of the first image in the grid (the top-left image showing food).",
+      "hard_assertions": {
+        "max_tool_calls": 5,
+        "min_tool_calls": 1,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      },
+      "id": "task_5097",
+      "input_screenshot": "screenshots/task_5097.jpg",
+      "prompt": "选中第一幅图",
+      "rubric": [
+        {
+          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "id": "called_click_tool"
+        },
+        {
+          "check": "The touch/click coordinates target the 第一幅图的选中按钮 area: normalized x in [248, 331], y in [192, 227] (0-1000 normalized space, where 500 is center).",
+          "id": "click_targets_"
+        }
+      ]
     }
   ]
 }
