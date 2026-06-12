@@ -47,7 +47,7 @@ cd "$SCRIPT_DIR"
 # Step 2: 准备 overlay 目录
 echo "[2/6] Preparing overlay directories..."
 mkdir -p "$OVERLAY/oem/usr/bin" "$OVERLAY/oem/usr/lib" "$OVERLAY/oem/etc"
-cp -a "$SCRIPT_DIR/build/bin"/. "$OVERLAY/oem/usr/bin/"
+rsync -a --delete "$SCRIPT_DIR/build/bin/" "$OVERLAY/oem/usr/bin/"
 echo "  ✓ Binaries copied to overlay/oem/usr/bin"
 
 BENCHMARK_SRC="$SCRIPT_DIR/benchmark"
@@ -167,7 +167,6 @@ fi
 
 # 设置默认值
 : ${RK_CHIP:=rv1106}
-: ${RK_LIBC_TPYE:=glibc}
 SDK_ROOT_DIR="$PICO_SDK"
 RK_PROJECT_OUTPUT="${SDK_ROOT_DIR}/output/out"
 RK_PROJECT_OUTPUT_IMAGE="${SDK_ROOT_DIR}/output/image"

@@ -97,6 +97,11 @@ if grep -q 'SDK_STAGE_STATE_DIR=' "$ROOT_DIR/_build_image.sh" || \
     exit 1
 fi
 
+if grep -q 'RK_LIBC_TPYE:=glibc' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must not guess the SDK libc type; pico-sdk derives it from RK_TOOLCHAIN_CROSS" >&2
+    exit 1
+fi
+
 if ! grep -q './build.sh sysdrv' "$ROOT_DIR/_build_image.sh" || \
    ! grep -q './build.sh media' "$ROOT_DIR/_build_image.sh" || \
    ! grep -q './build.sh app' "$ROOT_DIR/_build_image.sh" || \
@@ -112,6 +117,12 @@ fi
 
 if ! grep -Fq 'scripts/clean_rootfs_overlay_staging.sh" --dest-overlay "$DEST_OVERLAY"' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must clean stale rootfs overlay staging before syncing current rootfs assets" >&2
+    exit 1
+fi
+
+if grep -Fq 'cp -a "$SCRIPT_DIR/build/bin"/. "$OVERLAY/oem/usr/bin/"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'rsync -a --delete "$SCRIPT_DIR/build/bin/" "$OVERLAY/oem/usr/bin/"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must sync generated binaries into overlay/oem/usr/bin with delete semantics" >&2
     exit 1
 fi
 
