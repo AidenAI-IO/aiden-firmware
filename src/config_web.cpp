@@ -160,6 +160,7 @@ bool mkdir_p(const std::string& dir, std::string* error);
 bool prepare_ota_update_log_file(const std::string& path, std::string* error);
 bool set_fd_cloexec(int fd, std::string* error);
 CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms);
+void update_config_from_json(cJSON* root, aiden::AgentToml* config);
 
 // ValidationOutcome distinguishes "the user submitted something invalid" (the
 // CLI ran and rejected it -> 400) from "we could not run validation at all"
@@ -900,69 +901,51 @@ void send_response(int client_fd,
     write_all(client_fd, body.data(), body.size());
 }
 
-void apply_default_agent_config(aiden::AgentToml& cfg) {
-    // NOTE: The canonical defaults for these fields live in the agent's
-    // ConfigMeta() (src/agent/internal/agent/config_meta.go), which the config
-    // web UI consumes via `agent config-meta`. The numeric/string defaults here
-    // are kept in lockstep with that source of truth; this function only seeds a
-    // freshly provisioned agent.toml on the device where the Go metadata is not
-    // consulted. When changing a default, update ConfigMeta() first.
-    cfg.instruction =
-        "默认用简体中文回答，语气要像真人说话，简短自然，适合 TTS 播放。"
-        "需要读取或改变手机、外部设备或服务状态时必须使用工具；可以连续组合多个工具完成任务。"
-        "每次截图或输入工具返回 post-action screenshot 后，都要先根据最新画面判断上一步是否已经生效、焦点是否改变、页面是否跳转；不要连续重复同一个点击、手势或按键。"
-        "在手机上打开 App、查找联系人、设置项、商品或页面内容时，优先使用系统搜索、App 内搜索或页面上的搜索框；不要先靠连续滑动、翻页来碰运气。"
-        "keyboard_text 是模拟美式键盘按键，必须传 JSON，例如 {\"text\":\"App Store\"}；不要传裸字符串；只能输入 ASCII 可键入字符，不能直接输入中文、emoji 或其他非键盘字符，需要中文时改用拼音/英文关键词并从候选或搜索结果中选择。"
-        "点击要以最新截图为准，选择可见目标的中心点，并优先使用 coord_space:\"normalized\" 的 0-1000 坐标（(0,0) 左上角，(1000,1000) 右下角，(500,500) 中心）；手机投屏/截图可能被缩放，pixel 坐标容易和实际触控坐标偏移。除非用户明确要求或坐标系已经校准，不要使用 coord_space:\"pixel\"。坐标不确定时先截图确认，不要用大概位置连续试点。"
-        "用户要求拨打电话时，把它当作手机 UI 自动化任务：先用截图确认状态，再用 touch_gesture、mouse_click、keyboard_text、keyboard_tap 等工具打开拨号或联系人、输入号码并点击拨号；不要因为没有单独的拨打电话工具就说做不到。"
-        "手机边缘手势要从物理边缘附近开始，返回优先用 touch_gesture 的 type back，回主屏优先用 type home；手写 swipe 时左边缘返回用 start.x=1 左右，底边回主页用 start.y=999 左右。";
-    cfg.input_mode = "text";
-    cfg.trigger_mode = "manual";
-    cfg.vad_backend = "rknn";
-    cfg.vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
-    cfg.vad_helper_path = "/oem/usr/bin/rknn_vad";
-    cfg.vad_speech_threshold = 0.5;
-    cfg.silence_ms = 650;
-    cfg.min_speech_ms = 300;
-    cfg.voice_session_enabled = true;
-    cfg.voice_followup_timeout_ms = 6000;
-    cfg.voice_first_turn_timeout_ms = 10000;
-    cfg.voice_max_turns = 0;
-    cfg.voice_interrupt_on_wakeup = true;
-    cfg.voice_streaming_tts_enabled = true;
-    cfg.voice_tool_call_speech = true;
-    cfg.voice_max_response_tokens = 400;
-    cfg.max_iterations = -1;
-    cfg.screenshot_keep_n = 3;
-    cfg.screenshot_prune_interval = 25;
-    cfg.screen_stable_timeout_ms = 3500;
-    cfg.screen_stable_ms = 500;
-    cfg.screen_stable_diff_threshold = 2.0;
+bool apply_default_agent_config(aiden::AgentToml& cfg, std::string* error) {
+    if (error) {
+        error->clear();
+    }
+    const char* agent_bin = agent_bin_path();
+    if (!file_exists(agent_bin)) {
+        if (error) {
+            *error = std::string("config defaults unavailable: agent binary not found at ") + agent_bin;
+        }
+        std::cerr << "[config] agent binary not found at " << agent_bin
+                  << ", cannot load config defaults\n";
+        return false;
+    }
 
-    cfg.model.provider = "openrouter";
-    cfg.model.model = "bytedance-seed/seed-2.0-lite";
-    cfg.model.temperature = 0.2;
-    cfg.model.max_response_tokens = 1000;
+    std::string cmd = std::string(agent_bin) + " config-defaults --format=json";
+    CommandResult result = run_command_with_stdin(cmd, "", 2000);
+    if (result.timed_out) {
+        if (error) {
+            *error = "config defaults timed out";
+        }
+        return false;
+    }
+    if (result.exit_code != 0) {
+        if (error) {
+            *error = "config defaults generation failed";
+        }
+        std::cerr << "[config] agent config-defaults exited " << result.exit_code
+                  << ": " << result.output << "\n";
+        return false;
+    }
 
-    cfg.tts.provider = "minimax-ws";
-    cfg.tts.voice_id = "male-qn-qingse";
-    cfg.tts.emotion = "happy";
-    cfg.tts.speed = 1.0;
+    cJSON* defaults = cJSON_Parse(result.output.c_str());
+    if (!defaults) {
+        if (error) {
+            *error = "config defaults returned an unexpected response";
+        }
+        std::cerr << "[config] agent config-defaults returned invalid JSON: "
+                  << result.output << "\n";
+        return false;
+    }
 
-    cfg.stt.provider = "openai-whisper";
-    cfg.stt.model = "whisper-1";
-
-    cfg.audio.socket = "/run/audio_service/audio_service.sock";
-    cfg.audio.sample_rate = 16000;
-    cfg.audio.channels = 1;
-    cfg.audio.bit_width = 16;
-
-    cfg.hid.keyboard_device = "/dev/hidg0";
-    cfg.hid.mouse_device = "/dev/hidg1";
-    cfg.hid.frame_socket = "/run/frame_service/frame_service.sock";
-    cfg.hid.pointer_mode = "absolute";
-
-    cfg.search.provider = "duckduckgo";
+    cfg = aiden::AgentToml();
+    update_config_from_json(defaults, &cfg);
+    cJSON_Delete(defaults);
+    return true;
 }
 
 void load_current_agent_config(const Options& options,
@@ -975,18 +958,18 @@ void load_current_agent_config(const Options& options,
         return;
     }
 
-    *config = aiden::AgentToml();
-    apply_default_agent_config(*config);
+    std::string defaults_error;
+    if (!apply_default_agent_config(*config, &defaults_error)) {
+        if (load_error) {
+            *load_error = defaults_error;
+        }
+        *config = aiden::AgentToml();
+        return;
+    }
     if (file_exists(options.agent_config_path.c_str())) {
-        aiden::AgentToml loaded;
+        aiden::AgentToml loaded = *config;
         std::string err;
         if (aiden::load_agent_toml(options.agent_config_path.c_str(), loaded, &err)) {
-            if (loaded.search.provider.empty()) {
-                loaded.search.provider = "duckduckgo";
-            }
-            if (loaded.hid.pointer_mode.empty()) {
-                loaded.hid.pointer_mode = "absolute";
-            }
             *config = loaded;
         } else if (load_error) {
             *load_error = err;

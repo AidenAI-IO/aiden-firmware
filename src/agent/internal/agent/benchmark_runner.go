@@ -24,7 +24,7 @@ type benchmarkLaunchSpec struct {
 // handleBenchmarkRun (start) and the trailing echo (end).
 func (s *Server) launchBenchmarkRunner(spec benchmarkLaunchSpec, judgeModel, openRouterAPIKey string) error {
 	if judgeModel == "" {
-		judgeModel = "bytedance-seed/seed-2.0-lite"
+		judgeModel = defaultBenchmarkJudgeModel
 	}
 	runnerArgs := ""
 	if spec.Kind == "unit" {

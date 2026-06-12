@@ -714,6 +714,8 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("config validation unavailable: agent binary not found") != std::string::npos);
     // config metadata endpoint: agent CLI is the single source of field metadata.
     CHECK(source.find("config-meta --format=json") != std::string::npos);
+    CHECK(source.find("config-defaults --format=json") != std::string::npos);
+    CHECK(source.find("cannot load config defaults") != std::string::npos);
     CHECK(source.find("\"/api/config/meta\"") != std::string::npos);
     CHECK(source.find("config metadata unavailable: agent binary not found") != std::string::npos);
     CHECK(html.find("hid_pointer_mode") != std::string::npos);

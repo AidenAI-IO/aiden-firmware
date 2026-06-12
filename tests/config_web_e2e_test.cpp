@@ -319,6 +319,32 @@ TEST_CASE("config_web: GET /api/config/meta returns 200 + parseable JSON when st
     cJSON_Delete(parsed);
 }
 
+TEST_CASE("config_web: GET /api/config hydrates missing TOML fields from agent defaults") {
+    StubEnv env;
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* hid = cJSON_GetObjectItem(config, "hid");
+    REQUIRE(hid != nullptr);
+    cJSON* frame_socket = cJSON_GetObjectItem(hid, "frame_socket");
+    REQUIRE(frame_socket != nullptr);
+    REQUIRE(frame_socket->valuestring != nullptr);
+    CHECK(std::string(frame_socket->valuestring) == "/run/frame_service/frame_service.sock");
+
+    cJSON* model = cJSON_GetObjectItem(config, "model");
+    REQUIRE(model != nullptr);
+    cJSON* provider = cJSON_GetObjectItem(model, "provider");
+    REQUIRE(provider != nullptr);
+    REQUIRE(provider->valuestring != nullptr);
+    CHECK(std::string(provider->valuestring) == "openrouter");
+    cJSON_Delete(parsed);
+}
+
 TEST_CASE("config_web: GET /api/config/meta returns 503 when stub returns invalid JSON") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
@@ -466,4 +492,3 @@ TEST_CASE("config_web: failed manual OTA update releases launch lock even if a d
     CHECK(accepted);
     CHECK(retry.body.find("ota update already running") == std::string::npos);
 }
-

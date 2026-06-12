@@ -248,28 +248,28 @@ func (a AudioConfig) SocketOrDefault() string {
 	if a.Socket != "" {
 		return a.Socket
 	}
-	return "/run/audio_service/audio_service.sock"
+	return defaultAudioSocket
 }
 
 func (a AudioConfig) SampleRateOrDefault() int {
 	if a.SampleRate > 0 {
 		return a.SampleRate
 	}
-	return 16000
+	return defaultAudioSampleRate
 }
 
 func (a AudioConfig) ChannelsOrDefault() int {
 	if a.Channels > 0 {
 		return a.Channels
 	}
-	return 1
+	return defaultAudioChannels
 }
 
 func (a AudioConfig) BitWidthOrDefault() int {
 	if a.BitWidth > 0 {
 		return a.BitWidth
 	}
-	return 16
+	return defaultAudioBitWidth
 }
 
 type HIDConfig struct {
@@ -304,21 +304,21 @@ func (h HIDConfig) KeyboardDeviceOrDefault() string {
 	if h.KeyboardDevice != "" {
 		return h.KeyboardDevice
 	}
-	return "/dev/hidg0"
+	return defaultKeyboardDevice
 }
 
 func (h HIDConfig) MouseDeviceOrDefault() string {
 	if h.MouseDevice != "" {
 		return h.MouseDevice
 	}
-	return "/dev/hidg1"
+	return defaultMouseDevice
 }
 
 func (h HIDConfig) FrameSocketOrDefault() string {
 	if h.FrameSocket != "" {
 		return h.FrameSocket
 	}
-	return "/tmp/frame_service.sock"
+	return defaultFrameServiceSocket
 }
 
 func (h HIDConfig) PointerModeOrDefault() string {
@@ -702,7 +702,7 @@ func (t TelemetryConfig) EnvironmentOrDefault() string {
 func (c Config) InputModeOrDefault() string {
 	mode := strings.TrimSpace(c.InputMode)
 	if mode == "" {
-		return "text"
+		return defaultInputMode
 	}
 	return strings.ToLower(mode)
 }
@@ -711,7 +711,7 @@ func (c Config) InputModeOrDefault() string {
 func (c Config) TriggerModeOrDefault() string {
 	mode := strings.TrimSpace(c.TriggerMode)
 	if mode == "" {
-		return "manual"
+		return defaultTriggerMode
 	}
 	return strings.ToLower(mode)
 }
@@ -735,14 +735,14 @@ func (c Config) VoiceFollowupTimeoutOrDefault() time.Duration {
 	if c.VoiceFollowupTimeoutMs > 0 {
 		return time.Duration(c.VoiceFollowupTimeoutMs) * time.Millisecond
 	}
-	return 6 * time.Second
+	return time.Duration(defaultVoiceFollowupTimeoutMs) * time.Millisecond
 }
 
 func (c Config) VoiceFirstTurnTimeoutOrDefault() time.Duration {
 	if c.VoiceFirstTurnTimeoutMs > 0 {
 		return time.Duration(c.VoiceFirstTurnTimeoutMs) * time.Millisecond
 	}
-	return 10 * time.Second
+	return time.Duration(defaultVoiceFirstTurnTimeoutMs) * time.Millisecond
 }
 
 func (c Config) VoiceInterruptOnWakeupOrDefault() bool {
@@ -770,7 +770,7 @@ func (c Config) VoiceMaxResponseTokensOrDefault() int {
 	if c.VoiceMaxResponseTokens > 0 {
 		return c.VoiceMaxResponseTokens
 	}
-	return 400
+	return defaultVoiceMaxResponseTokens
 }
 
 func (c Config) ScreenshotPruningOrDefault() ScreenshotPruningConfig {

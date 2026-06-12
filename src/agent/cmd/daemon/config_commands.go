@@ -259,6 +259,114 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
+func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
+	return webConfigDTO{
+		Model: modelDTO{
+			Provider:             cfg.Model.Provider,
+			APIKey:               cfg.Model.APIKey,
+			Model:                cfg.Model.Model,
+			BaseURL:              cfg.Model.BaseURL,
+			TokenEnv:             cfg.Model.TokenEnv,
+			Temperature:          cfg.Model.Temperature,
+			MaxResponseTokens:    cfg.Model.MaxResponseTokens,
+			ContextWindow:        cfg.Model.ContextWindow,
+			ModelMaxOutputTokens: cfg.Model.ModelMaxOutputTokens,
+		},
+		ModelText: modelDTO{
+			Provider:             cfg.ModelText.Provider,
+			APIKey:               cfg.ModelText.APIKey,
+			Model:                cfg.ModelText.Model,
+			BaseURL:              cfg.ModelText.BaseURL,
+			TokenEnv:             cfg.ModelText.TokenEnv,
+			Temperature:          cfg.ModelText.Temperature,
+			MaxResponseTokens:    cfg.ModelText.MaxResponseTokens,
+			ContextWindow:        cfg.ModelText.ContextWindow,
+			ModelMaxOutputTokens: cfg.ModelText.ModelMaxOutputTokens,
+		},
+		TTS: ttsDTO{
+			Provider: cfg.TTS.Provider,
+			APIKey:   cfg.TTS.APIKey,
+			Model:    cfg.TTS.Model,
+			VoiceID:  cfg.TTS.VoiceID,
+			Emotion:  cfg.TTS.Emotion,
+			Speed:    cfg.TTS.Speed,
+		},
+		STT: sttDTO{
+			Provider:        cfg.STT.Provider,
+			APIKey:          cfg.STT.APIKey,
+			Model:           cfg.STT.Model,
+			BaseURL:         cfg.STT.BaseURL,
+			SecretID:        cfg.STT.SecretID,
+			SecretKey:       cfg.STT.SecretKey,
+			Region:          cfg.STT.Region,
+			EngineModelType: cfg.STT.EngineModelType,
+		},
+		Audio: audioDTO{
+			Socket:     cfg.Audio.Socket,
+			SampleRate: cfg.Audio.SampleRate,
+			Channels:   cfg.Audio.Channels,
+			BitWidth:   cfg.Audio.BitWidth,
+		},
+		Benchmark: benchmarkDTO{
+			JudgeModel:   cfg.Benchmark.JudgeModel,
+			APIKey:       cfg.Benchmark.APIKey,
+			BenchmarkDir: cfg.Benchmark.Dir,
+		},
+		HID: hidDTO{
+			KeyboardDevice: cfg.HID.KeyboardDevice,
+			MouseDevice:    cfg.HID.MouseDevice,
+			FrameSocket:    cfg.HID.FrameSocket,
+			PointerMode:    cfg.HID.PointerMode,
+		},
+		Search: searchDTO{
+			Provider:  cfg.Search.Provider,
+			HasAPIKey: strings.TrimSpace(cfg.Search.APIKey) != "",
+		},
+		Telemetry: telemetryDTO{
+			Enabled:           cfg.Telemetry.EnabledOrDefault(),
+			Provider:          cfg.Telemetry.ProviderOrDefault(),
+			BaseURL:           cfg.Telemetry.BaseURL,
+			PublicKey:         cfg.Telemetry.PublicKey,
+			SecretKey:         cfg.Telemetry.SecretKey,
+			UploadScreenshots: cfg.Telemetry.UploadScreenshotsOrDefault(),
+			UploadTimeoutSec:  int(cfg.Telemetry.UploadTimeoutOrDefault().Seconds()),
+			MaxRetry:          cfg.Telemetry.MaxRetryOrDefault(),
+			Tags:              cfg.Telemetry.Tags,
+			Environment:       cfg.Telemetry.EnvironmentOrDefault(),
+		},
+		Agent: agentDTO{
+			Instruction:               cfg.Instruction,
+			AdditionalPrompt:          cfg.AdditionalPrompt,
+			InputMode:                 cfg.InputMode,
+			TriggerMode:               cfg.TriggerMode,
+			VADBackend:                cfg.VADBackend,
+			VADModelPath:              cfg.VADModelPath,
+			VADHelperPath:             cfg.VADHelperPath,
+			VADSpeechThreshold:        cfg.VADSpeechThreshold,
+			SilenceMs:                 cfg.SilenceMs,
+			MinSpeechMs:               cfg.MinSpeechMs,
+			VoiceSessionEnabled:       cfg.VoiceSessionEnabledOrDefault(),
+			VoiceFollowupTimeoutMs:    cfg.VoiceFollowupTimeoutMs,
+			VoiceFirstTurnTimeoutMs:   cfg.VoiceFirstTurnTimeoutMs,
+			VoiceMaxTurns:             cfg.VoiceMaxTurns,
+			VoiceInterruptOnWakeup:    cfg.VoiceInterruptOnWakeupOrDefault(),
+			VoiceStreamingTTSEnabled:  cfg.VoiceStreamingTTSEnabledOrDefault(),
+			VoiceToolCallSpeech:       cfg.VoiceToolCallSpeechOrDefault(),
+			VoiceMaxResponseTokens:    cfg.VoiceMaxResponseTokens,
+			MaxIterations:             cfg.MaxIterations,
+			ScreenshotKeepN:           cfg.ScreenshotKeepN,
+			ScreenshotPruneInterval:   cfg.ScreenshotPruneInterval,
+			ScreenStableTimeoutMs:     cfg.ScreenStableTimeoutMs,
+			ScreenStableMs:            cfg.ScreenStableMs,
+			ScreenStableDiffThreshold: cfg.ScreenStableDiffThreshold,
+		},
+	}
+}
+
+func defaultWebConfigDTO() webConfigDTO {
+	return webConfigDTOFromAgentConfig(agent.DefaultConfig())
+}
+
 // runConfigCheck implements the `agent config-check` subcommand
 // It reads JSON config from stdin, validates it, and outputs structured JSON result
 func runConfigCheck(args []string) int {
@@ -352,6 +460,33 @@ func runConfigMeta(args []string) int {
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(agent.ConfigMeta()); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to encode metadata: %v\n", err)
+		return 1
+	}
+
+	return 0
+}
+
+// runConfigDefaults implements the `agent config-defaults` subcommand. It
+// outputs the same JSON wire shape that config_web reads and writes, populated
+// with the agent's canonical default config.
+func runConfigDefaults(args []string) int {
+	fs := flag.NewFlagSet("config-defaults", flag.ExitOnError)
+	formatFlag := fs.String("format", "json", "output format (only json supported)")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to parse flags: %v\n", err)
+		return 1
+	}
+
+	if *formatFlag != "json" {
+		fmt.Fprintln(os.Stderr, "only --format=json is supported")
+		return 1
+	}
+
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(defaultWebConfigDTO()); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to encode defaults: %v\n", err)
 		return 1
 	}
 

@@ -15,6 +15,11 @@
 //                                unset, prints {"valid": true, "errors": []}.
 //   AIDEN_AGENT_STUB_CHECK_EXIT  integer exit code for `config-check`
 //                                (default 0).
+//   AIDEN_AGENT_STUB_DEFAULTS_FILE path to a file whose contents are written
+//                                  verbatim to stdout for `config-defaults`.
+//                                  If unset, prints a minimal default config.
+//   AIDEN_AGENT_STUB_DEFAULTS_EXIT integer exit code for `config-defaults`
+//                                  (default 0).
 //   AIDEN_AGENT_STUB_SLEEP_MS    if set, sleep this many ms before producing
 //                                output -- used to exercise the timeout path.
 //
@@ -40,6 +45,40 @@ const char* kDefaultMeta =
     "]}\n";
 
 const char* kDefaultCheck = "{\"valid\":true,\"errors\":[]}\n";
+
+const char* kDefaultDefaults =
+    "{"
+    "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"bytedance-seed/seed-2.0-lite\","
+    "\"base_url\":\"\",\"token_env\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+    "\"context_window\":0,\"model_max_output_tokens\":0},"
+    "\"model_text\":{\"provider\":\"\",\"api_key\":\"\",\"model\":\"\",\"base_url\":\"\",\"token_env\":\"\","
+    "\"temperature\":0,\"max_response_tokens\":0,\"context_window\":0,\"model_max_output_tokens\":0},"
+    "\"tts\":{\"provider\":\"minimax-ws\",\"api_key\":\"\",\"model\":\"\",\"voice_id\":\"male-qn-qingse\","
+    "\"emotion\":\"happy\",\"speed\":1},"
+    "\"stt\":{\"provider\":\"openai-whisper\",\"api_key\":\"\",\"model\":\"whisper-1\",\"base_url\":\"\","
+    "\"secret_id\":\"\",\"secret_key\":\"\",\"region\":\"\",\"engine_model_type\":\"\"},"
+    "\"audio\":{\"socket\":\"/run/audio_service/audio_service.sock\",\"sample_rate\":16000,"
+    "\"channels\":1,\"bit_width\":16},"
+    "\"benchmark\":{\"judge_model\":\"bytedance-seed/seed-2.0-lite\",\"api_key\":\"\","
+    "\"benchmark_dir\":\"\"},"
+    "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
+    "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
+    "\"search\":{\"provider\":\"duckduckgo\",\"has_api_key\":false},"
+    "\"telemetry\":{\"enabled\":false,\"provider\":\"langfuse\",\"base_url\":\"\","
+    "\"public_key\":\"\",\"secret_key\":\"\",\"upload_screenshots\":true,"
+    "\"upload_timeout_sec\":30,\"max_retry\":2,\"tags\":[],\"environment\":\"default\"},"
+    "\"agent\":{\"instruction\":\"stub default instruction\",\"additional_prompt\":\"\","
+    "\"input_mode\":\"text\",\"trigger_mode\":\"manual\",\"vad_backend\":\"rknn\","
+    "\"vad_model_path\":\"/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn\","
+    "\"vad_helper_path\":\"/oem/usr/bin/rknn_vad\",\"vad_speech_threshold\":0.5,"
+    "\"silence_ms\":650,\"min_speech_ms\":300,\"voice_session_enabled\":true,"
+    "\"voice_followup_timeout_ms\":6000,\"voice_first_turn_timeout_ms\":10000,"
+    "\"voice_max_turns\":0,\"voice_interrupt_on_wakeup\":true,"
+    "\"voice_streaming_tts_enabled\":true,\"voice_tool_call_speech\":true,"
+    "\"voice_max_response_tokens\":400,\"max_iterations\":-1,\"screenshot_keep_n\":3,"
+    "\"screenshot_prune_interval\":25,\"screen_stable_timeout_ms\":3500,"
+    "\"screen_stable_ms\":500,\"screen_stable_diff_threshold\":2}"
+    "}\n";
 
 void maybe_sleep() {
     const char* sleep_ms = std::getenv("AIDEN_AGENT_STUB_SLEEP_MS");
@@ -107,6 +146,15 @@ int main(int argc, char** argv) {
         }
         std::fflush(stdout);
         return env_int("AIDEN_AGENT_STUB_CHECK_EXIT", 0);
+    }
+
+    if (sub == "config-defaults") {
+        maybe_sleep();
+        if (!write_file_contents("AIDEN_AGENT_STUB_DEFAULTS_FILE", kDefaultDefaults)) {
+            return 1;
+        }
+        std::fflush(stdout);
+        return env_int("AIDEN_AGENT_STUB_DEFAULTS_EXIT", 0);
     }
 
     return 99;

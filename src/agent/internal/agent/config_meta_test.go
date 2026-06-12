@@ -170,6 +170,70 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 	}
 }
 
+func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
+	idx := fieldIndex(t)
+	defaults := DefaultConfig()
+
+	tests := []struct {
+		path string
+		want any
+	}{
+		{"model.provider", defaults.Model.Provider},
+		{"model.model", defaults.Model.Model},
+		{"model.temperature", defaults.Model.Temperature},
+		{"model.max_response_tokens", defaults.Model.MaxResponseTokens},
+		{"tts.provider", defaults.TTS.Provider},
+		{"tts.voice_id", defaults.TTS.VoiceID},
+		{"tts.emotion", defaults.TTS.Emotion},
+		{"tts.speed", defaults.TTS.Speed},
+		{"stt.provider", defaults.STT.Provider},
+		{"stt.model", defaults.STT.Model},
+		{"audio.socket", defaults.Audio.Socket},
+		{"audio.sample_rate", defaults.Audio.SampleRate},
+		{"audio.channels", defaults.Audio.Channels},
+		{"audio.bit_width", defaults.Audio.BitWidth},
+		{"benchmark.judge_model", defaults.Benchmark.JudgeModel},
+		{"hid.keyboard_device", defaults.HID.KeyboardDevice},
+		{"hid.mouse_device", defaults.HID.MouseDevice},
+		{"hid.frame_socket", defaults.HID.FrameSocket},
+		{"hid.pointer_mode", defaults.HID.PointerMode},
+		{"agent.input_mode", defaults.InputMode},
+		{"agent.trigger_mode", defaults.TriggerMode},
+		{"agent.vad_backend", defaults.VADBackend},
+		{"agent.vad_model_path", defaults.VADModelPath},
+		{"agent.vad_helper_path", defaults.VADHelperPath},
+		{"agent.vad_speech_threshold", defaults.VADSpeechThreshold},
+		{"agent.silence_ms", defaults.SilenceMs},
+		{"agent.min_speech_ms", defaults.MinSpeechMs},
+		{"agent.voice_session_enabled", defaults.VoiceSessionEnabledOrDefault()},
+		{"agent.voice_followup_timeout_ms", defaults.VoiceFollowupTimeoutMs},
+		{"agent.voice_first_turn_timeout_ms", defaults.VoiceFirstTurnTimeoutMs},
+		{"agent.voice_max_turns", defaults.VoiceMaxTurns},
+		{"agent.voice_interrupt_on_wakeup", defaults.VoiceInterruptOnWakeupOrDefault()},
+		{"agent.voice_streaming_tts_enabled", defaults.VoiceStreamingTTSEnabledOrDefault()},
+		{"agent.voice_tool_call_speech", defaults.VoiceToolCallSpeechOrDefault()},
+		{"agent.voice_max_response_tokens", defaults.VoiceMaxResponseTokens},
+		{"agent.max_iterations", defaults.MaxIterations},
+		{"agent.screenshot_keep_n", defaults.ScreenshotKeepN},
+		{"agent.screenshot_prune_interval", defaults.ScreenshotPruneInterval},
+		{"agent.screen_stable_timeout_ms", defaults.ScreenStableTimeoutMs},
+		{"agent.screen_stable_ms", defaults.ScreenStableMs},
+		{"agent.screen_stable_diff_threshold", defaults.ScreenStableDiffThreshold},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			field, ok := idx[tt.path]
+			if !ok {
+				t.Fatalf("missing metadata field %s", tt.path)
+			}
+			if !reflect.DeepEqual(field.Default, tt.want) {
+				t.Fatalf("%s default = %#v, want runtime default %#v", tt.path, field.Default, tt.want)
+			}
+		})
+	}
+}
+
 // TestConfigMeta_CoversConfigFields uses reflection to ensure every flat,
 // UI-relevant config field has corresponding metadata, preventing silent drift
 // when new fields are added to the Config structs.

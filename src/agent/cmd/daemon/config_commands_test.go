@@ -63,6 +63,29 @@ func TestConfigCheck_ValidConfig(t *testing.T) {
 	t.Logf("Valid config JSON: %s", string(configJSON))
 }
 
+func TestConfigDefaults_WireFormatIsValid(t *testing.T) {
+	defaults := defaultWebConfigDTO()
+	if defaults.HID.FrameSocket != agent.DefaultConfig().HID.FrameSocket {
+		t.Fatalf("defaults HID frame_socket = %q, want %q",
+			defaults.HID.FrameSocket, agent.DefaultConfig().HID.FrameSocket)
+	}
+	if defaults.Agent.Instruction == "" {
+		t.Fatal("defaults instruction is empty")
+	}
+
+	data, err := json.Marshal(defaults)
+	if err != nil {
+		t.Fatalf("marshal defaults: %v", err)
+	}
+	result, err := checkConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("checkConfig(defaults) decode error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("default config is invalid: %+v", result.Errors)
+	}
+}
+
 func TestConfigCheck_InvalidSearchProvider(t *testing.T) {
 	invalidConfig := agent.Config{
 		Model: agent.ModelConfig{
