@@ -568,10 +568,7 @@ func (c Config) Validate() error {
 		if triggerMode != "manual" && triggerMode != "wakeup" {
 			return fmt.Errorf("invalid trigger_mode: %s (expected manual or wakeup)", c.TriggerMode)
 		}
-		effectiveInputMode := strings.ToLower(strings.TrimSpace(c.InputMode))
-		if effectiveInputMode == "" {
-			effectiveInputMode = "text"
-		}
+		effectiveInputMode := strings.ToLower(strings.TrimSpace(c.InputModeOrDefault()))
 		if triggerMode == "wakeup" && effectiveInputMode != "audio" && effectiveInputMode != "stt" {
 			return fmt.Errorf("incompatible trigger_mode %q with input_mode %q: wakeup requires input_mode audio or stt", c.TriggerMode, c.InputMode)
 		}

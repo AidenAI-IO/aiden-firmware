@@ -345,6 +345,29 @@ TEST_CASE("config_web: GET /api/config hydrates missing TOML fields from agent d
     cJSON_Delete(parsed);
 }
 
+TEST_CASE("config_web: GET /api/config reports invalid agent defaults schema") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/defaults.json", "{\"model\":{}}\n");
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_DEFAULTS_FILE", tmp + "/defaults.json");
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(resp.status == 200);
+    CHECK(resp.body.find("config defaults missing required fields") != std::string::npos);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config_error = cJSON_GetObjectItem(parsed, "config_error");
+    REQUIRE(config_error != nullptr);
+    REQUIRE(config_error->valuestring != nullptr);
+    CHECK(std::string(config_error->valuestring) == "config defaults missing required fields");
+    cJSON_Delete(parsed);
+}
+
 TEST_CASE("config_web: GET /api/config/meta returns 503 when stub returns invalid JSON") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(

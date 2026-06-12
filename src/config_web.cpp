@@ -307,6 +307,38 @@ bool json_is_bool(cJSON* item) {
     return json_is_type(item, cJSON_True) || json_is_type(item, cJSON_False);
 }
 
+bool defaults_required_object(cJSON* root, const char* key) {
+    if (!root) {
+        return false;
+    }
+    return json_is_object(cJSON_GetObjectItem(root, key));
+}
+
+bool defaults_required_string(cJSON* obj, const char* key, bool allow_empty = false) {
+    if (!obj) {
+        return false;
+    }
+    cJSON* item = cJSON_GetObjectItem(obj, key);
+    if (!json_is_string(item)) {
+        return false;
+    }
+    return allow_empty || !trim_copy(item->valuestring).empty();
+}
+
+bool defaults_required_number(cJSON* obj, const char* key) {
+    if (!obj) {
+        return false;
+    }
+    return json_is_number(cJSON_GetObjectItem(obj, key));
+}
+
+bool defaults_required_bool(cJSON* obj, const char* key) {
+    if (!obj) {
+        return false;
+    }
+    return json_is_bool(cJSON_GetObjectItem(obj, key));
+}
+
 cJSON* add_object(cJSON* parent, const char* key) {
     cJSON* child = cJSON_CreateObject();
     cJSON_AddItemToObject(parent, key, child);
@@ -901,6 +933,139 @@ void send_response(int client_fd,
     write_all(client_fd, body.data(), body.size());
 }
 
+bool validate_agent_defaults_json(cJSON* root) {
+    if (!json_is_object(root)) {
+        return false;
+    }
+
+    const char* sections[] = {
+        "model", "model_text", "tts", "stt", "audio", "benchmark",
+        "hid", "search", "telemetry", "agent", NULL,
+    };
+    for (int i = 0; sections[i]; ++i) {
+        if (!defaults_required_object(root, sections[i])) {
+            return false;
+        }
+    }
+
+    cJSON* model = cJSON_GetObjectItem(root, "model");
+    if (!defaults_required_string(model, "provider") ||
+        !defaults_required_string(model, "model") ||
+        !defaults_required_string(model, "api_key", true) ||
+        !defaults_required_string(model, "base_url", true) ||
+        !defaults_required_string(model, "token_env", true) ||
+        !defaults_required_number(model, "temperature") ||
+        !defaults_required_number(model, "max_response_tokens") ||
+        !defaults_required_number(model, "context_window") ||
+        !defaults_required_number(model, "model_max_output_tokens")) {
+        return false;
+    }
+
+    cJSON* model_text = cJSON_GetObjectItem(root, "model_text");
+    if (!defaults_required_string(model_text, "provider", true) ||
+        !defaults_required_string(model_text, "model", true) ||
+        !defaults_required_string(model_text, "api_key", true) ||
+        !defaults_required_string(model_text, "base_url", true) ||
+        !defaults_required_string(model_text, "token_env", true) ||
+        !defaults_required_number(model_text, "temperature") ||
+        !defaults_required_number(model_text, "max_response_tokens") ||
+        !defaults_required_number(model_text, "context_window") ||
+        !defaults_required_number(model_text, "model_max_output_tokens")) {
+        return false;
+    }
+
+    cJSON* tts = cJSON_GetObjectItem(root, "tts");
+    if (!defaults_required_string(tts, "provider") ||
+        !defaults_required_string(tts, "api_key", true) ||
+        !defaults_required_string(tts, "model", true) ||
+        !defaults_required_string(tts, "voice_id") ||
+        !defaults_required_string(tts, "emotion") ||
+        !defaults_required_number(tts, "speed")) {
+        return false;
+    }
+
+    cJSON* stt = cJSON_GetObjectItem(root, "stt");
+    if (!defaults_required_string(stt, "provider") ||
+        !defaults_required_string(stt, "api_key", true) ||
+        !defaults_required_string(stt, "model") ||
+        !defaults_required_string(stt, "base_url", true) ||
+        !defaults_required_string(stt, "secret_id", true) ||
+        !defaults_required_string(stt, "secret_key", true) ||
+        !defaults_required_string(stt, "region", true) ||
+        !defaults_required_string(stt, "engine_model_type", true)) {
+        return false;
+    }
+
+    cJSON* audio = cJSON_GetObjectItem(root, "audio");
+    if (!defaults_required_string(audio, "socket") ||
+        !defaults_required_number(audio, "sample_rate") ||
+        !defaults_required_number(audio, "channels") ||
+        !defaults_required_number(audio, "bit_width")) {
+        return false;
+    }
+
+    cJSON* benchmark = cJSON_GetObjectItem(root, "benchmark");
+    if (!defaults_required_string(benchmark, "judge_model") ||
+        !defaults_required_string(benchmark, "api_key", true) ||
+        !defaults_required_string(benchmark, "benchmark_dir", true)) {
+        return false;
+    }
+
+    cJSON* hid = cJSON_GetObjectItem(root, "hid");
+    if (!defaults_required_string(hid, "keyboard_device") ||
+        !defaults_required_string(hid, "mouse_device") ||
+        !defaults_required_string(hid, "frame_socket") ||
+        !defaults_required_string(hid, "pointer_mode")) {
+        return false;
+    }
+
+    cJSON* search = cJSON_GetObjectItem(root, "search");
+    if (!defaults_required_string(search, "provider") ||
+        !defaults_required_bool(search, "has_api_key")) {
+        return false;
+    }
+
+    cJSON* telemetry = cJSON_GetObjectItem(root, "telemetry");
+    if (!defaults_required_bool(telemetry, "enabled") ||
+        !defaults_required_string(telemetry, "provider") ||
+        !defaults_required_string(telemetry, "base_url", true) ||
+        !defaults_required_string(telemetry, "public_key", true) ||
+        !defaults_required_string(telemetry, "secret_key", true) ||
+        !defaults_required_bool(telemetry, "upload_screenshots") ||
+        !defaults_required_number(telemetry, "upload_timeout_sec") ||
+        !defaults_required_number(telemetry, "max_retry") ||
+        !json_is_array(cJSON_GetObjectItem(telemetry, "tags")) ||
+        !defaults_required_string(telemetry, "environment")) {
+        return false;
+    }
+
+    cJSON* agent = cJSON_GetObjectItem(root, "agent");
+    return defaults_required_string(agent, "instruction") &&
+           defaults_required_string(agent, "additional_prompt", true) &&
+           defaults_required_string(agent, "input_mode") &&
+           defaults_required_string(agent, "trigger_mode") &&
+           defaults_required_string(agent, "vad_backend") &&
+           defaults_required_string(agent, "vad_model_path") &&
+           defaults_required_string(agent, "vad_helper_path") &&
+           defaults_required_number(agent, "vad_speech_threshold") &&
+           defaults_required_number(agent, "silence_ms") &&
+           defaults_required_number(agent, "min_speech_ms") &&
+           defaults_required_bool(agent, "voice_session_enabled") &&
+           defaults_required_number(agent, "voice_followup_timeout_ms") &&
+           defaults_required_number(agent, "voice_first_turn_timeout_ms") &&
+           defaults_required_number(agent, "voice_max_turns") &&
+           defaults_required_bool(agent, "voice_interrupt_on_wakeup") &&
+           defaults_required_bool(agent, "voice_streaming_tts_enabled") &&
+           defaults_required_bool(agent, "voice_tool_call_speech") &&
+           defaults_required_number(agent, "voice_max_response_tokens") &&
+           defaults_required_number(agent, "max_iterations") &&
+           defaults_required_number(agent, "screenshot_keep_n") &&
+           defaults_required_number(agent, "screenshot_prune_interval") &&
+           defaults_required_number(agent, "screen_stable_timeout_ms") &&
+           defaults_required_number(agent, "screen_stable_ms") &&
+           defaults_required_number(agent, "screen_stable_diff_threshold");
+}
+
 bool apply_default_agent_config(aiden::AgentToml& cfg, std::string* error) {
     if (error) {
         error->clear();
@@ -939,6 +1104,16 @@ bool apply_default_agent_config(aiden::AgentToml& cfg, std::string* error) {
         }
         std::cerr << "[config] agent config-defaults returned invalid JSON: "
                   << result.output << "\n";
+        return false;
+    }
+
+    if (!validate_agent_defaults_json(defaults)) {
+        if (error) {
+            *error = "config defaults missing required fields";
+        }
+        std::cerr << "[config] agent config-defaults returned invalid schema: "
+                  << result.output << "\n";
+        cJSON_Delete(defaults);
         return false;
     }
 

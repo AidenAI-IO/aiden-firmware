@@ -336,14 +336,15 @@ TEST_CASE("config web exposes brave search provider") {
     CHECK(source.find("provider == \"brave\" || provider == \"brave-free\"") != std::string::npos);
     // The search provider enum now lives in the agent config metadata (the
     // single source of truth the config web UI consumes via config-meta),
-    // not a hard-coded table in the HTML.
+    // not a hard-coded table in the HTML. Compatibility aliases stay in the
+    // parser, but UI metadata only exposes canonical provider values.
     const std::string meta_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent/internal/agent/config_meta.go";
     std::ifstream meta_in(meta_path.c_str());
     REQUIRE(meta_in.good());
     std::ostringstream meta_buffer;
     meta_buffer << meta_in.rdbuf();
     const std::string meta = meta_buffer.str();
-    CHECK(meta.find("\"brave-free\"") != std::string::npos);
+    CHECK(meta.find("\"brave-free\"") == std::string::npos);
     CHECK(html.find("search:{provider:['duckduckgo','brave','brave-free','tavily']}") == std::string::npos);
     CHECK(source.find("const char* allowed[] = {\"duckduckgo\", \"brave\", \"brave-free\", \"tavily\", NULL};") != std::string::npos);
 }

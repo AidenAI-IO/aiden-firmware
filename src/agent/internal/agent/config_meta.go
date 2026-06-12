@@ -188,8 +188,8 @@ func ConfigMeta() ConfigMetadata {
 				Name: "search",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
-						Enum:    enumOptions(searchProviderDuckDuckGo, searchProviderBrave, "brave-free", searchProviderTavily),
-						Default: searchProviderDuckDuckGo},
+						Enum:    enumOptions(searchProviderDuckDuckGo, searchProviderBrave, searchProviderTavily),
+						Default: defaults.Search.ProviderOrDefault()},
 					{Key: "api_key", Widget: WidgetText, Secret: true,
 						VisibleWhen: all(ne("search.provider", searchProviderDuckDuckGo))},
 				},

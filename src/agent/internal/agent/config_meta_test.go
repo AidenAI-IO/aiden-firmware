@@ -197,6 +197,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"hid.mouse_device", defaults.HID.MouseDevice},
 		{"hid.frame_socket", defaults.HID.FrameSocket},
 		{"hid.pointer_mode", defaults.HID.PointerMode},
+		{"search.provider", defaults.Search.ProviderOrDefault()},
 		{"agent.input_mode", defaults.InputMode},
 		{"agent.trigger_mode", defaults.TriggerMode},
 		{"agent.vad_backend", defaults.VADBackend},

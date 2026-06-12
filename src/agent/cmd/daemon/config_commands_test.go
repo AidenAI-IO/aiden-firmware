@@ -86,6 +86,30 @@ func TestConfigDefaults_WireFormatIsValid(t *testing.T) {
 	}
 }
 
+func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
+	defaults := webConfigDTOFromAgentConfig(agent.Config{})
+	if defaults.Search.Provider != "duckduckgo" {
+		t.Fatalf("search provider = %q, want duckduckgo", defaults.Search.Provider)
+	}
+	if defaults.Audio.Socket == "" || defaults.Audio.SampleRate == 0 ||
+		defaults.Audio.Channels == 0 || defaults.Audio.BitWidth == 0 {
+		t.Fatalf("audio defaults were not populated: %+v", defaults.Audio)
+	}
+	if defaults.HID.FrameSocket == "" || defaults.HID.KeyboardDevice == "" ||
+		defaults.HID.MouseDevice == "" || defaults.HID.PointerMode == "" {
+		t.Fatalf("hid defaults were not populated: %+v", defaults.HID)
+	}
+	if defaults.Agent.InputMode != "text" || defaults.Agent.TriggerMode != "manual" {
+		t.Fatalf("agent mode defaults = input %q trigger %q, want text/manual",
+			defaults.Agent.InputMode, defaults.Agent.TriggerMode)
+	}
+	if defaults.Agent.VoiceFollowupTimeoutMs == 0 ||
+		defaults.Agent.VoiceFirstTurnTimeoutMs == 0 ||
+		defaults.Agent.VoiceMaxResponseTokens == 0 {
+		t.Fatalf("voice defaults were not populated: %+v", defaults.Agent)
+	}
+}
+
 func TestConfigCheck_InvalidSearchProvider(t *testing.T) {
 	invalidConfig := agent.Config{
 		Model: agent.ModelConfig{
