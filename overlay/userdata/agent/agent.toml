@@ -108,6 +108,18 @@ frame_socket = "/run/frame_service/frame_service.sock"
 provider = "duckduckgo"
 api_key = ""
 
+# Live Activity / Dynamic Island status for the iOS companion app.
+# Foreground app updates are local ActivityKit updates and do not use APNs.
+# Fill APNs fields only for background/lock-screen remote updates.
+# [live_activity]
+# enabled = true
+# bundle_id = "com.qing.aidenbridgedaily"
+# environment = "sandbox" # "sandbox" for development, "production" for TestFlight/App Store
+# team_id = "APPLE_TEAM_ID"
+# key_id = "APNS_AUTH_KEY_ID"
+# private_key_path = "/userdata/agent/AuthKey_APNS.p8"
+# timeout_sec = 10
+
 # Episode telemetry (Langfuse). Disabled by default.
 # Set enabled = true and configure base_url + public_key + secret_key.
 # [telemetry]

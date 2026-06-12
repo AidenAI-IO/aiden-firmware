@@ -32,6 +32,7 @@ build/bin/agent
 - conversation memory 持久化，session memory compaction 见 [Session Memory Compaction](session-memory.md)；
 - Device / Task Episode memory 设计见 [Memory Plane 设计](memory-plane.md)；
 - Web UI：聊天历史、浏览器录音、附件、Tool Lab、Skill Export；
+- iOS Live Activity / 灵动岛任务状态，见 [Live Activity / Dynamic Island](live-activity.md)；
 - 设备侧语音链路：VAD / STT / TTS。
 
 ## 运行模式

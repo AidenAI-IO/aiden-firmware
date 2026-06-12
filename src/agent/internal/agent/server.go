@@ -53,6 +53,7 @@ type Server struct {
 	recordMu                sync.Mutex
 	webRecording            *webAudioRecording
 	bridge                  *PhoneBridge
+	liveActivity            *LiveActivityManager
 	pendingResults          map[string]*chatPendingResult
 	pendingResultsMu        sync.Mutex
 	activeRuns              map[string]context.CancelFunc
@@ -143,11 +144,12 @@ type chatPendingResult struct {
 
 // ChatResultResponse is the JSON shape for GET /api/chat/result.
 type ChatResultResponse struct {
-	Status   string    `json:"status"`
-	Messages []Message `json:"messages,omitempty"`
-	Response string    `json:"response,omitempty"`
-	History  []Message `json:"history,omitempty"`
-	Error    string    `json:"error,omitempty"`
+	Status       string             `json:"status"`
+	Messages     []Message          `json:"messages,omitempty"`
+	Response     string             `json:"response,omitempty"`
+	History      []Message          `json:"history,omitempty"`
+	Error        string             `json:"error,omitempty"`
+	LiveActivity *LiveActivityState `json:"live_activity,omitempty"`
 }
 
 type ChatStreamEvent struct {
@@ -198,6 +200,7 @@ func NewServer(runtime *Runtime, addr string, benchmarkDir string) *Server {
 		userFilesToolsDir:   "/userdata/agent_tools",
 		history:             make([]Message, 0),
 		bridge:              bridge,
+		liveActivity:        NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
 		pendingResults:      make(map[string]*chatPendingResult),
 		activeRuns:          make(map[string]context.CancelFunc),
 	}
@@ -247,6 +250,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/chat", s.handleChat)
 	mux.HandleFunc("/api/chat/cancel", s.handleChatCancel)
 	mux.HandleFunc("/api/chat/result", s.handleChatResult)
+	mux.HandleFunc("/api/live-activity/registrations", s.handleLiveActivityRegistrations)
+	mux.HandleFunc("/api/live-activity/status", s.handleLiveActivityStatus)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
 	mux.HandleFunc("/api/clear", s.handleClear)
@@ -416,6 +421,9 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 		if s.logger != nil {
 			s.logger.Info("Chat request canceled: request_id=%s", requestID)
 		}
+		if s.liveActivity != nil {
+			s.liveActivity.CancelTask(requestID)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ChatCancelResponse{RequestID: requestID, Status: "canceled"})
 		return
@@ -506,6 +514,9 @@ func (s *Server) handleChatAsync(
 		return
 	}
 	s.appendHistory(userMsg)
+	if s.liveActivity != nil {
+		s.liveActivity.StartTask(requestID, inputText)
+	}
 
 	// Return {request_id} immediately
 	w.Header().Set("Content-Type", "application/json")
@@ -551,6 +562,9 @@ func (s *Server) handleChatAsync(
 			pending.history = append(pending.history, msg)
 			pending.messages = append(pending.messages, msg)
 			pending.mu.Unlock()
+			if s.liveActivity != nil {
+				s.liveActivity.UpdateFromRunEvent(requestID, event)
+			}
 
 			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(runCtx, event.Description)
@@ -596,6 +610,9 @@ func (s *Server) handleChatAsync(
 		if err != nil {
 			if errors.Is(runCtx.Err(), context.Canceled) {
 				pending.err = "request canceled"
+				if s.liveActivity != nil {
+					s.liveActivity.CancelTask(requestID)
+				}
 			} else {
 				errorMsg := Message{
 					Type:      "episode_status",
@@ -610,6 +627,9 @@ func (s *Server) handleChatAsync(
 				pending.history = append(pending.history, errorMsg)
 				pending.messages = append(pending.messages, errorMsg)
 				pending.err = err.Error()
+				if s.liveActivity != nil {
+					s.liveActivity.FailTask(requestID, err.Error())
+				}
 			}
 			pending.done = true
 			pending.mu.Unlock()
@@ -633,6 +653,9 @@ func (s *Server) handleChatAsync(
 		pending.messages = append(pending.messages, assistantMsg)
 		pending.done = true
 		pending.mu.Unlock()
+		if s.liveActivity != nil {
+			s.liveActivity.CompleteTask(requestID, result.Output)
+		}
 
 		if s.logger != nil {
 			s.logger.Info("Chat request completed: request_id=%s output_len=%d", requestID, len(result.Output))
@@ -687,12 +710,13 @@ func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
 	s.pendingResultsMu.Lock()
 	pending := s.pendingResults[requestID]
 	s.pendingResultsMu.Unlock()
+	liveActivity := s.liveActivitySnapshot(requestID)
 
 	if pending == nil {
 		// Request not found — may have completed and been cleaned up,
 		// or may never have existed.
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResultResponse{Status: "not_found"})
+		json.NewEncoder(w).Encode(ChatResultResponse{Status: "not_found", LiveActivity: liveActivity})
 		return
 	}
 
@@ -702,8 +726,9 @@ func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
 	if pending.err != "" {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status: "error",
-			Error:  pending.err,
+			Status:       "error",
+			Error:        pending.err,
+			LiveActivity: liveActivity,
 		})
 		return
 	}
@@ -730,18 +755,27 @@ func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status:   "complete",
-			Response: response,
-			History:  historySnapshot,
-			Messages: msgs,
+			Status:       "complete",
+			Response:     response,
+			History:      historySnapshot,
+			Messages:     msgs,
+			LiveActivity: liveActivity,
 		})
 	} else {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status:   "running",
-			Messages: msgs,
+			Status:       "running",
+			Messages:     msgs,
+			LiveActivity: liveActivity,
 		})
 	}
+}
+
+func (s *Server) liveActivitySnapshot(requestID string) *LiveActivityState {
+	if s.liveActivity == nil {
+		return nil
+	}
+	return s.liveActivity.Snapshot(requestID)
 }
 
 // handleChatSync is the original synchronous chat handler, kept for the web UI
@@ -1867,6 +1901,58 @@ func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(s.bridge.Status())
+}
+
+func (s *Server) handleLiveActivityRegistrations(w http.ResponseWriter, r *http.Request) {
+	if s.liveActivity == nil {
+		http.Error(w, `{"error":"live activity disabled"}`, http.StatusServiceUnavailable)
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		var req LiveActivityRegistrationRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+			return
+		}
+		state, apnsStatus, err := s.liveActivity.Register(req)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(LiveActivityRegistrationResponse{
+			OK:      true,
+			State:   state,
+			APNs:    apnsStatus,
+			Message: "registered",
+		})
+	case http.MethodDelete:
+		requestID := r.URL.Query().Get("request_id")
+		ok := s.liveActivity.Unregister(requestID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"ok": ok})
+	default:
+		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleLiveActivityStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	requestID := r.URL.Query().Get("request_id")
+	state := s.liveActivitySnapshot(requestID)
+	w.Header().Set("Content-Type", "application/json")
+	if state == nil {
+		json.NewEncoder(w).Encode(map[string]string{"status": "not_found"})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":        "ok",
+		"live_activity": state,
+	})
 }
 
 // handlePhoneBridgeCommands routes /api/phone-bridge/commands

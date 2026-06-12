@@ -97,7 +97,7 @@ func TestConfigMeta_Valid(t *testing.T) {
 		}
 	}
 
-	for _, name := range []string{"model", "tts", "stt", "audio", "benchmark", "hid", "search", "telemetry", "agent"} {
+	for _, name := range []string{"model", "tts", "stt", "audio", "benchmark", "hid", "search", "telemetry", "live_activity", "agent"} {
 		if !seenSections[name] {
 			t.Errorf("expected section %q to be present", name)
 		}
@@ -168,6 +168,13 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 			t.Errorf("telemetry.provider enum value %q normalizes to %q, expected langfuse", p, got)
 		}
 	}
+
+	for _, env := range enumValues("live_activity.environment") {
+		cfg := Config{Model: ModelConfig{Provider: "fake"}, LiveActivity: LiveActivityConfig{Environment: env}}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("live_activity.environment enum value %q rejected by Validate: %v", env, err)
+		}
+	}
 }
 
 // TestConfigMeta_CoversConfigFields uses reflection to ensure every flat,
@@ -192,6 +199,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"hid", reflect.TypeOf(HIDConfig{}), nil},
 		{"search", reflect.TypeOf(SearchConfig{}), nil},
 		{"telemetry", reflect.TypeOf(TelemetryConfig{}), nil},
+		{"live_activity", reflect.TypeOf(LiveActivityConfig{}), nil},
 	}
 
 	for _, s := range sections {
@@ -211,7 +219,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	// fields are surfaced under their own sections or not at all.
 	agentSkip := map[string]bool{
 		"model": true, "model_text": true, "tts": true, "stt": true, "hid": true,
-		"audio": true, "search": true, "telemetry": true,
+		"audio": true, "search": true, "telemetry": true, "live_activity": true,
 		"skills_dirs": true, "bundled_skills_dir": true,
 	}
 	cfgType := reflect.TypeOf(Config{})
