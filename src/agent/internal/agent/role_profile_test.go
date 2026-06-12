@@ -180,6 +180,116 @@ func TestRoleCollaborativeExecutorPassesToolsViaWithTools(t *testing.T) {
 	}
 }
 
+func TestForceSimpleLoopOmitsPlanMetaTools(t *testing.T) {
+	tools := []langtools.Tool{&stubTool{name: "audio_volume", description: "Get or set audio playback volume."}}
+	profiles := buildRoleProfiles(
+		AgentConfig{Instruction: "Use direct tools.", ForceSimpleLoop: true},
+		ResolvedSkills{},
+		tools,
+		MemoryContext{},
+	)
+
+	if hasProfileTool(profiles.Planner, toolEnterPlanMode) ||
+		hasProfileTool(profiles.Planner, toolCommitPlan) ||
+		hasProfileTool(profiles.Planner, toolCancelPlan) {
+		t.Fatalf("planner profile should not expose plan meta tools: %#v", profiles.Planner.Tools)
+	}
+	if profiles.Planner.Capabilities.CanModifyPlan {
+		t.Fatalf("force_simple_loop planner should not advertise plan modification capability: %#v", profiles.Planner.Capabilities)
+	}
+	if !hasProfileTool(profiles.Planner, "audio_volume") {
+		t.Fatalf("planner profile should keep normal tools: %#v", profiles.Planner.Tools)
+	}
+	for _, unexpected := range []string{"call enter_plan_mode", "commit_plan is only available", "cancel_plan clears"} {
+		if strings.Contains(profiles.Planner.SystemPrompt, unexpected) {
+			t.Fatalf("force_simple_loop planner prompt should not mention %q:\n%s", unexpected, profiles.Planner.SystemPrompt)
+		}
+	}
+	if !strings.Contains(profiles.Planner.SystemPrompt, "Plan mode is disabled by configuration") {
+		t.Fatalf("force_simple_loop planner prompt missing disabled-plan guidance:\n%s", profiles.Planner.SystemPrompt)
+	}
+}
+
+func TestForceSimpleLoopPlannerCallOmitsPlanMetaTools(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{\"volume\":3}"}`, "Volume set to 3."),
+	}
+	tool := &stubTool{
+		name:        "audio_volume",
+		description: "Get or set audio playback volume.",
+		output:      `{"volume":3}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use direct tools.", ForceSimpleLoop: true},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"audio_volume": tool}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "set volume to 3"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "Volume set to 3." {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if len(model.tools) != 2 {
+		t.Fatalf("expected two default-mode planner calls, got %d", len(model.tools))
+	}
+	if !llmToolsContain(model.tools[0], "audio_volume") {
+		t.Fatalf("planner did not receive audio_volume function tool: %#v", model.tools[0])
+	}
+	if llmToolsContain(model.tools[0], toolEnterPlanMode) ||
+		llmToolsContain(model.tools[0], toolCommitPlan) ||
+		llmToolsContain(model.tools[0], toolCancelPlan) {
+		t.Fatalf("force_simple_loop planner received plan meta tools: %#v", model.tools[0])
+	}
+	plannerPrompt := messageText(model.messages[0])
+	for _, unexpected := range []string{"call enter_plan_mode", "commit_plan is available", "if the task likely needs 3+ steps"} {
+		if strings.Contains(plannerPrompt, unexpected) {
+			t.Fatalf("force_simple_loop prompt should not contain %q:\n%s", unexpected, plannerPrompt)
+		}
+	}
+	if !strings.Contains(plannerPrompt, "force_simple_loop: true") {
+		t.Fatalf("force_simple_loop prompt missing loop-mode flag:\n%s", plannerPrompt)
+	}
+}
+
+func TestForceSimpleLoopRejectsUnexpectedPlanMetaToolCall(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			enterPlanModeToolCall(),
+			contentResponse("done"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use direct tools.", ForceSimpleLoop: true},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "try plan mode"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("output = %q, want done", result.Output)
+	}
+	if model.callCount != 2 {
+		t.Fatalf("model calls = %d, want 2", model.callCount)
+	}
+	secondPrompt := messageText(model.messages[1])
+	if !strings.Contains(secondPrompt, "current_mode: default") {
+		t.Fatalf("force_simple_loop should stay in default mode:\n%s", secondPrompt)
+	}
+	if strings.Contains(secondPrompt, "current_mode: plan") {
+		t.Fatalf("force_simple_loop should not enter plan mode:\n%s", secondPrompt)
+	}
+}
+
 func llmToolsContain(tools []llms.Tool, name string) bool {
 	for _, tool := range tools {
 		if tool.Function != nil && tool.Function.Name == name {

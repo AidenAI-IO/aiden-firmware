@@ -1062,6 +1062,7 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 			Instruction:      r.config.Instruction,
 			AdditionalPrompt: r.config.AdditionalPrompt,
 			RuntimeContext:   runtimeContext,
+			ForceSimpleLoop:  r.config.ForceSimpleLoop,
 		},
 		skills,
 		availableTools,

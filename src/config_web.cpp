@@ -933,6 +933,7 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
     cfg.voice_tool_call_speech = true;
     cfg.voice_max_response_tokens = 400;
     cfg.max_iterations = -1;
+    cfg.force_simple_loop = false;
     cfg.screenshot_keep_n = 3;
     cfg.screenshot_prune_interval = 25;
     cfg.screen_stable_timeout_ms = 3500;
@@ -1110,6 +1111,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddBoolToObject(agent, "voice_tool_call_speech", config.voice_tool_call_speech ? 1 : 0);
     cJSON_AddNumberToObject(agent, "voice_max_response_tokens", config.voice_max_response_tokens);
     cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
+    cJSON_AddBoolToObject(agent, "force_simple_loop", config.force_simple_loop ? 1 : 0);
     cJSON_AddNumberToObject(agent, "screenshot_keep_n", config.screenshot_keep_n);
     cJSON_AddNumberToObject(agent, "screenshot_prune_interval", config.screenshot_prune_interval);
     cJSON_AddNumberToObject(agent, "screen_stable_timeout_ms", config.screen_stable_timeout_ms);
@@ -1354,6 +1356,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_bool(&config->voice_tool_call_speech, agent, "voice_tool_call_speech");
         set_json_int(&config->voice_max_response_tokens, agent, "voice_max_response_tokens");
         set_json_int(&config->max_iterations, agent, "max_iterations");
+        set_json_bool(&config->force_simple_loop, agent, "force_simple_loop");
         set_json_int(&config->screenshot_keep_n, agent, "screenshot_keep_n");
         set_json_int(&config->screenshot_prune_interval, agent, "screenshot_prune_interval");
         set_json_int(&config->screen_stable_timeout_ms, agent, "screen_stable_timeout_ms");

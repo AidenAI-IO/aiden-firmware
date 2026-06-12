@@ -133,6 +133,7 @@ type agentDTO struct {
 	VoiceToolCallSpeech       bool    `json:"voice_tool_call_speech"`
 	VoiceMaxResponseTokens    int     `json:"voice_max_response_tokens"`
 	MaxIterations             int     `json:"max_iterations"`
+	ForceSimpleLoop           bool    `json:"force_simple_loop"`
 	ScreenshotKeepN           int     `json:"screenshot_keep_n"`
 	ScreenshotPruneInterval   int     `json:"screenshot_prune_interval"`
 	ScreenStableTimeoutMs     int     `json:"screen_stable_timeout_ms"`
@@ -247,6 +248,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		VoiceToolCallSpeech:       boolPtr(d.Agent.VoiceToolCallSpeech),
 		VoiceMaxResponseTokens:    d.Agent.VoiceMaxResponseTokens,
 		MaxIterations:             d.Agent.MaxIterations,
+		ForceSimpleLoop:           d.Agent.ForceSimpleLoop,
 		ScreenshotKeepN:           d.Agent.ScreenshotKeepN,
 		ScreenshotPruneInterval:   d.Agent.ScreenshotPruneInterval,
 		ScreenStableTimeoutMs:     d.Agent.ScreenStableTimeoutMs,

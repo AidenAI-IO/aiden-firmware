@@ -43,24 +43,10 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 			RolePlanner,
 			cfg,
 			skills,
-			appendLoopMetaTools(availableTools),
+			plannerToolsForConfig(cfg, availableTools),
 			roleMemory.RenderForRole(RolePlanner),
-			RoleCapabilities{CanModifyPlan: true, CanUseTools: true},
-			[]string{
-				"In default mode, handle only simple tasks: a direct answer, one tool call, or at most two short steps total.",
-				"If completing the request will likely need three or more steps, call enter_plan_mode first. Do not keep executing directly in default mode once you expect 3+ steps.",
-				"Also call enter_plan_mode for branching, sustained tracking, or tasks that need explicit completion criteria across multiple UI states.",
-				"In plan mode, explore with tools, maintain a draft plan, then call commit_plan to delegate execution or cancel_plan to return to default mode.",
-				"commit_plan is only available in plan mode. cancel_plan clears draft planning state and returns to default mode.",
-				"Prefer direct tools that cover the requested operation before UI workarounds. If a direct executor tool covers the request, plan or call that tool instead of a UI workaround.",
-				"For launch-only requests to open an app, URL, or dialer screen, make the direct tool success the completion criterion, for example open_app ok=true; do not add a screenshot requirement unless the user asked to inspect or act inside the opened target.",
-				"For semantic platform actions, plan quick_action first when a matching action may exist; semantic actions include back, home, app search, app switcher, notification shade, quick settings, copy, paste, cut, undo, redo, select all, find, send, and browser navigation.",
-				"When planning quick_action, name the concrete action id and platform, for example: quick_action action=spotlight_search platform=android, quick_action action=back platform=android, or quick_action action=copy platform=ios; include a low-level fallback only after quick_action failure/no effect.",
-				"When planning a platform-specific direct tool such as quick_action, use observed_state.platform from the current screenshot/context and name the concrete action id when possible.",
-				"Keep objective and completion_criteria tied to the original user request, not just the current step.",
-				"If the current screenshot clearly identifies the app/page or device platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence when relevant.",
-				"Plan a request_human_handoff step when the task requires credentials, verification, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Do not guess.",
-			},
+			RoleCapabilities{CanModifyPlan: !cfg.ForceSimpleLoop, CanUseTools: true},
+			plannerRoleRules(cfg),
 		),
 		Executor: buildRoleProfile(
 			RoleExecutor,
@@ -94,6 +80,55 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 			"Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}.",
 		}),
 	}
+}
+
+func plannerToolsForConfig(cfg AgentConfig, tools []langtools.Tool) []langtools.Tool {
+	if cfg.ForceSimpleLoop {
+		return append([]langtools.Tool{}, tools...)
+	}
+	return appendLoopMetaTools(tools)
+}
+
+func plannerRoleRules(cfg AgentConfig) []string {
+	var rules []string
+	if cfg.ForceSimpleLoop {
+		rules = append(rules,
+			"Use simple loop mode for every request: call available tools directly and return a final answer when the request is satisfied.",
+			"Plan mode is disabled by configuration: do not enter, draft, commit, cancel, or mention a delegated multi-step plan.",
+		)
+	} else {
+		rules = append(rules,
+			"In default mode, handle only simple tasks: a direct answer, one tool call, or at most two short steps total.",
+			"If completing the request will likely need three or more steps, call enter_plan_mode first. Do not keep executing directly in default mode once you expect 3+ steps.",
+			"Also call enter_plan_mode for branching, sustained tracking, or tasks that need explicit completion criteria across multiple UI states.",
+			"In plan mode, explore with tools, maintain a draft plan, then call commit_plan to delegate execution or cancel_plan to return to default mode.",
+			"commit_plan is only available in plan mode. cancel_plan clears draft planning state and returns to default mode.",
+		)
+	}
+	if cfg.ForceSimpleLoop {
+		rules = append(rules,
+			"Prefer direct tools that cover the requested operation before UI workarounds.",
+			"For launch-only requests to open an app, URL, or dialer screen, direct tool success such as open_app ok=true is enough unless the user asked to inspect or act inside the opened target.",
+			"For semantic platform actions, use quick_action first when a matching action may exist; semantic actions include back, home, app search, app switcher, notification shade, quick settings, copy, paste, cut, undo, redo, select all, find, send, and browser navigation.",
+			"When using quick_action, pass the concrete action id and platform, for example: quick_action action=spotlight_search platform=android, quick_action action=back platform=android, or quick_action action=copy platform=ios; use a low-level fallback only after quick_action failure/no effect.",
+			"When using a platform-specific direct tool such as quick_action, use observed_state.platform from the current screenshot/context and name the concrete action id when possible.",
+			"Keep your tool choices tied to the original user request, not just a self-invented subtask.",
+			"If the current screenshot clearly identifies the app/page or device platform, use that observed app, page, platform (ios/android/mac), visible text, and dialogs when choosing tools.",
+			"Use request_human_handoff when the task requires credentials, verification, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Do not guess.",
+		)
+		return rules
+	}
+	rules = append(rules,
+		"Prefer direct tools that cover the requested operation before UI workarounds. If a direct executor tool covers the request, plan or call that tool instead of a UI workaround.",
+		"For launch-only requests to open an app, URL, or dialer screen, make the direct tool success the completion criterion, for example open_app ok=true; do not add a screenshot requirement unless the user asked to inspect or act inside the opened target.",
+		"For semantic platform actions, plan quick_action first when a matching action may exist; semantic actions include back, home, app search, app switcher, notification shade, quick settings, copy, paste, cut, undo, redo, select all, find, send, and browser navigation.",
+		"When planning quick_action, name the concrete action id and platform, for example: quick_action action=spotlight_search platform=android, quick_action action=back platform=android, or quick_action action=copy platform=ios; include a low-level fallback only after quick_action failure/no effect.",
+		"When planning a platform-specific direct tool such as quick_action, use observed_state.platform from the current screenshot/context and name the concrete action id when possible.",
+		"Keep objective and completion_criteria tied to the original user request, not just the current step.",
+		"If the current screenshot clearly identifies the app/page or device platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence when relevant.",
+		"Plan a request_human_handoff step when the task requires credentials, verification, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Do not guess.",
+	)
+	return rules
 }
 
 func buildVerifierRoleProfile(roleRules []string) RoleProfile {

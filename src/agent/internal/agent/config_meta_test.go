@@ -102,6 +102,14 @@ func TestConfigMeta_Valid(t *testing.T) {
 			t.Errorf("expected section %q to be present", name)
 		}
 	}
+
+	forceSimpleLoop, ok := idx["agent.force_simple_loop"]
+	if !ok {
+		t.Fatal("missing agent.force_simple_loop metadata")
+	}
+	if forceSimpleLoop.Widget != WidgetBoolean || forceSimpleLoop.Default != false {
+		t.Fatalf("agent.force_simple_loop metadata = %#v, want boolean default false", forceSimpleLoop)
+	}
 }
 
 // TestConfigMeta_EnumsMatchValidation guards against drift between the metadata

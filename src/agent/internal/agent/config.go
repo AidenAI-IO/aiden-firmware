@@ -86,6 +86,7 @@ type Config struct {
 	VoiceToolCallSpeech       *bool           `toml:"voice_tool_call_speech,omitempty"`
 	VoiceMaxResponseTokens    int             `toml:"voice_max_response_tokens,omitempty"`
 	MaxIterations             int             `toml:"max_iterations,omitempty"`
+	ForceSimpleLoop           bool            `toml:"force_simple_loop,omitempty"`
 	ScreenshotKeepN           int             `toml:"screenshot_keep_n,omitempty"`
 	ScreenshotPruneInterval   int             `toml:"screenshot_prune_interval,omitempty"`
 	ScreenStableTimeoutMs     int             `toml:"screen_stable_timeout_ms,omitempty"`
@@ -353,6 +354,7 @@ type AgentConfig struct {
 	Instruction      string
 	AdditionalPrompt string
 	RuntimeContext   string
+	ForceSimpleLoop  bool
 }
 
 // MemoryConfig is used internally by the memory manager.

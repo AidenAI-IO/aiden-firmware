@@ -30,6 +30,7 @@ type roleCollaborativeExecutor struct {
 	OutputKey         string
 	Recorder          *EpisodeRecorder
 	ScreenshotPruning ScreenshotPruningConfig
+	ForceSimpleLoop   bool
 }
 
 const roleModelCallTimeout = 120 * time.Second
@@ -70,6 +71,7 @@ type planStepResult struct {
 
 type roleLoopState struct {
 	Phase                loopPhase
+	ForceSimpleLoop      bool
 	PlanStepIndex        int
 	PlanCommitted        bool
 	PlanExhausted        bool
@@ -157,6 +159,7 @@ func newRoleCollaborativeExecutor(
 		OutputKey:         "output",
 		Recorder:          recorder,
 		ScreenshotPruning: screenshotPruning.WithDefaults(),
+		ForceSimpleLoop:   profiles.Planner.SystemPrompt != "" && !profiles.Planner.Capabilities.CanModifyPlan,
 	}
 }
 
@@ -170,7 +173,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 	}
 
 	toolSpecs := NewToolSpecs(e.Tools)
-	state := roleLoopState{Phase: phaseDefault}
+	state := roleLoopState{Phase: phaseDefault, ForceSimpleLoop: e.ForceSimpleLoop}
 	for i := 0; i < e.MaxIterations; i++ {
 		switch state.Phase {
 		case phaseDefault, phasePlan:
@@ -298,9 +301,12 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 	toolSpecs *ToolSpecs,
 	options ...chains.ChainCallOption,
 ) (plannerTurnResult, error) {
-	task := plannerTaskForPhase(state.Phase, *state)
+	task := plannerTaskForPhase(state.Phase, *state, e.ForceSimpleLoop)
 	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
-	plannerTools := appendLoopMetaTools(e.Tools)
+	plannerTools := e.Tools
+	if !e.ForceSimpleLoop {
+		plannerTools = appendLoopMetaTools(e.Tools)
+	}
 	parser := &FunctionAgent{
 		Tools:     plannerTools,
 		OutputKey: e.OutputKey,
@@ -339,6 +345,15 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 	if isLoopMetaTool(action.Tool) {
 		if e.CallbacksHandler != nil {
 			e.CallbacksHandler.HandleAgentAction(ctx, action)
+		}
+		if e.ForceSimpleLoop {
+			return plannerTurnResult{
+				Kind: plannerTurnInvalidMeta,
+				Step: &schema.AgentStep{
+					Action:      action,
+					Observation: "plan mode tools are disabled by force_simple_loop; use available tools directly or return a final answer",
+				},
+			}, nil
 		}
 		turn := e.handlePlannerMetaTool(state.Phase, state, action)
 		if turn.InvalidMetaStep != nil {
@@ -497,6 +512,15 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		Parts: buildRoleUserMessageParts(statePrompt, e.InputAttachments, state.World),
 	})
 	return messages
+}
+
+func hasProfileTool(profile RoleProfile, name string) bool {
+	for _, tool := range profile.Tools {
+		if tool != nil && tool.Name() == name {
+			return true
+		}
+	}
+	return false
 }
 
 func roleSeesToolScratchpad(role RoleName) bool {

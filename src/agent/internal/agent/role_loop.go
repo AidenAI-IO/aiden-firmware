@@ -187,7 +187,10 @@ func parseOptionalReasonInput(raw string) string {
 	return raw
 }
 
-func plannerTaskForPhase(phase loopPhase, state roleLoopState) string {
+func plannerTaskForPhase(phase loopPhase, state roleLoopState, forceSimpleLoop bool) string {
+	if forceSimpleLoop {
+		return "Simple loop mode: plan-mode tools are disabled by configuration. Use available tools directly and return a final answer when the request is satisfied."
+	}
 	switch phase {
 	case phasePlan:
 		task := "Plan mode: explore with tools, maintain a draft plan, then call commit_plan when ready for delegated execution or cancel_plan to return to default mode."
@@ -210,6 +213,11 @@ func writeLoopMode(builder *strings.Builder, state roleLoopState) {
 	builder.WriteString("- current_mode: ")
 	builder.WriteString(string(state.Phase))
 	builder.WriteByte('\n')
+	if state.ForceSimpleLoop {
+		builder.WriteString("- force_simple_loop: true\n")
+		builder.WriteString("- plan mode tools are disabled; use available tools directly and return a final answer when done.\n")
+		return
+	}
 	if state.Phase == phasePlan {
 		builder.WriteString("- commit_plan is available in plan mode only.\n")
 		builder.WriteString("- cancel_plan returns to default mode and clears draft planning state.\n")
