@@ -120,7 +120,7 @@ func TestMobileGymInputToolsCallBridge(t *testing.T) {
 		{
 			name:     "touch tap",
 			toolName: "touch_gesture",
-			input:    `{"type":"tap","point":{"x":0.25,"y":0.5}}`,
+			input:    `{"type":"tap","point":{"x":250,"y":500}}`,
 			wantPath: "/tap",
 			check: func(t *testing.T, body map[string]any) {
 				assertJSONInt(t, body, "x", 250)
@@ -130,7 +130,7 @@ func TestMobileGymInputToolsCallBridge(t *testing.T) {
 		{
 			name:     "touch double tap",
 			toolName: "touch_gesture",
-			input:    `{"type":"double_tap","point":{"x":0.25,"y":0.5}}`,
+			input:    `{"type":"double_tap","point":{"x":250,"y":500}}`,
 			wantPath: "/tap",
 			check: func(t *testing.T, body map[string]any) {
 				assertJSONInt(t, body, "x", 250)
@@ -141,7 +141,7 @@ func TestMobileGymInputToolsCallBridge(t *testing.T) {
 		{
 			name:     "touch long press",
 			toolName: "touch_gesture",
-			input:    `{"type":"long_press","point":{"x":0.25,"y":0.5},"duration_ms":777}`,
+			input:    `{"type":"long_press","point":{"x":250,"y":500},"duration_ms":777}`,
 			wantPath: "/tap",
 			check: func(t *testing.T, body map[string]any) {
 				assertJSONInt(t, body, "x", 250)
@@ -155,7 +155,7 @@ func TestMobileGymInputToolsCallBridge(t *testing.T) {
 		{
 			name:     "touch swipe left",
 			toolName: "touch_gesture",
-			input:    `{"type":"swipe_left","distance":0.2,"anchor":0.5,"steps":3,"duration_ms":123}`,
+			input:    `{"type":"swipe_left","distance":200,"anchor":500,"steps":3,"duration_ms":123}`,
 			wantPath: "/swipe",
 			check: func(t *testing.T, body map[string]any) {
 				if startX, endX := jsonInt(body["start_x"]), jsonInt(body["end_x"]); startX <= endX {
@@ -272,7 +272,7 @@ func TestMobileGymMouseMoveToolIsLogicalOnly(t *testing.T) {
 		t.Fatal("mouse_move tool missing")
 	}
 
-	out, err := tool.Call(context.Background(), `{"x":0.2,"y":0.8}`)
+	out, err := tool.Call(context.Background(), `{"x":200,"y":800}`)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
@@ -291,7 +291,7 @@ func TestMobileGymTouchGestureNormalizedCoordinatesFallbackToDefaultScreenBefore
 		t.Fatal("touch_gesture tool missing")
 	}
 
-	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":0.5,"y":0.25}}`)
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":250}}`)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}

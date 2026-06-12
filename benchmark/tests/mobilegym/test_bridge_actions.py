@@ -40,14 +40,14 @@ def install_mobilegym_action_classes(monkeypatch):
 
 
 def test_fallback_action_objects_do_not_require_mobilegym_submodule():
-    action = build_action("tap", {"x": 0.25, "y": 0.75})
+    action = build_action("tap", {"x": 250, "y": 750})
 
     assert isinstance(action, Action)
     assert action.action_type == ActionType.CLICK
-    assert action.data == {"point": [0.25, 0.75]}
+    assert action.data == {"point": [250.0, 750.0]}
     assert action_to_dict(action) == {
         "action_type": "CLICK",
-        "data": {"point": [0.25, 0.75]},
+        "data": {"point": [250.0, 750.0]},
     }
 
 

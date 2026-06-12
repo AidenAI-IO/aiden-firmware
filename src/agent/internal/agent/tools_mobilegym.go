@@ -323,17 +323,17 @@ func (t *mobileGymMouseScrollTool) Call(ctx context.Context, input string) (stri
 		args.Delta = 127
 	}
 
-	distance := clampFloat(math.Abs(float64(args.Delta))*0.08, 0.12, 0.60)
+	distance := clampFloat(math.Abs(float64(args.Delta))*80, 120, 600)
 	half := distance / 2
-	startY, endY := 0.5-half, 0.5+half
+	startY, endY := 500-half, 500+half
 	if args.Delta < 0 {
-		startY, endY = 0.5+half, 0.5-half
+		startY, endY = 500+half, 500-half
 	}
-	start, err := resolveMobileGymNormalizedPoint(t.screen, 0.5, startY)
+	start, err := resolveMobileGymNormalizedPoint(t.screen, 500, startY)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
-	end, err := resolveMobileGymNormalizedPoint(t.screen, 0.5, endY)
+	end, err := resolveMobileGymNormalizedPoint(t.screen, 500, endY)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
@@ -529,7 +529,7 @@ func resolveMobileGymPixelPosition(screen *screenState, x, y float64) (int, int,
 		return 0, 0, fmt.Errorf("pixel coordinates require known screen dimensions; call screenshot first or use coord_space normalized")
 	}
 	if x < 0 || y < 0 || x > float64(width-1) || y > float64(height-1) {
-		return 0, 0, fmt.Errorf("pixel coordinates x=%.2f y=%.2f are outside cached screenshot bounds %dx%d; use coord_space normalized with 0..1 coordinates or refresh the screenshot dimensions", x, y, width, height)
+		return 0, 0, fmt.Errorf("pixel coordinates x=%.2f y=%.2f are outside cached screenshot bounds %dx%d; use coord_space normalized with 0-1000 coordinates, where 500,500 is center, or refresh the screenshot dimensions", x, y, width, height)
 	}
 	return int(math.Round(x)), int(math.Round(y)), nil
 }
@@ -549,7 +549,7 @@ func scaleNormalizedToMobileGymPixel(value float64, size int) int {
 	if size <= 1 {
 		return 0
 	}
-	return int(math.Round(clampFloat(value, 0, 1) * float64(size-1)))
+	return int(math.Round(clampFloat(value, 0, 1000) / 1000.0 * float64(size-1)))
 }
 
 func scaleAbsoluteToMobileGymPixel(value float64, size int) int {
@@ -565,11 +565,11 @@ func mobileGymDirectionalSwipePoints(screen *screenState, gestureType string, di
 		travel = defaultDirectionalSwipeDistance
 	}
 	if distance != nil && *distance > 0 {
-		travel = clampFloat(*distance, 0.05, 1)
+		travel = clampFloat(*distance, 1, 1000)
 	}
-	center := 0.5
+	center := 500.0
 	if anchor != nil {
-		center = clampFloat(*anchor, 0, 1)
+		center = clampFloat(*anchor, 0, 1000)
 	}
 	half := travel / 2
 

@@ -310,7 +310,7 @@ def test_device_endpoints_require_active_episode_and_device_token():
             bridge.base_url,
             "POST",
             "/tap",
-            {"episode_id": "ep1", "x": 0.5, "y": 0.25},
+            {"episode_id": "ep1", "x": 500, "y": 250},
             token="wrong-token",
         )
         assert status == 401
@@ -320,7 +320,7 @@ def test_device_endpoints_require_active_episode_and_device_token():
             bridge.base_url,
             "POST",
             "/tap",
-            {"episode_id": "old", "x": 0.5, "y": 0.25},
+            {"episode_id": "old", "x": 500, "y": 250},
             token="device-token",
         )
         assert status == 409
@@ -337,11 +337,11 @@ def test_device_endpoints_require_active_episode_and_device_token():
         assert body == expected_screenshot()
 
         action_requests = [
-            ("/tap", {"episode_id": "ep1", "x": 0.1, "y": 0.2}, "CLICK"),
-            ("/tap", {"episode_id": "ep1", "x": 0.1, "y": 0.2, "count": 2}, "DOUBLE_TAP"),
+            ("/tap", {"episode_id": "ep1", "x": 100, "y": 200}, "CLICK"),
+            ("/tap", {"episode_id": "ep1", "x": 100, "y": 200, "count": 2}, "DOUBLE_TAP"),
             (
                 "/tap",
-                {"episode_id": "ep1", "x": 0.1, "y": 0.2, "kind": "long_press", "duration_ms": 777},
+                {"episode_id": "ep1", "x": 100, "y": 200, "kind": "long_press", "duration_ms": 777},
                 "LONG_PRESS",
             ),
             (
@@ -443,7 +443,7 @@ def test_episode_end_returns_action_log_entries_with_screenshots():
             bridge.base_url,
             "POST",
             "/tap",
-            {"episode_id": "ep1", "x": 0.1, "y": 0.2},
+            {"episode_id": "ep1", "x": 100, "y": 200},
             token="device-token",
         )
         assert status == 200

@@ -103,7 +103,7 @@
       "prompt": "当前可能停在搜索界面。请先观察，然后安全返回主屏幕或一个适合继续操作的中立状态。",
       "setup": {
         "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
           { "tool": "wait_ms", "args": { "ms": 800 } },
           { "tool": "keyboard_text", "args": { "text": "Settings" } },
           { "tool": "wait_ms", "args": { "ms": 800 } }
@@ -137,7 +137,7 @@
       "prompt": "在当前搜索框或输入框里输入 validation 2026，只输入一次，然后确认文字显示出来。",
       "setup": {
         "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
           { "tool": "wait_ms", "args": { "ms": 800 } }
         ]
       },
