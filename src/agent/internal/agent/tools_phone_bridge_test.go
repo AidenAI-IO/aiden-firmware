@@ -56,6 +56,22 @@ func TestResolveOpenAppTargetsCameraUsesShortcutsFallback(t *testing.T) {
 	}
 }
 
+func TestResolveOpenAppTargetsNameAlias(t *testing.T) {
+	args := openAppArgs{Name: "Camera"}
+	want := "shortcuts://x-callback-url/run-shortcut?x-error=camera://"
+
+	if err := resolveOpenAppTargets(&args); err != nil {
+		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
+	}
+
+	if got := args.App; got != "Camera" {
+		t.Fatalf("app = %q, want Camera", got)
+	}
+	if got := args.IOSURLs; len(got) != 1 || got[0] != want {
+		t.Fatalf("ios_urls = %#v, want %q", got, want)
+	}
+}
+
 func TestResolveOpenAppTargetsAppCanBeSpecificURL(t *testing.T) {
 	args := openAppArgs{App: "https://example.org"}
 

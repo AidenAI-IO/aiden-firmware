@@ -137,6 +137,7 @@ func (t *OpenAppTool) Description() string {
 
 type openAppArgs struct {
 	App             string   `json:"app"`
+	Name            string   `json:"name"`
 	URL             string   `json:"url"`
 	IOSURLs         []string `json:"ios_urls"`
 	AndroidPackages []string `json:"android_packages"`
@@ -161,6 +162,9 @@ func applyOpenAppURL(args *openAppArgs, rawURL string) error {
 func resolveOpenAppTargets(args *openAppArgs) error {
 	if args == nil {
 		return fmt.Errorf("missing open_app args")
+	}
+	if strings.TrimSpace(args.App) == "" && strings.TrimSpace(args.Name) != "" {
+		args.App = args.Name
 	}
 
 	if strings.TrimSpace(args.PhoneNumber) != "" {
