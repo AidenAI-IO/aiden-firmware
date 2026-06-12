@@ -74,7 +74,6 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 	if req.Mode == "" {
 		req.Mode = "aiden"
 	}
-
 	statePath := s.benchmarkStatePath
 	if statePath == "" {
 		statePath = filepath.Join(s.benchmarkDir, "state.json")
@@ -107,9 +106,13 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		judge := ""
 		agentModel := ""
 		if s.runtime != nil {
-			apiKey = s.runtime.config.Model.APIKey
+			apiKey = s.runtime.config.Benchmark.APIKey
 			judge = s.runtime.config.Benchmark.JudgeModel
 			agentModel = s.runtime.config.Model.Model
+		}
+		if spec.Kind == "benchmark" && strings.TrimSpace(apiKey) == "" {
+			http.Error(w, `{"error":"benchmark judge api_key is not configured"}`, http.StatusBadRequest)
+			return
 		}
 		stateJSON, _ := json.Marshal(map[string]any{
 			"status": "running",

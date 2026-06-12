@@ -31,6 +31,7 @@ func TestConfigCheck_WireFormatContract(t *testing.T) {
 	t.Run("minimal valid config passes", func(t *testing.T) {
 		payload := `{
 			"model":{"provider":"openai","model":"gpt-4"},
+			"benchmark":{"api_key":"sk-judge"},
 			"search":{"provider":"duckduckgo"},
 			"agent":{},
 			"hid":{"pointer_mode":"absolute"}
@@ -135,6 +136,7 @@ func TestConfigCheck_WireSearchHasAPIKey(t *testing.T) {
 // against the nested "telemetry" wire object.
 func TestConfigCheck_WireTelemetryNested(t *testing.T) {
 	payload := `{"model":{"provider":"openai","model":"gpt-4"},
+		"benchmark":{"api_key":"sk-judge"},
 		"search":{"provider":"duckduckgo"},
 		"telemetry":{"enabled":true},"agent":{}}`
 	result := checkWire(t, payload)

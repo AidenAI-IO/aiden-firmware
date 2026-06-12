@@ -175,6 +175,8 @@ type BenchmarkConfig struct {
 	// JudgeModel is the OpenRouter model name passed to runner.main as
 	// --judge-model. Defaults to "bytedance-seed/seed-2.0-lite" when empty.
 	JudgeModel string `toml:"judge_model,omitempty"`
+	// APIKey is exported as OPENROUTER_API_KEY for benchmark judge calls.
+	APIKey string `toml:"api_key,omitempty"`
 	// Dir overrides the auto-detected benchmark root. When empty, the
 	// agent probes -benchmark-dir flag, AIDEN_BENCHMARK_DIR env,
 	// /userdata/agent/benchmark, then <cwd>/benchmark.

@@ -168,6 +168,7 @@ func ConfigMeta() ConfigMetadata {
 				Fields: []FieldMeta{
 					{Key: "judge_model", Widget: WidgetText,
 						Default: "bytedance-seed/seed-2.0-lite"},
+					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "benchmark_dir", Widget: WidgetText},
 				},
 			},

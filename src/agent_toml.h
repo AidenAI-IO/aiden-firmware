@@ -46,6 +46,7 @@ struct AudioToml {
 
 struct BenchmarkToml {
     std::string judge_model;
+    std::string api_key;
     std::string benchmark_dir;
 };
 
