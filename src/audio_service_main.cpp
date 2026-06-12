@@ -1,4 +1,5 @@
 #include "audio_service_server.h"
+#include "audio_volume_state.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,10 +18,11 @@ void signal_handler(int) {
 
 struct Options {
     std::string socket_path = "/run/audio_service/audio_service.sock";
+    std::string volume_state_path = aiden::kDefaultAudioVolumeStatePath;
 };
 
 void usage(const char* program) {
-    fprintf(stderr, "Usage: %s [--socket PATH]\n", program);
+    fprintf(stderr, "Usage: %s [--socket PATH] [--volume-state PATH]\n", program);
 }
 
 bool parse_options(int argc, char** argv, Options* opts) {
@@ -28,11 +30,17 @@ bool parse_options(int argc, char** argv, Options* opts) {
     if (env_socket && env_socket[0] != '\0') {
         opts->socket_path = env_socket;
     }
+    const char* env_volume_state = getenv("AUDIO_SERVICE_VOLUME_STATE");
+    if (env_volume_state && env_volume_state[0] != '\0') {
+        opts->volume_state_path = env_volume_state;
+    }
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--socket" && i + 1 < argc) {
             opts->socket_path = argv[++i];
+        } else if (arg == "--volume-state" && i + 1 < argc) {
+            opts->volume_state_path = argv[++i];
         } else if (arg == "--help") {
             usage(argv[0]);
             exit(0);
@@ -57,7 +65,8 @@ int main(int argc, char** argv) {
     signal(SIGHUP,  SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
 
-    aiden::AudioServiceServer server(opts.socket_path.c_str());
+    aiden::AudioServiceServer server(opts.socket_path.c_str(),
+                                     opts.volume_state_path.c_str());
     if (server.start() != aiden::AidenServiceStatus::OK) {
         fprintf(stderr, "[audio_service] Failed to start socket at %s\n",
                 opts.socket_path.c_str());

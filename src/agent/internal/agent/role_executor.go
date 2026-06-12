@@ -89,6 +89,7 @@ type worldScreenshot struct {
 type observedWorldState struct {
 	AppName     string   `json:"app_name,omitempty" yaml:"app_name,omitempty"`
 	PageName    string   `json:"page_name,omitempty" yaml:"page_name,omitempty"`
+	Platform    string   `json:"platform,omitempty" yaml:"platform,omitempty"`
 	VisibleText []string `json:"visible_text,omitempty" yaml:"visible_text,omitempty"`
 	Dialogs     []string `json:"dialogs,omitempty" yaml:"dialogs,omitempty"`
 	Confidence  float64  `json:"confidence,omitempty" yaml:"confidence,omitempty"`
@@ -457,6 +458,9 @@ func writeWorldState(builder *strings.Builder, world worldState) {
 		}
 		if label != "" {
 			builder.WriteString(fmt.Sprintf("- Observed app/page: %s", label))
+			if platform := strings.TrimSpace(obs.Platform); platform != "" {
+				builder.WriteString(fmt.Sprintf(" platform=%s", platform))
+			}
 			if obs.Confidence > 0 {
 				builder.WriteString(fmt.Sprintf(" confidence=%.2f", obs.Confidence))
 			}
@@ -670,6 +674,7 @@ func (s *worldState) UpdateObservedState(observed observedWorldState, source Rol
 func (o observedWorldState) IsEmpty() bool {
 	return strings.TrimSpace(o.AppName) == "" &&
 		strings.TrimSpace(o.PageName) == "" &&
+		strings.TrimSpace(o.Platform) == "" &&
 		len(uniqueNonEmpty(o.VisibleText)) == 0 &&
 		len(uniqueNonEmpty(o.Dialogs)) == 0
 }
@@ -677,6 +682,11 @@ func (o observedWorldState) IsEmpty() bool {
 func normalizeObservedWorldState(observed observedWorldState) observedWorldState {
 	observed.AppName = strings.TrimSpace(observed.AppName)
 	observed.PageName = strings.TrimSpace(observed.PageName)
+	if platform, err := normalizeQuickActionPlatform(observed.Platform); err == nil {
+		observed.Platform = platform
+	} else {
+		observed.Platform = ""
+	}
 	observed.VisibleText = uniqueNonEmpty(observed.VisibleText)
 	observed.Dialogs = uniqueNonEmpty(observed.Dialogs)
 	if observed.Confidence < 0 {

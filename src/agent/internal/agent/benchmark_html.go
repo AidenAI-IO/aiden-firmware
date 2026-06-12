@@ -321,6 +321,7 @@ payload.board_url=location.origin;
 payload.parallel=Number(document.getElementById('parallelInput').value)||4;
 }
 document.getElementById('runBtn').disabled=true;
+document.getElementById('runUnitBtn').disabled=true;
 document.getElementById('statusText').textContent='running';
 document.getElementById('statusText').className='status running';
 fetch(benchmarkEndpoint('/benchmark/run'),{method:'POST',headers:{'Content-Type':'application/json'},
@@ -329,6 +330,7 @@ loadLog();
 polling=setInterval(pollStatus,3000);
 if(!logPolling)logPolling=setInterval(loadLog,1000)}).catch(function(e){
 document.getElementById('runBtn').disabled=false;
+document.getElementById('runUnitBtn').disabled=false;
 if(getMode()==='mobilegym')showMobileGymLauncherError(e);else alert(String(e));
 });
 }

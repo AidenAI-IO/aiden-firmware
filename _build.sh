@@ -12,7 +12,8 @@ echo "Building Aiden SDK..."
 
 rm -rf "$BUILD_DIR"
 cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE"
-cmake --build "$BUILD_DIR"
+CMAKE_JOBS="${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)}"
+cmake --build "$BUILD_DIR" --parallel "$CMAKE_JOBS"
 
 echo "Build complete!"
 echo "Library: $ROOT_DIR/build/lib/libaiden.a"

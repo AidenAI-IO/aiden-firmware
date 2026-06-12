@@ -80,6 +80,7 @@ add_library(aiden STATIC
     src/frame_service_protocol.cpp
     src/frame_service_server.cpp
     src/audio_service_protocol.cpp
+    src/audio_volume_state.cpp
     src/audio_record_session.cpp
     src/audio_playback_session.cpp
     src/audio_session_manager.cpp

@@ -46,8 +46,10 @@ static void usage(const char* prog) {
             "  --force-trigger           Push EDID before the first timing query\n"
             "  --no-force-trigger        Query timings first and only push on failure\n"
             "  --no-hdmi-sync            Skip HDMI EDID/timing sync and use VI directly\n"
+            "  --require-exact-resolution\n"
+            "                            Fail if negotiated mode differs from requested width/height\n"
             "  --allow-resolution-mismatch\n"
-            "                            Accept whatever mode the source negotiated\n"
+            "                            Deprecated alias; default already accepts negotiated mode\n"
             "  --allow-uniform-frames    Keep all-same HDMI frames instead of retrying\n"
             "  --help                    Show this help\n",
             prog);
@@ -222,6 +224,8 @@ static int parse_options(int argc, char* argv[], Options* opts) {
             opts->camera.force_trigger = false;
         } else if (strcmp(arg, "--no-hdmi-sync") == 0) {
             opts->camera.enable_hdmi_sync = false;
+        } else if (strcmp(arg, "--require-exact-resolution") == 0) {
+            opts->camera.require_exact_resolution = true;
         } else if (strcmp(arg, "--allow-resolution-mismatch") == 0) {
             opts->camera.require_exact_resolution = false;
         } else if (strcmp(arg, "--allow-uniform-frames") == 0) {

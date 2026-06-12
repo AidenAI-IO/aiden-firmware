@@ -430,6 +430,40 @@ TEST_CASE("config web degrades gracefully when config metadata is unavailable") 
     CHECK(source.find("case 503: response.status_text = \"Service Unavailable\";") != std::string::npos);
 }
 
+TEST_CASE("config web tolerates metadata sections without rendered controls") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    // Config metadata may expose sections that do not have a static editor
+    // card yet. Page-level locking must skip those missing DOM nodes instead
+    // of aborting initialization.
+    CHECK(html.find("const btn=byId('save-'+section);if(btn)btn.disabled=locked;") != std::string::npos);
+    CHECK(html.find("const card=byId('section-'+section);if(card)card.classList.remove('editing');") != std::string::npos);
+}
+
+TEST_CASE("config web tolerates metadata fields without rendered controls") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    // A new metadata field may be added before the static HTML form is updated.
+    // Editing and saving an existing section must skip missing controls and
+    // preserve any already-loaded value for those fields.
+    CHECK(html.find("if(!el)return;snap[item[0]]=") != std::string::npos);
+    CHECK(html.find("if(!el)return;if(snap[item[0]]!==undefined)") != std::string::npos);
+    CHECK(html.find("function readSection(section){const values=Object.assign({},(appState.config&&appState.config[section])||{});") != std::string::npos);
+    CHECK(html.find("if(!el)return;const raw=el.value;") != std::string::npos);
+}
+
 
 TEST_CASE("config web updates dependent field visibility from selected values") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
@@ -553,6 +587,40 @@ TEST_CASE("config web exposes telemetry settings section") {
     CHECK(html.find("<textarea id=\\\"telemetry_tags\\\"") != std::string::npos);
 }
 
+TEST_CASE("config web exposes benchmark settings section") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("cJSON* benchmark = add_object(root, \"benchmark\")") != std::string::npos);
+    CHECK(source.find("config.benchmark.judge_model") != std::string::npos);
+    CHECK(source.find("config.benchmark.benchmark_dir") != std::string::npos);
+    CHECK(source.find("cJSON* benchmark = cJSON_GetObjectItem(root, \"benchmark\")") != std::string::npos);
+    CHECK(source.find("set_json_str(&config->benchmark.judge_model, benchmark, \"judge_model\")") != std::string::npos);
+    CHECK(source.find("set_json_str(&config->benchmark.benchmark_dir, benchmark, \"benchmark_dir\")") != std::string::npos);
+    CHECK(source.find("section == \"benchmark\"") != std::string::npos);
+    CHECK(source.find("defaults to bytedance-seed/seed-2.0-lite") != std::string::npos);
+
+    CHECK(html.find("section-benchmark") != std::string::npos);
+    CHECK(html.find("<h3>[benchmark]</h3>") != std::string::npos);
+    CHECK(html.find("benchmark_judge_model") != std::string::npos);
+    CHECK(html.find("benchmark_benchmark_dir") != std::string::npos);
+    CHECK(html.find("save-benchmark") != std::string::npos);
+    CHECK(html.find("enterEditSection('benchmark')") != std::string::npos);
+}
+
 TEST_CASE("config web restarts ota only when system env changes") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
@@ -573,7 +641,7 @@ TEST_CASE("config web restarts ota only when system env changes") {
     CHECK(source.find("config saved; agent and ota restarting") == std::string::npos);
 }
 
-TEST_CASE("config web DHCP invokes udhcpc without hook") {
+TEST_CASE("config web DHCP invokes dhcpcd without hook") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
     REQUIRE(source_in.good());
@@ -582,12 +650,12 @@ TEST_CASE("config web DHCP invokes udhcpc without hook") {
     source_buffer << source_in.rdbuf();
     const std::string source = source_buffer.str();
 
-    // Must invoke udhcpc for DHCP
-    CHECK(source.find("udhcpc -i ") != std::string::npos);
+    // Must invoke dhcpcd for DHCP
+    CHECK(source.find("dhcpcd -n ") != std::string::npos);
     // Must NOT reference the removed aiden.script hook
     CHECK(source.find("-s /etc/udhcpc/aiden.script") == std::string::npos);
-    // Should use -n -q for foreground one-shot DHCP
-    CHECK(source.find("udhcpc -i \" + shell_quote(options.wifi_interface) + \" -n -q") != std::string::npos);
+    // Should use -n for foreground one-shot DHCP
+    CHECK(source.find("dhcpcd -n \" + shell_quote(options.wifi_interface)") != std::string::npos);
 }
 
 TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhid") {

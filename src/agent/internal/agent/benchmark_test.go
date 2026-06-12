@@ -436,8 +436,11 @@ func TestHandleBenchmarkRun_WritesStateFile(t *testing.T) {
 	s := &Server{
 		benchmarkDir:       root,
 		benchmarkStatePath: statePath,
-		benchmarkLauncher: func(suite, judge, apiKey, agentModel string) error {
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error {
 			called = true
+			if spec.Suite != "/tmp/x.json" || spec.Kind != "benchmark" {
+				t.Fatalf("launch spec = %+v", spec)
+			}
 			return nil
 		},
 	}
@@ -454,6 +457,58 @@ func TestHandleBenchmarkRun_WritesStateFile(t *testing.T) {
 	data, _ := os.ReadFile(statePath)
 	if !strings.Contains(string(data), `"running"`) {
 		t.Errorf("state.json = %s", data)
+	}
+}
+
+func TestHandleBenchmarkRun_UnitSuite(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	unitSuite := filepath.Join(root, "suites", "unit_smoke.json")
+	os.MkdirAll(filepath.Dir(unitSuite), 0o755)
+	os.WriteFile(unitSuite, []byte(`{"kind":"unit","tasks":[]}`), 0o644)
+	var got benchmarkLaunchSpec
+	s := &Server{
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error {
+			got = spec
+			return nil
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run",
+		strings.NewReader(fmt.Sprintf(`{"suite":%q}`, unitSuite)))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRun(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if got.Suite != unitSuite || got.Kind != "unit" {
+		t.Fatalf("launch spec = %+v", got)
+	}
+}
+
+func TestHandleBenchmarkRun_UnitSuiteDir(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	suiteDir := filepath.Join(root, "suites", "unit")
+	var got benchmarkLaunchSpec
+	s := &Server{
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error {
+			got = spec
+			return nil
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run",
+		strings.NewReader(fmt.Sprintf(`{"suite_dir":%q}`, suiteDir)))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRun(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if got.SuiteDir != suiteDir || got.Kind != "unit" {
+		t.Fatalf("launch spec = %+v", got)
 	}
 }
 
@@ -616,9 +671,9 @@ func TestHandleBenchmarkRun_AidenModeDefault(t *testing.T) {
 	s := &Server{
 		benchmarkDir:       root,
 		benchmarkStatePath: statePath,
-		benchmarkLauncher: func(suite, judge, apiKey, agentModel string) error {
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error {
 			captured.called = true
-			captured.suite = suite
+			captured.suite = spec.Suite
 			return nil
 		},
 	}

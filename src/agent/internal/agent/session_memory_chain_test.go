@@ -50,7 +50,7 @@ func TestFilesystemMemoryChainCompressRecallAndLongTermSearch(t *testing.T) {
 		t.Fatalf("unexpected chunk summary: %#v", chunk)
 	}
 
-	recalled, err := session.RecallChunks(ctx, ChunkRecallQuery{Tags: []string{"验证码"}, AppName: "某政务App", Limit: 1})
+	recalled, err := session.RecallChunks(ctx, ChunkRecallQuery{Tags: []string{"验证码"}, Entities: []string{"某政务App"}, Limit: 1})
 	if err != nil {
 		t.Fatalf("RecallChunks() error = %v", err)
 	}

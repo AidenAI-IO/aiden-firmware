@@ -7,9 +7,9 @@ PICO_SDK="$SCRIPT_DIR/pico-sdk"
 DEST_OVERLAY="$PICO_SDK/project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-buildroot-aiden"
 
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
-    # Keep filesystem image metadata stable across releases when their payloads
-    # did not change. Callers can still set SOURCE_DATE_EPOCH explicitly.
-    SOURCE_DATE_EPOCH="${AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-0}"
+    # Keep image metadata stable without relying on every package treating epoch 0
+    # as truthy. Callers can still set SOURCE_DATE_EPOCH explicitly, including 0.
+    SOURCE_DATE_EPOCH="${AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-1}"
 fi
 if ! [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
     echo "SOURCE_DATE_EPOCH must be an unsigned Unix timestamp: $SOURCE_DATE_EPOCH" >&2
@@ -35,6 +35,49 @@ require_rknnmrt_version() {
     fi
 }
 
+clean_managed_staging_paths() {
+    local base="$1"
+    shift
+    local rel_path
+
+    mkdir -p "$base"
+    for rel_path in "$@"; do
+        rm -rf "$base/$rel_path"
+    done
+}
+
+AIDEN_GENERATED_BINARIES=(
+    abctl
+    agent
+    audio_service
+    audio_service_cli
+    audio_stream
+    config_web
+    cpu_vad
+    example_audio_capture
+    example_audio_play
+    example_camera_capture
+    example_usb_hid
+    example_wakeup
+    frame_service
+    frame_service_cli
+    hello
+    image_process
+    ota
+    rknn_vad
+    trigger
+)
+
+clean_generated_binaries() {
+    local bin_dir="$1"
+    local binary
+
+    mkdir -p "$bin_dir"
+    for binary in "${AIDEN_GENERATED_BINARIES[@]}"; do
+        rm -f "$bin_dir/$binary"
+    done
+}
+
 echo "=== Aiden Hardware Demo - Image Builder ==="
 echo ""
 
@@ -47,7 +90,8 @@ cd "$SCRIPT_DIR"
 # Step 2: 准备 overlay 目录
 echo "[2/6] Preparing overlay directories..."
 mkdir -p "$OVERLAY/oem/usr/bin" "$OVERLAY/oem/usr/lib" "$OVERLAY/oem/etc"
-cp -a "$SCRIPT_DIR/build/bin"/. "$OVERLAY/oem/usr/bin/"
+clean_generated_binaries "$OVERLAY/oem/usr/bin"
+rsync -a "$SCRIPT_DIR/build/bin/" "$OVERLAY/oem/usr/bin/"
 echo "  ✓ Binaries copied to overlay/oem/usr/bin"
 
 BENCHMARK_SRC="$SCRIPT_DIR/benchmark"
@@ -140,6 +184,16 @@ else
     echo "  ⚠ Warning: $APP_MAPPING_SRC not found; skipping app mapping" >&2
 fi
 
+QUICK_ACTIONS_SRC="$SCRIPT_DIR/src/agent/internal/agent/quick_actions.json"
+QUICK_ACTIONS_DEST="$DEST_OVERLAY/usr/share/aiden/quick_actions.json"
+if [ -f "$QUICK_ACTIONS_SRC" ]; then
+    mkdir -p "$(dirname "$QUICK_ACTIONS_DEST")"
+    cp "$QUICK_ACTIONS_SRC" "$QUICK_ACTIONS_DEST"
+    echo "  ✓ quick actions mapping synced"
+else
+    echo "  ⚠ Warning: $QUICK_ACTIONS_SRC not found; skipping quick actions" >&2
+fi
+
 # Step 4: 运行 pico-sdk 构建，overlay 注入后只打包一次 firmware，避免 A/B 大镜像重复生成。
 echo "[4/6] Running pico-sdk build stages..."
 cd "$PICO_SDK"
@@ -157,7 +211,6 @@ fi
 
 # 设置默认值
 : ${RK_CHIP:=rv1106}
-: ${RK_LIBC_TPYE:=glibc}
 SDK_ROOT_DIR="$PICO_SDK"
 RK_PROJECT_OUTPUT="${SDK_ROOT_DIR}/output/out"
 RK_PROJECT_OUTPUT_IMAGE="${SDK_ROOT_DIR}/output/image"
@@ -167,7 +220,14 @@ RK_PROJECT_PACKAGE_USERDATA_DIR="${RK_PROJECT_OUTPUT}/userdata"
 # 复制 oem 内容
 if [ -d "$OVERLAY/oem" ]; then
     echo "  → Copying oem content..."
-    mkdir -p "$RK_PROJECT_PACKAGE_OEM_DIR"
+    clean_managed_staging_paths "$RK_PROJECT_PACKAGE_OEM_DIR" \
+        "etc/ota_pubkey.pem" \
+        "usr/ko" \
+        "usr/lib/librknnmrt.so" \
+        "usr/model"
+    clean_generated_binaries "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin"
+    # Keep Aiden-managed /oem/usr/bin exact when pico-sdk/output/out is reused.
+    rsync -a --delete "$OVERLAY/oem/usr/bin/" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin/"
     rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"
     echo "  ✓ OEM content copied"
 fi
@@ -196,7 +256,13 @@ rm -rf "$RK_PROJECT_PACKAGE_USERDATA_DIR/agent/model"
 # 复制 userdata 内容
 if [ -d "$OVERLAY/userdata" ] && [ "$(ls -A "$OVERLAY/userdata" 2>/dev/null)" ]; then
     echo "  → Copying userdata content..."
-    mkdir -p "$RK_PROJECT_PACKAGE_USERDATA_DIR"
+    clean_managed_staging_paths "$RK_PROJECT_PACKAGE_USERDATA_DIR" \
+        "agent/agent.toml" \
+        "agent/benchmark" \
+        "agent/model" \
+        "agent_tools" \
+        "system/env" \
+        "wpa_supplicant.conf"
     rsync -a "$OVERLAY/userdata/" "$RK_PROJECT_PACKAGE_USERDATA_DIR/"
     echo "  ✓ USERDATA content copied"
 fi

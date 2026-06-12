@@ -122,9 +122,11 @@ class AgentClient:
             history=body.get("history", []),
         )
 
-    def invoke_tool(self, name: str, args: dict[str, Any]) -> ToolInvokeResult:
+    def invoke_tool(
+        self, name: str, args: dict[str, Any], timeout: int = 90
+    ) -> ToolInvokeResult:
         status, body_bytes = self._post(
-            f"/api/tools/{name}", {"input": args}, timeout=90
+            f"/api/tools/{name}", {"input": args}, timeout=timeout
         )
         if status != 200:
             raise AgentRequestError(f"invoke {name} returned {status}")

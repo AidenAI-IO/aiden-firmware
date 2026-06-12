@@ -11,30 +11,42 @@ import (
 	"strings"
 )
 
-// launchBenchmarkRunner double-forks a sh script that runs the Python benchmark
+type benchmarkLaunchSpec struct {
+	Suite    string
+	SuiteDir string
+	Kind     string
+}
+
 // launchBenchmarkRunner double-forks a sh script that runs the Python benchmark
 // runner. Writes /tmp/benchmark_runner.pid + /tmp/benchmark_run.log + updates
 // state.json on completion. The Python runner no longer accepts --state-file
 // (removed upstream); the Go server handles state.json bookkeeping itself in
 // handleBenchmarkRun (start) and the trailing echo (end).
-func (s *Server) launchBenchmarkRunner(suitePath, judgeModel, openRouterAPIKey, agentModel string) error {
+func (s *Server) launchBenchmarkRunner(spec benchmarkLaunchSpec, judgeModel, openRouterAPIKey, agentModel string) error {
 	if judgeModel == "" {
 		judgeModel = "bytedance-seed/seed-2.0-lite"
+	}
+	runnerArgs := ""
+	if spec.Kind == "unit" {
+		if spec.SuiteDir != "" {
+			runnerArgs = "unit --suite-dir " + shellQuote(spec.SuiteDir) + " --agent-url http://127.0.0.1:8080 "
+		} else {
+			runnerArgs = "unit --suite " + shellQuote(spec.Suite) + " --agent-url http://127.0.0.1:8080 "
+		}
+	} else {
+		runnerArgs = "run --suite " + shellQuote(spec.Suite) + " --agent-url http://127.0.0.1:8080 --judge-model " + shellQuote(judgeModel) + " --agent-model " + shellQuote(agentModel) + " "
 	}
 	script := fmt.Sprintf(`cd /userdata/agent/benchmark && `+
 		`export OPENROUTER_API_KEY=%s && `+
 		`(`+
 		`echo 'Starting benchmark...' > /tmp/benchmark_run.log; `+
 		`python3 -c 'import sys;sys.path.insert(0,".");from runner.main import cli;sys.exit(cli())' `+
-		`run --suite %s `+
-		`--agent-url http://127.0.0.1:8080 `+
-		`--judge-model %s `+
-		`--agent-model %s `+
+		`%s`+
 		`>> /tmp/benchmark_run.log 2>&1 & `+
 		`runner_pid=$!; echo $runner_pid > /tmp/benchmark_runner.pid; `+
 		`wait $runner_pid; rm -f /tmp/benchmark_runner.pid; `+
 		`echo '{"status":"idle"}' > /userdata/agent/benchmark/state.json) &`,
-		shellQuote(openRouterAPIKey), shellQuote(suitePath), shellQuote(judgeModel), shellQuote(agentModel))
+		shellQuote(openRouterAPIKey), runnerArgs)
 	return exec.Command("sh", "-c", script).Start()
 }
 
@@ -49,16 +61,16 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Suite     string `json:"suite"`
+		SuiteDir  string `json:"suite_dir"`
 		SuiteType string `json:"suite_type"`
 		Mode      string `json:"mode"`
 		Parallel  int    `json:"parallel"`
 		Limit     int    `json:"limit"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Suite == "" {
-		http.Error(w, `{"error":"missing suite field"}`, http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
 		return
 	}
-
 	if req.Mode == "" {
 		req.Mode = "aiden"
 	}
@@ -68,20 +80,25 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		statePath = filepath.Join(s.benchmarkDir, "state.json")
 	}
 
-	stateJSON, _ := json.Marshal(map[string]any{
-		"status":     "running",
-		"mode":       req.Mode,
-		"suite":      req.Suite,
-		"suite_type": req.SuiteType,
-		"parallel":   req.Parallel,
-	})
-	if err := os.WriteFile(statePath, stateJSON, 0o644); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
-		return
-	}
-
 	switch req.Mode {
 	case "aiden":
+		if req.Suite == "" && req.SuiteDir == "" {
+			http.Error(w, `{"error":"missing suite or suite_dir field"}`, http.StatusBadRequest)
+			return
+		}
+		if req.Suite != "" && req.SuiteDir != "" {
+			http.Error(w, `{"error":"exactly one of suite or suite_dir is required"}`, http.StatusBadRequest)
+			return
+		}
+		spec := benchmarkLaunchSpec{Suite: req.Suite, SuiteDir: req.SuiteDir, Kind: "benchmark"}
+		stateSuite := req.Suite
+		if req.SuiteDir != "" {
+			spec.Kind = "unit"
+			stateSuite = req.SuiteDir
+		} else if benchmarkSuiteKind(req.Suite) == "unit" {
+			spec.Kind = "unit"
+		}
+
 		launch := s.benchmarkLauncher
 		if launch == nil {
 			launch = s.launchBenchmarkRunner
@@ -94,13 +111,42 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 			judge = s.runtime.config.Benchmark.JudgeModel
 			agentModel = s.runtime.config.Model.Model
 		}
-		if err := launch(req.Suite, judge, apiKey, agentModel); err != nil {
+		stateJSON, _ := json.Marshal(map[string]any{
+			"status": "running",
+			"mode":   "aiden",
+			"suite":  stateSuite,
+			"model":  agentModel,
+		})
+		if err := os.WriteFile(statePath, stateJSON, 0o644); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+			return
+		}
+		if err := launch(spec, judge, apiKey, agentModel); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"launch failed: %s"}`, err), http.StatusInternalServerError)
 			return
 		}
 	case "mobilegym":
+		if req.Suite == "" {
+			http.Error(w, `{"error":"missing suite field"}`, http.StatusBadRequest)
+			return
+		}
+		if req.SuiteDir != "" {
+			http.Error(w, `{"error":"suite_dir is not supported for mobilegym mode"}`, http.StatusBadRequest)
+			return
+		}
 		if req.Parallel < 1 {
 			req.Parallel = 1
+		}
+		stateJSON, _ := json.Marshal(map[string]any{
+			"status":     "running",
+			"mode":       "mobilegym",
+			"suite":      req.Suite,
+			"suite_type": req.SuiteType,
+			"parallel":   req.Parallel,
+		})
+		if err := os.WriteFile(statePath, stateJSON, 0o644); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+			return
 		}
 		launch := s.benchmarkMobileGymLauncher
 		if launch == nil {
@@ -163,7 +209,6 @@ func buildMobileGymLaunchScript(benchmarkDir, suite, suiteType string, parallel,
 
 	statePath := filepath.Join(benchmarkDir, "state.json")
 	pidFile := "/tmp/mobilegym_runner.pid"
-
 	mobileGymDockerDir := filepath.Join(benchmarkDir, "mobilegym", "docker")
 
 	return fmt.Sprintf(`cd %s && `+

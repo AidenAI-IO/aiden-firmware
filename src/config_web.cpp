@@ -1059,6 +1059,10 @@ cJSON* config_to_json(const aiden::AgentToml& config) {
     cJSON_AddNumberToObject(audio, "channels", config.audio.channels);
     cJSON_AddNumberToObject(audio, "bit_width", config.audio.bit_width);
 
+    cJSON* benchmark = add_object(root, "benchmark");
+    cJSON_AddStringToObject(benchmark, "judge_model", config.benchmark.judge_model.c_str());
+    cJSON_AddStringToObject(benchmark, "benchmark_dir", config.benchmark.benchmark_dir.c_str());
+
     cJSON* hid = add_object(root, "hid");
     cJSON_AddStringToObject(hid, "keyboard_device", config.hid.keyboard_device.c_str());
     cJSON_AddStringToObject(hid, "mouse_device", config.hid.mouse_device.c_str());
@@ -1278,6 +1282,12 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->audio.sample_rate, audio, "sample_rate");
         set_json_int(&config->audio.channels, audio, "channels");
         set_json_int(&config->audio.bit_width, audio, "bit_width");
+    }
+
+    cJSON* benchmark = cJSON_GetObjectItem(root, "benchmark");
+    if (json_is_object(benchmark)) {
+        set_json_str(&config->benchmark.judge_model, benchmark, "judge_model");
+        set_json_str(&config->benchmark.benchmark_dir, benchmark, "benchmark_dir");
     }
 
     cJSON* hid = cJSON_GetObjectItem(root, "hid");
@@ -1714,9 +1724,9 @@ CommandResult apply_wifi_config(const Options& options) {
 
     bool dhcp_ok = false;
     if (associated) {
-        if (command_exists("udhcpc")) {
-            CommandResult dhcp = run_shell_command("udhcpc -i " + shell_quote(options.wifi_interface) + " -n -q 2>&1");
-            log << "$ udhcpc -i " << options.wifi_interface << " -n -q\n" << dhcp.output;
+        if (command_exists("dhcpcd")) {
+            CommandResult dhcp = run_shell_command("dhcpcd -n " + shell_quote(options.wifi_interface) + " 2>&1");
+            log << "$ dhcpcd -n " << options.wifi_interface << "\n" << dhcp.output;
             dhcp_ok = dhcp.exit_code == 0;
             if (!dhcp_ok) {
                 result.exit_code = dhcp.exit_code;
@@ -1729,7 +1739,7 @@ CommandResult apply_wifi_config(const Options& options) {
                 result.exit_code = dhcp.exit_code;
             }
         } else {
-            log << "No supported DHCP client found (need udhcpc or dhclient).\n";
+            log << "No supported DHCP client found (need dhcpcd or dhclient).\n";
             if (result.exit_code == 0) {
                 result.exit_code = 127;
             }
@@ -2965,6 +2975,32 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             if (!exists) all_passed = false;
         }
         cJSON_AddItemToArray(results, r);
+    } else if (section == "benchmark") {
+        cJSON* judge_item = cJSON_GetObjectItem(values, "judge_model");
+        std::string judge_model = json_is_string(judge_item) ? trim_copy(judge_item->valuestring) : "";
+        cJSON* judge_r = cJSON_CreateObject();
+        cJSON_AddStringToObject(judge_r, "check", "judge_model");
+        cJSON_AddBoolToObject(judge_r, "passed", 1);
+        cJSON_AddStringToObject(judge_r, "detail", judge_model.empty() ? "empty; defaults to bytedance-seed/seed-2.0-lite" : judge_model.c_str());
+        cJSON_AddItemToArray(results, judge_r);
+
+        cJSON* dir_item = cJSON_GetObjectItem(values, "benchmark_dir");
+        std::string benchmark_dir = json_is_string(dir_item) ? trim_copy(dir_item->valuestring) : "";
+        cJSON* dir_r = cJSON_CreateObject();
+        cJSON_AddStringToObject(dir_r, "check", "benchmark_dir");
+        if (benchmark_dir.empty()) {
+            cJSON_AddBoolToObject(dir_r, "passed", 1);
+            cJSON_AddStringToObject(dir_r, "detail", "empty; agent will auto-detect benchmark root");
+        } else {
+            std::string cmd = "test -d " + shell_quote(benchmark_dir) + " && echo OK || echo MISSING";
+            CommandResult cr = run_shell_command(cmd);
+            bool exists = cr.output.find("OK") != std::string::npos;
+            cJSON_AddBoolToObject(dir_r, "passed", exists ? 1 : 0);
+            std::string detail = benchmark_dir + (exists ? " exists" : " not found");
+            cJSON_AddStringToObject(dir_r, "detail", detail.c_str());
+            if (!exists) all_passed = false;
+        }
+        cJSON_AddItemToArray(results, dir_r);
     } else if (section == "hid") {
         const char* dev_keys[] = {"keyboard_device", "mouse_device", NULL};
         for (int i = 0; dev_keys[i]; ++i) {

@@ -36,7 +36,7 @@ type Server struct {
 	benchmarkPIDFile           string
 	benchmarkLogPath           string
 	benchmarkStatePath         string
-	benchmarkLauncher          func(suite, judge, apiKey, agentModel string) error
+	benchmarkLauncher          func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error
 	benchmarkMobileGymLauncher func(suite, suiteType string, parallel, limit int) error
 	benchmarkSuiteValidator    func(path string) error
 	benchmarkSuiteLocks        sync.Map
@@ -207,6 +207,7 @@ func NewServer(runtime *Runtime, addr string, benchmarkDir string) *Server {
 		s.episodeStore = NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
 	}
 	loadAppMappingForConfig(runtime.config.ConfigDir, runtime.logger)
+	loadQuickActionsForConfig(runtime.config.ConfigDir, runtime.logger)
 	runtime.tools.RegisterPhoneBridge(bridge)
 	s.loadHistoryFromDisk()
 

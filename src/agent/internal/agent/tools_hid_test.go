@@ -31,6 +31,50 @@ func TestResolvePointerPositionNormalized(t *testing.T) {
 	}
 }
 
+func TestHIDToolsExposeStructuredSchemas(t *testing.T) {
+	for name, tool := range map[string]structuredInputTool{
+		"keyboard_tap":  &KeyboardTapTool{},
+		"keyboard_text": &KeyboardTextTool{},
+		"mouse_click":   &MouseClickTool{},
+		"touch_gesture": &TouchGestureTool{},
+	} {
+		schema := tool.ArgsSchema()
+		props, ok := schema["properties"].(map[string]any)
+		if !ok || len(props) == 0 {
+			t.Fatalf("%s missing schema properties: %#v", name, schema)
+		}
+	}
+}
+
+func TestKeyboardTapSchemaRequiresKeysArray(t *testing.T) {
+	schema := (&KeyboardTapTool{}).ArgsSchema()
+	props := schema["properties"].(map[string]any)
+	keys := props["keys"].(map[string]any)
+	if keys["type"] != "array" {
+		t.Fatalf("keys schema type = %#v, want array", keys["type"])
+	}
+	items := keys["items"].(map[string]any)
+	if items["type"] != "string" {
+		t.Fatalf("keys items type = %#v, want string", items["type"])
+	}
+}
+
+func TestTouchGestureSchemaRequiresNamedPointCoordinates(t *testing.T) {
+	schema := (&TouchGestureTool{}).ArgsSchema()
+	props := schema["properties"].(map[string]any)
+	point := props["point"].(map[string]any)
+	if point["type"] != "object" {
+		t.Fatalf("point type = %#v, want object", point["type"])
+	}
+	pointProps := point["properties"].(map[string]any)
+	if _, ok := pointProps["x"]; !ok {
+		t.Fatalf("point schema missing x: %#v", pointProps)
+	}
+	if _, ok := pointProps["y"]; !ok {
+		t.Fatalf("point schema missing y: %#v", pointProps)
+	}
+}
+
 func TestResolvePointerPositionPixelUsesScreenDimensions(t *testing.T) {
 	screen := &screenState{}
 	screen.Update(1000, 2000)
@@ -60,6 +104,22 @@ func TestResolvePointerPositionPixelUsesActiveArea(t *testing.T) {
 	}
 	if y != 16399 {
 		t.Fatalf("y = %d, want 16399", y)
+	}
+}
+
+func TestResolvePointerPositionPixelUses720pActiveArea(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdateActiveArea(1280, 720, screenActiveArea{X: 320, Y: 0, Width: 640, Height: 720, Valid: true})
+
+	x, y, err := resolvePointerPosition(screen, 640, 360, "pixel", coordinateSpaceAuto)
+	if err != nil {
+		t.Fatalf("resolvePointerPosition returned error: %v", err)
+	}
+	if x != 16409 {
+		t.Fatalf("x = %d, want 16409", x)
+	}
+	if y != 16406 {
+		t.Fatalf("y = %d, want 16406", y)
 	}
 }
 
@@ -722,6 +782,78 @@ func newTestHIDDevice(t *testing.T) (*HIDDevice, string) {
 	return NewHIDDevice(path), path
 }
 
+func TestKeyboardTapSendsModifierOnly(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev}
+
+	out, err := tool.Call(context.Background(), `{"keys":["meta"]}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	dev.Close()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(data) != 16 {
+		t.Fatalf("report bytes = %d, want 16 (modifier + release)", len(data))
+	}
+
+	chord := data[0:8]
+	release := data[8:16]
+	if chord[0] != 0x08 {
+		t.Fatalf("chord modifier = 0x%02x, want 0x08", chord[0])
+	}
+	for i := 2; i < 8; i++ {
+		if chord[i] != 0 {
+			t.Fatalf("chord key slot [%d] = 0x%02x, want 0", i, chord[i])
+		}
+	}
+	for i := range release {
+		if release[i] != 0 {
+			t.Fatalf("release report = %v, want all zeros", release)
+		}
+	}
+}
+
+func TestKeyboardTapSendsModifierChordWithHold(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev}
+
+	out, err := tool.Call(context.Background(), `{"keys":["meta","q"]}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	dev.Close()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(data) != 16 {
+		t.Fatalf("report bytes = %d, want 16 (chord + release)", len(data))
+	}
+
+	chord := data[0:8]
+	release := data[8:16]
+
+	if chord[0] != 0x08 || chord[2] != 0x14 {
+		t.Fatalf("chord report = %v, want modifier 0x08 and key q(0x14)", chord)
+	}
+	for i := range release {
+		if release[i] != 0 {
+			t.Fatalf("release report = %v, want all zeros", release)
+		}
+	}
+}
+
 func readMouseReports(t *testing.T, dev *HIDDevice, path string) []mouseReport {
 	t.Helper()
 
@@ -1030,7 +1162,16 @@ func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 
 func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	desc := (&TouchGestureTool{}).Description()
-	for _, want := range []string{`"back"`, `"home"`, "x=1", "y=999"} {
+	for _, want := range []string{`"back"`, `"home"`, "x=1", "y=999", "prefer quick_action first", "low-level fallback"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+}
+
+func TestKeyboardTapDescriptionDocumentsQuickActionFallback(t *testing.T) {
+	desc := (&KeyboardTapTool{}).Description()
+	for _, want := range []string{"prefer quick_action first", "low-level fallback", "custom key input"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}

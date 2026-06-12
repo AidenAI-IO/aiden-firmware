@@ -130,9 +130,17 @@ memory/session/events.jsonl
 
 When compressed history exists, prompt construction wraps the rendered hot window with boundary markers. Those markers are prompt-only and are never persisted.
 
+When session-boundary detection classifies a user turn as a new session, the
+runtime archives the whole active `memory/session/` directory into
+`memory/session_archive/<closed_session_id>/`, recreates an empty
+`memory/session/events.jsonl`, and clears the in-memory conversation window.
+Archived sessions are preserved as logs only; they are not restored, listed,
+switched back into, injected into prompts, or searched by
+`recall_session_chunks`.
+
 ### Session Compaction
 
-Session compaction is handled by `MemoryManager.maintainFilesystemMemory`. It reads `events.jsonl`, decides whether compaction is needed, writes compacted chunks, updates `summary.md`, and replaces `events.jsonl` with the retained hot window.
+Session compaction is handled by `MemoryManager.maintainFilesystemMemory`. It reads active `events.jsonl`, decides whether compaction is needed, writes compacted chunks, updates active `summary.md`, and replaces `events.jsonl` with the retained hot window.
 
 Compression can be triggered by:
 
@@ -200,6 +208,8 @@ When a chat-history store exists, planner memory also loads a compact view of re
 |   |-- summary.md               # compressed session summary
 |   |-- summary_archive.md
 |   `-- chunks/
+|-- session_archive/             # closed session logs, not active context
+|   `-- <closed_session_id>/
 |-- long_term/
 |   |-- profile.md               # synthesized profile
 |   |-- index.yaml
@@ -220,7 +230,9 @@ When a chat-history store exists, planner memory also loads a compact view of re
 ## Invariants
 
 - Runtime context is request-local; do not use it as durable memory.
-- Session summaries are durable memory; hot-window boundary markers are not.
+- Active session summaries are durable within the current session; archived
+  session summaries are logs and are not prompt or recall context.
+- Hot-window boundary markers are prompt-only and are not durable memory.
 - Planner owns plans and sees retrieved experience memory.
 - Executor executes exactly one approved step and does not receive global memory.
 - Verifier is the only role allowed to finish a run and receives failure/conflict memory.

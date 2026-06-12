@@ -42,7 +42,7 @@ struct CameraConfig {
     int capture_retries = 2;
     bool enable_hdmi_sync = true;
     bool force_trigger = false;
-    bool require_exact_resolution = true;
+    bool require_exact_resolution = false;
     bool reject_uniform_frames = true;
 };
 ```

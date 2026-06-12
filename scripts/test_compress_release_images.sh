@@ -28,6 +28,42 @@ sha256_of() {
   fi
 }
 
+assert_archive_mtime() {
+  local archive="$1"
+  local entry_name="$2"
+  local expected_mtime="$3"
+
+  python3 - "$archive" "$entry_name" "$expected_mtime" <<'PY'
+import gzip
+import sys
+import tarfile
+
+archive, entry_name, raw_expected_mtime = sys.argv[1:]
+expected_mtime = int(raw_expected_mtime)
+
+with open(archive, "rb") as raw_file:
+    header = raw_file.read(10)
+if len(header) != 10 or header[:2] != b"\x1f\x8b" or header[2] != 8:
+    raise SystemExit(f"{archive} is not a valid gzip archive")
+gzip_mtime = int.from_bytes(header[4:8], "little")
+if gzip_mtime != expected_mtime:
+    raise SystemExit(
+        f"{archive} gzip mtime is {gzip_mtime}, want {expected_mtime}"
+    )
+
+with gzip.open(archive, "rb") as gzip_file:
+    with tarfile.open(fileobj=gzip_file, mode="r:") as tar_file:
+        members = tar_file.getmembers()
+if len(members) != 1 or members[0].name != entry_name:
+    raise SystemExit(f"{archive} must contain exactly {entry_name}")
+tar_mtime = int(members[0].mtime)
+if tar_mtime != expected_mtime:
+    raise SystemExit(
+        f"{archive} tar mtime is {tar_mtime}, want {expected_mtime}"
+    )
+PY
+}
+
 output_value() {
   local key="$1"
   local file="$2"
@@ -101,5 +137,17 @@ if [ "$(sha256_of "$tmp_dir/rootfs.updated.extracted")" != "$(sha256_of "$image_
   echo "compression script must refresh stale image archives" >&2
   exit 1
 fi
+
+SOURCE_DATE_EPOCH=0 "$compress_script" \
+  --image-dir "$image_dir" \
+  --assets 'update.img' \
+  --output "$outputs_file"
+assert_archive_mtime "$image_dir/update.img.tar.gz" update.img 0
+
+SOURCE_DATE_EPOCH=1 "$compress_script" \
+  --image-dir "$image_dir" \
+  --assets 'update.img' \
+  --output "$outputs_file"
+assert_archive_mtime "$image_dir/update.img.tar.gz" update.img 1
 
 echo "release image compression test passed"

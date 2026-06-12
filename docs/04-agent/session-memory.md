@@ -31,7 +31,7 @@ re-read session/events.jsonl under FileLock and merge new appends
 replaceEvents --> keep only the hot window in events.jsonl
 ```
 
-The storage layout reuses `/userdata/agent/memory/session/`:
+`/userdata/agent/memory/session/` is always the current active session:
 
 ```text
 session/
@@ -42,6 +42,46 @@ session/
     ├── index.yaml        # chunk index, with optional cut_meta
     └── <chunk_id>.jsonl  # full compacted events, retrievable by recall_session_chunks
 ```
+
+Closed sessions are archived outside the active directory:
+
+```text
+session_archive/
+└── <closed_session_id>/
+    ├── events.jsonl
+    ├── summary.md
+    ├── summary_archive.md
+    └── chunks/
+```
+
+Archived sessions are preserved as logs only. They are not loaded into prompts,
+do not make `HasCompressedHistory()` true, are not compacted by active-session
+maintenance, and are not searched by `recall_session_chunks`.
+
+## Recall Result Sources
+
+`recall_session_chunks` returns each result with a `source` field. Indexed
+chunks from `memory/session/chunks/index.yaml` use `source: "active"` even when
+their `chunk_id` has a legacy or pending-derived prefix such as `pending-...`.
+Live pending-file recall paths must use `source: "pending"` until those files
+are consumed into normal indexed chunks.
+
+Telemetry uses this explicit source field. `pending_chunks_recalled` counts only
+results with `source: "pending"`; it does not infer source from the chunk ID.
+Chunk IDs are opaque identifiers and must not be used as pending/live-state
+signals.
+
+## Session Boundary Rotation
+
+When session-boundary detection classifies a turn as `new`, `MemoryManager`
+closes the current active session by atomically moving the whole
+`memory/session/` directory to `memory/session_archive/<closed_session_id>/`.
+It then recreates `memory/session/events.jsonl` as an empty file and clears the
+in-memory conversation window and event counters.
+
+This implements only multi-session storage isolation. Aiden does not restore,
+list, or switch back to old sessions yet. There is always exactly one active
+session, and the new active session starts with empty conversation context.
 
 ## Concurrency and Event Preservation
 
@@ -115,7 +155,8 @@ The prefix summary is intentionally written to both the chunk summary and the ho
 
 ## summary.md and Rolling Summary
 
-`summary.md` is injected into the planner prompt and has two sections:
+The active session's `summary.md` is injected into the planner prompt and has
+two sections:
 
 ```markdown
 # Session History (compressed chunks)
@@ -136,7 +177,9 @@ The Rolling Summary currently has a 100-line cap (`maxRollingSummaryLines`). Whe
 
 ## Hot-Window Boundary Markers
 
-When compressed history exists (`HasCompressedHistory`, meaning `summary.md` exists), prompt construction wraps the hot window with boundary markers:
+When compressed history exists in the active session (`HasCompressedHistory`,
+meaning `memory/session/summary.md` exists), prompt construction wraps the hot
+window with boundary markers:
 
 ```text
 === Recent session context (hot window) ===

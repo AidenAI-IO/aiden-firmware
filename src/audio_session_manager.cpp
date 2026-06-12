@@ -1,4 +1,5 @@
 #include "audio_session_manager.h"
+#include "audio_volume_state.h"
 #include <chrono>
 #include <stdio.h>
 #include <vector>
@@ -6,10 +7,33 @@
 namespace aiden {
 
 AudioSessionManager::AudioSessionManager()
+    : AudioSessionManager(nullptr) {}
+
+AudioSessionManager::AudioSessionManager(const char* volume_state_path)
     : stop_reaper_(false),
       draining_playback_count_(std::make_shared<std::atomic<uint32_t>>(0)),
+      volume_state_path_(volume_state_path ? volume_state_path : ""),
       playback_volume_(100),
+      last_persisted_playback_volume_(-1),
       next_id_(1) {
+    if (!volume_state_path_.empty()) {
+        int persisted_volume = 100;
+        std::string error;
+        AudioVolumeStateLoadStatus load_status =
+            load_playback_volume_state(volume_state_path_.c_str(), &persisted_volume, &error);
+        if (load_status == AudioVolumeStateLoadStatus::LOADED) {
+            playback_volume_ = persisted_volume;
+            last_persisted_playback_volume_ = persisted_volume;
+            fprintf(stderr, "[audio_service] loaded playback volume %d from %s\n",
+                    playback_volume_, volume_state_path_.c_str());
+        } else if (load_status == AudioVolumeStateLoadStatus::MISSING) {
+            last_persisted_playback_volume_ = playback_volume_;
+        } else if (load_status == AudioVolumeStateLoadStatus::INVALID ||
+                   load_status == AudioVolumeStateLoadStatus::ERROR) {
+            fprintf(stderr, "[audio_service] ignoring playback volume state %s: %s\n",
+                    volume_state_path_.c_str(), error.c_str());
+        }
+    }
     reaper_thread_ = std::thread([this]() { reaper_loop(); });
 }
 
@@ -29,6 +53,22 @@ AudioSessionManager::~AudioSessionManager() {
 
 uint64_t AudioSessionManager::next_session_id() {
     return next_id_++;
+}
+
+bool AudioSessionManager::persist_playback_volume_if_changed(int volume) {
+    if (volume_state_path_.empty() || volume == last_persisted_playback_volume_) {
+        return true;
+    }
+
+    std::string error;
+    if (!save_playback_volume_state(volume_state_path_.c_str(), volume, &error)) {
+        fprintf(stderr, "[audio_service] failed to persist playback volume to %s: %s\n",
+                volume_state_path_.c_str(), error.c_str());
+        return false;
+    }
+
+    last_persisted_playback_volume_ = volume;
+    return true;
 }
 
 // -----------------------------------------------------------------------
@@ -216,6 +256,7 @@ AidenServiceStatus AudioSessionManager::set_playback_volume(int volume) {
         return AidenServiceStatus::INTERNAL_ERROR;
     }
 
+    std::lock_guard<std::mutex> volume_lock(volume_set_mutex_);
     std::vector<std::shared_ptr<AudioPlaybackSession>> sessions;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -229,6 +270,9 @@ AidenServiceStatus AudioSessionManager::set_playback_volume(int volume) {
         if (!sessions[i]->set_volume(volume)) {
             return AidenServiceStatus::INTERNAL_ERROR;
         }
+    }
+    if (!persist_playback_volume_if_changed(volume)) {
+        return AidenServiceStatus::INTERNAL_ERROR;
     }
     fprintf(stderr, "[audio_service] playback volume set to %d\n", volume);
     return AidenServiceStatus::OK;

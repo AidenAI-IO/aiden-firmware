@@ -60,14 +60,18 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 	screenStable := toolOptions.screenStable.Resolved()
 	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable)
+	keyboardTap := &KeyboardTapTool{dev: kbDev}
+	touchGesture := &TouchGestureTool{pc: pointer, screen: screen}
+	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture}
 
 	tools := map[string]langtools.Tool{
-		"keyboard_tap":           newPostActionStableScreenshotTool(&KeyboardTapTool{dev: kbDev}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"keyboard_tap":           newPostActionStableScreenshotTool(keyboardTap, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"keyboard_text":          newPostActionStableScreenshotTool(&KeyboardTextTool{dev: kbDev}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_click":            newPostActionStableScreenshotTool(&MouseClickTool{pc: pointer, screen: screen}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"touch_gesture":          newPostActionStableScreenshotTool(&TouchGestureTool{pc: pointer, screen: screen}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"quick_action":           newPostActionStableScreenshotTool(quickAction, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"screenshot":             screenshot,
 		"wait_for_stable_screen": waitStable,
 		"image_diff":             &ImageDiffTool{},
