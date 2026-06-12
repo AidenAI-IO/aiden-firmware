@@ -322,7 +322,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			PointerMode:    cfg.HID.PointerModeOrDefault(),
 		},
 		Search: searchDTO{
-			APIKey:    cfg.Search.APIKey,
 			Provider:  cfg.Search.ProviderOrDefault(),
 			HasAPIKey: strings.TrimSpace(cfg.Search.APIKey) != "",
 		},

@@ -394,6 +394,7 @@ TEST_CASE("config web renders finite choice fields as selects") {
     CHECK(html.find("let fieldDefaults=") != std::string::npos);
     CHECK(html.find("function fieldDefaultPlaceholder") != std::string::npos);
     CHECK(html.find("applyDefaultPlaceholder(name,field)") != std::string::npos);
+    CHECK(html.find("getAttribute('placeholder')") != std::string::npos);
     CHECK(html.find("默认值: ") != std::string::npos);
     // rangeOptions is now invoked with metadata-provided bounds, not literals.
     CHECK(html.find("rangeOptions(field.range.min,field.range.max,field.range.step") != std::string::npos);
@@ -753,4 +754,18 @@ TEST_CASE("config web usbhid init script does not orchestrate dependent service 
     CHECK(script.find("use poweroff") != std::string::npos);
     CHECK(script.find("restart|reload) restart") != std::string::npos);
     CHECK(script.find("restart|reload) stop; start") == std::string::npos);
+}
+
+TEST_CASE("config web resolved config validation rejects empty required strings by default") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("bool config_required_string(cJSON* obj, const char* key, bool allow_empty = false)") != std::string::npos);
+    CHECK(source.find("config_required_string(model_text, \"provider\", true)") != std::string::npos);
+    CHECK(source.find("config_required_string(model, \"api_key\", true)") != std::string::npos);
 }

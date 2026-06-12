@@ -314,7 +314,7 @@ bool config_required_object(cJSON* root, const char* key) {
     return json_is_object(cJSON_GetObjectItem(root, key));
 }
 
-bool config_required_string(cJSON* obj, const char* key, bool allow_empty = true) {
+bool config_required_string(cJSON* obj, const char* key, bool allow_empty = false) {
     if (!obj) {
         return false;
     }
@@ -1149,6 +1149,22 @@ void load_current_agent_config(const Options& options,
     }
 }
 
+void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* config) {
+    if (!config || !config->search.api_key.empty() || !config->search.has_api_key) {
+        return;
+    }
+
+    aiden::AgentToml stored;
+    std::string load_error;
+    if (!aiden::load_agent_toml(options.agent_config_path.c_str(), stored, &load_error)) {
+        return;
+    }
+    if (!stored.search.api_key.empty()) {
+        config->search.api_key = stored.search.api_key;
+        config->search.has_api_key = true;
+    }
+}
+
 void load_current_wifi_config(const Options& options,
                               aiden::WifiNetworkConfig* config,
                               std::string* load_error) {
@@ -1231,7 +1247,8 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
 
     cJSON* search = add_object(root, "search");
     cJSON_AddStringToObject(search, "provider", config.search.provider.c_str());
-    cJSON_AddBoolToObject(search, "has_api_key", !config.search.api_key.empty());
+    cJSON_AddBoolToObject(search, "has_api_key",
+                          (config.search.has_api_key || !config.search.api_key.empty()) ? 1 : 0);
 
     cJSON* telemetry = add_object(root, "telemetry");
     cJSON_AddBoolToObject(telemetry, "enabled", config.telemetry.enabled ? 1 : 0);
@@ -1468,9 +1485,11 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     cJSON* search = cJSON_GetObjectItem(root, "search");
     if (json_is_object(search)) {
         set_json_str(&config->search.provider, search, "provider");
+        set_json_bool(&config->search.has_api_key, search, "has_api_key");
         cJSON* key_item = cJSON_GetObjectItem(search, "api_key");
         if (json_is_string(key_item) && strlen(key_item->valuestring) > 0) {
             config->search.api_key = key_item->valuestring;
+            config->search.has_api_key = true;
         }
     }
 
@@ -2742,6 +2761,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON* config_json = cJSON_GetObjectItem(root, "config");
     if (json_is_object(config_json)) {
         update_config_from_json(config_json, &config);
+        preserve_redacted_agent_secrets(options, &config);
     }
 
     cJSON* wifi_json = cJSON_GetObjectItem(root, "wifi");

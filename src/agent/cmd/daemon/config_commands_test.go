@@ -154,6 +154,21 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 	}
 }
 
+func TestWebConfigDTOFromAgentConfig_RedactsSearchAPIKey(t *testing.T) {
+	dto := webConfigDTOFromAgentConfig(agent.Config{
+		Search: agent.SearchConfig{
+			Provider: "brave",
+			APIKey:   "search-test-key",
+		},
+	})
+	if dto.Search.APIKey != "" {
+		t.Fatalf("search api key was exposed in DTO: %q", dto.Search.APIKey)
+	}
+	if !dto.Search.HasAPIKey {
+		t.Fatal("search has_api_key = false, want true for stored API key")
+	}
+}
+
 func TestConfigCheck_InvalidSearchProvider(t *testing.T) {
 	invalidConfig := agent.Config{
 		Model: agent.ModelConfig{
