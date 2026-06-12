@@ -78,6 +78,127 @@ clean_generated_binaries() {
     done
 }
 
+partition_size_bytes() {
+    local name="$1"
+    local entry size suffix number
+
+    IFS=',' read -ra entries <<< "$RK_PARTITION_CMD_IN_ENV"
+    for entry in "${entries[@]}"; do
+        case "$entry" in
+            *"($name)")
+                size="${entry%%(*}"
+                size="${size%%@*}"
+                suffix="${size: -1}"
+                number="${size%?}"
+                case "$suffix" in
+                    K|k) echo $((number * 1024)); return 0 ;;
+                    M|m) echo $((number * 1024 * 1024)); return 0 ;;
+                    G|g) echo $((number * 1024 * 1024 * 1024)); return 0 ;;
+                    T|t) echo $((number * 1024 * 1024 * 1024 * 1024)); return 0 ;;
+                    P|p) echo $((number * 1024 * 1024 * 1024 * 1024 * 1024)); return 0 ;;
+                    E|e) echo $((number * 1024 * 1024 * 1024 * 1024 * 1024 * 1024)); return 0 ;;
+                    -) return 1 ;;
+                    *) echo "$size"; return 0 ;;
+                esac
+                ;;
+        esac
+    done
+    return 1
+}
+
+partition_image_size_bytes() {
+    local image_name="$1"
+
+    partition_size_bytes "$image_name" && return 0
+    partition_size_bytes "${image_name}_a" && return 0
+    partition_size_bytes "${image_name}_b" && return 0
+    return 1
+}
+
+partition_fs_type() {
+    local name="$1"
+    local entry part_name part_fs_type
+
+    IFS=',' read -ra entries <<< "$RK_PARTITION_FS_TYPE_CFG"
+    for entry in "${entries[@]}"; do
+        part_name="${entry%%@*}"
+        part_fs_type="${entry##*@}"
+        if [ "${part_name%_[ab]}" = "${name%_[ab]}" ]; then
+            echo "$part_fs_type"
+            return 0
+        fi
+    done
+    return 1
+}
+
+strip_release_files() {
+    local target_dir="$1"
+    local strip_tool toolchain_cross toolchain_bin
+
+    if [ "${RK_BUILD_VERSION_TYPE:-}" = "DEBUG" ]; then
+        return 0
+    fi
+    if [ "${LF_TARGET_ROOTFS:-}" != "buildroot" ] && [ "${LF_TARGET_ROOTFS:-}" != "busybox" ]; then
+        return 0
+    fi
+    toolchain_cross="${RK_PROJECT_TOOLCHAIN_CROSS:-${RK_TOOLCHAIN_CROSS:-}}"
+    if [ -z "$toolchain_cross" ]; then
+        echo "  ⚠ Warning: RK_TOOLCHAIN_CROSS is unset; skipping release strip for $target_dir" >&2
+        return 0
+    fi
+    toolchain_bin="$PICO_SDK/tools/linux/toolchain/$toolchain_cross/bin"
+    if [ -x "$toolchain_bin/${toolchain_cross}-strip" ]; then
+        strip_tool="$toolchain_bin/${toolchain_cross}-strip"
+    elif command -v "${toolchain_cross}-strip" >/dev/null 2>&1; then
+        strip_tool="${toolchain_cross}-strip"
+    else
+        echo "  ⚠ Warning: ${toolchain_cross}-strip not found; skipping release strip for $target_dir" >&2
+        return 0
+    fi
+
+    find "$target_dir" \( -name "lib*.la" -o -name "lib*.a" \) -exec rm -rf {} +
+    find "$target_dir" -type d -name pkgconfig -exec rm -rf {} +
+    find "$target_dir" -type f \( -perm /111 -o -name '*.so*' \) \
+        -not \( -name 'libpthread*.so*' -o -name 'ld-*.so*' -o -name '*.ko' \) -print0 |
+        xargs -0 "$strip_tool" 2>/dev/null || true
+    find "$target_dir" -type f -name '*.ko' -print0 |
+        xargs -0 "$strip_tool" --strip-debug 2>/dev/null || true
+}
+
+rebuild_ext4_image() {
+    local name="$1"
+    local src_dir="$2"
+    local image_path="$RK_PROJECT_OUTPUT_IMAGE/${name}.img"
+    local size_bytes fs_type
+
+    if [ ! -d "$src_dir" ] || [ -z "$(ls -A "$src_dir" 2>/dev/null)" ]; then
+        echo "  ✗ Error: missing staged content for ${name}.img: $src_dir" >&2
+        exit 1
+    fi
+
+    fs_type="$(partition_fs_type "$name")" || {
+        echo "  ✗ Error: filesystem type for ${name}.img not found in RK_PARTITION_FS_TYPE_CFG" >&2
+        exit 1
+    }
+    if [ "$fs_type" != "ext4" ]; then
+        echo "  ✗ Error: direct rebuild only supports ext4 ${name}.img, got $fs_type" >&2
+        exit 1
+    fi
+
+    size_bytes="$(partition_image_size_bytes "$name")" || {
+        echo "  ✗ Error: partition size for ${name}.img not found in RK_PARTITION_CMD_IN_ENV" >&2
+        exit 1
+    }
+
+    strip_release_files "$src_dir"
+    chown -hR 0:0 "$src_dir"
+    "$PICO_SDK/sysdrv/tools/pc/e2fsprogs/mkfs_ext4.sh" "$src_dir" "$image_path" "$size_bytes"
+    if [ ! -s "$image_path" ]; then
+        echo "  ✗ Error: missing rebuilt image: $image_path" >&2
+        exit 1
+    fi
+}
+
 echo "=== Aiden Hardware Demo - Image Builder ==="
 echo ""
 
@@ -194,7 +315,7 @@ else
     echo "  ⚠ Warning: $QUICK_ACTIONS_SRC not found; skipping quick actions" >&2
 fi
 
-# Step 4: 运行 pico-sdk 构建，overlay 注入后只打包一次 firmware，避免 A/B 大镜像重复生成。
+# Step 4: Run pico-sdk build stages and base firmware packaging.
 echo "[4/6] Running pico-sdk build stages..."
 cd "$PICO_SDK"
 ./build.sh sysdrv "$@"
@@ -217,12 +338,20 @@ RK_PROJECT_OUTPUT_IMAGE="${SDK_ROOT_DIR}/output/image"
 RK_PROJECT_PACKAGE_OEM_DIR="${RK_PROJECT_OUTPUT}/oem"
 RK_PROJECT_PACKAGE_USERDATA_DIR="${RK_PROJECT_OUTPUT}/userdata"
 
+cd "$PICO_SDK/project"
+echo "  → Running base firmware packaging..."
+firmware_log="$(mktemp)"
+./build.sh firmware "$@" > "$firmware_log" 2>&1
+grep -E "(oem|userdata|update)" "$firmware_log" || true
+rm -f "$firmware_log"
+echo "  ✓ Base images packaged"
+
 # 复制 oem 内容
 if [ -d "$OVERLAY/oem" ]; then
     echo "  → Copying oem content..."
     clean_managed_staging_paths "$RK_PROJECT_PACKAGE_OEM_DIR" \
         "etc/ota_pubkey.pem" \
-        "usr/ko" \
+        "usr/ko/insmod_wifi.sh" \
         "usr/lib/librknnmrt.so" \
         "usr/model"
     clean_generated_binaries "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin"
@@ -267,19 +396,24 @@ if [ -d "$OVERLAY/userdata" ] && [ "$(ls -A "$OVERLAY/userdata" 2>/dev/null)" ];
     echo "  ✓ USERDATA content copied"
 fi
 
-# Step 6: 重新打包 oem 和 userdata 镜像
-echo "[6/6] Rebuilding oem.img and userdata.img..."
+# Step 6: Rebuild Aiden-managed images. Do not call firmware again here:
+# SDK __PACKAGE_OEM regenerates usr/ko and would overwrite the Aiden overlay.
+echo "[6/6] Rebuilding Aiden-managed images..."
 cd "$PICO_SDK/project"
 
-# 重新打包 oem.img
-if [ -d "$RK_PROJECT_PACKAGE_OEM_DIR" ] && [ "$(ls -A "$RK_PROJECT_PACKAGE_OEM_DIR")" ]; then
-    echo "  → Rebuilding oem.img..."
-    firmware_log="$(mktemp)"
-    ./build.sh firmware "$@" > "$firmware_log" 2>&1
-    grep -E "(oem|userdata|update)" "$firmware_log" || true
-    rm -f "$firmware_log"
-    echo "  ✓ Images rebuilt"
+echo "  → Rebuilding oem.img..."
+rebuild_ext4_image oem "$RK_PROJECT_PACKAGE_OEM_DIR"
+
+echo "  → Rebuilding userdata.img..."
+rebuild_ext4_image userdata "$RK_PROJECT_PACKAGE_USERDATA_DIR"
+
+echo "  → Rebuilding update.img..."
+./build.sh updateimg "$@"
+if [ ! -s "$RK_PROJECT_OUTPUT_IMAGE/update.img" ]; then
+    echo "  ✗ Error: missing rebuilt image: $RK_PROJECT_OUTPUT_IMAGE/update.img" >&2
+    exit 1
 fi
+echo "  ✓ Images rebuilt"
 
 echo ""
 echo "=== Build Complete ==="

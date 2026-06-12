@@ -133,14 +133,25 @@ if [ -z "$oem_bin_sync_line" ] || [ -z "$oem_full_sync_line" ] || [ "$oem_bin_sy
     echo "_build_image.sh must sync OEM usr/bin with delete semantics before full OEM overlay sync" >&2
     exit 1
 fi
+firmware_count=$(grep -cF './build.sh firmware "$@"' "$ROOT_DIR/_build_image.sh")
+firmware_line=$(grep -nF './build.sh firmware "$@"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+if [ "$firmware_count" -ne 1 ] || [ -z "$firmware_line" ] || [ "$firmware_line" -ge "$oem_full_sync_line" ]; then
+    echo "_build_image.sh must sync final OEM overlay after pico-sdk firmware packaging regenerates SDK-managed OEM files" >&2
+    exit 1
+fi
 
 if ! grep -Fq 'clean_managed_staging_paths "$RK_PROJECT_PACKAGE_OEM_DIR"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq '"usr/model"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq '"usr/ko/insmod_wifi.sh"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq '"etc/ota_pubkey.pem"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq 'clean_managed_staging_paths "$RK_PROJECT_PACKAGE_USERDATA_DIR"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq '"agent/benchmark"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq '"agent_tools"' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must clean Aiden-managed SDK staging paths before preserving pico-sdk/output/out" >&2
+    exit 1
+fi
+if grep -Fq '"usr/ko"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must not delete the whole SDK usr/ko module directory; only Aiden-managed overrides may be cleaned" >&2
     exit 1
 fi
 
