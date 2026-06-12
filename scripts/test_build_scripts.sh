@@ -75,8 +75,8 @@ if ! grep -Fq 'GOCACHE="/tmp/go-cache"' "$BUILD_SH" || \
     exit 1
 fi
 
-if ! grep -Fq 'rm -rf pico-sdk/output/out' "$WORKFLOW"; then
-    echo "build workflow must clean pico-sdk/output/out; reused SDK build outputs are out of scope for this PR" >&2
+if grep -Fq 'rm -rf pico-sdk/output/out' "$WORKFLOW"; then
+    echo "build workflow must preserve pico-sdk/output/out so unchanged SDK code can reuse SDK-managed build outputs" >&2
     exit 1
 fi
 
@@ -121,8 +121,19 @@ if ! grep -Fq 'scripts/clean_rootfs_overlay_staging.sh" --dest-overlay "$DEST_OV
 fi
 
 if grep -Fq 'cp -a "$SCRIPT_DIR/build/bin"/. "$OVERLAY/oem/usr/bin/"' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq 'rsync -a --delete "$SCRIPT_DIR/build/bin/" "$OVERLAY/oem/usr/bin/"' "$ROOT_DIR/_build_image.sh"; then
-    echo "_build_image.sh must sync generated binaries into overlay/oem/usr/bin with delete semantics" >&2
+   ! grep -Fq 'clean_generated_binaries "$OVERLAY/oem/usr/bin"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'clean_generated_binaries "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must remove stale generated binaries from overlay and SDK OEM staging" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'clean_managed_staging_paths "$RK_PROJECT_PACKAGE_OEM_DIR"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq '"usr/model"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq '"etc/ota_pubkey.pem"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'clean_managed_staging_paths "$RK_PROJECT_PACKAGE_USERDATA_DIR"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq '"agent/benchmark"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq '"agent_tools"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must clean Aiden-managed SDK staging paths before preserving pico-sdk/output/out" >&2
     exit 1
 fi
 

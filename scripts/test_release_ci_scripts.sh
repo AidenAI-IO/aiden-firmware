@@ -90,8 +90,8 @@ if ! grep -q 'SOURCE_DATE_EPOCH' "$DOCKER_BUILD_SCRIPT" || \
     exit 1
 fi
 
-if ! grep -Fq 'rm -rf pico-sdk/output/out' "$WORKFLOW"; then
-    echo "build workflow must clean pico-sdk/output/out; reused SDK build outputs are out of scope for this PR" >&2
+if grep -Fq 'rm -rf pico-sdk/output/out' "$WORKFLOW"; then
+    echo "build workflow must preserve pico-sdk/output/out so unchanged SDK code can reuse SDK-managed build outputs" >&2
     exit 1
 fi
 

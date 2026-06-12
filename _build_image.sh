@@ -35,6 +35,49 @@ require_rknnmrt_version() {
     fi
 }
 
+clean_managed_staging_paths() {
+    local base="$1"
+    shift
+    local rel_path
+
+    mkdir -p "$base"
+    for rel_path in "$@"; do
+        rm -rf "$base/$rel_path"
+    done
+}
+
+AIDEN_GENERATED_BINARIES=(
+    abctl
+    agent
+    audio_service
+    audio_service_cli
+    audio_stream
+    config_web
+    cpu_vad
+    example_audio_capture
+    example_audio_play
+    example_camera_capture
+    example_usb_hid
+    example_wakeup
+    frame_service
+    frame_service_cli
+    hello
+    image_process
+    ota
+    rknn_vad
+    trigger
+)
+
+clean_generated_binaries() {
+    local bin_dir="$1"
+    local binary
+
+    mkdir -p "$bin_dir"
+    for binary in "${AIDEN_GENERATED_BINARIES[@]}"; do
+        rm -f "$bin_dir/$binary"
+    done
+}
+
 echo "=== Aiden Hardware Demo - Image Builder ==="
 echo ""
 
@@ -47,7 +90,8 @@ cd "$SCRIPT_DIR"
 # Step 2: 准备 overlay 目录
 echo "[2/6] Preparing overlay directories..."
 mkdir -p "$OVERLAY/oem/usr/bin" "$OVERLAY/oem/usr/lib" "$OVERLAY/oem/etc"
-rsync -a --delete "$SCRIPT_DIR/build/bin/" "$OVERLAY/oem/usr/bin/"
+clean_generated_binaries "$OVERLAY/oem/usr/bin"
+rsync -a "$SCRIPT_DIR/build/bin/" "$OVERLAY/oem/usr/bin/"
 echo "  ✓ Binaries copied to overlay/oem/usr/bin"
 
 BENCHMARK_SRC="$SCRIPT_DIR/benchmark"
@@ -176,7 +220,12 @@ RK_PROJECT_PACKAGE_USERDATA_DIR="${RK_PROJECT_OUTPUT}/userdata"
 # 复制 oem 内容
 if [ -d "$OVERLAY/oem" ]; then
     echo "  → Copying oem content..."
-    mkdir -p "$RK_PROJECT_PACKAGE_OEM_DIR"
+    clean_managed_staging_paths "$RK_PROJECT_PACKAGE_OEM_DIR" \
+        "etc/ota_pubkey.pem" \
+        "usr/ko" \
+        "usr/lib/librknnmrt.so" \
+        "usr/model"
+    clean_generated_binaries "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin"
     rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"
     echo "  ✓ OEM content copied"
 fi
@@ -205,7 +254,13 @@ rm -rf "$RK_PROJECT_PACKAGE_USERDATA_DIR/agent/model"
 # 复制 userdata 内容
 if [ -d "$OVERLAY/userdata" ] && [ "$(ls -A "$OVERLAY/userdata" 2>/dev/null)" ]; then
     echo "  → Copying userdata content..."
-    mkdir -p "$RK_PROJECT_PACKAGE_USERDATA_DIR"
+    clean_managed_staging_paths "$RK_PROJECT_PACKAGE_USERDATA_DIR" \
+        "agent/agent.toml" \
+        "agent/benchmark" \
+        "agent/model" \
+        "agent_tools" \
+        "system/env" \
+        "wpa_supplicant.conf"
     rsync -a "$OVERLAY/userdata/" "$RK_PROJECT_PACKAGE_USERDATA_DIR/"
     echo "  ✓ USERDATA content copied"
 fi

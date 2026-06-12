@@ -129,7 +129,6 @@ jobs:
     - name: Clean previous build artifacts
       run: |
         rm -rf pico-sdk/output/image/*.img pico-sdk/output/image/*.img.tar.gz pico-sdk/output/image/manifest.json
-        rm -rf pico-sdk/output/out
 
     - name: Generate release name
       id: release_info
