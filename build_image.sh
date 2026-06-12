@@ -36,9 +36,9 @@ if [ "$#" -gt 0 ]; then
 fi
 
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
-  # Keep rootfs/oem image metadata stable across releases when their payloads
-  # did not change. Callers can still set SOURCE_DATE_EPOCH explicitly.
-  SOURCE_DATE_EPOCH="${AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-0}"
+  # Keep image metadata stable without relying on every package treating epoch 0
+  # as truthy. Callers can still set SOURCE_DATE_EPOCH explicitly, including 0.
+  SOURCE_DATE_EPOCH="${AIDEN_REPRODUCIBLE_IMAGE_EPOCH:-1}"
 fi
 if ! [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
   echo "SOURCE_DATE_EPOCH must be an unsigned Unix timestamp: $SOURCE_DATE_EPOCH" >&2
