@@ -130,14 +130,28 @@ static uint32_t frame_size_bytes(const char* pixel_format, uint32_t width, uint3
     return width * height * 2;
 }
 
-static bool timings_match_request(const CameraConfig& config,
-                                  const struct v4l2_dv_timings& timings) {
-    if (!config.require_exact_resolution) {
-        return true;
-    }
-
+static bool timings_match_requested_resolution(const CameraConfig& config,
+                                               const struct v4l2_dv_timings& timings) {
     return timings.bt.width == static_cast<uint32_t>(config.width) &&
            timings.bt.height == static_cast<uint32_t>(config.height);
+}
+
+static bool timings_look_like_bootstrap_default(const CameraConfig& config,
+                                                const struct v4l2_dv_timings& timings) {
+    return timings.bt.width == 640 &&
+           timings.bt.height == 480 &&
+           (config.width != 640 || config.height != 480);
+}
+
+static bool timings_acceptable_after_trigger(const CameraConfig& config,
+                                             const struct v4l2_dv_timings& timings) {
+    if (timings_look_like_bootstrap_default(config, timings)) {
+        return false;
+    }
+    if (config.require_exact_resolution) {
+        return timings_match_requested_resolution(config, timings);
+    }
+    return true;
 }
 
 static bool is_uniform_packed_frame(const uint8_t* data, size_t size) {
@@ -357,6 +371,49 @@ static int push_edid(int subdev_fd, const CameraConfig& config) {
     return 0;
 }
 
+static int clear_edid_hotplug(int subdev_fd, const char* subdev_device) {
+    struct v4l2_edid edid;
+    uint8_t dummy = 0;
+
+    memset(&edid, 0, sizeof(edid));
+    edid.pad = 0;
+    edid.start_block = 0;
+    edid.blocks = 0;
+    edid.edid = &dummy;
+
+    if (xioctl(subdev_fd, VIDIOC_SUBDEV_S_EDID, &edid) < 0) {
+        fprintf(stderr, "Failed to clear HDMI EDID/HPD on %s: %s\n",
+                subdev_device, strerror(errno));
+        return -1;
+    }
+
+    return 0;
+}
+
+static int trigger_edid_hotplug_pulse(int subdev_fd,
+                                      const CameraConfig& config,
+                                      const char* subdev_device,
+                                      int attempt,
+                                      int total_attempts) {
+    static const int kHotplugLowMs = 500;
+
+    fprintf(stderr,
+            "Triggering HDMI EDID/HPD pulse on %s (attempt %d/%d)\n",
+            subdev_device,
+            attempt,
+            total_attempts);
+
+    if (clear_edid_hotplug(subdev_fd, subdev_device) < 0) {
+        fprintf(stderr,
+                "Continuing with EDID set on %s after HPD clear failure\n",
+                subdev_device);
+    } else {
+        usleep(static_cast<useconds_t>(kHotplugLowMs) * 1000);
+    }
+
+    return push_edid(subdev_fd, config);
+}
+
 static int query_and_set_timings(int subdev_fd, struct v4l2_dv_timings* timings) {
     memset(timings, 0, sizeof(*timings));
 
@@ -386,14 +443,14 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
     }
 
     struct v4l2_dv_timings timings;
-    const int trigger_attempts = config.force_trigger ? (config.trigger_retries + 1) : config.trigger_retries;
+    const int total_trigger_attempts = config.trigger_retries + 1;
 
     if (!config.force_trigger) {
         int ret = query_and_set_timings(subdev_fd, &timings);
         if (ret == 0) {
-            if (!timings_match_request(config, timings)) {
+            if (!timings_acceptable_after_trigger(config, timings)) {
                 fprintf(stderr,
-                        "HDMI timing mismatch on %s: detected %ux%u, expected %dx%d\n",
+                        "HDMI timing on %s needs EDID trigger: detected %ux%u, target %dx%d\n",
                         subdev_device,
                         timings.bt.width,
                         timings.bt.height,
@@ -412,8 +469,14 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
         }
     }
 
-    for (int attempt = 0; attempt <= trigger_attempts; ++attempt) {
-        if (push_edid(subdev_fd, config) < 0) {
+    for (int attempt = 0; attempt < total_trigger_attempts; ++attempt) {
+        const int attempt_number = attempt + 1;
+
+        if (trigger_edid_hotplug_pulse(subdev_fd,
+                                       config,
+                                       subdev_device,
+                                       attempt_number,
+                                       total_trigger_attempts) < 0) {
             close(subdev_fd);
             return false;
         }
@@ -423,7 +486,7 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
 
         int ret = query_and_set_timings(subdev_fd, &timings);
         if (ret == 0) {
-            if (!timings_match_request(config, timings)) {
+            if (!timings_acceptable_after_trigger(config, timings)) {
                 fprintf(stderr,
                         "HDMI timing mismatch on %s: detected %ux%u, expected %dx%d\n",
                         subdev_device,
@@ -437,6 +500,11 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
 
             *width = timings.bt.width;
             *height = timings.bt.height;
+            fprintf(stderr,
+                    "Synchronized HDMI timing on %s: %ux%u\n",
+                    subdev_device,
+                    *width,
+                    *height);
             close(subdev_fd);
             return true;
         }
@@ -444,10 +512,13 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
         if (ret == -2) {
             fprintf(stderr, "Failed to apply detected HDMI timings on %s: %s\n",
                     subdev_device, strerror(errno));
-        }
-
-        if (attempt == trigger_attempts) {
-            break;
+        } else {
+            fprintf(stderr,
+                    "HDMI timings not ready on %s after EDID trigger attempt %d/%d: %s\n",
+                    subdev_device,
+                    attempt_number,
+                    total_trigger_attempts,
+                    strerror(errno));
         }
     }
 

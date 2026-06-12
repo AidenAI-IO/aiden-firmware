@@ -27,6 +27,9 @@ struct Options {
                 ring_size(aiden::kDefaultFrameServiceRingSize),
                 fps(aiden::kDefaultFrameServiceFps) {
         aiden_demo::set_default_camera_config(&camera);
+        camera.force_trigger = true;
+        camera.trigger_retries = 40;
+        camera.trigger_delay_ms = 1500;
         device_name = camera.device_name;
         pixel_format = camera.pixel_format;
         subdev_device = camera.subdev_device;
@@ -54,7 +57,8 @@ void usage(const char* program) {
     fprintf(stderr,
             "Usage: %s [--socket PATH] [--device PATH] [--width N] [--height N] "
             "[--pixel-format FMT] [--subdev PATH] [--edid PATH] [--ring-size N] "
-            "[--fps N] [--no-hdmi-sync] [--require-exact-resolution]\n",
+            "[--fps N] [--no-hdmi-sync] [--force-trigger] "
+            "[--trigger-retries N] [--trigger-delay-ms N] [--require-exact-resolution]\n",
             program);
 }
 
@@ -106,6 +110,16 @@ bool parse_options(int argc, char** argv, Options* options) {
             if (!parse_double_arg(argv[++i], &options->fps) || options->fps < 0.0) return false;
         } else if (arg == "--no-hdmi-sync") {
             options->camera.enable_hdmi_sync = false;
+        } else if (arg == "--force-trigger") {
+            options->camera.force_trigger = true;
+        } else if (arg == "--no-force-trigger") {
+            options->camera.force_trigger = false;
+        } else if (arg == "--trigger-retries" && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], &options->camera.trigger_retries) ||
+                options->camera.trigger_retries < 0) return false;
+        } else if (arg == "--trigger-delay-ms" && i + 1 < argc) {
+            if (!parse_int_arg(argv[++i], &options->camera.trigger_delay_ms) ||
+                options->camera.trigger_delay_ms < 0) return false;
         } else if (arg == "--require-exact-resolution") {
             options->camera.require_exact_resolution = true;
         } else if (arg == "--allow-resolution-mismatch") {

@@ -42,6 +42,7 @@
 frame_service [--socket PATH] [--device PATH] [--width N] [--height N]
               [--pixel-format FMT] [--subdev PATH] [--edid PATH]
               [--ring-size N] [--fps N] [--no-hdmi-sync]
+              [--force-trigger] [--trigger-retries N] [--trigger-delay-ms N]
               [--require-exact-resolution]
 ```
 
@@ -56,6 +57,9 @@ frame_service [--socket PATH] [--device PATH] [--width N] [--height N]
 | `--ring-size N` | ring buffer 容量 |
 | `--fps N` | 采样 FPS；`0` 表示尽可能快 |
 | `--no-hdmi-sync` | 跳过 HDMI sync 辅助流程 |
+| `--force-trigger` | 启动时先做 EDID/HPD pulse，再查询 HDMI timing；init 默认开启 |
+| `--trigger-retries N` | EDID trigger 后额外重试次数；init 默认 `40`，用于等待 Android 分享屏幕确认后开始输出 |
+| `--trigger-delay-ms N` | 每次 EDID trigger 后等待时间；init 默认 `1500` |
 | `--require-exact-resolution` | 严格要求实际输入分辨率与 `--width/--height` 一致；默认关闭，便于 720p/竖屏等模式直接截图 |
 
 也可使用环境变量：

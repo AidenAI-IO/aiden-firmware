@@ -41,6 +41,13 @@ scp build/bin/agent root@<device-ip>:/oem/usr/bin/
 scp overlay/oem/usr/bin/aiden-env-run root@<device-ip>:/oem/usr/bin/
 ```
 
+如果本次改动涉及服务启动参数，也要同步对应 init/config。比如 HDMI frame service 的 EDID trigger / retry 参数变化时，需要额外复制；旧 `/etc/aiden_frame_service.conf` 会覆盖 init 脚本里的新默认值：
+
+```bash
+scp overlay/etc/init.d/S52frame_service root@<device-ip>:/etc/init.d/
+scp overlay/etc/aiden_frame_service.conf root@<device-ip>:/etc/
+```
+
 如果还需要设备端排障/调试工具，可选再复制：
 
 ```bash

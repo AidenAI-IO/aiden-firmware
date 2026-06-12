@@ -12,6 +12,9 @@ SOCKET_PATH=/run/frame_service/frame_service.sock
 FRAME_SERVICE_FPS=30
 FRAME_SERVICE_WIDTH=1920
 FRAME_SERVICE_HEIGHT=1080
+FRAME_SERVICE_FORCE_TRIGGER=1
+FRAME_SERVICE_TRIGGER_RETRIES=40
+FRAME_SERVICE_TRIGGER_DELAY_MS=1500
 FRAME_SERVICE_EDID=
 LOG_PATH=/var/log/frame_service/frame_service.log
 PID_FILE=/run/frame_service/frame_service.pid
@@ -111,6 +114,15 @@ start() {
             fi
             if [ -n "$FRAME_SERVICE_EDID" ]; then
                 set -- "$@" --edid "$FRAME_SERVICE_EDID"
+            fi
+            if [ "$FRAME_SERVICE_FORCE_TRIGGER" = "1" ]; then
+                set -- "$@" --force-trigger
+            fi
+            if [ -n "$FRAME_SERVICE_TRIGGER_RETRIES" ]; then
+                set -- "$@" --trigger-retries "$FRAME_SERVICE_TRIGGER_RETRIES"
+            fi
+            if [ -n "$FRAME_SERVICE_TRIGGER_DELAY_MS" ]; then
+                set -- "$@" --trigger-delay-ms "$FRAME_SERVICE_TRIGGER_DELAY_MS"
             fi
 
             echo "[frame_service] starting $FRAME_SERVICE_BIN $*" >> "$LOG_PATH"
