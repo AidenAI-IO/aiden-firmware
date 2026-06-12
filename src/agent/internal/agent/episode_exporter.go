@@ -596,6 +596,13 @@ func (e *EpisodeExporter) promptGenerationBody(episode TaskEpisode, traceID stri
 			"prompt_index": index + 1,
 		},
 	}
+	if len(call.Metadata) > 0 {
+		if metadata, ok := body["metadata"].(map[string]interface{}); ok {
+			for key, value := range call.Metadata {
+				metadata[key] = value
+			}
+		}
+	}
 	if parentObservationID != "" {
 		body["parentObservationId"] = parentObservationID
 	}

@@ -364,6 +364,25 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 				"temperature": 0.2,
 				"max_tokens":  128,
 			},
+			Metadata: map[string]interface{}{
+				"tools_count": 1,
+				"tool_schemas": []map[string]interface{}{
+					{
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":        "echo",
+							"description": "Echo text.",
+							"parameters": map[string]interface{}{
+								"type": "object",
+								"properties": map[string]interface{}{
+									"value": map[string]interface{}{"type": "string"},
+								},
+								"required": []string{"value"},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 
@@ -419,6 +438,38 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	modelParameters, ok := generations[0]["modelParameters"].(map[string]interface{})
 	if !ok || modelParameters["temperature"] != 0.2 || modelParameters["max_tokens"] != float64(128) {
 		t.Fatalf("modelParameters = %#v, want temperature/max_tokens", generations[0]["modelParameters"])
+	}
+	if _, ok := modelParameters["tools_count"]; ok {
+		t.Fatalf("modelParameters = %#v, did not expect tools_count", modelParameters)
+	}
+	if _, ok := modelParameters["tools"]; ok {
+		t.Fatalf("modelParameters = %#v, did not expect tools", modelParameters)
+	}
+	metadata, ok := generations[0]["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("generation metadata = %#v, want map", generations[0]["metadata"])
+	}
+	if metadata["role"] != string(RolePlanner) || metadata["prompt_index"] != float64(1) {
+		t.Fatalf("generation metadata = %#v, want role/prompt_index", metadata)
+	}
+	if metadata["tools_count"] != float64(1) {
+		t.Fatalf("generation metadata = %#v, want tools_count=1", metadata)
+	}
+	tools, ok := metadata["tool_schemas"].([]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("generation metadata.tool_schemas = %#v, want one tool definition", metadata["tool_schemas"])
+	}
+	tool, ok := tools[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tool definition = %#v", tools[0])
+	}
+	function, ok := tool["function"].(map[string]interface{})
+	if !ok || function["name"] != "echo" {
+		t.Fatalf("tool function = %#v, want echo", tool["function"])
+	}
+	parameters, ok := function["parameters"].(map[string]interface{})
+	if !ok || parameters["type"] != "object" {
+		t.Fatalf("tool parameters = %#v, want object schema", function["parameters"])
 	}
 }
 
@@ -694,11 +745,11 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 		},
 		Events: []TaskEpisodeEvent{
 			{
-				EventID:  "evt_tool",
-				Ts:       start.Add(time.Second).Format(time.RFC3339Nano),
-				Type:     "tool_call",
-				Role:     "planner",
-				ToolName: "echo",
+				EventID:   "evt_tool",
+				Ts:        start.Add(time.Second).Format(time.RFC3339Nano),
+				Type:      "tool_call",
+				Role:      "planner",
+				ToolName:  "echo",
 				ToolInput: `{"__arg1":"ok"}`,
 			},
 			{
@@ -778,12 +829,12 @@ func TestBuildLangfuseBatchMapsLoopPhaseTransitions(t *testing.T) {
 				Reason:  "enter_plan_mode",
 			},
 			{
-				EventID:   "evt_commit_phase",
-				Ts:        start.Add(2 * time.Second).Format(time.RFC3339Nano),
-				Type:      "loop_phase",
-				Role:      "planner",
-				Content:   "execution",
-				Reason:    "commit_plan",
+				EventID: "evt_commit_phase",
+				Ts:      start.Add(2 * time.Second).Format(time.RFC3339Nano),
+				Type:    "loop_phase",
+				Role:    "planner",
+				Content: "execution",
+				Reason:  "commit_plan",
 			},
 			{
 				EventID:   "evt_plan",
