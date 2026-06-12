@@ -60,7 +60,7 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		t.Fatalf("planner prompt should prefer direct executor tools:\n%s", profiles.Planner.SystemPrompt)
 	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "plan quick_action first") ||
-		!strings.Contains(profiles.Planner.SystemPrompt, "action=spotlight_search platform=android") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "quick_action action=back platform=android") ||
 		!strings.Contains(profiles.Executor.SystemPrompt, "try quick_action first") ||
 		!strings.Contains(profiles.Executor.SystemPrompt, "fall back to keyboard_tap") {
 		t.Fatalf("role prompts should prefer quick_action before low-level fallback: planner=%q executor=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt)

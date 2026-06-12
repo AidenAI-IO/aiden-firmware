@@ -31,6 +31,50 @@ func TestResolvePointerPositionNormalized(t *testing.T) {
 	}
 }
 
+func TestHIDToolsExposeStructuredSchemas(t *testing.T) {
+	for name, tool := range map[string]structuredInputTool{
+		"keyboard_tap":  &KeyboardTapTool{},
+		"keyboard_text": &KeyboardTextTool{},
+		"mouse_click":   &MouseClickTool{},
+		"touch_gesture": &TouchGestureTool{},
+	} {
+		schema := tool.ArgsSchema()
+		props, ok := schema["properties"].(map[string]any)
+		if !ok || len(props) == 0 {
+			t.Fatalf("%s missing schema properties: %#v", name, schema)
+		}
+	}
+}
+
+func TestKeyboardTapSchemaRequiresKeysArray(t *testing.T) {
+	schema := (&KeyboardTapTool{}).ArgsSchema()
+	props := schema["properties"].(map[string]any)
+	keys := props["keys"].(map[string]any)
+	if keys["type"] != "array" {
+		t.Fatalf("keys schema type = %#v, want array", keys["type"])
+	}
+	items := keys["items"].(map[string]any)
+	if items["type"] != "string" {
+		t.Fatalf("keys items type = %#v, want string", items["type"])
+	}
+}
+
+func TestTouchGestureSchemaRequiresNamedPointCoordinates(t *testing.T) {
+	schema := (&TouchGestureTool{}).ArgsSchema()
+	props := schema["properties"].(map[string]any)
+	point := props["point"].(map[string]any)
+	if point["type"] != "object" {
+		t.Fatalf("point type = %#v, want object", point["type"])
+	}
+	pointProps := point["properties"].(map[string]any)
+	if _, ok := pointProps["x"]; !ok {
+		t.Fatalf("point schema missing x: %#v", pointProps)
+	}
+	if _, ok := pointProps["y"]; !ok {
+		t.Fatalf("point schema missing y: %#v", pointProps)
+	}
+}
+
 func TestResolvePointerPositionPixelUsesScreenDimensions(t *testing.T) {
 	screen := &screenState{}
 	screen.Update(1000, 2000)
