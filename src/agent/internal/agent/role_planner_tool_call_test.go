@@ -19,7 +19,7 @@ func TestParsePlannerDecisionExtractsDescriptionFromToolCall(t *testing.T) {
 					{
 						FunctionCall: &llms.FunctionCall{
 							Name:      "touch_gesture",
-							Arguments: `{"__arg1": "{\"type\": \"tap\", \"point\": {\"x\": 0.09, \"y\": 0.05}}", "description": "点击左上角返回箭头，回到上一级设置菜单"}`,
+							Arguments: `{"__arg1": "{\"type\": \"tap\", \"point\": {\"x\": 90, \"y\": 50}}", "description": "点击左上角返回箭头，回到上一级设置菜单"}`,
 						},
 					},
 				},
