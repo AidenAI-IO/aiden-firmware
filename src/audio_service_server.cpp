@@ -34,10 +34,15 @@ static void send_response(int fd, AidenServiceStatus status,
 // -----------------------------------------------------------------------
 
 AudioServiceServer::AudioServiceServer(const char* socket_path)
+    : AudioServiceServer(socket_path, nullptr) {}
+
+AudioServiceServer::AudioServiceServer(const char* socket_path,
+                                       const char* volume_state_path)
     : uds_server_(new UdsServer(socket_path ? socket_path : "",
                                 [this](const UdsMessage& req, int fd) {
                                     handle_request(req, fd);
-                                })) {}
+                                })),
+      manager_(volume_state_path) {}
 
 AudioServiceServer::~AudioServiceServer() {
     stop();

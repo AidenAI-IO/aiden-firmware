@@ -26,6 +26,7 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/frame_service_server.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_service_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_service_client.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio_volume_state.cpp
     ${CMAKE_SOURCE_DIR}/src/cJSON/cJSON.c
 )
 
@@ -111,6 +112,7 @@ add_executable(aiden_tests
     audio_service_protocol_test.cpp
     audio_service_client_test.cpp
     audio_playback_session_test.cpp
+    audio_volume_state_test.cpp
     ${CMAKE_SOURCE_DIR}/src/system_env_parser.cpp
     ${AIDEN_IMAGE_TEST_SOURCES}
     ${AIDEN_TEST_SOURCES}
