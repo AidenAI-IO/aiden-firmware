@@ -500,6 +500,16 @@ func enterPlanModeToolCall() *llms.ContentResponse {
 	return toolCallResponse("enter_1", toolEnterPlanMode, `{"__arg1":"{}","description":"enter plan mode"}`)
 }
 
+func finishStepToolCall(summary string) *llms.ContentResponse {
+	payload, _ := json.Marshal(map[string]string{"summary": summary})
+	return toolCallResponse("finish_1", toolFinishStep, fmt.Sprintf(`{"__arg1":%q,"description":"finish step"}`, string(payload)))
+}
+
+func abortStepToolCall(reason string) *llms.ContentResponse {
+	payload, _ := json.Marshal(map[string]string{"reason": reason})
+	return toolCallResponse("abort_1", toolAbortStep, fmt.Sprintf(`{"__arg1":%q,"description":"abort step"}`, string(payload)))
+}
+
 func commitPlanToolCall(plan ...string) *llms.ContentResponse {
 	if len(plan) == 0 {
 		plan = []string{"step one"}
@@ -790,8 +800,10 @@ func TestRuntimeAllowsNearRepeatedMouseClick(t *testing.T) {
 		responses: roleCommittedExecutionResponses(
 			[]string{"click first point", "click nearby point"},
 			toolCallResponse("call_1", "mouse_click", `{"x":"500","y":"80","coord_space":"normalized"}`),
+			finishStepToolCall("clicked first point"),
 			verifierStepContinueResponse("need a second click"),
 			toolCallResponse("call_2", "mouse_click", `{"x":500,"y":120,"coord_space":"normalized"}`),
+			finishStepToolCall("clicked nearby point"),
 			verifierFinishResponse("我会换一个方式继续。"),
 		),
 	}
@@ -855,8 +867,10 @@ func TestRuntimeAllowsRepeatedKeyboardText(t *testing.T) {
 		responses: roleCommittedExecutionResponses(
 			[]string{"type first time", "type second time"},
 			toolCallResponse("call_1", "keyboard_text", `{"text":"yuanshen"}`),
+			finishStepToolCall("typed first time"),
 			verifierStepContinueResponse("need a repeated input"),
 			toolCallResponse("call_2", "keyboard_text", `{"text":"yuanshen"}`),
+			finishStepToolCall("typed second time"),
 			verifierFinishResponse("我不会重复输入。"),
 		),
 	}

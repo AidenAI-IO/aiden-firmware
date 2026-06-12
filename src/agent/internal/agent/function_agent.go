@@ -192,7 +192,7 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 				Tool:      functionName,
 				ToolInput: invocation.Input,
 				Log:       formatToolActionLog(functionName, toolInputStr, invocation.Description, contentMsg),
-				ToolID:    toolCall.ID,
+				ToolID:    ensureToolCallID(toolCall.ID, len(actions)),
 			})
 		}
 		return actions, nil, nil
@@ -213,6 +213,7 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 			Tool:      functionName,
 			ToolInput: invocation.Input,
 			Log:       formatToolActionLog(functionName, toolInputStr, invocation.Description, contentMsg),
+			ToolID:    ensureToolCallID("", 0),
 		}}, nil, nil
 	}
 
@@ -297,15 +298,28 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 	visualObservationIndex := 0
 
 	for i := 0; i < len(steps); {
+		if strings.TrimSpace(steps[i].Action.Tool) == "" {
+			if observation := strings.TrimSpace(steps[i].Observation); observation != "" {
+				messages = append(messages, llms.MessageContent{
+					Role:  llms.ChatMessageTypeAI,
+					Parts: []llms.ContentPart{llms.TextPart(observation)},
+				})
+			}
+			i++
+			continue
+		}
+
 		groupEnd := i + 1
-		for groupEnd < len(steps) && steps[groupEnd].Action.Log == steps[i].Action.Log {
+		for groupEnd < len(steps) &&
+			strings.TrimSpace(steps[groupEnd].Action.Tool) != "" &&
+			steps[groupEnd].Action.Log == steps[i].Action.Log {
 			groupEnd++
 		}
 
 		toolCallParts := make([]llms.ContentPart, 0, groupEnd-i)
 		for j := i; j < groupEnd; j++ {
 			toolCallParts = append(toolCallParts, llms.ToolCall{
-				ID:   steps[j].Action.ToolID,
+				ID:   scratchpadToolCallID(steps[j].Action, i, j),
 				Type: "function",
 				FunctionCall: &llms.FunctionCall{
 					Name: steps[j].Action.Tool,
@@ -328,23 +342,14 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 				includeVisual = visualObservationIndex > prunedVisualObservationCount
 			}
 			toolContent, followups := a.observationMessagesForStep(steps[j], includeVisual)
-			if steps[j].Action.ToolID != "" {
-				messages = append(messages, llms.MessageContent{
-					Role: llms.ChatMessageTypeTool,
-					Parts: []llms.ContentPart{llms.ToolCallResponse{
-						ToolCallID: steps[j].Action.ToolID,
-						Content:    toolContent,
-					}},
-				})
-			} else {
-				messages = append(messages, llms.MessageContent{
-					Role: llms.ChatMessageTypeFunction,
-					Parts: []llms.ContentPart{llms.ToolCallResponse{
-						Name:    steps[j].Action.Tool,
-						Content: toolContent,
-					}},
-				})
-			}
+			toolCallID := scratchpadToolCallID(steps[j].Action, i, j)
+			messages = append(messages, llms.MessageContent{
+				Role: llms.ChatMessageTypeTool,
+				Parts: []llms.ContentPart{llms.ToolCallResponse{
+					ToolCallID: toolCallID,
+					Content:    toolContent,
+				}},
+			})
 			messages = append(messages, followups...)
 		}
 
@@ -352,6 +357,20 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 	}
 
 	return messages
+}
+
+func ensureToolCallID(id string, index int) string {
+	if id = strings.TrimSpace(id); id != "" {
+		return id
+	}
+	return fmt.Sprintf("call_%d", index+1)
+}
+
+func scratchpadToolCallID(action schema.AgentAction, groupStart, index int) string {
+	if id := strings.TrimSpace(action.ToolID); id != "" {
+		return id
+	}
+	return fmt.Sprintf("scratchpad_%d_%d", groupStart, index)
 }
 
 func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includeVisual bool) (string, []llms.MessageContent) {

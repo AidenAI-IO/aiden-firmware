@@ -216,6 +216,50 @@ func TestFunctionAgentScratchpadReplaysFallbackToolDescription(t *testing.T) {
 	}
 }
 
+func TestFunctionAgentScratchpadSkipsObservationOnlySteps(t *testing.T) {
+	agent := &FunctionAgent{}
+	messages := agent.constructFunctionScratchPad([]schema.AgentStep{
+		{
+			Action:      schema.AgentAction{Tool: "echo", ToolInput: "hello", ToolID: "call_1"},
+			Observation: "ok",
+		},
+		{
+			Observation: "Call finish_step when the step is ready for verification or abort_step if blocked.",
+		},
+	})
+
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 scratchpad messages, got %d: %#v", len(messages), messages)
+	}
+	if text, ok := messages[2].Parts[0].(llms.TextContent); !ok || !strings.Contains(text.Text, "finish_step") {
+		t.Fatalf("expected invalid-meta feedback as text, got %#v", messages[2].Parts[0])
+	}
+	toolCall, ok := messages[0].Parts[0].(llms.ToolCall)
+	if !ok || toolCall.FunctionCall.Name != "echo" || toolCall.ID != "call_1" {
+		t.Fatalf("expected valid tool replay, got %#v", messages[0].Parts[0])
+	}
+}
+
+func TestFunctionAgentScratchpadSynthesizesMissingToolCallID(t *testing.T) {
+	agent := &FunctionAgent{}
+	messages := agent.constructFunctionScratchPad([]schema.AgentStep{{
+		Action:      schema.AgentAction{Tool: "echo", ToolInput: "hello"},
+		Observation: "ok",
+	}})
+
+	toolCall, ok := messages[0].Parts[0].(llms.ToolCall)
+	if !ok {
+		t.Fatalf("expected tool call part, got %T", messages[0].Parts[0])
+	}
+	if toolCall.ID != "scratchpad_0_0" {
+		t.Fatalf("tool call id = %q, want synthetic id", toolCall.ID)
+	}
+	toolResponse, ok := messages[1].Parts[0].(llms.ToolCallResponse)
+	if !ok || toolResponse.ToolCallID != "scratchpad_0_0" {
+		t.Fatalf("tool response = %#v", messages[1].Parts[0])
+	}
+}
+
 func TestFunctionAgentScratchpadKeepsScreenshotsUntilBatchThreshold(t *testing.T) {
 	agent := &FunctionAgent{
 		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},

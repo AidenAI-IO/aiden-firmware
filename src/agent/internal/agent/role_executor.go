@@ -58,20 +58,25 @@ type roleExecutionResult struct {
 }
 
 type roleLoopState struct {
-	Phase              loopPhase
-	PlanStepIndex      int
-	PlanCommitted      bool
-	PlanExhausted      bool
-	DraftPlan          plannerDecision
-	Objective          string
-	CompletionCriteria []string
-	Plan               []string
-	NextStep           string
-	PlannerReason      string
-	World              worldState
-	ToolSteps          []schema.AgentStep
-	ExecutionResults   []roleExecutionResult
-	VerifierResults    []verifierDecision
+	Phase                loopPhase
+	PlanStepIndex        int
+	PlanCommitted        bool
+	PlanExhausted        bool
+	DraftPlan            plannerDecision
+	Objective            string
+	CompletionCriteria   []string
+	Plan                 []string
+	NextStep             string
+	PlannerReason        string
+	World                worldState
+	ToolSteps            []schema.AgentStep
+	StepToolSteps        []schema.AgentStep
+	StepExecutionResults []roleExecutionResult
+	StepExecutionActive  bool
+	ExecutorStepOutcome  string
+	ExecutorStepSummary  string
+	ExecutionResults     []roleExecutionResult
+	VerifierResults      []verifierDecision
 }
 
 type worldState struct {
@@ -198,49 +203,67 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				}
 			}
 		case phaseExecution:
-			state.syncNextStepFromPlanIndex()
-			execution, err := e.callExecutor(ctx, inputs, state, toolSpecs, options...)
+			if !state.StepExecutionActive {
+				state.syncNextStepFromPlanIndex()
+				state.beginStepExecution()
+			}
+			turn, err := e.callExecutorTurn(ctx, inputs, &state, toolSpecs, options...)
 			if err != nil {
 				return nil, err
 			}
-			state.ExecutionResults = append(state.ExecutionResults, execution)
-			if e.Recorder != nil {
-				e.Recorder.RecordExecution(execution)
-			}
-			if execution.Step != nil {
-				state.ToolSteps = append(state.ToolSteps, *execution.Step)
-				state.World.UpdateFromStep(*execution.Step, len(state.ToolSteps))
-			}
+			switch turn.Kind {
+			case executorTurnTool, executorTurnInvalidMeta:
+				if turn.Step != nil {
+					state.ToolSteps = append(state.ToolSteps, *turn.Step)
+					state.StepToolSteps = append(state.StepToolSteps, *turn.Step)
+					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps))
+				}
+				if turn.Kind == executorTurnTool {
+					execution := roleExecutionResult{Action: turn.Action, Step: turn.Step}
+					state.StepExecutionResults = append(state.StepExecutionResults, execution)
+					state.ExecutionResults = append(state.ExecutionResults, execution)
+					if e.Recorder != nil {
+						e.Recorder.RecordExecution(execution)
+					}
+				}
+			case executorTurnFinishStep, executorTurnAbortStep:
+				if turn.Step != nil {
+					state.ToolSteps = append(state.ToolSteps, *turn.Step)
+					state.StepToolSteps = append(state.StepToolSteps, *turn.Step)
+				}
 
-			verification, err := e.callVerifier(ctx, inputs, state, options...)
-			if err != nil {
-				return nil, err
-			}
-			state.World.UpdateObservedState(verification.ObservedState, RoleVerifier)
-			state.VerifierResults = append(state.VerifierResults, verification)
-			if e.Recorder != nil {
-				e.Recorder.RecordVerifierDecision(verification)
-			}
-			if verification.CanFinish {
-				finalAnswer := strings.TrimSpace(verification.FinalAnswer)
-				if finalAnswer == "" {
-					finalAnswer = strings.TrimSpace(execution.CandidateAnswer)
+				verification, err := e.callVerifier(ctx, inputs, state, options...)
+				if err != nil {
+					return nil, err
 				}
-				return e.finishRun(ctx, finalAnswer, verification.Reason)
-			}
-			if verification.NeedsReplan {
-				state.Phase = phasePlan
-				state.PlanExhausted = false
+				state.World.UpdateObservedState(verification.ObservedState, RoleVerifier)
+				state.VerifierResults = append(state.VerifierResults, verification)
 				if e.Recorder != nil {
-					e.Recorder.RecordLoopPhase(phasePlan, verification.Reason)
+					e.Recorder.RecordVerifierDecision(verification)
 				}
-				continue
-			}
-			if state.advancePlanStepOrExhaust() {
-				if e.Recorder != nil {
-					e.Recorder.RecordLoopPhase(phasePlan, "plan_exhausted")
+				state.clearStepExecution()
+
+				if verification.CanFinish {
+					finalAnswer := strings.TrimSpace(verification.FinalAnswer)
+					if finalAnswer == "" {
+						finalAnswer = strings.TrimSpace(state.ExecutorStepSummary)
+					}
+					return e.finishRun(ctx, finalAnswer, verification.Reason)
 				}
-				continue
+				if verification.NeedsReplan {
+					state.Phase = phasePlan
+					state.PlanExhausted = false
+					if e.Recorder != nil {
+						e.Recorder.RecordLoopPhase(phasePlan, verification.Reason)
+					}
+					continue
+				}
+				if state.advancePlanStepOrExhaust() {
+					if e.Recorder != nil {
+						e.Recorder.RecordLoopPhase(phasePlan, "plan_exhausted")
+					}
+					continue
+				}
 			}
 		}
 	}
@@ -340,36 +363,38 @@ func (e *roleCollaborativeExecutor) finishRun(ctx context.Context, finalAnswer, 
 	return map[string]any{e.OutputKey: finalAnswer}, nil
 }
 
-func (e *roleCollaborativeExecutor) callExecutor(
+func (e *roleCollaborativeExecutor) callExecutorTurn(
 	ctx context.Context,
 	inputs map[string]string,
-	state roleLoopState,
+	state *roleLoopState,
 	toolSpecs *ToolSpecs,
 	options ...chains.ChainCallOption,
-) (roleExecutionResult, error) {
-	messages := e.roleMessages(e.Profiles.Executor, inputs, state, "Executor task: execute only current next_step. Use at most one tool call.")
+) (executorTurnResult, error) {
+	messages := e.roleMessages(e.Profiles.Executor, inputs, *state, "Executor task: work on the current next_step across multiple tool calls if needed, then call finish_step when the step is ready for verification or abort_step if blocked.")
+	executorTools := appendExecutorMetaTools(e.Tools)
 	parser := &FunctionAgent{
-		Tools:     e.Tools,
+		Tools:     executorTools,
 		OutputKey: e.OutputKey,
 	}
 	callOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
 	res, err := e.generateRoleContent(ctx, RoleExecutor, messages, callOptions...)
 	if err != nil {
-		return roleExecutionResult{}, err
+		return executorTurnResult{}, err
 	}
 	e.emitRoleOutput(ctx, RoleExecutor, roleResponseDebugText(res))
 
 	actions, finish, err := parser.ParseOutput(res)
 	if errors.Is(err, agents.ErrUnableToParseOutput) {
-		return roleExecutionResult{
+		return executorTurnResult{
+			Kind: executorTurnTool,
 			Step: &schema.AgentStep{Observation: err.Error()},
 		}, nil
 	}
 	if err != nil {
-		return roleExecutionResult{}, err
+		return executorTurnResult{}, err
 	}
 	if len(actions) == 0 && finish == nil {
-		return roleExecutionResult{}, agents.ErrAgentNoReturn
+		return executorTurnResult{}, agents.ErrAgentNoReturn
 	}
 	if len(actions) == 0 {
 		answer := ""
@@ -378,21 +403,41 @@ func (e *roleCollaborativeExecutor) callExecutor(
 				answer = value
 			}
 		}
-		return roleExecutionResult{CandidateAnswer: answer}, nil
+		observation := "Call finish_step when the step is ready for verification or abort_step if blocked."
+		if answer != "" {
+			observation = fmt.Sprintf("%s Plain text output alone does not enter verification: %s", observation, answer)
+		}
+		return executorTurnResult{
+			Kind: executorTurnInvalidMeta,
+			Step: &schema.AgentStep{Observation: observation},
+		}, nil
 	}
 
 	action := actions[0]
-	execution := executeToolCall(ctx, ToolCallExecution{
+	if isExecutorMetaTool(action.Tool) {
+		if e.CallbacksHandler != nil {
+			e.CallbacksHandler.HandleAgentAction(ctx, action)
+		}
+		turn := e.handleExecutorMetaTool(state, action)
+		if turn.InvalidMetaStep != nil {
+			turn.Step = turn.InvalidMetaStep
+		}
+		return turn, nil
+	}
+
+	toolExecution := executeToolCall(ctx, ToolCallExecution{
 		Specs:    toolSpecs,
 		Action:   action,
 		Callback: e.CallbacksHandler,
 	})
-	if execution.Error != nil {
-		return roleExecutionResult{}, execution.Error
+	if toolExecution.Error != nil {
+		return executorTurnResult{}, toolExecution.Error
 	}
-	return roleExecutionResult{
-		Action: &execution.Step.Action,
-		Step:   &execution.Step,
+	actionCopy := toolExecution.Step.Action
+	return executorTurnResult{
+		Kind:   executorTurnTool,
+		Action: &actionCopy,
+		Step:   &toolExecution.Step,
 	}, nil
 }
 
@@ -423,7 +468,10 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		Parts: []llms.ContentPart{llms.TextPart(profile.SystemPrompt)},
 	}}
 
-	if roleSeesToolScratchpad(profile.Name) && len(state.ToolSteps) > 0 {
+	if profile.Name == RoleExecutor && len(state.StepToolSteps) > 0 {
+		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(e.Tools), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.StepToolSteps)
+		messages = append(messages, scratchpad...)
+	} else if roleSeesToolScratchpad(profile.Name) && len(state.ToolSteps) > 0 {
 		scratchpad := (&FunctionAgent{Tools: e.Tools, ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.ToolSteps)
 		messages = append(messages, scratchpad...)
 	}
@@ -479,11 +527,17 @@ func buildExecutorStatePrompt(state roleLoopState, task string) string {
 	} else {
 		builder.WriteString("(none)")
 	}
-	if result, ok := state.latestExecutionResult(); ok {
-		builder.WriteString("\n\nLocal execution context (latest prior result only):\n")
-		writeExecutionResultLine(&builder, 1, result)
+	if len(state.StepExecutionResults) > 0 {
+		builder.WriteString("\n\nCurrent step progress:\n")
+		for i, result := range state.StepExecutionResults {
+			writeExecutionResultLine(&builder, i+1, result)
+		}
 	}
-	builder.WriteString("\n\nThe full plan, original request, verifier feedback, and broader history are intentionally not available to executor. Execute only the approved next_step.")
+	builder.WriteString("\n\nLoop mode:\n")
+	builder.WriteString("- finish_step enters verifier review when this step is ready.\n")
+	builder.WriteString("- abort_step enters verifier review when this step is blocked or failed.\n")
+	builder.WriteString("- do not return a plain-text final answer; use finish_step or abort_step.\n")
+	builder.WriteString("\nThe full plan, original request, verifier feedback, and broader history are intentionally not available to executor.")
 	return strings.TrimSpace(builder.String())
 }
 
@@ -492,7 +546,7 @@ func buildVerifierStatePrompt(_ map[string]string, state roleLoopState, task str
 	builder.WriteString(task)
 	writeWorldState(&builder, state.World)
 	writeCurrentStepForVerifier(&builder, state)
-	writeLatestExecutorEvidence(&builder, state)
+	writeStepExecutorEvidence(&builder, state)
 	return strings.TrimSpace(builder.String())
 }
 
@@ -516,12 +570,24 @@ func writeCurrentStepForVerifier(builder *strings.Builder, state roleLoopState) 
 	}
 }
 
-func writeLatestExecutorEvidence(builder *strings.Builder, state roleLoopState) {
-	builder.WriteString("\n\nLatest executor result for this step:\n")
-	if result, ok := state.latestExecutionResult(); ok {
-		writeExecutionResultLine(builder, 1, result)
-	} else {
-		builder.WriteString("(none)")
+func writeStepExecutorEvidence(builder *strings.Builder, state roleLoopState) {
+	builder.WriteString("\n\nExecutor activity for this step:\n")
+	if outcome := strings.TrimSpace(state.ExecutorStepOutcome); outcome != "" {
+		builder.WriteString("- executor_outcome: ")
+		builder.WriteString(outcome)
+		builder.WriteByte('\n')
+	}
+	if summary := strings.TrimSpace(state.ExecutorStepSummary); summary != "" {
+		builder.WriteString("- executor_summary: ")
+		builder.WriteString(summary)
+		builder.WriteByte('\n')
+	}
+	if len(state.StepExecutionResults) == 0 {
+		builder.WriteString("(no tool calls in this step)\n")
+		return
+	}
+	for i, result := range state.StepExecutionResults {
+		writeExecutionResultLine(builder, i+1, result)
 	}
 }
 
@@ -852,6 +918,9 @@ func (s worldScreenshot) MIMEType() string {
 }
 
 func (s roleLoopState) lastCandidateAnswer() string {
+	if summary := strings.TrimSpace(s.ExecutorStepSummary); summary != "" {
+		return summary
+	}
 	for i := len(s.ExecutionResults) - 1; i >= 0; i-- {
 		if answer := strings.TrimSpace(s.ExecutionResults[i].CandidateAnswer); answer != "" {
 			return answer

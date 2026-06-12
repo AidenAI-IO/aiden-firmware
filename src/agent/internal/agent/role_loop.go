@@ -35,6 +35,38 @@ type plannerTurnResult struct {
 	InvalidMetaStep *schema.AgentStep
 }
 
+type executorTurnKind int
+
+const (
+	executorTurnTool executorTurnKind = iota
+	executorTurnFinishStep
+	executorTurnAbortStep
+	executorTurnInvalidMeta
+)
+
+type executorTurnResult struct {
+	Kind            executorTurnKind
+	Action          *schema.AgentAction
+	Step            *schema.AgentStep
+	InvalidMetaStep *schema.AgentStep
+}
+
+func (s *roleLoopState) beginStepExecution() {
+	s.StepToolSteps = nil
+	s.StepExecutionResults = nil
+	s.ExecutorStepOutcome = ""
+	s.ExecutorStepSummary = ""
+	s.StepExecutionActive = true
+}
+
+func (s *roleLoopState) clearStepExecution() {
+	s.StepToolSteps = nil
+	s.StepExecutionResults = nil
+	s.ExecutorStepOutcome = ""
+	s.ExecutorStepSummary = ""
+	s.StepExecutionActive = false
+}
+
 func (s *roleLoopState) syncNextStepFromPlanIndex() {
 	if len(s.Plan) == 0 {
 		s.NextStep = ""

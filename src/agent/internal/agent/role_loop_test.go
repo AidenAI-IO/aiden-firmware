@@ -164,3 +164,79 @@ func TestAdvancePlanStepOrExhaust(t *testing.T) {
 		t.Fatalf("state = %#v", state)
 	}
 }
+
+func TestFinishStepEntersVerifierReview(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+	)
+	state := &roleLoopState{
+		Phase:               phaseExecution,
+		StepExecutionActive: true,
+		NextStep:            "use echo",
+	}
+	turn := executor.handleExecutorMetaTool(state, schema.AgentAction{
+		Tool:      toolFinishStep,
+		ToolInput: `{"summary":"echo ok"}`,
+	})
+	if turn.Kind != executorTurnFinishStep {
+		t.Fatalf("turn kind = %v", turn.Kind)
+	}
+	if state.ExecutorStepOutcome != "finished" || state.ExecutorStepSummary != "echo ok" {
+		t.Fatalf("state = %#v", state)
+	}
+}
+
+func TestAbortStepEntersVerifierReview(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+	)
+	state := &roleLoopState{
+		Phase:               phaseExecution,
+		StepExecutionActive: true,
+		NextStep:            "blocked step",
+	}
+	turn := executor.handleExecutorMetaTool(state, schema.AgentAction{
+		Tool:      toolAbortStep,
+		ToolInput: `{"reason":"permission denied"}`,
+	})
+	if turn.Kind != executorTurnAbortStep {
+		t.Fatalf("turn kind = %v", turn.Kind)
+	}
+	if state.ExecutorStepOutcome != "aborted" || state.ExecutorStepSummary != "permission denied" {
+		t.Fatalf("state = %#v", state)
+	}
+}
+
+func TestBeginStepExecutionClearsStepScratchpad(t *testing.T) {
+	state := roleLoopState{
+		StepToolSteps: []schema.AgentStep{{Observation: "old"}},
+		StepExecutionResults: []roleExecutionResult{{
+			CandidateAnswer: "old",
+		}},
+		ExecutorStepOutcome: "finished",
+		ExecutorStepSummary: "old",
+	}
+	state.beginStepExecution()
+	if len(state.StepToolSteps) != 0 || len(state.StepExecutionResults) != 0 {
+		t.Fatalf("step scratchpad not cleared: %#v", state)
+	}
+	if state.ExecutorStepOutcome != "" || state.ExecutorStepSummary != "" || !state.StepExecutionActive {
+		t.Fatalf("step execution not reset: %#v", state)
+	}
+}

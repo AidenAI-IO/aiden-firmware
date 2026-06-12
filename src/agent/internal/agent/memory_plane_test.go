@@ -183,6 +183,7 @@ func TestRuntimeRunWritesTaskEpisodeTrace(t *testing.T) {
 		responses: roleCommittedExecutionResponses(
 			[]string{"echo ok"},
 			toolCallResponse("call_1", "echo", `{"__arg1":"ok"}`),
+			finishStepToolCall("echo ok"),
 			verifierFinishResponse("done"),
 		),
 	}

@@ -191,8 +191,9 @@ func TestRoleCollaborativeExecutorRequiresVerifierToFinish(t *testing.T) {
 		responses: roleCommittedExecutionResponses(
 			[]string{"draft answer", "produce final candidate"},
 			contentResponse("premature candidate"),
+			finishStepToolCall("premature candidate"),
 			verifierStepContinueResponse("candidate needs another pass"),
-			contentResponse("second candidate"),
+			finishStepToolCall("second candidate"),
 			verifierFinishResponse("verified final"),
 		),
 	}
@@ -218,8 +219,9 @@ func TestRoleCollaborativeExecutorIgnoresExecutorPlanMutation(t *testing.T) {
 		responses: roleCommittedExecutionResponses(
 			[]string{"first planner step", "second planner step"},
 			contentResponse(`{"plan":["executor changed plan"],"next_step":"bad"}`),
+			finishStepToolCall("candidate"),
 			verifierStepContinueResponse("executor cannot change the plan"),
-			contentResponse("candidate"),
+			finishStepToolCall("candidate"),
 			verifierFinishResponse("done"),
 		),
 	}
@@ -234,7 +236,7 @@ func TestRoleCollaborativeExecutorIgnoresExecutorPlanMutation(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(model.messages) < 5 {
+	if len(model.messages) < 6 {
 		t.Fatalf("expected committed execution flow, got %d model calls", len(model.messages))
 	}
 	executorPrompt := messageText(model.messages[2])
@@ -244,7 +246,7 @@ func TestRoleCollaborativeExecutorIgnoresExecutorPlanMutation(t *testing.T) {
 	if strings.Contains(executorPrompt, "Current plan:\n") {
 		t.Fatalf("executor should not receive the full plan:\n%s", executorPrompt)
 	}
-	secondExecutorPrompt := messageText(model.messages[4])
+	secondExecutorPrompt := messageText(model.messages[5])
 	if !strings.Contains(secondExecutorPrompt, "Planner-approved next_step:\nsecond planner step") {
 		t.Fatalf("second executor did not receive the next committed step:\n%s", secondExecutorPrompt)
 	}
@@ -258,6 +260,7 @@ func TestRoleCollaborativeExecutorShowsCurrentStepForVerifier(t *testing.T) {
 		responses: roleCommittedExecutionResponses(
 			[]string{"use echo"},
 			toolCallResponse("call_1", "echo", `{"__arg1":"ok"}`),
+			finishStepToolCall("used echo"),
 			verifierFinishResponse("done"),
 		),
 	}
@@ -274,11 +277,11 @@ func TestRoleCollaborativeExecutorShowsCurrentStepForVerifier(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "open Settings and use echo"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(model.messages) < 4 {
+	if len(model.messages) < 5 {
 		t.Fatalf("expected verifier model call, got %d calls", len(model.messages))
 	}
-	verifierSystemPrompt := messageText(model.messages[3][:1])
-	verifierUserPrompt := messageText([]llms.MessageContent{model.messages[3][len(model.messages[3])-1]})
+	verifierSystemPrompt := messageText(model.messages[4][:1])
+	verifierUserPrompt := messageText([]llms.MessageContent{model.messages[4][len(model.messages[4])-1]})
 	if strings.Contains(verifierSystemPrompt, "## Base instruction") ||
 		strings.Contains(verifierSystemPrompt, "## Available skills") {
 		t.Fatalf("verifier system prompt should only contain role rules:\n%s", verifierSystemPrompt)
@@ -289,7 +292,8 @@ func TestRoleCollaborativeExecutorShowsCurrentStepForVerifier(t *testing.T) {
 		"total_committed_steps:",
 		"is_final_committed_step:",
 		"step_text: use echo",
-		"Latest executor result for this step:",
+		"Executor activity for this step:",
+		"executor_outcome: finished",
 		"tool=echo",
 	} {
 		if !strings.Contains(verifierUserPrompt, want) {
@@ -313,12 +317,14 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 			enterPlanModeToolCall(),
 			commitPlanToolCall("repeat same tool"),
 			toolCallResponse("call_1", "echo", `{"__arg1":"same"}`),
+			finishStepToolCall("same"),
 			verifierContinueResponse("not enough progress"),
 			commitPlanToolCall("repeat same tool"),
 			toolCallResponse("call_2", "echo", `{"__arg1":"same"}`),
+			finishStepToolCall("same again"),
 			verifierContinueResponse("still stuck"),
 			commitPlanToolCall("answer directly"),
-			contentResponse("candidate"),
+			finishStepToolCall("candidate"),
 			verifierFinishResponse("done"),
 		},
 	}
@@ -356,11 +362,11 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 			t.Fatalf("unexpected role output event: %#v", event)
 		}
 	}
-	if model.callCount != 10 {
-		t.Fatalf("model call count = %d, want 10", model.callCount)
+	if model.callCount != 12 {
+		t.Fatalf("model call count = %d, want 12", model.callCount)
 	}
 
-	secondPlannerPrompt := messageText(model.messages[4])
+	secondPlannerPrompt := messageText(model.messages[5])
 	for _, want := range []string{
 		"Current plan:",
 		"Executor results:",
@@ -372,11 +378,11 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 		}
 	}
 
-	secondExecutorMessages := model.messages[5]
+	secondExecutorMessages := model.messages[7]
 	secondExecutorPrompt := messageText(secondExecutorMessages)
 	for _, want := range []string{
 		"Planner-approved next_step:\nrepeat same tool",
-		"Local execution context (latest prior result only):",
+		"Current step progress:",
 		"tool=echo input=same",
 	} {
 		if !strings.Contains(secondExecutorPrompt, want) {
@@ -394,16 +400,19 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 			t.Fatalf("second executor prompt should not contain %q:\n%s", unexpected, secondExecutorPrompt)
 		}
 	}
-	if hasMessageRole(secondExecutorMessages, llms.ChatMessageTypeTool) {
-		t.Fatalf("executor should not receive prior tool scratchpad messages: %#v", secondExecutorMessages)
+	if !hasMessageRole(secondExecutorMessages, llms.ChatMessageTypeTool) {
+		t.Fatalf("executor should receive in-step tool scratchpad on follow-up turns: %#v", secondExecutorMessages)
+	}
+	if strings.Contains(messageText(secondExecutorMessages), "call_1") {
+		t.Fatalf("executor should not receive prior step tool scratchpad: %#v", secondExecutorMessages)
 	}
 
-	finalVerifierPrompt := messageText(model.messages[9])
+	finalVerifierPrompt := messageText(model.messages[11])
 	for _, want := range []string{
 		"Current step under verification:",
 		"step_text: answer directly",
-		"Latest executor result for this step:",
-		"candidate_answer=candidate",
+		"Executor activity for this step:",
+		"executor_summary: candidate",
 	} {
 		if !strings.Contains(finalVerifierPrompt, want) {
 			t.Fatalf("final verifier prompt missing %q:\n%s", want, finalVerifierPrompt)
@@ -421,8 +430,8 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 			t.Fatalf("final verifier prompt should not contain %q:\n%s", unexpected, finalVerifierPrompt)
 		}
 	}
-	if hasMessageRole(model.messages[9], llms.ChatMessageTypeTool) {
-		t.Fatalf("verifier should not receive full tool scratchpad history: %#v", model.messages[9])
+	if hasMessageRole(model.messages[11], llms.ChatMessageTypeTool) {
+		t.Fatalf("verifier should not receive full tool scratchpad history: %#v", model.messages[11])
 	}
 }
 
@@ -433,8 +442,9 @@ func TestRoleCollaborativeExecutorSharesScreenshotWorldStateAcrossRoles(t *testi
 		responses: roleCommittedExecutionResponses(
 			[]string{"inspect screen", "answer from current screen"},
 			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
+			finishStepToolCall("inspected screen"),
 			verifierStepContinueResponse("need act on visible UI"),
-			contentResponse("candidate"),
+			finishStepToolCall("candidate"),
 			verifierFinishResponse("done"),
 		),
 	}
@@ -460,11 +470,11 @@ func TestRoleCollaborativeExecutorSharesScreenshotWorldStateAcrossRoles(t *testi
 	if result.Output != "done" {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if model.callCount != 6 {
-		t.Fatalf("model call count = %d, want 6", model.callCount)
+	if model.callCount != 7 {
+		t.Fatalf("model call count = %d, want 7", model.callCount)
 	}
 
-	for _, idx := range []int{3, 4, 5} {
+	for _, idx := range []int{4, 5, 6} {
 		prompt := messageText(model.messages[idx])
 		for _, want := range []string{
 			"World State (shared across planner, executor, and verifier):",
@@ -483,12 +493,12 @@ func TestRoleCollaborativeExecutorSharesScreenshotWorldStateAcrossRoles(t *testi
 		}
 	}
 
-	secondExecutorPrompt := messageText(model.messages[4])
+	secondExecutorPrompt := messageText(model.messages[5])
 	if strings.Contains(secondExecutorPrompt, "Original user request") || strings.Contains(secondExecutorPrompt, "Verifier feedback") {
 		t.Fatalf("executor should see world state without broader planning context:\n%s", secondExecutorPrompt)
 	}
-	if hasMessageRole(model.messages[4], llms.ChatMessageTypeTool) {
-		t.Fatalf("executor should receive world-state screenshot without prior tool scratchpad: %#v", model.messages[4])
+	if hasMessageRole(model.messages[5], llms.ChatMessageTypeTool) {
+		t.Fatalf("second step executor without tools should not receive step scratchpad: %#v", model.messages[5])
 	}
 }
 
@@ -581,9 +591,10 @@ func TestRoleCollaborativeExecutorUpdatesWorldStateFromObservedState(t *testing.
 			enterPlanModeToolCall(),
 			commitPlanToolCall("inspect screen"),
 			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
+			finishStepToolCall("inspected"),
 			contentResponse(string(observedVerifier)),
 			commitPlanToolCall("answer from observed page"),
-			contentResponse("candidate"),
+			finishStepToolCall("candidate"),
 			verifierFinishResponse("done"),
 		},
 	}
@@ -606,7 +617,7 @@ func TestRoleCollaborativeExecutorUpdatesWorldStateFromObservedState(t *testing.
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	secondPlannerPrompt := messageText(model.messages[4])
+	secondPlannerPrompt := messageText(model.messages[5])
 	for _, want := range []string{
 		"Observed app/page: 微信 / 聊天列表 platform=android confidence=0.82 source_role=verifier screenshot_step=3",
 		"Visible text: 微信 | 通讯录",
@@ -617,7 +628,7 @@ func TestRoleCollaborativeExecutorUpdatesWorldStateFromObservedState(t *testing.
 		}
 	}
 
-	secondExecutorPrompt := messageText(model.messages[5])
+	secondExecutorPrompt := messageText(model.messages[7])
 	if !strings.Contains(secondExecutorPrompt, "Observed app/page: 微信 / 聊天列表 platform=android") {
 		t.Fatalf("executor should receive structured observed world state:\n%s", secondExecutorPrompt)
 	}
