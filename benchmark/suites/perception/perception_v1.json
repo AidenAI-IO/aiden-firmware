@@ -250,7 +250,7 @@
           "id": "called_click_tool"
         },
         {
-          "check": "The touch/click coordinates target the <target_name> area. For 0-1000 normalized coordinates, x should be in [804, 967] and y should be in [23, 67].",
+          "check": "The touch/click coordinates target the 跳过广告 area. For 0-1000 normalized coordinates, x should be in [804, 967] and y should be in [23, 67].",
           "id": "click_targets_"
         }
       ]
