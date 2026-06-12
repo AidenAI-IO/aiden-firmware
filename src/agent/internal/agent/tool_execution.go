@@ -56,11 +56,20 @@ type toolResultCallbackHandler interface {
 	HandleToolCallResult(ctx context.Context, call ToolCall, result ToolResult)
 }
 
+type toolCallStartCallbackHandler interface {
+	HandleToolCallStart(ctx context.Context, call ToolCall)
+}
+
 func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallExecutionResult {
 	action := execution.Action
+	startedAt := time.Now()
 	spec, ok := execution.Specs.Lookup(action.Tool)
 	if !ok || spec.Tool == nil {
-		return invalidToolExecutionResult(action)
+		call := invalidToolCall(action, startedAt)
+		emitToolStart(ctx, execution.Callback, call)
+		result := invalidToolResult(call)
+		emitToolResult(ctx, execution.Callback, call, result)
+		return resultForToolCall(call, result, nil)
 	}
 
 	input := spec.NormalizeInput(action.ToolInput)
@@ -71,9 +80,10 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		Action:      action,
 		Input:       input,
 		Description: toolDescriptionFromAction(action),
-		StartedAt:   time.Now(),
+		StartedAt:   startedAt,
 	}
 
+	emitToolStart(ctx, execution.Callback, call)
 	if allowed, result := runBeforeToolCallHook(ctx, execution, call); !allowed {
 		result = normalizeRejectedToolResult(spec.Name, result)
 		result.Duration = time.Since(call.StartedAt)
@@ -94,7 +104,6 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		return resultForToolCall(call, result, nil)
 	}
 
-	emitToolStart(ctx, execution.Callback, call)
 	output, err := spec.Tool.Call(ctx, input)
 	result := ToolResult{
 		Output:   output,
@@ -116,17 +125,28 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	return resultForToolCall(call, result, nil)
 }
 
-func invalidToolExecutionResult(action schema.AgentAction) ToolCallExecutionResult {
+func invalidToolCall(action schema.AgentAction, startedAt time.Time) ToolCall {
 	action.ToolInput = normalizeToolInput(action.ToolInput)
-	output := fmt.Sprintf("%s is not a valid tool, try another one", action.Tool)
-	result := ToolResult{Output: output, IsError: true}
-	return ToolCallExecutionResult{
-		Result: result,
-		Step: schema.AgentStep{
-			Action:      action,
-			Observation: output,
-		},
+	toolName := strings.TrimSpace(action.Tool)
+	return ToolCall{
+		Spec:        ToolSpec{Name: toolName},
+		Action:      action,
+		Input:       action.ToolInput,
+		Description: toolDescriptionFromAction(action),
+		StartedAt:   startedAt,
 	}
+}
+
+func invalidToolResult(call ToolCall) ToolResult {
+	toolName := strings.TrimSpace(call.Action.Tool)
+	if toolName == "" {
+		toolName = strings.TrimSpace(call.Spec.Name)
+	}
+	output := fmt.Sprintf("%s is not a valid tool, try another one", toolName)
+	if toolName == "" {
+		output = "requested tool is not a valid tool, try another one"
+	}
+	return ToolResult{Output: output, IsError: true, Duration: time.Since(call.StartedAt)}
 }
 
 func runBeforeToolCallHook(ctx context.Context, execution ToolCallExecution, call ToolCall) (bool, ToolResult) {
@@ -195,6 +215,10 @@ func resultForToolCall(call ToolCall, result ToolResult, err error) ToolCallExec
 
 func emitToolStart(ctx context.Context, handler callbacks.Handler, call ToolCall) {
 	if handler == nil {
+		return
+	}
+	if rich, ok := handler.(toolCallStartCallbackHandler); ok {
+		rich.HandleToolCallStart(ctx, call)
 		return
 	}
 	if named, ok := handler.(namedToolCallbackHandler); ok {

@@ -1246,7 +1246,7 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 	}
 }
 
-func (h *runtimeCallbackHandler) BeforeToolCall(ctx context.Context, call ToolCall) (ToolResult, bool) {
+func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call ToolCall) {
 	description := call.Description
 	if description == "" {
 		description = toolDescriptionOrFallback(call.Spec.Name, "")
@@ -1271,6 +1271,9 @@ func (h *runtimeCallbackHandler) BeforeToolCall(ctx context.Context, call ToolCa
 			Timestamp:   time.Now(),
 		})
 	}
+}
+
+func (h *runtimeCallbackHandler) BeforeToolCall(ctx context.Context, call ToolCall) (ToolResult, bool) {
 	return DefaultBeforeToolCall(ctx, call)
 }
 

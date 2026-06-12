@@ -133,7 +133,7 @@ func TestExecuteToolCallUnwrapsCompatibleInputBeforeValidation(t *testing.T) {
 	}
 }
 
-func TestExecuteToolCallInvalidToolDoesNotEmitCallbacks(t *testing.T) {
+func TestExecuteToolCallInvalidToolEmitsToolCallAndResult(t *testing.T) {
 	recorder := &toolExecutionCallbackRecorder{}
 	specs := NewToolSpecs([]langtools.Tool{&stubTool{name: "echo", description: "Echo.", output: "ok"}})
 
@@ -149,8 +149,14 @@ func TestExecuteToolCallInvalidToolDoesNotEmitCallbacks(t *testing.T) {
 	if !result.Result.IsError {
 		t.Fatalf("invalid tool should be an error result: %#v", result.Result)
 	}
-	if len(recorder.calls) != 0 || len(recorder.results) != 0 {
-		t.Fatalf("invalid tool should not emit callbacks, calls=%#v results=%#v", recorder.calls, recorder.results)
+	if result.Call.Spec.Name != "missing" || result.Call.Input != "hello" {
+		t.Fatalf("invalid tool call = %#v", result.Call)
+	}
+	if len(recorder.events) != 2 || recorder.events[0] != "start" || recorder.events[1] != "result" {
+		t.Fatalf("callback lifecycle events = %#v, want start then result", recorder.events)
+	}
+	if len(recorder.results) != 1 || !recorder.results[0].IsError {
+		t.Fatalf("expected one error result callback, got %#v", recorder.results)
 	}
 }
 
@@ -176,12 +182,16 @@ func TestExecuteToolCallValidationFailureEmitsToolCallAndResult(t *testing.T) {
 	if len(recorder.results) != 1 || !recorder.results[0].IsError {
 		t.Fatalf("expected one error result callback, got %#v", recorder.results)
 	}
+	if len(recorder.events) != 2 || recorder.events[0] != "start" || recorder.events[1] != "result" {
+		t.Fatalf("callback lifecycle events = %#v, want start then result", recorder.events)
+	}
 	if recorder.results[0].Duration <= 0 {
 		t.Fatalf("expected validation failure duration to be recorded, got %s", recorder.results[0].Duration)
 	}
 }
 
 func TestExecuteToolCallBeforeMayRejectWithToolResult(t *testing.T) {
+	recorder := &toolExecutionCallbackRecorder{}
 	tool := &stubTool{name: "echo", description: "Echo text.", output: "should-not-run"}
 	specs := NewToolSpecs([]langtools.Tool{tool})
 
@@ -198,6 +208,7 @@ func TestExecuteToolCallBeforeMayRejectWithToolResult(t *testing.T) {
 				Error:   errors.New("blocked by policy"),
 			}, false
 		},
+		Callback: recorder,
 	})
 
 	if len(tool.inputs) != 0 {
@@ -208,6 +219,9 @@ func TestExecuteToolCallBeforeMayRejectWithToolResult(t *testing.T) {
 	}
 	if result.Step.Observation != "blocked by policy" {
 		t.Fatalf("step observation = %q", result.Step.Observation)
+	}
+	if len(recorder.events) != 2 || recorder.events[0] != "start" || recorder.events[1] != "result" {
+		t.Fatalf("callback lifecycle events = %#v, want start then result", recorder.events)
 	}
 }
 
