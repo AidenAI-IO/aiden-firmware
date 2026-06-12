@@ -47,6 +47,13 @@ jobs:
         else
           echo "::warning::Skipping workspace ownership reclaim because sudo is unavailable and the current user is not root"
         fi
+        # Go extracts module cache directories as read-only. Older builds kept
+        # that cache under build/.cache, which can block actions/checkout's
+        # clean phase from removing stale modules on self-hosted runners.
+        if [ -d "$GITHUB_WORKSPACE/build/.cache/go-mod" ]; then
+          chmod -R u+w "$GITHUB_WORKSPACE/build/.cache/go-mod" || \
+            echo "::warning::Skipping stale Go module cache unlock because chmod failed"
+        fi
 
     - name: Remove unusable pico-sdk submodule checkout
       if: ${{ inputs.runner == 'self-hosted' }}

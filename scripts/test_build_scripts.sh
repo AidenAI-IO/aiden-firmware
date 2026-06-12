@@ -268,6 +268,11 @@ if ! grep -Fq 'owner="$(id -u):$(id -g)"' "$WORKFLOW" || \
     exit 1
 fi
 
+if ! grep -Fq 'chmod -R u+w "$GITHUB_WORKSPACE/build/.cache/go-mod"' "$WORKFLOW"; then
+    echo "self-hosted workspace reclaim must unlock stale read-only Go module cache directories before checkout" >&2
+    exit 1
+fi
+
 if ! grep -q 'go env GOROOT' "$BUILD_IMAGE_SH"; then
     echo "build_image.sh must discover the host Go root with go env GOROOT" >&2
     exit 1

@@ -100,6 +100,11 @@ if ! grep -Eq 'pico-sdk/output/image/\*\.img([[:space:]\\]|$)' "$WORKFLOW"; then
     exit 1
 fi
 
+if ! grep -Fq 'chmod -R u+w "$GITHUB_WORKSPACE/build/.cache/go-mod"' "$WORKFLOW"; then
+    echo "self-hosted workspace reclaim must unlock stale read-only Go module cache directories before checkout" >&2
+    exit 1
+fi
+
 if grep -q 'apply_pico_sdk_rootfs_reproducibility_patch.sh' "$BUILD_IMAGE_SCRIPT" || \
    [ -e "$ROOT_DIR/scripts/apply_pico_sdk_rootfs_reproducibility_patch.sh" ] || \
    [ -e "$ROOT_DIR/scripts/patches/pico-sdk-rootfs-reproducible-build.patch" ]; then
