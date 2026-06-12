@@ -56,6 +56,38 @@ func TestResolveOpenAppTargetsCameraUsesShortcutsFallback(t *testing.T) {
 	}
 }
 
+func TestResolveOpenAppTargetsContactsUsesShortcutsFallback(t *testing.T) {
+	args := openAppArgs{App: "contacts"}
+	want := "shortcuts://x-callback-url/run-shortcut?x-error=contact://"
+
+	if err := resolveOpenAppTargets(&args); err != nil {
+		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
+	}
+
+	if got := args.IOSURLs; len(got) != 1 || got[0] != want {
+		t.Fatalf("ios_urls = %#v, want %q", got, want)
+	}
+	if got := args.AndroidPackages; len(got) != 1 || got[0] != "com.android.contacts" {
+		t.Fatalf("android_packages = %#v, want com.android.contacts", got)
+	}
+}
+
+func TestResolveOpenAppTargetsVoiceMemosUsesShortcutsFallback(t *testing.T) {
+	args := openAppArgs{App: "voice memos"}
+	want := "shortcuts://x-callback-url/run-shortcut?x-error=voicememos://"
+
+	if err := resolveOpenAppTargets(&args); err != nil {
+		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
+	}
+
+	if got := args.IOSURLs; len(got) != 1 || got[0] != want {
+		t.Fatalf("ios_urls = %#v, want %q", got, want)
+	}
+	if got := args.AndroidPackages; len(got) != 0 {
+		t.Fatalf("android_packages = %#v, want none", got)
+	}
+}
+
 func TestResolveOpenAppTargetsNameAlias(t *testing.T) {
 	args := openAppArgs{Name: "Camera"}
 	want := "shortcuts://x-callback-url/run-shortcut?x-error=camera://"
