@@ -59,6 +59,10 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	if !strings.Contains(profiles.Planner.SystemPrompt, "If a direct executor tool covers the request") {
 		t.Fatalf("planner prompt should prefer direct executor tools:\n%s", profiles.Planner.SystemPrompt)
 	}
+	if !strings.Contains(profiles.Planner.SystemPrompt, "open_app ok=true") ||
+		!strings.Contains(profiles.Verifier.SystemPrompt, "open_app returning ok=true") {
+		t.Fatalf("role prompts should treat launch-only open_app success as direct evidence: planner=%q verifier=%q", profiles.Planner.SystemPrompt, profiles.Verifier.SystemPrompt)
+	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "plan quick_action first") ||
 		!strings.Contains(profiles.Planner.SystemPrompt, "action=spotlight_search platform=android") ||
 		!strings.Contains(profiles.Executor.SystemPrompt, "try quick_action first") ||

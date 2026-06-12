@@ -236,9 +236,11 @@ WebSocket 的核心价值：
 {
   "id": "open_001",
   "ok": true,
-  "method": "open_url"
+  "method": "ios_url_scheme"
 }
 ```
+
+App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`、`android_intent`、`android_deeplink`、`launch_package`、`dial`、`open_url`）。Agent 的 `open_app` 工具会把它归一化为任务语义：打开 App 返回 `method:"open_app"`，打开网页返回 `method:"open_url"`，底层机制放在 `mechanism`。
 
 浏览器语义和固定网页语义分开：打开浏览器入口时使用浏览器 URL scheme / Android browser intent；打开固定网页时传具体 `http`/`https` URL（iOS 放入 `ios_urls`，Android 使用 `android.intent.action.VIEW:<url>`）。
 

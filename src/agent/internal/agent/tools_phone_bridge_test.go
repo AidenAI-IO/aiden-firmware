@@ -118,3 +118,73 @@ func TestResolveOpenAppTargetsAppCanBeSpecificURL(t *testing.T) {
 		t.Fatalf("android_packages = %#v, want ACTION_VIEW requested URL", got)
 	}
 }
+
+func TestOpenAppResultMetadataForContactsShortcut(t *testing.T) {
+	args := openAppArgs{App: "Contacts"}
+	if err := resolveOpenAppTargets(&args); err != nil {
+		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
+	}
+
+	if got := openAppResultMethod(args); got != "open_app" {
+		t.Fatalf("method = %q, want open_app", got)
+	}
+	if got := openAppResultTarget(args); got != "Contacts" {
+		t.Fatalf("target = %q, want Contacts", got)
+	}
+	if got := openAppResultMechanism(args, "open_url"); got != "ios_shortcut" {
+		t.Fatalf("mechanism = %q, want ios_shortcut", got)
+	}
+}
+
+func TestOpenAppResultMetadataForSpecificURL(t *testing.T) {
+	args := openAppArgs{URL: "https://example.com"}
+	if err := resolveOpenAppTargets(&args); err != nil {
+		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
+	}
+
+	if got := openAppResultMethod(args); got != "open_url" {
+		t.Fatalf("method = %q, want open_url", got)
+	}
+	if got := openAppResultTarget(args); got != "https://example.com" {
+		t.Fatalf("target = %q, want requested URL", got)
+	}
+	if got := openAppResultMechanism(args, "open_url"); got != "open_url" {
+		t.Fatalf("mechanism = %q, want open_url", got)
+	}
+}
+
+func TestOpenAppResultMetadataForDial(t *testing.T) {
+	args := openAppArgs{PhoneNumber: "10086"}
+	if err := resolveOpenAppTargets(&args); err != nil {
+		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
+	}
+
+	if got := openAppResultMethod(args); got != "dial" {
+		t.Fatalf("method = %q, want dial", got)
+	}
+	if got := openAppResultTarget(args); got != "10086" {
+		t.Fatalf("target = %q, want phone number", got)
+	}
+	if got := openAppResultMechanism(args, "open_url"); got != "dial" {
+		t.Fatalf("mechanism = %q, want dial", got)
+	}
+	if got := openAppResultMechanism(args, ""); got != "dial" {
+		t.Fatalf("fallback mechanism = %q, want dial", got)
+	}
+}
+
+func TestOpenAppResultMetadataForAndroidIntent(t *testing.T) {
+	args := openAppArgs{
+		AndroidPackages: []string{"intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.APP_BROWSER;end"},
+	}
+
+	if got := openAppResultMethod(args); got != "open_app" {
+		t.Fatalf("method = %q, want open_app", got)
+	}
+	if got := openAppResultMechanism(args, "open_url"); got != "android_intent" {
+		t.Fatalf("mechanism = %q, want android_intent", got)
+	}
+	if got := openAppResultMechanism(args, ""); got != "android_intent" {
+		t.Fatalf("fallback mechanism = %q, want android_intent", got)
+	}
+}

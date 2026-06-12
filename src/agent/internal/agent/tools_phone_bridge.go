@@ -196,6 +196,83 @@ func resolveOpenAppTargets(args *openAppArgs) error {
 	return nil
 }
 
+func openAppResultMethod(args openAppArgs) string {
+	if strings.TrimSpace(args.PhoneNumber) != "" {
+		return "dial"
+	}
+	if strings.TrimSpace(args.URL) != "" || isHTTPURL(args.App) {
+		return "open_url"
+	}
+	return "open_app"
+}
+
+func openAppResultTarget(args openAppArgs) string {
+	if value := strings.TrimSpace(args.PhoneNumber); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(args.URL); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(args.App); value != "" {
+		return value
+	}
+	if len(args.IOSURLs) > 0 {
+		return strings.TrimSpace(args.IOSURLs[0])
+	}
+	if len(args.AndroidPackages) > 0 {
+		return strings.TrimSpace(args.AndroidPackages[0])
+	}
+	return ""
+}
+
+func openAppResultMechanism(args openAppArgs, responseMethod string) string {
+	method := strings.TrimSpace(responseMethod)
+	switch method {
+	case "ios_shortcut", "ios_url_scheme", "android_intent", "android_deeplink", "android_package", "dial":
+		return method
+	case "open_url":
+		if openAppResultMethod(args) == "open_url" {
+			return method
+		}
+	case "launch_package", "package_name":
+		return "android_package"
+	}
+
+	if len(args.IOSURLs) > 0 {
+		target := strings.TrimSpace(args.IOSURLs[0])
+		lower := strings.ToLower(target)
+		switch {
+		case isHTTPURL(target):
+			return "open_url"
+		case strings.HasPrefix(lower, "tel:"):
+			return "dial"
+		case strings.HasPrefix(lower, "shortcuts://"):
+			return "ios_shortcut"
+		case target != "":
+			return "ios_url_scheme"
+		}
+	}
+
+	if len(args.AndroidPackages) > 0 {
+		target := strings.TrimSpace(args.AndroidPackages[0])
+		lower := strings.ToLower(target)
+		switch {
+		case strings.HasPrefix(lower, "android.intent.action.dial:"):
+			return "dial"
+		case strings.HasPrefix(lower, "android.intent.action.view:"):
+			return "open_url"
+		case strings.HasPrefix(lower, "intent:"):
+			return "android_intent"
+		case strings.Contains(lower, "://"):
+			return "android_deeplink"
+		case target != "":
+			return "android_package"
+		}
+	}
+
+	return method
+}
+
 func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	if !t.bridge.Connected() {
 		return jsonString(map[string]interface{}{
@@ -242,7 +319,13 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 
 	result := map[string]interface{}{
 		"ok":     resp.OK,
-		"method": resp.Method,
+		"method": openAppResultMethod(args),
+	}
+	if target := openAppResultTarget(args); target != "" {
+		result["target"] = target
+	}
+	if mechanism := openAppResultMechanism(args, resp.Method); mechanism != "" {
+		result["mechanism"] = mechanism
 	}
 	if !resp.OK {
 		result["error"] = resp.Error

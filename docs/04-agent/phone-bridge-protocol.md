@@ -142,9 +142,12 @@ App 也可以主动发送事件消息。事件复用 `BridgeCommandResponse` 外
 {
   "id": "open_001",
   "ok": true,
-  "method": "open_url"  // 或 "package_name"
+  "method": "ios_url_scheme"
 }
 ```
+
+`method` 表示 App 侧采用的底层机制，常见值包括 `ios_url_scheme`、`ios_shortcut`、`android_intent`、`android_deeplink`、`launch_package`、`dial`、`open_url`。其中 `open_url` 只表示显式网页 URL。
+Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任务的 `method`（例如打开 App 返回 `open_app`，打开网页返回 `open_url`），并把底层值放在 `mechanism` 字段中。
 
 失败时:
 ```json
