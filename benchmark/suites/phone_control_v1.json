@@ -67,13 +67,13 @@
       "prompt": "请返回上一层。",
       "setup": {
         "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
           { "tool": "wait_ms", "args": { "ms": 800 } },
           { "tool": "keyboard_text", "args": { "text": "设置" } },
           { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.32 } } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
           { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.42 } } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 420 } } },
           { "tool": "wait_ms", "args": { "ms": 1000 } }
         ]
       },
@@ -96,7 +96,7 @@
       "prompt": "在搜索框里输入 hello。",
       "setup": {
         "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
           { "tool": "wait_ms", "args": { "ms": 800 } }
         ]
       },
@@ -127,11 +127,11 @@
       "prompt": "请向下滑动一屏。",
       "setup": {
         "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
           { "tool": "wait_ms", "args": { "ms": 800 } },
           { "tool": "keyboard_text", "args": { "text": "设置" } },
           { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.32 } } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
           { "tool": "wait_ms", "args": { "ms": 1500 } }
         ]
       },
@@ -271,11 +271,11 @@
       "prompt": "在设置页面持续向下滑动，直到滑到底部为止。",
       "setup": {
         "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
           { "tool": "wait_ms", "args": { "ms": 800 } },
           { "tool": "keyboard_text", "args": { "text": "设置" } },
           { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.32 } } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
           { "tool": "wait_ms", "args": { "ms": 1500 } }
         ]
       },
@@ -306,13 +306,13 @@
       "prompt": "在当前可输入位置输入：Aiden测试 benchmark-2026!",
       "setup": {
         "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
           { "tool": "wait_ms", "args": { "ms": 800 } },
           { "tool": "keyboard_text", "args": { "text": "备忘录" } },
           { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.32 } } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
           { "tool": "wait_ms", "args": { "ms": 2000 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.78 } } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 780 } } },
           { "tool": "wait_ms", "args": { "ms": 800 } }
         ]
       },
@@ -343,13 +343,13 @@
       "prompt": "请把输入框里已有的文字全部清空。",
       "setup": {
         "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
           { "tool": "wait_ms", "args": { "ms": 800 } },
           { "tool": "keyboard_text", "args": { "text": "备忘录" } },
           { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.32 } } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
           { "tool": "wait_ms", "args": { "ms": 2000 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.78 } } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 780 } } },
           { "tool": "wait_ms", "args": { "ms": 800 } },
           { "tool": "keyboard_text", "args": { "text": "temporary note text" } },
           { "tool": "wait_ms", "args": { "ms": 500 } }
@@ -378,13 +378,13 @@
       "prompt": "在第一个输入框输入 hello-aiden，然后选中复制，切到第二个输入框粘贴。",
       "setup": {
         "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 0.12 } },
+          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
           { "tool": "wait_ms", "args": { "ms": 800 } },
           { "tool": "keyboard_text", "args": { "text": "备忘录" } },
           { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.32 } } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
           { "tool": "wait_ms", "args": { "ms": 2000 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 0.5, "y": 0.78 } } },
+          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 780 } } },
           { "tool": "wait_ms", "args": { "ms": 800 } }
         ]
       },
