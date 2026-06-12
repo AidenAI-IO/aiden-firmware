@@ -78,6 +78,7 @@ func TestHandleBenchmarkSuites_ListsJSON(t *testing.T) {
 	suites := filepath.Join(root, "suites")
 	os.MkdirAll(filepath.Join(suites, "custom"), 0o755)
 	os.WriteFile(filepath.Join(suites, "perception_v1.json"), []byte(`{"name":"perception_v1","tasks":[]}`), 0o644)
+	os.WriteFile(filepath.Join(suites, "unit_tools.json"), []byte(`{"name":"unit_tools","kind":"unit","tasks":[]}`), 0o644)
 	os.WriteFile(filepath.Join(suites, "custom", "mine.json"), []byte(`{"name":"mine","tasks":[]}`), 0o644)
 	os.WriteFile(filepath.Join(suites, "._noise.json"), []byte("{}"), 0o644)
 
@@ -90,7 +91,7 @@ func TestHandleBenchmarkSuites_ListsJSON(t *testing.T) {
 	}
 	var got []map[string]any
 	json.Unmarshal(rec.Body.Bytes(), &got)
-	if len(got) != 2 {
+	if len(got) != 3 {
 		t.Fatalf("got %d suites: %+v", len(got), got)
 	}
 	for _, s := range got {
@@ -99,6 +100,12 @@ func TestHandleBenchmarkSuites_ListsJSON(t *testing.T) {
 		}
 		if s["name"].(string) == "perception_v1" && s["custom"] != false {
 			t.Errorf("expected perception_v1.custom = false")
+		}
+		if s["name"].(string) == "unit_tools" && s["kind"] != "unit" {
+			t.Errorf("expected unit_tools.kind = unit, got %+v", s)
+		}
+		if s["name"].(string) == "perception_v1" && s["kind"] != "benchmark" {
+			t.Errorf("expected perception_v1.kind = benchmark, got %+v", s)
 		}
 	}
 }
@@ -159,6 +166,85 @@ func TestHandleBenchmarkRuns_Caps20(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &got)
 	if len(got) != 20 {
 		t.Errorf("got %d runs, want 20", len(got))
+	}
+}
+
+func TestHandleBenchmarkRuns_IncludesModelStatusAndProgress(t *testing.T) {
+	root := t.TempDir()
+	runID := "2026-06-11_120000"
+	runDir := filepath.Join(root, "runs", runID)
+	os.MkdirAll(runDir, 0o755)
+	os.WriteFile(filepath.Join(runDir, "manifest.json"), []byte(`{
+		"suite_path":"/userdata/agent/benchmark/suites/memory_v1.json",
+		"agent_model":"google/gemini-3.5-flash",
+		"judge_config":{"provider":"openrouter","model":"anthropic/claude-sonnet-4"},
+		"totals":{"tasks":17,"passed":12,"failed":5}
+	}`), 0o644)
+	os.WriteFile(filepath.Join(root, "state.json"), []byte(`{
+		"status":"running",
+		"run_id":"running-1",
+		"suite":"memory_v1.json",
+		"total":17,
+		"current":1,
+		"completed":0,
+		"current_task":"task-1"
+	}`), 0o644)
+
+	s := &Server{
+		benchmarkDir: root,
+		runtime: &Runtime{config: Config{
+			Model:     ModelConfig{Provider: "openrouter", Model: "google/gemini-3.5-flash"},
+			Benchmark: BenchmarkConfig{JudgeModel: "bytedance-seed/seed-2.0-lite"},
+		}},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/runs", nil)
+	s.handleBenchmarkRuns(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if len(got) < 2 {
+		t.Fatalf("expected running row plus completed run, got %+v", got)
+	}
+	running := got[0]
+	if running["status"] != "running" || running["progress"] != "1/17" || running["model"] != "google/gemini-3.5-flash" {
+		t.Fatalf("unexpected running row: %+v", running)
+	}
+	completed := got[1]
+	if completed["status"] != "done" || completed["progress"] != "17/17" || completed["model"] != "google/gemini-3.5-flash" {
+		t.Fatalf("unexpected completed row: %+v", completed)
+	}
+}
+
+func TestHandleBenchmarkRuns_CompletedRunDoesNotUseJudgeModelAsAgentModel(t *testing.T) {
+	root := t.TempDir()
+	runID := "2026-06-11_120000"
+	runDir := filepath.Join(root, "runs", runID)
+	os.MkdirAll(runDir, 0o755)
+	os.WriteFile(filepath.Join(runDir, "manifest.json"), []byte(`{
+		"suite_path":"/userdata/agent/benchmark/suites/perception_v1.json",
+		"judge_config":{"provider":"openrouter","model":"bytedance-seed/seed-2.0-lite"},
+		"totals":{"tasks":2,"timeout":2}
+	}`), 0o644)
+
+	s := &Server{benchmarkDir: root}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/runs", nil)
+	s.handleBenchmarkRuns(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if len(got) != 1 {
+		t.Fatalf("expected one completed run, got %+v", got)
+	}
+	if got[0]["model"] == "bytedance-seed/seed-2.0-lite" {
+		t.Fatalf("completed run should not display judge model as agent model: %+v", got[0])
 	}
 }
 
@@ -295,9 +381,28 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, marker := range []string{
-		`fetch('/benchmark/suites?mode='`,
-		`fetch('/benchmark/runs')`,
-		`fetch('/benchmark/status')`,
+		`MOBILEGYM_LOCAL_BASE='http://127.0.0.1:4174'`,
+		`Start the Mac MobileGym launcher first`,
+		`benchmarkEndpoint('/benchmark/suites')`,
+		`benchmarkEndpoint('/benchmark/run')`,
+		`benchmarkEndpoint('/benchmark/status')`,
+		`benchmarkEndpoint('/benchmark/log')`,
+		`benchmarkEndpoint('/benchmark/runs')`,
+		`benchmarkEndpoint('/benchmark/report/')`,
+		`fetch(benchmarkEndpoint('/benchmark/status'))`,
+		`<th>Status</th><th>Progress</th><th>Model</th>`,
+		`progressText(r)`,
+		`r.model||'—'`,
+		`id="refreshBtn"`,
+		`function refreshBenchmark(){loadSuites();loadRuns();loadStatus();loadLog()}`,
+		`id="unitSelect"`,
+		`id="runUnitBtn"`,
+		`function startRunUnit()`,
+		`x.kind==='unit'`,
+		`reportCell(r)`,
+		`Not ready`,
+		`payload.suite=mobileGymSuiteName(item,key);`,
+		`payload.board_url=location.origin;`,
 		`/benchmark/record`,
 	} {
 		if !strings.Contains(body, marker) {
@@ -306,6 +411,11 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 	}
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Errorf("ct = %q", ct)
+	}
+	for _, marker := range []string{`id="limitInput"`, `payload.limit=Number(lim);`} {
+		if strings.Contains(body, marker) {
+			t.Errorf("body should not expose %q", marker)
+		}
 	}
 }
 
@@ -326,7 +436,7 @@ func TestHandleBenchmarkRun_WritesStateFile(t *testing.T) {
 	s := &Server{
 		benchmarkDir:       root,
 		benchmarkStatePath: statePath,
-		benchmarkLauncher: func(suite, judge, apiKey string) error {
+		benchmarkLauncher: func(suite, judge, apiKey, agentModel string) error {
 			called = true
 			return nil
 		},
@@ -506,7 +616,7 @@ func TestHandleBenchmarkRun_AidenModeDefault(t *testing.T) {
 	s := &Server{
 		benchmarkDir:       root,
 		benchmarkStatePath: statePath,
-		benchmarkLauncher: func(suite, judge, apiKey string) error {
+		benchmarkLauncher: func(suite, judge, apiKey, agentModel string) error {
 			captured.called = true
 			captured.suite = suite
 			return nil
@@ -619,6 +729,9 @@ func TestBuildMobileGymLaunchScript_AidenSuite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if !strings.Contains(script, "cd '/bench/mobilegym/docker'") {
+		t.Errorf("expected MobileGym docker dir under benchmarkDir, got: %s", script)
+	}
 	if !strings.Contains(script, "--aiden-suite 'memory_v1'") {
 		t.Errorf("expected --aiden-suite flag, got: %s", script)
 	}
@@ -660,11 +773,21 @@ func TestBuildMobileGymLaunchScript_RejectsUnknownSuiteType(t *testing.T) {
 }
 
 func TestBuildMobileGymLaunchScript_RejectsBadSuiteName(t *testing.T) {
-	for _, bad := range []string{"../etc/passwd", "foo/bar", "foo;rm -rf /", "foo bar"} {
+	for _, bad := range []string{".", "..", "../etc/passwd", "foo/../bar", "foo//bar", "foo;rm -rf /", "foo bar"} {
 		_, err := buildMobileGymLaunchScript("/bench", bad, "aiden", 1, 0)
 		if err == nil {
 			t.Errorf("expected error for suite name %q", bad)
 		}
+	}
+}
+
+func TestBuildMobileGymLaunchScript_AllowsNestedSuiteName(t *testing.T) {
+	script, err := buildMobileGymLaunchScript("/bench", "perception/perception_v1", "aiden", 1, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(script, "--aiden-suite 'perception/perception_v1'") {
+		t.Errorf("expected nested --aiden-suite flag, got: %s", script)
 	}
 }
 
@@ -673,7 +796,7 @@ func TestBuildMobileGymLaunchScript_QuotesBenchmarkDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(script, "'/path with spaces'") {
+	if !strings.Contains(script, "'/path with spaces/mobilegym/docker'") {
 		t.Errorf("benchmarkDir should be quoted, got: %s", script)
 	}
 }

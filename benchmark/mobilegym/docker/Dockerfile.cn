@@ -5,7 +5,17 @@
 # ============ MobileGym Simulator ============
 FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/node:22-bullseye AS mobilegym-base
 
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST
 WORKDIR /mobilegym
+
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY} \
+    PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST=${PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST:-https://playwright-akamai.azureedge.net} \
+    PUPPETEER_SKIP_DOWNLOAD=true
 
 # 使用清华源
 RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list && \
@@ -30,7 +40,12 @@ RUN pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 # Clone MobileGym (用 cp -a 保留 dotfiles)
 ARG MOBILEGYM_REPO=https://github.com/Purewhiter/mobilegym.git
 ARG MOBILEGYM_BRANCH=main
-RUN git clone --depth 1 --branch ${MOBILEGYM_BRANCH} ${MOBILEGYM_REPO} /tmp/mobilegym && \
+RUN for attempt in 1 2 3; do \
+        git clone --depth 1 --branch ${MOBILEGYM_BRANCH} ${MOBILEGYM_REPO} /tmp/mobilegym && break; \
+        rm -rf /tmp/mobilegym; \
+        sleep $((attempt * 5)); \
+    done && \
+    test -d /tmp/mobilegym/.git && \
     cp -a /tmp/mobilegym/. /mobilegym/ && \
     rm -rf /tmp/mobilegym
 
@@ -55,8 +70,14 @@ CMD ["npm", "run", "preview", "--", "--host", "0.0.0.0", "--port", "4173"]
 # ============ Go Agent Daemon ============
 FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/golang:1.23 AS daemon-builder
 
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
 WORKDIR /build
-ENV GOPROXY=https://goproxy.cn,direct \
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY} \
+    GOPROXY=https://goproxy.cn,direct \
     GOTOOLCHAIN=auto
 
 COPY src/agent/go.mod src/agent/go.sum ./
@@ -66,6 +87,13 @@ COPY src/agent/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -o daemon ./cmd/daemon
 
 FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/debian:bullseye-slim AS daemon-runtime
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY}
 
 RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list && \
     apt-get update && apt-get install -y ca-certificates curl && \
@@ -82,7 +110,16 @@ CMD ["daemon-entrypoint"]
 # ============ Test Runner ============
 FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.11-slim AS test-runner
 
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST
 WORKDIR /app
+
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY} \
+    PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST=${PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST:-https://playwright-akamai.azureedge.net}
 
 RUN if [ -f /etc/apt/sources.list ]; then \
         sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list && \
@@ -109,6 +146,7 @@ COPY --from=mobilegym-base /root/.cache/ms-playwright /root/.cache/ms-playwright
 COPY benchmark/pyproject.toml benchmark/uv.lock /app/benchmark/
 RUN cd /app/benchmark && uv sync && uv run pip install -r /mobilegym/bench_env/requirements.txt
 
+COPY benchmark/runner /app/benchmark/runner
 COPY benchmark/mobilegym /app/benchmark/mobilegym
 COPY benchmark/tests /app/benchmark/tests
 

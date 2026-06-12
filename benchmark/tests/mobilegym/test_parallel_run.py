@@ -17,8 +17,53 @@ def install_fake_docker(tmp_path):
     fake_docker.write_text(
         "#!/usr/bin/env bash\n"
         "printf '%s|%s|%s\\n' \"${COMPOSE_PROJECT_NAME:-}\" \"${AIDEN_CONFIG_DIR:-}\" \"$*\" >> \"$DOCKER_LOG\"\n"
+        "if [[ \"$*\" == *\" run \"* && -n \"${AIDEN_CONFIG_DIR:-}\" && -f \"$AIDEN_CONFIG_DIR/agent.toml\" ]]; then sed 's/^/AGENT_TOML:/' \"$AIDEN_CONFIG_DIR/agent.toml\" >> \"$DOCKER_LOG\"; fi\n"
         "if [[ \"$*\" == *\" logs\"* ]]; then printf 'compose logs for %s\\n' \"${COMPOSE_PROJECT_NAME:-}\"; fi\n"
         "if [[ \"$*\" == *\" run \"* && \"$*\" == *\"fail.Task\"* ]]; then exit 7; fi\n"
+    )
+    fake_docker.chmod(0o755)
+    return log_path
+
+
+def install_image_check_fake_docker(tmp_path):
+    log_path = tmp_path / "docker.log"
+    built_marker = tmp_path / "images-built"
+    fake_docker = tmp_path / "docker"
+    fake_docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s|%s|%s\\n' \"${COMPOSE_PROJECT_NAME:-}\" \"${AIDEN_CONFIG_DIR:-}\" \"$*\" >> \"$DOCKER_LOG\"\n"
+        f"if [[ \"$*\" == 'image inspect aiden-mobilegym-simulator:local aiden-mobilegym-daemon:local aiden-mobilegym-test-runner:local' && ! -f {built_marker} ]]; then exit 1; fi\n"
+        "if [[ \"${1:-}\" == 'image' && \"${2:-}\" == 'inspect' && \"${3:-}\" == '--format' ]]; then printf '%s\\n' \"${FAKE_IMAGE_CREATED:-1970-01-01T00:00:00Z}\"; exit 0; fi\n"
+        f"if [[ \"${{1:-}}\" == 'compose' && \"$*\" == *' build'* ]]; then touch {built_marker}; fi\n"
+        "if [[ \"$*\" == *\" logs\"* ]]; then printf 'compose logs for %s\\n' \"${COMPOSE_PROJECT_NAME:-}\"; fi\n"
+    )
+    fake_docker.chmod(0o755)
+    return log_path
+
+
+def install_build_fail_fake_docker(tmp_path):
+    log_path = tmp_path / "docker.log"
+    fake_docker = tmp_path / "docker"
+    fake_docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s|%s|%s\\n' \"${COMPOSE_PROJECT_NAME:-}\" \"${AIDEN_CONFIG_DIR:-}\" \"$*\" >> \"$DOCKER_LOG\"\n"
+        "if [[ \"$*\" == 'image inspect aiden-mobilegym-simulator:local aiden-mobilegym-daemon:local aiden-mobilegym-test-runner:local' ]]; then exit 1; fi\n"
+        "if [[ \"${1:-}\" == 'compose' && \"$*\" == *' build'* ]]; then printf 'build failed: registry timeout\\n' >&2; exit 12; fi\n"
+    )
+    fake_docker.chmod(0o755)
+    return log_path
+
+
+def install_registry_timeout_then_cn_fake_docker(tmp_path):
+    log_path = tmp_path / "docker.log"
+    fake_docker = tmp_path / "docker"
+    fake_docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s|%s|%s\\n' \"${COMPOSE_PROJECT_NAME:-}\" \"${AIDEN_CONFIG_DIR:-}\" \"$*\" >> \"$DOCKER_LOG\"\n"
+        "if [[ \"$*\" == 'image inspect aiden-mobilegym-simulator:local aiden-mobilegym-daemon:local aiden-mobilegym-test-runner:local' ]]; then exit 1; fi\n"
+        "if [[ \"${1:-}\" == 'compose' && \"$*\" == *'docker-compose.cn.yml'* && \"$*\" == *' build'* ]]; then exit 0; fi\n"
+        "if [[ \"${1:-}\" == 'compose' && \"$*\" == *' build'* ]]; then printf 'failed to fetch anonymous token: i/o timeout\\n' >&2; exit 12; fi\n"
+        "if [[ \"$*\" == *\" logs\"* ]]; then printf 'compose logs for %s\\n' \"${COMPOSE_PROJECT_NAME:-}\"; fi\n"
     )
     fake_docker.chmod(0o755)
     return log_path
@@ -54,6 +99,150 @@ def command_lines(lines, needle):
     return [line for line in lines if needle in line]
 
 
+def test_parallel_run_builds_missing_local_images_before_workers(tmp_path):
+    log_path = install_image_check_fake_docker(tmp_path)
+    env = make_env(tmp_path, log_path, PARALLEL="1")
+
+    result = subprocess.run(
+        ["./parallel_run.sh", "clock.CountAlarms"],
+        cwd=DOCKER_DIR,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = log_path.read_text().splitlines()
+    build_index = next(i for i, line in enumerate(lines) if " build" in line)
+    run_index = next(i for i, line in enumerate(lines) if " run --rm test " in line)
+    assert build_index < run_index
+
+
+def test_parallel_run_rebuilds_when_sources_are_newer_than_images(tmp_path):
+    log_path = install_image_check_fake_docker(tmp_path)
+    (tmp_path / "images-built").write_text("present\n")
+    env = make_env(tmp_path, log_path, PARALLEL="1")
+
+    result = subprocess.run(
+        ["./parallel_run.sh", "clock.CountAlarms"],
+        cwd=DOCKER_DIR,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert any(" build" in line for line in log_path.read_text().splitlines())
+
+
+def test_parallel_run_image_freshness_ignores_host_launcher_scripts():
+    script = (DOCKER_DIR / "parallel_run.sh").read_text()
+
+    assert 'mobilegym_root / "scripts",' not in script
+    assert 'mobilegym_root / "scripts" / "run_aiden.py"' in script
+
+
+def test_parallel_run_reports_missing_docker_clearly(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}{os.pathsep}/bin:/usr/bin",
+            "MOBILEGYM_RUNS_ROOT": str(tmp_path / "runs"),
+            "MOBILEGYM_BATCH_ID": "batch-test",
+        }
+    )
+
+    result = subprocess.run(
+        ["./parallel_run.sh", "clock.CountAlarms"],
+        cwd=DOCKER_DIR,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "Docker CLI not found" in result.stderr
+
+
+def test_parallel_run_writes_report_when_image_build_fails(tmp_path):
+    log_path = install_build_fail_fake_docker(tmp_path)
+    env = make_env(tmp_path, log_path, PARALLEL="1")
+
+    result = subprocess.run(
+        ["./parallel_run.sh", "clock.CountAlarms"],
+        cwd=DOCKER_DIR,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    batch = Path(env["MOBILEGYM_RUNS_ROOT"]) / env["MOBILEGYM_BATCH_ID"]
+    assert result.returncode != 0
+    assert (batch / "summary.json").exists()
+    assert (batch / "index.html").exists()
+    summary = json.loads((batch / "summary.json").read_text())
+    assert summary["worker_failed"] == 1
+    assert summary["tasks"] == 1
+
+
+def test_parallel_run_passes_build_proxy_args(tmp_path):
+    log_path = install_image_check_fake_docker(tmp_path)
+    env = make_env(
+        tmp_path,
+        log_path,
+        PARALLEL="1",
+        MOBILEGYM_DOCKER_PROXY="http://host.docker.internal:7897",
+        MOBILEGYM_PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST="https://cdn.playwright.dev",
+    )
+
+    result = subprocess.run(
+        ["./parallel_run.sh", "clock.CountAlarms"],
+        cwd=DOCKER_DIR,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    build_line = next(line for line in log_path.read_text().splitlines() if " build" in line)
+    assert "--profile test" in build_line
+    assert "--build-arg HTTP_PROXY=http://host.docker.internal:7897" in build_line
+    assert "--build-arg HTTPS_PROXY=http://host.docker.internal:7897" in build_line
+    assert "--build-arg PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST=https://cdn.playwright.dev" in build_line
+
+
+def test_parallel_run_falls_back_to_cn_compose_on_docker_hub_timeout(tmp_path):
+    log_path = install_registry_timeout_then_cn_fake_docker(tmp_path)
+    env = make_env(tmp_path, log_path, PARALLEL="1")
+
+    result = subprocess.run(
+        ["./parallel_run.sh", "clock.CountAlarms"],
+        cwd=DOCKER_DIR,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    build_lines = [line for line in log_path.read_text().splitlines() if " build" in line]
+    assert any("docker-compose.yml" in line for line in build_lines)
+    assert any("docker-compose.cn.yml" in line for line in build_lines)
+
+
 def test_parallel_run_uses_isolated_projects_configs_logs_and_reports(tmp_path):
     result, lines, batch_dir = run_parallel(
         tmp_path,
@@ -85,6 +274,7 @@ def test_parallel_run_shards_suite_and_writes_worker_metadata(tmp_path):
         tmp_path,
         ["--suite", "phone_control_v1"],
         PARALLEL="2",
+        MODEL_NAME="qwen3.6-35b",
     )
 
     assert result.returncode == 0, result.stderr
@@ -99,9 +289,37 @@ def test_parallel_run_shards_suite_and_writes_worker_metadata(tmp_path):
     assert all("--chat-timeout-sec 777" in line for line in run_lines)
     shard_json = batch_dir / "phone_control_v1" / "shard-0" / "shard.json"
     assert '"suite": "phone_control_v1"' in shard_json.read_text()
+    assert '"model": "qwen3.6-35b"' in shard_json.read_text()
     assert '"exit_code": 0' in shard_json.read_text()
     assert (batch_dir / "phone_control_v1" / "shard-0" / "runner.log").exists()
     assert (batch_dir / "phone_control_v1" / "shard-0" / "compose.log").exists()
+
+
+def test_parallel_run_renders_agent_template_from_environment(tmp_path):
+    source_config = tmp_path / "source-config"
+    source_config.mkdir()
+    (source_config / "agent.toml.template").write_text(
+        '[model]\nprovider = "{{MODEL_PROVIDER}}"\nmodel = "{{MODEL_NAME}}"\nbase_url = "{{MODEL_BASE_URL}}"\napi_key = "{{MODEL_API_KEY}}"\n[device]\ncontrol_token_file = "{{CONTROL_TOKEN_FILE}}"\n'
+    )
+
+    result, lines, _ = run_parallel(
+        tmp_path,
+        ["--suite", "clock"],
+        PARALLEL="1",
+        AIDEN_SOURCE_CONFIG_DIR=str(source_config),
+        MODEL_PROVIDER="openrouter",
+        MODEL_NAME="google/gemini-3.5-flash",
+        MODEL_BASE_URL="https://openrouter.ai/api/v1",
+        MODEL_API_KEY="test-key",
+    )
+
+    assert result.returncode == 0, result.stderr
+    agent_toml = "\n".join(line.removeprefix("AGENT_TOML:") for line in lines if line.startswith("AGENT_TOML:"))
+    assert '{{MODEL_PROVIDER}}' not in agent_toml
+    assert 'provider = "openrouter"' in agent_toml
+    assert 'model = "google/gemini-3.5-flash"' in agent_toml
+    assert 'control_token_file = "' in agent_toml
+    assert 'control_token' in agent_toml
 
 
 def test_parallel_run_expands_multiple_suites_and_keeps_reporting_after_failure(tmp_path):
@@ -157,6 +375,7 @@ def test_mobilegym_compose_files_use_stable_images_and_config_dir_variable():
         assert "image: aiden-mobilegym-daemon:local" in content
         assert "image: aiden-mobilegym-test-runner:local" in content
         assert "${AIDEN_CONFIG_DIR:-../config}:/config:ro" in content
+        assert "../../suites:/app/benchmark/suites:ro" in content
 
 
 def test_mobilegym_compose_files_pass_proxy_environment_to_daemon():
@@ -166,6 +385,40 @@ def test_mobilegym_compose_files_pass_proxy_environment_to_daemon():
         assert "HTTP_PROXY=${HTTP_PROXY:-}" in content
         assert "ALL_PROXY=${ALL_PROXY:-}" in content
         assert "NO_PROXY=localhost,127.0.0.1,daemon,mobilegym,test" in content
+
+
+def test_mobilegym_test_runner_bypasses_proxy_for_internal_services():
+    for compose_name in ("docker-compose.yml", "docker-compose.cn.yml"):
+        content = (DOCKER_DIR / compose_name).read_text()
+        test_section = content.split("\n  test:\n", 1)[1].split("\nnetworks:", 1)[0]
+        assert "NO_PROXY=localhost,127.0.0.1,daemon,mobilegym,test" in test_section
+        assert "no_proxy=localhost,127.0.0.1,daemon,mobilegym,test" in test_section
+
+
+def test_mobilegym_dockerfiles_support_playwright_download_mirror():
+    standard = (DOCKER_DIR / "Dockerfile").read_text()
+    china = (DOCKER_DIR / "Dockerfile.cn").read_text()
+
+    assert "ARG PLAYWRIGHT_DOWNLOAD_HOST" in standard
+    assert "ARG PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST" in standard
+    assert "PLAYWRIGHT_DOWNLOAD_HOST=${PLAYWRIGHT_DOWNLOAD_HOST}" in standard
+    assert "PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST=${PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST}" in standard
+    assert "PUPPETEER_SKIP_DOWNLOAD=true" in standard
+    assert "COPY benchmark/runner /app/benchmark/runner" in standard
+    assert "ARG HTTP_PROXY" in china
+    assert "HTTP_PROXY=${HTTP_PROXY}" in china
+    assert "PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST=${PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST:-https://playwright-akamai.azureedge.net}" in china
+    assert "PUPPETEER_SKIP_DOWNLOAD=true" in china
+    assert "COPY benchmark/runner /app/benchmark/runner" in china
+    assert "for attempt in 1 2 3" in china
+    assert "git clone" in china
+
+
+def test_mobilegym_agent_template_limits_screenshot_context():
+    template = (DOCKER_DIR.parent / "config" / "agent.toml.template").read_text()
+
+    assert "screenshot_keep_n = 1" in template
+    assert "screenshot_prune_interval = 2" in template
 
 
 def test_parallel_compose_config_removes_host_port_bindings():

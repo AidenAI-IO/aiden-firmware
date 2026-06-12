@@ -10,65 +10,99 @@ const benchmarkIndexHTML = `
 <title>Aiden Benchmark</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,-apple-system,sans-serif;background:#f5f5f5;padding:24px;color:#333;max-width:1120px;margin:0 auto}
-h1{font-size:20px;margin-bottom:14px}
-.card{background:#fff;border-radius:8px;padding:16px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
-select,button{font-size:14px;padding:8px 16px;border-radius:6px;border:1px solid #ddd}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f6f7fb;padding:clamp(18px,3vw,36px);color:#273142;max-width:1180px;margin:0 auto}
+h1{font-size:24px;margin-bottom:8px;letter-spacing:-.02em}
+h2{font-size:15px;margin-bottom:12px;color:#111827}
+.toplink{display:inline-block;font-size:13px;margin:0 0 20px;color:#2563eb;text-decoration:none}
+.card{background:#fbfcff;border:1px solid #e6eaf2;border-radius:14px;padding:20px;margin-bottom:18px;box-shadow:0 10px 28px rgba(15,23,42,.06)}
+select,button{font-size:14px;padding:9px 14px;border-radius:8px;border:1px solid #d7dde8}
+select{min-width:min(100%,360px);background:#fff;color:#1f2937}
 button{background:#2563eb;color:#fff;border:none;cursor:pointer}
 button:disabled{background:#94a3b8;cursor:not-allowed}
 button:hover:not(:disabled){background:#1d4ed8}
-.status{font-size:13px;color:#475569;background:#f1f5f9;border-radius:999px;padding:5px 10px;display:inline-flex;align-items:center;min-height:28px}
+.secondary{background:#e8eef8;color:#1e3a8a}
+.secondary:hover:not(:disabled){background:#dbe6f7}
+.status{font-size:13px;color:#475569;background:#eef3fb;border-radius:999px;padding:6px 12px;display:inline-flex;align-items:center;min-height:30px}
 .status.running{color:#92400e;background:#fef3c7}
 .status.done{color:#16a34a}
-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #eee}
-th{font-weight:600;color:#666}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
+th,td{text-align:left;padding:10px 8px;border-bottom:1px solid #edf0f6;vertical-align:middle}
+th{font-weight:650;color:#5b6472;background:#f8faff}
 a{color:#2563eb;text-decoration:none}
 a:hover{text-decoration:underline}
 .pass{color:#16a34a;font-weight:600}
 .fail{color:#dc2626;font-weight:600}
+.not-ready{color:#94a3b8;font-size:12px}
 .badge{display:inline-block;font-size:11px;background:#e0e7ff;color:#3730a3;padding:1px 6px;border-radius:4px;margin-left:6px}
-.progress{margin-top:10px;font-size:13px;color:#444;display:none}
+.progress{margin-top:14px;font-size:13px;color:#444;display:none}
 .progress-bar{height:8px;background:#e5e7eb;border-radius:999px;overflow:hidden;margin-top:6px;width:100%}
 .progress-fill{height:100%;width:0;background:#2563eb;transition:width .2s}
-.terminal{background:#0f172a;color:#d1fae5;border-radius:8px;padding:12px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;min-height:180px;max-height:320px;overflow:auto;white-space:pre-wrap;word-break:break-word;border:1px solid #1e293b}
-textarea{width:100%;min-height:200px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;padding:8px;border:1px solid #ddd;border-radius:6px;resize:vertical}
-input[type=text]{font-size:14px;padding:8px 12px;border-radius:6px;border:1px solid #ddd;width:240px}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.terminal{background:#111827;color:#d1fae5;border-radius:12px;padding:14px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;min-height:190px;max-height:340px;overflow:auto;white-space:pre-wrap;word-break:break-word;border:1px solid #1f2937}
+textarea{width:100%;min-height:210px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;padding:10px;border:1px solid #d7dde8;border-radius:10px;resize:vertical;background:#fff}
+input[type=text],input[type=number]{font-size:14px;padding:8px 12px;border-radius:8px;border:1px solid #d7dde8;background:#fff}
+input[type=text]{width:260px}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
 .toolbar{margin-bottom:0}
+.mode-row{justify-content:space-between;gap:16px}
+.mode-tabs{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.control-grid{display:grid;grid-template-columns:minmax(260px,1fr) auto;gap:14px;align-items:end;margin-top:16px}
+.field-label{display:block;font-size:12px;color:#64748b;margin-bottom:6px}
+.inline-field{display:inline-flex;gap:8px;align-items:center}
 .muted{font-size:12px;color:#888}
 .err{color:#dc2626;font-size:13px;white-space:pre-wrap;margin-top:8px}
 .ok{color:#16a34a;font-size:13px;margin-top:8px}
 .del{background:#dc2626;font-size:12px;padding:4px 8px}
 .del:hover:not(:disabled){background:#b91c1c}
+@media(max-width:720px){.control-grid{grid-template-columns:1fr}.actions{width:100%}button{flex:1}input[type=text],select{width:100%;min-width:0}}
 </style></head><body>
 <h1>Aiden Benchmark</h1>
-<a href="/benchmark/record" style="display:inline-block;font-size:13px;margin:-10px 0 14px;color:#2563eb;text-decoration:none">📷 录入截图任务 →</a>
+<a class="toplink" href="/benchmark/record">📷 录入截图任务 →</a>
 <div class="card">
-<div class="row toolbar">
+<div class="row toolbar mode-row">
+<div class="mode-tabs">
 <label><input type="radio" name="mode" value="aiden" checked onchange="onModeChange()"> Aiden Native</label>
 <label><input type="radio" name="mode" value="mobilegym" onchange="onModeChange()"> MobileGym</label>
+<span id="statusText" class="status">idle</span>
 </div>
-<div class="row toolbar">
+<button id="refreshBtn" class="secondary" onclick="refreshBenchmark()">Refresh</button>
+</div>
+<div class="control-grid">
+<div>
+<label class="field-label" for="suiteSelect">Benchmarks</label>
 <select id="suiteSelect"><option value="">Loading...</option></select>
-<span id="mgConfig" style="display:none">
-<label class="muted">Parallel <input type="number" id="parallelInput" value="4" min="1" max="16" style="width:60px"></label>
-<label class="muted">Limit <input type="number" id="limitInput" placeholder="(all)" min="1" style="width:80px"></label>
+</div>
+<div class="actions">
+<span id="mgConfig" class="inline-field" style="display:none">
+<label class="muted">Parallel <input type="number" id="parallelInput" value="4" min="1" max="16" style="width:64px"></label>
 </span>
 <button id="runBtn" onclick="startRun()">Run</button>
 <button id="delBtn" class="del" onclick="deleteSuite()" style="display:none">Delete</button>
-<span id="statusText" class="status">idle</span>
+</div>
 </div>
 <div id="progressBox" class="progress">
 <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
 </div>
 </div>
+<div id="unitCard" class="card">
+<h2>Unit Tests</h2>
+<div class="muted" style="margin-bottom:12px">Direct tool-level tests. Run one platform suite, or run all unit suites under suites/unit.</div>
+<div class="control-grid">
+<div>
+<label class="field-label" for="unitSelect">Unit suite</label>
+<select id="unitSelect"><option value="">Loading...</option></select>
+</div>
+<div class="actions">
+<button id="runUnitBtn" onclick="startRunUnit()">Run</button>
+</div>
+</div>
+</div>
 <div class="card">
-<h2 style="font-size:15px;margin-bottom:8px">Live Log</h2>
+<h2>Live Log</h2>
 <div id="logBox" class="terminal">No benchmark log yet.</div>
 </div>
 <div class="card">
-<h2 style="font-size:15px;margin-bottom:8px">AI Generate Suite</h2>
+<h2>AI Generate Suite</h2>
 <div class="muted" style="margin-bottom:8px">Describe test scenarios in natural language. One line = one task. Supports multi-step workflows, captcha handling, login requirements, etc.</div>
 <textarea id="aiPrompt" placeholder="Examples (one per line for batch generation):
 1. 淘宝购买上月买过的牙膏 (需要登录+历史订单)
@@ -87,7 +121,7 @@ Or single scenario: Test agent on 3 math questions (2+2, 5*3, 10-4) with multipl
 <div id="aiGenMsg"></div>
 </div>
 <div class="card">
-<h2 style="font-size:15px;margin-bottom:8px">Import Custom Suite</h2>
+<h2>Import Custom Suite</h2>
 <div class="muted" style="margin-bottom:8px">Paste a suite JSON (or use AI Generate above). Validation runs through runner.suite.load_suite.</div>
 <div class="row">
 <input type="text" id="importName" placeholder="suite name (a-z, 0-9, _-)">
@@ -97,13 +131,25 @@ Or single scenario: Test agent on 3 math questions (2+2, 5*3, 10-4) with multipl
 <textarea id="importJson" placeholder='{"name":"my_suite","tasks":[{"id":"t1","category":"single_step","description_for_judge":"...","prompt":"...","rubric":[{"id":"r1","check":"..."}],"hard_assertions":{}}]}'></textarea>
 <div id="importMsg"></div>
 </div>
-<div class="card"><h2 style="font-size:15px;margin-bottom:8px">History</h2>
-<table><thead><tr><th>Run ID</th><th>Suite</th><th>Passed</th><th>Failed</th><th>Report</th></tr></thead>
-<tbody id="historyBody"><tr><td colspan="5">Loading...</td></tr></tbody></table></div>
+<div class="card"><h2>History</h2>
+<table><thead><tr><th>Run ID</th><th>Suite</th><th>Status</th><th>Progress</th><th>Model</th><th>Passed</th><th>Failed</th><th>Report</th></tr></thead>
+<tbody id="historyBody"><tr><td colspan="8">Loading...</td></tr></tbody></table></div>
 <script>
+var MOBILEGYM_LOCAL_BASE='http://127.0.0.1:4174';
 var polling=null;
 var suiteIndex={};
+var benchmarkSuiteCount=0;
+var unitSuiteCount=0;
 var logPolling=null;
+function benchmarkEndpoint(path){return getMode()==='mobilegym'?MOBILEGYM_LOCAL_BASE+path:path}
+function mobileGymLauncherMessage(e){return 'Start the Mac MobileGym launcher first: '+String(e)}
+function showMobileGymLauncherError(e){
+var msg=mobileGymLauncherMessage(e);
+document.getElementById('statusText').textContent='launcher offline';
+document.getElementById('statusText').className='status fail';
+document.getElementById('logBox').textContent=msg;
+return msg;
+}
 function updateProgress(d){
 var box=document.getElementById('progressBox');
 var fill=document.getElementById('progressFill');
@@ -123,12 +169,12 @@ status.className='status '+(d.status||'');
 fill.style.width='0';
 }}
 function loadLog(){
-fetch('/benchmark/log?mode='+encodeURIComponent(getMode())).then(r=>r.text()).then(function(t){
+fetch(benchmarkEndpoint('/benchmark/log')+'?mode='+encodeURIComponent(getMode())).then(r=>r.text()).then(function(t){
 var box=document.getElementById('logBox');
 var atBottom=(box.scrollTop+box.clientHeight>=box.scrollHeight-24);
 box.textContent=t||'No benchmark log yet.';
 if(atBottom)box.scrollTop=box.scrollHeight;
-}).catch(function(){});
+}).catch(function(e){if(getMode()==='mobilegym')showMobileGymLauncherError(e)});
 }
 function getMode(){
 var els=document.getElementsByName('mode');
@@ -138,19 +184,28 @@ return 'aiden';
 function onModeChange(){
 var mg=getMode()==='mobilegym';
 document.getElementById('mgConfig').style.display=mg?'inline-block':'none';
+document.getElementById('unitCard').style.display=mg?'none':'block';
 loadSuites();
+loadRuns();
+loadStatus();
 }
 function load(){loadSuites();loadRuns();loadStatus()}
+function refreshBenchmark(){loadSuites();loadRuns();loadStatus();loadLog()}
 function loadSuites(){
 var mode=getMode();
-fetch('/benchmark/suites?mode='+encodeURIComponent(mode)).then(r=>r.json()).then(d=>{
-var s=document.getElementById('suiteSelect');s.innerHTML='';suiteIndex={};
+fetch(benchmarkEndpoint('/benchmark/suites')+'?mode='+encodeURIComponent(mode)).then(r=>r.json()).then(d=>{
+var s=document.getElementById('suiteSelect');var u=document.getElementById('unitSelect');
+s.innerHTML='';u.innerHTML='';suiteIndex={};benchmarkSuiteCount=0;unitSuiteCount=0;
 if(!d || !d.length){
 var o=document.createElement('option');o.value='';o.textContent='(no suites)';s.appendChild(o);
+var uo=document.createElement('option');uo.value='';uo.textContent='(no unit suites)';u.appendChild(uo);
 syncDelBtn();return;
 }
 var groups={aiden:[],mobilegym_builtin:[]};
-d.forEach(function(x){(groups[x.type]||groups.aiden).push(x)});
+d.forEach(function(x){
+if(mode!=='mobilegym'&&x.kind==='unit'){unitSuiteCount++;return}
+(groups[x.type]||groups.aiden).push(x);benchmarkSuiteCount++;
+});
 function appendGroup(label,arr){
 if(!arr.length)return;
 var og=document.createElement('optgroup');og.label=label;
@@ -166,7 +221,23 @@ s.appendChild(og);
 }
 appendGroup('Aiden Suites',groups.aiden);
 if(mode==='mobilegym')appendGroup('MobileGym Built-in',groups.mobilegym_builtin);
+if(!benchmarkSuiteCount){var bo=document.createElement('option');bo.value='';bo.textContent='(no benchmark suites)';s.appendChild(bo)}
+if(mode!=='mobilegym'){
+d.forEach(function(x){
+if(x.kind!=='unit')return;
+var o=document.createElement('option');o.value=x.path||x.name;
+o.textContent=x.name+(x.custom?' (custom)':'');
+u.appendChild(o);suiteIndex[x.path||x.name]=x;
+});
+if(!unitSuiteCount){var uo=document.createElement('option');uo.value='';uo.textContent='(no unit suites)';u.appendChild(uo)}
+}
 syncDelBtn();
+}).catch(function(e){
+var s=document.getElementById('suiteSelect');var u=document.getElementById('unitSelect');s.innerHTML='';u.innerHTML='';suiteIndex={};
+var o=document.createElement('option');o.value='';o.textContent=getMode()==='mobilegym'?'(Start the Mac MobileGym launcher first)':'(failed to load suites)';s.appendChild(o);
+var uo=document.createElement('option');uo.value='';uo.textContent='(failed to load unit suites)';u.appendChild(uo);
+syncDelBtn();
+if(getMode()==='mobilegym')showMobileGymLauncherError(e);
 });
 }
 function syncDelBtn(){
@@ -174,32 +245,56 @@ var p=document.getElementById('suiteSelect').value;
 var x=suiteIndex[p];
 document.getElementById('delBtn').style.display=(x&&x.custom)?'inline-block':'none';
 }
+function mobileGymSuiteName(item,key){
+if(item.type!=='aiden')return item.name;
+var p=item.path||key;
+var marker='/suites/';
+var i=p.indexOf(marker);
+if(i>=0)p=p.slice(i+marker.length);
+if(p.endsWith('.json'))p=p.slice(0,-5);
+return p;
+}
+function progressText(r){return r.progress||((r.totals&&r.totals.tasks)?((r.totals.tasks)+'/'+(r.totals.tasks)):'—')}
+function reportCell(r){
+var t=r.totals||{};
+var total=Number(t.tasks||0);
+if((r.status||'done')!=='done'||total<1)return '<span class="not-ready">Not ready</span>';
+var reportHref=benchmarkEndpoint('/benchmark/report/')+encodeURIComponent(r.run_id);
+return '<a href="'+reportHref+'">View</a>';
+}
 function loadRuns(){
-fetch('/benchmark/runs').then(r=>r.json()).then(d=>{
+fetch(benchmarkEndpoint('/benchmark/runs')).then(r=>r.json()).then(d=>{
 var tb=document.getElementById('historyBody');tb.innerHTML='';
-if(!d.length){tb.innerHTML='<tr><td colspan="5">No runs yet</td></tr>';return}
+if(!d.length){tb.innerHTML='<tr><td colspan="8">No runs yet</td></tr>';return}
 d.forEach(function(r){
 var t=r.totals||{};var suite=r.suite||'';
 var sn=suite.split('/').pop().replace('.json','');
 var tr=document.createElement('tr');
-tr.innerHTML='<td>'+r.run_id+'</td><td>'+sn+'</td>'
+tr.innerHTML='<td>'+r.run_id+'</td><td>'+sn+'</td><td>'+(r.status||'done')+'</td><td>'+progressText(r)+'</td><td>'+(r.model||'—')+'</td>'
 +'<td class="pass">'+(t.passed||0)+'</td><td class="fail">'+(t.failed||0)+'</td>'
-+'<td><a href="/benchmark/report/'+r.run_id+'">View</a></td>';
++'<td>'+reportCell(r)+'</td>';
 tb.appendChild(tr)});
+}).catch(function(e){
+var tb=document.getElementById('historyBody');
+tb.innerHTML='<tr><td colspan="8">'+(getMode()==='mobilegym'?mobileGymLauncherMessage(e):'Failed to load runs')+'</td></tr>';
 })}
 function loadStatus(){
-fetch('/benchmark/status').then(r=>r.json()).then(d=>{
+fetch(benchmarkEndpoint('/benchmark/status')).then(r=>r.json()).then(d=>{
 var btn=document.getElementById('runBtn');
-btn.disabled=(d.status==='running');
+var unitBtn=document.getElementById('runUnitBtn');
+btn.disabled=(d.status==='running'||benchmarkSuiteCount===0);
+unitBtn.disabled=(d.status==='running'||unitSuiteCount===0||getMode()==='mobilegym');
 updateProgress(d);
 loadLog();
 if(d.status==='running'&&!polling)polling=setInterval(pollStatus,3000);
 if(d.status==='running'&&!logPolling)logPolling=setInterval(loadLog,1000);
-})}
+}).catch(function(e){if(getMode()==='mobilegym')showMobileGymLauncherError(e)})}
 function pollStatus(){
-fetch('/benchmark/status').then(r=>r.json()).then(d=>{
+fetch(benchmarkEndpoint('/benchmark/status')).then(r=>r.json()).then(d=>{
 var btn=document.getElementById('runBtn');
-btn.disabled=(d.status==='running');
+var unitBtn=document.getElementById('runUnitBtn');
+btn.disabled=(d.status==='running'||benchmarkSuiteCount===0);
+unitBtn.disabled=(d.status==='running'||unitSuiteCount===0||getMode()==='mobilegym');
 updateProgress(d);
 loadLog();
 if(d.status!=='running'){
@@ -207,7 +302,7 @@ clearInterval(polling);polling=null;
 if(logPolling){clearInterval(logPolling);logPolling=null}
 loadRuns();loadLog()
 }
-})}
+}).catch(function(e){if(getMode()==='mobilegym')showMobileGymLauncherError(e)})}
 function startRun(){
 var sel=document.getElementById('suiteSelect');
 var key=sel.value;
@@ -219,21 +314,40 @@ if(mode==='aiden'){
 payload.suite=item.path||key;
 payload.mode='aiden';
 } else {
-payload.suite=item.name;
+payload.suite=mobileGymSuiteName(item,key);
 payload.suite_type=item.type;
 payload.mode='mobilegym';
+payload.board_url=location.origin;
 payload.parallel=Number(document.getElementById('parallelInput').value)||4;
-var lim=document.getElementById('limitInput').value;
-if(lim)payload.limit=Number(lim);
 }
 document.getElementById('runBtn').disabled=true;
 document.getElementById('statusText').textContent='running';
 document.getElementById('statusText').className='status running';
-fetch('/benchmark/run',{method:'POST',headers:{'Content-Type':'application/json'},
+fetch(benchmarkEndpoint('/benchmark/run'),{method:'POST',headers:{'Content-Type':'application/json'},
 body:JSON.stringify(payload)}).then(r=>r.json()).then(function(){
 loadLog();
 polling=setInterval(pollStatus,3000);
-if(!logPolling)logPolling=setInterval(loadLog,1000)});
+if(!logPolling)logPolling=setInterval(loadLog,1000)}).catch(function(e){
+document.getElementById('runBtn').disabled=false;
+if(getMode()==='mobilegym')showMobileGymLauncherError(e);else alert(String(e));
+});
+}
+function startRunUnit(){
+var suite=document.getElementById('unitSelect').value;
+if(!suite){alert('Select a unit suite');return}
+document.getElementById('runBtn').disabled=true;
+document.getElementById('runUnitBtn').disabled=true;
+document.getElementById('statusText').textContent='running';
+document.getElementById('statusText').className='status running';
+fetch('/benchmark/run',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({suite:suite,mode:'aiden'})}).then(r=>r.json()).then(function(){
+loadLog();
+polling=setInterval(pollStatus,3000);
+if(!logPolling)logPolling=setInterval(loadLog,1000)}).catch(function(e){
+document.getElementById('runBtn').disabled=false;
+document.getElementById('runUnitBtn').disabled=false;
+alert(String(e));
+});
 }
 function generateSuite(){
 var prompt=document.getElementById('aiPrompt').value.trim();

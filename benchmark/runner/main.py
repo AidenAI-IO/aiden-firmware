@@ -51,6 +51,7 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--suite", required=True)
     p_run.add_argument("--agent-url", default=os.environ.get("AIDEN_AGENT_URL", "http://localhost:8080"))
     p_run.add_argument("--judge-model", default="claude-sonnet-4-6")
+    p_run.add_argument("--agent-model", default=os.environ.get("AIDEN_MODEL") or os.environ.get("MODEL_NAME") or os.environ.get("OPENAI_MODEL") or "")
     p_run.add_argument("--no-judge", action="store_true")
     p_run.add_argument("--repeats", type=int, default=None)
     p_run.add_argument("--out", default=str(REPO_ROOT / "benchmark" / "runs"))
@@ -272,6 +273,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "run_id": run_id, "git_sha": sha, "git_dirty": dirty,
         "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
         "agent_url": args.agent_url,
+        "agent_model": args.agent_model,
         "judge_config": {"provider": "anthropic", "model": args.judge_model} if judge_cfg else None,
         "judge_prompt_version": "v1",
         "started_at": started, "finished_at": now_iso(),

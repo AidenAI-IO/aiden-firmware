@@ -195,7 +195,9 @@ class AidenGoAgent(_MobileGymBaseAgent):
                 try:
                     action_log = _extract_action_log(bridge_end_response)
                     if action_log:
-                        export_bridge_actions(self.artifact_dir, action_log)
+                        artifact_dir = _task_artifact_dir(self.artifact_dir, self.task)
+                        _write_task_meta(artifact_dir, self.task)
+                        export_bridge_actions(artifact_dir, action_log)
                 except Exception as e:
                     logger.warning(f"Failed to export bridge actions: {e}")
 
@@ -344,3 +346,35 @@ def _extract_action_log(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload.get("action_log"), list):
         return [entry for entry in payload["action_log"] if isinstance(entry, dict)]
     return []
+
+
+def _task_artifact_dir(root: Path, task: Any | None) -> Path:
+    task_id = _task_id(task)
+    if not task_id:
+        return root
+    return root / "trajectory" / task_id.replace(".", "_")
+
+
+def _write_task_meta(path: Path, task: Any | None) -> None:
+    task_id = _task_id(task)
+    if not task_id:
+        return
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "meta.json").write_text(json.dumps({"task_id": task_id}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _task_id(task: Any | None) -> str:
+    if task is None:
+        return ""
+    if isinstance(task, str):
+        return task
+    if isinstance(task, dict):
+        for key in ("id", "task_id", "name"):
+            if task.get(key):
+                return str(task[key])
+        return ""
+    for name in ("id", "task_id", "name"):
+        value = getattr(task, name, None)
+        if value:
+            return str(value)
+    return ""

@@ -45,6 +45,7 @@ def _write_minimal_suite(suites_dir: Path, name: str = "test_suite") -> Path:
         ],
     }
     suite_path = suites_dir / f"{name}.json"
+    suite_path.parent.mkdir(parents=True, exist_ok=True)
     suite_path.write_text(json.dumps(suite))
     return suite_path
 
@@ -123,6 +124,16 @@ def test_validate_selection_accepts_aiden_suite_alone(run_aiden_module):
 
 def test_load_aiden_suite_rejects_path_traversal(run_aiden_module, tmp_path, monkeypatch):
     monkeypatch.setattr(run_aiden_module, "BENCHMARK_ROOT", tmp_path)
-    for bad in ["../etc/passwd", "foo/bar", "foo bar", "foo;rm"]:
+    for bad in [".", "..", "../etc/passwd", "foo/../bar", "foo//bar", "foo bar", "foo;rm"]:
         with pytest.raises(run_aiden_module.LauncherError, match="invalid suite name"):
             run_aiden_module._load_aiden_suite_as_mobilegym_tasks(bad)
+
+
+def test_load_aiden_suite_allows_nested_safe_path(run_aiden_module, tmp_path, monkeypatch):
+    suites_dir = tmp_path / "suites"
+    _write_minimal_suite(suites_dir, "perception/perception_v1")
+
+    monkeypatch.setattr(run_aiden_module, "BENCHMARK_ROOT", tmp_path)
+    tasks = run_aiden_module._load_aiden_suite_as_mobilegym_tasks("perception/perception_v1")
+
+    assert len(tasks) == 1

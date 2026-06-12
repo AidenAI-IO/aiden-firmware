@@ -20,7 +20,16 @@ DEFAULT_MOBILEGYM_ROOT = MOBILEGYM_PACKAGE_ROOT / "vendor" / "mobilegym"
 DEFAULT_RUNS_DIR = BENCHMARK_ROOT / "runs" / "mobilegym"
 DEFAULT_ENV_URL = "http://localhost:4173"
 
-_SAFE_SUITE_NAME = re.compile(r"^[A-Za-z0-9_.\-]+$")
+_SAFE_SUITE_SEGMENT = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
+
+def _valid_suite_name(suite_name: str) -> bool:
+    if not suite_name or suite_name.startswith("/"):
+        return False
+    for part in suite_name.split("/"):
+        if part in {"", ".", ".."} or not _SAFE_SUITE_SEGMENT.match(part):
+            return False
+    return True
 
 
 @dc.dataclass
@@ -31,6 +40,8 @@ class MobileGymTaskAdapter:
     task_id: str
     instruction: str
     metadata: dict[Any, Any]
+    apps: list[str] = dc.field(default_factory=list)
+    params: dict[str, Any] = dc.field(default_factory=dict)
     # MobileGym sometimes reads `.id` / `.goal`; alias them.
 
     @property
@@ -41,13 +52,77 @@ class MobileGymTaskAdapter:
     def goal(self) -> str:
         return self.instruction
 
+    @property
+    def description(self) -> str:
+        return self.instruction
+
+    @property
+    def suite(self) -> str:
+        value = self.metadata.get("aiden_suite_name") or self.task_id.rsplit(".", 1)[0]
+        return str(value)
+
+    @property
+    def name(self) -> str:
+        return self.task_id.rsplit(".", 1)[-1]
+
+    @property
+    def category(self) -> str:
+        return str(self.metadata.get("category") or "aiden")
+
+    @property
+    def scope(self) -> str:
+        return "S1"
+
+    @property
+    def objective(self) -> str:
+        return "operate"
+
+    @property
+    def composition(self) -> str:
+        return "atomic"
+
+    @property
+    def difficulty(self) -> str:
+        return "L1"
+
+    @property
+    def capabilities(self) -> list[str]:
+        return []
+
+    async def setup(self, env: Any) -> Any:
+        return await env.get_observation()
+
+    def teardown(self, env: Any) -> None:
+        del env
+
+    def evaluate(self, input: Any) -> Any:
+        del input
+        try:
+            from bench_env.task.judge import JudgeResult
+
+            return JudgeResult.fail("Aiden JSON suites require external report judging")
+        except ModuleNotFoundError:
+            return _FallbackJudgeResult.fail("Aiden JSON suites require external report judging")
+
+
+@dc.dataclass
+class _FallbackJudgeResult:
+    success: bool = False
+    clean: bool = True
+    progress: float = 0.0
+    issues: list[dict[str, Any]] = dc.field(default_factory=list)
+
+    @classmethod
+    def fail(cls, reason: str) -> "_FallbackJudgeResult":
+        return cls(success=False, clean=True, issues=[{"reason": reason}])
+
 
 def _load_aiden_suite_as_mobilegym_tasks(suite_name: str) -> list[MobileGymTaskAdapter]:
     """Load benchmark/suites/<suite_name>.json and convert tasks for MobileGym."""
-    if not _SAFE_SUITE_NAME.match(suite_name):
+    if not _valid_suite_name(suite_name):
         raise LauncherError(
             f"invalid suite name: {suite_name!r} "
-            "(only letters, digits, '_', '-', '.' allowed)"
+            "(must be a safe relative path)"
         )
     suite_path = BENCHMARK_ROOT / "suites" / f"{suite_name}.json"
     if not suite_path.exists():
@@ -297,11 +372,12 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
         evaluator = factory.create_evaluator(config, None)
         recorder.start_run(
             agent="AidenGoAgent",
-            model_name="aiden-go",
+            model_name=_current_model_name(),
             extra_meta=SerialRunner.build_run_meta(config, tasks),
         )
         if recorder.run_dir:
             run_dir = recorder.run_dir
+            agent.artifact_dir = recorder.run_dir
             add_log_file(recorder.run_dir / "console.log")
         runner = SerialRunner(env, agent, tasks, config, recorder, evaluator)
         await runner.run()
@@ -316,7 +392,7 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
 def _runner_args(args: argparse.Namespace) -> argparse.Namespace:
     return argparse.Namespace(
         agent="aiden_go",
-        model_name="aiden-go",
+        model_name=_current_model_name(),
         model_base_url=None,
         model_api_key="",
         task_id=args.task_id,
@@ -409,6 +485,10 @@ def _task_id(task: Any) -> str:
         if value:
             return str(value)
     return str(task)
+
+
+def _current_model_name() -> str:
+    return os.getenv("MODEL_NAME") or os.getenv("AIDEN_MODEL") or os.getenv("OPENAI_MODEL") or "aiden-go"
 
 
 def _validate_mobilegym_root(path: Path, source: str) -> None:

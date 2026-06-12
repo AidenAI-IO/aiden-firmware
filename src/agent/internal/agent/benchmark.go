@@ -54,11 +54,26 @@ func ResolveBenchmarkDir(flagValue string, cfg BenchmarkConfig) (string, error) 
 type suiteListItem struct {
 	Name        string `json:"name"`
 	Path        string `json:"path,omitempty"`
+	Kind        string `json:"kind,omitempty"`
 	Custom      bool   `json:"custom"`
 	Type        string `json:"type"` // "aiden" | "mobilegym_builtin"
 	TaskCount   int    `json:"task_count,omitempty"`
 	Description string `json:"description,omitempty"`
 	Concurrent  bool   `json:"concurrent"`
+}
+
+func benchmarkSuiteKind(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) > 256*1024 {
+		return "benchmark"
+	}
+	var raw struct {
+		Kind string `json:"kind"`
+	}
+	if json.Unmarshal(data, &raw) == nil && raw.Kind == "unit" {
+		return "unit"
+	}
+	return "benchmark"
 }
 
 func (s *Server) handleBenchmarkSuites(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +117,7 @@ func scanAidenSuites(benchmarkDir string, concurrent bool) []suiteListItem {
 		items = append(items, suiteListItem{
 			Name:       strings.TrimSuffix(base, ".json"),
 			Path:       path,
+			Kind:       benchmarkSuiteKind(path),
 			Custom:     strings.HasPrefix(rel, "custom"+string(filepath.Separator)),
 			Type:       "aiden",
 			Concurrent: concurrent,
@@ -157,9 +173,12 @@ func scanMobileGymBuiltinSuites(benchmarkDir string) []suiteListItem {
 }
 
 type runListItem struct {
-	RunID  string         `json:"run_id"`
-	Suite  string         `json:"suite,omitempty"`
-	Totals map[string]int `json:"totals,omitempty"`
+	RunID    string         `json:"run_id"`
+	Suite    string         `json:"suite,omitempty"`
+	Status   string         `json:"status,omitempty"`
+	Progress string         `json:"progress,omitempty"`
+	Model    string         `json:"model,omitempty"`
+	Totals   map[string]int `json:"totals,omitempty"`
 }
 
 func (s *Server) handleBenchmarkRuns(w http.ResponseWriter, r *http.Request) {
@@ -191,15 +210,22 @@ func (s *Server) handleBenchmarkRuns(w http.ResponseWriter, r *http.Request) {
 		names = names[:20]
 	}
 
-	items := make([]runListItem, 0, len(names))
+	items := make([]runListItem, 0, len(names)+1)
+	if running := s.currentBenchmarkRunListItem(); running != nil {
+		items = append(items, *running)
+	}
 	for _, n := range names {
-		item := runListItem{RunID: n}
+		item := runListItem{RunID: n, Status: "done"}
 		// Read manifest.json (written by Python runner) for suite path + totals.
 		manifestPath := filepath.Join(s.benchmarkDir, "runs", n, "manifest.json")
 		if data, err := os.ReadFile(manifestPath); err == nil {
 			var raw struct {
-				SuitePath string         `json:"suite_path"`
-				Totals    map[string]int `json:"totals"`
+				SuitePath   string         `json:"suite_path"`
+				Totals      map[string]int `json:"totals"`
+				JudgeConfig map[string]any `json:"judge_config"`
+				Model       string         `json:"model"`
+				AgentModel  string         `json:"agent_model"`
+				ModelName   string         `json:"model_name"`
 			}
 			if json.Unmarshal(data, &raw) == nil {
 				if raw.SuitePath != "" {
@@ -207,6 +233,8 @@ func (s *Server) handleBenchmarkRuns(w http.ResponseWriter, r *http.Request) {
 					item.Suite = filepath.Base(raw.SuitePath)
 				}
 				item.Totals = raw.Totals
+				item.Model = benchmarkRunModel(raw.Model, raw.AgentModel, raw.ModelName)
+				item.Progress = benchmarkRunProgress(raw.Totals)
 			}
 		}
 		items = append(items, item)
@@ -214,6 +242,94 @@ func (s *Server) handleBenchmarkRuns(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(items)
+}
+
+func (s *Server) currentBenchmarkRunListItem() *runListItem {
+	statePath := filepath.Join(s.benchmarkDir, "state.json")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return nil
+	}
+	var state struct {
+		Status      string `json:"status"`
+		RunID       string `json:"run_id"`
+		Suite       string `json:"suite"`
+		Total       int    `json:"total"`
+		Current     int    `json:"current"`
+		Completed   int    `json:"completed"`
+		CurrentTask string `json:"current_task"`
+		Model       string `json:"model"`
+	}
+	if json.Unmarshal(data, &state) != nil || state.Status != "running" {
+		return nil
+	}
+	current := state.Current
+	if current == 0 && state.Completed > 0 {
+		current = state.Completed
+	}
+	if current == 0 && state.Total > 0 {
+		current = 1
+	}
+	progress := "running"
+	if state.Total > 0 {
+		progress = fmt.Sprintf("%d/%d", current, state.Total)
+	}
+	model := state.Model
+	if model == "" && s.runtime != nil {
+		model = s.runtime.config.Model.Model
+	}
+	return &runListItem{
+		RunID:    firstNonEmptyBenchmarkValue(state.RunID, "running"),
+		Suite:    displaySuiteName(state.Suite),
+		Status:   "running",
+		Progress: progress,
+		Model:    model,
+		Totals:   map[string]int{"tasks": state.Total, "completed": state.Completed},
+	}
+}
+
+func benchmarkRunModel(model, agentModel, modelName string) string {
+	if model != "" {
+		return model
+	}
+	if agentModel != "" {
+		return agentModel
+	}
+	if modelName != "" {
+		return modelName
+	}
+	return ""
+}
+
+func benchmarkRunProgress(totals map[string]int) string {
+	if totals == nil {
+		return ""
+	}
+	total := totals["tasks"]
+	if total == 0 {
+		return ""
+	}
+	done := totals["passed"] + totals["failed"] + totals["skipped"] + totals["judge_error"] + totals["timeout"] + totals["error"] + totals["unknown"] + totals["worker_failed"]
+	if done == 0 {
+		done = total
+	}
+	return fmt.Sprintf("%d/%d", done, total)
+}
+
+func displaySuiteName(suite string) string {
+	if suite == "" {
+		return ""
+	}
+	return filepath.Base(suite)
+}
+
+func firstNonEmptyBenchmarkValue(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (s *Server) handleBenchmarkReport(w http.ResponseWriter, r *http.Request) {

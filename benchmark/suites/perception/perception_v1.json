@@ -15,7 +15,7 @@
         },
         {
           "id": "click_targets_settings",
-          "check": "The touch/click coordinates target the Settings icon area: normalized x in [0.75, 0.98] and y in [0.38, 0.55]."
+          "check": "The touch/click coordinates target the Settings icon area: normalized x in [746, 930], y in [441, 560] (0-1000 normalized space, where 500 is center)."
         }
       ],
       "hard_assertions": {

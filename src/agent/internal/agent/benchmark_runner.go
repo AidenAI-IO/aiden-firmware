@@ -17,7 +17,7 @@ import (
 // state.json on completion. The Python runner no longer accepts --state-file
 // (removed upstream); the Go server handles state.json bookkeeping itself in
 // handleBenchmarkRun (start) and the trailing echo (end).
-func (s *Server) launchBenchmarkRunner(suitePath, judgeModel, openRouterAPIKey string) error {
+func (s *Server) launchBenchmarkRunner(suitePath, judgeModel, openRouterAPIKey, agentModel string) error {
 	if judgeModel == "" {
 		judgeModel = "bytedance-seed/seed-2.0-lite"
 	}
@@ -29,11 +29,12 @@ func (s *Server) launchBenchmarkRunner(suitePath, judgeModel, openRouterAPIKey s
 		`run --suite %s `+
 		`--agent-url http://127.0.0.1:8080 `+
 		`--judge-model %s `+
+		`--agent-model %s `+
 		`>> /tmp/benchmark_run.log 2>&1 & `+
 		`runner_pid=$!; echo $runner_pid > /tmp/benchmark_runner.pid; `+
 		`wait $runner_pid; rm -f /tmp/benchmark_runner.pid; `+
 		`echo '{"status":"idle"}' > /userdata/agent/benchmark/state.json) &`,
-		shellQuote(openRouterAPIKey), shellQuote(suitePath), shellQuote(judgeModel))
+		shellQuote(openRouterAPIKey), shellQuote(suitePath), shellQuote(judgeModel), shellQuote(agentModel))
 	return exec.Command("sh", "-c", script).Start()
 }
 
@@ -87,11 +88,13 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		}
 		apiKey := ""
 		judge := ""
+		agentModel := ""
 		if s.runtime != nil {
 			apiKey = s.runtime.config.Model.APIKey
 			judge = s.runtime.config.Benchmark.JudgeModel
+			agentModel = s.runtime.config.Model.Model
 		}
-		if err := launch(req.Suite, judge, apiKey); err != nil {
+		if err := launch(req.Suite, judge, apiKey, agentModel); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"launch failed: %s"}`, err), http.StatusInternalServerError)
 			return
 		}
@@ -116,7 +119,19 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"ok":true,"status":"running"}`))
 }
 
-var safeSuiteName = regexp.MustCompile(`^[A-Za-z0-9_.\-]+$`)
+var safeSuiteSegment = regexp.MustCompile(`^[A-Za-z0-9_.\-]+$`)
+
+func validSuiteName(suite string) bool {
+	if suite == "" || strings.HasPrefix(suite, "/") {
+		return false
+	}
+	for _, part := range strings.Split(suite, "/") {
+		if part == "" || part == "." || part == ".." || !safeSuiteSegment.MatchString(part) {
+			return false
+		}
+	}
+	return true
+}
 
 func (s *Server) launchMobileGymRunner(suite, suiteType string, parallel, limit int) error {
 	script, err := buildMobileGymLaunchScript(s.benchmarkDir, suite, suiteType, parallel, limit)
@@ -127,8 +142,8 @@ func (s *Server) launchMobileGymRunner(suite, suiteType string, parallel, limit 
 }
 
 func buildMobileGymLaunchScript(benchmarkDir, suite, suiteType string, parallel, limit int) (string, error) {
-	if !safeSuiteName.MatchString(suite) {
-		return "", fmt.Errorf("invalid suite name %q (only letters, digits, '_', '-', '.' allowed)", suite)
+	if !validSuiteName(suite) {
+		return "", fmt.Errorf("invalid suite name %q (must be a safe relative path)", suite)
 	}
 
 	var suiteFlag string
@@ -149,7 +164,9 @@ func buildMobileGymLaunchScript(benchmarkDir, suite, suiteType string, parallel,
 	statePath := filepath.Join(benchmarkDir, "state.json")
 	pidFile := "/tmp/mobilegym_runner.pid"
 
-	return fmt.Sprintf(`cd %s/benchmark/mobilegym/docker && `+
+	mobileGymDockerDir := filepath.Join(benchmarkDir, "mobilegym", "docker")
+
+	return fmt.Sprintf(`cd %s && `+
 		`(`+
 		`echo 'Starting MobileGym benchmark...' > /tmp/mobilegym_run.log; `+
 		`PARALLEL=%d ./parallel_run.sh %s %s `+
@@ -157,6 +174,6 @@ func buildMobileGymLaunchScript(benchmarkDir, suite, suiteType string, parallel,
 		`runner_pid=$!; echo $runner_pid > %s; `+
 		`wait $runner_pid; rm -f %s; `+
 		`echo '{"status":"idle"}' > %s) &`,
-		shellQuote(benchmarkDir), parallel, suiteFlag, limitFlag,
+		shellQuote(mobileGymDockerDir), parallel, suiteFlag, limitFlag,
 		shellQuote(pidFile), shellQuote(pidFile), shellQuote(statePath)), nil
 }

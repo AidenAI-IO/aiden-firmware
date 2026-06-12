@@ -13,8 +13,14 @@ HOST_RUNS_ROOT="${MOBILEGYM_RUNS_ROOT:-$SCRIPT_DIR/../../runs/mobilegym}"
 CONTAINER_RUNS_ROOT="${MOBILEGYM_CONTAINER_RUNS_ROOT:-/app/benchmark/runs/mobilegym}"
 SOURCE_CONFIG_DIR="${AIDEN_SOURCE_CONFIG_DIR:-$SCRIPT_DIR/../config}"
 CONFIG_TMP_ROOT="${MOBILEGYM_CONFIG_TMP_ROOT:-${TMPDIR:-/tmp}/mobilegym-parallel-configs-$BATCH_ID}"
+LIMIT=""
 STOPPING=0
 FAILED=0
+PIDS=()
+ACTIVE_PIDS=()
+ACTIVE_PROJECTS=()
+ACTIVE_CONFIGS=()
+ACTIVE_SHARDS=()
 
 require_positive_int() {
     local name="$1"
@@ -32,7 +38,7 @@ fi
 
 usage() {
     cat <<'EOF'
-Usage: ./parallel_run.sh <task-id> [task-id...] | --suite <suite> | --suites <suite-a,suite-b> | --aiden-suite <name>
+Usage: ./parallel_run.sh <task-id> [task-id...] | --suite <suite> [--limit N] | --suites <suite-a,suite-b> [--limit N] | --aiden-suite <name> [--limit N]
 
 Examples:
   ./parallel_run.sh clock.CountAlarms clock.ToggleAlarm
@@ -61,6 +67,10 @@ print(secrets.token_urlsafe(32))
 PY
 }
 
+current_model_name() {
+    printf '%s' "${MODEL_NAME:-${AIDEN_MODEL:-${OPENAI_MODEL:-aiden-go}}}"
+}
+
 now_iso() {
     python3 - <<'PY'
 from datetime import datetime, timezone
@@ -78,7 +88,12 @@ build_compose_args() {
     local raw="${COMPOSE_FILES:-docker-compose.yml}"
     local found_parallel=0
     local files=()
-    COMPOSE_ARGS=()
+COMPOSE_ARGS=()
+REQUIRED_IMAGES=(
+    "aiden-mobilegym-simulator:local"
+    "aiden-mobilegym-daemon:local"
+    "aiden-mobilegym-test-runner:local"
+)
     IFS=',' read -r -a files <<<"$raw"
     for file in "${files[@]}"; do
         if [[ -z "$file" ]]; then
@@ -94,11 +109,170 @@ build_compose_args() {
     fi
 }
 
+build_arg_values() {
+    local proxy="${MOBILEGYM_DOCKER_PROXY:-}"
+    local http_proxy="${HTTP_PROXY:-${http_proxy:-}}"
+    local https_proxy="${HTTPS_PROXY:-${https_proxy:-}}"
+    local no_proxy="${NO_PROXY:-${no_proxy:-localhost,127.0.0.1,daemon,mobilegym,test,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}}"
+    local playwright_host="${PLAYWRIGHT_DOWNLOAD_HOST:-${MOBILEGYM_PLAYWRIGHT_DOWNLOAD_HOST:-}}"
+    local chromium_host="${PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST:-${MOBILEGYM_PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST:-}}"
+    if [[ -n "$proxy" ]]; then
+        http_proxy="$proxy"
+        https_proxy="$proxy"
+    fi
+    BUILD_ARGS=()
+    if [[ -n "$http_proxy" ]]; then
+        BUILD_ARGS+=(--build-arg "HTTP_PROXY=$http_proxy" --build-arg "http_proxy=$http_proxy")
+    fi
+    if [[ -n "$https_proxy" ]]; then
+        BUILD_ARGS+=(--build-arg "HTTPS_PROXY=$https_proxy" --build-arg "https_proxy=$https_proxy")
+    fi
+    if [[ -n "$no_proxy" ]]; then
+        BUILD_ARGS+=(--build-arg "NO_PROXY=$no_proxy" --build-arg "no_proxy=$no_proxy")
+    fi
+    if [[ -n "$playwright_host" ]]; then
+        BUILD_ARGS+=(--build-arg "PLAYWRIGHT_DOWNLOAD_HOST=$playwright_host")
+    fi
+    if [[ -n "$chromium_host" ]]; then
+        BUILD_ARGS+=(--build-arg "PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST=$chromium_host")
+    fi
+}
+
 compose_for_worker() {
     local project="$1"
     local config_dir="$2"
     shift 2
     COMPOSE_PROJECT_NAME="$project" AIDEN_CONFIG_DIR="$config_dir" docker compose "${COMPOSE_ARGS[@]}" "$@"
+}
+
+preflight_docker() {
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "Error: Docker CLI not found. Install Docker Desktop and make sure 'docker' is on PATH." >&2
+        exit 2
+    fi
+    if ! docker compose version >/dev/null 2>&1; then
+        echo "Error: Docker Compose v2 not available. Install/update Docker Desktop." >&2
+        exit 2
+    fi
+}
+
+ensure_images_built() {
+    if docker image inspect "${REQUIRED_IMAGES[@]}" >/dev/null 2>&1 && images_are_fresh; then
+        return 0
+    fi
+    echo "Building MobileGym Docker images..."
+    build_arg_values
+    if docker compose "${COMPOSE_ARGS[@]}" --profile test build "${BUILD_ARGS[@]}"; then
+        return 0
+    fi
+    if should_try_cn_compose; then
+        echo "Standard Docker Hub build failed; retrying with docker-compose.cn.yml..."
+        if ! docker compose -f docker-compose.cn.yml -f docker-compose.parallel.yml --profile test build "${BUILD_ARGS[@]}"; then
+            return 1
+        fi
+        COMPOSE_ARGS=(-f docker-compose.cn.yml -f docker-compose.parallel.yml)
+        return 0
+    fi
+    return 1
+}
+
+should_try_cn_compose() {
+    local arg
+    for arg in "${COMPOSE_ARGS[@]}"; do
+        if [[ "$arg" == "docker-compose.cn.yml" ]]; then
+            return 1
+        fi
+    done
+    [[ -f "$SCRIPT_DIR/docker-compose.cn.yml" ]]
+}
+
+write_preflight_failure_report() {
+    local message="$1"
+    local suite="preflight"
+    if [[ ${#WORK_ITEMS[@]} -gt 0 ]]; then
+        IFS='|' read -r _kind suite _shard_index _shard_count _task_id _task_slug <<EOF
+${WORK_ITEMS[0]}
+EOF
+    fi
+    local shard_dir="$BATCH_DIR/$suite/shard-0"
+    mkdir -p "$shard_dir"
+    write_shard_json_initial "$shard_dir/shard.json" "$suite" 0 1 "preflight" "" "shard-0"
+    printf '%s\n' "$message" > "$shard_dir/runner.log"
+    update_shard_json_final "$shard_dir/shard.json" 2 0
+    set +e
+    (cd "$SCRIPT_DIR/../.." && uv run python -m mobilegym.report "$BATCH_DIR")
+    set -e
+}
+
+images_are_fresh() {
+    local newest
+    newest="$(latest_source_mtime)"
+    local image
+    for image in "${REQUIRED_IMAGES[@]}"; do
+        if [[ "$(image_created_epoch "$image")" -lt "$newest" ]]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+image_created_epoch() {
+    local image="$1"
+    local created
+    created="$(docker image inspect --format '{{.Created}}' "$image" 2>/dev/null || true)"
+    if [[ -z "$created" ]]; then
+        echo 0
+        return
+    fi
+    python3 - "$created" <<'PY'
+from datetime import datetime, timezone
+import sys
+
+raw = sys.argv[1].strip()
+try:
+    value = raw.replace("Z", "+00:00")
+    print(int(datetime.fromisoformat(value).timestamp()))
+except Exception:
+    print(0)
+PY
+}
+
+latest_source_mtime() {
+    python3 - "$SCRIPT_DIR" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+docker_dir = Path(sys.argv[1]).resolve()
+mobilegym_root = docker_dir.parent
+benchmark_root = mobilegym_root.parent
+paths = [
+    docker_dir / "Dockerfile",
+    docker_dir / "Dockerfile.cn",
+    docker_dir / "docker-compose.yml",
+    docker_dir / "docker-compose.cn.yml",
+    docker_dir / "docker-compose.parallel.yml",
+    mobilegym_root / "adapter",
+    mobilegym_root / "bridge",
+    mobilegym_root / "config",
+    mobilegym_root / "scripts" / "run_aiden.py",
+    mobilegym_root / "report.py",
+    benchmark_root / "runner",
+]
+newest = 0
+for path in paths:
+    if not path.exists():
+        continue
+    if path.is_file():
+        newest = max(newest, int(path.stat().st_mtime))
+        continue
+    for root, dirs, files in os.walk(path):
+        dirs[:] = [name for name in dirs if name != "__pycache__"]
+        for name in files:
+            if name.endswith((".py", ".toml", ".yml", ".yaml")) or name.startswith("Dockerfile"):
+                newest = max(newest, int((Path(root) / name).stat().st_mtime))
+print(newest)
+PY
 }
 
 prepare_worker_config() {
@@ -111,6 +285,7 @@ prepare_worker_config() {
         cp "$SOURCE_CONFIG_DIR/agent.toml" "$config_dir/agent.toml"
     elif [[ -f "$SOURCE_CONFIG_DIR/agent.toml.template" ]]; then
         cp "$SOURCE_CONFIG_DIR/agent.toml.template" "$config_dir/agent.toml"
+        render_agent_template "$config_dir/agent.toml" "$config_dir/control_token"
     else
         echo "missing agent.toml or agent.toml.template in $SOURCE_CONFIG_DIR" >&2
         return 1
@@ -171,6 +346,30 @@ PY
     chmod 600 "$config_dir/control_token"
 }
 
+render_agent_template() {
+    local path="$1"
+    local control_token_file="$2"
+    python3 - "$path" "$control_token_file" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+control_token_file = sys.argv[2]
+replacements = {
+    "MODEL_PROVIDER": os.getenv("MODEL_PROVIDER") or os.getenv("AIDEN_MODEL_PROVIDER") or "openrouter",
+    "MODEL_NAME": os.getenv("MODEL_NAME") or os.getenv("AIDEN_MODEL") or "google/gemini-3.5-flash",
+    "MODEL_BASE_URL": os.getenv("MODEL_BASE_URL") or os.getenv("AIDEN_MODEL_BASE_URL") or "https://openrouter.ai/api/v1",
+    "MODEL_API_KEY": os.getenv("MODEL_API_KEY") or os.getenv("OPENROUTER_API_KEY") or os.getenv("AIDEN_MODEL_API_KEY") or "",
+    "CONTROL_TOKEN_FILE": control_token_file,
+}
+text = path.read_text(encoding="utf-8")
+for key, value in replacements.items():
+    text = text.replace("{{" + key + "}}", value.replace('"', '\\"'))
+path.write_text(text, encoding="utf-8")
+PY
+}
+
 write_shard_json_initial() {
     local path="$1"
     local suite="$2"
@@ -180,7 +379,7 @@ write_shard_json_initial() {
     local task_id="$6"
     local task_slug="$7"
     mkdir -p "$(dirname "$path")"
-    python3 - "$path" "$BATCH_ID" "$suite" "$shard_index" "$shard_count" "$project" "$task_id" "$task_slug" "$(now_iso)" <<'PY'
+    python3 - "$path" "$BATCH_ID" "$suite" "$shard_index" "$shard_count" "$project" "$task_id" "$task_slug" "$(now_iso)" "$(current_model_name)" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -198,6 +397,7 @@ payload = {
     "runner_log": "runner.log",
     "compose_log": "compose.log",
     "raw_dir": "raw",
+    "model": sys.argv[10],
 }
 if task_id:
     payload.update({
@@ -287,6 +487,7 @@ run_worker() {
             --chat-timeout-sec "$CHAT_TIMEOUT_SEC" \
             --runs-dir "$container_raw_dir" \
             --shard-metadata-file "$container_shard_json" \
+            ${LIMIT:+--limit "$LIMIT"} \
             --parallel 1 \
             --headless > "$runner_log" 2>&1
         status=$?
@@ -299,6 +500,7 @@ run_worker() {
             --chat-timeout-sec "$CHAT_TIMEOUT_SEC" \
             --runs-dir "$container_raw_dir" \
             --shard-metadata-file "$container_shard_json" \
+            ${LIMIT:+--limit "$LIMIT"} \
             --parallel 1 \
             --headless > "$runner_log" 2>&1
         status=$?
@@ -419,7 +621,33 @@ if [[ $# -eq 0 ]]; then
     exit 1
 fi
 
+ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --limit)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "Error: --limit requires a positive integer" >&2
+                exit 2
+            fi
+            require_positive_int limit "$2"
+            LIMIT="$2"
+            shift 2
+            ;;
+        *)
+            ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${ARGS[@]}"
+
+if [[ $# -eq 0 ]]; then
+    usage
+    exit 1
+fi
+
 build_compose_args
+preflight_docker
 mkdir -p "$HOST_RUNS_ROOT" "$CONFIG_TMP_ROOT"
 HOST_RUNS_ROOT="$(cd "$HOST_RUNS_ROOT" && pwd)"
 BATCH_DIR="$HOST_RUNS_ROOT/$BATCH_ID"
@@ -463,6 +691,17 @@ else
 fi
 
 TOTAL=${#WORK_ITEMS[@]}
+set +e
+ensure_images_built
+preflight_status=$?
+set -e
+if [[ $preflight_status -ne 0 ]]; then
+    write_preflight_failure_report "Docker image build failed before starting workers. See launcher log for build output."
+    echo "Docker image build failed."
+    echo "Report: $BATCH_DIR/index.html"
+    exit "$preflight_status"
+fi
+
 MAX_JOBS_VALUE="${MAX_JOBS:-$PARALLEL}"
 if [[ "$MAX_JOBS_VALUE" -gt "$TOTAL" ]]; then
     MAX_JOBS_VALUE="$TOTAL"

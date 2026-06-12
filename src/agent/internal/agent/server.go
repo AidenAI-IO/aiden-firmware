@@ -36,7 +36,7 @@ type Server struct {
 	benchmarkPIDFile           string
 	benchmarkLogPath           string
 	benchmarkStatePath         string
-	benchmarkLauncher          func(suite, judge, apiKey string) error
+	benchmarkLauncher          func(suite, judge, apiKey, agentModel string) error
 	benchmarkMobileGymLauncher func(suite, suiteType string, parallel, limit int) error
 	benchmarkSuiteValidator    func(path string) error
 	benchmarkSuiteLocks        sync.Map

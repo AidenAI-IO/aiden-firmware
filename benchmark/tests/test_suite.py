@@ -28,6 +28,18 @@ def test_load_suite_returns_parsed(tmp_path: Path):
     assert suite.tasks[0].category == "single_step"
     assert suite.tasks[0].rubric[0].id == "in_settings"
 
+
+def test_perception_v1_settings_rubric_uses_0_1000_normalized_coordinates():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "perception" / "perception_v1.json"
+    suite = load_suite(suite_path)
+    task = next(task for task in suite.tasks if task.id == "find_settings_iphone")
+    check = next(item.check for item in task.rubric if item.id == "click_targets_settings")
+
+    assert "(0-1000 normalized space" in check
+    assert "normalized x in [746, 930]" in check
+    assert "y in [441, 560]" in check
+    assert "[0.75, 0.98]" not in check
+
 def test_load_suite_parses_expected_option_answer(tmp_path: Path):
     fixture = {
         **FIXTURE,
