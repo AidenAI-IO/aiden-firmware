@@ -29,6 +29,12 @@ func (t *AudioVolumeTool) Description() string {
 		`Volume range is 0..100.`
 }
 
+func (t *AudioVolumeTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"volume": rangedIntegerArgSchema("Optional playback volume to set before reading the current value.", 0, 100),
+	})
+}
+
 func (t *AudioVolumeTool) Call(_ context.Context, input string) (string, error) {
 	var args struct {
 		Volume *int `json:"volume"`

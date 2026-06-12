@@ -50,6 +50,15 @@ func (t *RecallSessionChunksTool) Description() string {
 	}, " ")
 }
 
+func (t *RecallSessionChunksTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"chunk_ids": stringArrayArgSchema("Specific session chunk ids to retrieve."),
+		"tags":      stringArrayArgSchema("Topic keywords to search when chunk_ids are not known."),
+		"entities":  stringArrayArgSchema("Named entities to search for."),
+		"limit":     minIntegerArgSchema("Maximum number of chunks to return.", 1),
+	})
+}
+
 func (t *RecallSessionChunksTool) Call(ctx context.Context, input string) (string, error) {
 	if t.store == nil {
 		return "", fmt.Errorf("session memory store is not configured")
@@ -84,6 +93,15 @@ func (t *RecallMemoryTool) Description() string {
 		"  - limit: Max results to return (default 5).",
 		"Returns JSON: {\"results\":[{\"id\":\"...\",\"type\":\"preference\",\"title\":\"...\",\"content\":\"...\",\"summary\":\"...\"}]}.",
 	}, " ")
+}
+
+func (t *RecallMemoryTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"tags":     stringArrayArgSchema("Topic or domain keywords."),
+		"entities": stringArrayArgSchema("Specific named things such as apps, accounts, services, or people."),
+		"types":    stringArrayArgSchema("Memory categories such as preference, rule, procedure, fact, or profile."),
+		"limit":    minIntegerArgSchema("Maximum number of memories to return.", 1),
+	})
 }
 
 func (t *RecallMemoryTool) Call(ctx context.Context, input string) (string, error) {
@@ -128,6 +146,18 @@ func (t *SaveMemoryTool) Description() string {
 		"  - priority: 0-100, higher = more important. Use 80+ for user-stated rules/preferences, 60+ for inferred patterns, 40+ for observations.",
 		"Returns the saved memory ID or indicates the memory was deduplicated.",
 	}, " ")
+}
+
+func (t *SaveMemoryTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"type":     stringEnumArgSchema("Memory category.", "preference", "rule", "procedure", "fact", "profile"),
+		"title":    stringArgSchema("Short title for the memory."),
+		"content":  stringArgSchema("The stable information to remember."),
+		"tags":     stringArrayArgSchema("Topic or domain keywords for future search."),
+		"entities": stringArrayArgSchema("Specific named things mentioned by the memory."),
+		"evidence": stringArrayArgSchema("Original quotes or observations that support this memory."),
+		"priority": rangedIntegerArgSchema("Importance from 0 to 100.", 0, 100),
+	}, "type", "content")
 }
 
 func (t *SaveMemoryTool) Call(ctx context.Context, input string) (string, error) {
@@ -193,6 +223,13 @@ func (t *ForgetMemoryTool) Description() string {
 	}, " ")
 }
 
+func (t *ForgetMemoryTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"id":     stringArgSchema("Memory id to delete."),
+		"reason": stringArgSchema("Reason for deleting the memory."),
+	}, "id")
+}
+
 func (t *ForgetMemoryTool) Call(ctx context.Context, input string) (string, error) {
 	if t.store == nil {
 		return "", fmt.Errorf("long-term memory store is not configured")
@@ -227,6 +264,17 @@ func (t *RecallDeviceMemoryTool) Description() string {
 	}, " ")
 }
 
+func (t *RecallDeviceMemoryTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"terms":     stringArrayArgSchema("Free-text search terms."),
+		"tags":      stringArrayArgSchema("Topic tags to match."),
+		"entities":  stringArrayArgSchema("Named apps, devices, accounts, or UI concepts to match."),
+		"types":     stringArrayArgSchema("Device memory categories such as procedure, failure, calibration, or conflict."),
+		"device_id": stringArgSchema("Device id to filter by; omit for default search."),
+		"limit":     minIntegerArgSchema("Maximum number of device memories to return.", 1),
+	})
+}
+
 func (t *RecallDeviceMemoryTool) Call(ctx context.Context, input string) (string, error) {
 	if t.store == nil {
 		return "", fmt.Errorf("device memory store is not configured")
@@ -254,6 +302,12 @@ func (t *InspectEpisodeTool) Description() string {
 		"The runtime writes task episodes automatically after runs; use this only for memory debugging or explicit user requests.",
 		`Input JSON: {"id":"ep_..."}`,
 	}, " ")
+}
+
+func (t *InspectEpisodeTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"id": stringArgSchema("Stored task episode id to inspect."),
+	}, "id")
 }
 
 func (t *InspectEpisodeTool) Call(ctx context.Context, input string) (string, error) {

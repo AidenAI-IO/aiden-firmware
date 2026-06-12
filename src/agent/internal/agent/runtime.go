@@ -868,6 +868,13 @@ func (t *sessionRecallTelemetryTool) Description() string {
 	return t.inner.Description()
 }
 
+func (t *sessionRecallTelemetryTool) ArgsSchema() map[string]any {
+	if structured, ok := t.inner.(structuredInputTool); ok {
+		return structured.ArgsSchema()
+	}
+	return nil
+}
+
 func (t *sessionRecallTelemetryTool) Call(ctx context.Context, input string) (string, error) {
 	output, err := t.inner.Call(ctx, input)
 	if err != nil {
@@ -1248,9 +1255,6 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 
 func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call ToolCall) {
 	description := call.Description
-	if description == "" {
-		description = toolDescriptionOrFallback(call.Spec.Name, "")
-	}
 	if h.logger != nil {
 		if description != "" {
 			h.logger.Info("Tool call: name=%s input=%s description=%s",

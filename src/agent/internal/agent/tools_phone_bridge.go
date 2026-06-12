@@ -135,6 +135,17 @@ func (t *OpenAppTool) Description() string {
 		`If the phone bridge is not connected, this tool will fail and you should fall back to HID actions.`
 }
 
+func (t *OpenAppTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"app":              stringArgSchema("App name, alias, package, bundle id, or browser shortcut target."),
+		"name":             stringArgSchema("Alias for app."),
+		"url":              stringArgSchema("HTTP or HTTPS URL to open."),
+		"ios_urls":         stringArrayArgSchema("Explicit iOS URL schemes to try."),
+		"android_packages": stringArrayArgSchema("Explicit Android package names or intent actions to try."),
+		"phone_number":     stringArgSchema("Phone number to dial."),
+	})
+}
+
 type openAppArgs struct {
 	App             string   `json:"app"`
 	Name            string   `json:"name"`

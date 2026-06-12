@@ -645,6 +645,19 @@ func (t *MouseMoveTool) Description() string {
 		`pointer_mode touchscreen (Android): moves the logical touch point without pressing.`
 }
 
+func (t *MouseMoveTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"x":           coordinateSchema("X coordinate."),
+			"y":           coordinateSchema("Y coordinate."),
+			"coord_space": coordSpaceSchema(),
+		},
+		"required": []string{"x", "y"},
+	}
+}
+
 func (t *MouseMoveTool) Call(_ context.Context, input string) (string, error) {
 	var args struct {
 		X          pointerCoordinate `json:"x"`
@@ -966,6 +979,12 @@ func (t *MouseScrollTool) Description() string {
 	return `Scroll the mouse wheel. Input JSON: {"delta": -3}. ` +
 		`Positive values scroll up, negative scroll down. Range: -127 to 127. This is a wheel event and is not equivalent to a mobile swipe gesture. ` +
 		`Works in pointer_mode absolute; pointer_mode touchscreen ignores wheel events.`
+}
+
+func (t *MouseScrollTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"delta": rangedIntegerArgSchema("Mouse wheel delta. Positive scrolls up, negative scrolls down.", -127, 127),
+	}, "delta")
 }
 
 func (t *MouseScrollTool) Call(_ context.Context, input string) (string, error) {

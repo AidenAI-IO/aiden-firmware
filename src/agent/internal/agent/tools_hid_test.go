@@ -36,6 +36,8 @@ func TestHIDToolsExposeStructuredSchemas(t *testing.T) {
 		"keyboard_tap":  &KeyboardTapTool{},
 		"keyboard_text": &KeyboardTextTool{},
 		"mouse_click":   &MouseClickTool{},
+		"mouse_move":    &MouseMoveTool{},
+		"mouse_scroll":  &MouseScrollTool{},
 		"touch_gesture": &TouchGestureTool{},
 	} {
 		schema := tool.ArgsSchema()

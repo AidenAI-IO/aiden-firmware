@@ -37,6 +37,12 @@ func (t *CurrentTimeTool) Description() string {
 		`The timezone may be an IANA name such as "America/New_York", "UTC", "local", or a UTC offset such as "+08:00".`
 }
 
+func (t *CurrentTimeTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"timezone": stringArgSchema(`IANA timezone such as "Asia/Shanghai", "UTC", "local", or a UTC offset such as "+08:00".`),
+	})
+}
+
 func (t *CurrentTimeTool) Call(ctx context.Context, input string) (string, error) {
 	timezone := strings.TrimSpace(input)
 	if strings.HasPrefix(timezone, "{") {
@@ -147,6 +153,14 @@ func (t *WeatherTool) Description() string {
 	return `Get current weather and a short forecast for a location. ` +
 		`Input JSON: {"location":"Shanghai"} or {"latitude":31.23,"longitude":121.47,"location":"Shanghai"}. ` +
 		`A bare location string is also accepted. Uses Open-Meteo public weather data.`
+}
+
+func (t *WeatherTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"location":  stringArgSchema("Location name to geocode, or a display name when latitude/longitude are provided."),
+		"latitude":  rangedNumberArgSchema("Latitude in decimal degrees.", -90, 90),
+		"longitude": rangedNumberArgSchema("Longitude in decimal degrees.", -180, 180),
+	})
 }
 
 func (t *WeatherTool) Call(ctx context.Context, input string) (string, error) {
@@ -540,6 +554,12 @@ func (t *EnterSleepTool) Description() string {
 	return `Ask the runtime to close the active voice session and return to wakeup-waiting sleep mode. ` +
 		`Use this when the user says to stop listening, go to sleep, standby, or wait for the next wakeup. ` +
 		`Input JSON is optional: {"reason":"user asked me to sleep"}.`
+}
+
+func (t *EnterSleepTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"reason": stringArgSchema("Optional reason for entering wakeup-waiting sleep mode."),
+	})
 }
 
 func (t *EnterSleepTool) Call(ctx context.Context, input string) (string, error) {

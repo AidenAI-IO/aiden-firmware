@@ -38,6 +38,15 @@ func (t *SkillListTool) Description() string {
 	}, " ")
 }
 
+func (t *SkillListTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"query":            stringArgSchema("Optional skill name or description search query."),
+		"state":            stringEnumArgSchema("Optional lifecycle state filter.", SkillUsageStateActive, SkillUsageStateStale, SkillUsageStateArchived),
+		"include_archived": boolArgSchema("Include archived skills in results."),
+		"limit":            minIntegerArgSchema("Maximum number of skills to return.", 1),
+	})
+}
+
 func (t *SkillListTool) Call(_ context.Context, input string) (string, error) {
 	req := parseSkillListInput(input)
 	query := strings.ToLower(req.Query)
@@ -142,6 +151,12 @@ func (t *SkillMarkUsedTool) Description() string {
 	return "Mark a skill as actually used after following it. Input: skill name."
 }
 
+func (t *SkillMarkUsedTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"name": stringArgSchema("Skill name to mark as used."),
+	}, "name")
+}
+
 func (t *SkillMarkUsedTool) Call(_ context.Context, input string) (string, error) {
 	name := strings.TrimSpace(input)
 	if strings.HasPrefix(name, "{") {
@@ -187,6 +202,13 @@ func (t *SkillReadTool) Description() string {
 		"Also use it when the user explicitly asks to inspect a skill, or before patching a skill with skill_manage.",
 		"Do not read every skill; choose only relevant skills. Reads UTF-8 text files only; binary assets are rejected. Input: skill name or JSON with name and optional file_path.",
 	}, " ")
+}
+
+func (t *SkillReadTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"name":      stringArgSchema("Skill name to read."),
+		"file_path": stringArgSchema("Optional linked file path under SKILL.md, references/, templates/, scripts/, or assets/."),
+	}, "name")
 }
 
 type skillReadInput struct {
@@ -380,8 +402,7 @@ func (t *SkillManageTool) Description() string {
 - old_string, new_string: for patch
 - file_path, file_content: for write_file/remove_file under references/, templates/, scripts/, or assets/
 - reason: why this change is being made
-Patch example: {"action":"patch","name":"device-operator","old_string":"old instructions","new_string":"new instructions","reason":"add recovery steps"}
-When using a function-call wrapper, put that JSON object as the __arg1 string and do not leave __arg1 empty.`
+Patch example: {"action":"patch","name":"device-operator","old_string":"old instructions","new_string":"new instructions","reason":"add recovery steps"}`
 }
 
 const skillManageInputExample = `{"action":"patch","name":"device-operator","old_string":"old instructions","new_string":"new instructions","reason":"add recovery steps"}`
@@ -395,6 +416,19 @@ type skillManageInput struct {
 	FilePath    string `json:"file_path,omitempty"`
 	FileContent string `json:"file_content,omitempty"`
 	Reason      string `json:"reason,omitempty"`
+}
+
+func (t *SkillManageTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"action":       stringEnumArgSchema("Skill management action.", "create", "edit", "patch", "delete", "write_file", "remove_file", "mark_stale", "archive", "restore_archive"),
+		"name":         stringArgSchema("Skill name."),
+		"content":      stringArgSchema("Full SKILL.md content for create or edit."),
+		"old_string":   stringArgSchema("Exact text to replace for patch."),
+		"new_string":   stringArgSchema("Replacement text for patch."),
+		"file_path":    stringArgSchema("File path under references/, templates/, scripts/, or assets/ for write_file/remove_file."),
+		"file_content": stringArgSchema("Full file content for write_file."),
+		"reason":       stringArgSchema("Reason for making this skill change."),
+	}, "action", "name")
 }
 
 func (t *SkillManageTool) Call(_ context.Context, input string) (string, error) {

@@ -19,10 +19,20 @@ func executorMetaTools() []langtools.Tool {
 		&loopMetaTool{
 			name:        toolFinishStep,
 			description: "Signal the current plan step is ready for verification. Required before verifier review. Input JSON: {\"summary\":\"what was accomplished for this step\",\"key_info\":[\"facts, ids, values, or observations later steps may need\"],\"reason\":\"optional\"}.",
+			schema: objectArgsSchema(map[string]any{
+				"summary":  stringArgSchema("What was accomplished for this step."),
+				"result":   stringArgSchema("Alias for summary."),
+				"key_info": stringArrayArgSchema("Facts, ids, values, labels, or observations later steps may need."),
+				"reason":   stringArgSchema("Optional reason or verification context."),
+			}),
 		},
 		&loopMetaTool{
 			name:        toolAbortStep,
 			description: "Signal the current plan step cannot be completed and needs replanning. Required to stop step execution and enter verifier review. Input JSON: {\"reason\":\"why the step failed or is blocked\"}.",
+			schema: objectArgsSchema(map[string]any{
+				"reason":  stringArgSchema("Why the step failed or is blocked."),
+				"summary": stringArgSchema("Alias for reason."),
+			}, "reason"),
 		},
 	}
 }

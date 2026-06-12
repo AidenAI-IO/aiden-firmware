@@ -367,10 +367,10 @@ func (spec ToolSpec) LLMTool() llms.Tool {
 func (spec ToolSpec) LLMSchema() map[string]any {
 	if structured, ok := spec.Tool.(structuredInputTool); ok {
 		if schema := structured.ArgsSchema(); len(schema) > 0 {
-			return toolParametersWithDescription(schema)
+			return toolParametersSchema(schema)
 		}
 	}
-	return legacyToolParameters()
+	return genericToolParameters()
 }
 
 func (spec ToolSpec) NormalizeInput(input string) string {

@@ -20,11 +20,16 @@ const (
 type loopMetaTool struct {
 	name        string
 	description string
+	schema      map[string]any
 }
 
 func (t *loopMetaTool) Name() string { return t.name }
 
 func (t *loopMetaTool) Description() string { return t.description }
+
+func (t *loopMetaTool) ArgsSchema() map[string]any {
+	return t.schema
+}
 
 func (t *loopMetaTool) Call(context.Context, string) (string, error) {
 	return "", errors.New("loop meta tool must be handled by the role loop controller")
@@ -35,14 +40,26 @@ func loopMetaTools() []langtools.Tool {
 		&loopMetaTool{
 			name:        toolEnterPlanMode,
 			description: "Enter plan mode to draft and commit a multi-step plan. Required in default mode when the task will likely need 3 or more steps. Optional JSON input: {\"reason\":\"why planning is needed\"}.",
+			schema: objectArgsSchema(map[string]any{
+				"reason": stringArgSchema("Why planning is needed."),
+			}),
 		},
 		&loopMetaTool{
 			name:        toolCommitPlan,
 			description: "Commit the draft plan and switch to delegated execution. Input JSON: {\"objective\":\"task\",\"completion_criteria\":[\"criterion\"],\"plan\":[\"step\"],\"reason\":\"brief rationale\"}.",
+			schema: objectArgsSchema(map[string]any{
+				"objective":           stringArgSchema("Task objective."),
+				"completion_criteria": stringArrayArgSchema("Concrete criteria required before the task is complete."),
+				"plan":                stringArrayArgSchema("Ordered execution steps."),
+				"reason":              stringArgSchema("Brief rationale for the committed plan."),
+			}, "plan"),
 		},
 		&loopMetaTool{
 			name:        toolCancelPlan,
 			description: "Cancel plan mode and return to default mode. Optional JSON input: {\"reason\":\"why planning is cancelled\"}.",
+			schema: objectArgsSchema(map[string]any{
+				"reason": stringArgSchema("Why planning is cancelled."),
+			}),
 		},
 	}
 }
