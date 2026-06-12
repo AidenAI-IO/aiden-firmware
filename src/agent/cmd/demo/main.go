@@ -35,7 +35,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg, err := agent.LoadConfigFromDir(*configDir)
+	cfg, err := agent.LoadRuntimeConfigFromDir(*configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)

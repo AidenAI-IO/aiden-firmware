@@ -96,6 +96,7 @@ type hidDTO struct {
 }
 
 type searchDTO struct {
+	APIKey    string `json:"api_key,omitempty"`
 	Provider  string `json:"provider"`
 	HasAPIKey bool   `json:"has_api_key"`
 }
@@ -150,7 +151,9 @@ const hasAPIKeyPlaceholder = "***"
 // Config.Validate() can run against it.
 func (d webConfigDTO) toAgentConfig() agent.Config {
 	searchKey := ""
-	if d.Search.HasAPIKey {
+	if strings.TrimSpace(d.Search.APIKey) != "" {
+		searchKey = d.Search.APIKey
+	} else if d.Search.HasAPIKey {
 		searchKey = hasAPIKeyPlaceholder
 	}
 
@@ -259,6 +262,110 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
+func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
+	return webConfigDTO{
+		Model: modelDTO{
+			Provider:             cfg.Model.Provider,
+			APIKey:               cfg.Model.APIKey,
+			Model:                cfg.Model.Model,
+			BaseURL:              cfg.Model.BaseURL,
+			TokenEnv:             cfg.Model.TokenEnv,
+			Temperature:          cfg.Model.Temperature,
+			MaxResponseTokens:    cfg.Model.MaxResponseTokens,
+			ContextWindow:        cfg.Model.ContextWindow,
+			ModelMaxOutputTokens: cfg.Model.ModelMaxOutputTokens,
+		},
+		ModelText: modelDTO{
+			Provider:             cfg.ModelText.Provider,
+			APIKey:               cfg.ModelText.APIKey,
+			Model:                cfg.ModelText.Model,
+			BaseURL:              cfg.ModelText.BaseURL,
+			TokenEnv:             cfg.ModelText.TokenEnv,
+			Temperature:          cfg.ModelText.Temperature,
+			MaxResponseTokens:    cfg.ModelText.MaxResponseTokens,
+			ContextWindow:        cfg.ModelText.ContextWindow,
+			ModelMaxOutputTokens: cfg.ModelText.ModelMaxOutputTokens,
+		},
+		TTS: ttsDTO{
+			Provider: cfg.TTS.Provider,
+			APIKey:   cfg.TTS.APIKey,
+			Model:    cfg.TTS.Model,
+			VoiceID:  cfg.TTS.VoiceID,
+			Emotion:  cfg.TTS.Emotion,
+			Speed:    cfg.TTS.Speed,
+		},
+		STT: sttDTO{
+			Provider:        cfg.STT.Provider,
+			APIKey:          cfg.STT.APIKey,
+			Model:           cfg.STT.Model,
+			BaseURL:         cfg.STT.BaseURL,
+			SecretID:        cfg.STT.SecretID,
+			SecretKey:       cfg.STT.SecretKey,
+			Region:          cfg.STT.Region,
+			EngineModelType: cfg.STT.EngineModelType,
+		},
+		Audio: audioDTO{
+			Socket:     cfg.Audio.SocketOrDefault(),
+			SampleRate: cfg.Audio.SampleRateOrDefault(),
+			Channels:   cfg.Audio.ChannelsOrDefault(),
+			BitWidth:   cfg.Audio.BitWidthOrDefault(),
+		},
+		Benchmark: benchmarkDTO{
+			JudgeModel:   cfg.Benchmark.JudgeModel,
+			APIKey:       cfg.Benchmark.APIKey,
+			BenchmarkDir: cfg.Benchmark.Dir,
+		},
+		HID: hidDTO{
+			KeyboardDevice: cfg.HID.KeyboardDeviceOrDefault(),
+			MouseDevice:    cfg.HID.MouseDeviceOrDefault(),
+			FrameSocket:    cfg.HID.FrameSocketOrDefault(),
+			PointerMode:    cfg.HID.PointerModeOrDefault(),
+		},
+		Search: searchDTO{
+			Provider:  cfg.Search.ProviderOrDefault(),
+			HasAPIKey: strings.TrimSpace(cfg.Search.APIKey) != "",
+		},
+		Telemetry: telemetryDTO{
+			Enabled:           cfg.Telemetry.EnabledOrDefault(),
+			Provider:          cfg.Telemetry.ProviderOrDefault(),
+			BaseURL:           cfg.Telemetry.BaseURL,
+			PublicKey:         cfg.Telemetry.PublicKey,
+			SecretKey:         cfg.Telemetry.SecretKey,
+			UploadScreenshots: cfg.Telemetry.UploadScreenshotsOrDefault(),
+			UploadTimeoutSec:  int(cfg.Telemetry.UploadTimeoutOrDefault().Seconds()),
+			MaxRetry:          cfg.Telemetry.MaxRetryOrDefault(),
+			Tags:              cfg.Telemetry.Tags,
+			Environment:       cfg.Telemetry.EnvironmentOrDefault(),
+		},
+		Agent: agentDTO{
+			Instruction:               cfg.Instruction,
+			AdditionalPrompt:          cfg.AdditionalPrompt,
+			InputMode:                 cfg.InputModeOrDefault(),
+			TriggerMode:               cfg.TriggerModeOrDefault(),
+			VADBackend:                cfg.VADBackendOrDefault(),
+			VADModelPath:              cfg.VADModelPath,
+			VADHelperPath:             cfg.VADHelperPath,
+			VADSpeechThreshold:        cfg.VADSpeechThreshold,
+			SilenceMs:                 cfg.SilenceMs,
+			MinSpeechMs:               cfg.MinSpeechMs,
+			VoiceSessionEnabled:       cfg.VoiceSessionEnabledOrDefault(),
+			VoiceFollowupTimeoutMs:    int(cfg.VoiceFollowupTimeoutOrDefault().Milliseconds()),
+			VoiceFirstTurnTimeoutMs:   int(cfg.VoiceFirstTurnTimeoutOrDefault().Milliseconds()),
+			VoiceMaxTurns:             cfg.VoiceMaxTurns,
+			VoiceInterruptOnWakeup:    cfg.VoiceInterruptOnWakeupOrDefault(),
+			VoiceStreamingTTSEnabled:  cfg.VoiceStreamingTTSEnabledOrDefault(),
+			VoiceToolCallSpeech:       cfg.VoiceToolCallSpeechOrDefault(),
+			VoiceMaxResponseTokens:    cfg.VoiceMaxResponseTokensOrDefault(),
+			MaxIterations:             cfg.MaxIterations,
+			ScreenshotKeepN:           cfg.ScreenshotKeepN,
+			ScreenshotPruneInterval:   cfg.ScreenshotPruneInterval,
+			ScreenStableTimeoutMs:     cfg.ScreenStableTimeoutMs,
+			ScreenStableMs:            cfg.ScreenStableMs,
+			ScreenStableDiffThreshold: cfg.ScreenStableDiffThreshold,
+		},
+	}
+}
+
 // runConfigCheck implements the `agent config-check` subcommand
 // It reads JSON config from stdin, validates it, and outputs structured JSON result
 func runConfigCheck(args []string) int {
@@ -352,6 +459,53 @@ func runConfigMeta(args []string) int {
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(agent.ConfigMeta()); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to encode metadata: %v\n", err)
+		return 1
+	}
+
+	return 0
+}
+
+func resolvedWebConfigDTO(configPath string) (webConfigDTO, error) {
+	cfg, err := agent.LoadResolvedConfig(configPath)
+	if err != nil {
+		return webConfigDTO{}, err
+	}
+	return webConfigDTOFromAgentConfig(cfg), nil
+}
+
+// runConfig implements the `agent config` subcommand. It reads the current
+// agent.toml over the canonical defaults and emits the resolved config in the
+// config_web wire format.
+func runConfig(args []string) int {
+	fs := flag.NewFlagSet("config", flag.ExitOnError)
+	formatFlag := fs.String("format", "json", "output format (only json supported)")
+	configFlag := fs.String("config", "", "path to agent.toml or config directory")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to parse flags: %v\n", err)
+		return 1
+	}
+
+	if *formatFlag != "json" {
+		fmt.Fprintln(os.Stderr, "only --format=json is supported")
+		return 1
+	}
+
+	if strings.TrimSpace(*configFlag) == "" {
+		fmt.Fprintln(os.Stderr, "--config is required")
+		return 1
+	}
+
+	dto, err := resolvedWebConfigDTO(*configFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		return 1
+	}
+
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(dto); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to encode config: %v\n", err)
 		return 1
 	}
 

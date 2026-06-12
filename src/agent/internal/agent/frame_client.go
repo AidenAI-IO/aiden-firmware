@@ -17,7 +17,7 @@ type FrameServiceClient struct {
 
 func NewFrameServiceClient(socketPath string) *FrameServiceClient {
 	if socketPath == "" {
-		socketPath = "/tmp/frame_service.sock"
+		socketPath = defaultFrameServiceSocket
 	}
 	return &FrameServiceClient{socketPath: socketPath}
 }

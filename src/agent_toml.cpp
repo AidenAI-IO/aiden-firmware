@@ -352,7 +352,10 @@ void apply_kv(AgentToml& cfg,
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "search") {
         if (key == "provider") assign_string(&cfg.search.provider, raw, &sub_err);
-        else if (key == "api_key") assign_string(&cfg.search.api_key, raw, &sub_err);
+        else if (key == "api_key") {
+            assign_string(&cfg.search.api_key, raw, &sub_err);
+            cfg.search.has_api_key = !cfg.search.api_key.empty();
+        }
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "telemetry") {
         if (key == "enabled") assign_bool(&cfg.telemetry.enabled, raw, &sub_err);

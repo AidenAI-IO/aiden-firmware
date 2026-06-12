@@ -33,6 +33,8 @@ func main() {
 			os.Exit(runConfigCheck(os.Args[2:]))
 		case "config-meta":
 			os.Exit(runConfigMeta(os.Args[2:]))
+		case "config":
+			os.Exit(runConfig(os.Args[2:]))
 		case "config-test":
 			fmt.Fprintln(os.Stderr, "config-test subcommand not yet implemented")
 			os.Exit(1)
@@ -52,7 +54,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg, err := agent.LoadConfigFromDir(*configDir)
+	cfg, err := agent.LoadRuntimeConfigFromDir(*configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
