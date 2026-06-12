@@ -57,10 +57,14 @@ done
 [ -n "$image_dir" ] || die "missing --image-dir"
 [ -n "$assets" ] || die "missing --assets"
 [ -d "$image_dir" ] || die "missing image directory: $image_dir"
-command -v tar >/dev/null 2>&1 || die "tar is required"
-if ! command -v python3 >/dev/null 2>&1 && ! command -v gzip >/dev/null 2>&1; then
-  die "python3 or gzip is required"
-fi
+command -v python3 >/dev/null 2>&1 || die "python3 is required"
+
+source_date_epoch="${SOURCE_DATE_EPOCH:-1}"
+case "$source_date_epoch" in
+  ''|*[!0-9]*)
+    die "SOURCE_DATE_EPOCH must be an unsigned Unix timestamp: $source_date_epoch"
+    ;;
+esac
 
 emit_output() {
   local key="$1"
@@ -77,12 +81,11 @@ create_tar_gz() {
   local source="$1"
   local archive="$2"
   local entry_name="$3"
-  local mtime="${SOURCE_DATE_EPOCH:-1}"
+  local mtime="$source_date_epoch"
   local tmp_archive="${archive}.tmp.$$"
 
   rm -f "$tmp_archive"
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - "$source" "$tmp_archive" "$entry_name" "$mtime" <<'PY'
+  python3 - "$source" "$tmp_archive" "$entry_name" "$mtime" <<'PY'
 import gzip
 import os
 import sys
@@ -109,48 +112,81 @@ with open(source, "rb") as source_file, open(archive, "wb") as raw_file:
         with tarfile.TarFile(fileobj=gzip_file, mode="w", format=tarfile.USTAR_FORMAT) as tar_file:
             tar_file.addfile(info, source_file)
 PY
-  else
-    tar -cf - -C "$(dirname "$source")" "$entry_name" | gzip -n -9 > "$tmp_archive"
-  fi
 
   mv "$tmp_archive" "$archive"
-}
-
-sha256_file() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
-  else
-    shasum -a 256 "$1" | awk '{print $1}'
-  fi
-}
-
-sha256_stream() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum | awk '{print $1}'
-  else
-    shasum -a 256 | awk '{print $1}'
-  fi
 }
 
 archive_matches_source() {
   local source="$1"
   local archive="$2"
   local entry_name="$3"
-  local source_sha archive_sha entries
+  local mtime="$source_date_epoch"
 
-  if ! entries="$(tar -tzf "$archive" 2>/dev/null)"; then
-    return 1
-  fi
-  if [ "$entries" != "$entry_name" ]; then
-    return 1
-  fi
+  python3 - "$source" "$archive" "$entry_name" "$mtime" <<'PY'
+import gzip
+import hashlib
+import os
+import sys
+import tarfile
 
-  source_sha="$(sha256_file "$source")" || return 1
-  if ! archive_sha="$(tar -xOzf "$archive" "$entry_name" 2>/dev/null | sha256_stream)"; then
-    return 1
-  fi
+source, archive, entry_name, raw_mtime = sys.argv[1:]
+try:
+    expected_mtime = int(raw_mtime)
+except ValueError:
+    sys.exit(1)
 
-  [ "$source_sha" = "$archive_sha" ]
+def hash_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def hash_reader(reader):
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: reader.read(1024 * 1024), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+try:
+    with open(archive, "rb") as raw_file:
+        header = raw_file.read(10)
+    if len(header) != 10 or header[:2] != b"\x1f\x8b" or header[2] != 8:
+        sys.exit(1)
+    if header[3] != 0:
+        sys.exit(1)
+    if int.from_bytes(header[4:8], "little") != expected_mtime:
+        sys.exit(1)
+
+    with tarfile.open(archive, mode="r:gz") as tar_file:
+        info = tar_file.next()
+        if info is None:
+            sys.exit(1)
+        if (
+            info.name != entry_name
+            or not info.isfile()
+            or info.size != os.path.getsize(source)
+            or int(info.mtime) != expected_mtime
+            or info.mode != 0o644
+            or info.uid != 0
+            or info.gid != 0
+            or info.uname != ""
+            or info.gname != ""
+        ):
+            sys.exit(1)
+
+        extracted = tar_file.extractfile(info)
+        if extracted is None:
+            sys.exit(1)
+        archive_sha = hash_reader(extracted)
+        if tar_file.next() is not None:
+            sys.exit(1)
+
+    if hash_file(source) != archive_sha:
+        sys.exit(1)
+except (OSError, tarfile.TarError, EOFError):
+    sys.exit(1)
+PY
 }
 
 compressed_assets=()
