@@ -72,6 +72,20 @@ TEST_CASE("save_playback_volume_state writes integer newline and creates parent 
     CHECK(loaded == 70);
 }
 
+TEST_CASE("save_playback_volume_state does not chmod existing parent directories") {
+    TempDir dir;
+    std::string parent = dir.path + "/audio_service";
+    REQUIRE(::mkdir(parent.c_str(), 0700) == 0);
+    REQUIRE(::chmod(parent.c_str(), 0700) == 0);
+
+    std::string error;
+    REQUIRE(aiden::save_playback_volume_state((parent + "/playback_volume").c_str(), 33, &error));
+
+    struct stat st;
+    REQUIRE(::stat(parent.c_str(), &st) == 0);
+    CHECK((st.st_mode & 0777) == 0700);
+}
+
 TEST_CASE("load_playback_volume_state rejects malformed or out-of-range values") {
     TempDir dir;
     std::string path = dir.path + "/playback_volume";

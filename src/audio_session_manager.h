@@ -65,7 +65,7 @@ private:
     using Clock = std::chrono::steady_clock;
 
     uint64_t next_session_id();
-    void persist_playback_volume_if_changed(int volume);
+    bool persist_playback_volume_if_changed(int volume);
     void reaper_loop();
     void reap_idle_sessions();
 

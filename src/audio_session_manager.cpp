@@ -55,19 +55,20 @@ uint64_t AudioSessionManager::next_session_id() {
     return next_id_++;
 }
 
-void AudioSessionManager::persist_playback_volume_if_changed(int volume) {
+bool AudioSessionManager::persist_playback_volume_if_changed(int volume) {
     if (volume_state_path_.empty() || volume == last_persisted_playback_volume_) {
-        return;
+        return true;
     }
 
     std::string error;
     if (!save_playback_volume_state(volume_state_path_.c_str(), volume, &error)) {
         fprintf(stderr, "[audio_service] failed to persist playback volume to %s: %s\n",
                 volume_state_path_.c_str(), error.c_str());
-        return;
+        return false;
     }
 
     last_persisted_playback_volume_ = volume;
+    return true;
 }
 
 // -----------------------------------------------------------------------
@@ -270,7 +271,9 @@ AidenServiceStatus AudioSessionManager::set_playback_volume(int volume) {
             return AidenServiceStatus::INTERNAL_ERROR;
         }
     }
-    persist_playback_volume_if_changed(volume);
+    if (!persist_playback_volume_if_changed(volume)) {
+        return AidenServiceStatus::INTERNAL_ERROR;
+    }
     fprintf(stderr, "[audio_service] playback volume set to %d\n", volume);
     return AidenServiceStatus::OK;
 }

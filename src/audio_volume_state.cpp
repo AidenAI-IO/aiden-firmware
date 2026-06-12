@@ -43,11 +43,15 @@ bool mkdir_p(const std::string& path, mode_t mode, std::string* error) {
         if (!part.empty()) {
             if (!current.empty() && current[current.size() - 1] != '/') current += "/";
             current += part;
-            if (::mkdir(current.c_str(), mode) != 0 && errno != EEXIST) {
-                set_error(error, "mkdir " + current + ": " + std::strerror(errno));
+            if (::mkdir(current.c_str(), mode) != 0) {
+                if (errno != EEXIST) {
+                    set_error(error, "mkdir " + current + ": " + std::strerror(errno));
+                    return false;
+                }
+            } else if (::chmod(current.c_str(), mode) != 0) {
+                set_error(error, "chmod " + current + ": " + std::strerror(errno));
                 return false;
             }
-            ::chmod(current.c_str(), mode);
         }
         if (next == std::string::npos) break;
         pos = next + 1;
@@ -192,6 +196,22 @@ bool save_playback_volume_state(const char* path,
     if (::rename(tmp.c_str(), state_path.c_str()) != 0) {
         set_error(error, "rename " + tmp + " -> " + state_path + ": " + std::strerror(errno));
         ::unlink(tmp.c_str());
+        return false;
+    }
+
+    std::string dir = parent_dir(state_path);
+    int dirfd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY);
+    if (dirfd < 0) {
+        set_error(error, "open dir " + dir + ": " + std::strerror(errno));
+        return false;
+    }
+    if (::fsync(dirfd) != 0) {
+        set_error(error, "fsync dir " + dir + ": " + std::strerror(errno));
+        ::close(dirfd);
+        return false;
+    }
+    if (::close(dirfd) != 0) {
+        set_error(error, "close dir " + dir + ": " + std::strerror(errno));
         return false;
     }
 
