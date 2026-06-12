@@ -231,6 +231,52 @@
           "id": "click_targets_"
         }
       ]
+    },
+    {
+      "category": "perception",
+      "description_for_judge": "The agent should identify the '跳过广告' (Skip Ad) button located in the top right corner of the screen and click it to dismiss the advertisement.",
+      "hard_assertions": {
+        "max_tool_calls": 5,
+        "min_tool_calls": 1,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      },
+      "id": "task_5081",
+      "input_screenshot": "screenshots/task_5081.jpg",
+      "prompt": "点击跳过广告",
+      "rubric": [
+        {
+          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "id": "called_click_tool"
+        },
+        {
+          "check": "The touch/click coordinates target the 跳过广告 area: normalized x in [804, 967], y in [23, 67] (0-1000 normalized space, where 500 is center).",
+          "id": "click_targets_"
+        }
+      ]
+    },
+    {
+      "category": "perception",
+      "description_for_judge": "The agent should identify the notification banner at the bottom of the screen and click the 'X' button to dismiss it.",
+      "hard_assertions": {
+        "max_tool_calls": 5,
+        "min_tool_calls": 1,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      },
+      "id": "task_5174",
+      "input_screenshot": "screenshots/task_5174.jpg",
+      "prompt": "关闭通知弹框",
+      "rubric": [
+        {
+          "check": "The tool trace contains at least one touch_gesture or mouse_click call.",
+          "id": "called_click_tool"
+        },
+        {
+          "check": "The touch/click coordinates target the 关闭的按钮 area: normalized x in [889, 945], y in [863, 884] (0-1000 normalized space, where 500 is center).",
+          "id": "click_targets_"
+        }
+      ]
     }
   ]
 }
