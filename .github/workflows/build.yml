@@ -126,18 +126,10 @@ jobs:
         scripts/validate_ota_pubkey.sh "$public_key"
         echo "OTA_PUBLIC_KEY_PATH=/home/.ota-ci/ota_ed25519_public_key.pem" >> "$GITHUB_ENV"
 
-    - name: Clean previous release image artifacts
+    - name: Clean previous build artifacts
       run: |
-        rm -f \
-          pico-sdk/output/image/boot.img \
-          pico-sdk/output/image/boot_a.img \
-          pico-sdk/output/image/boot_b.img \
-          pico-sdk/output/image/misc.img \
-          pico-sdk/output/image/oem.img \
-          pico-sdk/output/image/rootfs.img \
-          pico-sdk/output/image/update.img \
-          pico-sdk/output/image/*.img.tar.gz \
-          pico-sdk/output/image/manifest.json
+        rm -rf pico-sdk/output/image/*.img pico-sdk/output/image/*.img.tar.gz pico-sdk/output/image/manifest.json
+        rm -rf pico-sdk/output/out
 
     - name: Generate release name
       id: release_info

@@ -90,13 +90,13 @@ if ! grep -q 'SOURCE_DATE_EPOCH' "$DOCKER_BUILD_SCRIPT" || \
     exit 1
 fi
 
-if grep -Fq 'rm -rf pico-sdk/output/out' "$WORKFLOW"; then
-    echo "build workflow must preserve pico-sdk/output/out so self-hosted release builds can reuse intermediate artifacts" >&2
+if ! grep -Fq 'rm -rf pico-sdk/output/out' "$WORKFLOW"; then
+    echo "build workflow must clean pico-sdk/output/out; reused SDK build outputs are out of scope for this PR" >&2
     exit 1
 fi
 
-if grep -Eq 'pico-sdk/output/image/\*\.img([[:space:]\\]|$)' "$WORKFLOW"; then
-    echo "build workflow must not delete every pico-sdk output image; cached sysdrv outputs such as idblock.img and uboot.img are reused" >&2
+if ! grep -Eq 'pico-sdk/output/image/\*\.img([[:space:]\\]|$)' "$WORKFLOW"; then
+    echo "build workflow must clean all generated images before a release build" >&2
     exit 1
 fi
 
