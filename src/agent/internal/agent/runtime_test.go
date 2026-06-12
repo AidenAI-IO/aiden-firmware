@@ -358,6 +358,17 @@ type scriptedModel struct {
 	tools        [][]llms.Tool
 }
 
+type staticTool struct {
+	name   string
+	output string
+}
+
+func (t *staticTool) Name() string { return t.name }
+
+func (t *staticTool) Description() string { return "static test tool" }
+
+func (t *staticTool) Call(context.Context, string) (string, error) { return t.output, nil }
+
 func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	var callOptions llms.CallOptions
 	for _, option := range options {
@@ -1461,6 +1472,611 @@ func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
 	releaseMaintenance()
 }
 
+func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
+	configDir := t.TempDir()
+	storageDir := filepath.Join(configDir, "memory")
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	oldSummary := "OLD SESSION SUMMARY MUST NOT ENTER NEW PROMPT"
+	now := time.Now().UTC().Add(-4 * time.Minute)
+	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold+1; i++ {
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_old_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("查天气旧任务 %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(storageDir, "session", "summary.md"), []byte(oldSummary), 0o644); err != nil {
+		t.Fatalf("WriteFile old summary.md: %v", err)
+	}
+
+	releaseMaintenance := make(chan struct{})
+	manager := NewMemoryManager(storageDir, WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-releaseMaintenance:
+			return "old task summary"
+		}
+	}))
+	defer func() {
+		close(releaseMaintenance)
+		waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.WaitMaintenance(waitCtx); err != nil {
+			t.Fatalf("WaitMaintenance() error = %v", err)
+		}
+	}()
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(result.Memory) != 2 || result.Memory[0].Content != "打开微信" {
+		t.Fatalf("expected clean memory snapshot for new task, got %#v", result.Memory)
+	}
+
+	active := readSessionEvents(t, session.eventsPath())
+	if len(active) != 2 || active[0].Content != "打开微信" {
+		t.Fatalf("expected active events to contain only current exchange, got %#v", active)
+	}
+	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
+	if err != nil {
+		t.Fatalf("Glob archived sessions: %v", err)
+	}
+	if len(archiveDirs) != 1 {
+		t.Fatalf("expected one archived rotated session, got %v", archiveDirs)
+	}
+	archived := readSessionEvents(t, filepath.Join(archiveDirs[0], "events.jsonl"))
+	if len(archived) != DefaultBoundaryConfig().SmallSessionEventThreshold+1 || archived[0].EventID != "evt_old_0" {
+		t.Fatalf("unexpected archived events: %#v", archived)
+	}
+	if _, err := os.Stat(filepath.Join(storageDir, "session", "summary.md")); !os.IsNotExist(err) {
+		t.Fatalf("active summary.md should be absent after rotation, stat err = %v", err)
+	}
+	archivedSummary, err := os.ReadFile(filepath.Join(archiveDirs[0], "summary.md"))
+	if err != nil {
+		t.Fatalf("ReadFile archived summary.md: %v", err)
+	}
+	if string(archivedSummary) != oldSummary {
+		t.Fatalf("old summary not preserved in archive: %q", archivedSummary)
+	}
+	var promptText strings.Builder
+	for _, call := range model.messages {
+		for _, message := range call {
+			for _, part := range message.Parts {
+				if text, ok := part.(llms.TextContent); ok {
+					promptText.WriteString(text.Text)
+				}
+			}
+		}
+	}
+	if strings.Contains(promptText.String(), oldSummary) {
+		t.Fatalf("new-session prompt leaked archived summary:\n%s", promptText.String())
+	}
+
+	episode, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).Get(context.Background(), result.EpisodeID)
+	if err != nil {
+		t.Fatalf("Get episode: %v", err)
+	}
+	if got := episode.Extra["session_boundary_decision"]; got != BoundaryNew {
+		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryNew)
+	}
+	if got := episode.Extra["session_rotated"]; got != true {
+		t.Fatalf("session_rotated = %#v, want true", got)
+	}
+	if got := numericExtraValue(episode.Extra["pending_chunks_recalled"]); got != 0 {
+		t.Fatalf("pending_chunks_recalled = %#v, want 0 without recall tool call", got)
+	}
+}
+
+func TestRuntimeRunRepairsTruncatedSessionTailBeforeBoundaryRotation(t *testing.T) {
+	configDir := t.TempDir()
+	storageDir := filepath.Join(configDir, "memory")
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC().Add(-4 * time.Minute)
+	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold+1; i++ {
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_old_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("查天气旧任务 %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+	file, err := os.OpenFile(session.eventsPath(), os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("OpenFile events.jsonl: %v", err)
+	}
+	if _, err := file.WriteString(`{"event_id":"partial_crash_tail","type":"assistant_output","role":"assistant","content":"cut`); err != nil {
+		file.Close()
+		t.Fatalf("write truncated event tail: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close events.jsonl: %v", err)
+	}
+
+	manager := NewMemoryManager(storageDir)
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("ok")}},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(result.Memory) != 2 || result.Memory[0].Content != "打开微信" {
+		t.Fatalf("expected clean memory snapshot for new task, got %#v", result.Memory)
+	}
+
+	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
+	if err != nil {
+		t.Fatalf("Glob archived sessions: %v", err)
+	}
+	if len(archiveDirs) != 1 {
+		t.Fatalf("expected one archived rotated session, got %v", archiveDirs)
+	}
+	archivedPath := filepath.Join(archiveDirs[0], "events.jsonl")
+	archivedRaw, err := os.ReadFile(archivedPath)
+	if err != nil {
+		t.Fatalf("ReadFile archived events: %v", err)
+	}
+	if strings.Contains(string(archivedRaw), "partial_crash_tail") {
+		t.Fatalf("runtime boundary rotation archived unrepaired truncated tail: %q", archivedRaw)
+	}
+	archived := readSessionEvents(t, archivedPath)
+	if len(archived) != DefaultBoundaryConfig().SmallSessionEventThreshold+1 {
+		t.Fatalf("unexpected archived events after repair: %#v", archived)
+	}
+}
+
+func TestRuntimeRunKeepsSmallSessionOnUnrelatedInput(t *testing.T) {
+	configDir := t.TempDir()
+	storageDir := filepath.Join(configDir, "memory")
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC().Add(-4 * time.Minute)
+	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold; i++ {
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_small_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("查天气小会话 %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+
+	manager := NewMemoryManager(storageDir)
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(result.Memory) != DefaultBoundaryConfig().SmallSessionEventThreshold+2 {
+		t.Fatalf("small session should keep previous context, got %#v", result.Memory)
+	}
+
+	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
+	if err != nil {
+		t.Fatalf("Glob archived sessions: %v", err)
+	}
+	if len(archiveDirs) != 0 {
+		t.Fatalf("small session with unrelated input rotated session: %v", archiveDirs)
+	}
+
+	episode, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).Get(context.Background(), result.EpisodeID)
+	if err != nil {
+		t.Fatalf("Get episode: %v", err)
+	}
+	if got := episode.Extra["session_boundary_decision"]; got != BoundaryContinue {
+		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryContinue)
+	}
+	if got := episode.Extra["session_boundary_reason"]; got != BoundaryReasonSmallSession {
+		t.Fatalf("session_boundary_reason = %#v, want %q", got, BoundaryReasonSmallSession)
+	}
+}
+
+func TestRuntimeRunKeepsNeutralFollowUpWithActiveEpisode(t *testing.T) {
+	configDir := t.TempDir()
+	storageDir := filepath.Join(configDir, "memory")
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC().Add(-4 * time.Minute)
+	for i, content := range []string{"查一下今天天气", "今天多云"} {
+		role := "user"
+		eventType := "user_input"
+		if i == 1 {
+			role = "assistant"
+			eventType = "assistant_output"
+		}
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_prev_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    eventType,
+			Role:    role,
+			Content: content,
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+
+	episodeStore := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes"))
+	if _, err := episodeStore.AddEpisode(context.Background(), TaskEpisode{
+		ID:        "ep_weather_done",
+		Status:    "active",
+		StartedAt: now.Add(-30 * time.Second).Format(time.RFC3339Nano),
+		EndedAt:   now.Add(time.Second).Format(time.RFC3339Nano),
+		UserGoal:  "查一下今天天气",
+		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "今天多云"},
+	}); err != nil {
+		t.Fatalf("AddEpisode() error = %v", err)
+	}
+
+	manager := NewMemoryManager(storageDir)
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "好的"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(result.Memory) != 4 || result.Memory[0].Content != "查一下今天天气" {
+		t.Fatalf("neutral follow-up should keep previous session context, got %#v", result.Memory)
+	}
+
+	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
+	if err != nil {
+		t.Fatalf("Glob archived sessions: %v", err)
+	}
+	if len(archiveDirs) != 0 {
+		t.Fatalf("neutral follow-up with active episode rotated session: %v", archiveDirs)
+	}
+
+	episode, err := episodeStore.Get(context.Background(), result.EpisodeID)
+	if err != nil {
+		t.Fatalf("Get episode: %v", err)
+	}
+	if got := episode.Extra["session_boundary_decision"]; got != BoundaryContinue {
+		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryContinue)
+	}
+	if got := episode.Extra["session_boundary_reason"]; got != BoundaryReasonActiveEpisode {
+		t.Fatalf("session_boundary_reason = %#v, want %q", got, BoundaryReasonActiveEpisode)
+	}
+}
+
+func TestRecentEpisodeContextIncludesRunningAndRecentActiveEpisodes(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	store := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes"))
+	now := time.Now().UTC()
+
+	if _, err := store.StartEpisode(context.Background(), TaskEpisode{
+		ID:        "ep_running",
+		StartedAt: now.Add(-time.Minute).Format(time.RFC3339Nano),
+		UserGoal:  "继续处理天气",
+	}); err != nil {
+		t.Fatalf("StartEpisode() error = %v", err)
+	}
+	if _, err := store.AddEpisode(context.Background(), TaskEpisode{
+		ID:        "ep_active_recent",
+		Status:    "active",
+		StartedAt: now.Add(-3 * time.Minute).Format(time.RFC3339Nano),
+		EndedAt:   now.Add(-time.Minute).Format(time.RFC3339Nano),
+		UserGoal:  "查天气",
+		Outcome:   TaskEpisodeOutcome{Success: true},
+	}); err != nil {
+		t.Fatalf("AddEpisode() error = %v", err)
+	}
+
+	plane := NewFilesystemMemoryPlane(storageDir, DefaultMemoryExtractionConfig(), nil)
+	ctx := recentEpisodeContext(plane, now, 5*time.Minute)
+	if !ctx.HasRunning {
+		t.Fatalf("expected running episode context")
+	}
+	if !ctx.HasActive {
+		t.Fatalf("expected recent active episode context")
+	}
+}
+
+func TestRecentEpisodeContextIgnoresOldActiveEpisode(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	store := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes"))
+	now := time.Now().UTC()
+
+	if _, err := store.AddEpisode(context.Background(), TaskEpisode{
+		ID:        "ep_active_old",
+		Status:    "active",
+		StartedAt: now.Add(-10 * time.Minute).Format(time.RFC3339Nano),
+		EndedAt:   now.Add(-6 * time.Minute).Format(time.RFC3339Nano),
+		UserGoal:  "查天气",
+		Outcome:   TaskEpisodeOutcome{Success: true},
+	}); err != nil {
+		t.Fatalf("AddEpisode() error = %v", err)
+	}
+
+	plane := NewFilesystemMemoryPlane(storageDir, DefaultMemoryExtractionConfig(), nil)
+	ctx := recentEpisodeContext(plane, now, 5*time.Minute)
+	if ctx.HasActive {
+		t.Fatalf("old active episode should not bias session boundary")
+	}
+}
+
+func TestRuntimeRunCanceledWhileQueuedDoesNotRotateSessionOrStartEpisode(t *testing.T) {
+	configDir := t.TempDir()
+	storageDir := filepath.Join(configDir, "memory")
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC().Add(-2 * time.Minute)
+	for i := 0; i < 2; i++ {
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_old_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("查天气旧任务 %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+
+	model := &queuedCancelModel{
+		firstStarted: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+	manager := NewMemoryManager(storageDir)
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(context.Background(), RunRequest{Input: "继续查天气"})
+		firstDone <- err
+	}()
+	select {
+	case <-model.firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first run did not reach model call")
+	}
+
+	queuedCtx, cancelQueued := context.WithCancel(context.Background())
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(queuedCtx, RunRequest{Input: "打开微信"})
+		secondDone <- err
+	}()
+	cancelQueued()
+	close(model.releaseFirst)
+
+	if err := <-firstDone; err == nil || !strings.Contains(err.Error(), "first run stopped") {
+		t.Fatalf("first Run() error = %v, want first run stopped", err)
+	}
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("queued Run() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued Run() did not return after cancellation")
+	}
+
+	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
+	if err != nil {
+		t.Fatalf("Glob archived sessions: %v", err)
+	}
+	if len(archiveDirs) != 0 {
+		t.Fatalf("canceled queued run rotated session: %v", archiveDirs)
+	}
+	active := readSessionEvents(t, session.eventsPath())
+	if len(active) != 2 || active[0].EventID != "evt_old_0" {
+		t.Fatalf("canceled queued run changed active session events: %#v", active)
+	}
+
+	index, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).loadIndex()
+	if err != nil {
+		t.Fatalf("load episode index: %v", err)
+	}
+	if len(index.Episodes) != 1 {
+		t.Fatalf("episode index contains %d entries, want only the first run: %#v", len(index.Episodes), index.Episodes)
+	}
+	if index.Episodes[0].UserGoal != "继续查天气" {
+		t.Fatalf("unexpected episode goal: %#v", index.Episodes[0])
+	}
+}
+
+type queuedCancelModel struct {
+	firstStarted     chan struct{}
+	releaseFirst     chan struct{}
+	firstStartedOnce atomic.Bool
+	callCount        atomic.Int64
+}
+
+func (m *queuedCancelModel) GenerateContent(ctx context.Context, _ []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	if m.callCount.Add(1) == 1 {
+		if m.firstStartedOnce.CompareAndSwap(false, true) {
+			close(m.firstStarted)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-m.releaseFirst:
+			return nil, errors.New("first run stopped")
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, errors.New("queued run reached model")
+}
+
+func (m *queuedCancelModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	panic("unexpected Call invocation")
+}
+
+func numericExtraValue(v interface{}) int64 {
+	switch n := v.(type) {
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case int32:
+		return int64(n)
+	case uint64:
+		return int64(n)
+	case float64:
+		return int64(n)
+	default:
+		return -1
+	}
+}
+
+func TestSessionRecallTelemetryCountsPendingResults(t *testing.T) {
+	counter := &atomic.Int64{}
+	tool := &sessionRecallTelemetryTool{
+		inner: &staticTool{
+			name:   "recall_session_chunks",
+			output: `{"results":[{"chunk_id":"chunk_001"},{"chunk_id":"pending-123","source":"pending"}]}`,
+		},
+		counter: counter,
+	}
+	if _, err := tool.Call(context.Background(), `{}`); err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if got := counter.Load(); got != 1 {
+		t.Fatalf("pending recall count = %d, want 1", got)
+	}
+}
+
+func TestSessionRecallTelemetryIgnoresActiveChunksWithPendingPrefix(t *testing.T) {
+	counter := &atomic.Int64{}
+	tool := &sessionRecallTelemetryTool{
+		inner: &staticTool{
+			name: "recall_session_chunks",
+			output: `{"results":[` +
+				`{"chunk_id":"pending-archived","source":"active"},` +
+				`{"chunk_id":"pending-live","source":"pending"}` +
+				`]}`,
+		},
+		counter: counter,
+	}
+	if _, err := tool.Call(context.Background(), `{}`); err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if got := counter.Load(); got != 1 {
+		t.Fatalf("pending recall count = %d, want 1", got)
+	}
+}
+
+func TestSessionRecallTelemetryIgnoresCompressedChunkWithPendingPrefix(t *testing.T) {
+	ctx := context.Background()
+	session := NewSessionMemoryStore(filepath.Join(t.TempDir(), "session"))
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_pending_consumed",
+		Type:    "user_input",
+		Role:    "user",
+		Content: "already compressed from pending file",
+	}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+	if _, err := session.Compress(ctx, CompressOption{
+		ChunkID: "pending-consumed",
+		Summary: "already compressed pending file",
+	}); err != nil {
+		t.Fatalf("Compress() error = %v", err)
+	}
+
+	counter := &atomic.Int64{}
+	tool := &sessionRecallTelemetryTool{
+		inner:   NewRecallSessionChunksTool(session),
+		counter: counter,
+	}
+	output, err := tool.Call(ctx, `{"chunk_ids":["pending-consumed"]}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	var decoded struct {
+		Results []struct {
+			ChunkID string `json:"chunk_id"`
+			Source  string `json:"source"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatalf("decode output %q: %v", output, err)
+	}
+	if len(decoded.Results) != 1 {
+		t.Fatalf("expected 1 result, got %#v", decoded.Results)
+	}
+	if decoded.Results[0].ChunkID != "pending-consumed" || decoded.Results[0].Source != chunkRecallSourceActive {
+		t.Fatalf("unexpected recall source: %#v", decoded.Results[0])
+	}
+	if got := counter.Load(); got != 0 {
+		t.Fatalf("pending recall count = %d, want 0 for active compressed chunk", got)
+	}
+}
+
 func waitForSessionCompaction(t *testing.T, configDir string) {
 	t.Helper()
 	session := NewSessionMemoryStore(filepath.Join(configDir, "memory", "session"))
@@ -1577,6 +2193,49 @@ func TestRuntimeRunInjectsMemoryFilesIntoSystemPrompt(t *testing.T) {
 	}
 	if !strings.Contains(systemText.String(), profile) {
 		t.Fatalf("system message missing profile:\n%s", systemText.String())
+	}
+}
+
+func TestRuntimeMemoryContextIgnoresArchivedSessionSummary(t *testing.T) {
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	archiveSummary := "ARCHIVED SESSION SUMMARY SENTINEL"
+	profile := "PROFILE STILL ACTIVE"
+
+	archiveDir := filepath.Join(memoryDir, "session_archive", "closed-session")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll archive: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(archiveDir, "summary.md"), []byte(archiveSummary), 0o644); err != nil {
+		t.Fatalf("WriteFile archive summary.md: %v", err)
+	}
+	longTermDir := filepath.Join(memoryDir, "long_term")
+	if err := os.MkdirAll(longTermDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll long_term: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(longTermDir, "profile.md"), []byte(profile), 0o644); err != nil {
+		t.Fatalf("WriteFile profile.md: %v", err)
+	}
+
+	runtime := &Runtime{config: Config{ConfigDir: configDir}}
+	promptContext := runtime.memoryContextForPrompt()
+	if strings.Contains(promptContext, archiveSummary) {
+		t.Fatalf("memoryContextForPrompt leaked archived summary:\n%s", promptContext)
+	}
+	if !strings.Contains(promptContext, profile) {
+		t.Fatalf("memoryContextForPrompt missing active profile:\n%s", promptContext)
+	}
+
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	retrieved, err := plane.Retrieve(context.Background(), MemoryRetrieveRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Retrieve() error = %v", err)
+	}
+	if strings.Contains(retrieved.Common.SessionSummary, archiveSummary) {
+		t.Fatalf("Retrieve() leaked archived summary: %q", retrieved.Common.SessionSummary)
+	}
+	if retrieved.Common.Profile != profile {
+		t.Fatalf("Retrieve() profile = %q, want %q", retrieved.Common.Profile, profile)
 	}
 }
 

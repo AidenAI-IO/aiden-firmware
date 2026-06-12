@@ -109,17 +109,22 @@ type ChunkRecallQuery struct {
 	ChunkIDs []string `json:"chunk_ids,omitempty"`
 	Tags     []string `json:"tags,omitempty"`
 	Entities []string `json:"entities,omitempty"`
-	AppName  string   `json:"app_name,omitempty"`
 	Limit    int      `json:"limit,omitempty"`
 }
 
 // ChunkRecallResult returns a recalled chunk with its summary and events.
 type ChunkRecallResult struct {
 	ChunkID    string                  `json:"chunk_id"`
+	Source     string                  `json:"source,omitempty"`
 	Summary    string                  `json:"summary"`
 	Structured *ChunkStructuredSummary `json:"structured,omitempty"`
 	Evidence   []SessionEvent          `json:"evidence"`
 }
+
+const (
+	chunkRecallSourceActive  = "active"
+	chunkRecallSourcePending = "pending"
+)
 
 type chunkIndex struct {
 	Version   int               `yaml:"version"`
@@ -325,26 +330,26 @@ func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecall
 			if !idSet[entry.ID] {
 				continue
 			}
-			events, err := s.readEvents(filepath.Join(s.chunksDir(), entry.File))
+			if entry.Status != "active" {
+				continue
+			}
+			events, err := s.readEventsForIndexEntry(entry)
 			if err != nil {
 				return nil, err
 			}
-			results = append(results, ChunkRecallResult{ChunkID: entry.ID, Summary: entry.Summary, Structured: entry.Structured, Evidence: events})
+			results = append(results, ChunkRecallResult{ChunkID: entry.ID, Source: chunkRecallSourceActive, Summary: entry.Summary, Structured: entry.Structured, Evidence: events})
 		}
 		return results, nil
 	}
 
 	entries := make([]chunkIndexEntry, 0)
 	allActive := make([]chunkIndexEntry, 0)
-	hasFilter := query.AppName != "" || len(query.Tags) > 0 || len(query.Entities) > 0
+	hasFilter := len(query.Tags) > 0 || len(query.Entities) > 0
 	for _, entry := range index.Chunks {
 		if entry.Status != "active" {
 			continue
 		}
 		allActive = append(allActive, entry)
-		if query.AppName != "" && entry.AppName != query.AppName {
-			continue
-		}
 		if hasFilter && len(query.Tags) > 0 && !matchesAny(query.Tags, entry.Tags) {
 			continue
 		}
@@ -364,17 +369,21 @@ func (s *SessionMemoryStore) RecallChunks(ctx context.Context, query ChunkRecall
 		if len(results) >= limit {
 			break
 		}
-		events, err := s.readEvents(filepath.Join(s.chunksDir(), entry.File))
+		events, err := s.readEventsForIndexEntry(entry)
 		if err != nil {
 			return nil, err
 		}
-		results = append(results, ChunkRecallResult{ChunkID: entry.ID, Summary: entry.Summary, Structured: entry.Structured, Evidence: events})
+		results = append(results, ChunkRecallResult{ChunkID: entry.ID, Source: chunkRecallSourceActive, Summary: entry.Summary, Structured: entry.Structured, Evidence: events})
 	}
 	return results, nil
 }
 
 func (s *SessionMemoryStore) eventsPath() string {
 	return filepath.Join(s.rootDir, "events.jsonl")
+}
+
+func (s *SessionMemoryStore) readEventsForIndexEntry(entry chunkIndexEntry) ([]SessionEvent, error) {
+	return s.readEvents(filepath.Join(s.chunksDir(), entry.File))
 }
 
 func (s *SessionMemoryStore) summaryPath() string {
@@ -394,12 +403,41 @@ func (s *SessionMemoryStore) chunkIndexPath() string {
 }
 
 func (s *SessionMemoryStore) readEvents(path string) ([]SessionEvent, error) {
+	result, err := readSessionEventsJSONL(path, filepath.Clean(path) == filepath.Clean(s.eventsPath()))
+	if err != nil {
+		return nil, err
+	}
+	return result.events, nil
+}
+
+func (s *SessionMemoryStore) readActiveEventsRepairingTruncatedTail() (sessionEventsReadResult, error) {
+	path := s.eventsPath()
+	result, err := readSessionEventsJSONL(path, true)
+	if err != nil {
+		return sessionEventsReadResult{}, err
+	}
+	if result.truncatedTail {
+		if err := writeFileAtomic(path, result.validData, 0o644); err != nil {
+			result.repairErr = fmt.Errorf("repair session events %q: %w", path, err)
+		}
+	}
+	return result, nil
+}
+
+type sessionEventsReadResult struct {
+	events        []SessionEvent
+	validData     []byte
+	truncatedTail bool
+	repairErr     error
+}
+
+func readSessionEventsJSONL(path string, tolerateTruncatedTail bool) (sessionEventsReadResult, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("read session events %q: %w", path, err)
+		return sessionEventsReadResult{}, fmt.Errorf("read session events %q: %w", path, err)
 	}
 	defer file.Close()
-	var events []SessionEvent
+	var result sessionEventsReadResult
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0), 1<<20)
 	for scanner.Scan() {
@@ -409,17 +447,20 @@ func (s *SessionMemoryStore) readEvents(path string) ([]SessionEvent, error) {
 		}
 		var event SessionEvent
 		if err := json.Unmarshal(line, &event); err != nil {
-			if isTruncatedJSONLineError(err) && filepath.Clean(path) == filepath.Clean(s.eventsPath()) {
+			if tolerateTruncatedTail && isTruncatedJSONLineError(err) {
+				result.truncatedTail = true
 				break
 			}
-			return nil, fmt.Errorf("decode session event %q: %w", path, err)
+			return sessionEventsReadResult{}, fmt.Errorf("decode session event %q: %w", path, err)
 		}
-		events = append(events, event)
+		result.validData = append(result.validData, line...)
+		result.validData = append(result.validData, '\n')
+		result.events = append(result.events, event)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan session events %q: %w", path, err)
+		return sessionEventsReadResult{}, fmt.Errorf("scan session events %q: %w", path, err)
 	}
-	return events, nil
+	return result, nil
 }
 
 func (s *SessionMemoryStore) loadChunkIndex() (chunkIndex, error) {
@@ -565,7 +606,7 @@ func renderArchiveMD(chunks []chunkLine) string {
 
 func formatSessionSummaryWithWindow(existingSummary []byte, existingArchive []byte, newChunk chunkIndexEntry, maxChunks int) (summaryContent string, archiveContent string) {
 	chunks := parseChunkLines(existingSummary)
-	chunks = append(chunks, chunkLine{ID: newChunk.ID, Summary: strings.TrimSpace(newChunk.Summary)})
+	chunks = upsertChunkLine(chunks, chunkLine{ID: newChunk.ID, Summary: strings.TrimSpace(newChunk.Summary)})
 	rollingSummary := extractRollingSummary(existingSummary)
 
 	if maxChunks <= 0 || len(chunks) <= maxChunks {
@@ -580,6 +621,16 @@ func formatSessionSummaryWithWindow(existingSummary []byte, existingArchive []by
 
 	updatedRollingSummary := mergeArchivedChunksIntoRollingSummary(rollingSummary, overflow)
 	return renderSummaryMD(keep, updatedRollingSummary), renderArchiveMD(archived)
+}
+
+func upsertChunkLine(chunks []chunkLine, next chunkLine) []chunkLine {
+	for i := range chunks {
+		if chunks[i].ID == next.ID {
+			chunks[i] = next
+			return chunks
+		}
+	}
+	return append(chunks, next)
 }
 
 func mergeArchivedChunksIntoRollingSummary(existingRollingSummary string, archivedChunks []chunkLine) string {

@@ -49,6 +49,46 @@ func TestRecallSessionChunksToolReturnsMatchingEvidence(t *testing.T) {
 	}
 }
 
+func TestRecallSessionChunksToolIgnoresAppNameInput(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	session := NewSessionMemoryStore(filepath.Join(root, "session"))
+
+	if _, err := session.AppendEvent(ctx, SessionEvent{EventID: "evt_mail", Type: "user_input", Role: "user", Content: "打开邮件", AppName: "Mail"}); err != nil {
+		t.Fatalf("AppendEvent() mail error = %v", err)
+	}
+	if _, err := session.Compress(ctx, CompressOption{ChunkID: "chunk_mail", Tags: []string{"navigation"}, Summary: "Mail navigation"}); err != nil {
+		t.Fatalf("Compress() mail error = %v", err)
+	}
+	if err := session.replaceEvents(nil); err != nil {
+		t.Fatalf("replaceEvents() after mail error = %v", err)
+	}
+	if _, err := session.AppendEvent(ctx, SessionEvent{EventID: "evt_calendar", Type: "user_input", Role: "user", Content: "打开日历", AppName: "Calendar"}); err != nil {
+		t.Fatalf("AppendEvent() calendar error = %v", err)
+	}
+	if _, err := session.Compress(ctx, CompressOption{ChunkID: "chunk_calendar", Tags: []string{"navigation"}, Summary: "Calendar navigation"}); err != nil {
+		t.Fatalf("Compress() calendar error = %v", err)
+	}
+
+	tool := NewRecallSessionChunksTool(session)
+	out, err := tool.Call(ctx, `{"app_name":"Mail","limit":10}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+
+	var decoded struct {
+		Results []struct {
+			ChunkID string `json:"chunk_id"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("decode output %q: %v", out, err)
+	}
+	if len(decoded.Results) != 2 {
+		t.Fatalf("app_name input should not filter session chunks, got %#v", decoded.Results)
+	}
+}
+
 func TestRecallMemoryToolReturnsMatchingLongTermMemory(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

@@ -52,8 +52,53 @@ if grep -q 'build.sh firmware .*|| true' "$ROOT_DIR/_build_image.sh"; then
     exit 1
 fi
 
+if ! grep -Fq 'rm -rf "$BUILD_DIR"' "$BUILD_SH"; then
+    echo "_build.sh must clean the CMake build directory; this PR only keeps parallel compile speedups, not reused build outputs" >&2
+    exit 1
+fi
+
+if ! grep -q 'cmake --build "$BUILD_DIR" --parallel' "$BUILD_SH"; then
+    echo "_build.sh must use parallel CMake builds for changed native targets" >&2
+    exit 1
+fi
+
+if grep -Fq 'AIDEN_BUILD_CACHE_DIR' "$BUILD_SH" || \
+   grep -Fq 'build/.cache' "$BUILD_SH"; then
+    echo "_build.sh must not add workspace build-output reuse caches in this PR" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'GOCACHE="/tmp/go-cache"' "$BUILD_SH" || \
+   ! grep -Fq 'GOMODCACHE="/tmp/go-mod"' "$BUILD_SH" || \
+   ! grep -Fq 'GOPATH="/tmp/gopath"' "$BUILD_SH"; then
+    echo "_build.sh must keep Go caches ephemeral; persistent cache reuse is out of scope for this PR" >&2
+    exit 1
+fi
+
+if grep -Fq 'rm -rf pico-sdk/output/out' "$WORKFLOW"; then
+    echo "build workflow must preserve pico-sdk/output/out so unchanged SDK code can reuse SDK-managed build outputs" >&2
+    exit 1
+fi
+
+if ! grep -Eq 'pico-sdk/output/image/\*\.img([[:space:]\\]|$)' "$WORKFLOW"; then
+    echo "build workflow must clean all generated images before a release build" >&2
+    exit 1
+fi
+
 if grep -q './build.sh all' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must not run build.sh all before overlay injection; it creates large A/B images twice" >&2
+    exit 1
+fi
+
+if grep -q 'SDK_STAGE_STATE_DIR=' "$ROOT_DIR/_build_image.sh" || \
+   grep -q 'run_cached_sdk_stage' "$ROOT_DIR/_build_image.sh" || \
+   grep -q 'Skipping pico-sdk $stage (cached outputs match inputs)' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must not cache or reuse pico-sdk stage outputs in this PR" >&2
+    exit 1
+fi
+
+if grep -q 'RK_LIBC_TPYE:=glibc' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must not guess the SDK libc type; pico-sdk derives it from RK_TOOLCHAIN_CROSS" >&2
     exit 1
 fi
 
@@ -61,7 +106,7 @@ if ! grep -q './build.sh sysdrv' "$ROOT_DIR/_build_image.sh" || \
    ! grep -q './build.sh media' "$ROOT_DIR/_build_image.sh" || \
    ! grep -q './build.sh app' "$ROOT_DIR/_build_image.sh" || \
    ! grep -q './build.sh firmware' "$ROOT_DIR/_build_image.sh"; then
-    echo "_build_image.sh must build components first, inject overlay, then package firmware once" >&2
+    echo "_build_image.sh must build components directly, inject overlay, then package firmware once" >&2
     exit 1
 fi
 
@@ -72,6 +117,30 @@ fi
 
 if ! grep -Fq 'scripts/clean_rootfs_overlay_staging.sh" --dest-overlay "$DEST_OVERLAY"' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must clean stale rootfs overlay staging before syncing current rootfs assets" >&2
+    exit 1
+fi
+
+if grep -Fq 'cp -a "$SCRIPT_DIR/build/bin"/. "$OVERLAY/oem/usr/bin/"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'clean_generated_binaries "$OVERLAY/oem/usr/bin"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'clean_generated_binaries "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must remove stale generated binaries from overlay and SDK OEM staging" >&2
+    exit 1
+fi
+
+oem_bin_sync_line=$(grep -nF 'rsync -a --delete "$OVERLAY/oem/usr/bin/" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin/"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+oem_full_sync_line=$(grep -nF 'rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+if [ -z "$oem_bin_sync_line" ] || [ -z "$oem_full_sync_line" ] || [ "$oem_bin_sync_line" -ge "$oem_full_sync_line" ]; then
+    echo "_build_image.sh must sync OEM usr/bin with delete semantics before full OEM overlay sync" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'clean_managed_staging_paths "$RK_PROJECT_PACKAGE_OEM_DIR"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq '"usr/model"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq '"etc/ota_pubkey.pem"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'clean_managed_staging_paths "$RK_PROJECT_PACKAGE_USERDATA_DIR"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq '"agent/benchmark"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq '"agent_tools"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must clean Aiden-managed SDK staging paths before preserving pico-sdk/output/out" >&2
     exit 1
 fi
 
@@ -131,7 +200,9 @@ if ! grep -q 'normalize_image_tree_ownership' "$ROOT_DIR/pico-sdk/project/build.
 fi
 
 for required in \
-    'SOURCE_DATE_EPOCH ?= 0' \
+    'SOURCE_DATE_EPOCH ?=' \
+    'local epoch="${SOURCE_DATE_EPOCH:-' \
+    'source_date_epoch="${SOURCE_DATE_EPOCH:-' \
     '--sort=name' \
     '--mtime="@$(SOURCE_DATE_EPOCH)"' \
     'Build Time:  $(reproducible_build_utc)' \
@@ -302,9 +373,23 @@ if grep -q 'git submodule update.*pico-sdk' "$CI_WORKFLOW"; then
     exit 1
 fi
 
+if grep -q 'scripts/test_reproducible_rootfs_policy.sh' "$CI_WORKFLOW"; then
+    echo "CI release script checks must not run submodule-dependent reproducible rootfs policy checks" >&2
+    exit 1
+fi
+
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW"; then
     echo "CI must run repo-only release workflow and upload script tests" >&2
+    exit 1
+fi
+
+fetch_sdk_line=$(grep -n 'Fetch pico-sdk submodule' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
+policy_line=$(grep -n 'scripts/test_reproducible_rootfs_policy.sh' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
+run_build_line=$(grep -n 'Run build script' "$WORKFLOW" | sed 's/:.*//' | head -n 1)
+if [ -z "$fetch_sdk_line" ] || [ -z "$policy_line" ] || [ -z "$run_build_line" ] || \
+   [ "$fetch_sdk_line" -ge "$policy_line" ] || [ "$policy_line" -ge "$run_build_line" ]; then
+    echo "build workflow must verify reproducible rootfs policy after fetching pico-sdk and before building images" >&2
     exit 1
 fi
 

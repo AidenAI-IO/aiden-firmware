@@ -121,7 +121,6 @@ func decodeChunkRecallQuery(input string) (ChunkRecallQuery, error) {
 		ChunkIDs flexStringSlice `json:"chunk_ids"`
 		Tags     flexStringSlice `json:"tags"`
 		Entities flexStringSlice `json:"entities"`
-		AppName  string          `json:"app_name"`
 		Limit    flexInt         `json:"limit"`
 	}
 	if err := json.Unmarshal([]byte(input), &flex); err != nil {
@@ -131,7 +130,6 @@ func decodeChunkRecallQuery(input string) (ChunkRecallQuery, error) {
 		ChunkIDs: flex.ChunkIDs,
 		Tags:     flex.Tags,
 		Entities: flex.Entities,
-		AppName:  flex.AppName,
 		Limit:    int(flex.Limit),
 	}, nil
 }

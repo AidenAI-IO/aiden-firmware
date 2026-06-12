@@ -137,6 +137,9 @@ Langfuse 支持导出 dataset items（UI 或 [Public API](https://langfuse.com/d
 | `agent_commit` | Agent 二进制构建时的 git commit（`_build.sh` ldflags 注入） |
 | `agent_build` | Agent 构建版本号（`YYYYMMDD-HHMMSS-<commit>`） |
 | `firmware_version` | 设备 OTA 状态 `/userdata/ota/state.json` 中的 `current_version` |
+| `session_boundary_decision` / `session_boundary_reason` | Session-boundary classifier output for the run. |
+| `session_rotated` | Whether the run archived the previous active session before handling the user turn. |
+| `pending_chunks_recalled` | Number of `recall_session_chunks` results whose explicit result `source` is `pending`; `chunk_id` prefixes are ignored. |
 
 **Langfuse trace 字段映射：**
 

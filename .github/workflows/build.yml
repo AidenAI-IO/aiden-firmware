@@ -90,6 +90,9 @@ jobs:
         git submodule update --init --depth=1 pico-sdk
         git -C pico-sdk clean -f -- .gitmodules
 
+    - name: Verify reproducible rootfs policy
+      run: bash scripts/test_reproducible_rootfs_policy.sh
+
     - name: Free hosted runner disk space
       if: ${{ inputs.free_disk_space }}
       run: |
@@ -126,7 +129,6 @@ jobs:
     - name: Clean previous build artifacts
       run: |
         rm -rf pico-sdk/output/image/*.img pico-sdk/output/image/*.img.tar.gz pico-sdk/output/image/manifest.json
-        rm -rf pico-sdk/output/out
 
     - name: Generate release name
       id: release_info
