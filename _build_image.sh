@@ -226,6 +226,8 @@ if [ -d "$OVERLAY/oem" ]; then
         "usr/lib/librknnmrt.so" \
         "usr/model"
     clean_generated_binaries "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin"
+    # Keep Aiden-managed /oem/usr/bin exact when pico-sdk/output/out is reused.
+    rsync -a --delete "$OVERLAY/oem/usr/bin/" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin/"
     rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"
     echo "  ✓ OEM content copied"
 fi

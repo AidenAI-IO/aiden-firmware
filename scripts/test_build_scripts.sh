@@ -127,6 +127,13 @@ if grep -Fq 'cp -a "$SCRIPT_DIR/build/bin"/. "$OVERLAY/oem/usr/bin/"' "$ROOT_DIR
     exit 1
 fi
 
+oem_bin_sync_line=$(grep -nF 'rsync -a --delete "$OVERLAY/oem/usr/bin/" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin/"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+oem_full_sync_line=$(grep -nF 'rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+if [ -z "$oem_bin_sync_line" ] || [ -z "$oem_full_sync_line" ] || [ "$oem_bin_sync_line" -ge "$oem_full_sync_line" ]; then
+    echo "_build_image.sh must sync OEM usr/bin with delete semantics before full OEM overlay sync" >&2
+    exit 1
+fi
+
 if ! grep -Fq 'clean_managed_staging_paths "$RK_PROJECT_PACKAGE_OEM_DIR"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq '"usr/model"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq '"etc/ota_pubkey.pem"' "$ROOT_DIR/_build_image.sh" || \

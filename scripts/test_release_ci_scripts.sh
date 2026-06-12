@@ -159,6 +159,13 @@ if ! grep -q 'Compress OTA manifest images' "$WORKFLOW" || \
     exit 1
 fi
 
+oem_bin_sync_line=$(grep -nF 'rsync -a --delete "$OVERLAY/oem/usr/bin/" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin/"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+oem_full_sync_line=$(grep -nF 'rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+if [ -z "$oem_bin_sync_line" ] || [ -z "$oem_full_sync_line" ] || [ "$oem_bin_sync_line" -ge "$oem_full_sync_line" ]; then
+    echo "_build_image.sh must sync OEM usr/bin with delete semantics before full OEM overlay sync" >&2
+    exit 1
+fi
+
 if ! grep -q 'release_upload_assets.outputs.upload_assets' "$WORKFLOW"; then
     echo "build workflow must upload compressed release image assets" >&2
     exit 1
