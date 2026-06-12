@@ -184,7 +184,7 @@ func isHTTPToolExposed(name string) bool {
 }
 
 func isAgentToolExposed(name string) bool {
-	return isHTTPToolExposed(name)
+	return strings.TrimSpace(name) != ""
 }
 
 func (r *Runtime) ToolDescriptorByName(name string) (ToolDescriptor, bool) {

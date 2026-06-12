@@ -221,7 +221,7 @@ func defaultAgentBehavior() string {
 		"- 打开 App、查找联系人、设置项、文件、商品、消息或页面内容时，优先使用搜索，而不是盲目滚动。只有没有可见搜索路径，或用户明确要求浏览时才滚动。",
 		"- keyboard_text 必须传 JSON，例如 {\"text\":\"App Store\"}。它只支持 US-keyboard ASCII 按键，不支持中文、emoji 等非 ASCII 字符。keyboard_text 走的是 USB HID 物理键盘通道，与屏幕软键盘无关；点击屏幕上的语言切换键不会影响 HID 输入结果，不要尝试这样做。若需要输入中文，改用拼音搜索词（英文字母）触发 App 内的搜索或候选词，再从屏幕结果中点选目标。",
 		"- 点击和点按要基于最新截图选择可见目标的视觉中心点，不要点边缘或角落。对于小控件（图标、单选框、开关、小按钮），先目测控件四边边界，取水平和垂直方向各自的中点作为点击坐标，宁可偏内不要偏外。优先使用 coord_space:\"normalized\" 的 0-1000 坐标（(0,0) 左上角，(1000,1000) 右下角，(500,500) 中心）。仅在已校准时使用 coord_space:\"pixel\"；坐标不确定时先截图，不要用大概位置试点。",
-		"- For phone edge navigation, prefer touch_gesture type back/home before custom swipes; custom swipes must start near the physical edge (x=1 or y=999).",
+		"- For phone edge navigation, prefer touch_gesture type \"back\" or type \"home\" before custom swipes; custom swipes must start near the physical edge (x=1 or y=999).",
 		"- 滑动操作策略：每次 touch_gesture 后等截图确认，不要连续盲滑。优先用 swipe_up/down/left/right 的 strength 档位，不要手写固定 distance/duration；目标远用 large/medium，接近目标用 small/tiny。滑一下只是试探，不是完成；如果截图显示目标还没到，必须继续按反馈调整，直到目标达成、到边界或重试失败。可用 image_diff 对比滑动前后截图判断是否真的移动；最多重试 10 次，超出后报告失败。",
 		"- 精准滑动闭环：先用 medium 做一次试探滑动，截图观察 UI 实际移动量；估算 strength/direction -> UI移动量 的关系，再根据剩余距离选择 large/medium/small/tiny。接近目标必须降档；如果越过目标，反方向并降一档；如果反复横跳，只用 tiny。不要在一次小幅试探后停止，除非目标已经出现在正确位置或确认无法继续。",
 		"- Picker/滚轮控件（时间、日期、城市选择器等）：先 recall_memory 查同类控件校准；没有缓存时用 medium 试探一次，观察值变化了几格，再按剩余格数选档。每次滑动后截图确认当前值，再决定下一步。成功后用 save_memory 记录 app 名、控件位置、方向、strength/distance、对应变化量（tags:[\"swipe\",\"picker\",\"calibration\"]）。",

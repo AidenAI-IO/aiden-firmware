@@ -135,14 +135,19 @@ App 也可以主动发送事件消息。事件复用 `BridgeCommandResponse` 外
 **iOS 实现**: 调用 `UIApplication.shared.open(URL(string: ios_urls[0])!)` 尝试打开第一个 URL。  
 **Android 实现**: 调用 `packageManager.getLaunchIntentForPackage(android_packages[0])` 或解析 deeplink。
 
+浏览器入口不要绑定固定网站：打开浏览器本身时传浏览器 URL scheme / Android browser intent；打开指定网页时传具体 `http`/`https` URL（Android 使用 `android.intent.action.VIEW:<url>`）。
+
 **响应**:
 ```json
 {
   "id": "open_001",
   "ok": true,
-  "method": "open_url"  // 或 "package_name"
+  "method": "ios_url_scheme"
 }
 ```
+
+`method` 表示 App 侧采用的底层机制，常见值包括 `ios_url_scheme`、`ios_shortcut`、`android_intent`、`android_deeplink`、`launch_package`、`dial`、`open_url`。其中 `open_url` 只表示显式网页 URL。
+Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任务的 `method`（例如打开 App 返回 `open_app`，打开网页返回 `open_url`），并把底层值放在 `mechanism` 字段中。
 
 失败时:
 ```json
@@ -631,7 +636,7 @@ App 也可以主动发送事件消息。事件复用 `BridgeCommandResponse` 外
 {
   "id": "open_1717667890123_1",
   "ok": true,
-  "method": "open_url"
+  "method": "ios_url_scheme"
 }
 ```
 
