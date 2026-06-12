@@ -392,6 +392,13 @@ func TestHandleBenchmarkRun_RejectsMissingJudgeAPIKey(t *testing.T) {
 	if called {
 		t.Fatal("launcher should not be invoked without benchmark api key")
 	}
+	stateData, err := os.ReadFile(statePath)
+	if err == nil && strings.Contains(string(stateData), `"status":"running"`) {
+		t.Fatalf("unexpected running state written: %s", stateData)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read state file: %v", err)
+	}
 }
 
 func TestHandleBenchmarkRun_UnitSuite(t *testing.T) {
