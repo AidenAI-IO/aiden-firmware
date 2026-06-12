@@ -529,7 +529,7 @@ func resolveMobileGymPixelPosition(screen *screenState, x, y float64) (int, int,
 		return 0, 0, fmt.Errorf("pixel coordinates require known screen dimensions; call screenshot first or use coord_space normalized")
 	}
 	if x < 0 || y < 0 || x > float64(width-1) || y > float64(height-1) {
-		return 0, 0, fmt.Errorf("pixel coordinates x=%.2f y=%.2f are outside cached screenshot bounds %dx%d; use coord_space normalized with 0..1 coordinates or refresh the screenshot dimensions", x, y, width, height)
+		return 0, 0, fmt.Errorf("pixel coordinates x=%.2f y=%.2f are outside cached screenshot bounds %dx%d; use coord_space normalized with 0-1000 coordinates, where 500,500 is center, or refresh the screenshot dimensions", x, y, width, height)
 	}
 	return int(math.Round(x)), int(math.Round(y)), nil
 }
