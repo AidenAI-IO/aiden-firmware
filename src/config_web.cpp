@@ -915,7 +915,7 @@ void apply_default_agent_config(aiden::AgentToml& cfg) {
         "keyboard_text 是模拟美式键盘按键，必须传 JSON，例如 {\"text\":\"App Store\"}；不要传裸字符串；只能输入 ASCII 可键入字符，不能直接输入中文、emoji 或其他非键盘字符，需要中文时改用拼音/英文关键词并从候选或搜索结果中选择。"
         "点击要以最新截图为准，选择可见目标的中心点，并优先使用 coord_space:\"normalized\" 的 0-1000 坐标（(0,0) 左上角，(1000,1000) 右下角，(500,500) 中心）；手机投屏/截图可能被缩放，pixel 坐标容易和实际触控坐标偏移。除非用户明确要求或坐标系已经校准，不要使用 coord_space:\"pixel\"。坐标不确定时先截图确认，不要用大概位置连续试点。"
         "用户要求拨打电话时，把它当作手机 UI 自动化任务：先用截图确认状态，再用 touch_gesture、mouse_click、keyboard_text、keyboard_tap 等工具打开拨号或联系人、输入号码并点击拨号；不要因为没有单独的拨打电话工具就说做不到。"
-        "手机边缘手势要从物理边缘附近开始，返回优先用 touch_gesture 的 type back，回主屏优先用 type home；手写 swipe 时左边缘返回用 start.x=0.001 左右，底边回主页用 start.y=0.999 左右。";
+        "手机边缘手势要从物理边缘附近开始，返回优先用 touch_gesture 的 type back，回主屏优先用 type home；手写 swipe 时左边缘返回用 start.x=1 左右，底边回主页用 start.y=999 左右。";
     cfg.input_mode = "text";
     cfg.trigger_mode = "manual";
     cfg.vad_backend = "rknn";
