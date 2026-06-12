@@ -15,6 +15,7 @@ import (
 type toolExecutionCallbackRecorder struct {
 	calls   []ToolCall
 	results []ToolResult
+	events  []string
 }
 
 func (r *toolExecutionCallbackRecorder) HandleText(ctx context.Context, text string) {}
@@ -36,7 +37,9 @@ func (r *toolExecutionCallbackRecorder) HandleChainEnd(ctx context.Context, outp
 
 func (r *toolExecutionCallbackRecorder) HandleChainError(ctx context.Context, err error) {}
 
-func (r *toolExecutionCallbackRecorder) HandleToolStart(ctx context.Context, input string) {}
+func (r *toolExecutionCallbackRecorder) HandleToolStart(ctx context.Context, input string) {
+	r.events = append(r.events, "start")
+}
 
 func (r *toolExecutionCallbackRecorder) HandleToolEnd(ctx context.Context, output string) {}
 
@@ -66,6 +69,7 @@ func (r *toolExecutionCallbackRecorder) AfterToolCall(ctx context.Context, call 
 }
 
 func (r *toolExecutionCallbackRecorder) HandleToolCallResult(ctx context.Context, call ToolCall, result ToolResult) {
+	r.events = append(r.events, "result")
 	r.results = append(r.results, result)
 }
 
@@ -172,6 +176,9 @@ func TestExecuteToolCallValidationFailureEmitsToolCallAndResult(t *testing.T) {
 	if len(recorder.results) != 1 || !recorder.results[0].IsError {
 		t.Fatalf("expected one error result callback, got %#v", recorder.results)
 	}
+	if recorder.results[0].Duration <= 0 {
+		t.Fatalf("expected validation failure duration to be recorded, got %s", recorder.results[0].Duration)
+	}
 }
 
 func TestExecuteToolCallBeforeMayRejectWithToolResult(t *testing.T) {
@@ -230,6 +237,7 @@ func TestExecuteToolCallWrapsToolErrorsAndContinues(t *testing.T) {
 func TestExecuteToolCallPropagatesContextErrors(t *testing.T) {
 	for _, err := range []error{context.Canceled, context.DeadlineExceeded} {
 		t.Run(err.Error(), func(t *testing.T) {
+			recorder := &toolExecutionCallbackRecorder{}
 			tool := &stubTool{name: "echo", description: "Echo text.", err: err}
 			specs := NewToolSpecs([]langtools.Tool{tool})
 
@@ -239,10 +247,20 @@ func TestExecuteToolCallPropagatesContextErrors(t *testing.T) {
 					Tool:      "echo",
 					ToolInput: "hello",
 				},
+				Callback: recorder,
 			})
 
 			if !errors.Is(result.Error, err) {
 				t.Fatalf("execution error = %v, want %v", result.Error, err)
+			}
+			if !errors.Is(result.Result.Error, err) {
+				t.Fatalf("result error = %v, want %v", result.Result.Error, err)
+			}
+			if len(recorder.events) != 2 || recorder.events[0] != "start" || recorder.events[1] != "result" {
+				t.Fatalf("callback lifecycle events = %#v, want start then result", recorder.events)
+			}
+			if len(recorder.results) != 1 || !errors.Is(recorder.results[0].Error, err) {
+				t.Fatalf("terminal result callback = %#v, want error %v", recorder.results, err)
 			}
 		})
 	}

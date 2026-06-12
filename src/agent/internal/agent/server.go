@@ -1457,7 +1457,7 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 
 	toolName := strings.TrimPrefix(r.URL.Path, "/api/tools/")
 	toolName = strings.TrimSpace(toolName)
-	if toolName == "" || strings.Contains(toolName, "/") || !isHTTPToolExposed(toolName) {
+	if toolName == "" || strings.Contains(toolName, "/") {
 		http.NotFound(w, r)
 		return
 	}

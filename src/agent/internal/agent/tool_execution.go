@@ -88,6 +88,7 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 			IsError: true,
 			Error:   err,
 		}
+		result.Duration = time.Since(call.StartedAt)
 		result = runAfterToolCallHook(ctx, execution, call, result)
 		emitToolResult(ctx, execution.Callback, call, result)
 		return resultForToolCall(call, result, nil)
@@ -103,7 +104,9 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return ToolCallExecutionResult{Call: call, Error: err}
+			result = runAfterToolCallHook(ctx, execution, call, result)
+			emitToolResult(ctx, execution.Callback, call, result)
+			return ToolCallExecutionResult{Call: call, Result: result, Error: err}
 		}
 		result.Output = fmt.Sprintf("error: %s failed: %v", spec.Name, err)
 	}

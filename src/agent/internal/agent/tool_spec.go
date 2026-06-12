@@ -274,11 +274,12 @@ func NewToolSpec(tool langtools.Tool) ToolSpec {
 		return ToolSpec{}
 	}
 	name := tool.Name()
-	meta := builtInToolSpecMetadata[name]
-	httpExposed := true
+	meta, hasMeta := builtInToolSpecMetadata[name]
+	httpExposed := hasMeta
 	if meta.HTTPExposed != nil {
 		httpExposed = *meta.HTTPExposed
 	}
+	// Agent tools can be injected by runtime deps without HTTP exposure metadata.
 	agentExposed := true
 	if meta.AgentExposed != nil {
 		agentExposed = *meta.AgentExposed

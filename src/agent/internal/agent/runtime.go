@@ -1010,20 +1010,6 @@ func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *te
 	}()
 }
 
-func wrapToolsWithCallbacks(tools []langtools.Tool, handler callbacks.Handler) []langtools.Tool {
-	if handler == nil {
-		return tools
-	}
-	wrapped := make([]langtools.Tool, 0, len(tools))
-	for _, tool := range tools {
-		wrapped = append(wrapped, &callbackTool{
-			inner:   tool,
-			handler: handler,
-		})
-	}
-	return wrapped
-}
-
 func (r *Runtime) buildAgent(
 	model llms.Model,
 	skills ResolvedSkills,
