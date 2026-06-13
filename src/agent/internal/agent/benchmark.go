@@ -245,7 +245,7 @@ func (s *Server) handleBenchmarkRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) currentBenchmarkRunListItem() *runListItem {
-	statePath := filepath.Join(s.benchmarkDir, "state.json")
+	statePath := s.benchmarkStateFile()
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		return nil
@@ -369,7 +369,7 @@ func (s *Server) handleBenchmarkStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"benchmark directory not configured"}`, http.StatusServiceUnavailable)
 		return
 	}
-	statePath := filepath.Join(s.benchmarkDir, "state.json")
+	statePath := s.benchmarkStateFile()
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -399,7 +399,11 @@ func (s *Server) benchmarkRunnerAlive() bool {
 	if pidFile == "" {
 		pidFile = "/tmp/benchmark_runner.pid"
 	}
-	for _, p := range []string{pidFile, "/tmp/mobilegym_runner.pid"} {
+	pidFiles := []string{pidFile}
+	if pidFile == "/tmp/benchmark_runner.pid" {
+		pidFiles = append(pidFiles, "/tmp/mobilegym_runner.pid")
+	}
+	for _, p := range pidFiles {
 		if data, err := os.ReadFile(p); err == nil {
 			var pid int
 			if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil && pid > 0 {

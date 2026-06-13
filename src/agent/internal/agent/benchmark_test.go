@@ -396,6 +396,10 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		`r.model||'—'`,
 		`id="refreshBtn"`,
 		`function refreshBenchmark(){loadSuites();loadRuns();loadStatus();loadLog()}`,
+		`function logPanelError(context,e)`,
+		`function readErrorResponse(r)`,
+		`logPanelError('Start run failed',e)`,
+		`logPanelError('Start unit run failed',e)`,
 		`id="unitSelect"`,
 		`id="runUnitBtn"`,
 		`function startRunUnit()`,
@@ -422,6 +426,9 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		if strings.Contains(body, marker) {
 			t.Errorf("history table should avoid unsafe innerHTML marker %q", marker)
 		}
+	}
+	if strings.Contains(body, `alert(String(e))`) {
+		t.Errorf("run errors should be rendered into the Live Log, not alert-only")
 	}
 }
 
@@ -482,10 +489,12 @@ func TestHandleBenchmarkRun_WritesStateFile(t *testing.T) {
 func TestHandleBenchmarkRun_RejectsMissingJudgeAPIKey(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(root, "state.json")
+	logPath := filepath.Join(root, "benchmark_run.log")
 	called := false
 	s := &Server{
 		runtime:            &Runtime{config: Config{Benchmark: BenchmarkConfig{JudgeModel: "judge/model"}}},
 		benchmarkDir:       root,
+		benchmarkLogPath:   logPath,
 		benchmarkStatePath: statePath,
 		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error {
 			called = true
@@ -508,6 +517,54 @@ func TestHandleBenchmarkRun_RejectsMissingJudgeAPIKey(t *testing.T) {
 	}
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("read state file: %v", err)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("expected run error to be written to log: %v", err)
+	}
+	if !strings.Contains(string(logData), "benchmark judge api_key is not configured") {
+		t.Fatalf("log missing run error: %s", logData)
+	}
+}
+
+func TestLaunchBenchmarkRunner_PassesStateFileToPythonRunner(t *testing.T) {
+	tmp := t.TempDir()
+	capturePath := filepath.Join(tmp, "captured-script")
+	fakeSh := filepath.Join(tmp, "sh")
+	if err := os.WriteFile(fakeSh, []byte("#!/bin/sh\nprintf '%s' \"$2\" > \"$CAPTURE_SCRIPT\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CAPTURE_SCRIPT", capturePath)
+
+	s := &Server{
+		benchmarkDir:       "/userdata/agent/benchmark",
+		benchmarkStatePath: "/userdata/agent/benchmark/state.json",
+	}
+	if err := s.launchBenchmarkRunner(
+		benchmarkLaunchSpec{Suite: "/userdata/agent/benchmark/suites/memory_v1.json", Kind: "benchmark"},
+		"judge/model",
+		"sk-test",
+		"google/gemini-3.5-flash",
+	); err != nil {
+		t.Fatalf("launchBenchmarkRunner returned error: %v", err)
+	}
+
+	var script string
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(capturePath)
+		if err == nil && len(data) > 0 {
+			script = string(data)
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if script == "" {
+		t.Fatal("fake shell did not capture launch script")
+	}
+	if !strings.Contains(script, "--state-file '/userdata/agent/benchmark/state.json'") {
+		t.Fatalf("launch script should pass --state-file to Python runner, got: %s", script)
 	}
 }
 
@@ -545,8 +602,10 @@ func TestHandleBenchmarkRun_DoesNotWriteRunningStateWhenAidenLaunchFails(t *test
 func TestHandleBenchmarkRun_DoesNotWriteRunningStateWhenMobileGymLaunchFails(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(root, "state.json")
+	logPath := filepath.Join(root, "mobilegym_run.log")
 	s := &Server{
 		benchmarkDir:       root,
+		benchmarkLogPath:   logPath,
 		benchmarkStatePath: statePath,
 		benchmarkMobileGymLauncher: func(suite, suiteType string, parallel, limit int) error {
 			return errors.New("boom")
@@ -567,6 +626,13 @@ func TestHandleBenchmarkRun_DoesNotWriteRunningStateWhenMobileGymLaunchFails(t *
 	}
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("read state file: %v", err)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("expected mobilegym run error to be written to log: %v", err)
+	}
+	if !strings.Contains(string(logData), "mobilegym launch failed: boom") {
+		t.Fatalf("log missing mobilegym launch error: %s", logData)
 	}
 }
 

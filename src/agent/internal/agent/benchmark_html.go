@@ -150,6 +150,21 @@ document.getElementById('statusText').className='status fail';
 document.getElementById('logBox').textContent=msg;
 return msg;
 }
+function logPanelError(context,e){
+var msg=context+': '+String(e&&e.message?e.message:e);
+document.getElementById('statusText').textContent='error';
+document.getElementById('statusText').className='status fail';
+document.getElementById('logBox').textContent=msg;
+return msg;
+}
+function readErrorResponse(r){
+return r.text().then(function(t){
+var msg=t||('HTTP '+r.status);
+try{var d=JSON.parse(t);if(d&&d.error)msg=d.error}catch(_){ }
+throw new Error(msg);
+});
+}
+function jsonOrError(r){return r.ok?r.json():readErrorResponse(r)}
 function updateProgress(d){
 var box=document.getElementById('progressBox');
 var fill=document.getElementById('progressFill');
@@ -354,13 +369,13 @@ document.getElementById('runUnitBtn').disabled=true;
 document.getElementById('statusText').textContent='running';
 document.getElementById('statusText').className='status running';
 fetch(benchmarkEndpoint('/benchmark/run'),{method:'POST',headers:{'Content-Type':'application/json'},
-body:JSON.stringify(payload)}).then(r=>r.json()).then(function(){
+body:JSON.stringify(payload)}).then(jsonOrError).then(function(){
 loadLog();
 polling=setInterval(pollStatus,3000);
 if(!logPolling)logPolling=setInterval(loadLog,1000)}).catch(function(e){
 document.getElementById('runBtn').disabled=false;
 document.getElementById('runUnitBtn').disabled=false;
-if(getMode()==='mobilegym')showMobileGymLauncherError(e);else alert(String(e));
+if(getMode()==='mobilegym'&&String(e).indexOf('Failed to fetch')>=0)showMobileGymLauncherError(e);else logPanelError('Start run failed',e);
 });
 }
 function startRunUnit(){
@@ -371,13 +386,13 @@ document.getElementById('runUnitBtn').disabled=true;
 document.getElementById('statusText').textContent='running';
 document.getElementById('statusText').className='status running';
 fetch('/benchmark/run',{method:'POST',headers:{'Content-Type':'application/json'},
-body:JSON.stringify({suite:suite,mode:'aiden'})}).then(r=>r.json()).then(function(){
+body:JSON.stringify({suite:suite,mode:'aiden'})}).then(jsonOrError).then(function(){
 loadLog();
 polling=setInterval(pollStatus,3000);
 if(!logPolling)logPolling=setInterval(loadLog,1000)}).catch(function(e){
 document.getElementById('runBtn').disabled=false;
 document.getElementById('runUnitBtn').disabled=false;
-alert(String(e));
+logPanelError('Start unit run failed',e);
 });
 }
 function generateSuite(){

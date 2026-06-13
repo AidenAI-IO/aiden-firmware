@@ -18,14 +18,18 @@ type benchmarkLaunchSpec struct {
 }
 
 // launchBenchmarkRunner double-forks a sh script that runs the Python benchmark
-// runner. Writes /tmp/benchmark_runner.pid + /tmp/benchmark_run.log + updates
-// state.json on completion. The Python runner no longer accepts --state-file
-// (removed upstream); the Go server handles state.json bookkeeping itself in
-// handleBenchmarkRun (start) and the trailing echo (end).
+// runner. Writes the runner pid + log file and passes state.json to the Python
+// runner so progress updates include current/total task counts while running.
 func (s *Server) launchBenchmarkRunner(spec benchmarkLaunchSpec, judgeModel, openRouterAPIKey, agentModel string) error {
 	if judgeModel == "" {
 		judgeModel = defaultBenchmarkJudgeModel
 	}
+	benchmarkDir := s.benchmarkDir
+	if benchmarkDir == "" {
+		benchmarkDir = "/userdata/agent/benchmark"
+	}
+	statePath := s.benchmarkStateFile()
+	logPath := s.benchmarkLogFile("aiden")
 	runnerArgs := ""
 	if spec.Kind == "unit" {
 		if spec.SuiteDir != "" {
@@ -34,19 +38,19 @@ func (s *Server) launchBenchmarkRunner(spec benchmarkLaunchSpec, judgeModel, ope
 			runnerArgs = "unit --suite " + shellQuote(spec.Suite) + " --agent-url http://127.0.0.1:8080 "
 		}
 	} else {
-		runnerArgs = "run --suite " + shellQuote(spec.Suite) + " --agent-url http://127.0.0.1:8080 --judge-model " + shellQuote(judgeModel) + " --agent-model " + shellQuote(agentModel) + " "
+		runnerArgs = "run --suite " + shellQuote(spec.Suite) + " --agent-url http://127.0.0.1:8080 --judge-model " + shellQuote(judgeModel) + " --agent-model " + shellQuote(agentModel) + " --state-file " + shellQuote(statePath) + " "
 	}
-	script := fmt.Sprintf(`cd /userdata/agent/benchmark && `+
+	script := fmt.Sprintf(`cd %s && `+
 		`export OPENROUTER_API_KEY=%s && `+
 		`(`+
-		`echo 'Starting benchmark...' > /tmp/benchmark_run.log; `+
+		`echo 'Starting benchmark...' > %s; `+
 		`python3 -c 'import sys;sys.path.insert(0,".");from runner.main import cli;sys.exit(cli())' `+
 		`%s`+
-		`>> /tmp/benchmark_run.log 2>&1 & `+
+		`>> %s 2>&1 & `+
 		`runner_pid=$!; echo $runner_pid > /tmp/benchmark_runner.pid; `+
 		`wait $runner_pid; rm -f /tmp/benchmark_runner.pid; `+
-		`echo '{"status":"idle"}' > /userdata/agent/benchmark/state.json) &`,
-		shellQuote(openRouterAPIKey), runnerArgs)
+		`echo '{"status":"idle"}' > %s) &`,
+		shellQuote(benchmarkDir), shellQuote(openRouterAPIKey), shellQuote(logPath), runnerArgs, shellQuote(logPath), shellQuote(statePath))
 	return exec.Command("sh", "-c", script).Start()
 }
 
@@ -54,9 +58,42 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+func (s *Server) benchmarkStateFile() string {
+	if s.benchmarkStatePath != "" {
+		return s.benchmarkStatePath
+	}
+	if s.benchmarkDir != "" {
+		return filepath.Join(s.benchmarkDir, "state.json")
+	}
+	return "/userdata/agent/benchmark/state.json"
+}
+
+func (s *Server) benchmarkLogFile(mode string) string {
+	if s.benchmarkLogPath != "" {
+		return s.benchmarkLogPath
+	}
+	if mode == "mobilegym" {
+		return "/tmp/mobilegym_run.log"
+	}
+	return "/tmp/benchmark_run.log"
+}
+
+func (s *Server) writeBenchmarkRunError(w http.ResponseWriter, mode string, status int, message string) {
+	if logPath := s.benchmarkLogFile(mode); logPath != "" {
+		_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
+		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+			_, _ = fmt.Fprintf(f, "ERROR: %s\n", message)
+			_ = f.Close()
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
 func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 	if s.benchmarkDir == "" {
-		http.Error(w, `{"error":"benchmark directory not configured"}`, http.StatusServiceUnavailable)
+		s.writeBenchmarkRunError(w, "aiden", http.StatusServiceUnavailable, "benchmark directory not configured")
 		return
 	}
 	var req struct {
@@ -68,25 +105,22 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		Limit     int    `json:"limit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		s.writeBenchmarkRunError(w, "aiden", http.StatusBadRequest, "invalid request")
 		return
 	}
 	if req.Mode == "" {
 		req.Mode = "aiden"
 	}
-	statePath := s.benchmarkStatePath
-	if statePath == "" {
-		statePath = filepath.Join(s.benchmarkDir, "state.json")
-	}
+	statePath := s.benchmarkStateFile()
 
 	switch req.Mode {
 	case "aiden":
 		if req.Suite == "" && req.SuiteDir == "" {
-			http.Error(w, `{"error":"missing suite or suite_dir field"}`, http.StatusBadRequest)
+			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "missing suite or suite_dir field")
 			return
 		}
 		if req.Suite != "" && req.SuiteDir != "" {
-			http.Error(w, `{"error":"exactly one of suite or suite_dir is required"}`, http.StatusBadRequest)
+			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "exactly one of suite or suite_dir is required")
 			return
 		}
 		spec := benchmarkLaunchSpec{Suite: req.Suite, SuiteDir: req.SuiteDir, Kind: "benchmark"}
@@ -111,11 +145,7 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 			agentModel = s.runtime.config.Model.Model
 		}
 		if spec.Kind == "benchmark" && strings.TrimSpace(apiKey) == "" {
-			http.Error(w, `{"error":"benchmark judge api_key is not configured"}`, http.StatusBadRequest)
-			return
-		}
-		if err := launch(spec, judge, apiKey, agentModel); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"launch failed: %s"}`, err), http.StatusInternalServerError)
+			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "benchmark judge api_key is not configured")
 			return
 		}
 		stateJSON, _ := json.Marshal(map[string]any{
@@ -125,16 +155,21 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 			"model":  agentModel,
 		})
 		if err := os.WriteFile(statePath, stateJSON, 0o644); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+			s.writeBenchmarkRunError(w, req.Mode, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := launch(spec, judge, apiKey, agentModel); err != nil {
+			_ = os.WriteFile(statePath, []byte(`{"status":"idle"}`), 0o644)
+			s.writeBenchmarkRunError(w, req.Mode, http.StatusInternalServerError, "launch failed: "+err.Error())
 			return
 		}
 	case "mobilegym":
 		if req.Suite == "" {
-			http.Error(w, `{"error":"missing suite field"}`, http.StatusBadRequest)
+			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "missing suite field")
 			return
 		}
 		if req.SuiteDir != "" {
-			http.Error(w, `{"error":"suite_dir is not supported for mobilegym mode"}`, http.StatusBadRequest)
+			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "suite_dir is not supported for mobilegym mode")
 			return
 		}
 		if req.Parallel < 1 {
@@ -145,7 +180,7 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 			launch = s.launchMobileGymRunner
 		}
 		if err := launch(req.Suite, req.SuiteType, req.Parallel, req.Limit); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"mobilegym launch failed: %s"}`, err), http.StatusInternalServerError)
+			s.writeBenchmarkRunError(w, req.Mode, http.StatusInternalServerError, "mobilegym launch failed: "+err.Error())
 			return
 		}
 		stateJSON, _ := json.Marshal(map[string]any{
@@ -156,11 +191,11 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 			"parallel":   req.Parallel,
 		})
 		if err := os.WriteFile(statePath, stateJSON, 0o644); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+			s.writeBenchmarkRunError(w, req.Mode, http.StatusInternalServerError, err.Error())
 			return
 		}
 	default:
-		http.Error(w, fmt.Sprintf(`{"error":"unknown mode %q"}`, req.Mode), http.StatusBadRequest)
+		s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, fmt.Sprintf("unknown mode %q", req.Mode))
 		return
 	}
 
