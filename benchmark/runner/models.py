@@ -26,6 +26,8 @@ class RubricVerdict:
 class HardAssertionResults:
     min_tool_calls: bool | None = None
     max_tool_calls: bool | None = None
+    required_tools: bool | None = None
+    forbidden_tools: bool | None = None
     timeout: bool = True
     response_exists: bool = False
     expected_answer: bool | None = None

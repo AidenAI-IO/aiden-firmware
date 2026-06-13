@@ -42,6 +42,20 @@ def test_extract_trace_handles_malformed_input_gracefully():
     assert trace.tool_calls[0].input == {}
     assert trace.tool_calls[0].has_screenshot is False
 
+def test_extract_trace_keeps_tool_call_without_result_before_next_call():
+    history = [
+        {"type": "tool_call", "tool_name": "enter_plan_mode", "tool_input": '{"reason":"complex"}'},
+        {"type": "tool_call", "tool_name": "commit_plan", "tool_input": '{"plan":["step"]}'},
+        {"type": "tool_result", "tool_name": "commit_plan", "content": '{"status":"committed"}'},
+        {"type": "assistant", "content": "done"},
+    ]
+
+    trace = extract_trace(history)
+
+    assert [tc.tool for tc in trace.tool_calls] == ["enter_plan_mode", "commit_plan"]
+    assert trace.tool_calls[0].input == {"reason": "complex"}
+    assert trace.total_tool_calls == 2
+
 
 def test_trace_has_skill_read_detects_matching_tool_call():
     trace = Trace(

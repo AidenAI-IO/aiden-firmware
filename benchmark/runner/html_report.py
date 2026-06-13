@@ -96,6 +96,10 @@ def generate_report_html(run_dir: Path) -> str:
                 ha_failures.append(["Min Tool Calls", "Did not meet minimum tool call requirement", "no"])
             if hard_assertions.get("max_tool_calls") is False:
                 ha_failures.append(["Max Tool Calls", "Exceeded maximum tool call limit", "no"])
+            if hard_assertions.get("required_tools") is False:
+                ha_failures.append(["Required Tools", "Missing one or more required tool calls", "no"])
+            if hard_assertions.get("forbidden_tools") is False:
+                ha_failures.append(["Forbidden Tools", "Used one or more forbidden tools", "no"])
             if hard_assertions.get("expected_answer") is False:
                 expected = r.get("metrics", {}).get("expected_answer", "")
                 predicted = r.get("metrics", {}).get("predicted_answer", "")

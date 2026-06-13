@@ -43,6 +43,8 @@ def _task_result_with_details():
         hard_assertions=HardAssertionResults(
             min_tool_calls=False,
             response_exists=False,
+            required_tools=False,
+            forbidden_tools=False,
         ),
         metrics={"error": "boom", "agent_error": "agent boom", "judge_error": "judge boom"},
     )
@@ -66,6 +68,8 @@ def test_log_task_result_shows_details_in_verbose_mode(capsys):
     out = capsys.readouterr().out
     assert "FAILED" in out
     assert "Hard assertion failures" in out
+    assert "required_tools" in out
+    assert "forbidden_tools" in out
     assert "Error: boom" in out
     assert "Agent Error" in out
     assert "Judge Error" in out
