@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build_workflow="$repo_root/.github/workflows/build.yml"
+actionlint_config="$repo_root/actionlint.yaml"
 
 ruby - "$repo_root" <<'RUBY'
 require "yaml"
@@ -79,6 +80,29 @@ if failures.any?
 end
 
 puts "GitHub Actions self-hosted repo-branch safety check passed."
+RUBY
+
+if [[ ! -f "$actionlint_config" ]]; then
+  echo "actionlint config must declare dedicated Aiden hosted runner labels" >&2
+  exit 1
+fi
+
+ruby - "$actionlint_config" <<'RUBY'
+require "yaml"
+
+config_path = ARGV.fetch(0)
+config = YAML.load_file(config_path) || {}
+labels = config.dig("self-hosted-runner", "labels")
+unless labels.is_a?(Array)
+  warn "actionlint config must define self-hosted-runner.labels"
+  exit 1
+end
+
+missing_labels = %w[aiden-hosted-01 aiden-hosted-02] - labels
+if missing_labels.any?
+  warn "actionlint config is missing dedicated Aiden hosted runner labels: #{missing_labels.join(", ")}"
+  exit 1
+end
 RUBY
 
 sanitize_line="$(grep -n 'Remove unusable pico-sdk submodule checkout' "$build_workflow" | sed 's/:.*//' | head -n 1 || true)"
