@@ -289,7 +289,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		if k == reflect.Struct || k == reflect.Slice || k == reflect.Map {
 			continue
 		}
-		if f.Type.Kind() == reflect.Ptr && f.Type.Elem().Kind() == reflect.Bool {
+		if f.Type.Kind() == reflect.Pointer && f.Type.Elem().Kind() == reflect.Bool {
 			// *bool booleans are rendered; fall through to the check.
 		}
 		path := "agent." + name
