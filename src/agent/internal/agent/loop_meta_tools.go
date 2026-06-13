@@ -39,6 +39,13 @@ func (t *loopMetaTool) Call(context.Context, string) (string, error) {
 func loopMetaTools() []langtools.Tool {
 	return []langtools.Tool{
 		&loopMetaTool{
+			name:        toolUseSimpleMode,
+			description: "Use default/simple mode for short tasks that do not need multi-step planning. Optional JSON input: {\"reason\":\"why simple mode is sufficient\"}.",
+			schema: objectArgsSchema(map[string]any{
+				"reason": stringArgSchema("Why simple mode is sufficient."),
+			}),
+		},
+		&loopMetaTool{
 			name:        toolEnterPlanMode,
 			description: "Enter plan mode to draft and commit a multi-step plan. Required in default mode when the task will likely need 3 or more steps. Optional JSON input: {\"reason\":\"why planning is needed\"}.",
 			schema: objectArgsSchema(map[string]any{
@@ -85,7 +92,7 @@ func appendLoopMetaTools(tools []langtools.Tool) []langtools.Tool {
 
 func isLoopMetaTool(name string) bool {
 	switch strings.ToUpper(strings.TrimSpace(name)) {
-	case strings.ToUpper(toolEnterPlanMode), strings.ToUpper(toolCommitPlan), strings.ToUpper(toolCancelPlan):
+	case strings.ToUpper(toolUseSimpleMode), strings.ToUpper(toolEnterPlanMode), strings.ToUpper(toolCommitPlan), strings.ToUpper(toolCancelPlan):
 		return true
 	default:
 		return false

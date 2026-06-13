@@ -13,7 +13,8 @@ Each run is assembled from several layers. Some layers are persisted memory, whi
 | Skills | skill index plus active `SKILL.md` content | planner, executor, verifier | skill files and skill state |
 | Runtime context | `RunRequest.RuntimeContext`, for example phone bridge state | planner, executor, verifier | not persisted |
 | Tool catalog | resolved built-in tools plus skill tools | planner and executor can call; verifier does not receive a tool catalog | not persisted in memory |
-| Loop meta tools | `enter_plan_mode`, `commit_plan`, `cancel_plan` | planner only | not persisted in memory |
+| Planner loop meta tools | `use_simple_mode`, `enter_plan_mode`, `commit_plan`, `cancel_plan` | planner only | not persisted in memory |
+| Executor loop meta tools | `finish_step`, `abort_step` | executor only | not persisted in memory |
 | Retrieved memory context | `MemoryPlane.Retrieve` output | planner and verifier only | filesystem memory |
 | Planner conversation history | hot-window memory, optional compressed-history markers, optional persisted chat history | planner only | filesystem memory |
 | Role loop state | phase, objective, plan, `plan_step_index`, next step, tool evidence, verifier feedback, world state | role-specific | current run only |
@@ -27,6 +28,7 @@ The executor intentionally does not receive global memory or full conversation h
 
 | Phase | Planner behavior | Other roles |
 | --- | --- | --- |
+| `decision` | Route to direct answer, `default`, or `plan` before ordinary tools are exposed | not used |
 | `default` | Call built-in tools directly, return a final answer when done, or call `enter_plan_mode` for complex work | not used |
 | `plan` | Explore with tools, maintain a draft plan, then call `commit_plan` or `cancel_plan` | not used |
 | `execution` | not called | `executor` runs one approved step, then `verifier` reviews evidence |
@@ -34,32 +36,45 @@ The executor intentionally does not receive global memory or full conversation h
 Phase transitions:
 
 ```text
-Run starts in default
+Run starts in decision
   |
-  +-- planner finishes in default --> run ends (no verifier)
+  +-- direct_answer --> run ends (no verifier)
   |
-  +-- enter_plan_mode --> plan
+  +-- simple / use_simple_mode --> default
+  |     |
+  |     +-- planner finishes --> run ends (no verifier)
+  |     |
+  |     +-- planner calls domain tool --> default
+  |     |
+  |     +-- enter_plan_mode --> plan
+  |
+  +-- plan / enter_plan_mode --> plan
         |
         +-- cancel_plan --> default
         |
         +-- commit_plan --> execution
               |
-              +-- verifier can_finish --> run ends
-              |
-              +-- verifier needs_replan --> plan
-              |
-              +-- verifier continues and plan has more steps --> next execution step
-              |
-              +-- verifier continues and plan is exhausted --> plan
+              +-- executor finish_step / abort_step --> verifier
+                    |
+                    +-- verifier can_finish --> run ends
+                    |
+                    +-- verifier needs_replan --> plan
+                    |
+                    +-- verifier continues and plan has more steps --> next execution step
+                    |
+                    +-- verifier continues and plan is exhausted --> plan
 ```
 
-Loop meta tools are visible only to the planner and are intercepted by the runtime controller. They never reach the device tool layer.
+Planner loop meta tools are visible only to the planner and are intercepted by the runtime controller. Executor loop meta tools are visible only to the executor for step-boundary review. They never reach the device tool layer.
 
-| Meta tool | Allowed in | Effect |
-| --- | --- | --- |
-| `enter_plan_mode` | `default` | switch to `plan` |
-| `commit_plan` | `plan` only | commit objective, completion criteria, and plan steps; switch to `execution` |
-| `cancel_plan` | `plan` | clear draft planning state; switch to `default` |
+| Meta tool | Role | Allowed in | Effect |
+| --- | --- | --- | --- |
+| `use_simple_mode` | planner | `decision` | route to `default` |
+| `enter_plan_mode` | planner | `decision`, `default` | switch to `plan` |
+| `commit_plan` | planner | `plan` only | commit objective, completion criteria, and plan steps; switch to `execution` |
+| `cancel_plan` | planner | `plan` | clear draft planning state; switch to `default` |
+| `finish_step` | executor | `execution` | mark the current step ready for verifier review |
+| `abort_step` | executor | `execution` | mark the current step blocked or failed for verifier review |
 
 After `commit_plan`, runtime owns step progression. `plan_step_index` selects the current committed step, and `next_step` is synchronized from that index before each executor turn. The executor must not reorder or rewrite the plan.
 

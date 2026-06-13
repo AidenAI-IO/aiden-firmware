@@ -54,7 +54,11 @@ func TestAgentExposedToolsDoNotExposeLegacyArg1Schema(t *testing.T) {
 func TestSessionRecallTelemetryToolForwardsStructuredSchema(t *testing.T) {
 	inner := NewRecallSessionChunksTool(nil)
 	wrapped := &sessionRecallTelemetryTool{inner: inner}
-	props := wrapped.ArgsSchema()["properties"].(map[string]any)
+	schema := wrapped.ArgsSchema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("forwarded schema missing properties: %#v", schema)
+	}
 	if _, ok := props["chunk_ids"]; !ok {
 		t.Fatalf("forwarded schema missing chunk_ids: %#v", props)
 	}

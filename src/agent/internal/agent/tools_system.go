@@ -228,6 +228,9 @@ func parseWeatherArgs(input string) (weatherArgs, error) {
 			return weatherArgs{}, fmt.Errorf("invalid input: %w", err)
 		}
 		args.Location = strings.TrimSpace(args.Location)
+		if (args.Latitude == nil) != (args.Longitude == nil) {
+			return weatherArgs{}, fmt.Errorf("latitude and longitude must be provided together")
+		}
 		if args.hasCoordinates() {
 			if err := validateCoordinates(*args.Latitude, *args.Longitude); err != nil {
 				return weatherArgs{}, err

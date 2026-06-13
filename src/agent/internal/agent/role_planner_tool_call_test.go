@@ -139,6 +139,40 @@ func TestParseRouteDecisionTreatsBareSimpleIntentAsSimple(t *testing.T) {
 	}
 }
 
+func TestParseRouteDecisionTreatsOrdinaryPlanAndSimpleTextAsDirectAnswer(t *testing.T) {
+	for _, text := range []string{
+		"I will provide a plan in the final answer.",
+		"Let's keep this simple and answer directly.",
+		"Here is a simple approach: choose option B.",
+	} {
+		decision := parseRouteDecision(contentResponse(text), "Select option (b).")
+		if decision.Mode != routeModeDirectAnswer {
+			t.Fatalf("route mode for %q = %q, want direct_answer", text, decision.Mode)
+		}
+		if decision.FinalAnswer != text {
+			t.Fatalf("final answer for %q = %q", text, decision.FinalAnswer)
+		}
+	}
+}
+
+func TestParseRouteDecisionTreatsExplicitTextModeCommandsAsIntent(t *testing.T) {
+	cases := []struct {
+		text string
+		want routeMode
+	}{
+		{text: "switch to plan mode", want: routeModePlan},
+		{text: "enter_plan_mode because this needs checkpoints", want: routeModePlan},
+		{text: "use simple mode", want: routeModeSimple},
+		{text: "use_simple_mode\n<reason>short task</reason>", want: routeModeSimple},
+	}
+	for _, tc := range cases {
+		decision := parseRouteDecision(contentResponse(tc.text), "request")
+		if decision.Mode != tc.want {
+			t.Fatalf("route mode for %q = %q, want %q", tc.text, decision.Mode, tc.want)
+		}
+	}
+}
+
 func TestParseRouteDecisionForcesPlanForMultiStageRequest(t *testing.T) {
 	decision := parseRouteDecision(
 		contentResponse(`{"mode":"simple","reason":"model underestimated task"}`),

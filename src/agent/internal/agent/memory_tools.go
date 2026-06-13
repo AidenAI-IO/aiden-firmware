@@ -143,7 +143,7 @@ func (t *SaveMemoryTool) Description() string {
 		"  - tags: TOPIC/DOMAIN keywords for future search (e.g., 'verification', 'payment', 'expense'). NOT time words or vague terms.",
 		"  - entities: Specific named things mentioned (apps, accounts, services, people).",
 		"  - evidence: Original user quotes or context that led to this memory. Helps verify relevance later.",
-		"  - priority: 0-100, higher = more important. Use 80+ for user-stated rules/preferences, 60+ for inferred patterns, 40+ for observations.",
+		"  - priority: 1-100, higher = more important. Use 80+ for user-stated rules/preferences, 60+ for inferred patterns, 40+ for observations.",
 		"Returns the saved memory ID or indicates the memory was deduplicated.",
 	}, " ")
 }
@@ -156,7 +156,7 @@ func (t *SaveMemoryTool) ArgsSchema() map[string]any {
 		"tags":     stringArrayArgSchema("Topic or domain keywords for future search."),
 		"entities": stringArrayArgSchema("Specific named things mentioned by the memory."),
 		"evidence": stringArrayArgSchema("Original quotes or observations that support this memory."),
-		"priority": rangedIntegerArgSchema("Importance from 0 to 100.", 0, 100),
+		"priority": rangedIntegerArgSchema("Importance from 1 to 100.", 1, 100),
 	}, "type", "content")
 }
 

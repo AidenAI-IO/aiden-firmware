@@ -298,6 +298,9 @@ func telemetryModelParametersFromCallOptions(opts llms.CallOptions) map[string]i
 func telemetryPromptMetadata(options []llms.CallOption) map[string]interface{} {
 	opts := llms.CallOptions{}
 	for _, option := range options {
+		if option == nil {
+			continue
+		}
 		option(&opts)
 	}
 	meta := map[string]interface{}{}

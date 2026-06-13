@@ -96,6 +96,11 @@ def load_suite(path: Path) -> Suite:
             raise SuiteValidationError(f"task {tid}: hard_assertions values must be non-negative")
         required_tools = _string_list_assertion(ha.get("required_tools", []), tid, "required_tools")
         forbidden_tools = _string_list_assertion(ha.get("forbidden_tools", []), tid, "forbidden_tools")
+        overlap = sorted(set(required_tools) & set(forbidden_tools))
+        if overlap:
+            raise SuiteValidationError(
+                f"task {tid}: hard_assertions has overlapping required/forbidden tools: {overlap}"
+            )
         hard = HardAssertions(
             min_tool_calls=min_tc,
             max_tool_calls=max_tc,

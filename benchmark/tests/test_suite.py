@@ -101,6 +101,25 @@ def test_load_suite_rejects_invalid_required_tools(tmp_path: Path):
     with pytest.raises(SuiteValidationError):
         load_suite(p)
 
+def test_load_suite_rejects_overlapping_required_and_forbidden_tools(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "hard_assertions": {
+                    "required_tools": ["commit_plan", "calculator"],
+                    "forbidden_tools": ["screenshot", "commit_plan"],
+                },
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="overlapping required/forbidden tools"):
+        load_suite(p)
+
 def test_load_suite_rejects_invalid_expected_recalled_memory_ids(tmp_path: Path):
     fixture = {
         **FIXTURE,

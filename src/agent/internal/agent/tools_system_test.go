@@ -162,3 +162,15 @@ func TestWeatherToolAcceptsCoordinatesWithoutGeocoding(t *testing.T) {
 		t.Fatalf("unexpected output: %s", out)
 	}
 }
+
+func TestWeatherToolRejectsPartialCoordinates(t *testing.T) {
+	tool := NewWeatherTool(ProxyConfig{})
+
+	out, err := tool.Call(context.Background(), `{"location":"point","latitude":1}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "latitude and longitude must be provided together") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+}

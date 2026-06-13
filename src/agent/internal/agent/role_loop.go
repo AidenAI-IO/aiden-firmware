@@ -139,7 +139,6 @@ func (s *roleLoopState) syncNextStepFromPlanIndex() {
 func (s *roleLoopState) advancePlanStepOrExhaust() bool {
 	s.PlanStepIndex++
 	if s.PlanStepIndex >= len(s.Plan) {
-		s.Phase = phasePlan
 		s.PlanExhausted = true
 		return true
 	}
@@ -271,14 +270,24 @@ func splitStructuredLines(text string) []string {
 }
 
 var (
-	stepMarkerRE      = regexp.MustCompile(`(?i)(^|\s+)(step\s*\d+\s*[:：])`)
-	numberedMarkerRE  = regexp.MustCompile(`(^|\s*)(\(\d+\))`)
-	planListPrefixRE  = regexp.MustCompile(`(?i)^\s*(?:[-*•]+|\d+[\.)]|step\s*\d+\s*[:：])\s*`)
-	criteriaPrefixRE  = regexp.MustCompile(`(?i)^\s*(?:[-*•]+|\d+[\.)])\s*`)
-	blankWhitespaceRE = regexp.MustCompile(`\s+`)
-	stageMarkerRE     = regexp.MustCompile(`(?i)\bstage\s*\d+\b`)
-	bulletRecordRE    = regexp.MustCompile(`(?m)^\s*[-*]\s*[^:\n]+:\s*[-+]?\d+(?:\.\d+)?\s*$`)
+	stepMarkerRE        = regexp.MustCompile(`(?i)(^|\s+)(step\s*\d+\s*[:：])`)
+	numberedMarkerRE    = regexp.MustCompile(`(^|\s*)(\(\d+\))`)
+	planListPrefixRE    = regexp.MustCompile(`(?i)^\s*(?:[-*•]+|\d+[\.)]|step\s*\d+\s*[:：])\s*`)
+	criteriaPrefixRE    = regexp.MustCompile(`(?i)^\s*(?:[-*•]+|\d+[\.)])\s*`)
+	blankWhitespaceRE   = regexp.MustCompile(`\s+`)
+	stageMarkerRE       = regexp.MustCompile(`(?i)\bstage\s*\d+\b`)
+	bulletRecordRE      = regexp.MustCompile(`(?m)^\s*[-*]\s*[^:\n]+:\s*[-+]?\d+(?:\.\d+)?\s*$`)
+	routePlanIntentRE   = regexp.MustCompile(`(?i)(?:\b(?:enter|switch|use|choose|select)\s+(?:to\s+)?plan\s+mode\b|\benter_plan_mode\b|["']?mode["']?\s*:\s*["']?plan["']?)`)
+	routeSimpleIntentRE = regexp.MustCompile(`(?i)(?:\b(?:enter|switch|use|choose|select)\s+(?:to\s+)?simple\s+mode\b|\buse_simple_mode\b|["']?mode["']?\s*:\s*["']?simple["']?)`)
 )
+
+func routeTextHasPlanIntent(text string) bool {
+	return routePlanIntentRE.MatchString(text)
+}
+
+func routeTextHasSimpleIntent(text string) bool {
+	return routeSimpleIntentRE.MatchString(text)
+}
 
 func splitByStepMarkers(text string) []string {
 	matches := stepMarkerRE.FindAllStringSubmatchIndex(text, -1)

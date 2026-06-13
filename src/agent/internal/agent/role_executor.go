@@ -285,6 +285,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					return e.finishRun(ctx, finalAnswer, verification.Reason)
 				}
 				if state.advancePlanStepOrExhaust() {
+					state.Phase = phasePlan
 					if e.Recorder != nil {
 						e.Recorder.RecordLoopPhase(phasePlan, "plan_exhausted")
 					}
@@ -1280,13 +1281,14 @@ func parseRouteDecision(res *llms.ContentResponse, request string) routeDecision
 			Reason:      "route returned an explicit final answer",
 		}, request)
 	}
-	if strings.Contains(strings.ToLower(text), string(routeModePlan)) || strings.Contains(strings.ToLower(text), toolEnterPlanMode) {
+	lower := strings.ToLower(text)
+	if routeTextHasPlanIntent(lower) {
 		return normalizeRouteDecision(routeDecision{
 			Mode:   routeModePlan,
 			Reason: "route returned non-JSON plan intent",
 		}, request)
 	}
-	if strings.Contains(strings.ToLower(text), toolUseSimpleMode) || strings.Contains(strings.ToLower(text), "simple") {
+	if routeTextHasSimpleIntent(lower) {
 		return normalizeRouteDecision(routeDecision{
 			Mode:   routeModeSimple,
 			Reason: "route returned non-JSON simple intent",

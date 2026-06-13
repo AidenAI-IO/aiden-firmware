@@ -481,7 +481,7 @@ func TestAdvancePlanStepOrExhaust(t *testing.T) {
 	if !state.advancePlanStepOrExhaust() {
 		t.Fatal("expected exhausted transition")
 	}
-	if state.Phase != phasePlan || !state.PlanExhausted {
+	if state.Phase != phaseExecution || !state.PlanExhausted {
 		t.Fatalf("state = %#v", state)
 	}
 }

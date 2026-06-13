@@ -246,14 +246,6 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 		phaseWindowIndex++
 		return nil
 	}
-	if len(phaseWindows) == 0 {
-		phaseWindows = []langfuseIterationWindow{{
-			Index: 1,
-			ID:    uuid.NewString(),
-			Start: startTime,
-			End:   endTime,
-		}}
-	}
 	if err := openPhaseSpan("default", startTime, time.Time{}, map[string]interface{}{
 		"phase": "default",
 	}); err != nil {
