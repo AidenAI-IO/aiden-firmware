@@ -146,7 +146,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 		inputs["history"] = ""
 	}
 
-	nameToTool := executorNameToTool(e.Tools)
+	toolSpecs := NewToolSpecs(e.Tools)
 	state := roleLoopState{}
 	for i := 0; i < e.MaxIterations; i++ {
 		plan, err := e.callPlanner(ctx, inputs, state, options...)
@@ -159,7 +159,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 			e.Recorder.RecordPlannerDecision(plan)
 		}
 
-		execution, err := e.callExecutor(ctx, inputs, state, nameToTool, options...)
+		execution, err := e.callExecutor(ctx, inputs, state, toolSpecs, options...)
 		if err != nil {
 			return nil, err
 		}
@@ -230,7 +230,7 @@ func (e *roleCollaborativeExecutor) callExecutor(
 	ctx context.Context,
 	inputs map[string]string,
 	state roleLoopState,
-	nameToTool map[string]langtools.Tool,
+	toolSpecs *ToolSpecs,
 	options ...chains.ChainCallOption,
 ) (roleExecutionResult, error) {
 	messages := e.roleMessages(e.Profiles.Executor, inputs, state, "Executor task: execute only current next_step. Use at most one tool call.")
@@ -268,20 +268,17 @@ func (e *roleCollaborativeExecutor) callExecutor(
 	}
 
 	action := actions[0]
-	// Only emit the agent-action callback when the tool actually exists. The
-	// runtime callback handler tracks a pending action per HandleAgentAction and
-	// clears it on the matching tool-end callback; an unknown tool never reaches
-	// the tool wrapper, so emitting here would leave a dangling pending action.
-	if _, ok := nameToTool[strings.ToUpper(action.Tool)]; ok && e.CallbacksHandler != nil {
-		e.CallbacksHandler.HandleAgentAction(ctx, action)
-	}
-	step, err := e.callTool(ctx, nameToTool, action)
-	if err != nil {
-		return roleExecutionResult{}, err
+	execution := executeToolCall(ctx, ToolCallExecution{
+		Specs:    toolSpecs,
+		Action:   action,
+		Callback: e.CallbacksHandler,
+	})
+	if execution.Error != nil {
+		return roleExecutionResult{}, execution.Error
 	}
 	return roleExecutionResult{
-		Action: &action,
-		Step:   &step,
+		Action: &execution.Step.Action,
+		Step:   &execution.Step,
 	}, nil
 }
 
@@ -304,28 +301,6 @@ func (e *roleCollaborativeExecutor) generateRoleContent(ctx context.Context, rol
 		return nil, fmt.Errorf("%s role model call timed out after %s", role, roleModelCallTimeout)
 	}
 	return res, err
-}
-
-func (e *roleCollaborativeExecutor) callTool(ctx context.Context, nameToTool map[string]langtools.Tool, action schema.AgentAction) (schema.AgentStep, error) {
-	tool, ok := nameToTool[strings.ToUpper(action.Tool)]
-	if !ok {
-		return schema.AgentStep{
-			Action:      action,
-			Observation: fmt.Sprintf("%s is not a valid tool, try another one", action.Tool),
-		}, nil
-	}
-	toolInput := normalizeToolInput(action.ToolInput)
-	observation, err := tool.Call(ctx, toolInput)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return schema.AgentStep{}, err
-		}
-		return schema.AgentStep{
-			Action:      action,
-			Observation: fmt.Sprintf("error: %s failed: %v", action.Tool, err),
-		}, nil
-	}
-	return schema.AgentStep{Action: action, Observation: observation}, nil
 }
 
 func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map[string]string, state roleLoopState, task string) []llms.MessageContent {

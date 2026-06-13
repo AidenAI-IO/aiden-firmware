@@ -25,6 +25,17 @@ func TestPhoneBridgeToolsExposedToAgentOnly(t *testing.T) {
 	}
 }
 
+func TestUnknownToolsFailClosedForHTTP(t *testing.T) {
+	if isHTTPToolExposed("unregistered_tool") {
+		t.Fatal("expected unregistered tool hidden from HTTP catalog")
+	}
+
+	spec := NewToolSpec(&stubTool{name: "unregistered_tool", description: "Unregistered."})
+	if spec.HTTPExposed {
+		t.Fatal("expected unregistered tool spec hidden from HTTP catalog")
+	}
+}
+
 func TestResolveToolsIncludesQuickAction(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{},

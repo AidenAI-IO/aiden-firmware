@@ -170,6 +170,17 @@ if [ -z "$oem_bin_sync_line" ] || [ -z "$oem_full_sync_line" ] || [ "$oem_bin_sy
     echo "_build_image.sh must sync OEM usr/bin with delete semantics before full OEM overlay sync" >&2
     exit 1
 fi
+firmware_count=$(grep -cF './build.sh firmware "$@"' "$ROOT_DIR/_build_image.sh")
+firmware_line=$(grep -nF './build.sh firmware "$@"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+if [ "$firmware_count" -ne 1 ] || [ -z "$firmware_line" ] || [ "$firmware_line" -ge "$oem_full_sync_line" ]; then
+    echo "_build_image.sh must sync final OEM overlay after pico-sdk firmware packaging regenerates SDK-managed OEM files" >&2
+    exit 1
+fi
+if ! grep -Fq '"usr/ko/insmod_wifi.sh"' "$BUILD_IMAGE_SCRIPT" || \
+   grep -Fq '"usr/ko"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "_build_image.sh must clean only Aiden-managed usr/ko overrides, not the SDK module directory" >&2
+    exit 1
+fi
 
 if ! grep -q 'release_upload_assets.outputs.upload_assets' "$WORKFLOW"; then
     echo "build workflow must upload compressed release image assets" >&2

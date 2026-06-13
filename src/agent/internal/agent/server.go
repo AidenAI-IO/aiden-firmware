@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 
 	"aiden-agent/internal/agent/tts"
@@ -1457,13 +1458,13 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 
 	toolName := strings.TrimPrefix(r.URL.Path, "/api/tools/")
 	toolName = strings.TrimSpace(toolName)
-	if toolName == "" || strings.Contains(toolName, "/") || !isHTTPToolExposed(toolName) {
+	if toolName == "" || strings.Contains(toolName, "/") {
 		http.NotFound(w, r)
 		return
 	}
 
-	tool, descriptor, ok := s.lookupOwnedTool(toolName)
-	if !ok {
+	spec, ok := s.lookupOwnedToolSpec(toolName)
+	if !ok || !spec.HTTPExposed {
 		http.Error(w, fmt.Sprintf("Unknown tool: %s", toolName), http.StatusNotFound)
 		return
 	}
@@ -1475,14 +1476,21 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startedAt := time.Now()
-	output, callErr := tool.Call(r.Context(), rawInput)
+	execution := executeToolCall(r.Context(), ToolCallExecution{
+		Specs:  NewToolSpecs([]langtools.Tool{spec.Tool}),
+		Action: schema.AgentAction{Tool: spec.Name, ToolInput: rawInput},
+	})
 	duration := time.Since(startedAt).Milliseconds()
+	callErr := execution.Result.Error
+	if execution.Error != nil {
+		callErr = execution.Error
+	}
 
 	response := ToolInvokeResponse{
-		Tool:       descriptor,
-		RawInput:   rawInput,
-		Output:     output,
-		IsError:    callErr != nil || toolOutputLooksLikeError(output),
+		Tool:       spec.Descriptor(),
+		RawInput:   execution.Call.Input,
+		Output:     execution.Result.Output,
+		IsError:    execution.Result.IsError || execution.Error != nil,
 		DurationMs: duration,
 		CalledAt:   startedAt,
 	}
@@ -1638,15 +1646,8 @@ func firstForwardedHeaderValue(value string) string {
 	return strings.TrimSpace(parts[0])
 }
 
-func (s *Server) lookupOwnedTool(name string) (tool langtools.Tool, descriptor ToolDescriptor, ok bool) {
-	for _, candidate := range s.runtime.OwnedTools() {
-		if candidate.Name() != name {
-			continue
-		}
-		descriptor, _ = s.runtime.ToolDescriptorByName(name)
-		return candidate, descriptor, true
-	}
-	return nil, ToolDescriptor{}, false
+func (s *Server) lookupOwnedToolSpec(name string) (ToolSpec, bool) {
+	return s.runtime.ToolSpecs().Lookup(name)
 }
 
 func decodeToolInvokeInput(body io.Reader) (string, error) {

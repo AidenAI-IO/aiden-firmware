@@ -9,7 +9,7 @@ def test_exports_bridge_action_logs_to_trajectory_artifacts(tmp_path):
             "episode_id": "ep1",
             "action_id": "ep1:0001",
             "tool_name": "touch_gesture",
-            "tool_input": {"type": "tap", "point": {"x": 0.5, "y": 0.5}},
+            "tool_input": {"type": "tap", "point": {"x": 500, "y": 500}},
             "mobilegym_action": {"action_type": "CLICK", "data": {"point": [540, 1200]}},
             "screenshot": {"format": "jpeg", "data": "/9j/..."},
             "duration_ms": 123,
@@ -23,7 +23,7 @@ def test_exports_bridge_action_logs_to_trajectory_artifacts(tmp_path):
     payload = json.loads(output.read_text())
     assert payload[0]["action_id"] == "ep1:0001"
     assert payload[0]["tool_name"] == "touch_gesture"
-    assert payload[0]["tool_input"] == {"type": "tap", "point": {"x": 0.5, "y": 0.5}}
+    assert payload[0]["tool_input"] == {"type": "tap", "point": {"x": 500, "y": 500}}
     assert payload[0]["mobilegym_action"] == {"action_type": "CLICK", "data": {"point": [540, 1200]}}
     assert payload[0]["screenshot"]["format"] == "jpeg"
     assert payload[0]["screenshot"]["data"] == "/9j/..."
@@ -55,7 +55,7 @@ def test_agent_exports_bridge_end_action_logs_when_artifact_dir_is_set(tmp_path)
                                 "episode_id": payload["episode_id"],
                                 "action_id": f"{payload['episode_id']}:0001",
                                 "tool_name": "tap",
-                                "tool_input": {"x": 0.1, "y": 0.2},
+                                "tool_input": {"x": 100, "y": 200},
                                 "mobilegym_action": {"action_type": "CLICK", "data": {}},
                                 "screenshot": {"format": "png", "data": "abc"},
                                 "duration_ms": 5,

@@ -63,7 +63,7 @@ def test_episode_state_logs_actions_with_episode_scoped_ids():
 
         entry = state.log_action(
             tool_name="tap",
-            tool_input={"x": 0.5, "y": 0.25},
+            tool_input={"x": 500, "y": 250},
             mobilegym_action={"action_type": "CLICK"},
             duration_ms=12,
             error=None,
