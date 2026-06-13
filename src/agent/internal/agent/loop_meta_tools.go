@@ -12,6 +12,7 @@ import (
 )
 
 const (
+	toolUseSimpleMode = "use_simple_mode"
 	toolEnterPlanMode = "enter_plan_mode"
 	toolCommitPlan    = "commit_plan"
 	toolCancelPlan    = "cancel_plan"
@@ -46,7 +47,7 @@ func loopMetaTools() []langtools.Tool {
 		},
 		&loopMetaTool{
 			name:        toolCommitPlan,
-			description: "Commit the draft plan and switch to delegated execution. Input JSON: {\"objective\":\"task\",\"completion_criteria\":[\"criterion\"],\"plan\":[\"step\"],\"reason\":\"brief rationale\"}.",
+			description: "Commit the draft plan and switch to delegated execution. Use coarse steps because each step may use multiple tool calls; do not create one plan step per small calculation. Input JSON: {\"objective\":\"task\",\"completion_criteria\":[\"criterion\"],\"plan\":[\"step\"],\"reason\":\"brief rationale\"}.",
 			schema: objectArgsSchema(map[string]any{
 				"objective":           stringArgSchema("Task objective."),
 				"completion_criteria": stringArrayArgSchema("Concrete criteria required before the task is complete."),
@@ -100,18 +101,32 @@ func (e *roleCollaborativeExecutor) handlePlannerMetaTool(
 	input := normalizeToolInput(action.ToolInput)
 
 	switch toolName {
-	case strings.ToUpper(toolEnterPlanMode):
-		if phase != phaseDefault {
+	case strings.ToUpper(toolUseSimpleMode):
+		if phase != phaseDecision {
 			return plannerTurnResult{
 				Kind: plannerTurnInvalidMeta,
 				InvalidMetaStep: &schema.AgentStep{
 					Action:      action,
-					Observation: "enter_plan_mode is only available in default mode",
+					Observation: "use_simple_mode is only available in the upfront decision phase",
+				},
+			}
+		}
+		state.Phase = phaseDefault
+		return plannerTurnResult{Kind: plannerTurnUseSimpleMode}
+
+	case strings.ToUpper(toolEnterPlanMode):
+		if phase != phaseDecision && phase != phaseDefault {
+			return plannerTurnResult{
+				Kind: plannerTurnInvalidMeta,
+				InvalidMetaStep: &schema.AgentStep{
+					Action:      action,
+					Observation: "enter_plan_mode is only available in decision or default mode",
 				},
 			}
 		}
 		state.Phase = phasePlan
 		state.PlanExhausted = false
+		state.PlanCommitRequired = true
 		reason := parseOptionalReasonInput(input)
 		observation := `{"status":"entered","phase":"plan"}`
 		if reason != "" {

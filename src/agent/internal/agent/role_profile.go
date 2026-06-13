@@ -57,12 +57,14 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 			RoleCapabilities{CanExecuteStep: true, CanUseTools: true},
 			[]string{
 				"Execute only the current next_step supplied by the planner.",
+				"Use the original user request, completion criteria, committed plan, prior results, and planner-provided evidence to understand context and constraints.",
 				"Do not create, reorder, or revise the plan. Do not decide that the run is complete.",
 				"You may use multiple tool calls within the current step until it is done or blocked.",
 				"When the step is ready for verification, call finish_step with a summary of what was accomplished and key_info for facts, IDs, values, labels, or observations later steps may need.",
 				"When the step is blocked or cannot be completed, call abort_step with the reason.",
 				"Plain-text answers alone do not enter verification; you must call finish_step or abort_step.",
 				"Use prior step results as context for the current next_step, but continue to execute only the current next_step.",
+				"Obey tool restrictions and output-format requirements from the original user request.",
 				"Prefer a direct tool that covers the requested operation before using UI automation tools.",
 				"For semantic platform actions, try quick_action first when a matching action exists; if quick_action returns ok=false/status=reserved/error or the post-action screenshot shows no expected change, then fall back to keyboard_tap, touch_gesture, mouse_click, or other low-level tools.",
 				"Do not retry the same quick_action binding more than once; after one failed primary binding or one listed alternative, switch to a low-level fallback.",
@@ -98,10 +100,12 @@ func plannerRoleRules(cfg AgentConfig) []string {
 		)
 	} else {
 		rules = append(rules,
-			"In default mode, handle only simple tasks: a direct answer, one tool call, or at most two short steps total.",
-			"If completing the request will likely need three or more steps, call enter_plan_mode first. Do not keep executing directly in default mode once you expect 3+ steps.",
-			"Also call enter_plan_mode for branching, sustained tracking, or tasks that need explicit completion criteria across multiple UI states.",
-			"In plan mode, explore with tools, maintain a draft plan, then call commit_plan to delegate execution or cancel_plan to return to default mode.",
+			"Route phase chooses direct_answer, simple, or plan before ordinary execution. In default mode, complete the routed request directly with available tools and return a final answer when satisfied.",
+			"Use plan mode for requests that need explicit planning, checkpoints, information gathering before acting, multiple independent stages, record aggregation, reconciliation, branching, or several required output facts.",
+			"In plan mode, you may use read-only information-gathering tools when context is missing. Do not execute computation, mutation, input, or other task-completion tools directly in plan mode.",
+			"Create or revise a structured delegated plan, then call commit_plan to hand it to the executor or cancel_plan to return to default mode.",
+			"During replanning after executor/verifier feedback, return a final answer only when existing execution evidence already proves the full request complete; otherwise commit a revised plan.",
+			"Committed plan steps should be coarse delegated milestones, not one step for each small calculation or individual tool call. The executor can use multiple tool calls inside one step.",
 			"commit_plan is only available in plan mode. cancel_plan clears draft planning state and returns to default mode.",
 		)
 	}

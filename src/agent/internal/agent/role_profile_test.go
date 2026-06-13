@@ -103,9 +103,12 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	if !hasProfileTool(profiles.Planner, "screenshot") || !hasProfileTool(profiles.Planner, "enter_plan_mode") {
 		t.Fatalf("planner profile should retain callable tools and loop meta tools: %#v", profiles.Planner.Tools)
 	}
-	if !strings.Contains(profiles.Planner.SystemPrompt, "three or more steps") ||
-		!strings.Contains(profiles.Planner.SystemPrompt, "call enter_plan_mode first") {
-		t.Fatalf("planner prompt should require enter_plan_mode for 3+ step tasks:\n%s", profiles.Planner.SystemPrompt)
+	if !strings.Contains(profiles.Planner.SystemPrompt, "Route phase chooses direct_answer, simple, or plan") {
+		t.Fatalf("planner prompt should describe route-selected execution:\n%s", profiles.Planner.SystemPrompt)
+	}
+	if !strings.Contains(profiles.Planner.SystemPrompt, "read-only information-gathering tools") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "record aggregation") {
+		t.Fatalf("planner prompt should describe plan mode and readonly gathering:\n%s", profiles.Planner.SystemPrompt)
 	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "Prefer direct tools that cover the requested operation") {
 		t.Fatalf("planner prompt should prefer direct tools:\n%s", profiles.Planner.SystemPrompt)
@@ -156,13 +159,16 @@ func TestRoleCollaborativeExecutorPassesToolsViaWithTools(t *testing.T) {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
 	if len(model.tools) != 2 {
-		t.Fatalf("expected two default-mode planner calls, got %d", len(model.tools))
+		t.Fatalf("expected one route call and one default-mode planner call, got %d", len(model.tools))
 	}
-	if !llmToolsContain(model.tools[0], "audio_volume") {
-		t.Fatalf("planner did not receive audio_volume function tool: %#v", model.tools[0])
+	if len(model.tools[0]) != 0 {
+		t.Fatalf("route phase should not expose function tools: %#v", model.tools[0])
 	}
-	if !llmToolsContain(model.tools[0], "enter_plan_mode") {
-		t.Fatalf("planner did not receive loop meta function tool: %#v", model.tools[0])
+	if !llmToolsContain(model.tools[1], "audio_volume") {
+		t.Fatalf("default-mode planner did not receive audio_volume function tool: %#v", model.tools[1])
+	}
+	if !llmToolsContain(model.tools[1], "enter_plan_mode") {
+		t.Fatalf("default-mode planner did not receive loop meta function tool: %#v", model.tools[1])
 	}
 	if len(model.messages) != 2 {
 		t.Fatalf("expected two planner model calls, got %d", len(model.messages))
@@ -246,7 +252,7 @@ func TestForceSimpleLoopPlannerCallOmitsPlanMetaTools(t *testing.T) {
 		t.Fatalf("force_simple_loop planner received plan meta tools: %#v", model.tools[0])
 	}
 	plannerPrompt := messageText(model.messages[0])
-	for _, unexpected := range []string{"call enter_plan_mode", "commit_plan is available", "if the task likely needs 3+ steps"} {
+	for _, unexpected := range []string{"call enter_plan_mode", "commit_plan is available", "if the task likely needs 3+ steps", "logical subtasks"} {
 		if strings.Contains(plannerPrompt, unexpected) {
 			t.Fatalf("force_simple_loop prompt should not contain %q:\n%s", unexpected, plannerPrompt)
 		}
@@ -381,8 +387,8 @@ func TestRoleCollaborativeExecutorIgnoresExecutorPlanMutation(t *testing.T) {
 	if !strings.Contains(executorPrompt, "Planner-approved next_step:\nfirst planner step") {
 		t.Fatalf("executor did not receive the planner-approved next_step:\n%s", executorPrompt)
 	}
-	if strings.Contains(executorPrompt, "Current plan:\n") {
-		t.Fatalf("executor should not receive the full plan:\n%s", executorPrompt)
+	if !strings.Contains(executorPrompt, "Committed plan:") {
+		t.Fatalf("executor should receive committed plan context:\n%s", executorPrompt)
 	}
 	secondExecutorPrompt := messageText(model.messages[5])
 	if !strings.Contains(secondExecutorPrompt, "Planner-approved next_step:\nsecond planner step") {
@@ -392,6 +398,7 @@ func TestRoleCollaborativeExecutorIgnoresExecutorPlanMutation(t *testing.T) {
 		"Prior step results",
 		"step_index=1",
 		"summary=\"candidate\"",
+		"Committed plan:",
 	} {
 		if !strings.Contains(secondExecutorPrompt, want) {
 			t.Fatalf("second executor prompt missing prior step context %q:\n%s", want, secondExecutorPrompt)
@@ -434,6 +441,10 @@ func TestRoleCollaborativeExecutorShowsCurrentStepForVerifier(t *testing.T) {
 		t.Fatalf("verifier system prompt should only contain role rules:\n%s", verifierSystemPrompt)
 	}
 	for _, want := range []string{
+		"Original user request",
+		"open Settings and use echo",
+		"Completion criteria:",
+		"Current plan:",
 		"Current step under verification:",
 		"step_index:",
 		"total_committed_steps:",
@@ -450,7 +461,6 @@ func TestRoleCollaborativeExecutorShowsCurrentStepForVerifier(t *testing.T) {
 	for _, unexpected := range []string{
 		"Verifier mandatory checklist",
 		"Original user request repeated for final verification",
-		"Completion criteria:",
 	} {
 		if strings.Contains(verifierUserPrompt, unexpected) {
 			t.Fatalf("verifier user prompt should not contain %q:\n%s", unexpected, verifierUserPrompt)
@@ -528,6 +538,10 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 	secondExecutorMessages := model.messages[7]
 	secondExecutorPrompt := messageText(secondExecutorMessages)
 	for _, want := range []string{
+		"Original user request",
+		"do not get stuck",
+		"Completion criteria:",
+		"Committed plan:",
 		"Prior step results",
 		"summary=\"same\"",
 		"needs_replan=true",
@@ -541,9 +555,7 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 		}
 	}
 	for _, unexpected := range []string{
-		"do not get stuck",
 		"Current plan:",
-		"Completion criteria:",
 		"Verifier feedback:",
 	} {
 		if strings.Contains(secondExecutorPrompt, unexpected) {
@@ -559,6 +571,11 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 
 	finalVerifierPrompt := messageText(model.messages[11])
 	for _, want := range []string{
+		"Original user request",
+		"do not get stuck",
+		"Current plan:",
+		"Completion criteria:",
+		"Prior step results",
 		"Current step under verification:",
 		"step_text: answer directly",
 		"Executor activity for this step:",
@@ -569,12 +586,7 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 		}
 	}
 	for _, unexpected := range []string{
-		"Original user request",
-		"Current plan:",
-		"Completion criteria:",
 		"Verifier feedback:",
-		"not enough progress",
-		"still stuck",
 	} {
 		if strings.Contains(finalVerifierPrompt, unexpected) {
 			t.Fatalf("final verifier prompt should not contain %q:\n%s", unexpected, finalVerifierPrompt)
@@ -644,8 +656,17 @@ func TestRoleCollaborativeExecutorSharesScreenshotWorldStateAcrossRoles(t *testi
 	}
 
 	secondExecutorPrompt := messageText(model.messages[5])
-	if strings.Contains(secondExecutorPrompt, "Original user request") || strings.Contains(secondExecutorPrompt, "Verifier feedback") {
-		t.Fatalf("executor should see world state without broader planning context:\n%s", secondExecutorPrompt)
+	for _, want := range []string{
+		"Original user request",
+		"inspect and continue",
+		"Committed plan:",
+	} {
+		if !strings.Contains(secondExecutorPrompt, want) {
+			t.Fatalf("second executor prompt missing context %q:\n%s", want, secondExecutorPrompt)
+		}
+	}
+	if strings.Contains(secondExecutorPrompt, "Verifier feedback") {
+		t.Fatalf("executor should not receive planner-level verifier feedback section:\n%s", secondExecutorPrompt)
 	}
 	if hasMessageRole(model.messages[5], llms.ChatMessageTypeTool) {
 		t.Fatalf("second step executor without tools should not receive step scratchpad: %#v", model.messages[5])

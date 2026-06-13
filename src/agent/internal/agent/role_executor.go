@@ -81,6 +81,7 @@ type roleLoopState struct {
 	Plan                 []string
 	NextStep             string
 	PlannerReason        string
+	PlanCommitRequired   bool
 	World                worldState
 	ToolSteps            []schema.AgentStep
 	StepToolSteps        []schema.AgentStep
@@ -91,6 +92,7 @@ type roleLoopState struct {
 	ExecutorStepKeyInfo  []string
 	PlanStepResults      []planStepResult
 	ExecutionResults     []roleExecutionResult
+	PlannerEvidence      []roleExecutionResult
 	VerifierResults      []verifierDecision
 }
 
@@ -173,23 +175,29 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 	}
 
 	toolSpecs := NewToolSpecs(e.Tools)
-	state := roleLoopState{Phase: phaseDefault, ForceSimpleLoop: e.ForceSimpleLoop}
+	initialPhase := phaseDecision
+	if e.ForceSimpleLoop {
+		initialPhase = phaseDefault
+	}
+	state := roleLoopState{Phase: initialPhase, ForceSimpleLoop: e.ForceSimpleLoop}
 	for i := 0; i < e.MaxIterations; i++ {
 		switch state.Phase {
-		case phaseDefault, phasePlan:
+		case phaseDecision, phaseDefault, phasePlan:
 			turn, err := e.callPlannerTurn(ctx, inputs, &state, toolSpecs, options...)
 			if err != nil {
 				return nil, err
 			}
 			switch turn.Kind {
 			case plannerTurnFinish:
-				if state.Phase != phaseDefault {
-					continue
+				if state.Phase == phaseDecision || state.Phase == phaseDefault || state.canAcceptPlannerFinal(turn.Answer) {
+					if e.Recorder != nil {
+						e.Recorder.RecordDefaultFinish(turn.Answer)
+					}
+					return e.finishRun(ctx, turn.Answer, turn.Answer)
 				}
-				if e.Recorder != nil {
-					e.Recorder.RecordDefaultFinish(turn.Answer)
-				}
-				return e.finishRun(ctx, turn.Answer, turn.Answer)
+				continue
+			case plannerTurnUseSimpleMode:
+				continue
 			case plannerTurnEnterPlan:
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
@@ -261,13 +269,6 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				state.recordPlanStepResult(verification)
 				state.clearStepExecution()
 
-				if verification.CanFinish {
-					finalAnswer := strings.TrimSpace(verification.FinalAnswer)
-					if finalAnswer == "" {
-						finalAnswer = stepSummary
-					}
-					return e.finishRun(ctx, finalAnswer, verification.Reason)
-				}
 				if verification.NeedsReplan {
 					state.Phase = phasePlan
 					state.PlanExhausted = false
@@ -275,6 +276,13 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 						e.Recorder.RecordLoopPhase(phasePlan, verification.Reason)
 					}
 					continue
+				}
+				if verification.CanFinish {
+					finalAnswer := strings.TrimSpace(verification.FinalAnswer)
+					if finalAnswer == "" {
+						finalAnswer = stepSummary
+					}
+					return e.finishRun(ctx, finalAnswer, verification.Reason)
 				}
 				if state.advancePlanStepOrExhaust() {
 					if e.Recorder != nil {
@@ -301,11 +309,20 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 	toolSpecs *ToolSpecs,
 	options ...chains.ChainCallOption,
 ) (plannerTurnResult, error) {
+	if state.Phase == phaseDecision && !e.ForceSimpleLoop {
+		return e.callRouteTurn(ctx, inputs, state, toolSpecs, options...)
+	}
+
 	task := plannerTaskForPhase(state.Phase, *state, e.ForceSimpleLoop)
 	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
 	plannerTools := e.Tools
 	if !e.ForceSimpleLoop {
-		plannerTools = appendLoopMetaTools(e.Tools)
+		switch state.Phase {
+		case phasePlan:
+			plannerTools = appendPlannerReadOnlyTools(loopMetaTools(), e.Tools)
+		default:
+			plannerTools = appendLoopMetaTools(e.Tools)
+		}
 	}
 	parser := &FunctionAgent{
 		Tools:     plannerTools,
@@ -338,11 +355,37 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 				answer = value
 			}
 		}
+		if state.Phase == phasePlan && state.PlanCommitRequired {
+			return plannerCommitRequiredTurn(schema.AgentAction{
+				Tool: toolCommitPlan,
+				Log:  strings.TrimSpace(answer),
+			}), nil
+		}
+		if state.Phase == phasePlan && !state.canAcceptPlannerFinal(answer) {
+			return plannerPlanModeToolRejectedTurn(schema.AgentAction{
+				Tool: toolCommitPlan,
+				Log:  strings.TrimSpace(answer),
+			}), nil
+		}
 		return plannerTurnResult{Kind: plannerTurnFinish, Answer: answer}, nil
 	}
 
 	action := actions[0]
+	if state.Phase == phasePlan && !isLoopMetaTool(action.Tool) {
+		if isPlannerReadOnlyTool(action.Tool, toolSpecs) {
+			return e.executePlannerToolAction(ctx, state, toolSpecs, action)
+		}
+		if state.PlanCommitRequired {
+			return plannerCommitRequiredTurn(action), nil
+		}
+		return plannerPlanModeToolRejectedTurn(action), nil
+	}
 	if isLoopMetaTool(action.Tool) {
+		if state.Phase == phasePlan && state.PlanCommitRequired &&
+			!toolNameEqual(action.Tool, toolCommitPlan) &&
+			!toolNameEqual(action.Tool, toolEnterPlanMode) {
+			return plannerCommitRequiredTurn(action), nil
+		}
 		if e.CallbacksHandler != nil {
 			e.CallbacksHandler.HandleAgentAction(ctx, action)
 		}
@@ -362,6 +405,79 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 		return turn, nil
 	}
 
+	return e.executePlannerToolAction(ctx, state, toolSpecs, action)
+}
+
+func (e *roleCollaborativeExecutor) callRouteTurn(
+	ctx context.Context,
+	inputs map[string]string,
+	state *roleLoopState,
+	toolSpecs *ToolSpecs,
+	options ...chains.ChainCallOption,
+) (plannerTurnResult, error) {
+	task := plannerTaskForPhase(phaseDecision, *state, e.ForceSimpleLoop)
+	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
+	res, err := e.generateRoleContent(ctx, RolePlanner, messages, chains.GetLLMCallOptions(options...)...)
+	if err != nil {
+		return plannerTurnResult{}, err
+	}
+	e.emitRoleOutput(ctx, RolePlanner, roleResponseDebugText(res))
+
+	parser := &FunctionAgent{Tools: appendLoopMetaTools(e.Tools), OutputKey: e.OutputKey}
+	actions, _, parseErr := parser.ParseOutput(res)
+	if parseErr != nil && !errors.Is(parseErr, agents.ErrUnableToParseOutput) {
+		return plannerTurnResult{}, parseErr
+	}
+	if len(actions) > 0 {
+		action := actions[0]
+		if routeShouldUsePlan(inputs["input"]) || toolNameEqual(action.Tool, toolEnterPlanMode) {
+			return e.enterPlanFromRoute(ctx, state, "route selected plan mode")
+		}
+		if toolNameEqual(action.Tool, toolUseSimpleMode) {
+			state.Phase = phaseDefault
+			state.PlannerReason = parseOptionalReasonInput(normalizeToolInput(action.ToolInput))
+			return plannerTurnResult{Kind: plannerTurnUseSimpleMode}, nil
+		}
+		state.Phase = phaseDefault
+		return e.executePlannerToolAction(ctx, state, toolSpecs, action)
+	}
+
+	decision := parseRouteDecision(res, inputs["input"])
+	switch decision.Mode {
+	case routeModeDirectAnswer:
+		return plannerTurnResult{Kind: plannerTurnFinish, Answer: decision.FinalAnswer}, nil
+	case routeModePlan:
+		return e.enterPlanFromRoute(ctx, state, decision.Reason)
+	default:
+		state.Phase = phaseDefault
+		state.PlannerReason = decision.Reason
+		return plannerTurnResult{Kind: plannerTurnUseSimpleMode}, nil
+	}
+}
+
+func (e *roleCollaborativeExecutor) enterPlanFromRoute(ctx context.Context, state *roleLoopState, reason string) (plannerTurnResult, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "route selected plan mode"
+	}
+	payload, _ := json.Marshal(map[string]string{"reason": reason})
+	action := schema.AgentAction{
+		Tool:      toolEnterPlanMode,
+		ToolInput: string(payload),
+		Log:       reason,
+	}
+	if e.CallbacksHandler != nil {
+		e.CallbacksHandler.HandleAgentAction(ctx, action)
+	}
+	return e.handlePlannerMetaTool(phaseDecision, state, action), nil
+}
+
+func (e *roleCollaborativeExecutor) executePlannerToolAction(
+	ctx context.Context,
+	state *roleLoopState,
+	toolSpecs *ToolSpecs,
+	action schema.AgentAction,
+) (plannerTurnResult, error) {
 	toolExecution := executeToolCall(ctx, ToolCallExecution{
 		Specs:    toolSpecs,
 		Action:   action,
@@ -375,6 +491,7 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 		Step:   &toolExecution.Step,
 	}
 	state.ExecutionResults = append(state.ExecutionResults, execution)
+	state.PlannerEvidence = append(state.PlannerEvidence, execution)
 	if e.Recorder != nil {
 		e.Recorder.RecordPlannerExecution(execution)
 	}
@@ -523,6 +640,63 @@ func hasProfileTool(profile RoleProfile, name string) bool {
 	return false
 }
 
+func appendPlannerReadOnlyTools(base []langtools.Tool, tools []langtools.Tool) []langtools.Tool {
+	combined := append([]langtools.Tool{}, base...)
+	seen := map[string]bool{}
+	for _, tool := range combined {
+		if tool != nil {
+			seen[toolSpecKey(tool.Name())] = true
+		}
+	}
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		spec := NewToolSpec(tool)
+		if !isPlannerReadOnlyToolSpec(spec) {
+			continue
+		}
+		key := toolSpecKey(spec.Name)
+		if seen[key] {
+			continue
+		}
+		combined = append(combined, tool)
+		seen[key] = true
+	}
+	return combined
+}
+
+func isPlannerReadOnlyTool(name string, specs *ToolSpecs) bool {
+	if specs == nil {
+		return false
+	}
+	spec, ok := specs.Lookup(name)
+	return ok && isPlannerReadOnlyToolSpec(spec)
+}
+
+func isPlannerReadOnlyToolSpec(spec ToolSpec) bool {
+	switch strings.ToLower(strings.TrimSpace(spec.Category)) {
+	case "observation", "web":
+		return true
+	case "memory":
+		switch spec.Name {
+		case "recall_memory", "recall_device_memory", "recall_session_chunks", "inspect_episode":
+			return true
+		}
+	case "skills":
+		switch spec.Name {
+		case "skill_list", "skill_read":
+			return true
+		}
+	case "system":
+		switch spec.Name {
+		case "current_time", "weather":
+			return true
+		}
+	}
+	return false
+}
+
 func roleSeesToolScratchpad(role RoleName) bool {
 	return role == RolePlanner
 }
@@ -532,7 +706,7 @@ func buildRoleStatePrompt(role RoleName, inputs map[string]string, state roleLoo
 	case RolePlanner:
 		return buildPlannerStatePrompt(inputs, state, task)
 	case RoleExecutor:
-		return buildExecutorStatePrompt(state, task)
+		return buildExecutorStatePrompt(inputs, state, task)
 	case RoleVerifier:
 		return buildVerifierStatePrompt(inputs, state, task)
 	default:
@@ -556,10 +730,17 @@ func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task
 	return strings.TrimSpace(builder.String())
 }
 
-func buildExecutorStatePrompt(state roleLoopState, task string) string {
+func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
 	var builder strings.Builder
 	builder.WriteString(task)
 	writeWorldState(&builder, state.World)
+	writeRequestObjectiveAndCriteria(&builder, inputs, state)
+	if history := strings.TrimSpace(inputs["history"]); history != "" {
+		builder.WriteString("\n\nConversation history:\n")
+		builder.WriteString(history)
+	}
+	writeCommittedPlanForExecutor(&builder, state)
+	writePlannerEvidenceForExecutor(&builder, state)
 	writePriorPlanStepResults(&builder, state)
 	builder.WriteString("\n\nPlanner-approved next_step:\n")
 	if next := strings.TrimSpace(state.NextStep); next != "" {
@@ -578,14 +759,19 @@ func buildExecutorStatePrompt(state roleLoopState, task string) string {
 	builder.WriteString("- abort_step enters verifier review when this step is blocked or failed.\n")
 	builder.WriteString("- do not return a plain-text final answer; use finish_step or abort_step.\n")
 	builder.WriteString("- include durable facts in finish_step key_info when later steps may need them.\n")
-	builder.WriteString("\nThe full plan, original request, raw prior-step scratchpads, and broader history are intentionally not available to executor.")
+	builder.WriteString("- use planner-provided evidence when it already answers part of the current step; do not repeat the same direct tool call unless verification requires it.\n")
+	builder.WriteString("- obey tool restrictions and output-format requirements from the original user request.\n")
+	builder.WriteString("\nUse the original request, completion criteria, committed plan, and prior results to understand context, but execute only the current next_step.")
 	return strings.TrimSpace(builder.String())
 }
 
-func buildVerifierStatePrompt(_ map[string]string, state roleLoopState, task string) string {
+func buildVerifierStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
 	var builder strings.Builder
 	builder.WriteString(task)
 	writeWorldState(&builder, state.World)
+	writeRequestObjectiveAndCriteria(&builder, inputs, state)
+	writeCurrentPlan(&builder, state)
+	writePriorPlanStepResults(&builder, state)
 	writeCurrentStepForVerifier(&builder, state)
 	writeStepExecutorEvidence(&builder, state)
 	return strings.TrimSpace(builder.String())
@@ -644,6 +830,32 @@ func writePriorPlanStepResults(builder *strings.Builder, state roleLoopState) {
 	builder.WriteString("\n\nPrior step results (compact context from completed or attempted plan steps):\n")
 	for i, result := range state.PlanStepResults {
 		writePlanStepResultLine(builder, i+1, result)
+	}
+}
+
+func writeCommittedPlanForExecutor(builder *strings.Builder, state roleLoopState) {
+	if len(state.Plan) == 0 {
+		return
+	}
+	builder.WriteString("\n\nCommitted plan:\n")
+	for i, step := range state.Plan {
+		label := " "
+		if i == state.PlanStepIndex {
+			label = "*"
+		}
+		builder.WriteString(fmt.Sprintf("%s %d. %s\n", label, i+1, step))
+	}
+	builder.WriteString("Only the starred/current step is assigned now. Use the rest of the plan for context only.\n")
+}
+
+func writePlannerEvidenceForExecutor(builder *strings.Builder, state roleLoopState) {
+	if len(state.PlannerEvidence) == 0 {
+		return
+	}
+	builder.WriteString("\n\nPlanner-provided evidence from before committed execution:\n")
+	builder.WriteString("(Use these tool observations as known facts for the current step; avoid repeating them unless they are insufficient.)\n")
+	for i, result := range state.PlannerEvidence {
+		writeExecutionResultLine(builder, i+1, result)
 	}
 }
 
@@ -1053,6 +1265,46 @@ func (s roleLoopState) lastCandidateAnswer() string {
 	return ""
 }
 
+func parseRouteDecision(res *llms.ContentResponse, request string) routeDecision {
+	raw := contentResponseText(res)
+	var decision routeDecision
+	if decodeRoleJSON(raw, &decision) == nil {
+		return normalizeRouteDecision(decision, request)
+	}
+
+	text := strings.TrimSpace(raw)
+	if answer := strings.TrimSpace(extractMarkedFinalAnswer(text)); answer != "" {
+		return normalizeRouteDecision(routeDecision{
+			Mode:        routeModeDirectAnswer,
+			FinalAnswer: answer,
+			Reason:      "route returned an explicit final answer",
+		}, request)
+	}
+	if strings.Contains(strings.ToLower(text), string(routeModePlan)) || strings.Contains(strings.ToLower(text), toolEnterPlanMode) {
+		return normalizeRouteDecision(routeDecision{
+			Mode:   routeModePlan,
+			Reason: "route returned non-JSON plan intent",
+		}, request)
+	}
+	if strings.Contains(strings.ToLower(text), toolUseSimpleMode) || strings.Contains(strings.ToLower(text), "simple") {
+		return normalizeRouteDecision(routeDecision{
+			Mode:   routeModeSimple,
+			Reason: "route returned non-JSON simple intent",
+		}, request)
+	}
+	if text != "" {
+		return normalizeRouteDecision(routeDecision{
+			Mode:        routeModeDirectAnswer,
+			FinalAnswer: text,
+			Reason:      "route returned non-JSON text answer",
+		}, request)
+	}
+	return normalizeRouteDecision(routeDecision{
+		Mode:   routeModeSimple,
+		Reason: "route returned empty content",
+	}, request)
+}
+
 func parsePlannerDecision(res *llms.ContentResponse, fallbackStep string) plannerDecision {
 	raw := contentResponseText(res)
 
@@ -1127,6 +1379,13 @@ func parseVerifierDecision(raw, fallbackAnswer string) verifierDecision {
 		decision.FinalAnswer = strings.TrimSpace(decision.FinalAnswer)
 		decision.Reason = strings.TrimSpace(decision.Reason)
 		decision.ObservedState = normalizeObservedWorldState(decision.ObservedState)
+		if decision.NeedsReplan {
+			decision.CanFinish = false
+			if decision.Reason == "" {
+				decision.Reason = "verifier requested replan"
+			}
+			return decision
+		}
 		if decision.CanFinish && decision.FinalAnswer == "" {
 			decision.CanFinish = false
 			decision.NeedsReplan = true
@@ -1155,6 +1414,13 @@ func parseVerifierDecision(raw, fallbackAnswer string) verifierDecision {
 func extractMarkedFinalAnswer(content string) string {
 	if idx := strings.LastIndex(content, "Final Answer:"); idx >= 0 {
 		return strings.TrimSpace(content[idx+len("Final Answer:"):])
+	}
+	lower := strings.ToLower(content)
+	start := strings.LastIndex(lower, "<final_answer>")
+	end := strings.LastIndex(lower, "</final_answer>")
+	if start >= 0 && end > start {
+		start += len("<final_answer>")
+		return strings.TrimSpace(content[start:end])
 	}
 	return ""
 }
