@@ -261,6 +261,66 @@ func TestRuntimeRunPersistsSteerAsConversationHumanMessage(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunPersistsSteerEventsWhenSnapshotWindowIsFull(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	memoryManager := NewMemoryManager(storageDir)
+	ctx := context.Background()
+	for i := 0; i < 10; i++ {
+		if err := memoryManager.AppendExchange(ctx, "default", fmt.Sprintf("prior user %02d", i), fmt.Sprintf("prior assistant %02d", i)); err != nil {
+			t.Fatalf("AppendExchange(%d) error = %v", i, err)
+		}
+	}
+
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse("Old answer."),
+			contentResponse("Changed course."),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		memoryManager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	var steerCalls int32
+	result, err := runtime.Run(ctx, RunRequest{
+		Input: "windowed request",
+		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			if atomic.AddInt32(&steerCalls, 1) != 1 {
+				return RunSteerMessage{}, false
+			}
+			return RunSteerMessage{
+				ID:      "steer-1",
+				Content: "persist even when the hot window is full",
+			}, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "Changed course." {
+		t.Fatalf("output = %q, want Changed course.", result.Output)
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) != 23 {
+		t.Fatalf("expected 23 session events, got %d: %#v", len(events), events)
+	}
+	last := events[len(events)-3:]
+	for i, want := range []SessionEvent{
+		{Role: "user", Content: "windowed request"},
+		{Role: "user", Content: "persist even when the hot window is full"},
+		{Role: "assistant", Content: "Changed course."},
+	} {
+		if last[i].Role != want.Role || last[i].Content != want.Content {
+			t.Fatalf("last session event %d = %#v, want role=%q content=%q; all events: %#v", i, last[i], want.Role, want.Content, events)
+		}
+	}
+}
+
 func TestRuntimeRunIncludesAvailableSkillCatalog(t *testing.T) {
 	index := NewSkillIndex()
 	index.skills["planner"] = &SkillDefinition{

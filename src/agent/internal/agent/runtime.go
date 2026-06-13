@@ -559,7 +559,12 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
 	r.memories.SetLastPromptTokens(metrics.LastPromptTokens)
-	if steerStatus == nil || !steerStatus.HasSteerMessages() {
+	if steerStatus != nil && steerStatus.HasSteerMessages() {
+		if err := r.memories.AppendMessages(ctx, "default", steeredExchangeRecords(normalizedInput, steerStatus.SteerMessages(), output)); err != nil {
+			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
+			return RunResult{}, err
+		}
+	} else {
 		if err := r.memories.AppendExchange(ctx, "default", normalizedInput, output); err != nil {
 			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
 			return RunResult{}, err
@@ -585,6 +590,16 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Memory:    memorySnapshot,
 		Metrics:   metrics,
 	}, nil
+}
+
+func steeredExchangeRecords(input string, steers []RunSteerMessage, output string) []MessageRecord {
+	records := make([]MessageRecord, 0, len(steers)+2)
+	records = append(records, MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: input})
+	for _, steer := range steers {
+		records = append(records, MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: steerHumanMessageContent(steer)})
+	}
+	records = append(records, MessageRecord{Role: string(llms.ChatMessageTypeAI), Content: output})
+	return records
 }
 
 func (r *Runtime) currentEnvironmentHints() CurrentEnvironmentHints {

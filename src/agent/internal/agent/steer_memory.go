@@ -17,6 +17,7 @@ type steerConversationAppender interface {
 
 type steerConversationStatus interface {
 	HasSteerMessages() bool
+	SteerMessages() []RunSteerMessage
 }
 
 type steerConversationMemory struct {
@@ -26,6 +27,7 @@ type steerConversationMemory struct {
 	mu            sync.Mutex
 	inputAppended bool
 	steerAppended bool
+	steers        []RunSteerMessage
 }
 
 func newSteerConversationMemory(inner schema.Memory, history schema.ChatMessageHistory) schema.Memory {
@@ -72,6 +74,7 @@ func (m *steerConversationMemory) Clear(ctx context.Context) error {
 	m.mu.Lock()
 	m.inputAppended = false
 	m.steerAppended = false
+	m.steers = nil
 	m.mu.Unlock()
 	return m.inner.Clear(ctx)
 }
@@ -81,6 +84,7 @@ func (m *steerConversationMemory) AppendSteerMessage(ctx context.Context, input 
 	if content == "" {
 		content = "(empty steering message)"
 	}
+	steer.Content = content
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -94,6 +98,7 @@ func (m *steerConversationMemory) AppendSteerMessage(ctx context.Context, input 
 		return fmt.Errorf("append steering message: %w", err)
 	}
 	m.steerAppended = true
+	m.steers = append(m.steers, steer)
 	return pruneSteerConversationWindow(ctx, m.inner)
 }
 
@@ -101,6 +106,12 @@ func (m *steerConversationMemory) HasSteerMessages() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.steerAppended
+}
+
+func (m *steerConversationMemory) SteerMessages() []RunSteerMessage {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]RunSteerMessage(nil), m.steers...)
 }
 
 func pruneSteerConversationWindow(ctx context.Context, mem schema.Memory) error {
