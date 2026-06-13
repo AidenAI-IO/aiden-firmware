@@ -61,4 +61,20 @@ if ! grep -q 'define refresh_buildroot_config_state' "$PICO_SDK/sysdrv/Makefile"
   exit 1
 fi
 
+refresh_buildroot_config_state="$(sed -n '/^define refresh_buildroot_config_state$/,/^endef$/p' "$PICO_SDK/sysdrv/Makefile")"
+if ! printf '%s\n' "$refresh_buildroot_config_state" | grep -q 'SOURCE_DATE_EPOCH'; then
+  echo "pico-sdk Buildroot state must include SOURCE_DATE_EPOCH so stale package outputs are rebuilt when the reproducible epoch changes" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$refresh_buildroot_config_state" | grep -q 'AIDEN_BUILDROOT_REPRODUCIBLE_STATE_VERSION'; then
+  echo "pico-sdk Buildroot state must include an Aiden reproducibility state version to invalidate older runner caches" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$refresh_buildroot_config_state" | grep -Fq 'sha256sum "$(SYSDRV_DIR)/Makefile"'; then
+  echo "pico-sdk Buildroot state must include sysdrv/Makefile so reproducibility policy changes invalidate stale package outputs" >&2
+  exit 1
+fi
+
 echo "reproducible rootfs timestamp policy tests passed"
