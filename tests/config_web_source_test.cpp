@@ -271,17 +271,20 @@ TEST_CASE("config web exposes screenshot pruning config fields") {
     CHECK(source.find("\"screen_stable_timeout_ms\"") != std::string::npos);
     CHECK(source.find("\"screen_stable_ms\"") != std::string::npos);
     CHECK(source.find("\"screen_stable_diff_threshold\"") != std::string::npos);
+    CHECK(source.find("\"force_simple_loop\"") != std::string::npos);
     CHECK(source.find("config.screenshot_keep_n") != std::string::npos);
     CHECK(source.find("config.screenshot_prune_interval") != std::string::npos);
     CHECK(source.find("config.screen_stable_timeout_ms") != std::string::npos);
     CHECK(source.find("config.screen_stable_ms") != std::string::npos);
     CHECK(source.find("config.screen_stable_diff_threshold") != std::string::npos);
+    CHECK(source.find("config.force_simple_loop") != std::string::npos);
 
     CHECK(html.find("agent_screenshot_keep_n") != std::string::npos);
     CHECK(html.find("agent_screenshot_prune_interval") != std::string::npos);
     CHECK(html.find("agent_screen_stable_timeout_ms") != std::string::npos);
     CHECK(html.find("agent_screen_stable_ms") != std::string::npos);
     CHECK(html.find("agent_screen_stable_diff_threshold") != std::string::npos);
+    CHECK(html.find("agent_force_simple_loop") != std::string::npos);
 }
 
 TEST_CASE("config web exposes model spec override fields") {
@@ -765,7 +768,8 @@ TEST_CASE("config web resolved config validation rejects empty required strings 
     source_buffer << source_in.rdbuf();
     const std::string source = source_buffer.str();
 
-    CHECK(source.find("bool config_required_string(cJSON* obj, const char* key, bool allow_empty = false)") != std::string::npos);
-    CHECK(source.find("config_required_string(model_text, \"provider\", true)") != std::string::npos);
-    CHECK(source.find("config_required_string(model, \"api_key\", true)") != std::string::npos);
+    CHECK(source.find("expected non-empty string, got empty string") != std::string::npos);
+    CHECK(source.find("validate_config_field(model, \"model\", \"provider\", CONFIG_FIELD_STRING, false") != std::string::npos);
+    CHECK(source.find("validate_config_field(model_text, \"model_text\", \"provider\", CONFIG_FIELD_STRING, true") != std::string::npos);
+    CHECK(source.find("validate_config_field(model, \"model\", \"api_key\", CONFIG_FIELD_STRING, true") != std::string::npos);
 }

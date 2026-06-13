@@ -206,6 +206,29 @@ func (r *EpisodeRecorder) Start(ctx context.Context) error {
 	return nil
 }
 
+func (r *EpisodeRecorder) RecordDefaultFinish(answer string) {
+	if r == nil {
+		return
+	}
+	r.append(TaskEpisodeEvent{
+		Type:    "default_finish",
+		Role:    string(RolePlanner),
+		Content: strings.TrimSpace(answer),
+	})
+}
+
+func (r *EpisodeRecorder) RecordLoopPhase(phase loopPhase, reason string) {
+	if r == nil {
+		return
+	}
+	r.append(TaskEpisodeEvent{
+		Type:    "loop_phase",
+		Role:    string(RolePlanner),
+		Content: string(phase),
+		Reason:  strings.TrimSpace(reason),
+	})
+}
+
 func (r *EpisodeRecorder) RecordPlannerDecision(decision plannerDecision) {
 	if r == nil {
 		return
@@ -225,14 +248,22 @@ func (r *EpisodeRecorder) RecordPlannerDecision(decision plannerDecision) {
 	r.append(event)
 }
 
+func (r *EpisodeRecorder) RecordPlannerExecution(result roleExecutionResult) {
+	r.recordExecutionForRole(result, RolePlanner)
+}
+
 func (r *EpisodeRecorder) RecordExecution(result roleExecutionResult) {
+	r.recordExecutionForRole(result, RoleExecutor)
+}
+
+func (r *EpisodeRecorder) recordExecutionForRole(result roleExecutionResult, role RoleName) {
 	if r == nil {
 		return
 	}
 	if strings.TrimSpace(result.CandidateAnswer) != "" {
 		r.append(TaskEpisodeEvent{
 			Type:    "candidate_answer",
-			Role:    string(RoleExecutor),
+			Role:    string(role),
 			Content: result.CandidateAnswer,
 		})
 	}
@@ -240,7 +271,7 @@ func (r *EpisodeRecorder) RecordExecution(result roleExecutionResult) {
 		input := normalizeToolInput(result.Action.ToolInput)
 		r.append(TaskEpisodeEvent{
 			Type:            "tool_call",
-			Role:            string(RoleExecutor),
+			Role:            string(role),
 			ToolName:        result.Action.Tool,
 			ToolInput:       input,
 			ToolDescription: extractToolCallDescription(input),

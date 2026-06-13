@@ -86,6 +86,12 @@ func (t *WebSearchTool) Description() string {
 		`looking up product details, news, current events, or how a UI element should look.`
 }
 
+func (t *WebSearchTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"query": stringArgSchema("Search query."),
+	}, "query")
+}
+
 func (t *WebSearchTool) Call(ctx context.Context, input string) (string, error) {
 	if t.backend == nil {
 		return "error: web_search tool is not configured (provider=" + t.provider + ")", nil
@@ -292,6 +298,12 @@ func (t *WikipediaTool) Description() string {
 		`historical events, or other subjects. Input JSON: {"query": "..."} or a bare query string.`
 }
 
+func (t *WikipediaTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"query": stringArgSchema("Wikipedia search query."),
+	}, "query")
+}
+
 func (t *WikipediaTool) Call(ctx context.Context, input string) (string, error) {
 	query := strings.TrimSpace(input)
 	if query == "" {
@@ -335,6 +347,12 @@ func (t *CalculatorTool) Description() string {
 		`Supports arithmetic, comparisons, and standard math functions (sqrt, sin, cos, etc).`
 }
 
+func (t *CalculatorTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"expression": stringArgSchema("Math expression to evaluate."),
+	}, "expression")
+}
+
 func (t *CalculatorTool) Call(ctx context.Context, input string) (string, error) {
 	expr := strings.TrimSpace(input)
 	if expr == "" {
@@ -374,6 +392,12 @@ func (t *WebScraperTool) Description() string {
 		`Input JSON: {"url": "..."} or a bare URL string. ` +
 		`Returns page title, headers, paragraphs, and links. ` +
 		`Use this when you need the full content of a specific page rather than search snippets.`
+}
+
+func (t *WebScraperTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"url": stringArgSchema("HTTP or HTTPS URL to fetch."),
+	}, "url")
 }
 
 func (t *WebScraperTool) Call(ctx context.Context, input string) (string, error) {

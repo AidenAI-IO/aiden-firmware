@@ -199,10 +199,101 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 
 	iterationSpanID := ""
 	iterationIndex := 0
+	phaseSpanID := ""
+	phaseSpanBatchIdx := -1
+	phaseWindowIndex := 0
+	currentPhase := "default"
+	phaseWindows := langfusePhaseWindows(episode.Events, startTime, endTime)
+
+	openPhaseSpan := func(phase string, spanStart time.Time, spanEnd time.Time, metadata map[string]interface{}) error {
+		if phaseSpanBatchIdx >= 0 {
+			langfuseUpdateSpanEndTime(batch, phaseSpanBatchIdx, spanStart)
+		}
+		phase = strings.TrimSpace(phase)
+		if phase == "" {
+			phase = "unknown"
+		}
+		currentPhase = phase
+		if phaseWindowIndex < len(phaseWindows) {
+			phaseSpanID = phaseWindows[phaseWindowIndex].ID
+			if spanEnd.IsZero() {
+				spanEnd = phaseWindows[phaseWindowIndex].End
+			}
+		} else {
+			phaseSpanID = uuid.NewString()
+			if spanEnd.IsZero() {
+				spanEnd = endTime
+			}
+		}
+		body := map[string]interface{}{
+			"id":          phaseSpanID,
+			"traceId":     traceID,
+			"name":        "phase/" + phase,
+			"startTime":   langfuseRFC3339(spanStart),
+			"endTime":     langfuseRFC3339(spanEnd),
+			"environment": e.cfg.EnvironmentOrDefault(),
+			"metadata":    metadata,
+		}
+		if version != "" {
+			body["version"] = version
+		}
+		phaseEvent, err := newLangfuseEvent("span-create", spanStart, body)
+		if err != nil {
+			return err
+		}
+		batch = append(batch, phaseEvent)
+		phaseSpanBatchIdx = len(batch) - 1
+		phaseWindowIndex++
+		return nil
+	}
+	if err := openPhaseSpan("default", startTime, time.Time{}, map[string]interface{}{
+		"phase": "default",
+	}); err != nil {
+		return nil, err
+	}
 
 	for eventIndex, event := range episode.Events {
 		eventTime := parseEpisodeTime(event.Ts, startTime)
 		switch event.Type {
+		case "loop_phase":
+			if err := openPhaseSpan(event.Content, eventTime, time.Time{}, map[string]interface{}{
+				"phase":      strings.TrimSpace(event.Content),
+				"reason":     strings.TrimSpace(event.Reason),
+				"event_id":   event.EventID,
+				"event_type": event.Type,
+				"role":       event.Role,
+			}); err != nil {
+				return nil, err
+			}
+
+		case "default_finish":
+			parentID := phaseSpanID
+			body := map[string]interface{}{
+				"id":          uuid.NewString(),
+				"traceId":     traceID,
+				"name":        "planner/default_finish",
+				"startTime":   langfuseRFC3339(eventTime),
+				"endTime":     langfuseRFC3339(eventTime),
+				"output":      event.Content,
+				"environment": e.cfg.EnvironmentOrDefault(),
+				"metadata": map[string]interface{}{
+					"event_id": event.EventID,
+					"role":     event.Role,
+					"phase":    currentPhase,
+				},
+			}
+			if parentID != "" {
+				body["parentObservationId"] = parentID
+			}
+			if version != "" {
+				body["version"] = version
+			}
+			finishEvent, err := newLangfuseEvent("span-create", eventTime, body)
+			if err != nil {
+				return nil, err
+			}
+			batch = append(batch, finishEvent)
+
 		case "planner_decision":
 			iterationIndex++
 			iteration := iterationWindowForIndex(iterations, iterationIndex, eventTime)
@@ -282,7 +373,8 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			batch = append(batch, evt)
 
 		case "tool_call":
-			if iterationSpanID == "" {
+			parentID := langfuseToolParentSpan(iterationSpanID, phaseSpanID, event.Role)
+			if parentID == "" {
 				continue
 			}
 			toolName := strings.TrimSpace(event.ToolName)
@@ -303,6 +395,8 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 				"tool_name":        event.ToolName,
 				"tool_description": event.ToolDescription,
 				"has_tool_result":  paired && pair.HasResult,
+				"role":             event.Role,
+				"phase":            currentPhase,
 			}
 			if paired && pair.ResultEventID != "" {
 				metadata["result_event_id"] = pair.ResultEventID
@@ -311,8 +405,8 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			body := map[string]interface{}{
 				"id":                  toolSpanID,
 				"traceId":             traceID,
-				"parentObservationId": iterationSpanID,
-				"name":                "tool/" + toolName,
+				"parentObservationId": parentID,
+				"name":                langfuseToolSpanName(event.Role, toolName),
 				"startTime":           langfuseRFC3339(eventTime),
 				"endTime":             langfuseRFC3339(end),
 				"input":               toolCallInput(event),
@@ -354,6 +448,8 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 				"event_id":  event.EventID,
 				"tool_name": event.ToolName,
 				"is_error":  event.IsError,
+				"role":      event.Role,
+				"phase":     currentPhase,
 			}
 			if paired && pair.CallEventID != "" {
 				metadata["tool_call_event_id"] = pair.CallEventID
@@ -362,7 +458,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			body := map[string]interface{}{
 				"id":          resultSpanID,
 				"traceId":     traceID,
-				"name":        "tool_result/" + toolName,
+				"name":        langfuseToolResultSpanName(event.Role, toolName),
 				"startTime":   langfuseRFC3339(eventTime),
 				"endTime":     langfuseRFC3339(eventTime),
 				"output":      output,
@@ -374,8 +470,8 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 			if paired && pair.CallObservationID != "" {
 				body["parentObservationId"] = pair.CallObservationID
-			} else if iterationSpanID != "" {
-				body["parentObservationId"] = iterationSpanID
+			} else if parentID := langfuseToolParentSpan(iterationSpanID, phaseSpanID, event.Role); parentID != "" {
+				body["parentObservationId"] = parentID
 			}
 			if event.IsError {
 				body["level"] = "ERROR"
@@ -420,6 +516,9 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 		}
 	}
+	if phaseSpanBatchIdx >= 0 {
+		langfuseUpdateSpanEndTime(batch, phaseSpanBatchIdx, endTime)
+	}
 
 	var prompts []telemetryPromptCall
 	if len(promptCalls) > 0 {
@@ -427,7 +526,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 	}
 	if len(prompts) > 0 {
 		for index, call := range prompts {
-			parentID := promptParentObservationID(call, iterations)
+			parentID := promptParentObservationID(call, iterations, phaseWindows)
 			usageEvent, err := newLangfuseEvent("generation-create", call.StartedAt, e.promptGenerationBody(episode, traceID, call, index, parentID))
 			if err != nil {
 				return nil, err
@@ -488,6 +587,13 @@ func (e *EpisodeExporter) promptGenerationBody(episode TaskEpisode, traceID stri
 			"role":         call.Role,
 			"prompt_index": index + 1,
 		},
+	}
+	if len(call.Metadata) > 0 {
+		if metadata, ok := body["metadata"].(map[string]interface{}); ok {
+			for key, value := range call.Metadata {
+				metadata[key] = value
+			}
+		}
 	}
 	if parentObservationID != "" {
 		body["parentObservationId"] = parentObservationID
@@ -574,6 +680,77 @@ func episodeTokenUsage(episode TaskEpisode) (promptTokens, completionTokens, tot
 		totalTokens = promptTokens + completionTokens
 	}
 	return promptTokens, completionTokens, totalTokens, promptTokens > 0 || completionTokens > 0 || totalTokens > 0
+}
+
+func langfuseToolParentSpan(iterationSpanID, phaseSpanID, role string) string {
+	if strings.EqualFold(strings.TrimSpace(role), string(RoleExecutor)) && iterationSpanID != "" {
+		return iterationSpanID
+	}
+	if phaseSpanID != "" {
+		return phaseSpanID
+	}
+	return iterationSpanID
+}
+
+func langfuseToolSpanName(role, toolName string) string {
+	if strings.EqualFold(strings.TrimSpace(role), string(RolePlanner)) {
+		return "planner/tool/" + toolName
+	}
+	return "tool/" + toolName
+}
+
+func langfuseToolResultSpanName(role, toolName string) string {
+	if strings.EqualFold(strings.TrimSpace(role), string(RolePlanner)) {
+		return "planner/tool_result/" + toolName
+	}
+	return "tool_result/" + toolName
+}
+
+func langfuseUpdateSpanEndTime(batch []langfuseIngestionEvent, index int, endTime time.Time) {
+	if index < 0 || index >= len(batch) {
+		return
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(batch[index].Body, &body); err != nil {
+		return
+	}
+	body["endTime"] = langfuseRFC3339(endTime)
+	if raw, err := json.Marshal(body); err == nil {
+		batch[index].Body = raw
+	}
+}
+
+func langfusePhaseWindows(events []TaskEpisodeEvent, startTime, endTime time.Time) []langfuseIterationWindow {
+	windows := []langfuseIterationWindow{{
+		Index: 1,
+		ID:    uuid.NewString(),
+		Start: startTime,
+		End:   endTime,
+	}}
+	for _, event := range events {
+		if event.Type != "loop_phase" {
+			continue
+		}
+		eventTime := parseEpisodeTime(event.Ts, startTime)
+		if len(windows) > 0 {
+			windows[len(windows)-1].End = eventTime
+		}
+		windows = append(windows, langfuseIterationWindow{
+			Index: len(windows) + 1,
+			ID:    uuid.NewString(),
+			Start: eventTime,
+			End:   endTime,
+		})
+	}
+	for i := range windows {
+		if windows[i].End.IsZero() {
+			windows[i].End = endTime
+		}
+		if windows[i].End.Before(windows[i].Start) {
+			windows[i].End = windows[i].Start
+		}
+	}
+	return windows
 }
 
 func langfuseIterationWindows(events []TaskEpisodeEvent, startTime, endTime time.Time) []langfuseIterationWindow {
@@ -678,7 +855,14 @@ func langfuseToolPairs(events []TaskEpisodeEvent, startTime time.Time) (map[int]
 	return byCall, byResult
 }
 
-func promptParentObservationID(call telemetryPromptCall, windows []langfuseIterationWindow) string {
+func promptParentObservationID(call telemetryPromptCall, iterations, phases []langfuseIterationWindow) string {
+	if id := promptParentFromWindows(call, iterations); id != "" {
+		return id
+	}
+	return promptParentFromWindows(call, phases)
+}
+
+func promptParentFromWindows(call telemetryPromptCall, windows []langfuseIterationWindow) string {
 	if len(windows) == 0 {
 		return ""
 	}
@@ -847,6 +1031,7 @@ func (e *EpisodeExporter) traceTags(episode TaskEpisode) []string {
 	} else {
 		tags = append(tags, "failure")
 	}
+	tags = append(tags, episodeLoopTags(episode.Events)...)
 	return uniqueNonEmpty(tags)
 }
 
@@ -888,14 +1073,47 @@ func episodeDerivedMetrics(events []TaskEpisodeEvent) map[string]interface{} {
 		startTime = parseEpisodeTime(events[0].Ts, time.Now().UTC())
 	}
 	toolPairsByCall, _ := langfuseToolPairs(events, startTime)
+	phaseTransitions := []string{}
+	finalPhase := "default"
 	for index, event := range events {
 		switch event.Type {
+		case "loop_phase":
+			metrics["loop_phase_count"] = intMetric(metrics, "loop_phase_count") + 1
+			phase := strings.TrimSpace(event.Content)
+			reason := strings.TrimSpace(event.Reason)
+			if phase != "" {
+				finalPhase = phase
+				if reason != "" {
+					phaseTransitions = append(phaseTransitions, phase+":"+reason)
+				} else {
+					phaseTransitions = append(phaseTransitions, phase)
+				}
+			}
+			switch reason {
+			case "enter_plan_mode":
+				metrics["enter_plan_mode_count"] = intMetric(metrics, "enter_plan_mode_count") + 1
+			case "commit_plan":
+				metrics["commit_plan_count"] = intMetric(metrics, "commit_plan_count") + 1
+			case "cancel_plan":
+				metrics["cancel_plan_count"] = intMetric(metrics, "cancel_plan_count") + 1
+			case "plan_exhausted":
+				metrics["plan_exhausted_count"] = intMetric(metrics, "plan_exhausted_count") + 1
+			}
+		case "default_finish":
+			metrics["default_finish"] = true
+			metrics["loop_mode"] = "default"
 		case "planner_decision":
 			metrics["iteration_count"] = intMetric(metrics, "iteration_count") + 1
+			metrics["loop_mode"] = "committed"
 		case "candidate_answer":
 			metrics["candidate_answer_count"] = intMetric(metrics, "candidate_answer_count") + 1
 		case "tool_call":
 			metrics["tool_call_count"] = intMetric(metrics, "tool_call_count") + 1
+			if strings.EqualFold(strings.TrimSpace(event.Role), string(RolePlanner)) {
+				metrics["planner_tool_call_count"] = intMetric(metrics, "planner_tool_call_count") + 1
+			} else if strings.EqualFold(strings.TrimSpace(event.Role), string(RoleExecutor)) {
+				metrics["executor_tool_call_count"] = intMetric(metrics, "executor_tool_call_count") + 1
+			}
 			toolName := strings.TrimSpace(event.ToolName)
 			if toolName == "" {
 				toolName = "tool"
@@ -937,7 +1155,51 @@ func episodeDerivedMetrics(events []TaskEpisodeEvent) map[string]interface{} {
 		metrics["tool_latency_ms_avg"] = float64(total) / float64(len(toolLatencies))
 		metrics["tool_latency_ms_max"] = max
 	}
+	if len(phaseTransitions) > 0 {
+		metrics["phase_transitions"] = phaseTransitions
+	}
+	metrics["final_phase"] = finalPhase
 	return metrics
+}
+
+func episodeLoopTags(events []TaskEpisodeEvent) []string {
+	tags := []string{}
+	hasDefaultFinish := false
+	hasCommit := false
+	hasReplan := false
+	for _, event := range events {
+		switch event.Type {
+		case "default_finish":
+			hasDefaultFinish = true
+		case "planner_decision":
+			hasCommit = true
+		case "loop_phase":
+			switch strings.TrimSpace(event.Reason) {
+			case "enter_plan_mode":
+				tags = append(tags, "loop:plan")
+			case "commit_plan":
+				tags = append(tags, "loop:execution")
+			case "cancel_plan":
+				tags = append(tags, "loop:cancelled")
+			case "plan_exhausted":
+				tags = append(tags, "loop:exhausted")
+			}
+		case "verifier_decision":
+			if event.NeedsReplan {
+				hasReplan = true
+			}
+		}
+	}
+	if hasDefaultFinish {
+		tags = append(tags, "loop:default_finish")
+	}
+	if hasCommit {
+		tags = append(tags, "loop:committed")
+	}
+	if hasReplan {
+		tags = append(tags, "loop:replan")
+	}
+	return tags
 }
 
 func intMetric(values map[string]interface{}, key string) int {

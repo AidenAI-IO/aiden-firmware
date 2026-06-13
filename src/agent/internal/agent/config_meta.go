@@ -265,6 +265,7 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "voice_max_response_tokens", Widget: WidgetNumber, Default: defaults.VoiceMaxResponseTokens,
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
 					{Key: "max_iterations", Widget: WidgetNumber, Default: defaults.MaxIterations},
+					{Key: "force_simple_loop", Widget: WidgetBoolean, Default: defaults.ForceSimpleLoop},
 					{Key: "screenshot_keep_n", Widget: WidgetNumber, Default: defaults.ScreenshotKeepN},
 					{Key: "screenshot_prune_interval", Widget: WidgetNumber, Default: defaults.ScreenshotPruneInterval},
 					{Key: "screen_stable_timeout_ms", Widget: WidgetNumber, Default: defaults.ScreenStableTimeoutMs},

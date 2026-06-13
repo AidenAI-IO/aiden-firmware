@@ -87,6 +87,15 @@ void write_file(const std::string& path, const std::string& content) {
     out << content;
 }
 
+std::string replace_all(std::string text, const std::string& needle, const std::string& replacement) {
+    size_t pos = 0;
+    while ((pos = text.find(needle, pos)) != std::string::npos) {
+        text.replace(pos, needle.size(), replacement);
+        pos += replacement.size();
+    }
+    return text;
+}
+
 std::string resolved_config_json(const std::string& search_provider, bool search_has_api_key) {
     return std::string(
         "{"
@@ -119,7 +128,8 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"voice_followup_timeout_ms\":6000,\"voice_first_turn_timeout_ms\":10000,"
         "\"voice_max_turns\":0,\"voice_interrupt_on_wakeup\":true,"
         "\"voice_streaming_tts_enabled\":true,\"voice_tool_call_speech\":true,"
-        "\"voice_max_response_tokens\":400,\"max_iterations\":-1,\"screenshot_keep_n\":3,"
+        "\"voice_max_response_tokens\":400,\"max_iterations\":-1,\"force_simple_loop\":false,"
+        "\"screenshot_keep_n\":3,"
         "\"screenshot_prune_interval\":25,\"screen_stable_timeout_ms\":3500,"
         "\"screen_stable_ms\":500,\"screen_stable_diff_threshold\":2}"
         "}\n";
@@ -383,6 +393,37 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     cJSON_Delete(parsed);
 }
 
+TEST_CASE("config_web: GET /api/config tolerates resolved config without force_simple_loop") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string legacy_config = replace_all(
+        resolved_config_json("duckduckgo", false),
+        "\"force_simple_loop\":false,",
+        ""
+    );
+    write_file(tmp + "/config.json", legacy_config);
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(resp.status == 200);
+    CHECK(resp.body.find("agent config missing required fields") == std::string::npos);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* agent = cJSON_GetObjectItem(config, "agent");
+    REQUIRE(agent != nullptr);
+    cJSON* force_simple_loop = cJSON_GetObjectItem(agent, "force_simple_loop");
+    REQUIRE(force_simple_loop != nullptr);
+    CHECK((force_simple_loop->type & 0xff) == cJSON_False);
+    cJSON_Delete(parsed);
+}
+
 TEST_CASE("config_web: GET /api/config preserves search api key presence from resolved config") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
@@ -455,20 +496,25 @@ TEST_CASE("config_web: GET /api/config reports invalid resolved config schema") 
         const_cast<char*>(tmp.c_str()),
         [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
     );
-    write_file(tmp + "/config.json", "{\"model\":{}}\n");
+    const std::string invalid_config = replace_all(
+        resolved_config_json("duckduckgo", false),
+        "\"provider\":\"openrouter\",",
+        ""
+    );
+    write_file(tmp + "/config.json", invalid_config);
     StubEnv env;
     env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
     HttpResponse resp = http_request(handle->port, "GET", "/api/config");
     CHECK(resp.status == 200);
-    CHECK(resp.body.find("agent config missing required fields") != std::string::npos);
+    CHECK(resp.body.find("model.provider") != std::string::npos);
 
     cJSON* parsed = cJSON_Parse(resp.body.c_str());
     REQUIRE(parsed != nullptr);
     cJSON* config_error = cJSON_GetObjectItem(parsed, "config_error");
     REQUIRE(config_error != nullptr);
     REQUIRE(config_error->valuestring != nullptr);
-    CHECK(std::string(config_error->valuestring) == "agent config missing required fields");
+    CHECK(std::string(config_error->valuestring).find("model.provider") != std::string::npos);
     cJSON_Delete(parsed);
 }
 

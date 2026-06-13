@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -39,6 +40,7 @@ type telemetryPromptCall struct {
 	UsageDetails    map[string]int
 	CostDetails     map[string]float64
 	ModelParameters map[string]interface{}
+	Metadata        map[string]interface{}
 	Error           string
 }
 
@@ -63,6 +65,7 @@ func (c *telemetryPromptCapture) Record(ctx context.Context, startedAt, endedAt 
 		UsageDetails:    telemetryUsageDetails(res),
 		CostDetails:     telemetryCostDetails(res),
 		ModelParameters: telemetryModelParameters(options),
+		Metadata:        telemetryPromptMetadata(options),
 	}
 	if contextWindow > 0 {
 		if call.ModelParameters == nil {
@@ -283,9 +286,6 @@ func telemetryModelParametersFromCallOptions(opts llms.CallOptions) map[string]i
 	if len(opts.StopWords) > 0 {
 		params["stop_words"] = append([]string(nil), opts.StopWords...)
 	}
-	if len(opts.Tools) > 0 {
-		params["tools_count"] = len(opts.Tools)
-	}
 	if opts.ToolChoice != nil {
 		params["tool_choice"] = fmt.Sprint(opts.ToolChoice)
 	}
@@ -293,6 +293,68 @@ func telemetryModelParametersFromCallOptions(opts llms.CallOptions) map[string]i
 		return nil
 	}
 	return params
+}
+
+func telemetryPromptMetadata(options []llms.CallOption) map[string]interface{} {
+	opts := llms.CallOptions{}
+	for _, option := range options {
+		if option == nil {
+			continue
+		}
+		option(&opts)
+	}
+	meta := map[string]interface{}{}
+	if len(opts.Tools) > 0 {
+		meta["tools_count"] = len(opts.Tools)
+		meta["tool_schemas"] = telemetryToolDefinitions(opts.Tools)
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
+}
+
+func telemetryToolDefinitions(tools []llms.Tool) []map[string]interface{} {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, tool := range tools {
+		item := map[string]interface{}{}
+		if tool.Type != "" {
+			item["type"] = tool.Type
+		}
+		if tool.Function != nil {
+			function := map[string]interface{}{
+				"name":        tool.Function.Name,
+				"description": tool.Function.Description,
+			}
+			if tool.Function.Parameters != nil {
+				function["parameters"] = telemetryJSONClone(tool.Function.Parameters)
+			}
+			if tool.Function.Strict {
+				function["strict"] = true
+			}
+			item["function"] = function
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func telemetryJSONClone(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	var out interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return fmt.Sprint(value)
+	}
+	return out
 }
 
 func firstMapValue(values map[string]any, keys ...string) any {

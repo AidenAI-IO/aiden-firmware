@@ -136,6 +136,10 @@ def _log_task_result(task_id: str, attempt: int, result, verbose: bool = False,
             failures.append("min_tool_calls")
         if ha.max_tool_calls is False:
             failures.append("max_tool_calls")
+        if ha.required_tools is False:
+            failures.append("required_tools")
+        if ha.forbidden_tools is False:
+            failures.append("forbidden_tools")
         if ha.expected_answer is False:
             failures.append("expected_answer")
         if ha.expected_recalled_memory is False:

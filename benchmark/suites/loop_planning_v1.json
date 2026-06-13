@@ -1,0 +1,237 @@
+{
+  "name": "loop_planning_v1",
+  "description": "Text-only benchmark for checking whether the agent uses plan mode only for sufficiently complex tasks. It avoids screen and phone tools so failures are easier to interpret.",
+  "prompt_prefix": "You are completing text-only tasks. Do not use screen, phone, UI, keyboard, mouse, touch, app, clipboard, calendar, contacts, notification, or screenshot tools. Use non-UI tools such as calculator or shell when they are the appropriate way to avoid arithmetic mistakes. End with exactly one final line like <final_answer>(a)</final_answer>.",
+  "global_reset": {},
+  "tasks": [
+    {
+      "id": "direct_answer_no_plan",
+      "category": "diagnostic",
+      "description_for_judge": "A direct answer task should not enter plan mode or call tools.",
+      "prompt": "No computation is needed. Select option (b).\n\nOptions:\n(a) alpha\n(b) beta\n(c) gamma\n(d) delta",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "rubric": [
+        {
+          "id": "answered_directly",
+          "check": "The final answer is option (b), with no tool calls."
+        },
+        {
+          "id": "did_not_plan",
+          "check": "The trace does not contain enter_plan_mode or commit_plan."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 0,
+        "max_tool_calls": 0,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "forbidden_tools": [
+          "enter_plan_mode",
+          "commit_plan",
+          "screenshot",
+          "mouse_click",
+          "mouse_move",
+          "mouse_scroll",
+          "touch_gesture",
+          "keyboard_tap",
+          "keyboard_text",
+          "quick_action",
+          "open_app",
+          "clipboard",
+          "calendar",
+          "contacts",
+          "notification"
+        ]
+      }
+    },
+    {
+      "id": "single_calculation_no_plan",
+      "category": "single_step",
+      "description_for_judge": "A single arithmetic tool task should use calculator directly without plan mode.",
+      "prompt": "Use the calculator if needed: compute 37 * 19 + 42.\n\nOptions:\n(a) 703\n(b) 745\n(c) 779\n(d) 812",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "rubric": [
+        {
+          "id": "used_calculator",
+          "check": "The trace contains a calculator call."
+        },
+        {
+          "id": "did_not_plan",
+          "check": "The trace does not contain enter_plan_mode or commit_plan."
+        },
+        {
+          "id": "correct_answer",
+          "check": "The final answer is option (b)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 2,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["calculator"],
+        "forbidden_tools": [
+          "enter_plan_mode",
+          "commit_plan",
+          "screenshot",
+          "mouse_click",
+          "mouse_move",
+          "mouse_scroll",
+          "touch_gesture",
+          "keyboard_tap",
+          "keyboard_text",
+          "quick_action",
+          "open_app",
+          "clipboard",
+          "calendar",
+          "contacts",
+          "notification"
+        ]
+      }
+    },
+    {
+      "id": "two_calculation_compare_no_plan",
+      "category": "single_step",
+      "description_for_judge": "A two-expression comparison should remain in default mode and use calculator directly.",
+      "prompt": "Compare these two expressions and choose the true statement. Use the calculator for the arithmetic.\n\nExpression A: 17 * 23\nExpression B: 19 * 20 + 10\n\nOptions:\n(a) A is larger by 1\n(b) B is larger by 1\n(c) They are equal\n(d) A is larger by 11",
+      "expected_answer": "(a)",
+      "answer_format": "option_letter",
+      "rubric": [
+        {
+          "id": "used_calculator",
+          "check": "The trace contains calculator calls."
+        },
+        {
+          "id": "did_not_plan",
+          "check": "The trace does not contain enter_plan_mode or commit_plan."
+        },
+        {
+          "id": "correct_comparison",
+          "check": "The final answer is option (a)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 75,
+        "response_required": true,
+        "required_tools": ["calculator"],
+        "forbidden_tools": [
+          "enter_plan_mode",
+          "commit_plan",
+          "screenshot",
+          "mouse_click",
+          "mouse_move",
+          "mouse_scroll",
+          "touch_gesture",
+          "keyboard_tap",
+          "keyboard_text",
+          "quick_action",
+          "open_app",
+          "clipboard",
+          "calendar",
+          "contacts",
+          "notification"
+        ]
+      }
+    },
+    {
+      "id": "invoice_reconciliation_requires_plan",
+      "category": "multi_step",
+      "description_for_judge": "A three-stage invoice reconciliation should enter plan mode, commit a plan, use calculator, and answer the net total.",
+      "prompt": "Reconcile this invoice carefully.\n\nStage 1: Order A is 18 units at 24.50 each, with a 12% discount applied to the order subtotal.\nStage 2: Order B is 7 units at 39.99 each, plus 18.75 shipping.\nStage 3: A return credit removes 2 units at 24.50 each.\n\nChoose the final net total.\n\nOptions:\n(a) 637.76\n(b) 686.76\n(c) 688.01\n(d) 588.76",
+      "expected_answer": "(a)",
+      "answer_format": "option_letter",
+      "rubric": [
+        {
+          "id": "entered_plan_mode",
+          "check": "The trace contains enter_plan_mode."
+        },
+        {
+          "id": "committed_plan",
+          "check": "The trace contains commit_plan before execution."
+        },
+        {
+          "id": "used_calculator",
+          "check": "The trace contains calculator calls for arithmetic."
+        },
+        {
+          "id": "correct_net_total",
+          "check": "The final answer is option (a)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 4,
+        "max_tool_calls": 12,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "required_tools": ["enter_plan_mode", "commit_plan", "calculator"],
+        "forbidden_tools": [
+          "screenshot",
+          "mouse_click",
+          "mouse_move",
+          "mouse_scroll",
+          "touch_gesture",
+          "keyboard_tap",
+          "keyboard_text",
+          "quick_action",
+          "open_app",
+          "clipboard",
+          "calendar",
+          "contacts",
+          "notification"
+        ]
+      }
+    },
+    {
+      "id": "expense_summary_requires_plan",
+      "category": "multi_step",
+      "description_for_judge": "A multi-record expense summary should enter plan mode, commit a plan, use a non-UI computation tool, and answer the aggregate facts.",
+      "prompt": "Analyze this expense list. Find category totals, the category with the highest total, the number of records over 100, and the grand total.\n\nData:\n- travel: 128.40\n- meal: 34.25\n- travel: 72.60\n- software: 199.99\n- meal: 83.15\n- software: 49.01\n\nOptions:\n(a) highest travel, 2 records over 100, grand total 567.40\n(b) highest software, 2 records over 100, grand total 567.40\n(c) highest software, 3 records over 100, grand total 567.40\n(d) highest meal, 2 records over 100, grand total 518.39",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "rubric": [
+        {
+          "id": "entered_plan_mode",
+          "check": "The trace contains enter_plan_mode."
+        },
+        {
+          "id": "committed_plan",
+          "check": "The trace contains commit_plan before execution."
+        },
+        {
+          "id": "used_computation_tool",
+          "check": "The trace contains calculator or shell for the aggregation."
+        },
+        {
+          "id": "correct_summary",
+          "check": "The final answer is option (b)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 4,
+        "max_tool_calls": 14,
+        "must_complete_within_sec": 120,
+        "response_required": true,
+        "required_tools": ["enter_plan_mode", "commit_plan"],
+        "forbidden_tools": [
+          "screenshot",
+          "mouse_click",
+          "mouse_move",
+          "mouse_scroll",
+          "touch_gesture",
+          "keyboard_tap",
+          "keyboard_text",
+          "quick_action",
+          "open_app",
+          "clipboard",
+          "calendar",
+          "contacts",
+          "notification"
+        ]
+      }
+    }
+  ]
+}

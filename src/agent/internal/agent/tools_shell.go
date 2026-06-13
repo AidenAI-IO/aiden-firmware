@@ -45,6 +45,23 @@ func (t *ShellTool) Description() string {
 - bytes: max bytes to return for "poll" (default 12000, max 100000).`
 }
 
+func (t *ShellTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"command":    stringArgSchema("Shell command to run for foreground execution or background start."),
+		"timeout":    numberArgSchema("Execution timeout in seconds."),
+		"workdir":    stringArgSchema("Working directory for the command."),
+		"background": boolArgSchema("Start a long-running shell session and return a session_id immediately."),
+		"pty":        boolArgSchema("Run the command in a pseudo-terminal."),
+		"action":     stringEnumArgSchema("Shell session lifecycle action.", "start", "poll", "write", "submit", "send_keys", "resize", "stop"),
+		"session_id": stringArgSchema("Running shell session id returned by a background start."),
+		"input":      stringArgSchema("Text to write for write or submit actions."),
+		"keys":       stringArrayArgSchema(`Key sequence names for send_keys, e.g. "enter", "ctrl+c", or "tab".`),
+		"rows":       minIntegerArgSchema("PTY row count for start or resize.", 1),
+		"cols":       minIntegerArgSchema("PTY column count for start or resize.", 1),
+		"bytes":      rangedIntegerArgSchema("Maximum output bytes to return for poll.", 1, shellMaxPollBytes),
+	})
+}
+
 func (t *ShellTool) Call(ctx context.Context, input string) (string, error) {
 	arguments := map[string]interface{}{}
 	trimmed := strings.TrimSpace(input)

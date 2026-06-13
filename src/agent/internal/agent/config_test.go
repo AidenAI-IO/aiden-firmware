@@ -630,6 +630,7 @@ func TestLoadConfigAcceptsMobileGymDeviceBackend(t *testing.T) {
 instruction = "test"
 input_mode = "text"
 max_iterations = 20
+force_simple_loop = true
 
 [model]
 provider = "fake"
@@ -650,8 +651,8 @@ control_token_file = "/tmp/control-token"
 	if got := cfg.Device.BackendOrDefault(); got != "mobilegym" {
 		t.Fatalf("backend = %q, want mobilegym", got)
 	}
-	if cfg.Instruction != "test" || cfg.InputMode != "text" || cfg.MaxIterations != 20 {
-		t.Fatalf("root config not decoded: instruction=%q input_mode=%q max_iterations=%d", cfg.Instruction, cfg.InputMode, cfg.MaxIterations)
+	if cfg.Instruction != "test" || cfg.InputMode != "text" || cfg.MaxIterations != 20 || !cfg.ForceSimpleLoop {
+		t.Fatalf("root config not decoded: instruction=%q input_mode=%q max_iterations=%d force_simple_loop=%v", cfg.Instruction, cfg.InputMode, cfg.MaxIterations, cfg.ForceSimpleLoop)
 	}
 }
 

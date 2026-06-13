@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	_ "time/tzdata"
 )
@@ -35,6 +34,12 @@ func (t *CurrentTimeTool) Name() string { return "current_time" }
 func (t *CurrentTimeTool) Description() string {
 	return `Get the current date and time. Input JSON: {"timezone":"Asia/Shanghai"} or a bare timezone string. ` +
 		`The timezone may be an IANA name such as "America/New_York", "UTC", "local", or a UTC offset such as "+08:00".`
+}
+
+func (t *CurrentTimeTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"timezone": stringArgSchema(`IANA timezone such as "Asia/Shanghai", "UTC", "local", or a UTC offset such as "+08:00".`),
+	})
 }
 
 func (t *CurrentTimeTool) Call(ctx context.Context, input string) (string, error) {
@@ -149,6 +154,14 @@ func (t *WeatherTool) Description() string {
 		`A bare location string is also accepted. Uses Open-Meteo public weather data.`
 }
 
+func (t *WeatherTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"location":  stringArgSchema("Location name to geocode, or a display name when latitude/longitude are provided."),
+		"latitude":  rangedNumberArgSchema("Latitude in decimal degrees.", -90, 90),
+		"longitude": rangedNumberArgSchema("Longitude in decimal degrees.", -180, 180),
+	})
+}
+
 func (t *WeatherTool) Call(ctx context.Context, input string) (string, error) {
 	args, err := parseWeatherArgs(input)
 	if err != nil {
@@ -215,6 +228,9 @@ func parseWeatherArgs(input string) (weatherArgs, error) {
 			return weatherArgs{}, fmt.Errorf("invalid input: %w", err)
 		}
 		args.Location = strings.TrimSpace(args.Location)
+		if (args.Latitude == nil) != (args.Longitude == nil) {
+			return weatherArgs{}, fmt.Errorf("latitude and longitude must be provided together")
+		}
 		if args.hasCoordinates() {
 			if err := validateCoordinates(*args.Latitude, *args.Longitude); err != nil {
 				return weatherArgs{}, err
@@ -491,77 +507,6 @@ func weatherCodeDescription(code int) string {
 	default:
 		return fmt.Sprintf("Unknown weather code %d", code)
 	}
-}
-
-type SleepController struct {
-	mu        sync.Mutex
-	requested bool
-	reason    string
-}
-
-func NewSleepController() *SleepController {
-	return &SleepController{}
-}
-
-func (c *SleepController) Request(reason string) {
-	if c == nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.requested = true
-	c.reason = strings.TrimSpace(reason)
-}
-
-func (c *SleepController) Consume() (bool, string) {
-	if c == nil {
-		return false, ""
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	requested := c.requested
-	reason := c.reason
-	c.requested = false
-	c.reason = ""
-	return requested, reason
-}
-
-type EnterSleepTool struct {
-	controller *SleepController
-}
-
-func NewEnterSleepTool(controller *SleepController) *EnterSleepTool {
-	return &EnterSleepTool{controller: controller}
-}
-
-func (t *EnterSleepTool) Name() string { return "enter_sleep" }
-
-func (t *EnterSleepTool) Description() string {
-	return `Ask the runtime to close the active voice session and return to wakeup-waiting sleep mode. ` +
-		`Use this when the user says to stop listening, go to sleep, standby, or wait for the next wakeup. ` +
-		`Input JSON is optional: {"reason":"user asked me to sleep"}.`
-}
-
-func (t *EnterSleepTool) Call(ctx context.Context, input string) (string, error) {
-	reason := strings.TrimSpace(input)
-	if strings.HasPrefix(reason, "{") {
-		var args struct {
-			Reason string `json:"reason"`
-		}
-		if err := json.Unmarshal([]byte(reason), &args); err != nil {
-			return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"reason\": \"task completed\"} or a bare string describing the reason for entering sleep mode", err), nil
-		}
-		reason = strings.TrimSpace(args.Reason)
-	}
-	if t.controller != nil {
-		t.controller.Request(reason)
-	}
-	return jsonString(map[string]interface{}{
-		"status":  "sleep_requested",
-		"mode":    "wakeup",
-		"reason":  reason,
-		"message": "The active voice session will close after this turn, and the agent will wait for the next wakeup event.",
-	}), nil
 }
 
 func jsonString(value interface{}) string {

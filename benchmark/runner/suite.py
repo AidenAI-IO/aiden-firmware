@@ -28,6 +28,8 @@ class HardAssertions:
     max_tool_calls: int = 50
     must_complete_within_sec: int = 180
     response_required: bool = True
+    required_tools: list[str] = dc.field(default_factory=list)
+    forbidden_tools: list[str] = dc.field(default_factory=list)
 
 @dc.dataclass
 class TaskSpec:
@@ -92,11 +94,20 @@ def load_suite(path: Path) -> Suite:
             raise SuiteValidationError(f"task {tid}: invalid hard_assertions numeric value: {e}") from e
         if min_tc < 0 or max_tc < 0 or timeout_sec <= 0:
             raise SuiteValidationError(f"task {tid}: hard_assertions values must be non-negative")
+        required_tools = _string_list_assertion(ha.get("required_tools", []), tid, "required_tools")
+        forbidden_tools = _string_list_assertion(ha.get("forbidden_tools", []), tid, "forbidden_tools")
+        overlap = sorted(set(required_tools) & set(forbidden_tools))
+        if overlap:
+            raise SuiteValidationError(
+                f"task {tid}: hard_assertions has overlapping required/forbidden tools: {overlap}"
+            )
         hard = HardAssertions(
             min_tool_calls=min_tc,
             max_tool_calls=max_tc,
             must_complete_within_sec=timeout_sec,
             response_required=rr,
+            required_tools=required_tools,
+            forbidden_tools=forbidden_tools,
         )
         # Validate and bound repeats
         try:
@@ -169,3 +180,19 @@ def load_suite(path: Path) -> Suite:
         prompt_prefix=prompt_prefix,
         trace_observations=trace_observations,
     )
+
+
+def _string_list_assertion(raw: Any, task_id: str, field: str) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(item, str) and item.strip() for item in raw):
+        raise SuiteValidationError(f"task {task_id}: hard_assertions.{field} must be a list of non-empty strings")
+    seen = set()
+    out = []
+    for item in raw:
+        name = item.strip()
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out

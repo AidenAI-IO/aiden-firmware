@@ -516,10 +516,11 @@ type KeyboardTextTool struct {
 func (t *KeyboardTextTool) Name() string { return "keyboard_text" }
 
 func (t *KeyboardTextTool) Description() string {
-	return `Type a string of text character by character. Input JSON: {"text": "hello world"}. ` +
-		`Bare text is accepted only as a compatibility fallback; prefer JSON. ` +
-		`Supports US-keyboard ASCII characters only. It cannot directly type Chinese, emoji, or other non-ASCII text; use pinyin/English search terms plus on-screen candidates when Chinese input is needed. ` +
-		`If any unsupported character is present, no characters are typed and an error is returned.`
+	return `US-keyboard ASCII text input only via USB HID physical keyboard (not the on-screen soft keyboard). ` +
+		`Allowed characters: a-z, A-Z, 0-9, space, and common US-keyboard punctuation. ` +
+		`Do NOT pass Chinese/CJK, emoji, or any other non-ASCII text — if any character is unsupported, the tool returns an error and types nothing. ` +
+		`For Chinese targets, never copy the Chinese string into text; use pinyin or English keywords instead (e.g. {"text":"weixin"} or {"text":"zhangsan"}), then tap the on-screen candidate or search result. ` +
+		`Input JSON: {"text":"Settings"}. Bare plain text is accepted only as a compatibility fallback; prefer JSON.`
 }
 
 func (t *KeyboardTextTool) ArgsSchema() map[string]any {
@@ -642,6 +643,19 @@ func (t *MouseMoveTool) Description() string {
 		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
 		`pointer_mode absolute (default): writes absolute HID coordinates directly. ` +
 		`pointer_mode touchscreen (Android): moves the logical touch point without pressing.`
+}
+
+func (t *MouseMoveTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"x":           coordinateSchema("X coordinate."),
+			"y":           coordinateSchema("Y coordinate."),
+			"coord_space": coordSpaceSchema(),
+		},
+		"required": []string{"x", "y"},
+	}
 }
 
 func (t *MouseMoveTool) Call(_ context.Context, input string) (string, error) {
@@ -965,6 +979,12 @@ func (t *MouseScrollTool) Description() string {
 	return `Scroll the mouse wheel. Input JSON: {"delta": -3}. ` +
 		`Positive values scroll up, negative scroll down. Range: -127 to 127. This is a wheel event and is not equivalent to a mobile swipe gesture. ` +
 		`Works in pointer_mode absolute; pointer_mode touchscreen ignores wheel events.`
+}
+
+func (t *MouseScrollTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"delta": rangedIntegerArgSchema("Mouse wheel delta. Positive scrolls up, negative scrolls down.", -127, 127),
+	}, "delta")
 }
 
 func (t *MouseScrollTool) Call(_ context.Context, input string) (string, error) {

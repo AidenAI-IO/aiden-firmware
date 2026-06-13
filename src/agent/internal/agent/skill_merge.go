@@ -268,7 +268,6 @@ var knownToolNames = map[string]struct{}{
 	"audio_volume":          {},
 	"calculator":            {},
 	"current_time":          {},
-	"enter_sleep":           {},
 	"forget_memory":         {},
 	"keyboard_tap":          {},
 	"keyboard_text":         {},

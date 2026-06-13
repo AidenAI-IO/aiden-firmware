@@ -34,12 +34,14 @@ func TestCurrentTimeToolSupportsIANAAndOffsetTimezones(t *testing.T) {
 }
 
 func TestBuiltinToolSetRegistersSystemTools(t *testing.T) {
-	controller := NewSleepController()
-	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}, WithSleepController(controller))
-	for _, name := range []string{"current_time", "weather", "enter_sleep"} {
+	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
+	for _, name := range []string{"current_time", "weather"} {
 		if _, ok := tools.Get(name); !ok {
 			t.Fatalf("builtin tool %q was not registered", name)
 		}
+	}
+	if _, ok := tools.Get("enter_sleep"); ok {
+		t.Fatal("enter_sleep should not be registered")
 	}
 }
 
@@ -161,24 +163,14 @@ func TestWeatherToolAcceptsCoordinatesWithoutGeocoding(t *testing.T) {
 	}
 }
 
-func TestEnterSleepToolRequestsRuntimeSleep(t *testing.T) {
-	controller := NewSleepController()
-	tool := NewEnterSleepTool(controller)
+func TestWeatherToolRejectsPartialCoordinates(t *testing.T) {
+	tool := NewWeatherTool(ProxyConfig{})
 
-	out, err := tool.Call(context.Background(), `{"reason":"done for now"}`)
+	out, err := tool.Call(context.Background(), `{"location":"point","latitude":1}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.Contains(out, `"status": "sleep_requested"`) {
+	if !strings.Contains(out, "latitude and longitude must be provided together") {
 		t.Fatalf("unexpected output: %s", out)
-	}
-
-	requested, reason := controller.Consume()
-	if !requested || reason != "done for now" {
-		t.Fatalf("sleep request = %v %q, want true done for now", requested, reason)
-	}
-	requested, _ = controller.Consume()
-	if requested {
-		t.Fatal("sleep request was not consumed")
 	}
 }

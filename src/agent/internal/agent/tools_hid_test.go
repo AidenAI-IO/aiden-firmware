@@ -36,6 +36,8 @@ func TestHIDToolsExposeStructuredSchemas(t *testing.T) {
 		"keyboard_tap":  &KeyboardTapTool{},
 		"keyboard_text": &KeyboardTextTool{},
 		"mouse_click":   &MouseClickTool{},
+		"mouse_move":    &MouseMoveTool{},
+		"mouse_scroll":  &MouseScrollTool{},
 		"touch_gesture": &TouchGestureTool{},
 	} {
 		schema := tool.ArgsSchema()
@@ -468,6 +470,28 @@ func TestTouchscreenSwipeWritesTouchSequence(t *testing.T) {
 	last := reports[len(reports)-1]
 	if last.flags != 0x00 || last.x != 26214 {
 		t.Fatalf("last release = %+v, want release at end", last)
+	}
+}
+
+func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
+	desc := (&KeyboardTextTool{}).Description()
+	for _, want := range []string{
+		"ASCII",
+		"Do NOT pass Chinese",
+		"pinyin",
+		`{"text":"Settings"}`,
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+	for _, unexpected := range []string{
+		"Type a string of text",
+		"hello world",
+	} {
+		if strings.Contains(desc, unexpected) {
+			t.Fatalf("description should not contain misleading phrase %q:\n%s", unexpected, desc)
+		}
 	}
 }
 

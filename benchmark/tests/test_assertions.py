@@ -38,6 +38,46 @@ def test_missing_response_fails_when_required():
     assert out.all_passed is False
     assert out.results.response_exists is False
 
+def test_required_tools_pass_when_all_present():
+    trace = Trace(
+        tool_calls=[
+            ToolCall(step=1, tool="enter_plan_mode", input={}),
+            ToolCall(step=2, tool="commit_plan", input={}),
+            ToolCall(step=3, tool="calculator", input={}),
+        ],
+        final_response="ok",
+        total_tool_calls=3,
+        total_duration_ms=0,
+    )
+    spec = HardAssertions(required_tools=["enter_plan_mode", "commit_plan"])
+
+    out = evaluate_hard_assertions(trace, spec, timed_out=False)
+
+    assert out.all_passed is True
+    assert out.results.required_tools is True
+
+def test_required_tools_fail_when_missing():
+    spec = HardAssertions(required_tools=["enter_plan_mode"])
+
+    out = evaluate_hard_assertions(make_trace(1), spec, timed_out=False)
+
+    assert out.all_passed is False
+    assert out.results.required_tools is False
+
+def test_forbidden_tools_fail_when_present():
+    trace = Trace(
+        tool_calls=[ToolCall(step=1, tool="screenshot", input={})],
+        final_response="ok",
+        total_tool_calls=1,
+        total_duration_ms=0,
+    )
+    spec = HardAssertions(forbidden_tools=["screenshot"])
+
+    out = evaluate_hard_assertions(trace, spec, timed_out=False)
+
+    assert out.all_passed is False
+    assert out.results.forbidden_tools is False
+
 def test_expected_option_answer_matches_tagged_final_answer():
     result = assertions.evaluate_expected_answer(
         "Reasoning text. <final_answer>(c)</final_answer>", "(C)", "option_letter"

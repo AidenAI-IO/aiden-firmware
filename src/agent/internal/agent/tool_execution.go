@@ -272,7 +272,7 @@ func DefaultAfterToolCall(ctx context.Context, call ToolCall, result ToolResult)
 			result.Summary = compactToolObservation(result.Output)
 		}
 	}
-	if call.Spec.Name == "enter_sleep" || call.Spec.Name == "screenshot" || returnsVisualObservation(call.Spec.Tool) {
+	if call.Spec.Name == "screenshot" || returnsVisualObservation(call.Spec.Tool) {
 		result.Terminate = true
 	}
 	return result

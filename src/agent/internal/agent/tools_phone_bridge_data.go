@@ -55,6 +55,13 @@ func (t *ClipboardTool) Description() string {
 		`If the phone bridge is not connected, this tool fails and there is no HID fallback for clipboard access.`
 }
 
+func (t *ClipboardTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"action": stringEnumArgSchema("Clipboard action.", "read", "write"),
+		"text":   stringArgSchema("Text to write when action is write."),
+	}, "action")
+}
+
 type clipboardArgs struct {
 	Action string `json:"action"`
 	Text   string `json:"text"`
@@ -146,6 +153,22 @@ func (t *CalendarTool) Description() string {
 		`Query: {"action":"query","from":"2026-06-02T00:00:00+08:00","to":"2026-06-03T00:00:00+08:00"} -> {"ok":true,"events":[{"event_id","title","start_at","end_at","location"}]}. ` +
 		`Delete: {"action":"delete","event_id":"..."} -> {"ok":true}. ` +
 		`Confirm details with the user before creating or deleting events. If the phone bridge is not connected, this tool fails and there is no HID fallback.`
+}
+
+func (t *CalendarTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"action":               stringEnumArgSchema("Calendar action.", "create", "query", "delete"),
+		"event_id":             stringArgSchema("Calendar event id for delete."),
+		"title":                stringArgSchema("Event title for create."),
+		"start_at":             stringArgSchema("Event start time as RFC3339 with timezone."),
+		"end_at":               stringArgSchema("Optional event end time as RFC3339 with timezone."),
+		"from":                 stringArgSchema("Query start time as RFC3339 with timezone."),
+		"to":                   stringArgSchema("Query end time as RFC3339 with timezone."),
+		"all_day":              boolArgSchema("Whether the created event is all-day."),
+		"location":             stringArgSchema("Optional event location."),
+		"notes":                stringArgSchema("Optional event notes."),
+		"alarm_minutes_before": minIntegerArgSchema("Reminder offset in minutes before the event.", 0),
+	}, "action")
 }
 
 type calendarArgs struct {
@@ -302,6 +325,20 @@ func (t *ContactsTool) Description() string {
 		`Create: {"action":"create","name":"李四","phone_numbers":["+86 139 8765 4321"],"emails":["lisi@example.com"],"organization":"公司","notes":"备注"} -> {"ok":true,"contact_id":"..."}. ` +
 		`Update: {"action":"update","contact_id":"...","name":"新名字","phone_numbers":[...],"emails":[...]} -> {"ok":true}. ` +
 		`Confirm details with the user before creating or updating contacts. If the phone bridge is not connected, this tool fails.`
+}
+
+func (t *ContactsTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"action":        stringEnumArgSchema("Contacts action.", "query", "create", "update"),
+		"contact_id":    stringArgSchema("Contact id for update."),
+		"query":         stringArgSchema("Search query for contact lookup."),
+		"limit":         minIntegerArgSchema("Maximum query results.", 1),
+		"name":          stringArgSchema("Contact display name."),
+		"phone_numbers": stringArrayArgSchema("Contact phone numbers."),
+		"emails":        stringArrayArgSchema("Contact email addresses."),
+		"organization":  stringArgSchema("Contact organization."),
+		"notes":         stringArgSchema("Contact notes."),
+	}, "action")
 }
 
 type contactsArgs struct {
@@ -463,6 +500,16 @@ func (t *NotificationTool) Description() string {
 		`Returns {"ok":true,"notification_id":"..."} on success. ` +
 		`Use this to remind the user or bring the companion app back to foreground. ` +
 		`If the phone bridge is not connected, this tool fails.`
+}
+
+func (t *NotificationTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"title":       stringArgSchema("Notification title."),
+		"body":        stringArgSchema("Notification body."),
+		"schedule_at": stringArgSchema("Optional scheduled send time as RFC3339 with timezone."),
+		"sound":       boolArgSchema("Whether to play a sound."),
+		"badge":       minIntegerArgSchema("Optional app badge count.", 0),
+	}, "title")
 }
 
 type notificationArgs struct {

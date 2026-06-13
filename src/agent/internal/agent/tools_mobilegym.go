@@ -105,12 +105,6 @@ type mobileGymPoint struct {
 }
 
 func newMobileGymToolSet(cfg Config, proxyCfg ProxyConfig, mobileGym *mobileGymSessionStore, options ...BuiltinToolSetOption) *ToolSet {
-	toolOptions := builtinToolSetOptions{}
-	for _, option := range options {
-		if option != nil {
-			option(&toolOptions)
-		}
-	}
 	if mobileGym == nil {
 		mobileGym = &mobileGymSessionStore{}
 	}
@@ -129,9 +123,6 @@ func newMobileGymToolSet(cfg Config, proxyCfg ProxyConfig, mobileGym *mobileGymS
 		"current_time":  NewCurrentTimeTool(),
 		"calculator":    NewCalculatorTool(),
 	}
-	if toolOptions.sleepController != nil {
-		tools["enter_sleep"] = NewEnterSleepTool(toolOptions.sleepController)
-	}
 	return &ToolSet{tools: tools, screen: screen}
 }
 
@@ -142,6 +133,10 @@ func (t *mobileGymScreenshotTool) ReturnsVisualObservation() bool { return true 
 func (t *mobileGymScreenshotTool) Description() string {
 	return `Capture a screenshot from the MobileGym simulator. No input required (pass empty JSON {} or ""). ` +
 		`Returns a JSON object with width, height, and base64-encoded JPEG image data.`
+}
+
+func (t *mobileGymScreenshotTool) ArgsSchema() map[string]any {
+	return (&ScreenshotTool{}).ArgsSchema()
 }
 
 func (t *mobileGymScreenshotTool) Call(ctx context.Context, _ string) (string, error) {
@@ -162,6 +157,10 @@ func (t *mobileGymTouchGestureTool) ReturnsVisualObservation() bool { return tru
 
 func (t *mobileGymTouchGestureTool) Description() string {
 	return (&TouchGestureTool{}).Description() + " MobileGym backend sends gestures through the simulator bridge."
+}
+
+func (t *mobileGymTouchGestureTool) ArgsSchema() map[string]any {
+	return (&TouchGestureTool{}).ArgsSchema()
 }
 
 func (t *mobileGymTouchGestureTool) Call(ctx context.Context, input string) (string, error) {
@@ -261,6 +260,10 @@ func (t *mobileGymMouseClickTool) Description() string {
 	return (&MouseClickTool{}).Description() + " MobileGym backend converts the click to a simulator tap."
 }
 
+func (t *mobileGymMouseClickTool) ArgsSchema() map[string]any {
+	return (&MouseClickTool{}).ArgsSchema()
+}
+
 func (t *mobileGymMouseClickTool) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		X          pointerCoordinate `json:"x"`
@@ -284,6 +287,10 @@ func (t *mobileGymMouseMoveTool) Description() string {
 	return (&MouseMoveTool{}).Description() + " MobileGym backend treats this as a logical cursor update and does not mutate the simulator."
 }
 
+func (t *mobileGymMouseMoveTool) ArgsSchema() map[string]any {
+	return (&MouseMoveTool{}).ArgsSchema()
+}
+
 func (t *mobileGymMouseMoveTool) Call(_ context.Context, input string) (string, error) {
 	var args struct {
 		X          pointerCoordinate `json:"x"`
@@ -305,6 +312,10 @@ func (t *mobileGymMouseScrollTool) ReturnsVisualObservation() bool { return true
 
 func (t *mobileGymMouseScrollTool) Description() string {
 	return (&MouseScrollTool{}).Description() + " MobileGym backend converts wheel deltas to vertical swipe gestures."
+}
+
+func (t *mobileGymMouseScrollTool) ArgsSchema() map[string]any {
+	return (&MouseScrollTool{}).ArgsSchema()
 }
 
 func (t *mobileGymMouseScrollTool) Call(ctx context.Context, input string) (string, error) {
@@ -348,6 +359,10 @@ func (t *mobileGymKeyboardTextTool) Description() string {
 	return (&KeyboardTextTool{}).Description() + " MobileGym backend types the text through the simulator bridge."
 }
 
+func (t *mobileGymKeyboardTextTool) ArgsSchema() map[string]any {
+	return (&KeyboardTextTool{}).ArgsSchema()
+}
+
 func (t *mobileGymKeyboardTextTool) Call(ctx context.Context, input string) (string, error) {
 	text, errText := parseKeyboardTextInput(input)
 	if errText != "" {
@@ -362,6 +377,10 @@ func (t *mobileGymKeyboardTapTool) ReturnsVisualObservation() bool { return true
 
 func (t *mobileGymKeyboardTapTool) Description() string {
 	return (&KeyboardTapTool{}).Description() + " MobileGym backend sends common keys through the simulator bridge; meta+h maps to Android home."
+}
+
+func (t *mobileGymKeyboardTapTool) ArgsSchema() map[string]any {
+	return (&KeyboardTapTool{}).ArgsSchema()
 }
 
 func (t *mobileGymKeyboardTapTool) Call(ctx context.Context, input string) (string, error) {

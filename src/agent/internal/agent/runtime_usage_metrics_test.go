@@ -55,9 +55,23 @@ func TestUsageTrackingModelCapturesFullPromptForTelemetry(t *testing.T) {
 		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("full system prompt")}},
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("full user prompt")}},
 	}
+	tools := []llms.Tool{{
+		Type: "function",
+		Function: &llms.FunctionDefinition{
+			Name:        "echo",
+			Description: "Echo text.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"value": map[string]any{"type": "string"},
+				},
+				"required": []string{"value"},
+			},
+		},
+	}}
 
 	_, err := model.GenerateContent(contextWithTelemetryRole(context.Background(), RolePlanner), messages,
-		llms.WithTemperature(0.3), llms.WithMaxTokens(123))
+		llms.WithTemperature(0.3), llms.WithMaxTokens(123), llms.WithTools(tools))
 	if err != nil {
 		t.Fatalf("GenerateContent() error = %v", err)
 	}
@@ -80,5 +94,26 @@ func TestUsageTrackingModelCapturesFullPromptForTelemetry(t *testing.T) {
 	}
 	if _, ok := snapshot[0].ModelParameters["max_tokens"]; ok {
 		t.Fatalf("captured model parameters = %#v, did not expect legacy max_tokens", snapshot[0].ModelParameters)
+	}
+	if _, ok := snapshot[0].ModelParameters["tools_count"]; ok {
+		t.Fatalf("captured model parameters = %#v, did not expect tools_count", snapshot[0].ModelParameters)
+	}
+	if _, ok := snapshot[0].ModelParameters["tools"]; ok {
+		t.Fatalf("captured model parameters = %#v, did not expect tools", snapshot[0].ModelParameters)
+	}
+	if snapshot[0].Metadata["tools_count"] != 1 {
+		t.Fatalf("captured metadata = %#v, want tools_count=1", snapshot[0].Metadata)
+	}
+	capturedTools, ok := snapshot[0].Metadata["tool_schemas"].([]map[string]interface{})
+	if !ok || len(capturedTools) != 1 {
+		t.Fatalf("captured tool_schemas = %#v, want one tool definition", snapshot[0].Metadata["tool_schemas"])
+	}
+	function, ok := capturedTools[0]["function"].(map[string]interface{})
+	if !ok || function["name"] != "echo" {
+		t.Fatalf("captured tool function = %#v, want echo", capturedTools[0]["function"])
+	}
+	parameters, ok := function["parameters"].(map[string]interface{})
+	if !ok || parameters["type"] != "object" {
+		t.Fatalf("captured tool parameters = %#v, want object schema", function["parameters"])
 	}
 }
