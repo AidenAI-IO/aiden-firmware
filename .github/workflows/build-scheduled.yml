@@ -15,7 +15,7 @@ concurrency:
 jobs:
   check:
     if: ${{ startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
-    runs-on: self-hosted
+    runs-on: aiden-hosted-01
     outputs:
       should_run: ${{ steps.should_run.outputs.should_run }}
     steps:
@@ -99,6 +99,6 @@ jobs:
     if: ${{ needs.check.outputs.should_run == 'true' }}
     uses: ./.github/workflows/build.yml
     with:
-      runner: self-hosted
+      runner: aiden-hosted-01
       free_disk_space: false
     secrets: inherit

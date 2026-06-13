@@ -25,9 +25,15 @@ def dynamic_self_hosted_capable?(runs_on)
   runs_on_values(runs_on).any? { |value| value.include?("inputs.runner") }
 end
 
+def aiden_hosted_label?(value)
+  value.start_with?("aiden-hosted-")
+end
+
 def self_hosted_capable?(runs_on)
   values = runs_on_values(runs_on)
-  values.include?("self-hosted") || dynamic_self_hosted_capable?(runs_on)
+  values.include?("self-hosted") ||
+    values.any? { |value| aiden_hosted_label?(value) } ||
+    dynamic_self_hosted_capable?(runs_on)
 end
 
 def repo_branch_guarded?(condition, dynamic_runner)
@@ -41,7 +47,8 @@ def repo_branch_guarded?(condition, dynamic_runner)
   runner_guard =
     !dynamic_runner ||
     normalized.include?("inputs.runner != 'self-hosted'") ||
-    normalized.include?("inputs.runner == 'self-hosted'")
+    normalized.include?("inputs.runner == 'self-hosted'") ||
+    normalized.include?("startsWith(inputs.runner, 'aiden-hosted-')")
 
   blocks_pr_events && requires_repo_branch && runner_guard
 end
@@ -85,5 +92,10 @@ if ! grep -Fq 'git -C "$sdk_dir" rev-parse --verify HEAD' "$build_workflow" || \
    ! grep -Fq 'sdk_git_dir="$GITHUB_WORKSPACE/.git/modules/pico-sdk"' "$build_workflow" || \
    ! grep -Fq 'rm -rf -- "$sdk_dir" "$sdk_git_dir"' "$build_workflow"; then
   echo "self-hosted build workflow must detect and remove pico-sdk checkouts whose current revision is unavailable" >&2
+  exit 1
+fi
+
+if ! grep -Fq 'startsWith(inputs.runner, '\''aiden-hosted-'\'')' "$build_workflow"; then
+  echo "self-hosted build workflow must treat dedicated Aiden hosted labels as self-hosted runners" >&2
   exit 1
 fi

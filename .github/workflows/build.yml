@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   build:
-    if: ${{ inputs.runner != 'self-hosted' || (startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target') }}
+    if: ${{ (inputs.runner != 'self-hosted' && !startsWith(inputs.runner, 'aiden-hosted-')) || (startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target') }}
     runs-on: ${{ inputs.runner }}
 
     steps:
@@ -30,7 +30,7 @@ jobs:
       # if the previous build was killed by SIGKILL or the host crashed, leaving
       # root-owned files that block actions/checkout's clean phase with EACCES.
       # This step is a defence-in-depth no-op when the trap already ran.
-      if: ${{ inputs.runner == 'self-hosted' }}
+      if: ${{ inputs.runner == 'self-hosted' || startsWith(inputs.runner, 'aiden-hosted-') }}
       shell: bash
       run: |
         set -euo pipefail
@@ -56,7 +56,7 @@ jobs:
         fi
 
     - name: Remove unusable pico-sdk submodule checkout
-      if: ${{ inputs.runner == 'self-hosted' }}
+      if: ${{ inputs.runner == 'self-hosted' || startsWith(inputs.runner, 'aiden-hosted-') }}
       shell: bash
       run: |
         set -euo pipefail
@@ -73,7 +73,7 @@ jobs:
         rm -rf -- "$sdk_dir" "$sdk_git_dir"
 
     - name: Repair stale pico-sdk submodule metadata
-      if: ${{ inputs.runner == 'self-hosted' }}
+      if: ${{ inputs.runner == 'self-hosted' || startsWith(inputs.runner, 'aiden-hosted-') }}
       shell: bash
       run: |
         set -euo pipefail
