@@ -230,6 +230,132 @@ def test_list_runs_marks_current_run_not_done_without_summary(launcher_module, t
     ]
 
 
+def test_current_status_reports_mobilegym_progress_from_shard_artifacts(launcher_module, tmp_path):
+    class RunningProcess:
+        def poll(self):
+            return None
+
+    run_dir = tmp_path / "runs" / "mobilegym" / "batch-20260613-progress"
+    shard0 = run_dir / "personamem_lt_recall_v1" / "shard-0"
+    shard1 = run_dir / "personamem_lt_recall_v1" / "shard-1"
+    shard0.mkdir(parents=True)
+    shard1.mkdir(parents=True)
+    (shard0 / "shard.json").write_text(
+        json.dumps(
+            {
+                "selected_task_count": 2,
+                "selected_task_ids": ["suite.task_a", "suite.task_b"],
+                "exit_code": 0,
+            }
+        )
+    )
+    (shard1 / "shard.json").write_text(
+        json.dumps(
+            {
+                "selected_task_count": 2,
+                "selected_task_ids": ["suite.task_c", "suite.task_d"],
+            }
+        )
+    )
+    (shard0 / "raw" / "run").mkdir(parents=True)
+    (shard0 / "raw" / "run" / "results.jsonl").write_text(
+        json.dumps({"id": "suite.task_a", "is_success": True}) + "\n"
+    )
+    (tmp_path / launcher_module.STATE_NAME).write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "run_id": "batch-20260613-progress",
+                "suite": "personamem_lt_recall_v1",
+                "model": "qwen3.6-35b",
+            }
+        )
+    )
+    launcher_module._process = RunningProcess()
+
+    try:
+        status = launcher_module.current_status(tmp_path)
+    finally:
+        launcher_module._process = None
+
+    assert status["status"] == "running"
+    assert status["total"] == 4
+    assert status["completed"] == 1
+    assert status["current"] == 2
+    assert status["current_task"] == "suite.task_b"
+    assert status["progress"] == "1/4"
+
+
+def test_current_status_keeps_state_progress_before_shards_exist(launcher_module, tmp_path):
+    class RunningProcess:
+        def poll(self):
+            return None
+
+    (tmp_path / "runs" / "mobilegym" / "batch-20260613-starting").mkdir(parents=True)
+    (tmp_path / launcher_module.STATE_NAME).write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "run_id": "batch-20260613-starting",
+                "suite": "clock",
+                "total": 2,
+                "current": 1,
+                "completed": 0,
+            }
+        )
+    )
+    launcher_module._process = RunningProcess()
+
+    try:
+        status = launcher_module.current_status(tmp_path)
+    finally:
+        launcher_module._process = None
+
+    assert status["total"] == 2
+    assert status["current"] == 1
+    assert status["completed"] == 0
+
+
+def test_list_runs_reports_running_mobilegym_progress_from_shard_artifacts(launcher_module, tmp_path):
+    run_dir = tmp_path / "runs" / "mobilegym" / "batch-20260613-progress"
+    shard = run_dir / "personamem_lt_recall_v1" / "shard-0"
+    (shard / "raw" / "run").mkdir(parents=True)
+    (shard / "shard.json").write_text(
+        json.dumps(
+            {
+                "selected_task_count": 3,
+                "selected_task_ids": ["suite.task_a", "suite.task_b", "suite.task_c"],
+            }
+        )
+    )
+    (shard / "raw" / "run" / "results.jsonl").write_text(
+        json.dumps({"id": "suite.task_a", "is_success": True}) + "\n"
+    )
+    (tmp_path / launcher_module.STATE_NAME).write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "run_id": "batch-20260613-progress",
+                "suite": "personamem_lt_recall_v1",
+                "model": "qwen3.6-35b",
+            }
+        )
+    )
+
+    runs = launcher_module.list_runs(tmp_path)
+
+    assert runs == [
+        {
+            "run_id": "batch-20260613-progress",
+            "suite": "personamem_lt_recall_v1",
+            "status": "running",
+            "progress": "1/3",
+            "model": "qwen3.6-35b",
+            "totals": {"tasks": 3, "passed": 0, "failed": 0},
+        }
+    ]
+
+
 def test_parallel_run_passes_limit_to_suite_workers():
     script = PARALLEL_RUN_PATH.read_text()
 

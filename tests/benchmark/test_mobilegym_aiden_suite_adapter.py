@@ -96,6 +96,56 @@ def test_load_aiden_suite_preserves_metadata(
     assert md["global_reset"]["tool_sequence"][0]["tool"] == "wait_ms"
 
 
+def test_aiden_suite_evaluate_passes_expected_answer_and_recalled_memory(run_aiden_module):
+    task = run_aiden_module.MobileGymTaskAdapter(
+        task_id="personamem_lt_recall_v1.personamem_music",
+        instruction="Choose one option.",
+        metadata={
+            "expected_answer": "(c)",
+            "answer_format": "option_letter",
+            "expected_recalled_memory_ids": ["mem_expected"],
+            "aiden_last_response": "I used the stored preference.\n<final_answer>(c)</final_answer>",
+            "aiden_last_chat_history": [
+                {
+                    "type": "tool_result",
+                    "tool_name": "recall_memory",
+                    "content": json.dumps({"results": [{"id": "mem_expected"}]}),
+                }
+            ],
+        },
+    )
+
+    result = task.evaluate(None)
+
+    assert result.success is True
+    assert result.progress == 1.0
+
+
+def test_aiden_suite_evaluate_fails_when_expected_memory_was_not_recalled(run_aiden_module):
+    task = run_aiden_module.MobileGymTaskAdapter(
+        task_id="personamem_lt_recall_v1.personamem_music",
+        instruction="Choose one option.",
+        metadata={
+            "expected_answer": "(c)",
+            "answer_format": "option_letter",
+            "expected_recalled_memory_ids": ["mem_expected"],
+            "aiden_last_response": "I used a different memory.\n<final_answer>(c)</final_answer>",
+            "aiden_last_chat_history": [
+                {
+                    "type": "tool_result",
+                    "tool_name": "recall_memory",
+                    "content": json.dumps({"results": [{"id": "mem_other"}]}),
+                }
+            ],
+        },
+    )
+
+    result = task.evaluate(None)
+
+    assert result.success is False
+    assert "missing expected recalled memory ids" in result.issues[0]["reason"]
+
+
 def test_load_aiden_suite_missing_raises(run_aiden_module, tmp_path, monkeypatch):
     monkeypatch.setattr(run_aiden_module, "BENCHMARK_ROOT", tmp_path)
     with pytest.raises(run_aiden_module.LauncherError, match="Aiden suite not found"):

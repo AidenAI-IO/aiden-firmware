@@ -205,7 +205,8 @@ def test_generate_reports_handles_direct_mobilegym_run_directory(tmp_path):
 
     assert summary["tasks"] == 2
     assert summary["passed"] == 1
-    assert summary["error"] == 1
+    assert summary["timeout"] == 1
+    assert summary["error"] == 0
     assert summary["suites"][0]["suite"] == "wechat"
     assert (run_dir / "index.html").exists()
     assert read_json(run_dir / "summary.json")["pass_rate"] == 0.5
@@ -214,6 +215,55 @@ def test_generate_reports_handles_direct_mobilegym_run_directory(tmp_path):
     assert "results.jsonl" in html
     assert "errors.jsonl" in html
     assert "console.log" in html
+
+
+def test_generate_reports_counts_aiden_adapter_timeout_separately(tmp_path):
+    from mobilegym import report
+
+    batch = tmp_path / "batch-timeout"
+    shard = batch / "personamem_lt_recall_v1" / "shard-0"
+    write_json(
+        shard / "shard.json",
+        {
+            "batch_id": "batch-timeout",
+            "suite": "personamem_lt_recall_v1",
+            "shard_index": 0,
+            "shard_count": 1,
+            "selected_task_count": 1,
+            "selected_task_ids": ["personamem_lt_recall_v1.case_one"],
+            "exit_code": 0,
+        },
+    )
+    write_jsonl(
+        shard / "raw" / "run" / "results.jsonl",
+        [
+            {
+                "id": "personamem_lt_recall_v1.case_one",
+                "is_error": True,
+                "execution": {
+                    "runtime_s": 300.1,
+                    "stop_reason": "ERROR",
+                    "error": "AidenAdapterTimeout: Aiden /api/chat timed out: timed out",
+                },
+            }
+        ],
+    )
+    write_jsonl(
+        shard / "raw" / "run" / "errors.jsonl",
+        [
+            {
+                "id": "personamem_lt_recall_v1.case_one",
+                "error": "AidenAdapterTimeout: Aiden /api/chat timed out: timed out",
+            }
+        ],
+    )
+
+    summary = report.generate_reports(batch)
+
+    assert summary["timeout"] == 1
+    assert summary["error"] == 0
+    assert read_report_tasks(batch / "index.html")[0]["status"] == "timeout"
+    assert "Timeout 1" in (batch / "index.html").read_text()
 
 
 def test_generate_reports_uses_benchmark_drawer_style(tmp_path):
@@ -327,6 +377,61 @@ def test_report_maps_mobilegym_task_fields_into_drawer_payload(tmp_path):
     assert task["response"] == "done"
     assert ["execution_error", "timeout"] in task["errors"]
     assert task["errors"].count(["execution_error", "timeout"]) == 1
+
+
+def test_report_maps_aiden_suite_rubric_and_hard_assertions_into_drawer_payload(tmp_path):
+    from mobilegym import report
+
+    batch = tmp_path / "batch-aiden-rubric"
+    shard = batch / "personamem_lt_recall_v1" / "shard-0"
+    write_json(
+        shard / "shard.json",
+        {
+            "batch_id": "batch-aiden-rubric",
+            "suite": "personamem_lt_recall_v1",
+            "shard_index": 0,
+            "shard_count": 1,
+            "selected_task_count": 1,
+            "selected_task_ids": ["personamem_lt_recall_v1.case_one"],
+            "exit_code": 0,
+        },
+    )
+    write_jsonl(
+        shard / "raw" / "run" / "results.jsonl",
+        [
+            {
+                "id": "personamem_lt_recall_v1.case_one",
+                "suite": "personamem_lt_recall_v1",
+                "is_success": False,
+                "description_for_judge": "Recall the saved preference.",
+                "rubric": [
+                    {"id": "memory_recall", "check": "Mentions the saved preference."},
+                    {"id": "direct_answer", "reason": "Answered with B, expected C.", "verdict": "no"},
+                ],
+                "hard_assertions": {
+                    "expected_answer": False,
+                    "expected_recalled_memory": True,
+                },
+                "expected_answer_match": False,
+                "normalized_expected_answer": "C",
+                "predicted_answer": "B",
+                "expected_recalled_memory_match": True,
+            }
+        ],
+    )
+
+    report.generate_reports(batch)
+
+    task = read_report_tasks(batch / "index.html")[0]
+    assert task["description"] == "Recall the saved preference."
+    assert task["rubric"] == [
+        ["memory_recall", "Mentions the saved preference.", "—"],
+        ["direct_answer", "Answered with B, expected C.", "no"],
+    ]
+    assert task["rubric_pass"] == 0
+    assert task["rubric_total"] == 2
+    assert ["Expected Answer", "Expected: C, Got: B", "no"] in task["hard_assertions"]
+    assert task["rubric"] != [["mobilegym_status", "is_success false", "no"]]
 
 
 def test_drawer_task_deduplicates_mobilegym_errors():

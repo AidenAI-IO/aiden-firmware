@@ -232,6 +232,7 @@ def current_status(benchmark_root: Path) -> dict[str, Any]:
         except (OSError, json.JSONDecodeError):
             raw = {}
         raw["status"] = "running"
+        raw.update(mobilegym_progress(benchmark_root, str(raw.get("run_id") or "")))
         return raw
     return {"status": "idle"}
 
@@ -257,13 +258,14 @@ def list_runs(benchmark_root: Path) -> list[dict[str, Any]]:
     for run_id in run_ids[:20]:
         summary = read_json_file(runs_dir / run_id / "summary.json")
         state_for_run = state if state.get("run_id") == run_id and state.get("status") == "running" else {}
+        progress = mobilegym_progress(benchmark_root, run_id) if state_for_run else {}
         totals = {
-            "tasks": int(summary.get("tasks") or 0),
+            "tasks": int(summary.get("tasks") or progress.get("total") or 0),
             "passed": int(summary.get("passed") or 0),
-            "failed": int(summary.get("failed") or 0) + int(summary.get("error") or 0) + int(summary.get("worker_failed") or 0) + int(summary.get("unknown") or 0),
+            "failed": int(summary.get("failed") or 0) + int(summary.get("timeout") or 0) + int(summary.get("error") or 0) + int(summary.get("worker_failed") or 0) + int(summary.get("unknown") or 0),
         }
         total = totals["tasks"]
-        done = total if total else 0
+        done = int(progress.get("completed") or 0) if state_for_run else total
         items.append(
             {
                 "run_id": run_id,
@@ -275,6 +277,83 @@ def list_runs(benchmark_root: Path) -> list[dict[str, Any]]:
             }
         )
     return items
+
+
+def mobilegym_progress(benchmark_root: Path, run_id: str) -> dict[str, Any]:
+    if not is_safe_run_id(run_id):
+        return {}
+    run_dir = benchmark_root / "runs" / "mobilegym" / run_id
+    if not run_dir.is_dir():
+        return {}
+    task_ids: list[str] = []
+    completed_ids: set[str] = set()
+    shard_dirs = sorted(path.parent for path in run_dir.glob("**/shard.json") if path.is_file())
+    if not shard_dirs:
+        return {}
+    for shard_dir in shard_dirs:
+        metadata = read_json_file(shard_dir / "shard.json")
+        selected = [str(task_id) for task_id in metadata.get("selected_task_ids") or []]
+        if selected:
+            task_ids.extend(task_id for task_id in selected if task_id not in task_ids)
+        elif int(metadata.get("selected_task_count") or 0) == 0:
+            continue
+        completed_ids.update(_completed_task_ids(shard_dir / "raw"))
+
+    completed = sum(1 for task_id in task_ids if task_id in completed_ids)
+    total = len(task_ids)
+    payload: dict[str, Any] = {
+        "total": total,
+        "completed": completed,
+        "current": min(total, completed + 1) if total and completed < total else completed,
+        "progress": f"{completed}/{total}" if total else "",
+    }
+    current_task = _current_task_id(task_ids, completed_ids)
+    if current_task:
+        payload["current_task"] = current_task
+    return payload
+
+
+def _completed_task_ids(raw_dir: Path) -> set[str]:
+    completed: set[str] = set()
+    for name in ("results.jsonl", "errors.jsonl"):
+        for path in raw_dir.glob(f"**/{name}"):
+            for row in read_jsonl(path):
+                task_id = row_task_id(row)
+                if task_id:
+                    completed.add(task_id)
+    return completed
+
+
+def _current_task_id(task_ids: list[str], completed_ids: set[str]) -> str:
+    for task_id in task_ids:
+        if task_id not in completed_ids:
+            return task_id
+    return ""
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return rows
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def row_task_id(row: dict[str, Any]) -> str:
+    for key in ("id", "task_id", "name"):
+        if row.get(key):
+            return str(row[key])
+    return ""
 
 
 def read_json_file(path: Path) -> dict[str, Any]:

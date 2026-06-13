@@ -3,7 +3,9 @@ from __future__ import annotations
 import dataclasses as dc
 import json
 import logging
+import os
 import socket
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -136,6 +138,7 @@ class AidenGoAgent(_MobileGymBaseAgent):
 
     def reset(self, task: Any) -> None:
         self.task = task
+        self._prepare_aiden_suite_task(task)
 
     def act(self, obs: Any) -> Any:
         del obs
@@ -168,6 +171,7 @@ class AidenGoAgent(_MobileGymBaseAgent):
                 {"message": self._task_input(), "episode_id": episode_id},
                 timeout=self.chat_timeout_sec,
             )
+            self._record_task_chat_result(chat_result)
         except TimeoutError as exc:
             chat_error = AidenAdapterTimeout(f"Aiden /api/chat timed out: {exc}", worker_dirty=True)
         except AidenAdapterError as exc:
@@ -254,6 +258,84 @@ class AidenGoAgent(_MobileGymBaseAgent):
             timeout=timeout,
         )
 
+    def _prepare_aiden_suite_task(self, task: Any) -> None:
+        metadata = _task_metadata(task)
+        if not metadata or not _is_aiden_suite_task(metadata):
+            return
+        metadata.pop("aiden_last_response", None)
+        metadata.pop("aiden_last_chat_history", None)
+        try:
+            self._post_daemon("/api/clear", {}, timeout=self.episode_timeout_sec)
+            self._run_setup(metadata.get("global_reset"))
+            self._run_setup(metadata.get("setup"))
+        except AidenAdapterError:
+            raise
+        except TimeoutError as exc:
+            raise AidenAdapterTimeout(f"Aiden suite setup timed out: {exc}") from exc
+        except Exception as exc:
+            raise AidenAdapterError(f"Aiden suite setup failed: {exc}") from exc
+
+    def _run_setup(self, setup: Any) -> None:
+        if not isinstance(setup, dict) or not setup:
+            return
+        sequence = setup.get("tool_sequence")
+        if sequence:
+            if not isinstance(sequence, list):
+                raise AidenAdapterError(f"setup tool_sequence must be a list: {setup!r}")
+            self._run_tool_sequence(sequence)
+            return
+        if setup.get("type") == "agent_prompt":
+            prompt = setup.get("prompt")
+            if not prompt:
+                raise AidenAdapterError(f"agent_prompt setup missing prompt: {setup!r}")
+            timeout = _float_value(setup.get("timeout_sec"), 90.0)
+            self._post_daemon("/api/chat", {"message": str(prompt)}, timeout=timeout)
+            clear_history_after = setup.get("clear_history_after", True)
+            if not isinstance(clear_history_after, bool):
+                raise AidenAdapterError(f"clear_history_after must be boolean: {clear_history_after!r}")
+            if clear_history_after:
+                self._post_daemon("/api/clear", {}, timeout=self.episode_timeout_sec)
+            return
+        raise AidenAdapterError(f"unsupported setup form: {setup!r}")
+
+    def _run_tool_sequence(self, sequence: list[Any]) -> None:
+        for step in sequence:
+            if not isinstance(step, dict):
+                raise AidenAdapterError(f"setup step must be an object: {step!r}")
+            tool = step.get("tool")
+            args = dict(step.get("args") or {})
+            if tool == "wait_ms":
+                time.sleep(_float_value(args.get("ms"), 0.0) / 1000.0)
+                continue
+            if not tool:
+                raise AidenAdapterError(f"setup step missing tool: {step!r}")
+            if tool == "shell":
+                args = _rewrite_shell_memory_path(args, self._daemon_memory_dir())
+            timeout = _float_value(step.get("timeout_sec"), 90.0)
+            result = self._post_daemon(
+                f"/api/tools/{tool}",
+                {"input": args},
+                timeout=timeout,
+            )
+            if isinstance(result, dict) and result.get("is_error"):
+                output = result.get("output") or result.get("error") or result
+                raise AidenAdapterError(f"setup tool {tool} failed: {output}")
+
+    def _daemon_memory_dir(self) -> str:
+        attempt_config = getattr(self.daemon, "attempt_config", None)
+        memory_dir = getattr(attempt_config, "memory_dir", None)
+        if memory_dir is not None:
+            return str(memory_dir)
+        runtime_config_dir = os.getenv("AIDEN_RUNTIME_CONFIG_DIR") or "/tmp/aiden-config"
+        return f"{runtime_config_dir.rstrip('/')}/memory"
+
+    def _record_task_chat_result(self, payload: Any) -> None:
+        metadata = _task_metadata(self.task)
+        if metadata is None:
+            return
+        metadata["aiden_last_response"] = _response_text(payload)
+        metadata["aiden_last_chat_history"] = _history_payload(payload)
+
     def _daemon_control_token(self) -> str:
         return str(getattr(self.daemon, "control_token", ""))
 
@@ -335,6 +417,46 @@ def _response_text(payload: Any) -> str:
                 if data.get(key) is not None:
                     return str(data[key])
     return ""
+
+
+def _history_payload(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    history = payload.get("history")
+    if isinstance(history, list):
+        return [entry for entry in history if isinstance(entry, dict)]
+    data = payload.get("data")
+    if isinstance(data, dict) and isinstance(data.get("history"), list):
+        return [entry for entry in data["history"] if isinstance(entry, dict)]
+    return []
+
+
+def _task_metadata(task: Any | None) -> dict[Any, Any] | None:
+    if task is None:
+        return None
+    if isinstance(task, dict):
+        metadata = task.get("metadata")
+    else:
+        metadata = getattr(task, "metadata", None)
+    return metadata if isinstance(metadata, dict) else None
+
+
+def _is_aiden_suite_task(metadata: dict[Any, Any]) -> bool:
+    return bool(metadata.get("aiden_suite_name") or metadata.get("setup") or metadata.get("global_reset"))
+
+
+def _rewrite_shell_memory_path(args: dict[str, Any], memory_dir: str) -> dict[str, Any]:
+    command = args.get("command")
+    if isinstance(command, str):
+        args["command"] = command.replace("/userdata/agent/memory", memory_dir)
+    return args
+
+
+def _float_value(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _extract_action_log(payload: Any) -> list[dict[str, Any]]:

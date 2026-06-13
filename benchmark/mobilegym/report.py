@@ -10,7 +10,7 @@ from typing import Any
 from runner.html_report import HTML_TEMPLATE
 
 
-TASK_STATUSES = ("passed", "failed", "error", "unknown", "worker_failed")
+TASK_STATUSES = ("passed", "failed", "timeout", "error", "unknown", "worker_failed")
 SUMMARY_STATUSES = TASK_STATUSES + ("empty",)
 
 
@@ -290,12 +290,16 @@ def _read_json_payload(path: Path) -> Any:
 
 def _status_for(result: dict[str, Any] | None, error: dict[str, Any] | None) -> tuple[str, str]:
     if error is not None:
+        if _is_timeout(result, error):
+            return "timeout", str(error.get("error") or error.get("message") or "timeout")
         return "error", str(error.get("error") or error.get("message") or "errors.jsonl")
     if result is None:
         return "unknown", "missing result"
 
     stop_reason = _stop_reason(result)
-    if result.get("is_error") is True or stop_reason in {"overdue_termination", "timeout", "crash", "exception"}:
+    if _is_timeout(result, None):
+        return "timeout", stop_reason or _execution_error(result) or "timeout"
+    if result.get("is_error") is True or stop_reason in {"crash", "exception"}:
         return "error", stop_reason or "is_error"
     if stop_reason == "false_complete":
         return "failed", stop_reason
@@ -325,6 +329,27 @@ def _stop_reason(result: dict[str, Any]) -> str:
         return str(execution["stop_reason"])
     if result.get("stop_reason"):
         return str(result["stop_reason"])
+    return ""
+
+
+def _is_timeout(result: dict[str, Any] | None, error: dict[str, Any] | None) -> bool:
+    if result is not None:
+        stop_reason = _stop_reason(result).lower()
+        if stop_reason in {"overdue_termination", "timeout"}:
+            return True
+        if "aidenadaptertimeout" in _execution_error(result).lower():
+            return True
+    if error is None:
+        return False
+    return "aidenadaptertimeout" in str(error.get("error") or error.get("message") or error).lower()
+
+
+def _execution_error(result: dict[str, Any]) -> str:
+    execution = result.get("execution")
+    if isinstance(execution, dict) and execution.get("error"):
+        return str(execution["error"])
+    if result.get("error"):
+        return str(result["error"])
     return ""
 
 
@@ -418,9 +443,9 @@ def _write_direct_run_report(run_dir: Path, rows: list[dict[str, Any]], summary:
 def _drawer_html(title: str, summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     total = int(summary.get("tasks") or 0)
     passed = int(summary.get("passed") or 0)
+    timeout = int(summary.get("timeout") or 0)
     failed = int(summary.get("failed") or 0) + int(summary.get("error") or 0) + int(summary.get("worker_failed") or 0) + int(summary.get("unknown") or 0)
     skipped = int(summary.get("empty") or 0)
-    timeout = 0
     judge_error = 0
     pass_rate = f"{passed / total * 100:.1f}%" if total else "0%"
 
@@ -467,13 +492,15 @@ def _drawer_task(row: dict[str, Any]) -> dict[str, Any]:
     tool_calls_detail = _actions_text(actions) or links_text
     tool_calls_count = len(actions) if actions else int(execution.get("steps") or result.get("steps") or 0)
     errors = []
-    if status in {"error", "failed", "worker_failed", "unknown"}:
+    if status in {"error", "failed", "timeout", "worker_failed", "unknown"}:
         errors.append([status, str(row.get("reason") or status)])
     execution_error = execution.get("error") or result.get("error")
     if execution_error:
         errors.append(["execution_error", str(execution_error)])
     if error:
         errors.append(["error", str(error.get("error") or error.get("message") or error)])
+    rubric = _rubric_rows(result, row)
+    hard_assertions = _hard_assertion_rows(result)
     return {
         "id": str(row.get("task_id") or row.get("suite") or "-"),
         "category": str(row.get("suite") or "MobileGym"),
@@ -481,17 +508,84 @@ def _drawer_task(row: dict[str, Any]) -> dict[str, Any]:
         "wall_ms": wall_ms,
         "tool_calls_count": tool_calls_count,
         "screenshots_taken": 0,
-        "rubric_pass": 1 if status == "passed" else 0,
-        "rubric_total": 1 if status != "empty" else 0,
+        "rubric_pass": _rubric_pass_count(rubric, status),
+        "rubric_total": len(rubric),
         "description": description,
         "prompt": prompt,
         "response": response,
         "tool_calls_detail": tool_calls_detail,
-        "rubric": [["mobilegym_status", str(row.get("reason") or status), "yes" if status == "passed" else "no"]] if status != "empty" else [],
-        "hard_assertions": [],
+        "rubric": rubric,
+        "hard_assertions": hard_assertions,
         "errors": _dedupe_errors(errors),
         "trace_observations": [],
     }
+
+
+def _rubric_rows(result: dict[str, Any], row: dict[str, Any]) -> list[list[str]]:
+    rubric_items = result.get("rubric")
+    rows = _rubric_items_rows(rubric_items)
+    if rows:
+        return rows
+
+    rubric_spec = result.get("rubric_spec")
+    rows = _rubric_spec_rows(rubric_spec)
+    if rows:
+        return rows
+
+    status = str(row.get("status") or "unknown")
+    if status == "empty":
+        return []
+    return [["mobilegym_status", str(row.get("reason") or status), "yes" if status == "passed" else "no"]]
+
+
+def _rubric_items_rows(rubric_items: Any) -> list[list[str]]:
+    if not isinstance(rubric_items, list):
+        return []
+    rows = []
+    for item in rubric_items:
+        if not isinstance(item, dict):
+            continue
+        verdict = str(item.get("verdict")) if item.get("verdict") is not None else "—"
+        rows.append([
+            str(item.get("id") or ""),
+            _first_text(item, "reason", "check", "description"),
+            verdict,
+        ])
+    return rows
+
+
+def _rubric_spec_rows(rubric_spec: Any) -> list[list[str]]:
+    if not isinstance(rubric_spec, list):
+        return []
+    rows = []
+    for item in rubric_spec:
+        if not isinstance(item, dict):
+            continue
+        rows.append([str(item.get("id") or ""), _first_text(item, "check", "reason", "description"), "—"])
+    return rows
+
+
+def _rubric_pass_count(rubric: list[list[str]], status: str) -> int:
+    if not rubric:
+        return 0
+    verdicts = [row[2] for row in rubric if len(row) > 2]
+    if any(verdict in {"yes", "no"} for verdict in verdicts):
+        return sum(1 for verdict in verdicts if verdict == "yes")
+    return 1 if status == "passed" else 0
+
+
+def _hard_assertion_rows(result: dict[str, Any]) -> list[list[str]]:
+    hard_assertions = result.get("hard_assertions")
+    if not isinstance(hard_assertions, dict):
+        return []
+    rows: list[list[str]] = []
+    if hard_assertions.get("expected_answer") is False or result.get("expected_answer_match") is False:
+        expected = result.get("normalized_expected_answer") or result.get("expected_answer") or ""
+        predicted = result.get("predicted_answer") or ""
+        rows.append(["Expected Answer", f"Expected: {expected}, Got: {predicted}", "no"])
+    if hard_assertions.get("expected_recalled_memory") is False or result.get("expected_recalled_memory_match") is False:
+        rows.append(["Expected Recalled Memory", "Did not recall expected memory items", "no"])
+    return rows
 
 
 def _first_text(source: dict[str, Any], *keys: str) -> str:

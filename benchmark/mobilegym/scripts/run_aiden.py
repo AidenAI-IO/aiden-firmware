@@ -97,12 +97,10 @@ class MobileGymTaskAdapter:
 
     def evaluate(self, input: Any) -> Any:
         del input
-        try:
-            from bench_env.task.judge import JudgeResult
-
-            return JudgeResult.fail("Aiden JSON suites require external report judging")
-        except ModuleNotFoundError:
-            return _FallbackJudgeResult.fail("Aiden JSON suites require external report judging")
+        failures = _evaluate_aiden_metadata(self.metadata)
+        if failures:
+            return _judge_result(False, "; ".join(failures), progress=0.0)
+        return _judge_result(True, "Aiden JSON suite deterministic checks passed", progress=1.0)
 
 
 @dc.dataclass
@@ -115,6 +113,101 @@ class _FallbackJudgeResult:
     @classmethod
     def fail(cls, reason: str) -> "_FallbackJudgeResult":
         return cls(success=False, clean=True, issues=[{"reason": reason}])
+
+    @classmethod
+    def pass_(cls, reason: str) -> "_FallbackJudgeResult":
+        return cls(success=True, clean=True, progress=1.0, issues=[{"reason": reason}])
+
+
+def _evaluate_aiden_metadata(metadata: dict[Any, Any]) -> list[str]:
+    benchmark_root_str = str(BENCHMARK_ROOT)
+    if benchmark_root_str not in sys.path:
+        sys.path.insert(0, benchmark_root_str)
+    from runner.assertions import (  # type: ignore[import-not-found]
+        evaluate_expected_answer,
+        evaluate_expected_recalled_memory_ids,
+    )
+
+    failures: list[str] = []
+    response = str(metadata.get("aiden_last_response") or "")
+    history = metadata.get("aiden_last_chat_history")
+    if not isinstance(history, list):
+        history = []
+
+    expected_answer = metadata.get("expected_answer")
+    if expected_answer is not None:
+        answer_outcome = evaluate_expected_answer(
+            response,
+            str(expected_answer),
+            str(metadata.get("answer_format") or "option_letter"),
+        )
+        metadata.update(
+            {
+                "expected_answer_match": answer_outcome.passed,
+                "predicted_answer": answer_outcome.predicted_answer,
+                "normalized_expected_answer": answer_outcome.expected_answer,
+            }
+        )
+        if not answer_outcome.passed:
+            failures.append(
+                "expected answer mismatch: "
+                f"expected {answer_outcome.expected_answer}, got {answer_outcome.predicted_answer}"
+            )
+
+    expected_memory_ids = metadata.get("expected_recalled_memory_ids") or []
+    if expected_memory_ids:
+        recall_outcome = evaluate_expected_recalled_memory_ids(history, list(expected_memory_ids))
+        metadata.update(
+            {
+                "expected_recalled_memory_match": recall_outcome.passed,
+                "recalled_memory_ids": recall_outcome.recalled_memory_ids,
+            }
+        )
+        if not recall_outcome.passed:
+            missing = [
+                memory_id
+                for memory_id in recall_outcome.expected_memory_ids
+                if memory_id not in recall_outcome.recalled_memory_ids
+            ]
+            failures.append(f"missing expected recalled memory ids: {', '.join(missing)}")
+
+    return failures
+
+
+def _judge_result(success: bool, reason: str, *, progress: float) -> Any:
+    try:
+        from bench_env.task.judge import JudgeResult
+    except ModuleNotFoundError:
+        return _FallbackJudgeResult(
+            success=success,
+            clean=True,
+            progress=progress,
+            issues=[{"reason": reason}],
+        )
+
+    if success:
+        for name in ("pass_", "passed", "success", "ok"):
+            method = getattr(JudgeResult, name, None)
+            if callable(method):
+                try:
+                    return method(reason)
+                except TypeError:
+                    try:
+                        return method()
+                    except TypeError:
+                        pass
+        try:
+            return JudgeResult(success=True, clean=True, progress=progress, issues=[])
+        except TypeError:
+            return _FallbackJudgeResult.pass_(reason)
+
+    fail = getattr(JudgeResult, "fail", None)
+    if callable(fail):
+        return fail(reason)
+    try:
+        return JudgeResult(success=False, clean=True, progress=progress, issues=[{"reason": reason}])
+    except TypeError:
+        return _FallbackJudgeResult.fail(reason)
 
 
 def _load_aiden_suite_as_mobilegym_tasks(suite_name: str) -> list[MobileGymTaskAdapter]:

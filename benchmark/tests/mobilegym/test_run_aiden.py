@@ -177,9 +177,9 @@ def test_mobilegym_task_adapter_exposes_runner_interface():
     assert task.teardown(object()) is None
     assert asyncio.run(task.setup(FakeEnv())) == "initial observation"
     judge = task.evaluate(object())
-    assert judge.success is False
+    assert judge.success is True
     assert judge.clean is True
-    assert judge.issues[0]["reason"] == "Aiden JSON suites require external report judging"
+    assert judge.progress == 1.0
 
 
 def test_generate_run_report_best_effort_writes_index(tmp_path):
