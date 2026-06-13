@@ -77,6 +77,190 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleToolResponses("echo", `{"__arg1":"original action"}`, "Changed course."),
+	}
+	tool := &stubTool{
+		name:        "echo",
+		description: "Echo.",
+		output:      "tool output",
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"echo": tool}},
+		NewSkillIndex(),
+	)
+
+	var steerCalls int32
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "do the original action",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			if atomic.AddInt32(&steerCalls, 1) != 1 {
+				return RunSteerMessage{}, false
+			}
+			return RunSteerMessage{
+				ID:        "steer-1",
+				RequestID: "req-1",
+				Content:   "Use the updated instruction instead.",
+				Timestamp: time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC),
+			}, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "Changed course." {
+		t.Fatalf("output = %q, want Changed course.", result.Output)
+	}
+	if len(tool.inputs) != 1 || tool.inputs[0] != "original action" {
+		t.Fatalf("tool should run before steer is attached, got inputs %#v", tool.inputs)
+	}
+
+	steerEvent, ok := firstRunEventOfType(events, "steer")
+	if !ok || steerEvent.Content != "Use the updated instruction instead." {
+		t.Fatalf("missing steer event: %#v", events)
+	}
+	toolResult, ok := firstRunEventOfType(events, "tool_result")
+	if !ok {
+		t.Fatalf("missing tool_result event: %#v", events)
+	}
+	if toolResult.Content != "tool output" || toolResult.IsError {
+		t.Fatalf("unexpected steer tool result: %#v", toolResult)
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("expected follow-up model call with steer message, got %#v", model.messages)
+	}
+	role, text, ok := runtimeLastMessageText(model.messages[1])
+	if !ok || role != llms.ChatMessageTypeHuman || text != "Use the updated instruction instead." {
+		t.Fatalf("second model call missing steer message: %#v", model.messages)
+	}
+	if runtimeModelCallContains(model.messages[1], "User steering update received while the agent was already working") {
+		t.Fatalf("steer should be appended as a human message, not rewritten as prompt text: %#v", model.messages[1])
+	}
+	assertMemoryRecords(t, result.Memory, []MessageRecord{
+		{Role: "human", Content: "do the original action"},
+		{Role: "human", Content: "Use the updated instruction instead."},
+		{Role: "ai", Content: "Changed course."},
+	})
+}
+
+func TestRuntimeRunAttachesPendingSteerBeforeFinalAnswer(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse("Old answer."),
+			contentResponse("Changed course."),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	var steerCalls int32
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "answer the old request",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			if atomic.AddInt32(&steerCalls, 1) != 1 {
+				return RunSteerMessage{}, false
+			}
+			return RunSteerMessage{
+				ID:        "steer-1",
+				RequestID: "req-1",
+				Content:   "Actually change direction before answering.",
+				Timestamp: time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC),
+			}, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "Changed course." {
+		t.Fatalf("output = %q, want Changed course.", result.Output)
+	}
+	if _, ok := firstRunEventOfType(events, "steer"); !ok {
+		t.Fatalf("missing steer event: %#v", events)
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("expected follow-up model call with final-boundary steer message, got %#v", model.messages)
+	}
+	role, text, ok := runtimeLastMessageText(model.messages[1])
+	if !ok || role != llms.ChatMessageTypeHuman || text != "Actually change direction before answering." {
+		t.Fatalf("second model call missing final-boundary steer message: %#v", model.messages)
+	}
+	assertMemoryRecords(t, result.Memory, []MessageRecord{
+		{Role: "human", Content: "answer the old request"},
+		{Role: "human", Content: "Actually change direction before answering."},
+		{Role: "ai", Content: "Changed course."},
+	})
+}
+
+func TestRuntimeRunPersistsSteerAsConversationHumanMessage(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse("Old answer."),
+			contentResponse("Changed course."),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	var steerCalls int32
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "original persisted request",
+		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			if atomic.AddInt32(&steerCalls, 1) != 1 {
+				return RunSteerMessage{}, false
+			}
+			return RunSteerMessage{
+				ID:      "steer-1",
+				Content: "persist this steering message",
+			}, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	assertMemoryRecords(t, result.Memory, []MessageRecord{
+		{Role: "human", Content: "original persisted request"},
+		{Role: "human", Content: "persist this steering message"},
+		{Role: "ai", Content: "Changed course."},
+	})
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) != 3 {
+		t.Fatalf("expected 3 session events, got %d: %#v", len(events), events)
+	}
+	for i, want := range []SessionEvent{
+		{Role: "user", Content: "original persisted request"},
+		{Role: "user", Content: "persist this steering message"},
+		{Role: "assistant", Content: "Changed course."},
+	} {
+		if events[i].Role != want.Role || events[i].Content != want.Content {
+			t.Fatalf("session event %d = %#v, want role=%q content=%q; all events: %#v", i, events[i], want.Role, want.Content, events)
+		}
+	}
+}
+
 func TestRuntimeRunIncludesAvailableSkillCatalog(t *testing.T) {
 	index := NewSkillIndex()
 	index.skills["planner"] = &SkillDefinition{
@@ -347,6 +531,32 @@ func runtimeModelCallContains(messages []llms.MessageContent, want string) bool 
 		}
 	}
 	return false
+}
+
+func runtimeLastMessageText(messages []llms.MessageContent) (llms.ChatMessageType, string, bool) {
+	if len(messages) == 0 {
+		return "", "", false
+	}
+	last := messages[len(messages)-1]
+	var builder strings.Builder
+	for _, part := range last.Parts {
+		if text, ok := part.(llms.TextContent); ok {
+			builder.WriteString(text.Text)
+		}
+	}
+	return last.Role, builder.String(), true
+}
+
+func assertMemoryRecords(t *testing.T, got []MessageRecord, want []MessageRecord) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("memory records length = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("memory record %d = %#v, want %#v; all records: %#v", i, got[i], want[i], got)
+		}
+	}
 }
 
 type scriptedModel struct {

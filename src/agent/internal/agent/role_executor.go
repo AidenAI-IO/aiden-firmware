@@ -31,6 +31,7 @@ type roleCollaborativeExecutor struct {
 	Recorder          *EpisodeRecorder
 	ScreenshotPruning ScreenshotPruningConfig
 	ForceSimpleLoop   bool
+	SteerProvider     func(context.Context) (RunSteerMessage, bool)
 }
 
 const roleModelCallTimeout = 120 * time.Second
@@ -94,6 +95,7 @@ type roleLoopState struct {
 	ExecutionResults     []roleExecutionResult
 	PlannerEvidence      []roleExecutionResult
 	VerifierResults      []verifierDecision
+	SteerMessages        []RunSteerMessage
 }
 
 type worldState struct {
@@ -136,6 +138,10 @@ type roleOutputHandler interface {
 	HandleRoleOutput(ctx context.Context, role, content string)
 }
 
+type steerMessageHandler interface {
+	HandleSteerMessage(ctx context.Context, steer RunSteerMessage)
+}
+
 func newRoleCollaborativeExecutor(
 	model llms.Model,
 	profiles RoleProfiles,
@@ -146,9 +152,14 @@ func newRoleCollaborativeExecutor(
 	handler callbacks.Handler,
 	recorder *EpisodeRecorder,
 	screenshotPruning ScreenshotPruningConfig,
+	steerProviders ...func(context.Context) (RunSteerMessage, bool),
 ) *roleCollaborativeExecutor {
 	if mem == nil {
 		mem = memory.NewSimple()
+	}
+	var steerProvider func(context.Context) (RunSteerMessage, bool)
+	if len(steerProviders) > 0 {
+		steerProvider = steerProviders[0]
 	}
 	return &roleCollaborativeExecutor{
 		Model:             model,
@@ -162,6 +173,7 @@ func newRoleCollaborativeExecutor(
 		Recorder:          recorder,
 		ScreenshotPruning: screenshotPruning.WithDefaults(),
 		ForceSimpleLoop:   profiles.Planner.SystemPrompt != "" && !profiles.Planner.Capabilities.CanModifyPlan,
+		SteerProvider:     steerProvider,
 	}
 }
 
@@ -189,6 +201,13 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 			}
 			switch turn.Kind {
 			case plannerTurnFinish:
+				consumed, err := e.consumePendingSteer(ctx, inputs, &state)
+				if err != nil {
+					return nil, err
+				}
+				if consumed {
+					continue
+				}
 				if state.Phase == phaseDecision || state.Phase == phaseDefault || state.canAcceptPlannerFinal(turn.Answer) {
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(turn.Answer)
@@ -225,6 +244,11 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
 					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps))
 				}
+				if turn.Kind == plannerTurnTool {
+					if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
+						return nil, err
+					}
+				}
 			}
 		case phaseExecution:
 			if !state.StepExecutionActive {
@@ -248,6 +272,9 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					state.ExecutionResults = append(state.ExecutionResults, execution)
 					if e.Recorder != nil {
 						e.Recorder.RecordExecution(execution)
+					}
+					if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
+						return nil, err
 					}
 				}
 			case executorTurnFinishStep, executorTurnAbortStep:
@@ -281,6 +308,14 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					finalAnswer := strings.TrimSpace(verification.FinalAnswer)
 					if finalAnswer == "" {
 						finalAnswer = stepSummary
+					}
+					consumed, err := e.consumePendingSteer(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						state.Phase = phaseDefault
+						continue
 					}
 					return e.finishRun(ctx, finalAnswer, verification.Reason)
 				}
@@ -511,6 +546,29 @@ func (e *roleCollaborativeExecutor) finishRun(ctx context.Context, finalAnswer, 
 	return map[string]any{e.OutputKey: finalAnswer}, nil
 }
 
+func (e *roleCollaborativeExecutor) consumePendingSteer(ctx context.Context, inputs map[string]string, state *roleLoopState) (bool, error) {
+	if e == nil || e.SteerProvider == nil || state == nil {
+		return false, nil
+	}
+	steer, ok := e.SteerProvider(ctx)
+	if !ok {
+		return false, nil
+	}
+	if steer.Timestamp.IsZero() {
+		steer.Timestamp = time.Now()
+	}
+	if appender, ok := e.Memory.(steerConversationAppender); ok {
+		if err := appender.AppendSteerMessage(ctx, inputs["input"], steer); err != nil {
+			return false, err
+		}
+	}
+	state.SteerMessages = append(state.SteerMessages, steer)
+	if handler, ok := e.CallbacksHandler.(steerMessageHandler); ok {
+		handler.HandleSteerMessage(ctx, steer)
+	}
+	return true, nil
+}
+
 func (e *roleCollaborativeExecutor) callExecutorTurn(
 	ctx context.Context,
 	inputs map[string]string,
@@ -629,7 +687,21 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: buildRoleUserMessageParts(statePrompt, e.InputAttachments, state.World),
 	})
+	for _, steer := range state.SteerMessages {
+		messages = append(messages, llms.MessageContent{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart(steerHumanMessageContent(steer))},
+		})
+	}
 	return messages
+}
+
+func steerHumanMessageContent(steer RunSteerMessage) string {
+	content := strings.TrimSpace(steer.Content)
+	if content == "" {
+		content = "(empty steering message)"
+	}
+	return content
 }
 
 func hasProfileTool(profile RoleProfile, name string) bool {

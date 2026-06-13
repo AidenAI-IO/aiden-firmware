@@ -58,6 +58,8 @@ type Server struct {
 	pendingResultsMu           sync.Mutex
 	activeRuns                 map[string]context.CancelFunc
 	activeRunsMu               sync.Mutex
+	pendingSteers              map[string]pendingSteerMessage
+	pendingSteersMu            sync.Mutex
 }
 
 type webAudioRecording struct {
@@ -122,6 +124,24 @@ type ChatCancelRequest struct {
 type ChatCancelResponse struct {
 	RequestID string `json:"request_id"`
 	Status    string `json:"status"`
+}
+
+type ChatSteerRequest struct {
+	RequestID string `json:"request_id"`
+	Message   string `json:"message"`
+}
+
+type ChatSteerResponse struct {
+	RequestID string               `json:"request_id"`
+	Status    string               `json:"status"`
+	Steer     *pendingSteerMessage `json:"steer,omitempty"`
+}
+
+type pendingSteerMessage struct {
+	ID        string    `json:"id"`
+	RequestID string    `json:"request_id"`
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // ChatResponse represents a chat response
@@ -201,6 +221,7 @@ func NewServer(runtime *Runtime, addr string, benchmarkDir string) *Server {
 		bridge:              bridge,
 		pendingResults:      make(map[string]*chatPendingResult),
 		activeRuns:          make(map[string]context.CancelFunc),
+		pendingSteers:       make(map[string]pendingSteerMessage),
 	}
 	if runtime.config.ConfigDir != "" {
 		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
@@ -247,6 +268,8 @@ func (s *Server) Start() error {
 	// API endpoints
 	mux.HandleFunc("/api/chat", s.handleChat)
 	mux.HandleFunc("/api/chat/cancel", s.handleChatCancel)
+	mux.HandleFunc("/api/chat/steer", s.handleChatSteer)
+	mux.HandleFunc("/api/chat/steer/cancel", s.handleChatSteerCancel)
 	mux.HandleFunc("/api/chat/result", s.handleChatResult)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
@@ -426,6 +449,70 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(ChatCancelResponse{RequestID: requestID, Status: "not_running"})
 }
 
+func (s *Server) handleChatSteer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req ChatSteerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	requestID := strings.TrimSpace(req.RequestID)
+	message := strings.TrimSpace(req.Message)
+	if requestID == "" {
+		http.Error(w, "missing request_id", http.StatusBadRequest)
+		return
+	}
+	if message == "" {
+		http.Error(w, "message is required", http.StatusBadRequest)
+		return
+	}
+
+	steer, ok := s.setPendingSteer(requestID, message)
+	if !ok {
+		http.Error(w, "request_id is not running", http.StatusConflict)
+		return
+	}
+	if s.logger != nil {
+		s.logger.Info("Queued chat steer: request_id=%s len=%d", requestID, len(message))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ChatSteerResponse{RequestID: requestID, Status: "pending", Steer: &steer})
+}
+
+func (s *Server) handleChatSteerCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req ChatSteerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		http.Error(w, "missing request_id", http.StatusBadRequest)
+		return
+	}
+
+	status := "not_found"
+	if s.cancelPendingSteer(requestID) {
+		status = "canceled"
+		if s.logger != nil {
+			s.logger.Info("Canceled chat steer: request_id=%s", requestID)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ChatSteerResponse{RequestID: requestID, Status: status})
+}
+
 func (s *Server) registerActiveRun(requestID string, cancel context.CancelFunc) bool {
 	if requestID == "" {
 		return true
@@ -460,6 +547,72 @@ func (s *Server) cancelActiveRun(requestID string) bool {
 	}
 	cancel()
 	return true
+}
+
+func (s *Server) setPendingSteer(requestID, content string) (pendingSteerMessage, bool) {
+	s.activeRunsMu.Lock()
+	defer s.activeRunsMu.Unlock()
+	if requestID == "" || s.activeRuns[requestID] == nil {
+		return pendingSteerMessage{}, false
+	}
+	steer := pendingSteerMessage{
+		ID:        createSteerID(),
+		RequestID: requestID,
+		Content:   strings.TrimSpace(content),
+		Timestamp: time.Now(),
+	}
+	s.pendingSteersMu.Lock()
+	if s.pendingSteers == nil {
+		s.pendingSteers = make(map[string]pendingSteerMessage)
+	}
+	s.pendingSteers[requestID] = steer
+	s.pendingSteersMu.Unlock()
+	return steer, true
+}
+
+func (s *Server) cancelPendingSteer(requestID string) bool {
+	s.pendingSteersMu.Lock()
+	defer s.pendingSteersMu.Unlock()
+	if s.pendingSteers == nil {
+		return false
+	}
+	if _, ok := s.pendingSteers[requestID]; !ok {
+		return false
+	}
+	delete(s.pendingSteers, requestID)
+	return true
+}
+
+func (s *Server) clearPendingSteer(requestID string) {
+	if requestID == "" {
+		return
+	}
+	s.pendingSteersMu.Lock()
+	delete(s.pendingSteers, requestID)
+	s.pendingSteersMu.Unlock()
+}
+
+func (s *Server) consumePendingSteer(requestID string) (RunSteerMessage, bool) {
+	if requestID == "" {
+		return RunSteerMessage{}, false
+	}
+	s.pendingSteersMu.Lock()
+	defer s.pendingSteersMu.Unlock()
+	steer, ok := s.pendingSteers[requestID]
+	if !ok {
+		return RunSteerMessage{}, false
+	}
+	delete(s.pendingSteers, requestID)
+	return RunSteerMessage{
+		ID:        steer.ID,
+		RequestID: steer.RequestID,
+		Content:   steer.Content,
+		Timestamp: steer.Timestamp,
+	}, true
+}
+
+func createSteerID() string {
+	return "steer-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
 // handleChatAsync runs the agent in a background goroutine and returns
@@ -517,6 +670,7 @@ func (s *Server) handleChatAsync(
 	go func() {
 		defer func() {
 			s.unregisterActiveRun(requestID)
+			s.clearPendingSteer(requestID)
 			// Keep the completed result available for polling for 60s,
 			// then clean up. The client (PhoneBridge) polls /api/chat/result
 			// every ~1s; immediate deletion creates a race where the app
@@ -565,6 +719,9 @@ func (s *Server) handleChatAsync(
 			EpisodeID:      userMsg.EpisodeID,
 			RuntimeContext: s.runtimeContext(),
 			EventHandler:   eventHandler,
+			SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+				return s.consumePendingSteer(requestID)
+			},
 		}
 
 		var newStream *streamSessionWriter
@@ -920,6 +1077,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		}
 		defer func() {
 			s.unregisterActiveRun(req.RequestID)
+			s.clearPendingSteer(req.RequestID)
 			cancel()
 		}()
 		ctx = runCtx
@@ -932,6 +1090,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		Skills:         req.Skills,
 		EpisodeID:      episodeID,
 		RuntimeContext: s.runtimeContext(),
+		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			return s.consumePendingSteer(req.RequestID)
+		},
 		EventHandler: func(event RunEvent) {
 			eventEpisodeID := event.EpisodeID
 			if eventEpisodeID == "" {
@@ -2268,10 +2429,20 @@ const webUI = `<!DOCTYPE html>
             justify-content: flex-end;
         }
 
+        .message.steer .message-shell {
+            justify-content: flex-end;
+        }
+
         .message.user .message-avatar {
             order: 2;
             background: rgba(16, 163, 127, 0.12);
             color: var(--accent-strong);
+        }
+
+        .message.steer .message-avatar {
+            order: 2;
+            background: rgba(183, 107, 47, 0.14);
+            color: var(--tool-call-text);
         }
 
         .message.user .message-body {
@@ -2279,6 +2450,16 @@ const webUI = `<!DOCTYPE html>
             max-width: min(78%, 860px);
             background: var(--user-bubble);
             border: 1px solid var(--line);
+            border-radius: 18px 18px 8px 18px;
+            padding: 13px 15px;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .message.steer .message-body {
+            order: 1;
+            max-width: min(78%, 860px);
+            background: rgba(255, 248, 239, 0.95);
+            border: 1px solid rgba(183, 107, 47, 0.22);
             border-radius: 18px 18px 8px 18px;
             padding: 13px 15px;
             box-shadow: var(--shadow-soft);
@@ -2776,6 +2957,37 @@ const webUI = `<!DOCTYPE html>
             opacity: 1;
         }
 
+        .pending-steer {
+            margin: 0 18px 8px;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 11px 12px;
+            border-radius: 14px;
+            border: 1px solid rgba(183, 107, 47, 0.2);
+            background: rgba(255, 248, 239, 0.9);
+            box-shadow: var(--shadow-soft);
+        }
+
+        .pending-steer.hidden {
+            display: none;
+        }
+
+        .pending-steer-copy {
+            min-width: 0;
+            display: grid;
+            gap: 4px;
+        }
+
+        .pending-steer-text {
+            color: var(--text);
+            font-size: 0.88rem;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
         .spinner {
             width: 14px;
             height: 14px;
@@ -2828,7 +3040,8 @@ const webUI = `<!DOCTYPE html>
                 border-radius: 16px;
             }
 
-            .message.user .message-body {
+            .message.user .message-body,
+            .message.steer .message-body {
                 max-width: 100%;
             }
 
@@ -2890,6 +3103,14 @@ const webUI = `<!DOCTYPE html>
                 <span class="spinner" aria-hidden="true"></span>
                 <span>Working on it...</span>
                 <button type="button" class="stop-run-btn" id="stopRunBtn" onclick="cancelCurrentRun()" disabled>Stop</button>
+            </div>
+
+            <div class="pending-steer hidden" id="pendingSteer">
+                <div class="pending-steer-copy">
+                    <div class="message-role">Pending steer</div>
+                    <div class="pending-steer-text" id="pendingSteerText"></div>
+                </div>
+                <button type="button" class="stop-run-btn" id="cancelSteerBtn" onclick="cancelPendingSteer()">Cancel</button>
             </div>
 
             <form class="composer" onsubmit="event.preventDefault(); sendMessage();">
@@ -2980,6 +3201,9 @@ const webUI = `<!DOCTYPE html>
         const draftAttachmentsEl = document.getElementById('draftAttachments');
         const loadingDiv = document.getElementById('loading');
         const stopRunBtn = document.getElementById('stopRunBtn');
+        const pendingSteerEl = document.getElementById('pendingSteer');
+        const pendingSteerTextEl = document.getElementById('pendingSteerText');
+        const cancelSteerBtn = document.getElementById('cancelSteerBtn');
         const emptyStateEl = document.getElementById('emptyState');
         const toolSelectEl = document.getElementById('toolSelect');
         const toolDescriptionEl = document.getElementById('toolDescription');
@@ -3006,6 +3230,8 @@ const webUI = `<!DOCTYPE html>
         let currentChatRequestId = '';
         let currentChatAbortController = null;
         let currentChatCancelRequested = false;
+        let pendingSteer = null;
+        let pendingSteerSubmitting = false;
         let episodeCache = {};
 
         loadHistory();
@@ -3279,6 +3505,10 @@ const webUI = `<!DOCTYPE html>
 
         async function sendMessage() {
             if (sendBtn.disabled) return;
+            if (currentChatRequestId) {
+                await submitSteerMessage();
+                return;
+            }
             if (recorderState.isRecording || recorderState.isStopping) {
                 await stopRecording();
             }
@@ -3349,8 +3579,70 @@ const webUI = `<!DOCTYPE html>
                 currentChatRequestId = '';
                 currentChatAbortController = null;
                 currentChatCancelRequested = false;
+                pendingSteer = null;
+                renderPendingSteer();
                 setComposerState(false);
                 scrollToBottom();
+            }
+        }
+
+        async function submitSteerMessage() {
+            if (!currentChatRequestId || pendingSteerSubmitting) return;
+
+            const message = inputEl.value.trim();
+            if (!message) return;
+            if (draftAttachments.length > 0) {
+                alert('Attachments can be sent after the current run finishes.');
+                return;
+            }
+
+            const requestId = currentChatRequestId;
+            const localSteer = {
+                id: 'local-' + createRequestId(),
+                request_id: requestId,
+                content: message,
+                timestamp: new Date().toISOString()
+            };
+            pendingSteer = localSteer;
+            pendingSteerSubmitting = true;
+            inputEl.value = '';
+            autoResizeInput();
+            renderPendingSteer();
+            setComposerState(true);
+
+            try {
+                const res = await fetch('/api/chat/steer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        request_id: requestId,
+                        message: message
+                    })
+                });
+                if (!res.ok) {
+                    throw new Error(await res.text() || 'Failed to queue steer.');
+                }
+                const data = await res.json();
+                if (data.steer) {
+                    pendingSteer = data.steer;
+                    renderPendingSteer();
+                }
+            } catch (err) {
+                console.error('Failed to queue steer:', err);
+                if (currentChatRequestId === requestId) {
+                    inputEl.value = message;
+                    autoResizeInput();
+                }
+                pendingSteer = null;
+                renderPendingSteer();
+                addMessage({
+                    type: 'assistant',
+                    content: 'Error: ' + err.message,
+                    timestamp: new Date().toISOString()
+                });
+            } finally {
+                pendingSteerSubmitting = false;
+                setComposerState(!!currentChatRequestId);
             }
         }
 
@@ -3367,6 +3659,8 @@ const webUI = `<!DOCTYPE html>
             currentChatCancelRequested = true;
             stopRunBtn.disabled = true;
             stopRunBtn.textContent = 'Stopping...';
+            pendingSteer = null;
+            renderPendingSteer();
 
 			if (currentChatAbortController) {
 				currentChatAbortController.abort();
@@ -3381,6 +3675,31 @@ const webUI = `<!DOCTYPE html>
 				console.error('Failed to cancel chat request:', err);
 			});
 		}
+
+        async function cancelPendingSteer() {
+            if (!currentChatRequestId || !pendingSteer) return;
+            const requestId = currentChatRequestId;
+            const previous = pendingSteer;
+            pendingSteer = null;
+            renderPendingSteer();
+
+            try {
+                const res = await fetch('/api/chat/steer/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ request_id: requestId })
+                });
+                if (!res.ok) {
+                    throw new Error(await res.text() || 'Failed to cancel steer.');
+                }
+            } catch (err) {
+                console.error('Failed to cancel steer:', err);
+                if (currentChatRequestId === requestId) {
+                    pendingSteer = previous;
+                    renderPendingSteer();
+                }
+            }
+        }
 
         async function consumeChatStream(res) {
             let sawDone = false;
@@ -3457,6 +3776,10 @@ const webUI = `<!DOCTYPE html>
 
         function handleChatStreamEvent(event) {
             if (event.type === 'message' && event.message) {
+                if (event.message.type === 'steer') {
+                    pendingSteer = null;
+                    renderPendingSteer();
+                }
                 addMessage(event.message);
                 return false;
             }
@@ -3673,13 +3996,27 @@ const webUI = `<!DOCTYPE html>
         }
 
         function setComposerState(isLoading) {
-            sendBtn.disabled = isLoading || recorderState.isStopping;
+            sendBtn.disabled = recorderState.isStopping || pendingSteerSubmitting;
+            sendBtn.textContent = isLoading ? 'Steer' : 'Send';
             imageBtn.disabled = isLoading || recorderState.isRecording || recorderState.isStopping;
             recordBtn.disabled = isLoading || recorderState.isStopping;
             stopRunBtn.disabled = !isLoading;
             stopRunBtn.textContent = 'Stop';
             loadingDiv.classList.toggle('active', isLoading);
+            renderPendingSteer();
             updateRecordButton();
+        }
+
+        function renderPendingSteer() {
+            if (!pendingSteer) {
+                pendingSteerEl.classList.add('hidden');
+                pendingSteerTextEl.textContent = '';
+                cancelSteerBtn.disabled = true;
+                return;
+            }
+            pendingSteerEl.classList.remove('hidden');
+            pendingSteerTextEl.textContent = pendingSteer.content || '';
+            cancelSteerBtn.disabled = pendingSteerSubmitting;
         }
 
         function autoResizeInput() {
@@ -3697,6 +4034,7 @@ const webUI = `<!DOCTYPE html>
 
         function getRoleLabel(type, toolName, role) {
             if (type === 'user') return 'You';
+            if (type === 'steer') return 'Steer';
             if (type === 'episode_status') return 'Task Trace';
             if (type === 'role_output') return 'Role · ' + (role || 'agent');
             if (type === 'tool_call') return toolName ? 'Tool Call · ' + toolName : 'Tool Call';
@@ -3706,6 +4044,7 @@ const webUI = `<!DOCTYPE html>
 
         function getAvatarLabel(type) {
             if (type === 'user') return 'You';
+            if (type === 'steer') return 'Edit';
             if (type === 'episode_status') return 'Task';
             if (type === 'role_output') return 'Role';
             if (type === 'tool_call') return 'Call';
