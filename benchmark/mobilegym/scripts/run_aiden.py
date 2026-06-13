@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses as dc
 import json
 import os
+import re
 import secrets
 import sys
 from pathlib import Path
@@ -18,6 +20,242 @@ DEFAULT_MOBILEGYM_ROOT = MOBILEGYM_PACKAGE_ROOT / "vendor" / "mobilegym"
 DEFAULT_RUNS_DIR = BENCHMARK_ROOT / "runs" / "mobilegym"
 DEFAULT_ENV_URL = "http://localhost:4173"
 
+_SAFE_SUITE_SEGMENT = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
+
+def _valid_suite_name(suite_name: str) -> bool:
+    if not suite_name or suite_name.startswith("/"):
+        return False
+    for part in suite_name.split("/"):
+        if part in {"", ".", ".."} or not _SAFE_SUITE_SEGMENT.match(part):
+            return False
+    return True
+
+
+@dc.dataclass
+class MobileGymTaskAdapter:
+    """Duck-typed Task object returned to MobileGym SerialRunner when running
+    an Aiden JSON suite. Exposes the attributes the runner and adapter read.
+    """
+    task_id: str
+    instruction: str
+    metadata: dict[Any, Any]
+    apps: list[str] = dc.field(default_factory=list)
+    params: dict[str, Any] = dc.field(default_factory=dict)
+    # MobileGym sometimes reads `.id` / `.goal`; alias them.
+
+    @property
+    def id(self) -> str:
+        return self.task_id
+
+    @property
+    def goal(self) -> str:
+        return self.instruction
+
+    @property
+    def description(self) -> str:
+        return self.instruction
+
+    @property
+    def suite(self) -> str:
+        value = self.metadata.get("aiden_suite_name") or self.task_id.rsplit(".", 1)[0]
+        return str(value)
+
+    @property
+    def name(self) -> str:
+        return self.task_id.rsplit(".", 1)[-1]
+
+    @property
+    def category(self) -> str:
+        return str(self.metadata.get("category") or "aiden")
+
+    @property
+    def scope(self) -> str:
+        return "S1"
+
+    @property
+    def objective(self) -> str:
+        return "operate"
+
+    @property
+    def composition(self) -> str:
+        return "atomic"
+
+    @property
+    def difficulty(self) -> str:
+        return "L1"
+
+    @property
+    def capabilities(self) -> list[str]:
+        return []
+
+    async def setup(self, env: Any) -> Any:
+        return await env.get_observation()
+
+    def teardown(self, env: Any) -> None:
+        del env
+
+    def evaluate(self, input: Any) -> Any:
+        del input
+        failures = _evaluate_aiden_metadata(self.metadata)
+        if failures:
+            return _judge_result(False, "; ".join(failures), progress=0.0)
+        return _judge_result(True, "Aiden JSON suite deterministic checks passed", progress=1.0)
+
+
+@dc.dataclass
+class _FallbackJudgeResult:
+    success: bool = False
+    clean: bool = True
+    progress: float = 0.0
+    issues: list[dict[str, Any]] = dc.field(default_factory=list)
+
+    @classmethod
+    def fail(cls, reason: str) -> "_FallbackJudgeResult":
+        return cls(success=False, clean=True, issues=[{"reason": reason}])
+
+    @classmethod
+    def pass_(cls, reason: str) -> "_FallbackJudgeResult":
+        return cls(success=True, clean=True, progress=1.0, issues=[{"reason": reason}])
+
+
+def _evaluate_aiden_metadata(metadata: dict[Any, Any]) -> list[str]:
+    benchmark_root_str = str(BENCHMARK_ROOT)
+    if benchmark_root_str not in sys.path:
+        sys.path.insert(0, benchmark_root_str)
+    from runner.assertions import (  # type: ignore[import-not-found]
+        evaluate_expected_answer,
+        evaluate_expected_recalled_memory_ids,
+    )
+
+    failures: list[str] = []
+    response = str(metadata.get("aiden_last_response") or "")
+    history = metadata.get("aiden_last_chat_history")
+    if not isinstance(history, list):
+        history = []
+
+    expected_answer = metadata.get("expected_answer")
+    if expected_answer is not None:
+        answer_outcome = evaluate_expected_answer(
+            response,
+            str(expected_answer),
+            str(metadata.get("answer_format") or "option_letter"),
+        )
+        metadata.update(
+            {
+                "expected_answer_match": answer_outcome.passed,
+                "predicted_answer": answer_outcome.predicted_answer,
+                "normalized_expected_answer": answer_outcome.expected_answer,
+            }
+        )
+        if not answer_outcome.passed:
+            failures.append(
+                "expected answer mismatch: "
+                f"expected {answer_outcome.expected_answer}, got {answer_outcome.predicted_answer}"
+            )
+
+    expected_memory_ids = metadata.get("expected_recalled_memory_ids") or []
+    if expected_memory_ids:
+        recall_outcome = evaluate_expected_recalled_memory_ids(history, list(expected_memory_ids))
+        metadata.update(
+            {
+                "expected_recalled_memory_match": recall_outcome.passed,
+                "recalled_memory_ids": recall_outcome.recalled_memory_ids,
+            }
+        )
+        if not recall_outcome.passed:
+            missing = [
+                memory_id
+                for memory_id in recall_outcome.expected_memory_ids
+                if memory_id not in recall_outcome.recalled_memory_ids
+            ]
+            failures.append(f"missing expected recalled memory ids: {', '.join(missing)}")
+
+    return failures
+
+
+def _judge_result(success: bool, reason: str, *, progress: float) -> Any:
+    try:
+        from bench_env.task.judge import JudgeResult
+    except ModuleNotFoundError:
+        return _FallbackJudgeResult(
+            success=success,
+            clean=True,
+            progress=progress,
+            issues=[{"reason": reason}],
+        )
+
+    if success:
+        for name in ("pass_", "passed", "success", "ok"):
+            method = getattr(JudgeResult, name, None)
+            if callable(method):
+                try:
+                    return method(reason)
+                except TypeError:
+                    try:
+                        return method()
+                    except TypeError:
+                        pass
+        try:
+            return JudgeResult(success=True, clean=True, progress=progress, issues=[])
+        except TypeError:
+            return _FallbackJudgeResult.pass_(reason)
+
+    fail = getattr(JudgeResult, "fail", None)
+    if callable(fail):
+        return fail(reason)
+    try:
+        return JudgeResult(success=False, clean=True, progress=progress, issues=[{"reason": reason}])
+    except TypeError:
+        return _FallbackJudgeResult.fail(reason)
+
+
+def _load_aiden_suite_as_mobilegym_tasks(suite_name: str) -> list[MobileGymTaskAdapter]:
+    """Load benchmark/suites/<suite_name>.json and convert tasks for MobileGym."""
+    if not _valid_suite_name(suite_name):
+        raise LauncherError(
+            f"invalid suite name: {suite_name!r} "
+            "(must be a safe relative path)"
+        )
+    suite_path = BENCHMARK_ROOT / "suites" / f"{suite_name}.json"
+    if not suite_path.exists():
+        raise LauncherError(f"Aiden suite not found: {suite_path}")
+
+    benchmark_root_str = str(BENCHMARK_ROOT)
+    if benchmark_root_str not in sys.path:
+        sys.path.insert(0, benchmark_root_str)
+    from runner.suite import load_suite  # type: ignore[import-not-found]
+
+    aiden_suite = load_suite(suite_path)
+    return [_convert_task(aiden_suite, t) for t in aiden_suite.tasks]
+
+
+def _convert_task(suite: Any, task: Any) -> MobileGymTaskAdapter:
+    """Convert one Aiden TaskSpec into a MobileGymTaskAdapter."""
+    full_id = f"{suite.name}.{task.id}"
+    if suite.prompt_prefix:
+        instruction = f"{suite.prompt_prefix}\n\n{task.prompt}"
+    else:
+        instruction = task.prompt
+
+    return MobileGymTaskAdapter(
+        task_id=full_id,
+        instruction=instruction,
+        metadata={
+            "category": task.category,
+            "description_for_judge": task.description_for_judge,
+            "rubric": [dc.asdict(r) for r in task.rubric],
+            "hard_assertions": dc.asdict(task.hard_assertions),
+            "setup": task.setup,
+            "global_reset": suite.global_reset,
+            "expected_answer": task.expected_answer,
+            "answer_format": task.answer_format,
+            "expected_recalled_memory_ids": task.expected_recalled_memory_ids,
+            "aiden_suite_name": suite.name,
+            "aiden_task_id": task.id,
+        },
+    )
+
 
 class LauncherError(RuntimeError):
     pass
@@ -30,6 +268,12 @@ def build_parser() -> argparse.ArgumentParser:
     target = parser.add_argument_group("task selection")
     target.add_argument("--task-id", help="Run one MobileGym task id, for example clock.CountAlarms.")
     target.add_argument("--suite", help="Run tasks from one or more comma-separated suites.")
+    target.add_argument(
+        "--aiden-suite",
+        help="Run an Aiden JSON suite from benchmark/suites/<name>.json. "
+             "Tasks are converted to MobileGym format on the fly. "
+             "Mutually exclusive with --task-id/--suite/--split.",
+    )
     target.add_argument("--split", help="Restrict task selection to a MobileGym split, for example test.")
     target.add_argument("--limit", type=_non_negative_int, help="Limit selected tasks for smoke runs.")
 
@@ -177,7 +421,7 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
     from mobilegym.bridge.protocol import BridgeTokens
     from mobilegym.bridge.server import BridgeServer
 
-    tasks = factory.load_tasks(config)
+    tasks = factory.load_tasks(config) if not args.aiden_suite else _load_aiden_suite_as_mobilegym_tasks(args.aiden_suite)
     if args.limit is not None:
         tasks = tasks[: args.limit]
     if not tasks:
@@ -221,11 +465,12 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
         evaluator = factory.create_evaluator(config, None)
         recorder.start_run(
             agent="AidenGoAgent",
-            model_name="aiden-go",
+            model_name=_current_model_name(),
             extra_meta=SerialRunner.build_run_meta(config, tasks),
         )
         if recorder.run_dir:
             run_dir = recorder.run_dir
+            agent.artifact_dir = recorder.run_dir
             add_log_file(recorder.run_dir / "console.log")
         runner = SerialRunner(env, agent, tasks, config, recorder, evaluator)
         await runner.run()
@@ -240,7 +485,7 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
 def _runner_args(args: argparse.Namespace) -> argparse.Namespace:
     return argparse.Namespace(
         agent="aiden_go",
-        model_name="aiden-go",
+        model_name=_current_model_name(),
         model_base_url=None,
         model_api_key="",
         task_id=args.task_id,
@@ -271,8 +516,15 @@ def _runner_args(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def _validate_selection(args: argparse.Namespace) -> None:
-    if not args.task_id and not args.suite and not args.split:
-        raise LauncherError("select at least one task with --task-id, --suite, or --split")
+    selectors = [args.task_id, args.suite, args.split, args.aiden_suite]
+    if not any(selectors):
+        raise LauncherError(
+            "select at least one task with --task-id, --suite, --split, or --aiden-suite"
+        )
+    if args.aiden_suite and (args.task_id or args.suite or args.split):
+        raise LauncherError(
+            "--aiden-suite is mutually exclusive with --task-id/--suite/--split"
+        )
     if args.shard_index >= args.shard_count:
         raise LauncherError("--shard-index must be less than --shard-count")
 
@@ -326,6 +578,10 @@ def _task_id(task: Any) -> str:
         if value:
             return str(value)
     return str(task)
+
+
+def _current_model_name() -> str:
+    return os.getenv("MODEL_NAME") or os.getenv("AIDEN_MODEL") or os.getenv("OPENAI_MODEL") or "aiden-go"
 
 
 def _validate_mobilegym_root(path: Path, source: str) -> None:

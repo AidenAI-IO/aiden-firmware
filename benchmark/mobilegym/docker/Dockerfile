@@ -7,9 +7,14 @@ FROM node:22-bullseye AS mobilegym-base
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG NO_PROXY
+ARG PLAYWRIGHT_DOWNLOAD_HOST
+ARG PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST
 ENV HTTP_PROXY=${HTTP_PROXY} \
     HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=${NO_PROXY}
+    NO_PROXY=${NO_PROXY} \
+    PLAYWRIGHT_DOWNLOAD_HOST=${PLAYWRIGHT_DOWNLOAD_HOST} \
+    PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST=${PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST} \
+    PUPPETEER_SKIP_DOWNLOAD=true
 
 WORKDIR /mobilegym
 
@@ -150,6 +155,7 @@ COPY benchmark/pyproject.toml benchmark/uv.lock /app/benchmark/
 RUN cd /app/benchmark && uv sync && uv run pip install -r /mobilegym/bench_env/requirements.txt
 
 # Copy test code and adapter
+COPY benchmark/runner /app/benchmark/runner
 COPY benchmark/mobilegym /app/benchmark/mobilegym
 COPY benchmark/tests /app/benchmark/tests
 
