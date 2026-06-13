@@ -363,7 +363,18 @@ func (m *MemoryManager) maintenanceLoop() {
 
 // AppendExchange appends a user input and assistant output pair to the session.
 func (m *MemoryManager) AppendExchange(ctx context.Context, agentName string, input string, output string) error {
+	return m.AppendMessages(ctx, agentName, []MessageRecord{
+		{Role: string(llms.ChatMessageTypeHuman), Content: input},
+		{Role: string(llms.ChatMessageTypeAI), Content: output},
+	})
+}
+
+// AppendMessages appends explicit message records to the session event stream.
+func (m *MemoryManager) AppendMessages(ctx context.Context, agentName string, records []MessageRecord) error {
 	if m.storageDir == "" {
+		return nil
+	}
+	if len(records) == 0 {
 		return nil
 	}
 
@@ -372,7 +383,7 @@ func (m *MemoryManager) AppendExchange(ctx context.Context, agentName string, in
 
 	fl := NewFileLock(m.storageDir)
 	if err := fl.Lock(m.lockTimeout); err != nil {
-		return fmt.Errorf("lock for appending session exchange %q: %w", agentName, err)
+		return fmt.Errorf("lock for appending session messages %q: %w", agentName, err)
 	}
 	defer fl.Unlock()
 
@@ -387,10 +398,7 @@ func (m *MemoryManager) AppendExchange(ctx context.Context, agentName string, in
 
 	now := time.Now().UTC()
 	encoder := json.NewEncoder(file)
-	records := []MessageRecord{
-		{Role: string(llms.ChatMessageTypeHuman), Content: input},
-		{Role: string(llms.ChatMessageTypeAI), Content: output},
-	}
+	records = sanitizeMessageRecords(records)
 	for i, record := range records {
 		select {
 		case <-ctx.Done():
@@ -399,7 +407,7 @@ func (m *MemoryManager) AppendExchange(ctx context.Context, agentName string, in
 		}
 		event := sessionEventFromRecord(record, now, m.eventCount[agentName]+i)
 		if err := encoder.Encode(event); err != nil {
-			return fmt.Errorf("append session exchange for %q: %w", agentName, err)
+			return fmt.Errorf("append session messages for %q: %w", agentName, err)
 		}
 	}
 	m.eventCount[agentName] += len(records)

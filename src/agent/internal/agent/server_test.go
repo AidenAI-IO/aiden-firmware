@@ -458,6 +458,92 @@ func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatSteerQueuesAndCancelsPendingMessage(t *testing.T) {
+	server := &Server{
+		activeRuns:    make(map[string]context.CancelFunc),
+		pendingSteers: make(map[string]pendingSteerMessage),
+	}
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.registerActiveRun("req-1", cancel)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/steer", bytes.NewBufferString(`{"request_id":" req-1 ","message":" change direction "}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleChatSteer(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp ChatSteerResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Status != "pending" || resp.RequestID != "req-1" || resp.Steer == nil || resp.Steer.Content != "change direction" {
+		t.Fatalf("unexpected steer response: %#v", resp)
+	}
+	steer, ok := server.consumePendingSteer("req-1")
+	if !ok || steer.Content != "change direction" {
+		t.Fatalf("unexpected consumed steer: %#v ok=%v", steer, ok)
+	}
+	if _, ok := server.consumePendingSteer("req-1"); ok {
+		t.Fatal("pending steer was not consumed exactly once")
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/chat/steer", bytes.NewBufferString(`{"request_id":"req-1","message":"cancel this"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.handleChatSteer(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected requeue status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/chat/steer/cancel", bytes.NewBufferString(`{"request_id":"req-1"}`))
+	cancelReq.Header.Set("Content-Type", "application/json")
+	cancelRec := httptest.NewRecorder()
+	server.handleChatSteerCancel(cancelRec, cancelReq)
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("unexpected cancel status: %d body=%s", cancelRec.Code, cancelRec.Body.String())
+	}
+	var cancelResp ChatSteerResponse
+	if err := json.NewDecoder(cancelRec.Body).Decode(&cancelResp); err != nil {
+		t.Fatalf("decode cancel response: %v", err)
+	}
+	if cancelResp.Status != "canceled" || cancelResp.RequestID != "req-1" {
+		t.Fatalf("unexpected cancel response: %#v", cancelResp)
+	}
+	if _, ok := server.consumePendingSteer("req-1"); ok {
+		t.Fatal("canceled steer was still pending")
+	}
+}
+
+func TestServerHandleChatSteerRejectsNonRunningRequest(t *testing.T) {
+	server := &Server{activeRuns: make(map[string]context.CancelFunc)}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/steer", bytes.NewBufferString(`{"request_id":"req-1","message":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChatSteer(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWebUISteerModeControlsArePresent(t *testing.T) {
+	for _, want := range []string{
+		"/api/chat/steer",
+		"/api/chat/steer/cancel",
+		"async function submitSteerMessage()",
+		"sendBtn.textContent = isLoading ? 'Steer' : 'Send';",
+		"id=\"pendingSteer\"",
+	} {
+		if !strings.Contains(webUI, want) {
+			t.Fatalf("web UI missing %q", want)
+		}
+	}
+}
+
 func TestServerHandleChatAsyncDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
 	server := &Server{
 		activeRuns:     make(map[string]context.CancelFunc),
