@@ -26,6 +26,13 @@ func (t *callbackTool) Description() string {
 	return t.inner.Description()
 }
 
+func (t *callbackTool) ArgsSchema() map[string]any {
+	if structured, ok := t.inner.(structuredInputTool); ok {
+		return structured.ArgsSchema()
+	}
+	return nil
+}
+
 func (t *callbackTool) Call(ctx context.Context, input string) (string, error) {
 	if named, ok := t.handler.(namedToolCallbackHandler); ok {
 		named.HandleNamedToolStart(ctx, t.Name(), input)

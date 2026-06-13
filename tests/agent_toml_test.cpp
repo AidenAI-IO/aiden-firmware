@@ -42,6 +42,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.voice_tool_call_speech = false;
     cfg.voice_max_response_tokens = 240;
     cfg.max_iterations = 6;
+    cfg.force_simple_loop = true;
     cfg.screenshot_keep_n = 5;
     cfg.screenshot_prune_interval = 40;
     cfg.screen_stable_timeout_ms = 4500;
@@ -53,7 +54,9 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.model.api_key = "sk-or-test";
     cfg.model.token_env = "OPENROUTER_API_KEY";
     cfg.model.temperature = 0.2;
-    cfg.model.max_tokens = 1000;
+    cfg.model.max_response_tokens = 1000;
+    cfg.model.context_window = 64000;
+    cfg.model.model_max_output_tokens = 4096;
 
     cfg.tts.provider = "minimax-ws";
     cfg.tts.api_key = "mx-test";
@@ -77,6 +80,10 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
 
     cfg.search.provider = "duckduckgo";
     cfg.search.api_key = "tvly-test";
+
+    cfg.benchmark.judge_model = "custom/judge-v1";
+    cfg.benchmark.api_key = "sk-judge-test";
+    cfg.benchmark.benchmark_dir = "/userdata/agent/benchmark";
 
     cfg.telemetry.enabled = true;
     cfg.telemetry.provider = "langfuse";
@@ -117,6 +124,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
 	CHECK(loaded.voice_tool_call_speech == false);
 	CHECK(loaded.voice_max_response_tokens == 240);
 	CHECK(loaded.max_iterations == 6);
+	CHECK(loaded.force_simple_loop == true);
 	CHECK(loaded.screenshot_keep_n == 5);
 	CHECK(loaded.screenshot_prune_interval == 40);
 	CHECK(loaded.screen_stable_timeout_ms == 4500);
@@ -128,7 +136,9 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.model.api_key == "sk-or-test");
     CHECK(loaded.model.token_env == "OPENROUTER_API_KEY");
     CHECK(loaded.model.temperature == doctest::Approx(0.2));
-    CHECK(loaded.model.max_tokens == 1000);
+    CHECK(loaded.model.max_response_tokens == 1000);
+    CHECK(loaded.model.context_window == 64000);
+    CHECK(loaded.model.model_max_output_tokens == 4096);
 
     CHECK(loaded.tts.provider == "minimax-ws");
     CHECK(loaded.tts.api_key == "mx-test");
@@ -152,6 +162,10 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
 
     CHECK(loaded.search.provider == "duckduckgo");
     CHECK(loaded.search.api_key == "tvly-test");
+
+    CHECK(loaded.benchmark.judge_model == "custom/judge-v1");
+    CHECK(loaded.benchmark.api_key == "sk-judge-test");
+    CHECK(loaded.benchmark.benchmark_dir == "/userdata/agent/benchmark");
 
     CHECK(loaded.telemetry.enabled == true);
     CHECK(loaded.telemetry.provider == "langfuse");
@@ -187,6 +201,45 @@ TEST_CASE("agent_toml no longer writes legacy proxy section") {
     std::remove(path.c_str());
 }
 
+TEST_CASE("agent_toml accepts legacy model max_tokens") {
+    std::string path = make_temp_path("legacy_max_tokens.toml");
+    {
+        std::ofstream out(path);
+        out << "[model]\n"
+            << "provider = \"openrouter\"\n"
+            << "model = \"vendor/test-model\"\n"
+            << "max_tokens = 777\n";
+    }
+
+    aiden::AgentToml cfg;
+    std::string err;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    REQUIRE(err.empty());
+    CHECK(cfg.model.max_response_tokens == 777);
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("agent_toml prefers max_response_tokens over legacy max_tokens") {
+    std::string path = make_temp_path("legacy_max_tokens_precedence.toml");
+    {
+        std::ofstream out(path);
+        out << "[model]\n"
+            << "provider = \"openrouter\"\n"
+            << "model = \"vendor/test-model\"\n"
+            << "max_response_tokens = 1000\n"
+            << "max_tokens = 777\n";
+    }
+
+    aiden::AgentToml cfg;
+    std::string err;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    REQUIRE(err.empty());
+    CHECK(cfg.model.max_response_tokens == 1000);
+
+    std::remove(path.c_str());
+}
+
 TEST_CASE("agent_toml ignores unknown sections and keys") {
     std::string path = make_temp_path("unknown.toml");
     {
@@ -207,6 +260,7 @@ TEST_CASE("agent_toml ignores unknown sections and keys") {
     REQUIRE(err.empty());
     CHECK(cfg.input_mode == "text");
     CHECK(cfg.max_iterations == -1);
+    CHECK(cfg.force_simple_loop == false);
     CHECK(cfg.model.provider == "openai");
     CHECK(cfg.model.model == "gpt-4o-mini");
 
@@ -232,4 +286,64 @@ TEST_CASE("agent_toml strips inline comments after unquoted scalars") {
     CHECK(cfg.model.model == "x/y");
 
     std::remove(path.c_str());
+}
+
+TEST_CASE("agent_toml rejects negative model metadata overrides") {
+    struct Case {
+        const char* leaf;
+        const char* section;
+        const char* field;
+    };
+    const Case cases[] = {
+        {"negative_context_window.toml", "model", "context_window"},
+        {"negative_model_max_output_tokens.toml", "model_text", "model_max_output_tokens"},
+    };
+
+    for (const auto& tc : cases) {
+        std::string path = make_temp_path(tc.leaf);
+        {
+            std::ofstream out(path);
+            out << "[" << tc.section << "]\n"
+                << "provider = \"fake\"\n"
+                << tc.field << " = -1\n";
+        }
+
+        aiden::AgentToml cfg;
+        std::string err;
+        CHECK_FALSE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+        CHECK(err.find(tc.field) != std::string::npos);
+        CHECK(err.find(">= 0") != std::string::npos);
+
+        std::remove(path.c_str());
+    }
+}
+
+TEST_CASE("agent_toml rejects negative model response token limits") {
+    struct Case {
+        const char* leaf;
+        const char* section;
+        const char* field;
+    };
+    const Case cases[] = {
+        {"negative_max_response_tokens.toml", "model", "max_response_tokens"},
+        {"negative_legacy_max_tokens.toml", "model_text", "max_tokens"},
+    };
+
+    for (const auto& tc : cases) {
+        std::string path = make_temp_path(tc.leaf);
+        {
+            std::ofstream out(path);
+            out << "[" << tc.section << "]\n"
+                << "provider = \"fake\"\n"
+                << tc.field << " = -1\n";
+        }
+
+        aiden::AgentToml cfg;
+        std::string err;
+        CHECK_FALSE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+        CHECK(err.find(tc.field) != std::string::npos);
+        CHECK(err.find(">= 0") != std::string::npos);
+
+        std::remove(path.c_str());
+    }
 }

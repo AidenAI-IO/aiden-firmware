@@ -36,6 +36,17 @@ func WithScreenStableDefaults(defaults ScreenStableDefaults) BuiltinToolSetOptio
 }
 
 func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchConfig, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
+	return newHardwareToolSet(hidCfg, audioCfg, searchCfg, proxyCfg, options...)
+}
+
+func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, mobileGym *mobileGymSessionStore, options ...BuiltinToolSetOption) *ToolSet {
+	if cfg.Device.BackendOrDefault() == "mobilegym" {
+		return newMobileGymToolSet(cfg, proxyCfg, mobileGym, options...)
+	}
+	return newHardwareToolSet(cfg.HID, cfg.Audio, cfg.Search, proxyCfg, options...)
+}
+
+func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchConfig, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
 	toolOptions := builtinToolSetOptions{}
 	for _, option := range options {
 		if option != nil {
@@ -49,14 +60,18 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 	screenStable := toolOptions.screenStable.Resolved()
 	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable)
+	keyboardTap := &KeyboardTapTool{dev: kbDev}
+	touchGesture := &TouchGestureTool{pc: pointer, screen: screen}
+	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture}
 
 	tools := map[string]langtools.Tool{
-		"keyboard_tap":           newPostActionStableScreenshotTool(&KeyboardTapTool{dev: kbDev}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"keyboard_tap":           newPostActionStableScreenshotTool(keyboardTap, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"keyboard_text":          newPostActionStableScreenshotTool(&KeyboardTextTool{dev: kbDev}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_click":            newPostActionStableScreenshotTool(&MouseClickTool{pc: pointer, screen: screen}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"touch_gesture":          newPostActionStableScreenshotTool(&TouchGestureTool{pc: pointer, screen: screen}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"quick_action":           newPostActionStableScreenshotTool(quickAction, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"screenshot":             screenshot,
 		"wait_for_stable_screen": waitStable,
 		"image_diff":             &ImageDiffTool{},
@@ -72,7 +87,6 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 	if toolOptions.sleepController != nil {
 		tools["enter_sleep"] = NewEnterSleepTool(toolOptions.sleepController)
 	}
-
 	// Always register human handoff tool - no callback needed for non-blocking version
 	tools["request_human_handoff"] = NewHumanHandoffTool()
 

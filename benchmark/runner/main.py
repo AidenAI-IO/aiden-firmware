@@ -51,6 +51,7 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--suite", required=True)
     p_run.add_argument("--agent-url", default=os.environ.get("AIDEN_AGENT_URL", "http://localhost:8080"))
     p_run.add_argument("--judge-model", default="claude-sonnet-4-6")
+    p_run.add_argument("--agent-model", default=os.environ.get("AIDEN_MODEL") or os.environ.get("MODEL_NAME") or os.environ.get("OPENAI_MODEL") or "")
     p_run.add_argument("--no-judge", action="store_true")
     p_run.add_argument("--repeats", type=int, default=None)
     p_run.add_argument("--out", default=str(REPO_ROOT / "benchmark" / "runs"))
@@ -61,6 +62,11 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--agent-recovery-timeout-sec", type=int, default=90,
                        help="Extra wait after timeout/skipped before next task")
     p_run.add_argument("--inter-task-cooldown-sec", type=float, default=2.0)
+    p_unit = sub.add_parser("unit")
+    p_unit.add_argument("--suite")
+    p_unit.add_argument("--suite-dir")
+    p_unit.add_argument("--agent-url", default=os.environ.get("AIDEN_AGENT_URL", "http://localhost:8080"))
+    p_unit.add_argument("--out", default=str(REPO_ROOT / "benchmark" / "runs"))
     p_run.add_argument("--verbose", "-v", action="store_true",
                        help="Show detailed rubric results for each task")
     p_rejudge = sub.add_parser("rejudge")
@@ -71,6 +77,9 @@ def cli(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "run":
         return _cmd_run(args)
+    if args.cmd == "unit":
+        from runner.unit import cmd_unit
+        return cmd_unit(args)
     if args.cmd == "rejudge":
         from runner.rejudge import rejudge_run
         return rejudge_run(Path(args.run_dir), args.judge_model)
@@ -127,6 +136,10 @@ def _log_task_result(task_id: str, attempt: int, result, verbose: bool = False,
             failures.append("min_tool_calls")
         if ha.max_tool_calls is False:
             failures.append("max_tool_calls")
+        if ha.required_tools is False:
+            failures.append("required_tools")
+        if ha.forbidden_tools is False:
+            failures.append("forbidden_tools")
         if ha.expected_answer is False:
             failures.append("expected_answer")
         if ha.expected_recalled_memory is False:
@@ -272,7 +285,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "run_id": run_id, "git_sha": sha, "git_dirty": dirty,
         "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
         "agent_url": args.agent_url,
-        "judge_config": {"provider": "anthropic", "model": args.judge_model} if judge_cfg else None,
+        "agent_model": args.agent_model,
+        "judge_config": {"provider": "openrouter", "model": args.judge_model} if judge_cfg else None,
         "judge_prompt_version": "v1",
         "started_at": started, "finished_at": now_iso(),
         "totals": {"tasks": len(results),

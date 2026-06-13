@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/memory"
 	"github.com/tmc/langchaingo/schema"
-	langtools "github.com/tmc/langchaingo/tools"
 )
 
 type parallelToolExecutor struct {
@@ -41,12 +39,12 @@ func (e *parallelToolExecutor) Call(ctx context.Context, inputValues map[string]
 	if err != nil {
 		return nil, err
 	}
-	nameToTool := executorNameToTool(e.Agent.GetTools())
+	toolSpecs := NewToolSpecs(e.Agent.GetTools())
 	steps := make([]schema.AgentStep, 0)
 
 	for i := 0; i < e.MaxIterations; i++ {
 		var finish map[string]any
-		steps, finish, err = e.doIteration(ctx, steps, nameToTool, inputs, options...)
+		steps, finish, err = e.doIteration(ctx, steps, toolSpecs, inputs, options...)
 		if finish != nil || err != nil {
 			return finish, err
 		}
@@ -63,7 +61,7 @@ func (e *parallelToolExecutor) Call(ctx context.Context, inputValues map[string]
 func (e *parallelToolExecutor) doIteration(
 	ctx context.Context,
 	steps []schema.AgentStep,
-	nameToTool map[string]langtools.Tool,
+	toolSpecs *ToolSpecs,
 	inputs map[string]string,
 	options ...chains.ChainCallOption,
 ) ([]schema.AgentStep, map[string]any, error) {
@@ -85,7 +83,7 @@ func (e *parallelToolExecutor) doIteration(
 		return steps, finish.ReturnValues, nil
 	}
 
-	newSteps, err := e.doActions(ctx, nameToTool, actions)
+	newSteps, err := e.doActions(ctx, toolSpecs, actions)
 	if err != nil {
 		return steps, nil, err
 	}
@@ -93,38 +91,17 @@ func (e *parallelToolExecutor) doIteration(
 	return steps, nil, nil
 }
 
-func (e *parallelToolExecutor) doActions(ctx context.Context, nameToTool map[string]langtools.Tool, actions []schema.AgentAction) ([]schema.AgentStep, error) {
+func (e *parallelToolExecutor) doActions(ctx context.Context, toolSpecs *ToolSpecs, actions []schema.AgentAction) ([]schema.AgentStep, error) {
 	action := actions[0]
-	if e.CallbacksHandler != nil {
-		e.CallbacksHandler.HandleAgentAction(ctx, action)
+	execution := executeToolCall(ctx, ToolCallExecution{
+		Specs:    toolSpecs,
+		Action:   action,
+		Callback: e.CallbacksHandler,
+	})
+	if execution.Error != nil {
+		return nil, execution.Error
 	}
-	step, err := e.callTool(ctx, nameToTool, action)
-	if err != nil {
-		return nil, err
-	}
-	return []schema.AgentStep{step}, nil
-}
-
-func (e *parallelToolExecutor) callTool(ctx context.Context, nameToTool map[string]langtools.Tool, action schema.AgentAction) (schema.AgentStep, error) {
-	tool, ok := nameToTool[strings.ToUpper(action.Tool)]
-	if !ok {
-		return schema.AgentStep{
-			Action:      action,
-			Observation: fmt.Sprintf("%s is not a valid tool, try another one", action.Tool),
-		}, nil
-	}
-	toolInput := normalizeToolInput(action.ToolInput)
-	observation, err := tool.Call(ctx, toolInput)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return schema.AgentStep{}, err
-		}
-		return schema.AgentStep{
-			Action:      action,
-			Observation: fmt.Sprintf("error: %s failed: %v", action.Tool, err),
-		}, nil
-	}
-	return schema.AgentStep{Action: action, Observation: observation}, nil
+	return []schema.AgentStep{execution.Step}, nil
 }
 
 func (e *parallelToolExecutor) GetInputKeys() []string {
@@ -153,15 +130,4 @@ func executorInputsToString(inputValues map[string]any) (map[string]string, erro
 		inputs[key] = valueStr
 	}
 	return inputs, nil
-}
-
-func executorNameToTool(tools []langtools.Tool) map[string]langtools.Tool {
-	if len(tools) == 0 {
-		return nil
-	}
-	nameToTool := make(map[string]langtools.Tool, len(tools))
-	for _, tool := range tools {
-		nameToTool[strings.ToUpper(tool.Name())] = tool
-	}
-	return nameToTool
 }

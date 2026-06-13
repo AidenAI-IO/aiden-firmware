@@ -46,11 +46,17 @@ Prefer describing what you see before clicking.
 
 ## 角色权限
 
-- `planner`：唯一允许创建或修改计划的角色，输出当前计划和下一步；
-- `executor`：只能执行 planner 给出的下一步，最多发起一个工具调用，不能修改计划或决定结束；
-- `verifier`：唯一允许决定本轮是否可以结束的角色，最终回复必须由它确认；它会在最终判定前重新看到原始任务和完成条件；
+Agent loop 采用 `default` / `plan` / `execution` 三阶段状态机，详见 [Agent Context Lifecycle](context-lifecycle.md)。
 
-只有 `executor` 会收到可调用的 function tools；其他角色只看到 executor 工具目录，用于规划和复核。这样 planner 能优先规划 `audio_volume` 这类直接工具，但不能自己调用工具。
+- `planner`：
+  - 在 `default` 模式下仅处理简单任务（直接回答、单次工具调用或最多两步）；预计需要 **3 步及以上** 时必须先 `enter_plan_mode`，不得继续在 default 中直接执行；
+  - 在 `plan` 模式下可探索、维护 draft plan，并通过 `commit_plan` / `cancel_plan` 切换阶段；
+  - 是唯一允许创建或修改计划的角色；
+  - 额外可见 loop meta tools：`use_simple_mode`、`enter_plan_mode`、`commit_plan`、`cancel_plan`。
+- `executor`：仅在 `execution` 阶段运行；只能执行 planner 已提交的 `next_step`，通过 `finish_step` / `abort_step` 进入 verifier 复核，不能修改计划或决定结束。
+- `verifier`：仅在 `execution` 阶段运行；system prompt 仅含 `## Role rules`；每次只验证当前 executor 执行的 `step_text` 是否完成；中间步成功则继续下一步，最后一步成功才 `can_finish`；step 失败才 `needs_replan`；不接收工具目录或全局 memory。
+
+`planner` 和 `executor` 都会收到可调用的 function tools。`verifier` 不调用工具，只基于 executor 证据做复核。
 
 ## 已解析但未完全执行的字段
 

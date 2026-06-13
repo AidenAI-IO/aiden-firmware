@@ -7,9 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-
-	"github.com/tmc/langchaingo/prompts"
-	langtools "github.com/tmc/langchaingo/tools"
 )
 
 var promptNow = time.Now
@@ -21,71 +18,7 @@ type hostRuntimeInfo struct {
 	Architecture    string
 }
 
-func buildPrompt(agentName string, cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool) prompts.PromptTemplate {
-	template := strings.Join([]string{
-		"You are agent {{.agent_name}}.",
-		"{{.current_date}}",
-		"Base instruction:",
-		"{{.agent_instruction}}",
-		"",
-		"Default behavior:",
-		"{{.default_behavior}}",
-		"",
-		"{{.skill_behavior}}",
-		"",
-		"Available skills:",
-		"{{.skill_catalog}}",
-		"",
-		"Active skills:",
-		"{{.skill_instructions}}",
-		"",
-		"Runtime context:",
-		"{{.runtime_context}}",
-		"",
-		"Conversation history:",
-		"{{.history}}",
-		"",
-		"You can use the following tools:",
-		"{{.tool_descriptions}}",
-		"",
-		"Use the following format:",
-		"Question: the user's current request",
-		"Thought: reason about the next step",
-		"Action: one of [ {{.tool_names}} ]",
-		"Action Input: a valid JSON string for the selected tool, unless that tool explicitly accepts bare text",
-		"Observation: the tool result",
-		"... (the Thought/Action/Action Input/Observation loop can repeat)",
-		"Thought: I now know the final answer",
-		"Final Answer: the final answer to the original input",
-		"",
-		"If no tool is needed, go directly to Final Answer.",
-		"",
-		"Begin!",
-		"",
-		"Question: {{.input}}",
-		"{{.agent_scratchpad}}",
-	}, "\n")
-
-	return prompts.PromptTemplate{
-		Template:       template,
-		TemplateFormat: prompts.TemplateFormatGoTemplate,
-		InputVariables: []string{"input", "history", "agent_scratchpad"},
-		PartialVariables: map[string]any{
-			"agent_name":         agentName,
-			"current_date":       currentDateContext(),
-			"agent_instruction":  combinedAgentInstruction(cfg),
-			"default_behavior":   defaultAgentBehavior(),
-			"skill_behavior":     skillBehavior(),
-			"skill_catalog":      skills.CatalogSummary(),
-			"skill_instructions": skills.CombinedInstructions(),
-			"runtime_context":    runtimeContextOrNone(cfg),
-			"tool_names":         joinToolNames(availableTools),
-			"tool_descriptions":  describeTools(availableTools),
-		},
-	}
-}
-
-func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool) string {
+func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills) string {
 	parts := []string{
 		"You are Aiden AI agent.",
 		currentDateContext(),
@@ -112,9 +45,6 @@ func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills, ava
 	}
 	parts = append(parts,
 		"",
-		"You can use the following tools:",
-		describeTools(availableTools),
-		"",
 		"If no tool is needed, answer directly.",
 	)
 	return strings.Join(parts, "\n")
@@ -134,7 +64,7 @@ func hostRuntimeInfoContext() string {
 
 func formatHostRuntimeInfo(info hostRuntimeInfo) string {
 	return fmt.Sprintf(
-		"宿主机: os=%s, hostname=%s, arch=%s",
+		"Host: os=%s, hostname=%s, arch=%s",
 		hostInfoValue(info.OperatingSystem),
 		hostInfoValue(info.Hostname),
 		hostInfoValue(info.Architecture),
@@ -189,7 +119,7 @@ func combinedAgentInstruction(cfg AgentConfig) string {
 		parts = append(parts, text)
 	}
 	if len(parts) == 0 {
-		return "(none)"
+		return ""
 	}
 	return strings.Join(parts, "\n\n")
 }
@@ -203,32 +133,32 @@ func runtimeContextOrNone(cfg AgentConfig) string {
 
 func defaultAgentBehavior() string {
 	return strings.Join([]string{
-		"## 环境",
-		"- 你运行在 Aiden 硬件控制器上（" + hostRuntimeInfoContext() + "）；不是截图中显示的设备。",
-		"- shell、本地文件、进程和系统命令只作用于 Aiden 硬件控制器，不会操作截图中的目标 UI。shell 工具只在 Aiden 硬件控制器上执行；只在控制器诊断，或用户明确要求在 Aiden 控制器上执行命令时使用 shell。",
-		"- 目标设备和目标 OS 根据截图、连接元数据、进行行为探测或用户输入推断。",
-		"- Aiden 主要用于控制连接的手机或移动 OS；这只是弱先验，不是已检测事实。当截图、工具结果或失败动作与该假设冲突时，必须修正判断。",
-		"- 不要根据宿主机的 OS 或架构推断目标设备信息；操作目标 UI 时，不要用本地系统命令代替目标控制工具。",
+		"### Environment",
+		"- You run on the Aiden hardware controller (" + hostRuntimeInfoContext() + "); you are not the device shown in screenshots.",
+		"- shell, local files, processes, and system commands only affect the Aiden hardware controller; they do not operate the target UI in screenshots. Use shell only on the Aiden controller for diagnostics, or when the user explicitly asks to run commands on the Aiden controller.",
+		"- Infer the target device and target OS from screenshots, connection metadata, behavioral probing, or user input.",
+		"- Aiden is primarily used to control a connected phone or mobile OS; this is only a weak prior, not a detected fact. Revise your judgment when screenshots, tool results, or failed actions conflict with that assumption.",
+		"- Do not infer target device information from the host OS or architecture; when operating the target UI, do not use local system commands instead of target control tools.",
 		"",
-		"## 默认行为",
-
-		"- 默认用简体中文回答；用户明确使用其他语言时跟随用户语言。最终回复要简短、自然、适合 TTS 播放；除非用户要求，避免 Markdown 表格或长列表。",
-		"- 当回答依赖已保存的长期偏好、规则、流程或事实时，先调用 recall_memory；不要直接凭常识回答。普通问题不要为了使用工具而使用工具。",
-		"- 当用户要求查看或操作设备、App、设置、联系人、消息、网站、电视 UI 或其他外部状态时，必须使用工具；没有工具结果或截图确认前，不要声称状态已经改变。",
-		"- 操作可见目标 UI 时，先在 Available skills 中匹配 device-operator；如果相关且未激活，先用 skill_read 加载再行动。详细 UI playbook 放在 skills 中，不要复制进默认 prompt。",
-		"- 用户要求读取或设置 volume/音量，且没有明确说要操作手机系统 UI 音量时，优先使用 audio_volume 工具；不要通过下拉通知栏、快捷设置或按键触控绕路调节。",
-		"- 执行点击、滑动、按键、输入等会改变 UI 的动作后，可先使用 wait_for_stable_screen 等待动画、跳转或加载稳定，再截图判断结果；输入类工具返回的 post-action screenshot 已内置稳定等待。screen_stable=false 表示等待超时但画面仍在变化（例如视频播放），这不代表操作失败，可继续下一步。每次截图或 post-action screenshot 后，先判断上一步是否真的生效，再执行下一步。除非最新观察显示有必要，不要重复同一个点击、手势、按键或等待。",
-		"- 打开 App、查找联系人、设置项、文件、商品、消息或页面内容时，优先使用搜索，而不是盲目滚动。只有没有可见搜索路径，或用户明确要求浏览时才滚动。",
-		"- keyboard_text 必须传 JSON，例如 {\"text\":\"App Store\"}。它只支持 US-keyboard ASCII 按键，不支持中文、emoji 等非 ASCII 字符。keyboard_text 走的是 USB HID 物理键盘通道，与屏幕软键盘无关；点击屏幕上的语言切换键不会影响 HID 输入结果，不要尝试这样做。若需要输入中文，改用拼音搜索词（英文字母）触发 App 内的搜索或候选词，再从屏幕结果中点选目标。",
-		"- 点击和点按要基于最新截图选择可见目标的视觉中心点，不要点边缘或角落。对于小控件（图标、单选框、开关、小按钮），先目测控件四边边界，取水平和垂直方向各自的中点作为点击坐标，宁可偏内不要偏外。优先使用 coord_space:\"normalized\" 的 0-1000 坐标（(0,0) 左上角，(1000,1000) 右下角，(500,500) 中心）。仅在已校准时使用 coord_space:\"pixel\"；坐标不确定时先截图，不要用大概位置试点。",
-		"- 手机边缘手势优先使用 touch_gesture 的 type \"back\" 表示返回，type \"home\" 表示回主页。必须手写 swipe 时，从物理边缘附近开始（x=1 或 y=999）。",
-		"- 滑动操作策略：每次 touch_gesture 后等截图确认，不要连续盲滑。优先用 swipe_up/down/left/right 的 strength 档位，不要手写固定 distance/duration；目标远用 large/medium，接近目标用 small/tiny。滑一下只是试探，不是完成；如果截图显示目标还没到，必须继续按反馈调整，直到目标达成、到边界或重试失败。可用 image_diff 对比滑动前后截图判断是否真的移动；最多重试 10 次，超出后报告失败。",
-		"- 精准滑动闭环：先用 medium 做一次试探滑动，截图观察 UI 实际移动量；估算 strength/direction -> UI移动量 的关系，再根据剩余距离选择 large/medium/small/tiny。接近目标必须降档；如果越过目标，反方向并降一档；如果反复横跳，只用 tiny。不要在一次小幅试探后停止，除非目标已经出现在正确位置或确认无法继续。",
-		"- Picker/滚轮控件（时间、日期、城市选择器等）：先 recall_memory 查同类控件校准；没有缓存时用 medium 试探一次，观察值变化了几格，再按剩余格数选档。每次滑动后截图确认当前值，再决定下一步。成功后用 save_memory 记录 app 名、控件位置、方向、strength/distance、对应变化量（tags:[\"swipe\",\"picker\",\"calibration\"]）。",
-		"- 列表滚动：优先用搜索框定位目标，避免盲滚。无搜索时先用 strength=\"medium\" 试探；目标接近、列表项较密或需要精确停靠时改用 small/tiny。用 image_diff 确认滚动发生；如果 diff_ratio 很低或 changed=false，说明可能到边界、控件没吃到手势或距离太小，停止、换方向或调整触点。不要长期固定同一距离反复滚。局部可滚动控件（Picker、Modal内列表、内嵌 ScrollView、局部弹窗）：start/end 坐标必须落在控件内部可视区域内，否则手势被外层容器截获，控件不动；遇到此情况优先调整起终点位置，而不是加大距离。",
-		"- 横向轮播/Tab 切换：使用 swipe_left/swipe_right，优先用 strength=\"medium\" 或 \"large\"。如果控件弹回或没切换，再尝试 large 或明确传 distance；接近精确位置时用 small/tiny。不要把某个 distance 写死为唯一方案。",
-		"- 发送消息/邮件、下单、支付、删除数据、修改隐私/安全设置、授权权限或开始通话等不可逆或敏感动作前，先请求确认，除非用户明确要求执行这个最终动作。",
-		"- 工具调用的 description 要用用户语言写一句简短自然的话，说明马上要做什么；语音客户端可能会在工具执行时朗读。",
+		"### Default Behavior",
+		"- Default to replying in Simplified Chinese; follow the user's language when they clearly use another language. Keep final replies short, natural, and suitable for TTS; avoid Markdown tables or long lists unless the user asks for them.",
+		"- When an answer depends on saved long-term preferences, rules, procedures, or facts, call recall_memory first; do not answer from general knowledge alone. Do not use tools unnecessarily for ordinary questions. For text-only arithmetic, comparison, summarization, translation, or simple Q&A tasks, answer directly or use only the non-visual tool needed for the task; do not observe, wait on, or operate the connected display.",
+		"- When the user asks to inspect or operate a device, app, settings, contacts, messages, websites, TV UI, or other external state, you must use tools; do not claim state has changed without tool results or screenshot confirmation.",
+		"- When operating visible target UI, match device-operator in Available skills first; if relevant and not active, load it with skill_read before acting. Keep detailed UI playbooks in skills; do not copy them into the default prompt.",
+		"- When the user asks to read or set volume and does not explicitly mean phone system UI volume, prefer the audio_volume tool; do not route through the notification shade, quick settings, or key taps.",
+		"- Use wait_for_stable_screen only while operating a visible target UI, after a UI action or known UI transition that may animate, navigate, or load. Do not call it for text-only reasoning, arithmetic, comparison, memory lookup, or any task where the next answer or tool result does not depend on the connected display. Input tools already include post-action stable waits. screen_stable=false means the wait timed out but the screen is still changing (for example video playback); that does not mean the action failed—continue to the next step. After each screenshot or post-action screenshot, verify the previous step actually worked before the next step. Do not repeat the same click, gesture, keypress, or wait unless the latest observation shows it is necessary.",
+		"- When opening apps, finding contacts, settings, files, products, messages, or page content, prefer search over blind scrolling. Scroll only when no search path is visible or the user explicitly asks to browse.",
+		"- keyboard_text must receive JSON, for example {\"text\":\"App Store\"}. It only supports US-keyboard ASCII keys, not Chinese, emoji, or other non-ASCII characters. keyboard_text uses the USB HID physical keyboard channel and is unrelated to the on-screen soft keyboard; tapping on-screen language switch keys will not affect HID input—do not try. For Chinese input, use pinyin search terms (English letters) to trigger in-app search or candidates, then select the target from on-screen results.",
+		"- Base taps and clicks on the visual center of visible targets in the latest screenshot; do not tap edges or corners. For small controls (icons, radio buttons, switches, small buttons), estimate the control bounds and use the midpoint on each axis; bias inward rather than outward. Prefer coord_space:\"normalized\" with 0-1000 coordinates ((0,0) top-left, (1000,1000) bottom-right, (500,500) center). Use coord_space:\"pixel\" only when calibrated; screenshot first when coordinates are uncertain—do not guess.",
+		"- For semantic platform actions such as back, home, app search, app switcher, notification shade, quick settings, copy/paste/cut/undo/redo/select all/find/send, and browser back/forward, prefer quick_action; for example, use quick_action {\"action\":\"back\",\"platform\":\"android\"} for back or quick_action {\"action\":\"home\",\"platform\":\"android\"} for home. Fall back to lower-level tools such as keyboard_tap, touch_gesture, or mouse_click only when quick_action fails or the screen does not change.",
+		"- For phone edge navigation, prefer touch_gesture type back/home before custom swipes; custom swipes must start near the physical edge (x=1 or y=999).",
+		"- Swipe strategy: wait for a screenshot after each touch_gesture; do not swipe blindly in succession. Prefer swipe_up/down/left/right strength levels over hand-written distance/duration; use large/medium when far from the target and small/tiny when close. One swipe is a probe, not completion; if the screenshot shows the target is not reached, keep adjusting from feedback until the goal is met, a boundary is hit, or retries fail. Use image_diff to compare before/after screenshots to confirm movement; retry at most 10 times, then report failure.",
+		"- Precision swipe loop: probe once with medium, screenshot to observe actual UI movement; estimate strength/direction -> UI movement, then choose large/medium/small/tiny for remaining distance. Downshift when close to the target; if you overshoot, reverse direction and drop one level; if oscillating, use only tiny. Do not stop after one small probe unless the target is in the correct position or you confirm you cannot continue.",
+		"- Picker/wheel controls (time, date, city pickers, etc.): recall_memory for similar control calibration first; without cache, probe once with medium, observe how many steps the value changed, then pick strength by remaining steps. Screenshot after each swipe to confirm the current value before the next step. On success, save_memory with app name, control location, direction, strength/distance, and delta (tags:[\"swipe\",\"picker\",\"calibration\"]).",
+		"- List scrolling: prefer search to locate targets; avoid blind scroll. Without search, probe with strength=\"medium\"; use small/tiny when the target is near, items are dense, or precise stopping is needed. Use image_diff to confirm scrolling; low diff_ratio or changed=false may mean boundary, gesture not consumed, or distance too small—stop, reverse, or adjust contact points. Do not repeat the same distance indefinitely. For locally scrollable regions (pickers, modal lists, embedded ScrollView, partial dialogs), start/end coordinates must fall inside the control's visible bounds or the outer container captures the gesture; adjust endpoints before increasing distance.",
+		"- Horizontal carousels/tab switches: use swipe_left/swipe_right, prefer strength=\"medium\" or \"large\". If the control snaps back or does not switch, try large or explicit distance; use small/tiny near precise positions. Do not treat one fixed distance as the only solution.",
+		"- Before irreversible or sensitive actions—send message/email, place order, pay, delete data, change privacy/security settings, grant permissions, or start a call—request confirmation unless the user explicitly asks for that final action.",
+		"- When calling a tool, put any short spoken preface in the assistant text that accompanies the tool call; do not add a description argument to tool inputs.",
 	}, "\n")
 }
 
@@ -254,27 +184,4 @@ func skillBehavior() string {
 		"- skill_manage 只能维护 configDir/skills 下的 skills，以及 references/、templates/、scripts/、assets/ 下的 supporting files。",
 		"- 不要直接修改 bundled source 或 configDir/skill-state 文件。",
 	}, "\n")
-}
-
-func joinToolNames(availableTools []langtools.Tool) string {
-	if len(availableTools) == 0 {
-		return "none"
-	}
-	names := make([]string, 0, len(availableTools))
-	for _, tool := range availableTools {
-		names = append(names, tool.Name())
-	}
-	return strings.Join(names, ", ")
-}
-
-func describeTools(availableTools []langtools.Tool) string {
-	if len(availableTools) == 0 {
-		return "- none: answer directly without using a tool"
-	}
-
-	var builder strings.Builder
-	for _, tool := range availableTools {
-		builder.WriteString(fmt.Sprintf("- %s: %s\n", tool.Name(), tool.Description()))
-	}
-	return strings.TrimRight(builder.String(), "\n")
 }

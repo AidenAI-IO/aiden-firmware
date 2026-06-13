@@ -1,7 +1,7 @@
 #!/bin/sh
 # Aiden override: Wi-Fi driver load fallback before baseline network bring-up.
 # Skips when early boot (RkLunch/insmod_ko.sh) already brought up wlan0.
-# Interface bring-up and DHCP remain in S40network / S41dhcpcd.
+# Interface bring-up and DHCP remain in S40network and SDK rkwifi_server.
 
 BOOT_CONF=/etc/aiden_boot.conf
 

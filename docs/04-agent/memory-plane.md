@@ -7,10 +7,10 @@
 现有 Go Agent 的 memory 已经有几类能力：
 
 - `MemoryManager` 维护 langchaingo 的 conversation window，并把会话事件写入 `/userdata/agent/memory/session/events.jsonl`。
-- `SessionMemoryStore` 将较老事件压缩为 chunks，生成 `session/summary.md`，并提供 `recall_session_chunks`。
+- `SessionMemoryStore` compresses older events from the active session into chunks, writes `session/summary.md`, and provides `recall_session_chunks` for active-session chunks only.
 - `LongTermMemoryStore` 将 profile、rule、preference、procedure、fact 存为 markdown frontmatter，生成 `long_term/index.yaml` 和 `long_term/profile.md`，并提供 `recall_memory`、`save_memory`、`forget_memory`。
-- `Runtime.Run` 当前只把 `session/summary.md` 和 `long_term/profile.md` 拼入 prompt。长期记忆检索主要依赖模型主动调用工具，不是每次任务规划的稳定输入。
-- Agent loop 已拆成 `planner`、`executor`、`verifier`。`planner` 和 `verifier` 能看到历史、工具目录和 world state；`executor` 被刻意限制为只执行 planner 批准的 `next_step`。
+- `Runtime.Run` reads only the current active `session/summary.md` and `long_term/profile.md` for prompt context. Long-term memory retrieval mainly depends on the model calling tools; it is not stable input for every planning pass. Closed sessions under `session_archive/` are logs and are not prompt or recall context.
+- Agent loop 已拆成 `planner`、`executor`、`verifier`，并采用 `default` / `plan` / `execution` 三阶段状态机。简单任务在 `default` 由 planner 直接调工具并结束；复杂任务经 `enter_plan_mode` -> `commit_plan` 进入 `execution`，再由 `executor` / `verifier` 协作。`planner` 和 `verifier` 能看到历史与 world state；`executor` 被刻意限制为只执行 planner 已提交的 `next_step`。
 
 新设计应保留这个分层：自动检索进入 `planner` 和 `verifier`，不要把所有历史经验直接暴露给 `executor`。
 
@@ -32,12 +32,12 @@ RunRequest
   ▼
 MemoryPlane.Retrieve
   │
-  ├─ session summary/profile
+  ├─ active session summary/profile
   ├─ device/app/procedure/calibration/failure memory
   └─ task episode retrieval
   │
   ▼
-planner / executor / verifier loop
+phased role loop (default / plan / execution)
   │
   ▼
 TaskEpisodeWriter
@@ -71,6 +71,8 @@ TaskEpisodeWriter
 │   ├── events.jsonl             # 现有热会话事件
 │   ├── summary.md               # 现有压缩摘要
 │   └── chunks/
+├── session_archive/
+│   └── <closed_session_id>/      # closed session logs, excluded from active context
 ├── long_term/
 │   ├── profile.md               # 现有用户 profile
 │   ├── index.yaml
@@ -594,7 +596,7 @@ planner prompt 拼 `memory.Planner` 和 `memory.Common`，verifier prompt 拼 `m
 **3. Procedure（增强版）**  
 - **动作详情存储**：新增 `ProcedureStep` 结构，记录每步的：
   - 工具名、description（从 tool_call arguments 自动提取）
-  - 坐标（`x=0.50,y=0.85`）、输入文本
+  - 坐标（`x=500,y=850`）、输入文本
   - app_name、page_name、outcome_note
 - **按页面索引**：procedure ID 改为 `proc_<hash(app, page, goal)>`，page_name 进入 entities/tags
 - **结构化渲染**：在 prompt 中展开前 5 步，显示完整操作路径
@@ -697,7 +699,7 @@ memory/episodes/
 | 场景 | 设计目标 | 当前实现 |
 |------|---------|---------|
 | 相似任务复用 | "在美团点蜜雪冰城"后再执行"在美团点星巴克"能复用导航 | ✅ 命中"美团/首页→购物车"navigation + "购物车"页 procedure |
-| Planner 看到的 procedure | 详细的步骤、坐标、页面转移 | ✅ "step 1: launch_app(美团)→首页 / step 2: touch_gesture(@0.5,0.85)→购物车" |
+| Planner 看到的 procedure | 详细的步骤、坐标、页面转移 | ✅ "step 1: launch_app(美团)→首页 / step 2: touch_gesture(@x=500,y=850)→购物车" |
 | App 先验知识 | 首次使用某 app 能看到常用页面和工具 | ✅ app_profile 累积 pages_seen、tools_used |
 | 失败经验追踪 | 失败模式进入 verifier | ✅ failure memory 路由到 Verifier.FailureModes |
 | 页面级索引 | 按 page_name 检索 procedure | ✅ procedure ID 包含 page，page_name 在 entities/tags |
@@ -714,4 +716,3 @@ memory/episodes/
 2. **增强冲突检测**：设备环境变化（语言/分辨率）时主动降低旧 procedure 的 confidence
 3. **语义检索**：接入轻量 embedding 提高召回精度
 4. **Benchmark 覆盖**：验证 memory 对任务成功率和步数的实际影响
-

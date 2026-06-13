@@ -19,8 +19,12 @@ jobs:
       - name: Verify release scripts
         run: |
           sh scripts/test_release_ci_scripts.sh
-          bash scripts/test_reproducible_rootfs_policy.sh
+          bash scripts/test_clean_rootfs_overlay_staging.sh
           bash scripts/test_compress_release_images.sh
           bash scripts/test_ota_manifest_generation.sh
           bash scripts/test_github_release_upload.sh
           bash scripts/test_reusable_rootfs_release_asset.sh
+      - name: Verify normalized UI coordinates
+        run: |
+          python3 scripts/check_normalized_coords.py
+          bash scripts/test_check_normalized_coords.sh

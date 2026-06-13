@@ -77,6 +77,250 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleToolResponses("echo", `{"__arg1":"original action"}`, "Changed course."),
+	}
+	tool := &stubTool{
+		name:        "echo",
+		description: "Echo.",
+		output:      "tool output",
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"echo": tool}},
+		NewSkillIndex(),
+	)
+
+	var steerCalls int32
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "do the original action",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			if atomic.AddInt32(&steerCalls, 1) != 1 {
+				return RunSteerMessage{}, false
+			}
+			return RunSteerMessage{
+				ID:        "steer-1",
+				RequestID: "req-1",
+				Content:   "Use the updated instruction instead.",
+				Timestamp: time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC),
+			}, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "Changed course." {
+		t.Fatalf("output = %q, want Changed course.", result.Output)
+	}
+	if len(tool.inputs) != 1 || tool.inputs[0] != "original action" {
+		t.Fatalf("tool should run before steer is attached, got inputs %#v", tool.inputs)
+	}
+
+	steerEvent, ok := firstRunEventOfType(events, "steer")
+	if !ok || steerEvent.Content != "Use the updated instruction instead." {
+		t.Fatalf("missing steer event: %#v", events)
+	}
+	toolResult, ok := firstRunEventOfType(events, "tool_result")
+	if !ok {
+		t.Fatalf("missing tool_result event: %#v", events)
+	}
+	if toolResult.Content != "tool output" || toolResult.IsError {
+		t.Fatalf("unexpected steer tool result: %#v", toolResult)
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("expected follow-up model call with steer message, got %#v", model.messages)
+	}
+	role, text, ok := runtimeLastMessageText(model.messages[1])
+	if !ok || role != llms.ChatMessageTypeHuman || text != "Use the updated instruction instead." {
+		t.Fatalf("second model call missing steer message: %#v", model.messages)
+	}
+	if runtimeModelCallContains(model.messages[1], "User steering update received while the agent was already working") {
+		t.Fatalf("steer should be appended as a human message, not rewritten as prompt text: %#v", model.messages[1])
+	}
+	assertMemoryRecords(t, result.Memory, []MessageRecord{
+		{Role: "human", Content: "do the original action"},
+		{Role: "human", Content: "Use the updated instruction instead."},
+		{Role: "ai", Content: "Changed course."},
+	})
+}
+
+func TestRuntimeRunAttachesPendingSteerBeforeFinalAnswer(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse("Old answer."),
+			contentResponse("Changed course."),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	var steerCalls int32
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "answer the old request",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			if atomic.AddInt32(&steerCalls, 1) != 1 {
+				return RunSteerMessage{}, false
+			}
+			return RunSteerMessage{
+				ID:        "steer-1",
+				RequestID: "req-1",
+				Content:   "Actually change direction before answering.",
+				Timestamp: time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC),
+			}, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "Changed course." {
+		t.Fatalf("output = %q, want Changed course.", result.Output)
+	}
+	if _, ok := firstRunEventOfType(events, "steer"); !ok {
+		t.Fatalf("missing steer event: %#v", events)
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("expected follow-up model call with final-boundary steer message, got %#v", model.messages)
+	}
+	role, text, ok := runtimeLastMessageText(model.messages[1])
+	if !ok || role != llms.ChatMessageTypeHuman || text != "Actually change direction before answering." {
+		t.Fatalf("second model call missing final-boundary steer message: %#v", model.messages)
+	}
+	assertMemoryRecords(t, result.Memory, []MessageRecord{
+		{Role: "human", Content: "answer the old request"},
+		{Role: "human", Content: "Actually change direction before answering."},
+		{Role: "ai", Content: "Changed course."},
+	})
+}
+
+func TestRuntimeRunPersistsSteerAsConversationHumanMessage(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse("Old answer."),
+			contentResponse("Changed course."),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	var steerCalls int32
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "original persisted request",
+		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			if atomic.AddInt32(&steerCalls, 1) != 1 {
+				return RunSteerMessage{}, false
+			}
+			return RunSteerMessage{
+				ID:      "steer-1",
+				Content: "persist this steering message",
+			}, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	assertMemoryRecords(t, result.Memory, []MessageRecord{
+		{Role: "human", Content: "original persisted request"},
+		{Role: "human", Content: "persist this steering message"},
+		{Role: "ai", Content: "Changed course."},
+	})
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) != 3 {
+		t.Fatalf("expected 3 session events, got %d: %#v", len(events), events)
+	}
+	for i, want := range []SessionEvent{
+		{Role: "user", Content: "original persisted request"},
+		{Role: "user", Content: "persist this steering message"},
+		{Role: "assistant", Content: "Changed course."},
+	} {
+		if events[i].Role != want.Role || events[i].Content != want.Content {
+			t.Fatalf("session event %d = %#v, want role=%q content=%q; all events: %#v", i, events[i], want.Role, want.Content, events)
+		}
+	}
+}
+
+func TestRuntimeRunPersistsSteerEventsWhenSnapshotWindowIsFull(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	memoryManager := NewMemoryManager(storageDir)
+	ctx := context.Background()
+	for i := 0; i < 10; i++ {
+		if err := memoryManager.AppendExchange(ctx, "default", fmt.Sprintf("prior user %02d", i), fmt.Sprintf("prior assistant %02d", i)); err != nil {
+			t.Fatalf("AppendExchange(%d) error = %v", i, err)
+		}
+	}
+
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse("Old answer."),
+			contentResponse("Changed course."),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		memoryManager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	var steerCalls int32
+	result, err := runtime.Run(ctx, RunRequest{
+		Input: "windowed request",
+		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			if atomic.AddInt32(&steerCalls, 1) != 1 {
+				return RunSteerMessage{}, false
+			}
+			return RunSteerMessage{
+				ID:      "steer-1",
+				Content: "persist even when the hot window is full",
+			}, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "Changed course." {
+		t.Fatalf("output = %q, want Changed course.", result.Output)
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) != 23 {
+		t.Fatalf("expected 23 session events, got %d: %#v", len(events), events)
+	}
+	last := events[len(events)-3:]
+	for i, want := range []SessionEvent{
+		{Role: "user", Content: "windowed request"},
+		{Role: "user", Content: "persist even when the hot window is full"},
+		{Role: "assistant", Content: "Changed course."},
+	} {
+		if last[i].Role != want.Role || last[i].Content != want.Content {
+			t.Fatalf("last session event %d = %#v, want role=%q content=%q; all events: %#v", i, last[i], want.Role, want.Content, events)
+		}
+	}
+}
+
 func TestRuntimeRunIncludesAvailableSkillCatalog(t *testing.T) {
 	index := NewSkillIndex()
 	index.skills["planner"] = &SkillDefinition{
@@ -96,7 +340,7 @@ func TestRuntimeRunIncludesAvailableSkillCatalog(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if !runtimeModelCallContains(model.messages[0], "Available skills:") {
+	if !runtimeModelCallContains(model.messages[0], "## Available skills") {
 		t.Fatalf("run missing available skills heading")
 	}
 	if !runtimeModelCallContains(model.messages[0], "- planner: Plan before acting") {
@@ -284,9 +528,8 @@ func TestRuntimeRunReloadsSkillsWhenMarkedDirty(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello again", Skills: []string{"alpha"}}); err != nil {
 		t.Fatalf("second Run() error = %v", err)
 	}
-	// Each run issues planner/executor/verifier calls, so the second run's planner
-	// prompt is the fourth recorded model call (index 3).
-	secondRunPlannerPrompt := model.messages[3]
+	// Default mode issues one planner call per run.
+	secondRunPlannerPrompt := model.messages[1]
 	if !runtimeModelCallContains(secondRunPlannerPrompt, "Use alpha v2.") {
 		t.Fatalf("second run missing reloaded v2 skill instructions")
 	}
@@ -350,6 +593,32 @@ func runtimeModelCallContains(messages []llms.MessageContent, want string) bool 
 	return false
 }
 
+func runtimeLastMessageText(messages []llms.MessageContent) (llms.ChatMessageType, string, bool) {
+	if len(messages) == 0 {
+		return "", "", false
+	}
+	last := messages[len(messages)-1]
+	var builder strings.Builder
+	for _, part := range last.Parts {
+		if text, ok := part.(llms.TextContent); ok {
+			builder.WriteString(text.Text)
+		}
+	}
+	return last.Role, builder.String(), true
+}
+
+func assertMemoryRecords(t *testing.T, got []MessageRecord, want []MessageRecord) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("memory records length = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("memory record %d = %#v, want %#v; all records: %#v", i, got[i], want[i], got)
+		}
+	}
+}
+
 type scriptedModel struct {
 	responses    []*llms.ContentResponse
 	callCount    int
@@ -357,6 +626,17 @@ type scriptedModel struct {
 	messages     [][]llms.MessageContent
 	tools        [][]llms.Tool
 }
+
+type staticTool struct {
+	name   string
+	output string
+}
+
+func (t *staticTool) Name() string { return t.name }
+
+func (t *staticTool) Description() string { return "static test tool" }
+
+func (t *staticTool) Call(context.Context, string) (string, error) { return t.output, nil }
 
 func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	var callOptions llms.CallOptions
@@ -439,6 +719,15 @@ func verifierContinueResponse(reason string) *llms.ContentResponse {
 	return contentResponse(string(payload))
 }
 
+func verifierStepContinueResponse(reason string) *llms.ContentResponse {
+	payload, _ := json.Marshal(map[string]any{
+		"can_finish":   false,
+		"needs_replan": false,
+		"reason":       reason,
+	})
+	return contentResponse(string(payload))
+}
+
 func toolCallResponse(id, name, arguments string) *llms.ContentResponse {
 	return &llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
@@ -463,19 +752,53 @@ func multiToolCallResponse(calls ...llms.ToolCall) *llms.ContentResponse {
 }
 
 func roleDirectResponses(finalAnswer string) []*llms.ContentResponse {
+	return []*llms.ContentResponse{contentResponse(finalAnswer)}
+}
+
+func roleDefaultToolResponses(toolName, arguments, finalAnswer string) []*llms.ContentResponse {
 	return []*llms.ContentResponse{
-		plannerResponse("answer directly"),
+		toolCallResponse("call_1", toolName, arguments),
 		contentResponse(finalAnswer),
-		verifierFinishResponse(finalAnswer),
 	}
 }
 
 func roleToolResponses(toolName, arguments, finalAnswer string) []*llms.ContentResponse {
-	return []*llms.ContentResponse{
-		plannerResponse("use " + toolName),
-		toolCallResponse("call_1", toolName, arguments),
-		verifierFinishResponse(finalAnswer),
+	return roleDefaultToolResponses(toolName, arguments, finalAnswer)
+}
+
+func enterPlanModeToolCall() *llms.ContentResponse {
+	return toolCallResponse("enter_1", toolEnterPlanMode, `{"__arg1":"{}","description":"enter plan mode"}`)
+}
+
+func finishStepToolCall(summary string) *llms.ContentResponse {
+	payload, _ := json.Marshal(map[string]string{"summary": summary})
+	return toolCallResponse("finish_1", toolFinishStep, fmt.Sprintf(`{"__arg1":%q,"description":"finish step"}`, string(payload)))
+}
+
+func abortStepToolCall(reason string) *llms.ContentResponse {
+	payload, _ := json.Marshal(map[string]string{"reason": reason})
+	return toolCallResponse("abort_1", toolAbortStep, fmt.Sprintf(`{"__arg1":%q,"description":"abort step"}`, string(payload)))
+}
+
+func commitPlanToolCall(plan ...string) *llms.ContentResponse {
+	if len(plan) == 0 {
+		plan = []string{"step one"}
 	}
+	payload, _ := json.Marshal(map[string]any{
+		"objective":           "test objective",
+		"completion_criteria": []string{"test request is satisfied"},
+		"plan":                plan,
+		"reason":              "test plan ready",
+	})
+	return toolCallResponse("commit_1", toolCommitPlan, fmt.Sprintf(`{"__arg1":%q,"description":"commit plan"}`, string(payload)))
+}
+
+func roleCommittedExecutionResponses(planSteps []string, pairs ...*llms.ContentResponse) []*llms.ContentResponse {
+	responses := []*llms.ContentResponse{
+		enterPlanModeToolCall(),
+		commitPlanToolCall(planSteps...),
+	}
+	return append(responses, pairs...)
 }
 
 func firstRunEventOfType(events []RunEvent, eventType string) (RunEvent, bool) {
@@ -573,8 +896,8 @@ func TestRuntimeRunOpenRouterUsesToolsWithoutStreaming(t *testing.T) {
 	if len(tool.inputs) != 1 || tool.inputs[0] != "{}" {
 		t.Fatalf("unexpected tool inputs: %#v", tool.inputs)
 	}
-	if len(model.sawStreaming) != 3 || model.sawStreaming[0] || model.sawStreaming[1] || model.sawStreaming[2] {
-		t.Fatalf("expected non-streaming tool calls, got %#v", model.sawStreaming)
+	if len(model.sawStreaming) != 2 || model.sawStreaming[0] || model.sawStreaming[1] {
+		t.Fatalf("expected non-streaming default-mode planner calls, got %#v", model.sawStreaming)
 	}
 }
 
@@ -616,7 +939,6 @@ func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			plannerResponse("use slow_a"),
 			multiToolCallResponse(
 				llms.ToolCall{
 					ID:   "call_1",
@@ -635,7 +957,7 @@ func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
 					},
 				},
 			),
-			verifierFinishResponse("done"),
+			contentResponse("done"),
 		},
 	}
 	toolA := &stubTool{name: "slow_a", description: "First tool.", output: `{"ok":true}`}
@@ -667,11 +989,11 @@ func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
 	if len(toolB.inputs) != 0 {
 		t.Fatalf("second tool inputs = %#v, want no calls", toolB.inputs)
 	}
-	if len(model.messages) < 3 {
-		t.Fatalf("model calls = %d, want at least 3", len(model.messages))
+	if len(model.messages) < 2 {
+		t.Fatalf("model calls = %d, want at least 2", len(model.messages))
 	}
 	var toolCallNames []string
-	for _, msg := range model.messages[2] {
+	for _, msg := range model.messages[1] {
 		for _, part := range msg.Parts {
 			toolCall, ok := part.(llms.ToolCall)
 			if !ok || toolCall.FunctionCall == nil {
@@ -720,11 +1042,11 @@ func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
 	if result.Output != "屏幕暂时获取失败，frame service 正在恢复。" {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if len(model.messages) < 3 {
-		t.Fatalf("expected verifier model call with tool observation, got %d calls", len(model.messages))
+	if len(model.messages) < 2 {
+		t.Fatalf("expected follow-up planner call with tool observation, got %d calls", len(model.messages))
 	}
 	var toolObservation string
-	for _, msg := range model.messages[2] {
+	for _, msg := range model.messages[1] {
 		if msg.Role != llms.ChatMessageTypeTool {
 			continue
 		}
@@ -745,14 +1067,15 @@ func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
 
 func TestRuntimeAllowsNearRepeatedMouseClick(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			plannerResponse("click first point"),
-			toolCallResponse("call_1", "mouse_click", `{"x":"0.5","y":"0.08","coord_space":"normalized"}`),
-			verifierContinueResponse("need a second click"),
-			plannerResponse("click nearby point"),
-			toolCallResponse("call_2", "mouse_click", `{"x":0.5,"y":0.12,"coord_space":"normalized"}`),
+		responses: roleCommittedExecutionResponses(
+			[]string{"click first point", "click nearby point"},
+			toolCallResponse("call_1", "mouse_click", `{"x":"500","y":"80","coord_space":"normalized"}`),
+			finishStepToolCall("clicked first point"),
+			verifierStepContinueResponse("need a second click"),
+			toolCallResponse("call_2", "mouse_click", `{"x":500,"y":120,"coord_space":"normalized"}`),
+			finishStepToolCall("clicked nearby point"),
 			verifierFinishResponse("我会换一个方式继续。"),
-		},
+		),
 	}
 	tool := &stubTool{
 		name:        "mouse_click",
@@ -788,10 +1111,10 @@ func TestRuntimeAllowsNearRepeatedMouseClick(t *testing.T) {
 	if len(tool.inputs) != 2 {
 		t.Fatalf("expected repeated click attempts to reach the tool, got inputs %#v", tool.inputs)
 	}
-	if !strings.Contains(tool.inputs[0], `"x":"0.5"`) {
+	if !strings.Contains(tool.inputs[0], `"x":"500"`) {
 		t.Fatalf("first click should preserve model input, got %q", tool.inputs[0])
 	}
-	if !strings.Contains(tool.inputs[1], `"x":0.5`) {
+	if !strings.Contains(tool.inputs[1], `"x":500`) {
 		t.Fatalf("second click should reach the tool, got %q", tool.inputs[1])
 	}
 
@@ -811,14 +1134,15 @@ func TestRuntimeAllowsNearRepeatedMouseClick(t *testing.T) {
 
 func TestRuntimeAllowsRepeatedKeyboardText(t *testing.T) {
 	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			plannerResponse("type first time"),
+		responses: roleCommittedExecutionResponses(
+			[]string{"type first time", "type second time"},
 			toolCallResponse("call_1", "keyboard_text", `{"text":"yuanshen"}`),
-			verifierContinueResponse("need a repeated input"),
-			plannerResponse("type second time"),
+			finishStepToolCall("typed first time"),
+			verifierStepContinueResponse("need a repeated input"),
 			toolCallResponse("call_2", "keyboard_text", `{"text":"yuanshen"}`),
+			finishStepToolCall("typed second time"),
 			verifierFinishResponse("我不会重复输入。"),
-		},
+		),
 	}
 	tool := &stubTool{
 		name:        "keyboard_text",
@@ -847,36 +1171,6 @@ func TestRuntimeAllowsRepeatedKeyboardText(t *testing.T) {
 	}
 	if len(tool.inputs) != 2 {
 		t.Fatalf("expected repeated keyboard_text attempts to reach the tool, got inputs %#v", tool.inputs)
-	}
-}
-
-func TestRuntimeRunReportsEnterSleepToolRequest(t *testing.T) {
-	model := &scriptedModel{
-		responses: roleToolResponses("enter_sleep", `{"__arg1":"{\"reason\":\"user asked\"}"}`, "I will wait for the next wakeup."),
-	}
-	controller := NewSleepController()
-	runtime := NewRuntimeWithDeps(
-		Config{
-			Model:       ModelConfig{Provider: "fake"},
-			Instruction: "Use tools when external state is requested.",
-		},
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{
-			"enter_sleep": NewEnterSleepTool(controller),
-		}},
-		NewSkillIndex(),
-	)
-
-	result, err := runtime.Run(context.Background(), RunRequest{Input: "go to sleep"})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if !result.SleepRequested || result.SleepReason != "user asked" {
-		t.Fatalf("sleep request = %v %q, want true user asked", result.SleepRequested, result.SleepReason)
-	}
-	if result.Output != "I will wait for the next wakeup." {
-		t.Fatalf("unexpected output: %q", result.Output)
 	}
 }
 
@@ -972,8 +1266,8 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 	if result.Output != "completed" {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if len(model.sawStreaming) != 3 || model.sawStreaming[0] || model.sawStreaming[1] || model.sawStreaming[2] {
-		t.Fatalf("expected internal role calls to avoid provider streaming, got %#v", model.sawStreaming)
+	if len(model.sawStreaming) != 1 || model.sawStreaming[0] {
+		t.Fatalf("expected default-mode planner call to avoid provider streaming, got %#v", model.sawStreaming)
 	}
 	if stream.String() != "completed" {
 		t.Fatalf("unexpected stream output: %q", stream.String())
@@ -1012,11 +1306,11 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 	if result.Output != "The screenshot shows a UI." {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if len(model.messages) != 3 {
-		t.Fatalf("expected 3 role model calls, got %d", len(model.messages))
+	if len(model.messages) != 2 {
+		t.Fatalf("expected 2 default-mode planner calls, got %d", len(model.messages))
 	}
 
-	secondCall := model.messages[2]
+	secondCall := model.messages[1]
 	var foundToolResponse bool
 	var foundImageURL bool
 
@@ -1084,12 +1378,12 @@ func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if len(model.messages) != 3 {
-		t.Fatalf("expected 3 role model calls, got %d", len(model.messages))
+	if len(model.messages) != 2 {
+		t.Fatalf("expected 2 default-mode planner calls, got %d", len(model.messages))
 	}
 
 	var foundToolResponse, foundImageURL bool
-	for _, msg := range model.messages[2] {
+	for _, msg := range model.messages[1] {
 		for _, part := range msg.Parts {
 			switch p := part.(type) {
 			case llms.ToolCallResponse:
@@ -1150,7 +1444,7 @@ func TestRuntimeRunKeyboardToolAddsPostActionImageObservation(t *testing.T) {
 	}
 
 	var foundToolResponse, foundImageURL bool
-	for _, msg := range model.messages[2] {
+	for _, msg := range model.messages[1] {
 		for _, part := range msg.Parts {
 			switch p := part.(type) {
 			case llms.ToolCallResponse:
@@ -1202,9 +1496,7 @@ func TestRuntimeCallbackHandlerCapturesUsageMetrics(t *testing.T) {
 func TestRuntimeRunCapturesUsageMetricsFromDirectModelCall(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			plannerResponse("answer directly"),
-			contentResponse("completed"),
-			verifierFinishResponseWithInfo("completed", map[string]any{
+			contentResponseWithInfo("completed", map[string]any{
 				"prompt_tokens":     600,
 				"completion_tokens": 40,
 				"total_tokens":      640,
@@ -1233,14 +1525,10 @@ func TestRuntimeRunResetsPromptTokensWhenUsageUnavailable(t *testing.T) {
 	manager := NewMemoryManager("")
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			plannerResponse("answer first"),
-			contentResponse("with usage"),
-			verifierFinishResponseWithInfo("with usage", map[string]any{
+			contentResponseWithInfo("with usage", map[string]any{
 				"prompt_tokens": 600,
 			}),
-			plannerResponse("answer second"),
 			contentResponse("without usage"),
-			verifierFinishResponse("without usage"),
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -1351,6 +1639,10 @@ func TestNewRuntimeLoadsBundledSkillsSeededOnFirstStartup(t *testing.T) {
 
 func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 	configDir := t.TempDir()
+	memDir := filepath.Join(configDir, "memory")
+	os.MkdirAll(memDir, 0o755)
+	os.WriteFile(filepath.Join(memDir, "extraction.yaml"), []byte("hot_window_events: 20\n"), 0o644)
+
 	response := `{"objective":"test objective","completion_criteria":["test request is satisfied"],"plan":["answer directly"],"next_step":"answer directly","can_finish":true,"final_answer":"ok","reason":"test verified"}`
 	responses := make([]string, 90)
 	for i := range responses {
@@ -1372,7 +1664,7 @@ func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 		"我是硬件产品经理，平时用中文沟通，关注开发板 agent 端到端行为。",
 		"记一下，以后处理蓝海报销App超过100元的提交或付款动作，必须先给风险摘要并等我确认。",
 	}
-	for i := 0; i < 21; i++ {
+	for i := 0; i < 19; i++ {
 		inputs = append(inputs, "填充对话轮次")
 	}
 	for _, input := range inputs {
@@ -1391,7 +1683,7 @@ func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
 
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	now := time.Now().UTC()
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 9; i++ {
 		if _, err := session.AppendEvent(context.Background(), SessionEvent{
 			EventID: fmt.Sprintf("evt_%d", i),
 			Ts:      now.Format(time.RFC3339Nano),
@@ -1457,6 +1749,611 @@ func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
 	releaseMaintenance()
 }
 
+func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
+	configDir := t.TempDir()
+	storageDir := filepath.Join(configDir, "memory")
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	oldSummary := "OLD SESSION SUMMARY MUST NOT ENTER NEW PROMPT"
+	now := time.Now().UTC().Add(-4 * time.Minute)
+	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold+1; i++ {
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_old_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("查天气旧任务 %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(storageDir, "session", "summary.md"), []byte(oldSummary), 0o644); err != nil {
+		t.Fatalf("WriteFile old summary.md: %v", err)
+	}
+
+	releaseMaintenance := make(chan struct{})
+	manager := NewMemoryManager(storageDir, WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-releaseMaintenance:
+			return "old task summary"
+		}
+	}))
+	defer func() {
+		close(releaseMaintenance)
+		waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.WaitMaintenance(waitCtx); err != nil {
+			t.Fatalf("WaitMaintenance() error = %v", err)
+		}
+	}()
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(result.Memory) != 2 || result.Memory[0].Content != "打开微信" {
+		t.Fatalf("expected clean memory snapshot for new task, got %#v", result.Memory)
+	}
+
+	active := readSessionEvents(t, session.eventsPath())
+	if len(active) != 2 || active[0].Content != "打开微信" {
+		t.Fatalf("expected active events to contain only current exchange, got %#v", active)
+	}
+	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
+	if err != nil {
+		t.Fatalf("Glob archived sessions: %v", err)
+	}
+	if len(archiveDirs) != 1 {
+		t.Fatalf("expected one archived rotated session, got %v", archiveDirs)
+	}
+	archived := readSessionEvents(t, filepath.Join(archiveDirs[0], "events.jsonl"))
+	if len(archived) != DefaultBoundaryConfig().SmallSessionEventThreshold+1 || archived[0].EventID != "evt_old_0" {
+		t.Fatalf("unexpected archived events: %#v", archived)
+	}
+	if _, err := os.Stat(filepath.Join(storageDir, "session", "summary.md")); !os.IsNotExist(err) {
+		t.Fatalf("active summary.md should be absent after rotation, stat err = %v", err)
+	}
+	archivedSummary, err := os.ReadFile(filepath.Join(archiveDirs[0], "summary.md"))
+	if err != nil {
+		t.Fatalf("ReadFile archived summary.md: %v", err)
+	}
+	if string(archivedSummary) != oldSummary {
+		t.Fatalf("old summary not preserved in archive: %q", archivedSummary)
+	}
+	var promptText strings.Builder
+	for _, call := range model.messages {
+		for _, message := range call {
+			for _, part := range message.Parts {
+				if text, ok := part.(llms.TextContent); ok {
+					promptText.WriteString(text.Text)
+				}
+			}
+		}
+	}
+	if strings.Contains(promptText.String(), oldSummary) {
+		t.Fatalf("new-session prompt leaked archived summary:\n%s", promptText.String())
+	}
+
+	episode, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).Get(context.Background(), result.EpisodeID)
+	if err != nil {
+		t.Fatalf("Get episode: %v", err)
+	}
+	if got := episode.Extra["session_boundary_decision"]; got != BoundaryNew {
+		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryNew)
+	}
+	if got := episode.Extra["session_rotated"]; got != true {
+		t.Fatalf("session_rotated = %#v, want true", got)
+	}
+	if got := numericExtraValue(episode.Extra["pending_chunks_recalled"]); got != 0 {
+		t.Fatalf("pending_chunks_recalled = %#v, want 0 without recall tool call", got)
+	}
+}
+
+func TestRuntimeRunRepairsTruncatedSessionTailBeforeBoundaryRotation(t *testing.T) {
+	configDir := t.TempDir()
+	storageDir := filepath.Join(configDir, "memory")
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC().Add(-4 * time.Minute)
+	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold+1; i++ {
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_old_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("查天气旧任务 %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+	file, err := os.OpenFile(session.eventsPath(), os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("OpenFile events.jsonl: %v", err)
+	}
+	if _, err := file.WriteString(`{"event_id":"partial_crash_tail","type":"assistant_output","role":"assistant","content":"cut`); err != nil {
+		file.Close()
+		t.Fatalf("write truncated event tail: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close events.jsonl: %v", err)
+	}
+
+	manager := NewMemoryManager(storageDir)
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("ok")}},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(result.Memory) != 2 || result.Memory[0].Content != "打开微信" {
+		t.Fatalf("expected clean memory snapshot for new task, got %#v", result.Memory)
+	}
+
+	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
+	if err != nil {
+		t.Fatalf("Glob archived sessions: %v", err)
+	}
+	if len(archiveDirs) != 1 {
+		t.Fatalf("expected one archived rotated session, got %v", archiveDirs)
+	}
+	archivedPath := filepath.Join(archiveDirs[0], "events.jsonl")
+	archivedRaw, err := os.ReadFile(archivedPath)
+	if err != nil {
+		t.Fatalf("ReadFile archived events: %v", err)
+	}
+	if strings.Contains(string(archivedRaw), "partial_crash_tail") {
+		t.Fatalf("runtime boundary rotation archived unrepaired truncated tail: %q", archivedRaw)
+	}
+	archived := readSessionEvents(t, archivedPath)
+	if len(archived) != DefaultBoundaryConfig().SmallSessionEventThreshold+1 {
+		t.Fatalf("unexpected archived events after repair: %#v", archived)
+	}
+}
+
+func TestRuntimeRunKeepsSmallSessionOnUnrelatedInput(t *testing.T) {
+	configDir := t.TempDir()
+	storageDir := filepath.Join(configDir, "memory")
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC().Add(-4 * time.Minute)
+	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold; i++ {
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_small_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("查天气小会话 %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+
+	manager := NewMemoryManager(storageDir)
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(result.Memory) != DefaultBoundaryConfig().SmallSessionEventThreshold+2 {
+		t.Fatalf("small session should keep previous context, got %#v", result.Memory)
+	}
+
+	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
+	if err != nil {
+		t.Fatalf("Glob archived sessions: %v", err)
+	}
+	if len(archiveDirs) != 0 {
+		t.Fatalf("small session with unrelated input rotated session: %v", archiveDirs)
+	}
+
+	episode, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).Get(context.Background(), result.EpisodeID)
+	if err != nil {
+		t.Fatalf("Get episode: %v", err)
+	}
+	if got := episode.Extra["session_boundary_decision"]; got != BoundaryContinue {
+		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryContinue)
+	}
+	if got := episode.Extra["session_boundary_reason"]; got != BoundaryReasonSmallSession {
+		t.Fatalf("session_boundary_reason = %#v, want %q", got, BoundaryReasonSmallSession)
+	}
+}
+
+func TestRuntimeRunKeepsNeutralFollowUpWithActiveEpisode(t *testing.T) {
+	configDir := t.TempDir()
+	storageDir := filepath.Join(configDir, "memory")
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC().Add(-4 * time.Minute)
+	for i, content := range []string{"查一下今天天气", "今天多云"} {
+		role := "user"
+		eventType := "user_input"
+		if i == 1 {
+			role = "assistant"
+			eventType = "assistant_output"
+		}
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_prev_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    eventType,
+			Role:    role,
+			Content: content,
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+
+	episodeStore := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes"))
+	if _, err := episodeStore.AddEpisode(context.Background(), TaskEpisode{
+		ID:        "ep_weather_done",
+		Status:    "active",
+		StartedAt: now.Add(-30 * time.Second).Format(time.RFC3339Nano),
+		EndedAt:   now.Add(time.Second).Format(time.RFC3339Nano),
+		UserGoal:  "查一下今天天气",
+		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "今天多云"},
+	}); err != nil {
+		t.Fatalf("AddEpisode() error = %v", err)
+	}
+
+	manager := NewMemoryManager(storageDir)
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "好的"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(result.Memory) != 4 || result.Memory[0].Content != "查一下今天天气" {
+		t.Fatalf("neutral follow-up should keep previous session context, got %#v", result.Memory)
+	}
+
+	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
+	if err != nil {
+		t.Fatalf("Glob archived sessions: %v", err)
+	}
+	if len(archiveDirs) != 0 {
+		t.Fatalf("neutral follow-up with active episode rotated session: %v", archiveDirs)
+	}
+
+	episode, err := episodeStore.Get(context.Background(), result.EpisodeID)
+	if err != nil {
+		t.Fatalf("Get episode: %v", err)
+	}
+	if got := episode.Extra["session_boundary_decision"]; got != BoundaryContinue {
+		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryContinue)
+	}
+	if got := episode.Extra["session_boundary_reason"]; got != BoundaryReasonActiveEpisode {
+		t.Fatalf("session_boundary_reason = %#v, want %q", got, BoundaryReasonActiveEpisode)
+	}
+}
+
+func TestRecentEpisodeContextIncludesRunningAndRecentActiveEpisodes(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	store := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes"))
+	now := time.Now().UTC()
+
+	if _, err := store.StartEpisode(context.Background(), TaskEpisode{
+		ID:        "ep_running",
+		StartedAt: now.Add(-time.Minute).Format(time.RFC3339Nano),
+		UserGoal:  "继续处理天气",
+	}); err != nil {
+		t.Fatalf("StartEpisode() error = %v", err)
+	}
+	if _, err := store.AddEpisode(context.Background(), TaskEpisode{
+		ID:        "ep_active_recent",
+		Status:    "active",
+		StartedAt: now.Add(-3 * time.Minute).Format(time.RFC3339Nano),
+		EndedAt:   now.Add(-time.Minute).Format(time.RFC3339Nano),
+		UserGoal:  "查天气",
+		Outcome:   TaskEpisodeOutcome{Success: true},
+	}); err != nil {
+		t.Fatalf("AddEpisode() error = %v", err)
+	}
+
+	plane := NewFilesystemMemoryPlane(storageDir, DefaultMemoryExtractionConfig(), nil)
+	ctx := recentEpisodeContext(plane, now, 5*time.Minute)
+	if !ctx.HasRunning {
+		t.Fatalf("expected running episode context")
+	}
+	if !ctx.HasActive {
+		t.Fatalf("expected recent active episode context")
+	}
+}
+
+func TestRecentEpisodeContextIgnoresOldActiveEpisode(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	store := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes"))
+	now := time.Now().UTC()
+
+	if _, err := store.AddEpisode(context.Background(), TaskEpisode{
+		ID:        "ep_active_old",
+		Status:    "active",
+		StartedAt: now.Add(-10 * time.Minute).Format(time.RFC3339Nano),
+		EndedAt:   now.Add(-6 * time.Minute).Format(time.RFC3339Nano),
+		UserGoal:  "查天气",
+		Outcome:   TaskEpisodeOutcome{Success: true},
+	}); err != nil {
+		t.Fatalf("AddEpisode() error = %v", err)
+	}
+
+	plane := NewFilesystemMemoryPlane(storageDir, DefaultMemoryExtractionConfig(), nil)
+	ctx := recentEpisodeContext(plane, now, 5*time.Minute)
+	if ctx.HasActive {
+		t.Fatalf("old active episode should not bias session boundary")
+	}
+}
+
+func TestRuntimeRunCanceledWhileQueuedDoesNotRotateSessionOrStartEpisode(t *testing.T) {
+	configDir := t.TempDir()
+	storageDir := filepath.Join(configDir, "memory")
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC().Add(-2 * time.Minute)
+	for i := 0; i < 2; i++ {
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_old_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("查天气旧任务 %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+
+	model := &queuedCancelModel{
+		firstStarted: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+	manager := NewMemoryManager(storageDir)
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(context.Background(), RunRequest{Input: "继续查天气"})
+		firstDone <- err
+	}()
+	select {
+	case <-model.firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first run did not reach model call")
+	}
+
+	queuedCtx, cancelQueued := context.WithCancel(context.Background())
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(queuedCtx, RunRequest{Input: "打开微信"})
+		secondDone <- err
+	}()
+	cancelQueued()
+	close(model.releaseFirst)
+
+	if err := <-firstDone; err == nil || !strings.Contains(err.Error(), "first run stopped") {
+		t.Fatalf("first Run() error = %v, want first run stopped", err)
+	}
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("queued Run() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued Run() did not return after cancellation")
+	}
+
+	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
+	if err != nil {
+		t.Fatalf("Glob archived sessions: %v", err)
+	}
+	if len(archiveDirs) != 0 {
+		t.Fatalf("canceled queued run rotated session: %v", archiveDirs)
+	}
+	active := readSessionEvents(t, session.eventsPath())
+	if len(active) != 2 || active[0].EventID != "evt_old_0" {
+		t.Fatalf("canceled queued run changed active session events: %#v", active)
+	}
+
+	index, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).loadIndex()
+	if err != nil {
+		t.Fatalf("load episode index: %v", err)
+	}
+	if len(index.Episodes) != 1 {
+		t.Fatalf("episode index contains %d entries, want only the first run: %#v", len(index.Episodes), index.Episodes)
+	}
+	if index.Episodes[0].UserGoal != "继续查天气" {
+		t.Fatalf("unexpected episode goal: %#v", index.Episodes[0])
+	}
+}
+
+type queuedCancelModel struct {
+	firstStarted     chan struct{}
+	releaseFirst     chan struct{}
+	firstStartedOnce atomic.Bool
+	callCount        atomic.Int64
+}
+
+func (m *queuedCancelModel) GenerateContent(ctx context.Context, _ []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	if m.callCount.Add(1) == 1 {
+		if m.firstStartedOnce.CompareAndSwap(false, true) {
+			close(m.firstStarted)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-m.releaseFirst:
+			return nil, errors.New("first run stopped")
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, errors.New("queued run reached model")
+}
+
+func (m *queuedCancelModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	panic("unexpected Call invocation")
+}
+
+func numericExtraValue(v interface{}) int64 {
+	switch n := v.(type) {
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case int32:
+		return int64(n)
+	case uint64:
+		return int64(n)
+	case float64:
+		return int64(n)
+	default:
+		return -1
+	}
+}
+
+func TestSessionRecallTelemetryCountsPendingResults(t *testing.T) {
+	counter := &atomic.Int64{}
+	tool := &sessionRecallTelemetryTool{
+		inner: &staticTool{
+			name:   "recall_session_chunks",
+			output: `{"results":[{"chunk_id":"chunk_001"},{"chunk_id":"pending-123","source":"pending"}]}`,
+		},
+		counter: counter,
+	}
+	if _, err := tool.Call(context.Background(), `{}`); err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if got := counter.Load(); got != 1 {
+		t.Fatalf("pending recall count = %d, want 1", got)
+	}
+}
+
+func TestSessionRecallTelemetryIgnoresActiveChunksWithPendingPrefix(t *testing.T) {
+	counter := &atomic.Int64{}
+	tool := &sessionRecallTelemetryTool{
+		inner: &staticTool{
+			name: "recall_session_chunks",
+			output: `{"results":[` +
+				`{"chunk_id":"pending-archived","source":"active"},` +
+				`{"chunk_id":"pending-live","source":"pending"}` +
+				`]}`,
+		},
+		counter: counter,
+	}
+	if _, err := tool.Call(context.Background(), `{}`); err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if got := counter.Load(); got != 1 {
+		t.Fatalf("pending recall count = %d, want 1", got)
+	}
+}
+
+func TestSessionRecallTelemetryIgnoresCompressedChunkWithPendingPrefix(t *testing.T) {
+	ctx := context.Background()
+	session := NewSessionMemoryStore(filepath.Join(t.TempDir(), "session"))
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_pending_consumed",
+		Type:    "user_input",
+		Role:    "user",
+		Content: "already compressed from pending file",
+	}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+	if _, err := session.Compress(ctx, CompressOption{
+		ChunkID: "pending-consumed",
+		Summary: "already compressed pending file",
+	}); err != nil {
+		t.Fatalf("Compress() error = %v", err)
+	}
+
+	counter := &atomic.Int64{}
+	tool := &sessionRecallTelemetryTool{
+		inner:   NewRecallSessionChunksTool(session),
+		counter: counter,
+	}
+	output, err := tool.Call(ctx, `{"chunk_ids":["pending-consumed"]}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	var decoded struct {
+		Results []struct {
+			ChunkID string `json:"chunk_id"`
+			Source  string `json:"source"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatalf("decode output %q: %v", output, err)
+	}
+	if len(decoded.Results) != 1 {
+		t.Fatalf("expected 1 result, got %#v", decoded.Results)
+	}
+	if decoded.Results[0].ChunkID != "pending-consumed" || decoded.Results[0].Source != chunkRecallSourceActive {
+		t.Fatalf("unexpected recall source: %#v", decoded.Results[0])
+	}
+	if got := counter.Load(); got != 0 {
+		t.Fatalf("pending recall count = %d, want 0 for active compressed chunk", got)
+	}
+}
+
 func waitForSessionCompaction(t *testing.T, configDir string) {
 	t.Helper()
 	session := NewSessionMemoryStore(filepath.Join(configDir, "memory", "session"))
@@ -1480,7 +2377,7 @@ func waitForSessionCompaction(t *testing.T, configDir string) {
 		}
 		lastEventCount = len(events)
 		lastChunkCount = len(chunks)
-		if lastEventCount <= 20 && lastChunkCount == 1 {
+		if lastEventCount <= 21 && lastChunkCount == 1 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -1489,7 +2386,7 @@ func waitForSessionCompaction(t *testing.T, configDir string) {
 	if lastErr != nil {
 		t.Fatalf("waiting for session compaction: %v", lastErr)
 	}
-	t.Fatalf("expected compacted chunk and hot window events <= 20, got chunks=%d events=%d", lastChunkCount, lastEventCount)
+	t.Fatalf("expected compacted chunk and hot window events <= 21 including pinned root, got chunks=%d events=%d", lastChunkCount, lastEventCount)
 }
 
 func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {
@@ -1553,8 +2450,8 @@ func TestRuntimeRunInjectsMemoryFilesIntoSystemPrompt(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(model.messages) != 3 || len(model.messages[0]) == 0 {
-		t.Fatalf("expected three role model calls with messages, got %#v", model.messages)
+	if len(model.messages) != 1 || len(model.messages[0]) == 0 {
+		t.Fatalf("expected one default-mode planner call with messages, got %#v", model.messages)
 	}
 
 	systemMessage := model.messages[0][0]
@@ -1573,6 +2470,49 @@ func TestRuntimeRunInjectsMemoryFilesIntoSystemPrompt(t *testing.T) {
 	}
 	if !strings.Contains(systemText.String(), profile) {
 		t.Fatalf("system message missing profile:\n%s", systemText.String())
+	}
+}
+
+func TestRuntimeMemoryContextIgnoresArchivedSessionSummary(t *testing.T) {
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	archiveSummary := "ARCHIVED SESSION SUMMARY SENTINEL"
+	profile := "PROFILE STILL ACTIVE"
+
+	archiveDir := filepath.Join(memoryDir, "session_archive", "closed-session")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll archive: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(archiveDir, "summary.md"), []byte(archiveSummary), 0o644); err != nil {
+		t.Fatalf("WriteFile archive summary.md: %v", err)
+	}
+	longTermDir := filepath.Join(memoryDir, "long_term")
+	if err := os.MkdirAll(longTermDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll long_term: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(longTermDir, "profile.md"), []byte(profile), 0o644); err != nil {
+		t.Fatalf("WriteFile profile.md: %v", err)
+	}
+
+	runtime := &Runtime{config: Config{ConfigDir: configDir}}
+	promptContext := runtime.memoryContextForPrompt()
+	if strings.Contains(promptContext, archiveSummary) {
+		t.Fatalf("memoryContextForPrompt leaked archived summary:\n%s", promptContext)
+	}
+	if !strings.Contains(promptContext, profile) {
+		t.Fatalf("memoryContextForPrompt missing active profile:\n%s", promptContext)
+	}
+
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	retrieved, err := plane.Retrieve(context.Background(), MemoryRetrieveRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Retrieve() error = %v", err)
+	}
+	if strings.Contains(retrieved.Common.SessionSummary, archiveSummary) {
+		t.Fatalf("Retrieve() leaked archived summary: %q", retrieved.Common.SessionSummary)
+	}
+	if retrieved.Common.Profile != profile {
+		t.Fatalf("Retrieve() profile = %q, want %q", retrieved.Common.Profile, profile)
 	}
 }
 
@@ -1596,8 +2536,8 @@ func TestRuntimeRunIncludesRuntimeContextInSystemMessage(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello", RuntimeContext: runtimeContext}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(model.messages) != 3 || len(model.messages[0]) == 0 {
-		t.Fatalf("expected three role model calls with messages, got %#v", model.messages)
+	if len(model.messages) != 1 || len(model.messages[0]) == 0 {
+		t.Fatalf("expected one default-mode planner call with messages, got %#v", model.messages)
 	}
 
 	systemMessage := model.messages[0][0]
@@ -1611,7 +2551,7 @@ func TestRuntimeRunIncludesRuntimeContextInSystemMessage(t *testing.T) {
 			systemText.WriteString(text.Text)
 		}
 	}
-	if !strings.Contains(systemText.String(), "Runtime context:\n"+runtimeContext) {
+	if !strings.Contains(systemText.String(), "## Runtime context\n"+runtimeContext) {
 		t.Fatalf("system message missing runtime context:\n%s", systemText.String())
 	}
 }
@@ -1655,11 +2595,11 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	if result.Output != "processed" {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if len(model.messages) != 3 {
-		t.Fatalf("expected 3 role model calls, got %d", len(model.messages))
+	if len(model.messages) != 1 {
+		t.Fatalf("expected 1 default-mode planner call, got %d", len(model.messages))
 	}
 
-	lastCall := model.messages[1]
+	lastCall := model.messages[0]
 	if len(lastCall) == 0 {
 		t.Fatalf("expected messages in model call")
 	}

@@ -105,6 +105,19 @@ tune_radio() {
 	iw dev "$IFACE" set power_save off >/dev/null 2>&1 || true
 }
 
+send_gratuitous_arp() {
+	if ! wlan_associated; then
+		return 1
+	fi
+
+	ip_addr="$(ip -4 -o addr show "$IFACE" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | sed -n '1p')"
+	if [ -z "$ip_addr" ]; then
+		return 1
+	fi
+
+	arping -U -c 1 -I "$IFACE" "$ip_addr" >/dev/null 2>&1 || true
+}
+
 wlan_associated() {
 	state="$(wpa_cli -i "$IFACE" status 2>/dev/null | sed -n 's/^wpa_state=//p' | sed -n '1p')"
 	[ "$state" = "COMPLETED" ]
@@ -142,7 +155,7 @@ recover_wlan() {
 	sleep 2
 	wpa_cli -i "$IFACE" reassociate >/dev/null 2>&1 || true
 	sleep 8
-	udhcpc -n -q -i "$IFACE" -s /etc/udhcpc/aiden.script >/dev/null 2>&1 || true
+	dhcpcd -n "$IFACE" >/dev/null 2>&1 || true
 }
 
 watch_loop() {
@@ -178,6 +191,7 @@ watch_loop() {
 					log "connectivity healthy again"
 				fi
 				fail_count=0
+				send_gratuitous_arp
 			else
 				wait_reason=""
 				fail_count=$((fail_count + 1))

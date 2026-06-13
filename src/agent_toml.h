@@ -12,7 +12,9 @@ struct ModelToml {
     std::string api_key;
     std::string token_env;
     double temperature = 0.0;
-    int max_tokens = 0;
+    int max_response_tokens = 0;
+    int context_window = 0;
+    int model_max_output_tokens = 0;
 };
 
 struct TTSToml {
@@ -42,6 +44,12 @@ struct AudioToml {
     int bit_width = 0;
 };
 
+struct BenchmarkToml {
+    std::string judge_model;
+    std::string api_key;
+    std::string benchmark_dir;
+};
+
 struct HIDToml {
     std::string keyboard_device;
     std::string mouse_device;
@@ -52,6 +60,7 @@ struct HIDToml {
 struct SearchToml {
     std::string provider;
     std::string api_key;
+    bool has_api_key = false;
 };
 
 struct TelemetryToml {
@@ -73,6 +82,7 @@ struct AgentToml {
     TTSToml tts;
     STTToml stt;
     AudioToml audio;
+    BenchmarkToml benchmark;
     HIDToml hid;
     SearchToml search;
     TelemetryToml telemetry;
@@ -96,6 +106,7 @@ struct AgentToml {
 	bool voice_tool_call_speech = true;
 	int voice_max_response_tokens = 400;
 	int max_iterations = -1;
+	bool force_simple_loop = false;
 	int screenshot_keep_n = 3;
 	int screenshot_prune_interval = 25;
 	int screen_stable_timeout_ms = 3500;

@@ -1,4 +1,5 @@
 import time
+import json
 
 from runner.agent_client import ToolInvokeResult
 from runner.models import HardAssertionResults, RubricVerdict, TaskResult
@@ -43,6 +44,8 @@ def _task_result_with_details():
         hard_assertions=HardAssertionResults(
             min_tool_calls=False,
             response_exists=False,
+            required_tools=False,
+            forbidden_tools=False,
         ),
         metrics={"error": "boom", "agent_error": "agent boom", "judge_error": "judge boom"},
     )
@@ -66,7 +69,56 @@ def test_log_task_result_shows_details_in_verbose_mode(capsys):
     out = capsys.readouterr().out
     assert "FAILED" in out
     assert "Hard assertion failures" in out
+    assert "required_tools" in out
+    assert "forbidden_tools" in out
     assert "Error: boom" in out
     assert "Agent Error" in out
     assert "Judge Error" in out
     assert "Rubric Details" in out
+
+
+def test_run_manifest_records_agent_model(monkeypatch, tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "empty_suite",
+                "tasks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        def health(self):
+            return True
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "upload_report", lambda *args, **kwargs: False)
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--agent-model",
+            "qwen3.6-35b",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 0
+    manifest_path = next((tmp_path / "runs").glob("*/manifest.json"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["agent_model"] == "qwen3.6-35b"
+    assert manifest["judge_config"] is None

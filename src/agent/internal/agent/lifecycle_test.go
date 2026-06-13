@@ -607,12 +607,50 @@ hot_window_events: 30
 	if cfg.HotWindowEvents != 30 {
 		t.Fatalf("expected hot_window_events=30, got %d", cfg.HotWindowEvents)
 	}
+	if cfg.CountCompressAfterEvents != 60 {
+		t.Fatalf("expected default count_compress_after_events to follow hot_window_events*2, got %d", cfg.CountCompressAfterEvents)
+	}
+}
+
+func TestMemoryExtractionConfigDerivesCountThresholdFromCustomHotWindow(t *testing.T) {
+	dir := t.TempDir()
+	memDir := filepath.Join(dir, "memory")
+	os.MkdirAll(memDir, 0o755)
+	os.WriteFile(filepath.Join(memDir, "extraction.yaml"), []byte("hot_window_events: 20\n"), 0o644)
+
+	cfg := LoadMemoryExtractionConfig(dir)
+	if cfg.HotWindowEvents != 20 {
+		t.Fatalf("expected hot_window_events=20, got %d", cfg.HotWindowEvents)
+	}
+	if cfg.CountCompressAfterEvents != 40 {
+		t.Fatalf("expected implicit count_compress_after_events=40, got %d", cfg.CountCompressAfterEvents)
+	}
+}
+
+func TestMemoryExtractionConfigKeepsExplicitCountThreshold(t *testing.T) {
+	dir := t.TempDir()
+	memDir := filepath.Join(dir, "memory")
+	os.MkdirAll(memDir, 0o755)
+	os.WriteFile(filepath.Join(memDir, "extraction.yaml"), []byte(`
+hot_window_events: 20
+count_compress_after_events: 75
+`), 0o644)
+
+	cfg := LoadMemoryExtractionConfig(dir)
+	if cfg.HotWindowEvents != 20 {
+		t.Fatalf("expected hot_window_events=20, got %d", cfg.HotWindowEvents)
+	}
+	if cfg.CountCompressAfterEvents != 75 {
+		t.Fatalf("expected explicit count_compress_after_events=75, got %d", cfg.CountCompressAfterEvents)
+	}
 }
 
 func TestMaintainFilesystemMemoryOnlyArchivesNoAutoExtract(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
-	manager := NewMemoryManager(storageDir)
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.HotWindowEvents = 20 // Count fallback derives a 40-event trigger.
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
 
 	sessionDir := filepath.Join(storageDir, "session")
 	os.MkdirAll(sessionDir, 0o755)
@@ -620,7 +658,7 @@ func TestMaintainFilesystemMemoryOnlyArchivesNoAutoExtract(t *testing.T) {
 	var msgs []MessageRecord
 	msgs = append(msgs, MessageRecord{Role: "human", Content: "记一下，以后处理蓝海报销App超过100元的提交必须先确认。"})
 	msgs = append(msgs, MessageRecord{Role: "ai", Content: "已记录。"})
-	for i := 0; i < 22; i++ {
+	for i := 0; i < 39; i++ {
 		msgs = append(msgs, MessageRecord{Role: "human", Content: "填充"})
 	}
 

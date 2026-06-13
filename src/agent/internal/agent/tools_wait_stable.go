@@ -90,6 +90,14 @@ func (t *WaitStableScreenTool) Description() string {
 	)
 }
 
+func (t *WaitStableScreenTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"timeout_ms":     minIntegerArgSchema("Maximum time to wait for stability in milliseconds.", 1),
+		"stable_ms":      minIntegerArgSchema("Required continuous stable duration in milliseconds.", 1),
+		"diff_threshold": numberArgSchema("Maximum frame difference considered stable."),
+	})
+}
+
 func (t *WaitStableScreenTool) Call(ctx context.Context, input string) (string, error) {
 	result, err := t.wait(ctx, input)
 	if err != nil {

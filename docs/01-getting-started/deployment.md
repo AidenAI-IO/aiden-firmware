@@ -7,45 +7,102 @@
 ```text
 /oem/usr/bin/                  # 应用二进制
 /etc/init.d/S43wlan_guard      # WLAN connectivity guard
-/etc/init.d/S49ntp             # ntpd daemon + udhcpc-driven step sync
+/etc/init.d/S49ntp             # ntpd daemon
 /etc/init.d/S49usbhid          # USB HID gadget 初始化
+/etc/init.d/S50ntp_watchdog    # NTP 同步周期检查，未同步时触发 step
 /etc/init.d/S52frame_service   # Frame Service watchdog
 /etc/init.d/S53audio_service   # Audio Service watchdog
 /etc/init.d/S53agent           # Go Agent watchdog
 /etc/init.d/S56config_web      # 配置网页
 /etc/init.d/S99rtcinit         # RTC 默认时间校准，覆盖 SDK 默认脚本
-/etc/udhcpc/aiden.script       # udhcpc hook：DHCP bound 后触发 NTP step
 /userdata/agent/agent.toml     # Agent 默认配置
 /userdata/wpa_supplicant.conf  # Wi-Fi 默认配置
 ```
 
 ## 手动复制二进制
 
-开发时可先交叉编译，再通过 `scp` 将 `build/bin/` 中的目标程序复制到设备：
+`./build.sh` 完成后，主要产物在 `build/bin/`。其中和设备常驻运行直接相关的是：
+
+- `build/bin/frame_service`
+- `build/bin/audio_service`
+- `build/bin/config_web`
+- `build/bin/agent`
+- `overlay/oem/usr/bin/aiden-env-run`
+
+如果目标设备已经刷过一版 Aiden 固件，通常 init 脚本和 `/etc/*.conf` 已经存在，此时最小部署集合就是上面 5 个文件：
 
 ```bash
 ./build.sh
+
 scp build/bin/frame_service root@<device-ip>:/oem/usr/bin/
 scp build/bin/audio_service root@<device-ip>:/oem/usr/bin/
+scp build/bin/config_web root@<device-ip>:/oem/usr/bin/
 scp build/bin/agent root@<device-ip>:/oem/usr/bin/
+scp overlay/oem/usr/bin/aiden-env-run root@<device-ip>:/oem/usr/bin/
 ```
 
-也可以复制到 `/root` 或 `/userdata` 做临时测试，但启动脚本默认从 `/oem/usr/bin/` 查找。
+如果还需要设备端排障/调试工具，可选再复制：
+
+```bash
+scp build/bin/frame_service_cli root@<device-ip>:/oem/usr/bin/
+scp build/bin/audio_service_cli root@<device-ip>:/oem/usr/bin/
+scp build/bin/ota root@<device-ip>:/oem/usr/bin/
+scp build/bin/abctl root@<device-ip>:/oem/usr/bin/
+```
+
+如果目标设备是更裸的系统，缺少 Aiden 的 init 脚本和配置文件，还需要一起复制这些运行时文件：
+
+```bash
+scp overlay/etc/init.d/S52frame_service root@<device-ip>:/etc/init.d/
+scp overlay/etc/init.d/S53audio_service root@<device-ip>:/etc/init.d/
+scp overlay/etc/init.d/S53agent root@<device-ip>:/etc/init.d/
+scp overlay/etc/init.d/S56config_web root@<device-ip>:/etc/init.d/
+
+scp overlay/etc/aiden_frame_service.conf root@<device-ip>:/etc/
+scp overlay/etc/aiden_audio_service.conf root@<device-ip>:/etc/
+```
+
+首次部署通常还要准备 `/userdata` 下的默认配置：
+
+```bash
+ssh root@<device-ip> "mkdir -p /userdata/agent /userdata/system"
+scp overlay/userdata/agent/agent.toml root@<device-ip>:/userdata/agent/
+scp overlay/userdata/system/env root@<device-ip>:/userdata/system/
+scp overlay/userdata/wpa_supplicant.conf root@<device-ip>:/userdata/
+```
+
+说明：
+
+- Config Web calls the `/oem/usr/bin/agent` `config`, `config-check`, and `config-meta` subcommands, so copy `agent` whenever copying `config_web`.
+- `S52frame_service`、`S53audio_service`、`S53agent`、`S56config_web` 默认都通过 `/oem/usr/bin/aiden-env-run` 启动实际二进制，因此这个 wrapper 也要在设备上。
+- 也可以把二进制先复制到 `/root` 或 `/userdata` 做临时测试，但现有 init 脚本默认查找 `/oem/usr/bin/`。
+- 如果只是更新二进制，复制完成后执行 `chmod +x /oem/usr/bin/*` 一次即可。
+
+复制完成后，常见重启命令：
+
+```bash
+ssh root@<device-ip> "chmod +x /oem/usr/bin/frame_service /oem/usr/bin/audio_service /oem/usr/bin/config_web /oem/usr/bin/agent /oem/usr/bin/aiden-env-run"
+ssh root@<device-ip> "/etc/init.d/S52frame_service restart"
+ssh root@<device-ip> "/etc/init.d/S53audio_service restart"
+ssh root@<device-ip> "/etc/init.d/S53agent restart"
+ssh root@<device-ip> "/etc/init.d/S56config_web restart"
+```
 
 ## 服务启动顺序
 
 随固件启动时，主要服务关系如下：
 
 1. `S43wlan_guard` monitors WLAN connectivity and recovers automatically;
-2. `S49ntp` 以 daemon 模式启动 `ntpd`，使用 IP 直连 NTP server（绕开 DNS 启动顺序）；DHCP bound/renew 时由 `/etc/udhcpc/aiden.script` 触发一次 `S49ntp step` 强制同步；
-3. `S49usbhid` / `S50usbdevice` 配置 USB gadget；
-4. `S52frame_service` 独占 `/dev/video0` 并提供截图/帧服务；
-5. `S53audio_service` 提供音频录放服务；
-6. `S53agent` 启动 Go Agent；
-7. `S55aiden_usb_dhcp` 配置 USB 网络 DHCP / dnsmasq 相关能力；
-8. `S56config_web` 提供配置页面；
-9. `S99rtcinit` 覆盖 SDK 默认 RTC 脚本；RTC 异常时只在系统时间仍早于基线日期时写入默认时间，避免覆盖已经由 NTP 校准过的系统时间。
-10. `S99usb0config` 执行 USB 网络接口后置配置。
+2. `S49ntp` 以 daemon 模式启动 `ntpd`，使用 IP 直连 NTP server（绕开 DNS 启动顺序）；
+3. `S50ntp_watchdog` 周期检查时钟同步状态，未同步时触发 `S49ntp step` 强制同步，同步后退出；
+4. `S49usbhid` / `S50usbdevice` 配置 USB gadget；
+5. `S52frame_service` 独占 `/dev/video0` 并提供截图/帧服务；
+6. `S53audio_service` 提供音频录放服务；
+7. `S53agent` 启动 Go Agent；
+8. `S55aiden_usb_dhcp` 配置 USB 网络 DHCP / dnsmasq 相关能力；
+9. `S56config_web` 提供配置页面；
+10. `S99rtcinit` 覆盖 SDK 默认 RTC 脚本；RTC 异常时只在系统时间仍早于基线日期时写入默认时间，避免覆盖已经由 NTP 校准过的系统时间。
+11. `S99usb0config` 执行 USB 网络接口后置配置。
 
 ## 常用服务命令
 

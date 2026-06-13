@@ -10,6 +10,7 @@ BOOT_CONF=/etc/aiden_boot.conf
 AUDIO_SERVICE_BIN=/oem/usr/bin/audio_service
 ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
 SOCKET_PATH=/run/audio_service/audio_service.sock
+VOLUME_STATE_PATH=/userdata/audio_service/playback_volume
 LOG_PATH=/var/log/audio_service/audio_service.log
 PID_FILE=/run/audio_service/audio_service.pid
 WATCHDOG_PID_FILE=/run/audio_service/audio_service_watchdog.pid
@@ -21,6 +22,7 @@ if [ -f "$BOOT_CONF" ]; then
     . "$BOOT_CONF"
 fi
 : "${ENABLE_AUDIO_SERVICE:=1}"
+: "${VOLUME_STATE_PATH:=/userdata/audio_service/playback_volume}"
 
 is_running() {
     pid="$1"
@@ -100,8 +102,8 @@ start() {
                 continue
             fi
 
-            echo "[audio_service] starting $AUDIO_SERVICE_BIN --socket $SOCKET_PATH" >> "$LOG_PATH"
-            "$ENV_RUN_BIN" "$AUDIO_SERVICE_BIN" --socket "$SOCKET_PATH" >> "$LOG_PATH" 2>&1 &
+            echo "[audio_service] starting $AUDIO_SERVICE_BIN --socket $SOCKET_PATH --volume-state $VOLUME_STATE_PATH" >> "$LOG_PATH"
+            "$ENV_RUN_BIN" "$AUDIO_SERVICE_BIN" --socket "$SOCKET_PATH" --volume-state "$VOLUME_STATE_PATH" >> "$LOG_PATH" 2>&1 &
             child="$!"
             echo "$child" > "$PID_FILE"
             wait "$child"

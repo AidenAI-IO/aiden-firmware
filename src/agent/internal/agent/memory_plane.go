@@ -111,6 +111,9 @@ func (p *FilesystemMemoryPlane) Retrieve(ctx context.Context, req MemoryRetrieve
 	if p == nil || p.memoryDir == "" {
 		return out, nil
 	}
+	// Session summaries belong only to the current active session. Closed
+	// sessions are archived under session_archive/ and are not injected into
+	// prompts or retrieved through the active memory plane.
 	out.Common.SessionSummary = readTextFileIfExists(filepath.Join(p.memoryDir, "session", "summary.md"))
 	out.Common.Profile = readTextFileIfExists(filepath.Join(p.memoryDir, "long_term", "profile.md"))
 

@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 
 	"aiden-agent/internal/agent/tts"
@@ -29,25 +30,37 @@ import (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime          *Runtime
-	addr             string
-	logger           *Logger
-	mu               sync.Mutex
-	history          []Message
-	historyStore     *ChatHistoryStore
-	episodeStore     *TaskEpisodeStore
-	sttClient        STTClient
-	ttsManager       *tts.ProviderManager
-	ttsMu            sync.RWMutex
-	audioClient      *AudioServiceClient
-	recordMu         sync.Mutex
-	webRecording     *webAudioRecording
-	bridge           *PhoneBridge
-	pendingResults   map[string]*chatPendingResult
-	pendingResultsMu sync.Mutex
-	activeRuns       map[string]context.CancelFunc
-	activeRunsMu     sync.Mutex
-	eventBroadcaster *EventBroadcaster
+	runtime                    *Runtime
+	addr                       string
+	logger                     *Logger
+	benchmarkDir               string
+	benchmarkPIDFile           string
+	benchmarkLogPath           string
+	benchmarkStatePath         string
+	benchmarkLauncher          func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error
+	benchmarkMobileGymLauncher func(suite, suiteType string, parallel, limit int) error
+	benchmarkSuiteValidator    func(path string) error
+	benchmarkSuiteLocks        sync.Map
+	userFilesReportPath        string
+	userFilesToolsDir          string
+	mu                         sync.Mutex
+	history                    []Message
+	historyStore               *ChatHistoryStore
+	episodeStore               *TaskEpisodeStore
+	sttClient                  STTClient
+	ttsManager                 *tts.ProviderManager
+	ttsMu                      sync.RWMutex
+	audioClient                *AudioServiceClient
+	recordMu                   sync.Mutex
+	webRecording               *webAudioRecording
+	bridge                     *PhoneBridge
+	pendingResults             map[string]*chatPendingResult
+	pendingResultsMu           sync.Mutex
+	activeRuns                 map[string]context.CancelFunc
+	activeRunsMu               sync.Mutex
+	pendingSteers              map[string]pendingSteerMessage
+	pendingSteersMu            sync.Mutex
+	eventBroadcaster           *EventBroadcaster
 }
 
 type webAudioRecording struct {
@@ -117,6 +130,24 @@ type ChatCancelResponse struct {
 	Status    string `json:"status"`
 }
 
+type ChatSteerRequest struct {
+	RequestID string `json:"request_id"`
+	Message   string `json:"message"`
+}
+
+type ChatSteerResponse struct {
+	RequestID string               `json:"request_id"`
+	Status    string               `json:"status"`
+	Steer     *pendingSteerMessage `json:"steer,omitempty"`
+}
+
+type pendingSteerMessage struct {
+	ID        string    `json:"id"`
+	RequestID string    `json:"request_id"`
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
 // ChatResponse represents a chat response
 type ChatResponse struct {
 	Response string    `json:"response"`
@@ -180,17 +211,22 @@ type ToolInvokeResponse struct {
 }
 
 // NewServer creates a new HTTP server
-func NewServer(runtime *Runtime, addr string) *Server {
+func NewServer(runtime *Runtime, addr string, benchmarkDir string) *Server {
 	bridge := NewPhoneBridge(runtime.logger)
 	s := &Server{
-		runtime:          runtime,
-		addr:             addr,
-		logger:           runtime.logger,
-		history:          make([]Message, 0),
-		bridge:           bridge,
-		pendingResults:   make(map[string]*chatPendingResult),
-		activeRuns:       make(map[string]context.CancelFunc),
-		eventBroadcaster: NewEventBroadcaster(),
+		runtime:             runtime,
+		addr:                addr,
+		logger:              runtime.logger,
+		benchmarkDir:        benchmarkDir,
+		benchmarkPIDFile:    "/tmp/benchmark_runner.pid",
+		userFilesReportPath: "/userdata/agent/files_report.html",
+		userFilesToolsDir:   "/userdata/agent_tools",
+		history:             make([]Message, 0),
+		bridge:              bridge,
+		pendingResults:      make(map[string]*chatPendingResult),
+		activeRuns:          make(map[string]context.CancelFunc),
+		pendingSteers:       make(map[string]pendingSteerMessage),
+		eventBroadcaster:    NewEventBroadcaster(),
 	}
 	if runtime.config.ConfigDir != "" {
 		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
@@ -204,6 +240,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		})
 	}
 	loadAppMappingForConfig(runtime.config.ConfigDir, runtime.logger)
+	loadQuickActionsForConfig(runtime.config.ConfigDir, runtime.logger)
 	runtime.tools.RegisterPhoneBridge(bridge)
 	s.loadHistoryFromDisk()
 
@@ -242,6 +279,8 @@ func (s *Server) Start() error {
 	// API endpoints
 	mux.HandleFunc("/api/chat", s.handleChat)
 	mux.HandleFunc("/api/chat/cancel", s.handleChatCancel)
+	mux.HandleFunc("/api/chat/steer", s.handleChatSteer)
+	mux.HandleFunc("/api/chat/steer/cancel", s.handleChatSteerCancel)
 	mux.HandleFunc("/api/chat/result", s.handleChatResult)
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/history", s.handleHistory)
@@ -251,6 +290,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/skills/reload", s.handleSkillsReload)
 	mux.HandleFunc("/api/tools", s.handleTools)
 	mux.HandleFunc("/api/tools/", s.handleTools)
+	mux.HandleFunc("/api/mobilegym/episode/start", s.handleMobileGymEpisodeStart)
+	mux.HandleFunc("/api/mobilegym/episode/end", s.handleMobileGymEpisodeEnd)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
 	mux.HandleFunc("/api/audio/record/stop", s.handleAudioRecordStop)
@@ -270,6 +311,24 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/screenshot.jpg", s.handleScreenshotJPEG)
 	mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
 	mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
+
+	// Benchmark endpoints
+	mux.HandleFunc("/benchmark", s.handleBenchmarkIndex)
+	mux.HandleFunc("/benchmark/record", s.handleBenchmarkRecord)
+	mux.HandleFunc("/benchmark/suites", s.handleBenchmarkSuites)
+	mux.HandleFunc("/benchmark/runs", s.handleBenchmarkRuns)
+	mux.HandleFunc("/benchmark/report/", s.handleBenchmarkReport)
+	mux.HandleFunc("/benchmark/status", s.handleBenchmarkStatus)
+	mux.HandleFunc("/benchmark/log", s.handleBenchmarkLog)
+	mux.HandleFunc("/benchmark/run", s.handleBenchmarkRun)
+	mux.HandleFunc("/benchmark/suites/import", s.handleBenchmarkImport)
+	mux.HandleFunc("/benchmark/suites/delete", s.handleBenchmarkDelete)
+	mux.HandleFunc("/benchmark/suites/generate", s.handleBenchmarkGenerate)
+	mux.HandleFunc("/benchmark/suites/generate-perception", s.handleBenchmarkGeneratePerception)
+	mux.HandleFunc("/benchmark/suites/import-with-assets", s.handleBenchmarkImportWithAssets)
+	mux.HandleFunc("/benchmark/suites/append-perception", s.handleBenchmarkAppendPerception)
+	mux.HandleFunc("/user_files", s.handleUserFiles)
+	mux.HandleFunc("/user_files/regenerate", s.handleUserFilesRegenerate)
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
@@ -370,7 +429,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sync path — legacy behaviour for web UI and clients without request_id
-	s.handleChatSync(w, r, req, inputText, runAttachments, userMsg.EpisodeID)
+	s.handleChatSync(w, r, req, inputText, runAttachments, userMsg)
 }
 
 func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
@@ -401,6 +460,70 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ChatCancelResponse{RequestID: requestID, Status: "not_running"})
+}
+
+func (s *Server) handleChatSteer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req ChatSteerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	requestID := strings.TrimSpace(req.RequestID)
+	message := strings.TrimSpace(req.Message)
+	if requestID == "" {
+		http.Error(w, "missing request_id", http.StatusBadRequest)
+		return
+	}
+	if message == "" {
+		http.Error(w, "message is required", http.StatusBadRequest)
+		return
+	}
+
+	steer, ok := s.setPendingSteer(requestID, message)
+	if !ok {
+		http.Error(w, "request_id is not running", http.StatusConflict)
+		return
+	}
+	if s.logger != nil {
+		s.logger.Info("Queued chat steer: request_id=%s len=%d", requestID, len(message))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ChatSteerResponse{RequestID: requestID, Status: "pending", Steer: &steer})
+}
+
+func (s *Server) handleChatSteerCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req ChatSteerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		http.Error(w, "missing request_id", http.StatusBadRequest)
+		return
+	}
+
+	status := "not_found"
+	if s.cancelPendingSteer(requestID) {
+		status = "canceled"
+		if s.logger != nil {
+			s.logger.Info("Canceled chat steer: request_id=%s", requestID)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ChatSteerResponse{RequestID: requestID, Status: status})
 }
 
 func (s *Server) registerActiveRun(requestID string, cancel context.CancelFunc) bool {
@@ -437,6 +560,72 @@ func (s *Server) cancelActiveRun(requestID string) bool {
 	}
 	cancel()
 	return true
+}
+
+func (s *Server) setPendingSteer(requestID, content string) (pendingSteerMessage, bool) {
+	s.activeRunsMu.Lock()
+	defer s.activeRunsMu.Unlock()
+	if requestID == "" || s.activeRuns[requestID] == nil {
+		return pendingSteerMessage{}, false
+	}
+	steer := pendingSteerMessage{
+		ID:        createSteerID(),
+		RequestID: requestID,
+		Content:   strings.TrimSpace(content),
+		Timestamp: time.Now(),
+	}
+	s.pendingSteersMu.Lock()
+	if s.pendingSteers == nil {
+		s.pendingSteers = make(map[string]pendingSteerMessage)
+	}
+	s.pendingSteers[requestID] = steer
+	s.pendingSteersMu.Unlock()
+	return steer, true
+}
+
+func (s *Server) cancelPendingSteer(requestID string) bool {
+	s.pendingSteersMu.Lock()
+	defer s.pendingSteersMu.Unlock()
+	if s.pendingSteers == nil {
+		return false
+	}
+	if _, ok := s.pendingSteers[requestID]; !ok {
+		return false
+	}
+	delete(s.pendingSteers, requestID)
+	return true
+}
+
+func (s *Server) clearPendingSteer(requestID string) {
+	if requestID == "" {
+		return
+	}
+	s.pendingSteersMu.Lock()
+	delete(s.pendingSteers, requestID)
+	s.pendingSteersMu.Unlock()
+}
+
+func (s *Server) consumePendingSteer(requestID string) (RunSteerMessage, bool) {
+	if requestID == "" {
+		return RunSteerMessage{}, false
+	}
+	s.pendingSteersMu.Lock()
+	defer s.pendingSteersMu.Unlock()
+	steer, ok := s.pendingSteers[requestID]
+	if !ok {
+		return RunSteerMessage{}, false
+	}
+	delete(s.pendingSteers, requestID)
+	return RunSteerMessage{
+		ID:        steer.ID,
+		RequestID: steer.RequestID,
+		Content:   steer.Content,
+		Timestamp: steer.Timestamp,
+	}, true
+}
+
+func createSteerID() string {
+	return "steer-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
 // handleChatAsync runs the agent in a background goroutine and returns
@@ -494,6 +683,7 @@ func (s *Server) handleChatAsync(
 	go func() {
 		defer func() {
 			s.unregisterActiveRun(requestID)
+			s.clearPendingSteer(requestID)
 			// Keep the completed result available for polling for 60s,
 			// then clean up. The client (PhoneBridge) polls /api/chat/result
 			// every ~1s; immediate deletion creates a race where the app
@@ -542,6 +732,9 @@ func (s *Server) handleChatAsync(
 			EpisodeID:      userMsg.EpisodeID,
 			RuntimeContext: s.runtimeContext(),
 			EventHandler:   eventHandler,
+			SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+				return s.consumePendingSteer(requestID)
+			},
 		}
 
 		var newStream *streamSessionWriter
@@ -730,15 +923,17 @@ func (s *Server) handleChatSync(
 	req ChatRequest,
 	inputText string,
 	runAttachments []InputAttachment,
-	episodeID string,
+	userMsg Message,
 ) {
 	ctx := r.Context()
+	episodeID := userMsg.EpisodeID
 
 	if s.logger != nil {
 		s.logger.Info("Chat request (sync): %s attachments=%d", inputText, len(runAttachments))
 	}
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
+	s.appendHistory(userMsg)
 
 	runReq := RunRequest{
 		Input:          inputText,
@@ -895,6 +1090,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		}
 		defer func() {
 			s.unregisterActiveRun(req.RequestID)
+			s.clearPendingSteer(req.RequestID)
 			cancel()
 		}()
 		ctx = runCtx
@@ -907,6 +1103,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		Skills:         req.Skills,
 		EpisodeID:      episodeID,
 		RuntimeContext: s.runtimeContext(),
+		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			return s.consumePendingSteer(req.RequestID)
+		},
 		EventHandler: func(event RunEvent) {
 			eventEpisodeID := event.EpisodeID
 			if eventEpisodeID == "" {
@@ -1541,13 +1740,13 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 
 	toolName := strings.TrimPrefix(r.URL.Path, "/api/tools/")
 	toolName = strings.TrimSpace(toolName)
-	if toolName == "" || strings.Contains(toolName, "/") || !isHTTPToolExposed(toolName) {
+	if toolName == "" || strings.Contains(toolName, "/") {
 		http.NotFound(w, r)
 		return
 	}
 
-	tool, descriptor, ok := s.lookupOwnedTool(toolName)
-	if !ok {
+	spec, ok := s.lookupOwnedToolSpec(toolName)
+	if !ok || !spec.HTTPExposed {
 		http.Error(w, fmt.Sprintf("Unknown tool: %s", toolName), http.StatusNotFound)
 		return
 	}
@@ -1559,14 +1758,21 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startedAt := time.Now()
-	output, callErr := tool.Call(r.Context(), rawInput)
+	execution := executeToolCall(r.Context(), ToolCallExecution{
+		Specs:  NewToolSpecs([]langtools.Tool{spec.Tool}),
+		Action: schema.AgentAction{Tool: spec.Name, ToolInput: rawInput},
+	})
 	duration := time.Since(startedAt).Milliseconds()
+	callErr := execution.Result.Error
+	if execution.Error != nil {
+		callErr = execution.Error
+	}
 
 	response := ToolInvokeResponse{
-		Tool:       descriptor,
-		RawInput:   rawInput,
-		Output:     output,
-		IsError:    callErr != nil || toolOutputLooksLikeError(output),
+		Tool:       spec.Descriptor(),
+		RawInput:   execution.Call.Input,
+		Output:     execution.Result.Output,
+		IsError:    execution.Result.IsError || execution.Error != nil,
 		DurationMs: duration,
 		CalledAt:   startedAt,
 	}
@@ -1595,6 +1801,97 @@ func (s *Server) handleToolSkills(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(ToolSkillsResponse{
 		Skills: s.runtime.HTTPToolSkills(requestBaseURL(r)),
 	})
+}
+
+type mobileGymEpisodeStartRequest struct {
+	EpisodeID   string `json:"episode_id"`
+	BridgeURL   string `json:"bridge_url"`
+	BridgeToken string `json:"bridge_token"`
+}
+
+type mobileGymEpisodeEndRequest struct {
+	EpisodeID string `json:"episode_id"`
+}
+
+func (s *Server) handleMobileGymEpisodeStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorizeMobileGymControl(w, r) {
+		return
+	}
+
+	var req mobileGymEpisodeStartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.EpisodeID = strings.TrimSpace(req.EpisodeID)
+	req.BridgeURL = strings.TrimSpace(req.BridgeURL)
+	req.BridgeToken = strings.TrimSpace(req.BridgeToken)
+	if req.EpisodeID == "" || req.BridgeURL == "" || req.BridgeToken == "" {
+		http.Error(w, "episode_id, bridge_url, and bridge_token are required", http.StatusBadRequest)
+		return
+	}
+	if s.runtime.mobileGym == nil {
+		s.runtime.mobileGym = &mobileGymSessionStore{}
+	}
+	s.runtime.mobileGym.Set(mobileGymSession{EpisodeID: req.EpisodeID, BridgeURL: req.BridgeURL, BridgeToken: req.BridgeToken})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleMobileGymEpisodeEnd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorizeMobileGymControl(w, r) {
+		return
+	}
+
+	var req mobileGymEpisodeEndRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.EpisodeID = strings.TrimSpace(req.EpisodeID)
+	if req.EpisodeID == "" {
+		http.Error(w, "episode_id is required", http.StatusBadRequest)
+		return
+	}
+	if s.runtime.mobileGym != nil {
+		s.runtime.mobileGym.Clear(req.EpisodeID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) authorizeMobileGymControl(w http.ResponseWriter, r *http.Request) bool {
+	path := strings.TrimSpace(s.runtime.config.Device.ControlTokenFile)
+	if path == "" {
+		http.Error(w, "mobilegym control token is not configured", http.StatusUnauthorized)
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		http.Error(w, "mobilegym control token is unavailable", http.StatusUnauthorized)
+		return false
+	}
+	expected := strings.TrimSpace(string(data))
+	if expected == "" {
+		http.Error(w, "mobilegym control token is empty", http.StatusUnauthorized)
+		return false
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(auth, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) != expected {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	return true
 }
 
 func requestBaseURL(r *http.Request) string {
@@ -1631,15 +1928,8 @@ func firstForwardedHeaderValue(value string) string {
 	return strings.TrimSpace(parts[0])
 }
 
-func (s *Server) lookupOwnedTool(name string) (tool langtools.Tool, descriptor ToolDescriptor, ok bool) {
-	for _, candidate := range s.runtime.OwnedTools() {
-		if candidate.Name() != name {
-			continue
-		}
-		descriptor, _ = s.runtime.ToolDescriptorByName(name)
-		return candidate, descriptor, true
-	}
-	return nil, ToolDescriptor{}, false
+func (s *Server) lookupOwnedToolSpec(name string) (ToolSpec, bool) {
+	return s.runtime.ToolSpecs().Lookup(name)
 }
 
 func decodeToolInvokeInput(body io.Reader) (string, error) {
@@ -2273,10 +2563,20 @@ const webUI = `<!DOCTYPE html>
             justify-content: flex-end;
         }
 
+        .message.steer .message-shell {
+            justify-content: flex-end;
+        }
+
         .message.user .message-avatar {
             order: 2;
             background: rgba(16, 163, 127, 0.12);
             color: var(--accent-strong);
+        }
+
+        .message.steer .message-avatar {
+            order: 2;
+            background: rgba(183, 107, 47, 0.14);
+            color: var(--tool-call-text);
         }
 
         .message.user .message-body {
@@ -2284,6 +2584,16 @@ const webUI = `<!DOCTYPE html>
             max-width: min(78%, 860px);
             background: var(--user-bubble);
             border: 1px solid var(--line);
+            border-radius: 18px 18px 8px 18px;
+            padding: 13px 15px;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .message.steer .message-body {
+            order: 1;
+            max-width: min(78%, 860px);
+            background: rgba(255, 248, 239, 0.95);
+            border: 1px solid rgba(183, 107, 47, 0.22);
             border-radius: 18px 18px 8px 18px;
             padding: 13px 15px;
             box-shadow: var(--shadow-soft);
@@ -2781,6 +3091,37 @@ const webUI = `<!DOCTYPE html>
             opacity: 1;
         }
 
+        .pending-steer {
+            margin: 0 18px 8px;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 11px 12px;
+            border-radius: 14px;
+            border: 1px solid rgba(183, 107, 47, 0.2);
+            background: rgba(255, 248, 239, 0.9);
+            box-shadow: var(--shadow-soft);
+        }
+
+        .pending-steer.hidden {
+            display: none;
+        }
+
+        .pending-steer-copy {
+            min-width: 0;
+            display: grid;
+            gap: 4px;
+        }
+
+        .pending-steer-text {
+            color: var(--text);
+            font-size: 0.88rem;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
         .spinner {
             width: 14px;
             height: 14px;
@@ -2833,7 +3174,8 @@ const webUI = `<!DOCTYPE html>
                 border-radius: 16px;
             }
 
-            .message.user .message-body {
+            .message.user .message-body,
+            .message.steer .message-body {
                 max-width: 100%;
             }
 
@@ -2900,6 +3242,8 @@ const webUI = `<!DOCTYPE html>
                 <h1>Aiden Agent</h1>
                 <div class="topbar-actions">
                     <a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 坐标调试</a>
+                    <a href="/benchmark" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📋 Benchmark</a>
+                    <a href="/user_files" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📁 User files</a>
                     <button type="button" class="new-chat-btn" onclick="clearHistory()">New chat</button>
                     <button type="button" class="new-chat-btn" onclick="resetAllMemory()" style="background:#c0392b;">Reset all memory</button>
                 </div>
@@ -2919,6 +3263,14 @@ const webUI = `<!DOCTYPE html>
                 <span class="spinner" aria-hidden="true"></span>
                 <span>Working on it...</span>
                 <button type="button" class="stop-run-btn" id="stopRunBtn" onclick="cancelCurrentRun()" disabled>Stop</button>
+            </div>
+
+            <div class="pending-steer hidden" id="pendingSteer">
+                <div class="pending-steer-copy">
+                    <div class="message-role">Pending steer</div>
+                    <div class="pending-steer-text" id="pendingSteerText"></div>
+                </div>
+                <button type="button" class="stop-run-btn" id="cancelSteerBtn" onclick="cancelPendingSteer()">Cancel</button>
             </div>
 
             <form class="composer" onsubmit="event.preventDefault(); sendMessage();">
@@ -3009,6 +3361,9 @@ const webUI = `<!DOCTYPE html>
         const draftAttachmentsEl = document.getElementById('draftAttachments');
         const loadingDiv = document.getElementById('loading');
         const stopRunBtn = document.getElementById('stopRunBtn');
+        const pendingSteerEl = document.getElementById('pendingSteer');
+        const pendingSteerTextEl = document.getElementById('pendingSteerText');
+        const cancelSteerBtn = document.getElementById('cancelSteerBtn');
         const emptyStateEl = document.getElementById('emptyState');
         const toolSelectEl = document.getElementById('toolSelect');
         const toolDescriptionEl = document.getElementById('toolDescription');
@@ -3035,6 +3390,8 @@ const webUI = `<!DOCTYPE html>
         let currentChatRequestId = '';
         let currentChatAbortController = null;
         let currentChatCancelRequested = false;
+        let pendingSteer = null;
+        let pendingSteerSubmitting = false;
         let episodeCache = {};
         let eventSource = null;
 
@@ -3348,6 +3705,10 @@ const webUI = `<!DOCTYPE html>
 
         async function sendMessage() {
             if (sendBtn.disabled) return;
+            if (currentChatRequestId) {
+                await submitSteerMessage();
+                return;
+            }
             if (recorderState.isRecording || recorderState.isStopping) {
                 await stopRecording();
             }
@@ -3418,8 +3779,70 @@ const webUI = `<!DOCTYPE html>
                 currentChatRequestId = '';
                 currentChatAbortController = null;
                 currentChatCancelRequested = false;
+                pendingSteer = null;
+                renderPendingSteer();
                 setComposerState(false);
                 scrollToBottom();
+            }
+        }
+
+        async function submitSteerMessage() {
+            if (!currentChatRequestId || pendingSteerSubmitting) return;
+
+            const message = inputEl.value.trim();
+            if (!message) return;
+            if (draftAttachments.length > 0) {
+                alert('Attachments can be sent after the current run finishes.');
+                return;
+            }
+
+            const requestId = currentChatRequestId;
+            const localSteer = {
+                id: 'local-' + createRequestId(),
+                request_id: requestId,
+                content: message,
+                timestamp: new Date().toISOString()
+            };
+            pendingSteer = localSteer;
+            pendingSteerSubmitting = true;
+            inputEl.value = '';
+            autoResizeInput();
+            renderPendingSteer();
+            setComposerState(true);
+
+            try {
+                const res = await fetch('/api/chat/steer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        request_id: requestId,
+                        message: message
+                    })
+                });
+                if (!res.ok) {
+                    throw new Error(await res.text() || 'Failed to queue steer.');
+                }
+                const data = await res.json();
+                if (data.steer) {
+                    pendingSteer = data.steer;
+                    renderPendingSteer();
+                }
+            } catch (err) {
+                console.error('Failed to queue steer:', err);
+                if (currentChatRequestId === requestId) {
+                    inputEl.value = message;
+                    autoResizeInput();
+                }
+                pendingSteer = null;
+                renderPendingSteer();
+                addMessage({
+                    type: 'assistant',
+                    content: 'Error: ' + err.message,
+                    timestamp: new Date().toISOString()
+                });
+            } finally {
+                pendingSteerSubmitting = false;
+                setComposerState(!!currentChatRequestId);
             }
         }
 
@@ -3436,6 +3859,8 @@ const webUI = `<!DOCTYPE html>
             currentChatCancelRequested = true;
             stopRunBtn.disabled = true;
             stopRunBtn.textContent = 'Stopping...';
+            pendingSteer = null;
+            renderPendingSteer();
 
 			if (currentChatAbortController) {
 				currentChatAbortController.abort();
@@ -3450,6 +3875,31 @@ const webUI = `<!DOCTYPE html>
 				console.error('Failed to cancel chat request:', err);
 			});
 		}
+
+        async function cancelPendingSteer() {
+            if (!currentChatRequestId || !pendingSteer) return;
+            const requestId = currentChatRequestId;
+            const previous = pendingSteer;
+            pendingSteer = null;
+            renderPendingSteer();
+
+            try {
+                const res = await fetch('/api/chat/steer/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ request_id: requestId })
+                });
+                if (!res.ok) {
+                    throw new Error(await res.text() || 'Failed to cancel steer.');
+                }
+            } catch (err) {
+                console.error('Failed to cancel steer:', err);
+                if (currentChatRequestId === requestId) {
+                    pendingSteer = previous;
+                    renderPendingSteer();
+                }
+            }
+        }
 
         async function consumeChatStream(res) {
             let sawDone = false;
@@ -3526,6 +3976,10 @@ const webUI = `<!DOCTYPE html>
 
         function handleChatStreamEvent(event) {
             if (event.type === 'message' && event.message) {
+                if (event.message.type === 'steer') {
+                    pendingSteer = null;
+                    renderPendingSteer();
+                }
                 addMessage(event.message);
                 return false;
             }
@@ -3804,13 +4258,27 @@ const webUI = `<!DOCTYPE html>
         }
 
         function setComposerState(isLoading) {
-            sendBtn.disabled = isLoading || recorderState.isStopping;
+            sendBtn.disabled = recorderState.isStopping || pendingSteerSubmitting;
+            sendBtn.textContent = isLoading ? 'Steer' : 'Send';
             imageBtn.disabled = isLoading || recorderState.isRecording || recorderState.isStopping;
             recordBtn.disabled = isLoading || recorderState.isStopping;
             stopRunBtn.disabled = !isLoading;
             stopRunBtn.textContent = 'Stop';
             loadingDiv.classList.toggle('active', isLoading);
+            renderPendingSteer();
             updateRecordButton();
+        }
+
+        function renderPendingSteer() {
+            if (!pendingSteer) {
+                pendingSteerEl.classList.add('hidden');
+                pendingSteerTextEl.textContent = '';
+                cancelSteerBtn.disabled = true;
+                return;
+            }
+            pendingSteerEl.classList.remove('hidden');
+            pendingSteerTextEl.textContent = pendingSteer.content || '';
+            cancelSteerBtn.disabled = pendingSteerSubmitting;
         }
 
         function autoResizeInput() {
@@ -3828,6 +4296,7 @@ const webUI = `<!DOCTYPE html>
 
         function getRoleLabel(type, toolName, role) {
             if (type === 'user') return 'You';
+            if (type === 'steer') return 'Steer';
             if (type === 'episode_status') return 'Task Trace';
             if (type === 'role_output') return 'Role · ' + (role || 'agent');
             if (type === 'tool_call') return toolName ? 'Tool Call · ' + toolName : 'Tool Call';
@@ -3837,6 +4306,7 @@ const webUI = `<!DOCTYPE html>
 
         function getAvatarLabel(type) {
             if (type === 'user') return 'You';
+            if (type === 'steer') return 'Edit';
             if (type === 'episode_status') return 'Task';
             if (type === 'role_output') return 'Role';
             if (type === 'tool_call') return 'Call';

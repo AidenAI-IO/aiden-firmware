@@ -95,8 +95,10 @@ type Config struct {
 	TTS                       TTSConfig          `toml:"tts,omitempty"`
 	STT                       STTConfig          `toml:"stt,omitempty"`
 	HID                       HIDConfig          `toml:"hid"`
+	Device                    DeviceConfig       `toml:"device,omitempty"`
 	Audio                     AudioConfig        `toml:"audio,omitempty"`
 	AudioArchive              AudioArchiveConfig `toml:"audio_archive,omitempty"`
+	Benchmark                 BenchmarkConfig    `toml:"benchmark,omitempty"`
 	Search                    SearchConfig       `toml:"search,omitempty"`
 	Instruction               string             `toml:"instruction"`
 	AdditionalPrompt          string             `toml:"additional_prompt,omitempty"`
@@ -117,6 +119,7 @@ type Config struct {
 	VoiceToolCallSpeech       *bool              `toml:"voice_tool_call_speech,omitempty"`
 	VoiceMaxResponseTokens    int                `toml:"voice_max_response_tokens,omitempty"`
 	MaxIterations             int                `toml:"max_iterations,omitempty"`
+	ForceSimpleLoop           bool               `toml:"force_simple_loop,omitempty"`
 	ScreenshotKeepN           int                `toml:"screenshot_keep_n,omitempty"`
 	ScreenshotPruneInterval   int                `toml:"screenshot_prune_interval,omitempty"`
 	ScreenStableTimeoutMs     int                `toml:"screen_stable_timeout_ms,omitempty"`
@@ -199,6 +202,21 @@ type AudioConfig struct {
 	BitWidth   int    `toml:"bit_width,omitempty"`
 }
 
+// BenchmarkConfig configures the benchmark management endpoints in the agent
+// (migrated from config_web). All fields are optional; empty strings fall back
+// to runtime defaults.
+type BenchmarkConfig struct {
+	// JudgeModel is the OpenRouter model name passed to runner.main as
+	// --judge-model. Defaults to "bytedance-seed/seed-2.0-lite" when empty.
+	JudgeModel string `toml:"judge_model,omitempty"`
+	// APIKey is exported as OPENROUTER_API_KEY for benchmark judge calls.
+	APIKey string `toml:"api_key,omitempty"`
+	// Dir overrides the auto-detected benchmark root. When empty, the
+	// agent probes -benchmark-dir flag, AIDEN_BENCHMARK_DIR env,
+	// /userdata/agent/benchmark, then <cwd>/benchmark.
+	Dir string `toml:"benchmark_dir,omitempty"`
+}
+
 type ProxyConfig struct {
 	HTTPProxy  string
 	HTTPSProxy string
@@ -264,28 +282,28 @@ func (a AudioConfig) SocketOrDefault() string {
 	if a.Socket != "" {
 		return a.Socket
 	}
-	return "/run/audio_service/audio_service.sock"
+	return defaultAudioSocket
 }
 
 func (a AudioConfig) SampleRateOrDefault() int {
 	if a.SampleRate > 0 {
 		return a.SampleRate
 	}
-	return 16000
+	return defaultAudioSampleRate
 }
 
 func (a AudioConfig) ChannelsOrDefault() int {
 	if a.Channels > 0 {
 		return a.Channels
 	}
-	return 1
+	return defaultAudioChannels
 }
 
 func (a AudioConfig) BitWidthOrDefault() int {
 	if a.BitWidth > 0 {
 		return a.BitWidth
 	}
-	return 16
+	return defaultAudioBitWidth
 }
 
 type HIDConfig struct {
@@ -297,25 +315,44 @@ type HIDConfig struct {
 	PointerMode string `toml:"pointer_mode,omitempty"`
 }
 
+type DeviceConfig struct {
+	Backend          string   `toml:"backend,omitempty"`
+	BridgeURL        string   `toml:"bridge_url,omitempty"`
+	BridgeTokenFile  string   `toml:"bridge_token_file,omitempty"`
+	ControlTokenFile string   `toml:"control_token_file,omitempty"`
+	ToolAllowlist    []string `toml:"tool_allowlist,omitempty"`
+}
+
+func (d DeviceConfig) BackendOrDefault() string {
+	switch strings.ToLower(strings.TrimSpace(d.Backend)) {
+	case "", "hdmi", "hardware":
+		return "hdmi"
+	case "mobilegym":
+		return "mobilegym"
+	default:
+		return strings.ToLower(strings.TrimSpace(d.Backend))
+	}
+}
+
 func (h HIDConfig) KeyboardDeviceOrDefault() string {
 	if h.KeyboardDevice != "" {
 		return h.KeyboardDevice
 	}
-	return "/dev/hidg0"
+	return defaultKeyboardDevice
 }
 
 func (h HIDConfig) MouseDeviceOrDefault() string {
 	if h.MouseDevice != "" {
 		return h.MouseDevice
 	}
-	return "/dev/hidg1"
+	return defaultMouseDevice
 }
 
 func (h HIDConfig) FrameSocketOrDefault() string {
 	if h.FrameSocket != "" {
 		return h.FrameSocket
 	}
-	return "/tmp/frame_service.sock"
+	return defaultFrameServiceSocket
 }
 
 func (h HIDConfig) PointerModeOrDefault() string {
@@ -332,14 +369,17 @@ func (h HIDConfig) PointerTouchscreen() bool {
 }
 
 type ModelConfig struct {
-	Provider    string   `toml:"provider"`
-	Model       string   `toml:"model"`
-	BaseURL     string   `toml:"base_url,omitempty"`
-	APIKey      string   `toml:"api_key,omitempty"`
-	TokenEnv    string   `toml:"token_env,omitempty"`
-	Temperature float64  `toml:"temperature,omitempty"`
-	MaxTokens   int      `toml:"max_tokens,omitempty"`
-	Responses   []string `toml:"responses,omitempty"`
+	Provider          string  `toml:"provider"`
+	Model             string  `toml:"model"`
+	BaseURL           string  `toml:"base_url,omitempty"`
+	APIKey            string  `toml:"api_key,omitempty"`
+	TokenEnv          string  `toml:"token_env,omitempty"`
+	Temperature       float64 `toml:"temperature,omitempty"`
+	MaxResponseTokens int     `toml:"max_response_tokens,omitempty"`
+	// These override static model metadata; zero means use the registry/fallback.
+	ContextWindow        int      `toml:"context_window,omitempty"`
+	ModelMaxOutputTokens int      `toml:"model_max_output_tokens,omitempty"`
+	Responses            []string `toml:"responses,omitempty"`
 }
 
 // AgentConfig is used internally by the runtime prompt builder.
@@ -347,6 +387,7 @@ type AgentConfig struct {
 	Instruction      string
 	AdditionalPrompt string
 	RuntimeContext   string
+	ForceSimpleLoop  bool
 }
 
 // MemoryConfig is used internally by the memory manager.
@@ -357,13 +398,26 @@ type MemoryConfig struct {
 }
 
 func LoadConfigFromDir(configDir string) (Config, error) {
+	return loadConfigFromDir(configDir, LoadConfig)
+}
+
+// LoadRuntimeConfigFromDir loads the daemon-facing runtime config from a config
+// directory. It preserves the historic agent.toml -> agent.json lookup while
+// returning a config with runtime defaults resolved.
+func LoadRuntimeConfigFromDir(configDir string) (Config, error) {
+	return loadConfigFromDir(configDir, LoadRuntimeConfig)
+}
+
+type configFileLoader func(string) (Config, error)
+
+func loadConfigFromDir(configDir string, load configFileLoader) (Config, error) {
 	configPath := filepath.Join(configDir, "agent.toml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Fallback to .json for backward compatibility
 		configPath = filepath.Join(configDir, "agent.json")
 	}
 
-	cfg, err := LoadConfig(configPath)
+	cfg, err := load(configPath)
 	if err != nil {
 		return Config{}, err
 	}
@@ -404,17 +458,8 @@ func bundledSkillsDirCandidates() []string {
 func LoadConfig(path string) (Config, error) {
 	var cfg Config
 
-	// Determine format by file extension
-	if strings.HasSuffix(path, ".toml") {
-		if _, err := toml.DecodeFile(path, &cfg); err != nil {
-			return Config{}, fmt.Errorf("decode TOML config: %w", err)
-		}
-	} else {
-		_, err := os.Stat(path)
-		if err != nil {
-			return Config{}, fmt.Errorf("read config: %w", err)
-		}
-		return Config{}, fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
+	if _, err := decodeConfigFile(path, &cfg); err != nil {
+		return Config{}, err
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -422,6 +467,201 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// LoadRuntimeConfig loads a config file over runtime defaults and returns the
+// effective config used by the daemon. Optional speech providers remain opt-in:
+// their provider fields are not inherited from DefaultConfig unless the raw
+// config explicitly sets them.
+func LoadRuntimeConfig(path string) (Config, error) {
+	cfg := DefaultConfig()
+
+	metadata, err := decodeConfigFile(path, &cfg)
+	if err != nil {
+		return Config{}, err
+	}
+
+	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
+
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+
+	return cfg, nil
+}
+
+func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
+	if cfg == nil {
+		return
+	}
+
+	if !metadata.IsDefined("tts", "provider") || strings.TrimSpace(cfg.TTS.Provider) == "" {
+		cfg.TTS = TTSConfig{}
+	} else if normalizeTTSProvider(cfg.TTS.Provider) != defaultTTSProvider {
+		clearDefaultTTSProviderFields(cfg, metadata)
+	}
+	if !metadata.IsDefined("stt", "provider") || strings.TrimSpace(cfg.STT.Provider) == "" {
+		cfg.STT = STTConfig{}
+	} else if !usesDefaultSTTModel(cfg.STT.Provider) && !metadata.IsDefined("stt", "model") {
+		cfg.STT.Model = ""
+	}
+}
+
+func normalizeTTSProvider(provider string) string {
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+func clearDefaultTTSProviderFields(cfg *Config, metadata toml.MetaData) {
+	if !metadata.IsDefined("tts", "model") {
+		cfg.TTS.Model = ""
+	}
+	if !metadata.IsDefined("tts", "voice_id") {
+		cfg.TTS.VoiceID = ""
+	}
+	if !metadata.IsDefined("tts", "emotion") {
+		cfg.TTS.Emotion = ""
+	}
+	if !metadata.IsDefined("tts", "reference_id") {
+		cfg.TTS.ReferenceID = ""
+	}
+	if !metadata.IsDefined("tts", "speed") {
+		cfg.TTS.Speed = 0
+	}
+}
+
+func usesDefaultSTTModel(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai", defaultSTTProvider:
+		return true
+	default:
+		return false
+	}
+}
+
+// LoadResolvedConfig loads a config file over the canonical defaults and
+// returns the effective values used by config-editing surfaces. Missing files
+// are treated as "all defaults" so first-boot config pages can render before
+// agent.toml has been created.
+func LoadResolvedConfig(path string) (Config, error) {
+	resolvedPath, exists, err := resolveConfigPath(path)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg := DefaultConfig()
+	if exists {
+		if _, err := decodeConfigFile(resolvedPath, &cfg); err != nil {
+			return Config{}, err
+		}
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+
+	return cfg, nil
+}
+
+func resolveConfigPath(path string) (string, bool, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", false, errors.New("config path is required")
+	}
+
+	info, err := os.Stat(path)
+	if err == nil {
+		if !info.IsDir() {
+			return path, true, nil
+		}
+
+		tomlPath := filepath.Join(path, "agent.toml")
+		if _, err := os.Stat(tomlPath); err == nil {
+			return tomlPath, true, nil
+		} else if !os.IsNotExist(err) {
+			return "", false, fmt.Errorf("read config: %w", err)
+		}
+
+		jsonPath := filepath.Join(path, "agent.json")
+		if _, err := os.Stat(jsonPath); err == nil {
+			return jsonPath, true, nil
+		} else if !os.IsNotExist(err) {
+			return "", false, fmt.Errorf("read config: %w", err)
+		}
+
+		return tomlPath, false, nil
+	}
+	if os.IsNotExist(err) {
+		return path, false, nil
+	}
+	return "", false, fmt.Errorf("read config: %w", err)
+}
+
+func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
+	var metadata toml.MetaData
+
+	// Determine format by file extension
+	if strings.HasSuffix(path, ".toml") {
+		var err error
+		if metadata, err = toml.DecodeFile(path, cfg); err != nil {
+			return toml.MetaData{}, fmt.Errorf("decode TOML config: %w", err)
+		}
+	} else {
+		_, err := os.Stat(path)
+		if err != nil {
+			return toml.MetaData{}, fmt.Errorf("read config: %w", err)
+		}
+		return toml.MetaData{}, fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
+	}
+
+	if err := applyLegacyModelMaxTokens(path, metadata, cfg); err != nil {
+		return toml.MetaData{}, err
+	}
+	return metadata, nil
+}
+
+func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config) error {
+	needsModel := metadata.IsDefined("model", "max_tokens") &&
+		!metadata.IsDefined("model", "max_response_tokens")
+	needsModelText := metadata.IsDefined("model_text", "max_tokens") &&
+		!metadata.IsDefined("model_text", "max_response_tokens")
+	if !needsModel && !needsModelText {
+		return nil
+	}
+
+	var raw map[string]interface{}
+	if _, err := toml.DecodeFile(path, &raw); err != nil {
+		return fmt.Errorf("decode legacy TOML fields: %w", err)
+	}
+	if needsModel {
+		value, err := legacyModelMaxTokens(raw, "model")
+		if err != nil {
+			return err
+		}
+		cfg.Model.MaxResponseTokens = value
+	}
+	if needsModelText {
+		value, err := legacyModelMaxTokens(raw, "model_text")
+		if err != nil {
+			return err
+		}
+		cfg.ModelText.MaxResponseTokens = value
+	}
+	return nil
+}
+
+func legacyModelMaxTokens(raw map[string]interface{}, section string) (int, error) {
+	table, ok := raw[section].(map[string]interface{})
+	if !ok {
+		return 0, fmt.Errorf("%s.max_tokens is defined but %s is not a TOML table", section, section)
+	}
+	value, ok := table["max_tokens"]
+	if !ok {
+		return 0, fmt.Errorf("%s.max_tokens is defined but could not be decoded", section)
+	}
+	tokens, ok := value.(int64)
+	if !ok {
+		return 0, fmt.Errorf("%s.max_tokens must be an integer", section)
+	}
+	return int(tokens), nil
 }
 
 func (c Config) Validate() error {
@@ -444,6 +684,33 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Model.Model) == "" && strings.ToLower(c.Model.Provider) != "fake" {
 		return errors.New("model.model is required")
+	}
+	backend := c.Device.BackendOrDefault()
+	switch backend {
+	case "hdmi", "mobilegym":
+	default:
+		return fmt.Errorf("invalid device.backend: %s (expected hdmi or mobilegym)", c.Device.Backend)
+	}
+	if backend == "mobilegym" && strings.TrimSpace(c.Device.ControlTokenFile) == "" {
+		return errors.New("device.control_token_file is required when device.backend=mobilegym")
+	}
+	if c.Model.MaxResponseTokens < 0 {
+		return fmt.Errorf("model.max_response_tokens must be >= 0, got %d", c.Model.MaxResponseTokens)
+	}
+	if c.Model.ContextWindow < 0 {
+		return fmt.Errorf("model.context_window must be >= 0, got %d", c.Model.ContextWindow)
+	}
+	if c.Model.ModelMaxOutputTokens < 0 {
+		return fmt.Errorf("model.model_max_output_tokens must be >= 0, got %d", c.Model.ModelMaxOutputTokens)
+	}
+	if c.ModelText.ContextWindow < 0 {
+		return fmt.Errorf("model_text.context_window must be >= 0, got %d", c.ModelText.ContextWindow)
+	}
+	if c.ModelText.ModelMaxOutputTokens < 0 {
+		return fmt.Errorf("model_text.model_max_output_tokens must be >= 0, got %d", c.ModelText.ModelMaxOutputTokens)
+	}
+	if c.ModelText.MaxResponseTokens < 0 {
+		return fmt.Errorf("model_text.max_response_tokens must be >= 0, got %d", c.ModelText.MaxResponseTokens)
 	}
 
 	// Validate input_mode
@@ -483,10 +750,7 @@ func (c Config) Validate() error {
 		if triggerMode != "manual" && triggerMode != "wakeup" {
 			return fmt.Errorf("invalid trigger_mode: %s (expected manual or wakeup)", c.TriggerMode)
 		}
-		effectiveInputMode := strings.ToLower(strings.TrimSpace(c.InputMode))
-		if effectiveInputMode == "" {
-			effectiveInputMode = "text"
-		}
+		effectiveInputMode := strings.ToLower(strings.TrimSpace(c.InputModeOrDefault()))
 		if triggerMode == "wakeup" && effectiveInputMode != "audio" && effectiveInputMode != "stt" {
 			return fmt.Errorf("incompatible trigger_mode %q with input_mode %q: wakeup requires input_mode audio or stt", c.TriggerMode, c.InputMode)
 		}
@@ -525,6 +789,16 @@ func (c Config) Validate() error {
 	}
 	if c.ScreenStableDiffThreshold < 0 {
 		return fmt.Errorf("screen_stable_diff_threshold must be >= 0, got %g", c.ScreenStableDiffThreshold)
+	}
+
+	if c.MaxIterations < -1 {
+		return fmt.Errorf("max_iterations must be >= -1 (-1 means unlimited), got %d", c.MaxIterations)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(c.HID.PointerMode)) {
+	case "", "absolute", "touchscreen":
+	default:
+		return fmt.Errorf("invalid hid.pointer_mode: %s (expected absolute or touchscreen)", c.HID.PointerMode)
 	}
 
 	if err := c.Telemetry.Validate(); err != nil {
@@ -607,7 +881,7 @@ func (t TelemetryConfig) EnvironmentOrDefault() string {
 func (c Config) InputModeOrDefault() string {
 	mode := strings.TrimSpace(c.InputMode)
 	if mode == "" {
-		return "text"
+		return defaultInputMode
 	}
 	return strings.ToLower(mode)
 }
@@ -616,7 +890,7 @@ func (c Config) InputModeOrDefault() string {
 func (c Config) TriggerModeOrDefault() string {
 	mode := strings.TrimSpace(c.TriggerMode)
 	if mode == "" {
-		return "manual"
+		return defaultTriggerMode
 	}
 	return strings.ToLower(mode)
 }
@@ -640,14 +914,14 @@ func (c Config) VoiceFollowupTimeoutOrDefault() time.Duration {
 	if c.VoiceFollowupTimeoutMs > 0 {
 		return time.Duration(c.VoiceFollowupTimeoutMs) * time.Millisecond
 	}
-	return 6 * time.Second
+	return time.Duration(defaultVoiceFollowupTimeoutMs) * time.Millisecond
 }
 
 func (c Config) VoiceFirstTurnTimeoutOrDefault() time.Duration {
 	if c.VoiceFirstTurnTimeoutMs > 0 {
 		return time.Duration(c.VoiceFirstTurnTimeoutMs) * time.Millisecond
 	}
-	return 10 * time.Second
+	return time.Duration(defaultVoiceFirstTurnTimeoutMs) * time.Millisecond
 }
 
 func (c Config) VoiceInterruptOnWakeupOrDefault() bool {
@@ -675,7 +949,7 @@ func (c Config) VoiceMaxResponseTokensOrDefault() int {
 	if c.VoiceMaxResponseTokens > 0 {
 		return c.VoiceMaxResponseTokens
 	}
-	return 400
+	return defaultVoiceMaxResponseTokens
 }
 
 func (c Config) ScreenshotPruningOrDefault() ScreenshotPruningConfig {

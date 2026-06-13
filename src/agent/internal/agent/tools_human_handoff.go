@@ -72,6 +72,25 @@ func (t *HumanHandoffTool) Description() string {
 		`After the user confirms completion in their next message, take a screenshot to verify the result before continuing.`
 }
 
+func (t *HumanHandoffTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"reason": stringEnumArgSchema(
+			"Why human handoff is needed.",
+			string(HandoffReasonAuthentication),
+			string(HandoffReasonCAPTCHA),
+			string(HandoffReasonVerification),
+			string(HandoffReasonSensitive),
+			string(HandoffReasonBlackScreen),
+			string(HandoffReasonAmbiguous),
+			string(HandoffReasonUnsupported),
+			string(HandoffReasonStuck),
+			string(HandoffReasonOther),
+		),
+		"details":          stringArgSchema("Specific context explaining the situation."),
+		"suggested_action": stringArgSchema("Optional instruction for what the human should do."),
+	}, "reason", "details")
+}
+
 func (t *HumanHandoffTool) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		Reason          string `json:"reason"`

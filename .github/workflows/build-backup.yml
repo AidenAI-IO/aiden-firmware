@@ -1,0 +1,20 @@
+name: Build (backup / self-hosted-02)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: backup-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: ${{ startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+    uses: ./.github/workflows/build.yml
+    with:
+      runner: aiden-hosted-02
+      free_disk_space: false
+    secrets: inherit

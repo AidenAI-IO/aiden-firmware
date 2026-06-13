@@ -28,7 +28,10 @@ provider = "openrouter"
 model = "bytedance-seed/seed-2.0-lite"
 token_env = "OPENROUTER_API_KEY"
 temperature = 0.2
-max_tokens = 1000
+max_response_tokens = 1000
+# Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.
+# context_window = 128000
+# model_max_output_tokens = 8192
 
 [audio]
 socket = "/run/audio_service/audio_service.sock"
@@ -133,7 +136,28 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `api_key` | 直接填写 API key |
 | `token_env` | 从指定环境变量读取 API key；仅 `[model]` 支持 |
 | `temperature` | 采样温度 |
-| `max_tokens` | 最大输出 token |
+| `max_response_tokens` | 请求时传给模型的最大输出 token |
+| `context_window` | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback. |
+| `model_max_output_tokens` | Optional advertised max output override in tokens. Unset or `0` uses provider metadata when fetched, then the built-in registry. |
+
+## `memory/extraction.yaml`
+
+Optional. Place `memory/extraction.yaml` under the config directory to control session-memory compaction and chunk extraction. Missing files and invalid fields fall back to defaults. See [session-memory.md](./session-memory.md) for the full flow.
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `reserve_tokens` | `8192` | Token headroom reserved below the active model context window. Compaction triggers when `prompt_tokens >= context_window - reserve_tokens`. The value is clamped to at most half of the window so small-window models remain usable. |
+| `keep_recent_tokens` | `20000` | Approximate token budget for the hot window retained by token-based cut-point selection. It is clamped together with `reserve_tokens` to fit the active window. |
+| `hot_window_events` | `30` | Target number of recent events retained by the count fallback. Used only when prompt-token data is unavailable. |
+| `count_compress_after_events` | `hot_window_events * 2` | Event-count trigger used only when prompt-token data is unavailable. If omitted, it is derived from the normalized `hot_window_events`; explicit values must be greater than `hot_window_events`. |
+| `context_window` | `32000` | Fallback context window for compaction when the active model is not present in `model_specs`. Runtime normally derives this from `ModelResolver.Spec()`; this value is only used for unknown models. |
+| `compress_at_percent` | `50` | Percentage trigger: compaction starts when `prompt_tokens / context_window >= compress_at_percent%`. |
+| `summary_max_chunks` | `10` | Number of chunk summaries kept in the Recent Chunks section of `summary.md`. Older entries move to the archive and are folded into the Rolling Summary. |
+| `session_boundary_enabled` | `true` | Classify each new user turn as continuing the current session or starting a new one. A `new` boundary archives the current `memory/session/` directory and recreates an empty active session. |
+| `session_boundary_short_gap_seconds` | default boundary config | Gap below which a turn is treated as continuation regardless of lexical signals. |
+| `session_boundary_long_gap_seconds` | default boundary config | Gap above which a turn is treated as a fresh session regardless of lexical signals. |
+| `tag_candidates` | see defaults | Candidate keywords matched when tagging chunk summaries. |
+| `entity_suffixes` | `["App","app","APP"]` | Suffixes recognized during entity extraction. |
 
 ## System Environment Variables
 

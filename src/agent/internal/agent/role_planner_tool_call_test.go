@@ -19,7 +19,7 @@ func TestParsePlannerDecisionExtractsDescriptionFromToolCall(t *testing.T) {
 					{
 						FunctionCall: &llms.FunctionCall{
 							Name:      "touch_gesture",
-							Arguments: `{"__arg1": "{\"type\": \"tap\", \"point\": {\"x\": 0.09, \"y\": 0.05}}", "description": "点击左上角返回箭头，回到上一级设置菜单"}`,
+							Arguments: `{"__arg1": "{\"type\": \"tap\", \"point\": {\"x\": 90, \"y\": 50}}", "description": "点击左上角返回箭头，回到上一级设置菜单"}`,
 						},
 					},
 				},
@@ -106,6 +106,17 @@ func TestParseVerifierDecisionRejectsAnswerlessJSONFinish(t *testing.T) {
 	}
 }
 
+func TestParseVerifierDecisionReplanOverridesFinish(t *testing.T) {
+	decision := parseVerifierDecision(`{"can_finish":true,"needs_replan":true,"final_answer":"not done","reason":"step incomplete"}`, "")
+
+	if decision.CanFinish {
+		t.Fatalf("needs_replan should override can_finish: %#v", decision)
+	}
+	if !decision.NeedsReplan {
+		t.Fatalf("needs_replan should remain true: %#v", decision)
+	}
+}
+
 func TestParseVerifierDecisionAcceptsExplicitTextFinalAnswer(t *testing.T) {
 	decision := parseVerifierDecision("Final Answer: done", "")
 
@@ -114,5 +125,61 @@ func TestParseVerifierDecisionAcceptsExplicitTextFinalAnswer(t *testing.T) {
 	}
 	if decision.FinalAnswer != "done" {
 		t.Fatalf("final answer = %q, want done", decision.FinalAnswer)
+	}
+}
+
+func TestParseRouteDecisionTreatsBareSimpleIntentAsSimple(t *testing.T) {
+	decision := parseRouteDecision(contentResponse("use_simple_mode\n<reason>no tools needed</reason>"), "Select option (b).")
+
+	if decision.Mode != routeModeSimple {
+		t.Fatalf("route mode = %q, want simple", decision.Mode)
+	}
+	if decision.FinalAnswer != "" {
+		t.Fatalf("bare simple intent should not become final answer: %#v", decision)
+	}
+}
+
+func TestParseRouteDecisionTreatsOrdinaryPlanAndSimpleTextAsDirectAnswer(t *testing.T) {
+	for _, text := range []string{
+		"I will provide a plan in the final answer.",
+		"Let's keep this simple and answer directly.",
+		"Here is a simple approach: choose option B.",
+	} {
+		decision := parseRouteDecision(contentResponse(text), "Select option (b).")
+		if decision.Mode != routeModeDirectAnswer {
+			t.Fatalf("route mode for %q = %q, want direct_answer", text, decision.Mode)
+		}
+		if decision.FinalAnswer != text {
+			t.Fatalf("final answer for %q = %q", text, decision.FinalAnswer)
+		}
+	}
+}
+
+func TestParseRouteDecisionTreatsExplicitTextModeCommandsAsIntent(t *testing.T) {
+	cases := []struct {
+		text string
+		want routeMode
+	}{
+		{text: "switch to plan mode", want: routeModePlan},
+		{text: "enter_plan_mode because this needs checkpoints", want: routeModePlan},
+		{text: "use simple mode", want: routeModeSimple},
+		{text: "use_simple_mode\n<reason>short task</reason>", want: routeModeSimple},
+	}
+	for _, tc := range cases {
+		decision := parseRouteDecision(contentResponse(tc.text), "request")
+		if decision.Mode != tc.want {
+			t.Fatalf("route mode for %q = %q, want %q", tc.text, decision.Mode, tc.want)
+		}
+	}
+}
+
+func TestParseRouteDecisionForcesPlanForMultiStageRequest(t *testing.T) {
+	decision := parseRouteDecision(
+		contentResponse(`{"mode":"simple","reason":"model underestimated task"}`),
+		"Stage 1: compute A.\nStage 2: compute B.\nStage 3: reconcile invoice total.",
+	)
+
+	if decision.Mode != routeModePlan {
+		t.Fatalf("route mode = %q, want plan", decision.Mode)
 	}
 }

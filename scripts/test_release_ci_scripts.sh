@@ -90,6 +90,21 @@ if ! grep -q 'SOURCE_DATE_EPOCH' "$DOCKER_BUILD_SCRIPT" || \
     exit 1
 fi
 
+if grep -Fq 'rm -rf pico-sdk/output/out' "$WORKFLOW"; then
+    echo "build workflow must preserve pico-sdk/output/out so unchanged SDK code can reuse SDK-managed build outputs" >&2
+    exit 1
+fi
+
+if ! grep -Eq 'pico-sdk/output/image/\*\.img([[:space:]\\]|$)' "$WORKFLOW"; then
+    echo "build workflow must clean all generated images before a release build" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'chmod -R u+w "$GITHUB_WORKSPACE/build/.cache/go-mod"' "$WORKFLOW"; then
+    echo "self-hosted workspace reclaim must unlock stale read-only Go module cache directories before checkout" >&2
+    exit 1
+fi
+
 if grep -q 'apply_pico_sdk_rootfs_reproducibility_patch.sh' "$BUILD_IMAGE_SCRIPT" || \
    [ -e "$ROOT_DIR/scripts/apply_pico_sdk_rootfs_reproducibility_patch.sh" ] || \
    [ -e "$ROOT_DIR/scripts/patches/pico-sdk-rootfs-reproducible-build.patch" ]; then
@@ -99,6 +114,17 @@ fi
 
 if ! grep -q 'cancel-in-progress: false' "$SCHEDULED_WORKFLOW"; then
     echo "scheduled build workflow must not cancel an in-progress release build" >&2
+    exit 1
+fi
+
+if ! grep -q 'runs-on: aiden-hosted-01' "$SCHEDULED_WORKFLOW" || \
+   ! grep -q 'runner: aiden-hosted-01' "$SCHEDULED_WORKFLOW"; then
+    echo "scheduled build workflow must use the primary dedicated Aiden hosted runner label" >&2
+    exit 1
+fi
+
+if ! grep -q 'runner: aiden-hosted-02' "$ROOT_DIR/.github/workflows/build-backup.yml"; then
+    echo "backup build workflow must use the backup dedicated Aiden hosted runner label" >&2
     exit 1
 fi
 
@@ -112,7 +138,13 @@ if grep -q 'scripts/test_build_scripts.sh' "$CI_WORKFLOW"; then
     exit 1
 fi
 
+if grep -q 'scripts/test_reproducible_rootfs_policy.sh' "$CI_WORKFLOW"; then
+    echo "CI release script checks must not run submodule-dependent reproducible rootfs policy checks" >&2
+    exit 1
+fi
+
 if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
+   ! grep -q 'scripts/test_clean_rootfs_overlay_staging.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_compress_release_images.sh' "$CI_WORKFLOW" || \
    ! grep -q 'scripts/test_ota_manifest_generation.sh' "$CI_WORKFLOW" || \
@@ -140,6 +172,24 @@ fi
 if ! grep -q 'Compress OTA manifest images' "$WORKFLOW" || \
    ! grep -q 'Compress release upload images' "$WORKFLOW"; then
     echo "build workflow must compress OTA image assets before publishing releases" >&2
+    exit 1
+fi
+
+oem_bin_sync_line=$(grep -nF 'rsync -a --delete "$OVERLAY/oem/usr/bin/" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin/"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+oem_full_sync_line=$(grep -nF 'rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+if [ -z "$oem_bin_sync_line" ] || [ -z "$oem_full_sync_line" ] || [ "$oem_bin_sync_line" -ge "$oem_full_sync_line" ]; then
+    echo "_build_image.sh must sync OEM usr/bin with delete semantics before full OEM overlay sync" >&2
+    exit 1
+fi
+firmware_count=$(grep -cF './build.sh firmware "$@"' "$ROOT_DIR/_build_image.sh")
+firmware_line=$(grep -nF './build.sh firmware "$@"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+if [ "$firmware_count" -ne 1 ] || [ -z "$firmware_line" ] || [ "$firmware_line" -ge "$oem_full_sync_line" ]; then
+    echo "_build_image.sh must sync final OEM overlay after pico-sdk firmware packaging regenerates SDK-managed OEM files" >&2
+    exit 1
+fi
+if ! grep -Fq '"usr/ko/insmod_wifi.sh"' "$BUILD_IMAGE_SCRIPT" || \
+   grep -Fq '"usr/ko"' "$BUILD_IMAGE_SCRIPT"; then
+    echo "_build_image.sh must clean only Aiden-managed usr/ko overrides, not the SDK module directory" >&2
     exit 1
 fi
 

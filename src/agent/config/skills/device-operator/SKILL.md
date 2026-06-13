@@ -3,7 +3,7 @@ name: device-operator
 description: Use when controlling a visible target device UI through screenshots, touch, mouse, or keyboard.
 metadata:
   preferred_model: primary
-  allowed_tools: [screenshot, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text, shell]
+  allowed_tools: [screenshot, quick_action, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text, shell]
 ---
 
 Use this skill when interacting with the connected device screen, app UI, keyboard, touch input, or mouse pointer.
@@ -54,17 +54,17 @@ When reporting a blocker, include the screenshot error, which recovery commands 
 
 ## Action Choice
 
-Prefer higher-level touch actions before raw pointer actions:
-
-- Use `touch_gesture` for taps, swipes, back, home, drag, and mobile-style navigation.
-- Use `keyboard_text` for entering text after confirming the input field is focused.
-- Use `keyboard_tap` for keys such as enter, escape, tab, arrows, or shortcuts.
+- Use `quick_action` first when the goal matches a catalog shortcut (back, home, app switch, search, copy/paste, browser ops, etc.). Pass the correct `platform` (ios/android/mac).
+- If `quick_action` is reserved, returns `ok=false`, or the screen does not change as expected: do not retry the same binding. Try `alternative=true` once when listed, then fall back to direct input tools and continue.
+- Use `touch_gesture` for taps, swipes, drag, and mobile-style navigation.
+- Use `keyboard_text` for ASCII text entry after confirming the input field is focused. Never pass Chinese or emoji; use pinyin/English keywords and select on-screen candidates.
+- Use `keyboard_tap` for keys such as enter, escape, tab, arrows, or shortcuts not covered by quick_action.
 - Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch gestures are not appropriate.
 
-Prefer semantic gestures when available:
+Prefer semantic shortcuts and gestures when available:
 
-- Use `touch_gesture` with `type: "back"` for back navigation.
-- Use `touch_gesture` with `type: "home"` for home navigation.
+- Use `quick_action` for cataloged keyboard/touch bindings before improvising raw `keyboard_tap` or custom swipes.
+- Use `touch_gesture` with `type: "back"` or `type: "home"` when quick_action is unavailable or ineffective.
 - Use scroll or swipe instead of repeatedly tapping uncertain controls.
 
 ## Coordinate Discipline
@@ -73,7 +73,7 @@ Before using coordinates:
 
 - Inspect the screenshot.
 - Identify the intended target visually.
-- Use normalized coordinates when possible.
+- Use `coord_space: "normalized"` with 0-1000 coordinates when possible: (0,0) is top-left, (1000,1000) is bottom-right, and (500,500) is center. Do not use 0-1 coordinates.
 - Avoid edges unless performing an edge gesture.
 - Do not guess a coordinate if the target is not visible.
 
@@ -173,7 +173,9 @@ Do not confirm sensitive dialogs unless the user explicitly asked for that exact
 Before typing:
 
 - Confirm the text field is focused.
-- Prefer one `keyboard_text` call for normal text.
+- `keyboard_text` is US-keyboard ASCII only (letters, digits, common punctuation). Do not pass Chinese, emoji, or other non-ASCII characters — the tool errors without typing anything.
+- For Chinese content, use pinyin or English keywords in `keyboard_text` (e.g. `weixin`, `zhangsan`), then tap the matching on-screen candidate or search result.
+- Prefer one `keyboard_text` call for normal ASCII text.
 - Use `keyboard_tap` for submit or enter only after verifying the text appears.
 - If text does not appear, stop and re-check focus before typing again.
 
@@ -188,7 +190,13 @@ For navigation tasks:
 
 ## App Switching
 
-When the task requires switching to a different app or opening the recents/task switcher:
+When the task requires switching apps or opening recents:
+
+**Step 0 — prefer quick_action when platform is known.**
+
+- iOS/Android/macOS: try `quick_action` with `action=app_switch` and the correct `platform` first.
+- Android search: try `quick_action` `spotlight_search` (Meta) before manual UI search.
+- If quick_action fails or the screen does not change, continue with the probe flow below without asking the user.
 
 **Step 1 — recall cached method first.**
 Call `recall_memory` with tags `["app-switch", "device"]`. If a record exists for the current device, use it directly and skip probing.

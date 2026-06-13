@@ -23,7 +23,7 @@ var defaultAppMappingJSON []byte
 const AppMappingFileName = "app_mapping.json"
 
 // BundledAppMappingPath is the on-device install path, populated by
-// _build_image.sh from src/agent/config/app_mapping.json.
+// _build_image.sh from src/agent/internal/agent/app_mapping.json.
 const BundledAppMappingPath = "/usr/share/aiden/" + AppMappingFileName
 
 type appMappingEntry struct {
@@ -124,10 +124,10 @@ func (t *OpenAppTool) Name() string { return "open_app" }
 func (t *OpenAppTool) Description() string {
 	return `Open an app or dial a phone number on the connected phone via the phone bridge. ` +
 		`Use this instead of manually finding and tapping app icons when the phone bridge is connected. ` +
-		`Input JSON: {"app":"WeChat"} or {"app":"https://example.com"} or {"ios_urls":["weixin://"],"android_packages":["com.tencent.mm"]}. ` +
+		`Input JSON: {"app":"WeChat"}, {"app":"browser"}, {"url":"https://example.com"}, {"app":"https://example.com"}, or {"ios_urls":["weixin://"],"android_packages":["com.tencent.mm"]}. ` +
 		`If this tool returns {"ok":true}, the app launch request is complete; answer the user immediately unless they asked for additional actions inside that app. ` +
 		`To dial a phone number, use: {"app":"phone","phone_number":"10086"} or just {"phone_number":"10086"}. ` +
-		`Supports opening URLs directly: pass any http/https URL as the app name to open it in the browser. ` +
+		`Use {"app":"browser"} to open the browser itself, and {"url":"https://example.com"} to open a specific webpage. ` +
 		`Common apps: WeChat(微信), Alipay(支付宝), Safari, Chrome, Settings(设置), Phone(电话), Messages(短信), ` +
 		`Camera(相机), Photos(相册), Maps(地图), Notes(备忘录), Calendar(日历), Reminders(提醒事项), ` +
 		`Contacts(通讯录), Mail(邮件), AppStore(应用商店), Music(音乐), Files(文件), Clock(时钟), Health(健康), ` +
@@ -135,11 +135,246 @@ func (t *OpenAppTool) Description() string {
 		`If the phone bridge is not connected, this tool will fail and you should fall back to HID actions.`
 }
 
+func (t *OpenAppTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"app":              stringArgSchema("App name, alias, package, bundle id, or browser shortcut target."),
+		"name":             stringArgSchema("Alias for app."),
+		"url":              stringArgSchema("HTTP or HTTPS URL to open."),
+		"ios_urls":         stringArrayArgSchema("Explicit iOS URL schemes to try."),
+		"android_packages": stringArrayArgSchema("Explicit Android package names or intent actions to try."),
+		"phone_number":     stringArgSchema("Phone number to dial."),
+	})
+}
+
 type openAppArgs struct {
 	App             string   `json:"app"`
+	Name            string   `json:"name"`
+	URL             string   `json:"url"`
 	IOSURLs         []string `json:"ios_urls"`
 	AndroidPackages []string `json:"android_packages"`
 	PhoneNumber     string   `json:"phone_number"`
+}
+
+func isHTTPURL(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
+}
+
+func applyOpenAppURL(args *openAppArgs, rawURL string) error {
+	targetURL := strings.TrimSpace(rawURL)
+	if !isHTTPURL(targetURL) {
+		return fmt.Errorf("url must start with http:// or https://")
+	}
+	args.IOSURLs = []string{targetURL}
+	args.AndroidPackages = []string{"android.intent.action.VIEW:" + targetURL}
+	return nil
+}
+
+func hasOpenAppExplicitTargets(args openAppArgs) bool {
+	return len(args.IOSURLs) > 0 || len(args.AndroidPackages) > 0
+}
+
+func isPhoneAppAlias(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "phone", "telephone", "dial", "dialer", "电话":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveOpenAppTargets(args *openAppArgs) error {
+	if args == nil {
+		return fmt.Errorf("missing open_app args")
+	}
+	if strings.TrimSpace(args.App) == "" && strings.TrimSpace(args.Name) != "" {
+		args.App = args.Name
+	}
+	hasApp := strings.TrimSpace(args.App) != ""
+	hasURL := strings.TrimSpace(args.URL) != ""
+	hasExplicitTargets := hasOpenAppExplicitTargets(*args)
+
+	if strings.TrimSpace(args.PhoneNumber) != "" {
+		if hasURL || hasExplicitTargets {
+			return fmt.Errorf("phone_number cannot be combined with url, ios_urls, or android_packages")
+		}
+		if hasApp && !isPhoneAppAlias(args.App) {
+			return fmt.Errorf("phone_number can only be combined with app/name when the app is phone")
+		}
+		telURL := "tel:" + strings.TrimSpace(args.PhoneNumber)
+		args.IOSURLs = []string{telURL}
+		args.AndroidPackages = []string{"android.intent.action.DIAL:" + strings.TrimSpace(args.PhoneNumber)}
+		return nil
+	}
+
+	if hasURL {
+		if hasApp || hasExplicitTargets {
+			return fmt.Errorf("url cannot be combined with app, name, ios_urls, or android_packages")
+		}
+		return applyOpenAppURL(args, args.URL)
+	}
+
+	if hasApp && hasExplicitTargets {
+		return fmt.Errorf("app/name cannot be combined with ios_urls or android_packages")
+	}
+
+	if hasApp {
+		key := strings.ToLower(strings.TrimSpace(args.App))
+		if mapped, ok := globalAppMapping.lookup(key); ok {
+			args.IOSURLs = mapped.IOSURLs
+			args.AndroidPackages = mapped.AndroidPackages
+		} else if isHTTPURL(key) {
+			return applyOpenAppURL(args, args.App)
+		} else {
+			return fmt.Errorf("unknown app %q, please provide url, ios_urls, or android_packages explicitly", args.App)
+		}
+	}
+
+	if len(args.IOSURLs) == 0 && len(args.AndroidPackages) == 0 {
+		return fmt.Errorf("must provide app name, url, ios_urls, or android_packages")
+	}
+	return nil
+}
+
+func firstOpenAppIOSURL(args openAppArgs) string {
+	for _, target := range args.IOSURLs {
+		if value := strings.TrimSpace(target); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstOpenAppAndroidPackage(args openAppArgs) string {
+	for _, target := range args.AndroidPackages {
+		if value := strings.TrimSpace(target); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func androidActionPayload(target, prefix string) (string, bool) {
+	target = strings.TrimSpace(target)
+	if !strings.HasPrefix(strings.ToLower(target), prefix) {
+		return "", false
+	}
+	return strings.TrimSpace(target[len(prefix):]), true
+}
+
+func openAppResultMethod(args openAppArgs) string {
+	if strings.TrimSpace(args.PhoneNumber) != "" {
+		return "dial"
+	}
+	if strings.TrimSpace(args.URL) != "" || isHTTPURL(args.App) {
+		return "open_url"
+	}
+	if strings.TrimSpace(args.App) != "" {
+		return "open_app"
+	}
+	if target := firstOpenAppIOSURL(args); target != "" {
+		lower := strings.ToLower(target)
+		switch {
+		case isHTTPURL(target):
+			return "open_url"
+		case strings.HasPrefix(lower, "tel:"):
+			return "dial"
+		}
+	}
+	if target := firstOpenAppAndroidPackage(args); target != "" {
+		lower := strings.ToLower(target)
+		switch {
+		case strings.HasPrefix(lower, "android.intent.action.dial:"):
+			return "dial"
+		case strings.HasPrefix(lower, "android.intent.action.view:"):
+			if payload, ok := androidActionPayload(target, "android.intent.action.view:"); ok && isHTTPURL(payload) {
+				return "open_url"
+			}
+		}
+	}
+	return "open_app"
+}
+
+func openAppResultTarget(args openAppArgs) string {
+	if value := strings.TrimSpace(args.PhoneNumber); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(args.URL); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(args.App); value != "" {
+		return value
+	}
+	if target := firstOpenAppIOSURL(args); target != "" {
+		lower := strings.ToLower(target)
+		if strings.HasPrefix(lower, "tel:") {
+			return strings.TrimPrefix(target, target[:4])
+		}
+		return target
+	}
+	if target := firstOpenAppAndroidPackage(args); target != "" {
+		lower := strings.ToLower(target)
+		if strings.HasPrefix(lower, "android.intent.action.dial:") {
+			if payload, ok := androidActionPayload(target, "android.intent.action.dial:"); ok {
+				return payload
+			}
+		}
+		if strings.HasPrefix(lower, "android.intent.action.view:") {
+			if payload, ok := androidActionPayload(target, "android.intent.action.view:"); ok {
+				return payload
+			}
+		}
+		return target
+	}
+	return ""
+}
+
+func openAppResultMechanism(args openAppArgs, responseMethod string) string {
+	method := strings.TrimSpace(responseMethod)
+	switch method {
+	case "ios_shortcut", "ios_url_scheme", "android_intent", "android_deeplink", "android_package", "dial":
+		return method
+	case "open_url":
+		if openAppResultMethod(args) == "open_url" {
+			return method
+		}
+	case "launch_package", "package_name":
+		return "android_package"
+	}
+
+	if len(args.IOSURLs) > 0 {
+		target := strings.TrimSpace(args.IOSURLs[0])
+		lower := strings.ToLower(target)
+		switch {
+		case isHTTPURL(target):
+			return "open_url"
+		case strings.HasPrefix(lower, "tel:"):
+			return "dial"
+		case strings.HasPrefix(lower, "shortcuts://"):
+			return "ios_shortcut"
+		case target != "":
+			return "ios_url_scheme"
+		}
+	}
+
+	if len(args.AndroidPackages) > 0 {
+		target := strings.TrimSpace(args.AndroidPackages[0])
+		lower := strings.ToLower(target)
+		switch {
+		case strings.HasPrefix(lower, "android.intent.action.dial:"):
+			return "dial"
+		case strings.HasPrefix(lower, "android.intent.action.view:"):
+			return "open_url"
+		case strings.HasPrefix(lower, "intent:"):
+			return "android_intent"
+		case strings.Contains(lower, "://"):
+			return "android_deeplink"
+		case target != "":
+			return "android_package"
+		}
+	}
+
+	return method
 }
 
 func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
@@ -161,30 +396,11 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 		args.App = trimmed
 	}
 
-	if args.App != "" && len(args.IOSURLs) == 0 && len(args.AndroidPackages) == 0 {
-		key := strings.ToLower(strings.TrimSpace(args.App))
-		if mapped, ok := globalAppMapping.lookup(key); ok {
-			args.IOSURLs = mapped.IOSURLs
-			args.AndroidPackages = mapped.AndroidPackages
-		} else if strings.HasPrefix(key, "http://") || strings.HasPrefix(key, "https://") {
-			args.IOSURLs = []string{args.App}
-			args.AndroidPackages = []string{"android.intent.action.VIEW:" + args.App}
-		} else {
-			return jsonString(map[string]interface{}{
-				"ok":    false,
-				"error": fmt.Sprintf("unknown app %q, please provide ios_urls or android_packages explicitly", args.App),
-			}), nil
-		}
-	}
-
-	if args.PhoneNumber != "" {
-		telURL := "tel:" + args.PhoneNumber
-		args.IOSURLs = []string{telURL}
-		args.AndroidPackages = []string{"android.intent.action.DIAL:" + args.PhoneNumber}
-	}
-
-	if len(args.IOSURLs) == 0 && len(args.AndroidPackages) == 0 {
-		return "error: must provide app name, ios_urls, or android_packages", nil
+	if err := resolveOpenAppTargets(&args); err != nil {
+		return jsonString(map[string]interface{}{
+			"ok":    false,
+			"error": err.Error(),
+		}), nil
 	}
 
 	cmdID := fmt.Sprintf("open_%d_%d", time.Now().UnixMilli(), openAppCmdSeq.Add(1))
@@ -207,7 +423,13 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 
 	result := map[string]interface{}{
 		"ok":     resp.OK,
-		"method": resp.Method,
+		"method": openAppResultMethod(args),
+	}
+	if target := openAppResultTarget(args); target != "" {
+		result["target"] = target
+	}
+	if mechanism := openAppResultMechanism(args, resp.Method); mechanism != "" {
+		result["mechanism"] = mechanism
 	}
 	if !resp.OK {
 		result["error"] = resp.Error

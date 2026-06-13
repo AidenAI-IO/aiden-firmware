@@ -19,6 +19,8 @@ def extract_trace(history: list[dict[str, Any]]) -> Trace:
     for msg in history:
         mtype = msg.get("type")
         if mtype == "tool_call":
+            if pending is not None:
+                tool_calls.append(ToolCall(**pending))
             step += 1
             args = _safe_loads(msg.get("tool_input", "")) or {}
             if not isinstance(args, dict):

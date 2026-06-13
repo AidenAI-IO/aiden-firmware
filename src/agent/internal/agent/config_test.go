@@ -70,6 +70,325 @@ func TestConfigScreenStableDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadConfigParsesModelSpecOverrides(t *testing.T) {
+	configDir := t.TempDir()
+	config := `
+instruction = "test"
+
+[model]
+provider = "openrouter"
+model = "vendor/test-model"
+max_response_tokens = 1000
+context_window = 64000
+model_max_output_tokens = 4096
+`
+	if err := os.WriteFile(configDir+"/agent.toml", []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfigFromDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigFromDir() error = %v", err)
+	}
+	if cfg.Model.ContextWindow != 64_000 {
+		t.Errorf("ContextWindow = %d, want 64_000", cfg.Model.ContextWindow)
+	}
+	if cfg.Model.MaxResponseTokens != 1_000 {
+		t.Errorf("MaxResponseTokens = %d, want 1_000", cfg.Model.MaxResponseTokens)
+	}
+	if cfg.Model.ModelMaxOutputTokens != 4_096 {
+		t.Errorf("ModelMaxOutputTokens = %d, want 4_096", cfg.Model.ModelMaxOutputTokens)
+	}
+}
+
+func TestLoadConfigParsesLegacyModelMaxTokens(t *testing.T) {
+	configDir := t.TempDir()
+	config := `
+instruction = "test"
+
+[model]
+provider = "openrouter"
+model = "vendor/test-model"
+max_tokens = 777
+`
+	if err := os.WriteFile(configDir+"/agent.toml", []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfigFromDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigFromDir() error = %v", err)
+	}
+	if cfg.Model.MaxResponseTokens != 777 {
+		t.Errorf("MaxResponseTokens = %d, want legacy max_tokens value 777", cfg.Model.MaxResponseTokens)
+	}
+}
+
+func TestLoadConfigPrefersMaxResponseTokensOverLegacyMaxTokens(t *testing.T) {
+	configDir := t.TempDir()
+	config := `
+instruction = "test"
+
+[model]
+provider = "openrouter"
+model = "vendor/test-model"
+max_response_tokens = 1000
+max_tokens = 777
+`
+	if err := os.WriteFile(configDir+"/agent.toml", []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfigFromDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigFromDir() error = %v", err)
+	}
+	if cfg.Model.MaxResponseTokens != 1_000 {
+		t.Errorf("MaxResponseTokens = %d, want canonical max_response_tokens value 1_000", cfg.Model.MaxResponseTokens)
+	}
+}
+
+func TestLoadRuntimeConfigFromDirAppliesRuntimeDefaultsWithoutActivatingSpeech(t *testing.T) {
+	configDir := t.TempDir()
+	config := `
+[model]
+provider = "fake"
+`
+	if err := os.WriteFile(filepath.Join(configDir, "agent.toml"), []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfigFromDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfigFromDir() error = %v", err)
+	}
+
+	if cfg.InputMode != defaultInputMode {
+		t.Fatalf("InputMode = %q, want runtime default %q", cfg.InputMode, defaultInputMode)
+	}
+	if cfg.Audio.Socket != defaultAudioSocket {
+		t.Fatalf("Audio.Socket = %q, want runtime default %q", cfg.Audio.Socket, defaultAudioSocket)
+	}
+	if cfg.HID.FrameSocket != defaultFrameServiceSocket {
+		t.Fatalf("HID.FrameSocket = %q, want runtime default %q", cfg.HID.FrameSocket, defaultFrameServiceSocket)
+	}
+	if cfg.Benchmark.JudgeModel != defaultBenchmarkJudgeModel {
+		t.Fatalf("Benchmark.JudgeModel = %q, want runtime default %q",
+			cfg.Benchmark.JudgeModel, defaultBenchmarkJudgeModel)
+	}
+	if cfg.VoiceMaxResponseTokens != defaultVoiceMaxResponseTokens {
+		t.Fatalf("VoiceMaxResponseTokens = %d, want runtime default %d",
+			cfg.VoiceMaxResponseTokens, defaultVoiceMaxResponseTokens)
+	}
+	if cfg.ScreenStableTimeoutMs != defaultStableWaitTimeoutMs {
+		t.Fatalf("ScreenStableTimeoutMs = %d, want runtime default %d",
+			cfg.ScreenStableTimeoutMs, defaultStableWaitTimeoutMs)
+	}
+	if cfg.TTS.Provider != "" {
+		t.Fatalf("TTS.Provider = %q, want empty when text mode did not configure TTS", cfg.TTS.Provider)
+	}
+	if cfg.STT.Provider != "" {
+		t.Fatalf("STT.Provider = %q, want empty when text mode did not configure STT", cfg.STT.Provider)
+	}
+}
+
+func TestLoadRuntimeConfigKeepsSpeechProvidersOptIn(t *testing.T) {
+	dir := t.TempDir()
+
+	unconfiguredPath := filepath.Join(dir, "unconfigured.toml")
+	if err := os.WriteFile(unconfiguredPath, []byte(`
+[model]
+provider = "fake"
+
+[stt]
+
+[tts]
+`), 0o644); err != nil {
+		t.Fatalf("write unconfigured config: %v", err)
+	}
+	unconfigured, err := LoadRuntimeConfig(unconfiguredPath)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig(unconfigured) error = %v", err)
+	}
+	if unconfigured.STT.Provider != "" {
+		t.Fatalf("unconfigured STT.Provider = %q, want empty", unconfigured.STT.Provider)
+	}
+	if unconfigured.TTS.Provider != "" {
+		t.Fatalf("unconfigured TTS.Provider = %q, want empty", unconfigured.TTS.Provider)
+	}
+
+	keyOnlyPath := filepath.Join(dir, "key-only.toml")
+	if err := os.WriteFile(keyOnlyPath, []byte(`
+[model]
+provider = "fake"
+
+[stt]
+api_key = "stt-key"
+
+[tts]
+api_key = "tts-key"
+`), 0o644); err != nil {
+		t.Fatalf("write key-only config: %v", err)
+	}
+	keyOnly, err := LoadRuntimeConfig(keyOnlyPath)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig(key-only) error = %v", err)
+	}
+	if keyOnly.STT.Provider != "" {
+		t.Fatalf("key-only STT.Provider = %q, want empty", keyOnly.STT.Provider)
+	}
+	if keyOnly.TTS.Provider != "" {
+		t.Fatalf("key-only TTS.Provider = %q, want empty", keyOnly.TTS.Provider)
+	}
+
+	explicitPath := filepath.Join(dir, "explicit.toml")
+	if err := os.WriteFile(explicitPath, []byte(`
+[model]
+provider = "fake"
+
+[stt]
+provider = "openai-whisper"
+api_key = "stt-key"
+
+[tts]
+provider = "minimax-ws"
+api_key = "tts-key"
+`), 0o644); err != nil {
+		t.Fatalf("write explicit config: %v", err)
+	}
+	explicit, err := LoadRuntimeConfig(explicitPath)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig(explicit) error = %v", err)
+	}
+	if explicit.STT.Provider != defaultSTTProvider {
+		t.Fatalf("explicit STT.Provider = %q, want default %q", explicit.STT.Provider, defaultSTTProvider)
+	}
+	if explicit.STT.Model != defaultSTTModel {
+		t.Fatalf("explicit STT.Model = %q, want default %q", explicit.STT.Model, defaultSTTModel)
+	}
+	if explicit.TTS.Provider != defaultTTSProvider {
+		t.Fatalf("explicit TTS.Provider = %q, want default %q", explicit.TTS.Provider, defaultTTSProvider)
+	}
+	if explicit.TTS.VoiceID != defaultTTSVoiceID {
+		t.Fatalf("explicit TTS.VoiceID = %q, want default %q", explicit.TTS.VoiceID, defaultTTSVoiceID)
+	}
+}
+
+func TestLoadRuntimeConfigDoesNotCarryDefaultSpeechFieldsAcrossProviders(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+[model]
+provider = "fake"
+
+[stt]
+provider = "openrouter"
+api_key = "stt-key"
+
+[tts]
+provider = "volcengine"
+api_key = "tts-key"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.STT.Model != "" {
+		t.Fatalf("STT.Model = %q, want empty so provider-specific defaults can apply", cfg.STT.Model)
+	}
+	if cfg.TTS.VoiceID != "" {
+		t.Fatalf("TTS.VoiceID = %q, want empty so provider-specific defaults can apply", cfg.TTS.VoiceID)
+	}
+	if cfg.TTS.Emotion != "" {
+		t.Fatalf("TTS.Emotion = %q, want empty so provider-specific defaults can apply", cfg.TTS.Emotion)
+	}
+	if cfg.TTS.Speed != 0 {
+		t.Fatalf("TTS.Speed = %v, want zero so provider-specific defaults can apply", cfg.TTS.Speed)
+	}
+}
+
+func TestLoadRuntimeConfigRejectsVoiceModeWithoutExplicitSpeechProviders(t *testing.T) {
+	dir := t.TempDir()
+
+	sttPath := filepath.Join(dir, "stt.toml")
+	if err := os.WriteFile(sttPath, []byte(`
+input_mode = "stt"
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write stt config: %v", err)
+	}
+	_, err := LoadRuntimeConfig(sttPath)
+	if err == nil || !strings.Contains(err.Error(), "stt.provider") {
+		t.Fatalf("LoadRuntimeConfig(stt) error = %v, want stt.provider validation error", err)
+	}
+
+	audioPath := filepath.Join(dir, "audio.toml")
+	if err := os.WriteFile(audioPath, []byte(`
+input_mode = "audio"
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write audio config: %v", err)
+	}
+	_, err = LoadRuntimeConfig(audioPath)
+	if err == nil || !strings.Contains(err.Error(), "tts.provider") {
+		t.Fatalf("LoadRuntimeConfig(audio) error = %v, want tts.provider validation error", err)
+	}
+}
+
+func TestConfigValidateRejectsNegativeModelSpecOverrides(t *testing.T) {
+	cfg := Config{Model: ModelConfig{Provider: "fake", MaxResponseTokens: -1}}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model.max_response_tokens") {
+		t.Fatalf("expected model.max_response_tokens validation error, got %v", err)
+	}
+
+	cfg = Config{Model: ModelConfig{Provider: "fake", ContextWindow: -1}}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model.context_window") {
+		t.Fatalf("expected model.context_window validation error, got %v", err)
+	}
+
+	cfg = Config{Model: ModelConfig{Provider: "fake", ModelMaxOutputTokens: -1}}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model.model_max_output_tokens") {
+		t.Fatalf("expected model.model_max_output_tokens validation error, got %v", err)
+	}
+
+	cfg = Config{
+		Model:     ModelConfig{Provider: "fake"},
+		ModelText: ModelConfig{ContextWindow: -1},
+	}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model_text.context_window") {
+		t.Fatalf("expected model_text.context_window validation error, got %v", err)
+	}
+
+	cfg = Config{
+		Model:     ModelConfig{Provider: "fake"},
+		ModelText: ModelConfig{ModelMaxOutputTokens: -1},
+	}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model_text.model_max_output_tokens") {
+		t.Fatalf("expected model_text.model_max_output_tokens validation error, got %v", err)
+	}
+
+	cfg = Config{
+		Model:     ModelConfig{Provider: "fake"},
+		ModelText: ModelConfig{MaxResponseTokens: -1},
+	}
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "model_text.max_response_tokens") {
+		t.Fatalf("expected model_text.max_response_tokens validation error, got %v", err)
+	}
+}
+
 func TestConfigValidateRejectsNegativeScreenStableSettings(t *testing.T) {
 	cfg := Config{
 		Model:                 ModelConfig{Provider: "fake"},
@@ -296,6 +615,67 @@ func TestConfigVADBackendDefaultsAndValidation(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid vad_backend") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDeviceConfigBackendDefaultsToHDMI(t *testing.T) {
+	cfg := Config{Model: ModelConfig{Provider: "fake"}}
+	if got := cfg.Device.BackendOrDefault(); got != "hdmi" {
+		t.Fatalf("BackendOrDefault() = %q, want hdmi", got)
+	}
+}
+
+func TestLoadConfigAcceptsMobileGymDeviceBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	content := `
+instruction = "test"
+input_mode = "text"
+max_iterations = 20
+force_simple_loop = true
+
+[model]
+provider = "fake"
+
+[device]
+backend = "mobilegym"
+bridge_url = "http://127.0.0.1:19001"
+bridge_token_file = "/tmp/device-token"
+control_token_file = "/tmp/control-token"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := cfg.Device.BackendOrDefault(); got != "mobilegym" {
+		t.Fatalf("backend = %q, want mobilegym", got)
+	}
+	if cfg.Instruction != "test" || cfg.InputMode != "text" || cfg.MaxIterations != 20 || !cfg.ForceSimpleLoop {
+		t.Fatalf("root config not decoded: instruction=%q input_mode=%q max_iterations=%d force_simple_loop=%v", cfg.Instruction, cfg.InputMode, cfg.MaxIterations, cfg.ForceSimpleLoop)
+	}
+}
+
+func TestLoadConfigRejectsUnknownDeviceBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	content := `
+instruction = "test"
+
+[model]
+provider = "fake"
+
+[device]
+backend = "bogus"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "invalid device.backend") {
+		t.Fatalf("LoadConfig() error = %v, want invalid device.backend", err)
 	}
 }
 
@@ -587,5 +967,54 @@ storage_path = "/custom/path"
 	}
 	if cfg.AudioArchive.StoragePath != "/custom/path" {
 		t.Errorf("StoragePath: got %q, want %q", cfg.AudioArchive.StoragePath, "/custom/path")
+	}
+}
+
+func TestLoadConfig_BenchmarkSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	body := `
+[model]
+provider = "openrouter"
+api_key = "x"
+model = "y"
+
+[benchmark]
+judge_model = "custom/model-v1"
+benchmark_dir = "/tmp/bench"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Benchmark.JudgeModel != "custom/model-v1" {
+		t.Errorf("JudgeModel = %q", cfg.Benchmark.JudgeModel)
+	}
+	if cfg.Benchmark.Dir != "/tmp/bench" {
+		t.Errorf("Dir = %q", cfg.Benchmark.Dir)
+	}
+}
+
+func TestLoadConfig_BenchmarkDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	body := `
+[model]
+provider = "openrouter"
+api_key = "x"
+model = "y"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Benchmark.JudgeModel != "" {
+		t.Errorf("expected empty JudgeModel default, got %q", cfg.Benchmark.JudgeModel)
 	}
 }

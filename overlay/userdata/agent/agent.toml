@@ -1,7 +1,8 @@
 # Agent instruction and behavior
-instruction = "回答要简洁、自然、有帮助。默认用简体中文回答；用户明确使用其他语言时跟随用户语言。Aiden 通常用于控制连接的手机或移动 UI，但必须根据截图、工具结果和用户输入推断当前可见目标，不要假设。"
+instruction = ""
 additional_prompt = ""
 max_iterations = -1
+force_simple_loop = false
 
 # Screenshot context pruning:
 # keep the latest N screenshots and batch-prune older screenshots every interval
@@ -46,7 +47,10 @@ provider = "openrouter"
 model = "google/gemini-3.5-flash"
 api_key = "OPENROUTER_API_KEY"
 temperature = 0.2
-max_tokens = 1000
+max_response_tokens = 1000
+# Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.
+# context_window = 128000
+# model_max_output_tokens = 8192
 
 # Optional future field parsed by config but not currently used by the runtime.
 # [model_text]

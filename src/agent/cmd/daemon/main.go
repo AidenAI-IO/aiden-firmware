@@ -26,9 +26,26 @@ const (
 var wakeupGPIOPins = []int{33, 32}
 
 func main() {
+	// Check if a subcommand is provided
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "config-check":
+			os.Exit(runConfigCheck(os.Args[2:]))
+		case "config-meta":
+			os.Exit(runConfigMeta(os.Args[2:]))
+		case "config":
+			os.Exit(runConfig(os.Args[2:]))
+		case "config-test":
+			fmt.Fprintln(os.Stderr, "config-test subcommand not yet implemented")
+			os.Exit(1)
+		}
+	}
+
+	// Default: run as daemon
 	var (
-		configDir = flag.String("config", "", "path to config directory (required)")
-		addr      = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
+		configDir    = flag.String("config", "", "path to config directory (required)")
+		addr         = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
+		benchmarkDir = flag.String("benchmark-dir", "", "Override benchmark root directory (default: auto-detect)")
 	)
 	flag.Parse()
 
@@ -37,7 +54,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg, err := agent.LoadConfigFromDir(*configDir)
+	cfg, err := agent.LoadRuntimeConfigFromDir(*configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
@@ -64,12 +81,22 @@ func main() {
 
 	inputMode := cfg.InputModeOrDefault()
 
+	// Resolve benchmark directory (allow override via flag, default to auto-detect)
+	resolvedBenchmarkDir, err := agent.ResolveBenchmarkDir(*benchmarkDir, cfg.Benchmark)
+	if err != nil {
+		log.Printf("[benchmark] Failed to resolve benchmark directory: %v. Benchmark routes will return 503.", err)
+		resolvedBenchmarkDir = "" // Pass empty string to NewServer
+	}
+
 	// HTTP server runs in all input modes so the web UI is available even
 	// during voice (audio/stt) interactions.
-	server := agent.NewServer(runtime, *addr)
+	server := agent.NewServer(runtime, *addr, resolvedBenchmarkDir)
 
 	fmt.Printf("🚀 Aiden Agent daemon starting on %s\n", *addr)
 	fmt.Printf("📂 Config directory: %s\n", *configDir)
+	if resolvedBenchmarkDir != "" {
+		fmt.Printf("📊 Benchmark directory: %s\n", resolvedBenchmarkDir)
+	}
 	if _, port, err := net.SplitHostPort(*addr); err == nil && port != "" {
 		fmt.Printf("🌐 Web UI: http://localhost:%s\n", port)
 	}

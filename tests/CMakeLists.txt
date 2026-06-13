@@ -26,7 +26,27 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/frame_service_server.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_service_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_service_client.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio_volume_state.cpp
     ${CMAKE_SOURCE_DIR}/src/cJSON/cJSON.c
+)
+
+# config_web.cpp is a 4000-line all-in-one source for the on-device HTTP
+# server. It is not unit-testable directly (anonymous namespace + main), but
+# we still want host-side compilation to catch header/signature regressions
+# in PR CI -- the firmware cross-compile only runs in scheduled / manual
+# workflows, which is how PR #165 shipped a pre-existing fail-closed status
+# bug undetected. Wrap it in an OBJECT library so we can compile it once
+# with AIDEN_CONFIG_WEB_NO_MAIN for aiden_tests, while a separate
+# config_web_for_tests executable below builds it WITHOUT the macro for the
+# E2E test driver to spawn.
+add_library(config_web_no_main OBJECT
+    ${CMAKE_SOURCE_DIR}/src/config_web.cpp
+)
+target_include_directories(config_web_no_main PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_definitions(config_web_no_main PRIVATE
+    AIDEN_CONFIG_WEB_NO_MAIN
 )
 
 # Prefer system OpenCV for normal host tests. Bundled opencv-mobile is ARM/RV1106 only: use it
@@ -87,14 +107,44 @@ add_executable(aiden_tests
     service_status_test.cpp
     vad_common_test.cpp
     config_web_source_test.cpp
+    config_web_e2e_test.cpp
     system_env_parser_test.cpp
     audio_service_protocol_test.cpp
     audio_service_client_test.cpp
     audio_playback_session_test.cpp
+    audio_volume_state_test.cpp
     ${CMAKE_SOURCE_DIR}/src/system_env_parser.cpp
     ${AIDEN_IMAGE_TEST_SOURCES}
     ${AIDEN_TEST_SOURCES}
 )
+
+# config_web E2E tests spawn the real config_web binary against a stubbed
+# agent CLI to verify HTTP-level contracts (status codes, JSON shape) that
+# in-process unit tests can't see. These targets must be built before
+# aiden_tests runs; ctest's DEPENDS lacks file-level granularity but the
+# binary path is resolved at runtime, so we just declare a target-level
+# dependency for sequencing and pass the resolved paths via
+# target_compile_definitions.
+add_executable(config_web_for_tests
+    ${CMAKE_SOURCE_DIR}/src/config_web.cpp
+    ${CMAKE_SOURCE_DIR}/src/agent_toml.cpp
+    ${CMAKE_SOURCE_DIR}/src/system_env_parser.cpp
+    ${CMAKE_SOURCE_DIR}/src/wifi_config.cpp
+    ${CMAKE_SOURCE_DIR}/src/cJSON/cJSON.c
+)
+target_include_directories(config_web_for_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+set_target_properties(config_web_for_tests PROPERTIES
+    OUTPUT_NAME config_web
+)
+
+add_executable(agent_stub agent_stub_main.cpp)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.12)
+    target_compile_features(agent_stub PRIVATE cxx_std_11)
+endif()
+
+add_dependencies(aiden_tests config_web_for_tests agent_stub)
 
 target_include_directories(aiden_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -102,9 +152,12 @@ target_include_directories(aiden_tests PRIVATE
 
 target_compile_definitions(aiden_tests PRIVATE
     AIDEN_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    AIDEN_CONFIG_WEB_BIN="$<TARGET_FILE:config_web_for_tests>"
+    AIDEN_AGENT_STUB_BIN="$<TARGET_FILE:agent_stub>"
 )
 
 target_link_libraries(aiden_tests PRIVATE doctest)
+target_sources(aiden_tests PRIVATE $<TARGET_OBJECTS:config_web_no_main>)
 if(OpenCV_FOUND)
     target_link_libraries(aiden_tests PRIVATE aiden_image)
 endif()

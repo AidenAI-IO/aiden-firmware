@@ -59,11 +59,11 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 
 	silenceMs := cfg.SilenceMs
 	if silenceMs == 0 {
-		silenceMs = 650
+		silenceMs = defaultSilenceMs
 	}
 	minSpeechMs := cfg.MinSpeechMs
 	if minSpeechMs == 0 {
-		minSpeechMs = 300
+		minSpeechMs = defaultMinSpeechMs
 	}
 
 	alwaysBuffer := cfg.TriggerModeOrDefault() == "manual"

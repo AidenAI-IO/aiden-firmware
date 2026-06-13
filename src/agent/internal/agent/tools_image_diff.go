@@ -32,6 +32,19 @@ func (t *ImageDiffTool) Description() string {
 		`primary_axis helps confirm the swipe direction matched the intended scroll axis.`
 }
 
+func (t *ImageDiffTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"before": stringArgSchema("Base64-encoded JPEG from the earlier screenshot data field."),
+		"after":  stringArgSchema("Base64-encoded JPEG from the later screenshot data field."),
+		"region": objectArgsSchema(map[string]any{
+			"x": coordinateSchema("Normalized region left coordinate."),
+			"y": coordinateSchema("Normalized region top coordinate."),
+			"w": coordinateSchema("Normalized region width."),
+			"h": coordinateSchema("Normalized region height."),
+		}, "x", "y", "w", "h"),
+	}, "before", "after")
+}
+
 func (t *ImageDiffTool) Call(_ context.Context, input string) (string, error) {
 	var args struct {
 		Before string           `json:"before"`

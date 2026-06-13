@@ -206,6 +206,19 @@ bool assign_int(int* dst, const std::string& raw, std::string* err) {
     return parse_int(raw, dst, err);
 }
 
+bool assign_non_negative_int(int* dst, const std::string& raw, std::string* err) {
+    int value = 0;
+    if (!assign_int(&value, raw, err)) {
+        return false;
+    }
+    if (value < 0) {
+        if (err) *err = "must be >= 0";
+        return false;
+    }
+    *dst = value;
+    return true;
+}
+
 bool assign_double(double* dst, const std::string& raw, std::string* err) {
     return parse_double(raw, dst, err);
 }
@@ -270,6 +283,8 @@ void apply_kv(AgentToml& cfg,
             if (!assign_int(&cfg.voice_max_response_tokens, raw, &sub_err)) fail(sub_err);
         } else if (key == "max_iterations") {
             if (!assign_int(&cfg.max_iterations, raw, &sub_err)) fail(sub_err);
+        } else if (key == "force_simple_loop") {
+            if (!assign_bool(&cfg.force_simple_loop, raw, &sub_err)) fail(sub_err);
         } else if (key == "screenshot_keep_n") {
             if (!assign_int(&cfg.screenshot_keep_n, raw, &sub_err)) fail(sub_err);
         } else if (key == "screenshot_prune_interval") {
@@ -292,7 +307,9 @@ void apply_kv(AgentToml& cfg,
         else if (key == "api_key") assign_string(&m.api_key, raw, &sub_err);
         else if (key == "token_env") assign_string(&m.token_env, raw, &sub_err);
         else if (key == "temperature") assign_double(&m.temperature, raw, &sub_err);
-        else if (key == "max_tokens") assign_int(&m.max_tokens, raw, &sub_err);
+        else if (key == "max_response_tokens") assign_non_negative_int(&m.max_response_tokens, raw, &sub_err);
+        else if (key == "context_window") assign_non_negative_int(&m.context_window, raw, &sub_err);
+        else if (key == "model_max_output_tokens") assign_non_negative_int(&m.model_max_output_tokens, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     };
 
@@ -324,6 +341,11 @@ void apply_kv(AgentToml& cfg,
         else if (key == "channels") assign_int(&cfg.audio.channels, raw, &sub_err);
         else if (key == "bit_width") assign_int(&cfg.audio.bit_width, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "benchmark") {
+        if (key == "judge_model") assign_string(&cfg.benchmark.judge_model, raw, &sub_err);
+        else if (key == "api_key") assign_string(&cfg.benchmark.api_key, raw, &sub_err);
+        else if (key == "benchmark_dir") assign_string(&cfg.benchmark.benchmark_dir, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
     } else if (section == "hid") {
         if (key == "keyboard_device") assign_string(&cfg.hid.keyboard_device, raw, &sub_err);
         else if (key == "mouse_device") assign_string(&cfg.hid.mouse_device, raw, &sub_err);
@@ -332,7 +354,10 @@ void apply_kv(AgentToml& cfg,
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "search") {
         if (key == "provider") assign_string(&cfg.search.provider, raw, &sub_err);
-        else if (key == "api_key") assign_string(&cfg.search.api_key, raw, &sub_err);
+        else if (key == "api_key") {
+            assign_string(&cfg.search.api_key, raw, &sub_err);
+            cfg.search.has_api_key = !cfg.search.api_key.empty();
+        }
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "telemetry") {
         if (key == "enabled") assign_bool(&cfg.telemetry.enabled, raw, &sub_err);
@@ -380,6 +405,15 @@ bool atomic_write(const std::string& path, const std::string& content, std::stri
     return true;
 }
 
+struct LegacyModelMaxTokens {
+    std::string section;
+    std::string raw;
+    int lineno = 0;
+
+    LegacyModelMaxTokens(const std::string& section_name, const std::string& raw_value, int line)
+        : section(section_name), raw(raw_value), lineno(line) {}
+};
+
 void emit_string(std::ostringstream& out, const char* key, const std::string& value) {
     out << key << " = " << quote(value) << "\n";
 }
@@ -415,7 +449,9 @@ void emit_model(std::ostringstream& out, const char* section, const ModelToml& m
     emit_string(out, "api_key", m.api_key);
     if (!m.token_env.empty()) emit_string(out, "token_env", m.token_env);
     if (m.temperature != 0.0) emit_double(out, "temperature", m.temperature);
-    if (m.max_tokens != 0) emit_int(out, "max_tokens", m.max_tokens);
+    if (m.max_response_tokens != 0) emit_int(out, "max_response_tokens", m.max_response_tokens);
+    if (m.context_window != 0) emit_int(out, "context_window", m.context_window);
+    if (m.model_max_output_tokens != 0) emit_int(out, "model_max_output_tokens", m.model_max_output_tokens);
     out << "\n";
 }
 
@@ -438,6 +474,9 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
     std::string line;
     int lineno = 0;
     std::string parse_error;
+    bool model_max_response_tokens_seen = false;
+    bool model_text_max_response_tokens_seen = false;
+    std::vector<LegacyModelMaxTokens> legacy_model_max_tokens;
 
     while (std::getline(in, line)) {
         ++lineno;
@@ -493,10 +532,46 @@ bool load_agent_toml(const char* path, AgentToml& cfg, std::string* error) {
             }
         }
 
+        if ((section == "model" || section == "model_text") && key == "max_response_tokens") {
+            if (section == "model") {
+                model_max_response_tokens_seen = true;
+            } else {
+                model_text_max_response_tokens_seen = true;
+            }
+        }
+        if ((section == "model" || section == "model_text") && key == "max_tokens") {
+            legacy_model_max_tokens.push_back(LegacyModelMaxTokens(section, value, lineno));
+            continue;
+        }
+
         std::string apply_err;
         apply_kv(cfg, section, key, value, &apply_err);
         if (!apply_err.empty() && parse_error.empty()) {
             parse_error = "line " + std::to_string(lineno) + ": " + apply_err;
+        }
+    }
+
+    if (parse_error.empty()) {
+        for (const auto& legacy : legacy_model_max_tokens) {
+            bool canonical_seen = legacy.section == "model"
+                ? model_max_response_tokens_seen
+                : model_text_max_response_tokens_seen;
+            if (canonical_seen) {
+                continue;
+            }
+
+            int value = 0;
+            std::string legacy_error;
+            if (!assign_non_negative_int(&value, legacy.raw, &legacy_error)) {
+                parse_error = "line " + std::to_string(legacy.lineno) + ": ["
+                    + legacy.section + "] max_tokens: " + legacy_error;
+                break;
+            }
+            if (legacy.section == "model") {
+                cfg.model.max_response_tokens = value;
+            } else {
+                cfg.model_text.max_response_tokens = value;
+            }
         }
     }
 
@@ -534,6 +609,7 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     emit_bool(out, "voice_tool_call_speech", cfg.voice_tool_call_speech);
     if (cfg.voice_max_response_tokens != 0) emit_int(out, "voice_max_response_tokens", cfg.voice_max_response_tokens);
     if (cfg.max_iterations != 0) emit_int(out, "max_iterations", cfg.max_iterations);
+    emit_bool(out, "force_simple_loop", cfg.force_simple_loop);
     if (cfg.screenshot_keep_n != 0) emit_int(out, "screenshot_keep_n", cfg.screenshot_keep_n);
     if (cfg.screenshot_prune_interval != 0) emit_int(out, "screenshot_prune_interval", cfg.screenshot_prune_interval);
     if (cfg.screen_stable_timeout_ms != 0) emit_int(out, "screen_stable_timeout_ms", cfg.screen_stable_timeout_ms);
@@ -571,6 +647,12 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (cfg.audio.sample_rate != 0) emit_int(out, "sample_rate", cfg.audio.sample_rate);
     if (cfg.audio.channels != 0) emit_int(out, "channels", cfg.audio.channels);
     if (cfg.audio.bit_width != 0) emit_int(out, "bit_width", cfg.audio.bit_width);
+    out << "\n";
+
+    out << "[benchmark]\n";
+    if (!cfg.benchmark.judge_model.empty()) emit_string(out, "judge_model", cfg.benchmark.judge_model);
+    if (!cfg.benchmark.api_key.empty()) emit_string(out, "api_key", cfg.benchmark.api_key);
+    if (!cfg.benchmark.benchmark_dir.empty()) emit_string(out, "benchmark_dir", cfg.benchmark.benchmark_dir);
     out << "\n";
 
     out << "[hid]\n";

@@ -32,7 +32,7 @@ func NewOpenAIWhisperSTT(apiKey, model, baseURL string, httpClients ...*http.Cli
 		baseURL = "https://api.openai.com/v1"
 	}
 	if model == "" {
-		model = "whisper-1"
+		model = defaultSTTModel
 	}
 	httpClient := http.DefaultClient
 	if len(httpClients) > 0 && httpClients[0] != nil {
@@ -177,4 +177,3 @@ func (s *OpenRouterSTT) TranscribeWAV(wavData []byte) (string, error) {
 
 	return result.Text, nil
 }
-

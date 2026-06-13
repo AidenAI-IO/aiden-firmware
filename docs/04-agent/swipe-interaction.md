@@ -30,8 +30,8 @@
 ```json
 {
   "type": "swipe",
-  "start": {"x": 0.5, "y": 0.6},
-  "end":   {"x": 0.5, "y": 0.4},
+  "start": {"x": 500, "y": 600},
+  "end":   {"x": 500, "y": 400},
   "duration_ms": 400,
   "steps": 16,
   "hold_before_ms": 80,
@@ -39,7 +39,7 @@
 }
 ```
 
-默认值：700ms / 24步 / hold_before 80ms / hold_after 0ms。坐标系优先使用 `normalized`（0-1）。
+默认值：700ms / 24步 / hold_before 80ms / hold_after 0ms。坐标系优先使用 `normalized`（0-1000，中心为 `500,500`）。
 
 ### screenshot 工具
 
@@ -61,7 +61,7 @@
 输入：
   before:    string  — base64 JPEG（滑动前截图的 data 字段）
   after:     string  — base64 JPEG（滑动后截图的 data 字段）
-  region:    object  — 可选，{x, y, w, h}，归一化坐标，限定比较区域
+  region:    object  — 可选，{x, y, w, h}，0-1000 归一化坐标，限定比较区域
 
 输出：
   changed:       bool    — diff_ratio > 0.01
@@ -86,7 +86,7 @@
 ### 通用原则
 
 1. **每次滑动后等截图确认**，不要连续盲滑
-2. **优先小步**（distance ≤ 0.05），确认有效后再加大
+2. **优先小步**（distance ≤ 50），确认有效后再加大
 3. **用 image_diff 判断"有没有动"**，diff_ratio < 0.03 说明没效果
 4. **迭代比精确更可靠**，不要试图一次滑到位
 5. **最多重试 10 次**，超出后报告失败，不要无限循环
@@ -100,11 +100,11 @@
 1. 截图，识别 picker 当前值和目标值
 2. 判断方向（目标值 > 当前值 → 向上滑；反之向下）
 3. 执行 swipe：
-   - distance: 0.03（约 1 格）
+   - distance: 30（约 1 格）
    - duration_ms: 400，steps: 16（慢速，减少惯性）
    - hold_after_ms: 100（抬起前停顿，抑制 iOS 惯性）
 4. 等待截图，读取新值
-5. 如果 image_diff.changed=false → 加大 distance 到 0.05，重试
+5. 如果 image_diff.changed=false → 加大 distance 到 50，重试
 6. 如果已到目标 → 结束
 7. 如果过调 → 反向滑 1 格，重新确认
 ```
@@ -119,10 +119,10 @@
 策略：
 1. 截图，检查是否有搜索框 → 优先用搜索，避免盲滚
 2. 无搜索时：
-   - 粗滚：distance=0.35，duration_ms=500
+   - 粗滚：distance=350，duration_ms=500
    - 用 image_diff 确认滚动发生（diff_ratio > 0.05）
    - 截图判断目标是否可见
-3. 目标可见但需微调：distance=0.05
+3. 目标可见但需微调：distance=50
 4. image_diff.changed=false → 已到边界，停止
 ```
 
@@ -132,7 +132,7 @@
 
 ```text
 策略：
-- distance: 0.4（不要 < 0.3，容易被识别为误触弹回）
+- distance: 400（不要 < 300，容易被识别为误触弹回）
 - duration_ms: 400
 - 截图确认页面切换（diff_ratio 通常 > 0.3）
 - 如果没切换成功，检查是否在正确的可滑动区域
@@ -144,10 +144,10 @@
 
 ```text
 策略：
-- 估算目标方向，distance=0.2 开始
+- 估算目标方向，distance=200 开始
 - 截图确认目标是否进入视野，迭代调整
 - 不需要 image_diff，直接看截图判断
-- 精细定位时改用 distance=0.05
+- 精细定位时改用 distance=50
 ```
 
 ---
@@ -162,7 +162,7 @@
 {
   "type": "procedure",
   "title": "[AppName] [控件名] 滑动参数",
-  "content": "app: 微信, screen: 时间选择器, picker: 小时列, 有效 distance: 0.035, hold_after_ms: 100, 中心位置: x=0.5 y=0.38",
+  "content": "app: 微信, screen: 时间选择器, picker: 小时列, 有效 distance: 35, hold_after_ms: 100, 中心位置: x=500 y=380",
   "tags": ["swipe", "picker", "calibration"],
   "entities": ["微信"],
   "priority": 70

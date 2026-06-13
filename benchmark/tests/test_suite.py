@@ -28,6 +28,18 @@ def test_load_suite_returns_parsed(tmp_path: Path):
     assert suite.tasks[0].category == "single_step"
     assert suite.tasks[0].rubric[0].id == "in_settings"
 
+
+def test_perception_v1_settings_rubric_uses_0_1000_normalized_coordinates():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "perception" / "perception_v1.json"
+    suite = load_suite(suite_path)
+    task = next(task for task in suite.tasks if task.id == "find_settings_iphone")
+    check = next(item.check for item in task.rubric if item.id == "click_targets_settings")
+
+    assert "(0-1000 normalized space" in check
+    assert "normalized x in [746, 930]" in check
+    assert "y in [441, 560]" in check
+    assert "[0.75, 0.98]" not in check
+
 def test_load_suite_parses_expected_option_answer(tmp_path: Path):
     fixture = {
         **FIXTURE,
@@ -63,6 +75,62 @@ def test_load_suite_parses_expected_recalled_memory_ids(tmp_path: Path):
     suite = load_suite(p)
 
     assert suite.tasks[0].expected_recalled_memory_ids == ["mem_expected"]
+
+def test_load_suite_parses_required_and_forbidden_tools(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "hard_assertions": {
+                    "required_tools": ["enter_plan_mode", "commit_plan", "commit_plan"],
+                    "forbidden_tools": ["screenshot"],
+                },
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+
+    assert suite.tasks[0].hard_assertions.required_tools == ["enter_plan_mode", "commit_plan"]
+    assert suite.tasks[0].hard_assertions.forbidden_tools == ["screenshot"]
+
+def test_load_suite_rejects_invalid_required_tools(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "hard_assertions": {"required_tools": ["enter_plan_mode", ""]},
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError):
+        load_suite(p)
+
+def test_load_suite_rejects_overlapping_required_and_forbidden_tools(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "hard_assertions": {
+                    "required_tools": ["commit_plan", "calculator"],
+                    "forbidden_tools": ["screenshot", "commit_plan"],
+                },
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="overlapping required/forbidden tools"):
+        load_suite(p)
 
 def test_load_suite_rejects_invalid_expected_recalled_memory_ids(tmp_path: Path):
     fixture = {
@@ -228,6 +296,31 @@ def test_phone_control_bluetooth_task_uses_chinese_keyword():
     assert "蓝牙" in task.prompt
     assert "Bluetooth" not in task.prompt
     assert any("蓝牙" in item.check for item in task.rubric)
+
+def test_loop_planning_suite_uses_tool_hard_assertions():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "loop_planning_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    assert suite.name == "loop_planning_v1"
+    assert "screenshot" in suite.prompt_prefix
+    assert task_by_id["direct_answer_no_plan"].hard_assertions.forbidden_tools
+    assert "enter_plan_mode" in task_by_id["single_calculation_no_plan"].hard_assertions.forbidden_tools
+    assert "commit_plan" in task_by_id["two_calculation_compare_no_plan"].hard_assertions.forbidden_tools
+    assert task_by_id["invoice_reconciliation_requires_plan"].hard_assertions.required_tools == [
+        "enter_plan_mode",
+        "commit_plan",
+        "calculator",
+    ]
+    assert task_by_id["expense_summary_requires_plan"].hard_assertions.required_tools == [
+        "enter_plan_mode",
+        "commit_plan",
+    ]
+    for task in suite.tasks:
+        forbidden = set(task.hard_assertions.forbidden_tools)
+        assert "screenshot" in forbidden
+        assert "touch_gesture" in forbidden
+        assert "keyboard_text" in forbidden
 
 
 def test_device_operator_skillopt_suite_is_ready_for_optimization():
