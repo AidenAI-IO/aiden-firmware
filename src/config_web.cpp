@@ -1059,7 +1059,6 @@ bool validate_agent_config_json(cJSON* root) {
            config_required_bool(agent, "voice_tool_call_speech") &&
            config_required_number(agent, "voice_max_response_tokens") &&
            config_required_number(agent, "max_iterations") &&
-           config_required_bool(agent, "force_simple_loop") &&
            config_required_number(agent, "screenshot_keep_n") &&
            config_required_number(agent, "screenshot_prune_interval") &&
            config_required_number(agent, "screen_stable_timeout_ms") &&

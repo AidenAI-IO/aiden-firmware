@@ -87,6 +87,15 @@ void write_file(const std::string& path, const std::string& content) {
     out << content;
 }
 
+std::string replace_all(std::string text, const std::string& needle, const std::string& replacement) {
+    size_t pos = 0;
+    while ((pos = text.find(needle, pos)) != std::string::npos) {
+        text.replace(pos, needle.size(), replacement);
+        pos += replacement.size();
+    }
+    return text;
+}
+
 std::string resolved_config_json(const std::string& search_provider, bool search_has_api_key) {
     return std::string(
         "{"
@@ -381,6 +390,37 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     REQUIRE(provider != nullptr);
     REQUIRE(provider->valuestring != nullptr);
     CHECK(std::string(provider->valuestring) == "openrouter");
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: GET /api/config tolerates resolved config without force_simple_loop") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string legacy_config = replace_all(
+        resolved_config_json("duckduckgo", false),
+        "\"force_simple_loop\":false,",
+        ""
+    );
+    write_file(tmp + "/config.json", legacy_config);
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(resp.status == 200);
+    CHECK(resp.body.find("agent config missing required fields") == std::string::npos);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* agent = cJSON_GetObjectItem(config, "agent");
+    REQUIRE(agent != nullptr);
+    cJSON* force_simple_loop = cJSON_GetObjectItem(agent, "force_simple_loop");
+    REQUIRE(force_simple_loop != nullptr);
+    CHECK((force_simple_loop->type & 0xff) == cJSON_False);
     cJSON_Delete(parsed);
 }
 
