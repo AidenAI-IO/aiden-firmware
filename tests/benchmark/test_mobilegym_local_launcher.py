@@ -368,8 +368,8 @@ def test_local_launcher_installer_registers_launchd_service():
 
     assert "com.aiden.mobilegym-local-launcher" in script
     assert "benchmark/mobilegym/scripts/local_launcher.py" in script
-    assert "<string>-c</string>" in script
-    assert "<string>-lc</string>" not in script
+    assert "<string>-lc</string>" in script
+    assert "<string>-c</string>" not in script
     assert "--host 127.0.0.1" in script
     assert "--port 4174" in script
     assert "MOBILEGYM_DOCKER_PROXY" in script

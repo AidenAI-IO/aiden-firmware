@@ -501,7 +501,7 @@ def _runner_args(args: argparse.Namespace) -> argparse.Namespace:
         no_save_trajectory=False,
         screenshot_scale=1.0,
         device="sim",
-        coord_space="norm_0_1000",
+        coord_space="physical",
         delay_after_action=1.0,
         repeat_n=1,
         pass_k=None,
@@ -550,6 +550,7 @@ def _write_shard_metadata(path: Path, tasks: list[Any], *, shard_index: int, sha
             "shard_count": shard_count,
             "selected_task_count": len(tasks),
             "selected_task_ids": [_task_id(task) for task in tasks],
+            "task_metadata": _task_report_metadata(tasks),
             "empty": not tasks,
         }
     )
@@ -578,6 +579,22 @@ def _task_id(task: Any) -> str:
         if value:
             return str(value)
     return str(task)
+
+
+def _task_report_metadata(tasks: list[Any]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for task in tasks:
+        metadata = getattr(task, "metadata", None)
+        if not isinstance(metadata, dict):
+            continue
+        fields = {
+            key: metadata[key]
+            for key in ("description_for_judge", "rubric", "hard_assertions")
+            if key in metadata
+        }
+        if fields:
+            result[_task_id(task)] = fields
+    return result
 
 
 def _current_model_name() -> str:
