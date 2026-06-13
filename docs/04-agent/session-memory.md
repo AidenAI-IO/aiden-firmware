@@ -180,10 +180,9 @@ The Rolling Summary currently has a 100-line cap (`maxRollingSummaryLines`). Whe
 Compressed session summaries are loaded into the role memory context, while the
 retained hot-window events are restored as normal `ChatMessageHistory` records.
 At prompt time the planner sees those records under the regular
-`Conversation history:` section of its task prompt. When compressed history
-exists, the prompt labels the retained records as current-session recent
-history and points earlier context to the session summary. No synthetic
-hot-window start/end markers are added.
+`Conversation history:` section of its task prompt. Compressed-history state is
+not exposed through a hot-window label, and no synthetic hot-window start/end
+markers are added.
 
 Synthetic prompt text must not be persisted into `ChatMessageHistory`.
 `Snapshot()` reads history verbatim and `appendSessionEvents()` writes records
