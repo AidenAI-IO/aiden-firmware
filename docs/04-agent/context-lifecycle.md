@@ -14,7 +14,7 @@ Each run is assembled from several layers. Some layers are persisted memory, whi
 | Runtime context | `RunRequest.RuntimeContext`, for example phone bridge state | planner, executor, verifier | not persisted |
 | Tool catalog | resolved built-in tools plus skill tools | executor can call; planner/verifier can inspect | not persisted in memory |
 | Retrieved memory context | `MemoryPlane.Retrieve` output | planner and verifier only | filesystem memory |
-| Planner conversation history | hot-window memory, optional compressed-history markers, optional persisted chat history | planner only | filesystem memory |
+| Planner conversation history | hot-window memory plus optional persisted chat history | planner only | filesystem memory |
 | Role loop state | objective, plan, next step, tool evidence, verifier feedback, world state | role-specific | current run only |
 | Input attachments | `RunRequest.Attachments`, plus latest screenshot image when available | role user messages | current run only |
 
@@ -128,7 +128,9 @@ The hot window lives in:
 memory/session/events.jsonl
 ```
 
-When compressed history exists, prompt construction wraps the rendered hot window with boundary markers. Those markers are prompt-only and are never persisted.
+At prompt time, retained hot-window events render as normal planner
+`Conversation history:`. Prompt construction does not add hot-window labels or
+boundary markers.
 
 When session-boundary detection classifies a user turn as a new session, the
 runtime archives the whole active `memory/session/` directory into
@@ -232,7 +234,8 @@ When a chat-history store exists, planner memory also loads a compact view of re
 - Runtime context is request-local; do not use it as durable memory.
 - Active session summaries are durable within the current session; archived
   session summaries are logs and are not prompt or recall context.
-- Hot-window boundary markers are prompt-only and are not durable memory.
+- Hot-window labels or boundary markers are not injected into prompts or
+  durable memory.
 - Planner owns plans and sees retrieved experience memory.
 - Executor executes exactly one approved step and does not receive global memory.
 - Verifier is the only role allowed to finish a run and receives failure/conflict memory.

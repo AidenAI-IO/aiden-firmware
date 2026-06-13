@@ -525,13 +525,9 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 	if records, hotWindowTokens, ok, err := m.loadSessionMessageRecords(agentName); err != nil {
 		return err
 	} else if ok {
-		// Hot-window boundary markers are NOT stored here. They are synthetic
-		// prompt-construction artifacts and must never enter the persistable
-		// ChatMessageHistory: Snapshot() reads history verbatim and
-		// appendSessionEvents() writes records by index, so a stored marker
-		// would desync eventCount from the real session events and get
-		// persisted or cause duplicate appends. Markers are injected at
-		// prompt-build time instead (see hotWindowBoundaryMemory).
+		// Restore only real chat records into ChatMessageHistory. Snapshot()
+		// reads history verbatim and appendSessionEvents() writes records by
+		// index, so synthetic prompt text must not enter this history.
 		messages := make([]llms.ChatMessage, 0, len(records))
 		for _, record := range records {
 			messages = append(messages, messageFromRecord(record))
@@ -1341,8 +1337,7 @@ func (m *MemoryManager) hasCompressedHistory() bool {
 
 // HasCompressedHistory reports whether earlier conversation history has been
 // compressed into summaries, meaning the live chat history is only a hot
-// window. Callers use this to decide whether to bracket the hot window with
-// boundary markers at prompt-build time.
+// window.
 func (m *MemoryManager) HasCompressedHistory() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
