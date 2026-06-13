@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -50,6 +51,58 @@ func TestRuntimeStartupPersistsInterruptedEpisodeStatusToChatHistory(t *testing.
 	for _, want := range []string{"打开设置", "点击设置", "agent restarted before the task episode completed"} {
 		if !strings.Contains(status.Content, want) {
 			t.Fatalf("episode status missing %q:\n%s", want, status.Content)
+		}
+	}
+}
+
+func TestRuntimeRunKeepsCompressedHotWindowAsPlainConversationHistory(t *testing.T) {
+	ctx := context.Background()
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	manager := NewMemoryManager(memoryDir)
+
+	if err := manager.AppendExchange(ctx, "default", "上一轮用户问题", "上一轮回答"); err != nil {
+		t.Fatalf("AppendExchange() error = %v", err)
+	}
+	sessionDir := filepath.Join(memoryDir, "session")
+	if err := os.WriteFile(filepath.Join(sessionDir, "summary.md"), []byte("# Session Summary\nEarlier compressed context."), 0o644); err != nil {
+		t.Fatalf("write summary: %v", err)
+	}
+
+	model := &scriptedModel{responses: roleDirectResponses("继续完成")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(ctx, RunRequest{Input: "继续上一轮"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) == 0 || len(model.messages[0]) < 2 {
+		t.Fatalf("expected planner system and user messages, got %#v", model.messages)
+	}
+
+	systemPrompt := messageText(model.messages[0][:1])
+	plannerTaskPrompt := messageText(model.messages[0][1:])
+	if strings.Contains(systemPrompt, "上一轮用户问题") || strings.Contains(systemPrompt, "上一轮回答") {
+		t.Fatalf("hot-window chat history must not be injected into planner system prompt:\n%s", systemPrompt)
+	}
+	for _, want := range []string{"Conversation history:", "上一轮用户问题", "上一轮回答"} {
+		if !strings.Contains(plannerTaskPrompt, want) {
+			t.Fatalf("planner task prompt missing %q:\n%s", want, plannerTaskPrompt)
+		}
+	}
+	for _, marker := range []string{"=== Recent session context (hot window) ===", "=== End of recent context ==="} {
+		if strings.Contains(plannerTaskPrompt, marker) {
+			t.Fatalf("planner task prompt should not include hot-window boundary marker %q:\n%s", marker, plannerTaskPrompt)
 		}
 	}
 }

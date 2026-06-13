@@ -175,19 +175,18 @@ two sections:
 
 The Rolling Summary currently has a 100-line cap (`maxRollingSummaryLines`). When it overflows, older lines are dropped and a truncation marker is added. A future rolling checkpoint can summarize the Rolling Summary itself.
 
-## Hot-Window Boundary Markers
+## Hot-Window Prompt Placement
 
-When compressed history exists in the active session (`HasCompressedHistory`,
-meaning `memory/session/summary.md` exists), prompt construction wraps the hot
-window with boundary markers:
+Compressed session summaries are loaded into the role memory context, while the
+retained hot-window events are restored as normal `ChatMessageHistory` records.
+At prompt time the planner sees those records under the regular
+`Conversation history:` section of its task prompt. No synthetic hot-window
+start/end markers are added.
 
-```text
-=== Recent session context (hot window) ===
-...hot window events...
-=== End of recent context ===
-```
-
-These markers are injected only while building the prompt through `hotWindowBoundaryMemory`. They are never persisted into `ChatMessageHistory`. Persisting them would desynchronize `eventCount` from the real event stream because `Snapshot()` reads history verbatim and `appendSessionEvents()` writes records by index.
+Synthetic prompt text must not be persisted into `ChatMessageHistory`.
+`Snapshot()` reads history verbatim and `appendSessionEvents()` writes records
+by index, so storing non-event text there would desynchronize `eventCount` from
+the real event stream.
 
 ## Screenshot Data Scrubbing
 
