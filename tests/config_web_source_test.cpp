@@ -768,7 +768,8 @@ TEST_CASE("config web resolved config validation rejects empty required strings 
     source_buffer << source_in.rdbuf();
     const std::string source = source_buffer.str();
 
-    CHECK(source.find("bool config_required_string(cJSON* obj, const char* key, bool allow_empty = false)") != std::string::npos);
-    CHECK(source.find("config_required_string(model_text, \"provider\", true)") != std::string::npos);
-    CHECK(source.find("config_required_string(model, \"api_key\", true)") != std::string::npos);
+    CHECK(source.find("expected non-empty string, got empty string") != std::string::npos);
+    CHECK(source.find("validate_config_field(model, \"model\", \"provider\", CONFIG_FIELD_STRING, false") != std::string::npos);
+    CHECK(source.find("validate_config_field(model_text, \"model_text\", \"provider\", CONFIG_FIELD_STRING, true") != std::string::npos);
+    CHECK(source.find("validate_config_field(model, \"model\", \"api_key\", CONFIG_FIELD_STRING, true") != std::string::npos);
 }

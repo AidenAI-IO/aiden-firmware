@@ -496,20 +496,25 @@ TEST_CASE("config_web: GET /api/config reports invalid resolved config schema") 
         const_cast<char*>(tmp.c_str()),
         [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
     );
-    write_file(tmp + "/config.json", "{\"model\":{}}\n");
+    const std::string invalid_config = replace_all(
+        resolved_config_json("duckduckgo", false),
+        "\"provider\":\"openrouter\",",
+        ""
+    );
+    write_file(tmp + "/config.json", invalid_config);
     StubEnv env;
     env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
     HttpResponse resp = http_request(handle->port, "GET", "/api/config");
     CHECK(resp.status == 200);
-    CHECK(resp.body.find("agent config missing required fields") != std::string::npos);
+    CHECK(resp.body.find("model.provider") != std::string::npos);
 
     cJSON* parsed = cJSON_Parse(resp.body.c_str());
     REQUIRE(parsed != nullptr);
     cJSON* config_error = cJSON_GetObjectItem(parsed, "config_error");
     REQUIRE(config_error != nullptr);
     REQUIRE(config_error->valuestring != nullptr);
-    CHECK(std::string(config_error->valuestring) == "agent config missing required fields");
+    CHECK(std::string(config_error->valuestring).find("model.provider") != std::string::npos);
     cJSON_Delete(parsed);
 }
 
