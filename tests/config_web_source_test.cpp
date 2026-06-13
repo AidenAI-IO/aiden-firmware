@@ -339,14 +339,15 @@ TEST_CASE("config web exposes brave search provider") {
     CHECK(source.find("provider == \"brave\" || provider == \"brave-free\"") != std::string::npos);
     // The search provider enum now lives in the agent config metadata (the
     // single source of truth the config web UI consumes via config-meta),
-    // not a hard-coded table in the HTML.
+    // not a hard-coded table in the HTML. Compatibility aliases stay in the
+    // parser, but UI metadata only exposes canonical provider values.
     const std::string meta_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent/internal/agent/config_meta.go";
     std::ifstream meta_in(meta_path.c_str());
     REQUIRE(meta_in.good());
     std::ostringstream meta_buffer;
     meta_buffer << meta_in.rdbuf();
     const std::string meta = meta_buffer.str();
-    CHECK(meta.find("\"brave-free\"") != std::string::npos);
+    CHECK(meta.find("\"brave-free\"") == std::string::npos);
     CHECK(html.find("search:{provider:['duckduckgo','brave','brave-free','tavily']}") == std::string::npos);
     CHECK(source.find("const char* allowed[] = {\"duckduckgo\", \"brave\", \"brave-free\", \"tavily\", NULL};") != std::string::npos);
 }
@@ -393,6 +394,11 @@ TEST_CASE("config web renders finite choice fields as selects") {
     CHECK(html.find("'/api/config/meta'") != std::string::npos);
     CHECK(html.find("hydrateSelectOptions") != std::string::npos);
     CHECK(html.find("ensureSelectOption") != std::string::npos);
+    CHECK(html.find("let fieldDefaults=") != std::string::npos);
+    CHECK(html.find("function fieldDefaultPlaceholder") != std::string::npos);
+    CHECK(html.find("applyDefaultPlaceholder(name,field)") != std::string::npos);
+    CHECK(html.find("getAttribute('placeholder')") != std::string::npos);
+    CHECK(html.find("默认值: ") != std::string::npos);
     // rangeOptions is now invoked with metadata-provided bounds, not literals.
     CHECK(html.find("rangeOptions(field.range.min,field.range.max,field.range.step") != std::string::npos);
     // The legacy hard-coded option table must be gone.
@@ -717,6 +723,9 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("config validation unavailable: agent binary not found") != std::string::npos);
     // config metadata endpoint: agent CLI is the single source of field metadata.
     CHECK(source.find("config-meta --format=json") != std::string::npos);
+    CHECK(source.find(" config --config=") != std::string::npos);
+    CHECK(source.find("config-defaults --format=json") == std::string::npos);
+    CHECK(source.find("cannot load config defaults") == std::string::npos);
     CHECK(source.find("\"/api/config/meta\"") != std::string::npos);
     CHECK(source.find("config metadata unavailable: agent binary not found") != std::string::npos);
     CHECK(html.find("hid_pointer_mode") != std::string::npos);
@@ -748,4 +757,18 @@ TEST_CASE("config web usbhid init script does not orchestrate dependent service 
     CHECK(script.find("use poweroff") != std::string::npos);
     CHECK(script.find("restart|reload) restart") != std::string::npos);
     CHECK(script.find("restart|reload) stop; start") == std::string::npos);
+}
+
+TEST_CASE("config web resolved config validation rejects empty required strings by default") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("bool config_required_string(cJSON* obj, const char* key, bool allow_empty = false)") != std::string::npos);
+    CHECK(source.find("config_required_string(model_text, \"provider\", true)") != std::string::npos);
+    CHECK(source.find("config_required_string(model, \"api_key\", true)") != std::string::npos);
 }

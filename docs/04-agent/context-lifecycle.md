@@ -158,7 +158,7 @@ start EpisodeRecorder
 build role profiles and planner memory
   |
   v
-phased role loop (default / plan / execution)
+phased role loop (decision / default / plan / execution)
   |
   v
 append conversation exchange and save snapshot
@@ -188,7 +188,9 @@ The hot window lives in:
 memory/session/events.jsonl
 ```
 
-When compressed history exists, prompt construction wraps the rendered hot window with boundary markers. Those markers are prompt-only and are never persisted.
+At prompt time, retained hot-window events render as normal planner
+`Conversation history:`. Prompt construction does not add hot-window labels or
+boundary markers.
 
 When session-boundary detection classifies a user turn as a new session, the
 runtime archives the whole active `memory/session/` directory into
@@ -302,12 +304,13 @@ When a chat-history store exists, planner memory also loads a compact view of re
 - Runtime context is request-local; do not use it as durable memory.
 - Active session summaries are durable within the current session; archived
   session summaries are logs and are not prompt or recall context.
-- Hot-window boundary markers are prompt-only and are not durable memory.
+- Hot-window labels or boundary markers are not injected into prompts or
+  durable memory.
 - Planner owns plans and sees retrieved experience memory.
 - In `default`, planner may call tools and finish the run without verifier review.
 - In `execution`, executor executes exactly one approved step and does not receive global memory.
 - In `execution`, verifier validates only the current committed step; intermediate step success advances the plan, and `can_finish` is allowed only on the final committed step.
 - `commit_plan` is only valid in `plan`; runtime owns `plan_step_index` after commit.
-- Loop meta tools are planner-only and are handled by the runtime controller, not the device tool layer.
+- Loop meta tools are planner/executor control tools handled by the runtime controller, not the device tool layer.
 - Tool results and screenshots are evidence for the current run; reusable lessons are written only after episode commit or explicit memory-tool calls.
 - Device actions must be based on current tool observations or screenshots, not on stale remembered state alone.

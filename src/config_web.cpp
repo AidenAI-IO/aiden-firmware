@@ -160,6 +160,7 @@ bool mkdir_p(const std::string& dir, std::string* error);
 bool prepare_ota_update_log_file(const std::string& path, std::string* error);
 bool set_fd_cloexec(int fd, std::string* error);
 CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms);
+void update_config_from_json(cJSON* root, aiden::AgentToml* config);
 
 // ValidationOutcome distinguishes "the user submitted something invalid" (the
 // CLI ran and rejected it -> 400) from "we could not run validation at all"
@@ -304,6 +305,38 @@ bool json_is_array(cJSON* item) {
 
 bool json_is_bool(cJSON* item) {
     return json_is_type(item, cJSON_True) || json_is_type(item, cJSON_False);
+}
+
+bool config_required_object(cJSON* root, const char* key) {
+    if (!root) {
+        return false;
+    }
+    return json_is_object(cJSON_GetObjectItem(root, key));
+}
+
+bool config_required_string(cJSON* obj, const char* key, bool allow_empty = false) {
+    if (!obj) {
+        return false;
+    }
+    cJSON* item = cJSON_GetObjectItem(obj, key);
+    if (!json_is_string(item)) {
+        return false;
+    }
+    return allow_empty || !trim_copy(item->valuestring).empty();
+}
+
+bool config_required_number(cJSON* obj, const char* key) {
+    if (!obj) {
+        return false;
+    }
+    return json_is_number(cJSON_GetObjectItem(obj, key));
+}
+
+bool config_required_bool(cJSON* obj, const char* key) {
+    if (!obj) {
+        return false;
+    }
+    return json_is_bool(cJSON_GetObjectItem(obj, key));
 }
 
 cJSON* add_object(cJSON* parent, const char* key) {
@@ -900,70 +933,202 @@ void send_response(int client_fd,
     write_all(client_fd, body.data(), body.size());
 }
 
-void apply_default_agent_config(aiden::AgentToml& cfg) {
-    // NOTE: The canonical defaults for these fields live in the agent's
-    // ConfigMeta() (src/agent/internal/agent/config_meta.go), which the config
-    // web UI consumes via `agent config-meta`. The numeric/string defaults here
-    // are kept in lockstep with that source of truth; this function only seeds a
-    // freshly provisioned agent.toml on the device where the Go metadata is not
-    // consulted. When changing a default, update ConfigMeta() first.
-    cfg.instruction =
-        "默认用简体中文回答，语气要像真人说话，简短自然，适合 TTS 播放。"
-        "需要读取或改变手机、外部设备或服务状态时必须使用工具；可以连续组合多个工具完成任务。"
-        "每次截图或输入工具返回 post-action screenshot 后，都要先根据最新画面判断上一步是否已经生效、焦点是否改变、页面是否跳转；不要连续重复同一个点击、手势或按键。"
-        "在手机上打开 App、查找联系人、设置项、商品或页面内容时，优先使用系统搜索、App 内搜索或页面上的搜索框；不要先靠连续滑动、翻页来碰运气。"
-        "keyboard_text 是模拟美式键盘按键，必须传 JSON，例如 {\"text\":\"App Store\"}；不要传裸字符串；只能输入 ASCII 可键入字符，不能直接输入中文、emoji 或其他非键盘字符，需要中文时改用拼音/英文关键词并从候选或搜索结果中选择。"
-        "点击要以最新截图为准，选择可见目标的中心点，并优先使用 coord_space:\"normalized\" 的 0-1000 坐标（(0,0) 左上角，(1000,1000) 右下角，(500,500) 中心）；手机投屏/截图可能被缩放，pixel 坐标容易和实际触控坐标偏移。除非用户明确要求或坐标系已经校准，不要使用 coord_space:\"pixel\"。坐标不确定时先截图确认，不要用大概位置连续试点。"
-        "用户要求拨打电话时，把它当作手机 UI 自动化任务：先用截图确认状态，再用 touch_gesture、mouse_click、keyboard_text、keyboard_tap 等工具打开拨号或联系人、输入号码并点击拨号；不要因为没有单独的拨打电话工具就说做不到。"
-        "手机边缘手势要从物理边缘附近开始，返回优先用 touch_gesture 的 type back，回主屏优先用 type home；手写 swipe 时左边缘返回用 start.x=1 左右，底边回主页用 start.y=999 左右。";
-    cfg.input_mode = "text";
-    cfg.trigger_mode = "manual";
-    cfg.vad_backend = "rknn";
-    cfg.vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn";
-    cfg.vad_helper_path = "/oem/usr/bin/rknn_vad";
-    cfg.vad_speech_threshold = 0.5;
-    cfg.silence_ms = 650;
-    cfg.min_speech_ms = 300;
-    cfg.voice_session_enabled = true;
-    cfg.voice_followup_timeout_ms = 6000;
-    cfg.voice_first_turn_timeout_ms = 10000;
-    cfg.voice_max_turns = 0;
-    cfg.voice_interrupt_on_wakeup = true;
-    cfg.voice_streaming_tts_enabled = true;
-    cfg.voice_tool_call_speech = true;
-    cfg.voice_max_response_tokens = 400;
-    cfg.max_iterations = -1;
-    cfg.force_simple_loop = false;
-    cfg.screenshot_keep_n = 3;
-    cfg.screenshot_prune_interval = 25;
-    cfg.screen_stable_timeout_ms = 3500;
-    cfg.screen_stable_ms = 500;
-    cfg.screen_stable_diff_threshold = 2.0;
+bool validate_agent_config_json(cJSON* root) {
+    if (!json_is_object(root)) {
+        return false;
+    }
 
-    cfg.model.provider = "openrouter";
-    cfg.model.model = "bytedance-seed/seed-2.0-lite";
-    cfg.model.temperature = 0.2;
-    cfg.model.max_response_tokens = 1000;
+    const char* sections[] = {
+        "model", "model_text", "tts", "stt", "audio", "benchmark",
+        "hid", "search", "telemetry", "agent", NULL,
+    };
+    for (int i = 0; sections[i]; ++i) {
+        if (!config_required_object(root, sections[i])) {
+            return false;
+        }
+    }
 
-    cfg.tts.provider = "minimax-ws";
-    cfg.tts.voice_id = "male-qn-qingse";
-    cfg.tts.emotion = "happy";
-    cfg.tts.speed = 1.0;
+    cJSON* model = cJSON_GetObjectItem(root, "model");
+    if (!config_required_string(model, "provider") ||
+        !config_required_string(model, "model") ||
+        !config_required_string(model, "api_key", true) ||
+        !config_required_string(model, "base_url", true) ||
+        !config_required_string(model, "token_env", true) ||
+        !config_required_number(model, "temperature") ||
+        !config_required_number(model, "max_response_tokens") ||
+        !config_required_number(model, "context_window") ||
+        !config_required_number(model, "model_max_output_tokens")) {
+        return false;
+    }
 
-    cfg.stt.provider = "openai-whisper";
-    cfg.stt.model = "whisper-1";
+    cJSON* model_text = cJSON_GetObjectItem(root, "model_text");
+    if (!config_required_string(model_text, "provider", true) ||
+        !config_required_string(model_text, "model", true) ||
+        !config_required_string(model_text, "api_key", true) ||
+        !config_required_string(model_text, "base_url", true) ||
+        !config_required_string(model_text, "token_env", true) ||
+        !config_required_number(model_text, "temperature") ||
+        !config_required_number(model_text, "max_response_tokens") ||
+        !config_required_number(model_text, "context_window") ||
+        !config_required_number(model_text, "model_max_output_tokens")) {
+        return false;
+    }
 
-    cfg.audio.socket = "/run/audio_service/audio_service.sock";
-    cfg.audio.sample_rate = 16000;
-    cfg.audio.channels = 1;
-    cfg.audio.bit_width = 16;
+    cJSON* tts = cJSON_GetObjectItem(root, "tts");
+    if (!config_required_string(tts, "provider") ||
+        !config_required_string(tts, "api_key", true) ||
+        !config_required_string(tts, "model", true) ||
+        !config_required_string(tts, "voice_id") ||
+        !config_required_string(tts, "emotion") ||
+        !config_required_number(tts, "speed")) {
+        return false;
+    }
 
-    cfg.hid.keyboard_device = "/dev/hidg0";
-    cfg.hid.mouse_device = "/dev/hidg1";
-    cfg.hid.frame_socket = "/run/frame_service/frame_service.sock";
-    cfg.hid.pointer_mode = "absolute";
+    cJSON* stt = cJSON_GetObjectItem(root, "stt");
+    if (!config_required_string(stt, "provider") ||
+        !config_required_string(stt, "api_key", true) ||
+        !config_required_string(stt, "model") ||
+        !config_required_string(stt, "base_url", true) ||
+        !config_required_string(stt, "secret_id", true) ||
+        !config_required_string(stt, "secret_key", true) ||
+        !config_required_string(stt, "region", true) ||
+        !config_required_string(stt, "engine_model_type", true)) {
+        return false;
+    }
 
-    cfg.search.provider = "duckduckgo";
+    cJSON* audio = cJSON_GetObjectItem(root, "audio");
+    if (!config_required_string(audio, "socket") ||
+        !config_required_number(audio, "sample_rate") ||
+        !config_required_number(audio, "channels") ||
+        !config_required_number(audio, "bit_width")) {
+        return false;
+    }
+
+    cJSON* benchmark = cJSON_GetObjectItem(root, "benchmark");
+    if (!config_required_string(benchmark, "judge_model") ||
+        !config_required_string(benchmark, "api_key", true) ||
+        !config_required_string(benchmark, "benchmark_dir", true)) {
+        return false;
+    }
+
+    cJSON* hid = cJSON_GetObjectItem(root, "hid");
+    if (!config_required_string(hid, "keyboard_device") ||
+        !config_required_string(hid, "mouse_device") ||
+        !config_required_string(hid, "frame_socket") ||
+        !config_required_string(hid, "pointer_mode")) {
+        return false;
+    }
+
+    cJSON* search = cJSON_GetObjectItem(root, "search");
+    if (!config_required_string(search, "provider") ||
+        !config_required_bool(search, "has_api_key")) {
+        return false;
+    }
+
+    cJSON* telemetry = cJSON_GetObjectItem(root, "telemetry");
+    if (!config_required_bool(telemetry, "enabled") ||
+        !config_required_string(telemetry, "provider") ||
+        !config_required_string(telemetry, "base_url", true) ||
+        !config_required_string(telemetry, "public_key", true) ||
+        !config_required_string(telemetry, "secret_key", true) ||
+        !config_required_bool(telemetry, "upload_screenshots") ||
+        !config_required_number(telemetry, "upload_timeout_sec") ||
+        !config_required_number(telemetry, "max_retry") ||
+        !json_is_array(cJSON_GetObjectItem(telemetry, "tags")) ||
+        !config_required_string(telemetry, "environment")) {
+        return false;
+    }
+
+    cJSON* agent = cJSON_GetObjectItem(root, "agent");
+    return config_required_string(agent, "instruction") &&
+           config_required_string(agent, "additional_prompt", true) &&
+           config_required_string(agent, "input_mode") &&
+           config_required_string(agent, "trigger_mode") &&
+           config_required_string(agent, "vad_backend") &&
+           config_required_string(agent, "vad_model_path") &&
+           config_required_string(agent, "vad_helper_path") &&
+           config_required_number(agent, "vad_speech_threshold") &&
+           config_required_number(agent, "silence_ms") &&
+           config_required_number(agent, "min_speech_ms") &&
+           config_required_bool(agent, "voice_session_enabled") &&
+           config_required_number(agent, "voice_followup_timeout_ms") &&
+           config_required_number(agent, "voice_first_turn_timeout_ms") &&
+           config_required_number(agent, "voice_max_turns") &&
+           config_required_bool(agent, "voice_interrupt_on_wakeup") &&
+           config_required_bool(agent, "voice_streaming_tts_enabled") &&
+           config_required_bool(agent, "voice_tool_call_speech") &&
+           config_required_number(agent, "voice_max_response_tokens") &&
+           config_required_number(agent, "max_iterations") &&
+           config_required_bool(agent, "force_simple_loop") &&
+           config_required_number(agent, "screenshot_keep_n") &&
+           config_required_number(agent, "screenshot_prune_interval") &&
+           config_required_number(agent, "screen_stable_timeout_ms") &&
+           config_required_number(agent, "screen_stable_ms") &&
+           config_required_number(agent, "screen_stable_diff_threshold");
+}
+
+bool load_agent_config_via_cli(const Options& options,
+                               aiden::AgentToml* config,
+                               std::string* error) {
+    if (error) {
+        error->clear();
+    }
+    if (!config) {
+        return true;
+    }
+
+    const char* agent_bin = agent_bin_path();
+    if (!file_exists(agent_bin)) {
+        if (error) {
+            *error = std::string("agent config unavailable: agent binary not found at ") + agent_bin;
+        }
+        std::cerr << "[config] agent binary not found at " << agent_bin
+                  << ", cannot load agent config\n";
+        return false;
+    }
+
+    std::string cmd = shell_quote(agent_bin) + " config --config="
+                    + shell_quote(options.agent_config_path) + " --format=json";
+    CommandResult result = run_command_with_stdin(cmd, "", 2000);
+    if (result.timed_out) {
+        if (error) {
+            *error = "agent config timed out";
+        }
+        return false;
+    }
+    if (result.exit_code != 0) {
+        if (error) {
+            *error = "agent config load failed";
+        }
+        std::cerr << "[config] agent config exited " << result.exit_code
+                  << ": " << result.output << "\n";
+        return false;
+    }
+
+    cJSON* resolved = cJSON_Parse(result.output.c_str());
+    if (!resolved) {
+        if (error) {
+            *error = "agent config returned an unexpected response";
+        }
+        std::cerr << "[config] agent config returned invalid JSON: "
+                  << result.output << "\n";
+        return false;
+    }
+
+    if (!validate_agent_config_json(resolved)) {
+        if (error) {
+            *error = "agent config missing required fields";
+        }
+        std::cerr << "[config] agent config returned invalid schema: "
+                  << result.output << "\n";
+        cJSON_Delete(resolved);
+        return false;
+    }
+
+    *config = aiden::AgentToml();
+    update_config_from_json(resolved, config);
+    cJSON_Delete(resolved);
+    return true;
 }
 
 void load_current_agent_config(const Options& options,
@@ -976,22 +1141,28 @@ void load_current_agent_config(const Options& options,
         return;
     }
 
-    *config = aiden::AgentToml();
-    apply_default_agent_config(*config);
-    if (file_exists(options.agent_config_path.c_str())) {
-        aiden::AgentToml loaded;
-        std::string err;
-        if (aiden::load_agent_toml(options.agent_config_path.c_str(), loaded, &err)) {
-            if (loaded.search.provider.empty()) {
-                loaded.search.provider = "duckduckgo";
-            }
-            if (loaded.hid.pointer_mode.empty()) {
-                loaded.hid.pointer_mode = "absolute";
-            }
-            *config = loaded;
-        } else if (load_error) {
-            *load_error = err;
+    std::string config_error;
+    if (!load_agent_config_via_cli(options, config, &config_error)) {
+        if (load_error) {
+            *load_error = config_error;
         }
+        *config = aiden::AgentToml();
+    }
+}
+
+void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* config) {
+    if (!config || !config->search.api_key.empty() || !config->search.has_api_key) {
+        return;
+    }
+
+    aiden::AgentToml stored;
+    std::string load_error;
+    if (!aiden::load_agent_toml(options.agent_config_path.c_str(), stored, &load_error)) {
+        return;
+    }
+    if (!stored.search.api_key.empty()) {
+        config->search.api_key = stored.search.api_key;
+        config->search.has_api_key = true;
     }
 }
 
@@ -1077,7 +1248,8 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
 
     cJSON* search = add_object(root, "search");
     cJSON_AddStringToObject(search, "provider", config.search.provider.c_str());
-    cJSON_AddBoolToObject(search, "has_api_key", !config.search.api_key.empty());
+    cJSON_AddBoolToObject(search, "has_api_key",
+                          (config.search.has_api_key || !config.search.api_key.empty()) ? 1 : 0);
 
     cJSON* telemetry = add_object(root, "telemetry");
     cJSON_AddBoolToObject(telemetry, "enabled", config.telemetry.enabled ? 1 : 0);
@@ -1315,9 +1487,11 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     cJSON* search = cJSON_GetObjectItem(root, "search");
     if (json_is_object(search)) {
         set_json_str(&config->search.provider, search, "provider");
+        set_json_bool(&config->search.has_api_key, search, "has_api_key");
         cJSON* key_item = cJSON_GetObjectItem(search, "api_key");
         if (json_is_string(key_item) && strlen(key_item->valuestring) > 0) {
             config->search.api_key = key_item->valuestring;
+            config->search.has_api_key = true;
         }
     }
 
@@ -2590,6 +2764,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     cJSON* config_json = cJSON_GetObjectItem(root, "config");
     if (json_is_object(config_json)) {
         update_config_from_json(config_json, &config);
+        preserve_redacted_agent_secrets(options, &config);
     }
 
     cJSON* wifi_json = cJSON_GetObjectItem(root, "wifi");

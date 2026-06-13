@@ -35,8 +35,6 @@ type structuredInputTool interface {
 
 const toolActionLogVersion = 1
 const maxToolObservationRunes = 4000
-const defaultScreenshotKeepN = 3
-const defaultScreenshotPruneInterval = 25
 
 type ScreenshotPruningConfig struct {
 	KeepN    int

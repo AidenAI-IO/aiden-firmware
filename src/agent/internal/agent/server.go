@@ -30,33 +30,34 @@ import (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime                 *Runtime
-	addr                    string
-	logger                  *Logger
-	benchmarkDir            string
-	benchmarkPIDFile        string
-	benchmarkLogPath        string
-	benchmarkStatePath      string
-	benchmarkLauncher       func(spec benchmarkLaunchSpec, judge, apiKey string) error
-	benchmarkSuiteValidator func(path string) error
-	benchmarkSuiteLocks     sync.Map
-	userFilesReportPath     string
-	userFilesToolsDir       string
-	mu                      sync.Mutex
-	history                 []Message
-	historyStore            *ChatHistoryStore
-	episodeStore            *TaskEpisodeStore
-	sttClient               STTClient
-	ttsManager              *tts.ProviderManager
-	ttsMu                   sync.RWMutex
-	audioClient             *AudioServiceClient
-	recordMu                sync.Mutex
-	webRecording            *webAudioRecording
-	bridge                  *PhoneBridge
-	pendingResults          map[string]*chatPendingResult
-	pendingResultsMu        sync.Mutex
-	activeRuns              map[string]context.CancelFunc
-	activeRunsMu            sync.Mutex
+	runtime                    *Runtime
+	addr                       string
+	logger                     *Logger
+	benchmarkDir               string
+	benchmarkPIDFile           string
+	benchmarkLogPath           string
+	benchmarkStatePath         string
+	benchmarkLauncher          func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error
+	benchmarkMobileGymLauncher func(suite, suiteType string, parallel, limit int) error
+	benchmarkSuiteValidator    func(path string) error
+	benchmarkSuiteLocks        sync.Map
+	userFilesReportPath        string
+	userFilesToolsDir          string
+	mu                         sync.Mutex
+	history                    []Message
+	historyStore               *ChatHistoryStore
+	episodeStore               *TaskEpisodeStore
+	sttClient                  STTClient
+	ttsManager                 *tts.ProviderManager
+	ttsMu                      sync.RWMutex
+	audioClient                *AudioServiceClient
+	recordMu                   sync.Mutex
+	webRecording               *webAudioRecording
+	bridge                     *PhoneBridge
+	pendingResults             map[string]*chatPendingResult
+	pendingResultsMu           sync.Mutex
+	activeRuns                 map[string]context.CancelFunc
+	activeRunsMu               sync.Mutex
 }
 
 type webAudioRecording struct {

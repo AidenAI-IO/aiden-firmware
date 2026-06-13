@@ -60,6 +60,7 @@ struct HIDToml {
 struct SearchToml {
     std::string provider;
     std::string api_key;
+    bool has_api_key = false;
 };
 
 struct TelemetryToml {

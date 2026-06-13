@@ -147,11 +147,11 @@ func newAudioVAD(cfg AudioVADConfig, scorer VADScorer) (*AudioVAD, error) {
 
 	silenceMs := cfg.SilenceMs
 	if silenceMs <= 0 {
-		silenceMs = 650
+		silenceMs = defaultSilenceMs
 	}
 	minSpeechMs := cfg.MinSpeechMs
 	if minSpeechMs <= 0 {
-		minSpeechMs = 300
+		minSpeechMs = defaultMinSpeechMs
 	}
 
 	frameMs := sileroVADFrameSamples * 1000 / sileroVADSampleRate

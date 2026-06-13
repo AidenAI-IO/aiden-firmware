@@ -89,3 +89,18 @@ uv run python -m runner compare runs/<run_a> runs/<run_b>
 
 - [架构设计](./architecture.md) - Benchmark 设计原理和判分机制
 - [详细指南](./quickstart.md) - 完整使用说明
+
+## 双模式执行
+
+Benchmark 支持两种执行模式：
+
+- **Aiden Native** — 通过 `benchmark/runner/main.py` 在本地 agent 上跑，串行。
+- **MobileGym** — 通过 `benchmark/mobilegym/scripts/run_aiden.py` 在 Docker 模拟器上跑，
+  支持并发（`PARALLEL=N ./parallel_run.sh`）。
+
+同一份 `benchmark/suites/*.json` 在两种模式下都可执行。MobileGym 内置 suite
+（clock、alipay、wechat 等）只在 MobileGym 模式可用，从 `benchmark/mobilegym/suites/all_tasks.txt`
+聚合发现。
+
+Web UI `/benchmark` 上的「Aiden Native / MobileGym」单选切换两种模式。MobileGym 模式
+当前只提供并发数控制；`/benchmark` 页面暂不提供任务数限制输入框，也不会在启动 payload 中发送 `limit`。
