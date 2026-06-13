@@ -359,6 +359,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			VoiceToolCallSpeech:       cfg.VoiceToolCallSpeechOrDefault(),
 			VoiceMaxResponseTokens:    cfg.VoiceMaxResponseTokensOrDefault(),
 			MaxIterations:             cfg.MaxIterations,
+			ForceSimpleLoop:           cfg.ForceSimpleLoop,
 			ScreenshotKeepN:           cfg.ScreenshotKeepN,
 			ScreenshotPruneInterval:   cfg.ScreenshotPruneInterval,
 			ScreenStableTimeoutMs:     cfg.ScreenStableTimeoutMs,

@@ -96,6 +96,7 @@ func TestResolvedWebConfigDTO_OverlaysCurrentConfig(t *testing.T) {
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
 voice_session_enabled = false
+force_simple_loop = true
 
 [model]
 provider = "openai"
@@ -119,6 +120,9 @@ pointer_mode = "touchscreen"
 	}
 	if dto.Agent.VoiceSessionEnabled {
 		t.Fatal("agent.voice_session_enabled = true, want false from current config")
+	}
+	if !dto.Agent.ForceSimpleLoop {
+		t.Fatal("agent.force_simple_loop = false, want true from current config")
 	}
 	if dto.HID.KeyboardDevice != agent.DefaultConfig().HID.KeyboardDevice {
 		t.Fatalf("hid.keyboard_device = %q, want default %q",
