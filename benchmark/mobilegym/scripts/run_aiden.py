@@ -501,7 +501,7 @@ def _runner_args(args: argparse.Namespace) -> argparse.Namespace:
         no_save_trajectory=False,
         screenshot_scale=1.0,
         device="sim",
-        coord_space="norm_0_1000",
+        coord_space="physical",
         delay_after_action=1.0,
         repeat_n=1,
         pass_k=None,
