@@ -15,6 +15,6 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
     uses: ./.github/workflows/build.yml
     with:
-      runner: self-hosted-02
+      runner: aiden-hosted-02
       free_disk_space: false
     secrets: inherit

@@ -117,6 +117,17 @@ if ! grep -q 'cancel-in-progress: false' "$SCHEDULED_WORKFLOW"; then
     exit 1
 fi
 
+if ! grep -q 'runs-on: aiden-hosted-01' "$SCHEDULED_WORKFLOW" || \
+   ! grep -q 'runner: aiden-hosted-01' "$SCHEDULED_WORKFLOW"; then
+    echo "scheduled build workflow must use the primary dedicated Aiden hosted runner label" >&2
+    exit 1
+fi
+
+if ! grep -q 'runner: aiden-hosted-02' "$ROOT_DIR/.github/workflows/build-backup.yml"; then
+    echo "backup build workflow must use the backup dedicated Aiden hosted runner label" >&2
+    exit 1
+fi
+
 if grep -q 'git submodule update.*pico-sdk' "$CI_WORKFLOW"; then
     echo "CI release script checks must not fetch the large pico-sdk submodule" >&2
     exit 1
