@@ -16,6 +16,64 @@ const (
 	maxPlannerChatHistoryRunes        = 7000
 )
 
+const hotWindowHistoryLabel = "Current session recent history (earlier history is compressed into the session summary):"
+
+// hotWindowContextMemory labels the rendered hot-window history when earlier
+// session events have been compressed. The label is a prompt-only hint and is
+// never persisted into ChatMessageHistory or session events.
+type hotWindowContextMemory struct {
+	inner        schema.Memory
+	compressedFn func() bool
+}
+
+func newHotWindowContextMemory(inner schema.Memory, compressedFn func() bool) schema.Memory {
+	if inner == nil || compressedFn == nil {
+		return inner
+	}
+	return &hotWindowContextMemory{inner: inner, compressedFn: compressedFn}
+}
+
+func (m *hotWindowContextMemory) GetMemoryKey(ctx context.Context) string {
+	return m.inner.GetMemoryKey(ctx)
+}
+
+func (m *hotWindowContextMemory) MemoryVariables(ctx context.Context) []string {
+	return m.inner.MemoryVariables(ctx)
+}
+
+func (m *hotWindowContextMemory) LoadMemoryVariables(ctx context.Context, inputs map[string]any) (map[string]any, error) {
+	values, err := m.inner.LoadMemoryVariables(ctx, inputs)
+	if err != nil {
+		return nil, err
+	}
+	if !m.compressedFn() {
+		return values, nil
+	}
+	key := m.inner.GetMemoryKey(ctx)
+	existingValue, ok := values[key]
+	if !ok {
+		return values, nil
+	}
+	existing, ok := existingValue.(string)
+	if !ok {
+		return values, nil
+	}
+	existing = strings.TrimSpace(existing)
+	if existing == "" {
+		return values, nil
+	}
+	values[key] = hotWindowHistoryLabel + "\n" + existing
+	return values, nil
+}
+
+func (m *hotWindowContextMemory) SaveContext(ctx context.Context, inputs map[string]any, outputs map[string]any) error {
+	return m.inner.SaveContext(ctx, inputs, outputs)
+}
+
+func (m *hotWindowContextMemory) Clear(ctx context.Context) error {
+	return m.inner.Clear(ctx)
+}
+
 type chatHistoryPlannerMemory struct {
 	inner schema.Memory
 	store *ChatHistoryStore

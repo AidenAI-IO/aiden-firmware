@@ -535,6 +535,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
 	plannerMemory := memoryHandle.Memory
+	// Add a prompt-only label when history is a retained hot window after
+	// session compaction. Do not persist synthetic prompt text into memory.
+	plannerMemory = newHotWindowContextMemory(plannerMemory, r.memories.HasCompressedHistory)
 	if historyStore := chatHistoryStoreForConfigDir(r.config.ConfigDir); historyStore != nil {
 		plannerMemory = newChatHistoryPlannerMemory(plannerMemory, historyStore)
 	}

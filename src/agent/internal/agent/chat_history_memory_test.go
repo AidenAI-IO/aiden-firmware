@@ -107,6 +107,54 @@ func TestRuntimeRunKeepsCompressedHotWindowAsPlainConversationHistory(t *testing
 	}
 }
 
+func TestRuntimeRunLabelsCompressedHotWindowHistoryWithoutBoundaryMarkers(t *testing.T) {
+	ctx := context.Background()
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	manager := NewMemoryManager(memoryDir)
+
+	if err := manager.AppendExchange(ctx, "default", "最近用户问题", "最近回答"); err != nil {
+		t.Fatalf("AppendExchange() error = %v", err)
+	}
+	sessionDir := filepath.Join(memoryDir, "session")
+	if err := os.WriteFile(filepath.Join(sessionDir, "summary.md"), []byte("# Session Summary\nEarlier compressed context."), 0o644); err != nil {
+		t.Fatalf("write summary: %v", err)
+	}
+
+	model := &scriptedModel{responses: roleDirectResponses("继续完成")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(ctx, RunRequest{Input: "继续"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) == 0 || len(model.messages[0]) < 2 {
+		t.Fatalf("expected planner system and user messages, got %#v", model.messages)
+	}
+
+	plannerTaskPrompt := messageText(model.messages[0][1:])
+	for _, want := range []string{"Current session recent history", "earlier history is compressed into the session summary", "最近用户问题", "最近回答"} {
+		if !strings.Contains(plannerTaskPrompt, want) {
+			t.Fatalf("planner task prompt missing %q:\n%s", want, plannerTaskPrompt)
+		}
+	}
+	for _, marker := range []string{"=== Recent session context (hot window) ===", "=== End of recent context ==="} {
+		if strings.Contains(plannerTaskPrompt, marker) {
+			t.Fatalf("planner task prompt should not include hot-window boundary marker %q:\n%s", marker, plannerTaskPrompt)
+		}
+	}
+}
+
 func TestRuntimeRunIncludesPersistedInterruptedEpisodeInPlannerHistory(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
