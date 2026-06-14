@@ -76,6 +76,7 @@ input[type=text]{width:260px}
 <span id="mgConfig" class="inline-field" style="display:none">
 <label class="muted">Parallel <input type="number" id="parallelInput" value="4" min="1" max="16" style="width:64px"></label>
 </span>
+<button id="startLauncherBtn" class="secondary" onclick="startMobileGymLauncher()" style="display:none">Start Launcher</button>
 <button id="runBtn" onclick="startRun()">Run</button>
 <button id="delBtn" class="del" onclick="deleteSuite()" style="display:none">Delete</button>
 </div>
@@ -136,6 +137,7 @@ Or single scenario: Test agent on 3 math questions (2+2, 5*3, 10-4) with multipl
 <tbody id="historyBody"><tr><td colspan="8">Loading...</td></tr></tbody></table></div>
 <script>
 var MOBILEGYM_LOCAL_BASE='http://127.0.0.1:4174';
+var MOBILEGYM_HELPER_BASE='http://127.0.0.1:4175';
 var polling=null;
 var suiteIndex={};
 var benchmarkSuiteCount=0;
@@ -143,11 +145,13 @@ var unitSuiteCount=0;
 var logPolling=null;
 function benchmarkEndpoint(path){return getMode()==='mobilegym'?MOBILEGYM_LOCAL_BASE+path:path}
 function mobileGymLauncherMessage(e){return 'Start the Mac MobileGym launcher first: '+String(e)}
+function setStartLauncherVisible(visible){document.getElementById('startLauncherBtn').style.display=visible?'inline-block':'none'}
 function showMobileGymLauncherError(e){
 var msg=mobileGymLauncherMessage(e);
 document.getElementById('statusText').textContent='launcher offline';
 document.getElementById('statusText').className='status fail';
 document.getElementById('logBox').textContent=msg;
+setStartLauncherVisible(true);
 return msg;
 }
 function logPanelError(context,e){
@@ -166,6 +170,7 @@ throw new Error(msg);
 }
 function jsonOrError(r){return r.ok?r.json():readErrorResponse(r)}
 function updateProgress(d){
+setStartLauncherVisible(false);
 var box=document.getElementById('progressBox');
 var fill=document.getElementById('progressFill');
 var status=document.getElementById('statusText');
@@ -200,6 +205,7 @@ function onModeChange(){
 var mg=getMode()==='mobilegym';
 document.getElementById('mgConfig').style.display=mg?'inline-block':'none';
 document.getElementById('unitCard').style.display=mg?'none':'block';
+setStartLauncherVisible(false);
 loadSuites();
 loadRuns();
 loadStatus();
@@ -347,6 +353,22 @@ if(logPolling){clearInterval(logPolling);logPolling=null}
 loadRuns();loadLog()
 }
 }).catch(function(e){if(getMode()==='mobilegym')showMobileGymLauncherError(e)})}
+function startMobileGymLauncher(){
+var btn=document.getElementById('startLauncherBtn');
+var controller=new AbortController();
+var timer=setTimeout(function(){controller.abort()},10000);
+btn.disabled=true;
+document.getElementById('statusText').textContent='starting launcher';
+document.getElementById('statusText').className='status running';
+fetch(MOBILEGYM_HELPER_BASE+'/start',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:controller.signal}).then(jsonOrError).then(function(){
+btn.disabled=false;
+setStartLauncherVisible(false);
+setTimeout(refreshBenchmark,1200);
+}).catch(function(e){
+btn.disabled=false;
+logPanelError('Start launcher failed',e&&e.name==='AbortError'?'request timed out':e);
+}).finally(function(){clearTimeout(timer)});
+}
 function startRun(){
 var sel=document.getElementById('suiteSelect');
 var key=sel.value;
