@@ -155,6 +155,30 @@ def test_write_shard_metadata_preserves_existing_worker_fields(tmp_path):
     assert payload["selected_task_ids"] == ["task.A"]
 
 
+def test_write_shard_metadata_records_aiden_task_report_fields(tmp_path):
+    module = load_run_aiden_module()
+    metadata = tmp_path / "shard.json"
+    task = module.MobileGymTaskAdapter(
+        task_id="personamem_lt_recall_v1.case_one",
+        instruction="Choose the remembered option.",
+        metadata={
+            "aiden_suite_name": "personamem_lt_recall_v1",
+            "description_for_judge": "Recall the saved preference.",
+            "rubric": [{"id": "memory_recall", "check": "Mentions the saved preference."}],
+            "hard_assertions": {"expected_answer": True},
+        },
+    )
+
+    module._write_shard_metadata(metadata, [task], shard_index=0, shard_count=1)
+
+    payload = json.loads(metadata.read_text())
+    assert payload["task_metadata"]["personamem_lt_recall_v1.case_one"] == {
+        "description_for_judge": "Recall the saved preference.",
+        "rubric": [{"id": "memory_recall", "check": "Mentions the saved preference."}],
+        "hard_assertions": {"expected_answer": True},
+    }
+
+
 def test_mobilegym_task_adapter_exposes_runner_interface():
     module = load_run_aiden_module()
     task = module.MobileGymTaskAdapter(

@@ -152,6 +152,7 @@ def _normalize_shard(shard_dir: Path) -> tuple[list[dict[str, Any]], dict[str, A
     exit_code = int(metadata.get("exit_code") or 0)
     shard_name = shard_dir.name
     suite = str(metadata.get("suite") or shard_dir.parent.name)
+    task_metadata = metadata.get("task_metadata") if isinstance(metadata.get("task_metadata"), dict) else {}
 
     def _prefixed(path: str) -> str:
         return f"{shard_name}/{path}" if path else ""
@@ -195,6 +196,8 @@ def _normalize_shard(shard_dir: Path) -> tuple[list[dict[str, Any]], dict[str, A
     for task_id in task_ids:
         result = results.get(task_id)
         error = errors.get(task_id)
+        task_meta = task_metadata.get(task_id) if isinstance(task_metadata.get(task_id), dict) else {}
+        result = _merge_task_metadata(result, task_meta)
         status, reason = _status_for(result, error)
         if result is None and error is None:
             status = "worker_failed" if exit_code != 0 else "unknown"
@@ -213,6 +216,16 @@ def _normalize_shard(shard_dir: Path) -> tuple[list[dict[str, Any]], dict[str, A
             }
         )
     return rows, metadata
+
+
+def _merge_task_metadata(result: dict[str, Any] | None, metadata: dict[str, Any]) -> dict[str, Any] | None:
+    if not metadata:
+        return result
+    merged = dict(result or {})
+    for key in ("description_for_judge", "rubric", "rubric_spec", "hard_assertions"):
+        if key in metadata and key not in merged:
+            merged[key] = metadata[key]
+    return merged
 
 
 def _read_results(raw_dir: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
@@ -485,12 +498,13 @@ def _drawer_task(row: dict[str, Any]) -> dict[str, Any]:
     error = row.get("error") if isinstance(row.get("error"), dict) else {}
     actions = row.get("actions") if isinstance(row.get("actions"), list) else []
     execution = result.get("execution") if isinstance(result.get("execution"), dict) else {}
+    history_tool_calls = _history_tool_calls(result, execution)
     prompt = _first_text(result, "task_name", "prompt", "instruction", "goal")
     description = _first_text(result, "description_for_judge", "task_name", "prompt", "instruction", "goal") or str(row.get("reason") or "")
-    response = _first_text(execution, "agent_answer", "agent_message") or _first_text(result, "response", "answer")
+    response = _first_text(execution, "agent_answer", "agent_message") or _first_text(result, "aiden_last_response", "response", "answer")
     wall_ms = _runtime_ms(result, execution)
-    tool_calls_detail = _actions_text(actions) or links_text
-    tool_calls_count = len(actions) if actions else int(execution.get("steps") or result.get("steps") or 0)
+    tool_calls_detail = _tool_calls_detail(history_tool_calls, actions) or links_text
+    tool_calls_count = len(history_tool_calls) if history_tool_calls else len(actions) if actions else int(execution.get("steps") or result.get("steps") or 0)
     errors = []
     if status in {"error", "failed", "timeout", "worker_failed", "unknown"}:
         errors.append([status, str(row.get("reason") or status)])
@@ -588,6 +602,37 @@ def _hard_assertion_rows(result: dict[str, Any]) -> list[list[str]]:
     return rows
 
 
+def _history_tool_calls(result: dict[str, Any], execution: dict[str, Any]) -> list[dict[str, Any]]:
+    history = result.get("aiden_last_chat_history")
+    if not isinstance(history, list):
+        history = execution.get("aiden_last_chat_history")
+    if not isinstance(history, list):
+        return []
+    calls = []
+    for message in history:
+        if not isinstance(message, dict) or message.get("type") != "tool_call":
+            continue
+        tool_input = message.get("tool_input", message.get("input", {}))
+        calls.append(
+            {
+                "tool_name": str(message.get("tool_name") or message.get("name") or "tool_call"),
+                "tool_input": _jsonish(tool_input),
+            }
+        )
+    return calls
+
+
+def _jsonish(value: Any) -> Any:
+    if isinstance(value, str):
+        if not value.strip():
+            return {}
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return {} if value is None else value
+
+
 def _first_text(source: dict[str, Any], *keys: str) -> str:
     for key in keys:
         value = source.get(key)
@@ -629,6 +674,16 @@ def _actions_text(actions: list[Any]) -> str:
             "error": action.get("error"),
         }
         chunks.append(f"[{tool_name}]\n{json.dumps(payload, ensure_ascii=False, indent=2)}")
+    return "\n\n".join(chunks)
+
+
+def _tool_calls_detail(history_tool_calls: list[dict[str, Any]], actions: list[Any]) -> str:
+    chunks = []
+    for call in history_tool_calls:
+        chunks.append(f"[{call['tool_name']}]\n{json.dumps(call['tool_input'], ensure_ascii=False, indent=2)}")
+    actions_text = _actions_text(actions)
+    if actions_text:
+        chunks.append(actions_text)
     return "\n\n".join(chunks)
 
 

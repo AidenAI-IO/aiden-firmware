@@ -172,6 +172,27 @@ def test_validate_selection_accepts_aiden_suite_alone(run_aiden_module):
     run_aiden_module._validate_selection(args)
 
 
+def test_runner_args_use_physical_coord_space_for_bridge_pixels(run_aiden_module):
+    import argparse
+
+    args = argparse.Namespace(
+        task_id="clock.CountAlarms",
+        suite=None,
+        split=None,
+        env_url="http://mobilegym:4173",
+        headless=True,
+        parallel=1,
+        max_steps=30,
+        quiet=True,
+        runs_dir="runs",
+        aiden_suite=None,
+    )
+
+    runner_args = run_aiden_module._runner_args(args)
+
+    assert runner_args.coord_space == "physical"
+
+
 def test_load_aiden_suite_rejects_path_traversal(run_aiden_module, tmp_path, monkeypatch):
     monkeypatch.setattr(run_aiden_module, "BENCHMARK_ROOT", tmp_path)
     for bad in [".", "..", "../etc/passwd", "foo/../bar", "foo//bar", "foo bar", "foo;rm"]:

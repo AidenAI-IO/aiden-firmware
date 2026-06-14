@@ -379,6 +379,56 @@ def test_report_maps_mobilegym_task_fields_into_drawer_payload(tmp_path):
     assert task["errors"].count(["execution_error", "timeout"]) == 1
 
 
+def test_report_maps_aiden_chat_history_tool_calls_into_drawer_payload(tmp_path):
+    from mobilegym import report
+
+    batch = tmp_path / "batch-history"
+    shard = batch / "personamem_lt_recall_v1" / "shard-0"
+    write_json(
+        shard / "shard.json",
+        {
+            "batch_id": "batch-history",
+            "suite": "personamem_lt_recall_v1",
+            "shard_index": 0,
+            "shard_count": 1,
+            "selected_task_count": 1,
+            "selected_task_ids": ["personamem_lt_recall_v1.case_one"],
+            "exit_code": 0,
+        },
+    )
+    write_jsonl(
+        shard / "raw" / "run" / "results.jsonl",
+        [
+            {
+                "id": "personamem_lt_recall_v1.case_one",
+                "suite": "personamem_lt_recall_v1",
+                "is_success": True,
+                "aiden_last_response": "I found the stored preference.",
+                "aiden_last_chat_history": [
+                    {
+                        "type": "tool_call",
+                        "tool_name": "recall_memory",
+                        "tool_input": '{"tags":["music"],"limit":3}',
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_name": "recall_memory",
+                        "content": '{"results":[{"id":"personamem_music_software"}]}',
+                    },
+                ],
+            }
+        ],
+    )
+
+    report.generate_reports(batch)
+
+    task = read_report_tasks(batch / "index.html")[0]
+    assert task["response"] == "I found the stored preference."
+    assert task["tool_calls_count"] == 1
+    assert "[recall_memory]" in task["tool_calls_detail"]
+    assert '"tags": [\n    "music"\n  ]' in task["tool_calls_detail"]
+
+
 def test_report_maps_aiden_suite_rubric_and_hard_assertions_into_drawer_payload(tmp_path):
     from mobilegym import report
 
@@ -432,6 +482,54 @@ def test_report_maps_aiden_suite_rubric_and_hard_assertions_into_drawer_payload(
     assert task["rubric_total"] == 2
     assert ["Expected Answer", "Expected: C, Got: B", "no"] in task["hard_assertions"]
     assert task["rubric"] != [["mobilegym_status", "is_success false", "no"]]
+
+
+def test_report_uses_shard_task_metadata_when_result_omits_aiden_rubric(tmp_path):
+    from mobilegym import report
+
+    batch = tmp_path / "batch-shard-meta"
+    shard = batch / "personamem_lt_recall_v1" / "shard-0"
+    write_json(
+        shard / "shard.json",
+        {
+            "batch_id": "batch-shard-meta",
+            "suite": "personamem_lt_recall_v1",
+            "shard_index": 0,
+            "shard_count": 1,
+            "selected_task_count": 1,
+            "selected_task_ids": ["personamem_lt_recall_v1.case_one"],
+            "exit_code": 0,
+            "task_metadata": {
+                "personamem_lt_recall_v1.case_one": {
+                    "description_for_judge": "Recall the saved preference.",
+                    "rubric": [
+                        {"id": "memory_recall", "check": "Mentions the saved preference."},
+                    ],
+                    "hard_assertions": {"expected_answer": False},
+                }
+            },
+        },
+    )
+    write_jsonl(
+        shard / "raw" / "run" / "results.jsonl",
+        [
+            {
+                "id": "personamem_lt_recall_v1.case_one",
+                "suite": "personamem_lt_recall_v1",
+                "is_success": False,
+                "expected_answer_match": False,
+                "normalized_expected_answer": "C",
+                "predicted_answer": "B",
+            }
+        ],
+    )
+
+    report.generate_reports(batch)
+
+    task = read_report_tasks(batch / "index.html")[0]
+    assert task["description"] == "Recall the saved preference."
+    assert task["rubric"] == [["memory_recall", "Mentions the saved preference.", "—"]]
+    assert ["Expected Answer", "Expected: C, Got: B", "no"] in task["hard_assertions"]
 
 
 def test_drawer_task_deduplicates_mobilegym_errors():

@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import threading
+import urllib.error
 import urllib.request
 from http.server import HTTPServer
 from pathlib import Path
@@ -376,8 +377,8 @@ def test_parallel_run_passes_limit_to_suite_workers():
 def test_helper_start_invokes_launchctl_for_local_launcher(helper_module, monkeypatch):
     calls = []
 
-    def fake_run(argv, *, check, capture_output, text):
-        calls.append(argv)
+    def fake_run(argv, *, check, capture_output, text, timeout):
+        calls.append((argv, timeout))
         return subprocess.CompletedProcess(argv, 0, stdout="started\n", stderr="")
 
     monkeypatch.setattr(helper_module.subprocess, "run", fake_run)
@@ -386,12 +387,15 @@ def test_helper_start_invokes_launchctl_for_local_launcher(helper_module, monkey
 
     assert result == {"ok": True, "status": "started", "output": "started"}
     assert calls == [
-        [
-            "launchctl",
-            "kickstart",
-            "-k",
-            f"gui/{os.getuid()}/com.aiden.mobilegym-local-launcher",
-        ]
+        (
+            [
+                "launchctl",
+                "kickstart",
+                "-k",
+                f"gui/{os.getuid()}/com.aiden.mobilegym-local-launcher",
+            ],
+            helper_module.LAUNCHCTL_TIMEOUT_SECONDS,
+        )
     ]
 
 
@@ -401,7 +405,7 @@ def test_helper_start_bootstraps_launcher_when_service_is_unloaded(helper_module
     plist.write_text("plist")
     monkeypatch.setattr(helper_module, "LAUNCHER_PLIST", plist)
 
-    def fake_run(argv, *, check, capture_output, text):
+    def fake_run(argv, *, check, capture_output, text, timeout):
         calls.append(argv)
         if argv[1] == "kickstart" and len(calls) == 1:
             raise subprocess.CalledProcessError(
@@ -424,7 +428,17 @@ def test_helper_start_bootstraps_launcher_when_service_is_unloaded(helper_module
     ]
 
 
-def test_helper_start_endpoint_allows_browser_cors(helper_module):
+def test_helper_start_reports_launchctl_timeout(helper_module, monkeypatch):
+    def fake_run(argv, *, check, capture_output, text, timeout):
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    monkeypatch.setattr(helper_module.subprocess, "run", fake_run)
+
+    with pytest.raises(helper_module.HelperError, match="launchctl timed out"):
+        helper_module.start_local_launcher()
+
+
+def test_helper_start_endpoint_allows_private_browser_origin(helper_module):
     server = HTTPServer(("127.0.0.1", 0), helper_module.make_handler(lambda: {"ok": True}))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -433,13 +447,33 @@ def test_helper_start_endpoint_allows_browser_cors(helper_module):
             f"http://127.0.0.1:{server.server_port}/start",
             data=b"{}",
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Origin": "http://192.168.31.107:8080"},
         )
         with urllib.request.urlopen(req, timeout=2) as resp:
             assert resp.status == 200
-            assert resp.headers["Access-Control-Allow-Origin"] == "*"
+            assert resp.headers["Access-Control-Allow-Origin"] == "http://192.168.31.107:8080"
             assert resp.headers["Access-Control-Allow-Private-Network"] == "true"
             assert json.loads(resp.read().decode()) == {"ok": True}
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_helper_start_endpoint_rejects_public_browser_origin(helper_module):
+    server = HTTPServer(("127.0.0.1", 0), helper_module.make_handler(lambda: {"ok": True}))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/start",
+            data=b"{}",
+            method="POST",
+            headers={"Content-Type": "application/json", "Origin": "https://example.com"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(req, timeout=2)
+        assert err.value.code == 403
+        assert err.value.headers.get("Access-Control-Allow-Origin") is None
     finally:
         server.shutdown()
         thread.join(timeout=2)

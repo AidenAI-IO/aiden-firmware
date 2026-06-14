@@ -355,17 +355,19 @@ loadRuns();loadLog()
 }).catch(function(e){if(getMode()==='mobilegym')showMobileGymLauncherError(e)})}
 function startMobileGymLauncher(){
 var btn=document.getElementById('startLauncherBtn');
+var controller=new AbortController();
+var timer=setTimeout(function(){controller.abort()},10000);
 btn.disabled=true;
 document.getElementById('statusText').textContent='starting launcher';
 document.getElementById('statusText').className='status running';
-fetch(MOBILEGYM_HELPER_BASE+'/start',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(jsonOrError).then(function(){
+fetch(MOBILEGYM_HELPER_BASE+'/start',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:controller.signal}).then(jsonOrError).then(function(){
 btn.disabled=false;
 setStartLauncherVisible(false);
 setTimeout(refreshBenchmark,1200);
 }).catch(function(e){
 btn.disabled=false;
-logPanelError('Start launcher failed',e);
-});
+logPanelError('Start launcher failed',e&&e.name==='AbortError'?'request timed out':e);
+}).finally(function(){clearTimeout(timer)});
 }
 function startRun(){
 var sel=document.getElementById('suiteSelect');
