@@ -383,7 +383,11 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 	body := rec.Body.String()
 	for _, marker := range []string{
 		`MOBILEGYM_LOCAL_BASE='http://127.0.0.1:4174'`,
+		`MOBILEGYM_HELPER_BASE='http://127.0.0.1:4175'`,
 		`Start the Mac MobileGym launcher first`,
+		`id="startLauncherBtn"`,
+		`function startMobileGymLauncher()`,
+		`fetch(MOBILEGYM_HELPER_BASE+'/start'`,
 		`benchmarkEndpoint('/benchmark/suites')`,
 		`benchmarkEndpoint('/benchmark/run')`,
 		`benchmarkEndpoint('/benchmark/status')`,
