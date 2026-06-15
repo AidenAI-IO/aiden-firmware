@@ -77,6 +77,35 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunInjectsCurrentDateIntoPlannerPrompt(t *testing.T) {
+	originalNow := promptNow
+	promptNow = func() time.Time {
+		return time.Date(2026, time.June, 15, 8, 0, 0, 0, time.UTC)
+	}
+	t.Cleanup(func() { promptNow = originalNow })
+
+	model := &scriptedModel{responses: roleDirectResponses("completed")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) == 0 || len(model.messages[0]) == 0 {
+		t.Fatalf("expected model to receive planner prompt")
+	}
+	systemPrompt := messageText(model.messages[0][:1])
+	want := "Current date: 2026-06-15 (2026年06月15日 星期一)"
+	if !strings.Contains(systemPrompt, want) {
+		t.Fatalf("planner system prompt missing current date %q:\n%s", want, systemPrompt)
+	}
+}
+
 func TestRuntimeRunUsesSessionManager(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{

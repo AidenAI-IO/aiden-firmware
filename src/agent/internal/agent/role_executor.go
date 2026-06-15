@@ -1751,3 +1751,15 @@ func (e *roleCollaborativeExecutor) GetMemory() schema.Memory {
 func (e *roleCollaborativeExecutor) GetCallbackHandler() callbacks.Handler {
 	return e.CallbacksHandler
 }
+
+func executorInputsToString(inputValues map[string]any) (map[string]string, error) {
+	inputs := make(map[string]string, len(inputValues))
+	for key, value := range inputValues {
+		valueStr, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%w: %s", agents.ErrExecutorInputNotString, key)
+		}
+		inputs[key] = valueStr
+	}
+	return inputs, nil
+}

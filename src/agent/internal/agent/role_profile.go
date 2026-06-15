@@ -160,7 +160,11 @@ func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 }
 
 func buildVerifierRoleProfile(roleRules []string) RoleProfile {
-	parts := []string{"## Role rules"}
+	parts := []string{
+		currentDateContext(),
+		"",
+		"## Role rules",
+	}
 	for _, rule := range roleRules {
 		parts = append(parts, "- "+rule)
 	}
@@ -182,6 +186,7 @@ func buildRoleProfile(
 ) RoleProfile {
 	parts := []string{
 		fmt.Sprintf("You are the %s role in a multi-role Aiden agent loop.", name),
+		currentDateContext(),
 		"",
 		"## Base instruction",
 		combinedAgentInstruction(cfg),
