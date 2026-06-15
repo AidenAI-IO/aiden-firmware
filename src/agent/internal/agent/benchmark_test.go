@@ -410,7 +410,9 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		`id="unitSelect"`,
 		`id="runUnitBtn"`,
 		`function startRunUnit()`,
-		`x.kind==='unit'`,
+		`x.kind==='unit'?' (tool)':' (agent)'`,
+		` (agent)`,
+		`mode:'unit'`,
 		`reportCell(r)`,
 		`Not ready`,
 		`payload.suite=mobileGymSuiteName(item,key);`,
@@ -531,6 +533,33 @@ func TestHandleBenchmarkRun_RejectsMissingJudgeAPIKey(t *testing.T) {
 	}
 	if !strings.Contains(string(logData), "benchmark judge api_key is not configured") {
 		t.Fatalf("log missing run error: %s", logData)
+	}
+}
+
+func TestHandleBenchmarkRun_UnitModeForBenchmarkSuite(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	benchmarkSuite := filepath.Join(root, "suites", "perception_v1.json")
+	os.MkdirAll(filepath.Dir(benchmarkSuite), 0o755)
+	os.WriteFile(benchmarkSuite, []byte(`{"name":"perception_v1","tasks":[]}`), 0o644)
+	var got benchmarkLaunchSpec
+	s := &Server{
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error {
+			got = spec
+			return nil
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run",
+		strings.NewReader(fmt.Sprintf(`{"suite":%q,"mode":"unit"}`, benchmarkSuite)))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRun(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if got.Suite != benchmarkSuite || got.Kind != "unit" {
+		t.Fatalf("launch spec = %+v", got)
 	}
 }
 

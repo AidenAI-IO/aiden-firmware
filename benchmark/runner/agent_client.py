@@ -89,6 +89,22 @@ class AgentClient:
         except (AgentRequestError, AgentTimeoutError):
             return False
 
+    def get_tools(self) -> Any:
+        status, body_bytes = self._get("/api/tools", timeout=5)
+        if status != 200:
+            raise AgentRequestError(f"tools returned {status}")
+        return json.loads(body_bytes)
+
+    def get_tool_description(self, name: str) -> str:
+        target = name.strip()
+        if not target:
+            return ""
+        for item in _walk_tool_catalog(self.get_tools()):
+            if item.get("name") == target:
+                description = item.get("description")
+                return description if isinstance(description, str) else ""
+        return ""
+
     def clear_history(self, timeout: int = 30) -> None:
         self._post("/api/clear", timeout=timeout)
 
@@ -164,3 +180,13 @@ class AgentClient:
     def close(self) -> None:
         # urllib doesn't keep persistent connections by default; nothing to clean up.
         pass
+
+
+def _walk_tool_catalog(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_tool_catalog(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_tool_catalog(child)

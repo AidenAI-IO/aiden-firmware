@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import dataclasses as dc
 import html
 import json
@@ -13,9 +14,21 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from runner.agent_client import AgentClient
+from runner.agent_client import AgentClient, AgentTimeoutError
+from runner.assertions import (
+    evaluate_expected_answer,
+    evaluate_expected_recalled_memory_ids,
+    evaluate_hard_assertions,
+)
 from runner.html_report import upload_report
+from runner.perception import (
+    build_perception_prompt,
+    evaluate_first_click_rubric,
+    is_perception_first_click_task,
+)
 from runner.report import git_sha, now_iso, write_manifest
+from runner.suite import Suite, TaskSpec, load_suite
+from runner.trace import extract_trace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -117,7 +130,10 @@ def _collect_suites(args: argparse.Namespace) -> list[Path]:
     if args.suite:
         path = Path(args.suite)
         if not is_unit_suite(path):
-            raise SystemExit(f"not a unit suite: {path}")
+            try:
+                load_suite(path)
+            except Exception as e:
+                raise SystemExit(f"not a unit or benchmark suite: {path}: {e}") from e
         return [path]
     root = Path(args.suite_dir)
     return sorted(p for p in root.rglob("*.json") if is_unit_suite(p))
@@ -132,6 +148,14 @@ def _benchmark_url(agent_url: str) -> str:
 def _run_suite(client: AgentClient, suite_path: Path) -> list[UnitCaseResult]:
     data = json.loads(suite_path.read_text(encoding="utf-8"))
     if data.get("kind") != "unit":
+        return _run_agent_unit_suite(client, load_suite(suite_path))
+    return _run_tool_unit_suite(client, suite_path, data)
+
+
+def _run_tool_unit_suite(
+    client: AgentClient, suite_path: Path, data: dict[str, Any]
+) -> list[UnitCaseResult]:
+    if data.get("kind") != "unit":
         raise ValueError(f"{suite_path} is not a unit suite")
     target = data.get("target") or {}
     target_type = target.get("type")
@@ -144,6 +168,151 @@ def _run_suite(client: AgentClient, suite_path: Path) -> list[UnitCaseResult]:
     for test in data.get("tests") or []:
         results.append(_run_case(client, suite_name, suite_path, target_name, defaults, test))
     return results
+
+
+def _run_agent_unit_suite(client: AgentClient, suite: Suite) -> list[UnitCaseResult]:
+    results: list[UnitCaseResult] = []
+    for task in suite.tasks:
+        results.append(_run_agent_unit_case(client, suite, task))
+    return results
+
+
+def _run_agent_unit_case(
+    client: AgentClient, suite: Suite, task: TaskSpec
+) -> UnitCaseResult:
+    started = time.monotonic()
+    prompt = task.prompt
+    if suite.prompt_prefix:
+        prompt = f"{suite.prompt_prefix.rstrip()}\n\n{task.prompt}"
+    if is_perception_first_click_task(suite, task):
+        prompt = build_perception_prompt(prompt, _tool_description(client, "mouse_click"))
+
+    attachments = None
+    if task.input_screenshot:
+        screenshot_path = suite.source_path.parent / task.input_screenshot
+        if not screenshot_path.exists():
+            return _agent_unit_failure(
+                suite, task, started, prompt, f"input_screenshot not found: {screenshot_path}"
+            )
+        img_b64 = base64.b64encode(screenshot_path.read_bytes()).decode("ascii")
+        attachments = [{"kind": "image", "mime_type": "image/jpeg", "data": img_b64}]
+
+    history: list[dict[str, Any]] = []
+    response = ""
+    timed_out = False
+    agent_error = ""
+    try:
+        _clear_history_best_effort(client)
+        chat = client.chat(
+            prompt,
+            timeout_sec=task.hard_assertions.must_complete_within_sec,
+            attachments=attachments,
+        )
+        history = chat.history
+        response = chat.response
+    except AgentTimeoutError as e:
+        timed_out = True
+        agent_error = str(e)[:300]
+        history = _client_history_or_empty(client)
+    except Exception as e:
+        agent_error = str(e)[:300]
+        history = _client_history_or_empty(client)
+    finally:
+        _clear_history_best_effort(client)
+
+    trace = extract_trace(history)
+    perception_eval = (
+        evaluate_first_click_rubric(trace, task.rubric)
+        if is_perception_first_click_task(suite, task)
+        else None
+    )
+    hard = evaluate_hard_assertions(trace, task.hard_assertions, timed_out=timed_out)
+    if (
+        perception_eval is not None
+        and perception_eval.first_click is not None
+        and hard.results.response_exists is False
+        and task.hard_assertions.response_required
+    ):
+        hard.results.response_exists = True
+        hard.all_passed = bool(
+            hard.results.min_tool_calls
+            and hard.results.max_tool_calls
+            and hard.results.timeout
+            and hard.results.response_exists
+        )
+
+    errors: list[str] = []
+    if agent_error and not trace.tool_calls:
+        errors.append(f"agent error: {agent_error}")
+    if not hard.all_passed:
+        errors.append(_hard_assertion_error(hard.results))
+
+    expected_answer = None
+    if task.expected_answer is not None:
+        expected_answer = evaluate_expected_answer(
+            trace.final_response or response,
+            task.expected_answer,
+            task.answer_format or "option_letter",
+        )
+        if not expected_answer.passed:
+            errors.append(
+                f"expected_answer mismatch: expected {expected_answer.expected_answer}, "
+                f"got {expected_answer.predicted_answer}"
+            )
+
+    expected_recall = None
+    if task.expected_recalled_memory_ids:
+        expected_recall = evaluate_expected_recalled_memory_ids(
+            history, task.expected_recalled_memory_ids
+        )
+        if not expected_recall.passed:
+            errors.append(
+                "expected recalled memory ids missing: "
+                + ", ".join(task.expected_recalled_memory_ids)
+            )
+
+    if perception_eval is not None and not perception_eval.passed:
+        failed = [v for v in perception_eval.verdicts if v.verdict != "yes"]
+        errors.extend(v.reason for v in failed)
+
+    output_json: dict[str, Any] = {
+        "trace": {
+            "tool_calls": [dc.asdict(tc) for tc in trace.tool_calls],
+            "final_response": trace.final_response,
+            "total_tool_calls": trace.total_tool_calls,
+        },
+        "hard_assertions": dc.asdict(hard.results),
+        "agent_error": agent_error,
+    }
+    if perception_eval is not None:
+        output_json["perception_first_click"] = {
+            "first_click": perception_eval.first_click,
+            "expected": perception_eval.expected,
+            "passed": perception_eval.passed,
+            "verdicts": [dc.asdict(v) for v in perception_eval.verdicts],
+        }
+    if expected_answer is not None:
+        output_json["expected_answer"] = dc.asdict(expected_answer)
+    if expected_recall is not None:
+        output_json["expected_recalled_memory"] = dc.asdict(expected_recall)
+
+    return UnitCaseResult(
+        suite_name=suite.name,
+        suite_path=str(suite.source_path),
+        test_id=task.id,
+        target_type="agent",
+        target_name="chat",
+        status="failed" if errors else "passed",
+        input={
+            "message": prompt,
+            "attachments": _attachment_summary(attachments),
+        },
+        output=trace.final_response or response or agent_error,
+        output_json=output_json,
+        is_error=bool(errors),
+        duration_ms=int((time.monotonic() - started) * 1000),
+        error="; ".join(e for e in errors if e),
+    )
 
 
 def _run_case(
@@ -267,6 +436,77 @@ def _check_expectation(
                 if "max_len" in rule and actual_len > int(rule["max_len"]):
                     return f"{path} length above {rule['max_len']}"
     return ""
+
+
+def _tool_description(client: AgentClient, name: str) -> str:
+    get_tool_description = getattr(client, "get_tool_description", None)
+    if not callable(get_tool_description):
+        return ""
+    try:
+        return get_tool_description(name)
+    except Exception:
+        return ""
+
+
+def _clear_history_best_effort(client: AgentClient) -> None:
+    try:
+        client.clear_history()
+    except Exception:
+        pass
+
+
+def _client_history_or_empty(client: AgentClient) -> list[dict[str, Any]]:
+    try:
+        return client.get_history()
+    except Exception:
+        return []
+
+
+def _attachment_summary(attachments: list[dict[str, str]] | None) -> list[dict[str, Any]]:
+    summary = []
+    for item in attachments or []:
+        summary.append({
+            "kind": item.get("kind"),
+            "mime_type": item.get("mime_type"),
+            "data_len": len(item.get("data") or ""),
+        })
+    return summary
+
+
+def _hard_assertion_error(results: Any) -> str:
+    failures = []
+    if results.min_tool_calls is False:
+        failures.append("min_tool_calls")
+    if results.max_tool_calls is False:
+        failures.append("max_tool_calls")
+    if results.timeout is False:
+        failures.append("timeout")
+    if results.response_exists is False:
+        failures.append("response_required")
+    return "hard assertions failed: " + ", ".join(failures)
+
+
+def _agent_unit_failure(
+    suite: Suite,
+    task: TaskSpec,
+    started: float,
+    prompt: str,
+    error: str,
+) -> UnitCaseResult:
+    return UnitCaseResult(
+        suite_name=suite.name,
+        suite_path=str(suite.source_path),
+        test_id=task.id,
+        target_type="agent",
+        target_name="chat",
+        status="failed",
+        input={"message": prompt, "attachments": []},
+        output="",
+        output_json=None,
+        is_error=True,
+        duration_ms=int((time.monotonic() - started) * 1000),
+        error=error,
+    )
 
 
 def _resolve_path(data: Any, path: str) -> tuple[bool, Any]:

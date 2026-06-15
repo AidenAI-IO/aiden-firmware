@@ -71,6 +71,22 @@ def test_get_history_returns_current_history():
     assert result == history
 
 
+def test_get_tool_description_finds_nested_tool_catalog_entry():
+    seen = {}
+    client = AgentClient(base_url="http://test")
+    body = {
+        "tools": [
+            {"name": "shell", "description": "run shell"},
+            {"name": "mouse_click", "description": "click with 0-1000 coordinates"},
+        ]
+    }
+    with patch("urllib.request.urlopen", _captured(seen, body=body)):
+        result = client.get_tool_description("mouse_click")
+    assert seen["method"] == "GET"
+    assert seen["url"].endswith("/api/tools")
+    assert result == "click with 0-1000 coordinates"
+
+
 def test_chat_includes_skills_when_provided():
     seen = {}
     client = AgentClient(base_url="http://test")

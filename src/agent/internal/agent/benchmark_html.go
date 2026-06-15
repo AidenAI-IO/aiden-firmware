@@ -87,7 +87,7 @@ input[type=text]{width:260px}
 </div>
 <div id="unitCard" class="card">
 <h2>Unit Tests</h2>
-<div class="muted" style="margin-bottom:12px">Direct tool-level tests. Run one platform suite, or run all unit suites under suites/unit.</div>
+<div class="muted" style="margin-bottom:12px">Agent-only runs for benchmark suites; direct tool-level runs for unit suites. Skips reset, judge, and recovery flow.</div>
 <div class="control-grid">
 <div>
 <label class="field-label" for="unitSelect">Unit suite</label>
@@ -224,7 +224,12 @@ syncDelBtn();return;
 }
 var groups={aiden:[],mobilegym_builtin:[]};
 d.forEach(function(x){
-if(mode!=='mobilegym'&&x.kind==='unit'){unitSuiteCount++;return}
+if(mode!=='mobilegym'){
+var uo=document.createElement('option');uo.value=x.path||x.name;
+uo.textContent=x.name+(x.kind==='unit'?' (tool)':' (agent)')+(x.custom?' (custom)':'');
+u.appendChild(uo);suiteIndex[x.path||x.name]=x;unitSuiteCount++;
+if(x.kind==='unit')return;
+}
 (groups[x.type]||groups.aiden).push(x);benchmarkSuiteCount++;
 });
 function appendGroup(label,arr){
@@ -243,15 +248,7 @@ s.appendChild(og);
 appendGroup('Aiden Suites',groups.aiden);
 if(mode==='mobilegym')appendGroup('MobileGym Built-in',groups.mobilegym_builtin);
 if(!benchmarkSuiteCount){var bo=document.createElement('option');bo.value='';bo.textContent='(no benchmark suites)';s.appendChild(bo)}
-if(mode!=='mobilegym'){
-d.forEach(function(x){
-if(x.kind!=='unit')return;
-var o=document.createElement('option');o.value=x.path||x.name;
-o.textContent=x.name+(x.custom?' (custom)':'');
-u.appendChild(o);suiteIndex[x.path||x.name]=x;
-});
-if(!unitSuiteCount){var uo=document.createElement('option');uo.value='';uo.textContent='(no unit suites)';u.appendChild(uo)}
-}
+if(mode!=='mobilegym'&&!unitSuiteCount){var uo=document.createElement('option');uo.value='';uo.textContent='(no suites)';u.appendChild(uo)}
 syncDelBtn();
 }).catch(function(e){
 var s=document.getElementById('suiteSelect');var u=document.getElementById('unitSelect');s.innerHTML='';u.innerHTML='';suiteIndex={};
@@ -408,7 +405,7 @@ document.getElementById('runUnitBtn').disabled=true;
 document.getElementById('statusText').textContent='running';
 document.getElementById('statusText').className='status running';
 fetch('/benchmark/run',{method:'POST',headers:{'Content-Type':'application/json'},
-body:JSON.stringify({suite:suite,mode:'aiden'})}).then(jsonOrError).then(function(){
+body:JSON.stringify({suite:suite,mode:'unit'})}).then(jsonOrError).then(function(){
 loadLog();
 polling=setInterval(pollStatus,3000);
 if(!logPolling)logPolling=setInterval(loadLog,1000)}).catch(function(e){

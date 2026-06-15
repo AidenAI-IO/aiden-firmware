@@ -15,6 +15,11 @@ from runner.assertions import (
 from runner.capture import take_screenshot, write_step_screenshot
 from runner.judge import judge_task, JudgeConfig
 from runner.models import TaskResult, RubricVerdict, HardAssertionResults
+from runner.perception import (
+    build_perception_prompt,
+    evaluate_first_click_rubric,
+    is_perception_first_click_task,
+)
 from runner.recovery import prepare_task_isolation, recover_agent_after_timeout
 from runner.reset import ResetError
 from runner.suite import Suite, TaskSpec
@@ -102,6 +107,9 @@ def run_one_task(
         prompt = task.prompt
         if suite.prompt_prefix:
             prompt = f"{suite.prompt_prefix.rstrip()}\n\n{task.prompt}"
+        perception_first_click = is_perception_first_click_task(suite, task)
+        if perception_first_click:
+            prompt = build_perception_prompt(prompt, _tool_description(client, "mouse_click"))
         chat = client.chat(
             prompt,
             timeout_sec=task.hard_assertions.must_complete_within_sec,
@@ -119,6 +127,17 @@ def run_one_task(
     (artifact_dir / "history.json").write_text(
         json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
     trace = extract_trace(history)
+    perception_eval = (
+        evaluate_first_click_rubric(trace, task.rubric)
+        if is_perception_first_click_task(suite, task)
+        else None
+    )
+    if perception_eval is not None:
+        base.metrics["perception_first_click"] = {
+            "first_click": perception_eval.first_click,
+            "expected": perception_eval.expected,
+            "passed": perception_eval.passed,
+        }
     wall_ms = int((time.monotonic() - started_mono) * 1000)
     if suite.trace_observations:
         observation_results = evaluate_trace_observations(trace, suite.trace_observations)
@@ -149,6 +168,20 @@ def run_one_task(
     base.metrics.update({"wall_ms": wall_ms, "tool_calls": trace.total_tool_calls,
                          "screenshots_taken": sum(1 for tc in trace.tool_calls if tc.has_screenshot)})
     outcome = evaluate_hard_assertions(trace, task.hard_assertions, timed_out=timed_out)
+    if (
+        perception_eval is not None
+        and perception_eval.first_click is not None
+        and outcome.results.response_exists is False
+        and task.hard_assertions.response_required
+    ):
+        outcome.results.response_exists = True
+        base.metrics["response_required_satisfied_by_first_click"] = True
+        outcome.all_passed = bool(
+            outcome.results.min_tool_calls
+            and outcome.results.max_tool_calls
+            and outcome.results.timeout
+            and outcome.results.response_exists
+        )
     base.hard_assertions = outcome.results
     if not outcome.all_passed:
         base.status = "timeout" if timed_out else "failed"
@@ -180,6 +213,17 @@ def run_one_task(
             base.status = "failed"
             base.finished_at = now_iso()
             return base
+    if perception_eval is not None:
+        base.rubric = perception_eval.verdicts
+        base.rubric_pass_count = sum(1 for v in perception_eval.verdicts if v.verdict == "yes")
+        (artifact_dir / "judge.json").write_text(json.dumps({
+            "verdicts": [dc.asdict(v) for v in perception_eval.verdicts],
+            "overall_notes": "Local first-click perception evaluation.",
+            "cache_key": "local-perception-first-click",
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        base.status = "passed" if perception_eval.passed else "failed"
+        base.finished_at = now_iso()
+        return base
     if judge_cfg is None:
         base.status = "passed"
         base.finished_at = now_iso()
@@ -218,3 +262,13 @@ def client_history_or_empty(client: AgentClient) -> list[dict]:
     except Exception:
         pass
     return []
+
+
+def _tool_description(client: AgentClient, name: str) -> str:
+    get_tool_description = getattr(client, "get_tool_description", None)
+    if not callable(get_tool_description):
+        return ""
+    try:
+        return get_tool_description(name)
+    except Exception:
+        return ""

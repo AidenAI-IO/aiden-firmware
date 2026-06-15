@@ -111,9 +111,13 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 	if req.Mode == "" {
 		req.Mode = "aiden"
 	}
+	runMode := req.Mode
+	if req.Mode == "unit" {
+		runMode = "aiden"
+	}
 	statePath := s.benchmarkStateFile()
 
-	switch req.Mode {
+	switch runMode {
 	case "aiden":
 		if req.Suite == "" && req.SuiteDir == "" {
 			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "missing suite or suite_dir field")
@@ -128,6 +132,8 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		if req.SuiteDir != "" {
 			spec.Kind = "unit"
 			stateSuite = req.SuiteDir
+		} else if req.Mode == "unit" {
+			spec.Kind = "unit"
 		} else if benchmarkSuiteKind(req.Suite) == "unit" {
 			spec.Kind = "unit"
 		}
@@ -150,7 +156,7 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		}
 		stateJSON, _ := json.Marshal(map[string]any{
 			"status": "running",
-			"mode":   "aiden",
+			"mode":   req.Mode,
 			"suite":  stateSuite,
 			"model":  agentModel,
 		})
