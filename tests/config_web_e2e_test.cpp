@@ -151,6 +151,23 @@ int required_json_int(cJSON* object, const char* key) {
     return item->valueint;
 }
 
+std::string read_file(const std::string& path) {
+    std::ifstream in(path.c_str());
+    REQUIRE(in.good());
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+std::string replace_all(std::string text, const std::string& needle, const std::string& replacement) {
+    size_t pos = 0;
+    while ((pos = text.find(needle, pos)) != std::string::npos) {
+        text.replace(pos, needle.size(), replacement);
+        pos += replacement.size();
+    }
+    return text;
+}
+
 std::string resolved_config_json(const std::string& search_provider, bool search_has_api_key) {
     return std::string(
         "{"
@@ -993,6 +1010,47 @@ TEST_CASE("config_web: POST /api/config returns 200 when stub config-check appro
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 200);
+}
+
+TEST_CASE("config_web: POST /api/config legacy wifi fields update saved networks") {
+    StubEnv env;  // defaults: check returns valid:true
+    auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/wifi.conf",
+        "ctrl_interface=/var/run/wpa_supplicant\n"
+        "update_config=1\n"
+        "country=CN\n"
+        "\n"
+        "network={\n"
+        "    ssid=787878\n"
+        "    psk=\"xxx-password\"\n"
+        "    priority=1\n"
+        "    scan_ssid=1\n"
+        "}\n"
+        "\n"
+        "network={\n"
+        "    ssid=797979\n"
+        "    psk=\"yyy-password\"\n"
+        "    priority=2\n"
+        "    scan_ssid=1\n"
+        "}\n");
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},"
+        "\"wifi\":{\"ssid\":\"zzz\",\"psk\":\"zzz-password\",\"country\":\"CN\"},"
+        "\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/wifi.conf");
+    CHECK(saved.find("ssid=787878") != std::string::npos);
+    CHECK(saved.find("psk=\"xxx-password\"") != std::string::npos);
+    CHECK(saved.find("ssid=797979") != std::string::npos);
+    CHECK(saved.find("psk=\"yyy-password\"") != std::string::npos);
+    CHECK(saved.find("ssid=7a7a7a") != std::string::npos);
+    CHECK(saved.find("psk=\"zzz-password\"") != std::string::npos);
+    CHECK(saved.find("ssid=7a7a7a\n    psk=\"zzz-password\"\n    scan_ssid=1\n    priority=3") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config returns 400 when stub config-check rejects with reasons") {

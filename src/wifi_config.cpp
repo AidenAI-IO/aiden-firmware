@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -238,16 +239,81 @@ bool parse_assignment(const std::string& line, const char* key, std::string* val
     return true;
 }
 
+int parse_int_value(const std::string& text, int default_value) {
+    char* end = NULL;
+    long value = strtol(text.c_str(), &end, 10);
+    if (end == text.c_str()) {
+        return default_value;
+    }
+    while (end && *end) {
+        if (!isspace(static_cast<unsigned char>(*end))) {
+            return default_value;
+        }
+        ++end;
+    }
+    return static_cast<int>(value);
+}
+
+std::string decode_ssid_value(const std::string& value) {
+    std::string decoded;
+    if (hex_decode(value, &decoded)) {
+        return decoded;
+    }
+    return parse_quoted_value(value);
+}
+
+std::string decode_psk_value(const std::string& value) {
+    if (looks_like_hex(value) && value.size() == 64) {
+        return value;
+    }
+    return parse_quoted_value(value);
+}
+
+void sync_legacy_wifi_fields(WifiNetworkConfig* config) {
+    if (!config) {
+        return;
+    }
+    if (config->networks.empty()) {
+        return;
+    }
+
+    size_t best = 0;
+    for (size_t i = 1; i < config->networks.size(); ++i) {
+        if (config->networks[i].priority > config->networks[best].priority) {
+            best = i;
+        }
+    }
+    config->ssid = config->networks[best].ssid;
+    config->psk = config->networks[best].psk;
+}
+
+std::vector<WifiNetwork> render_networks_from_config(const WifiNetworkConfig& config) {
+    std::vector<WifiNetwork> networks = config.networks;
+    if (networks.empty() && !config.ssid.empty()) {
+        WifiNetwork network;
+        network.ssid = config.ssid;
+        network.psk = config.psk;
+        network.priority = 1;
+        networks.push_back(network);
+    }
+    return networks;
+}
+
 }
 
 std::string render_wifi_config(const WifiNetworkConfig& config) {
+    std::vector<WifiNetwork> networks = render_networks_from_config(config);
     std::string out;
     out += "ctrl_interface=/var/run/wpa_supplicant\n";
     out += "update_config=1\n";
     out += "country=";
     if (config.country.empty()) {
         // Try to detect country from the target SSID before connecting
-        std::string detected = detect_country_by_ssid(config.ssid);
+        std::string ssid = config.ssid;
+        if (ssid.empty() && !networks.empty()) {
+            ssid = networks[0].ssid;
+        }
+        std::string detected = detect_country_by_ssid(ssid);
         if (detected.empty()) {
             // Fallback: try from currently connected AP
             detected = detect_country_from_ap();
@@ -256,24 +322,42 @@ std::string render_wifi_config(const WifiNetworkConfig& config) {
     } else {
         out += config.country;
     }
-    out += "\n\n";
-    out += "network={\n";
-    out += "    ssid=";
-    out += hex_encode(config.ssid);
     out += "\n";
-    if (config.psk.empty()) {
-        out += "    key_mgmt=NONE\n";
-    } else if (is_raw_psk(config.psk)) {
-        out += "    psk=";
-        out += config.psk;
+
+    for (size_t i = 0; i < networks.size(); ++i) {
+        const WifiNetwork& network = networks[i];
+        if (network.ssid.empty()) {
+            continue;
+        }
+        out += "\nnetwork={\n";
+        out += "    ssid=";
+        out += hex_encode(network.ssid);
         out += "\n";
-    } else {
-        out += "    psk=";
-        out += quote_value(config.psk);
-        out += "\n";
+        if (network.psk.empty()) {
+            out += "    key_mgmt=NONE\n";
+        } else if (is_raw_psk(network.psk)) {
+            out += "    psk=";
+            out += network.psk;
+            out += "\n";
+        } else {
+            out += "    psk=";
+            out += quote_value(network.psk);
+            out += "\n";
+        }
+        out += "    scan_ssid=";
+        out += network.scan_ssid ? "1\n" : "0\n";
+        if (network.priority > 0) {
+            out += "    priority=";
+            char priority[32];
+            snprintf(priority, sizeof(priority), "%d", network.priority);
+            out += priority;
+            out += "\n";
+        }
+        if (network.disabled) {
+            out += "    disabled=1\n";
+        }
+        out += "}\n";
     }
-    out += "    scan_ssid=1\n";
-    out += "}\n";
     return out;
 }
 
@@ -286,28 +370,49 @@ bool load_wifi_config(const char* path, WifiNetworkConfig& config, std::string* 
     }
 
     WifiNetworkConfig parsed;
+    bool in_network = false;
+    WifiNetwork current_network;
     size_t pos = 0;
     while (pos < text.size()) {
         size_t next = text.find('\n', pos);
         std::string line = text.substr(pos, next == std::string::npos ? std::string::npos : next - pos);
         line = trim_copy(line);
 
+        if (line == "network={") {
+            in_network = true;
+            current_network = WifiNetwork();
+            if (next == std::string::npos) {
+                break;
+            }
+            pos = next + 1;
+            continue;
+        }
+
+        if (in_network && line == "}") {
+            if (!current_network.ssid.empty()) {
+                parsed.networks.push_back(current_network);
+            }
+            in_network = false;
+            if (next == std::string::npos) {
+                break;
+            }
+            pos = next + 1;
+            continue;
+        }
+
         std::string value;
-        if (parse_assignment(line, "country", &value)) {
+        if (!in_network && parse_assignment(line, "country", &value)) {
             parsed.country = value;
-        } else if (parse_assignment(line, "ssid", &value)) {
-            std::string decoded;
-            if (hex_decode(value, &decoded)) {
-                parsed.ssid = decoded;
-            } else {
-                parsed.ssid = parse_quoted_value(value);
-            }
-        } else if (parse_assignment(line, "psk", &value)) {
-            if (looks_like_hex(value) && value.size() == 64) {
-                parsed.psk = value;
-            } else {
-                parsed.psk = parse_quoted_value(value);
-            }
+        } else if (in_network && parse_assignment(line, "ssid", &value)) {
+            current_network.ssid = decode_ssid_value(value);
+        } else if (in_network && parse_assignment(line, "psk", &value)) {
+            current_network.psk = decode_psk_value(value);
+        } else if (in_network && parse_assignment(line, "priority", &value)) {
+            current_network.priority = parse_int_value(value, current_network.priority);
+        } else if (in_network && parse_assignment(line, "scan_ssid", &value)) {
+            current_network.scan_ssid = parse_int_value(value, current_network.scan_ssid ? 1 : 0) != 0;
+        } else if (in_network && parse_assignment(line, "disabled", &value)) {
+            current_network.disabled = parse_int_value(value, 0) != 0;
         }
 
         if (next == std::string::npos) {
@@ -315,6 +420,13 @@ bool load_wifi_config(const char* path, WifiNetworkConfig& config, std::string* 
         }
         pos = next + 1;
     }
+
+    if (in_network && !current_network.ssid.empty()) {
+        parsed.networks.push_back(current_network);
+    }
+
+    normalize_wifi_priorities(&parsed);
+    sync_legacy_wifi_fields(&parsed);
 
     config = parsed;
     if (config.country.empty()) {
@@ -328,6 +440,95 @@ bool load_wifi_config(const char* path, WifiNetworkConfig& config, std::string* 
             config.country = "CN";  // Last resort fallback
         }
     }
+    return true;
+}
+
+int find_wifi_network_index(const WifiNetworkConfig& config, const std::string& ssid) {
+    for (size_t i = 0; i < config.networks.size(); ++i) {
+        if (config.networks[i].ssid == ssid) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+void normalize_wifi_priorities(WifiNetworkConfig* config) {
+    if (!config) {
+        return;
+    }
+    int next_priority = 1;
+    for (size_t i = 0; i < config->networks.size(); ++i) {
+        if (config->networks[i].ssid.empty()) {
+            continue;
+        }
+        if (config->networks[i].priority <= 0) {
+            config->networks[i].priority = next_priority;
+        }
+        if (config->networks[i].priority >= next_priority) {
+            next_priority = config->networks[i].priority + 1;
+        }
+    }
+}
+
+bool upsert_wifi_network(WifiNetworkConfig* config, const WifiNetwork& network) {
+    if (!config || network.ssid.empty()) {
+        return false;
+    }
+    int index = find_wifi_network_index(*config, network.ssid);
+    if (index >= 0) {
+        int priority = config->networks[static_cast<size_t>(index)].priority;
+        config->networks[static_cast<size_t>(index)] = network;
+        if (config->networks[static_cast<size_t>(index)].priority <= 0) {
+            config->networks[static_cast<size_t>(index)].priority = priority;
+        }
+    } else {
+        config->networks.push_back(network);
+    }
+    normalize_wifi_priorities(config);
+    sync_legacy_wifi_fields(config);
+    return true;
+}
+
+bool remove_wifi_network(WifiNetworkConfig* config, const std::string& ssid) {
+    if (!config || ssid.empty()) {
+        return false;
+    }
+    int index = find_wifi_network_index(*config, ssid);
+    if (index < 0) {
+        return false;
+    }
+    config->networks.erase(config->networks.begin() + index);
+    normalize_wifi_priorities(config);
+    sync_legacy_wifi_fields(config);
+    if (config->networks.empty()) {
+        config->ssid.clear();
+        config->psk.clear();
+    }
+    return true;
+}
+
+bool promote_wifi_network(WifiNetworkConfig* config, const std::string& ssid) {
+    if (!config || ssid.empty()) {
+        return false;
+    }
+    int index = find_wifi_network_index(*config, ssid);
+    if (index < 0) {
+        return false;
+    }
+
+    std::vector<WifiNetwork> ordered;
+    ordered.reserve(config->networks.size());
+    for (size_t i = 0; i < config->networks.size(); ++i) {
+        if (static_cast<int>(i) != index) {
+            ordered.push_back(config->networks[i]);
+        }
+    }
+    ordered.push_back(config->networks[static_cast<size_t>(index)]);
+    for (size_t i = 0; i < ordered.size(); ++i) {
+        ordered[i].priority = static_cast<int>(i + 1);
+    }
+    config->networks = ordered;
+    sync_legacy_wifi_fields(config);
     return true;
 }
 
