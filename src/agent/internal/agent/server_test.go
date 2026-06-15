@@ -1592,7 +1592,9 @@ func TestServerHandleEventsSSE(t *testing.T) {
 	server := NewServer(runtime, "127.0.0.1:0", "")
 
 	// Create request
-	req := httptest.NewRequest("GET", "/api/events", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest("GET", "/api/events", nil).WithContext(ctx)
 	rec := httptest.NewRecorder()
 
 	// Start handler in goroutine (it blocks on SSE stream)
@@ -1631,6 +1633,13 @@ func TestServerHandleEventsSSE(t *testing.T) {
 	}
 	if !strings.Contains(body, "SSE test") {
 		t.Errorf("Response should contain message content, got: %s", body)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("handleEvents did not exit after context cancellation")
 	}
 }
 

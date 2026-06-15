@@ -77,6 +77,14 @@ func TestAudioArchiveManagerDisabled(t *testing.T) {
 	}
 }
 
+func TestAudioArchiveManagerRejectsInvalidSampleRate(t *testing.T) {
+	mgr := NewAudioArchiveManager(AudioArchiveConfig{Enabled: true, StoragePath: t.TempDir()})
+
+	if _, _, err := mgr.SaveAudio([]int16{1, 2, 3}, 0); err == nil {
+		t.Fatal("SaveAudio() error = nil, want invalid sample rate error")
+	}
+}
+
 func TestAudioArchiveManagerFilenameFormat(t *testing.T) {
 	tmpDir := t.TempDir()
 

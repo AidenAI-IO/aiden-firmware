@@ -240,7 +240,6 @@ static const char* CONFIG_WEB_HTML =
     "            <h3>[audio_archive]</h3>\n"
     "            <div class=\"section-actions\">\n"
     "              <button class=\"button ghost edit-btn\" onclick=\"enterEditSection('audio_archive')\">编辑</button>\n"
-    "              <button class=\"button secondary\" onclick=\"testSection('audio_archive')\">测试</button>\n"
     "              <button class=\"button ghost cancel-btn\" onclick=\"cancelEditSection('audio_archive')\">取消</button>\n"
     "              <button id=\"save-audio_archive\" class=\"button primary save-btn\" onclick=\"saveSection('audio_archive')\">保存</button>\n"
     "            </div>\n"

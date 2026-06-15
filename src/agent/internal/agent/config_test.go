@@ -957,6 +957,15 @@ provider = "fake"
 	}
 }
 
+func TestAudioArchiveStoragePathOrDefaultTrimsWhitespace(t *testing.T) {
+	if got := (AudioArchiveConfig{StoragePath: "  /tmp/audio  "}).StoragePathOrDefault(); got != "/tmp/audio" {
+		t.Fatalf("StoragePathOrDefault() = %q, want trimmed path", got)
+	}
+	if got := (AudioArchiveConfig{StoragePath: "  \t  "}).StoragePathOrDefault(); got != defaultAudioArchiveStoragePath {
+		t.Fatalf("StoragePathOrDefault() = %q, want default path", got)
+	}
+}
+
 func TestAudioArchiveConfigExplicitValues(t *testing.T) {
 	configContent := `
 [audio_archive]

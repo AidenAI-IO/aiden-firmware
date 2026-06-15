@@ -280,9 +280,6 @@ func boolPtr(b bool) *bool {
 
 func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 	audioArchive := cfg.AudioArchive
-	if audioArchive == (agent.AudioArchiveConfig{}) {
-		audioArchive = agent.DefaultConfig().AudioArchive
-	}
 
 	return webConfigDTO{
 		Model: modelDTO{

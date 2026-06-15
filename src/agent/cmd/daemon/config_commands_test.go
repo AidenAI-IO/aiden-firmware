@@ -132,6 +132,9 @@ pointer_mode = "touchscreen"
 		t.Fatalf("audio.socket = %q, want default %q",
 			dto.Audio.Socket, agent.DefaultConfig().Audio.Socket)
 	}
+	if !dto.AudioArchive.Enabled || dto.AudioArchive.StoragePath != agent.DefaultConfig().AudioArchive.StoragePath {
+		t.Fatalf("audio_archive defaults = %+v, want enabled default storage", dto.AudioArchive)
+	}
 }
 
 func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
@@ -143,9 +146,9 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 		defaults.Audio.Channels == 0 || defaults.Audio.BitWidth == 0 {
 		t.Fatalf("audio defaults were not populated: %+v", defaults.Audio)
 	}
-	if !defaults.AudioArchive.Enabled || defaults.AudioArchive.StoragePath == "" ||
+	if defaults.AudioArchive.Enabled || defaults.AudioArchive.StoragePath == "" ||
 		defaults.AudioArchive.MaxFiles == 0 || defaults.AudioArchive.MaxSizeMB == 0 {
-		t.Fatalf("audio archive defaults were not populated: %+v", defaults.AudioArchive)
+		t.Fatalf("audio archive zero config conversion = %+v, want disabled with path and retention defaults", defaults.AudioArchive)
 	}
 	if defaults.HID.FrameSocket == "" || defaults.HID.KeyboardDevice == "" ||
 		defaults.HID.MouseDevice == "" || defaults.HID.PointerMode == "" {
@@ -159,6 +162,13 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 		defaults.Agent.VoiceFirstTurnTimeoutMs == 0 ||
 		defaults.Agent.VoiceMaxResponseTokens == 0 {
 		t.Fatalf("voice defaults were not populated: %+v", defaults.Agent)
+	}
+}
+
+func TestWebConfigDTOFromAgentConfigDoesNotInferAudioArchiveEnabled(t *testing.T) {
+	roundTrip := webConfigDTOFromAgentConfig(agent.Config{AudioArchive: agent.AudioArchiveConfig{Enabled: false}})
+	if roundTrip.AudioArchive.Enabled {
+		t.Fatal("AudioArchive.Enabled = true, want explicit disabled zero-value config to stay disabled")
 	}
 }
 

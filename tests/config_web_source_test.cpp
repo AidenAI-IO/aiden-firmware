@@ -149,6 +149,7 @@ TEST_CASE("config web exposes audio archive switch") {
     CHECK(html.find("audioArchiveModeHint") != std::string::npos);
     CHECK(html.find("isAudioArchiveAvailable") != std::string::npos);
     CHECK(html.find("agent.input_mode = stt") != std::string::npos);
+    CHECK(html.find("testSection('audio_archive')") == std::string::npos);
     CHECK(html.find("[audio_archive]") != std::string::npos);
     CHECK(html.find("保存 STT 语音录音 WAV") != std::string::npos);
 }

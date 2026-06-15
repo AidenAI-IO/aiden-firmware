@@ -426,6 +426,20 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
 }
 
+TEST_CASE("config_web: POST /api/config accepts empty audio_archive storage_path") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"audio_archive\":{\"enabled\":true,\"max_files\":123,\"max_size_mb\":45,"
+        "\"storage_path\":\"\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+}
+
 TEST_CASE("config_web: GET /api/config tolerates resolved config without force_simple_loop") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(

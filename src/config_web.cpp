@@ -1096,7 +1096,7 @@ bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
 
     cJSON* audio_archive = cJSON_GetObjectItem(root, "audio_archive");
     if (!validate_config_field(audio_archive, "audio_archive", "enabled", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(audio_archive, "audio_archive", "storage_path", CONFIG_FIELD_STRING, false, error) ||
+        !validate_config_field(audio_archive, "audio_archive", "storage_path", CONFIG_FIELD_STRING, true, error) ||
         !validate_config_field(audio_archive, "audio_archive", "max_files", CONFIG_FIELD_NUMBER, false, error) ||
         !validate_config_field(audio_archive, "audio_archive", "max_size_mb", CONFIG_FIELD_NUMBER, false, error)) {
         return false;

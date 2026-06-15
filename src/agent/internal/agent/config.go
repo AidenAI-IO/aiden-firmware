@@ -83,10 +83,11 @@ func (c AudioArchiveConfig) MaxSizeMBOrDefault() int {
 
 // StoragePathOrDefault returns StoragePath if non-empty, else "/userdata/audio".
 func (c AudioArchiveConfig) StoragePathOrDefault() string {
-	if c.StoragePath == "" {
+	path := strings.TrimSpace(c.StoragePath)
+	if path == "" {
 		return defaultAudioArchiveStoragePath
 	}
-	return c.StoragePath
+	return path
 }
 
 type Config struct {
