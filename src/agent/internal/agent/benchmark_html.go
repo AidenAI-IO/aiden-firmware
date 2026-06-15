@@ -83,6 +83,7 @@ input[type=text]{width:260px}
 </div>
 </div>
 <div id="skillOptConfig" class="row" style="display:none;margin-top:12px">
+<span class="inline-field"><label class="muted">Backend <select id="skillOptBackendSelect" onchange="syncSkillOptBackend()"><option value="device">Real device</option><option value="mobilegym">MobileGym</option></select></label></span>
 <span class="inline-field"><label class="muted">Skill <select id="skillSelect"><option value="">Loading skills...</option></select></label></span>
 <span class="inline-field"><label class="muted">Verification <select id="validationSuiteSelect"><option value="">Loading suites...</option></select></label></span>
 <span class="inline-field"><label class="muted">Budget <input type="number" id="budgetInput" value="10" min="1" max="100" style="width:70px"></label></span>
@@ -151,6 +152,8 @@ var suiteIndex={};
 var benchmarkSuiteCount=0;
 var unitSuiteCount=0;
 var skillCount=0;
+var skillOptTargets=[];
+var skillOptTargetBySkill={};
 var logPolling=null;
 function benchmarkEndpoint(path){return getMode()==='mobilegym'?MOBILEGYM_LOCAL_BASE+path:path}
 function mobileGymLauncherMessage(e){return 'Start the Mac MobileGym launcher first: '+String(e)}
@@ -214,20 +217,21 @@ function onModeChange(){
 var mode=getMode();
 var mg=mode==='mobilegym';
 var skillopt=mode==='skillopt';
-document.getElementById('mgConfig').style.display=mg?'inline-block':'none';
 document.getElementById('skillOptConfig').style.display=skillopt?'flex':'none';
 document.getElementById('unitCard').style.display=mode==='aiden'?'block':'none';
 document.getElementById('suiteSelectLabel').textContent=skillopt?'Train suite':'Benchmarks';
+syncSkillOptBackend();
 setStartLauncherVisible(false);
 loadSuites();
-loadSkills();
+if(!skillopt)loadSkills();
 loadRuns();
 loadStatus();
 }
-function load(){loadSuites();loadSkills();loadRuns();loadStatus()}
-function refreshBenchmark(){loadSuites();loadSkills();loadRuns();loadStatus();loadLog()}
+function load(){loadSuites();if(getMode()!=='skillopt')loadSkills();loadRuns();loadStatus()}
+function refreshBenchmark(){loadSuites();if(getMode()!=='skillopt')loadSkills();loadRuns();loadStatus();loadLog()}
 function loadSuites(){
 var mode=getMode();
+if(mode==='skillopt'){loadSkillOptTargets();return}
 fetch(benchmarkEndpoint('/benchmark/suites')+'?mode='+encodeURIComponent(mode)).then(r=>r.json()).then(d=>{
 var s=document.getElementById('suiteSelect');var u=document.getElementById('unitSelect');var v=document.getElementById('validationSuiteSelect');
 s.innerHTML='';u.innerHTML='';v.innerHTML='';suiteIndex={};benchmarkSuiteCount=0;unitSuiteCount=0;
@@ -287,6 +291,46 @@ if(!d||!d.length){var o=document.createElement('option');o.value='';o.textConten
 d.forEach(function(x){var o=document.createElement('option');o.value=x.name;o.textContent=x.name;sel.appendChild(o);skillCount++});
 loadStatus();
 }).catch(function(e){skillCount=0;sel.innerHTML='<option value="">(failed to load skills)</option>';logPanelError('Load skills failed',e)});
+}
+function syncSkillOptBackend(){
+var mode=getMode();
+var backend=document.getElementById('skillOptBackendSelect').value||'device';
+document.getElementById('mgConfig').style.display=(mode==='mobilegym'||(mode==='skillopt'&&backend==='mobilegym'))?'inline-block':'none';
+}
+function loadSkillOptTargets(){
+if(getMode()!=='skillopt')return;
+fetch('/benchmark/skillopt-targets').then(jsonOrError).then(function(d){
+skillOptTargets=d||[];skillOptTargetBySkill={};
+skillOptTargets.forEach(function(x){skillOptTargetBySkill[x.skill]=x});
+populateSkillSelectFromTargets();
+syncSkillOptSuites();
+loadStatus();
+}).catch(function(e){skillCount=0;benchmarkSuiteCount=0;logPanelError('Load SkillOpt targets failed',e)});
+}
+function populateSkillSelectFromTargets(){
+var sel=document.getElementById('skillSelect');
+var current=sel.value;
+sel.innerHTML='';skillCount=0;
+if(!skillOptTargets.length){var o=document.createElement('option');o.value='';o.textContent='(no SkillOpt targets)';sel.appendChild(o);return}
+skillOptTargets.forEach(function(x){var o=document.createElement('option');o.value=x.skill;o.textContent=x.skill;sel.appendChild(o);skillCount++});
+if(current&&skillOptTargetBySkill[current])sel.value=current;
+}
+function syncSkillOptSuites(){
+var skill=document.getElementById('skillSelect').value;
+var target=skillOptTargetBySkill[skill]||{};
+var train=document.getElementById('suiteSelect');
+var verification=document.getElementById('validationSuiteSelect');
+train.innerHTML='';verification.innerHTML='';suiteIndex={};benchmarkSuiteCount=0;
+function addOptions(labels,select,emptyText,countAsBenchmark){
+if(!labels||!labels.length){var empty=document.createElement('option');empty.value='';empty.textContent=emptyText;select.appendChild(empty);return}
+labels.forEach(function(label){var o=document.createElement('option');o.value=label;o.textContent=label.split('/').pop();select.appendChild(o);suiteIndex[label]={name:label.split('/').pop(),type:'aiden'};if(countAsBenchmark)benchmarkSuiteCount++});
+}
+addOptions(target.train_suites,train,'(no train suites)',true);
+addOptions(target.verification_suites,verification,'(no verification suites)',false);
+if(target.default_train_suite)train.value=target.default_train_suite;
+if(target.default_verification_suite)verification.value=target.default_verification_suite;
+syncDelBtn();
+loadStatus();
 }
 function syncDelBtn(){
 var p=document.getElementById('suiteSelect').value;
@@ -416,6 +460,8 @@ var validationItem=suiteIndex[validationKey];
 if(!skill){alert('Select a skill');return}
 if(!validationKey){alert('Select a verification suite');return}
 payload.mode='skillopt';
+payload.skillopt_backend=document.getElementById('skillOptBackendSelect').value||'device';
+payload.mobilegym_parallel=Number(document.getElementById('parallelInput').value)||1;
 payload.skill=skill;
 payload.train_suite=aidenSuiteName(item,key);
 payload.validation_suite=aidenSuiteName(validationItem,validationKey);
@@ -536,6 +582,7 @@ fetch('/benchmark/suites/delete',{method:'POST',headers:{'Content-Type':'applica
 body:JSON.stringify({name:x.name})}).then(function(r){return r.json()}).then(function(){loadSuites()});
 }
 document.getElementById('suiteSelect').addEventListener('change',syncDelBtn);
+document.getElementById('skillSelect').addEventListener('change',syncSkillOptSuites);
 load();
 </script></body></html>
 `

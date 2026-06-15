@@ -18,16 +18,60 @@ import difflib
 import html
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
 from runner.judge import JudgeConfig
 from runner.suite import load_suite
+from runner.skillopt.backends import AidenDeviceBackend, SkillOptRolloutBackend
+from runner.skillopt.mobilegym_backend import MobileGymBackend
 from runner.skillopt.optimizer_client import OptimizerConfig
 from runner.skillopt.orchestrator import optimize_skill, OptimizationConfig
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
+
+def _valid_safe_relative_label(label: str) -> bool:
+    if not label or label.startswith("/"):
+        return False
+    return all(
+        part not in {"", ".", ".."} and SAFE_SEGMENT.match(part)
+        for part in label.split("/")
+    )
+
+
+def _validate_skill_name(skill: str) -> str | None:
+    if not skill or skill in {".", ".."} or "/" in skill or "\\" in skill or not SAFE_SEGMENT.match(skill):
+        return f"invalid skill name: {skill!r}"
+    return None
+
+
+def _validate_skillopt_suite_label(skill: str, suite_label: str) -> str | None:
+    if not _valid_safe_relative_label(suite_label):
+        return f"invalid suite label: {suite_label!r}"
+    prefix = f"skillopt/{skill}/"
+    if not suite_label.startswith(prefix):
+        return f"suite {suite_label!r} must be under {prefix.rstrip('/')}"
+    return None
+
+
+def _validate_suite_label(skill: str, suite_label: str) -> str | None:
+    if not _valid_safe_relative_label(suite_label):
+        return f"invalid suite label: {suite_label!r}"
+    if suite_label.startswith("skillopt/"):
+        prefix = f"skillopt/{skill}/"
+        if not suite_label.startswith(prefix):
+            return f"suite {suite_label!r} must be under {prefix.rstrip('/')}"
+    return None
+
+
+def _validate_run_id(run_id: str) -> str | None:
+    if not run_id or run_id in {".", ".."} or "/" in run_id or "\\" in run_id or not SAFE_SEGMENT.match(run_id):
+        return f"invalid run_id: {run_id!r}"
+    return None
 
 
 def _resolve_skill_path(skill_name: str) -> Path:
@@ -51,14 +95,30 @@ def _resolve_suite_path(suite_name: str) -> Path:
     return REPO_ROOT / "benchmark" / "suites" / rel
 
 
+def _build_rollout_backend(args: argparse.Namespace, skill_path: Path) -> SkillOptRolloutBackend:
+    if args.backend == "device":
+        return AidenDeviceBackend(agent_url=args.agent_url)
+    return MobileGymBackend(
+        benchmark_root=REPO_ROOT / "benchmark",
+        shared_skills_dir=skill_path.parent.parent,
+        parallel=args.mobilegym_parallel,
+    )
+
+
 def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m runner.skillopt",
         description="SkillOpt: optimize an Aiden skill through rollout reflection.",
     )
     parser.add_argument("--skill", required=True, help="Skill name (e.g. device-operator)")
+    parser.add_argument(
+        "--backend",
+        choices=["device", "mobilegym"],
+        default="device",
+        help="Rollout backend: device uses the current Aiden daemon; mobilegym uses MobileGym execution.",
+    )
     parser.add_argument("--suite", help="Suite name to split 70/30 (e.g. phone_control_v1)")
-    parser.add_argument("--train-suite", help="Explicit train suite name (e.g. skillopt/device_operator_skillopt_v1)")
+    parser.add_argument("--train-suite", help="Explicit train suite name (e.g. skillopt/device-operator/device_operator_train)")
     parser.add_argument(
         "--selection-suite",
         "--validation-suite",
@@ -68,6 +128,7 @@ def cli(argv: list[str] | None = None) -> int:
     parser.add_argument("--budget", type=int, default=10, help="Max optimization steps")
     parser.add_argument("--edit-budget", type=int, default=4, help="Edits per step")
     parser.add_argument("--min-delta", type=float, default=0.03, help="Validation gate threshold")
+    parser.add_argument("--mobilegym-parallel", type=int, default=1, help="MobileGym isolated worker count")
     parser.add_argument(
         "--optimizer-model",
         default="anthropic/claude-opus-4-7",
@@ -114,6 +175,25 @@ def cli(argv: list[str] | None = None) -> int:
         parser.error("--train-suite and --selection-suite must be provided together")
     if not args.suite and not args.train_suite:
         parser.error("either --suite or --train-suite/--selection-suite is required")
+    if err := _validate_skill_name(args.skill):
+        print(f"Error: {err}", file=sys.stderr)
+        return 2
+    if args.mobilegym_parallel <= 0:
+        print("Error: mobilegym_parallel must be positive", file=sys.stderr)
+        return 2
+    if args.run_id:
+        if err := _validate_run_id(args.run_id):
+            print(f"Error: {err}", file=sys.stderr)
+            return 2
+    if args.train_suite:
+        for label in (args.train_suite, args.selection_suite):
+            if err := _validate_skillopt_suite_label(args.skill, label):
+                print(f"Error: {err}", file=sys.stderr)
+                return 2
+    elif args.suite:
+        if err := _validate_suite_label(args.skill, args.suite):
+            print(f"Error: {err}", file=sys.stderr)
+            return 2
 
     # Resolve skill path
     skill_path = _resolve_skill_path(args.skill)
@@ -171,6 +251,7 @@ def cli(argv: list[str] | None = None) -> int:
     print(f"Budget: {args.budget} steps, {args.edit_budget} edits/step, min_delta={args.min_delta}")
     print(f"Optimizer: {args.optimizer_model}")
     print(f"Judge: {args.judge_model if not args.no_judge else 'disabled'}")
+    print(f"Backend: {args.backend}")
     print(f"Agent: {args.agent_url}")
     print()
 
@@ -192,6 +273,7 @@ def cli(argv: list[str] | None = None) -> int:
         judge_cfg=judge_cfg,
         agent_url=args.agent_url,
         artifact_root=Path(args.artifact_root),
+        rollout_backend=_build_rollout_backend(args, skill_path),
     )
     if args.run_id:
         cfg_kwargs["run_id"] = args.run_id
@@ -227,6 +309,7 @@ def cli(argv: list[str] | None = None) -> int:
         judge_model=None if args.no_judge else args.judge_model,
         train_suite_label=args.train_suite or args.suite or "",
         selection_suite_label=args.selection_suite or args.suite or "",
+        backend=args.backend,
     )
 
     return 0 if result.best_score > result.initial_score else 1
@@ -257,6 +340,7 @@ def _write_web_artifacts(
     judge_model: str | None,
     train_suite_label: str,
     selection_suite_label: str,
+    backend: str,
 ) -> None:
     run_dir = cfg.artifact_root / cfg.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -267,6 +351,7 @@ def _write_web_artifacts(
     manifest = {
         "run_id": cfg.run_id,
         "mode": "skillopt",
+        "backend": backend,
         "skill": cfg.skill_name,
         "suite_path": f"skillopt:{cfg.skill_name}",
         "train_suite": train_suite_label,

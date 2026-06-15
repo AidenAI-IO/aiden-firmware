@@ -176,6 +176,79 @@ def test_aiden_go_agent_records_chat_history_on_task_for_suite_evaluate():
     assert task.metadata["aiden_last_chat_history"][0]["tool_name"] == "recall_memory"
 
 
+def test_aiden_go_agent_writes_task_meta_with_aiden_evidence(tmp_path):
+    module = importlib.import_module("mobilegym.adapter.aiden_go_agent")
+
+    task = types.SimpleNamespace(
+        task_id="suite.case_one",
+        metadata={
+            "aiden_suite_name": "suite",
+            "aiden_task_id": "case_one",
+            "description_for_judge": "Judge it.",
+            "rubric": [{"id": "ok", "check": "ok"}],
+            "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 5},
+            "aiden_last_response": "done",
+            "aiden_last_chat_history": [{"type": "assistant", "content": "done"}],
+        },
+    )
+
+    artifact_dir = module._task_artifact_dir(tmp_path, task)
+    module._write_task_meta(artifact_dir, task)
+
+    meta = json.loads((artifact_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["task_id"] == "suite.case_one"
+    assert meta["aiden_last_response"] == "done"
+    assert meta["aiden_last_chat_history"] == [{"type": "assistant", "content": "done"}]
+    assert meta["description_for_judge"] == "Judge it."
+    assert meta["hard_assertions"] == {"min_tool_calls": 0, "max_tool_calls": 5}
+
+
+def test_aiden_go_agent_act_writes_task_meta_without_action_log(tmp_path):
+    module = importlib.import_module("mobilegym.adapter.aiden_go_agent")
+
+    class NoActionLogHTTPClient(RecordingHTTPClient):
+        def post_json(self, url, payload, *, token=None, timeout=None):
+            self.calls.append((url, payload, token, timeout))
+            if url.endswith("/api/chat"):
+                return {
+                    "response": "done",
+                    "history": [{"type": "assistant", "content": "done"}],
+                }
+            if url.endswith("/episode/end"):
+                return {"ok": True, "data": {}}
+            return {"ok": True}
+
+    class Task:
+        id = "suite.case_one"
+        instruction = "Do it."
+        metadata = {
+            "aiden_suite_name": "suite",
+            "aiden_task_id": "case_one",
+            "description_for_judge": "Judge it.",
+            "rubric": [{"id": "ok", "check": "ok"}],
+            "hard_assertions": {"min_tool_calls": 0, "max_tool_calls": 5},
+        }
+
+    task = Task()
+    agent = module.AidenGoAgent(
+        bridge_url="http://bridge.local",
+        bridge_control_token="bridge-control",
+        daemon=FakeDaemon(),
+        http_client=NoActionLogHTTPClient(),
+        episode_id_factory=lambda: "ep-no-actions",
+        artifact_dir=tmp_path / "raw" / "run",
+    )
+
+    agent.reset(task)
+    agent.act(obs=None)
+
+    meta_path = tmp_path / "raw" / "run" / "trajectory" / "suite_case_one" / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta["aiden_last_response"] == "done"
+    assert meta["aiden_last_chat_history"] == [{"type": "assistant", "content": "done"}]
+    assert not (meta_path.parent / "aiden_bridge_actions.json").exists()
+
+
 def test_json_http_client_classifies_urlerror_wrapped_socket_timeout(monkeypatch):
     module = importlib.import_module("mobilegym.adapter.aiden_go_agent")
 

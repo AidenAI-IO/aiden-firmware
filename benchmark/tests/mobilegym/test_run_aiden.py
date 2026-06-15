@@ -7,6 +7,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[2]
 RUN_AIDEN = BENCHMARK_ROOT / "mobilegym" / "scripts" / "run_aiden.py"
@@ -204,6 +206,24 @@ def test_mobilegym_task_adapter_exposes_runner_interface():
     assert judge.success is True
     assert judge.clean is True
     assert judge.progress == 1.0
+
+
+def test_filter_aiden_tasks_accepts_short_and_full_task_ids():
+    module = load_run_aiden_module()
+    tasks = [
+        module.MobileGymTaskAdapter(task_id="device_operator_train.case_one", instruction="one", metadata={}),
+        module.MobileGymTaskAdapter(task_id="device_operator_train.case_two", instruction="two", metadata={}),
+        module.MobileGymTaskAdapter(task_id="device_operator_train.case_three", instruction="three", metadata={}),
+    ]
+
+    selected = module._filter_aiden_tasks(tasks, "case_one,device_operator_train.case_two")
+
+    assert [task.task_id for task in selected] == [
+        "device_operator_train.case_one",
+        "device_operator_train.case_two",
+    ]
+    with pytest.raises(module.LauncherError, match="Aiden task ids not found"):
+        module._filter_aiden_tasks(tasks, "missing_case")
 
 
 def test_generate_run_report_best_effort_writes_index(tmp_path):

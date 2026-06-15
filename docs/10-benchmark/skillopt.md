@@ -33,8 +33,9 @@ cd src/agent
 cd benchmark
 python -m runner.skillopt \
     --skill device-operator \
-    --train-suite skillopt/device_operator_skillopt_v1 \
-    --validation-suite skillopt/device_operator_skillopt_validation_v1 \
+    --backend device \
+    --train-suite skillopt/device-operator/device_operator_train \
+    --validation-suite skillopt/device-operator/device_operator_verification \
     --budget 10 \
     --output /tmp/device-operator-optimized.md
 
@@ -118,12 +119,21 @@ def with_candidate_skill(skill_path: Path, candidate: str):
 
 不需要在 Go 侧加 `skill_overrides` 字段。
 
+## Backend 选择
+
+SkillOpt core 只有一套：优化循环、打分/gate、edit 应用、`best_skill.md`、报告都共享。差异只在 rollout backend：
+
+- `--backend device`：使用当前 Aiden daemon 和真实设备执行 suite。
+- `--backend mobilegym`：用 MobileGym Docker runner 执行同一批 Aiden suite task。
+
+MobileGym backend 不直接信任 raw `passed` / `success`。它先读取 MobileGym 产物里的 Aiden response、chat history、task metadata，再调用 Aiden-native `TaskResult` 评估逻辑（hard assertions、expected answer/memory、trace observations、judge）后转换为 SkillOpt rollout score。这样 MobileGym 和真机 backend 进入 SkillOpt core 的语义一致。
+
 ## 数据集
 
-**Phase 1 直接复用现有 benchmark suite**，不让 LLM 生成：
+SkillOpt suite 按 skill 分目录，默认一组 train + held-out verification：
 
-- `benchmark/suites/skillopt/device_operator_skillopt_v1.json` — 用于优化 device-operator
-- `benchmark/suites/skillopt/device_operator_skillopt_validation_v1.json` — device-operator held-out validation
+- `benchmark/suites/skillopt/device-operator/device_operator_train.json` — 用于优化 device-operator
+- `benchmark/suites/skillopt/device-operator/device_operator_verification.json` — device-operator held-out verification
 - `benchmark/suites/memory_v1.json` — 用于优化 memory 相关 skill
 - 其他 suite 按需
 
@@ -140,10 +150,13 @@ selection_tasks = suite.tasks[int(len(suite.tasks) * 0.7):]
 ```bash
 python -m runner.skillopt \
     --skill device-operator \
-    --train-suite skillopt/device_operator_skillopt_v1 \
-    --validation-suite skillopt/device_operator_skillopt_validation_v1 \
+    --backend device \
+    --train-suite skillopt/device-operator/device_operator_train \
+    --validation-suite skillopt/device-operator/device_operator_verification \
     ...
 ```
+
+UI 上选择 `SkillOpt` 后，会从 `/benchmark/skillopt-targets` 自动加载 `benchmark/suites/skillopt/<skill>/` 下的 train / verification suite。选择 skill 后，Train suite 和 Verification suite 会自动切到同一 skill 目录下的默认项；再选择 backend（Real device 或 MobileGym）即可启动。
 
 ## 任务隔离
 
@@ -260,6 +273,8 @@ runs/skillopt-<run_id>/
 ```bash
 python -m runner.skillopt \
     --skill <skill-name> \
+    [--backend device|mobilegym] \
+    [--mobilegym-parallel 1] \
     [--suite <suite-name> | --train-suite <suite-name> --validation-suite <suite-name>] \
     [--budget 10] \
     [--edit-budget 4] \
@@ -269,6 +284,18 @@ python -m runner.skillopt \
     [--agent-url http://localhost:8080] \
     [--output <path>] \
     [--dry-run]              # 不真正写文件，只输出 diff
+```
+
+MobileGym 示例：
+
+```bash
+python -m runner.skillopt \
+    --skill device-operator \
+    --backend mobilegym \
+    --mobilegym-parallel 4 \
+    --train-suite skillopt/device-operator/device_operator_train \
+    --validation-suite skillopt/device-operator/device_operator_verification \
+    --budget 10
 ```
 
 ## 工作量

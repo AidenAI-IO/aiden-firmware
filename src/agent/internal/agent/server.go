@@ -318,6 +318,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/benchmark/record", s.handleBenchmarkRecord)
 	mux.HandleFunc("/benchmark/suites", s.handleBenchmarkSuites)
 	mux.HandleFunc("/benchmark/skills", s.handleBenchmarkSkills)
+	mux.HandleFunc("/benchmark/skillopt-targets", s.handleBenchmarkSkillOptTargets)
 	mux.HandleFunc("/benchmark/runs", s.handleBenchmarkRuns)
 	mux.HandleFunc("/benchmark/report/", s.handleBenchmarkReport)
 	mux.HandleFunc("/benchmark/status", s.handleBenchmarkStatus)

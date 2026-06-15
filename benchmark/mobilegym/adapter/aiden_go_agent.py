@@ -17,6 +17,20 @@ from .artifacts import export_bridge_actions
 
 logger = logging.getLogger(__name__)
 
+EVIDENCE_FIELDS = (
+    "aiden_suite_name",
+    "aiden_task_id",
+    "aiden_last_response",
+    "aiden_last_chat_history",
+    "description_for_judge",
+    "rubric",
+    "rubric_spec",
+    "hard_assertions",
+    "expected_answer",
+    "answer_format",
+    "expected_recalled_memory_ids",
+)
+
 try:
     from bench_env.agent import BaseAgent as _MobileGymBaseAgent
 except Exception:
@@ -197,10 +211,10 @@ class AidenGoAgent(_MobileGymBaseAgent):
             )
             if self.artifact_dir is not None:
                 try:
+                    artifact_dir = _task_artifact_dir(self.artifact_dir, self.task)
+                    _write_task_meta(artifact_dir, self.task)
                     action_log = _extract_action_log(bridge_end_response)
                     if action_log:
-                        artifact_dir = _task_artifact_dir(self.artifact_dir, self.task)
-                        _write_task_meta(artifact_dir, self.task)
                         export_bridge_actions(artifact_dir, action_log)
                 except Exception as e:
                     logger.warning(f"Failed to export bridge actions: {e}")
@@ -482,7 +496,19 @@ def _write_task_meta(path: Path, task: Any | None) -> None:
     if not task_id:
         return
     path.mkdir(parents=True, exist_ok=True)
-    (path / "meta.json").write_text(json.dumps({"task_id": task_id}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    payload: dict[str, Any] = {"task_id": task_id}
+    metadata = _task_metadata(task)
+    if metadata is not None:
+        for field in EVIDENCE_FIELDS:
+            if field not in metadata:
+                continue
+            value = metadata[field]
+            try:
+                json.dumps(value, ensure_ascii=False)
+            except (TypeError, ValueError):
+                continue
+            payload[field] = value
+    (path / "meta.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _task_id(task: Any | None) -> str:

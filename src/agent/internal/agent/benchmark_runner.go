@@ -19,13 +19,15 @@ type benchmarkLaunchSpec struct {
 }
 
 type benchmarkSkillOptLaunchSpec struct {
-	RunID           string
-	Skill           string
-	TrainSuite      string
-	ValidationSuite string
-	Budget          int
-	EditBudget      int
-	MinDelta        float64
+	RunID             string
+	Skill             string
+	Backend           string
+	TrainSuite        string
+	ValidationSuite   string
+	Budget            int
+	EditBudget        int
+	MinDelta          float64
+	MobileGymParallel int
 }
 
 const defaultSkillOptOptimizerModel = "anthropic/claude-opus-4-7"
@@ -113,19 +115,21 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Suite           string  `json:"suite"`
-		SuiteDir        string  `json:"suite_dir"`
-		SuiteType       string  `json:"suite_type"`
-		Mode            string  `json:"mode"`
-		Parallel        int     `json:"parallel"`
-		Limit           int     `json:"limit"`
-		Skill           string  `json:"skill"`
-		TrainSuite      string  `json:"train_suite"`
-		ValidationSuite string  `json:"validation_suite"`
-		Budget          int     `json:"budget"`
-		EditBudget      int     `json:"edit_budget"`
-		MinDelta        float64 `json:"min_delta"`
-		OptimizerModel  string  `json:"optimizer_model"`
+		Suite             string  `json:"suite"`
+		SuiteDir          string  `json:"suite_dir"`
+		SuiteType         string  `json:"suite_type"`
+		Mode              string  `json:"mode"`
+		Parallel          int     `json:"parallel"`
+		Limit             int     `json:"limit"`
+		Skill             string  `json:"skill"`
+		TrainSuite        string  `json:"train_suite"`
+		ValidationSuite   string  `json:"validation_suite"`
+		Budget            int     `json:"budget"`
+		EditBudget        int     `json:"edit_budget"`
+		MinDelta          float64 `json:"min_delta"`
+		OptimizerModel    string  `json:"optimizer_model"`
+		SkillOptBackend   string  `json:"skillopt_backend"`
+		MobileGymParallel int     `json:"mobilegym_parallel"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeBenchmarkRunError(w, "aiden", http.StatusBadRequest, "invalid request")
@@ -230,9 +234,27 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, fmt.Sprintf("invalid skill name %q", req.Skill))
 			return
 		}
-		if !validSuiteName(req.TrainSuite) || !validSuiteName(req.ValidationSuite) {
-			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "train_suite and validation_suite must be safe relative suite names")
+		if !validSkillOptSuiteForSkill(req.Skill, req.TrainSuite) || !validSkillOptSuiteForSkill(req.Skill, req.ValidationSuite) {
+			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, fmt.Sprintf("train_suite and validation_suite must be under skillopt/%s", req.Skill))
 			return
+		}
+		backend := strings.TrimSpace(req.SkillOptBackend)
+		if backend == "" {
+			backend = "device"
+		}
+		if !validSkillOptBackend(backend) {
+			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, fmt.Sprintf("invalid skillopt backend %q", backend))
+			return
+		}
+		mobileGymParallel := req.MobileGymParallel
+		if mobileGymParallel <= 0 {
+			mobileGymParallel = req.Parallel
+		}
+		if mobileGymParallel <= 0 {
+			mobileGymParallel = 1
+		}
+		if mobileGymParallel > 16 {
+			mobileGymParallel = 16
 		}
 		if req.Budget <= 0 {
 			req.Budget = 10
@@ -261,25 +283,33 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "skillopt api_key is not configured")
 			return
 		}
+		skillsDir := s.benchmarkSkillOptSkillsDirFor(req.Skill)
+		if strings.TrimSpace(skillsDir) == "" {
+			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, fmt.Sprintf("skillopt shared skill is not configured for %s", req.Skill))
+			return
+		}
 		optimizer := strings.TrimSpace(req.OptimizerModel)
 		if optimizer == "" {
 			optimizer = defaultSkillOptOptimizerModel
 		}
 		runID := "skillopt-" + time.Now().UTC().Format("2006-01-02_150405")
 		spec := benchmarkSkillOptLaunchSpec{
-			RunID:           runID,
-			Skill:           req.Skill,
-			TrainSuite:      req.TrainSuite,
-			ValidationSuite: req.ValidationSuite,
-			Budget:          req.Budget,
-			EditBudget:      req.EditBudget,
-			MinDelta:        req.MinDelta,
+			RunID:             runID,
+			Skill:             req.Skill,
+			Backend:           backend,
+			TrainSuite:        req.TrainSuite,
+			ValidationSuite:   req.ValidationSuite,
+			Budget:            req.Budget,
+			EditBudget:        req.EditBudget,
+			MinDelta:          req.MinDelta,
+			MobileGymParallel: mobileGymParallel,
 		}
 		stateJSON, _ := json.Marshal(map[string]any{
 			"status":           "running",
 			"mode":             "skillopt",
 			"run_id":           runID,
 			"skill":            req.Skill,
+			"backend":          backend,
 			"suite":            req.TrainSuite,
 			"validation_suite": req.ValidationSuite,
 			"model":            agentModel,
@@ -292,7 +322,7 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		if launch == nil {
 			launch = s.launchSkillOptRunner
 		}
-		if err := launch(spec, optimizer, judge, apiKey, agentModel, s.benchmarkPrimarySkillsDir()); err != nil {
+		if err := launch(spec, optimizer, judge, apiKey, agentModel, skillsDir); err != nil {
 			_ = os.WriteFile(statePath, []byte(`{"status":"idle"}`), 0o644)
 			s.writeBenchmarkRunError(w, req.Mode, http.StatusInternalServerError, "skillopt launch failed: "+err.Error())
 			return
@@ -321,7 +351,15 @@ func validSuiteName(suite string) bool {
 }
 
 func validSkillOptSkillName(skill string) bool {
-	return skill != "" && !strings.Contains(skill, "/") && !strings.Contains(skill, "\\") && safeSuiteSegment.MatchString(skill)
+	return skill != "" && skill != "." && skill != ".." && !strings.Contains(skill, "/") && !strings.Contains(skill, "\\") && safeSuiteSegment.MatchString(skill)
+}
+
+func validSkillOptBackend(backend string) bool {
+	return backend == "device" || backend == "mobilegym"
+}
+
+func validSkillOptSuiteForSkill(skill, suite string) bool {
+	return validSuiteName(suite) && strings.HasPrefix(suite, "skillopt/"+skill+"/")
 }
 
 func (s *Server) launchSkillOptRunner(spec benchmarkSkillOptLaunchSpec, optimizerModel, judgeModel, openRouterAPIKey, agentModel, skillsDir string) error {
@@ -339,11 +377,20 @@ func buildSkillOptLaunchScript(benchmarkDir string, spec benchmarkSkillOptLaunch
 	if !validSkillOptSkillName(spec.Skill) {
 		return "", fmt.Errorf("invalid skill name %q", spec.Skill)
 	}
-	if !validSuiteName(spec.TrainSuite) {
+	if !validSkillOptSuiteForSkill(spec.Skill, spec.TrainSuite) {
 		return "", fmt.Errorf("invalid train suite %q", spec.TrainSuite)
 	}
-	if !validSuiteName(spec.ValidationSuite) {
+	if !validSkillOptSuiteForSkill(spec.Skill, spec.ValidationSuite) {
 		return "", fmt.Errorf("invalid validation suite %q", spec.ValidationSuite)
+	}
+	if spec.Backend == "" {
+		spec.Backend = "device"
+	}
+	if !validSkillOptBackend(spec.Backend) {
+		return "", fmt.Errorf("invalid skillopt backend %q", spec.Backend)
+	}
+	if spec.MobileGymParallel <= 0 {
+		spec.MobileGymParallel = 1
 	}
 	if spec.Budget <= 0 {
 		return "", fmt.Errorf("budget must be positive")
@@ -376,8 +423,9 @@ func buildSkillOptLaunchScript(benchmarkDir string, spec benchmarkSkillOptLaunch
 	}
 
 	runnerArgs := fmt.Sprintf(
-		"--skill %s --train-suite %s --validation-suite %s --budget %d --edit-budget %d --min-delta %g --optimizer-model %s --judge-model %s --agent-url http://127.0.0.1:8080 --artifact-root %s --run-id %s --output %s ",
-		shellQuote(spec.Skill), shellQuote(spec.TrainSuite), shellQuote(spec.ValidationSuite),
+		"--skill %s --backend %s --mobilegym-parallel %d --train-suite %s --validation-suite %s --budget %d --edit-budget %d --min-delta %g --optimizer-model %s --judge-model %s --agent-url http://127.0.0.1:8080 --artifact-root %s --run-id %s --output %s ",
+		shellQuote(spec.Skill), shellQuote(spec.Backend), spec.MobileGymParallel,
+		shellQuote(spec.TrainSuite), shellQuote(spec.ValidationSuite),
 		spec.Budget, spec.EditBudget, spec.MinDelta, shellQuote(optimizerModel), shellQuote(judgeModel),
 		shellQuote(runsDir), shellQuote(spec.RunID), shellQuote(filepath.Join(runDir, "best_skill.md")),
 	)

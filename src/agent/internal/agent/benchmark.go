@@ -67,6 +67,14 @@ type skillListItem struct {
 	Path string `json:"path,omitempty"`
 }
 
+type skillOptTargetItem struct {
+	Skill                    string   `json:"skill"`
+	TrainSuites              []string `json:"train_suites"`
+	VerificationSuites       []string `json:"verification_suites"`
+	DefaultTrainSuite        string   `json:"default_train_suite,omitempty"`
+	DefaultVerificationSuite string   `json:"default_verification_suite,omitempty"`
+}
+
 func benchmarkSuiteKind(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil || len(data) > 256*1024 {
@@ -183,6 +191,66 @@ func (s *Server) handleBenchmarkSkills(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(items)
 }
 
+func (s *Server) handleBenchmarkSkillOptTargets(w http.ResponseWriter, r *http.Request) {
+	if s.benchmarkDir == "" {
+		http.Error(w, `{"error":"benchmark directory not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	items := scanSkillOptTargets(s.benchmarkDir)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(items)
+}
+
+func scanSkillOptTargets(benchmarkDir string) []skillOptTargetItem {
+	skillOptDir := filepath.Join(benchmarkDir, "suites", "skillopt")
+	entries, err := os.ReadDir(skillOptDir)
+	if err != nil {
+		return []skillOptTargetItem{}
+	}
+
+	items := []skillOptTargetItem{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skill := entry.Name()
+		suiteDir := filepath.Join(skillOptDir, skill)
+		files, err := os.ReadDir(suiteDir)
+		if err != nil {
+			continue
+		}
+		item := skillOptTargetItem{Skill: skill}
+		for _, file := range files {
+			name := file.Name()
+			if file.IsDir() || strings.HasPrefix(name, "._") || !strings.HasSuffix(name, ".json") {
+				continue
+			}
+			base := strings.TrimSuffix(name, ".json")
+			label := filepath.ToSlash(filepath.Join("skillopt", skill, base))
+			lower := strings.ToLower(base)
+			switch {
+			case strings.Contains(lower, "train"):
+				item.TrainSuites = append(item.TrainSuites, label)
+			case strings.Contains(lower, "verification") || strings.Contains(lower, "validation"):
+				item.VerificationSuites = append(item.VerificationSuites, label)
+			}
+		}
+		sort.Strings(item.TrainSuites)
+		sort.Strings(item.VerificationSuites)
+		if len(item.TrainSuites) > 0 {
+			item.DefaultTrainSuite = item.TrainSuites[0]
+		}
+		if len(item.VerificationSuites) > 0 {
+			item.DefaultVerificationSuite = item.VerificationSuites[0]
+		}
+		if len(item.TrainSuites) > 0 || len(item.VerificationSuites) > 0 {
+			items = append(items, item)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Skill < items[j].Skill })
+	return items
+}
+
 func (s *Server) benchmarkSkillDirs() []string {
 	seen := map[string]bool{}
 	dirs := []string{}
@@ -222,6 +290,23 @@ func (s *Server) benchmarkPrimarySkillsDir() string {
 	for _, dir := range s.benchmarkSkillDirs() {
 		if strings.TrimSpace(dir) != "" {
 			return dir
+		}
+	}
+	return ""
+}
+
+func (s *Server) benchmarkSkillOptSkillsDirFor(skill string) string {
+	mobileGymTemplate := ""
+	if s.benchmarkDir != "" {
+		mobileGymTemplate = filepath.Clean(filepath.Join(s.benchmarkDir, "mobilegym", "config", "skills"))
+	}
+	for _, dir := range s.benchmarkSkillDirs() {
+		clean := filepath.Clean(dir)
+		if mobileGymTemplate != "" && clean == mobileGymTemplate {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(clean, skill, "SKILL.md")); err == nil && !info.IsDir() {
+			return clean
 		}
 	}
 	return ""
