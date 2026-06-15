@@ -45,6 +45,40 @@ func TestLiveActivityManagerLifecycle(t *testing.T) {
 	}
 }
 
+func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
+	manager := NewLiveActivityManager(LiveActivityConfig{}, nil)
+	manager.StartTask("req-1", "Book a table")
+
+	state := manager.UpdateFromRunEvent("req-1", RunEvent{
+		Type:      "role_output",
+		Role:      "planner",
+		Content:   `{"plan":["Open Maps","Search restaurant"],"next_step":"Open Maps"}`,
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.CurrentStep != "Planning: Open Maps" {
+		t.Fatalf("planner step = %#v, want Planning: Open Maps", state)
+	}
+
+	state = manager.UpdateFromRunEvent("req-1", RunEvent{
+		Type:      "tool_call",
+		ToolName:  "open_app",
+		ToolInput: `{"app":"Maps"}`,
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.CurrentStep != "Opening app" || state.CurrentApp != "Maps" {
+		t.Fatalf("open_app step = %#v, want app step and current app", state)
+	}
+
+	state = manager.UpdateFromRunEvent("req-1", RunEvent{
+		Type:      "tool_call",
+		ToolName:  "screenshot",
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.CurrentStep != "Checking the screen" {
+		t.Fatalf("screenshot step = %#v, want Checking the screen", state)
+	}
+}
+
 func TestServerLiveActivityRegistrationAndStatus(t *testing.T) {
 	server := &Server{liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil)}
 	server.liveActivity.StartTask("req-1", "Do a task")
@@ -83,6 +117,18 @@ func TestServerLiveActivityRegistrationAndStatus(t *testing.T) {
 	}
 }
 
+func TestServerLiveActivityStatusRequiresRequestID(t *testing.T) {
+	server := &Server{liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil)}
+	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/status", nil)
+	rec := httptest.NewRecorder()
+
+	server.handleLiveActivityStatus(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+}
+
 func TestChatResultIncludesLiveActivityState(t *testing.T) {
 	server := &Server{
 		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil),
@@ -108,5 +154,45 @@ func TestChatResultIncludesLiveActivityState(t *testing.T) {
 	}
 	if resp.Status != "running" || resp.LiveActivity == nil || resp.LiveActivity.RequestID != "req-1" {
 		t.Fatalf("unexpected chat result: %#v", resp)
+	}
+}
+
+func TestChatResultIncludesTerminalLiveActivityState(t *testing.T) {
+	server := &Server{
+		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil),
+		pendingResults: map[string]*chatPendingResult{
+			"req-1": {
+				messages: []Message{{
+					Type:      "assistant",
+					RequestID: "req-1",
+					Content:   "Done",
+					Timestamp: time.Now(),
+				}},
+				history: []Message{{
+					Type:      "assistant",
+					RequestID: "req-1",
+					Content:   "Done",
+					Timestamp: time.Now(),
+				}},
+				done: true,
+			},
+		},
+	}
+	server.liveActivity.StartTask("req-1", "Do a task")
+	server.liveActivity.CompleteTask("req-1", "Done")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id=req-1", nil)
+	rec := httptest.NewRecorder()
+	server.handleChatResult(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp ChatResultResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode chat result: %v", err)
+	}
+	if resp.Status != "complete" || resp.LiveActivity == nil || resp.LiveActivity.Status != LiveActivityStatusCompleted {
+		t.Fatalf("unexpected terminal chat result: %#v", resp)
 	}
 }

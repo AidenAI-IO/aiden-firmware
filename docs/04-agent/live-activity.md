@@ -35,6 +35,7 @@ Live Activity 有两条独立链路：
   "current_step": "Checking the current screen",
   "last_tool_name": "screenshot",
   "progress": 0.21,
+  "shows_progress": true,
   "can_stop": true,
   "started_at": "2026-06-12T07:00:00Z",
   "updated_at": "2026-06-12T07:00:02Z"
@@ -69,6 +70,7 @@ GET /api/live-activity/status?request_id=<id>
     "task_title": "Open Settings",
     "current_step": "Checking the current screen",
     "progress": 0.21,
+    "shows_progress": true,
     "can_stop": true
   }
 }
@@ -134,7 +136,7 @@ agent -> Aiden 后端/relay -> APNs -> iPhone Live Activity
 iOS app 包含 `AidenLiveActivityExtension` Widget Extension 和 `AidenLiveActivityModule` native module。
 
 - app 与硬件建立连接后，应能在切后台前创建 `ready` Live Activity，作为快速回到 Aiden 的入口。
-- 前台 polling 到 `live_activity.status=running` 时，app 调用 ActivityKit `startOrUpdate`，使用本地 Live Activity，不申请 push token。
+- 前台 polling 到 `live_activity.status=running` 时，app 调用自定义 native helper `AidenLiveActivityModule.startOrUpdate`；该 helper 内部用 ActivityKit `Activity.request` 创建、`Activity.update` 更新本地 Live Activity，不申请 push token。
 - polling 到 `completed`、`failed` 或 `canceled` 时，app 结束本地 Live Activity。
 - 任务结束后，如果硬件仍连接且入口仍需要保留，app 可以把 Live Activity 回落到 `ready`；否则结束 Live Activity。
 - 后台远程更新、后台任务状态刷新、以及从 agent Web UI 发起任务后的后台展示由 APNs/后端链路负责，不复用前台轮询路径。

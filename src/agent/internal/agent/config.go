@@ -22,6 +22,8 @@ const (
 	searchProviderBrave      = "brave"
 
 	braveSearchAPIKeyEnv = "BRAVE_SEARCH_API_KEY"
+
+	defaultLiveActivityTimeout = 10 * time.Second
 )
 
 func (s SearchConfig) ProviderOrDefault() string {
@@ -691,7 +693,7 @@ func (l LiveActivityConfig) Validate() error {
 		}
 	}
 	if l.TimeoutSec < 0 {
-		return fmt.Errorf("live_activity.timeout_sec must be >= 0, got %d", l.TimeoutSec)
+		return fmt.Errorf("live_activity.timeout_sec must be >= 0, got %d (0 uses default)", l.TimeoutSec)
 	}
 	if !l.APNsConfigured() {
 		return nil
@@ -738,7 +740,7 @@ func (l LiveActivityConfig) TimeoutOrDefault() time.Duration {
 	if l.TimeoutSec > 0 {
 		return time.Duration(l.TimeoutSec) * time.Second
 	}
-	return 10 * time.Second
+	return defaultLiveActivityTimeout
 }
 
 func (t TelemetryConfig) ProviderOrDefault() string {

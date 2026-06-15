@@ -788,3 +788,19 @@ timeout_sec = 3
 		t.Fatalf("TimeoutOrDefault() = %s, want 3s", cfg.LiveActivity.TimeoutOrDefault())
 	}
 }
+
+func TestLiveActivityTimeoutDefaultsAndValidation(t *testing.T) {
+	cfg := Config{Model: ModelConfig{Provider: "fake"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() with default live activity timeout error = %v", err)
+	}
+	if got := cfg.LiveActivity.TimeoutOrDefault(); got != 10*time.Second {
+		t.Fatalf("TimeoutOrDefault() = %s, want 10s", got)
+	}
+
+	cfg.LiveActivity.TimeoutSec = -1
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "live_activity.timeout_sec") {
+		t.Fatalf("Validate() error = %v, want live_activity.timeout_sec validation error", err)
+	}
+}

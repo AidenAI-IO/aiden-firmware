@@ -28,34 +28,37 @@ const (
 	LiveActivityStatusCanceled  = "canceled"
 
 	liveActivityFinalStateRetention = 5 * time.Minute
+	liveActivityAPNsQueueSize       = 16
 )
 
 type LiveActivityState struct {
-	RequestID    string     `json:"request_id"`
-	Status       string     `json:"status"`
-	TaskTitle    string     `json:"task_title"`
-	CurrentStep  string     `json:"current_step"`
-	CurrentApp   string     `json:"current_app,omitempty"`
-	LastToolName string     `json:"last_tool_name,omitempty"`
-	LastError    string     `json:"last_error,omitempty"`
-	Progress     float64    `json:"progress,omitempty"`
-	CanStop      bool       `json:"can_stop"`
-	StartedAt    time.Time  `json:"started_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	EndedAt      *time.Time `json:"ended_at,omitempty"`
+	RequestID     string     `json:"request_id"`
+	Status        string     `json:"status"`
+	TaskTitle     string     `json:"task_title"`
+	CurrentStep   string     `json:"current_step"`
+	CurrentApp    string     `json:"current_app,omitempty"`
+	LastToolName  string     `json:"last_tool_name,omitempty"`
+	LastError     string     `json:"last_error,omitempty"`
+	Progress      float64    `json:"progress,omitempty"`
+	ShowsProgress bool       `json:"shows_progress"`
+	CanStop       bool       `json:"can_stop"`
+	StartedAt     time.Time  `json:"started_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	EndedAt       *time.Time `json:"ended_at,omitempty"`
 }
 
 type LiveActivityContentState struct {
-	RequestID    string  `json:"request_id"`
-	Status       string  `json:"status"`
-	TaskTitle    string  `json:"task_title"`
-	CurrentStep  string  `json:"current_step"`
-	CurrentApp   string  `json:"current_app,omitempty"`
-	LastToolName string  `json:"last_tool_name,omitempty"`
-	LastError    string  `json:"last_error,omitempty"`
-	Progress     float64 `json:"progress,omitempty"`
-	CanStop      bool    `json:"can_stop"`
-	UpdatedAt    string  `json:"updated_at"`
+	RequestID     string  `json:"request_id"`
+	Status        string  `json:"status"`
+	TaskTitle     string  `json:"task_title"`
+	CurrentStep   string  `json:"current_step"`
+	CurrentApp    string  `json:"current_app,omitempty"`
+	LastToolName  string  `json:"last_tool_name,omitempty"`
+	LastError     string  `json:"last_error,omitempty"`
+	Progress      float64 `json:"progress,omitempty"`
+	ShowsProgress bool    `json:"shows_progress"`
+	CanStop       bool    `json:"can_stop"`
+	UpdatedAt     string  `json:"updated_at"`
 }
 
 type LiveActivityRegistrationRequest struct {
@@ -80,11 +83,19 @@ type liveActivityRegistration struct {
 	RegisteredAt time.Time
 }
 
+type liveActivityPushRequest struct {
+	requestID string
+	pushToken string
+	state     LiveActivityState
+	final     bool
+}
+
 type LiveActivityManager struct {
 	mu            sync.Mutex
 	states        map[string]LiveActivityState
 	registrations map[string]liveActivityRegistration
 	apns          *APNsClient
+	apnsQueue     chan liveActivityPushRequest
 	logger        *Logger
 }
 
@@ -105,6 +116,8 @@ func NewLiveActivityManager(cfg LiveActivityConfig, logger *Logger) *LiveActivit
 			}
 		} else {
 			manager.apns = client
+			manager.apnsQueue = make(chan liveActivityPushRequest, liveActivityAPNsQueueSize)
+			go manager.runAPNsPublisher(client, manager.apnsQueue)
 			if logger != nil {
 				logger.Info("live activity: APNs enabled environment=%s topic=%s", cfg.EnvironmentOrDefault(), cfg.APNsTopic())
 			}
@@ -126,14 +139,15 @@ func (m *LiveActivityManager) StartTask(requestID, title string) *LiveActivitySt
 	}
 	now := time.Now()
 	state := LiveActivityState{
-		RequestID:   strings.TrimSpace(requestID),
-		Status:      LiveActivityStatusRunning,
-		TaskTitle:   truncateLiveActivityText(firstNonEmptyString([]string{title, "Aiden task"}), 80),
-		CurrentStep: "Starting",
-		Progress:    0.05,
-		CanStop:     true,
-		StartedAt:   now,
-		UpdatedAt:   now,
+		RequestID:     strings.TrimSpace(requestID),
+		Status:        LiveActivityStatusRunning,
+		TaskTitle:     truncateLiveActivityText(firstNonEmptyString([]string{title, "Aiden task"}), 80),
+		CurrentStep:   "Planning next step",
+		Progress:      0.05,
+		ShowsProgress: true,
+		CanStop:       true,
+		StartedAt:     now,
+		UpdatedAt:     now,
 	}
 	m.mu.Lock()
 	m.states[state.RequestID] = state
@@ -147,6 +161,7 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		return nil
 	}
 	m.mu.Lock()
+	requestID = strings.TrimSpace(requestID)
 	state, ok := m.states[requestID]
 	if !ok {
 		m.mu.Unlock()
@@ -154,24 +169,28 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 	}
 	switch event.Type {
 	case "role_output":
-		if step := truncateLiveActivityText(event.Content, 120); step != "" {
+		if step := truncateLiveActivityText(liveActivityStepFromRoleOutput(event), 120); step != "" {
 			state.CurrentStep = step
 		}
 	case "tool_call":
-		state.LastToolName = event.ToolName
+		state.LastToolName = strings.TrimSpace(event.ToolName)
+		if app := liveActivityAppFromToolCall(event); app != "" {
+			state.CurrentApp = truncateLiveActivityText(app, 40)
+		}
 		state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
 			event.Description,
 			event.Content,
+			liveActivityToolCallStep(event.ToolName),
 			formatToolStep("Using", event.ToolName),
 		}), 120)
 		state.Progress = bumpLiveActivityProgress(state.Progress)
 	case "tool_result":
-		state.LastToolName = event.ToolName
+		state.LastToolName = strings.TrimSpace(event.ToolName)
 		if event.IsError {
 			state.LastError = truncateLiveActivityText(event.Content, 160)
-			state.CurrentStep = truncateLiveActivityText(formatToolStep("Tool failed", event.ToolName), 120)
+			state.CurrentStep = truncateLiveActivityText(liveActivityToolErrorStep(event.ToolName), 120)
 		} else {
-			state.CurrentStep = truncateLiveActivityText(formatToolStep("Finished", event.ToolName), 120)
+			state.CurrentStep = truncateLiveActivityText(liveActivityToolResultStep(event.ToolName), 120)
 			state.Progress = bumpLiveActivityProgress(state.Progress)
 		}
 	}
@@ -212,6 +231,7 @@ func (m *LiveActivityManager) finishTask(requestID, status, step, errText string
 	state.CurrentStep = truncateLiveActivityText(step, 120)
 	state.LastError = errText
 	state.Progress = 1
+	state.ShowsProgress = false
 	state.CanStop = false
 	state.UpdatedAt = now
 	state.EndedAt = &now
@@ -290,18 +310,53 @@ func (m *LiveActivityManager) publish(requestID string, final bool) {
 	m.mu.Lock()
 	state, stateOK := m.states[requestID]
 	registration, regOK := m.registrations[requestID]
-	apns := m.apns
+	queue := m.apnsQueue
 	m.mu.Unlock()
 	if !stateOK || !regOK {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), apns.timeout)
-		defer cancel()
-		if err := apns.Push(ctx, registration.PushToken, state, final); err != nil && m.logger != nil {
-			m.logger.Error("live activity: APNs push failed request_id=%s: %v", requestID, err)
+	m.enqueueAPNsPush(liveActivityPushRequest{
+		requestID: requestID,
+		pushToken: registration.PushToken,
+		state:     state,
+		final:     final,
+	}, queue)
+}
+
+func (m *LiveActivityManager) enqueueAPNsPush(req liveActivityPushRequest, queue chan liveActivityPushRequest) {
+	if queue == nil {
+		return
+	}
+	select {
+	case queue <- req:
+		return
+	default:
+	}
+	if req.final {
+		select {
+		case <-queue:
+		default:
 		}
-	}()
+		select {
+		case queue <- req:
+			return
+		default:
+		}
+	}
+	if m.logger != nil {
+		m.logger.Warn("live activity: dropping APNs push request_id=%s final=%t: queue full", req.requestID, req.final)
+	}
+}
+
+func (m *LiveActivityManager) runAPNsPublisher(apns *APNsClient, queue <-chan liveActivityPushRequest) {
+	for req := range queue {
+		ctx, cancel := context.WithTimeout(context.Background(), apns.timeout)
+		err := apns.Push(ctx, req.pushToken, req.state, req.final)
+		cancel()
+		if err != nil && m.logger != nil {
+			m.logger.Error("live activity: APNs push failed request_id=%s: %v", req.requestID, err)
+		}
+	}
 }
 
 func (m *LiveActivityManager) scheduleCleanup(requestID string, endedAt time.Time, after time.Duration) {
@@ -322,16 +377,17 @@ func (m *LiveActivityManager) scheduleCleanup(requestID string, endedAt time.Tim
 
 func (s LiveActivityState) ContentState() LiveActivityContentState {
 	return LiveActivityContentState{
-		RequestID:    s.RequestID,
-		Status:       s.Status,
-		TaskTitle:    s.TaskTitle,
-		CurrentStep:  s.CurrentStep,
-		CurrentApp:   s.CurrentApp,
-		LastToolName: s.LastToolName,
-		LastError:    s.LastError,
-		Progress:     s.Progress,
-		CanStop:      s.CanStop,
-		UpdatedAt:    s.UpdatedAt.Format(time.RFC3339),
+		RequestID:     s.RequestID,
+		Status:        s.Status,
+		TaskTitle:     s.TaskTitle,
+		CurrentStep:   s.CurrentStep,
+		CurrentApp:    s.CurrentApp,
+		LastToolName:  s.LastToolName,
+		LastError:     s.LastError,
+		Progress:      s.Progress,
+		ShowsProgress: s.ShowsProgress,
+		CanStop:       s.CanStop,
+		UpdatedAt:     s.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -354,12 +410,165 @@ func formatToolStep(prefix, tool string) string {
 	return prefix + " " + tool
 }
 
+func liveActivityStepFromRoleOutput(event RunEvent) string {
+	role := strings.ToLower(strings.TrimSpace(event.Role))
+	content := strings.TrimSpace(event.Content)
+	if content != "" && strings.HasPrefix(content, "{") {
+		if step := liveActivityStepFromJSONRoleOutput(role, content); step != "" {
+			return step
+		}
+	}
+	switch role {
+	case "planner":
+		return "Planning next step"
+	case "executor":
+		return "Working on the phone"
+	case "verifier":
+		return "Checking result"
+	default:
+		if content != "" && !strings.HasPrefix(content, "{") && !strings.HasPrefix(content, "[") {
+			return content
+		}
+		return "Thinking"
+	}
+}
+
+func liveActivityStepFromJSONRoleOutput(role, content string) string {
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return ""
+	}
+	if _, ok := payload["final_answer"]; ok {
+		return "Preparing answer"
+	}
+	for _, key := range []string{"current_step", "next_step", "executor_summary", "summary", "reason"} {
+		if value, ok := payload[key].(string); ok {
+			if value = strings.TrimSpace(value); value != "" {
+				switch role {
+				case "planner":
+					return "Planning: " + value
+				case "verifier":
+					return "Checking: " + value
+				default:
+					return value
+				}
+			}
+		}
+	}
+	if plan, ok := payload["plan"].([]interface{}); ok && len(plan) > 0 {
+		if first, ok := plan[0].(string); ok && strings.TrimSpace(first) != "" {
+			return "Planning: " + strings.TrimSpace(first)
+		}
+	}
+	return ""
+}
+
+func liveActivityToolCallStep(tool string) string {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case "screenshot":
+		return "Checking the screen"
+	case "wait_for_stable_screen":
+		return "Waiting for the screen"
+	case "open_app":
+		return "Opening app"
+	case "touch_gesture", "mouse_click", "quick_action":
+		return "Controlling the phone"
+	case "mouse_move":
+		return "Moving pointer"
+	case "mouse_scroll":
+		return "Scrolling"
+	case "keyboard_text":
+		return "Typing text"
+	case "keyboard_tap":
+		return "Pressing keys"
+	case "clipboard":
+		return "Using clipboard"
+	case "calendar":
+		return "Updating calendar"
+	case "contacts":
+		return "Checking contacts"
+	case "notification":
+		return "Sending notification"
+	case "web_search", "wikipedia", "web_scraper":
+		return "Searching"
+	case "audio_volume":
+		return "Adjusting audio"
+	case "image_diff":
+		return "Comparing screen changes"
+	case "calculator":
+		return "Calculating"
+	case "current_time", "weather":
+		return "Checking information"
+	case "recall_memory", "recall_session_chunks", "recall_device_memory", "inspect_episode":
+		return "Recalling context"
+	case "save_memory", "forget_memory":
+		return "Updating memory"
+	case "skill_list", "skill_read", "skill_manage", "skill_mark_used":
+		return "Using skills"
+	case "request_human_handoff":
+		return "Waiting for user input"
+	default:
+		return ""
+	}
+}
+
+func liveActivityToolResultStep(tool string) string {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case "screenshot":
+		return "Screen checked"
+	case "wait_for_stable_screen":
+		return "Screen is ready"
+	case "open_app":
+		return "App opened"
+	case "touch_gesture", "mouse_click", "quick_action", "mouse_move", "mouse_scroll", "keyboard_tap", "keyboard_text":
+		return "Action sent; checking result"
+	case "request_human_handoff":
+		return "Waiting for user input"
+	default:
+		if step := liveActivityToolCallStep(tool); step != "" {
+			return "Finished: " + step
+		}
+		return formatToolStep("Finished", tool)
+	}
+}
+
+func liveActivityToolErrorStep(tool string) string {
+	if step := liveActivityToolCallStep(tool); step != "" {
+		return "Problem while " + strings.ToLower(step)
+	}
+	return formatToolStep("Tool failed", tool)
+}
+
+func liveActivityAppFromToolCall(event RunEvent) string {
+	if strings.ToLower(strings.TrimSpace(event.ToolName)) != "open_app" {
+		return ""
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(event.ToolInput)), &payload); err != nil {
+		return ""
+	}
+	for _, key := range []string{"app", "name"} {
+		if value, ok := payload[key].(string); ok {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+	}
+	if value, ok := payload["url"].(string); ok && strings.TrimSpace(value) != "" {
+		return "Browser"
+	}
+	if value, ok := payload["phone_number"].(string); ok && strings.TrimSpace(value) != "" {
+		return "Phone"
+	}
+	return ""
+}
+
 func truncateLiveActivityText(s string, limit int) string {
 	s = strings.TrimSpace(s)
-	if limit <= 0 || len([]rune(s)) <= limit {
+	runes := []rune(s)
+	if limit <= 0 || len(runes) <= limit {
 		return s
 	}
-	runes := []rune(s)
 	return strings.TrimSpace(string(runes[:limit-1])) + "..."
 }
 
@@ -422,16 +631,15 @@ func (c *APNsClient) Push(ctx context.Context, pushToken string, state LiveActiv
 	if final {
 		event = "end"
 	}
-	payload := map[string]interface{}{
-		"aps": map[string]interface{}{
-			"timestamp":     time.Now().Unix(),
-			"event":         event,
-			"content-state": state.ContentState(),
-		},
+	apsPayload := map[string]interface{}{
+		"timestamp":     time.Now().Unix(),
+		"event":         event,
+		"content-state": state.ContentState(),
 	}
 	if final {
-		payload["aps"].(map[string]interface{})["dismissal-date"] = time.Now().Add(30 * time.Second).Unix()
+		apsPayload["dismissal-date"] = time.Now().Add(30 * time.Second).Unix()
 	}
+	payload := map[string]interface{}{"aps": apsPayload}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("encode APNs payload: %w", err)

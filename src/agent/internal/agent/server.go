@@ -609,10 +609,10 @@ func (s *Server) handleChatAsync(
 		pending.mu.Lock()
 		if err != nil {
 			if errors.Is(runCtx.Err(), context.Canceled) {
-				pending.err = "request canceled"
 				if s.liveActivity != nil {
 					s.liveActivity.CancelTask(requestID)
 				}
+				pending.err = "request canceled"
 			} else {
 				errorMsg := Message{
 					Type:      "episode_status",
@@ -626,10 +626,10 @@ func (s *Server) handleChatAsync(
 				s.appendHistory(errorMsg)
 				pending.history = append(pending.history, errorMsg)
 				pending.messages = append(pending.messages, errorMsg)
-				pending.err = err.Error()
 				if s.liveActivity != nil {
 					s.liveActivity.FailTask(requestID, err.Error())
 				}
+				pending.err = err.Error()
 			}
 			pending.done = true
 			pending.mu.Unlock()
@@ -651,11 +651,11 @@ func (s *Server) handleChatAsync(
 		s.appendHistory(assistantMsg)
 		pending.history = append(pending.history, assistantMsg)
 		pending.messages = append(pending.messages, assistantMsg)
-		pending.done = true
-		pending.mu.Unlock()
 		if s.liveActivity != nil {
 			s.liveActivity.CompleteTask(requestID, result.Output)
 		}
+		pending.done = true
+		pending.mu.Unlock()
 
 		if s.logger != nil {
 			s.logger.Info("Chat request completed: request_id=%s output_len=%d", requestID, len(result.Output))
@@ -710,49 +710,54 @@ func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
 	s.pendingResultsMu.Lock()
 	pending := s.pendingResults[requestID]
 	s.pendingResultsMu.Unlock()
-	liveActivity := s.liveActivitySnapshot(requestID)
 
 	if pending == nil {
 		// Request not found — may have completed and been cleaned up,
 		// or may never have existed.
+		liveActivity := s.liveActivitySnapshot(requestID)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ChatResultResponse{Status: "not_found", LiveActivity: liveActivity})
 		return
 	}
 
 	pending.mu.Lock()
-	defer pending.mu.Unlock()
+	errText := pending.err
+	done := pending.done
 
-	if pending.err != "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status:       "error",
-			Error:        pending.err,
-			LiveActivity: liveActivity,
-		})
-		return
-	}
-
-	// Return messages since the client's offset
 	msgs := pending.messages
 	if offset < len(msgs) {
-		msgs = msgs[offset:]
+		msgs = append([]Message(nil), msgs[offset:]...)
 	} else {
 		msgs = nil
 	}
 
-	if pending.done {
-		// Build a full ChatResponse-compatible shape
-		historySnapshot := make([]Message, len(pending.history))
+	var historySnapshot []Message
+	response := ""
+	if done {
+		historySnapshot = make([]Message, len(pending.history))
 		copy(historySnapshot, pending.history)
-		// Extract the assistant text from the last assistant message
-		response := ""
 		for i := len(pending.history) - 1; i >= 0; i-- {
 			if pending.history[i].Type == "assistant" {
 				response = pending.history[i].Content
 				break
 			}
 		}
+	}
+	pending.mu.Unlock()
+
+	liveActivity := s.liveActivitySnapshot(requestID)
+
+	if errText != "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ChatResultResponse{
+			Status:       "error",
+			Error:        errText,
+			LiveActivity: liveActivity,
+		})
+		return
+	}
+
+	if done {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ChatResultResponse{
 			Status:       "complete",
@@ -1943,6 +1948,10 @@ func (s *Server) handleLiveActivityStatus(w http.ResponseWriter, r *http.Request
 		return
 	}
 	requestID := r.URL.Query().Get("request_id")
+	if strings.TrimSpace(requestID) == "" {
+		http.Error(w, `{"error":"missing request_id"}`, http.StatusBadRequest)
+		return
+	}
 	state := s.liveActivitySnapshot(requestID)
 	w.Header().Set("Content-Type", "application/json")
 	if state == nil {
