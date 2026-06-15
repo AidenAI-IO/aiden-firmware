@@ -528,6 +528,42 @@ func TestFinishStepEntersVerifierReview(t *testing.T) {
 	}
 }
 
+func TestExecutorMarkedFinalAnswerEntersVerifierReview(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{responses: []*llms.ContentResponse{
+			contentResponse("The result matches option (a).\n\n<final_answer>(a)</final_answer>"),
+		}},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{
+		Phase:               phaseExecution,
+		PlanCommitted:       true,
+		StepExecutionActive: true,
+		NextStep:            "compare result and output final answer",
+	}
+	inputs := map[string]string{"input": "choose the option", "history": ""}
+
+	turn, err := executor.callExecutorTurn(context.Background(), inputs, state, NewToolSpecs(nil))
+	if err != nil {
+		t.Fatalf("executor turn error: %v", err)
+	}
+
+	if turn.Kind != executorTurnFinishStep {
+		t.Fatalf("turn kind = %v, want finish step", turn.Kind)
+	}
+	if state.ExecutorStepOutcome != "finished" || !strings.Contains(state.ExecutorStepSummary, "<final_answer>(a)</final_answer>") {
+		t.Fatalf("state = %#v", state)
+	}
+}
+
 func TestFinishStepStoresKeyInfo(t *testing.T) {
 	executor := newRoleCollaborativeExecutor(
 		&scriptedModel{},

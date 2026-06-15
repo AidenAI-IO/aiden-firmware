@@ -620,6 +620,22 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 				answer = value
 			}
 		}
+		if extractMarkedFinalAnswer(answer) != "" {
+			payload, _ := json.Marshal(map[string]any{
+				"summary":  strings.TrimSpace(answer),
+				"key_info": []string{strings.TrimSpace(answer)},
+				"reason":   "executor returned an explicit final answer",
+			})
+			turn := e.handleExecutorMetaTool(state, schema.AgentAction{
+				Tool:      toolFinishStep,
+				ToolInput: string(payload),
+				Log:       strings.TrimSpace(answer),
+			})
+			if turn.InvalidMetaStep != nil {
+				turn.Step = turn.InvalidMetaStep
+			}
+			return turn, nil
+		}
 		observation := "Call finish_step when the step is ready for verification or abort_step if blocked."
 		if answer != "" {
 			observation = fmt.Sprintf("%s Plain text output alone does not enter verification: %s", observation, answer)

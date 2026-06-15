@@ -429,6 +429,59 @@ def test_report_maps_aiden_chat_history_tool_calls_into_drawer_payload(tmp_path)
     assert '"tags": [\n    "music"\n  ]' in task["tool_calls_detail"]
 
 
+def test_report_falls_back_to_compose_log_tool_calls_when_bridge_artifact_is_missing(tmp_path):
+    from mobilegym import report
+
+    batch = tmp_path / "batch-compose-tools"
+    shard = batch / "loop_planning_v1" / "shard-0"
+    write_json(
+        shard / "shard.json",
+        {
+            "batch_id": "batch-compose-tools",
+            "suite": "loop_planning_v1",
+            "shard_index": 0,
+            "shard_count": 1,
+            "selected_task_count": 2,
+            "selected_task_ids": [
+                "loop_planning_v1.direct_answer_no_plan",
+                "loop_planning_v1.expense_summary_requires_plan",
+            ],
+            "exit_code": 0,
+        },
+    )
+    write_jsonl(
+        shard / "raw" / "run" / "results.jsonl",
+        [
+            {
+                "id": "loop_planning_v1.direct_answer_no_plan",
+                "suite": "loop_planning_v1",
+                "is_success": True,
+                "execution": {"steps": 1},
+            },
+            {
+                "id": "loop_planning_v1.expense_summary_requires_plan",
+                "suite": "loop_planning_v1",
+                "is_success": True,
+            },
+        ],
+    )
+    (shard / "compose.log").write_text(
+        "daemon-1     | 2026/06/15 10:20:14 [INFO] Chat request (sync): Select option (b).\n"
+        "daemon-1     | 2026/06/15 10:20:16 [INFO] Role output: role=planner content=(b)\n"
+        "daemon-1     | 2026/06/15 10:20:17 [INFO] Chat request (sync): Analyze the expense list.\n"
+        "daemon-1     | 2026/06/15 10:20:25 [INFO] Tool call: name=calculator input={\"expression\": \"128.40 + 72.60\"} description=Compute travel total.\n",
+        encoding="utf-8",
+    )
+
+    report.generate_reports(batch)
+
+    tasks = read_report_tasks(batch / "index.html")
+    assert tasks[0]["tool_calls_count"] == 0
+    assert tasks[1]["tool_calls_count"] == 1
+    assert "[calculator]" in tasks[1]["tool_calls_detail"]
+    assert '"expression": "128.40 + 72.60"' in tasks[1]["tool_calls_detail"]
+
+
 def test_report_maps_aiden_suite_rubric_and_hard_assertions_into_drawer_payload(tmp_path):
     from mobilegym import report
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ from runner.html_report import HTML_TEMPLATE
 
 TASK_STATUSES = ("passed", "failed", "timeout", "error", "unknown", "worker_failed")
 SUMMARY_STATUSES = TASK_STATUSES + ("empty",)
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_COMPOSE_TOOL_CALL_RE = re.compile(r"Tool call:\s+name=(?P<name>\S+)\s+input=(?P<input>.*?)(?:\s+description=|$)")
 
 
 def generate_reports(batch_dir: str | Path) -> dict[str, Any]:
@@ -148,6 +151,7 @@ def _normalize_shard(shard_dir: Path) -> tuple[list[dict[str, Any]], dict[str, A
     console_links = [path.relative_to(shard_dir).as_posix() for path in sorted(raw_dir.glob("**/console.log"))]
 
     selected_task_ids = [str(task_id) for task_id in metadata.get("selected_task_ids") or []]
+    compose_actions_by_task = _read_compose_tool_calls(shard_dir / "compose.log", selected_task_ids)
     selected_task_count = int(metadata.get("selected_task_count") or len(selected_task_ids))
     exit_code = int(metadata.get("exit_code") or 0)
     shard_name = shard_dir.name
@@ -211,7 +215,7 @@ def _normalize_shard(shard_dir: Path) -> tuple[list[dict[str, Any]], dict[str, A
                 "reason": reason,
                 "result": result or {},
                 "error": error or {},
-                "actions": actions_by_task.get(task_id, []),
+                "actions": actions_by_task.get(task_id) or compose_actions_by_task.get(task_id, []),
                 "links": links,
             }
         )
@@ -263,6 +267,49 @@ def _read_bridge_actions(raw_dir: Path) -> dict[str, list[dict[str, Any]]]:
             continue
         actions.setdefault(task_id, []).extend(entry for entry in payload if isinstance(entry, dict))
     return actions
+
+
+def _read_compose_tool_calls(compose_path: Path, task_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    if not task_ids:
+        return {}
+    segments = _compose_tool_call_segments(compose_path)
+    if not segments:
+        return {}
+    if len(segments) >= len(task_ids):
+        segments = segments[-len(task_ids):]
+    result: dict[str, list[dict[str, Any]]] = {}
+    for task_id, actions in zip(task_ids, segments):
+        if actions:
+            result[task_id] = actions
+    return result
+
+
+def _compose_tool_call_segments(compose_path: Path) -> list[list[dict[str, Any]]]:
+    try:
+        lines = compose_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    segments: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] | None = None
+    for raw_line in lines:
+        line = _ANSI_RE.sub("", raw_line)
+        if "Chat request (" in line:
+            current = []
+            segments.append(current)
+            continue
+        if current is None:
+            continue
+        match = _COMPOSE_TOOL_CALL_RE.search(line)
+        if not match:
+            continue
+        current.append(
+            {
+                "tool_name": match.group("name"),
+                "tool_input": _jsonish(match.group("input").strip()),
+                "source": "compose.log",
+            }
+        )
+    return segments
 
 
 def _task_id_from_artifact_dir(path: Path) -> str:
@@ -504,7 +551,7 @@ def _drawer_task(row: dict[str, Any]) -> dict[str, Any]:
     response = _first_text(execution, "agent_answer", "agent_message") or _first_text(result, "aiden_last_response", "response", "answer")
     wall_ms = _runtime_ms(result, execution)
     tool_calls_detail = _tool_calls_detail(history_tool_calls, actions) or links_text
-    tool_calls_count = len(history_tool_calls) if history_tool_calls else len(actions) if actions else int(execution.get("steps") or result.get("steps") or 0)
+    tool_calls_count = len(history_tool_calls) if history_tool_calls else len(actions)
     errors = []
     if status in {"error", "failed", "timeout", "worker_failed", "unknown"}:
         errors.append([status, str(row.get("reason") or status)])

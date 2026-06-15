@@ -96,8 +96,9 @@ class MobileGymTaskAdapter:
         del env
 
     def evaluate(self, input: Any) -> Any:
-        del input
-        failures = _evaluate_aiden_metadata(self.metadata)
+        metadata = _metadata_with_evaluation_input(self.metadata, input)
+        failures = _evaluate_aiden_metadata(metadata)
+        self.metadata.update(metadata)
         if failures:
             return _judge_result(False, "; ".join(failures), progress=0.0)
         return _judge_result(True, "Aiden JSON suite deterministic checks passed", progress=1.0)
@@ -172,6 +173,59 @@ def _evaluate_aiden_metadata(metadata: dict[Any, Any]) -> list[str]:
             failures.append(f"missing expected recalled memory ids: {', '.join(missing)}")
 
     return failures
+
+
+def _metadata_with_evaluation_input(metadata: dict[Any, Any], input: Any) -> dict[Any, Any]:
+    result = dict(metadata)
+    if not result.get("aiden_last_response"):
+        response = _response_from_evaluation_input(input)
+        if response:
+            result["aiden_last_response"] = response
+    if not isinstance(result.get("aiden_last_chat_history"), list):
+        history = _history_from_evaluation_input(input)
+        if history:
+            result["aiden_last_chat_history"] = history
+    return result
+
+
+def _response_from_evaluation_input(input: Any) -> str:
+    for source in _evaluation_payloads(input):
+        if not isinstance(source, dict):
+            continue
+        for key in ("aiden_last_response", "response", "agent_message", "agent_answer", "answer", "message", "output", "result"):
+            value = source.get(key)
+            if isinstance(value, (dict, list)) or value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+    return ""
+
+
+def _history_from_evaluation_input(input: Any) -> list[dict[str, Any]]:
+    for source in _evaluation_payloads(input):
+        if not isinstance(source, dict):
+            continue
+        for key in ("aiden_last_chat_history", "history"):
+            value = source.get(key)
+            if isinstance(value, list):
+                return [entry for entry in value if isinstance(entry, dict)]
+    return []
+
+
+def _evaluation_payloads(input: Any) -> list[Any]:
+    payloads = [input]
+    if isinstance(input, dict):
+        for key in ("data", "execution", "metadata", "result"):
+            value = input.get(key)
+            if isinstance(value, dict):
+                payloads.append(value)
+        return payloads
+    for name in ("data", "execution", "metadata", "result"):
+        value = getattr(input, name, None)
+        if isinstance(value, dict):
+            payloads.append(value)
+    return payloads
 
 
 def _judge_result(success: bool, reason: str, *, progress: float) -> Any:
