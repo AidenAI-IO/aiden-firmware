@@ -21,7 +21,6 @@ import (
 	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/prompts"
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -1026,49 +1025,6 @@ func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *te
 			r.logger.Warn("[telemetry] export episode failed: %v", err)
 		}
 	}()
-}
-
-func (r *Runtime) buildAgent(
-	model llms.Model,
-	skills ResolvedSkills,
-	availableTools []langtools.Tool,
-	attachments []InputAttachment,
-	runtimeContext string,
-	callbackHandler callbacks.Handler,
-) agents.Agent {
-	systemMessage := buildFunctionAgentSystemMessage(
-		AgentConfig{
-			Instruction:      r.config.Instruction,
-			AdditionalPrompt: r.config.AdditionalPrompt,
-			RuntimeContext:   runtimeContext,
-		},
-		skills,
-	)
-	if r.config.ConfigDir != "" {
-		sessionSummary, _ := os.ReadFile(filepath.Join(r.config.ConfigDir, "memory", "session", "summary.md"))
-		if len(sessionSummary) > 0 {
-			systemMessage += "\n\n" + string(sessionSummary)
-		}
-		profile, _ := os.ReadFile(filepath.Join(r.config.ConfigDir, "memory", "long_term", "profile.md"))
-		if len(profile) > 0 {
-			systemMessage += "\n\n" + string(profile)
-		}
-	}
-	agent := NewFunctionAgent(
-		model,
-		availableTools,
-		systemMessage,
-		[]prompts.MessageFormatter{
-			prompts.NewSystemMessagePromptTemplate(
-				"Conversation history:\n{{.history}}",
-				[]string{"history"},
-			),
-		},
-		attachments,
-		callbackHandler,
-	)
-	agent.ScreenshotPruning = r.config.ScreenshotPruningOrDefault()
-	return agent
 }
 
 func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []langtools.Tool, memoryContext MemoryContext, runtimeContext string) RoleProfiles {

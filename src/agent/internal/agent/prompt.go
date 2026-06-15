@@ -18,40 +18,8 @@ type hostRuntimeInfo struct {
 	Architecture    string
 }
 
-func buildFunctionAgentSystemMessage(cfg AgentConfig, skills ResolvedSkills) string {
-	parts := []string{
-		"You are Aiden AI agent.",
-		currentDateContext(),
-		"Base instruction:",
-		combinedAgentInstruction(cfg),
-		"",
-		"Default behavior:",
-		defaultAgentBehavior(),
-		"",
-		skillBehavior(),
-		"",
-		"Available skills:",
-		skills.CatalogSummary(),
-		"",
-		"Active skills:",
-		skills.CombinedInstructions(),
-	}
-	if text := strings.TrimSpace(cfg.RuntimeContext); text != "" {
-		parts = append(parts,
-			"",
-			"Runtime context:",
-			text,
-		)
-	}
-	parts = append(parts,
-		"",
-		"If no tool is needed, answer directly.",
-	)
-	return strings.Join(parts, "\n")
-}
-
 func currentDateContext() string {
-	return formatChineseDate(promptNow())
+	return formatCurrentDate(promptNow())
 }
 
 func hostRuntimeInfoContext() string {
@@ -105,9 +73,9 @@ func hostInfoValue(value string) string {
 	return value
 }
 
-func formatChineseDate(t time.Time) string {
+func formatCurrentDate(t time.Time) string {
 	weekdays := []string{"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}
-	return "今天的日期是: " + t.Format("2006年01月02日") + " " + weekdays[t.Weekday()]
+	return "Current date: " + t.Format("2006-01-02") + " (" + t.Format("2006年01月02日") + " " + weekdays[t.Weekday()] + ")"
 }
 
 func combinedAgentInstruction(cfg AgentConfig) string {
@@ -122,13 +90,6 @@ func combinedAgentInstruction(cfg AgentConfig) string {
 		return ""
 	}
 	return strings.Join(parts, "\n\n")
-}
-
-func runtimeContextOrNone(cfg AgentConfig) string {
-	if text := strings.TrimSpace(cfg.RuntimeContext); text != "" {
-		return text
-	}
-	return "(none)"
 }
 
 func defaultAgentBehavior() string {
@@ -159,29 +120,5 @@ func defaultAgentBehavior() string {
 		"- Horizontal carousels/tab switches: use swipe_left/swipe_right, prefer strength=\"medium\" or \"large\". If the control snaps back or does not switch, try large or explicit distance; use small/tiny near precise positions. Do not treat one fixed distance as the only solution.",
 		"- Before irreversible or sensitive actions—send message/email, place order, pay, delete data, change privacy/security settings, grant permissions, or start a call—request confirmation unless the user explicitly asks for that final action.",
 		"- When calling a tool, put any short spoken preface in the assistant text that accompanies the tool call; do not add a description argument to tool inputs.",
-	}, "\n")
-}
-
-func skillBehavior() string {
-	return strings.Join([]string{
-		"## Skills",
-		"Skills 是可复用的操作流程，不是 memory。适合 App 操作、排障、设备流程、表单/授权/支付、重复任务和已验证的工具使用模式。",
-		"",
-		"### 可用信息",
-		"- Available skills 列出当前可用 skill 的名称和描述；Active skills 列出本轮已激活并注入的完整说明。",
-		"- skill_list 用于浏览或搜索 skills，skill_read 用于加载相关 skill 的 SKILL.md 或链接文件，skill_manage 用于创建、编辑、归档或维护 skill，skill_mark_used 用于记录实际使用。",
-		"",
-		"### 使用规则",
-		"- 行动前先查看 Available skills；对可复用流程、App 操作、排障、设备设置、表单提交、支付/授权或已知重复任务，优先匹配 skill。",
-		"- 如果 Available skills 不够判断，再用 skill_list 搜索；找到相关 skill 后，先 skill_read，再执行，除非该 skill 已在 Active skills 中。",
-		"- 不要读取所有 skill。只读取和当前任务相关的 skill；如果相关 skill 已在 Active skills 中，优先按已激活说明执行，只有需要链接文件或完整 SKILL.md 细节时才再次 skill_read。",
-		"- 已加载 skill 是本次任务 SOP；除非它和用户指令、安全规则、当前屏幕状态或工具结果冲突。skill 过时或部分错误时，基于当前证据调整本次执行。",
-		"- 实际按某个 skill 执行后，如果有 skill_mark_used 工具，就用该 skill 名称调用它。",
-		"",
-		"### 维护规则",
-		"- 只有可复用流程才写入或更新 skill；不要保存一次性进度、临时状态、秘密、原始日志或个人事实。",
-		"- 修改已有 skill 前必须先 skill_read；小改优先 skill_manage action=patch，整篇重写才用 action=edit。",
-		"- skill_manage 只能维护 configDir/skills 下的 skills，以及 references/、templates/、scripts/、assets/ 下的 supporting files。",
-		"- 不要直接修改 bundled source 或 configDir/skill-state 文件。",
 	}, "\n")
 }
