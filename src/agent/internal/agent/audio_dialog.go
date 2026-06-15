@@ -23,15 +23,18 @@ var (
 
 // AudioDialog manages the audio conversation loop
 type AudioDialog struct {
-	config       Config
-	audioClient  *AudioServiceClient
-	sttClient    STTClient
-	ttsManager   *tts.ProviderManager
-	vad          *AudioVAD
-	recordActive bool
-	sessionID    uint64
-	recordReader *AudioRecordChunkReader
-	speechMu     sync.Mutex
+	config        Config
+	audioClient   *AudioServiceClient
+	sttClient     STTClient
+	ttsManager    *tts.ProviderManager
+	vad           *AudioVAD
+	recordActive  bool
+	sessionID     uint64
+	recordReader  *AudioRecordChunkReader
+	speechMu      sync.Mutex
+	historyStore  *ChatHistoryStore
+	historyAppend func(Message)
+	audioArchive  *AudioArchiveManager
 }
 
 // NewAudioDialog creates a new audio dialog manager
@@ -80,11 +83,12 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 	}
 
 	return &AudioDialog{
-		config:      cfg,
-		audioClient: audioClient,
-		sttClient:   sttClient,
-		ttsManager:  ttsManager,
-		vad:         vad,
+		config:       cfg,
+		audioClient:  audioClient,
+		sttClient:    sttClient,
+		ttsManager:   ttsManager,
+		vad:          vad,
+		audioArchive: NewAudioArchiveManager(cfg.AudioArchive),
 	}, nil
 }
 
@@ -264,10 +268,86 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	if err != nil {
 		return err
 	}
+	d.PersistVoiceTurn(input, result, utterance)
 	if result.SpeechStreamed {
 		return nil
 	}
 	return d.Speak(ctx, result.Output, nil)
+}
+
+// SetHistoryStore wires the chat history store. When non-nil, voice user and
+// assistant messages produced during ProcessUtterance are appended with
+// Source="voice".
+func (d *AudioDialog) SetHistoryStore(store *ChatHistoryStore) {
+	d.historyStore = store
+}
+
+// SetHistoryAppender wires a higher-level history appender. The server uses
+// this so voice turns update both persistent history and the in-memory Web UI
+// snapshot in the same path as HTTP chat messages.
+func (d *AudioDialog) SetHistoryAppender(appender func(Message)) {
+	d.historyAppend = appender
+}
+
+// persistVoiceTurn appends user (when transcript is available) and assistant
+// messages to the chat history store, tagging both with Source="voice". It is
+// best-effort: errors are logged and never break the voice loop. Uses
+// context.Background since the caller's context may be cancelled by the time
+// we persist.
+func (d *AudioDialog) persistVoiceTurn(input TurnInput, result RunResult, utterance []int16) {
+	d.PersistVoiceTurn(input, result, utterance)
+}
+
+func (d *AudioDialog) PersistVoiceTurn(input TurnInput, result RunResult, utterance []int16) {
+	if d.historyAppend == nil && d.historyStore == nil {
+		return
+	}
+	now := time.Now()
+
+	// Save audio if archiving enabled
+	audioPath, audioDuration, err := d.audioArchive.SaveAudio(utterance, d.config.Audio.SampleRateOrDefault())
+	if err != nil {
+		log.Printf("[audio_archive] save failed: %v", err)
+		// Continue without audio file
+	}
+
+	transcript := strings.TrimSpace(input.Transcript)
+	if transcript != "" {
+		userMsg := Message{
+			Type:            "user",
+			EpisodeID:       result.EpisodeID,
+			Content:         transcript,
+			Source:          "voice",
+			AudioFile:       audioPath,
+			AudioDurationMs: int64(audioDuration),
+			Timestamp:       now,
+		}
+		d.appendVoiceHistory(userMsg)
+	}
+
+	output := strings.TrimSpace(result.Output)
+	if output != "" {
+		assistantMsg := Message{
+			Type:      "assistant",
+			EpisodeID: result.EpisodeID,
+			Content:   output,
+			Source:    "voice",
+			Timestamp: now,
+		}
+		d.appendVoiceHistory(assistantMsg)
+	}
+}
+
+func (d *AudioDialog) appendVoiceHistory(message Message) {
+	if d.historyAppend != nil {
+		d.historyAppend(message)
+		return
+	}
+	if d.historyStore != nil {
+		if err := d.historyStore.Append(context.Background(), message); err != nil {
+			log.Printf("[history] persist voice message failed: %v", err)
+		}
+	}
 }
 
 func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {
@@ -333,6 +413,9 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 
 func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
 	if event.Type != "tool_call" || !d.config.VoiceToolCallSpeechOrDefault() {
+		return
+	}
+	if event.ToolName == "enter_sleep" {
 		return
 	}
 	description := event.Description

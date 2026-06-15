@@ -859,3 +859,66 @@ func finalHumanMessageHasTextBeforeImage(messages []llms.MessageContent, imageUR
 	}
 	return false
 }
+
+func TestWriteWorldStateIncludesDeviceEnvironment(t *testing.T) {
+	state := worldState{}
+	isTablet := true
+	state.UpdateDeviceEnvironment(&PhoneEnvironment{
+		CapturedAt:       "2026-06-15T01:41:43.469Z",
+		Source:           "aiden-app",
+		Platform:         "android",
+		SystemName:       "Android",
+		SystemVersion:    "15",
+		Locale:           "zh_CN",
+		Language:         "zh",
+		Region:           "CN",
+		TimeZone:         "Asia/Shanghai",
+		UTCOffsetMinutes: intPtr(480),
+		UTCOffset:        "+08:00",
+		IsTablet:         &isTablet,
+		Manufacturer:     "LENOVO",
+		Brand:            "Lenovo",
+		Model:            "TB322FC",
+		DeviceName:       "阿兴",
+		Screen: PhoneScreenInfo{
+			Width:         float64Ptr(692.3636363636),
+			Height:        float64Ptr(1105.4545454545),
+			WidthPixels:   intPtr(1904),
+			HeightPixels:  intPtr(3040),
+			Scale:         float64Ptr(2.75),
+			Density:       float64Ptr(2.75),
+			DensityDPI:    intPtr(440),
+			ScaledDensity: float64Ptr(2.75),
+		},
+		Battery: PhoneBatteryInfo{
+			Level:    float64Ptr(0.94),
+			Charging: boolPtrRoleProfile(true),
+			State:    "charging",
+		},
+		ThirdPartyApps: []AvailableAppInfo{{Name: "微信", Available: true}},
+	})
+
+	var builder strings.Builder
+	writeWorldState(&builder, state)
+	text := builder.String()
+	for _, want := range []string{
+		"Device environment: available platform=android system=Android version=15 tablet=true",
+		"Device source: aiden-app, captured_at=2026-06-15T01:41:43.469Z",
+		"Device locale: zh_CN, language=zh, region=CN, timezone=Asia/Shanghai",
+		"Device time: utc_offset=+08:00, utc_offset_minutes=480",
+		"Device hardware: manufacturer=LENOVO, brand=Lenovo, model=TB322FC, device_name=阿兴",
+		"Device screen: 692.36x1105.45 pt/dp, 1904x3040 px, scale=2.75, density=2.75, density_dpi=440, scaled_density=2.75",
+		"Device battery: level=94%, charging=true, state=charging",
+		"Confirmed third-party apps: 微信",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("world state text missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func intPtr(v int) *int { return &v }
+
+func float64Ptr(v float64) *float64 { return &v }
+
+func boolPtrRoleProfile(v bool) *bool { return &v }

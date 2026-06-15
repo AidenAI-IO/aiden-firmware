@@ -165,6 +165,19 @@ func ConfigMeta() ConfigMetadata {
 				},
 			},
 			{
+				Name: "audio_archive",
+				Fields: []FieldMeta{
+					{Key: "enabled", Widget: WidgetBoolean, Default: defaults.AudioArchive.Enabled,
+						VisibleWhen: all(eq("agent.input_mode", "stt"))},
+					{Key: "storage_path", Widget: WidgetText, Default: defaults.AudioArchive.StoragePathOrDefault(),
+						VisibleWhen: all(eq("agent.input_mode", "stt"), truthy("audio_archive.enabled"))},
+					{Key: "max_files", Widget: WidgetNumber, Default: defaults.AudioArchive.MaxFilesOrDefault(),
+						VisibleWhen: all(eq("agent.input_mode", "stt"), truthy("audio_archive.enabled"))},
+					{Key: "max_size_mb", Widget: WidgetNumber, Default: defaults.AudioArchive.MaxSizeMBOrDefault(),
+						VisibleWhen: all(eq("agent.input_mode", "stt"), truthy("audio_archive.enabled"))},
+				},
+			},
+			{
 				Name: "benchmark",
 				Fields: []FieldMeta{
 					{Key: "judge_model", Widget: WidgetText,
