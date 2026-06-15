@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -260,6 +261,90 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 	if !sawPlanner || !sawToolCall || !sawToolResult || !sawAssistant || !sawDone {
 		t.Fatalf("missing expected stream events: planner=%v tool_call=%v tool_result=%v assistant=%v done=%v events=%#v",
 			sawPlanner, sawToolCall, sawToolResult, sawAssistant, sawDone, events)
+	}
+}
+
+func TestHandleCoordinateDebugTap(t *testing.T) {
+	tool := &stubTool{
+		name:        "touch_gesture",
+		description: "Touch gesture tool.",
+		output:      `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ==","action_output":"ok"}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"touch_gesture": tool,
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":123,"y":456,"type":"double_tap"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleCoordinateDebugTap(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(tool.inputs) != 1 {
+		t.Fatalf("touch_gesture call count = %d, want 1", len(tool.inputs))
+	}
+
+	var input map[string]any
+	if err := json.Unmarshal([]byte(tool.inputs[0]), &input); err != nil {
+		t.Fatalf("decode tool input: %v", err)
+	}
+	if got := input["type"]; got != "double_tap" {
+		t.Fatalf("gesture type = %#v, want double_tap", got)
+	}
+	if got := input["coord_space"]; got != "normalized" {
+		t.Fatalf("coord_space = %#v, want normalized", got)
+	}
+	point, ok := input["point"].(map[string]any)
+	if !ok {
+		t.Fatalf("point missing or invalid: %#v", input["point"])
+	}
+	if point["x"] != float64(123) || point["y"] != float64(456) {
+		t.Fatalf("point = %#v, want x=123 y=456", point)
+	}
+
+	var resp coordinateDebugTapResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.OK || resp.ActionType != "double_tap" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+	if resp.Screenshot == nil || resp.Screenshot.Width != 320 || resp.Screenshot.Height != 240 || resp.Screenshot.Data != "ZmFrZQ==" {
+		t.Fatalf("unexpected screenshot payload: %#v", resp.Screenshot)
+	}
+}
+
+func TestHandleCoordinateDebugTapRejectsInvalidType(t *testing.T) {
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":100,"y":200,"type":"swipe"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleCoordinateDebugTap(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if body := strings.TrimSpace(rec.Body.String()); !strings.Contains(body, fmt.Sprintf("%q", "unsupported tap type")) {
+		t.Fatalf("unexpected error body: %s", body)
 	}
 }
 

@@ -296,6 +296,7 @@ func (s *Server) Start() error {
 	// so it is intentionally available on all listen addresses (including the
 	// 0.0.0.0:8080 web UI) per deployment requirement.
 	mux.HandleFunc("/api/screenshot.jpg", s.handleScreenshotJPEG)
+	mux.HandleFunc("/api/coordinate-debug/tap", s.handleCoordinateDebugTap)
 	mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
 	mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
 

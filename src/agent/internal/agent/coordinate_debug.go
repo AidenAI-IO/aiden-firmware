@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -49,4 +51,90 @@ func (s *Server) handleCoordinateDebug(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(coordinateDebugHTML))
+}
+
+type coordinateDebugTapRequest struct {
+	X    int    `json:"x"`
+	Y    int    `json:"y"`
+	Type string `json:"type"`
+}
+
+type coordinateDebugTapResponse struct {
+	OK         bool                        `json:"ok"`
+	Error      string                      `json:"error,omitempty"`
+	ActionType string                      `json:"action_type,omitempty"`
+	Screenshot *postActionScreenshotResult `json:"screenshot,omitempty"`
+}
+
+func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"ok":false,"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if s.runtime == nil || s.runtime.tools == nil {
+		http.Error(w, `{"ok":false,"error":"runtime not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req coordinateDebugTapRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"ok":false,"error":"invalid JSON request"}`, http.StatusBadRequest)
+		return
+	}
+	if req.X < 0 || req.X > 1000 || req.Y < 0 || req.Y > 1000 {
+		http.Error(w, `{"ok":false,"error":"x and y must be in range 0-1000"}`, http.StatusBadRequest)
+		return
+	}
+
+	gestureType := req.Type
+	switch gestureType {
+	case "", "tap":
+		gestureType = "tap"
+	case "double_tap", "long_press":
+	default:
+		http.Error(w, `{"ok":false,"error":"unsupported tap type"}`, http.StatusBadRequest)
+		return
+	}
+
+	tool, ok := s.runtime.tools.Get("touch_gesture")
+	if !ok {
+		http.Error(w, `{"ok":false,"error":"touch_gesture tool unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"type":        gestureType,
+		"coord_space": "normalized",
+		"point": map[string]int{
+			"x": req.X,
+			"y": req.Y,
+		},
+	})
+	if err != nil {
+		http.Error(w, `{"ok":false,"error":"failed to encode tap payload"}`, http.StatusInternalServerError)
+		return
+	}
+
+	output, err := tool.Call(context.Background(), string(payload))
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"ok":false,"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	if toolOutputLooksLikeError(output) {
+		http.Error(w, fmt.Sprintf(`{"ok":false,"error":%q}`, output), http.StatusBadRequest)
+		return
+	}
+
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		http.Error(w, fmt.Sprintf(`{"ok":false,"error":"invalid tool output: %s"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(coordinateDebugTapResponse{
+		OK:         true,
+		ActionType: gestureType,
+		Screenshot: &result,
+	})
 }

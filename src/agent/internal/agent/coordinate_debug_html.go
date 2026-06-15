@@ -26,7 +26,7 @@ h2 { font-size: 17px; color: #43493d; margin-bottom: 14px; }
 input[type="file"] { display: none; }
 .input-group { margin-bottom: 14px; }
 label { display: block; font-size: 13px; color: #697063; margin-bottom: 5px; }
-input[type="number"] { width: 100%; padding: 10px; border: 1px solid #d8cfbf; border-radius: 8px; font-size: 14px; background: #fffdf8; color: #1e241d; }
+input[type="number"], select { width: 100%; padding: 10px; border: 1px solid #d8cfbf; border-radius: 8px; font-size: 14px; background: #fffdf8; color: #1e241d; }
 .btn { width: 100%; padding: 12px; background: #1f7a63; color: #fff; border: none; border-radius: 8px; font-size: 15px; cursor: pointer; transition: background 0.2s; margin-bottom: 10px; }
 .btn:hover { background: #155646; }
 .btn:disabled { background: #b9c2b6; cursor: not-allowed; }
@@ -70,8 +70,18 @@ canvas { border: 2px solid #1f7a63; border-radius: 10px; cursor: crosshair; max-
 <label for="coordY">Y 坐标</label>
 <input type="number" id="coordY" min="0" max="1000" placeholder="0 - 1000">
 </div>
+<div class="input-group">
+<label for="tapType">点击类型</label>
+<select id="tapType">
+<option value="tap">tap</option>
+<option value="double_tap">double_tap</option>
+<option value="long_press">long_press</option>
+</select>
+</div>
 <button class="btn" id="showCoordBtn" disabled>显示坐标位置</button>
+<button class="btn" id="tapCoordBtn" disabled>触发点击</button>
 <button class="btn btn-clear" id="clearBtn" disabled>清除标记</button>
+<div class="status-text" id="tapStatus"></div>
 </div>
 </div>
 
@@ -91,6 +101,7 @@ canvas { border: 2px solid #1f7a63; border-radius: 10px; cursor: crosshair; max-
 let currentImage = null;
 let autoTimer = null;
 let captureInFlight = false;
+let tapInFlight = false;
 
 const uploadArea = document.getElementById('uploadArea');
 const fileInput = document.getElementById('fileInput');
@@ -100,14 +111,23 @@ const canvasWrapper = document.getElementById('canvasWrapper');
 const infoPanel = document.getElementById('infoPanel');
 const coordX = document.getElementById('coordX');
 const coordY = document.getElementById('coordY');
+const tapType = document.getElementById('tapType');
 const showCoordBtn = document.getElementById('showCoordBtn');
+const tapCoordBtn = document.getElementById('tapCoordBtn');
 const clearBtn = document.getElementById('clearBtn');
 const loadDeviceBtn = document.getElementById('loadDeviceBtn');
 const autoRefresh = document.getElementById('autoRefresh');
 const deviceStatus = document.getElementById('deviceStatus');
+const tapStatus = document.getElementById('tapStatus');
 
 function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
+}
+
+function setCoordinateActionsEnabled(enabled) {
+    showCoordBtn.disabled = !enabled;
+    tapCoordBtn.disabled = !enabled || tapInFlight;
+    clearBtn.disabled = !enabled;
 }
 
 uploadArea.addEventListener('click', () => fileInput.click());
@@ -164,14 +184,18 @@ function loadImageFromUrl(url, statusText, onDone) {
         drawImage();
         canvasWrapper.style.display = 'block';
         infoPanel.style.display = 'block';
-        showCoordBtn.disabled = false;
-        clearBtn.disabled = false;
+        setCoordinateActionsEnabled(true);
         document.getElementById('imageSize').textContent = img.width + ' × ' + img.height + ' px';
         deviceStatus.textContent = statusText;
         if (onDone) onDone();
     };
     img.onerror = () => { deviceStatus.textContent = '图片加载失败'; if (onDone) onDone(); };
     img.src = url;
+}
+
+function loadImageFromScreenshotResult(result, statusText, onDone) {
+    const format = result && result.format ? result.format : 'jpeg';
+    loadImageFromUrl('data:image/' + format + ';base64,' + result.data, statusText, onDone);
 }
 
 function drawImage() {
@@ -199,17 +223,75 @@ canvas.addEventListener('click', (e) => {
     showMarker(pixelX, pixelY);
 });
 
-showCoordBtn.addEventListener('click', () => {
+function getNormalizedInputs() {
     const x = parseInt(coordX.value);
     const y = parseInt(coordY.value);
     if (isNaN(x) || isNaN(y) || x < 0 || x > 1000 || y < 0 || y > 1000) {
+        return null;
+    }
+    return { x, y };
+}
+
+function normalizedToPixel(x, y) {
+    const pixelX = clamp(Math.round((x / 1000) * Math.max(canvas.width - 1, 0)), 0, canvas.width - 1);
+    const pixelY = clamp(Math.round((y / 1000) * Math.max(canvas.height - 1, 0)), 0, canvas.height - 1);
+    return { pixelX, pixelY };
+}
+
+function showNormalizedMarker(x, y) {
+    const pixel = normalizedToPixel(x, y);
+    showMarker(pixel.pixelX, pixel.pixelY);
+    document.getElementById('normalizedCoord').textContent = 'X: ' + x + ', Y: ' + y;
+}
+
+showCoordBtn.addEventListener('click', () => {
+    const point = getNormalizedInputs();
+    if (!point) {
         alert('请输入有效的坐标值 (0-1000)！');
         return;
     }
-    const pixelX = clamp(Math.round((x / 1000) * Math.max(canvas.width - 1, 0)), 0, canvas.width - 1);
-    const pixelY = clamp(Math.round((y / 1000) * Math.max(canvas.height - 1, 0)), 0, canvas.height - 1);
-    showMarker(pixelX, pixelY);
-    document.getElementById('normalizedCoord').textContent = 'X: ' + x + ', Y: ' + y;
+    showNormalizedMarker(point.x, point.y);
+});
+
+tapCoordBtn.addEventListener('click', async () => {
+    const point = getNormalizedInputs();
+    if (!point) {
+        alert('请输入有效的坐标值 (0-1000)！');
+        return;
+    }
+    tapInFlight = true;
+    setCoordinateActionsEnabled(true);
+    tapStatus.textContent = '点击执行中...';
+    try {
+        showNormalizedMarker(point.x, point.y);
+        const res = await fetch('/api/coordinate-debug/tap', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ x: point.x, y: point.y, type: tapType.value })
+        });
+        const bodyText = await res.text();
+        let payload = null;
+        try {
+            payload = JSON.parse(bodyText);
+        } catch (_) {}
+        if (!res.ok) {
+            tapStatus.textContent = payload && payload.error ? '点击失败: ' + payload.error : '点击失败: ' + bodyText;
+            return;
+        }
+        if (!payload || !payload.ok || !payload.screenshot || !payload.screenshot.data) {
+            tapStatus.textContent = '点击失败: 返回结果不完整';
+            return;
+        }
+        loadImageFromScreenshotResult(payload.screenshot, '点击后画面已刷新', () => {
+            showNormalizedMarker(point.x, point.y);
+            tapStatus.textContent = '已触发' + tapType.options[tapType.selectedIndex].text + '，画面已刷新';
+        });
+    } catch (e) {
+        tapStatus.textContent = '点击失败: ' + e.message;
+    } finally {
+        tapInFlight = false;
+        setCoordinateActionsEnabled(!!currentImage);
+    }
 });
 
 clearBtn.addEventListener('click', () => {
@@ -219,6 +301,7 @@ clearBtn.addEventListener('click', () => {
     document.getElementById('markerPixel').textContent = '-';
     coordX.value = '';
     coordY.value = '';
+    tapStatus.textContent = '';
 });
 
 function showMarker(pixelX, pixelY) {
