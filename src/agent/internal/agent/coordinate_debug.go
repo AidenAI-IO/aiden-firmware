@@ -17,9 +17,8 @@ func (s *Server) handleScreenshotJPEG(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	socketPath := s.runtime.config.HID.FrameSocketOrDefault()
-	client := NewFrameServiceClient(socketPath)
-	meta, jpegData, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	options := parseCoordinateDebugScreenshotOptions(r)
+	meta, jpegData, err := s.captureCoordinateDebugScreenshot(options)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Error("Coordinate debug screenshot capture failed: %v", err)
@@ -54,9 +53,10 @@ func (s *Server) handleCoordinateDebug(w http.ResponseWriter, r *http.Request) {
 }
 
 type coordinateDebugTapRequest struct {
-	X    int    `json:"x"`
-	Y    int    `json:"y"`
-	Type string `json:"type"`
+	X             int    `json:"x"`
+	Y             int    `json:"y"`
+	Type          string `json:"type"`
+	CropBlackBars *bool  `json:"crop_black_bars,omitempty"`
 }
 
 type coordinateDebugTapResponse struct {
@@ -86,6 +86,11 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	options := coordinateDebugScreenshotOptions{CropBlackBars: true}
+	if req.CropBlackBars != nil {
+		options.CropBlackBars = *req.CropBlackBars
+	}
+
 	gestureType := req.Type
 	switch gestureType {
 	case "", "tap":
@@ -102,7 +107,7 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	payload, err := json.Marshal(map[string]any{
+	toolInput, err := json.Marshal(map[string]any{
 		"type":        gestureType,
 		"coord_space": "normalized",
 		"point": map[string]int{
@@ -115,7 +120,7 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	output, err := tool.Call(context.Background(), string(payload))
+	output, err := tool.Call(context.Background(), string(toolInput))
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"ok":false,"error":%q}`, err.Error()), http.StatusInternalServerError)
 		return
@@ -125,16 +130,36 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var result postActionScreenshotResult
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		http.Error(w, fmt.Sprintf(`{"ok":false,"error":"invalid tool output: %s"}`, err), http.StatusInternalServerError)
-		return
+	var screenshotPayload postActionScreenshotResult
+	if options.CropBlackBars {
+		if err := json.Unmarshal([]byte(output), &screenshotPayload); err != nil {
+			http.Error(w, fmt.Sprintf(`{"ok":false,"error":"invalid tool output: %s"}`, err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		var actionResult postActionScreenshotResult
+		if err := json.Unmarshal([]byte(output), &actionResult); err != nil {
+			http.Error(w, fmt.Sprintf(`{"ok":false,"error":"invalid tool output: %s"}`, err), http.StatusInternalServerError)
+			return
+		}
+		screenshotResult, err := s.captureCoordinateDebugScreenshotResult(options)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"ok":false,"error":"post-action screenshot failed: %s"}`, err), http.StatusInternalServerError)
+			return
+		}
+		screenshotPayload = postActionScreenshotResult{
+			screenshotResult: *screenshotResult,
+			ActionOutput:     actionResult.ActionOutput,
+			ScreenStable:     actionResult.ScreenStable,
+			StableWaitMs:     actionResult.StableWaitMs,
+			LastDiff:         actionResult.LastDiff,
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(coordinateDebugTapResponse{
 		OK:         true,
 		ActionType: gestureType,
-		Screenshot: &result,
+		Screenshot: &screenshotPayload,
 	})
 }

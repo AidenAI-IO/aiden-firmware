@@ -51,6 +51,7 @@ canvas { border: 2px solid #1f7a63; border-radius: 10px; cursor: crosshair; max-
 <div class="control-section">
 <h2>📤 加载截图</h2>
 <button class="btn" id="loadDeviceBtn">📷 从设备抓取当前画面</button>
+<div class="checkbox-row"><input type="checkbox" id="cropBlackBars" checked><label for="cropBlackBars" style="margin:0;">裁剪黑边</label></div>
 <div class="checkbox-row"><input type="checkbox" id="autoRefresh"><label for="autoRefresh" style="margin:0;">自动刷新 (2s)</label></div>
 <div class="status-text" id="deviceStatus"></div>
 <div class="upload-area" id="uploadArea">
@@ -116,6 +117,7 @@ const showCoordBtn = document.getElementById('showCoordBtn');
 const tapCoordBtn = document.getElementById('tapCoordBtn');
 const clearBtn = document.getElementById('clearBtn');
 const loadDeviceBtn = document.getElementById('loadDeviceBtn');
+const cropBlackBars = document.getElementById('cropBlackBars');
 const autoRefresh = document.getElementById('autoRefresh');
 const deviceStatus = document.getElementById('deviceStatus');
 const tapStatus = document.getElementById('tapStatus');
@@ -128,6 +130,10 @@ function setCoordinateActionsEnabled(enabled) {
     showCoordBtn.disabled = !enabled;
     tapCoordBtn.disabled = !enabled || tapInFlight;
     clearBtn.disabled = !enabled;
+}
+
+function currentCropBlackBars() {
+    return !!cropBlackBars.checked;
 }
 
 uploadArea.addEventListener('click', () => fileInput.click());
@@ -148,7 +154,11 @@ async function captureFromDevice() {
     loadDeviceBtn.disabled = true;
     deviceStatus.textContent = '抓取中...';
     try {
-        const res = await fetch('/api/screenshot.jpg?t=' + Date.now(), { cache: 'no-store' });
+        const query = new URLSearchParams({
+            t: String(Date.now()),
+            crop_black_bars: currentCropBlackBars() ? 'true' : 'false'
+        });
+        const res = await fetch('/api/screenshot.jpg?' + query.toString(), { cache: 'no-store' });
         if (!res.ok) {
             deviceStatus.textContent = '抓取失败: ' + res.status + ' ' + (await res.text());
             return;
@@ -267,7 +277,12 @@ tapCoordBtn.addEventListener('click', async () => {
         const res = await fetch('/api/coordinate-debug/tap', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ x: point.x, y: point.y, type: tapType.value })
+            body: JSON.stringify({
+                x: point.x,
+                y: point.y,
+                type: tapType.value,
+                crop_black_bars: currentCropBlackBars()
+            })
         });
         const bodyText = await res.text();
         let payload = null;

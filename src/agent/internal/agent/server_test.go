@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image/jpeg"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -345,6 +346,121 @@ func TestHandleCoordinateDebugTapRejectsInvalidType(t *testing.T) {
 	}
 	if body := strings.TrimSpace(rec.Body.String()); !strings.Contains(body, fmt.Sprintf("%q", "unsupported tap type")) {
 		t.Fatalf("unexpected error body: %s", body)
+	}
+}
+
+func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
+	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
+		if method, _ := req["method"].(string); method != "latest_frame" {
+			t.Fatalf("unexpected method: %#v", req["method"])
+		}
+		if format, _ := req["format"].(string); format != "raw" {
+			t.Fatalf("expected raw format request when crop_black_bars=false, got %#v", req["format"])
+		}
+		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":2,"height":1,"pixel_format":"uyvy","stride":4,"bytes":4,"stale":false}}`
+		return header, []byte{16, 128, 235, 128}
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			HID:   HIDConfig{FrameSocket: frameSocket},
+		},
+		&testModelResolver{},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/screenshot.jpg?crop_black_bars=false", nil)
+	rec := httptest.NewRecorder()
+
+	server.handleScreenshotJPEG(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/jpeg" {
+		t.Fatalf("content-type = %q, want image/jpeg", got)
+	}
+	if got := rec.Header().Get("X-Frame-Width"); got != "2" {
+		t.Fatalf("X-Frame-Width = %q, want 2", got)
+	}
+	if got := rec.Header().Get("X-Frame-Height"); got != "1" {
+		t.Fatalf("X-Frame-Height = %q, want 1", got)
+	}
+
+	img, err := jpeg.Decode(bytes.NewReader(rec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("decode response jpeg: %v", err)
+	}
+	if bounds := img.Bounds(); bounds.Dx() != 2 || bounds.Dy() != 1 {
+		t.Fatalf("decoded bounds = %v, want 2x1", bounds)
+	}
+}
+
+func TestHandleCoordinateDebugTapRecapturesUncroppedScreenshot(t *testing.T) {
+	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
+		if format, _ := req["format"].(string); format != "raw" {
+			t.Fatalf("expected raw format request when crop_black_bars=false, got %#v", req["format"])
+		}
+		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":2,"width":2,"height":1,"pixel_format":"uyvy","stride":4,"bytes":4,"stale":false}}`
+		return header, []byte{16, 128, 235, 128}
+	})
+	tool := &stubTool{
+		name:        "touch_gesture",
+		description: "Touch gesture tool.",
+		output:      `{"width":1,"height":1,"format":"jpeg","size":4,"data":"ZmFrZQ==","action_output":"ok"}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			HID:   HIDConfig{FrameSocket: frameSocket},
+		},
+		&testModelResolver{},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"touch_gesture": tool,
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":123,"y":456,"type":"tap","crop_black_bars":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleCoordinateDebugTap(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp coordinateDebugTapResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Screenshot == nil {
+		t.Fatal("expected screenshot in response")
+	}
+	if resp.Screenshot.Width != 2 || resp.Screenshot.Height != 1 {
+		t.Fatalf("unexpected screenshot dimensions: %#v", resp.Screenshot)
+	}
+	if resp.Screenshot.Data == "ZmFrZQ==" {
+		t.Fatalf("expected recaptured screenshot instead of tool screenshot: %#v", resp.Screenshot)
+	}
+
+	jpegBytes, err := base64.StdEncoding.DecodeString(resp.Screenshot.Data)
+	if err != nil {
+		t.Fatalf("decode screenshot base64: %v", err)
+	}
+	img, err := jpeg.Decode(bytes.NewReader(jpegBytes))
+	if err != nil {
+		t.Fatalf("decode screenshot jpeg: %v", err)
+	}
+	if bounds := img.Bounds(); bounds.Dx() != 2 || bounds.Dy() != 1 {
+		t.Fatalf("decoded bounds = %v, want 2x1", bounds)
 	}
 }
 
@@ -1553,6 +1669,63 @@ func startFakeAudioServiceSocket(t *testing.T, handler func(audioRequest) (audio
 				}
 				if err := writeUdsMessage(conn, udsMessage{HeaderJSON: string(respHeader), Payload: payload}); err != nil {
 					t.Errorf("fake audio write response: %v", err)
+					return
+				}
+			}()
+		}
+	}()
+
+	return socketPath
+}
+
+func startFakeFrameServiceSocket(t *testing.T, handler func(map[string]any) (string, []byte)) string {
+	t.Helper()
+
+	socketDir, err := os.MkdirTemp("/tmp", "aiden-frame-test-*")
+	if err != nil {
+		t.Fatalf("create fake frame socket dir: %v", err)
+	}
+	t.Cleanup(func() {
+		os.RemoveAll(socketDir)
+	})
+
+	socketPath := filepath.Join(socketDir, "frame.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on fake frame socket: %v", err)
+	}
+	t.Cleanup(func() {
+		listener.Close()
+	})
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+
+				header, payload, err := readUDSMessage(conn)
+				if err != nil {
+					t.Errorf("fake frame read request: %v", err)
+					return
+				}
+				if len(payload) != 0 {
+					t.Errorf("fake frame expected empty request payload, got %d bytes", len(payload))
+					return
+				}
+
+				var req map[string]any
+				if err := json.Unmarshal(header, &req); err != nil {
+					t.Errorf("fake frame decode request: %v", err)
+					return
+				}
+
+				respHeader, respPayload := handler(req)
+				if err := writeUDSMessage(conn, []byte(respHeader), respPayload); err != nil {
+					t.Errorf("fake frame write response: %v", err)
 					return
 				}
 			}()
