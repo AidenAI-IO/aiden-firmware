@@ -1,10 +1,10 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"mime"
 	"net/http"
 )
 
@@ -79,23 +79,37 @@ type coordinateDebugPostActionScreenshotResult struct {
 	LastDiff     *float64 `json:"last_diff,omitempty"`
 }
 
+func writeCoordinateDebugTapError(w http.ResponseWriter, statusCode int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(coordinateDebugTapResponse{
+		OK:    false,
+		Error: message,
+	})
+}
+
 func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, `{"ok":false,"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		writeCoordinateDebugTapError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 	if s.runtime == nil || s.runtime.tools == nil {
-		http.Error(w, `{"ok":false,"error":"runtime not configured"}`, http.StatusServiceUnavailable)
+		writeCoordinateDebugTapError(w, http.StatusServiceUnavailable, "runtime not configured")
+		return
+	}
+	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || contentType != "application/json" {
+		writeCoordinateDebugTapError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 		return
 	}
 
 	var req coordinateDebugTapRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"ok":false,"error":"invalid JSON request"}`, http.StatusBadRequest)
+		writeCoordinateDebugTapError(w, http.StatusBadRequest, "invalid JSON request")
 		return
 	}
 	if req.X < 0 || req.X > 1000 || req.Y < 0 || req.Y > 1000 {
-		http.Error(w, `{"ok":false,"error":"x and y must be in range 0-1000"}`, http.StatusBadRequest)
+		writeCoordinateDebugTapError(w, http.StatusBadRequest, "x and y must be in range 0-1000")
 		return
 	}
 
@@ -133,7 +147,7 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	output, err := tool.Call(context.Background(), string(toolInput))
+	output, err := tool.Call(r.Context(), string(toolInput))
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"ok":false,"error":%q}`, err.Error()), http.StatusInternalServerError)
 		return

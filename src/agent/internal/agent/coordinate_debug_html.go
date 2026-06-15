@@ -252,7 +252,11 @@ async function captureFromDevice() {
         };
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
-        loadImageFromUrl(url, '设备画面已加载', () => URL.revokeObjectURL(url), meta);
+        try {
+            await loadImageFromUrl(url, '设备画面已加载', meta);
+        } finally {
+            URL.revokeObjectURL(url);
+        }
     } catch (e) {
         deviceStatus.textContent = '请求失败: ' + e.message;
     } finally {
@@ -270,30 +274,39 @@ autoRefresh.addEventListener('change', () => {
 function handleFile(file) {
     if (!file.type.startsWith('image/')) { alert('请选择图片文件！'); return; }
     const reader = new FileReader();
-    reader.onload = (e) => loadImageFromUrl(e.target.result, '本地图片已加载');
+    reader.onload = async (e) => {
+        try {
+            await loadImageFromUrl(e.target.result, '本地图片已加载');
+        } catch (_) {}
+    };
     reader.readAsDataURL(file);
 }
 
-function loadImageFromUrl(url, statusText, onDone, meta) {
-    const img = new Image();
-    img.onload = () => {
-        currentImage = img;
-        currentScreenshotMeta = meta || defaultScreenshotMeta(img.width, img.height);
-        drawImage();
-        canvasWrapper.style.display = 'block';
-        infoPanel.style.display = 'block';
-        setCoordinateActionsEnabled(true);
-        document.getElementById('imageSize').textContent = img.width + ' × ' + img.height + ' px';
-        deviceStatus.textContent = statusText;
-        if (onDone) onDone();
-    };
-    img.onerror = () => { deviceStatus.textContent = '图片加载失败'; if (onDone) onDone(); };
-    img.src = url;
+function loadImageFromUrl(url, statusText, meta) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+            currentImage = img;
+            currentScreenshotMeta = meta || defaultScreenshotMeta(img.width, img.height);
+            drawImage();
+            canvasWrapper.style.display = 'block';
+            infoPanel.style.display = 'block';
+            setCoordinateActionsEnabled(true);
+            document.getElementById('imageSize').textContent = img.width + ' × ' + img.height + ' px';
+            deviceStatus.textContent = statusText;
+            resolve(img);
+        };
+        img.onerror = () => {
+            deviceStatus.textContent = '图片加载失败';
+            reject(new Error('图片加载失败'));
+        };
+        img.src = url;
+    });
 }
 
-function loadImageFromScreenshotResult(result, statusText, onDone) {
+function loadImageFromScreenshotResult(result, statusText) {
     const format = result && result.format ? result.format : 'jpeg';
-    loadImageFromUrl('data:image/' + format + ';base64,' + result.data, statusText, onDone, result);
+    return loadImageFromUrl('data:image/' + format + ';base64,' + result.data, statusText, result);
 }
 
 function drawImage() {
@@ -384,10 +397,9 @@ tapCoordBtn.addEventListener('click', async () => {
             tapStatus.textContent = '点击失败: 返回结果不完整';
             return;
         }
-        loadImageFromScreenshotResult(payload.screenshot, '点击后画面已刷新', () => {
-            showNormalizedMarker(point.x, point.y);
-            tapStatus.textContent = '已触发' + tapType.options[tapType.selectedIndex].text + '，画面已刷新';
-        });
+        await loadImageFromScreenshotResult(payload.screenshot, '点击后画面已刷新');
+        showNormalizedMarker(point.x, point.y);
+        tapStatus.textContent = '已触发' + tapType.options[tapType.selectedIndex].text + '，画面已刷新';
     } catch (e) {
         tapStatus.textContent = '点击失败: ' + e.message;
     } finally {

@@ -403,6 +403,30 @@ func TestHandleCoordinateDebugTapRejectsInvalidType(t *testing.T) {
 	}
 }
 
+func TestHandleCoordinateDebugTapRejectsNonJSONContentType(t *testing.T) {
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":100,"y":200,"type":"tap"}`))
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+
+	server.handleCoordinateDebugTap(rec, req)
+
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if body := strings.TrimSpace(rec.Body.String()); !strings.Contains(body, fmt.Sprintf("%q", "Content-Type must be application/json")) {
+		t.Fatalf("unexpected error body: %s", body)
+	}
+}
+
 func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
 	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
 		if method, _ := req["method"].(string); method != "latest_frame" {
