@@ -1,5 +1,6 @@
 import abc
 import importlib
+import json
 import socket
 import sys
 import types
@@ -79,6 +80,100 @@ def test_aiden_go_agent_act_runs_one_episode_and_returns_complete_action():
     assert client.calls[1][2] == "daemon-control"
     assert client.calls[2][1] == {}
     assert client.calls[3][1] == {"message": "count alarms", "episode_id": "ep-test"}
+
+
+def test_aiden_go_agent_reset_runs_aiden_suite_setup_with_runtime_memory_dir(monkeypatch):
+    module = importlib.import_module("mobilegym.adapter.aiden_go_agent")
+    daemon = FakeDaemon()
+    client = RecordingHTTPClient()
+    agent = module.AidenGoAgent(
+        bridge_url="http://bridge.local",
+        bridge_control_token="bridge-control",
+        daemon=daemon,
+        http_client=client,
+    )
+    monkeypatch.setenv("AIDEN_RUNTIME_CONFIG_DIR", "/tmp/aiden-config")
+
+    class Task:
+        id = "personamem_lt_recall_v1.personamem_music"
+        metadata = {
+            "aiden_suite_name": "personamem_lt_recall_v1",
+            "global_reset": {
+                "tool_sequence": [
+                    {
+                        "tool": "shell",
+                        "args": {
+                            "command": "rm -rf /userdata/agent/memory/long_term",
+                        },
+                    }
+                ],
+            },
+            "setup": {
+                "tool_sequence": [
+                    {
+                        "tool": "shell",
+                        "args": {
+                            "command": "mkdir -p /userdata/agent/memory/long_term/memories",
+                        },
+                    }
+                ],
+            },
+        }
+
+    agent.reset(Task())
+
+    assert [call[0] for call in client.calls] == [
+        "http://daemon.local/api/clear",
+        "http://daemon.local/api/tools/shell",
+        "http://daemon.local/api/tools/shell",
+    ]
+    commands = [call[1]["input"]["command"] for call in client.calls[1:]]
+    assert commands == [
+        "rm -rf /tmp/aiden-config/memory/long_term",
+        "mkdir -p /tmp/aiden-config/memory/long_term/memories",
+    ]
+
+
+def test_aiden_go_agent_records_chat_history_on_task_for_suite_evaluate():
+    module = importlib.import_module("mobilegym.adapter.aiden_go_agent")
+
+    class HistoryHTTPClient(RecordingHTTPClient):
+        def post_json(self, url, payload, *, token=None, timeout=None):
+            self.calls.append((url, payload, token, timeout))
+            if url.endswith("/api/chat"):
+                return {
+                    "response": "I recall the stored preference.\n<final_answer>(c)</final_answer>",
+                    "history": [
+                        {
+                            "type": "tool_result",
+                            "tool_name": "recall_memory",
+                            "content": json.dumps({"results": [{"id": "mem_expected"}]}),
+                        }
+                    ],
+                }
+            if url.endswith("/episode/end"):
+                return {"ok": True, "data": {"action_log": []}}
+            return {"ok": True}
+
+    class Task:
+        id = "personamem_lt_recall_v1.personamem_music"
+        instruction = "Choose one option."
+        metadata = {"aiden_suite_name": "personamem_lt_recall_v1"}
+
+    task = Task()
+    agent = module.AidenGoAgent(
+        bridge_url="http://bridge.local",
+        bridge_control_token="bridge-control",
+        daemon=FakeDaemon(),
+        http_client=HistoryHTTPClient(),
+        episode_id_factory=lambda: "ep-history",
+    )
+
+    agent.reset(task)
+    agent.act(obs=None)
+
+    assert task.metadata["aiden_last_response"].endswith("<final_answer>(c)</final_answer>")
+    assert task.metadata["aiden_last_chat_history"][0]["tool_name"] == "recall_memory"
 
 
 def test_json_http_client_classifies_urlerror_wrapped_socket_timeout(monkeypatch):

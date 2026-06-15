@@ -59,6 +59,39 @@ func searchAPIKeyOrEnv(configured string, envKeys ...string) string {
 	return ""
 }
 
+// AudioArchiveConfig controls optional archival of voice recordings as WAV files.
+type AudioArchiveConfig struct {
+	Enabled     bool   `toml:"enabled"`
+	MaxFiles    int    `toml:"max_files,omitempty"`
+	MaxSizeMB   int    `toml:"max_size_mb,omitempty"`
+	StoragePath string `toml:"storage_path,omitempty"`
+}
+
+// MaxFilesOrDefault returns MaxFiles if positive, else 500.
+func (c AudioArchiveConfig) MaxFilesOrDefault() int {
+	if c.MaxFiles <= 0 {
+		return defaultAudioArchiveMaxFiles
+	}
+	return c.MaxFiles
+}
+
+// MaxSizeMBOrDefault returns MaxSizeMB if positive, else 100.
+func (c AudioArchiveConfig) MaxSizeMBOrDefault() int {
+	if c.MaxSizeMB <= 0 {
+		return defaultAudioArchiveMaxSizeMB
+	}
+	return c.MaxSizeMB
+}
+
+// StoragePathOrDefault returns StoragePath if non-empty, else "/userdata/audio".
+func (c AudioArchiveConfig) StoragePathOrDefault() string {
+	path := strings.TrimSpace(c.StoragePath)
+	if path == "" {
+		return defaultAudioArchiveStoragePath
+	}
+	return path
+}
+
 type Config struct {
 	Model                     ModelConfig        `toml:"model"`
 	ModelText                 ModelConfig        `toml:"model_text,omitempty"` // Override for STT-then-text mode
@@ -67,6 +100,7 @@ type Config struct {
 	HID                       HIDConfig          `toml:"hid"`
 	Device                    DeviceConfig       `toml:"device,omitempty"`
 	Audio                     AudioConfig        `toml:"audio,omitempty"`
+	AudioArchive              AudioArchiveConfig `toml:"audio_archive,omitempty"`
 	Benchmark                 BenchmarkConfig    `toml:"benchmark,omitempty"`
 	Search                    SearchConfig       `toml:"search,omitempty"`
 	LiveActivity              LiveActivityConfig `toml:"live_activity,omitempty"`
@@ -89,6 +123,7 @@ type Config struct {
 	VoiceToolCallSpeech       *bool              `toml:"voice_tool_call_speech,omitempty"`
 	VoiceMaxResponseTokens    int                `toml:"voice_max_response_tokens,omitempty"`
 	MaxIterations             int                `toml:"max_iterations,omitempty"`
+	ForceSimpleLoop           bool               `toml:"force_simple_loop,omitempty"`
 	ScreenshotKeepN           int                `toml:"screenshot_keep_n,omitempty"`
 	ScreenshotPruneInterval   int                `toml:"screenshot_prune_interval,omitempty"`
 	ScreenStableTimeoutMs     int                `toml:"screen_stable_timeout_ms,omitempty"`
@@ -263,28 +298,28 @@ func (a AudioConfig) SocketOrDefault() string {
 	if a.Socket != "" {
 		return a.Socket
 	}
-	return "/run/audio_service/audio_service.sock"
+	return defaultAudioSocket
 }
 
 func (a AudioConfig) SampleRateOrDefault() int {
 	if a.SampleRate > 0 {
 		return a.SampleRate
 	}
-	return 16000
+	return defaultAudioSampleRate
 }
 
 func (a AudioConfig) ChannelsOrDefault() int {
 	if a.Channels > 0 {
 		return a.Channels
 	}
-	return 1
+	return defaultAudioChannels
 }
 
 func (a AudioConfig) BitWidthOrDefault() int {
 	if a.BitWidth > 0 {
 		return a.BitWidth
 	}
-	return 16
+	return defaultAudioBitWidth
 }
 
 type HIDConfig struct {
@@ -319,21 +354,21 @@ func (h HIDConfig) KeyboardDeviceOrDefault() string {
 	if h.KeyboardDevice != "" {
 		return h.KeyboardDevice
 	}
-	return "/dev/hidg0"
+	return defaultKeyboardDevice
 }
 
 func (h HIDConfig) MouseDeviceOrDefault() string {
 	if h.MouseDevice != "" {
 		return h.MouseDevice
 	}
-	return "/dev/hidg1"
+	return defaultMouseDevice
 }
 
 func (h HIDConfig) FrameSocketOrDefault() string {
 	if h.FrameSocket != "" {
 		return h.FrameSocket
 	}
-	return "/tmp/frame_service.sock"
+	return defaultFrameServiceSocket
 }
 
 func (h HIDConfig) PointerModeOrDefault() string {
@@ -368,6 +403,7 @@ type AgentConfig struct {
 	Instruction      string
 	AdditionalPrompt string
 	RuntimeContext   string
+	ForceSimpleLoop  bool
 }
 
 // MemoryConfig is used internally by the memory manager.
@@ -378,13 +414,26 @@ type MemoryConfig struct {
 }
 
 func LoadConfigFromDir(configDir string) (Config, error) {
+	return loadConfigFromDir(configDir, LoadConfig)
+}
+
+// LoadRuntimeConfigFromDir loads the daemon-facing runtime config from a config
+// directory. It preserves the historic agent.toml -> agent.json lookup while
+// returning a config with runtime defaults resolved.
+func LoadRuntimeConfigFromDir(configDir string) (Config, error) {
+	return loadConfigFromDir(configDir, LoadRuntimeConfig)
+}
+
+type configFileLoader func(string) (Config, error)
+
+func loadConfigFromDir(configDir string, load configFileLoader) (Config, error) {
 	configPath := filepath.Join(configDir, "agent.toml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Fallback to .json for backward compatibility
 		configPath = filepath.Join(configDir, "agent.json")
 	}
 
-	cfg, err := LoadConfig(configPath)
+	cfg, err := load(configPath)
 	if err != nil {
 		return Config{}, err
 	}
@@ -424,23 +473,8 @@ func bundledSkillsDirCandidates() []string {
 
 func LoadConfig(path string) (Config, error) {
 	var cfg Config
-	var metadata toml.MetaData
 
-	// Determine format by file extension
-	if strings.HasSuffix(path, ".toml") {
-		var err error
-		if metadata, err = toml.DecodeFile(path, &cfg); err != nil {
-			return Config{}, fmt.Errorf("decode TOML config: %w", err)
-		}
-	} else {
-		_, err := os.Stat(path)
-		if err != nil {
-			return Config{}, fmt.Errorf("read config: %w", err)
-		}
-		return Config{}, fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
-	}
-
-	if err := applyLegacyModelMaxTokens(path, metadata, &cfg); err != nil {
+	if _, err := decodeConfigFile(path, &cfg); err != nil {
 		return Config{}, err
 	}
 
@@ -449,6 +483,155 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// LoadRuntimeConfig loads a config file over runtime defaults and returns the
+// effective config used by the daemon. Optional speech providers remain opt-in:
+// their provider fields are not inherited from DefaultConfig unless the raw
+// config explicitly sets them.
+func LoadRuntimeConfig(path string) (Config, error) {
+	cfg := DefaultConfig()
+
+	metadata, err := decodeConfigFile(path, &cfg)
+	if err != nil {
+		return Config{}, err
+	}
+
+	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
+
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+
+	return cfg, nil
+}
+
+func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
+	if cfg == nil {
+		return
+	}
+
+	if !metadata.IsDefined("tts", "provider") || strings.TrimSpace(cfg.TTS.Provider) == "" {
+		cfg.TTS = TTSConfig{}
+	} else if normalizeTTSProvider(cfg.TTS.Provider) != defaultTTSProvider {
+		clearDefaultTTSProviderFields(cfg, metadata)
+	}
+	if !metadata.IsDefined("stt", "provider") || strings.TrimSpace(cfg.STT.Provider) == "" {
+		cfg.STT = STTConfig{}
+	} else if !usesDefaultSTTModel(cfg.STT.Provider) && !metadata.IsDefined("stt", "model") {
+		cfg.STT.Model = ""
+	}
+}
+
+func normalizeTTSProvider(provider string) string {
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+func clearDefaultTTSProviderFields(cfg *Config, metadata toml.MetaData) {
+	if !metadata.IsDefined("tts", "model") {
+		cfg.TTS.Model = ""
+	}
+	if !metadata.IsDefined("tts", "voice_id") {
+		cfg.TTS.VoiceID = ""
+	}
+	if !metadata.IsDefined("tts", "emotion") {
+		cfg.TTS.Emotion = ""
+	}
+	if !metadata.IsDefined("tts", "reference_id") {
+		cfg.TTS.ReferenceID = ""
+	}
+	if !metadata.IsDefined("tts", "speed") {
+		cfg.TTS.Speed = 0
+	}
+}
+
+func usesDefaultSTTModel(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai", defaultSTTProvider:
+		return true
+	default:
+		return false
+	}
+}
+
+// LoadResolvedConfig loads a config file over the canonical defaults and
+// returns the effective values used by config-editing surfaces. Missing files
+// are treated as "all defaults" so first-boot config pages can render before
+// agent.toml has been created.
+func LoadResolvedConfig(path string) (Config, error) {
+	resolvedPath, exists, err := resolveConfigPath(path)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg := DefaultConfig()
+	if exists {
+		if _, err := decodeConfigFile(resolvedPath, &cfg); err != nil {
+			return Config{}, err
+		}
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+
+	return cfg, nil
+}
+
+func resolveConfigPath(path string) (string, bool, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", false, errors.New("config path is required")
+	}
+
+	info, err := os.Stat(path)
+	if err == nil {
+		if !info.IsDir() {
+			return path, true, nil
+		}
+
+		tomlPath := filepath.Join(path, "agent.toml")
+		if _, err := os.Stat(tomlPath); err == nil {
+			return tomlPath, true, nil
+		} else if !os.IsNotExist(err) {
+			return "", false, fmt.Errorf("read config: %w", err)
+		}
+
+		jsonPath := filepath.Join(path, "agent.json")
+		if _, err := os.Stat(jsonPath); err == nil {
+			return jsonPath, true, nil
+		} else if !os.IsNotExist(err) {
+			return "", false, fmt.Errorf("read config: %w", err)
+		}
+
+		return tomlPath, false, nil
+	}
+	if os.IsNotExist(err) {
+		return path, false, nil
+	}
+	return "", false, fmt.Errorf("read config: %w", err)
+}
+
+func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {
+	var metadata toml.MetaData
+
+	// Determine format by file extension
+	if strings.HasSuffix(path, ".toml") {
+		var err error
+		if metadata, err = toml.DecodeFile(path, cfg); err != nil {
+			return toml.MetaData{}, fmt.Errorf("decode TOML config: %w", err)
+		}
+	} else {
+		_, err := os.Stat(path)
+		if err != nil {
+			return toml.MetaData{}, fmt.Errorf("read config: %w", err)
+		}
+		return toml.MetaData{}, fmt.Errorf("JSON format is deprecated, please use TOML format: %s", path)
+	}
+
+	if err := applyLegacyModelMaxTokens(path, metadata, cfg); err != nil {
+		return toml.MetaData{}, err
+	}
+	return metadata, nil
 }
 
 func applyLegacyModelMaxTokens(path string, metadata toml.MetaData, cfg *Config) error {
@@ -583,10 +766,7 @@ func (c Config) Validate() error {
 		if triggerMode != "manual" && triggerMode != "wakeup" {
 			return fmt.Errorf("invalid trigger_mode: %s (expected manual or wakeup)", c.TriggerMode)
 		}
-		effectiveInputMode := strings.ToLower(strings.TrimSpace(c.InputMode))
-		if effectiveInputMode == "" {
-			effectiveInputMode = "text"
-		}
+		effectiveInputMode := strings.ToLower(strings.TrimSpace(c.InputModeOrDefault()))
 		if triggerMode == "wakeup" && effectiveInputMode != "audio" && effectiveInputMode != "stt" {
 			return fmt.Errorf("incompatible trigger_mode %q with input_mode %q: wakeup requires input_mode audio or stt", c.TriggerMode, c.InputMode)
 		}
@@ -782,7 +962,7 @@ func (t TelemetryConfig) EnvironmentOrDefault() string {
 func (c Config) InputModeOrDefault() string {
 	mode := strings.TrimSpace(c.InputMode)
 	if mode == "" {
-		return "text"
+		return defaultInputMode
 	}
 	return strings.ToLower(mode)
 }
@@ -791,7 +971,7 @@ func (c Config) InputModeOrDefault() string {
 func (c Config) TriggerModeOrDefault() string {
 	mode := strings.TrimSpace(c.TriggerMode)
 	if mode == "" {
-		return "manual"
+		return defaultTriggerMode
 	}
 	return strings.ToLower(mode)
 }
@@ -815,14 +995,14 @@ func (c Config) VoiceFollowupTimeoutOrDefault() time.Duration {
 	if c.VoiceFollowupTimeoutMs > 0 {
 		return time.Duration(c.VoiceFollowupTimeoutMs) * time.Millisecond
 	}
-	return 6 * time.Second
+	return time.Duration(defaultVoiceFollowupTimeoutMs) * time.Millisecond
 }
 
 func (c Config) VoiceFirstTurnTimeoutOrDefault() time.Duration {
 	if c.VoiceFirstTurnTimeoutMs > 0 {
 		return time.Duration(c.VoiceFirstTurnTimeoutMs) * time.Millisecond
 	}
-	return 10 * time.Second
+	return time.Duration(defaultVoiceFirstTurnTimeoutMs) * time.Millisecond
 }
 
 func (c Config) VoiceInterruptOnWakeupOrDefault() bool {
@@ -850,7 +1030,7 @@ func (c Config) VoiceMaxResponseTokensOrDefault() int {
 	if c.VoiceMaxResponseTokens > 0 {
 		return c.VoiceMaxResponseTokens
 	}
-	return 400
+	return defaultVoiceMaxResponseTokens
 }
 
 func (c Config) ScreenshotPruningOrDefault() ScreenshotPruningConfig {

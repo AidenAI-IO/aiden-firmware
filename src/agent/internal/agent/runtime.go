@@ -56,16 +56,18 @@ type Runtime struct {
 }
 
 type RunRequest struct {
-	Input       string
-	Attachments []InputAttachment
-	Skills      []string
-	EpisodeID   string
+	Input             string
+	Attachments       []InputAttachment
+	Skills            []string
+	EpisodeID         string
+	DeviceEnvironment *PhoneEnvironment
 	// RuntimeContext is dynamic per-turn system context, such as connected
 	// hardware/app state. It is not persisted as user configuration.
 	RuntimeContext string
 	StreamWriter   io.Writer
 	MaxTokens      int
 	EventHandler   func(RunEvent)
+	SteerProvider  func(context.Context) (RunSteerMessage, bool)
 }
 
 type RunResult struct {
@@ -77,6 +79,13 @@ type RunResult struct {
 	SleepRequested bool            `json:"sleep_requested,omitempty"`
 	SleepReason    string          `json:"sleep_reason,omitempty"`
 	SpeechStreamed bool            `json:"-"`
+}
+
+type RunSteerMessage struct {
+	ID        string    `json:"id,omitempty"`
+	RequestID string    `json:"request_id,omitempty"`
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 type RunMetrics struct {
@@ -519,7 +528,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		callOptions = append(callOptions, chains.WithMaxTokens(req.MaxTokens))
 	}
 	var streamCallbackHandler *runtimeCallbackHandler
-	if req.StreamWriter != nil || req.EventHandler != nil || r.logger != nil {
+	if req.StreamWriter != nil || req.EventHandler != nil || req.SteerProvider != nil || r.logger != nil {
 		streamCallbackHandler = &runtimeCallbackHandler{
 			writer:       req.StreamWriter,
 			metrics:      metrics,
@@ -535,13 +544,17 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
 	plannerMemory := memoryHandle.Memory
-	// Wrap the window buffer with hot-window boundary markers (injected at
-	// prompt-build time only, never persisted) when compressed history exists.
-	plannerMemory = newHotWindowBoundaryMemory(plannerMemory, r.memories.HasCompressedHistory)
 	if historyStore := chatHistoryStoreForConfigDir(r.config.ConfigDir); historyStore != nil {
 		plannerMemory = newChatHistoryPlannerMemory(plannerMemory, historyStore)
 	}
-	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault())
+	var steerStatus steerConversationStatus
+	if req.SteerProvider != nil {
+		plannerMemory = newSteerConversationMemory(plannerMemory, memoryHandle.History)
+		if status, ok := plannerMemory.(steerConversationStatus); ok {
+			steerStatus = status
+		}
+	}
+	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), req.DeviceEnvironment, req.SteerProvider)
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
@@ -563,9 +576,16 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
 	r.memories.SetLastPromptTokens(metrics.LastPromptTokens)
-	if err := r.memories.AppendExchange(ctx, "default", normalizedInput, output); err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
-		return RunResult{}, err
+	if steerStatus != nil && steerStatus.HasSteerMessages() {
+		if err := r.memories.AppendMessages(ctx, "default", steeredExchangeRecords(normalizedInput, steerStatus.SteerMessages(), output)); err != nil {
+			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
+			return RunResult{}, err
+		}
+	} else {
+		if err := r.memories.AppendExchange(ctx, "default", normalizedInput, output); err != nil {
+			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
+			return RunResult{}, err
+		}
 	}
 
 	memorySnapshot, err := r.memories.Snapshot(ctx, "default")
@@ -580,7 +600,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	r.memories.RequestMaintenance()
 	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry)
 
-	sleepRequested, sleepReason := r.sleep.Consume()
+	sleepRequested, sleepReason := false, ""
+	if r.sleep != nil {
+		sleepRequested, sleepReason = r.sleep.Consume()
+	}
 	return RunResult{
 		Output:         output,
 		Skills:         runSkills.GetActivatedSkills(),
@@ -590,6 +613,16 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		SleepRequested: sleepRequested,
 		SleepReason:    sleepReason,
 	}, nil
+}
+
+func steeredExchangeRecords(input string, steers []RunSteerMessage, output string) []MessageRecord {
+	records := make([]MessageRecord, 0, len(steers)+2)
+	records = append(records, MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: input})
+	for _, steer := range steers {
+		records = append(records, MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: steerHumanMessageContent(steer)})
+	}
+	records = append(records, MessageRecord{Role: string(llms.ChatMessageTypeAI), Content: output})
+	return records
 }
 
 func (r *Runtime) currentEnvironmentHints() CurrentEnvironmentHints {
@@ -868,6 +901,13 @@ func (t *sessionRecallTelemetryTool) Description() string {
 	return t.inner.Description()
 }
 
+func (t *sessionRecallTelemetryTool) ArgsSchema() map[string]any {
+	if structured, ok := t.inner.(structuredInputTool); ok {
+		return structured.ArgsSchema()
+	}
+	return nil
+}
+
 func (t *sessionRecallTelemetryTool) Call(ctx context.Context, input string) (string, error) {
 	output, err := t.inner.Call(ctx, input)
 	if err != nil {
@@ -1025,7 +1065,6 @@ func (r *Runtime) buildAgent(
 			RuntimeContext:   runtimeContext,
 		},
 		skills,
-		availableTools,
 	)
 	if r.config.ConfigDir != "" {
 		sessionSummary, _ := os.ReadFile(filepath.Join(r.config.ConfigDir, "memory", "session", "summary.md"))
@@ -1063,6 +1102,7 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 			Instruction:      r.config.Instruction,
 			AdditionalPrompt: r.config.AdditionalPrompt,
 			RuntimeContext:   runtimeContext,
+			ForceSimpleLoop:  r.config.ForceSimpleLoop,
 		},
 		skills,
 		availableTools,
@@ -1248,9 +1288,6 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 
 func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call ToolCall) {
 	description := call.Description
-	if description == "" {
-		description = toolDescriptionOrFallback(call.Spec.Name, "")
-	}
 	if h.logger != nil {
 		if description != "" {
 			h.logger.Info("Tool call: name=%s input=%s description=%s",
@@ -1344,6 +1381,21 @@ func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, con
 			Timestamp: time.Now(),
 		})
 	}
+}
+
+func (h *runtimeCallbackHandler) HandleSteerMessage(ctx context.Context, steer RunSteerMessage) {
+	if h.eventHandler == nil {
+		return
+	}
+	if steer.Timestamp.IsZero() {
+		steer.Timestamp = time.Now()
+	}
+	h.eventHandler(RunEvent{
+		Type:      "steer",
+		EpisodeID: h.episodeID,
+		Content:   steer.Content,
+		Timestamp: steer.Timestamp,
+	})
 }
 
 func (h *runtimeCallbackHandler) HandleRetrieverStart(ctx context.Context, query string) {}

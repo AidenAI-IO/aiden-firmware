@@ -1,8 +1,10 @@
 import importlib.util
+import asyncio
 import json
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 
@@ -15,6 +17,7 @@ def load_run_aiden_module():
     module = importlib.util.module_from_spec(spec)
     assert spec is not None
     assert spec.loader is not None
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -152,6 +155,57 @@ def test_write_shard_metadata_preserves_existing_worker_fields(tmp_path):
     assert payload["selected_task_ids"] == ["task.A"]
 
 
+def test_write_shard_metadata_records_aiden_task_report_fields(tmp_path):
+    module = load_run_aiden_module()
+    metadata = tmp_path / "shard.json"
+    task = module.MobileGymTaskAdapter(
+        task_id="personamem_lt_recall_v1.case_one",
+        instruction="Choose the remembered option.",
+        metadata={
+            "aiden_suite_name": "personamem_lt_recall_v1",
+            "description_for_judge": "Recall the saved preference.",
+            "rubric": [{"id": "memory_recall", "check": "Mentions the saved preference."}],
+            "hard_assertions": {"expected_answer": True},
+        },
+    )
+
+    module._write_shard_metadata(metadata, [task], shard_index=0, shard_count=1)
+
+    payload = json.loads(metadata.read_text())
+    assert payload["task_metadata"]["personamem_lt_recall_v1.case_one"] == {
+        "description_for_judge": "Recall the saved preference.",
+        "rubric": [{"id": "memory_recall", "check": "Mentions the saved preference."}],
+        "hard_assertions": {"expected_answer": True},
+    }
+
+
+def test_mobilegym_task_adapter_exposes_runner_interface():
+    module = load_run_aiden_module()
+    task = module.MobileGymTaskAdapter(
+        task_id="perception_v1.find_settings_iphone",
+        instruction="Find Settings",
+        metadata={"aiden_suite_name": "perception_v1", "category": "perception"},
+    )
+
+    class FakeEnv:
+        async def get_observation(self):
+            return "initial observation"
+
+    assert task.id == "perception_v1.find_settings_iphone"
+    assert task.name == "find_settings_iphone"
+    assert task.suite == "perception_v1"
+    assert task.description == "Find Settings"
+    assert task.goal == "Find Settings"
+    assert task.apps == []
+    assert task.params == {}
+    assert task.teardown(object()) is None
+    assert asyncio.run(task.setup(FakeEnv())) == "initial observation"
+    judge = task.evaluate(object())
+    assert judge.success is True
+    assert judge.clean is True
+    assert judge.progress == 1.0
+
+
 def test_generate_run_report_best_effort_writes_index(tmp_path):
     module = load_run_aiden_module()
     run_dir = tmp_path / "run"
@@ -162,3 +216,80 @@ def test_generate_run_report_best_effort_writes_index(tmp_path):
     module._generate_run_report_best_effort(run_dir)
 
     assert (run_dir / "index.html").exists()
+
+
+def test_run_serial_sets_agent_artifact_dir_to_recorder_run_dir(monkeypatch, tmp_path):
+    module = load_run_aiden_module()
+    captured = {}
+
+    class FakeRecorder:
+        run_dir = tmp_path / "run"
+
+        def start_run(self, **kwargs):
+            self.run_dir.mkdir()
+
+    class FakeFactory:
+        @staticmethod
+        def load_tasks(config):
+            return ["task.A"]
+
+        @staticmethod
+        def create_recorder(config):
+            return FakeRecorder()
+
+        @staticmethod
+        async def create_env(config):
+            return object()
+
+        @staticmethod
+        def create_evaluator(config, value):
+            return object()
+
+    class FakeBridge:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            return "http://bridge.local"
+
+        def stop(self):
+            pass
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            self.artifact_dir = None
+            captured["agent"] = self
+
+    class FakeRunner:
+        @staticmethod
+        def build_run_meta(config, tasks):
+            return {"tasks": tasks}
+
+        def __init__(self, *args):
+            pass
+
+        async def run(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "bench_env.logger", types.SimpleNamespace(add_log_file=lambda path: None))
+    monkeypatch.setitem(sys.modules, "mobilegym.adapter.aiden_go_agent", types.SimpleNamespace(AidenGoAgent=FakeAgent))
+    monkeypatch.setitem(sys.modules, "mobilegym.adapter.daemon", types.SimpleNamespace(AidenDaemonHandle=lambda **kwargs: object()))
+    monkeypatch.setitem(sys.modules, "mobilegym.bridge.episode", types.SimpleNamespace(BridgeEpisodeState=lambda *args, **kwargs: object()))
+    monkeypatch.setitem(sys.modules, "mobilegym.bridge.protocol", types.SimpleNamespace(BridgeTokens=lambda **kwargs: object()))
+    monkeypatch.setitem(sys.modules, "mobilegym.bridge.server", types.SimpleNamespace(BridgeServer=FakeBridge))
+    monkeypatch.setattr(module, "_generate_run_report_best_effort", lambda run_dir: None)
+
+    args = types.SimpleNamespace(
+        aiden_suite=None,
+        limit=None,
+        shard_index=0,
+        shard_count=1,
+        shard_metadata_file=None,
+        aiden_daemon_url="http://daemon.local",
+        aiden_control_token="token",
+        chat_timeout_sec=1,
+        episode_timeout_sec=1,
+    )
+
+    assert asyncio.run(module._run_serial(args, object(), FakeFactory, FakeRunner)) == 0
+    assert captured["agent"].artifact_dir == tmp_path / "run"

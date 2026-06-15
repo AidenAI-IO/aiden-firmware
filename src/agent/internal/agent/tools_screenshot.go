@@ -47,6 +47,10 @@ func (t *ScreenshotTool) Description() string {
 		`Returns a JSON object with width, height, and base64-encoded JPEG image data.`
 }
 
+func (t *ScreenshotTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(nil)
+}
+
 func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 	// Request JPEG format directly from frame_service (hardware-encoded)
 	meta, jpegData, err := t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
@@ -84,6 +88,10 @@ func detectScreenshotActiveArea(jpegData []byte, expectedWidth, expectedHeight i
 	if err != nil {
 		return screenActiveArea{}
 	}
+	return detectImageActiveArea(img, expectedWidth, expectedHeight)
+}
+
+func detectImageActiveArea(img image.Image, expectedWidth, expectedHeight int) screenActiveArea {
 	bounds := img.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()

@@ -42,6 +42,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.voice_tool_call_speech = false;
     cfg.voice_max_response_tokens = 240;
     cfg.max_iterations = 6;
+    cfg.force_simple_loop = true;
     cfg.screenshot_keep_n = 5;
     cfg.screenshot_prune_interval = 40;
     cfg.screen_stable_timeout_ms = 4500;
@@ -71,6 +72,11 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.audio.sample_rate = 16000;
     cfg.audio.channels = 1;
     cfg.audio.bit_width = 16;
+
+    cfg.audio_archive.enabled = false;
+    cfg.audio_archive.max_files = 42;
+    cfg.audio_archive.max_size_mb = 17;
+    cfg.audio_archive.storage_path = "/tmp/audio-archive";
 
     cfg.hid.keyboard_device = "/dev/hidg0";
     cfg.hid.mouse_device = "/dev/hidg1";
@@ -123,6 +129,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
 	CHECK(loaded.voice_tool_call_speech == false);
 	CHECK(loaded.voice_max_response_tokens == 240);
 	CHECK(loaded.max_iterations == 6);
+	CHECK(loaded.force_simple_loop == true);
 	CHECK(loaded.screenshot_keep_n == 5);
 	CHECK(loaded.screenshot_prune_interval == 40);
 	CHECK(loaded.screen_stable_timeout_ms == 4500);
@@ -152,6 +159,11 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.audio.sample_rate == 16000);
     CHECK(loaded.audio.channels == 1);
     CHECK(loaded.audio.bit_width == 16);
+
+    CHECK(loaded.audio_archive.enabled == false);
+    CHECK(loaded.audio_archive.max_files == 42);
+    CHECK(loaded.audio_archive.max_size_mb == 17);
+    CHECK(loaded.audio_archive.storage_path == "/tmp/audio-archive");
 
     CHECK(loaded.hid.keyboard_device == "/dev/hidg0");
     CHECK(loaded.hid.mouse_device == "/dev/hidg1");
@@ -258,6 +270,7 @@ TEST_CASE("agent_toml ignores unknown sections and keys") {
     REQUIRE(err.empty());
     CHECK(cfg.input_mode == "text");
     CHECK(cfg.max_iterations == -1);
+    CHECK(cfg.force_simple_loop == false);
     CHECK(cfg.model.provider == "openai");
     CHECK(cfg.model.model == "gpt-4o-mini");
 

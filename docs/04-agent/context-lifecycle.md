@@ -12,13 +12,73 @@ Each run is assembled from several layers. Some layers are persisted memory, whi
 | Runtime defaults | built-in prompt rules, current date, host runtime information | planner, executor, verifier | not persisted |
 | Skills | skill index plus active `SKILL.md` content | planner, executor, verifier | skill files and skill state |
 | Runtime context | `RunRequest.RuntimeContext`, for example phone bridge state | planner, executor, verifier | not persisted |
-| Tool catalog | resolved built-in tools plus skill tools | executor can call; planner/verifier can inspect | not persisted in memory |
+| Tool catalog | resolved built-in tools plus skill tools | planner and executor can call; verifier does not receive a tool catalog | not persisted in memory |
+| Planner loop meta tools | `use_simple_mode`, `enter_plan_mode`, `commit_plan`, `cancel_plan` | planner only | not persisted in memory |
+| Executor loop meta tools | `finish_step`, `abort_step` | executor only | not persisted in memory |
 | Retrieved memory context | `MemoryPlane.Retrieve` output | planner and verifier only | filesystem memory |
 | Planner conversation history | hot-window memory, optional compressed-history markers, optional persisted chat history | planner only | filesystem memory |
-| Role loop state | objective, plan, next step, tool evidence, verifier feedback, world state | role-specific | current run only |
+| Role loop state | phase, objective, plan, `plan_step_index`, next step, tool evidence, verifier feedback, world state | role-specific | current run only |
 | Input attachments | `RunRequest.Attachments`, plus latest screenshot image when available | role user messages | current run only |
 
 The executor intentionally does not receive global memory or full conversation history. It receives the planner-approved `next_step`, latest world state, and the latest local execution result only.
+
+## Phased Role Loop
+
+`roleCollaborativeExecutor` drives a three-phase state machine. All phases share one global `MaxIterations` budget.
+
+| Phase | Planner behavior | Other roles |
+| --- | --- | --- |
+| `decision` | Route to direct answer, `default`, or `plan` before ordinary tools are exposed | not used |
+| `default` | Call built-in tools directly, return a final answer when done, or call `enter_plan_mode` for complex work | not used |
+| `plan` | Explore with tools, maintain a draft plan, then call `commit_plan` or `cancel_plan` | not used |
+| `execution` | not called | `executor` runs one approved step, then `verifier` reviews evidence |
+
+Phase transitions:
+
+```text
+Run starts in decision
+  |
+  +-- direct_answer --> run ends (no verifier)
+  |
+  +-- simple / use_simple_mode --> default
+  |     |
+  |     +-- planner finishes --> run ends (no verifier)
+  |     |
+  |     +-- planner calls domain tool --> default
+  |     |
+  |     +-- enter_plan_mode --> plan
+  |
+  +-- plan / enter_plan_mode --> plan
+        |
+        +-- cancel_plan --> default
+        |
+        +-- commit_plan --> execution
+              |
+              +-- executor finish_step / abort_step --> verifier
+                    |
+                    +-- verifier can_finish --> run ends
+                    |
+                    +-- verifier needs_replan --> plan
+                    |
+                    +-- verifier continues and plan has more steps --> next execution step
+                    |
+                    +-- verifier continues and plan is exhausted --> plan
+```
+
+Planner loop meta tools are visible only to the planner and are intercepted by the runtime controller. Executor loop meta tools are visible only to the executor for step-boundary review. They never reach the device tool layer.
+
+| Meta tool | Role | Allowed in | Effect |
+| --- | --- | --- | --- |
+| `use_simple_mode` | planner | `decision` | route to `default` |
+| `enter_plan_mode` | planner | `decision`, `default` | switch to `plan` |
+| `commit_plan` | planner | `plan` only | commit objective, completion criteria, and plan steps; switch to `execution` |
+| `cancel_plan` | planner | `plan` | clear draft planning state; switch to `default` |
+| `finish_step` | executor | `execution` | mark the current step ready for verifier review |
+| `abort_step` | executor | `execution` | mark the current step blocked or failed for verifier review |
+
+After `commit_plan`, runtime owns step progression. `plan_step_index` selects the current committed step, and `next_step` is synchronized from that index before each executor turn. The executor must not reorder or rewrite the plan.
+
+Simple tasks should stay in `default` (direct answer, one tool call, or at most two short steps). If completing the request will likely need three or more steps, the planner must call `enter_plan_mode` before executing further. Also use `plan` for branching, sustained tracking, or explicit completion criteria before delegation.
 
 ## Prompt Shape
 
@@ -31,16 +91,16 @@ For the current multi-role loop, `Runtime.Run` builds `RoleProfiles` before exec
 5. active skill instructions;
 6. request-local runtime context, if provided;
 7. role rules;
-8. available tool information;
+8. available tool information, except verifier;
 9. role-specific rendered memory context, if any.
 
 The per-call user message is then built from the current loop state:
 
-- planner sees the current world state, original request, conversation history, current plan, executor results, and verifier feedback;
+- planner sees the current loop mode, world state, original request, conversation history, draft or committed plan, executor results, and verifier feedback;
 - executor sees the current world state and the planner-approved `next_step`;
-- verifier sees the current world state, original request, completion criteria, accumulated executor evidence, and mandatory completion checklist.
+- verifier sees the current world state, the step under verification (`step_index`, `step_text`, `is_final_committed_step`), and the latest executor result for that step only.
 
-Planner and verifier also receive the tool scratchpad after tools have run. The latest screenshot image is attached to the role message when the world state has screenshot bytes.
+Planner and executor receive the tool scratchpad after tools have run. The latest screenshot image is attached to the role message when the world state has screenshot bytes.
 
 ## Retrieved Memory Context
 
@@ -98,7 +158,7 @@ start EpisodeRecorder
 build role profiles and planner memory
   |
   v
-planner -> executor -> verifier loop
+phased role loop (decision / default / plan / execution)
   |
   v
 append conversation exchange and save snapshot
@@ -128,7 +188,9 @@ The hot window lives in:
 memory/session/events.jsonl
 ```
 
-When compressed history exists, prompt construction wraps the rendered hot window with boundary markers. Those markers are prompt-only and are never persisted.
+At prompt time, retained hot-window events render as normal planner
+`Conversation history:`. Prompt construction does not add hot-window labels or
+boundary markers.
 
 When session-boundary detection classifies a user turn as a new session, the
 runtime archives the whole active `memory/session/` directory into
@@ -181,7 +243,17 @@ The `save_memory`, `forget_memory`, and episode extraction paths update this sto
 
 ### Device And Episode Memory
 
-The episode recorder captures planner decisions, executor actions, tool results, verifier decisions, observed world state, and outcome data during the run. `MemoryPlane.CommitEpisode` writes the task episode, extracts reusable lessons, updates device memory, and updates outcomes on referenced memories.
+The episode recorder captures loop phase changes, default-mode finishes, planner decisions, planner and executor tool calls, tool results, verifier decisions, observed world state, and outcome data during the run. `MemoryPlane.CommitEpisode` writes the task episode, extracts reusable lessons, updates device memory, and updates outcomes on referenced memories.
+
+Common episode event types:
+
+| Event type | When recorded |
+| --- | --- |
+| `loop_phase` | `enter_plan_mode`, `commit_plan`, `cancel_plan`, `plan_exhausted`, or `needs_replan` |
+| `default_finish` | planner returns a final answer directly in `default` |
+| `planner_decision` | `commit_plan` commits objective, criteria, and plan steps |
+| `tool_call` / `tool_result` | planner tool use in `default`/`plan`, or executor tool use in `execution` |
+| `verifier_decision` | verifier review in `execution` |
 
 The main stores are:
 
@@ -232,9 +304,13 @@ When a chat-history store exists, planner memory also loads a compact view of re
 - Runtime context is request-local; do not use it as durable memory.
 - Active session summaries are durable within the current session; archived
   session summaries are logs and are not prompt or recall context.
-- Hot-window boundary markers are prompt-only and are not durable memory.
+- Hot-window labels or boundary markers are not injected into prompts or
+  durable memory.
 - Planner owns plans and sees retrieved experience memory.
-- Executor executes exactly one approved step and does not receive global memory.
-- Verifier is the only role allowed to finish a run and receives failure/conflict memory.
+- In `default`, planner may call tools and finish the run without verifier review.
+- In `execution`, executor executes exactly one approved step and does not receive global memory.
+- In `execution`, verifier validates only the current committed step; intermediate step success advances the plan, and `can_finish` is allowed only on the final committed step.
+- `commit_plan` is only valid in `plan`; runtime owns `plan_step_index` after commit.
+- Loop meta tools are planner/executor control tools handled by the runtime controller, not the device tool layer.
 - Tool results and screenshots are evidence for the current run; reusable lessons are written only after episode commit or explicit memory-tool calls.
 - Device actions must be based on current tool observations or screenshots, not on stale remembered state alone.

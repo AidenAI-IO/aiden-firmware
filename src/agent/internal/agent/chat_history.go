@@ -16,8 +16,9 @@ import (
 const maxChatHistoryContentRunes = 8000
 
 type ChatHistoryStore struct {
-	mu      sync.Mutex
-	rootDir string
+	mu           sync.Mutex
+	rootDir      string
+	onNewMessage func(Message) // callback invoked after successful Append
 }
 
 func NewChatHistoryStore(rootDir string) *ChatHistoryStore {
@@ -25,6 +26,17 @@ func NewChatHistoryStore(rootDir string) *ChatHistoryStore {
 		return nil
 	}
 	return &ChatHistoryStore{rootDir: rootDir}
+}
+
+// SetOnNewMessage registers a callback invoked after each successful Append.
+// The callback runs synchronously on the appending goroutine; keep it fast.
+func (s *ChatHistoryStore) SetOnNewMessage(callback func(Message)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.onNewMessage = callback
+	s.mu.Unlock()
 }
 
 func (s *ChatHistoryStore) Append(ctx context.Context, message Message) error {
@@ -53,6 +65,10 @@ func (s *ChatHistoryStore) Append(ctx context.Context, message Message) error {
 	defer file.Close()
 	if err := json.NewEncoder(file).Encode(message); err != nil {
 		return fmt.Errorf("append chat history event: %w", err)
+	}
+	// Notify callback after successful persistence
+	if s.onNewMessage != nil {
+		s.onNewMessage(message)
 	}
 	return nil
 }

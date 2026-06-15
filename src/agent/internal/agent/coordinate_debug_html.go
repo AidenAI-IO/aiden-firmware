@@ -26,7 +26,7 @@ h2 { font-size: 17px; color: #43493d; margin-bottom: 14px; }
 input[type="file"] { display: none; }
 .input-group { margin-bottom: 14px; }
 label { display: block; font-size: 13px; color: #697063; margin-bottom: 5px; }
-input[type="number"] { width: 100%; padding: 10px; border: 1px solid #d8cfbf; border-radius: 8px; font-size: 14px; background: #fffdf8; color: #1e241d; }
+input[type="number"], select { width: 100%; padding: 10px; border: 1px solid #d8cfbf; border-radius: 8px; font-size: 14px; background: #fffdf8; color: #1e241d; }
 .btn { width: 100%; padding: 12px; background: #1f7a63; color: #fff; border: none; border-radius: 8px; font-size: 15px; cursor: pointer; transition: background 0.2s; margin-bottom: 10px; }
 .btn:hover { background: #155646; }
 .btn:disabled { background: #b9c2b6; cursor: not-allowed; }
@@ -51,6 +51,7 @@ canvas { border: 2px solid #1f7a63; border-radius: 10px; cursor: crosshair; max-
 <div class="control-section">
 <h2>📤 加载截图</h2>
 <button class="btn" id="loadDeviceBtn">📷 从设备抓取当前画面</button>
+<div class="checkbox-row"><input type="checkbox" id="cropBlackBars" checked><label for="cropBlackBars" style="margin:0;">裁剪黑边</label></div>
 <div class="checkbox-row"><input type="checkbox" id="autoRefresh"><label for="autoRefresh" style="margin:0;">自动刷新 (2s)</label></div>
 <div class="status-text" id="deviceStatus"></div>
 <div class="upload-area" id="uploadArea">
@@ -70,8 +71,18 @@ canvas { border: 2px solid #1f7a63; border-radius: 10px; cursor: crosshair; max-
 <label for="coordY">Y 坐标</label>
 <input type="number" id="coordY" min="0" max="1000" placeholder="0 - 1000">
 </div>
+<div class="input-group">
+<label for="tapType">点击类型</label>
+<select id="tapType">
+<option value="tap">tap</option>
+<option value="double_tap">double_tap</option>
+<option value="long_press">long_press</option>
+</select>
+</div>
 <button class="btn" id="showCoordBtn" disabled>显示坐标位置</button>
+<button class="btn" id="tapCoordBtn" disabled>触发点击</button>
 <button class="btn btn-clear" id="clearBtn" disabled>清除标记</button>
+<div class="status-text" id="tapStatus"></div>
 </div>
 </div>
 
@@ -89,8 +100,10 @@ canvas { border: 2px solid #1f7a63; border-radius: 10px; cursor: crosshair; max-
 </div>
 <script>
 let currentImage = null;
+let currentScreenshotMeta = null;
 let autoTimer = null;
 let captureInFlight = false;
+let tapInFlight = false;
 
 const uploadArea = document.getElementById('uploadArea');
 const fileInput = document.getElementById('fileInput');
@@ -100,14 +113,101 @@ const canvasWrapper = document.getElementById('canvasWrapper');
 const infoPanel = document.getElementById('infoPanel');
 const coordX = document.getElementById('coordX');
 const coordY = document.getElementById('coordY');
+const tapType = document.getElementById('tapType');
 const showCoordBtn = document.getElementById('showCoordBtn');
+const tapCoordBtn = document.getElementById('tapCoordBtn');
 const clearBtn = document.getElementById('clearBtn');
 const loadDeviceBtn = document.getElementById('loadDeviceBtn');
+const cropBlackBars = document.getElementById('cropBlackBars');
 const autoRefresh = document.getElementById('autoRefresh');
 const deviceStatus = document.getElementById('deviceStatus');
+const tapStatus = document.getElementById('tapStatus');
 
 function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
+}
+
+function setCoordinateActionsEnabled(enabled) {
+    showCoordBtn.disabled = !enabled;
+    tapCoordBtn.disabled = !enabled || tapInFlight;
+    clearBtn.disabled = !enabled;
+}
+
+function currentCropBlackBars() {
+    return !!cropBlackBars.checked;
+}
+
+function defaultScreenshotMeta(width, height) {
+    return {
+        width,
+        height,
+        source_width: width,
+        source_height: height,
+        source_active_area: null
+    };
+}
+
+function normalizeActiveArea(meta) {
+    if (!meta || !meta.source_active_area || !meta.source_active_area.valid) return null;
+    return meta.source_active_area;
+}
+
+function imageIsCropped(meta) {
+    if (!meta) return false;
+    return (meta.width || 0) !== (meta.source_width || meta.width || 0) ||
+           (meta.height || 0) !== (meta.source_height || meta.height || 0);
+}
+
+function imagePixelToSourcePixel(pixelX, pixelY) {
+    const meta = currentScreenshotMeta || defaultScreenshotMeta(canvas.width, canvas.height);
+    const active = normalizeActiveArea(meta);
+    if (imageIsCropped(meta) && active) {
+        return {
+            pixelX: clamp(active.x + pixelX, 0, Math.max((meta.source_width || canvas.width) - 1, 0)),
+            pixelY: clamp(active.y + pixelY, 0, Math.max((meta.source_height || canvas.height) - 1, 0))
+        };
+    }
+    return {
+        pixelX: clamp(pixelX, 0, Math.max((meta.source_width || canvas.width) - 1, 0)),
+        pixelY: clamp(pixelY, 0, Math.max((meta.source_height || canvas.height) - 1, 0))
+    };
+}
+
+function sourcePixelToNormalized(pixelX, pixelY) {
+    const meta = currentScreenshotMeta || defaultScreenshotMeta(canvas.width, canvas.height);
+    const sourceWidth = Math.max(meta.source_width || canvas.width, 1);
+    const sourceHeight = Math.max(meta.source_height || canvas.height, 1);
+    const maxPixelX = Math.max(sourceWidth - 1, 1);
+    const maxPixelY = Math.max(sourceHeight - 1, 1);
+    return {
+        x: clamp(Math.round((pixelX / maxPixelX) * 1000), 0, 1000),
+        y: clamp(Math.round((pixelY / maxPixelY) * 1000), 0, 1000)
+    };
+}
+
+function normalizedToSourcePixel(x, y) {
+    const meta = currentScreenshotMeta || defaultScreenshotMeta(canvas.width, canvas.height);
+    const sourceWidth = Math.max(meta.source_width || canvas.width, 1);
+    const sourceHeight = Math.max(meta.source_height || canvas.height, 1);
+    return {
+        pixelX: clamp(Math.round((x / 1000) * Math.max(sourceWidth - 1, 0)), 0, sourceWidth - 1),
+        pixelY: clamp(Math.round((y / 1000) * Math.max(sourceHeight - 1, 0)), 0, sourceHeight - 1)
+    };
+}
+
+function sourcePixelToImagePixel(pixelX, pixelY) {
+    const meta = currentScreenshotMeta || defaultScreenshotMeta(canvas.width, canvas.height);
+    const active = normalizeActiveArea(meta);
+    if (imageIsCropped(meta) && active) {
+        return {
+            pixelX: clamp(pixelX - active.x, 0, canvas.width - 1),
+            pixelY: clamp(pixelY - active.y, 0, canvas.height - 1)
+        };
+    }
+    return {
+        pixelX: clamp(pixelX, 0, canvas.width - 1),
+        pixelY: clamp(pixelY, 0, canvas.height - 1)
+    };
 }
 
 uploadArea.addEventListener('click', () => fileInput.click());
@@ -128,14 +228,35 @@ async function captureFromDevice() {
     loadDeviceBtn.disabled = true;
     deviceStatus.textContent = '抓取中...';
     try {
-        const res = await fetch('/api/screenshot.jpg?t=' + Date.now(), { cache: 'no-store' });
+        const query = new URLSearchParams({
+            t: String(Date.now()),
+            crop_black_bars: currentCropBlackBars() ? 'true' : 'false'
+        });
+        const res = await fetch('/api/screenshot.jpg?' + query.toString(), { cache: 'no-store' });
         if (!res.ok) {
             deviceStatus.textContent = '抓取失败: ' + res.status + ' ' + (await res.text());
             return;
         }
+        const meta = {
+            width: parseInt(res.headers.get('X-Frame-Width') || '0', 10) || 0,
+            height: parseInt(res.headers.get('X-Frame-Height') || '0', 10) || 0,
+            source_width: parseInt(res.headers.get('X-Source-Width') || '0', 10) || 0,
+            source_height: parseInt(res.headers.get('X-Source-Height') || '0', 10) || 0,
+            source_active_area: res.headers.get('X-Source-Active-Valid') === 'true' ? {
+                x: parseInt(res.headers.get('X-Source-Active-X') || '0', 10) || 0,
+                y: parseInt(res.headers.get('X-Source-Active-Y') || '0', 10) || 0,
+                width: parseInt(res.headers.get('X-Source-Active-Width') || '0', 10) || 0,
+                height: parseInt(res.headers.get('X-Source-Active-Height') || '0', 10) || 0,
+                valid: true
+            } : null
+        };
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
-        loadImageFromUrl(url, '设备画面已加载', () => URL.revokeObjectURL(url));
+        try {
+            await loadImageFromUrl(url, '设备画面已加载', meta);
+        } finally {
+            URL.revokeObjectURL(url);
+        }
     } catch (e) {
         deviceStatus.textContent = '请求失败: ' + e.message;
     } finally {
@@ -153,25 +274,39 @@ autoRefresh.addEventListener('change', () => {
 function handleFile(file) {
     if (!file.type.startsWith('image/')) { alert('请选择图片文件！'); return; }
     const reader = new FileReader();
-    reader.onload = (e) => loadImageFromUrl(e.target.result, '本地图片已加载');
+    reader.onload = async (e) => {
+        try {
+            await loadImageFromUrl(e.target.result, '本地图片已加载');
+        } catch (_) {}
+    };
     reader.readAsDataURL(file);
 }
 
-function loadImageFromUrl(url, statusText, onDone) {
-    const img = new Image();
-    img.onload = () => {
-        currentImage = img;
-        drawImage();
-        canvasWrapper.style.display = 'block';
-        infoPanel.style.display = 'block';
-        showCoordBtn.disabled = false;
-        clearBtn.disabled = false;
-        document.getElementById('imageSize').textContent = img.width + ' × ' + img.height + ' px';
-        deviceStatus.textContent = statusText;
-        if (onDone) onDone();
-    };
-    img.onerror = () => { deviceStatus.textContent = '图片加载失败'; if (onDone) onDone(); };
-    img.src = url;
+function loadImageFromUrl(url, statusText, meta) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+            currentImage = img;
+            currentScreenshotMeta = meta || defaultScreenshotMeta(img.width, img.height);
+            drawImage();
+            canvasWrapper.style.display = 'block';
+            infoPanel.style.display = 'block';
+            setCoordinateActionsEnabled(true);
+            document.getElementById('imageSize').textContent = img.width + ' × ' + img.height + ' px';
+            deviceStatus.textContent = statusText;
+            resolve(img);
+        };
+        img.onerror = () => {
+            deviceStatus.textContent = '图片加载失败';
+            reject(new Error('图片加载失败'));
+        };
+        img.src = url;
+    });
+}
+
+function loadImageFromScreenshotResult(result, statusText) {
+    const format = result && result.format ? result.format : 'jpeg';
+    return loadImageFromUrl('data:image/' + format + ';base64,' + result.data, statusText, result);
 }
 
 function drawImage() {
@@ -190,26 +325,87 @@ canvas.addEventListener('click', (e) => {
     const maxPixelY = canvas.height - 1;
     const pixelX = clamp(Math.round((e.clientX - rect.left) * scaleX), 0, maxPixelX);
     const pixelY = clamp(Math.round((e.clientY - rect.top) * scaleY), 0, maxPixelY);
-    const normalizedX = clamp(Math.round((pixelX / Math.max(maxPixelX, 1)) * 1000), 0, 1000);
-    const normalizedY = clamp(Math.round((pixelY / Math.max(maxPixelY, 1)) * 1000), 0, 1000);
+    const sourcePixel = imagePixelToSourcePixel(pixelX, pixelY);
+    const normalized = sourcePixelToNormalized(sourcePixel.pixelX, sourcePixel.pixelY);
     document.getElementById('clickPixel').textContent = 'X: ' + pixelX + ', Y: ' + pixelY;
-    document.getElementById('normalizedCoord').textContent = 'X: ' + normalizedX + ', Y: ' + normalizedY;
-    coordX.value = normalizedX;
-    coordY.value = normalizedY;
+    document.getElementById('normalizedCoord').textContent = 'X: ' + normalized.x + ', Y: ' + normalized.y;
+    coordX.value = normalized.x;
+    coordY.value = normalized.y;
     showMarker(pixelX, pixelY);
 });
 
-showCoordBtn.addEventListener('click', () => {
+function getNormalizedInputs() {
     const x = parseInt(coordX.value);
     const y = parseInt(coordY.value);
     if (isNaN(x) || isNaN(y) || x < 0 || x > 1000 || y < 0 || y > 1000) {
+        return null;
+    }
+    return { x, y };
+}
+
+function normalizedToPixel(x, y) {
+    const sourcePixel = normalizedToSourcePixel(x, y);
+    return sourcePixelToImagePixel(sourcePixel.pixelX, sourcePixel.pixelY);
+}
+
+function showNormalizedMarker(x, y) {
+    const pixel = normalizedToPixel(x, y);
+    showMarker(pixel.pixelX, pixel.pixelY);
+    document.getElementById('normalizedCoord').textContent = 'X: ' + x + ', Y: ' + y;
+}
+
+showCoordBtn.addEventListener('click', () => {
+    const point = getNormalizedInputs();
+    if (!point) {
         alert('请输入有效的坐标值 (0-1000)！');
         return;
     }
-    const pixelX = clamp(Math.round((x / 1000) * Math.max(canvas.width - 1, 0)), 0, canvas.width - 1);
-    const pixelY = clamp(Math.round((y / 1000) * Math.max(canvas.height - 1, 0)), 0, canvas.height - 1);
-    showMarker(pixelX, pixelY);
-    document.getElementById('normalizedCoord').textContent = 'X: ' + x + ', Y: ' + y;
+    showNormalizedMarker(point.x, point.y);
+});
+
+tapCoordBtn.addEventListener('click', async () => {
+    const point = getNormalizedInputs();
+    if (!point) {
+        alert('请输入有效的坐标值 (0-1000)！');
+        return;
+    }
+    tapInFlight = true;
+    setCoordinateActionsEnabled(true);
+    tapStatus.textContent = '点击执行中...';
+    try {
+        showNormalizedMarker(point.x, point.y);
+        const res = await fetch('/api/coordinate-debug/tap', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                x: point.x,
+                y: point.y,
+                type: tapType.value,
+                crop_black_bars: currentCropBlackBars()
+            })
+        });
+        const bodyText = await res.text();
+        let payload = null;
+        try {
+            payload = JSON.parse(bodyText);
+        } catch (_) {}
+        if (!res.ok) {
+            tapStatus.textContent = payload && payload.error ? '点击失败: ' + payload.error : '点击失败: ' + bodyText;
+            return;
+        }
+        if (!payload || !payload.ok || !payload.screenshot || !payload.screenshot.data) {
+            tapStatus.textContent = '点击失败: 返回结果不完整';
+            return;
+        }
+        await loadImageFromScreenshotResult(payload.screenshot, '点击后画面已刷新');
+        showNormalizedMarker(point.x, point.y);
+        tapStatus.textContent = '已触发' + tapType.options[tapType.selectedIndex].text + '，画面已刷新';
+    } catch (e) {
+        tapStatus.textContent = '点击失败: ' + e.message;
+    } finally {
+        tapInFlight = false;
+        setCoordinateActionsEnabled(!!currentImage);
+    }
 });
 
 clearBtn.addEventListener('click', () => {
@@ -219,6 +415,7 @@ clearBtn.addEventListener('click', () => {
     document.getElementById('markerPixel').textContent = '-';
     coordX.value = '';
     coordY.value = '';
+    tapStatus.textContent = '';
 });
 
 function showMarker(pixelX, pixelY) {

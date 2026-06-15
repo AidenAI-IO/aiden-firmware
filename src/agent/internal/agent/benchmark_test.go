@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -78,7 +79,7 @@ func TestHandleBenchmarkSuites_ListsJSON(t *testing.T) {
 	suites := filepath.Join(root, "suites")
 	os.MkdirAll(filepath.Join(suites, "custom"), 0o755)
 	os.WriteFile(filepath.Join(suites, "perception_v1.json"), []byte(`{"name":"perception_v1","tasks":[]}`), 0o644)
-	os.WriteFile(filepath.Join(suites, "unit_smoke.json"), []byte(`{"kind":"unit","tasks":[]}`), 0o644)
+	os.WriteFile(filepath.Join(suites, "unit_tools.json"), []byte(`{"name":"unit_tools","kind":"unit","tasks":[]}`), 0o644)
 	os.WriteFile(filepath.Join(suites, "custom", "mine.json"), []byte(`{"name":"mine","tasks":[]}`), 0o644)
 	os.WriteFile(filepath.Join(suites, "._noise.json"), []byte("{}"), 0o644)
 
@@ -101,8 +102,11 @@ func TestHandleBenchmarkSuites_ListsJSON(t *testing.T) {
 		if s["name"].(string) == "perception_v1" && s["custom"] != false {
 			t.Errorf("expected perception_v1.custom = false")
 		}
-		if s["name"].(string) == "unit_smoke" && s["kind"] != "unit" {
-			t.Errorf("expected unit_smoke.kind = unit, got %v", s["kind"])
+		if s["name"].(string) == "unit_tools" && s["kind"] != "unit" {
+			t.Errorf("expected unit_tools.kind = unit, got %+v", s)
+		}
+		if s["name"].(string) == "perception_v1" && s["kind"] != "benchmark" {
+			t.Errorf("expected perception_v1.kind = benchmark, got %+v", s)
 		}
 	}
 }
@@ -163,6 +167,85 @@ func TestHandleBenchmarkRuns_Caps20(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &got)
 	if len(got) != 20 {
 		t.Errorf("got %d runs, want 20", len(got))
+	}
+}
+
+func TestHandleBenchmarkRuns_IncludesModelStatusAndProgress(t *testing.T) {
+	root := t.TempDir()
+	runID := "2026-06-11_120000"
+	runDir := filepath.Join(root, "runs", runID)
+	os.MkdirAll(runDir, 0o755)
+	os.WriteFile(filepath.Join(runDir, "manifest.json"), []byte(`{
+		"suite_path":"/userdata/agent/benchmark/suites/memory_v1.json",
+		"agent_model":"google/gemini-3.5-flash",
+		"judge_config":{"provider":"openrouter","model":"anthropic/claude-sonnet-4"},
+		"totals":{"tasks":17,"passed":12,"failed":5}
+	}`), 0o644)
+	os.WriteFile(filepath.Join(root, "state.json"), []byte(`{
+		"status":"running",
+		"run_id":"running-1",
+		"suite":"memory_v1.json",
+		"total":17,
+		"current":1,
+		"completed":0,
+		"current_task":"task-1"
+	}`), 0o644)
+
+	s := &Server{
+		benchmarkDir: root,
+		runtime: &Runtime{config: Config{
+			Model:     ModelConfig{Provider: "openrouter", Model: "google/gemini-3.5-flash"},
+			Benchmark: BenchmarkConfig{JudgeModel: "bytedance-seed/seed-2.0-lite"},
+		}},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/runs", nil)
+	s.handleBenchmarkRuns(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if len(got) < 2 {
+		t.Fatalf("expected running row plus completed run, got %+v", got)
+	}
+	running := got[0]
+	if running["status"] != "running" || running["progress"] != "1/17" || running["model"] != "google/gemini-3.5-flash" {
+		t.Fatalf("unexpected running row: %+v", running)
+	}
+	completed := got[1]
+	if completed["status"] != "done" || completed["progress"] != "17/17" || completed["model"] != "google/gemini-3.5-flash" {
+		t.Fatalf("unexpected completed row: %+v", completed)
+	}
+}
+
+func TestHandleBenchmarkRuns_CompletedRunDoesNotUseJudgeModelAsAgentModel(t *testing.T) {
+	root := t.TempDir()
+	runID := "2026-06-11_120000"
+	runDir := filepath.Join(root, "runs", runID)
+	os.MkdirAll(runDir, 0o755)
+	os.WriteFile(filepath.Join(runDir, "manifest.json"), []byte(`{
+		"suite_path":"/userdata/agent/benchmark/suites/perception_v1.json",
+		"judge_config":{"provider":"openrouter","model":"bytedance-seed/seed-2.0-lite"},
+		"totals":{"tasks":2,"timeout":2}
+	}`), 0o644)
+
+	s := &Server{benchmarkDir: root}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/runs", nil)
+	s.handleBenchmarkRuns(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if len(got) != 1 {
+		t.Fatalf("expected one completed run, got %+v", got)
+	}
+	if got[0]["model"] == "bytedance-seed/seed-2.0-lite" {
+		t.Fatalf("completed run should not display judge model as agent model: %+v", got[0])
 	}
 }
 
@@ -299,11 +382,39 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, marker := range []string{
-		`fetch('/benchmark/suites')`,
-		`fetch('/benchmark/runs')`,
-		`fetch('/benchmark/status')`,
-		`Unit Tests`,
-		`startRunUnit()`,
+		`MOBILEGYM_LOCAL_BASE='http://127.0.0.1:4174'`,
+		`MOBILEGYM_HELPER_BASE='http://127.0.0.1:4175'`,
+		`Start the Mac MobileGym launcher first`,
+		`id="startLauncherBtn"`,
+		`function startMobileGymLauncher()`,
+		`new AbortController()`,
+		`controller.abort()`,
+		`signal:controller.signal`,
+		`fetch(MOBILEGYM_HELPER_BASE+'/start'`,
+		`benchmarkEndpoint('/benchmark/suites')`,
+		`benchmarkEndpoint('/benchmark/run')`,
+		`benchmarkEndpoint('/benchmark/status')`,
+		`benchmarkEndpoint('/benchmark/log')`,
+		`benchmarkEndpoint('/benchmark/runs')`,
+		`benchmarkEndpoint('/benchmark/report/')`,
+		`fetch(benchmarkEndpoint('/benchmark/status'))`,
+		`<th>Status</th><th>Progress</th><th>Model</th>`,
+		`progressText(r)`,
+		`r.model||'—'`,
+		`id="refreshBtn"`,
+		`function refreshBenchmark(){loadSuites();loadRuns();loadStatus();loadLog()}`,
+		`function logPanelError(context,e)`,
+		`function readErrorResponse(r)`,
+		`logPanelError('Start run failed',e)`,
+		`logPanelError('Start unit run failed',e)`,
+		`id="unitSelect"`,
+		`id="runUnitBtn"`,
+		`function startRunUnit()`,
+		`x.kind==='unit'`,
+		`reportCell(r)`,
+		`Not ready`,
+		`payload.suite=mobileGymSuiteName(item,key);`,
+		`payload.board_url=location.origin;`,
 		`/benchmark/record`,
 	} {
 		if !strings.Contains(body, marker) {
@@ -312,6 +423,19 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 	}
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Errorf("ct = %q", ct)
+	}
+	for _, marker := range []string{`id="limitInput"`, `payload.limit=Number(lim);`} {
+		if strings.Contains(body, marker) {
+			t.Errorf("body should not expose %q", marker)
+		}
+	}
+	for _, marker := range []string{`tr.innerHTML='<td>'+r.run_id`, `+'<td>'+reportCell(r)+'</td>'`} {
+		if strings.Contains(body, marker) {
+			t.Errorf("history table should avoid unsafe innerHTML marker %q", marker)
+		}
+	}
+	if strings.Contains(body, `alert(String(e))`) {
+		t.Errorf("run errors should be rendered into the Live Log, not alert-only")
 	}
 }
 
@@ -337,7 +461,7 @@ func TestHandleBenchmarkRun_WritesStateFile(t *testing.T) {
 		}},
 		benchmarkDir:       root,
 		benchmarkStatePath: statePath,
-		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey string) error {
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error {
 			called = true
 			gotJudge = judge
 			gotAPIKey = apiKey
@@ -372,12 +496,14 @@ func TestHandleBenchmarkRun_WritesStateFile(t *testing.T) {
 func TestHandleBenchmarkRun_RejectsMissingJudgeAPIKey(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(root, "state.json")
+	logPath := filepath.Join(root, "benchmark_run.log")
 	called := false
 	s := &Server{
 		runtime:            &Runtime{config: Config{Benchmark: BenchmarkConfig{JudgeModel: "judge/model"}}},
 		benchmarkDir:       root,
+		benchmarkLogPath:   logPath,
 		benchmarkStatePath: statePath,
-		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey string) error {
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error {
 			called = true
 			return nil
 		},
@@ -399,6 +525,122 @@ func TestHandleBenchmarkRun_RejectsMissingJudgeAPIKey(t *testing.T) {
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("read state file: %v", err)
 	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("expected run error to be written to log: %v", err)
+	}
+	if !strings.Contains(string(logData), "benchmark judge api_key is not configured") {
+		t.Fatalf("log missing run error: %s", logData)
+	}
+}
+
+func TestLaunchBenchmarkRunner_PassesStateFileToPythonRunner(t *testing.T) {
+	tmp := t.TempDir()
+	capturePath := filepath.Join(tmp, "captured-script")
+	fakeSh := filepath.Join(tmp, "sh")
+	if err := os.WriteFile(fakeSh, []byte("#!/bin/sh\nprintf '%s' \"$2\" > \"$CAPTURE_SCRIPT\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CAPTURE_SCRIPT", capturePath)
+
+	s := &Server{
+		benchmarkDir:       "/userdata/agent/benchmark",
+		benchmarkStatePath: "/userdata/agent/benchmark/state.json",
+	}
+	if err := s.launchBenchmarkRunner(
+		benchmarkLaunchSpec{Suite: "/userdata/agent/benchmark/suites/memory_v1.json", Kind: "benchmark"},
+		"judge/model",
+		"sk-test",
+		"google/gemini-3.5-flash",
+	); err != nil {
+		t.Fatalf("launchBenchmarkRunner returned error: %v", err)
+	}
+
+	var script string
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(capturePath)
+		if err == nil && len(data) > 0 {
+			script = string(data)
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if script == "" {
+		t.Fatal("fake shell did not capture launch script")
+	}
+	if !strings.Contains(script, "--state-file '/userdata/agent/benchmark/state.json'") {
+		t.Fatalf("launch script should pass --state-file to Python runner, got: %s", script)
+	}
+}
+
+func TestHandleBenchmarkRun_DoesNotWriteRunningStateWhenAidenLaunchFails(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	s := &Server{
+		runtime: &Runtime{config: Config{
+			Benchmark: BenchmarkConfig{APIKey: "sk-judge"},
+		}},
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error {
+			return errors.New("boom")
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run",
+		strings.NewReader(`{"suite":"/tmp/x.json"}`))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	stateData, err := os.ReadFile(statePath)
+	if err == nil && strings.Contains(string(stateData), `"status":"running"`) {
+		t.Fatalf("unexpected running state written: %s", stateData)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read state file: %v", err)
+	}
+}
+
+func TestHandleBenchmarkRun_DoesNotWriteRunningStateWhenMobileGymLaunchFails(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	logPath := filepath.Join(root, "mobilegym_run.log")
+	s := &Server{
+		benchmarkDir:       root,
+		benchmarkLogPath:   logPath,
+		benchmarkStatePath: statePath,
+		benchmarkMobileGymLauncher: func(suite, suiteType string, parallel, limit int) error {
+			return errors.New("boom")
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run",
+		strings.NewReader(`{"suite":"clock","suite_type":"mobilegym_builtin","mode":"mobilegym"}`))
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	stateData, err := os.ReadFile(statePath)
+	if err == nil && strings.Contains(string(stateData), `"status":"running"`) {
+		t.Fatalf("unexpected running state written: %s", stateData)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read state file: %v", err)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("expected mobilegym run error to be written to log: %v", err)
+	}
+	if !strings.Contains(string(logData), "mobilegym launch failed: boom") {
+		t.Fatalf("log missing mobilegym launch error: %s", logData)
+	}
 }
 
 func TestHandleBenchmarkRun_UnitSuite(t *testing.T) {
@@ -411,7 +653,7 @@ func TestHandleBenchmarkRun_UnitSuite(t *testing.T) {
 	s := &Server{
 		benchmarkDir:       root,
 		benchmarkStatePath: statePath,
-		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey string) error {
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error {
 			got = spec
 			return nil
 		},
@@ -436,7 +678,7 @@ func TestHandleBenchmarkRun_UnitSuiteDir(t *testing.T) {
 	s := &Server{
 		benchmarkDir:       root,
 		benchmarkStatePath: statePath,
-		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey string) error {
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error {
 			got = spec
 			return nil
 		},
@@ -523,5 +765,277 @@ func TestHandleBenchmarkDelete_RejectsBuiltin(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "suites", "perception_v1.json")); err != nil {
 		t.Errorf("builtin file should still exist: %v", err)
+	}
+}
+
+func TestHandleBenchmarkSuites_AidenModeOmitsBuiltins(t *testing.T) {
+	root := t.TempDir()
+	suites := filepath.Join(root, "suites")
+	os.MkdirAll(suites, 0o755)
+	os.WriteFile(filepath.Join(suites, "memory_v1.json"),
+		[]byte(`{"name":"memory_v1","tasks":[]}`), 0o644)
+
+	// MobileGym all_tasks.txt should be ignored in aiden mode
+	mgDir := filepath.Join(root, "mobilegym", "suites")
+	os.MkdirAll(mgDir, 0o755)
+	os.WriteFile(filepath.Join(mgDir, "all_tasks.txt"),
+		[]byte("clock.AddAlarm\nclock.CountAlarms\nalipay.CheckBalance\n"), 0o644)
+
+	s := &Server{benchmarkDir: root}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/benchmark/suites?mode=aiden", nil)
+	s.handleBenchmarkSuites(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	for _, item := range got {
+		if item["type"] == "mobilegym_builtin" {
+			t.Fatalf("aiden mode should not include builtins, got %+v", got)
+		}
+	}
+	if len(got) != 1 || got[0]["name"] != "memory_v1" {
+		t.Fatalf("expected only memory_v1, got %+v", got)
+	}
+}
+
+func TestHandleBenchmarkSuites_MobileGymModeIncludesBuiltins(t *testing.T) {
+	root := t.TempDir()
+	suites := filepath.Join(root, "suites")
+	os.MkdirAll(suites, 0o755)
+	os.WriteFile(filepath.Join(suites, "memory_v1.json"),
+		[]byte(`{"name":"memory_v1","tasks":[]}`), 0o644)
+
+	mgDir := filepath.Join(root, "mobilegym", "suites")
+	os.MkdirAll(mgDir, 0o755)
+	os.WriteFile(filepath.Join(mgDir, "all_tasks.txt"),
+		[]byte("clock.AddAlarm\nclock.CountAlarms\nalipay.CheckBalance\n"), 0o644)
+
+	s := &Server{benchmarkDir: root}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/benchmark/suites?mode=mobilegym", nil)
+	s.handleBenchmarkSuites(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+
+	types := map[string]int{}
+	names := map[string]int{}
+	for _, item := range got {
+		types[item["type"].(string)]++
+		count := 0
+		if v, ok := item["task_count"].(float64); ok {
+			count = int(v)
+		}
+		names[item["name"].(string)] = count
+	}
+	if types["aiden"] != 1 {
+		t.Fatalf("expected 1 aiden suite, got %d (%+v)", types["aiden"], got)
+	}
+	if types["mobilegym_builtin"] != 2 {
+		t.Fatalf("expected 2 builtin suites (clock, alipay), got %d (%+v)",
+			types["mobilegym_builtin"], got)
+	}
+	if names["clock"] != 2 || names["alipay"] != 1 {
+		t.Fatalf("task counts wrong: %+v", names)
+	}
+}
+
+func TestHandleBenchmarkRun_AidenModeDefault(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	captured := struct {
+		called bool
+		suite  string
+	}{}
+	s := &Server{
+		runtime:            &Runtime{config: Config{Benchmark: BenchmarkConfig{APIKey: "sk-judge"}}},
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error {
+			captured.called = true
+			captured.suite = spec.Suite
+			return nil
+		},
+	}
+
+	body := `{"suite":"memory_v1.json"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/benchmark/run", strings.NewReader(body))
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !captured.called || captured.suite != "memory_v1.json" {
+		t.Fatalf("expected aiden launcher invoked with memory_v1.json, got %+v", captured)
+	}
+}
+
+func TestHandleBenchmarkRun_MobileGymMode(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	captured := struct {
+		called    bool
+		suite     string
+		suiteType string
+		parallel  int
+		limit     int
+	}{}
+	s := &Server{
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkMobileGymLauncher: func(suite, suiteType string, parallel, limit int) error {
+			captured.called = true
+			captured.suite = suite
+			captured.suiteType = suiteType
+			captured.parallel = parallel
+			captured.limit = limit
+			return nil
+		},
+	}
+
+	body := `{"suite":"memory_v1","suite_type":"aiden","mode":"mobilegym","parallel":4,"limit":10}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/benchmark/run", strings.NewReader(body))
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !captured.called {
+		t.Fatalf("expected mobilegym launcher invoked, got %+v", captured)
+	}
+	if captured.suite != "memory_v1" || captured.suiteType != "aiden" ||
+		captured.parallel != 4 || captured.limit != 10 {
+		t.Fatalf("unexpected mobilegym launch args: %+v", captured)
+	}
+}
+
+func TestHandleBenchmarkRun_MobileGymBuiltin(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	captured := struct {
+		suite     string
+		suiteType string
+	}{}
+	s := &Server{
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkMobileGymLauncher: func(suite, suiteType string, parallel, limit int) error {
+			captured.suite = suite
+			captured.suiteType = suiteType
+			return nil
+		},
+	}
+
+	body := `{"suite":"clock","suite_type":"mobilegym_builtin","mode":"mobilegym","parallel":2}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/benchmark/run", strings.NewReader(body))
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if captured.suite != "clock" || captured.suiteType != "mobilegym_builtin" {
+		t.Fatalf("unexpected mobilegym launch args: %+v", captured)
+	}
+}
+
+func TestHandleBenchmarkLog_MobileGymMode(t *testing.T) {
+	tmp := t.TempDir()
+	logFile := filepath.Join(tmp, "mobilegym_run.log")
+	os.WriteFile(logFile, []byte("hello mobilegym"), 0o644)
+
+	s := &Server{benchmarkLogPath: logFile}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/benchmark/log?mode=mobilegym", nil)
+	s.handleBenchmarkLog(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "hello mobilegym") {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+}
+
+func TestBuildMobileGymLaunchScript_AidenSuite(t *testing.T) {
+	script, err := buildMobileGymLaunchScript("/bench", "memory_v1", "aiden", 4, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(script, "cd '/bench/mobilegym/docker'") {
+		t.Errorf("expected MobileGym docker dir under benchmarkDir, got: %s", script)
+	}
+	if !strings.Contains(script, "--aiden-suite 'memory_v1'") {
+		t.Errorf("expected --aiden-suite flag, got: %s", script)
+	}
+	if !strings.Contains(script, "PARALLEL=4") {
+		t.Errorf("expected PARALLEL=4, got: %s", script)
+	}
+	if !strings.Contains(script, "--limit 10") {
+		t.Errorf("expected --limit 10, got: %s", script)
+	}
+	if !strings.Contains(script, "/tmp/mobilegym_runner.pid") {
+		t.Errorf("expected pid file write, got: %s", script)
+	}
+}
+
+func TestBuildMobileGymLaunchScript_MobileGymBuiltin(t *testing.T) {
+	script, err := buildMobileGymLaunchScript("/bench", "clock", "mobilegym_builtin", 2, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(script, "--suite 'clock'") {
+		t.Errorf("expected --suite flag, got: %s", script)
+	}
+	if strings.Contains(script, "--aiden-suite") {
+		t.Errorf("should not have --aiden-suite for builtin: %s", script)
+	}
+	if strings.Contains(script, "--limit") {
+		t.Errorf("limit=0 should omit --limit flag: %s", script)
+	}
+}
+
+func TestBuildMobileGymLaunchScript_RejectsUnknownSuiteType(t *testing.T) {
+	_, err := buildMobileGymLaunchScript("/bench", "memory_v1", "evil", 1, 0)
+	if err == nil {
+		t.Fatal("expected error for unknown suite_type")
+	}
+	if !strings.Contains(err.Error(), "unknown suite_type") {
+		t.Errorf("expected suite_type error, got: %v", err)
+	}
+}
+
+func TestBuildMobileGymLaunchScript_RejectsBadSuiteName(t *testing.T) {
+	for _, bad := range []string{".", "..", "../etc/passwd", "foo/../bar", "foo//bar", "foo;rm -rf /", "foo bar"} {
+		_, err := buildMobileGymLaunchScript("/bench", bad, "aiden", 1, 0)
+		if err == nil {
+			t.Errorf("expected error for suite name %q", bad)
+		}
+	}
+}
+
+func TestBuildMobileGymLaunchScript_AllowsNestedSuiteName(t *testing.T) {
+	script, err := buildMobileGymLaunchScript("/bench", "perception/perception_v1", "aiden", 1, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(script, "--aiden-suite 'perception/perception_v1'") {
+		t.Errorf("expected nested --aiden-suite flag, got: %s", script)
+	}
+}
+
+func TestBuildMobileGymLaunchScript_QuotesBenchmarkDir(t *testing.T) {
+	script, err := buildMobileGymLaunchScript("/path with spaces", "memory_v1", "aiden", 1, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(script, "'/path with spaces/mobilegym/docker'") {
+		t.Errorf("benchmarkDir should be quoted, got: %s", script)
 	}
 }

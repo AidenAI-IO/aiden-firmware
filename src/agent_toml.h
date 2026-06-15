@@ -44,6 +44,13 @@ struct AudioToml {
     int bit_width = 0;
 };
 
+struct AudioArchiveToml {
+    bool enabled = true;
+    int max_files = 500;
+    int max_size_mb = 100;
+    std::string storage_path = "/userdata/audio";
+};
+
 struct BenchmarkToml {
     std::string judge_model;
     std::string api_key;
@@ -60,6 +67,7 @@ struct HIDToml {
 struct SearchToml {
     std::string provider;
     std::string api_key;
+    bool has_api_key = false;
 };
 
 struct TelemetryToml {
@@ -81,6 +89,7 @@ struct AgentToml {
     TTSToml tts;
     STTToml stt;
     AudioToml audio;
+    AudioArchiveToml audio_archive;
     BenchmarkToml benchmark;
     HIDToml hid;
     SearchToml search;
@@ -105,6 +114,7 @@ struct AgentToml {
 	bool voice_tool_call_speech = true;
 	int voice_max_response_tokens = 400;
 	int max_iterations = -1;
+	bool force_simple_loop = false;
 	int screenshot_keep_n = 3;
 	int screenshot_prune_interval = 25;
 	int screen_stable_timeout_ms = 3500;

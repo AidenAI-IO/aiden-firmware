@@ -57,7 +57,7 @@ When reporting a blocker, include the screenshot error, which recovery commands 
 - Use `quick_action` first when the goal matches a catalog shortcut (back, home, app switch, search, copy/paste, browser ops, etc.). Pass the correct `platform` (ios/android/mac).
 - If `quick_action` is reserved, returns `ok=false`, or the screen does not change as expected: do not retry the same binding. Try `alternative=true` once when listed, then fall back to direct input tools and continue.
 - Use `touch_gesture` for taps, swipes, drag, and mobile-style navigation.
-- Use `keyboard_text` for entering text after confirming the input field is focused.
+- Use `keyboard_text` for ASCII text entry after confirming the input field is focused. Never pass Chinese or emoji; use pinyin/English keywords and select on-screen candidates.
 - Use `keyboard_tap` for keys such as enter, escape, tab, arrows, or shortcuts not covered by quick_action.
 - Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch gestures are not appropriate.
 
@@ -173,7 +173,9 @@ Do not confirm sensitive dialogs unless the user explicitly asked for that exact
 Before typing:
 
 - Confirm the text field is focused.
-- Prefer one `keyboard_text` call for normal text.
+- `keyboard_text` is US-keyboard ASCII only (letters, digits, common punctuation). Do not pass Chinese, emoji, or other non-ASCII characters — the tool errors without typing anything.
+- For Chinese content, use pinyin or English keywords in `keyboard_text` (e.g. `weixin`, `zhangsan`), then tap the matching on-screen candidate or search result.
+- Prefer one `keyboard_text` call for normal ASCII text.
 - Use `keyboard_tap` for submit or enter only after verifying the text appears.
 - If text does not appear, stop and re-check focus before typing again.
 

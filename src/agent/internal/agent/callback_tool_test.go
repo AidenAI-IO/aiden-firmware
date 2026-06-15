@@ -38,3 +38,17 @@ func TestCallbackToolCallDelegates(t *testing.T) {
 		t.Fatalf("inner tool not invoked with expected input: %#v", inner.inputs)
 	}
 }
+
+func TestCallbackToolForwardsStructuredSchema(t *testing.T) {
+	inner := &structuredStubTool{
+		stubTool: stubTool{name: "structured", output: "ok"},
+		schema: objectArgsSchema(map[string]any{
+			"value": stringArgSchema("Value."),
+		}, "value"),
+	}
+	wrapped := &callbackTool{inner: inner}
+	props := wrapped.ArgsSchema()["properties"].(map[string]any)
+	if _, ok := props["value"]; !ok {
+		t.Fatalf("forwarded schema missing value: %#v", props)
+	}
+}

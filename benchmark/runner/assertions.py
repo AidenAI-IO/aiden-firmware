@@ -56,15 +56,20 @@ def evaluate_trace_observations(
 
 
 def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool) -> AssertionOutcome:
+    tools_used = [tc.tool for tc in trace.tool_calls]
     results = HardAssertionResults(
         min_tool_calls=trace.total_tool_calls >= spec.min_tool_calls,
         max_tool_calls=trace.total_tool_calls <= spec.max_tool_calls,
+        required_tools=all(tool in tools_used for tool in spec.required_tools),
+        forbidden_tools=not any(tool in tools_used for tool in spec.forbidden_tools),
         timeout=not timed_out,
         response_exists=bool(trace.final_response) if spec.response_required else True,
     )
     all_passed = (
         results.min_tool_calls
         and results.max_tool_calls
+        and results.required_tools
+        and results.forbidden_tools
         and results.timeout
         and results.response_exists
     )

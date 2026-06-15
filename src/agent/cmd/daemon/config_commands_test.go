@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -61,6 +63,152 @@ func TestConfigCheck_ValidConfig(t *testing.T) {
 	}
 
 	t.Logf("Valid config JSON: %s", string(configJSON))
+}
+
+func TestResolvedWebConfigDTO_MissingFileUsesDefaults(t *testing.T) {
+	dto, err := resolvedWebConfigDTO(filepath.Join(t.TempDir(), "agent.toml"))
+	if err != nil {
+		t.Fatalf("resolvedWebConfigDTO() error = %v", err)
+	}
+	if dto.HID.FrameSocket != agent.DefaultConfig().HID.FrameSocket {
+		t.Fatalf("HID frame_socket = %q, want %q",
+			dto.HID.FrameSocket, agent.DefaultConfig().HID.FrameSocket)
+	}
+	if dto.Agent.Instruction == "" {
+		t.Fatal("instruction is empty")
+	}
+
+	data, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal resolved config: %v", err)
+	}
+	result, err := checkConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("checkConfig(resolved config) decode error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("resolved default config is invalid: %+v", result.Errors)
+	}
+}
+
+func TestResolvedWebConfigDTO_OverlaysCurrentConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+voice_session_enabled = false
+force_simple_loop = true
+
+[model]
+provider = "openai"
+model = "gpt-4o-mini"
+
+[hid]
+pointer_mode = "touchscreen"
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	dto, err := resolvedWebConfigDTO(path)
+	if err != nil {
+		t.Fatalf("resolvedWebConfigDTO() error = %v", err)
+	}
+	if dto.Model.Provider != "openai" || dto.Model.Model != "gpt-4o-mini" {
+		t.Fatalf("model overlay = provider %q model %q", dto.Model.Provider, dto.Model.Model)
+	}
+	if dto.HID.PointerMode != "touchscreen" {
+		t.Fatalf("hid.pointer_mode = %q, want touchscreen", dto.HID.PointerMode)
+	}
+	if dto.Agent.VoiceSessionEnabled {
+		t.Fatal("agent.voice_session_enabled = true, want false from current config")
+	}
+	if !dto.Agent.ForceSimpleLoop {
+		t.Fatal("agent.force_simple_loop = false, want true from current config")
+	}
+	if dto.HID.KeyboardDevice != agent.DefaultConfig().HID.KeyboardDevice {
+		t.Fatalf("hid.keyboard_device = %q, want default %q",
+			dto.HID.KeyboardDevice, agent.DefaultConfig().HID.KeyboardDevice)
+	}
+	if dto.Audio.Socket != agent.DefaultConfig().Audio.Socket {
+		t.Fatalf("audio.socket = %q, want default %q",
+			dto.Audio.Socket, agent.DefaultConfig().Audio.Socket)
+	}
+	if !dto.AudioArchive.Enabled || dto.AudioArchive.StoragePath != agent.DefaultConfig().AudioArchive.StoragePath {
+		t.Fatalf("audio_archive defaults = %+v, want enabled default storage", dto.AudioArchive)
+	}
+}
+
+func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
+	defaults := webConfigDTOFromAgentConfig(agent.Config{})
+	if defaults.Search.Provider != "duckduckgo" {
+		t.Fatalf("search provider = %q, want duckduckgo", defaults.Search.Provider)
+	}
+	if defaults.Audio.Socket == "" || defaults.Audio.SampleRate == 0 ||
+		defaults.Audio.Channels == 0 || defaults.Audio.BitWidth == 0 {
+		t.Fatalf("audio defaults were not populated: %+v", defaults.Audio)
+	}
+	if defaults.AudioArchive.Enabled || defaults.AudioArchive.StoragePath == "" ||
+		defaults.AudioArchive.MaxFiles == 0 || defaults.AudioArchive.MaxSizeMB == 0 {
+		t.Fatalf("audio archive zero config conversion = %+v, want disabled with path and retention defaults", defaults.AudioArchive)
+	}
+	if defaults.HID.FrameSocket == "" || defaults.HID.KeyboardDevice == "" ||
+		defaults.HID.MouseDevice == "" || defaults.HID.PointerMode == "" {
+		t.Fatalf("hid defaults were not populated: %+v", defaults.HID)
+	}
+	if defaults.Agent.InputMode != "text" || defaults.Agent.TriggerMode != "manual" {
+		t.Fatalf("agent mode defaults = input %q trigger %q, want text/manual",
+			defaults.Agent.InputMode, defaults.Agent.TriggerMode)
+	}
+	if defaults.Agent.VoiceFollowupTimeoutMs == 0 ||
+		defaults.Agent.VoiceFirstTurnTimeoutMs == 0 ||
+		defaults.Agent.VoiceMaxResponseTokens == 0 {
+		t.Fatalf("voice defaults were not populated: %+v", defaults.Agent)
+	}
+}
+
+func TestWebConfigDTOFromAgentConfigDoesNotInferAudioArchiveEnabled(t *testing.T) {
+	roundTrip := webConfigDTOFromAgentConfig(agent.Config{AudioArchive: agent.AudioArchiveConfig{Enabled: false}})
+	if roundTrip.AudioArchive.Enabled {
+		t.Fatal("AudioArchive.Enabled = true, want explicit disabled zero-value config to stay disabled")
+	}
+}
+
+func TestWebConfigDTOFromAgentConfig_RedactsSearchAPIKey(t *testing.T) {
+	dto := webConfigDTOFromAgentConfig(agent.Config{
+		Search: agent.SearchConfig{
+			Provider: "brave",
+			APIKey:   "search-test-key",
+		},
+	})
+	if dto.Search.APIKey != "" {
+		t.Fatalf("search api key was exposed in DTO: %q", dto.Search.APIKey)
+	}
+	if !dto.Search.HasAPIKey {
+		t.Fatal("search has_api_key = false, want true for stored API key")
+	}
+}
+
+func TestWebConfigDTOMapsAudioArchive(t *testing.T) {
+	dto := webConfigDTO{
+		AudioArchive: audioArchiveDTO{
+			Enabled:     false,
+			MaxFiles:    42,
+			MaxSizeMB:   17,
+			StoragePath: "/tmp/audio-archive",
+		},
+	}
+	cfg := dto.toAgentConfig()
+	if cfg.AudioArchive.Enabled {
+		t.Fatal("AudioArchive.Enabled = true, want false")
+	}
+	if cfg.AudioArchive.MaxFiles != 42 || cfg.AudioArchive.MaxSizeMB != 17 || cfg.AudioArchive.StoragePath != "/tmp/audio-archive" {
+		t.Fatalf("AudioArchive = %+v, want DTO values", cfg.AudioArchive)
+	}
+
+	roundTrip := webConfigDTOFromAgentConfig(agent.Config{AudioArchive: cfg.AudioArchive})
+	if roundTrip.AudioArchive.Enabled || roundTrip.AudioArchive.MaxFiles != 42 ||
+		roundTrip.AudioArchive.MaxSizeMB != 17 || roundTrip.AudioArchive.StoragePath != "/tmp/audio-archive" {
+		t.Fatalf("round-trip AudioArchive = %+v, want DTO values", roundTrip.AudioArchive)
+	}
 }
 
 func TestConfigCheck_InvalidSearchProvider(t *testing.T) {

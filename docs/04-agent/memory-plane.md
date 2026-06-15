@@ -9,8 +9,8 @@
 - `MemoryManager` 维护 langchaingo 的 conversation window，并把会话事件写入 `/userdata/agent/memory/session/events.jsonl`。
 - `SessionMemoryStore` compresses older events from the active session into chunks, writes `session/summary.md`, and provides `recall_session_chunks` for active-session chunks only.
 - `LongTermMemoryStore` 将 profile、rule、preference、procedure、fact 存为 markdown frontmatter，生成 `long_term/index.yaml` 和 `long_term/profile.md`，并提供 `recall_memory`、`save_memory`、`forget_memory`。
-- `Runtime.Run` reads only the current active `session/summary.md` and `long_term/profile.md` for prompt context. Closed sessions under `session_archive/` are logs and are not prompt or recall context.
-- Agent loop 已拆成 `planner`、`executor`、`verifier`。`planner` 和 `verifier` 能看到历史、工具目录和 world state；`executor` 被刻意限制为只执行 planner 批准的 `next_step`。
+- `Runtime.Run` reads only the current active `session/summary.md` and `long_term/profile.md` for prompt context. Long-term memory retrieval mainly depends on the model calling tools; it is not stable input for every planning pass. Closed sessions under `session_archive/` are logs and are not prompt or recall context.
+- Agent loop 已拆成 `planner`、`executor`、`verifier`，并采用 `default` / `plan` / `execution` 三阶段状态机。简单任务在 `default` 由 planner 直接调工具并结束；复杂任务经 `enter_plan_mode` -> `commit_plan` 进入 `execution`，再由 `executor` / `verifier` 协作。`planner` 和 `verifier` 能看到历史与 world state；`executor` 被刻意限制为只执行 planner 已提交的 `next_step`。
 
 新设计应保留这个分层：自动检索进入 `planner` 和 `verifier`，不要把所有历史经验直接暴露给 `executor`。
 
@@ -37,7 +37,7 @@ MemoryPlane.Retrieve
   └─ task episode retrieval
   │
   ▼
-planner / executor / verifier loop
+phased role loop (default / plan / execution)
   │
   ▼
 TaskEpisodeWriter

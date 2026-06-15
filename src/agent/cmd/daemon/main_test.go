@@ -25,6 +25,7 @@ type fakeAudioDialog struct {
 	prepareTurnInput   func([]int16) (agent.TurnInput, error)
 	runTurn            func(context.Context) (agent.RunResult, error)
 	speak              func(context.Context) error
+	persistedTurns     []persistedVoiceTurn
 	vadErr             error
 	onRead             func(*fakeAudioDialog, *agent.AudioChunkResult)
 	spoken             []string
@@ -35,6 +36,12 @@ type fakeAudioDialog struct {
 	stops              int
 	resets             int
 	recordingActive    bool
+}
+
+type persistedVoiceTurn struct {
+	input     agent.TurnInput
+	result    agent.RunResult
+	utterance []int16
 }
 
 func (d *fakeAudioDialog) StartRecording() error {
@@ -126,6 +133,14 @@ func (d *fakeAudioDialog) RunAgentTurn(ctx context.Context, input agent.TurnInpu
 		return d.runTurn(ctx)
 	}
 	return agent.RunResult{Output: "reply"}, nil
+}
+
+func (d *fakeAudioDialog) PersistVoiceTurn(input agent.TurnInput, result agent.RunResult, utterance []int16) {
+	d.persistedTurns = append(d.persistedTurns, persistedVoiceTurn{
+		input:     input,
+		result:    result,
+		utterance: append([]int16(nil), utterance...),
+	})
 }
 
 func (d *fakeAudioDialog) Speak(ctx context.Context, text string, interrupt <-chan struct{}) error {
@@ -841,6 +856,46 @@ func TestRunVoiceSessionClosesAfterFollowupTimeout(t *testing.T) {
 	}
 }
 
+func TestRunVoiceSessionPersistsCompletedTurn(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	dialog := &fakeAudioDialog{
+		frameSamples: 2,
+		chunkBatches: [][]*agent.AudioChunkResult{
+			{{PCM: pcm16BytesFromSamples(100, 200)}},
+			{},
+		},
+		utterancesToReturn: [][]int16{
+			{100, 200},
+		},
+		repeatEmpty: true,
+		readDelay:   time.Millisecond,
+		prepareTurnInput: func(utterance []int16) (agent.TurnInput, error) {
+			return agent.TurnInput{InputText: "现在几点了？", Transcript: "现在几点了？"}, nil
+		},
+		runTurn: func(ctx context.Context) (agent.RunResult, error) {
+			return agent.RunResult{EpisodeID: "ep_voice", Output: "现在是凌晨 1 点 42 分。"}, nil
+		},
+	}
+
+	exit := runVoiceSession(agent.Config{VoiceFollowupTimeoutMs: 5}, dialog, nil, sigChan, make(chan voiceEvent, 1))
+	if exit {
+		t.Fatal("runVoiceSession returned exit=true")
+	}
+	if len(dialog.persistedTurns) != 1 {
+		t.Fatalf("persisted turns = %d, want 1", len(dialog.persistedTurns))
+	}
+	turn := dialog.persistedTurns[0]
+	if turn.input.Transcript != "现在几点了？" {
+		t.Fatalf("persisted transcript = %q, want voice transcript", turn.input.Transcript)
+	}
+	if turn.result.EpisodeID != "ep_voice" || turn.result.Output != "现在是凌晨 1 点 42 分。" {
+		t.Fatalf("persisted result = %#v, want completed voice result", turn.result)
+	}
+	if len(turn.utterance) != 2 || turn.utterance[0] != 100 || turn.utterance[1] != 200 {
+		t.Fatalf("persisted utterance = %#v, want captured samples", turn.utterance)
+	}
+}
+
 func TestRunVoiceSessionClosesWhenAgentRequestsSleep(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	dialog := &fakeAudioDialog{
@@ -1100,6 +1155,52 @@ func TestRunVoiceSessionWakeupInterruptsThinking(t *testing.T) {
 	}
 	if dialog.starts != 2 {
 		t.Fatalf("dialog starts = %d, want recording restarted for follow-up listen", dialog.starts)
+	}
+}
+
+func TestRunVoiceTurnPersistsCompletedResultReturnedDuringWakeupInterrupt(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	events := make(chan voiceEvent, 1)
+	runStarted := make(chan struct{})
+	ctxCanceled := make(chan struct{})
+	dialog := &fakeAudioDialog{
+		prepareTurnInput: func(utterance []int16) (agent.TurnInput, error) {
+			return agent.TurnInput{InputText: "广州。", Transcript: "广州。"}, nil
+		},
+		runTurn: func(ctx context.Context) (agent.RunResult, error) {
+			close(runStarted)
+			<-ctx.Done()
+			close(ctxCanceled)
+			return agent.RunResult{EpisodeID: "ep_weather", Output: "广州当前天气：小雨。"}, nil
+		},
+	}
+
+	go func() {
+		<-runStarted
+		events <- voiceEventWakeup
+	}()
+
+	result := runVoiceTurn(agent.Config{}, dialog, nil, []int16{100, 200}, sigChan, events)
+	if !result.interrupted || result.exit || result.sleepRequested {
+		t.Fatalf("runVoiceTurn = interrupted:%v exit:%v sleep:%v, want true false false", result.interrupted, result.exit, result.sleepRequested)
+	}
+	select {
+	case <-ctxCanceled:
+	default:
+		t.Fatal("thinking context was not canceled")
+	}
+	if len(dialog.persistedTurns) != 1 {
+		t.Fatalf("persisted turns = %d, want 1", len(dialog.persistedTurns))
+	}
+	turn := dialog.persistedTurns[0]
+	if turn.input.Transcript != "广州。" {
+		t.Fatalf("persisted transcript = %q, want 广州。", turn.input.Transcript)
+	}
+	if turn.result.EpisodeID != "ep_weather" || turn.result.Output != "广州当前天气：小雨。" {
+		t.Fatalf("persisted result = %#v, want completed weather result", turn.result)
+	}
+	if len(turn.utterance) != 2 || turn.utterance[0] != 100 || turn.utterance[1] != 200 {
+		t.Fatalf("persisted utterance = %#v, want captured samples", turn.utterance)
 	}
 }
 

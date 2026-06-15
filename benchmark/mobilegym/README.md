@@ -71,6 +71,20 @@ benchmark/mobilegym/
 
 ## 🎯 测试套件
 
+### 运行 Aiden JSON suite
+
+`run_aiden.py` 现在支持 `--aiden-suite` 直接加载 `benchmark/suites/<name>.json`：
+
+```bash
+docker compose run --rm test --aiden-suite memory_v1 --limit 5
+```
+
+并发执行：
+
+```bash
+PARALLEL=4 ./parallel_run.sh --aiden-suite memory_v1
+```
+
 ### 运行内置 suite
 
 ```bash

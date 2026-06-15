@@ -43,56 +43,107 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 			RolePlanner,
 			cfg,
 			skills,
-			availableTools,
+			plannerToolsForConfig(cfg, availableTools),
 			roleMemory.RenderForRole(RolePlanner),
-			RoleCapabilities{CanModifyPlan: true, CanUseTools: false},
-			[]string{
-				"You own the plan. Create or revise the ordered plan from the user request, prior tool observations, and verifier feedback.",
-				"No other role can change the plan, so include the current next step explicitly.",
-				"Use the executor tool catalog when planning. If a direct executor tool covers the request, plan that tool instead of a UI workaround.",
-				"For launch-only requests to open an app, URL, or dialer screen, make the direct tool success the completion criterion, for example open_app ok=true; do not add a screenshot requirement unless the user asked to inspect or act inside the opened target.",
-				"For semantic platform actions, plan quick_action first when a matching action may exist; semantic actions include back, home, app search, app switcher, notification shade, quick settings, copy, paste, cut, undo, redo, select all, find, send, and browser navigation.",
-				"When planning quick_action, name the concrete action id and platform, for example: quick_action action=spotlight_search platform=android, quick_action action=back platform=android, or quick_action action=copy platform=ios; include a low-level fallback only after quick_action failure/no effect.",
-				"Keep objective and completion_criteria tied to the original user request, not just the current step.",
-				"If the current screenshot clearly identifies the app/page or device platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence; otherwise leave unknown fields empty.",
-				"When planning a platform-specific direct tool such as quick_action, use observed_state.platform from the current screenshot/context and name the concrete action id when possible.",
-				"Plan a request_human_handoff step when the task requires credentials, verification, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Do not guess.",
-				"You must NEVER call tools directly. Your role is planning only. Return planning decisions as JSON, not tool calls.",
-				"Return only JSON: {\"objective\":\"original task in one sentence\",\"completion_criteria\":[\"criterion\"],\"plan\":[\"step\"],\"next_step\":\"step to execute now\",\"reason\":\"brief rationale\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}.",
-			},
+			RoleCapabilities{CanModifyPlan: !cfg.ForceSimpleLoop, CanUseTools: true},
+			plannerRoleRules(cfg),
 		),
 		Executor: buildRoleProfile(
 			RoleExecutor,
 			cfg,
 			skills,
-			availableTools,
+			appendExecutorMetaTools(availableTools),
 			"",
 			RoleCapabilities{CanExecuteStep: true, CanUseTools: true},
 			[]string{
 				"Execute only the current next_step supplied by the planner.",
+				"Use the original user request, completion criteria, committed plan, prior results, and planner-provided evidence to understand context and constraints.",
 				"Do not create, reorder, or revise the plan. Do not decide that the run is complete.",
+				"You may use multiple tool calls within the current step until it is done or blocked.",
+				"When the step is ready for verification, call finish_step with a summary of what was accomplished and key_info for facts, IDs, values, labels, or observations later steps may need.",
+				"When the step is blocked or cannot be completed, call abort_step with the reason.",
+				"Plain-text answers alone do not enter verification; you must call finish_step or abort_step.",
+				"Use prior step results as context for the current next_step, but continue to execute only the current next_step.",
+				"Obey tool restrictions and output-format requirements from the original user request.",
 				"Prefer a direct tool that covers the requested operation before using UI automation tools.",
 				"For semantic platform actions, try quick_action first when a matching action exists; if quick_action returns ok=false/status=reserved/error or the post-action screenshot shows no expected change, then fall back to keyboard_tap, touch_gesture, mouse_click, or other low-level tools.",
 				"Do not retry the same quick_action binding more than once; after one failed primary binding or one listed alternative, switch to a low-level fallback.",
 				"For platform-specific tools such as quick_action, use the platform shown in World State (ios/android/mac) and pass it explicitly in the tool input.",
-				"If the next step requires external state or device action, call exactly one appropriate tool. If no tool is needed, return a concise candidate answer for verifier review.",
 			},
 		),
-		Verifier: buildRoleProfile(
-			RoleVerifier,
-			cfg,
-			skills,
-			availableTools,
-			roleMemory.RenderForRole(RoleVerifier),
-			RoleCapabilities{CanDecideFinish: true},
-			[]string{
-				"You are the only role allowed to decide whether the run can end.",
-				"Check the original user request, completion criteria, executor actions, candidate answers, and observations. Finish only when the answer is supported by the available evidence.",
-				"Do not approve completion from a generic latest executor result alone; every explicit requirement in the original request must be proven. An authoritative direct tool result is sufficient evidence when it exactly covers the request, such as open_app returning ok=true for a launch-only app, URL, or dialer request. Require screenshot evidence for additional visible UI work or when a screenshot contradicts the tool result.",
-				"If the current screenshot clearly identifies the app/page or device platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence; otherwise leave unknown fields empty.",
-				"Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}.",
-			},
-		),
+		Verifier: buildVerifierRoleProfile([]string{
+			"Verify only the current executor step provided in the user message. Do not judge overall task completion unless the user message marks this as the final committed plan step.",
+			"Use executor_outcome, executor_summary, tool observations, screenshots, and step progress to decide whether that step succeeded.",
+			"An authoritative direct tool result is sufficient evidence when it exactly covers the current step, such as open_app returning ok=true for a launch-only app, URL, or dialer request. Require screenshot evidence for additional visible UI work or when a screenshot contradicts the tool result.",
+			"If the current step succeeded and more committed plan steps remain: return can_finish=false and needs_replan=false.",
+			"If the current step succeeded and this is the final committed plan step: return can_finish=true with final_answer for the user.",
+			"If the current step failed, had no effect, or evidence is insufficient: return can_finish=false and needs_replan=true with a brief reason for the planner.",
+			"If the screenshot clearly identifies app/page/platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence; otherwise leave unknown fields empty.",
+			"Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}.",
+		}),
+	}
+}
+
+func plannerToolsForConfig(cfg AgentConfig, tools []langtools.Tool) []langtools.Tool {
+	if cfg.ForceSimpleLoop {
+		return append([]langtools.Tool{}, tools...)
+	}
+	return appendLoopMetaTools(tools)
+}
+
+func plannerRoleRules(cfg AgentConfig) []string {
+	var rules []string
+	if cfg.ForceSimpleLoop {
+		rules = append(rules,
+			"Use simple loop mode for every request: call available tools directly and return a final answer when the request is satisfied.",
+			"Plan mode is disabled by configuration: do not enter, draft, commit, cancel, or mention a delegated multi-step plan.",
+		)
+	} else {
+		rules = append(rules,
+			"Route phase chooses direct_answer, simple, or plan before ordinary execution. In default mode, complete the routed request directly with available tools and return a final answer when satisfied.",
+			"Use plan mode for requests that need explicit planning, checkpoints, information gathering before acting, multiple independent stages, record aggregation, reconciliation, branching, or several required output facts.",
+			"In plan mode, you may use read-only information-gathering tools when context is missing. Do not execute computation, mutation, input, or other task-completion tools directly in plan mode.",
+			"Create or revise a structured delegated plan, then call commit_plan to hand it to the executor or cancel_plan to return to default mode.",
+			"During replanning after executor/verifier feedback, return a final answer only when existing execution evidence already proves the full request complete; otherwise commit a revised plan.",
+			"Committed plan steps should be coarse delegated milestones, not one step for each small calculation or individual tool call. The executor can use multiple tool calls inside one step.",
+			"commit_plan is only available in plan mode. cancel_plan clears draft planning state and returns to default mode.",
+		)
+	}
+	if cfg.ForceSimpleLoop {
+		rules = append(rules,
+			"Prefer direct tools that cover the requested operation before UI workarounds.",
+			"For launch-only requests to open an app, URL, or dialer screen, direct tool success such as open_app ok=true is enough unless the user asked to inspect or act inside the opened target.",
+			"For semantic platform actions, use quick_action first when a matching action may exist; semantic actions include back, home, app search, app switcher, notification shade, quick settings, copy, paste, cut, undo, redo, select all, find, send, and browser navigation.",
+			"When using quick_action, pass the concrete action id and platform, for example: quick_action action=spotlight_search platform=android, quick_action action=back platform=android, or quick_action action=copy platform=ios; use a low-level fallback only after quick_action failure/no effect.",
+			"When using a platform-specific direct tool such as quick_action, use observed_state.platform from the current screenshot/context and name the concrete action id when possible.",
+			"Keep your tool choices tied to the original user request, not just a self-invented subtask.",
+			"If the current screenshot clearly identifies the app/page or device platform, use that observed app, page, platform (ios/android/mac), visible text, and dialogs when choosing tools.",
+			"Use request_human_handoff when the task requires credentials, verification, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Do not guess.",
+		)
+		return rules
+	}
+	rules = append(rules,
+		"Prefer direct tools that cover the requested operation before UI workarounds. If a direct executor tool covers the request, plan or call that tool instead of a UI workaround.",
+		"For launch-only requests to open an app, URL, or dialer screen, make the direct tool success the completion criterion, for example open_app ok=true; do not add a screenshot requirement unless the user asked to inspect or act inside the opened target.",
+		"For semantic platform actions, plan quick_action first when a matching action may exist; semantic actions include back, home, app search, app switcher, notification shade, quick settings, copy, paste, cut, undo, redo, select all, find, send, and browser navigation.",
+		"When planning quick_action, name the concrete action id and platform, for example: quick_action action=spotlight_search platform=android, quick_action action=back platform=android, or quick_action action=copy platform=ios; include a low-level fallback only after quick_action failure/no effect.",
+		"When planning a platform-specific direct tool such as quick_action, use observed_state.platform from the current screenshot/context and name the concrete action id when possible.",
+		"Keep objective and completion_criteria tied to the original user request, not just the current step.",
+		"If the current screenshot clearly identifies the app/page or device platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence when relevant.",
+		"Plan a request_human_handoff step when the task requires credentials, verification, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Do not guess.",
+	)
+	return rules
+}
+
+func buildVerifierRoleProfile(roleRules []string) RoleProfile {
+	parts := []string{"## Role rules"}
+	for _, rule := range roleRules {
+		parts = append(parts, "- "+rule)
+	}
+	return RoleProfile{
+		Name:         RoleVerifier,
+		SystemPrompt: strings.Join(parts, "\n"),
+		Capabilities: RoleCapabilities{CanDecideFinish: true},
 	}
 }
 
@@ -107,40 +158,29 @@ func buildRoleProfile(
 ) RoleProfile {
 	parts := []string{
 		fmt.Sprintf("You are the %s role in a multi-role Aiden agent loop.", name),
-		"Base instruction:",
+		"",
+		"## Base instruction",
 		combinedAgentInstruction(cfg),
 		"",
-		"Default behavior:",
+		"## Default behavior",
 		defaultAgentBehavior(),
 		"",
-		"Available skills:",
+		"## Available skills",
 		skills.CatalogSummary(),
 		"",
-		"Active skills:",
+		"## Active skills",
 		skills.CombinedInstructions(),
 	}
 	if text := strings.TrimSpace(cfg.RuntimeContext); text != "" {
 		parts = append(parts,
 			"",
-			"Runtime context:",
+			"## Runtime context",
 			text,
 		)
 	}
-	parts = append(parts, "", "Role rules:")
+	parts = append(parts, "", "## Role rules")
 	for _, rule := range roleRules {
 		parts = append(parts, "- "+rule)
-	}
-	parts = append(parts, "", "Available tools:")
-	if capabilities.CanUseTools {
-		parts = append(parts, describeTools(tools))
-	} else {
-		parts = append(parts, "- This role must not call tools directly.")
-		if len(tools) > 0 {
-			parts = append(parts, "- Executor tool catalog for planning/review only:")
-			parts = append(parts, describeTools(tools))
-		} else {
-			parts = append(parts, "- none")
-		}
 	}
 	if text := strings.TrimSpace(memoryContext); text != "" {
 		parts = append(parts, "", text)

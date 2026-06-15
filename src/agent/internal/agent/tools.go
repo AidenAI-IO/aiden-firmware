@@ -87,7 +87,6 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	if toolOptions.sleepController != nil {
 		tools["enter_sleep"] = NewEnterSleepTool(toolOptions.sleepController)
 	}
-
 	// Always register human handoff tool - no callback needed for non-blocking version
 	tools["request_human_handoff"] = NewHumanHandoffTool()
 

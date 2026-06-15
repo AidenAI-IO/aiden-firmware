@@ -87,6 +87,56 @@ void write_file(const std::string& path, const std::string& content) {
     out << content;
 }
 
+std::string replace_all(std::string text, const std::string& needle, const std::string& replacement) {
+    size_t pos = 0;
+    while ((pos = text.find(needle, pos)) != std::string::npos) {
+        text.replace(pos, needle.size(), replacement);
+        pos += replacement.size();
+    }
+    return text;
+}
+
+std::string resolved_config_json(const std::string& search_provider, bool search_has_api_key) {
+    return std::string(
+        "{"
+        "\"model\":{\"provider\":\"openrouter\",\"api_key\":\"\",\"model\":\"bytedance-seed/seed-2.0-lite\","
+        "\"base_url\":\"\",\"token_env\":\"\",\"temperature\":0.2,\"max_response_tokens\":1000,"
+        "\"context_window\":0,\"model_max_output_tokens\":0},"
+        "\"model_text\":{\"provider\":\"\",\"api_key\":\"\",\"model\":\"\",\"base_url\":\"\",\"token_env\":\"\","
+        "\"temperature\":0,\"max_response_tokens\":0,\"context_window\":0,\"model_max_output_tokens\":0},"
+        "\"tts\":{\"provider\":\"minimax-ws\",\"api_key\":\"\",\"model\":\"\",\"voice_id\":\"male-qn-qingse\","
+        "\"emotion\":\"happy\",\"speed\":1},"
+        "\"stt\":{\"provider\":\"openai-whisper\",\"api_key\":\"\",\"model\":\"whisper-1\",\"base_url\":\"\","
+        "\"secret_id\":\"\",\"secret_key\":\"\",\"region\":\"\",\"engine_model_type\":\"\"},"
+        "\"audio\":{\"socket\":\"/run/audio_service/audio_service.sock\",\"sample_rate\":16000,"
+        "\"channels\":1,\"bit_width\":16},"
+        "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
+        "\"storage_path\":\"/userdata/audio\"},"
+        "\"benchmark\":{\"judge_model\":\"bytedance-seed/seed-2.0-lite\",\"api_key\":\"\","
+        "\"benchmark_dir\":\"\"},"
+        "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
+        "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"") + search_provider + "\",\"has_api_key\":" +
+        (search_has_api_key ? "true" : "false") +
+        "},"
+        "\"telemetry\":{\"enabled\":false,\"provider\":\"langfuse\",\"base_url\":\"\","
+        "\"public_key\":\"\",\"secret_key\":\"\",\"upload_screenshots\":true,"
+        "\"upload_timeout_sec\":30,\"max_retry\":2,\"tags\":[],\"environment\":\"default\"},"
+        "\"agent\":{\"instruction\":\"stub default instruction\",\"additional_prompt\":\"\","
+        "\"input_mode\":\"text\",\"trigger_mode\":\"manual\",\"vad_backend\":\"rknn\","
+        "\"vad_model_path\":\"/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn\","
+        "\"vad_helper_path\":\"/oem/usr/bin/rknn_vad\",\"vad_speech_threshold\":0.5,"
+        "\"silence_ms\":650,\"min_speech_ms\":300,\"voice_session_enabled\":true,"
+        "\"voice_followup_timeout_ms\":6000,\"voice_first_turn_timeout_ms\":10000,"
+        "\"voice_max_turns\":0,\"voice_interrupt_on_wakeup\":true,"
+        "\"voice_streaming_tts_enabled\":true,\"voice_tool_call_speech\":true,"
+        "\"voice_max_response_tokens\":400,\"max_iterations\":-1,\"force_simple_loop\":false,"
+        "\"screenshot_keep_n\":3,"
+        "\"screenshot_prune_interval\":25,\"screen_stable_timeout_ms\":3500,"
+        "\"screen_stable_ms\":500,\"screen_stable_diff_threshold\":2}"
+        "}\n";
+}
+
 bool wait_for_file_contains(const std::string& path, const std::string& needle, int timeout_ms) {
     using clock = std::chrono::steady_clock;
     auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
@@ -319,6 +369,202 @@ TEST_CASE("config_web: GET /api/config/meta returns 200 + parseable JSON when st
     cJSON_Delete(parsed);
 }
 
+TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
+    StubEnv env;
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* hid = cJSON_GetObjectItem(config, "hid");
+    REQUIRE(hid != nullptr);
+    cJSON* frame_socket = cJSON_GetObjectItem(hid, "frame_socket");
+    REQUIRE(frame_socket != nullptr);
+    REQUIRE(frame_socket->valuestring != nullptr);
+    CHECK(std::string(frame_socket->valuestring) == "/run/frame_service/frame_service.sock");
+
+    cJSON* model = cJSON_GetObjectItem(config, "model");
+    REQUIRE(model != nullptr);
+    cJSON* provider = cJSON_GetObjectItem(model, "provider");
+    REQUIRE(provider != nullptr);
+    REQUIRE(provider->valuestring != nullptr);
+    CHECK(std::string(provider->valuestring) == "openrouter");
+
+    cJSON* audio_archive = cJSON_GetObjectItem(config, "audio_archive");
+    REQUIRE(audio_archive != nullptr);
+    cJSON* enabled = cJSON_GetObjectItem(audio_archive, "enabled");
+    REQUIRE(enabled != nullptr);
+    CHECK((enabled->type & 0xff) == cJSON_True);
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: POST /api/config writes audio_archive section") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"audio_archive\":{\"enabled\":false,\"max_files\":123,\"max_size_mb\":45,"
+        "\"storage_path\":\"/userdata/custom-audio\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+
+    std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
+    REQUIRE(saved_in.good());
+    std::ostringstream saved_buffer;
+    saved_buffer << saved_in.rdbuf();
+    const std::string saved = saved_buffer.str();
+    CHECK(saved.find("[audio_archive]") != std::string::npos);
+    CHECK(saved.find("enabled = false") != std::string::npos);
+    CHECK(saved.find("max_files = 123") != std::string::npos);
+    CHECK(saved.find("max_size_mb = 45") != std::string::npos);
+    CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config accepts empty audio_archive storage_path") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"audio_archive\":{\"enabled\":true,\"max_files\":123,\"max_size_mb\":45,"
+        "\"storage_path\":\"\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+}
+
+TEST_CASE("config_web: GET /api/config tolerates resolved config without force_simple_loop") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string legacy_config = replace_all(
+        resolved_config_json("duckduckgo", false),
+        "\"force_simple_loop\":false,",
+        ""
+    );
+    write_file(tmp + "/config.json", legacy_config);
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(resp.status == 200);
+    CHECK(resp.body.find("agent config missing required fields") == std::string::npos);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* agent = cJSON_GetObjectItem(config, "agent");
+    REQUIRE(agent != nullptr);
+    cJSON* force_simple_loop = cJSON_GetObjectItem(agent, "force_simple_loop");
+    REQUIRE(force_simple_loop != nullptr);
+    CHECK((force_simple_loop->type & 0xff) == cJSON_False);
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: GET /api/config preserves search api key presence from resolved config") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/config.json", resolved_config_json("brave", true));
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* search = cJSON_GetObjectItem(config, "search");
+    REQUIRE(search != nullptr);
+    cJSON* provider = cJSON_GetObjectItem(search, "provider");
+    REQUIRE(provider != nullptr);
+    REQUIRE(provider->valuestring != nullptr);
+    CHECK(std::string(provider->valuestring) == "brave");
+    cJSON* has_api_key = cJSON_GetObjectItem(search, "has_api_key");
+    REQUIRE(has_api_key != nullptr);
+    CHECK((has_api_key->type & 0xff) == cJSON_True);
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: POST /api/config preserves stored search api key when GET redacts it") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/config.json", resolved_config_json("brave", true));
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+        "[search]\n"
+        "provider = \"brave\"\n"
+        "api_key = \"search-test-key\"\n");
+
+    HttpResponse get_resp = http_request(handle->port, "GET", "/api/config");
+    REQUIRE(get_resp.status == 200);
+    cJSON* parsed = cJSON_Parse(get_resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    char* config_text = cJSON_PrintUnformatted(config);
+    REQUIRE(config_text != nullptr);
+    std::string post_body = std::string("{\"config\":") + config_text + ",\"apply_wifi\":false}";
+    free(config_text);
+    cJSON_Delete(parsed);
+
+    HttpResponse post_resp = http_request(handle->port, "POST", "/api/config", post_body);
+    CHECK(post_resp.status == 200);
+    std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
+    REQUIRE(saved_in.good());
+    std::ostringstream saved_buffer;
+    saved_buffer << saved_in.rdbuf();
+    const std::string saved = saved_buffer.str();
+    CHECK(saved.find("api_key = \"search-test-key\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: GET /api/config reports invalid resolved config schema") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string invalid_config = replace_all(
+        resolved_config_json("duckduckgo", false),
+        "\"provider\":\"openrouter\",",
+        ""
+    );
+    write_file(tmp + "/config.json", invalid_config);
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(resp.status == 200);
+    CHECK(resp.body.find("model.provider") != std::string::npos);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config_error = cJSON_GetObjectItem(parsed, "config_error");
+    REQUIRE(config_error != nullptr);
+    REQUIRE(config_error->valuestring != nullptr);
+    CHECK(std::string(config_error->valuestring).find("model.provider") != std::string::npos);
+    cJSON_Delete(parsed);
+}
+
 TEST_CASE("config_web: GET /api/config/meta returns 503 when stub returns invalid JSON") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
@@ -466,4 +712,3 @@ TEST_CASE("config_web: failed manual OTA update releases launch lock even if a d
     CHECK(accepted);
     CHECK(retry.body.find("ota update already running") == std::string::npos);
 }
-

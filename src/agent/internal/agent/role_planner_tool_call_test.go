@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
@@ -63,6 +64,30 @@ func TestParsePlannerDecisionHandlesLegacyFuncCall(t *testing.T) {
 	}
 }
 
+func TestRoleResponseDebugTextDoesNotDuplicateStructuredToolCall(t *testing.T) {
+	response := &llms.ContentResponse{
+		Choices: []*llms.ContentChoice{
+			{
+				Content: `tool_call: current_time input={"timezone":"local"}`,
+				ToolCalls: []llms.ToolCall{
+					{
+						FunctionCall: &llms.FunctionCall{
+							Name:      "current_time",
+							Arguments: `{"timezone":"local"}`,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	debug := roleResponseDebugText(response)
+
+	if count := strings.Count(debug, "tool_call: current_time"); count != 1 {
+		t.Fatalf("tool call debug count = %d, want 1; debug=%q", count, debug)
+	}
+}
+
 // TestParsePlannerDecisionFallsBackOnEmptyResponse tests fallback behavior
 func TestParsePlannerDecisionFallsBackOnEmptyResponse(t *testing.T) {
 	response := &llms.ContentResponse{
@@ -106,6 +131,17 @@ func TestParseVerifierDecisionRejectsAnswerlessJSONFinish(t *testing.T) {
 	}
 }
 
+func TestParseVerifierDecisionReplanOverridesFinish(t *testing.T) {
+	decision := parseVerifierDecision(`{"can_finish":true,"needs_replan":true,"final_answer":"not done","reason":"step incomplete"}`, "")
+
+	if decision.CanFinish {
+		t.Fatalf("needs_replan should override can_finish: %#v", decision)
+	}
+	if !decision.NeedsReplan {
+		t.Fatalf("needs_replan should remain true: %#v", decision)
+	}
+}
+
 func TestParseVerifierDecisionAcceptsExplicitTextFinalAnswer(t *testing.T) {
 	decision := parseVerifierDecision("Final Answer: done", "")
 
@@ -114,5 +150,61 @@ func TestParseVerifierDecisionAcceptsExplicitTextFinalAnswer(t *testing.T) {
 	}
 	if decision.FinalAnswer != "done" {
 		t.Fatalf("final answer = %q, want done", decision.FinalAnswer)
+	}
+}
+
+func TestParseRouteDecisionTreatsBareSimpleIntentAsSimple(t *testing.T) {
+	decision := parseRouteDecision(contentResponse("use_simple_mode\n<reason>no tools needed</reason>"), "Select option (b).")
+
+	if decision.Mode != routeModeSimple {
+		t.Fatalf("route mode = %q, want simple", decision.Mode)
+	}
+	if decision.FinalAnswer != "" {
+		t.Fatalf("bare simple intent should not become final answer: %#v", decision)
+	}
+}
+
+func TestParseRouteDecisionTreatsOrdinaryPlanAndSimpleTextAsDirectAnswer(t *testing.T) {
+	for _, text := range []string{
+		"I will provide a plan in the final answer.",
+		"Let's keep this simple and answer directly.",
+		"Here is a simple approach: choose option B.",
+	} {
+		decision := parseRouteDecision(contentResponse(text), "Select option (b).")
+		if decision.Mode != routeModeDirectAnswer {
+			t.Fatalf("route mode for %q = %q, want direct_answer", text, decision.Mode)
+		}
+		if decision.FinalAnswer != text {
+			t.Fatalf("final answer for %q = %q", text, decision.FinalAnswer)
+		}
+	}
+}
+
+func TestParseRouteDecisionTreatsExplicitTextModeCommandsAsIntent(t *testing.T) {
+	cases := []struct {
+		text string
+		want routeMode
+	}{
+		{text: "switch to plan mode", want: routeModePlan},
+		{text: "enter_plan_mode because this needs checkpoints", want: routeModePlan},
+		{text: "use simple mode", want: routeModeSimple},
+		{text: "use_simple_mode\n<reason>short task</reason>", want: routeModeSimple},
+	}
+	for _, tc := range cases {
+		decision := parseRouteDecision(contentResponse(tc.text), "request")
+		if decision.Mode != tc.want {
+			t.Fatalf("route mode for %q = %q, want %q", tc.text, decision.Mode, tc.want)
+		}
+	}
+}
+
+func TestParseRouteDecisionForcesPlanForMultiStageRequest(t *testing.T) {
+	decision := parseRouteDecision(
+		contentResponse(`{"mode":"simple","reason":"model underestimated task"}`),
+		"Stage 1: compute A.\nStage 2: compute B.\nStage 3: reconcile invoice total.",
+	)
+
+	if decision.Mode != routeModePlan {
+		t.Fatalf("route mode = %q, want plan", decision.Mode)
 	}
 }

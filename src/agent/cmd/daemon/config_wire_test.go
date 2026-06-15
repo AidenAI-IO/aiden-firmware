@@ -132,6 +132,18 @@ func TestConfigCheck_WireSearchHasAPIKey(t *testing.T) {
 	}
 }
 
+func TestConfigCheck_WireForceSimpleLoopMapsToAgentConfig(t *testing.T) {
+	dto := webConfigDTO{
+		Model:  modelDTO{Provider: "openai", Model: "gpt-4"},
+		Search: searchDTO{Provider: "duckduckgo"},
+		Agent:  agentDTO{ForceSimpleLoop: true},
+	}
+	cfg := dto.toAgentConfig()
+	if !cfg.ForceSimpleLoop {
+		t.Fatal("force_simple_loop was not mapped onto agent.Config")
+	}
+}
+
 // TestConfigCheck_WireTelemetryNested verifies telemetry validation runs
 // against the nested "telemetry" wire object.
 func TestConfigCheck_WireTelemetryNested(t *testing.T) {

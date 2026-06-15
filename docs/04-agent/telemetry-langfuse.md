@@ -37,7 +37,7 @@ tags = ["aiden-hardware"]
 
 ```text
 Runtime.Run()
-  → Planner / Executor / Verifier 循环
+  → Phased role loop（default / plan / execution）
   → EpisodeRecorder 记录事件
   → CommitEpisode 落盘 (episode.yaml + events.jsonl + artifacts/)
   → exportEpisodeBestEffort 异步上报 Langfuse
@@ -48,12 +48,67 @@ Runtime.Run()
 | Aiden Episode | Langfuse |
 | --- | --- |
 | `TaskEpisode` | Trace (`aiden-episode`) |
-| `planner_decision` | Span `planner`（嵌套在 `iteration_N` 下） |
-| `tool_call` / `tool_result` | Span `tool/{name}` + 子 Span `tool_result/{name}`，并记录工具耗时 |
-| `verifier_decision` | Span `verifier` |
+| 运行起点 | Span `phase/default`（所有 run 默认创建，覆盖 default 阶段活动） |
+| `loop_phase` | Span `phase/{content}`（`default` / `plan` / `execution`），metadata 含 `reason`（如 `enter_plan_mode`、`commit_plan`） |
+| `default_finish` | Span `planner/default_finish`（挂在当前 phase span 下） |
+| `planner_decision` | Span `iteration_N` + 子 Span `planner`（`commit_plan` 提交的计划） |
+| `tool_call` / `tool_result` | Planner 工具：`planner/tool/{name}` + `planner/tool_result/{name}`；Executor 工具：`tool/{name}` + `tool_result/{name}` |
+| `verifier_decision` | Span `verifier`（挂在 `iteration_N` 下，仅 execution 阶段） |
 | `Outcome.Success` | Boolean Score `success=1/0` |
 | `artifacts/*.jpeg` | Media upload + observation 引用 |
 | `Extra` metrics | Trace metadata + generation model/cost/usage fields |
+
+典型 trace 结构：
+
+```text
+aiden-episode (trace)
+├── phase/default
+│   ├── planner/tool/audio_volume
+│   │   └── planner/tool_result/audio_volume
+│   └── planner/default_finish
+└── phase/plan
+    └── loop_phase/enter_plan_mode (via phase/plan span metadata)
+
+aiden-episode (committed execution)
+├── phase/default
+├── phase/plan
+├── phase/execution
+├── iteration_1
+│   ├── planner
+│   ├── tool/mouse_click
+│   │   └── tool_result/mouse_click
+│   └── verifier
+└── generation (planner/executor/verifier LLM calls)
+```
+
+### Trace metadata 与 tags
+
+除 `episode.Extra` 中的 token、耗时、模型信息外，exporter 会从事件链派生 loop 指标并写入 trace `metadata`：
+
+| 字段 | 说明 |
+| --- | --- |
+| `loop_mode` | `default`（直结束）或 `committed`（经过 `commit_plan`） |
+| `final_phase` | 结束时所处阶段 |
+| `phase_transitions` | 阶段切换序列，如 `["plan:enter_plan_mode","execution:commit_plan"]` |
+| `loop_phase_count` | 阶段切换次数 |
+| `enter_plan_mode_count` / `commit_plan_count` / `cancel_plan_count` / `plan_exhausted_count` | 各 meta tool 触发次数 |
+| `default_finish` | 是否 default 直结束 |
+| `planner_tool_call_count` / `executor_tool_call_count` | 按 role 拆分的工具调用数 |
+| `replan_count` | verifier 触发 replan 次数 |
+
+Trace `tags` 额外附加：
+
+| Tag | 条件 |
+| --- | --- |
+| `loop:default_finish` | 存在 `default_finish` 事件 |
+| `loop:committed` | 存在 `planner_decision`（commit） |
+| `loop:plan` | 进入 plan 模式 |
+| `loop:execution` | commit 后进入 execution |
+| `loop:cancelled` | cancel_plan |
+| `loop:exhausted` | plan 步耗尽 |
+| `loop:replan` | verifier `needs_replan` |
+
+在 Langfuse UI 中可按 `loop:default_finish` 与 `loop:committed` 快速筛选简单任务与多步委托任务。
 
 本地 episode 仍写入 `/userdata/agent/memory/episodes/`，Langfuse 为额外副本，用于集中分析和数据集管理。
 
@@ -79,9 +134,12 @@ docker compose up -d
 3. 执行一次任务（Web UI 或 benchmark）
 4. 在 Langfuse UI → Traces 中确认：
    - 存在 `aiden-episode` trace
-   - 含 planner / tool / verifier spans
+   - 含 `phase/default`（以及按需出现的 `phase/plan`、`phase/execution`）
+   - 简单任务可见 `planner/tool/*` 与 `planner/default_finish`
+   - 委托任务可见 `iteration_N` + `tool/*` + `verifier`
    - 截图可在 tool_result observation 中预览
-   - metadata 含 `total_duration_ms`、`first_token_time_ms`、token 统计、tool/error/replan 计数
+   - metadata 含 `loop_mode`、`phase_transitions`、`planner_tool_call_count`、`executor_tool_call_count`、token 统计、tool/error/replan 计数
+   - tags 含 `loop:default_finish` 或 `loop:committed`
    - trace 含 `userId`（设备 ID）和 `sessionId`（runtime 会话 ID）
 
 ## Trace → Dataset → Benchmark 工作流

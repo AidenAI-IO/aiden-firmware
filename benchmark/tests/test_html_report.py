@@ -82,3 +82,41 @@ def test_generate_report_marks_timeout_as_fail_and_escapes_drawer_chips(tmp_path
     assert "'<span class=\"chip\">' + esc(t.status)" in html
     assert "esc(String(t.tool_calls_count))" in html
     assert "esc(String(t.wall_ms))" in html
+
+
+def test_generate_report_includes_tool_hard_assertion_failures(tmp_path: Path):
+    run_dir = tmp_path / "2026-05-28_091421"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "2026-05-28_091421",
+                "suite_path": "suite.json",
+                "totals": {"tasks": 1, "passed": 0, "failed": 1, "skipped": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "task_id": "task-1",
+                "category": "multi_step",
+                "status": "failed",
+                "rubric_pass_count": 0,
+                "rubric_total": 1,
+                "hard_assertions": {
+                    "required_tools": False,
+                    "forbidden_tools": False,
+                },
+                "metrics": {"tool_calls": 2, "wall_ms": 9},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    html = generate_report_html(run_dir)
+
+    assert "Required Tools" in html
+    assert "Forbidden Tools" in html

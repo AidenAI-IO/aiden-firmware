@@ -1,7 +1,8 @@
 # Agent instruction and behavior
-instruction = "回答要简洁、自然、有帮助。默认用简体中文回答；用户明确使用其他语言时跟随用户语言。Aiden 通常用于控制连接的手机或移动 UI，但必须根据截图、工具结果和用户输入推断当前可见目标，不要假设。"
+instruction = ""
 additional_prompt = ""
 max_iterations = -1
+force_simple_loop = false
 
 # Screenshot context pruning:
 # keep the latest N screenshots and batch-prune older screenshots every interval
@@ -63,6 +64,15 @@ socket = "/run/audio_service/audio_service.sock"
 sample_rate = 16000
 channels = 1
 bit_width = 16
+
+# Audio archive configuration (optional)
+# When enabled, saves audio recordings to disk for playback in web UI.
+# Default: enabled.
+[audio_archive]
+enabled = true               # Set false to stop archiving audio files
+max_files = 500             # Keep most recent N audio files
+max_size_mb = 100           # Or stop when total size exceeds this (MB)
+storage_path = "/userdata/audio"  # Where to store audio files
 
 # Speech-to-Text (STT) configuration
 # Required when input_mode = "stt"

@@ -1,0 +1,703 @@
+package agent
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/tmc/langchaingo/llms"
+	"github.com/tmc/langchaingo/schema"
+	langtools "github.com/tmc/langchaingo/tools"
+)
+
+func TestDefaultModeFinishesWithoutVerifier(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("done")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("output = %q", result.Output)
+	}
+	if model.callCount != 1 {
+		t.Fatalf("model call count = %d, want 1", model.callCount)
+	}
+}
+
+func TestEnterPlanModePreservesToolSteps(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{
+		Phase: phaseDefault,
+		ToolSteps: []schema.AgentStep{{
+			Action:      schema.AgentAction{Tool: "echo"},
+			Observation: "ok",
+		}},
+	}
+	turn := executor.handlePlannerMetaTool(phaseDefault, state, schema.AgentAction{
+		Tool:      toolEnterPlanMode,
+		ToolInput: `{"reason":"complex"}`,
+	})
+	if turn.Kind != plannerTurnEnterPlan {
+		t.Fatalf("turn kind = %v", turn.Kind)
+	}
+	if state.Phase != phasePlan {
+		t.Fatalf("phase = %q", state.Phase)
+	}
+	if !state.PlanCommitRequired {
+		t.Fatal("entering plan mode should require commit_plan before execution")
+	}
+	if len(state.ToolSteps) != 1 {
+		t.Fatalf("tool steps = %d, want 1", len(state.ToolSteps))
+	}
+}
+
+func TestCommitPlanOnlyInPlanMode(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phaseDefault}
+	turn := executor.handlePlannerMetaTool(phaseDefault, state, schema.AgentAction{
+		Tool:      toolCommitPlan,
+		ToolInput: `{"objective":"x","plan":["step"],"reason":"ready"}`,
+	})
+	if turn.Kind != plannerTurnInvalidMeta {
+		t.Fatalf("turn kind = %v", turn.Kind)
+	}
+	if !strings.Contains(turn.InvalidMetaStep.Observation, "only available in plan mode") {
+		t.Fatalf("observation = %q", turn.InvalidMetaStep.Observation)
+	}
+}
+
+func TestDecisionPhaseEntersPlanModeBeforeDomainTools(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		contentResponse(`{"mode":"plan","reason":"three subtasks","confidence":0.91}`),
+	}}
+	tool := &stubTool{name: "echo", description: "Echo.", output: "ok"}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{},
+		[]langtools.Tool{tool},
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phaseDecision}
+	toolSpecs := NewToolSpecs([]langtools.Tool{tool})
+	inputs := map[string]string{"input": "multi-step task", "history": ""}
+
+	turn, err := executor.callPlannerTurn(context.Background(), inputs, state, toolSpecs)
+	if err != nil {
+		t.Fatalf("planner turn error: %v", err)
+	}
+	if turn.Kind != plannerTurnEnterPlan {
+		t.Fatalf("turn kind = %v, want enter plan", turn.Kind)
+	}
+	if state.Phase != phasePlan {
+		t.Fatalf("phase = %q, want plan", state.Phase)
+	}
+	if !state.PlanCommitRequired {
+		t.Fatal("plan commit should be required after entering plan mode")
+	}
+	if len(tool.inputs) != 0 {
+		t.Fatalf("tool executions = %d, want 0", len(tool.inputs))
+	}
+	if turn.Step == nil || turn.Step.Action.Tool != toolEnterPlanMode {
+		t.Fatalf("observation = %#v", turn.Step)
+	}
+	if len(model.tools) != 1 || len(model.tools[0]) != 0 {
+		t.Fatalf("route phase should not expose tools: %#v", model.tools)
+	}
+}
+
+func TestDecisionPhaseUseSimpleModeSwitchesToDefaultWithoutToolStep(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		contentResponse(`{"mode":"simple","reason":"ordinary tool loop is enough","confidence":0.82}`),
+	}}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phaseDecision}
+	inputs := map[string]string{"input": "simple task", "history": ""}
+
+	turn, err := executor.callPlannerTurn(context.Background(), inputs, state, NewToolSpecs(nil))
+	if err != nil {
+		t.Fatalf("planner turn error: %v", err)
+	}
+
+	if turn.Kind != plannerTurnUseSimpleMode {
+		t.Fatalf("turn kind = %v, want use simple mode", turn.Kind)
+	}
+	if state.Phase != phaseDefault {
+		t.Fatalf("phase = %q, want default", state.Phase)
+	}
+	if turn.Step != nil {
+		t.Fatalf("simple route should not create a tool step: %#v", turn.Step)
+	}
+}
+
+func TestRoutePolicyOverridesSimpleForMultiStageRequests(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		contentResponse(`{"mode":"simple","reason":"model underestimated task"}`),
+	}}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phaseDecision}
+	inputs := map[string]string{
+		"input":   "Stage 1: compute A.\nStage 2: compute B.\nStage 3: reconcile invoice total.",
+		"history": "",
+	}
+
+	turn, err := executor.callPlannerTurn(context.Background(), inputs, state, NewToolSpecs(nil))
+	if err != nil {
+		t.Fatalf("planner turn error: %v", err)
+	}
+	if turn.Kind != plannerTurnEnterPlan {
+		t.Fatalf("turn kind = %v, want enter plan", turn.Kind)
+	}
+	if state.Phase != phasePlan || !state.PlanCommitRequired {
+		t.Fatalf("state = %#v, want plan phase with commit required", state)
+	}
+}
+
+func TestPlanRequiresCommitBeforeExecutionToolUse(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("echo_1", "echo", `{"text":"three"}`),
+	}}
+	tool := &stubTool{name: "echo", description: "Echo.", output: "ok"}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{},
+		[]langtools.Tool{tool},
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
+	toolSpecs := NewToolSpecs([]langtools.Tool{tool})
+	inputs := map[string]string{"input": "multi-step task", "history": ""}
+
+	turn, err := executor.callPlannerTurn(context.Background(), inputs, state, toolSpecs)
+	if err != nil {
+		t.Fatalf("planner turn error: %v", err)
+	}
+
+	if turn.Kind != plannerTurnInvalidMeta {
+		t.Fatalf("turn kind = %v, want invalid meta", turn.Kind)
+	}
+	if state.Phase != phasePlan || !state.PlanCommitRequired {
+		t.Fatalf("state = %#v, want plan phase with commit still required", state)
+	}
+	if len(tool.inputs) != 0 {
+		t.Fatalf("tool executions = %d, want 0", len(tool.inputs))
+	}
+	if turn.Step == nil || !strings.Contains(turn.Step.Observation, "commit_plan") {
+		t.Fatalf("observation = %#v, want commit_plan instruction", turn.Step)
+	}
+}
+
+func TestAutoPlanRejectsCancelBeforeCommit(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("cancel_1", toolCancelPlan, `{"reason":"already solved"}`),
+	}}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
+	inputs := map[string]string{"input": "multi-step task", "history": ""}
+
+	turn, err := executor.callPlannerTurn(context.Background(), inputs, state, NewToolSpecs(nil))
+	if err != nil {
+		t.Fatalf("planner turn error: %v", err)
+	}
+
+	if turn.Kind != plannerTurnInvalidMeta {
+		t.Fatalf("turn kind = %v, want invalid meta", turn.Kind)
+	}
+	if state.Phase != phasePlan || !state.PlanCommitRequired {
+		t.Fatalf("state = %#v, want plan phase with commit still required", state)
+	}
+	if turn.Step == nil || !strings.Contains(turn.Step.Observation, "commit_plan") {
+		t.Fatalf("observation = %#v, want commit_plan instruction", turn.Step)
+	}
+}
+
+func TestPlanModeAllowsReadOnlyToolBeforeCommit(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("recall_1", "recall_memory", `{"tags":["invoice"],"limit":3}`),
+	}}
+	tool := &stubTool{name: "recall_memory", description: "Recall memory.", output: `{"memories":[]}`}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{},
+		[]langtools.Tool{tool},
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
+	toolSpecs := NewToolSpecs([]langtools.Tool{tool})
+	inputs := map[string]string{"input": "plan after checking memory", "history": ""}
+
+	turn, err := executor.callPlannerTurn(context.Background(), inputs, state, toolSpecs)
+	if err != nil {
+		t.Fatalf("planner turn error: %v", err)
+	}
+
+	if turn.Kind != plannerTurnTool {
+		t.Fatalf("turn kind = %v, want readonly planner tool", turn.Kind)
+	}
+	if state.Phase != phasePlan || !state.PlanCommitRequired {
+		t.Fatalf("state = %#v, want plan phase with commit still required", state)
+	}
+	if len(tool.inputs) != 1 {
+		t.Fatalf("tool executions = %d, want 1", len(tool.inputs))
+	}
+	if len(state.PlannerEvidence) != 1 {
+		t.Fatalf("planner evidence = %#v, want one readonly result", state.PlannerEvidence)
+	}
+}
+
+func TestPlanModeRejectsDomainToolsAfterCommit(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("echo_1", "echo", `{"text":"do work"}`),
+	}}
+	tool := &stubTool{name: "echo", description: "Echo.", output: "ok"}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{},
+		[]langtools.Tool{tool},
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phasePlan, PlanCommitted: true}
+	toolSpecs := NewToolSpecs([]langtools.Tool{tool})
+	inputs := map[string]string{"input": "multi-step task", "history": ""}
+
+	turn, err := executor.callPlannerTurn(context.Background(), inputs, state, toolSpecs)
+	if err != nil {
+		t.Fatalf("planner turn error: %v", err)
+	}
+
+	if turn.Kind != plannerTurnInvalidMeta {
+		t.Fatalf("turn kind = %v, want invalid meta", turn.Kind)
+	}
+	if len(tool.inputs) != 0 {
+		t.Fatalf("tool executions = %d, want 0", len(tool.inputs))
+	}
+	if turn.Step == nil || !strings.Contains(turn.Step.Observation, "Put execution, computation, and state-changing work into committed executor steps") {
+		t.Fatalf("observation = %#v, want plan-mode tool rejection", turn.Step)
+	}
+}
+
+func TestPlanModeAllowsEvidenceBackedFinalAnswer(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		contentResponse("<final_answer>(b)</final_answer>"),
+	}}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{
+		Phase:         phasePlan,
+		PlanCommitted: true,
+		VerifierResults: []verifierDecision{{
+			NeedsReplan: true,
+			Reason:      "final answer can be derived from evidence",
+		}},
+	}
+	inputs := map[string]string{"input": "multi-step task", "history": ""}
+
+	turn, err := executor.callPlannerTurn(context.Background(), inputs, state, NewToolSpecs(nil))
+	if err != nil {
+		t.Fatalf("planner turn error: %v", err)
+	}
+	if turn.Kind != plannerTurnFinish || !strings.Contains(turn.Answer, "<final_answer>(b)</final_answer>") {
+		t.Fatalf("turn = %#v, want final answer", turn)
+	}
+}
+
+func TestCommitPlanEntersExecutionMode(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
+	turn := executor.handlePlannerMetaTool(phasePlan, state, schema.AgentAction{
+		Tool:      toolCommitPlan,
+		ToolInput: `{"objective":"inspect","completion_criteria":["done"],"plan":["screenshot","answer"],"reason":"ready"}`,
+	})
+	if turn.Kind != plannerTurnCommitPlan {
+		t.Fatalf("turn kind = %v", turn.Kind)
+	}
+	if state.Phase != phaseExecution {
+		t.Fatalf("phase = %q", state.Phase)
+	}
+	if state.PlanStepIndex != 0 || state.NextStep != "screenshot" {
+		t.Fatalf("state = %#v", state)
+	}
+	if state.PlanCommitRequired {
+		t.Fatal("plan commit requirement should be cleared after commit_plan")
+	}
+}
+
+func TestCommitPlanParsesStringPlanAndCriteria(t *testing.T) {
+	decision, err := parseCommitPlanInput(`{
+		"objective":"reconcile",
+		"completion_criteria":"- compute total\n- output final answer",
+		"plan":"Step 1: compute subtotal. Step 2: compare options. Step 3: output final answer.",
+		"reason":"ready"
+	}`)
+	if err != nil {
+		t.Fatalf("parseCommitPlanInput() error = %v", err)
+	}
+	if len(decision.CompletionCriteria) != 2 {
+		t.Fatalf("criteria = %#v, want 2 parsed criteria", decision.CompletionCriteria)
+	}
+	if len(decision.Plan) != 3 {
+		t.Fatalf("plan = %#v, want 3 parsed steps", decision.Plan)
+	}
+	if decision.Plan[0] != "Step 1: compute subtotal." || decision.Plan[2] != "Step 3: output final answer." {
+		t.Fatalf("unexpected parsed plan: %#v", decision.Plan)
+	}
+}
+
+func TestCancelPlanReturnsToDefaultMode(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{
+		Phase:     phasePlan,
+		Plan:      []string{"draft"},
+		NextStep:  "draft",
+		Objective: "draft",
+	}
+	turn := executor.handlePlannerMetaTool(phasePlan, state, schema.AgentAction{
+		Tool:      toolCancelPlan,
+		ToolInput: `{"reason":"abort"}`,
+	})
+	if turn.Kind != plannerTurnCancelPlan {
+		t.Fatalf("turn kind = %v", turn.Kind)
+	}
+	if state.Phase != phaseDefault {
+		t.Fatalf("phase = %q", state.Phase)
+	}
+	if len(state.Plan) != 0 {
+		t.Fatalf("plan should be cleared: %#v", state.Plan)
+	}
+}
+
+func TestAdvancePlanStepOrExhaust(t *testing.T) {
+	state := roleLoopState{
+		Phase:         phaseExecution,
+		Plan:          []string{"one"},
+		PlanStepIndex: 0,
+	}
+	if !state.advancePlanStepOrExhaust() {
+		t.Fatal("expected exhausted transition")
+	}
+	if state.Phase != phaseExecution || !state.PlanExhausted {
+		t.Fatalf("state = %#v", state)
+	}
+}
+
+func TestFinishStepEntersVerifierReview(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{
+		Phase:               phaseExecution,
+		StepExecutionActive: true,
+		NextStep:            "use echo",
+	}
+	turn := executor.handleExecutorMetaTool(state, schema.AgentAction{
+		Tool:      toolFinishStep,
+		ToolInput: `{"summary":"echo ok"}`,
+	})
+	if turn.Kind != executorTurnFinishStep {
+		t.Fatalf("turn kind = %v", turn.Kind)
+	}
+	if state.ExecutorStepOutcome != "finished" || state.ExecutorStepSummary != "echo ok" {
+		t.Fatalf("state = %#v", state)
+	}
+}
+
+func TestFinishStepStoresKeyInfo(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{
+		Phase:               phaseExecution,
+		StepExecutionActive: true,
+		NextStep:            "read the account id",
+	}
+	turn := executor.handleExecutorMetaTool(state, schema.AgentAction{
+		Tool:      toolFinishStep,
+		ToolInput: `{"summary":"account id found","key_info":["account_id=abc123","page=Account Details"]}`,
+	})
+	if turn.Kind != executorTurnFinishStep {
+		t.Fatalf("turn kind = %v", turn.Kind)
+	}
+	if state.ExecutorStepSummary != "account id found" {
+		t.Fatalf("summary = %q", state.ExecutorStepSummary)
+	}
+	if got := strings.Join(state.ExecutorStepKeyInfo, "|"); got != "account_id=abc123|page=Account Details" {
+		t.Fatalf("key info = %#v", state.ExecutorStepKeyInfo)
+	}
+	if !strings.Contains(turn.Step.Observation, "account_id=abc123") {
+		t.Fatalf("observation should include key_info: %s", turn.Step.Observation)
+	}
+}
+
+func TestAbortStepEntersVerifierReview(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{
+		Phase:               phaseExecution,
+		StepExecutionActive: true,
+		NextStep:            "blocked step",
+	}
+	turn := executor.handleExecutorMetaTool(state, schema.AgentAction{
+		Tool:      toolAbortStep,
+		ToolInput: `{"reason":"permission denied"}`,
+	})
+	if turn.Kind != executorTurnAbortStep {
+		t.Fatalf("turn kind = %v", turn.Kind)
+	}
+	if state.ExecutorStepOutcome != "aborted" || state.ExecutorStepSummary != "permission denied" {
+		t.Fatalf("state = %#v", state)
+	}
+}
+
+func TestBeginStepExecutionClearsStepScratchpad(t *testing.T) {
+	state := roleLoopState{
+		StepToolSteps: []schema.AgentStep{{Observation: "old"}},
+		StepExecutionResults: []roleExecutionResult{{
+			CandidateAnswer: "old",
+		}},
+		ExecutorStepOutcome: "finished",
+		ExecutorStepSummary: "old",
+		ExecutorStepKeyInfo: []string{"old-id"},
+	}
+	state.beginStepExecution()
+	if len(state.StepToolSteps) != 0 || len(state.StepExecutionResults) != 0 {
+		t.Fatalf("step scratchpad not cleared: %#v", state)
+	}
+	if state.ExecutorStepOutcome != "" || state.ExecutorStepSummary != "" || len(state.ExecutorStepKeyInfo) != 0 || !state.StepExecutionActive {
+		t.Fatalf("step execution not reset: %#v", state)
+	}
+}
+
+func TestRecordPlanStepResultSurvivesStepClear(t *testing.T) {
+	state := roleLoopState{
+		Plan:                []string{"read account id", "use account id"},
+		PlanStepIndex:       0,
+		NextStep:            "read account id",
+		ExecutorStepOutcome: "finished",
+		ExecutorStepSummary: "account id found",
+		ExecutorStepKeyInfo: []string{"account_id=abc123"},
+	}
+	state.recordPlanStepResult(verifierDecision{NeedsReplan: false, Reason: "step ok"})
+	state.clearStepExecution()
+
+	if len(state.PlanStepResults) != 1 {
+		t.Fatalf("plan step results = %#v", state.PlanStepResults)
+	}
+	record := state.PlanStepResults[0]
+	if record.StepIndex != 1 || record.StepText != "read account id" || record.Summary != "account id found" {
+		t.Fatalf("unexpected record: %#v", record)
+	}
+	if got := strings.Join(record.KeyInfo, "|"); got != "account_id=abc123" {
+		t.Fatalf("key info = %#v", record.KeyInfo)
+	}
+	if len(state.ExecutorStepKeyInfo) != 0 {
+		t.Fatalf("step key info should be cleared: %#v", state.ExecutorStepKeyInfo)
+	}
+}
+
+func TestExecutorPromptIncludesPriorPlanStepResults(t *testing.T) {
+	state := roleLoopState{
+		Plan:          []string{"read account id", "use account id"},
+		PlanStepIndex: 1,
+		NextStep:      "use account id",
+		PlanStepResults: []planStepResult{{
+			StepIndex: 1,
+			StepText:  "read account id",
+			Outcome:   "finished",
+			Summary:   "account id found",
+			KeyInfo:   []string{"account_id=abc123"},
+		}},
+	}
+
+	inputs := map[string]string{"input": "Use account id from the first step.", "history": ""}
+	prompt := buildExecutorStatePrompt(inputs, state, "Executor task.")
+	for _, want := range []string{
+		"Original user request",
+		"Use account id from the first step.",
+		"Committed plan",
+		"Prior step results",
+		"step_index=1",
+		"summary=\"account id found\"",
+		"key_info=[account_id=abc123]",
+		"Planner-approved next_step:\nuse account id",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("executor prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "raw prior-step scratchpads") {
+		t.Fatalf("executor prompt should not expose raw scratchpad internals:\n%s", prompt)
+	}
+}
+
+func TestExecutorPromptIncludesPlannerEvidence(t *testing.T) {
+	state := roleLoopState{
+		NextStep: "finish the calculation using known values",
+		PlannerEvidence: []roleExecutionResult{{
+			Action: &schema.AgentAction{Tool: "calculator", ToolInput: `{"expression":"1+2"}`},
+			Step: &schema.AgentStep{
+				Action:      schema.AgentAction{Tool: "calculator", ToolInput: `{"expression":"1+2"}`},
+				Observation: "3",
+			},
+		}},
+	}
+
+	inputs := map[string]string{"input": "Compute 1+2 and finish.", "history": ""}
+	prompt := buildExecutorStatePrompt(inputs, state, "Executor task.")
+	for _, want := range []string{
+		"Original user request",
+		"Planner-provided evidence",
+		"tool=calculator input={\"expression\":\"1+2\"} observation=3",
+		"do not repeat the same direct tool call",
+		"Planner-approved next_step:\nfinish the calculation using known values",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("executor prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}

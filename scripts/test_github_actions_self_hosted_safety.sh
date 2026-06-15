@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build_workflow="$repo_root/.github/workflows/build.yml"
+actionlint_config="$repo_root/actionlint.yaml"
 
 ruby - "$repo_root" <<'RUBY'
 require "yaml"
@@ -25,9 +26,15 @@ def dynamic_self_hosted_capable?(runs_on)
   runs_on_values(runs_on).any? { |value| value.include?("inputs.runner") }
 end
 
+def aiden_hosted_label?(value)
+  value.start_with?("aiden-hosted-")
+end
+
 def self_hosted_capable?(runs_on)
   values = runs_on_values(runs_on)
-  values.include?("self-hosted") || dynamic_self_hosted_capable?(runs_on)
+  values.include?("self-hosted") ||
+    values.any? { |value| aiden_hosted_label?(value) } ||
+    dynamic_self_hosted_capable?(runs_on)
 end
 
 def repo_branch_guarded?(condition, dynamic_runner)
@@ -41,7 +48,8 @@ def repo_branch_guarded?(condition, dynamic_runner)
   runner_guard =
     !dynamic_runner ||
     normalized.include?("inputs.runner != 'self-hosted'") ||
-    normalized.include?("inputs.runner == 'self-hosted'")
+    normalized.include?("inputs.runner == 'self-hosted'") ||
+    normalized.include?("startsWith(inputs.runner, 'aiden-hosted-')")
 
   blocks_pr_events && requires_repo_branch && runner_guard
 end
@@ -74,6 +82,29 @@ end
 puts "GitHub Actions self-hosted repo-branch safety check passed."
 RUBY
 
+if [[ ! -f "$actionlint_config" ]]; then
+  echo "actionlint config must declare dedicated Aiden hosted runner labels" >&2
+  exit 1
+fi
+
+ruby - "$actionlint_config" <<'RUBY'
+require "yaml"
+
+config_path = ARGV.fetch(0)
+config = YAML.load_file(config_path) || {}
+labels = config.dig("self-hosted-runner", "labels")
+unless labels.is_a?(Array)
+  warn "actionlint config must define self-hosted-runner.labels"
+  exit 1
+end
+
+missing_labels = %w[aiden-hosted-01 aiden-hosted-02] - labels
+if missing_labels.any?
+  warn "actionlint config is missing dedicated Aiden hosted runner labels: #{missing_labels.join(", ")}"
+  exit 1
+end
+RUBY
+
 sanitize_line="$(grep -n 'Remove unusable pico-sdk submodule checkout' "$build_workflow" | sed 's/:.*//' | head -n 1 || true)"
 checkout_line="$(grep -n 'uses: actions/checkout@v4' "$build_workflow" | sed 's/:.*//' | head -n 1 || true)"
 if [[ -z "$sanitize_line" || -z "$checkout_line" || "$sanitize_line" -ge "$checkout_line" ]]; then
@@ -85,5 +116,10 @@ if ! grep -Fq 'git -C "$sdk_dir" rev-parse --verify HEAD' "$build_workflow" || \
    ! grep -Fq 'sdk_git_dir="$GITHUB_WORKSPACE/.git/modules/pico-sdk"' "$build_workflow" || \
    ! grep -Fq 'rm -rf -- "$sdk_dir" "$sdk_git_dir"' "$build_workflow"; then
   echo "self-hosted build workflow must detect and remove pico-sdk checkouts whose current revision is unavailable" >&2
+  exit 1
+fi
+
+if ! grep -Fq 'startsWith(inputs.runner, '\''aiden-hosted-'\'')' "$build_workflow"; then
+  echo "self-hosted build workflow must treat dedicated Aiden hosted labels as self-hosted runners" >&2
   exit 1
 fi
