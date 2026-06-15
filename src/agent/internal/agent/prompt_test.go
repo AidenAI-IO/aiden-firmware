@@ -262,19 +262,19 @@ func TestPhoneBridgeRuntimeContextIncludesPhoneEnvironment(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"Phone environment summary:",
+		"device environment is available in World State for structured use",
 		"- environment_updated_at: 2026-06-01T02:03:05Z",
-		"- system: iOS, 18.5, tablet=false",
-		"- locale: zh-Hans-CN, language=zh, region=CN, timezone=Asia/Shanghai, utc_offset=+08:00, 24h_clock=true",
-		"- screen: 1179x2556 px, scale=3.00",
-		"- confirmed_launchable_third_party_apps: WeChat, Alipay",
-		"apps not listed may still be installed or openable",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)
 		}
 	}
 	for _, notWant := range []string{
+		"Phone environment summary:",
+		"- system:",
+		"- locale:",
+		"- screen:",
+		"confirmed_launchable_third_party_apps",
 		"User device",
 		"- device:",
 		"- battery:",
