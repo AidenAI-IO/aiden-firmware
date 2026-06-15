@@ -288,16 +288,8 @@ func TestPhoneBridgeRuntimeContextIncludesPhoneEnvironment(t *testing.T) {
 
 func TestPhoneBridgeRuntimeContextDisconnected(t *testing.T) {
 	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{})
-
-	for _, want := range []string{
-		"Phone bridge status:",
-		"- connected: false",
-		"The phone companion app is not connected",
-		"Do not assume open_app, clipboard, calendar, contacts, or notification tools can control the phone",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("runtime context missing %q:\n%s", want, got)
-		}
+	if got != "" {
+		t.Fatalf("disconnected phone bridge should not add runtime context, got:\n%s", got)
 	}
 }
 

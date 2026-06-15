@@ -10,8 +10,9 @@ import (
 
 // ToolSet is a fixed collection of built-in tools, keyed by name.
 type ToolSet struct {
-	tools  map[string]langtools.Tool
-	screen *screenState
+	tools       map[string]langtools.Tool
+	screen      *screenState
+	phoneBridge *PhoneBridge
 }
 
 // NewBuiltinToolSet returns all built-in tools. Tools are not configurable;
@@ -84,11 +85,17 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 }
 
 func (s *ToolSet) Get(name string) (langtools.Tool, bool) {
+	if s == nil || !s.toolAvailable(name) {
+		return nil, false
+	}
 	t, ok := s.tools[name]
 	return t, ok
 }
 
 func (s *ToolSet) All() []langtools.Tool {
+	if s == nil {
+		return nil
+	}
 	names := s.Names()
 	result := make([]langtools.Tool, 0, len(names))
 	for _, name := range names {
@@ -100,12 +107,25 @@ func (s *ToolSet) All() []langtools.Tool {
 }
 
 func (s *ToolSet) Names() []string {
+	if s == nil {
+		return nil
+	}
 	names := make([]string, 0, len(s.tools))
 	for name := range s.tools {
+		if !s.toolAvailable(name) {
+			continue
+		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	return names
+}
+
+func (s *ToolSet) toolAvailable(name string) bool {
+	if !isPhoneBridgeToolName(name) {
+		return true
+	}
+	return s.phoneBridge != nil && s.phoneBridge.Connected()
 }
 
 func (s *ToolSet) CurrentEnvironmentHints(maxAge time.Duration) CurrentEnvironmentHints {

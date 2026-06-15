@@ -442,9 +442,19 @@ func (s *ToolSet) RegisterPhoneBridge(bridge *PhoneBridge) {
 	if bridge == nil {
 		return
 	}
+	s.phoneBridge = bridge
 	s.tools["open_app"] = NewOpenAppTool(bridge)
 	s.tools["clipboard"] = NewClipboardTool(bridge)
 	s.tools["calendar"] = NewCalendarTool(bridge)
 	s.tools["contacts"] = NewContactsTool(bridge)
 	s.tools["notification"] = NewNotificationTool(bridge)
+}
+
+func isPhoneBridgeToolName(name string) bool {
+	switch name {
+	case "open_app", "clipboard", "calendar", "contacts", "notification":
+		return true
+	default:
+		return false
+	}
 }
