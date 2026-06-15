@@ -184,7 +184,8 @@ def _run_agent_unit_case(
     prompt = task.prompt
     if suite.prompt_prefix:
         prompt = f"{suite.prompt_prefix.rstrip()}\n\n{task.prompt}"
-    if is_perception_first_click_task(suite, task):
+    perception_first_click = is_perception_first_click_task(suite, task)
+    if perception_first_click:
         prompt = build_perception_prompt(prompt, _tool_description(client, "mouse_click"))
 
     attachments = None
@@ -223,7 +224,7 @@ def _run_agent_unit_case(
     trace = extract_trace(history)
     perception_eval = (
         evaluate_first_click_rubric(trace, task.rubric)
-        if is_perception_first_click_task(suite, task)
+        if perception_first_click
         else None
     )
     hard = evaluate_hard_assertions(trace, task.hard_assertions, timed_out=timed_out)
@@ -271,7 +272,9 @@ def _run_agent_unit_case(
                 + ", ".join(task.expected_recalled_memory_ids)
             )
 
-    if perception_eval is not None and not perception_eval.passed:
+    if perception_first_click and perception_eval is None:
+        errors.append("unsupported rubric for local first-click perception evaluation")
+    elif perception_eval is not None and not perception_eval.passed:
         failed = [v for v in perception_eval.verdicts if v.verdict != "yes"]
         errors.extend(v.reason for v in failed)
 
@@ -291,6 +294,10 @@ def _run_agent_unit_case(
             "passed": perception_eval.passed,
             "verdicts": [dc.asdict(v) for v in perception_eval.verdicts],
         }
+    elif perception_first_click:
+        output_json["perception_first_click_error"] = (
+            "unsupported rubric for local first-click perception evaluation"
+        )
     if expected_answer is not None:
         output_json["expected_answer"] = dc.asdict(expected_answer)
     if expected_recall is not None:

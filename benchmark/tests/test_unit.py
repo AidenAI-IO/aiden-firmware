@@ -156,3 +156,50 @@ def test_run_suite_accepts_benchmark_suite_as_agent_unit(tmp_path: Path):
     assert "mouse_click:" in client.messages[0]["message"]
     assert client.messages[0]["attachments"][0]["kind"] == "image"
     assert client.clear_calls == 2
+
+
+def test_agent_unit_fails_when_perception_rubric_is_unsupported(tmp_path: Path):
+    suite = tmp_path / "perception_v1.json"
+    screenshots = tmp_path / "screenshots"
+    screenshots.mkdir()
+    (screenshots / "task_386.jpg").write_bytes(b"jpeg")
+    suite.write_text(
+        json.dumps({
+            "name": "perception_v1",
+            "tasks": [{
+                "id": "task_386",
+                "category": "perception",
+                "input_screenshot": "screenshots/task_386.jpg",
+                "prompt": "打开右上角的聊天详情",
+                "description_for_judge": "Click chat details.",
+                "rubric": [{
+                    "id": "requires_visual_semantics",
+                    "check": "The target is semantically correct according to the judge.",
+                }],
+                "hard_assertions": {
+                    "min_tool_calls": 1,
+                    "max_tool_calls": 5,
+                    "must_complete_within_sec": 120,
+                    "response_required": True,
+                },
+            }],
+        }),
+        encoding="utf-8",
+    )
+    client = FakeAgentClient([
+        {
+            "type": "tool_call",
+            "tool_name": "mouse_click",
+            "tool_input": '{"x":940,"y":90,"coord_space":"normalized"}',
+        },
+        {"type": "tool_result", "tool_name": "mouse_click", "content": "{}"},
+        {"type": "assistant", "content": "done"},
+    ])
+
+    results = _run_suite(client, suite)
+
+    assert results[0].status == "failed"
+    assert "unsupported rubric" in results[0].error
+    assert results[0].output_json["perception_first_click_error"] == (
+        "unsupported rubric for local first-click perception evaluation"
+    )
