@@ -100,6 +100,7 @@ canvas { border: 2px solid #1f7a63; border-radius: 10px; cursor: crosshair; max-
 </div>
 <script>
 let currentImage = null;
+let currentScreenshotMeta = null;
 let autoTimer = null;
 let captureInFlight = false;
 let tapInFlight = false;
@@ -136,6 +137,79 @@ function currentCropBlackBars() {
     return !!cropBlackBars.checked;
 }
 
+function defaultScreenshotMeta(width, height) {
+    return {
+        width,
+        height,
+        source_width: width,
+        source_height: height,
+        source_active_area: null
+    };
+}
+
+function normalizeActiveArea(meta) {
+    if (!meta || !meta.source_active_area || !meta.source_active_area.valid) return null;
+    return meta.source_active_area;
+}
+
+function imageIsCropped(meta) {
+    if (!meta) return false;
+    return (meta.width || 0) !== (meta.source_width || meta.width || 0) ||
+           (meta.height || 0) !== (meta.source_height || meta.height || 0);
+}
+
+function imagePixelToSourcePixel(pixelX, pixelY) {
+    const meta = currentScreenshotMeta || defaultScreenshotMeta(canvas.width, canvas.height);
+    const active = normalizeActiveArea(meta);
+    if (imageIsCropped(meta) && active) {
+        return {
+            pixelX: clamp(active.x + pixelX, 0, Math.max((meta.source_width || canvas.width) - 1, 0)),
+            pixelY: clamp(active.y + pixelY, 0, Math.max((meta.source_height || canvas.height) - 1, 0))
+        };
+    }
+    return {
+        pixelX: clamp(pixelX, 0, Math.max((meta.source_width || canvas.width) - 1, 0)),
+        pixelY: clamp(pixelY, 0, Math.max((meta.source_height || canvas.height) - 1, 0))
+    };
+}
+
+function sourcePixelToNormalized(pixelX, pixelY) {
+    const meta = currentScreenshotMeta || defaultScreenshotMeta(canvas.width, canvas.height);
+    const sourceWidth = Math.max(meta.source_width || canvas.width, 1);
+    const sourceHeight = Math.max(meta.source_height || canvas.height, 1);
+    const maxPixelX = Math.max(sourceWidth - 1, 1);
+    const maxPixelY = Math.max(sourceHeight - 1, 1);
+    return {
+        x: clamp(Math.round((pixelX / maxPixelX) * 1000), 0, 1000),
+        y: clamp(Math.round((pixelY / maxPixelY) * 1000), 0, 1000)
+    };
+}
+
+function normalizedToSourcePixel(x, y) {
+    const meta = currentScreenshotMeta || defaultScreenshotMeta(canvas.width, canvas.height);
+    const sourceWidth = Math.max(meta.source_width || canvas.width, 1);
+    const sourceHeight = Math.max(meta.source_height || canvas.height, 1);
+    return {
+        pixelX: clamp(Math.round((x / 1000) * Math.max(sourceWidth - 1, 0)), 0, sourceWidth - 1),
+        pixelY: clamp(Math.round((y / 1000) * Math.max(sourceHeight - 1, 0)), 0, sourceHeight - 1)
+    };
+}
+
+function sourcePixelToImagePixel(pixelX, pixelY) {
+    const meta = currentScreenshotMeta || defaultScreenshotMeta(canvas.width, canvas.height);
+    const active = normalizeActiveArea(meta);
+    if (imageIsCropped(meta) && active) {
+        return {
+            pixelX: clamp(pixelX - active.x, 0, canvas.width - 1),
+            pixelY: clamp(pixelY - active.y, 0, canvas.height - 1)
+        };
+    }
+    return {
+        pixelX: clamp(pixelX, 0, canvas.width - 1),
+        pixelY: clamp(pixelY, 0, canvas.height - 1)
+    };
+}
+
 uploadArea.addEventListener('click', () => fileInput.click());
 uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.classList.add('drag-over'); });
 uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('drag-over'));
@@ -163,9 +237,22 @@ async function captureFromDevice() {
             deviceStatus.textContent = '抓取失败: ' + res.status + ' ' + (await res.text());
             return;
         }
+        const meta = {
+            width: parseInt(res.headers.get('X-Frame-Width') || '0', 10) || 0,
+            height: parseInt(res.headers.get('X-Frame-Height') || '0', 10) || 0,
+            source_width: parseInt(res.headers.get('X-Source-Width') || '0', 10) || 0,
+            source_height: parseInt(res.headers.get('X-Source-Height') || '0', 10) || 0,
+            source_active_area: res.headers.get('X-Source-Active-Valid') === 'true' ? {
+                x: parseInt(res.headers.get('X-Source-Active-X') || '0', 10) || 0,
+                y: parseInt(res.headers.get('X-Source-Active-Y') || '0', 10) || 0,
+                width: parseInt(res.headers.get('X-Source-Active-Width') || '0', 10) || 0,
+                height: parseInt(res.headers.get('X-Source-Active-Height') || '0', 10) || 0,
+                valid: true
+            } : null
+        };
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
-        loadImageFromUrl(url, '设备画面已加载', () => URL.revokeObjectURL(url));
+        loadImageFromUrl(url, '设备画面已加载', () => URL.revokeObjectURL(url), meta);
     } catch (e) {
         deviceStatus.textContent = '请求失败: ' + e.message;
     } finally {
@@ -187,10 +274,11 @@ function handleFile(file) {
     reader.readAsDataURL(file);
 }
 
-function loadImageFromUrl(url, statusText, onDone) {
+function loadImageFromUrl(url, statusText, onDone, meta) {
     const img = new Image();
     img.onload = () => {
         currentImage = img;
+        currentScreenshotMeta = meta || defaultScreenshotMeta(img.width, img.height);
         drawImage();
         canvasWrapper.style.display = 'block';
         infoPanel.style.display = 'block';
@@ -205,7 +293,7 @@ function loadImageFromUrl(url, statusText, onDone) {
 
 function loadImageFromScreenshotResult(result, statusText, onDone) {
     const format = result && result.format ? result.format : 'jpeg';
-    loadImageFromUrl('data:image/' + format + ';base64,' + result.data, statusText, onDone);
+    loadImageFromUrl('data:image/' + format + ';base64,' + result.data, statusText, onDone, result);
 }
 
 function drawImage() {
@@ -224,12 +312,12 @@ canvas.addEventListener('click', (e) => {
     const maxPixelY = canvas.height - 1;
     const pixelX = clamp(Math.round((e.clientX - rect.left) * scaleX), 0, maxPixelX);
     const pixelY = clamp(Math.round((e.clientY - rect.top) * scaleY), 0, maxPixelY);
-    const normalizedX = clamp(Math.round((pixelX / Math.max(maxPixelX, 1)) * 1000), 0, 1000);
-    const normalizedY = clamp(Math.round((pixelY / Math.max(maxPixelY, 1)) * 1000), 0, 1000);
+    const sourcePixel = imagePixelToSourcePixel(pixelX, pixelY);
+    const normalized = sourcePixelToNormalized(sourcePixel.pixelX, sourcePixel.pixelY);
     document.getElementById('clickPixel').textContent = 'X: ' + pixelX + ', Y: ' + pixelY;
-    document.getElementById('normalizedCoord').textContent = 'X: ' + normalizedX + ', Y: ' + normalizedY;
-    coordX.value = normalizedX;
-    coordY.value = normalizedY;
+    document.getElementById('normalizedCoord').textContent = 'X: ' + normalized.x + ', Y: ' + normalized.y;
+    coordX.value = normalized.x;
+    coordY.value = normalized.y;
     showMarker(pixelX, pixelY);
 });
 
@@ -243,9 +331,8 @@ function getNormalizedInputs() {
 }
 
 function normalizedToPixel(x, y) {
-    const pixelX = clamp(Math.round((x / 1000) * Math.max(canvas.width - 1, 0)), 0, canvas.width - 1);
-    const pixelY = clamp(Math.round((y / 1000) * Math.max(canvas.height - 1, 0)), 0, canvas.height - 1);
-    return { pixelX, pixelY };
+    const sourcePixel = normalizedToSourcePixel(x, y);
+    return sourcePixelToImagePixel(sourcePixel.pixelX, sourcePixel.pixelY);
 }
 
 function showNormalizedMarker(x, y) {

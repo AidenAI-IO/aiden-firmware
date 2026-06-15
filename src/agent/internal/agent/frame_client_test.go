@@ -84,3 +84,32 @@ func TestEncodeFrameAsJPEGPassthroughForJPEG(t *testing.T) {
 		t.Fatal("expected jpeg input to pass through unchanged")
 	}
 }
+
+func TestCropJPEGToActiveArea(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x * 40), G: uint8(y * 40), B: 0, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 100}); err != nil {
+		t.Fatalf("encode source jpeg: %v", err)
+	}
+
+	cropped, width, height, err := cropJPEGToActiveArea(buf.Bytes(), screenActiveArea{X: 1, Y: 1, Width: 2, Height: 2, Valid: true}, 100)
+	if err != nil {
+		t.Fatalf("cropJPEGToActiveArea: %v", err)
+	}
+	if width != 2 || height != 2 {
+		t.Fatalf("crop size = %dx%d, want 2x2", width, height)
+	}
+
+	decoded, err := jpeg.Decode(bytes.NewReader(cropped))
+	if err != nil {
+		t.Fatalf("decode cropped jpeg: %v", err)
+	}
+	if bounds := decoded.Bounds(); bounds.Dx() != 2 || bounds.Dy() != 2 {
+		t.Fatalf("decoded bounds = %v, want 2x2", bounds)
+	}
+}

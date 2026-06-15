@@ -266,13 +266,20 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 }
 
 func TestHandleCoordinateDebugTap(t *testing.T) {
+	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
+		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":2,"height":1,"pixel_format":"uyvy","stride":4,"bytes":4,"stale":false}}`
+		return header, []byte{16, 128, 235, 128}
+	})
 	tool := &stubTool{
 		name:        "touch_gesture",
 		description: "Touch gesture tool.",
 		output:      `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ==","action_output":"ok"}`,
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			HID:   HIDConfig{FrameSocket: frameSocket},
+		},
 		&testModelResolver{},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -320,8 +327,11 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	if !resp.OK || resp.ActionType != "double_tap" {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
-	if resp.Screenshot == nil || resp.Screenshot.Width != 320 || resp.Screenshot.Height != 240 || resp.Screenshot.Data != "ZmFrZQ==" {
+	if resp.Screenshot == nil || resp.Screenshot.Width != 2 || resp.Screenshot.Height != 1 || resp.Screenshot.Data == "ZmFrZQ==" {
 		t.Fatalf("unexpected screenshot payload: %#v", resp.Screenshot)
+	}
+	if resp.Screenshot.SourceWidth != 2 || resp.Screenshot.SourceHeight != 1 {
+		t.Fatalf("unexpected screenshot source dimensions: %#v", resp.Screenshot)
 	}
 }
 
