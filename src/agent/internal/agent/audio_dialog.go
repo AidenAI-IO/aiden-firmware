@@ -23,17 +23,18 @@ var (
 
 // AudioDialog manages the audio conversation loop
 type AudioDialog struct {
-	config       Config
-	audioClient  *AudioServiceClient
-	sttClient    STTClient
-	ttsManager   *tts.ProviderManager
-	vad          *AudioVAD
-	recordActive bool
-	sessionID    uint64
-	recordReader *AudioRecordChunkReader
-	speechMu     sync.Mutex
-	historyStore *ChatHistoryStore
-	audioArchive *AudioArchiveManager
+	config        Config
+	audioClient   *AudioServiceClient
+	sttClient     STTClient
+	ttsManager    *tts.ProviderManager
+	vad           *AudioVAD
+	recordActive  bool
+	sessionID     uint64
+	recordReader  *AudioRecordChunkReader
+	speechMu      sync.Mutex
+	historyStore  *ChatHistoryStore
+	historyAppend func(Message)
+	audioArchive  *AudioArchiveManager
 }
 
 // NewAudioDialog creates a new audio dialog manager
@@ -267,7 +268,7 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	if err != nil {
 		return err
 	}
-	d.persistVoiceTurn(input, result, utterance)
+	d.PersistVoiceTurn(input, result, utterance)
 	if result.SpeechStreamed {
 		return nil
 	}
@@ -281,13 +282,24 @@ func (d *AudioDialog) SetHistoryStore(store *ChatHistoryStore) {
 	d.historyStore = store
 }
 
+// SetHistoryAppender wires a higher-level history appender. The server uses
+// this so voice turns update both persistent history and the in-memory Web UI
+// snapshot in the same path as HTTP chat messages.
+func (d *AudioDialog) SetHistoryAppender(appender func(Message)) {
+	d.historyAppend = appender
+}
+
 // persistVoiceTurn appends user (when transcript is available) and assistant
 // messages to the chat history store, tagging both with Source="voice". It is
 // best-effort: errors are logged and never break the voice loop. Uses
 // context.Background since the caller's context may be cancelled by the time
 // we persist.
 func (d *AudioDialog) persistVoiceTurn(input TurnInput, result RunResult, utterance []int16) {
-	if d.historyStore == nil {
+	d.PersistVoiceTurn(input, result, utterance)
+}
+
+func (d *AudioDialog) PersistVoiceTurn(input TurnInput, result RunResult, utterance []int16) {
+	if d.historyAppend == nil && d.historyStore == nil {
 		return
 	}
 	now := time.Now()
@@ -310,9 +322,7 @@ func (d *AudioDialog) persistVoiceTurn(input TurnInput, result RunResult, uttera
 			AudioDurationMs: int64(audioDuration),
 			Timestamp:       now,
 		}
-		if err := d.historyStore.Append(context.Background(), userMsg); err != nil {
-			log.Printf("[history] persist voice user message failed: %v", err)
-		}
+		d.appendVoiceHistory(userMsg)
 	}
 
 	output := strings.TrimSpace(result.Output)
@@ -324,8 +334,18 @@ func (d *AudioDialog) persistVoiceTurn(input TurnInput, result RunResult, uttera
 			Source:    "voice",
 			Timestamp: now,
 		}
-		if err := d.historyStore.Append(context.Background(), assistantMsg); err != nil {
-			log.Printf("[history] persist voice assistant message failed: %v", err)
+		d.appendVoiceHistory(assistantMsg)
+	}
+}
+
+func (d *AudioDialog) appendVoiceHistory(message Message) {
+	if d.historyAppend != nil {
+		d.historyAppend(message)
+		return
+	}
+	if d.historyStore != nil {
+		if err := d.historyStore.Append(context.Background(), message); err != nil {
+			log.Printf("[history] persist voice message failed: %v", err)
 		}
 	}
 }

@@ -1069,6 +1069,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	userMessage := Message{
 		Type:        "user",
 		EpisodeID:   episodeID,
+		RequestID:   req.RequestID,
 		Content:     inputText,
 		Attachments: historyAttachments,
 		Timestamp:   time.Now(),
@@ -1115,6 +1116,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				Type:        event.Type,
 				Role:        event.Role,
 				EpisodeID:   eventEpisodeID,
+				RequestID:   req.RequestID,
 				Content:     event.Content,
 				ToolName:    event.ToolName,
 				ToolInput:   event.ToolInput,
@@ -1133,6 +1135,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		errorMessage := Message{
 			Type:      "episode_status",
 			EpisodeID: episodeID,
+			RequestID: req.RequestID,
 			Status:    "failed",
 			Content:   "Agent error: " + err.Error(),
 			Timestamp: time.Now(),
@@ -1150,6 +1153,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	assistantMessage := Message{
 		Type:      "assistant",
 		EpisodeID: firstNonEmptyString([]string{result.EpisodeID, episodeID}),
+		RequestID: req.RequestID,
 		Status:    "completed",
 		Content:   result.Output,
 		Timestamp: time.Now(),
@@ -1978,6 +1982,12 @@ func (s *Server) appendHistory(message Message) {
 			s.logger.Warn("Persist chat history failed: %v", err)
 		}
 	}
+}
+
+// AppendHistory appends a message through the server history path so persistent
+// history, in-memory /api/history snapshots, and SSE broadcasts stay aligned.
+func (s *Server) AppendHistory(message Message) {
+	s.appendHistory(message)
 }
 
 // HistoryStore returns the chat history store, used by audio dialog to persist
@@ -3394,6 +3404,7 @@ const webUI = `<!DOCTYPE html>
         let pendingSteerSubmitting = false;
         let episodeCache = {};
         let eventSource = null;
+        let renderedMessageKeys = new Set();
 
         loadHistory();
         loadToolCatalog();
@@ -3729,6 +3740,7 @@ const webUI = `<!DOCTYPE html>
 
             addMessage({
                 type: 'user',
+                request_id: currentChatRequestId,
                 content: message,
                 attachments: pendingAttachments,
                 timestamp: new Date().toISOString()
@@ -4021,9 +4033,13 @@ const webUI = `<!DOCTYPE html>
 
         function renderHistory(history) {
             messagesDiv.innerHTML = '';
+            renderedMessageKeys = new Set();
 
             const fragment = document.createDocumentFragment();
             history.forEach(function(msg) {
+                const key = messageIdentity(msg);
+                if (renderedMessageKeys.has(key)) return;
+                renderedMessageKeys.add(key);
                 fragment.appendChild(createMessageNode(msg));
             });
 
@@ -4033,9 +4049,29 @@ const webUI = `<!DOCTYPE html>
         }
 
         function addMessage(msg) {
+            const key = messageIdentity(msg);
+            if (renderedMessageKeys.has(key)) return;
+            renderedMessageKeys.add(key);
             messagesDiv.appendChild(createMessageNode(msg));
             updateEmptyState();
             scrollToBottom();
+        }
+
+        function messageIdentity(msg) {
+            msg = msg || {};
+            const type = normalizeType(msg.type);
+            const content = msg.content || '';
+            const requestId = msg.request_id || '';
+            if (requestId && (type === 'user' || type === 'assistant')) {
+                return ['request', requestId, type, content].join('\u001f');
+            }
+
+            const episodeId = msg.episode_id || '';
+            if (episodeId) {
+                return ['episode', episodeId, type, msg.role || '', msg.tool_name || '', msg.tool_input || '', content, msg.timestamp || ''].join('\u001f');
+            }
+
+            return ['local', type, content, msg.timestamp || ''].join('\u001f');
         }
 
         function createMessageNode(msg) {

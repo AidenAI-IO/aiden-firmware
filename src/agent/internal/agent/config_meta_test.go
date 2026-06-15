@@ -200,6 +200,10 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio.sample_rate", defaults.Audio.SampleRate},
 		{"audio.channels", defaults.Audio.Channels},
 		{"audio.bit_width", defaults.Audio.BitWidth},
+		{"audio_archive.enabled", defaults.AudioArchive.Enabled},
+		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
+		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},
+		{"audio_archive.storage_path", defaults.AudioArchive.StoragePathOrDefault()},
 		{"benchmark.judge_model", defaults.Benchmark.JudgeModel},
 		{"hid.keyboard_device", defaults.HID.KeyboardDevice},
 		{"hid.mouse_device", defaults.HID.MouseDevice},
@@ -243,6 +247,35 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 	}
 }
 
+func TestConfigMeta_AudioArchiveRequiresSTTInputMode(t *testing.T) {
+	idx := fieldIndex(t)
+
+	tests := []string{
+		"audio_archive.enabled",
+		"audio_archive.storage_path",
+		"audio_archive.max_files",
+		"audio_archive.max_size_mb",
+	}
+
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			field, ok := idx[path]
+			if !ok {
+				t.Fatalf("missing metadata field %s", path)
+			}
+			if field.VisibleWhen == nil {
+				t.Fatalf("%s has no visibleWhen rule", path)
+			}
+			for _, cond := range field.VisibleWhen.All {
+				if cond.Field == "agent.input_mode" && cond.Op == "eq" && cond.Value == "stt" {
+					return
+				}
+			}
+			t.Fatalf("%s visibleWhen = %#v, want agent.input_mode == stt", path, field.VisibleWhen)
+		})
+	}
+}
+
 // TestConfigMeta_CoversConfigFields uses reflection to ensure every flat,
 // UI-relevant config field has corresponding metadata, preventing silent drift
 // when new fields are added to the Config structs.
@@ -261,6 +294,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"tts", reflect.TypeOf(TTSConfig{}), map[string]bool{"reference_id": true, "credentials": true}},
 		{"stt", reflect.TypeOf(STTConfig{}), nil},
 		{"audio", reflect.TypeOf(AudioConfig{}), nil},
+		{"audio_archive", reflect.TypeOf(AudioArchiveConfig{}), nil},
 		{"benchmark", reflect.TypeOf(BenchmarkConfig{}), nil},
 		{"hid", reflect.TypeOf(HIDConfig{}), nil},
 		{"search", reflect.TypeOf(SearchConfig{}), nil},

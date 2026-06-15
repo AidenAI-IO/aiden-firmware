@@ -1094,6 +1094,14 @@ bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
         return false;
     }
 
+    cJSON* audio_archive = cJSON_GetObjectItem(root, "audio_archive");
+    if (!validate_config_field(audio_archive, "audio_archive", "enabled", CONFIG_FIELD_BOOL, false, error) ||
+        !validate_config_field(audio_archive, "audio_archive", "storage_path", CONFIG_FIELD_STRING, false, error) ||
+        !validate_config_field(audio_archive, "audio_archive", "max_files", CONFIG_FIELD_NUMBER, false, error) ||
+        !validate_config_field(audio_archive, "audio_archive", "max_size_mb", CONFIG_FIELD_NUMBER, false, error)) {
+        return false;
+    }
+
     cJSON* benchmark = cJSON_GetObjectItem(root, "benchmark");
     if (!validate_config_field(benchmark, "benchmark", "judge_model", CONFIG_FIELD_STRING, false, error) ||
         !validate_config_field(benchmark, "benchmark", "api_key", CONFIG_FIELD_STRING, true, error) ||
@@ -1325,6 +1333,12 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(audio, "channels", config.audio.channels);
     cJSON_AddNumberToObject(audio, "bit_width", config.audio.bit_width);
 
+    cJSON* audio_archive = add_object(root, "audio_archive");
+    cJSON_AddBoolToObject(audio_archive, "enabled", config.audio_archive.enabled ? 1 : 0);
+    cJSON_AddStringToObject(audio_archive, "storage_path", config.audio_archive.storage_path.c_str());
+    cJSON_AddNumberToObject(audio_archive, "max_files", config.audio_archive.max_files);
+    cJSON_AddNumberToObject(audio_archive, "max_size_mb", config.audio_archive.max_size_mb);
+
     cJSON* benchmark = add_object(root, "benchmark");
     cJSON_AddStringToObject(benchmark, "judge_model", config.benchmark.judge_model.c_str());
     if (include_secrets) {
@@ -1555,6 +1569,14 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->audio.sample_rate, audio, "sample_rate");
         set_json_int(&config->audio.channels, audio, "channels");
         set_json_int(&config->audio.bit_width, audio, "bit_width");
+    }
+
+    cJSON* audio_archive = cJSON_GetObjectItem(root, "audio_archive");
+    if (json_is_object(audio_archive)) {
+        set_json_bool(&config->audio_archive.enabled, audio_archive, "enabled");
+        set_json_str(&config->audio_archive.storage_path, audio_archive, "storage_path");
+        set_json_int(&config->audio_archive.max_files, audio_archive, "max_files");
+        set_json_int(&config->audio_archive.max_size_mb, audio_archive, "max_size_mb");
     }
 
     cJSON* benchmark = cJSON_GetObjectItem(root, "benchmark");

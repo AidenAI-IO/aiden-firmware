@@ -129,9 +129,7 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 		fmt.Fprintf(os.Stderr, "create audio dialog: %v\n", err)
 		os.Exit(1)
 	}
-	if hs := server.HistoryStore(); hs != nil {
-		dialog.SetHistoryStore(hs)
-	}
+	dialog.SetHistoryAppender(server.AppendHistory)
 
 	inputMode := cfg.InputModeOrDefault()
 	triggerMode := cfg.TriggerModeOrDefault()
@@ -170,6 +168,7 @@ type audioDialogRunner interface {
 	ProcessUtterance(ctx context.Context, utterance []int16, runtime *agent.Runtime) error
 	PrepareTurnInput(utterance []int16) (agent.TurnInput, error)
 	RunAgentTurn(ctx context.Context, input agent.TurnInput, runtime *agent.Runtime) (agent.RunResult, error)
+	PersistVoiceTurn(input agent.TurnInput, result agent.RunResult, utterance []int16)
 	Speak(ctx context.Context, text string, interrupt <-chan struct{}) error
 	FlushVAD() []int16
 	FinishManualUtterance(pending []int16) []int16
@@ -468,7 +467,7 @@ func runVoiceSession(cfg agent.Config, dialog audioDialogRunner, runtime *agent.
 		}
 
 		turns++
-		result := runVoiceTurnWithInput(cfg, dialog, runtime, input, sigChan, events)
+		result := runVoiceTurnWithInput(cfg, dialog, runtime, input, utterance, sigChan, events)
 		if result.exit {
 			return true
 		}
@@ -490,10 +489,10 @@ func runVoiceTurn(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Run
 		return voiceTurnResult{}
 	}
 
-	return runVoiceTurnWithInput(cfg, dialog, runtime, input, sigChan, events)
+	return runVoiceTurnWithInput(cfg, dialog, runtime, input, utterance, sigChan, events)
 }
 
-func runVoiceTurnWithInput(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, input agent.TurnInput, sigChan chan os.Signal, events <-chan voiceEvent) voiceTurnResult {
+func runVoiceTurnWithInput(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, input agent.TurnInput, utterance []int16, sigChan chan os.Signal, events <-chan voiceEvent) voiceTurnResult {
 	turnCtx, cancel := context.WithCancel(context.Background())
 	resultCh := make(chan struct {
 		result agent.RunResult
@@ -520,7 +519,14 @@ thinking:
 				log.Println("[interrupt] wakeup received during thinking, canceling current turn")
 				cancel()
 				select {
-				case <-resultCh:
+				case turnResult := <-resultCh:
+					if turnResult.err != nil {
+						if !errors.Is(turnResult.err, context.Canceled) {
+							log.Printf("[error] %v\n", turnResult.err)
+						}
+					} else {
+						dialog.PersistVoiceTurn(input, turnResult.result, utterance)
+					}
 				case <-time.After(2 * time.Second):
 					log.Println("[interrupt] current turn did not finish after cancellation; continuing session")
 				}
@@ -536,6 +542,8 @@ thinking:
 			break thinking
 		}
 	}
+
+	dialog.PersistVoiceTurn(input, result, utterance)
 
 	if result.SleepRequested {
 		return voiceTurnResult{sleepRequested: true}

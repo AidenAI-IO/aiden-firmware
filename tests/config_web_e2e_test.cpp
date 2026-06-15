@@ -110,6 +110,8 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"secret_id\":\"\",\"secret_key\":\"\",\"region\":\"\",\"engine_model_type\":\"\"},"
         "\"audio\":{\"socket\":\"/run/audio_service/audio_service.sock\",\"sample_rate\":16000,"
         "\"channels\":1,\"bit_width\":16},"
+        "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
+        "\"storage_path\":\"/userdata/audio\"},"
         "\"benchmark\":{\"judge_model\":\"bytedance-seed/seed-2.0-lite\",\"api_key\":\"\","
         "\"benchmark_dir\":\"\"},"
         "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
@@ -390,7 +392,38 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     REQUIRE(provider != nullptr);
     REQUIRE(provider->valuestring != nullptr);
     CHECK(std::string(provider->valuestring) == "openrouter");
+
+    cJSON* audio_archive = cJSON_GetObjectItem(config, "audio_archive");
+    REQUIRE(audio_archive != nullptr);
+    cJSON* enabled = cJSON_GetObjectItem(audio_archive, "enabled");
+    REQUIRE(enabled != nullptr);
+    CHECK((enabled->type & 0xff) == cJSON_True);
     cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: POST /api/config writes audio_archive section") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"audio_archive\":{\"enabled\":false,\"max_files\":123,\"max_size_mb\":45,"
+        "\"storage_path\":\"/userdata/custom-audio\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+
+    std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
+    REQUIRE(saved_in.good());
+    std::ostringstream saved_buffer;
+    saved_buffer << saved_in.rdbuf();
+    const std::string saved = saved_buffer.str();
+    CHECK(saved.find("[audio_archive]") != std::string::npos);
+    CHECK(saved.find("enabled = false") != std::string::npos);
+    CHECK(saved.find("max_files = 123") != std::string::npos);
+    CHECK(saved.find("max_size_mb = 45") != std::string::npos);
+    CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
 }
 
 TEST_CASE("config_web: GET /api/config tolerates resolved config without force_simple_loop") {

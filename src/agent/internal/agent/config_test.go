@@ -936,6 +936,27 @@ storage_path = "/userdata/audio"
 	}
 }
 
+func TestLoadRuntimeConfigEnablesAudioArchiveByDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "agent.toml")
+	if err := os.WriteFile(configFile, []byte(`[model]
+provider = "fake"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRuntimeConfig(configFile)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if !cfg.AudioArchive.Enabled {
+		t.Fatal("AudioArchive.Enabled = false, want true for runtime defaults")
+	}
+	if got, want := cfg.AudioArchive.StoragePathOrDefault(), "/userdata/audio"; got != want {
+		t.Fatalf("AudioArchive.StoragePathOrDefault() = %q, want %q", got, want)
+	}
+}
+
 func TestAudioArchiveConfigExplicitValues(t *testing.T) {
 	configContent := `
 [audio_archive]

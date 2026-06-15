@@ -67,9 +67,9 @@ bit_width = 16
 
 # Audio archive configuration (optional)
 # When enabled, saves audio recordings to disk for playback in web UI.
-# Default: disabled (only transcripts saved).
+# Default: enabled.
 [audio_archive]
-enabled = false              # Set true to archive audio files
+enabled = true               # Set false to stop archiving audio files
 max_files = 500             # Keep most recent N audio files
 max_size_mb = 100           # Or stop when total size exceeds this (MB)
 storage_path = "/userdata/audio"  # Where to store audio files

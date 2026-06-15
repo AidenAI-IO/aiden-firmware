@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
@@ -60,6 +61,30 @@ func TestParsePlannerDecisionHandlesLegacyFuncCall(t *testing.T) {
 
 	if decision.NextStep != "返回主页面" {
 		t.Errorf("next_step = %q, want %q", decision.NextStep, "返回主页面")
+	}
+}
+
+func TestRoleResponseDebugTextDoesNotDuplicateStructuredToolCall(t *testing.T) {
+	response := &llms.ContentResponse{
+		Choices: []*llms.ContentChoice{
+			{
+				Content: `tool_call: current_time input={"timezone":"local"}`,
+				ToolCalls: []llms.ToolCall{
+					{
+						FunctionCall: &llms.FunctionCall{
+							Name:      "current_time",
+							Arguments: `{"timezone":"local"}`,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	debug := roleResponseDebugText(response)
+
+	if count := strings.Count(debug, "tool_call: current_time"); count != 1 {
+		t.Fatalf("tool call debug count = %d, want 1; debug=%q", count, debug)
 	}
 }
 

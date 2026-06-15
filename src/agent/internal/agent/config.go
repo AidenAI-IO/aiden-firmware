@@ -68,7 +68,7 @@ type AudioArchiveConfig struct {
 // MaxFilesOrDefault returns MaxFiles if positive, else 500.
 func (c AudioArchiveConfig) MaxFilesOrDefault() int {
 	if c.MaxFiles <= 0 {
-		return 500
+		return defaultAudioArchiveMaxFiles
 	}
 	return c.MaxFiles
 }
@@ -76,7 +76,7 @@ func (c AudioArchiveConfig) MaxFilesOrDefault() int {
 // MaxSizeMBOrDefault returns MaxSizeMB if positive, else 100.
 func (c AudioArchiveConfig) MaxSizeMBOrDefault() int {
 	if c.MaxSizeMB <= 0 {
-		return 100
+		return defaultAudioArchiveMaxSizeMB
 	}
 	return c.MaxSizeMB
 }
@@ -84,7 +84,7 @@ func (c AudioArchiveConfig) MaxSizeMBOrDefault() int {
 // StoragePathOrDefault returns StoragePath if non-empty, else "/userdata/audio".
 func (c AudioArchiveConfig) StoragePathOrDefault() string {
 	if c.StoragePath == "" {
-		return "/userdata/audio"
+		return defaultAudioArchiveStoragePath
 	}
 	return c.StoragePath
 }
