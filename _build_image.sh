@@ -165,6 +165,176 @@ strip_release_files() {
         xargs -0 "$strip_tool" --strip-debug 2>/dev/null || true
 }
 
+find_ext4_debugfs() {
+    local candidate
+
+    if command -v debugfs >/dev/null 2>&1; then
+        command -v debugfs
+        return 0
+    fi
+
+    for candidate in \
+        "$PICO_SDK/sysdrv/tools/pc/e2fsprogs/debugfs" \
+        "$PICO_SDK/sysdrv/tools/pc/e2fsprogs/bin/debugfs"; do
+        if [ -x "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+sha256_file() {
+    local path="$1"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$path" | awk '{print $1}'
+        return 0
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$path" | awk '{print $1}'
+        return 0
+    fi
+
+    echo "  ✗ Error: sha256sum or shasum is required to verify rebuilt image contents" >&2
+    exit 1
+}
+
+file_size_bytes() {
+    local path="$1"
+
+    if stat -c '%s' "$path" >/dev/null 2>&1; then
+        stat -c '%s' "$path"
+        return 0
+    fi
+    wc -c < "$path" | tr -d ' '
+}
+
+file_allocated_bytes() {
+    local path="$1"
+    local blocks block_size
+
+    if read -r blocks block_size < <(stat -c '%b %B' "$path" 2>/dev/null); then
+        echo $((blocks * block_size))
+        return 0
+    fi
+    echo unknown
+}
+
+log_binary_fingerprint() {
+    local stage="$1"
+    local binary="$2"
+    local path="$3"
+    local size allocated sha
+
+    if [ ! -f "$path" ]; then
+        echo "  binary-fingerprint stage=$stage name=$binary missing"
+        return 0
+    fi
+
+    size="$(file_size_bytes "$path")"
+    allocated="$(file_allocated_bytes "$path")"
+    sha="$(sha256_file "$path")"
+    echo "  binary-fingerprint stage=$stage name=$binary size=$size allocated=$allocated sha256=$sha"
+
+    if command -v file >/dev/null 2>&1; then
+        echo "    file: $(file -b "$path")"
+    fi
+    case "$binary" in
+        abctl | agent | ota)
+            if command -v go >/dev/null 2>&1; then
+                go version -m "$path" 2>/dev/null | sed 's/^/    go-version-m: /' || true
+            fi
+            ;;
+    esac
+}
+
+log_generated_binaries_in_dir() {
+    local stage="$1"
+    local bin_dir="$2"
+    local binary
+
+    echo "  → Binary fingerprints ($stage)"
+    for binary in "${AIDEN_GENERATED_BINARIES[@]}"; do
+        log_binary_fingerprint "$stage" "$binary" "$bin_dir/$binary"
+    done
+}
+
+verify_ext4_image_file_matches() {
+    local image_path="$1"
+    local staged_root="$2"
+    local rel_path="${3#/}"
+    local staged_file="$staged_root/$rel_path"
+    local debugfs_tool dump_dir dumped_file dump_log staged_sha image_sha
+
+    if [ ! -f "$staged_file" ]; then
+        echo "  ✗ Error: missing staged file for image verification: $staged_file" >&2
+        exit 1
+    fi
+    if [ ! -s "$image_path" ]; then
+        echo "  ✗ Error: missing image for content verification: $image_path" >&2
+        exit 1
+    fi
+
+    debugfs_tool="$(find_ext4_debugfs)" || {
+        echo "  ✗ Error: debugfs is required to verify rebuilt ext4 image contents" >&2
+        exit 1
+    }
+
+    dump_dir="$(mktemp -d)"
+    dumped_file="$dump_dir/dumped"
+    dump_log="$dump_dir/debugfs.log"
+    if ! "$debugfs_tool" -R "dump /$rel_path $dumped_file" "$image_path" >"$dump_log" 2>&1; then
+        echo "  ✗ Error: failed to dump /$rel_path from $image_path" >&2
+        sed -n '1,20p' "$dump_log" >&2
+        rm -rf "$dump_dir"
+        exit 1
+    fi
+    if [ ! -f "$dumped_file" ]; then
+        echo "  ✗ Error: debugfs did not dump /$rel_path from $image_path" >&2
+        sed -n '1,20p' "$dump_log" >&2
+        rm -rf "$dump_dir"
+        exit 1
+    fi
+
+    staged_sha="$(sha256_file "$staged_file")"
+    image_sha="$(sha256_file "$dumped_file")"
+    rm -rf "$dump_dir"
+
+    if [ "$staged_sha" != "$image_sha" ]; then
+        echo "  ✗ Error: rebuilt image content mismatch for /$rel_path" >&2
+        echo "    staged: $staged_sha  $staged_file" >&2
+        echo "    image:  $image_sha  $image_path:/$rel_path" >&2
+        "$debugfs_tool" -R "stat /$rel_path" "$image_path" 2>&1 | sed -n '1,80p' >&2 || true
+        exit 1
+    fi
+    echo "  image-file-verified rel=/$rel_path sha256=$image_sha"
+}
+
+verify_oem_generated_binaries_in_image() {
+    local image_path="$1"
+    local staged_root="$2"
+    local binary missing verified
+
+    missing=0
+    verified=0
+    for binary in "${AIDEN_GENERATED_BINARIES[@]}"; do
+        if [ ! -f "$staged_root/usr/bin/$binary" ]; then
+            echo "  ✗ Error: missing generated OEM binary in staging: $staged_root/usr/bin/$binary" >&2
+            missing=1
+            continue
+        fi
+        verify_ext4_image_file_matches "$image_path" "$staged_root" "usr/bin/$binary"
+        verified=$((verified + 1))
+    done
+
+    if [ "$missing" -ne 0 ]; then
+        exit 1
+    fi
+    echo "  ✓ Verified $verified generated OEM binaries in $(basename "$image_path")"
+}
+
 rebuild_ext4_image() {
     local name="$1"
     local src_dir="$2"
@@ -190,7 +360,13 @@ rebuild_ext4_image() {
         exit 1
     }
 
+    if [ "$name" = "oem" ]; then
+        log_generated_binaries_in_dir "sdk-oem-before-strip" "$src_dir/usr/bin"
+    fi
     strip_release_files "$src_dir"
+    if [ "$name" = "oem" ]; then
+        log_generated_binaries_in_dir "sdk-oem-after-strip" "$src_dir/usr/bin"
+    fi
     chown -hR 0:0 "$src_dir"
     "$PICO_SDK/sysdrv/tools/pc/e2fsprogs/mkfs_ext4.sh" "$src_dir" "$image_path" "$size_bytes"
     if [ ! -s "$image_path" ]; then
@@ -207,6 +383,7 @@ echo ""
 echo "[1/6] Building applications..."
 cd "$SCRIPT_DIR"
 ./_build.sh
+log_generated_binaries_in_dir "build-bin" "$SCRIPT_DIR/build/bin"
 
 # Step 2: 准备 overlay 目录
 echo "[2/6] Preparing overlay directories..."
@@ -214,6 +391,7 @@ mkdir -p "$OVERLAY/oem/usr/bin" "$OVERLAY/oem/usr/lib" "$OVERLAY/oem/etc"
 clean_generated_binaries "$OVERLAY/oem/usr/bin"
 rsync -a "$SCRIPT_DIR/build/bin/" "$OVERLAY/oem/usr/bin/"
 echo "  ✓ Binaries copied to overlay/oem/usr/bin"
+log_generated_binaries_in_dir "overlay-oem-usr-bin" "$OVERLAY/oem/usr/bin"
 
 BENCHMARK_SRC="$SCRIPT_DIR/benchmark"
 BENCHMARK_DEST="$OVERLAY/userdata/agent/benchmark"
@@ -359,6 +537,7 @@ if [ -d "$OVERLAY/oem" ]; then
     rsync -a --delete "$OVERLAY/oem/usr/bin/" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin/"
     rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"
     echo "  ✓ OEM content copied"
+    log_generated_binaries_in_dir "sdk-oem-usr-bin" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin"
 fi
 
 # Bundled agent skills use src/agent/config/skills as the single source and
@@ -403,6 +582,7 @@ cd "$PICO_SDK/project"
 
 echo "  → Rebuilding oem.img..."
 rebuild_ext4_image oem "$RK_PROJECT_PACKAGE_OEM_DIR"
+verify_oem_generated_binaries_in_image "$RK_PROJECT_OUTPUT_IMAGE/oem.img" "$RK_PROJECT_PACKAGE_OEM_DIR"
 
 echo "  → Rebuilding userdata.img..."
 rebuild_ext4_image userdata "$RK_PROJECT_PACKAGE_USERDATA_DIR"
