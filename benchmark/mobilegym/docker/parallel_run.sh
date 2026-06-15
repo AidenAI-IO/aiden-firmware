@@ -55,13 +55,14 @@ fi
 
 usage() {
     cat <<'EOF'
-Usage: ./parallel_run.sh <task-id> [task-id...] | --suite <suite> [--limit N] | --suites <suite-a,suite-b> [--limit N] | --aiden-suite <name> [--limit N]
+Usage: ./parallel_run.sh <task-id> [task-id...] | --suite <suite> [--limit N] | --suites <suite-a,suite-b> [--limit N] | --aiden-suite <name> [--limit N] | --aiden-suites <name-a,name-b> [--limit N]
 
 Examples:
   ./parallel_run.sh clock.CountAlarms clock.ToggleAlarm
   PARALLEL=4 ./parallel_run.sh --suite phone_control_v1
   PARALLEL=2 MAX_JOBS=2 ./parallel_run.sh --suites clock,phone_control_v1
   PARALLEL=4 ./parallel_run.sh --aiden-suite memory_v1
+  PARALLEL=4 ./parallel_run.sh --aiden-suites memory_v1,perception/perception_v1
 EOF
 }
 
@@ -203,6 +204,20 @@ should_try_cn_compose() {
     [[ -f "$SCRIPT_DIR/docker-compose.cn.yml" ]]
 }
 
+run_report() {
+    local batch_dir="$1"
+    if command -v uv >/dev/null 2>&1; then
+        (cd "$SCRIPT_DIR/../.." && uv run python -m mobilegym.report "$batch_dir")
+        return $?
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        (cd "$SCRIPT_DIR/../.." && python3 -m mobilegym.report "$batch_dir")
+        return $?
+    fi
+    echo "Error: neither uv nor python3 found; cannot generate MobileGym report." >&2
+    return 127
+}
+
 write_preflight_failure_report() {
     local message="$1"
     local suite="preflight"
@@ -217,7 +232,7 @@ EOF
     printf '%s\n' "$message" > "$shard_dir/runner.log"
     update_shard_json_final "$shard_dir/shard.json" 2 0
     set +e
-    (cd "$SCRIPT_DIR/../.." && uv run python -m mobilegym.report "$BATCH_DIR")
+    run_report "$BATCH_DIR"
     set -e
 }
 
@@ -680,6 +695,18 @@ if [[ "$1" == "--aiden-suite" ]]; then
     for i in $(seq 0 $((PARALLEL - 1))); do
         WORK_ITEMS+=("aiden_suite|$2|$i|$PARALLEL||shard-$i")
     done
+elif [[ "$1" == "--aiden-suites" ]]; then
+    if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "Error: --aiden-suites requires a comma-separated suite list" >&2
+        exit 2
+    fi
+    suites="${2//,/ }"
+    for suite in $suites; do
+        validate_suite_name "$suite"
+        for i in $(seq 0 $((PARALLEL - 1))); do
+            WORK_ITEMS+=("aiden_suite|$suite|$i|$PARALLEL||shard-$i")
+        done
+    done
 elif [[ "$1" == "--suite" ]]; then
     if [[ $# -lt 2 || -z "$2" ]]; then
         echo "Error: --suite requires a suite name" >&2
@@ -776,7 +803,7 @@ while [[ ${#PIDS[@]} -gt 0 ]]; do
 done
 
 set +e
-(cd "$SCRIPT_DIR/../.." && uv run python -m mobilegym.report "$BATCH_DIR")
+run_report "$BATCH_DIR"
 report_status=$?
 set -e
 if [[ $report_status -ne 0 ]]; then
