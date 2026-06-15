@@ -23,6 +23,9 @@ const (
 	defaultAudioSampleRate         = 16000
 	defaultAudioChannels           = 1
 	defaultAudioBitWidth           = 16
+	defaultAudioArchiveStoragePath = "/userdata/audio"
+	defaultAudioArchiveMaxFiles    = 500
+	defaultAudioArchiveMaxSizeMB   = 100
 	defaultBenchmarkJudgeModel     = defaultModelName
 	defaultKeyboardDevice          = "/dev/hidg0"
 	defaultMouseDevice             = "/dev/hidg1"
@@ -73,6 +76,12 @@ func DefaultConfig() Config {
 			SampleRate: defaultAudioSampleRate,
 			Channels:   defaultAudioChannels,
 			BitWidth:   defaultAudioBitWidth,
+		},
+		AudioArchive: AudioArchiveConfig{
+			Enabled:     true,
+			MaxFiles:    defaultAudioArchiveMaxFiles,
+			MaxSizeMB:   defaultAudioArchiveMaxSizeMB,
+			StoragePath: defaultAudioArchiveStoragePath,
 		},
 		Benchmark: BenchmarkConfig{
 			JudgeModel: defaultBenchmarkJudgeModel,

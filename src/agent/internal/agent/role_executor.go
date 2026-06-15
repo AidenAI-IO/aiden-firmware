@@ -1615,25 +1615,38 @@ func roleResponseDebugText(res *llms.ContentResponse) string {
 	}
 	choice := res.Choices[0]
 	var parts []string
+	seenLines := map[string]bool{}
+	addPart := func(part string) {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return
+		}
+		parts = append(parts, part)
+		for _, line := range strings.Split(part, "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				seenLines[line] = true
+			}
+		}
+	}
+	addToolCall := func(name, input string) {
+		line := fmt.Sprintf("tool_call: %s input=%s", name, input)
+		if seenLines[strings.TrimSpace(line)] {
+			return
+		}
+		addPart(line)
+	}
 	if text := strings.TrimSpace(choice.Content); text != "" {
-		parts = append(parts, normalizeRoleOutputContent(text))
+		addPart(normalizeRoleOutputContent(text))
 	}
 	for _, toolCall := range choice.ToolCalls {
 		if toolCall.FunctionCall == nil {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf(
-			"tool_call: %s input=%s",
-			toolCall.FunctionCall.Name,
-			toolCall.FunctionCall.Arguments,
-		))
+		addToolCall(toolCall.FunctionCall.Name, toolCall.FunctionCall.Arguments)
 	}
 	if choice.FuncCall != nil {
-		parts = append(parts, fmt.Sprintf(
-			"tool_call: %s input=%s",
-			choice.FuncCall.Name,
-			choice.FuncCall.Arguments,
-		))
+		addToolCall(choice.FuncCall.Name, choice.FuncCall.Arguments)
 	}
 	if len(parts) == 0 {
 		return "(empty response)"

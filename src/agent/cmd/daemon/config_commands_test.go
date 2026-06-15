@@ -132,6 +132,9 @@ pointer_mode = "touchscreen"
 		t.Fatalf("audio.socket = %q, want default %q",
 			dto.Audio.Socket, agent.DefaultConfig().Audio.Socket)
 	}
+	if !dto.AudioArchive.Enabled || dto.AudioArchive.StoragePath != agent.DefaultConfig().AudioArchive.StoragePath {
+		t.Fatalf("audio_archive defaults = %+v, want enabled default storage", dto.AudioArchive)
+	}
 }
 
 func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
@@ -142,6 +145,10 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 	if defaults.Audio.Socket == "" || defaults.Audio.SampleRate == 0 ||
 		defaults.Audio.Channels == 0 || defaults.Audio.BitWidth == 0 {
 		t.Fatalf("audio defaults were not populated: %+v", defaults.Audio)
+	}
+	if defaults.AudioArchive.Enabled || defaults.AudioArchive.StoragePath == "" ||
+		defaults.AudioArchive.MaxFiles == 0 || defaults.AudioArchive.MaxSizeMB == 0 {
+		t.Fatalf("audio archive zero config conversion = %+v, want disabled with path and retention defaults", defaults.AudioArchive)
 	}
 	if defaults.HID.FrameSocket == "" || defaults.HID.KeyboardDevice == "" ||
 		defaults.HID.MouseDevice == "" || defaults.HID.PointerMode == "" {
@@ -158,6 +165,13 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 	}
 }
 
+func TestWebConfigDTOFromAgentConfigDoesNotInferAudioArchiveEnabled(t *testing.T) {
+	roundTrip := webConfigDTOFromAgentConfig(agent.Config{AudioArchive: agent.AudioArchiveConfig{Enabled: false}})
+	if roundTrip.AudioArchive.Enabled {
+		t.Fatal("AudioArchive.Enabled = true, want explicit disabled zero-value config to stay disabled")
+	}
+}
+
 func TestWebConfigDTOFromAgentConfig_RedactsSearchAPIKey(t *testing.T) {
 	dto := webConfigDTOFromAgentConfig(agent.Config{
 		Search: agent.SearchConfig{
@@ -170,6 +184,30 @@ func TestWebConfigDTOFromAgentConfig_RedactsSearchAPIKey(t *testing.T) {
 	}
 	if !dto.Search.HasAPIKey {
 		t.Fatal("search has_api_key = false, want true for stored API key")
+	}
+}
+
+func TestWebConfigDTOMapsAudioArchive(t *testing.T) {
+	dto := webConfigDTO{
+		AudioArchive: audioArchiveDTO{
+			Enabled:     false,
+			MaxFiles:    42,
+			MaxSizeMB:   17,
+			StoragePath: "/tmp/audio-archive",
+		},
+	}
+	cfg := dto.toAgentConfig()
+	if cfg.AudioArchive.Enabled {
+		t.Fatal("AudioArchive.Enabled = true, want false")
+	}
+	if cfg.AudioArchive.MaxFiles != 42 || cfg.AudioArchive.MaxSizeMB != 17 || cfg.AudioArchive.StoragePath != "/tmp/audio-archive" {
+		t.Fatalf("AudioArchive = %+v, want DTO values", cfg.AudioArchive)
+	}
+
+	roundTrip := webConfigDTOFromAgentConfig(agent.Config{AudioArchive: cfg.AudioArchive})
+	if roundTrip.AudioArchive.Enabled || roundTrip.AudioArchive.MaxFiles != 42 ||
+		roundTrip.AudioArchive.MaxSizeMB != 17 || roundTrip.AudioArchive.StoragePath != "/tmp/audio-archive" {
+		t.Fatalf("round-trip AudioArchive = %+v, want DTO values", roundTrip.AudioArchive)
 	}
 }
 

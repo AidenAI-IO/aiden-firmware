@@ -263,6 +263,50 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleDirectResponses("你好！"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Answer directly.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"web-req-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	req.Header.Set("X-Aiden-Stream", "ndjson")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	history := server.historySnapshot()
+	user, ok := firstMessageOfType(history, "user")
+	if !ok {
+		t.Fatalf("missing user history: %#v", history)
+	}
+	if user.RequestID != "web-req-1" {
+		t.Fatalf("user request_id = %q, want web-req-1", user.RequestID)
+	}
+	assistant, ok := firstMessageOfType(history, "assistant")
+	if !ok {
+		t.Fatalf("missing assistant history: %#v", history)
+	}
+	if assistant.RequestID != "web-req-1" {
+		t.Fatalf("assistant request_id = %q, want web-req-1", assistant.RequestID)
+	}
+}
+
 func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
 	provider := &recordingTTSProvider{name: "server-provider"}
 	server := &Server{
@@ -1475,4 +1519,322 @@ func startFakeAudioServiceSocket(t *testing.T, handler func(audioRequest) (audio
 	}()
 
 	return socketPath
+}
+
+func TestMessageJSONWithVoiceFields(t *testing.T) {
+	msg := Message{
+		Type:            "user",
+		Content:         "Hello",
+		Timestamp:       time.Now(),
+		Source:          "voice",
+		AudioFile:       "/userdata/audio/msg_123.wav",
+		AudioDurationMs: 2500,
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var decoded Message
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if decoded.Source != "voice" {
+		t.Errorf("Source: got %q, want %q", decoded.Source, "voice")
+	}
+	if decoded.AudioFile != "/userdata/audio/msg_123.wav" {
+		t.Errorf("AudioFile: got %q, want %q", decoded.AudioFile, "/userdata/audio/msg_123.wav")
+	}
+	if decoded.AudioDurationMs != 2500 {
+		t.Errorf("AudioDurationMs: got %d, want %d", decoded.AudioDurationMs, 2500)
+	}
+}
+
+func TestMessageJSONOmitsEmptyVoiceFields(t *testing.T) {
+	msg := Message{
+		Type:      "user",
+		Content:   "Hello",
+		Timestamp: time.Now(),
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal to map failed: %v", err)
+	}
+
+	if _, exists := raw["source"]; exists {
+		t.Errorf("source field should be omitted when empty")
+	}
+	if _, exists := raw["audio_file"]; exists {
+		t.Errorf("audio_file field should be omitted when empty")
+	}
+	if _, exists := raw["audio_duration_ms"]; exists {
+		t.Errorf("audio_duration_ms field should be omitted when zero")
+	}
+}
+
+func TestServerHandleEventsSSE(t *testing.T) {
+	// Create minimal server
+	cfg := Config{ConfigDir: t.TempDir()}
+	runtime, err := NewRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	server := NewServer(runtime, "127.0.0.1:0", "")
+
+	// Create request
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest("GET", "/api/events", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	// Start handler in goroutine (it blocks on SSE stream)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.handleEvents(rec, req)
+	}()
+
+	// Give handler time to set headers
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify SSE headers
+	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type: got %q, want %q", ct, "text/event-stream")
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control: got %q, want %q", cc, "no-cache")
+	}
+	if conn := rec.Header().Get("Connection"); conn != "keep-alive" {
+		t.Errorf("Connection: got %q, want %q", conn, "keep-alive")
+	}
+
+	// Broadcast a test message
+	server.eventBroadcaster.Broadcast(Message{
+		Type:    "user",
+		Content: "SSE test",
+	})
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify message was sent
+	body := rec.Body.String()
+	if !strings.Contains(body, "data:") {
+		t.Errorf("Response should contain SSE data, got: %s", body)
+	}
+	if !strings.Contains(body, "SSE test") {
+		t.Errorf("Response should contain message content, got: %s", body)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("handleEvents did not exit after context cancellation")
+	}
+}
+
+func TestServerHistoryStoreBroadcastsToSSE(t *testing.T) {
+	cfg := Config{ConfigDir: t.TempDir()}
+	runtime, err := NewRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	server := NewServer(runtime, "127.0.0.1:0", "")
+
+	// Subscribe to SSE
+	ch := server.eventBroadcaster.Subscribe()
+	defer server.eventBroadcaster.Unsubscribe(ch)
+
+	// Append message to history store
+	testMsg := Message{
+		Type:    "user",
+		Content: "broadcast test",
+	}
+	if err := server.historyStore.Append(context.Background(), testMsg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify broadcast received
+	select {
+	case received := <-ch:
+		if received.Content != "broadcast test" {
+			t.Errorf("got content %q, want %q", received.Content, "broadcast test")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timeout waiting for broadcast")
+	}
+}
+
+func TestServerHandleAudioFileServes(t *testing.T) {
+	tmpDir := t.TempDir()
+	audioDir := filepath.Join(tmpDir, "audio")
+	if err := os.MkdirAll(audioDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create test WAV file
+	testFile := filepath.Join(audioDir, "msg_123.wav")
+	if err := os.WriteFile(testFile, []byte("WAV content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		ConfigDir: tmpDir,
+		AudioArchive: AudioArchiveConfig{
+			Enabled:     true,
+			StoragePath: audioDir,
+		},
+	}
+	runtime, err := NewRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	server := NewServer(runtime, "127.0.0.1:0", "")
+
+	req := httptest.NewRequest("GET", "/api/audio/msg_123.wav", nil)
+	rec := httptest.NewRecorder()
+	server.handleAudioFile(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Status: got %d, want %d", rec.Code, http.StatusOK)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "audio/wav" {
+		t.Errorf("Content-Type: got %q, want %q", ct, "audio/wav")
+	}
+	if body := rec.Body.String(); body != "WAV content" {
+		t.Errorf("Body: got %q, want %q", body, "WAV content")
+	}
+}
+
+func TestServerHandleAudioFilePathTraversalBlocked(t *testing.T) {
+	tmpDir := t.TempDir()
+	audioDir := filepath.Join(tmpDir, "audio")
+	if err := os.MkdirAll(audioDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create file outside audio dir
+	secretFile := filepath.Join(tmpDir, "secret.txt")
+	if err := os.WriteFile(secretFile, []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		ConfigDir: tmpDir,
+		AudioArchive: AudioArchiveConfig{
+			Enabled:     true,
+			StoragePath: audioDir,
+		},
+	}
+	runtime, err := NewRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	server := NewServer(runtime, "127.0.0.1:0", "")
+
+	// Attempt path traversal
+	req := httptest.NewRequest("GET", "/api/audio/../secret.txt", nil)
+	rec := httptest.NewRecorder()
+	server.handleAudioFile(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("Path traversal: got status %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestServerHandleAudioFileNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	audioDir := filepath.Join(tmpDir, "audio")
+	if err := os.MkdirAll(audioDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		ConfigDir: tmpDir,
+		AudioArchive: AudioArchiveConfig{
+			Enabled:     true,
+			StoragePath: audioDir,
+		},
+	}
+	runtime, err := NewRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	server := NewServer(runtime, "127.0.0.1:0", "")
+
+	req := httptest.NewRequest("GET", "/api/audio/nonexistent.wav", nil)
+	rec := httptest.NewRecorder()
+	server.handleAudioFile(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Not found: got status %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestServerHandleAudioFileSymlinkBlocked(t *testing.T) {
+	tmpDir := t.TempDir()
+	audioDir := filepath.Join(tmpDir, "audio")
+	if err := os.MkdirAll(audioDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create file outside audio dir
+	secretFile := filepath.Join(tmpDir, "secret.txt")
+	if err := os.WriteFile(secretFile, []byte("secret data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create symlink in audio dir pointing to secret
+	symlinkPath := filepath.Join(audioDir, "msg_symlink.wav")
+	if err := os.Symlink(secretFile, symlinkPath); err != nil {
+		t.Skip("Symlink not supported:", err)
+	}
+
+	cfg := Config{
+		ConfigDir: tmpDir,
+		AudioArchive: AudioArchiveConfig{
+			Enabled:     true,
+			StoragePath: audioDir,
+		},
+	}
+	runtime, err := NewRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	server := NewServer(runtime, "127.0.0.1:0", "")
+
+	req := httptest.NewRequest("GET", "/api/audio/msg_symlink.wav", nil)
+	rec := httptest.NewRecorder()
+	server.handleAudioFile(rec, req)
+
+	// Should return 403 Forbidden
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("Symlink attack: got status %d, want %d (body: %s)", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	// Verify secret not leaked
+	body := rec.Body.String()
+	if strings.Contains(body, "secret data") {
+		t.Error("Symlink attack succeeded - secret data leaked")
+	}
 }
