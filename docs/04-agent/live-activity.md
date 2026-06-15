@@ -7,6 +7,22 @@ Live Activity 有两条独立链路：
 - 前台链路：app 轮询 agent 的 `live_activity` 状态，并用 ActivityKit 本地创建、更新、结束 Live Activity；不申请 push token，不注册 APNs，不需要后端。
 - 后台链路：app 退后台、锁屏或未打开时，远程更新只能走 APNs。生产形态应由 Aiden 后端/relay 保存 Apple 凭证和 token，再把 agent 上报的状态推给 APNs。
 
+## 期望行为
+
+灵动岛的产品目标是让 Aiden 在用户离开 companion app 后仍然有一个系统级状态入口。它应该表现为：
+
+- `ready` / `connected`: app 已连接硬件，切后台时启动一个 "Aiden Ready" Live Activity，显示设备可用、点击可回到 Aiden。这个状态主要是入口和连接提示，不代表 app 获得后台常驻能力。
+- `running`: agent 正在执行任务时，Live Activity 展示任务标题、当前步骤、进度、是否需要用户回到 app。任务可以由 app 前台 chat 发起，也可以由 agent Web UI 发起。
+- `needs_app`: agent 需要 phone bridge、剪贴板、联系人、日历、打开 app 等 companion app 扩展能力时，Live Activity 应提示用户点击回到 Aiden，恢复前台 bridge。
+- `completed` / `failed` / `canceled`: 任务结束后展示短暂结果。如果硬件仍连接，可以回到 `ready`；如果设备断开、会话过期或用户关闭入口，则结束 Live Activity。
+
+关键边界：
+
+- 灵动岛是状态面板和回 app 入口，不是后台 agent 控制台。
+- 它不能让 RN JS、WebSocket 或 phone bridge 在 iOS 后台长期运行。
+- 如果 app 在前台或刚切后台时已经创建了 Live Activity，可以先显示最后一次本地状态；后台持续刷新必须通过 APNs。
+- 如果 app 已经被系统挂起/杀掉且没有现存 Live Activity，远程让灵动岛出现需要 APNs push-to-start 或等用户重新打开 app。
+
 ## 状态模型
 
 异步 chat 请求提供 `request_id` 时，agent 会为该请求维护一份 `live_activity` 快照：
@@ -117,14 +133,17 @@ agent -> Aiden 后端/relay -> APNs -> iPhone Live Activity
 
 iOS app 包含 `AidenLiveActivityExtension` Widget Extension 和 `AidenLiveActivityModule` native module。
 
+- app 与硬件建立连接后，应能在切后台前创建 `ready` Live Activity，作为快速回到 Aiden 的入口。
 - 前台 polling 到 `live_activity.status=running` 时，app 调用 ActivityKit `startOrUpdate`，使用本地 Live Activity，不申请 push token。
 - polling 到 `completed`、`failed` 或 `canceled` 时，app 结束本地 Live Activity。
-- 后台远程更新由 APNs/后端链路负责，不复用前台轮询路径。
+- 任务结束后，如果硬件仍连接且入口仍需要保留，app 可以把 Live Activity 回落到 `ready`；否则结束 Live Activity。
+- 后台远程更新、后台任务状态刷新、以及从 agent Web UI 发起任务后的后台展示由 APNs/后端链路负责，不复用前台轮询路径。
 - 用户点击灵动岛/锁屏 Live Activity 时，系统会回到 Aiden app。
 
 ## 联调顺序
 
 1. 用 iOS 真机安装 app，确认 Widget Extension 被嵌入。
-2. 前台发起 chat，确认 Live Activity 能本地出现并更新；这一步不需要 APNs，也不应出现 token 注册请求。
-3. 准备后台链路：配置 Aiden 后端/relay 或开发期 agent 直连 APNs。
-4. app 退后台后执行长任务，确认 APNs 能更新灵动岛/锁屏状态。
+2. app 连接硬件后切后台，确认 `ready` Live Activity 能作为灵动岛/锁屏入口出现；这一步可以先不依赖 APNs。
+3. 前台发起 chat，确认 Live Activity 能从 `ready` 或空状态进入 `running` 并更新；前台本地链路不需要 APNs，也不应出现 token 注册请求。
+4. 准备后台链路：配置 Aiden 后端/relay 或开发期 agent 直连 APNs，并让 app 注册 Live Activity push token。
+5. 从 agent Web UI 或硬件侧发起长任务，确认 app 后台时 APNs 能把灵动岛/锁屏状态更新为 `running` / `needs_app` / 结束态。
