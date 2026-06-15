@@ -713,12 +713,13 @@ func (s *Server) handleChatAsync(
 		}
 
 		runReq := RunRequest{
-			Input:          inputText,
-			Attachments:    runAttachments,
-			Skills:         req.Skills,
-			EpisodeID:      userMsg.EpisodeID,
-			RuntimeContext: s.runtimeContext(),
-			EventHandler:   eventHandler,
+			Input:             inputText,
+			Attachments:       runAttachments,
+			Skills:            req.Skills,
+			EpisodeID:         userMsg.EpisodeID,
+			DeviceEnvironment: s.bridgeEnvironment(),
+			RuntimeContext:    s.runtimeContext(),
+			EventHandler:      eventHandler,
 			SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 				return s.consumePendingSteer(requestID)
 			},
@@ -923,11 +924,12 @@ func (s *Server) handleChatSync(
 	s.appendHistory(userMsg)
 
 	runReq := RunRequest{
-		Input:          inputText,
-		Attachments:    runAttachments,
-		Skills:         req.Skills,
-		EpisodeID:      episodeID,
-		RuntimeContext: s.runtimeContext(),
+		Input:             inputText,
+		Attachments:       runAttachments,
+		Skills:            req.Skills,
+		EpisodeID:         episodeID,
+		DeviceEnvironment: s.bridgeEnvironment(),
+		RuntimeContext:    s.runtimeContext(),
 		EventHandler: func(event RunEvent) {
 			eventEpisodeID := event.EpisodeID
 			if eventEpisodeID == "" {
@@ -1026,6 +1028,18 @@ func (s *Server) runtimeContext() string {
 	return phoneBridgeRuntimeContext(s.bridge.Status())
 }
 
+func (s *Server) bridgeEnvironment() *PhoneEnvironment {
+	if s == nil || s.bridge == nil {
+		return nil
+	}
+	status := s.bridge.Status()
+	if status.Environment == nil {
+		return nil
+	}
+	env := clonePhoneEnvironment(*status.Environment)
+	return &env
+}
+
 func wantsChatStream(r *http.Request) bool {
 	return strings.Contains(r.Header.Get("Accept"), "application/x-ndjson") ||
 		strings.EqualFold(r.Header.Get("X-Aiden-Stream"), "ndjson") ||
@@ -1085,11 +1099,12 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.appendHistory(userMessage)
 
 	result, err := s.runtime.Run(ctx, RunRequest{
-		Input:          inputText,
-		Attachments:    runAttachments,
-		Skills:         req.Skills,
-		EpisodeID:      episodeID,
-		RuntimeContext: s.runtimeContext(),
+		Input:             inputText,
+		Attachments:       runAttachments,
+		Skills:            req.Skills,
+		EpisodeID:         episodeID,
+		DeviceEnvironment: s.bridgeEnvironment(),
+		RuntimeContext:    s.runtimeContext(),
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return s.consumePendingSteer(req.RequestID)
 		},

@@ -43,6 +43,7 @@ func TestEnterPlanModePreservesToolSteps(t *testing.T) {
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{
 		Phase: phaseDefault,
@@ -80,6 +81,7 @@ func TestCommitPlanOnlyInPlanMode(t *testing.T) {
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{Phase: phaseDefault}
 	turn := executor.handlePlannerMetaTool(phaseDefault, state, schema.AgentAction{
@@ -109,6 +111,7 @@ func TestDecisionPhaseEntersPlanModeBeforeDomainTools(t *testing.T) {
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{Phase: phaseDecision}
 	toolSpecs := NewToolSpecs([]langtools.Tool{tool})
@@ -152,6 +155,7 @@ func TestDecisionPhaseUseSimpleModeSwitchesToDefaultWithoutToolStep(t *testing.T
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{Phase: phaseDecision}
 	inputs := map[string]string{"input": "simple task", "history": ""}
@@ -186,6 +190,7 @@ func TestRoutePolicyOverridesSimpleForMultiStageRequests(t *testing.T) {
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{Phase: phaseDecision}
 	inputs := map[string]string{
@@ -220,6 +225,7 @@ func TestPlanRequiresCommitBeforeExecutionToolUse(t *testing.T) {
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
 	toolSpecs := NewToolSpecs([]langtools.Tool{tool})
@@ -258,6 +264,7 @@ func TestAutoPlanRejectsCancelBeforeCommit(t *testing.T) {
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
 	inputs := map[string]string{"input": "multi-step task", "history": ""}
@@ -293,6 +300,7 @@ func TestPlanModeAllowsReadOnlyToolBeforeCommit(t *testing.T) {
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
 	toolSpecs := NewToolSpecs([]langtools.Tool{tool})
@@ -332,6 +340,7 @@ func TestPlanModeRejectsDomainToolsAfterCommit(t *testing.T) {
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{Phase: phasePlan, PlanCommitted: true}
 	toolSpecs := NewToolSpecs([]langtools.Tool{tool})
@@ -367,6 +376,7 @@ func TestPlanModeAllowsEvidenceBackedFinalAnswer(t *testing.T) {
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{
 		Phase:         phasePlan,
@@ -398,6 +408,7 @@ func TestCommitPlanEntersExecutionMode(t *testing.T) {
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
 	turn := executor.handlePlannerMetaTool(phasePlan, state, schema.AgentAction{
@@ -450,6 +461,7 @@ func TestCancelPlanReturnsToDefaultMode(t *testing.T) {
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{
 		Phase:     phasePlan,
@@ -497,6 +509,7 @@ func TestFinishStepEntersVerifierReview(t *testing.T) {
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{
 		Phase:               phaseExecution,
@@ -526,6 +539,7 @@ func TestFinishStepStoresKeyInfo(t *testing.T) {
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{
 		Phase:               phaseExecution,
@@ -561,6 +575,7 @@ func TestAbortStepEntersVerifierReview(t *testing.T) {
 		nil,
 		nil,
 		ScreenshotPruningConfig{},
+		nil,
 	)
 	state := &roleLoopState{
 		Phase:               phaseExecution,
