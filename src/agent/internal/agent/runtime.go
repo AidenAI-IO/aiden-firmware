@@ -56,10 +56,11 @@ type Runtime struct {
 }
 
 type RunRequest struct {
-	Input       string
-	Attachments []InputAttachment
-	Skills      []string
-	EpisodeID   string
+	Input             string
+	Attachments       []InputAttachment
+	Skills            []string
+	EpisodeID         string
+	DeviceEnvironment *PhoneEnvironment
 	// RuntimeContext is dynamic per-turn system context, such as connected
 	// hardware/app state. It is not persisted as user configuration.
 	RuntimeContext string
@@ -553,7 +554,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			steerStatus = status
 		}
 	}
-	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), req.SteerProvider)
+	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), req.DeviceEnvironment, req.SteerProvider)
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {

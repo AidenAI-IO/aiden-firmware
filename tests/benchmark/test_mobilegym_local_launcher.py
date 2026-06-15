@@ -5,7 +5,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
 import threading
+import urllib.error
 import urllib.request
 from http.server import HTTPServer
 from pathlib import Path
@@ -15,6 +17,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER_PATH = REPO_ROOT / "benchmark" / "mobilegym" / "scripts" / "local_launcher.py"
+HELPER_PATH = REPO_ROOT / "benchmark" / "mobilegym" / "scripts" / "local_launcher_helper.py"
 INSTALLER_PATH = REPO_ROOT / "benchmark" / "mobilegym" / "scripts" / "install_local_launcher.sh"
 PARALLEL_RUN_PATH = REPO_ROOT / "benchmark" / "mobilegym" / "docker" / "parallel_run.sh"
 
@@ -22,6 +25,14 @@ PARALLEL_RUN_PATH = REPO_ROOT / "benchmark" / "mobilegym" / "docker" / "parallel
 @pytest.fixture
 def launcher_module():
     spec = importlib.util.spec_from_file_location("local_launcher", LAUNCHER_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture
+def helper_module():
+    spec = importlib.util.spec_from_file_location("local_launcher_helper", HELPER_PATH)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -363,15 +374,126 @@ def test_parallel_run_passes_limit_to_suite_workers():
     assert "--limit \"$LIMIT\"" in script
 
 
+def test_helper_start_invokes_launchctl_for_local_launcher(helper_module, monkeypatch):
+    calls = []
+
+    def fake_run(argv, *, check, capture_output, text, timeout):
+        calls.append((argv, timeout))
+        return subprocess.CompletedProcess(argv, 0, stdout="started\n", stderr="")
+
+    monkeypatch.setattr(helper_module.subprocess, "run", fake_run)
+
+    result = helper_module.start_local_launcher()
+
+    assert result == {"ok": True, "status": "started", "output": "started"}
+    assert calls == [
+        (
+            [
+                "launchctl",
+                "kickstart",
+                "-k",
+                f"gui/{os.getuid()}/com.aiden.mobilegym-local-launcher",
+            ],
+            helper_module.LAUNCHCTL_TIMEOUT_SECONDS,
+        )
+    ]
+
+
+def test_helper_start_bootstraps_launcher_when_service_is_unloaded(helper_module, monkeypatch, tmp_path):
+    calls = []
+    plist = tmp_path / "com.aiden.mobilegym-local-launcher.plist"
+    plist.write_text("plist")
+    monkeypatch.setattr(helper_module, "LAUNCHER_PLIST", plist)
+
+    def fake_run(argv, *, check, capture_output, text, timeout):
+        calls.append(argv)
+        if argv[1] == "kickstart" and len(calls) == 1:
+            raise subprocess.CalledProcessError(
+                113,
+                argv,
+                output="",
+                stderr='Could not find service "com.aiden.mobilegym-local-launcher"\n',
+            )
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(helper_module.subprocess, "run", fake_run)
+
+    result = helper_module.start_local_launcher()
+
+    assert result == {"ok": True, "status": "started", "output": ""}
+    assert calls == [
+        ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.aiden.mobilegym-local-launcher"],
+        ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)],
+        ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.aiden.mobilegym-local-launcher"],
+    ]
+
+
+def test_helper_start_reports_launchctl_timeout(helper_module, monkeypatch):
+    def fake_run(argv, *, check, capture_output, text, timeout):
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    monkeypatch.setattr(helper_module.subprocess, "run", fake_run)
+
+    with pytest.raises(helper_module.HelperError, match="launchctl timed out"):
+        helper_module.start_local_launcher()
+
+
+def test_helper_start_endpoint_allows_private_browser_origin(helper_module):
+    server = HTTPServer(("127.0.0.1", 0), helper_module.make_handler(lambda: {"ok": True}))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/start",
+            data=b"{}",
+            method="POST",
+            headers={"Content-Type": "application/json", "Origin": "http://192.168.31.107:8080"},
+        )
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            assert resp.status == 200
+            assert resp.headers["Access-Control-Allow-Origin"] == "http://192.168.31.107:8080"
+            assert resp.headers["Access-Control-Allow-Private-Network"] == "true"
+            assert json.loads(resp.read().decode()) == {"ok": True}
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_helper_start_endpoint_rejects_public_browser_origin(helper_module):
+    server = HTTPServer(("127.0.0.1", 0), helper_module.make_handler(lambda: {"ok": True}))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/start",
+            data=b"{}",
+            method="POST",
+            headers={"Content-Type": "application/json", "Origin": "https://example.com"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(req, timeout=2)
+        assert err.value.code == 403
+        assert err.value.headers.get("Access-Control-Allow-Origin") is None
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
 def test_local_launcher_installer_registers_launchd_service():
     script = INSTALLER_PATH.read_text()
 
     assert "com.aiden.mobilegym-local-launcher" in script
+    assert "com.aiden.mobilegym-local-launcher-helper" in script
     assert "benchmark/mobilegym/scripts/local_launcher.py" in script
-    assert "<string>-lc</string>" in script
-    assert "<string>-c</string>" not in script
+    assert "benchmark/mobilegym/scripts/local_launcher_helper.py" in script
+    assert "UV_BIN=\"$(command -v uv)\"" in script
+    assert 'exec "$UV_BIN" run --project benchmark python' in script
+    assert "exec uv run --project benchmark python" not in script
+    assert "<string>-c</string>" in script
+    assert "<string>-lc</string>" not in script
     assert "--host 127.0.0.1" in script
     assert "--port 4174" in script
+    assert "--port 4175" in script
     assert "MOBILEGYM_DOCKER_PROXY" in script
     assert "http://host.docker.internal:7897" not in script
     assert 'if [[ -n "${MOBILEGYM_DOCKER_PROXY:-}" ]]' in script

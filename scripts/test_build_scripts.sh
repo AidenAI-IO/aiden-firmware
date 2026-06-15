@@ -140,6 +140,45 @@ if [ "$firmware_count" -ne 1 ] || [ -z "$firmware_line" ] || [ "$firmware_line" 
     exit 1
 fi
 
+if ! grep -Fq 'find_ext4_debugfs' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'verify_ext4_image_file_matches' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'sha256_file' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'debugfs is required to verify rebuilt ext4 image contents' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must verify rebuilt ext4 image file contents with debugfs and sha256" >&2
+    exit 1
+fi
+
+verify_oem_line=$(grep -nF 'verify_oem_generated_binaries_in_image "$RK_PROJECT_OUTPUT_IMAGE/oem.img" "$RK_PROJECT_PACKAGE_OEM_DIR"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+rebuild_oem_line=$(grep -nF 'rebuild_ext4_image oem "$RK_PROJECT_PACKAGE_OEM_DIR"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+updateimg_line=$(grep -nF './build.sh updateimg "$@"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+if [ -z "$verify_oem_line" ] || [ -z "$rebuild_oem_line" ] || [ -z "$updateimg_line" ] || \
+   [ "$verify_oem_line" -le "$rebuild_oem_line" ] || [ "$verify_oem_line" -ge "$updateimg_line" ]; then
+    echo "_build_image.sh must verify generated OEM binaries after rebuilding oem.img and before rebuilding update.img" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'verify_ext4_image_file_matches "$image_path" "$staged_root" "usr/bin/$binary"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must verify every Aiden-generated OEM binary in the rebuilt oem.img" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'log_generated_binaries_in_dir' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'binary-fingerprint stage=' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'log_generated_binaries_in_dir "build-bin"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'log_generated_binaries_in_dir "overlay-oem-usr-bin"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'log_generated_binaries_in_dir "sdk-oem-usr-bin"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'log_generated_binaries_in_dir "sdk-oem-before-strip"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'log_generated_binaries_in_dir "sdk-oem-after-strip"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'image-file-verified rel=/$rel_path' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must log staged, stripped, and image-readback binary fingerprints for OTA forensics" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'stat /$rel_path' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must print debugfs stat for mismatched image files" >&2
+    exit 1
+fi
+
 if ! grep -Fq 'clean_managed_staging_paths "$RK_PROJECT_PACKAGE_OEM_DIR"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq '"usr/model"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq '"usr/ko/insmod_wifi.sh"' "$ROOT_DIR/_build_image.sh" || \
