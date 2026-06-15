@@ -88,6 +88,10 @@ func detectScreenshotActiveArea(jpegData []byte, expectedWidth, expectedHeight i
 	if err != nil {
 		return screenActiveArea{}
 	}
+	return detectImageActiveArea(img, expectedWidth, expectedHeight)
+}
+
+func detectImageActiveArea(img image.Image, expectedWidth, expectedHeight int) screenActiveArea {
 	bounds := img.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
