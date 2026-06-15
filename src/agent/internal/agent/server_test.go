@@ -335,6 +335,50 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleDirectResponses("你好！"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Answer directly.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"web-req-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	req.Header.Set("X-Aiden-Stream", "ndjson")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	history := server.historySnapshot()
+	user, ok := firstMessageOfType(history, "user")
+	if !ok {
+		t.Fatalf("missing user history: %#v", history)
+	}
+	if user.RequestID != "web-req-1" {
+		t.Fatalf("user request_id = %q, want web-req-1", user.RequestID)
+	}
+	assistant, ok := firstMessageOfType(history, "assistant")
+	if !ok {
+		t.Fatalf("missing assistant history: %#v", history)
+	}
+	if assistant.RequestID != "web-req-1" {
+		t.Fatalf("assistant request_id = %q, want web-req-1", assistant.RequestID)
+	}
+}
+
 func TestHandleCoordinateDebugTapRejectsInvalidType(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},

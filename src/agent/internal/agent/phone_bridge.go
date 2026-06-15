@@ -419,7 +419,12 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 			builder.WriteByte('\n')
 		}
 		if status.Environment != nil {
-			appendPhoneEnvironmentContext(&builder, *status.Environment, status.EnvironmentUpdatedAt)
+			builder.WriteString("- device environment is available in World State for structured use\n")
+			if status.EnvironmentUpdatedAt != nil {
+				builder.WriteString("- environment_updated_at: ")
+				builder.WriteString(status.EnvironmentUpdatedAt.UTC().Format(time.RFC3339))
+				builder.WriteByte('\n')
+			}
 		}
 		builder.WriteString("- The phone companion app is connected. Use open_app as the primary path for opening apps, URLs, deeplinks, and phone dialer screens before falling back to screenshot/HID navigation.\n")
 		builder.WriteString("- clipboard, calendar, contacts, and notification tools are available through the companion app: prefer them over manual UI navigation for reading/writing the system clipboard, creating/querying/deleting system calendar events, managing contacts, or sending notifications.\n")
@@ -429,40 +434,6 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 	builder.WriteString("- connected: false\n")
 	builder.WriteString("- The phone companion app is not connected. Do not assume open_app, clipboard, calendar, contacts, or notification tools can control the phone; use screenshot plus HID/touch fallback for phone UI tasks, and tell the user when calendar/clipboard/contacts/notification actions cannot be completed without the companion app.")
 	return builder.String()
-}
-
-func appendPhoneEnvironmentContext(builder *strings.Builder, env PhoneEnvironment, updatedAt *time.Time) {
-	builder.WriteString("Phone environment summary:\n")
-	if updatedAt != nil {
-		builder.WriteString("- environment_updated_at: ")
-		builder.WriteString(updatedAt.UTC().Format(time.RFC3339))
-		builder.WriteByte('\n')
-	}
-	appendNonEmptyLine(builder, "- system: ", joinNonEmpty(", ",
-		firstNonEmptyPhoneField(env.SystemName, env.Platform),
-		env.SystemVersion,
-		boolLabel("tablet", env.IsTablet),
-	))
-	appendNonEmptyLine(builder, "- locale: ", joinNonEmpty(", ",
-		env.Locale,
-		fieldLabel("language", env.Language),
-		fieldLabel("region", env.Region),
-		fieldLabel("timezone", env.TimeZone),
-		fieldLabel("utc_offset", env.UTCOffset),
-		boolLabel("24h_clock", env.Uses24HourClock),
-	))
-	appendNonEmptyLine(builder, "- screen: ", formatPhoneScreen(env.Screen))
-	if apps := availableAppNames(env.ThirdPartyApps, 30); len(apps) > 0 {
-		builder.WriteString("- confirmed_launchable_third_party_apps: ")
-		builder.WriteString(strings.Join(apps, ", "))
-		builder.WriteByte('\n')
-		builder.WriteString("- App list is sampled from Aiden's prepared candidates; apps not listed may still be installed or openable. If the user asks for another app, try open_app by mapping/deeplink and verify with screenshot/HID if needed.\n")
-	} else if apps := availableAppNames(env.AvailableApps, 30); len(apps) > 0 {
-		builder.WriteString("- confirmed_launchable_third_party_apps: ")
-		builder.WriteString(strings.Join(apps, ", "))
-		builder.WriteByte('\n')
-		builder.WriteString("- App list is sampled from Aiden's prepared candidates; apps not listed may still be installed or openable. If the user asks for another app, try open_app by mapping/deeplink and verify with screenshot/HID if needed.\n")
-	}
 }
 
 func appendNonEmptyLine(builder *strings.Builder, prefix, value string) {
@@ -513,12 +484,15 @@ func boolLabel(label string, value *bool) string {
 }
 
 func formatPhoneScreen(screen PhoneScreenInfo) string {
-	parts := make([]string, 0, 4)
+	parts := make([]string, 0, 8)
+	if screen.Width != nil && screen.Height != nil {
+		parts = append(parts, fmt.Sprintf("%.2fx%.2f pt/dp", *screen.Width, *screen.Height))
+	}
 	if screen.WidthPixels != nil && screen.HeightPixels != nil {
 		parts = append(parts, fmt.Sprintf("%dx%d px", *screen.WidthPixels, *screen.HeightPixels))
 	}
-	if screen.Width != nil && screen.Height != nil {
-		parts = append(parts, fmt.Sprintf("%.0fx%.0f pt/dp", *screen.Width, *screen.Height))
+	if screen.NativeWidthPixels != nil && screen.NativeHeightPixels != nil {
+		parts = append(parts, fmt.Sprintf("native=%dx%d px", *screen.NativeWidthPixels, *screen.NativeHeightPixels))
 	}
 	if screen.Scale != nil {
 		parts = append(parts, fmt.Sprintf("scale=%.2f", *screen.Scale))
@@ -526,8 +500,14 @@ func formatPhoneScreen(screen PhoneScreenInfo) string {
 	if screen.NativeScale != nil {
 		parts = append(parts, fmt.Sprintf("native_scale=%.2f", *screen.NativeScale))
 	}
+	if screen.Density != nil {
+		parts = append(parts, fmt.Sprintf("density=%.2f", *screen.Density))
+	}
 	if screen.DensityDPI != nil {
 		parts = append(parts, fmt.Sprintf("density_dpi=%d", *screen.DensityDPI))
+	}
+	if screen.ScaledDensity != nil {
+		parts = append(parts, fmt.Sprintf("scaled_density=%.2f", *screen.ScaledDensity))
 	}
 	return strings.Join(parts, ", ")
 }

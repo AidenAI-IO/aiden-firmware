@@ -60,6 +60,7 @@ type Server struct {
 	activeRunsMu               sync.Mutex
 	pendingSteers              map[string]pendingSteerMessage
 	pendingSteersMu            sync.Mutex
+	eventBroadcaster           *EventBroadcaster
 }
 
 type webAudioRecording struct {
@@ -95,18 +96,21 @@ type MessageAttachment struct {
 
 // Message represents a chat message or tool call
 type Message struct {
-	Type        string              `json:"type"` // "user", "assistant", "tool_call", "tool_result", "role_output"
-	Role        string              `json:"role,omitempty"`
-	EpisodeID   string              `json:"episode_id,omitempty"`
-	RequestID   string              `json:"request_id,omitempty"`
-	Status      string              `json:"status,omitempty"`
-	Content     string              `json:"content"`
-	ToolName    string              `json:"tool_name,omitempty"`
-	ToolInput   string              `json:"tool_input,omitempty"`
-	Description string              `json:"description,omitempty"`
-	Attachments []MessageAttachment `json:"attachments,omitempty"`
-	Timestamp   time.Time           `json:"timestamp"`
-	IsError     bool                `json:"is_error,omitempty"`
+	Type            string              `json:"type"` // "user", "assistant", "tool_call", "tool_result", "role_output"
+	Role            string              `json:"role,omitempty"`
+	EpisodeID       string              `json:"episode_id,omitempty"`
+	RequestID       string              `json:"request_id,omitempty"`
+	Status          string              `json:"status,omitempty"`
+	Content         string              `json:"content"`
+	ToolName        string              `json:"tool_name,omitempty"`
+	ToolInput       string              `json:"tool_input,omitempty"`
+	Description     string              `json:"description,omitempty"`
+	Attachments     []MessageAttachment `json:"attachments,omitempty"`
+	Source          string              `json:"source,omitempty"`
+	AudioFile       string              `json:"audio_file,omitempty"`
+	AudioDurationMs int64               `json:"audio_duration_ms,omitempty"`
+	Timestamp       time.Time           `json:"timestamp"`
+	IsError         bool                `json:"is_error,omitempty"`
 }
 
 // ChatRequest represents an incoming chat request
@@ -222,11 +226,18 @@ func NewServer(runtime *Runtime, addr string, benchmarkDir string) *Server {
 		pendingResults:      make(map[string]*chatPendingResult),
 		activeRuns:          make(map[string]context.CancelFunc),
 		pendingSteers:       make(map[string]pendingSteerMessage),
+		eventBroadcaster:    NewEventBroadcaster(),
 	}
 	if runtime.config.ConfigDir != "" {
 		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
 		s.historyStore = NewChatHistoryStore(filepath.Join(memoryDir, "chat_history"))
 		s.episodeStore = NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
+	}
+	// Connect history store to event broadcaster
+	if s.historyStore != nil {
+		s.historyStore.SetOnNewMessage(func(msg Message) {
+			s.eventBroadcaster.Broadcast(msg)
+		})
 	}
 	loadAppMappingForConfig(runtime.config.ConfigDir, runtime.logger)
 	loadQuickActionsForConfig(runtime.config.ConfigDir, runtime.logger)
@@ -271,6 +282,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/chat/steer", s.handleChatSteer)
 	mux.HandleFunc("/api/chat/steer/cancel", s.handleChatSteerCancel)
 	mux.HandleFunc("/api/chat/result", s.handleChatResult)
+	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
 	mux.HandleFunc("/api/clear", s.handleClear)
@@ -283,6 +295,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
 	mux.HandleFunc("/api/audio/record/stop", s.handleAudioRecordStop)
+	mux.HandleFunc("/api/audio/", s.handleAudioFile)
 	mux.HandleFunc("/api/settings/tts", s.handleTTSSettings)
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
 	mux.HandleFunc("/api/phone-bridge", s.bridge.HandleWebSocket)
@@ -714,12 +727,13 @@ func (s *Server) handleChatAsync(
 		}
 
 		runReq := RunRequest{
-			Input:          inputText,
-			Attachments:    runAttachments,
-			Skills:         req.Skills,
-			EpisodeID:      userMsg.EpisodeID,
-			RuntimeContext: s.runtimeContext(),
-			EventHandler:   eventHandler,
+			Input:             inputText,
+			Attachments:       runAttachments,
+			Skills:            req.Skills,
+			EpisodeID:         userMsg.EpisodeID,
+			DeviceEnvironment: s.bridgeEnvironment(),
+			RuntimeContext:    s.runtimeContext(),
+			EventHandler:      eventHandler,
 			SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 				return s.consumePendingSteer(requestID)
 			},
@@ -924,11 +938,12 @@ func (s *Server) handleChatSync(
 	s.appendHistory(userMsg)
 
 	runReq := RunRequest{
-		Input:          inputText,
-		Attachments:    runAttachments,
-		Skills:         req.Skills,
-		EpisodeID:      episodeID,
-		RuntimeContext: s.runtimeContext(),
+		Input:             inputText,
+		Attachments:       runAttachments,
+		Skills:            req.Skills,
+		EpisodeID:         episodeID,
+		DeviceEnvironment: s.bridgeEnvironment(),
+		RuntimeContext:    s.runtimeContext(),
 		EventHandler: func(event RunEvent) {
 			eventEpisodeID := event.EpisodeID
 			if eventEpisodeID == "" {
@@ -1027,6 +1042,18 @@ func (s *Server) runtimeContext() string {
 	return phoneBridgeRuntimeContext(s.bridge.Status())
 }
 
+func (s *Server) bridgeEnvironment() *PhoneEnvironment {
+	if s == nil || s.bridge == nil {
+		return nil
+	}
+	status := s.bridge.Status()
+	if status.Environment == nil {
+		return nil
+	}
+	env := clonePhoneEnvironment(*status.Environment)
+	return &env
+}
+
 func wantsChatStream(r *http.Request) bool {
 	return strings.Contains(r.Header.Get("Accept"), "application/x-ndjson") ||
 		strings.EqualFold(r.Header.Get("X-Aiden-Stream"), "ndjson") ||
@@ -1057,6 +1084,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	userMessage := Message{
 		Type:        "user",
 		EpisodeID:   episodeID,
+		RequestID:   req.RequestID,
 		Content:     inputText,
 		Attachments: historyAttachments,
 		Timestamp:   time.Now(),
@@ -1086,11 +1114,12 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.appendHistory(userMessage)
 
 	result, err := s.runtime.Run(ctx, RunRequest{
-		Input:          inputText,
-		Attachments:    runAttachments,
-		Skills:         req.Skills,
-		EpisodeID:      episodeID,
-		RuntimeContext: s.runtimeContext(),
+		Input:             inputText,
+		Attachments:       runAttachments,
+		Skills:            req.Skills,
+		EpisodeID:         episodeID,
+		DeviceEnvironment: s.bridgeEnvironment(),
+		RuntimeContext:    s.runtimeContext(),
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return s.consumePendingSteer(req.RequestID)
 		},
@@ -1103,6 +1132,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				Type:        event.Type,
 				Role:        event.Role,
 				EpisodeID:   eventEpisodeID,
+				RequestID:   req.RequestID,
 				Content:     event.Content,
 				ToolName:    event.ToolName,
 				ToolInput:   event.ToolInput,
@@ -1121,6 +1151,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		errorMessage := Message{
 			Type:      "episode_status",
 			EpisodeID: episodeID,
+			RequestID: req.RequestID,
 			Status:    "failed",
 			Content:   "Agent error: " + err.Error(),
 			Timestamp: time.Now(),
@@ -1138,6 +1169,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	assistantMessage := Message{
 		Type:      "assistant",
 		EpisodeID: firstNonEmptyString([]string{result.EpisodeID, episodeID}),
+		RequestID: req.RequestID,
 		Status:    "completed",
 		Content:   result.Output,
 		Timestamp: time.Now(),
@@ -1259,6 +1291,58 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(historySnapshot)
+}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	// Check if response writer supports flushing
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	// Subscribe to events
+	ch := s.eventBroadcaster.Subscribe()
+	defer s.eventBroadcaster.Unsubscribe(ch)
+
+	// Send initial connection event
+	fmt.Fprintf(w, "data: {\"type\":\"connected\"}\n\n")
+	flusher.Flush()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			// Client disconnected
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				// Channel closed (server shutdown)
+				return
+			}
+
+			// Only send user and assistant messages
+			if msg.Type != "user" && msg.Type != "assistant" {
+				continue
+			}
+
+			data, err := json.Marshal(msg)
+			if err != nil {
+				if s.logger != nil {
+					s.logger.Warn("[sse] marshal error: %v", err)
+				}
+				continue
+			}
+
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+	}
 }
 
 func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
@@ -1589,6 +1673,61 @@ func (r *webAudioRecording) snapshotSamples() []int16 {
 	return samples
 }
 
+func (s *Server) handleAudioFile(w http.ResponseWriter, r *http.Request) {
+	// Extract filename from URL path
+	filename := strings.TrimPrefix(r.URL.Path, "/api/audio/")
+
+	// Reject path traversal attempts in the request
+	if strings.Contains(filename, "..") || strings.Contains(filename, "/") || strings.Contains(filename, "\\") {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	// Get audio directory from config
+	audioDir := s.runtime.config.AudioArchive.StoragePathOrDefault()
+
+	// Security: only allow base filenames, no path traversal
+	filename = filepath.Base(filename)
+	fullPath := filepath.Join(audioDir, filename)
+
+	// Resolve symlinks to prevent symlink-based traversal attacks
+	resolvedAudioDir, err := filepath.EvalSymlinks(audioDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if s.logger != nil {
+			s.logger.Warn("[audio] resolve audio dir: %v", err)
+		}
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	resolvedFullPath, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "File not found", http.StatusNotFound)
+			return
+		}
+		if s.logger != nil {
+			s.logger.Warn("[audio] resolve file path: %v", err)
+		}
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Verify resolved path is within audio directory
+	if !strings.HasPrefix(resolvedFullPath, resolvedAudioDir+string(filepath.Separator)) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	// Serve file
+	w.Header().Set("Content-Type", "audio/wav")
+	http.ServeFile(w, r, resolvedFullPath)
+}
+
 func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/api/tools":
@@ -1857,6 +1996,25 @@ func (s *Server) appendHistory(message Message) {
 		if err := s.historyStore.Append(context.Background(), message); err != nil && s.logger != nil {
 			s.logger.Warn("Persist chat history failed: %v", err)
 		}
+	}
+}
+
+// AppendHistory appends a message through the server history path so persistent
+// history, in-memory /api/history snapshots, and SSE broadcasts stay aligned.
+func (s *Server) AppendHistory(message Message) {
+	s.appendHistory(message)
+}
+
+// HistoryStore returns the chat history store, used by audio dialog to persist
+// voice messages. May return nil if no config dir was provided.
+func (s *Server) HistoryStore() *ChatHistoryStore {
+	return s.historyStore
+}
+
+// BroadcastMessage sends a message to all SSE subscribers.
+func (s *Server) BroadcastMessage(msg Message) {
+	if s.eventBroadcaster != nil {
+		s.eventBroadcaster.Broadcast(msg)
 	}
 }
 
@@ -3074,6 +3232,32 @@ const webUI = `<!DOCTYPE html>
                 justify-content: flex-end;
             }
         }
+
+        .voice-icon {
+            margin-left: 4px;
+            font-size: 0.9em;
+        }
+
+        .audio-playback-btn {
+            margin-top: 8px;
+            padding: 6px 12px;
+            font-size: 0.85rem;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .audio-playback-btn:hover:not(:disabled) {
+            background-color: #45a049;
+        }
+
+        .audio-playback-btn:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -3234,11 +3418,14 @@ const webUI = `<!DOCTYPE html>
         let pendingSteer = null;
         let pendingSteerSubmitting = false;
         let episodeCache = {};
+        let eventSource = null;
+        let renderedMessageKeys = new Set();
 
         loadHistory();
         loadToolCatalog();
         loadToolSkills();
         autoResizeInput();
+        connectSSE();
 
         inputEl.addEventListener('input', autoResizeInput);
         imageInputEl.addEventListener('change', handleImageSelection);
@@ -3260,6 +3447,44 @@ const webUI = `<!DOCTYPE html>
                 console.error('Failed to load history:', err);
             }
         }
+
+        function connectSSE() {
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            eventSource = new EventSource('/api/events');
+
+            eventSource.onopen = function() {
+                console.log('[SSE] Connected');
+            };
+
+            eventSource.onmessage = function(e) {
+                try {
+                    const data = JSON.parse(e.data);
+
+                    if (data.type === 'connected') {
+                        return;
+                    }
+
+                    if (data.type === 'user' || data.type === 'assistant') {
+                        addMessage(data);
+                    }
+                } catch (err) {
+                    console.error('[SSE] Parse error:', err);
+                }
+            };
+
+            eventSource.onerror = function(e) {
+                console.error('[SSE] Connection error, will retry...');
+            };
+        }
+
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden && (!eventSource || eventSource.readyState === EventSource.CLOSED)) {
+                connectSSE();
+            }
+        });
 
         async function loadToolCatalog() {
             try {
@@ -3530,6 +3755,7 @@ const webUI = `<!DOCTYPE html>
 
             addMessage({
                 type: 'user',
+                request_id: currentChatRequestId,
                 content: message,
                 attachments: pendingAttachments,
                 timestamp: new Date().toISOString()
@@ -3822,9 +4048,13 @@ const webUI = `<!DOCTYPE html>
 
         function renderHistory(history) {
             messagesDiv.innerHTML = '';
+            renderedMessageKeys = new Set();
 
             const fragment = document.createDocumentFragment();
             history.forEach(function(msg) {
+                const key = messageIdentity(msg);
+                if (renderedMessageKeys.has(key)) return;
+                renderedMessageKeys.add(key);
                 fragment.appendChild(createMessageNode(msg));
             });
 
@@ -3834,9 +4064,29 @@ const webUI = `<!DOCTYPE html>
         }
 
         function addMessage(msg) {
+            const key = messageIdentity(msg);
+            if (renderedMessageKeys.has(key)) return;
+            renderedMessageKeys.add(key);
             messagesDiv.appendChild(createMessageNode(msg));
             updateEmptyState();
             scrollToBottom();
+        }
+
+        function messageIdentity(msg) {
+            msg = msg || {};
+            const type = normalizeType(msg.type);
+            const content = msg.content || '';
+            const requestId = msg.request_id || '';
+            if (requestId && (type === 'user' || type === 'assistant')) {
+                return ['request', requestId, type, content].join('\u001f');
+            }
+
+            const episodeId = msg.episode_id || '';
+            if (episodeId) {
+                return ['episode', episodeId, type, msg.role || '', msg.tool_name || '', msg.tool_input || '', content, msg.timestamp || ''].join('\u001f');
+            }
+
+            return ['local', type, content, msg.timestamp || ''].join('\u001f');
         }
 
         function createMessageNode(msg) {
@@ -3856,6 +4106,16 @@ const webUI = `<!DOCTYPE html>
             const role = document.createElement('div');
             role.className = 'message-role';
             role.textContent = getRoleLabel(msg.type, msg.tool_name, msg.role);
+
+            // Add voice indicator for voice messages
+            if (msg.source === 'voice') {
+                const voiceIcon = document.createElement('span');
+                voiceIcon.className = 'voice-icon';
+                voiceIcon.textContent = ' 🎤';
+                voiceIcon.title = 'Voice message';
+                role.appendChild(voiceIcon);
+            }
+
             body.appendChild(role);
 
             if (msg.type === 'tool_call') {
@@ -3881,6 +4141,28 @@ const webUI = `<!DOCTYPE html>
                 body.appendChild(episodeLink);
             }
 
+            // Add audio playback button for voice messages with archived audio
+            if (msg.audio_file && msg.audio_file !== '') {
+                const audioBtn = document.createElement('button');
+                audioBtn.type = 'button';
+                audioBtn.className = 'audio-playback-btn';
+                audioBtn.textContent = '▶️ Play Audio';
+
+                const filename = msg.audio_file.split('/').pop();
+                const audioUrl = '/api/audio/' + encodeURIComponent(filename);
+
+                if (msg.audio_duration_ms > 0) {
+                    const durationSec = (msg.audio_duration_ms / 1000).toFixed(1);
+                    audioBtn.title = 'Duration: ' + durationSec + 's';
+                }
+
+                audioBtn.addEventListener('click', function() {
+                    playAudio(audioUrl, audioBtn);
+                });
+
+                body.appendChild(audioBtn);
+            }
+
             const timeDiv = document.createElement('div');
             timeDiv.className = 'message-time';
             timeDiv.textContent = formatTime(msg.timestamp);
@@ -3890,6 +4172,36 @@ const webUI = `<!DOCTYPE html>
             shell.appendChild(body);
             card.appendChild(shell);
             return card;
+        }
+
+        function playAudio(url, button) {
+            const audio = new Audio(url);
+
+            const originalText = button.textContent;
+            button.textContent = '⏸️ Playing...';
+            button.disabled = true;
+
+            audio.onended = function() {
+                button.textContent = originalText;
+                button.disabled = false;
+            };
+
+            audio.onerror = function() {
+                button.textContent = '❌ Error';
+                setTimeout(function() {
+                    button.textContent = originalText;
+                    button.disabled = false;
+                }, 2000);
+            };
+
+            audio.play().catch(function(err) {
+                console.error('[Audio] Play failed:', err);
+                button.textContent = '❌ Error';
+                setTimeout(function() {
+                    button.textContent = originalText;
+                    button.disabled = false;
+                }, 2000);
+            });
         }
 
         function renderEpisodeLink(msg) {

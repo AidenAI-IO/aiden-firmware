@@ -31,16 +31,17 @@ type ValidationResult struct {
 // Keep this struct in lockstep with config_to_json(); the round-trip is covered
 // by TestConfigCheck_WireFormatContract.
 type webConfigDTO struct {
-	Model     modelDTO     `json:"model"`
-	ModelText modelDTO     `json:"model_text"`
-	TTS       ttsDTO       `json:"tts"`
-	STT       sttDTO       `json:"stt"`
-	Audio     audioDTO     `json:"audio"`
-	Benchmark benchmarkDTO `json:"benchmark"`
-	HID       hidDTO       `json:"hid"`
-	Search    searchDTO    `json:"search"`
-	Telemetry telemetryDTO `json:"telemetry"`
-	Agent     agentDTO     `json:"agent"`
+	Model        modelDTO        `json:"model"`
+	ModelText    modelDTO        `json:"model_text"`
+	TTS          ttsDTO          `json:"tts"`
+	STT          sttDTO          `json:"stt"`
+	Audio        audioDTO        `json:"audio"`
+	AudioArchive audioArchiveDTO `json:"audio_archive"`
+	Benchmark    benchmarkDTO    `json:"benchmark"`
+	HID          hidDTO          `json:"hid"`
+	Search       searchDTO       `json:"search"`
+	Telemetry    telemetryDTO    `json:"telemetry"`
+	Agent        agentDTO        `json:"agent"`
 }
 
 type modelDTO struct {
@@ -80,6 +81,13 @@ type audioDTO struct {
 	SampleRate int    `json:"sample_rate"`
 	Channels   int    `json:"channels"`
 	BitWidth   int    `json:"bit_width"`
+}
+
+type audioArchiveDTO struct {
+	Enabled     bool   `json:"enabled"`
+	MaxFiles    int    `json:"max_files"`
+	MaxSizeMB   int    `json:"max_size_mb"`
+	StoragePath string `json:"storage_path"`
 }
 
 type benchmarkDTO struct {
@@ -205,6 +213,12 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			Channels:   d.Audio.Channels,
 			BitWidth:   d.Audio.BitWidth,
 		},
+		AudioArchive: agent.AudioArchiveConfig{
+			Enabled:     d.AudioArchive.Enabled,
+			MaxFiles:    d.AudioArchive.MaxFiles,
+			MaxSizeMB:   d.AudioArchive.MaxSizeMB,
+			StoragePath: d.AudioArchive.StoragePath,
+		},
 		Benchmark: agent.BenchmarkConfig{
 			JudgeModel: d.Benchmark.JudgeModel,
 			APIKey:     d.Benchmark.APIKey,
@@ -265,6 +279,8 @@ func boolPtr(b bool) *bool {
 }
 
 func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
+	audioArchive := cfg.AudioArchive
+
 	return webConfigDTO{
 		Model: modelDTO{
 			Provider:             cfg.Model.Provider,
@@ -311,6 +327,12 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			SampleRate: cfg.Audio.SampleRateOrDefault(),
 			Channels:   cfg.Audio.ChannelsOrDefault(),
 			BitWidth:   cfg.Audio.BitWidthOrDefault(),
+		},
+		AudioArchive: audioArchiveDTO{
+			Enabled:     audioArchive.Enabled,
+			MaxFiles:    audioArchive.MaxFilesOrDefault(),
+			MaxSizeMB:   audioArchive.MaxSizeMBOrDefault(),
+			StoragePath: audioArchive.StoragePathOrDefault(),
 		},
 		Benchmark: benchmarkDTO{
 			JudgeModel:   cfg.Benchmark.JudgeModel,

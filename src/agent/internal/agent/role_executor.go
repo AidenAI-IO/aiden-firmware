@@ -30,6 +30,7 @@ type roleCollaborativeExecutor struct {
 	OutputKey         string
 	Recorder          *EpisodeRecorder
 	ScreenshotPruning ScreenshotPruningConfig
+	InitialWorldState worldState
 	ForceSimpleLoop   bool
 	SteerProvider     func(context.Context) (RunSteerMessage, bool)
 }
@@ -99,8 +100,14 @@ type roleLoopState struct {
 }
 
 type worldState struct {
-	LatestScreenshot *worldScreenshot
-	Observation      *worldStateObservation
+	LatestScreenshot  *worldScreenshot
+	Observation       *worldStateObservation
+	DeviceEnvironment *worldDeviceEnvironment
+}
+
+type worldDeviceEnvironment struct {
+	PhoneEnvironment
+	UpdatedAt time.Time
 }
 
 type worldScreenshot struct {
@@ -152,6 +159,7 @@ func newRoleCollaborativeExecutor(
 	handler callbacks.Handler,
 	recorder *EpisodeRecorder,
 	screenshotPruning ScreenshotPruningConfig,
+	deviceEnvironment *PhoneEnvironment,
 	steerProviders ...func(context.Context) (RunSteerMessage, bool),
 ) *roleCollaborativeExecutor {
 	if mem == nil {
@@ -161,6 +169,8 @@ func newRoleCollaborativeExecutor(
 	if len(steerProviders) > 0 {
 		steerProvider = steerProviders[0]
 	}
+	world := worldState{}
+	world.UpdateDeviceEnvironment(deviceEnvironment)
 	return &roleCollaborativeExecutor{
 		Model:             model,
 		Profiles:          profiles,
@@ -172,6 +182,7 @@ func newRoleCollaborativeExecutor(
 		OutputKey:         "output",
 		Recorder:          recorder,
 		ScreenshotPruning: screenshotPruning.WithDefaults(),
+		InitialWorldState: world,
 		ForceSimpleLoop:   profiles.Planner.SystemPrompt != "" && !profiles.Planner.Capabilities.CanModifyPlan,
 		SteerProvider:     steerProvider,
 	}
@@ -191,7 +202,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 	if e.ForceSimpleLoop {
 		initialPhase = phaseDefault
 	}
-	state := roleLoopState{Phase: initialPhase, ForceSimpleLoop: e.ForceSimpleLoop}
+	state := roleLoopState{Phase: initialPhase, ForceSimpleLoop: e.ForceSimpleLoop, World: e.InitialWorldState}
 	for i := 0; i < e.MaxIterations; i++ {
 		switch state.Phase {
 		case phaseDecision, phaseDefault, phasePlan:
@@ -993,6 +1004,41 @@ func buildRoleUserMessageParts(input string, attachments []InputAttachment, worl
 
 func writeWorldState(builder *strings.Builder, world worldState) {
 	builder.WriteString("\n\nWorld State (shared across planner, executor, and verifier):\n")
+	if world.DeviceEnvironment != nil {
+		env := world.DeviceEnvironment
+		builder.WriteString("- Device environment: available")
+		if platform := strings.TrimSpace(env.Platform); platform != "" {
+			builder.WriteString(fmt.Sprintf(" platform=%s", platform))
+		}
+		if system := strings.TrimSpace(firstNonEmptyPhoneField(env.SystemName, env.Platform)); system != "" {
+			builder.WriteString(fmt.Sprintf(" system=%s", system))
+		}
+		if version := strings.TrimSpace(env.SystemVersion); version != "" {
+			builder.WriteString(fmt.Sprintf(" version=%s", version))
+		}
+		if env.IsTablet != nil {
+			builder.WriteString(fmt.Sprintf(" tablet=%t", *env.IsTablet))
+		}
+		if !env.UpdatedAt.IsZero() {
+			builder.WriteString(fmt.Sprintf(" updated_at=%s", env.UpdatedAt.UTC().Format(time.RFC3339)))
+		}
+		builder.WriteByte('\n')
+		appendWorldStateLine(builder, "- Device source: ", joinNonEmpty(", ", env.Source, fieldLabel("captured_at", env.CapturedAt)))
+		appendWorldStateLine(builder, "- Device locale: ", joinNonEmpty(", ", env.Locale, fieldLabel("language", env.Language), fieldLabel("region", env.Region), fieldLabel("timezone", env.TimeZone)))
+		appendWorldStateLine(builder, "- Device time: ", joinNonEmpty(", ", fieldLabel("utc_offset", env.UTCOffset), intLabel("utc_offset_minutes", env.UTCOffsetMinutes), boolLabel("24h_clock", env.Uses24HourClock)))
+		appendWorldStateLine(builder, "- Device hardware: ", joinNonEmpty(", ", fieldLabel("manufacturer", env.Manufacturer), fieldLabel("brand", env.Brand), fieldLabel("model", env.Model), fieldLabel("device_name", env.DeviceName)))
+		appendWorldStateLine(builder, "- Device screen: ", formatPhoneScreen(env.Screen))
+		appendWorldStateLine(builder, "- Device battery: ", formatPhoneBattery(env.Battery))
+		if apps := availableAppNames(env.ThirdPartyApps, 12); len(apps) > 0 {
+			builder.WriteString("- Confirmed third-party apps: ")
+			builder.WriteString(strings.Join(apps, ", "))
+			builder.WriteByte('\n')
+		} else if apps := availableAppNames(env.AvailableApps, 12); len(apps) > 0 {
+			builder.WriteString("- Confirmed third-party apps: ")
+			builder.WriteString(strings.Join(apps, ", "))
+			builder.WriteByte('\n')
+		}
+	}
 	if world.LatestScreenshot == nil {
 		builder.WriteString("- Latest screenshot: none yet.\n")
 	} else {
@@ -1053,6 +1099,23 @@ func writeWorldState(builder *strings.Builder, world worldState) {
 			builder.WriteByte('\n')
 		}
 	}
+}
+
+func appendWorldStateLine(builder *strings.Builder, prefix, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	builder.WriteString(prefix)
+	builder.WriteString(value)
+	builder.WriteByte('\n')
+}
+
+func intLabel(label string, value *int) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s=%d", label, *value)
 }
 
 func writeRequestObjectiveAndCriteria(builder *strings.Builder, inputs map[string]string, state roleLoopState) {
@@ -1255,6 +1318,33 @@ func (s *worldState) UpdateObservedState(observed observedWorldState, source Rol
 		SourceRole:         source,
 		ObservedAt:         time.Now(),
 		ScreenshotStep:     step,
+	}
+}
+
+func (s *worldState) UpdateDeviceEnvironment(env *PhoneEnvironment) {
+	if env == nil {
+		return
+	}
+	cloned := clonePhoneEnvironment(*env)
+	now := time.Now()
+	s.DeviceEnvironment = &worldDeviceEnvironment{
+		PhoneEnvironment: cloned,
+		UpdatedAt:        now,
+	}
+	platform := normalizeObservedWorldState(observedWorldState{Platform: cloned.Platform}).Platform
+	if platform == "" {
+		return
+	}
+	if s.Observation == nil {
+		s.Observation = &worldStateObservation{
+			observedWorldState: observedWorldState{Platform: platform, Confidence: 1},
+			SourceRole:         RoleVerifier,
+			ObservedAt:         now,
+		}
+		return
+	}
+	if strings.TrimSpace(s.Observation.Platform) == "" {
+		s.Observation.Platform = platform
 	}
 }
 
@@ -1525,25 +1615,38 @@ func roleResponseDebugText(res *llms.ContentResponse) string {
 	}
 	choice := res.Choices[0]
 	var parts []string
+	seenLines := map[string]bool{}
+	addPart := func(part string) {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return
+		}
+		parts = append(parts, part)
+		for _, line := range strings.Split(part, "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				seenLines[line] = true
+			}
+		}
+	}
+	addToolCall := func(name, input string) {
+		line := fmt.Sprintf("tool_call: %s input=%s", name, input)
+		if seenLines[strings.TrimSpace(line)] {
+			return
+		}
+		addPart(line)
+	}
 	if text := strings.TrimSpace(choice.Content); text != "" {
-		parts = append(parts, normalizeRoleOutputContent(text))
+		addPart(normalizeRoleOutputContent(text))
 	}
 	for _, toolCall := range choice.ToolCalls {
 		if toolCall.FunctionCall == nil {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf(
-			"tool_call: %s input=%s",
-			toolCall.FunctionCall.Name,
-			toolCall.FunctionCall.Arguments,
-		))
+		addToolCall(toolCall.FunctionCall.Name, toolCall.FunctionCall.Arguments)
 	}
 	if choice.FuncCall != nil {
-		parts = append(parts, fmt.Sprintf(
-			"tool_call: %s input=%s",
-			choice.FuncCall.Name,
-			choice.FuncCall.Arguments,
-		))
+		addToolCall(choice.FuncCall.Name, choice.FuncCall.Arguments)
 	}
 	if len(parts) == 0 {
 		return "(empty response)"

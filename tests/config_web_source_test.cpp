@@ -125,6 +125,35 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
+TEST_CASE("config web exposes audio archive switch") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("\"audio_archive\"") != std::string::npos);
+    CHECK(source.find("audio_archive.enabled") != std::string::npos);
+    CHECK(html.find("section-audio_archive") != std::string::npos);
+    CHECK(html.find("audio_archive_enabled") != std::string::npos);
+    CHECK(html.find("audioArchiveModeHint") != std::string::npos);
+    CHECK(html.find("isAudioArchiveAvailable") != std::string::npos);
+    CHECK(html.find("agent.input_mode = stt") != std::string::npos);
+    CHECK(html.find("testSection('audio_archive')") == std::string::npos);
+    CHECK(html.find("[audio_archive]") != std::string::npos);
+    CHECK(html.find("保存 STT 语音录音 WAV") != std::string::npos);
+}
+
 TEST_CASE("config web docs list token_env in model fields") {
     const std::string doc_path = std::string(AIDEN_SOURCE_DIR) + "/docs/03-services/config-web.md";
     std::ifstream doc_in(doc_path.c_str());
@@ -451,7 +480,7 @@ TEST_CASE("config web tolerates metadata sections without rendered controls") {
     // Config metadata may expose sections that do not have a static editor
     // card yet. Page-level locking must skip those missing DOM nodes instead
     // of aborting initialization.
-    CHECK(html.find("const btn=byId('save-'+section);if(btn)btn.disabled=locked;") != std::string::npos);
+    CHECK(html.find("const btn=byId('save-'+section);if(btn)btn.disabled=actualLocked;") != std::string::npos);
     CHECK(html.find("const card=byId('section-'+section);if(card)card.classList.remove('editing');") != std::string::npos);
 }
 

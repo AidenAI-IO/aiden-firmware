@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BurntSushi/toml"
 )
 
 func TestConfigValidateAcceptsAudioWakeup(t *testing.T) {
@@ -897,6 +899,104 @@ func TestVoiceSessionConfigValidationRejectsNegativeValues(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want contains %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestAudioArchiveConfigDefaults(t *testing.T) {
+	configContent := `
+[audio_archive]
+enabled = true
+storage_path = "/userdata/audio"
+`
+
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "agent.toml")
+	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var cfg Config
+	if _, err := toml.DecodeFile(configFile, &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if !cfg.AudioArchive.Enabled {
+		t.Error("AudioArchive.Enabled should be true")
+	}
+	if cfg.AudioArchive.StoragePath != "/userdata/audio" {
+		t.Errorf("StoragePath: got %q, want %q", cfg.AudioArchive.StoragePath, "/userdata/audio")
+	}
+
+	// Test defaults for unspecified fields
+	if cfg.AudioArchive.MaxFilesOrDefault() != 500 {
+		t.Errorf("MaxFiles default: got %d, want %d", cfg.AudioArchive.MaxFilesOrDefault(), 500)
+	}
+	if cfg.AudioArchive.MaxSizeMBOrDefault() != 100 {
+		t.Errorf("MaxSizeMB default: got %d, want %d", cfg.AudioArchive.MaxSizeMBOrDefault(), 100)
+	}
+}
+
+func TestLoadRuntimeConfigEnablesAudioArchiveByDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "agent.toml")
+	if err := os.WriteFile(configFile, []byte(`[model]
+provider = "fake"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRuntimeConfig(configFile)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if !cfg.AudioArchive.Enabled {
+		t.Fatal("AudioArchive.Enabled = false, want true for runtime defaults")
+	}
+	if got, want := cfg.AudioArchive.StoragePathOrDefault(), "/userdata/audio"; got != want {
+		t.Fatalf("AudioArchive.StoragePathOrDefault() = %q, want %q", got, want)
+	}
+}
+
+func TestAudioArchiveStoragePathOrDefaultTrimsWhitespace(t *testing.T) {
+	if got := (AudioArchiveConfig{StoragePath: "  /tmp/audio  "}).StoragePathOrDefault(); got != "/tmp/audio" {
+		t.Fatalf("StoragePathOrDefault() = %q, want trimmed path", got)
+	}
+	if got := (AudioArchiveConfig{StoragePath: "  \t  "}).StoragePathOrDefault(); got != defaultAudioArchiveStoragePath {
+		t.Fatalf("StoragePathOrDefault() = %q, want default path", got)
+	}
+}
+
+func TestAudioArchiveConfigExplicitValues(t *testing.T) {
+	configContent := `
+[audio_archive]
+enabled = false
+max_files = 1000
+max_size_mb = 200
+storage_path = "/custom/path"
+`
+
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "agent.toml")
+	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var cfg Config
+	if _, err := toml.DecodeFile(configFile, &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.AudioArchive.Enabled {
+		t.Error("AudioArchive.Enabled should be false")
+	}
+	if cfg.AudioArchive.MaxFilesOrDefault() != 1000 {
+		t.Errorf("MaxFiles: got %d, want %d", cfg.AudioArchive.MaxFilesOrDefault(), 1000)
+	}
+	if cfg.AudioArchive.MaxSizeMBOrDefault() != 200 {
+		t.Errorf("MaxSizeMB: got %d, want %d", cfg.AudioArchive.MaxSizeMBOrDefault(), 200)
+	}
+	if cfg.AudioArchive.StoragePath != "/custom/path" {
+		t.Errorf("StoragePath: got %q, want %q", cfg.AudioArchive.StoragePath, "/custom/path")
 	}
 }
 

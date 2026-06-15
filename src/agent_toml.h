@@ -44,6 +44,13 @@ struct AudioToml {
     int bit_width = 0;
 };
 
+struct AudioArchiveToml {
+    bool enabled = true;
+    int max_files = 500;
+    int max_size_mb = 100;
+    std::string storage_path = "/userdata/audio";
+};
+
 struct BenchmarkToml {
     std::string judge_model;
     std::string api_key;
@@ -82,6 +89,7 @@ struct AgentToml {
     TTSToml tts;
     STTToml stt;
     AudioToml audio;
+    AudioArchiveToml audio_archive;
     BenchmarkToml benchmark;
     HIDToml hid;
     SearchToml search;

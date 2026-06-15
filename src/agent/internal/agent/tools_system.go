@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	_ "time/tzdata"
 )
@@ -507,6 +508,86 @@ func weatherCodeDescription(code int) string {
 	default:
 		return fmt.Sprintf("Unknown weather code %d", code)
 	}
+}
+
+type SleepController struct {
+	mu        sync.Mutex
+	requested bool
+	reason    string
+}
+
+func NewSleepController() *SleepController {
+	return &SleepController{}
+}
+
+func (c *SleepController) Request(reason string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.requested = true
+	c.reason = strings.TrimSpace(reason)
+}
+
+func (c *SleepController) Consume() (bool, string) {
+	if c == nil {
+		return false, ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	requested := c.requested
+	reason := c.reason
+	c.requested = false
+	c.reason = ""
+	return requested, reason
+}
+
+type EnterSleepTool struct {
+	controller *SleepController
+}
+
+func NewEnterSleepTool(controller *SleepController) *EnterSleepTool {
+	return &EnterSleepTool{controller: controller}
+}
+
+func (t *EnterSleepTool) Name() string { return "enter_sleep" }
+
+func (t *EnterSleepTool) Description() string {
+	return `Ask the runtime to close the active voice session and return to wakeup-waiting sleep mode. ` +
+		`Use this when the user says to stop listening, go to sleep, standby, or wait for the next wakeup. ` +
+		`Input JSON is optional: {"reason":"user asked me to sleep"}.`
+}
+
+func (t *EnterSleepTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"reason": map[string]any{
+			"type":        "string",
+			"description": "Optional reason for entering sleep mode.",
+		},
+	})
+}
+
+func (t *EnterSleepTool) Call(ctx context.Context, input string) (string, error) {
+	reason := strings.TrimSpace(input)
+	if strings.HasPrefix(reason, "{") {
+		var args struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal([]byte(reason), &args); err != nil {
+			return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"reason\": \"task completed\"} or a bare string describing the reason for entering sleep mode", err), nil
+		}
+		reason = strings.TrimSpace(args.Reason)
+	}
+	if t.controller != nil {
+		t.controller.Request(reason)
+	}
+	return jsonString(map[string]interface{}{
+		"status":  "sleep_requested",
+		"mode":    "wakeup",
+		"reason":  reason,
+		"message": "The active voice session will close after this turn, and the agent will wait for the next wakeup event.",
+	}), nil
 }
 
 func jsonString(value interface{}) string {
