@@ -295,3 +295,36 @@ def test_perception_task_can_pass_from_history_after_agent_413(tmp_path: Path):
     assert result.metrics["agent_error"].startswith("HTTP 500")
     assert result.metrics["response_required_satisfied_by_first_click"] is True
     assert result.hard_assertions.response_exists is True
+
+
+def test_perception_task_fails_when_local_rubric_evaluation_is_unsupported(tmp_path: Path):
+    history = [
+        {"type": "tool_call", "tool_name": "mouse_click",
+         "tool_input": '{"x":920,"y":90,"coord_space":"normalized"}'},
+        {"type": "tool_result", "tool_name": "mouse_click", "content": "{}"},
+        {"type": "assistant", "content": "done"},
+    ]
+    task = _task_386_spec()
+    task.rubric = [
+        RubricItem(
+            id="requires_visual_semantics",
+            check="The target is semantically correct according to the judge.",
+        )
+    ]
+
+    result = run_one_task(
+        PerceptionClient(history),
+        _perception_suite(tmp_path),
+        task,
+        1,
+        tmp_path / "artifacts",
+        None,
+        None,
+        "run-1",
+    )
+
+    assert result.status == "failed"
+    assert result.metrics["perception_first_click_error"] == (
+        "unsupported rubric for local first-click perception evaluation"
+    )
+    assert not (tmp_path / "artifacts" / "judge.json").exists()

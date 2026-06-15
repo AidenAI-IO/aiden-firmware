@@ -127,9 +127,10 @@ def run_one_task(
     (artifact_dir / "history.json").write_text(
         json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
     trace = extract_trace(history)
+    perception_first_click = is_perception_first_click_task(suite, task)
     perception_eval = (
         evaluate_first_click_rubric(trace, task.rubric)
-        if is_perception_first_click_task(suite, task)
+        if perception_first_click
         else None
     )
     if perception_eval is not None:
@@ -138,6 +139,10 @@ def run_one_task(
             "expected": perception_eval.expected,
             "passed": perception_eval.passed,
         }
+    elif perception_first_click:
+        base.metrics["perception_first_click_error"] = (
+            "unsupported rubric for local first-click perception evaluation"
+        )
     wall_ms = int((time.monotonic() - started_mono) * 1000)
     if suite.trace_observations:
         observation_results = evaluate_trace_observations(trace, suite.trace_observations)
@@ -185,6 +190,10 @@ def run_one_task(
     base.hard_assertions = outcome.results
     if not outcome.all_passed:
         base.status = "timeout" if timed_out else "failed"
+        base.finished_at = now_iso()
+        return base
+    if perception_first_click and perception_eval is None:
+        base.status = "failed"
         base.finished_at = now_iso()
         return base
     if task.expected_answer is not None:
