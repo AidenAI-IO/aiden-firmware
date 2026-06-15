@@ -63,13 +63,14 @@ input[type=text]{width:260px}
 <div class="mode-tabs">
 <label><input type="radio" name="mode" value="aiden" checked onchange="onModeChange()"> Aiden Native</label>
 <label><input type="radio" name="mode" value="mobilegym" onchange="onModeChange()"> MobileGym</label>
+<label><input type="radio" name="mode" value="skillopt" onchange="onModeChange()"> SkillOpt</label>
 <span id="statusText" class="status">idle</span>
 </div>
 <button id="refreshBtn" class="secondary" onclick="refreshBenchmark()">Refresh</button>
 </div>
 <div class="control-grid">
 <div>
-<label class="field-label" for="suiteSelect">Benchmarks</label>
+<label class="field-label" id="suiteSelectLabel" for="suiteSelect">Benchmarks</label>
 <select id="suiteSelect"><option value="">Loading...</option></select>
 </div>
 <div class="actions">
@@ -80,6 +81,13 @@ input[type=text]{width:260px}
 <button id="runBtn" onclick="startRun()">Run</button>
 <button id="delBtn" class="del" onclick="deleteSuite()" style="display:none">Delete</button>
 </div>
+</div>
+<div id="skillOptConfig" class="row" style="display:none;margin-top:12px">
+<span class="inline-field"><label class="muted">Skill <select id="skillSelect"><option value="">Loading skills...</option></select></label></span>
+<span class="inline-field"><label class="muted">Verification <select id="validationSuiteSelect"><option value="">Loading suites...</option></select></label></span>
+<span class="inline-field"><label class="muted">Budget <input type="number" id="budgetInput" value="10" min="1" max="100" style="width:70px"></label></span>
+<span class="inline-field"><label class="muted">Edit budget <input type="number" id="editBudgetInput" value="4" min="1" max="20" style="width:70px"></label></span>
+<span class="inline-field"><label class="muted">Min delta <input type="text" id="minDeltaInput" value="0.03" style="width:76px"></label></span>
 </div>
 <div id="progressBox" class="progress">
 <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
@@ -142,6 +150,7 @@ var polling=null;
 var suiteIndex={};
 var benchmarkSuiteCount=0;
 var unitSuiteCount=0;
+var skillCount=0;
 var logPolling=null;
 function benchmarkEndpoint(path){return getMode()==='mobilegym'?MOBILEGYM_LOCAL_BASE+path:path}
 function mobileGymLauncherMessage(e){return 'Start the Mac MobileGym launcher first: '+String(e)}
@@ -202,24 +211,30 @@ for(var i=0;i<els.length;i++){if(els[i].checked)return els[i].value}
 return 'aiden';
 }
 function onModeChange(){
-var mg=getMode()==='mobilegym';
+var mode=getMode();
+var mg=mode==='mobilegym';
+var skillopt=mode==='skillopt';
 document.getElementById('mgConfig').style.display=mg?'inline-block':'none';
-document.getElementById('unitCard').style.display=mg?'none':'block';
+document.getElementById('skillOptConfig').style.display=skillopt?'flex':'none';
+document.getElementById('unitCard').style.display=mode==='aiden'?'block':'none';
+document.getElementById('suiteSelectLabel').textContent=skillopt?'Train suite':'Benchmarks';
 setStartLauncherVisible(false);
 loadSuites();
+loadSkills();
 loadRuns();
 loadStatus();
 }
-function load(){loadSuites();loadRuns();loadStatus()}
-function refreshBenchmark(){loadSuites();loadRuns();loadStatus();loadLog()}
+function load(){loadSuites();loadSkills();loadRuns();loadStatus()}
+function refreshBenchmark(){loadSuites();loadSkills();loadRuns();loadStatus();loadLog()}
 function loadSuites(){
 var mode=getMode();
 fetch(benchmarkEndpoint('/benchmark/suites')+'?mode='+encodeURIComponent(mode)).then(r=>r.json()).then(d=>{
-var s=document.getElementById('suiteSelect');var u=document.getElementById('unitSelect');
-s.innerHTML='';u.innerHTML='';suiteIndex={};benchmarkSuiteCount=0;unitSuiteCount=0;
+var s=document.getElementById('suiteSelect');var u=document.getElementById('unitSelect');var v=document.getElementById('validationSuiteSelect');
+s.innerHTML='';u.innerHTML='';v.innerHTML='';suiteIndex={};benchmarkSuiteCount=0;unitSuiteCount=0;
 if(!d || !d.length){
 var o=document.createElement('option');o.value='';o.textContent='(no suites)';s.appendChild(o);
 var uo=document.createElement('option');uo.value='';uo.textContent='(no unit suites)';u.appendChild(uo);
+var vo=document.createElement('option');vo.value='';vo.textContent='(no verification suites)';v.appendChild(vo);
 syncDelBtn();return;
 }
 var groups={aiden:[],mobilegym_builtin:[]};
@@ -227,7 +242,7 @@ d.forEach(function(x){
 if(mode!=='mobilegym'&&x.kind==='unit'){unitSuiteCount++;return}
 (groups[x.type]||groups.aiden).push(x);benchmarkSuiteCount++;
 });
-function appendGroup(label,arr){
+function appendGroup(label,arr,target){
 if(!arr.length)return;
 var og=document.createElement('optgroup');og.label=label;
 arr.forEach(function(x){
@@ -238,11 +253,12 @@ o.textContent=n;
 og.appendChild(o);
 suiteIndex[x.path||x.name]=x;
 });
-s.appendChild(og);
+target.appendChild(og);
 }
-appendGroup('Aiden Suites',groups.aiden);
-if(mode==='mobilegym')appendGroup('MobileGym Built-in',groups.mobilegym_builtin);
-if(!benchmarkSuiteCount){var bo=document.createElement('option');bo.value='';bo.textContent='(no benchmark suites)';s.appendChild(bo)}
+appendGroup('Aiden Suites',groups.aiden,s);
+if(mode==='skillopt')appendGroup('Verification Suites',groups.aiden,v);
+if(mode==='mobilegym')appendGroup('MobileGym Built-in',groups.mobilegym_builtin,s);
+if(!benchmarkSuiteCount){var bo=document.createElement('option');bo.value='';bo.textContent='(no benchmark suites)';s.appendChild(bo);var bvo=document.createElement('option');bvo.value='';bvo.textContent='(no verification suites)';v.appendChild(bvo)}
 if(mode!=='mobilegym'){
 d.forEach(function(x){
 if(x.kind!=='unit')return;
@@ -254,26 +270,40 @@ if(!unitSuiteCount){var uo=document.createElement('option');uo.value='';uo.textC
 }
 syncDelBtn();
 }).catch(function(e){
-var s=document.getElementById('suiteSelect');var u=document.getElementById('unitSelect');s.innerHTML='';u.innerHTML='';suiteIndex={};
+var s=document.getElementById('suiteSelect');var u=document.getElementById('unitSelect');var v=document.getElementById('validationSuiteSelect');s.innerHTML='';u.innerHTML='';v.innerHTML='';suiteIndex={};
 var o=document.createElement('option');o.value='';o.textContent=getMode()==='mobilegym'?'(Start the Mac MobileGym launcher first)':'(failed to load suites)';s.appendChild(o);
 var uo=document.createElement('option');uo.value='';uo.textContent='(failed to load unit suites)';u.appendChild(uo);
+var vo=document.createElement('option');vo.value='';vo.textContent='(failed to load verification suites)';v.appendChild(vo);
 syncDelBtn();
 if(getMode()==='mobilegym')showMobileGymLauncherError(e);
 });
+}
+function loadSkills(){
+var sel=document.getElementById('skillSelect');
+if(getMode()!=='skillopt'){skillCount=0;return}
+fetch('/benchmark/skills').then(r=>r.json()).then(function(d){
+sel.innerHTML='';skillCount=0;
+if(!d||!d.length){var o=document.createElement('option');o.value='';o.textContent='(no skills)';sel.appendChild(o);loadStatus();return}
+d.forEach(function(x){var o=document.createElement('option');o.value=x.name;o.textContent=x.name;sel.appendChild(o);skillCount++});
+loadStatus();
+}).catch(function(e){skillCount=0;sel.innerHTML='<option value="">(failed to load skills)</option>';logPanelError('Load skills failed',e)});
 }
 function syncDelBtn(){
 var p=document.getElementById('suiteSelect').value;
 var x=suiteIndex[p];
 document.getElementById('delBtn').style.display=(x&&x.custom)?'inline-block':'none';
 }
-function mobileGymSuiteName(item,key){
-if(item.type!=='aiden')return item.name;
-var p=item.path||key;
+function aidenSuiteName(item,key){
+var p=(item&&item.path)||key;
 var marker='/suites/';
 var i=p.indexOf(marker);
 if(i>=0)p=p.slice(i+marker.length);
 if(p.endsWith('.json'))p=p.slice(0,-5);
 return p;
+}
+function mobileGymSuiteName(item,key){
+if(item.type!=='aiden')return item.name;
+return aidenSuiteName(item,key);
 }
 function progressText(r){return r.progress||((r.totals&&r.totals.tasks)?((r.totals.tasks)+'/'+(r.totals.tasks)):'—')}
 function appendTextCell(tr,value,className){
@@ -332,8 +362,8 @@ function loadStatus(){
 fetch(benchmarkEndpoint('/benchmark/status')).then(r=>r.json()).then(d=>{
 var btn=document.getElementById('runBtn');
 var unitBtn=document.getElementById('runUnitBtn');
-btn.disabled=(d.status==='running'||benchmarkSuiteCount===0);
-unitBtn.disabled=(d.status==='running'||unitSuiteCount===0||getMode()==='mobilegym');
+btn.disabled=(d.status==='running'||benchmarkSuiteCount===0||(getMode()==='skillopt'&&skillCount===0));
+unitBtn.disabled=(d.status==='running'||unitSuiteCount===0||getMode()!=='aiden');
 updateProgress(d);
 loadLog();
 if(d.status==='running'&&!polling)polling=setInterval(pollStatus,3000);
@@ -343,8 +373,8 @@ function pollStatus(){
 fetch(benchmarkEndpoint('/benchmark/status')).then(r=>r.json()).then(d=>{
 var btn=document.getElementById('runBtn');
 var unitBtn=document.getElementById('runUnitBtn');
-btn.disabled=(d.status==='running'||benchmarkSuiteCount===0);
-unitBtn.disabled=(d.status==='running'||unitSuiteCount===0||getMode()==='mobilegym');
+btn.disabled=(d.status==='running'||benchmarkSuiteCount===0||(getMode()==='skillopt'&&skillCount===0));
+unitBtn.disabled=(d.status==='running'||unitSuiteCount===0||getMode()!=='aiden');
 updateProgress(d);
 loadLog();
 if(d.status!=='running'){
@@ -379,6 +409,19 @@ var payload={};
 if(mode==='aiden'){
 payload.suite=item.path||key;
 payload.mode='aiden';
+} else if(mode==='skillopt'){
+var skill=document.getElementById('skillSelect').value;
+var validationKey=document.getElementById('validationSuiteSelect').value;
+var validationItem=suiteIndex[validationKey];
+if(!skill){alert('Select a skill');return}
+if(!validationKey){alert('Select a verification suite');return}
+payload.mode='skillopt';
+payload.skill=skill;
+payload.train_suite=aidenSuiteName(item,key);
+payload.validation_suite=aidenSuiteName(validationItem,validationKey);
+payload.budget=Number(document.getElementById('budgetInput').value)||10;
+payload.edit_budget=Number(document.getElementById('editBudgetInput').value)||4;
+payload.min_delta=Number(document.getElementById('minDeltaInput').value)||0.03;
 } else {
 payload.suite=mobileGymSuiteName(item,key);
 payload.suite_type=item.type;

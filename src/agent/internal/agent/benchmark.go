@@ -62,6 +62,11 @@ type suiteListItem struct {
 	Concurrent  bool   `json:"concurrent"`
 }
 
+type skillListItem struct {
+	Name string `json:"name"`
+	Path string `json:"path,omitempty"`
+}
+
 func benchmarkSuiteKind(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil || len(data) > 256*1024 {
@@ -169,6 +174,85 @@ func scanMobileGymBuiltinSuites(benchmarkDir string) []suiteListItem {
 			Concurrent: true,
 		})
 	}
+	return items
+}
+
+func (s *Server) handleBenchmarkSkills(w http.ResponseWriter, r *http.Request) {
+	items := scanBenchmarkSkills(s.benchmarkSkillDirs())
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(items)
+}
+
+func (s *Server) benchmarkSkillDirs() []string {
+	seen := map[string]bool{}
+	dirs := []string{}
+	add := func(dir string) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" || seen[dir] {
+			return
+		}
+		seen[dir] = true
+		dirs = append(dirs, dir)
+	}
+	if env := os.Getenv("AIDEN_SKILLS_DIR"); env != "" {
+		for _, dir := range strings.Split(env, string(os.PathListSeparator)) {
+			add(dir)
+		}
+	}
+	if s.runtime != nil {
+		for _, dir := range s.runtime.config.SkillsDirs {
+			add(dir)
+		}
+		if s.runtime.config.ConfigDir != "" {
+			add(filepath.Join(s.runtime.config.ConfigDir, "skills"))
+		}
+	}
+	if s.benchmarkDir != "" {
+		add(filepath.Join(s.benchmarkDir, "config", "skills"))
+		add(filepath.Join(s.benchmarkDir, "mobilegym", "config", "skills"))
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		add(filepath.Join(cwd, "src", "agent", "config", "skills"))
+		add(filepath.Join(cwd, "config", "skills"))
+	}
+	return dirs
+}
+
+func (s *Server) benchmarkPrimarySkillsDir() string {
+	for _, dir := range s.benchmarkSkillDirs() {
+		if strings.TrimSpace(dir) != "" {
+			return dir
+		}
+	}
+	return ""
+}
+
+func scanBenchmarkSkills(dirs []string) []skillListItem {
+	byName := map[string]skillListItem{}
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			skillPath := filepath.Join(dir, name, "SKILL.md")
+			if info, err := os.Stat(skillPath); err != nil || info.IsDir() {
+				continue
+			}
+			if _, exists := byName[name]; !exists {
+				byName[name] = skillListItem{Name: name, Path: skillPath}
+			}
+		}
+	}
+	items := make([]skillListItem, 0, len(byName))
+	for _, item := range byName {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	return items
 }
 
@@ -416,7 +500,7 @@ func (s *Server) benchmarkRunnerAlive() bool {
 		}
 	}
 	out, err := exec.Command("sh", "-c",
-		"ps -w 2>/dev/null | grep -E 'runner.main|parallel_run.sh' | grep -v grep | head -1").Output()
+		"ps -w 2>/dev/null | grep -E 'runner.main|runner.skillopt|parallel_run.sh' | grep -v grep | head -1").Output()
 	if err != nil {
 		return true
 	}
@@ -431,6 +515,8 @@ func (s *Server) handleBenchmarkLog(w http.ResponseWriter, r *http.Request) {
 	if logPath == "" {
 		if mode == "mobilegym" {
 			logPath = "/tmp/mobilegym_run.log"
+		} else if mode == "skillopt" {
+			logPath = "/tmp/skillopt_run.log"
 		} else {
 			logPath = "/tmp/benchmark_run.log"
 		}

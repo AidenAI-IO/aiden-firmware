@@ -384,6 +384,19 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 	for _, marker := range []string{
 		`MOBILEGYM_LOCAL_BASE='http://127.0.0.1:4174'`,
 		`MOBILEGYM_HELPER_BASE='http://127.0.0.1:4175'`,
+		`<label><input type="radio" name="mode" value="skillopt"`,
+		`id="skillOptConfig"`,
+		`id="skillSelect"`,
+		`id="validationSuiteSelect"`,
+		`id="budgetInput"`,
+		`id="editBudgetInput"`,
+		`id="minDeltaInput"`,
+		`function loadSkills()`,
+		`/benchmark/skills`,
+		`payload.mode='skillopt';`,
+		`payload.skill=`,
+		`payload.train_suite=`,
+		`payload.validation_suite=`,
 		`Start the Mac MobileGym launcher first`,
 		`id="startLauncherBtn"`,
 		`function startMobileGymLauncher()`,
@@ -402,7 +415,7 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		`progressText(r)`,
 		`r.model||'—'`,
 		`id="refreshBtn"`,
-		`function refreshBenchmark(){loadSuites();loadRuns();loadStatus();loadLog()}`,
+		`function refreshBenchmark(){loadSuites();loadSkills();loadRuns();loadStatus();loadLog()}`,
 		`function logPanelError(context,e)`,
 		`function readErrorResponse(r)`,
 		`logPanelError('Start run failed',e)`,
@@ -439,6 +452,41 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 	}
 }
 
+func TestHandleBenchmarkSkills_ListsConfiguredSkills(t *testing.T) {
+	root := t.TempDir()
+	skillsDir := filepath.Join(root, "skills")
+	if err := os.MkdirAll(filepath.Join(skillsDir, "device-operator"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsDir, "device-operator", "SKILL.md"), []byte("---\nname: device-operator\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(skillsDir, "incomplete"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{
+		benchmarkDir: root,
+		runtime: &Runtime{config: Config{
+			SkillsDirs: []string{skillsDir},
+		}},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/skills", nil)
+	s.handleBenchmarkSkills(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0]["name"] != "device-operator" {
+		t.Fatalf("unexpected skills response: %+v", got)
+	}
+}
+
 func TestHandleBenchmarkRun_RejectsMissingSuite(t *testing.T) {
 	s := &Server{benchmarkDir: t.TempDir()}
 	req := httptest.NewRequest(http.MethodPost, "/benchmark/run", strings.NewReader(`{}`))
@@ -446,6 +494,77 @@ func TestHandleBenchmarkRun_RejectsMissingSuite(t *testing.T) {
 	s.handleBenchmarkRun(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestHandleBenchmarkRun_SkillOptMode(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	captured := struct {
+		called          bool
+		skill           string
+		trainSuite      string
+		validationSuite string
+		budget          int
+		editBudget      int
+		minDelta        float64
+		apiKey          string
+		skillsDir       string
+	}{}
+	skillsDir := filepath.Join(root, "skills")
+	s := &Server{
+		runtime: &Runtime{config: Config{
+			Benchmark:  BenchmarkConfig{JudgeModel: "judge/model", APIKey: "sk-judge"},
+			SkillsDirs: []string{skillsDir},
+		}},
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkSkillOptLauncher: func(spec benchmarkSkillOptLaunchSpec, optimizerModel, judgeModel, apiKey, agentModel, gotSkillsDir string) error {
+			captured.called = true
+			captured.skill = spec.Skill
+			captured.trainSuite = spec.TrainSuite
+			captured.validationSuite = spec.ValidationSuite
+			captured.budget = spec.Budget
+			captured.editBudget = spec.EditBudget
+			captured.minDelta = spec.MinDelta
+			captured.apiKey = apiKey
+			captured.skillsDir = gotSkillsDir
+			return nil
+		},
+	}
+
+	body := `{"mode":"skillopt","skill":"device-operator","train_suite":"skillopt/device_operator_skillopt_v1","validation_suite":"skillopt/device_operator_skillopt_validation_v1","budget":2,"edit_budget":3,"min_delta":0.02}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run", strings.NewReader(body))
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !captured.called {
+		t.Fatal("expected skillopt launcher invoked")
+	}
+	if captured.skill != "device-operator" || captured.trainSuite != "skillopt/device_operator_skillopt_v1" ||
+		captured.validationSuite != "skillopt/device_operator_skillopt_validation_v1" || captured.budget != 2 ||
+		captured.editBudget != 3 || captured.minDelta != 0.02 || captured.apiKey != "sk-judge" || captured.skillsDir != skillsDir {
+		t.Fatalf("unexpected skillopt launch args: %+v", captured)
+	}
+	data, _ := os.ReadFile(statePath)
+	state := string(data)
+	for _, want := range []string{`"status":"running"`, `"mode":"skillopt"`, `"skill":"device-operator"`, `"run_id":"skillopt-`} {
+		if !strings.Contains(state, want) {
+			t.Fatalf("state missing %s: %s", want, state)
+		}
+	}
+}
+
+func TestHandleBenchmarkRun_SkillOptRejectsMissingSkill(t *testing.T) {
+	s := &Server{benchmarkDir: t.TempDir()}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run", strings.NewReader(`{"mode":"skillopt","train_suite":"skillopt/train","validation_suite":"skillopt/validation"}`))
+	s.handleBenchmarkRun(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -960,6 +1079,85 @@ func TestHandleBenchmarkLog_MobileGymMode(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "hello mobilegym") {
 		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+}
+
+func TestHandleBenchmarkLog_SkillOptMode(t *testing.T) {
+	tmp := t.TempDir()
+	logFile := filepath.Join(tmp, "skillopt_run.log")
+	os.WriteFile(logFile, []byte("hello skillopt"), 0o644)
+
+	s := &Server{benchmarkLogPath: logFile}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/benchmark/log?mode=skillopt", nil)
+	s.handleBenchmarkLog(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "hello skillopt") {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+}
+
+func TestBuildSkillOptLaunchScript(t *testing.T) {
+	script, err := buildSkillOptLaunchScript("/bench", benchmarkSkillOptLaunchSpec{
+		RunID:           "skillopt-2026-06-15_120000",
+		Skill:           "device-operator",
+		TrainSuite:      "skillopt/device_operator_skillopt_v1",
+		ValidationSuite: "skillopt/device_operator_skillopt_validation_v1",
+		Budget:          2,
+		EditBudget:      3,
+		MinDelta:        0.02,
+	}, "optimizer/model", "judge/model", "sk-test", "agent/model", "/bench/config/skills")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{
+		"cd '/bench'",
+		"export OPENROUTER_API_KEY='sk-test'",
+		"export AIDEN_SKILLS_DIR='/bench/config/skills'",
+		"from runner.skillopt.main import cli",
+		"--skill 'device-operator'",
+		"--train-suite 'skillopt/device_operator_skillopt_v1'",
+		"--validation-suite 'skillopt/device_operator_skillopt_validation_v1'",
+		"--budget 2",
+		"--edit-budget 3",
+		"--min-delta 0.02",
+		"--optimizer-model 'optimizer/model'",
+		"--judge-model 'judge/model'",
+		"--artifact-root '/bench/runs'",
+		"--run-id 'skillopt-2026-06-15_120000'",
+		"--output '/bench/runs/skillopt-2026-06-15_120000/best_skill.md'",
+		"/tmp/skillopt_run.log",
+		"/tmp/benchmark_runner.pid",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("launch script missing %q: %s", want, script)
+		}
+	}
+}
+
+func TestBuildSkillOptLaunchScript_RejectsUnsafeInputs(t *testing.T) {
+	base := benchmarkSkillOptLaunchSpec{
+		RunID:           "skillopt-2026-06-15_120000",
+		Skill:           "device-operator",
+		TrainSuite:      "skillopt/device_operator_skillopt_v1",
+		ValidationSuite: "skillopt/device_operator_skillopt_validation_v1",
+		Budget:          1,
+		EditBudget:      1,
+		MinDelta:        0.01,
+	}
+	for _, mutate := range []func(*benchmarkSkillOptLaunchSpec){
+		func(s *benchmarkSkillOptLaunchSpec) { s.Skill = "../bad" },
+		func(s *benchmarkSkillOptLaunchSpec) { s.TrainSuite = "../bad" },
+		func(s *benchmarkSkillOptLaunchSpec) { s.ValidationSuite = "bad suite" },
+	} {
+		spec := base
+		mutate(&spec)
+		if _, err := buildSkillOptLaunchScript("/bench", spec, "optimizer", "judge", "key", "agent", ""); err == nil {
+			t.Fatalf("expected unsafe input to be rejected: %+v", spec)
+		}
 	}
 }
 
