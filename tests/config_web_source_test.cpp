@@ -247,7 +247,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("otaLogPanel") != std::string::npos);
     CHECK(html.find("id=\\\"otaLogPanel\\\" class=\\\"ota-log-panel\\\"") != std::string::npos);
     CHECK(html.find("id=\\\"otaLogPanel\\\" class=\\\"card ota-log-panel\\\"") == std::string::npos);
-    CHECK(html.find(".ota-log-panel{display:none}") != std::string::npos);
+    CHECK(html.find(".ota-log-panel{display:none;margin-top:12px}") != std::string::npos);
     CHECK(html.find("showOtaLogPanel") != std::string::npos);
     CHECK(html.find("updateActionDetailsVisibility") != std::string::npos);
     CHECK(html.find("if(!appState.otaLogVisible&&!showBanner){return;}") != std::string::npos);
