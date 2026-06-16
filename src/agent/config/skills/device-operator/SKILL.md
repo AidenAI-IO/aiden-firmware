@@ -177,6 +177,7 @@ Before typing:
 - `keyboard_text` is US-keyboard ASCII only (letters, digits, common punctuation). Do not pass Chinese, emoji, or other non-ASCII characters — the tool errors without typing anything.
 - For Chinese content, use pinyin or English keywords in `keyboard_text` (e.g. `weixin`, `zhangsan`), then tap the matching on-screen candidate or search result.
 - Prefer one `keyboard_text` call for normal ASCII text.
+- For ordinary deletion in an input field, use `keyboard_tap` with `{"keys":["backspace"]}`. The `delete` key is forward-delete and should only be used when intentionally deleting the character after the cursor.
 - Use `keyboard_tap` for submit or enter only after verifying the text appears.
 - If text does not appear, stop and re-check focus before typing again.
 

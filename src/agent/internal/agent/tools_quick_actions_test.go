@@ -25,6 +25,9 @@ func TestQuickActionsResolveAliasAndPlatform(t *testing.T) {
 	if id, ok := table.resolveActionID("quick-switch-left"); !ok || id != "quick_app_switch_left" {
 		t.Fatalf("expected hyphenated alias to resolve to quick_app_switch_left, got %q ok=%v", id, ok)
 	}
+	if id, ok := table.resolveActionID("退格"); !ok || id != "delete_backward" {
+		t.Fatalf("expected delete-backward alias to resolve to delete_backward, got %q ok=%v", id, ok)
+	}
 
 	platform, err := normalizeQuickActionPlatform("iPadOS")
 	if err != nil || platform != "ios" {
@@ -173,6 +176,30 @@ func TestQuickActionExecutesDelegatedKeyboardTap(t *testing.T) {
 	}
 	if info.Size() < 16 {
 		t.Fatalf("expected keyboard press/release writes, got %d bytes", info.Size())
+	}
+}
+
+func TestQuickActionDeleteBackwardUsesBackspace(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &QuickActionTool{
+		keyboard: &KeyboardTapTool{dev: dev},
+	}
+	out, err := tool.Call(context.Background(), `{"action":"delete_backward","platform":"mac"}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if !quickActionResultOK(t, out) {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(data) != 16 {
+		t.Fatalf("report bytes = %d, want 16 (backspace + release)", len(data))
+	}
+	if data[2] != hidKeyboardMap["backspace"] {
+		t.Fatalf("delete_backward key = 0x%02x, want backspace 0x%02x", data[2], hidKeyboardMap["backspace"])
 	}
 }
 
