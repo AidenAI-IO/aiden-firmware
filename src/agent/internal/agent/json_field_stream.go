@@ -41,6 +41,7 @@ type JSONFieldStreamWriter struct {
 	depth         int
 	skipValueRoot int
 	skipString    bool
+	emitted       bool
 }
 
 // NewJSONFieldStreamWriter creates a writer that extracts field from a
@@ -67,6 +68,11 @@ func (w *JSONFieldStreamWriter) ResetStreamState() {
 	w.depth = 0
 	w.skipValueRoot = 0
 	w.skipString = false
+	w.emitted = false
+}
+
+func (w *JSONFieldStreamWriter) StreamEmitted() bool {
+	return w != nil && w.emitted
 }
 
 func (w *JSONFieldStreamWriter) Write(p []byte) (int, error) {
@@ -168,7 +174,11 @@ func (w *JSONFieldStreamWriter) consumeRune(r rune) error {
 		} else if complete {
 			w.state = jsonFieldStreamDone
 		} else if decoded != "" {
-			if _, err := io.WriteString(w.target, decoded); err != nil {
+			n, err := io.WriteString(w.target, decoded)
+			if n > 0 {
+				w.emitted = true
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -311,6 +321,7 @@ type JSONFieldOrPlainStreamWriter struct {
 	field      string
 	prefix     []byte
 	mode       int
+	emitted    bool
 }
 
 const (
@@ -337,6 +348,17 @@ func (w *JSONFieldOrPlainStreamWriter) ResetStreamState() {
 	w.structured = nil
 	w.prefix = nil
 	w.mode = jsonStreamDetectMode
+	w.emitted = false
+}
+
+func (w *JSONFieldOrPlainStreamWriter) StreamEmitted() bool {
+	if w == nil {
+		return false
+	}
+	if w.emitted {
+		return true
+	}
+	return w.structured != nil && w.structured.StreamEmitted()
 }
 
 func (w *JSONFieldOrPlainStreamWriter) Write(p []byte) (int, error) {
@@ -346,9 +368,15 @@ func (w *JSONFieldOrPlainStreamWriter) Write(p []byte) (int, error) {
 	switch w.mode {
 	case jsonStreamStructuredMode:
 		_, err := w.structured.Write(p)
+		if w.structured.StreamEmitted() {
+			w.emitted = true
+		}
 		return len(p), err
 	case jsonStreamPlainMode:
-		_, err := w.target.Write(p)
+		n, err := w.target.Write(p)
+		if n > 0 {
+			w.emitted = true
+		}
 		return len(p), err
 	}
 
@@ -366,12 +394,18 @@ func (w *JSONFieldOrPlainStreamWriter) Write(p []byte) (int, error) {
 			chunk := append(append([]byte{}, w.prefix...), p[consumed:]...)
 			w.prefix = nil
 			_, err := w.structured.Write(chunk)
+			if w.structured.StreamEmitted() {
+				w.emitted = true
+			}
 			return len(p), err
 		}
 		w.mode = jsonStreamPlainMode
 		chunk := append(append([]byte{}, w.prefix...), p[consumed:]...)
 		w.prefix = nil
-		_, err := w.target.Write(chunk)
+		n, err := w.target.Write(chunk)
+		if n > 0 {
+			w.emitted = true
+		}
 		return len(p), err
 	}
 	return len(p), nil

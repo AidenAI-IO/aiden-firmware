@@ -1291,7 +1291,9 @@ func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk 
 	finalStreaming := h.finalStreamingEnabled()
 	if h.writer != nil && finalStreaming {
 		h.writer.Write(chunk)
-		h.recordFinalToken()
+		if streamWriterEmitted(h.writer) {
+			h.recordFinalToken()
+		}
 	}
 
 	// Record first token time
@@ -1326,12 +1328,24 @@ type streamStateResetter interface {
 	ResetStreamState()
 }
 
+type streamOutputTracker interface {
+	StreamEmitted() bool
+}
+
 func resetStreamWriterState(writer io.Writer) {
 	resetter, ok := writer.(streamStateResetter)
 	if !ok {
 		return
 	}
 	resetter.ResetStreamState()
+}
+
+func streamWriterEmitted(writer io.Writer) bool {
+	tracker, ok := writer.(streamOutputTracker)
+	if !ok {
+		return true
+	}
+	return tracker.StreamEmitted()
 }
 
 func (h *runtimeCallbackHandler) HasFinalStreamingToken(context.Context) bool {

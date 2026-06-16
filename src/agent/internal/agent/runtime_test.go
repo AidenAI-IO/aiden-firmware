@@ -835,12 +835,16 @@ func verifierFinishResponse(finalAnswer string) *llms.ContentResponse {
 }
 
 func verifierFinishResponseWithInfo(finalAnswer string, info map[string]any) *llms.ContentResponse {
+	return contentResponseWithInfo(verifierFinishJSON(finalAnswer), info)
+}
+
+func verifierFinishJSON(finalAnswer string) string {
 	payload, _ := json.Marshal(map[string]any{
 		"can_finish":   true,
 		"final_answer": finalAnswer,
 		"reason":       "test verified",
 	})
-	return contentResponseWithInfo(string(payload), info)
+	return string(payload)
 }
 
 func structuredVerifierFinishResponse(speechText, output string) *llms.ContentResponse {
@@ -1524,6 +1528,50 @@ func TestRuntimeRunResetsSpeechStreamWriterBetweenFinalStreamingAttempts(t *test
 	}
 	if stream.String() != "最终口播。" {
 		t.Fatalf("stream = %q, want final speech only", stream.String())
+	}
+}
+
+func TestRuntimeRunFallsBackWhenProviderStreamEmitsNoSpeechText(t *testing.T) {
+	finalVerifier := verifierFinishJSON("Fallback final answer.")
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			enterPlanModeToolCall(),
+			commitPlanToolCall("answer"),
+			finishStepToolCall("candidate"),
+			contentResponse(finalVerifier),
+		},
+		streamChunks: [][]string{
+			{},
+			{},
+			{},
+			{finalVerifier},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use plan mode."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var stream strings.Builder
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "do a planned task",
+		StreamWriter:      NewJSONFieldOrPlainStreamWriter(&stream, "output"),
+		StreamFinalChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.sawStreaming) != len(model.responses) || !model.sawStreaming[3] {
+		t.Fatalf("expected final verifier call to use provider streaming, got %#v", model.sawStreaming)
+	}
+	if result.Output != "Fallback final answer." {
+		t.Fatalf("Output = %q", result.Output)
+	}
+	if stream.String() != "Fallback final answer." {
+		t.Fatalf("stream = %q, want fallback final answer", stream.String())
 	}
 }
 
