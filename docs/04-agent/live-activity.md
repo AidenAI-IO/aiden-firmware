@@ -31,12 +31,16 @@ Live Activity 有两条独立链路：
 {
   "request_id": "chat_...",
   "status": "running",
+  "phase": "observing",
   "task_title": "Open Settings",
   "current_step": "Checking the current screen",
+  "current_action": "observe_screen",
+  "current_target": "",
   "last_tool_name": "screenshot",
   "progress": 0.21,
   "shows_progress": true,
   "can_stop": true,
+  "requires_app": false,
   "started_at": "2026-06-12T07:00:00Z",
   "updated_at": "2026-06-12T07:00:02Z"
 }
@@ -45,9 +49,18 @@ Live Activity 有两条独立链路：
 状态值：
 
 - `running`: 任务执行中，可展示步骤和进度。
+- `needs_app`: agent 需要用户回到 Aiden companion app 才能继续使用 phone bridge 能力。
 - `completed`: 任务完成。
 - `failed`: 任务失败，`last_error` 可展示失败原因。
 - `canceled`: 用户取消或请求被中断。
+
+结构化字段：
+
+- `phase`: agent 当前阶段，例如 `planning`、`observing`、`acting`、`phone_bridge`、`waiting_app`、`waiting_user`、`verifying`、`answering`。
+- `current_action`: 面向机器消费的动作键，例如 `open_app`、`observe_screen`、`control_phone`、`clipboard`、`calendar`。
+- `current_target`: 当前动作目标，例如 app 名、联系人、日历标题、查询词；不适合展示敏感输入时可为空。
+- `current_app`: 当前目标 app，通常由 `open_app` 工具输入推断。
+- `requires_app`: 当前动作依赖 companion app/Phone Bridge。若 bridge 不可用，`status` 会切到 `needs_app`，动态岛应提示用户回到 Aiden。
 
 `GET /api/chat/result?request_id=<id>&offset=<n>` 保持原响应兼容，并额外返回 `live_activity` 字段。iOS app 前台轮询时使用该字段本地更新 Live Activity。这条前台链路不使用 APNs。
 
@@ -74,6 +87,20 @@ GET /api/live-activity/status?request_id=<id>
     "can_stop": true
   }
 }
+```
+
+### 查询当前任务
+
+后台 relay 或调试工具如果只关心“agent 当前在做什么”，可以不带 request id 查询最近活跃任务：
+
+```http
+GET /api/live-activity/current
+```
+
+响应同上。没有活跃或保留中的任务时返回：
+
+```json
+{"status":"not_found"}
 ```
 
 ### 后台远程更新 token 注册

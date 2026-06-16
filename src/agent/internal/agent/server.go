@@ -287,6 +287,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/chat/result", s.handleChatResult)
 	mux.HandleFunc("/api/live-activity/registrations", s.handleLiveActivityRegistrations)
 	mux.HandleFunc("/api/live-activity/status", s.handleLiveActivityStatus)
+	mux.HandleFunc("/api/live-activity/current", s.handleLiveActivityCurrent)
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
@@ -1151,6 +1152,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		ctx = runCtx
 	}
 	s.appendHistory(userMessage)
+	if req.RequestID != "" && s.liveActivity != nil {
+		s.liveActivity.StartTask(req.RequestID, inputText)
+	}
 
 	result, err := s.runtime.Run(ctx, RunRequest{
 		Input:             inputText,
@@ -1181,12 +1185,22 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			}
 			s.appendHistory(message)
 			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
+			if req.RequestID != "" && s.liveActivity != nil {
+				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
+			}
 			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(ctx, event.Description)
 			}
 		},
 	})
 	if err != nil {
+		if req.RequestID != "" && s.liveActivity != nil {
+			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+				s.liveActivity.CancelTask(req.RequestID)
+			} else {
+				s.liveActivity.FailTask(req.RequestID, err.Error())
+			}
+		}
 		errorMessage := Message{
 			Type:      "episode_status",
 			EpisodeID: episodeID,
@@ -1216,6 +1230,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.appendHistory(assistantMessage)
 	stream.Write(ChatStreamEvent{Type: "message", Message: &assistantMessage})
 	historySnapshot := s.historySnapshot()
+	if req.RequestID != "" && s.liveActivity != nil {
+		s.liveActivity.CompleteTask(req.RequestID, result.Output)
+	}
 
 	if s.audioClient != nil && result.Output != "" && !result.SpeechStreamed {
 		go func(text string) {
@@ -2274,6 +2291,27 @@ func (s *Server) handleLiveActivityStatus(w http.ResponseWriter, r *http.Request
 		return
 	}
 	state := s.liveActivitySnapshot(requestID)
+	w.Header().Set("Content-Type", "application/json")
+	if state == nil {
+		json.NewEncoder(w).Encode(map[string]string{"status": "not_found"})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":        "ok",
+		"live_activity": state,
+	})
+}
+
+func (s *Server) handleLiveActivityCurrent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.liveActivity == nil {
+		http.Error(w, `{"error":"live activity disabled"}`, http.StatusNotFound)
+		return
+	}
+	state := s.liveActivity.SnapshotActive()
 	w.Header().Set("Content-Type", "application/json")
 	if state == nil {
 		json.NewEncoder(w).Encode(map[string]string{"status": "not_found"})

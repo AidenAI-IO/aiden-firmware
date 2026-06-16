@@ -20,7 +20,7 @@ func TestLiveActivityManagerLifecycle(t *testing.T) {
 	if state == nil || state.Status != LiveActivityStatusRunning {
 		t.Fatalf("StartTask() state = %#v", state)
 	}
-	if state.Progress <= 0 || !state.CanStop {
+	if state.Progress <= 0 || !state.CanStop || state.Phase != LiveActivityPhasePlanning || state.CurrentAction != "plan" {
 		t.Fatalf("unexpected initial state: %#v", state)
 	}
 
@@ -65,8 +65,8 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 		ToolInput: `{"app":"Maps"}`,
 		Timestamp: time.Now(),
 	})
-	if state == nil || state.CurrentStep != "Opening app" || state.CurrentApp != "Maps" {
-		t.Fatalf("open_app step = %#v, want app step and current app", state)
+	if state == nil || state.CurrentStep != "Opening Maps" || state.CurrentApp != "Maps" || state.Phase != LiveActivityPhasePhoneBridge {
+		t.Fatalf("open_app step = %#v, want targeted app step and current app", state)
 	}
 
 	state = manager.UpdateFromRunEvent("req-1", RunEvent{
@@ -76,6 +76,59 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 	})
 	if state == nil || state.CurrentStep != "Checking the screen" {
 		t.Fatalf("screenshot step = %#v, want Checking the screen", state)
+	}
+}
+
+func TestLiveActivityManagerNeedsAppWhenBridgeUnavailable(t *testing.T) {
+	manager := NewLiveActivityManager(LiveActivityConfig{}, nil)
+	manager.StartTask("req-1", "Read clipboard")
+
+	state := manager.UpdateFromRunEvent("req-1", RunEvent{
+		Type:      "tool_call",
+		ToolName:  "clipboard",
+		ToolInput: `{"action":"read"}`,
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.Status != LiveActivityStatusRunning || state.Phase != LiveActivityPhasePhoneBridge || !state.RequiresApp {
+		t.Fatalf("clipboard call state = %#v, want phone bridge state requiring app", state)
+	}
+	if state.CurrentStep != "Reading clipboard" {
+		t.Fatalf("clipboard call step = %q, want Reading clipboard", state.CurrentStep)
+	}
+
+	state = manager.UpdateFromRunEvent("req-1", RunEvent{
+		Type:      "tool_result",
+		ToolName:  "clipboard",
+		ToolInput: `{"action":"read"}`,
+		Content:   `{"ok":false,"error":"phone bridge not connected"}`,
+		Timestamp: time.Now(),
+	})
+	if state == nil || state.Status != LiveActivityStatusNeedsApp || state.Phase != LiveActivityPhaseWaitingApp || !state.RequiresApp {
+		t.Fatalf("bridge unavailable state = %#v, want needs_app", state)
+	}
+	if state.CurrentStep != "Open Aiden to continue" || state.ShowsProgress {
+		t.Fatalf("bridge unavailable display = %#v, want open Aiden without progress", state)
+	}
+	content := state.ContentState()
+	if content.Status != LiveActivityStatusNeedsApp || content.Phase != LiveActivityPhaseWaitingApp || !content.RequiresApp {
+		t.Fatalf("content state = %#v, want needs_app fields", content)
+	}
+}
+
+func TestLiveActivityManagerSnapshotActive(t *testing.T) {
+	manager := NewLiveActivityManager(LiveActivityConfig{}, nil)
+	manager.StartTask("req-1", "First task")
+	manager.StartTask("req-2", "Second task")
+
+	active := manager.SnapshotActive()
+	if active == nil || active.RequestID != "req-2" {
+		t.Fatalf("active state = %#v, want req-2", active)
+	}
+
+	manager.CompleteTask("req-2", "Done")
+	active = manager.SnapshotActive()
+	if active == nil || active.RequestID != "req-2" || active.Status != LiveActivityStatusCompleted {
+		t.Fatalf("active terminal state = %#v, want completed req-2", active)
 	}
 }
 
@@ -114,6 +167,28 @@ func TestServerLiveActivityRegistrationAndStatus(t *testing.T) {
 	}
 	if statusResp.Status != "ok" || statusResp.LiveActivity.RequestID != "req-1" {
 		t.Fatalf("unexpected status response: %#v", statusResp)
+	}
+}
+
+func TestServerLiveActivityCurrent(t *testing.T) {
+	server := &Server{liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil)}
+	server.liveActivity.StartTask("req-1", "Do a task")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/current", nil)
+	rec := httptest.NewRecorder()
+	server.handleLiveActivityCurrent(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Status       string            `json:"status"`
+		LiveActivity LiveActivityState `json:"live_activity"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode current response: %v", err)
+	}
+	if resp.Status != "ok" || resp.LiveActivity.RequestID != "req-1" || resp.LiveActivity.Phase != LiveActivityPhasePlanning {
+		t.Fatalf("unexpected current response: %#v", resp)
 	}
 }
 
