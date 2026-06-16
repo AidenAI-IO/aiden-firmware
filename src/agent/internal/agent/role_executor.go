@@ -377,7 +377,12 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 		Tools:     plannerTools,
 		OutputKey: e.OutputKey,
 	}
-	callOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
+	baseOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
+	finalStreaming := state.Phase == phaseDefault || e.ForceSimpleLoop
+	callOptions := baseOptions
+	if finalStreaming {
+		callOptions = e.finalStreamingCallOptions(baseOptions)
+	}
 	generate := func() (*llms.ContentResponse, error) {
 		return e.generateRoleContent(ctx, RolePlanner, messages, callOptions...)
 	}
@@ -385,7 +390,7 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 		res *llms.ContentResponse
 		err error
 	)
-	if state.Phase == phaseDefault || e.ForceSimpleLoop {
+	if finalStreaming {
 		res, err = e.withFinalStreaming(ctx, generate)
 	} else {
 		res, err = generate()
@@ -477,7 +482,10 @@ func (e *roleCollaborativeExecutor) callRouteTurn(
 ) (plannerTurnResult, error) {
 	task := plannerTaskForPhase(phaseDecision, *state, e.ForceSimpleLoop)
 	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
-	res, err := e.generateRoleContent(ctx, RolePlanner, messages, chains.GetLLMCallOptions(options...)...)
+	callOptions := e.finalStreamingCallOptions(chains.GetLLMCallOptions(options...))
+	res, err := e.withFinalStreaming(ctx, func() (*llms.ContentResponse, error) {
+		return e.generateRoleContent(ctx, RolePlanner, messages, callOptions...)
+	})
 	if err != nil {
 		return plannerTurnResult{}, err
 	}

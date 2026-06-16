@@ -1430,9 +1430,111 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunDirectRouteUsesProviderFinalStreaming(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{"mode":"direct_answer","speech_text":"Short answer.","output":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
+		},
+		streamChunks: [][]string{
+			{
+				`{"mode":"direct_answer","speech_text":"Short`,
+				` answer.","output":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`,
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "openrouter"},
+			Instruction: "Answer directly.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var stream strings.Builder
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "hello",
+		StreamWriter:      NewSpeechTextStreamWriter(&stream, "speech_text"),
+		StreamFinalChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if got, want := model.sawStreaming, []bool{true}; !slices.Equal(got, want) {
+		t.Fatalf("expected direct route call to use provider streaming, got %#v", got)
+	}
+	if stream.String() != "Short answer." {
+		t.Fatalf("stream = %q, want speech_text from provider chunks", stream.String())
+	}
+	if result.Output != "Complete answer." {
+		t.Fatalf("Output = %q", result.Output)
+	}
+	if result.SpeechText != "Short answer." {
+		t.Fatalf("SpeechText = %q", result.SpeechText)
+	}
+}
+
+func TestRuntimeRunDefaultModeFinalAnswerUsesProviderFinalStreaming(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{"mode":"simple","reason":"ordinary one-pass answer"}`),
+			contentResponse(`{"speech_text":"Short answer.","output":"Complete answer."}`),
+		},
+		streamChunks: [][]string{
+			{
+				`{"mode":"simple","reason":"ordinary one-pass answer"}`,
+			},
+			{
+				`{"speech_text":"Short`,
+				` answer.","output":"Complete answer."}`,
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "openrouter"},
+			Instruction: "Answer in default mode.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var stream strings.Builder
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "hello",
+		StreamWriter:      NewSpeechTextStreamWriter(&stream, "speech_text"),
+		StreamFinalChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if got, want := model.sawStreaming, []bool{true, true}; !slices.Equal(got, want) {
+		t.Fatalf("expected route and default final calls to use provider streaming, got %#v", got)
+	}
+	if stream.String() != "Short answer." {
+		t.Fatalf("stream = %q, want only default final speech_text", stream.String())
+	}
+	if result.Output != "Complete answer." {
+		t.Fatalf("Output = %q", result.Output)
+	}
+	if result.SpeechText != "Short answer." {
+		t.Fatalf("SpeechText = %q", result.SpeechText)
+	}
+}
+
 func TestRuntimeRunFinalStreamingDoesNotStreamIntermediateToolCalls(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{}"}`, "The current audio volume is 42."),
+		streamChunks: [][]string{
+			{},
+			{"The current audio volume is 42."},
+		},
 	}
 	tool := &stubTool{
 		name:        "audio_volume",
@@ -1469,8 +1571,8 @@ func TestRuntimeRunFinalStreamingDoesNotStreamIntermediateToolCalls(t *testing.T
 	if len(tool.inputs) != 1 || tool.inputs[0] != "{}" {
 		t.Fatalf("unexpected tool inputs: %#v", tool.inputs)
 	}
-	if got, want := model.sawStreaming, []bool{false, false}; !slices.Equal(got, want) {
-		t.Fatalf("expected non-streaming model calls, got %#v", got)
+	if got, want := model.sawStreaming, []bool{true, true}; !slices.Equal(got, want) {
+		t.Fatalf("expected default-mode model calls to use provider streaming, got %#v", got)
 	}
 	if stream.String() != "The current audio volume is 42." {
 		t.Fatalf("unexpected stream output: %q", stream.String())
