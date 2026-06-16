@@ -14,6 +14,15 @@ func TestQuickActionExposedToAgentAndToolLab(t *testing.T) {
 	}
 }
 
+func TestRunScriptExposedToAgentAndToolLab(t *testing.T) {
+	if !isHTTPToolExposed("run_script") {
+		t.Fatal("expected run_script in Tool Lab HTTP catalog")
+	}
+	if !isAgentToolExposed("run_script") {
+		t.Fatal("expected run_script available to conversational agent")
+	}
+}
+
 func TestPhoneBridgeToolsExposedToAgentOnly(t *testing.T) {
 	for _, name := range []string{"open_app", "clipboard", "calendar", "contacts", "notification"} {
 		if isHTTPToolExposed(name) {

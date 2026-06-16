@@ -77,6 +77,7 @@ JSON 对象输入：
 | `mouse_click` | input | `{"x":500,"y":500,"button":"left","coord_space":"normalized"}` |
 | `mouse_move` | input | `{"x":500,"y":500,"coord_space":"normalized"}` |
 | `mouse_scroll` | input | `{"delta":-3}` |
+| `run_script` | demo | `{"file":"demo.jsonl"}` |
 | `screenshot` | observation | `{}` |
 | `shell` | system | `{"command":"pwd"}` |
 | `skill_list` | skills | `{"query":"planner","include_archived":false}` |
@@ -120,6 +121,7 @@ curl -X POST http://127.0.0.1:8080/api/tools/weather \
 `current_time` 支持 IANA 时区名（如 `Asia/Shanghai`、`America/New_York`）、`UTC`、`local` 和 UTC offset（如 `+08:00`）。
 `weather` 支持地点名或经纬度，运行时通过 Open-Meteo 获取 geocoding、当前天气和短期预报。
 `enter_sleep` 会让语音连续对话 session 在当前轮结束后关闭，回到等待下一次 wakeup 的模式。
+`run_script` 执行配置目录 `scripts/` 下的本地 JSONL 演示脚本，不在脚本步骤之间调用 LLM。输入只接受文件名，例如 `{"file":"demo.jsonl"}`，不能传完整路径或子目录。每个非空行是一条 JSON 指令，例如 `{"type":"wait","ms":500}`、`{"type":"tts","text":"正在打开设置"}`、`{"type":"call","tool":"touch_gesture","input":{"type":"tap","point":{"x":500,"y":500}}}`；也支持短写 `{"wait":500}`、`{"tts":"正在打开设置"}`、`{"call":{"tool":"screenshot","input":{}}}`。`tts` 会异步发起语音播放并立刻继续下一行，不等待合成或播放完成；返回结果中对应步骤会包含原始 `text` 和 `output:"queued"`；脚本遇到第一处同步错误会停止。
 
 ## 外部 Agent 使用建议
 

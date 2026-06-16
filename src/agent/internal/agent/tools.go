@@ -21,6 +21,7 @@ type BuiltinToolSetOption func(*builtinToolSetOptions)
 
 type builtinToolSetOptions struct {
 	screenStable ScreenStableDefaults
+	scriptsDir   string
 }
 
 func WithScreenStableDefaults(defaults ScreenStableDefaults) BuiltinToolSetOption {
@@ -29,11 +30,20 @@ func WithScreenStableDefaults(defaults ScreenStableDefaults) BuiltinToolSetOptio
 	}
 }
 
+func WithRunScriptScriptsDir(dir string) BuiltinToolSetOption {
+	return func(options *builtinToolSetOptions) {
+		options.scriptsDir = dir
+	}
+}
+
 func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchConfig, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
 	return newHardwareToolSet(hidCfg, audioCfg, searchCfg, proxyCfg, options...)
 }
 
 func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, mobileGym *mobileGymSessionStore, options ...BuiltinToolSetOption) *ToolSet {
+	if cfg.ConfigDir != "" {
+		options = append(options, WithRunScriptScriptsDir(filepath.Join(cfg.ConfigDir, "scripts")))
+	}
 	if cfg.Device.BackendOrDefault() == "mobilegym" {
 		return newMobileGymToolSet(cfg, proxyCfg, mobileGym, options...)
 	}
@@ -78,10 +88,28 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"calculator":             NewCalculatorTool(),
 		"web_scraper":            NewWebScraperTool(proxyCfg),
 	}
+	runScript := NewRunScriptTool(toolOptions.scriptsDir, func(name string) (langtools.Tool, bool) {
+		tool, ok := tools[name]
+		return tool, ok
+	})
+	tools["run_script"] = runScript
 	// Always register human handoff tool - no callback needed for non-blocking version
 	tools["request_human_handoff"] = NewHumanHandoffTool()
 
 	return &ToolSet{tools: tools, screen: screen}
+}
+
+func (s *ToolSet) SetRunScriptSpeaker(speaker runScriptSpeaker) {
+	if s == nil {
+		return
+	}
+	tool, ok := s.tools["run_script"]
+	if !ok {
+		return
+	}
+	if runScript, ok := tool.(*RunScriptTool); ok {
+		runScript.SetSpeaker(speaker)
+	}
 }
 
 func (s *ToolSet) Get(name string) (langtools.Tool, bool) {

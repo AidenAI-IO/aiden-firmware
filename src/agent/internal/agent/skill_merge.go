@@ -278,6 +278,7 @@ var knownToolNames = map[string]struct{}{
 	"quick_action":          {},
 	"recall_memory":         {},
 	"recall_session_chunks": {},
+	"run_script":            {},
 	"save_memory":           {},
 	"screenshot":            {},
 	"shell":                 {},

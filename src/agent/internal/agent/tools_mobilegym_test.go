@@ -59,7 +59,7 @@ func TestNewBuiltinToolSetFromConfigMobileGymExcludesUnsafeToolsByDefault(t *tes
 
 func TestNewBuiltinToolSetFromConfigMobileGymRegistersSafeInputTools(t *testing.T) {
 	tools := NewBuiltinToolSetFromConfig(Config{Model: ModelConfig{Provider: "fake"}, Device: DeviceConfig{Backend: "mobilegym"}}, ProxyConfig{}, &mobileGymSessionStore{})
-	for _, name := range []string{"touch_gesture", "mouse_click", "mouse_move", "mouse_scroll", "keyboard_text", "keyboard_tap"} {
+	for _, name := range []string{"touch_gesture", "mouse_click", "mouse_move", "mouse_scroll", "keyboard_text", "keyboard_tap", "run_script"} {
 		if _, ok := tools.Get(name); !ok {
 			t.Fatalf("safe mobilegym input tool %q missing", name)
 		}

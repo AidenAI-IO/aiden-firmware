@@ -105,6 +105,12 @@ type mobileGymPoint struct {
 }
 
 func newMobileGymToolSet(cfg Config, proxyCfg ProxyConfig, mobileGym *mobileGymSessionStore, options ...BuiltinToolSetOption) *ToolSet {
+	toolOptions := builtinToolSetOptions{}
+	for _, option := range options {
+		if option != nil {
+			option(&toolOptions)
+		}
+	}
 	if mobileGym == nil {
 		mobileGym = &mobileGymSessionStore{}
 	}
@@ -123,6 +129,11 @@ func newMobileGymToolSet(cfg Config, proxyCfg ProxyConfig, mobileGym *mobileGymS
 		"current_time":  NewCurrentTimeTool(),
 		"calculator":    NewCalculatorTool(),
 	}
+	runScript := NewRunScriptTool(toolOptions.scriptsDir, func(name string) (langtools.Tool, bool) {
+		tool, ok := tools[name]
+		return tool, ok
+	})
+	tools["run_script"] = runScript
 	return &ToolSet{tools: tools, screen: screen}
 }
 

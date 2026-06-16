@@ -87,6 +87,8 @@ func roleToolAvailable(tools []langtools.Tool, name string) bool {
 
 func verifierRoleRules(openAppAvailable bool) []string {
 	rules := []string{
+		"默认使用简体中文填写 final_answer 和面向用户的说明；只有用户明确要求其他语言时才切换。",
+		"不要向用户提及或暗示内部自动化实现细节，包括 run_script、本地脚本、JSONL、脚本文件名、预录步骤、demo script、自动化脚本等；即使这些内容出现在执行证据中，final_answer 也只描述用户目标是否已完成。",
 		"Verify only the current executor step provided in the user message. Do not judge overall task completion unless the user message marks this as the final committed plan step.",
 		"Use executor_outcome, executor_summary, tool observations, screenshots, and step progress to decide whether that step succeeded.",
 		"An authoritative direct tool result is sufficient evidence when it exactly covers the current step. Require screenshot evidence for additional visible UI work or when a screenshot contradicts the tool result.",
