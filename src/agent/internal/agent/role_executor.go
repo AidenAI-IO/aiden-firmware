@@ -76,6 +76,7 @@ type planStepResult struct {
 type roleLoopState struct {
 	Phase                loopPhase
 	ForceSimpleLoop      bool
+	Todo                 TodoState
 	PlanStepIndex        int
 	PlanCommitted        bool
 	PlanExhausted        bool
@@ -204,7 +205,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 	if e.ForceSimpleLoop {
 		initialPhase = phaseDefault
 	}
-	state := roleLoopState{Phase: initialPhase, ForceSimpleLoop: e.ForceSimpleLoop, World: e.InitialWorldState}
+	state := roleLoopState{Phase: initialPhase, ForceSimpleLoop: e.ForceSimpleLoop, Todo: TodoState{Mode: TodoModeNone}, World: e.InitialWorldState}
 	for i := 0; i < e.MaxIterations; i++ {
 		switch state.Phase {
 		case phaseDecision, phaseDefault, phasePlan:
@@ -241,6 +242,9 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
 				}
+				if state.Todo.Mode != TodoModeNone && len(state.Todo.Items) > 0 {
+					e.emitTodoUpdate(ctx, state.Todo, state.Todo.SummaryText())
+				}
 				if e.Recorder != nil {
 					e.Recorder.RecordPlannerDecision(turn.CommittedPlan)
 					e.Recorder.RecordLoopPhase(phaseExecution, "commit_plan")
@@ -267,6 +271,9 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 			if !state.StepExecutionActive {
 				state.syncNextStepFromPlanIndex()
 				state.beginStepExecution()
+				if todo, ok := state.startCurrentTodoStep(); ok {
+					e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech())
+				}
 			}
 			turn, err := e.callExecutorTurn(ctx, inputs, &state, toolSpecs, options...)
 			if err != nil {
@@ -307,6 +314,15 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				}
 				stepSummary := strings.TrimSpace(state.ExecutorStepSummary)
 				state.recordPlanStepResult(verification)
+				if verification.NeedsReplan {
+					if todo, ok := state.blockCurrentTodoStep(verification.Reason); ok {
+						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech())
+					}
+				} else {
+					if todo, ok := state.finishCurrentTodoStep(); ok {
+						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech())
+					}
+				}
 				state.clearStepExecution()
 
 				if verification.NeedsReplan {
@@ -546,6 +562,13 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 	toolSpecs *ToolSpecs,
 	action schema.AgentAction,
 ) (plannerTurnResult, error) {
+	if state != nil && state.Phase == phaseDefault && toolSpecs != nil {
+		if spec, ok := toolSpecs.Lookup(action.Tool); ok {
+			if todo, changed := state.ensureImplicitSimpleTodo(spec); changed {
+				e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech())
+			}
+		}
+	}
 	toolExecution := executeToolCall(ctx, ToolCallExecution{
 		Specs:    toolSpecs,
 		Action:   action,
@@ -576,6 +599,21 @@ func (e *roleCollaborativeExecutor) finishRun(ctx context.Context, finalAnswer, 
 		})
 	}
 	return map[string]any{e.OutputKey: finalAnswer}, nil
+}
+
+type todoUpdateHandler interface {
+	HandleTodoUpdate(ctx context.Context, todo TodoState, content string)
+}
+
+func (e *roleCollaborativeExecutor) emitTodoUpdate(ctx context.Context, todo TodoState, content string) {
+	if e == nil || e.CallbacksHandler == nil {
+		return
+	}
+	handler, ok := e.CallbacksHandler.(todoUpdateHandler)
+	if !ok {
+		return
+	}
+	handler.HandleTodoUpdate(ctx, todo.Clone(), strings.TrimSpace(content))
 }
 
 func (e *roleCollaborativeExecutor) consumePendingSteer(ctx context.Context, inputs map[string]string, state *roleLoopState) (bool, error) {

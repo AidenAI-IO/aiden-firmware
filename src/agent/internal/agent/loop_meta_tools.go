@@ -166,6 +166,7 @@ func (e *roleCollaborativeExecutor) handlePlannerMetaTool(
 			}
 		}
 		state.applyCommittedPlan(decision)
+		state.applyCommittedPlanTodo(decision)
 		state.Phase = phaseExecution
 		payload, _ := json.Marshal(map[string]any{
 			"status": "committed",

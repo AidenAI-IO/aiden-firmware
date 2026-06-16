@@ -102,6 +102,7 @@ type Message struct {
 	RequestID       string              `json:"request_id,omitempty"`
 	Status          string              `json:"status,omitempty"`
 	Content         string              `json:"content"`
+	Todo            *TodoState          `json:"todo,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
 	Description     string              `json:"description,omitempty"`
@@ -111,6 +112,14 @@ type Message struct {
 	AudioDurationMs int64               `json:"audio_duration_ms,omitempty"`
 	Timestamp       time.Time           `json:"timestamp"`
 	IsError         bool                `json:"is_error,omitempty"`
+}
+
+func cloneTodoStatePtr(todo *TodoState) *TodoState {
+	if todo == nil {
+		return nil
+	}
+	cloned := todo.Clone()
+	return &cloned
 }
 
 // ChatRequest represents an incoming chat request
@@ -682,7 +691,9 @@ func (s *Server) handleChatAsync(
 
 	// Run agent in background goroutine
 	go func() {
+		progress := s.newRunProgressSpeaker()
 		defer func() {
+			progress.Cancel()
 			s.unregisterActiveRun(requestID)
 			s.clearPendingSteer(requestID)
 			// Keep the completed result available for polling for 60s,
@@ -709,6 +720,7 @@ func (s *Server) handleChatAsync(
 				EpisodeID:   episodeID,
 				RequestID:   requestID,
 				Content:     event.Content,
+				Todo:        cloneTodoStatePtr(event.Todo),
 				ToolName:    event.ToolName,
 				ToolInput:   event.ToolInput,
 				Description: event.Description,
@@ -723,6 +735,11 @@ func (s *Server) handleChatAsync(
 
 			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(runCtx, event.Description)
+			}
+			if event.Type == "todo_update" && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
+				if text, ok := progressSpeechTextForEvent(event); ok {
+					progress.Schedule(runCtx, text)
+				}
 			}
 		}
 
@@ -752,12 +769,13 @@ func (s *Server) handleChatAsync(
 					}
 				} else {
 					newStream = stream
-					runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+					runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
 				}
 			}
 		}
 
 		result, err := s.runtime.Run(runCtx, runReq)
+		progress.Cancel()
 		if newStream != nil {
 			closeErr := newStream.closeAndWait()
 			if closeErr != nil && s.logger != nil {
@@ -938,6 +956,8 @@ func (s *Server) handleChatSync(
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 	s.appendHistory(userMsg)
+	progress := s.newRunProgressSpeaker()
+	defer progress.Cancel()
 
 	runReq := RunRequest{
 		Input:             inputText,
@@ -957,6 +977,7 @@ func (s *Server) handleChatSync(
 				Role:        event.Role,
 				EpisodeID:   eventEpisodeID,
 				Content:     event.Content,
+				Todo:        cloneTodoStatePtr(event.Todo),
 				ToolName:    event.ToolName,
 				ToolInput:   event.ToolInput,
 				Description: event.Description,
@@ -965,6 +986,11 @@ func (s *Server) handleChatSync(
 			})
 			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(r.Context(), event.Description)
+			}
+			if event.Type == "todo_update" && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
+				if text, ok := progressSpeechTextForEvent(event); ok {
+					progress.Schedule(ctx, text)
+				}
 			}
 		},
 	}
@@ -981,12 +1007,13 @@ func (s *Server) handleChatSync(
 				}
 			} else {
 				newStream = stream
-				runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+				runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
 			}
 		}
 	}
 
 	result, err := s.runtime.Run(ctx, runReq)
+	progress.Cancel()
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
@@ -1116,6 +1143,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		ctx = runCtx
 	}
 	s.appendHistory(userMessage)
+	progress := s.newRunProgressSpeaker()
+	defer progress.Cancel()
 
 	runReq := RunRequest{
 		Input:             inputText,
@@ -1139,6 +1168,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				EpisodeID:   eventEpisodeID,
 				RequestID:   req.RequestID,
 				Content:     event.Content,
+				Todo:        cloneTodoStatePtr(event.Todo),
 				ToolName:    event.ToolName,
 				ToolInput:   event.ToolInput,
 				Description: event.Description,
@@ -1149,6 +1179,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
 			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(ctx, event.Description)
+			}
+			if event.Type == "todo_update" && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
+				if text, ok := progressSpeechTextForEvent(event); ok {
+					progress.Schedule(ctx, text)
+				}
 			}
 		},
 	}
@@ -1164,12 +1199,13 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				}
 			} else {
 				newStream = streamSession
-				runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+				runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
 			}
 		}
 	}
 
 	result, err := s.runtime.Run(ctx, runReq)
+	progress.Cancel()
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
@@ -1276,6 +1312,29 @@ func (s *Server) speakToolDescription(ctx context.Context, description string) {
 			s.logger.Error("Tool description TTS playback failed: %v", err)
 		}
 	}
+}
+
+func (s *Server) newRunProgressSpeaker() *progressSpeaker {
+	cfg := progressSpeakerConfig{}
+	if s.logger != nil {
+		cfg.Logf = func(format string, args ...any) {
+			s.logger.Error(format, args...)
+		}
+	}
+	return newProgressSpeaker(func(ctx context.Context, text string) error {
+		if strings.TrimSpace(text) == "" || s.audioClient == nil {
+			return nil
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		ttsCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
+		defer cancel()
+		if s.logger != nil {
+			s.logger.Info("Progress TTS playback: %q", text)
+		}
+		return s.speakText(ttsCtx, text, 0)
+	}, cfg)
 }
 
 func (s *Server) currentTTSManager() *tts.ProviderManager {

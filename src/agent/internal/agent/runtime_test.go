@@ -966,6 +966,29 @@ func firstRunEventOfType(events []RunEvent, eventType string) (RunEvent, bool) {
 	return RunEvent{}, false
 }
 
+func runEventsOfType(events []RunEvent, eventType string) []RunEvent {
+	var matching []RunEvent
+	for _, event := range events {
+		if event.Type == eventType {
+			matching = append(matching, event)
+		}
+	}
+	return matching
+}
+
+func assertTodoItemStatus(t *testing.T, event RunEvent, itemIndex int, status TodoStatus) {
+	t.Helper()
+	if event.Todo == nil {
+		t.Fatalf("event has nil todo: %#v", event)
+	}
+	if itemIndex < 0 || itemIndex >= len(event.Todo.Items) {
+		t.Fatalf("todo item index %d out of range: %#v", itemIndex, event.Todo.Items)
+	}
+	if got := event.Todo.Items[itemIndex].Status; got != status {
+		t.Fatalf("todo item %d status = %q, want %q in event %#v", itemIndex, got, status, event)
+	}
+}
+
 type stubTool struct {
 	name        string
 	description string
@@ -1378,6 +1401,205 @@ func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 	}
 	if toolCall.ToolInput != "{}" {
 		t.Fatalf("tool_call event input = %q, want stripped input", toolCall.ToolInput)
+	}
+}
+
+func TestRuntimePlannedTodoLifecycleEvents(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleCommittedExecutionResponses(
+			[]string{"inspect screen", "write answer"},
+			finishStepToolCall("inspected"),
+			verifierStepContinueResponse("step ok"),
+			finishStepToolCall("answered"),
+			verifierFinishResponse("done"),
+		),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use plan mode."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "do a planned task",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("Output = %q, want done", result.Output)
+	}
+
+	todos := runEventsOfType(events, "todo_update")
+	if len(todos) != 5 {
+		t.Fatalf("todo_update events = %d, want 5: %#v", len(todos), todos)
+	}
+	if todos[0].Todo == nil || todos[0].Todo.Mode != TodoModePlanned || todos[0].Todo.Revision != 1 || len(todos[0].Todo.Items) != 2 {
+		t.Fatalf("unexpected committed todo event: %#v", todos[0])
+	}
+	if todos[0].Todo.Items[0].Status != TodoPending || todos[0].Todo.Items[1].Status != TodoPending {
+		t.Fatalf("commit event should keep all items pending: %#v", todos[0].Todo.Items)
+	}
+	assertTodoItemStatus(t, todos[1], 0, TodoInProgress)
+	if todos[1].Content != "inspect screen" {
+		t.Fatalf("step 1 start content = %q", todos[1].Content)
+	}
+	assertTodoItemStatus(t, todos[2], 0, TodoDone)
+	assertTodoItemStatus(t, todos[3], 1, TodoInProgress)
+	assertTodoItemStatus(t, todos[4], 1, TodoDone)
+}
+
+func TestRuntimeTodoBlocksAndRevisionsOnReplan(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			enterPlanModeToolCall(),
+			commitPlanToolCall("blocked step"),
+			finishStepToolCall("blocked attempt"),
+			verifierContinueResponse("need a new plan"),
+			commitPlanToolCall("replacement step"),
+			finishStepToolCall("replacement done"),
+			verifierFinishResponse("done"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use plan mode."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "do a planned task",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	todos := runEventsOfType(events, "todo_update")
+	if len(todos) < 5 {
+		t.Fatalf("todo_update events = %d, want at least 5: %#v", len(todos), todos)
+	}
+	assertTodoItemStatus(t, todos[2], 0, TodoBlocked)
+	if todos[2].Todo.Revision != 1 {
+		t.Fatalf("blocked revision = %d, want 1", todos[2].Todo.Revision)
+	}
+	if todos[3].Todo == nil || todos[3].Todo.Revision != 2 || todos[3].Todo.Items[0].Text != "replacement step" {
+		t.Fatalf("replan commit should replace items with revision 2: %#v", todos[3].Todo)
+	}
+	assertTodoItemStatus(t, todos[4], 0, TodoInProgress)
+	if todos[4].Todo.Revision != 2 {
+		t.Fatalf("replacement step revision = %d, want 2", todos[4].Todo.Revision)
+	}
+}
+
+func TestRuntimeDirectAnswerDoesNotGenerateTodo(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("done")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "hello",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if todos := runEventsOfType(events, "todo_update"); len(todos) != 0 {
+		t.Fatalf("direct answer emitted todo_update events: %#v", todos)
+	}
+}
+
+func TestRuntimeSimpleLoopGeneratesSingleImplicitTodo(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
+			toolCallResponse("call_2", "web_search", `{"__arg1":"Aiden"}`),
+			contentResponse("done"),
+		},
+	}
+	screenshot := &stubTool{name: "screenshot", description: "Capture screen.", output: "screen"}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"screenshot": screenshot,
+			"web_search": webSearch,
+		}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "look",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	todos := runEventsOfType(events, "todo_update")
+	if len(todos) != 1 {
+		t.Fatalf("todo_update events = %d, want 1: %#v", len(todos), todos)
+	}
+	todo := todos[0].Todo
+	if todo == nil || todo.Mode != TodoModeSimple || todo.Items[0].Source != TodoSourceImplicitSimple || todo.Items[0].Status != TodoInProgress {
+		t.Fatalf("unexpected implicit todo: %#v", todo)
+	}
+	if todo.Items[0].Text != "检查当前界面" || todos[0].Content != "检查当前界面" {
+		t.Fatalf("unexpected implicit todo content: event=%#v todo=%#v", todos[0], todo)
+	}
+}
+
+func TestRuntimeForceSimpleLoopOnlyGeneratesImplicitTodo(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("call_1", "web_search", `{"__arg1":"Aiden"}`),
+			contentResponse("done"),
+		},
+	}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "search",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	todos := runEventsOfType(events, "todo_update")
+	if len(todos) != 1 {
+		t.Fatalf("todo_update events = %d, want 1: %#v", len(todos), todos)
+	}
+	if todos[0].Todo == nil || todos[0].Todo.Mode != TodoModeSimple || todos[0].Todo.Items[0].Source != TodoSourceImplicitSimple {
+		t.Fatalf("force_simple_loop should only produce implicit simple todo: %#v", todos[0].Todo)
 	}
 }
 

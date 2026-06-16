@@ -66,6 +66,7 @@ voice_max_turns = 0
 voice_interrupt_on_wakeup = true
 voice_streaming_tts_enabled = true
 voice_tool_call_speech = false
+voice_progress_speech_enabled = true
 voice_speech_summary_enabled = true
 voice_speech_max_runes = 120
 voice_max_response_tokens = 400
@@ -123,6 +124,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `voice_interrupt_on_wakeup` | `true` | session 内再次收到 wakeup 时取消 thinking/TTS 并重新听音；录音中 wakeup 会直接重启录音并丢弃已录音频 |
 | `voice_streaming_tts_enabled` | `true` | LLM 流式输出时按句送入 TTS，降低首句播放等待；启用 `voice_speech_summary_enabled` 时，最终播报改为生成完整输出后的摘要 |
 | `voice_tool_call_speech` | `false` | 是否异步朗读工具调用说明；默认关闭，避免快动作已经执行后才播报预告 |
+| `voice_progress_speech_enabled` | `true` | 是否在 todo item 进入 `in_progress` 时播报短进度；todo 状态仍会发送给 UI/trace |
 | `voice_speech_summary_enabled` | `true` | 是否将完整 assistant 输出转换成更短的口播文本；不影响 Web UI、history 和 memory 中的完整 `result.Output` |
 | `voice_speech_max_runes` | `120` | 口播摘要最大 rune 数；设为 `0` 使用默认值 |
 | `voice_max_response_tokens` | `400` | 语音回复的单次输出 token 上限（需 `>= 0`） |

@@ -348,6 +348,104 @@ func TestAudioDialogDoesNotSpeakEnterSleepToolDescription(t *testing.T) {
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
 }
 
+func TestAudioDialogProgressSpeechDisabledDoesNotSpeakTodoUpdate(t *testing.T) {
+	disabled := false
+	spoken := make(chan string, 1)
+	dialog := &AudioDialog{
+		config: Config{VoiceProgressSpeechEnabled: &disabled},
+	}
+	dialog.setProgressSpeaker(newProgressSpeaker(func(ctx context.Context, text string) error {
+		spoken <- text
+		return nil
+	}, progressSpeakerConfig{Delay: time.Millisecond, MinInterval: -1}))
+
+	todo := TodoState{
+		Mode:      TodoModeSimple,
+		Revision:  1,
+		CurrentID: "todo-1",
+		Items: []TodoItem{{
+			ID:     "todo-1",
+			Text:   "检查当前界面",
+			Status: TodoInProgress,
+			Source: TodoSourceImplicitSimple,
+		}},
+	}
+	dialog.HandleRunEvent(context.Background(), RunEvent{
+		Type:    "todo_update",
+		Content: "检查当前界面",
+		Todo:    &todo,
+	})
+
+	select {
+	case text := <-spoken:
+		t.Fatalf("progress speech was scheduled despite config=false: %q", text)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestProgressSpeechTextForEventOnlySpeaksInProgressCurrentItem(t *testing.T) {
+	todo := TodoState{
+		Mode:      TodoModePlanned,
+		Revision:  1,
+		CurrentID: "step-1",
+		Items: []TodoItem{{
+			ID:     "step-1",
+			Text:   "Inspect current screen",
+			Status: TodoDone,
+			Source: TodoSourceCommittedPlan,
+		}},
+	}
+	if text, ok := progressSpeechTextForEvent(RunEvent{Type: "todo_update", Content: "Inspect current screen", Todo: &todo}); ok {
+		t.Fatalf("done todo should not be spoken, got %q", text)
+	}
+	todo.Items[0].Status = TodoInProgress
+	text, ok := progressSpeechTextForEvent(RunEvent{Type: "todo_update", Content: "Inspect current screen", Todo: &todo})
+	if !ok || text != "Inspect current screen" {
+		t.Fatalf("in-progress todo speech = %q ok=%v", text, ok)
+	}
+}
+
+func TestProgressSpeakerLatestWins(t *testing.T) {
+	spoken := make(chan string, 2)
+	speaker := newProgressSpeaker(func(ctx context.Context, text string) error {
+		spoken <- text
+		return nil
+	}, progressSpeakerConfig{Delay: 20 * time.Millisecond, MinInterval: -1})
+	speaker.Schedule(context.Background(), "first")
+	time.Sleep(5 * time.Millisecond)
+	speaker.Schedule(context.Background(), "second")
+
+	select {
+	case text := <-spoken:
+		if text != "second" {
+			t.Fatalf("spoken text = %q, want latest value", text)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("progress speaker did not speak latest pending text")
+	}
+	select {
+	case text := <-spoken:
+		t.Fatalf("unexpected extra progress speech: %q", text)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestProgressSpeakerCancelDropsPending(t *testing.T) {
+	spoken := make(chan string, 1)
+	speaker := newProgressSpeaker(func(ctx context.Context, text string) error {
+		spoken <- text
+		return nil
+	}, progressSpeakerConfig{Delay: 30 * time.Millisecond, MinInterval: -1})
+	speaker.Schedule(context.Background(), "pending")
+	speaker.Cancel()
+
+	select {
+	case text := <-spoken:
+		t.Fatalf("pending progress speech was not canceled: %q", text)
+	case <-time.After(80 * time.Millisecond):
+	}
+}
+
 func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("enter_sleep", `{"__arg1":"{\"reason\":\"user asked\"}"}`, "I will wait for the next wakeup."),

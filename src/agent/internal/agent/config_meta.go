@@ -275,6 +275,8 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
 					{Key: "voice_tool_call_speech", Widget: WidgetBoolean, Default: defaults.VoiceToolCallSpeechOrDefault(),
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
+					{Key: "voice_progress_speech_enabled", Widget: WidgetBoolean, Default: defaults.VoiceProgressSpeechEnabledOrDefault(),
+						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
 					{Key: "voice_speech_summary_enabled", Widget: WidgetBoolean, Default: defaults.VoiceSpeechSummaryEnabledOrDefault(),
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
 					{Key: "voice_speech_max_runes", Widget: WidgetNumber, Default: defaults.VoiceSpeechMaxRunes,

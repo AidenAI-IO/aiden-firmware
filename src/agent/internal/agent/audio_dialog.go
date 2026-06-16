@@ -32,6 +32,8 @@ type AudioDialog struct {
 	sessionID     uint64
 	recordReader  *AudioRecordChunkReader
 	speechMu      sync.Mutex
+	progressMu    sync.Mutex
+	progress      *progressSpeaker
 	historyStore  *ChatHistoryStore
 	historyAppend func(Message)
 	audioArchive  *AudioArchiveManager
@@ -375,6 +377,13 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
 
+	progress := d.newRunProgressSpeaker()
+	d.setProgressSpeaker(progress)
+	defer func() {
+		progress.Cancel()
+		d.setProgressSpeaker(nil)
+	}()
+
 	req := RunRequest{
 		Input:       input.InputText,
 		Attachments: input.Attachments,
@@ -392,7 +401,7 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 			log.Printf("[error] TTS BeginStream failed: %v\n", err)
 		} else {
 			newStream = stream
-			req.StreamWriter = speechStreamWriterForConfig(newStream, d.config)
+			req.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, d.config), progress.Cancel)
 		}
 	}
 
@@ -413,14 +422,43 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 }
 
 func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
-	if event.Type != "tool_call" || !d.config.VoiceToolCallSpeechOrDefault() {
+	if event.Type == "todo_update" {
+		if !d.config.VoiceProgressSpeechEnabledOrDefault() {
+			return
+		}
+		text, ok := progressSpeechTextForEvent(event)
+		if !ok {
+			return
+		}
+		d.currentProgressSpeaker().Schedule(ctx, text)
 		return
 	}
-	if event.ToolName == "enter_sleep" {
+	if event.Type != "tool_call" || !d.config.VoiceToolCallSpeechOrDefault() || event.ToolName == "enter_sleep" {
 		return
 	}
 	description := event.Description
 	go d.SpeakToolDescription(description)
+}
+
+func (d *AudioDialog) newRunProgressSpeaker() *progressSpeaker {
+	return newProgressSpeaker(func(ctx context.Context, text string) error {
+		return d.speak(ctx, text, nil, toolDescriptionSpeechTimeout)
+	}, progressSpeakerConfig{})
+}
+
+func (d *AudioDialog) setProgressSpeaker(speaker *progressSpeaker) {
+	d.progressMu.Lock()
+	defer d.progressMu.Unlock()
+	d.progress = speaker
+}
+
+func (d *AudioDialog) currentProgressSpeaker() *progressSpeaker {
+	d.progressMu.Lock()
+	defer d.progressMu.Unlock()
+	if d.progress == nil {
+		d.progress = d.newRunProgressSpeaker()
+	}
+	return d.progress
 }
 
 func (d *AudioDialog) SpeakToolDescription(description string) {
@@ -516,6 +554,13 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
 
+	progress := d.newRunProgressSpeaker()
+	d.setProgressSpeaker(progress)
+	defer func() {
+		progress.Cancel()
+		d.setProgressSpeaker(nil)
+	}()
+
 	req := RunRequest{
 		Input: text,
 		EventHandler: func(event RunEvent) {
@@ -530,7 +575,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 			log.Printf("[error] TTS BeginStream failed: %v\n", err)
 		} else {
 			newStream = stream
-			req.StreamWriter = speechStreamWriterForConfig(newStream, d.config)
+			req.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, d.config), progress.Cancel)
 		}
 	}
 

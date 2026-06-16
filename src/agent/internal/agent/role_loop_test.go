@@ -427,6 +427,49 @@ func TestCommitPlanEntersExecutionMode(t *testing.T) {
 	if state.PlanCommitRequired {
 		t.Fatal("plan commit requirement should be cleared after commit_plan")
 	}
+	if state.Todo.Mode != TodoModePlanned || state.Todo.Revision != 1 || len(state.Todo.Items) != 2 {
+		t.Fatalf("planned todo not initialized: %#v", state.Todo)
+	}
+	if state.Todo.Items[0].Status != TodoPending || state.Todo.Items[1].Status != TodoPending {
+		t.Fatalf("planned todo items should start pending: %#v", state.Todo.Items)
+	}
+}
+
+func TestImplicitSimpleTodoCategoryMapping(t *testing.T) {
+	tests := []struct {
+		name     string
+		category string
+		wantText string
+		wantOK   bool
+	}{
+		{name: "observation", category: "observation", wantText: "检查当前界面", wantOK: true},
+		{name: "web", category: "web", wantText: "查找相关信息", wantOK: true},
+		{name: "memory", category: "memory", wantText: "回看已有记录", wantOK: true},
+		{name: "audio", category: "audio", wantText: "读取当前状态", wantOK: true},
+		{name: "system", category: "system", wantText: "读取当前状态", wantOK: true},
+		{name: "input", category: "input", wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := &roleLoopState{Phase: phaseDefault}
+			todo, ok := state.ensureImplicitSimpleTodo(ToolSpec{Name: tt.name, Category: tt.category})
+			if ok != tt.wantOK {
+				t.Fatalf("ensureImplicitSimpleTodo ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if todo.Mode != TodoModeSimple || todo.Revision != 1 || len(todo.Items) != 1 {
+				t.Fatalf("unexpected todo state: %#v", todo)
+			}
+			if todo.Items[0].Text != tt.wantText || todo.Items[0].Status != TodoInProgress || todo.Items[0].Source != TodoSourceImplicitSimple {
+				t.Fatalf("unexpected todo item: %#v", todo.Items[0])
+			}
+			if _, again := state.ensureImplicitSimpleTodo(ToolSpec{Name: "again", Category: "web"}); again {
+				t.Fatal("second implicit todo should not be generated")
+			}
+		})
+	}
 }
 
 func TestCommitPlanParsesStringPlanAndCriteria(t *testing.T) {
