@@ -138,6 +138,24 @@ func TestResolvePointerPositionPixelRejectsBlackBar(t *testing.T) {
 	}
 }
 
+func TestScalePixelToAbsoluteUsesActiveAreaYOffset(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdateActiveArea(1280, 720, screenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true})
+
+	x, y, err := resolvePointerPosition(screen, 919, 166, "pixel", coordinateSpaceAuto)
+	if err != nil {
+		t.Fatalf("resolvePointerPosition returned error: %v", err)
+	}
+	expectedX := scalePixelToAbsolute(919, 1280)
+	expectedY := scalePixelToAbsolute(94, 576)
+	if x != expectedX {
+		t.Fatalf("x = %d, want %d", x, expectedX)
+	}
+	if y != expectedY {
+		t.Fatalf("y = %d, want %d", y, expectedY)
+	}
+}
+
 func TestResolvePointerPositionAutoTreatsUnitCoordinatesAsNormalized(t *testing.T) {
 	screen := &screenState{}
 	screen.Update(1000, 2000)

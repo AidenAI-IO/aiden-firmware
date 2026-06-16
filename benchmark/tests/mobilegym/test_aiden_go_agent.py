@@ -170,10 +170,12 @@ def test_aiden_go_agent_records_chat_history_on_task_for_suite_evaluate():
     )
 
     agent.reset(task)
-    agent.act(obs=None)
+    action = agent.act(obs=None)
 
     assert task.metadata["aiden_last_response"].endswith("<final_answer>(c)</final_answer>")
     assert task.metadata["aiden_last_chat_history"][0]["tool_name"] == "recall_memory"
+    assert action.data["aiden_last_response"].endswith("<final_answer>(c)</final_answer>")
+    assert action.data["aiden_last_chat_history"][0]["tool_name"] == "recall_memory"
 
 
 def test_aiden_go_agent_writes_task_meta_with_aiden_evidence(tmp_path):

@@ -85,6 +85,50 @@ def test_build_run_command_uses_mobilegym_builtin_suite(launcher_module, tmp_pat
     assert command.env["PARALLEL"] == "2"
 
 
+def test_build_run_command_uses_mobilegym_builtin_suites(launcher_module, tmp_path):
+    docker_dir = tmp_path / "mobilegym" / "docker"
+    docker_dir.mkdir(parents=True)
+    (docker_dir / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
+
+    command = launcher_module.build_run_command(
+        tmp_path,
+        {"suites": ["clock", "phone_control_v1"], "suite_type": "mobilegym_builtin", "parallel": 2},
+    )
+
+    assert command.cwd == docker_dir
+    assert command.argv == ["./parallel_run.sh", "--suites", "clock,phone_control_v1"]
+    assert command.env["PARALLEL"] == "2"
+
+
+def test_build_run_command_uses_multiple_aiden_suites(launcher_module, tmp_path):
+    docker_dir = tmp_path / "mobilegym" / "docker"
+    docker_dir.mkdir(parents=True)
+    (docker_dir / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
+
+    command = launcher_module.build_run_command(
+        tmp_path,
+        {"suites": ["memory_v1", "perception_v1"], "suite_type": "aiden", "parallel": 1},
+    )
+
+    assert command.argv == ["./parallel_run.sh", "--aiden-suites", "memory_v1,perception_v1"]
+
+
+def test_build_run_command_adds_common_docker_cli_paths(launcher_module, tmp_path):
+    docker_dir = tmp_path / "mobilegym" / "docker"
+    docker_dir.mkdir(parents=True)
+    (docker_dir / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
+
+    command = launcher_module.build_run_command(
+        tmp_path,
+        {"suite": "clock", "suite_type": "mobilegym_builtin", "parallel": 1},
+    )
+
+    path_parts = command.env["PATH"].split(os.pathsep)
+    assert "/usr/local/bin" in path_parts
+    assert "/opt/homebrew/bin" in path_parts
+    assert "/Applications/Docker.app/Contents/Resources/bin" in path_parts
+
+
 def test_build_run_command_rejects_path_traversal(launcher_module, tmp_path):
     with pytest.raises(launcher_module.LauncherError, match="invalid suite name"):
         launcher_module.build_run_command(
@@ -199,6 +243,26 @@ def test_handler_serves_mobilegym_report(launcher_module, tmp_path):
         thread.join(timeout=2)
 
 
+def test_handler_serves_mobilegym_suite_report(launcher_module, tmp_path):
+    report_dir = tmp_path / "runs" / "mobilegym" / "batch-20260611-010101" / "perception" / "perception_v1"
+    report_dir.mkdir(parents=True)
+    (report_dir / "index.html").write_text("<html>Perception report</html>")
+    server = HTTPServer(("127.0.0.1", 0), launcher_module.make_handler(tmp_path))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/benchmark/report/batch-20260611-010101/perception/perception_v1",
+            timeout=2,
+        ) as resp:
+            assert resp.status == 200
+            assert "text/html" in resp.headers["Content-Type"]
+            assert resp.read().decode() == "<html>Perception report</html>"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
 def test_list_runs_includes_summary_model_and_progress(launcher_module, tmp_path):
     run_dir = tmp_path / "runs" / "mobilegym" / "batch-20260611-120000"
     run_dir.mkdir(parents=True)
@@ -217,6 +281,41 @@ def test_list_runs_includes_summary_model_and_progress(launcher_module, tmp_path
             "model": "google/gemini-3.5-flash",
             "totals": {"tasks": 17, "passed": 12, "failed": 5},
         }
+    ]
+
+
+def test_list_runs_expands_multiple_summary_suites(launcher_module, tmp_path):
+    run_dir = tmp_path / "runs" / "mobilegym" / "batch-20260611-130000"
+    run_dir.mkdir(parents=True)
+    (run_dir / "clock").mkdir()
+    (run_dir / "phone_control_v1").mkdir()
+    (run_dir / "clock" / "index.html").write_text("clock")
+    (run_dir / "phone_control_v1" / "index.html").write_text("phone")
+    (run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "tasks": 6,
+                "passed": 4,
+                "failed": 2,
+                "model": "qwen3.6-35b",
+                "suites": [
+                    {"suite": "clock", "tasks": 2, "passed": 1, "failed": 1},
+                    {"suite": "phone_control_v1", "tasks": 4, "passed": 3, "failed": 1},
+                ],
+            }
+        ),
+    )
+
+    runs = launcher_module.list_runs(tmp_path)
+
+    assert [run["suite"] for run in runs] == ["clock", "phone_control_v1"]
+    assert [run["progress"] for run in runs] == ["2/2", "4/4"]
+    assert runs[0]["totals"] == {"tasks": 2, "passed": 1, "failed": 1}
+    assert runs[1]["totals"] == {"tasks": 4, "passed": 3, "failed": 1}
+    assert runs[0]["model"] == "qwen3.6-35b"
+    assert [run["report_path"] for run in runs] == [
+        "/benchmark/report/batch-20260611-130000/clock",
+        "/benchmark/report/batch-20260611-130000/phone_control_v1",
     ]
 
 
@@ -374,6 +473,13 @@ def test_parallel_run_passes_limit_to_suite_workers():
     assert "--limit \"$LIMIT\"" in script
 
 
+def test_parallel_run_supports_multiple_aiden_suites():
+    script = PARALLEL_RUN_PATH.read_text()
+
+    assert "--aiden-suites" in script
+    assert "aiden_suite|$suite|$i|$PARALLEL" in script
+
+
 def test_helper_start_invokes_launchctl_for_local_launcher(helper_module, monkeypatch):
     calls = []
 
@@ -498,6 +604,8 @@ def test_local_launcher_installer_registers_launchd_service():
     assert "http://host.docker.internal:7897" not in script
     assert 'if [[ -n "${MOBILEGYM_DOCKER_PROXY:-}" ]]' in script
     assert "MOBILEGYM_PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST" in script
+    assert "<key>PATH</key>" in script
+    assert "/Applications/Docker.app/Contents/Resources/bin" in script
     assert "launchctl bootstrap gui/$UID" in script
 
 

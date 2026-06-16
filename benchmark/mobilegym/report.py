@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,9 @@ from runner.html_report import HTML_TEMPLATE
 
 TASK_STATUSES = ("passed", "failed", "timeout", "error", "unknown", "worker_failed")
 SUMMARY_STATUSES = TASK_STATUSES + ("empty",)
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_COMPOSE_TOOL_CALL_RE = re.compile(r"Tool call:\s+name=(?P<name>\S+)\s+input=(?P<input>.*?)(?:\s+description=|$)")
+_COMPOSE_START_RUN_RE = re.compile(r"Starting agent run:\s+input=(?P<input>\"(?:\\.|[^\"\\])*\")")
 
 
 def generate_reports(batch_dir: str | Path) -> dict[str, Any]:
@@ -148,6 +152,9 @@ def _normalize_shard(shard_dir: Path) -> tuple[list[dict[str, Any]], dict[str, A
     console_links = [path.relative_to(shard_dir).as_posix() for path in sorted(raw_dir.glob("**/console.log"))]
 
     selected_task_ids = [str(task_id) for task_id in metadata.get("selected_task_ids") or []]
+    task_rows = dict(results)
+    task_rows.update(errors)
+    compose_actions_by_task = _read_compose_tool_calls(shard_dir / "compose.log", selected_task_ids, task_rows)
     selected_task_count = int(metadata.get("selected_task_count") or len(selected_task_ids))
     exit_code = int(metadata.get("exit_code") or 0)
     shard_name = shard_dir.name
@@ -211,7 +218,7 @@ def _normalize_shard(shard_dir: Path) -> tuple[list[dict[str, Any]], dict[str, A
                 "reason": reason,
                 "result": result or {},
                 "error": error or {},
-                "actions": actions_by_task.get(task_id, []),
+                "actions": actions_by_task.get(task_id) or compose_actions_by_task.get(task_id, []),
                 "links": links,
             }
         )
@@ -263,6 +270,111 @@ def _read_bridge_actions(raw_dir: Path) -> dict[str, list[dict[str, Any]]]:
             continue
         actions.setdefault(task_id, []).extend(entry for entry in payload if isinstance(entry, dict))
     return actions
+
+
+def _read_compose_tool_calls(
+    compose_path: Path,
+    task_ids: list[str],
+    task_rows: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    if not task_ids:
+        return {}
+    segments = _compose_tool_call_segments(compose_path)
+    if not segments:
+        return {}
+    result: dict[str, list[dict[str, Any]]] = {}
+    used_segment_indexes: set[int] = set()
+    task_rows = task_rows or {}
+    for task_id in task_ids:
+        prompt = _normalize_compose_text(_task_prompt_for_compose(task_rows.get(task_id)))
+        if not prompt:
+            continue
+        for index, segment in enumerate(segments):
+            if index in used_segment_indexes:
+                continue
+            request = _normalize_compose_text(str(segment.get("request") or ""))
+            if not _compose_request_matches_task(request, prompt):
+                continue
+            actions = [entry for entry in segment.get("actions") or [] if isinstance(entry, dict)]
+            if actions:
+                result[task_id] = actions
+            used_segment_indexes.add(index)
+            break
+    if result or len(segments) != len(task_ids):
+        return result
+    for task_id, segment in zip(task_ids, segments, strict=True):
+        actions = [entry for entry in segment.get("actions") or [] if isinstance(entry, dict)]
+        if actions:
+            result[task_id] = actions
+    return result
+
+
+def _compose_tool_call_segments(compose_path: Path) -> list[dict[str, Any]]:
+    try:
+        lines = compose_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    segments: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for raw_line in lines:
+        line = _ANSI_RE.sub("", raw_line)
+        if "Chat request (" in line:
+            current = {"request": _compose_chat_request_text(line), "actions": []}
+            segments.append(current)
+            continue
+        if current is None:
+            continue
+        start_match = _COMPOSE_START_RUN_RE.search(line)
+        if start_match:
+            current["request"] = _jsonish(start_match.group("input"))
+            continue
+        match = _COMPOSE_TOOL_CALL_RE.search(line)
+        if not match:
+            continue
+        actions = current.setdefault("actions", [])
+        if not isinstance(actions, list):
+            actions = []
+            current["actions"] = actions
+        actions.append(
+            {
+                "tool_name": match.group("name"),
+                "tool_input": _jsonish(match.group("input").strip()),
+                "source": "compose.log",
+            }
+        )
+    return segments
+
+
+def _compose_chat_request_text(line: str) -> str:
+    marker = "Chat request ("
+    start = line.find(marker)
+    if start < 0:
+        return ""
+    text = line[start + len(marker):]
+    close = text.find("): ")
+    if close >= 0:
+        text = text[close + len("): "):]
+    return re.sub(r"\s+attachments=\d+\s*$", "", text).strip()
+
+
+def _task_prompt_for_compose(row: dict[str, Any] | None) -> str:
+    if not isinstance(row, dict):
+        return ""
+    return _first_text(row, "task_name", "prompt", "instruction", "goal")
+
+
+def _normalize_compose_text(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _compose_request_matches_task(request: str, prompt: str) -> bool:
+    if not request or not prompt:
+        return False
+    if request == prompt:
+        return True
+    if len(prompt) >= 80 and prompt in request:
+        return True
+    return len(request) >= 80 and request in prompt
 
 
 def _task_id_from_artifact_dir(path: Path) -> str:
@@ -465,7 +577,8 @@ def _drawer_html(title: str, summary: dict[str, Any], rows: list[dict[str, Any]]
     def pct(n: int) -> str:
         return f"{(n / total * 100) if total else 0:.4f}"
 
-    tasks = [_drawer_task(row) for row in rows]
+    display_rows = [row for row in rows if row.get("status") != "empty"]
+    tasks = [_drawer_task(row) for row in display_rows]
     tasks_json = json.dumps(tasks, ensure_ascii=False, indent=2).replace("</", r"<\/")
     rows_html = "".join(_drawer_row_html(index, task) for index, task in enumerate(tasks))
     return HTML_TEMPLATE.format(
@@ -503,8 +616,8 @@ def _drawer_task(row: dict[str, Any]) -> dict[str, Any]:
     description = _first_text(result, "description_for_judge", "task_name", "prompt", "instruction", "goal") or str(row.get("reason") or "")
     response = _first_text(execution, "agent_answer", "agent_message") or _first_text(result, "aiden_last_response", "response", "answer")
     wall_ms = _runtime_ms(result, execution)
-    tool_calls_detail = _tool_calls_detail(history_tool_calls, actions) or links_text
-    tool_calls_count = len(history_tool_calls) if history_tool_calls else len(actions) if actions else int(execution.get("steps") or result.get("steps") or 0)
+    tool_calls_detail = _tool_calls_detail(history_tool_calls, actions)
+    tool_calls_count = len(history_tool_calls) if history_tool_calls else len(actions)
     errors = []
     if status in {"error", "failed", "timeout", "worker_failed", "unknown"}:
         errors.append([status, str(row.get("reason") or status)])
@@ -528,6 +641,7 @@ def _drawer_task(row: dict[str, Any]) -> dict[str, Any]:
         "prompt": prompt,
         "response": response,
         "tool_calls_detail": tool_calls_detail,
+        "artifacts_detail": links_text,
         "rubric": rubric,
         "hard_assertions": hard_assertions,
         "errors": _dedupe_errors(errors),

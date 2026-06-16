@@ -226,6 +226,25 @@ def test_filter_aiden_tasks_accepts_short_and_full_task_ids():
         module._filter_aiden_tasks(tasks, "missing_case")
 
 
+def test_mobilegym_task_adapter_evaluate_uses_runner_action_response_when_metadata_is_empty():
+    module = load_run_aiden_module()
+    task = module.MobileGymTaskAdapter(
+        task_id="loop_planning_v1.direct_answer_no_plan",
+        instruction="Select option (b).",
+        metadata={
+            "aiden_suite_name": "loop_planning_v1",
+            "expected_answer": "(b)",
+            "answer_format": "option_letter",
+        },
+    )
+
+    judge = task.evaluate({"execution": {"agent_message": "<final_answer>(b)</final_answer>"}})
+
+    assert judge.success is True
+    assert task.metadata["expected_answer_match"] is True
+    assert task.metadata["predicted_answer"] == "(b)"
+
+
 def test_generate_run_report_best_effort_writes_index(tmp_path):
     module = load_run_aiden_module()
     run_dir = tmp_path / "run"

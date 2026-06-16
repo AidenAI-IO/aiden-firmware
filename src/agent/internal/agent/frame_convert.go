@@ -108,3 +108,21 @@ func encodeJPEG(rgb []byte, w, h int, quality int) ([]byte, error) {
 	}
 	return buf.Bytes(), nil
 }
+
+func encodeFrameAsJPEG(meta *frameMetadata, frame []byte, quality int) ([]byte, error) {
+	if meta == nil {
+		return nil, fmt.Errorf("missing frame metadata")
+	}
+	if quality <= 0 {
+		quality = screenshotJPEGQuality
+	}
+	if meta.PixelFormat == "jpeg" {
+		return append([]byte(nil), frame...), nil
+	}
+
+	rgb, err := convertFrameToRGB(meta, frame)
+	if err != nil {
+		return nil, err
+	}
+	return encodeJPEG(rgb, int(meta.Width), int(meta.Height), quality)
+}

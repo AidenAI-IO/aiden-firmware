@@ -2,6 +2,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -78,6 +79,33 @@ def run_parallel(tmp_path, args, **env_overrides):
             "DOCKER_LOG": str(log_path),
             "MOBILEGYM_RUNS_ROOT": str(tmp_path / "runs"),
             "MOBILEGYM_BATCH_ID": env_overrides.pop("MOBILEGYM_BATCH_ID", "batch-test"),
+            "CHAT_TIMEOUT_SEC": env_overrides.pop("CHAT_TIMEOUT_SEC", "777"),
+        }
+    )
+    env.update(env_overrides)
+    result = subprocess.run(
+        ["./parallel_run.sh", *args],
+        cwd=DOCKER_DIR,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    lines = log_path.read_text().splitlines() if log_path.exists() else []
+    return result, lines, Path(env["MOBILEGYM_RUNS_ROOT"]) / env["MOBILEGYM_BATCH_ID"]
+
+
+def run_parallel_without_uv(tmp_path, args, **env_overrides):
+    log_path = install_fake_docker(tmp_path)
+    (tmp_path / "python3").symlink_to(sys.executable)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{tmp_path}{os.pathsep}/usr/bin:/bin:/usr/sbin:/sbin",
+            "DOCKER_LOG": str(log_path),
+            "MOBILEGYM_RUNS_ROOT": str(tmp_path / "runs"),
+            "MOBILEGYM_BATCH_ID": env_overrides.pop("MOBILEGYM_BATCH_ID", "batch-no-uv"),
             "CHAT_TIMEOUT_SEC": env_overrides.pop("CHAT_TIMEOUT_SEC", "777"),
         }
     )
@@ -267,6 +295,19 @@ def test_parallel_run_uses_isolated_projects_configs_logs_and_reports(tmp_path):
     assert len(command_lines(lines, " down --volumes --remove-orphans")) == 2
     assert (batch_dir / "index.html").exists()
     assert (batch_dir / "tasks" / "summary.json").exists()
+
+
+def test_parallel_run_writes_report_when_uv_is_not_on_path(tmp_path):
+    result, lines, batch_dir = run_parallel_without_uv(
+        tmp_path,
+        ["clock.CountAlarms"],
+        PARALLEL="1",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert len(command_lines(lines, " run --rm test ")) == 1
+    assert (batch_dir / "summary.json").exists()
+    assert (batch_dir / "index.html").exists()
 
 
 def test_parallel_run_shards_suite_and_writes_worker_metadata(tmp_path):

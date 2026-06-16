@@ -14,6 +14,7 @@ import (
 
 type benchmarkLaunchSpec struct {
 	Suite    string
+	Suites   []string
 	SuiteDir string
 	Kind     string
 }
@@ -45,27 +46,46 @@ func (s *Server) launchBenchmarkRunner(spec benchmarkLaunchSpec, judgeModel, ope
 	}
 	statePath := s.benchmarkStateFile()
 	logPath := s.benchmarkLogFile("aiden")
-	runnerArgs := ""
+	runnerCommands := []string{}
 	if spec.Kind == "unit" {
+		runnerArgs := ""
 		if spec.SuiteDir != "" {
 			runnerArgs = "unit --suite-dir " + shellQuote(spec.SuiteDir) + " --agent-url http://127.0.0.1:8080 "
 		} else {
 			runnerArgs = "unit --suite " + shellQuote(spec.Suite) + " --agent-url http://127.0.0.1:8080 "
 		}
+		runnerCommands = append(runnerCommands, `python3 -c 'import sys;sys.path.insert(0,".");from runner.main import cli;sys.exit(cli())' `+runnerArgs+`>> `+shellQuote(logPath)+` 2>&1`)
 	} else {
-		runnerArgs = "run --suite " + shellQuote(spec.Suite) + " --agent-url http://127.0.0.1:8080 --judge-model " + shellQuote(judgeModel) + " --agent-model " + shellQuote(agentModel) + " --state-file " + shellQuote(statePath) + " "
+		suites := spec.Suites
+		if len(suites) == 0 {
+			suites = []string{spec.Suite}
+		}
+		for _, suite := range suites {
+			runnerArgs := "run --suite " + shellQuote(suite) + " --agent-url http://127.0.0.1:8080 --judge-model " + shellQuote(judgeModel) + " --agent-model " + shellQuote(agentModel) + " --state-file " + shellQuote(statePath) + " "
+			runnerCommands = append(runnerCommands, `python3 -c 'import sys;sys.path.insert(0,".");from runner.main import cli;sys.exit(cli())' `+runnerArgs+`>> `+shellQuote(logPath)+` 2>&1`)
+		}
+	}
+	runnerScript := ""
+	for i, command := range runnerCommands {
+		if i > 0 {
+			runnerScript += `if [ "$runner_rc" -eq 0 ]; then `
+		}
+		runnerScript += command + ` || runner_rc=$?; `
+		if i > 0 {
+			runnerScript += `fi; `
+		}
 	}
 	script := fmt.Sprintf(`cd %s && `+
 		`export OPENROUTER_API_KEY=%s && `+
 		`(`+
 		`echo 'Starting benchmark...' > %s; `+
-		`python3 -c 'import sys;sys.path.insert(0,".");from runner.main import cli;sys.exit(cli())' `+
-		`%s`+
-		`>> %s 2>&1 & `+
-		`runner_pid=$!; echo $runner_pid > /tmp/benchmark_runner.pid; `+
-		`wait $runner_pid; rm -f /tmp/benchmark_runner.pid; `+
-		`echo '{"status":"idle"}' > %s) &`,
-		shellQuote(benchmarkDir), shellQuote(openRouterAPIKey), shellQuote(logPath), runnerArgs, shellQuote(logPath), shellQuote(statePath))
+		`runner_rc=0; `+
+		`runner_pid=$$; echo $runner_pid > /tmp/benchmark_runner.pid; `+
+		`%s; `+
+		`rm -f /tmp/benchmark_runner.pid; `+
+		`echo '{"status":"idle"}' > %s; `+
+		`exit $runner_rc) &`,
+		shellQuote(benchmarkDir), shellQuote(openRouterAPIKey), shellQuote(logPath), runnerScript, shellQuote(statePath))
 	return exec.Command("sh", "-c", script).Start()
 }
 
@@ -115,21 +135,22 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Suite             string  `json:"suite"`
-		SuiteDir          string  `json:"suite_dir"`
-		SuiteType         string  `json:"suite_type"`
-		Mode              string  `json:"mode"`
-		Parallel          int     `json:"parallel"`
-		Limit             int     `json:"limit"`
-		Skill             string  `json:"skill"`
-		TrainSuite        string  `json:"train_suite"`
-		ValidationSuite   string  `json:"validation_suite"`
-		Budget            int     `json:"budget"`
-		EditBudget        int     `json:"edit_budget"`
-		MinDelta          float64 `json:"min_delta"`
-		OptimizerModel    string  `json:"optimizer_model"`
-		SkillOptBackend   string  `json:"skillopt_backend"`
-		MobileGymParallel int     `json:"mobilegym_parallel"`
+		Suite             string   `json:"suite"`
+		Suites            []string `json:"suites"`
+		SuiteDir          string   `json:"suite_dir"`
+		SuiteType         string   `json:"suite_type"`
+		Mode              string   `json:"mode"`
+		Parallel          int      `json:"parallel"`
+		Limit             int      `json:"limit"`
+		Skill             string   `json:"skill"`
+		TrainSuite        string   `json:"train_suite"`
+		ValidationSuite   string   `json:"validation_suite"`
+		Budget            int      `json:"budget"`
+		EditBudget        int      `json:"edit_budget"`
+		MinDelta          float64  `json:"min_delta"`
+		OptimizerModel    string   `json:"optimizer_model"`
+		SkillOptBackend   string   `json:"skillopt_backend"`
+		MobileGymParallel int      `json:"mobilegym_parallel"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeBenchmarkRunError(w, "aiden", http.StatusBadRequest, "invalid request")
@@ -142,20 +163,28 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Mode {
 	case "aiden":
-		if req.Suite == "" && req.SuiteDir == "" {
+		suites := req.Suites
+		if len(suites) == 0 && req.Suite != "" {
+			suites = []string{req.Suite}
+		}
+		if len(suites) == 0 && req.SuiteDir == "" {
 			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "missing suite or suite_dir field")
 			return
 		}
-		if req.Suite != "" && req.SuiteDir != "" {
+		if len(suites) > 0 && req.SuiteDir != "" {
 			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "exactly one of suite or suite_dir is required")
 			return
 		}
-		spec := benchmarkLaunchSpec{Suite: req.Suite, SuiteDir: req.SuiteDir, Kind: "benchmark"}
-		stateSuite := req.Suite
+		spec := benchmarkLaunchSpec{SuiteDir: req.SuiteDir, Kind: "benchmark"}
+		if len(suites) > 0 {
+			spec.Suite = suites[0]
+			spec.Suites = suites
+		}
+		stateSuite := strings.Join(suites, ",")
 		if req.SuiteDir != "" {
 			spec.Kind = "unit"
 			stateSuite = req.SuiteDir
-		} else if benchmarkSuiteKind(req.Suite) == "unit" {
+		} else if len(suites) == 1 && benchmarkSuiteKind(suites[0]) == "unit" {
 			spec.Kind = "unit"
 		}
 
@@ -179,6 +208,7 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 			"status": "running",
 			"mode":   "aiden",
 			"suite":  stateSuite,
+			"suites": suites,
 			"model":  agentModel,
 		})
 		if err := os.WriteFile(statePath, stateJSON, 0o644); err != nil {
@@ -191,12 +221,30 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "mobilegym":
-		if req.Suite == "" {
+		suites := req.Suites
+		if len(suites) == 0 && req.Suite != "" {
+			suites = []string{req.Suite}
+		}
+		if len(suites) == 0 {
 			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "missing suite field")
 			return
 		}
 		if req.SuiteDir != "" {
 			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "suite_dir is not supported for mobilegym mode")
+			return
+		}
+		for _, suite := range suites {
+			if !validSuiteName(suite) {
+				s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, fmt.Sprintf("invalid suite name %q", suite))
+				return
+			}
+		}
+		suiteType := req.SuiteType
+		if suiteType == "" {
+			suiteType = "mobilegym_builtin"
+		}
+		if len(suites) > 1 && suiteType != "mobilegym_builtin" && suiteType != "aiden" {
+			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "multiple suites are only supported for mobilegym_builtin or aiden")
 			return
 		}
 		if req.Parallel < 1 {
@@ -206,15 +254,17 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		if launch == nil {
 			launch = s.launchMobileGymRunner
 		}
-		if err := launch(req.Suite, req.SuiteType, req.Parallel, req.Limit); err != nil {
+		suiteArg := strings.Join(suites, ",")
+		if err := launch(suiteArg, suiteType, req.Parallel, req.Limit); err != nil {
 			s.writeBenchmarkRunError(w, req.Mode, http.StatusInternalServerError, "mobilegym launch failed: "+err.Error())
 			return
 		}
 		stateJSON, _ := json.Marshal(map[string]any{
 			"status":     "running",
 			"mode":       "mobilegym",
-			"suite":      req.Suite,
-			"suite_type": req.SuiteType,
+			"suite":      suiteArg,
+			"suites":     suites,
+			"suite_type": suiteType,
 			"parallel":   req.Parallel,
 		})
 		if err := os.WriteFile(statePath, stateJSON, 0o644); err != nil {
@@ -444,6 +494,19 @@ func buildSkillOptLaunchScript(benchmarkDir string, spec benchmarkSkillOptLaunch
 		shellQuote(logPath), shellQuote(pidFile), shellQuote(pidFile), shellQuote(statePath)), nil
 }
 
+func mobileGymSuiteList(suite string) ([]string, error) {
+	parts := strings.Split(suite, ",")
+	suites := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if !validSuiteName(part) {
+			return nil, fmt.Errorf("invalid suite name %q (must be a safe relative path)", part)
+		}
+		suites = append(suites, part)
+	}
+	return suites, nil
+}
+
 func (s *Server) launchMobileGymRunner(suite, suiteType string, parallel, limit int) error {
 	script, err := buildMobileGymLaunchScript(s.benchmarkDir, suite, suiteType, parallel, limit)
 	if err != nil {
@@ -453,16 +516,28 @@ func (s *Server) launchMobileGymRunner(suite, suiteType string, parallel, limit 
 }
 
 func buildMobileGymLaunchScript(benchmarkDir, suite, suiteType string, parallel, limit int) (string, error) {
-	if !validSuiteName(suite) {
-		return "", fmt.Errorf("invalid suite name %q (must be a safe relative path)", suite)
+	suites, err := mobileGymSuiteList(suite)
+	if err != nil {
+		return "", err
+	}
+	if len(suites) > 1 && suiteType != "mobilegym_builtin" && suiteType != "aiden" && suiteType != "" {
+		return "", fmt.Errorf("multiple suites are only supported for mobilegym_builtin or aiden")
 	}
 
 	var suiteFlag string
 	switch suiteType {
 	case "aiden":
-		suiteFlag = fmt.Sprintf("--aiden-suite %s", shellQuote(suite))
+		if len(suites) > 1 {
+			suiteFlag = fmt.Sprintf("--aiden-suites %s", shellQuote(strings.Join(suites, ",")))
+		} else {
+			suiteFlag = fmt.Sprintf("--aiden-suite %s", shellQuote(suites[0]))
+		}
 	case "mobilegym_builtin", "":
-		suiteFlag = fmt.Sprintf("--suite %s", shellQuote(suite))
+		if len(suites) > 1 {
+			suiteFlag = fmt.Sprintf("--suites %s", shellQuote(strings.Join(suites, ",")))
+		} else {
+			suiteFlag = fmt.Sprintf("--suite %s", shellQuote(suites[0]))
+		}
 	default:
 		return "", fmt.Errorf("unknown suite_type %q", suiteType)
 	}
