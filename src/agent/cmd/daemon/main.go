@@ -630,7 +630,25 @@ func listenOneUtterance(dialog audioDialogRunner, sigChan chan os.Signal, events
 	}()
 	dialog.ResetVAD()
 	utterance, exit := captureUtteranceWithTimeout(dialog, sigChan, events, listenTimeout)
+	if !exit {
+		drainWakeupsWhileListening(events)
+	}
 	return utterance, exit
+}
+
+func drainWakeupsWhileListening(events <-chan voiceEvent) {
+	for {
+		select {
+		case <-events:
+			ignoreWakeupWhileListening()
+		default:
+			return
+		}
+	}
+}
+
+func ignoreWakeupWhileListening() {
+	log.Println("[listen] duplicate wakeup received while listening, ignoring")
 }
 
 func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signal, events <-chan voiceEvent, listenTimeout time.Duration) ([]int16, bool) {
@@ -648,9 +666,6 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 	nextVADLogAt := startedAt.Add(time.Second)
 	hasVADState := false
 	speechDetected := false
-	ignoreWakeupWhileListening := func() {
-		log.Println("[listen] duplicate wakeup received while listening, ignoring")
-	}
 
 	for {
 		select {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -51,7 +52,7 @@ func TestWaitForPlaybackDrainRetriesTransientHealthFailure(t *testing.T) {
 
 func TestPlayPromptSoundRetriesBusyStartPlayback(t *testing.T) {
 	audioServer := newTestAudioService(t)
-	audioServer.startPlaybackStatuses = []string{"INTERNAL_ERROR", "OK"}
+	audioServer.startPlaybackStatuses = []string{"SERVICE_RECOVERING", "OK"}
 	audioServer.healthPlaybackSessions = []uint32{0}
 
 	if err := playPromptSound(context.Background(), NewAudioServiceClient(audioServer.socketPath), promptSoundRecordingStart, true); err != nil {
@@ -62,6 +63,45 @@ func TestPlayPromptSoundRetriesBusyStartPlayback(t *testing.T) {
 	}
 }
 
+func TestPlayPromptSoundDoesNotRetryNonRetryableStartPlaybackFailure(t *testing.T) {
+	audioServer := newTestAudioService(t)
+	audioServer.startPlaybackStatuses = []string{"INTERNAL_ERROR", "OK"}
+
+	if err := playPromptSound(context.Background(), NewAudioServiceClient(audioServer.socketPath), promptSoundRecordingStart, true); err == nil {
+		t.Fatal("playPromptSound() error = nil, want start playback failure")
+	}
+	if got := audioServer.countOp("start_playback"); got != 1 {
+		t.Fatalf("start_playback count = %d, want no retry for non-retryable failure", got)
+	}
+}
+
+func TestPlayPromptSoundReturnsContextErrorWhenCanceledBeforeRetry(t *testing.T) {
+	audioServer := newTestAudioService(t)
+	audioServer.startPlaybackStatuses = []string{"SERVICE_RECOVERING", "OK"}
+	firstStart := make(chan struct{})
+	var once sync.Once
+	audioServer.onStartPlayback = func() {
+		once.Do(func() {
+			close(firstStart)
+		})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-firstStart
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+
+	err := playPromptSound(ctx, NewAudioServiceClient(audioServer.socketPath), promptSoundRecordingStart, true)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("playPromptSound() error = %v, want context.Canceled", err)
+	}
+	if got := audioServer.countOp("start_playback"); got != 1 {
+		t.Fatalf("start_playback count = %d, want no retry after cancellation", got)
+	}
+}
+
 type testAudioService struct {
 	socketPath               string
 	listener                 net.Listener
@@ -69,6 +109,7 @@ type testAudioService struct {
 	ops                      []string
 	stopStatus               string
 	startPlaybackStatuses    []string
+	onStartPlayback          func()
 	healthConnectionDrops    int
 	healthPlaybackSessions   []uint32
 	lastHealthPlaybackStatus uint32
@@ -138,6 +179,9 @@ func (s *testAudioService) handleConn(conn net.Conn) {
 	extra := map[string]interface{}{}
 	if req.Op == "start_playback" {
 		status = s.nextStartPlaybackStatus()
+		if s.onStartPlayback != nil {
+			s.onStartPlayback()
+		}
 		extra["session_id"] = uint64(77)
 	}
 	if req.Op == "start_recording" {
