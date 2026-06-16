@@ -48,6 +48,7 @@ type Runtime struct {
 	mergeWorker        *MergeWorker
 	logger             *Logger
 	profileDebouncer   *ProfileDebouncer
+	sleep              *SleepController
 	memoryPlane        MemoryPlane
 	sessionCommitter   SessionCommitter
 	telemetrySessionID string
@@ -222,6 +223,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		memoryDir = filepath.Join(cfg.ConfigDir, "memory")
 	}
 
+	sleepController := NewSleepController()
 	proxy := ProxyConfigFromEnvironment()
 	if err := proxy.Validate(); err != nil {
 		return nil, fmt.Errorf("proxy environment: %w", err)
@@ -231,6 +233,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		cfg,
 		proxy,
 		mobileGymStore,
+		WithSleepController(sleepController),
 		WithScreenStableDefaults(cfg.ScreenStableDefaults()),
 	)
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
@@ -268,6 +271,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
+	rt.sleep = sleepController
 	rt.mobileGym = mobileGymStore
 
 	if len(mergeNeeded) > 0 && cfg.SkillMergeModel != nil {
@@ -287,6 +291,14 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 }
 
 func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
+	sleepController := NewSleepController()
+	if tools != nil {
+		if tool, ok := tools.Get("enter_sleep"); ok {
+			if sleepTool, ok := tool.(*EnterSleepTool); ok && sleepTool.controller != nil {
+				sleepController = sleepTool.controller
+			}
+		}
+	}
 	skillManager := NewSkillManager(skillIndex)
 	if cfg.ConfigDir != "" {
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
@@ -299,6 +311,7 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		skills:             skillManager,
 		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
 		sessionCommitter:   newMemoryManagerSessionCommitter(memories),
+		sleep:              sleepController,
 		telemetrySessionID: uuid.NewString(),
 		mobileGym:          &mobileGymSessionStore{},
 	}
@@ -411,6 +424,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	startTime := time.Now()
 	metrics := &RunMetrics{}
 	normalizedInput := normalizeRunInput(req.Input, req.Attachments)
+	if r.sleep != nil {
+		r.sleep.Consume()
+	}
 
 	if r.logger != nil {
 		r.logger.Info("Starting agent run: input=%q attachments=%d", normalizedInput, len(req.Attachments))
@@ -578,12 +594,18 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry)
 
+	sleepRequested, sleepReason := false, ""
+	if r.sleep != nil {
+		sleepRequested, sleepReason = r.sleep.Consume()
+	}
 	return RunResult{
-		Output:    output,
-		Skills:    runSkills.GetActivatedSkills(),
-		EpisodeID: episodeID,
-		Memory:    commitResult.Memory,
-		Metrics:   metrics,
+		Output:         output,
+		Skills:         runSkills.GetActivatedSkills(),
+		EpisodeID:      episodeID,
+		Memory:         commitResult.Memory,
+		Metrics:        metrics,
+		SleepRequested: sleepRequested,
+		SleepReason:    sleepReason,
 	}, nil
 }
 

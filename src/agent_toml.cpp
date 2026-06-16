@@ -341,6 +341,12 @@ void apply_kv(AgentToml& cfg,
         else if (key == "channels") assign_int(&cfg.audio.channels, raw, &sub_err);
         else if (key == "bit_width") assign_int(&cfg.audio.bit_width, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "audio_archive") {
+        if (key == "enabled") assign_bool(&cfg.audio_archive.enabled, raw, &sub_err);
+        else if (key == "max_files") assign_int(&cfg.audio_archive.max_files, raw, &sub_err);
+        else if (key == "max_size_mb") assign_int(&cfg.audio_archive.max_size_mb, raw, &sub_err);
+        else if (key == "storage_path") assign_string(&cfg.audio_archive.storage_path, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
     } else if (section == "benchmark") {
         if (key == "judge_model") assign_string(&cfg.benchmark.judge_model, raw, &sub_err);
         else if (key == "api_key") assign_string(&cfg.benchmark.api_key, raw, &sub_err);
@@ -647,6 +653,13 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (cfg.audio.sample_rate != 0) emit_int(out, "sample_rate", cfg.audio.sample_rate);
     if (cfg.audio.channels != 0) emit_int(out, "channels", cfg.audio.channels);
     if (cfg.audio.bit_width != 0) emit_int(out, "bit_width", cfg.audio.bit_width);
+    out << "\n";
+
+    out << "[audio_archive]\n";
+    emit_bool(out, "enabled", cfg.audio_archive.enabled);
+    if (cfg.audio_archive.max_files != 0) emit_int(out, "max_files", cfg.audio_archive.max_files);
+    if (cfg.audio_archive.max_size_mb != 0) emit_int(out, "max_size_mb", cfg.audio_archive.max_size_mb);
+    emit_string(out, "storage_path", cfg.audio_archive.storage_path);
     out << "\n";
 
     out << "[benchmark]\n";

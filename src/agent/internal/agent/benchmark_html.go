@@ -50,6 +50,11 @@ input[type=text]{width:260px}
 .field-label{display:block;font-size:12px;color:#64748b;margin-bottom:6px}
 .inline-field{display:inline-flex;gap:8px;align-items:center}
 .muted{font-size:12px;color:#888}
+.selected-tags{display:none;flex-wrap:wrap;gap:8px;margin-top:8px;min-height:32px;align-items:center}
+.suite-tag{display:inline-flex;align-items:center;gap:7px;max-width:100%;padding:5px 9px;border:1px solid #cdd8ec;border-radius:999px;background:#eef4ff;color:#1e3a8a;font-size:12px;font-weight:650}
+.suite-tag button{padding:0;border:0;background:transparent;color:#475569;font-size:15px;line-height:1;cursor:pointer}
+.suite-tag button:hover{color:#dc2626;background:transparent}
+.selected-tags-empty{font-size:12px;color:#64748b}
 .err{color:#dc2626;font-size:13px;white-space:pre-wrap;margin-top:8px}
 .ok{color:#16a34a;font-size:13px;margin-top:8px}
 .del{background:#dc2626;font-size:12px;padding:4px 8px}
@@ -71,6 +76,7 @@ input[type=text]{width:260px}
 <div>
 <label class="field-label" for="suiteSelect">Benchmarks</label>
 <select id="suiteSelect"><option value="">Loading...</option></select>
+<div id="selectedSuiteTags" class="selected-tags" aria-live="polite"></div>
 </div>
 <div class="actions">
 <span id="mgConfig" class="inline-field" style="display:none">
@@ -143,6 +149,8 @@ var suiteIndex={};
 var benchmarkSuiteCount=0;
 var unitSuiteCount=0;
 var logPolling=null;
+var lastBenchmarkStatus={status:'idle'};
+var selectedSuiteKeysState=[];
 function benchmarkEndpoint(path){return getMode()==='mobilegym'?MOBILEGYM_LOCAL_BASE+path:path}
 function mobileGymLauncherMessage(e){return 'Start the Mac MobileGym launcher first: '+String(e)}
 function setStartLauncherVisible(visible){document.getElementById('startLauncherBtn').style.display=visible?'inline-block':'none'}
@@ -201,10 +209,23 @@ var els=document.getElementsByName('mode');
 for(var i=0;i<els.length;i++){if(els[i].checked)return els[i].value}
 return 'aiden';
 }
+function selectedSuiteKeys(){
+return selectedSuiteKeysState.slice();
+}
+function selectedBenchmarkSuites(){return selectedSuiteKeys().map(function(key){return {key:key,item:suiteIndex[key]}}).filter(function(x){return x.item})}
+function suiteLabel(key){var item=suiteIndex[key];return item?(item.name+(item.task_count?(' · '+item.task_count):'')):key}
+function syncSelectedSuiteKeys(){selectedSuiteKeysState=selectedSuiteKeysState.filter(function(key){return !!suiteIndex[key]})}
+function renderSelectedSuiteTags(){var wrap=document.getElementById('selectedSuiteTags');if(!wrap)return;wrap.style.display='flex';wrap.innerHTML='';syncSelectedSuiteKeys();if(!selectedSuiteKeysState.length){var empty=document.createElement('span');empty.className='selected-tags-empty';empty.textContent=getMode()==='mobilegym'?'Select one or more suites. Run Aiden and built-in suites separately.':'Select one or more benchmark suites.';wrap.appendChild(empty);return}selectedSuiteKeysState.forEach(function(key){var tag=document.createElement('span');tag.className='suite-tag';var label=document.createElement('span');label.textContent=suiteLabel(key);var btn=document.createElement('button');btn.type='button';btn.setAttribute('aria-label','Remove '+suiteLabel(key));btn.textContent='×';btn.onclick=function(){removeSelectedSuiteKey(key)};tag.appendChild(label);tag.appendChild(btn);wrap.appendChild(tag);});}
+function addSelectedSuiteKey(key){if(!key)return;var item=suiteIndex[key];if(!item)return;var current=selectedBenchmarkSuites();if(selectedSuiteKeysState.indexOf(key)<0){if(getMode()==='mobilegym'&&current.length>0&&current.some(function(x){return x.item.type!==item.type})){alert('Run Aiden and built-in MobileGym suites separately');document.getElementById('suiteSelect').value='';return}selectedSuiteKeysState.push(key)}document.getElementById('suiteSelect').value='';renderSelectedSuiteTags();syncDelBtn();syncRunButtons();}
+function removeSelectedSuiteKey(key){selectedSuiteKeysState=selectedSuiteKeysState.filter(function(item){return item!==key});renderSelectedSuiteTags();syncDelBtn();syncRunButtons();}
+function configureSuiteSelect(){var s=document.getElementById('suiteSelect');s.multiple=false;s.size=1;renderSelectedSuiteTags();}
+function syncRunButtons(status){if(status)lastBenchmarkStatus=status;var running=lastBenchmarkStatus&&lastBenchmarkStatus.status==='running';var hasBench=benchmarkSuiteCount>0&&selectedSuiteKeys().length>0;document.getElementById('runBtn').disabled=(running||!hasBench);document.getElementById('runUnitBtn').disabled=(running||unitSuiteCount===0||getMode()==='mobilegym')}
 function onModeChange(){
 var mg=getMode()==='mobilegym';
 document.getElementById('mgConfig').style.display=mg?'inline-block':'none';
 document.getElementById('unitCard').style.display=mg?'none':'block';
+selectedSuiteKeysState=[];
+configureSuiteSelect();
 setStartLauncherVisible(false);
 loadSuites();
 loadRuns();
@@ -220,7 +241,7 @@ s.innerHTML='';u.innerHTML='';suiteIndex={};benchmarkSuiteCount=0;unitSuiteCount
 if(!d || !d.length){
 var o=document.createElement('option');o.value='';o.textContent='(no suites)';s.appendChild(o);
 var uo=document.createElement('option');uo.value='';uo.textContent='(no unit suites)';u.appendChild(uo);
-syncDelBtn();return;
+configureSuiteSelect();syncDelBtn();syncRunButtons();return;
 }
 var groups={aiden:[],mobilegym_builtin:[]};
 d.forEach(function(x){
@@ -240,6 +261,7 @@ suiteIndex[x.path||x.name]=x;
 });
 s.appendChild(og);
 }
+var add=document.createElement('option');add.value='';add.textContent='Add suite...';s.appendChild(add);
 appendGroup('Aiden Suites',groups.aiden);
 if(mode==='mobilegym')appendGroup('MobileGym Built-in',groups.mobilegym_builtin);
 if(!benchmarkSuiteCount){var bo=document.createElement('option');bo.value='';bo.textContent='(no benchmark suites)';s.appendChild(bo)}
@@ -252,18 +274,18 @@ u.appendChild(o);suiteIndex[x.path||x.name]=x;
 });
 if(!unitSuiteCount){var uo=document.createElement('option');uo.value='';uo.textContent='(no unit suites)';u.appendChild(uo)}
 }
-syncDelBtn();
+configureSuiteSelect();syncDelBtn();syncRunButtons();
 }).catch(function(e){
 var s=document.getElementById('suiteSelect');var u=document.getElementById('unitSelect');s.innerHTML='';u.innerHTML='';suiteIndex={};
 var o=document.createElement('option');o.value='';o.textContent=getMode()==='mobilegym'?'(Start the Mac MobileGym launcher first)':'(failed to load suites)';s.appendChild(o);
 var uo=document.createElement('option');uo.value='';uo.textContent='(failed to load unit suites)';u.appendChild(uo);
-syncDelBtn();
+benchmarkSuiteCount=0;unitSuiteCount=0;configureSuiteSelect();syncDelBtn();syncRunButtons();
 if(getMode()==='mobilegym')showMobileGymLauncherError(e);
 });
 }
 function syncDelBtn(){
-var p=document.getElementById('suiteSelect').value;
-var x=suiteIndex[p];
+var keys=selectedSuiteKeys();
+var x=keys.length===1?suiteIndex[keys[0]]:null;
 document.getElementById('delBtn').style.display=(x&&x.custom)?'inline-block':'none';
 }
 function mobileGymSuiteName(item,key){
@@ -294,7 +316,7 @@ span.textContent='Not ready';
 td.appendChild(span);
 return td;
 }
-var reportHref=benchmarkEndpoint('/benchmark/report/')+encodeURIComponent(r.run_id);
+var reportHref=r.report_path?benchmarkEndpoint(r.report_path):(benchmarkEndpoint('/benchmark/report/')+encodeURIComponent(r.run_id));
 var link=document.createElement('a');
 link.href=reportHref;
 link.textContent='View';
@@ -330,21 +352,15 @@ tb.appendChild(tr);
 })}
 function loadStatus(){
 fetch(benchmarkEndpoint('/benchmark/status')).then(r=>r.json()).then(d=>{
-var btn=document.getElementById('runBtn');
-var unitBtn=document.getElementById('runUnitBtn');
-btn.disabled=(d.status==='running'||benchmarkSuiteCount===0);
-unitBtn.disabled=(d.status==='running'||unitSuiteCount===0||getMode()==='mobilegym');
+syncRunButtons(d);
 updateProgress(d);
 loadLog();
 if(d.status==='running'&&!polling)polling=setInterval(pollStatus,3000);
 if(d.status==='running'&&!logPolling)logPolling=setInterval(loadLog,1000);
-}).catch(function(e){if(getMode()==='mobilegym')showMobileGymLauncherError(e)})}
+}).catch(function(e){syncRunButtons({status:'idle'});if(getMode()==='mobilegym')showMobileGymLauncherError(e)})}
 function pollStatus(){
 fetch(benchmarkEndpoint('/benchmark/status')).then(r=>r.json()).then(d=>{
-var btn=document.getElementById('runBtn');
-var unitBtn=document.getElementById('runUnitBtn');
-btn.disabled=(d.status==='running'||benchmarkSuiteCount===0);
-unitBtn.disabled=(d.status==='running'||unitSuiteCount===0||getMode()==='mobilegym');
+syncRunButtons(d);
 updateProgress(d);
 loadLog();
 if(d.status!=='running'){
@@ -352,7 +368,7 @@ clearInterval(polling);polling=null;
 if(logPolling){clearInterval(logPolling);logPolling=null}
 loadRuns();loadLog()
 }
-}).catch(function(e){if(getMode()==='mobilegym')showMobileGymLauncherError(e)})}
+}).catch(function(e){if(polling){clearInterval(polling);polling=null}if(logPolling){clearInterval(logPolling);logPolling=null}syncRunButtons({status:'idle'});if(getMode()==='mobilegym')showMobileGymLauncherError(e)})}
 function startMobileGymLauncher(){
 var btn=document.getElementById('startLauncherBtn');
 var controller=new AbortController();
@@ -370,18 +386,23 @@ logPanelError('Start launcher failed',e&&e.name==='AbortError'?'request timed ou
 }).finally(function(){clearTimeout(timer)});
 }
 function startRun(){
-var sel=document.getElementById('suiteSelect');
-var key=sel.value;
-if(!key){alert('Select a suite');return}
-var item=suiteIndex[key];
+var selected=selectedBenchmarkSuites();
+if(!selected.length){alert('Select a suite');return}
 var mode=getMode();
 var payload={};
 if(mode==='aiden'){
-payload.suite=item.path||key;
+var key=selected[0].key;var item=selected[0].item;
+if(selected.length>1){payload.suites=selected.map(function(x){return x.item.path||x.key});}
+else{payload.suite=item.path||key;}
 payload.mode='aiden';
 } else {
+if(selected.length>1&&selected.some(function(x){return x.item.type!==selected[0].item.type})){alert('Run Aiden and built-in MobileGym suites separately');return}
+var key=selected[0].key;var item=selected[0].item;
+if(selected.length>1){payload.suites=selected.map(function(x){return mobileGymSuiteName(x.item,x.key)});payload.suite_type=item.type;}
+else{
 payload.suite=mobileGymSuiteName(item,key);
 payload.suite_type=item.type;
+}
 payload.mode='mobilegym';
 payload.board_url=location.origin;
 payload.parallel=Number(document.getElementById('parallelInput').value)||4;
@@ -492,7 +513,7 @@ if(!confirm('Delete suite '+x.name+'?'))return;
 fetch('/benchmark/suites/delete',{method:'POST',headers:{'Content-Type':'application/json'},
 body:JSON.stringify({name:x.name})}).then(function(r){return r.json()}).then(function(){loadSuites()});
 }
-document.getElementById('suiteSelect').addEventListener('change',syncDelBtn);
+document.getElementById('suiteSelect').addEventListener('change',function(){addSelectedSuiteKey(this.value);});
 load();
 </script></body></html>
 `

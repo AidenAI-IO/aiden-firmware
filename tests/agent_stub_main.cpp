@@ -58,6 +58,8 @@ const char* kDefaultConfig =
     "\"secret_id\":\"\",\"secret_key\":\"\",\"region\":\"\",\"engine_model_type\":\"\"},"
     "\"audio\":{\"socket\":\"/run/audio_service/audio_service.sock\",\"sample_rate\":16000,"
     "\"channels\":1,\"bit_width\":16},"
+    "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
+    "\"storage_path\":\"/userdata/audio\"},"
     "\"benchmark\":{\"judge_model\":\"bytedance-seed/seed-2.0-lite\",\"api_key\":\"\","
     "\"benchmark_dir\":\"\"},"
     "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","

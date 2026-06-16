@@ -19,6 +19,10 @@ fi
 mkdir -p "$(dirname "$PLIST")" "$LOG_DIR"
 
 ENVIRONMENT_XML=""
+LAUNCHER_PATH="/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+ENVIRONMENT_XML="${ENVIRONMENT_XML}    <key>PATH</key>
+    <string>${LAUNCHER_PATH}</string>
+"
 if [[ -n "${MOBILEGYM_DOCKER_PROXY:-}" ]]; then
   ENVIRONMENT_XML="${ENVIRONMENT_XML}    <key>MOBILEGYM_DOCKER_PROXY</key>
     <string>${MOBILEGYM_DOCKER_PROXY}</string>
