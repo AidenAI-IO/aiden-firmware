@@ -112,7 +112,7 @@ func plannerToolsForConfig(cfg AgentConfig, tools []langtools.Tool) []langtools.
 
 func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 	var rules []string
-	structuredFinalRule := "When returning a final answer directly to the user, return only JSON with speech_text before output: {\"speech_text\":\"concise spoken answer\",\"output\":\"complete user-facing answer\"}. speech_text must be short and natural for TTS; output must preserve the full answer for the screen."
+	structuredFinalRule := "Outside the route decision phase, when returning a final answer directly to the user, return only JSON with speech_text before output: {\"speech_text\":\"concise spoken answer\",\"output\":\"complete user-facing answer\"}. speech_text must be short and natural for TTS; output must preserve the full answer for the screen."
 	if cfg.ForceSimpleLoop {
 		rules = append(rules,
 			"Use simple loop mode for every request: call available tools directly and return a final answer when the request is satisfied.",
