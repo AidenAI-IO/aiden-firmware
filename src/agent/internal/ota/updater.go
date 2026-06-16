@@ -50,10 +50,6 @@ type UpdaterConfig struct {
 	PartitionSizes         map[string]int64             `json:"partition_sizes,omitempty"`
 	GitHubToken            string                       `json:"github_token,omitempty"`
 	GitHubTokenPath        string                       `json:"github_token_path,omitempty"`
-	Interval               time.Duration                `json:"-"`
-	Jitter                 time.Duration                `json:"-"`
-	IntervalSeconds        int                          `json:"interval_seconds,omitempty"`
-	JitterSeconds          int                          `json:"jitter_seconds,omitempty"`
 	SwitchTries            uint8                        `json:"switch_tries,omitempty"`
 	HealthTimeout          time.Duration                `json:"-"`
 	HealthTimeoutSecs      int                          `json:"health_timeout_seconds,omitempty"`
@@ -125,16 +121,6 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 	}
 	if config.GitHubTokenPath == "" {
 		config.GitHubTokenPath = filepath.Join(config.StateDir, "gh_token")
-	}
-	if config.Interval == 0 {
-		if config.IntervalSeconds > 0 {
-			config.Interval = time.Duration(config.IntervalSeconds) * time.Second
-		} else {
-			config.Interval = time.Hour
-		}
-	}
-	if config.Jitter == 0 && config.JitterSeconds > 0 {
-		config.Jitter = time.Duration(config.JitterSeconds) * time.Second
 	}
 	if config.SwitchTries == 0 {
 		config.SwitchTries = 3
@@ -644,31 +630,17 @@ func (u *Updater) commitPendingHealth(pending PendingBoot) error {
 	return os.Remove(u.pendingPath())
 }
 
-func (u *Updater) RunDaemon(ctx context.Context) error {
-	u.logf("ota daemon: started interval=%s jitter=%s", u.config.Interval, u.config.Jitter)
+func (u *Updater) ProcessPendingHealthOnce(ctx context.Context) error {
+	u.logf("ota health: processing pending boot")
 	if err := u.processPendingHealthWithLock(ctx); err != nil {
 		u.logf("ota health: %v", err)
 		if !errors.Is(err, ErrUpdateAlreadyRunning) {
 			u.recordError("health", err)
 		}
+		return err
 	}
-	for {
-		if _, err := u.CheckOnce(ctx); err != nil {
-			u.logf("ota check: %v", err)
-			if !errors.Is(err, ErrUpdateAlreadyRunning) {
-				u.recordError("check", err)
-			}
-		}
-		wait := u.config.Interval + randomJitter(u.config.Jitter)
-		u.logf("ota daemon: next check in %s", wait)
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-		}
-	}
+	u.logf("ota health: complete")
+	return nil
 }
 
 func (u *Updater) processPendingHealthWithLock(ctx context.Context) error {
@@ -1158,15 +1130,4 @@ func currentBootID() string {
 		return ""
 	}
 	return strings.TrimSpace(string(data))
-}
-
-func randomJitter(max time.Duration) time.Duration {
-	if max <= 0 {
-		return 0
-	}
-	buf := make([]byte, 1)
-	if _, err := rand.Read(buf); err != nil {
-		return 0
-	}
-	return time.Duration(int64(buf[0]) * int64(max) / 255)
 }

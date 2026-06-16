@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -291,6 +292,56 @@ func TestUpdaterCheckOnceRejectsConcurrentUpdateLock(t *testing.T) {
 	_, err = env.updater().CheckOnce(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "ota update already running") {
 		t.Fatalf("CheckOnce() error = %v, want ota update already running", err)
+	}
+}
+
+func TestProcessPendingHealthOnceDoesNotCheckForUpdates(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	requests := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case requests <- r.URL.Path:
+		default:
+		}
+		http.Error(w, "unexpected automatic OTA check", http.StatusTeapot)
+	}))
+	t.Cleanup(server.Close)
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+
+	select {
+	case err := <-processPendingHealthOnceAsync(env.updater(), context.Background()):
+		if err != nil {
+			t.Fatalf("ProcessPendingHealthOnce() error = %v", err)
+		}
+	case path := <-requests:
+		t.Fatalf("ProcessPendingHealthOnce made automatic OTA request to %s", path)
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("ProcessPendingHealthOnce did not exit after one health pass")
+	}
+}
+
+func processPendingHealthOnceAsync(updater *Updater, ctx context.Context) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		done <- updater.ProcessPendingHealthOnce(ctx)
+	}()
+	return done
+}
+
+func TestProcessPendingHealthOnceReturnsContextErrorWhenHealthWaitIsCanceled(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	pending := PendingBoot{TargetSlot: "a", TargetVersion: "v2", TargetBuildTime: "2026-05-21T12:00:00Z", Nonce: "nonce"}
+	if err := WritePendingBoot(filepath.Join(env.stateDir, "pending_boot.json"), pending); err != nil {
+		t.Fatalf("WritePendingBoot() error = %v", err)
+	}
+	env.config.HealthTimeout = time.Hour
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := processPendingHealthOnceAsync(env.updater(), ctx)
+	cancel()
+
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("ProcessPendingHealthOnce() error = %v, want context canceled", err)
 	}
 }
 

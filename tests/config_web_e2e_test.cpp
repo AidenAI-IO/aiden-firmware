@@ -401,6 +401,36 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     cJSON_Delete(parsed);
 }
 
+TEST_CASE("config_web: POST /api/system/env saves env without OTA restart") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string env_body = "HTTP_PROXY=http://proxy.example:18080\\n";
+    const std::string body = "{\"system_env\":\"" + env_body + "\"}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/system/env", body);
+    REQUIRE(resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* agent_restart = cJSON_GetObjectItem(parsed, "agent_restart_scheduled");
+    REQUIRE(agent_restart != nullptr);
+    CHECK((agent_restart->type & 0xff) == cJSON_True);
+    cJSON* ota_restart = cJSON_GetObjectItem(parsed, "ota_restart_scheduled");
+    REQUIRE(ota_restart != nullptr);
+    CHECK((ota_restart->type & 0xff) == cJSON_False);
+    cJSON* saved_env = cJSON_GetObjectItem(parsed, "system_env");
+    REQUIRE(saved_env != nullptr);
+    REQUIRE(saved_env->valuestring != nullptr);
+    CHECK(std::string(saved_env->valuestring) == "HTTP_PROXY=http://proxy.example:18080\n");
+    cJSON_Delete(parsed);
+
+    std::ifstream saved_in((handle->tmp_dir + "/system_env").c_str());
+    REQUIRE(saved_in.good());
+    std::ostringstream saved_buffer;
+    saved_buffer << saved_in.rdbuf();
+    CHECK(saved_buffer.str() == "HTTP_PROXY=http://proxy.example:18080\n");
+}
+
 TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     StubEnv env;
     auto handle = start_server(env);
@@ -757,7 +787,7 @@ TEST_CASE("config_web: both endpoints fail closed with 503 when AIDEN_AGENT_BIN 
     CHECK(save.body.find("agent binary not found") != std::string::npos);
 }
 
-TEST_CASE("config_web: failed manual OTA update releases launch lock even if a daemon keeps running") {
+TEST_CASE("config_web: failed manual OTA update releases launch lock even if a child keeps running") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
         const_cast<char*>(tmp.c_str()),

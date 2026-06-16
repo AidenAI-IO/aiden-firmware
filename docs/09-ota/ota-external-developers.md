@@ -220,16 +220,12 @@ Instead of passing parameters every time, configure the device permanently:
 cat > /userdata/ota/config.json << 'EOF'
 {
   "manifest_url": "https://your-server.com/firmware/latest/manifest.json",
-  "public_key_path": "/userdata/ota/custom_pubkey.pem",
-  "interval_seconds": 3600
+  "public_key_path": "/userdata/ota/custom_pubkey.pem"
 }
 EOF
-
-# Restart OTA daemon
-/etc/init.d/S54ota restart
 ```
 
-Now the device will automatically check your custom source every hour.
+Run `ota update` whenever you want the device to check and install from this source.
 
 ## Security Considerations
 
@@ -278,7 +274,7 @@ To control which firmware a device installs, point it at a specific manifest via
 
 ### Check OTA logs
 ```bash
-# The OTA daemon writes to stderr, which S54ota redirects to a log file
+# The boot-time OTA health pass writes to stderr, which S54ota redirects here
 tail -f /var/log/ota/ota.log
 
 # When running `ota update` manually, logs go to stderr (your terminal)
@@ -360,6 +356,6 @@ echo "  ota update --manifest-url $BASE_URL/manifest.json --public-key /path/to/
 ## Support
 
 For issues or questions:
-- Check the daemon log at `/var/log/ota/ota.log` (S54ota redirects the daemon's stderr there)
+- Check the boot-time OTA health log at `/var/log/ota/ota.log`
 - Use `--dry-run` for testing
 - Join community discussions

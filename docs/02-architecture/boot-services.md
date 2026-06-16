@@ -15,7 +15,7 @@
 | `S52frame_service` | 启动并守护 HDMI 帧服务 |
 | `S53audio_service` | 启动并守护音频服务 |
 | `S53agent` | 启动并守护 Go Agent |
-| `S54ota` | 启动并守护 OTA daemon |
+| `S54ota` | 开机运行一次 OTA health 处理 |
 | `S55aiden_usb_dhcp` | USB 网络 DHCP / dnsmasq 相关服务 |
 | `S56config_web` | 启动配置网页 |
 | `S99rtcinit` | 覆盖 SDK 默认 RTC 脚本；RTC 异常且系统时间仍早于基线时写入默认日期 |
@@ -83,7 +83,7 @@ WATCHDOG_PID_FILE=/run/audio_service/audio_service_watchdog.pid
 默认启动命令：
 
 ```bash
-/oem/usr/bin/aiden-env-run /oem/usr/bin/ota daemon
+/oem/usr/bin/aiden-env-run /oem/usr/bin/ota health
 ```
 
 运行时目录：
