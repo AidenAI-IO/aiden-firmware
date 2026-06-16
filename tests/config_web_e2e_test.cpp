@@ -87,13 +87,46 @@ void write_file(const std::string& path, const std::string& content) {
     out << content;
 }
 
-std::string replace_all(std::string text, const std::string& needle, const std::string& replacement) {
-    size_t pos = 0;
-    while ((pos = text.find(needle, pos)) != std::string::npos) {
-        text.replace(pos, needle.size(), replacement);
-        pos += replacement.size();
-    }
-    return text;
+std::string print_json_unformatted(cJSON* root) {
+    char* text = cJSON_PrintUnformatted(root);
+    REQUIRE(text != nullptr);
+    std::string result(text);
+    free(text);
+    return result;
+}
+
+std::string remove_top_level_key(std::string json, const char* key) {
+    cJSON* root = cJSON_Parse(json.c_str());
+    REQUIRE(root != nullptr);
+    REQUIRE(cJSON_GetObjectItem(root, key) != nullptr);
+    cJSON_DeleteItemFromObject(root, key);
+    std::string result = print_json_unformatted(root);
+    cJSON_Delete(root);
+    return result;
+}
+
+std::string remove_nested_key(std::string json, const char* section, const char* key) {
+    cJSON* root = cJSON_Parse(json.c_str());
+    REQUIRE(root != nullptr);
+    cJSON* section_obj = cJSON_GetObjectItem(root, section);
+    REQUIRE(section_obj != nullptr);
+    REQUIRE((section_obj->type & 0xff) == cJSON_Object);
+    REQUIRE(cJSON_GetObjectItem(section_obj, key) != nullptr);
+    cJSON_DeleteItemFromObject(section_obj, key);
+    std::string result = print_json_unformatted(root);
+    cJSON_Delete(root);
+    return result;
+}
+
+std::string replace_top_level_key_with_array(std::string json, const char* key) {
+    cJSON* root = cJSON_Parse(json.c_str());
+    REQUIRE(root != nullptr);
+    REQUIRE(cJSON_GetObjectItem(root, key) != nullptr);
+    cJSON_DeleteItemFromObject(root, key);
+    cJSON_AddItemToObject(root, key, cJSON_CreateArray());
+    std::string result = print_json_unformatted(root);
+    cJSON_Delete(root);
+    return result;
 }
 
 std::string resolved_config_json(const std::string& search_provider, bool search_has_api_key) {
@@ -477,10 +510,10 @@ TEST_CASE("config_web: GET /api/config tolerates resolved config without force_s
         const_cast<char*>(tmp.c_str()),
         [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
     );
-    const std::string legacy_config = replace_all(
+    const std::string legacy_config = remove_nested_key(
         resolved_config_json("duckduckgo", false),
-        "\"force_simple_loop\":false,",
-        ""
+        "agent",
+        "force_simple_loop"
     );
     write_file(tmp + "/config.json", legacy_config);
     StubEnv env;
@@ -663,24 +696,56 @@ TEST_CASE("config_web: config test rejects blank search api key without stored m
     CHECK(test_resp.body.find("required for brave") != std::string::npos);
 }
 
-TEST_CASE("config_web: GET /api/config reports invalid resolved config schema") {
+TEST_CASE("config_web: GET /api/config accepts optional field-level omissions from resolved config") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
         const_cast<char*>(tmp.c_str()),
         [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
     );
-    const std::string invalid_config = replace_all(
+    const std::string partial_config = remove_nested_key(
         resolved_config_json("duckduckgo", false),
-        "\"provider\":\"openrouter\",",
-        ""
+        "model_text",
+        "provider"
     );
-    write_file(tmp + "/config.json", invalid_config);
+    write_file(tmp + "/config.json", partial_config);
     StubEnv env;
     env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
     auto handle = start_server(env);
     HttpResponse resp = http_request(handle->port, "GET", "/api/config");
     CHECK(resp.status == 200);
-    CHECK(resp.body.find("model.provider") != std::string::npos);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config_error = cJSON_GetObjectItem(parsed, "config_error");
+    CHECK(config_error == nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* model = cJSON_GetObjectItem(config, "model");
+    REQUIRE(model != nullptr);
+    cJSON* model_name = cJSON_GetObjectItem(model, "model");
+    REQUIRE(model_name != nullptr);
+    REQUIRE(model_name->valuestring != nullptr);
+    CHECK(std::string(model_name->valuestring) == "bytedance-seed/seed-2.0-lite");
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: GET /api/config rejects missing required resolved config fields") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string partial_config = remove_nested_key(
+        resolved_config_json("duckduckgo", false),
+        "model",
+        "provider"
+    );
+    write_file(tmp + "/config.json", partial_config);
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(resp.status == 200);
 
     cJSON* parsed = cJSON_Parse(resp.body.c_str());
     REQUIRE(parsed != nullptr);
@@ -688,6 +753,95 @@ TEST_CASE("config_web: GET /api/config reports invalid resolved config schema") 
     REQUIRE(config_error != nullptr);
     REQUIRE(config_error->valuestring != nullptr);
     CHECK(std::string(config_error->valuestring).find("model.provider") != std::string::npos);
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: GET /api/config rejects missing paid search key presence sentinel") {
+    const char* providers[] = {"brave", "brave-free", "tavily", NULL};
+    for (int i = 0; providers[i]; ++i) {
+        auto tmp = make_temp_dir();
+        auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+            const_cast<char*>(tmp.c_str()),
+            [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+        );
+        const std::string partial_config = remove_nested_key(
+            resolved_config_json(providers[i], true),
+            "search",
+            "has_api_key"
+        );
+        write_file(tmp + "/config.json", partial_config);
+        StubEnv env;
+        env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+        auto handle = start_server(env);
+        HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+        CHECK(resp.status == 200);
+
+        cJSON* parsed = cJSON_Parse(resp.body.c_str());
+        REQUIRE(parsed != nullptr);
+        cJSON* config_error = cJSON_GetObjectItem(parsed, "config_error");
+        REQUIRE(config_error != nullptr);
+        REQUIRE(config_error->valuestring != nullptr);
+        CHECK(std::string(config_error->valuestring).find("search.has_api_key") != std::string::npos);
+        cJSON_Delete(parsed);
+    }
+}
+
+TEST_CASE("config_web: GET /api/config accepts section-level omissions from resolved config") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    std::string partial_config = resolved_config_json("duckduckgo", false);
+    partial_config = remove_top_level_key(partial_config, "model_text");
+    partial_config = remove_top_level_key(partial_config, "audio_archive");
+    partial_config = remove_top_level_key(partial_config, "benchmark");
+    write_file(tmp + "/config.json", partial_config);
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config_error = cJSON_GetObjectItem(parsed, "config_error");
+    CHECK(config_error == nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* search = cJSON_GetObjectItem(config, "search");
+    REQUIRE(search != nullptr);
+    cJSON* provider = cJSON_GetObjectItem(search, "provider");
+    REQUIRE(provider != nullptr);
+    REQUIRE(provider->valuestring != nullptr);
+    CHECK(std::string(provider->valuestring) == "duckduckgo");
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: GET /api/config rejects non-object resolved config sections") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string invalid_config = replace_top_level_key_with_array(
+        resolved_config_json("duckduckgo", false),
+        "model"
+    );
+    write_file(tmp + "/config.json", invalid_config);
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(resp.status == 200);
+    CHECK(resp.body.find("model: expected object") != std::string::npos);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config_error = cJSON_GetObjectItem(parsed, "config_error");
+    REQUIRE(config_error != nullptr);
+    REQUIRE(config_error->valuestring != nullptr);
+    CHECK(std::string(config_error->valuestring).find("model: expected object") != std::string::npos);
     cJSON_Delete(parsed);
 }
 

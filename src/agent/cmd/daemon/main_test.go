@@ -424,18 +424,14 @@ func TestProcessAudioLoopStopsRecordingBeforeProcessingUtterance(t *testing.T) {
 			processedWhileRecording = true
 		}
 	}
-	recording := true
 
-	processAudioLoop(dialog, nil, &recording, context.Background(), nil)
+	processAudioLoop(dialog, nil, context.Background(), nil)
 
 	if processedWhileRecording {
 		t.Fatal("processed utterance while recording was still active")
 	}
 	if dialog.stops != 1 {
 		t.Fatalf("dialog stops = %d, want 1 before utterance processing", dialog.stops)
-	}
-	if recording {
-		t.Fatal("recording flag still true after utterance")
 	}
 }
 
@@ -450,12 +446,12 @@ func TestProcessAudioLoopFlushesManualTailOnStop(t *testing.T) {
 		repeatEmpty: true,
 		readDelay:   5 * time.Millisecond,
 	}
-	recording := true
 	manualStop := make(chan manualStopResult, 1)
-	go processAudioLoop(dialog, nil, &recording, context.Background(), manualStop)
+	ctx, cancel := context.WithCancel(context.Background())
+	go processAudioLoop(dialog, nil, ctx, manualStop)
 
 	time.Sleep(20 * time.Millisecond)
-	recording = false
+	cancel()
 
 	result := <-manualStop
 	if result.vadHandled {
@@ -475,13 +471,9 @@ func TestProcessAudioLoopStopsRecordingOnVADError(t *testing.T) {
 		},
 		vadErr: errors.New("vad failed"),
 	}
-	recording := true
 
-	processAudioLoop(dialog, nil, &recording, context.Background(), nil)
+	processAudioLoop(dialog, nil, context.Background(), nil)
 
-	if recording {
-		t.Fatal("recording flag still true after VAD error")
-	}
 	if dialog.recordingActive {
 		t.Fatal("dialog recording still active after VAD error")
 	}
@@ -778,6 +770,7 @@ func TestRunWakeupModeVoiceSessionProcessesFollowupWithoutSecondWakeup(t *testin
 		frameSamples: 2,
 		chunks: []*agent.AudioChunkResult{
 			{PCM: pcm16BytesFromSamples(100, 200)},
+			{PCM: pcm16BytesFromSamples(300, 400)},
 		},
 		utterancesToReturn: [][]int16{
 			{100, 200},
@@ -786,12 +779,6 @@ func TestRunWakeupModeVoiceSessionProcessesFollowupWithoutSecondWakeup(t *testin
 		repeatEmpty: true,
 		readDelay:   time.Millisecond,
 		speak: func(ctx context.Context) error {
-			if len(dialog.spoken) == 1 {
-				go func() {
-					time.Sleep(20 * time.Millisecond)
-					dialog.chunks = append(dialog.chunks, &agent.AudioChunkResult{PCM: pcm16BytesFromSamples(300, 400)})
-				}()
-			}
 			if len(dialog.spoken) == 2 {
 				sigChan <- syscall.SIGTERM
 			}
