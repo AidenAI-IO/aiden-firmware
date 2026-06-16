@@ -822,7 +822,7 @@ TEST_CASE("config web usbhid init script does not orchestrate dependent service 
     CHECK(script.find("restart|reload) stop; start") == std::string::npos);
 }
 
-TEST_CASE("config web resolved config validation rejects empty required strings by default") {
+TEST_CASE("config web resolved config validation stays transport-level only") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
     REQUIRE(source_in.good());
@@ -831,8 +831,8 @@ TEST_CASE("config web resolved config validation rejects empty required strings 
     source_buffer << source_in.rdbuf();
     const std::string source = source_buffer.str();
 
-    CHECK(source.find("expected non-empty string, got empty string") != std::string::npos);
-    CHECK(source.find("validate_config_field(model, \"model\", \"provider\", CONFIG_FIELD_STRING, false") != std::string::npos);
-    CHECK(source.find("validate_config_field(model_text, \"model_text\", \"provider\", CONFIG_FIELD_STRING, true") != std::string::npos);
-    CHECK(source.find("validate_config_field(model, \"model\", \"api_key\", CONFIG_FIELD_STRING, true") != std::string::npos);
+    CHECK(source.find("validate_config_field") == std::string::npos);
+    CHECK(source.find("CONFIG_FIELD_STRING") == std::string::npos);
+    CHECK(source.find("voice_speech_summary_enabled\", CONFIG_FIELD_BOOL") == std::string::npos);
+    CHECK(source.find("voice_speech_max_runes\", CONFIG_FIELD_NUMBER") == std::string::npos);
 }
