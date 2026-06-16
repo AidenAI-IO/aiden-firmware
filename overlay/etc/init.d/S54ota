@@ -1,125 +1,119 @@
 #!/bin/sh
-# Production OTA daemon watchdog. Runs in the background and never blocks boot.
+# One-shot OTA health processing. Manual updates run through `ota update`.
 
 OTA_BIN=${OTA_BIN:-/oem/usr/bin/ota}
 ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
 LOG_PATH=${LOG_PATH:-/var/log/ota/ota.log}
-PID_FILE=${PID_FILE:-/run/ota/ota.pid}
-WATCHDOG_PID_FILE=${WATCHDOG_PID_FILE:-/run/ota/ota_watchdog.pid}
 USERDATA_DIR=${USERDATA_DIR:-/userdata}
 SLEEP_BIN=${SLEEP_BIN:-sleep}
+WAIT_TIMEOUT=${WAIT_TIMEOUT:-}
+USERDATA_REQUIRE_MOUNT=${USERDATA_REQUIRE_MOUNT:-1}
+MOUNTS_PATH=${MOUNTS_PATH:-/proc/mounts}
 
-is_running() {
-    pid="$1"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+wait_for_existing_path() {
+    path="$1"
+    description="$2"
+    waited=0
+    while [ ! -e "$path" ]; do
+        if [ -n "$WAIT_TIMEOUT" ] && [ "$waited" -ge "$WAIT_TIMEOUT" ]; then
+            echo "[ota] $description unavailable after ${WAIT_TIMEOUT}s: $path" >> "$LOG_PATH"
+            return 1
+        fi
+        echo "[ota] waiting for $path" >> "$LOG_PATH"
+        "$SLEEP_BIN" 1
+        waited=$((waited + 1))
+    done
+    return 0
 }
 
-pid_matches_service() {
-    pid="$1"
-    [ -n "$pid" ] || return 1
-    [ -r "/proc/$pid/cmdline" ] || return 1
-    cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
-    case "$cmd" in
-        *"$OTA_BIN"*"daemon"*|*"ota"*"daemon"*) return 0 ;;
-        *) return 1 ;;
-    esac
+path_is_mounted() {
+    path="$1"
+    [ -r "$MOUNTS_PATH" ] || return 1
+    awk -v target="$path" '
+        $2 == target { found = 1 }
+        END { exit found ? 0 : 1 }
+    ' "$MOUNTS_PATH"
 }
 
-pid_matches_watchdog() {
-    pid="$1"
-    [ -n "$pid" ] || return 1
-    [ -r "/proc/$pid/cmdline" ] || return 1
-    cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
-    case "$cmd" in
-        *"$0"*|*"S54ota"*) return 0 ;;
-        *) return 1 ;;
-    esac
+wait_for_userdata_ready() {
+    wait_for_existing_path "$USERDATA_DIR" "userdata" || return 1
+    [ "$USERDATA_REQUIRE_MOUNT" = "0" ] && return 0
+
+    waited=0
+    while ! path_is_mounted "$USERDATA_DIR"; do
+        if [ -n "$WAIT_TIMEOUT" ] && [ "$waited" -ge "$WAIT_TIMEOUT" ]; then
+            echo "[ota] userdata mount unavailable after ${WAIT_TIMEOUT}s: $USERDATA_DIR" >> "$LOG_PATH"
+            return 1
+        fi
+        echo "[ota] waiting for userdata mount: $USERDATA_DIR" >> "$LOG_PATH"
+        "$SLEEP_BIN" 1
+        waited=$((waited + 1))
+    done
+    return 0
 }
 
-service_pid() {
-    if [ -f "$PID_FILE" ]; then
-        pid=$(cat "$PID_FILE" 2>/dev/null)
-        case "$pid" in ''|*[!0-9]*) return ;; esac
-        if pid_matches_service "$pid"; then echo "$pid"; fi
-    fi
+wait_for_executable() {
+    path="$1"
+    description="$2"
+    waited=0
+    while [ ! -x "$path" ]; do
+        if [ -n "$WAIT_TIMEOUT" ] && [ "$waited" -ge "$WAIT_TIMEOUT" ]; then
+            echo "[ota] $description unavailable after ${WAIT_TIMEOUT}s: $path" >> "$LOG_PATH"
+            return 1
+        fi
+        echo "[ota] waiting for $path" >> "$LOG_PATH"
+        "$SLEEP_BIN" 1
+        waited=$((waited + 1))
+    done
+    return 0
 }
 
-watchdog_pid() {
-    if [ -f "$WATCHDOG_PID_FILE" ]; then
-        pid=$(cat "$WATCHDOG_PID_FILE" 2>/dev/null)
-        case "$pid" in ''|*[!0-9]*) return ;; esac
-        if pid_matches_watchdog "$pid"; then echo "$pid"; fi
-    fi
+run_health_once() {
+    mkdir -p "$(dirname "$LOG_PATH")"
+    chmod 0755 "$(dirname "$LOG_PATH")"
+
+    wait_for_userdata_ready || return 1
+    mkdir -p "$USERDATA_DIR/ota"
+    chmod 0755 "$USERDATA_DIR/ota"
+
+    wait_for_executable "$ENV_RUN_BIN" "environment launcher" || return 1
+    wait_for_executable "$OTA_BIN" "ota binary" || return 1
+
+    echo "[ota] processing pending health" >> "$LOG_PATH"
+    "$ENV_RUN_BIN" "$OTA_BIN" health >> "$LOG_PATH" 2>&1
+    status="$?"
+    echo "[ota] health processing exited with status $status" >> "$LOG_PATH"
+    return "$status"
 }
 
 start() {
-    wpid=$(watchdog_pid)
-    if is_running "$wpid"; then
-        echo "ota watchdog already running (pid $wpid)"
-        return 0
-    fi
-
-    mkdir -p "$(dirname "$PID_FILE")" "$(dirname "$LOG_PATH")"
-    chmod 0755 "$(dirname "$PID_FILE")" "$(dirname "$LOG_PATH")"
-
     (
-        trap 'exit 0' INT TERM
-        while true; do
-            if [ ! -d "$USERDATA_DIR" ]; then
-                echo "[ota] waiting for $USERDATA_DIR" >> "$LOG_PATH"
-                "$SLEEP_BIN" 2
-                continue
-            fi
-            mkdir -p "$USERDATA_DIR/ota"
-            chmod 0755 "$USERDATA_DIR/ota"
-            if [ ! -x "$OTA_BIN" ]; then
-                echo "[ota] waiting for $OTA_BIN" >> "$LOG_PATH"
-                "$SLEEP_BIN" 5
-                continue
-            fi
-
-            echo "[ota] starting $OTA_BIN daemon" >> "$LOG_PATH"
-            "$ENV_RUN_BIN" "$OTA_BIN" daemon >> "$LOG_PATH" 2>&1 &
-            child="$!"
-            echo "$child" > "$PID_FILE"
-            wait "$child"
+        if run_health_once; then
+            echo "[ota] one-shot health complete" >> "$LOG_PATH"
+        else
             status="$?"
-            rm -f "$PID_FILE"
-            echo "[ota] exited with status $status; restarting in 2s" >> "$LOG_PATH"
-            "$SLEEP_BIN" 2
-        done
+            echo "[ota] one-shot health failed with status $status" >> "$LOG_PATH"
+            exit "$status"
+        fi
     ) &
-    echo "$!" > "$WATCHDOG_PID_FILE"
-    echo "Started ota"
+    echo "Started ota health"
+    return 0
 }
 
 stop() {
-    wpid=$(watchdog_pid)
-    if is_running "$wpid"; then kill "$wpid" 2>/dev/null || true; fi
-    rm -f "$WATCHDOG_PID_FILE"
-
-    spid=$(service_pid)
-    if is_running "$spid"; then
-        kill "$spid" 2>/dev/null || true
-        i=0
-        while is_running "$spid" && [ "$i" -lt 5 ]; do sleep 1; i=$((i + 1)); done
-        if is_running "$spid"; then kill -9 "$spid" 2>/dev/null || true; fi
-    fi
-    rm -f "$PID_FILE"
-    echo "Stopped ota"
+    echo "ota health is one-shot"
 }
 
 status() {
-    wpid=$(watchdog_pid)
-    spid=$(service_pid)
-    if is_running "$wpid"; then echo "watchdog=running pid=$wpid"; else echo "watchdog=stopped"; fi
-    if is_running "$spid"; then echo "ota=running pid=$spid"; else echo "ota=stopped"; fi
+    echo "ota=one-shot"
+    if [ -f "$LOG_PATH" ]; then
+        tail -n 20 "$LOG_PATH"
+    fi
 }
 
 case "${1:-}" in
-    start) start ;;
+    start|restart|reload) start ;;
     stop) stop ;;
-    restart|reload) stop; start ;;
     status) status ;;
     *) echo "Usage: $0 {start|stop|restart|reload|status}" >&2; exit 1 ;;
 esac

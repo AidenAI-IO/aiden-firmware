@@ -60,11 +60,11 @@ mount | grep ' /oem '
 
 | 路径 | 说明 |
 | --- | --- |
-| `src/agent/cmd/ota` | OTA CLI / daemon 入口 |
+| `src/agent/cmd/ota` | OTA CLI 入口，包含手动更新和 health 处理 |
 | `src/agent/cmd/abctl` | A/B metadata 诊断工具 |
 | `src/agent/internal/ota` | manifest、下载、状态机、slot、health 等 OTA 核心逻辑 |
 | `overlay/etc/init.d/S20oemslot` | 根据 `aiden.slot_suffix` 挂载 `/oem` |
-| `overlay/etc/init.d/S54ota` | OTA daemon watchdog |
+| `overlay/etc/init.d/S54ota` | 开机一次性 OTA health 处理 |
 | `scripts/generate_ota_manifest.sh` | 生成签名 OTA manifest |
 | `scripts/generate_ota_device_config.sh` | 从 manifest 生成首刷配置 |
 | `scripts/repack_ota_update_image.sh` | 把首刷 OTA 配置重新打入 `userdata.img` 和 `update.img` |

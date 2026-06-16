@@ -56,11 +56,10 @@ config_web [--bind=IP] [--port=PORT] [--config=PATH] [--wifi-config=PATH] [--sys
 ## Runtime apply behavior
 
 Config Web writes Agent, Wi-Fi, and system environment files. Saving Agent
-config still schedules an Agent restart. OTA is restarted only when the
-effective `/userdata/system/env` file changes, because OTA reads proxy settings
-from that file at process startup:
+config still schedules an Agent restart. OTA updates read the effective
+`/userdata/system/env` file when `ota update` is run, so saving system
+environment no longer restarts OTA:
 
 ```bash
 /etc/init.d/S53agent restart
-/etc/init.d/S54ota restart  # only when /userdata/system/env changes
 ```

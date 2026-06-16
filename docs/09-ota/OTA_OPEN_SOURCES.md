@@ -50,18 +50,18 @@ scripts/generate_ota_manifest.sh \
 
 官方仓库的 CI/CD 现在根据分支自动区分发布渠道：
 
-| 分支 | Channel | GitHub Release | 默认 OTA 行为 |
+| 分支 | Channel | GitHub Release | 默认手动 OTA 行为 |
 |------|---------|---------------|--------------|
-| `main` | `stable` | 正常 Release | ✅ 自动升级 |
-| 其他分支 | `dev-{分支名}` | Prerelease | ❌ 不会升级 |
+| `main` | `stable` | 正常 Release | `ota update` 默认可发现 |
+| 其他分支 | `dev-{分支名}` | Prerelease | 默认 `ota update` 不会发现 |
 
 **隔离机制**：
 
-非 main 分支的 Release 被标记为 **Prerelease**，而设备常规更新走 `releases/latest` API，该接口只返回正式 Release，不返回 prerelease。因此 `stable` 设备根本不会在常规检查中发现非 main 分支的固件。
+非 main 分支的 Release 被标记为 **Prerelease**，而不指定 `--manifest-url` 的手动 `ota update` 走 `releases/latest` API，该接口只返回正式 Release，不返回 prerelease。因此默认手动更新不会发现非 main 分支的固件。
 
 注：manifest 里的 `channel` 字段仅作为人类可读标签（CI 会为非 main 分支写入 `dev-{分支名}`），OTA 客户端只校验其字符串格式，并不会拿它和某个期望 channel 做匹配。真正起隔离作用的是上述 prerelease 机制。
 
-这样非 main 分支的固件即使发布也不会影响生产设备的正常 OTA 升级。
+这样非 main 分支的固件即使发布，也不会影响生产设备的默认手动 OTA 更新路径。
 
 **测试非 main 分支固件**：
 

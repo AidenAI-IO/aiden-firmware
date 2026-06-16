@@ -161,7 +161,7 @@ Optional. Place `memory/extraction.yaml` under the config directory to control s
 
 ## System Environment Variables
 
-The Agent no longer reads `[proxy]` from `agent.toml`. Outbound HTTP/WebSocket requests, shell tool subprocesses, the OTA daemon, and SSH login shells all use environment variables from `/userdata/system/env`. The file is loaded with shell syntax, for example:
+The Agent no longer reads `[proxy]` from `agent.toml`. Outbound HTTP/WebSocket requests, shell tool subprocesses, OTA commands launched through `aiden-env-run`, and SSH login shells all use environment variables from `/userdata/system/env`. The file is loaded with shell syntax, for example:
 
 ```sh
 HTTP_PROXY=http://127.0.0.1:7890

@@ -34,10 +34,10 @@ func TestSplitCommandAndFlagsAllowsGlobalFlagsBeforeCommand(t *testing.T) {
 	}
 }
 
-func TestSplitCommandAndFlagsDefaultsToDaemon(t *testing.T) {
+func TestSplitCommandAndFlagsDefaultsToHealth(t *testing.T) {
 	command, rest := splitCommandAndFlags([]string{"--config", "test.json"})
-	if command != "daemon" {
-		t.Fatalf("command = %q, want daemon", command)
+	if command != "health" {
+		t.Fatalf("command = %q, want health", command)
 	}
 	if len(rest) != 2 || rest[0] != "--config" || rest[1] != "test.json" {
 		t.Fatalf("rest = %#v", rest)
@@ -73,9 +73,20 @@ func TestSplitCommandAndFlagsKeepsCheckNowAlias(t *testing.T) {
 	}
 }
 
+func TestSplitCommandAndFlagsSupportsHealthCommand(t *testing.T) {
+	command, rest := splitCommandAndFlags([]string{"--state-dir", "state", "health"})
+	if command != "health" {
+		t.Fatalf("command = %q, want health", command)
+	}
+	want := []string{"--state-dir", "state"}
+	if len(rest) != len(want) || rest[0] != want[0] || rest[1] != want[1] {
+		t.Fatalf("rest = %#v, want %#v", rest, want)
+	}
+}
+
 func TestRunRejectsExtraPositionalsForNonManifestCommands(t *testing.T) {
 	for _, args := range [][]string{
-		{"daemon", "extra"},
+		{"health", "extra"},
 		{"update", "extra", "--dry-run"},
 		{"check-now", "extra", "--dry-run"},
 		{"status", "extra"},
@@ -101,55 +112,8 @@ func TestDefaultRebootIsRealUnlessDryRun(t *testing.T) {
 	}
 }
 
-func TestShouldRestartDaemonAfterUpdate(t *testing.T) {
-	tests := []struct {
-		name   string
-		config ota.UpdaterConfig
-		result ota.UpdateResult
-		err    error
-		want   bool
-	}{
-		{name: "check failure", err: errForcedUpdateCheckFailure, want: true},
-		{name: "already running", err: ota.ErrUpdateAlreadyRunning, want: false},
-		{name: "no update", result: ota.UpdateResult{NoUpdate: true}, want: true},
-		{name: "dry run", config: ota.UpdaterConfig{DryRun: true}, result: ota.UpdateResult{Updated: true}, want: true},
-		{name: "real update success", result: ota.UpdateResult{Updated: true}, want: false},
-	}
-
-	for _, tt := range tests {
-		if got := shouldRestartDaemonAfterUpdate(tt.config, tt.result, tt.err); got != tt.want {
-			t.Fatalf("%s: shouldRestartDaemonAfterUpdate() = %v, want %v", tt.name, got, tt.want)
-		}
-	}
-}
-
-var errForcedUpdateCheckFailure = &forcedUpdateCheckFailureError{}
-
-type forcedUpdateCheckFailureError struct{}
-
-func (*forcedUpdateCheckFailureError) Error() string {
-	return "forced update check failure"
-}
-
-func TestUpdateRestartsRunningDaemonWhenNoUpdate(t *testing.T) {
+func TestUpdateRunsManualCheckWhenNoUpdate(t *testing.T) {
 	fixture := newNoUpdateFixture(t)
-
-	stopCalls := 0
-	startCalls := 0
-	oldStop := stopRunningDaemon
-	oldStart := startRunningDaemon
-	stopRunningDaemon = func() error {
-		stopCalls++
-		return nil
-	}
-	startRunningDaemon = func() error {
-		startCalls++
-		return nil
-	}
-	t.Cleanup(func() {
-		stopRunningDaemon = oldStop
-		startRunningDaemon = oldStart
-	})
 
 	var out bytes.Buffer
 	err := run([]string{
@@ -162,40 +126,17 @@ func TestUpdateRestartsRunningDaemonWhenNoUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run(update) error = %v", err)
 	}
-	if stopCalls != 1 {
-		t.Fatalf("stopCalls = %d, want 1", stopCalls)
-	}
-	if startCalls != 1 {
-		t.Fatalf("startCalls = %d, want 1", startCalls)
-	}
 	if !strings.Contains(out.String(), `"NoUpdate":true`) {
 		t.Fatalf("output = %q, want no update", out.String())
 	}
 }
 
-func TestUpdateRestartsRunningDaemonAfterCheckFailure(t *testing.T) {
+func TestUpdateReturnsManualCheckFailure(t *testing.T) {
 	fixture := newNoUpdateFixture(t)
 	badServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("not a manifest"))
 	}))
 	t.Cleanup(badServer.Close)
-
-	stopCalls := 0
-	startCalls := 0
-	oldStop := stopRunningDaemon
-	oldStart := startRunningDaemon
-	stopRunningDaemon = func() error {
-		stopCalls++
-		return nil
-	}
-	startRunningDaemon = func() error {
-		startCalls++
-		return nil
-	}
-	t.Cleanup(func() {
-		stopRunningDaemon = oldStop
-		startRunningDaemon = oldStart
-	})
 
 	err := run([]string{
 		"update",
@@ -206,12 +147,6 @@ func TestUpdateRestartsRunningDaemonAfterCheckFailure(t *testing.T) {
 	}, &bytes.Buffer{})
 	if err == nil {
 		t.Fatalf("run(update) error = nil, want manifest failure")
-	}
-	if stopCalls != 1 {
-		t.Fatalf("stopCalls = %d, want 1", stopCalls)
-	}
-	if startCalls != 1 {
-		t.Fatalf("startCalls = %d, want 1", startCalls)
 	}
 }
 

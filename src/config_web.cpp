@@ -111,7 +111,6 @@ const char* kAnyBindAddress = "0.0.0.0";
 const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
-const char* kOtaInitScript = "/etc/init.d/S54ota";
 const char* kAgentLogPath = "/var/log/agent/agent.log";
 // Default path to the agent binary on device. Tests override this via the
 // AIDEN_AGENT_BIN environment variable, resolved once on first use to keep
@@ -1877,10 +1876,6 @@ void schedule_agent_restart() {
     schedule_init_script_restart(kAgentInitScript);
 }
 
-void schedule_ota_restart() {
-    schedule_init_script_restart(kOtaInitScript);
-}
-
 int acquire_ota_update_launch_lock(std::string* error) {
     std::string lock_path = ota_update_lock_path();
     int lock_fd = open(lock_path.c_str(), O_CREAT | O_RDWR, 0600);
@@ -1957,7 +1952,7 @@ bool launch_ota_update_supervisor(int lock_fd, const std::string& log_path, std:
         setsid();
         set_fd_cloexec(lock_fd, NULL);
         // Keep the launch lock in this supervisor while `ota update` runs,
-        // but keep it out of the ota/update-daemon exec tree.
+        // but keep it out of the ota update exec tree.
         std::string cmd = build_ota_update_command(log_path);
         int rc = system(cmd.c_str());
         (void)rc;
@@ -2855,26 +2850,18 @@ ApiResponse handle_post_system_env(const Options& options, const std::string& bo
     std::string system_env = env_item->valuestring;
     cJSON_Delete(root);
 
-    std::string original_system_env = read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize);
     std::string save_error;
     if (!save_system_env_content(options.system_env_path, system_env, &save_error)) {
         return make_json_error(400, save_error);
     }
 
-    std::string updated_system_env = read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize);
-    bool system_env_changed = original_system_env != updated_system_env;
     schedule_agent_restart();
-    if (system_env_changed) {
-        schedule_ota_restart();
-    }
 
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddStringToObject(response, "message",
-                            system_env_changed ? "system env saved; services restarting"
-                                               : "system env saved; agent restarting");
+    cJSON_AddStringToObject(response, "message", "system env saved; agent restarting");
     cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
-    cJSON_AddBoolToObject(response, "ota_restart_scheduled", system_env_changed ? 1 : 0);
+    cJSON_AddBoolToObject(response, "ota_restart_scheduled", 0);
     cJSON_AddStringToObject(response, "system_env",
                             read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize).c_str());
     cJSON* paths = add_object(response, "paths");

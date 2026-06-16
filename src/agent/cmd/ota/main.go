@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,13 +15,6 @@ import (
 	"aiden-agent/internal/ota"
 )
 
-const otaInitScriptPath = "/etc/init.d/S54ota"
-
-var (
-	stopRunningDaemon  = stopRunningDaemonWithInitScript
-	startRunningDaemon = startRunningDaemonWithInitScript
-)
-
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -33,7 +25,7 @@ func main() {
 func run(args []string, out io.Writer) error {
 	command, args := splitCommandAndFlags(args)
 	positional := flagArgs(args)
-	if (command == "daemon" || command == "update" || command == "check-now" || command == "status") && len(positional) != 0 {
+	if (command == "health" || command == "update" || command == "check-now" || command == "status") && len(positional) != 0 {
 		return usage()
 	}
 	config, err := parseConfigFlags(args)
@@ -47,21 +39,10 @@ func run(args []string, out io.Writer) error {
 	ctx := context.Background()
 
 	switch command {
-	case "daemon":
-		return updater.RunDaemon(ctx)
+	case "health":
+		return updater.ProcessPendingHealthOnce(ctx)
 	case "update", "check-now":
-		if err := stopRunningDaemon(); err != nil {
-			return err
-		}
 		result, err := updater.CheckOnce(ctx)
-		if shouldRestartDaemonAfterUpdate(config, result, err) {
-			if restartErr := startRunningDaemon(); restartErr != nil {
-				if err != nil {
-					return fmt.Errorf("%w; restart ota daemon: %v", err, restartErr)
-				}
-				return fmt.Errorf("restart ota daemon after unsuccessful update: %w", restartErr)
-			}
-		}
 		if err != nil {
 			return err
 		}
@@ -110,43 +91,9 @@ func platformReboot() error {
 	return fmt.Errorf("reboot binary not found in trusted paths")
 }
 
-func shouldRestartDaemonAfterUpdate(config ota.UpdaterConfig, result ota.UpdateResult, err error) bool {
-	if errors.Is(err, ota.ErrUpdateAlreadyRunning) {
-		return false
-	}
-	if err != nil {
-		return true
-	}
-	if config.DryRun {
-		return true
-	}
-	return !result.Updated
-}
-
-func stopRunningDaemonWithInitScript() error {
-	return runOtaInitScriptIfExists("stop")
-}
-
-func startRunningDaemonWithInitScript() error {
-	return runOtaInitScriptIfExists("start")
-}
-
-func runOtaInitScriptIfExists(action string) error {
-	if _, err := os.Stat(otaInitScriptPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	if err := exec.Command(otaInitScriptPath, action).Run(); err != nil {
-		return fmt.Errorf("%s ota daemon: %w", action, err)
-	}
-	return nil
-}
-
 func splitCommandAndFlags(args []string) (string, []string) {
 	commands := map[string]bool{
-		"daemon":          true,
+		"health":          true,
 		"update":          true,
 		"check-now":       true,
 		"status":          true,
@@ -167,9 +114,9 @@ func splitCommandAndFlags(args []string) (string, []string) {
 			rest = append(rest, args[i+1:]...)
 			return arg, rest
 		}
-		return "daemon", args
+		return "health", args
 	}
-	return "daemon", args
+	return "health", args
 }
 
 func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
@@ -182,9 +129,7 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	manifestURL := fs.String("manifest-url", "", "direct manifest URL (skips release API)")
 	publicKeyPath := fs.String("public-key", "", "Ed25519 public key PEM path")
 	dryRun := fs.Bool("dry-run", false, "download and verify without switching misc or rebooting")
-	testMode := fs.Bool("test", false, "use test-friendly short intervals")
-	interval := fs.Duration("interval", 0, "daemon check interval")
-	jitter := fs.Duration("jitter", 0, "daemon check jitter")
+	testMode := fs.Bool("test", false, "use test-friendly short health timeout")
 	healthTimeout := fs.Duration("health-timeout", 0, "pending health timeout")
 	httpTimeout := fs.Duration("http-timeout", 0, "HTTP request timeout")
 	switchTries := fs.Uint("switch-tries", 0, "tries remaining when switching slots")
@@ -214,12 +159,6 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	if *publicKeyPath != "" {
 		config.PublicKeyPath = *publicKeyPath
 	}
-	if *interval != 0 {
-		config.Interval = *interval
-	}
-	if *jitter != 0 {
-		config.Jitter = *jitter
-	}
 	if *healthTimeout != 0 {
 		config.HealthTimeout = *healthTimeout
 	}
@@ -237,8 +176,6 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	}
 	config.DryRun = config.DryRun || *dryRun
 	if *testMode {
-		config.Interval = time.Second
-		config.Jitter = 0
 		config.HealthTimeout = time.Second
 	}
 	config.Logger = log.New(os.Stderr, "ota: ", log.LstdFlags)
@@ -291,7 +228,7 @@ func flagIsBool(name string) bool {
 
 func flagTakesValue(name string) bool {
 	switch name {
-	case "config", "state-dir", "misc", "block-dir", "manifest-url", "public-key", "interval", "jitter", "health-timeout", "target-slot", "http-timeout", "switch-tries":
+	case "config", "state-dir", "misc", "block-dir", "manifest-url", "public-key", "health-timeout", "target-slot", "http-timeout", "switch-tries":
 		return true
 	default:
 		return false
@@ -299,5 +236,5 @@ func flagTakesValue(name string) bool {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: ota [flags] [daemon|update|check-now|status|verify-manifest <manifest>]")
+	return fmt.Errorf("usage: ota [flags] [health|update|check-now|status|verify-manifest <manifest>]")
 }
