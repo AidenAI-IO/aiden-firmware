@@ -85,3 +85,54 @@ func TestJSONFieldOrPlainStreamWriterPassesPlainText(t *testing.T) {
 		t.Fatalf("plain stream = %q", got)
 	}
 }
+
+func TestJSONFieldOrPlainStreamWriterPassesBracePrefixedPlainText(t *testing.T) {
+	tests := []struct {
+		name   string
+		chunks []string
+		want   string
+	}{
+		{
+			name:   "immediate text",
+			chunks: []string{`{`, `plain answer`},
+			want:   "{plain answer",
+		},
+		{
+			name:   "whitespace then text",
+			chunks: []string{`{`, "\n\t ", `plain answer`},
+			want:   "{\n\t plain answer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sink strings.Builder
+			writer := NewJSONFieldOrPlainStreamWriter(&sink, "output")
+
+			for _, chunk := range tt.chunks {
+				if _, err := writer.Write([]byte(chunk)); err != nil {
+					t.Fatalf("Write(%q) error = %v", chunk, err)
+				}
+			}
+
+			if got := sink.String(); got != tt.want {
+				t.Fatalf("plain stream = %q", got)
+			}
+		})
+	}
+}
+
+func TestJSONFieldOrPlainStreamWriterExtractsStructuredFieldAfterSplitGate(t *testing.T) {
+	var sink strings.Builder
+	writer := NewJSONFieldOrPlainStreamWriter(&sink, "output")
+
+	for _, chunk := range []string{`  {`, "\n\t", `"speech_text":"ignored","output":"完整回答。"}`} {
+		if _, err := writer.Write([]byte(chunk)); err != nil {
+			t.Fatalf("Write(%q) error = %v", chunk, err)
+		}
+	}
+
+	if got := sink.String(); got != "完整回答。" {
+		t.Fatalf("streamed field = %q", got)
+	}
+}

@@ -321,6 +321,7 @@ type JSONFieldOrPlainStreamWriter struct {
 	field      string
 	prefix     []byte
 	mode       int
+	detect     int
 	emitted    bool
 }
 
@@ -328,6 +329,11 @@ const (
 	jsonStreamDetectMode = iota
 	jsonStreamStructuredMode
 	jsonStreamPlainMode
+)
+
+const (
+	jsonStreamDetectLeading = iota
+	jsonStreamDetectAfterObjectStart
 )
 
 // NewJSONFieldOrPlainStreamWriter creates a structured-field-or-plain passthrough writer.
@@ -348,6 +354,7 @@ func (w *JSONFieldOrPlainStreamWriter) ResetStreamState() {
 	w.structured = nil
 	w.prefix = nil
 	w.mode = jsonStreamDetectMode
+	w.detect = jsonStreamDetectLeading
 	w.emitted = false
 }
 
@@ -383,32 +390,59 @@ func (w *JSONFieldOrPlainStreamWriter) Write(p []byte) (int, error) {
 	consumed := 0
 	for consumed < len(p) {
 		b := p[consumed]
-		if isJSONWhitespaceByte(b) {
-			w.prefix = append(w.prefix, b)
-			consumed++
-			continue
-		}
-		if b == '{' && w.field != "" {
-			w.mode = jsonStreamStructuredMode
-			w.structured = NewJSONFieldStreamWriter(w.target, w.field)
-			chunk := append(append([]byte{}, w.prefix...), p[consumed:]...)
-			w.prefix = nil
-			_, err := w.structured.Write(chunk)
-			if w.structured.StreamEmitted() {
-				w.emitted = true
+		switch w.detect {
+		case jsonStreamDetectLeading:
+			if isJSONWhitespaceByte(b) {
+				w.prefix = append(w.prefix, b)
+				consumed++
+				continue
 			}
-			return len(p), err
+			if b == '{' && w.field != "" {
+				w.prefix = append(w.prefix, b)
+				w.detect = jsonStreamDetectAfterObjectStart
+				consumed++
+				continue
+			}
+			return len(p), w.startPlainMode(p[consumed:])
+		case jsonStreamDetectAfterObjectStart:
+			if isJSONWhitespaceByte(b) {
+				w.prefix = append(w.prefix, b)
+				consumed++
+				continue
+			}
+			if b == '"' {
+				w.mode = jsonStreamStructuredMode
+				w.structured = NewJSONFieldStreamWriter(w.target, w.field)
+				chunk := w.bufferedChunk(p[consumed:])
+				w.prefix = nil
+				_, err := w.structured.Write(chunk)
+				if w.structured.StreamEmitted() {
+					w.emitted = true
+				}
+				return len(p), err
+			}
+			return len(p), w.startPlainMode(p[consumed:])
 		}
-		w.mode = jsonStreamPlainMode
-		chunk := append(append([]byte{}, w.prefix...), p[consumed:]...)
-		w.prefix = nil
-		n, err := w.target.Write(chunk)
-		if n > 0 {
-			w.emitted = true
-		}
-		return len(p), err
 	}
 	return len(p), nil
+}
+
+func (w *JSONFieldOrPlainStreamWriter) startPlainMode(p []byte) error {
+	w.mode = jsonStreamPlainMode
+	chunk := w.bufferedChunk(p)
+	w.prefix = nil
+	n, err := w.target.Write(chunk)
+	if n > 0 {
+		w.emitted = true
+	}
+	return err
+}
+
+func (w *JSONFieldOrPlainStreamWriter) bufferedChunk(p []byte) []byte {
+	chunk := make([]byte, 0, len(w.prefix)+len(p))
+	chunk = append(chunk, w.prefix...)
+	chunk = append(chunk, p...)
+	return chunk
 }
 
 func isJSONWhitespaceByte(b byte) bool {
