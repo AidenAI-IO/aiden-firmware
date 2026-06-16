@@ -194,7 +194,7 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 		path := filepath.Join(s.rootDir, entry.File)
 		parsed, err := readMemoryMarkdown(path)
 		if err != nil {
-			return nil, err
+			continue
 		}
 		if memoryItemExpired(parsed.Item, time.Now().UTC()) {
 			continue
@@ -531,7 +531,7 @@ func (s *LongTermMemoryStore) RebuildIndex(ctx context.Context) error {
 		path := filepath.Join(s.memoriesDir(), entry.Name())
 		parsed, err := readMemoryMarkdown(path)
 		if err != nil {
-			return err
+			continue
 		}
 		index.Memories = append(index.Memories, memoryIndexEntry{
 			ID:         parsed.Item.ID,

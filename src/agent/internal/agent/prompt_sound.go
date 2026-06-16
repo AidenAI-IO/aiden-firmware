@@ -20,6 +20,7 @@ const (
 
 	promptSoundDrainTimeout = 2 * time.Second
 	promptSoundSettleDelay  = 450 * time.Millisecond
+	promptSoundRetryDelay   = 150 * time.Millisecond
 )
 
 func playPromptSound(ctx context.Context, audio *AudioServiceClient, kind promptSoundKind, wait bool) error {
@@ -34,11 +35,21 @@ func playPromptSound(ctx context.Context, audio *AudioServiceClient, kind prompt
 	}
 
 	pcm := promptSoundPCM(kind)
-	playback, err := audio.StartPlayback(AudioFormat{
+	format := AudioFormat{
 		SampleRate: promptSoundSampleRate,
 		Channels:   promptSoundChannels,
 		BitWidth:   promptSoundBitWidth,
-	})
+	}
+	playback, err := audio.StartPlayback(format)
+	if err != nil && ctx.Err() == nil {
+		timer := time.NewTimer(promptSoundRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+		case <-timer.C:
+			playback, err = audio.StartPlayback(format)
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("start prompt playback: %w", err)
 	}

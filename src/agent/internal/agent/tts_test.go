@@ -49,12 +49,26 @@ func TestWaitForPlaybackDrainRetriesTransientHealthFailure(t *testing.T) {
 	}
 }
 
+func TestPlayPromptSoundRetriesBusyStartPlayback(t *testing.T) {
+	audioServer := newTestAudioService(t)
+	audioServer.startPlaybackStatuses = []string{"INTERNAL_ERROR", "OK"}
+	audioServer.healthPlaybackSessions = []uint32{0}
+
+	if err := playPromptSound(context.Background(), NewAudioServiceClient(audioServer.socketPath), promptSoundRecordingStart, true); err != nil {
+		t.Fatalf("playPromptSound() error = %v", err)
+	}
+	if got := audioServer.countOp("start_playback"); got != 2 {
+		t.Fatalf("start_playback count = %d, want retry after busy failure", got)
+	}
+}
+
 type testAudioService struct {
 	socketPath               string
 	listener                 net.Listener
 	mu                       sync.Mutex
 	ops                      []string
 	stopStatus               string
+	startPlaybackStatuses    []string
 	healthConnectionDrops    int
 	healthPlaybackSessions   []uint32
 	lastHealthPlaybackStatus uint32
@@ -123,6 +137,7 @@ func (s *testAudioService) handleConn(conn net.Conn) {
 	status := "OK"
 	extra := map[string]interface{}{}
 	if req.Op == "start_playback" {
+		status = s.nextStartPlaybackStatus()
 		extra["session_id"] = uint64(77)
 	}
 	if req.Op == "start_recording" {
@@ -143,6 +158,17 @@ func (s *testAudioService) handleConn(conn net.Conn) {
 	}
 	data, _ := json.Marshal(resp)
 	_ = writeUdsMessage(conn, udsMessage{HeaderJSON: string(data)})
+}
+
+func (s *testAudioService) nextStartPlaybackStatus() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.startPlaybackStatuses) == 0 {
+		return "OK"
+	}
+	status := s.startPlaybackStatuses[0]
+	s.startPlaybackStatuses = s.startPlaybackStatuses[1:]
+	return status
 }
 
 func (s *testAudioService) nextHealthPlaybackSessionsLocked() uint32 {

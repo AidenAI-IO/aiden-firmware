@@ -221,6 +221,87 @@ func TestLongTermMemorySearchTreatsWhitespaceOnlyTagsAsEmptyQuery(t *testing.T) 
 	}
 }
 
+func TestLongTermMemorySearchSkipsCorruptIndexedMarkdown(t *testing.T) {
+	ctx := context.Background()
+	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:         "mem_valid",
+		Type:       "preference",
+		Priority:   80,
+		Confidence: 0.9,
+		Tags:       []string{"general"},
+		Title:      "Valid memory",
+		Content:    "The user prefers concise replies.",
+		EvidenceExcerpts: []string{
+			"The user asked for concise replies.",
+		},
+	}); err != nil {
+		t.Fatalf("AddMemory() error = %v", err)
+	}
+
+	corruptPath := filepath.Join(store.RootDir(), "memories", "mem_corrupt.md")
+	if err := os.WriteFile(corruptPath, nil, 0o644); err != nil {
+		t.Fatalf("write corrupt memory: %v", err)
+	}
+	index, err := store.loadIndex(ctx)
+	if err != nil {
+		t.Fatalf("loadIndex() error = %v", err)
+	}
+	index.Memories = append(index.Memories, memoryIndexEntry{
+		ID:         "mem_corrupt",
+		File:       filepath.ToSlash(filepath.Join("memories", "mem_corrupt.md")),
+		Type:       "preference",
+		Status:     "active",
+		Priority:   100,
+		Confidence: 1,
+		Tags:       []string{"general"},
+	})
+	if err := store.writeIndex(index); err != nil {
+		t.Fatalf("writeIndex() error = %v", err)
+	}
+
+	results, err := store.Search(ctx, MemoryQuery{Tags: []string{"general"}, Limit: 5})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(results) != 1 || results[0].ID != "mem_valid" {
+		t.Fatalf("expected valid memory only, got %#v", results)
+	}
+}
+
+func TestLongTermMemoryRebuildIndexSkipsCorruptMarkdown(t *testing.T) {
+	ctx := context.Background()
+	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:         "mem_valid",
+		Type:       "preference",
+		Priority:   80,
+		Confidence: 0.9,
+		Tags:       []string{"general"},
+		Title:      "Valid memory",
+		Content:    "The user prefers concise replies.",
+		EvidenceExcerpts: []string{
+			"The user asked for concise replies.",
+		},
+	}); err != nil {
+		t.Fatalf("AddMemory() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.RootDir(), "memories", "mem_corrupt.md"), nil, 0o644); err != nil {
+		t.Fatalf("write corrupt memory: %v", err)
+	}
+
+	if err := store.RebuildIndex(ctx); err != nil {
+		t.Fatalf("RebuildIndex() error = %v", err)
+	}
+	index, err := store.loadIndex(ctx)
+	if err != nil {
+		t.Fatalf("loadIndex() error = %v", err)
+	}
+	if len(index.Memories) != 1 || index.Memories[0].ID != "mem_valid" {
+		t.Fatalf("expected valid memory only in rebuilt index, got %#v", index.Memories)
+	}
+}
+
 func TestLongTermMemoryForgetExcludesMemoryFromSearch(t *testing.T) {
 	ctx := context.Background()
 	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))
