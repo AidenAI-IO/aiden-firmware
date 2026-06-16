@@ -416,9 +416,10 @@ func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
 
 func (t *KeyboardTapTool) Description() string {
 	return `Press and release keyboard keys. Input JSON: {"keys": ["ctrl", "c"]}. ` +
-		`For known semantic platform actions such as back, app search, app switching, copy, paste, undo, redo, select all, find, send, or browser navigation, prefer quick_action first; use keyboard_tap as a low-level fallback or for custom key input. ` +
+		`For known semantic platform actions such as back, app search, app switching, copy, paste, undo, redo, select all, delete backward/forward, find, send, or browser navigation, prefer quick_action first; use keyboard_tap as a low-level fallback or for custom key input. ` +
 		`Supports: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, ` +
 		`up, down, left, right, home, end, pageup, pagedown, insert, printscreen. ` +
+		`For normal text deletion in an input field, use backspace; the delete key is forward-delete and should only be used when intentionally deleting the character after the cursor. ` +
 		`Modifiers: ctrl, shift, alt, meta/super/win/cmd. ` +
 		`Modifier-only taps are supported (e.g. {"keys":["meta"]} for Android Home). ` +
 		`Multiple keys are pressed simultaneously (e.g. ctrl+c). ` +
@@ -434,7 +435,7 @@ func (t *KeyboardTapTool) ArgsSchema() map[string]any {
 				"type":        "array",
 				"minItems":    1,
 				"maxItems":    6,
-				"description": "Keys pressed simultaneously, e.g. [\"ctrl\",\"c\"] or [\"meta\"].",
+				"description": "Keys pressed simultaneously, e.g. [\"ctrl\",\"c\"] or [\"meta\"]. Use backspace for ordinary text deletion before the cursor; delete is forward-delete after the cursor.",
 				"items": map[string]any{
 					"type": "string",
 				},

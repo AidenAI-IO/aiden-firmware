@@ -1256,6 +1256,31 @@
         }
       }
     },
+    "delete_backward": {
+      "label": "Delete Backward",
+      "aliases": ["向后删除", "退格", "backspace", "delete_backward", "backward_delete", "删除光标前字符"],
+      "category": "text_editing",
+      "platforms": {
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["backspace"] },
+          "note": "delete before cursor (Backspace key)"
+        },
+        "android": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["backspace"] },
+          "note": "delete before cursor (Backspace key)"
+        },
+        "mac": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["backspace"] },
+          "note": "delete before cursor (Backspace key)"
+        }
+      }
+    },
     "delete_forward": {
       "label": "Delete Forward",
       "aliases": ["向前删除", "delete_forward", "forward_delete"],
