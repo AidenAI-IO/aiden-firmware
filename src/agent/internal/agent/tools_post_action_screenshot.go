@@ -27,6 +27,10 @@ type postActionScreenshotTool struct {
 	waitInput  string
 }
 
+type stableScreenWaiter interface {
+	wait(context.Context, string) (waitStableScreenResult, error)
+}
+
 func newPostActionScreenshotTool(inner langtools.Tool, screenshot langtools.Tool, delay time.Duration) langtools.Tool {
 	return newPostActionStableScreenshotTool(inner, nil, screenshot, delay, ScreenStableDefaults{})
 }
@@ -79,18 +83,28 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 
 	var waitResult waitStableScreenResult
 	if t.waitStable != nil {
-		waitOutput, err := t.waitStable.Call(ctx, t.waitInput)
-		if err != nil {
-			return "", err
-		}
-		if toolOutputLooksLikeError(waitOutput) {
-			return fmt.Sprintf("error: %s completed with output %q, but stable-screen wait failed: %s", t.inner.Name(), actionOutput, waitOutput), nil
-		}
-		if err := json.Unmarshal([]byte(waitOutput), &waitResult); err != nil {
-			return fmt.Sprintf("error: %s completed with output %q, but stable-screen wait returned invalid JSON: %v", t.inner.Name(), actionOutput, err), nil
+		if waiter, ok := t.waitStable.(stableScreenWaiter); ok {
+			waitResult, err = waiter.wait(ctx, t.waitInput)
+			if err != nil {
+				return fmt.Sprintf("error: %s completed with output %q, but stable-screen wait failed: %v", t.inner.Name(), actionOutput, err), nil
+			}
+		} else {
+			waitOutput, err := t.waitStable.Call(ctx, t.waitInput)
+			if err != nil {
+				return "", err
+			}
+			if toolOutputLooksLikeError(waitOutput) {
+				return fmt.Sprintf("error: %s completed with output %q, but stable-screen wait failed: %s", t.inner.Name(), actionOutput, waitOutput), nil
+			}
+			if err := json.Unmarshal([]byte(waitOutput), &waitResult); err != nil {
+				return fmt.Sprintf("error: %s completed with output %q, but stable-screen wait returned invalid JSON: %v", t.inner.Name(), actionOutput, err), nil
+			}
+			if !waitResult.OK {
+				return fmt.Sprintf("error: %s completed with output %q, but stable-screen wait failed: %s", t.inner.Name(), actionOutput, waitOutput), nil
+			}
 		}
 		if !waitResult.OK {
-			return fmt.Sprintf("error: %s completed with output %q, but stable-screen wait failed: %s", t.inner.Name(), actionOutput, waitOutput), nil
+			return fmt.Sprintf("error: %s completed with output %q, but stable-screen wait failed", t.inner.Name(), actionOutput), nil
 		}
 	} else if err := waitForPostActionScreenshot(ctx, t.delay); err != nil {
 		return "", err

@@ -60,7 +60,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	pointer := newPointerController(hidCfg)
 	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 	screenStable := toolOptions.screenStable.Resolved()
-	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable)
+	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable, screen)
 	keyboardTap := &KeyboardTapTool{dev: kbDev}
 	touchGesture := &TouchGestureTool{pc: pointer, screen: screen}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture}
