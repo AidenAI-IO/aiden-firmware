@@ -53,6 +53,22 @@ func NewJSONFieldStreamWriter(target io.Writer, field string) *JSONFieldStreamWr
 	}
 }
 
+func (w *JSONFieldStreamWriter) ResetStreamState() {
+	if w == nil {
+		return
+	}
+	w.state = jsonFieldStreamExpectObject
+	w.key.Reset()
+	w.pending = nil
+	w.escape = false
+	w.unicodeEscape = false
+	w.unicodeDigits = ""
+	w.lastKey = ""
+	w.depth = 0
+	w.skipValueRoot = 0
+	w.skipString = false
+}
+
 func (w *JSONFieldStreamWriter) Write(p []byte) (int, error) {
 	if len(p) == 0 || w == nil || w.target == nil || w.field == "" {
 		return len(p), nil
@@ -309,6 +325,18 @@ func NewJSONFieldOrPlainStreamWriter(target io.Writer, field string) io.Writer {
 		target: target,
 		field:  strings.TrimSpace(field),
 	}
+}
+
+func (w *JSONFieldOrPlainStreamWriter) ResetStreamState() {
+	if w == nil {
+		return
+	}
+	if w.structured != nil {
+		w.structured.ResetStreamState()
+	}
+	w.structured = nil
+	w.prefix = nil
+	w.mode = jsonStreamDetectMode
 }
 
 func (w *JSONFieldOrPlainStreamWriter) Write(p []byte) (int, error) {

@@ -693,17 +693,21 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 
 func (e *roleCollaborativeExecutor) callVerifier(ctx context.Context, inputs map[string]string, state roleLoopState, options ...chains.ChainCallOption) (verifierDecision, error) {
 	messages := e.roleMessages(e.Profiles.Verifier, inputs, state, "Verifier task: decide whether the current executor step succeeded. Return the required JSON.")
-	generate := func() (*llms.ContentResponse, error) {
-		return e.generateRoleContent(ctx, RoleVerifier, messages, chains.GetLLMCallOptions(options...)...)
+	baseOptions := chains.GetLLMCallOptions(options...)
+	generate := func(callOptions []llms.CallOption) (*llms.ContentResponse, error) {
+		return e.generateRoleContent(ctx, RoleVerifier, messages, callOptions...)
 	}
 	var (
 		res *llms.ContentResponse
 		err error
 	)
 	if state.isFinalCommittedPlanStep() {
-		res, err = e.withFinalStreaming(ctx, generate)
+		callOptions := e.finalStreamingCallOptions(baseOptions)
+		res, err = e.withFinalStreaming(ctx, func() (*llms.ContentResponse, error) {
+			return generate(callOptions)
+		})
 	} else {
-		res, err = generate()
+		res, err = generate(baseOptions)
 	}
 	if err != nil {
 		return verifierDecision{}, err
@@ -1774,6 +1778,10 @@ type finalStreamingController interface {
 	HasFinalStreamingToken(context.Context) bool
 }
 
+type providerFinalStreamingController interface {
+	ProviderFinalStreamingEnabled() bool
+}
+
 func (e *roleCollaborativeExecutor) withFinalStreaming(ctx context.Context, fn func() (*llms.ContentResponse, error)) (*llms.ContentResponse, error) {
 	controller, ok := e.CallbacksHandler.(finalStreamingController)
 	if !ok {
@@ -1782,6 +1790,30 @@ func (e *roleCollaborativeExecutor) withFinalStreaming(ctx context.Context, fn f
 	controller.EnableFinalStreaming(ctx)
 	defer controller.DisableFinalStreaming(ctx)
 	return fn()
+}
+
+func (e *roleCollaborativeExecutor) finalStreamingCallOptions(options []llms.CallOption) []llms.CallOption {
+	controller, ok := e.CallbacksHandler.(providerFinalStreamingController)
+	if !ok || !controller.ProviderFinalStreamingEnabled() {
+		return options
+	}
+	streamer, ok := e.CallbacksHandler.(streamingFuncHandler)
+	if !ok {
+		return options
+	}
+	var current llms.CallOptions
+	for _, option := range options {
+		option(&current)
+	}
+	if current.StreamingFunc != nil {
+		return options
+	}
+	callOptions := append([]llms.CallOption{}, options...)
+	callOptions = append(callOptions, llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
+		streamer.HandleStreamingFunc(ctx, chunk)
+		return nil
+	}))
+	return callOptions
 }
 
 func (e *roleCollaborativeExecutor) streamFinalAnswer(ctx context.Context, finalAnswer string) {

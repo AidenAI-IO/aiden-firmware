@@ -65,8 +65,9 @@ type RunRequest struct {
 	// hardware/app state. It is not persisted as user configuration.
 	RuntimeContext string
 	StreamWriter   io.Writer
-	// StreamFinalChunks enables provider-level token streaming for final-answer
-	// audio paths. Plain UI streaming keeps the legacy finish-time write path.
+	// StreamFinalChunks allows final-answer chunks to be written through
+	// StreamWriter for audio paths. Non-final LLM calls must remain
+	// non-streaming because they may be planner, tool-call, or verifier turns.
 	StreamFinalChunks bool
 	MaxTokens         int
 	EventHandler      func(RunEvent)
@@ -555,20 +556,18 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	var streamCallbackHandler *runtimeCallbackHandler
 	if req.StreamWriter != nil || req.EventHandler != nil || req.SteerProvider != nil || r.logger != nil {
 		streamCallbackHandler = &runtimeCallbackHandler{
-			writer:       req.StreamWriter,
-			metrics:      metrics,
-			startTime:    startTime,
-			logger:       r.logger,
-			eventHandler: req.EventHandler,
-			episodeID:    episodeID,
+			writer:                 req.StreamWriter,
+			providerFinalStreaming: req.StreamWriter != nil && req.StreamFinalChunks,
+			metrics:                metrics,
+			startTime:              startTime,
+			logger:                 r.logger,
+			eventHandler:           req.EventHandler,
+			episodeID:              episodeID,
 		}
 	}
 	var executorHandler callbacks.Handler
 	if streamCallbackHandler != nil {
 		executorHandler = streamCallbackHandler
-		if req.StreamWriter != nil && req.StreamFinalChunks {
-			callOptions = append(callOptions, chains.WithCallback(streamCallbackHandler))
-		}
 	}
 	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
 	plannerMemory := memoryHandle.Memory
@@ -1011,17 +1010,18 @@ func (r *Runtime) memoryContextForPrompt() string {
 // runtimeCallbackHandler implements callbacks.Handler for streaming output and
 // tool/agent observability.
 type runtimeCallbackHandler struct {
-	writer         io.Writer
-	metrics        *RunMetrics
-	startTime      time.Time
-	firstTokenSeen bool
-	finalTokenSeen bool
-	streamFinal    bool
-	logger         *Logger
-	eventHandler   func(RunEvent)
-	episodeID      string
-	mu             sync.Mutex
-	pendingActions []schema.AgentAction
+	writer                 io.Writer
+	providerFinalStreaming bool
+	metrics                *RunMetrics
+	startTime              time.Time
+	firstTokenSeen         bool
+	finalTokenSeen         bool
+	streamFinal            bool
+	logger                 *Logger
+	eventHandler           func(RunEvent)
+	episodeID              string
+	mu                     sync.Mutex
+	pendingActions         []schema.AgentAction
 }
 
 func (h *runtimeCallbackHandler) HandleText(ctx context.Context, text string) {
@@ -1299,6 +1299,7 @@ func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk 
 }
 
 func (h *runtimeCallbackHandler) EnableFinalStreaming(ctx context.Context) {
+	resetStreamWriterState(h.writer)
 	h.mu.Lock()
 	h.finalTokenSeen = false
 	h.streamFinal = true
@@ -1315,6 +1316,22 @@ func (h *runtimeCallbackHandler) finalStreamingEnabled() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.streamFinal
+}
+
+func (h *runtimeCallbackHandler) ProviderFinalStreamingEnabled() bool {
+	return h != nil && h.writer != nil && h.providerFinalStreaming
+}
+
+type streamStateResetter interface {
+	ResetStreamState()
+}
+
+func resetStreamWriterState(writer io.Writer) {
+	resetter, ok := writer.(streamStateResetter)
+	if !ok {
+		return
+	}
+	resetter.ResetStreamState()
 }
 
 func (h *runtimeCallbackHandler) HasFinalStreamingToken(context.Context) bool {
