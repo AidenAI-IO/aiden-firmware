@@ -32,6 +32,7 @@ bool upsert_wifi_network(WifiNetworkConfig* config, const WifiNetwork& network);
 bool remove_wifi_network(WifiNetworkConfig* config, const std::string& ssid);
 bool promote_wifi_network(WifiNetworkConfig* config, const std::string& ssid);
 void normalize_wifi_priorities(WifiNetworkConfig* config);
+void sync_legacy_wifi_fields(WifiNetworkConfig* config);
 std::string detect_country_from_ap(const std::string& interface = "wlan0");
 std::string detect_country_by_ssid(const std::string& ssid, const std::string& interface = "wlan0");
 

@@ -1801,26 +1801,6 @@ ValidationResult validate_agent_config_for_save(const aiden::AgentToml& config) 
     return validate_agent_config_via_cli(config, agent_bin);
 }
 
-void sync_wifi_legacy_fields_from_networks(aiden::WifiNetworkConfig* wifi) {
-    if (!wifi) {
-        return;
-    }
-    if (wifi->networks.empty()) {
-        wifi->ssid.clear();
-        wifi->psk.clear();
-        return;
-    }
-
-    size_t best = 0;
-    for (size_t i = 1; i < wifi->networks.size(); ++i) {
-        if (wifi->networks[i].priority > wifi->networks[best].priority) {
-            best = i;
-        }
-    }
-    wifi->ssid = wifi->networks[best].ssid;
-    wifi->psk = wifi->networks[best].psk;
-}
-
 void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {
     if (!root || !wifi) {
         return;
@@ -1852,7 +1832,7 @@ void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {
             }
         }
         aiden::normalize_wifi_priorities(wifi);
-        sync_wifi_legacy_fields_from_networks(wifi);
+        aiden::sync_legacy_wifi_fields(wifi);
     } else if ((has_legacy_ssid || has_legacy_psk) && !wifi->ssid.empty()) {
         aiden::WifiNetwork network;
         int existing_index = aiden::find_wifi_network_index(*wifi, wifi->ssid);
@@ -3091,7 +3071,7 @@ ApiResponse handle_wifi_connect(const Options& options, const std::string& body)
         return make_json_error(400, "ssid is required");
     }
 
-    const std::string target_ssid = trim_copy(ssid_item->valuestring);
+    const std::string target_ssid = ssid_item->valuestring;
     cJSON* psk_item = cJSON_GetObjectItem(root, "psk");
     const bool has_psk = json_is_string(psk_item);
     std::string requested_psk = has_psk ? std::string(psk_item->valuestring) : std::string();
@@ -3254,7 +3234,7 @@ ApiResponse handle_wifi_forget(const Options& options, const std::string& body) 
         cJSON_Delete(root);
         return make_json_error(400, "ssid is required");
     }
-    const std::string ssid = trim_copy(ssid_item->valuestring);
+    const std::string ssid = ssid_item->valuestring;
     cJSON_Delete(root);
 
     aiden::WifiNetworkConfig wifi;
