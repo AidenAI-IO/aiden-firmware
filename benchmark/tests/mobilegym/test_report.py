@@ -139,6 +139,14 @@ def test_generate_reports_handles_fallback_fields_unknown_and_empty_shards(tmp_p
     assert "Fail" in batch_html
     assert read_json(batch / "summary.json")["pass_rate"] < 1
     assert "task.unknown" in batch_html
+    tasks = read_report_tasks(batch / "index.html")
+    assert [task["id"] for task in tasks] == [
+        "task.status-pass",
+        "task.success-false",
+        "task.passed-false",
+        "task.unknown",
+    ]
+    assert all(task["id"] != "phone" for task in tasks)
 
 
 def test_generate_reports_groups_positional_tasks_under_tasks_suite(tmp_path):
@@ -454,12 +462,14 @@ def test_report_falls_back_to_compose_log_tool_calls_when_bridge_artifact_is_mis
         [
             {
                 "id": "loop_planning_v1.direct_answer_no_plan",
+                "task_name": "Select option (b).",
                 "suite": "loop_planning_v1",
                 "is_success": True,
                 "execution": {"steps": 1},
             },
             {
                 "id": "loop_planning_v1.expense_summary_requires_plan",
+                "task_name": "Analyze the expense list.",
                 "suite": "loop_planning_v1",
                 "is_success": True,
             },
@@ -467,8 +477,13 @@ def test_report_falls_back_to_compose_log_tool_calls_when_bridge_artifact_is_mis
     )
     (shard / "compose.log").write_text(
         "daemon-1     | 2026/06/15 10:20:14 [INFO] Chat request (sync): Select option (b).\n"
+        "daemon-1     | 2026/06/15 10:20:14 [INFO] Starting agent run: input=\"Select option (b).\" attachments=0\n"
         "daemon-1     | 2026/06/15 10:20:16 [INFO] Role output: role=planner content=(b)\n"
+        "daemon-1     | 2026/06/15 10:20:16 [INFO] Chat request (sync): setup memory.\n"
+        "daemon-1     | 2026/06/15 10:20:16 [INFO] Starting agent run: input=\"setup memory.\" attachments=0\n"
+        "daemon-1     | 2026/06/15 10:20:16 [INFO] Tool call: name=calculator input={\"expression\": \"1 + 1\"} description=Setup-only call.\n"
         "daemon-1     | 2026/06/15 10:20:17 [INFO] Chat request (sync): Analyze the expense list.\n"
+        "daemon-1     | 2026/06/15 10:20:17 [INFO] Starting agent run: input=\"Analyze the expense list.\" attachments=0\n"
         "daemon-1     | 2026/06/15 10:20:25 [INFO] Tool call: name=calculator input={\"expression\": \"128.40 + 72.60\"} description=Compute travel total.\n",
         encoding="utf-8",
     )
@@ -477,9 +492,54 @@ def test_report_falls_back_to_compose_log_tool_calls_when_bridge_artifact_is_mis
 
     tasks = read_report_tasks(batch / "index.html")
     assert tasks[0]["tool_calls_count"] == 0
+    assert tasks[0]["tool_calls_detail"] == ""
+    assert "results.jsonl" in tasks[0]["artifacts_detail"]
     assert tasks[1]["tool_calls_count"] == 1
     assert "[calculator]" in tasks[1]["tool_calls_detail"]
     assert '"expression": "128.40 + 72.60"' in tasks[1]["tool_calls_detail"]
+
+
+def test_report_omits_empty_aiden_suite_shards_from_task_records(tmp_path):
+    from mobilegym import report
+
+    batch = tmp_path / "batch-aiden-empty-shard"
+    shard = batch / "episode_memory_v1" / "shard-0"
+    write_json(
+        shard / "shard.json",
+        {
+            "batch_id": "batch-aiden-empty-shard",
+            "suite": "episode_memory_v1",
+            "shard_index": 0,
+            "shard_count": 2,
+            "selected_task_count": 1,
+            "selected_task_ids": ["episode_memory_v1.case_one"],
+            "exit_code": 0,
+        },
+    )
+    write_jsonl(
+        shard / "raw" / "run" / "results.jsonl",
+        [{"id": "episode_memory_v1.case_one", "suite": "episode_memory_v1", "is_success": True}],
+    )
+    empty = batch / "episode_memory_v1" / "shard-1"
+    write_json(
+        empty / "shard.json",
+        {
+            "batch_id": "batch-aiden-empty-shard",
+            "suite": "episode_memory_v1",
+            "shard_index": 1,
+            "shard_count": 2,
+            "selected_task_count": 0,
+            "selected_task_ids": [],
+            "exit_code": 0,
+        },
+    )
+
+    summary = report.generate_reports(batch)
+
+    assert summary["empty"] == 1
+    tasks = read_report_tasks(batch / "episode_memory_v1" / "index.html")
+    assert [task["id"] for task in tasks] == ["episode_memory_v1.case_one"]
+    assert "episode_memory_v1.shard" not in (batch / "episode_memory_v1" / "index.html").read_text()
 
 
 def test_report_maps_aiden_suite_rubric_and_hard_assertions_into_drawer_payload(tmp_path):

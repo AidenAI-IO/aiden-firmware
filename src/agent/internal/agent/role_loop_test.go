@@ -529,6 +529,7 @@ func TestFinishStepEntersVerifierReview(t *testing.T) {
 }
 
 func TestExecutorMarkedFinalAnswerEntersVerifierReview(t *testing.T) {
+	handler := &toolExecutionCallbackRecorder{}
 	executor := newRoleCollaborativeExecutor(
 		&scriptedModel{responses: []*llms.ContentResponse{
 			contentResponse("The result matches option (a).\n\n<final_answer>(a)</final_answer>"),
@@ -538,7 +539,7 @@ func TestExecutorMarkedFinalAnswerEntersVerifierReview(t *testing.T) {
 		nil,
 		10,
 		nil,
-		nil,
+		handler,
 		nil,
 		ScreenshotPruningConfig{},
 		nil,
@@ -561,6 +562,9 @@ func TestExecutorMarkedFinalAnswerEntersVerifierReview(t *testing.T) {
 	}
 	if state.ExecutorStepOutcome != "finished" || !strings.Contains(state.ExecutorStepSummary, "<final_answer>(a)</final_answer>") {
 		t.Fatalf("state = %#v", state)
+	}
+	if len(handler.calls) != 1 || handler.calls[0].Action.Tool != toolFinishStep {
+		t.Fatalf("callback calls = %#v, want synthetic finish_step action", handler.calls)
 	}
 }
 

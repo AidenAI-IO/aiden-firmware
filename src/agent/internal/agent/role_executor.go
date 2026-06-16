@@ -626,11 +626,15 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 				"key_info": []string{strings.TrimSpace(answer)},
 				"reason":   "executor returned an explicit final answer",
 			})
-			turn := e.handleExecutorMetaTool(state, schema.AgentAction{
+			action := schema.AgentAction{
 				Tool:      toolFinishStep,
 				ToolInput: string(payload),
 				Log:       strings.TrimSpace(answer),
-			})
+			}
+			if e.CallbacksHandler != nil {
+				e.CallbacksHandler.HandleAgentAction(ctx, action)
+			}
+			turn := e.handleExecutorMetaTool(state, action)
 			if turn.InvalidMetaStep != nil {
 				turn.Step = turn.InvalidMetaStep
 			}
