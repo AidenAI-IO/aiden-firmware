@@ -281,26 +281,34 @@ func parseSetTodoInput(raw string) (simpleTodoUpdate, error) {
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		return simpleTodoUpdate{}, fmt.Errorf("set_todo payload must be valid JSON: %w", err)
 	}
-	update := simpleTodoUpdate{
-		Objective:        strings.TrimSpace(payload.Objective),
-		Items:            uniqueNonEmpty(parseStructuredStringList(payload.Items)),
-		CurrentIndex:     payload.CurrentIndex,
-		CompletedIndices: uniquePositiveIndices(payload.CompletedIndices),
-		BlockedIndices:   uniquePositiveIndices(payload.BlockedIndices),
-		Reason:           strings.TrimSpace(payload.Reason),
-	}
-	if len(update.Items) == 0 {
+	items := uniqueNonEmpty(parseStructuredStringList(payload.Items))
+	if len(items) == 0 {
 		return simpleTodoUpdate{}, fmt.Errorf("set_todo requires at least one item")
 	}
-	if update.CurrentIndex < 1 || update.CurrentIndex > len(update.Items) {
-		return simpleTodoUpdate{}, fmt.Errorf("current_index must be between 1 and %d", len(update.Items))
+	if payload.CurrentIndex < 1 || payload.CurrentIndex > len(items) {
+		return simpleTodoUpdate{}, fmt.Errorf("current_index must be between 1 and %d", len(items))
 	}
-	completed := indexSet(update.CompletedIndices)
-	blocked := indexSet(update.BlockedIndices)
-	if completed[update.CurrentIndex] || blocked[update.CurrentIndex] {
+	completedIndices, err := validatedTodoIndices(payload.CompletedIndices, len(items), "completed_indices")
+	if err != nil {
+		return simpleTodoUpdate{}, err
+	}
+	blockedIndices, err := validatedTodoIndices(payload.BlockedIndices, len(items), "blocked_indices")
+	if err != nil {
+		return simpleTodoUpdate{}, err
+	}
+	completed := indexSet(completedIndices)
+	blocked := indexSet(blockedIndices)
+	if completed[payload.CurrentIndex] || blocked[payload.CurrentIndex] {
 		return simpleTodoUpdate{}, fmt.Errorf("current_index cannot also be completed or blocked")
 	}
-	return update, nil
+	return simpleTodoUpdate{
+		Objective:        strings.TrimSpace(payload.Objective),
+		Items:            items,
+		CurrentIndex:     payload.CurrentIndex,
+		CompletedIndices: completedIndices,
+		BlockedIndices:   blockedIndices,
+		Reason:           strings.TrimSpace(payload.Reason),
+	}, nil
 }
 
 func todoCurrentStepIndex(todo TodoState) int {
@@ -316,20 +324,23 @@ func todoCurrentStepIndex(todo TodoState) int {
 	return 0
 }
 
-func uniquePositiveIndices(values []int) []int {
+func validatedTodoIndices(values []int, max int, field string) ([]int, error) {
 	if len(values) == 0 {
-		return nil
+		return nil, nil
 	}
 	seen := map[int]bool{}
 	var out []int
 	for _, value := range values {
-		if value <= 0 || seen[value] {
+		if value < 1 || value > max {
+			return nil, fmt.Errorf("%s contains index %d outside 1..%d", field, value, max)
+		}
+		if seen[value] {
 			continue
 		}
 		seen[value] = true
 		out = append(out, value)
 	}
-	return out
+	return out, nil
 }
 
 func indexSet(values []int) map[int]bool {

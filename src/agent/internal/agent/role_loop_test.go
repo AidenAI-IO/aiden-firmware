@@ -456,6 +456,46 @@ func TestCommitPlanParsesStringPlanAndCriteria(t *testing.T) {
 	}
 }
 
+func TestSetTodoRejectsOutOfRangeStatusIndices(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "completed zero",
+			input: `{"items":["one","two"],"current_index":1,"completed_indices":[0]}`,
+			want:  "completed_indices contains index 0 outside 1..2",
+		},
+		{
+			name:  "completed too large",
+			input: `{"items":["one","two"],"current_index":1,"completed_indices":[3]}`,
+			want:  "completed_indices contains index 3 outside 1..2",
+		},
+		{
+			name:  "blocked negative",
+			input: `{"items":["one","two"],"current_index":1,"blocked_indices":[-1]}`,
+			want:  "blocked_indices contains index -1 outside 1..2",
+		},
+		{
+			name:  "blocked too large",
+			input: `{"items":["one","two"],"current_index":1,"blocked_indices":[9]}`,
+			want:  "blocked_indices contains index 9 outside 1..2",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseSetTodoInput(tt.input)
+			if err == nil {
+				t.Fatal("parseSetTodoInput() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("parseSetTodoInput() error = %q, want containing %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestCancelPlanReturnsToDefaultMode(t *testing.T) {
 	executor := newRoleCollaborativeExecutor(
 		&scriptedModel{},
