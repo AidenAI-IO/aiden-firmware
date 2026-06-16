@@ -11,7 +11,8 @@ fi
 
 TMP_DIR=$(mktemp -d)
 LATE_TMP_DIR=
-trap 'rm -rf "$TMP_DIR" "$LATE_TMP_DIR"' EXIT INT TERM
+MOUNT_TMP_DIR=
+trap 'rm -rf "$TMP_DIR" "$LATE_TMP_DIR" "$MOUNT_TMP_DIR"' EXIT INT TERM
 
 OTA_BIN="$TMP_DIR/ota"
 LOG_PATH="$TMP_DIR/ota.log"
@@ -30,6 +31,7 @@ OTA_BIN="$OTA_BIN" \
 ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
 LOG_PATH="$LOG_PATH" \
 USERDATA_DIR="$USERDATA_DIR" \
+USERDATA_REQUIRE_MOUNT=0 \
 OTA_DAEMON_LOG="$TMP_DIR/daemon.args" \
 SLEEP_BIN=":" \
 WAIT_TIMEOUT=1 \
@@ -88,12 +90,54 @@ LATE_LOG_PATH="$LATE_TMP_DIR/ota.log"
 LATE_USERDATA_DIR="$LATE_TMP_DIR/userdata"
 mkdir -p "$LATE_USERDATA_DIR"
 
+MOUNT_TMP_DIR=$(mktemp -d)
+MOUNT_OTA_BIN="$MOUNT_TMP_DIR/ota"
+MOUNT_LOG_PATH="$MOUNT_TMP_DIR/ota.log"
+MOUNT_USERDATA_DIR="$MOUNT_TMP_DIR/userdata"
+MOUNT_MOUNTS_PATH="$MOUNT_TMP_DIR/mounts"
+cat > "$MOUNT_OTA_BIN" <<'EOF'
+#!/bin/sh
+echo "$@" >> "$OTA_DAEMON_LOG"
+exit 0
+EOF
+chmod +x "$MOUNT_OTA_BIN"
+mkdir -p "$MOUNT_USERDATA_DIR"
+: > "$MOUNT_MOUNTS_PATH"
+
+OTA_BIN="$MOUNT_OTA_BIN" \
+ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
+LOG_PATH="$MOUNT_LOG_PATH" \
+USERDATA_DIR="$MOUNT_USERDATA_DIR" \
+MOUNTS_PATH="$MOUNT_MOUNTS_PATH" \
+OTA_DAEMON_LOG="$MOUNT_TMP_DIR/daemon.args" \
+SLEEP_BIN=":" \
+WAIT_TIMEOUT=1 \
+"$SCRIPT" start >/dev/null
+
+deadline=$(( $(date +%s) + 5 ))
+while ! { [ -f "$MOUNT_LOG_PATH" ] && grep -q 'userdata mount unavailable after 1s' "$MOUNT_LOG_PATH"; }; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "ota health did not wait for mounted userdata" >&2
+        [ -f "$MOUNT_LOG_PATH" ] && cat "$MOUNT_LOG_PATH" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+if [ -e "$MOUNT_TMP_DIR/daemon.args" ]; then
+    echo "ota health ran before userdata was mounted" >&2
+    cat "$MOUNT_TMP_DIR/daemon.args" >&2
+    exit 1
+fi
+
 OTA_BIN="$LATE_OTA_BIN" \
 ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
 LOG_PATH="$LATE_LOG_PATH" \
 USERDATA_DIR="$LATE_USERDATA_DIR" \
+USERDATA_REQUIRE_MOUNT=0 \
 OTA_DAEMON_LOG="$LATE_TMP_DIR/daemon.args" \
 SLEEP_BIN="sleep" \
+WAIT_TIMEOUT=5 \
 "$SCRIPT" start >/dev/null
 
 sleep 1
@@ -125,5 +169,15 @@ if ! grep -qx 'health' "$LATE_TMP_DIR/daemon.args"; then
     cat "$LATE_TMP_DIR/daemon.args" >&2
     exit 1
 fi
+
+deadline=$(( $(date +%s) + 5 ))
+while ! { [ -f "$LATE_LOG_PATH" ] && grep -q 'health processing exited with status 0' "$LATE_LOG_PATH"; }; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "late ota health did not finish promptly" >&2
+        [ -f "$LATE_LOG_PATH" ] && cat "$LATE_LOG_PATH" >&2
+        exit 1
+    fi
+    sleep 1
+done
 
 echo "S54ota tests passed"

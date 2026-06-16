@@ -7,6 +7,8 @@ LOG_PATH=${LOG_PATH:-/var/log/ota/ota.log}
 USERDATA_DIR=${USERDATA_DIR:-/userdata}
 SLEEP_BIN=${SLEEP_BIN:-sleep}
 WAIT_TIMEOUT=${WAIT_TIMEOUT:-}
+USERDATA_REQUIRE_MOUNT=${USERDATA_REQUIRE_MOUNT:-1}
+MOUNTS_PATH=${MOUNTS_PATH:-/proc/mounts}
 
 wait_for_existing_path() {
     path="$1"
@@ -18,6 +20,32 @@ wait_for_existing_path() {
             return 1
         fi
         echo "[ota] waiting for $path" >> "$LOG_PATH"
+        "$SLEEP_BIN" 1
+        waited=$((waited + 1))
+    done
+    return 0
+}
+
+path_is_mounted() {
+    path="$1"
+    [ -r "$MOUNTS_PATH" ] || return 1
+    awk -v target="$path" '
+        $2 == target { found = 1 }
+        END { exit found ? 0 : 1 }
+    ' "$MOUNTS_PATH"
+}
+
+wait_for_userdata_ready() {
+    wait_for_existing_path "$USERDATA_DIR" "userdata" || return 1
+    [ "$USERDATA_REQUIRE_MOUNT" = "0" ] && return 0
+
+    waited=0
+    while ! path_is_mounted "$USERDATA_DIR"; do
+        if [ -n "$WAIT_TIMEOUT" ] && [ "$waited" -ge "$WAIT_TIMEOUT" ]; then
+            echo "[ota] userdata mount unavailable after ${WAIT_TIMEOUT}s: $USERDATA_DIR" >> "$LOG_PATH"
+            return 1
+        fi
+        echo "[ota] waiting for userdata mount: $USERDATA_DIR" >> "$LOG_PATH"
         "$SLEEP_BIN" 1
         waited=$((waited + 1))
     done
@@ -44,7 +72,7 @@ run_health_once() {
     mkdir -p "$(dirname "$LOG_PATH")"
     chmod 0755 "$(dirname "$LOG_PATH")"
 
-    wait_for_existing_path "$USERDATA_DIR" "userdata" || return 1
+    wait_for_userdata_ready || return 1
     mkdir -p "$USERDATA_DIR/ota"
     chmod 0755 "$USERDATA_DIR/ota"
 

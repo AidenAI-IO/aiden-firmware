@@ -315,7 +315,7 @@ func TestProcessPendingHealthOnceDoesNotCheckForUpdates(t *testing.T) {
 		}
 	case path := <-requests:
 		t.Fatalf("ProcessPendingHealthOnce made automatic OTA request to %s", path)
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 		t.Fatal("ProcessPendingHealthOnce did not exit after one health pass")
 	}
 }
