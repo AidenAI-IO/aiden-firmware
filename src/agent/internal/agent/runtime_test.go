@@ -77,6 +77,100 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunUsesSessionManager(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponseWithInfo("Old answer.", map[string]any{"prompt_tokens": 321}),
+			contentResponse("Committed answer."),
+		},
+	}
+	manager := &recordingSessionManager{
+		beginResult: SessionBeginResult{
+			Boundary: sessionBoundaryTelemetry{Decision: BoundaryContinue, Reason: BoundaryReasonTimeGapShort},
+		},
+		result: SessionCommitResult{
+			Memory: []MessageRecord{{Role: "human", Content: "committed snapshot"}},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.sessionManager = manager
+
+	var steerCalls int32
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "original request",
+		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			if atomic.AddInt32(&steerCalls, 1) != 1 {
+				return RunSteerMessage{}, false
+			}
+			return RunSteerMessage{ID: "steer-1", Content: "change direction"}, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if manager.beginCalls != 1 {
+		t.Fatalf("expected one session begin, got %d", manager.beginCalls)
+	}
+	if manager.beginReq.Input != "original request" {
+		t.Fatalf("begin input = %q, want original request", manager.beginReq.Input)
+	}
+	if manager.beginReq.CurrentHints != (CurrentEnvironmentHints{}) {
+		t.Fatalf("unexpected begin hints: %#v", manager.beginReq.CurrentHints)
+	}
+	if manager.commitCalls != 1 {
+		t.Fatalf("expected one session commit, got %d", manager.commitCalls)
+	}
+	if manager.commitReq.AgentName != "default" {
+		t.Fatalf("agent name = %q, want default", manager.commitReq.AgentName)
+	}
+	if manager.commitReq.Input != "original request" || manager.commitReq.Output != "Committed answer." {
+		t.Fatalf("unexpected commit request: %#v", manager.commitReq)
+	}
+	if len(manager.commitReq.Steers) != 1 || manager.commitReq.Steers[0].Content != "change direction" {
+		t.Fatalf("unexpected commit steers: %#v", manager.commitReq.Steers)
+	}
+	if manager.commitReq.Metrics == nil || manager.commitReq.Metrics.LastPromptTokens != 321 {
+		t.Fatalf("commit metrics missing prompt tokens: %#v", manager.commitReq.Metrics)
+	}
+	assertMemoryRecords(t, result.Memory, manager.result.Memory)
+}
+
+type recordingSessionManager struct {
+	beginCalls  int
+	beginReq    SessionBeginRequest
+	beginResult SessionBeginResult
+	beginErr    error
+	commitCalls int
+	commitReq   SessionCommitRequest
+	result      SessionCommitResult
+	err         error
+}
+
+func (m *recordingSessionManager) BeginRun(ctx context.Context, req SessionBeginRequest) (SessionBeginResult, error) {
+	m.beginCalls++
+	m.beginReq = req
+	if m.beginErr != nil {
+		return SessionBeginResult{}, m.beginErr
+	}
+	return m.beginResult, nil
+}
+
+func (m *recordingSessionManager) CommitRun(ctx context.Context, req SessionCommitRequest) (SessionCommitResult, error) {
+	m.commitCalls++
+	m.commitReq = req
+	if m.err != nil {
+		return SessionCommitResult{}, m.err
+	}
+	return m.result, nil
+}
+
 func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("echo", `{"__arg1":"original action"}`, "Changed course."),

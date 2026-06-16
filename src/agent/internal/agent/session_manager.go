@@ -1,0 +1,218 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"time"
+)
+
+// SessionManager owns the runtime session lifecycle for a run. BeginRun handles
+// run-start session boundary detection/rotation, and CommitRun persists the
+// completed turn into the active session projection.
+type SessionManager interface {
+	BeginRun(ctx context.Context, req SessionBeginRequest) (SessionBeginResult, error)
+	CommitRun(ctx context.Context, req SessionCommitRequest) (SessionCommitResult, error)
+}
+
+// SessionBeginRequest contains the run data needed before prompt construction.
+type SessionBeginRequest struct {
+	Input        string
+	CurrentHints CurrentEnvironmentHints
+}
+
+// SessionBeginResult contains session state computed before prompt construction.
+type SessionBeginResult struct {
+	Boundary sessionBoundaryTelemetry
+}
+
+type sessionBoundaryTelemetry struct {
+	Decision             string
+	Reason               string
+	Rotated              bool
+	PendingRecallCounter *atomic.Int64
+}
+
+// SessionCommitRequest contains the run data needed to update session memory.
+type SessionCommitRequest struct {
+	AgentName string
+	Input     string
+	Output    string
+	Steers    []RunSteerMessage
+	Metrics   *RunMetrics
+}
+
+// SessionCommitResult contains the session snapshot exposed on RunResult.
+type SessionCommitResult struct {
+	Memory []MessageRecord
+}
+
+type memoryManagerSessionManager struct {
+	memories       *MemoryManager
+	episodeContext func(now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext
+}
+
+func newMemoryManagerSessionManager(
+	memories *MemoryManager,
+	episodeContext func(now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext,
+) SessionManager {
+	return memoryManagerSessionManager{memories: memories, episodeContext: episodeContext}
+}
+
+func (m memoryManagerSessionManager) BeginRun(ctx context.Context, req SessionBeginRequest) (SessionBeginResult, error) {
+	if err := ctx.Err(); err != nil {
+		return SessionBeginResult{}, err
+	}
+	return SessionBeginResult{Boundary: m.handleSessionBoundary(req.Input)}, nil
+}
+
+func (m memoryManagerSessionManager) handleSessionBoundary(input string) sessionBoundaryTelemetry {
+	var telemetry sessionBoundaryTelemetry
+	if m.memories == nil || m.memories.storageDir == "" {
+		return telemetry
+	}
+	cfg := m.memories.extraction
+	if !cfg.SessionBoundaryEnabled {
+		return telemetry
+	}
+	events, err := loadLastNSessionEvents(m.memories, 20)
+	if err != nil {
+		if m.memories.logger != nil {
+			m.memories.logger.Warn("[memory] session boundary load failed: %v", err)
+		}
+		return telemetry
+	}
+	boundaryCfg := BoundaryConfig{
+		ShortGapSeconds:            cfg.SessionBoundaryShortGapSeconds,
+		LongGapSeconds:             cfg.SessionBoundaryLongGapSeconds,
+		SmallSessionEventThreshold: DefaultBoundaryConfig().SmallSessionEventThreshold,
+		ContinueScoreThreshold:     DefaultBoundaryConfig().ContinueScoreThreshold,
+	}
+	now := time.Now().UTC()
+	episodeCtx := BoundaryEpisodeContext{}
+	if m.episodeContext != nil {
+		episodeCtx = m.episodeContext(now, time.Duration(boundaryCfg.LongGapSeconds)*time.Second)
+	}
+	boundary, reason := ClassifyTurnBoundary(events, input, now, boundaryCfg, episodeCtx)
+	telemetry.Decision = boundary
+	telemetry.Reason = reason
+
+	if boundary != BoundaryNew || len(events) == 0 {
+		return telemetry
+	}
+
+	if m.memories.logger != nil {
+		m.memories.logger.Info("[memory] session boundary detected: reason=%s", reason)
+	}
+	archiveDir, err := m.memories.RotateSessionEvents()
+	if err != nil {
+		if m.memories.logger != nil {
+			m.memories.logger.Warn("[memory] session rotation failed: %v", err)
+		}
+		return telemetry
+	}
+	if archiveDir != "" {
+		telemetry.Rotated = true
+	}
+	return telemetry
+}
+
+func (m memoryManagerSessionManager) CommitRun(ctx context.Context, req SessionCommitRequest) (SessionCommitResult, error) {
+	if m.memories == nil {
+		return SessionCommitResult{}, nil
+	}
+	agentName := req.AgentName
+	if agentName == "" {
+		agentName = "default"
+	}
+	lastPromptTokens := 0
+	if req.Metrics != nil {
+		lastPromptTokens = req.Metrics.LastPromptTokens
+	}
+	m.memories.SetLastPromptTokens(lastPromptTokens)
+
+	if len(req.Steers) > 0 {
+		if err := m.memories.AppendMessages(ctx, agentName, steeredExchangeRecords(req.Input, req.Steers, req.Output)); err != nil {
+			return SessionCommitResult{}, err
+		}
+	} else {
+		if err := m.memories.AppendExchange(ctx, agentName, req.Input, req.Output); err != nil {
+			return SessionCommitResult{}, err
+		}
+	}
+
+	memorySnapshot, err := m.memories.Snapshot(ctx, agentName)
+	if err != nil {
+		return SessionCommitResult{}, err
+	}
+	if err := m.memories.SaveSnapshot(ctx, agentName, memorySnapshot); err != nil {
+		return SessionCommitResult{}, err
+	}
+	m.memories.RequestMaintenance()
+	return SessionCommitResult{Memory: memorySnapshot}, nil
+}
+
+func loadLastNSessionEvents(manager *MemoryManager, n int) ([]SessionEvent, error) {
+	if manager == nil || strings.TrimSpace(manager.storageDir) == "" || n <= 0 {
+		return nil, nil
+	}
+	session := NewSessionMemoryStore(filepath.Join(manager.storageDir, "session"), manager.extraction.SummaryMaxChunks)
+	fl := NewFileLock(manager.storageDir)
+	if err := fl.Lock(manager.lockTimeout); err != nil {
+		return nil, fmt.Errorf("lock for boundary session events: %w", err)
+	}
+	defer fl.Unlock()
+	result, err := session.readActiveEventsRepairingTruncatedTail()
+	if err != nil {
+		if isPathNotExistError(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	manager.logSessionEventsRepair("boundary", result)
+	events := result.events
+	if len(events) <= n {
+		return events, nil
+	}
+	return append([]SessionEvent(nil), events[len(events)-n:]...), nil
+}
+
+func recentEpisodeContext(plane MemoryPlane, now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext {
+	var ctx BoundaryEpisodeContext
+	fs, ok := plane.(*FilesystemMemoryPlane)
+	if !ok || fs == nil || fs.episodes == nil {
+		return ctx
+	}
+	index, err := fs.episodes.loadIndex()
+	if err != nil {
+		return ctx
+	}
+	for _, entry := range index.Episodes {
+		switch entry.Status {
+		case "running":
+			ctx.HasRunning = true
+		case "active":
+			if recentEpisodeEndedAt(entry.EndedAt, now, activeMaxAge) {
+				ctx.HasActive = true
+			}
+		}
+		if ctx.HasRunning && ctx.HasActive {
+			return ctx
+		}
+	}
+	return ctx
+}
+
+func recentEpisodeEndedAt(endedAt string, now time.Time, maxAge time.Duration) bool {
+	if maxAge <= 0 {
+		return false
+	}
+	ended, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(endedAt))
+	if err != nil {
+		return false
+	}
+	age := now.Sub(ended)
+	return age >= 0 && age <= maxAge
+}
