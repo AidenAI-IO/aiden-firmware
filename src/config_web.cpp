@@ -950,7 +950,7 @@ bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
     };
     for (int i = 0; sections[i]; ++i) {
         cJSON* section = cJSON_GetObjectItem(root, sections[i]);
-        if (!json_is_object(section)) {
+        if (section && !json_is_object(section)) {
             return config_schema_error(error, sections[i], "object", section);
         }
     }

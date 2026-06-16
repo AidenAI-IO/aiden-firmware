@@ -96,6 +96,18 @@ std::string replace_all(std::string text, const std::string& needle, const std::
     return text;
 }
 
+std::string remove_top_level_key(std::string json, const char* key) {
+    cJSON* root = cJSON_Parse(json.c_str());
+    REQUIRE(root != nullptr);
+    cJSON_DeleteItemFromObject(root, key);
+    char* text = cJSON_PrintUnformatted(root);
+    REQUIRE(text != nullptr);
+    std::string result(text);
+    free(text);
+    cJSON_Delete(root);
+    return result;
+}
+
 std::string resolved_config_json(const std::string& search_provider, bool search_has_api_key) {
     return std::string(
         "{"
@@ -694,6 +706,38 @@ TEST_CASE("config_web: GET /api/config accepts field-level omissions from resolv
     REQUIRE(model_name != nullptr);
     REQUIRE(model_name->valuestring != nullptr);
     CHECK(std::string(model_name->valuestring) == "bytedance-seed/seed-2.0-lite");
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: GET /api/config accepts section-level omissions from resolved config") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    std::string partial_config = resolved_config_json("duckduckgo", false);
+    partial_config = remove_top_level_key(partial_config, "model_text");
+    partial_config = remove_top_level_key(partial_config, "audio_archive");
+    partial_config = remove_top_level_key(partial_config, "benchmark");
+    write_file(tmp + "/config.json", partial_config);
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config_error = cJSON_GetObjectItem(parsed, "config_error");
+    CHECK(config_error == nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* search = cJSON_GetObjectItem(config, "search");
+    REQUIRE(search != nullptr);
+    cJSON* provider = cJSON_GetObjectItem(search, "provider");
+    REQUIRE(provider != nullptr);
+    REQUIRE(provider->valuestring != nullptr);
+    CHECK(std::string(provider->valuestring) == "duckduckgo");
     cJSON_Delete(parsed);
 }
 
