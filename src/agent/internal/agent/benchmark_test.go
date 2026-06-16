@@ -410,9 +410,19 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		`id="unitSelect"`,
 		`id="runUnitBtn"`,
 		`function startRunUnit()`,
+		`id="selectedSuiteTags"`,
+		`function configureSuiteSelect()`,
+		`function renderSelectedSuiteTags()`,
+		`function addSelectedSuiteKey(key)`,
+		`function removeSelectedSuiteKey(key)`,
+		`function selectedSuiteKeys()`,
+		`function syncRunButtons(status)`,
+		`payload.suites=selected.map(function(x){return x.item.path||x.key});`,
+		`payload.suites=selected.map(function(x){return mobileGymSuiteName(x.item,x.key)});`,
 		`x.kind==='unit'`,
 		`reportCell(r)`,
 		`Not ready`,
+		`r.report_path`,
 		`payload.suite=mobileGymSuiteName(item,key);`,
 		`payload.board_url=location.origin;`,
 		`/benchmark/record`,
@@ -436,6 +446,9 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 	}
 	if strings.Contains(body, `alert(String(e))`) {
 		t.Errorf("run errors should be rendered into the Live Log, not alert-only")
+	}
+	if strings.Contains(body, `s.multiple=mg;`) {
+		t.Errorf("MobileGym suite picker should use selected tags, not native multiple select")
 	}
 }
 
@@ -875,6 +888,40 @@ func TestHandleBenchmarkRun_AidenModeDefault(t *testing.T) {
 	}
 }
 
+func TestHandleBenchmarkRun_AidenModeSuites(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	captured := struct {
+		called bool
+		suites []string
+	}{}
+	s := &Server{
+		runtime:            &Runtime{config: Config{Benchmark: BenchmarkConfig{APIKey: "sk-judge"}}},
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkLauncher: func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error {
+			captured.called = true
+			captured.suites = append([]string(nil), spec.Suites...)
+			return nil
+		},
+	}
+
+	body := `{"suites":["memory_v1.json","perception/perception_v1.json"],"mode":"aiden"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/benchmark/run", strings.NewReader(body))
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !captured.called {
+		t.Fatalf("expected aiden launcher invoked")
+	}
+	if strings.Join(captured.suites, ",") != "memory_v1.json,perception/perception_v1.json" {
+		t.Fatalf("unexpected suites: %+v", captured.suites)
+	}
+}
+
 func TestHandleBenchmarkRun_MobileGymMode(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(root, "state.json")
@@ -945,6 +992,64 @@ func TestHandleBenchmarkRun_MobileGymBuiltin(t *testing.T) {
 	}
 }
 
+func TestHandleBenchmarkRun_MobileGymBuiltinSuites(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	captured := struct {
+		suite     string
+		suiteType string
+	}{}
+	s := &Server{
+		benchmarkDir:       root,
+		benchmarkStatePath: statePath,
+		benchmarkMobileGymLauncher: func(suite, suiteType string, parallel, limit int) error {
+			captured.suite = suite
+			captured.suiteType = suiteType
+			return nil
+		},
+	}
+
+	body := `{"suites":["clock","phone_control_v1"],"suite_type":"mobilegym_builtin","mode":"mobilegym","parallel":2}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/benchmark/run", strings.NewReader(body))
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if captured.suite != "clock,phone_control_v1" || captured.suiteType != "mobilegym_builtin" {
+		t.Fatalf("unexpected mobilegym launch args: %+v", captured)
+	}
+}
+
+func TestHandleBenchmarkRun_MobileGymAidenSuites(t *testing.T) {
+	root := t.TempDir()
+	captured := struct {
+		suite     string
+		suiteType string
+	}{}
+	s := &Server{
+		benchmarkDir: root,
+		benchmarkMobileGymLauncher: func(suite, suiteType string, parallel, limit int) error {
+			captured.suite = suite
+			captured.suiteType = suiteType
+			return nil
+		},
+	}
+
+	body := `{"suites":["memory_v1","perception_v1"],"suite_type":"aiden","mode":"mobilegym"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/benchmark/run", strings.NewReader(body))
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if captured.suite != "memory_v1,perception_v1" || captured.suiteType != "aiden" {
+		t.Fatalf("unexpected mobilegym launch args: %+v", captured)
+	}
+}
+
 func TestHandleBenchmarkLog_MobileGymMode(t *testing.T) {
 	tmp := t.TempDir()
 	logFile := filepath.Join(tmp, "mobilegym_run.log")
@@ -985,6 +1090,19 @@ func TestBuildMobileGymLaunchScript_AidenSuite(t *testing.T) {
 	}
 }
 
+func TestBuildMobileGymLaunchScript_AidenSuites(t *testing.T) {
+	script, err := buildMobileGymLaunchScript("/bench", "memory_v1,perception_v1", "aiden", 4, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(script, "--aiden-suites 'memory_v1,perception_v1'") {
+		t.Errorf("expected --aiden-suites flag, got: %s", script)
+	}
+	if !strings.Contains(script, "--limit 10") {
+		t.Errorf("expected --limit 10, got: %s", script)
+	}
+}
+
 func TestBuildMobileGymLaunchScript_MobileGymBuiltin(t *testing.T) {
 	script, err := buildMobileGymLaunchScript("/bench", "clock", "mobilegym_builtin", 2, 0)
 	if err != nil {
@@ -998,6 +1116,19 @@ func TestBuildMobileGymLaunchScript_MobileGymBuiltin(t *testing.T) {
 	}
 	if strings.Contains(script, "--limit") {
 		t.Errorf("limit=0 should omit --limit flag: %s", script)
+	}
+}
+
+func TestBuildMobileGymLaunchScript_MobileGymBuiltins(t *testing.T) {
+	script, err := buildMobileGymLaunchScript("/bench", "clock,phone_control_v1", "mobilegym_builtin", 2, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(script, "--suites 'clock,phone_control_v1'") {
+		t.Errorf("expected --suites flag, got: %s", script)
+	}
+	if strings.Contains(script, "--suite 'clock,phone_control_v1'") {
+		t.Errorf("multiple builtins should not use singular --suite: %s", script)
 	}
 }
 

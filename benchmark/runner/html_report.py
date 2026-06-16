@@ -375,6 +375,9 @@ function openDrawer(i) {{
   if (t.tool_calls_detail) {{
     body += '<div class="block"><div class="block-head"><strong>Tool Calls</strong><span>' + t.tool_calls_count + ' calls</span></div><pre class="block-body">' + esc(t.tool_calls_detail) + '</pre></div>';
   }}
+  if (t.artifacts_detail) {{
+    body += '<div class="block"><div class="block-head"><strong>Artifacts</strong><span>files</span></div><pre class="block-body">' + esc(t.artifacts_detail) + '</pre></div>';
+  }}
   body += '<div class="block"><div class="block-head"><strong>Agent Response</strong><span>final reply</span></div><pre class="block-body">' + esc(t.response) + '</pre></div>';
   if (t.errors && t.errors.length) {{
     var err = t.errors.map(function(e) {{

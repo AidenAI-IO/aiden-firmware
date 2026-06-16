@@ -224,7 +224,7 @@ class AidenGoAgent(_MobileGymBaseAgent):
                 cleanup_errors=cleanup_errors,
             )
 
-        return complete_action(_response_text(chat_result))
+        return complete_chat_action(chat_result)
 
     def _task_input(self) -> str:
         task = self.task
@@ -388,6 +388,18 @@ def complete_action(response: str) -> Any:
         return action_cls(action_type=action_type, data=data)
     except TypeError:
         return action_cls(action_type, data)
+
+
+def complete_chat_action(payload: Any) -> Any:
+    response = _response_text(payload)
+    action = complete_action(response)
+    data = getattr(action, "data", None)
+    if isinstance(data, dict):
+        data["aiden_last_response"] = response
+        history = _history_payload(payload)
+        if history:
+            data["aiden_last_chat_history"] = history
+    return action
 
 
 def _action_classes() -> tuple[type[Any], Any]:

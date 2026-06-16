@@ -13,7 +13,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -31,6 +31,11 @@ TAIL_BYTES = 64 * 1024
 
 _SAFE_SUITE_SEGMENT = re.compile(r"^[A-Za-z0-9_.\-]+$")
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9_\-]+$")
+COMMON_CLI_PATHS = [
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+    "/Applications/Docker.app/Contents/Resources/bin",
+]
 
 
 class LauncherError(RuntimeError):
@@ -59,6 +64,33 @@ def valid_suite_name(suite: str) -> bool:
 
 def is_safe_run_id(run_id: str) -> bool:
     return bool(run_id and _SAFE_RUN_ID.match(run_id))
+
+
+def selected_suites(payload: dict[str, Any]) -> list[str]:
+    suites_value = payload.get("suites")
+    if suites_value is not None:
+        if not isinstance(suites_value, list):
+            raise LauncherError("suites must be a JSON array")
+        suites = [str(item).strip() for item in suites_value]
+    else:
+        suites = [str(payload.get("suite") or "").strip()]
+
+    suites = [suite for suite in suites if suite]
+    if not suites:
+        raise LauncherError("missing suite field")
+    for suite in suites:
+        if not valid_suite_name(suite):
+            raise LauncherError(f"invalid suite name: {suite!r}")
+    return suites
+
+
+def add_common_cli_paths(env: dict[str, str]) -> None:
+    current = env.get("PATH") or "/usr/bin:/bin:/usr/sbin:/sbin"
+    parts = [part for part in current.split(os.pathsep) if part]
+    for path in reversed(COMMON_CLI_PATHS):
+        if path not in parts:
+            parts.insert(0, path)
+    env["PATH"] = os.pathsep.join(parts)
 
 
 def scan_suites(benchmark_root: str | Path = BENCHMARK_ROOT) -> list[dict[str, Any]]:
@@ -125,10 +157,10 @@ def build_run_command(
     payload: dict[str, Any] | None = None,
 ) -> RunCommand:
     payload = payload or {}
-    suite = str(payload.get("suite") or "")
+    suites = selected_suites(payload)
     suite_type = str(payload.get("suite_type") or "mobilegym_builtin")
-    if not valid_suite_name(suite):
-        raise LauncherError(f"invalid suite name: {suite!r}")
+    if len(suites) > 1 and suite_type not in {"mobilegym_builtin", "aiden"}:
+        raise LauncherError("multiple suites are only supported for mobilegym_builtin or aiden")
 
     root = Path(benchmark_root)
     docker_dir = root / "mobilegym" / "docker"
@@ -137,9 +169,15 @@ def build_run_command(
         raise LauncherError(f"missing runner script: {runner}")
 
     if suite_type == "aiden":
-        argv = ["./parallel_run.sh", "--aiden-suite", suite]
+        if len(suites) > 1:
+            argv = ["./parallel_run.sh", "--aiden-suites", ",".join(suites)]
+        else:
+            argv = ["./parallel_run.sh", "--aiden-suite", suites[0]]
     elif suite_type in {"mobilegym_builtin", ""}:
-        argv = ["./parallel_run.sh", "--suite", suite]
+        if len(suites) > 1:
+            argv = ["./parallel_run.sh", "--suites", ",".join(suites)]
+        else:
+            argv = ["./parallel_run.sh", "--suite", suites[0]]
     else:
         raise LauncherError(f"unknown suite_type: {suite_type!r}")
 
@@ -151,6 +189,7 @@ def build_run_command(
     if parallel < 1:
         parallel = 1
     env = os.environ.copy()
+    add_common_cli_paths(env)
     env.update(model_config_from_payload(payload))
     env["PARALLEL"] = str(parallel)
     env["MOBILEGYM_RUNS_ROOT"] = str(root / "runs" / "mobilegym")
@@ -165,6 +204,7 @@ def start_run(benchmark_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
             raise LauncherError("MobileGym benchmark is already running")
 
         command = build_run_command(benchmark_root, payload)
+        suites = selected_suites(payload)
         validate_model_environment(command.env)
         LOG_PATH.write_text("Starting Mac-local MobileGym benchmark...\n", encoding="utf-8")
         log_file = LOG_PATH.open("ab")
@@ -187,7 +227,8 @@ def start_run(benchmark_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
                 "status": "running",
                 "mode": "mobilegym",
                 "run_id": command.env.get("MOBILEGYM_BATCH_ID", ""),
-                "suite": payload.get("suite"),
+                "suite": ",".join(suites),
+                "suites": suites,
                 "suite_type": payload.get("suite_type") or "mobilegym_builtin",
                 "parallel": int(payload.get("parallel") or 4),
                 "total": int(payload.get("limit") or 0),
@@ -259,24 +300,133 @@ def list_runs(benchmark_root: Path) -> list[dict[str, Any]]:
         summary = read_json_file(runs_dir / run_id / "summary.json")
         state_for_run = state if state.get("run_id") == run_id and state.get("status") == "running" else {}
         progress = mobilegym_progress(benchmark_root, run_id) if state_for_run else {}
-        totals = {
-            "tasks": int(summary.get("tasks") or progress.get("total") or 0),
-            "passed": int(summary.get("passed") or 0),
-            "failed": int(summary.get("failed") or 0) + int(summary.get("timeout") or 0) + int(summary.get("error") or 0) + int(summary.get("worker_failed") or 0) + int(summary.get("unknown") or 0),
-        }
+        rows = summary_run_items(run_id, summary, state_for_run, progress, runs_dir / run_id)
+        if rows:
+            items.extend(rows)
+            continue
+        items.extend(state_run_items(run_id, state_for_run, progress))
+    return items
+
+
+def summary_run_items(
+    run_id: str,
+    summary: dict[str, Any],
+    state_for_run: dict[str, Any],
+    progress: dict[str, Any],
+    run_dir: Path,
+) -> list[dict[str, Any]]:
+    suites = summary_suite_summaries(summary)
+    if not suites:
+        return []
+    items = []
+    status = str(state_for_run.get("status") or "done")
+    fallback_model = str(summary.get("model") or state_for_run.get("model") or current_model_label())
+    for suite_summary in suites:
+        totals = summary_totals(suite_summary)
         total = totals["tasks"]
         done = int(progress.get("completed") or 0) if state_for_run else total
+        suite = str(suite_summary.get("suite") or "mobilegym")
+        item = {
+            "run_id": run_id,
+            "suite": suite,
+            "status": status,
+            "progress": f"{done}/{total}" if total else "",
+            "model": str(suite_summary.get("model") or fallback_model),
+            "totals": totals,
+        }
+        report_path = report_path_for(run_id, suite, run_dir)
+        if report_path:
+            item["report_path"] = report_path
+        items.append(item)
+    return items
+
+
+def report_path_for(run_id: str, suite: str, run_dir: Path) -> str:
+    if valid_suite_name(suite) and (run_dir / suite / "index.html").is_file():
+        return "/benchmark/report/" + quote(run_id, safe="") + "/" + quote_suite_path(suite)
+    if (run_dir / "index.html").is_file():
+        return "/benchmark/report/" + quote(run_id, safe="")
+    return ""
+
+
+def quote_suite_path(suite: str) -> str:
+    return "/".join(quote(part, safe="") for part in suite.split("/"))
+
+
+def report_file_for(root: Path, report_id: str) -> Path | None:
+    parts = [unquote(part) for part in report_id.split("/") if part]
+    if not parts or not is_safe_run_id(parts[0]):
+        return None
+    run_dir = root / "runs" / "mobilegym" / parts[0]
+    if len(parts) == 1:
+        return run_dir / "index.html"
+    suite = "/".join(parts[1:])
+    if not valid_suite_name(suite):
+        return None
+    return run_dir / suite / "index.html"
+
+
+def state_run_items(run_id: str, state_for_run: dict[str, Any], progress: dict[str, Any]) -> list[dict[str, Any]]:
+    suites = state_suites(state_for_run) or ["mobilegym"]
+    items = []
+    totals = {
+        "tasks": int(progress.get("total") or 0),
+        "passed": 0,
+        "failed": 0,
+    }
+    total = totals["tasks"]
+    done = int(progress.get("completed") or 0) if state_for_run else total
+    for suite in suites:
         items.append(
             {
                 "run_id": run_id,
-                "suite": summary_suite(summary) or str(state_for_run.get("suite") or "mobilegym"),
+                "suite": suite,
                 "status": str(state_for_run.get("status") or "done"),
                 "progress": f"{done}/{total}" if total else "",
-                "model": str(summary.get("model") or state_for_run.get("model") or current_model_label()),
+                "model": str(state_for_run.get("model") or current_model_label()),
                 "totals": totals,
             }
         )
     return items
+
+
+def summary_suite_summaries(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    suites = summary.get("suites")
+    if isinstance(suites, list):
+        rows = []
+        for item in suites:
+            if isinstance(item, dict) and item.get("suite"):
+                row = dict(summary)
+                row.update(item)
+                rows.append(row)
+        if rows:
+            return rows
+    suite = summary_suite(summary)
+    if suite:
+        row = dict(summary)
+        row["suite"] = suite
+        return [row]
+    return []
+
+
+def summary_totals(summary: dict[str, Any]) -> dict[str, int]:
+    return {
+        "tasks": int(summary.get("tasks") or 0),
+        "passed": int(summary.get("passed") or 0),
+        "failed": int(summary.get("failed") or 0)
+        + int(summary.get("timeout") or 0)
+        + int(summary.get("error") or 0)
+        + int(summary.get("worker_failed") or 0)
+        + int(summary.get("unknown") or 0),
+    }
+
+
+def state_suites(state: dict[str, Any]) -> list[str]:
+    raw = state.get("suites")
+    if isinstance(raw, list):
+        return [str(item) for item in raw if str(item)]
+    suite = str(state.get("suite") or "")
+    return [part.strip() for part in suite.split(",") if part.strip()]
 
 
 def mobilegym_progress(benchmark_root: Path, run_id: str) -> dict[str, Any]:
@@ -369,9 +519,13 @@ def summary_suite(summary: dict[str, Any]) -> str:
     if isinstance(suite, str) and suite:
         return suite
     suites = summary.get("suites")
-    if isinstance(suites, list) and len(suites) == 1 and isinstance(suites[0], dict):
-        value = suites[0].get("suite")
-        return str(value) if value else ""
+    if isinstance(suites, list):
+        names = []
+        for item in suites:
+            if isinstance(item, dict) and item.get("suite"):
+                names.append(str(item["suite"]))
+        if names:
+            return ", ".join(names)
     return ""
 
 
@@ -522,11 +676,11 @@ def make_handler(benchmark_root: str | Path = BENCHMARK_ROOT) -> type[BaseHTTPRe
             self.end_headers()
             self.wfile.write(body)
 
-        def send_report(self, run_id: str) -> None:
-            if not is_safe_run_id(run_id):
+        def send_report(self, report_id: str) -> None:
+            report_path = report_file_for(root, report_id)
+            if report_path is None:
                 self.send_error(404, "not found")
                 return
-            report_path = root / "runs" / "mobilegym" / run_id / "index.html"
             try:
                 body = report_path.read_bytes()
             except OSError:
