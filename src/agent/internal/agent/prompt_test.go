@@ -106,6 +106,8 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 			"type back/home",
 			"request confirmation",
 			"Swipe strategy",
+			"Directional swipe names describe finger movement",
+			"older chat/message history",
 			"Precision swipe loop",
 			"probe once with medium",
 			"strength/direction -> UI movement",

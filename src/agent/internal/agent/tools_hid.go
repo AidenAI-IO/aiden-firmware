@@ -699,6 +699,7 @@ func (t *TouchGestureTool) Description() string {
 		`pointer_mode absolute (default, iOS): every gesture moves to absolute coordinates before pressing; choose tap targets from the latest screenshot center and prefer normalized coordinates. ` +
 		`pointer_mode touchscreen (Android): gestures are sent as single-finger touch down/move/up reports. ` +
 		`Directional swipes accept optional "distance" (normalized 0-1000 travel, default 500), "anchor" (fixed-axis coordinate 0-1000, default 500), and "strength" ("large", "medium", "small", "tiny"). ` +
+		`Directional swipe names describe finger movement, not the content you want to reveal: "swipe_up" moves the finger upward and usually scrolls the viewport down to lower/newer items; "swipe_down" moves the finger downward and usually scrolls the viewport up to upper/older items. For chat or message history where older messages are above, use "swipe_down" (pull down), not "swipe_up". ` +
 		`For precise vertical or horizontal controls, first probe with medium/large, observe the screenshot, then use small/tiny near the target; if you overshoot, reverse direction and reduce strength. ` +
 		`Absolute-mode gestures wait for iOS HID-cursor smoothing to settle before pressing. ` +
 		`Tap and double_tap accept an optional "hold_ms" (dwell between press and release, default 60ms). ` +
