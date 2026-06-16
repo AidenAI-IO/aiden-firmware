@@ -444,7 +444,7 @@ bool validate_search_secret_presence(cJSON* root, std::string* error) {
 
     cJSON* provider_item = cJSON_GetObjectItem(search, "provider");
     const std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
-    if (provider != "brave" && provider != "tavily") {
+    if (provider != "brave" && provider != "brave-free" && provider != "tavily") {
         return true;
     }
 

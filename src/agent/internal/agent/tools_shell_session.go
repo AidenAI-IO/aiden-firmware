@@ -125,22 +125,33 @@ func (s *shellSession) capture(r io.Reader) {
 
 func (s *shellSession) wait() {
 	defer close(s.done)
+	var exitErr error
+	var exitCode *int
 	if s.usePTY && s.ptyCmd != nil {
-		s.exitErr = s.ptyCmd.Wait()
+		exitErr = s.ptyCmd.Wait()
 		if s.ptyCmd.ProcessState != nil {
 			code := s.ptyCmd.ProcessState.ExitCode()
-			s.exitCode = &code
+			exitCode = &code
 		}
+		s.setExitState(exitErr, exitCode)
 		s.closeInput()
 		return
 	}
 
-	s.exitErr = s.cmd.Wait()
+	exitErr = s.cmd.Wait()
 	if s.cmd.ProcessState != nil {
 		code := s.cmd.ProcessState.ExitCode()
-		s.exitCode = &code
+		exitCode = &code
 	}
+	s.setExitState(exitErr, exitCode)
 	s.closeInput()
+}
+
+func (s *shellSession) setExitState(exitErr error, exitCode *int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.exitErr = exitErr
+	s.exitCode = exitCode
 }
 
 func (s *shellSession) isRunning() bool {
@@ -163,6 +174,8 @@ func (s *shellSession) processID() int {
 }
 
 func (s *shellSession) exitCodeValue() interface{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.exitCode == nil {
 		return nil
 	}
@@ -170,6 +183,8 @@ func (s *shellSession) exitCodeValue() interface{} {
 }
 
 func (s *shellSession) exitErrorText() interface{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.exitErr == nil {
 		return nil
 	}
