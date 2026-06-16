@@ -269,6 +269,20 @@ std::string decode_psk_value(const std::string& value) {
     return parse_quoted_value(value);
 }
 
+std::vector<WifiNetwork> render_networks_from_config(const WifiNetworkConfig& config) {
+    std::vector<WifiNetwork> networks = config.networks;
+    if (networks.empty() && !config.ssid.empty()) {
+        WifiNetwork network;
+        network.ssid = config.ssid;
+        network.psk = config.psk;
+        network.priority = 1;
+        networks.push_back(network);
+    }
+    return networks;
+}
+
+}
+
 void sync_legacy_wifi_fields(WifiNetworkConfig* config) {
     if (!config) {
         return;
@@ -285,20 +299,6 @@ void sync_legacy_wifi_fields(WifiNetworkConfig* config) {
     }
     config->ssid = config->networks[best].ssid;
     config->psk = config->networks[best].psk;
-}
-
-std::vector<WifiNetwork> render_networks_from_config(const WifiNetworkConfig& config) {
-    std::vector<WifiNetwork> networks = config.networks;
-    if (networks.empty() && !config.ssid.empty()) {
-        WifiNetwork network;
-        network.ssid = config.ssid;
-        network.psk = config.psk;
-        network.priority = 1;
-        networks.push_back(network);
-    }
-    return networks;
-}
-
 }
 
 std::string render_wifi_config(const WifiNetworkConfig& config) {

@@ -1765,6 +1765,15 @@ void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {
             }
         }
         aiden::normalize_wifi_priorities(wifi);
+        // Keep the legacy ssid/psk fields in sync with the rebuilt list so a
+        // later render (which falls back to legacy fields when networks is
+        // empty) does not resurrect networks the client just cleared.
+        if (wifi->networks.empty()) {
+            wifi->ssid.clear();
+            wifi->psk.clear();
+        } else {
+            aiden::sync_legacy_wifi_fields(wifi);
+        }
     } else if ((has_legacy_ssid || has_legacy_psk) && !wifi->ssid.empty()) {
         aiden::WifiNetwork network;
         int existing_index = aiden::find_wifi_network_index(*wifi, wifi->ssid);
@@ -3015,7 +3024,7 @@ ApiResponse handle_wifi_connect(const Options& options, const std::string& body)
         return make_json_error(400, "ssid is required");
     }
 
-    const std::string target_ssid = trim_copy(ssid_item->valuestring);
+    const std::string target_ssid = ssid_item->valuestring;
     cJSON* psk_item = cJSON_GetObjectItem(root, "psk");
     const bool has_psk = json_is_string(psk_item);
     std::string requested_psk = has_psk ? std::string(psk_item->valuestring) : std::string();
@@ -3133,7 +3142,7 @@ ApiResponse handle_wifi_forget(const Options& options, const std::string& body) 
         cJSON_Delete(root);
         return make_json_error(400, "ssid is required");
     }
-    const std::string ssid = trim_copy(ssid_item->valuestring);
+    const std::string ssid = ssid_item->valuestring;
     cJSON_Delete(root);
 
     aiden::WifiNetworkConfig wifi;
