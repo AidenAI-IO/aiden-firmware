@@ -264,6 +264,12 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("renderOtaLog(snapshot, {preservePending:true})") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');setOtaLogPending(") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');showOtaLogPanel();") == std::string::npos);
+    CHECK(html.find("function hideOtaLogPanel()") != std::string::npos);
+    CHECK(html.find("function setDetails(text,options)") != std::string::npos);
+    CHECK(html.find("if(!(options&&options.keepOtaLog)){hideOtaLogPanel();}") != std::string::npos);
+    CHECK(html.find("setDetails('',{keepOtaLog:true})") != std::string::npos);
+    CHECK(html.find("setDetails('最近 OTA 日志：\\\\n'+String(text||'').slice(-4000),{keepOtaLog:true})") != std::string::npos);
+    CHECK(html.find("setDetails(err.message,{keepOtaLog:true})") != std::string::npos);
     CHECK(html.find("otaLogText") != std::string::npos);
     CHECK(html.find("otaLogMeta") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate") != std::string::npos);
