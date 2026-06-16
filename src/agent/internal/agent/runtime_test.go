@@ -1677,6 +1677,50 @@ func TestRuntimeRunFallsBackWhenProviderStreamEmitsNoSpeechText(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunFallsBackWhenProviderStreamWriterErrorsAfterPartialSpeechText(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{"mode":"direct_answer","speech_text":"Recovered speech.","output":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
+		},
+		streamChunks: [][]string{
+			{
+				`{"mode":"direct_answer","speech_text":"Broken`,
+				`\q","output":"ignored"}`,
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var stream strings.Builder
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "hello",
+		StreamWriter:      NewSpeechTextStreamWriter(&stream, "speech_text"),
+		StreamFinalChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if got, want := model.sawStreaming, []bool{true}; !slices.Equal(got, want) {
+		t.Fatalf("expected direct route call to use provider streaming, got %#v", got)
+	}
+	if result.Output != "Complete answer." {
+		t.Fatalf("Output = %q", result.Output)
+	}
+	if result.SpeechText != "Recovered speech." {
+		t.Fatalf("SpeechText = %q", result.SpeechText)
+	}
+	if stream.String() != "BrokenRecovered speech." {
+		t.Fatalf("stream = %q, want partial speech followed by fallback speech", stream.String())
+	}
+}
+
 func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 	jpegBytes := []byte("fake-jpeg-binary")
 	model := &scriptedModel{

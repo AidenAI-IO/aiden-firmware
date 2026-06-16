@@ -1020,6 +1020,7 @@ type runtimeCallbackHandler struct {
 	startTime              time.Time
 	firstTokenSeen         bool
 	finalTokenSeen         bool
+	finalStreamErr         error
 	streamFinal            bool
 	logger                 *Logger
 	eventHandler           func(RunEvent)
@@ -1293,9 +1294,10 @@ func (h *runtimeCallbackHandler) HandleRetrieverEnd(ctx context.Context, query s
 
 func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk []byte) {
 	finalStreaming := h.finalStreamingEnabled()
-	if h.writer != nil && finalStreaming {
-		h.writer.Write(chunk)
-		if streamWriterEmitted(h.writer) {
+	if h.writer != nil && finalStreaming && !h.finalStreamingFailed() {
+		if _, err := h.writer.Write(chunk); err != nil {
+			h.recordFinalStreamError(err)
+		} else if streamWriterEmitted(h.writer) {
 			h.recordFinalToken()
 		}
 	}
@@ -1308,6 +1310,7 @@ func (h *runtimeCallbackHandler) EnableFinalStreaming(ctx context.Context) {
 	resetStreamWriterState(h.writer)
 	h.mu.Lock()
 	h.finalTokenSeen = false
+	h.finalStreamErr = nil
 	h.streamFinal = true
 	h.mu.Unlock()
 }
@@ -1355,7 +1358,7 @@ func streamWriterEmitted(writer io.Writer) bool {
 func (h *runtimeCallbackHandler) HasFinalStreamingToken(context.Context) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.finalTokenSeen
+	return h.finalTokenSeen && h.finalStreamErr == nil
 }
 
 func (h *runtimeCallbackHandler) recordFirstToken() {
@@ -1372,8 +1375,33 @@ func (h *runtimeCallbackHandler) recordFirstToken() {
 
 func (h *runtimeCallbackHandler) recordFinalToken() {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.finalStreamErr != nil {
+		return
+	}
 	h.finalTokenSeen = true
+}
+
+func (h *runtimeCallbackHandler) finalStreamingFailed() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.finalStreamErr != nil
+}
+
+func (h *runtimeCallbackHandler) recordFinalStreamError(err error) {
+	if err == nil {
+		return
+	}
+	h.mu.Lock()
+	firstErr := h.finalStreamErr == nil
+	if firstErr {
+		h.finalStreamErr = err
+	}
+	h.finalTokenSeen = false
 	h.mu.Unlock()
+	if firstErr && h.logger != nil {
+		h.logger.Warn("Final stream writer failed; falling back to final answer: %v", err)
+	}
 }
 
 var _ callbacks.Handler = (*runtimeCallbackHandler)(nil)
