@@ -302,6 +302,22 @@ TEST_CASE("agent_toml strips inline comments after unquoted scalars") {
     std::remove(path.c_str());
 }
 
+TEST_CASE("agent_toml rejects negative voice speech max runes") {
+    std::string path = make_temp_path("negative_voice_speech_max_runes.toml");
+    {
+        std::ofstream out(path);
+        out << "voice_speech_max_runes = -1\n";
+    }
+
+    aiden::AgentToml cfg;
+    std::string err;
+    CHECK_FALSE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    CHECK(err.find("voice_speech_max_runes") != std::string::npos);
+    CHECK(err.find(">= 0") != std::string::npos);
+
+    std::remove(path.c_str());
+}
+
 TEST_CASE("agent_toml rejects negative model metadata overrides") {
     struct Case {
         const char* leaf;

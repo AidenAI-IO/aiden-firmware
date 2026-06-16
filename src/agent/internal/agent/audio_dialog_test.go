@@ -239,11 +239,12 @@ func TestProcessUtteranceSpeaksSpeechTextWithoutChangingHistoryOutput(t *testing
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
 		config: Config{
-			Model:                    ModelConfig{Provider: "fake"},
-			Audio:                    AudioConfig{SampleRate: 16000},
-			InputMode:                "audio",
-			VoiceStreamingTTSEnabled: boolPtr(false),
-			VoiceSpeechMaxRunes:      22,
+			Model:                     ModelConfig{Provider: "fake"},
+			Audio:                     AudioConfig{SampleRate: 16000},
+			InputMode:                 "audio",
+			VoiceStreamingTTSEnabled:  boolPtr(false),
+			VoiceSpeechSummaryEnabled: boolPtr(true),
+			VoiceSpeechMaxRunes:       22,
 		},
 		audioClient:  NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 		ttsManager:   ttsmodule.NewProviderManager(provider, nil),

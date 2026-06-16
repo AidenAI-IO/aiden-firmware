@@ -282,7 +282,7 @@ void apply_kv(AgentToml& cfg,
         } else if (key == "voice_speech_summary_enabled") {
             if (!assign_bool(&cfg.voice_speech_summary_enabled, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_speech_max_runes") {
-            if (!assign_int(&cfg.voice_speech_max_runes, raw, &sub_err)) fail(sub_err);
+            if (!assign_non_negative_int(&cfg.voice_speech_max_runes, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_max_response_tokens") {
             if (!assign_int(&cfg.voice_max_response_tokens, raw, &sub_err)) fail(sub_err);
         } else if (key == "max_iterations") {
