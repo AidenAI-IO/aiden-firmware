@@ -49,6 +49,7 @@ type Runtime struct {
 	logger             *Logger
 	profileDebouncer   *ProfileDebouncer
 	memoryPlane        MemoryPlane
+	sessionCommitter   SessionCommitter
 	telemetrySessionID string
 	mobileGym          *mobileGymSessionStore
 	runGate            chan struct{}
@@ -297,6 +298,7 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		tools:              tools,
 		skills:             skillManager,
 		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
+		sessionCommitter:   newMemoryManagerSessionCommitter(memories),
 		telemetrySessionID: uuid.NewString(),
 		mobileGym:          &mobileGymSessionStore{},
 	}
@@ -559,38 +561,37 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
-	r.memories.SetLastPromptTokens(metrics.LastPromptTokens)
+	commitReq := SessionCommitRequest{
+		AgentName: "default",
+		Input:     normalizedInput,
+		Output:    output,
+		Metrics:   metrics,
+	}
 	if steerStatus != nil && steerStatus.HasSteerMessages() {
-		if err := r.memories.AppendMessages(ctx, "default", steeredExchangeRecords(normalizedInput, steerStatus.SteerMessages(), output)); err != nil {
-			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
-			return RunResult{}, err
-		}
-	} else {
-		if err := r.memories.AppendExchange(ctx, "default", normalizedInput, output); err != nil {
-			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
-			return RunResult{}, err
-		}
+		commitReq.Steers = steerStatus.SteerMessages()
 	}
 
-	memorySnapshot, err := r.memories.Snapshot(ctx, "default")
+	commitResult, err := r.commitSession(ctx, commitReq)
 	if err != nil {
 		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
 		return RunResult{}, err
 	}
-	if err := r.memories.SaveSnapshot(ctx, "default", memorySnapshot); err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
-		return RunResult{}, err
-	}
-	r.memories.RequestMaintenance()
 	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry)
 
 	return RunResult{
 		Output:    output,
 		Skills:    runSkills.GetActivatedSkills(),
 		EpisodeID: episodeID,
-		Memory:    memorySnapshot,
+		Memory:    commitResult.Memory,
 		Metrics:   metrics,
 	}, nil
+}
+
+func (r *Runtime) commitSession(ctx context.Context, req SessionCommitRequest) (SessionCommitResult, error) {
+	if r == nil || r.sessionCommitter == nil {
+		return SessionCommitResult{}, nil
+	}
+	return r.sessionCommitter.CommitRun(ctx, req)
 }
 
 func steeredExchangeRecords(input string, steers []RunSteerMessage, output string) []MessageRecord {
