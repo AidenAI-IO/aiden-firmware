@@ -1278,49 +1278,12 @@ bool json_has_nonempty_string(cJSON* obj, const char* key) {
     return json_is_string(item) && !trim_copy(item->valuestring).empty();
 }
 
-void restore_redacted_secret(cJSON* values, const char* key, const std::string& stored_value) {
-    if (!values || stored_value.empty() || json_has_nonempty_string(values, key)) {
-        return;
+bool json_secret_present(cJSON* obj, const char* key) {
+    if (json_has_nonempty_string(obj, key)) {
+        return true;
     }
     const std::string has_key = std::string("has_") + key;
-    if (!json_bool_value(values, has_key.c_str())) {
-        return;
-    }
-    cJSON_DeleteItemFromObject(values, key);
-    cJSON_AddStringToObject(values, key, stored_value.c_str());
-}
-
-void merge_stored_config_test_secrets(const Options& options,
-                                      const std::string& section,
-                                      cJSON* values) {
-    if (!json_is_object(values)) {
-        return;
-    }
-
-    aiden::AgentToml stored;
-    std::string load_error;
-    if (!aiden::load_agent_toml(options.agent_config_path.c_str(), stored, &load_error)) {
-        return;
-    }
-
-    if (section == "model") {
-        restore_redacted_secret(values, "api_key", stored.model.api_key);
-    } else if (section == "model_text") {
-        restore_redacted_secret(values, "api_key", stored.model_text.api_key);
-    } else if (section == "tts") {
-        restore_redacted_secret(values, "api_key", stored.tts.api_key);
-    } else if (section == "stt") {
-        restore_redacted_secret(values, "api_key", stored.stt.api_key);
-        restore_redacted_secret(values, "secret_id", stored.stt.secret_id);
-        restore_redacted_secret(values, "secret_key", stored.stt.secret_key);
-    } else if (section == "benchmark") {
-        restore_redacted_secret(values, "api_key", stored.benchmark.api_key);
-    } else if (section == "search") {
-        restore_redacted_secret(values, "api_key", stored.search.api_key);
-    } else if (section == "telemetry") {
-        restore_redacted_secret(values, "public_key", stored.telemetry.public_key);
-        restore_redacted_secret(values, "secret_key", stored.telemetry.secret_key);
-    }
+    return json_bool_value(obj, has_key.c_str());
 }
 
 void load_current_wifi_config(const Options& options,
@@ -3173,7 +3136,6 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     load_system_env_proxy(options.system_env_path, &current_proxy);
     std::string curl_proxy_arg = build_curl_proxy_arg(current_proxy);
     std::string curl_env_exports = build_proxy_env_exports(current_proxy);
-    merge_stored_config_test_secrets(options, section, values);
 
     if (section == "model" || section == "tts" || section == "stt") {
         cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
@@ -3188,6 +3150,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
 
         cJSON* api_key_item = cJSON_GetObjectItem(values, "api_key");
         std::string api_key = json_is_string(api_key_item) ? trim_copy(api_key_item->valuestring) : "";
+        bool api_key_present = json_secret_present(values, "api_key");
 
         cJSON* r = cJSON_CreateObject();
         cJSON_AddStringToObject(r, "check", "endpoint_reachable");
@@ -3207,30 +3170,28 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         cJSON_AddItemToArray(results, r);
 
         if (tencent_stt) {
-            cJSON* secret_id_item = cJSON_GetObjectItem(values, "secret_id");
-            cJSON* secret_key_item = cJSON_GetObjectItem(values, "secret_key");
-            std::string secret_id = json_is_string(secret_id_item) ? trim_copy(secret_id_item->valuestring) : "";
-            std::string secret_key = json_is_string(secret_key_item) ? trim_copy(secret_key_item->valuestring) : "";
+            bool secret_id_present = json_secret_present(values, "secret_id");
+            bool secret_key_present = json_secret_present(values, "secret_key");
 
             cJSON* r_sid = cJSON_CreateObject();
             cJSON_AddStringToObject(r_sid, "check", "secret_id_present");
-            cJSON_AddBoolToObject(r_sid, "passed", !secret_id.empty() ? 1 : 0);
-            cJSON_AddStringToObject(r_sid, "detail", secret_id.empty() ? "secret_id is empty" : "secret_id is set");
-            if (secret_id.empty()) all_passed = false;
+            cJSON_AddBoolToObject(r_sid, "passed", secret_id_present ? 1 : 0);
+            cJSON_AddStringToObject(r_sid, "detail", secret_id_present ? "secret_id is set" : "secret_id is empty");
+            if (!secret_id_present) all_passed = false;
             cJSON_AddItemToArray(results, r_sid);
 
             cJSON* r_skey = cJSON_CreateObject();
             cJSON_AddStringToObject(r_skey, "check", "secret_key_present");
-            cJSON_AddBoolToObject(r_skey, "passed", !secret_key.empty() ? 1 : 0);
-            cJSON_AddStringToObject(r_skey, "detail", secret_key.empty() ? "secret_key is empty" : "secret_key is set");
-            if (secret_key.empty()) all_passed = false;
+            cJSON_AddBoolToObject(r_skey, "passed", secret_key_present ? 1 : 0);
+            cJSON_AddStringToObject(r_skey, "detail", secret_key_present ? "secret_key is set" : "secret_key is empty");
+            if (!secret_key_present) all_passed = false;
             cJSON_AddItemToArray(results, r_skey);
         } else {
             cJSON* r2 = cJSON_CreateObject();
             cJSON_AddStringToObject(r2, "check", "api_key_present");
-            cJSON_AddBoolToObject(r2, "passed", !api_key.empty() ? 1 : 0);
-            cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "api_key is empty" : "api_key is set");
-            if (api_key.empty()) all_passed = false;
+            cJSON_AddBoolToObject(r2, "passed", api_key_present ? 1 : 0);
+            cJSON_AddStringToObject(r2, "detail", api_key_present ? "api_key is set" : "api_key is empty");
+            if (!api_key_present) all_passed = false;
             cJSON_AddItemToArray(results, r2);
         }
 
@@ -3575,17 +3536,16 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
 
         const char* key_fields[] = {"public_key", "secret_key", NULL};
         for (int i = 0; key_fields[i]; ++i) {
-            cJSON* item = cJSON_GetObjectItem(values, key_fields[i]);
-            std::string key_value = json_is_string(item) ? trim_copy(item->valuestring) : "";
+            bool key_present = json_secret_present(values, key_fields[i]);
             cJSON* r = cJSON_CreateObject();
             cJSON_AddStringToObject(r, "check", key_fields[i]);
-            if (enabled && key_value.empty()) {
+            if (enabled && !key_present) {
                 cJSON_AddBoolToObject(r, "passed", 0);
                 cJSON_AddStringToObject(r, "detail", "required when telemetry.enabled is true");
                 all_passed = false;
             } else {
                 cJSON_AddBoolToObject(r, "passed", 1);
-                cJSON_AddStringToObject(r, "detail", key_value.empty() ? "empty; telemetry disabled or not configured" : "set");
+                cJSON_AddStringToObject(r, "detail", key_present ? "set" : "empty; telemetry disabled or not configured");
             }
             cJSON_AddItemToArray(results, r);
         }
@@ -3642,15 +3602,14 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         }
         cJSON_AddItemToArray(results, r);
 
-        cJSON* api_key_item = cJSON_GetObjectItem(values, "api_key");
-        std::string api_key = json_is_string(api_key_item) ? trim_copy(api_key_item->valuestring) : "";
+        bool api_key_present = json_secret_present(values, "api_key");
         cJSON* r2 = cJSON_CreateObject();
         cJSON_AddStringToObject(r2, "check", "api_key");
         if (provider == "duckduckgo") {
             cJSON_AddBoolToObject(r2, "passed", 1);
-            cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "not required for duckduckgo" : "set (not required for duckduckgo)");
+            cJSON_AddStringToObject(r2, "detail", api_key_present ? "set (not required for duckduckgo)" : "not required for duckduckgo");
         } else if (provider == "brave" || provider == "brave-free" || provider == "tavily") {
-            if (api_key.empty()) {
+            if (!api_key_present) {
                 cJSON_AddBoolToObject(r2, "passed", 0);
                 std::string msg = "required for " + provider;
                 cJSON_AddStringToObject(r2, "detail", msg.c_str());
@@ -3661,7 +3620,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             }
         } else {
             cJSON_AddBoolToObject(r2, "passed", 1);
-            cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "empty (may be required for paid providers)" : "set");
+            cJSON_AddStringToObject(r2, "detail", api_key_present ? "set" : "empty (may be required for paid providers)");
         }
         cJSON_AddItemToArray(results, r2);
     } else {
