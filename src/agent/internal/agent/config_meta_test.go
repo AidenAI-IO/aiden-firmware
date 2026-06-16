@@ -225,6 +225,8 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"agent.voice_interrupt_on_wakeup", defaults.VoiceInterruptOnWakeupOrDefault()},
 		{"agent.voice_streaming_tts_enabled", defaults.VoiceStreamingTTSEnabledOrDefault()},
 		{"agent.voice_tool_call_speech", defaults.VoiceToolCallSpeechOrDefault()},
+		{"agent.voice_speech_summary_enabled", defaults.VoiceSpeechSummaryEnabledOrDefault()},
+		{"agent.voice_speech_max_runes", defaults.VoiceSpeechMaxRunes},
 		{"agent.voice_max_response_tokens", defaults.VoiceMaxResponseTokens},
 		{"agent.max_iterations", defaults.MaxIterations},
 		{"agent.screenshot_keep_n", defaults.ScreenshotKeepN},

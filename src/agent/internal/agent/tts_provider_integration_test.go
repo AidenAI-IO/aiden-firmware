@@ -218,12 +218,14 @@ func TestAudioDialogRunAgentTurnStreamsThroughProviderManager(t *testing.T) {
 		NewSkillIndex(),
 	)
 	streamingEnabled := true
+	summaryDisabled := false
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
 		config: Config{
-			Model:                    ModelConfig{Provider: "fake"},
-			Audio:                    AudioConfig{SampleRate: 16000},
-			VoiceStreamingTTSEnabled: &streamingEnabled,
+			Model:                     ModelConfig{Provider: "fake"},
+			Audio:                     AudioConfig{SampleRate: 16000},
+			VoiceStreamingTTSEnabled:  &streamingEnabled,
+			VoiceSpeechSummaryEnabled: &summaryDisabled,
 		},
 		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),

@@ -118,6 +118,8 @@ type Config struct {
 	VoiceInterruptOnWakeup    *bool              `toml:"voice_interrupt_on_wakeup,omitempty"`
 	VoiceStreamingTTSEnabled  *bool              `toml:"voice_streaming_tts_enabled,omitempty"`
 	VoiceToolCallSpeech       *bool              `toml:"voice_tool_call_speech,omitempty"`
+	VoiceSpeechSummaryEnabled *bool              `toml:"voice_speech_summary_enabled,omitempty"`
+	VoiceSpeechMaxRunes       int                `toml:"voice_speech_max_runes,omitempty"`
 	VoiceMaxResponseTokens    int                `toml:"voice_max_response_tokens,omitempty"`
 	MaxIterations             int                `toml:"max_iterations,omitempty"`
 	ForceSimpleLoop           bool               `toml:"force_simple_loop,omitempty"`
@@ -773,6 +775,9 @@ func (c Config) Validate() error {
 	if c.VoiceMaxTurns < 0 {
 		return fmt.Errorf("voice_max_turns must be >= 0, got %d", c.VoiceMaxTurns)
 	}
+	if c.VoiceSpeechMaxRunes < 0 {
+		return fmt.Errorf("voice_speech_max_runes must be >= 0, got %d", c.VoiceSpeechMaxRunes)
+	}
 	if c.VoiceMaxResponseTokens < 0 {
 		return fmt.Errorf("voice_max_response_tokens must be >= 0, got %d", c.VoiceMaxResponseTokens)
 	}
@@ -943,7 +948,21 @@ func (c Config) VoiceToolCallSpeechOrDefault() bool {
 	if c.VoiceToolCallSpeech != nil {
 		return *c.VoiceToolCallSpeech
 	}
+	return false
+}
+
+func (c Config) VoiceSpeechSummaryEnabledOrDefault() bool {
+	if c.VoiceSpeechSummaryEnabled != nil {
+		return *c.VoiceSpeechSummaryEnabled
+	}
 	return true
+}
+
+func (c Config) VoiceSpeechMaxRunesOrDefault() int {
+	if c.VoiceSpeechMaxRunes > 0 {
+		return c.VoiceSpeechMaxRunes
+	}
+	return defaultVoiceSpeechMaxRunes
 }
 
 func (c Config) VoiceMaxResponseTokensOrDefault() int {

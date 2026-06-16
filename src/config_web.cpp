@@ -1154,6 +1154,8 @@ bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
         !validate_config_field(agent, "agent", "voice_interrupt_on_wakeup", CONFIG_FIELD_BOOL, false, error) ||
         !validate_config_field(agent, "agent", "voice_streaming_tts_enabled", CONFIG_FIELD_BOOL, false, error) ||
         !validate_config_field(agent, "agent", "voice_tool_call_speech", CONFIG_FIELD_BOOL, false, error) ||
+        !validate_config_field(agent, "agent", "voice_speech_summary_enabled", CONFIG_FIELD_BOOL, false, error) ||
+        !validate_config_field(agent, "agent", "voice_speech_max_runes", CONFIG_FIELD_NUMBER, false, error) ||
         !validate_config_field(agent, "agent", "voice_max_response_tokens", CONFIG_FIELD_NUMBER, false, error) ||
         !validate_config_field(agent, "agent", "max_iterations", CONFIG_FIELD_NUMBER, false, error) ||
         !validate_config_field(agent, "agent", "screenshot_keep_n", CONFIG_FIELD_NUMBER, false, error) ||
@@ -1406,6 +1408,8 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddBoolToObject(agent, "voice_interrupt_on_wakeup", config.voice_interrupt_on_wakeup ? 1 : 0);
     cJSON_AddBoolToObject(agent, "voice_streaming_tts_enabled", config.voice_streaming_tts_enabled ? 1 : 0);
     cJSON_AddBoolToObject(agent, "voice_tool_call_speech", config.voice_tool_call_speech ? 1 : 0);
+    cJSON_AddBoolToObject(agent, "voice_speech_summary_enabled", config.voice_speech_summary_enabled ? 1 : 0);
+    cJSON_AddNumberToObject(agent, "voice_speech_max_runes", config.voice_speech_max_runes);
     cJSON_AddNumberToObject(agent, "voice_max_response_tokens", config.voice_max_response_tokens);
     cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
     cJSON_AddBoolToObject(agent, "force_simple_loop", config.force_simple_loop ? 1 : 0);
@@ -1661,6 +1665,8 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_bool(&config->voice_interrupt_on_wakeup, agent, "voice_interrupt_on_wakeup");
         set_json_bool(&config->voice_streaming_tts_enabled, agent, "voice_streaming_tts_enabled");
         set_json_bool(&config->voice_tool_call_speech, agent, "voice_tool_call_speech");
+        set_json_bool(&config->voice_speech_summary_enabled, agent, "voice_speech_summary_enabled");
+        set_json_int(&config->voice_speech_max_runes, agent, "voice_speech_max_runes");
         set_json_int(&config->voice_max_response_tokens, agent, "voice_max_response_tokens");
         set_json_int(&config->max_iterations, agent, "max_iterations");
         set_json_bool(&config->force_simple_loop, agent, "force_simple_loop");
@@ -3425,7 +3431,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         const char* numeric_keys[] = {
             "silence_ms", "min_speech_ms",
             "voice_followup_timeout_ms", "voice_first_turn_timeout_ms",
-            "voice_max_turns", "voice_max_response_tokens",
+            "voice_max_turns", "voice_speech_max_runes", "voice_max_response_tokens",
             "screenshot_keep_n", "screenshot_prune_interval",
             "screen_stable_timeout_ms", "screen_stable_ms", NULL
         };

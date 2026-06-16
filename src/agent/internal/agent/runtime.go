@@ -72,6 +72,7 @@ type RunRequest struct {
 
 type RunResult struct {
 	Output         string          `json:"output"`
+	SpeechText     string          `json:"-"`
 	Skills         []string        `json:"skills"`
 	EpisodeID      string          `json:"episode_id,omitempty"`
 	Memory         []MessageRecord `json:"memory,omitempty"`
@@ -79,6 +80,21 @@ type RunResult struct {
 	SleepRequested bool            `json:"sleep_requested,omitempty"`
 	SleepReason    string          `json:"sleep_reason,omitempty"`
 	SpeechStreamed bool            `json:"-"`
+}
+
+func (r RunResult) SpokenText() string {
+	if text := strings.TrimSpace(r.SpeechText); text != "" {
+		return text
+	}
+	return strings.TrimSpace(r.Output)
+}
+
+func (r RunResult) SpokenTextForConfig(cfg Config) string {
+	text := BuildSpeechText(r.Output, cfg)
+	if text != "" {
+		return text
+	}
+	return r.SpokenText()
 }
 
 type RunSteerMessage struct {
@@ -601,6 +617,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	return RunResult{
 		Output:         output,
+		SpeechText:     BuildSpeechText(output, r.config),
 		Skills:         runSkills.GetActivatedSkills(),
 		EpisodeID:      episodeID,
 		Memory:         commitResult.Memory,

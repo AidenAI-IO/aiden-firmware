@@ -40,6 +40,8 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.voice_interrupt_on_wakeup = false;
     cfg.voice_streaming_tts_enabled = false;
     cfg.voice_tool_call_speech = false;
+    cfg.voice_speech_summary_enabled = false;
+    cfg.voice_speech_max_runes = 80;
     cfg.voice_max_response_tokens = 240;
     cfg.max_iterations = 6;
     cfg.force_simple_loop = true;
@@ -125,8 +127,10 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.voice_first_turn_timeout_ms == 11000);
     CHECK(loaded.voice_max_turns == 4);
     CHECK(loaded.voice_interrupt_on_wakeup == false);
-    CHECK(loaded.voice_streaming_tts_enabled == false);
+	CHECK(loaded.voice_streaming_tts_enabled == false);
 	CHECK(loaded.voice_tool_call_speech == false);
+	CHECK(loaded.voice_speech_summary_enabled == false);
+	CHECK(loaded.voice_speech_max_runes == 80);
 	CHECK(loaded.voice_max_response_tokens == 240);
 	CHECK(loaded.max_iterations == 6);
 	CHECK(loaded.force_simple_loop == true);

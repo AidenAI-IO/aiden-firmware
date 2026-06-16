@@ -742,7 +742,7 @@ func (s *Server) handleChatAsync(
 		var newStream *streamSessionWriter
 		ttsManager := s.currentTTSManager()
 
-		if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
+		if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && !s.runtime.config.VoiceSpeechSummaryEnabledOrDefault() && s.audioClient != nil {
 			if ttsManager != nil {
 				stream, err := beginManagedTTSStream(runCtx, ttsManager, s.audioClient, s.runtime.config)
 				if err != nil {
@@ -812,7 +812,8 @@ func (s *Server) handleChatAsync(
 		}
 
 		// Play TTS in background
-		if s.audioClient != nil && result.Output != "" && !result.SpeechStreamed {
+		speechText := result.SpokenTextForConfig(s.runtime.config)
+		if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
 			go func(text string) {
 				if s.logger != nil {
 					s.logger.Info("TTS playback: %q", text)
@@ -820,7 +821,7 @@ func (s *Server) handleChatAsync(
 				if err := s.speakText(runCtx, text, 0); err != nil && s.logger != nil {
 					s.logger.Error("TTS playback failed: %v", err)
 				}
-			}(result.Output)
+			}(speechText)
 		}
 	}()
 }
@@ -969,7 +970,7 @@ func (s *Server) handleChatSync(
 	var newStream *streamSessionWriter
 	ttsManager := s.currentTTSManager()
 
-	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
+	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && !s.runtime.config.VoiceSpeechSummaryEnabledOrDefault() && s.audioClient != nil {
 		if ttsManager != nil {
 			stream, err := beginManagedTTSStream(ctx, ttsManager, s.audioClient, s.runtime.config)
 			if err != nil {
@@ -1017,7 +1018,8 @@ func (s *Server) handleChatSync(
 	})
 	historySnapshot := s.historySnapshot()
 
-	if s.audioClient != nil && result.Output != "" && !result.SpeechStreamed {
+	speechText := result.SpokenTextForConfig(s.runtime.config)
+	if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
 		go func(text string) {
 			if s.logger != nil {
 				s.logger.Info("TTS playback: %q", text)
@@ -1025,7 +1027,7 @@ func (s *Server) handleChatSync(
 			if err := s.speakText(context.Background(), text, 0); err != nil && s.logger != nil {
 				s.logger.Error("TTS playback failed: %v", err)
 			}
-		}(result.Output)
+		}(speechText)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1178,7 +1180,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	stream.Write(ChatStreamEvent{Type: "message", Message: &assistantMessage})
 	historySnapshot := s.historySnapshot()
 
-	if s.audioClient != nil && result.Output != "" && !result.SpeechStreamed {
+	speechText := result.SpokenTextForConfig(s.runtime.config)
+	if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
 		go func(text string) {
 			if s.logger != nil {
 				s.logger.Info("TTS playback: %q", text)
@@ -1188,7 +1191,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 					s.logger.Error("TTS playback failed: %v", err)
 				}
 			}
-		}(result.Output)
+		}(speechText)
 	}
 
 	stream.Write(ChatStreamEvent{
