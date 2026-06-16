@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -33,10 +34,11 @@ type JSONFieldStreamWriter struct {
 	key     strings.Builder
 	pending []byte
 
-	escape        bool
-	unicodeEscape bool
-	unicodeDigits string
-	lastKey       string
+	escape               bool
+	unicodeEscape        bool
+	unicodeDigits        string
+	pendingHighSurrogate rune
+	lastKey              string
 
 	depth         int
 	skipValueRoot int
@@ -61,9 +63,7 @@ func (w *JSONFieldStreamWriter) ResetStreamState() {
 	w.state = jsonFieldStreamExpectObject
 	w.key.Reset()
 	w.pending = nil
-	w.escape = false
-	w.unicodeEscape = false
-	w.unicodeDigits = ""
+	w.resetJSONStringDecoder()
 	w.lastKey = ""
 	w.depth = 0
 	w.skipValueRoot = 0
@@ -128,9 +128,7 @@ func (w *JSONFieldStreamWriter) consumeRune(r rune) error {
 		}
 		if r == '"' {
 			w.key.Reset()
-			w.escape = false
-			w.unicodeEscape = false
-			w.unicodeDigits = ""
+			w.resetJSONStringDecoder()
 			w.state = jsonFieldStreamInKey
 		}
 	case jsonFieldStreamInKey:
@@ -157,9 +155,7 @@ func (w *JSONFieldStreamWriter) consumeRune(r rune) error {
 			return nil
 		}
 		if r == '"' {
-			w.escape = false
-			w.unicodeEscape = false
-			w.unicodeDigits = ""
+			w.resetJSONStringDecoder()
 			if w.lastKey == w.field {
 				w.state = jsonFieldStreamInTargetString
 			} else {
@@ -204,9 +200,7 @@ func (w *JSONFieldStreamWriter) startSkippingValue(r rune) {
 		w.skipString = false
 	case '"':
 		w.skipValueRoot = w.depth
-		w.escape = false
-		w.unicodeEscape = false
-		w.unicodeDigits = ""
+		w.resetJSONStringDecoder()
 		w.skipString = true
 		w.state = jsonFieldStreamSkipValue
 	case '}':
@@ -239,9 +233,7 @@ func (w *JSONFieldStreamWriter) skipValueRune(r rune) error {
 	}
 	switch r {
 	case '"':
-		w.escape = false
-		w.unicodeEscape = false
-		w.unicodeDigits = ""
+		w.resetJSONStringDecoder()
 		w.skipString = true
 	case '{', '[':
 		w.depth++
@@ -262,6 +254,13 @@ func (w *JSONFieldStreamWriter) skipValueRune(r rune) error {
 	return nil
 }
 
+func (w *JSONFieldStreamWriter) resetJSONStringDecoder() {
+	w.escape = false
+	w.unicodeEscape = false
+	w.unicodeDigits = ""
+	w.pendingHighSurrogate = 0
+}
+
 func (w *JSONFieldStreamWriter) consumeJSONStringRune(r rune) (bool, string, error) {
 	if w.unicodeEscape {
 		w.unicodeDigits += string(r)
@@ -275,24 +274,24 @@ func (w *JSONFieldStreamWriter) consumeJSONStringRune(r rune) (bool, string, err
 		if err != nil {
 			return false, "", fmt.Errorf("invalid unicode escape in JSON field stream: %w", err)
 		}
-		return false, string(rune(value)), nil
+		return w.consumeJSONUnicodeEscape(rune(value))
 	}
 
 	if w.escape {
 		w.escape = false
 		switch r {
 		case '"', '\\', '/':
-			return false, string(r), nil
+			return w.consumeJSONStringScalar(string(r))
 		case 'b':
-			return false, "\b", nil
+			return w.consumeJSONStringScalar("\b")
 		case 'f':
-			return false, "\f", nil
+			return w.consumeJSONStringScalar("\f")
 		case 'n':
-			return false, "\n", nil
+			return w.consumeJSONStringScalar("\n")
 		case 'r':
-			return false, "\r", nil
+			return w.consumeJSONStringScalar("\r")
 		case 't':
-			return false, "\t", nil
+			return w.consumeJSONStringScalar("\t")
 		case 'u':
 			w.unicodeEscape = true
 			w.unicodeDigits = ""
@@ -307,10 +306,58 @@ func (w *JSONFieldStreamWriter) consumeJSONStringRune(r rune) (bool, string, err
 		w.escape = true
 		return false, "", nil
 	case '"':
+		if err := w.ensureNoPendingHighSurrogate(); err != nil {
+			return false, "", err
+		}
 		return true, "", nil
 	default:
-		return false, string(r), nil
+		return w.consumeJSONStringScalar(string(r))
 	}
+}
+
+func (w *JSONFieldStreamWriter) consumeJSONStringScalar(decoded string) (bool, string, error) {
+	if err := w.ensureNoPendingHighSurrogate(); err != nil {
+		return false, "", err
+	}
+	return false, decoded, nil
+}
+
+func (w *JSONFieldStreamWriter) consumeJSONUnicodeEscape(value rune) (bool, string, error) {
+	switch {
+	case isHighSurrogate(value):
+		if err := w.ensureNoPendingHighSurrogate(); err != nil {
+			return false, "", err
+		}
+		w.pendingHighSurrogate = value
+		return false, "", nil
+	case isLowSurrogate(value):
+		if w.pendingHighSurrogate == 0 {
+			return false, "", fmt.Errorf("low surrogate without high surrogate in JSON field stream")
+		}
+		decoded := utf16.DecodeRune(w.pendingHighSurrogate, value)
+		w.pendingHighSurrogate = 0
+		return false, string(decoded), nil
+	default:
+		if err := w.ensureNoPendingHighSurrogate(); err != nil {
+			return false, "", err
+		}
+		return false, string(value), nil
+	}
+}
+
+func (w *JSONFieldStreamWriter) ensureNoPendingHighSurrogate() error {
+	if w.pendingHighSurrogate == 0 {
+		return nil
+	}
+	return fmt.Errorf("unpaired high surrogate in JSON field stream")
+}
+
+func isHighSurrogate(r rune) bool {
+	return r >= 0xD800 && r <= 0xDBFF
+}
+
+func isLowSurrogate(r rune) bool {
+	return r >= 0xDC00 && r <= 0xDFFF
 }
 
 // JSONFieldOrPlainStreamWriter extracts a field when the stream starts with a
