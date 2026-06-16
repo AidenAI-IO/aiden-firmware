@@ -925,6 +925,7 @@ func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ChatResultResponse{
 			Status:       "error",
+			Messages:     msgs,
 			Error:        errText,
 			LiveActivity: liveActivity,
 		})
@@ -2271,7 +2272,11 @@ func (s *Server) handleLiveActivityRegistrations(w http.ResponseWriter, r *http.
 			Message: "registered",
 		})
 	case http.MethodDelete:
-		requestID := r.URL.Query().Get("request_id")
+		requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
+		if requestID == "" {
+			http.Error(w, `{"error":"missing request_id"}`, http.StatusBadRequest)
+			return
+		}
 		ok := s.liveActivity.Unregister(requestID)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]bool{"ok": ok})
@@ -2285,8 +2290,8 @@ func (s *Server) handleLiveActivityStatus(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	requestID := r.URL.Query().Get("request_id")
-	if strings.TrimSpace(requestID) == "" {
+	requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
+	if requestID == "" {
 		http.Error(w, `{"error":"missing request_id"}`, http.StatusBadRequest)
 		return
 	}
@@ -2308,7 +2313,7 @@ func (s *Server) handleLiveActivityCurrent(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if s.liveActivity == nil {
-		http.Error(w, `{"error":"live activity disabled"}`, http.StatusNotFound)
+		http.Error(w, `{"error":"live activity disabled"}`, http.StatusServiceUnavailable)
 		return
 	}
 	state := s.liveActivity.SnapshotActive()

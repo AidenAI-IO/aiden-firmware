@@ -152,7 +152,7 @@ func TestServerLiveActivityRegistrationAndStatus(t *testing.T) {
 		t.Fatalf("unexpected register response: %#v", registerResp)
 	}
 
-	statusReq := httptest.NewRequest(http.MethodGet, "/api/live-activity/status?request_id=req-1", nil)
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/live-activity/status?request_id=%20req-1%20", nil)
 	statusRec := httptest.NewRecorder()
 	server.handleLiveActivityStatus(statusRec, statusReq)
 	if statusRec.Code != http.StatusOK {
@@ -167,6 +167,13 @@ func TestServerLiveActivityRegistrationAndStatus(t *testing.T) {
 	}
 	if statusResp.Status != "ok" || statusResp.LiveActivity.RequestID != "req-1" {
 		t.Fatalf("unexpected status response: %#v", statusResp)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/live-activity/registrations", nil)
+	deleteRec := httptest.NewRecorder()
+	server.handleLiveActivityRegistrations(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusBadRequest {
+		t.Fatalf("delete status code = %d body=%s, want 400", deleteRec.Code, deleteRec.Body.String())
 	}
 }
 
@@ -189,6 +196,26 @@ func TestServerLiveActivityCurrent(t *testing.T) {
 	}
 	if resp.Status != "ok" || resp.LiveActivity.RequestID != "req-1" || resp.LiveActivity.Phase != LiveActivityPhasePlanning {
 		t.Fatalf("unexpected current response: %#v", resp)
+	}
+}
+
+func TestServerLiveActivityCurrentEmpty(t *testing.T) {
+	server := &Server{liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil)}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/current", nil)
+	rec := httptest.NewRecorder()
+	server.handleLiveActivityCurrent(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode current empty response: %v", err)
+	}
+	if resp.Status != "not_found" {
+		t.Fatalf("unexpected current empty response: %#v", resp)
 	}
 }
 
@@ -269,5 +296,39 @@ func TestChatResultIncludesTerminalLiveActivityState(t *testing.T) {
 	}
 	if resp.Status != "complete" || resp.LiveActivity == nil || resp.LiveActivity.Status != LiveActivityStatusCompleted {
 		t.Fatalf("unexpected terminal chat result: %#v", resp)
+	}
+}
+
+func TestChatResultErrorIncludesQueuedMessages(t *testing.T) {
+	server := &Server{
+		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil),
+		pendingResults: map[string]*chatPendingResult{
+			"req-1": {
+				messages: []Message{{
+					Type:      "episode_status",
+					RequestID: "req-1",
+					Content:   `{"status":"failed"}`,
+					Timestamp: time.Now(),
+				}},
+				err: "boom",
+			},
+		},
+	}
+	server.liveActivity.StartTask("req-1", "Do a task")
+	server.liveActivity.FailTask("req-1", "boom")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id=req-1", nil)
+	rec := httptest.NewRecorder()
+	server.handleChatResult(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp ChatResultResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode chat result: %v", err)
+	}
+	if resp.Status != "error" || resp.Error != "boom" || len(resp.Messages) != 1 {
+		t.Fatalf("unexpected error chat result: %#v", resp)
 	}
 }
