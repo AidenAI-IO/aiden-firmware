@@ -50,7 +50,7 @@ type Runtime struct {
 	profileDebouncer   *ProfileDebouncer
 	sleep              *SleepController
 	memoryPlane        MemoryPlane
-	sessionCommitter   SessionCommitter
+	sessionManager     SessionManager
 	telemetrySessionID string
 	mobileGym          *mobileGymSessionStore
 	runGate            chan struct{}
@@ -103,13 +103,6 @@ type RunMetrics struct {
 	// the cumulative sum. Using the largest single prompt keeps a small verifier
 	// call from masking a much larger planner prompt.
 	LastPromptTokens int `json:"-"`
-}
-
-type sessionBoundaryTelemetry struct {
-	Decision             string
-	Reason               string
-	Rotated              bool
-	PendingRecallCounter *atomic.Int64
 }
 
 type RunEvent struct {
@@ -310,7 +303,6 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		tools:              tools,
 		skills:             skillManager,
 		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
-		sessionCommitter:   newMemoryManagerSessionCommitter(memories),
 		sleep:              sleepController,
 		telemetrySessionID: uuid.NewString(),
 		mobileGym:          &mobileGymSessionStore{},
@@ -319,6 +311,9 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
 		rt.markInterruptedEpisodesBestEffort()
 	}
+	rt.sessionManager = newMemoryManagerSessionManager(memories, func(now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext {
+		return recentEpisodeContext(rt.memoryPlane, now, activeMaxAge)
+	})
 	rt.initRunGate()
 	return rt
 }
@@ -476,7 +471,14 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: r.effectiveContextWindow}
 
 	currentHints := r.currentEnvironmentHints()
-	boundaryTelemetry := r.handleSessionBoundary(normalizedInput, currentHints)
+	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
+		Input:        normalizedInput,
+		CurrentHints: currentHints,
+	})
+	if err != nil {
+		return RunResult{}, err
+	}
+	boundaryTelemetry := beginResult.Boundary
 	if boundaryTelemetry.PendingRecallCounter == nil {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
 	}
@@ -609,11 +611,18 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}, nil
 }
 
+func (r *Runtime) beginSession(ctx context.Context, req SessionBeginRequest) (SessionBeginResult, error) {
+	if r == nil || r.sessionManager == nil {
+		return SessionBeginResult{}, nil
+	}
+	return r.sessionManager.BeginRun(ctx, req)
+}
+
 func (r *Runtime) commitSession(ctx context.Context, req SessionCommitRequest) (SessionCommitResult, error) {
-	if r == nil || r.sessionCommitter == nil {
+	if r == nil || r.sessionManager == nil {
 		return SessionCommitResult{}, nil
 	}
-	return r.sessionCommitter.CommitRun(ctx, req)
+	return r.sessionManager.CommitRun(ctx, req)
 }
 
 func steeredExchangeRecords(input string, steers []RunSteerMessage, output string) []MessageRecord {
@@ -631,117 +640,6 @@ func (r *Runtime) currentEnvironmentHints() CurrentEnvironmentHints {
 		return r.tools.CurrentEnvironmentHints(currentEnvironmentHintMaxAge)
 	}
 	return CurrentEnvironmentHints{}
-}
-
-func (r *Runtime) handleSessionBoundary(input string, hints CurrentEnvironmentHints) sessionBoundaryTelemetry {
-	var telemetry sessionBoundaryTelemetry
-	if r == nil || r.memories == nil || r.memories.storageDir == "" {
-		return telemetry
-	}
-	cfg := r.memories.extraction
-	if !cfg.SessionBoundaryEnabled {
-		return telemetry
-	}
-	events, err := loadLastNSessionEvents(r.memories, 20)
-	if err != nil {
-		if r.logger != nil {
-			r.logger.Warn("[memory] session boundary load failed: %v", err)
-		}
-		return telemetry
-	}
-	boundaryCfg := BoundaryConfig{
-		ShortGapSeconds:            cfg.SessionBoundaryShortGapSeconds,
-		LongGapSeconds:             cfg.SessionBoundaryLongGapSeconds,
-		SmallSessionEventThreshold: DefaultBoundaryConfig().SmallSessionEventThreshold,
-		ContinueScoreThreshold:     DefaultBoundaryConfig().ContinueScoreThreshold,
-	}
-	now := time.Now().UTC()
-	episodeCtx := recentEpisodeContext(r.memoryPlane, now, time.Duration(boundaryCfg.LongGapSeconds)*time.Second)
-	boundary, reason := ClassifyTurnBoundary(events, input, now, boundaryCfg, episodeCtx)
-	telemetry.Decision = boundary
-	telemetry.Reason = reason
-
-	if boundary != BoundaryNew || len(events) == 0 {
-		return telemetry
-	}
-
-	if r.logger != nil {
-		r.logger.Info("[memory] session boundary detected: reason=%s", reason)
-	}
-	archiveDir, err := r.memories.RotateSessionEvents()
-	if err != nil {
-		if r.logger != nil {
-			r.logger.Warn("[memory] session rotation failed: %v", err)
-		}
-		return telemetry
-	}
-	if archiveDir != "" {
-		telemetry.Rotated = true
-	}
-	return telemetry
-}
-
-func loadLastNSessionEvents(manager *MemoryManager, n int) ([]SessionEvent, error) {
-	if manager == nil || strings.TrimSpace(manager.storageDir) == "" || n <= 0 {
-		return nil, nil
-	}
-	session := NewSessionMemoryStore(filepath.Join(manager.storageDir, "session"), manager.extraction.SummaryMaxChunks)
-	fl := NewFileLock(manager.storageDir)
-	if err := fl.Lock(manager.lockTimeout); err != nil {
-		return nil, fmt.Errorf("lock for boundary session events: %w", err)
-	}
-	defer fl.Unlock()
-	result, err := session.readActiveEventsRepairingTruncatedTail()
-	if err != nil {
-		if isPathNotExistError(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	manager.logSessionEventsRepair("boundary", result)
-	events := result.events
-	if len(events) <= n {
-		return events, nil
-	}
-	return append([]SessionEvent(nil), events[len(events)-n:]...), nil
-}
-
-func recentEpisodeContext(plane MemoryPlane, now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext {
-	var ctx BoundaryEpisodeContext
-	fs, ok := plane.(*FilesystemMemoryPlane)
-	if !ok || fs == nil || fs.episodes == nil {
-		return ctx
-	}
-	index, err := fs.episodes.loadIndex()
-	if err != nil {
-		return ctx
-	}
-	for _, entry := range index.Episodes {
-		switch entry.Status {
-		case "running":
-			ctx.HasRunning = true
-		case "active":
-			if recentEpisodeEndedAt(entry.EndedAt, now, activeMaxAge) {
-				ctx.HasActive = true
-			}
-		}
-		if ctx.HasRunning && ctx.HasActive {
-			return ctx
-		}
-	}
-	return ctx
-}
-
-func recentEpisodeEndedAt(endedAt string, now time.Time, maxAge time.Duration) bool {
-	if maxAge <= 0 {
-		return false
-	}
-	ended, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(endedAt))
-	if err != nil {
-		return false
-	}
-	age := now.Sub(ended)
-	return age >= 0 && age <= maxAge
 }
 
 func (r *Runtime) effectiveContextWindow() int {
