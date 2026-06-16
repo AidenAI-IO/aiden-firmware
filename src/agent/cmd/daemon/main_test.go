@@ -1070,7 +1070,7 @@ func TestCaptureUtteranceTimeoutReturnsBufferedSpeechWhenVADStarted(t *testing.T
 	}
 }
 
-func TestListenOneUtteranceWakeupRestartsRecordingAndDiscardsBufferedAudio(t *testing.T) {
+func TestListenOneUtteranceIgnoresWakeupWhileAlreadyListening(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	events := make(chan voiceEvent, 1)
 	firstRead := true
@@ -1078,10 +1078,9 @@ func TestListenOneUtteranceWakeupRestartsRecordingAndDiscardsBufferedAudio(t *te
 		frameSamples: 2,
 		chunkBatches: [][]*agent.AudioChunkResult{
 			{{PCM: pcm16BytesFromSamples(100, 200)}},
-			{{PCM: pcm16BytesFromSamples(300, 400)}},
 		},
 		utterancesToReturn: [][]int16{
-			{300, 400},
+			{100, 200},
 		},
 		onRead: func(d *fakeAudioDialog, chunk *agent.AudioChunkResult) {
 			if firstRead {
@@ -1095,13 +1094,13 @@ func TestListenOneUtteranceWakeupRestartsRecordingAndDiscardsBufferedAudio(t *te
 	if exit {
 		t.Fatal("listenOneUtterance returned exit=true")
 	}
-	if got, want := utterance, []int16{300, 400}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("utterance = %#v, want only restarted recording samples %#v", got, want)
+	if got, want := utterance, []int16{100, 200}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("utterance = %#v, want original recording samples %#v", got, want)
 	}
-	if len(dialog.frames) != 1 || dialog.frames[0][0] != 300 || dialog.frames[0][1] != 400 {
-		t.Fatalf("VAD frames = %#v, want only restarted recording samples", dialog.frames)
+	if len(dialog.frames) != 1 || dialog.frames[0][0] != 100 || dialog.frames[0][1] != 200 {
+		t.Fatalf("VAD frames = %#v, want original recording samples", dialog.frames)
 	}
-	wantOps := []string{"start", "reset", "stop", "start", "reset", "stop"}
+	wantOps := []string{"start", "reset", "stop"}
 	if len(dialog.ops) != len(wantOps) {
 		t.Fatalf("dialog ops = %#v, want %#v", dialog.ops, wantOps)
 	}
@@ -1109,6 +1108,56 @@ func TestListenOneUtteranceWakeupRestartsRecordingAndDiscardsBufferedAudio(t *te
 		if dialog.ops[i] != want {
 			t.Fatalf("dialog ops = %#v, want %#v", dialog.ops, wantOps)
 		}
+	}
+}
+
+func TestRunVoiceSessionDrainsBurstWakeupsWhileAlreadyListening(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	events := make(chan voiceEvent, 8)
+	firstRead := true
+	turnStarted := make(chan struct{})
+	allowTurnResult := make(chan struct{})
+	dialog := &fakeAudioDialog{
+		frameSamples: 2,
+		chunkBatches: [][]*agent.AudioChunkResult{
+			{{PCM: pcm16BytesFromSamples(100, 200)}},
+			{},
+		},
+		utterancesToReturn: [][]int16{
+			{100, 200},
+		},
+		repeatEmpty: true,
+		readDelay:   time.Millisecond,
+		onRead: func(d *fakeAudioDialog, chunk *agent.AudioChunkResult) {
+			if firstRead {
+				firstRead = false
+				for i := 0; i < 4; i++ {
+					events <- voiceEventWakeup
+				}
+			}
+		},
+		runTurn: func(ctx context.Context) (agent.RunResult, error) {
+			close(turnStarted)
+			select {
+			case <-ctx.Done():
+				return agent.RunResult{}, ctx.Err()
+			case <-allowTurnResult:
+				return agent.RunResult{Output: "reply"}, nil
+			}
+		},
+	}
+	go func() {
+		<-turnStarted
+		time.Sleep(10 * time.Millisecond)
+		close(allowTurnResult)
+	}()
+
+	exit := runVoiceSession(agent.Config{VoiceFollowupTimeoutMs: 5}, dialog, nil, sigChan, events)
+	if exit {
+		t.Fatal("runVoiceSession returned exit=true")
+	}
+	if len(dialog.spoken) != 1 || dialog.spoken[0] != "reply" {
+		t.Fatalf("spoken texts = %#v, want reply after draining listen-time wakeups", dialog.spoken)
 	}
 }
 

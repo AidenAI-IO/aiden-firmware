@@ -213,7 +213,11 @@ func wakeupGPIOPinsLabel() string {
 func startWakeupWatchers(newWatcher wakeupWatcherFactory, callback func()) ([]wakeupWatcher, error) {
 	watchers := make([]wakeupWatcher, 0, len(wakeupGPIOPins))
 	for _, pin := range wakeupGPIOPins {
-		watcher, err := newWatcher(pin, callback)
+		pin := pin
+		watcher, err := newWatcher(pin, func() {
+			log.Printf("[wakeup] GPIO %d wakeup event", pin)
+			callback()
+		})
 		if err != nil {
 			stopWakeupWatchers(watchers)
 			return nil, fmt.Errorf("create GPIO %d watcher: %w", pin, err)
@@ -626,7 +630,25 @@ func listenOneUtterance(dialog audioDialogRunner, sigChan chan os.Signal, events
 	}()
 	dialog.ResetVAD()
 	utterance, exit := captureUtteranceWithTimeout(dialog, sigChan, events, listenTimeout)
+	if !exit {
+		drainWakeupsWhileListening(events)
+	}
 	return utterance, exit
+}
+
+func drainWakeupsWhileListening(events <-chan voiceEvent) {
+	for {
+		select {
+		case <-events:
+			ignoreWakeupWhileListening()
+		default:
+			return
+		}
+	}
+}
+
+func ignoreWakeupWhileListening() {
+	log.Println("[listen] duplicate wakeup received while listening, ignoring")
 }
 
 func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signal, events <-chan voiceEvent, listenTimeout time.Duration) ([]int16, bool) {
@@ -644,41 +666,13 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 	nextVADLogAt := startedAt.Add(time.Second)
 	hasVADState := false
 	speechDetected := false
-	resetCapture := func(now time.Time) {
-		vadPending = vadPending[:0]
-		captured = captured[:0]
-		hasPendingByte = false
-		pendingByte = 0
-		startedAt = now
-		nextVADLogAt = now.Add(time.Second)
-		hasVADState = false
-		speechDetected = false
-	}
-	restartRecordingAfterWakeup := func() bool {
-		log.Println("[listen] wakeup received while listening, restarting recording")
-		if dialog.RecordingActive() {
-			if err := dialog.StopRecording(); err != nil {
-				log.Printf("[listen] stop recording before wakeup restart: %v\n", err)
-			}
-		}
-		if err := dialog.StartRecording(); err != nil {
-			log.Printf("[listen] restart recording after wakeup failed: %v\n", err)
-			return false
-		}
-		dialog.ResetVAD()
-		resetCapture(time.Now())
-		return true
-	}
 
-captureLoop:
 	for {
 		select {
 		case <-sigChan:
 			return nil, true
 		case <-events:
-			if !restartRecordingAfterWakeup() {
-				return nil, false
-			}
+			ignoreWakeupWhileListening()
 			continue
 		default:
 		}
@@ -705,10 +699,7 @@ captureLoop:
 		case <-sigChan:
 			return nil, true
 		case <-events:
-			if !restartRecordingAfterWakeup() {
-				return nil, false
-			}
-			continue
+			ignoreWakeupWhileListening()
 		default:
 		}
 
@@ -762,10 +753,7 @@ captureLoop:
 				case <-sigChan:
 					return nil, true
 				case <-events:
-					if !restartRecordingAfterWakeup() {
-						return nil, false
-					}
-					continue captureLoop
+					ignoreWakeupWhileListening()
 				default:
 				}
 				log.Println("[utterance] VAD detected end of speech")
