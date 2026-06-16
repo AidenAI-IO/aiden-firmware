@@ -3551,6 +3551,7 @@ const webUI = `<!DOCTYPE html>
         let toolCatalog = [];
         let toolSkills = [];
         let currentChatRequestId = '';
+        let externalActiveRequestId = '';
         let currentChatAbortController = null;
         let currentChatCancelRequested = false;
         let pendingSteer = null;
@@ -3560,6 +3561,8 @@ const webUI = `<!DOCTYPE html>
         let renderedMessageKeys = new Set();
 
         loadHistory();
+        refreshCurrentLiveActivity();
+        setInterval(refreshCurrentLiveActivity, 2000);
         loadToolCatalog();
         loadToolSkills();
         autoResizeInput();
@@ -3888,6 +3891,7 @@ const webUI = `<!DOCTYPE html>
             setComposerState(true);
             clearDraftAttachments();
             currentChatRequestId = createRequestId();
+            externalActiveRequestId = '';
             currentChatAbortController = new AbortController();
             currentChatCancelRequested = false;
 
@@ -4018,28 +4022,50 @@ const webUI = `<!DOCTYPE html>
             return 'web-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
         }
 
+        function activeChatRequestId() {
+            return currentChatRequestId || externalActiveRequestId || '';
+        }
+
+        async function refreshCurrentLiveActivity() {
+            if (currentChatRequestId) return;
+            try {
+                const res = await fetch('/api/live-activity/current');
+                if (!res.ok) return;
+                const data = await res.json();
+                const state = data.live_activity;
+                const isActive = data.status === 'ok' && state && (state.status === 'running' || state.status === 'needs_app');
+                externalActiveRequestId = isActive ? state.request_id : '';
+                setComposerState(!!activeChatRequestId());
+            } catch (err) {
+                console.warn('Failed to refresh current live activity:', err);
+            }
+        }
+
         async function cancelCurrentRun() {
-            if (!currentChatRequestId) return;
-            const requestId = currentChatRequestId;
+            const requestId = activeChatRequestId();
+            if (!requestId) return;
             currentChatCancelRequested = true;
             stopRunBtn.disabled = true;
             stopRunBtn.textContent = 'Stopping...';
             pendingSteer = null;
             renderPendingSteer();
 
-			if (currentChatAbortController) {
-				currentChatAbortController.abort();
-			}
+            if (currentChatAbortController) {
+                currentChatAbortController.abort();
+            }
 
-			fetch('/api/chat/cancel', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ request_id: requestId }),
-				keepalive: true
-			}).catch(function(err) {
-				console.error('Failed to cancel chat request:', err);
-			});
-		}
+            fetch('/api/chat/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ request_id: requestId }),
+                keepalive: true
+            }).catch(function(err) {
+                console.error('Failed to cancel chat request:', err);
+            }).finally(function() {
+                if (externalActiveRequestId === requestId) externalActiveRequestId = '';
+                setComposerState(!!activeChatRequestId());
+            });
+        }
 
         async function cancelPendingSteer() {
             if (!currentChatRequestId || !pendingSteer) return;
@@ -4447,8 +4473,8 @@ const webUI = `<!DOCTYPE html>
         }
 
         function setComposerState(isLoading) {
-            sendBtn.disabled = recorderState.isStopping || pendingSteerSubmitting;
-            sendBtn.textContent = isLoading ? 'Steer' : 'Send';
+            sendBtn.disabled = recorderState.isStopping || pendingSteerSubmitting || (isLoading && !currentChatRequestId);
+            sendBtn.textContent = currentChatRequestId ? 'Steer' : 'Send';
             imageBtn.disabled = isLoading || recorderState.isRecording || recorderState.isStopping;
             recordBtn.disabled = isLoading || recorderState.isStopping;
             stopRunBtn.disabled = !isLoading;

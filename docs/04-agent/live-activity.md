@@ -164,9 +164,11 @@ iOS app 包含 `AidenLiveActivityExtension` Widget Extension 和 `AidenLiveActiv
 
 - app 与硬件建立连接后，应能在切后台前创建 `ready` Live Activity，作为快速回到 Aiden 的入口。
 - 前台 polling 到 `live_activity.status=running` 时，app 调用自定义 native helper `AidenLiveActivityModule.startOrUpdate`；该 helper 内部用 ActivityKit `Activity.request` 创建、`Activity.update` 更新本地 Live Activity，不申请 push token。
+- app 进入前台、连接恢复、以及刚切后台的短轮询窗口内，会 best-effort 查询 `GET /api/live-activity/current`，把 agent Web UI / 8080 发起的当前任务同步到本地 Live Activity。
+- app 和 agent Web UI 的停止按钮都应使用当前 `live_activity.request_id` 调用 `POST /api/chat/cancel`；这样无论任务由哪一端发起，另一端看到 running / needs_app 后也能中断同一个 agent run。
 - polling 到 `completed`、`failed` 或 `canceled` 时，app 结束本地 Live Activity。
 - 任务结束后，如果硬件仍连接且入口仍需要保留，app 可以把 Live Activity 回落到 `ready`；否则结束 Live Activity。
-- 后台远程更新、后台任务状态刷新、以及从 agent Web UI 发起任务后的后台展示由 APNs/后端链路负责，不复用前台轮询路径。
+- app 已被 iOS 挂起后的后台远程更新、后台任务状态持续刷新、以及从 agent Web UI 发起新任务后的后台展示由 APNs/后端链路负责，不依赖 RN 前台轮询路径。
 - 用户点击灵动岛/锁屏 Live Activity 时，系统会回到 Aiden app。
 
 ## 联调顺序
