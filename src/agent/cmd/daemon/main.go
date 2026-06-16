@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mattn/go-isatty"
+
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/ota"
 )
@@ -108,12 +110,20 @@ func main() {
 	}()
 
 	if inputMode == "audio" || inputMode == "stt" {
-		go func() {
-			if err := <-serverErr; err != nil {
-				log.Printf("[server] HTTP server stopped: %v", err)
-			}
-		}()
-		runAudioMode(cfg, runtime, server)
+		if shouldRunConsoleAudioLoop(cfg, stdinIsInteractive()) {
+			go func() {
+				if err := <-serverErr; err != nil {
+					log.Printf("[server] HTTP server stopped: %v", err)
+				}
+			}()
+			runAudioMode(cfg, runtime, server)
+			return
+		}
+		log.Printf("[manual] stdin is not interactive; console audio loop disabled, HTTP audio controls remain available")
+		if err := <-serverErr; err != nil {
+			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -121,6 +131,19 @@ func main() {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func stdinIsInteractive() bool {
+	fd := os.Stdin.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+}
+
+func shouldRunConsoleAudioLoop(cfg agent.Config, stdinInteractive bool) bool {
+	inputMode := cfg.InputModeOrDefault()
+	if inputMode != "audio" && inputMode != "stt" {
+		return false
+	}
+	return cfg.TriggerModeOrDefault() != "manual" || stdinInteractive
 }
 
 func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server) {
