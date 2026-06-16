@@ -9,7 +9,7 @@ SLEEP_BIN=${SLEEP_BIN:-sleep}
 WAIT_TIMEOUT=${WAIT_TIMEOUT:-}
 USERDATA_REQUIRE_MOUNT=${USERDATA_REQUIRE_MOUNT:-1}
 MOUNTS_PATH=${MOUNTS_PATH:-/proc/mounts}
-LOCK_DIR=${LOCK_DIR:-/var/run/ota-health.lock}
+LOCK_DIR=${LOCK_DIR:-/run/ota-health.lock}
 
 prepare_lock_parent() {
     dir="$(dirname "$LOCK_DIR")"
