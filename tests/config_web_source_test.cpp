@@ -822,7 +822,7 @@ TEST_CASE("config web usbhid init script does not orchestrate dependent service 
     CHECK(script.find("restart|reload) stop; start") == std::string::npos);
 }
 
-TEST_CASE("config web resolved config validation stays transport-level only") {
+TEST_CASE("config web resolved config validation keeps required fields and type guards") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
     REQUIRE(source_in.good());
@@ -831,8 +831,11 @@ TEST_CASE("config web resolved config validation stays transport-level only") {
     source_buffer << source_in.rdbuf();
     const std::string source = source_buffer.str();
 
-    CHECK(source.find("validate_config_field") == std::string::npos);
-    CHECK(source.find("CONFIG_FIELD_STRING") == std::string::npos);
-    CHECK(source.find("voice_speech_summary_enabled\", CONFIG_FIELD_BOOL") == std::string::npos);
-    CHECK(source.find("voice_speech_max_runes\", CONFIG_FIELD_NUMBER") == std::string::npos);
+    CHECK(source.find("validate_model_section") != std::string::npos);
+    CHECK(source.find("validate_known_config_field_types") != std::string::npos);
+    CHECK(source.find("validate_search_secret_presence") != std::string::npos);
+    CHECK(source.find("validate_required_string(model, \"model\", \"provider\", false") != std::string::npos);
+    CHECK(source.find("\"search\", \"has_api_key\", CONFIG_FIELD_BOOL") != std::string::npos);
+    CHECK(source.find("\"voice_speech_summary_enabled\", CONFIG_FIELD_BOOL") != std::string::npos);
+    CHECK(source.find("\"voice_speech_max_runes\", CONFIG_FIELD_NUMBER") != std::string::npos);
 }
