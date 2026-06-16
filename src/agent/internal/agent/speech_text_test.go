@@ -73,6 +73,15 @@ func TestRunResultSpokenTextForConfigPrefersSpeechText(t *testing.T) {
 	}
 }
 
+func TestRunResultSpokenTextForConfigIgnoresSpeechTextWhenSummaryDisabled(t *testing.T) {
+	disabled := false
+	result := RunResult{Output: "完整回答应该显示。", SpeechText: "短口播。"}
+
+	if got := result.SpokenTextForConfig(Config{VoiceSpeechSummaryEnabled: &disabled}); got != "完整回答应该显示。" {
+		t.Fatalf("SpokenTextForConfig() = %q, want output when summary is disabled", got)
+	}
+}
+
 func TestSpeechTextStreamWriterExtractsPartialJSONField(t *testing.T) {
 	var sink strings.Builder
 	writer := NewSpeechTextStreamWriter(&sink, "speech_text")
@@ -145,5 +154,47 @@ func TestFinalizeSpeechOutputParsesStructuredAnswer(t *testing.T) {
 	}
 	if speech != "短口播。" {
 		t.Fatalf("speech = %q", speech)
+	}
+}
+
+func TestFinalizeSpeechOutputIgnoresStructuredSpeechWhenSummaryDisabled(t *testing.T) {
+	disabled := false
+	raw := `{"speech_text":"短口播。","output":"完整回答。"}`
+
+	output, speech := finalizeSpeechOutput(raw, Config{VoiceSpeechSummaryEnabled: &disabled})
+
+	if output != "完整回答。" {
+		t.Fatalf("output = %q", output)
+	}
+	if speech != "" {
+		t.Fatalf("speech = %q, want empty when summary is disabled", speech)
+	}
+}
+
+func TestFinalizeSpeechOutputKeepsPlainTextWhenSummaryDisabled(t *testing.T) {
+	disabled := false
+	raw := "完整回答。"
+
+	output, speech := finalizeSpeechOutput(raw, Config{VoiceSpeechSummaryEnabled: &disabled})
+
+	if output != "完整回答。" {
+		t.Fatalf("output = %q", output)
+	}
+	if speech != "" {
+		t.Fatalf("speech = %q, want empty for plain answer when summary is disabled", speech)
+	}
+}
+
+func TestFinalizeSpeechOutputParsesOutputOnlyWhenSummaryDisabled(t *testing.T) {
+	disabled := false
+	raw := `{"output":"完整回答。"}`
+
+	output, speech := finalizeSpeechOutput(raw, Config{VoiceSpeechSummaryEnabled: &disabled})
+
+	if output != "完整回答。" {
+		t.Fatalf("output = %q", output)
+	}
+	if speech != "" {
+		t.Fatalf("speech = %q, want empty for output-only structured answer", speech)
 	}
 }

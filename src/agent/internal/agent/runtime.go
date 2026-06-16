@@ -94,6 +94,9 @@ func (r RunResult) SpokenText() string {
 }
 
 func (r RunResult) SpokenTextForConfig(cfg Config) string {
+	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
+		return strings.TrimSpace(r.Output)
+	}
 	if text := strings.TrimSpace(r.SpeechText); text != "" {
 		return text
 	}
@@ -980,10 +983,11 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 	}
 	return buildRoleProfiles(
 		AgentConfig{
-			Instruction:      r.config.Instruction,
-			AdditionalPrompt: r.config.AdditionalPrompt,
-			RuntimeContext:   runtimeContext,
-			ForceSimpleLoop:  r.config.ForceSimpleLoop,
+			Instruction:               r.config.Instruction,
+			AdditionalPrompt:          r.config.AdditionalPrompt,
+			RuntimeContext:            runtimeContext,
+			ForceSimpleLoop:           r.config.ForceSimpleLoop,
+			VoiceSpeechSummaryEnabled: r.config.VoiceSpeechSummaryEnabled,
 		},
 		skills,
 		availableTools,

@@ -387,10 +387,11 @@ type ModelConfig struct {
 
 // AgentConfig is used internally by the runtime prompt builder.
 type AgentConfig struct {
-	Instruction      string
-	AdditionalPrompt string
-	RuntimeContext   string
-	ForceSimpleLoop  bool
+	Instruction               string
+	AdditionalPrompt          string
+	RuntimeContext            string
+	ForceSimpleLoop           bool
+	VoiceSpeechSummaryEnabled *bool
 }
 
 // MemoryConfig is used internally by the memory manager.

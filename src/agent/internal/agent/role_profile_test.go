@@ -148,6 +148,30 @@ func TestBuildRoleProfilesIncludesOpenAppRulesOnlyWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestBuildRoleProfilesOmitsSpeechTextWhenSpeechSummaryDisabled(t *testing.T) {
+	profiles := buildRoleProfiles(
+		AgentConfig{VoiceSpeechSummaryEnabled: boolPtrRoleProfile(false)},
+		ResolvedSkills{},
+		nil,
+		MemoryContext{},
+	)
+
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Verifier} {
+		if strings.Contains(profile.SystemPrompt, "speech_text") {
+			t.Fatalf("%s prompt should not require speech_text when speech summary is disabled:\n%s", profile.Name, profile.SystemPrompt)
+		}
+		if strings.Contains(profile.SystemPrompt, `"output"`) {
+			t.Fatalf("%s prompt should not require structured output when speech summary is disabled:\n%s", profile.Name, profile.SystemPrompt)
+		}
+		if profile.Name == RolePlanner && (!strings.Contains(profile.SystemPrompt, "plain text") || !strings.Contains(profile.SystemPrompt, "not JSON")) {
+			t.Fatalf("planner prompt should ask for plain text final answers when speech summary is disabled:\n%s", profile.SystemPrompt)
+		}
+		if profile.Name == RoleVerifier && !strings.Contains(profile.SystemPrompt, "final_answer") {
+			t.Fatalf("verifier prompt should keep final_answer as the plain user-facing answer:\n%s", profile.SystemPrompt)
+		}
+	}
+}
+
 func TestRoleCollaborativeExecutorPassesToolsViaWithTools(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{\"volume\":3}"}`, "Volume set to 3."),

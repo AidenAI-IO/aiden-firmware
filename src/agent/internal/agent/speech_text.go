@@ -174,7 +174,7 @@ func parseStructuredFinalAnswer(raw string) (output string, speechText string, o
 	}
 	output = strings.TrimSpace(answer.Output)
 	speechText = strings.TrimSpace(answer.SpeechText)
-	if output == "" || speechText == "" {
+	if output == "" {
 		return "", "", false
 	}
 	return output, speechText, true
@@ -183,7 +183,16 @@ func parseStructuredFinalAnswer(raw string) (output string, speechText string, o
 func finalizeSpeechOutput(raw string, cfg Config) (string, string) {
 	output := strings.TrimSpace(raw)
 	if parsedOutput, parsedSpeech, ok := parseStructuredFinalAnswer(output); ok {
-		return parsedOutput, parsedSpeech
+		if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
+			return parsedOutput, ""
+		}
+		if parsedSpeech != "" {
+			return parsedOutput, parsedSpeech
+		}
+		return parsedOutput, BuildSpeechText(parsedOutput, cfg)
+	}
+	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
+		return output, ""
 	}
 	return output, BuildSpeechText(output, cfg)
 }
