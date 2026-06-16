@@ -106,6 +106,10 @@ func (s roleLoopState) canAcceptPlannerFinal(answer string) bool {
 	return s.PlanCommitted || s.PlanExhausted || len(s.PlanStepResults) > 0 || len(s.VerifierResults) > 0
 }
 
+func (s roleLoopState) isFinalCommittedPlanStep() bool {
+	return s.PlanCommitted && len(s.Plan) > 0 && s.PlanStepIndex >= len(s.Plan)-1
+}
+
 func (s *roleLoopState) beginStepExecution() {
 	s.StepToolSteps = nil
 	s.StepExecutionResults = nil

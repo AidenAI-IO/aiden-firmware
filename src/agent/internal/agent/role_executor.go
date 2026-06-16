@@ -49,6 +49,8 @@ type plannerDecision struct {
 type verifierDecision struct {
 	CanFinish     bool               `json:"can_finish"`
 	FinalAnswer   string             `json:"final_answer,omitempty"`
+	SpeechText    string             `json:"speech_text,omitempty"`
+	Output        string             `json:"output,omitempty"`
 	NeedsReplan   bool               `json:"needs_replan,omitempty"`
 	Reason        string             `json:"reason,omitempty"`
 	ObservedState observedWorldState `json:"observed_state,omitempty"`
@@ -376,7 +378,18 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 		OutputKey: e.OutputKey,
 	}
 	callOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
-	res, err := e.generateRoleContent(ctx, RolePlanner, messages, callOptions...)
+	generate := func() (*llms.ContentResponse, error) {
+		return e.generateRoleContent(ctx, RolePlanner, messages, callOptions...)
+	}
+	var (
+		res *llms.ContentResponse
+		err error
+	)
+	if state.Phase == phaseDefault || e.ForceSimpleLoop {
+		res, err = e.withFinalStreaming(ctx, generate)
+	} else {
+		res, err = generate()
+	}
 	if err != nil {
 		return plannerTurnResult{}, err
 	}
@@ -680,7 +693,18 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 
 func (e *roleCollaborativeExecutor) callVerifier(ctx context.Context, inputs map[string]string, state roleLoopState, options ...chains.ChainCallOption) (verifierDecision, error) {
 	messages := e.roleMessages(e.Profiles.Verifier, inputs, state, "Verifier task: decide whether the current executor step succeeded. Return the required JSON.")
-	res, err := e.generateRoleContent(ctx, RoleVerifier, messages, chains.GetLLMCallOptions(options...)...)
+	generate := func() (*llms.ContentResponse, error) {
+		return e.generateRoleContent(ctx, RoleVerifier, messages, chains.GetLLMCallOptions(options...)...)
+	}
+	var (
+		res *llms.ContentResponse
+		err error
+	)
+	if state.isFinalCommittedPlanStep() {
+		res, err = e.withFinalStreaming(ctx, generate)
+	} else {
+		res, err = generate()
+	}
 	if err != nil {
 		return verifierDecision{}, err
 	}
@@ -1561,6 +1585,14 @@ func parseVerifierDecision(raw, fallbackAnswer string) verifierDecision {
 	var decision verifierDecision
 	if decodeRoleJSON(raw, &decision) == nil {
 		decision.FinalAnswer = strings.TrimSpace(decision.FinalAnswer)
+		decision.SpeechText = strings.TrimSpace(decision.SpeechText)
+		decision.Output = strings.TrimSpace(decision.Output)
+		if decision.Output != "" && decision.FinalAnswer == "" {
+			decision.FinalAnswer = decision.Output
+		}
+		if decision.CanFinish && decision.Output != "" && decision.SpeechText != "" {
+			decision.FinalAnswer = marshalStructuredFinalAnswer(decision.SpeechText, decision.Output)
+		}
 		decision.Reason = strings.TrimSpace(decision.Reason)
 		decision.ObservedState = normalizeObservedWorldState(decision.ObservedState)
 		if decision.NeedsReplan {
@@ -1593,6 +1625,17 @@ func parseVerifierDecision(raw, fallbackAnswer string) verifierDecision {
 		FinalAnswer: text,
 		Reason:      "verifier returned explicit non-JSON final answer",
 	}
+}
+
+func marshalStructuredFinalAnswer(speechText, output string) string {
+	payload, err := json.Marshal(structuredFinalAnswer{
+		SpeechText: strings.TrimSpace(speechText),
+		Output:     strings.TrimSpace(output),
+	})
+	if err != nil {
+		return strings.TrimSpace(output)
+	}
+	return string(payload)
 }
 
 func extractMarkedFinalAnswer(content string) string {
@@ -1725,9 +1768,32 @@ type streamingFuncHandler interface {
 	HandleStreamingFunc(context.Context, []byte)
 }
 
+type finalStreamingController interface {
+	EnableFinalStreaming(context.Context)
+	DisableFinalStreaming(context.Context)
+	HasFinalStreamingToken(context.Context) bool
+}
+
+func (e *roleCollaborativeExecutor) withFinalStreaming(ctx context.Context, fn func() (*llms.ContentResponse, error)) (*llms.ContentResponse, error) {
+	controller, ok := e.CallbacksHandler.(finalStreamingController)
+	if !ok {
+		return fn()
+	}
+	controller.EnableFinalStreaming(ctx)
+	defer controller.DisableFinalStreaming(ctx)
+	return fn()
+}
+
 func (e *roleCollaborativeExecutor) streamFinalAnswer(ctx context.Context, finalAnswer string) {
 	if finalAnswer == "" {
 		return
+	}
+	if controller, ok := e.CallbacksHandler.(finalStreamingController); ok {
+		if controller.HasFinalStreamingToken(ctx) {
+			return
+		}
+		controller.EnableFinalStreaming(ctx)
+		defer controller.DisableFinalStreaming(ctx)
 	}
 	streamer, ok := e.CallbacksHandler.(streamingFuncHandler)
 	if !ok {

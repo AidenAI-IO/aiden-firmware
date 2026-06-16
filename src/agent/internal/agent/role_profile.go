@@ -92,9 +92,10 @@ func verifierRoleRules(openAppAvailable bool) []string {
 		"An authoritative direct tool result is sufficient evidence when it exactly covers the current step. Require screenshot evidence for additional visible UI work or when a screenshot contradicts the tool result.",
 		"If the current step succeeded and more committed plan steps remain: return can_finish=false and needs_replan=false.",
 		"If the current step succeeded and this is the final committed plan step: return can_finish=true with final_answer for the user.",
+		"When returning can_finish=true, also include speech_text and output as top-level JSON fields. Put speech_text before output in the JSON object. speech_text is a concise spoken summary; output is the complete user-facing answer. Keep final_answer equal to output for compatibility.",
 		"If the current step failed, had no effect, or evidence is insufficient: return can_finish=false and needs_replan=true with a brief reason for the planner.",
 		"If the screenshot clearly identifies app/page/platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence; otherwise leave unknown fields empty.",
-		"Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}.",
+		"Return only JSON: {\"can_finish\":true|false,\"speech_text\":\"short spoken answer when can_finish is true\",\"output\":\"complete answer when can_finish is true\",\"final_answer\":\"same as output when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}.",
 	}
 	if openAppAvailable {
 		rules = append(rules, "For launch-only app, URL, or dialer requests, open_app returning ok=true is authoritative completion evidence.")
@@ -111,14 +112,17 @@ func plannerToolsForConfig(cfg AgentConfig, tools []langtools.Tool) []langtools.
 
 func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 	var rules []string
+	structuredFinalRule := "When returning a final answer directly to the user, return only JSON with speech_text before output: {\"speech_text\":\"concise spoken answer\",\"output\":\"complete user-facing answer\"}. speech_text must be short and natural for TTS; output must preserve the full answer for the screen."
 	if cfg.ForceSimpleLoop {
 		rules = append(rules,
 			"Use simple loop mode for every request: call available tools directly and return a final answer when the request is satisfied.",
 			"Plan mode is disabled by configuration: do not enter, draft, commit, cancel, or mention a delegated multi-step plan.",
+			structuredFinalRule,
 		)
 	} else {
 		rules = append(rules,
 			"Route phase chooses direct_answer, simple, or plan before ordinary execution. In default mode, complete the routed request directly with available tools and return a final answer when satisfied.",
+			structuredFinalRule,
 			"Use plan mode for requests that need explicit planning, checkpoints, information gathering before acting, multiple independent stages, record aggregation, reconciliation, branching, or several required output facts.",
 			"In plan mode, you may use read-only information-gathering tools when context is missing. Do not execute computation, mutation, input, or other task-completion tools directly in plan mode.",
 			"Create or revise a structured delegated plan, then call commit_plan to hand it to the executor or cancel_plan to return to default mode.",

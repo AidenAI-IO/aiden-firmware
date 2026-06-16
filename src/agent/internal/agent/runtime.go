@@ -65,9 +65,12 @@ type RunRequest struct {
 	// hardware/app state. It is not persisted as user configuration.
 	RuntimeContext string
 	StreamWriter   io.Writer
-	MaxTokens      int
-	EventHandler   func(RunEvent)
-	SteerProvider  func(context.Context) (RunSteerMessage, bool)
+	// StreamFinalChunks enables provider-level token streaming for final-answer
+	// audio paths. Plain UI streaming keeps the legacy finish-time write path.
+	StreamFinalChunks bool
+	MaxTokens         int
+	EventHandler      func(RunEvent)
+	SteerProvider     func(context.Context) (RunSteerMessage, bool)
 }
 
 type RunResult struct {
@@ -90,6 +93,9 @@ func (r RunResult) SpokenText() string {
 }
 
 func (r RunResult) SpokenTextForConfig(cfg Config) string {
+	if text := strings.TrimSpace(r.SpeechText); text != "" {
+		return text
+	}
 	text := BuildSpeechText(r.Output, cfg)
 	if text != "" {
 		return text
@@ -560,6 +566,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	var executorHandler callbacks.Handler
 	if streamCallbackHandler != nil {
 		executorHandler = streamCallbackHandler
+		if req.StreamWriter != nil && req.StreamFinalChunks {
+			callOptions = append(callOptions, chains.WithCallback(streamCallbackHandler))
+		}
 	}
 	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
 	plannerMemory := memoryHandle.Memory
@@ -593,6 +602,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 
+	output, speechText := finalizeSpeechOutput(output, r.config)
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
 	commitReq := SessionCommitRequest{
 		AgentName: "default",
@@ -617,7 +627,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	return RunResult{
 		Output:         output,
-		SpeechText:     BuildSpeechText(output, r.config),
+		SpeechText:     speechText,
 		Skills:         runSkills.GetActivatedSkills(),
 		EpisodeID:      episodeID,
 		Memory:         commitResult.Memory,
@@ -1005,6 +1015,8 @@ type runtimeCallbackHandler struct {
 	metrics        *RunMetrics
 	startTime      time.Time
 	firstTokenSeen bool
+	finalTokenSeen bool
+	streamFinal    bool
 	logger         *Logger
 	eventHandler   func(RunEvent)
 	episodeID      string
@@ -1276,15 +1288,57 @@ func (h *runtimeCallbackHandler) HandleRetrieverEnd(ctx context.Context, query s
 }
 
 func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk []byte) {
-	if h.writer != nil {
+	finalStreaming := h.finalStreamingEnabled()
+	if h.writer != nil && finalStreaming {
 		h.writer.Write(chunk)
+		h.recordFinalToken()
 	}
 
 	// Record first token time
-	if !h.firstTokenSeen && h.metrics != nil {
-		h.firstTokenSeen = true
+	h.recordFirstToken()
+}
+
+func (h *runtimeCallbackHandler) EnableFinalStreaming(ctx context.Context) {
+	h.mu.Lock()
+	h.finalTokenSeen = false
+	h.streamFinal = true
+	h.mu.Unlock()
+}
+
+func (h *runtimeCallbackHandler) DisableFinalStreaming(ctx context.Context) {
+	h.mu.Lock()
+	h.streamFinal = false
+	h.mu.Unlock()
+}
+
+func (h *runtimeCallbackHandler) finalStreamingEnabled() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.streamFinal
+}
+
+func (h *runtimeCallbackHandler) HasFinalStreamingToken(context.Context) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.finalTokenSeen
+}
+
+func (h *runtimeCallbackHandler) recordFirstToken() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.firstTokenSeen {
+		return
+	}
+	h.firstTokenSeen = true
+	if h.metrics != nil {
 		h.metrics.FirstTokenTime = float64(time.Since(h.startTime).Milliseconds())
 	}
+}
+
+func (h *runtimeCallbackHandler) recordFinalToken() {
+	h.mu.Lock()
+	h.finalTokenSeen = true
+	h.mu.Unlock()
 }
 
 var _ callbacks.Handler = (*runtimeCallbackHandler)(nil)

@@ -65,3 +65,85 @@ func TestRunResultSpeechTextFallsBackToOutput(t *testing.T) {
 		t.Fatalf("SpokenText() = %q, want output fallback", got)
 	}
 }
+
+func TestRunResultSpokenTextForConfigPrefersSpeechText(t *testing.T) {
+	result := RunResult{Output: "完整回答应该显示。", SpeechText: "短口播。"}
+	if got := result.SpokenTextForConfig(Config{}); got != "短口播。" {
+		t.Fatalf("SpokenTextForConfig() = %q, want speech text", got)
+	}
+}
+
+func TestSpeechTextStreamWriterExtractsPartialJSONField(t *testing.T) {
+	var sink strings.Builder
+	writer := NewSpeechTextStreamWriter(&sink, "speech_text")
+
+	chunks := []string{
+		`{"speech_text":"已完成`,
+		`，当前音量是 42。","output":"`,
+		`完整回答不应该被播报。`,
+	}
+	for _, chunk := range chunks {
+		if _, err := writer.Write([]byte(chunk)); err != nil {
+			t.Fatalf("Write(%q) error = %v", chunk, err)
+		}
+	}
+
+	if got := sink.String(); got != "已完成，当前音量是 42。" {
+		t.Fatalf("streamed speech = %q", got)
+	}
+}
+
+func TestSpeechTextStreamWriterDecodesEscapes(t *testing.T) {
+	var sink strings.Builder
+	writer := NewSpeechTextStreamWriter(&sink, "speech_text")
+
+	if _, err := writer.Write([]byte(`{"speech_text":"第一行\n第二行\u3002","output":"ignored"}`)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	if got := sink.String(); got != "第一行\n第二行。" {
+		t.Fatalf("streamed speech = %q", got)
+	}
+}
+
+func TestSpeechTextStreamWriterHandlesSplitUTF8Rune(t *testing.T) {
+	var sink strings.Builder
+	writer := NewSpeechTextStreamWriter(&sink, "speech_text")
+	payload := []byte(`{"speech_text":"好","output":"ignored"}`)
+	split := strings.Index(string(payload), "好")
+	if split < 0 {
+		t.Fatal("test payload missing split rune")
+	}
+	if _, err := writer.Write(payload[:split+1]); err != nil {
+		t.Fatalf("Write(first) error = %v", err)
+	}
+	if _, err := writer.Write(payload[split+1:]); err != nil {
+		t.Fatalf("Write(second) error = %v", err)
+	}
+	if got := sink.String(); got != "好" {
+		t.Fatalf("streamed speech = %q", got)
+	}
+}
+
+func TestSpeechTextStreamWriterIgnoresNestedField(t *testing.T) {
+	var sink strings.Builder
+	writer := NewSpeechTextStreamWriter(&sink, "speech_text")
+	payload := `{"metadata":{"speech_text":"不要播报, {bad}"},"speech_text":"播报这个。","output":"ignored"}`
+	if _, err := writer.Write([]byte(payload)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if got := sink.String(); got != "播报这个。" {
+		t.Fatalf("streamed speech = %q", got)
+	}
+}
+
+func TestFinalizeSpeechOutputParsesStructuredAnswer(t *testing.T) {
+	raw := `{"speech_text":"短口播。","output":"完整回答。\n\n保留给屏幕。"}`
+	output, speech := finalizeSpeechOutput(raw, Config{})
+	if output != "完整回答。\n\n保留给屏幕。" {
+		t.Fatalf("output = %q", output)
+	}
+	if speech != "短口播。" {
+		t.Fatalf("speech = %q", speech)
+	}
+}
