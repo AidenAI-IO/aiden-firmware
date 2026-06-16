@@ -124,6 +124,7 @@ If a tap does not work:
 
 If a swipe does not work:
 
+- Directional `touch_gesture` swipe names describe finger movement, not the content you want to reveal: `swipe_up` moves the finger up and usually scrolls the viewport down to lower/newer items; `swipe_down` moves the finger down and usually scrolls the viewport up to upper/older items. In chat/message history, to see older messages above the current viewport, use `swipe_down` from inside the message list.
 - If the target is a partial scrollable region (picker, embedded list, modal, or in-page scroll area), place both start and end points well inside the visible bounds of that region. A gesture that starts on a fixed header, bottom navigation bar, or outside the scrollable area will be consumed by the outer container and the inner control will not move.
 - For list scrolling and search results, use calibrated strength:
   1. Start with `strength: "medium"` and take a screenshot immediately after.
