@@ -326,7 +326,19 @@ skillOptTargets.forEach(function(x){skillOptTargetBySkill[x.skill]=x});
 populateSkillSelectFromTargets();
 syncSkillOptSuites();
 loadStatus();
-}).catch(function(e){skillCount=0;benchmarkSuiteCount=0;logPanelError('Load SkillOpt targets failed',e)});
+}).catch(function(e){
+skillOptTargets=[];
+skillOptTargetBySkill={};
+suiteIndex={};
+skillCount=0;
+benchmarkSuiteCount=0;
+document.getElementById('skillSelect').innerHTML='<option value="">(failed to load skills)</option>';
+document.getElementById('suiteSelect').innerHTML='<option value="">(failed to load train suites)</option>';
+document.getElementById('validationSuiteSelect').innerHTML='<option value="">(failed to load verification suites)</option>';
+syncDelBtn();syncRunButtons();
+loadStatus();
+logPanelError('Load SkillOpt targets failed',e);
+});
 }
 function populateSkillSelectFromTargets(){
 var sel=document.getElementById('skillSelect');
@@ -478,7 +490,9 @@ payload.train_suite=aidenSuiteName(item,key);
 payload.validation_suite=aidenSuiteName(validationItem,validationKey);
 payload.budget=Number(document.getElementById('budgetInput').value)||10;
 payload.edit_budget=Number(document.getElementById('editBudgetInput').value)||4;
-payload.min_delta=Number(document.getElementById('minDeltaInput').value)||0.03;
+var minDeltaRaw=document.getElementById('minDeltaInput').value;
+var minDelta=Number(minDeltaRaw);
+payload.min_delta=(minDeltaRaw===''||!Number.isFinite(minDelta))?0.03:minDelta;
 } else {
 var selected=selectedBenchmarkSuites();
 if(!selected.length){alert('Select a suite');return}

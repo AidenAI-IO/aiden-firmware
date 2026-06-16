@@ -147,7 +147,7 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		ValidationSuite   string   `json:"validation_suite"`
 		Budget            int      `json:"budget"`
 		EditBudget        int      `json:"edit_budget"`
-		MinDelta          float64  `json:"min_delta"`
+		MinDelta          *float64 `json:"min_delta"`
 		OptimizerModel    string   `json:"optimizer_model"`
 		SkillOptBackend   string   `json:"skillopt_backend"`
 		MobileGymParallel int      `json:"mobilegym_parallel"`
@@ -312,12 +312,13 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		if req.EditBudget <= 0 {
 			req.EditBudget = 4
 		}
-		if req.MinDelta < 0 {
-			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "min_delta must be non-negative")
-			return
-		}
-		if req.MinDelta == 0 {
-			req.MinDelta = 0.03
+		minDelta := 0.03
+		if req.MinDelta != nil {
+			if *req.MinDelta < 0 {
+				s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "min_delta must be non-negative")
+				return
+			}
+			minDelta = *req.MinDelta
 		}
 		apiKey := ""
 		judge := defaultBenchmarkJudgeModel
@@ -342,7 +343,8 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 		if optimizer == "" {
 			optimizer = defaultSkillOptOptimizerModel
 		}
-		runID := "skillopt-" + time.Now().UTC().Format("2006-01-02_150405")
+		now := time.Now().UTC()
+		runID := fmt.Sprintf("skillopt-%s-%09d", now.Format("2006-01-02_150405"), now.UnixNano()%1_000_000_000)
 		spec := benchmarkSkillOptLaunchSpec{
 			RunID:             runID,
 			Skill:             req.Skill,
@@ -351,7 +353,7 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 			ValidationSuite:   req.ValidationSuite,
 			Budget:            req.Budget,
 			EditBudget:        req.EditBudget,
-			MinDelta:          req.MinDelta,
+			MinDelta:          minDelta,
 			MobileGymParallel: mobileGymParallel,
 		}
 		stateJSON, _ := json.Marshal(map[string]any{
@@ -413,7 +415,7 @@ func validSkillOptSuiteForSkill(skill, suite string) bool {
 }
 
 func (s *Server) launchSkillOptRunner(spec benchmarkSkillOptLaunchSpec, optimizerModel, judgeModel, openRouterAPIKey, agentModel, skillsDir string) error {
-	script, err := buildSkillOptLaunchScript(s.benchmarkDir, spec, optimizerModel, judgeModel, openRouterAPIKey, agentModel, skillsDir)
+	script, err := buildSkillOptLaunchScriptWithStatePath(s.benchmarkDir, s.benchmarkStateFile(), spec, optimizerModel, judgeModel, openRouterAPIKey, agentModel, skillsDir)
 	if err != nil {
 		return err
 	}
@@ -421,6 +423,10 @@ func (s *Server) launchSkillOptRunner(spec benchmarkSkillOptLaunchSpec, optimize
 }
 
 func buildSkillOptLaunchScript(benchmarkDir string, spec benchmarkSkillOptLaunchSpec, optimizerModel, judgeModel, openRouterAPIKey, agentModel, skillsDir string) (string, error) {
+	return buildSkillOptLaunchScriptWithStatePath(benchmarkDir, filepath.Join(benchmarkDir, "state.json"), spec, optimizerModel, judgeModel, openRouterAPIKey, agentModel, skillsDir)
+}
+
+func buildSkillOptLaunchScriptWithStatePath(benchmarkDir, statePath string, spec benchmarkSkillOptLaunchSpec, optimizerModel, judgeModel, openRouterAPIKey, agentModel, skillsDir string) (string, error) {
 	if sanitizeRunID(spec.RunID) != spec.RunID || spec.RunID == "" {
 		return "", fmt.Errorf("invalid run_id %q", spec.RunID)
 	}
@@ -462,7 +468,9 @@ func buildSkillOptLaunchScript(benchmarkDir string, spec benchmarkSkillOptLaunch
 	runDir := filepath.Join(runsDir, spec.RunID)
 	logPath := "/tmp/skillopt_run.log"
 	pidFile := "/tmp/benchmark_runner.pid"
-	statePath := filepath.Join(benchmarkDir, "state.json")
+	if strings.TrimSpace(statePath) == "" {
+		statePath = filepath.Join(benchmarkDir, "state.json")
+	}
 
 	envPrefix := fmt.Sprintf("export OPENROUTER_API_KEY=%s && ", shellQuote(openRouterAPIKey))
 	if strings.TrimSpace(skillsDir) != "" {

@@ -28,6 +28,7 @@ from runner.skillopt.backends import AidenDeviceBackend, SkillOptRolloutBackend
 from runner.skillopt.mobilegym_backend import MobileGymBackend
 from runner.skillopt.optimizer_client import OptimizerConfig
 from runner.skillopt.orchestrator import optimize_skill, OptimizationConfig
+from runner.skillopt.types import OptimizationResult
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -300,17 +301,18 @@ def cli(argv: list[str] | None = None) -> int:
         output_path.write_text(result.best_skill, encoding="utf-8")
         print(f"Best skill written to: {output_path}")
 
-    _write_web_artifacts(
-        cfg=cfg,
-        result=result,
-        original_skill=original_skill,
-        diff_text=diff_text,
-        optimizer_model=args.optimizer_model,
-        judge_model=None if args.no_judge else args.judge_model,
-        train_suite_label=args.train_suite or args.suite or "",
-        selection_suite_label=args.selection_suite or args.suite or "",
-        backend=args.backend,
-    )
+    if not args.dry_run:
+        _write_web_artifacts(
+            cfg=cfg,
+            result=result,
+            original_skill=original_skill,
+            diff_text=diff_text,
+            optimizer_model=args.optimizer_model,
+            judge_model=None if args.no_judge else args.judge_model,
+            train_suite_label=args.train_suite or args.suite or "",
+            selection_suite_label=args.selection_suite or args.suite or "",
+            backend=args.backend,
+        )
 
     return 0 if result.best_score > result.initial_score else 1
 

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -411,6 +412,10 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		`function loadSkills()`,
 		`function loadSkillOptTargets()`,
 		`function syncSkillOptSuites()`,
+		`skillOptTargets=[];`,
+		`skillOptTargetBySkill={};`,
+		`document.getElementById('suiteSelect').innerHTML='<option value="">(failed to load train suites)</option>';`,
+		`syncDelBtn();syncRunButtons();`,
 		`/benchmark/skills`,
 		`/benchmark/skillopt-targets`,
 		`payload.mode='skillopt';`,
@@ -419,6 +424,7 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		`payload.skill=`,
 		`payload.train_suite=`,
 		`payload.validation_suite=`,
+		`payload.min_delta=(minDeltaRaw===''||!Number.isFinite(minDelta))?0.03:minDelta;`,
 		`Start the Mac MobileGym launcher first`,
 		`id="startLauncherBtn"`,
 		`function startMobileGymLauncher()`,
@@ -661,6 +667,66 @@ func TestHandleBenchmarkRun_SkillOptMode(t *testing.T) {
 		if !strings.Contains(state, want) {
 			t.Fatalf("state missing %s: %s", want, state)
 		}
+	}
+}
+
+func TestHandleBenchmarkRun_SkillOptPreservesExplicitZeroMinDelta(t *testing.T) {
+	root := t.TempDir()
+	skillsDir := filepath.Join(root, "skills")
+	writeBenchmarkSkill(t, skillsDir, "device-operator")
+	capturedMinDelta := 1.0
+	s := &Server{
+		runtime: &Runtime{config: Config{
+			Benchmark:  BenchmarkConfig{APIKey: "sk-judge"},
+			SkillsDirs: []string{skillsDir},
+		}},
+		benchmarkDir: root,
+		benchmarkSkillOptLauncher: func(spec benchmarkSkillOptLaunchSpec, optimizerModel, judgeModel, apiKey, agentModel, gotSkillsDir string) error {
+			capturedMinDelta = spec.MinDelta
+			return nil
+		},
+	}
+
+	body := `{"mode":"skillopt","skill":"device-operator","train_suite":"skillopt/device-operator/device_operator_train","validation_suite":"skillopt/device-operator/device_operator_verification","min_delta":0}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run", strings.NewReader(body))
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if capturedMinDelta != 0 {
+		t.Fatalf("min_delta = %g, want explicit zero", capturedMinDelta)
+	}
+}
+
+func TestHandleBenchmarkRun_SkillOptRunIDHasCollisionResistantSuffix(t *testing.T) {
+	root := t.TempDir()
+	skillsDir := filepath.Join(root, "skills")
+	writeBenchmarkSkill(t, skillsDir, "device-operator")
+	capturedRunID := ""
+	s := &Server{
+		runtime: &Runtime{config: Config{
+			Benchmark:  BenchmarkConfig{APIKey: "sk-judge"},
+			SkillsDirs: []string{skillsDir},
+		}},
+		benchmarkDir: root,
+		benchmarkSkillOptLauncher: func(spec benchmarkSkillOptLaunchSpec, optimizerModel, judgeModel, apiKey, agentModel, gotSkillsDir string) error {
+			capturedRunID = spec.RunID
+			return nil
+		},
+	}
+
+	body := `{"mode":"skillopt","skill":"device-operator","train_suite":"skillopt/device-operator/device_operator_train","validation_suite":"skillopt/device-operator/device_operator_verification"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/benchmark/run", strings.NewReader(body))
+	s.handleBenchmarkRun(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !regexp.MustCompile(`^skillopt-\d{4}-\d{2}-\d{2}_\d{6}-.+$`).MatchString(capturedRunID) {
+		t.Fatalf("run_id %q does not include a collision-resistant suffix", capturedRunID)
 	}
 }
 
@@ -1478,6 +1544,56 @@ func TestBuildSkillOptLaunchScript(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Errorf("launch script missing %q: %s", want, script)
 		}
+	}
+}
+
+func TestLaunchSkillOptRunnerUsesBenchmarkStateFile(t *testing.T) {
+	root := t.TempDir()
+	capturePath := filepath.Join(root, "captured-script.txt")
+	fakeSh := filepath.Join(root, "sh")
+	if err := os.WriteFile(fakeSh, []byte("#!/usr/bin/env bash\nprintf '%s' \"$2\" > \"$CAPTURE_SCRIPT\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CAPTURE_SCRIPT", capturePath)
+
+	s := &Server{
+		benchmarkDir:       "/bench",
+		benchmarkStatePath: "/custom/state.json",
+	}
+	err := s.launchSkillOptRunner(benchmarkSkillOptLaunchSpec{
+		RunID:             "skillopt-2026-06-15_120000-000000001",
+		Skill:             "device-operator",
+		Backend:           "device",
+		TrainSuite:        deviceOperatorTrainSuite,
+		ValidationSuite:   deviceOperatorVerificationSuite,
+		Budget:            2,
+		EditBudget:        3,
+		MinDelta:          0.02,
+		MobileGymParallel: 1,
+	}, "optimizer/model", "judge/model", "sk-test", "agent/model", "/bench/config/skills")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var script string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(capturePath)
+		if err == nil {
+			script = string(data)
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if script == "" {
+		t.Fatalf("fake shell did not capture launch script")
+	}
+	if !strings.Contains(script, "'/custom/state.json'") {
+		t.Fatalf("script should write idle state to custom state path: %s", script)
+	}
+	if strings.Contains(script, "'/bench/state.json'") {
+		t.Fatalf("script should not hardcode benchmarkDir state path: %s", script)
 	}
 }
 

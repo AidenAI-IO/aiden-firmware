@@ -56,15 +56,25 @@ class MobileGymBackend:
             command = ["./parallel_run.sh", "--aiden-suite", suite_label]
             if tasks:
                 command.extend(["--aiden-task-ids", ",".join(task.id for task in tasks)])
-            result = subprocess.run(
-                command,
-                cwd=self.benchmark_root / "mobilegym" / "docker",
-                env=self._run_env(source_config, batch_id),
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
+            timeout_sec = int(self.env.get(
+                "MOBILEGYM_RUN_TIMEOUT_SEC",
+                os.environ.get("MOBILEGYM_RUN_TIMEOUT_SEC", "3600"),
+            ))
+            try:
+                result = subprocess.run(
+                    command,
+                    cwd=self.benchmark_root / "mobilegym" / "docker",
+                    env=self._run_env(source_config, batch_id),
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=timeout_sec,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(
+                    f"MobileGym runner timed out after {timeout_sec}s (batch_dir={batch_dir})"
+                ) from exc
 
         if result.returncode != 0 and not _has_readable_task_rows(batch_dir):
             raise RuntimeError(
@@ -96,7 +106,10 @@ class MobileGymBackend:
         if target_skills.exists():
             shutil.rmtree(target_skills)
         shutil.copytree(self.shared_skills_dir, target_skills)
-        skill_dir = target_skills / skill_name
+        skills_root = target_skills.resolve()
+        skill_dir = (skills_root / skill_name).resolve()
+        if skill_dir == skills_root or not skill_dir.is_relative_to(skills_root):
+            raise ValueError(f"invalid skill_name: {skill_name!r}")
         skill_dir.mkdir(parents=True, exist_ok=True)
         (skill_dir / "SKILL.md").write_text(skill_text, encoding="utf-8")
 

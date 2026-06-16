@@ -595,7 +595,7 @@ def _validate_selection(args: argparse.Namespace) -> None:
 def _filter_aiden_tasks(tasks: list[Any], raw_ids: str) -> list[Any]:
     requested = [part.strip() for part in raw_ids.split(",") if part.strip()]
     if not requested:
-        return tasks
+        raise LauncherError("--aiden-task-ids must include at least one non-empty id")
     requested_set = set(requested)
     found: set[str] = set()
     selected = []

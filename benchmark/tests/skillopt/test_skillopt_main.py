@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import typing
 
 import pytest
 
@@ -182,6 +183,47 @@ def test_cli_writes_run_artifacts_for_web_report(monkeypatch, tmp_path: Path):
     assert "-original skill" in (run_dir / "diff.patch").read_text(encoding="utf-8")
     assert "+optimized skill" in (run_dir / "diff.patch").read_text(encoding="utf-8")
     assert "SkillOpt Report" in (run_dir / "report.html").read_text(encoding="utf-8")
+
+
+def test_cli_dry_run_does_not_write_output_or_web_artifacts(monkeypatch, tmp_path: Path):
+    skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("original skill\n", encoding="utf-8")
+    _write_device_operator_suites(tmp_path)
+    artifact_root = tmp_path / "benchmark" / "runs"
+    output_path = tmp_path / "optimized.md"
+
+    def fake_optimize_skill(cfg):
+        return OptimizationResult(
+            skill_name=cfg.skill_name,
+            initial_score=0.0,
+            best_score=1.0,
+            best_skill="optimized skill\n",
+        )
+
+    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
+    monkeypatch.setattr(main, "AidenDeviceBackend", FakeDeviceBackend, raising=False)
+
+    rc = main.cli([
+        "--skill", "device-operator",
+        "--train-suite", TRAIN_LABEL,
+        "--validation-suite", VERIFICATION_LABEL,
+        "--artifact-root", str(artifact_root),
+        "--run-id", "skillopt-dry-run",
+        "--output", str(output_path),
+        "--dry-run",
+    ])
+
+    assert rc == 0
+    assert not output_path.exists()
+    assert not (artifact_root / "skillopt-dry-run").exists()
+
+
+def test_web_artifact_type_hints_resolve():
+    hints = typing.get_type_hints(main._write_web_artifacts)
+
+    assert hints["result"] is OptimizationResult
 
 
 @pytest.mark.parametrize("skill", ["../device-operator", ".", ".."])

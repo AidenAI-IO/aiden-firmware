@@ -226,6 +226,16 @@ def test_filter_aiden_tasks_accepts_short_and_full_task_ids():
         module._filter_aiden_tasks(tasks, "missing_case")
 
 
+def test_filter_aiden_tasks_rejects_empty_parsed_ids():
+    module = load_run_aiden_module()
+    tasks = [
+        module.MobileGymTaskAdapter(task_id="device_operator_train.case_one", instruction="one", metadata={}),
+    ]
+
+    with pytest.raises(module.LauncherError, match="at least one non-empty id"):
+        module._filter_aiden_tasks(tasks, " , , \t")
+
+
 def test_mobilegym_task_adapter_evaluate_uses_runner_action_response_when_metadata_is_empty():
     module = load_run_aiden_module()
     task = module.MobileGymTaskAdapter(

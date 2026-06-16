@@ -520,9 +520,13 @@ run_worker() {
 
     set +e
     if [[ "$kind" == "aiden_suite" ]]; then
+        local -a aiden_task_id_args=()
+        if [[ -n "$AIDEN_TASK_IDS" ]]; then
+            aiden_task_id_args+=(--aiden-task-ids "$AIDEN_TASK_IDS")
+        fi
         compose_for_worker "$project" "$config_dir" --profile test run --rm test \
             --aiden-suite "$suite" \
-            ${AIDEN_TASK_IDS:+--aiden-task-ids "$AIDEN_TASK_IDS"} \
+            ${aiden_task_id_args[@]+"${aiden_task_id_args[@]}"} \
             --shard-index "$shard_index" \
             --shard-count "$shard_count" \
             --env-url http://mobilegym:4173 \

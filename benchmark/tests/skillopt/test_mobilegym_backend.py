@@ -56,8 +56,8 @@ def test_mobilegym_backend_injects_candidate_skill_and_preserves_env(monkeypatch
     shared_skills = _write_shared_skills(tmp_path)
     captured = {}
 
-    def fake_run(command, *, cwd, env, text, stdout, stderr, check):
-        del text, stdout, stderr, check
+    def fake_run(command, *, cwd, env, text, stdout, stderr, check, timeout):
+        del text, stdout, stderr, check, timeout
         source_config = Path(env["AIDEN_SOURCE_CONFIG_DIR"])
         captured["command"] = command
         captured["cwd"] = cwd
@@ -111,6 +111,91 @@ def test_mobilegym_backend_injects_candidate_skill_and_preserves_env(monkeypatch
     assert captured["skill_text"] == "candidate skill"
     assert captured["batch_dir"] == benchmark_root / "runs" / "mobilegym" / "run-1-step_01_train"
     assert (benchmark_root / "mobilegym" / "config" / "skills" / "device-operator" / "SKILL.md").read_text(encoding="utf-8") == "template skill"
+
+
+def test_mobilegym_backend_passes_subprocess_timeout(monkeypatch, tmp_path: Path):
+    from runner.skillopt import mobilegym_backend
+
+    benchmark_root = tmp_path / "benchmark"
+    _write_mobilegym_config(benchmark_root)
+    shared_skills = _write_shared_skills(tmp_path)
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(mobilegym_backend.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        mobilegym_backend.mobilegym_results,
+        "load_aiden_suite_rollouts",
+        lambda **kwargs: [RolloutResult(id="case_one", hard=1, soft=1.0)],
+    )
+    backend = mobilegym_backend.MobileGymBackend(
+        benchmark_root=benchmark_root,
+        shared_skills_dir=shared_skills,
+        env={"MOBILEGYM_RUN_TIMEOUT_SEC": "12"},
+    )
+
+    backend.run_rollout(
+        suite=_suite(benchmark_root),
+        tasks=[_task()],
+        skill_name="device-operator",
+        skill_path=shared_skills / "device-operator" / "SKILL.md",
+        skill_text="candidate skill",
+        phase="phase",
+        run_id="run-1",
+        run_root=tmp_path / "runs" / "run-1",
+        judge_cfg=None,
+    )
+
+    assert captured["timeout"] == 12
+
+
+def test_mobilegym_backend_wraps_subprocess_timeout(monkeypatch, tmp_path: Path):
+    from runner.skillopt import mobilegym_backend
+
+    benchmark_root = tmp_path / "benchmark"
+    _write_mobilegym_config(benchmark_root)
+    shared_skills = _write_shared_skills(tmp_path)
+
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+
+    monkeypatch.setattr(mobilegym_backend.subprocess, "run", fake_run)
+    backend = mobilegym_backend.MobileGymBackend(
+        benchmark_root=benchmark_root,
+        shared_skills_dir=shared_skills,
+        env={"MOBILEGYM_RUN_TIMEOUT_SEC": "12"},
+    )
+
+    with pytest.raises(RuntimeError, match="timed out after 12s"):
+        backend.run_rollout(
+            suite=_suite(benchmark_root),
+            tasks=[_task()],
+            skill_name="device-operator",
+            skill_path=shared_skills / "device-operator" / "SKILL.md",
+            skill_text="candidate skill",
+            phase="phase",
+            run_id="run-1",
+            run_root=tmp_path / "runs" / "run-1",
+            judge_cfg=None,
+        )
+
+
+def test_prepare_source_config_rejects_skill_name_escape(tmp_path: Path):
+    from runner.skillopt import mobilegym_backend
+
+    benchmark_root = tmp_path / "benchmark"
+    _write_mobilegym_config(benchmark_root)
+    shared_skills = _write_shared_skills(tmp_path)
+    backend = mobilegym_backend.MobileGymBackend(benchmark_root=benchmark_root, shared_skills_dir=shared_skills)
+    source_config = tmp_path / "source-config"
+
+    with pytest.raises(ValueError, match="invalid skill_name"):
+        backend._prepare_source_config(source_config, "../evil", "candidate skill")
+
+    assert not (source_config / "evil" / "SKILL.md").exists()
 
 
 def test_mobilegym_backend_nonzero_without_rows_raises(monkeypatch, tmp_path: Path):
