@@ -502,6 +502,20 @@ TEST_CASE("config web tolerates metadata fields without rendered controls") {
     CHECK(html.find("if(!el)return;const raw=el.value;") != std::string::npos);
 }
 
+TEST_CASE("config web preserves loaded secret values when password inputs are left blank") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("const values=Object.assign({},(appState.config&&appState.config[section])||{});") != std::string::npos);
+    CHECK(html.find("if(el.type==='password'&&raw===''){return;}") != std::string::npos);
+    CHECK(html.find("if(el.type==='password'&&raw===''){delete values[key];return;}") == std::string::npos);
+}
+
 
 TEST_CASE("config web updates dependent field visibility from selected values") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";

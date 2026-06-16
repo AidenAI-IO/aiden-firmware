@@ -299,6 +299,54 @@ func TestStartWakeupWatchersRegistersGPIO32And33Callbacks(t *testing.T) {
 	}
 }
 
+func TestShouldRunConsoleAudioLoopSkipsManualModeWithoutInteractiveStdin(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfg         agent.Config
+		interactive bool
+		want        bool
+	}{
+		{
+			name:        "stt manual without terminal",
+			cfg:         agent.Config{InputMode: "stt", TriggerMode: "manual"},
+			interactive: false,
+			want:        false,
+		},
+		{
+			name:        "audio default manual without terminal",
+			cfg:         agent.Config{InputMode: "audio"},
+			interactive: false,
+			want:        false,
+		},
+		{
+			name:        "stt manual with terminal",
+			cfg:         agent.Config{InputMode: "stt", TriggerMode: "manual"},
+			interactive: true,
+			want:        true,
+		},
+		{
+			name:        "stt wakeup without terminal",
+			cfg:         agent.Config{InputMode: "stt", TriggerMode: "wakeup"},
+			interactive: false,
+			want:        true,
+		},
+		{
+			name:        "text mode never runs audio loop",
+			cfg:         agent.Config{InputMode: "text", TriggerMode: "manual"},
+			interactive: true,
+			want:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldRunConsoleAudioLoop(tt.cfg, tt.interactive); got != tt.want {
+				t.Fatalf("shouldRunConsoleAudioLoop() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProcessAudioUntilUtteranceUsesConfiguredFrameSizeAndCarriesOddPCMByte(t *testing.T) {
 	dialog := &fakeAudioDialog{
 		frameSamples: 2,
