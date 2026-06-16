@@ -9,6 +9,116 @@ SLEEP_BIN=${SLEEP_BIN:-sleep}
 WAIT_TIMEOUT=${WAIT_TIMEOUT:-}
 USERDATA_REQUIRE_MOUNT=${USERDATA_REQUIRE_MOUNT:-1}
 MOUNTS_PATH=${MOUNTS_PATH:-/proc/mounts}
+PID_PATH=${PID_PATH:-/var/run/ota-health.pid}
+LOCK_DIR=${LOCK_DIR:-/var/run/ota-health.lock}
+ACTIVE_CHILD_PID_PATH=${ACTIVE_CHILD_PID_PATH:-${PID_PATH}.child}
+STOP_TIMEOUT=${STOP_TIMEOUT:-5}
+STOP_SLEEP_BIN=${STOP_SLEEP_BIN:-sleep}
+
+runtime_dir() {
+    dirname "$PID_PATH"
+}
+
+prepare_runtime_dir() {
+    dir="$(runtime_dir)"
+    mkdir -p "$dir" || return 1
+    chmod 0755 "$dir"
+}
+
+read_pid_file() {
+    path="$1"
+    [ -f "$path" ] || return 1
+    IFS= read -r pid < "$path" || return 1
+    case "$pid" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s\n' "$pid"
+}
+
+read_worker_pid() {
+    read_pid_file "$PID_PATH"
+}
+
+running_worker_pid() {
+    pid="$(read_worker_pid)" || return 1
+    if kill -0 "$pid" 2>/dev/null; then
+        printf '%s\n' "$pid"
+        return 0
+    fi
+    rm -f "$PID_PATH"
+    return 1
+}
+
+active_child_pid() {
+    pid="$(read_pid_file "$ACTIVE_CHILD_PID_PATH")" || return 1
+    if kill -0 "$pid" 2>/dev/null; then
+        printf '%s\n' "$pid"
+        return 0
+    fi
+    rm -f "$ACTIVE_CHILD_PID_PATH"
+    return 1
+}
+
+wait_for_pid_exit() {
+    pid="$1"
+    timeout="$2"
+    waited=0
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$waited" -ge "$timeout" ]; then
+            return 1
+        fi
+        "$STOP_SLEEP_BIN" 1
+        waited=$((waited + 1))
+    done
+    return 0
+}
+
+terminate_pid() {
+    pid="$1"
+    kill "$pid" 2>/dev/null || return 0
+    if ! wait_for_pid_exit "$pid" "$STOP_TIMEOUT"; then
+        kill -KILL "$pid" 2>/dev/null || true
+        wait_for_pid_exit "$pid" 1 || true
+    fi
+}
+
+terminate_active_child() {
+    if child_pid="$(active_child_pid)"; then
+        terminate_pid "$child_pid"
+    fi
+    rm -f "$ACTIVE_CHILD_PID_PATH"
+}
+
+write_worker_pid() {
+    pid="$1"
+    tmp="${PID_PATH}.$$"
+    echo "$pid" > "$tmp" || return 1
+    mv "$tmp" "$PID_PATH" || {
+        rm -f "$tmp"
+        return 1
+    }
+}
+
+cleanup_worker_runtime() {
+    rm -f "$PID_PATH"
+    rm -f "$ACTIVE_CHILD_PID_PATH"
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+}
+
+run_child() {
+    "$@" &
+    child_pid="$!"
+    if ! echo "$child_pid" > "$ACTIVE_CHILD_PID_PATH"; then
+        kill "$child_pid" 2>/dev/null || true
+        wait "$child_pid" 2>/dev/null || true
+        return 1
+    fi
+
+    wait "$child_pid"
+    status="$?"
+    rm -f "$ACTIVE_CHILD_PID_PATH"
+    return "$status"
+}
 
 wait_for_existing_path() {
     path="$1"
@@ -20,7 +130,7 @@ wait_for_existing_path() {
             return 1
         fi
         echo "[ota] waiting for $path" >> "$LOG_PATH"
-        "$SLEEP_BIN" 1
+        run_child "$SLEEP_BIN" 1
         waited=$((waited + 1))
     done
     return 0
@@ -46,7 +156,7 @@ wait_for_userdata_ready() {
             return 1
         fi
         echo "[ota] waiting for userdata mount: $USERDATA_DIR" >> "$LOG_PATH"
-        "$SLEEP_BIN" 1
+        run_child "$SLEEP_BIN" 1
         waited=$((waited + 1))
     done
     return 0
@@ -62,7 +172,7 @@ wait_for_executable() {
             return 1
         fi
         echo "[ota] waiting for $path" >> "$LOG_PATH"
-        "$SLEEP_BIN" 1
+        run_child "$SLEEP_BIN" 1
         waited=$((waited + 1))
     done
     return 0
@@ -80,39 +190,113 @@ run_health_once() {
     wait_for_executable "$OTA_BIN" "ota binary" || return 1
 
     echo "[ota] processing pending health" >> "$LOG_PATH"
-    "$ENV_RUN_BIN" "$OTA_BIN" health >> "$LOG_PATH" 2>&1
+    run_child "$ENV_RUN_BIN" "$OTA_BIN" health >> "$LOG_PATH" 2>&1
     status="$?"
     echo "[ota] health processing exited with status $status" >> "$LOG_PATH"
     return "$status"
 }
 
+worker_signal() {
+    terminate_active_child
+    cleanup_worker_runtime
+    exit 143
+}
+
+run_health_worker() {
+    trap worker_signal INT TERM
+
+    if run_health_once; then
+        echo "[ota] one-shot health complete" >> "$LOG_PATH"
+        cleanup_worker_runtime
+        exit 0
+    else
+        status="$?"
+        echo "[ota] one-shot health failed with status $status" >> "$LOG_PATH"
+        cleanup_worker_runtime
+        exit "$status"
+    fi
+}
+
 start() {
-    (
-        if run_health_once; then
-            echo "[ota] one-shot health complete" >> "$LOG_PATH"
-        else
-            status="$?"
-            echo "[ota] one-shot health failed with status $status" >> "$LOG_PATH"
-            exit "$status"
+    prepare_runtime_dir || return 1
+
+    if pid="$(running_worker_pid)"; then
+        echo "ota health already running (pid $pid)"
+        return 0
+    fi
+
+    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+        if pid="$(running_worker_pid)"; then
+            echo "ota health already running (pid $pid)"
+            return 0
         fi
-    ) &
-    echo "Started ota health"
+        echo "ota health start is already in progress"
+        return 0
+    fi
+
+    run_health_worker &
+    worker_pid="$!"
+    if ! write_worker_pid "$worker_pid"; then
+        kill "$worker_pid" 2>/dev/null || true
+        cleanup_worker_runtime
+        echo "failed to record ota health pid" >&2
+        return 1
+    fi
+
+    if ! kill -0 "$worker_pid" 2>/dev/null; then
+        cleanup_worker_runtime
+    fi
+
+    echo "Started ota health (pid $worker_pid)"
     return 0
 }
 
 stop() {
-    echo "ota health is one-shot"
+    if ! pid="$(running_worker_pid)"; then
+        cleanup_worker_runtime
+        echo "ota health is not running"
+        return 0
+    fi
+
+    kill "$pid" 2>/dev/null || {
+        cleanup_worker_runtime
+        echo "ota health is not running"
+        return 0
+    }
+    terminate_active_child
+
+    if ! wait_for_pid_exit "$pid" "$STOP_TIMEOUT"; then
+        kill -KILL "$pid" 2>/dev/null || true
+        terminate_active_child
+        wait_for_pid_exit "$pid" 1 || true
+    fi
+    terminate_active_child
+
+    cleanup_worker_runtime
+    echo "Stopped ota health"
 }
 
 status() {
-    echo "ota=one-shot"
+    if pid="$(running_worker_pid)"; then
+        echo "ota=running pid=$pid"
+    elif [ -d "$LOCK_DIR" ]; then
+        echo "ota=starting"
+    else
+        echo "ota=idle"
+    fi
     if [ -f "$LOG_PATH" ]; then
         tail -n 20 "$LOG_PATH"
     fi
 }
 
+restart() {
+    stop >/dev/null
+    start
+}
+
 case "${1:-}" in
-    start|restart|reload) start ;;
+    start) start ;;
+    restart|reload) restart ;;
     stop) stop ;;
     status) status ;;
     *) echo "Usage: $0 {start|stop|restart|reload|status}" >&2; exit 1 ;;

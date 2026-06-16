@@ -12,11 +12,27 @@ fi
 TMP_DIR=$(mktemp -d)
 LATE_TMP_DIR=
 MOUNT_TMP_DIR=
-trap 'rm -rf "$TMP_DIR" "$LATE_TMP_DIR" "$MOUNT_TMP_DIR"' EXIT INT TERM
+PENDING_TMP_DIR=
+LONG_TMP_DIR=
+LONG_OTA_PID_FILE=
+
+cleanup() {
+    if [ -n "${LONG_OTA_PID_FILE:-}" ] && [ -f "$LONG_OTA_PID_FILE" ]; then
+        long_pid=$(cat "$LONG_OTA_PID_FILE")
+        case "$long_pid" in
+            ''|*[!0-9]*) ;;
+            *) kill "$long_pid" 2>/dev/null || true ;;
+        esac
+    fi
+    rm -rf "$TMP_DIR" "$LATE_TMP_DIR" "$MOUNT_TMP_DIR" "$PENDING_TMP_DIR" "$LONG_TMP_DIR"
+}
+trap cleanup EXIT INT TERM
 
 OTA_BIN="$TMP_DIR/ota"
 LOG_PATH="$TMP_DIR/ota.log"
 USERDATA_DIR="$TMP_DIR/userdata"
+MAIN_PID_PATH="$TMP_DIR/ota-health.pid"
+MAIN_LOCK_DIR="$TMP_DIR/ota-health.lock"
 
 cat > "$OTA_BIN" <<'EOF'
 #!/bin/sh
@@ -32,6 +48,8 @@ ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
 LOG_PATH="$LOG_PATH" \
 USERDATA_DIR="$USERDATA_DIR" \
 USERDATA_REQUIRE_MOUNT=0 \
+PID_PATH="$MAIN_PID_PATH" \
+LOCK_DIR="$MAIN_LOCK_DIR" \
 OTA_DAEMON_LOG="$TMP_DIR/daemon.args" \
 SLEEP_BIN=":" \
 WAIT_TIMEOUT=1 \
@@ -76,11 +94,192 @@ if ! grep -q 'health processing exited with status 0' "$LOG_PATH"; then
 fi
 
 status_output=$(
-    LOG_PATH="$LOG_PATH" "$SCRIPT" status
+    LOG_PATH="$LOG_PATH" \
+    PID_PATH="$MAIN_PID_PATH" \
+    LOCK_DIR="$MAIN_LOCK_DIR" \
+    "$SCRIPT" status
 )
-if ! printf '%s\n' "$status_output" | grep -q '^ota=one-shot$'; then
-    echo "ota status must report one-shot mode" >&2
+if ! printf '%s\n' "$status_output" | grep -q '^ota=idle$'; then
+    echo "ota status must report idle after the one-shot worker exits" >&2
     printf '%s\n' "$status_output" >&2
+    exit 1
+fi
+
+PENDING_TMP_DIR=$(mktemp -d)
+PENDING_OTA_BIN="$PENDING_TMP_DIR/missing-ota"
+PENDING_LOG_PATH="$PENDING_TMP_DIR/ota.log"
+PENDING_USERDATA_DIR="$PENDING_TMP_DIR/userdata"
+PENDING_PID_PATH="$PENDING_TMP_DIR/ota-health.pid"
+PENDING_LOCK_DIR="$PENDING_TMP_DIR/ota-health.lock"
+PENDING_SLEEP_BIN="$PENDING_TMP_DIR/sleep"
+PENDING_SLEEP_LOG="$PENDING_TMP_DIR/sleep.ppids"
+mkdir -p "$PENDING_USERDATA_DIR"
+cat > "$PENDING_SLEEP_BIN" <<'EOF'
+#!/bin/sh
+echo "$PPID" >> "$PENDING_SLEEP_LOG"
+sleep 1
+EOF
+chmod +x "$PENDING_SLEEP_BIN"
+
+OTA_BIN="$PENDING_OTA_BIN" \
+ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
+LOG_PATH="$PENDING_LOG_PATH" \
+USERDATA_DIR="$PENDING_USERDATA_DIR" \
+USERDATA_REQUIRE_MOUNT=0 \
+PID_PATH="$PENDING_PID_PATH" \
+LOCK_DIR="$PENDING_LOCK_DIR" \
+SLEEP_BIN="$PENDING_SLEEP_BIN" \
+WAIT_TIMEOUT=5 \
+PENDING_SLEEP_LOG="$PENDING_SLEEP_LOG" \
+"$SCRIPT" start >/dev/null
+
+deadline=$(( $(date +%s) + 5 ))
+while [ ! -s "$PENDING_SLEEP_LOG" ]; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "pending ota health worker did not enter wait loop" >&2
+        [ -f "$PENDING_LOG_PATH" ] && cat "$PENDING_LOG_PATH" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+OTA_BIN="$PENDING_OTA_BIN" \
+ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
+LOG_PATH="$PENDING_LOG_PATH" \
+USERDATA_DIR="$PENDING_USERDATA_DIR" \
+USERDATA_REQUIRE_MOUNT=0 \
+PID_PATH="$PENDING_PID_PATH" \
+LOCK_DIR="$PENDING_LOCK_DIR" \
+SLEEP_BIN="$PENDING_SLEEP_BIN" \
+WAIT_TIMEOUT=5 \
+PENDING_SLEEP_LOG="$PENDING_SLEEP_LOG" \
+"$SCRIPT" start >/dev/null
+
+sleep 1
+pending_worker_count=$(sort -u "$PENDING_SLEEP_LOG" | wc -l | tr -d ' ')
+if [ "$pending_worker_count" != "1" ]; then
+    echo "repeated ota start launched $pending_worker_count pending health workers" >&2
+    cat "$PENDING_SLEEP_LOG" >&2
+    exit 1
+fi
+
+pending_status=$(
+    LOG_PATH="$PENDING_LOG_PATH" \
+    PID_PATH="$PENDING_PID_PATH" \
+    LOCK_DIR="$PENDING_LOCK_DIR" \
+    "$SCRIPT" status
+)
+if ! printf '%s\n' "$pending_status" | grep -Eq '^ota=running pid=[0-9]+$'; then
+    echo "ota status must report the running pending health worker" >&2
+    printf '%s\n' "$pending_status" >&2
+    exit 1
+fi
+
+OTA_BIN="$PENDING_OTA_BIN" \
+ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
+LOG_PATH="$PENDING_LOG_PATH" \
+USERDATA_DIR="$PENDING_USERDATA_DIR" \
+USERDATA_REQUIRE_MOUNT=0 \
+PID_PATH="$PENDING_PID_PATH" \
+LOCK_DIR="$PENDING_LOCK_DIR" \
+SLEEP_BIN="$PENDING_SLEEP_BIN" \
+WAIT_TIMEOUT=5 \
+STOP_TIMEOUT=1 \
+PENDING_SLEEP_LOG="$PENDING_SLEEP_LOG" \
+"$SCRIPT" restart >/dev/null
+
+restarted_status=$(
+    LOG_PATH="$PENDING_LOG_PATH" \
+    PID_PATH="$PENDING_PID_PATH" \
+    LOCK_DIR="$PENDING_LOCK_DIR" \
+    "$SCRIPT" status
+)
+if ! printf '%s\n' "$restarted_status" | grep -Eq '^ota=running pid=[0-9]+$'; then
+    echo "ota restart must leave exactly one running pending health worker" >&2
+    printf '%s\n' "$restarted_status" >&2
+    exit 1
+fi
+restarted_pid=$(printf '%s\n' "$restarted_status" | sed -n 's/^ota=running pid=//p' | head -n 1)
+
+sleep 3
+recent_pending_workers=$(tail -n 2 "$PENDING_SLEEP_LOG" | sort -u | wc -l | tr -d ' ')
+if [ "$recent_pending_workers" != "1" ] ||
+   ! tail -n 2 "$PENDING_SLEEP_LOG" | grep -qx "$restarted_pid"; then
+    echo "ota restart left more than one active pending health worker" >&2
+    cat "$PENDING_SLEEP_LOG" >&2
+    exit 1
+fi
+
+LOG_PATH="$PENDING_LOG_PATH" \
+PID_PATH="$PENDING_PID_PATH" \
+LOCK_DIR="$PENDING_LOCK_DIR" \
+STOP_TIMEOUT=1 \
+"$SCRIPT" stop >/dev/null
+
+stopped_status=$(
+    LOG_PATH="$PENDING_LOG_PATH" \
+    PID_PATH="$PENDING_PID_PATH" \
+    LOCK_DIR="$PENDING_LOCK_DIR" \
+    "$SCRIPT" status
+)
+if ! printf '%s\n' "$stopped_status" | grep -q '^ota=idle$'; then
+    echo "ota status must report idle after stop" >&2
+    printf '%s\n' "$stopped_status" >&2
+    exit 1
+fi
+
+LONG_TMP_DIR=$(mktemp -d)
+LONG_OTA_BIN="$LONG_TMP_DIR/ota"
+LONG_LOG_PATH="$LONG_TMP_DIR/ota.log"
+LONG_USERDATA_DIR="$LONG_TMP_DIR/userdata"
+LONG_PID_PATH="$LONG_TMP_DIR/ota-health.pid"
+LONG_LOCK_DIR="$LONG_TMP_DIR/ota-health.lock"
+LONG_OTA_PID_FILE="$LONG_TMP_DIR/ota-process.pid"
+LONG_OTA_STARTED="$LONG_TMP_DIR/ota-started"
+mkdir -p "$LONG_USERDATA_DIR"
+cat > "$LONG_OTA_BIN" <<'EOF'
+#!/bin/sh
+echo "$$" > "$LONG_OTA_PID_FILE"
+: > "$LONG_OTA_STARTED"
+sleep 30 &
+child="$!"
+trap 'kill "$child" 2>/dev/null || true; exit 143' INT TERM
+wait "$child"
+EOF
+chmod +x "$LONG_OTA_BIN"
+
+OTA_BIN="$LONG_OTA_BIN" \
+ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
+LOG_PATH="$LONG_LOG_PATH" \
+USERDATA_DIR="$LONG_USERDATA_DIR" \
+USERDATA_REQUIRE_MOUNT=0 \
+PID_PATH="$LONG_PID_PATH" \
+LOCK_DIR="$LONG_LOCK_DIR" \
+LONG_OTA_PID_FILE="$LONG_OTA_PID_FILE" \
+LONG_OTA_STARTED="$LONG_OTA_STARTED" \
+"$SCRIPT" start >/dev/null
+
+deadline=$(( $(date +%s) + 5 ))
+while [ ! -f "$LONG_OTA_STARTED" ]; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "long-running ota health process did not start" >&2
+        [ -f "$LONG_LOG_PATH" ] && cat "$LONG_LOG_PATH" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+long_pid=$(cat "$LONG_OTA_PID_FILE")
+
+LOG_PATH="$LONG_LOG_PATH" \
+PID_PATH="$LONG_PID_PATH" \
+LOCK_DIR="$LONG_LOCK_DIR" \
+STOP_TIMEOUT=1 \
+"$SCRIPT" stop >/dev/null
+
+sleep 1
+if kill -0 "$long_pid" 2>/dev/null; then
+    echo "ota stop left the active ota health process running" >&2
     exit 1
 fi
 
@@ -88,6 +287,8 @@ LATE_TMP_DIR=$(mktemp -d)
 LATE_OTA_BIN="$LATE_TMP_DIR/ota"
 LATE_LOG_PATH="$LATE_TMP_DIR/ota.log"
 LATE_USERDATA_DIR="$LATE_TMP_DIR/userdata"
+LATE_PID_PATH="$LATE_TMP_DIR/ota-health.pid"
+LATE_LOCK_DIR="$LATE_TMP_DIR/ota-health.lock"
 mkdir -p "$LATE_USERDATA_DIR"
 
 MOUNT_TMP_DIR=$(mktemp -d)
@@ -95,6 +296,8 @@ MOUNT_OTA_BIN="$MOUNT_TMP_DIR/ota"
 MOUNT_LOG_PATH="$MOUNT_TMP_DIR/ota.log"
 MOUNT_USERDATA_DIR="$MOUNT_TMP_DIR/userdata"
 MOUNT_MOUNTS_PATH="$MOUNT_TMP_DIR/mounts"
+MOUNT_PID_PATH="$MOUNT_TMP_DIR/ota-health.pid"
+MOUNT_LOCK_DIR="$MOUNT_TMP_DIR/ota-health.lock"
 cat > "$MOUNT_OTA_BIN" <<'EOF'
 #!/bin/sh
 echo "$@" >> "$OTA_DAEMON_LOG"
@@ -109,6 +312,8 @@ ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
 LOG_PATH="$MOUNT_LOG_PATH" \
 USERDATA_DIR="$MOUNT_USERDATA_DIR" \
 MOUNTS_PATH="$MOUNT_MOUNTS_PATH" \
+PID_PATH="$MOUNT_PID_PATH" \
+LOCK_DIR="$MOUNT_LOCK_DIR" \
 OTA_DAEMON_LOG="$MOUNT_TMP_DIR/daemon.args" \
 SLEEP_BIN=":" \
 WAIT_TIMEOUT=1 \
@@ -135,6 +340,8 @@ ENV_RUN_BIN="$ROOT_DIR/overlay/oem/usr/bin/aiden-env-run" \
 LOG_PATH="$LATE_LOG_PATH" \
 USERDATA_DIR="$LATE_USERDATA_DIR" \
 USERDATA_REQUIRE_MOUNT=0 \
+PID_PATH="$LATE_PID_PATH" \
+LOCK_DIR="$LATE_LOCK_DIR" \
 OTA_DAEMON_LOG="$LATE_TMP_DIR/daemon.args" \
 SLEEP_BIN="sleep" \
 WAIT_TIMEOUT=5 \
