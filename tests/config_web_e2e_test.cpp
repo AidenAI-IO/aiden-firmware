@@ -537,6 +537,40 @@ TEST_CASE("config_web: POST /api/config preserves stored search api key when GET
     CHECK(saved.find("api_key = \"search-test-key\"") != std::string::npos);
 }
 
+TEST_CASE("config_web: config test accepts stored search api key when GET redacts it") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/config.json", resolved_config_json("brave", true));
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml",
+        "[search]\n"
+        "provider = \"brave\"\n"
+        "api_key = \"search-test-key\"\n");
+
+    HttpResponse get_resp = http_request(handle->port, "GET", "/api/config");
+    REQUIRE(get_resp.status == 200);
+    cJSON* parsed = cJSON_Parse(get_resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* search = cJSON_GetObjectItem(config, "search");
+    REQUIRE(search != nullptr);
+    char* search_text = cJSON_PrintUnformatted(search);
+    REQUIRE(search_text != nullptr);
+    std::string test_body = std::string("{\"section\":\"search\",\"values\":") + search_text + "}";
+    free(search_text);
+    cJSON_Delete(parsed);
+
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+    CHECK(test_resp.status == 200);
+    CHECK(test_resp.body.find("\"ok\":true") != std::string::npos);
+}
+
 TEST_CASE("config_web: GET /api/config reports invalid resolved config schema") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(

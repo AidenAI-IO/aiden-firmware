@@ -14,8 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mattn/go-isatty"
-
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/ota"
 )
@@ -134,8 +132,11 @@ func main() {
 }
 
 func stdinIsInteractive() bool {
-	fd := os.Stdin.Fd()
-	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
 }
 
 func shouldRunConsoleAudioLoop(cfg agent.Config, stdinInteractive bool) bool {

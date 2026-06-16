@@ -1268,6 +1268,61 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
     }
 }
 
+bool json_bool_value(cJSON* obj, const char* key) {
+    cJSON* item = cJSON_GetObjectItem(obj, key);
+    return json_is_bool(item) && json_is_type(item, cJSON_True);
+}
+
+bool json_has_nonempty_string(cJSON* obj, const char* key) {
+    cJSON* item = cJSON_GetObjectItem(obj, key);
+    return json_is_string(item) && !trim_copy(item->valuestring).empty();
+}
+
+void restore_redacted_secret(cJSON* values, const char* key, const std::string& stored_value) {
+    if (!values || stored_value.empty() || json_has_nonempty_string(values, key)) {
+        return;
+    }
+    const std::string has_key = std::string("has_") + key;
+    if (!json_bool_value(values, has_key.c_str())) {
+        return;
+    }
+    cJSON_DeleteItemFromObject(values, key);
+    cJSON_AddStringToObject(values, key, stored_value.c_str());
+}
+
+void merge_stored_config_test_secrets(const Options& options,
+                                      const std::string& section,
+                                      cJSON* values) {
+    if (!json_is_object(values)) {
+        return;
+    }
+
+    aiden::AgentToml stored;
+    std::string load_error;
+    if (!aiden::load_agent_toml(options.agent_config_path.c_str(), stored, &load_error)) {
+        return;
+    }
+
+    if (section == "model") {
+        restore_redacted_secret(values, "api_key", stored.model.api_key);
+    } else if (section == "model_text") {
+        restore_redacted_secret(values, "api_key", stored.model_text.api_key);
+    } else if (section == "tts") {
+        restore_redacted_secret(values, "api_key", stored.tts.api_key);
+    } else if (section == "stt") {
+        restore_redacted_secret(values, "api_key", stored.stt.api_key);
+        restore_redacted_secret(values, "secret_id", stored.stt.secret_id);
+        restore_redacted_secret(values, "secret_key", stored.stt.secret_key);
+    } else if (section == "benchmark") {
+        restore_redacted_secret(values, "api_key", stored.benchmark.api_key);
+    } else if (section == "search") {
+        restore_redacted_secret(values, "api_key", stored.search.api_key);
+    } else if (section == "telemetry") {
+        restore_redacted_secret(values, "public_key", stored.telemetry.public_key);
+        restore_redacted_secret(values, "secret_key", stored.telemetry.secret_key);
+    }
+}
+
 void load_current_wifi_config(const Options& options,
                               aiden::WifiNetworkConfig* config,
                               std::string* load_error) {
@@ -3118,6 +3173,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     load_system_env_proxy(options.system_env_path, &current_proxy);
     std::string curl_proxy_arg = build_curl_proxy_arg(current_proxy);
     std::string curl_env_exports = build_proxy_env_exports(current_proxy);
+    merge_stored_config_test_secrets(options, section, values);
 
     if (section == "model" || section == "tts" || section == "stt") {
         cJSON* provider_item = cJSON_GetObjectItem(values, "provider");
