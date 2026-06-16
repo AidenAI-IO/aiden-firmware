@@ -55,6 +55,12 @@ func TestKeyboardTapSchemaRequiresKeysArray(t *testing.T) {
 	if keys["type"] != "array" {
 		t.Fatalf("keys schema type = %#v, want array", keys["type"])
 	}
+	description, _ := keys["description"].(string)
+	for _, want := range []string{"Use backspace for ordinary text deletion", "delete is forward-delete"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("keys schema description missing %q: %s", want, description)
+		}
+	}
 	items := keys["items"].(map[string]any)
 	if items["type"] != "string" {
 		t.Fatalf("keys items type = %#v, want string", items["type"])
@@ -1204,7 +1210,7 @@ func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 
 func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	desc := (&TouchGestureTool{}).Description()
-	for _, want := range []string{`"back"`, `"home"`, "x=1", "y=999", "prefer quick_action first", "low-level fallback"} {
+	for _, want := range []string{`"back"`, `"home"`, "x=1", "y=999", "prefer quick_action first", "low-level fallback", "finger movement", "older messages", `not "swipe_up"`} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
@@ -1213,7 +1219,7 @@ func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 
 func TestKeyboardTapDescriptionDocumentsQuickActionFallback(t *testing.T) {
 	desc := (&KeyboardTapTool{}).Description()
-	for _, want := range []string{"prefer quick_action first", "low-level fallback", "custom key input"} {
+	for _, want := range []string{"prefer quick_action first", "delete backward/forward", "low-level fallback", "custom key input", "normal text deletion", "use backspace", "delete key is forward-delete"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}

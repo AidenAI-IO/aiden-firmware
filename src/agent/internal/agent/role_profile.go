@@ -38,6 +38,7 @@ type RoleProfiles struct {
 
 func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool, memoryContext interface{}) RoleProfiles {
 	roleMemory := normalizeMemoryContext(memoryContext)
+	openAppAvailable := roleToolAvailable(availableTools, "open_app")
 	return RoleProfiles{
 		Planner: buildRoleProfile(
 			RolePlanner,
@@ -46,7 +47,7 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 			plannerToolsForConfig(cfg, availableTools),
 			roleMemory.RenderForRole(RolePlanner),
 			RoleCapabilities{CanModifyPlan: !cfg.ForceSimpleLoop, CanUseTools: true},
-			plannerRoleRules(cfg),
+			plannerRoleRules(cfg, openAppAvailable),
 		),
 		Executor: buildRoleProfile(
 			RoleExecutor,
@@ -71,17 +72,34 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 				"For platform-specific tools such as quick_action, use the platform shown in World State (ios/android/mac) and pass it explicitly in the tool input.",
 			},
 		),
-		Verifier: buildVerifierRoleProfile([]string{
-			"Verify only the current executor step provided in the user message. Do not judge overall task completion unless the user message marks this as the final committed plan step.",
-			"Use executor_outcome, executor_summary, tool observations, screenshots, and step progress to decide whether that step succeeded.",
-			"An authoritative direct tool result is sufficient evidence when it exactly covers the current step, such as open_app returning ok=true for a launch-only app, URL, or dialer request. Require screenshot evidence for additional visible UI work or when a screenshot contradicts the tool result.",
-			"If the current step succeeded and more committed plan steps remain: return can_finish=false and needs_replan=false.",
-			"If the current step succeeded and this is the final committed plan step: return can_finish=true with final_answer for the user.",
-			"If the current step failed, had no effect, or evidence is insufficient: return can_finish=false and needs_replan=true with a brief reason for the planner.",
-			"If the screenshot clearly identifies app/page/platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence; otherwise leave unknown fields empty.",
-			"Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}.",
-		}),
+		Verifier: buildVerifierRoleProfile(verifierRoleRules(openAppAvailable)),
 	}
+}
+
+func roleToolAvailable(tools []langtools.Tool, name string) bool {
+	for _, tool := range tools {
+		if tool != nil && tool.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+func verifierRoleRules(openAppAvailable bool) []string {
+	rules := []string{
+		"Verify only the current executor step provided in the user message. Do not judge overall task completion unless the user message marks this as the final committed plan step.",
+		"Use executor_outcome, executor_summary, tool observations, screenshots, and step progress to decide whether that step succeeded.",
+		"An authoritative direct tool result is sufficient evidence when it exactly covers the current step. Require screenshot evidence for additional visible UI work or when a screenshot contradicts the tool result.",
+		"If the current step succeeded and more committed plan steps remain: return can_finish=false and needs_replan=false.",
+		"If the current step succeeded and this is the final committed plan step: return can_finish=true with final_answer for the user.",
+		"If the current step failed, had no effect, or evidence is insufficient: return can_finish=false and needs_replan=true with a brief reason for the planner.",
+		"If the screenshot clearly identifies app/page/platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence; otherwise leave unknown fields empty.",
+		"Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}.",
+	}
+	if openAppAvailable {
+		rules = append(rules, "For launch-only app, URL, or dialer requests, open_app returning ok=true is authoritative completion evidence.")
+	}
+	return rules
 }
 
 func plannerToolsForConfig(cfg AgentConfig, tools []langtools.Tool) []langtools.Tool {
@@ -91,7 +109,7 @@ func plannerToolsForConfig(cfg AgentConfig, tools []langtools.Tool) []langtools.
 	return appendLoopMetaTools(tools)
 }
 
-func plannerRoleRules(cfg AgentConfig) []string {
+func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 	var rules []string
 	if cfg.ForceSimpleLoop {
 		rules = append(rules,
@@ -112,7 +130,7 @@ func plannerRoleRules(cfg AgentConfig) []string {
 	if cfg.ForceSimpleLoop {
 		rules = append(rules,
 			"Prefer direct tools that cover the requested operation before UI workarounds.",
-			"For launch-only requests to open an app, URL, or dialer screen, direct tool success such as open_app ok=true is enough unless the user asked to inspect or act inside the opened target.",
+			"For launch-only requests to open an app, URL, or dialer screen, direct tool success is enough unless the user asked to inspect or act inside the opened target.",
 			"For semantic platform actions, use quick_action first when a matching action may exist; semantic actions include back, home, app search, app switcher, notification shade, quick settings, copy, paste, cut, undo, redo, select all, find, send, and browser navigation.",
 			"When using quick_action, pass the concrete action id and platform, for example: quick_action action=spotlight_search platform=android, quick_action action=back platform=android, or quick_action action=copy platform=ios; use a low-level fallback only after quick_action failure/no effect.",
 			"When using a platform-specific direct tool such as quick_action, use observed_state.platform from the current screenshot/context and name the concrete action id when possible.",
@@ -120,11 +138,14 @@ func plannerRoleRules(cfg AgentConfig) []string {
 			"If the current screenshot clearly identifies the app/page or device platform, use that observed app, page, platform (ios/android/mac), visible text, and dialogs when choosing tools.",
 			"Use request_human_handoff when the task requires credentials, verification, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Do not guess.",
 		)
+		if openAppAvailable {
+			rules = append(rules, "For launch-only app, URL, or dialer requests, open_app ok=true is enough unless the user asked to inspect or act inside the opened target.")
+		}
 		return rules
 	}
 	rules = append(rules,
 		"Prefer direct tools that cover the requested operation before UI workarounds. If a direct executor tool covers the request, plan or call that tool instead of a UI workaround.",
-		"For launch-only requests to open an app, URL, or dialer screen, make the direct tool success the completion criterion, for example open_app ok=true; do not add a screenshot requirement unless the user asked to inspect or act inside the opened target.",
+		"For launch-only requests to open an app, URL, or dialer screen, make direct tool success the completion criterion; do not add a screenshot requirement unless the user asked to inspect or act inside the opened target.",
 		"For semantic platform actions, plan quick_action first when a matching action may exist; semantic actions include back, home, app search, app switcher, notification shade, quick settings, copy, paste, cut, undo, redo, select all, find, send, and browser navigation.",
 		"When planning quick_action, name the concrete action id and platform, for example: quick_action action=spotlight_search platform=android, quick_action action=back platform=android, or quick_action action=copy platform=ios; include a low-level fallback only after quick_action failure/no effect.",
 		"When planning a platform-specific direct tool such as quick_action, use observed_state.platform from the current screenshot/context and name the concrete action id when possible.",
@@ -132,11 +153,18 @@ func plannerRoleRules(cfg AgentConfig) []string {
 		"If the current screenshot clearly identifies the app/page or device platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence when relevant.",
 		"Plan a request_human_handoff step when the task requires credentials, verification, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Do not guess.",
 	)
+	if openAppAvailable {
+		rules = append(rules, "For launch-only app, URL, or dialer requests, use open_app ok=true as the completion criterion.")
+	}
 	return rules
 }
 
 func buildVerifierRoleProfile(roleRules []string) RoleProfile {
-	parts := []string{"## Role rules"}
+	parts := []string{
+		currentDateContext(),
+		"",
+		"## Role rules",
+	}
 	for _, rule := range roleRules {
 		parts = append(parts, "- "+rule)
 	}
@@ -158,6 +186,7 @@ func buildRoleProfile(
 ) RoleProfile {
 	parts := []string{
 		fmt.Sprintf("You are the %s role in a multi-role Aiden agent loop.", name),
+		currentDateContext(),
 		"",
 		"## Base instruction",
 		combinedAgentInstruction(cfg),

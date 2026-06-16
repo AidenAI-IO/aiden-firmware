@@ -113,9 +113,9 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	if !strings.Contains(profiles.Planner.SystemPrompt, "Prefer direct tools that cover the requested operation") {
 		t.Fatalf("planner prompt should prefer direct tools:\n%s", profiles.Planner.SystemPrompt)
 	}
-	if !strings.Contains(profiles.Planner.SystemPrompt, "open_app ok=true") ||
-		!strings.Contains(profiles.Verifier.SystemPrompt, "open_app returning ok=true") {
-		t.Fatalf("role prompts should treat launch-only open_app success as direct evidence: planner=%q verifier=%q", profiles.Planner.SystemPrompt, profiles.Verifier.SystemPrompt)
+	if strings.Contains(profiles.Planner.SystemPrompt, "open_app") ||
+		strings.Contains(profiles.Verifier.SystemPrompt, "open_app") {
+		t.Fatalf("role prompts should not mention open_app when that tool is unavailable: planner=%q verifier=%q", profiles.Planner.SystemPrompt, profiles.Verifier.SystemPrompt)
 	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "plan quick_action first") ||
 		!strings.Contains(profiles.Planner.SystemPrompt, "quick_action action=back platform=android") ||
@@ -131,6 +131,20 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	if !strings.Contains(profiles.Verifier.SystemPrompt, "current executor step") ||
 		!strings.Contains(profiles.Verifier.SystemPrompt, "final committed plan step") {
 		t.Fatalf("verifier prompt should focus on per-step verification:\n%s", profiles.Verifier.SystemPrompt)
+	}
+}
+
+func TestBuildRoleProfilesIncludesOpenAppRulesOnlyWhenAvailable(t *testing.T) {
+	profiles := buildRoleProfiles(
+		AgentConfig{},
+		ResolvedSkills{},
+		[]langtools.Tool{&stubTool{name: "open_app", description: "Open app."}},
+		MemoryContext{},
+	)
+
+	if !strings.Contains(profiles.Planner.SystemPrompt, "open_app ok=true") ||
+		!strings.Contains(profiles.Verifier.SystemPrompt, "open_app returning ok=true") {
+		t.Fatalf("role prompts should treat launch-only open_app success as direct evidence when tool is available: planner=%q verifier=%q", profiles.Planner.SystemPrompt, profiles.Verifier.SystemPrompt)
 	}
 }
 

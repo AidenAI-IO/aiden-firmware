@@ -1,27 +1,19 @@
 package agent
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/tmc/langchaingo/callbacks"
-	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/prompts"
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
 type FunctionAgent struct {
-	LLM               llms.Model
-	Prompt            prompts.FormatPrompter
 	Tools             []langtools.Tool
-	InputAttachments  []InputAttachment
 	OutputKey         string
-	CallbacksHandler  callbacks.Handler
 	ScreenshotPruning ScreenshotPruningConfig
 }
 
@@ -72,96 +64,6 @@ type toolActionLog struct {
 type toolInvocation struct {
 	Input       string
 	Description string
-}
-
-func NewFunctionAgent(
-	llm llms.Model,
-	tools []langtools.Tool,
-	systemMessage string,
-	extraMessages []prompts.MessageFormatter,
-	inputAttachments []InputAttachment,
-	callbackHandler callbacks.Handler,
-) *FunctionAgent {
-	messageFormatters := []prompts.MessageFormatter{
-		prompts.NewSystemMessagePromptTemplate(systemMessage, nil),
-	}
-	messageFormatters = append(messageFormatters, extraMessages...)
-
-	return &FunctionAgent{
-		LLM:               llm,
-		Prompt:            prompts.NewChatPromptTemplate(messageFormatters),
-		Tools:             tools,
-		InputAttachments:  append([]InputAttachment{}, inputAttachments...),
-		OutputKey:         "output",
-		CallbacksHandler:  callbackHandler,
-		ScreenshotPruning: ScreenshotPruningConfig{}.WithDefaults(),
-	}
-}
-
-func (a *FunctionAgent) Plan(
-	ctx context.Context,
-	intermediateSteps []schema.AgentStep,
-	inputs map[string]string,
-	options ...chains.ChainCallOption,
-) ([]schema.AgentAction, *schema.AgentFinish, error) {
-	fullInputs := make(map[string]any, len(inputs))
-	for key, value := range inputs {
-		fullInputs[key] = value
-	}
-
-	var stream func(ctx context.Context, chunk []byte) error
-	if a.CallbacksHandler != nil {
-		stream = func(ctx context.Context, chunk []byte) error {
-			a.CallbacksHandler.HandleStreamingFunc(ctx, chunk)
-			return nil
-		}
-	}
-
-	prompt, err := a.Prompt.FormatPrompt(fullInputs)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	messages := make([]llms.MessageContent, 0, len(prompt.Messages())+len(intermediateSteps)*3)
-	for _, msg := range prompt.Messages() {
-		messages = append(messages, chatMessageToContent(msg))
-	}
-	messages = append(messages, llms.MessageContent{
-		Role:  llms.ChatMessageTypeHuman,
-		Parts: buildUserMessageParts(inputs["input"], a.InputAttachments),
-	})
-	messages = append(messages, a.constructFunctionScratchPad(intermediateSteps)...)
-
-	llmOptions := []llms.CallOption{
-		llms.WithTools(a.toolsAsLLM()),
-		llms.WithStreamingFunc(stream),
-	}
-	llmOptions = append(llmOptions, chains.GetLLMCallOptions(options...)...)
-
-	result, err := a.LLM.GenerateContent(ctx, messages, llmOptions...)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return a.ParseOutput(result)
-}
-
-func (a *FunctionAgent) GetInputKeys() []string {
-	inputs := append([]string{}, a.Prompt.GetInputVariables()...)
-	for _, key := range inputs {
-		if key == "input" {
-			return inputs
-		}
-	}
-	return append(inputs, "input")
-}
-
-func (a *FunctionAgent) GetOutputKeys() []string {
-	return []string{a.OutputKey}
-}
-
-func (a *FunctionAgent) GetTools() []langtools.Tool {
-	return a.Tools
 }
 
 func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema.AgentAction, *schema.AgentFinish, error) {
@@ -255,13 +157,6 @@ func toolParametersSchema(schema map[string]any) map[string]any {
 	}
 	parameters["type"] = "object"
 	return parameters
-}
-
-func chatMessageToContent(msg llms.ChatMessage) llms.MessageContent {
-	return llms.MessageContent{
-		Role:  msg.GetType(),
-		Parts: []llms.ContentPart{llms.TextPart(msg.GetContent())},
-	}
 }
 
 func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []llms.MessageContent {
