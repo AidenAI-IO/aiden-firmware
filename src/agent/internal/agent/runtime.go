@@ -65,13 +65,18 @@ type RunRequest struct {
 	// hardware/app state. It is not persisted as user configuration.
 	RuntimeContext string
 	StreamWriter   io.Writer
-	MaxTokens      int
-	EventHandler   func(RunEvent)
-	SteerProvider  func(context.Context) (RunSteerMessage, bool)
+	// StreamFinalChunks allows final-answer chunks to be written through
+	// StreamWriter for audio paths. Non-final LLM calls must remain
+	// non-streaming because they may be planner, tool-call, or verifier turns.
+	StreamFinalChunks bool
+	MaxTokens         int
+	EventHandler      func(RunEvent)
+	SteerProvider     func(context.Context) (RunSteerMessage, bool)
 }
 
 type RunResult struct {
 	Output         string          `json:"output"`
+	SpeechText     string          `json:"-"`
 	Skills         []string        `json:"skills"`
 	EpisodeID      string          `json:"episode_id,omitempty"`
 	Memory         []MessageRecord `json:"memory,omitempty"`
@@ -79,6 +84,27 @@ type RunResult struct {
 	SleepRequested bool            `json:"sleep_requested,omitempty"`
 	SleepReason    string          `json:"sleep_reason,omitempty"`
 	SpeechStreamed bool            `json:"-"`
+}
+
+func (r RunResult) SpokenText() string {
+	if text := strings.TrimSpace(r.SpeechText); text != "" {
+		return text
+	}
+	return strings.TrimSpace(r.Output)
+}
+
+func (r RunResult) SpokenTextForConfig(cfg Config) string {
+	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
+		return strings.TrimSpace(r.Output)
+	}
+	if text := strings.TrimSpace(r.SpeechText); text != "" {
+		return text
+	}
+	text := BuildSpeechText(r.Output, cfg)
+	if text != "" {
+		return text
+	}
+	return r.SpokenText()
 }
 
 type RunSteerMessage struct {
@@ -533,12 +559,13 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	var streamCallbackHandler *runtimeCallbackHandler
 	if req.StreamWriter != nil || req.EventHandler != nil || req.SteerProvider != nil || r.logger != nil {
 		streamCallbackHandler = &runtimeCallbackHandler{
-			writer:       req.StreamWriter,
-			metrics:      metrics,
-			startTime:    startTime,
-			logger:       r.logger,
-			eventHandler: req.EventHandler,
-			episodeID:    episodeID,
+			writer:                 req.StreamWriter,
+			providerFinalStreaming: req.StreamWriter != nil && req.StreamFinalChunks,
+			metrics:                metrics,
+			startTime:              startTime,
+			logger:                 r.logger,
+			eventHandler:           req.EventHandler,
+			episodeID:              episodeID,
 		}
 	}
 	var executorHandler callbacks.Handler
@@ -577,6 +604,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 
+	output, speechText := finalizeSpeechOutput(output, r.config)
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
 	commitReq := SessionCommitRequest{
 		AgentName: "default",
@@ -601,6 +629,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	return RunResult{
 		Output:         output,
+		SpeechText:     speechText,
 		Skills:         runSkills.GetActivatedSkills(),
 		EpisodeID:      episodeID,
 		Memory:         commitResult.Memory,
@@ -954,10 +983,11 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 	}
 	return buildRoleProfiles(
 		AgentConfig{
-			Instruction:      r.config.Instruction,
-			AdditionalPrompt: r.config.AdditionalPrompt,
-			RuntimeContext:   runtimeContext,
-			ForceSimpleLoop:  r.config.ForceSimpleLoop,
+			Instruction:               r.config.Instruction,
+			AdditionalPrompt:          r.config.AdditionalPrompt,
+			RuntimeContext:            runtimeContext,
+			ForceSimpleLoop:           r.config.ForceSimpleLoop,
+			VoiceSpeechSummaryEnabled: r.config.VoiceSpeechSummaryEnabled,
 		},
 		skills,
 		availableTools,
@@ -984,15 +1014,19 @@ func (r *Runtime) memoryContextForPrompt() string {
 // runtimeCallbackHandler implements callbacks.Handler for streaming output and
 // tool/agent observability.
 type runtimeCallbackHandler struct {
-	writer         io.Writer
-	metrics        *RunMetrics
-	startTime      time.Time
-	firstTokenSeen bool
-	logger         *Logger
-	eventHandler   func(RunEvent)
-	episodeID      string
-	mu             sync.Mutex
-	pendingActions []schema.AgentAction
+	writer                 io.Writer
+	providerFinalStreaming bool
+	metrics                *RunMetrics
+	startTime              time.Time
+	firstTokenSeen         bool
+	finalTokenSeen         bool
+	finalStreamErr         error
+	streamFinal            bool
+	logger                 *Logger
+	eventHandler           func(RunEvent)
+	episodeID              string
+	mu                     sync.Mutex
+	pendingActions         []schema.AgentAction
 }
 
 func (h *runtimeCallbackHandler) HandleText(ctx context.Context, text string) {
@@ -1259,14 +1293,114 @@ func (h *runtimeCallbackHandler) HandleRetrieverEnd(ctx context.Context, query s
 }
 
 func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk []byte) {
-	if h.writer != nil {
-		h.writer.Write(chunk)
+	finalStreaming := h.finalStreamingEnabled()
+	if h.writer != nil && finalStreaming && !h.finalStreamingFailed() {
+		if _, err := h.writer.Write(chunk); err != nil {
+			h.recordFinalStreamError(err)
+		} else if streamWriterEmitted(h.writer) {
+			h.recordFinalToken()
+		}
 	}
 
 	// Record first token time
-	if !h.firstTokenSeen && h.metrics != nil {
-		h.firstTokenSeen = true
+	h.recordFirstToken()
+}
+
+func (h *runtimeCallbackHandler) EnableFinalStreaming(ctx context.Context) {
+	resetStreamWriterState(h.writer)
+	h.mu.Lock()
+	h.finalTokenSeen = false
+	h.finalStreamErr = nil
+	h.streamFinal = true
+	h.mu.Unlock()
+}
+
+func (h *runtimeCallbackHandler) DisableFinalStreaming(ctx context.Context) {
+	h.mu.Lock()
+	h.streamFinal = false
+	h.mu.Unlock()
+}
+
+func (h *runtimeCallbackHandler) finalStreamingEnabled() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.streamFinal
+}
+
+func (h *runtimeCallbackHandler) ProviderFinalStreamingEnabled() bool {
+	return h != nil && h.writer != nil && h.providerFinalStreaming
+}
+
+type streamStateResetter interface {
+	ResetStreamState()
+}
+
+type streamOutputTracker interface {
+	StreamEmitted() bool
+}
+
+func resetStreamWriterState(writer io.Writer) {
+	resetter, ok := writer.(streamStateResetter)
+	if !ok {
+		return
+	}
+	resetter.ResetStreamState()
+}
+
+func streamWriterEmitted(writer io.Writer) bool {
+	tracker, ok := writer.(streamOutputTracker)
+	if !ok {
+		return true
+	}
+	return tracker.StreamEmitted()
+}
+
+func (h *runtimeCallbackHandler) HasFinalStreamingToken(context.Context) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.finalTokenSeen && h.finalStreamErr == nil
+}
+
+func (h *runtimeCallbackHandler) recordFirstToken() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.firstTokenSeen {
+		return
+	}
+	h.firstTokenSeen = true
+	if h.metrics != nil {
 		h.metrics.FirstTokenTime = float64(time.Since(h.startTime).Milliseconds())
+	}
+}
+
+func (h *runtimeCallbackHandler) recordFinalToken() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.finalStreamErr != nil {
+		return
+	}
+	h.finalTokenSeen = true
+}
+
+func (h *runtimeCallbackHandler) finalStreamingFailed() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.finalStreamErr != nil
+}
+
+func (h *runtimeCallbackHandler) recordFinalStreamError(err error) {
+	if err == nil {
+		return
+	}
+	h.mu.Lock()
+	firstErr := h.finalStreamErr == nil
+	if firstErr {
+		h.finalStreamErr = err
+	}
+	h.finalTokenSeen = false
+	h.mu.Unlock()
+	if firstErr && h.logger != nil {
+		h.logger.Warn("Final stream writer failed; falling back to final answer: %v", err)
 	}
 }
 

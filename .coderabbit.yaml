@@ -1,5 +1,9 @@
 reviews:
   tools:
     golangci-lint:
-      enabled: true
+      # CodeRabbit runs golangci-lint from the repository root with ./..., but
+      # this repository's Go module lives under src/agent. Keep the module-local
+      # config for local/CI use and disable the CodeRabbit tool until it can run
+      # with src/agent as the working directory.
+      enabled: false
       config_file: src/agent/.golangci.yml

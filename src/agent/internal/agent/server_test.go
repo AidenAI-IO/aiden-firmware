@@ -563,16 +563,18 @@ func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
 	}
 }
 
-func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
+func TestServerHandleChatDoesNotWaitForToolDescriptionTTSWhenEnabled(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
 	}
 	streamingDisabled := false
+	toolSpeechEnabled := true
 	runtime := NewRuntimeWithDeps(
 		Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Instruction:              "Use tools when external state is requested.",
 			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceToolCallSpeech:      &toolSpeechEnabled,
 		},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),

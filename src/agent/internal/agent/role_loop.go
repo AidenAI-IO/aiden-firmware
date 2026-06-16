@@ -49,6 +49,8 @@ const (
 type routeDecision struct {
 	Mode        routeMode `json:"mode"`
 	FinalAnswer string    `json:"final_answer,omitempty"`
+	SpeechText  string    `json:"speech_text,omitempty"`
+	Output      string    `json:"output,omitempty"`
 	Reason      string    `json:"reason,omitempty"`
 	Confidence  float64   `json:"confidence,omitempty"`
 }
@@ -104,6 +106,10 @@ func (s roleLoopState) canAcceptPlannerFinal(answer string) bool {
 		return false
 	}
 	return s.PlanCommitted || s.PlanExhausted || len(s.PlanStepResults) > 0 || len(s.VerifierResults) > 0
+}
+
+func (s roleLoopState) isFinalCommittedPlanStep() bool {
+	return s.PlanCommitted && len(s.Plan) > 0 && s.PlanStepIndex >= len(s.Plan)-1
 }
 
 func (s *roleLoopState) beginStepExecution() {
@@ -355,6 +361,15 @@ func parseOptionalReasonInput(raw string) string {
 func normalizeRouteDecision(decision routeDecision, request string) routeDecision {
 	decision.Mode = normalizeRouteMode(decision.Mode)
 	decision.FinalAnswer = strings.TrimSpace(decision.FinalAnswer)
+	decision.SpeechText = strings.TrimSpace(decision.SpeechText)
+	decision.Output = strings.TrimSpace(decision.Output)
+	if decision.Output != "" && (decision.Mode == "" || decision.Mode == routeModeDirectAnswer) {
+		if decision.SpeechText != "" {
+			decision.FinalAnswer = marshalStructuredFinalAnswer(decision.SpeechText, decision.Output)
+		} else if decision.FinalAnswer == "" {
+			decision.FinalAnswer = decision.Output
+		}
+	}
 	decision.Reason = strings.TrimSpace(decision.Reason)
 	if decision.Confidence < 0 {
 		decision.Confidence = 0
@@ -436,7 +451,7 @@ func plannerTaskForPhase(phase loopPhase, state roleLoopState, forceSimpleLoop b
 	}
 	switch phase {
 	case phaseDecision:
-		return "Route phase: decide the execution path before normal tools are exposed. Return only JSON: {\"mode\":\"direct_answer|simple|plan\",\"final_answer\":\"only for direct_answer\",\"reason\":\"brief rationale\",\"confidence\":0.0-1.0}. Use direct_answer only when the final user-facing answer is available now without tools. Use simple for ordinary one-pass execution such as direct tool use, straightforward arithmetic, or short comparisons. Use plan for tasks that need explicit planning, checkpoints, delegated execution, information gathering before acting, multiple independent stages, record aggregation, reconciliation, branching, or several required output facts. Examples: a single expression or comparing two expressions is simple; invoice reconciliation across stages and expense/category aggregation are plan."
+		return "Route phase: decide the execution path before normal tools are exposed. Return only JSON: {\"mode\":\"direct_answer|simple|plan\",\"speech_text\":\"only for direct_answer\",\"output\":\"only for direct_answer\",\"final_answer\":\"same as output for direct_answer\",\"reason\":\"brief rationale\",\"confidence\":0.0-1.0}. Use direct_answer only when the final user-facing answer is available now without tools; for direct_answer put speech_text before output, keep final_answer equal to output, and leave all final-answer fields empty for simple or plan. Use simple for ordinary one-pass execution such as direct tool use, straightforward arithmetic, or short comparisons. Use plan for tasks that need explicit planning, checkpoints, delegated execution, information gathering before acting, multiple independent stages, record aggregation, reconciliation, branching, or several required output facts. Examples: a single expression or comparing two expressions is simple; invoice reconciliation across stages and expense/category aggregation are plan."
 	case phasePlan:
 		task := "Plan mode: create or revise a structured delegated plan. You may use read-only information-gathering tools before committing if context is missing. Do not use execution, computation, or state-changing tools in plan mode. Call commit_plan to hand concrete steps to the executor, call cancel_plan only when planning should be abandoned, or return a final answer only when existing execution evidence already proves the task complete."
 		if state.PlanCommitRequired {
@@ -470,7 +485,8 @@ func writeLoopMode(builder *strings.Builder, state roleLoopState) {
 		builder.WriteString("- this is the upfront route decision before normal tool execution.\n")
 		builder.WriteString("- no tools are available in this phase.\n")
 		builder.WriteString("- return only JSON with mode direct_answer, simple, or plan.\n")
-		builder.WriteString("- direct_answer requires a final_answer value ready for the user.\n")
+		builder.WriteString("- direct_answer requires speech_text, output, and final_answer values ready for the user; put speech_text before output and keep final_answer equal to output.\n")
+		builder.WriteString("- simple and plan must leave speech_text, output, and final_answer empty.\n")
 		builder.WriteString("- plan is required for explicit planning, checkpoints, information gathering before acting, multi-stage reconciliation, record aggregation, branching, or several required output facts.\n")
 	}
 	if state.Phase == phasePlan {

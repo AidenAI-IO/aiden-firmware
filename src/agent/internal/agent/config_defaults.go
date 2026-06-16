@@ -38,6 +38,7 @@ const (
 	defaultVoiceFollowupTimeoutMs  = 6000
 	defaultVoiceFirstTurnTimeoutMs = 10000
 	defaultVoiceMaxTurns           = 0
+	defaultVoiceSpeechMaxRunes     = 120
 	defaultVoiceMaxResponseTokens  = 400
 	defaultMaxIterations           = -1
 	defaultScreenshotKeepN         = 3
@@ -119,7 +120,9 @@ func DefaultConfig() Config {
 		VoiceMaxTurns:             defaultVoiceMaxTurns,
 		VoiceInterruptOnWakeup:    defaultBoolPtr(true),
 		VoiceStreamingTTSEnabled:  defaultBoolPtr(true),
-		VoiceToolCallSpeech:       defaultBoolPtr(true),
+		VoiceToolCallSpeech:       defaultBoolPtr(false),
+		VoiceSpeechSummaryEnabled: defaultBoolPtr(true),
+		VoiceSpeechMaxRunes:       defaultVoiceSpeechMaxRunes,
 		VoiceMaxResponseTokens:    defaultVoiceMaxResponseTokens,
 		MaxIterations:             defaultMaxIterations,
 		ScreenshotKeepN:           defaultScreenshotKeepN,

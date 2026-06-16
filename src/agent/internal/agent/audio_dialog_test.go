@@ -220,6 +220,66 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 	}
 }
 
+func TestProcessUtteranceSpeaksSpeechTextWithoutChangingHistoryOutput(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleDirectResponses("已完成设置，当前音量是 42。\n\n- 读取音量\n- 确认状态\n\n这段详细说明保留给屏幕。"),
+	}
+	store := NewChatHistoryStore(t.TempDir())
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Answer directly.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config: Config{
+			Model:                     ModelConfig{Provider: "fake"},
+			Audio:                     AudioConfig{SampleRate: 16000},
+			InputMode:                 "audio",
+			VoiceStreamingTTSEnabled:  boolPtr(false),
+			VoiceSpeechSummaryEnabled: boolPtr(true),
+			VoiceSpeechMaxRunes:       22,
+		},
+		audioClient:  NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
+	dialog.SetHistoryStore(store)
+
+	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
+		t.Fatalf("ProcessUtterance() error = %v", err)
+	}
+
+	texts := provider.texts()
+	if len(texts) != 1 {
+		t.Fatalf("unexpected TTS texts: %#v", texts)
+	}
+	if strings.Contains(texts[0], "读取音量") || strings.Contains(texts[0], "详细说明") {
+		t.Fatalf("TTS should use spoken summary, got %q", texts[0])
+	}
+	if !strings.Contains(texts[0], "当前音量是 42") {
+		t.Fatalf("TTS summary lost conclusion: %q", texts[0])
+	}
+
+	messages, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	assistant, ok := firstMessageOfType(messages, "assistant")
+	if !ok {
+		t.Fatalf("assistant history missing: %#v", messages)
+	}
+	if !strings.Contains(assistant.Content, "这段详细说明保留给屏幕") {
+		t.Fatalf("history should keep full output, got %q", assistant.Content)
+	}
+}
+
 func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先检查当前音量。"}`, "当前音量是 42。"),

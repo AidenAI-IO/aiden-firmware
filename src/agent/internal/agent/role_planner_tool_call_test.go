@@ -180,6 +180,45 @@ func TestParseRouteDecisionTreatsOrdinaryPlanAndSimpleTextAsDirectAnswer(t *test
 	}
 }
 
+func TestParseRouteDecisionAcceptsStructuredFinalAnswerOutput(t *testing.T) {
+	decision := parseRouteDecision(
+		contentResponse(`{"mode":"direct_answer","speech_text":"Short answer.","output":"Complete answer."}`),
+		"Answer directly.",
+	)
+
+	if decision.Mode != routeModeDirectAnswer {
+		t.Fatalf("route mode = %q, want direct_answer", decision.Mode)
+	}
+	if decision.FinalAnswer == "" {
+		t.Fatal("structured final answer output should not be downgraded to simple mode")
+	}
+	output, speechText, ok := parseStructuredFinalAnswer(decision.FinalAnswer)
+	if !ok {
+		t.Fatalf("final answer should preserve structured output, got %q", decision.FinalAnswer)
+	}
+	if output != "Complete answer." || speechText != "Short answer." {
+		t.Fatalf("structured final answer = (%q, %q), want complete output and short speech", output, speechText)
+	}
+}
+
+func TestParseRouteDecisionTreatsStructuredFinalAnswerWithoutModeAsDirectAnswer(t *testing.T) {
+	decision := parseRouteDecision(
+		contentResponse(`{"speech_text":"Short answer.","output":"Complete answer."}`),
+		"Answer directly.",
+	)
+
+	if decision.Mode != routeModeDirectAnswer {
+		t.Fatalf("route mode = %q, want direct_answer", decision.Mode)
+	}
+	output, speechText, ok := parseStructuredFinalAnswer(decision.FinalAnswer)
+	if !ok {
+		t.Fatalf("final answer should preserve structured output, got %q", decision.FinalAnswer)
+	}
+	if output != "Complete answer." || speechText != "Short answer." {
+		t.Fatalf("structured final answer = (%q, %q), want complete output and short speech", output, speechText)
+	}
+}
+
 func TestParseRouteDecisionTreatsExplicitTextModeCommandsAsIntent(t *testing.T) {
 	cases := []struct {
 		text string

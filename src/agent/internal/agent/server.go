@@ -734,6 +734,7 @@ func (s *Server) handleChatAsync(
 			DeviceEnvironment: s.bridgeEnvironment(),
 			RuntimeContext:    s.runtimeContext(),
 			EventHandler:      eventHandler,
+			StreamFinalChunks: true,
 			SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 				return s.consumePendingSteer(requestID)
 			},
@@ -751,7 +752,7 @@ func (s *Server) handleChatAsync(
 					}
 				} else {
 					newStream = stream
-					runReq.StreamWriter = newStream
+					runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
 				}
 			}
 		}
@@ -812,7 +813,8 @@ func (s *Server) handleChatAsync(
 		}
 
 		// Play TTS in background
-		if s.audioClient != nil && result.Output != "" && !result.SpeechStreamed {
+		speechText := result.SpokenTextForConfig(s.runtime.config)
+		if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
 			go func(text string) {
 				if s.logger != nil {
 					s.logger.Info("TTS playback: %q", text)
@@ -820,7 +822,7 @@ func (s *Server) handleChatAsync(
 				if err := s.speakText(runCtx, text, 0); err != nil && s.logger != nil {
 					s.logger.Error("TTS playback failed: %v", err)
 				}
-			}(result.Output)
+			}(speechText)
 		}
 	}()
 }
@@ -944,6 +946,7 @@ func (s *Server) handleChatSync(
 		EpisodeID:         episodeID,
 		DeviceEnvironment: s.bridgeEnvironment(),
 		RuntimeContext:    s.runtimeContext(),
+		StreamFinalChunks: true,
 		EventHandler: func(event RunEvent) {
 			eventEpisodeID := event.EpisodeID
 			if eventEpisodeID == "" {
@@ -978,7 +981,7 @@ func (s *Server) handleChatSync(
 				}
 			} else {
 				newStream = stream
-				runReq.StreamWriter = newStream
+				runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
 			}
 		}
 	}
@@ -1017,7 +1020,8 @@ func (s *Server) handleChatSync(
 	})
 	historySnapshot := s.historySnapshot()
 
-	if s.audioClient != nil && result.Output != "" && !result.SpeechStreamed {
+	speechText := result.SpokenTextForConfig(s.runtime.config)
+	if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
 		go func(text string) {
 			if s.logger != nil {
 				s.logger.Info("TTS playback: %q", text)
@@ -1025,7 +1029,7 @@ func (s *Server) handleChatSync(
 			if err := s.speakText(context.Background(), text, 0); err != nil && s.logger != nil {
 				s.logger.Error("TTS playback failed: %v", err)
 			}
-		}(result.Output)
+		}(speechText)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1113,13 +1117,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	s.appendHistory(userMessage)
 
-	result, err := s.runtime.Run(ctx, RunRequest{
+	runReq := RunRequest{
 		Input:             inputText,
 		Attachments:       runAttachments,
 		Skills:            req.Skills,
 		EpisodeID:         episodeID,
 		DeviceEnvironment: s.bridgeEnvironment(),
 		RuntimeContext:    s.runtimeContext(),
+		StreamFinalChunks: true,
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return s.consumePendingSteer(req.RequestID)
 		},
@@ -1146,7 +1151,32 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				go s.speakToolDescription(ctx, event.Description)
 			}
 		},
-	})
+	}
+
+	var newStream *streamSessionWriter
+	ttsManager := s.currentTTSManager()
+	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
+		if ttsManager != nil {
+			streamSession, err := beginManagedTTSStream(ctx, ttsManager, s.audioClient, s.runtime.config)
+			if err != nil {
+				if s.logger != nil {
+					s.logger.Warn("TTS BeginStream failed: %v", err)
+				}
+			} else {
+				newStream = streamSession
+				runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+			}
+		}
+	}
+
+	result, err := s.runtime.Run(ctx, runReq)
+	if newStream != nil {
+		closeErr := newStream.closeAndWait()
+		if closeErr != nil && s.logger != nil {
+			s.logger.Error("new TTS stream failed: %v", closeErr)
+		}
+		result.SpeechStreamed = closeErr == nil && newStream.spoke
+	}
 	if err != nil {
 		errorMessage := Message{
 			Type:      "episode_status",
@@ -1178,7 +1208,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	stream.Write(ChatStreamEvent{Type: "message", Message: &assistantMessage})
 	historySnapshot := s.historySnapshot()
 
-	if s.audioClient != nil && result.Output != "" && !result.SpeechStreamed {
+	speechText := result.SpokenTextForConfig(s.runtime.config)
+	if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
 		go func(text string) {
 			if s.logger != nil {
 				s.logger.Info("TTS playback: %q", text)
@@ -1188,7 +1219,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 					s.logger.Error("TTS playback failed: %v", err)
 				}
 			}
-		}(result.Output)
+		}(speechText)
 	}
 
 	stream.Write(ChatStreamEvent{

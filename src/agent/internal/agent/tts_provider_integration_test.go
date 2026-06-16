@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/tmc/langchaingo/llms"
+	langtools "github.com/tmc/langchaingo/tools"
 
 	ttsmodule "aiden-agent/internal/agent/tts"
 )
@@ -209,7 +213,7 @@ func containsProviderName(values []string, target string) bool {
 }
 
 func TestAudioDialogRunAgentTurnStreamsThroughProviderManager(t *testing.T) {
-	model := &scriptedModel{responses: roleDirectResponses("streamed answer")}
+	model := &rawStreamingModel{content: "streamed answer", chunks: []string{"streamed ", "answer"}}
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: model},
@@ -218,12 +222,14 @@ func TestAudioDialogRunAgentTurnStreamsThroughProviderManager(t *testing.T) {
 		NewSkillIndex(),
 	)
 	streamingEnabled := true
+	summaryDisabled := false
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
 		config: Config{
-			Model:                    ModelConfig{Provider: "fake"},
-			Audio:                    AudioConfig{SampleRate: 16000},
-			VoiceStreamingTTSEnabled: &streamingEnabled,
+			Model:                     ModelConfig{Provider: "fake"},
+			Audio:                     AudioConfig{SampleRate: 16000},
+			VoiceStreamingTTSEnabled:  &streamingEnabled,
+			VoiceSpeechSummaryEnabled: &summaryDisabled,
 		},
 		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
@@ -239,6 +245,113 @@ func TestAudioDialogRunAgentTurnStreamsThroughProviderManager(t *testing.T) {
 	if got := provider.texts(); len(got) != 1 || got[0] != "streamed answer" {
 		t.Fatalf("provider texts = %#v, want streamed answer", got)
 	}
+}
+
+func TestAudioDialogRunAgentTurnStreamsSpeechTextFromStructuredAnswer(t *testing.T) {
+	model := &rawStreamingModel{
+		content: `{"speech_text":"已完成，当前音量是 42。","output":"已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。"}`,
+		chunks: []string{
+			`{"speech_text":"已完成`,
+			`，当前音量是 42。","output":"已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。"}`,
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	streamingEnabled := true
+	summaryEnabled := true
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config: Config{
+			Model:                     ModelConfig{Provider: "fake"},
+			Audio:                     AudioConfig{SampleRate: 16000},
+			VoiceStreamingTTSEnabled:  &streamingEnabled,
+			VoiceSpeechSummaryEnabled: &summaryEnabled,
+		},
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+	}
+
+	result, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "hello"}, runtime)
+	if err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", err)
+	}
+	if !result.SpeechStreamed {
+		t.Fatal("SpeechStreamed = false, want true when speech_text streamed")
+	}
+	if result.Output != "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。" {
+		t.Fatalf("Output = %q", result.Output)
+	}
+	if result.SpeechText != "已完成，当前音量是 42。" {
+		t.Fatalf("SpeechText = %q", result.SpeechText)
+	}
+	if got := provider.texts(); len(got) != 1 || got[0] != "已完成，当前音量是 42。" {
+		t.Fatalf("provider texts = %#v", got)
+	}
+}
+
+func TestRuntimeRunStreamsStructuredSpeechTextToWriter(t *testing.T) {
+	model := &rawStreamingModel{
+		content: `{"speech_text":"短口播。","output":"完整回答保留给屏幕。"}`,
+		chunks: []string{
+			`{"speech_text":"短`,
+			`口播。","output":"完整回答保留给屏幕。"}`,
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	var stream strings.Builder
+
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "hello",
+		StreamWriter:      NewSpeechTextStreamWriter(&stream, "speech_text"),
+		StreamFinalChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if stream.String() != "短口播。" {
+		t.Fatalf("stream = %q", stream.String())
+	}
+	if result.Output != "完整回答保留给屏幕。" {
+		t.Fatalf("Output = %q", result.Output)
+	}
+	if result.SpeechText != "短口播。" {
+		t.Fatalf("SpeechText = %q", result.SpeechText)
+	}
+}
+
+type rawStreamingModel struct {
+	content string
+	chunks  []string
+}
+
+func (m *rawStreamingModel) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
+	return m.content, nil
+}
+
+func (m *rawStreamingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	var callOptions llms.CallOptions
+	for _, option := range options {
+		option(&callOptions)
+	}
+	if callOptions.StreamingFunc != nil {
+		for _, chunk := range m.chunks {
+			if err := callOptions.StreamingFunc(ctx, []byte(chunk)); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return contentResponse(m.content), nil
 }
 
 type failingStreamSession struct {

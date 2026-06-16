@@ -577,7 +577,8 @@ thinking:
 		return voiceTurnResult{sleepRequested: true}
 	}
 
-	if result.Output == "" || result.SpeechStreamed {
+	speechText := result.SpokenTextForConfig(cfg)
+	if speechText == "" || result.SpeechStreamed {
 		return voiceTurnResult{}
 	}
 
@@ -590,7 +591,7 @@ thinking:
 	speakCtx, cancelSpeak := context.WithCancel(context.Background())
 	speakCh := make(chan error, 1)
 	go func() {
-		speakCh <- dialog.Speak(speakCtx, result.Output, nil)
+		speakCh <- dialog.Speak(speakCtx, speechText, nil)
 	}()
 
 speaking:

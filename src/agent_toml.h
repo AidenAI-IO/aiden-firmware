@@ -111,15 +111,17 @@ struct AgentToml {
     int voice_max_turns = 0;
     bool voice_interrupt_on_wakeup = true;
     bool voice_streaming_tts_enabled = true;
-	bool voice_tool_call_speech = true;
-	int voice_max_response_tokens = 400;
-	int max_iterations = -1;
-	bool force_simple_loop = false;
-	int screenshot_keep_n = 3;
-	int screenshot_prune_interval = 25;
-	int screen_stable_timeout_ms = 3500;
-	int screen_stable_ms = 500;
-	double screen_stable_diff_threshold = 2.0;
+    bool voice_tool_call_speech = false;
+    bool voice_speech_summary_enabled = true;
+    int voice_speech_max_runes = 120;
+    int voice_max_response_tokens = 400;
+    int max_iterations = -1;
+    bool force_simple_loop = false;
+    int screenshot_keep_n = 3;
+    int screenshot_prune_interval = 25;
+    int screen_stable_timeout_ms = 3500;
+    int screen_stable_ms = 500;
+    double screen_stable_diff_threshold = 2.0;
 };
 
 bool load_agent_toml(const char* path, AgentToml& config, std::string* error = nullptr);

@@ -272,7 +272,7 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	if result.SpeechStreamed {
 		return nil
 	}
-	return d.Speak(ctx, result.Output, nil)
+	return d.Speak(ctx, result.SpokenTextForConfig(d.config), nil)
 }
 
 // SetHistoryStore wires the chat history store. When non-nil, voice user and
@@ -382,6 +382,7 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 		EventHandler: func(event RunEvent) {
 			d.HandleRunEvent(ctx, event)
 		},
+		StreamFinalChunks: true,
 	}
 
 	var newStream *streamSessionWriter
@@ -391,7 +392,7 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 			log.Printf("[error] TTS BeginStream failed: %v\n", err)
 		} else {
 			newStream = stream
-			req.StreamWriter = newStream
+			req.StreamWriter = speechStreamWriterForConfig(newStream, d.config)
 		}
 	}
 
@@ -520,6 +521,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		EventHandler: func(event RunEvent) {
 			d.HandleRunEvent(ctx, event)
 		},
+		StreamFinalChunks: true,
 	}
 	var newStream *streamSessionWriter
 	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.ttsManager != nil {
@@ -528,7 +530,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 			log.Printf("[error] TTS BeginStream failed: %v\n", err)
 		} else {
 			newStream = stream
-			req.StreamWriter = newStream
+			req.StreamWriter = speechStreamWriterForConfig(newStream, d.config)
 		}
 	}
 
@@ -547,8 +549,9 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	log.Printf("[llm] Response received\n")
 
 	// Speak response if TTS is available
-	if d.ttsManager != nil && result.Output != "" && !result.SpeechStreamed {
-		if err := d.Speak(ctx, result.Output, nil); err != nil {
+	speechText := result.SpokenTextForConfig(d.config)
+	if d.ttsManager != nil && speechText != "" && !result.SpeechStreamed {
+		if err := d.Speak(ctx, speechText, nil); err != nil {
 			log.Printf("[error] TTS streaming failed: %v", err)
 		}
 	} else if result.Output != "" {
