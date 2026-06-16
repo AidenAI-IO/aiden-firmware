@@ -74,32 +74,34 @@ type planStepResult struct {
 }
 
 type roleLoopState struct {
-	Phase                loopPhase
-	ForceSimpleLoop      bool
-	Todo                 TodoState
-	PlanStepIndex        int
-	PlanCommitted        bool
-	PlanExhausted        bool
-	DraftPlan            plannerDecision
-	Objective            string
-	CompletionCriteria   []string
-	Plan                 []string
-	NextStep             string
-	PlannerReason        string
-	PlanCommitRequired   bool
-	World                worldState
-	ToolSteps            []schema.AgentStep
-	StepToolSteps        []schema.AgentStep
-	StepExecutionResults []roleExecutionResult
-	StepExecutionActive  bool
-	ExecutorStepOutcome  string
-	ExecutorStepSummary  string
-	ExecutorStepKeyInfo  []string
-	PlanStepResults      []planStepResult
-	ExecutionResults     []roleExecutionResult
-	PlannerEvidence      []roleExecutionResult
-	VerifierResults      []verifierDecision
-	SteerMessages        []RunSteerMessage
+	Phase                          loopPhase
+	ForceSimpleLoop                bool
+	Todo                           TodoState
+	PlanStepIndex                  int
+	PlanCommitted                  bool
+	PlanExhausted                  bool
+	DraftPlan                      plannerDecision
+	Objective                      string
+	CompletionCriteria             []string
+	Plan                           []string
+	NextStep                       string
+	PlannerReason                  string
+	PlanCommitRequired             bool
+	World                          worldState
+	ToolSteps                      []schema.AgentStep
+	StepToolSteps                  []schema.AgentStep
+	StepExecutionResults           []roleExecutionResult
+	StepExecutionActive            bool
+	ExecutorStepOutcome            string
+	ExecutorStepSummary            string
+	ExecutorStepKeyInfo            []string
+	PlanStepResults                []planStepResult
+	ExecutionResults               []roleExecutionResult
+	PlannerEvidence                []roleExecutionResult
+	VerifierResults                []verifierDecision
+	SteerMessages                  []RunSteerMessage
+	DefaultToolCallsSinceTodoTouch int
+	PendingTodoReminder            string
 }
 
 type worldState struct {
@@ -243,11 +245,18 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
 				}
 				if state.Todo.Mode != TodoModeNone && len(state.Todo.Items) > 0 {
-					e.emitTodoUpdate(ctx, state.Todo, state.Todo.SummaryText())
+					e.emitTodoUpdate(ctx, state.Todo, state.Todo.SummaryText(), false)
 				}
 				if e.Recorder != nil {
 					e.Recorder.RecordPlannerDecision(turn.CommittedPlan)
 					e.Recorder.RecordLoopPhase(phaseExecution, "commit_plan")
+				}
+			case plannerTurnSetTodo:
+				if turn.Step != nil {
+					state.ToolSteps = append(state.ToolSteps, *turn.Step)
+				}
+				if turn.Todo.Mode != TodoModeNone && len(turn.Todo.Items) > 0 {
+					e.emitTodoUpdate(ctx, turn.Todo, turn.Todo.CurrentSpeech(), turn.TodoSpeechEligible)
 				}
 			case plannerTurnCancelPlan:
 				if turn.Step != nil {
@@ -265,6 +274,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
 						return nil, err
 					}
+					state.noteDefaultToolCallAndMaybeTodoReminder()
 				}
 			}
 		case phaseExecution:
@@ -272,7 +282,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				state.syncNextStepFromPlanIndex()
 				state.beginStepExecution()
 				if todo, ok := state.startCurrentTodoStep(); ok {
-					e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech())
+					e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), true)
 				}
 			}
 			turn, err := e.callExecutorTurn(ctx, inputs, &state, toolSpecs, options...)
@@ -316,11 +326,11 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				state.recordPlanStepResult(verification)
 				if verification.NeedsReplan {
 					if todo, ok := state.blockCurrentTodoStep(verification.Reason); ok {
-						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech())
+						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), false)
 					}
 				} else {
 					if todo, ok := state.finishCurrentTodoStep(); ok {
-						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech())
+						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), false)
 					}
 				}
 				state.clearStepExecution()
@@ -380,13 +390,16 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 
 	task := plannerTaskForPhase(state.Phase, *state, e.ForceSimpleLoop)
 	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
+	state.PendingTodoReminder = ""
 	plannerTools := e.Tools
-	if !e.ForceSimpleLoop {
+	if e.ForceSimpleLoop {
+		plannerTools = appendSimpleTodoMetaTools(e.Tools)
+	} else {
 		switch state.Phase {
 		case phasePlan:
 			plannerTools = appendPlannerReadOnlyTools(loopMetaTools(), e.Tools)
 		default:
-			plannerTools = appendLoopMetaTools(e.Tools)
+			plannerTools = appendDefaultLoopMetaTools(e.Tools)
 		}
 	}
 	parser := &FunctionAgent{
@@ -470,7 +483,7 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 		if e.CallbacksHandler != nil {
 			e.CallbacksHandler.HandleAgentAction(ctx, action)
 		}
-		if e.ForceSimpleLoop {
+		if e.ForceSimpleLoop && !toolNameEqual(action.Tool, toolSetTodo) {
 			return plannerTurnResult{
 				Kind: plannerTurnInvalidMeta,
 				Step: &schema.AgentStep{
@@ -562,13 +575,6 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 	toolSpecs *ToolSpecs,
 	action schema.AgentAction,
 ) (plannerTurnResult, error) {
-	if state != nil && state.Phase == phaseDefault && toolSpecs != nil {
-		if spec, ok := toolSpecs.Lookup(action.Tool); ok {
-			if todo, changed := state.ensureImplicitSimpleTodo(spec); changed {
-				e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech())
-			}
-		}
-	}
 	toolExecution := executeToolCall(ctx, ToolCallExecution{
 		Specs:    toolSpecs,
 		Action:   action,
@@ -602,10 +608,10 @@ func (e *roleCollaborativeExecutor) finishRun(ctx context.Context, finalAnswer, 
 }
 
 type todoUpdateHandler interface {
-	HandleTodoUpdate(ctx context.Context, todo TodoState, content string)
+	HandleTodoUpdate(ctx context.Context, todo TodoState, content string, speechEligible bool)
 }
 
-func (e *roleCollaborativeExecutor) emitTodoUpdate(ctx context.Context, todo TodoState, content string) {
+func (e *roleCollaborativeExecutor) emitTodoUpdate(ctx context.Context, todo TodoState, content string, speechEligible bool) {
 	if e == nil || e.CallbacksHandler == nil {
 		return
 	}
@@ -613,7 +619,7 @@ func (e *roleCollaborativeExecutor) emitTodoUpdate(ctx context.Context, todo Tod
 	if !ok {
 		return
 	}
-	handler.HandleTodoUpdate(ctx, todo.Clone(), strings.TrimSpace(content))
+	handler.HandleTodoUpdate(ctx, todo.Clone(), strings.TrimSpace(content), speechEligible)
 }
 
 func (e *roleCollaborativeExecutor) consumePendingSteer(ctx context.Context, inputs map[string]string, state *roleLoopState) (bool, error) {
@@ -902,6 +908,8 @@ func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task
 		builder.WriteString("\n\nConversation history:\n")
 		builder.WriteString(history)
 	}
+	writeTodoState(&builder, state)
+	writeTodoReminder(&builder, state)
 	writeCurrentPlan(&builder, state)
 	writeExecutorResults(&builder, state)
 	writeVerifierFeedback(&builder, state)
@@ -1252,6 +1260,47 @@ func writeCurrentPlan(builder *strings.Builder, state roleLoopState) {
 		builder.WriteString("\n\nPlanner reason:\n")
 		builder.WriteString(reason)
 	}
+}
+
+func writeTodoState(builder *strings.Builder, state roleLoopState) {
+	if state.Todo.Mode == TodoModeNone || len(state.Todo.Items) == 0 {
+		return
+	}
+	builder.WriteString("\n\nCurrent todo state:\n")
+	builder.WriteString(fmt.Sprintf("- mode: %s\n", state.Todo.Mode))
+	builder.WriteString(fmt.Sprintf("- revision: %d\n", state.Todo.Revision))
+	if objective := strings.TrimSpace(state.Todo.Objective); objective != "" {
+		builder.WriteString("- objective: ")
+		builder.WriteString(objective)
+		builder.WriteByte('\n')
+	}
+	for _, item := range state.Todo.Items {
+		marker := " "
+		if item.ID == state.Todo.CurrentID {
+			marker = "*"
+		}
+		builder.WriteString(fmt.Sprintf("%s %d. [%s] %s\n", marker, item.StepIndex, item.Status, item.Text))
+	}
+	switch state.Todo.Mode {
+	case TodoModeSimple:
+		if state.Phase == phaseDefault {
+			builder.WriteString("Use set_todo if this todo state is stale; otherwise continue normally.\n")
+		} else {
+			builder.WriteString("This todo was created in single-agent mode; a committed plan will replace it.\n")
+		}
+	case TodoModePlanned:
+		builder.WriteString("This todo state is derived from the committed plan and updates through plan execution.\n")
+	}
+}
+
+func writeTodoReminder(builder *strings.Builder, state roleLoopState) {
+	reminder := strings.TrimSpace(state.PendingTodoReminder)
+	if reminder == "" {
+		return
+	}
+	builder.WriteString("\n\nTodo reminder:\n")
+	builder.WriteString(reminder)
+	builder.WriteByte('\n')
 }
 
 func writeExecutorResults(builder *strings.Builder, state roleLoopState) {

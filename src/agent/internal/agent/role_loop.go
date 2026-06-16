@@ -26,16 +26,19 @@ const (
 	plannerTurnEnterPlan
 	plannerTurnUseSimpleMode
 	plannerTurnCommitPlan
+	plannerTurnSetTodo
 	plannerTurnCancelPlan
 	plannerTurnInvalidMeta
 )
 
 type plannerTurnResult struct {
-	Kind            plannerTurnKind
-	Answer          string
-	Step            *schema.AgentStep
-	CommittedPlan   plannerDecision
-	InvalidMetaStep *schema.AgentStep
+	Kind               plannerTurnKind
+	Answer             string
+	Step               *schema.AgentStep
+	CommittedPlan      plannerDecision
+	Todo               TodoState
+	TodoSpeechEligible bool
+	InvalidMetaStep    *schema.AgentStep
 }
 
 type routeMode string
@@ -447,7 +450,7 @@ func routeShouldUsePlan(request string) bool {
 
 func plannerTaskForPhase(phase loopPhase, state roleLoopState, forceSimpleLoop bool) string {
 	if forceSimpleLoop {
-		return "Simple loop mode: plan-mode tools are disabled by configuration. Use available tools directly and return a final answer when the request is satisfied."
+		return "Single-agent simple loop mode: delegated plan mode is disabled by configuration. Use available tools directly and return a final answer when the request is satisfied. If the task becomes multi-step, use set_todo to maintain a visible todo list without switching modes."
 	}
 	switch phase {
 	case phaseDecision:
@@ -467,7 +470,7 @@ func plannerTaskForPhase(phase loopPhase, state roleLoopState, forceSimpleLoop b
 		}
 		return task
 	default:
-		return "Simple/default mode: the route phase selected ordinary execution. Use available tools directly as needed and return a final answer when the request is satisfied."
+		return "Single-agent default mode: use available tools directly as needed and return a final answer when the request is satisfied. If the task becomes multi-step, use set_todo to maintain a visible todo list without switching to delegated plan mode."
 	}
 }
 
@@ -478,7 +481,8 @@ func writeLoopMode(builder *strings.Builder, state roleLoopState) {
 	builder.WriteByte('\n')
 	if state.ForceSimpleLoop {
 		builder.WriteString("- force_simple_loop: true\n")
-		builder.WriteString("- plan mode tools are disabled; use available tools directly and return a final answer when done.\n")
+		builder.WriteString("- delegated plan mode tools are disabled; use available tools directly and return a final answer when done.\n")
+		builder.WriteString("- set_todo is available when this single-agent task needs explicit multi-step tracking.\n")
 		return
 	}
 	if state.Phase == phaseDecision {
@@ -510,6 +514,7 @@ func writeLoopMode(builder *strings.Builder, state roleLoopState) {
 	if state.Phase == phaseDefault {
 		builder.WriteString("- final answers in default mode end the run directly without verifier.\n")
 		builder.WriteString("- commit_plan is not available in default mode.\n")
-		builder.WriteString("- this request was routed to simple/default mode; complete it directly without a delegated plan unless the user changes the task.\n")
+		builder.WriteString("- set_todo is available if this single-agent task needs explicit multi-step tracking.\n")
+		builder.WriteString("- complete directly without a delegated plan unless the user changes the task or the task needs explicit planning.\n")
 	}
 }

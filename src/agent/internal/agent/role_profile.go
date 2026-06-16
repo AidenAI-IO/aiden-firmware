@@ -118,9 +118,9 @@ func verifierRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 
 func plannerToolsForConfig(cfg AgentConfig, tools []langtools.Tool) []langtools.Tool {
 	if cfg.ForceSimpleLoop {
-		return append([]langtools.Tool{}, tools...)
+		return appendSimpleTodoMetaTools(tools)
 	}
-	return appendLoopMetaTools(tools)
+	return appendDefaultLoopMetaTools(tools)
 }
 
 func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
@@ -132,12 +132,14 @@ func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 	if cfg.ForceSimpleLoop {
 		rules = append(rules,
 			"Use simple loop mode for every request: call available tools directly and return a final answer when the request is satisfied.",
+			"Use set_todo when a single-agent task becomes multi-step and needs visible progress tracking; otherwise do not create a todo.",
 			"Plan mode is disabled by configuration: do not enter, draft, commit, cancel, or mention a delegated multi-step plan.",
 			structuredFinalRule,
 		)
 	} else {
 		rules = append(rules,
 			"Route phase chooses direct_answer, simple, or plan before ordinary execution. In default mode, complete the routed request directly with available tools and return a final answer when satisfied.",
+			"In default mode, use set_todo when the single-agent task becomes multi-step and needs visible progress tracking; otherwise do not create a todo.",
 			structuredFinalRule,
 			"Use plan mode for requests that need explicit planning, checkpoints, information gathering before acting, multiple independent stages, record aggregation, reconciliation, branching, or several required output facts.",
 			"In plan mode, you may use read-only information-gathering tools when context is missing. Do not execute computation, mutation, input, or other task-completion tools directly in plan mode.",

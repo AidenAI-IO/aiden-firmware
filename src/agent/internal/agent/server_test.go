@@ -88,8 +88,8 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if resp.Response != "The current audio volume is 42." {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
-	if len(resp.History) != 7 {
-		t.Fatalf("expected 7 history entries for default-mode planner tool flow, got %d", len(resp.History))
+	if len(resp.History) != 6 {
+		t.Fatalf("expected 6 history entries for default-mode planner tool flow, got %d", len(resp.History))
 	}
 
 	if resp.History[0].Type != "user" || resp.History[0].Content != "当前音量是多少？" {
@@ -105,13 +105,6 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	}
 	if toolCall.Description != "我先读取当前音量。" || toolCall.Content != "我先读取当前音量。" {
 		t.Fatalf("unexpected tool_call description: %#v", toolCall)
-	}
-	todoUpdate, ok := firstMessageOfType(resp.History, "todo_update")
-	if !ok || todoUpdate.Todo == nil || todoUpdate.Todo.Mode != TodoModeSimple {
-		t.Fatalf("expected implicit todo_update message: %#v", resp.History)
-	}
-	if todoUpdate.Content != "读取当前状态" || todoUpdate.Todo.Items[0].Status != TodoInProgress {
-		t.Fatalf("unexpected todo_update message: %#v", todoUpdate)
 	}
 	toolResult, ok := firstMessageOfType(resp.History, "tool_result")
 	if !ok || toolResult.ToolName != "audio_volume" || toolResult.Content != `{"volume":42}` {

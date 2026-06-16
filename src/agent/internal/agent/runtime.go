@@ -131,16 +131,17 @@ type RunMetrics struct {
 }
 
 type RunEvent struct {
-	Type        string     `json:"type"`
-	Role        string     `json:"role,omitempty"`
-	EpisodeID   string     `json:"episode_id,omitempty"`
-	ToolName    string     `json:"tool_name,omitempty"`
-	ToolInput   string     `json:"tool_input,omitempty"`
-	Description string     `json:"description,omitempty"`
-	Content     string     `json:"content,omitempty"`
-	Todo        *TodoState `json:"todo,omitempty"`
-	Timestamp   time.Time  `json:"timestamp"`
-	IsError     bool       `json:"is_error,omitempty"`
+	Type           string     `json:"type"`
+	Role           string     `json:"role,omitempty"`
+	EpisodeID      string     `json:"episode_id,omitempty"`
+	ToolName       string     `json:"tool_name,omitempty"`
+	ToolInput      string     `json:"tool_input,omitempty"`
+	Description    string     `json:"description,omitempty"`
+	Content        string     `json:"content,omitempty"`
+	Todo           *TodoState `json:"todo,omitempty"`
+	SpeechEligible bool       `json:"speech_eligible,omitempty"`
+	Timestamp      time.Time  `json:"timestamp"`
+	IsError        bool       `json:"is_error,omitempty"`
 }
 
 type usageTrackingModel struct {
@@ -1257,20 +1258,21 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 
 func (h *runtimeCallbackHandler) HandleAgentFinish(ctx context.Context, finish schema.AgentFinish) {}
 
-func (h *runtimeCallbackHandler) HandleTodoUpdate(ctx context.Context, todo TodoState, content string) {
+func (h *runtimeCallbackHandler) HandleTodoUpdate(ctx context.Context, todo TodoState, content string, speechEligible bool) {
 	content = strings.TrimSpace(content)
 	snapshot := todo.Clone()
 	if h.logger != nil {
-		h.logger.Info("Todo update: mode=%s revision=%d current_id=%s content=%s",
-			snapshot.Mode, snapshot.Revision, snapshot.CurrentID, truncateForLog(content, 240))
+		h.logger.Info("Todo update: mode=%s revision=%d current_id=%s speech_eligible=%v content=%s",
+			snapshot.Mode, snapshot.Revision, snapshot.CurrentID, speechEligible, truncateForLog(content, 240))
 	}
 	if h.eventHandler != nil {
 		h.eventHandler(RunEvent{
-			Type:      "todo_update",
-			EpisodeID: h.episodeID,
-			Content:   content,
-			Todo:      &snapshot,
-			Timestamp: time.Now(),
+			Type:           "todo_update",
+			EpisodeID:      h.episodeID,
+			Content:        content,
+			Todo:           &snapshot,
+			SpeechEligible: speechEligible,
+			Timestamp:      time.Now(),
 		})
 	}
 }

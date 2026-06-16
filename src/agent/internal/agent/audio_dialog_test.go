@@ -360,20 +360,21 @@ func TestAudioDialogProgressSpeechDisabledDoesNotSpeakTodoUpdate(t *testing.T) {
 	}, progressSpeakerConfig{Delay: time.Millisecond, MinInterval: -1}))
 
 	todo := TodoState{
-		Mode:      TodoModeSimple,
+		Mode:      TodoModePlanned,
 		Revision:  1,
 		CurrentID: "todo-1",
 		Items: []TodoItem{{
 			ID:     "todo-1",
-			Text:   "检查当前界面",
+			Text:   "Inspect current screen",
 			Status: TodoInProgress,
-			Source: TodoSourceImplicitSimple,
+			Source: TodoSourceCommittedPlan,
 		}},
 	}
 	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:    "todo_update",
-		Content: "检查当前界面",
-		Todo:    &todo,
+		Type:           "todo_update",
+		Content:        "Inspect current screen",
+		Todo:           &todo,
+		SpeechEligible: true,
 	})
 
 	select {
@@ -395,11 +396,14 @@ func TestProgressSpeechTextForEventOnlySpeaksInProgressCurrentItem(t *testing.T)
 			Source: TodoSourceCommittedPlan,
 		}},
 	}
-	if text, ok := progressSpeechTextForEvent(RunEvent{Type: "todo_update", Content: "Inspect current screen", Todo: &todo}); ok {
+	if text, ok := progressSpeechTextForEvent(RunEvent{Type: "todo_update", Content: "Inspect current screen", Todo: &todo, SpeechEligible: true}); ok {
 		t.Fatalf("done todo should not be spoken, got %q", text)
 	}
 	todo.Items[0].Status = TodoInProgress
-	text, ok := progressSpeechTextForEvent(RunEvent{Type: "todo_update", Content: "Inspect current screen", Todo: &todo})
+	if text, ok := progressSpeechTextForEvent(RunEvent{Type: "todo_update", Content: "Inspect current screen", Todo: &todo}); ok {
+		t.Fatalf("in-progress todo without speech eligibility should not be spoken, got %q", text)
+	}
+	text, ok := progressSpeechTextForEvent(RunEvent{Type: "todo_update", Content: "Inspect current screen", Todo: &todo, SpeechEligible: true})
 	if !ok || text != "Inspect current screen" {
 		t.Fatalf("in-progress todo speech = %q ok=%v", text, ok)
 	}

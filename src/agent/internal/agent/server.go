@@ -103,6 +103,7 @@ type Message struct {
 	Status          string              `json:"status,omitempty"`
 	Content         string              `json:"content"`
 	Todo            *TodoState          `json:"todo,omitempty"`
+	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
 	Description     string              `json:"description,omitempty"`
@@ -715,17 +716,18 @@ func (s *Server) handleChatAsync(
 				episodeID = userMsg.EpisodeID
 			}
 			msg := Message{
-				Type:        event.Type,
-				Role:        event.Role,
-				EpisodeID:   episodeID,
-				RequestID:   requestID,
-				Content:     event.Content,
-				Todo:        cloneTodoStatePtr(event.Todo),
-				ToolName:    event.ToolName,
-				ToolInput:   event.ToolInput,
-				Description: event.Description,
-				Timestamp:   event.Timestamp,
-				IsError:     event.IsError,
+				Type:           event.Type,
+				Role:           event.Role,
+				EpisodeID:      episodeID,
+				RequestID:      requestID,
+				Content:        event.Content,
+				Todo:           cloneTodoStatePtr(event.Todo),
+				SpeechEligible: event.SpeechEligible,
+				ToolName:       event.ToolName,
+				ToolInput:      event.ToolInput,
+				Description:    event.Description,
+				Timestamp:      event.Timestamp,
+				IsError:        event.IsError,
 			}
 			s.appendHistory(msg)
 			pending.mu.Lock()
@@ -973,16 +975,17 @@ func (s *Server) handleChatSync(
 				eventEpisodeID = episodeID
 			}
 			s.appendHistory(Message{
-				Type:        event.Type,
-				Role:        event.Role,
-				EpisodeID:   eventEpisodeID,
-				Content:     event.Content,
-				Todo:        cloneTodoStatePtr(event.Todo),
-				ToolName:    event.ToolName,
-				ToolInput:   event.ToolInput,
-				Description: event.Description,
-				Timestamp:   event.Timestamp,
-				IsError:     event.IsError,
+				Type:           event.Type,
+				Role:           event.Role,
+				EpisodeID:      eventEpisodeID,
+				Content:        event.Content,
+				Todo:           cloneTodoStatePtr(event.Todo),
+				SpeechEligible: event.SpeechEligible,
+				ToolName:       event.ToolName,
+				ToolInput:      event.ToolInput,
+				Description:    event.Description,
+				Timestamp:      event.Timestamp,
+				IsError:        event.IsError,
 			})
 			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(r.Context(), event.Description)
@@ -1163,17 +1166,18 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				eventEpisodeID = episodeID
 			}
 			message := Message{
-				Type:        event.Type,
-				Role:        event.Role,
-				EpisodeID:   eventEpisodeID,
-				RequestID:   req.RequestID,
-				Content:     event.Content,
-				Todo:        cloneTodoStatePtr(event.Todo),
-				ToolName:    event.ToolName,
-				ToolInput:   event.ToolInput,
-				Description: event.Description,
-				Timestamp:   event.Timestamp,
-				IsError:     event.IsError,
+				Type:           event.Type,
+				Role:           event.Role,
+				EpisodeID:      eventEpisodeID,
+				RequestID:      req.RequestID,
+				Content:        event.Content,
+				Todo:           cloneTodoStatePtr(event.Todo),
+				SpeechEligible: event.SpeechEligible,
+				ToolName:       event.ToolName,
+				ToolInput:      event.ToolInput,
+				Description:    event.Description,
+				Timestamp:      event.Timestamp,
+				IsError:        event.IsError,
 			}
 			s.appendHistory(message)
 			stream.Write(ChatStreamEvent{Type: "message", Message: &message})

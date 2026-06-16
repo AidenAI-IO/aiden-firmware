@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -26,8 +27,17 @@ type TodoSource string
 
 const (
 	TodoSourceCommittedPlan  TodoSource = "committed_plan"
-	TodoSourceImplicitSimple TodoSource = "implicit_simple"
+	TodoSourceExplicitSimple TodoSource = "explicit_simple"
 )
+
+type simpleTodoUpdate struct {
+	Objective        string
+	Items            []string
+	CurrentIndex     int
+	CompletedIndices []int
+	BlockedIndices   []int
+	Reason           string
+}
 
 type TodoItem struct {
 	ID        string     `json:"id"`
@@ -47,6 +57,7 @@ type TodoState struct {
 }
 
 const todoSpeechMaxRunes = 40
+const defaultTodoReminderToolCalls = 4
 
 func (s TodoState) Clone() TodoState {
 	cloned := s
@@ -88,7 +99,10 @@ func (s TodoState) SummaryText() string {
 		}
 		return fmt.Sprintf("Plan committed: %d steps", len(s.Items))
 	case TodoModeSimple:
-		return s.CurrentSpeech()
+		if len(s.Items) == 0 {
+			return ""
+		}
+		return fmt.Sprintf("Todo updated: %d items", len(s.Items))
 	default:
 		return ""
 	}
@@ -151,33 +165,60 @@ func (s *roleLoopState) blockCurrentTodoStep(_ string) (TodoState, bool) {
 	return s.setCurrentTodoStatus(TodoBlocked)
 }
 
-func (s *roleLoopState) ensureImplicitSimpleTodo(spec ToolSpec) (TodoState, bool) {
-	if s == nil || len(s.Todo.Items) > 0 || s.Todo.Mode == TodoModePlanned {
-		return TodoState{}, false
-	}
-	text := implicitSimpleTodoText(spec)
-	if text == "" {
-		return TodoState{}, false
-	}
+func (s *roleLoopState) applySimpleTodoUpdate(update simpleTodoUpdate) (TodoState, bool) {
 	revision := s.Todo.Revision + 1
 	if revision <= 0 {
 		revision = 1
 	}
-	item := TodoItem{
-		ID:     fmt.Sprintf("todo-r%d-simple", revision),
-		Text:   text,
-		Speech: deriveTodoSpeech(text),
-		Status: TodoInProgress,
-		Source: TodoSourceImplicitSimple,
+	completed := indexSet(update.CompletedIndices)
+	blocked := indexSet(update.BlockedIndices)
+	items := make([]TodoItem, 0, len(update.Items))
+	for i, itemText := range update.Items {
+		stepIndex := i + 1
+		text := strings.TrimSpace(itemText)
+		status := TodoPending
+		if completed[stepIndex] {
+			status = TodoDone
+		}
+		if blocked[stepIndex] {
+			status = TodoBlocked
+		}
+		if stepIndex == update.CurrentIndex {
+			status = TodoInProgress
+		}
+		items = append(items, TodoItem{
+			ID:        fmt.Sprintf("todo-r%d-simple%d", revision, stepIndex),
+			Text:      text,
+			Speech:    deriveTodoSpeech(text),
+			Status:    status,
+			Source:    TodoSourceExplicitSimple,
+			StepIndex: stepIndex,
+		})
+	}
+	objective := strings.TrimSpace(update.Objective)
+	if objective == "" {
+		objective = strings.TrimSpace(s.Objective)
+	}
+	currentID := ""
+	if update.CurrentIndex >= 1 && update.CurrentIndex <= len(items) {
+		currentID = items[update.CurrentIndex-1].ID
+	}
+	speechEligible := false
+	if currentID != "" {
+		current := items[update.CurrentIndex-1]
+		previousStatus := s.Todo.statusForText(current.Text)
+		speechEligible = current.Status == TodoInProgress && (previousStatus == "" || previousStatus == TodoPending)
 	}
 	s.Todo = TodoState{
 		Mode:      TodoModeSimple,
-		Objective: strings.TrimSpace(s.Objective),
+		Objective: objective,
 		Revision:  revision,
-		CurrentID: item.ID,
-		Items:     []TodoItem{item},
+		CurrentID: currentID,
+		Items:     items,
 	}
-	return s.Todo.Clone(), true
+	s.DefaultToolCallsSinceTodoTouch = 0
+	s.PendingTodoReminder = ""
+	return s.Todo.Clone(), speechEligible
 }
 
 func (s *roleLoopState) setCurrentTodoStatus(status TodoStatus) (TodoState, bool) {
@@ -214,19 +255,109 @@ func (s *roleLoopState) setCurrentTodoStatus(status TodoStatus) (TodoState, bool
 	return s.Todo.Clone(), true
 }
 
-func implicitSimpleTodoText(spec ToolSpec) string {
-	switch strings.ToLower(strings.TrimSpace(spec.Category)) {
-	case "observation":
-		return "检查当前界面"
-	case "web":
-		return "查找相关信息"
-	case "memory":
-		return "回看已有记录"
-	case "audio", "system":
-		return "读取当前状态"
-	default:
-		return ""
+func (s TodoState) statusForText(text string) TodoStatus {
+	text = strings.TrimSpace(text)
+	for _, item := range s.Items {
+		if strings.TrimSpace(item.Text) == text {
+			return item.Status
+		}
 	}
+	return ""
+}
+
+func parseSetTodoInput(raw string) (simpleTodoUpdate, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return simpleTodoUpdate{}, fmt.Errorf("set_todo requires a JSON payload")
+	}
+	var payload struct {
+		Objective        string          `json:"objective"`
+		Items            json.RawMessage `json:"items"`
+		CurrentIndex     int             `json:"current_index"`
+		CompletedIndices []int           `json:"completed_indices"`
+		BlockedIndices   []int           `json:"blocked_indices"`
+		Reason           string          `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return simpleTodoUpdate{}, fmt.Errorf("set_todo payload must be valid JSON: %w", err)
+	}
+	update := simpleTodoUpdate{
+		Objective:        strings.TrimSpace(payload.Objective),
+		Items:            uniqueNonEmpty(parseStructuredStringList(payload.Items)),
+		CurrentIndex:     payload.CurrentIndex,
+		CompletedIndices: uniquePositiveIndices(payload.CompletedIndices),
+		BlockedIndices:   uniquePositiveIndices(payload.BlockedIndices),
+		Reason:           strings.TrimSpace(payload.Reason),
+	}
+	if len(update.Items) == 0 {
+		return simpleTodoUpdate{}, fmt.Errorf("set_todo requires at least one item")
+	}
+	if update.CurrentIndex < 1 || update.CurrentIndex > len(update.Items) {
+		return simpleTodoUpdate{}, fmt.Errorf("current_index must be between 1 and %d", len(update.Items))
+	}
+	completed := indexSet(update.CompletedIndices)
+	blocked := indexSet(update.BlockedIndices)
+	if completed[update.CurrentIndex] || blocked[update.CurrentIndex] {
+		return simpleTodoUpdate{}, fmt.Errorf("current_index cannot also be completed or blocked")
+	}
+	return update, nil
+}
+
+func todoCurrentStepIndex(todo TodoState) int {
+	currentID := strings.TrimSpace(todo.CurrentID)
+	if currentID == "" {
+		return 0
+	}
+	for _, item := range todo.Items {
+		if item.ID == currentID {
+			return item.StepIndex
+		}
+	}
+	return 0
+}
+
+func uniquePositiveIndices(values []int) []int {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[int]bool{}
+	var out []int
+	for _, value := range values {
+		if value <= 0 || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func indexSet(values []int) map[int]bool {
+	set := map[int]bool{}
+	for _, value := range values {
+		if value > 0 {
+			set[value] = true
+		}
+	}
+	return set
+}
+
+func (s *roleLoopState) noteDefaultToolCallAndMaybeTodoReminder() bool {
+	if s == nil || s.Phase != phaseDefault {
+		return false
+	}
+	s.DefaultToolCallsSinceTodoTouch++
+	hasTodo := s.Todo.Mode == TodoModeSimple && len(s.Todo.Items) > 0
+	if s.DefaultToolCallsSinceTodoTouch < defaultTodoReminderToolCalls {
+		return false
+	}
+	s.DefaultToolCallsSinceTodoTouch = 0
+	message := "This single-agent loop has used several tool calls without a todo. If the task has become multi-step, call set_todo with the current item; otherwise continue normally."
+	if hasTodo {
+		message = "Several tool calls have run since the todo was updated. If the current todo is stale, completed, blocked, or you moved to another subtask, call set_todo; otherwise continue normally."
+	}
+	s.PendingTodoReminder = message
+	return true
 }
 
 func deriveTodoSpeech(text string) string {

@@ -949,6 +949,18 @@ func commitPlanToolCall(plan ...string) *llms.ContentResponse {
 	return toolCallResponse("commit_1", toolCommitPlan, fmt.Sprintf(`{"__arg1":%q,"description":"commit plan"}`, string(payload)))
 }
 
+func setTodoToolCall(id string, items []string, currentIndex int, completed, blocked []int) *llms.ContentResponse {
+	payload, _ := json.Marshal(map[string]any{
+		"objective":         "test objective",
+		"items":             items,
+		"current_index":     currentIndex,
+		"completed_indices": completed,
+		"blocked_indices":   blocked,
+		"reason":            "test todo update",
+	})
+	return toolCallResponse(id, toolSetTodo, fmt.Sprintf(`{"__arg1":%q,"description":"set todo"}`, string(payload)))
+}
+
 func roleCommittedExecutionResponses(planSteps []string, pairs ...*llms.ContentResponse) []*llms.ContentResponse {
 	responses := []*llms.ContentResponse{
 		enterPlanModeToolCall(),
@@ -1526,7 +1538,7 @@ func TestRuntimeDirectAnswerDoesNotGenerateTodo(t *testing.T) {
 	}
 }
 
-func TestRuntimeSimpleLoopGeneratesSingleImplicitTodo(t *testing.T) {
+func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
@@ -1557,19 +1569,15 @@ func TestRuntimeSimpleLoopGeneratesSingleImplicitTodo(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 	todos := runEventsOfType(events, "todo_update")
-	if len(todos) != 1 {
-		t.Fatalf("todo_update events = %d, want 1: %#v", len(todos), todos)
+	if len(todos) != 0 {
+		t.Fatalf("simple loop emitted implicit todo_update events: %#v", todos)
 	}
-	todo := todos[0].Todo
-	if todo == nil || todo.Mode != TodoModeSimple || todo.Items[0].Source != TodoSourceImplicitSimple || todo.Items[0].Status != TodoInProgress {
-		t.Fatalf("unexpected implicit todo: %#v", todo)
-	}
-	if todo.Items[0].Text != "检查当前界面" || todos[0].Content != "检查当前界面" {
-		t.Fatalf("unexpected implicit todo content: event=%#v todo=%#v", todos[0], todo)
+	if len(screenshot.inputs) != 1 || len(webSearch.inputs) != 1 {
+		t.Fatalf("expected simple tools to execute without todo, screenshot=%#v web=%#v", screenshot.inputs, webSearch.inputs)
 	}
 }
 
-func TestRuntimeForceSimpleLoopOnlyGeneratesImplicitTodo(t *testing.T) {
+func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			toolCallResponse("call_1", "web_search", `{"__arg1":"Aiden"}`),
@@ -1595,11 +1603,89 @@ func TestRuntimeForceSimpleLoopOnlyGeneratesImplicitTodo(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 	todos := runEventsOfType(events, "todo_update")
-	if len(todos) != 1 {
-		t.Fatalf("todo_update events = %d, want 1: %#v", len(todos), todos)
+	if len(todos) != 0 {
+		t.Fatalf("force_simple_loop emitted todo_update events: %#v", todos)
 	}
-	if todos[0].Todo == nil || todos[0].Todo.Mode != TodoModeSimple || todos[0].Todo.Items[0].Source != TodoSourceImplicitSimple {
-		t.Fatalf("force_simple_loop should only produce implicit simple todo: %#v", todos[0].Todo)
+	if len(webSearch.inputs) != 1 {
+		t.Fatalf("expected force_simple_loop tool to execute without todo, inputs=%#v", webSearch.inputs)
+	}
+}
+
+func TestRuntimeForceSimpleLoopExplicitTodoLifecycle(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			setTodoToolCall("todo_1", []string{"inspect state", "write answer"}, 1, nil, nil),
+			toolCallResponse("call_1", "web_search", `{"__arg1":"Aiden"}`),
+			setTodoToolCall("todo_2", []string{"inspect state", "write answer"}, 2, []int{1}, nil),
+			contentResponse("done"),
+		},
+	}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "complex single-agent task",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	todos := runEventsOfType(events, "todo_update")
+	if len(todos) != 2 {
+		t.Fatalf("todo_update events = %d, want 2: %#v", len(todos), todos)
+	}
+	first := todos[0].Todo
+	if first == nil || first.Mode != TodoModeSimple || first.Revision != 1 || len(first.Items) != 2 {
+		t.Fatalf("unexpected first todo: %#v", first)
+	}
+	if !todos[0].SpeechEligible || first.Items[0].Status != TodoInProgress || first.Items[0].Source != TodoSourceExplicitSimple {
+		t.Fatalf("first todo should start item 1 with speech eligibility: event=%#v todo=%#v", todos[0], first)
+	}
+	second := todos[1].Todo
+	if second == nil || second.Revision != 2 {
+		t.Fatalf("unexpected second todo: %#v", second)
+	}
+	if !todos[1].SpeechEligible || second.Items[0].Status != TodoDone || second.Items[1].Status != TodoInProgress {
+		t.Fatalf("second todo should advance to item 2 with speech eligibility: event=%#v todo=%#v", todos[1], second)
+	}
+}
+
+func TestRuntimeSimpleLoopTodoReminderAfterSeveralToolCalls(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("call_1", "web_search", `{"__arg1":"one"}`),
+			toolCallResponse("call_2", "web_search", `{"__arg1":"two"}`),
+			toolCallResponse("call_3", "web_search", `{"__arg1":"three"}`),
+			toolCallResponse("call_4", "web_search", `{"__arg1":"four"}`),
+			contentResponse("done"),
+		},
+	}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "complex single-agent task"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) < 5 {
+		t.Fatalf("expected fifth model call after reminder, got %d", len(model.messages))
+	}
+	prompt := messageText(model.messages[4])
+	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
+		t.Fatalf("fifth prompt missing todo reminder:\n%s", prompt)
 	}
 }
 
