@@ -77,6 +77,75 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunUsesSessionCommitter(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponseWithInfo("Old answer.", map[string]any{"prompt_tokens": 321}),
+			contentResponse("Committed answer."),
+		},
+	}
+	committer := &recordingSessionCommitter{
+		result: SessionCommitResult{
+			Memory: []MessageRecord{{Role: "human", Content: "committed snapshot"}},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.sessionCommitter = committer
+
+	var steerCalls int32
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "original request",
+		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			if atomic.AddInt32(&steerCalls, 1) != 1 {
+				return RunSteerMessage{}, false
+			}
+			return RunSteerMessage{ID: "steer-1", Content: "change direction"}, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if committer.calls != 1 {
+		t.Fatalf("expected one session commit, got %d", committer.calls)
+	}
+	if committer.req.AgentName != "default" {
+		t.Fatalf("agent name = %q, want default", committer.req.AgentName)
+	}
+	if committer.req.Input != "original request" || committer.req.Output != "Committed answer." {
+		t.Fatalf("unexpected commit request: %#v", committer.req)
+	}
+	if len(committer.req.Steers) != 1 || committer.req.Steers[0].Content != "change direction" {
+		t.Fatalf("unexpected commit steers: %#v", committer.req.Steers)
+	}
+	if committer.req.Metrics == nil || committer.req.Metrics.LastPromptTokens != 321 {
+		t.Fatalf("commit metrics missing prompt tokens: %#v", committer.req.Metrics)
+	}
+	assertMemoryRecords(t, result.Memory, committer.result.Memory)
+}
+
+type recordingSessionCommitter struct {
+	calls  int
+	req    SessionCommitRequest
+	result SessionCommitResult
+	err    error
+}
+
+func (c *recordingSessionCommitter) CommitRun(ctx context.Context, req SessionCommitRequest) (SessionCommitResult, error) {
+	c.calls++
+	c.req = req
+	if c.err != nil {
+		return SessionCommitResult{}, c.err
+	}
+	return c.result, nil
+}
+
 func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("echo", `{"__arg1":"original action"}`, "Changed course."),
