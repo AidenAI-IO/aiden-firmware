@@ -420,6 +420,7 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		`/benchmark/skillopt-targets`,
 		`payload.mode='skillopt';`,
 		`payload.skillopt_backend=`,
+		`if(payload.skillopt_backend==='mobilegym')payload.board_url=location.origin;`,
 		`payload.mobilegym_parallel=`,
 		`payload.skill=`,
 		`payload.train_suite=`,
@@ -433,6 +434,8 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		`signal:controller.signal`,
 		`fetch(MOBILEGYM_HELPER_BASE+'/start'`,
 		`benchmarkEndpoint('/benchmark/suites')`,
+		`function usesMobileGymLocal()`,
+		`return usesMobileGymLocal()?MOBILEGYM_LOCAL_BASE+path:path`,
 		`benchmarkEndpoint('/benchmark/run')`,
 		`benchmarkEndpoint('/benchmark/status')`,
 		`benchmarkEndpoint('/benchmark/log')`,
@@ -730,14 +733,10 @@ func TestHandleBenchmarkRun_SkillOptRunIDHasCollisionResistantSuffix(t *testing.
 	}
 }
 
-func TestHandleBenchmarkRun_SkillOptMobileGymBackend(t *testing.T) {
+func TestHandleBenchmarkRun_SkillOptMobileGymBackendRequiresLocalLauncher(t *testing.T) {
 	root := t.TempDir()
 	skillsDir := filepath.Join(root, "skills")
 	writeBenchmarkSkill(t, skillsDir, "device-operator")
-	captured := struct {
-		backend           string
-		mobileGymParallel int
-	}{}
 	s := &Server{
 		runtime: &Runtime{config: Config{
 			Benchmark:  BenchmarkConfig{APIKey: "sk-judge"},
@@ -745,8 +744,7 @@ func TestHandleBenchmarkRun_SkillOptMobileGymBackend(t *testing.T) {
 		}},
 		benchmarkDir: root,
 		benchmarkSkillOptLauncher: func(spec benchmarkSkillOptLaunchSpec, optimizerModel, judgeModel, apiKey, agentModel, gotSkillsDir string) error {
-			captured.backend = spec.Backend
-			captured.mobileGymParallel = spec.MobileGymParallel
+			t.Fatal("board launcher should not run MobileGym SkillOpt")
 			return nil
 		},
 	}
@@ -756,11 +754,8 @@ func TestHandleBenchmarkRun_SkillOptMobileGymBackend(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/benchmark/run", strings.NewReader(body))
 	s.handleBenchmarkRun(rec, req)
 
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Mac MobileGym launcher") {
 		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
-	}
-	if captured.backend != "mobilegym" || captured.mobileGymParallel != 4 {
-		t.Fatalf("unexpected backend args: %+v", captured)
 	}
 }
 

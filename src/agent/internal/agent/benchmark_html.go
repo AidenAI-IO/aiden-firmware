@@ -163,7 +163,8 @@ var skillOptTargetBySkill={};
 var logPolling=null;
 var lastBenchmarkStatus={status:'idle'};
 var selectedSuiteKeysState=[];
-function benchmarkEndpoint(path){return getMode()==='mobilegym'?MOBILEGYM_LOCAL_BASE+path:path}
+function usesMobileGymLocal(){return getMode()==='mobilegym'||(getMode()==='skillopt'&&(document.getElementById('skillOptBackendSelect').value||'device')==='mobilegym')}
+function benchmarkEndpoint(path){return usesMobileGymLocal()?MOBILEGYM_LOCAL_BASE+path:path}
 function mobileGymLauncherMessage(e){return 'Start the Mac MobileGym launcher first: '+String(e)}
 function setStartLauncherVisible(visible){document.getElementById('startLauncherBtn').style.display=visible?'inline-block':'none'}
 function showMobileGymLauncherError(e){
@@ -484,6 +485,7 @@ if(!skill){alert('Select a skill');return}
 if(!validationKey){alert('Select a verification suite');return}
 payload.mode='skillopt';
 payload.skillopt_backend=document.getElementById('skillOptBackendSelect').value||'device';
+if(payload.skillopt_backend==='mobilegym')payload.board_url=location.origin;
 payload.mobilegym_parallel=Number(document.getElementById('parallelInput').value)||1;
 payload.skill=skill;
 payload.train_suite=aidenSuiteName(item,key);

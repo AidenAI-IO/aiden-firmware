@@ -296,6 +296,10 @@ func (s *Server) handleBenchmarkRun(w http.ResponseWriter, r *http.Request) {
 			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, fmt.Sprintf("invalid skillopt backend %q", backend))
 			return
 		}
+		if backend == "mobilegym" {
+			s.writeBenchmarkRunError(w, req.Mode, http.StatusBadRequest, "SkillOpt MobileGym runs on the Mac MobileGym launcher, not on the board")
+			return
+		}
 		mobileGymParallel := req.MobileGymParallel
 		if mobileGymParallel <= 0 {
 			mobileGymParallel = req.Parallel
