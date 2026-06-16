@@ -1187,6 +1187,53 @@ func (m *blockingFirstCallModel) Call(ctx context.Context, prompt string, option
 	return resp.Choices[0].Content, nil
 }
 
+func TestAudioDialogRunScriptUsesConfiguredTTS(t *testing.T) {
+	configDir := t.TempDir()
+	scriptsDir := filepath.Join(configDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeRunScriptTestFile(t, scriptsDir, "demo.jsonl", `{"tts":"脚本语音"}`)
+
+	model := &scriptedModel{
+		responses: roleToolResponses("run_script", `{"file":"demo.jsonl"}`, "脚本完成。"),
+	}
+	cfg := Config{
+		ConfigDir:                configDir,
+		Model:                    ModelConfig{Provider: "fake"},
+		Audio:                    AudioConfig{SampleRate: 16000},
+		InputMode:                "stt",
+		VoiceStreamingTTSEnabled: boolPtr(false),
+		VoiceMaxResponseTokens:   64,
+	}
+	runtime := NewRuntimeWithDeps(
+		cfg,
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSetFromConfig(cfg, ProxyConfig{}, nil),
+		NewSkillIndex(),
+	)
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config:      cfg,
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+	}
+
+	result, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "run demo"}, runtime)
+	if err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", err)
+	}
+	if result.Output != "脚本完成。" {
+		t.Fatalf("output = %q, want 脚本完成。", result.Output)
+	}
+	waitForProviderTextCount(t, provider, 1)
+	if got := provider.texts(); !containsString(got, "脚本语音") {
+		t.Fatalf("provider texts = %#v, want script tts text", got)
+	}
+}
+}
+
 func boolPtr(value bool) *bool {
 	return &value
 }

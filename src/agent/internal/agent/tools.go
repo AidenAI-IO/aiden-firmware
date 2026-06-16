@@ -24,6 +24,7 @@ type BuiltinToolSetOption func(*builtinToolSetOptions)
 type builtinToolSetOptions struct {
 	waitForWakeupController *WaitForWakeupController
 	screenStable            ScreenStableDefaults
+	scriptsDir              string
 }
 
 func WithWaitForWakeupController(controller *WaitForWakeupController) BuiltinToolSetOption {
@@ -38,11 +39,20 @@ func WithScreenStableDefaults(defaults ScreenStableDefaults) BuiltinToolSetOptio
 	}
 }
 
+func WithRunScriptScriptsDir(dir string) BuiltinToolSetOption {
+	return func(options *builtinToolSetOptions) {
+		options.scriptsDir = dir
+	}
+}
+
 func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchConfig, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
 	return newHardwareToolSet(hidCfg, audioCfg, searchCfg, proxyCfg, options...)
 }
 
 func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
+	if cfg.ConfigDir != "" {
+		options = append(options, WithRunScriptScriptsDir(filepath.Join(cfg.ConfigDir, "scripts")))
+	}
 	return newHardwareToolSet(cfg.HID, cfg.Audio, cfg.Search, proxyCfg, options...)
 }
 
@@ -97,6 +107,11 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	if toolOptions.waitForWakeupController != nil {
 		tools[toolWaitForWakeup] = NewWaitForWakeupTool(toolOptions.waitForWakeupController)
 	}
+	runScript := NewRunScriptTool(toolOptions.scriptsDir, func(name string) (langtools.Tool, bool) {
+		tool, ok := tools[name]
+		return tool, ok
+	})
+	tools["run_script"] = runScript
 	// Always register human handoff tool - no callback needed for non-blocking version
 	tools["request_human_handoff"] = NewHumanHandoffTool()
 
@@ -117,6 +132,19 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models ModelResolver, platformFn 
 	s.tools["enter_text_in_field"] = newPostActionScreenshotTool(tool, s.textInputHW.screenshot, 300*time.Millisecond)
 	bridgeTool := &EnterTextViaBridgeTool{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }, platformFn: platformFn}
 	s.tools["enter_text_via_bridge"] = newPostActionScreenshotTool(bridgeTool, s.textInputHW.screenshot, 300*time.Millisecond)
+}
+
+func (s *ToolSet) SetRunScriptSpeaker(speaker runScriptSpeaker) {
+	if s == nil {
+		return
+	}
+	tool, ok := s.tools["run_script"]
+	if !ok {
+		return
+	}
+	if runScript, ok := tool.(*RunScriptTool); ok {
+		runScript.SetSpeaker(speaker)
+	}
 }
 
 func (s *ToolSet) Get(name string) (langtools.Tool, bool) {

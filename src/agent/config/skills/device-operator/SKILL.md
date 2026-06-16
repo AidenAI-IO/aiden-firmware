@@ -3,10 +3,12 @@ name: device-operator
 description: Use when controlling a visible target device UI through screenshots, touch, mouse, or keyboard.
 metadata:
   preferred_model: primary
-  allowed_tools: [screenshot, quick_action, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text, enter_text_in_field, enter_text_via_bridge, shell]
+  allowed_tools: [screenshot, quick_action, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text, enter_text_in_field, enter_text_via_bridge, run_script, shell]
 ---
 
 Use this skill when interacting with the connected device screen, app UI, keyboard, touch input, or mouse pointer.
+
+Use `run_script` only when the user explicitly asks to run a prepared demo script; pass only a script file name from the config directory's `scripts/` folder. It executes JSONL script lines directly without LLM planning between steps, and `tts` lines start playback asynchronously without waiting for speech to finish.
 
 ## Core Loop
 

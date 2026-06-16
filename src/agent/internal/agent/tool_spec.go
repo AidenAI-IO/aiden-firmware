@@ -217,6 +217,11 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"reason":"Need user confirmation"}`,
 	},
+	"run_script": {
+		Category:     "demo",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"file":"demo.jsonl"}`,
+	},
 	"skill_manage": {
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
