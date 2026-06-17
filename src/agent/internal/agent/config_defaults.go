@@ -38,7 +38,7 @@ const (
 	defaultVoiceFollowupTimeoutMs  = 6000
 	defaultVoiceFirstTurnTimeoutMs = 10000
 	defaultVoiceMaxTurns           = 0
-	defaultVoiceMaxResponseTokens  = 400
+	defaultVoiceMaxResponseTokens  = 300
 	defaultTodoReminderToolCalls   = 3
 	defaultMaxIterations           = -1
 	defaultScreenshotKeepN         = 3

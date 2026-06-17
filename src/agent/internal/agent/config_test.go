@@ -871,8 +871,8 @@ func TestVoiceSessionConfigDefaults(t *testing.T) {
 	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
 		t.Fatal("VoiceSpeechSummaryEnabledOrDefault() = false, want true")
 	}
-	if cfg.VoiceMaxResponseTokensOrDefault() != 400 {
-		t.Fatalf("VoiceMaxResponseTokensOrDefault() = %d, want 400", cfg.VoiceMaxResponseTokensOrDefault())
+	if cfg.VoiceMaxResponseTokensOrDefault() != 300 {
+		t.Fatalf("VoiceMaxResponseTokensOrDefault() = %d, want 300", cfg.VoiceMaxResponseTokensOrDefault())
 	}
 }
 
