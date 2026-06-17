@@ -118,8 +118,6 @@ func pruneSteerConversationWindow(ctx context.Context, mem schema.Memory) error 
 	switch typed := mem.(type) {
 	case *steerConversationMemory:
 		return pruneSteerConversationWindow(ctx, typed.inner)
-	case *chatHistoryPlannerMemory:
-		return pruneSteerConversationWindow(ctx, typed.inner)
 	case *langmemory.ConversationWindowBuffer:
 		messages, err := typed.ChatHistory.Messages(ctx)
 		if err != nil {

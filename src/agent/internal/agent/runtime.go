@@ -517,7 +517,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
 	}
 
-	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "buffer"})
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -585,9 +585,14 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
 	plannerMemory := memoryHandle.Memory
-	if historyStore := chatHistoryStoreForConfigDir(r.config.ConfigDir); historyStore != nil {
-		plannerMemory = newChatHistoryPlannerMemory(plannerMemory, historyStore)
-	}
+	// DISABLED: chat_history injection into planner context.
+	// Rationale: session system already provides comprehensive history management with
+	// compaction, archiving, and recall. Injecting chat_history creates duplicate,
+	// uncompressed context that grows unbounded and confuses planner memory boundaries.
+	// For "resume task" scenarios, use explicit session restore or recall tools instead.
+	// if historyStore := chatHistoryStoreForConfigDir(r.config.ConfigDir); historyStore != nil {
+	// 	plannerMemory = newChatHistoryPlannerMemory(plannerMemory, historyStore)
+	// }
 	var steerStatus steerConversationStatus
 	if req.SteerProvider != nil {
 		plannerMemory = newSteerConversationMemory(plannerMemory, memoryHandle.History)
