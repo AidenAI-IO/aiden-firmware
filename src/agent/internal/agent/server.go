@@ -1458,6 +1458,8 @@ func (w *chatAssistantDeltaWriter) StreamEmitted() bool {
 
 type finalStreamFanoutWriter struct {
 	writers []io.Writer
+	mu      sync.Mutex
+	emitted bool
 }
 
 func newFinalStreamFanoutWriter(writers ...io.Writer) io.Writer {
@@ -1477,6 +1479,7 @@ func (w *finalStreamFanoutWriter) Write(p []byte) (int, error) {
 	if w == nil || len(p) == 0 {
 		return len(p), nil
 	}
+	emitted := false
 	for _, writer := range w.writers {
 		if writer == nil {
 			continue
@@ -1484,6 +1487,14 @@ func (w *finalStreamFanoutWriter) Write(p []byte) (int, error) {
 		if _, err := writer.Write(p); err != nil {
 			return 0, err
 		}
+		if streamWriterEmitted(writer) {
+			emitted = true
+		}
+	}
+	if emitted {
+		w.mu.Lock()
+		w.emitted = true
+		w.mu.Unlock()
 	}
 	return len(p), nil
 }
@@ -1497,14 +1508,25 @@ func (w *finalStreamFanoutWriter) ResetStreamState() {
 			resetter.ResetStreamState()
 		}
 	}
+	w.mu.Lock()
+	w.emitted = false
+	w.mu.Unlock()
 }
 
 func (w *finalStreamFanoutWriter) StreamEmitted() bool {
-	if w == nil || len(w.writers) == 0 {
+	if w == nil {
 		return false
 	}
-	if tracker, ok := w.writers[0].(streamOutputTracker); ok {
-		return tracker.StreamEmitted()
+	w.mu.Lock()
+	emitted := w.emitted
+	w.mu.Unlock()
+	if emitted {
+		return true
+	}
+	for _, writer := range w.writers {
+		if streamWriterEmitted(writer) {
+			return true
+		}
 	}
 	return false
 }

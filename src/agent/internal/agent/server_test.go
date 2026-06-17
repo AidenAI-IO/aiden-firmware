@@ -351,6 +351,34 @@ func TestServerHandleChatStreamEmitsAssistantDeltasBeforeDone(t *testing.T) {
 	}
 }
 
+func TestFinalStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
+	var webDelta strings.Builder
+	var speech strings.Builder
+
+	fanout := newFinalStreamFanoutWriter(
+		NewJSONFieldOrPlainStreamWriter(&webDelta, "text"),
+		NewSpeechStreamWriter(&speech),
+	)
+	tracker, ok := fanout.(streamOutputTracker)
+	if !ok {
+		t.Fatal("fanout writer must track stream emission")
+	}
+
+	if _, err := fanout.Write([]byte(`{"speech":"Short answer.","final_answer":"Complete answer."}`)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	if webDelta.String() != "" {
+		t.Fatalf("web delta stream = %q, want empty when text field is absent", webDelta.String())
+	}
+	if speech.String() != "Short answer." {
+		t.Fatalf("speech stream = %q, want Short answer.", speech.String())
+	}
+	if !tracker.StreamEmitted() {
+		t.Fatal("fanout should report emitted when any child stream emitted")
+	}
+}
+
 func TestHandleCoordinateDebugTap(t *testing.T) {
 	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
 		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":2,"height":1,"pixel_format":"uyvy","stride":4,"bytes":4,"stale":false}}`
