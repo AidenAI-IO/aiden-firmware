@@ -20,6 +20,7 @@ const (
 	defaultWeatherGeocodingURL = "https://geocoding-api.open-meteo.com/v1/search"
 	defaultWeatherForecastURL  = "https://api.open-meteo.com/v1/forecast"
 	defaultWeatherForecastDays = 3
+	toolEnterSleep             = "enter_sleep"
 )
 
 type CurrentTimeTool struct {
@@ -551,7 +552,7 @@ func NewEnterSleepTool(controller *SleepController) *EnterSleepTool {
 	return &EnterSleepTool{controller: controller}
 }
 
-func (t *EnterSleepTool) Name() string { return "enter_sleep" }
+func (t *EnterSleepTool) Name() string { return toolEnterSleep }
 
 func (t *EnterSleepTool) Description() string {
 	return `Ask the runtime to close the active voice session and return to wakeup-waiting sleep mode. ` +

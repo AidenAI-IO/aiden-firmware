@@ -79,6 +79,37 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunEnterSleepTerminatesRoleLoop(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("sleep_1", "enter_sleep", `{"reason":"user asked"}`),
+		toolCallResponse("sleep_2", "enter_sleep", `{"reason":"still awake"}`),
+	}}
+	controller := NewSleepController()
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", MaxIterations: 2},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"enter_sleep": NewEnterSleepTool(controller),
+		}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "go to sleep"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !result.SleepRequested {
+		t.Fatal("SleepRequested = false, want true")
+	}
+	if result.SleepReason != "user asked" {
+		t.Fatalf("SleepReason = %q, want user asked", result.SleepReason)
+	}
+	if model.callCount != 1 {
+		t.Fatalf("model call count = %d, want role loop to stop after enter_sleep", model.callCount)
+	}
+}
+
 func TestRuntimeRunInjectsCurrentDateIntoPlannerPrompt(t *testing.T) {
 	originalNow := promptNow
 	promptNow = func() time.Time {

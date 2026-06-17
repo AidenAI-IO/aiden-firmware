@@ -291,7 +291,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				if e.Recorder != nil {
 					e.Recorder.RecordLoopPhase(phaseDefault, "cancel_plan")
 				}
-			case plannerTurnTool, plannerTurnInvalidMeta:
+			case plannerTurnTool, plannerTurnInvalidMeta, plannerTurnSleep:
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
 					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps))
@@ -301,6 +301,13 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 						return nil, err
 					}
 					state.noteDefaultToolCallAndMaybeTodoReminder()
+				}
+				if turn.Kind == plannerTurnSleep {
+					answer := enterSleepFinalAnswer(turn.Step)
+					if e.Recorder != nil {
+						e.Recorder.RecordDefaultFinish(answer)
+					}
+					return e.finishRun(ctx, answer, answer, &state)
 				}
 			}
 		case phaseExecution:
@@ -316,7 +323,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				return nil, err
 			}
 			switch turn.Kind {
-			case executorTurnTool, executorTurnInvalidMeta:
+			case executorTurnTool, executorTurnInvalidMeta, executorTurnSleep:
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
 					state.StepToolSteps = append(state.StepToolSteps, *turn.Step)
@@ -332,6 +339,13 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
 						return nil, err
 					}
+				}
+				if turn.Kind == executorTurnSleep {
+					answer := enterSleepFinalAnswer(turn.Step)
+					if e.Recorder != nil {
+						e.Recorder.RecordDefaultFinish(answer)
+					}
+					return e.finishRun(ctx, answer, answer, &state)
 				}
 			case executorTurnFinishStep, executorTurnAbortStep:
 				if turn.Step != nil {
@@ -629,7 +643,11 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 	if e.Recorder != nil {
 		e.Recorder.RecordPlannerExecution(execution)
 	}
-	return plannerTurnResult{Kind: plannerTurnTool, Step: &toolExecution.Step}, nil
+	kind := plannerTurnTool
+	if isEnterSleepTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
+		kind = plannerTurnSleep
+	}
+	return plannerTurnResult{Kind: kind, Step: &toolExecution.Step}, nil
 }
 
 func (e *roleCollaborativeExecutor) finishRun(ctx context.Context, finalAnswer, log string, state *roleLoopState) (map[string]any, error) {
@@ -808,8 +826,12 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 		return executorTurnResult{}, toolExecution.Error
 	}
 	actionCopy := toolExecution.Step.Action
+	kind := executorTurnTool
+	if isEnterSleepTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
+		kind = executorTurnSleep
+	}
 	return executorTurnResult{
-		Kind:   executorTurnTool,
+		Kind:   kind,
 		Action: &actionCopy,
 		Step:   &toolExecution.Step,
 	}, nil

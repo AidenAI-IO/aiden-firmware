@@ -20,7 +20,9 @@ type fakeAudioDialog struct {
 	vad                *agent.AudioVAD
 	utterance          []int16
 	utterancesToReturn [][]int16
+	onStart            func(*fakeAudioDialog)
 	onUtterance        func()
+	processUtterance   func(context.Context, []int16, *agent.Runtime) error
 	utterances         [][]int16
 	prepareTurnInput   func([]int16) (agent.TurnInput, error)
 	runTurn            func(context.Context) (agent.RunResult, error)
@@ -51,6 +53,9 @@ func (d *fakeAudioDialog) StartRecording() error {
 	d.ops = append(d.ops, "start")
 	d.starts++
 	d.recordingActive = true
+	if d.onStart != nil {
+		d.onStart(d)
+	}
 	if len(d.chunkBatches) > 0 {
 		d.chunks = d.chunkBatches[0]
 		d.chunkBatches = d.chunkBatches[1:]
@@ -113,6 +118,9 @@ func (d *fakeAudioDialog) ProcessUtterance(ctx context.Context, utterance []int1
 	d.utterances = append(d.utterances, append([]int16(nil), utterance...))
 	if d.onUtterance != nil {
 		d.onUtterance()
+	}
+	if d.processUtterance != nil {
+		return d.processUtterance(ctx, utterance, runtime)
 	}
 	return nil
 }
@@ -719,6 +727,72 @@ func TestRunWakeupModeStartsNewRecordingForNextWakeup(t *testing.T) {
 	}
 	if len(dialog.utterances) != 2 {
 		t.Fatalf("utterances = %d, want 2", len(dialog.utterances))
+	}
+}
+
+func TestRunWakeupModeLegacyWakeupInterruptsProcessing(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	watcher := &fakeWakeupWatcher{fireOnStart: true}
+	processingStarted := make(chan struct{})
+	ctxCanceled := make(chan struct{})
+	secondStart := make(chan struct{})
+	voiceSessionDisabled := false
+	var dialog *fakeAudioDialog
+	dialog = &fakeAudioDialog{
+		frameSamples: 2,
+		chunks: []*agent.AudioChunkResult{
+			{PCM: pcm16BytesFromSamples(100, 200)},
+		},
+		utterance: []int16{100, 200},
+		onStart: func(d *fakeAudioDialog) {
+			if d.starts == 2 {
+				close(secondStart)
+				sigChan <- syscall.SIGTERM
+			}
+		},
+		processUtterance: func(ctx context.Context, utterance []int16, runtime *agent.Runtime) error {
+			close(processingStarted)
+			select {
+			case <-ctx.Done():
+				close(ctxCanceled)
+				return ctx.Err()
+			case <-time.After(150 * time.Millisecond):
+				sigChan <- syscall.SIGTERM
+				return errors.New("legacy wakeup did not cancel utterance processing")
+			}
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		runWakeupMode(agent.Config{InputMode: "stt", VoiceFollowupEnabled: &voiceSessionDisabled}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
+			watcher.callback = callback
+			return watcher, nil
+		})
+		close(done)
+	}()
+
+	select {
+	case <-processingStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("legacy wakeup mode did not start utterance processing")
+	}
+	watcher.callback()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runWakeupMode did not stop after interrupted legacy wakeup")
+	}
+	select {
+	case <-ctxCanceled:
+	default:
+		t.Fatal("legacy utterance context was not canceled by wakeup")
+	}
+	select {
+	case <-secondStart:
+	default:
+		t.Fatal("legacy wakeup interrupt did not trigger the next recording")
 	}
 }
 
