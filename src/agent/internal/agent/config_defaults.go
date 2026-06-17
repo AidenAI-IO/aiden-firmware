@@ -115,7 +115,7 @@ func DefaultConfig() Config {
 		VADSpeechThreshold:         defaultVADSpeechThreshold,
 		SilenceMs:                  defaultSilenceMs,
 		MinSpeechMs:                defaultMinSpeechMs,
-		VoiceSessionEnabled:        defaultBoolPtr(true),
+		VoiceFollowupEnabled:       defaultBoolPtr(false),
 		VoiceFollowupTimeoutMs:     defaultVoiceFollowupTimeoutMs,
 		VoiceFirstTurnTimeoutMs:    defaultVoiceFirstTurnTimeoutMs,
 		VoiceMaxTurns:              defaultVoiceMaxTurns,

@@ -366,7 +366,7 @@ func runManualMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 }
 
 func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory) {
-	if cfg.InputModeOrDefault() != "stt" || !cfg.VoiceSessionEnabledOrDefault() {
+	if cfg.InputModeOrDefault() != "stt" || !cfg.VoiceFollowupEnabledOrDefault() {
 		runLegacyWakeupMode(cfg, dialog, runtime, sigChan, newWatcher)
 		return
 	}

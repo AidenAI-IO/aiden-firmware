@@ -33,7 +33,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.vad_speech_threshold = 0.5;
     cfg.silence_ms = 1000;
     cfg.min_speech_ms = 250;
-    cfg.voice_session_enabled = false;
+    cfg.voice_followup_enabled = true;
     cfg.voice_followup_timeout_ms = 6500;
     cfg.voice_first_turn_timeout_ms = 11000;
     cfg.voice_max_turns = 4;
@@ -132,7 +132,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.vad_speech_threshold == doctest::Approx(0.5));
     CHECK(loaded.silence_ms == 1000);
     CHECK(loaded.min_speech_ms == 250);
-    CHECK(loaded.voice_session_enabled == false);
+    CHECK(loaded.voice_followup_enabled == true);
     CHECK(loaded.voice_followup_timeout_ms == 6500);
     CHECK(loaded.voice_first_turn_timeout_ms == 11000);
     CHECK(loaded.voice_max_turns == 4);

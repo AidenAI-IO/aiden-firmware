@@ -133,7 +133,7 @@ type agentDTO struct {
 	VADSpeechThreshold         float64 `json:"vad_speech_threshold"`
 	SilenceMs                  int     `json:"silence_ms"`
 	MinSpeechMs                int     `json:"min_speech_ms"`
-	VoiceSessionEnabled        bool    `json:"voice_session_enabled"`
+	VoiceFollowupEnabled       bool    `json:"voice_followup_enabled"`
 	VoiceFollowupTimeoutMs     int     `json:"voice_followup_timeout_ms"`
 	VoiceFirstTurnTimeoutMs    int     `json:"voice_first_turn_timeout_ms"`
 	VoiceMaxTurns              int     `json:"voice_max_turns"`
@@ -259,7 +259,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		VADSpeechThreshold:         d.Agent.VADSpeechThreshold,
 		SilenceMs:                  d.Agent.SilenceMs,
 		MinSpeechMs:                d.Agent.MinSpeechMs,
-		VoiceSessionEnabled:        boolPtr(d.Agent.VoiceSessionEnabled),
+		VoiceFollowupEnabled:       boolPtr(d.Agent.VoiceFollowupEnabled),
 		VoiceFollowupTimeoutMs:     d.Agent.VoiceFollowupTimeoutMs,
 		VoiceFirstTurnTimeoutMs:    d.Agent.VoiceFirstTurnTimeoutMs,
 		VoiceMaxTurns:              d.Agent.VoiceMaxTurns,
@@ -378,7 +378,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			VADSpeechThreshold:         cfg.VADSpeechThreshold,
 			SilenceMs:                  cfg.SilenceMs,
 			MinSpeechMs:                cfg.MinSpeechMs,
-			VoiceSessionEnabled:        cfg.VoiceSessionEnabledOrDefault(),
+			VoiceFollowupEnabled:       cfg.VoiceFollowupEnabledOrDefault(),
 			VoiceFollowupTimeoutMs:     int(cfg.VoiceFollowupTimeoutOrDefault().Milliseconds()),
 			VoiceFirstTurnTimeoutMs:    int(cfg.VoiceFirstTurnTimeoutOrDefault().Milliseconds()),
 			VoiceMaxTurns:              cfg.VoiceMaxTurns,

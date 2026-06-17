@@ -114,7 +114,7 @@ type Config struct {
 	VADSpeechThreshold         float64            `toml:"vad_speech_threshold,omitempty"`
 	SilenceMs                  int                `toml:"silence_ms,omitempty"`
 	MinSpeechMs                int                `toml:"min_speech_ms,omitempty"`
-	VoiceSessionEnabled        *bool              `toml:"voice_session_enabled,omitempty"`
+	VoiceFollowupEnabled       *bool              `toml:"voice_followup_enabled,omitempty"`
 	VoiceFollowupTimeoutMs     int                `toml:"voice_followup_timeout_ms,omitempty"`
 	VoiceFirstTurnTimeoutMs    int                `toml:"voice_first_turn_timeout_ms,omitempty"`
 	VoiceMaxTurns              int                `toml:"voice_max_turns,omitempty"`
@@ -1007,11 +1007,11 @@ func (c Config) VADBackendOrDefault() string {
 	return backend
 }
 
-func (c Config) VoiceSessionEnabledOrDefault() bool {
-	if c.VoiceSessionEnabled != nil {
-		return *c.VoiceSessionEnabled
+func (c Config) VoiceFollowupEnabledOrDefault() bool {
+	if c.VoiceFollowupEnabled != nil {
+		return *c.VoiceFollowupEnabled
 	}
-	return true
+	return false
 }
 
 func (c Config) VoiceFollowupTimeoutOrDefault() time.Duration {

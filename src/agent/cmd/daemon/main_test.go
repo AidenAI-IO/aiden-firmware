@@ -698,7 +698,7 @@ func TestRunWakeupModeStartsNewRecordingForNextWakeup(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runWakeupMode(agent.Config{VoiceSessionEnabled: &voiceSessionDisabled}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
+		runWakeupMode(agent.Config{VoiceFollowupEnabled: &voiceSessionDisabled}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
 			watcher.callback = callback
 			return watcher, nil
 		})
@@ -788,7 +788,7 @@ func TestRunWakeupModeVoiceSessionProcessesFollowupWithoutSecondWakeup(t *testin
 
 	done := make(chan struct{})
 	go func() {
-		runWakeupMode(agent.Config{InputMode: "stt", VoiceFollowupTimeoutMs: 100}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
+		runWakeupMode(agent.Config{InputMode: "stt", VoiceFollowupEnabled: boolPtr(true), VoiceFollowupTimeoutMs: 100}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
 			watcher.callback = callback
 			return watcher, nil
 		})
@@ -840,7 +840,7 @@ func TestRunWakeupModeVoiceSessionStartsRecordingWithoutWakeupAck(t *testing.T) 
 
 	done := make(chan struct{})
 	go func() {
-		runWakeupMode(agent.Config{InputMode: "stt", VoiceMaxTurns: 1}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
+		runWakeupMode(agent.Config{InputMode: "stt", VoiceFollowupEnabled: boolPtr(true), VoiceMaxTurns: 1}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
 			watcher.callback = callback
 			return watcher, nil
 		})

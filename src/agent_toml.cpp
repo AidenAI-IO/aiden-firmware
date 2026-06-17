@@ -265,8 +265,8 @@ void apply_kv(AgentToml& cfg,
             if (!assign_int(&cfg.silence_ms, raw, &sub_err)) fail(sub_err);
         } else if (key == "min_speech_ms") {
             if (!assign_int(&cfg.min_speech_ms, raw, &sub_err)) fail(sub_err);
-        } else if (key == "voice_session_enabled") {
-            if (!assign_bool(&cfg.voice_session_enabled, raw, &sub_err)) fail(sub_err);
+        } else if (key == "voice_followup_enabled") {
+            if (!assign_bool(&cfg.voice_followup_enabled, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_followup_timeout_ms") {
             if (!assign_int(&cfg.voice_followup_timeout_ms, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_first_turn_timeout_ms") {
@@ -612,7 +612,7 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (cfg.vad_speech_threshold != 0.0) emit_double(out, "vad_speech_threshold", cfg.vad_speech_threshold);
     if (cfg.silence_ms != 0) emit_int(out, "silence_ms", cfg.silence_ms);
     if (cfg.min_speech_ms != 0) emit_int(out, "min_speech_ms", cfg.min_speech_ms);
-    emit_bool(out, "voice_session_enabled", cfg.voice_session_enabled);
+    emit_bool(out, "voice_followup_enabled", cfg.voice_followup_enabled);
     if (cfg.voice_followup_timeout_ms != 0) emit_int(out, "voice_followup_timeout_ms", cfg.voice_followup_timeout_ms);
     if (cfg.voice_first_turn_timeout_ms != 0) emit_int(out, "voice_first_turn_timeout_ms", cfg.voice_first_turn_timeout_ms);
     if (cfg.voice_max_turns != 0) emit_int(out, "voice_max_turns", cfg.voice_max_turns);

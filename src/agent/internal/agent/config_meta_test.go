@@ -225,7 +225,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"agent.vad_speech_threshold", defaults.VADSpeechThreshold},
 		{"agent.silence_ms", defaults.SilenceMs},
 		{"agent.min_speech_ms", defaults.MinSpeechMs},
-		{"agent.voice_session_enabled", defaults.VoiceSessionEnabledOrDefault()},
+		{"agent.voice_followup_enabled", defaults.VoiceFollowupEnabledOrDefault()},
 		{"agent.voice_followup_timeout_ms", defaults.VoiceFollowupTimeoutMs},
 		{"agent.voice_first_turn_timeout_ms", defaults.VoiceFirstTurnTimeoutMs},
 		{"agent.voice_max_turns", defaults.VoiceMaxTurns},

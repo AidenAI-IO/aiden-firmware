@@ -181,7 +181,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"input_mode\":\"text\",\"trigger_mode\":\"manual\",\"vad_backend\":\"rknn\","
         "\"vad_model_path\":\"/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn\","
         "\"vad_helper_path\":\"/oem/usr/bin/rknn_vad\",\"vad_speech_threshold\":0.5,"
-        "\"silence_ms\":650,\"min_speech_ms\":300,\"voice_session_enabled\":true,"
+        "\"silence_ms\":650,\"min_speech_ms\":300,\"voice_followup_enabled\":false,"
         "\"voice_followup_timeout_ms\":6000,\"voice_first_turn_timeout_ms\":10000,"
         "\"voice_max_turns\":0,\"voice_interrupt_on_wakeup\":true,"
         "\"voice_streaming_tts_enabled\":true,\"voice_tool_call_speech\":false,"
