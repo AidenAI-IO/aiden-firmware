@@ -520,6 +520,7 @@ TEST_CASE("config web degrades gracefully when config metadata is unavailable") 
     std::ostringstream cpp_buffer;
     cpp_buffer << cpp_in.rdbuf();
     const std::string source = cpp_buffer.str();
+    CHECK(source.find("case 404: response.status_text = \"Not Found\";") != std::string::npos);
     CHECK(source.find("case 503: response.status_text = \"Service Unavailable\";") != std::string::npos);
 }
 
@@ -773,6 +774,108 @@ TEST_CASE("config web DHCP invokes dhcpcd without hook") {
     CHECK(source.find("-s /etc/udhcpc/aiden.script") == std::string::npos);
     // Should use -n for foreground one-shot DHCP
     CHECK(source.find("dhcpcd -n \" + shell_quote(options.wifi_interface)") != std::string::npos);
+}
+
+TEST_CASE("config web waits for an IPv4 lease before confirming a connection") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    // A dedicated helper polls for the DHCP-assigned IPv4 address; `dhcpcd -n`
+    // returns immediately so the lease is not present when it exits.
+    CHECK(source.find("bool wait_for_ip(const Options& options") != std::string::npos);
+    // The helper must consult both wpa_cli status and ifconfig for the address.
+    CHECK(source.find("find_key_value_line(status.output, \"ip_address\")") != std::string::npos);
+    CHECK(source.find("extract_ifconfig_ipv4(status.output)") != std::string::npos);
+    // DHCP success must depend on actually obtaining an address, not just the
+    // dhcpcd exit code.
+    CHECK(source.find("dhcp.exit_code == 0 && wait_for_ip(options, log, 15)") != std::string::npos);
+}
+
+TEST_CASE("config web wifi status falls back to ifconfig for the IPv4 address") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    // wpa_cli status never reports ip_address= on this device (DHCP is run by
+    // dhcpcd, not wpa_supplicant), so query_wifi_status must back-fill the IPv4
+    // address from ifconfig; otherwise the connect-confirmation gate rolls back
+    // a working connection because status.ip_address is always empty.
+    CHECK(source.find("extract_ifconfig_ipv4(ifc.output)") != std::string::npos);
+    // The fallback is gated on a missing wpa_cli ip_address and an associated
+    // (COMPLETED) link, so a stale ifconfig inet cannot falsely confirm.
+    CHECK(source.find("if (status.ip_address.empty() && status.connected && command_exists(\"ifconfig\"))") !=
+          std::string::npos);
+}
+
+TEST_CASE("config web restores previous wifi config when final apply is not confirmed") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("auto is_connected_to_target = [&](const WifiRuntimeStatus& status)") != std::string::npos);
+    CHECK(source.find("if (final_apply.exit_code != 0 || !is_connected_to_target(wifi_status))") != std::string::npos);
+    CHECK(source.find("failed to restore previous wifi config") != std::string::npos);
+    CHECK(source.find("saved Wi-Fi was not confirmed; restored previous Wi-Fi config.") != std::string::npos);
+}
+
+TEST_CASE("config web fails closed when wifi rollback snapshot cannot be read") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("bool read_file_contents_checked(const char* path") != std::string::npos);
+    CHECK(source.find("stat(options.wifi_config_path.c_str(), &st)") != std::string::npos);
+    CHECK(source.find("static_cast<size_t>(st.st_size) + 1") != std::string::npos);
+    CHECK(source.find("if (!read_file_contents_checked(options.wifi_config_path.c_str()") != std::string::npos);
+    CHECK(source.find("failed to read existing wifi config for rollback") != std::string::npos);
+    CHECK(source.find("had_original_config ? read_file_contents(options.wifi_config_path.c_str())") == std::string::npos);
+}
+
+TEST_CASE("config web reports wifi forget runtime apply failures") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("const bool applied = wifi_apply.exit_code == 0;") != std::string::npos);
+    CHECK(source.find("cJSON_AddBoolToObject(response, \"ok\", applied ? 1 : 0);") != std::string::npos);
+    CHECK(source.find("wifi network forgotten but failed to apply runtime changes") != std::string::npos);
+    CHECK(source.find("cJSON_AddBoolToObject(apply, \"ok\", applied ? 1 : 0);") != std::string::npos);
+}
+
+TEST_CASE("config web clears legacy wifi fields for explicit empty network lists") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("void sync_wifi_legacy_fields_from_networks(aiden::WifiNetworkConfig* wifi)") != std::string::npos);
+    CHECK(source.find("wifi->ssid.clear();") != std::string::npos);
+    CHECK(source.find("wifi->psk.clear();") != std::string::npos);
+    CHECK(source.find("sync_wifi_legacy_fields_from_networks(wifi);") != std::string::npos);
 }
 
 TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhid") {
