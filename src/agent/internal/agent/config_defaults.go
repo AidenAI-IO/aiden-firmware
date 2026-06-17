@@ -26,7 +26,6 @@ const (
 	defaultAudioArchiveStoragePath = "/userdata/audio"
 	defaultAudioArchiveMaxFiles    = 500
 	defaultAudioArchiveMaxSizeMB   = 100
-	defaultBenchmarkJudgeModel     = defaultModelName
 	defaultKeyboardDevice          = "/dev/hidg0"
 	defaultMouseDevice             = "/dev/hidg1"
 	defaultFrameServiceSocket      = "/run/frame_service/frame_service.sock"
@@ -82,9 +81,6 @@ func DefaultConfig() Config {
 			MaxFiles:    defaultAudioArchiveMaxFiles,
 			MaxSizeMB:   defaultAudioArchiveMaxSizeMB,
 			StoragePath: defaultAudioArchiveStoragePath,
-		},
-		Benchmark: BenchmarkConfig{
-			JudgeModel: defaultBenchmarkJudgeModel,
 		},
 		HID: HIDConfig{
 			KeyboardDevice: defaultKeyboardDevice,

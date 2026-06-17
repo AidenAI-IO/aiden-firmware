@@ -46,7 +46,6 @@ func main() {
 	var (
 		configDir         = flag.String("config", "", "path to config directory (required)")
 		addr              = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
-		benchmarkDir      = flag.String("benchmark-dir", "", "Override benchmark root directory (default: auto-detect)")
 		toolProxyMode     = flag.Bool("tool-proxy-mode", false, "Enable tool proxy mode (forward selected tool calls to a remote daemon; see --forward-tools)")
 		toolProxyEndpoint = flag.String("tool-proxy-endpoint", "", "Remote daemon endpoint for tool proxy mode (e.g., http://192.168.50.123:8080)")
 		forwardTools      = flag.String("forward-tools", "", "Comma-separated tool names or glob patterns to forward when tool-proxy-mode is on, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\" to forward all. Required with --tool-proxy-mode.")
@@ -102,25 +101,15 @@ func main() {
 
 	inputMode := cfg.InputModeOrDefault()
 
-	// Resolve benchmark directory (allow override via flag, default to auto-detect)
-	resolvedBenchmarkDir, err := agent.ResolveBenchmarkDir(*benchmarkDir, cfg.Benchmark)
-	if err != nil {
-		log.Printf("[benchmark] Failed to resolve benchmark directory: %v. Benchmark routes will return 503.", err)
-		resolvedBenchmarkDir = "" // Pass empty string to NewServer
-	}
-
 	// HTTP server runs in all input modes so the web UI is available even
 	// during voice (audio/stt) interactions.
-	server := agent.NewServer(runtime, *addr, resolvedBenchmarkDir)
+	server := agent.NewServer(runtime, *addr)
 
 	fmt.Printf("🚀 Aiden Agent daemon starting on %s\n", *addr)
 	fmt.Printf("📂 Config directory: %s\n", *configDir)
 	if cfg.ToolProxy.Enabled {
 		fmt.Printf("🔀 Tool proxy mode: forwarding to %s\n", cfg.ToolProxy.Endpoint)
 		fmt.Printf("   Forward tools: %v\n", cfg.ToolProxy.ForwardTools)
-	}
-	if resolvedBenchmarkDir != "" {
-		fmt.Printf("📊 Benchmark directory: %s\n", resolvedBenchmarkDir)
 	}
 	if _, port, err := net.SplitHostPort(*addr); err == nil && port != "" {
 		fmt.Printf("🌐 Web UI: http://localhost:%s\n", port)

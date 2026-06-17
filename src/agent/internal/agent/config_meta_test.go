@@ -97,7 +97,7 @@ func TestConfigMeta_Valid(t *testing.T) {
 		}
 	}
 
-	for _, name := range []string{"model", "tts", "stt", "audio", "benchmark", "hid", "search", "telemetry", "agent"} {
+	for _, name := range []string{"model", "tts", "stt", "audio", "hid", "search", "telemetry", "agent"} {
 		if !seenSections[name] {
 			t.Errorf("expected section %q to be present", name)
 		}
@@ -204,7 +204,6 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
 		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},
 		{"audio_archive.storage_path", defaults.AudioArchive.StoragePathOrDefault()},
-		{"benchmark.judge_model", defaults.Benchmark.JudgeModel},
 		{"hid.keyboard_device", defaults.HID.KeyboardDevice},
 		{"hid.mouse_device", defaults.HID.MouseDevice},
 		{"hid.frame_socket", defaults.HID.FrameSocket},
@@ -295,7 +294,6 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"stt", reflect.TypeOf(STTConfig{}), nil},
 		{"audio", reflect.TypeOf(AudioConfig{}), nil},
 		{"audio_archive", reflect.TypeOf(AudioArchiveConfig{}), nil},
-		{"benchmark", reflect.TypeOf(BenchmarkConfig{}), nil},
 		{"hid", reflect.TypeOf(HIDConfig{}), nil},
 		{"search", reflect.TypeOf(SearchConfig{}), nil},
 		{"telemetry", reflect.TypeOf(TelemetryConfig{}), nil},

@@ -24,7 +24,7 @@ func newMockRemoteDaemon(t *testing.T, tools ...langtools.Tool) *httptest.Server
 		&ToolSet{tools: toolMapFromSlice(tools)},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/tools/", server.handleToolInvoke)
 	return httptest.NewServer(mux)
@@ -165,9 +165,9 @@ func TestShouldProxyToolEmptyListForwardsNothing(t *testing.T) {
 
 func TestShouldProxyToolWildcard(t *testing.T) {
 	tests := []struct {
-		name         string
-		patterns     []string
-		toolName     string
+		name          string
+		patterns      []string
+		toolName      string
 		wantForwarded bool
 	}{
 		{"star matches everything", []string{"*"}, "calculator", true},

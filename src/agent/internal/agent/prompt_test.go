@@ -143,7 +143,7 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 		}
 
 		if strings.Contains(profile.SystemPrompt, "Use long-term memory if relevant") {
-			t.Fatalf("%s system prompt should not contain benchmark-specific memory trigger:\n%s", profile.Name, profile.SystemPrompt)
+			t.Fatalf("%s system prompt should not contain legacy memory trigger:\n%s", profile.Name, profile.SystemPrompt)
 		}
 	}
 }

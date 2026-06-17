@@ -178,15 +178,6 @@ func ConfigMeta() ConfigMetadata {
 				},
 			},
 			{
-				Name: "benchmark",
-				Fields: []FieldMeta{
-					{Key: "judge_model", Widget: WidgetText,
-						Default: defaults.Benchmark.JudgeModel},
-					{Key: "api_key", Widget: WidgetText, Secret: true},
-					{Key: "benchmark_dir", Widget: WidgetText},
-				},
-			},
-			{
 				Name: "hid",
 				Fields: []FieldMeta{
 					{Key: "pointer_mode", Widget: WidgetSelect,

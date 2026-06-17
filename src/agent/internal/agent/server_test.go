@@ -67,7 +67,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	body := bytes.NewBufferString(`{"message":"当前音量是多少？"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", body)
@@ -136,7 +136,7 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"做一个任务"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -158,7 +158,7 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 		t.Fatalf("user and assistant episode ids differ: %#v", resp.History)
 	}
 
-	reloaded := NewServer(runtime, ":0", "")
+	reloaded := NewServer(runtime, ":0")
 	historyReq := httptest.NewRequest(http.MethodGet, "/api/history", nil)
 	historyRec := httptest.NewRecorder()
 	reloaded.handleHistory(historyRec, historyReq)
@@ -209,7 +209,7 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -287,7 +287,7 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":123,"y":456,"type":"double_tap"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -349,7 +349,7 @@ func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"web-req-1"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -387,7 +387,7 @@ func TestHandleCoordinateDebugTapRejectsInvalidType(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":100,"y":200,"type":"swipe"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -411,7 +411,7 @@ func TestHandleCoordinateDebugTapRejectsNonJSONContentType(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":100,"y":200,"type":"tap"}`))
 	req.Header.Set("Content-Type", "text/plain")
@@ -449,7 +449,7 @@ func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/screenshot.jpg?crop_black_bars=false", nil)
 	rec := httptest.NewRecorder()
@@ -503,7 +503,7 @@ func TestHandleCoordinateDebugTapRecapturesUncroppedScreenshot(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":123,"y":456,"type":"tap","crop_black_bars":false}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -585,7 +585,7 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
 	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
@@ -643,7 +643,7 @@ func TestServerHandleChatSkipsToolDescriptionTTSWhenDisabled(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
 	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
@@ -673,7 +673,7 @@ func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello"}`)).WithContext(ctx)
@@ -1215,7 +1215,7 @@ func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	startReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/start", nil)
 	startRec := httptest.NewRecorder()
@@ -1304,7 +1304,7 @@ func TestServerDeviceAudioRecordingStartRecoversStaleSession(t *testing.T) {
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 	server.webRecording = &webAudioRecording{
 		sessionID:  99,
 		sampleRate: 16000,
@@ -1337,7 +1337,7 @@ func TestServerToolCatalogEndpoint(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
 	rec := httptest.NewRecorder()
@@ -1382,7 +1382,7 @@ func TestServerToolInvokeEndpointAcceptsStructuredJSON(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	body := bytes.NewBufferString(`{"input":{"command":"pwd"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/tools/shell", body)
@@ -1422,7 +1422,7 @@ func TestServerToolInvokeUsesUnifiedExecutionAndNormalizesInput(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	body := bytes.NewBufferString(`{"raw_input":"{\"command\":\"pwd\"}\nObservation:"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/tools/shell", body)
@@ -1461,7 +1461,7 @@ func TestServerDoesNotExposeActivateSkillOverHTTP(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		index,
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	catalogReq := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
 	catalogRec := httptest.NewRecorder()
@@ -1494,7 +1494,7 @@ func TestServerExposesSkillManageOverHTTP(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	catalogReq := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
 	catalogRec := httptest.NewRecorder()
@@ -1532,7 +1532,7 @@ func TestServerToolSkillsEndpointReturnsGeneratedSkills(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodGet, "https://device.example/api/tool-skills", nil)
 	req.Header.Set("X-Forwarded-Host", "203.0.113.57:8080")
