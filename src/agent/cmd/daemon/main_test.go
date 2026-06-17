@@ -1005,7 +1005,7 @@ func TestRunVoiceSessionPersistsCompletedTurn(t *testing.T) {
 	}
 }
 
-func TestRunVoiceSessionClosesWhenAgentRequestsSleep(t *testing.T) {
+func TestRunVoiceSessionClosesWhenAgentRequestsWaitForWakeup(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	dialog := &fakeAudioDialog{
 		frameSamples: 2,
@@ -1016,7 +1016,7 @@ func TestRunVoiceSessionClosesWhenAgentRequestsSleep(t *testing.T) {
 			{100, 200},
 		},
 		runTurn: func(ctx context.Context) (agent.RunResult, error) {
-			return agent.RunResult{Output: "我先休眠，等下次唤醒。", SleepRequested: true}, nil
+			return agent.RunResult{Output: "我先待命，等下次唤醒。", WaitForWakeupRequested: true}, nil
 		},
 	}
 
@@ -1028,7 +1028,7 @@ func TestRunVoiceSessionClosesWhenAgentRequestsSleep(t *testing.T) {
 		t.Fatalf("dialog starts = %d, want one recording for the single voice turn", dialog.starts)
 	}
 	if len(dialog.spoken) != 0 {
-		t.Fatalf("spoken = %#v, want no final reply after sleep request", dialog.spoken)
+		t.Fatalf("spoken = %#v, want no final reply after wait-for-wakeup request", dialog.spoken)
 	}
 }
 
@@ -1095,8 +1095,8 @@ func TestRunVoiceTurnSignalWaitsForThinkingGoroutine(t *testing.T) {
 	}()
 
 	result := runVoiceTurn(agent.Config{}, dialog, nil, []int16{1}, sigChan, events)
-	if result.interrupted || result.sleepRequested || !result.exit {
-		t.Fatalf("runVoiceTurn = interrupted:%v sleep:%v exit:%v, want false false true", result.interrupted, result.sleepRequested, result.exit)
+	if result.interrupted || result.waitForWakeupRequested || !result.exit {
+		t.Fatalf("runVoiceTurn = interrupted:%v wait:%v exit:%v, want false false true", result.interrupted, result.waitForWakeupRequested, result.exit)
 	}
 	select {
 	case <-ctxCanceled:
@@ -1128,8 +1128,8 @@ func TestRunVoiceTurnSignalWaitsForSpeakingGoroutine(t *testing.T) {
 	}()
 
 	result := runVoiceTurn(agent.Config{}, dialog, nil, []int16{1}, sigChan, events)
-	if result.interrupted || result.sleepRequested || !result.exit {
-		t.Fatalf("runVoiceTurn = interrupted:%v sleep:%v exit:%v, want false false true", result.interrupted, result.sleepRequested, result.exit)
+	if result.interrupted || result.waitForWakeupRequested || !result.exit {
+		t.Fatalf("runVoiceTurn = interrupted:%v wait:%v exit:%v, want false false true", result.interrupted, result.waitForWakeupRequested, result.exit)
 	}
 	select {
 	case <-ctxCanceled:
@@ -1339,8 +1339,8 @@ func TestRunVoiceTurnPersistsCompletedResultReturnedDuringWakeupInterrupt(t *tes
 	}()
 
 	result := runVoiceTurn(agent.Config{}, dialog, nil, []int16{100, 200}, sigChan, events)
-	if !result.interrupted || result.exit || result.sleepRequested {
-		t.Fatalf("runVoiceTurn = interrupted:%v exit:%v sleep:%v, want true false false", result.interrupted, result.exit, result.sleepRequested)
+	if !result.interrupted || result.exit || result.waitForWakeupRequested {
+		t.Fatalf("runVoiceTurn = interrupted:%v exit:%v wait:%v, want true false false", result.interrupted, result.exit, result.waitForWakeupRequested)
 	}
 	select {
 	case <-ctxCanceled:

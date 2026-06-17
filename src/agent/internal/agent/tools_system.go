@@ -20,7 +20,7 @@ const (
 	defaultWeatherGeocodingURL = "https://geocoding-api.open-meteo.com/v1/search"
 	defaultWeatherForecastURL  = "https://api.open-meteo.com/v1/forecast"
 	defaultWeatherForecastDays = 3
-	toolEnterSleep             = "enter_sleep"
+	toolWaitForWakeup          = "wait_for_wakeup"
 )
 
 type CurrentTimeTool struct {
@@ -511,17 +511,17 @@ func weatherCodeDescription(code int) string {
 	}
 }
 
-type SleepController struct {
+type WaitForWakeupController struct {
 	mu        sync.Mutex
 	requested bool
 	reason    string
 }
 
-func NewSleepController() *SleepController {
-	return &SleepController{}
+func NewWaitForWakeupController() *WaitForWakeupController {
+	return &WaitForWakeupController{}
 }
 
-func (c *SleepController) Request(reason string) {
+func (c *WaitForWakeupController) Request(reason string) {
 	if c == nil {
 		return
 	}
@@ -531,7 +531,7 @@ func (c *SleepController) Request(reason string) {
 	c.reason = strings.TrimSpace(reason)
 }
 
-func (c *SleepController) Consume() (bool, string) {
+func (c *WaitForWakeupController) Consume() (bool, string) {
 	if c == nil {
 		return false, ""
 	}
@@ -544,39 +544,39 @@ func (c *SleepController) Consume() (bool, string) {
 	return requested, reason
 }
 
-type EnterSleepTool struct {
-	controller *SleepController
+type WaitForWakeupTool struct {
+	controller *WaitForWakeupController
 }
 
-func NewEnterSleepTool(controller *SleepController) *EnterSleepTool {
-	return &EnterSleepTool{controller: controller}
+func NewWaitForWakeupTool(controller *WaitForWakeupController) *WaitForWakeupTool {
+	return &WaitForWakeupTool{controller: controller}
 }
 
-func (t *EnterSleepTool) Name() string { return toolEnterSleep }
+func (t *WaitForWakeupTool) Name() string { return toolWaitForWakeup }
 
-func (t *EnterSleepTool) Description() string {
-	return `Ask the runtime to close the active voice session and return to wakeup-waiting sleep mode. ` +
-		`Use this when the user says to stop listening, go to sleep, standby, or wait for the next wakeup. ` +
-		`Input JSON is optional: {"reason":"user asked me to sleep"}.`
+func (t *WaitForWakeupTool) Description() string {
+	return `End the current agent run and return the voice interaction to wakeup-waiting mode. ` +
+		`Use this when the user asks Aiden to stop listening, go idle, or wait for the next wakeup. ` +
+		`Input JSON is optional: {"reason":"user asked me to wait for wakeup"}.`
 }
 
-func (t *EnterSleepTool) ArgsSchema() map[string]any {
+func (t *WaitForWakeupTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"reason": map[string]any{
 			"type":        "string",
-			"description": "Optional reason for entering sleep mode.",
+			"description": "Optional reason for returning to wakeup-waiting mode.",
 		},
 	})
 }
 
-func (t *EnterSleepTool) Call(ctx context.Context, input string) (string, error) {
+func (t *WaitForWakeupTool) Call(ctx context.Context, input string) (string, error) {
 	reason := strings.TrimSpace(input)
 	if strings.HasPrefix(reason, "{") {
 		var args struct {
 			Reason string `json:"reason"`
 		}
 		if err := json.Unmarshal([]byte(reason), &args); err != nil {
-			return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"reason\": \"task completed\"} or a bare string describing the reason for entering sleep mode", err), nil
+			return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"reason\": \"task completed\"} or a bare string describing why Aiden should wait for wakeup", err), nil
 		}
 		reason = strings.TrimSpace(args.Reason)
 	}
@@ -584,10 +584,10 @@ func (t *EnterSleepTool) Call(ctx context.Context, input string) (string, error)
 		t.controller.Request(reason)
 	}
 	return jsonString(map[string]interface{}{
-		"status":  "sleep_requested",
+		"status":  "wait_for_wakeup_requested",
 		"mode":    "wakeup",
 		"reason":  reason,
-		"message": "The active voice session will close after this turn, and the agent will wait for the next wakeup event.",
+		"message": "The current agent run is ending now, and the voice interaction will wait for the next wakeup event.",
 	}), nil
 }
 

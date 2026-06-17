@@ -303,7 +303,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					state.noteDefaultToolCallAndMaybeTodoReminder()
 				}
 				if turn.Kind == plannerTurnSleep {
-					answer := enterSleepFinalAnswer(turn.Step)
+					answer := waitForWakeupFinalAnswer(turn.Step)
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(answer)
 					}
@@ -341,7 +341,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					}
 				}
 				if turn.Kind == executorTurnSleep {
-					answer := enterSleepFinalAnswer(turn.Step)
+					answer := waitForWakeupFinalAnswer(turn.Step)
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(answer)
 					}
@@ -644,7 +644,7 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 		e.Recorder.RecordPlannerExecution(execution)
 	}
 	kind := plannerTurnTool
-	if isEnterSleepTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
+	if isWaitForWakeupTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
 		kind = plannerTurnSleep
 	}
 	return plannerTurnResult{Kind: kind, Step: &toolExecution.Step}, nil
@@ -827,7 +827,7 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 	}
 	actionCopy := toolExecution.Step.Action
 	kind := executorTurnTool
-	if isEnterSleepTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
+	if isWaitForWakeupTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
 		kind = executorTurnSleep
 	}
 	return executorTurnResult{

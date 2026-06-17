@@ -71,7 +71,7 @@ JSON 对象输入：
 | --- | --- | --- |
 | `audio_volume` | audio | `{}` |
 | `current_time` | system | `{"timezone":"Asia/Shanghai"}` |
-| `enter_sleep` | system | `{"reason":"user asked me to sleep"}` |
+| `wait_for_wakeup` | system | `{"reason":"user asked me to wait for wakeup"}` |
 | `keyboard_tap` | input | `{"keys":["ctrl","c"]}` |
 | `keyboard_text` | input | `{"text":"hello world"}` |
 | `mouse_click` | input | `{"x":500,"y":500,"button":"left","coord_space":"normalized"}` |
@@ -119,7 +119,7 @@ curl -X POST http://127.0.0.1:8080/api/tools/weather \
 `touch_gesture` 的 `back` 会从左物理边缘附近开始滑动，`home` 会从底部物理边缘附近开始上滑；normalized 坐标使用 0-1000 范围，手写 `swipe` 时也应使用贴边起点，例如 `start.x=1` 或 `start.y=999`。
 `current_time` 支持 IANA 时区名（如 `Asia/Shanghai`、`America/New_York`）、`UTC`、`local` 和 UTC offset（如 `+08:00`）。
 `weather` 支持地点名或经纬度，运行时通过 Open-Meteo 获取 geocoding、当前天气和短期预报。
-`enter_sleep` 会让语音连续对话 session 在当前轮结束后关闭，回到等待下一次 wakeup 的模式。
+`wait_for_wakeup` 是终止型运行时工具。工具调用成功后会立即结束本次 Agent run，并让语音交互回到等待下一次 wakeup 的模式；不会再要求模型补一轮普通 final answer。
 
 ## 外部 Agent 使用建议
 
@@ -129,4 +129,4 @@ curl -X POST http://127.0.0.1:8080/api/tools/weather \
 - 鼠标和触控优先使用 `coord_space: "normalized"` 的 0-1000 坐标；
 - 私有 IP 或 USB 网卡访问时注意代理绕过：设置 `NO_PROXY` / `no_proxy`；
 - `shell` 的长任务应按工具说明使用后台 session，并在结束时停止。
-- 用户要求“休眠 / 停止监听 / 等我下次唤醒”时，使用 `enter_sleep`，不要用普通文本回复假装已经休眠。
+- 用户要求“休眠 / 停止监听 / 等我下次唤醒”时，使用 `wait_for_wakeup`，不要用普通文本回复假装已经回到等待唤醒。

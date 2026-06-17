@@ -329,7 +329,7 @@ func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 	}
 }
 
-func TestAudioDialogDoesNotSpeakEnterSleepToolDescription(t *testing.T) {
+func TestAudioDialogDoesNotSpeakWaitForWakeupToolDescription(t *testing.T) {
 	toolSpeech := true
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
@@ -342,8 +342,8 @@ func TestAudioDialogDoesNotSpeakEnterSleepToolDescription(t *testing.T) {
 
 	dialog.HandleRunEvent(context.Background(), RunEvent{
 		Type:        runEventToolCall,
-		ToolName:    "enter_sleep",
-		Description: "用户让我休息，我准备进入睡眠模式。",
+		ToolName:    "wait_for_wakeup",
+		Description: "用户让我休息，我准备回到等待唤醒状态。",
 	})
 
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
@@ -495,11 +495,11 @@ func TestProgressSpeakerCancelDropsPending(t *testing.T) {
 	}
 }
 
-func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
+func TestAudioDialogStreamingSpeechErrorDoesNotHideWaitForWakeupRequest(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("enter_sleep", `{"__arg1":"{\"reason\":\"user asked\"}"}`, "I will wait for the next wakeup."),
+		responses: roleToolResponses("wait_for_wakeup", `{"__arg1":"{\"reason\":\"user asked\"}"}`, "I will wait for the next wakeup."),
 	}
-	controller := NewSleepController()
+	controller := NewWaitForWakeupController()
 	runtime := NewRuntimeWithDeps(
 		Config{
 			Model:       ModelConfig{Provider: "fake"},
@@ -508,7 +508,7 @@ func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
-			"enter_sleep": NewEnterSleepTool(controller),
+			"wait_for_wakeup": NewWaitForWakeupTool(controller),
 		}},
 		NewSkillIndex(),
 	)
@@ -525,8 +525,8 @@ func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunAgentTurn() error = %v", err)
 	}
-	if !result.SleepRequested {
-		t.Fatal("SleepRequested = false, want true even when streaming speech fails")
+	if !result.WaitForWakeupRequested {
+		t.Fatal("WaitForWakeupRequested = false, want true even when streaming speech fails")
 	}
 	if result.SpeechStreamed {
 		t.Fatal("SpeechStreamed = true, want false when TTS playback failed before successful speech")

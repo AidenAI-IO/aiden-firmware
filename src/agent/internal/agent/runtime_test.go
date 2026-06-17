@@ -79,18 +79,18 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunEnterSleepTerminatesRoleLoop(t *testing.T) {
+func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{
-		toolCallResponse("sleep_1", "enter_sleep", `{"reason":"user asked"}`),
-		toolCallResponse("sleep_2", "enter_sleep", `{"reason":"still awake"}`),
+		toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked"}`),
+		toolCallResponse("wait_2", "wait_for_wakeup", `{"reason":"still awake"}`),
 	}}
-	controller := NewSleepController()
+	controller := NewWaitForWakeupController()
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", MaxIterations: 2},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
-			"enter_sleep": NewEnterSleepTool(controller),
+			"wait_for_wakeup": NewWaitForWakeupTool(controller),
 		}},
 		NewSkillIndex(),
 	)
@@ -99,14 +99,17 @@ func TestRuntimeRunEnterSleepTerminatesRoleLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if !result.SleepRequested {
-		t.Fatal("SleepRequested = false, want true")
+	if !result.WaitForWakeupRequested {
+		t.Fatal("WaitForWakeupRequested = false, want true")
 	}
-	if result.SleepReason != "user asked" {
-		t.Fatalf("SleepReason = %q, want user asked", result.SleepReason)
+	if result.WaitForWakeupReason != "user asked" {
+		t.Fatalf("WaitForWakeupReason = %q, want user asked", result.WaitForWakeupReason)
+	}
+	if result.Output != "I will wait for the next wakeup." {
+		t.Fatalf("Output = %q, want wait-for-wakeup final answer", result.Output)
 	}
 	if model.callCount != 1 {
-		t.Fatalf("model call count = %d, want role loop to stop after enter_sleep", model.callCount)
+		t.Fatalf("model call count = %d, want role loop to stop after wait_for_wakeup", model.callCount)
 	}
 }
 

@@ -271,9 +271,9 @@ const (
 )
 
 type voiceTurnResult struct {
-	interrupted    bool
-	sleepRequested bool
-	exit           bool
+	interrupted            bool
+	waitForWakeupRequested bool
+	exit                   bool
 }
 
 func runManualMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal) {
@@ -516,8 +516,8 @@ func runVoiceSession(cfg agent.Config, dialog audioDialogRunner, runtime *agent.
 			return true
 		}
 		firstTurn = false
-		if result.sleepRequested {
-			log.Println("[session] agent requested sleep, closing voice session")
+		if result.waitForWakeupRequested {
+			log.Println("[session] agent requested wakeup wait, closing voice session")
 			return false
 		}
 		if result.interrupted {
@@ -589,8 +589,8 @@ thinking:
 
 	dialog.PersistVoiceTurn(input, result, utterance)
 
-	if result.SleepRequested {
-		return voiceTurnResult{sleepRequested: true}
+	if result.WaitForWakeupRequested {
+		return voiceTurnResult{waitForWakeupRequested: true}
 	}
 
 	speechText := result.SpokenTextForConfig(cfg)

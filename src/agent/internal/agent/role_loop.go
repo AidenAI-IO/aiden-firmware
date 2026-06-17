@@ -106,20 +106,17 @@ func toolNameEqual(got, want string) bool {
 	return strings.EqualFold(strings.TrimSpace(got), strings.TrimSpace(want))
 }
 
-func isEnterSleepTool(name string) bool {
-	return toolNameEqual(name, toolEnterSleep)
+func isWaitForWakeupTool(name string) bool {
+	return toolNameEqual(name, toolWaitForWakeup)
 }
 
-func enterSleepFinalAnswer(step *schema.AgentStep) string {
+func waitForWakeupFinalAnswer(step *schema.AgentStep) string {
 	if step != nil {
 		if speech := toolSpeechFromAction(step.Action); speech != "" {
 			return speech
 		}
 		if description := toolDescriptionFromAction(step.Action); description != "" {
 			return description
-		}
-		if message := toolObservationMessage(step.Observation); message != "" {
-			return message
 		}
 	}
 	return "I will wait for the next wakeup."

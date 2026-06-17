@@ -48,7 +48,7 @@ type Runtime struct {
 	mergeWorker        *MergeWorker
 	logger             *Logger
 	profileDebouncer   *ProfileDebouncer
-	sleep              *SleepController
+	waitForWakeup      *WaitForWakeupController
 	memoryPlane        MemoryPlane
 	sessionManager     SessionManager
 	telemetrySessionID string
@@ -78,15 +78,15 @@ type RunRequest struct {
 }
 
 type RunResult struct {
-	Output         string          `json:"output"`
-	SpeechText     string          `json:"-"`
-	Skills         []string        `json:"skills"`
-	EpisodeID      string          `json:"episode_id,omitempty"`
-	Memory         []MessageRecord `json:"memory,omitempty"`
-	Metrics        *RunMetrics     `json:"metrics,omitempty"`
-	SleepRequested bool            `json:"sleep_requested,omitempty"`
-	SleepReason    string          `json:"sleep_reason,omitempty"`
-	SpeechStreamed bool            `json:"-"`
+	Output                 string          `json:"output"`
+	SpeechText             string          `json:"-"`
+	Skills                 []string        `json:"skills"`
+	EpisodeID              string          `json:"episode_id,omitempty"`
+	Memory                 []MessageRecord `json:"memory,omitempty"`
+	Metrics                *RunMetrics     `json:"metrics,omitempty"`
+	WaitForWakeupRequested bool            `json:"wait_for_wakeup_requested,omitempty"`
+	WaitForWakeupReason    string          `json:"wait_for_wakeup_reason,omitempty"`
+	SpeechStreamed         bool            `json:"-"`
 }
 
 func canonicalTurnInputFromRunRequest(req RunRequest) TurnInput {
@@ -270,7 +270,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		memoryDir = filepath.Join(cfg.ConfigDir, "memory")
 	}
 
-	sleepController := NewSleepController()
+	waitForWakeupController := NewWaitForWakeupController()
 	proxy := ProxyConfigFromEnvironment()
 	if err := proxy.Validate(); err != nil {
 		return nil, fmt.Errorf("proxy environment: %w", err)
@@ -280,7 +280,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		cfg,
 		proxy,
 		mobileGymStore,
-		WithSleepController(sleepController),
+		WithWaitForWakeupController(waitForWakeupController),
 		WithScreenStableDefaults(cfg.ScreenStableDefaults()),
 	)
 	extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
@@ -318,7 +318,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
-	rt.sleep = sleepController
+	rt.waitForWakeup = waitForWakeupController
 	rt.mobileGym = mobileGymStore
 
 	if len(mergeNeeded) > 0 && cfg.SkillMergeModel != nil {
@@ -338,11 +338,11 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 }
 
 func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
-	sleepController := NewSleepController()
+	waitForWakeupController := NewWaitForWakeupController()
 	if tools != nil {
-		if tool, ok := tools.Get("enter_sleep"); ok {
-			if sleepTool, ok := tool.(*EnterSleepTool); ok && sleepTool.controller != nil {
-				sleepController = sleepTool.controller
+		if tool, ok := tools.Get(toolWaitForWakeup); ok {
+			if waitTool, ok := tool.(*WaitForWakeupTool); ok && waitTool.controller != nil {
+				waitForWakeupController = waitTool.controller
 			}
 		}
 	}
@@ -357,7 +357,7 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		tools:              tools,
 		skills:             skillManager,
 		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
-		sleep:              sleepController,
+		waitForWakeup:      waitForWakeupController,
 		telemetrySessionID: uuid.NewString(),
 		mobileGym:          &mobileGymSessionStore{},
 	}
@@ -474,8 +474,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	metrics := &RunMetrics{}
 	turnInput := canonicalTurnInputFromRunRequest(req)
 	normalizedInput := turnInput.InputText
-	if r.sleep != nil {
-		r.sleep.Consume()
+	if r.waitForWakeup != nil {
+		r.waitForWakeup.Consume()
 	}
 
 	if r.logger != nil {
@@ -697,19 +697,19 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry)
 
-	sleepRequested, sleepReason := false, ""
-	if r.sleep != nil {
-		sleepRequested, sleepReason = r.sleep.Consume()
+	waitForWakeupRequested, waitForWakeupReason := false, ""
+	if r.waitForWakeup != nil {
+		waitForWakeupRequested, waitForWakeupReason = r.waitForWakeup.Consume()
 	}
 	return RunResult{
-		Output:         output,
-		SpeechText:     speechText,
-		Skills:         runSkills.GetActivatedSkills(),
-		EpisodeID:      episodeID,
-		Memory:         commitResult.Memory,
-		Metrics:        metrics,
-		SleepRequested: sleepRequested,
-		SleepReason:    sleepReason,
+		Output:                 output,
+		SpeechText:             speechText,
+		Skills:                 runSkills.GetActivatedSkills(),
+		EpisodeID:              episodeID,
+		Memory:                 commitResult.Memory,
+		Metrics:                metrics,
+		WaitForWakeupRequested: waitForWakeupRequested,
+		WaitForWakeupReason:    waitForWakeupReason,
 	}, nil
 }
 

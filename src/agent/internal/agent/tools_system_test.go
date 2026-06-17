@@ -40,8 +40,8 @@ func TestBuiltinToolSetRegistersSystemTools(t *testing.T) {
 			t.Fatalf("builtin tool %q was not registered", name)
 		}
 	}
-	if _, ok := tools.Get("enter_sleep"); ok {
-		t.Fatal("enter_sleep should not be registered")
+	if _, ok := tools.Get("wait_for_wakeup"); ok {
+		t.Fatal("wait_for_wakeup should not be registered")
 	}
 }
 
