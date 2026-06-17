@@ -1287,7 +1287,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	var newStream *streamSessionWriter
 	ttsManager := s.currentTTSManager()
 	finalStreamWriters := []io.Writer{
-		NewJSONFieldOrPlainStreamWriter(newChatAssistantDeltaWriter(stream, episodeID, req.RequestID), "text"),
+		newChatAssistantFinalStreamWriter(stream, episodeID, req.RequestID),
 	}
 	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
 		if ttsManager != nil {
@@ -1443,8 +1443,16 @@ func (w *chatAssistantDeltaWriter) ResetStreamState() {
 		return
 	}
 	w.mu.Lock()
+	emitted := w.emitted
 	w.emitted = false
 	w.mu.Unlock()
+	if emitted && w.stream != nil {
+		w.stream.Write(ChatStreamEvent{
+			Type:      "assistant_delta_reset",
+			RequestID: w.requestID,
+			EpisodeID: w.episodeID,
+		})
+	}
 }
 
 func (w *chatAssistantDeltaWriter) StreamEmitted() bool {
@@ -1454,6 +1462,45 @@ func (w *chatAssistantDeltaWriter) StreamEmitted() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.emitted
+}
+
+type chatAssistantFinalStreamWriter struct {
+	delta     *chatAssistantDeltaWriter
+	extractor io.Writer
+}
+
+func newChatAssistantFinalStreamWriter(stream *chatStreamWriter, episodeID, requestID string) io.Writer {
+	delta := newChatAssistantDeltaWriter(stream, episodeID, requestID)
+	return &chatAssistantFinalStreamWriter{
+		delta:     delta,
+		extractor: NewJSONFieldOrPlainStreamWriter(delta, "text"),
+	}
+}
+
+func (w *chatAssistantFinalStreamWriter) Write(p []byte) (int, error) {
+	if w == nil || w.extractor == nil {
+		return len(p), nil
+	}
+	return w.extractor.Write(p)
+}
+
+func (w *chatAssistantFinalStreamWriter) ResetStreamState() {
+	if w == nil {
+		return
+	}
+	if w.delta != nil {
+		w.delta.ResetStreamState()
+	}
+	if resetter, ok := w.extractor.(streamStateResetter); ok {
+		resetter.ResetStreamState()
+	}
+}
+
+func (w *chatAssistantFinalStreamWriter) StreamEmitted() bool {
+	if w == nil || w.delta == nil {
+		return false
+	}
+	return w.delta.StreamEmitted()
 }
 
 type finalStreamFanoutWriter struct {
@@ -4455,6 +4502,10 @@ const webUI = `<!DOCTYPE html>
                 appendAssistantDelta(event);
                 return false;
             }
+            if (event.type === 'assistant_delta_reset') {
+                resetAssistantDelta(event);
+                return false;
+            }
             if (event.type === 'message' && event.message) {
                 if (event.message.type === 'steer') {
                     pendingSteer = null;
@@ -4492,6 +4543,26 @@ const webUI = `<!DOCTYPE html>
             }
             msg.content += event.delta || '';
             addMessage(msg);
+        }
+
+        function resetAssistantDelta(event) {
+            const key = assistantStreamKey(event);
+            if (!key) return;
+            const msg = streamingAssistantDrafts[key] || {
+                type: 'assistant',
+                request_id: event.request_id || '',
+                episode_id: event.episode_id || ''
+            };
+            delete streamingAssistantDrafts[key];
+            const messageKey = messageIdentity(msg);
+            const existing = renderedMessageNodes.get(messageKey);
+            renderedMessageKeys.delete(messageKey);
+            renderedMessageNodes.delete(messageKey);
+            if (existing) {
+                existing.remove();
+                updateEmptyState();
+                scrollToBottom();
+            }
         }
 
         function finalizeAssistantMessage(msg) {

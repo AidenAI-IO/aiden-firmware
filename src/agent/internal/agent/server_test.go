@@ -385,6 +385,72 @@ func TestFinalStreamFanoutWriterReturnsInputLengthWhenLaterWriterFails(t *testin
 	}
 }
 
+func TestFinalStreamFanoutWriterResetsAssistantDeltaDraftBeforeFallback(t *testing.T) {
+	writeErr := errors.New("fanout write failed")
+	rec := httptest.NewRecorder()
+	stream, ok := newChatStreamWriter(rec)
+	if !ok {
+		t.Fatal("httptest recorder must support streaming")
+	}
+	fanout := newFinalStreamFanoutWriter(
+		newChatAssistantFinalStreamWriter(stream, "episode-reset", "request-reset"),
+		failingStreamWriter{err: writeErr},
+	)
+
+	if _, err := fanout.Write([]byte(`{"text":"Partial`)); !errors.Is(err, writeErr) {
+		t.Fatalf("first Write() error = %v, want %v", err, writeErr)
+	}
+	resetStreamWriterState(fanout)
+	if _, err := fanout.Write([]byte("Complete answer.")); !errors.Is(err, writeErr) {
+		t.Fatalf("fallback Write() error = %v, want %v", err, writeErr)
+	}
+
+	var events []ChatStreamEvent
+	scanner := bufio.NewScanner(strings.NewReader(rec.Body.String()))
+	for scanner.Scan() {
+		var event ChatStreamEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("decode stream event %q: %v", scanner.Text(), err)
+		}
+		events = append(events, event)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan stream: %v", err)
+	}
+
+	resetIndex := -1
+	for i, event := range events {
+		if event.Type == "assistant_delta_reset" {
+			if resetIndex >= 0 {
+				t.Fatalf("expected one assistant_delta_reset, events=%#v", events)
+			}
+			resetIndex = i
+		}
+	}
+	if resetIndex <= 0 || resetIndex >= len(events)-1 {
+		t.Fatalf("assistant_delta_reset index = %d, want between deltas: %#v", resetIndex, events)
+	}
+
+	var beforeReset strings.Builder
+	var afterReset strings.Builder
+	for i, event := range events {
+		if event.Type != "assistant_delta" {
+			continue
+		}
+		if i < resetIndex {
+			beforeReset.WriteString(event.Delta)
+		} else {
+			afterReset.WriteString(event.Delta)
+		}
+	}
+	if beforeReset.String() != "Partial" {
+		t.Fatalf("delta before reset = %q, want Partial", beforeReset.String())
+	}
+	if afterReset.String() != "Complete answer." {
+		t.Fatalf("delta after reset = %q, want Complete answer.", afterReset.String())
+	}
+}
+
 func TestFinalStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
 	var webDelta strings.Builder
 	var speech strings.Builder
