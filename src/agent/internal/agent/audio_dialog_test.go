@@ -231,6 +231,7 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 
 func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 	output := "已完成设置，当前音量是 42。\n\n- 读取音量\n- 确认状态\n\n这段详细说明保留给屏幕。"
+	expectedSpeech := "已完成设置，当前音量是 42。\n\n读取音量\n确认状态\n\n这段详细说明保留给屏幕。"
 	model := &scriptedModel{
 		responses: roleDirectResponses(output),
 	}
@@ -270,8 +271,8 @@ func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 	if len(texts) != 1 {
 		t.Fatalf("unexpected TTS texts: %#v", texts)
 	}
-	if texts[0] != output {
-		t.Fatalf("TTS should use full output, got %q want %q", texts[0], output)
+	if texts[0] != expectedSpeech {
+		t.Fatalf("TTS should use normalized full output, got %q want %q", texts[0], expectedSpeech)
 	}
 
 	messages, err := store.Load(context.Background())

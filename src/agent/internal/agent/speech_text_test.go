@@ -22,9 +22,78 @@ func TestBuildSpeechTextKeepsFullOutputWhenSummaryEnabled(t *testing.T) {
 	}, "\n")
 
 	speech := BuildSpeechText(output, Config{VoiceSpeechMaxRunes: 40})
+	want := strings.Join([]string{
+		"已完成设置，当前音量是 42。",
+		"",
+		"详细信息如下：",
+		"我先打开了设置。",
+		"然后读取了音量状态。",
+		"最后确认没有继续修改。",
+		"",
+		`{"volume":42}`,
+		"",
+		"这段额外说明不应该进入播报摘要，因为它太长也不适合口播。",
+	}, "\n")
 
-	if speech != strings.TrimSpace(output) {
-		t.Fatalf("speech = %q, want full output %q", speech, strings.TrimSpace(output))
+	if speech != want {
+		t.Fatalf("speech = %q, want normalized full output %q", speech, want)
+	}
+}
+
+func TestBuildSpeechTextNormalizesMarkdownWithoutDroppingContent(t *testing.T) {
+	output := strings.Join([]string{
+		"# 状态更新",
+		"",
+		"**重点**：已完成 `audio_service` 检查。",
+		"",
+		"- 当前音量是 **42**。",
+		"1. 播放 fallback output。",
+		"",
+		"详情见 [PR #237](https://github.com/AidenAI-IO/aiden-hardware-demo/pull/237)。",
+		"",
+		"> 请继续验证。",
+	}, "\n")
+
+	speech := BuildSpeechText(output, Config{})
+	want := strings.Join([]string{
+		"状态更新",
+		"",
+		"重点：已完成 audio_service 检查。",
+		"",
+		"当前音量是 42。",
+		"播放 fallback output。",
+		"",
+		"详情见 PR #237（https://github.com/AidenAI-IO/aiden-hardware-demo/pull/237）。",
+		"",
+		"请继续验证。",
+	}, "\n")
+
+	if speech != want {
+		t.Fatalf("speech = %q, want %q", speech, want)
+	}
+}
+
+func TestBuildSpeechTextNormalizesTablesAndTasksWithoutDroppingContent(t *testing.T) {
+	output := strings.Join([]string{
+		"| 项目 | 状态 |",
+		"| --- | --- |",
+		"| 音频 | 已修复 |",
+		"",
+		"- [x] 保留正文",
+		"- [ ] 继续验证",
+	}, "\n")
+
+	speech := BuildSpeechText(output, Config{})
+	want := strings.Join([]string{
+		"项目，状态",
+		"音频，已修复",
+		"",
+		"保留正文",
+		"继续验证",
+	}, "\n")
+
+	if speech != want {
+		t.Fatalf("speech = %q, want %q", speech, want)
 	}
 }
 
