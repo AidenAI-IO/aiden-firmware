@@ -34,6 +34,7 @@ type roleCollaborativeExecutor struct {
 	ScreenshotPruning     ScreenshotPruningConfig
 	InitialWorldState     worldState
 	ForceSimpleLoop       bool
+	ToolCallSpeech        bool
 	SteerProvider         func(context.Context) (RunSteerMessage, bool)
 }
 
@@ -438,8 +439,9 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 		}
 	}
 	parser := &FunctionAgent{
-		Tools:     plannerTools,
-		OutputKey: e.OutputKey,
+		Tools:          plannerTools,
+		OutputKey:      e.OutputKey,
+		ToolCallSpeech: e.ToolCallSpeech,
 	}
 	baseOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
 	finalStreaming := state.Phase == phaseDefault || e.ForceSimpleLoop
@@ -555,7 +557,7 @@ func (e *roleCollaborativeExecutor) callRouteTurn(
 	}
 	e.emitRoleOutput(ctx, RolePlanner, roleResponseDebugText(res))
 
-	parser := &FunctionAgent{Tools: appendLoopMetaTools(e.Tools), OutputKey: e.OutputKey}
+	parser := &FunctionAgent{Tools: appendLoopMetaTools(e.Tools), OutputKey: e.OutputKey, ToolCallSpeech: e.ToolCallSpeech}
 	actions, _, parseErr := parser.ParseOutput(res)
 	if parseErr != nil && !errors.Is(parseErr, agents.ErrUnableToParseOutput) {
 		return plannerTurnResult{}, parseErr
@@ -724,8 +726,9 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 	messages := e.roleMessages(e.Profiles.Executor, inputs, *state, "Executor task: work on the current next_step across multiple tool calls if needed, then call finish_step when the step is ready for verification or abort_step if blocked.")
 	executorTools := appendExecutorMetaTools(e.Tools)
 	parser := &FunctionAgent{
-		Tools:     executorTools,
-		OutputKey: e.OutputKey,
+		Tools:          executorTools,
+		OutputKey:      e.OutputKey,
+		ToolCallSpeech: e.ToolCallSpeech,
 	}
 	callOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
 	res, err := e.generateRoleContent(ctx, RoleExecutor, messages, callOptions...)

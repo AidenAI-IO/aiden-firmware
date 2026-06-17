@@ -409,6 +409,7 @@ type AgentConfig struct {
 	RuntimeContext            string
 	ForceSimpleLoop           bool
 	VoiceSpeechSummaryEnabled *bool
+	VoiceToolCallSpeech       *bool
 }
 
 // MemoryConfig is used internally by the memory manager.

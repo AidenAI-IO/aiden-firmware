@@ -436,6 +436,8 @@ func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
 	if event.Type != runEventToolCall || !d.config.VoiceToolCallSpeechOrDefault() || event.ToolName == "enter_sleep" {
 		return
 	}
+	// Tool-call speech is only the explicit LLM-generated speech field; do not
+	// synthesize speech from the description when it is missing.
 	go d.SpeakToolDescription(event.Speech)
 }
 
