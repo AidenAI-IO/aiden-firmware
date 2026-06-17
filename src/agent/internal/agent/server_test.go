@@ -268,6 +268,89 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatStreamEmitsAssistantDeltasBeforeDone(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{"mode":"direct_answer","speech":"Short answer.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
+		},
+		streamChunks: [][]string{
+			{
+				`{"mode":"direct_answer","speech":"Short answer.","text":"Complete`,
+				` answer.","final_answer":"Complete answer.","reason":"direct"}`,
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Answer directly.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"web-req-stream"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	req.Header.Set("X-Aiden-Stream", "ndjson")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var (
+		deltaText              strings.Builder
+		sawDeltaBeforeDone     bool
+		sawAssistantBeforeDone bool
+		sawDone                bool
+		events                 []ChatStreamEvent
+	)
+	scanner := bufio.NewScanner(strings.NewReader(rec.Body.String()))
+	for scanner.Scan() {
+		var event ChatStreamEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("decode stream event %q: %v", scanner.Text(), err)
+		}
+		events = append(events, event)
+		switch event.Type {
+		case "assistant_delta":
+			if sawDone {
+				t.Fatalf("assistant_delta arrived after done: %#v", events)
+			}
+			sawDeltaBeforeDone = true
+			deltaText.WriteString(event.Delta)
+		case "message":
+			if event.Message != nil && event.Message.Type == "assistant" && !sawDone {
+				sawAssistantBeforeDone = true
+			}
+		case "done":
+			sawDone = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan stream: %v", err)
+	}
+
+	if !sawDeltaBeforeDone {
+		t.Fatalf("expected assistant_delta before done, events=%#v", events)
+	}
+	if !sawAssistantBeforeDone || !sawDone {
+		t.Fatalf("expected final assistant message and done, assistant=%v done=%v events=%#v", sawAssistantBeforeDone, sawDone, events)
+	}
+	if got := deltaText.String(); got != "Complete answer." {
+		t.Fatalf("assistant deltas = %q, want Complete answer.", got)
+	}
+	if len(model.sawStreaming) != 1 || !model.sawStreaming[0] {
+		t.Fatalf("expected web chat stream to enable provider streaming, got %#v", model.sawStreaming)
+	}
+}
+
 func TestHandleCoordinateDebugTap(t *testing.T) {
 	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
 		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":2,"height":1,"pixel_format":"uyvy","stride":4,"bytes":4,"stale":false}}`
