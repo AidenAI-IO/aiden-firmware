@@ -104,6 +104,8 @@ type PhoneBridgeStatus struct {
 	Connected            bool              `json:"connected"`
 	Platform             string            `json:"platform,omitempty"`
 	LastHeartbeatAt      *time.Time        `json:"last_heartbeat_at,omitempty"`
+	AppState             string            `json:"app_state,omitempty"`
+	AppStateUpdatedAt    *time.Time        `json:"app_state_updated_at,omitempty"`
 	Environment          *PhoneEnvironment `json:"environment,omitempty"`
 	EnvironmentUpdatedAt *time.Time        `json:"environment_updated_at,omitempty"`
 }
@@ -114,6 +116,8 @@ type PhoneBridge struct {
 	connected       bool
 	platform        string
 	lastHeartbeatAt time.Time
+	appState        string
+	appStateAt      time.Time
 	environment     *PhoneEnvironment
 	environmentAt   time.Time
 	pendingCmds     map[string]chan BridgeCommandResponse
@@ -266,9 +270,17 @@ func (pb *PhoneBridge) readLoop(conn *websocket.Conn, done chan struct{}) {
 }
 
 func (pb *PhoneBridge) handleAppEvent(resp BridgeCommandResponse) bool {
-	if resp.ID != "phone_environment" && resp.Method != "phone_environment" {
+	switch {
+	case resp.ID == "phone_environment" || resp.Method == "phone_environment":
+		return pb.handleEnvironmentEvent(resp)
+	case resp.ID == "phone_app_state" || resp.Method == "phone_app_state":
+		return pb.handleAppStateEvent(resp)
+	default:
 		return false
 	}
+}
+
+func (pb *PhoneBridge) handleEnvironmentEvent(resp BridgeCommandResponse) bool {
 	if !resp.OK {
 		if pb.logger != nil {
 			pb.logger.Warn("phone-bridge: environment report failed: %s", resp.Error)
@@ -301,6 +313,43 @@ func (pb *PhoneBridge) handleAppEvent(resp BridgeCommandResponse) bool {
 
 	if pb.logger != nil {
 		pb.logger.Info("phone-bridge: environment updated (platform=%s)", env.Platform)
+	}
+	return true
+}
+
+func (pb *PhoneBridge) handleAppStateEvent(resp BridgeCommandResponse) bool {
+	if !resp.OK {
+		if pb.logger != nil {
+			pb.logger.Warn("phone-bridge: app state report failed: %s", resp.Error)
+		}
+		return true
+	}
+	var payload struct {
+		AppState   string `json:"app_state"`
+		ReportedAt string `json:"reported_at,omitempty"`
+	}
+	if err := json.Unmarshal(resp.Data, &payload); err != nil {
+		if pb.logger != nil {
+			pb.logger.Error("phone-bridge: decode app state report failed: %v", err)
+		}
+		return true
+	}
+	appState := strings.ToLower(strings.TrimSpace(payload.AppState))
+	switch appState {
+	case "active", "background", "inactive":
+	default:
+		if pb.logger != nil {
+			pb.logger.Warn("phone-bridge: ignoring unknown app_state=%q", payload.AppState)
+		}
+		return true
+	}
+	pb.mu.Lock()
+	pb.appState = appState
+	pb.appStateAt = time.Now()
+	pb.lastHeartbeatAt = pb.appStateAt
+	pb.mu.Unlock()
+	if pb.logger != nil {
+		pb.logger.Info("phone-bridge: app state updated (%s)", appState)
 	}
 	return true
 }
@@ -379,6 +428,13 @@ func (pb *PhoneBridge) Status() PhoneBridgeStatus {
 		t := pb.lastHeartbeatAt
 		status.LastHeartbeatAt = &t
 	}
+	if pb.appState != "" {
+		status.AppState = pb.appState
+		if !pb.appStateAt.IsZero() {
+			t := pb.appStateAt
+			status.AppStateUpdatedAt = &t
+		}
+	}
 	if pb.connected && pb.environment != nil {
 		env := clonePhoneEnvironment(*pb.environment)
 		status.Environment = &env
@@ -418,6 +474,11 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 	if status.LastHeartbeatAt != nil {
 		builder.WriteString("- last_heartbeat_at: ")
 		builder.WriteString(status.LastHeartbeatAt.UTC().Format(time.RFC3339))
+		builder.WriteByte('\n')
+	}
+	if appState := strings.TrimSpace(status.AppState); appState != "" {
+		builder.WriteString("- app_state: ")
+		builder.WriteString(appState)
 		builder.WriteByte('\n')
 	}
 	if status.Environment != nil {

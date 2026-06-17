@@ -161,7 +161,10 @@ WebSocket's core value:
 2. Relay app auto-connects to `ws://192.168.42.1:8080/api/phone-bridge` after startup.
 3. App sends periodic heartbeat.
 4. App actively reports `phone_environment` upon connection success and returning from background to foreground, including system version, language/region, timezone, screen/battery, system apps, third-party candidate app availability, etc.
-5. Board maintains `bridge_connected`, `platform`, `last_heartbeat_at`, `environment` status. Complete environment exposed via status API; Agent runtime context only injects system type/version, language/region/timezone, screen dimensions, confirmed openable third-party candidate apps, etc.
+5. App reports `phone_app_state` when the visible lifecycle state changes among `active`, `background`, and `inactive`.
+6. Board maintains `bridge_connected`, `platform`, `last_heartbeat_at`, `app_state`, and `environment` status. Complete environment is exposed through status API; Agent runtime context only injects summarized system type/version, language/region/timezone, screen dimensions, confirmed openable third-party candidate apps, etc.
+
+`bridge_connected` only means the WebSocket is currently active. It is not equivalent to USB cable connectivity. After the iOS app enters background, WebSocket may disconnect while USB ECM remains reachable; real-time background Dynamic Island updates should go through Live Activity relay/APNs, not the phone bridge WebSocket.
 
 ### Command Protocol
 

@@ -132,6 +132,47 @@ func TestLiveActivityManagerSnapshotActive(t *testing.T) {
 	}
 }
 
+func TestLiveActivityManagerPublishesToRelay(t *testing.T) {
+	requests := make(chan map[string]interface{}, 1)
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/boards/board-1/live-activity/state" {
+			t.Errorf("relay path = %s, want board state path", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer relay-secret" {
+			t.Errorf("relay auth = %q, want bearer token", got)
+		}
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode relay payload: %v", err)
+		}
+		requests <- payload
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer relay.Close()
+
+	manager := NewLiveActivityManager(LiveActivityConfig{
+		RelayURL:    relay.URL,
+		RelayAPIKey: "relay-secret",
+		BoardID:     "board-1",
+		PhoneID:     "phone-1",
+	}, nil)
+	manager.StartTask("req-1", "Open Settings")
+
+	select {
+	case payload := <-requests:
+		if payload["phone_id"] != "phone-1" || payload["request_id"] != "req-1" || payload["status"] != LiveActivityStatusRunning {
+			t.Fatalf("relay payload = %#v, want phone/request/status", payload)
+		}
+		if payload["task_title"] != "Open Settings" || payload["can_stop"] != true {
+			t.Fatalf("relay payload = %#v, want title and stoppable state", payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for relay publish")
+	}
+}
+
 func TestServerLiveActivityRegistrationAndStatus(t *testing.T) {
 	server := &Server{liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil)}
 	server.liveActivity.StartTask("req-1", "Do a task")

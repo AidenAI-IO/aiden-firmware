@@ -1197,6 +1197,10 @@ api_key = "x"
 model = "y"
 
 [live_activity]
+relay_url = "https://relay.example.com"
+relay_api_key = "relay-secret"
+board_id = "board-001"
+phone_id = "phone-001"
 bundle_id = "com.example.aiden"
 environment = "sandbox"
 team_id = "TEAMID1234"
@@ -1213,6 +1217,15 @@ timeout_sec = 3
 	}
 	if !cfg.LiveActivity.EnabledOrDefault() {
 		t.Fatal("LiveActivity.EnabledOrDefault() = false, want true")
+	}
+	if !cfg.LiveActivity.RelayConfigured() {
+		t.Fatal("LiveActivity.RelayConfigured() = false, want true")
+	}
+	if cfg.LiveActivity.RelayURL != "https://relay.example.com" || cfg.LiveActivity.RelayAPIKey != "relay-secret" {
+		t.Fatalf("relay config = %#v, want configured URL/key", cfg.LiveActivity)
+	}
+	if cfg.LiveActivity.BoardIDOrDefault() != "board-001" || cfg.LiveActivity.PhoneID != "phone-001" {
+		t.Fatalf("relay identity = board %q phone %q", cfg.LiveActivity.BoardIDOrDefault(), cfg.LiveActivity.PhoneID)
 	}
 	if cfg.LiveActivity.APNsTopic() != "com.example.aiden.push-type.liveactivity" {
 		t.Fatalf("APNsTopic() = %q", cfg.LiveActivity.APNsTopic())

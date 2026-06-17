@@ -58,6 +58,7 @@ The app can also actively send event messages. Events reuse the `BridgeCommandRe
 Current events:
 
 - `phone_environment`: App reports phone environment snapshot upon WebSocket connection success and returning from background to foreground.
+- `phone_app_state`: App reports the last visible app lifecycle state when it changes among `active`, `background`, and `inactive`. This state is for diagnostics and strategy decisions; it does not mean the app can execute permanently in iOS background.
 
 Example:
 
@@ -112,6 +113,20 @@ Example:
 ```
 
 The board writes the latest complete environment to the `environment` field of `GET /api/phone-bridge/status`. Each Agent runtime context only injects a streamlined summary: connection status, system type/version, language/region/timezone, screen dimensions, confirmed openable third-party candidate apps. Environment is cleared on disconnection to avoid using stale information.
+
+`phone_app_state` example:
+
+```json
+{
+  "id": "phone_app_state",
+  "ok": true,
+  "method": "phone_app_state",
+  "data": {
+    "app_state": "background",
+    "reported_at": "2026-06-10T03:20:05Z"
+  }
+}
+```
 
 `system_apps` represents system built-in apps/capabilities; on iOS doesn't depend on `canOpenURL` to determine existence; `third_party_apps` represents third-party candidate apps, probed via `canOpenURL` on iOS and package launchability on Android. `available_apps` is a legacy third-party candidate summary for old board compatibility; new implementations should prioritize reading the split fields.
 

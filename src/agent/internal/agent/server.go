@@ -2636,6 +2636,7 @@ func (s *Server) handleLiveActivityRegistrations(w http.ResponseWriter, r *http.
 			OK:      true,
 			State:   state,
 			APNs:    apnsStatus,
+			Relay:   s.liveActivity.RelayStatus(),
 			Message: "registered",
 		})
 	case http.MethodDelete:

@@ -68,3 +68,26 @@ func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
 		t.Fatal("environment event should not consume pending command responses")
 	}
 }
+
+func TestPhoneBridgeHandlesAppStateEvent(t *testing.T) {
+	bridge := NewPhoneBridge(nil)
+	defer bridge.queue.Stop()
+
+	handled := bridge.handleAppEvent(BridgeCommandResponse{
+		ID:     "phone_app_state",
+		OK:     true,
+		Method: "phone_app_state",
+		Data:   json.RawMessage(`{"app_state":"background","reported_at":"2026-06-01T02:03:06Z"}`),
+	})
+	if !handled {
+		t.Fatal("app state event was not handled")
+	}
+
+	status := bridge.Status()
+	if status.AppState != "background" {
+		t.Fatalf("app_state = %q, want background", status.AppState)
+	}
+	if status.AppStateUpdatedAt == nil {
+		t.Fatal("expected app_state_updated_at")
+	}
+}

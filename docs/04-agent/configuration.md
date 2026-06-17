@@ -220,6 +220,19 @@ When `vad_helper_path` is still the built-in default, switching `vad_backend` au
 | `keyboard_device` | `/dev/hidg0` | Keyboard HID device |
 | `mouse_device` | `/dev/hidg1` | Mouse/touch HID device |
 | `frame_socket` | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool |
+
+## `[live_activity]`
+
+Used for the iOS companion app Live Activity / Dynamic Island task status. The agent-side state snapshot is enabled by default. Background, lock-screen, or not-open app remote updates go through the Aiden Live Activity relay. Official firmware preconfigures relay settings in `overlay/userdata/agent/agent.toml`, so newly flashed boards work with the official app without users entering the relay key. The normal config page does not expose the relay key. Apple APNs credentials stay on the relay/backend and are not placed in board config. See [Live Activity / Dynamic Island](./live-activity.md).
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `enabled` | `true` | Enables agent-side state snapshots and APIs |
+| `relay_url` | preconfigured in official firmware | Aiden Live Activity relay URL; only advanced deployments need to override it |
+| `relay_api_key` | preconfigured in official firmware | Shared relay Bearer token; must match the app build config and relay server `AIDEN_RELAY_API_KEY` |
+| `board_id` | `default` | Board ID in relay; should match the app `LIVE_ACTIVITY_BOARD_ID` |
+| `phone_id` | - | Phone ID in relay; empty lets relay use the default/latest phone registered for this board |
+
 ## `[stt]` and `[tts]`
 
 `[stt]` is required when `input_mode = "stt"`; `[tts]` is required when `input_mode = "stt"` or `"audio"`.

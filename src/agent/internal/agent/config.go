@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,6 +168,10 @@ type TelemetryConfig struct {
 
 type LiveActivityConfig struct {
 	Enabled        *bool  `toml:"enabled,omitempty"`
+	RelayURL       string `toml:"relay_url,omitempty"`
+	RelayAPIKey    string `toml:"relay_api_key,omitempty"`
+	BoardID        string `toml:"board_id,omitempty"`
+	PhoneID        string `toml:"phone_id,omitempty"`
 	BundleID       string `toml:"bundle_id,omitempty"`
 	Topic          string `toml:"topic,omitempty"`
 	Environment    string `toml:"environment,omitempty"`
@@ -913,6 +918,12 @@ func (l LiveActivityConfig) Validate() error {
 	if l.TimeoutSec < 0 {
 		return fmt.Errorf("live_activity.timeout_sec must be >= 0, got %d (0 uses default)", l.TimeoutSec)
 	}
+	if relayURL := strings.TrimSpace(l.RelayURL); relayURL != "" {
+		parsed, err := url.Parse(relayURL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return fmt.Errorf("invalid live_activity.relay_url: %s", l.RelayURL)
+		}
+	}
 	if !l.APNsConfigured() {
 		return nil
 	}
@@ -942,6 +953,17 @@ func (l LiveActivityConfig) APNsConfigured() bool {
 	return strings.TrimSpace(l.TeamID) != "" &&
 		strings.TrimSpace(l.KeyID) != "" &&
 		(strings.TrimSpace(l.PrivateKeyPath) != "" || strings.TrimSpace(l.PrivateKeyPEM) != "")
+}
+
+func (l LiveActivityConfig) RelayConfigured() bool {
+	return strings.TrimSpace(l.RelayURL) != ""
+}
+
+func (l LiveActivityConfig) BoardIDOrDefault() string {
+	if boardID := strings.TrimSpace(l.BoardID); boardID != "" {
+		return boardID
+	}
+	return "default"
 }
 
 func (l LiveActivityConfig) APNsTopic() string {
