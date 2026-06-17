@@ -34,7 +34,6 @@ type sessionContextView struct {
 	RootUserRequest       string
 	LatestUserMessage     string
 	FollowUpRelation      string
-	Interpretation        string
 	LatestCommittedPlan   *plannerDecision
 	LatestVerifierSummary string
 	LatestCorrection      string
@@ -178,7 +177,6 @@ func BuildSessionContextView(events []SessionEvent, currentInput string) session
 		RootUserRequest:   root,
 		LatestUserMessage: latestContent,
 		FollowUpRelation:  relation,
-		Interpretation:    interpretationForFollowUpRelation(relation),
 	}
 	if relation == FollowUpCorrection {
 		view.LatestCorrection = latestContent
@@ -329,21 +327,6 @@ func latestVerifierSummary(events []SessionEvent, taskRootIndex, latestUserIndex
 	return ""
 }
 
-func interpretationForFollowUpRelation(relation string) string {
-	switch relation {
-	case FollowUpCorrection:
-		return "treat the latest user message as a correction to the root request unless it explicitly replaces the task"
-	case FollowUpReplacement:
-		return "treat the latest user message as an explicit replacement and do not continue the previous task"
-	case FollowUpNewTask:
-		return "treat the latest user message as a new task; prior session context is lower priority"
-	case FollowUpContinuation:
-		return "continue the existing task using the root request as the authority"
-	default:
-		return "treat this as the root request"
-	}
-}
-
 func formatSessionContextView(view sessionContextView) string {
 	if strings.TrimSpace(view.RootUserRequest) == "" && strings.TrimSpace(view.LatestUserMessage) == "" {
 		return ""
@@ -363,11 +346,6 @@ func formatSessionContextView(view sessionContextView) string {
 	if relation := strings.TrimSpace(view.FollowUpRelation); relation != "" {
 		builder.WriteString("- Follow-up classification: ")
 		builder.WriteString(relation)
-		builder.WriteByte('\n')
-	}
-	if interpretation := strings.TrimSpace(view.Interpretation); interpretation != "" {
-		builder.WriteString("- Interpretation: ")
-		builder.WriteString(interpretation)
 		builder.WriteByte('\n')
 	}
 	if correction := strings.TrimSpace(view.LatestCorrection); correction != "" {

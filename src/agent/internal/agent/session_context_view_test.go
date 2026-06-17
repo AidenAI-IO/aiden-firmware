@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestBuildSessionContextViewUsesLatestTaskRootForContinuation(t *testing.T) {
 	events := []SessionEvent{
@@ -17,5 +20,28 @@ func TestBuildSessionContextViewUsesLatestTaskRootForContinuation(t *testing.T) 
 	}
 	if view.LatestCommittedPlan != nil {
 		t.Fatalf("latest committed plan should not cross task root, got %#v", view.LatestCommittedPlan)
+	}
+}
+
+func TestFormatSessionContextViewOmitsFollowUpInterpretationText(t *testing.T) {
+	events := []SessionEvent{
+		{Type: "user_input", Role: "user", Content: "打开微信", Relation: FollowUpRootRequest},
+		{Type: "assistant_output", Role: "assistant", Content: "正在打开微信"},
+		{Type: "user_input", Role: "user", Content: "我喜欢吃小龙虾", Relation: FollowUpContinuation},
+	}
+
+	view := BuildSessionContextView(events, "我喜欢吃小龙虾")
+	formatted := formatSessionContextView(view)
+	if !strings.Contains(formatted, "- Follow-up classification: continuation") {
+		t.Fatalf("formatted context missing follow-up classification:\n%s", formatted)
+	}
+	for _, unwanted := range []string{
+		"Interpretation:",
+		"continue the existing task using the root request as the authority",
+		"treat the latest user message",
+	} {
+		if strings.Contains(formatted, unwanted) {
+			t.Fatalf("formatted context should not contain %q:\n%s", unwanted, formatted)
+		}
 	}
 }
