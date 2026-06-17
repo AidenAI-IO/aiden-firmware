@@ -614,6 +614,66 @@ func TestExecutorMarkedFinalAnswerEntersVerifierReview(t *testing.T) {
 	}
 }
 
+func TestCallExecutorTurnOmitOversizedToolResultBeforeModelCall(t *testing.T) {
+	hugeObservation := strings.Repeat("超", 2000)
+	model := &contextWindowScriptedModel{
+		scriptedModel: scriptedModel{responses: []*llms.ContentResponse{
+			finishStepToolCall("handled oversized tool result"),
+		}},
+		window: 300,
+	}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{
+			Executor: RoleProfile{
+				Name:         RoleExecutor,
+				SystemPrompt: strings.Repeat("executor system prompt ", 20),
+			},
+		},
+		[]langtools.Tool{&stubTool{name: "dump", description: "Return a dump."}},
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{
+		Phase:               phaseExecution,
+		PlanCommitted:       true,
+		StepExecutionActive: true,
+		NextStep:            "inspect dump",
+		StepToolSteps: []schema.AgentStep{{
+			Action: schema.AgentAction{
+				Tool:      "dump",
+				ToolInput: "{}",
+				ToolID:    "dump_1",
+			},
+			Observation: hugeObservation,
+		}},
+	}
+	inputs := map[string]string{"input": "summarize the dump", "history": ""}
+
+	turn, err := executor.callExecutorTurn(context.Background(), inputs, state, NewToolSpecs(executor.Tools))
+	if err != nil {
+		t.Fatalf("executor turn error: %v", err)
+	}
+	if turn.Kind != executorTurnFinishStep {
+		t.Fatalf("turn kind = %v, want finish step", turn.Kind)
+	}
+	if model.callCount != 1 {
+		t.Fatalf("model call count = %d, want 1", model.callCount)
+	}
+	content := firstToolResponseContent(t, model.messages[0])
+	if strings.Contains(content, strings.Repeat("超", 20)) {
+		t.Fatalf("oversized raw observation leaked into model prompt: %q", content)
+	}
+	if !strings.Contains(content, "tool result omitted") || !strings.Contains(content, "context_window=300") {
+		t.Fatalf("tool response should explain the context-window rejection, got: %q", content)
+	}
+}
+
 func TestFinishStepStoresKeyInfo(t *testing.T) {
 	executor := newRoleCollaborativeExecutor(
 		&scriptedModel{},
@@ -648,6 +708,28 @@ func TestFinishStepStoresKeyInfo(t *testing.T) {
 	if !strings.Contains(turn.Step.Observation, "account_id=abc123") {
 		t.Fatalf("observation should include key_info: %s", turn.Step.Observation)
 	}
+}
+
+type contextWindowScriptedModel struct {
+	scriptedModel
+	window int
+}
+
+func (m *contextWindowScriptedModel) contextWindow() int {
+	return m.window
+}
+
+func firstToolResponseContent(t *testing.T, messages []llms.MessageContent) string {
+	t.Helper()
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if response, ok := part.(llms.ToolCallResponse); ok {
+				return response.Content
+			}
+		}
+	}
+	t.Fatalf("no tool response found in messages: %#v", messages)
+	return ""
 }
 
 func TestAbortStepEntersVerifierReview(t *testing.T) {
