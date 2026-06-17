@@ -29,6 +29,7 @@ const (
 	plannerTurnSetTodo
 	plannerTurnCancelPlan
 	plannerTurnInvalidMeta
+	plannerTurnSleep
 )
 
 type plannerTurnResult struct {
@@ -65,6 +66,7 @@ const (
 	executorTurnFinishStep
 	executorTurnAbortStep
 	executorTurnInvalidMeta
+	executorTurnSleep
 )
 
 type executorTurnResult struct {
@@ -102,6 +104,39 @@ func plannerPlanModeToolRejectedTurn(action schema.AgentAction) plannerTurnResul
 
 func toolNameEqual(got, want string) bool {
 	return strings.EqualFold(strings.TrimSpace(got), strings.TrimSpace(want))
+}
+
+func isWaitForWakeupTool(name string) bool {
+	return toolNameEqual(name, toolWaitForWakeup)
+}
+
+func waitForWakeupFinalAnswer(step *schema.AgentStep) string {
+	if step != nil {
+		if speech := toolSpeechFromAction(step.Action); speech != "" {
+			return speech
+		}
+		if description := toolDescriptionFromAction(step.Action); description != "" {
+			return description
+		}
+		if message := toolObservationMessage(step.Observation); message != "" {
+			return message
+		}
+	}
+	return "I will wait for the next wakeup."
+}
+
+func toolObservationMessage(observation string) string {
+	observation = strings.TrimSpace(observation)
+	if observation == "" || !strings.HasPrefix(observation, "{") {
+		return ""
+	}
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(observation), &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Message)
 }
 
 func (s roleLoopState) canAcceptPlannerFinal(answer string) bool {

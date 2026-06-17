@@ -521,7 +521,7 @@ func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
 		d.currentProgressSpeaker().Schedule(ctx, text)
 		return
 	}
-	if event.Type != runEventToolCall || !d.config.VoiceToolCallSpeechOrDefault() || event.ToolName == "enter_sleep" {
+	if event.Type != runEventToolCall || !d.config.VoiceToolCallSpeechOrDefault() || event.ToolName == toolWaitForWakeup {
 		return
 	}
 	// Tool-call speech is only the explicit LLM-generated speech field; do not

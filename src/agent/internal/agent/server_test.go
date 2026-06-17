@@ -857,6 +857,46 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTSWhenEnabled(t *testing.
 	}
 }
 
+func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
+	toolSpeechEnabled := true
+	streamingDisabled := false
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked","speech":"我先待命。"}`),
+		},
+	}
+	controller := NewWaitForWakeupController()
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Use tools.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceToolCallSpeech:      &toolSpeechEnabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"wait_for_wakeup": NewWaitForWakeupTool(controller),
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+	provider := &recordingTTSProvider{name: "server-provider"}
+	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
+	server.audioClient = NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"go to sleep"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
+}
+
 func TestServerHandleChatSkipsToolDescriptionTTSWhenDisabled(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。","speech":"读取音量。"}`, "The current audio volume is 42."),

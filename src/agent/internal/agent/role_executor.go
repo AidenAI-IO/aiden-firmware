@@ -291,7 +291,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				if e.Recorder != nil {
 					e.Recorder.RecordLoopPhase(phaseDefault, "cancel_plan")
 				}
-			case plannerTurnTool, plannerTurnInvalidMeta:
+			case plannerTurnTool, plannerTurnInvalidMeta, plannerTurnSleep:
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
 					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps))
@@ -301,6 +301,13 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 						return nil, err
 					}
 					state.noteDefaultToolCallAndMaybeTodoReminder()
+				}
+				if turn.Kind == plannerTurnSleep {
+					answer := waitForWakeupFinalAnswer(turn.Step)
+					if e.Recorder != nil {
+						e.Recorder.RecordDefaultFinish(answer)
+					}
+					return e.finishRunWithoutStreaming(ctx, answer, answer, &state)
 				}
 			}
 		case phaseExecution:
@@ -316,7 +323,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				return nil, err
 			}
 			switch turn.Kind {
-			case executorTurnTool, executorTurnInvalidMeta:
+			case executorTurnTool, executorTurnInvalidMeta, executorTurnSleep:
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
 					state.StepToolSteps = append(state.StepToolSteps, *turn.Step)
@@ -332,6 +339,13 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
 						return nil, err
 					}
+				}
+				if turn.Kind == executorTurnSleep {
+					answer := waitForWakeupFinalAnswer(turn.Step)
+					if e.Recorder != nil {
+						e.Recorder.RecordDefaultFinish(answer)
+					}
+					return e.finishRunWithoutStreaming(ctx, answer, answer, &state)
 				}
 			case executorTurnFinishStep, executorTurnAbortStep:
 				if turn.Step != nil {
@@ -629,13 +643,27 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 	if e.Recorder != nil {
 		e.Recorder.RecordPlannerExecution(execution)
 	}
-	return plannerTurnResult{Kind: plannerTurnTool, Step: &toolExecution.Step}, nil
+	kind := plannerTurnTool
+	if isWaitForWakeupTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
+		kind = plannerTurnSleep
+	}
+	return plannerTurnResult{Kind: kind, Step: &toolExecution.Step}, nil
 }
 
 func (e *roleCollaborativeExecutor) finishRun(ctx context.Context, finalAnswer, log string, state *roleLoopState) (map[string]any, error) {
+	return e.finishRunWithStreaming(ctx, finalAnswer, log, state, true)
+}
+
+func (e *roleCollaborativeExecutor) finishRunWithoutStreaming(ctx context.Context, finalAnswer, log string, state *roleLoopState) (map[string]any, error) {
+	return e.finishRunWithStreaming(ctx, finalAnswer, log, state, false)
+}
+
+func (e *roleCollaborativeExecutor) finishRunWithStreaming(ctx context.Context, finalAnswer, log string, state *roleLoopState, stream bool) (map[string]any, error) {
 	finalAnswer = strings.TrimSpace(finalAnswer)
 	if e.CallbacksHandler != nil {
-		e.streamFinalAnswer(ctx, finalAnswer)
+		if stream {
+			e.streamFinalAnswer(ctx, finalAnswer)
+		}
 		e.CallbacksHandler.HandleAgentFinish(ctx, schema.AgentFinish{
 			ReturnValues: map[string]any{e.OutputKey: finalAnswer},
 			Log:          log,
@@ -808,8 +836,12 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 		return executorTurnResult{}, toolExecution.Error
 	}
 	actionCopy := toolExecution.Step.Action
+	kind := executorTurnTool
+	if isWaitForWakeupTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
+		kind = executorTurnSleep
+	}
 	return executorTurnResult{
-		Kind:   executorTurnTool,
+		Kind:   kind,
 		Action: &actionCopy,
 		Step:   &toolExecution.Step,
 	}, nil

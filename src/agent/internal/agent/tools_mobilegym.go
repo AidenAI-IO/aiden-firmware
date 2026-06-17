@@ -129,8 +129,8 @@ func newMobileGymToolSet(cfg Config, proxyCfg ProxyConfig, mobileGym *mobileGymS
 		"current_time":  NewCurrentTimeTool(),
 		"calculator":    NewCalculatorTool(),
 	}
-	if toolOptions.sleepController != nil {
-		tools["enter_sleep"] = NewEnterSleepTool(toolOptions.sleepController)
+	if toolOptions.waitForWakeupController != nil {
+		tools[toolWaitForWakeup] = NewWaitForWakeupTool(toolOptions.waitForWakeupController)
 	}
 	return &ToolSet{tools: tools, screen: screen}
 }

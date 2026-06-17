@@ -828,7 +828,7 @@ func (s *Server) handleChatAsync(
 				s.liveActivity.UpdateFromRunEvent(requestID, event)
 			}
 
-			if event.Type == runEventToolCall && s.runtime.config.VoiceToolCallSpeechOrDefault() {
+			if s.shouldSpeakToolCall(event) {
 				go s.speakToolDescription(runCtx, event.Speech)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
@@ -1094,7 +1094,7 @@ func (s *Server) handleChatSync(
 		StreamFinalChunks: true,
 		EventHandler: func(event RunEvent) {
 			s.appendHistory(messageFromRunEvent(event, episodeID, ""))
-			if event.Type == runEventToolCall && s.runtime.config.VoiceToolCallSpeechOrDefault() {
+			if s.shouldSpeakToolCall(event) {
 				go s.speakToolDescription(r.Context(), event.Speech)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
@@ -1273,7 +1273,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			if req.RequestID != "" && s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
-			if event.Type == runEventToolCall && s.runtime.config.VoiceToolCallSpeechOrDefault() {
+			if s.shouldSpeakToolCall(event) {
 				go s.speakToolDescription(ctx, event.Speech)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
@@ -1609,6 +1609,13 @@ func (s *Server) speakToolDescription(ctx context.Context, description string) {
 			s.logger.Error("Tool description TTS playback failed: %v", err)
 		}
 	}
+}
+
+func (s *Server) shouldSpeakToolCall(event RunEvent) bool {
+	if event.Type != runEventToolCall || event.ToolName == toolWaitForWakeup {
+		return false
+	}
+	return s.runtime != nil && s.runtime.config.VoiceToolCallSpeechOrDefault()
 }
 
 func (s *Server) newRunProgressSpeaker() *progressSpeaker {

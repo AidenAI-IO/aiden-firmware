@@ -79,6 +79,93 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
+	const wakeupMessage = "The current agent run is ending now, and the voice interaction will wait for the next wakeup event."
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked"}`),
+		toolCallResponse("wait_2", "wait_for_wakeup", `{"reason":"still awake"}`),
+	}}
+	controller := NewWaitForWakeupController()
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", MaxIterations: 2},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"wait_for_wakeup": NewWaitForWakeupTool(controller),
+		}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "go to sleep"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !result.WaitForWakeupRequested {
+		t.Fatal("WaitForWakeupRequested = false, want true")
+	}
+	if result.WaitForWakeupReason != "user asked" {
+		t.Fatalf("WaitForWakeupReason = %q, want user asked", result.WaitForWakeupReason)
+	}
+	if !result.SleepRequested {
+		t.Fatal("SleepRequested = false, want deprecated alias to mirror WaitForWakeupRequested")
+	}
+	if result.SleepReason != "user asked" {
+		t.Fatalf("SleepReason = %q, want deprecated alias to mirror WaitForWakeupReason", result.SleepReason)
+	}
+	if result.Output != wakeupMessage {
+		t.Fatalf("Output = %q, want wait-for-wakeup observation message", result.Output)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal RunResult: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("Unmarshal RunResult JSON: %v", err)
+	}
+	if payload["wait_for_wakeup_requested"] != true || payload["sleep_requested"] != true {
+		t.Fatalf("RunResult JSON missing wakeup aliases: %s", encoded)
+	}
+	if payload["wait_for_wakeup_reason"] != "user asked" || payload["sleep_reason"] != "user asked" {
+		t.Fatalf("RunResult JSON missing wakeup reason aliases: %s", encoded)
+	}
+	if model.callCount != 1 {
+		t.Fatalf("model call count = %d, want role loop to stop after wait_for_wakeup", model.callCount)
+	}
+}
+
+func TestRuntimeRunWaitForWakeupDoesNotStreamFinalAnswer(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked"}`),
+	}}
+	controller := NewWaitForWakeupController()
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"wait_for_wakeup": NewWaitForWakeupTool(controller),
+		}},
+		NewSkillIndex(),
+	)
+
+	var stream strings.Builder
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "go to sleep",
+		StreamWriter:      &stream,
+		StreamFinalChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !result.WaitForWakeupRequested {
+		t.Fatal("WaitForWakeupRequested = false, want true")
+	}
+	if stream.String() != "" {
+		t.Fatalf("stream = %q, want no spoken final answer for wait_for_wakeup", stream.String())
+	}
+}
+
 func TestRuntimeRunInjectsCurrentDateIntoPlannerPrompt(t *testing.T) {
 	originalNow := promptNow
 	promptNow = func() time.Time {
