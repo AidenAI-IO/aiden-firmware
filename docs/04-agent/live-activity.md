@@ -164,7 +164,7 @@ iOS app includes `AidenLiveActivityExtension` Widget Extension and `AidenLiveAct
 
 - After app establishes connection with hardware, it should be able to create a `ready` Live Activity before switching to background, as a quick entry point back to Aiden.
 - When foreground polling detects `live_activity.status=running`, app calls custom native helper `AidenLiveActivityModule.startOrUpdate`; this helper internally uses ActivityKit `Activity.request` to create and `Activity.update` to update local Live Activity, without requesting push token.
-- When app enters foreground, connection is restored, or within the short polling window after just switching to background, it will best-effort query `GET /api/live-activity/current` to sync the current task initiated from agent Web UI / 8080 to local Live Activity.
+- While the app is in foreground and connected to hardware, it periodically queries `GET /api/live-activity/current` to sync the current task initiated from agent Web UI / 8080 to local Live Activity. It also runs one best-effort sync when entering foreground, reconnecting, or during the short polling window after switching to background.
 - Stop buttons in both app and agent Web UI should use the current `live_activity.request_id` to call `POST /api/chat/cancel`; this way regardless of which end initiated the task, the other end can interrupt the same agent run after seeing running / needs_app.
 - When polling detects `completed`, `failed`, or `canceled`, app ends local Live Activity.
 - After task ends, if hardware is still connected and entry point still needs to be retained, app can fall back Live Activity to `ready`; otherwise end Live Activity.

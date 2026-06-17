@@ -1016,6 +1016,15 @@ func isFinalLiveActivityStatus(status string) bool {
 	}
 }
 
+func isCancelableLiveActivityStatus(status string) bool {
+	switch status {
+	case LiveActivityStatusRunning, LiveActivityStatusNeedsApp:
+		return true
+	default:
+		return false
+	}
+}
+
 type APNsClient struct {
 	httpClient *http.Client
 	endpoint   string

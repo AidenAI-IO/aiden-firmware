@@ -572,6 +572,18 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.liveActivity != nil {
+		if state := s.liveActivity.Snapshot(requestID); state != nil && isCancelableLiveActivityStatus(state.Status) {
+			s.liveActivity.CancelTask(requestID)
+			if s.logger != nil {
+				s.logger.Info("Chat request live activity canceled without active run: request_id=%s", requestID)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(ChatCancelResponse{RequestID: requestID, Status: "canceled"})
+			return
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ChatCancelResponse{RequestID: requestID, Status: "not_running"})
 }

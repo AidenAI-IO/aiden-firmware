@@ -1020,6 +1020,35 @@ func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatCancelEndsDanglingLiveActivity(t *testing.T) {
+	server := &Server{
+		activeRuns:   make(map[string]context.CancelFunc),
+		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil),
+	}
+	server.liveActivity.StartTask("req-1", "External run")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"req-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChatCancel(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp ChatCancelResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Status != "canceled" || resp.RequestID != "req-1" {
+		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+	state := server.liveActivity.Snapshot("req-1")
+	if state == nil || state.Status != LiveActivityStatusCanceled || state.CanStop {
+		t.Fatalf("live activity state = %#v, want canceled", state)
+	}
+}
+
 func TestServerHandleChatSteerQueuesAndCancelsPendingMessage(t *testing.T) {
 	server := &Server{
 		activeRuns:    make(map[string]context.CancelFunc),
