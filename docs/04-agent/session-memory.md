@@ -182,7 +182,9 @@ retained hot-window events are restored as normal `ChatMessageHistory` records.
 At prompt time the planner sees those records under the regular
 `Conversation history:` section of its task prompt. Compressed-history state is
 not exposed through a hot-window label, and no synthetic hot-window start/end
-markers are added.
+markers are added. The planner does not apply a separate fixed message-count cap
+to this hot window; the session compaction thresholds and model context budget
+are the controls for prompt growth.
 
 Synthetic prompt text must not be persisted into `ChatMessageHistory`.
 `Snapshot()` reads history verbatim and `appendSessionEvents()` writes records

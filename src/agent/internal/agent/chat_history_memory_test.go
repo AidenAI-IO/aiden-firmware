@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -217,6 +218,51 @@ func TestRuntimeRunKeepsCurrentRequestOutOfCompressedHistoryBlock(t *testing.T) 
 	}
 }
 
+func TestRuntimeRunIncludesEntireActiveHotWindowInConversationHistory(t *testing.T) {
+	ctx := context.Background()
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	manager := NewMemoryManager(memoryDir)
+	for i := 0; i < 12; i++ {
+		if err := manager.AppendExchange(ctx, "default", fmt.Sprintf("prior user %02d", i), fmt.Sprintf("prior assistant %02d", i)); err != nil {
+			t.Fatalf("AppendExchange(%d) error = %v", i, err)
+		}
+	}
+
+	model := &scriptedModel{responses: roleDirectResponses("继续完成")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(ctx, RunRequest{Input: "继续"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) == 0 || len(model.messages[0]) < 2 {
+		t.Fatalf("expected planner system and user messages, got %#v", model.messages)
+	}
+
+	plannerTaskPrompt := messageText(model.messages[0][1:])
+	for _, want := range []string{
+		"prior user 00",
+		"prior assistant 00",
+		"prior user 11",
+		"prior assistant 11",
+	} {
+		if !strings.Contains(plannerTaskPrompt, want) {
+			t.Fatalf("planner task prompt should include full active hot window, missing %q:\n%s", want, plannerTaskPrompt)
+		}
+	}
+}
+
 func TestRuntimeRunIncludesPersistedInterruptedEpisodeInPlannerHistory(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
@@ -264,6 +310,26 @@ func TestRuntimeRunIncludesPersistedInterruptedEpisodeInPlannerHistory(t *testin
 	for _, want := range []string{"Recent persisted chat history", "ep_resume_context", "打开设置", "点击设置"} {
 		if !strings.Contains(plannerPrompt, want) {
 			t.Fatalf("planner prompt missing %q:\n%s", want, plannerPrompt)
+		}
+	}
+}
+
+func TestFormatChatHistoryForPlannerDoesNotHardCapMessageCount(t *testing.T) {
+	history := make([]Message, 0, 25)
+	for i := 0; i < 25; i++ {
+		history = append(history, Message{
+			Type:      "episode_status",
+			EpisodeID: fmt.Sprintf("ep_%02d", i),
+			Status:    "interrupted",
+			Content:   fmt.Sprintf("interrupted episode %02d", i),
+			IsError:   true,
+		})
+	}
+
+	formatted := formatChatHistoryForPlanner(history, "继续")
+	for _, want := range []string{"interrupted episode 00", "interrupted episode 24"} {
+		if !strings.Contains(formatted, want) {
+			t.Fatalf("planner history should not apply a fixed message-count cap, missing %q:\n%s", want, formatted)
 		}
 	}
 }

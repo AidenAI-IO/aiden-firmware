@@ -11,9 +11,7 @@ import (
 )
 
 const (
-	maxPlannerChatHistoryMessages     = 20
 	maxPlannerChatHistoryContentRunes = 1200
-	maxPlannerChatHistoryRunes        = 7000
 )
 
 type chatHistoryPlannerMemory struct {
@@ -114,10 +112,7 @@ func formatChatHistoryForPlanner(messages []Message, currentInput string) string
 		}
 		lines = append(lines, line)
 	}
-	if len(lines) > maxPlannerChatHistoryMessages {
-		lines = lines[len(lines)-maxPlannerChatHistoryMessages:]
-	}
-	return truncateChatHistoryRunes(strings.Join(lines, "\n"), maxPlannerChatHistoryRunes)
+	return strings.Join(lines, "\n")
 }
 
 func latestMatchingUserMessageIndex(messages []Message, currentInput string) int {

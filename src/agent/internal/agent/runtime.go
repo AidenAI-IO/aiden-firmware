@@ -517,7 +517,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
 	}
 
-	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "buffer"})
 	if err != nil {
 		return RunResult{}, err
 	}
