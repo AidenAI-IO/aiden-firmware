@@ -1493,6 +1493,7 @@ ApiResponse make_json_error(int status_code, const std::string& message) {
     response.status_code = status_code;
     switch (status_code) {
         case 400: response.status_text = "Bad Request"; break;
+        case 404: response.status_text = "Not Found"; break;
         case 503: response.status_text = "Service Unavailable"; break;
         default:  response.status_text = "Internal Server Error"; break;
     }
@@ -1806,6 +1807,26 @@ ValidationResult validate_agent_config_for_save(const aiden::AgentToml& config) 
     return validate_agent_config_via_cli(config, agent_bin);
 }
 
+void sync_wifi_legacy_fields_from_networks(aiden::WifiNetworkConfig* wifi) {
+    if (!wifi) {
+        return;
+    }
+    if (wifi->networks.empty()) {
+        wifi->ssid.clear();
+        wifi->psk.clear();
+        return;
+    }
+
+    size_t best = 0;
+    for (size_t i = 1; i < wifi->networks.size(); ++i) {
+        if (wifi->networks[i].priority > wifi->networks[best].priority) {
+            best = i;
+        }
+    }
+    wifi->ssid = wifi->networks[best].ssid;
+    wifi->psk = wifi->networks[best].psk;
+}
+
 void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {
     if (!root || !wifi) {
         return;
@@ -1837,6 +1858,7 @@ void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {
             }
         }
         aiden::normalize_wifi_priorities(wifi);
+        sync_wifi_legacy_fields_from_networks(wifi);
     } else if ((has_legacy_ssid || has_legacy_psk) && !wifi->ssid.empty()) {
         aiden::WifiNetwork network;
         int existing_index = aiden::find_wifi_network_index(*wifi, wifi->ssid);
@@ -3218,6 +3240,8 @@ ApiResponse handle_wifi_connect(const Options& options, const std::string& body)
     aiden::WifiNetworkConfig original;
     std::string ignore_error;
     const bool had_original_config = file_exists(options.wifi_config_path.c_str());
+    const std::string original_wifi_config_text =
+        had_original_config ? read_file_contents(options.wifi_config_path.c_str()) : std::string();
     load_current_wifi_config(options, &original, &ignore_error);
 
     aiden::WifiNetworkConfig attempt = original;
@@ -3250,12 +3274,15 @@ ApiResponse handle_wifi_connect(const Options& options, const std::string& body)
 
     CommandResult wifi_apply = apply_wifi_config(attempt_options, true);
     WifiRuntimeStatus wifi_status = query_wifi_status(options);
-    const bool connected_to_target =
+    auto is_connected_to_target = [&](const WifiRuntimeStatus& status) {
+        return status.connected &&
+               status.state == "COMPLETED" &&
+               status.ssid == target_ssid &&
+               !status.ip_address.empty();
+    };
+    bool connected_to_target =
         wifi_apply.exit_code == 0 &&
-        wifi_status.connected &&
-        wifi_status.state == "COMPLETED" &&
-        wifi_status.ssid == target_ssid &&
-        !wifi_status.ip_address.empty();
+        is_connected_to_target(wifi_status);
 
     aiden::WifiNetworkConfig response_wifi = attempt;
     if (connected_to_target) {
@@ -3271,7 +3298,47 @@ ApiResponse handle_wifi_connect(const Options& options, const std::string& body)
                 trim_trailing_newlines(final_apply.output);
         }
         wifi_status = query_wifi_status(options);
-        response_wifi = attempt;
+        if (final_apply.exit_code != 0 || !is_connected_to_target(wifi_status)) {
+            connected_to_target = false;
+            if (wifi_apply.exit_code == 0) {
+                wifi_apply.exit_code = final_apply.exit_code == 0 ? 1 : final_apply.exit_code;
+            }
+
+            if (had_original_config) {
+                if (!atomic_write_file(options.wifi_config_path,
+                                       original_wifi_config_text,
+                                       0600,
+                                       &save_error)) {
+                    unlink(attempt_options.wifi_config_path.c_str());
+                    return make_json_error(500, "failed to restore previous wifi config: " + save_error);
+                }
+            } else if (unlink(options.wifi_config_path.c_str()) != 0 && errno != ENOENT) {
+                unlink(attempt_options.wifi_config_path.c_str());
+                return make_json_error(500,
+                                       std::string("failed to remove wifi config during restore: ") +
+                                           strerror(errno));
+            }
+
+            CommandResult restore_apply;
+            if (had_original_config && (!original.networks.empty() || !original.ssid.empty())) {
+                restore_apply = apply_wifi_config(options, true);
+            } else {
+                restore_apply = run_shell_command("wpa_cli -i " + shell_quote(options.wifi_interface) +
+                                                  " disconnect 2>&1");
+            }
+            std::ostringstream restored_output;
+            restored_output << trim_trailing_newlines(wifi_apply.output);
+            restored_output << "\n[config_web] saved Wi-Fi was not confirmed; restored previous Wi-Fi config.";
+            if (!trim_trailing_newlines(restore_apply.output).empty()) {
+                restored_output << "\n[config_web] restore apply output:\n"
+                                << trim_trailing_newlines(restore_apply.output);
+            }
+            wifi_apply.output = restored_output.str();
+            response_wifi = original;
+            wifi_status = query_wifi_status(options);
+        } else {
+            response_wifi = attempt;
+        }
     } else {
         CommandResult restore_apply;
         if (had_original_config && (!original.networks.empty() || !original.ssid.empty())) {
@@ -3352,14 +3419,21 @@ ApiResponse handle_wifi_forget(const Options& options, const std::string& body) 
     }
 
     cJSON* response = cJSON_CreateObject();
-    cJSON_AddBoolToObject(response, "ok", 1);
+    const bool applied = wifi_apply.exit_code == 0;
+    cJSON_AddBoolToObject(response, "ok", applied ? 1 : 0);
     cJSON_AddItemToObject(response, "wifi", wifi_to_json(wifi));
     cJSON_AddItemToObject(response, "wifi_status", wifi_status_to_json(query_wifi_status(options)));
-    cJSON_AddStringToObject(response, "message", "wifi network forgotten");
+    cJSON_AddStringToObject(response,
+                            "message",
+                            applied ? "wifi network forgotten"
+                                    : "wifi network forgotten but failed to apply runtime changes");
     cJSON* apply = add_object(response, "wifi_apply");
-    cJSON_AddBoolToObject(apply, "ok", wifi_apply.exit_code == 0 ? 1 : 0);
+    cJSON_AddBoolToObject(apply, "ok", applied ? 1 : 0);
     cJSON_AddNumberToObject(apply, "exit_code", wifi_apply.exit_code);
     cJSON_AddStringToObject(apply, "output", trim_trailing_newlines(wifi_apply.output).c_str());
+    if (!applied) {
+        cJSON_AddStringToObject(apply, "error", "failed to apply wifi config");
+    }
     return make_json_ok(response);
 }
 
