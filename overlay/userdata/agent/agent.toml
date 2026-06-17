@@ -32,7 +32,7 @@ min_speech_ms = 300       # Minimum speech duration to accept (ms)
 
 # Wakeup voice session parameters
 # Only used when input_mode = "stt" and trigger_mode = "wakeup"
-voice_session_enabled = true
+voice_followup_enabled = false
 voice_followup_timeout_ms = 6000
 voice_first_turn_timeout_ms = 10000
 voice_max_turns = 0

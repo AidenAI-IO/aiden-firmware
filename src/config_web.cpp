@@ -542,7 +542,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"agent", "vad_speech_threshold", CONFIG_FIELD_NUMBER},
         {"agent", "silence_ms", CONFIG_FIELD_NUMBER},
         {"agent", "min_speech_ms", CONFIG_FIELD_NUMBER},
-        {"agent", "voice_session_enabled", CONFIG_FIELD_BOOL},
+        {"agent", "voice_followup_enabled", CONFIG_FIELD_BOOL},
         {"agent", "voice_followup_timeout_ms", CONFIG_FIELD_NUMBER},
         {"agent", "voice_first_turn_timeout_ms", CONFIG_FIELD_NUMBER},
         {"agent", "voice_max_turns", CONFIG_FIELD_NUMBER},
@@ -1429,7 +1429,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(agent, "vad_speech_threshold", config.vad_speech_threshold);
     cJSON_AddNumberToObject(agent, "silence_ms", config.silence_ms);
     cJSON_AddNumberToObject(agent, "min_speech_ms", config.min_speech_ms);
-    cJSON_AddBoolToObject(agent, "voice_session_enabled", config.voice_session_enabled ? 1 : 0);
+    cJSON_AddBoolToObject(agent, "voice_followup_enabled", config.voice_followup_enabled ? 1 : 0);
     cJSON_AddNumberToObject(agent, "voice_followup_timeout_ms", config.voice_followup_timeout_ms);
     cJSON_AddNumberToObject(agent, "voice_first_turn_timeout_ms", config.voice_first_turn_timeout_ms);
     cJSON_AddNumberToObject(agent, "voice_max_turns", config.voice_max_turns);
@@ -1687,7 +1687,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_double(&config->vad_speech_threshold, agent, "vad_speech_threshold");
         set_json_int(&config->silence_ms, agent, "silence_ms");
         set_json_int(&config->min_speech_ms, agent, "min_speech_ms");
-        set_json_bool(&config->voice_session_enabled, agent, "voice_session_enabled");
+        set_json_bool(&config->voice_followup_enabled, agent, "voice_followup_enabled");
         set_json_int(&config->voice_followup_timeout_ms, agent, "voice_followup_timeout_ms");
         set_json_int(&config->voice_first_turn_timeout_ms, agent, "voice_first_turn_timeout_ms");
         set_json_int(&config->voice_max_turns, agent, "voice_max_turns");

@@ -847,8 +847,8 @@ func TestConfigValidateRejectsUnsupportedAudioFormatForVoiceInput(t *testing.T) 
 func TestVoiceSessionConfigDefaults(t *testing.T) {
 	cfg := Config{}
 
-	if !cfg.VoiceSessionEnabledOrDefault() {
-		t.Fatal("VoiceSessionEnabledOrDefault() = false, want true")
+	if cfg.VoiceFollowupEnabledOrDefault() {
+		t.Fatal("VoiceFollowupEnabledOrDefault() = true, want false")
 	}
 	if cfg.VoiceFirstTurnTimeoutOrDefault() != 10*time.Second {
 		t.Fatalf("VoiceFirstTurnTimeoutOrDefault() = %s, want 10s", cfg.VoiceFirstTurnTimeoutOrDefault())
@@ -880,14 +880,14 @@ func TestVoiceSessionConfigDefaults(t *testing.T) {
 }
 
 func TestVoiceSessionConfigOverrides(t *testing.T) {
-	disabled := false
+	followupEnabled := true
 	interruptDisabled := false
 	streamingDisabled := false
 	toolSpeech := false
 	progressSpeechDisabled := false
 	summaryDisabled := false
 	cfg := Config{
-		VoiceSessionEnabled:        &disabled,
+		VoiceFollowupEnabled:       &followupEnabled,
 		VoiceFirstTurnTimeoutMs:    1234,
 		VoiceFollowupTimeoutMs:     5678,
 		VoiceInterruptOnWakeup:     &interruptDisabled,
@@ -899,8 +899,8 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 		VoiceMaxResponseTokens:     123,
 	}
 
-	if cfg.VoiceSessionEnabledOrDefault() {
-		t.Fatal("VoiceSessionEnabledOrDefault() = true, want false")
+	if !cfg.VoiceFollowupEnabledOrDefault() {
+		t.Fatal("VoiceFollowupEnabledOrDefault() = false, want true")
 	}
 	if cfg.VoiceFirstTurnTimeoutOrDefault() != 1234*time.Millisecond {
 		t.Fatalf("VoiceFirstTurnTimeoutOrDefault() = %s, want 1234ms", cfg.VoiceFirstTurnTimeoutOrDefault())

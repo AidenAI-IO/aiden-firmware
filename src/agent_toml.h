@@ -105,7 +105,7 @@ struct AgentToml {
     double vad_speech_threshold = 0.0;
     int silence_ms = 0;
     int min_speech_ms = 0;
-    bool voice_session_enabled = true;
+    bool voice_followup_enabled = false;
     int voice_followup_timeout_ms = 6000;
     int voice_first_turn_timeout_ms = 10000;
     int voice_max_turns = 0;

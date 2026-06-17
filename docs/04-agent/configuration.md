@@ -59,7 +59,7 @@ vad_helper_path = "/oem/usr/bin/rknn_vad"
 vad_speech_threshold = 0.5
 silence_ms = 650
 min_speech_ms = 300
-voice_session_enabled = true
+voice_followup_enabled = false
 voice_followup_timeout_ms = 6000
 voice_first_turn_timeout_ms = 10000
 voice_max_turns = 0
@@ -117,7 +117,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `vad_speech_threshold` | `0.5` | Silero VAD 语音概率阈值 |
 | `silence_ms` | `650` | 多少毫秒静音后认为一句话结束 |
 | `min_speech_ms` | `300` | 最短有效语音时长 |
-| `voice_session_enabled` | `true` | wakeup 模式下启用一次唤醒后的连续对话；设为 `false` 保持一轮一唤醒 |
+| `voice_followup_enabled` | `false` | wakeup 模式下启用一次唤醒后的连续追问；默认保持一轮一唤醒 |
 | `voice_followup_timeout_ms` | `6000` | Agent 回复后等待用户追问的窗口 |
 | `voice_first_turn_timeout_ms` | `10000` | wakeup 后等待第一句话的窗口 |
 | `voice_max_turns` | `0` | 单个 wakeup session 最大轮数；`0` 表示不限制 |

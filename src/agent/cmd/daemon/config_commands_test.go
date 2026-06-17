@@ -160,7 +160,7 @@ func TestResolvedWebConfigDTO_OverlaysCurrentConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
-voice_session_enabled = false
+voice_followup_enabled = true
 force_simple_loop = true
 
 [model]
@@ -183,8 +183,8 @@ pointer_mode = "touchscreen"
 	if dto.HID.PointerMode != "touchscreen" {
 		t.Fatalf("hid.pointer_mode = %q, want touchscreen", dto.HID.PointerMode)
 	}
-	if dto.Agent.VoiceSessionEnabled {
-		t.Fatal("agent.voice_session_enabled = true, want false from current config")
+	if !dto.Agent.VoiceFollowupEnabled {
+		t.Fatal("agent.voice_followup_enabled = false, want true from current config")
 	}
 	if !dto.Agent.ForceSimpleLoop {
 		t.Fatal("agent.force_simple_loop = false, want true from current config")
