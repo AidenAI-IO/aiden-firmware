@@ -236,6 +236,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"agent.voice_speech_summary_enabled", defaults.VoiceSpeechSummaryEnabledOrDefault()},
 		{"agent.voice_speech_max_runes", defaults.VoiceSpeechMaxRunes},
 		{"agent.voice_max_response_tokens", defaults.VoiceMaxResponseTokens},
+		{"agent.todo_reminder_tool_calls", defaults.TodoReminderToolCallsOrDefault()},
 		{"agent.max_iterations", defaults.MaxIterations},
 		{"agent.screenshot_keep_n", defaults.ScreenshotKeepN},
 		{"agent.screenshot_prune_interval", defaults.ScreenshotPruneInterval},

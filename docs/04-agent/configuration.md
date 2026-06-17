@@ -128,6 +128,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `voice_speech_summary_enabled` | `true` | 是否将完整 assistant 输出转换成更短的口播文本；不影响 Web UI、history 和 memory 中的完整 `result.Output` |
 | `voice_speech_max_runes` | `120` | 口播摘要最大 rune 数；设为 `0` 使用默认值 |
 | `voice_max_response_tokens` | `400` | 语音回复的单次输出 token 上限（需 `>= 0`） |
+| `todo_reminder_tool_calls` | `3` | single-agent/default mode 中连续多少次工具调用后提醒模型更新 todo；设为 `0` 使用默认值 |
 
 `vad_model_path` 指向的模型需要先在 PC 端用 `silero-vad/convert_silero_vad_to_rknn.py` 从 Silero ONNX 转成 RV1106 RKNN，再放到设备对应路径。CPU 后端需要 `silero_vad_6_2_lstm_decoder_weights.bin` 包含 Conv1d encoder 扩展，可用 `silero-vad/export_silero_vad_v6_2_weights.py` 从随仓库提供的 TorchScript 文件生成。
 当 `vad_helper_path` 仍是内置默认值时，切换 `vad_backend` 会自动切换 helper；只有设置成自定义路径时才按自定义路径执行。

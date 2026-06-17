@@ -57,7 +57,6 @@ type TodoState struct {
 }
 
 const todoSpeechMaxRunes = 40
-const defaultTodoReminderToolCalls = 4
 
 func (s TodoState) Clone() TodoState {
 	cloned := s
@@ -357,9 +356,13 @@ func (s *roleLoopState) noteDefaultToolCallAndMaybeTodoReminder() bool {
 	if s == nil || s.Phase != phaseDefault {
 		return false
 	}
+	threshold := s.TodoReminderToolCalls
+	if threshold <= 0 {
+		threshold = defaultTodoReminderToolCalls
+	}
 	s.DefaultToolCallsSinceTodoTouch++
 	hasTodo := s.Todo.Mode == TodoModeSimple && len(s.Todo.Items) > 0
-	if s.DefaultToolCallsSinceTodoTouch < defaultTodoReminderToolCalls {
+	if s.DefaultToolCallsSinceTodoTouch < threshold {
 		return false
 	}
 	s.DefaultToolCallsSinceTodoTouch = 0

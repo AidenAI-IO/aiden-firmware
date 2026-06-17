@@ -40,6 +40,7 @@ const (
 	defaultVoiceMaxTurns           = 0
 	defaultVoiceSpeechMaxRunes     = 120
 	defaultVoiceMaxResponseTokens  = 400
+	defaultTodoReminderToolCalls   = 3
 	defaultMaxIterations           = -1
 	defaultScreenshotKeepN         = 3
 	defaultScreenshotPruneInterval = 25
@@ -125,6 +126,7 @@ func DefaultConfig() Config {
 		VoiceSpeechSummaryEnabled:  defaultBoolPtr(true),
 		VoiceSpeechMaxRunes:        defaultVoiceSpeechMaxRunes,
 		VoiceMaxResponseTokens:     defaultVoiceMaxResponseTokens,
+		TodoReminderToolCalls:      defaultTodoReminderToolCalls,
 		MaxIterations:              defaultMaxIterations,
 		ScreenshotKeepN:            defaultScreenshotKeepN,
 		ScreenshotPruneInterval:    defaultScreenshotPruneInterval,

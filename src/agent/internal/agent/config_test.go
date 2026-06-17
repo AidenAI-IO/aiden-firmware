@@ -70,6 +70,23 @@ func TestConfigScreenStableDefaults(t *testing.T) {
 	}
 }
 
+func TestConfigTodoReminderToolCallsDefaultsAndOverrides(t *testing.T) {
+	cfg := Config{}
+	if got := cfg.TodoReminderToolCallsOrDefault(); got != 3 {
+		t.Fatalf("TodoReminderToolCallsOrDefault() = %d, want 3", got)
+	}
+
+	cfg.TodoReminderToolCalls = 2
+	if got := cfg.TodoReminderToolCallsOrDefault(); got != 2 {
+		t.Fatalf("TodoReminderToolCallsOrDefault() override = %d, want 2", got)
+	}
+
+	cfg.TodoReminderToolCalls = 0
+	if got := cfg.TodoReminderToolCallsOrDefault(); got != 3 {
+		t.Fatalf("TodoReminderToolCallsOrDefault() zero = %d, want 3", got)
+	}
+}
+
 func TestLoadConfigParsesModelSpecOverrides(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
@@ -917,6 +934,14 @@ func TestVoiceSessionConfigValidationRejectsNegativeValues(t *testing.T) {
 				VoiceSpeechMaxRunes: -1,
 			},
 			want: "voice_speech_max_runes must be >= 0",
+		},
+		{
+			name: "negative todo reminder tool calls",
+			cfg: Config{
+				Model:                 ModelConfig{Provider: "fake"},
+				TodoReminderToolCalls: -1,
+			},
+			want: "todo_reminder_tool_calls must be >= 0",
 		},
 	}
 

@@ -1851,7 +1851,6 @@ func TestRuntimeSimpleLoopTodoReminderAfterSeveralToolCalls(t *testing.T) {
 			toolCallResponse("call_1", "web_search", `{"__arg1":"one"}`),
 			toolCallResponse("call_2", "web_search", `{"__arg1":"two"}`),
 			toolCallResponse("call_3", "web_search", `{"__arg1":"three"}`),
-			toolCallResponse("call_4", "web_search", `{"__arg1":"four"}`),
 			contentResponse("done"),
 		},
 	}
@@ -1867,12 +1866,41 @@ func TestRuntimeSimpleLoopTodoReminderAfterSeveralToolCalls(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "complex single-agent task"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(model.messages) < 5 {
-		t.Fatalf("expected fifth model call after reminder, got %d", len(model.messages))
+	if len(model.messages) < 4 {
+		t.Fatalf("expected fourth model call after reminder, got %d", len(model.messages))
 	}
-	prompt := messageText(model.messages[4])
+	prompt := messageText(model.messages[3])
 	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
-		t.Fatalf("fifth prompt missing todo reminder:\n%s", prompt)
+		t.Fatalf("fourth prompt missing todo reminder:\n%s", prompt)
+	}
+}
+
+func TestRuntimeSimpleLoopTodoReminderUsesConfiguredToolCallThreshold(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("call_1", "web_search", `{"__arg1":"one"}`),
+			toolCallResponse("call_2", "web_search", `{"__arg1":"two"}`),
+			contentResponse("done"),
+		},
+	}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true, TodoReminderToolCalls: 2},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "complex single-agent task"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) < 3 {
+		t.Fatalf("expected third model call after configured reminder, got %d", len(model.messages))
+	}
+	prompt := messageText(model.messages[2])
+	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
+		t.Fatalf("third prompt missing configured todo reminder:\n%s", prompt)
 	}
 }
 

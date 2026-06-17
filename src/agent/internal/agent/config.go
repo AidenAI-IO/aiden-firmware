@@ -125,6 +125,7 @@ type Config struct {
 	VoiceSpeechSummaryEnabled  *bool              `toml:"voice_speech_summary_enabled,omitempty"`
 	VoiceSpeechMaxRunes        int                `toml:"voice_speech_max_runes,omitempty"`
 	VoiceMaxResponseTokens     int                `toml:"voice_max_response_tokens,omitempty"`
+	TodoReminderToolCalls      int                `toml:"todo_reminder_tool_calls,omitempty"`
 	MaxIterations              int                `toml:"max_iterations,omitempty"`
 	ForceSimpleLoop            bool               `toml:"force_simple_loop,omitempty"`
 	ScreenshotKeepN            int                `toml:"screenshot_keep_n,omitempty"`
@@ -798,6 +799,9 @@ func (c Config) Validate() error {
 	if c.VoiceMaxResponseTokens < 0 {
 		return fmt.Errorf("voice_max_response_tokens must be >= 0, got %d", c.VoiceMaxResponseTokens)
 	}
+	if c.TodoReminderToolCalls < 0 {
+		return fmt.Errorf("todo_reminder_tool_calls must be >= 0, got %d", c.TodoReminderToolCalls)
+	}
 	if c.ScreenshotKeepN < 0 {
 		return fmt.Errorf("screenshot_keep_n must be >= 0, got %d", c.ScreenshotKeepN)
 	}
@@ -1059,6 +1063,13 @@ func (c Config) VoiceMaxResponseTokensOrDefault() int {
 		return c.VoiceMaxResponseTokens
 	}
 	return defaultVoiceMaxResponseTokens
+}
+
+func (c Config) TodoReminderToolCallsOrDefault() int {
+	if c.TodoReminderToolCalls > 0 {
+		return c.TodoReminderToolCalls
+	}
+	return defaultTodoReminderToolCalls
 }
 
 func (c Config) ScreenshotPruningOrDefault() ScreenshotPruningConfig {

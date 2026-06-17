@@ -20,19 +20,20 @@ import (
 )
 
 type roleCollaborativeExecutor struct {
-	Model             llms.Model
-	Profiles          RoleProfiles
-	Tools             []langtools.Tool
-	Memory            schema.Memory
-	CallbacksHandler  callbacks.Handler
-	MaxIterations     int
-	InputAttachments  []InputAttachment
-	OutputKey         string
-	Recorder          *EpisodeRecorder
-	ScreenshotPruning ScreenshotPruningConfig
-	InitialWorldState worldState
-	ForceSimpleLoop   bool
-	SteerProvider     func(context.Context) (RunSteerMessage, bool)
+	Model                 llms.Model
+	Profiles              RoleProfiles
+	Tools                 []langtools.Tool
+	Memory                schema.Memory
+	CallbacksHandler      callbacks.Handler
+	MaxIterations         int
+	TodoReminderToolCalls int
+	InputAttachments      []InputAttachment
+	OutputKey             string
+	Recorder              *EpisodeRecorder
+	ScreenshotPruning     ScreenshotPruningConfig
+	InitialWorldState     worldState
+	ForceSimpleLoop       bool
+	SteerProvider         func(context.Context) (RunSteerMessage, bool)
 }
 
 const roleModelCallTimeout = 120 * time.Second
@@ -102,6 +103,7 @@ type roleLoopState struct {
 	SteerMessages                  []RunSteerMessage
 	DefaultToolCallsSinceTodoTouch int
 	PendingTodoReminder            string
+	TodoReminderToolCalls          int
 }
 
 type worldState struct {
@@ -207,7 +209,13 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 	if e.ForceSimpleLoop {
 		initialPhase = phaseDefault
 	}
-	state := roleLoopState{Phase: initialPhase, ForceSimpleLoop: e.ForceSimpleLoop, Todo: TodoState{Mode: TodoModeNone}, World: e.InitialWorldState}
+	state := roleLoopState{
+		Phase:                 initialPhase,
+		ForceSimpleLoop:       e.ForceSimpleLoop,
+		Todo:                  TodoState{Mode: TodoModeNone},
+		World:                 e.InitialWorldState,
+		TodoReminderToolCalls: e.TodoReminderToolCalls,
+	}
 	for i := 0; i < e.MaxIterations; i++ {
 		switch state.Phase {
 		case phaseDecision, phaseDefault, phasePlan:
