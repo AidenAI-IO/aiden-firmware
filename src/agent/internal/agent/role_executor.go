@@ -27,6 +27,7 @@ type roleCollaborativeExecutor struct {
 	CallbacksHandler      callbacks.Handler
 	MaxIterations         int
 	TodoReminderToolCalls int
+	ConversationHistory   []llms.MessageContent
 	InputAttachments      []InputAttachment
 	OutputKey             string
 	Recorder              *EpisodeRecorder
@@ -853,6 +854,7 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		Role:  llms.ChatMessageTypeSystem,
 		Parts: []llms.ContentPart{llms.TextPart(profile.SystemPrompt)},
 	}}
+	messages = append(messages, e.ConversationHistory...)
 
 	if profile.Name == RoleExecutor && len(state.StepToolSteps) > 0 {
 		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(e.Tools), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.StepToolSteps)

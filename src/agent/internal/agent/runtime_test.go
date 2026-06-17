@@ -108,6 +108,45 @@ func TestRuntimeRunInjectsCurrentDateIntoPlannerPrompt(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunRestoresHotWindowHistoryAsChatMessages(t *testing.T) {
+	ctx := context.Background()
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	manager := NewMemoryManager(storageDir)
+	if err := manager.AppendExchange(ctx, "default", "上一轮用户问题", "上一轮回答"); err != nil {
+		t.Fatalf("AppendExchange() error = %v", err)
+	}
+
+	model := &scriptedModel{responses: roleDirectResponses("completed")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(ctx, RunRequest{Input: "继续上一轮"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) == 0 || len(model.messages[0]) < 4 {
+		t.Fatalf("expected planner system, restored history, and state prompt messages, got %#v", model.messages)
+	}
+	messages := model.messages[0]
+	if messages[1].Role != llms.ChatMessageTypeHuman || messageText(messages[1:2]) != "上一轮用户问题\n" {
+		t.Fatalf("restored user history message = role %q text %q", messages[1].Role, messageText(messages[1:2]))
+	}
+	if messages[2].Role != llms.ChatMessageTypeAI || messageText(messages[2:3]) != "上一轮回答\n" {
+		t.Fatalf("restored assistant history message = role %q text %q", messages[2].Role, messageText(messages[2:3]))
+	}
+	statePrompt := messageText(messages[3:])
+	if strings.Contains(statePrompt, "Conversation history:") ||
+		strings.Contains(statePrompt, "Human: 上一轮用户问题") ||
+		strings.Contains(statePrompt, "AI: 上一轮回答") ||
+		strings.Contains(statePrompt, "上一轮回答") {
+		t.Fatalf("state prompt should not duplicate restored chat history:\n%s", statePrompt)
+	}
+}
+
 func TestRuntimeRunUsesSessionManager(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{

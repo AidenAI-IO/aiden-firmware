@@ -190,6 +190,43 @@ func TestMemoryManagerRestoresFromSessionEventsWhenSnapshotMissing(t *testing.T)
 	}
 }
 
+func TestMemoryManagerRestoresOnlyConversationEventsFromRuntimeSession(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	events := []SessionEvent{
+		{Type: "user_input", Role: "user", Content: "original request"},
+		{Type: runEventToolCall, Role: "tool", ToolName: "tap", ToolInput: `{"x":10}`, Content: "tap button"},
+		{Type: "tool_result", Role: "tool", ToolName: "tap", ToolInput: `{"x":10}`, Content: "tap ok"},
+		{Type: runEventTodoUpdate, Role: "system", Content: "current todo"},
+		{Type: "steer", Role: "user", Content: "updated instruction"},
+		{Type: "assistant_output", Role: "assistant", Content: "done"},
+	}
+	for _, event := range events {
+		if _, err := session.AppendEvent(ctx, event); err != nil {
+			t.Fatalf("AppendEvent(%s) error = %v", event.Type, err)
+		}
+	}
+
+	manager := NewMemoryManager(storageDir)
+	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	messages, err := handle.History.Messages(ctx)
+	if err != nil {
+		t.Fatalf("Messages() error = %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 restored conversation messages, got %d: %#v", len(messages), messages)
+	}
+	if messages[0].GetContent() != "original request" ||
+		messages[1].GetContent() != "updated instruction" ||
+		messages[2].GetContent() != "done" {
+		t.Fatalf("unexpected restored conversation messages: %#v", messages)
+	}
+}
+
 func TestMemoryManagerRepairsTruncatedSessionEventTail(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()

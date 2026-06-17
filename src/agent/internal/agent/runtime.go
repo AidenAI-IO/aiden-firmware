@@ -33,6 +33,7 @@ func effectiveMaxIterations(configured int) int {
 }
 
 const currentEnvironmentHintMaxAge = 10 * time.Minute
+const runtimePlannerMemoryWindowSize = 10
 
 type Runtime struct {
 	config             Config
@@ -506,7 +507,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: r.effectiveContextWindow}
 
 	currentHints := r.currentEnvironmentHints()
-	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "window", WindowSize: runtimePlannerMemoryWindowSize})
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -606,7 +607,14 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		executorHandler = streamCallbackHandler
 	}
 	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
+	conversationHistory, err := conversationHistoryMessageContents(ctx, memoryHandle.History, runtimePlannerMemoryWindowSize*2)
+	if err != nil {
+		return RunResult{}, err
+	}
 	plannerMemory := memoryHandle.Memory
+	if len(conversationHistory) > 0 {
+		plannerMemory = newConversationMessagePlannerMemory(plannerMemory)
+	}
 	plannerMemory = newSessionContextPlannerMemory(plannerMemory, r.memories, "default")
 	if historyStore := chatHistoryStoreForConfigDir(r.config.ConfigDir); historyStore != nil {
 		plannerMemory = newChatHistoryPlannerMemory(plannerMemory, historyStore)
@@ -619,6 +627,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), req.DeviceEnvironment, req.SteerProvider)
+	executor.ConversationHistory = conversationHistory
 	executor.TodoReminderToolCalls = r.config.TodoReminderToolCallsOrDefault()
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)

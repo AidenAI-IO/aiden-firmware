@@ -1593,15 +1593,18 @@ func applySessionEventMetadata(event SessionEvent, meta SessionEventMetadata) Se
 }
 
 func messageRecordFromSessionEvent(event SessionEvent) (MessageRecord, bool) {
-	switch event.Role {
-	case "assistant":
+	switch event.Type {
+	case "assistant_output":
 		return MessageRecord{Role: string(llms.ChatMessageTypeAI), Content: event.Content}, true
-	case "tool":
-		return MessageRecord{Role: string(llms.ChatMessageTypeTool), Content: event.Content}, true
-	case "system":
-		return MessageRecord{Role: string(llms.ChatMessageTypeSystem), Content: event.Content}, true
-	case "user":
+	case "user_input", "steer":
 		return MessageRecord{Role: string(llms.ChatMessageTypeHuman), Content: event.Content}, true
+	case "system_event":
+		return MessageRecord{Role: string(llms.ChatMessageTypeSystem), Content: event.Content}, true
+	case "tool_result":
+		if event.ToolName == "" && event.ToolInput == "" && event.Description == "" {
+			return MessageRecord{Role: string(llms.ChatMessageTypeTool), Content: event.Content}, true
+		}
+		return MessageRecord{}, false
 	default:
 		return MessageRecord{}, false
 	}
