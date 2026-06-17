@@ -1344,12 +1344,8 @@ func writeRequestObjectiveAndCriteria(builder *strings.Builder, inputs map[strin
 		builder.WriteString("\n\nLatest user message:\n")
 		builder.WriteString(latestUserMessage)
 		if relation := strings.TrimSpace(inputs[followUpRelationKey]); relation != "" {
-			builder.WriteString("\n\nInterpretation:\n")
-			builder.WriteString("- follow_up_classification: ")
+			builder.WriteString("\n\nFollow-up classification:\n")
 			builder.WriteString(relation)
-			builder.WriteByte('\n')
-			builder.WriteString("- ")
-			builder.WriteString(interpretationForFollowUpRelation(relation))
 			builder.WriteByte('\n')
 		}
 	}

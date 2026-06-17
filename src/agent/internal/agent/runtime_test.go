@@ -818,7 +818,7 @@ func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T)
 		rootRequest,
 		"Latest user message",
 		correction,
-		"Interpretation:",
+		"Follow-up classification:",
 		"correction",
 		"Latest committed plan",
 		"在微信群发送100块钱红包",
