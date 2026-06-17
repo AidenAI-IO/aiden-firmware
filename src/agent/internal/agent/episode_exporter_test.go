@@ -122,6 +122,7 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 				Type:      runEventToolCall,
 				ToolName:  "mouse_click",
 				ToolInput: `{"x":100,"y":200}`,
+				Speech:    "点击设置。",
 			},
 			{
 				EventID:       "evt3",
@@ -179,6 +180,7 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 	types := map[string]int{}
 	names := map[string]int{}
 	var usageBody map[string]interface{}
+	var toolBody map[string]interface{}
 	for _, event := range batch {
 		types[event.Type]++
 		var body map[string]interface{}
@@ -190,6 +192,9 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 		}
 		if name, _ := body["name"].(string); name != "" {
 			names[name]++
+			if name == "tool/mouse_click" {
+				toolBody = body
+			}
 		}
 	}
 	if types["trace-create"] != 1 {
@@ -222,6 +227,20 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 	}
 	if names["tool/mouse_click"] != 1 {
 		t.Fatalf("tool span count = %d, want 1", names["tool/mouse_click"])
+	}
+	toolInput, ok := toolBody["input"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tool span input missing: %#v", toolBody["input"])
+	}
+	if toolInput["speech"] != "点击设置。" {
+		t.Fatalf("tool span speech input = %#v", toolInput["speech"])
+	}
+	toolMetadata, ok := toolBody["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tool span metadata missing: %#v", toolBody["metadata"])
+	}
+	if toolMetadata["speech"] != "点击设置。" {
+		t.Fatalf("tool span speech metadata = %#v", toolMetadata["speech"])
 	}
 	if names["verifier"] != 1 {
 		t.Fatalf("verifier span count = %d, want 1", names["verifier"])

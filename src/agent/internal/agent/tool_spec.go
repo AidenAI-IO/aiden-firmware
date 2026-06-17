@@ -349,23 +349,31 @@ func (spec ToolSpec) Descriptor() ToolDescriptor {
 }
 
 func (spec ToolSpec) LLMTool() llms.Tool {
+	return spec.LLMToolWithSpeech(false)
+}
+
+func (spec ToolSpec) LLMToolWithSpeech(includeSpeech bool) llms.Tool {
 	return llms.Tool{
 		Type: "function",
 		Function: &llms.FunctionDefinition{
 			Name:        spec.Name,
 			Description: strings.TrimSpace(spec.Description),
-			Parameters:  spec.LLMSchema(),
+			Parameters:  spec.LLMSchemaWithSpeech(includeSpeech),
 		},
 	}
 }
 
 func (spec ToolSpec) LLMSchema() map[string]any {
+	return spec.LLMSchemaWithSpeech(false)
+}
+
+func (spec ToolSpec) LLMSchemaWithSpeech(includeSpeech bool) map[string]any {
 	if structured, ok := spec.Tool.(structuredInputTool); ok {
 		if schema := structured.ArgsSchema(); len(schema) > 0 {
-			return toolParametersSchema(schema)
+			return toolParametersSchema(schema, includeSpeech)
 		}
 	}
-	return genericToolParameters()
+	return genericToolParameters(includeSpeech)
 }
 
 func (spec ToolSpec) NormalizeInput(input string) string {

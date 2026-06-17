@@ -46,7 +46,7 @@ func firstMessageOfType(messages []Message, messageType string) (Message, bool) 
 
 func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。","speech":"读取音量。"}`, "The current audio volume is 42."),
 	}
 	tool := &stubTool{
 		name:        "audio_volume",
@@ -572,8 +572,9 @@ func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
 
 func TestServerHandleChatDoesNotWaitForToolDescriptionTTSWhenEnabled(t *testing.T) {
 	description := "我先读取当前音量并检查当前播放设备、音量状态、静音状态、输出通道以及系统返回结果是否一致。然后继续回答。"
+	speech := "读取音量。"
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", fmt.Sprintf(`{"__arg1":"{}","description":%q}`, description), "The current audio volume is 42."),
+		responses: roleToolResponses("audio_volume", fmt.Sprintf(`{"__arg1":"{}","description":%q,"speech":%q}`, description, speech), "The current audio volume is 42."),
 	}
 	streamingDisabled := false
 	toolSpeechEnabled := true
@@ -596,7 +597,7 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTSWhenEnabled(t *testing.
 		NewSkillIndex(),
 	)
 	server := NewServer(runtime, ":0", "")
-	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: deriveToolCallSpeech(description)}
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: speech}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
 	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
 
@@ -631,7 +632,7 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTSWhenEnabled(t *testing.
 
 func TestServerHandleChatSkipsToolDescriptionTTSWhenDisabled(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。","speech":"读取音量。"}`, "The current audio volume is 42."),
 	}
 	streamingDisabled := false
 	toolSpeechDisabled := false

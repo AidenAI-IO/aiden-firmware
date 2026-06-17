@@ -92,6 +92,13 @@ func (cfg AgentConfig) VoiceSpeechSummaryEnabledOrDefault() bool {
 	return true
 }
 
+func (cfg AgentConfig) VoiceToolCallSpeechOrDefault() bool {
+	if cfg.VoiceToolCallSpeech != nil {
+		return *cfg.VoiceToolCallSpeech
+	}
+	return false
+}
+
 func verifierRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 	finalAnswerRule := "When returning can_finish=true, also include speech and text as top-level JSON fields. Put speech before text in the JSON object. speech is a concise spoken summary; text is the complete user-facing answer. Keep final_answer equal to text for compatibility."
 	formatRule := "Return only JSON: {\"can_finish\":true|false,\"speech\":\"short spoken answer when can_finish is true\",\"text\":\"complete answer when can_finish is true\",\"final_answer\":\"same as text when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}."
@@ -214,7 +221,7 @@ func buildRoleProfile(
 		combinedAgentInstruction(cfg),
 		"",
 		"## Default behavior",
-		defaultAgentBehavior(),
+		defaultAgentBehavior(cfg),
 		"",
 		"## Available skills",
 		skills.CatalogSummary(),

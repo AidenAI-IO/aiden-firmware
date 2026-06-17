@@ -70,6 +70,7 @@ type TaskEpisodeEvent struct {
 	ToolName           string              `json:"tool_name,omitempty" yaml:"tool_name,omitempty"`
 	ToolInput          string              `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
 	ToolDescription    string              `json:"tool_description,omitempty" yaml:"tool_description,omitempty"`
+	Speech             string              `json:"speech,omitempty" yaml:"speech,omitempty"`
 	Content            string              `json:"content,omitempty" yaml:"content,omitempty"`
 	Todo               *TodoState          `json:"todo,omitempty" yaml:"todo,omitempty"`
 	SpeechEligible     bool                `json:"speech_eligible,omitempty" yaml:"speech_eligible,omitempty"`
@@ -125,6 +126,8 @@ type EpisodeRecorder struct {
 	store     *TaskEpisodeStore
 	started   bool
 	startErr  error
+	// ToolCallSpeech gates persistence of LLM-generated tool-call speech.
+	ToolCallSpeech bool
 }
 
 func NewTaskEpisodeStore(rootDir string) *TaskEpisodeStore {
@@ -296,13 +299,21 @@ func (r *EpisodeRecorder) recordExecutionForRole(result roleExecutionResult, rol
 	}
 	if result.Action != nil {
 		input := normalizeToolInput(result.Action.ToolInput)
-		r.append(TaskEpisodeEvent{
+		description := toolDescriptionFromAction(*result.Action)
+		if description == "" {
+			description = extractToolCallDescription(input)
+		}
+		event := TaskEpisodeEvent{
 			Type:            runEventToolCall,
 			Role:            string(role),
 			ToolName:        result.Action.Tool,
 			ToolInput:       input,
-			ToolDescription: extractToolCallDescription(input),
-		})
+			ToolDescription: description,
+		}
+		if r.ToolCallSpeech {
+			event.Speech = toolSpeechFromAction(*result.Action)
+		}
+		r.append(event)
 	}
 	if result.Step != nil {
 		event := TaskEpisodeEvent{

@@ -92,7 +92,11 @@ func combinedAgentInstruction(cfg AgentConfig) string {
 	return strings.Join(parts, "\n\n")
 }
 
-func defaultAgentBehavior() string {
+func defaultAgentBehavior(cfg AgentConfig) string {
+	toolCallSpeechRule := "- When calling a tool, do not add speech or description arguments to tool inputs."
+	if cfg.VoiceToolCallSpeechOrDefault() {
+		toolCallSpeechRule = "- When calling a tool and a short spoken preface is useful, set the optional tool argument speech to concise natural TTS text in the user's language. Do not put spoken prefaces in assistant text and do not add a description argument; speech is consumed by the runtime and is not passed to the real tool."
+	}
 	return strings.Join([]string{
 		"### Environment",
 		"- You run on the Aiden hardware controller (" + hostRuntimeInfoContext() + "); you are not the device shown in screenshots.",
@@ -120,6 +124,6 @@ func defaultAgentBehavior() string {
 		"- List scrolling: prefer search to locate targets; avoid blind scroll. Without search, probe with strength=\"medium\"; use small/tiny when the target is near, items are dense, or precise stopping is needed. Use image_diff to confirm scrolling; low diff_ratio or changed=false may mean boundary, gesture not consumed, or distance too small—stop, reverse, or adjust contact points. Do not repeat the same distance indefinitely. For locally scrollable regions (pickers, modal lists, embedded ScrollView, partial dialogs), start/end coordinates must fall inside the control's visible bounds or the outer container captures the gesture; adjust endpoints before increasing distance. For older chat/message history above the current viewport, use swipe_down from inside the message pane, not swipe_up.",
 		"- Horizontal carousels/tab switches: use swipe_left/swipe_right, prefer strength=\"medium\" or \"large\". If the control snaps back or does not switch, try large or explicit distance; use small/tiny near precise positions. Do not treat one fixed distance as the only solution.",
 		"- Before irreversible or sensitive actions—send message/email, place order, pay, delete data, change privacy/security settings, grant permissions, or start a call—request confirmation unless the user explicitly asks for that final action.",
-		"- When calling a tool, put any short spoken preface in the assistant text that accompanies the tool call; do not add a description argument to tool inputs.",
+		toolCallSpeechRule,
 	}, "\n")
 }

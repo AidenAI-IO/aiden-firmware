@@ -1378,7 +1378,7 @@ func TestRuntimeAllowsRepeatedKeyboardText(t *testing.T) {
 
 func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。","speech":"读取音量。"}`, "The current audio volume is 42."),
 	}
 	tool := &stubTool{
 		name:        "audio_volume",
@@ -1432,8 +1432,9 @@ func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 
 func TestRuntimeRunEmitsToolSpeechOnlyWhenToolCallSpeechEnabled(t *testing.T) {
 	description := "我先读取当前音量并检查当前播放设备、音量状态、静音状态、输出通道以及系统返回结果是否一致。然后继续回答。"
+	speech := "读取音量。"
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", fmt.Sprintf(`{"__arg1":"{}","description":%q}`, description), "The current audio volume is 42."),
+		responses: roleToolResponses("audio_volume", fmt.Sprintf(`{"__arg1":"{}","description":%q,"speech":%q}`, description, speech), "The current audio volume is 42."),
 	}
 	tool := &stubTool{
 		name:        "audio_volume",
@@ -1478,11 +1479,8 @@ func TestRuntimeRunEmitsToolSpeechOnlyWhenToolCallSpeechEnabled(t *testing.T) {
 	if toolCall.Speech == "" {
 		t.Fatal("tool_call speech is empty when voice_tool_call_speech is enabled")
 	}
-	if toolCall.Speech == description {
-		t.Fatalf("tool_call speech was not shortened: %q", toolCall.Speech)
-	}
-	if len([]rune(toolCall.Speech)) > toolCallSpeechMaxRunes {
-		t.Fatalf("tool_call speech has %d runes, want <= %d: %q", len([]rune(toolCall.Speech)), toolCallSpeechMaxRunes, toolCall.Speech)
+	if toolCall.Speech != speech {
+		t.Fatalf("tool_call speech = %q, want LLM speech %q", toolCall.Speech, speech)
 	}
 }
 
