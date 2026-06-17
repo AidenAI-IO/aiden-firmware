@@ -1514,8 +1514,11 @@ func TestRuntimeTodoBlocksAndRevisionsOnReplan(t *testing.T) {
 	if todos[2].Todo.Revision != 1 {
 		t.Fatalf("blocked revision = %d, want 1", todos[2].Todo.Revision)
 	}
-	if todos[3].Todo == nil || todos[3].Todo.Revision != 2 || todos[3].Todo.Items[0].Text != "replacement step" {
+	if todos[3].Todo == nil || todos[3].Todo.Revision != 2 || len(todos[3].Todo.Items) != 1 {
 		t.Fatalf("replan commit should replace items with revision 2: %#v", todos[3].Todo)
+	}
+	if todos[3].Todo.Items[0].Text != "replacement step" {
+		t.Fatalf("replan commit item text = %q, want replacement step", todos[3].Todo.Items[0].Text)
 	}
 	assertTodoItemStatus(t, todos[4], 0, TodoInProgress)
 	if todos[4].Todo.Revision != 2 {
