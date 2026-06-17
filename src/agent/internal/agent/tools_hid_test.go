@@ -501,8 +501,8 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 	desc := (&KeyboardTextTool{}).Description()
 	for _, want := range []string{
 		"ASCII",
-		"Do NOT pass Chinese",
-		"pinyin",
+		"Do NOT pass non-ASCII",
+		"enter_text_in_field",
 		`{"text":"Settings"}`,
 	} {
 		if !strings.Contains(desc, want) {
