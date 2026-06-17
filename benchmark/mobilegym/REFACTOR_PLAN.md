@@ -116,7 +116,7 @@ docker compose up -d aiden-daemon
 
 # 3. 运行 benchmark（使用标准 runner）
 python -m benchmark.runner run \
-  --suite benchmark/suites/mobilegym_clock.json \
+  --suite benchmark/suites/mobilegym_basic.json \
   --agent-url http://localhost:8080
 ```
 

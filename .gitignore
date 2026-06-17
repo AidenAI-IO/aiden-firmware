@@ -41,8 +41,9 @@ __pycache__/
 benchmark/runs/
 benchmark/artifacts/
 
-# MobileGym vendor checkout
-benchmark/mobilegym/vendor/
+# MobileGym vendor - allow submodule but ignore its contents
+benchmark/mobilegym/vendor/*
+!benchmark/mobilegym/vendor/mobilegym/
 
 # MobileGym daemon runtime state (regenerated each run)
 benchmark/mobilegym/config/agent.toml

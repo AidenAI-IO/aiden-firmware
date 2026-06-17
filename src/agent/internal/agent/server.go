@@ -290,6 +290,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/skills/reload", s.handleSkillsReload)
 	mux.HandleFunc("/api/tools", s.handleTools)
 	mux.HandleFunc("/api/tools/", s.handleTools)
+	mux.HandleFunc("/api/mobilegym/bridge/configure", s.handleMobileGymBridgeConfigure)
+	mux.HandleFunc("/api/mobilegym/bridge/status", s.handleMobileGymBridgeStatus)
 	mux.HandleFunc("/api/mobilegym/episode/start", s.handleMobileGymEpisodeStart)
 	mux.HandleFunc("/api/mobilegym/episode/end", s.handleMobileGymEpisodeEnd)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
@@ -1887,6 +1889,71 @@ func (s *Server) handleMobileGymEpisodeEnd(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+type mobileGymBridgeConfigureRequest struct {
+	BridgeURL         string `json:"bridge_url"`
+	BridgeDeviceToken string `json:"bridge_device_token"`
+}
+
+func (s *Server) handleMobileGymBridgeConfigure(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorizeMobileGymControl(w, r) {
+		return
+	}
+
+	var req mobileGymBridgeConfigureRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.BridgeURL = strings.TrimSpace(req.BridgeURL)
+	req.BridgeDeviceToken = strings.TrimSpace(req.BridgeDeviceToken)
+	if req.BridgeURL == "" || req.BridgeDeviceToken == "" {
+		http.Error(w, "bridge_url and bridge_device_token are required", http.StatusBadRequest)
+		return
+	}
+
+	// Set persistent bridge session (empty episode_id means applies to all future episodes)
+	if s.runtime.mobileGym == nil {
+		s.runtime.mobileGym = &mobileGymSessionStore{}
+	}
+	s.runtime.mobileGym.Set(mobileGymSession{
+		EpisodeID:   "", // empty = persistent global config
+		BridgeURL:   req.BridgeURL,
+		BridgeToken: req.BridgeDeviceToken,
+	})
+
+	s.runtime.logger.Info("MobileGym bridge configured", "bridge_url", req.BridgeURL)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "configured",
+		"message": "Bridge configuration applied successfully",
+	})
+}
+
+func (s *Server) handleMobileGymBridgeStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	session, active := mobileGymSession{}, false
+	if s.runtime.mobileGym != nil {
+		session, active = s.runtime.mobileGym.Get()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"active":      active,
+		"bridge_url":  session.BridgeURL,
+		"episode_id":  session.EpisodeID,
+		"has_token":   session.BridgeToken != "",
+	})
 }
 
 func (s *Server) authorizeMobileGymControl(w http.ResponseWriter, r *http.Request) bool {

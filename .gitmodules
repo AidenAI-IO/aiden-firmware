@@ -1,3 +1,7 @@
 [submodule "pico-sdk"]
 	path = pico-sdk
 	url = https://github.com/AidenAI-IO/aiden-sdk.git
+
+[submodule "benchmark/mobilegym/vendor/mobilegym"]
+	path = benchmark/mobilegym/vendor/mobilegym
+	url = https://github.com/Purewhiter/mobilegym.git

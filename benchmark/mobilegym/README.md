@@ -151,12 +151,19 @@ benchmark/mobilegym/
 
 ### Aiden agent.toml
 
-确保配置了 `device-operator` skill：
+配置 MobileGym 设备后端：
 
 ```toml
-[skills.device-operator]
-path = "benchmark/mobilegym/config/skills/device-operator"
-enabled = true
+[device]
+backend = "mobilegym"
+control_token_file = "/config/control_token"
+# bridge_url 和 bridge_token_file 可以静态配置，或通过 configure_daemon.py 动态设置
+```
+
+**可选**：加载 `device-operator` skill 以获得更详细的设备操作提示：
+
+```toml
+skills_dirs = ["benchmark/mobilegym/config/skills"]
 ```
 
 ### Bridge 环境变量
@@ -206,7 +213,7 @@ python benchmark/mobilegym/scripts/start_simulator.py &
 
 # 2. 使用统一 runner
 python -m benchmark.runner run \
-  --suite benchmark/suites/mobilegym_clock.json \
+  --suite benchmark/suites/mobilegym_basic.json \
   --agent-url http://localhost:8080
 ```
 
@@ -219,9 +226,9 @@ python -m benchmark.runner run \
 ## 📚 相关文档
 
 - **重构说明**: [REFACTOR_PLAN.md](REFACTOR_PLAN.md)
-- **Bridge 协议**: [bridge/README.md](bridge/README.md)
+- **迁移指南**: [MIGRATION.md](MIGRATION.md)
 - **Docker 使用**: [docker/README.md](docker/README.md)
-- **架构设计**: 见项目根目录文档
+- **Bridge 协议**: 见 `bridge/` 目录下的 Python 实现
 
 ## 🐛 故障排查
 
@@ -243,9 +250,9 @@ cat /tmp/mobilegym-tokens/bridge_device_token
 
 ### Daemon 无法调用设备工具
 ```bash
-# 确认 skill 已加载
-curl http://localhost:8080/api/skills
-
-# 确认 bridge 配置
+# 确认 device backend 配置
 curl http://localhost:8080/api/mobilegym/bridge/status
+
+# 如果使用 configure_daemon.py，确认已成功配置
+cat /tmp/mobilegym-tokens/bridge_device_token
 ```
