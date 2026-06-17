@@ -372,6 +372,44 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 			batch = append(batch, evt)
 
+		case "todo_update":
+			parentID := iterationSpanID
+			if parentID == "" {
+				parentID = phaseSpanID
+			}
+			metadata := map[string]interface{}{
+				"event_id":        event.EventID,
+				"role":            event.Role,
+				"phase":           currentPhase,
+				"speech_eligible": event.SpeechEligible,
+			}
+			if event.Todo != nil {
+				metadata["todo_mode"] = event.Todo.Mode
+				metadata["todo_revision"] = event.Todo.Revision
+				metadata["todo_current_id"] = event.Todo.CurrentID
+			}
+			body := map[string]interface{}{
+				"id":          uuid.NewString(),
+				"traceId":     traceID,
+				"name":        "todo_update",
+				"startTime":   langfuseRFC3339(eventTime),
+				"endTime":     langfuseRFC3339(eventTime),
+				"output":      todoUpdateOutput(event),
+				"environment": e.cfg.EnvironmentOrDefault(),
+				"metadata":    metadata,
+			}
+			if parentID != "" {
+				body["parentObservationId"] = parentID
+			}
+			if version != "" {
+				body["version"] = version
+			}
+			evt, err := newLangfuseEvent("event-create", eventTime, body)
+			if err != nil {
+				return nil, err
+			}
+			batch = append(batch, evt)
+
 		case "tool_call":
 			parentID := langfuseToolParentSpan(iterationSpanID, phaseSpanID, event.Role)
 			if parentID == "" {
@@ -1107,6 +1145,8 @@ func episodeDerivedMetrics(events []TaskEpisodeEvent) map[string]interface{} {
 			metrics["loop_mode"] = "committed"
 		case "candidate_answer":
 			metrics["candidate_answer_count"] = intMetric(metrics, "candidate_answer_count") + 1
+		case "todo_update":
+			metrics["todo_update_count"] = intMetric(metrics, "todo_update_count") + 1
 		case "tool_call":
 			metrics["tool_call_count"] = intMetric(metrics, "tool_call_count") + 1
 			if strings.EqualFold(strings.TrimSpace(event.Role), string(RolePlanner)) {
@@ -1295,6 +1335,14 @@ func toolCallInput(event TaskEpisodeEvent) map[string]interface{} {
 		input["description"] = event.ToolDescription
 	}
 	return input
+}
+
+func todoUpdateOutput(event TaskEpisodeEvent) map[string]interface{} {
+	return map[string]interface{}{
+		"content":         event.Content,
+		"todo":            event.Todo,
+		"speech_eligible": event.SpeechEligible,
+	}
 }
 
 func verifierOutput(event TaskEpisodeEvent) map[string]interface{} {

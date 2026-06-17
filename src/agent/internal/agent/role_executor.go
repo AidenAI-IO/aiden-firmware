@@ -619,14 +619,22 @@ type todoUpdateHandler interface {
 }
 
 func (e *roleCollaborativeExecutor) emitTodoUpdate(ctx context.Context, todo TodoState, content string, speechEligible bool) {
-	if e == nil || e.CallbacksHandler == nil {
+	if e == nil {
+		return
+	}
+	content = strings.TrimSpace(content)
+	snapshot := todo.Clone()
+	if e.Recorder != nil {
+		e.Recorder.RecordTodoUpdate(snapshot, content, speechEligible)
+	}
+	if e.CallbacksHandler == nil {
 		return
 	}
 	handler, ok := e.CallbacksHandler.(todoUpdateHandler)
 	if !ok {
 		return
 	}
-	handler.HandleTodoUpdate(ctx, todo.Clone(), strings.TrimSpace(content), speechEligible)
+	handler.HandleTodoUpdate(ctx, snapshot, content, speechEligible)
 }
 
 func (e *roleCollaborativeExecutor) consumePendingSteer(ctx context.Context, inputs map[string]string, state *roleLoopState) (bool, error) {

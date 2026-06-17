@@ -71,6 +71,8 @@ type TaskEpisodeEvent struct {
 	ToolInput          string              `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
 	ToolDescription    string              `json:"tool_description,omitempty" yaml:"tool_description,omitempty"`
 	Content            string              `json:"content,omitempty" yaml:"content,omitempty"`
+	Todo               *TodoState          `json:"todo,omitempty" yaml:"todo,omitempty"`
+	SpeechEligible     bool                `json:"speech_eligible,omitempty" yaml:"speech_eligible,omitempty"`
 	Observation        string              `json:"observation,omitempty" yaml:"observation,omitempty"`
 	ScreenshotRef      string              `json:"screenshot_ref,omitempty" yaml:"screenshot_ref,omitempty"`
 	CanFinish          *bool               `json:"can_finish,omitempty" yaml:"can_finish,omitempty"`
@@ -226,6 +228,19 @@ func (r *EpisodeRecorder) RecordLoopPhase(phase loopPhase, reason string) {
 		Role:    string(RolePlanner),
 		Content: string(phase),
 		Reason:  strings.TrimSpace(reason),
+	})
+}
+
+func (r *EpisodeRecorder) RecordTodoUpdate(todo TodoState, content string, speechEligible bool) {
+	if r == nil {
+		return
+	}
+	snapshot := todo.Clone()
+	r.append(TaskEpisodeEvent{
+		Type:           "todo_update",
+		Content:        strings.TrimSpace(content),
+		Todo:           &snapshot,
+		SpeechEligible: speechEligible,
 	})
 }
 

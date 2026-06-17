@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -988,6 +989,16 @@ func runEventsOfType(events []RunEvent, eventType string) []RunEvent {
 	return matching
 }
 
+func taskEpisodeEventsOfType(events []TaskEpisodeEvent, eventType string) []TaskEpisodeEvent {
+	var matching []TaskEpisodeEvent
+	for _, event := range events {
+		if event.Type == eventType {
+			matching = append(matching, event)
+		}
+	}
+	return matching
+}
+
 func assertTodoItemStatus(t *testing.T, event RunEvent, itemIndex int, status TodoStatus) {
 	t.Helper()
 	if event.Todo == nil {
@@ -1532,6 +1543,70 @@ func TestRuntimePlannedTodoLifecycleEvents(t *testing.T) {
 	assertTodoItemStatus(t, todos[3], 1, TodoDone)
 	if todos[3].SpeechEligible {
 		t.Fatalf("final done event should not be speech eligible: %#v", todos[3])
+	}
+}
+
+func TestRuntimeTodoUpdatesRecordedInEpisode(t *testing.T) {
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	model := &scriptedModel{
+		responses: roleCommittedExecutionResponses(
+			[]string{"inspect state"},
+			finishStepToolCall("inspected"),
+			verifierFinishResponse("done"),
+		),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Model: ModelConfig{Provider: "fake"}, Instruction: "Use plan mode."},
+		&testModelResolver{model: model},
+		NewMemoryManager(memoryDir),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "do a planned task",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.EpisodeID == "" {
+		t.Fatal("EpisodeID is empty")
+	}
+	traceTodos := runEventsOfType(events, "todo_update")
+	if len(traceTodos) == 0 {
+		t.Fatalf("runtime emitted no todo_update events: %#v", events)
+	}
+
+	eventPaths, err := filepath.Glob(filepath.Join(memoryDir, "episodes", "*", result.EpisodeID, "events.jsonl"))
+	if err != nil || len(eventPaths) != 1 {
+		t.Fatalf("episode events glob paths=%#v err=%v", eventPaths, err)
+	}
+	episodeEvents, err := readEpisodeEvents(eventPaths[0])
+	if err != nil {
+		t.Fatalf("read episode events: %v", err)
+	}
+	episodeTodos := taskEpisodeEventsOfType(episodeEvents, "todo_update")
+	if len(episodeTodos) != len(traceTodos) {
+		t.Fatalf("episode todo_update count = %d, want %d\ntrace=%#v\nepisode=%#v", len(episodeTodos), len(traceTodos), traceTodos, episodeTodos)
+	}
+	for i := range traceTodos {
+		if episodeTodos[i].Content != traceTodos[i].Content {
+			t.Fatalf("todo %d content = %q, want %q", i, episodeTodos[i].Content, traceTodos[i].Content)
+		}
+		if episodeTodos[i].SpeechEligible != traceTodos[i].SpeechEligible {
+			t.Fatalf("todo %d speechEligible = %v, want %v", i, episodeTodos[i].SpeechEligible, traceTodos[i].SpeechEligible)
+		}
+		if episodeTodos[i].Todo == nil || traceTodos[i].Todo == nil {
+			t.Fatalf("todo %d missing snapshot: trace=%#v episode=%#v", i, traceTodos[i].Todo, episodeTodos[i].Todo)
+		}
+		if !reflect.DeepEqual(*episodeTodos[i].Todo, *traceTodos[i].Todo) {
+			t.Fatalf("todo %d snapshot mismatch:\ntrace=%#v\nepisode=%#v", i, *traceTodos[i].Todo, *episodeTodos[i].Todo)
+		}
 	}
 }
 
