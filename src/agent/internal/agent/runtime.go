@@ -548,6 +548,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if r.memoryPlane != nil {
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
 		if episodeRecorder != nil {
+			episodeRecorder.ToolCallSpeech = r.config.VoiceToolCallSpeechOrDefault()
 			retrieveReq.EpisodeID = episodeRecorder.ID()
 			if err := episodeRecorder.Start(ctx); err != nil && r.logger != nil {
 				r.logger.Warn("[memory] start episode failed: %v", err)
@@ -596,6 +597,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), req.DeviceEnvironment, req.SteerProvider)
 	executor.TodoReminderToolCalls = r.config.TodoReminderToolCallsOrDefault()
+	executor.ToolCallSpeech = r.config.VoiceToolCallSpeechOrDefault()
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
@@ -999,6 +1001,7 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 			RuntimeContext:            runtimeContext,
 			ForceSimpleLoop:           r.config.ForceSimpleLoop,
 			VoiceSpeechSummaryEnabled: r.config.VoiceSpeechSummaryEnabled,
+			VoiceToolCallSpeech:       r.config.VoiceToolCallSpeech,
 		},
 		skills,
 		availableTools,
@@ -1189,10 +1192,17 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 
 func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call ToolCall) {
 	description := call.Description
+	speech := call.Speech
 	if h.logger != nil {
-		if description != "" {
+		if description != "" && speech != "" {
+			h.logger.Info("Tool call: name=%s input=%s description=%s speech=%s",
+				call.Spec.Name, truncateForLog(call.Input, 240), truncateForLog(description, 240), truncateForLog(speech, 120))
+		} else if description != "" {
 			h.logger.Info("Tool call: name=%s input=%s description=%s",
 				call.Spec.Name, truncateForLog(call.Input, 240), truncateForLog(description, 240))
+		} else if speech != "" {
+			h.logger.Info("Tool call: name=%s input=%s speech=%s",
+				call.Spec.Name, truncateForLog(call.Input, 240), truncateForLog(speech, 120))
 		} else {
 			h.logger.Info("Tool call: name=%s input=%s",
 				call.Spec.Name, truncateForLog(call.Input, 240))
@@ -1205,7 +1215,7 @@ func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call T
 			ToolName:    call.Spec.Name,
 			ToolInput:   call.Input,
 			Description: description,
-			Speech:      h.toolCallSpeech(description),
+			Speech:      h.toolCallSpeech(speech),
 			Content:     description,
 			Timestamp:   time.Now(),
 		})
@@ -1244,10 +1254,17 @@ func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call 
 
 func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action schema.AgentAction) {
 	description := toolDescriptionFromAction(action)
+	speech := toolSpeechFromAction(action)
 	if h.logger != nil {
-		if description != "" {
+		if description != "" && speech != "" {
+			h.logger.Info("Tool call: name=%s input=%s description=%s speech=%s",
+				action.Tool, truncateForLog(action.ToolInput, 240), truncateForLog(description, 240), truncateForLog(speech, 120))
+		} else if description != "" {
 			h.logger.Info("Tool call: name=%s input=%s description=%s",
 				action.Tool, truncateForLog(action.ToolInput, 240), truncateForLog(description, 240))
+		} else if speech != "" {
+			h.logger.Info("Tool call: name=%s input=%s speech=%s",
+				action.Tool, truncateForLog(action.ToolInput, 240), truncateForLog(speech, 120))
 		} else {
 			h.logger.Info("Tool call: name=%s input=%s",
 				action.Tool, truncateForLog(action.ToolInput, 240))
@@ -1261,7 +1278,7 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 			ToolName:    action.Tool,
 			ToolInput:   action.ToolInput,
 			Description: description,
-			Speech:      h.toolCallSpeech(description),
+			Speech:      h.toolCallSpeech(speech),
 			Content:     description,
 			Timestamp:   time.Now(),
 		})
@@ -1457,11 +1474,13 @@ func (h *runtimeCallbackHandler) recordFinalStreamError(err error) {
 
 var _ callbacks.Handler = (*runtimeCallbackHandler)(nil)
 
-func (h *runtimeCallbackHandler) toolCallSpeech(description string) string {
+func (h *runtimeCallbackHandler) toolCallSpeech(speech string) string {
 	if h == nil || !h.toolCallSpeechEnabled {
 		return ""
 	}
-	return deriveToolCallSpeech(description)
+	// Intentionally do not derive speech from the tool description. Missing
+	// LLM-generated tool-call speech means this tool call stays silent.
+	return strings.TrimSpace(speech)
 }
 
 func (h *runtimeCallbackHandler) pushPendingAction(action schema.AgentAction) {

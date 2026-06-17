@@ -109,6 +109,12 @@ emotion = "happy"
 speed = 1.0
 ```
 
+### 工具调用口播
+
+`voice_tool_call_speech = true` 时，运行时会把工具 schema 中可选的 `speech` 参数暴露给 LLM，并在工具调用事件到达时异步 TTS 播放该字段。`speech` 是运行时元字段，不会传给真实工具。
+
+如果 LLM 没有生成 `speech`，该工具调用保持静默。运行时不会从工具 `description`、assistant text 或其他上下文字段派生短口播；`description` 只用于 UI、trace、memory 和调试上下文。
+
 ## TTS provider 使用方式
 
 `[tts]` 的通用字段是 `provider`、`api_key`、`model`、`voice_id`、`emotion`、`speed` 和 `reference_id`。不同 provider 对字段的解释不同，完整说明见 [Agent 配置参考](configuration.md#stt-和-tts)。以下示例省略 `api_key`，只展示 adapter 行为相关配置。

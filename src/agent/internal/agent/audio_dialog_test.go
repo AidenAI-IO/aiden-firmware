@@ -283,7 +283,7 @@ func TestProcessUtteranceSpeaksSpeechTextWithoutChangingHistoryOutput(t *testing
 func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 	toolSpeech := true
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先检查当前音量。"}`, "当前音量是 42。"),
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我会检查当前音量。","speech":"检查音量。"}`, "当前音量是 42。"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -324,7 +324,7 @@ func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 	if len(texts) != 2 {
 		t.Fatalf("expected tool description and final answer TTS, got %#v", texts)
 	}
-	if !containsString(texts, "我先检查当前音量。") || !containsString(texts, "当前音量是 42。") {
+	if !containsString(texts, "检查音量。") || !containsString(texts, "当前音量是 42。") {
 		t.Fatalf("unexpected TTS texts: %#v", texts)
 	}
 }

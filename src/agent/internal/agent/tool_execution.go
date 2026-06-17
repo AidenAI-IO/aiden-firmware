@@ -17,6 +17,7 @@ type ToolCall struct {
 	Action      schema.AgentAction
 	Input       string
 	Description string
+	Speech      string
 	StartedAt   time.Time
 }
 
@@ -80,6 +81,7 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		Action:      action,
 		Input:       input,
 		Description: toolDescriptionFromAction(action),
+		Speech:      toolSpeechFromAction(action),
 		StartedAt:   startedAt,
 	}
 
@@ -133,6 +135,7 @@ func invalidToolCall(action schema.AgentAction, startedAt time.Time) ToolCall {
 		Action:      action,
 		Input:       action.ToolInput,
 		Description: toolDescriptionFromAction(action),
+		Speech:      toolSpeechFromAction(action),
 		StartedAt:   startedAt,
 	}
 }
