@@ -177,3 +177,23 @@ TEST_CASE("upsert and remove wifi network preserve other saved networks") {
     CHECK(wifi.networks[0].ssid == "yyy");
     CHECK(aiden::find_wifi_network_index(wifi, "xxx") < 0);
 }
+
+TEST_CASE("removing the last wifi network clears legacy credentials") {
+    aiden::WifiNetworkConfig wifi;
+    aiden::WifiNetwork network;
+    network.ssid = "obsolete";
+    network.psk = "old-password";
+    network.priority = 1;
+    REQUIRE(aiden::upsert_wifi_network(&wifi, network));
+    CHECK(wifi.ssid == "obsolete");
+    CHECK(wifi.psk == "old-password");
+
+    REQUIRE(aiden::remove_wifi_network(&wifi, "obsolete"));
+    CHECK(wifi.networks.empty());
+    CHECK(wifi.ssid.empty());
+    CHECK(wifi.psk.empty());
+
+    std::string rendered = aiden::render_wifi_config(wifi);
+    CHECK(rendered.find("network={") == std::string::npos);
+    CHECK(rendered.find("obsolete") == std::string::npos);
+}
