@@ -1,6 +1,7 @@
 #include <doctest.h>
 
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -870,6 +871,71 @@ TEST_CASE("config web resolved config validation keeps required fields and type 
     CHECK(source.find("validate_search_secret_presence") != std::string::npos);
     CHECK(source.find("validate_required_string(model, \"model\", \"provider\", false") != std::string::npos);
     CHECK(source.find("\"search\", \"has_api_key\", CONFIG_FIELD_BOOL") != std::string::npos);
+    CHECK(source.find("\"voice_progress_speech_enabled\", CONFIG_FIELD_BOOL") != std::string::npos);
     CHECK(source.find("\"voice_speech_summary_enabled\", CONFIG_FIELD_BOOL") != std::string::npos);
     CHECK(source.find("\"voice_speech_max_runes\", CONFIG_FIELD_NUMBER") != std::string::npos);
+}
+
+TEST_CASE("config web rendered config controls are registered in field type guards") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    std::set<std::string> rendered_fields;
+    const std::string section_marker = "data-section=\\\"";
+    size_t pos = 0;
+    while ((pos = html.find(section_marker, pos)) != std::string::npos) {
+        const size_t section_start = pos + section_marker.size();
+        const size_t section_end = html.find("\\\"", section_start);
+        REQUIRE(section_end != std::string::npos);
+        const std::string section = html.substr(section_start, section_end - section_start);
+        pos = section_end + 2;
+
+        if (section == "system_env") {
+            continue;
+        }
+
+        size_t line_start = html.rfind('\n', section_start);
+        line_start = line_start == std::string::npos ? 0 : line_start + 1;
+        size_t line_end = html.find('\n', section_start);
+        line_end = line_end == std::string::npos ? html.size() : line_end;
+        const std::string line = html.substr(line_start, line_end - line_start);
+
+        const std::string id_marker = "id=\\\"";
+        const size_t id_pos = line.find(id_marker);
+        REQUIRE(id_pos != std::string::npos);
+        const size_t id_start = id_pos + id_marker.size();
+        const size_t id_end = line.find("\\\"", id_start);
+        REQUIRE(id_end != std::string::npos);
+        const std::string id = line.substr(id_start, id_end - id_start);
+        const std::string prefix = section + "_";
+
+        REQUIRE_MESSAGE(id.find(prefix) == 0, "config control id must be section_key: " << id);
+        rendered_fields.insert(section + "." + id.substr(prefix.size()));
+    }
+
+    REQUIRE(!rendered_fields.empty());
+    for (std::set<std::string>::const_iterator it = rendered_fields.begin(); it != rendered_fields.end(); ++it) {
+        const std::string& field = *it;
+        const size_t dot = field.find('.');
+        REQUIRE(dot != std::string::npos);
+        const std::string section = field.substr(0, dot);
+        const std::string key = field.substr(dot + 1);
+        const std::string guard = "{\"" + section + "\", \"" + key + "\", CONFIG_FIELD_";
+
+        CHECK_MESSAGE(source.find(guard) != std::string::npos,
+                      "rendered config field is missing from validate_known_config_field_types: " << field);
+    }
 }
