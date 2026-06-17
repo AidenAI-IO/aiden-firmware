@@ -54,6 +54,7 @@ type Server struct {
 	recordMu                   sync.Mutex
 	webRecording               *webAudioRecording
 	bridge                     *PhoneBridge
+	liveActivity               *LiveActivityManager
 	pendingResults             map[string]*chatPendingResult
 	pendingResultsMu           sync.Mutex
 	activeRuns                 map[string]context.CancelFunc
@@ -178,11 +179,12 @@ type chatPendingResult struct {
 
 // ChatResultResponse is the JSON shape for GET /api/chat/result.
 type ChatResultResponse struct {
-	Status   string    `json:"status"`
-	Messages []Message `json:"messages,omitempty"`
-	Response string    `json:"response,omitempty"`
-	History  []Message `json:"history,omitempty"`
-	Error    string    `json:"error,omitempty"`
+	Status       string             `json:"status"`
+	Messages     []Message          `json:"messages,omitempty"`
+	Response     string             `json:"response,omitempty"`
+	History      []Message          `json:"history,omitempty"`
+	Error        string             `json:"error,omitempty"`
+	LiveActivity *LiveActivityState `json:"live_activity,omitempty"`
 }
 
 type ChatStreamEvent struct {
@@ -233,6 +235,7 @@ func NewServer(runtime *Runtime, addr string, benchmarkDir string) *Server {
 		userFilesToolsDir:   "/userdata/agent_tools",
 		history:             make([]Message, 0),
 		bridge:              bridge,
+		liveActivity:        NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
 		pendingResults:      make(map[string]*chatPendingResult),
 		activeRuns:          make(map[string]context.CancelFunc),
 		pendingSteers:       make(map[string]pendingSteerMessage),
@@ -292,6 +295,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/chat/steer", s.handleChatSteer)
 	mux.HandleFunc("/api/chat/steer/cancel", s.handleChatSteerCancel)
 	mux.HandleFunc("/api/chat/result", s.handleChatResult)
+	mux.HandleFunc("/api/live-activity/registrations", s.handleLiveActivityRegistrations)
+	mux.HandleFunc("/api/live-activity/status", s.handleLiveActivityStatus)
+	mux.HandleFunc("/api/live-activity/current", s.handleLiveActivityCurrent)
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
@@ -463,6 +469,9 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 	if s.cancelActiveRun(requestID) {
 		if s.logger != nil {
 			s.logger.Info("Chat request canceled: request_id=%s", requestID)
+		}
+		if s.liveActivity != nil {
+			s.liveActivity.CancelTask(requestID)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ChatCancelResponse{RequestID: requestID, Status: "canceled"})
@@ -684,6 +693,9 @@ func (s *Server) handleChatAsync(
 		return
 	}
 	s.appendHistory(userMsg)
+	if s.liveActivity != nil {
+		s.liveActivity.StartTask(requestID, inputText)
+	}
 
 	// Return {request_id} immediately
 	w.Header().Set("Content-Type", "application/json")
@@ -734,6 +746,9 @@ func (s *Server) handleChatAsync(
 			pending.history = append(pending.history, msg)
 			pending.messages = append(pending.messages, msg)
 			pending.mu.Unlock()
+			if s.liveActivity != nil {
+				s.liveActivity.UpdateFromRunEvent(requestID, event)
+			}
 
 			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(runCtx, event.Description)
@@ -789,6 +804,9 @@ func (s *Server) handleChatAsync(
 		pending.mu.Lock()
 		if err != nil {
 			if errors.Is(runCtx.Err(), context.Canceled) {
+				if s.liveActivity != nil {
+					s.liveActivity.CancelTask(requestID)
+				}
 				pending.err = "request canceled"
 			} else {
 				errorMsg := Message{
@@ -803,6 +821,9 @@ func (s *Server) handleChatAsync(
 				s.appendHistory(errorMsg)
 				pending.history = append(pending.history, errorMsg)
 				pending.messages = append(pending.messages, errorMsg)
+				if s.liveActivity != nil {
+					s.liveActivity.FailTask(requestID, err.Error())
+				}
 				pending.err = err.Error()
 			}
 			pending.done = true
@@ -825,6 +846,9 @@ func (s *Server) handleChatAsync(
 		s.appendHistory(assistantMsg)
 		pending.history = append(pending.history, assistantMsg)
 		pending.messages = append(pending.messages, assistantMsg)
+		if s.liveActivity != nil {
+			s.liveActivity.CompleteTask(requestID, result.Output)
+		}
 		pending.done = true
 		pending.mu.Unlock()
 
@@ -886,57 +910,74 @@ func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
 	if pending == nil {
 		// Request not found — may have completed and been cleaned up,
 		// or may never have existed.
+		liveActivity := s.liveActivitySnapshot(requestID)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResultResponse{Status: "not_found"})
+		json.NewEncoder(w).Encode(ChatResultResponse{Status: "not_found", LiveActivity: liveActivity})
 		return
 	}
 
 	pending.mu.Lock()
-	defer pending.mu.Unlock()
+	errText := pending.err
+	done := pending.done
 
-	if pending.err != "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status: "error",
-			Error:  pending.err,
-		})
-		return
-	}
-
-	// Return messages since the client's offset
 	msgs := pending.messages
 	if offset < len(msgs) {
-		msgs = msgs[offset:]
+		msgs = append([]Message(nil), msgs[offset:]...)
 	} else {
 		msgs = nil
 	}
 
-	if pending.done {
-		// Build a full ChatResponse-compatible shape
-		historySnapshot := make([]Message, len(pending.history))
+	var historySnapshot []Message
+	response := ""
+	if done {
+		historySnapshot = make([]Message, len(pending.history))
 		copy(historySnapshot, pending.history)
-		// Extract the assistant text from the last assistant message
-		response := ""
 		for i := len(pending.history) - 1; i >= 0; i-- {
 			if pending.history[i].Type == "assistant" {
 				response = pending.history[i].Content
 				break
 			}
 		}
+	}
+	pending.mu.Unlock()
+
+	liveActivity := s.liveActivitySnapshot(requestID)
+
+	if errText != "" {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status:   "complete",
-			Response: response,
-			History:  historySnapshot,
-			Messages: msgs,
+			Status:       "error",
+			Messages:     msgs,
+			Error:        errText,
+			LiveActivity: liveActivity,
+		})
+		return
+	}
+
+	if done {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ChatResultResponse{
+			Status:       "complete",
+			Response:     response,
+			History:      historySnapshot,
+			Messages:     msgs,
+			LiveActivity: liveActivity,
 		})
 	} else {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status:   "running",
-			Messages: msgs,
+			Status:       "running",
+			Messages:     msgs,
+			LiveActivity: liveActivity,
 		})
 	}
+}
+
+func (s *Server) liveActivitySnapshot(requestID string) *LiveActivityState {
+	if s.liveActivity == nil {
+		return nil
+	}
+	return s.liveActivity.Snapshot(requestID)
 }
 
 // handleChatSync is the original synchronous chat handler, kept for the web UI
@@ -1148,6 +1189,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.appendHistory(userMessage)
 	progress := s.newRunProgressSpeaker()
 	defer progress.Cancel()
+	if req.RequestID != "" && s.liveActivity != nil {
+		s.liveActivity.StartTask(req.RequestID, inputText)
+	}
 
 	runReq := RunRequest{
 		Input:             inputText,
@@ -1181,6 +1225,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			}
 			s.appendHistory(message)
 			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
+			if req.RequestID != "" && s.liveActivity != nil {
+				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
+			}
 			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(ctx, event.Description)
 			}
@@ -1218,6 +1265,13 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		result.SpeechStreamed = closeErr == nil && newStream.spoke
 	}
 	if err != nil {
+		if req.RequestID != "" && s.liveActivity != nil {
+			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+				s.liveActivity.CancelTask(req.RequestID)
+			} else {
+				s.liveActivity.FailTask(req.RequestID, err.Error())
+			}
+		}
 		errorMessage := Message{
 			Type:      "episode_status",
 			EpisodeID: episodeID,
@@ -1247,6 +1301,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.appendHistory(assistantMessage)
 	stream.Write(ChatStreamEvent{Type: "message", Message: &assistantMessage})
 	historySnapshot := s.historySnapshot()
+	if req.RequestID != "" && s.liveActivity != nil {
+		s.liveActivity.CompleteTask(req.RequestID, result.Output)
+	}
 
 	speechText := result.SpokenTextForConfig(s.runtime.config)
 	if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
@@ -2282,6 +2339,87 @@ func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(s.bridge.Status())
+}
+
+func (s *Server) handleLiveActivityRegistrations(w http.ResponseWriter, r *http.Request) {
+	if s.liveActivity == nil {
+		http.Error(w, `{"error":"live activity disabled"}`, http.StatusServiceUnavailable)
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		var req LiveActivityRegistrationRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+			return
+		}
+		state, apnsStatus, err := s.liveActivity.Register(req)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(LiveActivityRegistrationResponse{
+			OK:      true,
+			State:   state,
+			APNs:    apnsStatus,
+			Message: "registered",
+		})
+	case http.MethodDelete:
+		requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
+		if requestID == "" {
+			http.Error(w, `{"error":"missing request_id"}`, http.StatusBadRequest)
+			return
+		}
+		ok := s.liveActivity.Unregister(requestID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"ok": ok})
+	default:
+		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleLiveActivityStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
+	if requestID == "" {
+		http.Error(w, `{"error":"missing request_id"}`, http.StatusBadRequest)
+		return
+	}
+	state := s.liveActivitySnapshot(requestID)
+	w.Header().Set("Content-Type", "application/json")
+	if state == nil {
+		json.NewEncoder(w).Encode(map[string]string{"status": "not_found"})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":        "ok",
+		"live_activity": state,
+	})
+}
+
+func (s *Server) handleLiveActivityCurrent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.liveActivity == nil {
+		http.Error(w, `{"error":"live activity disabled"}`, http.StatusServiceUnavailable)
+		return
+	}
+	state := s.liveActivity.SnapshotActive()
+	w.Header().Set("Content-Type", "application/json")
+	if state == nil {
+		json.NewEncoder(w).Encode(map[string]string{"status": "not_found"})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":        "ok",
+		"live_activity": state,
+	})
 }
 
 // handlePhoneBridgeCommands routes /api/phone-bridge/commands
@@ -3507,6 +3645,7 @@ const webUI = `<!DOCTYPE html>
         let toolCatalog = [];
         let toolSkills = [];
         let currentChatRequestId = '';
+        let externalActiveRequestId = '';
         let currentChatAbortController = null;
         let currentChatCancelRequested = false;
         let pendingSteer = null;
@@ -3516,6 +3655,8 @@ const webUI = `<!DOCTYPE html>
         let renderedMessageKeys = new Set();
 
         loadHistory();
+        refreshCurrentLiveActivity();
+        setInterval(refreshCurrentLiveActivity, 2000);
         loadToolCatalog();
         loadToolSkills();
         autoResizeInput();
@@ -3844,6 +3985,7 @@ const webUI = `<!DOCTYPE html>
             setComposerState(true);
             clearDraftAttachments();
             currentChatRequestId = createRequestId();
+            externalActiveRequestId = '';
             currentChatAbortController = new AbortController();
             currentChatCancelRequested = false;
 
@@ -3974,28 +4116,50 @@ const webUI = `<!DOCTYPE html>
             return 'web-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
         }
 
+        function activeChatRequestId() {
+            return currentChatRequestId || externalActiveRequestId || '';
+        }
+
+        async function refreshCurrentLiveActivity() {
+            if (currentChatRequestId) return;
+            try {
+                const res = await fetch('/api/live-activity/current');
+                if (!res.ok) return;
+                const data = await res.json();
+                const state = data.live_activity;
+                const isActive = data.status === 'ok' && state && (state.status === 'running' || state.status === 'needs_app');
+                externalActiveRequestId = isActive ? state.request_id : '';
+                setComposerState(!!activeChatRequestId());
+            } catch (err) {
+                console.warn('Failed to refresh current live activity:', err);
+            }
+        }
+
         async function cancelCurrentRun() {
-            if (!currentChatRequestId) return;
-            const requestId = currentChatRequestId;
+            const requestId = activeChatRequestId();
+            if (!requestId) return;
             currentChatCancelRequested = true;
             stopRunBtn.disabled = true;
             stopRunBtn.textContent = 'Stopping...';
             pendingSteer = null;
             renderPendingSteer();
 
-			if (currentChatAbortController) {
-				currentChatAbortController.abort();
-			}
+            if (currentChatAbortController) {
+                currentChatAbortController.abort();
+            }
 
-			fetch('/api/chat/cancel', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ request_id: requestId }),
-				keepalive: true
-			}).catch(function(err) {
-				console.error('Failed to cancel chat request:', err);
-			});
-		}
+            fetch('/api/chat/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ request_id: requestId }),
+                keepalive: true
+            }).catch(function(err) {
+                console.error('Failed to cancel chat request:', err);
+            }).finally(function() {
+                if (externalActiveRequestId === requestId) externalActiveRequestId = '';
+                setComposerState(!!activeChatRequestId());
+            });
+        }
 
         async function cancelPendingSteer() {
             if (!currentChatRequestId || !pendingSteer) return;
@@ -4403,8 +4567,8 @@ const webUI = `<!DOCTYPE html>
         }
 
         function setComposerState(isLoading) {
-            sendBtn.disabled = recorderState.isStopping || pendingSteerSubmitting;
-            sendBtn.textContent = isLoading ? 'Steer' : 'Send';
+            sendBtn.disabled = recorderState.isStopping || pendingSteerSubmitting || (isLoading && !currentChatRequestId);
+            sendBtn.textContent = currentChatRequestId ? 'Steer' : 'Send';
             imageBtn.disabled = isLoading || recorderState.isRecording || recorderState.isStopping;
             recordBtn.disabled = isLoading || recorderState.isStopping;
             stopRunBtn.disabled = !isLoading;

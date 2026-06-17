@@ -283,12 +283,16 @@ func runManualMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 	scanner := bufio.NewScanner(os.Stdin)
 	recording := false
 	var manualStop chan manualStopResult
+	var cancelRecording context.CancelFunc
 	ctx := context.Background()
 
 	for {
 		select {
 		case <-sigChan:
 			if recording {
+				if cancelRecording != nil {
+					cancelRecording()
+				}
 				dialog.StopRecording()
 			}
 			log.Println("\n[exit] Stopped.")
@@ -310,18 +314,24 @@ func runManualMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 			recording = true
 
 			manualStop = make(chan manualStopResult, 1)
-			go processAudioLoop(dialog, runtime, &recording, ctx, manualStop)
+			var loopCtx context.Context
+			loopCtx, cancelRecording = context.WithCancel(ctx)
+			go processAudioLoop(dialog, runtime, loopCtx, manualStop)
 		} else {
 			if !scanner.Scan() {
 				break
 			}
 
 			log.Println("[manual] Stop triggered by user")
-			recording = false
+			if cancelRecording != nil {
+				cancelRecording()
+				cancelRecording = nil
+			}
 
 			// Wait for the capture loop to flush tail PCM, then close capture
 			// before TTS so playback is never fed back into the mic session.
 			result := <-manualStop
+			recording = false
 			if result.vadHandled {
 				log.Println("\n[ready] Waiting for next trigger...")
 				continue
@@ -344,6 +354,12 @@ func runManualMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("[error] %v\n", err)
+	}
+	if recording {
+		if cancelRecording != nil {
+			cancelRecording()
+		}
+		dialog.StopRecording()
 	}
 
 	log.Println("\n[exit] Stopped.")
@@ -897,11 +913,10 @@ func processAudioUntilUtteranceWithTimeout(dialog audioDialogRunner, runtime *ag
 	}
 }
 
-func processAudioLoop(dialog audioDialogRunner, runtime *agent.Runtime, recording *bool, ctx context.Context, manualStop chan<- manualStopResult) {
+func processAudioLoop(dialog audioDialogRunner, runtime *agent.Runtime, ctx context.Context, manualStop chan<- manualStopResult) {
 	frameSamples := dialog.VADFrameSamples()
 	if frameSamples <= 0 {
 		log.Printf("[listen] invalid VAD frame size: %d\n", frameSamples)
-		*recording = false
 		if manualStop != nil {
 			manualStop <- manualStopResult{}
 		}
@@ -913,12 +928,17 @@ func processAudioLoop(dialog audioDialogRunner, runtime *agent.Runtime, recordin
 	var pendingByte byte
 	vadHandled := false
 
-	for *recording {
+	for {
+		select {
+		case <-ctx.Done():
+			goto stopped
+		default:
+		}
+
 		// Read audio chunk
 		chunk, err := dialog.ReadRecordChunk(200)
 		if err != nil {
 			log.Printf("[listen] read_record_chunk error: %v\n", err)
-			*recording = false
 			break
 		}
 
@@ -928,7 +948,6 @@ func processAudioLoop(dialog audioDialogRunner, runtime *agent.Runtime, recordin
 
 		if chunk.EndOfStream {
 			log.Println("[listen] record session closed by service")
-			*recording = false
 			break
 		}
 
@@ -946,16 +965,14 @@ func processAudioLoop(dialog audioDialogRunner, runtime *agent.Runtime, recordin
 			consumed += frameSamples
 			if err != nil {
 				log.Printf("[vad] processing failed: %v\n", err)
-				*recording = false
 				if stopErr := dialog.StopRecording(); stopErr != nil {
 					log.Printf("[listen] stop recording after VAD failure: %v\n", stopErr)
 				}
-				break
+				goto stopped
 			}
 			if utterance != nil {
 				log.Println("[utterance] VAD detected end of speech")
 				vadHandled = true
-				*recording = false
 				if err := dialog.StopRecording(); err != nil {
 					log.Printf("[listen] stop recording before utterance processing: %v\n", err)
 				}
@@ -963,7 +980,7 @@ func processAudioLoop(dialog audioDialogRunner, runtime *agent.Runtime, recordin
 					log.Printf("[error] %v\n", err)
 				}
 				log.Println("\n[ready] Waiting for next trigger...")
-				break
+				goto stopped
 			}
 		}
 
@@ -972,6 +989,7 @@ func processAudioLoop(dialog audioDialogRunner, runtime *agent.Runtime, recordin
 		}
 	}
 
+stopped:
 	if manualStop == nil {
 		return
 	}

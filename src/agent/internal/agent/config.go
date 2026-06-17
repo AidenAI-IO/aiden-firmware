@@ -22,6 +22,8 @@ const (
 	searchProviderBrave      = "brave"
 
 	braveSearchAPIKeyEnv = "BRAVE_SEARCH_API_KEY"
+
+	defaultLiveActivityTimeout = 10 * time.Second
 )
 
 func (s SearchConfig) ProviderOrDefault() string {
@@ -101,6 +103,7 @@ type Config struct {
 	AudioArchive               AudioArchiveConfig `toml:"audio_archive,omitempty"`
 	Benchmark                  BenchmarkConfig    `toml:"benchmark,omitempty"`
 	Search                     SearchConfig       `toml:"search,omitempty"`
+	LiveActivity               LiveActivityConfig `toml:"live_activity,omitempty"`
 	Instruction                string             `toml:"instruction"`
 	AdditionalPrompt           string             `toml:"additional_prompt,omitempty"`
 	InputMode                  string             `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
@@ -147,6 +150,18 @@ type TelemetryConfig struct {
 	MaxRetry          int      `toml:"max_retry,omitempty"`
 	Tags              []string `toml:"tags,omitempty"`
 	Environment       string   `toml:"environment,omitempty"`
+}
+
+type LiveActivityConfig struct {
+	Enabled        *bool  `toml:"enabled,omitempty"`
+	BundleID       string `toml:"bundle_id,omitempty"`
+	Topic          string `toml:"topic,omitempty"`
+	Environment    string `toml:"environment,omitempty"`
+	TeamID         string `toml:"team_id,omitempty"`
+	KeyID          string `toml:"key_id,omitempty"`
+	PrivateKeyPath string `toml:"private_key_path,omitempty"`
+	PrivateKeyPEM  string `toml:"private_key_pem,omitempty"`
+	TimeoutSec     int    `toml:"timeout_sec,omitempty"`
 }
 
 type TTSConfig struct {
@@ -812,6 +827,9 @@ func (c Config) Validate() error {
 	if err := c.Telemetry.Validate(); err != nil {
 		return err
 	}
+	if err := c.LiveActivity.Validate(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -848,6 +866,68 @@ func (t TelemetryConfig) EnabledOrDefault() bool {
 		return *t.Enabled
 	}
 	return false
+}
+
+func (l LiveActivityConfig) Validate() error {
+	if !l.EnabledOrDefault() {
+		return nil
+	}
+	if env := strings.ToLower(strings.TrimSpace(l.Environment)); env != "" {
+		switch env {
+		case "sandbox", "production", "prod":
+		default:
+			return fmt.Errorf("invalid live_activity.environment: %s (expected sandbox or production)", l.Environment)
+		}
+	}
+	if l.TimeoutSec < 0 {
+		return fmt.Errorf("live_activity.timeout_sec must be >= 0, got %d (0 uses default)", l.TimeoutSec)
+	}
+	if !l.APNsConfigured() {
+		return nil
+	}
+	if strings.TrimSpace(l.BundleID) == "" && strings.TrimSpace(l.Topic) == "" {
+		return errors.New("live_activity.bundle_id or live_activity.topic is required when APNs credentials are configured")
+	}
+	return nil
+}
+
+func (l LiveActivityConfig) EnabledOrDefault() bool {
+	if l.Enabled != nil {
+		return *l.Enabled
+	}
+	return true
+}
+
+func (l LiveActivityConfig) EnvironmentOrDefault() string {
+	switch strings.ToLower(strings.TrimSpace(l.Environment)) {
+	case "production", "prod":
+		return "production"
+	default:
+		return "sandbox"
+	}
+}
+
+func (l LiveActivityConfig) APNsConfigured() bool {
+	return strings.TrimSpace(l.TeamID) != "" &&
+		strings.TrimSpace(l.KeyID) != "" &&
+		(strings.TrimSpace(l.PrivateKeyPath) != "" || strings.TrimSpace(l.PrivateKeyPEM) != "")
+}
+
+func (l LiveActivityConfig) APNsTopic() string {
+	if topic := strings.TrimSpace(l.Topic); topic != "" {
+		return topic
+	}
+	if bundleID := strings.TrimSpace(l.BundleID); bundleID != "" {
+		return bundleID + ".push-type.liveactivity"
+	}
+	return ""
+}
+
+func (l LiveActivityConfig) TimeoutOrDefault() time.Duration {
+	if l.TimeoutSec > 0 {
+		return time.Duration(l.TimeoutSec) * time.Second
+	}
+	return defaultLiveActivityTimeout
 }
 
 func (t TelemetryConfig) ProviderOrDefault() string {

@@ -233,6 +233,30 @@ func ConfigMeta() ConfigMetadata {
 				},
 			},
 			{
+				Name: "live_activity",
+				Fields: []FieldMeta{
+					{Key: "enabled", Widget: WidgetBoolean, Default: true},
+					{Key: "bundle_id", Widget: WidgetText,
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+					{Key: "topic", Widget: WidgetText,
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+					{Key: "environment", Widget: WidgetSelect,
+						Enum:        enumOptions("sandbox", "production"),
+						Default:     "sandbox",
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+					{Key: "team_id", Widget: WidgetText, Secret: true,
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+					{Key: "key_id", Widget: WidgetText, Secret: true,
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+					{Key: "private_key_path", Widget: WidgetText, Secret: true,
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+					{Key: "private_key_pem", Widget: WidgetTextarea, Secret: true,
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+					{Key: "timeout_sec", Widget: WidgetNumber, Default: 10,
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+				},
+			},
+			{
 				// The "agent" UI section maps to the top-level Config fields.
 				Name: "agent",
 				Fields: []FieldMeta{

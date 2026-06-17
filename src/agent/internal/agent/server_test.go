@@ -377,6 +377,10 @@ func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
 	if assistant.RequestID != "web-req-1" {
 		t.Fatalf("assistant request_id = %q, want web-req-1", assistant.RequestID)
 	}
+	state := server.liveActivity.Snapshot("web-req-1")
+	if state == nil || state.Status != LiveActivityStatusCompleted {
+		t.Fatalf("stream live activity state = %#v, want completed", state)
+	}
 }
 
 func TestHandleCoordinateDebugTapRejectsInvalidType(t *testing.T) {
@@ -816,7 +820,7 @@ func TestWebUISteerModeControlsArePresent(t *testing.T) {
 		"/api/chat/steer",
 		"/api/chat/steer/cancel",
 		"async function submitSteerMessage()",
-		"sendBtn.textContent = isLoading ? 'Steer' : 'Send';",
+		"sendBtn.textContent = currentChatRequestId ? 'Steer' : 'Send';",
 		"id=\"pendingSteer\"",
 	} {
 		if !strings.Contains(webUI, want) {

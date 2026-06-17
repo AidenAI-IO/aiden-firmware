@@ -306,38 +306,6 @@ bool json_is_bool(cJSON* item) {
     return json_is_type(item, cJSON_True) || json_is_type(item, cJSON_False);
 }
 
-bool config_required_object(cJSON* root, const char* key) {
-    if (!root) {
-        return false;
-    }
-    return json_is_object(cJSON_GetObjectItem(root, key));
-}
-
-bool config_required_string(cJSON* obj, const char* key, bool allow_empty = false) {
-    if (!obj) {
-        return false;
-    }
-    cJSON* item = cJSON_GetObjectItem(obj, key);
-    if (!json_is_string(item)) {
-        return false;
-    }
-    return allow_empty || !trim_copy(item->valuestring).empty();
-}
-
-bool config_required_number(cJSON* obj, const char* key) {
-    if (!obj) {
-        return false;
-    }
-    return json_is_number(cJSON_GetObjectItem(obj, key));
-}
-
-bool config_required_bool(cJSON* obj, const char* key) {
-    if (!obj) {
-        return false;
-    }
-    return json_is_bool(cJSON_GetObjectItem(obj, key));
-}
-
 std::string json_type_name(cJSON* item) {
     if (!item) {
         return "missing";
@@ -388,24 +356,21 @@ enum ConfigFieldKind {
     CONFIG_FIELD_ARRAY,
 };
 
-bool validate_config_field(cJSON* obj,
-                           const char* section,
-                           const char* key,
-                           ConfigFieldKind kind,
-                           bool allow_empty,
-                           std::string* error) {
+bool validate_config_field_type(cJSON* obj,
+                                const char* section,
+                                const char* key,
+                                ConfigFieldKind kind,
+                                std::string* error) {
     cJSON* item = obj ? cJSON_GetObjectItem(obj, key) : NULL;
+    if (!item) {
+        return true;
+    }
+
     const std::string path = config_field_path(section, key);
     switch (kind) {
         case CONFIG_FIELD_STRING:
             if (!json_is_string(item)) {
-                return config_schema_error(error, path, allow_empty ? "string" : "non-empty string", item);
-            }
-            if (!allow_empty && trim_copy(item->valuestring).empty()) {
-                if (error) {
-                    *error = "agent config invalid field " + path + ": expected non-empty string, got empty string";
-                }
-                return false;
+                return config_schema_error(error, path, "string", item);
             }
             return true;
         case CONFIG_FIELD_NUMBER:
@@ -425,6 +390,186 @@ bool validate_config_field(cJSON* obj,
             return true;
     }
     return config_schema_error(error, path, "known field kind", item);
+}
+
+bool validate_required_string(cJSON* obj,
+                              const char* section,
+                              const char* key,
+                              bool allow_empty,
+                              std::string* error) {
+    cJSON* item = obj ? cJSON_GetObjectItem(obj, key) : NULL;
+    const std::string path = config_field_path(section, key);
+    if (!json_is_string(item)) {
+        return config_schema_error(error, path, allow_empty ? "string" : "non-empty string", item);
+    }
+    if (!allow_empty && trim_copy(item->valuestring).empty()) {
+        if (error) {
+            *error = "agent config invalid field " + path + ": expected non-empty string, got empty string";
+        }
+        return false;
+    }
+    return true;
+}
+
+bool validate_model_section(cJSON* root, std::string* error) {
+    cJSON* model = cJSON_GetObjectItem(root, "model");
+    if (!json_is_object(model)) {
+        return config_schema_error(error, "model", "object", model);
+    }
+
+    if (!validate_required_string(model, "model", "provider", false, error)) {
+        return false;
+    }
+    cJSON* provider_item = cJSON_GetObjectItem(model, "provider");
+    const std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
+    if (provider != "fake" && !validate_required_string(model, "model", "model", false, error)) {
+        return false;
+    }
+    return true;
+}
+
+bool validate_search_secret_presence(cJSON* root, std::string* error) {
+    cJSON* search = cJSON_GetObjectItem(root, "search");
+    if (!search) {
+        return true;
+    }
+    if (!json_is_object(search)) {
+        return config_schema_error(error, "search", "object", search);
+    }
+    if (!validate_config_field_type(search, "search", "provider", CONFIG_FIELD_STRING, error) ||
+        !validate_config_field_type(search, "search", "api_key", CONFIG_FIELD_STRING, error) ||
+        !validate_config_field_type(search, "search", "has_api_key", CONFIG_FIELD_BOOL, error)) {
+        return false;
+    }
+
+    cJSON* provider_item = cJSON_GetObjectItem(search, "provider");
+    const std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
+    if (provider != "brave" && provider != "brave-free" && provider != "tavily") {
+        return true;
+    }
+
+    cJSON* key_item = cJSON_GetObjectItem(search, "api_key");
+    if (json_is_string(key_item) && !trim_copy(key_item->valuestring).empty()) {
+        return true;
+    }
+    cJSON* has_key_item = cJSON_GetObjectItem(search, "has_api_key");
+    if (!has_key_item) {
+        return config_schema_error(error, "search.has_api_key", "bool", has_key_item);
+    }
+    return true;
+}
+
+bool validate_known_config_field_types(cJSON* root, std::string* error) {
+    struct FieldSpec {
+        const char* section;
+        const char* key;
+        ConfigFieldKind kind;
+    };
+    const FieldSpec fields[] = {
+        {"model", "provider", CONFIG_FIELD_STRING},
+        {"model", "model", CONFIG_FIELD_STRING},
+        {"model", "api_key", CONFIG_FIELD_STRING},
+        {"model", "base_url", CONFIG_FIELD_STRING},
+        {"model", "token_env", CONFIG_FIELD_STRING},
+        {"model", "temperature", CONFIG_FIELD_NUMBER},
+        {"model", "max_response_tokens", CONFIG_FIELD_NUMBER},
+        {"model", "context_window", CONFIG_FIELD_NUMBER},
+        {"model", "model_max_output_tokens", CONFIG_FIELD_NUMBER},
+        {"model_text", "provider", CONFIG_FIELD_STRING},
+        {"model_text", "model", CONFIG_FIELD_STRING},
+        {"model_text", "api_key", CONFIG_FIELD_STRING},
+        {"model_text", "base_url", CONFIG_FIELD_STRING},
+        {"model_text", "token_env", CONFIG_FIELD_STRING},
+        {"model_text", "temperature", CONFIG_FIELD_NUMBER},
+        {"model_text", "max_response_tokens", CONFIG_FIELD_NUMBER},
+        {"model_text", "context_window", CONFIG_FIELD_NUMBER},
+        {"model_text", "model_max_output_tokens", CONFIG_FIELD_NUMBER},
+        {"tts", "provider", CONFIG_FIELD_STRING},
+        {"tts", "api_key", CONFIG_FIELD_STRING},
+        {"tts", "model", CONFIG_FIELD_STRING},
+        {"tts", "voice_id", CONFIG_FIELD_STRING},
+        {"tts", "emotion", CONFIG_FIELD_STRING},
+        {"tts", "speed", CONFIG_FIELD_NUMBER},
+        {"stt", "provider", CONFIG_FIELD_STRING},
+        {"stt", "api_key", CONFIG_FIELD_STRING},
+        {"stt", "model", CONFIG_FIELD_STRING},
+        {"stt", "base_url", CONFIG_FIELD_STRING},
+        {"stt", "secret_id", CONFIG_FIELD_STRING},
+        {"stt", "secret_key", CONFIG_FIELD_STRING},
+        {"stt", "region", CONFIG_FIELD_STRING},
+        {"stt", "engine_model_type", CONFIG_FIELD_STRING},
+        {"audio", "socket", CONFIG_FIELD_STRING},
+        {"audio", "sample_rate", CONFIG_FIELD_NUMBER},
+        {"audio", "channels", CONFIG_FIELD_NUMBER},
+        {"audio", "bit_width", CONFIG_FIELD_NUMBER},
+        {"audio_archive", "enabled", CONFIG_FIELD_BOOL},
+        {"audio_archive", "storage_path", CONFIG_FIELD_STRING},
+        {"audio_archive", "max_files", CONFIG_FIELD_NUMBER},
+        {"audio_archive", "max_size_mb", CONFIG_FIELD_NUMBER},
+        {"benchmark", "judge_model", CONFIG_FIELD_STRING},
+        {"benchmark", "api_key", CONFIG_FIELD_STRING},
+        {"benchmark", "benchmark_dir", CONFIG_FIELD_STRING},
+        {"hid", "keyboard_device", CONFIG_FIELD_STRING},
+        {"hid", "mouse_device", CONFIG_FIELD_STRING},
+        {"hid", "frame_socket", CONFIG_FIELD_STRING},
+        {"hid", "pointer_mode", CONFIG_FIELD_STRING},
+        {"search", "provider", CONFIG_FIELD_STRING},
+        {"search", "api_key", CONFIG_FIELD_STRING},
+        {"search", "has_api_key", CONFIG_FIELD_BOOL},
+        {"telemetry", "enabled", CONFIG_FIELD_BOOL},
+        {"telemetry", "provider", CONFIG_FIELD_STRING},
+        {"telemetry", "base_url", CONFIG_FIELD_STRING},
+        {"telemetry", "public_key", CONFIG_FIELD_STRING},
+        {"telemetry", "secret_key", CONFIG_FIELD_STRING},
+        {"telemetry", "upload_screenshots", CONFIG_FIELD_BOOL},
+        {"telemetry", "upload_timeout_sec", CONFIG_FIELD_NUMBER},
+        {"telemetry", "max_retry", CONFIG_FIELD_NUMBER},
+        {"telemetry", "tags", CONFIG_FIELD_ARRAY},
+        {"telemetry", "environment", CONFIG_FIELD_STRING},
+        {"agent", "instruction", CONFIG_FIELD_STRING},
+        {"agent", "additional_prompt", CONFIG_FIELD_STRING},
+        {"agent", "input_mode", CONFIG_FIELD_STRING},
+        {"agent", "trigger_mode", CONFIG_FIELD_STRING},
+        {"agent", "vad_backend", CONFIG_FIELD_STRING},
+        {"agent", "vad_model_path", CONFIG_FIELD_STRING},
+        {"agent", "vad_helper_path", CONFIG_FIELD_STRING},
+        {"agent", "vad_speech_threshold", CONFIG_FIELD_NUMBER},
+        {"agent", "silence_ms", CONFIG_FIELD_NUMBER},
+        {"agent", "min_speech_ms", CONFIG_FIELD_NUMBER},
+        {"agent", "voice_session_enabled", CONFIG_FIELD_BOOL},
+        {"agent", "voice_followup_timeout_ms", CONFIG_FIELD_NUMBER},
+        {"agent", "voice_first_turn_timeout_ms", CONFIG_FIELD_NUMBER},
+        {"agent", "voice_max_turns", CONFIG_FIELD_NUMBER},
+        {"agent", "voice_interrupt_on_wakeup", CONFIG_FIELD_BOOL},
+        {"agent", "voice_streaming_tts_enabled", CONFIG_FIELD_BOOL},
+        {"agent", "voice_tool_call_speech", CONFIG_FIELD_BOOL},
+        {"agent", "voice_speech_summary_enabled", CONFIG_FIELD_BOOL},
+        {"agent", "voice_speech_max_runes", CONFIG_FIELD_NUMBER},
+        {"agent", "voice_max_response_tokens", CONFIG_FIELD_NUMBER},
+        {"agent", "max_iterations", CONFIG_FIELD_NUMBER},
+        {"agent", "force_simple_loop", CONFIG_FIELD_BOOL},
+        {"agent", "screenshot_keep_n", CONFIG_FIELD_NUMBER},
+        {"agent", "screenshot_prune_interval", CONFIG_FIELD_NUMBER},
+        {"agent", "screen_stable_timeout_ms", CONFIG_FIELD_NUMBER},
+        {"agent", "screen_stable_ms", CONFIG_FIELD_NUMBER},
+        {"agent", "screen_stable_diff_threshold", CONFIG_FIELD_NUMBER},
+        {NULL, NULL, CONFIG_FIELD_STRING},
+    };
+
+    for (int i = 0; fields[i].section; ++i) {
+        cJSON* section = cJSON_GetObjectItem(root, fields[i].section);
+        if (!section) {
+            continue;
+        }
+        if (!validate_config_field_type(section,
+                                        fields[i].section,
+                                        fields[i].key,
+                                        fields[i].kind,
+                                        error)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 cJSON* add_object(cJSON* parent, const char* key) {
@@ -1027,142 +1172,18 @@ bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
     }
 
     const char* sections[] = {
-        "model", "model_text", "tts", "stt", "audio", "benchmark",
-        "hid", "search", "telemetry", "agent", NULL,
+        "model", "model_text", "tts", "stt", "audio", "audio_archive",
+        "benchmark", "hid", "search", "telemetry", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
         cJSON* section = cJSON_GetObjectItem(root, sections[i]);
-        if (!json_is_object(section)) {
+        if (section && !json_is_object(section)) {
             return config_schema_error(error, sections[i], "object", section);
         }
     }
-
-    cJSON* model = cJSON_GetObjectItem(root, "model");
-    if (!validate_config_field(model, "model", "provider", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(model, "model", "model", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(model, "model", "api_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model, "model", "base_url", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model, "model", "token_env", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model, "model", "temperature", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(model, "model", "max_response_tokens", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(model, "model", "context_window", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(model, "model", "model_max_output_tokens", CONFIG_FIELD_NUMBER, false, error)) {
-        return false;
-    }
-
-    cJSON* model_text = cJSON_GetObjectItem(root, "model_text");
-    if (!validate_config_field(model_text, "model_text", "provider", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model_text, "model_text", "model", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model_text, "model_text", "api_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model_text, "model_text", "base_url", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model_text, "model_text", "token_env", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model_text, "model_text", "temperature", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(model_text, "model_text", "max_response_tokens", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(model_text, "model_text", "context_window", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(model_text, "model_text", "model_max_output_tokens", CONFIG_FIELD_NUMBER, false, error)) {
-        return false;
-    }
-
-    cJSON* tts = cJSON_GetObjectItem(root, "tts");
-    if (!validate_config_field(tts, "tts", "provider", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(tts, "tts", "api_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(tts, "tts", "model", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(tts, "tts", "voice_id", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(tts, "tts", "emotion", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(tts, "tts", "speed", CONFIG_FIELD_NUMBER, false, error)) {
-        return false;
-    }
-
-    cJSON* stt = cJSON_GetObjectItem(root, "stt");
-    if (!validate_config_field(stt, "stt", "provider", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(stt, "stt", "api_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(stt, "stt", "model", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(stt, "stt", "base_url", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(stt, "stt", "secret_id", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(stt, "stt", "secret_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(stt, "stt", "region", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(stt, "stt", "engine_model_type", CONFIG_FIELD_STRING, true, error)) {
-        return false;
-    }
-
-    cJSON* audio = cJSON_GetObjectItem(root, "audio");
-    if (!validate_config_field(audio, "audio", "socket", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(audio, "audio", "sample_rate", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(audio, "audio", "channels", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(audio, "audio", "bit_width", CONFIG_FIELD_NUMBER, false, error)) {
-        return false;
-    }
-
-    cJSON* audio_archive = cJSON_GetObjectItem(root, "audio_archive");
-    if (!validate_config_field(audio_archive, "audio_archive", "enabled", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(audio_archive, "audio_archive", "storage_path", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(audio_archive, "audio_archive", "max_files", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(audio_archive, "audio_archive", "max_size_mb", CONFIG_FIELD_NUMBER, false, error)) {
-        return false;
-    }
-
-    cJSON* benchmark = cJSON_GetObjectItem(root, "benchmark");
-    if (!validate_config_field(benchmark, "benchmark", "judge_model", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(benchmark, "benchmark", "api_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(benchmark, "benchmark", "benchmark_dir", CONFIG_FIELD_STRING, true, error)) {
-        return false;
-    }
-
-    cJSON* hid = cJSON_GetObjectItem(root, "hid");
-    if (!validate_config_field(hid, "hid", "keyboard_device", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(hid, "hid", "mouse_device", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(hid, "hid", "frame_socket", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(hid, "hid", "pointer_mode", CONFIG_FIELD_STRING, false, error)) {
-        return false;
-    }
-
-    cJSON* search = cJSON_GetObjectItem(root, "search");
-    if (!validate_config_field(search, "search", "provider", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(search, "search", "has_api_key", CONFIG_FIELD_BOOL, false, error)) {
-        return false;
-    }
-
-    cJSON* telemetry = cJSON_GetObjectItem(root, "telemetry");
-    if (!validate_config_field(telemetry, "telemetry", "enabled", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(telemetry, "telemetry", "provider", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(telemetry, "telemetry", "base_url", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(telemetry, "telemetry", "public_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(telemetry, "telemetry", "secret_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(telemetry, "telemetry", "upload_screenshots", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(telemetry, "telemetry", "upload_timeout_sec", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(telemetry, "telemetry", "max_retry", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(telemetry, "telemetry", "tags", CONFIG_FIELD_ARRAY, false, error) ||
-        !validate_config_field(telemetry, "telemetry", "environment", CONFIG_FIELD_STRING, false, error)) {
-        return false;
-    }
-
-    cJSON* agent = cJSON_GetObjectItem(root, "agent");
-    if (!validate_config_field(agent, "agent", "instruction", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(agent, "agent", "additional_prompt", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(agent, "agent", "input_mode", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(agent, "agent", "trigger_mode", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(agent, "agent", "vad_backend", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(agent, "agent", "vad_model_path", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(agent, "agent", "vad_helper_path", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(agent, "agent", "vad_speech_threshold", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "silence_ms", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "min_speech_ms", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "voice_session_enabled", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(agent, "agent", "voice_followup_timeout_ms", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "voice_first_turn_timeout_ms", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "voice_max_turns", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "voice_interrupt_on_wakeup", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(agent, "agent", "voice_streaming_tts_enabled", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(agent, "agent", "voice_tool_call_speech", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(agent, "agent", "voice_speech_summary_enabled", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(agent, "agent", "voice_speech_max_runes", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "voice_max_response_tokens", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "max_iterations", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "screenshot_keep_n", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "screenshot_prune_interval", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "screen_stable_timeout_ms", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "screen_stable_ms", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "screen_stable_diff_threshold", CONFIG_FIELD_NUMBER, false, error)) {
+    if (!validate_model_section(root, error) ||
+        !validate_known_config_field_types(root, error) ||
+        !validate_search_secret_presence(root, error)) {
         return false;
     }
     return true;
