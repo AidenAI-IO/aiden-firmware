@@ -108,6 +108,64 @@ func TestRuntimeRunInjectsCurrentDateIntoPlannerPrompt(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunRestoresHotWindowHistoryAsChatMessages(t *testing.T) {
+	ctx := context.Background()
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	manager := NewMemoryManager(storageDir)
+	if err := manager.AppendExchange(ctx, "default", "上一轮用户问题", "上一轮回答"); err != nil {
+		t.Fatalf("AppendExchange() error = %v", err)
+	}
+
+	model := &scriptedModel{responses: roleDirectResponses("completed")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(ctx, RunRequest{Input: "继续上一轮"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) == 0 || len(model.messages[0]) < 4 {
+		t.Fatalf("expected planner system, restored history, and state prompt messages, got %#v", model.messages)
+	}
+	messages := model.messages[0]
+	if messages[1].Role != llms.ChatMessageTypeHuman || messageText(messages[1:2]) != "上一轮用户问题\n" {
+		t.Fatalf("restored user history message = role %q text %q", messages[1].Role, messageText(messages[1:2]))
+	}
+	if messages[2].Role != llms.ChatMessageTypeAI || messageText(messages[2:3]) != "上一轮回答\n" {
+		t.Fatalf("restored assistant history message = role %q text %q", messages[2].Role, messageText(messages[2:3]))
+	}
+	statePrompt := messageText(messages[3:])
+	if strings.Contains(statePrompt, "Conversation history:") ||
+		strings.Contains(statePrompt, "Human: 上一轮用户问题") ||
+		strings.Contains(statePrompt, "AI: 上一轮回答") ||
+		strings.Contains(statePrompt, "上一轮回答") {
+		t.Fatalf("state prompt should not duplicate restored chat history:\n%s", statePrompt)
+	}
+}
+
+func TestRuntimeRunAllowsNilMemoryManager(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		nil,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+}
+
 func TestRuntimeRunUsesSessionManager(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -372,16 +430,22 @@ func TestRuntimeRunPersistsSteerAsConversationHumanMessage(t *testing.T) {
 	})
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
-	if len(events) != 3 {
-		t.Fatalf("expected 3 session events, got %d: %#v", len(events), events)
+	if !sessionEventsContain(events, func(event SessionEvent) bool {
+		return event.Type == "role_output" && event.Role == "planner" && event.Content == "Old answer."
+	}) {
+		t.Fatalf("expected planner role_output to be persisted in session events: %#v", events)
+	}
+	chatEvents := sessionEventsOfTypes(events, "user_input", "steer", "assistant_output")
+	if len(chatEvents) != 3 {
+		t.Fatalf("expected 3 chat-like session events, got %d: %#v", len(chatEvents), events)
 	}
 	for i, want := range []SessionEvent{
 		{Role: "user", Content: "original persisted request"},
 		{Role: "user", Content: "persist this steering message"},
 		{Role: "assistant", Content: "Changed course."},
 	} {
-		if events[i].Role != want.Role || events[i].Content != want.Content {
-			t.Fatalf("session event %d = %#v, want role=%q content=%q; all events: %#v", i, events[i], want.Role, want.Content, events)
+		if chatEvents[i].Role != want.Role || chatEvents[i].Content != want.Content {
+			t.Fatalf("chat-like session event %d = %#v, want role=%q content=%q; all events: %#v", i, chatEvents[i], want.Role, want.Content, events)
 		}
 	}
 }
@@ -431,10 +495,11 @@ func TestRuntimeRunPersistsSteerEventsWhenSnapshotWindowIsFull(t *testing.T) {
 	}
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
-	if len(events) != 23 {
-		t.Fatalf("expected 23 session events, got %d: %#v", len(events), events)
+	chatEvents := sessionEventsOfTypes(events, "user_input", "steer", "assistant_output")
+	if len(chatEvents) != 23 {
+		t.Fatalf("expected 23 chat-like session events, got %d: %#v", len(chatEvents), events)
 	}
-	last := events[len(events)-3:]
+	last := chatEvents[len(chatEvents)-3:]
 	for i, want := range []SessionEvent{
 		{Role: "user", Content: "windowed request"},
 		{Role: "user", Content: "persist even when the hot window is full"},
@@ -443,6 +508,256 @@ func TestRuntimeRunPersistsSteerEventsWhenSnapshotWindowIsFull(t *testing.T) {
 		if last[i].Role != want.Role || last[i].Content != want.Content {
 			t.Fatalf("last session event %d = %#v, want role=%q content=%q; all events: %#v", i, last[i], want.Role, want.Content, events)
 		}
+	}
+}
+
+func TestRuntimeRunPersistsRootInputBeforeModelFailure(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: failingGenerateModel{err: errors.New("model unavailable")}},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	_, err := runtime.Run(context.Background(), RunRequest{
+		Input:     "打开微信，进入 den 群，发送100块钱红包",
+		EpisodeID: "ep_red_packet_failure",
+		RequestID: "req-red-packet-failure",
+	})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want model failure")
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) == 0 {
+		t.Fatalf("expected root user_input to be persisted before model failure")
+	}
+	root := events[0]
+	if root.Type != "user_input" || root.Role != "user" || root.Content != "打开微信，进入 den 群，发送100块钱红包" {
+		t.Fatalf("first session event = %#v", root)
+	}
+	if root.Modality != "text" || root.OriginalText != "打开微信，进入 den 群，发送100块钱红包" {
+		t.Fatalf("root event missing text modality/original text: %#v", root)
+	}
+	if root.EpisodeID != "ep_red_packet_failure" || root.RequestID != "req-red-packet-failure" {
+		t.Fatalf("root event missing episode/request metadata: %#v", root)
+	}
+}
+
+func TestRuntimeRunPersistsCanonicalVoiceInputBeforeModelFailure(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: failingGenerateModel{err: errors.New("model unavailable")}},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	_, err := runtime.Run(context.Background(), RunRequest{
+		Turn: TurnInput{
+			InputText:    "打开微信发消息",
+			OriginalText: "按住说话",
+			Modality:     "stt",
+			Source:       "voice",
+			Transcript:   "打开微信发消息",
+			Artifacts: []InputArtifact{{
+				Kind:       AttachmentKindAudio,
+				MIMEType:   "audio/wav",
+				Path:       "/userdata/agent/audio/msg_123.wav",
+				DurationMS: 3200,
+				Size:       102400,
+			}},
+		},
+		EpisodeID: "ep_voice_failure",
+		RequestID: "req-voice-failure",
+	})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want model failure")
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) == 0 {
+		t.Fatalf("expected canonical user_input to be persisted before model failure")
+	}
+	root := events[0]
+	if root.Type != "user_input" || root.Role != "user" || root.Content != "打开微信发消息" {
+		t.Fatalf("first session event = %#v", root)
+	}
+	if root.Modality != "stt" || root.Source != "voice" || root.OriginalText != "按住说话" || root.Transcript != "打开微信发消息" {
+		t.Fatalf("root event missing voice metadata: %#v", root)
+	}
+	if len(root.Artifacts) != 1 {
+		t.Fatalf("root artifacts = %#v, want one audio artifact", root.Artifacts)
+	}
+	artifact := root.Artifacts[0]
+	if artifact.Kind != AttachmentKindAudio || artifact.MIMEType != "audio/wav" || artifact.Path == "" {
+		t.Fatalf("audio artifact metadata = %#v", artifact)
+	}
+	if artifact.DurationMS != 3200 || artifact.Size != 102400 {
+		t.Fatalf("audio artifact size/duration = %#v", artifact)
+	}
+	if len(artifact.Data) != 0 {
+		t.Fatalf("session artifact must not contain binary data: %#v", artifact)
+	}
+	if root.EpisodeID != "ep_voice_failure" || root.RequestID != "req-voice-failure" {
+		t.Fatalf("root event missing episode/request metadata: %#v", root)
+	}
+}
+
+func TestRuntimeRunPersistsAttachmentArtifactsWithoutBinary(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: failingGenerateModel{err: errors.New("model unavailable")}},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	_, err := runtime.Run(context.Background(), RunRequest{
+		Input: "Describe the uploaded image.",
+		Attachments: []InputAttachment{{
+			Kind:     AttachmentKindImage,
+			Name:     "screen.png",
+			MIMEType: "image/png",
+			Data:     []byte{0x89, 0x50, 0x4e, 0x47},
+		}},
+		EpisodeID: "ep_image_failure",
+		RequestID: "req-image-failure",
+	})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want model failure")
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) == 0 {
+		t.Fatalf("expected user_input to be persisted before model failure")
+	}
+	root := events[0]
+	if root.Type != "user_input" || root.Content != "Describe the uploaded image." || root.Modality != "text" {
+		t.Fatalf("first session event = %#v", root)
+	}
+	if root.OriginalText != "Describe the uploaded image." {
+		t.Fatalf("root original_text = %q", root.OriginalText)
+	}
+	if len(root.Artifacts) != 1 {
+		t.Fatalf("root artifacts = %#v, want one image artifact", root.Artifacts)
+	}
+	artifact := root.Artifacts[0]
+	if artifact.Kind != AttachmentKindImage || artifact.Name != "screen.png" || artifact.MIMEType != "image/png" || artifact.Size != 4 {
+		t.Fatalf("image artifact metadata = %#v", artifact)
+	}
+	if len(artifact.Data) != 0 {
+		t.Fatalf("session artifact must not contain binary data: %#v", artifact)
+	}
+}
+
+func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T) {
+	ctx := context.Background()
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	rootRequest := "打开微信，进入 den 群，发送100块钱红包"
+	correction := "群名你听错了，是 Aden AI agent"
+	committedPlanPayload, _ := json.Marshal(map[string]any{
+		"objective":           "在微信群发送100块钱红包",
+		"completion_criteria": []string{"目标群是 Aden AI agent", "发送金额是100块钱红包"},
+		"plan": []string{
+			"打开微信",
+			"进入 den 群",
+			"发送100块钱红包",
+		},
+		"reason": "phone control task needs delegated execution",
+	})
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{"mode":"plan","reason":"requires delegated phone control"}`),
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "错误推断：发介绍",
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_commit",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      toolCommitPlan,
+							Arguments: string(committedPlanPayload),
+						},
+					}},
+				}},
+			},
+			contentResponse("收到，我会按更正后的群名继续。"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, MaxIterations: 2},
+		&testModelResolver{model: model},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	_, err := runtime.Run(ctx, RunRequest{
+		Input:     rootRequest,
+		EpisodeID: "ep_red_packet_resume",
+		RequestID: "req-red-packet-1",
+	})
+	if err == nil {
+		t.Fatalf("first Run() error = nil, want forced interruption from max iterations")
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if !sessionEventsContain(events, func(event SessionEvent) bool {
+		return event.Type == "planner_decision" &&
+			event.Objective == "在微信群发送100块钱红包" &&
+			slices.Contains(event.Plan, "发送100块钱红包")
+	}) {
+		t.Fatalf("session events missing structured committed plan: %#v", events)
+	}
+
+	if _, err := runtime.Run(ctx, RunRequest{
+		Input:     correction,
+		EpisodeID: "ep_red_packet_resume",
+		RequestID: "req-red-packet-2",
+	}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if len(model.messages) < 3 {
+		t.Fatalf("expected second run planner prompt, got %#v", model.messages)
+	}
+	resumePrompt := messageText(model.messages[2])
+	for _, want := range []string{
+		"Original user request / root request",
+		rootRequest,
+		"Latest user message",
+		correction,
+		"Interpretation:",
+		"correction",
+		"Latest committed plan",
+		"在微信群发送100块钱红包",
+		"发送100块钱红包",
+	} {
+		if !strings.Contains(resumePrompt, want) {
+			t.Fatalf("resume planner prompt missing %q:\n%s", want, resumePrompt)
+		}
+	}
+	if strings.Contains(resumePrompt, "发介绍") {
+		t.Fatalf("resume planner prompt should not promote unverified role_output into context:\n%s", resumePrompt)
+	}
+	events = readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	chatEvents := sessionEventsOfTypes(events, "user_input", "assistant_output")
+	correctionCount := 0
+	answerCount := 0
+	for _, event := range chatEvents {
+		if event.Type == "user_input" && event.Content == correction {
+			correctionCount++
+		}
+		if event.Type == "assistant_output" && event.Content == "收到，我会按更正后的群名继续。" {
+			answerCount++
+		}
+	}
+	if correctionCount != 1 || answerCount != 1 {
+		t.Fatalf("chat-like session events duplicated correction/answer: correction=%d answer=%d events=%#v", correctionCount, answerCount, chatEvents)
 	}
 }
 
@@ -744,6 +1059,29 @@ func assertMemoryRecords(t *testing.T, got []MessageRecord, want []MessageRecord
 	}
 }
 
+func sessionEventsContain(events []SessionEvent, predicate func(SessionEvent) bool) bool {
+	for _, event := range events {
+		if predicate(event) {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionEventsOfTypes(events []SessionEvent, types ...string) []SessionEvent {
+	wanted := map[string]bool{}
+	for _, typ := range types {
+		wanted[typ] = true
+	}
+	var filtered []SessionEvent
+	for _, event := range events {
+		if wanted[event.Type] {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
+}
+
 type scriptedModel struct {
 	responses    []*llms.ContentResponse
 	streamChunks [][]string
@@ -763,6 +1101,24 @@ func (t *staticTool) Name() string { return t.name }
 func (t *staticTool) Description() string { return "static test tool" }
 
 func (t *staticTool) Call(context.Context, string) (string, error) { return t.output, nil }
+
+type failingGenerateModel struct {
+	err error
+}
+
+func (m failingGenerateModel) GenerateContent(context.Context, []llms.MessageContent, ...llms.CallOption) (*llms.ContentResponse, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return nil, errors.New("generate failed")
+}
+
+func (m failingGenerateModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	if m.err != nil {
+		return "", m.err
+	}
+	return "", errors.New("call failed")
+}
 
 func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	var callOptions llms.CallOptions
@@ -2826,7 +3182,8 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 	}
 
 	active := readSessionEvents(t, session.eventsPath())
-	if len(active) != 2 || active[0].Content != "打开微信" {
+	activeChat := sessionEventsOfTypes(active, "user_input", "assistant_output")
+	if len(activeChat) != 2 || activeChat[0].Content != "打开微信" {
 		t.Fatalf("expected active events to contain only current exchange, got %#v", active)
 	}
 	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
@@ -3223,8 +3580,18 @@ func TestRuntimeRunCanceledWhileQueuedDoesNotRotateSessionOrStartEpisode(t *test
 		t.Fatalf("canceled queued run rotated session: %v", archiveDirs)
 	}
 	active := readSessionEvents(t, session.eventsPath())
-	if len(active) != 2 || active[0].EventID != "evt_old_0" {
-		t.Fatalf("canceled queued run changed active session events: %#v", active)
+	if len(active) < 2 || active[0].EventID != "evt_old_0" {
+		t.Fatalf("active session lost original events: %#v", active)
+	}
+	if sessionEventsContain(active, func(event SessionEvent) bool {
+		return event.Type == "user_input" && event.Content == "打开微信"
+	}) {
+		t.Fatalf("canceled queued run wrote its input to active session events: %#v", active)
+	}
+	if !sessionEventsContain(active, func(event SessionEvent) bool {
+		return event.Type == "user_input" && event.Content == "继续查天气"
+	}) {
+		t.Fatalf("started first run should persist its root input: %#v", active)
 	}
 
 	index, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).loadIndex()
@@ -3392,7 +3759,7 @@ func waitForSessionCompaction(t *testing.T, configDir string) {
 		}
 		lastEventCount = len(events)
 		lastChunkCount = len(chunks)
-		if lastEventCount <= 21 && lastChunkCount == 1 {
+		if lastEventCount <= 22 && lastChunkCount == 1 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -3401,7 +3768,7 @@ func waitForSessionCompaction(t *testing.T, configDir string) {
 	if lastErr != nil {
 		t.Fatalf("waiting for session compaction: %v", lastErr)
 	}
-	t.Fatalf("expected compacted chunk and hot window events <= 21 including pinned root, got chunks=%d events=%d", lastChunkCount, lastEventCount)
+	t.Fatalf("expected compacted chunk and hot window events <= 22 including pinned root and realtime role_output, got chunks=%d events=%d", lastChunkCount, lastEventCount)
 }
 
 func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {

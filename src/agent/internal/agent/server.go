@@ -90,8 +90,10 @@ type MessageAttachment struct {
 	Kind       string `json:"kind"`
 	Name       string `json:"name,omitempty"`
 	MIMEType   string `json:"mime_type,omitempty"`
+	Path       string `json:"path,omitempty"`
 	Data       string `json:"data,omitempty"`
 	Size       int    `json:"size,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
 	Transcript string `json:"transcript,omitempty"`
 }
 
@@ -102,6 +104,9 @@ type Message struct {
 	EpisodeID       string              `json:"episode_id,omitempty"`
 	RequestID       string              `json:"request_id,omitempty"`
 	Status          string              `json:"status,omitempty"`
+	Modality        string              `json:"modality,omitempty"`
+	OriginalText    string              `json:"original_text,omitempty"`
+	Transcript      string              `json:"transcript,omitempty"`
 	Content         string              `json:"content"`
 	Todo            *TodoState          `json:"todo,omitempty"`
 	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
@@ -110,6 +115,7 @@ type Message struct {
 	ToolInput       string              `json:"tool_input,omitempty"`
 	Description     string              `json:"description,omitempty"`
 	Attachments     []MessageAttachment `json:"attachments,omitempty"`
+	Artifacts       []InputArtifact     `json:"artifacts,omitempty"`
 	Source          string              `json:"source,omitempty"`
 	AudioFile       string              `json:"audio_file,omitempty"`
 	AudioDurationMs int64               `json:"audio_duration_ms,omitempty"`
@@ -145,6 +151,76 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 		Timestamp:      event.Timestamp,
 		IsError:        event.IsError,
 	}
+}
+
+func messageFromTurnInput(input TurnInput, episodeID, requestID string, attachments []MessageAttachment, timestamp time.Time) Message {
+	input = normalizeTurnInput(input)
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	message := Message{
+		Type:         "user",
+		EpisodeID:    episodeID,
+		RequestID:    requestID,
+		Modality:     input.Modality,
+		OriginalText: input.OriginalText,
+		Transcript:   input.Transcript,
+		Content:      input.InputText,
+		Attachments:  mergeTurnMessageAttachments(input, attachments),
+		Artifacts:    sanitizeInputArtifacts(input.Artifacts),
+		Source:       input.Source,
+		Timestamp:    timestamp,
+	}
+	if artifact, ok := firstAudioArtifact(input); ok {
+		message.AudioFile = artifact.Path
+		message.AudioDurationMs = artifact.DurationMS
+	}
+	return message
+}
+
+func mergeTurnMessageAttachments(input TurnInput, attachments []MessageAttachment) []MessageAttachment {
+	merged := make([]MessageAttachment, 0, len(attachments)+len(input.Artifacts))
+	merged = append(merged, attachments...)
+	if input.Transcript != "" {
+		for i := range merged {
+			if merged[i].Kind == AttachmentKindAudio && merged[i].Transcript == "" {
+				merged[i].Transcript = input.Transcript
+			}
+		}
+	}
+	for _, artifact := range sanitizeInputArtifacts(input.Artifacts) {
+		if artifact.Kind == "" {
+			continue
+		}
+		if messageAttachmentsContainArtifact(merged, artifact) {
+			continue
+		}
+		merged = append(merged, MessageAttachment{
+			Kind:       artifact.Kind,
+			Name:       artifact.Name,
+			MIMEType:   artifact.MIMEType,
+			Path:       artifact.Path,
+			Size:       int(artifact.Size),
+			DurationMS: artifact.DurationMS,
+			Transcript: input.Transcript,
+		})
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
+func messageAttachmentsContainArtifact(attachments []MessageAttachment, artifact InputArtifact) bool {
+	for _, attachment := range attachments {
+		if artifact.Path != "" && attachment.Path == artifact.Path {
+			return true
+		}
+		if attachment.Kind == artifact.Kind && attachment.Name == artifact.Name && attachment.MIMEType == artifact.MIMEType && attachment.Size == int(artifact.Size) {
+			return true
+		}
+	}
+	return false
 }
 
 // ChatRequest represents an incoming chat request
@@ -446,30 +522,23 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	req.RequestID = strings.TrimSpace(req.RequestID)
 
-	inputText, runAttachments, historyAttachments, err := s.resolveRequestInput(req)
+	turnInput, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
 		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	episodeID := s.runtime.NewEpisodeID()
 
-	userMsg := Message{
-		Type:        "user",
-		EpisodeID:   episodeID,
-		RequestID:   req.RequestID,
-		Content:     inputText,
-		Attachments: historyAttachments,
-		Timestamp:   time.Now(),
-	}
+	userMsg := messageFromTurnInput(turnInput, episodeID, req.RequestID, historyAttachments, time.Now())
 
 	// Async path — when the client provides a request_id
 	if req.RequestID != "" {
-		s.handleChatAsync(w, r, req, inputText, runAttachments, userMsg)
+		s.handleChatAsync(w, r, req, turnInput, userMsg)
 		return
 	}
 
 	// Sync path — legacy behaviour for web UI and clients without request_id
-	s.handleChatSync(w, r, req, inputText, runAttachments, userMsg)
+	s.handleChatSync(w, r, req, turnInput, userMsg)
 }
 
 func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
@@ -678,13 +747,13 @@ func (s *Server) handleChatAsync(
 	w http.ResponseWriter,
 	r *http.Request,
 	req ChatRequest,
-	inputText string,
-	runAttachments []InputAttachment,
+	turnInput TurnInput,
 	userMsg Message,
 ) {
 	requestID := req.RequestID
+	inputText := turnInput.InputText
 	if s.logger != nil {
-		s.logger.Info("Chat request (async): %s request_id=%s attachments=%d", inputText, requestID, len(runAttachments))
+		s.logger.Info("Chat request (async): %s request_id=%s attachments=%d", inputText, requestID, len(turnInput.Attachments))
 	}
 
 	// Create a pending result slot for this request. Reject a request_id that
@@ -768,9 +837,11 @@ func (s *Server) handleChatAsync(
 
 		runReq := RunRequest{
 			Input:             inputText,
-			Attachments:       runAttachments,
+			Attachments:       turnInput.Attachments,
+			Turn:              turnInput,
 			Skills:            req.Skills,
 			EpisodeID:         userMsg.EpisodeID,
+			RequestID:         requestID,
 			DeviceEnvironment: s.bridgeEnvironment(),
 			RuntimeContext:    s.runtimeContext(),
 			EventHandler:      eventHandler,
@@ -992,15 +1063,15 @@ func (s *Server) handleChatSync(
 	w http.ResponseWriter,
 	r *http.Request,
 	req ChatRequest,
-	inputText string,
-	runAttachments []InputAttachment,
+	turnInput TurnInput,
 	userMsg Message,
 ) {
 	ctx := r.Context()
 	episodeID := userMsg.EpisodeID
+	inputText := turnInput.InputText
 
 	if s.logger != nil {
-		s.logger.Info("Chat request (sync): %s attachments=%d", inputText, len(runAttachments))
+		s.logger.Info("Chat request (sync): %s attachments=%d", inputText, len(turnInput.Attachments))
 	}
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
@@ -1010,9 +1081,11 @@ func (s *Server) handleChatSync(
 
 	runReq := RunRequest{
 		Input:             inputText,
-		Attachments:       runAttachments,
+		Attachments:       turnInput.Attachments,
+		Turn:              turnInput,
 		Skills:            req.Skills,
 		EpisodeID:         episodeID,
+		RequestID:         req.RequestID,
 		DeviceEnvironment: s.bridgeEnvironment(),
 		RuntimeContext:    s.runtimeContext(),
 		StreamFinalChunks: true,
@@ -1133,11 +1206,12 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	req.RequestID = strings.TrimSpace(req.RequestID)
 
-	inputText, runAttachments, historyAttachments, err := s.resolveRequestInput(req)
+	turnInput, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
 		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	inputText := turnInput.InputText
 
 	stream, ok := newChatStreamWriter(w)
 	if !ok {
@@ -1146,17 +1220,10 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	episodeID := s.runtime.NewEpisodeID()
-	userMessage := Message{
-		Type:        "user",
-		EpisodeID:   episodeID,
-		RequestID:   req.RequestID,
-		Content:     inputText,
-		Attachments: historyAttachments,
-		Timestamp:   time.Now(),
-	}
+	userMessage := messageFromTurnInput(turnInput, episodeID, req.RequestID, historyAttachments, time.Now())
 
 	if s.logger != nil {
-		s.logger.Info("Chat request: %s attachments=%d stream=ndjson", inputText, len(runAttachments))
+		s.logger.Info("Chat request: %s attachments=%d stream=ndjson", inputText, len(turnInput.Attachments))
 	}
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
@@ -1185,9 +1252,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	runReq := RunRequest{
 		Input:             inputText,
-		Attachments:       runAttachments,
+		Attachments:       turnInput.Attachments,
+		Turn:              turnInput,
 		Skills:            req.Skills,
 		EpisodeID:         episodeID,
+		RequestID:         req.RequestID,
 		DeviceEnvironment: s.bridgeEnvironment(),
 		RuntimeContext:    s.runtimeContext(),
 		StreamFinalChunks: true,
@@ -2188,22 +2257,22 @@ func (s *Server) loadHistoryFromDisk() {
 	}
 }
 
-func (s *Server) resolveRequestInput(req ChatRequest) (string, []InputAttachment, []MessageAttachment, error) {
+func (s *Server) resolveRequestInput(req ChatRequest) (TurnInput, []MessageAttachment, error) {
 	decodedAttachments, historyAttachments, err := decodeMessageAttachments(req.Attachments)
 	if err != nil {
-		return "", nil, nil, err
+		return TurnInput{}, nil, err
 	}
 
 	audioAttachment, nonAudioAttachments, err := splitAudioAttachment(decodedAttachments)
 	if err != nil {
-		return "", nil, nil, err
+		return TurnInput{}, nil, err
 	}
 
 	trimmedMessage := strings.TrimSpace(req.Message)
 	if audioAttachment != nil {
 		audioInput, err := PrepareAudioInput(s.webAudioInputMode(), s.sttClient, audioAttachment.Data, trimmedMessage, nonAudioAttachments)
 		if err != nil {
-			return "", nil, nil, err
+			return TurnInput{}, nil, err
 		}
 		if audioInput.Transcript != "" {
 			for i := range historyAttachments {
@@ -2213,14 +2282,14 @@ func (s *Server) resolveRequestInput(req ChatRequest) (string, []InputAttachment
 				}
 			}
 		}
-		return audioInput.InputText, audioInput.Attachments, historyAttachments, nil
+		return audioInput, historyAttachments, nil
 	}
 
-	inputText := normalizeRunInput(trimmedMessage, nonAudioAttachments)
-	if inputText == "" {
-		return "", nil, nil, fmt.Errorf("message or attachment is required")
+	turnInput := NewTextTurnInput(trimmedMessage, nonAudioAttachments)
+	if turnInput.InputText == "" {
+		return TurnInput{}, nil, fmt.Errorf("message or attachment is required")
 	}
-	return inputText, nonAudioAttachments, historyAttachments, nil
+	return turnInput, historyAttachments, nil
 }
 
 func (s *Server) webAudioInputMode() string {

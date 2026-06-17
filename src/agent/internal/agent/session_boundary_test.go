@@ -34,6 +34,30 @@ func TestClassifyTurnBoundary_NoPrevEvents(t *testing.T) {
 	}
 }
 
+func TestClassifyFollowUpRelation_RootRequestOnNewBoundary(t *testing.T) {
+	if got := ClassifyFollowUpRelation(nil, "打开微信", BoundaryNew); got != FollowUpRootRequest {
+		t.Fatalf("first action input relation = %q, want %q", got, FollowUpRootRequest)
+	}
+
+	prev := []SessionEvent{{Type: "user_input", Role: "user", Content: "旧任务"}}
+	if got := ClassifyFollowUpRelation(prev, "发消息给张三", BoundaryNew); got != FollowUpRootRequest {
+		t.Fatalf("new boundary action input relation = %q, want %q", got, FollowUpRootRequest)
+	}
+}
+
+func TestClassifyTurnBoundary_RunningEpisodeOverridesNoPrevEvents(t *testing.T) {
+	cfg := DefaultBoundaryConfig()
+	now := time.Now()
+
+	boundary, reason := ClassifyTurnBoundary(nil, "群名你听错了，是 Aden AI agent", now, cfg, BoundaryEpisodeContext{HasRunning: true})
+	if boundary != BoundaryContinue {
+		t.Fatalf("running episode with empty active session should continue, got %q (reason=%s)", boundary, reason)
+	}
+	if reason != BoundaryReasonRunningEpisode {
+		t.Fatalf("expected reason %q, got %q", BoundaryReasonRunningEpisode, reason)
+	}
+}
+
 func TestClassifyTurnBoundary_TimeGapShort(t *testing.T) {
 	// Short gap (< 3m default): strong continuation, even on a generic action verb.
 	cfg := DefaultBoundaryConfig()

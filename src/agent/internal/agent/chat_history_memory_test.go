@@ -56,7 +56,7 @@ func TestRuntimeStartupPersistsInterruptedEpisodeStatusToChatHistory(t *testing.
 	}
 }
 
-func TestRuntimeRunKeepsCompressedHotWindowAsPlainConversationHistory(t *testing.T) {
+func TestRuntimeRunKeepsCompressedHotWindowAsChatMessages(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
@@ -92,14 +92,22 @@ func TestRuntimeRunKeepsCompressedHotWindowAsPlainConversationHistory(t *testing
 	}
 
 	systemPrompt := messageText(model.messages[0][:1])
-	plannerTaskPrompt := messageText(model.messages[0][1:])
 	if strings.Contains(systemPrompt, "上一轮用户问题") || strings.Contains(systemPrompt, "上一轮回答") {
 		t.Fatalf("hot-window chat history must not be injected into planner system prompt:\n%s", systemPrompt)
 	}
-	for _, want := range []string{"Conversation history:", "上一轮用户问题", "上一轮回答"} {
-		if !strings.Contains(plannerTaskPrompt, want) {
-			t.Fatalf("planner task prompt missing %q:\n%s", want, plannerTaskPrompt)
-		}
+	messages := model.messages[0]
+	if len(messages) < 4 {
+		t.Fatalf("expected restored chat messages before planner task prompt, got %#v", messages)
+	}
+	if messages[1].Role != "human" || messageText(messages[1:2]) != "上一轮用户问题\n" {
+		t.Fatalf("unexpected restored user history message: role=%s text=%q", messages[1].Role, messageText(messages[1:2]))
+	}
+	if messages[2].Role != "ai" || messageText(messages[2:3]) != "上一轮回答\n" {
+		t.Fatalf("unexpected restored assistant history message: role=%s text=%q", messages[2].Role, messageText(messages[2:3]))
+	}
+	plannerTaskPrompt := messageText(messages[3:])
+	if strings.Contains(plannerTaskPrompt, "Conversation history:") || strings.Contains(plannerTaskPrompt, "上一轮回答") {
+		t.Fatalf("planner task prompt should not duplicate hot-window chat history:\n%s", plannerTaskPrompt)
 	}
 	for _, marker := range []string{"=== Recent session context (hot window) ===", "=== End of recent context ==="} {
 		if strings.Contains(plannerTaskPrompt, marker) {
@@ -108,7 +116,7 @@ func TestRuntimeRunKeepsCompressedHotWindowAsPlainConversationHistory(t *testing
 	}
 }
 
-func TestRuntimeRunDoesNotLabelCompressedHotWindowHistory(t *testing.T) {
+func TestRuntimeRunDoesNotLabelCompressedHotWindowChatMessages(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
@@ -143,12 +151,17 @@ func TestRuntimeRunDoesNotLabelCompressedHotWindowHistory(t *testing.T) {
 		t.Fatalf("expected planner system and user messages, got %#v", model.messages)
 	}
 
-	plannerTaskPrompt := messageText(model.messages[0][1:])
-	for _, want := range []string{"Conversation history:", "最近用户问题", "最近回答"} {
-		if !strings.Contains(plannerTaskPrompt, want) {
-			t.Fatalf("planner task prompt missing %q:\n%s", want, plannerTaskPrompt)
-		}
+	messages := model.messages[0]
+	if len(messages) < 4 {
+		t.Fatalf("expected restored chat messages before planner task prompt, got %#v", messages)
 	}
+	if messages[1].Role != "human" || messageText(messages[1:2]) != "最近用户问题\n" {
+		t.Fatalf("unexpected restored user history message: role=%s text=%q", messages[1].Role, messageText(messages[1:2]))
+	}
+	if messages[2].Role != "ai" || messageText(messages[2:3]) != "最近回答\n" {
+		t.Fatalf("unexpected restored assistant history message: role=%s text=%q", messages[2].Role, messageText(messages[2:3]))
+	}
+	plannerTaskPrompt := messageText(messages[3:])
 	for _, marker := range []string{"=== Recent session context (hot window) ===", "=== End of recent context ===", "Current session recent history", "Prior messages retained from this session", "compressed into the session summary"} {
 		if strings.Contains(plannerTaskPrompt, marker) {
 			t.Fatalf("planner task prompt should not include hot-window label or marker %q:\n%s", marker, plannerTaskPrompt)
@@ -192,33 +205,26 @@ func TestRuntimeRunKeepsCurrentRequestOutOfCompressedHistoryBlock(t *testing.T) 
 		t.Fatalf("expected planner system and user messages, got %#v", model.messages)
 	}
 
-	plannerTaskPrompt := messageText(model.messages[0][1:])
-	historyHeader := "Conversation history:"
-	headerIndex := strings.Index(plannerTaskPrompt, historyHeader)
-	if headerIndex < 0 {
-		t.Fatalf("planner task prompt missing history header %q:\n%s", historyHeader, plannerTaskPrompt)
+	messages := model.messages[0]
+	if len(messages) < 4 {
+		t.Fatalf("expected restored chat messages before planner task prompt, got %#v", messages)
 	}
-
-	historyBlock := plannerTaskPrompt[headerIndex+len(historyHeader):]
-	if nextSectionIndex := strings.Index(historyBlock, "\n\nCurrent plan:"); nextSectionIndex >= 0 {
-		historyBlock = historyBlock[:nextSectionIndex]
+	historyMessages := messages[1:3]
+	if messageText(historyMessages[0:1]) != "历史用户问题\n" || messageText(historyMessages[1:2]) != "历史回答\n" {
+		t.Fatalf("unexpected restored history messages: %#v", historyMessages)
 	}
-	for _, want := range []string{"历史用户问题", "历史回答"} {
-		if !strings.Contains(historyBlock, want) {
-			t.Fatalf("history block missing %q:\n%s", want, historyBlock)
-		}
+	if strings.Contains(messageText(historyMessages), currentRequest) {
+		t.Fatalf("current request must not be inside restored conversation history messages:\n%s", messageText(historyMessages))
 	}
-	if strings.Contains(historyBlock, currentRequest) {
-		t.Fatalf("current request must not be inside conversation history block:\n%s", historyBlock)
-	}
+	plannerTaskPrompt := messageText(messages[3:])
 	for _, marker := range []string{"hot window", "Current session recent history", "Prior messages retained from this session", "compressed into the session summary"} {
-		if strings.Contains(historyBlock, marker) {
-			t.Fatalf("conversation history block should not include hot-window label %q:\n%s", marker, historyBlock)
+		if strings.Contains(plannerTaskPrompt, marker) {
+			t.Fatalf("planner task prompt should not include hot-window label %q:\n%s", marker, plannerTaskPrompt)
 		}
 	}
 }
 
-func TestRuntimeRunIncludesEntireActiveHotWindowInConversationHistory(t *testing.T) {
+func TestRuntimeRunIncludesActivePlannerWindowAndSessionRootContext(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
@@ -252,14 +258,17 @@ func TestRuntimeRunIncludesEntireActiveHotWindowInConversationHistory(t *testing
 
 	plannerTaskPrompt := messageText(model.messages[0][1:])
 	for _, want := range []string{
-		"prior user 00",
-		"prior assistant 00",
+		"prior user 02",
+		"prior assistant 02",
 		"prior user 11",
 		"prior assistant 11",
+		"Root request: prior user 00",
 	} {
 		if !strings.Contains(plannerTaskPrompt, want) {
-			t.Fatalf("planner task prompt should include full active hot window, missing %q:\n%s", want, plannerTaskPrompt)
+			t.Fatalf("planner task prompt missing %q:\n%s", want, plannerTaskPrompt)
 		}
 	}
+	if strings.Contains(plannerTaskPrompt, "prior assistant 00") {
+		t.Fatalf("planner conversation history should stay within the active message window:\n%s", plannerTaskPrompt)
+	}
 }
-

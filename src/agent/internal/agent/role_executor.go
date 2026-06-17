@@ -27,6 +27,7 @@ type roleCollaborativeExecutor struct {
 	CallbacksHandler      callbacks.Handler
 	MaxIterations         int
 	TodoReminderToolCalls int
+	ConversationHistory   []llms.MessageContent
 	InputAttachments      []InputAttachment
 	OutputKey             string
 	Recorder              *EpisodeRecorder
@@ -153,6 +154,14 @@ type roleOutputHandler interface {
 	HandleRoleOutput(ctx context.Context, role, content string)
 }
 
+type plannerDecisionHandler interface {
+	HandlePlannerDecision(ctx context.Context, decision plannerDecision)
+}
+
+type verifierDecisionHandler interface {
+	HandleVerifierDecision(ctx context.Context, decision verifierDecision)
+}
+
 type steerMessageHandler interface {
 	HandleSteerMessage(ctx context.Context, steer RunSteerMessage)
 }
@@ -203,6 +212,11 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 	}
 	if _, ok := inputs["history"]; !ok {
 		inputs["history"] = ""
+	}
+	for _, key := range []string{sessionContextInputKey, rootRequestInputKey, latestUserInputKey, followUpRelationKey} {
+		if _, ok := inputs[key]; !ok {
+			inputs[key] = ""
+		}
 	}
 
 	toolSpecs := NewToolSpecs(e.Tools)
@@ -259,6 +273,9 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				if e.Recorder != nil {
 					e.Recorder.RecordPlannerDecision(turn.CommittedPlan)
 					e.Recorder.RecordLoopPhase(phaseExecution, "commit_plan")
+				}
+				if handler, ok := e.CallbacksHandler.(plannerDecisionHandler); ok {
+					handler.HandlePlannerDecision(ctx, turn.CommittedPlan)
 				}
 			case plannerTurnSetTodo:
 				if turn.Step != nil {
@@ -330,6 +347,9 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				state.VerifierResults = append(state.VerifierResults, verification)
 				if e.Recorder != nil {
 					e.Recorder.RecordVerifierDecision(verification)
+				}
+				if handler, ok := e.CallbacksHandler.(verifierDecisionHandler); ok {
+					handler.HandleVerifierDecision(ctx, verification)
 				}
 				stepSummary := strings.TrimSpace(state.ExecutorStepSummary)
 				state.recordPlanStepResult(verification)
@@ -837,6 +857,7 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		Role:  llms.ChatMessageTypeSystem,
 		Parts: []llms.ContentPart{llms.TextPart(profile.SystemPrompt)},
 	}}
+	messages = append(messages, e.ConversationHistory...)
 
 	if profile.Name == RoleExecutor && len(state.StepToolSteps) > 0 {
 		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(e.Tools), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.StepToolSteps)
@@ -957,6 +978,7 @@ func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task
 	writeLoopMode(&builder, state)
 	writeWorldState(&builder, state.World)
 	writeRequestObjectiveAndCriteria(&builder, inputs, state)
+	writeSessionContext(&builder, inputs)
 	if history := strings.TrimSpace(inputs["history"]); history != "" {
 		builder.WriteString("\n\nConversation history:\n")
 		builder.WriteString(history)
@@ -974,6 +996,7 @@ func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, tas
 	builder.WriteString(task)
 	writeWorldState(&builder, state.World)
 	writeRequestObjectiveAndCriteria(&builder, inputs, state)
+	writeSessionContext(&builder, inputs)
 	if history := strings.TrimSpace(inputs["history"]); history != "" {
 		builder.WriteString("\n\nConversation history:\n")
 		builder.WriteString(history)
@@ -1009,6 +1032,7 @@ func buildVerifierStatePrompt(inputs map[string]string, state roleLoopState, tas
 	builder.WriteString(task)
 	writeWorldState(&builder, state.World)
 	writeRequestObjectiveAndCriteria(&builder, inputs, state)
+	writeSessionContext(&builder, inputs)
 	writeCurrentPlan(&builder, state)
 	writePriorPlanStepResults(&builder, state)
 	writeCurrentStepForVerifier(&builder, state)
@@ -1274,13 +1298,34 @@ func intLabel(label string, value *int) string {
 }
 
 func writeRequestObjectiveAndCriteria(builder *strings.Builder, inputs map[string]string, state roleLoopState) {
-	builder.WriteString("\n\nOriginal user request (authoritative; do not replace it with a subtask):\n")
-	builder.WriteString(inputs["input"])
+	rootRequest := strings.TrimSpace(inputs[rootRequestInputKey])
+	if rootRequest == "" {
+		rootRequest = strings.TrimSpace(inputs["input"])
+	}
+	latestUserMessage := strings.TrimSpace(inputs[latestUserInputKey])
+	if latestUserMessage == "" {
+		latestUserMessage = strings.TrimSpace(inputs["input"])
+	}
+	builder.WriteString("\n\nOriginal user request / root request (authoritative; do not replace it with a subtask):\n")
+	builder.WriteString(rootRequest)
+	if latestUserMessage != "" && latestUserMessage != rootRequest {
+		builder.WriteString("\n\nLatest user message:\n")
+		builder.WriteString(latestUserMessage)
+		if relation := strings.TrimSpace(inputs[followUpRelationKey]); relation != "" {
+			builder.WriteString("\n\nInterpretation:\n")
+			builder.WriteString("- follow_up_classification: ")
+			builder.WriteString(relation)
+			builder.WriteByte('\n')
+			builder.WriteString("- ")
+			builder.WriteString(interpretationForFollowUpRelation(relation))
+			builder.WriteByte('\n')
+		}
+	}
 	builder.WriteString("\n\nCurrent objective:\n")
 	if objective := strings.TrimSpace(state.Objective); objective != "" {
 		builder.WriteString(objective)
 	} else {
-		builder.WriteString(inputs["input"])
+		builder.WriteString(rootRequest)
 	}
 	builder.WriteString("\n\nCompletion criteria:\n")
 	if len(state.CompletionCriteria) == 0 {
@@ -1294,6 +1339,15 @@ func writeRequestObjectiveAndCriteria(builder *strings.Builder, inputs map[strin
 			builder.WriteByte('\n')
 		}
 	}
+}
+
+func writeSessionContext(builder *strings.Builder, inputs map[string]string) {
+	contextView := strings.TrimSpace(inputs[sessionContextInputKey])
+	if contextView == "" {
+		return
+	}
+	builder.WriteString("\n\n")
+	builder.WriteString(contextView)
 }
 
 func writeCurrentPlan(builder *strings.Builder, state roleLoopState) {

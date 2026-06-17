@@ -681,12 +681,17 @@ func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	// Audio mode does not produce a transcript, so we expect only the assistant message.
-	if len(messages) != 1 {
-		t.Fatalf("expected 1 message (assistant only, no transcript in audio mode), got %d: %#v", len(messages), messages)
+	if len(messages) != 2 {
+		t.Fatalf("expected user and assistant messages, got %d: %#v", len(messages), messages)
 	}
-	if messages[0].Type != "assistant" || messages[0].Source != "voice" || messages[0].Content != "voice reply" {
-		t.Fatalf("assistant message = %#v", messages[0])
+	if messages[0].Type != "user" || messages[0].Source != "voice" || messages[0].Modality != "audio" || messages[0].Content != voiceAudioInputPlaceholder {
+		t.Fatalf("user audio message = %#v", messages[0])
+	}
+	if len(messages[0].Attachments) != 1 || messages[0].Attachments[0].Kind != AttachmentKindAudio || messages[0].Attachments[0].Data != "" {
+		t.Fatalf("user audio attachment should be metadata-only: %#v", messages[0].Attachments)
+	}
+	if messages[1].Type != "assistant" || messages[1].Source != "voice" || messages[1].Content != "voice reply" {
+		t.Fatalf("assistant message = %#v", messages[1])
 	}
 }
 

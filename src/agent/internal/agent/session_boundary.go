@@ -116,7 +116,14 @@ func ClassifyTurnBoundary(
 ) (boundary string, reason string) {
 	cfg = normalizeBoundaryConfig(cfg)
 
-	// 1. No previous events means there is no session to continue.
+	if episode.HasRunning && len(prevEvents) == 0 {
+		return BoundaryContinue, BoundaryReasonRunningEpisode
+	}
+
+	// 1. No previous events means there is no session to continue unless an
+	// episode is already running. The running episode case is handled above
+	// because the active session event file may be empty after a crash or
+	// pre-fix run that never flushed events.
 	if len(prevEvents) == 0 {
 		return BoundaryNew, BoundaryReasonNoPrev
 	}
