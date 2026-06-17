@@ -854,8 +854,8 @@ func structuredVerifierFinishResponse(speechText, output string) *llms.ContentRe
 func structuredVerifierFinishJSON(speechText, output string) string {
 	payload, _ := json.Marshal(map[string]any{
 		"can_finish":   true,
-		"speech_text":  speechText,
-		"output":       output,
+		"speech":       speechText,
+		"text":         output,
 		"final_answer": output,
 		"reason":       "test verified",
 	})
@@ -1750,12 +1750,12 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 func TestRuntimeRunDirectRouteUsesProviderFinalStreaming(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			contentResponse(`{"mode":"direct_answer","speech_text":"Short answer.","output":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
+			contentResponse(`{"mode":"direct_answer","speech":"Short answer.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
 		},
 		streamChunks: [][]string{
 			{
-				`{"mode":"direct_answer","speech_text":"Short`,
-				` answer.","output":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`,
+				`{"mode":"direct_answer","speech":"Short`,
+				` answer.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`,
 			},
 		},
 	}
@@ -1773,7 +1773,7 @@ func TestRuntimeRunDirectRouteUsesProviderFinalStreaming(t *testing.T) {
 	var stream strings.Builder
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:             "hello",
-		StreamWriter:      NewSpeechTextStreamWriter(&stream, "speech_text"),
+		StreamWriter:      NewSpeechStreamWriter(&stream),
 		StreamFinalChunks: true,
 	})
 	if err != nil {
@@ -1784,7 +1784,7 @@ func TestRuntimeRunDirectRouteUsesProviderFinalStreaming(t *testing.T) {
 		t.Fatalf("expected direct route call to use provider streaming, got %#v", got)
 	}
 	if stream.String() != "Short answer." {
-		t.Fatalf("stream = %q, want speech_text from provider chunks", stream.String())
+		t.Fatalf("stream = %q, want speech from provider chunks", stream.String())
 	}
 	if result.Output != "Complete answer." {
 		t.Fatalf("Output = %q", result.Output)
@@ -1798,15 +1798,15 @@ func TestRuntimeRunDefaultModeFinalAnswerUsesProviderFinalStreaming(t *testing.T
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			contentResponse(`{"mode":"simple","reason":"ordinary one-pass answer"}`),
-			contentResponse(`{"speech_text":"Short answer.","output":"Complete answer."}`),
+			contentResponse(`{"speech":"Short answer.","text":"Complete answer."}`),
 		},
 		streamChunks: [][]string{
 			{
 				`{"mode":"simple","reason":"ordinary one-pass answer"}`,
 			},
 			{
-				`{"speech_text":"Short`,
-				` answer.","output":"Complete answer."}`,
+				`{"speech":"Short`,
+				` answer.","text":"Complete answer."}`,
 			},
 		},
 	}
@@ -1824,7 +1824,7 @@ func TestRuntimeRunDefaultModeFinalAnswerUsesProviderFinalStreaming(t *testing.T
 	var stream strings.Builder
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:             "hello",
-		StreamWriter:      NewSpeechTextStreamWriter(&stream, "speech_text"),
+		StreamWriter:      NewSpeechStreamWriter(&stream),
 		StreamFinalChunks: true,
 	})
 	if err != nil {
@@ -1835,7 +1835,7 @@ func TestRuntimeRunDefaultModeFinalAnswerUsesProviderFinalStreaming(t *testing.T
 		t.Fatalf("expected route and default final calls to use provider streaming, got %#v", got)
 	}
 	if stream.String() != "Short answer." {
-		t.Fatalf("stream = %q, want only default final speech_text", stream.String())
+		t.Fatalf("stream = %q, want only default final speech", stream.String())
 	}
 	if result.Output != "Complete answer." {
 		t.Fatalf("Output = %q", result.Output)
@@ -1930,7 +1930,7 @@ func TestRuntimeRunResetsSpeechStreamWriterBetweenFinalStreamingAttempts(t *test
 	var stream strings.Builder
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:             "do a planned task",
-		StreamWriter:      NewSpeechTextStreamWriter(&stream, "speech_text"),
+		StreamWriter:      NewSpeechStreamWriter(&stream),
 		StreamFinalChunks: true,
 	})
 	if err != nil {
@@ -1950,7 +1950,7 @@ func TestRuntimeRunResetsSpeechStreamWriterBetweenFinalStreamingAttempts(t *test
 	}
 }
 
-func TestRuntimeRunFallsBackWhenProviderStreamEmitsNoSpeechText(t *testing.T) {
+func TestRuntimeRunFallsBackWhenProviderStreamEmitsNoSpeech(t *testing.T) {
 	finalVerifier := verifierFinishJSON("Fallback final answer.")
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -1977,7 +1977,7 @@ func TestRuntimeRunFallsBackWhenProviderStreamEmitsNoSpeechText(t *testing.T) {
 	var stream strings.Builder
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:             "do a planned task",
-		StreamWriter:      NewJSONFieldOrPlainStreamWriter(&stream, "output"),
+		StreamWriter:      NewJSONFieldOrPlainStreamWriter(&stream, "text"),
 		StreamFinalChunks: true,
 	})
 	if err != nil {
@@ -1994,15 +1994,15 @@ func TestRuntimeRunFallsBackWhenProviderStreamEmitsNoSpeechText(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunFallsBackWhenProviderStreamWriterErrorsAfterPartialSpeechText(t *testing.T) {
+func TestRuntimeRunFallsBackWhenProviderStreamWriterErrorsAfterPartialSpeech(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			contentResponse(`{"mode":"direct_answer","speech_text":"Recovered speech.","output":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
+			contentResponse(`{"mode":"direct_answer","speech":"Recovered speech.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
 		},
 		streamChunks: [][]string{
 			{
-				`{"mode":"direct_answer","speech_text":"Broken`,
-				`\q","output":"ignored"}`,
+				`{"mode":"direct_answer","speech":"Broken`,
+				`\q","text":"ignored"}`,
 			},
 		},
 	}
@@ -2017,7 +2017,7 @@ func TestRuntimeRunFallsBackWhenProviderStreamWriterErrorsAfterPartialSpeechText
 	var stream strings.Builder
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:             "hello",
-		StreamWriter:      NewSpeechTextStreamWriter(&stream, "speech_text"),
+		StreamWriter:      NewSpeechStreamWriter(&stream),
 		StreamFinalChunks: true,
 	})
 	if err != nil {

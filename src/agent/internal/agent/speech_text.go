@@ -145,15 +145,15 @@ func firstSpeechSentence(text string) string {
 	return ""
 }
 
-type SpeechTextStreamWriter = JSONFieldStreamWriter
+type SpeechStreamWriter = JSONFieldStreamWriter
 
-func NewSpeechTextStreamWriter(target io.Writer, field string) *SpeechTextStreamWriter {
-	return NewJSONFieldStreamWriter(target, field)
+func NewSpeechStreamWriter(target io.Writer) *SpeechStreamWriter {
+	return NewJSONFieldStreamWriter(target, "speech")
 }
 
 type structuredFinalAnswer struct {
-	SpeechText string `json:"speech_text"`
-	Output     string `json:"output"`
+	Speech string `json:"speech"`
+	Text   string `json:"text"`
 }
 
 func parseStructuredFinalAnswer(raw string) (output string, speechText string, ok bool) {
@@ -172,8 +172,8 @@ func parseStructuredFinalAnswer(raw string) (output string, speechText string, o
 			return "", "", false
 		}
 	}
-	output = strings.TrimSpace(answer.Output)
-	speechText = strings.TrimSpace(answer.SpeechText)
+	output = strings.TrimSpace(answer.Text)
+	speechText = strings.TrimSpace(answer.Speech)
 	if output == "" {
 		return "", "", false
 	}
@@ -202,7 +202,7 @@ func speechStreamWriterForConfig(target io.Writer, cfg Config) io.Writer {
 		return nil
 	}
 	if cfg.VoiceSpeechSummaryEnabledOrDefault() {
-		return NewJSONFieldStreamWriter(target, "speech_text")
+		return NewJSONFieldStreamWriter(target, "speech")
 	}
-	return NewJSONFieldOrPlainStreamWriter(target, "output")
+	return NewJSONFieldOrPlainStreamWriter(target, "text")
 }

@@ -180,9 +180,9 @@ func TestParseRouteDecisionTreatsOrdinaryPlanAndSimpleTextAsDirectAnswer(t *test
 	}
 }
 
-func TestParseRouteDecisionAcceptsStructuredFinalAnswerOutput(t *testing.T) {
+func TestParseRouteDecisionAcceptsStructuredFinalAnswerText(t *testing.T) {
 	decision := parseRouteDecision(
-		contentResponse(`{"mode":"direct_answer","speech_text":"Short answer.","output":"Complete answer."}`),
+		contentResponse(`{"mode":"direct_answer","speech":"Short answer.","text":"Complete answer."}`),
 		"Answer directly.",
 	)
 
@@ -190,32 +190,32 @@ func TestParseRouteDecisionAcceptsStructuredFinalAnswerOutput(t *testing.T) {
 		t.Fatalf("route mode = %q, want direct_answer", decision.Mode)
 	}
 	if decision.FinalAnswer == "" {
-		t.Fatal("structured final answer output should not be downgraded to simple mode")
+		t.Fatal("structured final answer text should not be downgraded to simple mode")
 	}
-	output, speechText, ok := parseStructuredFinalAnswer(decision.FinalAnswer)
+	text, speech, ok := parseStructuredFinalAnswer(decision.FinalAnswer)
 	if !ok {
-		t.Fatalf("final answer should preserve structured output, got %q", decision.FinalAnswer)
+		t.Fatalf("final answer should preserve structured text, got %q", decision.FinalAnswer)
 	}
-	if output != "Complete answer." || speechText != "Short answer." {
-		t.Fatalf("structured final answer = (%q, %q), want complete output and short speech", output, speechText)
+	if text != "Complete answer." || speech != "Short answer." {
+		t.Fatalf("structured final answer = (%q, %q), want complete text and short speech", text, speech)
 	}
 }
 
 func TestParseRouteDecisionTreatsStructuredFinalAnswerWithoutModeAsDirectAnswer(t *testing.T) {
 	decision := parseRouteDecision(
-		contentResponse(`{"speech_text":"Short answer.","output":"Complete answer."}`),
+		contentResponse(`{"speech":"Short answer.","text":"Complete answer."}`),
 		"Answer directly.",
 	)
 
 	if decision.Mode != routeModeDirectAnswer {
 		t.Fatalf("route mode = %q, want direct_answer", decision.Mode)
 	}
-	output, speechText, ok := parseStructuredFinalAnswer(decision.FinalAnswer)
+	text, speech, ok := parseStructuredFinalAnswer(decision.FinalAnswer)
 	if !ok {
-		t.Fatalf("final answer should preserve structured output, got %q", decision.FinalAnswer)
+		t.Fatalf("final answer should preserve structured text, got %q", decision.FinalAnswer)
 	}
-	if output != "Complete answer." || speechText != "Short answer." {
-		t.Fatalf("structured final answer = (%q, %q), want complete output and short speech", output, speechText)
+	if text != "Complete answer." || speech != "Short answer." {
+		t.Fatalf("structured final answer = (%q, %q), want complete text and short speech", text, speech)
 	}
 }
 

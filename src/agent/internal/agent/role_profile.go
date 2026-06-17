@@ -93,8 +93,8 @@ func (cfg AgentConfig) VoiceSpeechSummaryEnabledOrDefault() bool {
 }
 
 func verifierRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
-	finalAnswerRule := "When returning can_finish=true, also include speech_text and output as top-level JSON fields. Put speech_text before output in the JSON object. speech_text is a concise spoken summary; output is the complete user-facing answer. Keep final_answer equal to output for compatibility."
-	formatRule := "Return only JSON: {\"can_finish\":true|false,\"speech_text\":\"short spoken answer when can_finish is true\",\"output\":\"complete answer when can_finish is true\",\"final_answer\":\"same as output when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}."
+	finalAnswerRule := "When returning can_finish=true, also include speech and text as top-level JSON fields. Put speech before text in the JSON object. speech is a concise spoken summary; text is the complete user-facing answer. Keep final_answer equal to text for compatibility."
+	formatRule := "Return only JSON: {\"can_finish\":true|false,\"speech\":\"short spoken answer when can_finish is true\",\"text\":\"complete answer when can_finish is true\",\"final_answer\":\"same as text when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}."
 	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
 		finalAnswerRule = "When returning can_finish=true, put the complete user-facing answer directly in final_answer as plain text. Do not include separate spoken-summary or display-output fields."
 		formatRule = "Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"complete plain text answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}."
@@ -125,7 +125,7 @@ func plannerToolsForConfig(cfg AgentConfig, tools []langtools.Tool) []langtools.
 
 func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 	var rules []string
-	structuredFinalRule := "When returning a final answer directly to the user, use speech_text before output. In default/simple mode return only JSON: {\"speech_text\":\"concise spoken answer\",\"output\":\"complete user-facing answer\"}. In the route decision phase, use speech_text and output only when mode is direct_answer. speech_text must be short and natural for TTS; output must preserve the full answer for the screen."
+	structuredFinalRule := "When returning a final answer directly to the user, use speech before text. In default/simple mode return only JSON: {\"speech\":\"concise spoken answer\",\"text\":\"complete user-facing answer\"}. In the route decision phase, use speech and text only when mode is direct_answer. speech must be short and natural for TTS; text must preserve the full answer for the screen."
 	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
 		structuredFinalRule = "When returning a final answer directly to the user, return the complete answer as plain text, not JSON. In the route decision phase, return plain answer text only when answering directly."
 	}

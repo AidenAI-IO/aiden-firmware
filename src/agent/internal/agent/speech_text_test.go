@@ -82,13 +82,13 @@ func TestRunResultSpokenTextForConfigIgnoresSpeechTextWhenSummaryDisabled(t *tes
 	}
 }
 
-func TestSpeechTextStreamWriterExtractsPartialJSONField(t *testing.T) {
+func TestSpeechStreamWriterExtractsPartialJSONField(t *testing.T) {
 	var sink strings.Builder
-	writer := NewSpeechTextStreamWriter(&sink, "speech_text")
+	writer := NewSpeechStreamWriter(&sink)
 
 	chunks := []string{
-		`{"speech_text":"已完成`,
-		`，当前音量是 42。","output":"`,
+		`{"speech":"已完成`,
+		`，当前音量是 42。","text":"`,
 		`完整回答不应该被播报。`,
 	}
 	for _, chunk := range chunks {
@@ -102,11 +102,11 @@ func TestSpeechTextStreamWriterExtractsPartialJSONField(t *testing.T) {
 	}
 }
 
-func TestSpeechTextStreamWriterDecodesEscapes(t *testing.T) {
+func TestSpeechStreamWriterDecodesEscapes(t *testing.T) {
 	var sink strings.Builder
-	writer := NewSpeechTextStreamWriter(&sink, "speech_text")
+	writer := NewSpeechStreamWriter(&sink)
 
-	if _, err := writer.Write([]byte(`{"speech_text":"第一行\n第二行\u3002","output":"ignored"}`)); err != nil {
+	if _, err := writer.Write([]byte(`{"speech":"第一行\n第二行\u3002","text":"ignored"}`)); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
 
@@ -115,10 +115,10 @@ func TestSpeechTextStreamWriterDecodesEscapes(t *testing.T) {
 	}
 }
 
-func TestSpeechTextStreamWriterHandlesSplitUTF8Rune(t *testing.T) {
+func TestSpeechStreamWriterHandlesSplitUTF8Rune(t *testing.T) {
 	var sink strings.Builder
-	writer := NewSpeechTextStreamWriter(&sink, "speech_text")
-	payload := []byte(`{"speech_text":"好","output":"ignored"}`)
+	writer := NewSpeechStreamWriter(&sink)
+	payload := []byte(`{"speech":"好","text":"ignored"}`)
 	split := strings.Index(string(payload), "好")
 	if split < 0 {
 		t.Fatal("test payload missing split rune")
@@ -134,10 +134,10 @@ func TestSpeechTextStreamWriterHandlesSplitUTF8Rune(t *testing.T) {
 	}
 }
 
-func TestSpeechTextStreamWriterIgnoresNestedField(t *testing.T) {
+func TestSpeechStreamWriterIgnoresNestedField(t *testing.T) {
 	var sink strings.Builder
-	writer := NewSpeechTextStreamWriter(&sink, "speech_text")
-	payload := `{"metadata":{"speech_text":"不要播报, {bad}"},"speech_text":"播报这个。","output":"ignored"}`
+	writer := NewSpeechStreamWriter(&sink)
+	payload := `{"metadata":{"speech":"不要播报, {bad}"},"speech":"播报这个。","text":"ignored"}`
 	if _, err := writer.Write([]byte(payload)); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
@@ -147,7 +147,7 @@ func TestSpeechTextStreamWriterIgnoresNestedField(t *testing.T) {
 }
 
 func TestFinalizeSpeechOutputParsesStructuredAnswer(t *testing.T) {
-	raw := `{"speech_text":"短口播。","output":"完整回答。\n\n保留给屏幕。"}`
+	raw := `{"speech":"短口播。","text":"完整回答。\n\n保留给屏幕。"}`
 	output, speech := finalizeSpeechOutput(raw, Config{})
 	if output != "完整回答。\n\n保留给屏幕。" {
 		t.Fatalf("output = %q", output)
@@ -159,7 +159,7 @@ func TestFinalizeSpeechOutputParsesStructuredAnswer(t *testing.T) {
 
 func TestFinalizeSpeechOutputIgnoresStructuredSpeechWhenSummaryDisabled(t *testing.T) {
 	disabled := false
-	raw := `{"speech_text":"短口播。","output":"完整回答。"}`
+	raw := `{"speech":"短口播。","text":"完整回答。"}`
 
 	output, speech := finalizeSpeechOutput(raw, Config{VoiceSpeechSummaryEnabled: &disabled})
 
@@ -185,9 +185,9 @@ func TestFinalizeSpeechOutputKeepsPlainTextWhenSummaryDisabled(t *testing.T) {
 	}
 }
 
-func TestFinalizeSpeechOutputParsesOutputOnlyWhenSummaryDisabled(t *testing.T) {
+func TestFinalizeSpeechOutputParsesTextOnlyWhenSummaryDisabled(t *testing.T) {
 	disabled := false
-	raw := `{"output":"完整回答。"}`
+	raw := `{"text":"完整回答。"}`
 
 	output, speech := finalizeSpeechOutput(raw, Config{VoiceSpeechSummaryEnabled: &disabled})
 
@@ -195,6 +195,6 @@ func TestFinalizeSpeechOutputParsesOutputOnlyWhenSummaryDisabled(t *testing.T) {
 		t.Fatalf("output = %q", output)
 	}
 	if speech != "" {
-		t.Fatalf("speech = %q, want empty for output-only structured answer", speech)
+		t.Fatalf("speech = %q, want empty for text-only structured answer", speech)
 	}
 }

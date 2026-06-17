@@ -49,8 +49,8 @@ type plannerDecision struct {
 type verifierDecision struct {
 	CanFinish     bool               `json:"can_finish"`
 	FinalAnswer   string             `json:"final_answer,omitempty"`
-	SpeechText    string             `json:"speech_text,omitempty"`
-	Output        string             `json:"output,omitempty"`
+	Speech        string             `json:"speech,omitempty"`
+	Text          string             `json:"text,omitempty"`
 	NeedsReplan   bool               `json:"needs_replan,omitempty"`
 	Reason        string             `json:"reason,omitempty"`
 	ObservedState observedWorldState `json:"observed_state,omitempty"`
@@ -1691,13 +1691,13 @@ func parseVerifierDecision(raw, fallbackAnswer string) verifierDecision {
 	var decision verifierDecision
 	if decodeRoleJSON(raw, &decision) == nil {
 		decision.FinalAnswer = strings.TrimSpace(decision.FinalAnswer)
-		decision.SpeechText = strings.TrimSpace(decision.SpeechText)
-		decision.Output = strings.TrimSpace(decision.Output)
-		if decision.Output != "" && decision.FinalAnswer == "" {
-			decision.FinalAnswer = decision.Output
+		decision.Speech = strings.TrimSpace(decision.Speech)
+		decision.Text = strings.TrimSpace(decision.Text)
+		if decision.Text != "" && decision.FinalAnswer == "" {
+			decision.FinalAnswer = decision.Text
 		}
-		if decision.CanFinish && decision.Output != "" && decision.SpeechText != "" {
-			decision.FinalAnswer = marshalStructuredFinalAnswer(decision.SpeechText, decision.Output)
+		if decision.CanFinish && decision.Text != "" && decision.Speech != "" {
+			decision.FinalAnswer = marshalStructuredFinalAnswer(decision.Speech, decision.Text)
 		}
 		decision.Reason = strings.TrimSpace(decision.Reason)
 		decision.ObservedState = normalizeObservedWorldState(decision.ObservedState)
@@ -1735,8 +1735,8 @@ func parseVerifierDecision(raw, fallbackAnswer string) verifierDecision {
 
 func marshalStructuredFinalAnswer(speechText, output string) string {
 	payload, err := json.Marshal(structuredFinalAnswer{
-		SpeechText: strings.TrimSpace(speechText),
-		Output:     strings.TrimSpace(output),
+		Speech: strings.TrimSpace(speechText),
+		Text:   strings.TrimSpace(output),
 	})
 	if err != nil {
 		return strings.TrimSpace(output)
