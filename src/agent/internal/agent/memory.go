@@ -87,15 +87,41 @@ type MessageRecord struct {
 // SessionEvent represents a single event in the session event stream, capturing
 // conversation turns, tool calls, and system events with metadata.
 type SessionEvent struct {
-	EventID    string `json:"event_id"`
-	Ts         string `json:"ts"`
-	Type       string `json:"type"`
-	Role       string `json:"role"`
-	Source     string `json:"source,omitempty"`
-	Content    string `json:"content"`
-	AppName    string `json:"app_name,omitempty"`
-	RiskLevel  string `json:"risk_level,omitempty"`
-	ToolCallID string `json:"tool_call_id,omitempty"`
+	EventID            string   `json:"event_id"`
+	Ts                 string   `json:"ts"`
+	Sequence           int      `json:"sequence,omitempty"`
+	Type               string   `json:"type"`
+	Role               string   `json:"role"`
+	Source             string   `json:"source,omitempty"`
+	SessionID          string   `json:"session_id,omitempty"`
+	EpisodeID          string   `json:"episode_id,omitempty"`
+	RequestID          string   `json:"request_id,omitempty"`
+	RunID              string   `json:"run_id,omitempty"`
+	Relation           string   `json:"relation,omitempty"`
+	Status             string   `json:"status,omitempty"`
+	Content            string   `json:"content"`
+	AppName            string   `json:"app_name,omitempty"`
+	RiskLevel          string   `json:"risk_level,omitempty"`
+	ToolCallID         string   `json:"tool_call_id,omitempty"`
+	ToolName           string   `json:"tool_name,omitempty"`
+	ToolInput          string   `json:"tool_input,omitempty"`
+	Description        string   `json:"description,omitempty"`
+	Objective          string   `json:"objective,omitempty"`
+	CompletionCriteria []string `json:"completion_criteria,omitempty"`
+	Plan               []string `json:"plan,omitempty"`
+	NextStep           string   `json:"next_step,omitempty"`
+	CanFinish          *bool    `json:"can_finish,omitempty"`
+	NeedsReplan        bool     `json:"needs_replan,omitempty"`
+	Reason             string   `json:"reason,omitempty"`
+	IsError            bool     `json:"is_error,omitempty"`
+}
+
+type SessionEventMetadata struct {
+	SessionID string
+	EpisodeID string
+	RequestID string
+	RunID     string
+	Relation  string
 }
 
 // MemoryManagerOption configures a MemoryManager instance.
@@ -371,6 +397,10 @@ func (m *MemoryManager) AppendExchange(ctx context.Context, agentName string, in
 
 // AppendMessages appends explicit message records to the session event stream.
 func (m *MemoryManager) AppendMessages(ctx context.Context, agentName string, records []MessageRecord) error {
+	return m.AppendMessagesWithMetadata(ctx, agentName, records, SessionEventMetadata{})
+}
+
+func (m *MemoryManager) AppendMessagesWithMetadata(ctx context.Context, agentName string, records []MessageRecord, meta SessionEventMetadata) error {
 	if m.storageDir == "" {
 		return nil
 	}
@@ -406,11 +436,49 @@ func (m *MemoryManager) AppendMessages(ctx context.Context, agentName string, re
 		default:
 		}
 		event := sessionEventFromRecord(record, now, m.eventCount[agentName]+i)
+		event = applySessionEventMetadata(event, meta)
+		event.Sequence = m.eventCount[agentName] + i + 1
 		if err := encoder.Encode(event); err != nil {
 			return fmt.Errorf("append session messages for %q: %w", agentName, err)
 		}
 	}
 	m.eventCount[agentName] += len(records)
+	return nil
+}
+
+func (m *MemoryManager) AppendSessionEvent(ctx context.Context, agentName string, event SessionEvent, meta SessionEventMetadata) error {
+	if m.storageDir == "" {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	fl := NewFileLock(m.storageDir)
+	if err := fl.Lock(m.lockTimeout); err != nil {
+		return fmt.Errorf("lock for appending session event %q: %w", agentName, err)
+	}
+	defer fl.Unlock()
+
+	if err := os.MkdirAll(filepath.Dir(m.sessionEventsPath()), 0o755); err != nil {
+		return fmt.Errorf("create session memory directory: %w", err)
+	}
+	file, err := os.OpenFile(m.sessionEventsPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open session events for %q: %w", agentName, err)
+	}
+	defer file.Close()
+
+	now := time.Now().UTC()
+	event = normalizeSessionEventForAppend(event, now, m.eventCount[agentName]+1)
+	event = applySessionEventMetadata(event, meta)
+	if err := json.NewEncoder(file).Encode(event); err != nil {
+		return fmt.Errorf("append session event for %q: %w", agentName, err)
+	}
+	m.eventCount[agentName]++
 	return nil
 }
 
@@ -530,7 +598,7 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 	if m.storageDir == "" {
 		return nil
 	}
-	if records, hotWindowTokens, ok, err := m.loadSessionMessageRecords(agentName); err != nil {
+	if records, hotWindowTokens, eventCount, ok, err := m.loadSessionMessageRecords(agentName); err != nil {
 		return err
 	} else if ok {
 		// Restore only real chat records into ChatMessageHistory. Snapshot()
@@ -543,7 +611,7 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 		if err := history.SetMessages(context.Background(), messages); err != nil {
 			return fmt.Errorf("restore session events for %q: %w", agentName, err)
 		}
-		m.eventCount[agentName] = len(records)
+		m.eventCount[agentName] = eventCount
 		// Cold-start seeding: a fresh process has lastPromptTokens == 0, which
 		// makes the first shouldCompress skip the token-driven branch and fall
 		// back to the coarse event-count heuristic. Seed it from the estimated
@@ -588,10 +656,10 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 	return nil
 }
 
-func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRecord, int, bool, error) {
+func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRecord, int, int, bool, error) {
 	fl := NewFileLock(m.storageDir)
 	if err := fl.Lock(m.lockTimeout); err != nil {
-		return nil, 0, false, fmt.Errorf("lock for loading session events %q: %w", agentName, err)
+		return nil, 0, 0, false, fmt.Errorf("lock for loading session events %q: %w", agentName, err)
 	}
 	defer fl.Unlock()
 
@@ -599,9 +667,9 @@ func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRe
 	result, err := session.readActiveEventsRepairingTruncatedTail()
 	if err != nil {
 		if isPathNotExistError(err) {
-			return nil, 0, false, nil
+			return nil, 0, 0, false, nil
 		}
-		return nil, 0, false, fmt.Errorf("read session events for %q: %w", agentName, err)
+		return nil, 0, 0, false, fmt.Errorf("read session events for %q: %w", agentName, err)
 	}
 	m.logSessionEventsRepair(agentName, result)
 
@@ -617,7 +685,38 @@ func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRe
 			records = append(records, record)
 		}
 	}
-	return records, hotWindowTokens, true, nil
+	return records, hotWindowTokens, len(result.events), true, nil
+}
+
+func (m *MemoryManager) LoadActiveSessionEvents(ctx context.Context, limit int) ([]SessionEvent, error) {
+	if m == nil || strings.TrimSpace(m.storageDir) == "" {
+		return nil, nil
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	fl := NewFileLock(m.storageDir)
+	if err := fl.Lock(m.lockTimeout); err != nil {
+		return nil, fmt.Errorf("lock for loading active session events: %w", err)
+	}
+	defer fl.Unlock()
+
+	session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"), m.extraction.SummaryMaxChunks)
+	result, err := session.readActiveEventsRepairingTruncatedTail()
+	if err != nil {
+		if isPathNotExistError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read active session events: %w", err)
+	}
+	m.logSessionEventsRepair("context_view", result)
+	events := result.events
+	if limit > 0 && len(events) > limit {
+		events = events[len(events)-limit:]
+	}
+	return append([]SessionEvent(nil), events...), nil
 }
 
 func (m *MemoryManager) logSessionEventsRepair(agentName string, result sessionEventsReadResult) {
@@ -1429,9 +1528,10 @@ func sessionEventFromRecord(record MessageRecord, ts time.Time, offset int) Sess
 	content := stripScreenshotData(record.Content)
 
 	event := SessionEvent{
-		EventID: "evt_" + strconv.FormatInt(ts.UnixNano(), 10) + "_" + strconv.Itoa(offset),
-		Ts:      ts.Format(time.RFC3339Nano),
-		Content: content,
+		EventID:  "evt_" + strconv.FormatInt(ts.UnixNano(), 10) + "_" + strconv.Itoa(offset),
+		Ts:       ts.Format(time.RFC3339Nano),
+		Sequence: offset + 1,
+		Content:  content,
 	}
 	switch record.Role {
 	case string(llms.ChatMessageTypeAI):
@@ -1448,6 +1548,46 @@ func sessionEventFromRecord(record MessageRecord, ts time.Time, offset int) Sess
 	default:
 		event.Type = "user_input"
 		event.Role = "user"
+	}
+	return event
+}
+
+func normalizeSessionEventForAppend(event SessionEvent, ts time.Time, sequence int) SessionEvent {
+	if event.EventID == "" {
+		event.EventID = "evt_" + strconv.FormatInt(ts.UnixNano(), 10) + "_" + strconv.Itoa(sequence-1)
+	}
+	if event.Ts == "" {
+		event.Ts = ts.Format(time.RFC3339Nano)
+	}
+	if event.Sequence == 0 {
+		event.Sequence = sequence
+	}
+	if event.Type == "" {
+		event.Type = "system_event"
+	}
+	if event.Role == "" {
+		event.Role = "system"
+	}
+	event.Content = stripScreenshotData(event.Content)
+	event.ToolInput = stripScreenshotData(event.ToolInput)
+	return event
+}
+
+func applySessionEventMetadata(event SessionEvent, meta SessionEventMetadata) SessionEvent {
+	if event.SessionID == "" {
+		event.SessionID = strings.TrimSpace(meta.SessionID)
+	}
+	if event.EpisodeID == "" {
+		event.EpisodeID = strings.TrimSpace(meta.EpisodeID)
+	}
+	if event.RequestID == "" {
+		event.RequestID = strings.TrimSpace(meta.RequestID)
+	}
+	if event.RunID == "" {
+		event.RunID = strings.TrimSpace(meta.RunID)
+	}
+	if event.Relation == "" {
+		event.Relation = strings.TrimSpace(meta.Relation)
 	}
 	return event
 }

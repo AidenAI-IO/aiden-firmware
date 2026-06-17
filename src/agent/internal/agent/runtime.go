@@ -60,6 +60,7 @@ type RunRequest struct {
 	Attachments       []InputAttachment
 	Skills            []string
 	EpisodeID         string
+	RequestID         string
 	DeviceEnvironment *PhoneEnvironment
 	// RuntimeContext is dynamic per-turn system context, such as connected
 	// hardware/app state. It is not persisted as user configuration.
@@ -505,8 +506,22 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: r.effectiveContextWindow}
 
 	currentHints := r.currentEnvironmentHints()
+	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		return RunResult{}, err
+	}
+	runID := "run_" + uuid.NewString()
+	episodeID := strings.TrimSpace(req.EpisodeID)
+	if episodeID == "" && r.memoryPlane != nil {
+		episodeID = newTaskEpisodeID(startTime.UTC())
+	}
 	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
+		AgentName:    "default",
 		Input:        normalizedInput,
+		SessionID:    r.telemetrySessionID,
+		EpisodeID:    episodeID,
+		RequestID:    req.RequestID,
+		RunID:        runID,
 		CurrentHints: currentHints,
 	})
 	if err != nil {
@@ -517,11 +532,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
 	}
 
-	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
-	if err != nil {
-		return RunResult{}, err
-	}
-
 	availableTools := r.resolveTools(resolvedSkills)
 	availableTools = wrapSessionRecallTelemetry(availableTools, boundaryTelemetry.PendingRecallCounter)
 	retrieveReq := MemoryRetrieveRequest{
@@ -529,7 +539,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Attachments:  req.Attachments,
 		Skills:       skillNames,
 		ToolNames:    toolNamesFromTools(availableTools),
-		EpisodeID:    req.EpisodeID,
+		EpisodeID:    episodeID,
 		DeviceID:     defaultMemoryDeviceID,
 		CurrentHints: currentHints,
 	}
@@ -554,7 +564,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			}
 		}
 	}
-	episodeID := ""
 	if episodeRecorder != nil {
 		episodeID = episodeRecorder.ID()
 	}
@@ -566,7 +575,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		callOptions = append(callOptions, chains.WithMaxTokens(req.MaxTokens))
 	}
 	var streamCallbackHandler *runtimeCallbackHandler
-	if req.StreamWriter != nil || req.EventHandler != nil || req.SteerProvider != nil || r.logger != nil {
+	persistRuntimeSessionEvents := r.memories != nil && strings.TrimSpace(r.memories.storageDir) != ""
+	if req.StreamWriter != nil || req.EventHandler != nil || req.SteerProvider != nil || r.logger != nil || persistRuntimeSessionEvents {
 		streamCallbackHandler = &runtimeCallbackHandler{
 			writer:                 req.StreamWriter,
 			providerFinalStreaming: req.StreamWriter != nil && req.StreamFinalChunks,
@@ -575,7 +585,20 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			logger:                 r.logger,
 			eventHandler:           req.EventHandler,
 			episodeID:              episodeID,
+			sessionID:              r.telemetrySessionID,
+			requestID:              req.RequestID,
+			runID:                  runID,
 			toolCallSpeechEnabled:  r.config.VoiceToolCallSpeechOrDefault(),
+		}
+		if persistRuntimeSessionEvents {
+			streamCallbackHandler.sessionEventAppender = func(ctx context.Context, event SessionEvent) error {
+				return r.appendRuntimeSessionEvent(ctx, "default", event, SessionEventMetadata{
+					SessionID: r.telemetrySessionID,
+					EpisodeID: episodeID,
+					RequestID: req.RequestID,
+					RunID:     runID,
+				})
+			}
 		}
 	}
 	var executorHandler callbacks.Handler
@@ -584,6 +607,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
 	plannerMemory := memoryHandle.Memory
+	plannerMemory = newSessionContextPlannerMemory(plannerMemory, r.memories, "default")
 	if historyStore := chatHistoryStoreForConfigDir(r.config.ConfigDir); historyStore != nil {
 		plannerMemory = newChatHistoryPlannerMemory(plannerMemory, historyStore)
 	}
@@ -610,6 +634,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			}
 		}
 		if err != nil {
+			r.persistRunStatusBestEffort(episodeID, req.RequestID, runID, err)
 			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
 			return RunResult{}, err
 		}
@@ -622,6 +647,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Input:     normalizedInput,
 		Output:    output,
 		Metrics:   metrics,
+		SessionID: r.telemetrySessionID,
+		EpisodeID: episodeID,
+		RequestID: req.RequestID,
+		RunID:     runID,
 	}
 	if steerStatus != nil && steerStatus.HasSteerMessages() {
 		commitReq.Steers = steerStatus.SteerMessages()
@@ -662,6 +691,45 @@ func (r *Runtime) commitSession(ctx context.Context, req SessionCommitRequest) (
 		return SessionCommitResult{}, nil
 	}
 	return r.sessionManager.CommitRun(ctx, req)
+}
+
+func (r *Runtime) appendRuntimeSessionEvent(ctx context.Context, agentName string, event SessionEvent, meta SessionEventMetadata) error {
+	if r == nil || r.memories == nil {
+		return nil
+	}
+	return r.memories.AppendSessionEvent(ctx, agentName, event, meta)
+}
+
+func (r *Runtime) persistRunStatusBestEffort(episodeID, requestID, runID string, runErr error) {
+	if r == nil || r.memories == nil || runErr == nil {
+		return
+	}
+	status := "failed"
+	if errors.Is(runErr, context.Canceled) {
+		status = "interrupted"
+	}
+	content := "Agent run " + status + ": " + runErr.Error()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := r.memories.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:      "episode_status",
+		Role:      "system",
+		Status:    status,
+		Content:   content,
+		IsError:   true,
+		EpisodeID: episodeID,
+		RequestID: requestID,
+		RunID:     runID,
+		SessionID: r.telemetrySessionID,
+	}, SessionEventMetadata{
+		SessionID: r.telemetrySessionID,
+		EpisodeID: episodeID,
+		RequestID: requestID,
+		RunID:     runID,
+	})
+	if err != nil && r.logger != nil {
+		r.logger.Warn("[memory] persist run status failed: %v", err)
+	}
 }
 
 func steeredExchangeRecords(input string, steers []RunSteerMessage, output string) []MessageRecord {
@@ -1036,6 +1104,10 @@ type runtimeCallbackHandler struct {
 	logger                 *Logger
 	eventHandler           func(RunEvent)
 	episodeID              string
+	sessionID              string
+	requestID              string
+	runID                  string
+	sessionEventAppender   func(context.Context, SessionEvent) error
 	toolCallSpeechEnabled  bool
 	mu                     sync.Mutex
 	pendingActions         []schema.AgentAction
@@ -1108,22 +1180,37 @@ func (h *runtimeCallbackHandler) HandleChainError(ctx context.Context, err error
 
 func (h *runtimeCallbackHandler) HandleToolStart(ctx context.Context, input string) {}
 
+func (h *runtimeCallbackHandler) emitRunEvent(ctx context.Context, event RunEvent) {
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now()
+	}
+	if event.EpisodeID == "" {
+		event.EpisodeID = h.episodeID
+	}
+	if h.sessionEventAppender != nil {
+		if err := h.sessionEventAppender(ctx, sessionEventFromRunEvent(event, h)); err != nil && h.logger != nil {
+			h.logger.Warn("[memory] persist runtime session event failed: %v", err)
+		}
+	}
+	if h.eventHandler != nil {
+		h.eventHandler(event)
+	}
+}
+
 func (h *runtimeCallbackHandler) HandleToolEnd(ctx context.Context, output string) {
 	if h.logger != nil {
 		h.logger.Info("Tool result: %s", truncateForLog(output, 240))
 	}
-	if h.eventHandler != nil {
-		action, ok := h.popPendingAction()
-		if ok {
-			h.eventHandler(RunEvent{
-				Type:      "tool_result",
-				EpisodeID: h.episodeID,
-				ToolName:  action.Tool,
-				ToolInput: normalizeToolInput(action.ToolInput),
-				Content:   output,
-				Timestamp: time.Now(),
-			})
-		}
+	action, ok := h.popPendingAction()
+	if ok {
+		h.emitRunEvent(ctx, RunEvent{
+			Type:      "tool_result",
+			EpisodeID: h.episodeID,
+			ToolName:  action.Tool,
+			ToolInput: normalizeToolInput(action.ToolInput),
+			Content:   output,
+			Timestamp: time.Now(),
+		})
 	}
 }
 
@@ -1131,19 +1218,17 @@ func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error)
 	if h.logger != nil {
 		h.logger.Error("Tool error: %v", err)
 	}
-	if h.eventHandler != nil {
-		action, ok := h.popPendingAction()
-		if ok {
-			h.eventHandler(RunEvent{
-				Type:      "tool_result",
-				EpisodeID: h.episodeID,
-				ToolName:  action.Tool,
-				ToolInput: normalizeToolInput(action.ToolInput),
-				Content:   "error: " + err.Error(),
-				Timestamp: time.Now(),
-				IsError:   true,
-			})
-		}
+	action, ok := h.popPendingAction()
+	if ok {
+		h.emitRunEvent(ctx, RunEvent{
+			Type:      "tool_result",
+			EpisodeID: h.episodeID,
+			ToolName:  action.Tool,
+			ToolInput: normalizeToolInput(action.ToolInput),
+			Content:   "error: " + err.Error(),
+			Timestamp: time.Now(),
+			IsError:   true,
+		})
 	}
 }
 
@@ -1155,17 +1240,15 @@ func (h *runtimeCallbackHandler) HandleNamedToolEnd(ctx context.Context, name, i
 		h.logger.Info("Tool result: name=%s output=%s", name, truncateForLog(output, 240))
 	}
 	h.removePendingAction(name, input)
-	if h.eventHandler != nil {
-		h.eventHandler(RunEvent{
-			Type:      "tool_result",
-			EpisodeID: h.episodeID,
-			ToolName:  name,
-			ToolInput: input,
-			Content:   output,
-			Timestamp: time.Now(),
-			IsError:   toolOutputLooksLikeError(output),
-		})
-	}
+	h.emitRunEvent(ctx, RunEvent{
+		Type:      "tool_result",
+		EpisodeID: h.episodeID,
+		ToolName:  name,
+		ToolInput: input,
+		Content:   output,
+		Timestamp: time.Now(),
+		IsError:   toolOutputLooksLikeError(output),
+	})
 }
 
 func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name, input string, err error) {
@@ -1174,17 +1257,15 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 		h.logger.Error("Tool error: name=%s err=%v", name, err)
 	}
 	h.removePendingAction(name, input)
-	if h.eventHandler != nil {
-		h.eventHandler(RunEvent{
-			Type:      "tool_result",
-			EpisodeID: h.episodeID,
-			ToolName:  name,
-			ToolInput: input,
-			Content:   "error: " + err.Error(),
-			Timestamp: time.Now(),
-			IsError:   true,
-		})
-	}
+	h.emitRunEvent(ctx, RunEvent{
+		Type:      "tool_result",
+		EpisodeID: h.episodeID,
+		ToolName:  name,
+		ToolInput: input,
+		Content:   "error: " + err.Error(),
+		Timestamp: time.Now(),
+		IsError:   true,
+	})
 }
 
 func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call ToolCall) {
@@ -1198,18 +1279,16 @@ func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call T
 				call.Spec.Name, truncateForLog(call.Input, 240))
 		}
 	}
-	if h.eventHandler != nil {
-		h.eventHandler(RunEvent{
-			Type:        runEventToolCall,
-			EpisodeID:   h.episodeID,
-			ToolName:    call.Spec.Name,
-			ToolInput:   call.Input,
-			Description: description,
-			Speech:      h.toolCallSpeech(description),
-			Content:     description,
-			Timestamp:   time.Now(),
-		})
-	}
+	h.emitRunEvent(ctx, RunEvent{
+		Type:        runEventToolCall,
+		EpisodeID:   h.episodeID,
+		ToolName:    call.Spec.Name,
+		ToolInput:   call.Input,
+		Description: description,
+		Speech:      h.toolCallSpeech(description),
+		Content:     description,
+		Timestamp:   time.Now(),
+	})
 }
 
 func (h *runtimeCallbackHandler) BeforeToolCall(ctx context.Context, call ToolCall) (ToolResult, bool) {
@@ -1229,17 +1308,15 @@ func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call 
 			h.logger.Info("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
 		}
 	}
-	if h.eventHandler != nil {
-		h.eventHandler(RunEvent{
-			Type:      "tool_result",
-			EpisodeID: h.episodeID,
-			ToolName:  call.Spec.Name,
-			ToolInput: call.Input,
-			Content:   output,
-			Timestamp: time.Now(),
-			IsError:   result.IsError,
-		})
-	}
+	h.emitRunEvent(ctx, RunEvent{
+		Type:      "tool_result",
+		EpisodeID: h.episodeID,
+		ToolName:  call.Spec.Name,
+		ToolInput: call.Input,
+		Content:   output,
+		Timestamp: time.Now(),
+		IsError:   result.IsError,
+	})
 }
 
 func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action schema.AgentAction) {
@@ -1253,19 +1330,19 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 				action.Tool, truncateForLog(action.ToolInput, 240))
 		}
 	}
-	if h.eventHandler != nil {
+	if !isLoopMetaTool(action.Tool) {
 		h.pushPendingAction(action)
-		h.eventHandler(RunEvent{
-			Type:        runEventToolCall,
-			EpisodeID:   h.episodeID,
-			ToolName:    action.Tool,
-			ToolInput:   action.ToolInput,
-			Description: description,
-			Speech:      h.toolCallSpeech(description),
-			Content:     description,
-			Timestamp:   time.Now(),
-		})
 	}
+	h.emitRunEvent(ctx, RunEvent{
+		Type:        runEventToolCall,
+		EpisodeID:   h.episodeID,
+		ToolName:    action.Tool,
+		ToolInput:   action.ToolInput,
+		Description: description,
+		Speech:      h.toolCallSpeech(description),
+		Content:     description,
+		Timestamp:   time.Now(),
+	})
 }
 
 func (h *runtimeCallbackHandler) HandleAgentFinish(ctx context.Context, finish schema.AgentFinish) {}
@@ -1277,16 +1354,14 @@ func (h *runtimeCallbackHandler) HandleTodoUpdate(ctx context.Context, todo Todo
 		h.logger.Info("Todo update: mode=%s revision=%d current_id=%s speech_eligible=%v content=%s",
 			snapshot.Mode, snapshot.Revision, snapshot.CurrentID, speechEligible, truncateForLog(content, 240))
 	}
-	if h.eventHandler != nil {
-		h.eventHandler(RunEvent{
-			Type:           runEventTodoUpdate,
-			EpisodeID:      h.episodeID,
-			Content:        content,
-			Todo:           &snapshot,
-			SpeechEligible: speechEligible,
-			Timestamp:      time.Now(),
-		})
-	}
+	h.emitRunEvent(ctx, RunEvent{
+		Type:           runEventTodoUpdate,
+		EpisodeID:      h.episodeID,
+		Content:        content,
+		Todo:           &snapshot,
+		SpeechEligible: speechEligible,
+		Timestamp:      time.Now(),
+	})
 }
 
 func (h *runtimeCallbackHandler) HandleTodoClosed(ctx context.Context, todo TodoState, reason string) {
@@ -1296,15 +1371,13 @@ func (h *runtimeCallbackHandler) HandleTodoClosed(ctx context.Context, todo Todo
 		h.logger.Info("Todo closed: mode=%s revision=%d current_id=%s reason=%s",
 			snapshot.Mode, snapshot.Revision, snapshot.CurrentID, truncateForLog(reason, 240))
 	}
-	if h.eventHandler != nil {
-		h.eventHandler(RunEvent{
-			Type:      runEventTodoClosed,
-			EpisodeID: h.episodeID,
-			Content:   reason,
-			Todo:      &snapshot,
-			Timestamp: time.Now(),
-		})
-	}
+	h.emitRunEvent(ctx, RunEvent{
+		Type:      runEventTodoClosed,
+		EpisodeID: h.episodeID,
+		Content:   reason,
+		Todo:      &snapshot,
+		Timestamp: time.Now(),
+	})
 }
 
 func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, content string) {
@@ -1312,30 +1385,112 @@ func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, con
 	if h.logger != nil {
 		h.logger.Info("Role output: role=%s content=%s", role, truncateForLog(content, 1000))
 	}
-	if h.eventHandler != nil {
-		h.eventHandler(RunEvent{
-			Type:      "role_output",
-			Role:      role,
-			EpisodeID: h.episodeID,
-			Content:   content,
-			Timestamp: time.Now(),
-		})
-	}
+	h.emitRunEvent(ctx, RunEvent{
+		Type:      "role_output",
+		Role:      role,
+		EpisodeID: h.episodeID,
+		Content:   content,
+		Timestamp: time.Now(),
+	})
 }
 
 func (h *runtimeCallbackHandler) HandleSteerMessage(ctx context.Context, steer RunSteerMessage) {
-	if h.eventHandler == nil {
-		return
-	}
 	if steer.Timestamp.IsZero() {
 		steer.Timestamp = time.Now()
 	}
-	h.eventHandler(RunEvent{
+	h.emitRunEvent(ctx, RunEvent{
 		Type:      "steer",
 		EpisodeID: h.episodeID,
 		Content:   steer.Content,
 		Timestamp: steer.Timestamp,
 	})
+}
+
+func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) SessionEvent {
+	role := strings.TrimSpace(event.Role)
+	if role == "" {
+		switch event.Type {
+		case runEventToolCall, "tool_result":
+			role = "tool"
+		case "steer":
+			role = "user"
+		default:
+			role = "system"
+		}
+	}
+	ts := event.Timestamp
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	sessionEvent := SessionEvent{
+		Ts:          ts.UTC().Format(time.RFC3339Nano),
+		Type:        event.Type,
+		Role:        role,
+		SessionID:   h.sessionID,
+		EpisodeID:   firstNonEmptyString([]string{event.EpisodeID, h.episodeID}),
+		RequestID:   h.requestID,
+		RunID:       h.runID,
+		Content:     event.Content,
+		ToolName:    event.ToolName,
+		ToolInput:   event.ToolInput,
+		Description: event.Description,
+		IsError:     event.IsError,
+	}
+	if event.Type == "steer" {
+		sessionEvent.Relation = FollowUpCorrection
+	}
+	return sessionEvent
+}
+
+func sessionEventFromPlannerDecision(decision plannerDecision) SessionEvent {
+	content, _ := json.Marshal(decision)
+	nextStep := strings.TrimSpace(decision.NextStep)
+	if nextStep == "" && len(decision.Plan) > 0 {
+		nextStep = strings.TrimSpace(decision.Plan[0])
+	}
+	return SessionEvent{
+		Type:               "planner_decision",
+		Role:               string(RolePlanner),
+		Content:            string(content),
+		Objective:          strings.TrimSpace(decision.Objective),
+		CompletionCriteria: uniqueNonEmpty(decision.CompletionCriteria),
+		Plan:               uniqueNonEmpty(decision.Plan),
+		NextStep:           nextStep,
+		Reason:             strings.TrimSpace(decision.Reason),
+	}
+}
+
+func sessionEventFromVerifierDecision(decision verifierDecision) SessionEvent {
+	content, _ := json.Marshal(decision)
+	canFinish := decision.CanFinish
+	return SessionEvent{
+		Type:        "verifier_decision",
+		Role:        string(RoleVerifier),
+		Content:     strings.TrimSpace(firstNonEmptyString([]string{decision.FinalAnswer, string(content)})),
+		CanFinish:   &canFinish,
+		NeedsReplan: decision.NeedsReplan,
+		Reason:      strings.TrimSpace(decision.Reason),
+	}
+}
+
+func (h *runtimeCallbackHandler) HandlePlannerDecision(ctx context.Context, decision plannerDecision) {
+	if h.sessionEventAppender != nil {
+		event := sessionEventFromPlannerDecision(decision)
+		event.EpisodeID = h.episodeID
+		if err := h.sessionEventAppender(ctx, event); err != nil && h.logger != nil {
+			h.logger.Warn("[memory] persist planner decision failed: %v", err)
+		}
+	}
+}
+
+func (h *runtimeCallbackHandler) HandleVerifierDecision(ctx context.Context, decision verifierDecision) {
+	if h.sessionEventAppender != nil {
+		event := sessionEventFromVerifierDecision(decision)
+		event.EpisodeID = h.episodeID
+		if err := h.sessionEventAppender(ctx, event); err != nil && h.logger != nil {
+			h.logger.Warn("[memory] persist verifier decision failed: %v", err)
+		}
+	}
 }
 
 func (h *runtimeCallbackHandler) HandleRetrieverStart(ctx context.Context, query string) {}

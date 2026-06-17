@@ -34,6 +34,19 @@ func TestClassifyTurnBoundary_NoPrevEvents(t *testing.T) {
 	}
 }
 
+func TestClassifyTurnBoundary_RunningEpisodeOverridesNoPrevEvents(t *testing.T) {
+	cfg := DefaultBoundaryConfig()
+	now := time.Now()
+
+	boundary, reason := ClassifyTurnBoundary(nil, "群名你听错了，是 Aden AI agent", now, cfg, BoundaryEpisodeContext{HasRunning: true})
+	if boundary != BoundaryContinue {
+		t.Fatalf("running episode with empty active session should continue, got %q (reason=%s)", boundary, reason)
+	}
+	if reason != BoundaryReasonRunningEpisode {
+		t.Fatalf("expected reason %q, got %q", BoundaryReasonRunningEpisode, reason)
+	}
+}
+
 func TestClassifyTurnBoundary_TimeGapShort(t *testing.T) {
 	// Short gap (< 3m default): strong continuation, even on a generic action verb.
 	cfg := DefaultBoundaryConfig()
