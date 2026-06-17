@@ -51,6 +51,7 @@ type MemoryManager struct {
 	storageDir                     string
 	extraction                     MemoryExtractionConfig
 	lastPromptTokens               int
+	pendingPromptTokenFloor        int
 	summarizeFn                    SummarizeFn
 	structuredSummarizeFn          StructuredSummarizeFn
 	profileFn                      ProfileFn
@@ -211,6 +212,28 @@ func (m *MemoryManager) LastPromptTokens() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.lastPromptTokens
+}
+
+func (m *MemoryManager) RaisePromptTokenFloor(tokens int) {
+	if m == nil || tokens <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if tokens > m.pendingPromptTokenFloor {
+		m.pendingPromptTokenFloor = tokens
+	}
+}
+
+func (m *MemoryManager) ConsumePromptTokenFloor() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tokens := m.pendingPromptTokenFloor
+	m.pendingPromptTokenFloor = 0
+	return tokens
 }
 
 // Get retrieves or creates a memory handle for the specified agent.
@@ -578,6 +601,7 @@ func (m *MemoryManager) RotateSessionEvents() (string, error) {
 			m.eventCount[agentName] = 0
 		}
 		m.lastPromptTokens = 0
+		m.pendingPromptTokenFloor = 0
 		for _, handle := range m.handles {
 			if handle != nil && handle.Memory != nil {
 				_ = handle.Memory.Clear(context.Background())
@@ -835,6 +859,8 @@ func (m *MemoryManager) removeSessionPersisted(agentName string) error {
 		return fmt.Errorf("remove session memory for %q: %w", agentName, err)
 	}
 	m.eventCount[agentName] = 0
+	m.lastPromptTokens = 0
+	m.pendingPromptTokenFloor = 0
 	return nil
 }
 
@@ -867,6 +893,8 @@ func (m *MemoryManager) removeAllPersisted(agentName string) error {
 		}
 	}
 	m.eventCount[agentName] = 0
+	m.lastPromptTokens = 0
+	m.pendingPromptTokenFloor = 0
 	return nil
 }
 
@@ -1068,6 +1096,7 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	// Without this, eventCount and handle.History remain at pre-compression size,
 	// causing appendSessionEvents() to skip writes or use stale indices.
 	m.lastPromptTokens = cutMeta.KeptTokensEstimate
+	m.pendingPromptTokenFloor = 0
 	for agentName := range m.eventCount {
 		m.eventCount[agentName] = len(hotEvents)
 	}

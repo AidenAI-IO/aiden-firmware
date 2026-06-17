@@ -33,7 +33,6 @@ func effectiveMaxIterations(configured int) int {
 }
 
 const currentEnvironmentHintMaxAge = 10 * time.Minute
-const runtimePlannerMemoryWindowSize = 10
 
 type Runtime struct {
 	config             Config
@@ -526,7 +525,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: r.effectiveContextWindow}
 
 	currentHints := r.currentEnvironmentHints()
-	memoryCfg := MemoryConfig{Type: "window", WindowSize: runtimePlannerMemoryWindowSize}
+	memoryCfg := MemoryConfig{Type: "buffer"}
 	var memoryHandle *MemoryHandle
 	if r.memories != nil {
 		memoryHandle, err = r.memories.Get("default", memoryCfg)
@@ -634,7 +633,13 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		executorHandler = streamCallbackHandler
 	}
 	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
-	conversationHistory, err := conversationHistoryMessageContents(ctx, memoryHandle.History, runtimePlannerMemoryWindowSize*2)
+	conversationHistory, err := runtimeConversationHistoryMessageContents(
+		ctx,
+		memoryHandle.History,
+		r.memories,
+		runID,
+		r.activeConversationHistoryTokenBudget(contextWindow),
+	)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -796,6 +801,20 @@ func (r *Runtime) effectiveContextWindow() int {
 		return r.memories.effectiveContextWindow()
 	}
 	return 0
+}
+
+func (r *Runtime) activeConversationHistoryTokenBudget(contextWindow int) int {
+	if contextWindow <= 0 {
+		return 0
+	}
+	reserveTokens := defaultReserveTokens
+	keepRecentTokens := defaultKeepRecentTokens
+	if r != nil && r.memories != nil {
+		reserveTokens = r.memories.reserveTokens()
+		keepRecentTokens = r.memories.keepRecentTokens()
+	}
+	_, keepRecent := clampTokenBudgets(reserveTokens, keepRecentTokens, contextWindow)
+	return keepRecent
 }
 
 func (r *Runtime) ClearMemory(ctx context.Context) error {
