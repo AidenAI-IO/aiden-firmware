@@ -966,6 +966,35 @@ std::string extract_iw_ssid(const std::string& text) {
     return "";
 }
 
+// Extract the IPv4 address from `ifconfig` output, supporting both the
+// BusyBox ("inet addr:192.168.1.2") and iproute/glibc ("inet 192.168.1.2")
+// formats. Returns an empty string when no IPv4 address is present.
+std::string extract_ifconfig_ipv4(const std::string& text) {
+    std::istringstream input(text);
+    std::string line;
+    while (std::getline(input, line)) {
+        std::string trimmed = trim_copy(line);
+        std::string value;
+        if (starts_with(trimmed, "inet addr:")) {
+            value = trimmed.substr(std::string("inet addr:").size());
+        } else if (starts_with(trimmed, "inet ") && !starts_with(trimmed, "inet6")) {
+            value = trimmed.substr(std::string("inet ").size());
+        } else {
+            continue;
+        }
+        // The address is the first whitespace-delimited token.
+        size_t end = value.find_first_of(" \t");
+        if (end != std::string::npos) {
+            value = value.substr(0, end);
+        }
+        value = trim_copy(value);
+        if (!value.empty()) {
+            return value;
+        }
+    }
+    return "";
+}
+
 bool write_all(int fd, const void* data, size_t size) {
     const char* bytes = static_cast<const char*>(data);
     size_t offset = 0;
@@ -1946,6 +1975,41 @@ bool wait_for_wpa_completed(const Options& options, std::ostringstream& log, int
     return false;
 }
 
+// Poll until the interface has obtained an IPv4 address (DHCP lease), up to
+// max_seconds. `dhcpcd -n` only signals the running daemon and returns
+// immediately, so the lease is not yet in place when it exits; without this
+// wait the connect-confirmation check sees an empty ip_address and rolls back
+// a connection that would have succeeded a second or two later.
+bool wait_for_ip(const Options& options, std::ostringstream& log, int max_seconds) {
+    for (int i = 0; i < max_seconds; ++i) {
+        if (command_exists("wpa_cli")) {
+            CommandResult status = run_shell_command(
+                "wpa_cli -i " + shell_quote(options.wifi_interface) + " status 2>&1");
+            if (status.exit_code == 0) {
+                std::string ip = find_key_value_line(status.output, "ip_address");
+                if (!ip.empty()) {
+                    log << "$ wpa_cli status -> ip_address=" << ip << " after "
+                        << (i + 1) << "s\n";
+                    return true;
+                }
+            }
+        }
+        if (command_exists("ifconfig")) {
+            CommandResult status = run_shell_command(
+                "ifconfig " + shell_quote(options.wifi_interface) + " 2>&1");
+            std::string ip = extract_ifconfig_ipv4(status.output);
+            if (!ip.empty()) {
+                log << "$ ifconfig " << options.wifi_interface << " -> inet " << ip
+                    << " after " << (i + 1) << "s\n";
+                return true;
+            }
+        }
+        sleep(1);
+    }
+    log << "$ no IPv4 address obtained within " << max_seconds << "s\n";
+    return false;
+}
+
 void restart_wpa_supplicant(const Options& options, std::ostringstream& log) {
     CommandResult killed = run_shell_command("killall wpa_supplicant 2>&1");
     log << "$ killall wpa_supplicant\n" << killed.output;
@@ -2140,16 +2204,19 @@ CommandResult apply_wifi_config(const Options& options, bool force_restart = fal
         if (command_exists("dhcpcd")) {
             CommandResult dhcp = run_shell_command("dhcpcd -n " + shell_quote(options.wifi_interface) + " 2>&1");
             log << "$ dhcpcd -n " << options.wifi_interface << "\n" << dhcp.output;
-            dhcp_ok = dhcp.exit_code == 0;
+            // `dhcpcd -n` only signals the running daemon and returns
+            // immediately, so its exit code says nothing about whether a lease
+            // was actually obtained. Wait for the IPv4 address to appear.
+            dhcp_ok = dhcp.exit_code == 0 && wait_for_ip(options, log, 15);
             if (!dhcp_ok) {
-                result.exit_code = dhcp.exit_code;
+                result.exit_code = dhcp.exit_code != 0 ? dhcp.exit_code : 1;
             }
         } else if (command_exists("dhclient")) {
             CommandResult dhcp = run_shell_command("dhclient " + shell_quote(options.wifi_interface) + " 2>&1");
             log << "$ dhclient " << options.wifi_interface << "\n" << dhcp.output;
-            dhcp_ok = dhcp.exit_code == 0;
+            dhcp_ok = dhcp.exit_code == 0 && wait_for_ip(options, log, 15);
             if (!dhcp_ok) {
-                result.exit_code = dhcp.exit_code;
+                result.exit_code = dhcp.exit_code != 0 ? dhcp.exit_code : 1;
             }
         } else {
             log << "No supported DHCP client found (need dhcpcd or dhclient).\n";

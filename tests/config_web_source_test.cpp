@@ -776,6 +776,26 @@ TEST_CASE("config web DHCP invokes dhcpcd without hook") {
     CHECK(source.find("dhcpcd -n \" + shell_quote(options.wifi_interface)") != std::string::npos);
 }
 
+TEST_CASE("config web waits for an IPv4 lease before confirming a connection") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    // A dedicated helper polls for the DHCP-assigned IPv4 address; `dhcpcd -n`
+    // returns immediately so the lease is not present when it exits.
+    CHECK(source.find("bool wait_for_ip(const Options& options") != std::string::npos);
+    // The helper must consult both wpa_cli status and ifconfig for the address.
+    CHECK(source.find("find_key_value_line(status.output, \"ip_address\")") != std::string::npos);
+    CHECK(source.find("extract_ifconfig_ipv4(status.output)") != std::string::npos);
+    // DHCP success must depend on actually obtaining an address, not just the
+    // dhcpcd exit code.
+    CHECK(source.find("dhcp.exit_code == 0 && wait_for_ip(options, log, 15)") != std::string::npos);
+}
+
 TEST_CASE("config web restores previous wifi config when final apply is not confirmed") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
