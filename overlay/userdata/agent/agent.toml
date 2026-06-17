@@ -1,5 +1,5 @@
 # Agent instruction and behavior
-instruction = ""
+custom_instruction = ""
 additional_prompt = ""
 max_iterations = -1
 force_simple_loop = false

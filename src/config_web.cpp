@@ -532,7 +532,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"telemetry", "max_retry", CONFIG_FIELD_NUMBER},
         {"telemetry", "tags", CONFIG_FIELD_ARRAY},
         {"telemetry", "environment", CONFIG_FIELD_STRING},
-        {"agent", "instruction", CONFIG_FIELD_STRING},
+        {"agent", "custom_instruction", CONFIG_FIELD_STRING},
         {"agent", "additional_prompt", CONFIG_FIELD_STRING},
         {"agent", "input_mode", CONFIG_FIELD_STRING},
         {"agent", "trigger_mode", CONFIG_FIELD_STRING},
@@ -1418,7 +1418,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(telemetry, "environment", config.telemetry.environment.c_str());
 
     cJSON* agent = add_object(root, "agent");
-    cJSON_AddStringToObject(agent, "instruction", config.instruction.c_str());
+    cJSON_AddStringToObject(agent, "custom_instruction", config.custom_instruction.c_str());
     cJSON_AddStringToObject(agent, "additional_prompt", config.additional_prompt.c_str());
     cJSON_AddStringToObject(agent, "input_mode", config.input_mode.c_str());
     cJSON_AddStringToObject(agent, "trigger_mode", config.trigger_mode.c_str());
@@ -1675,7 +1675,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
 
     cJSON* agent = cJSON_GetObjectItem(root, "agent");
     if (json_is_object(agent)) {
-        set_json_str(&config->instruction, agent, "instruction");
+        set_json_str(&config->custom_instruction, agent, "custom_instruction");
         set_json_str(&config->additional_prompt, agent, "additional_prompt");
         set_json_str(&config->input_mode, agent, "input_mode");
         set_json_str(&config->trigger_mode, agent, "trigger_mode");

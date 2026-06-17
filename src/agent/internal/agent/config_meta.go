@@ -94,9 +94,9 @@ func all(conds ...Condition) *VisibleRule { return &VisibleRule{All: conds} }
 
 // ConfigMeta returns the full field metadata for the config web UI. Defaults
 // here are the canonical defaults for the device's agent.toml. Free-text
-// fields (instruction, additional_prompt) intentionally carry no default: the
-// first-boot seed prompt is product content owned by the provisioning path,
-// not UI metadata.
+// fields (custom_instruction, additional_prompt) intentionally carry no
+// metadata default: the built-in prompt is runtime content, while
+// custom_instruction is only an override.
 func ConfigMeta() ConfigMetadata {
 	defaults := DefaultConfig()
 	return ConfigMetadata{
@@ -315,7 +315,7 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "screen_stable_timeout_ms", Widget: WidgetNumber, Default: defaults.ScreenStableTimeoutMs},
 					{Key: "screen_stable_ms", Widget: WidgetNumber, Default: defaults.ScreenStableMs},
 					{Key: "screen_stable_diff_threshold", Widget: WidgetNumber, Default: defaults.ScreenStableDiffThreshold},
-					{Key: "instruction", Widget: WidgetTextarea},
+					{Key: "custom_instruction", Widget: WidgetTextarea},
 					{Key: "additional_prompt", Widget: WidgetTextarea},
 				},
 			},

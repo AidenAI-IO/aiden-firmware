@@ -90,7 +90,7 @@ func TestConfigTodoReminderToolCallsDefaultsAndOverrides(t *testing.T) {
 func TestLoadConfigParsesModelSpecOverrides(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
-instruction = "test"
+custom_instruction = "test"
 
 [model]
 provider = "openrouter"
@@ -121,7 +121,7 @@ model_max_output_tokens = 4096
 func TestLoadConfigParsesLegacyModelMaxTokens(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
-instruction = "test"
+custom_instruction = "test"
 
 [model]
 provider = "openrouter"
@@ -144,7 +144,7 @@ max_tokens = 777
 func TestLoadConfigPrefersMaxResponseTokensOverLegacyMaxTokens(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
-instruction = "test"
+custom_instruction = "test"
 
 [model]
 provider = "openrouter"
@@ -206,6 +206,48 @@ provider = "fake"
 	}
 	if cfg.STT.Provider != "" {
 		t.Fatalf("STT.Provider = %q, want empty when text mode did not configure STT", cfg.STT.Provider)
+	}
+}
+
+func TestLoadRuntimeConfigIgnoresLegacyInstructionField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+instruction = "legacy field should be ignored"
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.Instruction != defaultInstruction {
+		t.Fatalf("Instruction = %q, want built-in default because legacy instruction is ignored", cfg.Instruction)
+	}
+}
+
+func TestLoadRuntimeConfigEmptyCustomInstructionUsesDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+custom_instruction = ""
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.Instruction != defaultInstruction {
+		t.Fatalf("Instruction = %q, want built-in default for empty custom_instruction", cfg.Instruction)
 	}
 }
 
@@ -646,7 +688,7 @@ func TestLoadConfigAcceptsMobileGymDeviceBackend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	content := `
-instruction = "test"
+custom_instruction = "test"
 input_mode = "text"
 max_iterations = 20
 force_simple_loop = true
@@ -679,7 +721,7 @@ func TestLoadConfigRejectsUnknownDeviceBackend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	content := `
-instruction = "test"
+custom_instruction = "test"
 
 [model]
 provider = "fake"

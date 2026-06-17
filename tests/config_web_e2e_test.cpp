@@ -87,6 +87,14 @@ void write_file(const std::string& path, const std::string& content) {
     out << content;
 }
 
+std::string read_file(const std::string& path) {
+    std::ifstream in(path);
+    REQUIRE(in.good());
+    std::ostringstream buf;
+    buf << in.rdbuf();
+    return buf.str();
+}
+
 std::string print_json_unformatted(cJSON* root) {
     char* text = cJSON_PrintUnformatted(root);
     REQUIRE(text != nullptr);
@@ -169,7 +177,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"telemetry\":{\"enabled\":false,\"provider\":\"langfuse\",\"base_url\":\"\","
         "\"public_key\":\"\",\"secret_key\":\"\",\"upload_screenshots\":true,"
         "\"upload_timeout_sec\":30,\"max_retry\":2,\"tags\":[],\"environment\":\"default\"},"
-        "\"agent\":{\"instruction\":\"stub default instruction\",\"additional_prompt\":\"\","
+        "\"agent\":{\"custom_instruction\":\"stub custom instruction\",\"additional_prompt\":\"\","
         "\"input_mode\":\"text\",\"trigger_mode\":\"manual\",\"vad_backend\":\"rknn\","
         "\"vad_model_path\":\"/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn\","
         "\"vad_helper_path\":\"/oem/usr/bin/rknn_vad\",\"vad_speech_threshold\":0.5,"
@@ -453,6 +461,14 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     cJSON* enabled = cJSON_GetObjectItem(audio_archive, "enabled");
     REQUIRE(enabled != nullptr);
     CHECK((enabled->type & 0xff) == cJSON_True);
+
+    cJSON* agent = cJSON_GetObjectItem(config, "agent");
+    REQUIRE(agent != nullptr);
+    cJSON* custom_instruction = cJSON_GetObjectItem(agent, "custom_instruction");
+    REQUIRE(custom_instruction != nullptr);
+    REQUIRE(custom_instruction->valuestring != nullptr);
+    CHECK(std::string(custom_instruction->valuestring) == "stub custom instruction");
+    CHECK(cJSON_GetObjectItem(agent, "instruction") == nullptr);
     cJSON_Delete(parsed);
 }
 
@@ -559,6 +575,49 @@ TEST_CASE("config_web: POST /api/config accepts empty audio_archive storage_path
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 200);
+}
+
+TEST_CASE("config_web: POST /api/config writes custom_instruction") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},"
+        "\"agent\":{\"custom_instruction\":\"Use custom behavior.\"}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("custom_instruction = \"Use custom behavior.\"") != std::string::npos);
+    CHECK(saved.rfind("instruction =", 0) != 0);
+    CHECK(saved.find("\ninstruction =") == std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config ignores legacy instruction") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/config.json", resolved_config_json("duckduckgo", false));
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},"
+        "\"agent\":{\"custom_instruction\":\"\",\"instruction\":\"legacy value\"}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("custom_instruction") == std::string::npos);
+    CHECK(saved.rfind("instruction =", 0) != 0);
+    CHECK(saved.find("\ninstruction =") == std::string::npos);
 }
 
 TEST_CASE("config_web: GET /api/config tolerates resolved config without force_simple_loop") {

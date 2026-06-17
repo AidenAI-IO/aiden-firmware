@@ -123,7 +123,7 @@ type telemetryDTO struct {
 }
 
 type agentDTO struct {
-	Instruction                string  `json:"instruction"`
+	CustomInstruction          string  `json:"custom_instruction"`
 	AdditionalPrompt           string  `json:"additional_prompt"`
 	InputMode                  string  `json:"input_mode"`
 	TriggerMode                string  `json:"trigger_mode"`
@@ -249,7 +249,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			Tags:              d.Telemetry.Tags,
 			Environment:       d.Telemetry.Environment,
 		},
-		Instruction:                d.Agent.Instruction,
+		Instruction:                d.Agent.CustomInstruction,
 		AdditionalPrompt:           d.Agent.AdditionalPrompt,
 		InputMode:                  d.Agent.InputMode,
 		TriggerMode:                d.Agent.TriggerMode,
@@ -368,7 +368,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			Environment:       cfg.Telemetry.EnvironmentOrDefault(),
 		},
 		Agent: agentDTO{
-			Instruction:                cfg.Instruction,
+			CustomInstruction:          customInstructionValue(cfg.Instruction),
 			AdditionalPrompt:           cfg.AdditionalPrompt,
 			InputMode:                  cfg.InputModeOrDefault(),
 			TriggerMode:                cfg.TriggerModeOrDefault(),
@@ -398,6 +398,13 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			ScreenStableDiffThreshold:  cfg.ScreenStableDiffThreshold,
 		},
 	}
+}
+
+func customInstructionValue(instruction string) string {
+	if strings.TrimSpace(instruction) == agent.DefaultConfig().Instruction {
+		return ""
+	}
+	return instruction
 }
 
 // runConfigCheck implements the `agent config-check` subcommand
