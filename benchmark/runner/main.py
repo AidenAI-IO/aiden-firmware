@@ -74,6 +74,16 @@ def cli(argv: list[str] | None = None) -> int:
     p_rejudge.add_argument("--judge-model", default="claude-sonnet-4-6")
     p_compare = sub.add_parser("compare")
     p_compare.add_argument("--runs", nargs=2, required=True)
+    p_webui = sub.add_parser("webui")
+    p_webui.add_argument("--host", default="127.0.0.1")
+    p_webui.add_argument("--port", type=int, default=8765)
+    p_webui.add_argument("--suites-dir", default=str(REPO_ROOT / "benchmark" / "suites"))
+    p_webui.add_argument("--runs-dir", default=str(REPO_ROOT / "benchmark" / "runs" / "webui"))
+    p_webui.add_argument("--base-config-dir", default=str(REPO_ROOT / "benchmark" / "config"))
+    p_webui.add_argument("--daemon-image", default="aiden-mobilegym-daemon:local")
+    p_webui.add_argument("--mobilegym-image", default="aiden-mobilegym-simulator:local")
+    p_webui.add_argument("--no-build-daemon-image", action="store_true")
+    p_webui.add_argument("--no-build-mobilegym-image", action="store_true")
     args = parser.parse_args(argv)
     if args.cmd == "run":
         return _cmd_run(args)
@@ -86,6 +96,22 @@ def cli(argv: list[str] | None = None) -> int:
     if args.cmd == "compare":
         from runner.compare import compare_runs
         return compare_runs(Path(args.runs[0]), Path(args.runs[1]))
+    if args.cmd == "webui":
+        from runner.webui import cli as webui_cli
+        forwarded = [
+            "--host", args.host,
+            "--port", str(args.port),
+            "--suites-dir", args.suites_dir,
+            "--runs-dir", args.runs_dir,
+            "--base-config-dir", args.base_config_dir,
+            "--daemon-image", args.daemon_image,
+            "--mobilegym-image", args.mobilegym_image,
+        ]
+        if args.no_build_daemon_image:
+            forwarded.append("--no-build-daemon-image")
+        if args.no_build_mobilegym_image:
+            forwarded.append("--no-build-mobilegym-image")
+        return webui_cli(forwarded)
     return 2
 
 

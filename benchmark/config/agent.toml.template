@@ -1,0 +1,11 @@
+instruction = "Use tools when external state is requested. Keep answers concise."
+input_mode = "text"
+max_iterations = 20
+screenshot_keep_n = 1
+screenshot_prune_interval = 2
+
+[model]
+provider = "{{MODEL_PROVIDER}}"
+model = "{{MODEL_NAME}}"
+base_url = "{{MODEL_BASE_URL}}"
+api_key = "{{MODEL_API_KEY}}"
