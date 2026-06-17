@@ -25,7 +25,7 @@ func TestLiveActivityManagerLifecycle(t *testing.T) {
 	}
 
 	state = manager.UpdateFromRunEvent("req-1", RunEvent{
-		Type:        "tool_call",
+		Type:        runEventToolCall,
 		ToolName:    "screenshot",
 		Description: "Checking the current screen",
 		Timestamp:   time.Now(),
@@ -60,7 +60,7 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 	}
 
 	state = manager.UpdateFromRunEvent("req-1", RunEvent{
-		Type:      "tool_call",
+		Type:      runEventToolCall,
 		ToolName:  "open_app",
 		ToolInput: `{"app":"Maps"}`,
 		Timestamp: time.Now(),
@@ -70,7 +70,7 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 	}
 
 	state = manager.UpdateFromRunEvent("req-1", RunEvent{
-		Type:      "tool_call",
+		Type:      runEventToolCall,
 		ToolName:  "screenshot",
 		Timestamp: time.Now(),
 	})
@@ -84,7 +84,7 @@ func TestLiveActivityManagerNeedsAppWhenBridgeUnavailable(t *testing.T) {
 	manager.StartTask("req-1", "Read clipboard")
 
 	state := manager.UpdateFromRunEvent("req-1", RunEvent{
-		Type:      "tool_call",
+		Type:      runEventToolCall,
 		ToolName:  "clipboard",
 		ToolInput: `{"action":"read"}`,
 		Timestamp: time.Now(),

@@ -71,6 +71,8 @@ type TaskEpisodeEvent struct {
 	ToolInput          string              `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
 	ToolDescription    string              `json:"tool_description,omitempty" yaml:"tool_description,omitempty"`
 	Content            string              `json:"content,omitempty" yaml:"content,omitempty"`
+	Todo               *TodoState          `json:"todo,omitempty" yaml:"todo,omitempty"`
+	SpeechEligible     bool                `json:"speech_eligible,omitempty" yaml:"speech_eligible,omitempty"`
 	Observation        string              `json:"observation,omitempty" yaml:"observation,omitempty"`
 	ScreenshotRef      string              `json:"screenshot_ref,omitempty" yaml:"screenshot_ref,omitempty"`
 	CanFinish          *bool               `json:"can_finish,omitempty" yaml:"can_finish,omitempty"`
@@ -229,6 +231,31 @@ func (r *EpisodeRecorder) RecordLoopPhase(phase loopPhase, reason string) {
 	})
 }
 
+func (r *EpisodeRecorder) RecordTodoUpdate(todo TodoState, content string, speechEligible bool) {
+	if r == nil {
+		return
+	}
+	snapshot := todo.Clone()
+	r.append(TaskEpisodeEvent{
+		Type:           runEventTodoUpdate,
+		Content:        strings.TrimSpace(content),
+		Todo:           &snapshot,
+		SpeechEligible: speechEligible,
+	})
+}
+
+func (r *EpisodeRecorder) RecordTodoClosed(todo TodoState, reason string) {
+	if r == nil {
+		return
+	}
+	snapshot := todo.Clone()
+	r.append(TaskEpisodeEvent{
+		Type:   runEventTodoClosed,
+		Todo:   &snapshot,
+		Reason: strings.TrimSpace(reason),
+	})
+}
+
 func (r *EpisodeRecorder) RecordPlannerDecision(decision plannerDecision) {
 	if r == nil {
 		return
@@ -270,7 +297,7 @@ func (r *EpisodeRecorder) recordExecutionForRole(result roleExecutionResult, rol
 	if result.Action != nil {
 		input := normalizeToolInput(result.Action.ToolInput)
 		r.append(TaskEpisodeEvent{
-			Type:            "tool_call",
+			Type:            runEventToolCall,
 			Role:            string(role),
 			ToolName:        result.Action.Tool,
 			ToolInput:       input,
@@ -1019,7 +1046,7 @@ func summarizeEpisodeForIndex(episode TaskEpisode, events []TaskEpisodeEvent) st
 	}
 	var tools []string
 	for _, event := range events {
-		if event.Type == "tool_call" && strings.TrimSpace(event.ToolName) != "" {
+		if event.Type == runEventToolCall && strings.TrimSpace(event.ToolName) != "" {
 			tools = append(tools, event.ToolName)
 		}
 	}
@@ -1109,7 +1136,7 @@ func inferReusableLessons(episode TaskEpisode) []string {
 	}
 	var tools []string
 	for _, evt := range episode.Events {
-		if evt.Type == "tool_call" && strings.TrimSpace(evt.ToolName) != "" {
+		if evt.Type == runEventToolCall && strings.TrimSpace(evt.ToolName) != "" {
 			tools = append(tools, evt.ToolName)
 		}
 	}
@@ -1122,7 +1149,7 @@ func inferReusableLessons(episode TaskEpisode) []string {
 func episodeToolSequence(events []TaskEpisodeEvent) []string {
 	var tools []string
 	for _, evt := range events {
-		if evt.Type == "tool_call" && strings.TrimSpace(evt.ToolName) != "" {
+		if evt.Type == runEventToolCall && strings.TrimSpace(evt.ToolName) != "" {
 			tools = append(tools, evt.ToolName)
 		}
 	}

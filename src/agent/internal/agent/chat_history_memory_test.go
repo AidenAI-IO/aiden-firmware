@@ -267,3 +267,40 @@ func TestRuntimeRunIncludesPersistedInterruptedEpisodeInPlannerHistory(t *testin
 		}
 	}
 }
+
+func TestFormatChatHistoryForPlannerOmitsTodoControlEvents(t *testing.T) {
+	history := []Message{
+		{Type: "user", EpisodeID: "ep_todo", Content: "处理多步任务"},
+		{
+			Type:      runEventTodoClosed,
+			EpisodeID: "ep_todo",
+			Content:   "final_answer",
+			Todo: &TodoState{
+				Mode:      TodoModeSimple,
+				Objective: "处理多步任务",
+				Revision:  1,
+				CurrentID: "todo-r1-simple1",
+				Items: []TodoItem{
+					{
+						ID:        "todo-r1-simple1",
+						Text:      "仍显示为执行中但已随 episode 关闭",
+						Status:    TodoInProgress,
+						Source:    TodoSourceExplicitSimple,
+						StepIndex: 1,
+					},
+				},
+			},
+		},
+		{Type: "assistant", EpisodeID: "ep_todo", Content: "完成"},
+	}
+
+	formatted := formatChatHistoryForPlanner(history, "继续")
+	for _, forbidden := range []string{runEventTodoClosed, "final_answer", "仍显示为执行中但已随 episode 关闭"} {
+		if strings.Contains(formatted, forbidden) {
+			t.Fatalf("planner history should omit todo control event %q:\n%s", forbidden, formatted)
+		}
+	}
+	if strings.Contains(formatted, "处理多步任务") {
+		t.Fatalf("completed episode user message should stay omitted with todo control events:\n%s", formatted)
+	}
+}

@@ -130,16 +130,25 @@ type RunMetrics struct {
 	LastPromptTokens int `json:"-"`
 }
 
+const (
+	runEventToolCall   = "tool_call"
+	runEventTodoUpdate = "todo_update"
+	runEventTodoClosed = "todo_closed"
+)
+
 type RunEvent struct {
-	Type        string    `json:"type"`
-	Role        string    `json:"role,omitempty"`
-	EpisodeID   string    `json:"episode_id,omitempty"`
-	ToolName    string    `json:"tool_name,omitempty"`
-	ToolInput   string    `json:"tool_input,omitempty"`
-	Description string    `json:"description,omitempty"`
-	Content     string    `json:"content,omitempty"`
-	Timestamp   time.Time `json:"timestamp"`
-	IsError     bool      `json:"is_error,omitempty"`
+	Type           string     `json:"type"`
+	Role           string     `json:"role,omitempty"`
+	EpisodeID      string     `json:"episode_id,omitempty"`
+	ToolName       string     `json:"tool_name,omitempty"`
+	ToolInput      string     `json:"tool_input,omitempty"`
+	Description    string     `json:"description,omitempty"`
+	Speech         string     `json:"speech,omitempty"`
+	Content        string     `json:"content,omitempty"`
+	Todo           *TodoState `json:"todo,omitempty"`
+	SpeechEligible bool       `json:"speech_eligible,omitempty"`
+	Timestamp      time.Time  `json:"timestamp"`
+	IsError        bool       `json:"is_error,omitempty"`
 }
 
 type usageTrackingModel struct {
@@ -566,6 +575,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			logger:                 r.logger,
 			eventHandler:           req.EventHandler,
 			episodeID:              episodeID,
+			toolCallSpeechEnabled:  r.config.VoiceToolCallSpeechOrDefault(),
 		}
 	}
 	var executorHandler callbacks.Handler
@@ -585,6 +595,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), req.DeviceEnvironment, req.SteerProvider)
+	executor.TodoReminderToolCalls = r.config.TodoReminderToolCallsOrDefault()
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
@@ -1025,6 +1036,7 @@ type runtimeCallbackHandler struct {
 	logger                 *Logger
 	eventHandler           func(RunEvent)
 	episodeID              string
+	toolCallSpeechEnabled  bool
 	mu                     sync.Mutex
 	pendingActions         []schema.AgentAction
 }
@@ -1188,11 +1200,12 @@ func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call T
 	}
 	if h.eventHandler != nil {
 		h.eventHandler(RunEvent{
-			Type:        "tool_call",
+			Type:        runEventToolCall,
 			EpisodeID:   h.episodeID,
 			ToolName:    call.Spec.Name,
 			ToolInput:   call.Input,
 			Description: description,
+			Speech:      h.toolCallSpeech(description),
 			Content:     description,
 			Timestamp:   time.Now(),
 		})
@@ -1243,11 +1256,12 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 	if h.eventHandler != nil {
 		h.pushPendingAction(action)
 		h.eventHandler(RunEvent{
-			Type:        "tool_call",
+			Type:        runEventToolCall,
 			EpisodeID:   h.episodeID,
 			ToolName:    action.Tool,
 			ToolInput:   action.ToolInput,
 			Description: description,
+			Speech:      h.toolCallSpeech(description),
 			Content:     description,
 			Timestamp:   time.Now(),
 		})
@@ -1255,6 +1269,43 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 }
 
 func (h *runtimeCallbackHandler) HandleAgentFinish(ctx context.Context, finish schema.AgentFinish) {}
+
+func (h *runtimeCallbackHandler) HandleTodoUpdate(ctx context.Context, todo TodoState, content string, speechEligible bool) {
+	content = strings.TrimSpace(content)
+	snapshot := todo.Clone()
+	if h.logger != nil {
+		h.logger.Info("Todo update: mode=%s revision=%d current_id=%s speech_eligible=%v content=%s",
+			snapshot.Mode, snapshot.Revision, snapshot.CurrentID, speechEligible, truncateForLog(content, 240))
+	}
+	if h.eventHandler != nil {
+		h.eventHandler(RunEvent{
+			Type:           runEventTodoUpdate,
+			EpisodeID:      h.episodeID,
+			Content:        content,
+			Todo:           &snapshot,
+			SpeechEligible: speechEligible,
+			Timestamp:      time.Now(),
+		})
+	}
+}
+
+func (h *runtimeCallbackHandler) HandleTodoClosed(ctx context.Context, todo TodoState, reason string) {
+	reason = strings.TrimSpace(reason)
+	snapshot := todo.Clone()
+	if h.logger != nil {
+		h.logger.Info("Todo closed: mode=%s revision=%d current_id=%s reason=%s",
+			snapshot.Mode, snapshot.Revision, snapshot.CurrentID, truncateForLog(reason, 240))
+	}
+	if h.eventHandler != nil {
+		h.eventHandler(RunEvent{
+			Type:      runEventTodoClosed,
+			EpisodeID: h.episodeID,
+			Content:   reason,
+			Todo:      &snapshot,
+			Timestamp: time.Now(),
+		})
+	}
+}
 
 func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, content string) {
 	content = strings.TrimSpace(content)
@@ -1405,6 +1456,13 @@ func (h *runtimeCallbackHandler) recordFinalStreamError(err error) {
 }
 
 var _ callbacks.Handler = (*runtimeCallbackHandler)(nil)
+
+func (h *runtimeCallbackHandler) toolCallSpeech(description string) string {
+	if h == nil || !h.toolCallSpeechEnabled {
+		return ""
+	}
+	return deriveToolCallSpeech(description)
+}
 
 func (h *runtimeCallbackHandler) pushPendingAction(action schema.AgentAction) {
 	h.mu.Lock()

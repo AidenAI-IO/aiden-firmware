@@ -148,7 +148,7 @@ func TestBuildRoleProfilesIncludesOpenAppRulesOnlyWhenAvailable(t *testing.T) {
 	}
 }
 
-func TestBuildRoleProfilesOmitsSpeechTextWhenSpeechSummaryDisabled(t *testing.T) {
+func TestBuildRoleProfilesOmitsStructuredSpeechWhenSpeechSummaryDisabled(t *testing.T) {
 	profiles := buildRoleProfiles(
 		AgentConfig{VoiceSpeechSummaryEnabled: boolPtrRoleProfile(false)},
 		ResolvedSkills{},
@@ -157,11 +157,8 @@ func TestBuildRoleProfilesOmitsSpeechTextWhenSpeechSummaryDisabled(t *testing.T)
 	)
 
 	for _, profile := range []RoleProfile{profiles.Planner, profiles.Verifier} {
-		if strings.Contains(profile.SystemPrompt, "speech_text") {
-			t.Fatalf("%s prompt should not require speech_text when speech summary is disabled:\n%s", profile.Name, profile.SystemPrompt)
-		}
-		if strings.Contains(profile.SystemPrompt, `"output"`) {
-			t.Fatalf("%s prompt should not require structured output when speech summary is disabled:\n%s", profile.Name, profile.SystemPrompt)
+		if strings.Contains(profile.SystemPrompt, `"speech":`) {
+			t.Fatalf("%s prompt should not require structured speech when speech summary is disabled:\n%s", profile.Name, profile.SystemPrompt)
 		}
 		if profile.Name == RolePlanner && (!strings.Contains(profile.SystemPrompt, "plain text") || !strings.Contains(profile.SystemPrompt, "not JSON")) {
 			t.Fatalf("planner prompt should ask for plain text final answers when speech summary is disabled:\n%s", profile.SystemPrompt)

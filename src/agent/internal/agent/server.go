@@ -103,6 +103,9 @@ type Message struct {
 	RequestID       string              `json:"request_id,omitempty"`
 	Status          string              `json:"status,omitempty"`
 	Content         string              `json:"content"`
+	Todo            *TodoState          `json:"todo,omitempty"`
+	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
+	Speech          string              `json:"speech,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
 	Description     string              `json:"description,omitempty"`
@@ -112,6 +115,36 @@ type Message struct {
 	AudioDurationMs int64               `json:"audio_duration_ms,omitempty"`
 	Timestamp       time.Time           `json:"timestamp"`
 	IsError         bool                `json:"is_error,omitempty"`
+}
+
+func cloneTodoStatePtr(todo *TodoState) *TodoState {
+	if todo == nil {
+		return nil
+	}
+	cloned := todo.Clone()
+	return &cloned
+}
+
+func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID string) Message {
+	episodeID := event.EpisodeID
+	if episodeID == "" {
+		episodeID = fallbackEpisodeID
+	}
+	return Message{
+		Type:           event.Type,
+		Role:           event.Role,
+		EpisodeID:      episodeID,
+		RequestID:      requestID,
+		Content:        event.Content,
+		Todo:           cloneTodoStatePtr(event.Todo),
+		SpeechEligible: event.SpeechEligible,
+		Speech:         event.Speech,
+		ToolName:       event.ToolName,
+		ToolInput:      event.ToolInput,
+		Description:    event.Description,
+		Timestamp:      event.Timestamp,
+		IsError:        event.IsError,
+	}
 }
 
 // ChatRequest represents an incoming chat request
@@ -694,7 +727,9 @@ func (s *Server) handleChatAsync(
 
 	// Run agent in background goroutine
 	go func() {
+		progress := s.newRunProgressSpeaker()
 		defer func() {
+			progress.Cancel()
 			s.unregisterActiveRun(requestID)
 			s.clearPendingSteer(requestID)
 			// Keep the completed result available for polling for 60s,
@@ -711,22 +746,7 @@ func (s *Server) handleChatAsync(
 		// Event handler pushes intermediate messages into the pending result
 		// so the client can poll them in near-realtime.
 		eventHandler := func(event RunEvent) {
-			episodeID := event.EpisodeID
-			if episodeID == "" {
-				episodeID = userMsg.EpisodeID
-			}
-			msg := Message{
-				Type:        event.Type,
-				Role:        event.Role,
-				EpisodeID:   episodeID,
-				RequestID:   requestID,
-				Content:     event.Content,
-				ToolName:    event.ToolName,
-				ToolInput:   event.ToolInput,
-				Description: event.Description,
-				Timestamp:   event.Timestamp,
-				IsError:     event.IsError,
-			}
+			msg := messageFromRunEvent(event, userMsg.EpisodeID, requestID)
 			s.appendHistory(msg)
 			pending.mu.Lock()
 			pending.history = append(pending.history, msg)
@@ -736,8 +756,13 @@ func (s *Server) handleChatAsync(
 				s.liveActivity.UpdateFromRunEvent(requestID, event)
 			}
 
-			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
-				go s.speakToolDescription(runCtx, event.Description)
+			if event.Type == runEventToolCall && s.runtime.config.VoiceToolCallSpeechOrDefault() {
+				go s.speakToolDescription(runCtx, event.Speech)
+			}
+			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
+				if text, ok := progressSpeechTextForEvent(event); ok {
+					progress.Schedule(runCtx, text)
+				}
 			}
 		}
 
@@ -767,12 +792,13 @@ func (s *Server) handleChatAsync(
 					}
 				} else {
 					newStream = stream
-					runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+					runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
 				}
 			}
 		}
 
 		result, err := s.runtime.Run(runCtx, runReq)
+		progress.Cancel()
 		if newStream != nil {
 			closeErr := newStream.closeAndWait()
 			if closeErr != nil && s.logger != nil {
@@ -979,6 +1005,8 @@ func (s *Server) handleChatSync(
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 	s.appendHistory(userMsg)
+	progress := s.newRunProgressSpeaker()
+	defer progress.Cancel()
 
 	runReq := RunRequest{
 		Input:             inputText,
@@ -989,23 +1017,14 @@ func (s *Server) handleChatSync(
 		RuntimeContext:    s.runtimeContext(),
 		StreamFinalChunks: true,
 		EventHandler: func(event RunEvent) {
-			eventEpisodeID := event.EpisodeID
-			if eventEpisodeID == "" {
-				eventEpisodeID = episodeID
+			s.appendHistory(messageFromRunEvent(event, episodeID, ""))
+			if event.Type == runEventToolCall && s.runtime.config.VoiceToolCallSpeechOrDefault() {
+				go s.speakToolDescription(r.Context(), event.Speech)
 			}
-			s.appendHistory(Message{
-				Type:        event.Type,
-				Role:        event.Role,
-				EpisodeID:   eventEpisodeID,
-				Content:     event.Content,
-				ToolName:    event.ToolName,
-				ToolInput:   event.ToolInput,
-				Description: event.Description,
-				Timestamp:   event.Timestamp,
-				IsError:     event.IsError,
-			})
-			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
-				go s.speakToolDescription(r.Context(), event.Description)
+			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
+				if text, ok := progressSpeechTextForEvent(event); ok {
+					progress.Schedule(ctx, text)
+				}
 			}
 		},
 	}
@@ -1022,12 +1041,13 @@ func (s *Server) handleChatSync(
 				}
 			} else {
 				newStream = stream
-				runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+				runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
 			}
 		}
 	}
 
 	result, err := s.runtime.Run(ctx, runReq)
+	progress.Cancel()
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
@@ -1157,6 +1177,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		ctx = runCtx
 	}
 	s.appendHistory(userMessage)
+	progress := s.newRunProgressSpeaker()
+	defer progress.Cancel()
 	if req.RequestID != "" && s.liveActivity != nil {
 		s.liveActivity.StartTask(req.RequestID, inputText)
 	}
@@ -1173,29 +1195,19 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			return s.consumePendingSteer(req.RequestID)
 		},
 		EventHandler: func(event RunEvent) {
-			eventEpisodeID := event.EpisodeID
-			if eventEpisodeID == "" {
-				eventEpisodeID = episodeID
-			}
-			message := Message{
-				Type:        event.Type,
-				Role:        event.Role,
-				EpisodeID:   eventEpisodeID,
-				RequestID:   req.RequestID,
-				Content:     event.Content,
-				ToolName:    event.ToolName,
-				ToolInput:   event.ToolInput,
-				Description: event.Description,
-				Timestamp:   event.Timestamp,
-				IsError:     event.IsError,
-			}
+			message := messageFromRunEvent(event, episodeID, req.RequestID)
 			s.appendHistory(message)
 			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
 			if req.RequestID != "" && s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
-			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
-				go s.speakToolDescription(ctx, event.Description)
+			if event.Type == runEventToolCall && s.runtime.config.VoiceToolCallSpeechOrDefault() {
+				go s.speakToolDescription(ctx, event.Speech)
+			}
+			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
+				if text, ok := progressSpeechTextForEvent(event); ok {
+					progress.Schedule(ctx, text)
+				}
 			}
 		},
 	}
@@ -1211,12 +1223,13 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				}
 			} else {
 				newStream = streamSession
-				runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+				runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
 			}
 		}
 	}
 
 	result, err := s.runtime.Run(ctx, runReq)
+	progress.Cancel()
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
@@ -1333,6 +1346,29 @@ func (s *Server) speakToolDescription(ctx context.Context, description string) {
 			s.logger.Error("Tool description TTS playback failed: %v", err)
 		}
 	}
+}
+
+func (s *Server) newRunProgressSpeaker() *progressSpeaker {
+	cfg := progressSpeakerConfig{}
+	if s.logger != nil {
+		cfg.Logf = func(format string, args ...any) {
+			s.logger.Error(format, args...)
+		}
+	}
+	return newProgressSpeaker(func(ctx context.Context, text string) error {
+		if strings.TrimSpace(text) == "" || s.audioClient == nil {
+			return nil
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		ttsCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
+		defer cancel()
+		if s.logger != nil {
+			s.logger.Info("Progress TTS playback: %q", text)
+		}
+		return s.speakText(ttsCtx, text, 0)
+	}, cfg)
 }
 
 func (s *Server) currentTTSManager() *tts.ProviderManager {
@@ -4247,6 +4283,7 @@ const webUI = `<!DOCTYPE html>
 
             const fragment = document.createDocumentFragment();
             history.forEach(function(msg) {
+                if (isControlMessage(msg)) return;
                 const key = messageIdentity(msg);
                 if (renderedMessageKeys.has(key)) return;
                 renderedMessageKeys.add(key);
@@ -4259,12 +4296,17 @@ const webUI = `<!DOCTYPE html>
         }
 
         function addMessage(msg) {
+            if (isControlMessage(msg)) return;
             const key = messageIdentity(msg);
             if (renderedMessageKeys.has(key)) return;
             renderedMessageKeys.add(key);
             messagesDiv.appendChild(createMessageNode(msg));
             updateEmptyState();
             scrollToBottom();
+        }
+
+        function isControlMessage(msg) {
+            return normalizeType((msg || {}).type) === 'todo_closed';
         }
 
         function messageIdentity(msg) {

@@ -40,6 +40,17 @@ func stringArrayArgSchema(description string) map[string]any {
 	return schema
 }
 
+func integerArrayArgSchema(description string) map[string]any {
+	schema := map[string]any{
+		"type":  "array",
+		"items": map[string]any{"type": "integer"},
+	}
+	if description != "" {
+		schema["description"] = description
+	}
+	return schema
+}
+
 func boolArgSchema(description string) map[string]any {
 	schema := map[string]any{"type": "boolean"}
 	if description != "" {

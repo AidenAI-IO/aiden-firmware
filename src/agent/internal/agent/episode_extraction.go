@@ -143,7 +143,7 @@ func episodeProcedureSteps(events []TaskEpisodeEvent) []ProcedureStep {
 			pendingApp, pendingPage = evt.ObservedState.AppName, evt.ObservedState.PageName
 			continue
 		}
-		if evt.Type != "tool_call" || strings.TrimSpace(evt.ToolName) == "" {
+		if evt.Type != runEventToolCall || strings.TrimSpace(evt.ToolName) == "" {
 			continue
 		}
 		step := ProcedureStep{
@@ -166,7 +166,7 @@ func episodeProcedureSteps(events []TaskEpisodeEvent) []ProcedureStep {
 				nextApp, nextPage = next.ObservedState.AppName, next.ObservedState.PageName
 				break
 			}
-			if next.Type == "tool_call" {
+			if next.Type == runEventToolCall {
 				break
 			}
 		}
@@ -285,7 +285,7 @@ func observedToolsByApp(events []TaskEpisodeEvent) map[string][]string {
 
 	// 扫描 tool_call，归属到当前 app（如果为空，往后找最近的）
 	for i, evt := range events {
-		if evt.Type != "tool_call" || strings.TrimSpace(evt.ToolName) == "" {
+		if evt.Type != runEventToolCall || strings.TrimSpace(evt.ToolName) == "" {
 			continue
 		}
 		app := appAtIndex[i]
@@ -356,7 +356,7 @@ func pageTransitions(events []TaskEpisodeEvent) []pageTransition {
 			}
 			curApp, curPage = nextApp, nextPage
 			pending = nil
-		case "tool_call":
+		case runEventToolCall:
 			cp := evt
 			pending = &cp
 		}

@@ -70,6 +70,23 @@ func TestConfigScreenStableDefaults(t *testing.T) {
 	}
 }
 
+func TestConfigTodoReminderToolCallsDefaultsAndOverrides(t *testing.T) {
+	cfg := Config{}
+	if got := cfg.TodoReminderToolCallsOrDefault(); got != 3 {
+		t.Fatalf("TodoReminderToolCallsOrDefault() = %d, want 3", got)
+	}
+
+	cfg.TodoReminderToolCalls = 2
+	if got := cfg.TodoReminderToolCallsOrDefault(); got != 2 {
+		t.Fatalf("TodoReminderToolCallsOrDefault() override = %d, want 2", got)
+	}
+
+	cfg.TodoReminderToolCalls = 0
+	if got := cfg.TodoReminderToolCallsOrDefault(); got != 3 {
+		t.Fatalf("TodoReminderToolCallsOrDefault() zero = %d, want 3", got)
+	}
+}
+
 func TestLoadConfigParsesModelSpecOverrides(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
@@ -806,6 +823,9 @@ func TestVoiceSessionConfigDefaults(t *testing.T) {
 	if cfg.VoiceToolCallSpeechOrDefault() {
 		t.Fatal("VoiceToolCallSpeechOrDefault() = true, want false")
 	}
+	if !cfg.VoiceProgressSpeechEnabledOrDefault() {
+		t.Fatal("VoiceProgressSpeechEnabledOrDefault() = false, want true")
+	}
 	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
 		t.Fatal("VoiceSpeechSummaryEnabledOrDefault() = false, want true")
 	}
@@ -822,17 +842,19 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 	interruptDisabled := false
 	streamingDisabled := false
 	toolSpeech := false
+	progressSpeechDisabled := false
 	summaryDisabled := false
 	cfg := Config{
-		VoiceSessionEnabled:       &disabled,
-		VoiceFirstTurnTimeoutMs:   1234,
-		VoiceFollowupTimeoutMs:    5678,
-		VoiceInterruptOnWakeup:    &interruptDisabled,
-		VoiceStreamingTTSEnabled:  &streamingDisabled,
-		VoiceToolCallSpeech:       &toolSpeech,
-		VoiceSpeechSummaryEnabled: &summaryDisabled,
-		VoiceSpeechMaxRunes:       64,
-		VoiceMaxResponseTokens:    123,
+		VoiceSessionEnabled:        &disabled,
+		VoiceFirstTurnTimeoutMs:    1234,
+		VoiceFollowupTimeoutMs:     5678,
+		VoiceInterruptOnWakeup:     &interruptDisabled,
+		VoiceStreamingTTSEnabled:   &streamingDisabled,
+		VoiceToolCallSpeech:        &toolSpeech,
+		VoiceProgressSpeechEnabled: &progressSpeechDisabled,
+		VoiceSpeechSummaryEnabled:  &summaryDisabled,
+		VoiceSpeechMaxRunes:        64,
+		VoiceMaxResponseTokens:     123,
 	}
 
 	if cfg.VoiceSessionEnabledOrDefault() {
@@ -852,6 +874,9 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 	}
 	if cfg.VoiceToolCallSpeechOrDefault() {
 		t.Fatal("VoiceToolCallSpeechOrDefault() = true, want false")
+	}
+	if cfg.VoiceProgressSpeechEnabledOrDefault() {
+		t.Fatal("VoiceProgressSpeechEnabledOrDefault() = true, want false")
 	}
 	if cfg.VoiceSpeechSummaryEnabledOrDefault() {
 		t.Fatal("VoiceSpeechSummaryEnabledOrDefault() = true, want false")
@@ -909,6 +934,14 @@ func TestVoiceSessionConfigValidationRejectsNegativeValues(t *testing.T) {
 				VoiceSpeechMaxRunes: -1,
 			},
 			want: "voice_speech_max_runes must be >= 0",
+		},
+		{
+			name: "negative todo reminder tool calls",
+			cfg: Config{
+				Model:                 ModelConfig{Provider: "fake"},
+				TodoReminderToolCalls: -1,
+			},
+			want: "todo_reminder_tool_calls must be >= 0",
 		},
 	}
 

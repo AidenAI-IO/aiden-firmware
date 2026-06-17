@@ -281,13 +281,15 @@ func TestProcessUtteranceSpeaksSpeechTextWithoutChangingHistoryOutput(t *testing
 }
 
 func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
+	toolSpeech := true
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先检查当前音量。"}`, "当前音量是 42。"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
-			Model:       ModelConfig{Provider: "fake"},
-			Instruction: "Use tools when external state is requested.",
+			Model:               ModelConfig{Provider: "fake"},
+			Instruction:         "Use tools when external state is requested.",
+			VoiceToolCallSpeech: &toolSpeech,
 		},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
@@ -301,7 +303,6 @@ func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 		NewSkillIndex(),
 	)
 	provider := &recordingTTSProvider{name: "dialog-provider"}
-	toolSpeech := true
 	dialog := &AudioDialog{
 		config: Config{
 			Model:                    ModelConfig{Provider: "fake"},
@@ -340,12 +341,158 @@ func TestAudioDialogDoesNotSpeakEnterSleepToolDescription(t *testing.T) {
 	}
 
 	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:        "tool_call",
+		Type:        runEventToolCall,
 		ToolName:    "enter_sleep",
 		Description: "用户让我休息，我准备进入睡眠模式。",
 	})
 
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
+}
+
+func TestAudioDialogSpeaksToolCallSpeechField(t *testing.T) {
+	toolSpeech := true
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config: Config{
+			VoiceToolCallSpeech: &toolSpeech,
+		},
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+	}
+
+	dialog.HandleRunEvent(context.Background(), RunEvent{
+		Type:        runEventToolCall,
+		ToolName:    "audio_volume",
+		Description: "完整工具描述保留给事件和上下文，不应该直接播报。",
+		Speech:      "读取当前音量。",
+	})
+
+	waitForProviderTextCount(t, provider, 1)
+	if got := provider.texts(); len(got) != 1 || got[0] != "读取当前音量。" {
+		t.Fatalf("unexpected TTS texts: %#v", got)
+	}
+}
+
+func TestAudioDialogDoesNotFallbackToToolCallDescriptionForSpeech(t *testing.T) {
+	toolSpeech := true
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config: Config{
+			VoiceToolCallSpeech: &toolSpeech,
+		},
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+	}
+
+	dialog.HandleRunEvent(context.Background(), RunEvent{
+		Type:        runEventToolCall,
+		ToolName:    "audio_volume",
+		Description: "完整工具描述保留给事件和上下文。",
+	})
+
+	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
+}
+
+func TestAudioDialogProgressSpeechDisabledDoesNotSpeakTodoUpdate(t *testing.T) {
+	disabled := false
+	spoken := make(chan string, 1)
+	dialog := &AudioDialog{
+		config: Config{VoiceProgressSpeechEnabled: &disabled},
+	}
+	dialog.setProgressSpeaker(newProgressSpeaker(func(ctx context.Context, text string) error {
+		spoken <- text
+		return nil
+	}, progressSpeakerConfig{Delay: time.Millisecond, MinInterval: -1}))
+
+	todo := TodoState{
+		Mode:      TodoModePlanned,
+		Revision:  1,
+		CurrentID: "todo-1",
+		Items: []TodoItem{{
+			ID:     "todo-1",
+			Text:   "Inspect current screen",
+			Status: TodoInProgress,
+			Source: TodoSourceCommittedPlan,
+		}},
+	}
+	dialog.HandleRunEvent(context.Background(), RunEvent{
+		Type:           runEventTodoUpdate,
+		Content:        "Inspect current screen",
+		Todo:           &todo,
+		SpeechEligible: true,
+	})
+
+	select {
+	case text := <-spoken:
+		t.Fatalf("progress speech was scheduled despite config=false: %q", text)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestProgressSpeechTextForEventOnlySpeaksInProgressCurrentItem(t *testing.T) {
+	todo := TodoState{
+		Mode:      TodoModePlanned,
+		Revision:  1,
+		CurrentID: "step-1",
+		Items: []TodoItem{{
+			ID:     "step-1",
+			Text:   "Inspect current screen",
+			Status: TodoDone,
+			Source: TodoSourceCommittedPlan,
+		}},
+	}
+	if text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo, SpeechEligible: true}); ok {
+		t.Fatalf("done todo should not be spoken, got %q", text)
+	}
+	todo.Items[0].Status = TodoInProgress
+	if text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo}); ok {
+		t.Fatalf("in-progress todo without speech eligibility should not be spoken, got %q", text)
+	}
+	text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo, SpeechEligible: true})
+	if !ok || text != "Inspect current screen" {
+		t.Fatalf("in-progress todo speech = %q ok=%v", text, ok)
+	}
+}
+
+func TestProgressSpeakerLatestWins(t *testing.T) {
+	spoken := make(chan string, 2)
+	speaker := newProgressSpeaker(func(ctx context.Context, text string) error {
+		spoken <- text
+		return nil
+	}, progressSpeakerConfig{Delay: 20 * time.Millisecond, MinInterval: -1})
+	speaker.Schedule(context.Background(), "first")
+	time.Sleep(5 * time.Millisecond)
+	speaker.Schedule(context.Background(), "second")
+
+	select {
+	case text := <-spoken:
+		if text != "second" {
+			t.Fatalf("spoken text = %q, want latest value", text)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("progress speaker did not speak latest pending text")
+	}
+	select {
+	case text := <-spoken:
+		t.Fatalf("unexpected extra progress speech: %q", text)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestProgressSpeakerCancelDropsPending(t *testing.T) {
+	spoken := make(chan string, 1)
+	speaker := newProgressSpeaker(func(ctx context.Context, text string) error {
+		spoken <- text
+		return nil
+	}, progressSpeakerConfig{Delay: 30 * time.Millisecond, MinInterval: -1})
+	speaker.Schedule(context.Background(), "pending")
+	speaker.Cancel()
+
+	select {
+	case text := <-spoken:
+		t.Fatalf("pending progress speech was not canceled: %q", text)
+	case <-time.After(80 * time.Millisecond):
+	}
 }
 
 func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {

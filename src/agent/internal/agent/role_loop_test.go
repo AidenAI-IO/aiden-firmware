@@ -427,6 +427,12 @@ func TestCommitPlanEntersExecutionMode(t *testing.T) {
 	if state.PlanCommitRequired {
 		t.Fatal("plan commit requirement should be cleared after commit_plan")
 	}
+	if state.Todo.Mode != TodoModePlanned || state.Todo.Revision != 1 || len(state.Todo.Items) != 2 {
+		t.Fatalf("planned todo not initialized: %#v", state.Todo)
+	}
+	if state.Todo.Items[0].Status != TodoPending || state.Todo.Items[1].Status != TodoPending {
+		t.Fatalf("planned todo items should start pending: %#v", state.Todo.Items)
+	}
 }
 
 func TestCommitPlanParsesStringPlanAndCriteria(t *testing.T) {
@@ -447,6 +453,46 @@ func TestCommitPlanParsesStringPlanAndCriteria(t *testing.T) {
 	}
 	if decision.Plan[0] != "Step 1: compute subtotal." || decision.Plan[2] != "Step 3: output final answer." {
 		t.Fatalf("unexpected parsed plan: %#v", decision.Plan)
+	}
+}
+
+func TestSetTodoRejectsOutOfRangeStatusIndices(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "completed zero",
+			input: `{"items":["one","two"],"current_index":1,"completed_indices":[0]}`,
+			want:  "completed_indices contains index 0 outside 1..2",
+		},
+		{
+			name:  "completed too large",
+			input: `{"items":["one","two"],"current_index":1,"completed_indices":[3]}`,
+			want:  "completed_indices contains index 3 outside 1..2",
+		},
+		{
+			name:  "blocked negative",
+			input: `{"items":["one","two"],"current_index":1,"blocked_indices":[-1]}`,
+			want:  "blocked_indices contains index -1 outside 1..2",
+		},
+		{
+			name:  "blocked too large",
+			input: `{"items":["one","two"],"current_index":1,"blocked_indices":[9]}`,
+			want:  "blocked_indices contains index 9 outside 1..2",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseSetTodoInput(tt.input)
+			if err == nil {
+				t.Fatal("parseSetTodoInput() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("parseSetTodoInput() error = %q, want containing %q", err.Error(), tt.want)
+			}
+		})
 	}
 }
 

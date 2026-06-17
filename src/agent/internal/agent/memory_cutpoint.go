@@ -70,7 +70,7 @@ func classifySessionCutEligibility(event SessionEvent) sessionCutEligibility {
 	switch event.Type {
 	case "user_input":
 		return cutTurnBoundary
-	case "assistant_output", "role_output", "tool_call":
+	case "assistant_output", "role_output", runEventToolCall:
 		return cutSplitAllowed
 	case "tool_result", "system_event", "screen_context":
 		return cutForbidden

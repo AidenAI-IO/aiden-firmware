@@ -247,12 +247,12 @@ func TestAudioDialogRunAgentTurnStreamsThroughProviderManager(t *testing.T) {
 	}
 }
 
-func TestAudioDialogRunAgentTurnStreamsSpeechTextFromStructuredAnswer(t *testing.T) {
+func TestAudioDialogRunAgentTurnStreamsSpeechFromStructuredAnswer(t *testing.T) {
 	model := &rawStreamingModel{
-		content: `{"speech_text":"已完成，当前音量是 42。","output":"已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。"}`,
+		content: `{"speech":"已完成，当前音量是 42。","text":"已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。"}`,
 		chunks: []string{
-			`{"speech_text":"已完成`,
-			`，当前音量是 42。","output":"已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。"}`,
+			`{"speech":"已完成`,
+			`，当前音量是 42。","text":"已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。"}`,
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -281,7 +281,7 @@ func TestAudioDialogRunAgentTurnStreamsSpeechTextFromStructuredAnswer(t *testing
 		t.Fatalf("RunAgentTurn() error = %v", err)
 	}
 	if !result.SpeechStreamed {
-		t.Fatal("SpeechStreamed = false, want true when speech_text streamed")
+		t.Fatal("SpeechStreamed = false, want true when speech streamed")
 	}
 	if result.Output != "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。" {
 		t.Fatalf("Output = %q", result.Output)
@@ -294,12 +294,12 @@ func TestAudioDialogRunAgentTurnStreamsSpeechTextFromStructuredAnswer(t *testing
 	}
 }
 
-func TestRuntimeRunStreamsStructuredSpeechTextToWriter(t *testing.T) {
+func TestRuntimeRunStreamsStructuredSpeechToWriter(t *testing.T) {
 	model := &rawStreamingModel{
-		content: `{"speech_text":"短口播。","output":"完整回答保留给屏幕。"}`,
+		content: `{"speech":"短口播。","text":"完整回答保留给屏幕。"}`,
 		chunks: []string{
-			`{"speech_text":"短`,
-			`口播。","output":"完整回答保留给屏幕。"}`,
+			`{"speech":"短`,
+			`口播。","text":"完整回答保留给屏幕。"}`,
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -313,7 +313,7 @@ func TestRuntimeRunStreamsStructuredSpeechTextToWriter(t *testing.T) {
 
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:             "hello",
-		StreamWriter:      NewSpeechTextStreamWriter(&stream, "speech_text"),
+		StreamWriter:      NewSpeechStreamWriter(&stream),
 		StreamFinalChunks: true,
 	})
 	if err != nil {

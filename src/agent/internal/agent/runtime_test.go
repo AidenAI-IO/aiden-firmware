@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -854,8 +855,8 @@ func structuredVerifierFinishResponse(speechText, output string) *llms.ContentRe
 func structuredVerifierFinishJSON(speechText, output string) string {
 	payload, _ := json.Marshal(map[string]any{
 		"can_finish":   true,
-		"speech_text":  speechText,
-		"output":       output,
+		"speech":       speechText,
+		"text":         output,
 		"final_answer": output,
 		"reason":       "test verified",
 	})
@@ -949,6 +950,18 @@ func commitPlanToolCall(plan ...string) *llms.ContentResponse {
 	return toolCallResponse("commit_1", toolCommitPlan, fmt.Sprintf(`{"__arg1":%q,"description":"commit plan"}`, string(payload)))
 }
 
+func setTodoToolCall(id string, items []string, currentIndex int, completed, blocked []int) *llms.ContentResponse {
+	payload, _ := json.Marshal(map[string]any{
+		"objective":         "test objective",
+		"items":             items,
+		"current_index":     currentIndex,
+		"completed_indices": completed,
+		"blocked_indices":   blocked,
+		"reason":            "test todo update",
+	})
+	return toolCallResponse(id, toolSetTodo, fmt.Sprintf(`{"__arg1":%q,"description":"set todo"}`, string(payload)))
+}
+
 func roleCommittedExecutionResponses(planSteps []string, pairs ...*llms.ContentResponse) []*llms.ContentResponse {
 	responses := []*llms.ContentResponse{
 		enterPlanModeToolCall(),
@@ -964,6 +977,39 @@ func firstRunEventOfType(events []RunEvent, eventType string) (RunEvent, bool) {
 		}
 	}
 	return RunEvent{}, false
+}
+
+func runEventsOfType(events []RunEvent, eventType string) []RunEvent {
+	var matching []RunEvent
+	for _, event := range events {
+		if event.Type == eventType {
+			matching = append(matching, event)
+		}
+	}
+	return matching
+}
+
+func taskEpisodeEventsOfType(events []TaskEpisodeEvent, eventType string) []TaskEpisodeEvent {
+	var matching []TaskEpisodeEvent
+	for _, event := range events {
+		if event.Type == eventType {
+			matching = append(matching, event)
+		}
+	}
+	return matching
+}
+
+func assertTodoItemStatus(t *testing.T, event RunEvent, itemIndex int, status TodoStatus) {
+	t.Helper()
+	if event.Todo == nil {
+		t.Fatalf("event has nil todo: %#v", event)
+	}
+	if itemIndex < 0 || itemIndex >= len(event.Todo.Items) {
+		t.Fatalf("todo item index %d out of range: %#v", itemIndex, event.Todo.Items)
+	}
+	if got := event.Todo.Items[itemIndex].Status; got != status {
+		t.Fatalf("todo item %d status = %q, want %q in event %#v", itemIndex, got, status, event)
+	}
 }
 
 type stubTool struct {
@@ -1369,15 +1415,492 @@ func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 	if len(tool.inputs) != 1 || tool.inputs[0] != "{}" {
 		t.Fatalf("unexpected tool inputs: %#v", tool.inputs)
 	}
-	toolCall, ok := firstRunEventOfType(events, "tool_call")
+	toolCall, ok := firstRunEventOfType(events, runEventToolCall)
 	if !ok {
 		t.Fatalf("expected tool_call event, got %#v", events)
 	}
 	if toolCall.Description != "我先读取当前音量。" || toolCall.Content != toolCall.Description {
 		t.Fatalf("unexpected tool description event: %#v", toolCall)
 	}
+	if toolCall.Speech != "" {
+		t.Fatalf("tool_call speech = %q, want empty when voice_tool_call_speech is disabled", toolCall.Speech)
+	}
 	if toolCall.ToolInput != "{}" {
 		t.Fatalf("tool_call event input = %q, want stripped input", toolCall.ToolInput)
+	}
+}
+
+func TestRuntimeRunEmitsToolSpeechOnlyWhenToolCallSpeechEnabled(t *testing.T) {
+	description := "我先读取当前音量并检查当前播放设备、音量状态、静音状态、输出通道以及系统返回结果是否一致。然后继续回答。"
+	model := &scriptedModel{
+		responses: roleToolResponses("audio_volume", fmt.Sprintf(`{"__arg1":"{}","description":%q}`, description), "The current audio volume is 42."),
+	}
+	tool := &stubTool{
+		name:        "audio_volume",
+		description: "Get the current audio playback volume.",
+		output:      `{"volume":42}`,
+	}
+	toolSpeechEnabled := true
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:               ModelConfig{Provider: "fake"},
+			Instruction:         "Use tools when external state is requested.",
+			VoiceToolCallSpeech: &toolSpeechEnabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "当前音量是多少？",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	toolCall, ok := firstRunEventOfType(events, runEventToolCall)
+	if !ok {
+		t.Fatalf("expected tool_call event, got %#v", events)
+	}
+	if toolCall.Description != description {
+		t.Fatalf("tool_call description changed: %q", toolCall.Description)
+	}
+	if toolCall.Content != description {
+		t.Fatalf("tool_call content = %q, want full description", toolCall.Content)
+	}
+	if toolCall.Speech == "" {
+		t.Fatal("tool_call speech is empty when voice_tool_call_speech is enabled")
+	}
+	if toolCall.Speech == description {
+		t.Fatalf("tool_call speech was not shortened: %q", toolCall.Speech)
+	}
+	if len([]rune(toolCall.Speech)) > toolCallSpeechMaxRunes {
+		t.Fatalf("tool_call speech has %d runes, want <= %d: %q", len([]rune(toolCall.Speech)), toolCallSpeechMaxRunes, toolCall.Speech)
+	}
+}
+
+func TestRuntimePlannedTodoLifecycleEvents(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleCommittedExecutionResponses(
+			[]string{"inspect screen", "write answer"},
+			finishStepToolCall("inspected"),
+			verifierStepContinueResponse("step ok"),
+			finishStepToolCall("answered"),
+			verifierFinishResponse("done"),
+		),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use plan mode."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "do a planned task",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("Output = %q, want done", result.Output)
+	}
+
+	todos := runEventsOfType(events, runEventTodoUpdate)
+	if len(todos) != 4 {
+		t.Fatalf("todo_update events = %d, want 4: %#v", len(todos), todos)
+	}
+	if todos[0].Todo == nil || todos[0].Todo.Mode != TodoModePlanned || todos[0].Todo.Revision != 1 || len(todos[0].Todo.Items) != 2 {
+		t.Fatalf("unexpected committed todo event: %#v", todos[0])
+	}
+	if todos[0].Todo.Items[0].Status != TodoPending || todos[0].Todo.Items[1].Status != TodoPending {
+		t.Fatalf("commit event should keep all items pending: %#v", todos[0].Todo.Items)
+	}
+	assertTodoItemStatus(t, todos[1], 0, TodoInProgress)
+	if todos[1].Content != "inspect screen" {
+		t.Fatalf("step 1 start content = %q", todos[1].Content)
+	}
+	if !todos[1].SpeechEligible {
+		t.Fatalf("step 1 start should be speech eligible: %#v", todos[1])
+	}
+	assertTodoItemStatus(t, todos[2], 0, TodoDone)
+	assertTodoItemStatus(t, todos[2], 1, TodoInProgress)
+	if todos[2].Content != "write answer" || !todos[2].SpeechEligible {
+		t.Fatalf("step transition should speak step 2 start: %#v", todos[2])
+	}
+	assertTodoItemStatus(t, todos[3], 1, TodoDone)
+	if todos[3].SpeechEligible {
+		t.Fatalf("final done event should not be speech eligible: %#v", todos[3])
+	}
+	closed := runEventsOfType(events, runEventTodoClosed)
+	if len(closed) != 1 {
+		t.Fatalf("todo_closed events = %d, want 1: %#v", len(closed), closed)
+	}
+	if closed[0].Todo == nil || closed[0].Todo.Revision != todos[3].Todo.Revision {
+		t.Fatalf("todo_closed should carry final todo snapshot: closed=%#v final_todo=%#v", closed[0], todos[3].Todo)
+	}
+	if closed[0].SpeechEligible {
+		t.Fatalf("todo_closed must not be speech eligible: %#v", closed[0])
+	}
+}
+
+func TestRuntimeTodoUpdatesRecordedInEpisode(t *testing.T) {
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	model := &scriptedModel{
+		responses: roleCommittedExecutionResponses(
+			[]string{"inspect state"},
+			finishStepToolCall("inspected"),
+			verifierFinishResponse("done"),
+		),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Model: ModelConfig{Provider: "fake"}, Instruction: "Use plan mode."},
+		&testModelResolver{model: model},
+		NewMemoryManager(memoryDir),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "do a planned task",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.EpisodeID == "" {
+		t.Fatal("EpisodeID is empty")
+	}
+	traceTodos := runEventsOfType(events, runEventTodoUpdate)
+	if len(traceTodos) == 0 {
+		t.Fatalf("runtime emitted no todo_update events: %#v", events)
+	}
+
+	eventPaths, err := filepath.Glob(filepath.Join(memoryDir, "episodes", "*", result.EpisodeID, "events.jsonl"))
+	if err != nil || len(eventPaths) != 1 {
+		t.Fatalf("episode events glob paths=%#v err=%v", eventPaths, err)
+	}
+	episodeEvents, err := readEpisodeEvents(eventPaths[0])
+	if err != nil {
+		t.Fatalf("read episode events: %v", err)
+	}
+	episodeTodos := taskEpisodeEventsOfType(episodeEvents, runEventTodoUpdate)
+	if len(episodeTodos) != len(traceTodos) {
+		t.Fatalf("episode todo_update count = %d, want %d\ntrace=%#v\nepisode=%#v", len(episodeTodos), len(traceTodos), traceTodos, episodeTodos)
+	}
+	for i := range traceTodos {
+		if episodeTodos[i].Content != traceTodos[i].Content {
+			t.Fatalf("todo %d content = %q, want %q", i, episodeTodos[i].Content, traceTodos[i].Content)
+		}
+		if episodeTodos[i].SpeechEligible != traceTodos[i].SpeechEligible {
+			t.Fatalf("todo %d speechEligible = %v, want %v", i, episodeTodos[i].SpeechEligible, traceTodos[i].SpeechEligible)
+		}
+		if episodeTodos[i].Todo == nil || traceTodos[i].Todo == nil {
+			t.Fatalf("todo %d missing snapshot: trace=%#v episode=%#v", i, traceTodos[i].Todo, episodeTodos[i].Todo)
+		}
+		if !reflect.DeepEqual(*episodeTodos[i].Todo, *traceTodos[i].Todo) {
+			t.Fatalf("todo %d snapshot mismatch:\ntrace=%#v\nepisode=%#v", i, *traceTodos[i].Todo, *episodeTodos[i].Todo)
+		}
+	}
+
+	traceClosed := runEventsOfType(events, runEventTodoClosed)
+	episodeClosed := taskEpisodeEventsOfType(episodeEvents, runEventTodoClosed)
+	if len(traceClosed) != 1 || len(episodeClosed) != 1 {
+		t.Fatalf("todo_closed counts trace=%d episode=%d\ntrace=%#v\nepisode=%#v", len(traceClosed), len(episodeClosed), traceClosed, episodeClosed)
+	}
+	if traceClosed[0].Content != "final_answer" || episodeClosed[0].Reason != "final_answer" {
+		t.Fatalf("todo_closed reason mismatch: trace=%#v episode=%#v", traceClosed[0], episodeClosed[0])
+	}
+	if traceClosed[0].Todo == nil || episodeClosed[0].Todo == nil {
+		t.Fatalf("todo_closed missing snapshot: trace=%#v episode=%#v", traceClosed[0].Todo, episodeClosed[0].Todo)
+	}
+	if !reflect.DeepEqual(*traceClosed[0].Todo, *episodeClosed[0].Todo) {
+		t.Fatalf("todo_closed snapshot mismatch:\ntrace=%#v\nepisode=%#v", *traceClosed[0].Todo, *episodeClosed[0].Todo)
+	}
+}
+
+func TestRuntimeTodoBlocksAndRevisionsOnReplan(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			enterPlanModeToolCall(),
+			commitPlanToolCall("blocked step"),
+			finishStepToolCall("blocked attempt"),
+			verifierContinueResponse("need a new plan"),
+			commitPlanToolCall("replacement step"),
+			finishStepToolCall("replacement done"),
+			verifierFinishResponse("done"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use plan mode."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "do a planned task",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	todos := runEventsOfType(events, runEventTodoUpdate)
+	if len(todos) < 5 {
+		t.Fatalf("todo_update events = %d, want at least 5: %#v", len(todos), todos)
+	}
+	assertTodoItemStatus(t, todos[2], 0, TodoBlocked)
+	if todos[2].Todo.Revision != 1 {
+		t.Fatalf("blocked revision = %d, want 1", todos[2].Todo.Revision)
+	}
+	if todos[3].Todo == nil || todos[3].Todo.Revision != 2 || len(todos[3].Todo.Items) != 1 {
+		t.Fatalf("replan commit should replace items with revision 2: %#v", todos[3].Todo)
+	}
+	if todos[3].Todo.Items[0].Text != "replacement step" {
+		t.Fatalf("replan commit item text = %q, want replacement step", todos[3].Todo.Items[0].Text)
+	}
+	assertTodoItemStatus(t, todos[4], 0, TodoInProgress)
+	if todos[4].Todo.Revision != 2 {
+		t.Fatalf("replacement step revision = %d, want 2", todos[4].Todo.Revision)
+	}
+}
+
+func TestRuntimeDirectAnswerDoesNotGenerateTodo(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("done")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "hello",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if todos := runEventsOfType(events, runEventTodoUpdate); len(todos) != 0 {
+		t.Fatalf("direct answer emitted todo_update events: %#v", todos)
+	}
+	if closed := runEventsOfType(events, runEventTodoClosed); len(closed) != 0 {
+		t.Fatalf("direct answer emitted todo_closed events: %#v", closed)
+	}
+}
+
+func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
+			toolCallResponse("call_2", "web_search", `{"__arg1":"Aiden"}`),
+			contentResponse("done"),
+		},
+	}
+	screenshot := &stubTool{name: "screenshot", description: "Capture screen.", output: "screen"}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"screenshot": screenshot,
+			"web_search": webSearch,
+		}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "look",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	todos := runEventsOfType(events, runEventTodoUpdate)
+	if len(todos) != 0 {
+		t.Fatalf("simple loop emitted implicit todo_update events: %#v", todos)
+	}
+	if closed := runEventsOfType(events, runEventTodoClosed); len(closed) != 0 {
+		t.Fatalf("simple loop emitted implicit todo_closed events: %#v", closed)
+	}
+	if len(screenshot.inputs) != 1 || len(webSearch.inputs) != 1 {
+		t.Fatalf("expected simple tools to execute without todo, screenshot=%#v web=%#v", screenshot.inputs, webSearch.inputs)
+	}
+}
+
+func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("call_1", "web_search", `{"__arg1":"Aiden"}`),
+			contentResponse("done"),
+		},
+	}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "search",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	todos := runEventsOfType(events, runEventTodoUpdate)
+	if len(todos) != 0 {
+		t.Fatalf("force_simple_loop emitted todo_update events: %#v", todos)
+	}
+	if closed := runEventsOfType(events, runEventTodoClosed); len(closed) != 0 {
+		t.Fatalf("force_simple_loop emitted todo_closed events: %#v", closed)
+	}
+	if len(webSearch.inputs) != 1 {
+		t.Fatalf("expected force_simple_loop tool to execute without todo, inputs=%#v", webSearch.inputs)
+	}
+}
+
+func TestRuntimeForceSimpleLoopExplicitTodoLifecycle(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			setTodoToolCall("todo_1", []string{"inspect state", "write answer"}, 1, nil, nil),
+			toolCallResponse("call_1", "web_search", `{"__arg1":"Aiden"}`),
+			setTodoToolCall("todo_2", []string{"inspect state", "write answer"}, 2, []int{1}, nil),
+			contentResponse("done"),
+		},
+	}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "complex single-agent task",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	todos := runEventsOfType(events, runEventTodoUpdate)
+	if len(todos) != 2 {
+		t.Fatalf("todo_update events = %d, want 2: %#v", len(todos), todos)
+	}
+	first := todos[0].Todo
+	if first == nil || first.Mode != TodoModeSimple || first.Revision != 1 || len(first.Items) != 2 {
+		t.Fatalf("unexpected first todo: %#v", first)
+	}
+	if !todos[0].SpeechEligible || first.Items[0].Status != TodoInProgress || first.Items[0].Source != TodoSourceExplicitSimple {
+		t.Fatalf("first todo should start item 1 with speech eligibility: event=%#v todo=%#v", todos[0], first)
+	}
+	second := todos[1].Todo
+	if second == nil || second.Revision != 2 {
+		t.Fatalf("unexpected second todo: %#v", second)
+	}
+	if !todos[1].SpeechEligible || second.Items[0].Status != TodoDone || second.Items[1].Status != TodoInProgress {
+		t.Fatalf("second todo should advance to item 2 with speech eligibility: event=%#v todo=%#v", todos[1], second)
+	}
+	closed := runEventsOfType(events, runEventTodoClosed)
+	if len(closed) != 1 {
+		t.Fatalf("todo_closed events = %d, want 1: %#v", len(closed), closed)
+	}
+	if closed[0].Todo == nil || closed[0].Todo.Items[1].Status != TodoInProgress {
+		t.Fatalf("todo_closed should preserve last simple todo snapshot without forcing done: %#v", closed[0])
+	}
+}
+
+func TestRuntimeSimpleLoopTodoReminderAfterSeveralToolCalls(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("call_1", "web_search", `{"__arg1":"one"}`),
+			toolCallResponse("call_2", "web_search", `{"__arg1":"two"}`),
+			toolCallResponse("call_3", "web_search", `{"__arg1":"three"}`),
+			contentResponse("done"),
+		},
+	}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "complex single-agent task"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) < 4 {
+		t.Fatalf("expected fourth model call after reminder, got %d", len(model.messages))
+	}
+	prompt := messageText(model.messages[3])
+	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
+		t.Fatalf("fourth prompt missing todo reminder:\n%s", prompt)
+	}
+}
+
+func TestRuntimeSimpleLoopTodoReminderUsesConfiguredToolCallThreshold(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("call_1", "web_search", `{"__arg1":"one"}`),
+			toolCallResponse("call_2", "web_search", `{"__arg1":"two"}`),
+			contentResponse("done"),
+		},
+	}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true, TodoReminderToolCalls: 2},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "complex single-agent task"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) < 3 {
+		t.Fatalf("expected third model call after configured reminder, got %d", len(model.messages))
+	}
+	prompt := messageText(model.messages[2])
+	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
+		t.Fatalf("third prompt missing configured todo reminder:\n%s", prompt)
 	}
 }
 
@@ -1433,12 +1956,12 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 func TestRuntimeRunDirectRouteUsesProviderFinalStreaming(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			contentResponse(`{"mode":"direct_answer","speech_text":"Short answer.","output":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
+			contentResponse(`{"mode":"direct_answer","speech":"Short answer.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
 		},
 		streamChunks: [][]string{
 			{
-				`{"mode":"direct_answer","speech_text":"Short`,
-				` answer.","output":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`,
+				`{"mode":"direct_answer","speech":"Short`,
+				` answer.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`,
 			},
 		},
 	}
@@ -1456,7 +1979,7 @@ func TestRuntimeRunDirectRouteUsesProviderFinalStreaming(t *testing.T) {
 	var stream strings.Builder
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:             "hello",
-		StreamWriter:      NewSpeechTextStreamWriter(&stream, "speech_text"),
+		StreamWriter:      NewSpeechStreamWriter(&stream),
 		StreamFinalChunks: true,
 	})
 	if err != nil {
@@ -1467,7 +1990,7 @@ func TestRuntimeRunDirectRouteUsesProviderFinalStreaming(t *testing.T) {
 		t.Fatalf("expected direct route call to use provider streaming, got %#v", got)
 	}
 	if stream.String() != "Short answer." {
-		t.Fatalf("stream = %q, want speech_text from provider chunks", stream.String())
+		t.Fatalf("stream = %q, want speech from provider chunks", stream.String())
 	}
 	if result.Output != "Complete answer." {
 		t.Fatalf("Output = %q", result.Output)
@@ -1481,15 +2004,15 @@ func TestRuntimeRunDefaultModeFinalAnswerUsesProviderFinalStreaming(t *testing.T
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			contentResponse(`{"mode":"simple","reason":"ordinary one-pass answer"}`),
-			contentResponse(`{"speech_text":"Short answer.","output":"Complete answer."}`),
+			contentResponse(`{"speech":"Short answer.","text":"Complete answer."}`),
 		},
 		streamChunks: [][]string{
 			{
 				`{"mode":"simple","reason":"ordinary one-pass answer"}`,
 			},
 			{
-				`{"speech_text":"Short`,
-				` answer.","output":"Complete answer."}`,
+				`{"speech":"Short`,
+				` answer.","text":"Complete answer."}`,
 			},
 		},
 	}
@@ -1507,7 +2030,7 @@ func TestRuntimeRunDefaultModeFinalAnswerUsesProviderFinalStreaming(t *testing.T
 	var stream strings.Builder
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:             "hello",
-		StreamWriter:      NewSpeechTextStreamWriter(&stream, "speech_text"),
+		StreamWriter:      NewSpeechStreamWriter(&stream),
 		StreamFinalChunks: true,
 	})
 	if err != nil {
@@ -1518,7 +2041,7 @@ func TestRuntimeRunDefaultModeFinalAnswerUsesProviderFinalStreaming(t *testing.T
 		t.Fatalf("expected route and default final calls to use provider streaming, got %#v", got)
 	}
 	if stream.String() != "Short answer." {
-		t.Fatalf("stream = %q, want only default final speech_text", stream.String())
+		t.Fatalf("stream = %q, want only default final speech", stream.String())
 	}
 	if result.Output != "Complete answer." {
 		t.Fatalf("Output = %q", result.Output)
@@ -1613,7 +2136,7 @@ func TestRuntimeRunResetsSpeechStreamWriterBetweenFinalStreamingAttempts(t *test
 	var stream strings.Builder
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:             "do a planned task",
-		StreamWriter:      NewSpeechTextStreamWriter(&stream, "speech_text"),
+		StreamWriter:      NewSpeechStreamWriter(&stream),
 		StreamFinalChunks: true,
 	})
 	if err != nil {
@@ -1633,7 +2156,7 @@ func TestRuntimeRunResetsSpeechStreamWriterBetweenFinalStreamingAttempts(t *test
 	}
 }
 
-func TestRuntimeRunFallsBackWhenProviderStreamEmitsNoSpeechText(t *testing.T) {
+func TestRuntimeRunFallsBackWhenProviderStreamEmitsNoSpeech(t *testing.T) {
 	finalVerifier := verifierFinishJSON("Fallback final answer.")
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -1660,7 +2183,7 @@ func TestRuntimeRunFallsBackWhenProviderStreamEmitsNoSpeechText(t *testing.T) {
 	var stream strings.Builder
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:             "do a planned task",
-		StreamWriter:      NewJSONFieldOrPlainStreamWriter(&stream, "output"),
+		StreamWriter:      NewJSONFieldOrPlainStreamWriter(&stream, "text"),
 		StreamFinalChunks: true,
 	})
 	if err != nil {
@@ -1677,15 +2200,15 @@ func TestRuntimeRunFallsBackWhenProviderStreamEmitsNoSpeechText(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunFallsBackWhenProviderStreamWriterErrorsAfterPartialSpeechText(t *testing.T) {
+func TestRuntimeRunFallsBackWhenProviderStreamWriterErrorsAfterPartialSpeech(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			contentResponse(`{"mode":"direct_answer","speech_text":"Recovered speech.","output":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
+			contentResponse(`{"mode":"direct_answer","speech":"Recovered speech.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
 		},
 		streamChunks: [][]string{
 			{
-				`{"mode":"direct_answer","speech_text":"Broken`,
-				`\q","output":"ignored"}`,
+				`{"mode":"direct_answer","speech":"Broken`,
+				`\q","text":"ignored"}`,
 			},
 		},
 	}
@@ -1700,7 +2223,7 @@ func TestRuntimeRunFallsBackWhenProviderStreamWriterErrorsAfterPartialSpeechText
 	var stream strings.Builder
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:             "hello",
-		StreamWriter:      NewSpeechTextStreamWriter(&stream, "speech_text"),
+		StreamWriter:      NewSpeechStreamWriter(&stream),
 		StreamFinalChunks: true,
 	})
 	if err != nil {

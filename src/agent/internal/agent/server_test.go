@@ -99,12 +99,15 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if !ok || roleOutput.Role != "planner" {
 		t.Fatalf("expected planner role_output in history: %#v", resp.History)
 	}
-	toolCall, ok := firstMessageOfType(resp.History, "tool_call")
+	toolCall, ok := firstMessageOfType(resp.History, runEventToolCall)
 	if !ok || toolCall.ToolName != "audio_volume" || toolCall.ToolInput != "{}" {
 		t.Fatalf("unexpected tool_call message: %#v", resp.History)
 	}
 	if toolCall.Description != "我先读取当前音量。" || toolCall.Content != "我先读取当前音量。" {
 		t.Fatalf("unexpected tool_call description: %#v", toolCall)
+	}
+	if toolCall.Speech != "" {
+		t.Fatalf("tool_call speech = %q, want empty when voice_tool_call_speech is disabled", toolCall.Speech)
 	}
 	toolResult, ok := firstMessageOfType(resp.History, "tool_result")
 	if !ok || toolResult.ToolName != "audio_volume" || toolResult.Content != `{"volume":42}` {
@@ -247,7 +250,7 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 				if event.Message.Role == "planner" {
 					sawPlanner = true
 				}
-			case "tool_call":
+			case runEventToolCall:
 				sawToolCall = event.Message.ToolName == "audio_volume"
 			case "tool_result":
 				sawToolResult = event.Message.ToolName == "audio_volume" && event.Message.Content == `{"volume":42}`
@@ -568,8 +571,9 @@ func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
 }
 
 func TestServerHandleChatDoesNotWaitForToolDescriptionTTSWhenEnabled(t *testing.T) {
+	description := "我先读取当前音量并检查当前播放设备、音量状态、静音状态、输出通道以及系统返回结果是否一致。然后继续回答。"
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
+		responses: roleToolResponses("audio_volume", fmt.Sprintf(`{"__arg1":"{}","description":%q}`, description), "The current audio volume is 42."),
 	}
 	streamingDisabled := false
 	toolSpeechEnabled := true
@@ -592,7 +596,7 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTSWhenEnabled(t *testing.
 		NewSkillIndex(),
 	)
 	server := NewServer(runtime, ":0", "")
-	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: deriveToolCallSpeech(description)}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
 	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
 
@@ -820,7 +824,7 @@ func TestWebUISteerModeControlsArePresent(t *testing.T) {
 		"/api/chat/steer",
 		"/api/chat/steer/cancel",
 		"async function submitSteerMessage()",
-		"sendBtn.textContent = isLoading ? 'Steer' : 'Send';",
+		"sendBtn.textContent = currentChatRequestId ? 'Steer' : 'Send';",
 		"id=\"pendingSteer\"",
 	} {
 		if !strings.Contains(webUI, want) {
@@ -976,7 +980,7 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 		),
 		history: []Message{
 			{Type: "user", Content: "hello"},
-			{Type: "tool_call", ToolName: "screenshot", ToolInput: "{}"},
+			{Type: runEventToolCall, ToolName: "screenshot", ToolInput: "{}"},
 			{Type: "tool_result", ToolName: "screenshot", Content: `{"width":100}`},
 		},
 	}
@@ -996,7 +1000,7 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 	if len(history) != 3 {
 		t.Fatalf("expected 3 history entries, got %d", len(history))
 	}
-	if history[1].Type != "tool_call" || history[2].Type != "tool_result" {
+	if history[1].Type != runEventToolCall || history[2].Type != "tool_result" {
 		t.Fatalf("unexpected history payload: %#v", history)
 	}
 }
