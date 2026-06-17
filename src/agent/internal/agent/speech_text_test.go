@@ -3,10 +3,9 @@ package agent
 import (
 	"strings"
 	"testing"
-	"unicode/utf8"
 )
 
-func TestBuildSpeechTextSummarizesVerboseOutputForTTS(t *testing.T) {
+func TestBuildSpeechTextKeepsFullOutputWhenSummaryEnabled(t *testing.T) {
 	output := strings.Join([]string{
 		"已完成设置，当前音量是 42。",
 		"",
@@ -24,20 +23,8 @@ func TestBuildSpeechTextSummarizesVerboseOutputForTTS(t *testing.T) {
 
 	speech := BuildSpeechText(output, Config{VoiceSpeechMaxRunes: 40})
 
-	if speech == "" {
-		t.Fatal("BuildSpeechText() returned empty speech")
-	}
-	if strings.Contains(speech, "```") || strings.Contains(speech, `{"volume":42}`) {
-		t.Fatalf("speech should drop code blocks, got %q", speech)
-	}
-	if strings.Contains(speech, "- 我先打开") {
-		t.Fatalf("speech should drop markdown list detail, got %q", speech)
-	}
-	if !strings.Contains(speech, "当前音量是 42") {
-		t.Fatalf("speech should keep the main conclusion, got %q", speech)
-	}
-	if utf8.RuneCountInString(speech) > 40 {
-		t.Fatalf("speech length = %d runes, want <= 40: %q", utf8.RuneCountInString(speech), speech)
+	if speech != strings.TrimSpace(output) {
+		t.Fatalf("speech = %q, want full output %q", speech, strings.TrimSpace(output))
 	}
 }
 
@@ -49,6 +36,16 @@ func TestBuildSpeechTextKeepsOutputWhenSummaryDisabled(t *testing.T) {
 
 	if speech != strings.TrimSpace(output) {
 		t.Fatalf("speech = %q, want original output", speech)
+	}
+}
+
+func TestBuildSpeechTextDoesNotKeepOnlyFirstSentence(t *testing.T) {
+	output := "CodeFace，你好！\n\n我仔细搜寻了记忆，但没有找到今天的对话历史记录。你可以再问我一次，我会尽力回答。"
+
+	speech := BuildSpeechText(output, Config{})
+
+	if speech != strings.TrimSpace(output) {
+		t.Fatalf("speech = %q, want full output %q", speech, strings.TrimSpace(output))
 	}
 }
 
