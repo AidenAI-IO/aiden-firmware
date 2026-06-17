@@ -21,6 +21,7 @@ type SessionManager interface {
 type SessionBeginRequest struct {
 	AgentName    string
 	Input        string
+	Turn         TurnInput
 	SessionID    string
 	EpisodeID    string
 	RequestID    string
@@ -74,7 +75,11 @@ func (m memoryManagerSessionManager) BeginRun(ctx context.Context, req SessionBe
 	if err := ctx.Err(); err != nil {
 		return SessionBeginResult{}, err
 	}
-	boundary, relation := m.handleSessionBoundary(req.Input)
+	turn := normalizeTurnInput(req.Turn)
+	if turn.InputText == "" {
+		turn = NewTextTurnInput(req.Input, nil)
+	}
+	boundary, relation := m.handleSessionBoundary(turn.InputText)
 	if m.memories != nil {
 		agentName := req.AgentName
 		if agentName == "" {
@@ -87,11 +92,7 @@ func (m memoryManagerSessionManager) BeginRun(ctx context.Context, req SessionBe
 			RunID:     req.RunID,
 			Relation:  relation,
 		}
-		if err := m.memories.AppendSessionEvent(ctx, agentName, SessionEvent{
-			Type:    "user_input",
-			Role:    "user",
-			Content: req.Input,
-		}, meta); err != nil {
+		if err := m.memories.AppendSessionEvent(ctx, agentName, sessionEventFromTurnInput(turn), meta); err != nil {
 			return SessionBeginResult{}, err
 		}
 	}

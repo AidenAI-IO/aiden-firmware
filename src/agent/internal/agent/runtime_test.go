@@ -538,8 +538,120 @@ func TestRuntimeRunPersistsRootInputBeforeModelFailure(t *testing.T) {
 	if root.Type != "user_input" || root.Role != "user" || root.Content != "打开微信，进入 den 群，发送100块钱红包" {
 		t.Fatalf("first session event = %#v", root)
 	}
+	if root.Modality != "text" || root.OriginalText != "打开微信，进入 den 群，发送100块钱红包" {
+		t.Fatalf("root event missing text modality/original text: %#v", root)
+	}
 	if root.EpisodeID != "ep_red_packet_failure" || root.RequestID != "req-red-packet-failure" {
 		t.Fatalf("root event missing episode/request metadata: %#v", root)
+	}
+}
+
+func TestRuntimeRunPersistsCanonicalVoiceInputBeforeModelFailure(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: failingGenerateModel{err: errors.New("model unavailable")}},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	_, err := runtime.Run(context.Background(), RunRequest{
+		Turn: TurnInput{
+			InputText:    "打开微信发消息",
+			OriginalText: "按住说话",
+			Modality:     "stt",
+			Source:       "voice",
+			Transcript:   "打开微信发消息",
+			Artifacts: []InputArtifact{{
+				Kind:       AttachmentKindAudio,
+				MIMEType:   "audio/wav",
+				Path:       "/userdata/agent/audio/msg_123.wav",
+				DurationMS: 3200,
+				Size:       102400,
+			}},
+		},
+		EpisodeID: "ep_voice_failure",
+		RequestID: "req-voice-failure",
+	})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want model failure")
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) == 0 {
+		t.Fatalf("expected canonical user_input to be persisted before model failure")
+	}
+	root := events[0]
+	if root.Type != "user_input" || root.Role != "user" || root.Content != "打开微信发消息" {
+		t.Fatalf("first session event = %#v", root)
+	}
+	if root.Modality != "stt" || root.Source != "voice" || root.OriginalText != "按住说话" || root.Transcript != "打开微信发消息" {
+		t.Fatalf("root event missing voice metadata: %#v", root)
+	}
+	if len(root.Artifacts) != 1 {
+		t.Fatalf("root artifacts = %#v, want one audio artifact", root.Artifacts)
+	}
+	artifact := root.Artifacts[0]
+	if artifact.Kind != AttachmentKindAudio || artifact.MIMEType != "audio/wav" || artifact.Path == "" {
+		t.Fatalf("audio artifact metadata = %#v", artifact)
+	}
+	if artifact.DurationMS != 3200 || artifact.Size != 102400 {
+		t.Fatalf("audio artifact size/duration = %#v", artifact)
+	}
+	if len(artifact.Data) != 0 {
+		t.Fatalf("session artifact must not contain binary data: %#v", artifact)
+	}
+	if root.EpisodeID != "ep_voice_failure" || root.RequestID != "req-voice-failure" {
+		t.Fatalf("root event missing episode/request metadata: %#v", root)
+	}
+}
+
+func TestRuntimeRunPersistsAttachmentArtifactsWithoutBinary(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: failingGenerateModel{err: errors.New("model unavailable")}},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	_, err := runtime.Run(context.Background(), RunRequest{
+		Input: "Describe the uploaded image.",
+		Attachments: []InputAttachment{{
+			Kind:     AttachmentKindImage,
+			Name:     "screen.png",
+			MIMEType: "image/png",
+			Data:     []byte{0x89, 0x50, 0x4e, 0x47},
+		}},
+		EpisodeID: "ep_image_failure",
+		RequestID: "req-image-failure",
+	})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want model failure")
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) == 0 {
+		t.Fatalf("expected user_input to be persisted before model failure")
+	}
+	root := events[0]
+	if root.Type != "user_input" || root.Content != "Describe the uploaded image." || root.Modality != "text" {
+		t.Fatalf("first session event = %#v", root)
+	}
+	if root.OriginalText != "Describe the uploaded image." {
+		t.Fatalf("root original_text = %q", root.OriginalText)
+	}
+	if len(root.Artifacts) != 1 {
+		t.Fatalf("root artifacts = %#v, want one image artifact", root.Artifacts)
+	}
+	artifact := root.Artifacts[0]
+	if artifact.Kind != AttachmentKindImage || artifact.Name != "screen.png" || artifact.MIMEType != "image/png" || artifact.Size != 4 {
+		t.Fatalf("image artifact metadata = %#v", artifact)
+	}
+	if len(artifact.Data) != 0 {
+		t.Fatalf("session artifact must not contain binary data: %#v", artifact)
 	}
 }
 

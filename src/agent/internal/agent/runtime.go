@@ -59,6 +59,7 @@ type Runtime struct {
 type RunRequest struct {
 	Input             string
 	Attachments       []InputAttachment
+	Turn              TurnInput
 	Skills            []string
 	EpisodeID         string
 	RequestID         string
@@ -86,6 +87,23 @@ type RunResult struct {
 	SleepRequested bool            `json:"sleep_requested,omitempty"`
 	SleepReason    string          `json:"sleep_reason,omitempty"`
 	SpeechStreamed bool            `json:"-"`
+}
+
+func canonicalTurnInputFromRunRequest(req RunRequest) TurnInput {
+	turn := normalizeTurnInput(req.Turn)
+	if turn.InputText == "" && turn.Modality == TurnModalityText && len(turn.Attachments) == 0 && len(turn.Artifacts) == 0 && turn.Transcript == "" && turn.OriginalText == "" {
+		return NewTextTurnInput(req.Input, req.Attachments)
+	}
+	if len(turn.Attachments) == 0 && len(req.Attachments) > 0 {
+		turn.Attachments = cloneInputAttachments(req.Attachments)
+	}
+	if turn.OriginalText == "" {
+		turn.OriginalText = strings.TrimSpace(req.Input)
+	}
+	if turn.InputText == "" {
+		turn.InputText = normalizeRunInput(req.Input, turn.Attachments)
+	}
+	return normalizeTurnInput(turn)
 }
 
 func (r RunResult) SpokenText() string {
@@ -454,13 +472,14 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	startTime := time.Now()
 	metrics := &RunMetrics{}
-	normalizedInput := normalizeRunInput(req.Input, req.Attachments)
+	turnInput := canonicalTurnInputFromRunRequest(req)
+	normalizedInput := turnInput.InputText
 	if r.sleep != nil {
 		r.sleep.Consume()
 	}
 
 	if r.logger != nil {
-		r.logger.Info("Starting agent run: input=%q attachments=%d", normalizedInput, len(req.Attachments))
+		r.logger.Info("Starting agent run: input=%q modality=%s attachments=%d", normalizedInput, turnInput.Modality, len(turnInput.Attachments))
 	}
 
 	if normalizedInput == "" {
@@ -525,6 +544,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
 		AgentName:    "default",
 		Input:        normalizedInput,
+		Turn:         turnInput,
 		SessionID:    r.telemetrySessionID,
 		EpisodeID:    episodeID,
 		RequestID:    req.RequestID,
@@ -543,7 +563,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	availableTools = wrapSessionRecallTelemetry(availableTools, boundaryTelemetry.PendingRecallCounter)
 	retrieveReq := MemoryRetrieveRequest{
 		Input:        normalizedInput,
-		Attachments:  req.Attachments,
+		Attachments:  turnInput.Attachments,
 		Skills:       skillNames,
 		ToolNames:    toolNamesFromTools(availableTools),
 		EpisodeID:    episodeID,
@@ -633,7 +653,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			steerStatus = status
 		}
 	}
-	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), req.DeviceEnvironment, req.SteerProvider)
+	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, turnInput.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), req.DeviceEnvironment, req.SteerProvider)
 	executor.ConversationHistory = conversationHistory
 	executor.TodoReminderToolCalls = r.config.TodoReminderToolCallsOrDefault()
 	executor.ToolCallSpeech = r.config.VoiceToolCallSpeechOrDefault()

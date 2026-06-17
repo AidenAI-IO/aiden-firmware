@@ -87,33 +87,37 @@ type MessageRecord struct {
 // SessionEvent represents a single event in the session event stream, capturing
 // conversation turns, tool calls, and system events with metadata.
 type SessionEvent struct {
-	EventID            string   `json:"event_id"`
-	Ts                 string   `json:"ts"`
-	Sequence           int      `json:"sequence,omitempty"`
-	Type               string   `json:"type"`
-	Role               string   `json:"role"`
-	Source             string   `json:"source,omitempty"`
-	SessionID          string   `json:"session_id,omitempty"`
-	EpisodeID          string   `json:"episode_id,omitempty"`
-	RequestID          string   `json:"request_id,omitempty"`
-	RunID              string   `json:"run_id,omitempty"`
-	Relation           string   `json:"relation,omitempty"`
-	Status             string   `json:"status,omitempty"`
-	Content            string   `json:"content"`
-	AppName            string   `json:"app_name,omitempty"`
-	RiskLevel          string   `json:"risk_level,omitempty"`
-	ToolCallID         string   `json:"tool_call_id,omitempty"`
-	ToolName           string   `json:"tool_name,omitempty"`
-	ToolInput          string   `json:"tool_input,omitempty"`
-	Description        string   `json:"description,omitempty"`
-	Objective          string   `json:"objective,omitempty"`
-	CompletionCriteria []string `json:"completion_criteria,omitempty"`
-	Plan               []string `json:"plan,omitempty"`
-	NextStep           string   `json:"next_step,omitempty"`
-	CanFinish          *bool    `json:"can_finish,omitempty"`
-	NeedsReplan        bool     `json:"needs_replan,omitempty"`
-	Reason             string   `json:"reason,omitempty"`
-	IsError            bool     `json:"is_error,omitempty"`
+	EventID            string          `json:"event_id"`
+	Ts                 string          `json:"ts"`
+	Sequence           int             `json:"sequence,omitempty"`
+	Type               string          `json:"type"`
+	Role               string          `json:"role"`
+	Source             string          `json:"source,omitempty"`
+	SessionID          string          `json:"session_id,omitempty"`
+	EpisodeID          string          `json:"episode_id,omitempty"`
+	RequestID          string          `json:"request_id,omitempty"`
+	RunID              string          `json:"run_id,omitempty"`
+	Relation           string          `json:"relation,omitempty"`
+	Status             string          `json:"status,omitempty"`
+	Modality           string          `json:"modality,omitempty"`
+	OriginalText       string          `json:"original_text,omitempty"`
+	Transcript         string          `json:"transcript,omitempty"`
+	Artifacts          []InputArtifact `json:"artifacts,omitempty"`
+	Content            string          `json:"content"`
+	AppName            string          `json:"app_name,omitempty"`
+	RiskLevel          string          `json:"risk_level,omitempty"`
+	ToolCallID         string          `json:"tool_call_id,omitempty"`
+	ToolName           string          `json:"tool_name,omitempty"`
+	ToolInput          string          `json:"tool_input,omitempty"`
+	Description        string          `json:"description,omitempty"`
+	Objective          string          `json:"objective,omitempty"`
+	CompletionCriteria []string        `json:"completion_criteria,omitempty"`
+	Plan               []string        `json:"plan,omitempty"`
+	NextStep           string          `json:"next_step,omitempty"`
+	CanFinish          *bool           `json:"can_finish,omitempty"`
+	NeedsReplan        bool            `json:"needs_replan,omitempty"`
+	Reason             string          `json:"reason,omitempty"`
+	IsError            bool            `json:"is_error,omitempty"`
 }
 
 type SessionEventMetadata struct {
@@ -1650,7 +1654,22 @@ func normalizeSessionEventForAppend(event SessionEvent, ts time.Time, sequence i
 	}
 	event.Content = stripScreenshotData(event.Content)
 	event.ToolInput = stripScreenshotData(event.ToolInput)
+	event.Artifacts = sanitizeInputArtifacts(event.Artifacts)
 	return event
+}
+
+func sessionEventFromTurnInput(input TurnInput) SessionEvent {
+	input = normalizeTurnInput(input)
+	return SessionEvent{
+		Type:         "user_input",
+		Role:         "user",
+		Source:       input.Source,
+		Modality:     input.Modality,
+		OriginalText: input.OriginalText,
+		Transcript:   input.Transcript,
+		Artifacts:    sanitizeInputArtifacts(input.Artifacts),
+		Content:      input.InputText,
+	}
 }
 
 func applySessionEventMetadata(event SessionEvent, meta SessionEventMetadata) SessionEvent {

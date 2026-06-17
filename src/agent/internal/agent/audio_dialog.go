@@ -5,14 +5,13 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"aiden-agent/internal/agent/tts"
 )
-
-type TurnInput = AudioInputResult
 
 const toolDescriptionSpeechTimeout = 15 * time.Second
 
@@ -266,11 +265,16 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	if err != nil {
 		return err
 	}
-	result, err := d.RunAgentTurn(ctx, input, runtime)
+	episodeID := ""
+	if runtime != nil {
+		episodeID = runtime.NewEpisodeID()
+	}
+	d.persistVoiceUserInput(input, utterance, episodeID, "")
+	result, err := d.runAgentTurnWithEpisode(ctx, input, runtime, episodeID)
 	if err != nil {
 		return err
 	}
-	d.PersistVoiceTurn(input, result, utterance)
+	d.PersistVoiceAssistantOutput(result)
 	if result.SpeechStreamed {
 		return nil
 	}
@@ -301,32 +305,40 @@ func (d *AudioDialog) persistVoiceTurn(input TurnInput, result RunResult, uttera
 }
 
 func (d *AudioDialog) PersistVoiceTurn(input TurnInput, result RunResult, utterance []int16) {
+	d.persistVoiceUserInput(input, utterance, result.EpisodeID, "")
+	d.PersistVoiceAssistantOutput(result)
+}
+
+func (d *AudioDialog) PersistVoiceUserInput(input TurnInput, utterance []int16) {
+	d.persistVoiceUserInput(input, utterance, "", "")
+}
+
+func (d *AudioDialog) persistVoiceUserInput(input TurnInput, utterance []int16, episodeID, requestID string) {
+	if d.historyAppend == nil && d.historyStore == nil {
+		return
+	}
+	input = d.ensureVoiceInputAudioArtifact(input, utterance, nil)
+
+	content := strings.TrimSpace(input.InputText)
+	if content == "" {
+		content = strings.TrimSpace(input.Transcript)
+	}
+	if content == "" {
+		return
+	}
+	userMsg := messageFromTurnInput(input, episodeID, requestID, nil, time.Now())
+	userMsg.Content = content
+	if userMsg.Source == "" {
+		userMsg.Source = "voice"
+	}
+	d.appendVoiceHistory(userMsg)
+}
+
+func (d *AudioDialog) PersistVoiceAssistantOutput(result RunResult) {
 	if d.historyAppend == nil && d.historyStore == nil {
 		return
 	}
 	now := time.Now()
-
-	// Save audio if archiving enabled
-	audioPath, audioDuration, err := d.audioArchive.SaveAudio(utterance, d.config.Audio.SampleRateOrDefault())
-	if err != nil {
-		log.Printf("[audio_archive] save failed: %v", err)
-		// Continue without audio file
-	}
-
-	transcript := strings.TrimSpace(input.Transcript)
-	if transcript != "" {
-		userMsg := Message{
-			Type:            "user",
-			EpisodeID:       result.EpisodeID,
-			Content:         transcript,
-			Source:          "voice",
-			AudioFile:       audioPath,
-			AudioDurationMs: int64(audioDuration),
-			Timestamp:       now,
-		}
-		d.appendVoiceHistory(userMsg)
-	}
-
 	output := strings.TrimSpace(result.Output)
 	if output != "" {
 		assistantMsg := Message{
@@ -364,13 +376,63 @@ func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {
 	if err != nil {
 		return TurnInput{}, err
 	}
+	audioInput = d.ensureVoiceInputAudioArtifact(audioInput, utterance, wavData)
 	if audioInput.Transcript != "" {
 		log.Printf("[stt] Transcript: %s\n", audioInput.Transcript)
 	}
 	return audioInput, nil
 }
 
+func (d *AudioDialog) ensureVoiceInputAudioArtifact(input TurnInput, utterance []int16, wavData []byte) TurnInput {
+	input = normalizeTurnInput(input)
+	if artifact, ok := firstAudioArtifact(input); ok {
+		if artifact.Path != "" {
+			return input
+		}
+		if d.audioArchive == nil || !d.audioArchive.config.Enabled {
+			if artifact.DurationMS > 0 || artifact.Size > 0 {
+				return input
+			}
+		}
+	}
+	if d.audioArchive == nil {
+		if input.Modality == TurnModalityAudio && len(wavData) > 0 {
+			return withAudioArtifactPath(input, "", wavDurationMS(wavData), int64(len(wavData)))
+		}
+		return input
+	}
+
+	audioPath, audioDuration, err := d.audioArchive.SaveAudio(utterance, d.config.Audio.SampleRateOrDefault())
+	if err != nil {
+		log.Printf("[audio_archive] save failed: %v", err)
+		if input.Modality == TurnModalityAudio && len(wavData) > 0 {
+			return withAudioArtifactPath(input, "", wavDurationMS(wavData), int64(len(wavData)))
+		}
+		return input
+	}
+	size := int64(0)
+	if audioPath != "" {
+		if info, statErr := os.Stat(audioPath); statErr == nil {
+			size = info.Size()
+		}
+	}
+	if size == 0 && len(wavData) > 0 {
+		size = int64(len(wavData))
+	}
+	if audioDuration == 0 && len(wavData) > 0 {
+		audioDuration = int(wavDurationMS(wavData))
+	}
+	if audioPath == "" && input.Modality != TurnModalityAudio {
+		return input
+	}
+	return withAudioArtifactPath(input, audioPath, int64(audioDuration), size)
+}
+
 func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime *Runtime) (RunResult, error) {
+	return d.runAgentTurnWithEpisode(ctx, input, runtime, "")
+}
+
+func (d *AudioDialog) runAgentTurnWithEpisode(ctx context.Context, input TurnInput, runtime *Runtime, episodeID string) (RunResult, error) {
 	d.playPromptSound(promptSoundAgentSend, "agent send", true)
 
 	// Send to LLM
@@ -387,12 +449,14 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 	req := RunRequest{
 		Input:       input.InputText,
 		Attachments: input.Attachments,
+		Turn:        input,
 		MaxTokens:   d.config.VoiceMaxResponseTokensOrDefault(),
 		EventHandler: func(event RunEvent) {
 			d.HandleRunEvent(ctx, event)
 		},
 		StreamFinalChunks: true,
 	}
+	req.EpisodeID = strings.TrimSpace(episodeID)
 
 	var newStream *streamSessionWriter
 	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.ttsManager != nil {
@@ -564,6 +628,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 
 	req := RunRequest{
 		Input: text,
+		Turn:  NewTextTurnInput(text, nil),
 		EventHandler: func(event RunEvent) {
 			d.HandleRunEvent(ctx, event)
 		},
