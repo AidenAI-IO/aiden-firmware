@@ -1713,8 +1713,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Only send user and assistant messages
-			if msg.Type != "user" && msg.Type != "assistant" {
+			if !shouldStreamEventMessage(msg) {
 				continue
 			}
 
@@ -1730,6 +1729,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+func shouldStreamEventMessage(msg Message) bool {
+	return strings.TrimSpace(msg.Type) != ""
 }
 
 func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
@@ -2383,6 +2386,8 @@ func (s *Server) appendHistory(message Message) {
 		if err := s.historyStore.Append(context.Background(), message); err != nil && s.logger != nil {
 			s.logger.Warn("Persist chat history failed: %v", err)
 		}
+	} else if s.eventBroadcaster != nil {
+		s.eventBroadcaster.Broadcast(message)
 	}
 }
 
@@ -3940,7 +3945,7 @@ const webUI = `<!DOCTYPE html>
                         return;
                     }
 
-                    if (data.type === 'user' || data.type === 'assistant') {
+                    if (data.type) {
                         addMessage(data);
                     }
                 } catch (err) {

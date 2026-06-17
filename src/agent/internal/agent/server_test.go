@@ -479,6 +479,22 @@ func TestFinalStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
 	}
 }
 
+func TestServerEventStreamAllowsRunEventMessages(t *testing.T) {
+	for _, messageType := range []string{
+		"user",
+		"assistant",
+		"role_output",
+		runEventToolCall,
+		"tool_result",
+		runEventTodoUpdate,
+		runEventTodoClosed,
+	} {
+		if !shouldStreamEventMessage(Message{Type: messageType}) {
+			t.Fatalf("message type %q should be streamed to web clients", messageType)
+		}
+	}
+}
+
 func TestHandleCoordinateDebugTap(t *testing.T) {
 	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
 		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":2,"height":1,"pixel_format":"uyvy","stride":4,"bytes":4,"stale":false}}`

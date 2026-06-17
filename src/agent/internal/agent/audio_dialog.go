@@ -352,6 +352,18 @@ func (d *AudioDialog) PersistVoiceAssistantOutput(result RunResult) {
 	}
 }
 
+func (d *AudioDialog) appendVoiceRunEvent(event RunEvent) {
+	if d.historyAppend == nil && d.historyStore == nil {
+		return
+	}
+	message := messageFromRunEvent(event, event.EpisodeID, "")
+	if message.Type == "" {
+		return
+	}
+	message.Source = "voice"
+	d.appendVoiceHistory(message)
+}
+
 func (d *AudioDialog) appendVoiceHistory(message Message) {
 	if d.historyAppend != nil {
 		d.historyAppend(message)
@@ -429,7 +441,11 @@ func (d *AudioDialog) ensureVoiceInputAudioArtifact(input TurnInput, utterance [
 }
 
 func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime *Runtime) (RunResult, error) {
-	return d.runAgentTurnWithEpisode(ctx, input, runtime, "")
+	episodeID := ""
+	if runtime != nil {
+		episodeID = runtime.NewEpisodeID()
+	}
+	return d.runAgentTurnWithEpisode(ctx, input, runtime, episodeID)
 }
 
 func (d *AudioDialog) runAgentTurnWithEpisode(ctx context.Context, input TurnInput, runtime *Runtime, episodeID string) (RunResult, error) {
@@ -452,6 +468,7 @@ func (d *AudioDialog) runAgentTurnWithEpisode(ctx context.Context, input TurnInp
 		Turn:        input,
 		MaxTokens:   d.config.VoiceMaxResponseTokensOrDefault(),
 		EventHandler: func(event RunEvent) {
+			d.appendVoiceRunEvent(event)
 			d.HandleRunEvent(ctx, event)
 		},
 		StreamFinalChunks: true,
@@ -630,6 +647,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		Input: text,
 		Turn:  NewTextTurnInput(text, nil),
 		EventHandler: func(event RunEvent) {
+			d.appendVoiceRunEvent(event)
 			d.HandleRunEvent(ctx, event)
 		},
 		StreamFinalChunks: true,
