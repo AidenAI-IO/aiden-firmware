@@ -38,8 +38,7 @@ const (
 	defaultVoiceFollowupTimeoutMs  = 6000
 	defaultVoiceFirstTurnTimeoutMs = 10000
 	defaultVoiceMaxTurns           = 0
-	defaultVoiceSpeechMaxRunes     = 120
-	defaultVoiceMaxResponseTokens  = 400
+	defaultVoiceMaxResponseTokens  = 300
 	defaultTodoReminderToolCalls   = 3
 	defaultMaxIterations           = -1
 	defaultScreenshotKeepN         = 3
@@ -124,7 +123,6 @@ func DefaultConfig() Config {
 		VoiceToolCallSpeech:        defaultBoolPtr(false),
 		VoiceProgressSpeechEnabled: defaultBoolPtr(true),
 		VoiceSpeechSummaryEnabled:  defaultBoolPtr(true),
-		VoiceSpeechMaxRunes:        defaultVoiceSpeechMaxRunes,
 		VoiceMaxResponseTokens:     defaultVoiceMaxResponseTokens,
 		TodoReminderToolCalls:      defaultTodoReminderToolCalls,
 		MaxIterations:              defaultMaxIterations,

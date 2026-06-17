@@ -142,7 +142,6 @@ type agentDTO struct {
 	VoiceToolCallSpeech        bool    `json:"voice_tool_call_speech"`
 	VoiceProgressSpeechEnabled bool    `json:"voice_progress_speech_enabled"`
 	VoiceSpeechSummaryEnabled  bool    `json:"voice_speech_summary_enabled"`
-	VoiceSpeechMaxRunes        int     `json:"voice_speech_max_runes"`
 	VoiceMaxResponseTokens     int     `json:"voice_max_response_tokens"`
 	MaxIterations              int     `json:"max_iterations"`
 	ForceSimpleLoop            bool    `json:"force_simple_loop"`
@@ -268,7 +267,6 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		VoiceToolCallSpeech:        boolPtr(d.Agent.VoiceToolCallSpeech),
 		VoiceProgressSpeechEnabled: boolPtr(d.Agent.VoiceProgressSpeechEnabled),
 		VoiceSpeechSummaryEnabled:  boolPtr(d.Agent.VoiceSpeechSummaryEnabled),
-		VoiceSpeechMaxRunes:        d.Agent.VoiceSpeechMaxRunes,
 		VoiceMaxResponseTokens:     d.Agent.VoiceMaxResponseTokens,
 		MaxIterations:              d.Agent.MaxIterations,
 		ForceSimpleLoop:            d.Agent.ForceSimpleLoop,
@@ -387,7 +385,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			VoiceToolCallSpeech:        cfg.VoiceToolCallSpeechOrDefault(),
 			VoiceProgressSpeechEnabled: cfg.VoiceProgressSpeechEnabledOrDefault(),
 			VoiceSpeechSummaryEnabled:  cfg.VoiceSpeechSummaryEnabledOrDefault(),
-			VoiceSpeechMaxRunes:        cfg.VoiceSpeechMaxRunesOrDefault(),
 			VoiceMaxResponseTokens:     cfg.VoiceMaxResponseTokensOrDefault(),
 			MaxIterations:              cfg.MaxIterations,
 			ForceSimpleLoop:            cfg.ForceSimpleLoop,
@@ -610,8 +607,6 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "voice_first_turn_timeout_ms"
 	} else if strings.Contains(errMsg, "voice_max_turns") {
 		field = "voice_max_turns"
-	} else if strings.Contains(errMsg, "voice_speech_max_runes") {
-		field = "voice_speech_max_runes"
 	} else if strings.Contains(errMsg, "voice_max_response_tokens") {
 		field = "voice_max_response_tokens"
 	} else if strings.Contains(errMsg, "screenshot_keep_n") {

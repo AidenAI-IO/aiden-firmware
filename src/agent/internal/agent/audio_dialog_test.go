@@ -229,9 +229,11 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 	}
 }
 
-func TestProcessUtteranceSpeaksSpeechTextWithoutChangingHistoryOutput(t *testing.T) {
+func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
+	output := "已完成设置，当前音量是 42。\n\n- 读取音量\n- 确认状态\n\n这段详细说明保留给屏幕。"
+	expectedSpeech := "已完成设置，当前音量是 42。\n\n读取音量\n确认状态\n\n这段详细说明保留给屏幕。"
 	model := &scriptedModel{
-		responses: roleDirectResponses("已完成设置，当前音量是 42。\n\n- 读取音量\n- 确认状态\n\n这段详细说明保留给屏幕。"),
+		responses: roleDirectResponses(output),
 	}
 	store := NewChatHistoryStore(t.TempDir())
 	runtime := NewRuntimeWithDeps(
@@ -253,7 +255,6 @@ func TestProcessUtteranceSpeaksSpeechTextWithoutChangingHistoryOutput(t *testing
 			InputMode:                 "audio",
 			VoiceStreamingTTSEnabled:  boolPtr(false),
 			VoiceSpeechSummaryEnabled: boolPtr(true),
-			VoiceSpeechMaxRunes:       22,
 		},
 		audioClient:  NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
@@ -269,11 +270,8 @@ func TestProcessUtteranceSpeaksSpeechTextWithoutChangingHistoryOutput(t *testing
 	if len(texts) != 1 {
 		t.Fatalf("unexpected TTS texts: %#v", texts)
 	}
-	if strings.Contains(texts[0], "读取音量") || strings.Contains(texts[0], "详细说明") {
-		t.Fatalf("TTS should use spoken summary, got %q", texts[0])
-	}
-	if !strings.Contains(texts[0], "当前音量是 42") {
-		t.Fatalf("TTS summary lost conclusion: %q", texts[0])
+	if texts[0] != expectedSpeech {
+		t.Fatalf("TTS should use normalized full output, got %q want %q", texts[0], expectedSpeech)
 	}
 
 	messages, err := store.Load(context.Background())

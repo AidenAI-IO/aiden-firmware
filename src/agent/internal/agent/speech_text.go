@@ -3,146 +3,163 @@ package agent
 import (
 	"encoding/json"
 	"io"
+	"regexp"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 )
 
-// BuildSpeechText derives a short, spoken-friendly text from the full assistant
-// output. The full output remains the source of truth for UI, history, and memory.
-func BuildSpeechText(output string, cfg Config) string {
+var (
+	markdownImagePattern = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]*)\)`)
+	markdownLinkPattern  = regexp.MustCompile(`\[([^\]]+)\]\(([^)]*)\)`)
+)
+
+// BuildSpeechText returns the full assistant output for fallback TTS. Structured
+// speech/text responses remain the preferred path for concise spoken output.
+func BuildSpeechText(output string, _ Config) string {
 	output = strings.TrimSpace(output)
 	if output == "" {
 		return ""
 	}
-	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
-		return output
-	}
-
-	text := stripSpeechUnfriendlyMarkdown(output)
-	text = strings.Join(strings.Fields(text), " ")
-	if text == "" {
-		text = strings.Join(strings.Fields(output), " ")
-	}
-	if sentence := firstSpeechSentence(text); sentence != "" {
-		text = sentence
-	}
-	return truncateSpeechRunes(text, cfg.VoiceSpeechMaxRunesOrDefault())
+	return normalizeMarkdownForSpeech(output)
 }
 
-func stripSpeechUnfriendlyMarkdown(output string) string {
+func normalizeMarkdownForSpeech(output string) string {
 	lines := strings.Split(output, "\n")
-	var kept []string
-	inCodeBlock := false
+	normalized := make([]string, 0, len(lines))
+	inFence := false
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			inCodeBlock = !inCodeBlock
+		if isMarkdownFenceLine(trimmed) {
+			inFence = !inFence
 			continue
 		}
-		if inCodeBlock || trimmed == "" {
-			continue
+		if !inFence {
+			if isMarkdownTableSeparatorLine(trimmed) {
+				continue
+			}
+			trimmed = stripMarkdownLinePrefix(trimmed)
+			trimmed = normalizeMarkdownTableRow(trimmed)
+			trimmed = normalizeInlineMarkdown(trimmed)
 		}
-		if isMarkdownListLine(trimmed) || isMarkdownTableLine(trimmed) {
-			continue
-		}
-		kept = append(kept, strings.TrimSpace(stripMarkdownDecorators(trimmed)))
+		normalized = append(normalized, trimmed)
 	}
-	return strings.Join(kept, " ")
+	return strings.TrimSpace(strings.Join(normalized, "\n"))
 }
 
-func isMarkdownListLine(line string) bool {
-	if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") || strings.HasPrefix(line, "+ ") {
-		return true
-	}
-	i := 0
-	for ; i < len(line); i++ {
-		r, size := utf8.DecodeRuneInString(line[i:])
-		if !unicode.IsDigit(r) {
-			break
-		}
-		i += size - 1
-	}
-	if i == 0 || i >= len(line)-1 {
-		return false
-	}
-	return (line[i] == '.' || line[i] == ')') && line[i+1] == ' '
+func isMarkdownFenceLine(line string) bool {
+	return strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~")
 }
 
-func isMarkdownTableLine(line string) bool {
-	if !strings.Contains(line, "|") {
+func isMarkdownTableSeparatorLine(line string) bool {
+	if !strings.Contains(line, "|") || !strings.Contains(line, "-") {
 		return false
 	}
-	trimmed := strings.Trim(line, "| ")
-	if trimmed == "" {
-		return true
-	}
-	for _, r := range trimmed {
-		if r != '-' && r != ':' && r != '|' && !unicode.IsSpace(r) {
-			return strings.Count(line, "|") >= 2
+	for _, r := range line {
+		if r != '|' && r != '-' && r != ':' && r != ' ' && r != '\t' {
+			return false
 		}
 	}
 	return true
 }
 
-func stripMarkdownDecorators(line string) string {
-	replacer := strings.NewReplacer(
-		"**", "",
-		"__", "",
-		"`", "",
-		"#", "",
-		"> ", "",
-	)
-	return replacer.Replace(line)
+func stripMarkdownLinePrefix(line string) string {
+	line = stripMarkdownBlockquotePrefix(line)
+	line = stripMarkdownHeadingPrefix(line)
+	line = stripMarkdownListPrefix(line)
+	line = stripMarkdownTaskPrefix(line)
+	return strings.TrimSpace(line)
 }
 
-func truncateSpeechRunes(text string, maxRunes int) string {
-	if maxRunes <= 0 || utf8.RuneCountInString(text) <= maxRunes {
-		return strings.TrimSpace(text)
+func stripMarkdownBlockquotePrefix(line string) string {
+	for strings.HasPrefix(line, ">") {
+		line = strings.TrimSpace(strings.TrimPrefix(line, ">"))
 	}
-	runes := []rune(text)
-	minSentenceCut := maxRunes / 3
-	if minSentenceCut < 8 {
-		minSentenceCut = 8
+	return line
+}
+
+func stripMarkdownHeadingPrefix(line string) string {
+	hashes := 0
+	for hashes < len(line) && hashes < 6 && line[hashes] == '#' {
+		hashes++
 	}
-	sentenceCut := 0
-	softCut := 0
-	for i := 0; i < maxRunes && i < len(runes); i++ {
-		switch runes[i] {
-		case '。', '！', '？', '.', '!', '?', ';', '；':
-			if i+1 >= minSentenceCut {
-				sentenceCut = i + 1
-			}
-		case '，', ',', '、':
-			if i >= maxRunes/2 {
-				softCut = i
-			}
+	if hashes > 0 && hashes < len(line) && line[hashes] == ' ' {
+		return strings.TrimSpace(line[hashes+1:])
+	}
+	return line
+}
+
+func stripMarkdownListPrefix(line string) string {
+	if len(line) >= 2 && (line[0] == '-' || line[0] == '*' || line[0] == '+') && line[1] == ' ' {
+		return strings.TrimSpace(line[2:])
+	}
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i > 0 && i+1 < len(line) && (line[i] == '.' || line[i] == ')') && line[i+1] == ' ' {
+		return strings.TrimSpace(line[i+2:])
+	}
+	return line
+}
+
+func stripMarkdownTaskPrefix(line string) string {
+	if len(line) >= 4 && line[0] == '[' && line[2] == ']' && line[3] == ' ' {
+		marker := line[1]
+		if marker == ' ' || marker == 'x' || marker == 'X' {
+			return strings.TrimSpace(line[4:])
 		}
 	}
-	if sentenceCut > 0 {
-		return strings.TrimSpace(string(runes[:sentenceCut]))
-	}
-	if softCut > 0 {
-		return strings.TrimSpace(string(runes[:softCut]))
-	}
-	return strings.TrimSpace(string(runes[:maxRunes]))
+	return line
 }
 
-func firstSpeechSentence(text string) string {
-	text = strings.TrimSpace(text)
-	if text == "" {
+func normalizeMarkdownTableRow(line string) string {
+	if strings.Count(line, "|") < 2 {
+		return line
+	}
+	parts := strings.Split(strings.Trim(line, "|"), "|")
+	cells := make([]string, 0, len(parts))
+	for _, part := range parts {
+		cell := strings.TrimSpace(part)
+		if cell != "" {
+			cells = append(cells, cell)
+		}
+	}
+	if len(cells) == 0 {
 		return ""
 	}
-	runes := []rune(text)
-	for i, r := range runes {
-		switch r {
-		case '。', '！', '？', '.', '!', '?', ';', '；':
-			if i >= 5 {
-				return strings.TrimSpace(string(runes[:i+1]))
-			}
+	return strings.Join(cells, "，")
+}
+
+func normalizeInlineMarkdown(text string) string {
+	text = markdownImagePattern.ReplaceAllStringFunc(text, func(match string) string {
+		parts := markdownImagePattern.FindStringSubmatch(match)
+		alt := strings.TrimSpace(parts[1])
+		url := strings.TrimSpace(parts[2])
+		if alt == "" && url == "" {
+			return ""
 		}
-	}
-	return ""
+		if alt == "" {
+			return "图片（" + url + "）"
+		}
+		if url == "" {
+			return "图片：" + alt
+		}
+		return "图片：" + alt + "（" + url + "）"
+	})
+	text = markdownLinkPattern.ReplaceAllStringFunc(text, func(match string) string {
+		parts := markdownLinkPattern.FindStringSubmatch(match)
+		label := strings.TrimSpace(parts[1])
+		url := strings.TrimSpace(parts[2])
+		if url == "" {
+			return label
+		}
+		return label + "（" + url + "）"
+	})
+	text = strings.ReplaceAll(text, "~~", "")
+	text = strings.ReplaceAll(text, "**", "")
+	text = strings.ReplaceAll(text, "__", "")
+	text = strings.ReplaceAll(text, "`", "")
+	text = strings.ReplaceAll(text, "*", "")
+	return strings.TrimSpace(text)
 }
 
 type SpeechStreamWriter = JSONFieldStreamWriter
