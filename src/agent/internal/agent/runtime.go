@@ -86,7 +86,11 @@ type RunResult struct {
 	Metrics                *RunMetrics     `json:"metrics,omitempty"`
 	WaitForWakeupRequested bool            `json:"wait_for_wakeup_requested,omitempty"`
 	WaitForWakeupReason    string          `json:"wait_for_wakeup_reason,omitempty"`
-	SpeechStreamed         bool            `json:"-"`
+	// Deprecated: use WaitForWakeupRequested.
+	SleepRequested bool `json:"sleep_requested,omitempty"`
+	// Deprecated: use WaitForWakeupReason.
+	SleepReason    string `json:"sleep_reason,omitempty"`
+	SpeechStreamed bool   `json:"-"`
 }
 
 func canonicalTurnInputFromRunRequest(req RunRequest) TurnInput {
@@ -713,6 +717,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Metrics:                metrics,
 		WaitForWakeupRequested: waitForWakeupRequested,
 		WaitForWakeupReason:    waitForWakeupReason,
+		SleepRequested:         waitForWakeupRequested,
+		SleepReason:            waitForWakeupReason,
 	}, nil
 }
 

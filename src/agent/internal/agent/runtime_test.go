@@ -80,6 +80,7 @@ func TestRuntimeRun(t *testing.T) {
 }
 
 func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
+	const wakeupMessage = "The current agent run is ending now, and the voice interaction will wait for the next wakeup event."
 	model := &scriptedModel{responses: []*llms.ContentResponse{
 		toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked"}`),
 		toolCallResponse("wait_2", "wait_for_wakeup", `{"reason":"still awake"}`),
@@ -105,8 +106,28 @@ func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
 	if result.WaitForWakeupReason != "user asked" {
 		t.Fatalf("WaitForWakeupReason = %q, want user asked", result.WaitForWakeupReason)
 	}
-	if result.Output != "I will wait for the next wakeup." {
-		t.Fatalf("Output = %q, want wait-for-wakeup final answer", result.Output)
+	if !result.SleepRequested {
+		t.Fatal("SleepRequested = false, want deprecated alias to mirror WaitForWakeupRequested")
+	}
+	if result.SleepReason != "user asked" {
+		t.Fatalf("SleepReason = %q, want deprecated alias to mirror WaitForWakeupReason", result.SleepReason)
+	}
+	if result.Output != wakeupMessage {
+		t.Fatalf("Output = %q, want wait-for-wakeup observation message", result.Output)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal RunResult: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("Unmarshal RunResult JSON: %v", err)
+	}
+	if payload["wait_for_wakeup_requested"] != true || payload["sleep_requested"] != true {
+		t.Fatalf("RunResult JSON missing wakeup aliases: %s", encoded)
+	}
+	if payload["wait_for_wakeup_reason"] != "user asked" || payload["sleep_reason"] != "user asked" {
+		t.Fatalf("RunResult JSON missing wakeup reason aliases: %s", encoded)
 	}
 	if model.callCount != 1 {
 		t.Fatalf("model call count = %d, want role loop to stop after wait_for_wakeup", model.callCount)

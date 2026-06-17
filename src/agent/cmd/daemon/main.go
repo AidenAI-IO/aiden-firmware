@@ -818,6 +818,7 @@ func processAudioUntilUtterance(dialog audioDialogRunner, runtime *agent.Runtime
 }
 
 func processAudioUntilUtteranceWithTimeout(dialog audioDialogRunner, runtime *agent.Runtime, ctx context.Context, sigChan chan os.Signal, listenTimeout time.Duration) bool {
+	// Wakeup interruption is disabled when wakeupEvents is nil, so interrupted is always false here.
 	exit, _ := processAudioUntilUtteranceWithWakeupInterrupt(dialog, runtime, ctx, sigChan, nil, false, listenTimeout)
 	return exit
 }
@@ -934,14 +935,14 @@ func drainWakeupEventsWhileListening(wakeupEvents <-chan struct{}) {
 	if wakeupEvents == nil {
 		return
 	}
-	drained := false
+	drainedCount := 0
 	for {
 		select {
 		case <-wakeupEvents:
-			drained = true
+			drainedCount++
 		default:
-			if drained {
-				log.Println("[listen] duplicate wakeup received while listening, ignoring")
+			if drainedCount > 0 {
+				log.Printf("[listen] %d duplicate wakeup(s) received while listening, ignoring", drainedCount)
 			}
 			return
 		}

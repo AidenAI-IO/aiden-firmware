@@ -342,8 +342,9 @@ func TestAudioDialogDoesNotSpeakWaitForWakeupToolDescription(t *testing.T) {
 
 	dialog.HandleRunEvent(context.Background(), RunEvent{
 		Type:        runEventToolCall,
-		ToolName:    "wait_for_wakeup",
+		ToolName:    toolWaitForWakeup,
 		Description: "用户让我休息，我准备回到等待唤醒状态。",
+		Speech:      "我准备回到等待唤醒状态。",
 	})
 
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)

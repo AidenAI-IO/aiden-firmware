@@ -118,6 +118,9 @@ func waitForWakeupFinalAnswer(step *schema.AgentStep) string {
 		if description := toolDescriptionFromAction(step.Action); description != "" {
 			return description
 		}
+		if message := toolObservationMessage(step.Observation); message != "" {
+			return message
+		}
 	}
 	return "I will wait for the next wakeup."
 }

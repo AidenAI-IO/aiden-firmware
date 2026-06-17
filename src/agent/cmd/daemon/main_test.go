@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
+	"log"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -414,6 +417,29 @@ func TestProcessAudioUntilUtteranceSendsBufferedAudioAfterVADTimeout(t *testing.
 	}
 	if dialog.stops != 1 {
 		t.Fatalf("dialog stops = %d, want 1 before timeout utterance processing", dialog.stops)
+	}
+}
+
+func TestDrainWakeupEventsWhileListeningLogsDrainedCount(t *testing.T) {
+	wakeupEvents := make(chan struct{}, 3)
+	wakeupEvents <- struct{}{}
+	wakeupEvents <- struct{}{}
+	wakeupEvents <- struct{}{}
+
+	var logBuf bytes.Buffer
+	originalOutput := log.Writer()
+	originalFlags := log.Flags()
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(originalOutput)
+		log.SetFlags(originalFlags)
+	})
+
+	drainWakeupEventsWhileListening(wakeupEvents)
+
+	if got := logBuf.String(); !strings.Contains(got, "3 duplicate wakeup(s) received while listening, ignoring") {
+		t.Fatalf("drain log = %q, want drained count", got)
 	}
 }
 
