@@ -267,7 +267,19 @@ Successful episodes can create or update procedures, navigation memory, app prof
 
 ### Persisted Chat History
 
-When a chat-history store exists, planner memory also loads the useful persisted UI chat history and appends it to the planner conversation-history string without a fixed message-count cap. Prompt growth is controlled by active-session compaction and the model context budget. This store is separate from `session/events.jsonl` and does not change the executor visibility boundary.
+**NOTE: As of this branch, chat_history injection into planner context is DISABLED.**
+
+The `chat_history/` store persists UI-level conversation logs but is NOT automatically injected into the planner's context. This prevents:
+- Duplicate, uncompressed context competing with the session system
+- Unbounded growth of planner prompts
+- Confusion between active session and archived history
+
+For "resume interrupted task" scenarios, use explicit session restore or recall tools instead. The session system already provides comprehensive history management with compaction, archiving, and recall capabilities.
+
+The chat_history store remains available for:
+- UI display of conversation history across sessions
+- Audit logging
+- Future explicit session restore features
 
 ## Storage Map
 
