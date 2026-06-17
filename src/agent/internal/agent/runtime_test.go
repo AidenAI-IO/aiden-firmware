@@ -113,6 +113,38 @@ func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunWaitForWakeupDoesNotStreamFinalAnswer(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked"}`),
+	}}
+	controller := NewWaitForWakeupController()
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"wait_for_wakeup": NewWaitForWakeupTool(controller),
+		}},
+		NewSkillIndex(),
+	)
+
+	var stream strings.Builder
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "go to sleep",
+		StreamWriter:      &stream,
+		StreamFinalChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !result.WaitForWakeupRequested {
+		t.Fatal("WaitForWakeupRequested = false, want true")
+	}
+	if stream.String() != "" {
+		t.Fatalf("stream = %q, want no spoken final answer for wait_for_wakeup", stream.String())
+	}
+}
+
 func TestRuntimeRunInjectsCurrentDateIntoPlannerPrompt(t *testing.T) {
 	originalNow := promptNow
 	promptNow = func() time.Time {

@@ -114,6 +114,9 @@ func (r RunResult) SpokenText() string {
 }
 
 func (r RunResult) SpokenTextForConfig(cfg Config) string {
+	if r.WaitForWakeupRequested {
+		return ""
+	}
 	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
 		return strings.TrimSpace(r.Output)
 	}

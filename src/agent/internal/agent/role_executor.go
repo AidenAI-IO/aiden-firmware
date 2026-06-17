@@ -307,7 +307,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(answer)
 					}
-					return e.finishRun(ctx, answer, answer, &state)
+					return e.finishRunWithoutStreaming(ctx, answer, answer, &state)
 				}
 			}
 		case phaseExecution:
@@ -345,7 +345,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(answer)
 					}
-					return e.finishRun(ctx, answer, answer, &state)
+					return e.finishRunWithoutStreaming(ctx, answer, answer, &state)
 				}
 			case executorTurnFinishStep, executorTurnAbortStep:
 				if turn.Step != nil {
@@ -651,9 +651,19 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 }
 
 func (e *roleCollaborativeExecutor) finishRun(ctx context.Context, finalAnswer, log string, state *roleLoopState) (map[string]any, error) {
+	return e.finishRunWithStreaming(ctx, finalAnswer, log, state, true)
+}
+
+func (e *roleCollaborativeExecutor) finishRunWithoutStreaming(ctx context.Context, finalAnswer, log string, state *roleLoopState) (map[string]any, error) {
+	return e.finishRunWithStreaming(ctx, finalAnswer, log, state, false)
+}
+
+func (e *roleCollaborativeExecutor) finishRunWithStreaming(ctx context.Context, finalAnswer, log string, state *roleLoopState, stream bool) (map[string]any, error) {
 	finalAnswer = strings.TrimSpace(finalAnswer)
 	if e.CallbacksHandler != nil {
-		e.streamFinalAnswer(ctx, finalAnswer)
+		if stream {
+			e.streamFinalAnswer(ctx, finalAnswer)
+		}
 		e.CallbacksHandler.HandleAgentFinish(ctx, schema.AgentFinish{
 			ReturnValues: map[string]any{e.OutputKey: finalAnswer},
 			Log:          log,

@@ -71,6 +71,11 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		InputMode:    toolInputModeText,
 		ExampleInput: `{"timezone":"Asia/Shanghai"}`,
 	},
+	toolWaitForWakeup: {
+		Category:     "system",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"reason":"user asked me to wait for wakeup"}`,
+	},
 	"inspect_episode": {
 		Category:     "memory",
 		InputMode:    toolInputModeJSON,

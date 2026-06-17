@@ -313,9 +313,7 @@ func runManualMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 			recording = true
 
 			manualStop = make(chan manualStopResult, 1)
-			var loopCtx context.Context
-			loopCtx, cancelRecording = context.WithCancel(ctx)
-			go processAudioLoop(dialog, runtime, loopCtx, manualStop)
+			cancelRecording = startManualAudioLoop(ctx, dialog, runtime, manualStop)
 		} else {
 			if !scanner.Scan() {
 				break
@@ -357,11 +355,18 @@ func runManualMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 	if recording {
 		if cancelRecording != nil {
 			cancelRecording()
+			cancelRecording = nil
 		}
 		dialog.StopRecording()
 	}
 
 	log.Println("\n[exit] Stopped.")
+}
+
+func startManualAudioLoop(ctx context.Context, dialog audioDialogRunner, runtime *agent.Runtime, manualStop chan<- manualStopResult) context.CancelFunc {
+	loopCtx, cancel := context.WithCancel(ctx)
+	go processAudioLoop(dialog, runtime, loopCtx, manualStop)
+	return cancel
 }
 
 func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory) {
