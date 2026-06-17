@@ -224,7 +224,7 @@ func TestRuntimeRunKeepsCurrentRequestOutOfCompressedHistoryBlock(t *testing.T) 
 	}
 }
 
-func TestRuntimeRunIncludesActivePlannerWindowAndSessionRootContext(t *testing.T) {
+func TestRuntimeRunIncludesFullActivePlannerHistoryAndSessionRootContext(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
@@ -258,6 +258,8 @@ func TestRuntimeRunIncludesActivePlannerWindowAndSessionRootContext(t *testing.T
 
 	plannerTaskPrompt := messageText(model.messages[0][1:])
 	for _, want := range []string{
+		"prior user 00",
+		"prior assistant 00",
 		"prior user 02",
 		"prior assistant 02",
 		"prior user 11",
@@ -267,8 +269,5 @@ func TestRuntimeRunIncludesActivePlannerWindowAndSessionRootContext(t *testing.T
 		if !strings.Contains(plannerTaskPrompt, want) {
 			t.Fatalf("planner task prompt missing %q:\n%s", want, plannerTaskPrompt)
 		}
-	}
-	if strings.Contains(plannerTaskPrompt, "prior assistant 00") {
-		t.Fatalf("planner conversation history should stay within the active message window:\n%s", plannerTaskPrompt)
 	}
 }

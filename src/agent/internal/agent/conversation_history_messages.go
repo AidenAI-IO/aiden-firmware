@@ -52,16 +52,13 @@ func (m *conversationMessagePlannerMemory) Clear(ctx context.Context) error {
 	return m.inner.Clear(ctx)
 }
 
-func conversationHistoryMessageContents(ctx context.Context, history *langmemory.ChatMessageHistory, maxMessages int) ([]llms.MessageContent, error) {
+func conversationHistoryMessageContents(ctx context.Context, history *langmemory.ChatMessageHistory) ([]llms.MessageContent, error) {
 	if history == nil {
 		return nil, nil
 	}
 	messages, err := history.Messages(ctx)
 	if err != nil {
 		return nil, err
-	}
-	if maxMessages > 0 && len(messages) > maxMessages {
-		messages = messages[len(messages)-maxMessages:]
 	}
 	result := make([]llms.MessageContent, 0, len(messages))
 	for _, message := range messages {
