@@ -1063,7 +1063,7 @@ func isCJKRune(r rune) bool {
 
 func episodeHasTaskTrace(episode TaskEpisode) bool {
 	for _, event := range episode.Events {
-		if event.Type == "tool_call" || event.Type == "tool_result" {
+		if event.Type == runEventToolCall || event.Type == "tool_result" {
 			return true
 		}
 	}
@@ -1185,7 +1185,7 @@ func inferEpisodeApps(episode TaskEpisode) []string {
 
 func episodeUsesNormalizedCoordinates(events []TaskEpisodeEvent) bool {
 	for _, event := range events {
-		if event.Type != "tool_call" {
+		if event.Type != runEventToolCall {
 			continue
 		}
 		input := strings.ToLower(event.ToolInput)

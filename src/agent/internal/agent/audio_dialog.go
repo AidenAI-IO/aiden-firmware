@@ -422,7 +422,7 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 }
 
 func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
-	if event.Type == "todo_update" {
+	if event.Type == runEventTodoUpdate {
 		if !d.config.VoiceProgressSpeechEnabledOrDefault() {
 			return
 		}
@@ -433,7 +433,7 @@ func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
 		d.currentProgressSpeaker().Schedule(ctx, text)
 		return
 	}
-	if event.Type != "tool_call" || !d.config.VoiceToolCallSpeechOrDefault() || event.ToolName == "enter_sleep" {
+	if event.Type != runEventToolCall || !d.config.VoiceToolCallSpeechOrDefault() || event.ToolName == "enter_sleep" {
 		return
 	}
 	go d.SpeakToolDescription(event.Speech)

@@ -99,7 +99,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if !ok || roleOutput.Role != "planner" {
 		t.Fatalf("expected planner role_output in history: %#v", resp.History)
 	}
-	toolCall, ok := firstMessageOfType(resp.History, "tool_call")
+	toolCall, ok := firstMessageOfType(resp.History, runEventToolCall)
 	if !ok || toolCall.ToolName != "audio_volume" || toolCall.ToolInput != "{}" {
 		t.Fatalf("unexpected tool_call message: %#v", resp.History)
 	}
@@ -250,7 +250,7 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 				if event.Message.Role == "planner" {
 					sawPlanner = true
 				}
-			case "tool_call":
+			case runEventToolCall:
 				sawToolCall = event.Message.ToolName == "audio_volume"
 			case "tool_result":
 				sawToolResult = event.Message.ToolName == "audio_volume" && event.Message.Content == `{"volume":42}`
@@ -980,7 +980,7 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 		),
 		history: []Message{
 			{Type: "user", Content: "hello"},
-			{Type: "tool_call", ToolName: "screenshot", ToolInput: "{}"},
+			{Type: runEventToolCall, ToolName: "screenshot", ToolInput: "{}"},
 			{Type: "tool_result", ToolName: "screenshot", Content: `{"width":100}`},
 		},
 	}
@@ -1000,7 +1000,7 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 	if len(history) != 3 {
 		t.Fatalf("expected 3 history entries, got %d", len(history))
 	}
-	if history[1].Type != "tool_call" || history[2].Type != "tool_result" {
+	if history[1].Type != runEventToolCall || history[2].Type != "tool_result" {
 		t.Fatalf("unexpected history payload: %#v", history)
 	}
 }

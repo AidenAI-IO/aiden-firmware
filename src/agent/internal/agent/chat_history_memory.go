@@ -138,7 +138,7 @@ func chatHistoryMessageUsefulForPlanner(message Message, completedEpisodes map[s
 	switch message.Type {
 	case "episode_status":
 		return !strings.EqualFold(strings.TrimSpace(message.Status), "completed")
-	case "user", "role_output", "tool_call":
+	case "user", "role_output", runEventToolCall:
 		return episodeID != "" && !completedEpisodes[episodeID]
 	default:
 		return false
@@ -175,7 +175,7 @@ func formatChatHistoryMessageLine(message Message) string {
 			return ""
 		}
 		return titleHistoryLabel(role) + episodeSuffix + ": " + singleLineHistoryText(content)
-	case "tool_call":
+	case runEventToolCall:
 		toolName := strings.TrimSpace(message.ToolName)
 		if toolName == "" {
 			toolName = "tool"

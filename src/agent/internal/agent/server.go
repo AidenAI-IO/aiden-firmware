@@ -125,6 +125,28 @@ func cloneTodoStatePtr(todo *TodoState) *TodoState {
 	return &cloned
 }
 
+func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID string) Message {
+	episodeID := event.EpisodeID
+	if episodeID == "" {
+		episodeID = fallbackEpisodeID
+	}
+	return Message{
+		Type:           event.Type,
+		Role:           event.Role,
+		EpisodeID:      episodeID,
+		RequestID:      requestID,
+		Content:        event.Content,
+		Todo:           cloneTodoStatePtr(event.Todo),
+		SpeechEligible: event.SpeechEligible,
+		Speech:         event.Speech,
+		ToolName:       event.ToolName,
+		ToolInput:      event.ToolInput,
+		Description:    event.Description,
+		Timestamp:      event.Timestamp,
+		IsError:        event.IsError,
+	}
+}
+
 // ChatRequest represents an incoming chat request
 type ChatRequest struct {
 	Message     string              `json:"message"`
@@ -724,25 +746,7 @@ func (s *Server) handleChatAsync(
 		// Event handler pushes intermediate messages into the pending result
 		// so the client can poll them in near-realtime.
 		eventHandler := func(event RunEvent) {
-			episodeID := event.EpisodeID
-			if episodeID == "" {
-				episodeID = userMsg.EpisodeID
-			}
-			msg := Message{
-				Type:           event.Type,
-				Role:           event.Role,
-				EpisodeID:      episodeID,
-				RequestID:      requestID,
-				Content:        event.Content,
-				Todo:           cloneTodoStatePtr(event.Todo),
-				SpeechEligible: event.SpeechEligible,
-				Speech:         event.Speech,
-				ToolName:       event.ToolName,
-				ToolInput:      event.ToolInput,
-				Description:    event.Description,
-				Timestamp:      event.Timestamp,
-				IsError:        event.IsError,
-			}
+			msg := messageFromRunEvent(event, userMsg.EpisodeID, requestID)
 			s.appendHistory(msg)
 			pending.mu.Lock()
 			pending.history = append(pending.history, msg)
@@ -752,10 +756,10 @@ func (s *Server) handleChatAsync(
 				s.liveActivity.UpdateFromRunEvent(requestID, event)
 			}
 
-			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
+			if event.Type == runEventToolCall && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(runCtx, event.Speech)
 			}
-			if event.Type == "todo_update" && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
+			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
 					progress.Schedule(runCtx, text)
 				}
@@ -1013,28 +1017,11 @@ func (s *Server) handleChatSync(
 		RuntimeContext:    s.runtimeContext(),
 		StreamFinalChunks: true,
 		EventHandler: func(event RunEvent) {
-			eventEpisodeID := event.EpisodeID
-			if eventEpisodeID == "" {
-				eventEpisodeID = episodeID
-			}
-			s.appendHistory(Message{
-				Type:           event.Type,
-				Role:           event.Role,
-				EpisodeID:      eventEpisodeID,
-				Content:        event.Content,
-				Todo:           cloneTodoStatePtr(event.Todo),
-				SpeechEligible: event.SpeechEligible,
-				Speech:         event.Speech,
-				ToolName:       event.ToolName,
-				ToolInput:      event.ToolInput,
-				Description:    event.Description,
-				Timestamp:      event.Timestamp,
-				IsError:        event.IsError,
-			})
-			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
+			s.appendHistory(messageFromRunEvent(event, episodeID, ""))
+			if event.Type == runEventToolCall && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(r.Context(), event.Speech)
 			}
-			if event.Type == "todo_update" && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
+			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
 					progress.Schedule(ctx, text)
 				}
@@ -1208,34 +1195,16 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			return s.consumePendingSteer(req.RequestID)
 		},
 		EventHandler: func(event RunEvent) {
-			eventEpisodeID := event.EpisodeID
-			if eventEpisodeID == "" {
-				eventEpisodeID = episodeID
-			}
-			message := Message{
-				Type:           event.Type,
-				Role:           event.Role,
-				EpisodeID:      eventEpisodeID,
-				RequestID:      req.RequestID,
-				Content:        event.Content,
-				Todo:           cloneTodoStatePtr(event.Todo),
-				SpeechEligible: event.SpeechEligible,
-				Speech:         event.Speech,
-				ToolName:       event.ToolName,
-				ToolInput:      event.ToolInput,
-				Description:    event.Description,
-				Timestamp:      event.Timestamp,
-				IsError:        event.IsError,
-			}
+			message := messageFromRunEvent(event, episodeID, req.RequestID)
 			s.appendHistory(message)
 			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
 			if req.RequestID != "" && s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
-			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
+			if event.Type == runEventToolCall && s.runtime.config.VoiceToolCallSpeechOrDefault() {
 				go s.speakToolDescription(ctx, event.Speech)
 			}
-			if event.Type == "todo_update" && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
+			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
 					progress.Schedule(ctx, text)
 				}

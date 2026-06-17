@@ -130,6 +130,12 @@ type RunMetrics struct {
 	LastPromptTokens int `json:"-"`
 }
 
+const (
+	runEventToolCall   = "tool_call"
+	runEventTodoUpdate = "todo_update"
+	runEventTodoClosed = "todo_closed"
+)
+
 type RunEvent struct {
 	Type           string     `json:"type"`
 	Role           string     `json:"role,omitempty"`
@@ -1194,7 +1200,7 @@ func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call T
 	}
 	if h.eventHandler != nil {
 		h.eventHandler(RunEvent{
-			Type:        "tool_call",
+			Type:        runEventToolCall,
 			EpisodeID:   h.episodeID,
 			ToolName:    call.Spec.Name,
 			ToolInput:   call.Input,
@@ -1250,7 +1256,7 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 	if h.eventHandler != nil {
 		h.pushPendingAction(action)
 		h.eventHandler(RunEvent{
-			Type:        "tool_call",
+			Type:        runEventToolCall,
 			EpisodeID:   h.episodeID,
 			ToolName:    action.Tool,
 			ToolInput:   action.ToolInput,
@@ -1273,7 +1279,7 @@ func (h *runtimeCallbackHandler) HandleTodoUpdate(ctx context.Context, todo Todo
 	}
 	if h.eventHandler != nil {
 		h.eventHandler(RunEvent{
-			Type:           "todo_update",
+			Type:           runEventTodoUpdate,
 			EpisodeID:      h.episodeID,
 			Content:        content,
 			Todo:           &snapshot,
@@ -1292,7 +1298,7 @@ func (h *runtimeCallbackHandler) HandleTodoClosed(ctx context.Context, todo Todo
 	}
 	if h.eventHandler != nil {
 		h.eventHandler(RunEvent{
-			Type:      "todo_closed",
+			Type:      runEventTodoClosed,
 			EpisodeID: h.episodeID,
 			Content:   reason,
 			Todo:      &snapshot,

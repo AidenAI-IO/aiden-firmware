@@ -201,7 +201,7 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		if step := truncateLiveActivityText(liveActivityStepFromRoleOutput(event), 120); step != "" {
 			state.CurrentStep = step
 		}
-	case "tool_call":
+	case runEventToolCall:
 		toolStatus := liveActivityToolCallStatus(event)
 		state.Status = LiveActivityStatusRunning
 		state.Phase = toolStatus.phase

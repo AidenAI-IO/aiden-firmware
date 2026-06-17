@@ -1415,7 +1415,7 @@ func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 	if len(tool.inputs) != 1 || tool.inputs[0] != "{}" {
 		t.Fatalf("unexpected tool inputs: %#v", tool.inputs)
 	}
-	toolCall, ok := firstRunEventOfType(events, "tool_call")
+	toolCall, ok := firstRunEventOfType(events, runEventToolCall)
 	if !ok {
 		t.Fatalf("expected tool_call event, got %#v", events)
 	}
@@ -1465,7 +1465,7 @@ func TestRuntimeRunEmitsToolSpeechOnlyWhenToolCallSpeechEnabled(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	toolCall, ok := firstRunEventOfType(events, "tool_call")
+	toolCall, ok := firstRunEventOfType(events, runEventToolCall)
 	if !ok {
 		t.Fatalf("expected tool_call event, got %#v", events)
 	}
@@ -1518,7 +1518,7 @@ func TestRuntimePlannedTodoLifecycleEvents(t *testing.T) {
 		t.Fatalf("Output = %q, want done", result.Output)
 	}
 
-	todos := runEventsOfType(events, "todo_update")
+	todos := runEventsOfType(events, runEventTodoUpdate)
 	if len(todos) != 4 {
 		t.Fatalf("todo_update events = %d, want 4: %#v", len(todos), todos)
 	}
@@ -1544,7 +1544,7 @@ func TestRuntimePlannedTodoLifecycleEvents(t *testing.T) {
 	if todos[3].SpeechEligible {
 		t.Fatalf("final done event should not be speech eligible: %#v", todos[3])
 	}
-	closed := runEventsOfType(events, "todo_closed")
+	closed := runEventsOfType(events, runEventTodoClosed)
 	if len(closed) != 1 {
 		t.Fatalf("todo_closed events = %d, want 1: %#v", len(closed), closed)
 	}
@@ -1587,7 +1587,7 @@ func TestRuntimeTodoUpdatesRecordedInEpisode(t *testing.T) {
 	if result.EpisodeID == "" {
 		t.Fatal("EpisodeID is empty")
 	}
-	traceTodos := runEventsOfType(events, "todo_update")
+	traceTodos := runEventsOfType(events, runEventTodoUpdate)
 	if len(traceTodos) == 0 {
 		t.Fatalf("runtime emitted no todo_update events: %#v", events)
 	}
@@ -1600,7 +1600,7 @@ func TestRuntimeTodoUpdatesRecordedInEpisode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read episode events: %v", err)
 	}
-	episodeTodos := taskEpisodeEventsOfType(episodeEvents, "todo_update")
+	episodeTodos := taskEpisodeEventsOfType(episodeEvents, runEventTodoUpdate)
 	if len(episodeTodos) != len(traceTodos) {
 		t.Fatalf("episode todo_update count = %d, want %d\ntrace=%#v\nepisode=%#v", len(episodeTodos), len(traceTodos), traceTodos, episodeTodos)
 	}
@@ -1619,8 +1619,8 @@ func TestRuntimeTodoUpdatesRecordedInEpisode(t *testing.T) {
 		}
 	}
 
-	traceClosed := runEventsOfType(events, "todo_closed")
-	episodeClosed := taskEpisodeEventsOfType(episodeEvents, "todo_closed")
+	traceClosed := runEventsOfType(events, runEventTodoClosed)
+	episodeClosed := taskEpisodeEventsOfType(episodeEvents, runEventTodoClosed)
 	if len(traceClosed) != 1 || len(episodeClosed) != 1 {
 		t.Fatalf("todo_closed counts trace=%d episode=%d\ntrace=%#v\nepisode=%#v", len(traceClosed), len(episodeClosed), traceClosed, episodeClosed)
 	}
@@ -1665,7 +1665,7 @@ func TestRuntimeTodoBlocksAndRevisionsOnReplan(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	todos := runEventsOfType(events, "todo_update")
+	todos := runEventsOfType(events, runEventTodoUpdate)
 	if len(todos) < 5 {
 		t.Fatalf("todo_update events = %d, want at least 5: %#v", len(todos), todos)
 	}
@@ -1704,10 +1704,10 @@ func TestRuntimeDirectAnswerDoesNotGenerateTodo(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if todos := runEventsOfType(events, "todo_update"); len(todos) != 0 {
+	if todos := runEventsOfType(events, runEventTodoUpdate); len(todos) != 0 {
 		t.Fatalf("direct answer emitted todo_update events: %#v", todos)
 	}
-	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
+	if closed := runEventsOfType(events, runEventTodoClosed); len(closed) != 0 {
 		t.Fatalf("direct answer emitted todo_closed events: %#v", closed)
 	}
 }
@@ -1742,11 +1742,11 @@ func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	todos := runEventsOfType(events, "todo_update")
+	todos := runEventsOfType(events, runEventTodoUpdate)
 	if len(todos) != 0 {
 		t.Fatalf("simple loop emitted implicit todo_update events: %#v", todos)
 	}
-	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
+	if closed := runEventsOfType(events, runEventTodoClosed); len(closed) != 0 {
 		t.Fatalf("simple loop emitted implicit todo_closed events: %#v", closed)
 	}
 	if len(screenshot.inputs) != 1 || len(webSearch.inputs) != 1 {
@@ -1779,11 +1779,11 @@ func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	todos := runEventsOfType(events, "todo_update")
+	todos := runEventsOfType(events, runEventTodoUpdate)
 	if len(todos) != 0 {
 		t.Fatalf("force_simple_loop emitted todo_update events: %#v", todos)
 	}
-	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
+	if closed := runEventsOfType(events, runEventTodoClosed); len(closed) != 0 {
 		t.Fatalf("force_simple_loop emitted todo_closed events: %#v", closed)
 	}
 	if len(webSearch.inputs) != 1 {
@@ -1818,7 +1818,7 @@ func TestRuntimeForceSimpleLoopExplicitTodoLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	todos := runEventsOfType(events, "todo_update")
+	todos := runEventsOfType(events, runEventTodoUpdate)
 	if len(todos) != 2 {
 		t.Fatalf("todo_update events = %d, want 2: %#v", len(todos), todos)
 	}
@@ -1836,7 +1836,7 @@ func TestRuntimeForceSimpleLoopExplicitTodoLifecycle(t *testing.T) {
 	if !todos[1].SpeechEligible || second.Items[0].Status != TodoDone || second.Items[1].Status != TodoInProgress {
 		t.Fatalf("second todo should advance to item 2 with speech eligibility: event=%#v todo=%#v", todos[1], second)
 	}
-	closed := runEventsOfType(events, "todo_closed")
+	closed := runEventsOfType(events, runEventTodoClosed)
 	if len(closed) != 1 {
 		t.Fatalf("todo_closed events = %d, want 1: %#v", len(closed), closed)
 	}

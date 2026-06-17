@@ -372,7 +372,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 			batch = append(batch, evt)
 
-		case "todo_update":
+		case runEventTodoUpdate:
 			parentID := iterationSpanID
 			if parentID == "" {
 				parentID = phaseSpanID
@@ -391,7 +391,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			body := map[string]interface{}{
 				"id":          uuid.NewString(),
 				"traceId":     traceID,
-				"name":        "todo_update",
+				"name":        runEventTodoUpdate,
 				"startTime":   langfuseRFC3339(eventTime),
 				"endTime":     langfuseRFC3339(eventTime),
 				"output":      todoUpdateOutput(event),
@@ -410,7 +410,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 			batch = append(batch, evt)
 
-		case "todo_closed":
+		case runEventTodoClosed:
 			parentID := iterationSpanID
 			if parentID == "" {
 				parentID = phaseSpanID
@@ -429,7 +429,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			body := map[string]interface{}{
 				"id":          uuid.NewString(),
 				"traceId":     traceID,
-				"name":        "todo_closed",
+				"name":        runEventTodoClosed,
 				"startTime":   langfuseRFC3339(eventTime),
 				"endTime":     langfuseRFC3339(eventTime),
 				"output":      todoClosedOutput(event),
@@ -448,7 +448,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 			batch = append(batch, evt)
 
-		case "tool_call":
+		case runEventToolCall:
 			parentID := langfuseToolParentSpan(iterationSpanID, phaseSpanID, event.Role)
 			if parentID == "" {
 				continue
@@ -877,7 +877,7 @@ func langfuseToolPairs(events []TaskEpisodeEvent, startTime time.Time) (map[int]
 	pending := []pendingLangfuseToolCall{}
 	for index, event := range events {
 		switch event.Type {
-		case "tool_call":
+		case runEventToolCall:
 			pending = append(pending, pendingLangfuseToolCall{
 				Index:         index,
 				ToolName:      strings.TrimSpace(event.ToolName),
@@ -1183,11 +1183,11 @@ func episodeDerivedMetrics(events []TaskEpisodeEvent) map[string]interface{} {
 			metrics["loop_mode"] = "committed"
 		case "candidate_answer":
 			metrics["candidate_answer_count"] = intMetric(metrics, "candidate_answer_count") + 1
-		case "todo_update":
+		case runEventTodoUpdate:
 			metrics["todo_update_count"] = intMetric(metrics, "todo_update_count") + 1
-		case "todo_closed":
+		case runEventTodoClosed:
 			metrics["todo_closed_count"] = intMetric(metrics, "todo_closed_count") + 1
-		case "tool_call":
+		case runEventToolCall:
 			metrics["tool_call_count"] = intMetric(metrics, "tool_call_count") + 1
 			if strings.EqualFold(strings.TrimSpace(event.Role), string(RolePlanner)) {
 				metrics["planner_tool_call_count"] = intMetric(metrics, "planner_tool_call_count") + 1

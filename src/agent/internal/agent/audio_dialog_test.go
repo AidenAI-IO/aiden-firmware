@@ -341,7 +341,7 @@ func TestAudioDialogDoesNotSpeakEnterSleepToolDescription(t *testing.T) {
 	}
 
 	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:        "tool_call",
+		Type:        runEventToolCall,
 		ToolName:    "enter_sleep",
 		Description: "用户让我休息，我准备进入睡眠模式。",
 	})
@@ -361,7 +361,7 @@ func TestAudioDialogSpeaksToolCallSpeechField(t *testing.T) {
 	}
 
 	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:        "tool_call",
+		Type:        runEventToolCall,
 		ToolName:    "audio_volume",
 		Description: "完整工具描述保留给事件和上下文，不应该直接播报。",
 		Speech:      "读取当前音量。",
@@ -385,7 +385,7 @@ func TestAudioDialogDoesNotFallbackToToolCallDescriptionForSpeech(t *testing.T) 
 	}
 
 	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:        "tool_call",
+		Type:        runEventToolCall,
 		ToolName:    "audio_volume",
 		Description: "完整工具描述保留给事件和上下文。",
 	})
@@ -416,7 +416,7 @@ func TestAudioDialogProgressSpeechDisabledDoesNotSpeakTodoUpdate(t *testing.T) {
 		}},
 	}
 	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:           "todo_update",
+		Type:           runEventTodoUpdate,
 		Content:        "Inspect current screen",
 		Todo:           &todo,
 		SpeechEligible: true,
@@ -441,14 +441,14 @@ func TestProgressSpeechTextForEventOnlySpeaksInProgressCurrentItem(t *testing.T)
 			Source: TodoSourceCommittedPlan,
 		}},
 	}
-	if text, ok := progressSpeechTextForEvent(RunEvent{Type: "todo_update", Content: "Inspect current screen", Todo: &todo, SpeechEligible: true}); ok {
+	if text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo, SpeechEligible: true}); ok {
 		t.Fatalf("done todo should not be spoken, got %q", text)
 	}
 	todo.Items[0].Status = TodoInProgress
-	if text, ok := progressSpeechTextForEvent(RunEvent{Type: "todo_update", Content: "Inspect current screen", Todo: &todo}); ok {
+	if text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo}); ok {
 		t.Fatalf("in-progress todo without speech eligibility should not be spoken, got %q", text)
 	}
-	text, ok := progressSpeechTextForEvent(RunEvent{Type: "todo_update", Content: "Inspect current screen", Todo: &todo, SpeechEligible: true})
+	text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo, SpeechEligible: true})
 	if !ok || text != "Inspect current screen" {
 		t.Fatalf("in-progress todo speech = %q ok=%v", text, ok)
 	}

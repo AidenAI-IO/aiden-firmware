@@ -272,7 +272,7 @@ func TestFormatChatHistoryForPlannerOmitsTodoControlEvents(t *testing.T) {
 	history := []Message{
 		{Type: "user", EpisodeID: "ep_todo", Content: "处理多步任务"},
 		{
-			Type:      "todo_closed",
+			Type:      runEventTodoClosed,
 			EpisodeID: "ep_todo",
 			Content:   "final_answer",
 			Todo: &TodoState{
@@ -295,7 +295,7 @@ func TestFormatChatHistoryForPlannerOmitsTodoControlEvents(t *testing.T) {
 	}
 
 	formatted := formatChatHistoryForPlanner(history, "继续")
-	for _, forbidden := range []string{"todo_closed", "final_answer", "仍显示为执行中但已随 episode 关闭"} {
+	for _, forbidden := range []string{runEventTodoClosed, "final_answer", "仍显示为执行中但已随 episode 关闭"} {
 		if strings.Contains(formatted, forbidden) {
 			t.Fatalf("planner history should omit todo control event %q:\n%s", forbidden, formatted)
 		}

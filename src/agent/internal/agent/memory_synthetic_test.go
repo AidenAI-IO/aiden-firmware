@@ -150,7 +150,7 @@ func TestMultipleCompactionRoundsDoNotNestSummaries(t *testing.T) {
 	events1 := []SessionEvent{
 		{EventID: "e1", Type: "user_input", Role: "user", Content: "What is 2+2?"},
 		{EventID: "e2", Type: "assistant_output", Role: "assistant", Content: "Let me calculate"},
-		{EventID: "e3", Type: "tool_call", Role: "assistant", Content: "calc(2+2)"},
+		{EventID: "e3", Type: runEventToolCall, Role: "assistant", Content: "calc(2+2)"},
 		{EventID: "e4", Type: "tool_result", Role: "tool", Content: "4"},
 		{EventID: "e5", Type: "assistant_output", Role: "assistant", Content: "The answer is 4"},
 		{EventID: "e6", Type: "user_input", Role: "user", Content: "What is 3+3?"},
@@ -184,7 +184,7 @@ func TestMultipleCompactionRoundsDoNotNestSummaries(t *testing.T) {
 
 	// Round 2: Add more events and trigger second compaction
 	moreEvents := []SessionEvent{
-		{EventID: "e8", Type: "tool_call", Role: "assistant", Content: "calc(3+3)"},
+		{EventID: "e8", Type: runEventToolCall, Role: "assistant", Content: "calc(3+3)"},
 		{EventID: "e9", Type: "tool_result", Role: "tool", Content: "6"},
 		{EventID: "e10", Type: "assistant_output", Role: "assistant", Content: "The answer is 6"},
 		{EventID: "e11", Type: "user_input", Role: "user", Content: "What is 5+5?"},

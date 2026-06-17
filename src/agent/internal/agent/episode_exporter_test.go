@@ -97,7 +97,7 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 			{
 				EventID: "evt_todo",
 				Ts:      start.Add(time.Second).Format(time.RFC3339Nano),
-				Type:    "todo_update",
+				Type:    runEventTodoUpdate,
 				Content: "点击设置图标",
 				Todo: &TodoState{
 					Mode:      TodoModePlanned,
@@ -119,7 +119,7 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 			{
 				EventID:   "evt2",
 				Ts:        start.Add(2 * time.Second).Format(time.RFC3339Nano),
-				Type:      "tool_call",
+				Type:      runEventToolCall,
 				ToolName:  "mouse_click",
 				ToolInput: `{"x":100,"y":200}`,
 			},
@@ -142,7 +142,7 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 			{
 				EventID: "evt_todo_closed",
 				Ts:      start.Add(6 * time.Second).Format(time.RFC3339Nano),
-				Type:    "todo_closed",
+				Type:    runEventTodoClosed,
 				Reason:  "final_answer",
 				Todo: &TodoState{
 					Mode:      TodoModePlanned,
@@ -214,11 +214,11 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 	if names["planner"] != 1 {
 		t.Fatalf("planner span count = %d, want 1", names["planner"])
 	}
-	if names["todo_update"] != 1 {
-		t.Fatalf("todo_update event count = %d, want 1", names["todo_update"])
+	if names[runEventTodoUpdate] != 1 {
+		t.Fatalf("todo_update event count = %d, want 1", names[runEventTodoUpdate])
 	}
-	if names["todo_closed"] != 1 {
-		t.Fatalf("todo_closed event count = %d, want 1", names["todo_closed"])
+	if names[runEventTodoClosed] != 1 {
+		t.Fatalf("todo_closed event count = %d, want 1", names[runEventTodoClosed])
 	}
 	if names["tool/mouse_click"] != 1 {
 		t.Fatalf("tool span count = %d, want 1", names["tool/mouse_click"])
@@ -300,7 +300,7 @@ func TestBuildLangfuseBatchParentsGenerationsAndToolResults(t *testing.T) {
 			{
 				EventID:   "evt_tool",
 				Ts:        start.Add(3 * time.Second).Format(time.RFC3339Nano),
-				Type:      "tool_call",
+				Type:      runEventToolCall,
 				ToolName:  "mouse_click",
 				ToolInput: `{"x":1,"y":2}`,
 			},
@@ -796,7 +796,7 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 			{
 				EventID:   "evt_tool",
 				Ts:        start.Add(time.Second).Format(time.RFC3339Nano),
-				Type:      "tool_call",
+				Type:      runEventToolCall,
 				Role:      "planner",
 				ToolName:  "echo",
 				ToolInput: `{"__arg1":"ok"}`,

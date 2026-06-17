@@ -489,7 +489,7 @@ func TestVerifyPrunesOldUnreferencedEpisodeTrace(t *testing.T) {
 			EndedAt:   "2000-01-01T00:00:10Z",
 			UserGoal:  "打开微信App",
 			Outcome:   TaskEpisodeOutcome{Success: true, FinalState: "已打开"},
-			Events:    []TaskEpisodeEvent{{EventID: "evt_old", Type: "tool_call", ToolName: "touch_gesture"}},
+			Events:    []TaskEpisodeEvent{{EventID: "evt_old", Type: runEventToolCall, ToolName: "touch_gesture"}},
 		},
 		{
 			ID:        "ep_old_referenced",
@@ -498,7 +498,7 @@ func TestVerifyPrunesOldUnreferencedEpisodeTrace(t *testing.T) {
 			EndedAt:   "2000-01-01T00:01:10Z",
 			UserGoal:  "打开通讯录",
 			Outcome:   TaskEpisodeOutcome{Success: true, FinalState: "已打开"},
-			Events:    []TaskEpisodeEvent{{EventID: "evt_ref", Type: "tool_call", ToolName: "touch_gesture"}},
+			Events:    []TaskEpisodeEvent{{EventID: "evt_ref", Type: runEventToolCall, ToolName: "touch_gesture"}},
 		},
 	} {
 		if _, err := episodes.AddEpisode(ctx, episode); err != nil {

@@ -237,7 +237,7 @@ func (r *EpisodeRecorder) RecordTodoUpdate(todo TodoState, content string, speec
 	}
 	snapshot := todo.Clone()
 	r.append(TaskEpisodeEvent{
-		Type:           "todo_update",
+		Type:           runEventTodoUpdate,
 		Content:        strings.TrimSpace(content),
 		Todo:           &snapshot,
 		SpeechEligible: speechEligible,
@@ -250,7 +250,7 @@ func (r *EpisodeRecorder) RecordTodoClosed(todo TodoState, reason string) {
 	}
 	snapshot := todo.Clone()
 	r.append(TaskEpisodeEvent{
-		Type:   "todo_closed",
+		Type:   runEventTodoClosed,
 		Todo:   &snapshot,
 		Reason: strings.TrimSpace(reason),
 	})
@@ -297,7 +297,7 @@ func (r *EpisodeRecorder) recordExecutionForRole(result roleExecutionResult, rol
 	if result.Action != nil {
 		input := normalizeToolInput(result.Action.ToolInput)
 		r.append(TaskEpisodeEvent{
-			Type:            "tool_call",
+			Type:            runEventToolCall,
 			Role:            string(role),
 			ToolName:        result.Action.Tool,
 			ToolInput:       input,
@@ -1046,7 +1046,7 @@ func summarizeEpisodeForIndex(episode TaskEpisode, events []TaskEpisodeEvent) st
 	}
 	var tools []string
 	for _, event := range events {
-		if event.Type == "tool_call" && strings.TrimSpace(event.ToolName) != "" {
+		if event.Type == runEventToolCall && strings.TrimSpace(event.ToolName) != "" {
 			tools = append(tools, event.ToolName)
 		}
 	}
@@ -1136,7 +1136,7 @@ func inferReusableLessons(episode TaskEpisode) []string {
 	}
 	var tools []string
 	for _, evt := range episode.Events {
-		if evt.Type == "tool_call" && strings.TrimSpace(evt.ToolName) != "" {
+		if evt.Type == runEventToolCall && strings.TrimSpace(evt.ToolName) != "" {
 			tools = append(tools, evt.ToolName)
 		}
 	}
@@ -1149,7 +1149,7 @@ func inferReusableLessons(episode TaskEpisode) []string {
 func episodeToolSequence(events []TaskEpisodeEvent) []string {
 	var tools []string
 	for _, evt := range events {
-		if evt.Type == "tool_call" && strings.TrimSpace(evt.ToolName) != "" {
+		if evt.Type == runEventToolCall && strings.TrimSpace(evt.ToolName) != "" {
 			tools = append(tools, evt.ToolName)
 		}
 	}

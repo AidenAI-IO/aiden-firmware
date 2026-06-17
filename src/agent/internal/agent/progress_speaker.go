@@ -134,7 +134,7 @@ func (p *progressSpeaker) fire(ctx context.Context, generation int64) {
 }
 
 func progressSpeechTextForEvent(event RunEvent) (string, bool) {
-	if event.Type != "todo_update" || event.Todo == nil || !event.SpeechEligible {
+	if event.Type != runEventTodoUpdate || event.Todo == nil || !event.SpeechEligible {
 		return "", false
 	}
 	item, ok := event.Todo.CurrentItem()
