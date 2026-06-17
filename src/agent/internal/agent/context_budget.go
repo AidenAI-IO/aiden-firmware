@@ -24,6 +24,18 @@ type toolResponseBudgetCandidate struct {
 	EstimatedPromptTokensSingle int
 }
 
+type toolResponseBudgetCandidateKey struct {
+	MessageIndex int
+	PartIndex    int
+}
+
+func (c toolResponseBudgetCandidate) key() toolResponseBudgetCandidateKey {
+	return toolResponseBudgetCandidateKey{
+		MessageIndex: c.MessageIndex,
+		PartIndex:    c.PartIndex,
+	}
+}
+
 func (e *roleCollaborativeExecutor) guardMessagesWithinContextWindow(messages []llms.MessageContent, options []llms.CallOption) []llms.MessageContent {
 	if e == nil || e.Model == nil {
 		return messages
@@ -57,7 +69,7 @@ func (e *roleCollaborativeExecutor) guardMessagesWithinContextWindow(messages []
 	}
 
 	sanitized := cloneMessageContents(messages)
-	changed := false
+	omitted := make(map[toolResponseBudgetCandidateKey]struct{})
 	for _, candidate := range candidates {
 		singlePromptTokens := estimateSingleToolResponsePromptTokens(messages, candidate) + toolSchemaTokens
 		if singlePromptTokens <= inputBudget {
@@ -65,11 +77,7 @@ func (e *roleCollaborativeExecutor) guardMessagesWithinContextWindow(messages []
 		}
 		candidate.EstimatedPromptTokensSingle = singlePromptTokens
 		replaceToolResponsePart(sanitized, candidate, omittedToolResultMessage(candidate, contextWindow, inputBudget, callOptions.MaxTokens))
-		changed = true
-	}
-
-	if !changed {
-		return messages
+		omitted[candidate.key()] = struct{}{}
 	}
 
 	if estimateMessagesTokens(sanitized)+toolSchemaTokens <= inputBudget {
@@ -80,11 +88,12 @@ func (e *roleCollaborativeExecutor) guardMessagesWithinContextWindow(messages []
 		return candidates[i].ContentTokens > candidates[j].ContentTokens
 	})
 	for _, candidate := range candidates {
-		if isToolResponseAlreadyOmitted(sanitized, candidate) {
+		if isToolResponseAlreadyOmitted(omitted, candidate) {
 			continue
 		}
 		candidate.EstimatedPromptTokensSingle = estimateSingleToolResponsePromptTokens(messages, candidate) + toolSchemaTokens
 		replaceToolResponsePart(sanitized, candidate, omittedToolResultMessage(candidate, contextWindow, inputBudget, callOptions.MaxTokens))
+		omitted[candidate.key()] = struct{}{}
 		if estimateMessagesTokens(sanitized)+toolSchemaTokens <= inputBudget {
 			break
 		}
@@ -185,16 +194,9 @@ func replaceToolResponsePart(messages []llms.MessageContent, candidate toolRespo
 	parts[candidate.PartIndex] = response
 }
 
-func isToolResponseAlreadyOmitted(messages []llms.MessageContent, candidate toolResponseBudgetCandidate) bool {
-	if candidate.MessageIndex < 0 || candidate.MessageIndex >= len(messages) {
-		return true
-	}
-	parts := messages[candidate.MessageIndex].Parts
-	if candidate.PartIndex < 0 || candidate.PartIndex >= len(parts) {
-		return true
-	}
-	response, ok := parts[candidate.PartIndex].(llms.ToolCallResponse)
-	return ok && strings.Contains(response.Content, "tool result omitted")
+func isToolResponseAlreadyOmitted(omitted map[toolResponseBudgetCandidateKey]struct{}, candidate toolResponseBudgetCandidate) bool {
+	_, ok := omitted[candidate.key()]
+	return ok
 }
 
 func omittedToolResultMessage(candidate toolResponseBudgetCandidate, contextWindow, inputBudget, maxResponseTokens int) string {
