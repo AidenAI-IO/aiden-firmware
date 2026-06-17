@@ -228,7 +228,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(turn.Answer)
 					}
-					return e.finishRun(ctx, turn.Answer, turn.Answer)
+					return e.finishRun(ctx, turn.Answer, turn.Answer, &state)
 				}
 				continue
 			case plannerTurnUseSimpleMode:
@@ -353,7 +353,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 						state.Phase = phaseDefault
 						continue
 					}
-					return e.finishRun(ctx, finalAnswer, verification.Reason)
+					return e.finishRun(ctx, finalAnswer, verification.Reason, &state)
 				}
 				doneTodo, doneChanged := state.finishCurrentTodoStep()
 				state.clearStepExecution()
@@ -602,7 +602,7 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 	return plannerTurnResult{Kind: plannerTurnTool, Step: &toolExecution.Step}, nil
 }
 
-func (e *roleCollaborativeExecutor) finishRun(ctx context.Context, finalAnswer, log string) (map[string]any, error) {
+func (e *roleCollaborativeExecutor) finishRun(ctx context.Context, finalAnswer, log string, state *roleLoopState) (map[string]any, error) {
 	finalAnswer = strings.TrimSpace(finalAnswer)
 	if e.CallbacksHandler != nil {
 		e.streamFinalAnswer(ctx, finalAnswer)
@@ -611,11 +611,18 @@ func (e *roleCollaborativeExecutor) finishRun(ctx context.Context, finalAnswer, 
 			Log:          log,
 		})
 	}
+	if state != nil && state.Todo.Mode != TodoModeNone && len(state.Todo.Items) > 0 {
+		e.emitTodoClosed(ctx, state.Todo, "final_answer")
+	}
 	return map[string]any{e.OutputKey: finalAnswer}, nil
 }
 
 type todoUpdateHandler interface {
 	HandleTodoUpdate(ctx context.Context, todo TodoState, content string, speechEligible bool)
+}
+
+type todoClosedHandler interface {
+	HandleTodoClosed(ctx context.Context, todo TodoState, reason string)
 }
 
 func (e *roleCollaborativeExecutor) emitTodoUpdate(ctx context.Context, todo TodoState, content string, speechEligible bool) {
@@ -635,6 +642,25 @@ func (e *roleCollaborativeExecutor) emitTodoUpdate(ctx context.Context, todo Tod
 		return
 	}
 	handler.HandleTodoUpdate(ctx, snapshot, content, speechEligible)
+}
+
+func (e *roleCollaborativeExecutor) emitTodoClosed(ctx context.Context, todo TodoState, reason string) {
+	if e == nil {
+		return
+	}
+	reason = strings.TrimSpace(reason)
+	snapshot := todo.Clone()
+	if e.Recorder != nil {
+		e.Recorder.RecordTodoClosed(snapshot, reason)
+	}
+	if e.CallbacksHandler == nil {
+		return
+	}
+	handler, ok := e.CallbacksHandler.(todoClosedHandler)
+	if !ok {
+		return
+	}
+	handler.HandleTodoClosed(ctx, snapshot, reason)
 }
 
 func (e *roleCollaborativeExecutor) consumePendingSteer(ctx context.Context, inputs map[string]string, state *roleLoopState) (bool, error) {

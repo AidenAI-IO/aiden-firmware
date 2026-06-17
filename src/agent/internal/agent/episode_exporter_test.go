@@ -139,6 +139,27 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 				Reason:    "设置页面已打开",
 				Content:   "已打开设置",
 			},
+			{
+				EventID: "evt_todo_closed",
+				Ts:      start.Add(6 * time.Second).Format(time.RFC3339Nano),
+				Type:    "todo_closed",
+				Reason:  "final_answer",
+				Todo: &TodoState{
+					Mode:      TodoModePlanned,
+					Objective: "打开系统设置",
+					Revision:  1,
+					CurrentID: "todo-r1-step1",
+					Items: []TodoItem{
+						{
+							ID:        "todo-r1-step1",
+							Text:      "点击设置图标",
+							Status:    TodoDone,
+							Source:    TodoSourceCommittedPlan,
+							StepIndex: 1,
+						},
+					},
+				},
+			},
 		},
 	}
 
@@ -195,6 +216,9 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 	}
 	if names["todo_update"] != 1 {
 		t.Fatalf("todo_update event count = %d, want 1", names["todo_update"])
+	}
+	if names["todo_closed"] != 1 {
+		t.Fatalf("todo_closed event count = %d, want 1", names["todo_closed"])
 	}
 	if names["tool/mouse_click"] != 1 {
 		t.Fatalf("tool span count = %d, want 1", names["tool/mouse_click"])

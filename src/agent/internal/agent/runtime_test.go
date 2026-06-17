@@ -1544,6 +1544,16 @@ func TestRuntimePlannedTodoLifecycleEvents(t *testing.T) {
 	if todos[3].SpeechEligible {
 		t.Fatalf("final done event should not be speech eligible: %#v", todos[3])
 	}
+	closed := runEventsOfType(events, "todo_closed")
+	if len(closed) != 1 {
+		t.Fatalf("todo_closed events = %d, want 1: %#v", len(closed), closed)
+	}
+	if closed[0].Todo == nil || closed[0].Todo.Revision != todos[3].Todo.Revision {
+		t.Fatalf("todo_closed should carry final todo snapshot: closed=%#v final_todo=%#v", closed[0], todos[3].Todo)
+	}
+	if closed[0].SpeechEligible {
+		t.Fatalf("todo_closed must not be speech eligible: %#v", closed[0])
+	}
 }
 
 func TestRuntimeTodoUpdatesRecordedInEpisode(t *testing.T) {
@@ -1607,6 +1617,21 @@ func TestRuntimeTodoUpdatesRecordedInEpisode(t *testing.T) {
 		if !reflect.DeepEqual(*episodeTodos[i].Todo, *traceTodos[i].Todo) {
 			t.Fatalf("todo %d snapshot mismatch:\ntrace=%#v\nepisode=%#v", i, *traceTodos[i].Todo, *episodeTodos[i].Todo)
 		}
+	}
+
+	traceClosed := runEventsOfType(events, "todo_closed")
+	episodeClosed := taskEpisodeEventsOfType(episodeEvents, "todo_closed")
+	if len(traceClosed) != 1 || len(episodeClosed) != 1 {
+		t.Fatalf("todo_closed counts trace=%d episode=%d\ntrace=%#v\nepisode=%#v", len(traceClosed), len(episodeClosed), traceClosed, episodeClosed)
+	}
+	if traceClosed[0].Content != "final_answer" || episodeClosed[0].Reason != "final_answer" {
+		t.Fatalf("todo_closed reason mismatch: trace=%#v episode=%#v", traceClosed[0], episodeClosed[0])
+	}
+	if traceClosed[0].Todo == nil || episodeClosed[0].Todo == nil {
+		t.Fatalf("todo_closed missing snapshot: trace=%#v episode=%#v", traceClosed[0].Todo, episodeClosed[0].Todo)
+	}
+	if !reflect.DeepEqual(*traceClosed[0].Todo, *episodeClosed[0].Todo) {
+		t.Fatalf("todo_closed snapshot mismatch:\ntrace=%#v\nepisode=%#v", *traceClosed[0].Todo, *episodeClosed[0].Todo)
 	}
 }
 
@@ -1682,6 +1707,9 @@ func TestRuntimeDirectAnswerDoesNotGenerateTodo(t *testing.T) {
 	if todos := runEventsOfType(events, "todo_update"); len(todos) != 0 {
 		t.Fatalf("direct answer emitted todo_update events: %#v", todos)
 	}
+	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
+		t.Fatalf("direct answer emitted todo_closed events: %#v", closed)
+	}
 }
 
 func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
@@ -1718,6 +1746,9 @@ func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 	if len(todos) != 0 {
 		t.Fatalf("simple loop emitted implicit todo_update events: %#v", todos)
 	}
+	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
+		t.Fatalf("simple loop emitted implicit todo_closed events: %#v", closed)
+	}
 	if len(screenshot.inputs) != 1 || len(webSearch.inputs) != 1 {
 		t.Fatalf("expected simple tools to execute without todo, screenshot=%#v web=%#v", screenshot.inputs, webSearch.inputs)
 	}
@@ -1751,6 +1782,9 @@ func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
 	todos := runEventsOfType(events, "todo_update")
 	if len(todos) != 0 {
 		t.Fatalf("force_simple_loop emitted todo_update events: %#v", todos)
+	}
+	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
+		t.Fatalf("force_simple_loop emitted todo_closed events: %#v", closed)
 	}
 	if len(webSearch.inputs) != 1 {
 		t.Fatalf("expected force_simple_loop tool to execute without todo, inputs=%#v", webSearch.inputs)
@@ -1801,6 +1835,13 @@ func TestRuntimeForceSimpleLoopExplicitTodoLifecycle(t *testing.T) {
 	}
 	if !todos[1].SpeechEligible || second.Items[0].Status != TodoDone || second.Items[1].Status != TodoInProgress {
 		t.Fatalf("second todo should advance to item 2 with speech eligibility: event=%#v todo=%#v", todos[1], second)
+	}
+	closed := runEventsOfType(events, "todo_closed")
+	if len(closed) != 1 {
+		t.Fatalf("todo_closed events = %d, want 1: %#v", len(closed), closed)
+	}
+	if closed[0].Todo == nil || closed[0].Todo.Items[1].Status != TodoInProgress {
+		t.Fatalf("todo_closed should preserve last simple todo snapshot without forcing done: %#v", closed[0])
 	}
 }
 

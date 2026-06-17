@@ -244,6 +244,18 @@ func (r *EpisodeRecorder) RecordTodoUpdate(todo TodoState, content string, speec
 	})
 }
 
+func (r *EpisodeRecorder) RecordTodoClosed(todo TodoState, reason string) {
+	if r == nil {
+		return
+	}
+	snapshot := todo.Clone()
+	r.append(TaskEpisodeEvent{
+		Type:   "todo_closed",
+		Todo:   &snapshot,
+		Reason: strings.TrimSpace(reason),
+	})
+}
+
 func (r *EpisodeRecorder) RecordPlannerDecision(decision plannerDecision) {
 	if r == nil {
 		return

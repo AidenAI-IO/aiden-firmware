@@ -4314,6 +4314,7 @@ const webUI = `<!DOCTYPE html>
 
             const fragment = document.createDocumentFragment();
             history.forEach(function(msg) {
+                if (isControlMessage(msg)) return;
                 const key = messageIdentity(msg);
                 if (renderedMessageKeys.has(key)) return;
                 renderedMessageKeys.add(key);
@@ -4326,12 +4327,17 @@ const webUI = `<!DOCTYPE html>
         }
 
         function addMessage(msg) {
+            if (isControlMessage(msg)) return;
             const key = messageIdentity(msg);
             if (renderedMessageKeys.has(key)) return;
             renderedMessageKeys.add(key);
             messagesDiv.appendChild(createMessageNode(msg));
             updateEmptyState();
             scrollToBottom();
+        }
+
+        function isControlMessage(msg) {
+            return normalizeType((msg || {}).type) === 'todo_closed';
         }
 
         function messageIdentity(msg) {

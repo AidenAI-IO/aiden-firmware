@@ -1282,6 +1282,24 @@ func (h *runtimeCallbackHandler) HandleTodoUpdate(ctx context.Context, todo Todo
 	}
 }
 
+func (h *runtimeCallbackHandler) HandleTodoClosed(ctx context.Context, todo TodoState, reason string) {
+	reason = strings.TrimSpace(reason)
+	snapshot := todo.Clone()
+	if h.logger != nil {
+		h.logger.Info("Todo closed: mode=%s revision=%d current_id=%s reason=%s",
+			snapshot.Mode, snapshot.Revision, snapshot.CurrentID, truncateForLog(reason, 240))
+	}
+	if h.eventHandler != nil {
+		h.eventHandler(RunEvent{
+			Type:      "todo_closed",
+			EpisodeID: h.episodeID,
+			Content:   reason,
+			Todo:      &snapshot,
+			Timestamp: time.Now(),
+		})
+	}
+}
+
 func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, content string) {
 	content = strings.TrimSpace(content)
 	if h.logger != nil {
