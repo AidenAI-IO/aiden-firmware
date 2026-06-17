@@ -105,6 +105,20 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.telemetry.tags.push_back("field-test");
     cfg.telemetry.environment = "staging";
 
+    cfg.live_activity.enabled = true;
+    cfg.live_activity.relay_url = "https://relay.example.com";
+    cfg.live_activity.relay_api_key = "relay-secret";
+    cfg.live_activity.board_id = "board-001";
+    cfg.live_activity.phone_id = "phone-001";
+    cfg.live_activity.bundle_id = "com.aiden.bridge";
+    cfg.live_activity.topic = "com.aiden.bridge.push-type.liveactivity";
+    cfg.live_activity.environment = "production";
+    cfg.live_activity.team_id = "TEAM123456";
+    cfg.live_activity.key_id = "KEY123456";
+    cfg.live_activity.private_key_path = "/userdata/agent/AuthKey_KEY123456.p8";
+    cfg.live_activity.private_key_pem = "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----";
+    cfg.live_activity.timeout_sec = 12;
+
     std::string path = make_temp_path("roundtrip.toml");
     std::string err;
     REQUIRE(aiden::save_agent_toml(path.c_str(), cfg, &err));
@@ -206,6 +220,22 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.telemetry.tags[0] == "aiden-hardware");
     CHECK(loaded.telemetry.tags[1] == "field-test");
     CHECK(loaded.telemetry.environment == "staging");
+
+    CHECK(loaded.live_activity.enabled == true);
+    CHECK(loaded.live_activity.relay_url == "https://relay.example.com");
+    CHECK(loaded.live_activity.relay_api_key == "relay-secret");
+    CHECK(loaded.live_activity.has_relay_api_key == true);
+    CHECK(loaded.live_activity.board_id == "board-001");
+    CHECK(loaded.live_activity.phone_id == "phone-001");
+    CHECK(loaded.live_activity.bundle_id == "com.aiden.bridge");
+    CHECK(loaded.live_activity.topic == "com.aiden.bridge.push-type.liveactivity");
+    CHECK(loaded.live_activity.environment == "production");
+    CHECK(loaded.live_activity.team_id == "TEAM123456");
+    CHECK(loaded.live_activity.key_id == "KEY123456");
+    CHECK(loaded.live_activity.private_key_path == "/userdata/agent/AuthKey_KEY123456.p8");
+    CHECK(loaded.live_activity.private_key_pem == "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----");
+    CHECK(loaded.live_activity.has_private_key_pem == true);
+    CHECK(loaded.live_activity.timeout_sec == 12);
 
     std::remove(path.c_str());
 }

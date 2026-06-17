@@ -972,6 +972,65 @@ TEST_CASE("config web exposes log settings section") {
     CHECK(html.find("enterEditSection('log')") != std::string::npos);
 }
 
+TEST_CASE("config web exposes live activity settings section") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const std::string toml_header_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.h";
+    std::ifstream toml_header_in(toml_header_path.c_str());
+    REQUIRE(toml_header_in.good());
+
+    std::ostringstream toml_header_buffer;
+    toml_header_buffer << toml_header_in.rdbuf();
+    const std::string toml_header = toml_header_buffer.str();
+
+    const std::string toml_source_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.cpp";
+    std::ifstream toml_source_in(toml_source_path.c_str());
+    REQUIRE(toml_source_in.good());
+
+    std::ostringstream toml_source_buffer;
+    toml_source_buffer << toml_source_in.rdbuf();
+    const std::string toml_source = toml_source_buffer.str();
+
+    CHECK(source.find("\"live_activity\"") != std::string::npos);
+    CHECK(source.find("cJSON* live_activity = add_object(root, \"live_activity\")") != std::string::npos);
+    CHECK(source.find("config.live_activity.relay_url") != std::string::npos);
+    CHECK(source.find("has_relay_api_key") != std::string::npos);
+    CHECK(source.find("has_private_key_pem") != std::string::npos);
+    CHECK(source.find("preserve_redacted_agent_secrets") != std::string::npos);
+    CHECK(source.find("stored.live_activity.relay_api_key") != std::string::npos);
+    CHECK(source.find("stored.live_activity.private_key_pem") != std::string::npos);
+
+    CHECK(html.find("section-live_activity") != std::string::npos);
+    CHECK(html.find("<h3>[live_activity]</h3>") != std::string::npos);
+    CHECK(html.find("live_activity_relay_url") != std::string::npos);
+    CHECK(html.find("live_activity_relay_api_key") != std::string::npos);
+    CHECK(html.find("live_activity_board_id") != std::string::npos);
+    CHECK(html.find("live_activity_phone_id") != std::string::npos);
+    CHECK(html.find("live_activity_private_key_pem") != std::string::npos);
+    CHECK(html.find("save-live_activity") != std::string::npos);
+    CHECK(html.find("enterEditSection('live_activity')") != std::string::npos);
+
+    CHECK(toml_header.find("struct LiveActivityToml") != std::string::npos);
+    CHECK(toml_header.find("LiveActivityToml live_activity") != std::string::npos);
+    CHECK(toml_source.find("section == \"live_activity\"") != std::string::npos);
+    CHECK(toml_source.find("\"relay_api_key\"") != std::string::npos);
+    CHECK(toml_source.find("[live_activity]") != std::string::npos);
+}
+
 TEST_CASE("config web does not restart ota for system env changes") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());

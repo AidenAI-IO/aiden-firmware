@@ -383,6 +383,25 @@ void apply_kv(AgentToml& cfg,
         else if (key == "tags") assign_string_array(&cfg.telemetry.tags, raw, &sub_err);
         else if (key == "environment") assign_string(&cfg.telemetry.environment, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "live_activity") {
+        if (key == "enabled") assign_bool(&cfg.live_activity.enabled, raw, &sub_err);
+        else if (key == "relay_url") assign_string(&cfg.live_activity.relay_url, raw, &sub_err);
+        else if (key == "relay_api_key") {
+            assign_string(&cfg.live_activity.relay_api_key, raw, &sub_err);
+            cfg.live_activity.has_relay_api_key = !cfg.live_activity.relay_api_key.empty();
+        } else if (key == "board_id") assign_string(&cfg.live_activity.board_id, raw, &sub_err);
+        else if (key == "phone_id") assign_string(&cfg.live_activity.phone_id, raw, &sub_err);
+        else if (key == "bundle_id") assign_string(&cfg.live_activity.bundle_id, raw, &sub_err);
+        else if (key == "topic") assign_string(&cfg.live_activity.topic, raw, &sub_err);
+        else if (key == "environment") assign_string(&cfg.live_activity.environment, raw, &sub_err);
+        else if (key == "team_id") assign_string(&cfg.live_activity.team_id, raw, &sub_err);
+        else if (key == "key_id") assign_string(&cfg.live_activity.key_id, raw, &sub_err);
+        else if (key == "private_key_path") assign_string(&cfg.live_activity.private_key_path, raw, &sub_err);
+        else if (key == "private_key_pem") {
+            assign_string(&cfg.live_activity.private_key_pem, raw, &sub_err);
+            cfg.live_activity.has_private_key_pem = !cfg.live_activity.private_key_pem.empty();
+        } else if (key == "timeout_sec") assign_int(&cfg.live_activity.timeout_sec, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
     }
     // Unknown sections / keys are ignored.
 }
@@ -703,6 +722,22 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (cfg.telemetry.max_retry != 0) emit_int(out, "max_retry", cfg.telemetry.max_retry);
     if (!cfg.telemetry.tags.empty()) emit_string_array(out, "tags", cfg.telemetry.tags);
     if (!cfg.telemetry.environment.empty()) emit_string(out, "environment", cfg.telemetry.environment);
+    out << "\n";
+
+    out << "[live_activity]\n";
+    emit_bool(out, "enabled", cfg.live_activity.enabled);
+    if (!cfg.live_activity.relay_url.empty()) emit_string(out, "relay_url", cfg.live_activity.relay_url);
+    if (!cfg.live_activity.relay_api_key.empty()) emit_string(out, "relay_api_key", cfg.live_activity.relay_api_key);
+    if (!cfg.live_activity.board_id.empty()) emit_string(out, "board_id", cfg.live_activity.board_id);
+    if (!cfg.live_activity.phone_id.empty()) emit_string(out, "phone_id", cfg.live_activity.phone_id);
+    if (!cfg.live_activity.bundle_id.empty()) emit_string(out, "bundle_id", cfg.live_activity.bundle_id);
+    if (!cfg.live_activity.topic.empty()) emit_string(out, "topic", cfg.live_activity.topic);
+    if (!cfg.live_activity.environment.empty()) emit_string(out, "environment", cfg.live_activity.environment);
+    if (!cfg.live_activity.team_id.empty()) emit_string(out, "team_id", cfg.live_activity.team_id);
+    if (!cfg.live_activity.key_id.empty()) emit_string(out, "key_id", cfg.live_activity.key_id);
+    if (!cfg.live_activity.private_key_path.empty()) emit_string(out, "private_key_path", cfg.live_activity.private_key_path);
+    if (!cfg.live_activity.private_key_pem.empty()) emit_string(out, "private_key_pem", cfg.live_activity.private_key_pem);
+    if (cfg.live_activity.timeout_sec != 0) emit_int(out, "timeout_sec", cfg.live_activity.timeout_sec);
     out << "\n";
 
     return atomic_write(path, out.str(), error);
