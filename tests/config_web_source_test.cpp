@@ -206,7 +206,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(source.find("read_ota_log_snapshot") != std::string::npos);
     CHECK(source.find("kOtaWebUpdateLogPath") != std::string::npos);
     CHECK(source.find("/tmp/config_web_ota_update.log") != std::string::npos);
-    CHECK(source.find("/var/log/ota/ota.log") == std::string::npos);
+    CHECK(source.find("/var/log/ota/ota.log") != std::string::npos);
     CHECK(source.find("/oem/usr/bin/ota") != std::string::npos);
     CHECK(source.find(" update") != std::string::npos);
     CHECK(source.find("kOtaWebUpdateLockPath") != std::string::npos);
@@ -279,6 +279,36 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("/api/ota/logs") != std::string::npos);
     CHECK(html.find("await refreshOtaLog(false)") == std::string::npos);
     CHECK(html.find("setInterval(function(){refreshOtaLog(false);},2000)") != std::string::npos);
+}
+
+TEST_CASE("config web exposes running firmware version and ota health status separately") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("\"health_status\"") != std::string::npos);
+    CHECK(source.find("\"health_error\"") != std::string::npos);
+    CHECK(source.find("\"previous_version\"") != std::string::npos);
+    CHECK(source.find("current_slot_from_cmdline") != std::string::npos);
+    CHECK(source.find("running_slot_matches_target") != std::string::npos);
+
+    CHECK(html.find("fwHealth") != std::string::npos);
+    CHECK(html.find("renderFirmwareInfo") != std::string::npos);
+    CHECK(html.find("OTA 状态") != std::string::npos);
+    CHECK(html.find("health_error") != std::string::npos);
+    CHECK(html.find("previous_version") != std::string::npos);
 }
 
 TEST_CASE("ota open sources documentation references current docs paths") {
