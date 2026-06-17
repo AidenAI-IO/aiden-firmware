@@ -3,9 +3,6 @@ package agent
 import "testing"
 
 func TestQuickActionExposedToAgentAndToolLab(t *testing.T) {
-	if !isHTTPToolExposed("quick_action") {
-		t.Fatal("expected quick_action in Tool Lab HTTP catalog")
-	}
 	if !isAgentToolExposed("quick_action") {
 		t.Fatal("expected quick_action available to conversational agent")
 	}
@@ -14,25 +11,20 @@ func TestQuickActionExposedToAgentAndToolLab(t *testing.T) {
 	}
 }
 
-func TestPhoneBridgeToolsExposedToAgentOnly(t *testing.T) {
+func TestPhoneBridgeToolsExposedToAgent(t *testing.T) {
 	for _, name := range []string{"open_app", "clipboard", "calendar", "contacts", "notification"} {
-		if isHTTPToolExposed(name) {
-			t.Fatalf("expected %s hidden from Tool Lab HTTP catalog", name)
-		}
 		if !isAgentToolExposed(name) {
 			t.Fatalf("expected %s available to conversational agent", name)
 		}
 	}
 }
 
-func TestUnknownToolsFailClosedForHTTP(t *testing.T) {
-	if isHTTPToolExposed("unregistered_tool") {
-		t.Fatal("expected unregistered tool hidden from HTTP catalog")
-	}
-
+func TestAllToolsExposedOverHTTP(t *testing.T) {
+	// Every registered tool, including phone bridge and unregistered tools,
+	// is now exposed through the HTTP catalog.
 	spec := NewToolSpec(&stubTool{name: "unregistered_tool", description: "Unregistered."})
-	if spec.HTTPExposed {
-		t.Fatal("expected unregistered tool spec hidden from HTTP catalog")
+	if spec.Name != "unregistered_tool" {
+		t.Fatalf("unexpected tool spec name: %q", spec.Name)
 	}
 }
 

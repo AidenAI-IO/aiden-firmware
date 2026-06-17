@@ -1582,7 +1582,7 @@ func TestServerDoesNotExposeActivateSkillOverHTTP(t *testing.T) {
 	}
 }
 
-func TestServerDoesNotExposeSkillManageOverHTTP(t *testing.T) {
+func TestServerExposesSkillManageOverHTTP(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
@@ -1601,18 +1601,18 @@ func TestServerDoesNotExposeSkillManageOverHTTP(t *testing.T) {
 	if catalogRec.Code != http.StatusOK {
 		t.Fatalf("unexpected catalog status: %d body=%s", catalogRec.Code, catalogRec.Body.String())
 	}
-	if bytes.Contains(catalogRec.Body.Bytes(), []byte("skill_manage")) {
-		t.Fatalf("skill_manage should not be advertised over HTTP: %s", catalogRec.Body.String())
+	if !bytes.Contains(catalogRec.Body.Bytes(), []byte("skill_manage")) {
+		t.Fatalf("expected skill_manage advertised over HTTP: %s", catalogRec.Body.String())
 	}
 	if !bytes.Contains(catalogRec.Body.Bytes(), []byte("skill_list")) {
-		t.Fatalf("expected non-mutating skill tool to remain exposed: %s", catalogRec.Body.String())
+		t.Fatalf("expected skill_list to remain exposed: %s", catalogRec.Body.String())
 	}
 
-	invokeReq := httptest.NewRequest(http.MethodPost, "/api/tools/skill_manage", bytes.NewBufferString(`{"raw_input":"{}"}`))
+	invokeReq := httptest.NewRequest(http.MethodPost, "/api/tools/skill_manage", bytes.NewBufferString(`{"raw_input":"{\"action\":\"list\"}"}`))
 	invokeRec := httptest.NewRecorder()
 	server.handleToolInvoke(invokeRec, invokeReq)
-	if invokeRec.Code != http.StatusNotFound {
-		t.Fatalf("expected skill_manage HTTP invoke to be blocked, got %d body=%s", invokeRec.Code, invokeRec.Body.String())
+	if invokeRec.Code != http.StatusOK {
+		t.Fatalf("expected skill_manage HTTP invoke to succeed, got %d body=%s", invokeRec.Code, invokeRec.Body.String())
 	}
 }
 

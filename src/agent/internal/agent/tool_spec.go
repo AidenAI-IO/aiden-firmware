@@ -22,7 +22,6 @@ type ToolSpec struct {
 	Category     string
 	InputMode    string
 	ExampleInput string
-	HTTPExposed  bool
 	AgentExposed bool
 }
 
@@ -56,7 +55,6 @@ type toolSpecMetadata struct {
 	Category     string
 	InputMode    string
 	ExampleInput string
-	HTTPExposed  *bool
 	AgentExposed *bool
 }
 
@@ -205,38 +203,32 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"action":"list"}`,
-		HTTPExposed:  toolSpecBoolPtr(false),
 		AgentExposed: toolSpecBoolPtr(true),
 	},
 	"open_app": {
 		Category:     "phone",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"name":"App Store"}`,
-		HTTPExposed:  toolSpecBoolPtr(false),
 	},
 	"clipboard": {
 		Category:     "phone",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
-		HTTPExposed:  toolSpecBoolPtr(false),
 	},
 	"calendar": {
 		Category:     "phone",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
-		HTTPExposed:  toolSpecBoolPtr(false),
 	},
 	"contacts": {
 		Category:     "phone",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
-		HTTPExposed:  toolSpecBoolPtr(false),
 	},
 	"notification": {
 		Category:     "phone",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
-		HTTPExposed:  toolSpecBoolPtr(false),
 	},
 }
 
@@ -269,12 +261,8 @@ func NewToolSpec(tool langtools.Tool) ToolSpec {
 		return ToolSpec{}
 	}
 	name := tool.Name()
-	meta, hasMeta := builtInToolSpecMetadata[name]
-	httpExposed := hasMeta
-	if meta.HTTPExposed != nil {
-		httpExposed = *meta.HTTPExposed
-	}
-	// Agent tools can be injected by runtime deps without HTTP exposure metadata.
+	meta := builtInToolSpecMetadata[name]
+	// Agent tools can be injected by runtime deps without exposure metadata.
 	agentExposed := true
 	if meta.AgentExposed != nil {
 		agentExposed = *meta.AgentExposed
@@ -286,7 +274,6 @@ func NewToolSpec(tool langtools.Tool) ToolSpec {
 		Category:     defaultString(meta.Category, "general"),
 		InputMode:    defaultString(meta.InputMode, toolInputModeText),
 		ExampleInput: meta.ExampleInput,
-		HTTPExposed:  httpExposed,
 		AgentExposed: agentExposed,
 	}
 }
@@ -318,9 +305,6 @@ func (s *ToolSpecs) Descriptors() []ToolDescriptor {
 	}
 	descriptors := make([]ToolDescriptor, 0, len(s.names))
 	for _, spec := range s.All() {
-		if !spec.HTTPExposed {
-			continue
-		}
 		descriptors = append(descriptors, spec.Descriptor())
 	}
 	return descriptors
@@ -328,7 +312,7 @@ func (s *ToolSpecs) Descriptors() []ToolDescriptor {
 
 func (s *ToolSpecs) DescriptorByName(name string) (ToolDescriptor, bool) {
 	spec, ok := s.Lookup(name)
-	if !ok || !spec.HTTPExposed {
+	if !ok {
 		return ToolDescriptor{}, false
 	}
 	return spec.Descriptor(), true

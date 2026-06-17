@@ -1767,7 +1767,7 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	spec, ok := s.lookupOwnedToolSpec(toolName)
-	if !ok || !spec.HTTPExposed {
+	if !ok {
 		http.Error(w, fmt.Sprintf("Unknown tool: %s", toolName), http.StatusNotFound)
 		return
 	}

@@ -25,20 +25,6 @@ func (r *Runtime) ToolDescriptors() []ToolDescriptor {
 	return r.ToolSpecs().Descriptors()
 }
 
-func isHTTPToolExposed(name string) bool {
-	if strings.TrimSpace(name) == "" {
-		return false
-	}
-	meta, ok := builtInToolSpecMetadata[name]
-	if !ok {
-		return false
-	}
-	if meta.HTTPExposed != nil {
-		return *meta.HTTPExposed
-	}
-	return true
-}
-
 func isAgentToolExposed(name string) bool {
 	if strings.TrimSpace(name) == "" {
 		return false
