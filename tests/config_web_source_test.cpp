@@ -791,6 +791,23 @@ TEST_CASE("config web restores previous wifi config when final apply is not conf
     CHECK(source.find("saved Wi-Fi was not confirmed; restored previous Wi-Fi config.") != std::string::npos);
 }
 
+TEST_CASE("config web fails closed when wifi rollback snapshot cannot be read") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("bool read_file_contents_checked(const char* path") != std::string::npos);
+    CHECK(source.find("stat(options.wifi_config_path.c_str(), &st)") != std::string::npos);
+    CHECK(source.find("static_cast<size_t>(st.st_size) + 1") != std::string::npos);
+    CHECK(source.find("if (!read_file_contents_checked(options.wifi_config_path.c_str()") != std::string::npos);
+    CHECK(source.find("failed to read existing wifi config for rollback") != std::string::npos);
+    CHECK(source.find("had_original_config ? read_file_contents(options.wifi_config_path.c_str())") == std::string::npos);
+}
+
 TEST_CASE("config web reports wifi forget runtime apply failures") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
