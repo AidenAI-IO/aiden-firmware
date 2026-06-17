@@ -643,9 +643,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		plannerMemory = newConversationMessagePlannerMemory(plannerMemory)
 	}
 	plannerMemory = newSessionContextPlannerMemory(plannerMemory, r.memories, "default")
-	if historyStore := chatHistoryStoreForConfigDir(r.config.ConfigDir); historyStore != nil {
-		plannerMemory = newChatHistoryPlannerMemory(plannerMemory, historyStore)
-	}
 	var steerStatus steerConversationStatus
 	if req.SteerProvider != nil {
 		plannerMemory = newSteerConversationMemory(plannerMemory, memoryHandle.History)

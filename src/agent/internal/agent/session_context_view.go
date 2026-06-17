@@ -108,6 +108,22 @@ func (m *sessionContextPlannerMemory) Clear(ctx context.Context) error {
 	return m.inner.Clear(ctx)
 }
 
+func currentInputFromMemoryInputs(inputs map[string]any) string {
+	if inputs == nil {
+		return ""
+	}
+	value, ok := inputs["input"]
+	if !ok {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	default:
+		return fmt.Sprint(typed)
+	}
+}
+
 func ClassifyFollowUpRelation(prevEvents []SessionEvent, input string, boundary string) string {
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "" {

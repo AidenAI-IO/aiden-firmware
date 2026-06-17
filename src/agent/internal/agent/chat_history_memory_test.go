@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -223,27 +224,15 @@ func TestRuntimeRunKeepsCurrentRequestOutOfCompressedHistoryBlock(t *testing.T) 
 	}
 }
 
-func TestRuntimeRunIncludesPersistedInterruptedEpisodeInPlannerHistory(t *testing.T) {
+func TestRuntimeRunIncludesActivePlannerWindowAndSessionRootContext(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
-	historyStore := NewChatHistoryStore(filepath.Join(memoryDir, "chat_history"))
-
-	if err := historyStore.Append(ctx, Message{
-		Type:      "user",
-		EpisodeID: "ep_resume_context",
-		Content:   "打开设置",
-	}); err != nil {
-		t.Fatalf("Append user history: %v", err)
-	}
-	if err := historyStore.Append(ctx, Message{
-		Type:      "episode_status",
-		EpisodeID: "ep_resume_context",
-		Status:    "interrupted",
-		Content:   "Task episode ep_resume_context was interrupted before completion.\nGoal: 打开设置\nLast recorded step: planner_decision next_step=点击设置",
-		IsError:   true,
-	}); err != nil {
-		t.Fatalf("Append episode status: %v", err)
+	manager := NewMemoryManager(memoryDir)
+	for i := 0; i < 12; i++ {
+		if err := manager.AppendExchange(ctx, "default", fmt.Sprintf("prior user %02d", i), fmt.Sprintf("prior assistant %02d", i)); err != nil {
+			t.Fatalf("AppendExchange(%d) error = %v", i, err)
+		}
 	}
 
 	model := &scriptedModel{responses: roleDirectResponses("继续完成")}
@@ -255,7 +244,7 @@ func TestRuntimeRunIncludesPersistedInterruptedEpisodeInPlannerHistory(t *testin
 			MaxIterations: 1,
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(memoryDir),
+		manager,
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
@@ -263,50 +252,23 @@ func TestRuntimeRunIncludesPersistedInterruptedEpisodeInPlannerHistory(t *testin
 	if _, err := runtime.Run(ctx, RunRequest{Input: "继续"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(model.messages) == 0 {
-		t.Fatalf("expected planner model call")
-	}
-	plannerPrompt := messageText(model.messages[0])
-	for _, want := range []string{"Recent persisted chat history", "ep_resume_context", "打开设置", "点击设置"} {
-		if !strings.Contains(plannerPrompt, want) {
-			t.Fatalf("planner prompt missing %q:\n%s", want, plannerPrompt)
-		}
-	}
-}
-
-func TestFormatChatHistoryForPlannerOmitsTodoControlEvents(t *testing.T) {
-	history := []Message{
-		{Type: "user", EpisodeID: "ep_todo", Content: "处理多步任务"},
-		{
-			Type:      runEventTodoClosed,
-			EpisodeID: "ep_todo",
-			Content:   "final_answer",
-			Todo: &TodoState{
-				Mode:      TodoModeSimple,
-				Objective: "处理多步任务",
-				Revision:  1,
-				CurrentID: "todo-r1-simple1",
-				Items: []TodoItem{
-					{
-						ID:        "todo-r1-simple1",
-						Text:      "仍显示为执行中但已随 episode 关闭",
-						Status:    TodoInProgress,
-						Source:    TodoSourceExplicitSimple,
-						StepIndex: 1,
-					},
-				},
-			},
-		},
-		{Type: "assistant", EpisodeID: "ep_todo", Content: "完成"},
+	if len(model.messages) == 0 || len(model.messages[0]) < 2 {
+		t.Fatalf("expected planner system and user messages, got %#v", model.messages)
 	}
 
-	formatted := formatChatHistoryForPlanner(history, "继续")
-	for _, forbidden := range []string{runEventTodoClosed, "final_answer", "仍显示为执行中但已随 episode 关闭"} {
-		if strings.Contains(formatted, forbidden) {
-			t.Fatalf("planner history should omit todo control event %q:\n%s", forbidden, formatted)
+	plannerTaskPrompt := messageText(model.messages[0][1:])
+	for _, want := range []string{
+		"prior user 02",
+		"prior assistant 02",
+		"prior user 11",
+		"prior assistant 11",
+		"Root request: prior user 00",
+	} {
+		if !strings.Contains(plannerTaskPrompt, want) {
+			t.Fatalf("planner task prompt missing %q:\n%s", want, plannerTaskPrompt)
 		}
 	}
-	if strings.Contains(formatted, "处理多步任务") {
-		t.Fatalf("completed episode user message should stay omitted with todo control events:\n%s", formatted)
+	if strings.Contains(plannerTaskPrompt, "prior assistant 00") {
+		t.Fatalf("planner conversation history should stay within the active message window:\n%s", plannerTaskPrompt)
 	}
 }
