@@ -218,6 +218,20 @@ func (m *MemoryManager) Get(agentName string, cfg MemoryConfig) (*MemoryHandle, 
 		return handle, nil
 	}
 
+	handle, err := newMemoryHandle(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := m.loadPersistedMessages(handle.History, agentName); err != nil {
+		return nil, err
+	}
+
+	m.handles[agentName] = handle
+	return handle, nil
+}
+
+func newMemoryHandle(cfg MemoryConfig) (*MemoryHandle, error) {
 	memoryKey := cfg.MemoryKey
 	if memoryKey == "" {
 		memoryKey = "history"
@@ -244,12 +258,6 @@ func (m *MemoryManager) Get(agentName string, cfg MemoryConfig) (*MemoryHandle, 
 	default:
 		return nil, fmt.Errorf("unsupported memory type %q", cfg.Type)
 	}
-
-	if err := m.loadPersistedMessages(history, agentName); err != nil {
-		return nil, err
-	}
-
-	m.handles[agentName] = handle
 	return handle, nil
 }
 

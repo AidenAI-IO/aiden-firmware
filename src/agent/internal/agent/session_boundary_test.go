@@ -34,6 +34,17 @@ func TestClassifyTurnBoundary_NoPrevEvents(t *testing.T) {
 	}
 }
 
+func TestClassifyFollowUpRelation_RootRequestOnNewBoundary(t *testing.T) {
+	if got := ClassifyFollowUpRelation(nil, "打开微信", BoundaryNew); got != FollowUpRootRequest {
+		t.Fatalf("first action input relation = %q, want %q", got, FollowUpRootRequest)
+	}
+
+	prev := []SessionEvent{{Type: "user_input", Role: "user", Content: "旧任务"}}
+	if got := ClassifyFollowUpRelation(prev, "发消息给张三", BoundaryNew); got != FollowUpRootRequest {
+		t.Fatalf("new boundary action input relation = %q, want %q", got, FollowUpRootRequest)
+	}
+}
+
 func TestClassifyTurnBoundary_RunningEpisodeOverridesNoPrevEvents(t *testing.T) {
 	cfg := DefaultBoundaryConfig()
 	now := time.Now()

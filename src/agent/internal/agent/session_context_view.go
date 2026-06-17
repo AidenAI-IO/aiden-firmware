@@ -113,6 +113,9 @@ func ClassifyFollowUpRelation(prevEvents []SessionEvent, input string, boundary 
 	if trimmed == "" {
 		return FollowUpRootRequest
 	}
+	if boundary == BoundaryNew || len(prevEvents) == 0 {
+		return FollowUpRootRequest
+	}
 	if replacementCueRe.MatchString(trimmed) {
 		return FollowUpReplacement
 	}
@@ -121,9 +124,6 @@ func ClassifyFollowUpRelation(prevEvents []SessionEvent, input string, boundary 
 	}
 	if actionVerbStartRe.MatchString(trimmed) && !continuationMarkerRe.MatchString(trimmed) {
 		return FollowUpNewTask
-	}
-	if boundary == BoundaryNew || len(prevEvents) == 0 {
-		return FollowUpRootRequest
 	}
 	return FollowUpContinuation
 }
@@ -151,9 +151,11 @@ func BuildSessionContextView(events []SessionEvent, currentInput string) session
 	}
 
 	root := latestContent
+	taskRootIndex := latestUserIndex
 	if relation != FollowUpReplacement && relation != FollowUpNewTask {
-		if first := firstRootUserInput(events, latestUserIndex); first != "" {
-			root = first
+		if taskRoot, index := taskRootUserInput(events, latestUserIndex); taskRoot != "" {
+			root = taskRoot
+			taskRootIndex = index
 		}
 	}
 	view := sessionContextView{
@@ -166,10 +168,10 @@ func BuildSessionContextView(events []SessionEvent, currentInput string) session
 		view.LatestCorrection = latestContent
 	}
 	if relation != FollowUpReplacement && relation != FollowUpNewTask {
-		if decision, ok := latestCommittedPlan(events, latestUserIndex); ok {
+		if decision, ok := latestCommittedPlan(events, taskRootIndex, latestUserIndex); ok {
 			view.LatestCommittedPlan = &decision
 		}
-		if summary := latestVerifierSummary(events, latestUserIndex); summary != "" {
+		if summary := latestVerifierSummary(events, taskRootIndex, latestUserIndex); summary != "" {
 			view.LatestVerifierSummary = summary
 		}
 	}
@@ -200,12 +202,12 @@ func eventsBefore(events []SessionEvent, index int) []SessionEvent {
 	return events[:index]
 }
 
-func firstRootUserInput(events []SessionEvent, latestUserIndex int) string {
+func taskRootUserInput(events []SessionEvent, latestUserIndex int) (string, int) {
 	limit := len(events)
 	if latestUserIndex >= 0 && latestUserIndex < limit {
 		limit = latestUserIndex + 1
 	}
-	for i := 0; i < limit; i++ {
+	for i := limit - 1; i >= 0; i-- {
 		event := events[i]
 		if event.Type != "user_input" {
 			continue
@@ -215,26 +217,34 @@ func firstRootUserInput(events []SessionEvent, latestUserIndex int) string {
 			continue
 		}
 		relation := strings.TrimSpace(event.Relation)
-		if relation == "" || relation == FollowUpRootRequest {
-			return content
+		switch relation {
+		case FollowUpRootRequest, FollowUpNewTask, FollowUpReplacement:
+			return content, i
 		}
 	}
 	for i := 0; i < limit; i++ {
 		if events[i].Type == "user_input" {
 			if content := strings.TrimSpace(events[i].Content); content != "" {
-				return content
+				return content, i
 			}
 		}
 	}
-	return ""
+	return "", -1
 }
 
-func latestCommittedPlan(events []SessionEvent, latestUserIndex int) (plannerDecision, bool) {
+func latestCommittedPlan(events []SessionEvent, taskRootIndex, latestUserIndex int) (plannerDecision, bool) {
 	limit := latestUserIndex
 	if limit < 0 || limit > len(events) {
 		limit = len(events)
 	}
+	start := 0
+	if taskRootIndex >= 0 && taskRootIndex < limit {
+		start = taskRootIndex + 1
+	}
 	for i := limit - 1; i >= 0; i-- {
+		if i < start {
+			break
+		}
 		event := events[i]
 		if event.Type != "planner_decision" {
 			continue
@@ -268,12 +278,19 @@ func plannerDecisionFromSessionEvent(event SessionEvent) (plannerDecision, bool)
 	return decision, len(decision.Plan) > 0 || decision.Objective != "" || decision.NextStep != ""
 }
 
-func latestVerifierSummary(events []SessionEvent, latestUserIndex int) string {
+func latestVerifierSummary(events []SessionEvent, taskRootIndex, latestUserIndex int) string {
 	limit := latestUserIndex
 	if limit < 0 || limit > len(events) {
 		limit = len(events)
 	}
+	start := 0
+	if taskRootIndex >= 0 && taskRootIndex < limit {
+		start = taskRootIndex + 1
+	}
 	for i := limit - 1; i >= 0; i-- {
+		if i < start {
+			break
+		}
 		event := events[i]
 		if event.Type != "verifier_decision" {
 			continue

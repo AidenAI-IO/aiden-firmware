@@ -507,7 +507,13 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: r.effectiveContextWindow}
 
 	currentHints := r.currentEnvironmentHints()
-	memoryHandle, err := r.memories.Get("default", MemoryConfig{Type: "window", WindowSize: runtimePlannerMemoryWindowSize})
+	memoryCfg := MemoryConfig{Type: "window", WindowSize: runtimePlannerMemoryWindowSize}
+	var memoryHandle *MemoryHandle
+	if r.memories != nil {
+		memoryHandle, err = r.memories.Get("default", memoryCfg)
+	} else {
+		memoryHandle, err = newMemoryHandle(memoryCfg)
+	}
 	if err != nil {
 		return RunResult{}, err
 	}
