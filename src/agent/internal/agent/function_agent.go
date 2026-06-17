@@ -85,7 +85,7 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 			}
 			functionName := toolCall.FunctionCall.Name
 			toolInputStr := toolCall.FunctionCall.Arguments
-			invocation := extractToolInvocation(toolInputStr)
+			invocation := extractToolInvocation(toolInputStr, a.ToolCallSpeech)
 			invocation.Description = toolCallDescriptionText(choice.Content, invocation.Description)
 
 			contentMsg := "\n"
@@ -106,7 +106,7 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 	if choice.FuncCall != nil {
 		functionName := choice.FuncCall.Name
 		toolInputStr := choice.FuncCall.Arguments
-		invocation := extractToolInvocation(toolInputStr)
+		invocation := extractToolInvocation(toolInputStr, a.ToolCallSpeech)
 		invocation.Description = toolCallDescriptionText(choice.Content, invocation.Description)
 
 		contentMsg := "\n"
@@ -441,7 +441,7 @@ func attachmentAwarePrompt(text string, attachments []InputAttachment, descripti
 	return text + "\n\nAttached content:\n- " + strings.Join(descriptions, "\n- ")
 }
 
-func extractToolInvocation(raw string) toolInvocation {
+func extractToolInvocation(raw string, includeSpeech bool) toolInvocation {
 	var toolInputMap map[string]any
 	if err := json.Unmarshal([]byte(raw), &toolInputMap); err != nil {
 		return toolInvocation{Input: raw}
@@ -449,12 +449,14 @@ func extractToolInvocation(raw string) toolInvocation {
 	invocation := toolInvocation{Input: raw}
 	_, hasLegacyArg := toolInputMap["__arg1"]
 	hasGenericInput := false
-	if speech, ok := toolInputMap[toolCallSpeechField].(string); ok {
-		invocation.Speech = strings.TrimSpace(speech)
+	if includeSpeech {
+		if speech, ok := toolInputMap[toolCallSpeechField].(string); ok {
+			invocation.Speech = strings.TrimSpace(speech)
+		}
 	}
 	if arg1, ok := toolInputMap["__arg1"].(string); ok {
 		invocation.Input = arg1
-	} else if input, ok := toolInputMap["input"].(string); ok && isGenericStringInputWrapper(toolInputMap) {
+	} else if input, ok := toolInputMap["input"].(string); ok && isGenericStringInputWrapper(toolInputMap, includeSpeech) {
 		invocation.Input = input
 		hasGenericInput = true
 	}
@@ -463,7 +465,9 @@ func extractToolInvocation(raw string) toolInvocation {
 	}
 	if !hasLegacyArg && !hasGenericInput {
 		delete(toolInputMap, toolCallDescriptionField)
-		delete(toolInputMap, toolCallSpeechField)
+		if includeSpeech {
+			delete(toolInputMap, toolCallSpeechField)
+		}
 		if encoded, err := json.Marshal(toolInputMap); err == nil {
 			invocation.Input = string(encoded)
 		}
@@ -471,13 +475,17 @@ func extractToolInvocation(raw string) toolInvocation {
 	return invocation
 }
 
-func isGenericStringInputWrapper(fields map[string]any) bool {
+func isGenericStringInputWrapper(fields map[string]any, includeSpeech bool) bool {
 	if _, ok := fields["input"]; !ok {
 		return false
 	}
 	for key := range fields {
 		switch key {
-		case "input", toolCallDescriptionField, toolCallSpeechField:
+		case "input", toolCallDescriptionField:
+		case toolCallSpeechField:
+			if !includeSpeech {
+				return false
+			}
 		default:
 			return false
 		}
@@ -486,7 +494,7 @@ func isGenericStringInputWrapper(fields map[string]any) bool {
 }
 
 func extractToolInput(raw string) string {
-	return extractToolInvocation(raw).Input
+	return extractToolInvocation(raw, false).Input
 }
 
 func encodeToolArguments(input string) string {

@@ -46,7 +46,7 @@ func TestFunctionAgentParseOutputSkipsNilToolCalls(t *testing.T) {
 }
 
 func TestFunctionAgentParseOutputUsesLLMToolSpeechArgument(t *testing.T) {
-	agent := &FunctionAgent{OutputKey: "output"}
+	agent := &FunctionAgent{OutputKey: "output", ToolCallSpeech: true}
 
 	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
@@ -90,7 +90,7 @@ func TestFunctionAgentParseOutputUsesLLMToolSpeechArgument(t *testing.T) {
 }
 
 func TestFunctionAgentParseOutputExtractsGenericInputWrapper(t *testing.T) {
-	agent := &FunctionAgent{OutputKey: "output"}
+	agent := &FunctionAgent{OutputKey: "output", ToolCallSpeech: true}
 
 	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
@@ -125,7 +125,7 @@ func TestFunctionAgentParseOutputExtractsGenericInputWrapper(t *testing.T) {
 }
 
 func TestFunctionAgentParseOutputPassesStructuredToolArguments(t *testing.T) {
-	agent := &FunctionAgent{OutputKey: "output"}
+	agent := &FunctionAgent{OutputKey: "output", ToolCallSpeech: true}
 
 	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
@@ -161,7 +161,7 @@ func TestFunctionAgentParseOutputPassesStructuredToolArguments(t *testing.T) {
 }
 
 func TestFunctionAgentParseOutputKeepsLegacyArg1Compatibility(t *testing.T) {
-	agent := &FunctionAgent{OutputKey: "output"}
+	agent := &FunctionAgent{OutputKey: "output", ToolCallSpeech: true}
 
 	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
@@ -196,7 +196,7 @@ func TestFunctionAgentParseOutputKeepsLegacyArg1Compatibility(t *testing.T) {
 }
 
 func TestFunctionAgentParseOutputDoesNotSynthesizeMissingToolSpeech(t *testing.T) {
-	agent := &FunctionAgent{OutputKey: "output"}
+	agent := &FunctionAgent{OutputKey: "output", ToolCallSpeech: true}
 
 	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
@@ -221,6 +221,42 @@ func TestFunctionAgentParseOutputDoesNotSynthesizeMissingToolSpeech(t *testing.T
 	}
 	if got := toolSpeechFromAction(actions[0]); got != "" {
 		t.Fatalf("tool speech = %q, want empty", got)
+	}
+}
+
+func TestFunctionAgentParseOutputPreservesSpeechArgumentWhenDisabled(t *testing.T) {
+	agent := &FunctionAgent{OutputKey: "output"}
+
+	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
+		Choices: []*llms.ContentChoice{{
+			ToolCalls: []llms.ToolCall{{
+				ID:   "call_1",
+				Type: "function",
+				FunctionCall: &llms.FunctionCall{
+					Name:      "say",
+					Arguments: `{"speech":"hello","volume":1}`,
+				},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ParseOutput() error = %v", err)
+	}
+	if finish != nil {
+		t.Fatalf("expected no finish, got %#v", finish)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %#v", actions)
+	}
+	var input map[string]any
+	if err := json.Unmarshal([]byte(actions[0].ToolInput), &input); err != nil {
+		t.Fatalf("ToolInput is not JSON: %q err=%v", actions[0].ToolInput, err)
+	}
+	if input["speech"] != "hello" || input["volume"] != float64(1) {
+		t.Fatalf("ToolInput lost real speech argument: %#v", input)
+	}
+	if got := toolSpeechFromAction(actions[0]); got != "" {
+		t.Fatalf("tool speech metadata = %q, want empty", got)
 	}
 }
 

@@ -311,6 +311,8 @@ func (r *EpisodeRecorder) recordExecutionForRole(result roleExecutionResult, rol
 			ToolDescription: description,
 		}
 		if r.ToolCallSpeech {
+			// Persist only explicit LLM-generated tool-call speech. Missing
+			// speech is intentionally left empty rather than derived.
 			event.Speech = toolSpeechFromAction(*result.Action)
 		}
 		r.append(event)

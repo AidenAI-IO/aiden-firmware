@@ -1478,6 +1478,8 @@ func (h *runtimeCallbackHandler) toolCallSpeech(speech string) string {
 	if h == nil || !h.toolCallSpeechEnabled {
 		return ""
 	}
+	// Intentionally do not derive speech from the tool description. Missing
+	// LLM-generated tool-call speech means this tool call stays silent.
 	return strings.TrimSpace(speech)
 }
 

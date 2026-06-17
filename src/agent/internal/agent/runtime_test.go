@@ -1484,6 +1484,53 @@ func TestRuntimeRunEmitsToolSpeechOnlyWhenToolCallSpeechEnabled(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunDoesNotDeriveToolSpeechWhenMissing(t *testing.T) {
+	description := "我先读取当前音量并检查当前播放设备、音量状态、静音状态、输出通道以及系统返回结果是否一致。然后继续回答。"
+	model := &scriptedModel{
+		responses: roleToolResponses("audio_volume", fmt.Sprintf(`{"__arg1":"{}","description":%q}`, description), "The current audio volume is 42."),
+	}
+	tool := &stubTool{
+		name:        "audio_volume",
+		description: "Get the current audio playback volume.",
+		output:      `{"volume":42}`,
+	}
+	toolSpeechEnabled := true
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:               ModelConfig{Provider: "fake"},
+			Instruction:         "Use tools when external state is requested.",
+			VoiceToolCallSpeech: &toolSpeechEnabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "当前音量是多少？",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	toolCall, ok := firstRunEventOfType(events, runEventToolCall)
+	if !ok {
+		t.Fatalf("expected tool_call event, got %#v", events)
+	}
+	if toolCall.Description != description {
+		t.Fatalf("tool_call description changed: %q", toolCall.Description)
+	}
+	if toolCall.Speech != "" {
+		t.Fatalf("tool_call speech = %q, want empty when LLM omitted speech", toolCall.Speech)
+	}
+}
+
 func TestRuntimePlannedTodoLifecycleEvents(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleCommittedExecutionResponses(
