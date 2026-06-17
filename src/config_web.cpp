@@ -154,6 +154,7 @@ const int kSystemEnvCommandTimeoutMs = 1500;
 const size_t kMaxSystemEnvSize = 64 * 1024;
 
 std::string read_file_contents(const char* path, size_t max_size);
+bool read_file_contents_checked(const char* path, size_t max_size, std::string* contents, std::string* error);
 std::string validate_proxy_url(const std::string& url);
 std::string lowercase_copy(const std::string& text);
 std::string parent_dir(const std::string& path);
@@ -2212,25 +2213,73 @@ WifiRuntimeStatus query_wifi_status(const Options& options) {
     return status;
 }
 
-std::string read_file_contents(const char* path, size_t max_size = 64 * 1024) {
+bool read_file_contents_checked(const char* path, size_t max_size, std::string* contents, std::string* error) {
+    if (contents) {
+        contents->clear();
+    }
+    if (!path) {
+        if (error) *error = "path is null";
+        return false;
+    }
     FILE* f = fopen(path, "r");
     if (!f) {
-        return "";
+        if (error) *error = std::string("open ") + path + ": " + strerror(errno);
+        return false;
     }
-    fseek(f, 0, SEEK_END);
-    long file_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (file_size < 0 || static_cast<size_t>(file_size) > max_size) {
+    if (fseek(f, 0, SEEK_END) != 0) {
+        if (error) *error = std::string("seek ") + path + ": " + strerror(errno);
         fclose(f);
-        return "";
+        return false;
     }
-    std::string contents;
-    contents.reserve(static_cast<size_t>(file_size));
+    long file_size = ftell(f);
+    if (file_size < 0) {
+        if (error) *error = std::string("tell ") + path + ": " + strerror(errno);
+        fclose(f);
+        return false;
+    }
+    if (static_cast<size_t>(file_size) > max_size) {
+        if (error) {
+            *error = std::string("file too large: ") + path + " (" +
+                     std::to_string(file_size) + " bytes)";
+        }
+        fclose(f);
+        return false;
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        if (error) *error = std::string("seek ") + path + ": " + strerror(errno);
+        fclose(f);
+        return false;
+    }
+    std::string result;
+    result.reserve(static_cast<size_t>(file_size));
     char buf[1024];
     while (size_t n = fread(buf, 1, sizeof(buf), f)) {
-        contents.append(buf, n);
+        result.append(buf, n);
     }
-    fclose(f);
+    if (ferror(f)) {
+        if (error) *error = std::string("read ") + path + ": " + strerror(errno);
+        fclose(f);
+        return false;
+    }
+    if (fclose(f) != 0) {
+        if (error) *error = std::string("close ") + path + ": " + strerror(errno);
+        return false;
+    }
+    if (contents) {
+        *contents = result;
+    }
+    if (error) {
+        error->clear();
+    }
+    return true;
+}
+
+std::string read_file_contents(const char* path, size_t max_size = 64 * 1024) {
+    std::string contents;
+    std::string error;
+    if (!read_file_contents_checked(path, max_size, &contents, &error)) {
+        return "";
+    }
     return contents;
 }
 
@@ -3223,8 +3272,25 @@ ApiResponse handle_wifi_connect(const Options& options, const std::string& body)
     aiden::WifiNetworkConfig original;
     std::string ignore_error;
     const bool had_original_config = file_exists(options.wifi_config_path.c_str());
-    const std::string original_wifi_config_text =
-        had_original_config ? read_file_contents(options.wifi_config_path.c_str()) : std::string();
+    std::string original_wifi_config_text;
+    if (had_original_config) {
+        struct stat st;
+        if (stat(options.wifi_config_path.c_str(), &st) != 0) {
+            return make_json_error(500,
+                                   std::string("failed to stat existing wifi config for rollback: ") +
+                                       strerror(errno));
+        }
+        if (st.st_size < 0) {
+            return make_json_error(500, "failed to stat existing wifi config for rollback: invalid size");
+        }
+        std::string snapshot_error;
+        if (!read_file_contents_checked(options.wifi_config_path.c_str(),
+                                        static_cast<size_t>(st.st_size) + 1,
+                                        &original_wifi_config_text,
+                                        &snapshot_error)) {
+            return make_json_error(500, "failed to read existing wifi config for rollback: " + snapshot_error);
+        }
+    }
     load_current_wifi_config(options, &original, &ignore_error);
 
     aiden::WifiNetworkConfig attempt = original;
