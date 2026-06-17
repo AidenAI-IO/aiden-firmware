@@ -10,6 +10,7 @@ using aiden::decode_frame_wire_prefix;
 using aiden::encode_frame_wire_prefix;
 using aiden::frame_service_status_from_string;
 using aiden::frame_service_status_to_string;
+using aiden::kFrameWirePrefixSize;
 
 TEST_CASE("frame service status converts to stable protocol strings") {
     CHECK(std::string(frame_service_status_to_string(FrameServiceStatus::OK)) == "OK");
@@ -46,7 +47,7 @@ TEST_CASE("frame service status rejects unknown protocol strings") {
 TEST_CASE("frame wire prefix encodes header and payload lengths as little endian") {
     std::vector<uint8_t> bytes = encode_frame_wire_prefix(0x01020304u, 0x0102030405060708ull);
 
-    REQUIRE(bytes.size() == 12);
+    REQUIRE(bytes.size() == kFrameWirePrefixSize);
     CHECK(bytes[0] == 0x04);
     CHECK(bytes[1] == 0x03);
     CHECK(bytes[2] == 0x02);
@@ -72,10 +73,10 @@ TEST_CASE("frame wire prefix decodes header and payload lengths") {
 
 TEST_CASE("frame wire prefix rejects incomplete input") {
     uint8_t short_bytes[11] = {};
-    uint8_t full_bytes[12] = {};
+    uint8_t full_bytes[kFrameWirePrefixSize] = {};
     FrameWirePrefix prefix{};
 
     CHECK_FALSE(decode_frame_wire_prefix(short_bytes, sizeof(short_bytes), &prefix));
-    CHECK_FALSE(decode_frame_wire_prefix(nullptr, 12, &prefix));
+    CHECK_FALSE(decode_frame_wire_prefix(nullptr, kFrameWirePrefixSize, &prefix));
     CHECK_FALSE(decode_frame_wire_prefix(full_bytes, sizeof(full_bytes), nullptr));
 }

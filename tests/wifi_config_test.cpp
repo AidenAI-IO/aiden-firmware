@@ -197,3 +197,15 @@ TEST_CASE("removing the last wifi network clears legacy credentials") {
     CHECK(rendered.find("network={") == std::string::npos);
     CHECK(rendered.find("obsolete") == std::string::npos);
 }
+
+TEST_CASE("sync_legacy_wifi_fields clears legacy credentials for empty networks") {
+    aiden::WifiNetworkConfig wifi;
+    wifi.ssid = "legacy";
+    wifi.psk = "legacy-password";
+
+    aiden::sync_legacy_wifi_fields(&wifi);
+
+    CHECK(wifi.networks.empty());
+    CHECK(wifi.ssid.empty());
+    CHECK(wifi.psk.empty());
+}

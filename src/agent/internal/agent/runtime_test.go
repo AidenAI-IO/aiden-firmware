@@ -3212,7 +3212,7 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	oldSummary := "OLD SESSION SUMMARY MUST NOT ENTER NEW PROMPT"
-	now := time.Now().UTC().Add(-4 * time.Minute)
+	now := time.Now().UTC().Add(-6 * time.Minute)
 	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold+1; i++ {
 		if _, err := session.AppendEvent(context.Background(), SessionEvent{
 			EventID: fmt.Sprintf("evt_old_%d", i),
@@ -3327,7 +3327,7 @@ func TestRuntimeRunRepairsTruncatedSessionTailBeforeBoundaryRotation(t *testing.
 	configDir := t.TempDir()
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC().Add(-4 * time.Minute)
+	now := time.Now().UTC().Add(-6 * time.Minute)
 	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold+1; i++ {
 		if _, err := session.AppendEvent(context.Background(), SessionEvent{
 			EventID: fmt.Sprintf("evt_old_%d", i),
@@ -3399,7 +3399,7 @@ func TestRuntimeRunKeepsSmallSessionOnUnrelatedInput(t *testing.T) {
 	configDir := t.TempDir()
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC().Add(-4 * time.Minute)
+	now := time.Now().UTC().Add(-6 * time.Minute)
 	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold; i++ {
 		if _, err := session.AppendEvent(context.Background(), SessionEvent{
 			EventID: fmt.Sprintf("evt_small_%d", i),
@@ -3460,7 +3460,7 @@ func TestRuntimeRunKeepsNeutralFollowUpWithActiveEpisode(t *testing.T) {
 	configDir := t.TempDir()
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC().Add(-4 * time.Minute)
+	now := time.Now().UTC().Add(-6 * time.Minute)
 	for i, content := range []string{"查一下今天天气", "今天多云"} {
 		role := "user"
 		eventType := "user_input"

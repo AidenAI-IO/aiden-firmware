@@ -92,7 +92,7 @@ FrameServiceStatus read_uds_message(int fd, UdsMessage* out) {
         return FrameServiceStatus::INTERNAL_ERROR;
     }
 
-    uint8_t prefix_bytes[12];
+    uint8_t prefix_bytes[kFrameWirePrefixSize];
     FrameServiceStatus status = read_exact(fd, prefix_bytes, sizeof(prefix_bytes));
     if (status != FrameServiceStatus::OK) {
         return status;

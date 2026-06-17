@@ -149,6 +149,9 @@ normalize input and activate requested skills
 resolve model, context window, tools, and memory handle
   |
   v
+begin session: detect/rotate boundary and append current user input
+  |
+  v
 MemoryPlane.Retrieve(input, attachments, skills, tools, current hints)
   |
   v
@@ -161,7 +164,7 @@ build role profiles and planner memory
 phased role loop (decision / default / plan / execution)
   |
   v
-append conversation exchange and save snapshot
+commit session: append assistant output and save snapshot
   |
   v
 request session-memory maintenance
@@ -180,7 +183,11 @@ Runtime context is supplied per request and is not written back into memory. The
 
 ### Session Hot Window
 
-After a run completes, `MemoryManager.AppendExchange` records the user input and final answer. `SaveSnapshot` persists the current window, and `RequestMaintenance` schedules filesystem maintenance.
+At run begin, session management detects whether the input starts a new session
+and appends the current user input to `memory/session/events.jsonl`. At run
+commit, it appends the assistant output, persists the current snapshot with
+`SaveSnapshot`, and schedules filesystem maintenance with
+`RequestMaintenance`.
 
 The hot window lives in:
 
@@ -188,8 +195,10 @@ The hot window lives in:
 memory/session/events.jsonl
 ```
 
-At prompt time, retained hot-window events render as normal planner
-`Conversation history:`. Prompt construction does not add hot-window labels or
+At prompt time, retained hot-window events are converted into native chat
+messages and inserted between the planner system prompt and the current planner
+task message. Prompt construction does not render them inside a
+`Conversation history:` text block and does not add hot-window labels or
 boundary markers.
 
 When session-boundary detection classifies a user turn as a new session, the
