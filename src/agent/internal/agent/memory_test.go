@@ -227,6 +227,96 @@ func TestMemoryManagerRestoresOnlyConversationEventsFromRuntimeSession(t *testin
 	}
 }
 
+func TestMemoryManagerSaveDoesNotRegressEventCountWithRuntimeEvents(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "user_input",
+		Role:    "user",
+		Content: "first request",
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendSessionEvent(user) error = %v", err)
+	}
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "planner_decision",
+		Role:    string(RolePlanner),
+		Content: `{"objective":"first request","plan":["answer"]}`,
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendSessionEvent(planner) error = %v", err)
+	}
+	if err := manager.AppendMessagesWithMetadata(ctx, "default", []MessageRecord{
+		{Role: string(llms.ChatMessageTypeAI), Content: "first answer"},
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendMessagesWithMetadata(ai) error = %v", err)
+	}
+	if err := handle.History.SetMessages(ctx, []llms.ChatMessage{
+		llms.HumanChatMessage{Content: "first request"},
+		llms.AIChatMessage{Content: "first answer"},
+	}); err != nil {
+		t.Fatalf("SetMessages() error = %v", err)
+	}
+
+	if err := manager.Save(ctx, "default"); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "user_input",
+		Role:    "user",
+		Content: "second request",
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendSessionEvent(second user) error = %v", err)
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) != 4 {
+		t.Fatalf("expected 4 session events, got %d: %#v", len(events), events)
+	}
+	for i, event := range events {
+		want := i + 1
+		if event.Sequence != want {
+			t.Fatalf("event %d sequence = %d, want %d; events=%#v", i, event.Sequence, want, events)
+		}
+	}
+}
+
+func TestMemoryManagerAppendSessionEventContinuesExistingEventStream(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	for i := 0; i < 2; i++ {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("existing event %d", i+1),
+		}); err != nil {
+			t.Fatalf("AppendEvent(%d) error = %v", i, err)
+		}
+	}
+
+	manager := NewMemoryManager(storageDir)
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "user_input",
+		Role:    "user",
+		Content: "new event",
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendSessionEvent() error = %v", err)
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) != 3 {
+		t.Fatalf("expected 3 session events, got %d: %#v", len(events), events)
+	}
+	if events[2].Sequence != 3 {
+		t.Fatalf("new event sequence = %d, want 3; events=%#v", events[2].Sequence, events)
+	}
+}
+
 func TestMemoryManagerRepairsTruncatedSessionEventTail(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()

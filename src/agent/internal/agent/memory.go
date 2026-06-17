@@ -420,6 +420,9 @@ func (m *MemoryManager) AppendMessagesWithMetadata(ctx context.Context, agentNam
 	if err := os.MkdirAll(filepath.Dir(m.sessionEventsPath()), 0o755); err != nil {
 		return fmt.Errorf("create session memory directory: %w", err)
 	}
+	if err := m.ensureEventCountLoadedLocked(agentName); err != nil {
+		return err
+	}
 	file, err := os.OpenFile(m.sessionEventsPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("open session events for %q: %w", agentName, err)
@@ -466,6 +469,9 @@ func (m *MemoryManager) AppendSessionEvent(ctx context.Context, agentName string
 	if err := os.MkdirAll(filepath.Dir(m.sessionEventsPath()), 0o755); err != nil {
 		return fmt.Errorf("create session memory directory: %w", err)
 	}
+	if err := m.ensureEventCountLoadedLocked(agentName); err != nil {
+		return err
+	}
 	file, err := os.OpenFile(m.sessionEventsPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("open session events for %q: %w", agentName, err)
@@ -479,6 +485,26 @@ func (m *MemoryManager) AppendSessionEvent(ctx context.Context, agentName string
 		return fmt.Errorf("append session event for %q: %w", agentName, err)
 	}
 	m.eventCount[agentName]++
+	return nil
+}
+
+func (m *MemoryManager) ensureEventCountLoadedLocked(agentName string) error {
+	if m.eventCount[agentName] != 0 {
+		return nil
+	}
+	if _, err := os.Stat(m.sessionEventsPath()); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat session events for %q: %w", agentName, err)
+	}
+	session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"), m.extraction.SummaryMaxChunks)
+	result, err := session.readActiveEventsRepairingTruncatedTail()
+	if err != nil {
+		return fmt.Errorf("read session events for %q: %w", agentName, err)
+	}
+	m.logSessionEventsRepair(agentName, result)
+	m.eventCount[agentName] = len(result.events)
 	return nil
 }
 
@@ -1453,14 +1479,23 @@ func (m *MemoryManager) HasCompressedHistory() bool {
 
 func (m *MemoryManager) appendSessionEvents(agentName string, records []MessageRecord) error {
 	path := m.sessionEventsPath()
-	start := m.eventCount[agentName]
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		start = 0
-	} else if err != nil {
+	var events []SessionEvent
+	if _, err := os.Stat(path); err == nil {
+		session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"), m.extraction.SummaryMaxChunks)
+		result, err := session.readActiveEventsRepairingTruncatedTail()
+		if err != nil {
+			return fmt.Errorf("read session events for %q: %w", agentName, err)
+		}
+		m.logSessionEventsRepair(agentName, result)
+		events = result.events
+	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("stat session events for %q: %w", agentName, err)
 	}
+
+	existingRecords := conversationRecordsFromSessionEvents(events)
+	start := snapshotAppendStart(existingRecords, records)
 	if start >= len(records) {
-		m.eventCount[agentName] = len(records)
+		m.eventCount[agentName] = len(events)
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -1475,14 +1510,51 @@ func (m *MemoryManager) appendSessionEvents(agentName string, records []MessageR
 
 	encoder := json.NewEncoder(file)
 	now := time.Now().UTC()
+	sequenceOffset := len(events)
 	for i, record := range records[start:] {
-		event := sessionEventFromRecord(record, now, start+i)
+		event := sessionEventFromRecord(record, now, sequenceOffset+i)
 		if err := encoder.Encode(event); err != nil {
 			return fmt.Errorf("append session event for %q: %w", agentName, err)
 		}
 	}
-	m.eventCount[agentName] = len(records)
+	m.eventCount[agentName] = sequenceOffset + len(records[start:])
 	return nil
+}
+
+func conversationRecordsFromSessionEvents(events []SessionEvent) []MessageRecord {
+	records := make([]MessageRecord, 0, len(events))
+	for _, event := range events {
+		if record, ok := messageRecordFromSessionEvent(event); ok {
+			records = append(records, record)
+		}
+	}
+	return records
+}
+
+func snapshotAppendStart(existingRecords, records []MessageRecord) int {
+	if messageRecordsHavePrefix(records, existingRecords) {
+		return len(existingRecords)
+	}
+	if messageRecordsHavePrefix(existingRecords, records) {
+		return len(records)
+	}
+	return 0
+}
+
+func messageRecordsHavePrefix(records, prefix []MessageRecord) bool {
+	if len(prefix) > len(records) {
+		return false
+	}
+	for i, want := range prefix {
+		if !messageRecordsEqual(records[i], want) {
+			return false
+		}
+	}
+	return true
+}
+
+func messageRecordsEqual(a, b MessageRecord) bool {
+	return a.Role == b.Role && a.Content == b.Content
 }
 
 func memoryFileName(agentName string) string {
