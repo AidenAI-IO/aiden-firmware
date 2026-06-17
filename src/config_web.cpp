@@ -241,6 +241,10 @@ std::string ota_update_log_path() {
     return env_path_or_default("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", kOtaWebUpdateLogPath);
 }
 
+std::string ota_health_log_path() {
+    return env_path_or_default("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG", kOtaHealthLogPath);
+}
+
 std::string trim_copy(const std::string& input) {
     size_t start = 0;
     while (start < input.size() && isspace(static_cast<unsigned char>(input[start]))) {
@@ -2437,63 +2441,14 @@ AgentLogSnapshot read_agent_log_snapshot() {
     return read_log_snapshot(kAgentLogPath, kAgentLogReadSize, kAgentLogDisplaySize);
 }
 
-void append_ota_log_part(std::string* out, const AgentLogSnapshot& snapshot) {
-    if (!out || !snapshot.exists || snapshot.log.empty()) {
-        return;
-    }
-    if (!out->empty()) {
-        out->append("\n\n");
-    }
-    out->append("=== ");
-    out->append(snapshot.path);
-    out->append(" ===\n");
-    out->append(snapshot.log);
-}
-
-std::string join_log_errors(const AgentLogSnapshot& first, const AgentLogSnapshot& second) {
-    std::vector<std::string> errors;
-    if (!first.error.empty()) {
-        errors.push_back(first.path + ": " + first.error);
-    }
-    if (!second.error.empty()) {
-        errors.push_back(second.path + ": " + second.error);
-    }
-    std::string joined;
-    for (size_t i = 0; i < errors.size(); ++i) {
-        if (i) {
-            joined += "; ";
-        }
-        joined += errors[i];
-    }
-    return joined;
-}
-
 AgentLogSnapshot read_ota_log_snapshot() {
     std::string update_log_path = ota_update_log_path();
-    AgentLogSnapshot update_log = read_log_snapshot(update_log_path.c_str(), kOtaLogReadSize, kOtaLogDisplaySize);
-    AgentLogSnapshot health_log = read_log_snapshot(kOtaHealthLogPath, kOtaLogReadSize, kOtaLogDisplaySize);
+    return read_log_snapshot(update_log_path.c_str(), kOtaLogReadSize, kOtaLogDisplaySize);
+}
 
-    if (update_log.exists && !health_log.exists) {
-        return update_log;
-    }
-    if (!update_log.exists && health_log.exists) {
-        return health_log;
-    }
-
-    AgentLogSnapshot combined;
-    combined.exists = update_log.exists || health_log.exists;
-    combined.path = update_log.path + " + " + health_log.path;
-    combined.size_bytes = update_log.size_bytes + health_log.size_bytes;
-    combined.truncated = update_log.truncated || health_log.truncated;
-    if (!combined.exists) {
-        combined.error = join_log_errors(update_log, health_log);
-        return combined;
-    }
-    append_ota_log_part(&combined.log, update_log);
-    append_ota_log_part(&combined.log, health_log);
-    combined.log = trim_for_display(combined.log, kOtaLogDisplaySize);
-    combined.error = join_log_errors(update_log, health_log);
-    return combined;
+AgentLogSnapshot read_ota_health_log_snapshot() {
+    std::string health_log_path = ota_health_log_path();
+    return read_log_snapshot(health_log_path.c_str(), kOtaLogReadSize, kOtaLogDisplaySize);
 }
 
 std::string lowercase_copy(const std::string& text) {
@@ -3027,6 +2982,7 @@ ApiResponse handle_get_ota_log() {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
     cJSON_AddItemToObject(root, "ota_log", ota_log_to_json(read_ota_log_snapshot()));
+    cJSON_AddItemToObject(root, "ota_health_log", ota_log_to_json(read_ota_health_log_snapshot()));
     return make_json_ok(root);
 }
 

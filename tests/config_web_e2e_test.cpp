@@ -136,6 +136,13 @@ std::string required_json_string(cJSON* object, const char* key) {
     return std::string(item->valuestring);
 }
 
+int required_json_int(cJSON* object, const char* key) {
+    cJSON* item = cJSON_GetObjectItem(object, key);
+    REQUIRE(item != nullptr);
+    REQUIRE((item->type & 0xff) == cJSON_Number);
+    return item->valueint;
+}
+
 std::string resolved_config_json(const std::string& search_provider, bool search_has_api_key) {
     return std::string(
         "{"
@@ -1041,4 +1048,50 @@ TEST_CASE("config_web: failed manual OTA update releases launch lock even if a c
     }
     CHECK(accepted);
     CHECK(retry.body.find("ota update already running") == std::string::npos);
+}
+
+TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+
+    const std::string update_log_path = tmp + "/config_web_ota_update.log";
+    const std::string health_log_path = tmp + "/ota_health.log";
+    const std::string update_log =
+        "[config_web] ota update requested\n"
+        "[config_web] ota update exited rc=1\n";
+    std::ostringstream health_log;
+    for (int i = 0; i < 5000; ++i) {
+        health_log << "ota health previous boot line " << i << "\n";
+    }
+    health_log << "health timeout waiting for /userdata/ota/health.ok\n";
+    write_file(update_log_path, update_log);
+    write_file(health_log_path, health_log.str());
+
+    StubEnv env;
+    env.set("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", update_log_path);
+    env.set("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG", health_log_path);
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/ota/logs");
+    REQUIRE(resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* update = cJSON_GetObjectItem(parsed, "ota_log");
+    cJSON* health = cJSON_GetObjectItem(parsed, "ota_health_log");
+    REQUIRE(update != nullptr);
+    REQUIRE(health != nullptr);
+
+    CHECK(required_json_string(update, "path") == update_log_path);
+    CHECK(required_json_int(update, "size_bytes") == static_cast<int>(update_log.size()));
+    CHECK(required_json_string(update, "log").find("[config_web] ota update exited rc=1") != std::string::npos);
+    CHECK(required_json_string(update, "log").find("health timeout") == std::string::npos);
+
+    CHECK(required_json_string(health, "path") == health_log_path);
+    CHECK(required_json_string(health, "log").find("health timeout waiting for /userdata/ota/health.ok") != std::string::npos);
+    CHECK(required_json_string(health, "log").find("[config_web] ota update") == std::string::npos);
+    cJSON_Delete(parsed);
 }

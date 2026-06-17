@@ -207,6 +207,8 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(source.find("kOtaWebUpdateLogPath") != std::string::npos);
     CHECK(source.find("/tmp/config_web_ota_update.log") != std::string::npos);
     CHECK(source.find("/var/log/ota/ota.log") != std::string::npos);
+    CHECK(source.find("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG") != std::string::npos);
+    CHECK(source.find("\"ota_health_log\"") != std::string::npos);
     CHECK(source.find("/oem/usr/bin/ota") != std::string::npos);
     CHECK(source.find(" update") != std::string::npos);
     CHECK(source.find("kOtaWebUpdateLockPath") != std::string::npos);
@@ -262,6 +264,8 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("OTA 更新已开始，等待日志输出...") != std::string::npos);
     CHECK(html.find("setOtaLogPending('OTA 更新已开始，等待日志输出...',Number(payload.ota_log_start_size_bytes||0));") != std::string::npos);
     CHECK(html.find("renderOtaLog(snapshot, {preservePending:true})") != std::string::npos);
+    CHECK(html.find("payload.ota_health_log") != std::string::npos);
+    CHECK(html.find("extractOtaExitCode((payload.ota_log||{}).log||'')") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');setOtaLogPending(") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');showOtaLogPanel();") == std::string::npos);
     CHECK(html.find("function hideOtaLogPanel()") != std::string::npos);
