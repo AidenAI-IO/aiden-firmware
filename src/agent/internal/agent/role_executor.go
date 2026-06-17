@@ -328,14 +328,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if todo, ok := state.blockCurrentTodoStep(verification.Reason); ok {
 						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), false)
 					}
-				} else {
-					if todo, ok := state.finishCurrentTodoStep(); ok {
-						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), false)
-					}
-				}
-				state.clearStepExecution()
-
-				if verification.NeedsReplan {
+					state.clearStepExecution()
 					state.Phase = phasePlan
 					state.PlanExhausted = false
 					if e.Recorder != nil {
@@ -344,6 +337,10 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					continue
 				}
 				if verification.CanFinish {
+					if todo, ok := state.finishCurrentTodoStep(); ok {
+						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), false)
+					}
+					state.clearStepExecution()
 					finalAnswer := strings.TrimSpace(verification.FinalAnswer)
 					if finalAnswer == "" {
 						finalAnswer = stepSummary
@@ -358,12 +355,22 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					}
 					return e.finishRun(ctx, finalAnswer, verification.Reason)
 				}
-				if state.advancePlanStepOrExhaust() {
+				doneTodo, doneChanged := state.finishCurrentTodoStep()
+				state.clearStepExecution()
+				if exhausted := state.advancePlanStepOrExhaust(); exhausted {
+					if doneChanged {
+						e.emitTodoUpdate(ctx, doneTodo, doneTodo.CurrentSpeech(), false)
+					}
 					state.Phase = phasePlan
 					if e.Recorder != nil {
 						e.Recorder.RecordLoopPhase(phasePlan, "plan_exhausted")
 					}
 					continue
+				}
+				if todo, ok := state.startCurrentTodoStep(); ok {
+					e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), true)
+				} else if doneChanged {
+					e.emitTodoUpdate(ctx, doneTodo, doneTodo.CurrentSpeech(), false)
 				}
 			}
 		}

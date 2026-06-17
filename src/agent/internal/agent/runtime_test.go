@@ -1449,8 +1449,8 @@ func TestRuntimePlannedTodoLifecycleEvents(t *testing.T) {
 	}
 
 	todos := runEventsOfType(events, "todo_update")
-	if len(todos) != 5 {
-		t.Fatalf("todo_update events = %d, want 5: %#v", len(todos), todos)
+	if len(todos) != 4 {
+		t.Fatalf("todo_update events = %d, want 4: %#v", len(todos), todos)
 	}
 	if todos[0].Todo == nil || todos[0].Todo.Mode != TodoModePlanned || todos[0].Todo.Revision != 1 || len(todos[0].Todo.Items) != 2 {
 		t.Fatalf("unexpected committed todo event: %#v", todos[0])
@@ -1462,9 +1462,18 @@ func TestRuntimePlannedTodoLifecycleEvents(t *testing.T) {
 	if todos[1].Content != "inspect screen" {
 		t.Fatalf("step 1 start content = %q", todos[1].Content)
 	}
+	if !todos[1].SpeechEligible {
+		t.Fatalf("step 1 start should be speech eligible: %#v", todos[1])
+	}
 	assertTodoItemStatus(t, todos[2], 0, TodoDone)
-	assertTodoItemStatus(t, todos[3], 1, TodoInProgress)
-	assertTodoItemStatus(t, todos[4], 1, TodoDone)
+	assertTodoItemStatus(t, todos[2], 1, TodoInProgress)
+	if todos[2].Content != "write answer" || !todos[2].SpeechEligible {
+		t.Fatalf("step transition should speak step 2 start: %#v", todos[2])
+	}
+	assertTodoItemStatus(t, todos[3], 1, TodoDone)
+	if todos[3].SpeechEligible {
+		t.Fatalf("final done event should not be speech eligible: %#v", todos[3])
+	}
 }
 
 func TestRuntimeTodoBlocksAndRevisionsOnReplan(t *testing.T) {
