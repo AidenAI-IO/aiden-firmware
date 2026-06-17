@@ -129,6 +129,20 @@ std::string replace_top_level_key_with_array(std::string json, const char* key) 
     return result;
 }
 
+std::string required_json_string(cJSON* object, const char* key) {
+    cJSON* item = cJSON_GetObjectItem(object, key);
+    REQUIRE(item != nullptr);
+    REQUIRE(item->valuestring != nullptr);
+    return std::string(item->valuestring);
+}
+
+int required_json_int(cJSON* object, const char* key) {
+    cJSON* item = cJSON_GetObjectItem(object, key);
+    REQUIRE(item != nullptr);
+    REQUIRE((item->type & 0xff) == cJSON_Number);
+    return item->valueint;
+}
+
 std::string resolved_config_json(const std::string& search_provider, bool search_has_api_key) {
     return std::string(
         "{"
@@ -322,9 +336,12 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
     const std::string agent_toml_path = handle->tmp_dir + "/agent.toml";
     const std::string wifi_conf_path = handle->tmp_dir + "/wifi.conf";
     const std::string sysenv_path = handle->tmp_dir + "/system_env";
+    const std::string ota_state_path = handle->tmp_dir + "/ota_state.json";
+    const std::string cmdline_path = handle->tmp_dir + "/cmdline";
     write_file(agent_toml_path, "");
     write_file(wifi_conf_path, "");
     write_file(sysenv_path, "");
+    write_file(cmdline_path, "console=ttyFIQ0 aiden.slot_suffix=_a root=PARTLABEL=rootfs_a\n");
 
     pid_t pid = ::fork();
     REQUIRE(pid >= 0);
@@ -363,6 +380,8 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
         const std::string config_arg = "--config=" + agent_toml_path;
         const std::string wifi_arg = "--wifi-config=" + wifi_conf_path;
         const std::string sysenv_arg = "--system-env=" + sysenv_path;
+        const std::string ota_state_arg = "--ota-state=" + ota_state_path;
+        const std::string cmdline_arg = "--cmdline=" + cmdline_path;
         std::vector<char*> argv = {
             const_cast<char*>(AIDEN_CONFIG_WEB_BIN),
             const_cast<char*>("--bind=127.0.0.1"),
@@ -370,6 +389,8 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
             const_cast<char*>(config_arg.c_str()),
             const_cast<char*>(wifi_arg.c_str()),
             const_cast<char*>(sysenv_arg.c_str()),
+            const_cast<char*>(ota_state_arg.c_str()),
+            const_cast<char*>(cmdline_arg.c_str()),
             nullptr,
         };
         ::execve(AIDEN_CONFIG_WEB_BIN, argv.data(), envp.data());
@@ -432,6 +453,42 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     cJSON* enabled = cJSON_GetObjectItem(audio_archive, "enabled");
     REQUIRE(enabled != nullptr);
     CHECK((enabled->type & 0xff) == cJSON_True);
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: GET /api/config reports running OTA target version when health failed") {
+    StubEnv env;
+    auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/cmdline", "console=ttyFIQ0 aiden.slot_suffix=_b root=PARTLABEL=rootfs_b\n");
+    write_file(handle->tmp_dir + "/ota_state.json",
+        "{"
+        "\"phase\":\"health\","
+        "\"current_version\":\"20260601-100000-old\","
+        "\"current_build_time\":\"2026-06-01T10:00:00Z\","
+        "\"target_version\":\"20260602-100000-new\","
+        "\"target_build_time\":\"2026-06-02T10:00:00Z\","
+        "\"active_slot\":0,"
+        "\"target_slot\":1,"
+        "\"last_committed_version\":\"20260601-100000-old\","
+        "\"last_committed_build_time\":\"2026-06-01T10:00:00Z\","
+        "\"last_error\":\"health timeout waiting for /userdata/ota/health.ok\""
+        "}\n");
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
+    REQUIRE(resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* firmware = cJSON_GetObjectItem(parsed, "firmware");
+    REQUIRE(firmware != nullptr);
+    CHECK(required_json_string(firmware, "version") == "20260602-100000-new");
+    CHECK(required_json_string(firmware, "build_time") == "2026-06-02T10:00:00Z");
+    CHECK(required_json_string(firmware, "phase") == "health");
+    CHECK(required_json_string(firmware, "health_status") == "failed");
+    CHECK(required_json_string(firmware, "health_error") == "health timeout waiting for /userdata/ota/health.ok");
+    CHECK(required_json_string(firmware, "previous_version") == "20260601-100000-old");
+    CHECK(required_json_string(firmware, "running_slot") == "b");
+    CHECK(required_json_string(firmware, "target_slot") == "b");
     cJSON_Delete(parsed);
 }
 
@@ -991,4 +1048,50 @@ TEST_CASE("config_web: failed manual OTA update releases launch lock even if a c
     }
     CHECK(accepted);
     CHECK(retry.body.find("ota update already running") == std::string::npos);
+}
+
+TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+
+    const std::string update_log_path = tmp + "/config_web_ota_update.log";
+    const std::string health_log_path = tmp + "/ota_health.log";
+    const std::string update_log =
+        "[config_web] ota update requested\n"
+        "[config_web] ota update exited rc=1\n";
+    std::ostringstream health_log;
+    for (int i = 0; i < 5000; ++i) {
+        health_log << "ota health previous boot line " << i << "\n";
+    }
+    health_log << "health timeout waiting for /userdata/ota/health.ok\n";
+    write_file(update_log_path, update_log);
+    write_file(health_log_path, health_log.str());
+
+    StubEnv env;
+    env.set("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", update_log_path);
+    env.set("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG", health_log_path);
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/ota/logs");
+    REQUIRE(resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* update = cJSON_GetObjectItem(parsed, "ota_log");
+    cJSON* health = cJSON_GetObjectItem(parsed, "ota_health_log");
+    REQUIRE(update != nullptr);
+    REQUIRE(health != nullptr);
+
+    CHECK(required_json_string(update, "path") == update_log_path);
+    CHECK(required_json_int(update, "size_bytes") == static_cast<int>(update_log.size()));
+    CHECK(required_json_string(update, "log").find("[config_web] ota update exited rc=1") != std::string::npos);
+    CHECK(required_json_string(update, "log").find("health timeout") == std::string::npos);
+
+    CHECK(required_json_string(health, "path") == health_log_path);
+    CHECK(required_json_string(health, "log").find("health timeout waiting for /userdata/ota/health.ok") != std::string::npos);
+    CHECK(required_json_string(health, "log").find("[config_web] ota update") == std::string::npos);
+    cJSON_Delete(parsed);
 }

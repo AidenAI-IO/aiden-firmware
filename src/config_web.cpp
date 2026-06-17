@@ -41,6 +41,7 @@ struct Options {
     std::string wifi_config_path = "/userdata/wpa_supplicant.conf";
     std::string wifi_interface = "wlan0";
     std::string ota_state_path = "/userdata/ota/state.json";
+    std::string cmdline_path = "/proc/cmdline";
     std::string system_env_path = "/userdata/system/env";
 };
 
@@ -133,6 +134,7 @@ const char* agent_bin_path() {
 }
 const char* kOtaBin = "/oem/usr/bin/ota";
 const char* kEnvRunBin = "/oem/usr/bin/aiden-env-run";
+const char* kOtaHealthLogPath = "/var/log/ota/ota.log";
 const char* kOtaWebUpdateLockPath = "/tmp/config_web_ota_update.lock";
 const char* kOtaWebUpdateLogPath = "/tmp/config_web_ota_update.log";
 const char* kAgentPortHost = "127.0.0.1";
@@ -237,6 +239,10 @@ std::string ota_update_lock_path() {
 
 std::string ota_update_log_path() {
     return env_path_or_default("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", kOtaWebUpdateLogPath);
+}
+
+std::string ota_health_log_path() {
+    return env_path_or_default("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG", kOtaHealthLogPath);
 }
 
 std::string trim_copy(const std::string& input) {
@@ -2436,8 +2442,13 @@ AgentLogSnapshot read_agent_log_snapshot() {
 }
 
 AgentLogSnapshot read_ota_log_snapshot() {
-    std::string log_path = ota_update_log_path();
-    return read_log_snapshot(log_path.c_str(), kOtaLogReadSize, kOtaLogDisplaySize);
+    std::string update_log_path = ota_update_log_path();
+    return read_log_snapshot(update_log_path.c_str(), kOtaLogReadSize, kOtaLogDisplaySize);
+}
+
+AgentLogSnapshot read_ota_health_log_snapshot() {
+    std::string health_log_path = ota_health_log_path();
+    return read_log_snapshot(health_log_path.c_str(), kOtaLogReadSize, kOtaLogDisplaySize);
 }
 
 std::string lowercase_copy(const std::string& text) {
@@ -2723,12 +2734,111 @@ cJSON* ota_log_to_json(const AgentLogSnapshot& snapshot) {
     return log_snapshot_to_json(snapshot);
 }
 
+std::string json_string_value(cJSON* obj, const char* key) {
+    cJSON* item = cJSON_GetObjectItem(obj, key);
+    return json_is_string(item) ? item->valuestring : "";
+}
+
+std::string normalize_slot_name(const std::string& raw) {
+    std::string value = lowercase_copy(trim_copy(raw));
+    if (value == "a" || value == "_a" || value == "slot_a" || value == "0") {
+        return "a";
+    }
+    if (value == "b" || value == "_b" || value == "slot_b" || value == "1") {
+        return "b";
+    }
+    return "";
+}
+
+std::string slot_name_from_json(cJSON* item) {
+    if (json_is_number(item)) {
+        if (item->valueint == 0) {
+            return "a";
+        }
+        if (item->valueint == 1) {
+            return "b";
+        }
+        return "";
+    }
+    if (json_is_string(item)) {
+        return normalize_slot_name(item->valuestring);
+    }
+    return "";
+}
+
+bool string_has_suffix(const std::string& text, const std::string& suffix) {
+    return text.size() >= suffix.size()
+        && text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+std::string slot_from_root_value(const std::string& root) {
+    std::string value = lowercase_copy(trim_copy(root));
+    if (value == "partlabel=rootfs_a" || value == "rootfs_a"
+        || value == "/dev/mmcblk0p9" || string_has_suffix(value, "/rootfs_a")) {
+        return "a";
+    }
+    if (value == "partlabel=rootfs_b" || value == "rootfs_b"
+        || value == "/dev/mmcblk0p10" || string_has_suffix(value, "/rootfs_b")) {
+        return "b";
+    }
+    return "";
+}
+
+std::string current_slot_from_cmdline(const std::string& cmdline) {
+    std::istringstream in(cmdline);
+    std::string field;
+    std::string root_slot;
+    while (in >> field) {
+        const std::string slot_prefix = "aiden.slot_suffix=";
+        if (field.compare(0, slot_prefix.size(), slot_prefix) == 0) {
+            std::string slot = normalize_slot_name(field.substr(slot_prefix.size()));
+            if (!slot.empty()) {
+                return slot;
+            }
+        }
+        const std::string root_prefix = "root=";
+        if (field.compare(0, root_prefix.size(), root_prefix) == 0) {
+            root_slot = slot_from_root_value(field.substr(root_prefix.size()));
+        }
+    }
+    return root_slot;
+}
+
+bool running_slot_matches_target(const std::string& running_slot,
+                                 const std::string& target_slot) {
+    return !running_slot.empty() && !target_slot.empty() && running_slot == target_slot;
+}
+
+std::string firmware_health_status(const std::string& phase,
+                                   const std::string& last_error,
+                                   bool showing_running_target) {
+    if (phase == "health" && !last_error.empty()) {
+        return "failed";
+    }
+    if (phase == "pending-reboot" && showing_running_target) {
+        return "pending";
+    }
+    if (phase == "committed") {
+        return "success";
+    }
+    if (phase == "rolled-back") {
+        return "rolled_back";
+    }
+    return "";
+}
+
 cJSON* firmware_info_to_json(const Options& options) {
     cJSON* fw = cJSON_CreateObject();
     if (!file_exists(options.ota_state_path.c_str())) {
         cJSON_AddStringToObject(fw, "version", "");
         cJSON_AddStringToObject(fw, "build_time", "");
         cJSON_AddStringToObject(fw, "phase", "");
+        cJSON_AddStringToObject(fw, "health_status", "");
+        cJSON_AddStringToObject(fw, "health_error", "");
+        cJSON_AddStringToObject(fw, "previous_version", "");
+        cJSON_AddStringToObject(fw, "previous_build_time", "");
+        cJSON_AddStringToObject(fw, "running_slot", "");
+        cJSON_AddStringToObject(fw, "target_slot", "");
         return fw;
     }
     std::string contents = read_file_contents(options.ota_state_path.c_str());
@@ -2737,17 +2847,44 @@ cJSON* firmware_info_to_json(const Options& options) {
         cJSON_AddStringToObject(fw, "version", "");
         cJSON_AddStringToObject(fw, "build_time", "");
         cJSON_AddStringToObject(fw, "phase", "");
+        cJSON_AddStringToObject(fw, "health_status", "");
+        cJSON_AddStringToObject(fw, "health_error", "");
+        cJSON_AddStringToObject(fw, "previous_version", "");
+        cJSON_AddStringToObject(fw, "previous_build_time", "");
+        cJSON_AddStringToObject(fw, "running_slot", "");
+        cJSON_AddStringToObject(fw, "target_slot", "");
         return fw;
     }
-    cJSON* version = cJSON_GetObjectItem(state, "current_version");
-    cJSON* build_time = cJSON_GetObjectItem(state, "current_build_time");
-    cJSON* phase = cJSON_GetObjectItem(state, "phase");
-    cJSON_AddStringToObject(fw, "version",
-                            json_is_string(version) ? version->valuestring : "");
-    cJSON_AddStringToObject(fw, "build_time",
-                            json_is_string(build_time) ? build_time->valuestring : "");
-    cJSON_AddStringToObject(fw, "phase",
-                            json_is_string(phase) ? phase->valuestring : "");
+
+    const std::string current_version = json_string_value(state, "current_version");
+    const std::string current_build_time = json_string_value(state, "current_build_time");
+    const std::string target_version = json_string_value(state, "target_version");
+    const std::string target_build_time = json_string_value(state, "target_build_time");
+    const std::string phase = json_string_value(state, "phase");
+    const std::string last_error = json_string_value(state, "last_error");
+    const std::string target_slot = slot_name_from_json(cJSON_GetObjectItem(state, "target_slot"));
+    const std::string running_slot = current_slot_from_cmdline(
+        read_file_contents(options.cmdline_path.c_str(), 16 * 1024));
+    const bool show_target =
+        !target_version.empty()
+        && (phase == "pending-reboot" || phase == "health")
+        && running_slot_matches_target(running_slot, target_slot);
+
+    cJSON_AddStringToObject(fw, "version", show_target ? target_version.c_str() : current_version.c_str());
+    cJSON_AddStringToObject(fw, "build_time", show_target ? target_build_time.c_str() : current_build_time.c_str());
+    cJSON_AddStringToObject(fw, "phase", phase.c_str());
+    cJSON_AddStringToObject(fw, "current_version", current_version.c_str());
+    cJSON_AddStringToObject(fw, "current_build_time", current_build_time.c_str());
+    cJSON_AddStringToObject(fw, "target_version", target_version.c_str());
+    cJSON_AddStringToObject(fw, "target_build_time", target_build_time.c_str());
+    cJSON_AddStringToObject(fw, "previous_version", show_target ? current_version.c_str() : "");
+    cJSON_AddStringToObject(fw, "previous_build_time", show_target ? current_build_time.c_str() : "");
+    cJSON_AddStringToObject(fw, "running_slot", running_slot.c_str());
+    cJSON_AddStringToObject(fw, "target_slot", target_slot.c_str());
+    std::string health_status = firmware_health_status(phase, last_error, show_target);
+    cJSON_AddStringToObject(fw, "health_status", health_status.c_str());
+    cJSON_AddStringToObject(fw, "health_error",
+                            health_status == "failed" ? last_error.c_str() : "");
     cJSON_Delete(state);
     return fw;
 }
@@ -2845,6 +2982,7 @@ ApiResponse handle_get_ota_log() {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
     cJSON_AddItemToObject(root, "ota_log", ota_log_to_json(read_ota_log_snapshot()));
+    cJSON_AddItemToObject(root, "ota_health_log", ota_log_to_json(read_ota_health_log_snapshot()));
     return make_json_ok(root);
 }
 
@@ -3740,7 +3878,7 @@ bool parse_int(const char* text, int min_value, int max_value, int* value) {
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0 << " [--bind=IP] [--port=PORT]"
               << " [--config=PATH] [--wifi-config=PATH] [--wifi-iface=NAME]"
-              << " [--system-env=PATH]" << std::endl;
+              << " [--ota-state=PATH] [--cmdline=PATH] [--system-env=PATH]" << std::endl;
 }
 
 bool parse_args(int argc, char** argv, Options* options) {
@@ -3759,6 +3897,8 @@ bool parse_args(int argc, char** argv, Options* options) {
         } else if (consume_prefix(arg, "--config=", &options->agent_config_path)) {
         } else if (consume_prefix(arg, "--wifi-config=", &options->wifi_config_path)) {
         } else if (consume_prefix(arg, "--wifi-iface=", &options->wifi_interface)) {
+        } else if (consume_prefix(arg, "--ota-state=", &options->ota_state_path)) {
+        } else if (consume_prefix(arg, "--cmdline=", &options->cmdline_path)) {
         } else if (consume_prefix(arg, "--system-env=", &options->system_env_path)) {
         } else {
             return false;
