@@ -443,6 +443,33 @@ func TestDrainWakeupEventsWhileListeningLogsDrainedCount(t *testing.T) {
 	}
 }
 
+func TestSignalWakeupEventCoalescesPendingEvents(t *testing.T) {
+	wakeupEvents := make(chan struct{}, 1)
+
+	signalWakeupEvent(wakeupEvents)
+	signalWakeupEvent(wakeupEvents)
+	signalWakeupEvent(wakeupEvents)
+
+	if got := len(wakeupEvents); got != 1 {
+		t.Fatalf("pending wakeup events = %d, want 1", got)
+	}
+}
+
+func TestSignalVoiceWakeupEventCoalescesPendingEvents(t *testing.T) {
+	events := make(chan voiceEvent, 1)
+
+	signalVoiceWakeupEvent(events)
+	signalVoiceWakeupEvent(events)
+	signalVoiceWakeupEvent(events)
+
+	if got := len(events); got != 1 {
+		t.Fatalf("pending voice events = %d, want 1", got)
+	}
+	if got := <-events; got != voiceEventWakeup {
+		t.Fatalf("voice event = %v, want wakeup", got)
+	}
+}
+
 func TestProcessAudioLoopStopsRecordingBeforeProcessingUtterance(t *testing.T) {
 	dialog := &fakeAudioDialog{
 		frameSamples:    2,

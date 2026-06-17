@@ -377,14 +377,10 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 
 	log.Printf("\n[ready] Starting GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
 
-	events := make(chan voiceEvent, 8)
+	events := make(chan voiceEvent, 1)
 
 	watchers, err := startWakeupWatchers(newWatcher, func() {
-		select {
-		case events <- voiceEventWakeup:
-		default:
-			log.Println("[wakeup] event queue full, dropping GPIO wakeup event")
-		}
+		signalVoiceWakeupEvent(events)
 	})
 	if err != nil {
 		log.Printf("[error] Failed to start GPIO wakeup listeners: %v\n", err)
@@ -414,14 +410,10 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 	log.Printf("\n[ready] Starting GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
 
 	ctx := context.Background()
-	wakeupEvents := make(chan struct{}, 8)
+	wakeupEvents := make(chan struct{}, 1)
 
 	watchers, err := startWakeupWatchers(newWatcher, func() {
-		select {
-		case wakeupEvents <- struct{}{}:
-		default:
-			log.Println("[wakeup] event queue full, dropping GPIO wakeup event")
-		}
+		signalWakeupEvent(wakeupEvents)
 	})
 	if err != nil {
 		log.Printf("[error] Failed to start GPIO wakeup listeners: %v\n", err)
@@ -480,6 +472,22 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 		}
 
 		log.Println("[ready] Waiting for next wakeup event...")
+	}
+}
+
+func signalVoiceWakeupEvent(events chan<- voiceEvent) {
+	select {
+	case events <- voiceEventWakeup:
+	default:
+		log.Println("[wakeup] pending wakeup already queued, coalescing duplicate GPIO wakeup event")
+	}
+}
+
+func signalWakeupEvent(wakeupEvents chan<- struct{}) {
+	select {
+	case wakeupEvents <- struct{}{}:
+	default:
+		log.Println("[wakeup] pending wakeup already queued, coalescing duplicate GPIO wakeup event")
 	}
 }
 
