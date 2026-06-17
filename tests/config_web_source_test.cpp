@@ -795,6 +795,26 @@ TEST_CASE("config web waits for an IPv4 lease before confirming a connection") {
     CHECK(source.find("dhcp.exit_code == 0 && wait_for_ip(options, log, 15)") != std::string::npos);
 }
 
+TEST_CASE("config web wifi status falls back to ifconfig for the IPv4 address") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    // wpa_cli status never reports ip_address= on this device (DHCP is run by
+    // dhcpcd, not wpa_supplicant), so query_wifi_status must back-fill the IPv4
+    // address from ifconfig; otherwise the connect-confirmation gate rolls back
+    // a working connection because status.ip_address is always empty.
+    CHECK(source.find("extract_ifconfig_ipv4(ifc.output)") != std::string::npos);
+    // The fallback is gated on a missing wpa_cli ip_address and an associated
+    // (COMPLETED) link, so a stale ifconfig inet cannot falsely confirm.
+    CHECK(source.find("if (status.ip_address.empty() && status.connected && command_exists(\"ifconfig\"))") !=
+          std::string::npos);
+}
+
 TEST_CASE("config web restores previous wifi config when final apply is not confirmed") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
