@@ -47,6 +47,61 @@ func TestMemoryManagerSaveWritesSessionEvents(t *testing.T) {
 	}
 }
 
+func TestSnapshotAppendStartFindsExistingSuffixOverlap(t *testing.T) {
+	human := func(content string) MessageRecord {
+		return MessageRecord{Role: "human", Content: content}
+	}
+	ai := func(content string) MessageRecord {
+		return MessageRecord{Role: "ai", Content: content}
+	}
+
+	tests := []struct {
+		name     string
+		existing []MessageRecord
+		records  []MessageRecord
+		want     int
+	}{
+		{
+			name:     "existing prefix of snapshot",
+			existing: []MessageRecord{human("first"), ai("first answer")},
+			records:  []MessageRecord{human("first"), ai("first answer"), human("second")},
+			want:     2,
+		},
+		{
+			name:     "snapshot prefix already persisted",
+			existing: []MessageRecord{human("first"), ai("first answer"), human("second")},
+			records:  []MessageRecord{human("first"), ai("first answer")},
+			want:     2,
+		},
+		{
+			name:     "existing suffix overlaps snapshot prefix",
+			existing: []MessageRecord{human("failed request"), human("current request"), ai("current answer")},
+			records:  []MessageRecord{human("current request"), ai("current answer")},
+			want:     2,
+		},
+		{
+			name:     "partial overlap appends only new tail",
+			existing: []MessageRecord{human("old"), human("current request"), ai("current answer")},
+			records:  []MessageRecord{human("current request"), ai("current answer"), human("next request")},
+			want:     2,
+		},
+		{
+			name:     "no overlap",
+			existing: []MessageRecord{human("old")},
+			records:  []MessageRecord{human("new")},
+			want:     0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := snapshotAppendStart(tt.existing, tt.records); got != tt.want {
+				t.Fatalf("snapshotAppendStart() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSessionEventsStripScreenshotData(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()

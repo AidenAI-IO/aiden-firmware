@@ -744,6 +744,21 @@ func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T)
 	if strings.Contains(resumePrompt, "发介绍") {
 		t.Fatalf("resume planner prompt should not promote unverified role_output into context:\n%s", resumePrompt)
 	}
+	events = readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	chatEvents := sessionEventsOfTypes(events, "user_input", "assistant_output")
+	correctionCount := 0
+	answerCount := 0
+	for _, event := range chatEvents {
+		if event.Type == "user_input" && event.Content == correction {
+			correctionCount++
+		}
+		if event.Type == "assistant_output" && event.Content == "收到，我会按更正后的群名继续。" {
+			answerCount++
+		}
+	}
+	if correctionCount != 1 || answerCount != 1 {
+		t.Fatalf("chat-like session events duplicated correction/answer: correction=%d answer=%d events=%#v", correctionCount, answerCount, chatEvents)
+	}
 }
 
 func TestRuntimeRunIncludesAvailableSkillCatalog(t *testing.T) {

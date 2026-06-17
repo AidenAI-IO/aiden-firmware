@@ -1550,6 +1550,11 @@ func snapshotAppendStart(existingRecords, records []MessageRecord) int {
 	if messageRecordsHavePrefix(existingRecords, records) {
 		return len(records)
 	}
+	for overlap := min(len(existingRecords), len(records)); overlap > 0; overlap-- {
+		if messageRecordsEqualSlice(existingRecords[len(existingRecords)-overlap:], records[:overlap]) {
+			return overlap
+		}
+	}
 	return 0
 }
 
@@ -1559,6 +1564,18 @@ func messageRecordsHavePrefix(records, prefix []MessageRecord) bool {
 	}
 	for i, want := range prefix {
 		if !messageRecordsEqual(records[i], want) {
+			return false
+		}
+	}
+	return true
+}
+
+func messageRecordsEqualSlice(a, b []MessageRecord) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !messageRecordsEqual(a[i], b[i]) {
 			return false
 		}
 	}
