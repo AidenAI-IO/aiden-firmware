@@ -274,6 +274,8 @@ void sync_legacy_wifi_fields(WifiNetworkConfig* config) {
         return;
     }
     if (config->networks.empty()) {
+        config->ssid.clear();
+        config->psk.clear();
         return;
     }
 
