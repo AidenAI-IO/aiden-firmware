@@ -163,6 +163,9 @@ func (m memoryManagerSessionManager) CommitRun(ctx context.Context, req SessionC
 	if req.Metrics != nil {
 		lastPromptTokens = req.Metrics.LastPromptTokens
 	}
+	if floor := m.memories.ConsumePromptTokenFloor(); floor > lastPromptTokens {
+		lastPromptTokens = floor
+	}
 	m.memories.SetLastPromptTokens(lastPromptTokens)
 
 	meta := SessionEventMetadata{

@@ -633,7 +633,13 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		executorHandler = streamCallbackHandler
 	}
 	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
-	conversationHistory, err := conversationHistoryMessageContents(ctx, memoryHandle.History)
+	conversationHistory, err := runtimeConversationHistoryMessageContents(
+		ctx,
+		memoryHandle.History,
+		r.memories,
+		runID,
+		r.activeConversationHistoryTokenBudget(contextWindow),
+	)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -795,6 +801,20 @@ func (r *Runtime) effectiveContextWindow() int {
 		return r.memories.effectiveContextWindow()
 	}
 	return 0
+}
+
+func (r *Runtime) activeConversationHistoryTokenBudget(contextWindow int) int {
+	if contextWindow <= 0 {
+		return 0
+	}
+	reserveTokens := defaultReserveTokens
+	keepRecentTokens := defaultKeepRecentTokens
+	if r != nil && r.memories != nil {
+		reserveTokens = r.memories.reserveTokens()
+		keepRecentTokens = r.memories.keepRecentTokens()
+	}
+	_, keepRecent := clampTokenBudgets(reserveTokens, keepRecentTokens, contextWindow)
+	return keepRecent
 }
 
 func (r *Runtime) ClearMemory(ctx context.Context) error {
