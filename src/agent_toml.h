@@ -95,7 +95,7 @@ struct AgentToml {
     SearchToml search;
     TelemetryToml telemetry;
 
-    std::string instruction;
+    std::string custom_instruction;
     std::string additional_prompt;
     std::string input_mode;
     std::string trigger_mode;

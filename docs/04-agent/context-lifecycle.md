@@ -8,7 +8,7 @@ Each run is assembled from several layers. Some layers are persisted memory, whi
 
 | Layer | Source | Visibility | Persistence |
 | --- | --- | --- | --- |
-| Base instruction | `agent.toml` `instruction` and `additional_prompt` | planner, executor, verifier | configuration |
+| Base instruction | built-in runtime instruction, optional `agent.toml` `custom_instruction`, and `additional_prompt` | planner, executor, verifier | configuration |
 | Runtime defaults | built-in prompt rules, current date, host runtime information | planner, executor, verifier | not persisted |
 | Skills | skill index plus active `SKILL.md` content | planner, executor, verifier | skill files and skill state |
 | Runtime context | `RunRequest.RuntimeContext`, for example phone bridge state | planner, executor, verifier | not persisted |

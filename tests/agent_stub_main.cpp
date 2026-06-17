@@ -68,7 +68,7 @@ const char* kDefaultConfig =
     "\"telemetry\":{\"enabled\":false,\"provider\":\"langfuse\",\"base_url\":\"\","
     "\"public_key\":\"\",\"secret_key\":\"\",\"upload_screenshots\":true,"
     "\"upload_timeout_sec\":30,\"max_retry\":2,\"tags\":[],\"environment\":\"default\"},"
-    "\"agent\":{\"instruction\":\"stub default instruction\",\"additional_prompt\":\"\","
+    "\"agent\":{\"custom_instruction\":\"stub custom instruction\",\"additional_prompt\":\"\","
     "\"input_mode\":\"text\",\"trigger_mode\":\"manual\",\"vad_backend\":\"rknn\","
     "\"vad_model_path\":\"/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn\","
     "\"vad_helper_path\":\"/oem/usr/bin/rknn_vad\",\"vad_speech_threshold\":0.5,"

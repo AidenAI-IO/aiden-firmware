@@ -104,7 +104,7 @@ type Config struct {
 	Benchmark                  BenchmarkConfig    `toml:"benchmark,omitempty"`
 	Search                     SearchConfig       `toml:"search,omitempty"`
 	LiveActivity               LiveActivityConfig `toml:"live_activity,omitempty"`
-	Instruction                string             `toml:"instruction"`
+	Instruction                string             `toml:"custom_instruction,omitempty"`
 	AdditionalPrompt           string             `toml:"additional_prompt,omitempty"`
 	InputMode                  string             `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
 	TriggerMode                string             `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
@@ -503,6 +503,7 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	}
 
 	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
+	applyRuntimeInstructionDefault(&cfg)
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -576,6 +577,8 @@ func LoadResolvedConfig(path string) (Config, error) {
 		}
 	}
 
+	applyRuntimeInstructionDefault(&cfg)
+
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -614,6 +617,15 @@ func resolveConfigPath(path string) (string, bool, error) {
 		return path, false, nil
 	}
 	return "", false, fmt.Errorf("read config: %w", err)
+}
+
+func applyRuntimeInstructionDefault(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	if strings.TrimSpace(cfg.Instruction) == "" {
+		cfg.Instruction = defaultInstruction
+	}
 }
 
 func decodeConfigFile(path string, cfg *Config) (toml.MetaData, error) {

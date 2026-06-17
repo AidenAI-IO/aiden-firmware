@@ -24,7 +24,7 @@ std::string make_temp_path(const char* leaf) {
 
 TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     aiden::AgentToml cfg;
-    cfg.instruction = "Hello \"world\"";
+    cfg.custom_instruction = "Hello \"world\"";
     cfg.input_mode = "stt";
     cfg.trigger_mode = "manual";
     cfg.vad_backend = "cpu";
@@ -110,11 +110,20 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     REQUIRE(aiden::save_agent_toml(path.c_str(), cfg, &err));
     REQUIRE(err.empty());
 
+    {
+        std::ifstream saved_in(path);
+        REQUIRE(saved_in.good());
+        std::string contents((std::istreambuf_iterator<char>(saved_in)), std::istreambuf_iterator<char>());
+        CHECK(contents.find("custom_instruction = \"Hello \\\"world\\\"\"") != std::string::npos);
+        CHECK(contents.rfind("instruction =", 0) != 0);
+        CHECK(contents.find("\ninstruction =") == std::string::npos);
+    }
+
     aiden::AgentToml loaded;
     REQUIRE(aiden::load_agent_toml(path.c_str(), loaded, &err));
     REQUIRE(err.empty());
 
-    CHECK(loaded.instruction == "Hello \"world\"");
+    CHECK(loaded.custom_instruction == "Hello \"world\"");
     CHECK(loaded.input_mode == "stt");
     CHECK(loaded.trigger_mode == "manual");
     CHECK(loaded.vad_backend == "cpu");
@@ -213,6 +222,25 @@ TEST_CASE("agent_toml no longer writes legacy proxy section") {
     std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     CHECK(contents.find("[proxy]") == std::string::npos);
     CHECK(contents.find("http_proxy") == std::string::npos);
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("agent_toml ignores legacy instruction key") {
+    std::string path = make_temp_path("legacy_instruction.toml");
+    {
+        std::ofstream out(path);
+        out << "instruction = \"legacy value\"\n"
+            << "custom_instruction = \"custom value\"\n"
+            << "[model]\n"
+            << "provider = \"fake\"\n";
+    }
+
+    aiden::AgentToml cfg;
+    std::string err;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    REQUIRE(err.empty());
+    CHECK(cfg.custom_instruction == "custom value");
 
     std::remove(path.c_str());
 }
