@@ -153,6 +153,9 @@ type cancelOnFirstWriteWriter struct {
 	inner  io.Writer
 	cancel func()
 	once   sync.Once
+
+	mu      sync.Mutex
+	emitted bool
 }
 
 func newCancelOnFirstWriteWriter(inner io.Writer, cancel func()) io.Writer {
@@ -166,5 +169,35 @@ func (w *cancelOnFirstWriteWriter) Write(p []byte) (int, error) {
 	if len(p) > 0 {
 		w.once.Do(w.cancel)
 	}
-	return w.inner.Write(p)
+	n, err := w.inner.Write(p)
+	if n > 0 {
+		w.mu.Lock()
+		w.emitted = true
+		w.mu.Unlock()
+	}
+	return n, err
+}
+
+func (w *cancelOnFirstWriteWriter) ResetStreamState() {
+	if w == nil {
+		return
+	}
+	if resetter, ok := w.inner.(streamStateResetter); ok {
+		resetter.ResetStreamState()
+	}
+	w.mu.Lock()
+	w.emitted = false
+	w.mu.Unlock()
+}
+
+func (w *cancelOnFirstWriteWriter) StreamEmitted() bool {
+	if w == nil {
+		return false
+	}
+	if tracker, ok := w.inner.(streamOutputTracker); ok {
+		return tracker.StreamEmitted()
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.emitted
 }

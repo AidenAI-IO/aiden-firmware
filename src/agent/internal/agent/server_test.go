@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/jpeg"
 	"net"
@@ -265,6 +266,232 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 	if !sawPlanner || !sawToolCall || !sawToolResult || !sawAssistant || !sawDone {
 		t.Fatalf("missing expected stream events: planner=%v tool_call=%v tool_result=%v assistant=%v done=%v events=%#v",
 			sawPlanner, sawToolCall, sawToolResult, sawAssistant, sawDone, events)
+	}
+}
+
+func TestServerHandleChatStreamEmitsAssistantDeltasBeforeDone(t *testing.T) {
+	const expectedAnswer = "Complete answer."
+
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{"mode":"direct_answer","speech":"Short answer.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
+		},
+		streamChunks: [][]string{
+			{
+				`{"mode":"direct_answer","speech":"Short answer.","text":"Complete`,
+				` answer.","final_answer":"Complete answer.","reason":"direct"}`,
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Answer directly.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"web-req-stream"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	req.Header.Set("X-Aiden-Stream", "ndjson")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var (
+		deltaText              strings.Builder
+		sawDeltaBeforeDone     bool
+		sawAssistantBeforeDone bool
+		assistantContent       string
+		sawDone                bool
+		events                 []ChatStreamEvent
+	)
+	scanner := bufio.NewScanner(strings.NewReader(rec.Body.String()))
+	for scanner.Scan() {
+		var event ChatStreamEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("decode stream event %q: %v", scanner.Text(), err)
+		}
+		events = append(events, event)
+		switch event.Type {
+		case "assistant_delta":
+			if sawDone {
+				t.Fatalf("assistant_delta arrived after done: %#v", events)
+			}
+			sawDeltaBeforeDone = true
+			deltaText.WriteString(event.Delta)
+		case "message":
+			if event.Message != nil && event.Message.Type == "assistant" && !sawDone {
+				sawAssistantBeforeDone = true
+				assistantContent = event.Message.Content
+			}
+		case "done":
+			sawDone = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan stream: %v", err)
+	}
+
+	if !sawDeltaBeforeDone {
+		t.Fatalf("expected assistant_delta before done, events=%#v", events)
+	}
+	if !sawAssistantBeforeDone || !sawDone {
+		t.Fatalf("expected final assistant message and done, assistant=%v done=%v events=%#v", sawAssistantBeforeDone, sawDone, events)
+	}
+	if got := deltaText.String(); got != expectedAnswer {
+		t.Fatalf("assistant deltas = %q, want %q", got, expectedAnswer)
+	}
+	if assistantContent != expectedAnswer {
+		t.Fatalf("assistant message content = %q, want %q", assistantContent, expectedAnswer)
+	}
+	if len(model.sawStreaming) != 1 || !model.sawStreaming[0] {
+		t.Fatalf("expected web chat stream to enable provider streaming, got %#v", model.sawStreaming)
+	}
+}
+
+type failingStreamWriter struct {
+	err error
+}
+
+func (w failingStreamWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func TestFinalStreamFanoutWriterReturnsInputLengthWhenLaterWriterFails(t *testing.T) {
+	writeErr := errors.New("fanout write failed")
+	var first strings.Builder
+	fanout := newFinalStreamFanoutWriter(&first, failingStreamWriter{err: writeErr})
+
+	n, err := fanout.Write([]byte("chunk"))
+
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("Write() error = %v, want %v", err, writeErr)
+	}
+	if n != len("chunk") {
+		t.Fatalf("Write() bytes = %d, want %d", n, len("chunk"))
+	}
+	if first.String() != "chunk" {
+		t.Fatalf("first writer received %q, want chunk", first.String())
+	}
+}
+
+func TestFinalStreamFanoutWriterResetsAssistantDeltaDraftBeforeFallback(t *testing.T) {
+	writeErr := errors.New("fanout write failed")
+	rec := httptest.NewRecorder()
+	stream, ok := newChatStreamWriter(rec)
+	if !ok {
+		t.Fatal("httptest recorder must support streaming")
+	}
+	fanout := newFinalStreamFanoutWriter(
+		newChatAssistantFinalStreamWriter(stream, "episode-reset", "request-reset"),
+		failingStreamWriter{err: writeErr},
+	)
+
+	if _, err := fanout.Write([]byte(`{"text":"Partial`)); !errors.Is(err, writeErr) {
+		t.Fatalf("first Write() error = %v, want %v", err, writeErr)
+	}
+	resetStreamWriterState(fanout)
+	if _, err := fanout.Write([]byte("Complete answer.")); !errors.Is(err, writeErr) {
+		t.Fatalf("fallback Write() error = %v, want %v", err, writeErr)
+	}
+
+	var events []ChatStreamEvent
+	scanner := bufio.NewScanner(strings.NewReader(rec.Body.String()))
+	for scanner.Scan() {
+		var event ChatStreamEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("decode stream event %q: %v", scanner.Text(), err)
+		}
+		events = append(events, event)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan stream: %v", err)
+	}
+
+	resetIndex := -1
+	for i, event := range events {
+		if event.Type == "assistant_delta_reset" {
+			if resetIndex >= 0 {
+				t.Fatalf("expected one assistant_delta_reset, events=%#v", events)
+			}
+			resetIndex = i
+		}
+	}
+	if resetIndex <= 0 || resetIndex >= len(events)-1 {
+		t.Fatalf("assistant_delta_reset index = %d, want between deltas: %#v", resetIndex, events)
+	}
+
+	var beforeReset strings.Builder
+	var afterReset strings.Builder
+	for i, event := range events {
+		if event.Type != "assistant_delta" {
+			continue
+		}
+		if i < resetIndex {
+			beforeReset.WriteString(event.Delta)
+		} else {
+			afterReset.WriteString(event.Delta)
+		}
+	}
+	if beforeReset.String() != "Partial" {
+		t.Fatalf("delta before reset = %q, want Partial", beforeReset.String())
+	}
+	if afterReset.String() != "Complete answer." {
+		t.Fatalf("delta after reset = %q, want Complete answer.", afterReset.String())
+	}
+}
+
+func TestFinalStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
+	var webDelta strings.Builder
+	var speech strings.Builder
+
+	fanout := newFinalStreamFanoutWriter(
+		NewJSONFieldOrPlainStreamWriter(&webDelta, "text"),
+		NewSpeechStreamWriter(&speech),
+	)
+	tracker, ok := fanout.(streamOutputTracker)
+	if !ok {
+		t.Fatal("fanout writer must track stream emission")
+	}
+
+	if _, err := fanout.Write([]byte(`{"speech":"Short answer.","final_answer":"Complete answer."}`)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	if webDelta.String() != "" {
+		t.Fatalf("web delta stream = %q, want empty when text field is absent", webDelta.String())
+	}
+	if speech.String() != "Short answer." {
+		t.Fatalf("speech stream = %q, want Short answer.", speech.String())
+	}
+	if !tracker.StreamEmitted() {
+		t.Fatal("fanout should report emitted when any child stream emitted")
+	}
+}
+
+func TestServerEventStreamAllowsRunEventMessages(t *testing.T) {
+	for _, messageType := range []string{
+		"user",
+		"assistant",
+		"role_output",
+		runEventToolCall,
+		"tool_result",
+		runEventTodoUpdate,
+		runEventTodoClosed,
+	} {
+		if !shouldStreamEventMessage(Message{Type: messageType}) {
+			t.Fatalf("message type %q should be streamed to web clients", messageType)
+		}
 	}
 }
 
