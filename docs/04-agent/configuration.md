@@ -198,6 +198,22 @@ OPENROUTER_API_KEY=...
 | `mouse_device` | `/dev/hidg1` | 鼠标/触控 HID 设备 |
 | `frame_socket` | `/run/frame_service/frame_service.sock` | 截图工具使用的 Frame Service socket |
 
+## `[live_activity]`
+
+用于 iOS companion app 的 Live Activity / 灵动岛任务状态。agent 侧状态快照默认启用；APNs 相关字段只针对 app 后台、锁屏或未打开时的远程更新。前台本地更新不需要也不会使用 APNs。完整链路见 [Live Activity / Dynamic Island](./live-activity.md)。
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `enabled` | `true` | 是否启用 agent 侧状态快照和 API |
+| `bundle_id` | - | iOS app bundle id；仅配置后台 APNs 且未显式设置 `topic` 时必填 |
+| `topic` | `<bundle_id>.push-type.liveactivity` | APNs topic；通常不需要手动设置 |
+| `environment` | `sandbox` | `sandbox` 或 `production` |
+| `team_id` | - | Apple Developer Team ID；仅后台 APNs 使用 |
+| `key_id` | - | APNs Auth Key ID；仅后台 APNs 使用 |
+| `private_key_path` | - | APNs `.p8` 私钥路径；仅后台 APNs 使用 |
+| `private_key_pem` | - | 直接内联 APNs `.p8` PEM；仅开发联调使用，生产不要放到开源配置或用户板子 |
+| `timeout_sec` | `10` | 后台 APNs 请求超时 |
+
 ## `[stt]` 和 `[tts]`
 
 `input_mode = "stt"` 时需要 `[stt]`；`input_mode = "stt"` 或 `"audio"` 时需要 `[tts]`。
