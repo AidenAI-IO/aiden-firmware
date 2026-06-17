@@ -872,10 +872,9 @@ TEST_CASE("config web clears legacy wifi fields for explicit empty network lists
     source_buffer << source_in.rdbuf();
     const std::string source = source_buffer.str();
 
-    CHECK(source.find("void sync_wifi_legacy_fields_from_networks(aiden::WifiNetworkConfig* wifi)") != std::string::npos);
-    CHECK(source.find("wifi->ssid.clear();") != std::string::npos);
-    CHECK(source.find("wifi->psk.clear();") != std::string::npos);
-    CHECK(source.find("sync_wifi_legacy_fields_from_networks(wifi);") != std::string::npos);
+    CHECK(source.find("if (json_is_array(networks))") != std::string::npos);
+    CHECK(source.find("wifi->networks.clear();") != std::string::npos);
+    CHECK(source.find("aiden::sync_legacy_wifi_fields(wifi);") != std::string::npos);
 }
 
 TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhid") {

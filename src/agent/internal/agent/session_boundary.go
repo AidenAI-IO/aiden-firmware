@@ -53,7 +53,7 @@ type BoundaryConfig struct {
 // DefaultBoundaryConfig returns the sane defaults for voice agent usage.
 func DefaultBoundaryConfig() BoundaryConfig {
 	return BoundaryConfig{
-		ShortGapSeconds:            180,
+		ShortGapSeconds:            300,
 		LongGapSeconds:             1800,
 		SmallSessionEventThreshold: 16,
 		ContinueScoreThreshold:     2,

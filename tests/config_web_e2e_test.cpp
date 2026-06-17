@@ -151,14 +151,6 @@ int required_json_int(cJSON* object, const char* key) {
     return item->valueint;
 }
 
-std::string read_file(const std::string& path) {
-    std::ifstream in(path.c_str());
-    REQUIRE(in.good());
-    std::ostringstream buffer;
-    buffer << in.rdbuf();
-    return buffer.str();
-}
-
 std::string replace_all(std::string text, const std::string& needle, const std::string& replacement) {
     size_t pos = 0;
     while ((pos = text.find(needle, pos)) != std::string::npos) {

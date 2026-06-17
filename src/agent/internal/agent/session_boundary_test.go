@@ -59,7 +59,7 @@ func TestClassifyTurnBoundary_RunningEpisodeOverridesNoPrevEvents(t *testing.T) 
 }
 
 func TestClassifyTurnBoundary_TimeGapShort(t *testing.T) {
-	// Short gap (< 3m default): strong continuation, even on a generic action verb.
+	// Short gap (< 5m default): strong continuation, even on a generic action verb.
 	cfg := DefaultBoundaryConfig()
 	now := time.Now()
 	prev := []SessionEvent{eventAt(now.Add(-2*time.Minute), "user_input", "打开微信")}
@@ -90,7 +90,7 @@ func TestClassifyTurnBoundary_ContinuationMarker(t *testing.T) {
 	// Mid-range gap + sentence-initial continuation marker → continue.
 	cfg := DefaultBoundaryConfig()
 	now := time.Now()
-	prev := eventsAt(now.Add(-4*time.Minute), cfg.SmallSessionEventThreshold+1, "user_input", "查一下今天天气")
+	prev := eventsAt(now.Add(-6*time.Minute), cfg.SmallSessionEventThreshold+1, "user_input", "查一下今天天气")
 	cases := []string{
 		"对了再帮我看下后天的",
 		"然后呢？",
@@ -116,7 +116,7 @@ func TestClassifyTurnBoundary_ActionVerbStartsNewTask(t *testing.T) {
 	// Mid-range gap + sentence-initial action verb on new entity → new.
 	cfg := DefaultBoundaryConfig()
 	now := time.Now()
-	prev := eventsAt(now.Add(-4*time.Minute), cfg.SmallSessionEventThreshold+1, "user_input", "查一下今天天气")
+	prev := eventsAt(now.Add(-6*time.Minute), cfg.SmallSessionEventThreshold+1, "user_input", "查一下今天天气")
 	cases := []string{
 		"打开微信",
 		"发消息给老婆",
@@ -142,7 +142,7 @@ func TestClassifyTurnBoundary_ActionVerbStartsNewTask(t *testing.T) {
 func TestClassifyTurnBoundary_IgnoresAppDivergence(t *testing.T) {
 	cfg := DefaultBoundaryConfig()
 	now := time.Now()
-	prev := eventsAt(now.Add(-4*time.Minute), cfg.SmallSessionEventThreshold+1, "user_input", "查天气")
+	prev := eventsAt(now.Add(-6*time.Minute), cfg.SmallSessionEventThreshold+1, "user_input", "查天气")
 	for i := range prev {
 		prev[i].AppName = "WeatherApp"
 	}
@@ -163,7 +163,7 @@ func TestClassifyTurnBoundary_IgnoresAppDivergence(t *testing.T) {
 func TestClassifyTurnBoundary_SmallSessionContinuesUnrelatedMidGap(t *testing.T) {
 	cfg := DefaultBoundaryConfig()
 	now := time.Now()
-	prev := eventsAt(now.Add(-4*time.Minute), cfg.SmallSessionEventThreshold, "user_input", "查一下今天天气")
+	prev := eventsAt(now.Add(-6*time.Minute), cfg.SmallSessionEventThreshold, "user_input", "查一下今天天气")
 
 	boundary, reason := ClassifyTurnBoundary(prev, "打开微信", now, cfg, BoundaryEpisodeContext{})
 	if boundary != BoundaryContinue {
@@ -179,7 +179,7 @@ func TestClassifyTurnBoundary_RunningEpisodeBiasesContinue(t *testing.T) {
 	// Same input + no episode → new (default bias).
 	cfg := DefaultBoundaryConfig()
 	now := time.Now()
-	prev := eventsAt(now.Add(-4*time.Minute), cfg.SmallSessionEventThreshold+1, "user_input", "查一下今天天气")
+	prev := eventsAt(now.Add(-6*time.Minute), cfg.SmallSessionEventThreshold+1, "user_input", "查一下今天天气")
 	neutralInput := "好的"
 
 	withEpisode := BoundaryEpisodeContext{HasRunning: true}
@@ -198,7 +198,7 @@ func TestClassifyTurnBoundary_RunningEpisodeBiasesContinue(t *testing.T) {
 func TestClassifyTurnBoundary_ActiveEpisodeBiasesNeutralFollowUpContinue(t *testing.T) {
 	cfg := DefaultBoundaryConfig()
 	now := time.Now()
-	prev := eventsAt(now.Add(-4*time.Minute), cfg.SmallSessionEventThreshold+1, "user_input", "查一下今天天气")
+	prev := eventsAt(now.Add(-6*time.Minute), cfg.SmallSessionEventThreshold+1, "user_input", "查一下今天天气")
 
 	boundary, reason := ClassifyTurnBoundary(prev, "确认", now, cfg, BoundaryEpisodeContext{HasActive: true})
 	if boundary != BoundaryContinue {
@@ -216,7 +216,7 @@ func TestClassifyTurnBoundary_BiasFavorsFalsePositiveContinue(t *testing.T) {
 	// a single weak continuation signal appears.
 	cfg := DefaultBoundaryConfig()
 	now := time.Now()
-	prev := eventsAt(now.Add(-4*time.Minute), cfg.SmallSessionEventThreshold+1, "user_input", "查一下天气")
+	prev := eventsAt(now.Add(-6*time.Minute), cfg.SmallSessionEventThreshold+1, "user_input", "查一下天气")
 	// Weak marker "把它" should be enough.
 	boundary, _ := ClassifyTurnBoundary(prev, "把它保存下来", now, cfg, BoundaryEpisodeContext{})
 	if boundary != BoundaryContinue {
@@ -244,8 +244,8 @@ func TestClassifyTurnBoundary_MalformedTimestampFallsBack(t *testing.T) {
 
 func TestDefaultBoundaryConfig_SaneDefaults(t *testing.T) {
 	cfg := DefaultBoundaryConfig()
-	if cfg.ShortGapSeconds != 180 {
-		t.Errorf("ShortGapSeconds = %d, want 180", cfg.ShortGapSeconds)
+	if cfg.ShortGapSeconds != 300 {
+		t.Errorf("ShortGapSeconds = %d, want 300", cfg.ShortGapSeconds)
 	}
 	if cfg.SmallSessionEventThreshold != 16 {
 		t.Errorf("SmallSessionEventThreshold = %d, want 16", cfg.SmallSessionEventThreshold)
