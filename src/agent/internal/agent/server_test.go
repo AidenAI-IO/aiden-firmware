@@ -106,6 +106,9 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if toolCall.Description != "我先读取当前音量。" || toolCall.Content != "我先读取当前音量。" {
 		t.Fatalf("unexpected tool_call description: %#v", toolCall)
 	}
+	if toolCall.Speech != "" {
+		t.Fatalf("tool_call speech = %q, want empty when voice_tool_call_speech is disabled", toolCall.Speech)
+	}
 	toolResult, ok := firstMessageOfType(resp.History, "tool_result")
 	if !ok || toolResult.ToolName != "audio_volume" || toolResult.Content != `{"volume":42}` {
 		t.Fatalf("unexpected tool_result message: %#v", resp.History)
@@ -568,8 +571,9 @@ func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
 }
 
 func TestServerHandleChatDoesNotWaitForToolDescriptionTTSWhenEnabled(t *testing.T) {
+	description := "我先读取当前音量并检查当前播放设备、音量状态、静音状态、输出通道以及系统返回结果是否一致。然后继续回答。"
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
+		responses: roleToolResponses("audio_volume", fmt.Sprintf(`{"__arg1":"{}","description":%q}`, description), "The current audio volume is 42."),
 	}
 	streamingDisabled := false
 	toolSpeechEnabled := true
@@ -592,7 +596,7 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTSWhenEnabled(t *testing.
 		NewSkillIndex(),
 	)
 	server := NewServer(runtime, ":0", "")
-	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: deriveToolCallSpeech(description)}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
 	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
 

@@ -105,6 +105,7 @@ type Message struct {
 	Content         string              `json:"content"`
 	Todo            *TodoState          `json:"todo,omitempty"`
 	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
+	Speech          string              `json:"speech,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
 	Description     string              `json:"description,omitempty"`
@@ -735,6 +736,7 @@ func (s *Server) handleChatAsync(
 				Content:        event.Content,
 				Todo:           cloneTodoStatePtr(event.Todo),
 				SpeechEligible: event.SpeechEligible,
+				Speech:         event.Speech,
 				ToolName:       event.ToolName,
 				ToolInput:      event.ToolInput,
 				Description:    event.Description,
@@ -751,7 +753,7 @@ func (s *Server) handleChatAsync(
 			}
 
 			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
-				go s.speakToolDescription(runCtx, event.Description)
+				go s.speakToolDescription(runCtx, event.Speech)
 			}
 			if event.Type == "todo_update" && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
@@ -1022,6 +1024,7 @@ func (s *Server) handleChatSync(
 				Content:        event.Content,
 				Todo:           cloneTodoStatePtr(event.Todo),
 				SpeechEligible: event.SpeechEligible,
+				Speech:         event.Speech,
 				ToolName:       event.ToolName,
 				ToolInput:      event.ToolInput,
 				Description:    event.Description,
@@ -1029,7 +1032,7 @@ func (s *Server) handleChatSync(
 				IsError:        event.IsError,
 			})
 			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
-				go s.speakToolDescription(r.Context(), event.Description)
+				go s.speakToolDescription(r.Context(), event.Speech)
 			}
 			if event.Type == "todo_update" && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
@@ -1217,6 +1220,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				Content:        event.Content,
 				Todo:           cloneTodoStatePtr(event.Todo),
 				SpeechEligible: event.SpeechEligible,
+				Speech:         event.Speech,
 				ToolName:       event.ToolName,
 				ToolInput:      event.ToolInput,
 				Description:    event.Description,
@@ -1229,7 +1233,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
 			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
-				go s.speakToolDescription(ctx, event.Description)
+				go s.speakToolDescription(ctx, event.Speech)
 			}
 			if event.Type == "todo_update" && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {

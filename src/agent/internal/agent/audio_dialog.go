@@ -436,8 +436,7 @@ func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
 	if event.Type != "tool_call" || !d.config.VoiceToolCallSpeechOrDefault() || event.ToolName == "enter_sleep" {
 		return
 	}
-	description := event.Description
-	go d.SpeakToolDescription(description)
+	go d.SpeakToolDescription(event.Speech)
 }
 
 func (d *AudioDialog) newRunProgressSpeaker() *progressSpeaker {

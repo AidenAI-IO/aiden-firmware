@@ -27,6 +27,7 @@ type structuredInputTool interface {
 
 const toolActionLogVersion = 1
 const maxToolObservationRunes = 4000
+const toolCallSpeechMaxRunes = 40
 
 type ScreenshotPruningConfig struct {
 	KeepN    int
@@ -507,6 +508,22 @@ func toolCallSpeechText(content, legacyDescription string) string {
 		return content
 	}
 	return strings.TrimSpace(legacyDescription)
+}
+
+func deriveToolCallSpeech(description string) string {
+	description = strings.TrimSpace(description)
+	if description == "" {
+		return ""
+	}
+	text := stripSpeechUnfriendlyMarkdown(description)
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		text = strings.Join(strings.Fields(description), " ")
+	}
+	if sentence := firstSpeechSentence(text); sentence != "" {
+		text = sentence
+	}
+	return truncateSpeechRunes(text, toolCallSpeechMaxRunes)
 }
 
 func extractFinalAnswer(content string) string {

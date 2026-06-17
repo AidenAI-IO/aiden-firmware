@@ -137,6 +137,7 @@ type RunEvent struct {
 	ToolName       string     `json:"tool_name,omitempty"`
 	ToolInput      string     `json:"tool_input,omitempty"`
 	Description    string     `json:"description,omitempty"`
+	Speech         string     `json:"speech,omitempty"`
 	Content        string     `json:"content,omitempty"`
 	Todo           *TodoState `json:"todo,omitempty"`
 	SpeechEligible bool       `json:"speech_eligible,omitempty"`
@@ -568,6 +569,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			logger:                 r.logger,
 			eventHandler:           req.EventHandler,
 			episodeID:              episodeID,
+			toolCallSpeechEnabled:  r.config.VoiceToolCallSpeechOrDefault(),
 		}
 	}
 	var executorHandler callbacks.Handler
@@ -1027,6 +1029,7 @@ type runtimeCallbackHandler struct {
 	logger                 *Logger
 	eventHandler           func(RunEvent)
 	episodeID              string
+	toolCallSpeechEnabled  bool
 	mu                     sync.Mutex
 	pendingActions         []schema.AgentAction
 }
@@ -1195,6 +1198,7 @@ func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call T
 			ToolName:    call.Spec.Name,
 			ToolInput:   call.Input,
 			Description: description,
+			Speech:      h.toolCallSpeech(description),
 			Content:     description,
 			Timestamp:   time.Now(),
 		})
@@ -1250,6 +1254,7 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 			ToolName:    action.Tool,
 			ToolInput:   action.ToolInput,
 			Description: description,
+			Speech:      h.toolCallSpeech(description),
 			Content:     description,
 			Timestamp:   time.Now(),
 		})
@@ -1426,6 +1431,13 @@ func (h *runtimeCallbackHandler) recordFinalStreamError(err error) {
 }
 
 var _ callbacks.Handler = (*runtimeCallbackHandler)(nil)
+
+func (h *runtimeCallbackHandler) toolCallSpeech(description string) string {
+	if h == nil || !h.toolCallSpeechEnabled {
+		return ""
+	}
+	return deriveToolCallSpeech(description)
+}
 
 func (h *runtimeCallbackHandler) pushPendingAction(action schema.AgentAction) {
 	h.mu.Lock()

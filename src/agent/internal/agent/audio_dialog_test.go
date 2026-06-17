@@ -281,13 +281,15 @@ func TestProcessUtteranceSpeaksSpeechTextWithoutChangingHistoryOutput(t *testing
 }
 
 func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
+	toolSpeech := true
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先检查当前音量。"}`, "当前音量是 42。"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
-			Model:       ModelConfig{Provider: "fake"},
-			Instruction: "Use tools when external state is requested.",
+			Model:               ModelConfig{Provider: "fake"},
+			Instruction:         "Use tools when external state is requested.",
+			VoiceToolCallSpeech: &toolSpeech,
 		},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
@@ -301,7 +303,6 @@ func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 		NewSkillIndex(),
 	)
 	provider := &recordingTTSProvider{name: "dialog-provider"}
-	toolSpeech := true
 	dialog := &AudioDialog{
 		config: Config{
 			Model:                    ModelConfig{Provider: "fake"},
@@ -343,6 +344,50 @@ func TestAudioDialogDoesNotSpeakEnterSleepToolDescription(t *testing.T) {
 		Type:        "tool_call",
 		ToolName:    "enter_sleep",
 		Description: "用户让我休息，我准备进入睡眠模式。",
+	})
+
+	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
+}
+
+func TestAudioDialogSpeaksToolCallSpeechField(t *testing.T) {
+	toolSpeech := true
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config: Config{
+			VoiceToolCallSpeech: &toolSpeech,
+		},
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+	}
+
+	dialog.HandleRunEvent(context.Background(), RunEvent{
+		Type:        "tool_call",
+		ToolName:    "audio_volume",
+		Description: "完整工具描述保留给事件和上下文，不应该直接播报。",
+		Speech:      "读取当前音量。",
+	})
+
+	waitForProviderTextCount(t, provider, 1)
+	if got := provider.texts(); len(got) != 1 || got[0] != "读取当前音量。" {
+		t.Fatalf("unexpected TTS texts: %#v", got)
+	}
+}
+
+func TestAudioDialogDoesNotFallbackToToolCallDescriptionForSpeech(t *testing.T) {
+	toolSpeech := true
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config: Config{
+			VoiceToolCallSpeech: &toolSpeech,
+		},
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+	}
+
+	dialog.HandleRunEvent(context.Background(), RunEvent{
+		Type:        "tool_call",
+		ToolName:    "audio_volume",
+		Description: "完整工具描述保留给事件和上下文。",
 	})
 
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
