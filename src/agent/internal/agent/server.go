@@ -1480,15 +1480,28 @@ func (w *finalStreamFanoutWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	emitted := false
+	delivered := false
 	for _, writer := range w.writers {
 		if writer == nil {
 			continue
 		}
-		if _, err := writer.Write(p); err != nil {
-			return 0, err
-		}
+		n, err := writer.Write(p)
 		if streamWriterEmitted(writer) {
 			emitted = true
+		}
+		if err != nil {
+			if emitted {
+				w.mu.Lock()
+				w.emitted = true
+				w.mu.Unlock()
+			}
+			if delivered {
+				return len(p), err
+			}
+			return n, err
+		}
+		if n == len(p) {
+			delivered = true
 		}
 	}
 	if emitted {

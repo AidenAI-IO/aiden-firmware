@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/jpeg"
 	"net"
@@ -269,6 +270,8 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 }
 
 func TestServerHandleChatStreamEmitsAssistantDeltasBeforeDone(t *testing.T) {
+	const expectedAnswer = "Complete answer."
+
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			contentResponse(`{"mode":"direct_answer","speech":"Short answer.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
@@ -308,6 +311,7 @@ func TestServerHandleChatStreamEmitsAssistantDeltasBeforeDone(t *testing.T) {
 		deltaText              strings.Builder
 		sawDeltaBeforeDone     bool
 		sawAssistantBeforeDone bool
+		assistantContent       string
 		sawDone                bool
 		events                 []ChatStreamEvent
 	)
@@ -328,6 +332,7 @@ func TestServerHandleChatStreamEmitsAssistantDeltasBeforeDone(t *testing.T) {
 		case "message":
 			if event.Message != nil && event.Message.Type == "assistant" && !sawDone {
 				sawAssistantBeforeDone = true
+				assistantContent = event.Message.Content
 			}
 		case "done":
 			sawDone = true
@@ -343,11 +348,40 @@ func TestServerHandleChatStreamEmitsAssistantDeltasBeforeDone(t *testing.T) {
 	if !sawAssistantBeforeDone || !sawDone {
 		t.Fatalf("expected final assistant message and done, assistant=%v done=%v events=%#v", sawAssistantBeforeDone, sawDone, events)
 	}
-	if got := deltaText.String(); got != "Complete answer." {
-		t.Fatalf("assistant deltas = %q, want Complete answer.", got)
+	if got := deltaText.String(); got != expectedAnswer {
+		t.Fatalf("assistant deltas = %q, want %q", got, expectedAnswer)
+	}
+	if assistantContent != expectedAnswer {
+		t.Fatalf("assistant message content = %q, want %q", assistantContent, expectedAnswer)
 	}
 	if len(model.sawStreaming) != 1 || !model.sawStreaming[0] {
 		t.Fatalf("expected web chat stream to enable provider streaming, got %#v", model.sawStreaming)
+	}
+}
+
+type failingStreamWriter struct {
+	err error
+}
+
+func (w failingStreamWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func TestFinalStreamFanoutWriterReturnsInputLengthWhenLaterWriterFails(t *testing.T) {
+	writeErr := errors.New("fanout write failed")
+	var first strings.Builder
+	fanout := newFinalStreamFanoutWriter(&first, failingStreamWriter{err: writeErr})
+
+	n, err := fanout.Write([]byte("chunk"))
+
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("Write() error = %v, want %v", err, writeErr)
+	}
+	if n != len("chunk") {
+		t.Fatalf("Write() bytes = %d, want %d", n, len("chunk"))
+	}
+	if first.String() != "chunk" {
+		t.Fatalf("first writer received %q, want chunk", first.String())
 	}
 }
 
