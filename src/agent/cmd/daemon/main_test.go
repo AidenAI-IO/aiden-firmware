@@ -29,7 +29,9 @@ type fakeAudioDialog struct {
 	utterances         [][]int16
 	prepareTurnInput   func([]int16) (agent.TurnInput, error)
 	runTurn            func(context.Context) (agent.RunResult, error)
+	runVoiceTurn       func(context.Context, agent.TurnInput, []int16) (agent.RunResult, error)
 	speak              func(context.Context) error
+	persistVoiceTurn   func(agent.TurnInput, agent.RunResult, []int16)
 	persistedTurns     []persistedVoiceTurn
 	vadErr             error
 	onRead             func(*fakeAudioDialog, *agent.AudioChunkResult)
@@ -146,12 +148,37 @@ func (d *fakeAudioDialog) RunAgentTurn(ctx context.Context, input agent.TurnInpu
 	return agent.RunResult{Output: "reply"}, nil
 }
 
+func (d *fakeAudioDialog) RunVoiceTurn(ctx context.Context, input agent.TurnInput, utterance []int16, runtime *agent.Runtime) (agent.RunResult, error) {
+	if d.runVoiceTurn != nil {
+		return d.runVoiceTurn(ctx, input, utterance)
+	}
+	if d.persistVoiceTurn != nil {
+		d.persistVoiceTurn(input, agent.RunResult{}, utterance)
+	}
+	result, err := d.RunAgentTurn(ctx, input, runtime)
+	if err != nil {
+		return result, err
+	}
+	d.persistedTurns = append(d.persistedTurns, persistedVoiceTurn{
+		input:     input,
+		result:    result,
+		utterance: append([]int16(nil), utterance...),
+	})
+	if d.persistVoiceTurn != nil {
+		d.persistVoiceTurn(agent.TurnInput{}, result, nil)
+	}
+	return result, nil
+}
+
 func (d *fakeAudioDialog) PersistVoiceTurn(input agent.TurnInput, result agent.RunResult, utterance []int16) {
 	d.persistedTurns = append(d.persistedTurns, persistedVoiceTurn{
 		input:     input,
 		result:    result,
 		utterance: append([]int16(nil), utterance...),
 	})
+	if d.persistVoiceTurn != nil {
+		d.persistVoiceTurn(input, result, utterance)
+	}
 }
 
 func (d *fakeAudioDialog) Speak(ctx context.Context, text string, interrupt <-chan struct{}) error {
@@ -1154,7 +1181,50 @@ func TestRunVoiceTurnSignalWaitsForThinkingGoroutine(t *testing.T) {
 	select {
 	case <-ctxCanceled:
 	default:
-		t.Fatal("RunAgentTurn goroutine was not finished before signal return")
+		t.Fatal("RunVoiceTurn goroutine was not finished before signal return")
+	}
+}
+
+func TestRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	events := make(chan voiceEvent, 1)
+	historyOrder := make([]string, 0, 3)
+	dialog := &fakeAudioDialog{
+		runTurn: func(ctx context.Context) (agent.RunResult, error) {
+			historyOrder = append(historyOrder, "role_output")
+			return agent.RunResult{EpisodeID: "ep-voice", Output: "reply"}, nil
+		},
+		persistVoiceTurn: func(input agent.TurnInput, result agent.RunResult, utterance []int16) {
+			if input.InputText != "" || input.Transcript != "" {
+				historyOrder = append(historyOrder, "user")
+			}
+			if result.Output != "" {
+				historyOrder = append(historyOrder, "assistant")
+			}
+		},
+	}
+
+	result := runVoiceTurnWithInput(
+		agent.Config{},
+		dialog,
+		nil,
+		agent.TurnInput{InputText: "voice command"},
+		[]int16{1, 2, 3},
+		sigChan,
+		events,
+	)
+
+	if result.interrupted || result.waitForWakeupRequested || result.exit {
+		t.Fatalf("runVoiceTurnWithInput = interrupted:%v wait:%v exit:%v, want false false false", result.interrupted, result.waitForWakeupRequested, result.exit)
+	}
+	want := []string{"user", "role_output", "assistant"}
+	if len(historyOrder) != len(want) {
+		t.Fatalf("history order = %#v, want %#v", historyOrder, want)
+	}
+	for i := range want {
+		if historyOrder[i] != want[i] {
+			t.Fatalf("history order = %#v, want %#v", historyOrder, want)
+		}
 	}
 }
 

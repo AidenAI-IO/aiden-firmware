@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -224,7 +225,7 @@ func TestRuntimeRunKeepsCurrentRequestOutOfCompressedHistoryBlock(t *testing.T) 
 	}
 }
 
-func TestRuntimeRunIncludesActivePlannerWindowAndSessionRootContext(t *testing.T) {
+func TestRuntimeRunIncludesFullActivePlannerHistoryAndSessionRootContext(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
@@ -258,6 +259,8 @@ func TestRuntimeRunIncludesActivePlannerWindowAndSessionRootContext(t *testing.T
 
 	plannerTaskPrompt := messageText(model.messages[0][1:])
 	for _, want := range []string{
+		"prior user 00",
+		"prior assistant 00",
 		"prior user 02",
 		"prior assistant 02",
 		"prior user 11",
@@ -268,7 +271,88 @@ func TestRuntimeRunIncludesActivePlannerWindowAndSessionRootContext(t *testing.T
 			t.Fatalf("planner task prompt missing %q:\n%s", want, plannerTaskPrompt)
 		}
 	}
-	if strings.Contains(plannerTaskPrompt, "prior assistant 00") {
-		t.Fatalf("planner conversation history should stay within the active message window:\n%s", plannerTaskPrompt)
+}
+
+func TestRuntimeRunBudgetsActivePlannerHistoryBeforeModelCall(t *testing.T) {
+	ctx := context.Background()
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 800
+	cfg.ReserveTokens = 200
+	cfg.KeepRecentTokens = 220
+	manager := NewMemoryManager(memoryDir, WithExtractionConfig(cfg), WithSessionBoundaryEnabled(false))
+
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "user_input",
+		Role:    "user",
+		Source:  EventSourcePinnedRoot,
+		Content: "PINNED_ROOT_REQUEST",
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendSessionEvent(pinned root) error = %v", err)
+	}
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "system_event",
+		Role:    "system",
+		Source:  EventSourceCompactionPrefix,
+		Content: "SPLIT_SYNTHETIC_CONTEXT",
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendSessionEvent(synthetic context) error = %v", err)
+	}
+	for i := 0; i < 8; i++ {
+		if err := manager.AppendExchange(ctx, "default",
+			fmt.Sprintf("DROP_OLD_USER_%02d %s", i, strings.Repeat("old ", 160)),
+			fmt.Sprintf("DROP_OLD_ASSISTANT_%02d %s", i, strings.Repeat("old ", 160)),
+		); err != nil {
+			t.Fatalf("AppendExchange(old %d) error = %v", i, err)
+		}
+	}
+	if err := manager.AppendExchange(ctx, "default",
+		"KEEP_RECENT_USER "+strings.Repeat("recent ", 28),
+		"KEEP_RECENT_ASSISTANT "+strings.Repeat("recent ", 28),
+	); err != nil {
+		t.Fatalf("AppendExchange(recent) error = %v", err)
+	}
+
+	model := &scriptedModel{responses: roleDirectResponses("继续完成")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model, spec: ModelSpec{ContextWindow: 800}},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(ctx, RunRequest{Input: "CURRENT_REQUEST_MARKER 继续"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) == 0 || len(model.messages[0]) < 3 {
+		t.Fatalf("expected planner system, history, and state prompt messages, got %#v", model.messages)
+	}
+
+	plannerMessages := model.messages[0]
+	historyText := messageText(plannerMessages[1 : len(plannerMessages)-1])
+	for _, want := range []string{"PINNED_ROOT_REQUEST", "SPLIT_SYNTHETIC_CONTEXT", "KEEP_RECENT_USER", "KEEP_RECENT_ASSISTANT"} {
+		if !strings.Contains(historyText, want) {
+			t.Fatalf("budgeted planner history missing %q:\n%s", want, historyText)
+		}
+	}
+	for _, unwanted := range []string{"DROP_OLD_USER_00", "DROP_OLD_ASSISTANT_00", "CURRENT_REQUEST_MARKER"} {
+		if strings.Contains(historyText, unwanted) {
+			t.Fatalf("budgeted planner history should not contain %q:\n%s", unwanted, historyText)
+		}
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := manager.WaitMaintenance(waitCtx); err != nil {
+		t.Fatalf("WaitMaintenance() error = %v", err)
+	}
+	if !manager.HasCompressedHistory() {
+		t.Fatal("over-budget active history should preserve a compression signal for maintenance")
 	}
 }

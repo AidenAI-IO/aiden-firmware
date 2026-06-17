@@ -16,6 +16,15 @@ import (
 	ttsmodule "aiden-agent/internal/agent/tts"
 )
 
+func firstAudioDialogTestMessageOfType(messages []Message, messageType string) (Message, bool) {
+	for _, message := range messages {
+		if message.Type == messageType {
+			return message, true
+		}
+	}
+	return Message{}, false
+}
+
 func TestAudioDialogFinishManualUtterancePreservesTail(t *testing.T) {
 	vad, err := NewAudioVADWithScorer(AudioVADConfig{
 		SampleRate:      16000,
@@ -682,17 +691,130 @@ func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if len(messages) != 2 {
-		t.Fatalf("expected user and assistant messages, got %d: %#v", len(messages), messages)
+	userMessage, ok := firstAudioDialogTestMessageOfType(messages, "user")
+	if !ok || userMessage.Source != "voice" || userMessage.Modality != "audio" || userMessage.Content != voiceAudioInputPlaceholder {
+		t.Fatalf("user audio message = %#v in %#v", userMessage, messages)
 	}
-	if messages[0].Type != "user" || messages[0].Source != "voice" || messages[0].Modality != "audio" || messages[0].Content != voiceAudioInputPlaceholder {
-		t.Fatalf("user audio message = %#v", messages[0])
+	if len(userMessage.Attachments) != 1 || userMessage.Attachments[0].Kind != AttachmentKindAudio || userMessage.Attachments[0].Data != "" {
+		t.Fatalf("user audio attachment should be metadata-only: %#v", userMessage.Attachments)
 	}
-	if len(messages[0].Attachments) != 1 || messages[0].Attachments[0].Kind != AttachmentKindAudio || messages[0].Attachments[0].Data != "" {
-		t.Fatalf("user audio attachment should be metadata-only: %#v", messages[0].Attachments)
+	roleOutput, ok := firstAudioDialogTestMessageOfType(messages, "role_output")
+	if !ok || roleOutput.Source != "voice" || roleOutput.Content != "voice reply" {
+		t.Fatalf("role_output message = %#v in %#v", roleOutput, messages)
 	}
-	if messages[1].Type != "assistant" || messages[1].Source != "voice" || messages[1].Content != "voice reply" {
-		t.Fatalf("assistant message = %#v", messages[1])
+	assistantMessage, ok := firstAudioDialogTestMessageOfType(messages, "assistant")
+	if !ok || assistantMessage.Source != "voice" || assistantMessage.Content != "voice reply" {
+		t.Fatalf("assistant message = %#v in %#v", assistantMessage, messages)
+	}
+}
+
+func TestAudioDialogRunAgentTurnAppendsRunEventsToVoiceHistory(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleToolResponses("echo", `{"__arg1":"{}"}`, "voice tool reply"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools when requested.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"echo": &staticTool{name: "echo", output: `{"ok":true}`},
+		}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config: Config{
+			Model: ModelConfig{Provider: "fake"},
+		},
+	}
+	var messages []Message
+	dialog.SetHistoryAppender(func(message Message) {
+		messages = append(messages, message)
+	})
+
+	if _, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "use echo"}, runtime); err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", err)
+	}
+
+	for _, wantType := range []string{"role_output", runEventToolCall, "tool_result"} {
+		message, ok := firstAudioDialogTestMessageOfType(messages, wantType)
+		if !ok {
+			t.Fatalf("missing voice history message type %q: %#v", wantType, messages)
+		}
+		if message.Source != "voice" {
+			t.Fatalf("%s Source = %q, want voice", wantType, message.Source)
+		}
+	}
+}
+
+func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
+	configDir := t.TempDir()
+	model := &scriptedModel{
+		responses: roleToolResponses("echo", `{"__arg1":"{}"}`, "voice tool reply"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:       configDir,
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Use tools when requested.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(filepath.Join(configDir, "memory")),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"echo": &staticTool{name: "echo", output: `{"ok":true}`},
+		}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config: Config{
+			Model:        ModelConfig{Provider: "fake"},
+			Audio:        AudioConfig{SampleRate: 16000},
+			AudioArchive: AudioArchiveConfig{Enabled: false},
+		},
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
+	var messages []Message
+	dialog.SetHistoryAppender(func(message Message) {
+		messages = append(messages, message)
+	})
+
+	_, err := dialog.RunVoiceTurn(
+		context.Background(),
+		TurnInput{InputText: "use echo", Transcript: "use echo"},
+		[]int16{100, -100, 200, -200},
+		runtime,
+	)
+	if err != nil {
+		t.Fatalf("RunVoiceTurn() error = %v", err)
+	}
+	if len(messages) < 5 {
+		t.Fatalf("expected user, run events, and assistant messages, got %#v", messages)
+	}
+	if messages[0].Type != "user" {
+		t.Fatalf("first message type = %q, want user in %#v", messages[0].Type, messages)
+	}
+	if messages[len(messages)-1].Type != "assistant" {
+		t.Fatalf("last message type = %q, want assistant in %#v", messages[len(messages)-1].Type, messages)
+	}
+	for _, wantType := range []string{runEventToolCall, "tool_result", "role_output"} {
+		if _, ok := firstAudioDialogTestMessageOfType(messages, wantType); !ok {
+			t.Fatalf("missing voice history message type %q: %#v", wantType, messages)
+		}
+	}
+	episodeID := messages[0].EpisodeID
+	if episodeID == "" {
+		t.Fatalf("user message missing episode id: %#v", messages[0])
+	}
+	for _, message := range messages {
+		if message.Source != "voice" {
+			t.Fatalf("message source = %q, want voice: %#v", message.Source, message)
+		}
+		if message.EpisodeID != episodeID {
+			t.Fatalf("message episode id = %q, want %q in %#v", message.EpisodeID, episodeID, messages)
+		}
 	}
 }
 

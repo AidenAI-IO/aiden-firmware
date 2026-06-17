@@ -190,8 +190,7 @@ type audioDialogRunner interface {
 	ProcessVADFrame(samples []int16) ([]int16, error)
 	ProcessUtterance(ctx context.Context, utterance []int16, runtime *agent.Runtime) error
 	PrepareTurnInput(utterance []int16) (agent.TurnInput, error)
-	RunAgentTurn(ctx context.Context, input agent.TurnInput, runtime *agent.Runtime) (agent.RunResult, error)
-	PersistVoiceTurn(input agent.TurnInput, result agent.RunResult, utterance []int16)
+	RunVoiceTurn(ctx context.Context, input agent.TurnInput, utterance []int16, runtime *agent.Runtime) (agent.RunResult, error)
 	Speak(ctx context.Context, text string, interrupt <-chan struct{}) error
 	FlushVAD() []int16
 	FinishManualUtterance(pending []int16) []int16
@@ -556,7 +555,7 @@ func runVoiceTurnWithInput(cfg agent.Config, dialog audioDialogRunner, runtime *
 		err    error
 	}, 1)
 	go func() {
-		result, err := dialog.RunAgentTurn(turnCtx, input, runtime)
+		result, err := dialog.RunVoiceTurn(turnCtx, input, utterance, runtime)
 		resultCh <- struct {
 			result agent.RunResult
 			err    error
@@ -581,8 +580,6 @@ thinking:
 						if !errors.Is(turnResult.err, context.Canceled) {
 							log.Printf("[error] %v\n", turnResult.err)
 						}
-					} else {
-						dialog.PersistVoiceTurn(input, turnResult.result, utterance)
 					}
 				case <-time.After(2 * time.Second):
 					log.Println("[interrupt] current turn did not finish after cancellation; continuing session")
@@ -599,8 +596,6 @@ thinking:
 			break thinking
 		}
 	}
-
-	dialog.PersistVoiceTurn(input, result, utterance)
 
 	if result.WaitForWakeupRequested {
 		return voiceTurnResult{waitForWakeupRequested: true}

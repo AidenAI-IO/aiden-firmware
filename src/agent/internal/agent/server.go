@@ -287,11 +287,14 @@ type ChatResultResponse struct {
 }
 
 type ChatStreamEvent struct {
-	Type     string    `json:"type"`
-	Message  *Message  `json:"message,omitempty"`
-	Response string    `json:"response,omitempty"`
-	History  []Message `json:"history,omitempty"`
-	Error    string    `json:"error,omitempty"`
+	Type      string    `json:"type"`
+	Message   *Message  `json:"message,omitempty"`
+	RequestID string    `json:"request_id,omitempty"`
+	EpisodeID string    `json:"episode_id,omitempty"`
+	Delta     string    `json:"delta,omitempty"`
+	Response  string    `json:"response,omitempty"`
+	History   []Message `json:"history,omitempty"`
+	Error     string    `json:"error,omitempty"`
 }
 
 type EpisodeResponse struct {
@@ -1283,6 +1286,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	var newStream *streamSessionWriter
 	ttsManager := s.currentTTSManager()
+	finalStreamWriters := []io.Writer{
+		newChatAssistantFinalStreamWriter(stream, episodeID, req.RequestID),
+	}
 	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
 		if ttsManager != nil {
 			streamSession, err := beginManagedTTSStream(ctx, ttsManager, s.audioClient, s.runtime.config)
@@ -1292,10 +1298,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				}
 			} else {
 				newStream = streamSession
-				runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
+				finalStreamWriters = append(finalStreamWriters, newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel))
 			}
 		}
 	}
+	runReq.StreamWriter = newFinalStreamFanoutWriter(finalStreamWriters...)
 
 	result, err := s.runtime.Run(ctx, runReq)
 	progress.Cancel()
@@ -1395,6 +1402,193 @@ func (w *chatStreamWriter) Write(event ChatStreamEvent) {
 	if err := w.encoder.Encode(event); err == nil {
 		w.flusher.Flush()
 	}
+}
+
+type chatAssistantDeltaWriter struct {
+	stream    *chatStreamWriter
+	episodeID string
+	requestID string
+
+	mu      sync.Mutex
+	emitted bool
+}
+
+func newChatAssistantDeltaWriter(stream *chatStreamWriter, episodeID, requestID string) *chatAssistantDeltaWriter {
+	return &chatAssistantDeltaWriter{
+		stream:    stream,
+		episodeID: episodeID,
+		requestID: requestID,
+	}
+}
+
+func (w *chatAssistantDeltaWriter) Write(p []byte) (int, error) {
+	if w == nil || w.stream == nil || len(p) == 0 {
+		return len(p), nil
+	}
+	delta := string(p)
+	w.mu.Lock()
+	w.emitted = true
+	w.mu.Unlock()
+	w.stream.Write(ChatStreamEvent{
+		Type:      "assistant_delta",
+		RequestID: w.requestID,
+		EpisodeID: w.episodeID,
+		Delta:     delta,
+	})
+	return len(p), nil
+}
+
+func (w *chatAssistantDeltaWriter) ResetStreamState() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	emitted := w.emitted
+	w.emitted = false
+	w.mu.Unlock()
+	if emitted && w.stream != nil {
+		w.stream.Write(ChatStreamEvent{
+			Type:      "assistant_delta_reset",
+			RequestID: w.requestID,
+			EpisodeID: w.episodeID,
+		})
+	}
+}
+
+func (w *chatAssistantDeltaWriter) StreamEmitted() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.emitted
+}
+
+type chatAssistantFinalStreamWriter struct {
+	delta     *chatAssistantDeltaWriter
+	extractor io.Writer
+}
+
+func newChatAssistantFinalStreamWriter(stream *chatStreamWriter, episodeID, requestID string) io.Writer {
+	delta := newChatAssistantDeltaWriter(stream, episodeID, requestID)
+	return &chatAssistantFinalStreamWriter{
+		delta:     delta,
+		extractor: NewJSONFieldOrPlainStreamWriter(delta, "text"),
+	}
+}
+
+func (w *chatAssistantFinalStreamWriter) Write(p []byte) (int, error) {
+	if w == nil || w.extractor == nil {
+		return len(p), nil
+	}
+	return w.extractor.Write(p)
+}
+
+func (w *chatAssistantFinalStreamWriter) ResetStreamState() {
+	if w == nil {
+		return
+	}
+	if w.delta != nil {
+		w.delta.ResetStreamState()
+	}
+	if resetter, ok := w.extractor.(streamStateResetter); ok {
+		resetter.ResetStreamState()
+	}
+}
+
+func (w *chatAssistantFinalStreamWriter) StreamEmitted() bool {
+	if w == nil || w.delta == nil {
+		return false
+	}
+	return w.delta.StreamEmitted()
+}
+
+type finalStreamFanoutWriter struct {
+	writers []io.Writer
+	mu      sync.Mutex
+	emitted bool
+}
+
+func newFinalStreamFanoutWriter(writers ...io.Writer) io.Writer {
+	filtered := make([]io.Writer, 0, len(writers))
+	for _, writer := range writers {
+		if writer != nil {
+			filtered = append(filtered, writer)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return &finalStreamFanoutWriter{writers: filtered}
+}
+
+func (w *finalStreamFanoutWriter) Write(p []byte) (int, error) {
+	if w == nil || len(p) == 0 {
+		return len(p), nil
+	}
+	emitted := false
+	delivered := false
+	for _, writer := range w.writers {
+		if writer == nil {
+			continue
+		}
+		n, err := writer.Write(p)
+		if streamWriterEmitted(writer) {
+			emitted = true
+		}
+		if err != nil {
+			if emitted {
+				w.mu.Lock()
+				w.emitted = true
+				w.mu.Unlock()
+			}
+			if delivered {
+				return len(p), err
+			}
+			return n, err
+		}
+		if n == len(p) {
+			delivered = true
+		}
+	}
+	if emitted {
+		w.mu.Lock()
+		w.emitted = true
+		w.mu.Unlock()
+	}
+	return len(p), nil
+}
+
+func (w *finalStreamFanoutWriter) ResetStreamState() {
+	if w == nil {
+		return
+	}
+	for _, writer := range w.writers {
+		if resetter, ok := writer.(streamStateResetter); ok {
+			resetter.ResetStreamState()
+		}
+	}
+	w.mu.Lock()
+	w.emitted = false
+	w.mu.Unlock()
+}
+
+func (w *finalStreamFanoutWriter) StreamEmitted() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	emitted := w.emitted
+	w.mu.Unlock()
+	if emitted {
+		return true
+	}
+	for _, writer := range w.writers {
+		if streamWriterEmitted(writer) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) speakToolDescription(ctx context.Context, description string) {
@@ -1526,8 +1720,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Only send user and assistant messages
-			if msg.Type != "user" && msg.Type != "assistant" {
+			if !shouldStreamEventMessage(msg) {
 				continue
 			}
 
@@ -1543,6 +1736,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+func shouldStreamEventMessage(msg Message) bool {
+	return strings.TrimSpace(msg.Type) != ""
 }
 
 func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
@@ -2196,6 +2393,8 @@ func (s *Server) appendHistory(message Message) {
 		if err := s.historyStore.Append(context.Background(), message); err != nil && s.logger != nil {
 			s.logger.Warn("Persist chat history failed: %v", err)
 		}
+	} else if s.eventBroadcaster != nil {
+		s.eventBroadcaster.Broadcast(message)
 	}
 }
 
@@ -3702,6 +3901,8 @@ const webUI = `<!DOCTYPE html>
         let episodeCache = {};
         let eventSource = null;
         let renderedMessageKeys = new Set();
+        let renderedMessageNodes = new Map();
+        let streamingAssistantDrafts = {};
 
         loadHistory();
         refreshCurrentLiveActivity();
@@ -3751,7 +3952,7 @@ const webUI = `<!DOCTYPE html>
                         return;
                     }
 
-                    if (data.type === 'user' || data.type === 'assistant') {
+                    if (data.type) {
                         addMessage(data);
                     }
                 } catch (err) {
@@ -4309,12 +4510,24 @@ const webUI = `<!DOCTYPE html>
         }
 
         function handleChatStreamEvent(event) {
+            if (event.type === 'assistant_delta') {
+                appendAssistantDelta(event);
+                return false;
+            }
+            if (event.type === 'assistant_delta_reset') {
+                resetAssistantDelta(event);
+                return false;
+            }
             if (event.type === 'message' && event.message) {
                 if (event.message.type === 'steer') {
                     pendingSteer = null;
                     renderPendingSteer();
                 }
-                addMessage(event.message);
+                if (event.message.type === 'assistant') {
+                    finalizeAssistantMessage(event.message);
+                } else {
+                    addMessage(event.message);
+                }
                 return false;
             }
             if (event.type === 'done') {
@@ -4324,6 +4537,57 @@ const webUI = `<!DOCTYPE html>
                 throw new Error(event.error || 'Agent error');
             }
             return false;
+        }
+
+        function appendAssistantDelta(event) {
+            const key = assistantStreamKey(event);
+            if (!key) return;
+            let msg = streamingAssistantDrafts[key];
+            if (!msg) {
+                msg = {
+                    type: 'assistant',
+                    request_id: event.request_id || '',
+                    episode_id: event.episode_id || '',
+                    content: '',
+                    timestamp: new Date().toISOString()
+                };
+                streamingAssistantDrafts[key] = msg;
+            }
+            msg.content += event.delta || '';
+            addMessage(msg);
+        }
+
+        function resetAssistantDelta(event) {
+            const key = assistantStreamKey(event);
+            if (!key) return;
+            const msg = streamingAssistantDrafts[key] || {
+                type: 'assistant',
+                request_id: event.request_id || '',
+                episode_id: event.episode_id || ''
+            };
+            delete streamingAssistantDrafts[key];
+            const messageKey = messageIdentity(msg);
+            const existing = renderedMessageNodes.get(messageKey);
+            renderedMessageKeys.delete(messageKey);
+            renderedMessageNodes.delete(messageKey);
+            if (existing) {
+                existing.remove();
+                updateEmptyState();
+                scrollToBottom();
+            }
+        }
+
+        function finalizeAssistantMessage(msg) {
+            const key = assistantStreamKey(msg);
+            if (key) {
+                delete streamingAssistantDrafts[key];
+            }
+            addMessage(msg);
+        }
+
+        function assistantStreamKey(value) {
+            value = value || {};
+            return value.request_id || value.episode_id || currentChatRequestId || '';
         }
 
         async function clearHistory() {
@@ -4356,6 +4620,8 @@ const webUI = `<!DOCTYPE html>
         function renderHistory(history) {
             messagesDiv.innerHTML = '';
             renderedMessageKeys = new Set();
+            renderedMessageNodes = new Map();
+            streamingAssistantDrafts = {};
 
             const fragment = document.createDocumentFragment();
             history.forEach(function(msg) {
@@ -4363,7 +4629,9 @@ const webUI = `<!DOCTYPE html>
                 const key = messageIdentity(msg);
                 if (renderedMessageKeys.has(key)) return;
                 renderedMessageKeys.add(key);
-                fragment.appendChild(createMessageNode(msg));
+                const node = createMessageNode(msg);
+                renderedMessageNodes.set(key, node);
+                fragment.appendChild(node);
             });
 
             messagesDiv.appendChild(fragment);
@@ -4374,9 +4642,26 @@ const webUI = `<!DOCTYPE html>
         function addMessage(msg) {
             if (isControlMessage(msg)) return;
             const key = messageIdentity(msg);
-            if (renderedMessageKeys.has(key)) return;
+            if (renderedMessageKeys.has(key)) {
+                if (normalizeType((msg || {}).type) === 'assistant') {
+                    updateMessageNode(key, msg);
+                }
+                return;
+            }
             renderedMessageKeys.add(key);
-            messagesDiv.appendChild(createMessageNode(msg));
+            const node = createMessageNode(msg);
+            renderedMessageNodes.set(key, node);
+            messagesDiv.appendChild(node);
+            updateEmptyState();
+            scrollToBottom();
+        }
+
+        function updateMessageNode(key, msg) {
+            const existing = renderedMessageNodes.get(key);
+            if (!existing) return;
+            const replacement = createMessageNode(msg);
+            renderedMessageNodes.set(key, replacement);
+            existing.replaceWith(replacement);
             updateEmptyState();
             scrollToBottom();
         }
@@ -4390,11 +4675,17 @@ const webUI = `<!DOCTYPE html>
             const type = normalizeType(msg.type);
             const content = msg.content || '';
             const requestId = msg.request_id || '';
-            if (requestId && (type === 'user' || type === 'assistant')) {
+            if (requestId && type === 'assistant') {
+                return ['request', requestId, type].join('\u001f');
+            }
+            if (requestId && type === 'user') {
                 return ['request', requestId, type, content].join('\u001f');
             }
 
             const episodeId = msg.episode_id || '';
+            if (episodeId && type === 'assistant') {
+                return ['episode', episodeId, type].join('\u001f');
+            }
             if (episodeId) {
                 return ['episode', episodeId, type, msg.role || '', msg.tool_name || '', msg.tool_input || '', content, msg.timestamp || ''].join('\u001f');
             }
