@@ -1,0 +1,27 @@
+# Dockerfile for Benchmark Runner
+# This image runs benchmark/runner/main.py with standard suites.
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy benchmark runner code
+COPY benchmark/runner /app/benchmark/runner
+COPY benchmark/suites /app/benchmark/suites
+COPY benchmark/mobilegym/scripts/configure_daemon.py /app/benchmark/mobilegym/scripts/configure_daemon.py
+
+# Install Python dependencies (assumes requirements.txt exists)
+COPY benchmark/requirements.txt /app/benchmark/requirements.txt
+RUN pip install --no-cache-dir -r /app/benchmark/requirements.txt
+
+# Set Python path
+ENV PYTHONPATH=/app
+
+# Default command (can be overridden)
+CMD ["python", "-m", "benchmark.runner", "run", "--help"]

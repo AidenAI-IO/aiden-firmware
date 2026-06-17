@@ -1,0 +1,34 @@
+# Dockerfile for MobileGym Simulator + Bridge Server
+# This image ONLY runs the simulator and bridge, not the test framework.
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy MobileGym simulator code
+COPY benchmark/mobilegym/vendor/mobilegym /app/mobilegym-upstream
+COPY benchmark/mobilegym/bridge /app/benchmark/mobilegym/bridge
+COPY benchmark/mobilegym/scripts/start_simulator.py /app/benchmark/mobilegym/scripts/start_simulator.py
+
+# Install MobileGym dependencies
+RUN pip install --no-cache-dir -r /app/mobilegym-upstream/bench_env/requirements.txt
+
+# Install Playwright browsers
+RUN playwright install chromium && \
+    playwright install-deps chromium
+
+# Set Python path
+ENV PYTHONPATH=/app:/app/mobilegym-upstream
+
+# Health check
+HEALTHCHECK --interval=5s --timeout=3s --retries=10 \
+    CMD curl -f http://localhost:8888/health || exit 1
+
+# Run simulator
+CMD ["python", "benchmark/mobilegym/scripts/start_simulator.py"]

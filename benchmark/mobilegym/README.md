@@ -1,145 +1,251 @@
 # Aiden MobileGym Integration
 
-MobileGym 集成到 Aiden Agent，支持批量测试手机控制能力。
+MobileGym 作为纯模拟器集成到 Aiden benchmark，使用统一的 `benchmark/runner` 框架。
 
-> ℹ️ MobileGym 官方本身支持本地 `--parallel` 并发，并不依赖 Docker。本集成推荐 Docker，是因为当前 Aiden Go daemon 只有一个 active MobileGym session，且 conversation/memory 是 daemon 全局状态；并发 benchmark 需要用独立 daemon/config/network/volume 隔离这些状态。
+## 🎯 架构设计
 
-## 🚀 快速开始（Aiden 隔离推荐：Docker）
+MobileGym **仅作为设备模拟器**，不使用其测试框架：
+
+```
+benchmark/runner/main.py (测试编排)
+  ↓ /api/chat
+Aiden Go Daemon (配置 device-operator skill)
+  ↓ /tap, /swipe, /screenshot (HTTP)
+MobileGym Bridge Server (HTTP ↔ env.step)
+  ↓ env.step(action)
+MobileGym Simulator (bench_env)
+```
+
+**关键点**：
+- ✅ 使用 `benchmark/runner` 统一测试流程
+- ✅ 使用 `benchmark/suites/*.json` 定义测试任务
+- ✅ MobileGym 仅提供设备环境，不涉及测试逻辑
+- ❌ 不使用 MobileGym 的 `SerialRunner`、`factory`、agent 注册
+
+## 🚀 快速开始
+
+### 方式 1：本地运行（开发）
+
+```bash
+# 1. 启动 MobileGym 模拟器（后台）
+python benchmark/mobilegym/scripts/start_simulator.py \
+  --env-url http://localhost:4173 \
+  --bridge-port 8888 \
+  --token-dir /tmp/mobilegym-tokens \
+  --bridge-url-file /tmp/mobilegym-bridge-url &
+
+# 2. 启动 Aiden daemon（假设已配置 agent.toml）
+# daemon 需要配置 device-operator skill 指向 bridge
+
+# 3. 配置 daemon 连接 bridge
+python benchmark/mobilegym/scripts/configure_daemon.py \
+  --daemon-url http://localhost:8080 \
+  --bridge-url $(cat /tmp/mobilegym-bridge-url) \
+  --bridge-token-file /tmp/mobilegym-tokens/bridge_device_token
+
+# 4. 运行 benchmark（使用标准 runner）
+python -m benchmark.runner run \
+  --suite benchmark/suites/mobilegym_basic.json \
+  --agent-url http://localhost:8080
+```
+
+### 方式 2：Docker（推荐）
 
 ```bash
 cd benchmark/mobilegym/docker
 
-# 1. 一键初始化：生成 token、从模板创建 agent.toml、生成 .env
+# 1. 初始化配置
 ./init.sh
 
-# 2. 编辑 LLM 配置（必须填入真实 api_key）
+# 2. 编辑 agent.toml 填入 API key
 vim ../config/agent.toml
 
-# 3. 构建（国内用户用 docker-compose.cn.yml）
+# 3. 构建镜像
 docker compose build
 
-# 4. 启动常驻服务
+# 4. 启动所有服务
 docker compose up -d
 
-# 5. 跑一个内置任务验证
-docker compose run --rm test \
-  --task-id clock.CountAlarms \
-  --aiden-control-token "$(cat ../config/control_token)"
+# 5. 运行 benchmark
+docker compose run --rm runner \
+  --suite /benchmark/suites/mobilegym_basic.json \
+  --agent-url http://aiden-daemon:8080
 
 # 6. 查看结果
-ls ../../runs/mobilegym/
-
-# 7. 停止
-docker compose down
+ls ../../runs/
+open ../../runs/<run-id>/report.html
 ```
-
-详见 [docker/README.md](docker/README.md)
 
 ## 📁 目录结构
 
 ```text
 benchmark/mobilegym/
 ├── README.md                       # 本文件
-├── adapter/                        # Python 适配器（AidenGoAgent）
-├── bridge/                         # Bridge server（HTTP ↔ MobileGym）
-├── config/                         # Agent 配置
+├── REFACTOR_PLAN.md                # 重构说明
+├── bridge/                         # Bridge server（HTTP ↔ MobileGym env）⭐
+│   ├── server.py                   # HTTP 端点
+│   ├── episode.py                  # Episode 状态管理
+│   ├── protocol.py                 # 协议定义
+│   └── actions.py                  # Action 转换
+├── config/                         # Aiden 配置
 │   ├── agent.toml.template         # 配置模板
-│   └── skills/device-operator/     # MobileGym 专用 skill
-├── docker/                         # Aiden 隔离运行方案 ⭐
-│   ├── README.md                   # 主入口
-│   ├── Dockerfile                  # 标准版
-│   ├── Dockerfile.cn               # 国内加速版
-│   ├── docker-compose.yml          # 标准编排
-│   ├── docker-compose.cn.yml       # 国内编排
-│   ├── docker-compose.parallel.yml # 并发模式 overlay（重置端口）
-│   ├── init.sh                     # 纯净环境一键初始化
-│   └── parallel_run.sh             # 并发隔离 orchestrator
-├── report.py                       # 批次/套件 HTML 报告生成器
-├── scripts/                        # 测试脚本
-│   └── run_aiden.py                # 主入口（容器/本地串行执行）
-├── suites/                         # 自定义测试套件 YAML（当前未被加载）
-│   └── aiden_smoke.yaml            # 示例套件
-└── vendor/mobilegym/               # 上游 MobileGym（submodule）
+│   └── skills/device-operator/     # MobileGym skill
+├── docker/                         # Docker 编排
+│   ├── Dockerfile.simulator        # 模拟器镜像
+│   ├── Dockerfile.runner           # Runner 镜像
+│   ├── docker-compose.yml          # 服务编排
+│   └── init.sh                     # 初始化脚本
+├── scripts/                        # 启动脚本 ⭐
+│   ├── start_simulator.py          # 启动纯模拟器
+│   └── configure_daemon.py         # 配置 daemon bridge
+└── vendor/mobilegym/               # 上游 MobileGym (submodule)
 ```
 
-## 📚 文档
+**移除的组件**（不再需要）：
+- ❌ `adapter/register.py` - agent 注册
+- ❌ `adapter/aiden_go_agent.py` - MobileGym Agent 适配器
+- ❌ `scripts/run_aiden.py` - MobileGym 测试框架入口
+- ❌ `suites/*.yaml` - MobileGym 自定义 suite（改用 benchmark/suites/*.json）
 
-- **一键启动**: [docker/README.md](docker/README.md) ⭐
-- **测试流程**: [docker/TEST_FLOW.md](docker/TEST_FLOW.md)
-- **代理配置**: [docker/SETUP_PROXY.md](docker/SETUP_PROXY.md)
-- **架构设计**: 见项目根目录文档
+## 🎯 测试定义
 
-## 🎯 测试套件
+所有测试任务定义在 `benchmark/suites/*.json`，使用统一格式：
 
-### 运行 Aiden JSON suite
-
-`run_aiden.py` 现在支持 `--aiden-suite` 直接加载 `benchmark/suites/<name>.json`：
-
-```bash
-docker compose run --rm test --aiden-suite memory_v1 --limit 5
+```json
+{
+  "name": "mobilegym_basic",
+  "prompt_prefix": "你正在控制一台 Android 模拟器。",
+  "global_reset": {
+    "type": "agent_prompt",
+    "prompt": "请重置设备到初始状态",
+    "timeout_sec": 30,
+    "clear_history_after": true
+  },
+  "tasks": [
+    {
+      "id": "clock_count_alarms",
+      "category": "device_operation",
+      "prompt": "打开时钟应用，告诉我有多少个闹钟。",
+      "description_for_judge": "Agent 应该打开时钟应用并正确报告闹钟数量",
+      "rubric": [
+        {
+          "id": "opened_clock_app",
+          "description": "成功打开时钟应用"
+        },
+        {
+          "id": "counted_alarms",
+          "description": "正确识别并报告闹钟数量"
+        }
+      ],
+      "hard_assertions": {
+        "must_complete_within_sec": 120,
+        "min_tool_calls": 2,
+        "required_tools": ["screenshot", "tap"]
+      }
+    }
+  ]
+}
 ```
 
-并发执行：
+## 🔧 配置说明
 
-```bash
-PARALLEL=4 ./parallel_run.sh --aiden-suite memory_v1
+### Aiden agent.toml
+
+确保配置了 `device-operator` skill：
+
+```toml
+[skills.device-operator]
+path = "benchmark/mobilegym/config/skills/device-operator"
+enabled = true
 ```
 
-### 运行内置 suite
+### Bridge 环境变量
 
-```bash
-docker compose run --rm test --suite phone_control_v1 --limit 3
-docker compose run --rm test --suite clock --limit 5
-```
+启动 simulator 时可用的环境变量：
 
-> ℹ️ `--suite` 接受的是 MobileGym 内置 suite 名（`clock`, `phone_control_v1`, `calendar`, `wechat`, ...）。`benchmark/mobilegym/suites/*.yaml` 是仓库内的自定义 YAML，**当前版本** `run_aiden.py` 还没解析它们，请用 `--task-id` 一个个列举或选用内置 suite。
-
-## 🚀 并发测试
-
-使用 `parallel_run.sh` 并发运行 Aiden benchmark。每个 worker 都是一套独立的 Docker Compose project，包含独立的 MobileGym 模拟器、Aiden daemon、配置/token、network、volume 和日志；只有结果根目录共享。这样做是为了隔离 Aiden daemon 状态，不是因为 MobileGym 官方并发必须依赖 Docker。
-
-```bash
-cd benchmark/mobilegym/docker
-
-# 并发跑多个任务（每个任务独立容器）
-./parallel_run.sh clock.CountAlarms clock.ToggleAlarm phone_control_v1.MakeCall
-
-# 用多个隔离 worker 跑同一个内置 suite（按 shard 分配任务）
-PARALLEL=4 ./parallel_run.sh --suite phone_control_v1
-
-# 并发跑多个内置 suite，每个 suite 单独汇总结果
-PARALLEL=2 MAX_JOBS=2 ./parallel_run.sh --suites clock,phone_control_v1
-
-# 使用国内 compose 文件；parallel no-ports override 会自动追加
-COMPOSE_FILES=docker-compose.cn.yml PARALLEL=2 ./parallel_run.sh --suite clock
-```
-
-**特点：**
-
-- ✅ 完全隔离：每个 worker 独立的模拟器、daemon、配置和 Docker project
-- ✅ 无状态干扰：修改闹钟、联系人、设置等互不影响
-- ✅ 自动分片：suite 任务按 shard 分配到可用 worker
-- ✅ 单独看结果：每个 suite 有独立 `index.html` 和 `summary.json`
-- ⚠️ 资源开销：每个 worker 启动独立的 simulator + daemon 容器
-- ⚠️ 需要 Docker Compose **v2.24+**（`!reset` 语法）
-
-**注意：** 对本集成来说，`run_aiden.py --parallel N` 会在同一 Aiden daemon 内共享 session、history 和 memory，可能导致测试间状态干扰；需要并发时优先用 `parallel_run.sh`。
-
-结果位于：
-
-```bash
-ls ../../runs/mobilegym/
-open ../../runs/mobilegym/<run-id>/index.html            # direct run 报告
-open ../../runs/mobilegym/<batch-id>/index.html          # parallel batch 总览
-open ../../runs/mobilegym/<batch-id>/<suite>/index.html  # parallel 单个 suite
-```
+- `MOBILEGYM_ENV_URL`: MobileGym web 模拟器地址（默认 `http://localhost:4173`）
+- `AIDEN_BRIDGE_BIND_HOST`: Bridge 绑定地址（默认 `127.0.0.1`）
+- `AIDEN_BRIDGE_PORT`: Bridge 端口（默认自动分配）
+- `AIDEN_BRIDGE_PUBLIC_HOST`: Bridge 公开地址（Docker 需要）
+- `BRIDGE_CONTROL_TOKEN`: Bridge 控制 token（默认自动生成）
+- `BRIDGE_DEVICE_TOKEN`: Bridge 设备 token（默认自动生成）
 
 ## ✅ 验证
 
 ```bash
-# 单任务测试
-docker compose run --rm test --task-id clock.CountAlarms
+# 检查模拟器健康状态
+curl http://localhost:8888/health
 
-# 内置 suite 限量测试
-docker compose run --rm test --suite clock --limit 1
+# 测试 bridge 操作
+curl -X POST http://localhost:8888/screenshot \
+  -H "Authorization: Bearer <device-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"episode_id": "test-001"}'
+
+# 运行单个测试
+python -m benchmark.runner run \
+  --suite benchmark/suites/mobilegym_basic.json \
+  --agent-url http://localhost:8080 \
+  --no-judge  # 快速验证，跳过 judge
+```
+
+## 🔄 与旧版本对比
+
+### 旧版（使用 MobileGym 框架）
+```bash
+# 依赖 MobileGym SerialRunner、agent 注册
+python benchmark/mobilegym/scripts/run_aiden.py \
+  --suite clock \
+  --aiden-daemon-url http://localhost:8080
+```
+
+### 新版（纯模拟器）
+```bash
+# 1. 启动模拟器
+python benchmark/mobilegym/scripts/start_simulator.py &
+
+# 2. 使用统一 runner
+python -m benchmark.runner run \
+  --suite benchmark/suites/mobilegym_clock.json \
+  --agent-url http://localhost:8080
+```
+
+**优势**：
+1. **解耦**：MobileGym 仅作为设备模拟器
+2. **统一**：所有 benchmark 使用相同的 runner 和 suite 格式
+3. **简化**：不需要适配 MobileGym Agent 接口
+4. **灵活**：可以轻松替换为其他模拟器或真实设备
+
+## 📚 相关文档
+
+- **重构说明**: [REFACTOR_PLAN.md](REFACTOR_PLAN.md)
+- **Bridge 协议**: [bridge/README.md](bridge/README.md)
+- **Docker 使用**: [docker/README.md](docker/README.md)
+- **架构设计**: 见项目根目录文档
+
+## 🐛 故障排查
+
+### 模拟器无法启动
+```bash
+# 检查 MobileGym 依赖
+pip install -r benchmark/mobilegym/vendor/mobilegym/bench_env/requirements.txt
+playwright install chromium
+```
+
+### Bridge 连接失败
+```bash
+# 检查 bridge 健康状态
+curl http://localhost:8888/health
+
+# 检查 token 是否正确
+cat /tmp/mobilegym-tokens/bridge_device_token
+```
+
+### Daemon 无法调用设备工具
+```bash
+# 确认 skill 已加载
+curl http://localhost:8080/api/skills
+
+# 确认 bridge 配置
+curl http://localhost:8080/api/mobilegym/bridge/status
 ```
