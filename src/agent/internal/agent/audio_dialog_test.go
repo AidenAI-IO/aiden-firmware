@@ -748,6 +748,75 @@ func TestAudioDialogRunAgentTurnAppendsRunEventsToVoiceHistory(t *testing.T) {
 	}
 }
 
+func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
+	configDir := t.TempDir()
+	model := &scriptedModel{
+		responses: roleToolResponses("echo", `{"__arg1":"{}"}`, "voice tool reply"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:       configDir,
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Use tools when requested.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(filepath.Join(configDir, "memory")),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"echo": &staticTool{name: "echo", output: `{"ok":true}`},
+		}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config: Config{
+			Model:        ModelConfig{Provider: "fake"},
+			Audio:        AudioConfig{SampleRate: 16000},
+			AudioArchive: AudioArchiveConfig{Enabled: false},
+		},
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
+	var messages []Message
+	dialog.SetHistoryAppender(func(message Message) {
+		messages = append(messages, message)
+	})
+
+	_, err := dialog.RunVoiceTurn(
+		context.Background(),
+		TurnInput{InputText: "use echo", Transcript: "use echo"},
+		[]int16{100, -100, 200, -200},
+		runtime,
+	)
+	if err != nil {
+		t.Fatalf("RunVoiceTurn() error = %v", err)
+	}
+	if len(messages) < 5 {
+		t.Fatalf("expected user, run events, and assistant messages, got %#v", messages)
+	}
+	if messages[0].Type != "user" {
+		t.Fatalf("first message type = %q, want user in %#v", messages[0].Type, messages)
+	}
+	if messages[len(messages)-1].Type != "assistant" {
+		t.Fatalf("last message type = %q, want assistant in %#v", messages[len(messages)-1].Type, messages)
+	}
+	for _, wantType := range []string{runEventToolCall, "tool_result", "role_output"} {
+		if _, ok := firstAudioDialogTestMessageOfType(messages, wantType); !ok {
+			t.Fatalf("missing voice history message type %q: %#v", wantType, messages)
+		}
+	}
+	episodeID := messages[0].EpisodeID
+	if episodeID == "" {
+		t.Fatalf("user message missing episode id: %#v", messages[0])
+	}
+	for _, message := range messages {
+		if message.Source != "voice" {
+			t.Fatalf("message source = %q, want voice: %#v", message.Source, message)
+		}
+		if message.EpisodeID != episodeID {
+			t.Fatalf("message episode id = %q, want %q in %#v", message.EpisodeID, episodeID, messages)
+		}
+	}
+}
+
 func TestAudioDialogProcessUtteranceSavesAudioFile(t *testing.T) {
 	tmpDir := t.TempDir()
 

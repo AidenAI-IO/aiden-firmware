@@ -265,25 +265,18 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	if err != nil {
 		return err
 	}
-	episodeID := ""
-	if runtime != nil {
-		episodeID = runtime.NewEpisodeID()
-	}
-	d.persistVoiceUserInput(input, utterance, episodeID, "")
-	result, err := d.runAgentTurnWithEpisode(ctx, input, runtime, episodeID)
+	result, err := d.RunVoiceTurn(ctx, input, utterance, runtime)
 	if err != nil {
 		return err
 	}
-	d.PersistVoiceAssistantOutput(result)
 	if result.SpeechStreamed {
 		return nil
 	}
 	return d.Speak(ctx, result.SpokenTextForConfig(d.config), nil)
 }
 
-// SetHistoryStore wires the chat history store. When non-nil, voice user and
-// assistant messages produced during ProcessUtterance are appended with
-// Source="voice".
+// SetHistoryStore wires the chat history store. When non-nil, voice messages
+// produced during RunVoiceTurn are appended with Source="voice".
 func (d *AudioDialog) SetHistoryStore(store *ChatHistoryStore) {
 	d.historyStore = store
 }
@@ -446,6 +439,20 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 		episodeID = runtime.NewEpisodeID()
 	}
 	return d.runAgentTurnWithEpisode(ctx, input, runtime, episodeID)
+}
+
+func (d *AudioDialog) RunVoiceTurn(ctx context.Context, input TurnInput, utterance []int16, runtime *Runtime) (RunResult, error) {
+	episodeID := ""
+	if runtime != nil {
+		episodeID = runtime.NewEpisodeID()
+	}
+	d.persistVoiceUserInput(input, utterance, episodeID, "")
+	result, err := d.runAgentTurnWithEpisode(ctx, input, runtime, episodeID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	d.PersistVoiceAssistantOutput(result)
+	return result, nil
 }
 
 func (d *AudioDialog) runAgentTurnWithEpisode(ctx context.Context, input TurnInput, runtime *Runtime, episodeID string) (RunResult, error) {
