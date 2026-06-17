@@ -324,19 +324,13 @@ type HIDConfig struct {
 }
 
 type DeviceConfig struct {
-	Backend          string   `toml:"backend,omitempty"`
-	BridgeURL        string   `toml:"bridge_url,omitempty"`
-	BridgeTokenFile  string   `toml:"bridge_token_file,omitempty"`
-	ControlTokenFile string   `toml:"control_token_file,omitempty"`
-	ToolAllowlist    []string `toml:"tool_allowlist,omitempty"`
+	Backend string `toml:"backend,omitempty"`
 }
 
 func (d DeviceConfig) BackendOrDefault() string {
 	switch strings.ToLower(strings.TrimSpace(d.Backend)) {
 	case "", "hdmi", "hardware":
 		return "hdmi"
-	case "mobilegym":
-		return "mobilegym"
 	default:
 		return strings.ToLower(strings.TrimSpace(d.Backend))
 	}
@@ -695,12 +689,9 @@ func (c Config) Validate() error {
 	}
 	backend := c.Device.BackendOrDefault()
 	switch backend {
-	case "hdmi", "mobilegym":
+	case "hdmi":
 	default:
-		return fmt.Errorf("invalid device.backend: %s (expected hdmi or mobilegym)", c.Device.Backend)
-	}
-	if backend == "mobilegym" && strings.TrimSpace(c.Device.ControlTokenFile) == "" {
-		return errors.New("device.control_token_file is required when device.backend=mobilegym")
+		return fmt.Errorf("invalid device.backend: %s (expected hdmi)", c.Device.Backend)
 	}
 	if c.Model.MaxResponseTokens < 0 {
 		return fmt.Errorf("model.max_response_tokens must be >= 0, got %d", c.Model.MaxResponseTokens)

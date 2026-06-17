@@ -625,7 +625,7 @@ func TestDeviceConfigBackendDefaultsToHDMI(t *testing.T) {
 	}
 }
 
-func TestLoadConfigAcceptsMobileGymDeviceBackend(t *testing.T) {
+func TestLoadConfigRejectsMobileGymDeviceBackend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	content := `
@@ -639,22 +639,13 @@ provider = "fake"
 
 [device]
 backend = "mobilegym"
-bridge_url = "http://127.0.0.1:19001"
-bridge_token_file = "/tmp/device-token"
-control_token_file = "/tmp/control-token"
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
-	}
-	if got := cfg.Device.BackendOrDefault(); got != "mobilegym" {
-		t.Fatalf("backend = %q, want mobilegym", got)
-	}
-	if cfg.Instruction != "test" || cfg.InputMode != "text" || cfg.MaxIterations != 20 || !cfg.ForceSimpleLoop {
-		t.Fatalf("root config not decoded: instruction=%q input_mode=%q max_iterations=%d force_simple_loop=%v", cfg.Instruction, cfg.InputMode, cfg.MaxIterations, cfg.ForceSimpleLoop)
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "invalid device.backend") {
+		t.Fatalf("LoadConfig() error = %v, want invalid device.backend", err)
 	}
 }
 

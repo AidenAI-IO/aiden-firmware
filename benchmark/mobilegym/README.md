@@ -4,13 +4,13 @@ MobileGym 作为纯模拟器集成到 Aiden benchmark，使用统一的 `benchma
 
 ## 🎯 架构设计
 
-MobileGym **仅作为设备模拟器**，不使用其测试框架：
+MobileGym **仅作为设备模拟器**，通过统一的 `/api/tools` endpoint 提供服务：
 
 ```
 benchmark/runner/main.py (测试编排)
   ↓ /api/chat
-Aiden Go Daemon (配置 device-operator skill)
-  ↓ /tap, /swipe, /screenshot (HTTP)
+Aiden Go Daemon (tool-proxy-endpoint)
+  ↓ /api/tools/* (统一工具接口)
 MobileGym Bridge Server (HTTP ↔ env.step)
   ↓ env.step(action)
 MobileGym Simulator (bench_env)
@@ -19,7 +19,8 @@ MobileGym Simulator (bench_env)
 **关键点**：
 - ✅ 使用 `benchmark/runner` 统一测试流程
 - ✅ 使用 `benchmark/suites/*.json` 定义测试任务
-- ✅ MobileGym 仅提供设备环境，不涉及测试逻辑
+- ✅ Bridge Server 提供 `/api/tools` 统一接口，与 Go agent 完全兼容
+- ✅ 通过 tool proxy 模式连接，无需特殊配置
 - ❌ 不使用 MobileGym 的 `SerialRunner`、`factory`、agent 注册
 
 ## 🚀 快速开始
@@ -27,27 +28,29 @@ MobileGym Simulator (bench_env)
 ### 方式 1：本地运行（开发）
 
 ```bash
-# 1. 启动 MobileGym 模拟器（后台）
+# 1. 启动 MobileGym 模拟器和 Bridge Server（后台）
 python benchmark/mobilegym/scripts/start_simulator.py \
   --env-url http://localhost:4173 \
   --bridge-port 8888 \
-  --token-dir /tmp/mobilegym-tokens \
-  --bridge-url-file /tmp/mobilegym-bridge-url &
+  --token-dir /tmp/mobilegym-tokens &
 
-# 2. 启动 Aiden daemon（假设已配置 agent.toml）
-# daemon 需要配置 device-operator skill 指向 bridge
+# 2. 启动 Aiden daemon 使用 tool proxy 模式
+# 读取 device token
+DEVICE_TOKEN=$(cat /tmp/mobilegym-tokens/bridge_device_token)
 
-# 3. 配置 daemon 连接 bridge
-python benchmark/mobilegym/scripts/configure_daemon.py \
-  --daemon-url http://localhost:8080 \
-  --bridge-url $(cat /tmp/mobilegym-bridge-url) \
-  --bridge-token-file /tmp/mobilegym-tokens/bridge_device_token
+# 启动 daemon，指定 tool proxy endpoint
+go run src/agent/cmd/daemon/main.go \
+  --config /path/to/agent.toml \
+  --tool-proxy-endpoint http://localhost:8888 \
+  --tool-proxy-forward screenshot,touch_gesture,keyboard_text,keyboard_tap &
 
-# 4. 运行 benchmark（使用标准 runner）
+# 3. 运行 benchmark（使用标准 runner）
 python -m benchmark.runner run \
   --suite benchmark/suites/mobilegym_basic.json \
   --agent-url http://localhost:8080
 ```
+
+**注意**：现在使用统一的 tool proxy 模式，不再需要 `device.backend=mobilegym` 配置。
 
 ### 方式 2：Docker（推荐）
 
@@ -149,21 +152,15 @@ benchmark/mobilegym/
 
 ## 🔧 配置说明
 
-### Aiden agent.toml
+### Tool Proxy 模式
 
-配置 MobileGym 设备后端：
+使用命令行参数启动 daemon：
 
-```toml
-[device]
-backend = "mobilegym"
-control_token_file = "/config/control_token"
-# bridge_url 和 bridge_token_file 可以静态配置，或通过 configure_daemon.py 动态设置
-```
-
-**可选**：加载 `device-operator` skill 以获得更详细的设备操作提示：
-
-```toml
-skills_dirs = ["benchmark/mobilegym/config/skills"]
+```bash
+go run cmd/daemon/main.go \
+  --config agent.toml \
+  --tool-proxy-endpoint http://localhost:8888 \
+  --tool-proxy-forward screenshot,touch_gesture,keyboard_text,keyboard_tap
 ```
 
 ### Bridge 环境变量
@@ -196,35 +193,9 @@ python -m benchmark.runner run \
   --no-judge  # 快速验证，跳过 judge
 ```
 
-## 🔄 与旧版本对比
-
-### 旧版（使用 MobileGym 框架）
-```bash
-# 依赖 MobileGym SerialRunner、agent 注册
-python benchmark/mobilegym/scripts/run_aiden.py \
-  --suite clock \
-  --aiden-daemon-url http://localhost:8080
-```
-
-### 新版（纯模拟器）
-```bash
-# 1. 启动模拟器
-python benchmark/mobilegym/scripts/start_simulator.py &
-
-# 2. 使用统一 runner
-python -m benchmark.runner run \
-  --suite benchmark/suites/mobilegym_basic.json \
-  --agent-url http://localhost:8080
-```
-
-**优势**：
-1. **解耦**：MobileGym 仅作为设备模拟器
-2. **统一**：所有 benchmark 使用相同的 runner 和 suite 格式
-3. **简化**：不需要适配 MobileGym Agent 接口
-4. **灵活**：可以轻松替换为其他模拟器或真实设备
-
 ## 📚 相关文档
 
+- **统一 Tool API**: [bridge/TOOLS_API.md](bridge/TOOLS_API.md) ⭐ **新增**
 - **重构说明**: [REFACTOR_PLAN.md](REFACTOR_PLAN.md)
 - **迁移指南**: [MIGRATION.md](MIGRATION.md)
 - **Docker 使用**: [docker/README.md](docker/README.md)

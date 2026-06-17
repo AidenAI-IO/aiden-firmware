@@ -40,10 +40,7 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 	return newHardwareToolSet(hidCfg, audioCfg, searchCfg, proxyCfg, options...)
 }
 
-func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, mobileGym *mobileGymSessionStore, options ...BuiltinToolSetOption) *ToolSet {
-	if cfg.Device.BackendOrDefault() == "mobilegym" {
-		return newMobileGymToolSet(cfg, proxyCfg, mobileGym, options...)
-	}
+func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
 	return newHardwareToolSet(cfg.HID, cfg.Audio, cfg.Search, proxyCfg, options...)
 }
 

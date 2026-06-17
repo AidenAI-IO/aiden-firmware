@@ -10,7 +10,8 @@ from typing import Any
 
 from .actions import action_to_dict, build_action
 from .episode import BridgeEpisodeState, StaleEpisodeError
-from .protocol import BridgeTokens, bridge_error, bridge_ok, encode_screenshot
+from .protocol import bridge_error, bridge_ok, encode_screenshot
+from .tools_api import ToolsAPIHandler
 
 
 ACTION_ENDPOINTS = {"tap", "swipe", "drag", "type_text", "key", "back", "home", "wait"}
@@ -20,14 +21,12 @@ class BridgeServer:
     def __init__(
         self,
         state: BridgeEpisodeState,
-        tokens: BridgeTokens,
         host: str = "127.0.0.1",
         port: int = 0,
         public_host: str | None = None,
         request_timeout_sec: float = 30,
     ):
         self.state = state
-        self.tokens = tokens
         self.host = host
         self.port = port
         self.public_host = public_host
@@ -35,6 +34,7 @@ class BridgeServer:
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self.base_url = ""
+        self.tools_api = ToolsAPIHandler(state, request_timeout_sec)
 
     def start(self) -> str:
         if self._httpd is not None:
@@ -73,6 +73,10 @@ class BridgeServer:
 def _handler_for(bridge: BridgeServer):
     class BridgeRequestHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            # Handle /api/tools catalog
+            if self.path == "/api/tools":
+                bridge.tools_api.handle_request(self, self.path)
+                return
             if self.path != "/health":
                 self._send_error(404, "not_found", "unknown endpoint")
                 return
@@ -82,6 +86,11 @@ def _handler_for(bridge: BridgeServer):
             )
 
         def do_POST(self) -> None:
+            # Handle /api/tools/{tool_name} invocation
+            if self.path.startswith("/api/tools/"):
+                bridge.tools_api.handle_request(self, self.path)
+                return
+
             payload = self._read_json()
             if payload is None:
                 return
@@ -116,24 +125,14 @@ def _handler_for(bridge: BridgeServer):
             return
 
         def _handle_episode_start(self, payload: dict[str, Any]) -> None:
-            if not bridge.tokens.require_control(self.headers):
-                self._send_error(401, "unauthorized", "runner control token required")
-                return
             result = bridge.submit(bridge.state.start_episode(str(payload.get("episode_id", ""))))
             self._send_json(200, bridge_ok(result))
 
         def _handle_episode_end(self, payload: dict[str, Any]) -> None:
-            if not bridge.tokens.require_control(self.headers):
-                self._send_error(401, "unauthorized", "runner control token required")
-                return
             result = bridge.submit(bridge.state.end_episode(str(payload.get("episode_id", ""))))
             self._send_json(200, bridge_ok(result))
 
         def _handle_reset(self) -> None:
-            if not bridge.tokens.require_control(self.headers):
-                self._send_error(401, "unauthorized", "runner control token required")
-                return
-
             async def reset_env(env: Any) -> dict[str, bool]:
                 reset = getattr(env, "reset", None)
                 if reset is None:
@@ -147,22 +146,16 @@ def _handler_for(bridge: BridgeServer):
             self._send_json(200, bridge_ok(result))
 
         def _handle_state(self, payload: dict[str, Any]) -> None:
-            if not bridge.tokens.require_control(self.headers):
-                self._send_error(401, "unauthorized", "runner control token required")
-                return
             result = bridge.submit(bridge.state.run_env(lambda env: env.get_state(**payload)))
             self._send_json(200, bridge_ok(result))
 
         def _handle_route(self) -> None:
-            if not bridge.tokens.require_control(self.headers):
-                self._send_error(401, "unauthorized", "runner control token required")
-                return
             result = bridge.submit(bridge.state.run_env(lambda env: env.get_route()))
             self._send_json(200, bridge_ok(result))
 
         def _handle_screenshot(self, payload: dict[str, Any]) -> None:
-            if not self._require_device_episode(payload):
-                return
+            episode_id = str(payload.get("episode_id", ""))
+            bridge.state.require_active(episode_id)
 
             async def get_screenshot(env: Any) -> dict[str, Any]:
                 bridge.state.require_active(str(payload.get("episode_id", "")))
@@ -173,9 +166,8 @@ def _handler_for(bridge: BridgeServer):
             self._send_json(200, result)
 
         def _handle_action(self, name: str, payload: dict[str, Any]) -> None:
-            if not self._require_device_episode(payload):
-                return
             episode_id = str(payload.get("episode_id", ""))
+            bridge.state.require_active(episode_id)
             tool_input = {key: value for key, value in payload.items() if key != "episode_id"}
             action = build_action(name, tool_input)
             action_payload = action_to_dict(action)
@@ -207,13 +199,6 @@ def _handler_for(bridge: BridgeServer):
 
             result = bridge.submit(bridge.state.run_env(step_env))
             self._send_json(200, result)
-
-        def _require_device_episode(self, payload: dict[str, Any]) -> bool:
-            if not bridge.tokens.require_device(self.headers):
-                self._send_error(401, "unauthorized", "agent device token required")
-                return False
-            bridge.state.require_active(str(payload.get("episode_id", "")))
-            return True
 
         def _read_json(self) -> dict[str, Any] | None:
             try:

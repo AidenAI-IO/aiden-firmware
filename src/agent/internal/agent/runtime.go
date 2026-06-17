@@ -51,7 +51,6 @@ type Runtime struct {
 	memoryPlane        MemoryPlane
 	sessionManager     SessionManager
 	telemetrySessionID string
-	mobileGym          *mobileGymSessionStore
 	toolProxy          *ToolProxyClient
 	runGate            chan struct{}
 }
@@ -221,11 +220,9 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err := proxy.Validate(); err != nil {
 		return nil, fmt.Errorf("proxy environment: %w", err)
 	}
-	mobileGymStore := &mobileGymSessionStore{}
 	toolSet := NewBuiltinToolSetFromConfig(
 		cfg,
 		proxy,
-		mobileGymStore,
 		WithSleepController(sleepController),
 		WithScreenStableDefaults(cfg.ScreenStableDefaults()),
 	)
@@ -265,7 +262,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
 	rt.sleep = sleepController
-	rt.mobileGym = mobileGymStore
 
 	if len(mergeNeeded) > 0 && cfg.SkillMergeModel != nil {
 		manifestPath := filepath.Join(cfg.ConfigDir, "skill-state", ".bundled_manifest.json")
@@ -311,7 +307,6 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
 		sleep:              sleepController,
 		telemetrySessionID: uuid.NewString(),
-		mobileGym:          &mobileGymSessionStore{},
 		toolProxy:          toolProxy,
 	}
 	if cfg.ConfigDir != "" {
