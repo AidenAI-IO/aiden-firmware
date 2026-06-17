@@ -119,7 +119,7 @@ curl -X POST http://127.0.0.1:8080/api/tools/weather \
 `touch_gesture` 的 `back` 会从左物理边缘附近开始滑动，`home` 会从底部物理边缘附近开始上滑；normalized 坐标使用 0-1000 范围，手写 `swipe` 时也应使用贴边起点，例如 `start.x=1` 或 `start.y=999`。
 `current_time` 支持 IANA 时区名（如 `Asia/Shanghai`、`America/New_York`）、`UTC`、`local` 和 UTC offset（如 `+08:00`）。
 `weather` 支持地点名或经纬度，运行时通过 Open-Meteo 获取 geocoding、当前天气和短期预报。
-`wait_for_wakeup` 是终止型运行时工具。工具调用成功后会立即结束本次 Agent run，并让语音交互回到等待下一次 wakeup 的模式；不会再要求模型补一轮普通 final answer。
+`wait_for_wakeup` 是终止型运行时工具。工具调用成功后会立即结束本次 Agent run，并让语音交互回到等待下一次 wakeup 的模式；不会再要求模型补一轮普通 final answer。运行结果会设置 `wait_for_wakeup_requested` / `wait_for_wakeup_reason`；旧字段 `sleep_requested` / `sleep_reason` 仅作为兼容别名保留。
 
 ## 外部 Agent 使用建议
 
