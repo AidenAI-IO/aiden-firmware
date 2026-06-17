@@ -43,9 +43,11 @@ func main() {
 
 	// Default: run as daemon
 	var (
-		configDir    = flag.String("config", "", "path to config directory (required)")
-		addr         = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
-		benchmarkDir = flag.String("benchmark-dir", "", "Override benchmark root directory (default: auto-detect)")
+		configDir         = flag.String("config", "", "path to config directory (required)")
+		addr              = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
+		benchmarkDir      = flag.String("benchmark-dir", "", "Override benchmark root directory (default: auto-detect)")
+		toolProxyMode     = flag.Bool("tool-proxy-mode", false, "Enable tool proxy mode (forward all tool calls to remote daemon)")
+		toolProxyEndpoint = flag.String("tool-proxy-endpoint", "", "Remote daemon endpoint for tool proxy mode (e.g., http://192.168.50.123:8080)")
 	)
 	flag.Parse()
 
@@ -58,6 +60,18 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Apply CLI flags to override config file
+	if *toolProxyMode {
+		cfg.ToolProxy.Enabled = true
+		if *toolProxyEndpoint != "" {
+			cfg.ToolProxy.Endpoint = *toolProxyEndpoint
+		}
+		if cfg.ToolProxy.Endpoint == "" {
+			fmt.Fprintln(os.Stderr, "tool-proxy-mode requires --tool-proxy-endpoint or [tool_proxy] endpoint in config")
+			os.Exit(1)
+		}
 	}
 
 	proxyConfig := agent.ProxyConfigFromEnvironment()
@@ -94,6 +108,9 @@ func main() {
 
 	fmt.Printf("🚀 Aiden Agent daemon starting on %s\n", *addr)
 	fmt.Printf("📂 Config directory: %s\n", *configDir)
+	if cfg.ToolProxy.Enabled {
+		fmt.Printf("🔀 Tool proxy mode: forwarding tool calls to %s\n", cfg.ToolProxy.Endpoint)
+	}
 	if resolvedBenchmarkDir != "" {
 		fmt.Printf("📊 Benchmark directory: %s\n", resolvedBenchmarkDir)
 	}

@@ -52,6 +52,7 @@ type Runtime struct {
 	sessionManager     SessionManager
 	telemetrySessionID string
 	mobileGym          *mobileGymSessionStore
+	toolProxy          *ToolProxyClient
 	runGate            chan struct{}
 }
 
@@ -295,6 +296,12 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 	if cfg.ConfigDir != "" {
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
 	}
+
+	var toolProxy *ToolProxyClient
+	if cfg.ToolProxy.Enabled && cfg.ToolProxy.Endpoint != "" {
+		toolProxy = NewToolProxyClient(cfg.ToolProxy.Endpoint)
+	}
+
 	rt := &Runtime{
 		config:             cfg,
 		models:             models,
@@ -305,6 +312,7 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		sleep:              sleepController,
 		telemetrySessionID: uuid.NewString(),
 		mobileGym:          &mobileGymSessionStore{},
+		toolProxy:          toolProxy,
 	}
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
@@ -558,6 +566,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, req.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), req.DeviceEnvironment, req.SteerProvider)
+	executor.ToolProxy = r.toolProxy
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {

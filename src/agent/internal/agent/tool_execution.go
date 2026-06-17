@@ -30,11 +30,12 @@ type ToolResult struct {
 }
 
 type ToolCallExecution struct {
-	Specs    *ToolSpecs
-	Action   schema.AgentAction
-	Before   BeforeToolCallHook
-	After    AfterToolCallHook
-	Callback callbacks.Handler
+	Specs       *ToolSpecs
+	Action      schema.AgentAction
+	Before      BeforeToolCallHook
+	After       AfterToolCallHook
+	Callback    callbacks.Handler
+	ProxyClient *ToolProxyClient
 }
 
 type ToolCallExecutionResult struct {
@@ -99,6 +100,40 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 			Error:   err,
 		}
 		result.Duration = time.Since(call.StartedAt)
+		result = runAfterToolCallHook(ctx, execution, call, result)
+		emitToolResult(ctx, execution.Callback, call, result)
+		return resultForToolCall(call, result, nil)
+	}
+
+	// If tool proxy is enabled, forward the call to the remote daemon. When the
+	// HTTP call succeeds the remote output/is_error are passed through verbatim,
+	// because the remote ran the same executeToolCall path and already produced
+	// the exact response (including any "error: X failed" formatting) the LLM
+	// would see locally. Only transport failures are formatted here, mirroring
+	// how a local tool error is surfaced.
+	if execution.ProxyClient != nil {
+		output, remoteIsError, err := execution.ProxyClient.CallTool(ctx, spec.Name, input)
+		if err != nil {
+			result := ToolResult{
+				Error:    err,
+				IsError:  true,
+				Duration: time.Since(call.StartedAt),
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				result = runAfterToolCallHook(ctx, execution, call, result)
+				emitToolResult(ctx, execution.Callback, call, result)
+				return ToolCallExecutionResult{Call: call, Result: result, Error: err}
+			}
+			result.Output = fmt.Sprintf("error: %s failed: %v", spec.Name, err)
+			result = runAfterToolCallHook(ctx, execution, call, result)
+			emitToolResult(ctx, execution.Callback, call, result)
+			return resultForToolCall(call, result, nil)
+		}
+		result := ToolResult{
+			Output:   output,
+			IsError:  remoteIsError,
+			Duration: time.Since(call.StartedAt),
+		}
 		result = runAfterToolCallHook(ctx, execution, call, result)
 		emitToolResult(ctx, execution.Callback, call, result)
 		return resultForToolCall(call, result, nil)

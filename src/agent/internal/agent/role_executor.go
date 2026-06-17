@@ -33,6 +33,7 @@ type roleCollaborativeExecutor struct {
 	InitialWorldState worldState
 	ForceSimpleLoop   bool
 	SteerProvider     func(context.Context) (RunSteerMessage, bool)
+	ToolProxy         *ToolProxyClient
 }
 
 const roleModelCallTimeout = 120 * time.Second
@@ -526,9 +527,10 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 	action schema.AgentAction,
 ) (plannerTurnResult, error) {
 	toolExecution := executeToolCall(ctx, ToolCallExecution{
-		Specs:    toolSpecs,
-		Action:   action,
-		Callback: e.CallbacksHandler,
+		Specs:       toolSpecs,
+		Action:      action,
+		Callback:    e.CallbacksHandler,
+		ProxyClient: e.ToolProxy,
 	})
 	if toolExecution.Error != nil {
 		return plannerTurnResult{}, toolExecution.Error
@@ -663,9 +665,10 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 	}
 
 	toolExecution := executeToolCall(ctx, ToolCallExecution{
-		Specs:    toolSpecs,
-		Action:   action,
-		Callback: e.CallbacksHandler,
+		Specs:       toolSpecs,
+		Action:      action,
+		Callback:    e.CallbacksHandler,
+		ProxyClient: e.ToolProxy,
 	})
 	if toolExecution.Error != nil {
 		return executorTurnResult{}, toolExecution.Error

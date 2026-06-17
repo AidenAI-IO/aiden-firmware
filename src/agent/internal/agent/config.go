@@ -16,6 +16,11 @@ type SearchConfig struct {
 	APIKey   string `toml:"api_key,omitempty"`
 }
 
+type ToolProxyConfig struct {
+	Enabled  bool   `toml:"enabled"`
+	Endpoint string `toml:"endpoint"`
+}
+
 const (
 	searchProviderDuckDuckGo = "duckduckgo"
 	searchProviderTavily     = "tavily"
@@ -101,6 +106,7 @@ type Config struct {
 	AudioArchive              AudioArchiveConfig `toml:"audio_archive,omitempty"`
 	Benchmark                 BenchmarkConfig    `toml:"benchmark,omitempty"`
 	Search                    SearchConfig       `toml:"search,omitempty"`
+	ToolProxy                 ToolProxyConfig    `toml:"tool_proxy,omitempty"`
 	Instruction               string             `toml:"instruction"`
 	AdditionalPrompt          string             `toml:"additional_prompt,omitempty"`
 	InputMode                 string             `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
