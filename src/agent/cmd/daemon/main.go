@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -46,8 +47,9 @@ func main() {
 		configDir         = flag.String("config", "", "path to config directory (required)")
 		addr              = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
 		benchmarkDir      = flag.String("benchmark-dir", "", "Override benchmark root directory (default: auto-detect)")
-		toolProxyMode     = flag.Bool("tool-proxy-mode", false, "Enable tool proxy mode (forward all tool calls to remote daemon)")
+		toolProxyMode     = flag.Bool("tool-proxy-mode", false, "Enable tool proxy mode (forward selected tool calls to a remote daemon; see --forward-tools)")
 		toolProxyEndpoint = flag.String("tool-proxy-endpoint", "", "Remote daemon endpoint for tool proxy mode (e.g., http://192.168.50.123:8080)")
+		forwardTools      = flag.String("forward-tools", "", "Comma-separated tool names or glob patterns to forward when tool-proxy-mode is on, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\" to forward all. Required with --tool-proxy-mode.")
 	)
 	flag.Parse()
 
@@ -69,7 +71,12 @@ func main() {
 			cfg.ToolProxy.Endpoint = *toolProxyEndpoint
 		}
 		if cfg.ToolProxy.Endpoint == "" {
-			fmt.Fprintln(os.Stderr, "tool-proxy-mode requires --tool-proxy-endpoint or [tool_proxy] endpoint in config")
+			fmt.Fprintln(os.Stderr, "tool-proxy-mode requires --tool-proxy-endpoint")
+			os.Exit(1)
+		}
+		cfg.ToolProxy.ForwardTools = parseCommaSeparated(*forwardTools)
+		if len(cfg.ToolProxy.ForwardTools) == 0 {
+			fmt.Fprintln(os.Stderr, "tool-proxy-mode requires --forward-tools (comma-separated tool names or glob patterns, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\" to forward all)")
 			os.Exit(1)
 		}
 	}
@@ -109,7 +116,8 @@ func main() {
 	fmt.Printf("🚀 Aiden Agent daemon starting on %s\n", *addr)
 	fmt.Printf("📂 Config directory: %s\n", *configDir)
 	if cfg.ToolProxy.Enabled {
-		fmt.Printf("🔀 Tool proxy mode: forwarding tool calls to %s\n", cfg.ToolProxy.Endpoint)
+		fmt.Printf("🔀 Tool proxy mode: forwarding to %s\n", cfg.ToolProxy.Endpoint)
+		fmt.Printf("   Forward tools: %v\n", cfg.ToolProxy.ForwardTools)
 	}
 	if resolvedBenchmarkDir != "" {
 		fmt.Printf("📊 Benchmark directory: %s\n", resolvedBenchmarkDir)
@@ -239,6 +247,20 @@ func floatOrDefault(value, fallback float64) float64 {
 		return value
 	}
 	return fallback
+}
+
+func parseCommaSeparated(input string) []string {
+	if strings.TrimSpace(input) == "" {
+		return nil
+	}
+	parts := strings.Split(input, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }
 
 type wakeupWatcherFactory func(pin int, callback func()) (wakeupWatcher, error)

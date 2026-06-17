@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 
@@ -30,12 +31,13 @@ type ToolResult struct {
 }
 
 type ToolCallExecution struct {
-	Specs       *ToolSpecs
-	Action      schema.AgentAction
-	Before      BeforeToolCallHook
-	After       AfterToolCallHook
-	Callback    callbacks.Handler
-	ProxyClient *ToolProxyClient
+	Specs        *ToolSpecs
+	Action       schema.AgentAction
+	Before       BeforeToolCallHook
+	After        AfterToolCallHook
+	Callback     callbacks.Handler
+	ProxyClient  *ToolProxyClient
+	ForwardTools []string // Tool name globs to forward; empty forwards nothing (see shouldProxyTool)
 }
 
 type ToolCallExecutionResult struct {
@@ -59,6 +61,34 @@ type toolResultCallbackHandler interface {
 
 type toolCallStartCallbackHandler interface {
 	HandleToolCallStart(ctx context.Context, call ToolCall)
+}
+
+// shouldProxyTool determines whether a tool call should be forwarded to the
+// remote daemon. A tool is forwarded when its name matches any pattern in
+// forwardTools. Patterns use shell-style globbing (path.Match), so "*" matches
+// every tool, "keyboard_*" matches all keyboard tools, and an exact name like
+// "screenshot" matches only that tool. An empty forwardTools list forwards
+// nothing, so the caller is responsible for supplying the device-tool patterns.
+func shouldProxyTool(toolName string, forwardTools []string) bool {
+	for _, pattern := range forwardTools {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		// path.Match only errors on malformed patterns; treat a malformed
+		// pattern as a literal exact-match fallback so a stray character never
+		// silently forwards or drops a tool.
+		if matched, err := path.Match(pattern, toolName); err == nil {
+			if matched {
+				return true
+			}
+			continue
+		}
+		if pattern == toolName {
+			return true
+		}
+	}
+	return false
 }
 
 func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallExecutionResult {
@@ -111,7 +141,10 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	// the exact response (including any "error: X failed" formatting) the LLM
 	// would see locally. Only transport failures are formatted here, mirroring
 	// how a local tool error is surfaced.
-	if execution.ProxyClient != nil {
+	//
+	// Only forward tools whose name matches one of the configured ForwardTools
+	// patterns (see shouldProxyTool). Everything else runs locally.
+	if execution.ProxyClient != nil && shouldProxyTool(spec.Name, execution.ForwardTools) {
 		output, remoteIsError, err := execution.ProxyClient.CallTool(ctx, spec.Name, input)
 		if err != nil {
 			result := ToolResult{

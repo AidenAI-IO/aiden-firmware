@@ -17,8 +17,9 @@ type SearchConfig struct {
 }
 
 type ToolProxyConfig struct {
-	Enabled  bool   `toml:"enabled"`
-	Endpoint string `toml:"endpoint"`
+	Enabled      bool     `toml:"-"` // Only set via CLI, not config file
+	Endpoint     string   `toml:"-"` // Only set via CLI, not config file
+	ForwardTools []string `toml:"-"` // Only set via CLI, not config file
 }
 
 const (
@@ -106,7 +107,7 @@ type Config struct {
 	AudioArchive              AudioArchiveConfig `toml:"audio_archive,omitempty"`
 	Benchmark                 BenchmarkConfig    `toml:"benchmark,omitempty"`
 	Search                    SearchConfig       `toml:"search,omitempty"`
-	ToolProxy                 ToolProxyConfig    `toml:"tool_proxy,omitempty"`
+	ToolProxy                 ToolProxyConfig    `toml:"-"` // Only set via CLI flags, never from config file
 	Instruction               string             `toml:"instruction"`
 	AdditionalPrompt          string             `toml:"additional_prompt,omitempty"`
 	InputMode                 string             `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
