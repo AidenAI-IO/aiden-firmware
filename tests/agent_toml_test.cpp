@@ -42,7 +42,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.voice_tool_call_speech = false;
     cfg.voice_progress_speech_enabled = false;
     cfg.voice_speech_summary_enabled = false;
-    cfg.voice_speech_max_runes = 80;
     cfg.voice_max_response_tokens = 240;
     cfg.max_iterations = 6;
     cfg.force_simple_loop = true;
@@ -141,7 +140,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
 	CHECK(loaded.voice_tool_call_speech == false);
 	CHECK(loaded.voice_progress_speech_enabled == false);
 	CHECK(loaded.voice_speech_summary_enabled == false);
-	CHECK(loaded.voice_speech_max_runes == 80);
 	CHECK(loaded.voice_max_response_tokens == 240);
 	CHECK(loaded.max_iterations == 6);
 	CHECK(loaded.force_simple_loop == true);
@@ -332,18 +330,19 @@ TEST_CASE("agent_toml strips inline comments after unquoted scalars") {
     std::remove(path.c_str());
 }
 
-TEST_CASE("agent_toml rejects negative voice speech max runes") {
-    std::string path = make_temp_path("negative_voice_speech_max_runes.toml");
+TEST_CASE("agent_toml ignores legacy voice speech max runes") {
+    std::string path = make_temp_path("legacy_voice_speech_max_runes.toml");
     {
         std::ofstream out(path);
         out << "voice_speech_max_runes = -1\n";
+        out << "voice_max_response_tokens = 240\n";
     }
 
     aiden::AgentToml cfg;
     std::string err;
-    CHECK_FALSE(aiden::load_agent_toml(path.c_str(), cfg, &err));
-    CHECK(err.find("voice_speech_max_runes") != std::string::npos);
-    CHECK(err.find(">= 0") != std::string::npos);
+    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    CHECK(err.empty());
+    CHECK(cfg.voice_max_response_tokens == 240);
 
     std::remove(path.c_str());
 }

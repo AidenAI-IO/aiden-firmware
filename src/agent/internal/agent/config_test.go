@@ -871,9 +871,6 @@ func TestVoiceSessionConfigDefaults(t *testing.T) {
 	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
 		t.Fatal("VoiceSpeechSummaryEnabledOrDefault() = false, want true")
 	}
-	if cfg.VoiceSpeechMaxRunesOrDefault() != 120 {
-		t.Fatalf("VoiceSpeechMaxRunesOrDefault() = %d, want 120", cfg.VoiceSpeechMaxRunesOrDefault())
-	}
 	if cfg.VoiceMaxResponseTokensOrDefault() != 400 {
 		t.Fatalf("VoiceMaxResponseTokensOrDefault() = %d, want 400", cfg.VoiceMaxResponseTokensOrDefault())
 	}
@@ -895,7 +892,6 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 		VoiceToolCallSpeech:        &toolSpeech,
 		VoiceProgressSpeechEnabled: &progressSpeechDisabled,
 		VoiceSpeechSummaryEnabled:  &summaryDisabled,
-		VoiceSpeechMaxRunes:        64,
 		VoiceMaxResponseTokens:     123,
 	}
 
@@ -922,9 +918,6 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 	}
 	if cfg.VoiceSpeechSummaryEnabledOrDefault() {
 		t.Fatal("VoiceSpeechSummaryEnabledOrDefault() = true, want false")
-	}
-	if cfg.VoiceSpeechMaxRunesOrDefault() != 64 {
-		t.Fatalf("VoiceSpeechMaxRunesOrDefault() = %d, want 64", cfg.VoiceSpeechMaxRunesOrDefault())
 	}
 	if cfg.VoiceMaxResponseTokensOrDefault() != 123 {
 		t.Fatalf("VoiceMaxResponseTokensOrDefault() = %d, want 123", cfg.VoiceMaxResponseTokensOrDefault())
@@ -968,14 +961,6 @@ func TestVoiceSessionConfigValidationRejectsNegativeValues(t *testing.T) {
 				VoiceMaxResponseTokens: -1,
 			},
 			want: "voice_max_response_tokens must be >= 0",
-		},
-		{
-			name: "negative voice speech max runes",
-			cfg: Config{
-				Model:               ModelConfig{Provider: "fake"},
-				VoiceSpeechMaxRunes: -1,
-			},
-			want: "voice_speech_max_runes must be >= 0",
 		},
 		{
 			name: "negative todo reminder tool calls",

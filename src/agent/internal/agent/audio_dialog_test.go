@@ -255,7 +255,6 @@ func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 			InputMode:                 "audio",
 			VoiceStreamingTTSEnabled:  boolPtr(false),
 			VoiceSpeechSummaryEnabled: boolPtr(true),
-			VoiceSpeechMaxRunes:       22,
 		},
 		audioClient:  NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 		ttsManager:   ttsmodule.NewProviderManager(provider, nil),

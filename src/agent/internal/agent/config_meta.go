@@ -303,8 +303,6 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
 					{Key: "voice_speech_summary_enabled", Widget: WidgetBoolean, Default: defaults.VoiceSpeechSummaryEnabledOrDefault(),
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
-					{Key: "voice_speech_max_runes", Widget: WidgetNumber, Default: defaults.VoiceSpeechMaxRunes,
-						VisibleWhen: all(in("agent.input_mode", "stt", "audio"), truthy("agent.voice_speech_summary_enabled"))},
 					{Key: "voice_max_response_tokens", Widget: WidgetNumber, Default: defaults.VoiceMaxResponseTokens,
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
 					{Key: "todo_reminder_tool_calls", Widget: WidgetNumber, Default: defaults.TodoReminderToolCallsOrDefault()},
