@@ -821,6 +821,7 @@ func (e *roleCollaborativeExecutor) generateRoleContent(ctx context.Context, rol
 	callCtx, cancel := context.WithTimeout(ctx, roleModelCallTimeout)
 	defer cancel()
 	callCtx = contextWithTelemetryRole(callCtx, role)
+	messages = e.guardMessagesWithinContextWindow(messages, options)
 	res, err := e.Model.GenerateContent(callCtx, messages, options...)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return nil, fmt.Errorf("%s role model call timed out after %s", role, roleModelCallTimeout)
