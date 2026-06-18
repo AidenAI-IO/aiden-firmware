@@ -5,7 +5,7 @@ from runner.suite import load_suite, SuiteValidationError
 
 FIXTURE = {
     "name": "test_suite",
-    "global_reset": {"tool_sequence": [{"tool": "keyboard_tap", "args": {"keys": ["escape"]}}]},
+    "global_reset": {},
     "tasks": [
         {
             "id": "open_settings",
@@ -47,6 +47,28 @@ def test_mobilegym_basic_suite_loads_device_operation_tasks():
     assert suite.name == "mobilegym_basic"
     assert {task.category for task in suite.tasks} == {"device_operation"}
     assert all(task.rubric and task.rubric[0].check for task in suite.tasks)
+
+
+def test_benchmark_suites_do_not_use_tool_sequence():
+    suites_root = Path(__file__).resolve().parents[1] / "suites"
+    offenders = []
+
+    def walk(path, value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_path = f"{path}.{key}" if path else key
+                if key == "tool_sequence":
+                    offenders.append(child_path)
+                walk(child_path, child)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                walk(f"{path}[{index}]", child)
+
+    for suite_path in sorted(suites_root.rglob("*.json")):
+        data = json.loads(suite_path.read_text(encoding="utf-8"))
+        walk(str(suite_path.relative_to(suites_root)), data)
+
+    assert offenders == []
 
 def test_load_suite_parses_expected_option_answer(tmp_path: Path):
     fixture = {
@@ -252,23 +274,6 @@ def test_load_suite_duplicate_ids_raise(tmp_path: Path):
         load_suite(p)
 
 
-def test_phone_control_suite_uses_cmd_h_for_global_reset():
-    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
-    suite = load_suite(suite_path)
-    sequence = suite.global_reset["tool_sequence"]
-
-    cmd_h_steps = [
-        step
-        for step in sequence
-        if step.get("tool") == "keyboard_tap" and step.get("args", {}).get("keys") == ["meta", "h"]
-    ]
-    assert len(cmd_h_steps) == 2
-    assert all(
-        not (step.get("tool") == "touch_gesture" and step.get("args", {}).get("type") == "home")
-        for step in sequence
-    )
-
-
 def test_phone_control_suite_constrains_agent_to_iphone_ui():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
     suite = load_suite(suite_path)
@@ -277,23 +282,6 @@ def test_phone_control_suite_constrains_agent_to_iphone_ui():
     assert "macOS" in suite.prompt_prefix
     assert "shell" in suite.prompt_prefix
     assert "osascript" in suite.prompt_prefix
-
-
-def test_phone_control_tap_back_setup_is_iphone_specific():
-    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
-    suite = load_suite(suite_path)
-    task_by_id = {task.id: task for task in suite.tasks}
-    setup = task_by_id["tap_back"].setup
-
-    assert setup.get("tool_sequence")
-    tools = [step.get("tool") for step in setup["tool_sequence"]]
-    assert "touch_gesture" in tools
-    assert "keyboard_text" in tools
-    assert any(
-        step.get("args", {}).get("text") == "设置"
-        for step in setup["tool_sequence"]
-        if step.get("tool") == "keyboard_text"
-    )
 
 
 def test_phone_control_bluetooth_task_uses_chinese_keyword():
@@ -372,12 +360,6 @@ def test_device_operator_skillopt_suite_is_ready_for_optimization():
         "permission" in item.check or "隐私" in item.check
         for item in task_by_id["ask_before_privacy_permission"].rubric
     )
-    for task in suite.tasks:
-        for step in (task.setup or {}).get("tool_sequence", []):
-            if step.get("tool") == "keyboard_text":
-                text = step.get("args", {}).get("text", "")
-                assert text.isascii(), f"{task.id} setup keyboard_text must be ASCII: {text!r}"
-
 
 def test_device_operator_skillopt_validation_suite_is_held_out():
     suites_root = Path(__file__).resolve().parents[1] / "suites" / "skillopt"
@@ -392,11 +374,6 @@ def test_device_operator_skillopt_validation_suite_is_held_out():
     assert validation_ids.isdisjoint(train_ids)
     assert any(obs.skill_name == "device-operator" for obs in validation_suite.trace_observations)
     assert all(task.category in {"single_step", "multi_step"} for task in validation_suite.tasks)
-    for task in validation_suite.tasks:
-        for step in (task.setup or {}).get("tool_sequence", []):
-            if step.get("tool") == "keyboard_text":
-                text = step.get("args", {}).get("text", "")
-                assert text.isascii(), f"{task.id} setup keyboard_text must be ASCII: {text!r}"
 
 def test_memory_suite_covers_representative_memory_behaviors():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "memory_v1.json"
@@ -426,26 +403,10 @@ def test_memory_suite_covers_representative_memory_behaviors():
     assert len(suite.tasks) >= 17
     assert all(task.category == "memory" for task in suite.tasks)
 
-    assert task_by_id["use_preference_brevity"].setup["type"] == "agent_prompt"
-    assert task_by_id["use_preference_language"].setup["tool_sequence"]
-    assert task_by_id["use_rule_to_block_action"].setup["tool_sequence"]
-    assert task_by_id["use_procedure_steps"].setup["tool_sequence"]
-    assert task_by_id["recall_saved_fact_after_setup"].setup["type"] == "agent_prompt"
-    assert task_by_id["recall_session_chunk_details"].setup["tool_sequence"]
-    assert task_by_id["use_filtered_subset"].setup["tool_sequence"]
     assert any(
         "recall_session_chunks" in item.check
         for item in task_by_id["recall_session_chunk_details"].rubric
     )
-    assert task_by_id["forget_on_request"].setup["type"] == "agent_prompt"
-
-def test_memory_suite_global_reset_tolerates_missing_memory_dir():
-    suite_path = Path(__file__).resolve().parents[1] / "suites" / "memory_v1.json"
-    suite = load_suite(suite_path)
-    command = suite.global_reset["tool_sequence"][0]["args"]["command"]
-
-    assert "mkdir -p /userdata/agent/memory" in command
-    assert "ls /userdata/agent/memory/ 2>/dev/null || true" in command
 
 
 def test_personamem_lt_recall_suite_uses_deterministic_answers():
@@ -476,17 +437,9 @@ def test_personamem_lt_recall_suite_uses_deterministic_answers():
     assert expected_tasks <= set(task_by_id)
     assert len(suite.tasks) >= 16
     assert all(task.category == "memory" for task in suite.tasks)
-    assert all(task.setup and task.setup["tool_sequence"] for task in suite.tasks)
     assert all(task.expected_answer for task in suite.tasks)
     assert all(task.expected_recalled_memory_ids for task in suite.tasks)
     assert all(task.answer_format == "option_letter" for task in suite.tasks)
-    for task in suite.tasks:
-        for step in task.setup["tool_sequence"]:
-            if step.get("tool") != "shell":
-                continue
-            command = step["args"]["command"]
-            assert "<<'EOF'" in command
-            assert "\nEOF" in command
 
 
 def test_episode_memory_suite_guards_against_setup_context_leakage():

@@ -1,17 +1,7 @@
 {
   "name": "episode_memory_v1",
   "description": "Task episode and device memory benchmark — verifies runtime automatic retrieval, failure-memory use, and conflict handling.",
-  "global_reset": {
-    "tool_sequence": [
-      {
-        "tool": "shell",
-        "args": {
-          "command": "rm -rf /userdata/agent/memory/session /userdata/agent/memory/long_term /userdata/agent/memory/device /userdata/agent/memory/episodes /userdata/agent/memory/lifecycle /userdata/agent/memory/default.json 2>/dev/null; mkdir -p /userdata/agent/memory"
-        }
-      },
-      { "tool": "wait_ms", "args": { "ms": 300 } }
-    ]
-  },
+  "global_reset": {},
   "tasks": [
     {
       "id": "reuse_success_episode_for_planning",
@@ -49,16 +39,6 @@
       "id": "failure_memory_guides_verifier_policy",
       "category": "memory",
       "description_for_judge": "The setup writes a device failure memory saying direct Chinese input via keyboard_text fails and pinyin/candidate selection should be used. The agent should surface that failure lesson when asked whether direct Chinese keyboard_text is acceptable.",
-      "setup": {
-        "tool_sequence": [
-          {
-            "tool": "shell",
-            "args": {
-              "command": "mkdir -p /userdata/agent/memory/device/failures; cat > /userdata/agent/memory/device/failures/fail_direct_chinese_input.yaml <<'EOF'\nid: fail_direct_chinese_input\ntype: failure\nstatus: active\ntitle: Direct Chinese keyboard_text fails\ncontent: keyboard_text cannot directly input Chinese text on this device; use pinyin or English keywords, then select an input-method candidate or visible search result.\ndevice_id: default\ntags: [\"输入\", \"中文\", \"keyboard_text\"]\nentities: [\"keyboard_text\"]\nconfidence: 0.95\npriority: 90\nttl: 60d\nEOF"
-            }
-          }
-        ]
-      },
       "prompt": "我要在手机输入框里直接用 keyboard_text 输入中文“张三”。根据设备失败经验，这样做稳吗？应该怎么做？",
       "rubric": [
         {
@@ -85,16 +65,6 @@
       "id": "conflicted_memory_not_used_as_plan",
       "category": "memory",
       "description_for_judge": "The setup writes a conflicted device procedure. Conflicted memories should not be used as ordinary planner procedures; they should be surfaced as verifier/conflict cautions. The response should avoid relying on the conflicted path and should require fresh observation.",
-      "setup": {
-        "tool_sequence": [
-          {
-            "tool": "shell",
-            "args": {
-              "command": "mkdir -p /userdata/agent/memory/device/procedures; cat > /userdata/agent/memory/device/procedures/proc_bad_open_app.yaml <<'EOF'\nid: proc_bad_open_app\ntype: procedure\nstatus: conflicted\ntitle: Conflicted open-app path\ncontent: Always open apps by repeated home-screen swiping.\ndevice_id: default\ntags: [\"打开App\"]\nconfidence: 0.4\npriority: 90\nconflicts_with: [\"ep_failed_open_app\"]\nEOF"
-            }
-          }
-        ]
-      },
       "prompt": "我想打开一个 App。根据已有设备经验，是否应该直接采用反复桌面翻页这个路径？请只给结论和一句理由。",
       "rubric": [
         {

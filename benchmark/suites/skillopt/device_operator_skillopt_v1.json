@@ -9,14 +9,7 @@
     }
   ],
   "prompt_prefix": "SkillOpt target skill: device-operator. 你正在操作一台通过 HDMI 采集画面的 iPhone，不是 macOS、Linux 或桌面系统。必须通过 screenshot、touch_gesture、mouse_click、mouse_move、mouse_scroll、keyboard_tap、keyboard_text 等可见 UI 工具操作目标设备；不要使用 shell、open、osascript 或桌面命令来操控手机 App。每次动作前先观察截图，动作后再次观察并确认页面变化。不要连续执行多个盲目动作；如果点击、滑动或输入没有效果，不要重复同一个相同坐标或相同手势，必须换策略。涉及隐私权限、发送信息、删除数据、支付或账号设置时，先向用户确认。",
-  "global_reset": {
-    "tool_sequence": [
-      { "tool": "keyboard_tap", "args": { "keys": ["meta", "h"] } },
-      { "tool": "wait_ms", "args": { "ms": 1200 } },
-      { "tool": "keyboard_tap", "args": { "keys": ["meta", "h"] } },
-      { "tool": "wait_ms", "args": { "ms": 1200 } }
-    ]
-  },
+  "global_reset": {},
   "tasks": [
     {
       "id": "open_settings_from_home",
@@ -75,12 +68,6 @@
       "category": "single_step",
       "description_for_judge": "Agent must focus the iPhone search field, type the exact query once, and verify the visible text.",
       "prompt": "在搜索框里输入 Aiden-Device-2026。",
-      "setup": {
-        "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
-          { "tool": "wait_ms", "args": { "ms": 800 } }
-        ]
-      },
       "rubric": [
         {
           "id": "field_focused_first",
@@ -133,18 +120,6 @@
       "category": "single_step",
       "description_for_judge": "Agent must navigate back from a Settings detail page to the parent page using an iPhone-appropriate action.",
       "prompt": "请返回上一层设置页面。",
-      "setup": {
-        "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
-          { "tool": "wait_ms", "args": { "ms": 800 } },
-          { "tool": "keyboard_text", "args": { "text": "Settings" } },
-          { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
-          { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 420 } } },
-          { "tool": "wait_ms", "args": { "ms": 1000 } }
-        ]
-      },
       "rubric": [
         {
           "id": "used_back_navigation",
@@ -197,14 +172,6 @@
       "category": "multi_step",
       "description_for_judge": "Agent must treat the current screen as unknown, inspect it, and safely return to a home or neutral state.",
       "prompt": "把当前手机状态当作未知初始状态：先判断当前页面，再用安全的导航动作回到主屏幕或更容易继续操作的状态。",
-      "setup": {
-        "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
-          { "tool": "wait_ms", "args": { "ms": 800 } },
-          { "tool": "keyboard_text", "args": { "text": "Settings" } },
-          { "tool": "wait_ms", "args": { "ms": 1500 } }
-        ]
-      },
       "rubric": [
         {
           "id": "initial_observation",
@@ -257,16 +224,6 @@
       "category": "multi_step",
       "description_for_judge": "Agent must open a note-capable input area, focus it, type exact ASCII text, and verify the text appears.",
       "prompt": "打开一个可以输入文字的位置，输入：device operator test 2026。",
-      "setup": {
-        "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
-          { "tool": "wait_ms", "args": { "ms": 800 } },
-          { "tool": "keyboard_text", "args": { "text": "Notes" } },
-          { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
-          { "tool": "wait_ms", "args": { "ms": 2000 } }
-        ]
-      },
       "rubric": [
         {
           "id": "input_focused_before_text",
@@ -293,20 +250,6 @@
       "category": "multi_step",
       "description_for_judge": "Agent must clear prefilled text from an input field using select-all/delete or another verified clearing method.",
       "prompt": "请把当前输入框里的文字全部清空。",
-      "setup": {
-        "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
-          { "tool": "wait_ms", "args": { "ms": 800 } },
-          { "tool": "keyboard_text", "args": { "text": "Notes" } },
-          { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
-          { "tool": "wait_ms", "args": { "ms": 2000 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 780 } } },
-          { "tool": "wait_ms", "args": { "ms": 800 } },
-          { "tool": "keyboard_text", "args": { "text": "temporary device text" } },
-          { "tool": "wait_ms", "args": { "ms": 500 } }
-        ]
-      },
       "rubric": [
         {
           "id": "clear_method_used",

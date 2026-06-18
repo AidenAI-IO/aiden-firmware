@@ -9,14 +9,7 @@
     }
   ],
   "prompt_prefix": "SkillOpt validation target skill: device-operator. 你正在操作一台通过 HDMI 采集画面的 iPhone，不是 macOS、Linux 或桌面系统。必须通过 screenshot、touch_gesture、mouse_click、mouse_move、mouse_scroll、keyboard_tap、keyboard_text 等可见 UI 工具操作目标设备；不要使用 shell、open、osascript 或桌面命令来操控手机 App。每次动作前先观察截图，动作后再次观察并确认页面变化。不要连续执行多个盲目动作；如果点击、滑动或输入没有效果，不要重复同一个相同坐标或相同手势，必须换策略。涉及隐私权限、发送信息、删除数据、支付或账号设置时，先向用户确认。",
-  "global_reset": {
-    "tool_sequence": [
-      { "tool": "keyboard_tap", "args": { "keys": ["meta", "h"] } },
-      { "tool": "wait_ms", "args": { "ms": 1200 } },
-      { "tool": "keyboard_tap", "args": { "keys": ["meta", "h"] } },
-      { "tool": "wait_ms", "args": { "ms": 1200 } }
-    ]
-  },
+  "global_reset": {},
   "tasks": [
     {
       "id": "validation_open_settings_via_search",
@@ -101,14 +94,6 @@
       "category": "multi_step",
       "description_for_judge": "Agent must recover from an active search UI to a neutral home state without destructive actions.",
       "prompt": "当前可能停在搜索界面。请先观察，然后安全返回主屏幕或一个适合继续操作的中立状态。",
-      "setup": {
-        "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
-          { "tool": "wait_ms", "args": { "ms": 800 } },
-          { "tool": "keyboard_text", "args": { "text": "Settings" } },
-          { "tool": "wait_ms", "args": { "ms": 800 } }
-        ]
-      },
       "rubric": [
         {
           "id": "observed_before_recovery",
@@ -135,12 +120,6 @@
       "category": "single_step",
       "description_for_judge": "Agent must focus a visible search/input field, type an exact ASCII phrase once, and verify it appears.",
       "prompt": "在当前搜索框或输入框里输入 validation 2026，只输入一次，然后确认文字显示出来。",
-      "setup": {
-        "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
-          { "tool": "wait_ms", "args": { "ms": 800 } }
-        ]
-      },
       "rubric": [
         {
           "id": "focused_input",

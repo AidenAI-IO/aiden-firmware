@@ -9,14 +9,7 @@
     }
   ],
   "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的 iPhone，不是 macOS、Linux 或桌面系统。只能通过截图、touch_gesture、mouse_click、keyboard_text、keyboard_tap 等手机 UI 工具操作目标设备；不要使用 shell、open、osascript 或桌面命令来打开目标手机上的 App。每次工具返回截图后，先判断页面是否变化、是否已经进入目标页面，再继续下一步；如果截图没有变化，不要反复点击同一坐标。打开系统设置或时钟时，优先点击当前 iPhone 主屏幕上可见的图标，或使用 iPhone 搜索。",
-  "global_reset": {
-    "tool_sequence": [
-      { "tool": "keyboard_tap", "args": { "keys": ["meta", "h"] } },
-      { "tool": "wait_ms", "args": { "ms": 1200 } },
-      { "tool": "keyboard_tap", "args": { "keys": ["meta", "h"] } },
-      { "tool": "wait_ms", "args": { "ms": 1200 } }
-    ]
-  },
+  "global_reset": {},
   "tasks": [
     {
       "id": "open_settings",
@@ -65,18 +58,6 @@
       "category": "single_step",
       "description_for_judge": "Agent must navigate back from a settings sub-page to the parent settings page.",
       "prompt": "请返回上一层。",
-      "setup": {
-        "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
-          { "tool": "wait_ms", "args": { "ms": 800 } },
-          { "tool": "keyboard_text", "args": { "text": "设置" } },
-          { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
-          { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 420 } } },
-          { "tool": "wait_ms", "args": { "ms": 1000 } }
-        ]
-      },
       "rubric": [
         {
           "id": "page_changed",
@@ -94,12 +75,6 @@
       "category": "single_step",
       "description_for_judge": "Agent must locate a search input on the screen and type the literal string 'hello' into it.",
       "prompt": "在搜索框里输入 hello。",
-      "setup": {
-        "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
-          { "tool": "wait_ms", "args": { "ms": 800 } }
-        ]
-      },
       "rubric": [
         {
           "id": "search_focused",
@@ -125,16 +100,6 @@
       "category": "single_step",
       "description_for_judge": "Agent must perform a vertical scroll downward on the current page.",
       "prompt": "请向下滑动一屏。",
-      "setup": {
-        "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
-          { "tool": "wait_ms", "args": { "ms": 800 } },
-          { "tool": "keyboard_text", "args": { "text": "设置" } },
-          { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
-          { "tool": "wait_ms", "args": { "ms": 1500 } }
-        ]
-      },
       "rubric": [
         {
           "id": "page_scrolled",
@@ -269,16 +234,6 @@
       "category": "multi_step",
       "description_for_judge": "Agent must repeatedly scroll a settings page until the bottom of the list is reached, and stop scrolling once the bottom is detected.",
       "prompt": "在设置页面持续向下滑动，直到滑到底部为止。",
-      "setup": {
-        "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
-          { "tool": "wait_ms", "args": { "ms": 800 } },
-          { "tool": "keyboard_text", "args": { "text": "设置" } },
-          { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
-          { "tool": "wait_ms", "args": { "ms": 1500 } }
-        ]
-      },
       "rubric": [
         {
           "id": "multiple_scrolls",
@@ -304,18 +259,6 @@
       "category": "multi_step",
       "description_for_judge": "Agent must locate a text input and type the literal string 'Aiden测试 benchmark-2026!' into it.",
       "prompt": "在当前可输入位置输入：Aiden测试 benchmark-2026!",
-      "setup": {
-        "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
-          { "tool": "wait_ms", "args": { "ms": 800 } },
-          { "tool": "keyboard_text", "args": { "text": "备忘录" } },
-          { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
-          { "tool": "wait_ms", "args": { "ms": 2000 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 780 } } },
-          { "tool": "wait_ms", "args": { "ms": 800 } }
-        ]
-      },
       "rubric": [
         {
           "id": "input_focused",
@@ -341,20 +284,6 @@
       "category": "multi_step",
       "description_for_judge": "Agent must clear an input field that already contains text by selecting all and deleting.",
       "prompt": "请把输入框里已有的文字全部清空。",
-      "setup": {
-        "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
-          { "tool": "wait_ms", "args": { "ms": 800 } },
-          { "tool": "keyboard_text", "args": { "text": "备忘录" } },
-          { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
-          { "tool": "wait_ms", "args": { "ms": 2000 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 780 } } },
-          { "tool": "wait_ms", "args": { "ms": 800 } },
-          { "tool": "keyboard_text", "args": { "text": "temporary note text" } },
-          { "tool": "wait_ms", "args": { "ms": 500 } }
-        ]
-      },
       "rubric": [
         {
           "id": "select_used",
@@ -376,18 +305,6 @@
       "category": "multi_step",
       "description_for_judge": "Agent must type a phrase, select all and copy it, then move to a different input field and paste it.",
       "prompt": "在第一个输入框输入 hello-aiden，然后选中复制，切到第二个输入框粘贴。",
-      "setup": {
-        "tool_sequence": [
-          { "tool": "touch_gesture", "args": { "type": "swipe_down", "anchor": 120 } },
-          { "tool": "wait_ms", "args": { "ms": 800 } },
-          { "tool": "keyboard_text", "args": { "text": "备忘录" } },
-          { "tool": "wait_ms", "args": { "ms": 1500 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 320 } } },
-          { "tool": "wait_ms", "args": { "ms": 2000 } },
-          { "tool": "touch_gesture", "args": { "type": "tap", "point": { "x": 500, "y": 780 } } },
-          { "tool": "wait_ms", "args": { "ms": 800 } }
-        ]
-      },
       "rubric": [
         {
           "id": "first_input_typed",

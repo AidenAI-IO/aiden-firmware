@@ -167,13 +167,6 @@ def test_parallel_run_rebuilds_when_sources_are_newer_than_images(tmp_path):
     assert any(" build" in line for line in log_path.read_text().splitlines())
 
 
-def test_parallel_run_image_freshness_ignores_host_launcher_scripts():
-    script = (DOCKER_DIR / "parallel_run.sh").read_text()
-
-    assert 'mobilegym_root / "scripts",' not in script
-    assert 'mobilegym_root / "scripts" / "run_aiden.py"' in script
-
-
 def test_parallel_run_reports_missing_docker_clearly(tmp_path):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

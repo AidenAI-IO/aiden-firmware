@@ -17,7 +17,7 @@
 
 - `agent_client.py`：HTTP 调用 agent
 - `suite.py`：加载任务集
-- `reset.py`：任务隔离（global_reset + per_task_setup）
+- `reset.py`：任务隔离（清理 agent history、可选调用环境 `/api/reset`、支持非工具的 `agent_prompt` setup）
 - `runtask.py`：执行单个任务
 - `judge.py`：LLM 评分
 - `assertions.py`：硬断言
@@ -151,9 +151,9 @@ python -m runner.skillopt \
 
 ```python
 # 每个 task 之前
-client.clear_history()              # 清 agent history（可能也清 memory）
-global_reset(client, suite)         # home + back + wait
-per_task_setup(client, task.setup)  # 任务前置状态
+client.clear_history()              # 清 agent history
+call_environment_reset(env_url)     # 可选：调用环境 /api/reset
+per_task_setup(client, task.setup)  # 非 environment run 可选：agent_prompt setup
 ```
 
 跟 benchmark runner 一模一样。

@@ -757,7 +757,7 @@ def test_failed_shard_without_selected_tasks_still_generates_report_row(tmp_path
         },
     )
     (shard / "runner.log").parent.mkdir(parents=True, exist_ok=True)
-    (shard / "runner.log").write_text("run_aiden.py: error: unrecognized arguments: --aiden-suite\n", encoding="utf-8")
+    (shard / "runner.log").write_text("worker.py: error: unrecognized arguments: --suite\n", encoding="utf-8")
 
     report.generate_reports(batch)
 

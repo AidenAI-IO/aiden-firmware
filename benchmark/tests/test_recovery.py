@@ -61,6 +61,12 @@ class SetupClient:
         if self.clears <= self.fail_clears:
             raise AgentTimeoutError("clear timed out")
 
+    def invoke_tool(self, name, args):
+        raise AssertionError("unexpected agent-side tool call")
+
+    def chat(self, message, timeout_sec=None):
+        raise AssertionError("unexpected agent-side setup chat")
+
 
 def test_prepare_task_isolation_retries_clear(monkeypatch):
     sleeps = []
@@ -87,7 +93,7 @@ def test_prepare_task_isolation_retries_clear(monkeypatch):
     assert client.clears == 2
 
 
-def test_prepare_task_isolation_uses_environment_reset_instead_of_global_reset(monkeypatch):
+def test_prepare_task_isolation_uses_environment_reset_without_agent_side_setup(monkeypatch):
     reset_calls = []
     monkeypatch.setattr(
         "runner.recovery.call_environment_reset",
@@ -96,7 +102,7 @@ def test_prepare_task_isolation_uses_environment_reset_instead_of_global_reset(m
     client = SetupClient()
     suite = Suite(
         name="phone",
-        global_reset={"tool_sequence": [{"tool": "shell", "args": {"command": "should-not-run"}}]},
+        global_reset={},
         tasks=[],
         sha256="sha",
         source_path=__import__("pathlib").Path("suite.json"),
@@ -108,6 +114,7 @@ def test_prepare_task_isolation_uses_environment_reset_instead_of_global_reset(m
         prompt="open settings",
         rubric=[RubricItem(id="ok", check="ok")],
         hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=3),
+        setup={"type": "agent_prompt", "prompt": "should not run"},
     )
 
     prepare_task_isolation(
