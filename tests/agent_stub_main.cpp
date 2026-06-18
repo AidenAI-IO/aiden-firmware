@@ -79,7 +79,7 @@ const char* kDefaultConfig =
     "\"voice_speech_summary_enabled\":true,"
     "\"voice_max_response_tokens\":300,\"max_iterations\":-1,\"force_simple_loop\":false,"
     "\"screenshot_keep_n\":3,"
-    "\"screenshot_prune_interval\":25,\"screen_stable_timeout_ms\":3500,"
+    "\"screenshot_prune_interval\":2,\"screen_stable_timeout_ms\":3500,"
     "\"screen_stable_ms\":500,\"screen_stable_diff_threshold\":2}"
     "}\n";
 

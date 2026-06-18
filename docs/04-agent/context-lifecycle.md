@@ -18,7 +18,7 @@ Each run is assembled from several layers. Some layers are persisted memory, whi
 | Retrieved memory context | `MemoryPlane.Retrieve` output | planner receives common and planner memory; verifier receives failure/conflict caution memory only | filesystem memory |
 | Planner conversation history | hot-window memory, optional compressed-history markers, optional persisted chat history | planner only | filesystem memory |
 | Role loop state | phase, objective, plan, `plan_step_index`, next step, tool evidence, verifier feedback, world state | role-specific | current run only |
-| Input attachments | `RunRequest.Attachments`, plus latest screenshot image when available | role user messages | current run only |
+| Input attachments | `RunRequest.Attachments`; verifier-only latest screenshot image when world state has one | role user messages | current run only |
 
 The executor intentionally does not receive global memory or full conversation history. It receives the planner-approved `next_step`, latest world state, and the latest local execution result only.
 
@@ -100,9 +100,9 @@ The per-call user message is then built from the current loop state:
 
 - planner sees the current loop mode, world state, original request, conversation history, draft or committed plan, executor results, and verifier feedback;
 - executor sees the current world state and the planner-approved `next_step`;
-- verifier sees the current world state, the step under verification (`step_index`, `step_text`, `is_final_committed_step`), and the latest executor result for that step only.
+- verifier sees the current world state, the step under verification (`step_index`, `step_text`, `is_final_committed_step`), the latest executor result for that step, and the latest world-state screenshot image when available.
 
-Planner and executor receive the tool scratchpad after tools have run. The latest screenshot image is attached to the role message when the world state has screenshot bytes.
+Planner and executor receive tool scratchpads after tools have run. `WorldState.LatestScreenshot` is retained as verifier-only visual evidence: planner and executor do not receive it through World State, which keeps their world-state prompt prefix stable for model cache reuse.
 
 ## Retrieved Memory Context
 

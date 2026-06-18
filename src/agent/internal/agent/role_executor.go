@@ -109,6 +109,9 @@ type roleLoopState struct {
 }
 
 type worldState struct {
+	// LatestScreenshot is verifier-only visual evidence. Planner and executor
+	// receive screenshots through tool scratchpads/results so their world-state
+	// prompt prefix stays stable for model cache reuse.
 	LatestScreenshot  *worldScreenshot
 	Observation       *worldStateObservation
 	DeviceEnvironment *worldDeviceEnvironment
@@ -294,7 +297,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 			case plannerTurnTool, plannerTurnInvalidMeta, plannerTurnSleep:
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
-					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps))
+					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools)
 				}
 				if turn.Kind == plannerTurnTool {
 					if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
@@ -327,7 +330,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
 					state.StepToolSteps = append(state.StepToolSteps, *turn.Step)
-					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps))
+					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools)
 				}
 				if turn.Kind == executorTurnTool {
 					execution := roleExecutionResult{Action: turn.Action, Step: turn.Step}
@@ -901,10 +904,13 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		messages = append(messages, scratchpad...)
 	}
 
-	statePrompt := buildRoleStatePrompt(profile.Name, inputs, state, task)
+	includeWorldStateLatestScreenshot := profile.Name == RoleVerifier
+	statePrompt := buildRoleStatePromptWithOptions(profile.Name, inputs, state, task, roleStatePromptOptions{
+		IncludeWorldStateLatestScreenshot: includeWorldStateLatestScreenshot,
+	})
 	messages = append(messages, llms.MessageContent{
 		Role:  llms.ChatMessageTypeHuman,
-		Parts: buildRoleUserMessageParts(statePrompt, e.InputAttachments, state.World),
+		Parts: buildRoleUserMessageParts(statePrompt, e.InputAttachments, state.World, includeWorldStateLatestScreenshot),
 	})
 	for _, steer := range state.SteerMessages {
 		messages = append(messages, llms.MessageContent{
@@ -994,13 +1000,23 @@ func roleSeesToolScratchpad(role RoleName) bool {
 }
 
 func buildRoleStatePrompt(role RoleName, inputs map[string]string, state roleLoopState, task string) string {
+	return buildRoleStatePromptWithOptions(role, inputs, state, task, roleStatePromptOptions{})
+}
+
+type roleStatePromptOptions struct {
+	IncludeWorldStateLatestScreenshot bool
+}
+
+func buildRoleStatePromptWithOptions(role RoleName, inputs map[string]string, state roleLoopState, task string, options roleStatePromptOptions) string {
 	switch role {
 	case RolePlanner:
 		return buildPlannerStatePrompt(inputs, state, task)
 	case RoleExecutor:
 		return buildExecutorStatePrompt(inputs, state, task)
 	case RoleVerifier:
-		return buildVerifierStatePrompt(inputs, state, task)
+		return buildVerifierStatePromptWithOptions(inputs, state, task, worldStatePromptOptions{
+			IncludeLatestScreenshot: options.IncludeWorldStateLatestScreenshot,
+		})
 	default:
 		return buildPlannerStatePrompt(inputs, state, task)
 	}
@@ -1062,9 +1078,13 @@ func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, tas
 }
 
 func buildVerifierStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
+	return buildVerifierStatePromptWithOptions(inputs, state, task, worldStatePromptOptions{})
+}
+
+func buildVerifierStatePromptWithOptions(inputs map[string]string, state roleLoopState, task string, worldOptions worldStatePromptOptions) string {
 	var builder strings.Builder
 	builder.WriteString(task)
-	writeWorldState(&builder, state.World)
+	writeWorldStateWithOptions(&builder, state.World, worldOptions)
 	writeRequestContextAndCriteria(&builder, inputs, state)
 	writeSessionContext(&builder, inputs)
 	writeCurrentPlan(&builder, state)
@@ -1207,15 +1227,23 @@ func compactPromptLine(value string, max int) string {
 	return truncateForLog(singleLineHistoryText(value), max)
 }
 
-func buildRoleUserMessageParts(input string, attachments []InputAttachment, world worldState) []llms.ContentPart {
+func buildRoleUserMessageParts(input string, attachments []InputAttachment, world worldState, includeWorldStateLatestScreenshot bool) []llms.ContentPart {
 	parts := buildUserMessageParts(input, attachments)
-	if world.LatestScreenshot == nil || len(world.LatestScreenshot.Data) == 0 {
+	if !includeWorldStateLatestScreenshot || world.LatestScreenshot == nil || len(world.LatestScreenshot.Data) == 0 {
 		return parts
 	}
 	return append(parts, buildImagePart(world.LatestScreenshot.MIMEType(), world.LatestScreenshot.Data))
 }
 
+type worldStatePromptOptions struct {
+	IncludeLatestScreenshot bool
+}
+
 func writeWorldState(builder *strings.Builder, world worldState) {
+	writeWorldStateWithOptions(builder, world, worldStatePromptOptions{})
+}
+
+func writeWorldStateWithOptions(builder *strings.Builder, world worldState, options worldStatePromptOptions) {
 	builder.WriteString("\n\nWorld State (shared across planner, executor, and verifier):\n")
 	if world.DeviceEnvironment != nil {
 		env := world.DeviceEnvironment
@@ -1252,28 +1280,30 @@ func writeWorldState(builder *strings.Builder, world worldState) {
 			builder.WriteByte('\n')
 		}
 	}
-	if world.LatestScreenshot == nil {
-		builder.WriteString("- Latest screenshot: none yet.\n")
-	} else {
-		screenshot := world.LatestScreenshot
-		builder.WriteString(fmt.Sprintf(
-			"- Latest screenshot: step=%d source_tool=%s size=%dx%d format=%s bytes=%d. The current screenshot image is attached to this message.\n",
-			screenshot.StepNumber,
-			screenshot.SourceTool,
-			screenshot.Width,
-			screenshot.Height,
-			screenshot.Format,
-			screenshot.Size,
-		))
-		if input := strings.TrimSpace(screenshot.ToolInput); input != "" {
-			builder.WriteString("- Screenshot source input: ")
-			builder.WriteString(input)
-			builder.WriteByte('\n')
-		}
-		if actionOutput := strings.TrimSpace(screenshot.ActionOutput); actionOutput != "" {
-			builder.WriteString("- Post-action output before screenshot: ")
-			builder.WriteString(compactToolObservation(actionOutput))
-			builder.WriteByte('\n')
+	if options.IncludeLatestScreenshot {
+		if world.LatestScreenshot == nil {
+			builder.WriteString("- Latest screenshot: none yet.\n")
+		} else {
+			screenshot := world.LatestScreenshot
+			builder.WriteString(fmt.Sprintf(
+				"- Latest screenshot: step=%d source_tool=%s size=%dx%d format=%s bytes=%d. The current screenshot image is attached to this message.\n",
+				screenshot.StepNumber,
+				screenshot.SourceTool,
+				screenshot.Width,
+				screenshot.Height,
+				screenshot.Format,
+				screenshot.Size,
+			))
+			if input := strings.TrimSpace(screenshot.ToolInput); input != "" {
+				builder.WriteString("- Screenshot source input: ")
+				builder.WriteString(input)
+				builder.WriteByte('\n')
+			}
+			if actionOutput := strings.TrimSpace(screenshot.ActionOutput); actionOutput != "" {
+				builder.WriteString("- Post-action output before screenshot: ")
+				builder.WriteString(compactToolObservation(actionOutput))
+				builder.WriteByte('\n')
+			}
 		}
 	}
 	if world.Observation != nil {
@@ -1296,7 +1326,7 @@ func writeWorldState(builder *strings.Builder, world worldState) {
 			if obs.SourceRole != "" {
 				builder.WriteString(fmt.Sprintf(" source_role=%s", obs.SourceRole))
 			}
-			if obs.ScreenshotStep > 0 {
+			if options.IncludeLatestScreenshot && obs.ScreenshotStep > 0 {
 				builder.WriteString(fmt.Sprintf(" screenshot_step=%d", obs.ScreenshotStep))
 			}
 			builder.WriteByte('\n')
@@ -1569,8 +1599,8 @@ func (s roleLoopState) latestExecutionResult() (roleExecutionResult, bool) {
 	return s.ExecutionResults[len(s.ExecutionResults)-1], true
 }
 
-func (s *worldState) UpdateFromStep(step schema.AgentStep, stepNumber int) {
-	screenshot, ok := screenshotFromStep(step, stepNumber)
+func (s *worldState) UpdateFromStep(step schema.AgentStep, stepNumber int, tools []langtools.Tool) {
+	screenshot, ok := screenshotFromVisualStep(step, stepNumber, tools)
 	if !ok {
 		return
 	}
@@ -1649,44 +1679,38 @@ func normalizeObservedWorldState(observed observedWorldState) observedWorldState
 }
 
 func screenshotFromStep(step schema.AgentStep, stepNumber int) (worldScreenshot, bool) {
-	var result postActionScreenshotResult
-	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
+	visual, ok := parseScreenshotObservation(step.Observation)
+	if !ok {
 		return worldScreenshot{}, false
 	}
-	if result.Width <= 0 || result.Height <= 0 || result.Data == "" {
+	return worldScreenshotFromVisualObservation(step, stepNumber, visual), true
+}
+
+func screenshotFromVisualStep(step schema.AgentStep, stepNumber int, tools []langtools.Tool) (worldScreenshot, bool) {
+	visual, ok := (&FunctionAgent{Tools: tools}).visualScreenshotObservation(step)
+	if !ok {
 		return worldScreenshot{}, false
 	}
-	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
-	if err != nil || len(imageBytes) == 0 {
-		return worldScreenshot{}, false
-	}
-	format := strings.TrimSpace(result.Format)
-	if format == "" {
-		format = "jpeg"
-	}
-	size := result.Size
-	if size <= 0 {
-		size = len(imageBytes)
-	}
+	return worldScreenshotFromVisualObservation(step, stepNumber, visual), true
+}
+
+func worldScreenshotFromVisualObservation(step schema.AgentStep, stepNumber int, visual visualScreenshotObservation) worldScreenshot {
+	result := visual.Result
 	return worldScreenshot{
 		SourceTool:   step.Action.Tool,
 		ToolInput:    normalizeToolInput(step.Action.ToolInput),
 		ActionOutput: strings.TrimSpace(result.ActionOutput),
 		Width:        result.Width,
 		Height:       result.Height,
-		Format:       format,
-		Size:         size,
-		Data:         imageBytes,
+		Format:       result.Format,
+		Size:         result.Size,
+		Data:         visual.ImageBytes,
 		StepNumber:   stepNumber,
-	}, true
+	}
 }
 
 func (s worldScreenshot) MIMEType() string {
-	format := strings.TrimSpace(s.Format)
-	if format == "" {
-		format = "jpeg"
-	}
-	return "image/" + format
+	return screenshotMIMEType(s.Format)
 }
 
 func (s roleLoopState) lastCandidateAnswer() string {

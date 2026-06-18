@@ -20,7 +20,7 @@ TOML 是当前支持的配置格式；JSON 配置已废弃。
 custom_instruction = ""
 max_iterations = -1
 screenshot_keep_n = 3
-screenshot_prune_interval = 25
+screenshot_prune_interval = 2
 input_mode = "text"
 
 [model]
@@ -108,7 +108,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `additional_prompt` | - | 额外 prompt 字段；运行时会追加到 base instruction 后面 |
 | `max_iterations` | `-1` | 单次运行最大工具调用循环次数；`-1` 表示不限制 |
 | `screenshot_keep_n` | `3` | LLM 上下文中截图裁剪的最近保留数量；未设置或 `0` 使用默认值 |
-| `screenshot_prune_interval` | `25` | 截图超过 `screenshot_keep_n + screenshot_prune_interval` 后，按批次把旧截图替换为占位符；未设置或 `0` 使用默认值 |
+| `screenshot_prune_interval` | `2` | 截图超过 `screenshot_keep_n + screenshot_prune_interval` 后，按批次把旧截图替换为占位符；未设置或 `0` 使用默认值 |
 | `input_mode` | `text` / `stt` / `audio` | 输入模式 |
 | `trigger_mode` | `manual` / `wakeup` | 语音模式触发方式 |
 | `vad_backend` | `rknn` | VAD 后端：`rknn` 使用 NPU encoder + CPU LSTM/decoder，`cpu` 使用纯 CPU helper |

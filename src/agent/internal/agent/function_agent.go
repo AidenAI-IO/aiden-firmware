@@ -22,6 +22,12 @@ type visualObservationTool interface {
 	ReturnsVisualObservation() bool
 }
 
+type visualScreenshotObservation struct {
+	Result     postActionScreenshotResult
+	ImageBytes []byte
+	MIMEType   string
+}
+
 type structuredInputTool interface {
 	ArgsSchema() map[string]any
 }
@@ -278,27 +284,12 @@ func scratchpadToolCallID(action schema.AgentAction, groupStart, index int) stri
 }
 
 func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includeVisual bool) (string, []llms.MessageContent) {
-	if !a.isVisualObservationTool(step.Action.Tool) {
+	visual, ok := a.visualScreenshotObservation(step)
+	if !ok {
 		return compactToolObservation(step.Observation), nil
 	}
+	result := visual.Result
 
-	var result postActionScreenshotResult
-	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
-		return compactToolObservation(step.Observation), nil
-	}
-	if result.Data == "" {
-		return compactToolObservation(step.Observation), nil
-	}
-
-	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
-	if err != nil {
-		return compactToolObservation(step.Observation), nil
-	}
-	if len(imageBytes) == 0 {
-		return compactToolObservation(step.Observation), nil
-	}
-
-	mimeType := "image/jpeg"
 	imageAvailability := "The image is attached in the next message."
 	if !includeVisual {
 		imageAvailability = "The image is replaced with a placeholder in the next message."
@@ -325,9 +316,6 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 			imageAvailability,
 		)
 	}
-	if result.Format != "" && result.Format != "jpeg" {
-		mimeType = "image/" + result.Format
-	}
 	caption := fmt.Sprintf("This image is the screenshot observation returned by the %s tool. Use it when answering the original request.", step.Action.Tool)
 	if !includeVisual {
 		return toolContent, []llms.MessageContent{{
@@ -343,7 +331,7 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 		Role: llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{
 			llms.TextPart(caption),
-			buildImagePart(mimeType, imageBytes),
+			buildImagePart(visual.MIMEType, visual.ImageBytes),
 		},
 	}}
 }
@@ -359,22 +347,65 @@ func (a *FunctionAgent) countVisualObservations(steps []schema.AgentStep) int {
 }
 
 func (a *FunctionAgent) hasVisualObservation(step schema.AgentStep) bool {
-	if !a.isVisualObservationTool(step.Action.Tool) {
-		return false
-	}
+	_, ok := a.visualScreenshotObservation(step)
+	return ok
+}
 
-	var result postActionScreenshotResult
-	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
-		return false
+func (a *FunctionAgent) visualScreenshotObservation(step schema.AgentStep) (visualScreenshotObservation, bool) {
+	if !a.isVisualObservationTool(step.Action.Tool) {
+		return visualScreenshotObservation{}, false
 	}
-	if result.Data == "" {
-		return false
+	return parseScreenshotObservation(step.Observation)
+}
+
+func parseScreenshotObservation(observation string) (visualScreenshotObservation, bool) {
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(observation), &result); err != nil {
+		return visualScreenshotObservation{}, false
+	}
+	if result.Width <= 0 || result.Height <= 0 || strings.TrimSpace(result.Data) == "" {
+		return visualScreenshotObservation{}, false
 	}
 	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
 	if err != nil || len(imageBytes) == 0 {
-		return false
+		return visualScreenshotObservation{}, false
 	}
-	return true
+	format, ok := normalizeScreenshotFormat(result.Format)
+	if !ok {
+		return visualScreenshotObservation{}, false
+	}
+	result.Format = format
+	if result.Size <= 0 {
+		result.Size = len(imageBytes)
+	}
+	return visualScreenshotObservation{
+		Result:     result,
+		ImageBytes: imageBytes,
+		MIMEType:   screenshotMIMEType(format),
+	}, true
+}
+
+func normalizeScreenshotFormat(format string) (string, bool) {
+	format = strings.ToLower(strings.TrimSpace(format))
+	format = strings.TrimPrefix(format, "image/")
+	switch format {
+	case "":
+		return "jpeg", true
+	case "jpg", "jpeg":
+		return "jpeg", true
+	case "png", "webp", "gif":
+		return format, true
+	default:
+		return "", false
+	}
+}
+
+func screenshotMIMEType(format string) string {
+	format, ok := normalizeScreenshotFormat(format)
+	if !ok {
+		format = "jpeg"
+	}
+	return "image/" + format
 }
 
 func compactToolObservation(observation string) string {

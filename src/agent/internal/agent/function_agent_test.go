@@ -447,45 +447,45 @@ func TestFunctionAgentScratchpadPrunesScreenshotsInBatches(t *testing.T) {
 		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
 	}
 
-	messages29 := agent.constructFunctionScratchPad(screenshotSteps(29))
-	imageURLs29 := scratchpadImageURLs(messages29)
-	if got := scratchpadToolResponseCount(messages29); got != 29 {
-		t.Fatalf("expected all 29 tool responses to remain, got %d", got)
+	messages6 := agent.constructFunctionScratchPad(screenshotSteps(6))
+	imageURLs6 := scratchpadImageURLs(messages6)
+	if got := scratchpadToolResponseCount(messages6); got != 6 {
+		t.Fatalf("expected all 6 tool responses to remain, got %d", got)
 	}
-	if got := scratchpadImagePlaceholderCount(messages29); got != 25 {
-		t.Fatalf("expected first prune batch to replace 25 images, got %d", got)
+	if got := scratchpadImagePlaceholderCount(messages6); got != 2 {
+		t.Fatalf("expected first prune batch to replace 2 images, got %d", got)
 	}
-	if len(imageURLs29) != 4 {
-		t.Fatalf("expected 4 full images after first prune batch, got %d (%#v)", len(imageURLs29), imageURLs29)
+	if len(imageURLs6) != 4 {
+		t.Fatalf("expected 4 full images after first prune batch, got %d (%#v)", len(imageURLs6), imageURLs6)
 	}
-	for i, url := range imageURLs29 {
-		expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("image-"+strconv.Itoa(i+26)))
+	for i, url := range imageURLs6 {
+		expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("image-"+strconv.Itoa(i+3)))
 		if url != expected {
 			t.Fatalf("image %d = %q, want %q", i, url, expected)
 		}
 	}
 
-	messages30 := agent.constructFunctionScratchPad(screenshotSteps(30))
-	if !reflect.DeepEqual(messages29, messages30[:len(messages29)]) {
+	messages7 := agent.constructFunctionScratchPad(screenshotSteps(7))
+	if !reflect.DeepEqual(messages6, messages7[:len(messages6)]) {
 		t.Fatalf("message prefix changed between batch pruning events")
 	}
-	if got := scratchpadImagePlaceholderCount(messages30); got != 25 {
+	if got := scratchpadImagePlaceholderCount(messages7); got != 2 {
 		t.Fatalf("expected placeholder count to remain stable between prune batches, got %d", got)
 	}
-	if len(scratchpadImageURLs(messages30)) != 5 {
+	if len(scratchpadImageURLs(messages7)) != 5 {
 		t.Fatalf("expected one appended full image between prune batches")
 	}
 
-	messages54 := agent.constructFunctionScratchPad(screenshotSteps(54))
-	imageURLs54 := scratchpadImageURLs(messages54)
-	if got := scratchpadImagePlaceholderCount(messages54); got != 50 {
-		t.Fatalf("expected second prune batch to replace 50 total images, got %d", got)
+	messages8 := agent.constructFunctionScratchPad(screenshotSteps(8))
+	imageURLs8 := scratchpadImageURLs(messages8)
+	if got := scratchpadImagePlaceholderCount(messages8); got != 4 {
+		t.Fatalf("expected second prune batch to replace 4 total images, got %d", got)
 	}
-	if len(imageURLs54) != 4 {
-		t.Fatalf("expected 4 full images after second prune batch, got %d (%#v)", len(imageURLs54), imageURLs54)
+	if len(imageURLs8) != 4 {
+		t.Fatalf("expected 4 full images after second prune batch, got %d (%#v)", len(imageURLs8), imageURLs8)
 	}
-	for i, url := range imageURLs54 {
-		expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("image-"+strconv.Itoa(i+51)))
+	for i, url := range imageURLs8 {
+		expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("image-"+strconv.Itoa(i+5)))
 		if url != expected {
 			t.Fatalf("second batch image %d = %q, want %q", i, url, expected)
 		}
@@ -763,6 +763,29 @@ func TestFunctionAgentRejectsEmptyVisualObservationData(t *testing.T) {
 	toolContent, followups := agent.observationMessagesForStep(step, true)
 	if followups != nil {
 		t.Fatalf("expected no followup messages for empty screenshot data, got %#v", followups)
+	}
+	if toolContent != observation {
+		t.Fatalf("unexpected compacted observation: %q", toolContent)
+	}
+}
+
+func TestFunctionAgentRejectsVisualObservationWithoutDimensions(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
+	}
+	observation := `{"width":0,"height":240,"format":"jpeg","size":4,"data":"` +
+		base64.StdEncoding.EncodeToString([]byte("image-bytes")) + `"}`
+	step := schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "screenshot"},
+		Observation: observation,
+	}
+
+	if agent.countVisualObservations([]schema.AgentStep{step}) != 0 {
+		t.Fatal("screenshot with invalid dimensions counted as a visual observation")
+	}
+	toolContent, followups := agent.observationMessagesForStep(step, true)
+	if followups != nil {
+		t.Fatalf("expected no followup messages for invalid screenshot dimensions, got %#v", followups)
 	}
 	if toolContent != observation {
 		t.Fatalf("unexpected compacted observation: %q", toolContent)
