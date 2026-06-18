@@ -17,6 +17,17 @@ from .episode import BridgeEpisodeState
 from .protocol import encode_screenshot
 
 
+DEFAULT_DIRECTIONAL_SWIPE_DISTANCE = 500.0
+DIRECTIONAL_SWIPE_PRESETS = {
+    "": (DEFAULT_DIRECTIONAL_SWIPE_DISTANCE, 700),
+    "default": (DEFAULT_DIRECTIONAL_SWIPE_DISTANCE, 700),
+    "large": (700.0, 800),
+    "medium": (500.0, 650),
+    "small": (200.0, 420),
+    "tiny": (40.0, 320),
+}
+
+
 class ToolsAPIHandler:
     """Handler for /api/tools endpoint compatible with Go agent tool proxy."""
 
@@ -79,6 +90,13 @@ class ToolsAPIHandler:
                             "description": "End point for swipe/drag",
                         },
                         "duration_ms": {"type": "integer", "description": "Duration in milliseconds"},
+                        "distance": {"type": "number", "description": "Directional swipe travel in normalized 0-1000 units"},
+                        "anchor": {"type": "number", "description": "Directional swipe fixed-axis coordinate in normalized 0-1000 units"},
+                        "strength": {
+                            "type": "string",
+                            "enum": ["large", "medium", "small", "tiny", "default"],
+                            "description": "Directional swipe preset",
+                        },
                     },
                     "required": ["type"],
                 },
@@ -269,11 +287,9 @@ class ToolsAPIHandler:
         if gesture_type == "tap":
             point = tool_input.get("point", {})
             action = build_action("tap", {"x": point.get("x", 0), "y": point.get("y", 0)})
-            path = "/tap"
         elif gesture_type == "double_tap":
             point = tool_input.get("point", {})
             action = build_action("tap", {"x": point.get("x", 0), "y": point.get("y", 0), "count": 2})
-            path = "/tap"
         elif gesture_type == "long_press":
             point = tool_input.get("point", {})
             action = build_action(
@@ -285,7 +301,6 @@ class ToolsAPIHandler:
                     "duration_ms": tool_input.get("duration_ms", 500),
                 },
             )
-            path = "/tap"
         elif gesture_type in ("swipe", "drag"):
             start = tool_input.get("start", {})
             end = tool_input.get("end", {})
@@ -299,13 +314,15 @@ class ToolsAPIHandler:
                     "duration_ms": tool_input.get("duration_ms", 300),
                 },
             )
-            path = f"/{gesture_type}"
+        elif gesture_type in ("swipe_left", "swipe_right", "swipe_up", "swipe_down"):
+            try:
+                action = build_action("swipe", _directional_swipe_payload(gesture_type, tool_input))
+            except (TypeError, ValueError) as exc:
+                return {"output": f"error: {exc}", "is_error": True}
         elif gesture_type == "back":
             action = build_action("back", {})
-            path = "/back"
         elif gesture_type == "home":
             action = build_action("home", {})
-            path = "/home"
         else:
             return {"output": f"error: unsupported gesture type: {gesture_type}", "is_error": True}
 
@@ -400,6 +417,54 @@ def _encode_observation_screenshot(observation: Any) -> dict[str, Any]:
     width = _observation_int(observation, "width") or _observation_int(observation, "screenshot_width")
     height = _observation_int(observation, "height") or _observation_int(observation, "screenshot_height")
     return encode_screenshot(payload, mime_type=str(mime_type), width=width, height=height)
+
+
+def _directional_swipe_payload(gesture_type: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+    strength = str(tool_input.get("strength", "")).strip().lower()
+    if strength not in DIRECTIONAL_SWIPE_PRESETS:
+        raise ValueError(f"unsupported strength: {strength!r}")
+    preset_distance, preset_duration = DIRECTIONAL_SWIPE_PRESETS[strength]
+    distance = _positive_float(tool_input.get("distance"), preset_distance)
+    distance = max(1.0, min(1000.0, distance))
+    anchor = _float_or_default(tool_input.get("anchor"), 500.0)
+    anchor = max(0.0, min(1000.0, anchor))
+    half = distance / 2.0
+
+    if gesture_type == "swipe_left":
+        start_x, end_x = anchor + half, anchor - half
+        start_y = end_y = anchor
+    elif gesture_type == "swipe_right":
+        start_x, end_x = anchor - half, anchor + half
+        start_y = end_y = anchor
+    elif gesture_type == "swipe_up":
+        start_y, end_y = anchor + half, anchor - half
+        start_x = end_x = anchor
+    elif gesture_type == "swipe_down":
+        start_y, end_y = anchor - half, anchor + half
+        start_x = end_x = anchor
+    else:
+        raise ValueError(f"unsupported directional swipe: {gesture_type}")
+
+    return {
+        "start_x": max(0.0, min(1000.0, start_x)),
+        "start_y": max(0.0, min(1000.0, start_y)),
+        "end_x": max(0.0, min(1000.0, end_x)),
+        "end_y": max(0.0, min(1000.0, end_y)),
+        "duration_ms": int(tool_input.get("duration_ms") or preset_duration),
+    }
+
+
+def _positive_float(value: Any, default: float) -> float:
+    if value in (None, ""):
+        return default
+    parsed = float(value)
+    return parsed if parsed > 0 else default
+
+
+def _float_or_default(value: Any, default: float) -> float:
+    if value in (None, ""):
+        return default
+    return float(value)
 
 
 def _infer_screenshot_mime_type(payload: bytes) -> str:

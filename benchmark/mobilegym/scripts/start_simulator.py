@@ -90,13 +90,13 @@ async def create_mobilegym_env(env_url: str, headless: bool, device: str = "sim"
             "env_url": env_url,
             "headless": headless,
             "device": device,
-            "coord_space": "physical",
+            "coord_space": "norm_0_1000",
             "delay_after_action": 1.0,
         }
         env = MobileGymEnv(
             url=env_url,
             headless=headless,
-            coord_space="physical",
+            coord_space="norm_0_1000",
             delay_after_action=1.0,
             verbose=True,
             viewport_size=(360, 800),
@@ -111,7 +111,7 @@ async def create_mobilegym_env(env_url: str, headless: bool, device: str = "sim"
             env_url=env_url,
             headless=headless,
             device=device,
-            coord_space="physical",
+            coord_space="norm_0_1000",
             delay_after_action=1.0,
             screenshot_scale=1.0,
         )

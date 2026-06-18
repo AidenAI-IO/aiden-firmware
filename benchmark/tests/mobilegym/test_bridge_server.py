@@ -279,6 +279,49 @@ def test_health_and_runner_endpoints_do_not_require_authentication():
         assert bridge.env.threads and set(bridge.env.threads) == {"mobilegym-owner-loop"}
 
 
+def test_tools_api_touch_gestures_use_active_reset_episode_and_normalized_coordinates():
+    with RunningBridge() as bridge:
+        status, body = request_json(bridge.base_url, "POST", "/api/reset", {"episode_id": "reset-ep1"})
+        assert status == 200
+        assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/touch_gesture",
+            {"input": {"type": "tap", "point": {"x": 500, "y": 800}}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "CLICK",
+            "data": {"point": [500.0, 800.0]},
+        }
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/touch_gesture",
+            {"input": {"type": "swipe_up", "strength": "small", "anchor": 600}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "SWIPE",
+            "data": {"point1": [600.0, 700.0], "point2": [600.0, 500.0], "duration": 420.0},
+        }
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/touch_gesture",
+            {"input": {"type": "swipe_up", "strength": "extreme"}},
+        )
+        assert status == 200
+        assert body["is_error"] is True
+        assert "unsupported strength" in body["output"]
+
+
 def test_device_endpoints_require_active_episode_without_authentication():
     with RunningBridge() as bridge:
         assert start_episode(bridge)[0] == 200
