@@ -1,30 +1,18 @@
 import base64
 
 from mobilegym.bridge.protocol import (
-    BridgeTokens,
     bridge_error,
     bridge_ok,
     encode_screenshot,
 )
 
 
-def test_bridge_tokens_keep_runner_and_device_scopes_separate():
-    tokens = BridgeTokens(control_token="control-token", device_token="device-token")
-
-    assert tokens.require_control({"Authorization": "Bearer control-token"}) is True
-    assert tokens.require_device({"Authorization": "Bearer device-token"}) is True
-    assert tokens.require_control({"Authorization": "Bearer device-token"}) is False
-    assert tokens.require_device({"Authorization": "Bearer control-token"}) is False
-    assert tokens.require_control({}) is False
-    assert tokens.require_device({"Authorization": "wrong"}) is False
-
-
 def test_bridge_response_helpers_use_consistent_json_shape():
     assert bridge_ok({"ready": True}) == {"ok": True, "data": {"ready": True}}
-    assert bridge_error("unauthorized", "wrong token", status=401) == {
+    assert bridge_error("bad_request", "invalid input", status=400) == {
         "ok": False,
-        "error": {"code": "unauthorized", "message": "wrong token"},
-        "status": 401,
+        "error": {"code": "bad_request", "message": "invalid input"},
+        "status": 400,
     }
 
 

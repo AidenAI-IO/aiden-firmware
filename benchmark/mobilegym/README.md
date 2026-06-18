@@ -31,13 +31,9 @@ MobileGym Simulator (bench_env)
 # 1. 启动 MobileGym 模拟器和 Bridge Server（后台）
 python benchmark/mobilegym/scripts/start_simulator.py \
   --env-url http://localhost:4173 \
-  --bridge-port 8888 \
-  --token-dir /tmp/mobilegym-tokens &
+  --bridge-port 8888 &
 
 # 2. 启动 Aiden daemon 使用 tool proxy 模式
-# 读取 device token
-DEVICE_TOKEN=$(cat /tmp/mobilegym-tokens/bridge_device_token)
-
 # 启动 daemon，指定 tool proxy endpoint
 go run src/agent/cmd/daemon/main.go \
   --config /path/to/agent.toml \
@@ -171,8 +167,6 @@ go run cmd/daemon/main.go \
 - `AIDEN_BRIDGE_BIND_HOST`: Bridge 绑定地址（默认 `127.0.0.1`）
 - `AIDEN_BRIDGE_PORT`: Bridge 端口（默认自动分配）
 - `AIDEN_BRIDGE_PUBLIC_HOST`: Bridge 公开地址（Docker 需要）
-- `BRIDGE_CONTROL_TOKEN`: Bridge 控制 token（默认自动生成）
-- `BRIDGE_DEVICE_TOKEN`: Bridge 设备 token（默认自动生成）
 
 ## ✅ 验证
 
@@ -182,7 +176,6 @@ curl http://localhost:8888/health
 
 # 测试 bridge 操作
 curl -X POST http://localhost:8888/screenshot \
-  -H "Authorization: Bearer <device-token>" \
   -H "Content-Type: application/json" \
   -d '{"episode_id": "test-001"}'
 
@@ -214,9 +207,6 @@ playwright install chromium
 ```bash
 # 检查 bridge 健康状态
 curl http://localhost:8888/health
-
-# 检查 token 是否正确
-cat /tmp/mobilegym-tokens/bridge_device_token
 ```
 
 ### Daemon 无法调用设备工具
@@ -225,5 +215,5 @@ cat /tmp/mobilegym-tokens/bridge_device_token
 curl http://localhost:8080/api/mobilegym/bridge/status
 
 # 如果使用 configure_daemon.py，确认已成功配置
-cat /tmp/mobilegym-tokens/bridge_device_token
+curl http://localhost:8080/api/mobilegym/bridge/status
 ```

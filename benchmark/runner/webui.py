@@ -28,7 +28,7 @@ DEFAULT_SUITES_DIR = BENCHMARK_ROOT / "suites"
 DEFAULT_RUNS_DIR = BENCHMARK_ROOT / "runs" / "webui"
 DEFAULT_BASE_CONFIG_DIR = BENCHMARK_ROOT / "config"
 DEFAULT_DAEMON_IMAGE = "aiden-mobilegym-daemon:local"
-DEFAULT_MOBILEGYM_IMAGE = "aiden-mobilegym-simulator:local"
+DEFAULT_MOBILEGYM_IMAGE = "aiden-mobilegym-simulator:py311"
 DEFAULT_DAEMON_READY_TIMEOUT_SEC = 90
 DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC = 120
 LOG_TAIL_BYTES = 96 * 1024
@@ -615,6 +615,7 @@ def build_mobilegym_environment_command(
     script = "\n".join(
         [
             "set -eu",
+            'export PATH="/opt/venv/bin:$PATH"',
             "cd /mobilegym",
             "npm run preview -- --host 0.0.0.0 --port 4173 >/tmp/mobilegym-preview.log 2>&1 &",
             'preview_pid="$!"',
@@ -623,7 +624,7 @@ def build_mobilegym_environment_command(
             "ready=0",
             "for _ in $(seq 1 120); do",
             (
-                "  if python -c \"import urllib.request; "
+                "  if python3 -c \"import urllib.request; "
                 "urllib.request.urlopen('http://127.0.0.1:4173', timeout=1).read(1)\" "
                 ">/dev/null 2>&1; then"
             ),
@@ -641,7 +642,7 @@ def build_mobilegym_environment_command(
             "  exit 1",
             "fi",
             (
-                "exec python /app/benchmark/mobilegym/scripts/start_simulator.py "
+                "exec python3 /app/benchmark/mobilegym/scripts/start_simulator.py "
                 "--mobilegym-root /mobilegym "
                 "--env-url http://127.0.0.1:4173 "
                 "--bridge-host 0.0.0.0 "
@@ -675,7 +676,7 @@ def build_mobilegym_environment_command(
         "--entrypoint",
         "sh",
         image,
-        "-lc",
+        "-c",
         script,
     ]
 

@@ -124,7 +124,7 @@ def test_build_mobilegym_environment_command_starts_preview_and_bridge(tmp_path:
     benchmark_dir.mkdir()
 
     cmd = webui.build_mobilegym_environment_command(
-        image="aiden-mobilegym-simulator:local",
+        image=webui.DEFAULT_MOBILEGYM_IMAGE,
         container_name="aiden-mobilegym-env-test",
         host_web_port=18173,
         host_bridge_port=19090,
@@ -138,14 +138,18 @@ def test_build_mobilegym_environment_command_starts_preview_and_bridge(tmp_path:
     assert f"{benchmark_dir.resolve()}:/app/benchmark:ro" in cmd
     assert "MOBILEGYM_ROOT=/mobilegym" in cmd
     assert "--entrypoint" in cmd
+    assert cmd[-2] == "-c"
     script = cmd[-1]
+    assert 'export PATH="/opt/venv/bin:$PATH"' in script
+    assert "python3 -c" in script
     assert "npm run preview -- --host 0.0.0.0 --port 4173" in script
-    assert "mobilegym/scripts/start_simulator.py" in script
+    assert "exec python3 /app/benchmark/mobilegym/scripts/start_simulator.py" in script
     assert "--mobilegym-root /mobilegym" in script
     assert "--env-url http://127.0.0.1:4173" in script
     assert "--bridge-host 0.0.0.0" in script
     assert "--bridge-port 9090" in script
     assert "--headless" in script
+    assert webui.DEFAULT_MOBILEGYM_IMAGE in cmd
 
 
 def test_start_mobilegym_environment_returns_docker_reachable_endpoint(tmp_path: Path, monkeypatch):

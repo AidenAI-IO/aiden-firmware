@@ -1,7 +1,7 @@
 # Aiden MobileGym Docker Setup
 
 # ============ MobileGym Simulator ============
-FROM node:22-bullseye AS mobilegym-base
+FROM node:22-bookworm AS mobilegym-base
 
 # 支持构建时代理
 ARG HTTP_PROXY
@@ -56,7 +56,7 @@ RUN git clone --depth 1 --branch ${MOBILEGYM_BRANCH} ${MOBILEGYM_REPO} /tmp/mobi
 RUN cd /mobilegym && \
     python3 -m venv /opt/venv && \
     . /opt/venv/bin/activate && \
-    pip install -r bench_env/requirements.txt
+    pip install -r bench_env/requirements.txt requests
 
 # Install Node.js dependencies and build
 RUN npm install && npm run build

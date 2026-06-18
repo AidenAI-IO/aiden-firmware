@@ -14,10 +14,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import secrets
 import signal
 import sys
 from pathlib import Path
+from typing import Any
 
 SCRIPT_PATH = Path(__file__).resolve()
 MOBILEGYM_PACKAGE_ROOT = SCRIPT_PATH.parents[1]
@@ -71,33 +71,53 @@ async def create_mobilegym_env(env_url: str, headless: bool, device: str = "sim"
     """Create MobileGym environment without using factory/runner framework.
 
     Returns:
-        Tuple of (env, EnvConfig) - the environment instance and its config
+        Tuple of (env, config) - the environment instance and its config
     """
     try:
         from bench_env.config import EnvConfig
         from bench_env.env.mobile import MobileEnv
-    except ModuleNotFoundError as exc:
-        raise SimulatorError(
-            "Unable to import MobileGym modules. "
-            "Install dependencies with: "
-            "`pip install -r bench_env/requirements.txt && playwright install chromium`"
-        ) from exc
+    except (ImportError, ModuleNotFoundError):
+        try:
+            from bench_env.env import MobileGymEnv
+        except ModuleNotFoundError as exc:
+            raise SimulatorError(
+                "Unable to import MobileGym modules. "
+                "Install dependencies with: "
+                "`pip install -r bench_env/requirements.txt && playwright install chromium`"
+            ) from exc
 
-    # Create config directly without using factory
-    config = EnvConfig(
-        env_url=env_url,
-        headless=headless,
-        device=device,
-        coord_space="physical",
-        delay_after_action=1.0,
-        screenshot_scale=1.0,
-    )
-
-    # Create environment directly
-    env = MobileEnv(config)
-    await env.reset()
-
-    return env, config
+        config = {
+            "env_url": env_url,
+            "headless": headless,
+            "device": device,
+            "coord_space": "physical",
+            "delay_after_action": 1.0,
+        }
+        env = MobileGymEnv(
+            url=env_url,
+            headless=headless,
+            coord_space="physical",
+            delay_after_action=1.0,
+            verbose=True,
+            viewport_size=(360, 800),
+            physical_size=(1080, 2400),
+            device_scale_factor=3,
+        )
+        await env.start()
+        await env.reset(app_ids=[])
+        return env, config
+    else:
+        config = EnvConfig(
+            env_url=env_url,
+            headless=headless,
+            device=device,
+            coord_space="physical",
+            delay_after_action=1.0,
+            screenshot_scale=1.0,
+        )
+        env = MobileEnv(config)
+        await env.reset()
+        return env, config
 
 
 async def run_simulator(args: argparse.Namespace) -> int:
@@ -109,7 +129,6 @@ async def run_simulator(args: argparse.Namespace) -> int:
 
     # Import bridge components (no agent registration needed)
     from mobilegym.bridge.episode import BridgeEpisodeState
-    from mobilegym.bridge.protocol import BridgeTokens
     from mobilegym.bridge.server import BridgeServer
 
     print(f"Creating MobileGym simulator environment...", flush=True)
@@ -125,15 +144,10 @@ async def run_simulator(args: argparse.Namespace) -> int:
 
     print(f"✓ MobileGym environment created", flush=True)
 
-    # Generate tokens
-    bridge_control_token = args.bridge_control_token or secrets.token_urlsafe(32)
-    bridge_device_token = args.bridge_device_token or secrets.token_urlsafe(32)
-
     # Create bridge
     bridge_state = BridgeEpisodeState(env, asyncio.get_running_loop())
     bridge = BridgeServer(
         bridge_state,
-        BridgeTokens(control_token=bridge_control_token, device_token=bridge_device_token),
         host=args.bridge_host,
         port=args.bridge_port,
         public_host=args.bridge_public_host or None,
@@ -141,16 +155,6 @@ async def run_simulator(args: argparse.Namespace) -> int:
 
     bridge_url = bridge.start()
     print(f"✓ Bridge server started at {bridge_url}", flush=True)
-    print(f"  Control token: {bridge_control_token[:16]}...", flush=True)
-    print(f"  Device token: {bridge_device_token[:16]}...", flush=True)
-
-    # Write tokens to files if requested
-    if args.token_dir:
-        token_dir = Path(args.token_dir)
-        token_dir.mkdir(parents=True, exist_ok=True)
-        (token_dir / "bridge_control_token").write_text(bridge_control_token)
-        (token_dir / "bridge_device_token").write_text(bridge_device_token)
-        print(f"✓ Tokens written to {token_dir}/", flush=True)
 
     # Write bridge URL to file if requested
     if args.bridge_url_file:
@@ -232,21 +236,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--bridge-public-host",
         default=os.getenv("AIDEN_BRIDGE_PUBLIC_HOST"),
         help="Bridge server public hostname (for Docker networking)",
-    )
-    bridge.add_argument(
-        "--bridge-control-token",
-        default=os.getenv("BRIDGE_CONTROL_TOKEN"),
-        help="Bridge control token (default: auto-generate)",
-    )
-    bridge.add_argument(
-        "--bridge-device-token",
-        default=os.getenv("BRIDGE_DEVICE_TOKEN"),
-        help="Bridge device token (default: auto-generate)",
-    )
-    bridge.add_argument(
-        "--token-dir",
-        type=Path,
-        help="Write generated tokens to this directory",
     )
     bridge.add_argument(
         "--bridge-url-file",

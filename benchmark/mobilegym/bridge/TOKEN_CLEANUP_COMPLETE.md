@@ -10,7 +10,7 @@
 - ✅ `server.py` - 移除所有 `require_device()` 和 `require_control()` 检查
 - ✅ `tools_api.py` - 移除 token 验证逻辑
 - ✅ `demo_unified_api.py` - 移除 Authorization header
-- ✅ 移除 `BridgeTokens` 参数传递
+- ✅ 移除 `BridgeTokens` 类型和参数传递
 
 ### 2. 测试代码 ✅
 - ✅ `test_tools_api.py` - 移除所有 token 相关测试和参数
@@ -24,8 +24,8 @@
 - ✅ 更新示例代码不包含 Authorization header
 - ✅ 更新故障排查移除 401 错误说明
 
-### 4. 保留内容
-- ✅ `protocol.py` 中的 `BridgeTokens` 类保留（未使用但不影响）
+### 4. 删除内容
+- ✅ `protocol.py` 中的 `BridgeTokens` 类已删除
 - ✅ Episode 管理功能保持不变
 
 ## 验证结果
@@ -58,8 +58,7 @@ curl -X POST http://localhost:8888/episode/start \
 - 不再需要传递 Authorization header
 - 启动更简单，使用更方便
 
-### ✅ 向后兼容
-- 所有现有功能保持正常
+### ✅ 简化后的行为
 - Episode 管理机制不变
 - Tool API 格式不变
 - Go agent 连接方式不变
