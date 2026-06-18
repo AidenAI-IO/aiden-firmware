@@ -24,6 +24,7 @@ Key boundaries:
 - If app has already been suspended/killed by system and there is no existing Live Activity, making Live Activity appear remotely requires APNs push-to-start or waiting for user to reopen app.
 - USB ECM connectivity only means the phone and board can still exchange IP packets; it does not mean the iOS app is running in background. `phone_bridge.connected=true` primarily means the app WebSocket is still active, usually while the app is foreground or inside the short background window.
 - When `phone_bridge.connected=false` but USB is still physically connected, the agent cannot push status to the app over WebSocket. If relay has a valid Live Activity token for the board, the agent should still update Dynamic Island through relay/APNs.
+- When agent needs Phone Bridge capability and a visible Aiden Dynamic Island / Live Activity entry exists, treat it as the recovery entry: tap back to Aiden, wait for bridge recovery, then call `open_app`, `clipboard`, `calendar`, `contacts`, or `notification` instead of searching the home screen for the target app icon first.
 
 ## State Model
 
@@ -63,6 +64,7 @@ Structured fields:
 - `current_target`: current action target, e.g. app name, contact, calendar title, search term; can be empty when not suitable to display sensitive input.
 - `current_app`: current target app, usually inferred from `open_app` tool input.
 - `requires_app`: current action depends on companion app/Phone Bridge. If bridge is unavailable, `status` switches to `needs_app`, and Dynamic Island should prompt user to return to Aiden.
+- `phone_app_state` events additionally report `return_entry` and `return_entry_available`. When the iOS app is backgrounded or inactive, it usually reports `return_entry="dynamic_island"` to indicate that the user can tap Dynamic Island / lock screen Live Activity to return to Aiden and restore Phone Bridge.
 
 `GET /api/chat/result?request_id=<id>&offset=<n>` maintains original response compatibility and additionally returns a `live_activity` field. iOS app uses this field to locally update Live Activity when polling in foreground. This foreground path does not use APNs.
 
@@ -176,7 +178,7 @@ iOS app includes `AidenLiveActivityExtension` Widget Extension and `AidenLiveAct
 - While the app is in foreground and connected to hardware, it periodically queries `GET /api/live-activity/current` to sync the current task initiated from agent Web UI / 8080 to local Live Activity. It also runs one best-effort sync when entering foreground, reconnecting, or during the short polling window after switching to background.
 - Stop buttons in both app and agent Web UI should use the current `live_activity.request_id` to call `POST /api/chat/cancel`; this way regardless of which end initiated the task, the other end can interrupt the same agent run after seeing running / needs_app.
 - When polling detects `completed`, `failed`, or `canceled`, app ends local Live Activity.
-- After task ends, if hardware is still connected and entry point still needs to be retained, app can fall back Live Activity to `ready`; otherwise end Live Activity.
+- After task ends, if the entry point still needs to be retained, app can fall back Live Activity to `ready`. When the iOS app is already backgrounded, ordinary WebSocket disconnection should not immediately clear standby, otherwise Agent loses the fastest entry back to Aiden.
 - Background remote updates after app has been suspended by iOS, continuous background task status refresh, and background display after initiating new task from agent Web UI are handled by APNs/backend path, and do not depend on RN foreground polling path.
 - When user taps Dynamic Island/lock screen Live Activity, system returns to Aiden app.
 

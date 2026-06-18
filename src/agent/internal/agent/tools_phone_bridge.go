@@ -124,6 +124,7 @@ func (t *OpenAppTool) Name() string { return "open_app" }
 func (t *OpenAppTool) Description() string {
 	return `Open an app or dial a phone number on the connected phone via the phone bridge. ` +
 		`Use this instead of manually finding and tapping app icons when the phone bridge is connected. ` +
+		`If the Aiden companion app is backgrounded on iOS and the Dynamic Island/Live Activity is visible, reopen Aiden from that entry first, then use this tool before searching the home screen. ` +
 		`Input JSON: {"app":"WeChat"}, {"app":"browser"}, {"url":"https://example.com"}, {"app":"https://example.com"}, or {"ios_urls":["weixin://"],"android_packages":["com.tencent.mm"]}. ` +
 		`If this tool returns {"ok":true}, the app launch request is complete; answer the user immediately unless they asked for additional actions inside that app. ` +
 		`To dial a phone number, use: {"app":"phone","phone_number":"10086"} or just {"phone_number":"10086"}. ` +
@@ -132,7 +133,7 @@ func (t *OpenAppTool) Description() string {
 		`Camera(相机), Photos(相册), Maps(地图), Notes(备忘录), Calendar(日历), Reminders(提醒事项), ` +
 		`Contacts(通讯录), Mail(邮件), AppStore(应用商店), Music(音乐), Files(文件), Clock(时钟), Health(健康), ` +
 		`Taobao(淘宝), Douyin(抖音), Meituan(美团), Didi(滴滴), Xiaohongshu(小红书), Bilibili(哔哩哔哩), JD(京东), Eleme(饿了么). ` +
-		`If the phone bridge is not connected, this tool will fail and you should fall back to HID actions.`
+		`If the phone bridge is not connected, restore Aiden from the Dynamic Island/Live Activity when available before using HID fallback.`
 }
 
 func (t *OpenAppTool) ArgsSchema() map[string]any {
@@ -378,11 +379,12 @@ func openAppResultMechanism(args openAppArgs, responseMethod string) string {
 }
 
 func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
-	if !t.bridge.Connected() {
+	status := t.bridge.Status()
+	if !status.Connected {
 		return jsonString(map[string]interface{}{
 			"ok":       false,
 			"error":    "phone bridge not connected",
-			"fallback": "Use HID actions (find app icon on screen and tap it)",
+			"fallback": phoneBridgeRecoveryGuidance(status),
 		}), nil
 	}
 
@@ -414,10 +416,11 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 
 	resp, err := t.bridge.SendCommand(ctx, cmd)
 	if err != nil {
+		status := t.bridge.Status()
 		return jsonString(map[string]interface{}{
 			"ok":       false,
 			"error":    err.Error(),
-			"fallback": "Use HID actions (find app icon on screen and tap it)",
+			"fallback": phoneBridgeRecoveryGuidance(status),
 		}), nil
 	}
 
@@ -433,7 +436,7 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	}
 	if !resp.OK {
 		result["error"] = resp.Error
-		result["fallback"] = "Use HID actions (find app icon on screen and tap it)"
+		result["fallback"] = phoneBridgeRecoveryGuidance(t.bridge.Status())
 	}
 	return jsonString(result), nil
 }

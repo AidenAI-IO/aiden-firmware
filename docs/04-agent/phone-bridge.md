@@ -53,6 +53,10 @@ Android: com.tencent.mm
         ▼
 If relay app already connected:
     Send open_app command
+If relay app is backgrounded and the Aiden Dynamic Island / Live Activity is visible:
+    Tap Dynamic Island to return to Aiden
+    Wait for app to reconnect to board
+    Then send open_app command
 Otherwise:
     First use HID to open Aiden relay app
     Wait for app to auto-connect to board
@@ -69,7 +73,7 @@ Android: Intent launch package name
 
 ## Key Boundaries
 
-On iOS, the relay app is not a background-resident system agent. It's more like a foreground fast-path executor:
+On iOS, the relay app is not a background-resident system agent. It's more like a foreground fast-path executor; Dynamic Island / Live Activity is the entry point back to Aiden, not background execution capability:
 
 ```text
 Aiden App foreground
@@ -161,10 +165,12 @@ WebSocket's core value:
 2. Relay app auto-connects to `ws://192.168.42.1:8080/api/phone-bridge` after startup.
 3. App sends periodic heartbeat.
 4. App actively reports `phone_environment` upon connection success and returning from background to foreground, including system version, language/region, timezone, screen/battery, system apps, third-party candidate app availability, etc.
-5. App reports `phone_app_state` when the visible lifecycle state changes among `active`, `background`, and `inactive`.
-6. Board maintains `bridge_connected`, `platform`, `last_heartbeat_at`, `app_state`, and `environment` status. Complete environment is exposed through status API; Agent runtime context only injects summarized system type/version, language/region/timezone, screen dimensions, confirmed openable third-party candidate apps, etc.
+5. App reports `phone_app_state` when the visible lifecycle state changes among `active`, `background`, and `inactive`, including any available Dynamic Island / Live Activity return entry.
+6. Board maintains `bridge_connected`, `platform`, `last_heartbeat_at`, `app_state`, `return_entry`, `return_entry_available`, and `environment` status. Complete environment is exposed through status API; Agent runtime context only injects summarized connection state, app foreground/background state, return entry, system type/version, language/region/timezone, screen dimensions, confirmed openable third-party candidate apps, etc.
 
 `bridge_connected` only means the WebSocket is currently active. It is not equivalent to USB cable connectivity. After the iOS app enters background, WebSocket may disconnect while USB ECM remains reachable; real-time background Dynamic Island updates should go through Live Activity relay/APNs, not the phone bridge WebSocket.
+
+When `app_state=background|inactive` and `return_entry_available=true`, Agent should first use HDMI screenshots to confirm whether the Aiden Dynamic Island / lock-screen Live Activity entry is visible. If visible, tap it to return to Aiden, wait for Phone Bridge recovery, then call shortcut tools such as `open_app` or `clipboard`. Fall back to home-screen search, icon taps, or other HID paths only when the entry is unavailable or recovery fails.
 
 ### Command Protocol
 
@@ -502,8 +508,9 @@ The board-side `current_time` tool can provide the model with current timezone b
 
 ### Implementation Notes
 
-7. Board then verifies via HDMI whether target app opened (only `open_app`).
-8. Verification failure auto-fallback to HID (only `open_app`; clipboard/calendar have no HID fallback, failure directly tells user).
+7. If the iOS Aiden app is backgrounded and Dynamic Island / Live Activity is visible, tap that entry to restore Phone Bridge, then retry shortcut tools such as `open_app` or clipboard.
+8. Board then verifies via HDMI whether target app opened (only `open_app`).
+9. Verification failure auto-fallback to HID (only `open_app`; clipboard/calendar have no HID fallback, failure directly tells user).
 
 ## Final Positioning
 

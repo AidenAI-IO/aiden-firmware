@@ -106,6 +106,8 @@ type PhoneBridgeStatus struct {
 	LastHeartbeatAt      *time.Time        `json:"last_heartbeat_at,omitempty"`
 	AppState             string            `json:"app_state,omitempty"`
 	AppStateUpdatedAt    *time.Time        `json:"app_state_updated_at,omitempty"`
+	ReturnEntry          string            `json:"return_entry,omitempty"`
+	ReturnEntryAvailable *bool             `json:"return_entry_available,omitempty"`
 	Environment          *PhoneEnvironment `json:"environment,omitempty"`
 	EnvironmentUpdatedAt *time.Time        `json:"environment_updated_at,omitempty"`
 }
@@ -118,6 +120,9 @@ type PhoneBridge struct {
 	lastHeartbeatAt time.Time
 	appState        string
 	appStateAt      time.Time
+	returnEntry     string
+	returnEntryOK   bool
+	returnEntrySeen bool
 	environment     *PhoneEnvironment
 	environmentAt   time.Time
 	pendingCmds     map[string]chan BridgeCommandResponse
@@ -325,8 +330,10 @@ func (pb *PhoneBridge) handleAppStateEvent(resp BridgeCommandResponse) bool {
 		return true
 	}
 	var payload struct {
-		AppState   string `json:"app_state"`
-		ReportedAt string `json:"reported_at,omitempty"`
+		AppState             string `json:"app_state"`
+		ReportedAt           string `json:"reported_at,omitempty"`
+		ReturnEntry          string `json:"return_entry,omitempty"`
+		ReturnEntryAvailable *bool  `json:"return_entry_available,omitempty"`
 	}
 	if err := json.Unmarshal(resp.Data, &payload); err != nil {
 		if pb.logger != nil {
@@ -346,6 +353,11 @@ func (pb *PhoneBridge) handleAppStateEvent(resp BridgeCommandResponse) bool {
 	pb.mu.Lock()
 	pb.appState = appState
 	pb.appStateAt = time.Now()
+	if payload.ReturnEntryAvailable != nil {
+		pb.returnEntryOK = *payload.ReturnEntryAvailable
+		pb.returnEntrySeen = true
+	}
+	pb.returnEntry = strings.ToLower(strings.TrimSpace(payload.ReturnEntry))
 	pb.lastHeartbeatAt = pb.appStateAt
 	pb.mu.Unlock()
 	if pb.logger != nil {
@@ -435,6 +447,13 @@ func (pb *PhoneBridge) Status() PhoneBridgeStatus {
 			status.AppStateUpdatedAt = &t
 		}
 	}
+	if pb.returnEntrySeen {
+		v := pb.returnEntryOK
+		status.ReturnEntryAvailable = &v
+	}
+	if pb.returnEntry != "" {
+		status.ReturnEntry = pb.returnEntry
+	}
 	if pb.connected && pb.environment != nil {
 		env := clonePhoneEnvironment(*pb.environment)
 		status.Environment = &env
@@ -460,18 +479,22 @@ func clonePhoneEnvironment(env PhoneEnvironment) PhoneEnvironment {
 }
 
 func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
-	if !status.Connected {
+	if !status.Connected && strings.TrimSpace(status.AppState) == "" && strings.TrimSpace(status.Platform) == "" {
 		return ""
 	}
 	var builder strings.Builder
 	builder.WriteString("Phone bridge status:\n")
-	builder.WriteString("- connected: true\n")
+	if status.Connected {
+		builder.WriteString("- connected: true\n")
+	} else {
+		builder.WriteString("- connected: false\n")
+	}
 	if platform := strings.TrimSpace(status.Platform); platform != "" {
 		builder.WriteString("- platform: ")
 		builder.WriteString(platform)
 		builder.WriteByte('\n')
 	}
-	if status.LastHeartbeatAt != nil {
+	if status.Connected && status.LastHeartbeatAt != nil {
 		builder.WriteString("- last_heartbeat_at: ")
 		builder.WriteString(status.LastHeartbeatAt.UTC().Format(time.RFC3339))
 		builder.WriteByte('\n')
@@ -479,6 +502,27 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 	if appState := strings.TrimSpace(status.AppState); appState != "" {
 		builder.WriteString("- app_state: ")
 		builder.WriteString(appState)
+		builder.WriteByte('\n')
+		if status.AppStateUpdatedAt != nil {
+			builder.WriteString("- app_state_updated_at: ")
+			builder.WriteString(status.AppStateUpdatedAt.UTC().Format(time.RFC3339))
+			builder.WriteByte('\n')
+		}
+	}
+	if returnEntry := strings.TrimSpace(status.ReturnEntry); returnEntry != "" || status.ReturnEntryAvailable != nil {
+		builder.WriteString("- return_entry: ")
+		if returnEntry == "" {
+			returnEntry = "unknown"
+		}
+		builder.WriteString(returnEntry)
+		if status.ReturnEntryAvailable != nil {
+			builder.WriteString(" available=")
+			if *status.ReturnEntryAvailable {
+				builder.WriteString("true")
+			} else {
+				builder.WriteString("false")
+			}
+		}
 		builder.WriteByte('\n')
 	}
 	if status.Environment != nil {
@@ -489,10 +533,39 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 			builder.WriteByte('\n')
 		}
 	}
-	builder.WriteString("- The phone companion app is connected. Use open_app as the primary path for opening apps, URLs, deeplinks, and phone dialer screens before falling back to screenshot/HID navigation.\n")
-	builder.WriteString("- clipboard, calendar, contacts, and notification tools are available through the companion app: prefer them over manual UI navigation for reading/writing the system clipboard, creating/querying/deleting system calendar events, managing contacts, or sending notifications.\n")
-	builder.WriteString("- If open_app returns {\"ok\":true}, treat the app launch as complete unless the user requested additional in-app actions.")
+	if phoneBridgeAppNeedsForeground(status) {
+		builder.WriteString("- The Aiden companion app is backgrounded or inactive. On iOS, Phone Bridge commands may time out until Aiden returns to foreground.\n")
+		builder.WriteString("- If the screenshot shows the Aiden Dynamic Island or Live Activity at the top of the phone, tap it to reopen Aiden, wait for app_state=active/phone bridge reconnect, then retry open_app, clipboard, calendar, contacts, or notification before searching the home screen or using HID fallback.\n")
+	} else if status.Connected {
+		builder.WriteString("- The phone companion app is connected. Use open_app as the primary path for opening apps, URLs, deeplinks, and phone dialer screens before falling back to screenshot/HID navigation.\n")
+		builder.WriteString("- clipboard, calendar, contacts, and notification tools are available through the companion app: prefer them over manual UI navigation for reading/writing the system clipboard, creating/querying/deleting system calendar events, managing contacts, or sending notifications.\n")
+		builder.WriteString("- For long or non-ASCII text entry, prefer clipboard write through the companion app, switch to the target app, then paste with quick_action/keyboard shortcut instead of typing via HID.\n")
+		builder.WriteString("- If open_app returns {\"ok\":true}, treat the app launch as complete unless the user requested additional in-app actions.")
+	} else {
+		builder.WriteString("- The phone companion app is not connected. Do not assume open_app, clipboard, calendar, contacts, or notification tools can control the phone right now.\n")
+		builder.WriteString("- If the screenshot shows the Aiden Dynamic Island or Live Activity return entry, tap it to reopen Aiden and restore Phone Bridge before using those shortcut tools; otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
+	}
 	return builder.String()
+}
+
+func phoneBridgeAppNeedsForeground(status PhoneBridgeStatus) bool {
+	appState := strings.ToLower(strings.TrimSpace(status.AppState))
+	return appState == "background" || appState == "inactive"
+}
+
+func phoneBridgeHasReturnEntry(status PhoneBridgeStatus) bool {
+	if status.ReturnEntryAvailable != nil {
+		return *status.ReturnEntryAvailable
+	}
+	platform := strings.ToLower(strings.TrimSpace(status.Platform))
+	return platform == "ios" && phoneBridgeAppNeedsForeground(status)
+}
+
+func phoneBridgeRecoveryGuidance(status PhoneBridgeStatus) string {
+	if phoneBridgeHasReturnEntry(status) {
+		return "If the screenshot shows the Aiden Dynamic Island or Live Activity, tap it to reopen Aiden, wait for Phone Bridge to reconnect, then retry the companion app tool before using home-screen search or HID fallback."
+	}
+	return "Use screenshot plus HID/touch fallback only after confirming the Aiden Dynamic Island/Live Activity return entry is not available or reopening Aiden did not restore Phone Bridge."
 }
 
 func appendNonEmptyLine(builder *strings.Builder, prefix, value string) {

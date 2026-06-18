@@ -14,15 +14,23 @@ func nextBridgeCmdID(prefix string) string {
 	return fmt.Sprintf("%s_%d_%d", prefix, time.Now().UnixMilli(), openAppCmdSeq.Add(1))
 }
 
-func bridgeNotConnected() string {
-	return jsonString(map[string]interface{}{
+func bridgeNotConnected(status ...PhoneBridgeStatus) string {
+	result := map[string]interface{}{
 		"ok":    false,
 		"error": "phone bridge not connected",
-	})
+	}
+	if len(status) > 0 {
+		result["fallback"] = phoneBridgeRecoveryGuidance(status[0])
+	}
+	return jsonString(result)
 }
 
-func bridgeRespError(err error) string {
-	return jsonString(map[string]interface{}{"ok": false, "error": err.Error()})
+func bridgeRespError(err error, status ...PhoneBridgeStatus) string {
+	result := map[string]interface{}{"ok": false, "error": err.Error()}
+	if len(status) > 0 {
+		result["fallback"] = phoneBridgeRecoveryGuidance(status[0])
+	}
+	return jsonString(result)
 }
 
 // bridgeMsgError returns a JSON envelope for a tool-level error string. Keeps
@@ -51,8 +59,8 @@ func (t *ClipboardTool) Description() string {
 	return `Read or write the connected phone's system clipboard via the phone bridge. ` +
 		`Input JSON: {"action":"read"} returns {"ok":true,"text":"..."}; ` +
 		`{"action":"write","text":"content"} sets the clipboard and returns {"ok":true}. ` +
-		`Use this as a fast cross-app content channel instead of HID copy/paste when the phone bridge is connected. ` +
-		`If the phone bridge is not connected, this tool fails and there is no HID fallback for clipboard access.`
+		`Use this as a fast cross-app content channel for long or non-ASCII text: write the clipboard in Aiden, switch to the target app, then paste. ` +
+		`If the phone bridge is not connected, first restore Aiden from the Dynamic Island/Live Activity when available; there is no HID fallback for reading or writing the system clipboard.`
 }
 
 func (t *ClipboardTool) ArgsSchema() map[string]any {
@@ -68,8 +76,9 @@ type clipboardArgs struct {
 }
 
 func (t *ClipboardTool) Call(ctx context.Context, input string) (string, error) {
-	if !t.bridge.Connected() {
-		return bridgeNotConnected(), nil
+	status := t.bridge.Status()
+	if !status.Connected {
+		return bridgeNotConnected(status), nil
 	}
 
 	var args clipboardArgs
@@ -95,7 +104,7 @@ func (t *ClipboardTool) read(ctx context.Context) (string, error) {
 		TimeoutMs: 5000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, t.bridge.Status()), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
 	if !resp.OK {
@@ -125,7 +134,7 @@ func (t *ClipboardTool) write(ctx context.Context, text string) (string, error) 
 		TimeoutMs: 5000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, t.bridge.Status()), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
 	if !resp.OK {
@@ -186,8 +195,9 @@ type calendarArgs struct {
 }
 
 func (t *CalendarTool) Call(ctx context.Context, input string) (string, error) {
-	if !t.bridge.Connected() {
-		return bridgeNotConnected(), nil
+	status := t.bridge.Status()
+	if !status.Connected {
+		return bridgeNotConnected(status), nil
 	}
 
 	var args calendarArgs
@@ -230,7 +240,7 @@ func (t *CalendarTool) create(ctx context.Context, args calendarArgs) (string, e
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, t.bridge.Status()), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
 	if !resp.OK {
@@ -263,7 +273,7 @@ func (t *CalendarTool) query(ctx context.Context, args calendarArgs) (string, er
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, t.bridge.Status()), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
 	if !resp.OK {
@@ -299,7 +309,7 @@ func (t *CalendarTool) delete(ctx context.Context, args calendarArgs) (string, e
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, t.bridge.Status()), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
 	if !resp.OK {
@@ -354,8 +364,9 @@ type contactsArgs struct {
 }
 
 func (t *ContactsTool) Call(ctx context.Context, input string) (string, error) {
-	if !t.bridge.Connected() {
-		return bridgeNotConnected(), nil
+	status := t.bridge.Status()
+	if !status.Connected {
+		return bridgeNotConnected(status), nil
 	}
 
 	var args contactsArgs
@@ -391,7 +402,7 @@ func (t *ContactsTool) query(ctx context.Context, args contactsArgs) (string, er
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, t.bridge.Status()), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
 	if !resp.OK {
@@ -433,7 +444,7 @@ func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, e
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, t.bridge.Status()), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
 	if !resp.OK {
@@ -473,7 +484,7 @@ func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, e
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, t.bridge.Status()), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
 	if !resp.OK {
@@ -521,8 +532,9 @@ type notificationArgs struct {
 }
 
 func (t *NotificationTool) Call(ctx context.Context, input string) (string, error) {
-	if !t.bridge.Connected() {
-		return bridgeNotConnected(), nil
+	status := t.bridge.Status()
+	if !status.Connected {
+		return bridgeNotConnected(status), nil
 	}
 
 	var args notificationArgs
@@ -548,7 +560,7 @@ func (t *NotificationTool) Call(ctx context.Context, input string) (string, erro
 		TimeoutMs: 5000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, t.bridge.Status()), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
 	if !resp.OK {

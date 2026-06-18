@@ -77,7 +77,7 @@ func TestPhoneBridgeHandlesAppStateEvent(t *testing.T) {
 		ID:     "phone_app_state",
 		OK:     true,
 		Method: "phone_app_state",
-		Data:   json.RawMessage(`{"app_state":"background","reported_at":"2026-06-01T02:03:06Z"}`),
+		Data:   json.RawMessage(`{"app_state":"background","reported_at":"2026-06-01T02:03:06Z","return_entry":"dynamic_island","return_entry_available":true}`),
 	})
 	if !handled {
 		t.Fatal("app state event was not handled")
@@ -89,5 +89,11 @@ func TestPhoneBridgeHandlesAppStateEvent(t *testing.T) {
 	}
 	if status.AppStateUpdatedAt == nil {
 		t.Fatal("expected app_state_updated_at")
+	}
+	if status.ReturnEntry != "dynamic_island" {
+		t.Fatalf("return_entry = %q, want dynamic_island", status.ReturnEntry)
+	}
+	if status.ReturnEntryAvailable == nil || !*status.ReturnEntryAvailable {
+		t.Fatalf("return_entry_available = %#v, want true", status.ReturnEntryAvailable)
 	}
 }

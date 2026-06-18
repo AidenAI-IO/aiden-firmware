@@ -58,7 +58,7 @@ The app can also actively send event messages. Events reuse the `BridgeCommandRe
 Current events:
 
 - `phone_environment`: App reports phone environment snapshot upon WebSocket connection success and returning from background to foreground.
-- `phone_app_state`: App reports the last visible app lifecycle state when it changes among `active`, `background`, and `inactive`. This state is for diagnostics and strategy decisions; it does not mean the app can execute permanently in iOS background.
+- `phone_app_state`: App reports the last visible app lifecycle state when it changes among `active`, `background`, and `inactive`, plus whether a Live Activity / Dynamic Island entry is available to return to Aiden. This state is for diagnostics and strategy decisions; it does not mean the app can execute permanently in iOS background.
 
 Example:
 
@@ -112,7 +112,7 @@ Example:
 }
 ```
 
-The board writes the latest complete environment to the `environment` field of `GET /api/phone-bridge/status`. Each Agent runtime context only injects a streamlined summary: connection status, system type/version, language/region/timezone, screen dimensions, confirmed openable third-party candidate apps. Environment is cleared on disconnection to avoid using stale information.
+The board writes the latest complete environment to the `environment` field of `GET /api/phone-bridge/status`, and keeps `app_state`, `return_entry`, and `return_entry_available` for Agent runtime context. Each Agent runtime context only injects a streamlined summary: connection status, app foreground/background state, return entry, system type/version, language/region/timezone, screen dimensions, and confirmed openable third-party candidate apps. Environment is cleared on disconnection to avoid using stale information, but the latest app foreground/background state can be retained to decide whether Aiden should be restored through Dynamic Island first.
 
 `phone_app_state` example:
 
@@ -123,6 +123,8 @@ The board writes the latest complete environment to the `environment` field of `
   "method": "phone_app_state",
   "data": {
     "app_state": "background",
+    "return_entry": "dynamic_island",
+    "return_entry_available": true,
     "reported_at": "2026-06-10T03:20:05Z"
   }
 }
