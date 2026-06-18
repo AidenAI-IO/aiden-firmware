@@ -19,12 +19,15 @@ import (
 
 const (
 	wakeupListenTimeout                     = 10 * time.Second
+	defaultVoiceSteerListenTimeout          = 45 * time.Second
 	voiceTurnCancelWaitTimeout              = 2 * time.Second
 	voiceWakeupInterruptedCorrectionContext = "Voice interruption: the user pressed the physical wakeup button " +
 		"while the previous voice turn was still running. The latest voice input was spoken after that interruption. " +
 		"Treat it as a correction or steering update to the interrupted turn, not as an independent new task unless " +
 		"the user explicitly asks to start over."
 )
+
+var voiceSteerListenTimeout = defaultVoiceSteerListenTimeout
 
 var wakeupGPIOPins = []int{33, 32}
 
@@ -803,7 +806,7 @@ func interruptedFollowUpContext(result voiceTurnResult) agent.VoiceTurnContext {
 func captureVoiceSteer(cfg agent.Config, dialog audioDialogRunner, sigChan chan os.Signal, events <-chan voiceEvent) (*pendingVoiceTurn, bool) {
 	log.Println("[steer] wakeup received during thinking, listening for steering input")
 	dialog.InterruptOutput()
-	utterance, exit := listenOneUtterance(dialog, sigChan, events, cfg.VoiceFollowupTimeoutOrDefault())
+	utterance, exit := listenOneUtterance(dialog, sigChan, events, voiceSteerListenTimeoutForConfig(cfg))
 	if exit {
 		return nil, true
 	}
@@ -821,6 +824,13 @@ func captureVoiceSteer(cfg agent.Config, dialog audioDialogRunner, sigChan chan 
 		utterance:   append([]int16(nil), utterance...),
 		turnContext: interruptedVoiceCorrectionContext(),
 	}, false
+}
+
+func voiceSteerListenTimeoutForConfig(_ agent.Config) time.Duration {
+	if voiceSteerListenTimeout > 0 {
+		return voiceSteerListenTimeout
+	}
+	return defaultVoiceSteerListenTimeout
 }
 
 func interruptedVoiceCorrectionContext() agent.VoiceTurnContext {

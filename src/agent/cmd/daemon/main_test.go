@@ -60,6 +60,15 @@ type persistedVoiceTurn struct {
 	utterance []int16
 }
 
+func withVoiceSteerListenTimeout(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	old := voiceSteerListenTimeout
+	voiceSteerListenTimeout = timeout
+	t.Cleanup(func() {
+		voiceSteerListenTimeout = old
+	})
+}
+
 func (d *fakeAudioDialog) StartRecording() error {
 	if d.recordingActive {
 		return nil
@@ -1776,6 +1785,8 @@ func TestRunVoiceTurnWakeupBeginsSteerInterruptBeforeRecording(t *testing.T) {
 }
 
 func TestRunVoiceTurnWakeupEmptySteerResumesOriginalRun(t *testing.T) {
+	withVoiceSteerListenTimeout(t, 5*time.Millisecond)
+
 	sigChan := make(chan os.Signal, 1)
 	events := make(chan voiceEvent, 1)
 	runStarted := make(chan struct{})
@@ -1832,6 +1843,13 @@ func TestRunVoiceTurnWakeupEmptySteerResumesOriginalRun(t *testing.T) {
 	}
 	if len(dialog.spoken) != 1 || dialog.spoken[0] != "original reply" {
 		t.Fatalf("spoken texts = %#v, want original reply", dialog.spoken)
+	}
+}
+
+func TestVoiceSteerListenTimeoutIgnoresFollowupTimeout(t *testing.T) {
+	cfg := agent.Config{VoiceFollowupTimeoutMs: 5}
+	if got := voiceSteerListenTimeoutForConfig(cfg); got != 45*time.Second {
+		t.Fatalf("voiceSteerListenTimeoutForConfig() = %s, want 45s", got)
 	}
 }
 
