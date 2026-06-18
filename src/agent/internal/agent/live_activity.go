@@ -24,6 +24,7 @@ import (
 
 const (
 	LiveActivityStatusRunning   = "running"
+	LiveActivityStatusReady     = "ready"
 	LiveActivityStatusNeedsApp  = "needs_app"
 	LiveActivityStatusCompleted = "completed"
 	LiveActivityStatusFailed    = "failed"
@@ -483,7 +484,8 @@ func (m *LiveActivityManager) enqueueAPNsPush(req liveActivityPushRequest, queue
 func (m *LiveActivityManager) runAPNsPublisher(apns *APNsClient, queue <-chan liveActivityPushRequest) {
 	for req := range queue {
 		ctx, cancel := context.WithTimeout(context.Background(), apns.timeout)
-		err := apns.Push(ctx, req.pushToken, req.state, req.final)
+		state, final := liveActivityRemotePushState(req.state, req.final)
+		err := apns.Push(ctx, req.pushToken, state, final)
 		cancel()
 		if err != nil && m.logger != nil {
 			m.logger.Error("live activity: APNs push failed request_id=%s: %v", req.requestID, err)
@@ -519,7 +521,8 @@ func (m *LiveActivityManager) enqueueRelayPush(req liveActivityPushRequest, queu
 func (m *LiveActivityManager) runRelayPublisher(relay *LiveActivityRelayClient, queue <-chan liveActivityPushRequest) {
 	for req := range queue {
 		ctx, cancel := context.WithTimeout(context.Background(), relay.timeout)
-		err := relay.Push(ctx, req.state, req.final)
+		state, final := liveActivityRemotePushState(req.state, req.final)
+		err := relay.Push(ctx, state, final)
 		cancel()
 		if err != nil && m.logger != nil {
 			m.logger.Error("live activity: relay push failed request_id=%s: %v", req.requestID, err)
@@ -563,6 +566,28 @@ func (s LiveActivityState) ContentState() LiveActivityContentState {
 		CanStop:       s.CanStop,
 		RequiresApp:   s.RequiresApp,
 		UpdatedAt:     s.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+func liveActivityRemotePushState(state LiveActivityState, final bool) (LiveActivityState, bool) {
+	if !final || !isFinalLiveActivityStatus(state.Status) {
+		return state, final
+	}
+	return liveActivityStandbyStateForRemotePush(state), false
+}
+
+func liveActivityStandbyStateForRemotePush(state LiveActivityState) LiveActivityState {
+	return LiveActivityState{
+		RequestID:     state.RequestID,
+		Status:        LiveActivityStatusReady,
+		TaskTitle:     "Aiden",
+		CurrentStep:   "Ready",
+		CurrentAction: "standby",
+		Progress:      0,
+		ShowsProgress: false,
+		CanStop:       false,
+		StartedAt:     state.StartedAt,
+		UpdatedAt:     state.UpdatedAt,
 	}
 }
 

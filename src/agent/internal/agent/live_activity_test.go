@@ -173,6 +173,52 @@ func TestLiveActivityManagerPublishesToRelay(t *testing.T) {
 	}
 }
 
+func TestLiveActivityManagerPublishesTerminalStateToRelayAsStandby(t *testing.T) {
+	requests := make(chan map[string]interface{}, 2)
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode relay payload: %v", err)
+		}
+		requests <- payload
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer relay.Close()
+
+	manager := NewLiveActivityManager(LiveActivityConfig{
+		RelayURL: relay.URL,
+		BoardID:  "board-1",
+	}, nil)
+	manager.StartTask("req-1", "Open Settings")
+	manager.CompleteTask("req-1", "Done")
+
+	var terminalPayload map[string]interface{}
+	for i := 0; i < 2; i++ {
+		select {
+		case payload := <-requests:
+			if payload["request_id"] == "req-1" && payload["status"] == LiveActivityStatusReady {
+				terminalPayload = payload
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for relay publish")
+		}
+	}
+	if terminalPayload == nil {
+		t.Fatal("missing standby relay payload after completion")
+	}
+	if terminalPayload["event"] == "end" {
+		t.Fatalf("terminal relay payload event = %q, want no end event", terminalPayload["event"])
+	}
+	if terminalPayload["task_title"] != "Aiden" || terminalPayload["current_step"] != "Ready" {
+		t.Fatalf("terminal relay payload = %#v, want standby title/step", terminalPayload)
+	}
+	if terminalPayload["can_stop"] != false || terminalPayload["shows_progress"] != false {
+		t.Fatalf("terminal relay payload = %#v, want non-stoppable standby", terminalPayload)
+	}
+}
+
 func TestServerLiveActivityRegistrationAndStatus(t *testing.T) {
 	server := &Server{liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil)}
 	server.liveActivity.StartTask("req-1", "Do a task")
