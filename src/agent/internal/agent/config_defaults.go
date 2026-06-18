@@ -19,6 +19,11 @@ const (
 	defaultTTSSpeed                = 1.0
 	defaultSTTProvider             = "openai-whisper"
 	defaultSTTModel                = "whisper-1"
+	tencentASRProvider             = "tencent-asr"
+	legacyTencentProvider          = "tencent"
+	legacyTencentASRProvider       = "tencent_asr"
+	defaultTencentASRRegion        = "ap-guangzhou"
+	defaultTencentASREngineModel   = "16k_zh"
 	defaultAudioSocket             = "/run/audio_service/audio_service.sock"
 	defaultAudioSampleRate         = 16000
 	defaultAudioChannels           = 1
@@ -37,7 +42,8 @@ const (
 	defaultVoiceFollowupTimeoutMs  = 6000
 	defaultVoiceFirstTurnTimeoutMs = 10000
 	defaultVoiceMaxTurns           = 0
-	defaultVoiceMaxResponseTokens  = 400
+	defaultVoiceMaxResponseTokens  = 300
+	defaultTodoReminderToolCalls   = 3
 	defaultMaxIterations           = -1
 	defaultScreenshotKeepN         = 3
 	defaultScreenshotPruneInterval = 25
@@ -100,28 +106,31 @@ func DefaultConfig() Config {
 			Tags:              []string{},
 			Environment:       defaultTelemetryEnvironment,
 		},
-		Instruction:               defaultInstruction,
-		InputMode:                 defaultInputMode,
-		TriggerMode:               defaultTriggerMode,
-		VADBackend:                defaultVADBackend,
-		VADModelPath:              defaultVADModelPath,
-		VADHelperPath:             defaultVADHelperPath,
-		VADSpeechThreshold:        defaultVADSpeechThreshold,
-		SilenceMs:                 defaultSilenceMs,
-		MinSpeechMs:               defaultMinSpeechMs,
-		VoiceSessionEnabled:       defaultBoolPtr(true),
-		VoiceFollowupTimeoutMs:    defaultVoiceFollowupTimeoutMs,
-		VoiceFirstTurnTimeoutMs:   defaultVoiceFirstTurnTimeoutMs,
-		VoiceMaxTurns:             defaultVoiceMaxTurns,
-		VoiceInterruptOnWakeup:    defaultBoolPtr(true),
-		VoiceStreamingTTSEnabled:  defaultBoolPtr(true),
-		VoiceToolCallSpeech:       defaultBoolPtr(true),
-		VoiceMaxResponseTokens:    defaultVoiceMaxResponseTokens,
-		MaxIterations:             defaultMaxIterations,
-		ScreenshotKeepN:           defaultScreenshotKeepN,
-		ScreenshotPruneInterval:   defaultScreenshotPruneInterval,
-		ScreenStableTimeoutMs:     defaultStableWaitTimeoutMs,
-		ScreenStableMs:            defaultStableDurationMs,
-		ScreenStableDiffThreshold: defaultDiffThreshold,
+		Instruction:                defaultInstruction,
+		InputMode:                  defaultInputMode,
+		TriggerMode:                defaultTriggerMode,
+		VADBackend:                 defaultVADBackend,
+		VADModelPath:               defaultVADModelPath,
+		VADHelperPath:              defaultVADHelperPath,
+		VADSpeechThreshold:         defaultVADSpeechThreshold,
+		SilenceMs:                  defaultSilenceMs,
+		MinSpeechMs:                defaultMinSpeechMs,
+		VoiceFollowupEnabled:       defaultBoolPtr(false),
+		VoiceFollowupTimeoutMs:     defaultVoiceFollowupTimeoutMs,
+		VoiceFirstTurnTimeoutMs:    defaultVoiceFirstTurnTimeoutMs,
+		VoiceMaxTurns:              defaultVoiceMaxTurns,
+		VoiceInterruptOnWakeup:     defaultBoolPtr(true),
+		VoiceStreamingTTSEnabled:   defaultBoolPtr(true),
+		VoiceToolCallSpeech:        defaultBoolPtr(false),
+		VoiceProgressSpeechEnabled: defaultBoolPtr(true),
+		VoiceSpeechSummaryEnabled:  defaultBoolPtr(true),
+		VoiceMaxResponseTokens:     defaultVoiceMaxResponseTokens,
+		TodoReminderToolCalls:      defaultTodoReminderToolCalls,
+		MaxIterations:              defaultMaxIterations,
+		ScreenshotKeepN:            defaultScreenshotKeepN,
+		ScreenshotPruneInterval:    defaultScreenshotPruneInterval,
+		ScreenStableTimeoutMs:      defaultStableWaitTimeoutMs,
+		ScreenStableMs:             defaultStableDurationMs,
+		ScreenStableDiffThreshold:  defaultDiffThreshold,
 	}
 }

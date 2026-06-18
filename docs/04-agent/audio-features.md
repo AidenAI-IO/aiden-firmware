@@ -26,7 +26,7 @@ Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go
 | --- | --- | --- |
 | Audio client | `audio_client.go` | 连接 `audio_service`，启动录音/播放 session，读写 PCM chunk |
 | VAD | `vad.go` + `/oem/usr/bin/rknn_vad` 或 `/oem/usr/bin/cpu_vad` | Silero VAD 推理；输入固定为 16 kHz、512 samples/32 ms，并在 helper 中维护 `state` 状态 |
-| STT | `stt.go`, `tencent_asr_stt.go` | OpenAI Whisper / OpenRouter / 腾讯云 ASR（`tencent` 或 `tencent_asr`） |
+| STT | `stt.go`, `tencent_asr_stt.go` | OpenAI Whisper / OpenRouter / 腾讯云 ASR（`tencent-asr`；旧值 `tencent` / `tencent_asr` 兼容） |
 | TTS | `tts/`、`tts_helpers.go` | 可插拔 TTS provider，输出 PCM 后通过 `audio_service` 播放；必要时自动重采样到设备播放采样率 |
 | Dialog manager | `audio_dialog.go` | 编排录音、VAD、STT/LLM/TTS 流程 |
 
@@ -61,7 +61,7 @@ Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go
 
 ### `trigger_mode = "wakeup"`
 
-等待 GPIO 33 或 GPIO 32 falling edge 触发后录音，两路触发进入同一套 wakeup 流程。`input_mode = "stt"` 且 `voice_session_enabled = true` 时，wakeup 默认打开一个连续语音 session：首轮仍需要 GPIO，Agent 回复后会在 `voice_followup_timeout_ms` 窗口内继续听追问，`voice_first_turn_timeout_ms` 控制首轮等待窗口，`voice_max_turns` 控制单个 session 的轮数上限。录音中再次触发 wakeup 会打断当前录音、丢弃已录音频，并重新开始录音计时；session 内再次触发 wakeup 是否取消当前 LLM 请求由 `voice_interrupt_on_wakeup` 控制；TTS 播放期间默认不开麦，播放结束后才继续录音；播放中再次触发 wakeup 会打断当前轮并立即开始录音。需要 Linux GPIO sysfs 可用，并完成硬件连线。
+等待 GPIO 33 或 GPIO 32 falling edge 触发后录音，两路触发进入同一套 wakeup 流程。`input_mode = "stt"` 且 `voice_followup_enabled = true` 时，wakeup 打开一个连续语音 session：首轮仍需要 GPIO，Agent 回复后会在 `voice_followup_timeout_ms` 窗口内继续听追问，`voice_first_turn_timeout_ms` 控制首轮等待窗口，`voice_max_turns` 控制单个 session 的轮数上限。监听或录音阶段重复触发 wakeup 会被合并或忽略，不会重启录音或丢弃已录音频；thinking 阶段再次触发 wakeup 是否取消当前 LLM 请求由 `voice_interrupt_on_wakeup` 控制；TTS 播放期间默认不开麦，播放结束后才继续录音；播放中再次触发 wakeup 会打断当前轮并立即开始录音。需要 Linux GPIO sysfs 可用，并完成硬件连线。
 
 ## 配置片段
 
@@ -74,13 +74,15 @@ vad_helper_path = "/oem/usr/bin/rknn_vad"
 vad_speech_threshold = 0.5
 silence_ms = 650
 min_speech_ms = 300
-voice_session_enabled = true
+voice_followup_enabled = false
 voice_followup_timeout_ms = 6000
 voice_first_turn_timeout_ms = 10000
 voice_max_turns = 0
 voice_interrupt_on_wakeup = true
 voice_streaming_tts_enabled = true
-voice_tool_call_speech = true
+voice_tool_call_speech = false
+voice_speech_summary_enabled = true
+voice_speech_max_runes = 120
 voice_max_response_tokens = 400
 
 [audio]
@@ -106,6 +108,12 @@ voice_id = "Cherry"
 emotion = "happy"
 speed = 1.0
 ```
+
+### 工具调用口播
+
+`voice_tool_call_speech = true` 时，运行时会把工具 schema 中可选的 `speech` 参数暴露给 LLM，并在工具调用事件到达时异步 TTS 播放该字段。`speech` 是运行时元字段，不会传给真实工具。
+
+如果 LLM 没有生成 `speech`，该工具调用保持静默。运行时不会从工具 `description`、assistant text 或其他上下文字段派生短口播；`description` 只用于 UI、trace、memory 和调试上下文。
 
 ## TTS provider 使用方式
 

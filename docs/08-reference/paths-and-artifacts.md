@@ -20,7 +20,7 @@
 | `src/audio_service_main.cpp` | Audio Service 入口 |
 | `src/config_web.cpp` | Config Web 入口 |
 | `src/agent/cmd/daemon` | Go Agent daemon |
-| `src/agent/cmd/ota` | OTA CLI / daemon |
+| `src/agent/cmd/ota` | OTA CLI |
 | `src/agent/cmd/abctl` | A/B metadata 诊断工具 |
 | `src/agent/internal/agent` | Agent runtime 和工具实现 |
 | `src/agent/internal/ota` | OTA manifest、下载、slot、health 和状态机 |
@@ -54,7 +54,7 @@
 | `overlay/etc/init.d/S20oemslot` | Slot-aware `/oem` 挂载脚本 |
 | `overlay/etc/init.d/S49ntp` | ntpd daemon 启动 + `step` 一次性同步子命令 |
 | `overlay/etc/init.d/S50ntp_watchdog` | NTP 同步周期检查，未同步时触发 `S49ntp step` |
-| `overlay/etc/init.d/S54ota` | OTA daemon watchdog |
+| `overlay/etc/init.d/S54ota` | Boot-time OTA health one-shot |
 | `overlay/etc/init.d/S99rtcinit` | RTC invalid-date calibration script replacing the SDK default |
 | `overlay/etc/profile.d/aiden-env.sh` | SSH/login shell environment loader snippet |
 | `overlay/oem/usr/bin/aiden-env-run` | Service environment launcher |

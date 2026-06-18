@@ -24,7 +24,7 @@ std::string make_temp_path(const char* leaf) {
 
 TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     aiden::AgentToml cfg;
-    cfg.instruction = "Hello \"world\"";
+    cfg.custom_instruction = "Hello \"world\"";
     cfg.input_mode = "stt";
     cfg.trigger_mode = "manual";
     cfg.vad_backend = "cpu";
@@ -33,13 +33,15 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.vad_speech_threshold = 0.5;
     cfg.silence_ms = 1000;
     cfg.min_speech_ms = 250;
-    cfg.voice_session_enabled = false;
+    cfg.voice_followup_enabled = true;
     cfg.voice_followup_timeout_ms = 6500;
     cfg.voice_first_turn_timeout_ms = 11000;
     cfg.voice_max_turns = 4;
     cfg.voice_interrupt_on_wakeup = false;
     cfg.voice_streaming_tts_enabled = false;
     cfg.voice_tool_call_speech = false;
+    cfg.voice_progress_speech_enabled = false;
+    cfg.voice_speech_summary_enabled = false;
     cfg.voice_max_response_tokens = 240;
     cfg.max_iterations = 6;
     cfg.force_simple_loop = true;
@@ -103,11 +105,20 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     REQUIRE(aiden::save_agent_toml(path.c_str(), cfg, &err));
     REQUIRE(err.empty());
 
+    {
+        std::ifstream saved_in(path);
+        REQUIRE(saved_in.good());
+        std::string contents((std::istreambuf_iterator<char>(saved_in)), std::istreambuf_iterator<char>());
+        CHECK(contents.find("custom_instruction = \"Hello \\\"world\\\"\"") != std::string::npos);
+        CHECK(contents.rfind("instruction =", 0) != 0);
+        CHECK(contents.find("\ninstruction =") == std::string::npos);
+    }
+
     aiden::AgentToml loaded;
     REQUIRE(aiden::load_agent_toml(path.c_str(), loaded, &err));
     REQUIRE(err.empty());
 
-    CHECK(loaded.instruction == "Hello \"world\"");
+    CHECK(loaded.custom_instruction == "Hello \"world\"");
     CHECK(loaded.input_mode == "stt");
     CHECK(loaded.trigger_mode == "manual");
     CHECK(loaded.vad_backend == "cpu");
@@ -116,13 +127,15 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.vad_speech_threshold == doctest::Approx(0.5));
     CHECK(loaded.silence_ms == 1000);
     CHECK(loaded.min_speech_ms == 250);
-    CHECK(loaded.voice_session_enabled == false);
+    CHECK(loaded.voice_followup_enabled == true);
     CHECK(loaded.voice_followup_timeout_ms == 6500);
     CHECK(loaded.voice_first_turn_timeout_ms == 11000);
     CHECK(loaded.voice_max_turns == 4);
     CHECK(loaded.voice_interrupt_on_wakeup == false);
-    CHECK(loaded.voice_streaming_tts_enabled == false);
+	CHECK(loaded.voice_streaming_tts_enabled == false);
 	CHECK(loaded.voice_tool_call_speech == false);
+	CHECK(loaded.voice_progress_speech_enabled == false);
+	CHECK(loaded.voice_speech_summary_enabled == false);
 	CHECK(loaded.voice_max_response_tokens == 240);
 	CHECK(loaded.max_iterations == 6);
 	CHECK(loaded.force_simple_loop == true);
@@ -202,6 +215,25 @@ TEST_CASE("agent_toml no longer writes legacy proxy section") {
     CHECK(contents.find("[benchmark]") == std::string::npos);
     CHECK(contents.find("judge_model") == std::string::npos);
     CHECK(contents.find("benchmark_dir") == std::string::npos);
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("agent_toml ignores legacy instruction key") {
+    std::string path = make_temp_path("legacy_instruction.toml");
+    {
+        std::ofstream out(path);
+        out << "instruction = \"legacy value\"\n"
+            << "custom_instruction = \"custom value\"\n"
+            << "[model]\n"
+            << "provider = \"fake\"\n";
+    }
+
+    aiden::AgentToml cfg;
+    std::string err;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    REQUIRE(err.empty());
+    CHECK(cfg.custom_instruction == "custom value");
 
     std::remove(path.c_str());
 }
@@ -289,6 +321,23 @@ TEST_CASE("agent_toml strips inline comments after unquoted scalars") {
     CHECK(cfg.vad_speech_threshold == doctest::Approx(0.5));
     CHECK(cfg.model.provider == "openrouter");
     CHECK(cfg.model.model == "x/y");
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("agent_toml ignores legacy voice speech max runes") {
+    std::string path = make_temp_path("legacy_voice_speech_max_runes.toml");
+    {
+        std::ofstream out(path);
+        out << "voice_speech_max_runes = -1\n";
+        out << "voice_max_response_tokens = 240\n";
+    }
+
+    aiden::AgentToml cfg;
+    std::string err;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), cfg, &err));
+    CHECK(err.empty());
+    CHECK(cfg.voice_max_response_tokens == 240);
 
     std::remove(path.c_str());
 }

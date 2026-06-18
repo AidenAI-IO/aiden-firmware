@@ -1,5 +1,5 @@
 # Agent instruction and behavior
-instruction = ""
+custom_instruction = ""
 additional_prompt = ""
 max_iterations = -1
 force_simple_loop = false
@@ -32,13 +32,16 @@ min_speech_ms = 300       # Minimum speech duration to accept (ms)
 
 # Wakeup voice session parameters
 # Only used when input_mode = "stt" and trigger_mode = "wakeup"
-voice_session_enabled = true
+voice_followup_enabled = false
 voice_followup_timeout_ms = 6000
 voice_first_turn_timeout_ms = 10000
 voice_max_turns = 0
 voice_interrupt_on_wakeup = true
 voice_streaming_tts_enabled = true
-voice_tool_call_speech = true
+voice_tool_call_speech = false
+voice_progress_speech_enabled = true
+voice_speech_summary_enabled = true
+voice_speech_max_runes = 120
 voice_max_response_tokens = 400
 
 # Primary LLM model configuration
@@ -77,7 +80,7 @@ storage_path = "/userdata/audio"  # Where to store audio files
 # Speech-to-Text (STT) configuration
 # Required when input_mode = "stt"
 [stt]
-provider = "openai-whisper"  # "openai-whisper", "openrouter", "tencent", or "tencent_asr"
+provider = "openai-whisper"  # "openai-whisper", "openrouter", or "tencent-asr"
 api_key = "OPENAI_API_KEY"
 model = "whisper-1"
 # base_url = "https://api.openai.com/v1"  # Optional: custom endpoint
@@ -89,7 +92,7 @@ model = "whisper-1"
 # base_url = "https://openrouter.ai/api/v1"  # Optional: custom endpoint
 
 # For Tencent ASR (alternative to OpenAI Whisper):
-# provider = "tencent_asr"  # alias: tencent
+# provider = "tencent-asr"  # legacy aliases: tencent, tencent_asr
 # secret_id = "TENCENT_SECRET_ID"
 # secret_key = "TENCENT_SECRET_KEY"
 # region = "ap-guangzhou"

@@ -121,16 +121,20 @@ if ! grep -Fq 'scripts/clean_rootfs_overlay_staging.sh" --dest-overlay "$DEST_OV
 fi
 
 if grep -Fq 'cp -a "$SCRIPT_DIR/build/bin"/. "$OVERLAY/oem/usr/bin/"' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq 'clean_generated_binaries "$OVERLAY/oem/usr/bin"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'sync_generated_binaries_from_source "$SCRIPT_DIR/build/bin" "$OVERLAY/oem/usr/bin"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq 'clean_generated_binaries "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin"' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must remove stale generated binaries from overlay and SDK OEM staging" >&2
     exit 1
 fi
 
-oem_bin_sync_line=$(grep -nF 'rsync -a --delete "$OVERLAY/oem/usr/bin/" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin/"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
 oem_full_sync_line=$(grep -nF 'rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
-if [ -z "$oem_bin_sync_line" ] || [ -z "$oem_full_sync_line" ] || [ "$oem_bin_sync_line" -ge "$oem_full_sync_line" ]; then
-    echo "_build_image.sh must sync OEM usr/bin with delete semantics before full OEM overlay sync" >&2
+oem_repair_line=$(grep -nF 'repair_generated_binaries_from_manifest "sdk-oem-usr-bin" "$SCRIPT_DIR/build/bin" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin" "$GENERATED_BINARY_MANIFEST"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+if [ -z "$oem_full_sync_line" ] || [ -z "$oem_repair_line" ] || [ "$oem_full_sync_line" -ge "$oem_repair_line" ]; then
+    echo "_build_image.sh must sync OEM overlay first, then restore generated usr/bin files from the build manifest source" >&2
+    exit 1
+fi
+if grep -Fq 'rsync -a --delete "$OVERLAY/oem/usr/bin/" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin/"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must not trust overlay/oem/usr/bin as the final generated binary source" >&2
     exit 1
 fi
 firmware_count=$(grep -cF './build.sh firmware "$@"' "$ROOT_DIR/_build_image.sh")
@@ -164,10 +168,16 @@ fi
 
 if ! grep -Fq 'log_generated_binaries_in_dir' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq 'binary-fingerprint stage=' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'write_generated_binary_manifest "$SCRIPT_DIR/build/bin" "$GENERATED_BINARY_MANIFEST"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'repair_generated_binaries_from_manifest "overlay-after-sdk-sysdrv"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'repair_generated_binaries_from_manifest "overlay-after-sdk-media"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'repair_generated_binaries_from_manifest "overlay-after-sdk-app"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'repair_generated_binaries_from_manifest "overlay-after-sdk-firmware"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'log_binary_diff_summary' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq 'log_generated_binaries_in_dir "build-bin"' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq 'log_generated_binaries_in_dir "overlay-oem-usr-bin"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'repair_generated_binaries_from_manifest "overlay-oem-usr-bin"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq 'log_generated_binaries_in_dir "sdk-oem-usr-bin"' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq 'log_generated_binaries_in_dir "sdk-oem-before-strip"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'repair_generated_binaries_from_manifest "sdk-oem-before-strip"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq 'log_generated_binaries_in_dir "sdk-oem-after-strip"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq 'image-file-verified rel=/$rel_path' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must log staged, stripped, and image-readback binary fingerprints for OTA forensics" >&2

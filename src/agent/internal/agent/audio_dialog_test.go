@@ -16,6 +16,15 @@ import (
 	ttsmodule "aiden-agent/internal/agent/tts"
 )
 
+func firstAudioDialogTestMessageOfType(messages []Message, messageType string) (Message, bool) {
+	for _, message := range messages {
+		if message.Type == messageType {
+			return message, true
+		}
+	}
+	return Message{}, false
+}
+
 func TestAudioDialogFinishManualUtterancePreservesTail(t *testing.T) {
 	vad, err := NewAudioVADWithScorer(AudioVADConfig{
 		SampleRate:      16000,
@@ -220,14 +229,74 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 	}
 }
 
-func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
+func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
+	output := "已完成设置，当前音量是 42。\n\n- 读取音量\n- 确认状态\n\n这段详细说明保留给屏幕。"
+	expectedSpeech := "已完成设置，当前音量是 42。\n\n读取音量\n确认状态\n\n这段详细说明保留给屏幕。"
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先检查当前音量。"}`, "当前音量是 42。"),
+		responses: roleDirectResponses(output),
 	}
+	store := NewChatHistoryStore(t.TempDir())
 	runtime := NewRuntimeWithDeps(
 		Config{
 			Model:       ModelConfig{Provider: "fake"},
-			Instruction: "Use tools when external state is requested.",
+			Instruction: "Answer directly.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config: Config{
+			Model:                     ModelConfig{Provider: "fake"},
+			Audio:                     AudioConfig{SampleRate: 16000},
+			InputMode:                 "audio",
+			VoiceStreamingTTSEnabled:  boolPtr(false),
+			VoiceSpeechSummaryEnabled: boolPtr(true),
+		},
+		audioClient:  NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
+	dialog.SetHistoryStore(store)
+
+	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
+		t.Fatalf("ProcessUtterance() error = %v", err)
+	}
+
+	texts := provider.texts()
+	if len(texts) != 1 {
+		t.Fatalf("unexpected TTS texts: %#v", texts)
+	}
+	if texts[0] != expectedSpeech {
+		t.Fatalf("TTS should use normalized full output, got %q want %q", texts[0], expectedSpeech)
+	}
+
+	messages, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	assistant, ok := firstMessageOfType(messages, "assistant")
+	if !ok {
+		t.Fatalf("assistant history missing: %#v", messages)
+	}
+	if !strings.Contains(assistant.Content, "这段详细说明保留给屏幕") {
+		t.Fatalf("history should keep full output, got %q", assistant.Content)
+	}
+}
+
+func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
+	toolSpeech := true
+	model := &scriptedModel{
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我会检查当前音量。","speech":"检查音量。"}`, "当前音量是 42。"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:               ModelConfig{Provider: "fake"},
+			Instruction:         "Use tools when external state is requested.",
+			VoiceToolCallSpeech: &toolSpeech,
 		},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
@@ -241,7 +310,6 @@ func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 		NewSkillIndex(),
 	)
 	provider := &recordingTTSProvider{name: "dialog-provider"}
-	toolSpeech := true
 	dialog := &AudioDialog{
 		config: Config{
 			Model:                    ModelConfig{Provider: "fake"},
@@ -263,12 +331,12 @@ func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 	if len(texts) != 2 {
 		t.Fatalf("expected tool description and final answer TTS, got %#v", texts)
 	}
-	if !containsString(texts, "我先检查当前音量。") || !containsString(texts, "当前音量是 42。") {
+	if !containsString(texts, "检查音量。") || !containsString(texts, "当前音量是 42。") {
 		t.Fatalf("unexpected TTS texts: %#v", texts)
 	}
 }
 
-func TestAudioDialogDoesNotSpeakEnterSleepToolDescription(t *testing.T) {
+func TestAudioDialogDoesNotSpeakWaitForWakeupToolDescription(t *testing.T) {
 	toolSpeech := true
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
@@ -280,19 +348,166 @@ func TestAudioDialogDoesNotSpeakEnterSleepToolDescription(t *testing.T) {
 	}
 
 	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:        "tool_call",
-		ToolName:    "enter_sleep",
-		Description: "用户让我休息，我准备进入睡眠模式。",
+		Type:        runEventToolCall,
+		ToolName:    toolWaitForWakeup,
+		Description: "用户让我休息，我准备回到等待唤醒状态。",
+		Speech:      "我准备回到等待唤醒状态。",
 	})
 
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
 }
 
-func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
-	model := &scriptedModel{
-		responses: roleToolResponses("enter_sleep", `{"__arg1":"{\"reason\":\"user asked\"}"}`, "I will wait for the next wakeup."),
+func TestAudioDialogSpeaksToolCallSpeechField(t *testing.T) {
+	toolSpeech := true
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config: Config{
+			VoiceToolCallSpeech: &toolSpeech,
+		},
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
 	}
-	controller := NewSleepController()
+
+	dialog.HandleRunEvent(context.Background(), RunEvent{
+		Type:        runEventToolCall,
+		ToolName:    "audio_volume",
+		Description: "完整工具描述保留给事件和上下文，不应该直接播报。",
+		Speech:      "读取当前音量。",
+	})
+
+	waitForProviderTextCount(t, provider, 1)
+	if got := provider.texts(); len(got) != 1 || got[0] != "读取当前音量。" {
+		t.Fatalf("unexpected TTS texts: %#v", got)
+	}
+}
+
+func TestAudioDialogDoesNotFallbackToToolCallDescriptionForSpeech(t *testing.T) {
+	toolSpeech := true
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config: Config{
+			VoiceToolCallSpeech: &toolSpeech,
+		},
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+	}
+
+	dialog.HandleRunEvent(context.Background(), RunEvent{
+		Type:        runEventToolCall,
+		ToolName:    "audio_volume",
+		Description: "完整工具描述保留给事件和上下文。",
+	})
+
+	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
+}
+
+func TestAudioDialogProgressSpeechDisabledDoesNotSpeakTodoUpdate(t *testing.T) {
+	disabled := false
+	spoken := make(chan string, 1)
+	dialog := &AudioDialog{
+		config: Config{VoiceProgressSpeechEnabled: &disabled},
+	}
+	dialog.setProgressSpeaker(newProgressSpeaker(func(ctx context.Context, text string) error {
+		spoken <- text
+		return nil
+	}, progressSpeakerConfig{Delay: time.Millisecond, MinInterval: -1}))
+
+	todo := TodoState{
+		Mode:      TodoModePlanned,
+		Revision:  1,
+		CurrentID: "todo-1",
+		Items: []TodoItem{{
+			ID:     "todo-1",
+			Text:   "Inspect current screen",
+			Status: TodoInProgress,
+			Source: TodoSourceCommittedPlan,
+		}},
+	}
+	dialog.HandleRunEvent(context.Background(), RunEvent{
+		Type:           runEventTodoUpdate,
+		Content:        "Inspect current screen",
+		Todo:           &todo,
+		SpeechEligible: true,
+	})
+
+	select {
+	case text := <-spoken:
+		t.Fatalf("progress speech was scheduled despite config=false: %q", text)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestProgressSpeechTextForEventOnlySpeaksInProgressCurrentItem(t *testing.T) {
+	todo := TodoState{
+		Mode:      TodoModePlanned,
+		Revision:  1,
+		CurrentID: "step-1",
+		Items: []TodoItem{{
+			ID:     "step-1",
+			Text:   "Inspect current screen",
+			Status: TodoDone,
+			Source: TodoSourceCommittedPlan,
+		}},
+	}
+	if text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo, SpeechEligible: true}); ok {
+		t.Fatalf("done todo should not be spoken, got %q", text)
+	}
+	todo.Items[0].Status = TodoInProgress
+	if text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo}); ok {
+		t.Fatalf("in-progress todo without speech eligibility should not be spoken, got %q", text)
+	}
+	text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo, SpeechEligible: true})
+	if !ok || text != "Inspect current screen" {
+		t.Fatalf("in-progress todo speech = %q ok=%v", text, ok)
+	}
+}
+
+func TestProgressSpeakerLatestWins(t *testing.T) {
+	spoken := make(chan string, 2)
+	speaker := newProgressSpeaker(func(ctx context.Context, text string) error {
+		spoken <- text
+		return nil
+	}, progressSpeakerConfig{Delay: 20 * time.Millisecond, MinInterval: -1})
+	speaker.Schedule(context.Background(), "first")
+	time.Sleep(5 * time.Millisecond)
+	speaker.Schedule(context.Background(), "second")
+
+	select {
+	case text := <-spoken:
+		if text != "second" {
+			t.Fatalf("spoken text = %q, want latest value", text)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("progress speaker did not speak latest pending text")
+	}
+	select {
+	case text := <-spoken:
+		t.Fatalf("unexpected extra progress speech: %q", text)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestProgressSpeakerCancelDropsPending(t *testing.T) {
+	spoken := make(chan string, 1)
+	speaker := newProgressSpeaker(func(ctx context.Context, text string) error {
+		spoken <- text
+		return nil
+	}, progressSpeakerConfig{Delay: 30 * time.Millisecond, MinInterval: -1})
+	speaker.Schedule(context.Background(), "pending")
+	speaker.Cancel()
+
+	select {
+	case text := <-spoken:
+		t.Fatalf("pending progress speech was not canceled: %q", text)
+	case <-time.After(80 * time.Millisecond):
+	}
+}
+
+func TestAudioDialogStreamingSpeechErrorDoesNotHideWaitForWakeupRequest(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleToolResponses("wait_for_wakeup", `{"__arg1":"{\"reason\":\"user asked\"}"}`, "I will wait for the next wakeup."),
+	}
+	controller := NewWaitForWakeupController()
 	runtime := NewRuntimeWithDeps(
 		Config{
 			Model:       ModelConfig{Provider: "fake"},
@@ -301,7 +516,7 @@ func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
-			"enter_sleep": NewEnterSleepTool(controller),
+			"wait_for_wakeup": NewWaitForWakeupTool(controller),
 		}},
 		NewSkillIndex(),
 	)
@@ -318,8 +533,8 @@ func TestAudioDialogStreamingSpeechErrorDoesNotHideSleepRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunAgentTurn() error = %v", err)
 	}
-	if !result.SleepRequested {
-		t.Fatal("SleepRequested = false, want true even when streaming speech fails")
+	if !result.WaitForWakeupRequested {
+		t.Fatal("WaitForWakeupRequested = false, want true even when streaming speech fails")
 	}
 	if result.SpeechStreamed {
 		t.Fatal("SpeechStreamed = true, want false when TTS playback failed before successful speech")
@@ -474,12 +689,130 @@ func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	// Audio mode does not produce a transcript, so we expect only the assistant message.
-	if len(messages) != 1 {
-		t.Fatalf("expected 1 message (assistant only, no transcript in audio mode), got %d: %#v", len(messages), messages)
+	userMessage, ok := firstAudioDialogTestMessageOfType(messages, "user")
+	if !ok || userMessage.Source != "voice" || userMessage.Modality != "audio" || userMessage.Content != voiceAudioInputPlaceholder {
+		t.Fatalf("user audio message = %#v in %#v", userMessage, messages)
 	}
-	if messages[0].Type != "assistant" || messages[0].Source != "voice" || messages[0].Content != "voice reply" {
-		t.Fatalf("assistant message = %#v", messages[0])
+	if len(userMessage.Attachments) != 1 || userMessage.Attachments[0].Kind != AttachmentKindAudio || userMessage.Attachments[0].Data != "" {
+		t.Fatalf("user audio attachment should be metadata-only: %#v", userMessage.Attachments)
+	}
+	roleOutput, ok := firstAudioDialogTestMessageOfType(messages, "role_output")
+	if !ok || roleOutput.Source != "voice" || roleOutput.Content != "voice reply" {
+		t.Fatalf("role_output message = %#v in %#v", roleOutput, messages)
+	}
+	assistantMessage, ok := firstAudioDialogTestMessageOfType(messages, "assistant")
+	if !ok || assistantMessage.Source != "voice" || assistantMessage.Content != "voice reply" {
+		t.Fatalf("assistant message = %#v in %#v", assistantMessage, messages)
+	}
+}
+
+func TestAudioDialogRunAgentTurnAppendsRunEventsToVoiceHistory(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleToolResponses("echo", `{"__arg1":"{}"}`, "voice tool reply"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools when requested.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"echo": &staticTool{name: "echo", output: `{"ok":true}`},
+		}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config: Config{
+			Model: ModelConfig{Provider: "fake"},
+		},
+	}
+	var messages []Message
+	dialog.SetHistoryAppender(func(message Message) {
+		messages = append(messages, message)
+	})
+
+	if _, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "use echo"}, runtime); err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", err)
+	}
+
+	for _, wantType := range []string{"role_output", runEventToolCall, "tool_result"} {
+		message, ok := firstAudioDialogTestMessageOfType(messages, wantType)
+		if !ok {
+			t.Fatalf("missing voice history message type %q: %#v", wantType, messages)
+		}
+		if message.Source != "voice" {
+			t.Fatalf("%s Source = %q, want voice", wantType, message.Source)
+		}
+	}
+}
+
+func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
+	configDir := t.TempDir()
+	model := &scriptedModel{
+		responses: roleToolResponses("echo", `{"__arg1":"{}"}`, "voice tool reply"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:       configDir,
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Use tools when requested.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(filepath.Join(configDir, "memory")),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"echo": &staticTool{name: "echo", output: `{"ok":true}`},
+		}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config: Config{
+			Model:        ModelConfig{Provider: "fake"},
+			Audio:        AudioConfig{SampleRate: 16000},
+			AudioArchive: AudioArchiveConfig{Enabled: false},
+		},
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
+	var messages []Message
+	dialog.SetHistoryAppender(func(message Message) {
+		messages = append(messages, message)
+	})
+
+	_, err := dialog.RunVoiceTurn(
+		context.Background(),
+		TurnInput{InputText: "use echo", Transcript: "use echo"},
+		[]int16{100, -100, 200, -200},
+		runtime,
+	)
+	if err != nil {
+		t.Fatalf("RunVoiceTurn() error = %v", err)
+	}
+	if len(messages) < 5 {
+		t.Fatalf("expected user, run events, and assistant messages, got %#v", messages)
+	}
+	if messages[0].Type != "user" {
+		t.Fatalf("first message type = %q, want user in %#v", messages[0].Type, messages)
+	}
+	if messages[len(messages)-1].Type != "assistant" {
+		t.Fatalf("last message type = %q, want assistant in %#v", messages[len(messages)-1].Type, messages)
+	}
+	for _, wantType := range []string{runEventToolCall, "tool_result", "role_output"} {
+		if _, ok := firstAudioDialogTestMessageOfType(messages, wantType); !ok {
+			t.Fatalf("missing voice history message type %q: %#v", wantType, messages)
+		}
+	}
+	episodeID := messages[0].EpisodeID
+	if episodeID == "" {
+		t.Fatalf("user message missing episode id: %#v", messages[0])
+	}
+	for _, message := range messages {
+		if message.Source != "voice" {
+			t.Fatalf("message source = %q, want voice: %#v", message.Source, message)
+		}
+		if message.EpisodeID != episodeID {
+			t.Fatalf("message episode id = %q, want %q in %#v", message.EpisodeID, episodeID, messages)
+		}
 	}
 }
 

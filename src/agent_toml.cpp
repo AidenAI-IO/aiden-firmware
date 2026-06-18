@@ -245,8 +245,8 @@ void apply_kv(AgentToml& cfg,
     std::string sub_err;
 
     if (section.empty()) {
-        if (key == "instruction") {
-            if (!assign_string(&cfg.instruction, raw, &sub_err)) fail(sub_err);
+        if (key == "custom_instruction") {
+            if (!assign_string(&cfg.custom_instruction, raw, &sub_err)) fail(sub_err);
         } else if (key == "additional_prompt") {
             if (!assign_string(&cfg.additional_prompt, raw, &sub_err)) fail(sub_err);
         } else if (key == "input_mode") {
@@ -265,8 +265,8 @@ void apply_kv(AgentToml& cfg,
             if (!assign_int(&cfg.silence_ms, raw, &sub_err)) fail(sub_err);
         } else if (key == "min_speech_ms") {
             if (!assign_int(&cfg.min_speech_ms, raw, &sub_err)) fail(sub_err);
-        } else if (key == "voice_session_enabled") {
-            if (!assign_bool(&cfg.voice_session_enabled, raw, &sub_err)) fail(sub_err);
+        } else if (key == "voice_followup_enabled") {
+            if (!assign_bool(&cfg.voice_followup_enabled, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_followup_timeout_ms") {
             if (!assign_int(&cfg.voice_followup_timeout_ms, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_first_turn_timeout_ms") {
@@ -279,6 +279,10 @@ void apply_kv(AgentToml& cfg,
             if (!assign_bool(&cfg.voice_streaming_tts_enabled, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_tool_call_speech") {
             if (!assign_bool(&cfg.voice_tool_call_speech, raw, &sub_err)) fail(sub_err);
+        } else if (key == "voice_progress_speech_enabled") {
+            if (!assign_bool(&cfg.voice_progress_speech_enabled, raw, &sub_err)) fail(sub_err);
+        } else if (key == "voice_speech_summary_enabled") {
+            if (!assign_bool(&cfg.voice_speech_summary_enabled, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_max_response_tokens") {
             if (!assign_int(&cfg.voice_max_response_tokens, raw, &sub_err)) fail(sub_err);
         } else if (key == "max_iterations") {
@@ -591,7 +595,7 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     }
 
     std::ostringstream out;
-    if (!cfg.instruction.empty()) emit_string(out, "instruction", cfg.instruction);
+    if (!cfg.custom_instruction.empty()) emit_string(out, "custom_instruction", cfg.custom_instruction);
     if (!cfg.additional_prompt.empty()) emit_string(out, "additional_prompt", cfg.additional_prompt);
     if (!cfg.input_mode.empty()) emit_string(out, "input_mode", cfg.input_mode);
     if (!cfg.trigger_mode.empty()) emit_string(out, "trigger_mode", cfg.trigger_mode);
@@ -601,13 +605,15 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (cfg.vad_speech_threshold != 0.0) emit_double(out, "vad_speech_threshold", cfg.vad_speech_threshold);
     if (cfg.silence_ms != 0) emit_int(out, "silence_ms", cfg.silence_ms);
     if (cfg.min_speech_ms != 0) emit_int(out, "min_speech_ms", cfg.min_speech_ms);
-    emit_bool(out, "voice_session_enabled", cfg.voice_session_enabled);
+    emit_bool(out, "voice_followup_enabled", cfg.voice_followup_enabled);
     if (cfg.voice_followup_timeout_ms != 0) emit_int(out, "voice_followup_timeout_ms", cfg.voice_followup_timeout_ms);
     if (cfg.voice_first_turn_timeout_ms != 0) emit_int(out, "voice_first_turn_timeout_ms", cfg.voice_first_turn_timeout_ms);
     if (cfg.voice_max_turns != 0) emit_int(out, "voice_max_turns", cfg.voice_max_turns);
     emit_bool(out, "voice_interrupt_on_wakeup", cfg.voice_interrupt_on_wakeup);
     emit_bool(out, "voice_streaming_tts_enabled", cfg.voice_streaming_tts_enabled);
     emit_bool(out, "voice_tool_call_speech", cfg.voice_tool_call_speech);
+    emit_bool(out, "voice_progress_speech_enabled", cfg.voice_progress_speech_enabled);
+    emit_bool(out, "voice_speech_summary_enabled", cfg.voice_speech_summary_enabled);
     if (cfg.voice_max_response_tokens != 0) emit_int(out, "voice_max_response_tokens", cfg.voice_max_response_tokens);
     if (cfg.max_iterations != 0) emit_int(out, "max_iterations", cfg.max_iterations);
     emit_bool(out, "force_simple_loop", cfg.force_simple_loop);

@@ -1,6 +1,6 @@
 # OTA 架构与运行时
 
-OTA 由三层配合完成：`pico-sdk` 生成 A/B 镜像和 factory `misc.img`，GitHub Actions 发布签名 Release，设备端 `ota` daemon 在运行时完成下载、写入、切换和健康提交。
+OTA 由三层配合完成：`pico-sdk` 生成 A/B 镜像和 factory `misc.img`，GitHub Actions 发布签名 Release，设备端 `ota` 在手动触发时完成下载、写入和切换，开机 one-shot health 处理负责启动后的健康提交。
 
 ## 分区布局
 
@@ -29,7 +29,7 @@ OTA 由三层配合完成：`pico-sdk` 生成 A/B 镜像和 factory `misc.img`�
 4. slot-specific FIT boot image 提供 `root=PARTLABEL=rootfs_a|rootfs_b` 和 `aiden.slot_suffix=_a|_b`。
 5. Linux 挂载匹配的 `rootfs_*`。
 6. `S20oemslot` 根据 `aiden.slot_suffix` 挂载 `/dev/block/by-name/oem_a|oem_b` 到 `/oem`。
-7. `S54ota` 启动 OTA daemon，先处理 pending health，再进行网络检查。
+7. `S54ota` 运行一次 `ota health`，处理 pending health 后退出。
 
 ## 更新流程
 
@@ -59,7 +59,7 @@ OTA 由三层配合完成：`pico-sdk` 生成 A/B 镜像和 factory `misc.img`�
 2. 更新 `/userdata/ota/state.json` 的 committed version/build time 和 per-slot partition hashes。
 3. 删除 `pending_boot.json` 和 `health.ok`。
 
-如果健康窗口超时，`ota` 会主动 reboot，让 SPL 消耗 tries。tries 用尽且目标 slot 未 successful 时，SPL 回退到上一成功 slot。daemon 在旧 slot 观察到已经回滚后，会清理 pending 状态并把 state phase 标记为 `rolled-back`。
+如果健康窗口超时，`ota health` 会主动 reboot，让 SPL 消耗 tries。tries 用尽且目标 slot 未 successful 时，SPL 回退到上一成功 slot。`ota health` 在旧 slot 观察到已经回滚后，会清理 pending 状态并把 state phase 标记为 `rolled-back`。
 
 ## Manifest 约定
 
@@ -87,7 +87,6 @@ For `.img.tar.gz` assets, `size` and `sha256` describe the downloaded archive. T
 
 - `manifest_url` - 直接指定 manifest URL（跳过 GitHub Release API）
 - `public_key_path` - 覆盖默认公钥路径（默认 `/oem/etc/ota_pubkey.pem`）
-- `interval_seconds` - OTA 检查间隔（默认 3600 秒）
 - `github_token_path` - GitHub token 文件路径（私有仓库需要）
 
 Factory baseline 必须 slot-aware，因为 `boot_a.img` 和 `boot_b.img` hash 不同。缺失 baseline 时 OTA 初始化必须失败，不应猜测当前分区版本。

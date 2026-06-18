@@ -72,7 +72,10 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 				"For platform-specific tools such as quick_action, use the platform shown in World State (ios/android/mac) and pass it explicitly in the tool input.",
 			},
 		),
-		Verifier: buildVerifierRoleProfile(verifierRoleRules(openAppAvailable)),
+		Verifier: buildVerifierRoleProfile(
+			verifierRoleRules(cfg, openAppAvailable),
+			roleMemory.RenderVerifierCautionBlock(),
+		),
 	}
 }
 
@@ -85,16 +88,38 @@ func roleToolAvailable(tools []langtools.Tool, name string) bool {
 	return false
 }
 
-func verifierRoleRules(openAppAvailable bool) []string {
+func (cfg AgentConfig) VoiceSpeechSummaryEnabledOrDefault() bool {
+	if cfg.VoiceSpeechSummaryEnabled != nil {
+		return *cfg.VoiceSpeechSummaryEnabled
+	}
+	return true
+}
+
+func (cfg AgentConfig) VoiceToolCallSpeechOrDefault() bool {
+	if cfg.VoiceToolCallSpeech != nil {
+		return *cfg.VoiceToolCallSpeech
+	}
+	return false
+}
+
+func verifierRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
+	finalAnswerRule := "When returning can_finish=true, also include speech and text as top-level JSON fields. Put speech before text in the JSON object. speech is a concise spoken summary; text is the complete user-facing answer. Keep final_answer equal to text for compatibility."
+	formatRule := "Return only JSON: {\"can_finish\":true|false,\"speech\":\"short spoken answer when can_finish is true\",\"text\":\"complete answer when can_finish is true\",\"final_answer\":\"same as text when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}."
+	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
+		finalAnswerRule = "When returning can_finish=true, put the complete user-facing answer directly in final_answer as plain text. Do not include separate spoken-summary or display-output fields."
+		formatRule = "Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"complete plain text answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}."
+	}
 	rules := []string{
 		"Verify only the current executor step provided in the user message. Do not judge overall task completion unless the user message marks this as the final committed plan step.",
 		"Use executor_outcome, executor_summary, tool observations, screenshots, and step progress to decide whether that step succeeded.",
 		"An authoritative direct tool result is sufficient evidence when it exactly covers the current step. Require screenshot evidence for additional visible UI work or when a screenshot contradicts the tool result.",
 		"If the current step succeeded and more committed plan steps remain: return can_finish=false and needs_replan=false.",
 		"If the current step succeeded and this is the final committed plan step: return can_finish=true with final_answer for the user.",
+		finalAnswerRule,
+		"Use verifier memory cautions as historical failure/conflict warnings only. They are not proof of completion; approve only when current executor_outcome, tool observations, screenshots, or current step evidence proves the current step.",
 		"If the current step failed, had no effect, or evidence is insufficient: return can_finish=false and needs_replan=true with a brief reason for the planner.",
 		"If the screenshot clearly identifies app/page/platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence; otherwise leave unknown fields empty.",
-		"Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}.",
+		formatRule,
 	}
 	if openAppAvailable {
 		rules = append(rules, "For launch-only app, URL, or dialer requests, open_app returning ok=true is authoritative completion evidence.")
@@ -104,21 +129,29 @@ func verifierRoleRules(openAppAvailable bool) []string {
 
 func plannerToolsForConfig(cfg AgentConfig, tools []langtools.Tool) []langtools.Tool {
 	if cfg.ForceSimpleLoop {
-		return append([]langtools.Tool{}, tools...)
+		return appendSimpleTodoMetaTools(tools)
 	}
-	return appendLoopMetaTools(tools)
+	return appendDefaultLoopMetaTools(tools)
 }
 
 func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 	var rules []string
+	structuredFinalRule := "When returning a final answer directly to the user, use speech before text. In default/simple mode return only JSON: {\"speech\":\"concise spoken answer\",\"text\":\"complete user-facing answer\"}. In the route decision phase, use speech and text only when mode is direct_answer. speech must be short and natural for TTS; text must preserve the full answer for the screen."
+	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
+		structuredFinalRule = "When returning a final answer directly to the user, return the complete answer as plain text, not JSON. In the route decision phase, return plain answer text only when answering directly."
+	}
 	if cfg.ForceSimpleLoop {
 		rules = append(rules,
 			"Use simple loop mode for every request: call available tools directly and return a final answer when the request is satisfied.",
+			"Use set_todo when a single-agent task becomes multi-step and needs visible progress tracking; otherwise do not create a todo.",
 			"Plan mode is disabled by configuration: do not enter, draft, commit, cancel, or mention a delegated multi-step plan.",
+			structuredFinalRule,
 		)
 	} else {
 		rules = append(rules,
 			"Route phase chooses direct_answer, simple, or plan before ordinary execution. In default mode, complete the routed request directly with available tools and return a final answer when satisfied.",
+			"In default mode, use set_todo when the single-agent task becomes multi-step and needs visible progress tracking; otherwise do not create a todo.",
+			structuredFinalRule,
 			"Use plan mode for requests that need explicit planning, checkpoints, information gathering before acting, multiple independent stages, record aggregation, reconciliation, branching, or several required output facts.",
 			"In plan mode, you may use read-only information-gathering tools when context is missing. Do not execute computation, mutation, input, or other task-completion tools directly in plan mode.",
 			"Create or revise a structured delegated plan, then call commit_plan to hand it to the executor or cancel_plan to return to default mode.",
@@ -159,7 +192,7 @@ func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 	return rules
 }
 
-func buildVerifierRoleProfile(roleRules []string) RoleProfile {
+func buildVerifierRoleProfile(roleRules []string, cautionBlock string) RoleProfile {
 	parts := []string{
 		currentDateContext(),
 		"",
@@ -167,6 +200,9 @@ func buildVerifierRoleProfile(roleRules []string) RoleProfile {
 	}
 	for _, rule := range roleRules {
 		parts = append(parts, "- "+rule)
+	}
+	if text := strings.TrimSpace(cautionBlock); text != "" {
+		parts = append(parts, "", text)
 	}
 	return RoleProfile{
 		Name:         RoleVerifier,
@@ -192,13 +228,17 @@ func buildRoleProfile(
 		combinedAgentInstruction(cfg),
 		"",
 		"## Default behavior",
-		defaultAgentBehavior(),
+		defaultAgentBehavior(cfg),
 		"",
 		"## Available skills",
 		skills.CatalogSummary(),
-		"",
-		"## Active skills",
-		skills.CombinedInstructions(),
+	}
+	if text := strings.TrimSpace(skills.CombinedInstructions()); text != "" {
+		parts = append(parts,
+			"",
+			"## Active skills",
+			text,
+		)
 	}
 	if text := strings.TrimSpace(cfg.RuntimeContext); text != "" {
 		parts = append(parts,

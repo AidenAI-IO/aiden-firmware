@@ -20,13 +20,13 @@ type ToolSet struct {
 type BuiltinToolSetOption func(*builtinToolSetOptions)
 
 type builtinToolSetOptions struct {
-	sleepController *SleepController
-	screenStable    ScreenStableDefaults
+	waitForWakeupController *WaitForWakeupController
+	screenStable            ScreenStableDefaults
 }
 
-func WithSleepController(controller *SleepController) BuiltinToolSetOption {
+func WithWaitForWakeupController(controller *WaitForWakeupController) BuiltinToolSetOption {
 	return func(options *builtinToolSetOptions) {
-		options.sleepController = controller
+		options.waitForWakeupController = controller
 	}
 }
 
@@ -82,8 +82,8 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"calculator":             NewCalculatorTool(),
 		"web_scraper":            NewWebScraperTool(proxyCfg),
 	}
-	if toolOptions.sleepController != nil {
-		tools["enter_sleep"] = NewEnterSleepTool(toolOptions.sleepController)
+	if toolOptions.waitForWakeupController != nil {
+		tools[toolWaitForWakeup] = NewWaitForWakeupTool(toolOptions.waitForWakeupController)
 	}
 	// Always register human handoff tool - no callback needed for non-blocking version
 	tools["request_human_handoff"] = NewHumanHandoffTool()

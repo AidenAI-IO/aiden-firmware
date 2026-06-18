@@ -143,6 +143,18 @@ func TestConfigCheck_WireForceSimpleLoopMapsToAgentConfig(t *testing.T) {
 	}
 }
 
+func TestConfigCheck_WireCustomInstructionMapsToAgentConfig(t *testing.T) {
+	dto := webConfigDTO{
+		Model:  modelDTO{Provider: "openai", Model: "gpt-4"},
+		Search: searchDTO{Provider: "duckduckgo"},
+		Agent:  agentDTO{CustomInstruction: "Use custom behavior."},
+	}
+	cfg := dto.toAgentConfig()
+	if cfg.Instruction != "Use custom behavior." {
+		t.Fatalf("Instruction = %q, want custom instruction", cfg.Instruction)
+	}
+}
+
 // TestConfigCheck_WireTelemetryNested verifies telemetry validation runs
 // against the nested "telemetry" wire object.
 func TestConfigCheck_WireTelemetryNested(t *testing.T) {

@@ -17,7 +17,7 @@ TOML 是当前支持的配置格式；JSON 配置已废弃。
 ## Web UI 最小配置
 
 ```toml
-instruction = "回答要简洁、自然、有帮助。默认用简体中文回答；用户明确使用其他语言时跟随用户语言。Aiden 通常用于控制连接的手机或移动 UI，但必须根据截图、工具结果和用户输入推断当前可见目标，不要假设。"
+custom_instruction = ""
 max_iterations = -1
 screenshot_keep_n = 3
 screenshot_prune_interval = 25
@@ -50,7 +50,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 ## STT 语音模式最小配置
 
 ```toml
-instruction = "回答要简洁、自然、有帮助。默认用简体中文回答；用户明确使用其他语言时跟随用户语言。Aiden 通常用于控制连接的手机或移动 UI，但必须根据截图、工具结果和用户输入推断当前可见目标，不要假设。"
+custom_instruction = ""
 input_mode = "stt"
 trigger_mode = "manual"
 vad_backend = "rknn"
@@ -59,13 +59,16 @@ vad_helper_path = "/oem/usr/bin/rknn_vad"
 vad_speech_threshold = 0.5
 silence_ms = 650
 min_speech_ms = 300
-voice_session_enabled = true
+voice_followup_enabled = false
 voice_followup_timeout_ms = 6000
 voice_first_turn_timeout_ms = 10000
 voice_max_turns = 0
 voice_interrupt_on_wakeup = true
 voice_streaming_tts_enabled = true
-voice_tool_call_speech = true
+voice_tool_call_speech = false
+voice_progress_speech_enabled = true
+voice_speech_summary_enabled = true
+voice_speech_max_runes = 120
 voice_max_response_tokens = 400
 
 [model]
@@ -101,8 +104,8 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 | 字段 | 默认/可选值 | 说明 |
 | --- | --- | --- |
-| `instruction` | - | Agent deployment/persona instruction；默认只放简短语气、语言和目标设备软默认。工具边界、环境感知、UI 操作约束和 skill 策略由运行时默认 prompt 提供，避免在配置中重复长规则 |
-| `additional_prompt` | - | 额外 prompt 字段；运行时会追加到 `instruction` 后面 |
+| `custom_instruction` | - | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior. |
+| `additional_prompt` | - | 额外 prompt 字段；运行时会追加到 base instruction 后面 |
 | `max_iterations` | `-1` | 单次运行最大工具调用循环次数；`-1` 表示不限制 |
 | `screenshot_keep_n` | `3` | LLM 上下文中截图裁剪的最近保留数量；未设置或 `0` 使用默认值 |
 | `screenshot_prune_interval` | `25` | 截图超过 `screenshot_keep_n + screenshot_prune_interval` 后，按批次把旧截图替换为占位符；未设置或 `0` 使用默认值 |
@@ -114,14 +117,18 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `vad_speech_threshold` | `0.5` | Silero VAD 语音概率阈值 |
 | `silence_ms` | `650` | 多少毫秒静音后认为一句话结束 |
 | `min_speech_ms` | `300` | 最短有效语音时长 |
-| `voice_session_enabled` | `true` | wakeup 模式下启用一次唤醒后的连续对话；设为 `false` 保持一轮一唤醒 |
+| `voice_followup_enabled` | `false` | wakeup 模式下启用一次唤醒后的连续追问；默认保持一轮一唤醒 |
 | `voice_followup_timeout_ms` | `6000` | Agent 回复后等待用户追问的窗口 |
 | `voice_first_turn_timeout_ms` | `10000` | wakeup 后等待第一句话的窗口 |
 | `voice_max_turns` | `0` | 单个 wakeup session 最大轮数；`0` 表示不限制 |
-| `voice_interrupt_on_wakeup` | `true` | session 内再次收到 wakeup 时取消 thinking/TTS 并重新听音；录音中 wakeup 会直接重启录音并丢弃已录音频 |
-| `voice_streaming_tts_enabled` | `true` | LLM 流式输出时按句送入 TTS，降低首句播放等待 |
-| `voice_tool_call_speech` | `true` | 是否异步朗读工具调用说明；默认开启以避免工具执行期间长时间沉默 |
+| `voice_interrupt_on_wakeup` | `true` | session 内再次收到 wakeup 时取消 thinking/TTS 并重新听音；监听或录音阶段的重复 wakeup 会被合并或忽略 |
+| `voice_streaming_tts_enabled` | `true` | LLM 流式输出时按句送入 TTS，降低首句播放等待；启用 `voice_speech_summary_enabled` 时，最终播报改为生成完整输出后的摘要 |
+| `voice_tool_call_speech` | `false` | 是否异步朗读 LLM 在工具参数中显式生成的 `speech`；默认关闭。缺少 `speech` 时保持静默，不会从工具 `description` 派生口播 |
+| `voice_progress_speech_enabled` | `true` | 是否在 todo item 进入 `in_progress` 时播报短进度；todo 状态仍会发送给 UI/trace |
+| `voice_speech_summary_enabled` | `true` | 是否将完整 assistant 输出转换成更短的口播文本；不影响 Web UI、history 和 memory 中的完整 `result.Output` |
+| `voice_speech_max_runes` | `120` | 口播摘要最大 rune 数；设为 `0` 使用默认值 |
 | `voice_max_response_tokens` | `400` | 语音回复的单次输出 token 上限（需 `>= 0`） |
+| `todo_reminder_tool_calls` | `3` | single-agent/default mode 中连续多少次工具调用后提醒模型更新 todo；设为 `0` 使用默认值 |
 
 `vad_model_path` 指向的模型需要先在 PC 端用 `silero-vad/convert_silero_vad_to_rknn.py` 从 Silero ONNX 转成 RV1106 RKNN，再放到设备对应路径。CPU 后端需要 `silero_vad_6_2_lstm_decoder_weights.bin` 包含 Conv1d encoder 扩展，可用 `silero-vad/export_silero_vad_v6_2_weights.py` 从随仓库提供的 TorchScript 文件生成。
 当 `vad_helper_path` 仍是内置默认值时，切换 `vad_backend` 会自动切换 helper；只有设置成自定义路径时才按自定义路径执行。
@@ -154,14 +161,14 @@ Optional. Place `memory/extraction.yaml` under the config directory to control s
 | `compress_at_percent` | `50` | Percentage trigger: compaction starts when `prompt_tokens / context_window >= compress_at_percent%`. |
 | `summary_max_chunks` | `10` | Number of chunk summaries kept in the Recent Chunks section of `summary.md`. Older entries move to the archive and are folded into the Rolling Summary. |
 | `session_boundary_enabled` | `true` | Classify each new user turn as continuing the current session or starting a new one. A `new` boundary archives the current `memory/session/` directory and recreates an empty active session. |
-| `session_boundary_short_gap_seconds` | default boundary config | Gap below which a turn is treated as continuation regardless of lexical signals. |
-| `session_boundary_long_gap_seconds` | default boundary config | Gap above which a turn is treated as a fresh session regardless of lexical signals. |
+| `session_boundary_short_gap_seconds` | `300` | Gap below which a turn is treated as continuation regardless of lexical signals. |
+| `session_boundary_long_gap_seconds` | `1800` | Gap above which a turn is treated as a fresh session regardless of lexical signals. |
 | `tag_candidates` | see defaults | Candidate keywords matched when tagging chunk summaries. |
 | `entity_suffixes` | `["App","app","APP"]` | Suffixes recognized during entity extraction. |
 
 ## System Environment Variables
 
-The Agent no longer reads `[proxy]` from `agent.toml`. Outbound HTTP/WebSocket requests, shell tool subprocesses, the OTA daemon, and SSH login shells all use environment variables from `/userdata/system/env`. The file is loaded with shell syntax, for example:
+The Agent no longer reads `[proxy]` from `agent.toml`. Outbound HTTP/WebSocket requests, shell tool subprocesses, OTA commands launched through `aiden-env-run`, and SSH login shells all use environment variables from `/userdata/system/env`. The file is loaded with shell syntax, for example:
 
 ```sh
 HTTP_PROXY=http://127.0.0.1:7890
@@ -194,6 +201,22 @@ OPENROUTER_API_KEY=...
 | `mouse_device` | `/dev/hidg1` | 鼠标/触控 HID 设备 |
 | `frame_socket` | `/run/frame_service/frame_service.sock` | 截图工具使用的 Frame Service socket |
 
+## `[live_activity]`
+
+用于 iOS companion app 的 Live Activity / 灵动岛任务状态。agent 侧状态快照默认启用；APNs 相关字段只针对 app 后台、锁屏或未打开时的远程更新。前台本地更新不需要也不会使用 APNs。完整链路见 [Live Activity / Dynamic Island](./live-activity.md)。
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `enabled` | `true` | 是否启用 agent 侧状态快照和 API |
+| `bundle_id` | - | iOS app bundle id；仅配置后台 APNs 且未显式设置 `topic` 时必填 |
+| `topic` | `<bundle_id>.push-type.liveactivity` | APNs topic；通常不需要手动设置 |
+| `environment` | `sandbox` | `sandbox` 或 `production` |
+| `team_id` | - | Apple Developer Team ID；仅后台 APNs 使用 |
+| `key_id` | - | APNs Auth Key ID；仅后台 APNs 使用 |
+| `private_key_path` | - | APNs `.p8` 私钥路径；仅后台 APNs 使用 |
+| `private_key_pem` | - | 直接内联 APNs `.p8` PEM；仅开发联调使用，生产不要放到开源配置或用户板子 |
+| `timeout_sec` | `10` | 后台 APNs 请求超时 |
+
 ## `[stt]` 和 `[tts]`
 
 `input_mode = "stt"` 时需要 `[stt]`；`input_mode = "stt"` 或 `"audio"` 时需要 `[tts]`。
@@ -202,7 +225,7 @@ STT：
 
 - `provider = "openai-whisper"`：当前可用；
 - `provider = "openrouter"`：当前可用，默认 endpoint 为 `https://openrouter.ai/api/v1/audio/transcriptions`，请求体使用 base64 WAV；
-- `provider = "tencent"` 或 `tencent_asr`：腾讯云一句话识别（SentenceRecognition），使用 `secret_id` / `secret_key`，无需 `base_url`。
+- `provider = "tencent-asr"`：腾讯云一句话识别（SentenceRecognition），使用 `secret_id` / `secret_key`，无需 `base_url`；旧值 `tencent` / `tencent_asr` 仅作为兼容别名保留。
 
 TTS：
 

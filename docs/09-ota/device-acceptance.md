@@ -9,7 +9,7 @@
 - The `update.img` inside `update.img.tar.gz` has `/userdata/ota/config.json` embedded.
 - 有 UART 时建议同时记录 SPL rollback 日志。
 
-`ota` 在启动时必须先处理 `/userdata/ota/pending_boot.json` health，再做网络或 GitHub update check。不要在 pending health 处理前加入网络等待。
+`S54ota` 在启动时只处理 `/userdata/ota/pending_boot.json` health，不做网络或 GitHub update check。手动更新必须通过 `ota update` 触发。
 
 ## 1. USB 首刷验收
 

@@ -97,7 +97,7 @@ func TestConfigMeta_Valid(t *testing.T) {
 		}
 	}
 
-	for _, name := range []string{"model", "tts", "stt", "audio", "hid", "search", "telemetry", "agent"} {
+	for _, name := range []string{"model", "tts", "stt", "audio", "audio_archive", "hid", "search", "telemetry", "live_activity", "agent"} {
 		if !seenSections[name] {
 			t.Errorf("expected section %q to be present", name)
 		}
@@ -176,6 +176,13 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 			t.Errorf("telemetry.provider enum value %q normalizes to %q, expected langfuse", p, got)
 		}
 	}
+
+	for _, env := range enumValues("live_activity.environment") {
+		cfg := Config{Model: ModelConfig{Provider: "fake"}, LiveActivity: LiveActivityConfig{Environment: env}}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("live_activity.environment enum value %q rejected by Validate: %v", env, err)
+		}
+	}
 }
 
 func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
@@ -217,14 +224,17 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"agent.vad_speech_threshold", defaults.VADSpeechThreshold},
 		{"agent.silence_ms", defaults.SilenceMs},
 		{"agent.min_speech_ms", defaults.MinSpeechMs},
-		{"agent.voice_session_enabled", defaults.VoiceSessionEnabledOrDefault()},
+		{"agent.voice_followup_enabled", defaults.VoiceFollowupEnabledOrDefault()},
 		{"agent.voice_followup_timeout_ms", defaults.VoiceFollowupTimeoutMs},
 		{"agent.voice_first_turn_timeout_ms", defaults.VoiceFirstTurnTimeoutMs},
 		{"agent.voice_max_turns", defaults.VoiceMaxTurns},
 		{"agent.voice_interrupt_on_wakeup", defaults.VoiceInterruptOnWakeupOrDefault()},
 		{"agent.voice_streaming_tts_enabled", defaults.VoiceStreamingTTSEnabledOrDefault()},
 		{"agent.voice_tool_call_speech", defaults.VoiceToolCallSpeechOrDefault()},
+		{"agent.voice_progress_speech_enabled", defaults.VoiceProgressSpeechEnabledOrDefault()},
+		{"agent.voice_speech_summary_enabled", defaults.VoiceSpeechSummaryEnabledOrDefault()},
 		{"agent.voice_max_response_tokens", defaults.VoiceMaxResponseTokens},
+		{"agent.todo_reminder_tool_calls", defaults.TodoReminderToolCallsOrDefault()},
 		{"agent.max_iterations", defaults.MaxIterations},
 		{"agent.screenshot_keep_n", defaults.ScreenshotKeepN},
 		{"agent.screenshot_prune_interval", defaults.ScreenshotPruneInterval},
@@ -243,6 +253,59 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 				t.Fatalf("%s default = %#v, want runtime default %#v", tt.path, field.Default, tt.want)
 			}
 		})
+	}
+}
+
+func TestConfigMeta_TTSModelHiddenForMinimaxWebSocket(t *testing.T) {
+	idx := fieldIndex(t)
+	model, ok := idx["tts.model"]
+	if !ok {
+		t.Fatal("missing tts.model metadata")
+	}
+	if model.VisibleWhen == nil {
+		t.Fatal("tts.model has no visibleWhen rule")
+	}
+	want := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "ne", Value: "minimax-ws"}}}
+	if !reflect.DeepEqual(*model.VisibleWhen, want) {
+		t.Fatalf("tts.model visibleWhen = %#v, want %#v", *model.VisibleWhen, want)
+	}
+}
+
+func TestConfigMeta_STTTencentASRProviderMetadata(t *testing.T) {
+	idx := fieldIndex(t)
+
+	provider, ok := idx["stt.provider"]
+	if !ok {
+		t.Fatal("missing stt.provider metadata")
+	}
+	values := make(map[string]bool, len(provider.Enum))
+	for _, option := range provider.Enum {
+		values[option.Value] = true
+	}
+	if !values["tencent-asr"] {
+		t.Fatalf("stt.provider enum missing canonical tencent-asr option: %#v", provider.Enum)
+	}
+	for _, legacy := range []string{"tencent", "tencent_asr"} {
+		if values[legacy] {
+			t.Fatalf("stt.provider enum still includes legacy alias %q: %#v", legacy, provider.Enum)
+		}
+	}
+
+	tests := []struct {
+		path string
+		want any
+	}{
+		{"stt.region", "ap-guangzhou"},
+		{"stt.engine_model_type", "16k_zh"},
+	}
+	for _, tt := range tests {
+		field, ok := idx[tt.path]
+		if !ok {
+			t.Fatalf("missing %s metadata", tt.path)
+		}
+		if field.Default != tt.want {
+			t.Fatalf("%s default = %#v, want %#v", tt.path, field.Default, tt.want)
+		}
 	}
 }
 
@@ -297,6 +360,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"hid", reflect.TypeOf(HIDConfig{}), nil},
 		{"search", reflect.TypeOf(SearchConfig{}), nil},
 		{"telemetry", reflect.TypeOf(TelemetryConfig{}), nil},
+		{"live_activity", reflect.TypeOf(LiveActivityConfig{}), nil},
 	}
 
 	for _, s := range sections {
@@ -316,7 +380,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	// fields are surfaced under their own sections or not at all.
 	agentSkip := map[string]bool{
 		"model": true, "model_text": true, "tts": true, "stt": true, "hid": true,
-		"audio": true, "search": true, "telemetry": true,
+		"audio": true, "search": true, "telemetry": true, "live_activity": true,
 		"skills_dirs": true, "bundled_skills_dir": true,
 	}
 	cfgType := reflect.TypeOf(Config{})

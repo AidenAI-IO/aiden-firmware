@@ -10,6 +10,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -77,6 +79,93 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
+	const wakeupMessage = "The current agent run is ending now, and the voice interaction will wait for the next wakeup event."
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked"}`),
+		toolCallResponse("wait_2", "wait_for_wakeup", `{"reason":"still awake"}`),
+	}}
+	controller := NewWaitForWakeupController()
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", MaxIterations: 2},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"wait_for_wakeup": NewWaitForWakeupTool(controller),
+		}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "go to sleep"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !result.WaitForWakeupRequested {
+		t.Fatal("WaitForWakeupRequested = false, want true")
+	}
+	if result.WaitForWakeupReason != "user asked" {
+		t.Fatalf("WaitForWakeupReason = %q, want user asked", result.WaitForWakeupReason)
+	}
+	if !result.SleepRequested {
+		t.Fatal("SleepRequested = false, want deprecated alias to mirror WaitForWakeupRequested")
+	}
+	if result.SleepReason != "user asked" {
+		t.Fatalf("SleepReason = %q, want deprecated alias to mirror WaitForWakeupReason", result.SleepReason)
+	}
+	if result.Output != wakeupMessage {
+		t.Fatalf("Output = %q, want wait-for-wakeup observation message", result.Output)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal RunResult: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("Unmarshal RunResult JSON: %v", err)
+	}
+	if payload["wait_for_wakeup_requested"] != true || payload["sleep_requested"] != true {
+		t.Fatalf("RunResult JSON missing wakeup aliases: %s", encoded)
+	}
+	if payload["wait_for_wakeup_reason"] != "user asked" || payload["sleep_reason"] != "user asked" {
+		t.Fatalf("RunResult JSON missing wakeup reason aliases: %s", encoded)
+	}
+	if model.callCount != 1 {
+		t.Fatalf("model call count = %d, want role loop to stop after wait_for_wakeup", model.callCount)
+	}
+}
+
+func TestRuntimeRunWaitForWakeupDoesNotStreamFinalAnswer(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked"}`),
+	}}
+	controller := NewWaitForWakeupController()
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"wait_for_wakeup": NewWaitForWakeupTool(controller),
+		}},
+		NewSkillIndex(),
+	)
+
+	var stream strings.Builder
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "go to sleep",
+		StreamWriter:      &stream,
+		StreamFinalChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !result.WaitForWakeupRequested {
+		t.Fatal("WaitForWakeupRequested = false, want true")
+	}
+	if stream.String() != "" {
+		t.Fatalf("stream = %q, want no spoken final answer for wait_for_wakeup", stream.String())
+	}
+}
+
 func TestRuntimeRunInjectsCurrentDateIntoPlannerPrompt(t *testing.T) {
 	originalNow := promptNow
 	promptNow = func() time.Time {
@@ -103,6 +192,64 @@ func TestRuntimeRunInjectsCurrentDateIntoPlannerPrompt(t *testing.T) {
 	want := "Current date: 2026-06-15 (2026年06月15日 星期一)"
 	if !strings.Contains(systemPrompt, want) {
 		t.Fatalf("planner system prompt missing current date %q:\n%s", want, systemPrompt)
+	}
+}
+
+func TestRuntimeRunRestoresHotWindowHistoryAsChatMessages(t *testing.T) {
+	ctx := context.Background()
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	manager := NewMemoryManager(storageDir)
+	if err := manager.AppendExchange(ctx, "default", "上一轮用户问题", "上一轮回答"); err != nil {
+		t.Fatalf("AppendExchange() error = %v", err)
+	}
+
+	model := &scriptedModel{responses: roleDirectResponses("completed")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(ctx, RunRequest{Input: "继续上一轮"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) == 0 || len(model.messages[0]) < 4 {
+		t.Fatalf("expected planner system, restored history, and state prompt messages, got %#v", model.messages)
+	}
+	messages := model.messages[0]
+	if messages[1].Role != llms.ChatMessageTypeHuman || messageText(messages[1:2]) != "上一轮用户问题\n" {
+		t.Fatalf("restored user history message = role %q text %q", messages[1].Role, messageText(messages[1:2]))
+	}
+	if messages[2].Role != llms.ChatMessageTypeAI || messageText(messages[2:3]) != "上一轮回答\n" {
+		t.Fatalf("restored assistant history message = role %q text %q", messages[2].Role, messageText(messages[2:3]))
+	}
+	statePrompt := messageText(messages[3:])
+	if strings.Contains(statePrompt, "Conversation history:") ||
+		strings.Contains(statePrompt, "Human: 上一轮用户问题") ||
+		strings.Contains(statePrompt, "AI: 上一轮回答") ||
+		strings.Contains(statePrompt, "上一轮回答") {
+		t.Fatalf("state prompt should not duplicate restored chat history:\n%s", statePrompt)
+	}
+}
+
+func TestRuntimeRunAllowsNilMemoryManager(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		nil,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
 	}
 }
 
@@ -370,16 +517,22 @@ func TestRuntimeRunPersistsSteerAsConversationHumanMessage(t *testing.T) {
 	})
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
-	if len(events) != 3 {
-		t.Fatalf("expected 3 session events, got %d: %#v", len(events), events)
+	if !sessionEventsContain(events, func(event SessionEvent) bool {
+		return event.Type == "role_output" && event.Role == "planner" && event.Content == "Old answer."
+	}) {
+		t.Fatalf("expected planner role_output to be persisted in session events: %#v", events)
+	}
+	chatEvents := sessionEventsOfTypes(events, "user_input", "steer", "assistant_output")
+	if len(chatEvents) != 3 {
+		t.Fatalf("expected 3 chat-like session events, got %d: %#v", len(chatEvents), events)
 	}
 	for i, want := range []SessionEvent{
 		{Role: "user", Content: "original persisted request"},
 		{Role: "user", Content: "persist this steering message"},
 		{Role: "assistant", Content: "Changed course."},
 	} {
-		if events[i].Role != want.Role || events[i].Content != want.Content {
-			t.Fatalf("session event %d = %#v, want role=%q content=%q; all events: %#v", i, events[i], want.Role, want.Content, events)
+		if chatEvents[i].Role != want.Role || chatEvents[i].Content != want.Content {
+			t.Fatalf("chat-like session event %d = %#v, want role=%q content=%q; all events: %#v", i, chatEvents[i], want.Role, want.Content, events)
 		}
 	}
 }
@@ -429,10 +582,11 @@ func TestRuntimeRunPersistsSteerEventsWhenSnapshotWindowIsFull(t *testing.T) {
 	}
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
-	if len(events) != 23 {
-		t.Fatalf("expected 23 session events, got %d: %#v", len(events), events)
+	chatEvents := sessionEventsOfTypes(events, "user_input", "steer", "assistant_output")
+	if len(chatEvents) != 23 {
+		t.Fatalf("expected 23 chat-like session events, got %d: %#v", len(chatEvents), events)
 	}
-	last := events[len(events)-3:]
+	last := chatEvents[len(chatEvents)-3:]
 	for i, want := range []SessionEvent{
 		{Role: "user", Content: "windowed request"},
 		{Role: "user", Content: "persist even when the hot window is full"},
@@ -441,6 +595,256 @@ func TestRuntimeRunPersistsSteerEventsWhenSnapshotWindowIsFull(t *testing.T) {
 		if last[i].Role != want.Role || last[i].Content != want.Content {
 			t.Fatalf("last session event %d = %#v, want role=%q content=%q; all events: %#v", i, last[i], want.Role, want.Content, events)
 		}
+	}
+}
+
+func TestRuntimeRunPersistsRootInputBeforeModelFailure(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: failingGenerateModel{err: errors.New("model unavailable")}},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	_, err := runtime.Run(context.Background(), RunRequest{
+		Input:     "打开微信，进入 den 群，发送100块钱红包",
+		EpisodeID: "ep_red_packet_failure",
+		RequestID: "req-red-packet-failure",
+	})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want model failure")
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) == 0 {
+		t.Fatalf("expected root user_input to be persisted before model failure")
+	}
+	root := events[0]
+	if root.Type != "user_input" || root.Role != "user" || root.Content != "打开微信，进入 den 群，发送100块钱红包" {
+		t.Fatalf("first session event = %#v", root)
+	}
+	if root.Modality != "text" || root.OriginalText != "打开微信，进入 den 群，发送100块钱红包" {
+		t.Fatalf("root event missing text modality/original text: %#v", root)
+	}
+	if root.EpisodeID != "ep_red_packet_failure" || root.RequestID != "req-red-packet-failure" {
+		t.Fatalf("root event missing episode/request metadata: %#v", root)
+	}
+}
+
+func TestRuntimeRunPersistsCanonicalVoiceInputBeforeModelFailure(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: failingGenerateModel{err: errors.New("model unavailable")}},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	_, err := runtime.Run(context.Background(), RunRequest{
+		Turn: TurnInput{
+			InputText:    "打开微信发消息",
+			OriginalText: "按住说话",
+			Modality:     "stt",
+			Source:       "voice",
+			Transcript:   "打开微信发消息",
+			Artifacts: []InputArtifact{{
+				Kind:       AttachmentKindAudio,
+				MIMEType:   "audio/wav",
+				Path:       "/userdata/agent/audio/msg_123.wav",
+				DurationMS: 3200,
+				Size:       102400,
+			}},
+		},
+		EpisodeID: "ep_voice_failure",
+		RequestID: "req-voice-failure",
+	})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want model failure")
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) == 0 {
+		t.Fatalf("expected canonical user_input to be persisted before model failure")
+	}
+	root := events[0]
+	if root.Type != "user_input" || root.Role != "user" || root.Content != "打开微信发消息" {
+		t.Fatalf("first session event = %#v", root)
+	}
+	if root.Modality != "stt" || root.Source != "voice" || root.OriginalText != "按住说话" || root.Transcript != "打开微信发消息" {
+		t.Fatalf("root event missing voice metadata: %#v", root)
+	}
+	if len(root.Artifacts) != 1 {
+		t.Fatalf("root artifacts = %#v, want one audio artifact", root.Artifacts)
+	}
+	artifact := root.Artifacts[0]
+	if artifact.Kind != AttachmentKindAudio || artifact.MIMEType != "audio/wav" || artifact.Path == "" {
+		t.Fatalf("audio artifact metadata = %#v", artifact)
+	}
+	if artifact.DurationMS != 3200 || artifact.Size != 102400 {
+		t.Fatalf("audio artifact size/duration = %#v", artifact)
+	}
+	if len(artifact.Data) != 0 {
+		t.Fatalf("session artifact must not contain binary data: %#v", artifact)
+	}
+	if root.EpisodeID != "ep_voice_failure" || root.RequestID != "req-voice-failure" {
+		t.Fatalf("root event missing episode/request metadata: %#v", root)
+	}
+}
+
+func TestRuntimeRunPersistsAttachmentArtifactsWithoutBinary(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: failingGenerateModel{err: errors.New("model unavailable")}},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	_, err := runtime.Run(context.Background(), RunRequest{
+		Input: "Describe the uploaded image.",
+		Attachments: []InputAttachment{{
+			Kind:     AttachmentKindImage,
+			Name:     "screen.png",
+			MIMEType: "image/png",
+			Data:     []byte{0x89, 0x50, 0x4e, 0x47},
+		}},
+		EpisodeID: "ep_image_failure",
+		RequestID: "req-image-failure",
+	})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want model failure")
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) == 0 {
+		t.Fatalf("expected user_input to be persisted before model failure")
+	}
+	root := events[0]
+	if root.Type != "user_input" || root.Content != "Describe the uploaded image." || root.Modality != "text" {
+		t.Fatalf("first session event = %#v", root)
+	}
+	if root.OriginalText != "Describe the uploaded image." {
+		t.Fatalf("root original_text = %q", root.OriginalText)
+	}
+	if len(root.Artifacts) != 1 {
+		t.Fatalf("root artifacts = %#v, want one image artifact", root.Artifacts)
+	}
+	artifact := root.Artifacts[0]
+	if artifact.Kind != AttachmentKindImage || artifact.Name != "screen.png" || artifact.MIMEType != "image/png" || artifact.Size != 4 {
+		t.Fatalf("image artifact metadata = %#v", artifact)
+	}
+	if len(artifact.Data) != 0 {
+		t.Fatalf("session artifact must not contain binary data: %#v", artifact)
+	}
+}
+
+func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T) {
+	ctx := context.Background()
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	rootRequest := "打开微信，进入 den 群，发送100块钱红包"
+	correction := "群名你听错了，是 Aden AI agent"
+	committedPlanPayload, _ := json.Marshal(map[string]any{
+		"objective":           "在微信群发送100块钱红包",
+		"completion_criteria": []string{"目标群是 Aden AI agent", "发送金额是100块钱红包"},
+		"plan": []string{
+			"打开微信",
+			"进入 den 群",
+			"发送100块钱红包",
+		},
+		"reason": "phone control task needs delegated execution",
+	})
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{"mode":"plan","reason":"requires delegated phone control"}`),
+			{
+				Choices: []*llms.ContentChoice{{
+					Content: "错误推断：发介绍",
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_commit",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      toolCommitPlan,
+							Arguments: string(committedPlanPayload),
+						},
+					}},
+				}},
+			},
+			contentResponse("收到，我会按更正后的群名继续。"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, MaxIterations: 2},
+		&testModelResolver{model: model},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	_, err := runtime.Run(ctx, RunRequest{
+		Input:     rootRequest,
+		EpisodeID: "ep_red_packet_resume",
+		RequestID: "req-red-packet-1",
+	})
+	if err == nil {
+		t.Fatalf("first Run() error = nil, want forced interruption from max iterations")
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if !sessionEventsContain(events, func(event SessionEvent) bool {
+		return event.Type == "planner_decision" &&
+			event.Objective == "在微信群发送100块钱红包" &&
+			slices.Contains(event.Plan, "发送100块钱红包")
+	}) {
+		t.Fatalf("session events missing structured committed plan: %#v", events)
+	}
+
+	if _, err := runtime.Run(ctx, RunRequest{
+		Input:     correction,
+		EpisodeID: "ep_red_packet_resume",
+		RequestID: "req-red-packet-2",
+	}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if len(model.messages) < 3 {
+		t.Fatalf("expected second run planner prompt, got %#v", model.messages)
+	}
+	resumePrompt := messageText(model.messages[2])
+	for _, want := range []string{
+		"Original user request / root request",
+		rootRequest,
+		"Latest user message",
+		correction,
+		"Follow-up classification:",
+		"correction",
+		"Latest committed plan",
+		"在微信群发送100块钱红包",
+		"发送100块钱红包",
+	} {
+		if !strings.Contains(resumePrompt, want) {
+			t.Fatalf("resume planner prompt missing %q:\n%s", want, resumePrompt)
+		}
+	}
+	if strings.Contains(resumePrompt, "发介绍") {
+		t.Fatalf("resume planner prompt should not promote unverified role_output into context:\n%s", resumePrompt)
+	}
+	events = readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	chatEvents := sessionEventsOfTypes(events, "user_input", "assistant_output")
+	correctionCount := 0
+	answerCount := 0
+	for _, event := range chatEvents {
+		if event.Type == "user_input" && event.Content == correction {
+			correctionCount++
+		}
+		if event.Type == "assistant_output" && event.Content == "收到，我会按更正后的群名继续。" {
+			answerCount++
+		}
+	}
+	if correctionCount != 1 || answerCount != 1 {
+		t.Fatalf("chat-like session events duplicated correction/answer: correction=%d answer=%d events=%#v", correctionCount, answerCount, chatEvents)
 	}
 }
 
@@ -742,8 +1146,32 @@ func assertMemoryRecords(t *testing.T, got []MessageRecord, want []MessageRecord
 	}
 }
 
+func sessionEventsContain(events []SessionEvent, predicate func(SessionEvent) bool) bool {
+	for _, event := range events {
+		if predicate(event) {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionEventsOfTypes(events []SessionEvent, types ...string) []SessionEvent {
+	wanted := map[string]bool{}
+	for _, typ := range types {
+		wanted[typ] = true
+	}
+	var filtered []SessionEvent
+	for _, event := range events {
+		if wanted[event.Type] {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
+}
+
 type scriptedModel struct {
 	responses    []*llms.ContentResponse
+	streamChunks [][]string
 	callCount    int
 	sawStreaming []bool
 	messages     [][]llms.MessageContent
@@ -761,6 +1189,24 @@ func (t *staticTool) Description() string { return "static test tool" }
 
 func (t *staticTool) Call(context.Context, string) (string, error) { return t.output, nil }
 
+type failingGenerateModel struct {
+	err error
+}
+
+func (m failingGenerateModel) GenerateContent(context.Context, []llms.MessageContent, ...llms.CallOption) (*llms.ContentResponse, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return nil, errors.New("generate failed")
+}
+
+func (m failingGenerateModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	if m.err != nil {
+		return "", m.err
+	}
+	return "", errors.New("call failed")
+}
+
 func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	var callOptions llms.CallOptions
 	for _, option := range options {
@@ -771,10 +1217,18 @@ func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.Mes
 	m.tools = append(m.tools, callOptions.Tools)
 
 	if callOptions.StreamingFunc != nil && m.callCount < len(m.responses) {
-		content := m.responses[m.callCount].Choices[0].Content
-		if content != "" {
-			if err := callOptions.StreamingFunc(ctx, []byte("chunk:"+content)); err != nil {
-				return nil, err
+		if m.streamChunks != nil && m.callCount < len(m.streamChunks) {
+			for _, chunk := range m.streamChunks[m.callCount] {
+				if err := callOptions.StreamingFunc(ctx, []byte(chunk)); err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			content := m.responses[m.callCount].Choices[0].Content
+			if content != "" {
+				if err := callOptions.StreamingFunc(ctx, []byte("chunk:"+content)); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -825,21 +1279,44 @@ func verifierFinishResponse(finalAnswer string) *llms.ContentResponse {
 }
 
 func verifierFinishResponseWithInfo(finalAnswer string, info map[string]any) *llms.ContentResponse {
+	return contentResponseWithInfo(verifierFinishJSON(finalAnswer), info)
+}
+
+func verifierFinishJSON(finalAnswer string) string {
 	payload, _ := json.Marshal(map[string]any{
 		"can_finish":   true,
 		"final_answer": finalAnswer,
 		"reason":       "test verified",
 	})
-	return contentResponseWithInfo(string(payload), info)
+	return string(payload)
+}
+
+func structuredVerifierFinishResponse(speechText, output string) *llms.ContentResponse {
+	return contentResponse(structuredVerifierFinishJSON(speechText, output))
+}
+
+func structuredVerifierFinishJSON(speechText, output string) string {
+	payload, _ := json.Marshal(map[string]any{
+		"can_finish":   true,
+		"speech":       speechText,
+		"text":         output,
+		"final_answer": output,
+		"reason":       "test verified",
+	})
+	return string(payload)
 }
 
 func verifierContinueResponse(reason string) *llms.ContentResponse {
+	return contentResponse(verifierContinueJSON(reason))
+}
+
+func verifierContinueJSON(reason string) string {
 	payload, _ := json.Marshal(map[string]any{
 		"can_finish":   false,
 		"needs_replan": true,
 		"reason":       reason,
 	})
-	return contentResponse(string(payload))
+	return string(payload)
 }
 
 func verifierStepContinueResponse(reason string) *llms.ContentResponse {
@@ -916,6 +1393,18 @@ func commitPlanToolCall(plan ...string) *llms.ContentResponse {
 	return toolCallResponse("commit_1", toolCommitPlan, fmt.Sprintf(`{"__arg1":%q,"description":"commit plan"}`, string(payload)))
 }
 
+func setTodoToolCall(id string, items []string, currentIndex int, completed, blocked []int) *llms.ContentResponse {
+	payload, _ := json.Marshal(map[string]any{
+		"objective":         "test objective",
+		"items":             items,
+		"current_index":     currentIndex,
+		"completed_indices": completed,
+		"blocked_indices":   blocked,
+		"reason":            "test todo update",
+	})
+	return toolCallResponse(id, toolSetTodo, fmt.Sprintf(`{"__arg1":%q,"description":"set todo"}`, string(payload)))
+}
+
 func roleCommittedExecutionResponses(planSteps []string, pairs ...*llms.ContentResponse) []*llms.ContentResponse {
 	responses := []*llms.ContentResponse{
 		enterPlanModeToolCall(),
@@ -931,6 +1420,39 @@ func firstRunEventOfType(events []RunEvent, eventType string) (RunEvent, bool) {
 		}
 	}
 	return RunEvent{}, false
+}
+
+func runEventsOfType(events []RunEvent, eventType string) []RunEvent {
+	var matching []RunEvent
+	for _, event := range events {
+		if event.Type == eventType {
+			matching = append(matching, event)
+		}
+	}
+	return matching
+}
+
+func taskEpisodeEventsOfType(events []TaskEpisodeEvent, eventType string) []TaskEpisodeEvent {
+	var matching []TaskEpisodeEvent
+	for _, event := range events {
+		if event.Type == eventType {
+			matching = append(matching, event)
+		}
+	}
+	return matching
+}
+
+func assertTodoItemStatus(t *testing.T, event RunEvent, itemIndex int, status TodoStatus) {
+	t.Helper()
+	if event.Todo == nil {
+		t.Fatalf("event has nil todo: %#v", event)
+	}
+	if itemIndex < 0 || itemIndex >= len(event.Todo.Items) {
+		t.Fatalf("todo item index %d out of range: %#v", itemIndex, event.Todo.Items)
+	}
+	if got := event.Todo.Items[itemIndex].Status; got != status {
+		t.Fatalf("todo item %d status = %q, want %q in event %#v", itemIndex, got, status, event)
+	}
 }
 
 type stubTool struct {
@@ -1299,7 +1821,7 @@ func TestRuntimeAllowsRepeatedKeyboardText(t *testing.T) {
 
 func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。","speech":"读取音量。"}`, "The current audio volume is 42."),
 	}
 	tool := &stubTool{
 		name:        "audio_volume",
@@ -1336,15 +1858,537 @@ func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 	if len(tool.inputs) != 1 || tool.inputs[0] != "{}" {
 		t.Fatalf("unexpected tool inputs: %#v", tool.inputs)
 	}
-	toolCall, ok := firstRunEventOfType(events, "tool_call")
+	toolCall, ok := firstRunEventOfType(events, runEventToolCall)
 	if !ok {
 		t.Fatalf("expected tool_call event, got %#v", events)
 	}
 	if toolCall.Description != "我先读取当前音量。" || toolCall.Content != toolCall.Description {
 		t.Fatalf("unexpected tool description event: %#v", toolCall)
 	}
+	if toolCall.Speech != "" {
+		t.Fatalf("tool_call speech = %q, want empty when voice_tool_call_speech is disabled", toolCall.Speech)
+	}
 	if toolCall.ToolInput != "{}" {
 		t.Fatalf("tool_call event input = %q, want stripped input", toolCall.ToolInput)
+	}
+}
+
+func TestRuntimeRunEmitsToolSpeechOnlyWhenToolCallSpeechEnabled(t *testing.T) {
+	description := "我先读取当前音量并检查当前播放设备、音量状态、静音状态、输出通道以及系统返回结果是否一致。然后继续回答。"
+	speech := "读取音量。"
+	model := &scriptedModel{
+		responses: roleToolResponses("audio_volume", fmt.Sprintf(`{"__arg1":"{}","description":%q,"speech":%q}`, description, speech), "The current audio volume is 42."),
+	}
+	tool := &stubTool{
+		name:        "audio_volume",
+		description: "Get the current audio playback volume.",
+		output:      `{"volume":42}`,
+	}
+	toolSpeechEnabled := true
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:               ModelConfig{Provider: "fake"},
+			Instruction:         "Use tools when external state is requested.",
+			VoiceToolCallSpeech: &toolSpeechEnabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "当前音量是多少？",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	toolCall, ok := firstRunEventOfType(events, runEventToolCall)
+	if !ok {
+		t.Fatalf("expected tool_call event, got %#v", events)
+	}
+	if toolCall.Description != description {
+		t.Fatalf("tool_call description changed: %q", toolCall.Description)
+	}
+	if toolCall.Content != description {
+		t.Fatalf("tool_call content = %q, want full description", toolCall.Content)
+	}
+	if toolCall.Speech == "" {
+		t.Fatal("tool_call speech is empty when voice_tool_call_speech is enabled")
+	}
+	if toolCall.Speech != speech {
+		t.Fatalf("tool_call speech = %q, want LLM speech %q", toolCall.Speech, speech)
+	}
+}
+
+func TestRuntimeRunDoesNotDeriveToolSpeechWhenMissing(t *testing.T) {
+	description := "我先读取当前音量并检查当前播放设备、音量状态、静音状态、输出通道以及系统返回结果是否一致。然后继续回答。"
+	model := &scriptedModel{
+		responses: roleToolResponses("audio_volume", fmt.Sprintf(`{"__arg1":"{}","description":%q}`, description), "The current audio volume is 42."),
+	}
+	tool := &stubTool{
+		name:        "audio_volume",
+		description: "Get the current audio playback volume.",
+		output:      `{"volume":42}`,
+	}
+	toolSpeechEnabled := true
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:               ModelConfig{Provider: "fake"},
+			Instruction:         "Use tools when external state is requested.",
+			VoiceToolCallSpeech: &toolSpeechEnabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "当前音量是多少？",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	toolCall, ok := firstRunEventOfType(events, runEventToolCall)
+	if !ok {
+		t.Fatalf("expected tool_call event, got %#v", events)
+	}
+	if toolCall.Description != description {
+		t.Fatalf("tool_call description changed: %q", toolCall.Description)
+	}
+	if toolCall.Speech != "" {
+		t.Fatalf("tool_call speech = %q, want empty when LLM omitted speech", toolCall.Speech)
+	}
+}
+
+func TestRuntimePlannedTodoLifecycleEvents(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleCommittedExecutionResponses(
+			[]string{"inspect screen", "write answer"},
+			finishStepToolCall("inspected"),
+			verifierStepContinueResponse("step ok"),
+			finishStepToolCall("answered"),
+			verifierFinishResponse("done"),
+		),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use plan mode."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "do a planned task",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("Output = %q, want done", result.Output)
+	}
+
+	todos := runEventsOfType(events, runEventTodoUpdate)
+	if len(todos) != 4 {
+		t.Fatalf("todo_update events = %d, want 4: %#v", len(todos), todos)
+	}
+	if todos[0].Todo == nil || todos[0].Todo.Mode != TodoModePlanned || todos[0].Todo.Revision != 1 || len(todos[0].Todo.Items) != 2 {
+		t.Fatalf("unexpected committed todo event: %#v", todos[0])
+	}
+	if todos[0].Todo.Items[0].Status != TodoPending || todos[0].Todo.Items[1].Status != TodoPending {
+		t.Fatalf("commit event should keep all items pending: %#v", todos[0].Todo.Items)
+	}
+	assertTodoItemStatus(t, todos[1], 0, TodoInProgress)
+	if todos[1].Content != "inspect screen" {
+		t.Fatalf("step 1 start content = %q", todos[1].Content)
+	}
+	if !todos[1].SpeechEligible {
+		t.Fatalf("step 1 start should be speech eligible: %#v", todos[1])
+	}
+	assertTodoItemStatus(t, todos[2], 0, TodoDone)
+	assertTodoItemStatus(t, todos[2], 1, TodoInProgress)
+	if todos[2].Content != "write answer" || !todos[2].SpeechEligible {
+		t.Fatalf("step transition should speak step 2 start: %#v", todos[2])
+	}
+	assertTodoItemStatus(t, todos[3], 1, TodoDone)
+	if todos[3].SpeechEligible {
+		t.Fatalf("final done event should not be speech eligible: %#v", todos[3])
+	}
+	closed := runEventsOfType(events, runEventTodoClosed)
+	if len(closed) != 1 {
+		t.Fatalf("todo_closed events = %d, want 1: %#v", len(closed), closed)
+	}
+	if closed[0].Todo == nil || closed[0].Todo.Revision != todos[3].Todo.Revision {
+		t.Fatalf("todo_closed should carry final todo snapshot: closed=%#v final_todo=%#v", closed[0], todos[3].Todo)
+	}
+	if closed[0].SpeechEligible {
+		t.Fatalf("todo_closed must not be speech eligible: %#v", closed[0])
+	}
+}
+
+func TestRuntimeTodoUpdatesRecordedInEpisode(t *testing.T) {
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	model := &scriptedModel{
+		responses: roleCommittedExecutionResponses(
+			[]string{"inspect state"},
+			finishStepToolCall("inspected"),
+			verifierFinishResponse("done"),
+		),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Model: ModelConfig{Provider: "fake"}, Instruction: "Use plan mode."},
+		&testModelResolver{model: model},
+		NewMemoryManager(memoryDir),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input: "do a planned task",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.EpisodeID == "" {
+		t.Fatal("EpisodeID is empty")
+	}
+	traceTodos := runEventsOfType(events, runEventTodoUpdate)
+	if len(traceTodos) == 0 {
+		t.Fatalf("runtime emitted no todo_update events: %#v", events)
+	}
+
+	eventPaths, err := filepath.Glob(filepath.Join(memoryDir, "episodes", "*", result.EpisodeID, "events.jsonl"))
+	if err != nil || len(eventPaths) != 1 {
+		t.Fatalf("episode events glob paths=%#v err=%v", eventPaths, err)
+	}
+	episodeEvents, err := readEpisodeEvents(eventPaths[0])
+	if err != nil {
+		t.Fatalf("read episode events: %v", err)
+	}
+	episodeTodos := taskEpisodeEventsOfType(episodeEvents, runEventTodoUpdate)
+	if len(episodeTodos) != len(traceTodos) {
+		t.Fatalf("episode todo_update count = %d, want %d\ntrace=%#v\nepisode=%#v", len(episodeTodos), len(traceTodos), traceTodos, episodeTodos)
+	}
+	for i := range traceTodos {
+		if episodeTodos[i].Content != traceTodos[i].Content {
+			t.Fatalf("todo %d content = %q, want %q", i, episodeTodos[i].Content, traceTodos[i].Content)
+		}
+		if episodeTodos[i].SpeechEligible != traceTodos[i].SpeechEligible {
+			t.Fatalf("todo %d speechEligible = %v, want %v", i, episodeTodos[i].SpeechEligible, traceTodos[i].SpeechEligible)
+		}
+		if episodeTodos[i].Todo == nil || traceTodos[i].Todo == nil {
+			t.Fatalf("todo %d missing snapshot: trace=%#v episode=%#v", i, traceTodos[i].Todo, episodeTodos[i].Todo)
+		}
+		if !reflect.DeepEqual(*episodeTodos[i].Todo, *traceTodos[i].Todo) {
+			t.Fatalf("todo %d snapshot mismatch:\ntrace=%#v\nepisode=%#v", i, *traceTodos[i].Todo, *episodeTodos[i].Todo)
+		}
+	}
+
+	traceClosed := runEventsOfType(events, runEventTodoClosed)
+	episodeClosed := taskEpisodeEventsOfType(episodeEvents, runEventTodoClosed)
+	if len(traceClosed) != 1 || len(episodeClosed) != 1 {
+		t.Fatalf("todo_closed counts trace=%d episode=%d\ntrace=%#v\nepisode=%#v", len(traceClosed), len(episodeClosed), traceClosed, episodeClosed)
+	}
+	if traceClosed[0].Content != "final_answer" || episodeClosed[0].Reason != "final_answer" {
+		t.Fatalf("todo_closed reason mismatch: trace=%#v episode=%#v", traceClosed[0], episodeClosed[0])
+	}
+	if traceClosed[0].Todo == nil || episodeClosed[0].Todo == nil {
+		t.Fatalf("todo_closed missing snapshot: trace=%#v episode=%#v", traceClosed[0].Todo, episodeClosed[0].Todo)
+	}
+	if !reflect.DeepEqual(*traceClosed[0].Todo, *episodeClosed[0].Todo) {
+		t.Fatalf("todo_closed snapshot mismatch:\ntrace=%#v\nepisode=%#v", *traceClosed[0].Todo, *episodeClosed[0].Todo)
+	}
+}
+
+func TestRuntimeTodoBlocksAndRevisionsOnReplan(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			enterPlanModeToolCall(),
+			commitPlanToolCall("blocked step"),
+			finishStepToolCall("blocked attempt"),
+			verifierContinueResponse("need a new plan"),
+			commitPlanToolCall("replacement step"),
+			finishStepToolCall("replacement done"),
+			verifierFinishResponse("done"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use plan mode."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "do a planned task",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	todos := runEventsOfType(events, runEventTodoUpdate)
+	if len(todos) < 5 {
+		t.Fatalf("todo_update events = %d, want at least 5: %#v", len(todos), todos)
+	}
+	assertTodoItemStatus(t, todos[2], 0, TodoBlocked)
+	if todos[2].Todo.Revision != 1 {
+		t.Fatalf("blocked revision = %d, want 1", todos[2].Todo.Revision)
+	}
+	if todos[3].Todo == nil || todos[3].Todo.Revision != 2 || len(todos[3].Todo.Items) != 1 {
+		t.Fatalf("replan commit should replace items with revision 2: %#v", todos[3].Todo)
+	}
+	if todos[3].Todo.Items[0].Text != "replacement step" {
+		t.Fatalf("replan commit item text = %q, want replacement step", todos[3].Todo.Items[0].Text)
+	}
+	assertTodoItemStatus(t, todos[4], 0, TodoInProgress)
+	if todos[4].Todo.Revision != 2 {
+		t.Fatalf("replacement step revision = %d, want 2", todos[4].Todo.Revision)
+	}
+}
+
+func TestRuntimeDirectAnswerDoesNotGenerateTodo(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("done")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "hello",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if todos := runEventsOfType(events, runEventTodoUpdate); len(todos) != 0 {
+		t.Fatalf("direct answer emitted todo_update events: %#v", todos)
+	}
+	if closed := runEventsOfType(events, runEventTodoClosed); len(closed) != 0 {
+		t.Fatalf("direct answer emitted todo_closed events: %#v", closed)
+	}
+}
+
+func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
+			toolCallResponse("call_2", "web_search", `{"__arg1":"Aiden"}`),
+			contentResponse("done"),
+		},
+	}
+	screenshot := &stubTool{name: "screenshot", description: "Capture screen.", output: "screen"}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"screenshot": screenshot,
+			"web_search": webSearch,
+		}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "look",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	todos := runEventsOfType(events, runEventTodoUpdate)
+	if len(todos) != 0 {
+		t.Fatalf("simple loop emitted implicit todo_update events: %#v", todos)
+	}
+	if closed := runEventsOfType(events, runEventTodoClosed); len(closed) != 0 {
+		t.Fatalf("simple loop emitted implicit todo_closed events: %#v", closed)
+	}
+	if len(screenshot.inputs) != 1 || len(webSearch.inputs) != 1 {
+		t.Fatalf("expected simple tools to execute without todo, screenshot=%#v web=%#v", screenshot.inputs, webSearch.inputs)
+	}
+}
+
+func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("call_1", "web_search", `{"__arg1":"Aiden"}`),
+			contentResponse("done"),
+		},
+	}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "search",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	todos := runEventsOfType(events, runEventTodoUpdate)
+	if len(todos) != 0 {
+		t.Fatalf("force_simple_loop emitted todo_update events: %#v", todos)
+	}
+	if closed := runEventsOfType(events, runEventTodoClosed); len(closed) != 0 {
+		t.Fatalf("force_simple_loop emitted todo_closed events: %#v", closed)
+	}
+	if len(webSearch.inputs) != 1 {
+		t.Fatalf("expected force_simple_loop tool to execute without todo, inputs=%#v", webSearch.inputs)
+	}
+}
+
+func TestRuntimeForceSimpleLoopExplicitTodoLifecycle(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			setTodoToolCall("todo_1", []string{"inspect state", "write answer"}, 1, nil, nil),
+			toolCallResponse("call_1", "web_search", `{"__arg1":"Aiden"}`),
+			setTodoToolCall("todo_2", []string{"inspect state", "write answer"}, 2, []int{1}, nil),
+			contentResponse("done"),
+		},
+	}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		NewSkillIndex(),
+	)
+
+	var events []RunEvent
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: "complex single-agent task",
+		EventHandler: func(event RunEvent) {
+			events = append(events, event)
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	todos := runEventsOfType(events, runEventTodoUpdate)
+	if len(todos) != 2 {
+		t.Fatalf("todo_update events = %d, want 2: %#v", len(todos), todos)
+	}
+	first := todos[0].Todo
+	if first == nil || first.Mode != TodoModeSimple || first.Revision != 1 || len(first.Items) != 2 {
+		t.Fatalf("unexpected first todo: %#v", first)
+	}
+	if !todos[0].SpeechEligible || first.Items[0].Status != TodoInProgress || first.Items[0].Source != TodoSourceExplicitSimple {
+		t.Fatalf("first todo should start item 1 with speech eligibility: event=%#v todo=%#v", todos[0], first)
+	}
+	second := todos[1].Todo
+	if second == nil || second.Revision != 2 {
+		t.Fatalf("unexpected second todo: %#v", second)
+	}
+	if !todos[1].SpeechEligible || second.Items[0].Status != TodoDone || second.Items[1].Status != TodoInProgress {
+		t.Fatalf("second todo should advance to item 2 with speech eligibility: event=%#v todo=%#v", todos[1], second)
+	}
+	closed := runEventsOfType(events, runEventTodoClosed)
+	if len(closed) != 1 {
+		t.Fatalf("todo_closed events = %d, want 1: %#v", len(closed), closed)
+	}
+	if closed[0].Todo == nil || closed[0].Todo.Items[1].Status != TodoInProgress {
+		t.Fatalf("todo_closed should preserve last simple todo snapshot without forcing done: %#v", closed[0])
+	}
+}
+
+func TestRuntimeSimpleLoopTodoReminderAfterSeveralToolCalls(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("call_1", "web_search", `{"__arg1":"one"}`),
+			toolCallResponse("call_2", "web_search", `{"__arg1":"two"}`),
+			toolCallResponse("call_3", "web_search", `{"__arg1":"three"}`),
+			contentResponse("done"),
+		},
+	}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "complex single-agent task"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) < 4 {
+		t.Fatalf("expected fourth model call after reminder, got %d", len(model.messages))
+	}
+	prompt := messageText(model.messages[3])
+	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
+		t.Fatalf("fourth prompt missing todo reminder:\n%s", prompt)
+	}
+}
+
+func TestRuntimeSimpleLoopTodoReminderUsesConfiguredToolCallThreshold(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("call_1", "web_search", `{"__arg1":"one"}`),
+			toolCallResponse("call_2", "web_search", `{"__arg1":"two"}`),
+			contentResponse("done"),
+		},
+	}
+	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true, TodoReminderToolCalls: 2},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "complex single-agent task"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) < 3 {
+		t.Fatalf("expected third model call after configured reminder, got %d", len(model.messages))
+	}
+	prompt := messageText(model.messages[2])
+	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
+		t.Fatalf("third prompt missing configured todo reminder:\n%s", prompt)
 	}
 }
 
@@ -1394,6 +2438,297 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 	}
 	if stream.String() != "completed" {
 		t.Fatalf("unexpected stream output: %q", stream.String())
+	}
+}
+
+func TestRuntimeRunDirectRouteUsesProviderFinalStreaming(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{"mode":"direct_answer","speech":"Short answer.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
+		},
+		streamChunks: [][]string{
+			{
+				`{"mode":"direct_answer","speech":"Short`,
+				` answer.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`,
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "openrouter"},
+			Instruction: "Answer directly.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var stream strings.Builder
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "hello",
+		StreamWriter:      NewSpeechStreamWriter(&stream),
+		StreamFinalChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if got, want := model.sawStreaming, []bool{true}; !slices.Equal(got, want) {
+		t.Fatalf("expected direct route call to use provider streaming, got %#v", got)
+	}
+	if stream.String() != "Short answer." {
+		t.Fatalf("stream = %q, want speech from provider chunks", stream.String())
+	}
+	if result.Output != "Complete answer." {
+		t.Fatalf("Output = %q", result.Output)
+	}
+	if result.SpeechText != "Short answer." {
+		t.Fatalf("SpeechText = %q", result.SpeechText)
+	}
+}
+
+func TestRuntimeRunDefaultModeFinalAnswerUsesProviderFinalStreaming(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{"mode":"simple","reason":"ordinary one-pass answer"}`),
+			contentResponse(`{"speech":"Short answer.","text":"Complete answer."}`),
+		},
+		streamChunks: [][]string{
+			{
+				`{"mode":"simple","reason":"ordinary one-pass answer"}`,
+			},
+			{
+				`{"speech":"Short`,
+				` answer.","text":"Complete answer."}`,
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "openrouter"},
+			Instruction: "Answer in default mode.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var stream strings.Builder
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "hello",
+		StreamWriter:      NewSpeechStreamWriter(&stream),
+		StreamFinalChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if got, want := model.sawStreaming, []bool{true, true}; !slices.Equal(got, want) {
+		t.Fatalf("expected route and default final calls to use provider streaming, got %#v", got)
+	}
+	if stream.String() != "Short answer." {
+		t.Fatalf("stream = %q, want only default final speech", stream.String())
+	}
+	if result.Output != "Complete answer." {
+		t.Fatalf("Output = %q", result.Output)
+	}
+	if result.SpeechText != "Short answer." {
+		t.Fatalf("SpeechText = %q", result.SpeechText)
+	}
+}
+
+func TestRuntimeRunFinalStreamingDoesNotStreamIntermediateToolCalls(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}"}`, "The current audio volume is 42."),
+		streamChunks: [][]string{
+			{},
+			{"The current audio volume is 42."},
+		},
+	}
+	tool := &stubTool{
+		name:        "audio_volume",
+		description: "Get the current audio playback volume.",
+		output:      `{"volume":42}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:           ModelConfig{Provider: "openrouter"},
+			Instruction:     "Use tools when external state is requested.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"audio_volume": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	var stream bytes.Buffer
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "当前音量是多少？",
+		StreamWriter:      &stream,
+		StreamFinalChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.Output != "The current audio volume is 42." {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if len(tool.inputs) != 1 || tool.inputs[0] != "{}" {
+		t.Fatalf("unexpected tool inputs: %#v", tool.inputs)
+	}
+	if got, want := model.sawStreaming, []bool{true, true}; !slices.Equal(got, want) {
+		t.Fatalf("expected default-mode model calls to use provider streaming, got %#v", got)
+	}
+	if stream.String() != "The current audio volume is 42." {
+		t.Fatalf("unexpected stream output: %q", stream.String())
+	}
+}
+
+func TestRuntimeRunResetsSpeechStreamWriterBetweenFinalStreamingAttempts(t *testing.T) {
+	firstVerifier := verifierContinueJSON("need more evidence")
+	finalVerifier := structuredVerifierFinishJSON("最终口播。", "最终完整回答。")
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			enterPlanModeToolCall(),
+			commitPlanToolCall("inspect first"),
+			finishStepToolCall("first candidate"),
+			contentResponse(firstVerifier),
+			commitPlanToolCall("answer from evidence"),
+			finishStepToolCall("final candidate"),
+			structuredVerifierFinishResponse("最终口播。", "最终完整回答。"),
+		},
+		streamChunks: [][]string{
+			{},
+			{},
+			{},
+			{firstVerifier},
+			{},
+			{},
+			{finalVerifier[:len(finalVerifier)/2], finalVerifier[len(finalVerifier)/2:]},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use plan mode."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var stream strings.Builder
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "do a planned task",
+		StreamWriter:      NewSpeechStreamWriter(&stream),
+		StreamFinalChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.sawStreaming) != len(model.responses) || !model.sawStreaming[3] || !model.sawStreaming[6] {
+		t.Fatalf("expected both final-step verifier calls to use streaming, got %#v", model.sawStreaming)
+	}
+	if result.Output != "最终完整回答。" {
+		t.Fatalf("Output = %q", result.Output)
+	}
+	if result.SpeechText != "最终口播。" {
+		t.Fatalf("SpeechText = %q", result.SpeechText)
+	}
+	if stream.String() != "最终口播。" {
+		t.Fatalf("stream = %q, want final speech only", stream.String())
+	}
+}
+
+func TestRuntimeRunFallsBackWhenProviderStreamEmitsNoSpeech(t *testing.T) {
+	finalVerifier := verifierFinishJSON("Fallback final answer.")
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			enterPlanModeToolCall(),
+			commitPlanToolCall("answer"),
+			finishStepToolCall("candidate"),
+			contentResponse(finalVerifier),
+		},
+		streamChunks: [][]string{
+			{},
+			{},
+			{},
+			{finalVerifier},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use plan mode."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var stream strings.Builder
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "do a planned task",
+		StreamWriter:      NewJSONFieldOrPlainStreamWriter(&stream, "text"),
+		StreamFinalChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.sawStreaming) != len(model.responses) || !model.sawStreaming[3] {
+		t.Fatalf("expected final verifier call to use provider streaming, got %#v", model.sawStreaming)
+	}
+	if result.Output != "Fallback final answer." {
+		t.Fatalf("Output = %q", result.Output)
+	}
+	if stream.String() != "Fallback final answer." {
+		t.Fatalf("stream = %q, want fallback final answer", stream.String())
+	}
+}
+
+func TestRuntimeRunFallsBackWhenProviderStreamWriterErrorsAfterPartialSpeech(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{"mode":"direct_answer","speech":"Recovered speech.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
+		},
+		streamChunks: [][]string{
+			{
+				`{"mode":"direct_answer","speech":"Broken`,
+				`\q","text":"ignored"}`,
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var stream strings.Builder
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "hello",
+		StreamWriter:      NewSpeechStreamWriter(&stream),
+		StreamFinalChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if got, want := model.sawStreaming, []bool{true}; !slices.Equal(got, want) {
+		t.Fatalf("expected direct route call to use provider streaming, got %#v", got)
+	}
+	if result.Output != "Complete answer." {
+		t.Fatalf("Output = %q", result.Output)
+	}
+	if result.SpeechText != "Recovered speech." {
+		t.Fatalf("SpeechText = %q", result.SpeechText)
+	}
+	if stream.String() != "BrokenRecovered speech." {
+		t.Fatalf("stream = %q, want partial speech followed by fallback speech", stream.String())
 	}
 }
 
@@ -1877,7 +3212,7 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	oldSummary := "OLD SESSION SUMMARY MUST NOT ENTER NEW PROMPT"
-	now := time.Now().UTC().Add(-4 * time.Minute)
+	now := time.Now().UTC().Add(-6 * time.Minute)
 	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold+1; i++ {
 		if _, err := session.AppendEvent(context.Background(), SessionEvent{
 			EventID: fmt.Sprintf("evt_old_%d", i),
@@ -1934,7 +3269,8 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 	}
 
 	active := readSessionEvents(t, session.eventsPath())
-	if len(active) != 2 || active[0].Content != "打开微信" {
+	activeChat := sessionEventsOfTypes(active, "user_input", "assistant_output")
+	if len(activeChat) != 2 || activeChat[0].Content != "打开微信" {
 		t.Fatalf("expected active events to contain only current exchange, got %#v", active)
 	}
 	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
@@ -1991,7 +3327,7 @@ func TestRuntimeRunRepairsTruncatedSessionTailBeforeBoundaryRotation(t *testing.
 	configDir := t.TempDir()
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC().Add(-4 * time.Minute)
+	now := time.Now().UTC().Add(-6 * time.Minute)
 	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold+1; i++ {
 		if _, err := session.AppendEvent(context.Background(), SessionEvent{
 			EventID: fmt.Sprintf("evt_old_%d", i),
@@ -2063,7 +3399,7 @@ func TestRuntimeRunKeepsSmallSessionOnUnrelatedInput(t *testing.T) {
 	configDir := t.TempDir()
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC().Add(-4 * time.Minute)
+	now := time.Now().UTC().Add(-6 * time.Minute)
 	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold; i++ {
 		if _, err := session.AppendEvent(context.Background(), SessionEvent{
 			EventID: fmt.Sprintf("evt_small_%d", i),
@@ -2124,7 +3460,7 @@ func TestRuntimeRunKeepsNeutralFollowUpWithActiveEpisode(t *testing.T) {
 	configDir := t.TempDir()
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC().Add(-4 * time.Minute)
+	now := time.Now().UTC().Add(-6 * time.Minute)
 	for i, content := range []string{"查一下今天天气", "今天多云"} {
 		role := "user"
 		eventType := "user_input"
@@ -2331,8 +3667,18 @@ func TestRuntimeRunCanceledWhileQueuedDoesNotRotateSessionOrStartEpisode(t *test
 		t.Fatalf("canceled queued run rotated session: %v", archiveDirs)
 	}
 	active := readSessionEvents(t, session.eventsPath())
-	if len(active) != 2 || active[0].EventID != "evt_old_0" {
-		t.Fatalf("canceled queued run changed active session events: %#v", active)
+	if len(active) < 2 || active[0].EventID != "evt_old_0" {
+		t.Fatalf("active session lost original events: %#v", active)
+	}
+	if sessionEventsContain(active, func(event SessionEvent) bool {
+		return event.Type == "user_input" && event.Content == "打开微信"
+	}) {
+		t.Fatalf("canceled queued run wrote its input to active session events: %#v", active)
+	}
+	if !sessionEventsContain(active, func(event SessionEvent) bool {
+		return event.Type == "user_input" && event.Content == "继续查天气"
+	}) {
+		t.Fatalf("started first run should persist its root input: %#v", active)
 	}
 
 	index, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).loadIndex()
@@ -2500,7 +3846,7 @@ func waitForSessionCompaction(t *testing.T, configDir string) {
 		}
 		lastEventCount = len(events)
 		lastChunkCount = len(chunks)
-		if lastEventCount <= 21 && lastChunkCount == 1 {
+		if lastEventCount <= 22 && lastChunkCount == 1 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -2509,7 +3855,7 @@ func waitForSessionCompaction(t *testing.T, configDir string) {
 	if lastErr != nil {
 		t.Fatalf("waiting for session compaction: %v", lastErr)
 	}
-	t.Fatalf("expected compacted chunk and hot window events <= 21 including pinned root, got chunks=%d events=%d", lastChunkCount, lastEventCount)
+	t.Fatalf("expected compacted chunk and hot window events <= 22 including pinned root and realtime role_output, got chunks=%d events=%d", lastChunkCount, lastEventCount)
 }
 
 func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {

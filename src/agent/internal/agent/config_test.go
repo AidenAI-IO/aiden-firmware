@@ -70,10 +70,27 @@ func TestConfigScreenStableDefaults(t *testing.T) {
 	}
 }
 
+func TestConfigTodoReminderToolCallsDefaultsAndOverrides(t *testing.T) {
+	cfg := Config{}
+	if got := cfg.TodoReminderToolCallsOrDefault(); got != 3 {
+		t.Fatalf("TodoReminderToolCallsOrDefault() = %d, want 3", got)
+	}
+
+	cfg.TodoReminderToolCalls = 2
+	if got := cfg.TodoReminderToolCallsOrDefault(); got != 2 {
+		t.Fatalf("TodoReminderToolCallsOrDefault() override = %d, want 2", got)
+	}
+
+	cfg.TodoReminderToolCalls = 0
+	if got := cfg.TodoReminderToolCallsOrDefault(); got != 3 {
+		t.Fatalf("TodoReminderToolCallsOrDefault() zero = %d, want 3", got)
+	}
+}
+
 func TestLoadConfigParsesModelSpecOverrides(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
-instruction = "test"
+custom_instruction = "test"
 
 [model]
 provider = "openrouter"
@@ -104,7 +121,7 @@ model_max_output_tokens = 4096
 func TestLoadConfigParsesLegacyModelMaxTokens(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
-instruction = "test"
+custom_instruction = "test"
 
 [model]
 provider = "openrouter"
@@ -127,7 +144,7 @@ max_tokens = 777
 func TestLoadConfigPrefersMaxResponseTokensOverLegacyMaxTokens(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
-instruction = "test"
+custom_instruction = "test"
 
 [model]
 provider = "openrouter"
@@ -185,6 +202,48 @@ provider = "fake"
 	}
 	if cfg.STT.Provider != "" {
 		t.Fatalf("STT.Provider = %q, want empty when text mode did not configure STT", cfg.STT.Provider)
+	}
+}
+
+func TestLoadRuntimeConfigIgnoresLegacyInstructionField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+instruction = "legacy field should be ignored"
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.Instruction != defaultInstruction {
+		t.Fatalf("Instruction = %q, want built-in default because legacy instruction is ignored", cfg.Instruction)
+	}
+}
+
+func TestLoadRuntimeConfigEmptyCustomInstructionUsesDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+custom_instruction = ""
+
+[model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.Instruction != defaultInstruction {
+		t.Fatalf("Instruction = %q, want built-in default for empty custom_instruction", cfg.Instruction)
 	}
 }
 
@@ -625,7 +684,7 @@ func TestLoadConfigRejectsUnknownDeviceBackend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	content := `
-instruction = "test"
+custom_instruction = "test"
 
 [model]
 provider = "fake"
@@ -751,8 +810,8 @@ func TestConfigValidateRejectsUnsupportedAudioFormatForVoiceInput(t *testing.T) 
 func TestVoiceSessionConfigDefaults(t *testing.T) {
 	cfg := Config{}
 
-	if !cfg.VoiceSessionEnabledOrDefault() {
-		t.Fatal("VoiceSessionEnabledOrDefault() = false, want true")
+	if cfg.VoiceFollowupEnabledOrDefault() {
+		t.Fatal("VoiceFollowupEnabledOrDefault() = true, want false")
 	}
 	if cfg.VoiceFirstTurnTimeoutOrDefault() != 10*time.Second {
 		t.Fatalf("VoiceFirstTurnTimeoutOrDefault() = %s, want 10s", cfg.VoiceFirstTurnTimeoutOrDefault())
@@ -766,31 +825,41 @@ func TestVoiceSessionConfigDefaults(t *testing.T) {
 	if !cfg.VoiceStreamingTTSEnabledOrDefault() {
 		t.Fatal("VoiceStreamingTTSEnabledOrDefault() = false, want true")
 	}
-	if !cfg.VoiceToolCallSpeechOrDefault() {
-		t.Fatal("VoiceToolCallSpeechOrDefault() = false, want true")
+	if cfg.VoiceToolCallSpeechOrDefault() {
+		t.Fatal("VoiceToolCallSpeechOrDefault() = true, want false")
 	}
-	if cfg.VoiceMaxResponseTokensOrDefault() != 400 {
-		t.Fatalf("VoiceMaxResponseTokensOrDefault() = %d, want 400", cfg.VoiceMaxResponseTokensOrDefault())
+	if !cfg.VoiceProgressSpeechEnabledOrDefault() {
+		t.Fatal("VoiceProgressSpeechEnabledOrDefault() = false, want true")
+	}
+	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
+		t.Fatal("VoiceSpeechSummaryEnabledOrDefault() = false, want true")
+	}
+	if cfg.VoiceMaxResponseTokensOrDefault() != 300 {
+		t.Fatalf("VoiceMaxResponseTokensOrDefault() = %d, want 300", cfg.VoiceMaxResponseTokensOrDefault())
 	}
 }
 
 func TestVoiceSessionConfigOverrides(t *testing.T) {
-	disabled := false
+	followupEnabled := true
 	interruptDisabled := false
 	streamingDisabled := false
 	toolSpeech := false
+	progressSpeechDisabled := false
+	summaryDisabled := false
 	cfg := Config{
-		VoiceSessionEnabled:      &disabled,
-		VoiceFirstTurnTimeoutMs:  1234,
-		VoiceFollowupTimeoutMs:   5678,
-		VoiceInterruptOnWakeup:   &interruptDisabled,
-		VoiceStreamingTTSEnabled: &streamingDisabled,
-		VoiceToolCallSpeech:      &toolSpeech,
-		VoiceMaxResponseTokens:   123,
+		VoiceFollowupEnabled:       &followupEnabled,
+		VoiceFirstTurnTimeoutMs:    1234,
+		VoiceFollowupTimeoutMs:     5678,
+		VoiceInterruptOnWakeup:     &interruptDisabled,
+		VoiceStreamingTTSEnabled:   &streamingDisabled,
+		VoiceToolCallSpeech:        &toolSpeech,
+		VoiceProgressSpeechEnabled: &progressSpeechDisabled,
+		VoiceSpeechSummaryEnabled:  &summaryDisabled,
+		VoiceMaxResponseTokens:     123,
 	}
 
-	if cfg.VoiceSessionEnabledOrDefault() {
-		t.Fatal("VoiceSessionEnabledOrDefault() = true, want false")
+	if !cfg.VoiceFollowupEnabledOrDefault() {
+		t.Fatal("VoiceFollowupEnabledOrDefault() = false, want true")
 	}
 	if cfg.VoiceFirstTurnTimeoutOrDefault() != 1234*time.Millisecond {
 		t.Fatalf("VoiceFirstTurnTimeoutOrDefault() = %s, want 1234ms", cfg.VoiceFirstTurnTimeoutOrDefault())
@@ -806,6 +875,12 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 	}
 	if cfg.VoiceToolCallSpeechOrDefault() {
 		t.Fatal("VoiceToolCallSpeechOrDefault() = true, want false")
+	}
+	if cfg.VoiceProgressSpeechEnabledOrDefault() {
+		t.Fatal("VoiceProgressSpeechEnabledOrDefault() = true, want false")
+	}
+	if cfg.VoiceSpeechSummaryEnabledOrDefault() {
+		t.Fatal("VoiceSpeechSummaryEnabledOrDefault() = true, want false")
 	}
 	if cfg.VoiceMaxResponseTokensOrDefault() != 123 {
 		t.Fatalf("VoiceMaxResponseTokensOrDefault() = %d, want 123", cfg.VoiceMaxResponseTokensOrDefault())
@@ -849,6 +924,14 @@ func TestVoiceSessionConfigValidationRejectsNegativeValues(t *testing.T) {
 				VoiceMaxResponseTokens: -1,
 			},
 			want: "voice_max_response_tokens must be >= 0",
+		},
+		{
+			name: "negative todo reminder tool calls",
+			cfg: Config{
+				Model:                 ModelConfig{Provider: "fake"},
+				TodoReminderToolCalls: -1,
+			},
+			want: "todo_reminder_tool_calls must be >= 0",
 		},
 	}
 
@@ -960,5 +1043,56 @@ storage_path = "/custom/path"
 	}
 	if cfg.AudioArchive.StoragePath != "/custom/path" {
 		t.Errorf("StoragePath: got %q, want %q", cfg.AudioArchive.StoragePath, "/custom/path")
+	}
+}
+
+func TestLoadConfig_LiveActivitySection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	body := `
+[model]
+provider = "openrouter"
+api_key = "x"
+model = "y"
+
+[live_activity]
+bundle_id = "com.example.aiden"
+environment = "sandbox"
+team_id = "TEAMID1234"
+key_id = "KEYID12345"
+private_key_path = "/tmp/AuthKey.p8"
+timeout_sec = 3
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LiveActivity.EnabledOrDefault() {
+		t.Fatal("LiveActivity.EnabledOrDefault() = false, want true")
+	}
+	if cfg.LiveActivity.APNsTopic() != "com.example.aiden.push-type.liveactivity" {
+		t.Fatalf("APNsTopic() = %q", cfg.LiveActivity.APNsTopic())
+	}
+	if cfg.LiveActivity.TimeoutOrDefault() != 3*time.Second {
+		t.Fatalf("TimeoutOrDefault() = %s, want 3s", cfg.LiveActivity.TimeoutOrDefault())
+	}
+}
+
+func TestLiveActivityTimeoutDefaultsAndValidation(t *testing.T) {
+	cfg := Config{Model: ModelConfig{Provider: "fake"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() with default live activity timeout error = %v", err)
+	}
+	if got := cfg.LiveActivity.TimeoutOrDefault(); got != 10*time.Second {
+		t.Fatalf("TimeoutOrDefault() = %s, want 10s", got)
+	}
+
+	cfg.LiveActivity.TimeoutSec = -1
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "live_activity.timeout_sec") {
+		t.Fatalf("Validate() error = %v, want live_activity.timeout_sec validation error", err)
 	}
 }

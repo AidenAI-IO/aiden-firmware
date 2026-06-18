@@ -188,6 +188,7 @@ func (s *SessionMemoryStore) AppendEvent(ctx context.Context, event SessionEvent
 	// direct writes. stripScreenshotData is idempotent—calling it twice on
 	// already-stripped content is safe—so we can sanitize here unconditionally.
 	event.Content = stripScreenshotData(event.Content)
+	event.Artifacts = sanitizeInputArtifacts(event.Artifacts)
 
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
 		return "", fmt.Errorf("create session directory: %w", err)

@@ -73,7 +73,7 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		"extra",
 	} {
 		if strings.Contains(profiles.Verifier.SystemPrompt, unexpected) {
-			t.Fatalf("verifier profile should only keep role rules, found %q:\n%s", unexpected, profiles.Verifier.SystemPrompt)
+			t.Fatalf("verifier profile should not include general prompt context, found %q:\n%s", unexpected, profiles.Verifier.SystemPrompt)
 		}
 	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "MEMORY CONTEXT") {
@@ -134,6 +134,103 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	}
 }
 
+func TestBuildRoleProfilesOmitsActiveSkillsSectionWhenEmpty(t *testing.T) {
+	profiles := buildRoleProfiles(
+		AgentConfig{},
+		ResolvedSkills{},
+		nil,
+		MemoryContext{},
+	)
+
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+		for _, unexpected := range []string{
+			"## Active skills",
+			"No extra skill is active.",
+		} {
+			if strings.Contains(profile.SystemPrompt, unexpected) {
+				t.Fatalf("%s profile should omit empty active skills section, found %q:\n%s", profile.Name, unexpected, profile.SystemPrompt)
+			}
+		}
+	}
+}
+
+func TestBuildRoleProfilesInjectsVerifierCautionMemory(t *testing.T) {
+	skills := ResolvedSkills{
+		Names:        []string{"ui"},
+		Instructions: []string{"[ui] skill instruction should stay out"},
+	}
+	memory := MemoryContext{
+		Common: RoleMemoryContext{
+			SessionSummary: "COMMON SESSION SHOULD STAY OUT",
+			Profile:        "COMMON PROFILE SHOULD STAY OUT",
+		},
+		Planner: RoleMemoryContext{
+			Procedures: []MemoryHit{{
+				ID:      "planner_proc",
+				Type:    "procedure",
+				Summary: "planner procedure should stay out",
+			}},
+		},
+		Verifier: RoleMemoryContext{
+			FailureModes: []MemoryHit{
+				{
+					ID:      "failure_mem",
+					Type:    "failure",
+					Summary: "require fresh screen evidence before approving",
+				},
+				{
+					ID:      "failed_episode",
+					Type:    "task_episode_failure",
+					Summary: "prior failed episode approved a stale screen",
+				},
+			},
+			Conflicts: []MemoryHit{{
+				ID:      "conflict_mem",
+				Type:    "conflict",
+				Summary: "old route conflicts with the current layout",
+			}},
+		},
+	}
+
+	profiles := buildRoleProfiles(
+		AgentConfig{Instruction: "BASE SHOULD STAY OUT"},
+		skills,
+		nil,
+		memory,
+	)
+	prompt := profiles.Verifier.SystemPrompt
+
+	for _, want := range []string{
+		"## Verifier memory cautions",
+		"historical failure/conflict warnings only",
+		"not proof of completion",
+		"current executor_outcome, tool observations, screenshots, or current step evidence",
+		"failure_mem",
+		"require fresh screen evidence before approving",
+		"failed_episode",
+		"prior failed episode approved a stale screen",
+		"conflict_mem",
+		"old route conflicts with the current layout",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("verifier prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unexpected := range []string{
+		"## Base instruction",
+		"BASE SHOULD STAY OUT",
+		"[ui] skill instruction should stay out",
+		"COMMON SESSION SHOULD STAY OUT",
+		"COMMON PROFILE SHOULD STAY OUT",
+		"planner_proc",
+		"planner procedure should stay out",
+	} {
+		if strings.Contains(prompt, unexpected) {
+			t.Fatalf("verifier caution memory leaked %q:\n%s", unexpected, prompt)
+		}
+	}
+}
+
 func TestBuildRoleProfilesIncludesOpenAppRulesOnlyWhenAvailable(t *testing.T) {
 	profiles := buildRoleProfiles(
 		AgentConfig{},
@@ -145,6 +242,27 @@ func TestBuildRoleProfilesIncludesOpenAppRulesOnlyWhenAvailable(t *testing.T) {
 	if !strings.Contains(profiles.Planner.SystemPrompt, "open_app ok=true") ||
 		!strings.Contains(profiles.Verifier.SystemPrompt, "open_app returning ok=true") {
 		t.Fatalf("role prompts should treat launch-only open_app success as direct evidence when tool is available: planner=%q verifier=%q", profiles.Planner.SystemPrompt, profiles.Verifier.SystemPrompt)
+	}
+}
+
+func TestBuildRoleProfilesOmitsStructuredSpeechWhenSpeechSummaryDisabled(t *testing.T) {
+	profiles := buildRoleProfiles(
+		AgentConfig{VoiceSpeechSummaryEnabled: boolPtrRoleProfile(false)},
+		ResolvedSkills{},
+		nil,
+		MemoryContext{},
+	)
+
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Verifier} {
+		if strings.Contains(profile.SystemPrompt, `"speech":`) {
+			t.Fatalf("%s prompt should not require structured speech when speech summary is disabled:\n%s", profile.Name, profile.SystemPrompt)
+		}
+		if profile.Name == RolePlanner && (!strings.Contains(profile.SystemPrompt, "plain text") || !strings.Contains(profile.SystemPrompt, "not JSON")) {
+			t.Fatalf("planner prompt should ask for plain text final answers when speech summary is disabled:\n%s", profile.SystemPrompt)
+		}
+		if profile.Name == RoleVerifier && !strings.Contains(profile.SystemPrompt, "final_answer") {
+			t.Fatalf("verifier prompt should keep final_answer as the plain user-facing answer:\n%s", profile.SystemPrompt)
+		}
 	}
 }
 
@@ -452,7 +570,7 @@ func TestRoleCollaborativeExecutorShowsCurrentStepForVerifier(t *testing.T) {
 	verifierUserPrompt := messageText([]llms.MessageContent{model.messages[4][len(model.messages[4])-1]})
 	if strings.Contains(verifierSystemPrompt, "## Base instruction") ||
 		strings.Contains(verifierSystemPrompt, "## Available skills") {
-		t.Fatalf("verifier system prompt should only contain role rules:\n%s", verifierSystemPrompt)
+		t.Fatalf("verifier system prompt should not include base instructions or skills:\n%s", verifierSystemPrompt)
 	}
 	for _, want := range []string{
 		"Original user request",

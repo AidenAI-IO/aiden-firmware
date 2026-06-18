@@ -11,6 +11,28 @@ func TestQuickActionExposedToAgentAndToolLab(t *testing.T) {
 	}
 }
 
+func TestWaitForWakeupExposedToAgentAndToolLab(t *testing.T) {
+	runtime := NewRuntimeWithDeps(
+		Config{},
+		nil,
+		NewMemoryManager(""),
+		NewBuiltinToolSet(
+			HIDConfig{},
+			AudioConfig{},
+			SearchConfig{},
+			ProxyConfig{},
+			WithWaitForWakeupController(NewWaitForWakeupController()),
+		),
+		NewSkillIndex(),
+	)
+	if _, ok := runtime.ToolDescriptorByName("wait_for_wakeup"); !ok {
+		t.Fatal("expected wait_for_wakeup in Tool Lab HTTP catalog")
+	}
+	if !isAgentToolExposed("wait_for_wakeup") {
+		t.Fatal("expected wait_for_wakeup available to conversational agent")
+	}
+}
+
 func TestPhoneBridgeToolsExposedToAgent(t *testing.T) {
 	for _, name := range []string{"open_app", "clipboard", "calendar", "contacts", "notification"} {
 		if !isAgentToolExposed(name) {

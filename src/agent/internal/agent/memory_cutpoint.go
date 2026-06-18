@@ -25,12 +25,16 @@ import (
 // the budget. The split estimate intentionally overestimates slightly so the
 // window stays within budget rather than creeping over it.
 func estimateSessionEventTokens(event SessionEvent) int {
-	if len(event.Content) == 0 {
+	return estimateTextTokens(event.Content)
+}
+
+func estimateTextTokens(content string) int {
+	if len(content) == 0 {
 		return 0
 	}
 	cjkTokens := 0
 	nonCJKBytes := 0
-	for _, r := range event.Content {
+	for _, r := range content {
 		if isCJK(r) {
 			cjkTokens++
 		} else {
@@ -70,7 +74,7 @@ func classifySessionCutEligibility(event SessionEvent) sessionCutEligibility {
 	switch event.Type {
 	case "user_input":
 		return cutTurnBoundary
-	case "assistant_output", "role_output", "tool_call":
+	case "assistant_output", "role_output", runEventToolCall:
 		return cutSplitAllowed
 	case "tool_result", "system_event", "screen_context":
 		return cutForbidden

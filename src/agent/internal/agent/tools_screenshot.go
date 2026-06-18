@@ -66,17 +66,25 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		t.screen.UpdateActiveArea(int(meta.Width), int(meta.Height), active)
 	}
 
-	result := screenshotResult{
-		Width:  int(meta.Width),
-		Height: int(meta.Height),
-		Format: "jpeg",
-		Size:   len(jpegData),
-		Data:   base64.StdEncoding.EncodeToString(jpegData),
+	// Crop to active_area so LLM sees only visible content (normalized coordinates map to this)
+	displayWidth := int(meta.Width)
+	displayHeight := int(meta.Height)
+	displayData := jpegData
+	if active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
+		croppedData, croppedWidth, croppedHeight, err := cropJPEGToActiveArea(jpegData, active, screenshotJPEGQuality)
+		if err == nil {
+			displayWidth = croppedWidth
+			displayHeight = croppedHeight
+			displayData = croppedData
+		}
 	}
-	if active.Valid && (active.X != 0 || active.Y != 0 || active.Width != result.Width || active.Height != result.Height) {
-		result.ActiveArea = &active
-		result.ActiveWidth = active.Width
-		result.ActiveHeight = active.Height
+
+	result := screenshotResult{
+		Width:  displayWidth,
+		Height: displayHeight,
+		Format: "jpeg",
+		Size:   len(displayData),
+		Data:   base64.StdEncoding.EncodeToString(displayData),
 	}
 
 	out, _ := json.Marshal(result)

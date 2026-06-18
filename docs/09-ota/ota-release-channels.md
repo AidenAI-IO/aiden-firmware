@@ -6,10 +6,10 @@ This document explains how the official repository distinguishes releases by bra
 
 The CI/CD pipeline assigns a release channel based on the branch being built:
 
-| Branch | Channel | GitHub Release | Default OTA Behavior |
+| Branch | Channel | GitHub Release | Default Manual OTA Behavior |
 |--------|---------|----------------|----------------------|
-| `main` | `stable` | Normal release | Auto-updates devices |
-| any other branch | `dev-{branch-name}` | Prerelease | Ignored by default OTA |
+| `main` | `stable` | Normal release | Discoverable by `ota update` |
+| any other branch | `dev-{branch-name}` | Prerelease | Ignored by default `ota update` |
 
 For example:
 - `main` → channel `stable`, normal release
@@ -25,11 +25,12 @@ mechanism described below.
 Non-main branch builds are protected from affecting production OTA by their
 **prerelease** status on GitHub.
 
-Non-main branch releases are marked as **prerelease**. A device's normal update
-check uses the `releases/latest` API, which only returns the newest
-non-prerelease release, so `stable` devices never even discover development
-builds. The `dev-*` channel name is just a label that makes the manifest easy to
-identify; it is not what keeps the build off production devices.
+Non-main branch releases are marked as **prerelease**. A manual `ota update`
+without `--manifest-url` uses the `releases/latest` API, which only returns the
+newest non-prerelease release, so the default update path never discovers
+development builds. The `dev-*` channel name is just a label that makes the
+manifest easy to identify; it is not what keeps the build off production
+devices.
 
 This means you can safely push experimental branches and let CI build them,
 without any risk to devices running production firmware.
@@ -59,7 +60,7 @@ Notes:
 Because development releases are published as prereleases, they:
 
 - **Do not** appear as the latest stable release
-- **Do not** auto-update production devices
+- **Do not** get selected by the default `ota update` release lookup
 - **Do** remain available for manual testing via `--manifest-url`
 
 This lets individual developers build and debug firmware on their own branches without coordinating with, or disrupting, anyone else.
