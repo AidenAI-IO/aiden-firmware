@@ -95,7 +95,7 @@ func combinedAgentInstruction(cfg AgentConfig) string {
 func defaultAgentBehavior(cfg AgentConfig) string {
 	toolCallSpeechRule := "- When calling a tool, do not add speech or description arguments to tool inputs."
 	if cfg.VoiceToolCallSpeechOrDefault() {
-		toolCallSpeechRule = "- When calling a user-visible tool, set the optional tool argument speech to concise natural TTS text in the user's language. Keep speech under 20 Chinese characters or 8 English words. Do not put spoken prefaces in assistant text and do not add a description argument; speech is consumed by the runtime and is not passed to the real tool."
+		toolCallSpeechRule = "- Include the speech argument on every tool call that observes, waits for, reads, or changes external state; this includes screenshot, wait_for_stable_screen, quick_action, mouse_click, touch_gesture, keyboard_text, keyboard_tap, open_app, recall_memory, recall_device_memory, recall_session_chunks, and similar UI/device/memory tools. Assistant text before a tool call is not a substitute for the speech argument; put the spoken status in speech on the tool call itself. Keep speech under 20 Chinese characters or 8 English words, in the user's language. Do not add a description argument; speech is consumed by the runtime and is not passed to the real tool."
 	}
 	return strings.Join([]string{
 		"### Environment",

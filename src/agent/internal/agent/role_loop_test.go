@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -68,6 +69,57 @@ func TestEnterPlanModePreservesToolSteps(t *testing.T) {
 	if len(state.ToolSteps) != 1 {
 		t.Fatalf("tool steps = %d, want 1", len(state.ToolSteps))
 	}
+}
+
+func TestExecutorScratchpadReplaysToolSpeechWhenEnabled(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	executor.ToolCallSpeech = true
+	state := roleLoopState{
+		StepToolSteps: []schema.AgentStep{{
+			Action: schema.AgentAction{
+				Tool:      "mouse_click",
+				ToolInput: `{"button":"left","x":500,"y":850}`,
+				Log:       formatToolActionLog("mouse_click", `{"button":"left","speech":"点击支付按钮","x":500,"y":850}`, "", "点击支付按钮", "\n"),
+				ToolID:    "call_1",
+			},
+			Observation: "ok",
+		}},
+	}
+
+	messages := executor.roleMessages(
+		RoleProfile{Name: RoleExecutor, SystemPrompt: "system"},
+		map[string]string{"input": "continue"},
+		state,
+		"task",
+	)
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			toolCall, ok := part.(llms.ToolCall)
+			if !ok || toolCall.FunctionCall == nil || toolCall.FunctionCall.Name != "mouse_click" {
+				continue
+			}
+			var args map[string]any
+			if err := json.Unmarshal([]byte(toolCall.FunctionCall.Arguments), &args); err != nil {
+				t.Fatalf("decode scratchpad tool arguments: %v", err)
+			}
+			if args["speech"] != "点击支付按钮" {
+				t.Fatalf("scratchpad speech = %#v, want previous tool-call speech; args=%#v", args["speech"], args)
+			}
+			return
+		}
+	}
+	t.Fatalf("scratchpad mouse_click tool call not found: %#v", messages)
 }
 
 func TestCommitPlanOnlyInPlanMode(t *testing.T) {
