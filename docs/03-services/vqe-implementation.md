@@ -13,13 +13,13 @@ Commit: `be00053` - feat(audio): implement AI VQE full-duplex with AEC
    - Allows VQE to communicate actual output format (mono clean PCM) vs hardware format (stereo raw)
 
 2. **VQE state management** (`src/aiden_sdk.cpp` - AudioCaptureImpl)
-   - `vqe_enabled`: parsed from `AIDEN_VQE_ENABLE` environment variable
+   - `vqe_enabled`: parsed from `AIDEN_AUDIO_VQE` environment variable
    - `vqe_active`: tracks successful VQE initialization
    - `vqe_strict`: controls fallback behavior on init failure
    - `output_*`: actual format after VQE processing
 
 3. **VQE initialization sequence** (`AudioCapture::init`)
-   - Parse environment variables: `AIDEN_VQE_ENABLE`, `AIDEN_VQE_CONFIG`, `AIDEN_VQE_STRICT`
+   - Parse environment variables: `AIDEN_AUDIO_VQE`, `AIDEN_AUDIO_VQE_CONFIG`, `AIDEN_AUDIO_VQE_STRICT`
    - Enforce VQE requirements: 16kHz/mono/16bit
    - Set frame size to 256 samples (16ms) for VQE mode
    - Module enables for single-mic:
@@ -47,7 +47,7 @@ Commit: `be00053` - feat(audio): implement AI VQE full-duplex with AEC
    - `overlay/oem/usr/lib/libaec_bf_process.so` (323KB)
 
 2. **VQE configuration**
-   - `overlay/oem/usr/share/aiden/config_aivqe_aiden_singlemic.json`
+   - `overlay/oem/usr/share/aiden/vqe/config_aivqe_aiden_singlemic.json`
    - Single-mic optimized: array modules disabled, AGC tuned for near-field
 
 ## How to Enable VQE
@@ -55,9 +55,9 @@ Commit: `be00053` - feat(audio): implement AI VQE full-duplex with AEC
 ### Method 1: Environment variables (recommended for testing)
 
 ```bash
-export AIDEN_VQE_ENABLE=1
-export AIDEN_VQE_CONFIG=/oem/usr/share/aiden/config_aivqe_aiden_singlemic.json
-export AIDEN_VQE_STRICT=0
+export AIDEN_AUDIO_VQE=1
+export AIDEN_AUDIO_VQE_CONFIG=/oem/usr/share/aiden/vqe/config_aivqe_aiden_singlemic.json
+export AIDEN_AUDIO_VQE_STRICT=0
 /oem/usr/bin/audio_service
 ```
 
@@ -65,18 +65,18 @@ export AIDEN_VQE_STRICT=0
 
 Add to `/userdata/system/env`:
 ```
-AIDEN_VQE_ENABLE=1
-AIDEN_VQE_CONFIG=/oem/usr/share/aiden/config_aivqe_aiden_singlemic.json
-AIDEN_VQE_STRICT=0
+AIDEN_AUDIO_VQE=1
+AIDEN_AUDIO_VQE_CONFIG=/oem/usr/share/aiden/vqe/config_aivqe_aiden_singlemic.json
+AIDEN_AUDIO_VQE_STRICT=0
 ```
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |---|---:|---|
-| `AIDEN_VQE_ENABLE` | `0` | Set to `1` to enable AI VQE |
-| `AIDEN_VQE_CONFIG` | empty | Path to VQE JSON config file |
-| `AIDEN_VQE_STRICT` | `0` | `1` = fail on VQE init error; `0` = fallback to raw capture |
+| `AIDEN_AUDIO_VQE` | `0` | Set to `1` to enable AI VQE |
+| `AIDEN_AUDIO_VQE_CONFIG` | empty | Path to VQE JSON config file |
+| `AIDEN_AUDIO_VQE_STRICT` | `0` | `1` = fail on VQE init error; `0` = fallback to raw capture |
 
 ## Expected Behavior
 
@@ -97,7 +97,7 @@ AIDEN_VQE_STRICT=0
 1. **Basic audio_service test**
    ```bash
    # Terminal 1: Start service with VQE
-   AIDEN_VQE_ENABLE=1 /oem/usr/bin/audio_service
+   AIDEN_AUDIO_VQE=1 /oem/usr/bin/audio_service
    
    # Terminal 2: Record while playing
    audio_service_cli record-stream > /tmp/vqe_test.pcm &
@@ -174,7 +174,7 @@ VQE processing on single-core Cortex-A7:
  src/audio_record_session.cpp             |  47 ++++
  overlay/oem/usr/lib/librkaudio_common.so | Bin (116KB)
  overlay/oem/usr/lib/libaec_bf_process.so | Bin (323KB)
- overlay/oem/usr/share/aiden/config_aivqe_aiden_singlemic.json | 166 lines
+ overlay/oem/usr/share/aiden/vqe/config_aivqe_aiden_singlemic.json | 166 lines
 ```
 
 ## References

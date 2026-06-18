@@ -8,15 +8,15 @@ Ensure the build output includes:
 - `build/bin/audio_service` with VQE support
 - `overlay/oem/usr/lib/librkaudio_common.so`
 - `overlay/oem/usr/lib/libaec_bf_process.so`
-- `overlay/oem/usr/share/aiden/config_aivqe_aiden_singlemic.json`
+- `overlay/oem/usr/share/aiden/vqe/config_aivqe_aiden_singlemic.json`
 
 ### 2. Enable VQE (SSH to device)
 
 ```bash
 # Add to /userdata/system/env
-echo "AIDEN_VQE_ENABLE=1" >> /userdata/system/env
-echo "AIDEN_VQE_CONFIG=/oem/usr/share/aiden/vqe/config_aivqe_aiden_singlemic.json" >> /userdata/system/env
-echo "AIDEN_VQE_STRICT=0" >> /userdata/system/env
+echo "AIDEN_AUDIO_VQE=1" >> /userdata/system/env
+echo "AIDEN_AUDIO_VQE_CONFIG=/oem/usr/share/aiden/vqe/config_aivqe_aiden_singlemic.json" >> /userdata/system/env
+echo "AIDEN_AUDIO_VQE_STRICT=0" >> /userdata/system/env
 
 # Restart audio service
 killall audio_service
@@ -41,7 +41,7 @@ logread | grep "first frame"
 
 ```bash
 # Disable VQE
-sed -i 's/AIDEN_VQE_ENABLE=1/AIDEN_VQE_ENABLE=0/' /userdata/system/env
+sed -i 's/AIDEN_AUDIO_VQE=1/AIDEN_AUDIO_VQE=0/' /userdata/system/env
 killall audio_service && /etc/init.d/S53audio_service restart
 
 # Record 10 seconds of silence
@@ -56,7 +56,7 @@ audio_service_cli record-stream -d 10 > /tmp/baseline_speech.pcm
 
 ```bash
 # Enable VQE
-sed -i 's/AIDEN_VQE_ENABLE=0/AIDEN_VQE_ENABLE=1/' /userdata/system/env
+sed -i 's/AIDEN_AUDIO_VQE=0/AIDEN_AUDIO_VQE=1/' /userdata/system/env
 killall audio_service && /etc/init.d/S53audio_service restart
 
 # Record with VQE
@@ -175,7 +175,7 @@ Possible causes:
 # VQE should continue with raw capture fallback
 
 # To test strict mode:
-echo "AIDEN_VQE_STRICT=1" >> /userdata/system/env
+echo "AIDEN_AUDIO_VQE_STRICT=1" >> /userdata/system/env
 # Now audio_service should fail to start if VQE cannot init
 ```
 
@@ -214,7 +214,7 @@ ps aux | grep audio_service
 
 ```bash
 # Disable VQE
-sed -i '/AIDEN_VQE/d' /userdata/system/env
+sed -i '/AIDEN_AUDIO_VQE/d' /userdata/system/env
 
 # Restart service
 killall audio_service && /etc/init.d/S53audio_service restart
@@ -232,6 +232,6 @@ After verifying Stage 1 success:
 
 ## References
 
-- Implementation summary: `VQE_IMPLEMENTATION_SUMMARY.md`
+- Implementation summary: `docs/03-services/vqe-implementation.md`
 - Design document: `VQE_全双工实现方案.md`
 - Commit: `be00053`

@@ -238,14 +238,14 @@ void AudioRecordSession::capture_loop() {
                 size_t frame_samples = total_samples;
                 maybe_update_hw_sample_rate(frame.timestamp, frame_samples);
 
-                // Aggregate to kChunkSamples (1024)
-                static std::vector<int16_t> vqe_buffer;
-                vqe_buffer.insert(vqe_buffer.end(), src, src + total_samples);
+                // Aggregate to kChunkSamples (1024) within this record session.
+                vqe_pending_samples_.insert(vqe_pending_samples_.end(), src, src + total_samples);
 
-                while (vqe_buffer.size() >= kChunkSamples) {
+                while (vqe_pending_samples_.size() >= kChunkSamples) {
                     std::vector<uint8_t> chunk(kChunkSamples * sizeof(int16_t));
-                    std::memcpy(chunk.data(), vqe_buffer.data(), chunk.size());
-                    vqe_buffer.erase(vqe_buffer.begin(), vqe_buffer.begin() + kChunkSamples);
+                    std::memcpy(chunk.data(), vqe_pending_samples_.data(), chunk.size());
+                    vqe_pending_samples_.erase(vqe_pending_samples_.begin(),
+                                               vqe_pending_samples_.begin() + kChunkSamples);
 
                     std::unique_lock<std::mutex> lock(mutex_);
                     if (queue_.size() < kMaxQueueChunks) {

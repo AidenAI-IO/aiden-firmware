@@ -8,6 +8,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
@@ -613,11 +614,44 @@ AudioCapture::AudioCapture() : impl_(new AudioCaptureImpl()) {}
 AudioCapture::~AudioCapture() { stop(); }
 
 bool AudioCapture::init(const AudioConfig& config) {
+    if (impl_->initialized) {
+        stop();
+    }
+
     ensure_sys_init();
 
     impl_->config = config;
     impl_->dev_id = 0;
     impl_->chn_id = 0;
+    impl_->vqe_enabled = false;
+    impl_->vqe_active = false;
+    impl_->vqe_strict = false;
+    impl_->vqe_config_path.clear();
+    impl_->output_sample_rate = config.sample_rate;
+    impl_->output_channels = 2;
+    impl_->output_bit_width = config.bit_width;
+
+    bool ai_enabled = false;
+    bool chn_enabled = false;
+    bool vqe_hw_enabled = false;
+    bool loopback_enabled = false;
+    auto rollback_init = [&]() {
+        if (vqe_hw_enabled) {
+            RK_MPI_AI_DisableVqe(impl_->dev_id, impl_->chn_id);
+        }
+        if (chn_enabled) {
+            RK_MPI_AI_DisableChn(impl_->dev_id, impl_->chn_id);
+        }
+        if (ai_enabled) {
+            RK_MPI_AI_Disable(impl_->dev_id);
+        }
+        if (loopback_enabled) {
+            RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Disabled");
+        }
+        impl_->vqe_active = false;
+        impl_->initialized = false;
+        maybe_sys_deinit();
+    };
 
     // Parse VQE environment variables
     const char* vqe_env = getenv("AIDEN_AUDIO_VQE");
@@ -637,6 +671,7 @@ bool AudioCapture::init(const AudioConfig& config) {
             fprintf(stderr, "[AudioCapture] VQE mode requires 16kHz/mono/16bit, got %dHz/%dch/%dbit\n",
                     config.sample_rate, config.channels, config.bit_width);
             if (impl_->vqe_strict) {
+                rollback_init();
                 return false;
             }
             fprintf(stderr, "[AudioCapture] VQE disabled, falling back to raw capture\n");
@@ -668,25 +703,34 @@ bool AudioCapture::init(const AudioConfig& config) {
     RK_S32 ret = RK_MPI_AI_SetPubAttr(impl_->dev_id, &impl_->attr);
     if (ret != RK_SUCCESS) {
         fprintf(stderr, "[AudioCapture] RK_MPI_AI_SetPubAttr failed: %#x\n", ret);
+        rollback_init();
         return false;
     }
 
     // RV1106 mixer: enable loopback and set ADC volume
     RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Mode2");
+    loopback_enabled = true;
     RK_MPI_AMIX_SetControl(impl_->dev_id, "ADC ALC Left Volume", (char*)"22");
     RK_MPI_AMIX_SetControl(impl_->dev_id, "ADC ALC Right Volume", (char*)"22");
 
     ret = RK_MPI_AI_Enable(impl_->dev_id);
     if (ret != RK_SUCCESS) {
         fprintf(stderr, "[AudioCapture] RK_MPI_AI_Enable failed: %#x\n", ret);
+        rollback_init();
         return false;
     }
+    ai_enabled = true;
 
     // Set channel param — s32UsrFrmDepth must be > 0 for GetFrame to work
     AI_CHN_PARAM_S chnParam;
     memset(&chnParam, 0, sizeof(AI_CHN_PARAM_S));
     chnParam.s32UsrFrmDepth = 4;
-    RK_MPI_AI_SetChnParam(impl_->dev_id, impl_->chn_id, &chnParam);
+    ret = RK_MPI_AI_SetChnParam(impl_->dev_id, impl_->chn_id, &chnParam);
+    if (ret != RK_SUCCESS) {
+        fprintf(stderr, "[AudioCapture] RK_MPI_AI_SetChnParam failed: %#x\n", ret);
+        rollback_init();
+        return false;
+    }
 
     // Initialize VQE if enabled
     if (impl_->vqe_enabled) {
@@ -712,9 +756,16 @@ bool AudioCapture::init(const AudioConfig& config) {
         ret = RK_MPI_AI_SetVqeModuleEnable(impl_->dev_id, impl_->chn_id, &vqe_mod);
         if (ret != RK_SUCCESS) {
             fprintf(stderr, "[AudioCapture] RK_MPI_AI_SetVqeModuleEnable failed: %#x\n", ret);
-            if (impl_->vqe_strict) return false;
+            if (impl_->vqe_strict) {
+                rollback_init();
+                return false;
+            }
             fprintf(stderr, "[AudioCapture] VQE init failed, falling back to raw capture\n");
             impl_->vqe_enabled = false;
+            impl_->vqe_active = false;
+            impl_->output_sample_rate = config.sample_rate;
+            impl_->output_channels = 2;
+            impl_->output_bit_width = config.bit_width;
             goto enable_channel;
         }
 
@@ -736,9 +787,16 @@ bool AudioCapture::init(const AudioConfig& config) {
         ret = RK_MPI_AI_SetVqeAttr(impl_->dev_id, impl_->chn_id, 0, 0, &vqe_cfg);
         if (ret != RK_SUCCESS) {
             fprintf(stderr, "[AudioCapture] RK_MPI_AI_SetVqeAttr failed: %#x\n", ret);
-            if (impl_->vqe_strict) return false;
+            if (impl_->vqe_strict) {
+                rollback_init();
+                return false;
+            }
             fprintf(stderr, "[AudioCapture] VQE config failed, falling back to raw capture\n");
             impl_->vqe_enabled = false;
+            impl_->vqe_active = false;
+            impl_->output_sample_rate = config.sample_rate;
+            impl_->output_channels = 2;
+            impl_->output_bit_width = config.bit_width;
             goto enable_channel;
         }
 
@@ -746,12 +804,20 @@ bool AudioCapture::init(const AudioConfig& config) {
         ret = RK_MPI_AI_EnableVqe(impl_->dev_id, impl_->chn_id);
         if (ret != RK_SUCCESS) {
             fprintf(stderr, "[AudioCapture] RK_MPI_AI_EnableVqe failed: %#x\n", ret);
-            if (impl_->vqe_strict) return false;
+            if (impl_->vqe_strict) {
+                rollback_init();
+                return false;
+            }
             fprintf(stderr, "[AudioCapture] VQE enable failed, falling back to raw capture\n");
             impl_->vqe_enabled = false;
+            impl_->vqe_active = false;
+            impl_->output_sample_rate = config.sample_rate;
+            impl_->output_channels = 2;
+            impl_->output_bit_width = config.bit_width;
             goto enable_channel;
         }
 
+        vqe_hw_enabled = true;
         impl_->vqe_active = true;
         impl_->output_sample_rate = 16000;
         impl_->output_channels = 1;  // VQE outputs mono clean PCM
@@ -768,8 +834,10 @@ enable_channel:
     ret = RK_MPI_AI_EnableChn(impl_->dev_id, impl_->chn_id);
     if (ret != RK_SUCCESS) {
         fprintf(stderr, "[AudioCapture] RK_MPI_AI_EnableChn failed: %#x\n", ret);
+        rollback_init();
         return false;
     }
+    chn_enabled = true;
 
     RK_MPI_AI_SetVolume(impl_->dev_id, 100);
     RK_MPI_AI_SetTrackMode(impl_->dev_id, AUDIO_TRACK_NORMAL);
@@ -795,10 +863,11 @@ void AudioCapture::stop() {
         pthread_join(impl_->thread, nullptr);
     }
 
-    if (impl_->vqe_enabled) {
+    if (impl_->vqe_active) {
         RK_MPI_AI_DisableVqe(impl_->dev_id, impl_->chn_id);
-        impl_->vqe_enabled = false;
     }
+    impl_->vqe_active = false;
+    impl_->vqe_enabled = false;
 
     RK_MPI_AI_DisableChn(impl_->dev_id, impl_->chn_id);
     RK_MPI_AI_Disable(impl_->dev_id);

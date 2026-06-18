@@ -16,15 +16,25 @@ void signal_handler(int sig) {
 void on_audio_frame(const aiden::AudioFrame& frame) {
     frame_count++;
     if (audio_fp) {
-        // Data is interleaved stereo (L R L R...), extract left channel only
-        int16_t* samples = (int16_t*)frame.data;
-        uint32_t sample_count = frame.length / (2 * sizeof(int16_t));  // 2ch, 16bit
-        for (uint32_t i = 0; i < sample_count; i++) {
-            fwrite(&samples[i * 2], sizeof(int16_t), 1, audio_fp);
+        const int channels = frame.channels > 0 ? frame.channels : 2;
+        const int bit_width = frame.bit_width > 0 ? frame.bit_width : 16;
+        if (frame.data && bit_width == 16) {
+            const int16_t* samples = static_cast<const int16_t*>(frame.data);
+            const uint32_t total_samples = frame.length / sizeof(int16_t);
+            if (channels <= 1) {
+                fwrite(samples, sizeof(int16_t), total_samples, audio_fp);
+            } else {
+                const uint32_t frame_count_per_channel = total_samples / channels;
+                for (uint32_t i = 0; i < frame_count_per_channel; i++) {
+                    fwrite(&samples[i * channels], sizeof(int16_t), 1, audio_fp);
+                }
+            }
         }
         fflush(audio_fp);
     }
-    printf("Received audio frame #%d: %u bytes\n", frame_count, frame.length);
+    printf("Received audio frame #%d: %u bytes, sr=%d ch=%d bits=%d vqe=%d\n",
+           frame_count, frame.length, frame.sample_rate, frame.channels,
+           frame.bit_width, frame.vqe_processed ? 1 : 0);
 }
 
 int main(int argc, char* argv[]) {

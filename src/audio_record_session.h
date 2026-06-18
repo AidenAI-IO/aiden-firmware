@@ -51,6 +51,7 @@ private:
     std::mutex mutex_;
     std::condition_variable cv_;
     std::queue<std::vector<uint8_t>> queue_;
+    std::vector<int16_t> vqe_pending_samples_;
     std::atomic<bool> stopped_;
 };
 
