@@ -524,6 +524,28 @@ TEST_CASE("config web degrades gracefully when config metadata is unavailable") 
     CHECK(source.find("case 503: response.status_text = \"Service Unavailable\";") != std::string::npos);
 }
 
+TEST_CASE("config web collapses wifi list after a successful connection") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("wifiListExpanded:false") != std::string::npos);
+    CHECK(html.find("function connectedWifiSsid()") != std::string::npos);
+    CHECK(html.find("function visibleWifiNames(names)") != std::string::npos);
+    CHECK(html.find("function toggleWifiListExpanded()") != std::string::npos);
+    CHECK(html.find("显示其他 Wi-Fi") != std::string::npos);
+    CHECK(html.find("收起其他 Wi-Fi") != std::string::npos);
+    CHECK(html.find("const visibleNames=visibleWifiNames(names);") != std::string::npos);
+    CHECK(html.find("names.forEach(function(name)") == std::string::npos);
+    CHECK(html.find("function initialReadyMessage(metaOk)") != std::string::npos);
+    CHECK(html.find("if(connectedWifiSsid())return 'Wi-Fi 已连接。';") != std::string::npos);
+    CHECK(html.find("setBanner(initialReadyMessage(metaOk),!metaOk);") != std::string::npos);
+}
+
 TEST_CASE("config web tolerates metadata sections without rendered controls") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());
