@@ -63,7 +63,7 @@ func NewSTTClientFromConfig(cfg Config) (STTClient, error) {
 		return NewOpenAIWhisperSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, httpClient), nil
 	case "openrouter":
 		return NewOpenRouterSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, httpClient), nil
-	case "tencent", "tencent_asr":
+	case tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider:
 		return NewTencentASRSTT(cfg.STT.SecretID, cfg.STT.SecretKey, cfg.STT.Region, cfg.STT.EngineModelType, httpClient), nil
 	default:
 		return nil, fmt.Errorf("unsupported STT provider: %s", cfg.STT.Provider)

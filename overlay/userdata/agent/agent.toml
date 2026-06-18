@@ -80,7 +80,7 @@ storage_path = "/userdata/audio"  # Where to store audio files
 # Speech-to-Text (STT) configuration
 # Required when input_mode = "stt"
 [stt]
-provider = "openai-whisper"  # "openai-whisper", "openrouter", "tencent", or "tencent_asr"
+provider = "openai-whisper"  # "openai-whisper", "openrouter", or "tencent-asr"
 api_key = "OPENAI_API_KEY"
 model = "whisper-1"
 # base_url = "https://api.openai.com/v1"  # Optional: custom endpoint
@@ -92,7 +92,7 @@ model = "whisper-1"
 # base_url = "https://openrouter.ai/api/v1"  # Optional: custom endpoint
 
 # For Tencent ASR (alternative to OpenAI Whisper):
-# provider = "tencent_asr"  # alias: tencent
+# provider = "tencent-asr"  # legacy aliases: tencent, tencent_asr
 # secret_id = "TENCENT_SECRET_ID"
 # secret_key = "TENCENT_SECRET_KEY"
 # region = "ap-guangzhou"

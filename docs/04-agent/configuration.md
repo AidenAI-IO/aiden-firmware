@@ -225,7 +225,7 @@ STT：
 
 - `provider = "openai-whisper"`：当前可用；
 - `provider = "openrouter"`：当前可用，默认 endpoint 为 `https://openrouter.ai/api/v1/audio/transcriptions`，请求体使用 base64 WAV；
-- `provider = "tencent"` 或 `tencent_asr`：腾讯云一句话识别（SentenceRecognition），使用 `secret_id` / `secret_key`，无需 `base_url`。
+- `provider = "tencent-asr"`：腾讯云一句话识别（SentenceRecognition），使用 `secret_id` / `secret_key`，无需 `base_url`；旧值 `tencent` / `tencent_asr` 仅作为兼容别名保留。
 
 TTS：
 

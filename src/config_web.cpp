@@ -3579,7 +3579,7 @@ std::string validate_proxy_url(const std::string& url) {
 }
 
 static bool is_tencent_asr_provider(const std::string& provider) {
-    return provider == "tencent" || provider == "tencent_asr";
+    return provider == "tencent-asr" || provider == "tencent" || provider == "tencent_asr";
 }
 
 std::string provider_default_url(const std::string& provider) {
