@@ -40,6 +40,7 @@ type AudioDialog struct {
 	progress              *progressSpeaker
 	runControlMu          sync.Mutex
 	activeRequestID       string
+	acceptingSteer        bool
 	pendingSteer          RunSteerMessage
 	hasPendingSteer       bool
 	steerInterruptCh      chan struct{}
@@ -676,6 +677,9 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return d.consumePendingSteer(requestID)
 		},
+		FinalSteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			return d.consumeFinalPendingSteer(requestID)
+		},
 		SteerInterrupt: func() <-chan struct{} {
 			return d.steerInterruptChannel(requestID)
 		},
@@ -700,6 +704,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	}
 
 	result, err := runtime.Run(ctx, req)
+	d.stopAcceptingSteer(requestID)
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil {
@@ -733,6 +738,7 @@ func (d *AudioDialog) beginVoiceRunControl(requestID string) bool {
 		return false
 	}
 	d.activeRequestID = requestID
+	d.acceptingSteer = true
 	d.pendingSteer = RunSteerMessage{}
 	d.hasPendingSteer = false
 	d.steerInterruptCh = make(chan struct{})
@@ -752,6 +758,7 @@ func (d *AudioDialog) endVoiceRunControl(requestID string) {
 	}
 	d.resolveSteerInterruptLocked(RunSteerMessage{}, false)
 	d.activeRequestID = ""
+	d.acceptingSteer = false
 	d.pendingSteer = RunSteerMessage{}
 	d.hasPendingSteer = false
 	d.steerInterruptCh = nil
@@ -769,7 +776,7 @@ func (d *AudioDialog) QueueSteer(input TurnInput) bool {
 	}
 	d.runControlMu.Lock()
 	defer d.runControlMu.Unlock()
-	if d.activeRequestID == "" {
+	if d.activeRequestID == "" || !d.acceptingSteer {
 		return false
 	}
 	steer := RunSteerMessage{
@@ -795,7 +802,7 @@ func (d *AudioDialog) BeginSteerInterrupt() bool {
 	}
 	d.runControlMu.Lock()
 	defer d.runControlMu.Unlock()
-	if d.activeRequestID == "" {
+	if d.activeRequestID == "" || !d.acceptingSteer {
 		return false
 	}
 	if d.steerInterruptActive {
@@ -820,7 +827,7 @@ func (d *AudioDialog) ResumeSteerInterrupt() bool {
 	}
 	d.runControlMu.Lock()
 	defer d.runControlMu.Unlock()
-	if d.activeRequestID == "" || !d.steerInterruptActive {
+	if d.activeRequestID == "" || !d.acceptingSteer || !d.steerInterruptActive {
 		return false
 	}
 	d.resolveSteerInterruptLocked(RunSteerMessage{}, false)
@@ -831,7 +838,7 @@ func (d *AudioDialog) ResumeSteerInterrupt() bool {
 func (d *AudioDialog) consumePendingSteer(requestID string) (RunSteerMessage, bool) {
 	d.runControlMu.Lock()
 	defer d.runControlMu.Unlock()
-	if requestID == "" || d.activeRequestID != requestID || !d.hasPendingSteer {
+	if requestID == "" || d.activeRequestID != requestID || !d.acceptingSteer || !d.hasPendingSteer {
 		return RunSteerMessage{}, false
 	}
 	steer := d.pendingSteer
@@ -840,10 +847,42 @@ func (d *AudioDialog) consumePendingSteer(requestID string) (RunSteerMessage, bo
 	return steer, true
 }
 
-func (d *AudioDialog) steerInterruptChannel(requestID string) <-chan struct{} {
+func (d *AudioDialog) consumeFinalPendingSteer(requestID string) (RunSteerMessage, bool) {
+	d.runControlMu.Lock()
+	defer d.runControlMu.Unlock()
+	if requestID == "" || d.activeRequestID != requestID || !d.acceptingSteer {
+		return RunSteerMessage{}, false
+	}
+	if d.hasPendingSteer {
+		steer := d.pendingSteer
+		d.pendingSteer = RunSteerMessage{}
+		d.hasPendingSteer = false
+		return steer, true
+	}
+	d.closeSteerAcceptanceLocked()
+	return RunSteerMessage{}, false
+}
+
+func (d *AudioDialog) stopAcceptingSteer(requestID string) {
 	d.runControlMu.Lock()
 	defer d.runControlMu.Unlock()
 	if requestID == "" || d.activeRequestID != requestID {
+		return
+	}
+	d.closeSteerAcceptanceLocked()
+}
+
+func (d *AudioDialog) closeSteerAcceptanceLocked() {
+	d.acceptingSteer = false
+	d.pendingSteer = RunSteerMessage{}
+	d.hasPendingSteer = false
+	d.resolveSteerInterruptLocked(RunSteerMessage{}, false)
+}
+
+func (d *AudioDialog) steerInterruptChannel(requestID string) <-chan struct{} {
+	d.runControlMu.Lock()
+	defer d.runControlMu.Unlock()
+	if requestID == "" || d.activeRequestID != requestID || !d.acceptingSteer {
 		return nil
 	}
 	return d.steerInterruptCh
@@ -851,7 +890,7 @@ func (d *AudioDialog) steerInterruptChannel(requestID string) <-chan struct{} {
 
 func (d *AudioDialog) waitForSteerInterrupt(ctx context.Context, requestID string) (RunSteerMessage, bool, error) {
 	d.runControlMu.Lock()
-	if requestID == "" || d.activeRequestID != requestID || !d.steerInterruptActive {
+	if requestID == "" || d.activeRequestID != requestID || !d.acceptingSteer || !d.steerInterruptActive {
 		d.runControlMu.Unlock()
 		return RunSteerMessage{}, false, nil
 	}
@@ -869,7 +908,7 @@ func (d *AudioDialog) waitForSteerInterrupt(ctx context.Context, requestID strin
 
 	d.runControlMu.Lock()
 	defer d.runControlMu.Unlock()
-	if requestID == "" || d.activeRequestID != requestID {
+	if requestID == "" || d.activeRequestID != requestID || !d.acceptingSteer {
 		return RunSteerMessage{}, false, nil
 	}
 	steer := d.steerInterruptSteer

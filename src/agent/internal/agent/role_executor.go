@@ -36,6 +36,7 @@ type roleCollaborativeExecutor struct {
 	ForceSimpleLoop       bool
 	ToolCallSpeech        bool
 	SteerProvider         func(context.Context) (RunSteerMessage, bool)
+	FinalSteerProvider    func(context.Context) (RunSteerMessage, bool)
 	SteerInterrupt        func() <-chan struct{}
 	SteerWaiter           func(context.Context) (RunSteerMessage, bool, error)
 	handledSteerInterrupt <-chan struct{}
@@ -259,18 +260,26 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				if consumed {
 					continue
 				}
+				canFinish := state.Phase == phaseDecision || state.Phase == phaseDefault || state.canAcceptPlannerFinal(turn.Answer)
+				if canFinish {
+					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
+					if e.Recorder != nil {
+						e.Recorder.RecordDefaultFinish(turn.Answer)
+					}
+					return e.finishRun(ctx, turn.Answer, turn.Answer, &state)
+				}
 				consumed, err = e.consumePendingSteer(ctx, inputs, &state)
 				if err != nil {
 					return nil, err
 				}
 				if consumed {
 					continue
-				}
-				if state.Phase == phaseDecision || state.Phase == phaseDefault || state.canAcceptPlannerFinal(turn.Answer) {
-					if e.Recorder != nil {
-						e.Recorder.RecordDefaultFinish(turn.Answer)
-					}
-					return e.finishRun(ctx, turn.Answer, turn.Answer, &state)
 				}
 				continue
 			case plannerTurnUseSimpleMode:
@@ -329,6 +338,20 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					state.noteDefaultToolCallAndMaybeTodoReminder()
 				}
 				if turn.Kind == plannerTurnSleep {
+					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
+					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
 					answer := waitForWakeupFinalAnswer(turn.Step)
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(answer)
@@ -376,6 +399,20 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					}
 				}
 				if turn.Kind == executorTurnSleep {
+					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
+					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
 					answer := waitForWakeupFinalAnswer(turn.Step)
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(answer)
@@ -431,7 +468,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 						state.Phase = phaseDefault
 						continue
 					}
-					consumed, err = e.consumePendingSteer(ctx, inputs, &state)
+					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
 					if err != nil {
 						return nil, err
 					}
@@ -804,6 +841,24 @@ func (e *roleCollaborativeExecutor) consumePendingSteer(ctx context.Context, inp
 		return false, nil
 	}
 	steer, ok := e.SteerProvider(ctx)
+	if !ok {
+		return false, nil
+	}
+	return e.appendSteerMessage(ctx, inputs, state, steer)
+}
+
+func (e *roleCollaborativeExecutor) consumeFinalPendingSteer(ctx context.Context, inputs map[string]string, state *roleLoopState) (bool, error) {
+	if e == nil || state == nil {
+		return false, nil
+	}
+	provider := e.FinalSteerProvider
+	if provider == nil {
+		provider = e.SteerProvider
+	}
+	if provider == nil {
+		return false, nil
+	}
+	steer, ok := provider(ctx)
 	if !ok {
 		return false, nil
 	}

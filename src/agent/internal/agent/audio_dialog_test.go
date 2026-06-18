@@ -831,6 +831,70 @@ func TestAudioDialogRunAgentTurnConsumesQueuedSteer(t *testing.T) {
 	}
 }
 
+func TestAudioDialogRejectsSteerAfterRuntimeFinishesBeforeVoiceHistoryPersist(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("final answer")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Answer directly.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config: Config{
+			Model: ModelConfig{Provider: "fake"},
+		},
+	}
+
+	assistantAppendStarted := make(chan struct{})
+	releaseAssistantAppend := make(chan struct{})
+	dialog.SetHistoryAppender(func(message Message) {
+		if message.Type != "assistant" {
+			return
+		}
+		close(assistantAppendStarted)
+		<-releaseAssistantAppend
+	})
+
+	resultCh := make(chan struct {
+		result RunResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := dialog.RunVoiceTurnWithContext(context.Background(), TurnInput{InputText: "original"}, nil, runtime, VoiceTurnContext{})
+		resultCh <- struct {
+			result RunResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-assistantAppendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("assistant history append did not start")
+	}
+	if dialog.QueueSteer(TurnInput{InputText: "too late", Transcript: "too late"}) {
+		t.Fatal("QueueSteer returned true after runtime finished consuming steer")
+	}
+	close(releaseAssistantAppend)
+
+	select {
+	case runResult := <-resultCh:
+		if runResult.err != nil {
+			t.Fatalf("RunVoiceTurnWithContext() error = %v", runResult.err)
+		}
+		if runResult.result.Output != "final answer" {
+			t.Fatalf("Output = %q, want final answer", runResult.result.Output)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunVoiceTurnWithContext did not finish")
+	}
+}
+
 func TestAudioDialogBeginSteerInterruptWaitsForQueuedCorrection(t *testing.T) {
 	firstCallStarted := make(chan struct{})
 	releaseFirstCall := make(chan struct{})

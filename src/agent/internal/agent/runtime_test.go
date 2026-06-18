@@ -1431,6 +1431,20 @@ type scriptedModel struct {
 	tools        [][]llms.Tool
 }
 
+type blockingFinalWriter struct {
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce atomic.Bool
+}
+
+func (w *blockingFinalWriter) Write(p []byte) (int, error) {
+	if w.startedOnce.CompareAndSwap(false, true) {
+		close(w.started)
+	}
+	<-w.release
+	return len(p), nil
+}
+
 type staticTool struct {
 	name   string
 	output string
@@ -2728,6 +2742,73 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 	}
 	if stream.String() != "completed" {
 		t.Fatalf("unexpected stream output: %q", stream.String())
+	}
+}
+
+func TestRuntimeRunFinalSteerProviderClosesBeforeFinalStreaming(t *testing.T) {
+	model := &scriptedModel{
+		responses:    roleDirectResponses("final answer"),
+		streamChunks: [][]string{{}},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Answer directly.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	finalSteerClosed := make(chan struct{})
+	writer := &blockingFinalWriter{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	resultCh := make(chan struct {
+		result RunResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := runtime.Run(context.Background(), RunRequest{
+			Input:             "hello",
+			StreamWriter:      writer,
+			StreamFinalChunks: true,
+			FinalSteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+				close(finalSteerClosed)
+				return RunSteerMessage{}, false
+			},
+		})
+		resultCh <- struct {
+			result RunResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-writer.started:
+	case <-time.After(time.Second):
+		t.Fatal("final stream writer was not called")
+	}
+	select {
+	case <-finalSteerClosed:
+	default:
+		t.Fatal("FinalSteerProvider was not called before final streaming")
+	}
+	close(writer.release)
+
+	select {
+	case runResult := <-resultCh:
+		if runResult.err != nil {
+			t.Fatalf("Run() error = %v", runResult.err)
+		}
+		if runResult.result.Output != "final answer" {
+			t.Fatalf("Output = %q, want final answer", runResult.result.Output)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not finish")
 	}
 }
 

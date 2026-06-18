@@ -77,6 +77,10 @@ type RunRequest struct {
 	MaxTokens         int
 	EventHandler      func(RunEvent)
 	SteerProvider     func(context.Context) (RunSteerMessage, bool)
+	// FinalSteerProvider is called at terminal executor boundaries. It should
+	// atomically consume one last pending steer if available; otherwise it should
+	// close the request's steer acceptance window.
+	FinalSteerProvider func(context.Context) (RunSteerMessage, bool)
 	// SteerInterrupt signals that the current run should pause before scheduling
 	// more model/tool work while an out-of-band steering input is being captured.
 	SteerInterrupt func() <-chan struct{}
@@ -678,6 +682,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	executor.ToolCallSpeech = r.config.VoiceToolCallSpeechOrDefault()
 	executor.SteerInterrupt = req.SteerInterrupt
 	executor.SteerWaiter = req.SteerWaiter
+	executor.FinalSteerProvider = req.FinalSteerProvider
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
