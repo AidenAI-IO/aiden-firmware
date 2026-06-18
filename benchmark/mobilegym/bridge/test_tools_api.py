@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 import pytest
 
 from .episode import BridgeEpisodeState
+from .actions import action_to_dict
 from .server import BridgeServer
 
 
@@ -79,11 +80,54 @@ def test_get_tools_catalog(bridge_server):
     assert "touch_gesture" in tools
     assert "keyboard_text" in tools
     assert "keyboard_tap" in tools
+    assert "mouse_click" in tools
+    assert "mouse_move" in tools
+    assert "mouse_scroll" in tools
+    assert "quick_action" in tools
 
     # Verify tool structure
     screenshot_tool = tools["screenshot"]
     assert "description" in screenshot_tool
     assert "args_schema" in screenshot_tool
+    assert screenshot_tool["args_schema"]["additionalProperties"] is False
+    assert tools["touch_gesture"]["args_schema"]["additionalProperties"] is False
+    touch_props = tools["touch_gesture"]["args_schema"]["properties"]
+    assert touch_props["point"]["additionalProperties"] is False
+    assert touch_props["point"]["required"] == ["x", "y"]
+    assert touch_props["coord_space"]["enum"] == ["auto", "pixel", "normalized", "absolute"]
+    assert touch_props["button"]["enum"] == ["left", "right", "middle"]
+    assert touch_props["strength"]["enum"] == ["large", "medium", "small", "tiny"]
+    assert "hold_before_ms" in touch_props
+    assert "hold_after_ms" in touch_props
+    assert "hold_ms" in touch_props
+    assert "pause_ms" in touch_props
+    assert "steps" in touch_props
+
+    keyboard_tap_props = tools["keyboard_tap"]["args_schema"]["properties"]
+    assert tools["keyboard_text"]["args_schema"]["additionalProperties"] is False
+    assert tools["keyboard_tap"]["args_schema"]["additionalProperties"] is False
+    assert "hold_ms" in keyboard_tap_props
+
+    mouse_click_props = tools["mouse_click"]["args_schema"]["properties"]
+    assert tools["mouse_click"]["args_schema"]["additionalProperties"] is False
+    assert tools["mouse_move"]["args_schema"]["additionalProperties"] is False
+    assert tools["mouse_scroll"]["args_schema"]["additionalProperties"] is False
+    assert mouse_click_props["button"]["enum"] == ["left", "right", "middle"]
+    assert mouse_click_props["coord_space"]["enum"] == ["auto", "pixel", "normalized", "absolute"]
+    assert tools["mouse_move"]["args_schema"]["properties"]["coord_space"]["enum"] == [
+        "auto",
+        "pixel",
+        "normalized",
+        "absolute",
+    ]
+    assert tools["mouse_scroll"]["args_schema"]["properties"]["delta"]["minimum"] == -127
+    assert tools["mouse_scroll"]["args_schema"]["properties"]["delta"]["maximum"] == 127
+
+    quick_action_props = tools["quick_action"]["args_schema"]["properties"]
+    assert tools["quick_action"]["args_schema"]["additionalProperties"] is False
+    assert quick_action_props["platform"]["enum"] == ["ios", "android", "mac"]
+    assert "alternative" in quick_action_props
+    assert "alternative_index" in quick_action_props
 
 
 def test_invoke_screenshot_tool(bridge_server):
@@ -140,6 +184,57 @@ def test_invoke_touch_gesture_tap(bridge_server):
     output = json.loads(data["output"])
     assert "action_output" in output
     assert "data" in output  # Screenshot included
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "CLICK",
+        "data": {"point": [500.0, 800.0]},
+    }
+
+
+def test_invoke_touch_gesture_tap_accepts_top_level_string_coordinates(bridge_server):
+    """Regression test for Go tool-proxy payloads that include top-level x/y."""
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-002b"
+
+    request_body = json.dumps({"input": {"type": "tap", "coord_space": "normalized", "x": "135", "y": "705"}}).encode()
+    req = Request(
+        f"{base_url}/api/tools/touch_gesture",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "CLICK",
+        "data": {"point": [135.0, 705.0]},
+    }
+
+
+def test_invoke_mouse_click_maps_to_tap(bridge_server):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-mouse"
+
+    request_body = json.dumps({"input": {"x": 321, "y": 654, "button": "left"}}).encode()
+    req = Request(
+        f"{base_url}/api/tools/mouse_click",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "CLICK",
+        "data": {"point": [321.0, 654.0]},
+    }
 
 
 def test_invoke_keyboard_text(bridge_server):
@@ -160,6 +255,34 @@ def test_invoke_keyboard_text(bridge_server):
         data = json.loads(resp.read().decode())
 
     assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "TYPE",
+        "data": {"value": "hello world"},
+    }
+
+
+def test_invoke_keyboard_text_accepts_plain_text_fallback(bridge_server):
+    """Matches the Go keyboard_text fallback for bare plain text input."""
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-003b"
+
+    request_body = json.dumps({"raw_input": "plain text"}).encode()
+    req = Request(
+        f"{base_url}/api/tools/keyboard_text",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "TYPE",
+        "data": {"value": "plain text"},
+    }
 
 
 def test_invoke_without_episode_returns_error(bridge_server):

@@ -708,11 +708,15 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     entrypoint_text = (webui.MOBILEGYM_DOCKER_DIR / "daemon-entrypoint.sh").read_text(
         encoding="utf-8"
     )
+    expected_forward_tools = (
+        "screenshot,touch_gesture,keyboard_text,keyboard_tap,"
+        "mouse_click,mouse_move,mouse_scroll,quick_action"
+    )
     assert 'AIDEN_TOOL_PROXY_MODE: "1"' in compose_text
-    assert 'AIDEN_FORWARD_TOOLS: "*"' in compose_text
+    assert f'AIDEN_FORWARD_TOOLS: "{expected_forward_tools}"' in compose_text
     assert "--tool-proxy-mode" in entrypoint_text
     assert '--tool-proxy-endpoint "$TOOL_PROXY_ENDPOINT"' in entrypoint_text
-    assert '--forward-tools "${AIDEN_FORWARD_TOOLS:-*}"' in entrypoint_text
+    assert '--forward-tools "${AIDEN_FORWARD_TOOLS:-$default_forward_tools}"' in entrypoint_text
 
 
 def test_build_mobilegym_environment_command_starts_preview_and_bridge(tmp_path: Path):

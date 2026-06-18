@@ -354,6 +354,19 @@ def test_tools_api_touch_gestures_use_active_reset_episode_and_normalized_coordi
             bridge.base_url,
             "POST",
             "/api/tools/touch_gesture",
+            {"input": {"type": "tap", "coord_space": "normalized", "x": "135", "y": "705"}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "CLICK",
+            "data": {"point": [135.0, 705.0]},
+        }
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/touch_gesture",
             {"input": {"type": "swipe_up", "strength": "small", "anchor": 600}},
         )
         assert status == 200
@@ -372,6 +385,132 @@ def test_tools_api_touch_gestures_use_active_reset_episode_and_normalized_coordi
         assert status == 200
         assert body["is_error"] is True
         assert "unsupported strength" in body["output"]
+
+
+def test_tools_api_mouse_and_quick_action_inputs_map_to_mobilegym_actions():
+    with RunningBridge() as bridge:
+        status, body = request_json(bridge.base_url, "POST", "/api/reset", {"episode_id": "reset-ep1"})
+        assert status == 200
+        assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/mouse_click",
+            {"input": {"x": 321, "y": 654, "button": "right", "coord_space": "normalized"}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "CLICK",
+            "data": {"point": [321.0, 654.0]},
+        }
+
+        before = len(bridge.env.actions)
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/mouse_move",
+            {"input": {"x": 111, "y": 222, "coord_space": "normalized"}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert len(bridge.env.actions) == before
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/mouse_move",
+            {"input": {"y": 222, "coord_space": "normalized"}},
+        )
+        assert status == 200
+        assert body["is_error"] is True
+        assert "point is required" in body["output"]
+        assert len(bridge.env.actions) == before
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/mouse_scroll",
+            {"input": {"delta": -3}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1])["action_type"] == "SWIPE"
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/quick_action",
+            {"input": {"action": "back", "platform": "android"}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1]) == {"action_type": "BACK", "data": {}}
+
+        before = len(bridge.env.actions)
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/quick_action",
+            {"input": {"action": "list", "platform": "android"}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        output = json.loads(body["output"])
+        assert output["ok"] is True
+        assert output["platform"] == "android"
+        assert len(bridge.env.actions) == before
+
+
+def test_tools_api_keyboard_inputs_match_agent_proxy_contract():
+    with RunningBridge() as bridge:
+        status, body = request_json(bridge.base_url, "POST", "/api/reset", {"episode_id": "reset-ep1"})
+        assert status == 200
+        assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/keyboard_text",
+            {"raw_input": "plain text"},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "TYPE",
+            "data": {"value": "plain text"},
+        }
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/keyboard_text",
+            {"input": {"text": "中文"}},
+        )
+        assert status == 200
+        assert body["is_error"] is True
+        assert "US-keyboard ASCII" in body["output"]
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/keyboard_tap",
+            {"input": {"keys": ["meta"], "hold_ms": 120}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1]) == {"action_type": "HOME", "data": {}}
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/keyboard_tap",
+            {"input": {"keys": ["ctrl", "c"]}},
+        )
+        assert status == 200
+        assert body["is_error"] is True
+        assert "does not support key" in body["output"]
 
 
 def test_device_endpoints_require_active_episode_without_authentication():

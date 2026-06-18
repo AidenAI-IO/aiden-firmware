@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 from http.server import BaseHTTPRequestHandler
 from typing import Any
@@ -26,6 +27,15 @@ DIRECTIONAL_SWIPE_PRESETS = {
     "small": (200.0, 420),
     "tiny": (40.0, 320),
 }
+HID_ABSOLUTE_MAX = 32767.0
+US_KEYBOARD_TEXT_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789"
+    " \n\r\t"
+    "-=[]\\;'`,./"
+    "!@#$%^&*()_+{}|:\"~<>?"
+)
 
 
 class ToolsAPIHandler:
@@ -68,6 +78,7 @@ class ToolsAPIHandler:
                 "description": "Perform touch gestures on the MobileGym simulator (tap, swipe, drag, long_press, etc.).",
                 "args_schema": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "type": {
                             "type": "string",
@@ -76,25 +87,38 @@ class ToolsAPIHandler:
                         },
                         "point": {
                             "type": "object",
+                            "additionalProperties": False,
                             "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                            "required": ["x", "y"],
                             "description": "Point for tap/double_tap/long_press (normalized 0-1000)",
                         },
                         "start": {
                             "type": "object",
+                            "additionalProperties": False,
                             "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                            "required": ["x", "y"],
                             "description": "Start point for swipe/drag",
                         },
                         "end": {
                             "type": "object",
+                            "additionalProperties": False,
                             "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                            "required": ["x", "y"],
                             "description": "End point for swipe/drag",
                         },
-                        "duration_ms": {"type": "integer", "description": "Duration in milliseconds"},
+                        "duration_ms": {"type": "integer", "minimum": 0, "description": "Duration in milliseconds"},
+                        "hold_before_ms": {"type": "integer", "minimum": 0, "description": "Optional dwell after pressing before a swipe begins."},
+                        "hold_after_ms": {"type": "integer", "minimum": 0, "description": "Optional dwell at the destination before release."},
+                        "hold_ms": {"type": "integer", "minimum": 0, "description": "Tap or long-press hold duration in milliseconds."},
+                        "pause_ms": {"type": "integer", "minimum": 0, "description": "Pause between taps for double_tap."},
+                        "steps": {"type": "integer", "minimum": 1, "description": "Number of movement steps for swipe or drag."},
                         "distance": {"type": "number", "description": "Directional swipe travel in normalized 0-1000 units"},
                         "anchor": {"type": "number", "description": "Directional swipe fixed-axis coordinate in normalized 0-1000 units"},
+                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"], "description": "Coordinate space; normalized uses 0-1000 screen coordinates."},
+                        "button": {"type": "string", "enum": ["left", "right", "middle"]},
                         "strength": {
                             "type": "string",
-                            "enum": ["large", "medium", "small", "tiny", "default"],
+                            "enum": ["large", "medium", "small", "tiny"],
                             "description": "Directional swipe preset",
                         },
                     },
@@ -106,6 +130,7 @@ class ToolsAPIHandler:
                 "description": "Type text into the MobileGym simulator.",
                 "args_schema": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "text": {"type": "string", "description": "Text to type"},
                     },
@@ -117,14 +142,73 @@ class ToolsAPIHandler:
                 "description": "Press keyboard keys in the MobileGym simulator (e.g., enter, back, home).",
                 "args_schema": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "keys": {
                             "type": "array",
+                            "minItems": 1,
+                            "maxItems": 6,
                             "items": {"type": "string"},
                             "description": "Keys to press (e.g., ['enter'], ['meta', 'h'])",
                         },
+                        "hold_ms": {"type": "integer", "minimum": 0, "description": "Optional press duration before release."},
                     },
                     "required": ["keys"],
+                },
+            },
+            {
+                "name": "mouse_click",
+                "description": "Click/tap a coordinate in the MobileGym simulator. Coordinates use normalized 0-1000 space.",
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                        "button": {"type": "string", "enum": ["left", "right", "middle"]},
+                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"]},
+                    },
+                    "required": ["x", "y"],
+                },
+            },
+            {
+                "name": "mouse_move",
+                "description": "Move the pointer. MobileGym has no hover state, so this is accepted as a no-op and returns a screenshot.",
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                        "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"]},
+                    },
+                    "required": ["x", "y"],
+                },
+            },
+            {
+                "name": "mouse_scroll",
+                "description": "Scroll using a MobileGym swipe approximation.",
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {"delta": {"type": "integer", "minimum": -127, "maximum": 127}},
+                    "required": ["delta"],
+                },
+            },
+            {
+                "name": "quick_action",
+                "description": "Execute common platform navigation actions such as back or home.",
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "action": {"type": "string"},
+                        "platform": {"type": "string", "enum": ["ios", "android", "mac"]},
+                        "list": {"type": "boolean"},
+                        "alternative": {"type": "boolean"},
+                        "alternative_index": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["platform"],
                 },
             },
         ]
@@ -151,17 +235,40 @@ class ToolsAPIHandler:
         # Decode input (matches Go agent's decodeToolInvokeInput)
         raw_input = self._decode_tool_input(request_body)
 
-        # Parse input as JSON (tools expect JSON object input)
+        # Parse input as JSON (tools expect JSON object input). keyboard_text
+        # intentionally mirrors the Go tool's plain-text compatibility fallback.
         try:
             if raw_input.strip() in ("", "null", "{}"):
                 tool_input = {}
             else:
-                tool_input = json.loads(raw_input)
+                parsed_input = json.loads(raw_input)
+                if tool_name == "keyboard_text" and isinstance(parsed_input, str):
+                    tool_input = {"text": parsed_input}
+                elif isinstance(parsed_input, dict):
+                    tool_input = parsed_input
+                else:
+                    self._send_json(
+                        handler,
+                        400,
+                        {"error": "invalid_input", "output": "tool input must be a JSON object", "is_error": True},
+                    )
+                    return
         except json.JSONDecodeError:
+            if tool_name == "keyboard_text":
+                tool_input = {"text": raw_input.strip()}
+            else:
+                self._send_json(
+                    handler,
+                    400,
+                    {"error": "invalid_input", "output": f"tool input must be valid JSON: {raw_input}", "is_error": True},
+                )
+                return
+
+        if not isinstance(tool_input, dict):
             self._send_json(
                 handler,
                 400,
-                {"error": "invalid_input", "output": f"tool input must be valid JSON: {raw_input}", "is_error": True},
+                {"error": "invalid_input", "output": "tool input must be a JSON object", "is_error": True},
             )
             return
 
@@ -262,6 +369,14 @@ class ToolsAPIHandler:
             return self._call_keyboard_text(tool_input, episode_id)
         elif tool_name == "keyboard_tap":
             return self._call_keyboard_tap(tool_input, episode_id)
+        elif tool_name == "mouse_click":
+            return self._call_mouse_click(tool_input, episode_id)
+        elif tool_name == "mouse_move":
+            return self._call_mouse_move(tool_input, episode_id)
+        elif tool_name == "mouse_scroll":
+            return self._call_mouse_scroll(tool_input, episode_id)
+        elif tool_name == "quick_action":
+            return self._call_quick_action(tool_input, episode_id)
         else:
             return {"output": f"unknown tool: {tool_name}", "is_error": True, "error": "unknown_tool"}
 
@@ -284,53 +399,148 @@ class ToolsAPIHandler:
             return {"output": "error: type is required", "is_error": True}
 
         # Map gesture type to bridge action
-        if gesture_type == "tap":
-            point = tool_input.get("point", {})
-            action = build_action("tap", {"x": point.get("x", 0), "y": point.get("y", 0)})
-        elif gesture_type == "double_tap":
-            point = tool_input.get("point", {})
-            action = build_action("tap", {"x": point.get("x", 0), "y": point.get("y", 0), "count": 2})
-        elif gesture_type == "long_press":
-            point = tool_input.get("point", {})
-            action = build_action(
-                "tap",
-                {
-                    "x": point.get("x", 0),
-                    "y": point.get("y", 0),
-                    "kind": "long_press",
-                    "duration_ms": tool_input.get("duration_ms", 500),
-                },
-            )
-        elif gesture_type in ("swipe", "drag"):
-            start = tool_input.get("start", {})
-            end = tool_input.get("end", {})
-            action = build_action(
-                gesture_type,
-                {
-                    "start_x": start.get("x", 0),
-                    "start_y": start.get("y", 0),
-                    "end_x": end.get("x", 0),
-                    "end_y": end.get("y", 0),
-                    "duration_ms": tool_input.get("duration_ms", 300),
-                },
-            )
-        elif gesture_type in ("swipe_left", "swipe_right", "swipe_up", "swipe_down"):
-            try:
+        try:
+            if gesture_type == "tap":
+                point = _normalized_point_arg(tool_input, default_space="normalized")
+                action = build_action("tap", point)
+            elif gesture_type == "double_tap":
+                point = _normalized_point_arg(tool_input, default_space="normalized")
+                action = build_action("tap", {**point, "count": 2})
+            elif gesture_type == "long_press":
+                point = _normalized_point_arg(tool_input, default_space="normalized")
+                action = build_action(
+                    "tap",
+                    {
+                        **point,
+                        "kind": "long_press",
+                        "duration_ms": tool_input.get("duration_ms", tool_input.get("hold_ms", 500)),
+                    },
+                )
+            elif gesture_type in ("swipe", "drag"):
+                start = _normalized_point_arg(
+                    tool_input,
+                    field="start",
+                    x_key="start_x",
+                    y_key="start_y",
+                    default_space="normalized",
+                )
+                end = _normalized_point_arg(
+                    tool_input,
+                    field="end",
+                    x_key="end_x",
+                    y_key="end_y",
+                    default_space="normalized",
+                )
+                action = build_action(
+                    gesture_type,
+                    {
+                        "start_x": start["x"],
+                        "start_y": start["y"],
+                        "end_x": end["x"],
+                        "end_y": end["y"],
+                        "duration_ms": tool_input.get("duration_ms", 300),
+                    },
+                )
+            elif gesture_type in ("swipe_left", "swipe_right", "swipe_up", "swipe_down"):
                 action = build_action("swipe", _directional_swipe_payload(gesture_type, tool_input))
-            except (TypeError, ValueError) as exc:
-                return {"output": f"error: {exc}", "is_error": True}
-        elif gesture_type == "back":
-            action = build_action("back", {})
-        elif gesture_type == "home":
-            action = build_action("home", {})
-        else:
-            return {"output": f"error: unsupported gesture type: {gesture_type}", "is_error": True}
+            elif gesture_type == "back":
+                action = build_action("back", {})
+            elif gesture_type == "home":
+                action = build_action("home", {})
+            else:
+                return {"output": f"error: unsupported gesture type: {gesture_type}", "is_error": True}
+        except (TypeError, ValueError) as exc:
+            return {"output": f"error: {exc}", "is_error": True}
 
         return self._execute_action(action, episode_id)
+
+    def _call_mouse_click(self, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+        """Execute mouse_click as a MobileGym tap."""
+        button = str(tool_input.get("button", "left") or "left").strip().lower()
+        if button not in ("", "left", "right", "middle"):
+            return {"output": f"error: unsupported mouse button: {button!r}", "is_error": True}
+        try:
+            point = _normalized_point_arg(tool_input, default_space="auto")
+        except (TypeError, ValueError) as exc:
+            return {"output": f"error: {exc}", "is_error": True}
+        action = build_action("tap", point)
+        return self._execute_action(action, episode_id)
+
+    def _call_mouse_move(self, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+        """Validate mouse_move input and return a screenshot.
+
+        MobileGym has no hover/pointer state, but accepting the tool keeps the
+        proxy contract aligned with the local HID tools.
+        """
+        try:
+            _normalized_point_arg(tool_input, default_space="auto")
+        except (TypeError, ValueError) as exc:
+            return {"output": f"error: {exc}", "is_error": True}
+        return self._call_noop_with_screenshot(episode_id)
+
+    def _call_mouse_scroll(self, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+        """Execute mouse_scroll as an approximate vertical swipe."""
+        try:
+            delta = int(tool_input.get("delta", 0))
+        except (TypeError, ValueError) as exc:
+            return {"output": f"error: invalid delta: {exc}", "is_error": True}
+        if delta == 0:
+            return self._call_noop_with_screenshot(episode_id)
+        strength = "medium" if abs(delta) >= 3 else "small"
+        gesture_type = "swipe_up" if delta < 0 else "swipe_down"
+        return self._call_touch_gesture({"type": gesture_type, "strength": strength}, episode_id)
+
+    def _call_quick_action(self, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+        """Execute a small MobileGym-compatible quick_action subset."""
+        platform = str(tool_input.get("platform", "") or "").strip().lower()
+        if platform not in ("ios", "android", "mac"):
+            return {"output": f"error: unsupported platform: {tool_input.get('platform')!r}", "is_error": True}
+
+        action = _quick_action_id(tool_input)
+        if bool(tool_input.get("list")) or action == "list":
+            output = {
+                "ok": True,
+                "platform": platform,
+                "actions": [
+                    {"id": "back", "status": "active", "tool": "touch_gesture"},
+                    {"id": "home", "status": "active", "tool": "touch_gesture"},
+                    {"id": "notification_center", "status": "active", "tool": "touch_gesture"},
+                    {"id": "quick_settings", "status": "active", "tool": "touch_gesture"},
+                ],
+            }
+            return {"output": json.dumps(output), "is_error": False}
+
+        if bool(tool_input.get("alternative")):
+            return {"output": "error: mobilegym quick_action does not define alternative bindings", "is_error": True}
+
+        if action == "back":
+            return self._call_touch_gesture({"type": "back"}, episode_id)
+        if action == "home":
+            return self._call_touch_gesture({"type": "home"}, episode_id)
+        if action == "notification_center":
+            return self._call_touch_gesture({"type": "swipe_down", "strength": "medium", "anchor": 500}, episode_id)
+        if action == "quick_settings":
+            action = build_action(
+                "swipe",
+                {"start_x": 850, "start_y": 0, "end_x": 850, "end_y": 700, "duration_ms": 500},
+            )
+            return self._execute_action(action, episode_id)
+
+        return {"output": f"error: unsupported quick_action: {tool_input.get('action')!r}", "is_error": True}
 
     def _call_keyboard_text(self, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute keyboard_text tool."""
         text = tool_input.get("text", "")
+        if not isinstance(text, str):
+            return {"output": "error: text must be a string", "is_error": True}
+        if text == "":
+            return {"output": "error: text is required", "is_error": True}
+        unsupported = _unsupported_keyboard_text_chars(text)
+        if unsupported:
+            return {
+                "output": f"error: keyboard_text supports only US-keyboard ASCII characters; unsupported characters: {unsupported!r}",
+                "is_error": True,
+            }
         action = build_action("type_text", {"text": text})
         return self._execute_action(action, episode_id)
 
@@ -339,23 +549,37 @@ class ToolsAPIHandler:
         keys = tool_input.get("keys", [])
         if not keys:
             return {"output": "error: keys array is required", "is_error": True}
+        if not isinstance(keys, list):
+            return {"output": "error: keys must be an array", "is_error": True}
 
         # Handle meta+h -> home
-        has_meta = any(k.lower() in ("meta", "cmd", "super", "win") for k in keys)
-        non_modifiers = [k for k in keys if k.lower() not in ("meta", "cmd", "super", "win", "ctrl", "alt", "shift")]
+        normalized_keys = [str(k).strip().lower() for k in keys if str(k).strip()]
+        if not normalized_keys:
+            return {"output": "error: at least one key or modifier is required", "is_error": True}
+        has_meta = any(k in ("meta", "cmd", "super", "win") for k in normalized_keys)
+        non_modifiers = [k for k in normalized_keys if k not in ("meta", "cmd", "super", "win", "ctrl", "alt", "shift")]
 
-        if has_meta and len(non_modifiers) == 1 and non_modifiers[0].lower() == "h":
-            action = build_action("home", {})
-        elif len(non_modifiers) == 1:
-            key = non_modifiers[0].lower()
-            if key in ("enter", "return"):
-                action = build_action("key", {"key": "enter"})
-            elif key in ("back", "escape", "esc"):
-                action = build_action("key", {"key": "back"})
+        try:
+            if has_meta and len(non_modifiers) == 0:
+                action = build_action("home", {})
+            elif len(non_modifiers) == 0:
+                return self._call_noop_with_screenshot(episode_id)
+            elif has_meta and len(non_modifiers) == 1 and non_modifiers[0] == "h":
+                action = build_action("home", {})
+            elif len(non_modifiers) == 1:
+                key = non_modifiers[0]
+                if key in ("enter", "return"):
+                    action = build_action("key", {"key": "enter"})
+                elif key in ("home",):
+                    action = build_action("key", {"key": "home"})
+                elif key in ("back", "escape", "esc"):
+                    action = build_action("key", {"key": "back"})
+                else:
+                    return {"output": f"error: mobilegym keyboard_tap does not support key: {key!r}", "is_error": True}
             else:
-                action = build_action("key", {"key": key})
-        else:
-            return {"output": "error: mobilegym keyboard_tap supports one non-modifier key at a time", "is_error": True}
+                return {"output": "error: mobilegym keyboard_tap supports one non-modifier key at a time", "is_error": True}
+        except (TypeError, ValueError) as exc:
+            return {"output": f"error: {exc}", "is_error": True}
 
         return self._execute_action(action, episode_id)
 
@@ -387,6 +611,23 @@ class ToolsAPIHandler:
             return {"output": json.dumps(output_data), "is_error": False}
 
         future = asyncio.run_coroutine_threadsafe(self.state.run_env(step_env), self.state.owner_loop)
+        return future.result(timeout=self.request_timeout_sec)
+
+    def _call_noop_with_screenshot(self, episode_id: str) -> dict[str, Any]:
+        async def get_screenshot(env: Any) -> dict[str, Any]:
+            self.state.require_active(episode_id)
+            observation = await _maybe_await(env.get_observation())
+            screenshot = _encode_observation_screenshot(observation)
+            output_data = {
+                "action_output": "ok",
+                "data": screenshot["data"],
+                "width": screenshot["width"],
+                "height": screenshot["height"],
+                "format": screenshot.get("format", "jpeg"),
+            }
+            return {"output": json.dumps(output_data), "is_error": False}
+
+        future = asyncio.run_coroutine_threadsafe(self.state.run_env(get_screenshot), self.state.owner_loop)
         return future.result(timeout=self.request_timeout_sec)
 
     def _send_json(self, handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
@@ -465,6 +706,88 @@ def _float_or_default(value: Any, default: float) -> float:
     if value in (None, ""):
         return default
     return float(value)
+
+
+def _point_arg(
+    tool_input: dict[str, Any],
+    *,
+    field: str = "point",
+    x_key: str = "x",
+    y_key: str = "y",
+) -> dict[str, float]:
+    point = tool_input.get(field)
+    if isinstance(point, dict):
+        if "x" not in point or "y" not in point:
+            raise ValueError(f"{field}.x and {field}.y are required")
+        return {"x": _finite_float(point["x"], f"{field}.x"), "y": _finite_float(point["y"], f"{field}.y")}
+
+    if x_key in tool_input and y_key in tool_input:
+        return {"x": _finite_float(tool_input[x_key], x_key), "y": _finite_float(tool_input[y_key], y_key)}
+
+    raise ValueError(f"{field} is required")
+
+
+def _normalized_point_arg(
+    tool_input: dict[str, Any],
+    *,
+    field: str = "point",
+    x_key: str = "x",
+    y_key: str = "y",
+    default_space: str,
+) -> dict[str, float]:
+    point = _point_arg(tool_input, field=field, x_key=x_key, y_key=y_key)
+    coord_space = str(tool_input.get("coord_space", "") or "").strip().lower() or default_space
+    if coord_space == "normalized":
+        return {"x": _clamp(point["x"], 0.0, 1000.0), "y": _clamp(point["y"], 0.0, 1000.0)}
+    if coord_space == "auto":
+        if 0.0 <= point["x"] <= 1000.0 and 0.0 <= point["y"] <= 1000.0:
+            return point
+        raise ValueError("mobilegym coord_space auto only supports 0-1000 normalized coordinates")
+    if coord_space == "absolute":
+        return {
+            "x": _clamp(point["x"], 0.0, HID_ABSOLUTE_MAX) / HID_ABSOLUTE_MAX * 1000.0,
+            "y": _clamp(point["y"], 0.0, HID_ABSOLUTE_MAX) / HID_ABSOLUTE_MAX * 1000.0,
+        }
+    if coord_space == "pixel":
+        raise ValueError("mobilegym coord_space pixel is not supported; use normalized coordinates")
+    raise ValueError(f"unsupported coord_space: {coord_space!r}")
+
+
+def _finite_float(value: Any, name: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if math.isnan(parsed) or math.isinf(parsed):
+        raise ValueError(f"{name} must be a finite number")
+    return parsed
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def _unsupported_keyboard_text_chars(text: str) -> str:
+    return "".join(ch for ch in text if ch not in US_KEYBOARD_TEXT_CHARS)
+
+
+def _quick_action_id(tool_input: dict[str, Any]) -> str:
+    action = str(tool_input.get("action", "") or "").strip().lower().replace("-", "_")
+    aliases = {
+        "返回": "back",
+        "go_back": "back",
+        "navigate_back": "back",
+        "主屏": "home",
+        "go_home": "home",
+        "home_screen": "home",
+        "notifications": "notification_center",
+        "notification_shade": "notification_center",
+        "通知": "notification_center",
+        "control_center": "quick_settings",
+        "quick_setting": "quick_settings",
+        "快捷设置": "quick_settings",
+    }
+    return aliases.get(action, action)
 
 
 def _infer_screenshot_mime_type(payload: bytes) -> str:
