@@ -831,6 +831,79 @@ func TestAudioDialogRunAgentTurnConsumesQueuedSteer(t *testing.T) {
 	}
 }
 
+func TestAudioDialogBeginSteerInterruptWaitsForQueuedCorrection(t *testing.T) {
+	firstCallStarted := make(chan struct{})
+	releaseFirstCall := make(chan struct{})
+	model := &blockingFirstCallModel{
+		firstCallStarted: firstCallStarted,
+		releaseFirstCall: releaseFirstCall,
+		responses: []*llms.ContentResponse{
+			contentResponse("stale answer"),
+			contentResponse("corrected answer"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Answer directly.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config: Config{
+			Model: ModelConfig{Provider: "fake"},
+		},
+	}
+
+	resultCh := make(chan struct {
+		result RunResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "original"}, runtime)
+		resultCh <- struct {
+			result RunResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-firstCallStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first model call did not start")
+	}
+	if !dialog.BeginSteerInterrupt() {
+		t.Fatal("BeginSteerInterrupt returned false while voice run was active")
+	}
+	if !dialog.QueueSteer(TurnInput{InputText: "change direction", Transcript: "change direction"}) {
+		t.Fatal("QueueSteer returned false for interrupted voice run")
+	}
+	close(releaseFirstCall)
+
+	var runResult struct {
+		result RunResult
+		err    error
+	}
+	select {
+	case runResult = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("RunAgentTurn did not finish")
+	}
+	if runResult.err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", runResult.err)
+	}
+	if runResult.result.Output != "corrected answer" {
+		t.Fatalf("Output = %q, want corrected answer", runResult.result.Output)
+	}
+	if dialog.ResumeSteerInterrupt() {
+		t.Fatal("ResumeSteerInterrupt returned true after interrupted steer was consumed")
+	}
+}
+
 func TestAudioDialogRunVoiceTurnDoesNotPersistUserWhenVoiceRunActive(t *testing.T) {
 	dialog := &AudioDialog{
 		config: Config{

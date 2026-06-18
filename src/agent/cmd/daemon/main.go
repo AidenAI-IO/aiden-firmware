@@ -197,6 +197,8 @@ type audioDialogRunner interface {
 	RunVoiceTurn(ctx context.Context, input agent.TurnInput, utterance []int16, runtime *agent.Runtime) (agent.RunResult, error)
 	RunVoiceTurnWithContext(ctx context.Context, input agent.TurnInput, utterance []int16, runtime *agent.Runtime, turnContext agent.VoiceTurnContext) (agent.RunResult, error)
 	QueueSteer(input agent.TurnInput) bool
+	BeginSteerInterrupt() bool
+	ResumeSteerInterrupt() bool
 	InterruptOutput()
 	Speak(ctx context.Context, text string, interrupt <-chan struct{}) error
 	FlushVAD() []int16
@@ -695,6 +697,7 @@ thinking:
 			return voiceTurnResult{exit: true}
 		case <-events:
 			if interruptOnWakeup {
+				interruptedRun := dialog.BeginSteerInterrupt()
 				nextTurn, exit := captureVoiceSteer(cfg, dialog, sigChan, events)
 				if exit {
 					cancel()
@@ -702,6 +705,9 @@ thinking:
 					return voiceTurnResult{exit: true}
 				}
 				if nextTurn == nil {
+					if interruptedRun {
+						dialog.ResumeSteerInterrupt()
+					}
 					continue
 				}
 				if dialog.QueueSteer(nextTurn.input) {

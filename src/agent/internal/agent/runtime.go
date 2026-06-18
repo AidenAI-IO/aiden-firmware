@@ -77,6 +77,12 @@ type RunRequest struct {
 	MaxTokens         int
 	EventHandler      func(RunEvent)
 	SteerProvider     func(context.Context) (RunSteerMessage, bool)
+	// SteerInterrupt signals that the current run should pause before scheduling
+	// more model/tool work while an out-of-band steering input is being captured.
+	SteerInterrupt func() <-chan struct{}
+	// SteerWaiter waits for the out-of-band steering capture to resolve. ok=false
+	// means the interruption produced no usable input and the run may continue.
+	SteerWaiter func(context.Context) (RunSteerMessage, bool, error)
 }
 
 type RunResult struct {
@@ -670,6 +676,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	executor.ConversationHistory = conversationHistory
 	executor.TodoReminderToolCalls = r.config.TodoReminderToolCallsOrDefault()
 	executor.ToolCallSpeech = r.config.VoiceToolCallSpeechOrDefault()
+	executor.SteerInterrupt = req.SteerInterrupt
+	executor.SteerWaiter = req.SteerWaiter
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {

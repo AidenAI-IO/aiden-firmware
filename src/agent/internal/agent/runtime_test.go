@@ -421,6 +421,189 @@ func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 	})
 }
 
+func TestRuntimeRunSteerInterruptPausesAfterNonCancelableTool(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleToolResponses("slow", `{"__arg1":"original action"}`, "Changed course."),
+	}
+	toolStarted := make(chan struct{})
+	releaseTool := make(chan struct{})
+	tool := &blockingTool{
+		name:         "slow",
+		description:  "Slow tool.",
+		output:       "tool output",
+		started:      toolStarted,
+		release:      releaseTool,
+		ignoreCancel: true,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"slow": tool}},
+		NewSkillIndex(),
+	)
+
+	interruptCh := make(chan struct{})
+	waitCalled := make(chan struct{})
+	releaseSteer := make(chan struct{})
+	resultCh := make(chan struct {
+		result RunResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := runtime.Run(context.Background(), RunRequest{
+			Input: "do the original action",
+			SteerInterrupt: func() <-chan struct{} {
+				return interruptCh
+			},
+			SteerWaiter: func(ctx context.Context) (RunSteerMessage, bool, error) {
+				close(waitCalled)
+				select {
+				case <-ctx.Done():
+					return RunSteerMessage{}, false, ctx.Err()
+				case <-releaseSteer:
+				}
+				return RunSteerMessage{ID: "steer-1", Content: "Use the updated instruction instead."}, true, nil
+			},
+		})
+		resultCh <- struct {
+			result RunResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	close(interruptCh)
+	close(releaseTool)
+	select {
+	case <-waitCalled:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not pause for steering after interrupted tool returned")
+	}
+	if model.callCount != 1 {
+		t.Fatalf("model call count while waiting for steer = %d, want 1", model.callCount)
+	}
+	close(releaseSteer)
+
+	var runResult struct {
+		result RunResult
+		err    error
+	}
+	select {
+	case runResult = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not finish after steering release")
+	}
+	if runResult.err != nil {
+		t.Fatalf("Run() error = %v", runResult.err)
+	}
+	if runResult.result.Output != "Changed course." {
+		t.Fatalf("output = %q, want Changed course.", runResult.result.Output)
+	}
+	if len(tool.inputs) != 1 || tool.inputs[0] != "original action" {
+		t.Fatalf("tool inputs = %#v, want only original action", tool.inputs)
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("expected second model call after steer, got %#v", model.messages)
+	}
+	role, text, ok := runtimeLastMessageText(model.messages[1])
+	if !ok || role != llms.ChatMessageTypeHuman || text != "Use the updated instruction instead." {
+		t.Fatalf("second model call missing steer message: %#v", model.messages[1])
+	}
+}
+
+func TestRuntimeRunEmptySteerInterruptResumesAfterCancelableTool(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleToolResponses("slow", `{"__arg1":"original action"}`, "Original done."),
+	}
+	toolStarted := make(chan struct{})
+	toolCanceled := make(chan struct{})
+	tool := &blockingTool{
+		name:        "slow",
+		description: "Slow tool.",
+		output:      "tool output",
+		started:     toolStarted,
+		canceled:    toolCanceled,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"slow": tool}},
+		NewSkillIndex(),
+	)
+
+	interruptCh := make(chan struct{})
+	waitCalled := make(chan struct{})
+	releaseWait := make(chan struct{})
+	resultCh := make(chan struct {
+		result RunResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := runtime.Run(context.Background(), RunRequest{
+			Input: "do the original action",
+			SteerInterrupt: func() <-chan struct{} {
+				return interruptCh
+			},
+			SteerWaiter: func(ctx context.Context) (RunSteerMessage, bool, error) {
+				close(waitCalled)
+				select {
+				case <-ctx.Done():
+					return RunSteerMessage{}, false, ctx.Err()
+				case <-releaseWait:
+				}
+				return RunSteerMessage{}, false, nil
+			},
+		})
+		resultCh <- struct {
+			result RunResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	close(interruptCh)
+	select {
+	case <-toolCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("tool context was not canceled after steer interrupt")
+	}
+	select {
+	case <-waitCalled:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not wait for empty steer decision")
+	}
+	close(releaseWait)
+
+	var runResult struct {
+		result RunResult
+		err    error
+	}
+	select {
+	case runResult = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not resume after empty steer decision")
+	}
+	if runResult.err != nil {
+		t.Fatalf("Run() error = %v", runResult.err)
+	}
+	if runResult.result.Output != "Original done." {
+		t.Fatalf("output = %q, want Original done.", runResult.result.Output)
+	}
+	if len(tool.inputs) != 1 || tool.inputs[0] != "original action" {
+		t.Fatalf("tool inputs = %#v, want only original action", tool.inputs)
+	}
+}
+
 func TestRuntimeRunAttachesPendingSteerBeforeFinalAnswer(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -1546,6 +1729,43 @@ func (t *stubTool) Call(_ context.Context, input string) (string, error) {
 		return "", t.err
 	}
 	return t.output, nil
+}
+
+type blockingTool struct {
+	name         string
+	description  string
+	output       string
+	inputs       []string
+	started      chan struct{}
+	release      chan struct{}
+	canceled     chan struct{}
+	ignoreCancel bool
+}
+
+func (t *blockingTool) Name() string { return t.name }
+
+func (t *blockingTool) Description() string { return t.description }
+
+func (t *blockingTool) Call(ctx context.Context, input string) (string, error) {
+	t.inputs = append(t.inputs, input)
+	if t.started != nil {
+		close(t.started)
+	}
+	if t.ignoreCancel {
+		if t.release != nil {
+			<-t.release
+		}
+		return t.output, nil
+	}
+	select {
+	case <-ctx.Done():
+		if t.canceled != nil {
+			close(t.canceled)
+		}
+		return "", ctx.Err()
+	case <-t.release:
+		return t.output, nil
+	}
 }
 
 func TestBuildLLMStructuredSummarizeFnParsesStrictJSON(t *testing.T) {

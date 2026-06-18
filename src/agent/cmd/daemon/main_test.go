@@ -17,37 +17,41 @@ import (
 )
 
 type fakeAudioDialog struct {
-	chunks             []*agent.AudioChunkResult
-	chunkBatches       [][]*agent.AudioChunkResult
-	frameSamples       int
-	frames             [][]int16
-	vad                *agent.AudioVAD
-	utterance          []int16
-	utterancesToReturn [][]int16
-	onStart            func(*fakeAudioDialog)
-	onUtterance        func()
-	processUtterance   func(context.Context, []int16, *agent.Runtime) error
-	utterances         [][]int16
-	prepareTurnInput   func([]int16) (agent.TurnInput, error)
-	runTurn            func(context.Context) (agent.RunResult, error)
-	runVoiceTurn       func(context.Context, agent.TurnInput, []int16) (agent.RunResult, error)
-	queueSteer         func(agent.TurnInput) bool
-	interruptOutput    func()
-	speak              func(context.Context) error
-	persistVoiceTurn   func(agent.TurnInput, agent.RunResult, []int16)
-	persistedTurns     []persistedVoiceTurn
-	queuedSteers       []agent.TurnInput
-	vadErr             error
-	onRead             func(*fakeAudioDialog, *agent.AudioChunkResult)
-	spoken             []string
-	voiceTurnContexts  []agent.VoiceTurnContext
-	repeatEmpty        bool
-	readDelay          time.Duration
-	ops                []string
-	starts             int
-	stops              int
-	resets             int
-	recordingActive    bool
+	chunks               []*agent.AudioChunkResult
+	chunkBatches         [][]*agent.AudioChunkResult
+	frameSamples         int
+	frames               [][]int16
+	vad                  *agent.AudioVAD
+	utterance            []int16
+	utterancesToReturn   [][]int16
+	onStart              func(*fakeAudioDialog)
+	onUtterance          func()
+	processUtterance     func(context.Context, []int16, *agent.Runtime) error
+	utterances           [][]int16
+	prepareTurnInput     func([]int16) (agent.TurnInput, error)
+	runTurn              func(context.Context) (agent.RunResult, error)
+	runVoiceTurn         func(context.Context, agent.TurnInput, []int16) (agent.RunResult, error)
+	beginSteerInterrupt  func() bool
+	resumeSteerInterrupt func() bool
+	queueSteer           func(agent.TurnInput) bool
+	interruptOutput      func()
+	speak                func(context.Context) error
+	persistVoiceTurn     func(agent.TurnInput, agent.RunResult, []int16)
+	persistedTurns       []persistedVoiceTurn
+	queuedSteers         []agent.TurnInput
+	steerInterrupts      int
+	steerResumes         int
+	vadErr               error
+	onRead               func(*fakeAudioDialog, *agent.AudioChunkResult)
+	spoken               []string
+	voiceTurnContexts    []agent.VoiceTurnContext
+	repeatEmpty          bool
+	readDelay            time.Duration
+	ops                  []string
+	starts               int
+	stops                int
+	resets               int
+	recordingActive      bool
 }
 
 type persistedVoiceTurn struct {
@@ -191,6 +195,24 @@ func (d *fakeAudioDialog) QueueSteer(input agent.TurnInput) bool {
 	return ok
 }
 
+func (d *fakeAudioDialog) BeginSteerInterrupt() bool {
+	d.ops = append(d.ops, "begin_steer_interrupt")
+	d.steerInterrupts++
+	if d.beginSteerInterrupt != nil {
+		return d.beginSteerInterrupt()
+	}
+	return true
+}
+
+func (d *fakeAudioDialog) ResumeSteerInterrupt() bool {
+	d.ops = append(d.ops, "resume_steer_interrupt")
+	d.steerResumes++
+	if d.resumeSteerInterrupt != nil {
+		return d.resumeSteerInterrupt()
+	}
+	return true
+}
+
 func (d *fakeAudioDialog) InterruptOutput() {
 	d.ops = append(d.ops, "interrupt_output")
 	if d.interruptOutput != nil {
@@ -301,6 +323,18 @@ func opOccursAfter(ops []string, op, after string, afterOccurrence int) bool {
 	for _, got := range ops[afterIndex+1 : nextAfterIndex] {
 		if got == op {
 			return true
+		}
+	}
+	return false
+}
+
+func opOccursBefore(ops []string, op, before string) bool {
+	for _, got := range ops {
+		if got == op {
+			return true
+		}
+		if got == before {
+			return false
 		}
 	}
 	return false
@@ -1672,6 +1706,132 @@ func TestRunVoiceTurnWakeupQueuesSteerWhileOriginalRunActive(t *testing.T) {
 	}
 	if len(dialog.spoken) != 1 || dialog.spoken[0] != "steered reply" {
 		t.Fatalf("spoken texts = %#v, want steered reply from original run", dialog.spoken)
+	}
+}
+
+func TestRunVoiceTurnWakeupBeginsSteerInterruptBeforeRecording(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	events := make(chan voiceEvent, 1)
+	runStarted := make(chan struct{})
+	releaseRun := make(chan struct{})
+	queuedSteer := make(chan struct{})
+	dialog := &fakeAudioDialog{
+		frameSamples: 2,
+		chunkBatches: [][]*agent.AudioChunkResult{
+			{{PCM: pcm16BytesFromSamples(500, 600)}},
+		},
+		utterancesToReturn: [][]int16{
+			{500, 600},
+		},
+		repeatEmpty: true,
+		readDelay:   time.Millisecond,
+		prepareTurnInput: func(utterance []int16) (agent.TurnInput, error) {
+			if len(utterance) > 0 && utterance[0] == 500 {
+				return agent.TurnInput{InputText: "改查深圳。", Transcript: "改查深圳。"}, nil
+			}
+			return agent.TurnInput{InputText: "广州。", Transcript: "广州。"}, nil
+		},
+		runVoiceTurn: func(ctx context.Context, input agent.TurnInput, utterance []int16) (agent.RunResult, error) {
+			close(runStarted)
+			<-releaseRun
+			return agent.RunResult{Output: "steered reply"}, nil
+		},
+		queueSteer: func(input agent.TurnInput) bool {
+			close(queuedSteer)
+			close(releaseRun)
+			return true
+		},
+	}
+
+	go func() {
+		<-runStarted
+		events <- voiceEventWakeup
+	}()
+
+	result := runVoiceTurnWithInputContext(
+		agent.Config{VoiceFollowupTimeoutMs: 5},
+		dialog,
+		nil,
+		agent.TurnInput{InputText: "广州。", Transcript: "广州。"},
+		[]int16{100, 200},
+		sigChan,
+		events,
+		agent.VoiceTurnContext{},
+		true,
+	)
+	if result.exit || result.interrupted || result.waitForWakeupRequested || result.nextTurn != nil {
+		t.Fatalf("runVoiceTurnWithInputContext result = %#v, want completed original run after queued steer", result)
+	}
+	select {
+	case <-queuedSteer:
+	default:
+		t.Fatal("wakeup correction was not queued as steer")
+	}
+	if dialog.steerInterrupts != 1 {
+		t.Fatalf("steer interrupts = %d, want 1", dialog.steerInterrupts)
+	}
+	if !opOccursBefore(dialog.ops, "begin_steer_interrupt", "start") {
+		t.Fatalf("dialog ops = %#v, want interrupt marker before steer recording starts", dialog.ops)
+	}
+}
+
+func TestRunVoiceTurnWakeupEmptySteerResumesOriginalRun(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	events := make(chan voiceEvent, 1)
+	runStarted := make(chan struct{})
+	resumed := make(chan struct{})
+	dialog := &fakeAudioDialog{
+		frameSamples: 2,
+		chunkBatches: [][]*agent.AudioChunkResult{
+			{},
+		},
+		repeatEmpty: true,
+		readDelay:   time.Millisecond,
+		runVoiceTurn: func(ctx context.Context, input agent.TurnInput, utterance []int16) (agent.RunResult, error) {
+			close(runStarted)
+			select {
+			case <-ctx.Done():
+				return agent.RunResult{}, ctx.Err()
+			case <-resumed:
+			}
+			return agent.RunResult{Output: "original reply"}, nil
+		},
+		resumeSteerInterrupt: func() bool {
+			close(resumed)
+			return true
+		},
+	}
+
+	go func() {
+		<-runStarted
+		events <- voiceEventWakeup
+	}()
+
+	result := runVoiceTurnWithInputContext(
+		agent.Config{VoiceFollowupTimeoutMs: 5},
+		dialog,
+		nil,
+		agent.TurnInput{InputText: "广州。", Transcript: "广州。"},
+		[]int16{100, 200},
+		sigChan,
+		events,
+		agent.VoiceTurnContext{},
+		true,
+	)
+	if result.exit || result.interrupted || result.waitForWakeupRequested || result.nextTurn != nil {
+		t.Fatalf("runVoiceTurnWithInputContext result = %#v, want original run to resume after empty steer", result)
+	}
+	if dialog.steerInterrupts != 1 {
+		t.Fatalf("steer interrupts = %d, want 1", dialog.steerInterrupts)
+	}
+	if dialog.steerResumes != 1 {
+		t.Fatalf("steer resumes = %d, want 1", dialog.steerResumes)
+	}
+	if len(dialog.queuedSteers) != 0 {
+		t.Fatalf("queued steers = %#v, want none for empty steer", dialog.queuedSteers)
+	}
+	if len(dialog.spoken) != 1 || dialog.spoken[0] != "original reply" {
+		t.Fatalf("spoken texts = %#v, want original reply", dialog.spoken)
 	}
 }
 

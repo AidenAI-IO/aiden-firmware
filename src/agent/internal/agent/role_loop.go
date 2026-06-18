@@ -32,6 +32,7 @@ const (
 	plannerTurnCancelPlan
 	plannerTurnInvalidMeta
 	plannerTurnSleep
+	plannerTurnSteer
 )
 
 type plannerTurnResult struct {
@@ -69,6 +70,7 @@ const (
 	executorTurnAbortStep
 	executorTurnInvalidMeta
 	executorTurnSleep
+	executorTurnSteer
 )
 
 type executorTurnResult struct {
