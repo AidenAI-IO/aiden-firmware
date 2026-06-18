@@ -22,20 +22,24 @@ var (
 
 // AudioDialog manages the audio conversation loop
 type AudioDialog struct {
-	config        Config
-	audioClient   *AudioServiceClient
-	sttClient     STTClient
-	ttsManager    *tts.ProviderManager
-	vad           *AudioVAD
-	recordActive  bool
-	sessionID     uint64
-	recordReader  *AudioRecordChunkReader
-	speechMu      sync.Mutex
-	progressMu    sync.Mutex
-	progress      *progressSpeaker
-	historyStore  *ChatHistoryStore
-	historyAppend func(Message)
-	audioArchive  *AudioArchiveManager
+	config          Config
+	audioClient     *AudioServiceClient
+	sttClient       STTClient
+	ttsManager      *tts.ProviderManager
+	vad             *AudioVAD
+	recordActive    bool
+	sessionID       uint64
+	recordReader    *AudioRecordChunkReader
+	speechMu        sync.Mutex
+	progressMu      sync.Mutex
+	progress        *progressSpeaker
+	runControlMu    sync.Mutex
+	activeRequestID string
+	pendingSteer    RunSteerMessage
+	hasPendingSteer bool
+	historyStore    *ChatHistoryStore
+	historyAppend   func(Message)
+	audioArchive    *AudioArchiveManager
 }
 
 // NewAudioDialog creates a new audio dialog manager
@@ -299,7 +303,7 @@ func (d *AudioDialog) persistVoiceTurn(input TurnInput, result RunResult, uttera
 
 func (d *AudioDialog) PersistVoiceTurn(input TurnInput, result RunResult, utterance []int16) {
 	d.persistVoiceUserInput(input, utterance, result.EpisodeID, "")
-	d.PersistVoiceAssistantOutput(result)
+	d.persistVoiceAssistantOutput(result, "")
 }
 
 func (d *AudioDialog) PersistVoiceUserInput(input TurnInput, utterance []int16) {
@@ -328,6 +332,10 @@ func (d *AudioDialog) persistVoiceUserInput(input TurnInput, utterance []int16, 
 }
 
 func (d *AudioDialog) PersistVoiceAssistantOutput(result RunResult) {
+	d.persistVoiceAssistantOutput(result, "")
+}
+
+func (d *AudioDialog) persistVoiceAssistantOutput(result RunResult, requestID string) {
 	if d.historyAppend == nil && d.historyStore == nil {
 		return
 	}
@@ -337,6 +345,7 @@ func (d *AudioDialog) PersistVoiceAssistantOutput(result RunResult) {
 		assistantMsg := Message{
 			Type:      "assistant",
 			EpisodeID: result.EpisodeID,
+			RequestID: requestID,
 			Content:   output,
 			Source:    "voice",
 			Timestamp: now,
@@ -345,11 +354,11 @@ func (d *AudioDialog) PersistVoiceAssistantOutput(result RunResult) {
 	}
 }
 
-func (d *AudioDialog) appendVoiceRunEvent(event RunEvent) {
+func (d *AudioDialog) appendVoiceRunEvent(event RunEvent, requestID string) {
 	if d.historyAppend == nil && d.historyStore == nil {
 		return
 	}
-	message := messageFromRunEvent(event, event.EpisodeID, "")
+	message := messageFromRunEvent(event, event.EpisodeID, requestID)
 	if message.Type == "" {
 		return
 	}
@@ -438,7 +447,7 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 	if runtime != nil {
 		episodeID = runtime.NewEpisodeID()
 	}
-	return d.runAgentTurnWithEpisode(ctx, input, runtime, episodeID)
+	return d.runAgentTurnWithEpisodeAndRequest(ctx, input, runtime, episodeID, createVoiceRequestID())
 }
 
 func (d *AudioDialog) RunVoiceTurn(ctx context.Context, input TurnInput, utterance []int16, runtime *Runtime) (RunResult, error) {
@@ -446,16 +455,25 @@ func (d *AudioDialog) RunVoiceTurn(ctx context.Context, input TurnInput, utteran
 	if runtime != nil {
 		episodeID = runtime.NewEpisodeID()
 	}
-	d.persistVoiceUserInput(input, utterance, episodeID, "")
-	result, err := d.runAgentTurnWithEpisode(ctx, input, runtime, episodeID)
+	requestID := createVoiceRequestID()
+	d.persistVoiceUserInput(input, utterance, episodeID, requestID)
+	result, err := d.runAgentTurnWithEpisodeAndRequest(ctx, input, runtime, episodeID, requestID)
 	if err != nil {
 		return RunResult{}, err
 	}
-	d.PersistVoiceAssistantOutput(result)
+	d.persistVoiceAssistantOutput(result, requestID)
 	return result, nil
 }
 
-func (d *AudioDialog) runAgentTurnWithEpisode(ctx context.Context, input TurnInput, runtime *Runtime, episodeID string) (RunResult, error) {
+func (d *AudioDialog) runAgentTurnWithEpisodeAndRequest(ctx context.Context, input TurnInput, runtime *Runtime, episodeID, requestID string) (RunResult, error) {
+	if requestID == "" {
+		requestID = createVoiceRequestID()
+	}
+	if !d.beginVoiceRunControl(requestID) {
+		return RunResult{}, fmt.Errorf("voice run already active")
+	}
+	defer d.endVoiceRunControl(requestID)
+
 	d.playPromptSound(promptSoundAgentSend, "agent send", true)
 
 	// Send to LLM
@@ -473,12 +491,16 @@ func (d *AudioDialog) runAgentTurnWithEpisode(ctx context.Context, input TurnInp
 		Input:       input.InputText,
 		Attachments: input.Attachments,
 		Turn:        input,
+		RequestID:   requestID,
 		MaxTokens:   d.config.VoiceMaxResponseTokensOrDefault(),
 		EventHandler: func(event RunEvent) {
-			d.appendVoiceRunEvent(event)
+			d.appendVoiceRunEvent(event, requestID)
 			d.HandleRunEvent(ctx, event)
 		},
 		StreamFinalChunks: true,
+		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			return d.consumePendingSteer(requestID)
+		},
 	}
 	req.EpisodeID = strings.TrimSpace(episodeID)
 
@@ -507,6 +529,77 @@ func (d *AudioDialog) runAgentTurnWithEpisode(ctx context.Context, input TurnInp
 
 	log.Printf("[llm] Response received\n")
 	return result, nil
+}
+
+func createVoiceRequestID() string {
+	return fmt.Sprintf("voice-%x", time.Now().UnixNano())
+}
+
+func (d *AudioDialog) beginVoiceRunControl(requestID string) bool {
+	d.runControlMu.Lock()
+	defer d.runControlMu.Unlock()
+	if d.activeRequestID != "" {
+		return false
+	}
+	d.activeRequestID = requestID
+	d.pendingSteer = RunSteerMessage{}
+	d.hasPendingSteer = false
+	return true
+}
+
+func (d *AudioDialog) endVoiceRunControl(requestID string) {
+	d.runControlMu.Lock()
+	defer d.runControlMu.Unlock()
+	if d.activeRequestID != requestID {
+		return
+	}
+	d.activeRequestID = ""
+	d.pendingSteer = RunSteerMessage{}
+	d.hasPendingSteer = false
+}
+
+func (d *AudioDialog) QueueSteer(input TurnInput) bool {
+	content := steerContentFromTurnInput(input)
+	if content == "" {
+		return false
+	}
+	d.runControlMu.Lock()
+	defer d.runControlMu.Unlock()
+	if d.activeRequestID == "" {
+		return false
+	}
+	d.pendingSteer = RunSteerMessage{
+		ID:        createSteerID(),
+		RequestID: d.activeRequestID,
+		Content:   content,
+		Timestamp: time.Now(),
+	}
+	d.hasPendingSteer = true
+	log.Printf("[steer] Queued voice steer: request_id=%s len=%d\n", d.activeRequestID, len(content))
+	return true
+}
+
+func (d *AudioDialog) consumePendingSteer(requestID string) (RunSteerMessage, bool) {
+	d.runControlMu.Lock()
+	defer d.runControlMu.Unlock()
+	if requestID == "" || d.activeRequestID != requestID || !d.hasPendingSteer {
+		return RunSteerMessage{}, false
+	}
+	steer := d.pendingSteer
+	d.pendingSteer = RunSteerMessage{}
+	d.hasPendingSteer = false
+	return steer, true
+}
+
+func steerContentFromTurnInput(input TurnInput) string {
+	input = normalizeTurnInput(input)
+	if content := strings.TrimSpace(input.InputText); content != "" {
+		if content == voiceAudioInputPlaceholder && strings.TrimSpace(input.Transcript) == "" {
+			return ""
+		}
+		return content
+	}
+	return strings.TrimSpace(input.Transcript)
 }
 
 func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
@@ -654,7 +747,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		Input: text,
 		Turn:  NewTextTurnInput(text, nil),
 		EventHandler: func(event RunEvent) {
-			d.appendVoiceRunEvent(event)
+			d.appendVoiceRunEvent(event, "")
 			d.HandleRunEvent(ctx, event)
 		},
 		StreamFinalChunks: true,

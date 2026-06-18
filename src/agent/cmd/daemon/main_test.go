@@ -30,9 +30,11 @@ type fakeAudioDialog struct {
 	prepareTurnInput   func([]int16) (agent.TurnInput, error)
 	runTurn            func(context.Context) (agent.RunResult, error)
 	runVoiceTurn       func(context.Context, agent.TurnInput, []int16) (agent.RunResult, error)
+	queueSteer         func(agent.TurnInput) bool
 	speak              func(context.Context) error
 	persistVoiceTurn   func(agent.TurnInput, agent.RunResult, []int16)
 	persistedTurns     []persistedVoiceTurn
+	queuedSteers       []agent.TurnInput
 	vadErr             error
 	onRead             func(*fakeAudioDialog, *agent.AudioChunkResult)
 	spoken             []string
@@ -168,6 +170,14 @@ func (d *fakeAudioDialog) RunVoiceTurn(ctx context.Context, input agent.TurnInpu
 		d.persistVoiceTurn(agent.TurnInput{}, result, nil)
 	}
 	return result, nil
+}
+
+func (d *fakeAudioDialog) QueueSteer(input agent.TurnInput) bool {
+	d.queuedSteers = append(d.queuedSteers, input)
+	if d.queueSteer != nil {
+		return d.queueSteer(input)
+	}
+	return true
 }
 
 func (d *fakeAudioDialog) PersistVoiceTurn(input agent.TurnInput, result agent.RunResult, utterance []int16) {
@@ -1393,27 +1403,44 @@ func TestRunVoiceSessionDrainsBurstWakeupsWhileAlreadyListening(t *testing.T) {
 	}
 }
 
-func TestRunVoiceSessionWakeupInterruptsThinking(t *testing.T) {
+func TestRunVoiceSessionWakeupQueuesSteerWhileThinking(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	events := make(chan voiceEvent, 2)
 	runStarted := make(chan struct{})
-	ctxCanceled := make(chan struct{})
+	steerQueued := make(chan struct{})
 	dialog := &fakeAudioDialog{
 		frameSamples: 2,
 		chunkBatches: [][]*agent.AudioChunkResult{
 			{{PCM: pcm16BytesFromSamples(100, 200)}},
+			{{PCM: pcm16BytesFromSamples(300, 400)}},
 			{},
 		},
 		utterancesToReturn: [][]int16{
 			{100, 200},
+			{300, 400},
 		},
 		repeatEmpty: true,
 		readDelay:   time.Millisecond,
+		prepareTurnInput: func(utterance []int16) (agent.TurnInput, error) {
+			if len(utterance) > 0 && utterance[0] == 300 {
+				return agent.TurnInput{InputText: "change course", Transcript: "change course"}, nil
+			}
+			return agent.TurnInput{InputText: "original request", Transcript: "original request"}, nil
+		},
 		runTurn: func(ctx context.Context) (agent.RunResult, error) {
 			close(runStarted)
-			<-ctx.Done()
-			close(ctxCanceled)
-			return agent.RunResult{}, ctx.Err()
+			select {
+			case <-ctx.Done():
+				return agent.RunResult{}, ctx.Err()
+			case <-steerQueued:
+				return agent.RunResult{Output: "reply"}, nil
+			}
+		},
+		queueSteer: func(input agent.TurnInput) bool {
+			if input.InputText == "change course" {
+				close(steerQueued)
+			}
+			return true
 		},
 	}
 
@@ -1422,37 +1449,59 @@ func TestRunVoiceSessionWakeupInterruptsThinking(t *testing.T) {
 		events <- voiceEventWakeup
 	}()
 
-	exit := runVoiceSession(agent.Config{VoiceFollowupTimeoutMs: 5}, dialog, nil, sigChan, events)
+	exit := runVoiceSession(agent.Config{VoiceFollowupTimeoutMs: 5, VoiceMaxTurns: 1}, dialog, nil, sigChan, events)
 	if exit {
 		t.Fatal("runVoiceSession returned exit=true")
 	}
-	select {
-	case <-ctxCanceled:
-	default:
-		t.Fatal("thinking context was not canceled")
+	if len(dialog.queuedSteers) != 1 {
+		t.Fatalf("queued steers = %#v, want one steer", dialog.queuedSteers)
 	}
-	if len(dialog.spoken) != 0 {
-		t.Fatalf("spoken texts = %#v, want no acknowledgement after wakeup interrupt", dialog.spoken)
+	if dialog.queuedSteers[0].InputText != "change course" {
+		t.Fatalf("queued steer = %#v, want change course", dialog.queuedSteers[0])
+	}
+	if len(dialog.spoken) != 1 || dialog.spoken[0] != "reply" {
+		t.Fatalf("spoken texts = %#v, want reply after steered run completes", dialog.spoken)
 	}
 	if dialog.starts != 2 {
-		t.Fatalf("dialog starts = %d, want recording restarted for follow-up listen", dialog.starts)
+		t.Fatalf("dialog starts = %d, want original listen plus steer listen", dialog.starts)
 	}
 }
 
-func TestRunVoiceTurnPersistsCompletedResultReturnedDuringWakeupInterrupt(t *testing.T) {
+func TestRunVoiceTurnWakeupQueuesSteerAndPersistsCompletedResult(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	events := make(chan voiceEvent, 1)
 	runStarted := make(chan struct{})
-	ctxCanceled := make(chan struct{})
+	steerQueued := make(chan struct{})
 	dialog := &fakeAudioDialog{
+		frameSamples: 2,
+		chunkBatches: [][]*agent.AudioChunkResult{
+			{{PCM: pcm16BytesFromSamples(500, 600)}},
+		},
+		utterancesToReturn: [][]int16{
+			{500, 600},
+		},
+		repeatEmpty: true,
+		readDelay:   time.Millisecond,
 		prepareTurnInput: func(utterance []int16) (agent.TurnInput, error) {
+			if len(utterance) > 0 && utterance[0] == 500 {
+				return agent.TurnInput{InputText: "改查深圳。", Transcript: "改查深圳。"}, nil
+			}
 			return agent.TurnInput{InputText: "广州。", Transcript: "广州。"}, nil
 		},
 		runTurn: func(ctx context.Context) (agent.RunResult, error) {
 			close(runStarted)
-			<-ctx.Done()
-			close(ctxCanceled)
-			return agent.RunResult{EpisodeID: "ep_weather", Output: "广州当前天气：小雨。"}, nil
+			select {
+			case <-ctx.Done():
+				return agent.RunResult{}, ctx.Err()
+			case <-steerQueued:
+				return agent.RunResult{EpisodeID: "ep_weather", Output: "深圳当前天气：多云。"}, nil
+			}
+		},
+		queueSteer: func(input agent.TurnInput) bool {
+			if input.InputText == "改查深圳。" {
+				close(steerQueued)
+			}
+			return true
 		},
 	}
 
@@ -1461,14 +1510,12 @@ func TestRunVoiceTurnPersistsCompletedResultReturnedDuringWakeupInterrupt(t *tes
 		events <- voiceEventWakeup
 	}()
 
-	result := runVoiceTurn(agent.Config{}, dialog, nil, []int16{100, 200}, sigChan, events)
-	if !result.interrupted || result.exit || result.waitForWakeupRequested {
-		t.Fatalf("runVoiceTurn = interrupted:%v exit:%v wait:%v, want true false false", result.interrupted, result.exit, result.waitForWakeupRequested)
+	result := runVoiceTurn(agent.Config{VoiceFollowupTimeoutMs: 5}, dialog, nil, []int16{100, 200}, sigChan, events)
+	if result.interrupted || result.exit || result.waitForWakeupRequested {
+		t.Fatalf("runVoiceTurn = interrupted:%v exit:%v wait:%v, want false false false", result.interrupted, result.exit, result.waitForWakeupRequested)
 	}
-	select {
-	case <-ctxCanceled:
-	default:
-		t.Fatal("thinking context was not canceled")
+	if len(dialog.queuedSteers) != 1 || dialog.queuedSteers[0].InputText != "改查深圳。" {
+		t.Fatalf("queued steers = %#v, want Shenzhen steer", dialog.queuedSteers)
 	}
 	if len(dialog.persistedTurns) != 1 {
 		t.Fatalf("persisted turns = %d, want 1", len(dialog.persistedTurns))
@@ -1477,8 +1524,8 @@ func TestRunVoiceTurnPersistsCompletedResultReturnedDuringWakeupInterrupt(t *tes
 	if turn.input.Transcript != "广州。" {
 		t.Fatalf("persisted transcript = %q, want 广州。", turn.input.Transcript)
 	}
-	if turn.result.EpisodeID != "ep_weather" || turn.result.Output != "广州当前天气：小雨。" {
-		t.Fatalf("persisted result = %#v, want completed weather result", turn.result)
+	if turn.result.EpisodeID != "ep_weather" || turn.result.Output != "深圳当前天气：多云。" {
+		t.Fatalf("persisted result = %#v, want completed steered weather result", turn.result)
 	}
 	if len(turn.utterance) != 2 || turn.utterance[0] != 100 || turn.utterance[1] != 200 {
 		t.Fatalf("persisted utterance = %#v, want captured samples", turn.utterance)

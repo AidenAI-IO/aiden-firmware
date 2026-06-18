@@ -747,6 +747,90 @@ func TestAudioDialogRunAgentTurnAppendsRunEventsToVoiceHistory(t *testing.T) {
 	}
 }
 
+func TestAudioDialogRunAgentTurnConsumesQueuedSteer(t *testing.T) {
+	firstCallStarted := make(chan struct{})
+	releaseFirstCall := make(chan struct{})
+	model := &blockingFirstCallModel{
+		firstCallStarted: firstCallStarted,
+		releaseFirstCall: releaseFirstCall,
+		responses: []*llms.ContentResponse{
+			contentResponse("first answer"),
+			contentResponse("steered answer"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Answer directly.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config: Config{
+			Model: ModelConfig{Provider: "fake"},
+		},
+	}
+	var messages []Message
+	dialog.SetHistoryAppender(func(message Message) {
+		messages = append(messages, message)
+	})
+
+	resultCh := make(chan struct {
+		result RunResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "original"}, runtime)
+		resultCh <- struct {
+			result RunResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-firstCallStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first model call did not start")
+	}
+	if !dialog.QueueSteer(TurnInput{InputText: "change direction", Transcript: "change direction"}) {
+		t.Fatal("QueueSteer returned false while voice run was active")
+	}
+	close(releaseFirstCall)
+
+	var runResult struct {
+		result RunResult
+		err    error
+	}
+	select {
+	case runResult = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("RunAgentTurn did not finish")
+	}
+	if runResult.err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", runResult.err)
+	}
+	if runResult.result.Output != "steered answer" {
+		t.Fatalf("Output = %q, want steered answer", runResult.result.Output)
+	}
+	steerMessage, ok := firstAudioDialogTestMessageOfType(messages, "steer")
+	if !ok {
+		t.Fatalf("missing steer history message: %#v", messages)
+	}
+	if steerMessage.Content != "change direction" {
+		t.Fatalf("steer content = %q, want change direction", steerMessage.Content)
+	}
+	if !strings.HasPrefix(steerMessage.RequestID, "voice-") {
+		t.Fatalf("steer request_id = %q, want voice-*", steerMessage.RequestID)
+	}
+	if dialog.QueueSteer(TurnInput{InputText: "too late"}) {
+		t.Fatal("QueueSteer returned true after voice run completed")
+	}
+}
+
 func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
 	configDir := t.TempDir()
 	model := &scriptedModel{
@@ -888,6 +972,41 @@ func TestAudioDialogProcessUtteranceSavesAudioFile(t *testing.T) {
 	if _, err := os.Stat(userMsg.AudioFile); err != nil {
 		t.Errorf("Audio file should exist at %s: %v", userMsg.AudioFile, err)
 	}
+}
+
+type blockingFirstCallModel struct {
+	firstCallStarted chan struct{}
+	releaseFirstCall chan struct{}
+	responses        []*llms.ContentResponse
+	callCount        int
+}
+
+func (m *blockingFirstCallModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	call := m.callCount
+	m.callCount++
+	if call == 0 {
+		close(m.firstCallStarted)
+		select {
+		case <-m.releaseFirstCall:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if call >= len(m.responses) {
+		return contentResponse(""), nil
+	}
+	return m.responses[call], nil
+}
+
+func (m *blockingFirstCallModel) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
+	resp, err := m.GenerateContent(ctx, nil, options...)
+	if err != nil {
+		return "", err
+	}
+	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil {
+		return "", nil
+	}
+	return resp.Choices[0].Content, nil
 }
 
 func boolPtr(value bool) *bool {
