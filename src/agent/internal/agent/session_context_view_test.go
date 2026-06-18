@@ -37,6 +37,8 @@ func TestFormatSessionContextViewOmitsFollowUpInterpretationText(t *testing.T) {
 	}
 	for _, unwanted := range []string{
 		"Interpretation:",
+		"Context priority:",
+		"Root request:",
 		"continue the existing task using the root request as the authority",
 		"treat the latest user message",
 	} {

@@ -18,6 +18,8 @@ const (
 	phaseExecution loopPhase = "execution"
 )
 
+const defaultCompletionCriterion = "Satisfy the current user request."
+
 type plannerTurnKind int
 
 const (
@@ -268,7 +270,7 @@ func parseCommitPlanInput(raw string) (plannerDecision, error) {
 		decision.Objective = decision.Plan[0]
 	}
 	if len(decision.CompletionCriteria) == 0 {
-		decision.CompletionCriteria = []string{"Satisfy every explicit requirement in the original user request."}
+		decision.CompletionCriteria = []string{defaultCompletionCriterion}
 	}
 	return decision, nil
 }

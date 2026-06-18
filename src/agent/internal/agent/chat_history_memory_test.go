@@ -375,11 +375,13 @@ func TestRuntimeRunIncludesFullActivePlannerHistoryAndSessionRootContext(t *test
 		"prior assistant 02",
 		"prior user 11",
 		"prior assistant 11",
-		"Root request: prior user 00",
 	} {
 		if !strings.Contains(plannerTaskPrompt, want) {
 			t.Fatalf("planner task prompt missing %q:\n%s", want, plannerTaskPrompt)
 		}
+	}
+	if strings.Contains(plannerTaskPrompt, "Root request:") {
+		t.Fatalf("planner task prompt should not repeat root request in session context:\n%s", plannerTaskPrompt)
 	}
 }
 

@@ -328,16 +328,15 @@ func latestVerifierSummary(events []SessionEvent, taskRootIndex, latestUserIndex
 }
 
 func formatSessionContextView(view sessionContextView) string {
-	if strings.TrimSpace(view.RootUserRequest) == "" && strings.TrimSpace(view.LatestUserMessage) == "" {
+	if strings.TrimSpace(view.LatestUserMessage) == "" &&
+		strings.TrimSpace(view.FollowUpRelation) == "" &&
+		strings.TrimSpace(view.LatestCorrection) == "" &&
+		view.LatestCommittedPlan == nil &&
+		strings.TrimSpace(view.LatestVerifierSummary) == "" {
 		return ""
 	}
 	var builder strings.Builder
-	builder.WriteString("Session context view (runtime-normalized, priority ordered):\n")
-	if root := strings.TrimSpace(view.RootUserRequest); root != "" {
-		builder.WriteString("- Root request: ")
-		builder.WriteString(singleLineHistoryText(root))
-		builder.WriteByte('\n')
-	}
+	builder.WriteString("Session context view:\n")
 	if latest := strings.TrimSpace(view.LatestUserMessage); latest != "" {
 		builder.WriteString("- Latest user message: ")
 		builder.WriteString(singleLineHistoryText(latest))
@@ -378,10 +377,6 @@ func formatSessionContextView(view sessionContextView) string {
 		builder.WriteString(summary)
 		builder.WriteByte('\n')
 	}
-	builder.WriteString("\nContext priority:\n")
-	builder.WriteString("- explicit cancellation or replacement > latest correction > root request > planner inference\n")
-	builder.WriteString("- verified evidence > unverified role_output\n")
-	builder.WriteString("- committed plan > ordinary chat summary\n")
 	return strings.TrimSpace(builder.String())
 }
 
