@@ -1197,6 +1197,23 @@ func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string
 		}
 		return pixelToAbsolutePoint(x, y, width, height, active)
 	case coordinateSpaceNormalized:
+		// Normalized coordinates are relative to active_area (0-1000 maps to visible content).
+		// Convert to pixel coordinates within active_area, then to absolute HID coordinates.
+		if screen != nil {
+			if width, height, active, age, ok := screen.ActiveAreaWithAge(); ok && age < screenDimensionsStaleAfter && active.Valid {
+				// Step 1: Map normalized (0-1000) to pixel within active_area (0 to active.Width-1)
+				activePixelX := (x / 1000.0) * float64(active.Width-1)
+				activePixelY := (y / 1000.0) * float64(active.Height-1)
+				// Step 2: Add active_area offset to get full-frame pixel coordinates
+				fullFramePixelX := activePixelX + float64(active.X)
+				fullFramePixelY := activePixelY + float64(active.Y)
+				// Step 3: Scale full-frame pixel (0 to width-1) to HID absolute (0 to 32767)
+				absX := int(math.Round((fullFramePixelX / float64(width-1)) * float64(absMouseMaxPos)))
+				absY := int(math.Round((fullFramePixelY / float64(height-1)) * float64(absMouseMaxPos)))
+				return absX, absY, nil
+			}
+		}
+		// Fallback: no active_area available, treat as full-frame normalized
 		absX, absY := normalizedToAbsolutePoint(x, y)
 		return absX, absY, nil
 	case coordinateSpaceAbsolute:
