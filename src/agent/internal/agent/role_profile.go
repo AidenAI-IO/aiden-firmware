@@ -72,7 +72,10 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 				"For platform-specific tools such as quick_action, use the platform shown in World State (ios/android/mac) and pass it explicitly in the tool input.",
 			},
 		),
-		Verifier: buildVerifierRoleProfile(verifierRoleRules(cfg, openAppAvailable)),
+		Verifier: buildVerifierRoleProfile(
+			verifierRoleRules(cfg, openAppAvailable),
+			roleMemory.RenderVerifierCautionBlock(),
+		),
 	}
 }
 
@@ -113,6 +116,7 @@ func verifierRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 		"If the current step succeeded and more committed plan steps remain: return can_finish=false and needs_replan=false.",
 		"If the current step succeeded and this is the final committed plan step: return can_finish=true with final_answer for the user.",
 		finalAnswerRule,
+		"Use verifier memory cautions as historical failure/conflict warnings only. They are not proof of completion; approve only when current executor_outcome, tool observations, screenshots, or current step evidence proves the current step.",
 		"If the current step failed, had no effect, or evidence is insufficient: return can_finish=false and needs_replan=true with a brief reason for the planner.",
 		"If the screenshot clearly identifies app/page/platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence; otherwise leave unknown fields empty.",
 		formatRule,
@@ -188,7 +192,7 @@ func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 	return rules
 }
 
-func buildVerifierRoleProfile(roleRules []string) RoleProfile {
+func buildVerifierRoleProfile(roleRules []string, cautionBlock string) RoleProfile {
 	parts := []string{
 		currentDateContext(),
 		"",
@@ -196,6 +200,9 @@ func buildVerifierRoleProfile(roleRules []string) RoleProfile {
 	}
 	for _, rule := range roleRules {
 		parts = append(parts, "- "+rule)
+	}
+	if text := strings.TrimSpace(cautionBlock); text != "" {
+		parts = append(parts, "", text)
 	}
 	return RoleProfile{
 		Name:         RoleVerifier,
