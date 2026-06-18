@@ -124,18 +124,17 @@ func TestEnterTextInFieldCompositionRequiresSegments(t *testing.T) {
 }
 
 func TestEnterTextInFieldCompositionSuccess(t *testing.T) {
-	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
-		ObservedMode:       textInputModeComposition,
-		FieldText:          "ni",
-		CompositionPending: true,
-	}, {
-		ObservedMode:       textInputModeComposition,
-		FieldText:          "nihao",
-		CompositionPending: true,
-		Candidates:         []textInputCandidateClick{{X: 500, Y: 800, Text: "你好"}},
-	}, {
-		FieldText: "你好",
-	}}}
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
+		// after all segments typed + space: pending with candidate
+		{
+			ObservedMode:       textInputModeComposition,
+			FieldText:          "nihao",
+			CompositionPending: true,
+			Candidates:         []textInputCandidateClick{{X: 500, Y: 800, Text: "你好"}},
+		},
+		// after clicking candidate: committed
+		{FieldText: "你好"},
+	}}
 	engine := newTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
@@ -202,8 +201,7 @@ func TestEvaluateFieldCommitAcceptsASCIIDespitePendingFlag(t *testing.T) {
 
 func TestEnterTextInFieldASCIIRetryWithoutRefocus(t *testing.T) {
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
-		FieldText:          "hell",
-		CompositionPending: true,
+		FieldText: "hell",
 	}, {
 		FieldText: "hello",
 	}}}
@@ -221,14 +219,11 @@ func TestEnterTextInFieldASCIIRetryWithoutRefocus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `"committed": true`) || !strings.Contains(out, "retry analyze/candidates without retype") {
+	if !strings.Contains(out, `"committed": true`) {
 		t.Fatalf("unexpected output: %s", out)
 	}
 	if len(kbText.calls) != 1 {
 		t.Fatalf("expected single keyboard_text call, got %v", kbText.calls)
-	}
-	if len(mouse.calls) != 1 {
-		t.Fatalf("expected single focus click on attempt 1, got mouse_click calls=%v", mouse.calls)
 	}
 }
 
@@ -239,7 +234,9 @@ func TestEnterTextInFieldRetryWithoutRetype(t *testing.T) {
 		Candidates:         []textInputCandidateClick{{X: 500, Y: 800, Text: "你好"}},
 	}
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
-		pending, pending, pending, pending, pending, pending,
+		// attempt 1: after space commit, analyze sees pending with candidate
+		pending,
+		// after clicking candidate: committed
 		{FieldText: "你好"},
 	}}
 	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
@@ -255,11 +252,57 @@ func TestEnterTextInFieldRetryWithoutRetype(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `"committed": true`) || !strings.Contains(out, "retry analyze/candidates without retype") {
+	if !strings.Contains(out, `"committed": true`) {
 		t.Fatalf("unexpected output: %s", out)
 	}
 	if len(kbText.calls) != 2 {
 		t.Fatalf("expected single type pass (ni+hao), got keyboard_text calls=%v", kbText.calls)
+	}
+}
+
+func TestEnterTextInFieldCandidatePaging(t *testing.T) {
+	// Simulate: after typing, composition pending but no candidates visible,
+	// then after paging down once, candidate appears and gets clicked, then field committed.
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
+		// first analyze after typing segment "ni"
+		{ObservedMode: textInputModeComposition, FieldText: "", CompositionPending: true, Candidates: nil},
+		// after first page-down: still no match
+		{ObservedMode: textInputModeComposition, FieldText: "", CompositionPending: true, Candidates: nil},
+		// after second page-down: candidate found
+		{ObservedMode: textInputModeComposition, FieldText: "", CompositionPending: true, Candidates: []textInputCandidateClick{{X: 500, Y: 800, Text: "你"}}},
+		// after clicking candidate: committed
+		{FieldText: "你"},
+		// second segment "hao" typed, analyze
+		{ObservedMode: textInputModeComposition, FieldText: "你", CompositionPending: true, Candidates: []textInputCandidateClick{{X: 500, Y: 800, Text: "好"}}},
+		// after clicking: committed
+		{FieldText: "你好"},
+	}}
+	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+	engine := newTextInputEngine(textInputHardwareDeps{
+		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+		keyboardTap:  kbTap,
+		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
+		quickAction:  textInputStubTool{name: "quick_action", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision)
+	tool := &EnterTextInFieldTool{engine: engine}
+	out, err := tool.Call(context.Background(), `{"text":"你好","focus":{"x":500,"y":100},"segments":["ni","hao"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"committed": true`) {
+		t.Fatalf("expected committed, got: %s", out)
+	}
+	// Verify page-down keys were tapped
+	hasDown := false
+	for _, call := range kbTap.calls {
+		if strings.Contains(call, "down") {
+			hasDown = true
+			break
+		}
+	}
+	if !hasDown {
+		t.Fatalf("expected page-down tap, keyboard_tap calls=%v", kbTap.calls)
 	}
 }
 

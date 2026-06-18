@@ -8,7 +8,8 @@ import (
 )
 
 type EnterTextInFieldTool struct {
-	engine *textInputEngine
+	engine     *textInputEngine
+	platformFn func() string
 }
 
 func (t *EnterTextInFieldTool) Name() string { return "enter_text_in_field" }
@@ -39,6 +40,11 @@ func (t *EnterTextInFieldTool) Call(ctx context.Context, input string) (string, 
 	var args enterTextInFieldArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
 		return fmt.Sprintf("error: invalid input: %v", err), nil
+	}
+	if t.platformFn != nil {
+		if override := strings.TrimSpace(t.platformFn()); override != "" {
+			args.Platform = override
+		}
 	}
 	result, err := t.engine.Run(ctx, args)
 	if err != nil {

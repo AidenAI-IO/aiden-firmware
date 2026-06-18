@@ -153,6 +153,7 @@ static const char* CONFIG_WEB_HTML =
     "            <div class=\"field\"><label>screen_stable_timeout_ms</label><input id=\"agent_screen_stable_timeout_ms\" type=\"number\" data-section=\"agent\"></div>\n"
     "            <div class=\"field\"><label>screen_stable_ms</label><input id=\"agent_screen_stable_ms\" type=\"number\" data-section=\"agent\"></div>\n"
     "            <div class=\"field\"><label>screen_stable_diff_threshold</label><input id=\"agent_screen_stable_diff_threshold\" type=\"number\" step=\"0.1\" data-section=\"agent\"></div>\n"
+    "            <div class=\"field\"><label>default_platform</label><select id=\"agent_default_platform\" data-section=\"agent\"></select></div>\n"
     "            <div class=\"field wide\"><label>custom_instruction</label><textarea id=\"agent_custom_instruction\" data-section=\"agent\"></textarea></div>\n"
     "            <div class=\"field wide\"><label>additional_prompt</label><textarea id=\"agent_additional_prompt\" data-section=\"agent\"></textarea></div>\n"
     "          </div>\n"

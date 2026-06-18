@@ -18,8 +18,11 @@ const (
 	textInputKeystrokeGap         = 60 * time.Millisecond
 	textInputFocusRestoreDelay    = 250 * time.Millisecond
 	textInputIMESwitchSettleDelay = time.Second
-	textInputClearBackspaceRepeats = 32
-	textInputMaxAttempts           = 3
+	textInputClearBackspaceRepeats  = 32
+	textInputClearBackspaceFallback = 16
+	textInputMaxAttempts            = 3
+	textInputCandidatePageMax      = 5
+	textInputCandidatePageDelay    = 300 * time.Millisecond
 )
 
 func requiredTextInputMode(text string) textInputMode {
@@ -76,14 +79,22 @@ func evaluateFieldCommit(analysis textInputScreenAnalysis, targetText string) (c
 }
 
 func shouldSuspectWrongIME(analysis textInputScreenAnalysis, fieldText string, segments []string, requiredMode textInputMode) bool {
-	if requiredMode != textInputModeComposition {
-		return false
-	}
-	if analysis.CompositionPending || len(analysis.Candidates) > 0 {
-		return false
-	}
 	if analysis.WrongIMESuspected || analysis.SuggestSwitchIME {
 		return true
+	}
+	if requiredMode == textInputModeASCII {
+		// ASCII text but IME is active (composition pending or candidates visible)
+		if analysis.CompositionPending || len(analysis.Candidates) > 0 {
+			return true
+		}
+		if analysis.ObservedMode == textInputModeComposition {
+			return true
+		}
+		return false
+	}
+	// Composition mode checks below
+	if analysis.CompositionPending || len(analysis.Candidates) > 0 {
+		return false
 	}
 	if isRomanizationOnlyField(fieldText, segments) {
 		return true

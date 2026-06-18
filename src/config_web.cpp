@@ -560,6 +560,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"agent", "screen_stable_timeout_ms", CONFIG_FIELD_NUMBER},
         {"agent", "screen_stable_ms", CONFIG_FIELD_NUMBER},
         {"agent", "screen_stable_diff_threshold", CONFIG_FIELD_NUMBER},
+        {"agent", "default_platform", CONFIG_FIELD_STRING},
         {NULL, NULL, CONFIG_FIELD_STRING},
     };
 
@@ -1475,6 +1476,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(agent, "screen_stable_timeout_ms", config.screen_stable_timeout_ms);
     cJSON_AddNumberToObject(agent, "screen_stable_ms", config.screen_stable_ms);
     cJSON_AddNumberToObject(agent, "screen_stable_diff_threshold", config.screen_stable_diff_threshold);
+    cJSON_AddStringToObject(agent, "default_platform", config.default_platform.c_str());
 
     return root;
 }
@@ -1744,6 +1746,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->screen_stable_timeout_ms, agent, "screen_stable_timeout_ms");
         set_json_int(&config->screen_stable_ms, agent, "screen_stable_ms");
         set_json_double(&config->screen_stable_diff_threshold, agent, "screen_stable_diff_threshold");
+        set_json_str(&config->default_platform, agent, "default_platform");
     }
 }
 

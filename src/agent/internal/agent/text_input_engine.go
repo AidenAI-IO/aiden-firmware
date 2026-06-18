@@ -230,6 +230,48 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 			if committed, fieldText := evaluateFieldCommit(analysis, args.Text); committed {
 				return true, fieldText, false, imeSwitches, vlmCalls, steps, nil
 			}
+		} else if analysis.CompositionPending {
+			// No matching candidate visible — try paging through candidate list
+			for page := 0; page < textInputCandidatePageMax; page++ {
+				steps = append(steps, fmt.Sprintf("candidate page down %d", page+1))
+				if err := e.tapKeys(ctx, []string{"down"}); err != nil {
+					steps = append(steps, "page down failed: "+err.Error())
+					break
+				}
+				time.Sleep(textInputCandidatePageDelay)
+				analysis, calls, stepNotes, err = e.analyzeScreen(ctx, platform, args, segments)
+				vlmCalls += calls
+				steps = append(steps, stepNotes...)
+				if err != nil {
+					return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
+				}
+				if committed, fieldText := evaluateFieldCommit(analysis, args.Text); committed {
+					return true, fieldText, false, imeSwitches, vlmCalls, steps, nil
+				}
+				if clicks := analysisToClicks(analysis.Candidates); len(clicks) > 0 {
+					steps = append(steps, fmt.Sprintf("click %d candidate(s) after paging", len(clicks)))
+					for _, click := range clicks {
+						if err := e.applyFocus(ctx, click); err != nil {
+							return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
+						}
+					}
+					time.Sleep(textInputFocusRestoreDelay)
+					analysis, calls, stepNotes, err = e.analyzeScreen(ctx, platform, args, segments)
+					vlmCalls += calls
+					steps = append(steps, stepNotes...)
+					if err != nil {
+						return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
+					}
+					if committed, fieldText := evaluateFieldCommit(analysis, args.Text); committed {
+						return true, fieldText, false, imeSwitches, vlmCalls, steps, nil
+					}
+					break
+				}
+				if !analysis.CompositionPending {
+					steps = append(steps, "composition no longer pending after paging; stopping")
+					break
+				}
+			}
 		}
 	}
 
@@ -343,39 +385,64 @@ func (e *textInputEngine) typeCompositionWithCandidateSelection(ctx context.Cont
 			return false, fieldText, false, vlmCalls, steps, fmt.Errorf("%s", out)
 		}
 		time.Sleep(textInputKeystrokeGap)
-
-		var calls int
-		var notes []string
-		committed, fieldText, wrongIME, _, calls, notes, err = e.analyzeActVerify(ctx, platform, args, textInputModeComposition, segments)
-		vlmCalls += calls
-		steps = append(steps, notes...)
-		if err != nil {
-			return false, fieldText, wrongIME, vlmCalls, steps, err
-		}
-		if committed {
-			return true, fieldText, false, vlmCalls, steps, nil
-		}
-		if wrongIME {
-			return false, fieldText, true, vlmCalls, steps, nil
-		}
 	}
-	return false, fieldText, false, vlmCalls, steps, nil
+	// All segments typed; press space to commit the current IME composition
+	steps = append(steps, "press space to commit composition")
+	if err := e.tapKeys(ctx, []string{"space"}); err != nil {
+		steps = append(steps, "space commit failed: "+err.Error())
+	}
+	time.Sleep(textInputFocusRestoreDelay)
+
+	var calls int
+	var notes []string
+	committed, fieldText, wrongIME, _, calls, notes, err = e.analyzeActVerify(ctx, platform, args, textInputModeComposition, segments)
+	vlmCalls += calls
+	steps = append(steps, notes...)
+	if err != nil {
+		return false, fieldText, wrongIME, vlmCalls, steps, err
+	}
+	return committed, fieldText, wrongIME, vlmCalls, steps, nil
 }
 
 func (e *textInputEngine) clearField(ctx context.Context, platform string) error {
-	selectKeys, err := textInputKeyboardKeysForSelectAll(platform)
+	// Take a screenshot to determine how many characters to delete
+	shot, err := e.captureScreenshot(ctx)
 	if err != nil {
-		return err
+		// Fallback: use escape to dismiss composition then moderate backspaces
+		_ = e.tapKeys(ctx, []string{"escape"})
+		time.Sleep(textInputKeystrokeGap)
+		for i := 0; i < textInputClearBackspaceFallback; i++ {
+			_ = e.tapKeys(ctx, []string{"backspace"})
+			time.Sleep(textInputKeystrokeGap)
+		}
+		return nil
 	}
-	if err := e.tapKeys(ctx, selectKeys); err != nil {
-		return err
+	analysis, err := e.vision.AnalyzeScreen(ctx, shot, textInputScreenAnalysisRequest{
+		Phase:    textInputPhaseAfterType,
+		Platform: platform,
+	})
+	if err != nil {
+		_ = e.tapKeys(ctx, []string{"escape"})
+		time.Sleep(textInputKeystrokeGap)
+		for i := 0; i < textInputClearBackspaceFallback; i++ {
+			_ = e.tapKeys(ctx, []string{"backspace"})
+			time.Sleep(textInputKeystrokeGap)
+		}
+		return nil
 	}
-	time.Sleep(textInputKeystrokeGap)
-	if err := e.tapKeys(ctx, []string{"backspace"}); err != nil {
-		return err
+
+	// Dismiss any active composition in candidate bar first
+	if analysis.CompositionPending {
+		_ = e.tapKeys(ctx, []string{"escape"})
+		time.Sleep(textInputKeystrokeGap)
 	}
-	time.Sleep(textInputKeystrokeGap)
-	for i := 0; i < textInputClearBackspaceRepeats; i++ {
+
+	// Backspace once per rune in the committed field text
+	fieldLen := len([]rune(strings.TrimSpace(analysis.FieldText)))
+	if fieldLen == 0 {
+		return nil
+	}
+	for i := 0; i < fieldLen; i++ {
 		if err := e.tapKeys(ctx, []string{"backspace"}); err != nil {
 			return err
 		}

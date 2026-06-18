@@ -104,12 +104,12 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	return &ToolSet{tools: tools, screen: screen, textInputHW: textInputHW}
 }
 
-func (s *ToolSet) RegisterEnterTextInFieldTool(models ModelResolver) {
+func (s *ToolSet) RegisterEnterTextInFieldTool(models ModelResolver, platformFn func() string) {
 	if s == nil || s.textInputHW == nil || models == nil {
 		return
 	}
 	engine := newTextInputEngine(*s.textInputHW, newLLMTextInputVision(models))
-	tool := &EnterTextInFieldTool{engine: engine}
+	tool := &EnterTextInFieldTool{engine: engine, platformFn: platformFn}
 	s.tools["enter_text_in_field"] = newPostActionScreenshotTool(tool, s.textInputHW.screenshot, 300*time.Millisecond)
 }
 

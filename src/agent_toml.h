@@ -122,6 +122,7 @@ struct AgentToml {
     int screen_stable_timeout_ms = 3500;
     int screen_stable_ms = 500;
     double screen_stable_diff_threshold = 2.0;
+    std::string default_platform;
 };
 
 bool load_agent_toml(const char* path, AgentToml& config, std::string* error = nullptr);
