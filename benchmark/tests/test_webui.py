@@ -444,19 +444,15 @@ def test_stop_job_marks_stopping_terminates_runner_and_removes_container(tmp_pat
     app._jobs[job.id] = job
     app._job_runner_procs[job.id] = proc
     terminated = []
-    removed = []
+    stopped_projects = []
 
     monkeypatch.setattr(webui, "terminate_process_tree", lambda p: terminated.append(p))
 
-    def fake_run(command, **kwargs):
-        removed.append(command)
-
-        class Result:
-            returncode = 0
-
-        return Result()
-
-    monkeypatch.setattr(webui.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        webui,
+        "stop_daemon_compose",
+        lambda stopped_job: stopped_projects.append(webui.daemon_compose_project(stopped_job)),
+    )
 
     stopped = app.stop_job("job-test")
 
@@ -464,7 +460,7 @@ def test_stop_job_marks_stopping_terminates_runner_and_removes_container(tmp_pat
     assert stopped["status"] == "stopping"
     assert stopped["message"] == "stop requested"
     assert terminated == [proc]
-    assert removed == [["docker", "rm", "-f", "aiden-benchmark-agent-job-test"]]
+    assert stopped_projects == ["aiden-benchmark-agent-job-test"]
     assert json.loads(Path(job.state_file).read_text(encoding="utf-8"))["status"] == "stopping"
     assert "STOP requested" in Path(job.runner_log).read_text(encoding="utf-8")
 
@@ -501,7 +497,7 @@ def test_run_suite_tracks_runner_process_and_finishes_stopped(tmp_path: Path, mo
     app._jobs[job.id] = job
     captured = {}
     terminated = []
-    removed = []
+    stopped_projects = []
 
     class FakeProc:
         returncode = None
@@ -525,17 +521,13 @@ def test_run_suite_tracks_runner_process_and_finishes_stopped(tmp_path: Path, mo
         terminated.append(proc)
         proc.returncode = -15
 
-    def fake_run(command, **kwargs):
-        removed.append(command)
-
-        class Result:
-            returncode = 0
-
-        return Result()
-
     monkeypatch.setattr(webui.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(webui, "terminate_process_tree", fake_terminate)
-    monkeypatch.setattr(webui.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        webui,
+        "stop_daemon_compose",
+        lambda stopped_job: stopped_projects.append(webui.daemon_compose_project(stopped_job)),
+    )
 
     try:
         app._run_suite(job, "suite.json")
@@ -546,7 +538,7 @@ def test_run_suite_tracks_runner_process_and_finishes_stopped(tmp_path: Path, mo
 
     assert app._job_runner_procs == {}
     assert terminated == [captured["proc"]]
-    assert removed == [["docker", "rm", "-f", "aiden-benchmark-agent-job-test"]]
+    assert stopped_projects == ["aiden-benchmark-agent-job-test"]
     assert job.suite_results[-1]["stopped"] is True
     assert json.loads(Path(job.state_file).read_text(encoding="utf-8"))["status"] == "stopped"
     if webui.os.name == "posix":
@@ -602,6 +594,33 @@ def test_ensure_docker_image_stops_cancelable_build(tmp_path: Path, monkeypatch)
         assert captured["start_new_session"] is True
 
 
+def test_ensure_daemon_image_uses_compose_build(tmp_path: Path, monkeypatch):
+    class FakeProc:
+        returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = kwargs.get("env") or {}
+        captured["start_new_session"] = kwargs.get("start_new_session")
+        return FakeProc()
+
+    monkeypatch.setattr(webui.subprocess, "Popen", fake_popen)
+
+    webui.ensure_daemon_image("aiden-test-daemon:local", True, tmp_path / "build.log")
+
+    assert captured["cmd"] == webui.daemon_compose_command("build", "daemon")
+    assert captured["cwd"] == webui.MOBILEGYM_DOCKER_DIR
+    assert captured["env"]["AIDEN_DAEMON_IMAGE"] == "aiden-test-daemon:local"
+    if webui.os.name == "posix":
+        assert captured["start_new_session"] is True
+
+
 def test_index_html_exposes_judge_settings_panel():
     assert 'id="judgeEnabled"' in webui.INDEX_HTML
     assert 'id="judgeModel"' in webui.INDEX_HTML
@@ -642,15 +661,15 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     app._jobs[job.id] = job
 
     monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
-    monkeypatch.setattr(webui, "start_docker_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_wait_for_daemon", lambda job: None)
 
     def fake_run_suite(job, suite_key):
         job.suite_results.append({"suite": suite_key, "exit_code": 0})
 
     monkeypatch.setattr(app, "_run_suite", fake_run_suite)
-    monkeypatch.setattr(webui.subprocess, "check_output", lambda *args, **kwargs: "container-id\n")
-    monkeypatch.setattr(webui.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "start_daemon_compose", lambda *args, **kwargs: "container-id")
+    monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
 
     app._run_job(job)
 
@@ -658,27 +677,42 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     assert job.status == "passed"
 
 
-def test_build_docker_run_command_forwards_tools_to_environment(tmp_path: Path):
+def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: Path):
     config = tmp_path / "config"
     config.mkdir()
 
-    cmd = webui.build_docker_run_command(
+    cmd = webui.daemon_compose_command(
+        "up",
+        "-d",
+        "--force-recreate",
+        "daemon",
+        project="aiden-benchmark-agent-test",
+    )
+    env = webui.daemon_compose_env(
         image="aiden-mobilegym-daemon:local",
-        container_name="aiden-benchmark-agent-test",
         host_port=18081,
         config_dir=config,
         tool_proxy_endpoint="http://host.docker.internal:18080",
     )
 
-    assert cmd[:5] == ["docker", "run", "--rm", "-d", "--name"]
+    assert cmd[:4] == ["docker", "compose", "-f", str(webui.WEBUI_DAEMON_COMPOSE_FILE)]
+    assert "-p" in cmd
     assert "aiden-benchmark-agent-test" in cmd
-    assert "127.0.0.1:18081:8080" in cmd
-    assert f"{config.resolve()}:/config:ro" in cmd
-    assert "TOOL_PROXY_ENDPOINT=http://host.docker.internal:18080" in cmd
-    script = cmd[-1]
-    assert "--tool-proxy-mode" in script
-    assert '--tool-proxy-endpoint "$TOOL_PROXY_ENDPOINT"' in script
-    assert '--forward-tools "*"' in script
+    assert cmd[-4:] == ["up", "-d", "--force-recreate", "daemon"]
+    assert env["AIDEN_DAEMON_IMAGE"] == "aiden-mobilegym-daemon:local"
+    assert env["AIDEN_DAEMON_HOST_PORT"] == "18081"
+    assert env["AIDEN_CONFIG_DIR"] == str(config.resolve())
+    assert env["TOOL_PROXY_ENDPOINT"] == "http://host.docker.internal:18080"
+    assert "host.docker.internal" in env["NO_PROXY"]
+    compose_text = webui.WEBUI_DAEMON_COMPOSE_FILE.read_text(encoding="utf-8")
+    entrypoint_text = (webui.MOBILEGYM_DOCKER_DIR / "daemon-entrypoint.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'AIDEN_TOOL_PROXY_MODE: "1"' in compose_text
+    assert 'AIDEN_FORWARD_TOOLS: "*"' in compose_text
+    assert "--tool-proxy-mode" in entrypoint_text
+    assert '--tool-proxy-endpoint "$TOOL_PROXY_ENDPOINT"' in entrypoint_text
+    assert '--forward-tools "${AIDEN_FORWARD_TOOLS:-*}"' in entrypoint_text
 
 
 def test_build_mobilegym_environment_command_starts_preview_and_bridge(tmp_path: Path):

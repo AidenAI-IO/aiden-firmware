@@ -31,6 +31,8 @@ DEFAULT_RUNS_DIR = BENCHMARK_ROOT / "runs" / "webui"
 DEFAULT_BASE_CONFIG_DIR = BENCHMARK_ROOT / "config"
 DEFAULT_DAEMON_IMAGE = "aiden-mobilegym-daemon:local"
 DEFAULT_MOBILEGYM_IMAGE = "aiden-mobilegym-simulator:py311"
+MOBILEGYM_DOCKER_DIR = BENCHMARK_ROOT / "mobilegym" / "docker"
+WEBUI_DAEMON_COMPOSE_FILE = MOBILEGYM_DOCKER_DIR / "docker-compose.webui-daemon.yml"
 DEFAULT_DAEMON_READY_TIMEOUT_SEC = 90
 DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC = 120
 DEFAULT_JUDGE_MODEL = JudgeConfig().model
@@ -410,7 +412,7 @@ class BenchmarkWebApp:
         if state_file is not None:
             update_state_status(state_file, "stopping", run_id=job.id)
         terminate_process_tree(proc)
-        subprocess.run(["docker", "rm", "-f", job.container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        stop_daemon_compose(job)
         return self._job_payload(job)
 
     def _set_job(self, job: Job, **updates: Any) -> None:
@@ -482,17 +484,17 @@ class BenchmarkWebApp:
                 stop_requested=lambda: self._job_stop_requested(job),
             )
             self._raise_if_job_stop_requested(job)
-            command = build_docker_run_command(
+            container_id = start_daemon_compose(
+                job,
                 image=self.config.daemon_image,
-                container_name=job.container_name,
                 host_port=host_port,
                 config_dir=Path(job.config_dir),
                 tool_proxy_endpoint=job.docker_endpoint,
+                log_path=Path(job.runner_log),
+                stop_requested=lambda: self._job_stop_requested(job),
             )
-            append_log(Path(job.runner_log), "$ " + " ".join(command))
-            container_id = subprocess.check_output(command, cwd=REPO_ROOT, text=True).strip()
             append_log(Path(job.runner_log), f"container {container_id}")
-            log_proc = start_docker_logs(job.container_name, Path(job.daemon_log))
+            log_proc = start_daemon_logs(job, Path(job.daemon_log))
             try:
                 self._wait_for_daemon(job)
                 self._raise_if_job_stop_requested(job)
@@ -503,17 +505,17 @@ class BenchmarkWebApp:
             finally:
                 if log_proc is not None:
                     log_proc.terminate()
-                subprocess.run(["docker", "rm", "-f", job.container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                stop_daemon_compose(job)
             self._raise_if_job_stop_requested(job)
             final_status = "passed" if job.suite_results and all(item.get("exit_code") == 0 for item in job.suite_results) else "failed"
             self._set_job(job, status=final_status, finished_at=now_iso(), message="")
         except JobStopped:
             append_log(Path(job.runner_log), "STOPPED")
-            subprocess.run(["docker", "rm", "-f", job.container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            stop_daemon_compose(job)
             self._finish_stopped_job(job)
         except Exception as exc:
             append_log(Path(job.runner_log), f"ERROR: {exc}")
-            subprocess.run(["docker", "rm", "-f", job.container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            stop_daemon_compose(job)
             if self._job_stop_requested(job):
                 self._finish_stopped_job(job)
             else:
@@ -890,50 +892,6 @@ def reserve_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def build_docker_run_command(
-    *,
-    image: str,
-    container_name: str,
-    host_port: int,
-    config_dir: Path,
-    tool_proxy_endpoint: str,
-) -> list[str]:
-    script = (
-        'set -eu; '
-        'runtime_config_dir="${AIDEN_RUNTIME_CONFIG_DIR:-/tmp/aiden-config}"; '
-        'rm -rf "$runtime_config_dir"; '
-        'mkdir -p "$runtime_config_dir"; '
-        'cp -a /config/. "$runtime_config_dir"/; '
-        'mkdir -p "$runtime_config_dir/log" "$runtime_config_dir/memory" "$runtime_config_dir/skill-state"; '
-        'exec daemon -config "$runtime_config_dir" -addr 0.0.0.0:8080 '
-        '--tool-proxy-mode --tool-proxy-endpoint "$TOOL_PROXY_ENDPOINT" --forward-tools "*"'
-    )
-    return [
-        "docker",
-        "run",
-        "--rm",
-        "-d",
-        "--name",
-        container_name,
-        "--add-host",
-        "host.docker.internal:host-gateway",
-        "-p",
-        f"127.0.0.1:{host_port}:8080",
-        "-v",
-        f"{config_dir.resolve()}:/config:ro",
-        "-e",
-        f"TOOL_PROXY_ENDPOINT={tool_proxy_endpoint}",
-        "-e",
-        f"NO_PROXY={docker_no_proxy(tool_proxy_endpoint)}",
-        "-e",
-        f"no_proxy={docker_no_proxy(tool_proxy_endpoint)}",
-        image,
-        "sh",
-        "-lc",
-        script,
-    ]
-
-
 def build_mobilegym_environment_command(
     *,
     image: str,
@@ -1027,12 +985,29 @@ def docker_no_proxy(endpoint: str) -> str:
 
 def ensure_daemon_image(
     image: str,
-    build_missing: bool,
+    build_image: bool,
     log_path: Path,
     *,
     stop_requested: Callable[[], bool] | None = None,
 ) -> None:
-    ensure_docker_image(image, build_missing, log_path, "daemon-runtime", stop_requested=stop_requested)
+    if not build_image:
+        inspect = subprocess.run(
+            ["docker", "image", "inspect", image],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if inspect.returncode != 0:
+            raise RuntimeError(f"Docker image not found: {image}")
+        return
+    env = daemon_compose_env(image=image)
+    run_logged_command(
+        daemon_compose_command("build", "daemon"),
+        log_path,
+        cwd=MOBILEGYM_DOCKER_DIR,
+        env=env,
+        stop_requested=stop_requested,
+    )
 
 
 def ensure_mobilegym_image(image: str, build_missing: bool, log_path: Path) -> None:
@@ -1069,6 +1044,145 @@ def ensure_docker_image(
         popen_kwargs["start_new_session"] = True
     with log_path.open("ab") as log:
         proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, **popen_kwargs)
+        while proc.poll() is None:
+            if stop_requested is not None and stop_requested():
+                terminate_process_tree(proc)
+                raise JobStopped("job stop requested")
+            time.sleep(0.25)
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
+
+
+def daemon_compose_project(job: Job) -> str:
+    return job.container_name or f"aiden-benchmark-agent-{job.id}"
+
+
+def daemon_compose_command(*args: str, project: str | None = None) -> list[str]:
+    command = [
+        "docker",
+        "compose",
+        "-f",
+        str(WEBUI_DAEMON_COMPOSE_FILE),
+    ]
+    if project:
+        command.extend(["-p", project])
+    command.extend(args)
+    return command
+
+
+def daemon_compose_env(
+    *,
+    image: str,
+    host_port: int | None = None,
+    config_dir: Path | None = None,
+    tool_proxy_endpoint: str = "",
+) -> dict[str, str]:
+    env = dict(os.environ)
+    env["AIDEN_DAEMON_IMAGE"] = image
+    if host_port is not None:
+        env["AIDEN_DAEMON_HOST_PORT"] = str(host_port)
+    if config_dir is not None:
+        env["AIDEN_CONFIG_DIR"] = str(config_dir.resolve())
+    if tool_proxy_endpoint:
+        env["TOOL_PROXY_ENDPOINT"] = tool_proxy_endpoint
+        no_proxy = docker_no_proxy(tool_proxy_endpoint)
+        env["NO_PROXY"] = no_proxy
+        env["no_proxy"] = no_proxy
+    return env
+
+
+def start_daemon_compose(
+    job: Job,
+    *,
+    image: str,
+    host_port: int,
+    config_dir: Path,
+    tool_proxy_endpoint: str,
+    log_path: Path,
+    stop_requested: Callable[[], bool] | None = None,
+) -> str:
+    project = daemon_compose_project(job)
+    env = daemon_compose_env(
+        image=image,
+        host_port=host_port,
+        config_dir=config_dir,
+        tool_proxy_endpoint=tool_proxy_endpoint,
+    )
+    run_logged_command(
+        daemon_compose_command(
+            "up",
+            "-d",
+            "--force-recreate",
+            "daemon",
+            project=project,
+        ),
+        log_path,
+        cwd=MOBILEGYM_DOCKER_DIR,
+        env=env,
+        stop_requested=stop_requested,
+    )
+    ps_command = daemon_compose_command("ps", "-q", "daemon", project=project)
+    append_log(log_path, "$ " + " ".join(ps_command))
+    return subprocess.check_output(ps_command, cwd=MOBILEGYM_DOCKER_DIR, env=env, text=True).strip()
+
+
+def stop_daemon_compose(job: Job) -> None:
+    subprocess.run(
+        daemon_compose_command(
+            "down",
+            "--volumes",
+            "--remove-orphans",
+            project=daemon_compose_project(job),
+        ),
+        cwd=MOBILEGYM_DOCKER_DIR,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def start_daemon_logs(job: Job, log_path: Path) -> subprocess.Popen | None:
+    try:
+        log_file = log_path.open("ab")
+        try:
+            return subprocess.Popen(
+                daemon_compose_command(
+                    "logs",
+                    "-f",
+                    "daemon",
+                    project=daemon_compose_project(job),
+                ),
+                cwd=MOBILEGYM_DOCKER_DIR,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+            )
+        finally:
+            log_file.close()
+    except Exception:
+        return None
+
+
+def run_logged_command(
+    cmd: list[str],
+    log_path: Path,
+    *,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    stop_requested: Callable[[], bool] | None = None,
+) -> None:
+    append_log(log_path, "$ " + " ".join(cmd))
+    popen_kwargs: dict[str, Any] = {}
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+    with log_path.open("ab") as log:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            env=dict(env) if env is not None else None,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            **popen_kwargs,
+        )
         while proc.poll() is None:
             if stop_requested is not None and stop_requested():
                 terminate_process_tree(proc)

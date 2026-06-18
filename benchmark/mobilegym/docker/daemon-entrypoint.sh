@@ -23,4 +23,14 @@ if grep -q '^[[:space:]]*control_token_file[[:space:]]*=' "$config_file"; then
     sed -i 's#^[[:space:]]*control_token_file[[:space:]]*=.*#control_token_file = "/config/control_token"#' "$config_file"
 fi
 
-exec daemon -config "$runtime_config_dir" -addr "${AIDEN_DAEMON_ADDR:-0.0.0.0:8080}"
+set -- daemon -config "$runtime_config_dir" -addr "${AIDEN_DAEMON_ADDR:-0.0.0.0:8080}"
+
+if [ "${AIDEN_TOOL_PROXY_MODE:-}" = "1" ] || [ "${AIDEN_TOOL_PROXY_MODE:-}" = "true" ]; then
+    if [ -z "${TOOL_PROXY_ENDPOINT:-}" ]; then
+        echo "TOOL_PROXY_ENDPOINT is required when AIDEN_TOOL_PROXY_MODE is enabled" >&2
+        exit 1
+    fi
+    set -- "$@" --tool-proxy-mode --tool-proxy-endpoint "$TOOL_PROXY_ENDPOINT" --forward-tools "${AIDEN_FORWARD_TOOLS:-*}"
+fi
+
+exec "$@"

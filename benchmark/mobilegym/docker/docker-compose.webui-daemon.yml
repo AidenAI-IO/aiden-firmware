@@ -1,0 +1,27 @@
+services:
+  daemon:
+    image: ${AIDEN_DAEMON_IMAGE:-aiden-mobilegym-daemon:local}
+    build:
+      context: ../../..
+      dockerfile: benchmark/mobilegym/docker/Dockerfile
+      target: daemon-runtime
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+    ports:
+      - "127.0.0.1:${AIDEN_DAEMON_HOST_PORT:-8080}:8080"
+    volumes:
+      - ${AIDEN_CONFIG_DIR:-../../config}:/config:ro
+    environment:
+      AIDEN_TOOL_PROXY_MODE: "1"
+      AIDEN_FORWARD_TOOLS: "*"
+      TOOL_PROXY_ENDPOINT: ${TOOL_PROXY_ENDPOINT:-}
+      AIDEN_RUNTIME_CONFIG_DIR: /tmp/aiden-config
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+      no_proxy: ${no_proxy:-localhost,127.0.0.1,host.docker.internal}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -175,9 +175,6 @@ preflight_docker() {
 }
 
 ensure_images_built() {
-    if docker image inspect "${REQUIRED_IMAGES[@]}" >/dev/null 2>&1 && images_are_fresh; then
-        return 0
-    fi
     echo "Building MobileGym Docker images..."
     build_arg_values
     if docker compose "${COMPOSE_ARGS[@]}" --profile test build "${BUILD_ARGS[@]}"; then
