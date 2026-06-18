@@ -1,11 +1,60 @@
 from __future__ import annotations
+import json
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Any
 from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
 
 
 class ResetError(RuntimeError):
     pass
+
+
+def environment_reset_endpoint(environment_url: str) -> str:
+    raw = str(environment_url or "").strip()
+    if not raw:
+        raise ResetError("environment_url is required")
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ResetError(f"invalid environment_url: {environment_url!r}")
+    path = parsed.path.rstrip("/")
+    if path in {"", "/"}:
+        path = "/api/reset"
+    elif path not in {"/api/reset", "/reset"}:
+        path = f"{path}/api/reset"
+    return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+
+
+def call_environment_reset(environment_url: str, timeout: int = 30) -> dict[str, Any]:
+    url = environment_reset_endpoint(environment_url)
+    req = urllib.request.Request(
+        url,
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read()
+        except Exception:
+            body = b""
+        raise ResetError(f"reset endpoint failed HTTP {e.code}: {body[:200]!r}") from e
+    except urllib.error.URLError as e:
+        raise ResetError(f"reset endpoint request failed: {e}") from e
+    except TimeoutError as e:
+        raise ResetError(f"reset endpoint timed out: {e}") from e
+    try:
+        payload = json.loads(body.decode("utf-8")) if body else {}
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ResetError(f"reset endpoint returned invalid JSON: {body[:200]!r}") from e
+    if isinstance(payload, dict) and payload.get("ok") is False:
+        raise ResetError(f"reset endpoint failed: {payload.get('error') or payload}")
+    return payload if isinstance(payload, dict) else {}
 
 
 def run_tool_sequence(client: AgentClient, sequence: list[dict[str, Any]]) -> None:

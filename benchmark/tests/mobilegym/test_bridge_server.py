@@ -254,9 +254,15 @@ def test_health_and_runner_endpoints_do_not_require_authentication():
         status, _ = request_json(bridge.base_url, "POST", "/episode/start", {"episode_id": "ep1"})
         assert status == 200
 
-        status, _ = request_json(bridge.base_url, "POST", "/reset", {})
+        status, body = request_json(bridge.base_url, "POST", "/api/reset", {"episode_id": "reset-ep1"})
         assert status == 200
+        assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
+        assert bridge.state.active_episode_id == "reset-ep1"
         assert bridge.env.reset_calls == 1
+
+        status, body = request_json(bridge.base_url, "POST", "/api/tools/screenshot", {"input": {}})
+        assert status == 200
+        assert body["is_error"] is False
 
         status, body = request_json(bridge.base_url, "POST", "/state", {})
         assert status == 200
@@ -266,7 +272,7 @@ def test_health_and_runner_endpoints_do_not_require_authentication():
         assert status == 200
         assert body["data"] == bridge.env.route
 
-        status, _ = request_json(bridge.base_url, "POST", "/episode/end", {"episode_id": "ep1"})
+        status, _ = request_json(bridge.base_url, "POST", "/episode/end", {"episode_id": "reset-ep1"})
         assert status == 200
 
         assert bridge.env.loop_matches and all(bridge.env.loop_matches)

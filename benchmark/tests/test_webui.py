@@ -273,6 +273,53 @@ def test_start_job_records_judge_settings_without_exposing_api_key(tmp_path: Pat
     assert app._job_judge_api_keys[job["id"]] == "sk-judge-secret"
 
 
+def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkeypatch):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    app._mobilegym_environments["env-1"] = webui.MobileGymEnvironment(
+        id="env-1",
+        name="MobileGym",
+        endpoint="http://host.docker.internal:19090",
+        public_endpoint="http://127.0.0.1:19090",
+        web_url="http://127.0.0.1:18173",
+        status="running",
+    )
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(webui.threading, "Thread", FakeThread)
+    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18080)
+
+    job = app.start_job(
+        {
+            "endpoint": "http://host.docker.internal:19090",
+            "environment_type": "mobilegym",
+            "environment_id": "env-1",
+            "suites": ["suite.json"],
+            "no_judge": True,
+        }
+    )
+
+    assert job["environment_endpoint"] == "http://127.0.0.1:19090"
+    assert job["environment_type"] == "mobilegym"
+
+
 def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatch):
     suites = tmp_path / "suites"
     suites.mkdir()
@@ -321,6 +368,53 @@ def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatc
     assert captured["cmd"][captured["cmd"].index("--judge-model") + 1] == "anthropic/test-judge"
     assert "--no-judge" not in captured["cmd"]
     assert captured["env"]["OPENROUTER_API_KEY"] == "sk-judge-secret"
+
+
+def test_run_suite_passes_mobilegym_environment_url(tmp_path: Path, monkeypatch):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    raw_runs_dir = tmp_path / "runs" / "job-test" / "raw"
+    raw_runs_dir.mkdir(parents=True)
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://host.docker.internal:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        environment_endpoint="http://127.0.0.1:19090",
+        suites=["suite.json"],
+        environment_type="mobilegym",
+        agent_url="http://127.0.0.1:18080",
+        raw_runs_dir=str(raw_runs_dir),
+        state_file=str(tmp_path / "runs" / "job-test" / "state.json"),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+        no_judge=True,
+    )
+    captured = {}
+
+    class FakeProc:
+        def wait(self):
+            return 0
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(webui.subprocess, "Popen", fake_popen)
+
+    app._run_suite(job, "suite.json")
+
+    assert "--environment-url" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
 
 
 def test_index_html_exposes_judge_settings_panel():

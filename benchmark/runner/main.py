@@ -50,6 +50,8 @@ def cli(argv: list[str] | None = None) -> int:
     p_run = sub.add_parser("run")
     p_run.add_argument("--suite", required=True)
     p_run.add_argument("--agent-url", default=os.environ.get("AIDEN_AGENT_URL", "http://localhost:8080"))
+    p_run.add_argument("--environment-url", default=os.environ.get("AIDEN_ENVIRONMENT_URL", ""),
+                       help="Optional environment endpoint; when set, each task calls its /api/reset instead of suite global_reset")
     p_run.add_argument("--judge-model", default="claude-sonnet-4-6")
     p_run.add_argument("--agent-model", default=os.environ.get("AIDEN_MODEL") or os.environ.get("MODEL_NAME") or os.environ.get("OPENAI_MODEL") or "")
     p_run.add_argument("--no-judge", action="store_true")
@@ -283,7 +285,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if n > 1 else "")
                 try:
                     r = run_one_task(client, suite, task, attempt, art_dir,
-                                     judge_cfg, judge_cache, run_id)
+                                     judge_cfg, judge_cache, run_id,
+                                     environment_url=args.environment_url or None)
                 except Exception as e:
                     print(f"[{progress}] ERROR      {task.id} attempt={attempt} — {e}", flush=True)
                     r = skipped_task_result(suite, task, attempt, art_dir, run_id, str(e))
@@ -314,6 +317,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "run_id": run_id, "git_sha": sha, "git_dirty": dirty,
         "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
         "agent_url": args.agent_url,
+        "environment_url": args.environment_url or None,
         "agent_model": args.agent_model,
         "judge_config": {"provider": "openrouter", "model": args.judge_model} if judge_cfg else None,
         "judge_prompt_version": "v1",

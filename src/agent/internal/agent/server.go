@@ -275,6 +275,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
+	mux.HandleFunc("/api/reset", s.handleReset)
 	mux.HandleFunc("/api/clear", s.handleClear)
 	mux.HandleFunc("/api/clear-all", s.handleClearAll)
 	mux.HandleFunc("/api/skills/reload", s.handleSkillsReload)
@@ -1344,6 +1345,20 @@ func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(EpisodeResponse{Episode: episode})
+}
+
+func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok": true,
+		"data": map[string]bool{
+			"reset": false,
+		},
+	})
 }
 
 // handleClear clears the conversation history

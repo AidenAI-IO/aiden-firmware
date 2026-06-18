@@ -32,6 +32,23 @@ class BridgeEpisodeState:
             self._action_counter = 0
         return {"episode_id": episode_id}
 
+    async def reset_episode(self, episode_id: str) -> dict[str, Any]:
+        episode_id = str(episode_id or "").strip()
+        if not episode_id:
+            raise ValueError("episode_id is required")
+        async with self._env_lock:
+            reset = getattr(self.env, "reset", None)
+            reset_ran = False
+            if reset is not None:
+                result = reset()
+                if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
+                    await result
+                reset_ran = True
+            self.active_episode_id = episode_id
+            self.action_log = []
+            self._action_counter = 0
+        return {"episode_id": episode_id, "reset": reset_ran}
+
     async def end_episode(self, episode_id: str) -> dict[str, Any]:
         episode_id = self.require_active(episode_id)
         async with self._env_lock:

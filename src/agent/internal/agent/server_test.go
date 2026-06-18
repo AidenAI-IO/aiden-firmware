@@ -1040,6 +1040,38 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 	}
 }
 
+func TestServerHandleResetReturnsSuccessWithoutClearingHistory(t *testing.T) {
+	server := &Server{
+		history: []Message{{Type: "user", Content: "hello"}},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/reset", nil)
+	rec := httptest.NewRecorder()
+	server.handleReset(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Reset bool `json:"reset"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !got.OK {
+		t.Fatalf("expected ok response: %#v", got)
+	}
+	if got.Data.Reset {
+		t.Fatalf("expected reset=false for Go agent no-op response")
+	}
+	if len(server.history) != 1 || server.history[0].Content != "hello" {
+		t.Fatalf("reset should not clear history, got %#v", server.history)
+	}
+}
+
 func TestServerHandleSkillsReloadMarksDirty(t *testing.T) {
 	storageDir := t.TempDir()
 	server := &Server{

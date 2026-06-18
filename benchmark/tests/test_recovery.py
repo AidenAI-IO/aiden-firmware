@@ -87,6 +87,42 @@ def test_prepare_task_isolation_retries_clear(monkeypatch):
     assert client.clears == 2
 
 
+def test_prepare_task_isolation_uses_environment_reset_instead_of_global_reset(monkeypatch):
+    reset_calls = []
+    monkeypatch.setattr(
+        "runner.recovery.call_environment_reset",
+        lambda environment_url: reset_calls.append(environment_url),
+    )
+    client = SetupClient()
+    suite = Suite(
+        name="phone",
+        global_reset={"tool_sequence": [{"tool": "shell", "args": {"command": "should-not-run"}}]},
+        tasks=[],
+        sha256="sha",
+        source_path=__import__("pathlib").Path("suite.json"),
+    )
+    task = TaskSpec(
+        id="open_settings",
+        category="single_step",
+        description_for_judge="Open settings.",
+        prompt="open settings",
+        rubric=[RubricItem(id="ok", check="ok")],
+        hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=3),
+    )
+
+    prepare_task_isolation(
+        client,
+        suite,
+        task,
+        environment_url="http://127.0.0.1:9090",
+        ready_timeout_sec=10,
+        setup_attempts=1,
+    )
+
+    assert reset_calls == ["http://127.0.0.1:9090"]
+    assert client.clears == 1
+
+
 def test_prepare_task_isolation_raises_after_exhausting_retries(monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     client = SetupClient(fail_clears=3)

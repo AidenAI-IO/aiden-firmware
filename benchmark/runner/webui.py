@@ -57,6 +57,7 @@ class Job:
     endpoint: str
     docker_endpoint: str
     suites: list[str]
+    environment_endpoint: str = ""
     environment_id: str = ""
     environment_name: str = ""
     environment_type: str = "device"
@@ -328,13 +329,27 @@ class BenchmarkWebApp:
         raw_runs_dir.mkdir(parents=True, exist_ok=True)
         port = reserve_free_port()
         now = now_iso()
+        environment_id = str(payload.get("environment_id") or environment_payload.get("id") or "")
+        environment_name = str(payload.get("environment_name") or environment_payload.get("name") or "")
+        environment_endpoint = str(payload.get("environment_endpoint") or "").strip()
+        if environment_type == "mobilegym":
+            with self._lock:
+                mobilegym_env = self._mobilegym_environments.get(environment_id)
+            if mobilegym_env is not None:
+                environment_endpoint = mobilegym_env.public_endpoint.rstrip("/")
+            elif not environment_endpoint:
+                public_endpoint = str(environment_payload.get("public_endpoint") or "").strip()
+                if public_endpoint:
+                    environment_endpoint = public_endpoint.rstrip("/")
+
         job = Job(
             id=job_id,
             endpoint=endpoint,
             docker_endpoint=endpoint_for_docker(endpoint),
             suites=suite_keys,
-            environment_id=str(payload.get("environment_id") or environment_payload.get("id") or ""),
-            environment_name=str(payload.get("environment_name") or environment_payload.get("name") or ""),
+            environment_endpoint=environment_endpoint,
+            environment_id=environment_id,
+            environment_name=environment_name,
             environment_type=environment_type,
             status="queued",
             created_at=now,
@@ -490,6 +505,8 @@ class BenchmarkWebApp:
         ]
         if not suite_is_unit:
             cmd.extend(["--state-file", job.state_file])
+            if job.environment_endpoint:
+                cmd.extend(["--environment-url", job.environment_endpoint])
             if job.no_judge:
                 cmd.append("--no-judge")
             else:
@@ -2215,7 +2232,7 @@ INDEX_HTML = r"""<!doctype html>
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           endpoint: env.endpoint,
-          environment: {id: env.id, name: env.name, type: env.type},
+          environment: {id: env.id, name: env.name, type: env.type, public_endpoint: env.public_endpoint || ''},
           suites: Array.from(selectedSuites),
           no_judge: !judge.enabled,
           judge_model: judge.model

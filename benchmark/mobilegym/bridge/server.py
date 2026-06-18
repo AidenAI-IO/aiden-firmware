@@ -5,6 +5,7 @@ import json
 import socket
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -100,8 +101,8 @@ def _handler_for(bridge: BridgeServer):
                     self._handle_episode_start(payload)
                 elif path == "episode/end":
                     self._handle_episode_end(payload)
-                elif path == "reset":
-                    self._handle_reset()
+                elif path in {"api/reset", "reset"}:
+                    self._handle_reset(payload)
                 elif path == "state":
                     self._handle_state(payload)
                 elif path == "route":
@@ -132,17 +133,11 @@ def _handler_for(bridge: BridgeServer):
             result = bridge.submit(bridge.state.end_episode(str(payload.get("episode_id", ""))))
             self._send_json(200, bridge_ok(result))
 
-        def _handle_reset(self) -> None:
-            async def reset_env(env: Any) -> dict[str, bool]:
-                reset = getattr(env, "reset", None)
-                if reset is None:
-                    return {"reset": False}
-                result = reset()
-                if asyncio.iscoroutine(result):
-                    await result
-                return {"reset": True}
-
-            result = bridge.submit(bridge.state.run_env(reset_env))
+        def _handle_reset(self, payload: dict[str, Any]) -> None:
+            episode_id = str(payload.get("episode_id") or "").strip()
+            if not episode_id:
+                episode_id = f"reset-{uuid.uuid4().hex}"
+            result = bridge.submit(bridge.state.reset_episode(episode_id))
             self._send_json(200, bridge_ok(result))
 
         def _handle_state(self, payload: dict[str, Any]) -> None:

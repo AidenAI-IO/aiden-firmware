@@ -1,7 +1,7 @@
 import pytest
 
 from runner.agent_client import AgentRequestError, AgentTimeoutError
-from runner.reset import ResetError, per_task_setup
+from runner.reset import ResetError, call_environment_reset, environment_reset_endpoint, per_task_setup
 
 
 class FailingChatClient:
@@ -91,3 +91,43 @@ def test_agent_prompt_setup_can_make_history_clear_explicit():
     )
 
     assert client.calls[-1] == ("clear_history",)
+
+
+def test_environment_reset_endpoint_is_derived_from_environment_endpoint():
+    assert environment_reset_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/api/reset"
+    assert environment_reset_endpoint("http://127.0.0.1:9090/api/reset") == "http://127.0.0.1:9090/api/reset"
+
+
+def test_call_environment_reset_posts_to_api_reset(monkeypatch):
+    seen = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return b'{"ok": true, "data": {"episode_id": "reset-1", "reset": true}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["method"] = req.get_method()
+        seen["body"] = req.data
+        seen["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = call_environment_reset("http://127.0.0.1:9090", timeout=12)
+
+    assert seen == {
+        "url": "http://127.0.0.1:9090/api/reset",
+        "method": "POST",
+        "body": b"{}",
+        "timeout": 12,
+    }
+    assert result["data"]["episode_id"] == "reset-1"
