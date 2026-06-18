@@ -1349,11 +1349,10 @@ func writeRequestContextAndCriteria(builder *strings.Builder, inputs map[string]
 			builder.WriteByte('\n')
 		}
 	}
-	builder.WriteString("\n\nCompletion criteria:\n")
 	if len(state.CompletionCriteria) == 0 {
-		builder.WriteString("- Satisfy every explicit requirement in the original user request.\n")
 		return
 	}
+	builder.WriteString("\n\nCompletion criteria:\n")
 	for _, criterion := range state.CompletionCriteria {
 		if criterion = strings.TrimSpace(criterion); criterion != "" {
 			builder.WriteString("- ")
@@ -1787,7 +1786,7 @@ func parsePlannerDecision(res *llms.ContentResponse, fallbackStep string) planne
 		if toolDesc != "" {
 			return plannerDecision{
 				Objective:          strings.TrimSpace(fallbackStep),
-				CompletionCriteria: uniqueNonEmpty([]string{"Satisfy every explicit requirement in the original user request."}),
+				CompletionCriteria: uniqueNonEmpty([]string{defaultCompletionCriterion}),
 				Plan:               uniqueNonEmpty([]string{toolDesc}),
 				NextStep:           toolDesc,
 				Reason:             "planner incorrectly returned tool_call instead of JSON; extracted description field as next_step",
@@ -1802,7 +1801,7 @@ func parsePlannerDecision(res *llms.ContentResponse, fallbackStep string) planne
 	}
 	return plannerDecision{
 		Objective:          strings.TrimSpace(fallbackStep),
-		CompletionCriteria: uniqueNonEmpty([]string{"Satisfy every explicit requirement in the original user request."}),
+		CompletionCriteria: uniqueNonEmpty([]string{defaultCompletionCriterion}),
 		Plan:               uniqueNonEmpty([]string{text}),
 		NextStep:           text,
 		Reason:             "planner returned non-JSON content",

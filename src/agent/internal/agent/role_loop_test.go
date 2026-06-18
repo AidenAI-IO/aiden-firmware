@@ -821,6 +821,7 @@ func TestRequestContextPromptDoesNotMarkRootRequestAuthoritative(t *testing.T) {
 		"Original user request / root request (authoritative; do not replace it with a subtask)",
 		"authoritative; do not replace it with a subtask",
 		"Current objective:",
+		"Satisfy every explicit requirement in the original user request.",
 	} {
 		if strings.Contains(prompt, unwanted) {
 			t.Fatalf("planner prompt should not contain %q:\n%s", unwanted, prompt)
