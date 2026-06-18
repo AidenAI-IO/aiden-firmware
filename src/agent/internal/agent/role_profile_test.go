@@ -709,9 +709,10 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 	}
 }
 
-func TestRoleCollaborativeExecutorSharesScreenshotWorldStateAcrossRoles(t *testing.T) {
+func TestRoleCollaborativeExecutorSharesScreenshotWorldStateOnlyWithVerifier(t *testing.T) {
 	jpegBytes := []byte("world-state-jpeg")
 	encodedImage := base64.StdEncoding.EncodeToString(jpegBytes)
+	imageURL := "data:image/jpeg;base64," + encodedImage
 	model := &scriptedModel{
 		responses: roleCommittedExecutionResponses(
 			[]string{"inspect screen", "answer from current screen"},
@@ -748,7 +749,7 @@ func TestRoleCollaborativeExecutorSharesScreenshotWorldStateAcrossRoles(t *testi
 		t.Fatalf("model call count = %d, want 7", model.callCount)
 	}
 
-	for _, idx := range []int{4, 5, 6} {
+	for _, idx := range []int{4, 6} {
 		prompt := messageText(model.messages[idx])
 		for _, want := range []string{
 			"World State (shared across planner, executor, and verifier):",
@@ -756,15 +757,30 @@ func TestRoleCollaborativeExecutorSharesScreenshotWorldStateAcrossRoles(t *testi
 			"The current screenshot image is attached to this message.",
 		} {
 			if !strings.Contains(prompt, want) {
-				t.Fatalf("model call %d missing world state %q:\n%s", idx, want, prompt)
+				t.Fatalf("verifier model call %d missing world-state screenshot text %q:\n%s", idx, want, prompt)
 			}
 		}
-		if !hasImageURL(model.messages[idx], "data:image/jpeg;base64,"+encodedImage) {
-			t.Fatalf("model call %d missing world-state screenshot image: %#v", idx, model.messages[idx])
+		if got := imageURLCount(model.messages[idx], imageURL); got != 1 {
+			t.Fatalf("verifier model call %d should receive one world-state screenshot image, got %d", idx, got)
 		}
-		if !finalHumanMessageHasTextBeforeImage(model.messages[idx], "data:image/jpeg;base64,"+encodedImage) {
-			t.Fatalf("model call %d should place text before world-state screenshot image: %#v", idx, model.messages[idx])
+		if !finalHumanMessageHasTextBeforeImage(model.messages[idx], imageURL) {
+			t.Fatalf("verifier model call %d should place text before world-state screenshot image: %#v", idx, model.messages[idx])
 		}
+	}
+
+	executorPrompt := messageText(model.messages[5])
+	for _, unexpected := range []string{
+		"Latest screenshot:",
+		"The current screenshot image is attached to this message.",
+		"Screenshot source input:",
+		"Post-action output before screenshot:",
+	} {
+		if strings.Contains(executorPrompt, unexpected) {
+			t.Fatalf("executor should not receive world-state screenshot text %q:\n%s", unexpected, executorPrompt)
+		}
+	}
+	if got := imageURLCount(model.messages[5], imageURL); got != 0 {
+		t.Fatalf("executor should not receive world-state screenshot image, got %d copies", got)
 	}
 
 	secondExecutorPrompt := messageText(model.messages[5])
@@ -852,66 +868,7 @@ func TestRoleCollaborativeExecutorOmitsWorldStateLatestScreenshotWhenLatestExecu
 	}
 }
 
-func TestExecutorLatestToolResultHasScreenshotObservation(t *testing.T) {
-	screenshotStep := func(tool string) schema.AgentStep {
-		return testScreenshotObservationStep(tool, []byte(tool+"-screenshot"))
-	}
-	plainStep := schema.AgentStep{
-		Action:      schema.AgentAction{Tool: "echo"},
-		Observation: "ok",
-	}
-
-	for _, tc := range []struct {
-		name  string
-		state roleLoopState
-		want  bool
-	}{
-		{
-			name:  "no current executor tool steps",
-			state: roleLoopState{},
-			want:  false,
-		},
-		{
-			name: "last result is screenshot observation",
-			state: roleLoopState{
-				StepToolSteps: []schema.AgentStep{screenshotStep("screenshot")},
-			},
-			want: true,
-		},
-		{
-			name: "last result is post action screenshot observation",
-			state: roleLoopState{
-				StepToolSteps: []schema.AgentStep{screenshotStep("keyboard_tap")},
-			},
-			want: true,
-		},
-		{
-			name: "earlier screenshot but last result is not screenshot",
-			state: roleLoopState{
-				StepToolSteps: []schema.AgentStep{screenshotStep("screenshot"), plainStep},
-			},
-			want: false,
-		},
-		{
-			name: "last result is not parseable as screenshot",
-			state: roleLoopState{
-				StepToolSteps: []schema.AgentStep{{
-					Action:      schema.AgentAction{Tool: "screenshot"},
-					Observation: `{"width":320,"height":240,"format":"jpeg","data":"not-base64"}`,
-				}},
-			},
-			want: false,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := executorLatestToolResultHasScreenshotObservation(tc.state); got != tc.want {
-				t.Fatalf("executorLatestToolResultHasScreenshotObservation() = %t, want %t", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestRoleMessagesOmitWorldScreenshotWhenLatestExecutorToolResultIsScreenshotEvenIfWorldDiffers(t *testing.T) {
+func TestRoleMessagesAttachCurrentStepScreenshotOnlyFromScratchpad(t *testing.T) {
 	worldBytes := []byte("stale-world-screenshot")
 	stepBytes := []byte("latest-tool-screenshot")
 	state := roleLoopState{
@@ -932,86 +889,44 @@ func TestRoleMessagesOmitWorldScreenshotWhenLatestExecutorToolResultIsScreenshot
 		t.Fatalf("executor prompt should omit world latest screenshot when latest tool result is a screenshot:\n%s", prompt)
 	}
 	if hasImageURL(messages, worldImageURL) {
-		t.Fatalf("executor messages should not attach stale world screenshot: %#v", messages)
+		t.Fatalf("executor messages should not attach world-state screenshot: %#v", messages)
 	}
-	if !hasImageURL(messages, stepImageURL) {
-		t.Fatalf("executor messages should still include latest tool-result screenshot: %#v", messages)
+	if got := imageURLCount(messages, stepImageURL); got != 1 {
+		t.Fatalf("executor messages should include latest tool-result screenshot once, got %d", got)
 	}
 }
 
-func TestRoleMessagesKeepWorldScreenshotWhenLatestExecutorToolResultIsNotScreenshot(t *testing.T) {
-	screenshotBytes := []byte("executor-current-step-screenshot")
+func TestRoleMessagesAttachWorldScreenshotOnlyForVerifier(t *testing.T) {
+	worldBytes := []byte("verifier-world-screenshot")
 	state := roleLoopState{
-		World: worldState{LatestScreenshot: testWorldScreenshot(screenshotBytes)},
-		StepToolSteps: []schema.AgentStep{
-			testScreenshotObservationStep("screenshot", screenshotBytes),
-			{
-				Action:      schema.AgentAction{Tool: "echo", ToolInput: `{"message":"ok"}`},
-				Observation: "ok",
-			},
-		},
+		World: worldState{LatestScreenshot: testWorldScreenshot(worldBytes)},
 	}
-	executor := &roleCollaborativeExecutor{
-		Tools: []langtools.Tool{
-			&stubTool{name: "screenshot", visual: true},
-			&stubTool{name: "echo"},
-		},
-	}
+	executor := &roleCollaborativeExecutor{}
+	imageURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(worldBytes)
 
-	messages := executor.roleMessages(RoleProfile{Name: RoleExecutor, SystemPrompt: "executor"}, map[string]string{"input": "inspect"}, state, "Executor task.")
-	prompt := messageText(messages)
-	imageURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(screenshotBytes)
+	plannerMessages := executor.roleMessages(RoleProfile{Name: RolePlanner, SystemPrompt: "planner"}, map[string]string{"input": "inspect"}, state, "Planner task.")
+	executorMessages := executor.roleMessages(RoleProfile{Name: RoleExecutor, SystemPrompt: "executor"}, map[string]string{"input": "inspect"}, state, "Executor task.")
+	verifierMessages := executor.roleMessages(RoleProfile{Name: RoleVerifier, SystemPrompt: "verifier"}, map[string]string{"input": "inspect"}, state, "Verifier task.")
 
-	for _, want := range []string{
-		"Latest screenshot:",
-		"The current screenshot image is attached to this message.",
+	for role, messages := range map[string][]llms.MessageContent{
+		"planner":  plannerMessages,
+		"executor": executorMessages,
 	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("executor prompt should keep world latest screenshot text %q:\n%s", want, prompt)
+		prompt := messageText(messages)
+		if strings.Contains(prompt, "Latest screenshot:") {
+			t.Fatalf("%s should not receive world-state latest screenshot text:\n%s", role, prompt)
+		}
+		if hasImageURL(messages, imageURL) {
+			t.Fatalf("%s should not receive world-state latest screenshot image: %#v", role, messages)
 		}
 	}
-	if got := imageURLCount(messages, imageURL); got != 2 {
-		t.Fatalf("executor messages should include scratchpad and world screenshots, got %d copies", got)
+
+	verifierPrompt := messageText(verifierMessages)
+	if !strings.Contains(verifierPrompt, "Latest screenshot: step=1 source_tool=screenshot size=320x240 format=jpeg bytes=25") {
+		t.Fatalf("verifier should receive world-state latest screenshot text:\n%s", verifierPrompt)
 	}
-}
-
-func TestRoleMessagesKeepWorldScreenshotWithoutLatestExecutorScreenshotObservation(t *testing.T) {
-	worldBytes := []byte("world-screenshot")
-	imageURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(worldBytes)
-	for _, tc := range []struct {
-		name          string
-		stepToolSteps []schema.AgentStep
-	}{
-		{
-			name: "no current executor tool steps",
-		},
-		{
-			name: "latest observation is not parseable as screenshot",
-			stepToolSteps: []schema.AgentStep{{
-				Action:      schema.AgentAction{Tool: "keyboard_tap"},
-				Observation: `{"width":320,"height":240,"format":"jpeg","data":"not-base64"}`,
-			}},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			state := roleLoopState{
-				World:         worldState{LatestScreenshot: testWorldScreenshot(worldBytes)},
-				StepToolSteps: tc.stepToolSteps,
-			}
-			executor := &roleCollaborativeExecutor{
-				Tools: []langtools.Tool{&stubTool{name: "keyboard_tap", visual: true}},
-			}
-
-			messages := executor.roleMessages(RoleProfile{Name: RoleExecutor, SystemPrompt: "executor"}, map[string]string{"input": "inspect"}, state, "Executor task.")
-			prompt := messageText(messages)
-
-			if !strings.Contains(prompt, "Latest screenshot:") {
-				t.Fatalf("executor prompt should keep world latest screenshot:\n%s", prompt)
-			}
-			if !hasImageURL(messages, imageURL) {
-				t.Fatalf("executor messages should attach world latest screenshot: %#v", messages)
-			}
-		})
+	if !hasImageURL(verifierMessages, imageURL) {
+		t.Fatalf("verifier should receive world-state latest screenshot image: %#v", verifierMessages)
 	}
 }
 
@@ -1025,7 +940,7 @@ func TestWorldStateUpdatesFromPostActionScreenshot(t *testing.T) {
 		},
 		Observation: `{"action_output":"ok","width":640,"height":480,"format":"jpeg","size":16,"data":"` +
 			base64.StdEncoding.EncodeToString(jpegBytes) + `"}`,
-	}, 3)
+	}, 3, []langtools.Tool{&stubTool{name: "keyboard_tap", visual: true}})
 
 	if state.LatestScreenshot == nil {
 		t.Fatal("expected world state screenshot")
@@ -1038,7 +953,7 @@ func TestWorldStateUpdatesFromPostActionScreenshot(t *testing.T) {
 	}
 
 	var builder strings.Builder
-	writeWorldState(&builder, state)
+	writeWorldStateWithOptions(&builder, state, worldStatePromptOptions{IncludeLatestScreenshot: true})
 	text := builder.String()
 	for _, want := range []string{
 		"source_tool=keyboard_tap",
@@ -1046,8 +961,33 @@ func TestWorldStateUpdatesFromPostActionScreenshot(t *testing.T) {
 		"Post-action output before screenshot: ok",
 	} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("world state text missing %q:\n%s", want, text)
+			t.Fatalf("verifier world state text missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestDefaultWorldStateDoesNotRenderLatestScreenshot(t *testing.T) {
+	state := worldState{LatestScreenshot: testWorldScreenshot([]byte("default-hidden-screenshot"))}
+
+	var builder strings.Builder
+	writeWorldState(&builder, state)
+	text := builder.String()
+	if strings.Contains(text, "Latest screenshot:") ||
+		strings.Contains(text, "The current screenshot image is attached to this message.") {
+		t.Fatalf("world state should not render latest screenshot fields:\n%s", text)
+	}
+}
+
+func TestWorldStateIgnoresScreenshotShapedObservationFromNonVisualTool(t *testing.T) {
+	worldBytes := []byte("previous-world-screenshot")
+	state := worldState{LatestScreenshot: testWorldScreenshot(worldBytes)}
+	state.UpdateFromStep(testScreenshotObservationStep("metadata_dump", []byte("metadata-image-shaped-payload")), 3, []langtools.Tool{&stubTool{name: "metadata_dump"}})
+
+	if state.LatestScreenshot == nil {
+		t.Fatal("expected previous world screenshot to remain")
+	}
+	if string(state.LatestScreenshot.Data) != string(worldBytes) {
+		t.Fatalf("world screenshot was overwritten by non visual tool: %#v", state.LatestScreenshot)
 	}
 }
 
@@ -1132,7 +1072,7 @@ func TestRoleCollaborativeExecutorUpdatesWorldStateFromObservedState(t *testing.
 
 	secondPlannerPrompt := messageText(model.messages[5])
 	for _, want := range []string{
-		"Observed app/page: 微信 / 聊天列表 platform=android confidence=0.82 source_role=verifier screenshot_step=3",
+		"Observed app/page: 微信 / 聊天列表 platform=android confidence=0.82 source_role=verifier",
 		"Visible text: 微信 | 通讯录",
 		"Dialogs: 权限提示",
 	} {
@@ -1141,9 +1081,16 @@ func TestRoleCollaborativeExecutorUpdatesWorldStateFromObservedState(t *testing.
 		}
 	}
 
-	secondExecutorPrompt := messageText(model.messages[7])
+	secondExecutorPrompt := messageText(model.messages[6])
 	if !strings.Contains(secondExecutorPrompt, "Observed app/page: 微信 / 聊天列表 platform=android") {
 		t.Fatalf("executor should receive structured observed world state:\n%s", secondExecutorPrompt)
+	}
+	if strings.Contains(secondPlannerPrompt, "screenshot_step=") || strings.Contains(secondExecutorPrompt, "screenshot_step=") {
+		t.Fatalf("planner/executor should not receive screenshot_step from verifier-only screenshot state:\nplanner:\n%s\nexecutor:\n%s", secondPlannerPrompt, secondExecutorPrompt)
+	}
+	finalVerifierPrompt := messageText(model.messages[7])
+	if !strings.Contains(finalVerifierPrompt, "screenshot_step=3") {
+		t.Fatalf("verifier should receive screenshot_step with verifier-only screenshot state:\n%s", finalVerifierPrompt)
 	}
 }
 

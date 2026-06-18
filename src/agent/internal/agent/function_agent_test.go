@@ -731,3 +731,26 @@ func TestFunctionAgentRejectsEmptyVisualObservationData(t *testing.T) {
 		t.Fatalf("unexpected compacted observation: %q", toolContent)
 	}
 }
+
+func TestFunctionAgentRejectsVisualObservationWithoutDimensions(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
+	}
+	observation := `{"width":0,"height":240,"format":"jpeg","size":4,"data":"` +
+		base64.StdEncoding.EncodeToString([]byte("image-bytes")) + `"}`
+	step := schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "screenshot"},
+		Observation: observation,
+	}
+
+	if agent.countVisualObservations([]schema.AgentStep{step}) != 0 {
+		t.Fatal("screenshot with invalid dimensions counted as a visual observation")
+	}
+	toolContent, followups := agent.observationMessagesForStep(step, true)
+	if followups != nil {
+		t.Fatalf("expected no followup messages for invalid screenshot dimensions, got %#v", followups)
+	}
+	if toolContent != observation {
+		t.Fatalf("unexpected compacted observation: %q", toolContent)
+	}
+}
