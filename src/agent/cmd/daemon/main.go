@@ -271,10 +271,16 @@ const (
 	voiceEventWakeup voiceEvent = iota + 1
 )
 
+type pendingVoiceTurn struct {
+	input     agent.TurnInput
+	utterance []int16
+}
+
 type voiceTurnResult struct {
 	interrupted            bool
 	waitForWakeupRequested bool
 	exit                   bool
+	nextTurn               *pendingVoiceTurn
 }
 
 func runManualMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal) {
@@ -496,35 +502,46 @@ func runVoiceSession(cfg agent.Config, dialog audioDialogRunner, runtime *agent.
 	maxTurns := cfg.VoiceMaxTurns
 	turns := 0
 	firstTurn := true
+	var nextTurn *pendingVoiceTurn
 
 	for {
-		if maxTurns > 0 && turns >= maxTurns {
-			log.Printf("[session] max turns reached (%d), closing voice session\n", maxTurns)
-			return false
+		var input agent.TurnInput
+		var utterance []int16
+
+		if nextTurn != nil {
+			input = nextTurn.input
+			utterance = nextTurn.utterance
+			nextTurn = nil
+		} else {
+			if maxTurns > 0 && turns >= maxTurns {
+				log.Printf("[session] max turns reached (%d), closing voice session\n", maxTurns)
+				return false
+			}
+
+			timeout := cfg.VoiceFollowupTimeoutOrDefault()
+			if firstTurn {
+				timeout = cfg.VoiceFirstTurnTimeoutOrDefault()
+			}
+
+			var exit bool
+			utterance, exit = listenOneUtterance(dialog, sigChan, events, timeout)
+			if exit {
+				return true
+			}
+			if len(utterance) == 0 {
+				log.Println("[session] listen timeout, closing voice session")
+				return false
+			}
+
+			var err error
+			input, err = dialog.PrepareTurnInput(utterance)
+			if err != nil {
+				log.Printf("[error] prepare turn input failed: %v\n", err)
+				firstTurn = false
+				continue
+			}
 		}
 
-		timeout := cfg.VoiceFollowupTimeoutOrDefault()
-		if firstTurn {
-			timeout = cfg.VoiceFirstTurnTimeoutOrDefault()
-		}
-
-		utterance, exit := listenOneUtterance(dialog, sigChan, events, timeout)
-		if exit {
-			return true
-		}
-		if len(utterance) == 0 {
-			log.Println("[session] listen timeout, closing voice session")
-			return false
-		}
-
-		input, err := dialog.PrepareTurnInput(utterance)
-		if err != nil {
-			log.Printf("[error] prepare turn input failed: %v\n", err)
-			firstTurn = false
-			continue
-		}
-
-		turns++
 		result := runVoiceTurnWithInput(cfg, dialog, runtime, input, utterance, sigChan, events)
 		if result.exit {
 			return true
@@ -534,9 +551,16 @@ func runVoiceSession(cfg agent.Config, dialog audioDialogRunner, runtime *agent.
 			log.Println("[session] agent requested wakeup wait, closing voice session")
 			return false
 		}
+		if result.nextTurn != nil {
+			nextTurn = result.nextTurn
+			log.Println("[session] turn interrupted, running captured steering input")
+			continue
+		}
 		if result.interrupted {
 			log.Println("[session] turn interrupted, listening for follow-up")
+			continue
 		}
+		turns++
 	}
 }
 
@@ -574,12 +598,13 @@ thinking:
 			return voiceTurnResult{exit: true}
 		case <-events:
 			if cfg.VoiceInterruptOnWakeupOrDefault() {
-				if captureAndQueueVoiceSteer(cfg, dialog, sigChan, events) {
-					cancel()
-					waitForTurnCancel(resultCh)
+				cancel()
+				nextTurn, exit := captureVoiceSteer(cfg, dialog, sigChan, events)
+				waitForTurnCancel(resultCh)
+				if exit {
 					return voiceTurnResult{exit: true}
 				}
-				continue
+				return voiceTurnResult{interrupted: true, nextTurn: nextTurn}
 			}
 			log.Println("[steer] wakeup received during thinking, ignoring because wakeup steering is disabled")
 		case turnResult := <-resultCh:
@@ -641,27 +666,26 @@ speaking:
 	return voiceTurnResult{}
 }
 
-func captureAndQueueVoiceSteer(cfg agent.Config, dialog audioDialogRunner, sigChan chan os.Signal, events <-chan voiceEvent) bool {
+func captureVoiceSteer(cfg agent.Config, dialog audioDialogRunner, sigChan chan os.Signal, events <-chan voiceEvent) (*pendingVoiceTurn, bool) {
 	log.Println("[steer] wakeup received during thinking, listening for steering input")
 	dialog.InterruptOutput()
 	utterance, exit := listenOneUtterance(dialog, sigChan, events, cfg.VoiceFollowupTimeoutOrDefault())
 	if exit {
-		return true
+		return nil, true
 	}
 	if len(utterance) == 0 {
 		log.Println("[steer] no steering utterance captured")
-		return false
+		return nil, false
 	}
 	input, err := dialog.PrepareTurnInput(utterance)
 	if err != nil {
 		log.Printf("[steer] prepare steer input failed: %v\n", err)
-		return false
+		return nil, false
 	}
-	if !dialog.QueueSteer(input) {
-		log.Println("[steer] active voice run was not available for steering")
-		return false
-	}
-	return false
+	return &pendingVoiceTurn{
+		input:     input,
+		utterance: append([]int16(nil), utterance...),
+	}, false
 }
 
 func waitForTurnCancel(resultCh <-chan struct {
