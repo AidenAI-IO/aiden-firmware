@@ -595,21 +595,26 @@ def render_agent_template(text: str) -> str:
 
 
 def default_agent_toml() -> str:
-    provider = os.getenv("MODEL_PROVIDER") or os.getenv("AIDEN_MODEL_PROVIDER") or "fake"
-    model = os.getenv("MODEL_NAME") or os.getenv("AIDEN_MODEL") or os.getenv("OPENAI_MODEL") or ""
-    base_url = os.getenv("MODEL_BASE_URL") or os.getenv("AIDEN_MODEL_BASE_URL") or ""
-    api_key = os.getenv("MODEL_API_KEY") or os.getenv("OPENROUTER_API_KEY") or os.getenv("AIDEN_MODEL_API_KEY") or ""
     return "\n".join(
         [
-            'instruction = "Use tools when external state is requested. Keep answers concise."',
+            'instruction = ""',
             'input_mode = "text"',
-            "max_iterations = 20",
+            'trigger_mode = "manual"',
+            "max_iterations = -1",
+            "force_simple_loop = false",
+            "screenshot_keep_n = 3",
+            "screenshot_prune_interval = 25",
+            "screen_stable_timeout_ms = 3500",
+            "screen_stable_ms = 500",
+            "screen_stable_diff_threshold = 2",
             "",
             "[model]",
-            f"provider = {json.dumps(provider)}",
-            f"model = {json.dumps(model)}",
-            f"base_url = {json.dumps(base_url)}",
-            f"api_key = {json.dumps(api_key)}",
+            'provider = "openrouter"',
+            'model = "qwen3.6-35b"',
+            'base_url = ""',
+            'api_key = ""',
+            "temperature = 0.2",
+            "max_response_tokens = 1000",
             "",
         ]
     )

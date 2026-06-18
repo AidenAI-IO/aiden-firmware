@@ -110,6 +110,19 @@ def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
     assert (dest / "memory").is_dir()
 
 
+def test_default_agent_toml_uses_benchmark_defaults():
+    rendered = webui.default_agent_toml()
+
+    assert 'instruction = ""' in rendered
+    assert 'trigger_mode = "manual"' in rendered
+    assert "max_iterations = -1" in rendered
+    assert "screenshot_keep_n = 3" in rendered
+    assert 'provider = "openrouter"' in rendered
+    assert 'model = "qwen3.6-35b"' in rendered
+    assert "temperature = 0.2" in rendered
+    assert "max_response_tokens = 1000" in rendered
+
+
 def test_webui_agent_config_persists_under_runs_dir(tmp_path: Path, monkeypatch):
     base = tmp_path / "base"
     base.mkdir()
