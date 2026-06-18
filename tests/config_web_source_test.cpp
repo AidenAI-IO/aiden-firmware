@@ -126,6 +126,76 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
+TEST_CASE("config web auto-scrolls agent logs only while pinned to bottom") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("agentLogPaused") == std::string::npos);
+    CHECK(html.find("agentLogAutoScroll:true") != std::string::npos);
+    CHECK(html.find("function isAgentLogAtBottom(el)") != std::string::npos);
+    CHECK(html.find("function setAgentLogAutoScroll(enabled)") != std::string::npos);
+    CHECK(html.find("function syncAgentLogAutoScroll()") != std::string::npos);
+    CHECK(html.find("function toggleAgentLogAutoScroll()") != std::string::npos);
+    CHECK(html.find("byId('agentLogText').addEventListener('scroll',syncAgentLogAutoScroll)") != std::string::npos);
+    CHECK(html.find("if(appState.agentLogAutoScroll){textEl.scrollTop=textEl.scrollHeight;}") != std::string::npos);
+    CHECK(html.find("btn.className='button '+(appState.agentLogAutoScroll?'primary':'ghost')") != std::string::npos);
+    CHECK(html.find("appState.agentLogPaused&&!showBanner") == std::string::npos);
+}
+
+TEST_CASE("config web colors live log lines by frontend classification") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("function classifyLine(line)") != std::string::npos);
+    CHECK(html.find("function renderLogText(el,text,emptyText)") != std::string::npos);
+    CHECK(html.find("split(/\\\\r?\\\\n/)") != std::string::npos);
+    CHECK(html.find("document.createElement('span')") != std::string::npos);
+    CHECK(html.find("span.className='log-line '+classifyLine(line);") != std::string::npos);
+
+    CHECK(html.find("log-error") != std::string::npos);
+    CHECK(html.find("log-warn") != std::string::npos);
+    CHECK(html.find("log-update") != std::string::npos);
+    CHECK(html.find("log-proxy") != std::string::npos);
+    CHECK(html.find("log-cache") != std::string::npos);
+    CHECK(html.find("log-http") != std::string::npos);
+    CHECK(html.find("log-success") != std::string::npos);
+
+    CHECK(html.find("failed") != std::string::npos);
+    CHECK(html.find("error") != std::string::npos);
+    CHECK(html.find("pq:") != std::string::npos);
+    CHECK(html.find("panic") != std::string::npos);
+    CHECK(html.find("fallback") != std::string::npos);
+    CHECK(html.find("not found") != std::string::npos);
+    CHECK(html.find("skip") != std::string::npos);
+    CHECK(html.find("warn") != std::string::npos);
+    CHECK(html.find("[update]") != std::string::npos);
+    CHECK(html.find("[proxy]") != std::string::npos);
+    CHECK(html.find("cache hit") != std::string::npos);
+    CHECK(html.find("[gin]") != std::string::npos);
+    CHECK(html.find("\\\\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\\\\b") != std::string::npos);
+    CHECK(html.find("page created") != std::string::npos);
+    CHECK(html.find("html updated") != std::string::npos);
+    CHECK(html.find("new resource") != std::string::npos);
+
+    CHECK(html.find(".log-line.log-error{color:#ff5555;border-left-color:#ff5555}") != std::string::npos);
+    CHECK(html.find(".log-line.log-warn{color:#ffaa00;border-left-color:#ffaa00}") != std::string::npos);
+    CHECK(html.find(".log-line.log-success{color:#00ff88}") != std::string::npos);
+    CHECK(html.find(".log-line.log-proxy{color:#808080}") != std::string::npos);
+    CHECK(html.find(".log-line.log-http{color:#00d9ff}") != std::string::npos);
+    CHECK(html.find(".log-line.log-cache{color:#bb88ff}") != std::string::npos);
+    CHECK(html.find(".log-line.log-update{color:#44bbff}") != std::string::npos);
+}
+
 TEST_CASE("config web exposes audio archive switch") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
@@ -524,6 +594,28 @@ TEST_CASE("config web degrades gracefully when config metadata is unavailable") 
     CHECK(source.find("case 503: response.status_text = \"Service Unavailable\";") != std::string::npos);
 }
 
+TEST_CASE("config web collapses wifi list after a successful connection") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("wifiListExpanded:false") != std::string::npos);
+    CHECK(html.find("function connectedWifiSsid()") != std::string::npos);
+    CHECK(html.find("function visibleWifiNames(names)") != std::string::npos);
+    CHECK(html.find("function toggleWifiListExpanded()") != std::string::npos);
+    CHECK(html.find("显示其他 Wi-Fi") != std::string::npos);
+    CHECK(html.find("收起其他 Wi-Fi") != std::string::npos);
+    CHECK(html.find("const visibleNames=visibleWifiNames(names);") != std::string::npos);
+    CHECK(html.find("names.forEach(function(name)") == std::string::npos);
+    CHECK(html.find("function initialReadyMessage(metaOk)") != std::string::npos);
+    CHECK(html.find("if(connectedWifiSsid())return 'Wi-Fi 已连接。';") != std::string::npos);
+    CHECK(html.find("setBanner(initialReadyMessage(metaOk),!metaOk);") != std::string::npos);
+}
+
 TEST_CASE("config web tolerates metadata sections without rendered controls") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());
@@ -600,6 +692,24 @@ TEST_CASE("config web updates dependent field visibility from selected values") 
     CHECK(html.find("const sttTencent=sttProvider==='tencent'") == std::string::npos);
 }
 
+TEST_CASE("config web fills Tencent ASR STT defaults from metadata") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("function isTencentASRProvider(value)") != std::string::npos);
+    CHECK(html.find("function fieldDefaultValue(section,key,fallback)") != std::string::npos);
+    CHECK(html.find("function applySTTTencentASRDefaults()") != std::string::npos);
+    CHECK(html.find("applySTTTencentASRDefaults();applyAudioArchiveAvailability();") != std::string::npos);
+    CHECK(html.find("fillIfEmpty('region','ap-guangzhou')") != std::string::npos);
+    CHECK(html.find("fillIfEmpty('engine_model_type','16k_zh')") != std::string::npos);
+    CHECK(html.find("p==='tencent-asr'||p==='tencent_asr'||p==='tencent'") != std::string::npos);
+}
+
 TEST_CASE("config web exposes a single system env editor backed by the env file") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
@@ -647,6 +757,8 @@ TEST_CASE("config web exposes a single system env editor backed by the env file"
 
     CHECK(html.find("system_env") != std::string::npos);
     CHECK(html.find("system_env_content") != std::string::npos);
+    CHECK(html.find("textarea.system-env-editor{min-height:180px}") != std::string::npos);
+    CHECK(html.find("<textarea id=\\\"system_env_content\\\" class=\\\"system-env-editor\\\"") != std::string::npos);
     CHECK(html.find("saveSystemEnv") != std::string::npos);
     CHECK(html.find("system_proxy") == std::string::npos);
     CHECK(html.find("section-proxy") == std::string::npos);
@@ -655,6 +767,16 @@ TEST_CASE("config web exposes a single system env editor backed by the env file"
     CHECK(html.find("Proxy example") == std::string::npos);
     CHECK(html.find("http_proxy=http://127.0.0.1:7890") == std::string::npos);
     CHECK(html.find("NO_PROXY=localhost,127.0.0.1,::1") == std::string::npos);
+
+    const size_t agent_card = html.find("<h2>Agent 配置</h2>");
+    const size_t telemetry_section = html.find("id=\\\"section-telemetry\\\"");
+    const size_t system_env_section = html.find("id=\\\"section-system_env\\\"");
+    REQUIRE(agent_card != std::string::npos);
+    REQUIRE(telemetry_section != std::string::npos);
+    REQUIRE(system_env_section != std::string::npos);
+    CHECK(agent_card < telemetry_section);
+    CHECK(telemetry_section < system_env_section);
+    CHECK(html.find("<div class=\\\"card section-card\\\" id=\\\"section-system_env\\\"") != std::string::npos);
 }
 
 TEST_CASE("config web exposes telemetry settings section") {

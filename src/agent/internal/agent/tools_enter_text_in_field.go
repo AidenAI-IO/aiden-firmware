@@ -12,6 +12,12 @@ type EnterTextInFieldTool struct {
 	platformFn func() string
 }
 
+func (t *EnterTextInFieldTool) SetPlatformFn(fn func() string) {
+	if t != nil {
+		t.platformFn = fn
+	}
+}
+
 func (t *EnterTextInFieldTool) Name() string { return "enter_text_in_field" }
 
 func (t *EnterTextInFieldTool) Description() string {

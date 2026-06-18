@@ -312,9 +312,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	toolSet.RegisterMemoryTools(memoryDir, profileFn, extractionCfg.SummaryMaxChunks, debouncer)
-	toolSet.RegisterEnterTextInFieldTool(modelManager, func() string {
-		return strings.TrimSpace(cfg.DefaultPlatform)
-	})
+	toolSet.RegisterEnterTextInFieldTool(modelManager, nil) // platformFn set per-request
 
 	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithStructuredSummarizeFn(structuredSummarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithMemoryLogger(logger)), toolSet, skillIndex)
 
@@ -676,6 +674,20 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	} else if strings.TrimSpace(deviceEnv.Platform) == "" {
 		if defaultPlatform != "" {
 			deviceEnv.Platform = defaultPlatform
+		}
+	}
+
+	// Set platformFn for enter_text_in_field tool (bridge > config > LLM)
+	if textInputTool, ok := r.tools.Get("enter_text_in_field"); ok {
+		if tool, ok := textInputTool.(*EnterTextInFieldTool); ok {
+			tool.SetPlatformFn(func() string {
+				if deviceEnv != nil {
+					if p := strings.TrimSpace(deviceEnv.Platform); p != "" {
+						return p
+					}
+				}
+				return defaultPlatform
+			})
 		}
 	}
 

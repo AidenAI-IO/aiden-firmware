@@ -98,7 +98,7 @@ func buildTextInputAnalysisPrompt(req textInputScreenAnalysisRequest) string {
 	if req.Phase == textInputPhaseAfterType {
 		phaseHint = "Typing already happened. Read ONLY the focused target input field for field_text. Do NOT copy IME candidate bar, preedit strip, keyboard suggestions, or inline composition text into field_text. Set composition_pending=true when target text is visible only in IME candidates/preedit and is not yet fully committed inside the target input field. If field shows only latin/pinyin segments instead of target characters, set wrong_ime_suspected=true and suggest_switch_ime=true."
 	}
-	return strings.TrimSpace(fmt.Sprintf(`Analyze this Android/iOS device screenshot for text-input automation.
+	return strings.TrimSpace(fmt.Sprintf(`Analyze this device screenshot (Android/iOS/macOS) for text-input automation.
 Platform: %q
 Phase: %q
 Target text: %q

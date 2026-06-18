@@ -19,6 +19,11 @@ const (
 	defaultTTSSpeed                = 1.0
 	defaultSTTProvider             = "openai-whisper"
 	defaultSTTModel                = "whisper-1"
+	tencentASRProvider             = "tencent-asr"
+	legacyTencentProvider          = "tencent"
+	legacyTencentASRProvider       = "tencent_asr"
+	defaultTencentASRRegion        = "ap-guangzhou"
+	defaultTencentASREngineModel   = "16k_zh"
 	defaultAudioSocket             = "/run/audio_service/audio_service.sock"
 	defaultAudioSampleRate         = 16000
 	defaultAudioChannels           = 1

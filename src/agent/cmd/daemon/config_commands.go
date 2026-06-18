@@ -150,6 +150,7 @@ type agentDTO struct {
 	ScreenStableTimeoutMs      int     `json:"screen_stable_timeout_ms"`
 	ScreenStableMs             int     `json:"screen_stable_ms"`
 	ScreenStableDiffThreshold  float64 `json:"screen_stable_diff_threshold"`
+	DefaultPlatform            string  `json:"default_platform,omitempty"`
 }
 
 // hasAPIKeyPlaceholder is substituted for a real key when the wire payload
@@ -393,6 +394,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			ScreenStableTimeoutMs:      cfg.ScreenStableTimeoutMs,
 			ScreenStableMs:             cfg.ScreenStableMs,
 			ScreenStableDiffThreshold:  cfg.ScreenStableDiffThreshold,
+			DefaultPlatform:            cfg.DefaultPlatform,
 		},
 	}
 }

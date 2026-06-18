@@ -214,11 +214,10 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 
 	if requiredMode == textInputModeComposition {
 		if clicks := analysisToClicks(analysis.Candidates); len(clicks) > 0 {
-			steps = append(steps, fmt.Sprintf("click %d candidate(s)", len(clicks)))
-			for _, click := range clicks {
-				if err := e.applyFocus(ctx, click); err != nil {
-					return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
-				}
+			steps = append(steps, fmt.Sprintf("click first candidate of %d", len(clicks)))
+			// Click only the first candidate
+			if err := e.applyFocus(ctx, clicks[0]); err != nil {
+				return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
 			}
 			time.Sleep(textInputFocusRestoreDelay)
 			analysis, calls, stepNotes, err = e.analyzeScreen(ctx, platform, args, segments)
@@ -249,11 +248,10 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 					return true, fieldText, false, imeSwitches, vlmCalls, steps, nil
 				}
 				if clicks := analysisToClicks(analysis.Candidates); len(clicks) > 0 {
-					steps = append(steps, fmt.Sprintf("click %d candidate(s) after paging", len(clicks)))
-					for _, click := range clicks {
-						if err := e.applyFocus(ctx, click); err != nil {
-							return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
-						}
+					steps = append(steps, fmt.Sprintf("click first candidate of %d after paging", len(clicks)))
+					// Click only the first candidate
+					if err := e.applyFocus(ctx, clicks[0]); err != nil {
+						return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
 					}
 					time.Sleep(textInputFocusRestoreDelay)
 					analysis, calls, stepNotes, err = e.analyzeScreen(ctx, platform, args, segments)
