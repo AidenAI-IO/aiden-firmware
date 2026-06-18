@@ -68,6 +68,7 @@ class Job:
     environment_id: str = ""
     environment_name: str = ""
     environment_type: str = "device"
+    environment_web_url: str = ""
     status: str = "queued"
     message: str = ""
     created_at: str = ""
@@ -343,11 +344,13 @@ class BenchmarkWebApp:
         environment_id = str(payload.get("environment_id") or environment_payload.get("id") or "")
         environment_name = str(payload.get("environment_name") or environment_payload.get("name") or "")
         environment_endpoint = str(payload.get("environment_endpoint") or "").strip()
+        environment_web_url = str(payload.get("environment_web_url") or environment_payload.get("web_url") or "").strip()
         if environment_type == "mobilegym":
             with self._lock:
                 mobilegym_env = self._mobilegym_environments.get(environment_id)
             if mobilegym_env is not None:
                 environment_endpoint = mobilegym_env.public_endpoint.rstrip("/")
+                environment_web_url = mobilegym_env.web_url.rstrip("/")
             elif not environment_endpoint:
                 public_endpoint = str(environment_payload.get("public_endpoint") or "").strip()
                 if public_endpoint:
@@ -362,6 +365,7 @@ class BenchmarkWebApp:
             environment_id=environment_id,
             environment_name=environment_name,
             environment_type=environment_type,
+            environment_web_url=environment_web_url,
             status="queued",
             created_at=now,
             agent_url=f"http://127.0.0.1:{port}",
@@ -2393,7 +2397,7 @@ INDEX_HTML = r"""<!doctype html>
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           endpoint: env.endpoint,
-          environment: {id: env.id, name: env.name, type: env.type, public_endpoint: env.public_endpoint || ''},
+          environment: {id: env.id, name: env.name, type: env.type, public_endpoint: env.public_endpoint || '', web_url: env.web_url || ''},
           suites: Array.from(selectedSuites),
           no_judge: !judge.enabled,
           judge_model: judge.model
@@ -2424,12 +2428,15 @@ INDEX_HTML = r"""<!doctype html>
         const reports = (job.suite_results || []).filter(r => r.report_url).map(r => `<a href="${escapeHtml(r.report_url)}" target="_blank" rel="noreferrer">report</a>`).join(' ');
         const envLabel = job.environment_name || job.endpoint;
         const envType = job.environment_type || 'device';
+        const screenLink = job.environment_web_url
+          ? ` · <a href="${escapeHtml(job.environment_web_url)}" target="_blank" rel="noreferrer">screen</a>`
+          : '';
         const actionHtml = jobCanStop(job)
           ? `<button class="danger" data-stop-job="${escapeHtml(job.id)}" ${job.status === 'stopping' ? 'disabled' : ''}>Stop</button>`
           : '';
         const tr = document.createElement('tr');
         tr.innerHTML = `<td><div class="cell-main"><a href="#" data-job="${job.id}">${escapeHtml(job.id)}</a><small>${escapeHtml(job.created_at || '')}</small></div></td>
-          <td title="${escapeHtml(job.endpoint)}"><div class="cell-main"><span>${escapeHtml(envLabel)}</span><small>${escapeHtml(envType)} - ${escapeHtml((job.suites || []).length)} suites</small></div></td>
+          <td title="${escapeHtml(job.endpoint)}"><div class="cell-main"><span>${escapeHtml(envLabel)}</span><small>${escapeHtml(envType)} - ${escapeHtml((job.suites || []).length)} suites${screenLink}</small></div></td>
           <td><span class="status ${cssToken(job.status)}">${escapeHtml(job.status)}</span></td>
           <td>${reports || '<span class="muted">none</span>'}</td>
           <td>${actionHtml}</td>`;
@@ -2450,7 +2457,11 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function renderActiveJob(job){
-      document.getElementById('activeJobLabel').textContent = job.id + ' - ' + job.agent_url;
+      const activeLabel = document.getElementById('activeJobLabel');
+      const screenLink = job.environment_web_url
+        ? ` · <a href="${escapeHtml(job.environment_web_url)}" target="_blank" rel="noreferrer">screen</a>`
+        : '';
+      activeLabel.innerHTML = `${escapeHtml(job.id)} - ${escapeHtml(job.agent_url)}${screenLink}`;
       const st = document.getElementById('activeJobStatus');
       st.className = 'status ' + job.status;
       st.textContent = job.status;

@@ -318,6 +318,7 @@ def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkey
 
     assert job["environment_endpoint"] == "http://127.0.0.1:19090"
     assert job["environment_type"] == "mobilegym"
+    assert job["environment_web_url"] == "http://127.0.0.1:18173"
 
 
 def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatch):
@@ -609,6 +610,9 @@ def test_index_html_exposes_judge_settings_panel():
     assert 'id="activeStopJob"' in webui.INDEX_HTML
     assert "function stopJob" in webui.INDEX_HTML
     assert "/api/jobs/${encodeURIComponent(id)}/stop" in webui.INDEX_HTML
+    assert "environment_web_url" in webui.INDEX_HTML
+    assert "web_url: env.web_url" in webui.INDEX_HTML
+    assert ">screen</a>" in webui.INDEX_HTML
 
 
 def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
