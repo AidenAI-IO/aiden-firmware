@@ -170,6 +170,15 @@ def request_json(base_url, method, path, payload=None, timeout=2):
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
+def request_text(base_url, method, path, timeout=2):
+    req = urllib.request.Request(f"{base_url}{path}", method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8")
+
+
 def start_episode(bridge, episode_id="ep1"):
     return request_json(
         bridge.base_url,
@@ -277,6 +286,49 @@ def test_health_and_runner_endpoints_do_not_require_authentication():
 
         assert bridge.env.loop_matches and all(bridge.env.loop_matches)
         assert bridge.env.threads and set(bridge.env.threads) == {"mobilegym-owner-loop"}
+
+
+def test_screen_page_snapshots_active_execution_state():
+    with RunningBridge() as bridge:
+        status, html = request_text(bridge.base_url, "GET", "/screen")
+        assert status == 200
+        assert "MobileGym Screen" in html
+        assert "/screen/snapshot" in html
+
+        status, body = request_json(bridge.base_url, "GET", "/screen/snapshot")
+        assert status == 200
+        assert body["data"]["status"] == "waiting"
+        assert body["data"]["active_episode_id"] is None
+        assert body["data"]["screenshot"] is None
+
+        assert start_episode(bridge)[0] == 200
+        status, _ = request_json(
+            bridge.base_url,
+            "POST",
+            "/tap",
+            {"episode_id": "ep1", "x": 100, "y": 200},
+        )
+        assert status == 200
+
+        status, body = request_json(bridge.base_url, "GET", "/screen/snapshot")
+        assert status == 200
+        data = body["data"]
+        assert data["status"] == "running"
+        assert data["active_episode_id"] == "ep1"
+        assert data["screenshot"] == expected_screenshot()
+        assert data["action_count"] == 1
+        assert data["actions"] == [
+            {
+                "episode_id": "ep1",
+                "action_id": "ep1:0001",
+                "tool_name": "tap",
+                "tool_input": {"x": 100, "y": 200},
+                "duration_ms": data["actions"][0]["duration_ms"],
+                "error": None,
+                "has_screenshot": True,
+            }
+        ]
+        assert "screenshot" not in data["actions"][0]
 
 
 def test_tools_api_touch_gestures_use_active_reset_episode_and_normalized_coordinates():

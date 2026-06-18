@@ -350,11 +350,13 @@ class BenchmarkWebApp:
                 mobilegym_env = self._mobilegym_environments.get(environment_id)
             if mobilegym_env is not None:
                 environment_endpoint = mobilegym_env.public_endpoint.rstrip("/")
-                environment_web_url = mobilegym_env.web_url.rstrip("/")
+                environment_web_url = mobilegym_screen_url(environment_endpoint)
             elif not environment_endpoint:
                 public_endpoint = str(environment_payload.get("public_endpoint") or "").strip()
                 if public_endpoint:
                     environment_endpoint = public_endpoint.rstrip("/")
+            if environment_endpoint:
+                environment_web_url = mobilegym_screen_url(environment_endpoint)
 
         job = Job(
             id=job_id,
@@ -871,6 +873,15 @@ def endpoint_for_docker(endpoint: str) -> str:
             userinfo += f":{parsed.password}"
         netloc = f"{userinfo}@{netloc}"
     return urllib.parse.urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).rstrip("/")
+
+
+def mobilegym_screen_url(endpoint: str) -> str:
+    raw = str(endpoint or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    parsed = urllib.parse.urlparse(raw)
+    path = (parsed.path.rstrip("/") if parsed.path else "") + "/screen"
+    return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment="")).rstrip("/")
 
 
 def reserve_free_port() -> int:

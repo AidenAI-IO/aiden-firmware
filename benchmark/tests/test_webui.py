@@ -64,6 +64,11 @@ def test_endpoint_for_docker_rewrites_localhost():
     assert webui.endpoint_for_docker("http://192.168.1.20:8080") == "http://192.168.1.20:8080"
 
 
+def test_mobilegym_screen_url_points_at_bridge_screen():
+    assert webui.mobilegym_screen_url("http://127.0.0.1:19090") == "http://127.0.0.1:19090/screen"
+    assert webui.mobilegym_screen_url("http://127.0.0.1:19090/bridge/") == "http://127.0.0.1:19090/bridge/screen"
+
+
 def test_prepare_run_config_renders_template(tmp_path: Path, monkeypatch):
     base = tmp_path / "base"
     base.mkdir()
@@ -318,7 +323,7 @@ def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkey
 
     assert job["environment_endpoint"] == "http://127.0.0.1:19090"
     assert job["environment_type"] == "mobilegym"
-    assert job["environment_web_url"] == "http://127.0.0.1:18173"
+    assert job["environment_web_url"] == "http://127.0.0.1:19090/screen"
 
 
 def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatch):
