@@ -54,7 +54,7 @@ Agent loop 采用 `default` / `plan` / `execution` 三阶段状态机，详见 [
   - 是唯一允许创建或修改计划的角色；
   - 额外可见 loop meta tools：`use_simple_mode`、`enter_plan_mode`、`commit_plan`、`cancel_plan`。
 - `executor`：仅在 `execution` 阶段运行；只能执行 planner 已提交的 `next_step`，通过 `finish_step` / `abort_step` 进入 verifier 复核，不能修改计划或决定结束。
-- `verifier`：仅在 `execution` 阶段运行；system prompt 仅含 `## Role rules`；每次只验证当前 executor 执行的 `step_text` 是否完成；中间步成功则继续下一步，最后一步成功才 `can_finish`；step 失败才 `needs_replan`；不接收工具目录或全局 memory。
+- `verifier`: runs only in `execution`; its system prompt contains the current date, `## Role rules`, and optional `## Verifier memory cautions`; each turn verifies only the current executor `step_text`; intermediate step success advances to the next step, and only final-step success may set `can_finish`; step failure sets `needs_replan`; it does not receive the tool catalog, skills, base instruction, runtime context, or global memory.
 
 `planner` 和 `executor` 都会收到可调用的 function tools。`verifier` 不调用工具，只基于 executor 证据做复核。
 

@@ -516,7 +516,7 @@ go r.memoryPlane.CommitEpisode(context.Background(), episode)
 func buildRoleProfiles(..., memory MemoryContext) RoleProfiles
 ```
 
-planner prompt 拼 `memory.Planner` 和 `memory.Common`，verifier prompt 拼 `memory.Verifier` 和 `memory.Common`，executor 为空。
+The planner prompt receives `memory.Planner` plus `memory.Common`. The verifier prompt receives only `memory.Verifier.FailureModes` and `memory.Verifier.Conflicts` as a caution block; `memory.Common` is not injected into verifier. The executor prompt receives no memory context.
 
 ### Tools
 
