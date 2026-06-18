@@ -118,7 +118,7 @@ struct AgentToml {
     int max_iterations = -1;
     bool force_simple_loop = false;
     int screenshot_keep_n = 3;
-    int screenshot_prune_interval = 25;
+    int screenshot_prune_interval = 5;
     int screen_stable_timeout_ms = 3500;
     int screen_stable_ms = 500;
     double screen_stable_diff_threshold = 2.0;

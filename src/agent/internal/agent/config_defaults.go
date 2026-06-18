@@ -47,7 +47,7 @@ const (
 	defaultTodoReminderToolCalls   = 3
 	defaultMaxIterations           = -1
 	defaultScreenshotKeepN         = 3
-	defaultScreenshotPruneInterval = 25
+	defaultScreenshotPruneInterval = 5
 	defaultTelemetryProvider       = "langfuse"
 	defaultTelemetryTimeoutSec     = 30
 	defaultTelemetryMaxRetry       = 2

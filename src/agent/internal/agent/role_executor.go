@@ -901,10 +901,11 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		messages = append(messages, scratchpad...)
 	}
 
+	omitWorldStateLatestScreenshot := profile.Name == RoleExecutor && currentExecutorScratchpadHasLatestScreenshot(state)
 	statePrompt := buildRoleStatePrompt(profile.Name, inputs, state, task)
 	messages = append(messages, llms.MessageContent{
 		Role:  llms.ChatMessageTypeHuman,
-		Parts: buildRoleUserMessageParts(statePrompt, e.InputAttachments, state.World),
+		Parts: buildRoleUserMessageParts(statePrompt, e.InputAttachments, state.World, omitWorldStateLatestScreenshot),
 	})
 	for _, steer := range state.SteerMessages {
 		messages = append(messages, llms.MessageContent{
@@ -1028,7 +1029,9 @@ func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task
 func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
 	var builder strings.Builder
 	builder.WriteString(task)
-	writeWorldState(&builder, state.World)
+	writeWorldStateWithOptions(&builder, state.World, worldStatePromptOptions{
+		OmitLatestScreenshot: currentExecutorScratchpadHasLatestScreenshot(state),
+	})
 	writeRequestContextAndCriteria(&builder, inputs, state)
 	writeSessionContext(&builder, inputs)
 	if history := strings.TrimSpace(inputs["history"]); history != "" {
@@ -1207,15 +1210,23 @@ func compactPromptLine(value string, max int) string {
 	return truncateForLog(singleLineHistoryText(value), max)
 }
 
-func buildRoleUserMessageParts(input string, attachments []InputAttachment, world worldState) []llms.ContentPart {
+func buildRoleUserMessageParts(input string, attachments []InputAttachment, world worldState, omitWorldStateLatestScreenshot bool) []llms.ContentPart {
 	parts := buildUserMessageParts(input, attachments)
-	if world.LatestScreenshot == nil || len(world.LatestScreenshot.Data) == 0 {
+	if omitWorldStateLatestScreenshot || world.LatestScreenshot == nil || len(world.LatestScreenshot.Data) == 0 {
 		return parts
 	}
 	return append(parts, buildImagePart(world.LatestScreenshot.MIMEType(), world.LatestScreenshot.Data))
 }
 
+type worldStatePromptOptions struct {
+	OmitLatestScreenshot bool
+}
+
 func writeWorldState(builder *strings.Builder, world worldState) {
+	writeWorldStateWithOptions(builder, world, worldStatePromptOptions{})
+}
+
+func writeWorldStateWithOptions(builder *strings.Builder, world worldState, options worldStatePromptOptions) {
 	builder.WriteString("\n\nWorld State (shared across planner, executor, and verifier):\n")
 	if world.DeviceEnvironment != nil {
 		env := world.DeviceEnvironment
@@ -1252,28 +1263,30 @@ func writeWorldState(builder *strings.Builder, world worldState) {
 			builder.WriteByte('\n')
 		}
 	}
-	if world.LatestScreenshot == nil {
-		builder.WriteString("- Latest screenshot: none yet.\n")
-	} else {
-		screenshot := world.LatestScreenshot
-		builder.WriteString(fmt.Sprintf(
-			"- Latest screenshot: step=%d source_tool=%s size=%dx%d format=%s bytes=%d. The current screenshot image is attached to this message.\n",
-			screenshot.StepNumber,
-			screenshot.SourceTool,
-			screenshot.Width,
-			screenshot.Height,
-			screenshot.Format,
-			screenshot.Size,
-		))
-		if input := strings.TrimSpace(screenshot.ToolInput); input != "" {
-			builder.WriteString("- Screenshot source input: ")
-			builder.WriteString(input)
-			builder.WriteByte('\n')
-		}
-		if actionOutput := strings.TrimSpace(screenshot.ActionOutput); actionOutput != "" {
-			builder.WriteString("- Post-action output before screenshot: ")
-			builder.WriteString(compactToolObservation(actionOutput))
-			builder.WriteByte('\n')
+	if !options.OmitLatestScreenshot {
+		if world.LatestScreenshot == nil {
+			builder.WriteString("- Latest screenshot: none yet.\n")
+		} else {
+			screenshot := world.LatestScreenshot
+			builder.WriteString(fmt.Sprintf(
+				"- Latest screenshot: step=%d source_tool=%s size=%dx%d format=%s bytes=%d. The current screenshot image is attached to this message.\n",
+				screenshot.StepNumber,
+				screenshot.SourceTool,
+				screenshot.Width,
+				screenshot.Height,
+				screenshot.Format,
+				screenshot.Size,
+			))
+			if input := strings.TrimSpace(screenshot.ToolInput); input != "" {
+				builder.WriteString("- Screenshot source input: ")
+				builder.WriteString(input)
+				builder.WriteByte('\n')
+			}
+			if actionOutput := strings.TrimSpace(screenshot.ActionOutput); actionOutput != "" {
+				builder.WriteString("- Post-action output before screenshot: ")
+				builder.WriteString(compactToolObservation(actionOutput))
+				builder.WriteByte('\n')
+			}
 		}
 	}
 	if world.Observation != nil {
@@ -1312,6 +1325,30 @@ func writeWorldState(builder *strings.Builder, world worldState) {
 			builder.WriteByte('\n')
 		}
 	}
+}
+
+func currentExecutorScratchpadHasLatestScreenshot(state roleLoopState) bool {
+	latest := state.World.LatestScreenshot
+	if latest == nil || len(latest.Data) == 0 || len(state.StepToolSteps) == 0 {
+		return false
+	}
+	for _, step := range state.StepToolSteps {
+		screenshot, ok := screenshotFromStep(step, latest.StepNumber)
+		if !ok {
+			continue
+		}
+		if worldScreenshotImageMatches(screenshot, *latest) {
+			return true
+		}
+	}
+	return false
+}
+
+func worldScreenshotImageMatches(a, b worldScreenshot) bool {
+	return a.Width == b.Width &&
+		a.Height == b.Height &&
+		strings.EqualFold(a.Format, b.Format) &&
+		bytes.Equal(a.Data, b.Data)
 }
 
 func appendWorldStateLine(builder *strings.Builder, prefix, value string) {

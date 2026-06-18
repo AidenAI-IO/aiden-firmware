@@ -43,8 +43,8 @@ func TestConfigScreenshotPruningDefaultsAndOverrides(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 	pruning := cfg.ScreenshotPruningOrDefault()
-	if pruning.KeepN != 3 || pruning.Interval != 25 {
-		t.Fatalf("default screenshot pruning = %#v, want keep_n=3 interval=25", pruning)
+	if pruning.KeepN != 3 || pruning.Interval != 5 {
+		t.Fatalf("default screenshot pruning = %#v, want keep_n=3 interval=5", pruning)
 	}
 
 	cfg.ScreenshotKeepN = 5

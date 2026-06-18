@@ -785,6 +785,73 @@ func TestRoleCollaborativeExecutorSharesScreenshotWorldStateAcrossRoles(t *testi
 	}
 }
 
+func TestRoleCollaborativeExecutorOmitsWorldStateLatestScreenshotWhenExecutorScratchpadHasIt(t *testing.T) {
+	jpegBytes := []byte("executor-scratchpad-jpeg")
+	encodedImage := base64.StdEncoding.EncodeToString(jpegBytes)
+	imageURL := "data:image/jpeg;base64," + encodedImage
+	model := &scriptedModel{
+		responses: roleCommittedExecutionResponses(
+			[]string{"inspect screen"},
+			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
+			finishStepToolCall("inspected screen"),
+			verifierFinishResponse("done"),
+		),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"screenshot": &stubTool{
+				name:        "screenshot",
+				description: "Capture screen.",
+				visual:      true,
+				output:      `{"width":320,"height":240,"format":"jpeg","size":16,"data":"` + encodedImage + `"}`,
+			},
+		}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "inspect current screen"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if model.callCount != 5 {
+		t.Fatalf("model call count = %d, want 5", model.callCount)
+	}
+
+	executorFollowup := model.messages[3]
+	prompt := messageText(executorFollowup)
+	if !hasMessageRole(executorFollowup, llms.ChatMessageTypeTool) {
+		t.Fatalf("executor follow-up should receive current step scratchpad: %#v", executorFollowup)
+	}
+	if got := imageURLCount(executorFollowup, imageURL); got != 1 {
+		t.Fatalf("executor follow-up should include screenshot only from scratchpad, got %d copies", got)
+	}
+	for _, want := range []string{
+		"World State (shared across planner, executor, and verifier):",
+		"This image is the screenshot observation returned by the screenshot tool.",
+		"Original user request",
+		"inspect current screen",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("executor follow-up missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unexpected := range []string{
+		"Latest screenshot:",
+		"The current screenshot image is attached to this message.",
+		"Screenshot source input:",
+	} {
+		if strings.Contains(prompt, unexpected) {
+			t.Fatalf("executor follow-up should not include world-state screenshot text %q:\n%s", unexpected, prompt)
+		}
+	}
+}
+
 func TestWorldStateUpdatesFromPostActionScreenshot(t *testing.T) {
 	jpegBytes := []byte("post-action-jpeg")
 	state := worldState{}
@@ -949,6 +1016,19 @@ func hasImageURL(messages []llms.MessageContent, want string) bool {
 		}
 	}
 	return false
+}
+
+func imageURLCount(messages []llms.MessageContent, want string) int {
+	count := 0
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			image, ok := part.(llms.ImageURLContent)
+			if ok && image.URL == want {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func finalHumanMessageHasTextBeforeImage(messages []llms.MessageContent, imageURL string) bool {
