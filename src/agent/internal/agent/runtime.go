@@ -66,7 +66,10 @@ type RunRequest struct {
 	// RuntimeContext is dynamic per-turn system context, such as connected
 	// hardware/app state. It is not persisted as user configuration.
 	RuntimeContext string
-	StreamWriter   io.Writer
+	// FollowUpRelation overrides automatic session follow-up classification for
+	// inputs whose relationship to the previous turn is known by the caller.
+	FollowUpRelation string
+	StreamWriter     io.Writer
 	// StreamFinalChunks allows final-answer chunks to be written through
 	// StreamWriter for audio paths. Non-final LLM calls must remain
 	// non-streaming because they may be planner, tool-call, or verifier turns.
@@ -74,6 +77,16 @@ type RunRequest struct {
 	MaxTokens         int
 	EventHandler      func(RunEvent)
 	SteerProvider     func(context.Context) (RunSteerMessage, bool)
+	// FinalSteerProvider is called at terminal executor boundaries. It should
+	// atomically consume one last pending steer if available; otherwise it should
+	// close the request's steer acceptance window.
+	FinalSteerProvider func(context.Context) (RunSteerMessage, bool)
+	// SteerInterrupt signals that the current run should pause before scheduling
+	// more model/tool work while an out-of-band steering input is being captured.
+	SteerInterrupt func() <-chan struct{}
+	// SteerWaiter waits for the out-of-band steering capture to resolve. ok=false
+	// means the interruption produced no usable input and the run may continue.
+	SteerWaiter func(context.Context) (RunSteerMessage, bool, error)
 }
 
 type RunResult struct {
@@ -548,14 +561,15 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		episodeID = newTaskEpisodeID(startTime.UTC())
 	}
 	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
-		AgentName:    "default",
-		Input:        normalizedInput,
-		Turn:         turnInput,
-		SessionID:    r.telemetrySessionID,
-		EpisodeID:    episodeID,
-		RequestID:    req.RequestID,
-		RunID:        runID,
-		CurrentHints: currentHints,
+		AgentName:        "default",
+		Input:            normalizedInput,
+		Turn:             turnInput,
+		SessionID:        r.telemetrySessionID,
+		EpisodeID:        episodeID,
+		RequestID:        req.RequestID,
+		RunID:            runID,
+		CurrentHints:     currentHints,
+		FollowUpRelation: req.FollowUpRelation,
 	})
 	if err != nil {
 		return RunResult{}, err
@@ -666,6 +680,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	executor.ConversationHistory = conversationHistory
 	executor.TodoReminderToolCalls = r.config.TodoReminderToolCallsOrDefault()
 	executor.ToolCallSpeech = r.config.VoiceToolCallSpeechOrDefault()
+	executor.SteerInterrupt = req.SteerInterrupt
+	executor.SteerWaiter = req.SteerWaiter
+	executor.FinalSteerProvider = req.FinalSteerProvider
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {

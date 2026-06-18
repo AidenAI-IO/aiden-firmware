@@ -102,6 +102,35 @@ func TestPlayPromptSoundReturnsContextErrorWhenCanceledBeforeRetry(t *testing.T)
 	}
 }
 
+func TestAudioDialogInterruptOutputStopsPromptSound(t *testing.T) {
+	audioServer := newTestAudioService(t)
+	audioServer.healthPlaybackSessions = []uint32{1}
+	firstStart := make(chan struct{})
+	var once sync.Once
+	audioServer.onStartPlayback = func() {
+		once.Do(func() {
+			close(firstStart)
+		})
+	}
+	dialog := &AudioDialog{
+		audioClient: NewAudioServiceClient(audioServer.socketPath),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		dialog.playPromptSound(promptSoundRecordingStart, "recording", true)
+		close(done)
+	}()
+
+	waitForTestSignal(t, firstStart, "prompt sound playback to start")
+	dialog.InterruptOutput()
+	waitForTestSignal(t, done, "prompt sound to stop")
+
+	if got := audioServer.countOp("stop_playback"); got != 1 {
+		t.Fatalf("stop_playback count = %d, want 1", got)
+	}
+}
+
 type testAudioService struct {
 	socketPath               string
 	listener                 net.Listener

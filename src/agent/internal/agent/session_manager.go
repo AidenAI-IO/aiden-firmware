@@ -19,14 +19,15 @@ type SessionManager interface {
 
 // SessionBeginRequest contains the run data needed before prompt construction.
 type SessionBeginRequest struct {
-	AgentName    string
-	Input        string
-	Turn         TurnInput
-	SessionID    string
-	EpisodeID    string
-	RequestID    string
-	RunID        string
-	CurrentHints CurrentEnvironmentHints
+	AgentName        string
+	Input            string
+	Turn             TurnInput
+	SessionID        string
+	EpisodeID        string
+	RequestID        string
+	RunID            string
+	CurrentHints     CurrentEnvironmentHints
+	FollowUpRelation string
 }
 
 // SessionBeginResult contains session state computed before prompt construction.
@@ -79,7 +80,7 @@ func (m memoryManagerSessionManager) BeginRun(ctx context.Context, req SessionBe
 	if turn.InputText == "" {
 		turn = NewTextTurnInput(req.Input, nil)
 	}
-	boundary, relation := m.handleSessionBoundary(turn.InputText)
+	boundary, relation := m.handleSessionBoundary(turn.InputText, req.FollowUpRelation)
 	if m.memories != nil {
 		agentName := req.AgentName
 		if agentName == "" {
@@ -99,8 +100,13 @@ func (m memoryManagerSessionManager) BeginRun(ctx context.Context, req SessionBe
 	return SessionBeginResult{Boundary: boundary}, nil
 }
 
-func (m memoryManagerSessionManager) handleSessionBoundary(input string) (sessionBoundaryTelemetry, string) {
+func (m memoryManagerSessionManager) handleSessionBoundary(input string, forcedRelation string) (sessionBoundaryTelemetry, string) {
 	var telemetry sessionBoundaryTelemetry
+	if forcedRelation = normalizeFollowUpRelation(forcedRelation); forcedRelation != "" {
+		telemetry.Decision = BoundaryContinue
+		telemetry.Reason = BoundaryReasonForcedFollowUp
+		return telemetry, forcedRelation
+	}
 	if m.memories == nil || m.memories.storageDir == "" {
 		return telemetry, FollowUpRootRequest
 	}

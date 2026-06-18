@@ -878,7 +878,7 @@ func (s *Server) handleChatAsync(
 			if closeErr != nil && s.logger != nil {
 				s.logger.Error("new TTS stream failed: %v", closeErr)
 			}
-			result.SpeechStreamed = closeErr == nil && newStream.spoke
+			result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
 		}
 
 		pending.mu.Lock()
@@ -1129,7 +1129,7 @@ func (s *Server) handleChatSync(
 		if closeErr != nil && s.logger != nil {
 			s.logger.Error("new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = closeErr == nil && newStream.spoke
+		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
 	}
 
 	if err != nil {
@@ -1311,7 +1311,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		if closeErr != nil && s.logger != nil {
 			s.logger.Error("new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = closeErr == nil && newStream.spoke
+		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
 	}
 	if err != nil {
 		if req.RequestID != "" && s.liveActivity != nil {

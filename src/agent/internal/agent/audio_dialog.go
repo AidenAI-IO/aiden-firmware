@@ -13,7 +13,10 @@ import (
 	"aiden-agent/internal/agent/tts"
 )
 
-const toolDescriptionSpeechTimeout = 15 * time.Second
+const (
+	toolDescriptionSpeechTimeout = 15 * time.Second
+	outputInterruptWaitTimeout   = 250 * time.Millisecond
+)
 
 var (
 	recordingStartRetryTimeout  = 5 * time.Second
@@ -31,11 +34,75 @@ type AudioDialog struct {
 	sessionID     uint64
 	recordReader  *AudioRecordChunkReader
 	speechMu      sync.Mutex
+	outputMu      sync.Mutex
+	activeOutputs map[*activeTTSOutput]struct{}
 	progressMu    sync.Mutex
 	progress      *progressSpeaker
+	runControl    voiceRunControl
 	historyStore  *ChatHistoryStore
 	historyAppend func(Message)
 	audioArchive  *AudioArchiveManager
+}
+
+type activeTTSOutput struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+
+	mu     sync.Mutex
+	stream *streamSessionWriter
+}
+
+func newActiveTTSOutput(cancel context.CancelFunc) *activeTTSOutput {
+	return &activeTTSOutput{
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+}
+
+func (o *activeTTSOutput) setStream(stream *streamSessionWriter) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.stream = stream
+}
+
+func (o *activeTTSOutput) clearStream(stream *streamSessionWriter) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.stream == stream {
+		o.stream = nil
+	}
+}
+
+func (o *activeTTSOutput) interrupt() {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	stream := o.stream
+	o.mu.Unlock()
+	if stream != nil {
+		stream.interrupt()
+	}
+	if o.cancel != nil {
+		o.cancel()
+	}
+}
+
+func (o *activeTTSOutput) finish() {
+	if o == nil {
+		return
+	}
+	select {
+	case <-o.done:
+	default:
+		close(o.done)
+	}
 }
 
 // NewAudioDialog creates a new audio dialog manager
@@ -259,6 +326,95 @@ func (d *AudioDialog) VADDebugState() VADDebugState {
 	return d.vad.DebugState()
 }
 
+func (d *AudioDialog) registerActiveOutput(output *activeTTSOutput) func() {
+	if output == nil {
+		return func() {}
+	}
+	d.outputMu.Lock()
+	if d.activeOutputs == nil {
+		d.activeOutputs = make(map[*activeTTSOutput]struct{})
+	}
+	d.activeOutputs[output] = struct{}{}
+	d.outputMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			d.outputMu.Lock()
+			delete(d.activeOutputs, output)
+			d.outputMu.Unlock()
+			output.finish()
+		})
+	}
+}
+
+func (d *AudioDialog) snapshotActiveOutputs() []*activeTTSOutput {
+	d.outputMu.Lock()
+	defer d.outputMu.Unlock()
+	if len(d.activeOutputs) == 0 {
+		return nil
+	}
+	outputs := make([]*activeTTSOutput, 0, len(d.activeOutputs))
+	for output := range d.activeOutputs {
+		outputs = append(outputs, output)
+	}
+	return outputs
+}
+
+func (d *AudioDialog) beginActiveManagedTTSStream(ctx context.Context) (*streamSessionWriter, func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	streamCtx, streamCancel := context.WithCancel(ctx)
+	stream, err := beginManagedTTSStream(streamCtx, d.ttsManager, d.audioClient, d.config)
+	if err != nil {
+		streamCancel()
+		return nil, nil, err
+	}
+	stream.setCancel(streamCancel)
+	output := newActiveTTSOutput(streamCancel)
+	output.setStream(stream)
+	unregister := d.registerActiveOutput(output)
+	return stream, func() {
+		unregister()
+		streamCancel()
+	}, nil
+}
+
+// InterruptOutput immediately stops any TTS output owned by this dialog.
+func (d *AudioDialog) InterruptOutput() {
+	if d == nil {
+		return
+	}
+	d.progressMu.Lock()
+	progress := d.progress
+	d.progressMu.Unlock()
+	if progress != nil {
+		progress.Cancel()
+	}
+
+	outputs := d.snapshotActiveOutputs()
+	for _, output := range outputs {
+		output.interrupt()
+	}
+	waitForActiveOutputs(outputs, outputInterruptWaitTimeout)
+}
+
+func waitForActiveOutputs(outputs []*activeTTSOutput, timeout time.Duration) {
+	if len(outputs) == 0 || timeout <= 0 {
+		return
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for _, output := range outputs {
+		select {
+		case <-output.done:
+		case <-timer.C:
+			return
+		}
+	}
+}
+
 // ProcessUtterance processes a detected utterance
 func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, runtime *Runtime) error {
 	input, err := d.PrepareTurnInput(utterance)
@@ -299,7 +455,7 @@ func (d *AudioDialog) persistVoiceTurn(input TurnInput, result RunResult, uttera
 
 func (d *AudioDialog) PersistVoiceTurn(input TurnInput, result RunResult, utterance []int16) {
 	d.persistVoiceUserInput(input, utterance, result.EpisodeID, "")
-	d.PersistVoiceAssistantOutput(result)
+	d.persistVoiceAssistantOutput(result, "")
 }
 
 func (d *AudioDialog) PersistVoiceUserInput(input TurnInput, utterance []int16) {
@@ -328,6 +484,10 @@ func (d *AudioDialog) persistVoiceUserInput(input TurnInput, utterance []int16, 
 }
 
 func (d *AudioDialog) PersistVoiceAssistantOutput(result RunResult) {
+	d.persistVoiceAssistantOutput(result, "")
+}
+
+func (d *AudioDialog) persistVoiceAssistantOutput(result RunResult, requestID string) {
 	if d.historyAppend == nil && d.historyStore == nil {
 		return
 	}
@@ -337,6 +497,7 @@ func (d *AudioDialog) PersistVoiceAssistantOutput(result RunResult) {
 		assistantMsg := Message{
 			Type:      "assistant",
 			EpisodeID: result.EpisodeID,
+			RequestID: requestID,
 			Content:   output,
 			Source:    "voice",
 			Timestamp: now,
@@ -345,11 +506,11 @@ func (d *AudioDialog) PersistVoiceAssistantOutput(result RunResult) {
 	}
 }
 
-func (d *AudioDialog) appendVoiceRunEvent(event RunEvent) {
+func (d *AudioDialog) appendVoiceRunEvent(event RunEvent, requestID string) {
 	if d.historyAppend == nil && d.historyStore == nil {
 		return
 	}
-	message := messageFromRunEvent(event, event.EpisodeID, "")
+	message := messageFromRunEvent(event, event.EpisodeID, requestID)
 	if message.Type == "" {
 		return
 	}
@@ -438,24 +599,40 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 	if runtime != nil {
 		episodeID = runtime.NewEpisodeID()
 	}
-	return d.runAgentTurnWithEpisode(ctx, input, runtime, episodeID)
+	requestID := createVoiceRequestID()
+	if !d.beginVoiceRunControl(requestID) {
+		return RunResult{}, fmt.Errorf("voice run already active")
+	}
+	defer d.endVoiceRunControl(requestID)
+	return d.runAgentTurnWithActiveRequest(ctx, input, runtime, episodeID, requestID, VoiceTurnContext{})
 }
 
 func (d *AudioDialog) RunVoiceTurn(ctx context.Context, input TurnInput, utterance []int16, runtime *Runtime) (RunResult, error) {
+	return d.RunVoiceTurnWithContext(ctx, input, utterance, runtime, VoiceTurnContext{})
+}
+
+func (d *AudioDialog) RunVoiceTurnWithContext(ctx context.Context, input TurnInput, utterance []int16, runtime *Runtime, turnContext VoiceTurnContext) (RunResult, error) {
 	episodeID := ""
 	if runtime != nil {
 		episodeID = runtime.NewEpisodeID()
 	}
-	d.persistVoiceUserInput(input, utterance, episodeID, "")
-	result, err := d.runAgentTurnWithEpisode(ctx, input, runtime, episodeID)
+	requestID := createVoiceRequestID()
+	if !d.beginVoiceRunControl(requestID) {
+		return RunResult{}, fmt.Errorf("voice run already active")
+	}
+	defer d.endVoiceRunControl(requestID)
+	d.persistVoiceUserInput(input, utterance, episodeID, requestID)
+	result, err := d.runAgentTurnWithActiveRequest(ctx, input, runtime, episodeID, requestID, turnContext)
 	if err != nil {
 		return RunResult{}, err
 	}
-	d.PersistVoiceAssistantOutput(result)
+	d.persistVoiceAssistantOutput(result, requestID)
 	return result, nil
 }
 
-func (d *AudioDialog) runAgentTurnWithEpisode(ctx context.Context, input TurnInput, runtime *Runtime, episodeID string) (RunResult, error) {
+func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input TurnInput, runtime *Runtime, episodeID, requestID string, turnContext VoiceTurnContext) (RunResult, error) {
+	turnContext = normalizeVoiceTurnContext(turnContext)
+
 	d.playPromptSound(promptSoundAgentSend, "agent send", true)
 
 	// Send to LLM
@@ -470,36 +647,55 @@ func (d *AudioDialog) runAgentTurnWithEpisode(ctx context.Context, input TurnInp
 	}()
 
 	req := RunRequest{
-		Input:       input.InputText,
-		Attachments: input.Attachments,
-		Turn:        input,
-		MaxTokens:   d.config.VoiceMaxResponseTokensOrDefault(),
+		Input:            input.InputText,
+		Attachments:      input.Attachments,
+		Turn:             input,
+		RequestID:        requestID,
+		RuntimeContext:   turnContext.RuntimeContext,
+		FollowUpRelation: turnContext.FollowUpRelation,
+		MaxTokens:        d.config.VoiceMaxResponseTokensOrDefault(),
 		EventHandler: func(event RunEvent) {
-			d.appendVoiceRunEvent(event)
+			d.appendVoiceRunEvent(event, requestID)
 			d.HandleRunEvent(ctx, event)
 		},
 		StreamFinalChunks: true,
+		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			return d.consumePendingSteer(requestID)
+		},
+		FinalSteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			return d.consumeFinalPendingSteer(requestID)
+		},
+		SteerInterrupt: func() <-chan struct{} {
+			return d.steerInterruptChannel(requestID)
+		},
+		SteerWaiter: func(ctx context.Context) (RunSteerMessage, bool, error) {
+			return d.waitForSteerInterrupt(ctx, requestID)
+		},
 	}
 	req.EpisodeID = strings.TrimSpace(episodeID)
 
 	var newStream *streamSessionWriter
+	unregisterStream := func() {}
 	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.ttsManager != nil {
-		stream, err := beginManagedTTSStream(ctx, d.ttsManager, d.audioClient, d.config)
+		stream, unregister, err := d.beginActiveManagedTTSStream(ctx)
 		if err != nil {
 			log.Printf("[error] TTS BeginStream failed: %v\n", err)
 		} else {
 			newStream = stream
+			unregisterStream = unregister
+			defer unregisterStream()
 			req.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, d.config), progress.Cancel)
 		}
 	}
 
 	result, err := runtime.Run(ctx, req)
+	d.stopAcceptingSteer(requestID)
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil {
 			log.Printf("[error] new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = closeErr == nil && newStream.spoke
+		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
 	}
 	if err != nil {
 		return RunResult{}, fmt.Errorf("LLM request failed: %w", err)
@@ -507,6 +703,98 @@ func (d *AudioDialog) runAgentTurnWithEpisode(ctx context.Context, input TurnInp
 
 	log.Printf("[llm] Response received\n")
 	return result, nil
+}
+
+func (d *AudioDialog) beginVoiceRunControl(requestID string) bool {
+	if d == nil {
+		return false
+	}
+	return d.runControl.begin(requestID)
+}
+
+func (d *AudioDialog) endVoiceRunControl(requestID string) {
+	if d == nil {
+		return
+	}
+	d.runControl.end(requestID)
+}
+
+func (d *AudioDialog) QueueSteer(input TurnInput) bool {
+	content := steerContentFromTurnInput(input)
+	if content == "" {
+		return false
+	}
+	queued, ok := d.runControl.queueSteer(content)
+	if !ok {
+		return false
+	}
+	if queued.interrupted {
+		log.Printf("[steer] Queued interrupted voice steer: request_id=%s len=%d\n", queued.requestID, queued.contentLength)
+		return true
+	}
+	log.Printf("[steer] Queued voice steer: request_id=%s len=%d\n", queued.requestID, queued.contentLength)
+	return true
+}
+
+func (d *AudioDialog) BeginSteerInterrupt() bool {
+	if d == nil {
+		return false
+	}
+	requestID, started, ok := d.runControl.beginInterrupt()
+	if !ok {
+		return false
+	}
+	if started {
+		log.Printf("[steer] Voice run interrupted, waiting for steering input: request_id=%s\n", requestID)
+	}
+	return true
+}
+
+func (d *AudioDialog) ResumeSteerInterrupt() bool {
+	if d == nil {
+		return false
+	}
+	requestID, ok := d.runControl.resumeInterrupt()
+	if !ok {
+		return false
+	}
+	log.Printf("[steer] Voice steer interruption resumed without input: request_id=%s\n", requestID)
+	return true
+}
+
+func (d *AudioDialog) consumePendingSteer(requestID string) (RunSteerMessage, bool) {
+	if d == nil {
+		return RunSteerMessage{}, false
+	}
+	return d.runControl.consumePending(requestID)
+}
+
+func (d *AudioDialog) consumeFinalPendingSteer(requestID string) (RunSteerMessage, bool) {
+	if d == nil {
+		return RunSteerMessage{}, false
+	}
+	return d.runControl.consumeFinalPending(requestID)
+}
+
+func (d *AudioDialog) stopAcceptingSteer(requestID string) {
+	if d == nil {
+		return
+	}
+	d.runControl.stopAccepting(requestID)
+}
+
+func (d *AudioDialog) steerInterruptChannel(requestID string) <-chan struct{} {
+	if d == nil {
+		return nil
+	}
+	return d.runControl.interruptChannel(requestID)
+}
+
+func (d *AudioDialog) waitForSteerInterrupt(ctx context.Context, requestID string) (RunSteerMessage, bool, error) {
+	if d == nil {
+		return RunSteerMessage{}, false, nil
+	}
+	return d.runControl.waitForInterrupt(ctx, requestID)
 }
 
 func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
@@ -590,15 +878,22 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 		if err := baseCtx.Err(); err != nil {
 			return err
 		}
+		outputCtx, cancelOutput := context.WithCancel(baseCtx)
+		output := newActiveTTSOutput(cancelOutput)
+		unregisterOutput := d.registerActiveOutput(output)
+		defer func() {
+			unregisterOutput()
+			cancelOutput()
+		}()
 		d.speechMu.Lock()
 		defer d.speechMu.Unlock()
-		if err := baseCtx.Err(); err != nil {
+		if err := outputCtx.Err(); err != nil {
 			return err
 		}
-		speakCtx := baseCtx
+		speakCtx := outputCtx
 		cancelTimeout := func() {}
 		if timeoutAfterLock > 0 {
-			speakCtx, cancelTimeout = context.WithTimeout(baseCtx, timeoutAfterLock)
+			speakCtx, cancelTimeout = context.WithTimeout(outputCtx, timeoutAfterLock)
 			defer cancelTimeout()
 		}
 		if err := speakCtx.Err(); err != nil {
@@ -606,7 +901,13 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 		}
 		log.Printf("[reply] %s\n", text)
 		log.Printf("[tts] Starting streaming playback...\n")
-		_, err := speakWithTTSManager(speakCtx, d.ttsManager, d.audioClient, d.config, text)
+		_, err := speakWithTTSManagerObserved(speakCtx, d.ttsManager, d.audioClient, d.config, text, func(stream *streamSessionWriter) func() {
+			stream.setCancel(cancelOutput)
+			output.setStream(stream)
+			return func() {
+				output.clearStream(stream)
+			}
+		})
 		if err != nil {
 			log.Printf("[error] TTS streaming failed: %v", err)
 			return err
@@ -627,9 +928,17 @@ func (d *AudioDialog) playPromptSoundAsync(kind promptSoundKind, label string) {
 }
 
 func (d *AudioDialog) playPromptSound(kind promptSoundKind, label string, wait bool) {
+	outputCtx, cancelOutput := context.WithCancel(context.Background())
+	output := newActiveTTSOutput(cancelOutput)
+	unregisterOutput := d.registerActiveOutput(output)
+	defer func() {
+		unregisterOutput()
+		cancelOutput()
+	}()
+
 	d.speechMu.Lock()
 	defer d.speechMu.Unlock()
-	if err := playPromptSound(context.Background(), d.audioClient, kind, wait); err != nil {
+	if err := playPromptSound(outputCtx, d.audioClient, kind, wait); err != nil {
 		log.Printf("[audio] %s prompt sound failed: %v\n", label, err)
 	}
 }
@@ -654,18 +963,21 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		Input: text,
 		Turn:  NewTextTurnInput(text, nil),
 		EventHandler: func(event RunEvent) {
-			d.appendVoiceRunEvent(event)
+			d.appendVoiceRunEvent(event, "")
 			d.HandleRunEvent(ctx, event)
 		},
 		StreamFinalChunks: true,
 	}
 	var newStream *streamSessionWriter
+	unregisterStream := func() {}
 	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.ttsManager != nil {
-		stream, err := beginManagedTTSStream(ctx, d.ttsManager, d.audioClient, d.config)
+		stream, unregister, err := d.beginActiveManagedTTSStream(ctx)
 		if err != nil {
 			log.Printf("[error] TTS BeginStream failed: %v\n", err)
 		} else {
 			newStream = stream
+			unregisterStream = unregister
+			defer unregisterStream()
 			req.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, d.config), progress.Cancel)
 		}
 	}
@@ -676,7 +988,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		if closeErr != nil {
 			log.Printf("[error] new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = closeErr == nil && newStream.spoke
+		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
 	}
 	if err != nil {
 		return fmt.Errorf("LLM request failed: %w", err)

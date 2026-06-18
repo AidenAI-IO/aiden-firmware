@@ -421,6 +421,189 @@ func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 	})
 }
 
+func TestRuntimeRunSteerInterruptPausesAfterNonCancelableTool(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleToolResponses("slow", `{"__arg1":"original action"}`, "Changed course."),
+	}
+	toolStarted := make(chan struct{})
+	releaseTool := make(chan struct{})
+	tool := &blockingTool{
+		name:         "slow",
+		description:  "Slow tool.",
+		output:       "tool output",
+		started:      toolStarted,
+		release:      releaseTool,
+		ignoreCancel: true,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"slow": tool}},
+		NewSkillIndex(),
+	)
+
+	interruptCh := make(chan struct{})
+	waitCalled := make(chan struct{})
+	releaseSteer := make(chan struct{})
+	resultCh := make(chan struct {
+		result RunResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := runtime.Run(context.Background(), RunRequest{
+			Input: "do the original action",
+			SteerInterrupt: func() <-chan struct{} {
+				return interruptCh
+			},
+			SteerWaiter: func(ctx context.Context) (RunSteerMessage, bool, error) {
+				close(waitCalled)
+				select {
+				case <-ctx.Done():
+					return RunSteerMessage{}, false, ctx.Err()
+				case <-releaseSteer:
+				}
+				return RunSteerMessage{ID: "steer-1", Content: "Use the updated instruction instead."}, true, nil
+			},
+		})
+		resultCh <- struct {
+			result RunResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	close(interruptCh)
+	close(releaseTool)
+	select {
+	case <-waitCalled:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not pause for steering after interrupted tool returned")
+	}
+	if model.callCount != 1 {
+		t.Fatalf("model call count while waiting for steer = %d, want 1", model.callCount)
+	}
+	close(releaseSteer)
+
+	var runResult struct {
+		result RunResult
+		err    error
+	}
+	select {
+	case runResult = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not finish after steering release")
+	}
+	if runResult.err != nil {
+		t.Fatalf("Run() error = %v", runResult.err)
+	}
+	if runResult.result.Output != "Changed course." {
+		t.Fatalf("output = %q, want Changed course.", runResult.result.Output)
+	}
+	if len(tool.inputs) != 1 || tool.inputs[0] != "original action" {
+		t.Fatalf("tool inputs = %#v, want only original action", tool.inputs)
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("expected second model call after steer, got %#v", model.messages)
+	}
+	role, text, ok := runtimeLastMessageText(model.messages[1])
+	if !ok || role != llms.ChatMessageTypeHuman || text != "Use the updated instruction instead." {
+		t.Fatalf("second model call missing steer message: %#v", model.messages[1])
+	}
+}
+
+func TestRuntimeRunEmptySteerInterruptResumesAfterCancelableTool(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleToolResponses("slow", `{"__arg1":"original action"}`, "Original done."),
+	}
+	toolStarted := make(chan struct{})
+	toolCanceled := make(chan struct{})
+	tool := &blockingTool{
+		name:        "slow",
+		description: "Slow tool.",
+		output:      "tool output",
+		started:     toolStarted,
+		canceled:    toolCanceled,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"slow": tool}},
+		NewSkillIndex(),
+	)
+
+	interruptCh := make(chan struct{})
+	waitCalled := make(chan struct{})
+	releaseWait := make(chan struct{})
+	resultCh := make(chan struct {
+		result RunResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := runtime.Run(context.Background(), RunRequest{
+			Input: "do the original action",
+			SteerInterrupt: func() <-chan struct{} {
+				return interruptCh
+			},
+			SteerWaiter: func(ctx context.Context) (RunSteerMessage, bool, error) {
+				close(waitCalled)
+				select {
+				case <-ctx.Done():
+					return RunSteerMessage{}, false, ctx.Err()
+				case <-releaseWait:
+				}
+				return RunSteerMessage{}, false, nil
+			},
+		})
+		resultCh <- struct {
+			result RunResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	close(interruptCh)
+	select {
+	case <-toolCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("tool context was not canceled after steer interrupt")
+	}
+	select {
+	case <-waitCalled:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not wait for empty steer decision")
+	}
+	close(releaseWait)
+
+	var runResult struct {
+		result RunResult
+		err    error
+	}
+	select {
+	case runResult = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not resume after empty steer decision")
+	}
+	if runResult.err != nil {
+		t.Fatalf("Run() error = %v", runResult.err)
+	}
+	if runResult.result.Output != "Original done." {
+		t.Fatalf("output = %q, want Original done.", runResult.result.Output)
+	}
+	if len(tool.inputs) != 1 || tool.inputs[0] != "original action" {
+		t.Fatalf("tool inputs = %#v, want only original action", tool.inputs)
+	}
+}
+
 func TestRuntimeRunAttachesPendingSteerBeforeFinalAnswer(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -848,6 +1031,76 @@ func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T)
 	}
 }
 
+func TestRuntimeRunForcedFollowUpRelationMarksInterruptedCorrection(t *testing.T) {
+	ctx := context.Background()
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	rootRequest := "打开微信，进入 Aden AI agent 群，发送100块钱红包"
+	correction := "短一点的搜索词"
+	interruptionContext := "Voice interruption: the user pressed the physical wakeup button after interrupting the previous voice turn. Treat the latest voice input as a correction to that interrupted turn."
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse("started"),
+			contentResponse("updated"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Answer directly.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(ctx, RunRequest{
+		Input:     rootRequest,
+		RequestID: "req-voice-root",
+	}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if _, err := runtime.Run(ctx, RunRequest{
+		Input:            correction,
+		RequestID:        "req-voice-correction",
+		FollowUpRelation: FollowUpCorrection,
+		RuntimeContext:   interruptionContext,
+	}); err != nil {
+		t.Fatalf("correction Run() error = %v", err)
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("expected second model prompt, got %#v", model.messages)
+	}
+	correctionPrompt := messageText(model.messages[1])
+	for _, want := range []string{
+		"## Runtime context",
+		"physical wakeup",
+		"after interrupting the previous voice turn",
+		"Original user request / root request",
+		rootRequest,
+		"Latest user message",
+		correction,
+		"Follow-up classification:",
+		FollowUpCorrection,
+		"Latest correction",
+	} {
+		if !strings.Contains(correctionPrompt, want) {
+			t.Fatalf("correction prompt missing %q:\n%s", want, correctionPrompt)
+		}
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if !sessionEventsContain(events, func(event SessionEvent) bool {
+		return event.Type == "user_input" &&
+			event.Content == correction &&
+			event.Relation == FollowUpCorrection &&
+			event.RequestID == "req-voice-correction"
+	}) {
+		t.Fatalf("session events missing forced correction relation: %#v", events)
+	}
+}
+
 func TestRuntimeRunIncludesAvailableSkillCatalog(t *testing.T) {
 	index := NewSkillIndex()
 	index.skills["planner"] = &SkillDefinition{
@@ -1178,6 +1431,20 @@ type scriptedModel struct {
 	tools        [][]llms.Tool
 }
 
+type blockingFinalWriter struct {
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce atomic.Bool
+}
+
+func (w *blockingFinalWriter) Write(p []byte) (int, error) {
+	if w.startedOnce.CompareAndSwap(false, true) {
+		close(w.started)
+	}
+	<-w.release
+	return len(p), nil
+}
+
 type staticTool struct {
 	name   string
 	output string
@@ -1476,6 +1743,43 @@ func (t *stubTool) Call(_ context.Context, input string) (string, error) {
 		return "", t.err
 	}
 	return t.output, nil
+}
+
+type blockingTool struct {
+	name         string
+	description  string
+	output       string
+	inputs       []string
+	started      chan struct{}
+	release      chan struct{}
+	canceled     chan struct{}
+	ignoreCancel bool
+}
+
+func (t *blockingTool) Name() string { return t.name }
+
+func (t *blockingTool) Description() string { return t.description }
+
+func (t *blockingTool) Call(ctx context.Context, input string) (string, error) {
+	t.inputs = append(t.inputs, input)
+	if t.started != nil {
+		close(t.started)
+	}
+	if t.ignoreCancel {
+		if t.release != nil {
+			<-t.release
+		}
+		return t.output, nil
+	}
+	select {
+	case <-ctx.Done():
+		if t.canceled != nil {
+			close(t.canceled)
+		}
+		return "", ctx.Err()
+	case <-t.release:
+		return t.output, nil
+	}
 }
 
 func TestBuildLLMStructuredSummarizeFnParsesStrictJSON(t *testing.T) {
@@ -2438,6 +2742,73 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 	}
 	if stream.String() != "completed" {
 		t.Fatalf("unexpected stream output: %q", stream.String())
+	}
+}
+
+func TestRuntimeRunFinalSteerProviderClosesBeforeFinalStreaming(t *testing.T) {
+	model := &scriptedModel{
+		responses:    roleDirectResponses("final answer"),
+		streamChunks: [][]string{{}},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Answer directly.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	finalSteerClosed := make(chan struct{})
+	writer := &blockingFinalWriter{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	resultCh := make(chan struct {
+		result RunResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := runtime.Run(context.Background(), RunRequest{
+			Input:             "hello",
+			StreamWriter:      writer,
+			StreamFinalChunks: true,
+			FinalSteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+				close(finalSteerClosed)
+				return RunSteerMessage{}, false
+			},
+		})
+		resultCh <- struct {
+			result RunResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-writer.started:
+	case <-time.After(time.Second):
+		t.Fatal("final stream writer was not called")
+	}
+	select {
+	case <-finalSteerClosed:
+	default:
+		t.Fatal("FinalSteerProvider was not called before final streaming")
+	}
+	close(writer.release)
+
+	select {
+	case runResult := <-resultCh:
+		if runResult.err != nil {
+			t.Fatalf("Run() error = %v", runResult.err)
+		}
+		if runResult.result.Output != "final answer" {
+			t.Fatalf("Output = %q, want final answer", runResult.result.Output)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not finish")
 	}
 }
 

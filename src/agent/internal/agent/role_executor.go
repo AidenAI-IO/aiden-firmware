@@ -36,6 +36,10 @@ type roleCollaborativeExecutor struct {
 	ForceSimpleLoop       bool
 	ToolCallSpeech        bool
 	SteerProvider         func(context.Context) (RunSteerMessage, bool)
+	FinalSteerProvider    func(context.Context) (RunSteerMessage, bool)
+	SteerInterrupt        func() <-chan struct{}
+	SteerWaiter           func(context.Context) (RunSteerMessage, bool, error)
+	handledSteerInterrupt <-chan struct{}
 }
 
 const roleModelCallTimeout = 120 * time.Second
@@ -235,6 +239,13 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 		TodoReminderToolCalls: e.TodoReminderToolCalls,
 	}
 	for i := 0; i < e.MaxIterations; i++ {
+		consumedInterrupt, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+		if err != nil {
+			return nil, err
+		}
+		if consumedInterrupt {
+			continue
+		}
 		switch state.Phase {
 		case phaseDecision, phaseDefault, phasePlan:
 			turn, err := e.callPlannerTurn(ctx, inputs, &state, toolSpecs, options...)
@@ -242,19 +253,36 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				return nil, err
 			}
 			switch turn.Kind {
+			case plannerTurnSteer:
+				continue
 			case plannerTurnFinish:
-				consumed, err := e.consumePendingSteer(ctx, inputs, &state)
+				consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
 				if err != nil {
 					return nil, err
 				}
 				if consumed {
 					continue
 				}
-				if state.Phase == phaseDecision || state.Phase == phaseDefault || state.canAcceptPlannerFinal(turn.Answer) {
+				canFinish := state.Phase == phaseDecision || state.Phase == phaseDefault || state.canAcceptPlannerFinal(turn.Answer)
+				if canFinish {
+					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(turn.Answer)
 					}
 					return e.finishRun(ctx, turn.Answer, turn.Answer, &state)
+				}
+				consumed, err = e.consumePendingSteer(ctx, inputs, &state)
+				if err != nil {
+					return nil, err
+				}
+				if consumed {
+					continue
 				}
 				continue
 			case plannerTurnUseSimpleMode:
@@ -300,12 +328,33 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools)
 				}
 				if turn.Kind == plannerTurnTool {
+					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
 					if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
 						return nil, err
 					}
 					state.noteDefaultToolCallAndMaybeTodoReminder()
 				}
 				if turn.Kind == plannerTurnSleep {
+					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
+					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
 					answer := waitForWakeupFinalAnswer(turn.Step)
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(answer)
@@ -326,6 +375,8 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				return nil, err
 			}
 			switch turn.Kind {
+			case executorTurnSteer:
+				continue
 			case executorTurnTool, executorTurnInvalidMeta, executorTurnSleep:
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
@@ -339,11 +390,32 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if e.Recorder != nil {
 						e.Recorder.RecordExecution(execution)
 					}
+					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
 					if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
 						return nil, err
 					}
 				}
 				if turn.Kind == executorTurnSleep {
+					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
+					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
 					answer := waitForWakeupFinalAnswer(turn.Step)
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(answer)
@@ -391,7 +463,15 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if finalAnswer == "" {
 						finalAnswer = stepSummary
 					}
-					consumed, err := e.consumePendingSteer(ctx, inputs, &state)
+					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						state.Phase = phaseDefault
+						continue
+					}
+					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
 					if err != nil {
 						return nil, err
 					}
@@ -482,6 +562,11 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 		return plannerTurnResult{}, err
 	}
 	e.emitRoleOutput(ctx, RolePlanner, roleResponseDebugText(res))
+	if consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, state); err != nil {
+		return plannerTurnResult{}, err
+	} else if consumed {
+		return plannerTurnResult{Kind: plannerTurnSteer}, nil
+	}
 
 	actions, finish, err := parser.ParseOutput(res)
 	if errors.Is(err, agents.ErrUnableToParseOutput) {
@@ -573,6 +658,11 @@ func (e *roleCollaborativeExecutor) callRouteTurn(
 		return plannerTurnResult{}, err
 	}
 	e.emitRoleOutput(ctx, RolePlanner, roleResponseDebugText(res))
+	if consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, state); err != nil {
+		return plannerTurnResult{}, err
+	} else if consumed {
+		return plannerTurnResult{Kind: plannerTurnSteer}, nil
+	}
 
 	parser := &FunctionAgent{Tools: appendLoopMetaTools(e.Tools), OutputKey: e.OutputKey, ToolCallSpeech: e.ToolCallSpeech}
 	actions, _, parseErr := parser.ParseOutput(res)
@@ -629,12 +719,12 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 	toolSpecs *ToolSpecs,
 	action schema.AgentAction,
 ) (plannerTurnResult, error) {
-	toolExecution := executeToolCall(ctx, ToolCallExecution{
+	toolExecution := e.executeToolCall(ctx, ToolCallExecution{
 		Specs:    toolSpecs,
 		Action:   action,
 		Callback: e.CallbacksHandler,
 	})
-	if toolExecution.Error != nil {
+	if toolExecution.Error != nil && !(errors.Is(toolExecution.Error, context.Canceled) && e.steerInterruptSignaled(ctx)) {
 		return plannerTurnResult{}, toolExecution.Error
 	}
 	execution := roleExecutionResult{
@@ -724,12 +814,116 @@ func (e *roleCollaborativeExecutor) emitTodoClosed(ctx context.Context, todo Tod
 	handler.HandleTodoClosed(ctx, snapshot, reason)
 }
 
+func (e *roleCollaborativeExecutor) executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallExecutionResult {
+	interruptCh := (<-chan struct{})(nil)
+	if e != nil && e.SteerInterrupt != nil {
+		interruptCh = e.SteerInterrupt()
+	}
+	if interruptCh == nil {
+		return executeToolCall(ctx, execution)
+	}
+
+	toolCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-interruptCh:
+			cancel()
+		case <-toolCtx.Done():
+		case <-done:
+		}
+	}()
+	result := executeToolCall(toolCtx, execution)
+	close(done)
+	cancel()
+	return result
+}
+
 func (e *roleCollaborativeExecutor) consumePendingSteer(ctx context.Context, inputs map[string]string, state *roleLoopState) (bool, error) {
 	if e == nil || e.SteerProvider == nil || state == nil {
 		return false, nil
 	}
 	steer, ok := e.SteerProvider(ctx)
 	if !ok {
+		return false, nil
+	}
+	return e.appendSteerMessage(ctx, inputs, state, steer)
+}
+
+func (e *roleCollaborativeExecutor) consumeFinalPendingSteer(ctx context.Context, inputs map[string]string, state *roleLoopState) (bool, error) {
+	if e == nil || state == nil {
+		return false, nil
+	}
+	provider := e.FinalSteerProvider
+	if provider == nil {
+		provider = e.SteerProvider
+	}
+	if provider == nil {
+		return false, nil
+	}
+	steer, ok := provider(ctx)
+	if !ok {
+		return false, nil
+	}
+	return e.appendSteerMessage(ctx, inputs, state, steer)
+}
+
+func (e *roleCollaborativeExecutor) consumeSteerInterruptIfSignaled(ctx context.Context, inputs map[string]string, state *roleLoopState) (bool, error) {
+	if e == nil || e.SteerInterrupt == nil || e.SteerWaiter == nil || state == nil {
+		return false, nil
+	}
+	interruptCh := e.SteerInterrupt()
+	if interruptCh == nil {
+		return false, nil
+	}
+	if e.handledSteerInterrupt == interruptCh {
+		return false, nil
+	}
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-interruptCh:
+	default:
+		return false, nil
+	}
+	e.handledSteerInterrupt = interruptCh
+
+	steer, ok, err := e.SteerWaiter(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	if consumed, err := e.appendSteerMessage(ctx, inputs, state, steer); err != nil || !consumed {
+		return consumed, err
+	}
+	state.Phase = phaseDefault
+	state.clearStepExecution()
+	state.PlanExhausted = false
+	return true, nil
+}
+
+func (e *roleCollaborativeExecutor) steerInterruptSignaled(ctx context.Context) bool {
+	if e == nil || e.SteerInterrupt == nil {
+		return false
+	}
+	interruptCh := e.SteerInterrupt()
+	if interruptCh == nil {
+		return false
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-interruptCh:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *roleCollaborativeExecutor) appendSteerMessage(ctx context.Context, inputs map[string]string, state *roleLoopState, steer RunSteerMessage) (bool, error) {
+	if e == nil || state == nil {
 		return false, nil
 	}
 	if steer.Timestamp.IsZero() {
@@ -767,6 +961,11 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 		return executorTurnResult{}, err
 	}
 	e.emitRoleOutput(ctx, RoleExecutor, roleResponseDebugText(res))
+	if consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, state); err != nil {
+		return executorTurnResult{}, err
+	} else if consumed {
+		return executorTurnResult{Kind: executorTurnSteer}, nil
+	}
 
 	actions, finish, err := parser.ParseOutput(res)
 	if errors.Is(err, agents.ErrUnableToParseOutput) {
@@ -830,12 +1029,12 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 		return turn, nil
 	}
 
-	toolExecution := executeToolCall(ctx, ToolCallExecution{
+	toolExecution := e.executeToolCall(ctx, ToolCallExecution{
 		Specs:    toolSpecs,
 		Action:   action,
 		Callback: e.CallbacksHandler,
 	})
-	if toolExecution.Error != nil {
+	if toolExecution.Error != nil && !(errors.Is(toolExecution.Error, context.Canceled) && e.steerInterruptSignaled(ctx)) {
 		return executorTurnResult{}, toolExecution.Error
 	}
 	actionCopy := toolExecution.Step.Action
