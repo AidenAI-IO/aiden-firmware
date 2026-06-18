@@ -1338,7 +1338,7 @@ func writeRequestObjectiveAndCriteria(builder *strings.Builder, inputs map[strin
 	if latestUserMessage == "" {
 		latestUserMessage = strings.TrimSpace(inputs["input"])
 	}
-	builder.WriteString("\n\nOriginal user request / root request (authoritative; do not replace it with a subtask):\n")
+	builder.WriteString("\n\nOriginal user request / root request:\n")
 	builder.WriteString(rootRequest)
 	if latestUserMessage != "" && latestUserMessage != rootRequest {
 		builder.WriteString("\n\nLatest user message:\n")
