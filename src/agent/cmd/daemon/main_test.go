@@ -31,6 +31,7 @@ type fakeAudioDialog struct {
 	runTurn            func(context.Context) (agent.RunResult, error)
 	runVoiceTurn       func(context.Context, agent.TurnInput, []int16) (agent.RunResult, error)
 	queueSteer         func(agent.TurnInput) bool
+	interruptOutput    func()
 	speak              func(context.Context) error
 	persistVoiceTurn   func(agent.TurnInput, agent.RunResult, []int16)
 	persistedTurns     []persistedVoiceTurn
@@ -181,6 +182,13 @@ func (d *fakeAudioDialog) QueueSteer(input agent.TurnInput) bool {
 		d.queuedSteers = append(d.queuedSteers, input)
 	}
 	return ok
+}
+
+func (d *fakeAudioDialog) InterruptOutput() {
+	d.ops = append(d.ops, "interrupt_output")
+	if d.interruptOutput != nil {
+		d.interruptOutput()
+	}
 }
 
 func (d *fakeAudioDialog) PersistVoiceTurn(input agent.TurnInput, result agent.RunResult, utterance []int16) {
@@ -1467,6 +1475,41 @@ func TestRunVoiceSessionWakeupQueuesSteerWhileThinking(t *testing.T) {
 	}
 	if dialog.starts != 2 {
 		t.Fatalf("dialog starts = %d, want original listen plus steer listen", dialog.starts)
+	}
+}
+
+func TestCaptureAndQueueVoiceSteerInterruptsOutputBeforeRecording(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	events := make(chan voiceEvent, 1)
+	dialog := &fakeAudioDialog{
+		frameSamples: 2,
+		chunkBatches: [][]*agent.AudioChunkResult{
+			{{PCM: pcm16BytesFromSamples(300, 400)}},
+		},
+		utterancesToReturn: [][]int16{
+			{300, 400},
+		},
+		prepareTurnInput: func(utterance []int16) (agent.TurnInput, error) {
+			return agent.TurnInput{InputText: "change course", Transcript: "change course"}, nil
+		},
+	}
+
+	exit := captureAndQueueVoiceSteer(agent.Config{VoiceFollowupTimeoutMs: 50}, dialog, sigChan, events)
+	if exit {
+		t.Fatal("captureAndQueueVoiceSteer returned exit=true")
+	}
+
+	wantOps := []string{"interrupt_output", "start", "reset", "stop"}
+	if len(dialog.ops) != len(wantOps) {
+		t.Fatalf("dialog ops = %#v, want %#v", dialog.ops, wantOps)
+	}
+	for i, want := range wantOps {
+		if dialog.ops[i] != want {
+			t.Fatalf("dialog ops = %#v, want %#v", dialog.ops, wantOps)
+		}
+	}
+	if len(dialog.queuedSteers) != 1 || dialog.queuedSteers[0].InputText != "change course" {
+		t.Fatalf("queued steers = %#v, want change course", dialog.queuedSteers)
 	}
 }
 

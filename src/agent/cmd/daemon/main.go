@@ -192,6 +192,7 @@ type audioDialogRunner interface {
 	PrepareTurnInput(utterance []int16) (agent.TurnInput, error)
 	RunVoiceTurn(ctx context.Context, input agent.TurnInput, utterance []int16, runtime *agent.Runtime) (agent.RunResult, error)
 	QueueSteer(input agent.TurnInput) bool
+	InterruptOutput()
 	Speak(ctx context.Context, text string, interrupt <-chan struct{}) error
 	FlushVAD() []int16
 	FinishManualUtterance(pending []int16) []int16
@@ -623,6 +624,7 @@ speaking:
 		case <-events:
 			if cfg.VoiceInterruptOnWakeupOrDefault() {
 				log.Println("[interrupt] wakeup received during speaking, stopping playback")
+				dialog.InterruptOutput()
 				cancelSpeak()
 				waitForSpeakCancel(speakCh)
 				return voiceTurnResult{interrupted: true}
@@ -641,6 +643,7 @@ speaking:
 
 func captureAndQueueVoiceSteer(cfg agent.Config, dialog audioDialogRunner, sigChan chan os.Signal, events <-chan voiceEvent) bool {
 	log.Println("[steer] wakeup received during thinking, listening for steering input")
+	dialog.InterruptOutput()
 	utterance, exit := listenOneUtterance(dialog, sigChan, events, cfg.VoiceFollowupTimeoutOrDefault())
 	if exit {
 		return true
