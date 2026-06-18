@@ -607,7 +607,12 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 	if runtime != nil {
 		episodeID = runtime.NewEpisodeID()
 	}
-	return d.runAgentTurnWithEpisodeAndRequest(ctx, input, runtime, episodeID, createVoiceRequestID(), VoiceTurnContext{})
+	requestID := createVoiceRequestID()
+	if !d.beginVoiceRunControl(requestID) {
+		return RunResult{}, fmt.Errorf("voice run already active")
+	}
+	defer d.endVoiceRunControl(requestID)
+	return d.runAgentTurnWithActiveRequest(ctx, input, runtime, episodeID, requestID, VoiceTurnContext{})
 }
 
 func (d *AudioDialog) RunVoiceTurn(ctx context.Context, input TurnInput, utterance []int16, runtime *Runtime) (RunResult, error) {
@@ -620,8 +625,12 @@ func (d *AudioDialog) RunVoiceTurnWithContext(ctx context.Context, input TurnInp
 		episodeID = runtime.NewEpisodeID()
 	}
 	requestID := createVoiceRequestID()
+	if !d.beginVoiceRunControl(requestID) {
+		return RunResult{}, fmt.Errorf("voice run already active")
+	}
+	defer d.endVoiceRunControl(requestID)
 	d.persistVoiceUserInput(input, utterance, episodeID, requestID)
-	result, err := d.runAgentTurnWithEpisodeAndRequest(ctx, input, runtime, episodeID, requestID, turnContext)
+	result, err := d.runAgentTurnWithActiveRequest(ctx, input, runtime, episodeID, requestID, turnContext)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -629,15 +638,8 @@ func (d *AudioDialog) RunVoiceTurnWithContext(ctx context.Context, input TurnInp
 	return result, nil
 }
 
-func (d *AudioDialog) runAgentTurnWithEpisodeAndRequest(ctx context.Context, input TurnInput, runtime *Runtime, episodeID, requestID string, turnContext VoiceTurnContext) (RunResult, error) {
-	if requestID == "" {
-		requestID = createVoiceRequestID()
-	}
+func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input TurnInput, runtime *Runtime, episodeID, requestID string, turnContext VoiceTurnContext) (RunResult, error) {
 	turnContext = normalizeVoiceTurnContext(turnContext)
-	if !d.beginVoiceRunControl(requestID) {
-		return RunResult{}, fmt.Errorf("voice run already active")
-	}
-	defer d.endVoiceRunControl(requestID)
 
 	d.playPromptSound(promptSoundAgentSend, "agent send", true)
 

@@ -695,12 +695,22 @@ thinking:
 			return voiceTurnResult{exit: true}
 		case <-events:
 			if interruptOnWakeup {
-				cancel()
 				nextTurn, exit := captureVoiceSteer(cfg, dialog, sigChan, events)
-				waitForTurnCancel(resultCh)
 				if exit {
+					cancel()
+					waitForTurnCancel(resultCh)
 					return voiceTurnResult{exit: true}
 				}
+				if nextTurn == nil {
+					continue
+				}
+				if dialog.QueueSteer(nextTurn.input) {
+					log.Println("[steer] queued wakeup correction for active voice run")
+					continue
+				}
+				log.Println("[steer] active voice run no longer accepts steer; running captured correction as next turn")
+				cancel()
+				waitForTurnCancel(resultCh)
 				return voiceTurnResult{interrupted: true, nextTurn: nextTurn}
 			}
 			log.Println("[steer] wakeup received during thinking, ignoring because wakeup steering is disabled")

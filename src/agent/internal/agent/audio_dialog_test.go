@@ -831,6 +831,40 @@ func TestAudioDialogRunAgentTurnConsumesQueuedSteer(t *testing.T) {
 	}
 }
 
+func TestAudioDialogRunVoiceTurnDoesNotPersistUserWhenVoiceRunActive(t *testing.T) {
+	dialog := &AudioDialog{
+		config: Config{
+			Model:        ModelConfig{Provider: "fake"},
+			Audio:        AudioConfig{SampleRate: 16000},
+			AudioArchive: AudioArchiveConfig{Enabled: false},
+		},
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
+	var messages []Message
+	dialog.SetHistoryAppender(func(message Message) {
+		messages = append(messages, message)
+	})
+
+	if !dialog.beginVoiceRunControl("existing-request") {
+		t.Fatal("beginVoiceRunControl returned false for setup")
+	}
+	defer dialog.endVoiceRunControl("existing-request")
+
+	_, err := dialog.RunVoiceTurnWithContext(
+		context.Background(),
+		TurnInput{InputText: "late correction", Transcript: "late correction"},
+		[]int16{100, -100},
+		nil,
+		VoiceTurnContext{FollowUpRelation: FollowUpCorrection},
+	)
+	if err == nil || !strings.Contains(err.Error(), "voice run already active") {
+		t.Fatalf("RunVoiceTurnWithContext() error = %v, want voice run already active", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("persisted messages = %#v, want none when voice run is already active", messages)
+	}
+}
+
 func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
 	configDir := t.TempDir()
 	model := &scriptedModel{
