@@ -232,9 +232,13 @@ func buildRoleProfile(
 		"",
 		"## Available skills",
 		skills.CatalogSummary(),
-		"",
-		"## Active skills",
-		skills.CombinedInstructions(),
+	}
+	if text := strings.TrimSpace(skills.CombinedInstructions()); text != "" {
+		parts = append(parts,
+			"",
+			"## Active skills",
+			text,
+		)
 	}
 	if text := strings.TrimSpace(cfg.RuntimeContext); text != "" {
 		parts = append(parts,

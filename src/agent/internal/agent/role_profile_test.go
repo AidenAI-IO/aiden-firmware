@@ -134,6 +134,26 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	}
 }
 
+func TestBuildRoleProfilesOmitsActiveSkillsSectionWhenEmpty(t *testing.T) {
+	profiles := buildRoleProfiles(
+		AgentConfig{},
+		ResolvedSkills{},
+		nil,
+		MemoryContext{},
+	)
+
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+		for _, unexpected := range []string{
+			"## Active skills",
+			"No extra skill is active.",
+		} {
+			if strings.Contains(profile.SystemPrompt, unexpected) {
+				t.Fatalf("%s profile should omit empty active skills section, found %q:\n%s", profile.Name, unexpected, profile.SystemPrompt)
+			}
+		}
+	}
+}
+
 func TestBuildRoleProfilesInjectsVerifierCautionMemory(t *testing.T) {
 	skills := ResolvedSkills{
 		Names:        []string{"ui"},
