@@ -94,9 +94,9 @@ func all(conds ...Condition) *VisibleRule { return &VisibleRule{All: conds} }
 
 // ConfigMeta returns the full field metadata for the config web UI. Defaults
 // here are the canonical defaults for the device's agent.toml. Free-text
-// fields (instruction, additional_prompt) intentionally carry no default: the
-// first-boot seed prompt is product content owned by the provisioning path,
-// not UI metadata.
+// fields (custom_instruction, additional_prompt) intentionally carry no
+// metadata default: the built-in prompt is runtime content, while
+// custom_instruction is only an override.
 func ConfigMeta() ConfigMetadata {
 	defaults := DefaultConfig()
 	return ConfigMetadata{
@@ -233,6 +233,30 @@ func ConfigMeta() ConfigMetadata {
 				},
 			},
 			{
+				Name: "live_activity",
+				Fields: []FieldMeta{
+					{Key: "enabled", Widget: WidgetBoolean, Default: true},
+					{Key: "bundle_id", Widget: WidgetText,
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+					{Key: "topic", Widget: WidgetText,
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+					{Key: "environment", Widget: WidgetSelect,
+						Enum:        enumOptions("sandbox", "production"),
+						Default:     "sandbox",
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+					{Key: "team_id", Widget: WidgetText, Secret: true,
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+					{Key: "key_id", Widget: WidgetText, Secret: true,
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+					{Key: "private_key_path", Widget: WidgetText, Secret: true,
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+					{Key: "private_key_pem", Widget: WidgetTextarea, Secret: true,
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+					{Key: "timeout_sec", Widget: WidgetNumber, Default: 10,
+						VisibleWhen: all(truthy("live_activity.enabled"))},
+				},
+			},
+			{
 				// The "agent" UI section maps to the top-level Config fields.
 				Name: "agent",
 				Fields: []FieldMeta{
@@ -261,26 +285,27 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
 					{Key: "min_speech_ms", Widget: WidgetNumber, Default: defaults.MinSpeechMs,
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
-					{Key: "voice_session_enabled", Widget: WidgetBoolean, Default: defaults.VoiceSessionEnabledOrDefault(),
+					{Key: "voice_followup_enabled", Widget: WidgetBoolean, Default: defaults.VoiceFollowupEnabledOrDefault(),
 						VisibleWhen: all(eq("agent.input_mode", "stt"), eq("agent.trigger_mode", "wakeup"))},
 					{Key: "voice_followup_timeout_ms", Widget: WidgetNumber, Default: defaults.VoiceFollowupTimeoutMs,
-						VisibleWhen: all(eq("agent.input_mode", "stt"), eq("agent.trigger_mode", "wakeup"), truthy("agent.voice_session_enabled"))},
+						VisibleWhen: all(eq("agent.input_mode", "stt"), eq("agent.trigger_mode", "wakeup"), truthy("agent.voice_followup_enabled"))},
 					{Key: "voice_first_turn_timeout_ms", Widget: WidgetNumber, Default: defaults.VoiceFirstTurnTimeoutMs,
-						VisibleWhen: all(eq("agent.input_mode", "stt"), eq("agent.trigger_mode", "wakeup"), truthy("agent.voice_session_enabled"))},
+						VisibleWhen: all(eq("agent.input_mode", "stt"), eq("agent.trigger_mode", "wakeup"), truthy("agent.voice_followup_enabled"))},
 					{Key: "voice_max_turns", Widget: WidgetNumber, Default: defaults.VoiceMaxTurns,
-						VisibleWhen: all(eq("agent.input_mode", "stt"), eq("agent.trigger_mode", "wakeup"), truthy("agent.voice_session_enabled"))},
+						VisibleWhen: all(eq("agent.input_mode", "stt"), eq("agent.trigger_mode", "wakeup"), truthy("agent.voice_followup_enabled"))},
 					{Key: "voice_interrupt_on_wakeup", Widget: WidgetBoolean, Default: defaults.VoiceInterruptOnWakeupOrDefault(),
-						VisibleWhen: all(eq("agent.input_mode", "stt"), eq("agent.trigger_mode", "wakeup"), truthy("agent.voice_session_enabled"))},
+						VisibleWhen: all(eq("agent.input_mode", "stt"), eq("agent.trigger_mode", "wakeup"), truthy("agent.voice_followup_enabled"))},
 					{Key: "voice_streaming_tts_enabled", Widget: WidgetBoolean, Default: defaults.VoiceStreamingTTSEnabledOrDefault(),
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
 					{Key: "voice_tool_call_speech", Widget: WidgetBoolean, Default: defaults.VoiceToolCallSpeechOrDefault(),
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
+					{Key: "voice_progress_speech_enabled", Widget: WidgetBoolean, Default: defaults.VoiceProgressSpeechEnabledOrDefault(),
+						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
 					{Key: "voice_speech_summary_enabled", Widget: WidgetBoolean, Default: defaults.VoiceSpeechSummaryEnabledOrDefault(),
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
-					{Key: "voice_speech_max_runes", Widget: WidgetNumber, Default: defaults.VoiceSpeechMaxRunes,
-						VisibleWhen: all(in("agent.input_mode", "stt", "audio"), truthy("agent.voice_speech_summary_enabled"))},
 					{Key: "voice_max_response_tokens", Widget: WidgetNumber, Default: defaults.VoiceMaxResponseTokens,
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
+					{Key: "todo_reminder_tool_calls", Widget: WidgetNumber, Default: defaults.TodoReminderToolCallsOrDefault()},
 					{Key: "max_iterations", Widget: WidgetNumber, Default: defaults.MaxIterations},
 					{Key: "force_simple_loop", Widget: WidgetBoolean, Default: defaults.ForceSimpleLoop},
 					{Key: "screenshot_keep_n", Widget: WidgetNumber, Default: defaults.ScreenshotKeepN},
@@ -288,7 +313,7 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "screen_stable_timeout_ms", Widget: WidgetNumber, Default: defaults.ScreenStableTimeoutMs},
 					{Key: "screen_stable_ms", Widget: WidgetNumber, Default: defaults.ScreenStableMs},
 					{Key: "screen_stable_diff_threshold", Widget: WidgetNumber, Default: defaults.ScreenStableDiffThreshold},
-					{Key: "instruction", Widget: WidgetTextarea},
+					{Key: "custom_instruction", Widget: WidgetTextarea},
 					{Key: "additional_prompt", Widget: WidgetTextarea},
 				},
 			},

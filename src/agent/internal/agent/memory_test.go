@@ -47,6 +47,61 @@ func TestMemoryManagerSaveWritesSessionEvents(t *testing.T) {
 	}
 }
 
+func TestSnapshotAppendStartFindsExistingSuffixOverlap(t *testing.T) {
+	human := func(content string) MessageRecord {
+		return MessageRecord{Role: "human", Content: content}
+	}
+	ai := func(content string) MessageRecord {
+		return MessageRecord{Role: "ai", Content: content}
+	}
+
+	tests := []struct {
+		name     string
+		existing []MessageRecord
+		records  []MessageRecord
+		want     int
+	}{
+		{
+			name:     "existing prefix of snapshot",
+			existing: []MessageRecord{human("first"), ai("first answer")},
+			records:  []MessageRecord{human("first"), ai("first answer"), human("second")},
+			want:     2,
+		},
+		{
+			name:     "snapshot prefix already persisted",
+			existing: []MessageRecord{human("first"), ai("first answer"), human("second")},
+			records:  []MessageRecord{human("first"), ai("first answer")},
+			want:     2,
+		},
+		{
+			name:     "existing suffix overlaps snapshot prefix",
+			existing: []MessageRecord{human("failed request"), human("current request"), ai("current answer")},
+			records:  []MessageRecord{human("current request"), ai("current answer")},
+			want:     2,
+		},
+		{
+			name:     "partial overlap appends only new tail",
+			existing: []MessageRecord{human("old"), human("current request"), ai("current answer")},
+			records:  []MessageRecord{human("current request"), ai("current answer"), human("next request")},
+			want:     2,
+		},
+		{
+			name:     "no overlap",
+			existing: []MessageRecord{human("old")},
+			records:  []MessageRecord{human("new")},
+			want:     0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := snapshotAppendStart(tt.existing, tt.records); got != tt.want {
+				t.Fatalf("snapshotAppendStart() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSessionEventsStripScreenshotData(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
@@ -187,6 +242,133 @@ func TestMemoryManagerRestoresFromSessionEventsWhenSnapshotMissing(t *testing.T)
 	}
 	if messages[0].GetContent() != "remember this" || messages[1].GetContent() != "stored" {
 		t.Fatalf("unexpected restored messages: %#v", messages)
+	}
+}
+
+func TestMemoryManagerRestoresOnlyConversationEventsFromRuntimeSession(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	events := []SessionEvent{
+		{Type: "user_input", Role: "user", Content: "original request"},
+		{Type: runEventToolCall, Role: "tool", ToolName: "tap", ToolInput: `{"x":10}`, Content: "tap button"},
+		{Type: "tool_result", Role: "tool", ToolName: "tap", ToolInput: `{"x":10}`, Content: "tap ok"},
+		{Type: runEventTodoUpdate, Role: "system", Content: "current todo"},
+		{Type: "steer", Role: "user", Content: "updated instruction"},
+		{Type: "assistant_output", Role: "assistant", Content: "done"},
+	}
+	for _, event := range events {
+		if _, err := session.AppendEvent(ctx, event); err != nil {
+			t.Fatalf("AppendEvent(%s) error = %v", event.Type, err)
+		}
+	}
+
+	manager := NewMemoryManager(storageDir)
+	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	messages, err := handle.History.Messages(ctx)
+	if err != nil {
+		t.Fatalf("Messages() error = %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 restored conversation messages, got %d: %#v", len(messages), messages)
+	}
+	if messages[0].GetContent() != "original request" ||
+		messages[1].GetContent() != "updated instruction" ||
+		messages[2].GetContent() != "done" {
+		t.Fatalf("unexpected restored conversation messages: %#v", messages)
+	}
+}
+
+func TestMemoryManagerSaveDoesNotRegressEventCountWithRuntimeEvents(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "user_input",
+		Role:    "user",
+		Content: "first request",
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendSessionEvent(user) error = %v", err)
+	}
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "planner_decision",
+		Role:    string(RolePlanner),
+		Content: `{"objective":"first request","plan":["answer"]}`,
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendSessionEvent(planner) error = %v", err)
+	}
+	if err := manager.AppendMessagesWithMetadata(ctx, "default", []MessageRecord{
+		{Role: string(llms.ChatMessageTypeAI), Content: "first answer"},
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendMessagesWithMetadata(ai) error = %v", err)
+	}
+	if err := handle.History.SetMessages(ctx, []llms.ChatMessage{
+		llms.HumanChatMessage{Content: "first request"},
+		llms.AIChatMessage{Content: "first answer"},
+	}); err != nil {
+		t.Fatalf("SetMessages() error = %v", err)
+	}
+
+	if err := manager.Save(ctx, "default"); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "user_input",
+		Role:    "user",
+		Content: "second request",
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendSessionEvent(second user) error = %v", err)
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) != 4 {
+		t.Fatalf("expected 4 session events, got %d: %#v", len(events), events)
+	}
+	for i, event := range events {
+		want := i + 1
+		if event.Sequence != want {
+			t.Fatalf("event %d sequence = %d, want %d; events=%#v", i, event.Sequence, want, events)
+		}
+	}
+}
+
+func TestMemoryManagerAppendSessionEventContinuesExistingEventStream(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	for i := 0; i < 2; i++ {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("existing event %d", i+1),
+		}); err != nil {
+			t.Fatalf("AppendEvent(%d) error = %v", i, err)
+		}
+	}
+
+	manager := NewMemoryManager(storageDir)
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "user_input",
+		Role:    "user",
+		Content: "new event",
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendSessionEvent() error = %v", err)
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) != 3 {
+		t.Fatalf("expected 3 session events, got %d: %#v", len(events), events)
+	}
+	if events[2].Sequence != 3 {
+		t.Fatalf("new event sequence = %d, want 3; events=%#v", events[2].Sequence, events)
 	}
 }
 
@@ -1652,8 +1834,8 @@ func TestSummaryMaxChunksConfigDefaultAndCustom(t *testing.T) {
 	if !cfg.SessionBoundaryEnabled {
 		t.Fatalf("expected session boundary detection to be enabled by default")
 	}
-	if cfg.SessionBoundaryShortGapSeconds != 180 {
-		t.Fatalf("expected default short gap 180s, got %d", cfg.SessionBoundaryShortGapSeconds)
+	if cfg.SessionBoundaryShortGapSeconds != 300 {
+		t.Fatalf("expected default short gap 300s, got %d", cfg.SessionBoundaryShortGapSeconds)
 	}
 	if cfg.SessionBoundaryLongGapSeconds != 1800 {
 		t.Fatalf("expected default long gap 1800s, got %d", cfg.SessionBoundaryLongGapSeconds)

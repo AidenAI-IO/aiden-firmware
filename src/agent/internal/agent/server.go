@@ -54,6 +54,7 @@ type Server struct {
 	recordMu                   sync.Mutex
 	webRecording               *webAudioRecording
 	bridge                     *PhoneBridge
+	liveActivity               *LiveActivityManager
 	pendingResults             map[string]*chatPendingResult
 	pendingResultsMu           sync.Mutex
 	activeRuns                 map[string]context.CancelFunc
@@ -89,8 +90,10 @@ type MessageAttachment struct {
 	Kind       string `json:"kind"`
 	Name       string `json:"name,omitempty"`
 	MIMEType   string `json:"mime_type,omitempty"`
+	Path       string `json:"path,omitempty"`
 	Data       string `json:"data,omitempty"`
 	Size       int    `json:"size,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
 	Transcript string `json:"transcript,omitempty"`
 }
 
@@ -101,16 +104,123 @@ type Message struct {
 	EpisodeID       string              `json:"episode_id,omitempty"`
 	RequestID       string              `json:"request_id,omitempty"`
 	Status          string              `json:"status,omitempty"`
+	Modality        string              `json:"modality,omitempty"`
+	OriginalText    string              `json:"original_text,omitempty"`
+	Transcript      string              `json:"transcript,omitempty"`
 	Content         string              `json:"content"`
+	Todo            *TodoState          `json:"todo,omitempty"`
+	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
+	Speech          string              `json:"speech,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
 	Description     string              `json:"description,omitempty"`
 	Attachments     []MessageAttachment `json:"attachments,omitempty"`
+	Artifacts       []InputArtifact     `json:"artifacts,omitempty"`
 	Source          string              `json:"source,omitempty"`
 	AudioFile       string              `json:"audio_file,omitempty"`
 	AudioDurationMs int64               `json:"audio_duration_ms,omitempty"`
 	Timestamp       time.Time           `json:"timestamp"`
 	IsError         bool                `json:"is_error,omitempty"`
+}
+
+func cloneTodoStatePtr(todo *TodoState) *TodoState {
+	if todo == nil {
+		return nil
+	}
+	cloned := todo.Clone()
+	return &cloned
+}
+
+func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID string) Message {
+	episodeID := event.EpisodeID
+	if episodeID == "" {
+		episodeID = fallbackEpisodeID
+	}
+	return Message{
+		Type:           event.Type,
+		Role:           event.Role,
+		EpisodeID:      episodeID,
+		RequestID:      requestID,
+		Content:        event.Content,
+		Todo:           cloneTodoStatePtr(event.Todo),
+		SpeechEligible: event.SpeechEligible,
+		Speech:         event.Speech,
+		ToolName:       event.ToolName,
+		ToolInput:      event.ToolInput,
+		Description:    event.Description,
+		Timestamp:      event.Timestamp,
+		IsError:        event.IsError,
+	}
+}
+
+func messageFromTurnInput(input TurnInput, episodeID, requestID string, attachments []MessageAttachment, timestamp time.Time) Message {
+	input = normalizeTurnInput(input)
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	message := Message{
+		Type:         "user",
+		EpisodeID:    episodeID,
+		RequestID:    requestID,
+		Modality:     input.Modality,
+		OriginalText: input.OriginalText,
+		Transcript:   input.Transcript,
+		Content:      input.InputText,
+		Attachments:  mergeTurnMessageAttachments(input, attachments),
+		Artifacts:    sanitizeInputArtifacts(input.Artifacts),
+		Source:       input.Source,
+		Timestamp:    timestamp,
+	}
+	if artifact, ok := firstAudioArtifact(input); ok {
+		message.AudioFile = artifact.Path
+		message.AudioDurationMs = artifact.DurationMS
+	}
+	return message
+}
+
+func mergeTurnMessageAttachments(input TurnInput, attachments []MessageAttachment) []MessageAttachment {
+	merged := make([]MessageAttachment, 0, len(attachments)+len(input.Artifacts))
+	merged = append(merged, attachments...)
+	if input.Transcript != "" {
+		for i := range merged {
+			if merged[i].Kind == AttachmentKindAudio && merged[i].Transcript == "" {
+				merged[i].Transcript = input.Transcript
+			}
+		}
+	}
+	for _, artifact := range sanitizeInputArtifacts(input.Artifacts) {
+		if artifact.Kind == "" {
+			continue
+		}
+		if messageAttachmentsContainArtifact(merged, artifact) {
+			continue
+		}
+		merged = append(merged, MessageAttachment{
+			Kind:       artifact.Kind,
+			Name:       artifact.Name,
+			MIMEType:   artifact.MIMEType,
+			Path:       artifact.Path,
+			Size:       int(artifact.Size),
+			DurationMS: artifact.DurationMS,
+			Transcript: input.Transcript,
+		})
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
+func messageAttachmentsContainArtifact(attachments []MessageAttachment, artifact InputArtifact) bool {
+	for _, attachment := range attachments {
+		if artifact.Path != "" && attachment.Path == artifact.Path {
+			return true
+		}
+		if attachment.Kind == artifact.Kind && attachment.Name == artifact.Name && attachment.MIMEType == artifact.MIMEType && attachment.Size == int(artifact.Size) {
+			return true
+		}
+	}
+	return false
 }
 
 // ChatRequest represents an incoming chat request
@@ -168,19 +278,23 @@ type chatPendingResult struct {
 
 // ChatResultResponse is the JSON shape for GET /api/chat/result.
 type ChatResultResponse struct {
-	Status   string    `json:"status"`
-	Messages []Message `json:"messages,omitempty"`
-	Response string    `json:"response,omitempty"`
-	History  []Message `json:"history,omitempty"`
-	Error    string    `json:"error,omitempty"`
+	Status       string             `json:"status"`
+	Messages     []Message          `json:"messages,omitempty"`
+	Response     string             `json:"response,omitempty"`
+	History      []Message          `json:"history,omitempty"`
+	Error        string             `json:"error,omitempty"`
+	LiveActivity *LiveActivityState `json:"live_activity,omitempty"`
 }
 
 type ChatStreamEvent struct {
-	Type     string    `json:"type"`
-	Message  *Message  `json:"message,omitempty"`
-	Response string    `json:"response,omitempty"`
-	History  []Message `json:"history,omitempty"`
-	Error    string    `json:"error,omitempty"`
+	Type      string    `json:"type"`
+	Message   *Message  `json:"message,omitempty"`
+	RequestID string    `json:"request_id,omitempty"`
+	EpisodeID string    `json:"episode_id,omitempty"`
+	Delta     string    `json:"delta,omitempty"`
+	Response  string    `json:"response,omitempty"`
+	History   []Message `json:"history,omitempty"`
+	Error     string    `json:"error,omitempty"`
 }
 
 type EpisodeResponse struct {
@@ -223,6 +337,7 @@ func NewServer(runtime *Runtime, addr string, benchmarkDir string) *Server {
 		userFilesToolsDir:   "/userdata/agent_tools",
 		history:             make([]Message, 0),
 		bridge:              bridge,
+		liveActivity:        NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
 		pendingResults:      make(map[string]*chatPendingResult),
 		activeRuns:          make(map[string]context.CancelFunc),
 		pendingSteers:       make(map[string]pendingSteerMessage),
@@ -282,6 +397,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/chat/steer", s.handleChatSteer)
 	mux.HandleFunc("/api/chat/steer/cancel", s.handleChatSteerCancel)
 	mux.HandleFunc("/api/chat/result", s.handleChatResult)
+	mux.HandleFunc("/api/live-activity/registrations", s.handleLiveActivityRegistrations)
+	mux.HandleFunc("/api/live-activity/status", s.handleLiveActivityStatus)
+	mux.HandleFunc("/api/live-activity/current", s.handleLiveActivityCurrent)
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
@@ -407,30 +525,23 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	req.RequestID = strings.TrimSpace(req.RequestID)
 
-	inputText, runAttachments, historyAttachments, err := s.resolveRequestInput(req)
+	turnInput, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
 		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	episodeID := s.runtime.NewEpisodeID()
 
-	userMsg := Message{
-		Type:        "user",
-		EpisodeID:   episodeID,
-		RequestID:   req.RequestID,
-		Content:     inputText,
-		Attachments: historyAttachments,
-		Timestamp:   time.Now(),
-	}
+	userMsg := messageFromTurnInput(turnInput, episodeID, req.RequestID, historyAttachments, time.Now())
 
 	// Async path — when the client provides a request_id
 	if req.RequestID != "" {
-		s.handleChatAsync(w, r, req, inputText, runAttachments, userMsg)
+		s.handleChatAsync(w, r, req, turnInput, userMsg)
 		return
 	}
 
 	// Sync path — legacy behaviour for web UI and clients without request_id
-	s.handleChatSync(w, r, req, inputText, runAttachments, userMsg)
+	s.handleChatSync(w, r, req, turnInput, userMsg)
 }
 
 func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
@@ -453,6 +564,9 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 	if s.cancelActiveRun(requestID) {
 		if s.logger != nil {
 			s.logger.Info("Chat request canceled: request_id=%s", requestID)
+		}
+		if s.liveActivity != nil {
+			s.liveActivity.CancelTask(requestID)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ChatCancelResponse{RequestID: requestID, Status: "canceled"})
@@ -636,13 +750,13 @@ func (s *Server) handleChatAsync(
 	w http.ResponseWriter,
 	r *http.Request,
 	req ChatRequest,
-	inputText string,
-	runAttachments []InputAttachment,
+	turnInput TurnInput,
 	userMsg Message,
 ) {
 	requestID := req.RequestID
+	inputText := turnInput.InputText
 	if s.logger != nil {
-		s.logger.Info("Chat request (async): %s request_id=%s attachments=%d", inputText, requestID, len(runAttachments))
+		s.logger.Info("Chat request (async): %s request_id=%s attachments=%d", inputText, requestID, len(turnInput.Attachments))
 	}
 
 	// Create a pending result slot for this request. Reject a request_id that
@@ -674,6 +788,9 @@ func (s *Server) handleChatAsync(
 		return
 	}
 	s.appendHistory(userMsg)
+	if s.liveActivity != nil {
+		s.liveActivity.StartTask(requestID, inputText)
+	}
 
 	// Return {request_id} immediately
 	w.Header().Set("Content-Type", "application/json")
@@ -682,7 +799,9 @@ func (s *Server) handleChatAsync(
 
 	// Run agent in background goroutine
 	go func() {
+		progress := s.newRunProgressSpeaker()
 		defer func() {
+			progress.Cancel()
 			s.unregisterActiveRun(requestID)
 			s.clearPendingSteer(requestID)
 			// Keep the completed result available for polling for 60s,
@@ -699,38 +818,33 @@ func (s *Server) handleChatAsync(
 		// Event handler pushes intermediate messages into the pending result
 		// so the client can poll them in near-realtime.
 		eventHandler := func(event RunEvent) {
-			episodeID := event.EpisodeID
-			if episodeID == "" {
-				episodeID = userMsg.EpisodeID
-			}
-			msg := Message{
-				Type:        event.Type,
-				Role:        event.Role,
-				EpisodeID:   episodeID,
-				RequestID:   requestID,
-				Content:     event.Content,
-				ToolName:    event.ToolName,
-				ToolInput:   event.ToolInput,
-				Description: event.Description,
-				Timestamp:   event.Timestamp,
-				IsError:     event.IsError,
-			}
+			msg := messageFromRunEvent(event, userMsg.EpisodeID, requestID)
 			s.appendHistory(msg)
 			pending.mu.Lock()
 			pending.history = append(pending.history, msg)
 			pending.messages = append(pending.messages, msg)
 			pending.mu.Unlock()
+			if s.liveActivity != nil {
+				s.liveActivity.UpdateFromRunEvent(requestID, event)
+			}
 
-			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
-				go s.speakToolDescription(runCtx, event.Description)
+			if s.shouldSpeakToolCall(event) {
+				go s.speakToolDescription(runCtx, event.Speech)
+			}
+			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
+				if text, ok := progressSpeechTextForEvent(event); ok {
+					progress.Schedule(runCtx, text)
+				}
 			}
 		}
 
 		runReq := RunRequest{
 			Input:             inputText,
-			Attachments:       runAttachments,
+			Attachments:       turnInput.Attachments,
+			Turn:              turnInput,
 			Skills:            req.Skills,
 			EpisodeID:         userMsg.EpisodeID,
+			RequestID:         requestID,
 			DeviceEnvironment: s.bridgeEnvironment(),
 			RuntimeContext:    s.runtimeContext(),
 			EventHandler:      eventHandler,
@@ -752,12 +866,13 @@ func (s *Server) handleChatAsync(
 					}
 				} else {
 					newStream = stream
-					runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+					runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
 				}
 			}
 		}
 
 		result, err := s.runtime.Run(runCtx, runReq)
+		progress.Cancel()
 		if newStream != nil {
 			closeErr := newStream.closeAndWait()
 			if closeErr != nil && s.logger != nil {
@@ -769,6 +884,9 @@ func (s *Server) handleChatAsync(
 		pending.mu.Lock()
 		if err != nil {
 			if errors.Is(runCtx.Err(), context.Canceled) {
+				if s.liveActivity != nil {
+					s.liveActivity.CancelTask(requestID)
+				}
 				pending.err = "request canceled"
 			} else {
 				errorMsg := Message{
@@ -783,6 +901,9 @@ func (s *Server) handleChatAsync(
 				s.appendHistory(errorMsg)
 				pending.history = append(pending.history, errorMsg)
 				pending.messages = append(pending.messages, errorMsg)
+				if s.liveActivity != nil {
+					s.liveActivity.FailTask(requestID, err.Error())
+				}
 				pending.err = err.Error()
 			}
 			pending.done = true
@@ -805,6 +926,9 @@ func (s *Server) handleChatAsync(
 		s.appendHistory(assistantMsg)
 		pending.history = append(pending.history, assistantMsg)
 		pending.messages = append(pending.messages, assistantMsg)
+		if s.liveActivity != nil {
+			s.liveActivity.CompleteTask(requestID, result.Output)
+		}
 		pending.done = true
 		pending.mu.Unlock()
 
@@ -866,57 +990,74 @@ func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
 	if pending == nil {
 		// Request not found — may have completed and been cleaned up,
 		// or may never have existed.
+		liveActivity := s.liveActivitySnapshot(requestID)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResultResponse{Status: "not_found"})
+		json.NewEncoder(w).Encode(ChatResultResponse{Status: "not_found", LiveActivity: liveActivity})
 		return
 	}
 
 	pending.mu.Lock()
-	defer pending.mu.Unlock()
+	errText := pending.err
+	done := pending.done
 
-	if pending.err != "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status: "error",
-			Error:  pending.err,
-		})
-		return
-	}
-
-	// Return messages since the client's offset
 	msgs := pending.messages
 	if offset < len(msgs) {
-		msgs = msgs[offset:]
+		msgs = append([]Message(nil), msgs[offset:]...)
 	} else {
 		msgs = nil
 	}
 
-	if pending.done {
-		// Build a full ChatResponse-compatible shape
-		historySnapshot := make([]Message, len(pending.history))
+	var historySnapshot []Message
+	response := ""
+	if done {
+		historySnapshot = make([]Message, len(pending.history))
 		copy(historySnapshot, pending.history)
-		// Extract the assistant text from the last assistant message
-		response := ""
 		for i := len(pending.history) - 1; i >= 0; i-- {
 			if pending.history[i].Type == "assistant" {
 				response = pending.history[i].Content
 				break
 			}
 		}
+	}
+	pending.mu.Unlock()
+
+	liveActivity := s.liveActivitySnapshot(requestID)
+
+	if errText != "" {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status:   "complete",
-			Response: response,
-			History:  historySnapshot,
-			Messages: msgs,
+			Status:       "error",
+			Messages:     msgs,
+			Error:        errText,
+			LiveActivity: liveActivity,
+		})
+		return
+	}
+
+	if done {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ChatResultResponse{
+			Status:       "complete",
+			Response:     response,
+			History:      historySnapshot,
+			Messages:     msgs,
+			LiveActivity: liveActivity,
 		})
 	} else {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status:   "running",
-			Messages: msgs,
+			Status:       "running",
+			Messages:     msgs,
+			LiveActivity: liveActivity,
 		})
 	}
+}
+
+func (s *Server) liveActivitySnapshot(requestID string) *LiveActivityState {
+	if s.liveActivity == nil {
+		return nil
+	}
+	return s.liveActivity.Snapshot(requestID)
 }
 
 // handleChatSync is the original synchronous chat handler, kept for the web UI
@@ -925,46 +1066,41 @@ func (s *Server) handleChatSync(
 	w http.ResponseWriter,
 	r *http.Request,
 	req ChatRequest,
-	inputText string,
-	runAttachments []InputAttachment,
+	turnInput TurnInput,
 	userMsg Message,
 ) {
 	ctx := r.Context()
 	episodeID := userMsg.EpisodeID
+	inputText := turnInput.InputText
 
 	if s.logger != nil {
-		s.logger.Info("Chat request (sync): %s attachments=%d", inputText, len(runAttachments))
+		s.logger.Info("Chat request (sync): %s attachments=%d", inputText, len(turnInput.Attachments))
 	}
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 	s.appendHistory(userMsg)
+	progress := s.newRunProgressSpeaker()
+	defer progress.Cancel()
 
 	runReq := RunRequest{
 		Input:             inputText,
-		Attachments:       runAttachments,
+		Attachments:       turnInput.Attachments,
+		Turn:              turnInput,
 		Skills:            req.Skills,
 		EpisodeID:         episodeID,
+		RequestID:         req.RequestID,
 		DeviceEnvironment: s.bridgeEnvironment(),
 		RuntimeContext:    s.runtimeContext(),
 		StreamFinalChunks: true,
 		EventHandler: func(event RunEvent) {
-			eventEpisodeID := event.EpisodeID
-			if eventEpisodeID == "" {
-				eventEpisodeID = episodeID
+			s.appendHistory(messageFromRunEvent(event, episodeID, ""))
+			if s.shouldSpeakToolCall(event) {
+				go s.speakToolDescription(r.Context(), event.Speech)
 			}
-			s.appendHistory(Message{
-				Type:        event.Type,
-				Role:        event.Role,
-				EpisodeID:   eventEpisodeID,
-				Content:     event.Content,
-				ToolName:    event.ToolName,
-				ToolInput:   event.ToolInput,
-				Description: event.Description,
-				Timestamp:   event.Timestamp,
-				IsError:     event.IsError,
-			})
-			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
-				go s.speakToolDescription(r.Context(), event.Description)
+			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
+				if text, ok := progressSpeechTextForEvent(event); ok {
+					progress.Schedule(ctx, text)
+				}
 			}
 		},
 	}
@@ -981,12 +1117,13 @@ func (s *Server) handleChatSync(
 				}
 			} else {
 				newStream = stream
-				runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+				runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
 			}
 		}
 	}
 
 	result, err := s.runtime.Run(ctx, runReq)
+	progress.Cancel()
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
@@ -1072,11 +1209,12 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	req.RequestID = strings.TrimSpace(req.RequestID)
 
-	inputText, runAttachments, historyAttachments, err := s.resolveRequestInput(req)
+	turnInput, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
 		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	inputText := turnInput.InputText
 
 	stream, ok := newChatStreamWriter(w)
 	if !ok {
@@ -1085,17 +1223,10 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	episodeID := s.runtime.NewEpisodeID()
-	userMessage := Message{
-		Type:        "user",
-		EpisodeID:   episodeID,
-		RequestID:   req.RequestID,
-		Content:     inputText,
-		Attachments: historyAttachments,
-		Timestamp:   time.Now(),
-	}
+	userMessage := messageFromTurnInput(turnInput, episodeID, req.RequestID, historyAttachments, time.Now())
 
 	if s.logger != nil {
-		s.logger.Info("Chat request: %s attachments=%d stream=ndjson", inputText, len(runAttachments))
+		s.logger.Info("Chat request: %s attachments=%d stream=ndjson", inputText, len(turnInput.Attachments))
 	}
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
@@ -1116,12 +1247,19 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		ctx = runCtx
 	}
 	s.appendHistory(userMessage)
+	progress := s.newRunProgressSpeaker()
+	defer progress.Cancel()
+	if req.RequestID != "" && s.liveActivity != nil {
+		s.liveActivity.StartTask(req.RequestID, inputText)
+	}
 
 	runReq := RunRequest{
 		Input:             inputText,
-		Attachments:       runAttachments,
+		Attachments:       turnInput.Attachments,
+		Turn:              turnInput,
 		Skills:            req.Skills,
 		EpisodeID:         episodeID,
+		RequestID:         req.RequestID,
 		DeviceEnvironment: s.bridgeEnvironment(),
 		RuntimeContext:    s.runtimeContext(),
 		StreamFinalChunks: true,
@@ -1129,32 +1267,28 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			return s.consumePendingSteer(req.RequestID)
 		},
 		EventHandler: func(event RunEvent) {
-			eventEpisodeID := event.EpisodeID
-			if eventEpisodeID == "" {
-				eventEpisodeID = episodeID
-			}
-			message := Message{
-				Type:        event.Type,
-				Role:        event.Role,
-				EpisodeID:   eventEpisodeID,
-				RequestID:   req.RequestID,
-				Content:     event.Content,
-				ToolName:    event.ToolName,
-				ToolInput:   event.ToolInput,
-				Description: event.Description,
-				Timestamp:   event.Timestamp,
-				IsError:     event.IsError,
-			}
+			message := messageFromRunEvent(event, episodeID, req.RequestID)
 			s.appendHistory(message)
 			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
-			if event.Type == "tool_call" && s.runtime.config.VoiceToolCallSpeechOrDefault() {
-				go s.speakToolDescription(ctx, event.Description)
+			if req.RequestID != "" && s.liveActivity != nil {
+				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
+			}
+			if s.shouldSpeakToolCall(event) {
+				go s.speakToolDescription(ctx, event.Speech)
+			}
+			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
+				if text, ok := progressSpeechTextForEvent(event); ok {
+					progress.Schedule(ctx, text)
+				}
 			}
 		},
 	}
 
 	var newStream *streamSessionWriter
 	ttsManager := s.currentTTSManager()
+	finalStreamWriters := []io.Writer{
+		newChatAssistantFinalStreamWriter(stream, episodeID, req.RequestID),
+	}
 	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
 		if ttsManager != nil {
 			streamSession, err := beginManagedTTSStream(ctx, ttsManager, s.audioClient, s.runtime.config)
@@ -1164,12 +1298,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				}
 			} else {
 				newStream = streamSession
-				runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
+				finalStreamWriters = append(finalStreamWriters, newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel))
 			}
 		}
 	}
+	runReq.StreamWriter = newFinalStreamFanoutWriter(finalStreamWriters...)
 
 	result, err := s.runtime.Run(ctx, runReq)
+	progress.Cancel()
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
@@ -1178,6 +1314,13 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		result.SpeechStreamed = closeErr == nil && newStream.spoke
 	}
 	if err != nil {
+		if req.RequestID != "" && s.liveActivity != nil {
+			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+				s.liveActivity.CancelTask(req.RequestID)
+			} else {
+				s.liveActivity.FailTask(req.RequestID, err.Error())
+			}
+		}
 		errorMessage := Message{
 			Type:      "episode_status",
 			EpisodeID: episodeID,
@@ -1207,6 +1350,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.appendHistory(assistantMessage)
 	stream.Write(ChatStreamEvent{Type: "message", Message: &assistantMessage})
 	historySnapshot := s.historySnapshot()
+	if req.RequestID != "" && s.liveActivity != nil {
+		s.liveActivity.CompleteTask(req.RequestID, result.Output)
+	}
 
 	speechText := result.SpokenTextForConfig(s.runtime.config)
 	if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
@@ -1258,6 +1404,193 @@ func (w *chatStreamWriter) Write(event ChatStreamEvent) {
 	}
 }
 
+type chatAssistantDeltaWriter struct {
+	stream    *chatStreamWriter
+	episodeID string
+	requestID string
+
+	mu      sync.Mutex
+	emitted bool
+}
+
+func newChatAssistantDeltaWriter(stream *chatStreamWriter, episodeID, requestID string) *chatAssistantDeltaWriter {
+	return &chatAssistantDeltaWriter{
+		stream:    stream,
+		episodeID: episodeID,
+		requestID: requestID,
+	}
+}
+
+func (w *chatAssistantDeltaWriter) Write(p []byte) (int, error) {
+	if w == nil || w.stream == nil || len(p) == 0 {
+		return len(p), nil
+	}
+	delta := string(p)
+	w.mu.Lock()
+	w.emitted = true
+	w.mu.Unlock()
+	w.stream.Write(ChatStreamEvent{
+		Type:      "assistant_delta",
+		RequestID: w.requestID,
+		EpisodeID: w.episodeID,
+		Delta:     delta,
+	})
+	return len(p), nil
+}
+
+func (w *chatAssistantDeltaWriter) ResetStreamState() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	emitted := w.emitted
+	w.emitted = false
+	w.mu.Unlock()
+	if emitted && w.stream != nil {
+		w.stream.Write(ChatStreamEvent{
+			Type:      "assistant_delta_reset",
+			RequestID: w.requestID,
+			EpisodeID: w.episodeID,
+		})
+	}
+}
+
+func (w *chatAssistantDeltaWriter) StreamEmitted() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.emitted
+}
+
+type chatAssistantFinalStreamWriter struct {
+	delta     *chatAssistantDeltaWriter
+	extractor io.Writer
+}
+
+func newChatAssistantFinalStreamWriter(stream *chatStreamWriter, episodeID, requestID string) io.Writer {
+	delta := newChatAssistantDeltaWriter(stream, episodeID, requestID)
+	return &chatAssistantFinalStreamWriter{
+		delta:     delta,
+		extractor: NewJSONFieldOrPlainStreamWriter(delta, "text"),
+	}
+}
+
+func (w *chatAssistantFinalStreamWriter) Write(p []byte) (int, error) {
+	if w == nil || w.extractor == nil {
+		return len(p), nil
+	}
+	return w.extractor.Write(p)
+}
+
+func (w *chatAssistantFinalStreamWriter) ResetStreamState() {
+	if w == nil {
+		return
+	}
+	if w.delta != nil {
+		w.delta.ResetStreamState()
+	}
+	if resetter, ok := w.extractor.(streamStateResetter); ok {
+		resetter.ResetStreamState()
+	}
+}
+
+func (w *chatAssistantFinalStreamWriter) StreamEmitted() bool {
+	if w == nil || w.delta == nil {
+		return false
+	}
+	return w.delta.StreamEmitted()
+}
+
+type finalStreamFanoutWriter struct {
+	writers []io.Writer
+	mu      sync.Mutex
+	emitted bool
+}
+
+func newFinalStreamFanoutWriter(writers ...io.Writer) io.Writer {
+	filtered := make([]io.Writer, 0, len(writers))
+	for _, writer := range writers {
+		if writer != nil {
+			filtered = append(filtered, writer)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return &finalStreamFanoutWriter{writers: filtered}
+}
+
+func (w *finalStreamFanoutWriter) Write(p []byte) (int, error) {
+	if w == nil || len(p) == 0 {
+		return len(p), nil
+	}
+	emitted := false
+	delivered := false
+	for _, writer := range w.writers {
+		if writer == nil {
+			continue
+		}
+		n, err := writer.Write(p)
+		if streamWriterEmitted(writer) {
+			emitted = true
+		}
+		if err != nil {
+			if emitted {
+				w.mu.Lock()
+				w.emitted = true
+				w.mu.Unlock()
+			}
+			if delivered {
+				return len(p), err
+			}
+			return n, err
+		}
+		if n == len(p) {
+			delivered = true
+		}
+	}
+	if emitted {
+		w.mu.Lock()
+		w.emitted = true
+		w.mu.Unlock()
+	}
+	return len(p), nil
+}
+
+func (w *finalStreamFanoutWriter) ResetStreamState() {
+	if w == nil {
+		return
+	}
+	for _, writer := range w.writers {
+		if resetter, ok := writer.(streamStateResetter); ok {
+			resetter.ResetStreamState()
+		}
+	}
+	w.mu.Lock()
+	w.emitted = false
+	w.mu.Unlock()
+}
+
+func (w *finalStreamFanoutWriter) StreamEmitted() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	emitted := w.emitted
+	w.mu.Unlock()
+	if emitted {
+		return true
+	}
+	for _, writer := range w.writers {
+		if streamWriterEmitted(writer) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) speakToolDescription(ctx context.Context, description string) {
 	description = strings.TrimSpace(description)
 	if description == "" || s.audioClient == nil {
@@ -1276,6 +1609,36 @@ func (s *Server) speakToolDescription(ctx context.Context, description string) {
 			s.logger.Error("Tool description TTS playback failed: %v", err)
 		}
 	}
+}
+
+func (s *Server) shouldSpeakToolCall(event RunEvent) bool {
+	if event.Type != runEventToolCall || event.ToolName == toolWaitForWakeup {
+		return false
+	}
+	return s.runtime != nil && s.runtime.config.VoiceToolCallSpeechOrDefault()
+}
+
+func (s *Server) newRunProgressSpeaker() *progressSpeaker {
+	cfg := progressSpeakerConfig{}
+	if s.logger != nil {
+		cfg.Logf = func(format string, args ...any) {
+			s.logger.Error(format, args...)
+		}
+	}
+	return newProgressSpeaker(func(ctx context.Context, text string) error {
+		if strings.TrimSpace(text) == "" || s.audioClient == nil {
+			return nil
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		ttsCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
+		defer cancel()
+		if s.logger != nil {
+			s.logger.Info("Progress TTS playback: %q", text)
+		}
+		return s.speakText(ttsCtx, text, 0)
+	}, cfg)
 }
 
 func (s *Server) currentTTSManager() *tts.ProviderManager {
@@ -1357,8 +1720,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Only send user and assistant messages
-			if msg.Type != "user" && msg.Type != "assistant" {
+			if !shouldStreamEventMessage(msg) {
 				continue
 			}
 
@@ -1374,6 +1736,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+func shouldStreamEventMessage(msg Message) bool {
+	return strings.TrimSpace(msg.Type) != ""
 }
 
 func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
@@ -2027,6 +2393,8 @@ func (s *Server) appendHistory(message Message) {
 		if err := s.historyStore.Append(context.Background(), message); err != nil && s.logger != nil {
 			s.logger.Warn("Persist chat history failed: %v", err)
 		}
+	} else if s.eventBroadcaster != nil {
+		s.eventBroadcaster.Broadcast(message)
 	}
 }
 
@@ -2095,22 +2463,22 @@ func (s *Server) loadHistoryFromDisk() {
 	}
 }
 
-func (s *Server) resolveRequestInput(req ChatRequest) (string, []InputAttachment, []MessageAttachment, error) {
+func (s *Server) resolveRequestInput(req ChatRequest) (TurnInput, []MessageAttachment, error) {
 	decodedAttachments, historyAttachments, err := decodeMessageAttachments(req.Attachments)
 	if err != nil {
-		return "", nil, nil, err
+		return TurnInput{}, nil, err
 	}
 
 	audioAttachment, nonAudioAttachments, err := splitAudioAttachment(decodedAttachments)
 	if err != nil {
-		return "", nil, nil, err
+		return TurnInput{}, nil, err
 	}
 
 	trimmedMessage := strings.TrimSpace(req.Message)
 	if audioAttachment != nil {
 		audioInput, err := PrepareAudioInput(s.webAudioInputMode(), s.sttClient, audioAttachment.Data, trimmedMessage, nonAudioAttachments)
 		if err != nil {
-			return "", nil, nil, err
+			return TurnInput{}, nil, err
 		}
 		if audioInput.Transcript != "" {
 			for i := range historyAttachments {
@@ -2120,14 +2488,14 @@ func (s *Server) resolveRequestInput(req ChatRequest) (string, []InputAttachment
 				}
 			}
 		}
-		return audioInput.InputText, audioInput.Attachments, historyAttachments, nil
+		return audioInput, historyAttachments, nil
 	}
 
-	inputText := normalizeRunInput(trimmedMessage, nonAudioAttachments)
-	if inputText == "" {
-		return "", nil, nil, fmt.Errorf("message or attachment is required")
+	turnInput := NewTextTurnInput(trimmedMessage, nonAudioAttachments)
+	if turnInput.InputText == "" {
+		return TurnInput{}, nil, fmt.Errorf("message or attachment is required")
 	}
-	return inputText, nonAudioAttachments, historyAttachments, nil
+	return turnInput, historyAttachments, nil
 }
 
 func (s *Server) webAudioInputMode() string {
@@ -2219,6 +2587,87 @@ func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(s.bridge.Status())
+}
+
+func (s *Server) handleLiveActivityRegistrations(w http.ResponseWriter, r *http.Request) {
+	if s.liveActivity == nil {
+		http.Error(w, `{"error":"live activity disabled"}`, http.StatusServiceUnavailable)
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		var req LiveActivityRegistrationRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+			return
+		}
+		state, apnsStatus, err := s.liveActivity.Register(req)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(LiveActivityRegistrationResponse{
+			OK:      true,
+			State:   state,
+			APNs:    apnsStatus,
+			Message: "registered",
+		})
+	case http.MethodDelete:
+		requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
+		if requestID == "" {
+			http.Error(w, `{"error":"missing request_id"}`, http.StatusBadRequest)
+			return
+		}
+		ok := s.liveActivity.Unregister(requestID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"ok": ok})
+	default:
+		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleLiveActivityStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
+	if requestID == "" {
+		http.Error(w, `{"error":"missing request_id"}`, http.StatusBadRequest)
+		return
+	}
+	state := s.liveActivitySnapshot(requestID)
+	w.Header().Set("Content-Type", "application/json")
+	if state == nil {
+		json.NewEncoder(w).Encode(map[string]string{"status": "not_found"})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":        "ok",
+		"live_activity": state,
+	})
+}
+
+func (s *Server) handleLiveActivityCurrent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.liveActivity == nil {
+		http.Error(w, `{"error":"live activity disabled"}`, http.StatusServiceUnavailable)
+		return
+	}
+	state := s.liveActivity.SnapshotActive()
+	w.Header().Set("Content-Type", "application/json")
+	if state == nil {
+		json.NewEncoder(w).Encode(map[string]string{"status": "not_found"})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":        "ok",
+		"live_activity": state,
+	})
 }
 
 // handlePhoneBridgeCommands routes /api/phone-bridge/commands
@@ -3444,6 +3893,7 @@ const webUI = `<!DOCTYPE html>
         let toolCatalog = [];
         let toolSkills = [];
         let currentChatRequestId = '';
+        let externalActiveRequestId = '';
         let currentChatAbortController = null;
         let currentChatCancelRequested = false;
         let pendingSteer = null;
@@ -3451,8 +3901,12 @@ const webUI = `<!DOCTYPE html>
         let episodeCache = {};
         let eventSource = null;
         let renderedMessageKeys = new Set();
+        let renderedMessageNodes = new Map();
+        let streamingAssistantDrafts = {};
 
         loadHistory();
+        refreshCurrentLiveActivity();
+        setInterval(refreshCurrentLiveActivity, 2000);
         loadToolCatalog();
         loadToolSkills();
         autoResizeInput();
@@ -3498,7 +3952,7 @@ const webUI = `<!DOCTYPE html>
                         return;
                     }
 
-                    if (data.type === 'user' || data.type === 'assistant') {
+                    if (data.type) {
                         addMessage(data);
                     }
                 } catch (err) {
@@ -3781,6 +4235,7 @@ const webUI = `<!DOCTYPE html>
             setComposerState(true);
             clearDraftAttachments();
             currentChatRequestId = createRequestId();
+            externalActiveRequestId = '';
             currentChatAbortController = new AbortController();
             currentChatCancelRequested = false;
 
@@ -3911,28 +4366,50 @@ const webUI = `<!DOCTYPE html>
             return 'web-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
         }
 
+        function activeChatRequestId() {
+            return currentChatRequestId || externalActiveRequestId || '';
+        }
+
+        async function refreshCurrentLiveActivity() {
+            if (currentChatRequestId) return;
+            try {
+                const res = await fetch('/api/live-activity/current');
+                if (!res.ok) return;
+                const data = await res.json();
+                const state = data.live_activity;
+                const isActive = data.status === 'ok' && state && (state.status === 'running' || state.status === 'needs_app');
+                externalActiveRequestId = isActive ? state.request_id : '';
+                setComposerState(!!activeChatRequestId());
+            } catch (err) {
+                console.warn('Failed to refresh current live activity:', err);
+            }
+        }
+
         async function cancelCurrentRun() {
-            if (!currentChatRequestId) return;
-            const requestId = currentChatRequestId;
+            const requestId = activeChatRequestId();
+            if (!requestId) return;
             currentChatCancelRequested = true;
             stopRunBtn.disabled = true;
             stopRunBtn.textContent = 'Stopping...';
             pendingSteer = null;
             renderPendingSteer();
 
-			if (currentChatAbortController) {
-				currentChatAbortController.abort();
-			}
+            if (currentChatAbortController) {
+                currentChatAbortController.abort();
+            }
 
-			fetch('/api/chat/cancel', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ request_id: requestId }),
-				keepalive: true
-			}).catch(function(err) {
-				console.error('Failed to cancel chat request:', err);
-			});
-		}
+            fetch('/api/chat/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ request_id: requestId }),
+                keepalive: true
+            }).catch(function(err) {
+                console.error('Failed to cancel chat request:', err);
+            }).finally(function() {
+                if (externalActiveRequestId === requestId) externalActiveRequestId = '';
+                setComposerState(!!activeChatRequestId());
+            });
+        }
 
         async function cancelPendingSteer() {
             if (!currentChatRequestId || !pendingSteer) return;
@@ -4033,12 +4510,24 @@ const webUI = `<!DOCTYPE html>
         }
 
         function handleChatStreamEvent(event) {
+            if (event.type === 'assistant_delta') {
+                appendAssistantDelta(event);
+                return false;
+            }
+            if (event.type === 'assistant_delta_reset') {
+                resetAssistantDelta(event);
+                return false;
+            }
             if (event.type === 'message' && event.message) {
                 if (event.message.type === 'steer') {
                     pendingSteer = null;
                     renderPendingSteer();
                 }
-                addMessage(event.message);
+                if (event.message.type === 'assistant') {
+                    finalizeAssistantMessage(event.message);
+                } else {
+                    addMessage(event.message);
+                }
                 return false;
             }
             if (event.type === 'done') {
@@ -4048,6 +4537,57 @@ const webUI = `<!DOCTYPE html>
                 throw new Error(event.error || 'Agent error');
             }
             return false;
+        }
+
+        function appendAssistantDelta(event) {
+            const key = assistantStreamKey(event);
+            if (!key) return;
+            let msg = streamingAssistantDrafts[key];
+            if (!msg) {
+                msg = {
+                    type: 'assistant',
+                    request_id: event.request_id || '',
+                    episode_id: event.episode_id || '',
+                    content: '',
+                    timestamp: new Date().toISOString()
+                };
+                streamingAssistantDrafts[key] = msg;
+            }
+            msg.content += event.delta || '';
+            addMessage(msg);
+        }
+
+        function resetAssistantDelta(event) {
+            const key = assistantStreamKey(event);
+            if (!key) return;
+            const msg = streamingAssistantDrafts[key] || {
+                type: 'assistant',
+                request_id: event.request_id || '',
+                episode_id: event.episode_id || ''
+            };
+            delete streamingAssistantDrafts[key];
+            const messageKey = messageIdentity(msg);
+            const existing = renderedMessageNodes.get(messageKey);
+            renderedMessageKeys.delete(messageKey);
+            renderedMessageNodes.delete(messageKey);
+            if (existing) {
+                existing.remove();
+                updateEmptyState();
+                scrollToBottom();
+            }
+        }
+
+        function finalizeAssistantMessage(msg) {
+            const key = assistantStreamKey(msg);
+            if (key) {
+                delete streamingAssistantDrafts[key];
+            }
+            addMessage(msg);
+        }
+
+        function assistantStreamKey(value) {
+            value = value || {};
+            return value.request_id || value.episode_id || currentChatRequestId || '';
         }
 
         async function clearHistory() {
@@ -4080,13 +4620,18 @@ const webUI = `<!DOCTYPE html>
         function renderHistory(history) {
             messagesDiv.innerHTML = '';
             renderedMessageKeys = new Set();
+            renderedMessageNodes = new Map();
+            streamingAssistantDrafts = {};
 
             const fragment = document.createDocumentFragment();
             history.forEach(function(msg) {
+                if (isControlMessage(msg)) return;
                 const key = messageIdentity(msg);
                 if (renderedMessageKeys.has(key)) return;
                 renderedMessageKeys.add(key);
-                fragment.appendChild(createMessageNode(msg));
+                const node = createMessageNode(msg);
+                renderedMessageNodes.set(key, node);
+                fragment.appendChild(node);
             });
 
             messagesDiv.appendChild(fragment);
@@ -4095,12 +4640,34 @@ const webUI = `<!DOCTYPE html>
         }
 
         function addMessage(msg) {
+            if (isControlMessage(msg)) return;
             const key = messageIdentity(msg);
-            if (renderedMessageKeys.has(key)) return;
+            if (renderedMessageKeys.has(key)) {
+                if (normalizeType((msg || {}).type) === 'assistant') {
+                    updateMessageNode(key, msg);
+                }
+                return;
+            }
             renderedMessageKeys.add(key);
-            messagesDiv.appendChild(createMessageNode(msg));
+            const node = createMessageNode(msg);
+            renderedMessageNodes.set(key, node);
+            messagesDiv.appendChild(node);
             updateEmptyState();
             scrollToBottom();
+        }
+
+        function updateMessageNode(key, msg) {
+            const existing = renderedMessageNodes.get(key);
+            if (!existing) return;
+            const replacement = createMessageNode(msg);
+            renderedMessageNodes.set(key, replacement);
+            existing.replaceWith(replacement);
+            updateEmptyState();
+            scrollToBottom();
+        }
+
+        function isControlMessage(msg) {
+            return normalizeType((msg || {}).type) === 'todo_closed';
         }
 
         function messageIdentity(msg) {
@@ -4108,11 +4675,17 @@ const webUI = `<!DOCTYPE html>
             const type = normalizeType(msg.type);
             const content = msg.content || '';
             const requestId = msg.request_id || '';
-            if (requestId && (type === 'user' || type === 'assistant')) {
+            if (requestId && type === 'assistant') {
+                return ['request', requestId, type].join('\u001f');
+            }
+            if (requestId && type === 'user') {
                 return ['request', requestId, type, content].join('\u001f');
             }
 
             const episodeId = msg.episode_id || '';
+            if (episodeId && type === 'assistant') {
+                return ['episode', episodeId, type].join('\u001f');
+            }
             if (episodeId) {
                 return ['episode', episodeId, type, msg.role || '', msg.tool_name || '', msg.tool_input || '', content, msg.timestamp || ''].join('\u001f');
             }
@@ -4340,8 +4913,8 @@ const webUI = `<!DOCTYPE html>
         }
 
         function setComposerState(isLoading) {
-            sendBtn.disabled = recorderState.isStopping || pendingSteerSubmitting;
-            sendBtn.textContent = isLoading ? 'Steer' : 'Send';
+            sendBtn.disabled = recorderState.isStopping || pendingSteerSubmitting || (isLoading && !currentChatRequestId);
+            sendBtn.textContent = currentChatRequestId ? 'Steer' : 'Send';
             imageBtn.disabled = isLoading || recorderState.isRecording || recorderState.isStopping;
             recordBtn.disabled = isLoading || recorderState.isStopping;
             stopRunBtn.disabled = !isLoading;

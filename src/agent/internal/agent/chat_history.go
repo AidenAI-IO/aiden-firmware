@@ -141,7 +141,9 @@ func compactMessageForChatHistory(message Message) Message {
 		message.Content = compactToolResultForChatHistory(message.Content)
 	}
 	message.Attachments = compactAttachmentsForChatHistory(message.Attachments)
+	message.Artifacts = sanitizeInputArtifacts(message.Artifacts)
 	message.Content = truncateChatHistoryRunes(message.Content, maxChatHistoryContentRunes)
+	message.OriginalText = truncateChatHistoryRunes(message.OriginalText, maxChatHistoryContentRunes)
 	message.ToolInput = truncateChatHistoryRunes(message.ToolInput, maxChatHistoryContentRunes)
 	message.Description = truncateChatHistoryRunes(message.Description, maxChatHistoryContentRunes)
 	return message

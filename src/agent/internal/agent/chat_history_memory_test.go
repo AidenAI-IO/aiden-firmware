@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -55,7 +57,7 @@ func TestRuntimeStartupPersistsInterruptedEpisodeStatusToChatHistory(t *testing.
 	}
 }
 
-func TestRuntimeRunKeepsCompressedHotWindowAsPlainConversationHistory(t *testing.T) {
+func TestRuntimeRunKeepsCompressedHotWindowAsChatMessages(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
@@ -91,14 +93,22 @@ func TestRuntimeRunKeepsCompressedHotWindowAsPlainConversationHistory(t *testing
 	}
 
 	systemPrompt := messageText(model.messages[0][:1])
-	plannerTaskPrompt := messageText(model.messages[0][1:])
 	if strings.Contains(systemPrompt, "上一轮用户问题") || strings.Contains(systemPrompt, "上一轮回答") {
 		t.Fatalf("hot-window chat history must not be injected into planner system prompt:\n%s", systemPrompt)
 	}
-	for _, want := range []string{"Conversation history:", "上一轮用户问题", "上一轮回答"} {
-		if !strings.Contains(plannerTaskPrompt, want) {
-			t.Fatalf("planner task prompt missing %q:\n%s", want, plannerTaskPrompt)
-		}
+	messages := model.messages[0]
+	if len(messages) < 4 {
+		t.Fatalf("expected restored chat messages before planner task prompt, got %#v", messages)
+	}
+	if messages[1].Role != "human" || messageText(messages[1:2]) != "上一轮用户问题\n" {
+		t.Fatalf("unexpected restored user history message: role=%s text=%q", messages[1].Role, messageText(messages[1:2]))
+	}
+	if messages[2].Role != "ai" || messageText(messages[2:3]) != "上一轮回答\n" {
+		t.Fatalf("unexpected restored assistant history message: role=%s text=%q", messages[2].Role, messageText(messages[2:3]))
+	}
+	plannerTaskPrompt := messageText(messages[3:])
+	if strings.Contains(plannerTaskPrompt, "Conversation history:") || strings.Contains(plannerTaskPrompt, "上一轮回答") {
+		t.Fatalf("planner task prompt should not duplicate hot-window chat history:\n%s", plannerTaskPrompt)
 	}
 	for _, marker := range []string{"=== Recent session context (hot window) ===", "=== End of recent context ==="} {
 		if strings.Contains(plannerTaskPrompt, marker) {
@@ -107,7 +117,7 @@ func TestRuntimeRunKeepsCompressedHotWindowAsPlainConversationHistory(t *testing
 	}
 }
 
-func TestRuntimeRunDoesNotLabelCompressedHotWindowHistory(t *testing.T) {
+func TestRuntimeRunDoesNotLabelCompressedHotWindowChatMessages(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
@@ -142,12 +152,17 @@ func TestRuntimeRunDoesNotLabelCompressedHotWindowHistory(t *testing.T) {
 		t.Fatalf("expected planner system and user messages, got %#v", model.messages)
 	}
 
-	plannerTaskPrompt := messageText(model.messages[0][1:])
-	for _, want := range []string{"Conversation history:", "最近用户问题", "最近回答"} {
-		if !strings.Contains(plannerTaskPrompt, want) {
-			t.Fatalf("planner task prompt missing %q:\n%s", want, plannerTaskPrompt)
-		}
+	messages := model.messages[0]
+	if len(messages) < 4 {
+		t.Fatalf("expected restored chat messages before planner task prompt, got %#v", messages)
 	}
+	if messages[1].Role != "human" || messageText(messages[1:2]) != "最近用户问题\n" {
+		t.Fatalf("unexpected restored user history message: role=%s text=%q", messages[1].Role, messageText(messages[1:2]))
+	}
+	if messages[2].Role != "ai" || messageText(messages[2:3]) != "最近回答\n" {
+		t.Fatalf("unexpected restored assistant history message: role=%s text=%q", messages[2].Role, messageText(messages[2:3]))
+	}
+	plannerTaskPrompt := messageText(messages[3:])
 	for _, marker := range []string{"=== Recent session context (hot window) ===", "=== End of recent context ===", "Current session recent history", "Prior messages retained from this session", "compressed into the session summary"} {
 		if strings.Contains(plannerTaskPrompt, marker) {
 			t.Fatalf("planner task prompt should not include hot-window label or marker %q:\n%s", marker, plannerTaskPrompt)
@@ -191,53 +206,34 @@ func TestRuntimeRunKeepsCurrentRequestOutOfCompressedHistoryBlock(t *testing.T) 
 		t.Fatalf("expected planner system and user messages, got %#v", model.messages)
 	}
 
-	plannerTaskPrompt := messageText(model.messages[0][1:])
-	historyHeader := "Conversation history:"
-	headerIndex := strings.Index(plannerTaskPrompt, historyHeader)
-	if headerIndex < 0 {
-		t.Fatalf("planner task prompt missing history header %q:\n%s", historyHeader, plannerTaskPrompt)
+	messages := model.messages[0]
+	if len(messages) < 4 {
+		t.Fatalf("expected restored chat messages before planner task prompt, got %#v", messages)
 	}
-
-	historyBlock := plannerTaskPrompt[headerIndex+len(historyHeader):]
-	if nextSectionIndex := strings.Index(historyBlock, "\n\nCurrent plan:"); nextSectionIndex >= 0 {
-		historyBlock = historyBlock[:nextSectionIndex]
+	historyMessages := messages[1:3]
+	if messageText(historyMessages[0:1]) != "历史用户问题\n" || messageText(historyMessages[1:2]) != "历史回答\n" {
+		t.Fatalf("unexpected restored history messages: %#v", historyMessages)
 	}
-	for _, want := range []string{"历史用户问题", "历史回答"} {
-		if !strings.Contains(historyBlock, want) {
-			t.Fatalf("history block missing %q:\n%s", want, historyBlock)
-		}
+	if strings.Contains(messageText(historyMessages), currentRequest) {
+		t.Fatalf("current request must not be inside restored conversation history messages:\n%s", messageText(historyMessages))
 	}
-	if strings.Contains(historyBlock, currentRequest) {
-		t.Fatalf("current request must not be inside conversation history block:\n%s", historyBlock)
-	}
+	plannerTaskPrompt := messageText(messages[3:])
 	for _, marker := range []string{"hot window", "Current session recent history", "Prior messages retained from this session", "compressed into the session summary"} {
-		if strings.Contains(historyBlock, marker) {
-			t.Fatalf("conversation history block should not include hot-window label %q:\n%s", marker, historyBlock)
+		if strings.Contains(plannerTaskPrompt, marker) {
+			t.Fatalf("planner task prompt should not include hot-window label %q:\n%s", marker, plannerTaskPrompt)
 		}
 	}
 }
 
-func TestRuntimeRunIncludesPersistedInterruptedEpisodeInPlannerHistory(t *testing.T) {
+func TestRuntimeRunIncludesFullActivePlannerHistoryAndSessionRootContext(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
-	historyStore := NewChatHistoryStore(filepath.Join(memoryDir, "chat_history"))
-
-	if err := historyStore.Append(ctx, Message{
-		Type:      "user",
-		EpisodeID: "ep_resume_context",
-		Content:   "打开设置",
-	}); err != nil {
-		t.Fatalf("Append user history: %v", err)
-	}
-	if err := historyStore.Append(ctx, Message{
-		Type:      "episode_status",
-		EpisodeID: "ep_resume_context",
-		Status:    "interrupted",
-		Content:   "Task episode ep_resume_context was interrupted before completion.\nGoal: 打开设置\nLast recorded step: planner_decision next_step=点击设置",
-		IsError:   true,
-	}); err != nil {
-		t.Fatalf("Append episode status: %v", err)
+	manager := NewMemoryManager(memoryDir)
+	for i := 0; i < 12; i++ {
+		if err := manager.AppendExchange(ctx, "default", fmt.Sprintf("prior user %02d", i), fmt.Sprintf("prior assistant %02d", i)); err != nil {
+			t.Fatalf("AppendExchange(%d) error = %v", i, err)
+		}
 	}
 
 	model := &scriptedModel{responses: roleDirectResponses("继续完成")}
@@ -249,7 +245,7 @@ func TestRuntimeRunIncludesPersistedInterruptedEpisodeInPlannerHistory(t *testin
 			MaxIterations: 1,
 		},
 		&testModelResolver{model: model},
-		NewMemoryManager(memoryDir),
+		manager,
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
@@ -257,13 +253,106 @@ func TestRuntimeRunIncludesPersistedInterruptedEpisodeInPlannerHistory(t *testin
 	if _, err := runtime.Run(ctx, RunRequest{Input: "继续"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(model.messages) == 0 {
-		t.Fatalf("expected planner model call")
+	if len(model.messages) == 0 || len(model.messages[0]) < 2 {
+		t.Fatalf("expected planner system and user messages, got %#v", model.messages)
 	}
-	plannerPrompt := messageText(model.messages[0])
-	for _, want := range []string{"Recent persisted chat history", "ep_resume_context", "打开设置", "点击设置"} {
-		if !strings.Contains(plannerPrompt, want) {
-			t.Fatalf("planner prompt missing %q:\n%s", want, plannerPrompt)
+
+	plannerTaskPrompt := messageText(model.messages[0][1:])
+	for _, want := range []string{
+		"prior user 00",
+		"prior assistant 00",
+		"prior user 02",
+		"prior assistant 02",
+		"prior user 11",
+		"prior assistant 11",
+		"Root request: prior user 00",
+	} {
+		if !strings.Contains(plannerTaskPrompt, want) {
+			t.Fatalf("planner task prompt missing %q:\n%s", want, plannerTaskPrompt)
 		}
+	}
+}
+
+func TestRuntimeRunBudgetsActivePlannerHistoryBeforeModelCall(t *testing.T) {
+	ctx := context.Background()
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 800
+	cfg.ReserveTokens = 200
+	cfg.KeepRecentTokens = 220
+	manager := NewMemoryManager(memoryDir, WithExtractionConfig(cfg), WithSessionBoundaryEnabled(false))
+
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "user_input",
+		Role:    "user",
+		Source:  EventSourcePinnedRoot,
+		Content: "PINNED_ROOT_REQUEST",
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendSessionEvent(pinned root) error = %v", err)
+	}
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "system_event",
+		Role:    "system",
+		Source:  EventSourceCompactionPrefix,
+		Content: "SPLIT_SYNTHETIC_CONTEXT",
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendSessionEvent(synthetic context) error = %v", err)
+	}
+	for i := 0; i < 8; i++ {
+		if err := manager.AppendExchange(ctx, "default",
+			fmt.Sprintf("DROP_OLD_USER_%02d %s", i, strings.Repeat("old ", 160)),
+			fmt.Sprintf("DROP_OLD_ASSISTANT_%02d %s", i, strings.Repeat("old ", 160)),
+		); err != nil {
+			t.Fatalf("AppendExchange(old %d) error = %v", i, err)
+		}
+	}
+	if err := manager.AppendExchange(ctx, "default",
+		"KEEP_RECENT_USER "+strings.Repeat("recent ", 28),
+		"KEEP_RECENT_ASSISTANT "+strings.Repeat("recent ", 28),
+	); err != nil {
+		t.Fatalf("AppendExchange(recent) error = %v", err)
+	}
+
+	model := &scriptedModel{responses: roleDirectResponses("继续完成")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model, spec: ModelSpec{ContextWindow: 800}},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(ctx, RunRequest{Input: "CURRENT_REQUEST_MARKER 继续"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) == 0 || len(model.messages[0]) < 3 {
+		t.Fatalf("expected planner system, history, and state prompt messages, got %#v", model.messages)
+	}
+
+	plannerMessages := model.messages[0]
+	historyText := messageText(plannerMessages[1 : len(plannerMessages)-1])
+	for _, want := range []string{"PINNED_ROOT_REQUEST", "SPLIT_SYNTHETIC_CONTEXT", "KEEP_RECENT_USER", "KEEP_RECENT_ASSISTANT"} {
+		if !strings.Contains(historyText, want) {
+			t.Fatalf("budgeted planner history missing %q:\n%s", want, historyText)
+		}
+	}
+	for _, unwanted := range []string{"DROP_OLD_USER_00", "DROP_OLD_ASSISTANT_00", "CURRENT_REQUEST_MARKER"} {
+		if strings.Contains(historyText, unwanted) {
+			t.Fatalf("budgeted planner history should not contain %q:\n%s", unwanted, historyText)
+		}
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := manager.WaitMaintenance(waitCtx); err != nil {
+		t.Fatalf("WaitMaintenance() error = %v", err)
+	}
+	if !manager.HasCompressedHistory() {
+		t.Fatal("over-budget active history should preserve a compression signal for maintenance")
 	}
 }

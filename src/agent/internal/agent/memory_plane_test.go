@@ -110,7 +110,7 @@ func TestMemoryPlaneRetrieveRoutesExperienceByRole(t *testing.T) {
 		Entities:  []string{"微信App"},
 		Outcome:   TaskEpisodeOutcome{Success: true, VerifierReason: "已打开"},
 		Events: []TaskEpisodeEvent{
-			{EventID: "evt_1", Type: "tool_call", ToolName: "touch_gesture"},
+			{EventID: "evt_1", Type: runEventToolCall, ToolName: "touch_gesture"},
 		},
 	}); err != nil {
 		t.Fatalf("AddEpisode success: %v", err)
@@ -230,7 +230,7 @@ func TestRuntimeRunWritesTaskEpisodeTrace(t *testing.T) {
 		switch event.Type {
 		case "planner_decision":
 			sawPlanner = true
-		case "tool_call":
+		case runEventToolCall:
 			if event.ToolName == "echo" {
 				sawToolCall = true
 			}
@@ -322,7 +322,7 @@ func TestTaskEpisodeIndexSummaryOmitsScreenshotBase64(t *testing.T) {
 		Events: []TaskEpisodeEvent{
 			{
 				EventID:        "evt_tool",
-				Type:           "tool_call",
+				Type:           runEventToolCall,
 				ToolName:       "screenshot",
 				RawObservation: "",
 			},
@@ -503,7 +503,7 @@ func TestMemoryPlaneUpdatesReferencedMemoryOutcomes(t *testing.T) {
 			RetrievedMemoryRefs: []string{"mem_proc", "dev_proc"},
 			Outcome:             TaskEpisodeOutcome{Success: false, FailureReason: "旧流程失败"},
 			Events: []TaskEpisodeEvent{
-				{EventID: episodeID + "_tool", Type: "tool_call", ToolName: "echo"},
+				{EventID: episodeID + "_tool", Type: runEventToolCall, ToolName: "echo"},
 			},
 		}); err != nil {
 			t.Fatalf("CommitEpisode(%s): %v", episodeID, err)
@@ -550,7 +550,7 @@ func TestMemoryPlaneUpdatesReferencedMemoryOutcomes(t *testing.T) {
 		RetrievedMemoryRefs: []string{"mem_fail_fresh"},
 		Outcome:             TaskEpisodeOutcome{Success: true, VerifierReason: "成功完成"},
 		Events: []TaskEpisodeEvent{
-			{EventID: "ep_success_tool", Type: "tool_call", ToolName: "echo"},
+			{EventID: "ep_success_tool", Type: runEventToolCall, ToolName: "echo"},
 		},
 	}); err != nil {
 		t.Fatalf("CommitEpisode success: %v", err)

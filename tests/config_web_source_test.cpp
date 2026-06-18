@@ -1,6 +1,7 @@
 #include <doctest.h>
 
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -206,7 +207,9 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(source.find("read_ota_log_snapshot") != std::string::npos);
     CHECK(source.find("kOtaWebUpdateLogPath") != std::string::npos);
     CHECK(source.find("/tmp/config_web_ota_update.log") != std::string::npos);
-    CHECK(source.find("/var/log/ota/ota.log") == std::string::npos);
+    CHECK(source.find("/var/log/ota/ota.log") != std::string::npos);
+    CHECK(source.find("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG") != std::string::npos);
+    CHECK(source.find("\"ota_health_log\"") != std::string::npos);
     CHECK(source.find("/oem/usr/bin/ota") != std::string::npos);
     CHECK(source.find(" update") != std::string::npos);
     CHECK(source.find("kOtaWebUpdateLockPath") != std::string::npos);
@@ -262,6 +265,8 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("OTA 更新已开始，等待日志输出...") != std::string::npos);
     CHECK(html.find("setOtaLogPending('OTA 更新已开始，等待日志输出...',Number(payload.ota_log_start_size_bytes||0));") != std::string::npos);
     CHECK(html.find("renderOtaLog(snapshot, {preservePending:true})") != std::string::npos);
+    CHECK(html.find("payload.ota_health_log") != std::string::npos);
+    CHECK(html.find("extractOtaExitCode((payload.ota_log||{}).log||'')") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');setOtaLogPending(") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');showOtaLogPanel();") == std::string::npos);
     CHECK(html.find("function hideOtaLogPanel()") != std::string::npos);
@@ -279,6 +284,36 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("/api/ota/logs") != std::string::npos);
     CHECK(html.find("await refreshOtaLog(false)") == std::string::npos);
     CHECK(html.find("setInterval(function(){refreshOtaLog(false);},2000)") != std::string::npos);
+}
+
+TEST_CASE("config web exposes running firmware version and ota health status separately") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("\"health_status\"") != std::string::npos);
+    CHECK(source.find("\"health_error\"") != std::string::npos);
+    CHECK(source.find("\"previous_version\"") != std::string::npos);
+    CHECK(source.find("current_slot_from_cmdline") != std::string::npos);
+    CHECK(source.find("running_slot_matches_target") != std::string::npos);
+
+    CHECK(html.find("fwHealth") != std::string::npos);
+    CHECK(html.find("renderFirmwareInfo") != std::string::npos);
+    CHECK(html.find("OTA 状态") != std::string::npos);
+    CHECK(html.find("health_error") != std::string::npos);
+    CHECK(html.find("previous_version") != std::string::npos);
 }
 
 TEST_CASE("ota open sources documentation references current docs paths") {
@@ -485,6 +520,7 @@ TEST_CASE("config web degrades gracefully when config metadata is unavailable") 
     std::ostringstream cpp_buffer;
     cpp_buffer << cpp_in.rdbuf();
     const std::string source = cpp_buffer.str();
+    CHECK(source.find("case 404: response.status_text = \"Not Found\";") != std::string::npos);
     CHECK(source.find("case 503: response.status_text = \"Service Unavailable\";") != std::string::npos);
 }
 
@@ -740,6 +776,107 @@ TEST_CASE("config web DHCP invokes dhcpcd without hook") {
     CHECK(source.find("dhcpcd -n \" + shell_quote(options.wifi_interface)") != std::string::npos);
 }
 
+TEST_CASE("config web waits for an IPv4 lease before confirming a connection") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    // A dedicated helper polls for the DHCP-assigned IPv4 address; `dhcpcd -n`
+    // returns immediately so the lease is not present when it exits.
+    CHECK(source.find("bool wait_for_ip(const Options& options") != std::string::npos);
+    // The helper must consult both wpa_cli status and ifconfig for the address.
+    CHECK(source.find("find_key_value_line(status.output, \"ip_address\")") != std::string::npos);
+    CHECK(source.find("extract_ifconfig_ipv4(status.output)") != std::string::npos);
+    // DHCP success must depend on actually obtaining an address, not just the
+    // dhcpcd exit code.
+    CHECK(source.find("dhcp.exit_code == 0 && wait_for_ip(options, log, 15)") != std::string::npos);
+}
+
+TEST_CASE("config web wifi status falls back to ifconfig for the IPv4 address") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    // wpa_cli status never reports ip_address= on this device (DHCP is run by
+    // dhcpcd, not wpa_supplicant), so query_wifi_status must back-fill the IPv4
+    // address from ifconfig; otherwise the connect-confirmation gate rolls back
+    // a working connection because status.ip_address is always empty.
+    CHECK(source.find("extract_ifconfig_ipv4(ifc.output)") != std::string::npos);
+    // The fallback is gated on a missing wpa_cli ip_address and an associated
+    // (COMPLETED) link, so a stale ifconfig inet cannot falsely confirm.
+    CHECK(source.find("if (status.ip_address.empty() && status.connected && command_exists(\"ifconfig\"))") !=
+          std::string::npos);
+}
+
+TEST_CASE("config web restores previous wifi config when final apply is not confirmed") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("auto is_connected_to_target = [&](const WifiRuntimeStatus& status)") != std::string::npos);
+    CHECK(source.find("if (final_apply.exit_code != 0 || !is_connected_to_target(wifi_status))") != std::string::npos);
+    CHECK(source.find("failed to restore previous wifi config") != std::string::npos);
+    CHECK(source.find("saved Wi-Fi was not confirmed; restored previous Wi-Fi config.") != std::string::npos);
+}
+
+TEST_CASE("config web fails closed when wifi rollback snapshot cannot be read") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("bool read_file_contents_checked(const char* path") != std::string::npos);
+    CHECK(source.find("stat(options.wifi_config_path.c_str(), &st)") != std::string::npos);
+    CHECK(source.find("static_cast<size_t>(st.st_size) + 1") != std::string::npos);
+    CHECK(source.find("if (!read_file_contents_checked(options.wifi_config_path.c_str()") != std::string::npos);
+    CHECK(source.find("failed to read existing wifi config for rollback") != std::string::npos);
+    CHECK(source.find("had_original_config ? read_file_contents(options.wifi_config_path.c_str())") == std::string::npos);
+}
+
+TEST_CASE("config web reports wifi forget runtime apply failures") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("const bool applied = wifi_apply.exit_code == 0;") != std::string::npos);
+    CHECK(source.find("cJSON_AddBoolToObject(response, \"ok\", applied ? 1 : 0);") != std::string::npos);
+    CHECK(source.find("wifi network forgotten but failed to apply runtime changes") != std::string::npos);
+    CHECK(source.find("cJSON_AddBoolToObject(apply, \"ok\", applied ? 1 : 0);") != std::string::npos);
+}
+
+TEST_CASE("config web clears legacy wifi fields for explicit empty network lists") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("if (json_is_array(networks))") != std::string::npos);
+    CHECK(source.find("wifi->networks.clear();") != std::string::npos);
+    CHECK(source.find("aiden::sync_legacy_wifi_fields(wifi);") != std::string::npos);
+}
+
 TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhid") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
@@ -836,6 +973,70 @@ TEST_CASE("config web resolved config validation keeps required fields and type 
     CHECK(source.find("validate_search_secret_presence") != std::string::npos);
     CHECK(source.find("validate_required_string(model, \"model\", \"provider\", false") != std::string::npos);
     CHECK(source.find("\"search\", \"has_api_key\", CONFIG_FIELD_BOOL") != std::string::npos);
+    CHECK(source.find("\"voice_progress_speech_enabled\", CONFIG_FIELD_BOOL") != std::string::npos);
     CHECK(source.find("\"voice_speech_summary_enabled\", CONFIG_FIELD_BOOL") != std::string::npos);
-    CHECK(source.find("\"voice_speech_max_runes\", CONFIG_FIELD_NUMBER") != std::string::npos);
+}
+
+TEST_CASE("config web rendered config controls are registered in field type guards") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    std::set<std::string> rendered_fields;
+    const std::string section_marker = "data-section=\\\"";
+    size_t pos = 0;
+    while ((pos = html.find(section_marker, pos)) != std::string::npos) {
+        const size_t section_start = pos + section_marker.size();
+        const size_t section_end = html.find("\\\"", section_start);
+        REQUIRE(section_end != std::string::npos);
+        const std::string section = html.substr(section_start, section_end - section_start);
+        pos = section_end + 2;
+
+        if (section == "system_env") {
+            continue;
+        }
+
+        size_t line_start = html.rfind('\n', section_start);
+        line_start = line_start == std::string::npos ? 0 : line_start + 1;
+        size_t line_end = html.find('\n', section_start);
+        line_end = line_end == std::string::npos ? html.size() : line_end;
+        const std::string line = html.substr(line_start, line_end - line_start);
+
+        const std::string id_marker = "id=\\\"";
+        const size_t id_pos = line.find(id_marker);
+        REQUIRE(id_pos != std::string::npos);
+        const size_t id_start = id_pos + id_marker.size();
+        const size_t id_end = line.find("\\\"", id_start);
+        REQUIRE(id_end != std::string::npos);
+        const std::string id = line.substr(id_start, id_end - id_start);
+        const std::string prefix = section + "_";
+
+        REQUIRE_MESSAGE(id.find(prefix) == 0, "config control id must be section_key: " << id);
+        rendered_fields.insert(section + "." + id.substr(prefix.size()));
+    }
+
+    REQUIRE(!rendered_fields.empty());
+    for (std::set<std::string>::const_iterator it = rendered_fields.begin(); it != rendered_fields.end(); ++it) {
+        const std::string& field = *it;
+        const size_t dot = field.find('.');
+        REQUIRE(dot != std::string::npos);
+        const std::string section = field.substr(0, dot);
+        const std::string key = field.substr(dot + 1);
+        const std::string guard = "{\"" + section + "\", \"" + key + "\", CONFIG_FIELD_";
+
+        CHECK_MESSAGE(source.find(guard) != std::string::npos,
+                      "rendered config field is missing from validate_known_config_field_types: " << field);
+    }
 }

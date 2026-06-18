@@ -35,6 +35,8 @@ struct FrameWirePrefix {
     uint64_t payload_len = 0;
 };
 
+static const size_t kFrameWirePrefixSize = sizeof(uint32_t) + sizeof(uint64_t);
+
 const char* frame_service_status_to_string(FrameServiceStatus status);
 bool frame_service_status_from_string(const char* text, FrameServiceStatus* out);
 

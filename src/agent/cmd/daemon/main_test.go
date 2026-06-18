@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
+	"log"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -20,11 +23,15 @@ type fakeAudioDialog struct {
 	vad                *agent.AudioVAD
 	utterance          []int16
 	utterancesToReturn [][]int16
+	onStart            func(*fakeAudioDialog)
 	onUtterance        func()
+	processUtterance   func(context.Context, []int16, *agent.Runtime) error
 	utterances         [][]int16
 	prepareTurnInput   func([]int16) (agent.TurnInput, error)
 	runTurn            func(context.Context) (agent.RunResult, error)
+	runVoiceTurn       func(context.Context, agent.TurnInput, []int16) (agent.RunResult, error)
 	speak              func(context.Context) error
+	persistVoiceTurn   func(agent.TurnInput, agent.RunResult, []int16)
 	persistedTurns     []persistedVoiceTurn
 	vadErr             error
 	onRead             func(*fakeAudioDialog, *agent.AudioChunkResult)
@@ -51,6 +58,9 @@ func (d *fakeAudioDialog) StartRecording() error {
 	d.ops = append(d.ops, "start")
 	d.starts++
 	d.recordingActive = true
+	if d.onStart != nil {
+		d.onStart(d)
+	}
 	if len(d.chunkBatches) > 0 {
 		d.chunks = d.chunkBatches[0]
 		d.chunkBatches = d.chunkBatches[1:]
@@ -114,6 +124,9 @@ func (d *fakeAudioDialog) ProcessUtterance(ctx context.Context, utterance []int1
 	if d.onUtterance != nil {
 		d.onUtterance()
 	}
+	if d.processUtterance != nil {
+		return d.processUtterance(ctx, utterance, runtime)
+	}
 	return nil
 }
 
@@ -135,12 +148,37 @@ func (d *fakeAudioDialog) RunAgentTurn(ctx context.Context, input agent.TurnInpu
 	return agent.RunResult{Output: "reply"}, nil
 }
 
+func (d *fakeAudioDialog) RunVoiceTurn(ctx context.Context, input agent.TurnInput, utterance []int16, runtime *agent.Runtime) (agent.RunResult, error) {
+	if d.runVoiceTurn != nil {
+		return d.runVoiceTurn(ctx, input, utterance)
+	}
+	if d.persistVoiceTurn != nil {
+		d.persistVoiceTurn(input, agent.RunResult{}, utterance)
+	}
+	result, err := d.RunAgentTurn(ctx, input, runtime)
+	if err != nil {
+		return result, err
+	}
+	d.persistedTurns = append(d.persistedTurns, persistedVoiceTurn{
+		input:     input,
+		result:    result,
+		utterance: append([]int16(nil), utterance...),
+	})
+	if d.persistVoiceTurn != nil {
+		d.persistVoiceTurn(agent.TurnInput{}, result, nil)
+	}
+	return result, nil
+}
+
 func (d *fakeAudioDialog) PersistVoiceTurn(input agent.TurnInput, result agent.RunResult, utterance []int16) {
 	d.persistedTurns = append(d.persistedTurns, persistedVoiceTurn{
 		input:     input,
 		result:    result,
 		utterance: append([]int16(nil), utterance...),
 	})
+	if d.persistVoiceTurn != nil {
+		d.persistVoiceTurn(input, result, utterance)
+	}
 }
 
 func (d *fakeAudioDialog) Speak(ctx context.Context, text string, interrupt <-chan struct{}) error {
@@ -406,6 +444,56 @@ func TestProcessAudioUntilUtteranceSendsBufferedAudioAfterVADTimeout(t *testing.
 	}
 	if dialog.stops != 1 {
 		t.Fatalf("dialog stops = %d, want 1 before timeout utterance processing", dialog.stops)
+	}
+}
+
+func TestDrainWakeupEventsWhileListeningLogsDrainedCount(t *testing.T) {
+	wakeupEvents := make(chan struct{}, 3)
+	wakeupEvents <- struct{}{}
+	wakeupEvents <- struct{}{}
+	wakeupEvents <- struct{}{}
+
+	var logBuf bytes.Buffer
+	originalOutput := log.Writer()
+	originalFlags := log.Flags()
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(originalOutput)
+		log.SetFlags(originalFlags)
+	})
+
+	drainWakeupEventsWhileListening(wakeupEvents)
+
+	if got := logBuf.String(); !strings.Contains(got, "3 duplicate wakeup(s) received while listening, ignoring") {
+		t.Fatalf("drain log = %q, want drained count", got)
+	}
+}
+
+func TestSignalWakeupEventCoalescesPendingEvents(t *testing.T) {
+	wakeupEvents := make(chan struct{}, 1)
+
+	signalWakeupEvent(wakeupEvents)
+	signalWakeupEvent(wakeupEvents)
+	signalWakeupEvent(wakeupEvents)
+
+	if got := len(wakeupEvents); got != 1 {
+		t.Fatalf("pending wakeup events = %d, want 1", got)
+	}
+}
+
+func TestSignalVoiceWakeupEventCoalescesPendingEvents(t *testing.T) {
+	events := make(chan voiceEvent, 1)
+
+	signalVoiceWakeupEvent(events)
+	signalVoiceWakeupEvent(events)
+	signalVoiceWakeupEvent(events)
+
+	if got := len(events); got != 1 {
+		t.Fatalf("pending voice events = %d, want 1", got)
+	}
+	if got := <-events; got != voiceEventWakeup {
+		t.Fatalf("voice event = %v, want wakeup", got)
 	}
 }
 
@@ -698,7 +786,7 @@ func TestRunWakeupModeStartsNewRecordingForNextWakeup(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runWakeupMode(agent.Config{VoiceSessionEnabled: &voiceSessionDisabled}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
+		runWakeupMode(agent.Config{VoiceFollowupEnabled: &voiceSessionDisabled}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
 			watcher.callback = callback
 			return watcher, nil
 		})
@@ -719,6 +807,72 @@ func TestRunWakeupModeStartsNewRecordingForNextWakeup(t *testing.T) {
 	}
 	if len(dialog.utterances) != 2 {
 		t.Fatalf("utterances = %d, want 2", len(dialog.utterances))
+	}
+}
+
+func TestRunWakeupModeLegacyWakeupInterruptsProcessing(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	watcher := &fakeWakeupWatcher{fireOnStart: true}
+	processingStarted := make(chan struct{})
+	ctxCanceled := make(chan struct{})
+	secondStart := make(chan struct{})
+	voiceSessionDisabled := false
+	var dialog *fakeAudioDialog
+	dialog = &fakeAudioDialog{
+		frameSamples: 2,
+		chunks: []*agent.AudioChunkResult{
+			{PCM: pcm16BytesFromSamples(100, 200)},
+		},
+		utterance: []int16{100, 200},
+		onStart: func(d *fakeAudioDialog) {
+			if d.starts == 2 {
+				close(secondStart)
+				sigChan <- syscall.SIGTERM
+			}
+		},
+		processUtterance: func(ctx context.Context, utterance []int16, runtime *agent.Runtime) error {
+			close(processingStarted)
+			select {
+			case <-ctx.Done():
+				close(ctxCanceled)
+				return ctx.Err()
+			case <-time.After(150 * time.Millisecond):
+				sigChan <- syscall.SIGTERM
+				return errors.New("legacy wakeup did not cancel utterance processing")
+			}
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		runWakeupMode(agent.Config{InputMode: "stt", VoiceFollowupEnabled: &voiceSessionDisabled}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
+			watcher.callback = callback
+			return watcher, nil
+		})
+		close(done)
+	}()
+
+	select {
+	case <-processingStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("legacy wakeup mode did not start utterance processing")
+	}
+	watcher.callback()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runWakeupMode did not stop after interrupted legacy wakeup")
+	}
+	select {
+	case <-ctxCanceled:
+	default:
+		t.Fatal("legacy utterance context was not canceled by wakeup")
+	}
+	select {
+	case <-secondStart:
+	default:
+		t.Fatal("legacy wakeup interrupt did not trigger the next recording")
 	}
 }
 
@@ -788,7 +942,7 @@ func TestRunWakeupModeVoiceSessionProcessesFollowupWithoutSecondWakeup(t *testin
 
 	done := make(chan struct{})
 	go func() {
-		runWakeupMode(agent.Config{InputMode: "stt", VoiceFollowupTimeoutMs: 100}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
+		runWakeupMode(agent.Config{InputMode: "stt", VoiceFollowupEnabled: boolPtr(true), VoiceFollowupTimeoutMs: 100}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
 			watcher.callback = callback
 			return watcher, nil
 		})
@@ -840,7 +994,7 @@ func TestRunWakeupModeVoiceSessionStartsRecordingWithoutWakeupAck(t *testing.T) 
 
 	done := make(chan struct{})
 	go func() {
-		runWakeupMode(agent.Config{InputMode: "stt", VoiceMaxTurns: 1}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
+		runWakeupMode(agent.Config{InputMode: "stt", VoiceFollowupEnabled: boolPtr(true), VoiceMaxTurns: 1}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
 			watcher.callback = callback
 			return watcher, nil
 		})
@@ -931,7 +1085,7 @@ func TestRunVoiceSessionPersistsCompletedTurn(t *testing.T) {
 	}
 }
 
-func TestRunVoiceSessionClosesWhenAgentRequestsSleep(t *testing.T) {
+func TestRunVoiceSessionClosesWhenAgentRequestsWaitForWakeup(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	dialog := &fakeAudioDialog{
 		frameSamples: 2,
@@ -942,7 +1096,7 @@ func TestRunVoiceSessionClosesWhenAgentRequestsSleep(t *testing.T) {
 			{100, 200},
 		},
 		runTurn: func(ctx context.Context) (agent.RunResult, error) {
-			return agent.RunResult{Output: "我先休眠，等下次唤醒。", SleepRequested: true}, nil
+			return agent.RunResult{Output: "我先待命，等下次唤醒。", WaitForWakeupRequested: true}, nil
 		},
 	}
 
@@ -954,7 +1108,7 @@ func TestRunVoiceSessionClosesWhenAgentRequestsSleep(t *testing.T) {
 		t.Fatalf("dialog starts = %d, want one recording for the single voice turn", dialog.starts)
 	}
 	if len(dialog.spoken) != 0 {
-		t.Fatalf("spoken = %#v, want no final reply after sleep request", dialog.spoken)
+		t.Fatalf("spoken = %#v, want no final reply after wait-for-wakeup request", dialog.spoken)
 	}
 }
 
@@ -1021,13 +1175,56 @@ func TestRunVoiceTurnSignalWaitsForThinkingGoroutine(t *testing.T) {
 	}()
 
 	result := runVoiceTurn(agent.Config{}, dialog, nil, []int16{1}, sigChan, events)
-	if result.interrupted || result.sleepRequested || !result.exit {
-		t.Fatalf("runVoiceTurn = interrupted:%v sleep:%v exit:%v, want false false true", result.interrupted, result.sleepRequested, result.exit)
+	if result.interrupted || result.waitForWakeupRequested || !result.exit {
+		t.Fatalf("runVoiceTurn = interrupted:%v wait:%v exit:%v, want false false true", result.interrupted, result.waitForWakeupRequested, result.exit)
 	}
 	select {
 	case <-ctxCanceled:
 	default:
-		t.Fatal("RunAgentTurn goroutine was not finished before signal return")
+		t.Fatal("RunVoiceTurn goroutine was not finished before signal return")
+	}
+}
+
+func TestRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	events := make(chan voiceEvent, 1)
+	historyOrder := make([]string, 0, 3)
+	dialog := &fakeAudioDialog{
+		runTurn: func(ctx context.Context) (agent.RunResult, error) {
+			historyOrder = append(historyOrder, "role_output")
+			return agent.RunResult{EpisodeID: "ep-voice", Output: "reply"}, nil
+		},
+		persistVoiceTurn: func(input agent.TurnInput, result agent.RunResult, utterance []int16) {
+			if input.InputText != "" || input.Transcript != "" {
+				historyOrder = append(historyOrder, "user")
+			}
+			if result.Output != "" {
+				historyOrder = append(historyOrder, "assistant")
+			}
+		},
+	}
+
+	result := runVoiceTurnWithInput(
+		agent.Config{},
+		dialog,
+		nil,
+		agent.TurnInput{InputText: "voice command"},
+		[]int16{1, 2, 3},
+		sigChan,
+		events,
+	)
+
+	if result.interrupted || result.waitForWakeupRequested || result.exit {
+		t.Fatalf("runVoiceTurnWithInput = interrupted:%v wait:%v exit:%v, want false false false", result.interrupted, result.waitForWakeupRequested, result.exit)
+	}
+	want := []string{"user", "role_output", "assistant"}
+	if len(historyOrder) != len(want) {
+		t.Fatalf("history order = %#v, want %#v", historyOrder, want)
+	}
+	for i := range want {
+		if historyOrder[i] != want[i] {
+			t.Fatalf("history order = %#v, want %#v", historyOrder, want)
+		}
 	}
 }
 
@@ -1054,8 +1251,8 @@ func TestRunVoiceTurnSignalWaitsForSpeakingGoroutine(t *testing.T) {
 	}()
 
 	result := runVoiceTurn(agent.Config{}, dialog, nil, []int16{1}, sigChan, events)
-	if result.interrupted || result.sleepRequested || !result.exit {
-		t.Fatalf("runVoiceTurn = interrupted:%v sleep:%v exit:%v, want false false true", result.interrupted, result.sleepRequested, result.exit)
+	if result.interrupted || result.waitForWakeupRequested || !result.exit {
+		t.Fatalf("runVoiceTurn = interrupted:%v wait:%v exit:%v, want false false true", result.interrupted, result.waitForWakeupRequested, result.exit)
 	}
 	select {
 	case <-ctxCanceled:
@@ -1265,8 +1462,8 @@ func TestRunVoiceTurnPersistsCompletedResultReturnedDuringWakeupInterrupt(t *tes
 	}()
 
 	result := runVoiceTurn(agent.Config{}, dialog, nil, []int16{100, 200}, sigChan, events)
-	if !result.interrupted || result.exit || result.sleepRequested {
-		t.Fatalf("runVoiceTurn = interrupted:%v exit:%v sleep:%v, want true false false", result.interrupted, result.exit, result.sleepRequested)
+	if !result.interrupted || result.exit || result.waitForWakeupRequested {
+		t.Fatalf("runVoiceTurn = interrupted:%v exit:%v wait:%v, want true false false", result.interrupted, result.exit, result.waitForWakeupRequested)
 	}
 	select {
 	case <-ctxCanceled:

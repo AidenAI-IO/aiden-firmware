@@ -129,7 +129,7 @@ func telemetryContentParts(parts []llms.ContentPart) []map[string]interface{} {
 			})
 		case llms.ToolCall:
 			item := map[string]interface{}{
-				"type":      "tool_call",
+				"type":      runEventToolCall,
 				"id":        typed.ID,
 				"tool_type": typed.Type,
 			}

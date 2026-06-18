@@ -427,6 +427,12 @@ func TestCommitPlanEntersExecutionMode(t *testing.T) {
 	if state.PlanCommitRequired {
 		t.Fatal("plan commit requirement should be cleared after commit_plan")
 	}
+	if state.Todo.Mode != TodoModePlanned || state.Todo.Revision != 1 || len(state.Todo.Items) != 2 {
+		t.Fatalf("planned todo not initialized: %#v", state.Todo)
+	}
+	if state.Todo.Items[0].Status != TodoPending || state.Todo.Items[1].Status != TodoPending {
+		t.Fatalf("planned todo items should start pending: %#v", state.Todo.Items)
+	}
 }
 
 func TestCommitPlanParsesStringPlanAndCriteria(t *testing.T) {
@@ -447,6 +453,46 @@ func TestCommitPlanParsesStringPlanAndCriteria(t *testing.T) {
 	}
 	if decision.Plan[0] != "Step 1: compute subtotal." || decision.Plan[2] != "Step 3: output final answer." {
 		t.Fatalf("unexpected parsed plan: %#v", decision.Plan)
+	}
+}
+
+func TestSetTodoRejectsOutOfRangeStatusIndices(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "completed zero",
+			input: `{"items":["one","two"],"current_index":1,"completed_indices":[0]}`,
+			want:  "completed_indices contains index 0 outside 1..2",
+		},
+		{
+			name:  "completed too large",
+			input: `{"items":["one","two"],"current_index":1,"completed_indices":[3]}`,
+			want:  "completed_indices contains index 3 outside 1..2",
+		},
+		{
+			name:  "blocked negative",
+			input: `{"items":["one","two"],"current_index":1,"blocked_indices":[-1]}`,
+			want:  "blocked_indices contains index -1 outside 1..2",
+		},
+		{
+			name:  "blocked too large",
+			input: `{"items":["one","two"],"current_index":1,"blocked_indices":[9]}`,
+			want:  "blocked_indices contains index 9 outside 1..2",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseSetTodoInput(tt.input)
+			if err == nil {
+				t.Fatal("parseSetTodoInput() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("parseSetTodoInput() error = %q, want containing %q", err.Error(), tt.want)
+			}
+		})
 	}
 }
 
@@ -568,6 +614,66 @@ func TestExecutorMarkedFinalAnswerEntersVerifierReview(t *testing.T) {
 	}
 }
 
+func TestCallExecutorTurnOmitOversizedToolResultBeforeModelCall(t *testing.T) {
+	hugeObservation := strings.Repeat("超", 2000)
+	model := &contextWindowScriptedModel{
+		scriptedModel: scriptedModel{responses: []*llms.ContentResponse{
+			finishStepToolCall("handled oversized tool result"),
+		}},
+		window: 300,
+	}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{
+			Executor: RoleProfile{
+				Name:         RoleExecutor,
+				SystemPrompt: strings.Repeat("executor system prompt ", 20),
+			},
+		},
+		[]langtools.Tool{&stubTool{name: "dump", description: "Return a dump."}},
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{
+		Phase:               phaseExecution,
+		PlanCommitted:       true,
+		StepExecutionActive: true,
+		NextStep:            "inspect dump",
+		StepToolSteps: []schema.AgentStep{{
+			Action: schema.AgentAction{
+				Tool:      "dump",
+				ToolInput: "{}",
+				ToolID:    "dump_1",
+			},
+			Observation: hugeObservation,
+		}},
+	}
+	inputs := map[string]string{"input": "summarize the dump", "history": ""}
+
+	turn, err := executor.callExecutorTurn(context.Background(), inputs, state, NewToolSpecs(executor.Tools))
+	if err != nil {
+		t.Fatalf("executor turn error: %v", err)
+	}
+	if turn.Kind != executorTurnFinishStep {
+		t.Fatalf("turn kind = %v, want finish step", turn.Kind)
+	}
+	if model.callCount != 1 {
+		t.Fatalf("model call count = %d, want 1", model.callCount)
+	}
+	content := firstToolResponseContent(t, model.messages[0])
+	if strings.Contains(content, strings.Repeat("超", 20)) {
+		t.Fatalf("oversized raw observation leaked into model prompt: %q", content)
+	}
+	if !strings.Contains(content, "tool result omitted") || !strings.Contains(content, "context_window=300") {
+		t.Fatalf("tool response should explain the context-window rejection, got: %q", content)
+	}
+}
+
 func TestFinishStepStoresKeyInfo(t *testing.T) {
 	executor := newRoleCollaborativeExecutor(
 		&scriptedModel{},
@@ -602,6 +708,28 @@ func TestFinishStepStoresKeyInfo(t *testing.T) {
 	if !strings.Contains(turn.Step.Observation, "account_id=abc123") {
 		t.Fatalf("observation should include key_info: %s", turn.Step.Observation)
 	}
+}
+
+type contextWindowScriptedModel struct {
+	scriptedModel
+	window int
+}
+
+func (m *contextWindowScriptedModel) contextWindow() int {
+	return m.window
+}
+
+func firstToolResponseContent(t *testing.T, messages []llms.MessageContent) string {
+	t.Helper()
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if response, ok := part.(llms.ToolCallResponse); ok {
+				return response.Content
+			}
+		}
+	}
+	t.Fatalf("no tool response found in messages: %#v", messages)
+	return ""
 }
 
 func TestAbortStepEntersVerifierReview(t *testing.T) {

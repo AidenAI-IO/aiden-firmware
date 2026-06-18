@@ -7,12 +7,12 @@ import (
 
 func TestJSONFieldStreamWriterExtractsArbitraryTopLevelField(t *testing.T) {
 	var sink strings.Builder
-	writer := NewJSONFieldStreamWriter(&sink, "output")
+	writer := NewJSONFieldStreamWriter(&sink, "text")
 
 	chunks := []string{
-		`{"speech_text":"ignored",`,
-		`"output":"完整回答`,
-		`保留给屏幕。","metadata":{"output":"ignored"}}`,
+		`{"speech":"ignored",`,
+		`"text":"完整回答`,
+		`保留给屏幕。","metadata":{"text":"ignored"}}`,
 	}
 	for _, chunk := range chunks {
 		if _, err := writer.Write([]byte(chunk)); err != nil {
@@ -27,8 +27,8 @@ func TestJSONFieldStreamWriterExtractsArbitraryTopLevelField(t *testing.T) {
 
 func TestJSONFieldStreamWriterIgnoresNestedField(t *testing.T) {
 	var sink strings.Builder
-	writer := NewJSONFieldStreamWriter(&sink, "output")
-	payload := `{"metadata":{"output":"不要输出"},"output":"输出这个。"}`
+	writer := NewJSONFieldStreamWriter(&sink, "text")
+	payload := `{"metadata":{"text":"不要输出"},"text":"输出这个。"}`
 
 	if _, err := writer.Write([]byte(payload)); err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -42,7 +42,7 @@ func TestJSONFieldStreamWriterIgnoresNestedField(t *testing.T) {
 func TestJSONFieldStreamWriterHandlesEscapesAndSplitUTF8(t *testing.T) {
 	var sink strings.Builder
 	writer := NewJSONFieldStreamWriter(&sink, "summary")
-	payload := []byte(`{"summary":"第一行\n第二行\u3002 好","output":"ignored"}`)
+	payload := []byte(`{"summary":"第一行\n第二行\u3002 好","text":"ignored"}`)
 	split := strings.Index(string(payload), "好")
 	if split < 0 {
 		t.Fatal("test payload missing split rune")
@@ -120,9 +120,9 @@ func TestJSONFieldStreamWriterRejectsInvalidUnicodeSurrogates(t *testing.T) {
 
 func TestJSONFieldOrPlainStreamWriterExtractsStructuredField(t *testing.T) {
 	var sink strings.Builder
-	writer := NewJSONFieldOrPlainStreamWriter(&sink, "output")
+	writer := NewJSONFieldOrPlainStreamWriter(&sink, "text")
 
-	if _, err := writer.Write([]byte(`  {"speech_text":"ignored","output":"完整回答。"}`)); err != nil {
+	if _, err := writer.Write([]byte(`  {"speech":"ignored","text":"完整回答。"}`)); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
 
@@ -133,7 +133,7 @@ func TestJSONFieldOrPlainStreamWriterExtractsStructuredField(t *testing.T) {
 
 func TestJSONFieldOrPlainStreamWriterPassesPlainText(t *testing.T) {
 	var sink strings.Builder
-	writer := NewJSONFieldOrPlainStreamWriter(&sink, "output")
+	writer := NewJSONFieldOrPlainStreamWriter(&sink, "text")
 
 	if _, err := writer.Write([]byte("plain answer")); err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -165,7 +165,7 @@ func TestJSONFieldOrPlainStreamWriterPassesBracePrefixedPlainText(t *testing.T) 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var sink strings.Builder
-			writer := NewJSONFieldOrPlainStreamWriter(&sink, "output")
+			writer := NewJSONFieldOrPlainStreamWriter(&sink, "text")
 
 			for _, chunk := range tt.chunks {
 				if _, err := writer.Write([]byte(chunk)); err != nil {
@@ -182,9 +182,9 @@ func TestJSONFieldOrPlainStreamWriterPassesBracePrefixedPlainText(t *testing.T) 
 
 func TestJSONFieldOrPlainStreamWriterExtractsStructuredFieldAfterSplitGate(t *testing.T) {
 	var sink strings.Builder
-	writer := NewJSONFieldOrPlainStreamWriter(&sink, "output")
+	writer := NewJSONFieldOrPlainStreamWriter(&sink, "text")
 
-	for _, chunk := range []string{`  {`, "\n\t", `"speech_text":"ignored","output":"完整回答。"}`} {
+	for _, chunk := range []string{`  {`, "\n\t", `"speech":"ignored","text":"完整回答。"}`} {
 		if _, err := writer.Write([]byte(chunk)); err != nil {
 			t.Fatalf("Write(%q) error = %v", chunk, err)
 		}

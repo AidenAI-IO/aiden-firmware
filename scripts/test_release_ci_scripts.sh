@@ -175,10 +175,14 @@ if ! grep -q 'Compress OTA manifest images' "$WORKFLOW" || \
     exit 1
 fi
 
-oem_bin_sync_line=$(grep -nF 'rsync -a --delete "$OVERLAY/oem/usr/bin/" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin/"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
 oem_full_sync_line=$(grep -nF 'rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
-if [ -z "$oem_bin_sync_line" ] || [ -z "$oem_full_sync_line" ] || [ "$oem_bin_sync_line" -ge "$oem_full_sync_line" ]; then
-    echo "_build_image.sh must sync OEM usr/bin with delete semantics before full OEM overlay sync" >&2
+oem_repair_line=$(grep -nF 'repair_generated_binaries_from_manifest "sdk-oem-usr-bin" "$SCRIPT_DIR/build/bin" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin" "$GENERATED_BINARY_MANIFEST"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+if [ -z "$oem_full_sync_line" ] || [ -z "$oem_repair_line" ] || [ "$oem_full_sync_line" -ge "$oem_repair_line" ]; then
+    echo "_build_image.sh must sync OEM overlay first, then restore generated usr/bin files from the build manifest source" >&2
+    exit 1
+fi
+if grep -Fq 'rsync -a --delete "$OVERLAY/oem/usr/bin/" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin/"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must not trust overlay/oem/usr/bin as the final generated binary source" >&2
     exit 1
 fi
 firmware_count=$(grep -cF './build.sh firmware "$@"' "$ROOT_DIR/_build_image.sh")

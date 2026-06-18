@@ -14,6 +14,15 @@ func TestQuickActionExposedToAgentAndToolLab(t *testing.T) {
 	}
 }
 
+func TestWaitForWakeupExposedToAgentAndToolLab(t *testing.T) {
+	if !isHTTPToolExposed("wait_for_wakeup") {
+		t.Fatal("expected wait_for_wakeup in Tool Lab HTTP catalog")
+	}
+	if !isAgentToolExposed("wait_for_wakeup") {
+		t.Fatal("expected wait_for_wakeup available to conversational agent")
+	}
+}
+
 func TestPhoneBridgeToolsExposedToAgentOnly(t *testing.T) {
 	for _, name := range []string{"open_app", "clipboard", "calendar", "contacts", "notification"} {
 		if isHTTPToolExposed(name) {

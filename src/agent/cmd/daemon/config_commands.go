@@ -123,33 +123,33 @@ type telemetryDTO struct {
 }
 
 type agentDTO struct {
-	Instruction               string  `json:"instruction"`
-	AdditionalPrompt          string  `json:"additional_prompt"`
-	InputMode                 string  `json:"input_mode"`
-	TriggerMode               string  `json:"trigger_mode"`
-	VADBackend                string  `json:"vad_backend"`
-	VADModelPath              string  `json:"vad_model_path"`
-	VADHelperPath             string  `json:"vad_helper_path"`
-	VADSpeechThreshold        float64 `json:"vad_speech_threshold"`
-	SilenceMs                 int     `json:"silence_ms"`
-	MinSpeechMs               int     `json:"min_speech_ms"`
-	VoiceSessionEnabled       bool    `json:"voice_session_enabled"`
-	VoiceFollowupTimeoutMs    int     `json:"voice_followup_timeout_ms"`
-	VoiceFirstTurnTimeoutMs   int     `json:"voice_first_turn_timeout_ms"`
-	VoiceMaxTurns             int     `json:"voice_max_turns"`
-	VoiceInterruptOnWakeup    bool    `json:"voice_interrupt_on_wakeup"`
-	VoiceStreamingTTSEnabled  bool    `json:"voice_streaming_tts_enabled"`
-	VoiceToolCallSpeech       bool    `json:"voice_tool_call_speech"`
-	VoiceSpeechSummaryEnabled bool    `json:"voice_speech_summary_enabled"`
-	VoiceSpeechMaxRunes       int     `json:"voice_speech_max_runes"`
-	VoiceMaxResponseTokens    int     `json:"voice_max_response_tokens"`
-	MaxIterations             int     `json:"max_iterations"`
-	ForceSimpleLoop           bool    `json:"force_simple_loop"`
-	ScreenshotKeepN           int     `json:"screenshot_keep_n"`
-	ScreenshotPruneInterval   int     `json:"screenshot_prune_interval"`
-	ScreenStableTimeoutMs     int     `json:"screen_stable_timeout_ms"`
-	ScreenStableMs            int     `json:"screen_stable_ms"`
-	ScreenStableDiffThreshold float64 `json:"screen_stable_diff_threshold"`
+	CustomInstruction          string  `json:"custom_instruction"`
+	AdditionalPrompt           string  `json:"additional_prompt"`
+	InputMode                  string  `json:"input_mode"`
+	TriggerMode                string  `json:"trigger_mode"`
+	VADBackend                 string  `json:"vad_backend"`
+	VADModelPath               string  `json:"vad_model_path"`
+	VADHelperPath              string  `json:"vad_helper_path"`
+	VADSpeechThreshold         float64 `json:"vad_speech_threshold"`
+	SilenceMs                  int     `json:"silence_ms"`
+	MinSpeechMs                int     `json:"min_speech_ms"`
+	VoiceFollowupEnabled       bool    `json:"voice_followup_enabled"`
+	VoiceFollowupTimeoutMs     int     `json:"voice_followup_timeout_ms"`
+	VoiceFirstTurnTimeoutMs    int     `json:"voice_first_turn_timeout_ms"`
+	VoiceMaxTurns              int     `json:"voice_max_turns"`
+	VoiceInterruptOnWakeup     bool    `json:"voice_interrupt_on_wakeup"`
+	VoiceStreamingTTSEnabled   bool    `json:"voice_streaming_tts_enabled"`
+	VoiceToolCallSpeech        bool    `json:"voice_tool_call_speech"`
+	VoiceProgressSpeechEnabled bool    `json:"voice_progress_speech_enabled"`
+	VoiceSpeechSummaryEnabled  bool    `json:"voice_speech_summary_enabled"`
+	VoiceMaxResponseTokens     int     `json:"voice_max_response_tokens"`
+	MaxIterations              int     `json:"max_iterations"`
+	ForceSimpleLoop            bool    `json:"force_simple_loop"`
+	ScreenshotKeepN            int     `json:"screenshot_keep_n"`
+	ScreenshotPruneInterval    int     `json:"screenshot_prune_interval"`
+	ScreenStableTimeoutMs      int     `json:"screen_stable_timeout_ms"`
+	ScreenStableMs             int     `json:"screen_stable_ms"`
+	ScreenStableDiffThreshold  float64 `json:"screen_stable_diff_threshold"`
 }
 
 // hasAPIKeyPlaceholder is substituted for a real key when the wire payload
@@ -248,33 +248,33 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			Tags:              d.Telemetry.Tags,
 			Environment:       d.Telemetry.Environment,
 		},
-		Instruction:               d.Agent.Instruction,
-		AdditionalPrompt:          d.Agent.AdditionalPrompt,
-		InputMode:                 d.Agent.InputMode,
-		TriggerMode:               d.Agent.TriggerMode,
-		VADBackend:                d.Agent.VADBackend,
-		VADModelPath:              d.Agent.VADModelPath,
-		VADHelperPath:             d.Agent.VADHelperPath,
-		VADSpeechThreshold:        d.Agent.VADSpeechThreshold,
-		SilenceMs:                 d.Agent.SilenceMs,
-		MinSpeechMs:               d.Agent.MinSpeechMs,
-		VoiceSessionEnabled:       boolPtr(d.Agent.VoiceSessionEnabled),
-		VoiceFollowupTimeoutMs:    d.Agent.VoiceFollowupTimeoutMs,
-		VoiceFirstTurnTimeoutMs:   d.Agent.VoiceFirstTurnTimeoutMs,
-		VoiceMaxTurns:             d.Agent.VoiceMaxTurns,
-		VoiceInterruptOnWakeup:    boolPtr(d.Agent.VoiceInterruptOnWakeup),
-		VoiceStreamingTTSEnabled:  boolPtr(d.Agent.VoiceStreamingTTSEnabled),
-		VoiceToolCallSpeech:       boolPtr(d.Agent.VoiceToolCallSpeech),
-		VoiceSpeechSummaryEnabled: boolPtr(d.Agent.VoiceSpeechSummaryEnabled),
-		VoiceSpeechMaxRunes:       d.Agent.VoiceSpeechMaxRunes,
-		VoiceMaxResponseTokens:    d.Agent.VoiceMaxResponseTokens,
-		MaxIterations:             d.Agent.MaxIterations,
-		ForceSimpleLoop:           d.Agent.ForceSimpleLoop,
-		ScreenshotKeepN:           d.Agent.ScreenshotKeepN,
-		ScreenshotPruneInterval:   d.Agent.ScreenshotPruneInterval,
-		ScreenStableTimeoutMs:     d.Agent.ScreenStableTimeoutMs,
-		ScreenStableMs:            d.Agent.ScreenStableMs,
-		ScreenStableDiffThreshold: d.Agent.ScreenStableDiffThreshold,
+		Instruction:                d.Agent.CustomInstruction,
+		AdditionalPrompt:           d.Agent.AdditionalPrompt,
+		InputMode:                  d.Agent.InputMode,
+		TriggerMode:                d.Agent.TriggerMode,
+		VADBackend:                 d.Agent.VADBackend,
+		VADModelPath:               d.Agent.VADModelPath,
+		VADHelperPath:              d.Agent.VADHelperPath,
+		VADSpeechThreshold:         d.Agent.VADSpeechThreshold,
+		SilenceMs:                  d.Agent.SilenceMs,
+		MinSpeechMs:                d.Agent.MinSpeechMs,
+		VoiceFollowupEnabled:       boolPtr(d.Agent.VoiceFollowupEnabled),
+		VoiceFollowupTimeoutMs:     d.Agent.VoiceFollowupTimeoutMs,
+		VoiceFirstTurnTimeoutMs:    d.Agent.VoiceFirstTurnTimeoutMs,
+		VoiceMaxTurns:              d.Agent.VoiceMaxTurns,
+		VoiceInterruptOnWakeup:     boolPtr(d.Agent.VoiceInterruptOnWakeup),
+		VoiceStreamingTTSEnabled:   boolPtr(d.Agent.VoiceStreamingTTSEnabled),
+		VoiceToolCallSpeech:        boolPtr(d.Agent.VoiceToolCallSpeech),
+		VoiceProgressSpeechEnabled: boolPtr(d.Agent.VoiceProgressSpeechEnabled),
+		VoiceSpeechSummaryEnabled:  boolPtr(d.Agent.VoiceSpeechSummaryEnabled),
+		VoiceMaxResponseTokens:     d.Agent.VoiceMaxResponseTokens,
+		MaxIterations:              d.Agent.MaxIterations,
+		ForceSimpleLoop:            d.Agent.ForceSimpleLoop,
+		ScreenshotKeepN:            d.Agent.ScreenshotKeepN,
+		ScreenshotPruneInterval:    d.Agent.ScreenshotPruneInterval,
+		ScreenStableTimeoutMs:      d.Agent.ScreenStableTimeoutMs,
+		ScreenStableMs:             d.Agent.ScreenStableMs,
+		ScreenStableDiffThreshold:  d.Agent.ScreenStableDiffThreshold,
 	}
 }
 
@@ -366,35 +366,42 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			Environment:       cfg.Telemetry.EnvironmentOrDefault(),
 		},
 		Agent: agentDTO{
-			Instruction:               cfg.Instruction,
-			AdditionalPrompt:          cfg.AdditionalPrompt,
-			InputMode:                 cfg.InputModeOrDefault(),
-			TriggerMode:               cfg.TriggerModeOrDefault(),
-			VADBackend:                cfg.VADBackendOrDefault(),
-			VADModelPath:              cfg.VADModelPath,
-			VADHelperPath:             cfg.VADHelperPath,
-			VADSpeechThreshold:        cfg.VADSpeechThreshold,
-			SilenceMs:                 cfg.SilenceMs,
-			MinSpeechMs:               cfg.MinSpeechMs,
-			VoiceSessionEnabled:       cfg.VoiceSessionEnabledOrDefault(),
-			VoiceFollowupTimeoutMs:    int(cfg.VoiceFollowupTimeoutOrDefault().Milliseconds()),
-			VoiceFirstTurnTimeoutMs:   int(cfg.VoiceFirstTurnTimeoutOrDefault().Milliseconds()),
-			VoiceMaxTurns:             cfg.VoiceMaxTurns,
-			VoiceInterruptOnWakeup:    cfg.VoiceInterruptOnWakeupOrDefault(),
-			VoiceStreamingTTSEnabled:  cfg.VoiceStreamingTTSEnabledOrDefault(),
-			VoiceToolCallSpeech:       cfg.VoiceToolCallSpeechOrDefault(),
-			VoiceSpeechSummaryEnabled: cfg.VoiceSpeechSummaryEnabledOrDefault(),
-			VoiceSpeechMaxRunes:       cfg.VoiceSpeechMaxRunesOrDefault(),
-			VoiceMaxResponseTokens:    cfg.VoiceMaxResponseTokensOrDefault(),
-			MaxIterations:             cfg.MaxIterations,
-			ForceSimpleLoop:           cfg.ForceSimpleLoop,
-			ScreenshotKeepN:           cfg.ScreenshotKeepN,
-			ScreenshotPruneInterval:   cfg.ScreenshotPruneInterval,
-			ScreenStableTimeoutMs:     cfg.ScreenStableTimeoutMs,
-			ScreenStableMs:            cfg.ScreenStableMs,
-			ScreenStableDiffThreshold: cfg.ScreenStableDiffThreshold,
+			CustomInstruction:          customInstructionValue(cfg.Instruction),
+			AdditionalPrompt:           cfg.AdditionalPrompt,
+			InputMode:                  cfg.InputModeOrDefault(),
+			TriggerMode:                cfg.TriggerModeOrDefault(),
+			VADBackend:                 cfg.VADBackendOrDefault(),
+			VADModelPath:               cfg.VADModelPath,
+			VADHelperPath:              cfg.VADHelperPath,
+			VADSpeechThreshold:         cfg.VADSpeechThreshold,
+			SilenceMs:                  cfg.SilenceMs,
+			MinSpeechMs:                cfg.MinSpeechMs,
+			VoiceFollowupEnabled:       cfg.VoiceFollowupEnabledOrDefault(),
+			VoiceFollowupTimeoutMs:     int(cfg.VoiceFollowupTimeoutOrDefault().Milliseconds()),
+			VoiceFirstTurnTimeoutMs:    int(cfg.VoiceFirstTurnTimeoutOrDefault().Milliseconds()),
+			VoiceMaxTurns:              cfg.VoiceMaxTurns,
+			VoiceInterruptOnWakeup:     cfg.VoiceInterruptOnWakeupOrDefault(),
+			VoiceStreamingTTSEnabled:   cfg.VoiceStreamingTTSEnabledOrDefault(),
+			VoiceToolCallSpeech:        cfg.VoiceToolCallSpeechOrDefault(),
+			VoiceProgressSpeechEnabled: cfg.VoiceProgressSpeechEnabledOrDefault(),
+			VoiceSpeechSummaryEnabled:  cfg.VoiceSpeechSummaryEnabledOrDefault(),
+			VoiceMaxResponseTokens:     cfg.VoiceMaxResponseTokensOrDefault(),
+			MaxIterations:              cfg.MaxIterations,
+			ForceSimpleLoop:            cfg.ForceSimpleLoop,
+			ScreenshotKeepN:            cfg.ScreenshotKeepN,
+			ScreenshotPruneInterval:    cfg.ScreenshotPruneInterval,
+			ScreenStableTimeoutMs:      cfg.ScreenStableTimeoutMs,
+			ScreenStableMs:             cfg.ScreenStableMs,
+			ScreenStableDiffThreshold:  cfg.ScreenStableDiffThreshold,
 		},
 	}
+}
+
+func customInstructionValue(instruction string) string {
+	if strings.TrimSpace(instruction) == agent.DefaultConfig().Instruction {
+		return ""
+	}
+	return instruction
 }
 
 // runConfigCheck implements the `agent config-check` subcommand
@@ -600,8 +607,6 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "voice_first_turn_timeout_ms"
 	} else if strings.Contains(errMsg, "voice_max_turns") {
 		field = "voice_max_turns"
-	} else if strings.Contains(errMsg, "voice_speech_max_runes") {
-		field = "voice_speech_max_runes"
 	} else if strings.Contains(errMsg, "voice_max_response_tokens") {
 		field = "voice_max_response_tokens"
 	} else if strings.Contains(errMsg, "screenshot_keep_n") {

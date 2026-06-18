@@ -44,7 +44,7 @@ config_web [--bind=IP] [--port=PORT] [--config=PATH] [--wifi-config=PATH] [--sys
 
 页面字段覆盖以下配置段：
 
-- `agent`：`input_mode`、`trigger_mode`、VAD 参数、`max_iterations`、`instruction`、`additional_prompt`
+- `agent`：`input_mode`、`trigger_mode`、VAD 参数、`max_iterations`、`custom_instruction`、`additional_prompt`
 - `model`: provider, token_env, model, api_key, base_url, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
 - `stt`：provider、api_key、model、base_url、Tencent ASR 字段
 - `tts`：provider、api_key、model、voice_id、emotion、speed

@@ -3,10 +3,9 @@ package agent
 import (
 	"strings"
 	"testing"
-	"unicode/utf8"
 )
 
-func TestBuildSpeechTextSummarizesVerboseOutputForTTS(t *testing.T) {
+func TestBuildSpeechTextKeepsFullOutputWhenSummaryEnabled(t *testing.T) {
 	output := strings.Join([]string{
 		"已完成设置，当前音量是 42。",
 		"",
@@ -22,22 +21,79 @@ func TestBuildSpeechTextSummarizesVerboseOutputForTTS(t *testing.T) {
 		"这段额外说明不应该进入播报摘要，因为它太长也不适合口播。",
 	}, "\n")
 
-	speech := BuildSpeechText(output, Config{VoiceSpeechMaxRunes: 40})
+	speech := BuildSpeechText(output, Config{})
+	want := strings.Join([]string{
+		"已完成设置，当前音量是 42。",
+		"",
+		"详细信息如下：",
+		"我先打开了设置。",
+		"然后读取了音量状态。",
+		"最后确认没有继续修改。",
+		"",
+		`{"volume":42}`,
+		"",
+		"这段额外说明不应该进入播报摘要，因为它太长也不适合口播。",
+	}, "\n")
 
-	if speech == "" {
-		t.Fatal("BuildSpeechText() returned empty speech")
+	if speech != want {
+		t.Fatalf("speech = %q, want normalized full output %q", speech, want)
 	}
-	if strings.Contains(speech, "```") || strings.Contains(speech, `{"volume":42}`) {
-		t.Fatalf("speech should drop code blocks, got %q", speech)
+}
+
+func TestBuildSpeechTextNormalizesMarkdownWithoutDroppingContent(t *testing.T) {
+	output := strings.Join([]string{
+		"# 状态更新",
+		"",
+		"**重点**：已完成 `audio_service` 检查。",
+		"",
+		"- 当前音量是 **42**。",
+		"1. 播放 fallback output。",
+		"",
+		"详情见 [PR #237](https://github.com/AidenAI-IO/aiden-hardware-demo/pull/237)。",
+		"",
+		"> 请继续验证。",
+	}, "\n")
+
+	speech := BuildSpeechText(output, Config{})
+	want := strings.Join([]string{
+		"状态更新",
+		"",
+		"重点：已完成 audio_service 检查。",
+		"",
+		"当前音量是 42。",
+		"播放 fallback output。",
+		"",
+		"详情见 PR #237（https://github.com/AidenAI-IO/aiden-hardware-demo/pull/237）。",
+		"",
+		"请继续验证。",
+	}, "\n")
+
+	if speech != want {
+		t.Fatalf("speech = %q, want %q", speech, want)
 	}
-	if strings.Contains(speech, "- 我先打开") {
-		t.Fatalf("speech should drop markdown list detail, got %q", speech)
-	}
-	if !strings.Contains(speech, "当前音量是 42") {
-		t.Fatalf("speech should keep the main conclusion, got %q", speech)
-	}
-	if utf8.RuneCountInString(speech) > 40 {
-		t.Fatalf("speech length = %d runes, want <= 40: %q", utf8.RuneCountInString(speech), speech)
+}
+
+func TestBuildSpeechTextNormalizesTablesAndTasksWithoutDroppingContent(t *testing.T) {
+	output := strings.Join([]string{
+		"| 项目 | 状态 |",
+		"| --- | --- |",
+		"| 音频 | 已修复 |",
+		"",
+		"- [x] 保留正文",
+		"- [ ] 继续验证",
+	}, "\n")
+
+	speech := BuildSpeechText(output, Config{})
+	want := strings.Join([]string{
+		"项目，状态",
+		"音频，已修复",
+		"",
+		"保留正文",
+		"继续验证",
+	}, "\n")
+
+	if speech != want {
+		t.Fatalf("speech = %q, want %q", speech, want)
 	}
 }
 
@@ -45,10 +101,20 @@ func TestBuildSpeechTextKeepsOutputWhenSummaryDisabled(t *testing.T) {
 	disabled := false
 	output := "第一句很长，但用户仍然应该能在关闭摘要时听到完整内容。\n\n第二段也要保留。"
 
-	speech := BuildSpeechText(output, Config{VoiceSpeechSummaryEnabled: &disabled, VoiceSpeechMaxRunes: 10})
+	speech := BuildSpeechText(output, Config{VoiceSpeechSummaryEnabled: &disabled})
 
 	if speech != strings.TrimSpace(output) {
 		t.Fatalf("speech = %q, want original output", speech)
+	}
+}
+
+func TestBuildSpeechTextDoesNotKeepOnlyFirstSentence(t *testing.T) {
+	output := "CodeFace，你好！\n\n我仔细搜寻了记忆，但没有找到今天的对话历史记录。你可以再问我一次，我会尽力回答。"
+
+	speech := BuildSpeechText(output, Config{})
+
+	if speech != strings.TrimSpace(output) {
+		t.Fatalf("speech = %q, want full output %q", speech, strings.TrimSpace(output))
 	}
 }
 
@@ -82,13 +148,13 @@ func TestRunResultSpokenTextForConfigIgnoresSpeechTextWhenSummaryDisabled(t *tes
 	}
 }
 
-func TestSpeechTextStreamWriterExtractsPartialJSONField(t *testing.T) {
+func TestSpeechStreamWriterExtractsPartialJSONField(t *testing.T) {
 	var sink strings.Builder
-	writer := NewSpeechTextStreamWriter(&sink, "speech_text")
+	writer := NewSpeechStreamWriter(&sink)
 
 	chunks := []string{
-		`{"speech_text":"已完成`,
-		`，当前音量是 42。","output":"`,
+		`{"speech":"已完成`,
+		`，当前音量是 42。","text":"`,
 		`完整回答不应该被播报。`,
 	}
 	for _, chunk := range chunks {
@@ -102,11 +168,11 @@ func TestSpeechTextStreamWriterExtractsPartialJSONField(t *testing.T) {
 	}
 }
 
-func TestSpeechTextStreamWriterDecodesEscapes(t *testing.T) {
+func TestSpeechStreamWriterDecodesEscapes(t *testing.T) {
 	var sink strings.Builder
-	writer := NewSpeechTextStreamWriter(&sink, "speech_text")
+	writer := NewSpeechStreamWriter(&sink)
 
-	if _, err := writer.Write([]byte(`{"speech_text":"第一行\n第二行\u3002","output":"ignored"}`)); err != nil {
+	if _, err := writer.Write([]byte(`{"speech":"第一行\n第二行\u3002","text":"ignored"}`)); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
 
@@ -115,10 +181,10 @@ func TestSpeechTextStreamWriterDecodesEscapes(t *testing.T) {
 	}
 }
 
-func TestSpeechTextStreamWriterHandlesSplitUTF8Rune(t *testing.T) {
+func TestSpeechStreamWriterHandlesSplitUTF8Rune(t *testing.T) {
 	var sink strings.Builder
-	writer := NewSpeechTextStreamWriter(&sink, "speech_text")
-	payload := []byte(`{"speech_text":"好","output":"ignored"}`)
+	writer := NewSpeechStreamWriter(&sink)
+	payload := []byte(`{"speech":"好","text":"ignored"}`)
 	split := strings.Index(string(payload), "好")
 	if split < 0 {
 		t.Fatal("test payload missing split rune")
@@ -134,10 +200,10 @@ func TestSpeechTextStreamWriterHandlesSplitUTF8Rune(t *testing.T) {
 	}
 }
 
-func TestSpeechTextStreamWriterIgnoresNestedField(t *testing.T) {
+func TestSpeechStreamWriterIgnoresNestedField(t *testing.T) {
 	var sink strings.Builder
-	writer := NewSpeechTextStreamWriter(&sink, "speech_text")
-	payload := `{"metadata":{"speech_text":"不要播报, {bad}"},"speech_text":"播报这个。","output":"ignored"}`
+	writer := NewSpeechStreamWriter(&sink)
+	payload := `{"metadata":{"speech":"不要播报, {bad}"},"speech":"播报这个。","text":"ignored"}`
 	if _, err := writer.Write([]byte(payload)); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
@@ -147,7 +213,7 @@ func TestSpeechTextStreamWriterIgnoresNestedField(t *testing.T) {
 }
 
 func TestFinalizeSpeechOutputParsesStructuredAnswer(t *testing.T) {
-	raw := `{"speech_text":"短口播。","output":"完整回答。\n\n保留给屏幕。"}`
+	raw := `{"speech":"短口播。","text":"完整回答。\n\n保留给屏幕。"}`
 	output, speech := finalizeSpeechOutput(raw, Config{})
 	if output != "完整回答。\n\n保留给屏幕。" {
 		t.Fatalf("output = %q", output)
@@ -159,7 +225,7 @@ func TestFinalizeSpeechOutputParsesStructuredAnswer(t *testing.T) {
 
 func TestFinalizeSpeechOutputIgnoresStructuredSpeechWhenSummaryDisabled(t *testing.T) {
 	disabled := false
-	raw := `{"speech_text":"短口播。","output":"完整回答。"}`
+	raw := `{"speech":"短口播。","text":"完整回答。"}`
 
 	output, speech := finalizeSpeechOutput(raw, Config{VoiceSpeechSummaryEnabled: &disabled})
 
@@ -185,9 +251,9 @@ func TestFinalizeSpeechOutputKeepsPlainTextWhenSummaryDisabled(t *testing.T) {
 	}
 }
 
-func TestFinalizeSpeechOutputParsesOutputOnlyWhenSummaryDisabled(t *testing.T) {
+func TestFinalizeSpeechOutputParsesTextOnlyWhenSummaryDisabled(t *testing.T) {
 	disabled := false
-	raw := `{"output":"完整回答。"}`
+	raw := `{"text":"完整回答。"}`
 
 	output, speech := finalizeSpeechOutput(raw, Config{VoiceSpeechSummaryEnabled: &disabled})
 
@@ -195,6 +261,6 @@ func TestFinalizeSpeechOutputParsesOutputOnlyWhenSummaryDisabled(t *testing.T) {
 		t.Fatalf("output = %q", output)
 	}
 	if speech != "" {
-		t.Fatalf("speech = %q, want empty for output-only structured answer", speech)
+		t.Fatalf("speech = %q, want empty for text-only structured answer", speech)
 	}
 }
