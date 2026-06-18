@@ -410,45 +410,45 @@ func TestFunctionAgentScratchpadPrunesScreenshotsInBatches(t *testing.T) {
 		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
 	}
 
-	messages9 := agent.constructFunctionScratchPad(screenshotSteps(9))
-	imageURLs9 := scratchpadImageURLs(messages9)
-	if got := scratchpadToolResponseCount(messages9); got != 9 {
-		t.Fatalf("expected all 9 tool responses to remain, got %d", got)
+	messages6 := agent.constructFunctionScratchPad(screenshotSteps(6))
+	imageURLs6 := scratchpadImageURLs(messages6)
+	if got := scratchpadToolResponseCount(messages6); got != 6 {
+		t.Fatalf("expected all 6 tool responses to remain, got %d", got)
 	}
-	if got := scratchpadImagePlaceholderCount(messages9); got != 5 {
-		t.Fatalf("expected first prune batch to replace 5 images, got %d", got)
+	if got := scratchpadImagePlaceholderCount(messages6); got != 2 {
+		t.Fatalf("expected first prune batch to replace 2 images, got %d", got)
 	}
-	if len(imageURLs9) != 4 {
-		t.Fatalf("expected 4 full images after first prune batch, got %d (%#v)", len(imageURLs9), imageURLs9)
+	if len(imageURLs6) != 4 {
+		t.Fatalf("expected 4 full images after first prune batch, got %d (%#v)", len(imageURLs6), imageURLs6)
 	}
-	for i, url := range imageURLs9 {
-		expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("image-"+strconv.Itoa(i+6)))
+	for i, url := range imageURLs6 {
+		expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("image-"+strconv.Itoa(i+3)))
 		if url != expected {
 			t.Fatalf("image %d = %q, want %q", i, url, expected)
 		}
 	}
 
-	messages10 := agent.constructFunctionScratchPad(screenshotSteps(10))
-	if !reflect.DeepEqual(messages9, messages10[:len(messages9)]) {
+	messages7 := agent.constructFunctionScratchPad(screenshotSteps(7))
+	if !reflect.DeepEqual(messages6, messages7[:len(messages6)]) {
 		t.Fatalf("message prefix changed between batch pruning events")
 	}
-	if got := scratchpadImagePlaceholderCount(messages10); got != 5 {
+	if got := scratchpadImagePlaceholderCount(messages7); got != 2 {
 		t.Fatalf("expected placeholder count to remain stable between prune batches, got %d", got)
 	}
-	if len(scratchpadImageURLs(messages10)) != 5 {
+	if len(scratchpadImageURLs(messages7)) != 5 {
 		t.Fatalf("expected one appended full image between prune batches")
 	}
 
-	messages14 := agent.constructFunctionScratchPad(screenshotSteps(14))
-	imageURLs14 := scratchpadImageURLs(messages14)
-	if got := scratchpadImagePlaceholderCount(messages14); got != 10 {
-		t.Fatalf("expected second prune batch to replace 10 total images, got %d", got)
+	messages8 := agent.constructFunctionScratchPad(screenshotSteps(8))
+	imageURLs8 := scratchpadImageURLs(messages8)
+	if got := scratchpadImagePlaceholderCount(messages8); got != 4 {
+		t.Fatalf("expected second prune batch to replace 4 total images, got %d", got)
 	}
-	if len(imageURLs14) != 4 {
-		t.Fatalf("expected 4 full images after second prune batch, got %d (%#v)", len(imageURLs14), imageURLs14)
+	if len(imageURLs8) != 4 {
+		t.Fatalf("expected 4 full images after second prune batch, got %d (%#v)", len(imageURLs8), imageURLs8)
 	}
-	for i, url := range imageURLs14 {
-		expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("image-"+strconv.Itoa(i+11)))
+	for i, url := range imageURLs8 {
+		expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("image-"+strconv.Itoa(i+5)))
 		if url != expected {
 			t.Fatalf("second batch image %d = %q, want %q", i, url, expected)
 		}
