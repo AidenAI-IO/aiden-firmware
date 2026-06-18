@@ -889,7 +889,9 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		Role:  llms.ChatMessageTypeSystem,
 		Parts: []llms.ContentPart{llms.TextPart(profile.SystemPrompt)},
 	}}
-	messages = append(messages, e.ConversationHistory...)
+	if profile.Name == RolePlanner {
+		messages = append(messages, e.ConversationHistory...)
+	}
 
 	if profile.Name == RoleExecutor && len(state.StepToolSteps) > 0 {
 		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(e.Tools), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.StepToolSteps)

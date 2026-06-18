@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tmc/langchaingo/llms"
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
@@ -113,6 +114,115 @@ func TestRuntimeRunKeepsCompressedHotWindowAsChatMessages(t *testing.T) {
 	for _, marker := range []string{"=== Recent session context (hot window) ===", "=== End of recent context ==="} {
 		if strings.Contains(plannerTaskPrompt, marker) {
 			t.Fatalf("planner task prompt should not include hot-window boundary marker %q:\n%s", marker, plannerTaskPrompt)
+		}
+	}
+}
+
+func TestRuntimeRunScopesHotWindowConversationHistoryToPlanner(t *testing.T) {
+	ctx := context.Background()
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	manager := NewMemoryManager(memoryDir, WithSessionBoundaryEnabled(false))
+
+	const (
+		historyUser      = "HOT_WINDOW_USER_ONLY_PLANNER"
+		historyAssistant = "HOT_WINDOW_ASSISTANT_ONLY_PLANNER"
+	)
+	if err := manager.AppendExchange(ctx, "default", historyUser, historyAssistant); err != nil {
+		t.Fatalf("AppendExchange() error = %v", err)
+	}
+
+	model := &scriptedModel{
+		responses: roleCommittedExecutionResponses(
+			[]string{"use echo"},
+			toolCallResponse("call_1", "echo", `{"__arg1":"ok"}`),
+			finishStepToolCall("used echo"),
+			verifierFinishResponse("done"),
+		),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:   configDir,
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools.",
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{
+			"echo": &stubTool{name: "echo", description: "Echo.", output: "ok"},
+		}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(ctx, RunRequest{Input: "continue the current task with echo"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) < 5 {
+		t.Fatalf("expected planner, executor, and verifier model calls, got %d", len(model.messages))
+	}
+
+	plannerPrompt := messageText(model.messages[0])
+	for _, want := range []string{historyUser, historyAssistant} {
+		if !strings.Contains(plannerPrompt, want) {
+			t.Fatalf("planner prompt missing hot-window history %q:\n%s", want, plannerPrompt)
+		}
+	}
+
+	for _, roleMessages := range []struct {
+		name     string
+		messages []llms.MessageContent
+	}{
+		{name: "executor", messages: model.messages[2]},
+		{name: "verifier", messages: model.messages[4]},
+	} {
+		prompt := messageText(roleMessages.messages)
+		for _, unexpected := range []string{historyUser, historyAssistant} {
+			if strings.Contains(prompt, unexpected) {
+				t.Fatalf("%s prompt should not receive hot-window history %q:\n%s", roleMessages.name, unexpected, prompt)
+			}
+		}
+	}
+}
+
+func TestRuntimeRunKeepsHotWindowConversationHistoryForForceSimpleLoop(t *testing.T) {
+	ctx := context.Background()
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+	manager := NewMemoryManager(memoryDir, WithSessionBoundaryEnabled(false))
+
+	const (
+		historyUser      = "SIMPLE_LOOP_HOT_WINDOW_USER"
+		historyAssistant = "SIMPLE_LOOP_HOT_WINDOW_ASSISTANT"
+	)
+	if err := manager.AppendExchange(ctx, "default", historyUser, historyAssistant); err != nil {
+		t.Fatalf("AppendExchange() error = %v", err)
+	}
+
+	model := &scriptedModel{responses: roleDirectResponses("done")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:       configDir,
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Answer directly.",
+			ForceSimpleLoop: true,
+			MaxIterations:   1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(ctx, RunRequest{Input: "continue"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) != 1 {
+		t.Fatalf("force_simple_loop should use one planner-role model call, got %d", len(model.messages))
+	}
+	prompt := messageText(model.messages[0])
+	for _, want := range []string{historyUser, historyAssistant} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("force_simple_loop prompt missing hot-window history %q:\n%s", want, prompt)
 		}
 	}
 }
