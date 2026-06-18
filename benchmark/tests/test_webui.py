@@ -417,6 +417,185 @@ def test_run_suite_passes_mobilegym_environment_url(tmp_path: Path, monkeypatch)
     assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
 
 
+def test_stop_job_marks_stopping_terminates_runner_and_removes_container(tmp_path: Path, monkeypatch):
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        suites=["suite.json"],
+        status="running",
+        container_name="aiden-benchmark-agent-job-test",
+        state_file=str(tmp_path / "runs" / "job-test" / "state.json"),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+    )
+    proc = object()
+    app._jobs[job.id] = job
+    app._job_runner_procs[job.id] = proc
+    terminated = []
+    removed = []
+
+    monkeypatch.setattr(webui, "terminate_process_tree", lambda p: terminated.append(p))
+
+    def fake_run(command, **kwargs):
+        removed.append(command)
+
+        class Result:
+            returncode = 0
+
+        return Result()
+
+    monkeypatch.setattr(webui.subprocess, "run", fake_run)
+
+    stopped = app.stop_job("job-test")
+
+    assert stopped is not None
+    assert stopped["status"] == "stopping"
+    assert stopped["message"] == "stop requested"
+    assert terminated == [proc]
+    assert removed == [["docker", "rm", "-f", "aiden-benchmark-agent-job-test"]]
+    assert json.loads(Path(job.state_file).read_text(encoding="utf-8"))["status"] == "stopping"
+    assert "STOP requested" in Path(job.runner_log).read_text(encoding="utf-8")
+
+
+def test_run_suite_tracks_runner_process_and_finishes_stopped(tmp_path: Path, monkeypatch):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    raw_runs_dir = tmp_path / "runs" / "job-test" / "raw"
+    raw_runs_dir.mkdir(parents=True)
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        suites=["suite.json"],
+        status="running",
+        agent_url="http://127.0.0.1:18080",
+        container_name="aiden-benchmark-agent-job-test",
+        raw_runs_dir=str(raw_runs_dir),
+        state_file=str(tmp_path / "runs" / "job-test" / "state.json"),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+        no_judge=True,
+    )
+    app._jobs[job.id] = job
+    captured = {}
+    terminated = []
+    removed = []
+
+    class FakeProc:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self):
+            app.stop_job(job.id)
+            self.returncode = -15
+            return self.returncode
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["start_new_session"] = kwargs.get("start_new_session")
+        proc = FakeProc()
+        captured["proc"] = proc
+        return proc
+
+    def fake_terminate(proc):
+        terminated.append(proc)
+        proc.returncode = -15
+
+    def fake_run(command, **kwargs):
+        removed.append(command)
+
+        class Result:
+            returncode = 0
+
+        return Result()
+
+    monkeypatch.setattr(webui.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(webui, "terminate_process_tree", fake_terminate)
+    monkeypatch.setattr(webui.subprocess, "run", fake_run)
+
+    try:
+        app._run_suite(job, "suite.json")
+    except webui.JobStopped:
+        pass
+    else:
+        raise AssertionError("stopped suite did not raise JobStopped")
+
+    assert app._job_runner_procs == {}
+    assert terminated == [captured["proc"]]
+    assert removed == [["docker", "rm", "-f", "aiden-benchmark-agent-job-test"]]
+    assert job.suite_results[-1]["stopped"] is True
+    assert json.loads(Path(job.state_file).read_text(encoding="utf-8"))["status"] == "stopped"
+    if webui.os.name == "posix":
+        assert captured["start_new_session"] is True
+
+
+def test_ensure_docker_image_stops_cancelable_build(tmp_path: Path, monkeypatch):
+    class InspectResult:
+        returncode = 1
+
+    class FakeProc:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+    captured = {}
+    terminated = []
+
+    monkeypatch.setattr(webui.subprocess, "run", lambda *args, **kwargs: InspectResult())
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["start_new_session"] = kwargs.get("start_new_session")
+        proc = FakeProc()
+        captured["proc"] = proc
+        return proc
+
+    def fake_terminate(proc):
+        terminated.append(proc)
+        proc.returncode = -15
+
+    monkeypatch.setattr(webui.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(webui, "terminate_process_tree", fake_terminate)
+
+    try:
+        webui.ensure_docker_image(
+            "aiden-test:local",
+            True,
+            tmp_path / "build.log",
+            "daemon-runtime",
+            stop_requested=lambda: True,
+        )
+    except webui.JobStopped:
+        pass
+    else:
+        raise AssertionError("cancelable Docker build did not stop")
+
+    assert terminated == [captured["proc"]]
+    assert "--target" in captured["cmd"]
+    assert "daemon-runtime" in captured["cmd"]
+    if webui.os.name == "posix":
+        assert captured["start_new_session"] is True
+
+
 def test_index_html_exposes_judge_settings_panel():
     assert 'id="judgeEnabled"' in webui.INDEX_HTML
     assert 'id="judgeModel"' in webui.INDEX_HTML
@@ -427,6 +606,9 @@ def test_index_html_exposes_judge_settings_panel():
     assert 'id="editAgentConfig"' in webui.INDEX_HTML
     assert 'id="agentConfigText" spellcheck="false" readonly' in webui.INDEX_HTML
     assert "function setAgentConfigEditing" in webui.INDEX_HTML
+    assert 'id="activeStopJob"' in webui.INDEX_HTML
+    assert "function stopJob" in webui.INDEX_HTML
+    assert "/api/jobs/${encodeURIComponent(id)}/stop" in webui.INDEX_HTML
 
 
 def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):

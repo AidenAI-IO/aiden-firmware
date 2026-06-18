@@ -4,6 +4,7 @@ import argparse
 import dataclasses as dc
 import json
 import os
+import signal
 import shutil
 import socket
 import subprocess
@@ -16,7 +17,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from runner.agent_client import AgentClient
 from runner.judge import JudgeConfig
@@ -35,6 +36,12 @@ DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC = 120
 DEFAULT_JUDGE_MODEL = JudgeConfig().model
 WEBUI_SETTINGS_FILE = "webui-settings.json"
 LOG_TAIL_BYTES = 96 * 1024
+TERMINAL_JOB_STATUSES = {"passed", "failed", "stopped", "canceled"}
+STOP_REQUESTED_JOB_STATUSES = {"stopping", "stopped", "canceled"}
+
+
+class JobStopped(RuntimeError):
+    pass
 
 
 @dc.dataclass(frozen=True)
@@ -108,6 +115,7 @@ class BenchmarkWebApp:
         self._lock = threading.RLock()
         self._jobs: dict[str, Job] = {}
         self._job_judge_api_keys: dict[str, str] = {}
+        self._job_runner_procs: dict[str, subprocess.Popen] = {}
         self._mobilegym_environments: dict[str, MobileGymEnvironment] = {}
         self._mobilegym_log_procs: dict[str, subprocess.Popen] = {}
 
@@ -278,7 +286,10 @@ class BenchmarkWebApp:
 
     def shutdown(self) -> None:
         with self._lock:
+            job_ids = list(self._jobs)
             environment_ids = list(self._mobilegym_environments)
+        for job_id in job_ids:
+            self.stop_job(job_id)
         for environment_id in environment_ids:
             self.stop_mobilegym_environment(environment_id)
 
@@ -374,19 +385,33 @@ class BenchmarkWebApp:
         return self._job_payload(job)
 
     def cancel_job(self, job_id: str) -> dict[str, Any] | None:
+        return self.stop_job(job_id)
+
+    def stop_job(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
                 return None
-            if job.status in {"passed", "failed", "canceled"}:
+            if job.status in TERMINAL_JOB_STATUSES:
                 return self._job_payload(job)
-            job.status = "canceled"
-            job.message = "cancel requested"
+            job.status = "stopping"
+            job.message = "stop requested"
+            proc = self._job_runner_procs.get(job.id)
+            runner_log = Path(job.runner_log) if job.runner_log else None
+            state_file = Path(job.state_file) if job.state_file else None
+        if runner_log is not None:
+            append_log(runner_log, "STOP requested")
+        if state_file is not None:
+            update_state_status(state_file, "stopping", run_id=job.id)
+        terminate_process_tree(proc)
         subprocess.run(["docker", "rm", "-f", job.container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         return self._job_payload(job)
 
     def _set_job(self, job: Job, **updates: Any) -> None:
         with self._lock:
+            if job.status in STOP_REQUESTED_JOB_STATUSES and updates.get("status") not in STOP_REQUESTED_JOB_STATUSES:
+                updates.pop("status", None)
+                updates.pop("message", None)
             for key, value in updates.items():
                 setattr(job, key, value)
 
@@ -394,6 +419,19 @@ class BenchmarkWebApp:
         with self._lock:
             for key, value in updates.items():
                 setattr(env, key, value)
+
+    def _job_stop_requested(self, job: Job) -> bool:
+        with self._lock:
+            return job.status in STOP_REQUESTED_JOB_STATUSES
+
+    def _raise_if_job_stop_requested(self, job: Job) -> None:
+        if self._job_stop_requested(job):
+            raise JobStopped("job stop requested")
+
+    def _finish_stopped_job(self, job: Job) -> None:
+        if job.state_file:
+            update_state_status(Path(job.state_file), "stopped", run_id=job.id)
+        self._set_job(job, status="stopped", finished_at=now_iso(), message="")
 
     def _agent_config_path(self) -> Path:
         return self.config.agent_config_path or (self.config.runs_dir / "agent.toml")
@@ -425,11 +463,19 @@ class BenchmarkWebApp:
     def _run_job(self, job: Job) -> None:
         host_port = int(urllib.parse.urlparse(job.agent_url).port or 0)
         try:
+            self._raise_if_job_stop_requested(job)
             self._set_job(job, status="preparing", started_at=now_iso(), message="preparing config")
             agent_config_text = self.get_agent_config()["content"]
             prepare_run_config(self.config.base_config_dir, Path(job.config_dir), agent_config_text=agent_config_text)
+            self._raise_if_job_stop_requested(job)
             self._set_job(job, status="starting_agent", message="starting docker agent")
-            ensure_daemon_image(self.config.daemon_image, self.config.build_daemon_image, Path(job.runner_log))
+            ensure_daemon_image(
+                self.config.daemon_image,
+                self.config.build_daemon_image,
+                Path(job.runner_log),
+                stop_requested=lambda: self._job_stop_requested(job),
+            )
+            self._raise_if_job_stop_requested(job)
             command = build_docker_run_command(
                 image=self.config.daemon_image,
                 container_name=job.container_name,
@@ -443,24 +489,29 @@ class BenchmarkWebApp:
             log_proc = start_docker_logs(job.container_name, Path(job.daemon_log))
             try:
                 self._wait_for_daemon(job)
+                self._raise_if_job_stop_requested(job)
                 self._set_job(job, status="running", message="running suites")
                 for suite_key in job.suites:
-                    if job.status == "canceled":
-                        break
+                    self._raise_if_job_stop_requested(job)
                     self._run_suite(job, suite_key)
             finally:
                 if log_proc is not None:
                     log_proc.terminate()
                 subprocess.run(["docker", "rm", "-f", job.container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-            if job.status == "canceled":
-                self._set_job(job, finished_at=now_iso())
-                return
+            self._raise_if_job_stop_requested(job)
             final_status = "passed" if job.suite_results and all(item.get("exit_code") == 0 for item in job.suite_results) else "failed"
             self._set_job(job, status=final_status, finished_at=now_iso(), message="")
+        except JobStopped:
+            append_log(Path(job.runner_log), "STOPPED")
+            subprocess.run(["docker", "rm", "-f", job.container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            self._finish_stopped_job(job)
         except Exception as exc:
             append_log(Path(job.runner_log), f"ERROR: {exc}")
             subprocess.run(["docker", "rm", "-f", job.container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-            self._set_job(job, status="failed", finished_at=now_iso(), message=str(exc))
+            if self._job_stop_requested(job):
+                self._finish_stopped_job(job)
+            else:
+                self._set_job(job, status="failed", finished_at=now_iso(), message=str(exc))
         finally:
             with self._lock:
                 self._job_judge_api_keys.pop(job.id, None)
@@ -469,14 +520,14 @@ class BenchmarkWebApp:
         client = AgentClient(job.agent_url)
         deadline = time.monotonic() + max(1, self.config.daemon_ready_timeout_sec)
         while time.monotonic() < deadline:
-            if job.status == "canceled":
-                raise RuntimeError("canceled")
+            self._raise_if_job_stop_requested(job)
             if client.health():
                 return
             time.sleep(1)
         raise RuntimeError(f"agent daemon did not become ready at {job.agent_url}")
 
     def _run_suite(self, job: Job, suite_key: str) -> None:
+        self._raise_if_job_stop_requested(job)
         suite_path = resolve_suite_path(self.config.suites_dir, suite_key)
         suite_is_unit = is_unit_suite(suite_path)
         write_state(
@@ -520,9 +571,27 @@ class BenchmarkWebApp:
                 judge_api_key = self._job_judge_api_keys.get(job.id, "")
             if judge_api_key:
                 env["OPENROUTER_API_KEY"] = judge_api_key
+        self._raise_if_job_stop_requested(job)
+        popen_kwargs: dict[str, Any] = {}
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
         with Path(job.runner_log).open("ab") as log:
-            proc = subprocess.Popen(cmd, cwd=BENCHMARK_ROOT, stdout=log, stderr=subprocess.STDOUT, env=env)
-            exit_code = proc.wait()
+            proc = subprocess.Popen(
+                cmd,
+                cwd=BENCHMARK_ROOT,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=env,
+                **popen_kwargs,
+            )
+            with self._lock:
+                self._job_runner_procs[job.id] = proc
+            try:
+                exit_code = proc.wait()
+            finally:
+                with self._lock:
+                    if self._job_runner_procs.get(job.id) is proc:
+                        self._job_runner_procs.pop(job.id, None)
         new_runs = sorted(
             (p for p in Path(job.raw_runs_dir).iterdir() if p.is_dir() and p.name not in existing),
             key=lambda p: p.stat().st_mtime,
@@ -540,7 +609,7 @@ class BenchmarkWebApp:
             write_state(
                 Path(job.state_file),
                 {
-                    "status": "done" if exit_code == 0 else "failed",
+                    "status": "stopped" if self._job_stop_requested(job) else "done" if exit_code == 0 else "failed",
                     "suite": suite_key,
                     "run_id": job.id,
                     "total": 1,
@@ -548,8 +617,13 @@ class BenchmarkWebApp:
                     "current": 1,
                 },
             )
+        if self._job_stop_requested(job):
+            update_state_status(Path(job.state_file), "stopped", run_id=job.id)
+            result["stopped"] = True
         with self._lock:
             job.suite_results.append(result)
+        if self._job_stop_requested(job):
+            raise JobStopped("job stop requested")
 
 
 def list_benchmark_suites(suites_dir: Path) -> list[dict[str, Any]]:
@@ -936,15 +1010,28 @@ def docker_no_proxy(endpoint: str) -> str:
     return ",".join(base)
 
 
-def ensure_daemon_image(image: str, build_missing: bool, log_path: Path) -> None:
-    ensure_docker_image(image, build_missing, log_path, "daemon-runtime")
+def ensure_daemon_image(
+    image: str,
+    build_missing: bool,
+    log_path: Path,
+    *,
+    stop_requested: Callable[[], bool] | None = None,
+) -> None:
+    ensure_docker_image(image, build_missing, log_path, "daemon-runtime", stop_requested=stop_requested)
 
 
 def ensure_mobilegym_image(image: str, build_missing: bool, log_path: Path) -> None:
     ensure_docker_image(image, build_missing, log_path, "mobilegym-base")
 
 
-def ensure_docker_image(image: str, build_missing: bool, log_path: Path, target: str) -> None:
+def ensure_docker_image(
+    image: str,
+    build_missing: bool,
+    log_path: Path,
+    target: str,
+    *,
+    stop_requested: Callable[[], bool] | None = None,
+) -> None:
     inspect = subprocess.run(["docker", "image", "inspect", image], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     if inspect.returncode == 0:
         return
@@ -962,8 +1049,18 @@ def ensure_docker_image(image: str, build_missing: bool, log_path: Path, target:
         str(REPO_ROOT),
     ]
     append_log(log_path, "$ " + " ".join(cmd))
+    popen_kwargs: dict[str, Any] = {}
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
     with log_path.open("ab") as log:
-        subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, check=True)
+        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, **popen_kwargs)
+        while proc.poll() is None:
+            if stop_requested is not None and stop_requested():
+                terminate_process_tree(proc)
+                raise JobStopped("job stop requested")
+            time.sleep(0.25)
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
 def wait_for_http_health(url: str, timeout_sec: int) -> None:
@@ -1015,6 +1112,54 @@ def write_state(path: Path, payload: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     tmp.replace(path)
+
+
+def update_state_status(path: Path, status: str, *, run_id: str = "") -> None:
+    payload = read_json_file(path) or {}
+    payload["status"] = status
+    if run_id and not payload.get("run_id"):
+        payload["run_id"] = run_id
+    write_state(path, payload)
+
+
+def terminate_process_tree(proc: subprocess.Popen | None, timeout_sec: float = 3.0) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except ProcessLookupError:
+        return
+    except Exception:
+        try:
+            proc.terminate()
+        except Exception:
+            return
+    try:
+        proc.wait(timeout=timeout_sec)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except Exception:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        return
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            return
+    try:
+        proc.wait(timeout=1)
+    except Exception:
+        return
 
 
 def tail_text(path: Path, max_bytes: int) -> str:
@@ -1137,6 +1282,14 @@ class WebHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             self._send_json({"environment": environment})
+            return
+        if path.startswith("/api/jobs/") and path.endswith("/stop"):
+            job_id = path.split("/")[3]
+            job = self.server.app.stop_job(job_id)
+            if job is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"job": job})
             return
         if path.startswith("/api/jobs/") and path.endswith("/cancel"):
             job_id = path.split("/")[3]
@@ -1589,6 +1742,11 @@ INDEX_HTML = r"""<!doctype html>
     .status.canceled, .status.stopping { background: #fff8e1; color: var(--orange); }
     .status.stopped, .status.device { background: #e0e0e0; color: #525252; }
     .status.mobilegym { background: #e8daff; color: var(--purple); }
+    .status-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
     .progress {
       height: 8px;
       background: #e0e0e0;
@@ -1793,7 +1951,10 @@ INDEX_HTML = r"""<!doctype html>
             <h2 class="tile-title">Progress</h2>
             <div id="activeJobLabel" class="tile-kicker">No active job</div>
           </div>
-          <span id="activeJobStatus" class="status">idle</span>
+          <div class="status-actions">
+            <span id="activeJobStatus" class="status">idle</span>
+            <button id="activeStopJob" class="danger" type="button" hidden>Stop</button>
+          </div>
         </div>
         <div class="progress"><div id="progressBar"></div></div>
         <div class="metric-grid">
@@ -1815,7 +1976,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="table-wrap job-table-wrap">
           <table>
-            <thead><tr><th>Job</th><th>Environment</th><th style="width:120px">Status</th><th style="width:120px">Reports</th></tr></thead>
+            <thead><tr><th>Job</th><th>Environment</th><th style="width:120px">Status</th><th style="width:120px">Reports</th><th style="width:96px"></th></tr></thead>
             <tbody id="jobRows"></tbody>
           </table>
         </div>
@@ -2257,18 +2418,24 @@ INDEX_HTML = r"""<!doctype html>
       const tbody = document.getElementById('jobRows');
       tbody.innerHTML = '';
       if(!jobs.length){
-        tbody.innerHTML = '<tr><td class="empty-row" colspan="4">No jobs yet</td></tr>';
+        tbody.innerHTML = '<tr><td class="empty-row" colspan="5">No jobs yet</td></tr>';
       }
       jobs.forEach(job => {
         const reports = (job.suite_results || []).filter(r => r.report_url).map(r => `<a href="${escapeHtml(r.report_url)}" target="_blank" rel="noreferrer">report</a>`).join(' ');
         const envLabel = job.environment_name || job.endpoint;
         const envType = job.environment_type || 'device';
+        const actionHtml = jobCanStop(job)
+          ? `<button class="danger" data-stop-job="${escapeHtml(job.id)}" ${job.status === 'stopping' ? 'disabled' : ''}>Stop</button>`
+          : '';
         const tr = document.createElement('tr');
         tr.innerHTML = `<td><div class="cell-main"><a href="#" data-job="${job.id}">${escapeHtml(job.id)}</a><small>${escapeHtml(job.created_at || '')}</small></div></td>
           <td title="${escapeHtml(job.endpoint)}"><div class="cell-main"><span>${escapeHtml(envLabel)}</span><small>${escapeHtml(envType)} - ${escapeHtml((job.suites || []).length)} suites</small></div></td>
           <td><span class="status ${cssToken(job.status)}">${escapeHtml(job.status)}</span></td>
-          <td>${reports || '<span class="muted">none</span>'}</td>`;
+          <td>${reports || '<span class="muted">none</span>'}</td>
+          <td>${actionHtml}</td>`;
         tr.querySelector('[data-job]').onclick = e => { e.preventDefault(); activeJobId = job.id; loadActiveJob(); };
+        const stop = tr.querySelector('[data-stop-job]');
+        if(stop) stop.onclick = () => stopJob(job.id);
         tbody.appendChild(tr);
       });
     }
@@ -2287,6 +2454,9 @@ INDEX_HTML = r"""<!doctype html>
       const st = document.getElementById('activeJobStatus');
       st.className = 'status ' + job.status;
       st.textContent = job.status;
+      const stop = document.getElementById('activeStopJob');
+      stop.hidden = !jobCanStop(job);
+      stop.disabled = job.status === 'stopping';
       const progress = job.progress || {};
       const total = progress.total || (job.totals && job.totals.tasks) || 0;
       const completed = progress.completed || 0;
@@ -2306,9 +2476,22 @@ INDEX_HTML = r"""<!doctype html>
       const st = document.getElementById('activeJobStatus');
       st.className = 'status';
       st.textContent = 'idle';
+      const stop = document.getElementById('activeStopJob');
+      stop.hidden = true;
+      stop.disabled = false;
       document.getElementById('progressBar').style.width = '0%';
       ['mTasks', 'mPassed', 'mFailed', 'mSkipped', 'mJudge', 'mTimeout'].forEach(id => document.getElementById(id).textContent = '0');
       document.getElementById('headerStatus').textContent = 'Idle';
+    }
+
+    function jobCanStop(job){
+      return job && !['passed', 'failed', 'stopped', 'canceled'].includes(job.status || '');
+    }
+
+    async function stopJob(id){
+      const res = await fetch(`/api/jobs/${encodeURIComponent(id)}/stop`, {method: 'POST'});
+      if(!res.ok) document.getElementById('logBox').textContent = await res.text();
+      await refreshJobs();
     }
 
     function cssToken(value){
@@ -2337,6 +2520,7 @@ INDEX_HTML = r"""<!doctype html>
     };
     document.getElementById('suiteFilter').oninput = renderSuites;
     document.getElementById('runBtn').onclick = startRun;
+    document.getElementById('activeStopJob').onclick = () => { if(activeJobId) stopJob(activeJobId); };
     setAgentConfigEditing(false);
     renderEnvs();
     loadWebuiSettings();
