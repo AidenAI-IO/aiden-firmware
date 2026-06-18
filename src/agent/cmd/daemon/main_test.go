@@ -1980,6 +1980,139 @@ func TestRunVoiceSessionWakeupInterruptsSpeaking(t *testing.T) {
 	}
 }
 
+func TestRunVoiceSessionSpeakingInterruptMarksNextUtteranceCorrection(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	events := make(chan voiceEvent, 1)
+	speakStarted := make(chan struct{})
+	ctxCanceled := make(chan struct{})
+	speakCalls := 0
+	dialog := &fakeAudioDialog{
+		frameSamples: 2,
+		chunkBatches: [][]*agent.AudioChunkResult{
+			{{PCM: pcm16BytesFromSamples(100, 200)}},
+			{{PCM: pcm16BytesFromSamples(300, 400)}},
+		},
+		utterancesToReturn: [][]int16{
+			{100, 200},
+			{300, 400},
+		},
+		prepareTurnInput: func(utterance []int16) (agent.TurnInput, error) {
+			if len(utterance) > 0 && utterance[0] == 300 {
+				return agent.TurnInput{InputText: "改成明天。", Transcript: "改成明天。"}, nil
+			}
+			return agent.TurnInput{InputText: "订今天的票。", Transcript: "订今天的票。"}, nil
+		},
+		speak: func(ctx context.Context) error {
+			speakCalls++
+			if speakCalls > 1 {
+				return nil
+			}
+			close(speakStarted)
+			<-ctx.Done()
+			close(ctxCanceled)
+			return ctx.Err()
+		},
+	}
+
+	go func() {
+		<-speakStarted
+		events <- voiceEventWakeup
+	}()
+
+	exit := runVoiceSession(agent.Config{VoiceFollowupTimeoutMs: 50, VoiceMaxTurns: 1}, dialog, nil, sigChan, events)
+	if exit {
+		t.Fatal("runVoiceSession returned exit=true")
+	}
+	select {
+	case <-ctxCanceled:
+	default:
+		t.Fatal("speaking context was not canceled")
+	}
+	if len(dialog.voiceTurnContexts) != 2 {
+		t.Fatalf("voice turn contexts = %#v, want original turn and correction follow-up", dialog.voiceTurnContexts)
+	}
+	if dialog.voiceTurnContexts[0] != (agent.VoiceTurnContext{}) {
+		t.Fatalf("first voice turn context = %#v, want ordinary new task", dialog.voiceTurnContexts[0])
+	}
+	if got, want := dialog.voiceTurnContexts[1], interruptedVoiceCorrectionContext(); got != want {
+		t.Fatalf("second voice turn context = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunWakeupModeSTTSpeakingInterruptMarksNextTurnCorrection(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	watcher := &fakeWakeupWatcher{fireOnStart: true}
+	speakStarted := make(chan struct{})
+	ctxCanceled := make(chan struct{})
+	voiceSessionDisabled := false
+	speakCalls := 0
+	var dialog *fakeAudioDialog
+	dialog = &fakeAudioDialog{
+		frameSamples: 2,
+		chunkBatches: [][]*agent.AudioChunkResult{
+			{{PCM: pcm16BytesFromSamples(100, 200)}},
+			{{PCM: pcm16BytesFromSamples(300, 400)}},
+		},
+		utterancesToReturn: [][]int16{
+			{100, 200},
+			{300, 400},
+		},
+		prepareTurnInput: func(utterance []int16) (agent.TurnInput, error) {
+			if len(utterance) > 0 && utterance[0] == 300 {
+				return agent.TurnInput{InputText: "短一点。", Transcript: "短一点。"}, nil
+			}
+			return agent.TurnInput{InputText: "总结这段内容。", Transcript: "总结这段内容。"}, nil
+		},
+		speak: func(ctx context.Context) error {
+			speakCalls++
+			if speakCalls > 1 {
+				sigChan <- syscall.SIGTERM
+				return nil
+			}
+			close(speakStarted)
+			<-ctx.Done()
+			close(ctxCanceled)
+			return ctx.Err()
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		runWakeupMode(agent.Config{InputMode: "stt", VoiceFollowupEnabled: &voiceSessionDisabled, VoiceFollowupTimeoutMs: 50}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
+			watcher.callback = callback
+			return watcher, nil
+		})
+		close(done)
+	}()
+
+	select {
+	case <-speakStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runWakeupMode did not start speaking")
+	}
+	watcher.callback()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runWakeupMode did not stop after correction turn")
+	}
+	select {
+	case <-ctxCanceled:
+	default:
+		t.Fatal("speaking context was not canceled")
+	}
+	if len(dialog.voiceTurnContexts) != 2 {
+		t.Fatalf("voice turn contexts = %#v, want original turn and correction follow-up", dialog.voiceTurnContexts)
+	}
+	if dialog.voiceTurnContexts[0] != (agent.VoiceTurnContext{}) {
+		t.Fatalf("first voice turn context = %#v, want ordinary new task", dialog.voiceTurnContexts[0])
+	}
+	if got, want := dialog.voiceTurnContexts[1], interruptedVoiceCorrectionContext(); got != want {
+		t.Fatalf("second voice turn context = %#v, want %#v", got, want)
+	}
+}
+
 func pcm16Bytes(sample int16) []byte {
 	return pcm16BytesFromSamples(sample)
 }
