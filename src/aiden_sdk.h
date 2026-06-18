@@ -21,6 +21,11 @@ struct AudioFrame {
     void* data;
     uint32_t length;
     uint64_t timestamp;
+    // Actual format of the frame (may differ from requested format when VQE is active)
+    int sample_rate = 0;
+    int channels = 0;
+    int bit_width = 0;
+    bool vqe_processed = false;
 };
 
 // Camera configuration

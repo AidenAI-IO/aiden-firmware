@@ -1,6 +1,7 @@
 #include "audio_record_session.h"
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>
@@ -173,6 +174,7 @@ void AudioRecordSession::maybe_update_hw_sample_rate(uint64_t timestamp_us,
 
 void AudioRecordSession::capture_loop() {
     int consecutive_failures = 0;
+    bool first_frame_logged = false;
 
     while (!stopped_.load()) {
         AudioFrame frame;
@@ -205,12 +207,57 @@ void AudioRecordSession::capture_loop() {
         consecutive_failures = 0;
 
         if (frame.data && frame.length > 0) {
+            // Use frame metadata when VQE-processed, else fallback to hardware shape
+            int actual_channels = hw_channels_;
+            int actual_sample_rate = hw_sample_rate_;
+            if (frame.vqe_processed) {
+                actual_channels = static_cast<int>(frame.channels);
+                actual_sample_rate = static_cast<int>(frame.sample_rate);
+            }
+
+            if (!first_frame_logged) {
+                fprintf(stderr,
+                        "[audio_service] record session %llu first frame: sr=%d ch=%d bw=%d vqe=%d\n",
+                        static_cast<unsigned long long>(session_id_),
+                        actual_sample_rate, actual_channels,
+                        frame.vqe_processed ? static_cast<int>(frame.bit_width) : static_cast<int>(fmt_.bit_width),
+                        frame.vqe_processed ? 1 : 0);
+                first_frame_logged = true;
+            }
+
             const int16_t* src = reinterpret_cast<const int16_t*>(frame.data);
             size_t total_samples = frame.length / sizeof(int16_t);
             if (total_samples == 0) {
                 capture_.release_frame();
                 continue;
             }
+
+            // VQE output is already mono clean PCM: aggregate to 1024-sample chunks
+            if (frame.vqe_processed && actual_channels == 1) {
+                // No stereo downmix needed; sample rate should match target
+                size_t frame_samples = total_samples;
+                maybe_update_hw_sample_rate(frame.timestamp, frame_samples);
+
+                // Aggregate to kChunkSamples (1024)
+                static std::vector<int16_t> vqe_buffer;
+                vqe_buffer.insert(vqe_buffer.end(), src, src + total_samples);
+
+                while (vqe_buffer.size() >= kChunkSamples) {
+                    std::vector<uint8_t> chunk(kChunkSamples * sizeof(int16_t));
+                    std::memcpy(chunk.data(), vqe_buffer.data(), chunk.size());
+                    vqe_buffer.erase(vqe_buffer.begin(), vqe_buffer.begin() + kChunkSamples);
+
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    if (queue_.size() < kMaxQueueChunks) {
+                        queue_.push(std::move(chunk));
+                        cv_.notify_one();
+                    }
+                }
+                capture_.release_frame();
+                continue;
+            }
+
+            // Non-VQE path: stereo downmix as before
             if ((total_samples % 2) != 0) {
                 // Odd sample count cannot be stereo-interleaved.
                 hw_channels_ = 1;
