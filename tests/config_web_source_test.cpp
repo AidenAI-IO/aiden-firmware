@@ -639,7 +639,7 @@ TEST_CASE("config web exposes telemetry settings section") {
     CHECK(html.find("<textarea id=\\\"telemetry_tags\\\"") != std::string::npos);
 }
 
-TEST_CASE("config web exposes benchmark settings section") {
+TEST_CASE("config web does not expose benchmark settings section") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
     REQUIRE(source_in.good());
@@ -656,31 +656,20 @@ TEST_CASE("config web exposes benchmark settings section") {
     html_buffer << html_in.rdbuf();
     const std::string html = html_buffer.str();
 
-    CHECK(source.find("cJSON* benchmark = add_object(root, \"benchmark\")") != std::string::npos);
-    CHECK(source.find("config.benchmark.judge_model") != std::string::npos);
-    CHECK(source.find("config.benchmark.api_key") != std::string::npos);
-    CHECK(source.find("config.benchmark.benchmark_dir") != std::string::npos);
-    CHECK(source.find("cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = false)") != std::string::npos);
-    CHECK(source.find("if (include_secrets)") != std::string::npos);
-    CHECK(source.find("cJSON_AddBoolToObject(benchmark, \"has_api_key\", !config.benchmark.api_key.empty())") != std::string::npos);
-    CHECK(source.find("cJSON_AddStringToObject(benchmark, \"api_key\", config.benchmark.api_key.c_str())") != std::string::npos);
-    CHECK(source.find("cJSON* benchmark = cJSON_GetObjectItem(root, \"benchmark\")") != std::string::npos);
-    CHECK(source.find("set_json_str(&config->benchmark.judge_model, benchmark, \"judge_model\")") != std::string::npos);
-    CHECK(source.find("std::string api_key = trim_copy(key_item->valuestring)") != std::string::npos);
-    CHECK(source.find("config->benchmark.api_key = api_key") != std::string::npos);
-    CHECK(source.find("set_json_str(&config->benchmark.benchmark_dir, benchmark, \"benchmark_dir\")") != std::string::npos);
-    CHECK(source.find("cJSON* config_json = config_to_json(config, true)") != std::string::npos);
-    CHECK(source.find("section == \"benchmark\"") != std::string::npos);
-    CHECK(source.find("defaults to bytedance-seed/seed-2.0-lite") != std::string::npos);
+    CHECK(source.find("add_object(root, \"benchmark\")") == std::string::npos);
+    CHECK(source.find("config.benchmark") == std::string::npos);
+    CHECK(source.find("cJSON_GetObjectItem(root, \"benchmark\")") == std::string::npos);
+    CHECK(source.find("section == \"benchmark\"") == std::string::npos);
+    CHECK(source.find("defaults to bytedance-seed/seed-2.0-lite") == std::string::npos);
 
-    CHECK(html.find("section-benchmark") != std::string::npos);
-    CHECK(html.find("<h3>[benchmark]</h3>") != std::string::npos);
-    CHECK(html.find("benchmark_judge_model") != std::string::npos);
-    CHECK(html.find("benchmark_api_key") != std::string::npos);
-    CHECK(html.find("benchmark_benchmark_dir") != std::string::npos);
+    CHECK(html.find("section-benchmark") == std::string::npos);
+    CHECK(html.find("<h3>[benchmark]</h3>") == std::string::npos);
+    CHECK(html.find("benchmark_judge_model") == std::string::npos);
+    CHECK(html.find("benchmark_api_key") == std::string::npos);
+    CHECK(html.find("benchmark_benchmark_dir") == std::string::npos);
     CHECK(html.find("sectionValues['has_'+key]") != std::string::npos);
-    CHECK(html.find("save-benchmark") != std::string::npos);
-    CHECK(html.find("enterEditSection('benchmark')") != std::string::npos);
+    CHECK(html.find("save-benchmark") == std::string::npos);
+    CHECK(html.find("enterEditSection('benchmark')") == std::string::npos);
 }
 
 TEST_CASE("config web restarts ota only when system env changes") {

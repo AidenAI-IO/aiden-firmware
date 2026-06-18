@@ -51,12 +51,6 @@ struct AudioArchiveToml {
     std::string storage_path = "/userdata/audio";
 };
 
-struct BenchmarkToml {
-    std::string judge_model;
-    std::string api_key;
-    std::string benchmark_dir;
-};
-
 struct HIDToml {
     std::string keyboard_device;
     std::string mouse_device;
@@ -90,7 +84,6 @@ struct AgentToml {
     STTToml stt;
     AudioToml audio;
     AudioArchiveToml audio_archive;
-    BenchmarkToml benchmark;
     HIDToml hid;
     SearchToml search;
     TelemetryToml telemetry;

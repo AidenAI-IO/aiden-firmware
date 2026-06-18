@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from runner.agent_client import AgentClient
+from runner.judge import JudgeConfig
 from runner.unit import is_unit_suite
 
 
@@ -31,6 +32,8 @@ DEFAULT_DAEMON_IMAGE = "aiden-mobilegym-daemon:local"
 DEFAULT_MOBILEGYM_IMAGE = "aiden-mobilegym-simulator:py311"
 DEFAULT_DAEMON_READY_TIMEOUT_SEC = 90
 DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC = 120
+DEFAULT_JUDGE_MODEL = JudgeConfig().model
+WEBUI_SETTINGS_FILE = "webui-settings.json"
 LOG_TAIL_BYTES = 96 * 1024
 
 
@@ -71,6 +74,8 @@ class Job:
     daemon_log: str = ""
     suite_results: list[dict[str, Any]] = dc.field(default_factory=list)
     no_judge: bool = False
+    judge_model: str = DEFAULT_JUDGE_MODEL
+    judge_api_key_set: bool = False
     repeats: int | None = None
 
 
@@ -101,6 +106,7 @@ class BenchmarkWebApp:
         self.config.runs_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._jobs: dict[str, Job] = {}
+        self._job_judge_api_keys: dict[str, str] = {}
         self._mobilegym_environments: dict[str, MobileGymEnvironment] = {}
         self._mobilegym_log_procs: dict[str, subprocess.Popen] = {}
 
@@ -143,6 +149,32 @@ class BenchmarkWebApp:
             "path": str(path),
             "source": source,
         }
+
+    def get_webui_settings(self) -> dict[str, Any]:
+        return sanitize_webui_settings(self._load_webui_settings(include_secrets=False))
+
+    def save_webui_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        current = self._load_webui_settings(include_secrets=True)
+        incoming_judge = payload.get("judge") if isinstance(payload.get("judge"), dict) else {}
+        current_judge = current.setdefault("judge", {})
+        if "enabled" in incoming_judge:
+            current_judge["enabled"] = bool(incoming_judge.get("enabled"))
+        if "model" in incoming_judge:
+            model = str(incoming_judge.get("model") or "").strip() or DEFAULT_JUDGE_MODEL
+            current_judge["model"] = model
+        if "api_key" in incoming_judge:
+            api_key = str(incoming_judge.get("api_key") or "").strip()
+            if api_key:
+                current_judge["api_key"] = api_key
+
+        if "device_environments" in payload:
+            current["device_environments"] = normalize_device_environments(payload.get("device_environments"))
+        if "selected_environment_id" in payload:
+            current["selected_environment_id"] = str(payload.get("selected_environment_id") or "")
+
+        normalized = normalize_webui_settings(current, include_secrets=True)
+        write_json_atomic(self._webui_settings_path(), normalized)
+        return sanitize_webui_settings(normalized)
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -276,6 +308,19 @@ class BenchmarkWebApp:
         if environment_type not in {"device", "mobilegym"}:
             raise ValueError("environment_type must be device or mobilegym")
 
+        settings = self._load_webui_settings(include_secrets=True)
+        judge_settings = settings.get("judge") if isinstance(settings.get("judge"), dict) else {}
+        no_judge = bool(payload.get("no_judge")) if "no_judge" in payload else not bool(judge_settings.get("enabled", True))
+        judge_model = (
+            str(payload.get("judge_model") or "").strip()
+            or str(judge_settings.get("model") or "").strip()
+            or DEFAULT_JUDGE_MODEL
+        )
+        judge_api_key = (
+            str(payload.get("judge_api_key") or "").strip()
+            or str(judge_settings.get("api_key") or "").strip()
+        )
+
         job_id = new_job_id()
         job_dir = self.config.runs_dir / job_id
         raw_runs_dir = job_dir / "raw"
@@ -300,11 +345,15 @@ class BenchmarkWebApp:
             state_file=str(job_dir / "state.json"),
             runner_log=str(job_dir / "runner.log"),
             daemon_log=str(job_dir / "daemon.log"),
-            no_judge=bool(payload.get("no_judge")),
+            no_judge=no_judge,
+            judge_model=judge_model,
+            judge_api_key_set=bool(judge_api_key) and not no_judge,
             repeats=repeats_value,
         )
         with self._lock:
             self._jobs[job.id] = job
+            if judge_api_key and not no_judge:
+                self._job_judge_api_keys[job.id] = judge_api_key
         thread = threading.Thread(target=self._run_job, args=(job,), name=f"benchmark-{job.id}", daemon=True)
         thread.start()
         return self._job_payload(job)
@@ -333,6 +382,12 @@ class BenchmarkWebApp:
 
     def _agent_config_path(self) -> Path:
         return self.config.agent_config_path or (self.config.runs_dir / "agent.toml")
+
+    def _webui_settings_path(self) -> Path:
+        return self.config.runs_dir / WEBUI_SETTINGS_FILE
+
+    def _load_webui_settings(self, include_secrets: bool = False) -> dict[str, Any]:
+        return load_webui_settings(self._webui_settings_path(), include_secrets=include_secrets)
 
     def _job_payload(self, job: Job) -> dict[str, Any]:
         payload = dc.asdict(job)
@@ -391,6 +446,9 @@ class BenchmarkWebApp:
             append_log(Path(job.runner_log), f"ERROR: {exc}")
             subprocess.run(["docker", "rm", "-f", job.container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             self._set_job(job, status="failed", finished_at=now_iso(), message=str(exc))
+        finally:
+            with self._lock:
+                self._job_judge_api_keys.pop(job.id, None)
 
     def _wait_for_daemon(self, job: Job) -> None:
         client = AgentClient(job.agent_url)
@@ -434,11 +492,19 @@ class BenchmarkWebApp:
             cmd.extend(["--state-file", job.state_file])
             if job.no_judge:
                 cmd.append("--no-judge")
+            else:
+                cmd.extend(["--judge-model", job.judge_model or DEFAULT_JUDGE_MODEL])
             if job.repeats:
                 cmd.extend(["--repeats", str(job.repeats)])
         append_log(Path(job.runner_log), "\n$ " + " ".join(cmd))
+        env = os.environ.copy()
+        if not suite_is_unit and not job.no_judge:
+            with self._lock:
+                judge_api_key = self._job_judge_api_keys.get(job.id, "")
+            if judge_api_key:
+                env["OPENROUTER_API_KEY"] = judge_api_key
         with Path(job.runner_log).open("ab") as log:
-            proc = subprocess.Popen(cmd, cwd=BENCHMARK_ROOT, stdout=log, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen(cmd, cwd=BENCHMARK_ROOT, stdout=log, stderr=subprocess.STDOUT, env=env)
             exit_code = proc.wait()
         new_runs = sorted(
             (p for p in Path(job.raw_runs_dir).iterdir() if p.is_dir() and p.name not in existing),
@@ -573,11 +639,88 @@ def validate_agent_toml(content: str) -> None:
         raise ValueError(f"invalid agent.toml: {exc}") from exc
 
 
+def default_webui_settings(include_secrets: bool = False) -> dict[str, Any]:
+    judge: dict[str, Any] = {
+        "enabled": True,
+        "model": DEFAULT_JUDGE_MODEL,
+    }
+    if include_secrets:
+        judge["api_key"] = ""
+    else:
+        judge["has_api_key"] = False
+    return {
+        "judge": judge,
+        "device_environments": [],
+        "selected_environment_id": "",
+    }
+
+
+def normalize_device_environments(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        env_id = str(item.get("id") or "").strip() or f"device-{index + 1}"
+        name = str(item.get("name") or "").strip()
+        endpoint = str(item.get("endpoint") or "").strip()
+        if not name or not endpoint or env_id in seen:
+            continue
+        seen.add(env_id)
+        out.append({
+            "id": env_id,
+            "name": name,
+            "endpoint": endpoint,
+        })
+    return out
+
+
+def normalize_webui_settings(data: Any, include_secrets: bool = False) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        data = {}
+    raw_judge = data.get("judge") if isinstance(data.get("judge"), dict) else {}
+    api_key = str(raw_judge.get("api_key") or "").strip()
+    has_api_key = bool(api_key) or bool(raw_judge.get("has_api_key", False))
+    judge: dict[str, Any] = {
+        "enabled": bool(raw_judge.get("enabled", True)),
+        "model": str(raw_judge.get("model") or DEFAULT_JUDGE_MODEL).strip() or DEFAULT_JUDGE_MODEL,
+    }
+    if include_secrets:
+        judge["api_key"] = api_key
+    else:
+        judge["has_api_key"] = has_api_key
+    return {
+        "judge": judge,
+        "device_environments": normalize_device_environments(data.get("device_environments")),
+        "selected_environment_id": str(data.get("selected_environment_id") or ""),
+    }
+
+
+def sanitize_webui_settings(data: dict[str, Any]) -> dict[str, Any]:
+    return normalize_webui_settings(data, include_secrets=False)
+
+
+def load_webui_settings(path: Path, include_secrets: bool = False) -> dict[str, Any]:
+    if not path.exists():
+        return default_webui_settings(include_secrets=include_secrets)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    return normalize_webui_settings(data, include_secrets=include_secrets)
+
+
 def write_text_atomic(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(content, encoding="utf-8")
     tmp.replace(path)
+
+
+def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    write_text_atomic(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
 
 
 def render_agent_template(text: str) -> str:
@@ -903,6 +1046,9 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/agent-config":
             self._send_json({"config": self.server.app.get_agent_config()})
             return
+        if path == "/api/webui-settings":
+            self._send_json({"settings": self.server.app.get_webui_settings()})
+            return
         if path == "/api/jobs":
             self._send_json({"jobs": self.server.app.list_jobs()})
             return
@@ -954,6 +1100,15 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
             self._send_json({"config": config})
+            return
+        if path == "/api/webui-settings":
+            try:
+                payload = self._read_json()
+                settings = self.server.app.save_webui_settings(payload)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json({"settings": settings})
             return
         if path.startswith("/api/environments/mobilegym/") and path.endswith("/stop"):
             parts = path.strip("/").split("/")
@@ -1184,7 +1339,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .layout {
       display: grid;
-      grid-template-columns: 392px minmax(0, 1fr);
+      grid-template-columns: 360px minmax(0, 1fr);
       min-height: calc(100vh - 48px);
       gap: 1px;
       background: var(--border);
@@ -1201,7 +1356,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .workspace {
       display: grid;
-      grid-template-rows: auto auto auto minmax(220px, 1fr);
+      grid-template-rows: auto auto auto minmax(360px, 1fr);
       gap: 1px;
     }
     .tile {
@@ -1254,6 +1409,7 @@ INDEX_HTML = r"""<!doctype html>
     input[type="text"],
     input:not([type]),
     input[type="url"],
+    input[type="password"],
     input[type="search"],
     select,
     textarea {
@@ -1268,6 +1424,7 @@ INDEX_HTML = r"""<!doctype html>
     input[type="text"],
     input:not([type]),
     input[type="url"],
+    input[type="password"],
     input[type="search"],
     select {
       height: 40px;
@@ -1351,7 +1508,7 @@ INDEX_HTML = r"""<!doctype html>
       overflow: auto;
       background: var(--layer);
     }
-    .suite-table-wrap { max-height: calc(100vh - 360px); min-height: 320px; }
+    .suite-table-wrap { max-height: calc(100vh - 360px); min-height: 360px; }
     .job-table-wrap { max-height: 240px; }
     table {
       width: 100%;
@@ -1427,6 +1584,12 @@ INDEX_HTML = r"""<!doctype html>
       gap: 16px;
       align-items: center;
     }
+    .run-config-grid {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) minmax(360px, 1.2fr) auto;
+      gap: 16px;
+      align-items: end;
+    }
     .run-meta {
       display: grid;
       gap: 4px;
@@ -1443,6 +1606,12 @@ INDEX_HTML = r"""<!doctype html>
       display: flex;
       gap: 12px;
       align-items: center;
+    }
+    .judge-inline {
+      display: grid;
+      grid-template-columns: auto minmax(220px, 1fr) minmax(180px, 0.8fr);
+      gap: 12px;
+      align-items: end;
     }
     .check-label {
       display: flex;
@@ -1476,9 +1645,24 @@ INDEX_HTML = r"""<!doctype html>
       line-height: 1;
       font-weight: 400;
     }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: minmax(360px, 0.95fr) minmax(420px, 1.05fr);
+      gap: 1px;
+      min-width: 0;
+      min-height: 0;
+      background: var(--border);
+    }
+    .detail-grid .tile {
+      min-height: 0;
+    }
+    .detail-grid textarea {
+      min-height: 300px;
+      max-height: 520px;
+    }
     pre {
       margin: 0;
-      min-height: 260px;
+      min-height: 300px;
       height: 100%;
       max-height: 420px;
       overflow: auto;
@@ -1502,6 +1686,9 @@ INDEX_HTML = r"""<!doctype html>
       .suite-table-wrap { max-height: 360px; }
       .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .summary-strip { grid-template-columns: 1fr; }
+      .run-config-grid { grid-template-columns: 1fr; align-items: stretch; }
+      .judge-inline { grid-template-columns: 1fr; align-items: stretch; }
+      .detail-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -1548,24 +1735,6 @@ INDEX_HTML = r"""<!doctype html>
       </section>
 
       <section class="tile">
-        <div class="tile-header">
-          <div>
-            <h2 class="tile-title">Agent config</h2>
-            <div id="agentConfigPath" class="tile-kicker">agent.toml</div>
-          </div>
-        </div>
-        <div class="field">
-          <label for="agentConfigText">agent.toml</label>
-          <textarea id="agentConfigText" spellcheck="false"></textarea>
-        </div>
-        <div class="config-actions">
-          <button id="saveAgentConfig" class="primary" type="button">Save</button>
-          <button id="resetAgentConfig" class="ghost-button" type="button">Reset</button>
-          <span id="agentConfigStatus" class="muted"></span>
-        </div>
-      </section>
-
-      <section class="tile">
         <div class="toolbar">
           <div>
             <h2 class="tile-title">Suites</h2>
@@ -1584,14 +1753,18 @@ INDEX_HTML = r"""<!doctype html>
 
     <section class="workspace">
       <section class="tile">
-        <div class="summary-strip">
+        <div class="run-config-grid">
           <div class="run-meta">
             <span class="tile-kicker">Run configuration</span>
             <strong><span id="selectedEnvLabel">No environment</span></strong>
-            <span class="muted"><span id="selectedSuitesLabel">0 suites</span> selected</span>
+            <span class="muted"><span id="selectedSuitesLabel">0 suites</span> selected - <span id="selectedJudgeLabel">judge enabled</span></span>
+          </div>
+          <div class="judge-inline">
+            <label class="check-label"><input id="judgeEnabled" type="checkbox" checked> Enable judge</label>
+            <div class="field"><label for="judgeModel">Judge model</label><input id="judgeModel" autocomplete="off" placeholder="anthropic/claude-sonnet-4-6"></div>
+            <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="OPENROUTER_API_KEY"></div>
           </div>
           <div class="run-actions">
-            <label class="check-label"><input id="noJudge" type="checkbox"> no judge</label>
             <button id="runBtn" class="primary">Run selected</button>
           </div>
         </div>
@@ -1631,22 +1804,43 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       </section>
 
-      <section class="tile">
-        <div class="tile-header">
-          <div>
-            <h2 class="tile-title">Log</h2>
-            <div class="tile-kicker">Runner and daemon output</div>
+      <div class="detail-grid">
+        <section class="tile">
+          <div class="tile-header">
+            <div>
+              <h2 class="tile-title">Agent config</h2>
+              <div id="agentConfigPath" class="tile-kicker">agent.toml</div>
+            </div>
           </div>
-        </div>
-        <pre id="logBox"></pre>
-      </section>
+          <div class="field">
+            <label for="agentConfigText">agent.toml</label>
+            <textarea id="agentConfigText" spellcheck="false" readonly></textarea>
+          </div>
+          <div class="config-actions">
+            <button id="editAgentConfig" class="primary" type="button">Edit</button>
+            <button id="saveAgentConfig" class="primary" type="button">Save</button>
+            <button id="resetAgentConfig" class="ghost-button" type="button">Reset</button>
+            <span id="agentConfigStatus" class="muted"></span>
+          </div>
+        </section>
+
+        <section class="tile">
+          <div class="tile-header">
+            <div>
+              <h2 class="tile-title">Log</h2>
+              <div class="tile-kicker">Runner and daemon output</div>
+            </div>
+          </div>
+          <pre id="logBox"></pre>
+        </section>
+      </div>
     </section>
   </main>
   <script>
-    const ENV_KEY = 'aiden.benchmark.environments.v1';
-    const SELECTED_ENV_KEY = 'aiden.benchmark.selectedEnvironment';
+    const DEFAULT_JUDGE_MODEL = 'anthropic/claude-sonnet-4-6';
     let deviceEnvironments = [];
     let mobilegymEnvironments = [];
+    let selectedEnvironmentId = '';
     let editingDeviceEnvId = null;
     let suites = [];
     let selectedSuites = new Set();
@@ -1654,42 +1848,82 @@ INDEX_HTML = r"""<!doctype html>
     let activeJobId = null;
     let agentConfigDirty = false;
     let agentConfigLoaded = false;
+    let agentConfigEditing = false;
 
     function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
-    function loadDeviceEnvs(){
+    function normalizeDeviceEnv(env, index){
+      return {
+        id: String(env.id || uid()),
+        name: String(env.name || `Device ${index + 1}`),
+        endpoint: String(env.endpoint || ''),
+        type: 'device',
+        status: 'device'
+      };
+    }
+    async function loadWebuiSettings(){
       try {
-        const raw = JSON.parse(localStorage.getItem(ENV_KEY) || '[]');
-        deviceEnvironments = (Array.isArray(raw) ? raw : [])
-          .map((env, index) => ({
-            id: String(env.id || uid()),
-            name: String(env.name || `Device ${index + 1}`),
-            endpoint: String(env.endpoint || ''),
-            type: 'device',
-            status: 'device'
-          }))
-          .filter(env => env.name && env.endpoint);
-      } catch {
-        deviceEnvironments = [];
+        const res = await fetch('/api/webui-settings');
+        const body = await res.json();
+        if(!res.ok) throw new Error(body.error || 'failed to load settings');
+        applyWebuiSettings(body.settings || {});
+      } catch (err) {
+        document.getElementById('logBox').textContent = err.message || String(err);
+        applyWebuiSettings({});
       }
     }
-    function saveDeviceEnvs(){
-      const payload = deviceEnvironments.map(env => ({id: env.id, name: env.name, endpoint: env.endpoint}));
-      localStorage.setItem(ENV_KEY, JSON.stringify(payload));
+    function applyWebuiSettings(settings){
+      deviceEnvironments = (Array.isArray(settings.device_environments) ? settings.device_environments : [])
+        .map(normalizeDeviceEnv)
+        .filter(env => env.name && env.endpoint);
+      selectedEnvironmentId = String(settings.selected_environment_id || '');
+      const judge = settings.judge || {};
+      document.getElementById('judgeEnabled').checked = judge.enabled !== false;
+      document.getElementById('judgeModel').value = String(judge.model || DEFAULT_JUDGE_MODEL);
+      const keyInput = document.getElementById('judgeApiKey');
+      keyInput.value = '';
+      keyInput.placeholder = judge.has_api_key ? 'Saved; leave blank to keep' : 'OPENROUTER_API_KEY';
+      syncJudgePanel();
+      renderEnvs();
+      syncRunState();
+    }
+    async function saveWebuiSettings(options = {}){
+      const judge = currentJudgeSettings();
+      const judgePayload = {enabled: judge.enabled, model: judge.model};
+      if(judge.apiKey) judgePayload.api_key = judge.apiKey;
+      const payload = {
+        judge: judgePayload,
+        device_environments: deviceEnvironments.map(env => ({id: env.id, name: env.name, endpoint: env.endpoint})),
+        selected_environment_id: selectedEnvironmentId
+      };
+      try {
+        const res = await fetch('/api/webui-settings', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const body = await res.json();
+        if(!res.ok) throw new Error(body.error || 'failed to save settings');
+        if(!options.keepInputs) applyWebuiSettings(body.settings || {});
+        return true;
+      } catch (err) {
+        document.getElementById('logBox').textContent = err.message || String(err);
+        return false;
+      }
     }
     function allEnvironments(){ return [...deviceEnvironments, ...mobilegymEnvironments]; }
     function envCanRun(env){ return !!env && !!env.endpoint && (env.type === 'device' || env.status === 'running'); }
     function selectedEnv(){
-      const id = localStorage.getItem(SELECTED_ENV_KEY);
-      const current = allEnvironments().find(env => env.id === id);
+      const current = allEnvironments().find(env => env.id === selectedEnvironmentId);
       if(envCanRun(current)) return current;
       return allEnvironments().find(envCanRun) || null;
     }
     function setSelectedEnv(id){
       const env = allEnvironments().find(item => item.id === id);
       if(!envCanRun(env)) return;
-      localStorage.setItem(SELECTED_ENV_KEY, id);
+      selectedEnvironmentId = id;
       renderEnvs();
       syncRunState();
+      saveWebuiSettings({keepInputs: true});
     }
     function setEnvMode(mode){
       const isMobileGym = mode === 'mobilegym';
@@ -1699,10 +1933,42 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('mobilegymPanel').hidden = !isMobileGym;
     }
 
+    function currentJudgeSettings(){
+      const enabled = document.getElementById('judgeEnabled').checked;
+      const model = document.getElementById('judgeModel').value.trim() || DEFAULT_JUDGE_MODEL;
+      const apiKey = document.getElementById('judgeApiKey').value.trim();
+      return {enabled, model, apiKey};
+    }
+
+    function persistJudgeSettings(){
+      syncJudgePanel();
+      syncRunState();
+      saveWebuiSettings({keepInputs: true});
+    }
+
+    function syncJudgePanel(){
+      const enabled = document.getElementById('judgeEnabled').checked;
+      document.getElementById('judgeModel').disabled = !enabled;
+      document.getElementById('judgeApiKey').disabled = !enabled;
+    }
+
     function setAgentConfigStatus(text, isError = false){
       const node = document.getElementById('agentConfigStatus');
       node.textContent = text || '';
       node.style.color = isError ? 'var(--red)' : '';
+    }
+
+    function setAgentConfigEditing(editing){
+      agentConfigEditing = !!editing;
+      const text = document.getElementById('agentConfigText');
+      text.readOnly = !agentConfigEditing;
+      document.getElementById('editAgentConfig').disabled = agentConfigEditing;
+      document.getElementById('saveAgentConfig').disabled = !agentConfigEditing;
+      document.getElementById('resetAgentConfig').disabled = !agentConfigEditing;
+      if(agentConfigEditing){
+        text.focus();
+        setAgentConfigStatus(agentConfigDirty ? 'Modified' : 'Editing');
+      }
     }
 
     function applyAgentConfig(config){
@@ -1710,6 +1976,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('agentConfigPath').textContent = config.path || 'agent.toml';
       agentConfigDirty = false;
       agentConfigLoaded = true;
+      setAgentConfigEditing(false);
       setAgentConfigStatus(config.source === 'generated' ? 'Generated' : 'Saved');
     }
 
@@ -1790,10 +2057,10 @@ INDEX_HTML = r"""<!doctype html>
         const del = tr.querySelector('[data-delete]');
         if(del) del.onclick = () => {
           deviceEnvironments = deviceEnvironments.filter(e => e.id !== env.id);
-          if(localStorage.getItem(SELECTED_ENV_KEY) === env.id) localStorage.removeItem(SELECTED_ENV_KEY);
-          saveDeviceEnvs();
+          if(selectedEnvironmentId === env.id) selectedEnvironmentId = '';
           renderEnvs();
           syncRunState();
+          saveWebuiSettings({keepInputs: true});
         };
         const stop = tr.querySelector('[data-stop]');
         if(stop) stop.onclick = () => stopMobileGym(env.id);
@@ -1821,14 +2088,14 @@ INDEX_HTML = r"""<!doctype html>
       } else {
         const env = {id: uid(), name, endpoint, type: 'device', status: 'device'};
         deviceEnvironments.push(env);
-        localStorage.setItem(SELECTED_ENV_KEY, env.id);
+        selectedEnvironmentId = env.id;
       }
       editingDeviceEnvId = null;
       document.getElementById('envName').value = '';
       document.getElementById('envEndpoint').value = '';
-      saveDeviceEnvs();
       renderEnvs();
       syncRunState();
+      saveWebuiSettings({keepInputs: true});
     }
 
     async function loadMobileGymEnvironments(){
@@ -1863,7 +2130,8 @@ INDEX_HTML = r"""<!doctype html>
         document.getElementById('mobilegymName').value = '';
         if(body.environment){
           mobilegymEnvironments = [body.environment, ...mobilegymEnvironments.filter(env => env.id !== body.environment.id)];
-          localStorage.setItem(SELECTED_ENV_KEY, body.environment.id);
+          selectedEnvironmentId = body.environment.id;
+          saveWebuiSettings({keepInputs: true});
         }
         await loadMobileGymEnvironments();
       } finally {
@@ -1873,14 +2141,20 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     async function stopMobileGym(id){
-      if(localStorage.getItem(SELECTED_ENV_KEY) === id) localStorage.removeItem(SELECTED_ENV_KEY);
+      if(selectedEnvironmentId === id){
+        selectedEnvironmentId = '';
+        saveWebuiSettings({keepInputs: true});
+      }
       const res = await fetch(`/api/environments/mobilegym/${encodeURIComponent(id)}/stop`, {method: 'POST'});
       if(!res.ok) document.getElementById('logBox').textContent = await res.text();
       await loadMobileGymEnvironments();
     }
 
     async function removeMobileGym(id){
-      if(localStorage.getItem(SELECTED_ENV_KEY) === id) localStorage.removeItem(SELECTED_ENV_KEY);
+      if(selectedEnvironmentId === id){
+        selectedEnvironmentId = '';
+        saveWebuiSettings({keepInputs: true});
+      }
       const res = await fetch(`/api/environments/mobilegym/${encodeURIComponent(id)}`, {method: 'DELETE'});
       if(!res.ok) document.getElementById('logBox').textContent = await res.text();
       await loadMobileGymEnvironments();
@@ -1917,8 +2191,10 @@ INDEX_HTML = r"""<!doctype html>
 
     function syncRunState(){
       const env = selectedEnv();
+      const judge = currentJudgeSettings();
       document.getElementById('selectedSuitesLabel').textContent = `${selectedSuites.size} suites`;
       document.getElementById('selectedEnvLabel').textContent = env ? env.name : 'No environment';
+      document.getElementById('selectedJudgeLabel').textContent = judge.enabled ? `judge: ${judge.model}` : 'judge: off';
       document.getElementById('runBtn').disabled = !envCanRun(env) || selectedSuites.size === 0;
     }
 
@@ -1930,6 +2206,10 @@ INDEX_HTML = r"""<!doctype html>
         const saved = await saveAgentConfig({silent: true});
         if(!saved) return;
       }
+      const judge = currentJudgeSettings();
+      selectedEnvironmentId = env.id;
+      const settingsSaved = await saveWebuiSettings({keepInputs: true});
+      if(!settingsSaved) return;
       const res = await fetch('/api/jobs', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -1937,7 +2217,8 @@ INDEX_HTML = r"""<!doctype html>
           endpoint: env.endpoint,
           environment: {id: env.id, name: env.name, type: env.type},
           suites: Array.from(selectedSuites),
-          no_judge: document.getElementById('noJudge').checked
+          no_judge: !judge.enabled,
+          judge_model: judge.model
         })
       });
       const body = await res.json();
@@ -2025,16 +2306,23 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById('mobilegymTab').onclick = () => setEnvMode('mobilegym');
     document.getElementById('saveEnv').onclick = saveEnvFromForm;
     document.getElementById('startMobileGym').onclick = startMobileGym;
+    document.getElementById('editAgentConfig').onclick = () => setAgentConfigEditing(true);
     document.getElementById('saveAgentConfig').onclick = () => saveAgentConfig();
     document.getElementById('resetAgentConfig').onclick = resetAgentConfig;
+    document.getElementById('judgeEnabled').onchange = persistJudgeSettings;
+    document.getElementById('judgeModel').oninput = persistJudgeSettings;
+    document.getElementById('judgeApiKey').oninput = syncRunState;
+    document.getElementById('judgeApiKey').onchange = persistJudgeSettings;
     document.getElementById('agentConfigText').oninput = () => {
+      if(!agentConfigEditing) return;
       agentConfigDirty = true;
       setAgentConfigStatus('Modified');
     };
     document.getElementById('suiteFilter').oninput = renderSuites;
     document.getElementById('runBtn').onclick = startRun;
-    loadDeviceEnvs();
+    setAgentConfigEditing(false);
     renderEnvs();
+    loadWebuiSettings();
     loadAgentConfig();
     loadMobileGymEnvironments();
     loadSuites();

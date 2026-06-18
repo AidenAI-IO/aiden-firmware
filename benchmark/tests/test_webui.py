@@ -146,6 +146,195 @@ def test_webui_agent_config_persists_under_runs_dir(tmp_path: Path, monkeypatch)
     assert app.get_agent_config()["content"] == saved
 
 
+def test_webui_settings_persist_judge_and_device_environments(tmp_path: Path):
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+
+    saved = app.save_webui_settings(
+        {
+            "judge": {
+                "enabled": True,
+                "model": "anthropic/test-judge",
+                "api_key": "sk-judge-secret",
+            },
+            "device_environments": [
+                {
+                    "id": "dev-1",
+                    "name": "Bench board",
+                    "endpoint": "http://192.168.1.50:8080",
+                }
+            ],
+            "selected_environment_id": "dev-1",
+        }
+    )
+
+    assert saved["judge"] == {
+        "enabled": True,
+        "model": "anthropic/test-judge",
+        "has_api_key": True,
+    }
+    assert "api_key" not in saved["judge"]
+    assert saved["device_environments"][0]["name"] == "Bench board"
+    assert saved["selected_environment_id"] == "dev-1"
+
+    persisted = json.loads((tmp_path / "runs" / webui.WEBUI_SETTINGS_FILE).read_text(encoding="utf-8"))
+    assert persisted["judge"]["api_key"] == "sk-judge-secret"
+
+    reloaded = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    assert reloaded.get_webui_settings() == saved
+
+
+def test_start_job_uses_persisted_judge_settings(tmp_path: Path, monkeypatch):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    app.save_webui_settings(
+        {
+            "judge": {
+                "enabled": True,
+                "model": "anthropic/persisted-judge",
+                "api_key": "sk-persisted",
+            }
+        }
+    )
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(webui.threading, "Thread", FakeThread)
+    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18080)
+
+    job = app.start_job({"endpoint": "http://127.0.0.1:9090", "suites": ["suite.json"]})
+
+    assert job["judge_model"] == "anthropic/persisted-judge"
+    assert job["judge_api_key_set"] is True
+    assert app._job_judge_api_keys[job["id"]] == "sk-persisted"
+
+
+def test_start_job_records_judge_settings_without_exposing_api_key(tmp_path: Path, monkeypatch):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(webui.threading, "Thread", FakeThread)
+    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18080)
+    job = app.start_job(
+        {
+            "endpoint": "http://127.0.0.1:9090",
+            "suites": ["suite.json"],
+            "judge_model": "anthropic/test-judge",
+            "judge_api_key": "sk-judge-secret",
+        }
+    )
+
+    assert job["judge_model"] == "anthropic/test-judge"
+    assert job["judge_api_key_set"] is True
+    assert "judge_api_key" not in job
+    assert app._job_judge_api_keys[job["id"]] == "sk-judge-secret"
+
+
+def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatch):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    raw_runs_dir = tmp_path / "runs" / "job-test" / "raw"
+    raw_runs_dir.mkdir(parents=True)
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        suites=["suite.json"],
+        agent_url="http://127.0.0.1:18080",
+        raw_runs_dir=str(raw_runs_dir),
+        state_file=str(tmp_path / "runs" / "job-test" / "state.json"),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+        judge_model="anthropic/test-judge",
+        judge_api_key_set=True,
+    )
+    app._job_judge_api_keys[job.id] = "sk-judge-secret"
+    captured = {}
+
+    class FakeProc:
+        def wait(self):
+            return 0
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env") or {}
+        return FakeProc()
+
+    monkeypatch.setattr(webui.subprocess, "Popen", fake_popen)
+
+    app._run_suite(job, "suite.json")
+
+    assert "--judge-model" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--judge-model") + 1] == "anthropic/test-judge"
+    assert "--no-judge" not in captured["cmd"]
+    assert captured["env"]["OPENROUTER_API_KEY"] == "sk-judge-secret"
+
+
+def test_index_html_exposes_judge_settings_panel():
+    assert 'id="judgeEnabled"' in webui.INDEX_HTML
+    assert 'id="judgeModel"' in webui.INDEX_HTML
+    assert 'id="judgeApiKey"' in webui.INDEX_HTML
+    assert 'id="noJudge"' not in webui.INDEX_HTML
+    assert "/api/webui-settings" in webui.INDEX_HTML
+    assert "localStorage" not in webui.INDEX_HTML
+    assert 'id="editAgentConfig"' in webui.INDEX_HTML
+    assert 'id="agentConfigText" spellcheck="false" readonly' in webui.INDEX_HTML
+    assert "function setAgentConfigEditing" in webui.INDEX_HTML
+
+
 def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
     base = tmp_path / "base"
     base.mkdir()

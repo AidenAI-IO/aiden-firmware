@@ -86,10 +86,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.search.provider = "duckduckgo";
     cfg.search.api_key = "tvly-test";
 
-    cfg.benchmark.judge_model = "custom/judge-v1";
-    cfg.benchmark.api_key = "sk-judge-test";
-    cfg.benchmark.benchmark_dir = "/userdata/agent/benchmark";
-
     cfg.telemetry.enabled = true;
     cfg.telemetry.provider = "langfuse";
     cfg.telemetry.base_url = "http://langfuse.example.com:3000";
@@ -173,10 +169,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.search.provider == "duckduckgo");
     CHECK(loaded.search.api_key == "tvly-test");
 
-    CHECK(loaded.benchmark.judge_model == "custom/judge-v1");
-    CHECK(loaded.benchmark.api_key == "sk-judge-test");
-    CHECK(loaded.benchmark.benchmark_dir == "/userdata/agent/benchmark");
-
     CHECK(loaded.telemetry.enabled == true);
     CHECK(loaded.telemetry.provider == "langfuse");
     CHECK(loaded.telemetry.base_url == "http://langfuse.example.com:3000");
@@ -207,6 +199,9 @@ TEST_CASE("agent_toml no longer writes legacy proxy section") {
     std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     CHECK(contents.find("[proxy]") == std::string::npos);
     CHECK(contents.find("http_proxy") == std::string::npos);
+    CHECK(contents.find("[benchmark]") == std::string::npos);
+    CHECK(contents.find("judge_model") == std::string::npos);
+    CHECK(contents.find("benchmark_dir") == std::string::npos);
 
     std::remove(path.c_str());
 }

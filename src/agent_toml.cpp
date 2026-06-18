@@ -347,11 +347,6 @@ void apply_kv(AgentToml& cfg,
         else if (key == "max_size_mb") assign_int(&cfg.audio_archive.max_size_mb, raw, &sub_err);
         else if (key == "storage_path") assign_string(&cfg.audio_archive.storage_path, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
-    } else if (section == "benchmark") {
-        if (key == "judge_model") assign_string(&cfg.benchmark.judge_model, raw, &sub_err);
-        else if (key == "api_key") assign_string(&cfg.benchmark.api_key, raw, &sub_err);
-        else if (key == "benchmark_dir") assign_string(&cfg.benchmark.benchmark_dir, raw, &sub_err);
-        if (!sub_err.empty()) fail(sub_err);
     } else if (section == "hid") {
         if (key == "keyboard_device") assign_string(&cfg.hid.keyboard_device, raw, &sub_err);
         else if (key == "mouse_device") assign_string(&cfg.hid.mouse_device, raw, &sub_err);
@@ -660,12 +655,6 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (cfg.audio_archive.max_files != 0) emit_int(out, "max_files", cfg.audio_archive.max_files);
     if (cfg.audio_archive.max_size_mb != 0) emit_int(out, "max_size_mb", cfg.audio_archive.max_size_mb);
     emit_string(out, "storage_path", cfg.audio_archive.storage_path);
-    out << "\n";
-
-    out << "[benchmark]\n";
-    if (!cfg.benchmark.judge_model.empty()) emit_string(out, "judge_model", cfg.benchmark.judge_model);
-    if (!cfg.benchmark.api_key.empty()) emit_string(out, "api_key", cfg.benchmark.api_key);
-    if (!cfg.benchmark.benchmark_dir.empty()) emit_string(out, "benchmark_dir", cfg.benchmark.benchmark_dir);
     out << "\n";
 
     out << "[hid]\n";
