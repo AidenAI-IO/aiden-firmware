@@ -1009,7 +1009,7 @@ func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task
 	builder.WriteString(task)
 	writeLoopMode(&builder, state)
 	writeWorldState(&builder, state.World)
-	writeRequestObjectiveAndCriteria(&builder, inputs, state)
+	writeRequestContextAndCriteria(&builder, inputs, state)
 	writeSessionContext(&builder, inputs)
 	if history := strings.TrimSpace(inputs["history"]); history != "" {
 		builder.WriteString("\n\nConversation history:\n")
@@ -1027,7 +1027,7 @@ func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, tas
 	var builder strings.Builder
 	builder.WriteString(task)
 	writeWorldState(&builder, state.World)
-	writeRequestObjectiveAndCriteria(&builder, inputs, state)
+	writeRequestContextAndCriteria(&builder, inputs, state)
 	writeSessionContext(&builder, inputs)
 	if history := strings.TrimSpace(inputs["history"]); history != "" {
 		builder.WriteString("\n\nConversation history:\n")
@@ -1063,7 +1063,7 @@ func buildVerifierStatePrompt(inputs map[string]string, state roleLoopState, tas
 	var builder strings.Builder
 	builder.WriteString(task)
 	writeWorldState(&builder, state.World)
-	writeRequestObjectiveAndCriteria(&builder, inputs, state)
+	writeRequestContextAndCriteria(&builder, inputs, state)
 	writeSessionContext(&builder, inputs)
 	writeCurrentPlan(&builder, state)
 	writePriorPlanStepResults(&builder, state)
@@ -1329,7 +1329,7 @@ func intLabel(label string, value *int) string {
 	return fmt.Sprintf("%s=%d", label, *value)
 }
 
-func writeRequestObjectiveAndCriteria(builder *strings.Builder, inputs map[string]string, state roleLoopState) {
+func writeRequestContextAndCriteria(builder *strings.Builder, inputs map[string]string, state roleLoopState) {
 	rootRequest := strings.TrimSpace(inputs[rootRequestInputKey])
 	if rootRequest == "" {
 		rootRequest = strings.TrimSpace(inputs["input"])
@@ -1348,12 +1348,6 @@ func writeRequestObjectiveAndCriteria(builder *strings.Builder, inputs map[strin
 			builder.WriteString(relation)
 			builder.WriteByte('\n')
 		}
-	}
-	builder.WriteString("\n\nCurrent objective:\n")
-	if objective := strings.TrimSpace(state.Objective); objective != "" {
-		builder.WriteString(objective)
-	} else {
-		builder.WriteString(rootRequest)
 	}
 	builder.WriteString("\n\nCompletion criteria:\n")
 	if len(state.CompletionCriteria) == 0 {
