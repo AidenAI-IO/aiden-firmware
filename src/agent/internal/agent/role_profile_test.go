@@ -785,7 +785,7 @@ func TestRoleCollaborativeExecutorSharesScreenshotWorldStateAcrossRoles(t *testi
 	}
 }
 
-func TestRoleCollaborativeExecutorOmitsWorldStateLatestScreenshotWhenExecutorScratchpadHasIt(t *testing.T) {
+func TestRoleCollaborativeExecutorOmitsWorldStateLatestScreenshotWhenLatestExecutorToolResultIsScreenshot(t *testing.T) {
 	jpegBytes := []byte("executor-scratchpad-jpeg")
 	encodedImage := base64.StdEncoding.EncodeToString(jpegBytes)
 	imageURL := "data:image/jpeg;base64," + encodedImage
@@ -849,6 +849,169 @@ func TestRoleCollaborativeExecutorOmitsWorldStateLatestScreenshotWhenExecutorScr
 		if strings.Contains(prompt, unexpected) {
 			t.Fatalf("executor follow-up should not include world-state screenshot text %q:\n%s", unexpected, prompt)
 		}
+	}
+}
+
+func TestExecutorLatestToolResultHasScreenshotObservation(t *testing.T) {
+	screenshotStep := func(tool string) schema.AgentStep {
+		return testScreenshotObservationStep(tool, []byte(tool+"-screenshot"))
+	}
+	plainStep := schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "echo"},
+		Observation: "ok",
+	}
+
+	for _, tc := range []struct {
+		name  string
+		state roleLoopState
+		want  bool
+	}{
+		{
+			name:  "no current executor tool steps",
+			state: roleLoopState{},
+			want:  false,
+		},
+		{
+			name: "last result is screenshot observation",
+			state: roleLoopState{
+				StepToolSteps: []schema.AgentStep{screenshotStep("screenshot")},
+			},
+			want: true,
+		},
+		{
+			name: "last result is post action screenshot observation",
+			state: roleLoopState{
+				StepToolSteps: []schema.AgentStep{screenshotStep("keyboard_tap")},
+			},
+			want: true,
+		},
+		{
+			name: "earlier screenshot but last result is not screenshot",
+			state: roleLoopState{
+				StepToolSteps: []schema.AgentStep{screenshotStep("screenshot"), plainStep},
+			},
+			want: false,
+		},
+		{
+			name: "last result is not parseable as screenshot",
+			state: roleLoopState{
+				StepToolSteps: []schema.AgentStep{{
+					Action:      schema.AgentAction{Tool: "screenshot"},
+					Observation: `{"width":320,"height":240,"format":"jpeg","data":"not-base64"}`,
+				}},
+			},
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := executorLatestToolResultHasScreenshotObservation(tc.state); got != tc.want {
+				t.Fatalf("executorLatestToolResultHasScreenshotObservation() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRoleMessagesOmitWorldScreenshotWhenLatestExecutorToolResultIsScreenshotEvenIfWorldDiffers(t *testing.T) {
+	worldBytes := []byte("stale-world-screenshot")
+	stepBytes := []byte("latest-tool-screenshot")
+	state := roleLoopState{
+		World:         worldState{LatestScreenshot: testWorldScreenshot(worldBytes)},
+		StepToolSteps: []schema.AgentStep{testScreenshotObservationStep("keyboard_tap", stepBytes)},
+	}
+	executor := &roleCollaborativeExecutor{
+		Tools: []langtools.Tool{&stubTool{name: "keyboard_tap", visual: true}},
+	}
+
+	messages := executor.roleMessages(RoleProfile{Name: RoleExecutor, SystemPrompt: "executor"}, map[string]string{"input": "inspect"}, state, "Executor task.")
+	prompt := messageText(messages)
+	worldImageURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(worldBytes)
+	stepImageURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(stepBytes)
+
+	if strings.Contains(prompt, "Latest screenshot:") ||
+		strings.Contains(prompt, "The current screenshot image is attached to this message.") {
+		t.Fatalf("executor prompt should omit world latest screenshot when latest tool result is a screenshot:\n%s", prompt)
+	}
+	if hasImageURL(messages, worldImageURL) {
+		t.Fatalf("executor messages should not attach stale world screenshot: %#v", messages)
+	}
+	if !hasImageURL(messages, stepImageURL) {
+		t.Fatalf("executor messages should still include latest tool-result screenshot: %#v", messages)
+	}
+}
+
+func TestRoleMessagesKeepWorldScreenshotWhenLatestExecutorToolResultIsNotScreenshot(t *testing.T) {
+	screenshotBytes := []byte("executor-current-step-screenshot")
+	state := roleLoopState{
+		World: worldState{LatestScreenshot: testWorldScreenshot(screenshotBytes)},
+		StepToolSteps: []schema.AgentStep{
+			testScreenshotObservationStep("screenshot", screenshotBytes),
+			{
+				Action:      schema.AgentAction{Tool: "echo", ToolInput: `{"message":"ok"}`},
+				Observation: "ok",
+			},
+		},
+	}
+	executor := &roleCollaborativeExecutor{
+		Tools: []langtools.Tool{
+			&stubTool{name: "screenshot", visual: true},
+			&stubTool{name: "echo"},
+		},
+	}
+
+	messages := executor.roleMessages(RoleProfile{Name: RoleExecutor, SystemPrompt: "executor"}, map[string]string{"input": "inspect"}, state, "Executor task.")
+	prompt := messageText(messages)
+	imageURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(screenshotBytes)
+
+	for _, want := range []string{
+		"Latest screenshot:",
+		"The current screenshot image is attached to this message.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("executor prompt should keep world latest screenshot text %q:\n%s", want, prompt)
+		}
+	}
+	if got := imageURLCount(messages, imageURL); got != 2 {
+		t.Fatalf("executor messages should include scratchpad and world screenshots, got %d copies", got)
+	}
+}
+
+func TestRoleMessagesKeepWorldScreenshotWithoutLatestExecutorScreenshotObservation(t *testing.T) {
+	worldBytes := []byte("world-screenshot")
+	imageURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(worldBytes)
+	for _, tc := range []struct {
+		name          string
+		stepToolSteps []schema.AgentStep
+	}{
+		{
+			name: "no current executor tool steps",
+		},
+		{
+			name: "latest observation is not parseable as screenshot",
+			stepToolSteps: []schema.AgentStep{{
+				Action:      schema.AgentAction{Tool: "keyboard_tap"},
+				Observation: `{"width":320,"height":240,"format":"jpeg","data":"not-base64"}`,
+			}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := roleLoopState{
+				World:         worldState{LatestScreenshot: testWorldScreenshot(worldBytes)},
+				StepToolSteps: tc.stepToolSteps,
+			}
+			executor := &roleCollaborativeExecutor{
+				Tools: []langtools.Tool{&stubTool{name: "keyboard_tap", visual: true}},
+			}
+
+			messages := executor.roleMessages(RoleProfile{Name: RoleExecutor, SystemPrompt: "executor"}, map[string]string{"input": "inspect"}, state, "Executor task.")
+			prompt := messageText(messages)
+
+			if !strings.Contains(prompt, "Latest screenshot:") {
+				t.Fatalf("executor prompt should keep world latest screenshot:\n%s", prompt)
+			}
+			if !hasImageURL(messages, imageURL) {
+				t.Fatalf("executor messages should attach world latest screenshot: %#v", messages)
+			}
+		})
 	}
 }
 
@@ -995,6 +1158,34 @@ func messageText(messages []llms.MessageContent) string {
 		}
 	}
 	return builder.String()
+}
+
+func testWorldScreenshot(data []byte) *worldScreenshot {
+	return &worldScreenshot{
+		SourceTool: "screenshot",
+		Width:      320,
+		Height:     240,
+		Format:     "jpeg",
+		Size:       len(data),
+		Data:       data,
+		StepNumber: 1,
+	}
+}
+
+func testScreenshotObservationStep(tool string, data []byte) schema.AgentStep {
+	observation, _ := json.Marshal(postActionScreenshotResult{
+		screenshotResult: screenshotResult{
+			Width:  320,
+			Height: 240,
+			Format: "jpeg",
+			Size:   len(data),
+			Data:   base64.StdEncoding.EncodeToString(data),
+		},
+	})
+	return schema.AgentStep{
+		Action:      schema.AgentAction{Tool: tool},
+		Observation: string(observation),
+	}
 }
 
 func hasMessageRole(messages []llms.MessageContent, role llms.ChatMessageType) bool {

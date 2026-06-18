@@ -901,7 +901,7 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		messages = append(messages, scratchpad...)
 	}
 
-	omitWorldStateLatestScreenshot := profile.Name == RoleExecutor && currentExecutorScratchpadHasLatestScreenshot(state)
+	omitWorldStateLatestScreenshot := profile.Name == RoleExecutor && executorLatestToolResultHasScreenshotObservation(state)
 	statePrompt := buildRoleStatePrompt(profile.Name, inputs, state, task)
 	messages = append(messages, llms.MessageContent{
 		Role:  llms.ChatMessageTypeHuman,
@@ -1030,7 +1030,7 @@ func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, tas
 	var builder strings.Builder
 	builder.WriteString(task)
 	writeWorldStateWithOptions(&builder, state.World, worldStatePromptOptions{
-		OmitLatestScreenshot: currentExecutorScratchpadHasLatestScreenshot(state),
+		OmitLatestScreenshot: executorLatestToolResultHasScreenshotObservation(state),
 	})
 	writeRequestContextAndCriteria(&builder, inputs, state)
 	writeSessionContext(&builder, inputs)
@@ -1327,28 +1327,18 @@ func writeWorldStateWithOptions(builder *strings.Builder, world worldState, opti
 	}
 }
 
-func currentExecutorScratchpadHasLatestScreenshot(state roleLoopState) bool {
-	latest := state.World.LatestScreenshot
-	if latest == nil || len(latest.Data) == 0 || len(state.StepToolSteps) == 0 {
+func executorLatestToolResultHasScreenshotObservation(state roleLoopState) bool {
+	if len(state.StepToolSteps) == 0 {
 		return false
 	}
-	for _, step := range state.StepToolSteps {
-		screenshot, ok := screenshotFromStep(step, latest.StepNumber)
-		if !ok {
-			continue
-		}
-		if worldScreenshotImageMatches(screenshot, *latest) {
-			return true
-		}
-	}
-	return false
+
+	latestStep := state.StepToolSteps[len(state.StepToolSteps)-1]
+	return stepHasScreenshotObservation(latestStep)
 }
 
-func worldScreenshotImageMatches(a, b worldScreenshot) bool {
-	return a.Width == b.Width &&
-		a.Height == b.Height &&
-		strings.EqualFold(a.Format, b.Format) &&
-		bytes.Equal(a.Data, b.Data)
+func stepHasScreenshotObservation(step schema.AgentStep) bool {
+	_, ok := screenshotFromStep(step, 0)
+	return ok
 }
 
 func appendWorldStateLine(builder *strings.Builder, prefix, value string) {
