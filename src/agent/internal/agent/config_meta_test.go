@@ -257,6 +257,59 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 	}
 }
 
+func TestConfigMeta_TTSModelHiddenForMinimaxWebSocket(t *testing.T) {
+	idx := fieldIndex(t)
+	model, ok := idx["tts.model"]
+	if !ok {
+		t.Fatal("missing tts.model metadata")
+	}
+	if model.VisibleWhen == nil {
+		t.Fatal("tts.model has no visibleWhen rule")
+	}
+	want := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "ne", Value: "minimax-ws"}}}
+	if !reflect.DeepEqual(*model.VisibleWhen, want) {
+		t.Fatalf("tts.model visibleWhen = %#v, want %#v", *model.VisibleWhen, want)
+	}
+}
+
+func TestConfigMeta_STTTencentASRProviderMetadata(t *testing.T) {
+	idx := fieldIndex(t)
+
+	provider, ok := idx["stt.provider"]
+	if !ok {
+		t.Fatal("missing stt.provider metadata")
+	}
+	values := make(map[string]bool, len(provider.Enum))
+	for _, option := range provider.Enum {
+		values[option.Value] = true
+	}
+	if !values["tencent-asr"] {
+		t.Fatalf("stt.provider enum missing canonical tencent-asr option: %#v", provider.Enum)
+	}
+	for _, legacy := range []string{"tencent", "tencent_asr"} {
+		if values[legacy] {
+			t.Fatalf("stt.provider enum still includes legacy alias %q: %#v", legacy, provider.Enum)
+		}
+	}
+
+	tests := []struct {
+		path string
+		want any
+	}{
+		{"stt.region", "ap-guangzhou"},
+		{"stt.engine_model_type", "16k_zh"},
+	}
+	for _, tt := range tests {
+		field, ok := idx[tt.path]
+		if !ok {
+			t.Fatalf("missing %s metadata", tt.path)
+		}
+		if field.Default != tt.want {
+			t.Fatalf("%s default = %#v, want %#v", tt.path, field.Default, tt.want)
+		}
+	}
+}
+
 func TestConfigMeta_AudioArchiveRequiresSTTInputMode(t *testing.T) {
 	idx := fieldIndex(t)
 

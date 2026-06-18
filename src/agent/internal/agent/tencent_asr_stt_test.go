@@ -51,22 +51,26 @@ func TestTencentASRSTTTranscribeWAV(t *testing.T) {
 	}
 }
 
-func TestNewSTTClientTencentASRAlias(t *testing.T) {
-	cfg := Config{
-		STT: STTConfig{
-			Provider:        "tencent_asr",
-			SecretID:        "id",
-			SecretKey:       "key",
-			Region:          "ap-guangzhou",
-			EngineModelType: "16k_zh",
-		},
-	}
-	client, err := NewSTTClientFromConfig(cfg)
-	if err != nil {
-		t.Fatalf("NewSTTClientFromConfig() error = %v", err)
-	}
-	if _, ok := client.(*TencentASRSTT); !ok {
-		t.Fatalf("client type = %T, want *TencentASRSTT", client)
+func TestNewSTTClientTencentASRProviderNames(t *testing.T) {
+	for _, provider := range []string{"tencent-asr", "tencent_asr", "tencent"} {
+		t.Run(provider, func(t *testing.T) {
+			cfg := Config{
+				STT: STTConfig{
+					Provider:        provider,
+					SecretID:        "id",
+					SecretKey:       "key",
+					Region:          "ap-guangzhou",
+					EngineModelType: "16k_zh",
+				},
+			}
+			client, err := NewSTTClientFromConfig(cfg)
+			if err != nil {
+				t.Fatalf("NewSTTClientFromConfig() error = %v", err)
+			}
+			if _, ok := client.(*TencentASRSTT); !ok {
+				t.Fatalf("client type = %T, want *TencentASRSTT", client)
+			}
+		})
 	}
 }
 

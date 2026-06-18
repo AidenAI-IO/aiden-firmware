@@ -692,6 +692,24 @@ TEST_CASE("config web updates dependent field visibility from selected values") 
     CHECK(html.find("const sttTencent=sttProvider==='tencent'") == std::string::npos);
 }
 
+TEST_CASE("config web fills Tencent ASR STT defaults from metadata") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("function isTencentASRProvider(value)") != std::string::npos);
+    CHECK(html.find("function fieldDefaultValue(section,key,fallback)") != std::string::npos);
+    CHECK(html.find("function applySTTTencentASRDefaults()") != std::string::npos);
+    CHECK(html.find("applySTTTencentASRDefaults();applyAudioArchiveAvailability();") != std::string::npos);
+    CHECK(html.find("fillIfEmpty('region','ap-guangzhou')") != std::string::npos);
+    CHECK(html.find("fillIfEmpty('engine_model_type','16k_zh')") != std::string::npos);
+    CHECK(html.find("p==='tencent-asr'||p==='tencent_asr'||p==='tencent'") != std::string::npos);
+}
+
 TEST_CASE("config web exposes a single system env editor backed by the env file") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
@@ -739,6 +757,8 @@ TEST_CASE("config web exposes a single system env editor backed by the env file"
 
     CHECK(html.find("system_env") != std::string::npos);
     CHECK(html.find("system_env_content") != std::string::npos);
+    CHECK(html.find("textarea.system-env-editor{min-height:180px}") != std::string::npos);
+    CHECK(html.find("<textarea id=\\\"system_env_content\\\" class=\\\"system-env-editor\\\"") != std::string::npos);
     CHECK(html.find("saveSystemEnv") != std::string::npos);
     CHECK(html.find("system_proxy") == std::string::npos);
     CHECK(html.find("section-proxy") == std::string::npos);
@@ -747,6 +767,16 @@ TEST_CASE("config web exposes a single system env editor backed by the env file"
     CHECK(html.find("Proxy example") == std::string::npos);
     CHECK(html.find("http_proxy=http://127.0.0.1:7890") == std::string::npos);
     CHECK(html.find("NO_PROXY=localhost,127.0.0.1,::1") == std::string::npos);
+
+    const size_t agent_card = html.find("<h2>Agent 配置</h2>");
+    const size_t telemetry_section = html.find("id=\\\"section-telemetry\\\"");
+    const size_t system_env_section = html.find("id=\\\"section-system_env\\\"");
+    REQUIRE(agent_card != std::string::npos);
+    REQUIRE(telemetry_section != std::string::npos);
+    REQUIRE(system_env_section != std::string::npos);
+    CHECK(agent_card < telemetry_section);
+    CHECK(telemetry_section < system_env_section);
+    CHECK(html.find("<div class=\\\"card section-card\\\" id=\\\"section-system_env\\\"") != std::string::npos);
 }
 
 TEST_CASE("config web exposes telemetry settings section") {
