@@ -47,6 +47,11 @@ type AudioDialog struct {
 	audioArchive    *AudioArchiveManager
 }
 
+type VoiceTurnContext struct {
+	FollowUpRelation string
+	RuntimeContext   string
+}
+
 type activeTTSOutput struct {
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -602,17 +607,21 @@ func (d *AudioDialog) RunAgentTurn(ctx context.Context, input TurnInput, runtime
 	if runtime != nil {
 		episodeID = runtime.NewEpisodeID()
 	}
-	return d.runAgentTurnWithEpisodeAndRequest(ctx, input, runtime, episodeID, createVoiceRequestID())
+	return d.runAgentTurnWithEpisodeAndRequest(ctx, input, runtime, episodeID, createVoiceRequestID(), VoiceTurnContext{})
 }
 
 func (d *AudioDialog) RunVoiceTurn(ctx context.Context, input TurnInput, utterance []int16, runtime *Runtime) (RunResult, error) {
+	return d.RunVoiceTurnWithContext(ctx, input, utterance, runtime, VoiceTurnContext{})
+}
+
+func (d *AudioDialog) RunVoiceTurnWithContext(ctx context.Context, input TurnInput, utterance []int16, runtime *Runtime, turnContext VoiceTurnContext) (RunResult, error) {
 	episodeID := ""
 	if runtime != nil {
 		episodeID = runtime.NewEpisodeID()
 	}
 	requestID := createVoiceRequestID()
 	d.persistVoiceUserInput(input, utterance, episodeID, requestID)
-	result, err := d.runAgentTurnWithEpisodeAndRequest(ctx, input, runtime, episodeID, requestID)
+	result, err := d.runAgentTurnWithEpisodeAndRequest(ctx, input, runtime, episodeID, requestID, turnContext)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -620,10 +629,11 @@ func (d *AudioDialog) RunVoiceTurn(ctx context.Context, input TurnInput, utteran
 	return result, nil
 }
 
-func (d *AudioDialog) runAgentTurnWithEpisodeAndRequest(ctx context.Context, input TurnInput, runtime *Runtime, episodeID, requestID string) (RunResult, error) {
+func (d *AudioDialog) runAgentTurnWithEpisodeAndRequest(ctx context.Context, input TurnInput, runtime *Runtime, episodeID, requestID string, turnContext VoiceTurnContext) (RunResult, error) {
 	if requestID == "" {
 		requestID = createVoiceRequestID()
 	}
+	turnContext = normalizeVoiceTurnContext(turnContext)
 	if !d.beginVoiceRunControl(requestID) {
 		return RunResult{}, fmt.Errorf("voice run already active")
 	}
@@ -643,11 +653,13 @@ func (d *AudioDialog) runAgentTurnWithEpisodeAndRequest(ctx context.Context, inp
 	}()
 
 	req := RunRequest{
-		Input:       input.InputText,
-		Attachments: input.Attachments,
-		Turn:        input,
-		RequestID:   requestID,
-		MaxTokens:   d.config.VoiceMaxResponseTokensOrDefault(),
+		Input:            input.InputText,
+		Attachments:      input.Attachments,
+		Turn:             input,
+		RequestID:        requestID,
+		RuntimeContext:   turnContext.RuntimeContext,
+		FollowUpRelation: turnContext.FollowUpRelation,
+		MaxTokens:        d.config.VoiceMaxResponseTokensOrDefault(),
 		EventHandler: func(event RunEvent) {
 			d.appendVoiceRunEvent(event, requestID)
 			d.HandleRunEvent(ctx, event)
@@ -687,6 +699,13 @@ func (d *AudioDialog) runAgentTurnWithEpisodeAndRequest(ctx context.Context, inp
 
 	log.Printf("[llm] Response received\n")
 	return result, nil
+}
+
+func normalizeVoiceTurnContext(turnContext VoiceTurnContext) VoiceTurnContext {
+	return VoiceTurnContext{
+		FollowUpRelation: normalizeFollowUpRelation(turnContext.FollowUpRelation),
+		RuntimeContext:   strings.TrimSpace(turnContext.RuntimeContext),
+	}
 }
 
 func createVoiceRequestID() string {
@@ -891,9 +910,17 @@ func (d *AudioDialog) playPromptSoundAsync(kind promptSoundKind, label string) {
 }
 
 func (d *AudioDialog) playPromptSound(kind promptSoundKind, label string, wait bool) {
+	outputCtx, cancelOutput := context.WithCancel(context.Background())
+	output := newActiveTTSOutput(cancelOutput)
+	unregisterOutput := d.registerActiveOutput(output)
+	defer func() {
+		unregisterOutput()
+		cancelOutput()
+	}()
+
 	d.speechMu.Lock()
 	defer d.speechMu.Unlock()
-	if err := playPromptSound(context.Background(), d.audioClient, kind, wait); err != nil {
+	if err := playPromptSound(outputCtx, d.audioClient, kind, wait); err != nil {
 		log.Printf("[audio] %s prompt sound failed: %v\n", label, err)
 	}
 }

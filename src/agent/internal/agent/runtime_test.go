@@ -848,6 +848,76 @@ func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T)
 	}
 }
 
+func TestRuntimeRunForcedFollowUpRelationMarksInterruptedCorrection(t *testing.T) {
+	ctx := context.Background()
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	rootRequest := "打开微信，进入 Aden AI agent 群，发送100块钱红包"
+	correction := "短一点的搜索词"
+	interruptionContext := "Voice interruption: the user pressed the physical wakeup button after interrupting the previous voice turn. Treat the latest voice input as a correction to that interrupted turn."
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse("started"),
+			contentResponse("updated"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Answer directly.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(ctx, RunRequest{
+		Input:     rootRequest,
+		RequestID: "req-voice-root",
+	}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if _, err := runtime.Run(ctx, RunRequest{
+		Input:            correction,
+		RequestID:        "req-voice-correction",
+		FollowUpRelation: FollowUpCorrection,
+		RuntimeContext:   interruptionContext,
+	}); err != nil {
+		t.Fatalf("correction Run() error = %v", err)
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("expected second model prompt, got %#v", model.messages)
+	}
+	correctionPrompt := messageText(model.messages[1])
+	for _, want := range []string{
+		"## Runtime context",
+		"physical wakeup",
+		"after interrupting the previous voice turn",
+		"Original user request / root request",
+		rootRequest,
+		"Latest user message",
+		correction,
+		"Follow-up classification:",
+		FollowUpCorrection,
+		"Latest correction",
+	} {
+		if !strings.Contains(correctionPrompt, want) {
+			t.Fatalf("correction prompt missing %q:\n%s", want, correctionPrompt)
+		}
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if !sessionEventsContain(events, func(event SessionEvent) bool {
+		return event.Type == "user_input" &&
+			event.Content == correction &&
+			event.Relation == FollowUpCorrection &&
+			event.RequestID == "req-voice-correction"
+	}) {
+		t.Fatalf("session events missing forced correction relation: %#v", events)
+	}
+}
+
 func TestRuntimeRunIncludesAvailableSkillCatalog(t *testing.T) {
 	index := NewSkillIndex()
 	index.skills["planner"] = &SkillDefinition{

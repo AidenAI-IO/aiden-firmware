@@ -66,7 +66,10 @@ type RunRequest struct {
 	// RuntimeContext is dynamic per-turn system context, such as connected
 	// hardware/app state. It is not persisted as user configuration.
 	RuntimeContext string
-	StreamWriter   io.Writer
+	// FollowUpRelation overrides automatic session follow-up classification for
+	// inputs whose relationship to the previous turn is known by the caller.
+	FollowUpRelation string
+	StreamWriter     io.Writer
 	// StreamFinalChunks allows final-answer chunks to be written through
 	// StreamWriter for audio paths. Non-final LLM calls must remain
 	// non-streaming because they may be planner, tool-call, or verifier turns.
@@ -548,14 +551,15 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		episodeID = newTaskEpisodeID(startTime.UTC())
 	}
 	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
-		AgentName:    "default",
-		Input:        normalizedInput,
-		Turn:         turnInput,
-		SessionID:    r.telemetrySessionID,
-		EpisodeID:    episodeID,
-		RequestID:    req.RequestID,
-		RunID:        runID,
-		CurrentHints: currentHints,
+		AgentName:        "default",
+		Input:            normalizedInput,
+		Turn:             turnInput,
+		SessionID:        r.telemetrySessionID,
+		EpisodeID:        episodeID,
+		RequestID:        req.RequestID,
+		RunID:            runID,
+		CurrentHints:     currentHints,
+		FollowUpRelation: req.FollowUpRelation,
 	})
 	if err != nil {
 		return RunResult{}, err

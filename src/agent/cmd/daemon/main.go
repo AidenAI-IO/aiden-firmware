@@ -18,8 +18,12 @@ import (
 )
 
 const (
-	wakeupListenTimeout        = 10 * time.Second
-	voiceTurnCancelWaitTimeout = 2 * time.Second
+	wakeupListenTimeout                     = 10 * time.Second
+	voiceTurnCancelWaitTimeout              = 2 * time.Second
+	voiceWakeupInterruptedCorrectionContext = "Voice interruption: the user pressed the physical wakeup button " +
+		"while the previous voice turn was still running. The latest voice input was spoken after that interruption. " +
+		"Treat it as a correction or steering update to the interrupted turn, not as an independent new task unless " +
+		"the user explicitly asks to start over."
 )
 
 var wakeupGPIOPins = []int{33, 32}
@@ -191,6 +195,7 @@ type audioDialogRunner interface {
 	ProcessUtterance(ctx context.Context, utterance []int16, runtime *agent.Runtime) error
 	PrepareTurnInput(utterance []int16) (agent.TurnInput, error)
 	RunVoiceTurn(ctx context.Context, input agent.TurnInput, utterance []int16, runtime *agent.Runtime) (agent.RunResult, error)
+	RunVoiceTurnWithContext(ctx context.Context, input agent.TurnInput, utterance []int16, runtime *agent.Runtime, turnContext agent.VoiceTurnContext) (agent.RunResult, error)
 	QueueSteer(input agent.TurnInput) bool
 	InterruptOutput()
 	Speak(ctx context.Context, text string, interrupt <-chan struct{}) error
@@ -272,8 +277,9 @@ const (
 )
 
 type pendingVoiceTurn struct {
-	input     agent.TurnInput
-	utterance []int16
+	input       agent.TurnInput
+	utterance   []int16
+	turnContext agent.VoiceTurnContext
 }
 
 type voiceTurnResult struct {
@@ -377,6 +383,10 @@ func startManualAudioLoop(ctx context.Context, dialog audioDialogRunner, runtime
 }
 
 func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory) {
+	if cfg.InputModeOrDefault() == "stt" && !cfg.VoiceFollowupEnabledOrDefault() {
+		runSingleTurnSTTWakeupMode(cfg, dialog, runtime, sigChan, newWatcher)
+		return
+	}
 	if cfg.InputModeOrDefault() != "stt" || !cfg.VoiceFollowupEnabledOrDefault() {
 		runLegacyWakeupMode(cfg, dialog, runtime, sigChan, newWatcher)
 		return
@@ -387,6 +397,7 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 	events := make(chan voiceEvent, 1)
 
 	watchers, err := startWakeupWatchers(newWatcher, func() {
+		dialog.InterruptOutput()
 		signalVoiceWakeupEvent(events)
 	})
 	if err != nil {
@@ -420,6 +431,7 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 	wakeupEvents := make(chan struct{}, 1)
 
 	watchers, err := startWakeupWatchers(newWatcher, func() {
+		dialog.InterruptOutput()
 		signalWakeupEvent(wakeupEvents)
 	})
 	if err != nil {
@@ -482,6 +494,85 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 	}
 }
 
+func runSingleTurnSTTWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory) {
+	log.Printf("\n[ready] Starting GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
+
+	events := make(chan voiceEvent, 1)
+
+	watchers, err := startWakeupWatchers(newWatcher, func() {
+		dialog.InterruptOutput()
+		signalVoiceWakeupEvent(events)
+	})
+	if err != nil {
+		log.Printf("[error] Failed to start GPIO wakeup listeners: %v\n", err)
+		os.Exit(1)
+	}
+	defer stopWakeupWatchers(watchers)
+
+	log.Printf("[ready] Waiting for wakeup event (%s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
+
+	var nextTurn *pendingVoiceTurn
+	pendingWakeup := false
+	for {
+		if nextTurn == nil {
+			if !pendingWakeup {
+				select {
+				case <-sigChan:
+					if dialog != nil {
+						dialog.StopRecording()
+					}
+					log.Println("\n[exit] Stopped.")
+					return
+				case <-events:
+					log.Println("\n[wakeup] GPIO wakeup triggered, starting to listen...")
+				}
+			} else {
+				pendingWakeup = false
+			}
+
+			utterance, exit := listenOneUtterance(dialog, sigChan, events, wakeupListenTimeout)
+			if exit {
+				log.Println("\n[exit] Stopped.")
+				return
+			}
+			if len(utterance) == 0 {
+				log.Println("[listen] no utterance captured after wakeup")
+				log.Println("[ready] Waiting for next wakeup event...")
+				continue
+			}
+			input, err := dialog.PrepareTurnInput(utterance)
+			if err != nil {
+				log.Printf("[error] prepare turn input failed: %v\n", err)
+				log.Println("[ready] Waiting for next wakeup event...")
+				continue
+			}
+			nextTurn = &pendingVoiceTurn{
+				input:     input,
+				utterance: append([]int16(nil), utterance...),
+			}
+		}
+
+		turn := nextTurn
+		nextTurn = nil
+		result := runVoiceTurnWithInputContext(cfg, dialog, runtime, turn.input, turn.utterance, sigChan, events, turn.turnContext, true)
+		if result.exit {
+			log.Println("\n[exit] Stopped.")
+			return
+		}
+		if result.nextTurn != nil {
+			nextTurn = result.nextTurn
+			log.Println("[session] turn interrupted, running captured steering input")
+			continue
+		}
+		if result.interrupted {
+			pendingWakeup = true
+			log.Println("[session] playback interrupted, starting a new wakeup turn")
+			continue
+		}
+		log.Println("[ready] Waiting for next wakeup event...")
+	}
+}
+
 func signalVoiceWakeupEvent(events chan<- voiceEvent) {
 	select {
 	case events <- voiceEventWakeup:
@@ -507,10 +598,12 @@ func runVoiceSession(cfg agent.Config, dialog audioDialogRunner, runtime *agent.
 	for {
 		var input agent.TurnInput
 		var utterance []int16
+		var turnContext agent.VoiceTurnContext
 
 		if nextTurn != nil {
 			input = nextTurn.input
 			utterance = nextTurn.utterance
+			turnContext = nextTurn.turnContext
 			nextTurn = nil
 		} else {
 			if maxTurns > 0 && turns >= maxTurns {
@@ -542,7 +635,7 @@ func runVoiceSession(cfg agent.Config, dialog audioDialogRunner, runtime *agent.
 			}
 		}
 
-		result := runVoiceTurnWithInput(cfg, dialog, runtime, input, utterance, sigChan, events)
+		result := runVoiceTurnWithInputContext(cfg, dialog, runtime, input, utterance, sigChan, events, turnContext, cfg.VoiceInterruptOnWakeupOrDefault())
 		if result.exit {
 			return true
 		}
@@ -575,13 +668,17 @@ func runVoiceTurn(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Run
 }
 
 func runVoiceTurnWithInput(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, input agent.TurnInput, utterance []int16, sigChan chan os.Signal, events <-chan voiceEvent) voiceTurnResult {
+	return runVoiceTurnWithInputContext(cfg, dialog, runtime, input, utterance, sigChan, events, agent.VoiceTurnContext{}, cfg.VoiceInterruptOnWakeupOrDefault())
+}
+
+func runVoiceTurnWithInputContext(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, input agent.TurnInput, utterance []int16, sigChan chan os.Signal, events <-chan voiceEvent, turnContext agent.VoiceTurnContext, interruptOnWakeup bool) voiceTurnResult {
 	turnCtx, cancel := context.WithCancel(context.Background())
 	resultCh := make(chan struct {
 		result agent.RunResult
 		err    error
 	}, 1)
 	go func() {
-		result, err := dialog.RunVoiceTurn(turnCtx, input, utterance, runtime)
+		result, err := dialog.RunVoiceTurnWithContext(turnCtx, input, utterance, runtime, turnContext)
 		resultCh <- struct {
 			result agent.RunResult
 			err    error
@@ -597,7 +694,7 @@ thinking:
 			waitForTurnCancel(resultCh)
 			return voiceTurnResult{exit: true}
 		case <-events:
-			if cfg.VoiceInterruptOnWakeupOrDefault() {
+			if interruptOnWakeup {
 				cancel()
 				nextTurn, exit := captureVoiceSteer(cfg, dialog, sigChan, events)
 				waitForTurnCancel(resultCh)
@@ -647,7 +744,7 @@ speaking:
 			waitForSpeakCancel(speakCh)
 			return voiceTurnResult{exit: true}
 		case <-events:
-			if cfg.VoiceInterruptOnWakeupOrDefault() {
+			if interruptOnWakeup {
 				log.Println("[interrupt] wakeup received during speaking, stopping playback")
 				dialog.InterruptOutput()
 				cancelSpeak()
@@ -683,9 +780,17 @@ func captureVoiceSteer(cfg agent.Config, dialog audioDialogRunner, sigChan chan 
 		return nil, false
 	}
 	return &pendingVoiceTurn{
-		input:     input,
-		utterance: append([]int16(nil), utterance...),
+		input:       input,
+		utterance:   append([]int16(nil), utterance...),
+		turnContext: interruptedVoiceCorrectionContext(),
 	}, false
+}
+
+func interruptedVoiceCorrectionContext() agent.VoiceTurnContext {
+	return agent.VoiceTurnContext{
+		FollowUpRelation: agent.FollowUpCorrection,
+		RuntimeContext:   voiceWakeupInterruptedCorrectionContext,
+	}
 }
 
 func waitForTurnCancel(resultCh <-chan struct {

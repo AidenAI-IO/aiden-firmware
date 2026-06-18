@@ -39,6 +39,7 @@ type fakeAudioDialog struct {
 	vadErr             error
 	onRead             func(*fakeAudioDialog, *agent.AudioChunkResult)
 	spoken             []string
+	voiceTurnContexts  []agent.VoiceTurnContext
 	repeatEmpty        bool
 	readDelay          time.Duration
 	ops                []string
@@ -152,6 +153,11 @@ func (d *fakeAudioDialog) RunAgentTurn(ctx context.Context, input agent.TurnInpu
 }
 
 func (d *fakeAudioDialog) RunVoiceTurn(ctx context.Context, input agent.TurnInput, utterance []int16, runtime *agent.Runtime) (agent.RunResult, error) {
+	return d.RunVoiceTurnWithContext(ctx, input, utterance, runtime, agent.VoiceTurnContext{})
+}
+
+func (d *fakeAudioDialog) RunVoiceTurnWithContext(ctx context.Context, input agent.TurnInput, utterance []int16, runtime *agent.Runtime, turnContext agent.VoiceTurnContext) (agent.RunResult, error) {
+	d.voiceTurnContexts = append(d.voiceTurnContexts, turnContext)
 	if d.runVoiceTurn != nil {
 		return d.runVoiceTurn(ctx, input, utterance)
 	}
@@ -258,6 +264,62 @@ func (d *fakeAudioDialog) VADDebugState() agent.VADDebugState {
 		return d.vad.DebugState()
 	}
 	return agent.VADDebugState{}
+}
+
+func opsHasPrefix(ops, prefix []string) bool {
+	if len(ops) < len(prefix) {
+		return false
+	}
+	for i, want := range prefix {
+		if ops[i] != want {
+			return false
+		}
+	}
+	return true
+}
+
+func countDialogOp(ops []string, op string) int {
+	count := 0
+	for _, got := range ops {
+		if got == op {
+			count++
+		}
+	}
+	return count
+}
+
+func opOccursAfter(ops []string, op, after string, afterOccurrence int) bool {
+	afterIndex := nthDialogOpIndex(ops, after, afterOccurrence)
+	if afterIndex < 0 {
+		return false
+	}
+	nextAfterIndex := nthDialogOpIndex(ops, after, afterOccurrence+1)
+	if nextAfterIndex < 0 {
+		nextAfterIndex = len(ops)
+	}
+	for _, got := range ops[afterIndex+1 : nextAfterIndex] {
+		if got == op {
+			return true
+		}
+	}
+	return false
+}
+
+func nthDialogOpIndex(ops []string, op string, occurrence int) int {
+	if occurrence <= 0 {
+		return -1
+	}
+	seen := 0
+	for i, got := range ops {
+		if got != op {
+			continue
+		}
+		seen++
+		if seen == occurrence {
+			return i
+		}
+	}
+	return -1
 }
 
 type fakeWakeupWatcher struct {
@@ -668,11 +730,9 @@ func TestRunWakeupModeLegacyStartsRecordingWithoutWakeupAck(t *testing.T) {
 	if len(dialog.spoken) != 0 {
 		t.Fatalf("spoken texts = %#v, want no wakeup acknowledgement", dialog.spoken)
 	}
-	if len(dialog.ops) < 2 {
-		t.Fatalf("dialog ops = %#v, want recording start/reset", dialog.ops)
-	}
-	if dialog.ops[0] != "start" || dialog.ops[1] != "reset" {
-		t.Fatalf("dialog ops = %#v, want start/reset without wakeup acknowledgement", dialog.ops)
+	wantPrefix := []string{"interrupt_output", "start", "reset"}
+	if !opsHasPrefix(dialog.ops, wantPrefix) {
+		t.Fatalf("dialog ops = %#v, want prefix %#v without wakeup acknowledgement", dialog.ops, wantPrefix)
 	}
 }
 
@@ -831,36 +891,52 @@ func TestRunWakeupModeStartsNewRecordingForNextWakeup(t *testing.T) {
 	}
 }
 
-func TestRunWakeupModeLegacyWakeupInterruptsProcessing(t *testing.T) {
+func TestRunWakeupModeSTTWakeupInterruptRunsNextTurnAsCorrection(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	watcher := &fakeWakeupWatcher{fireOnStart: true}
-	processingStarted := make(chan struct{})
+	firstRunStarted := make(chan struct{})
 	ctxCanceled := make(chan struct{})
-	secondStart := make(chan struct{})
+	secondRunStarted := make(chan struct{})
 	voiceSessionDisabled := false
+	runInputs := make([]string, 0, 2)
 	var dialog *fakeAudioDialog
 	dialog = &fakeAudioDialog{
 		frameSamples: 2,
-		chunks: []*agent.AudioChunkResult{
-			{PCM: pcm16BytesFromSamples(100, 200)},
+		chunkBatches: [][]*agent.AudioChunkResult{
+			{{PCM: pcm16BytesFromSamples(100, 200)}},
+			{{PCM: pcm16BytesFromSamples(300, 400)}},
 		},
-		utterance: []int16{100, 200},
-		onStart: func(d *fakeAudioDialog) {
-			if d.starts == 2 {
-				close(secondStart)
-				sigChan <- syscall.SIGTERM
+		utterancesToReturn: [][]int16{
+			{100, 200},
+			{300, 400},
+		},
+		prepareTurnInput: func(utterance []int16) (agent.TurnInput, error) {
+			if len(utterance) > 0 && utterance[0] == 300 {
+				return agent.TurnInput{InputText: "use the shorter search term", Transcript: "use the shorter search term"}, nil
 			}
+			return agent.TurnInput{InputText: "open the group and send money", Transcript: "open the group and send money"}, nil
 		},
-		processUtterance: func(ctx context.Context, utterance []int16, runtime *agent.Runtime) error {
-			close(processingStarted)
-			select {
-			case <-ctx.Done():
+		runVoiceTurn: func(ctx context.Context, input agent.TurnInput, utterance []int16) (agent.RunResult, error) {
+			runInputs = append(runInputs, input.InputText)
+			switch input.InputText {
+			case "open the group and send money":
+				close(firstRunStarted)
+				<-ctx.Done()
 				close(ctxCanceled)
-				return ctx.Err()
-			case <-time.After(150 * time.Millisecond):
-				sigChan <- syscall.SIGTERM
-				return errors.New("legacy wakeup did not cancel utterance processing")
+				return agent.RunResult{}, ctx.Err()
+			case "use the shorter search term":
+				close(secondRunStarted)
+				return agent.RunResult{Output: "revised reply"}, nil
+			default:
+				t.Errorf("unexpected run input = %#v", input)
+				return agent.RunResult{}, nil
 			}
+		},
+		speak: func(ctx context.Context) error {
+			if len(dialog.spoken) == 1 {
+				sigChan <- syscall.SIGTERM
+			}
+			return nil
 		},
 	}
 
@@ -874,26 +950,48 @@ func TestRunWakeupModeLegacyWakeupInterruptsProcessing(t *testing.T) {
 	}()
 
 	select {
-	case <-processingStarted:
+	case <-firstRunStarted:
 	case <-time.After(2 * time.Second):
-		t.Fatal("legacy wakeup mode did not start utterance processing")
+		t.Fatal("STT wakeup mode did not start the first voice run")
 	}
 	watcher.callback()
 
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("runWakeupMode did not stop after interrupted legacy wakeup")
+		t.Fatal("runWakeupMode did not stop after interrupted STT wakeup")
 	}
 	select {
 	case <-ctxCanceled:
 	default:
-		t.Fatal("legacy utterance context was not canceled by wakeup")
+		t.Fatal("first voice run context was not canceled by wakeup")
 	}
 	select {
-	case <-secondStart:
+	case <-secondRunStarted:
 	default:
-		t.Fatal("legacy wakeup interrupt did not trigger the next recording")
+		t.Fatal("wakeup interrupt did not trigger the correction voice run")
+	}
+	if len(runInputs) != 2 || runInputs[0] != "open the group and send money" || runInputs[1] != "use the shorter search term" {
+		t.Fatalf("run inputs = %#v, want original request followed by correction input", runInputs)
+	}
+	if len(dialog.voiceTurnContexts) != 2 {
+		t.Fatalf("voice turn contexts = %#v, want 2", dialog.voiceTurnContexts)
+	}
+	if dialog.voiceTurnContexts[0] != (agent.VoiceTurnContext{}) {
+		t.Fatalf("first voice turn context = %#v, want ordinary new task", dialog.voiceTurnContexts[0])
+	}
+	correctionContext := dialog.voiceTurnContexts[1]
+	if correctionContext.FollowUpRelation != agent.FollowUpCorrection {
+		t.Fatalf("second follow-up relation = %q, want correction", correctionContext.FollowUpRelation)
+	}
+	if !strings.Contains(correctionContext.RuntimeContext, "physical wakeup") || !strings.Contains(correctionContext.RuntimeContext, "interrupted") {
+		t.Fatalf("second runtime context = %q, want physical wakeup interruption context", correctionContext.RuntimeContext)
+	}
+	if got := countDialogOp(dialog.ops, "interrupt_output"); got < 2 {
+		t.Fatalf("interrupt_output count = %d, want initial wakeup and interrupting wakeup; ops=%#v", got, dialog.ops)
+	}
+	if !opOccursAfter(dialog.ops, "interrupt_output", "start", 1) {
+		t.Fatalf("dialog ops = %#v, want wakeup interrupt output before second recording start", dialog.ops)
 	}
 }
 
@@ -1028,11 +1126,9 @@ func TestRunWakeupModeVoiceSessionStartsRecordingWithoutWakeupAck(t *testing.T) 
 		t.Fatal("runWakeupMode did not stop after signal")
 	}
 
-	if len(dialog.ops) < 2 {
-		t.Fatalf("dialog ops = %#v, want recording start/reset", dialog.ops)
-	}
-	if dialog.ops[0] != "start" || dialog.ops[1] != "reset" {
-		t.Fatalf("dialog ops = %#v, want start/reset without wakeup acknowledgement", dialog.ops)
+	wantPrefix := []string{"interrupt_output", "start", "reset"}
+	if !opsHasPrefix(dialog.ops, wantPrefix) {
+		t.Fatalf("dialog ops = %#v, want prefix %#v without wakeup acknowledgement", dialog.ops, wantPrefix)
 	}
 	if len(dialog.spoken) != 1 || dialog.spoken[0] != "reply" {
 		t.Fatalf("spoken texts = %#v, want only the agent reply", dialog.spoken)

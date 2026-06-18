@@ -123,6 +123,23 @@ func currentInputFromMemoryInputs(inputs map[string]any) string {
 	}
 }
 
+func normalizeFollowUpRelation(relation string) string {
+	switch strings.TrimSpace(relation) {
+	case FollowUpRootRequest:
+		return FollowUpRootRequest
+	case FollowUpContinuation:
+		return FollowUpContinuation
+	case FollowUpCorrection:
+		return FollowUpCorrection
+	case FollowUpReplacement:
+		return FollowUpReplacement
+	case FollowUpNewTask:
+		return FollowUpNewTask
+	default:
+		return ""
+	}
+}
+
 func ClassifyFollowUpRelation(prevEvents []SessionEvent, input string, boundary string) string {
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "" {
