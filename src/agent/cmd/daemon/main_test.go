@@ -173,11 +173,14 @@ func (d *fakeAudioDialog) RunVoiceTurn(ctx context.Context, input agent.TurnInpu
 }
 
 func (d *fakeAudioDialog) QueueSteer(input agent.TurnInput) bool {
-	d.queuedSteers = append(d.queuedSteers, input)
+	ok := true
 	if d.queueSteer != nil {
-		return d.queueSteer(input)
+		ok = d.queueSteer(input)
 	}
-	return true
+	if ok {
+		d.queuedSteers = append(d.queuedSteers, input)
+	}
+	return ok
 }
 
 func (d *fakeAudioDialog) PersistVoiceTurn(input agent.TurnInput, result agent.RunResult, utterance []int16) {
