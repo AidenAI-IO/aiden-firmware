@@ -96,6 +96,81 @@ def test_prepare_run_config_renders_template(tmp_path: Path, monkeypatch):
     assert (dest / "skill-state").is_dir()
 
 
+def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "agent.toml.template").write_text('[model]\nprovider = "template"\n', encoding="utf-8")
+    agent_config = 'instruction = "custom"\n[model]\nprovider = "saved"\n'
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(base, dest, agent_config_text=agent_config)
+
+    assert (dest / "agent.toml").read_text(encoding="utf-8") == agent_config
+    assert (dest / "control_token").exists()
+    assert (dest / "memory").is_dir()
+
+
+def test_webui_agent_config_persists_under_runs_dir(tmp_path: Path, monkeypatch):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "agent.toml.template").write_text(
+        '[model]\nprovider = "{{MODEL_PROVIDER}}"\nmodel = "{{MODEL_NAME}}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("MODEL_NAME", "gpt-test")
+    app = webui.BenchmarkWebApp(webui.WebUIConfig(runs_dir=tmp_path / "runs", base_config_dir=base))
+
+    initial = app.get_agent_config()
+    assert initial["path"] == str(tmp_path / "runs" / "agent.toml")
+    assert initial["source"] == "generated"
+    assert 'provider = "openai"' in initial["content"]
+
+    saved = 'instruction = "saved"\n[model]\nprovider = "fake"\n'
+    updated = app.save_agent_config({"content": saved})
+    assert updated["source"] == "saved"
+    assert (tmp_path / "runs" / "agent.toml").read_text(encoding="utf-8") == saved
+    assert app.get_agent_config()["content"] == saved
+
+
+def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
+    base = tmp_path / "base"
+    base.mkdir()
+    app = webui.BenchmarkWebApp(webui.WebUIConfig(runs_dir=tmp_path / "runs", base_config_dir=base, build_daemon_image=False))
+    saved = 'instruction = "from web ui"\n[model]\nprovider = "fake"\n'
+    app.save_agent_config({"content": saved})
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        suites=["mobilegym_basic.json"],
+        agent_url="http://127.0.0.1:18080",
+        container_name="aiden-benchmark-agent-job-test",
+        config_dir=str(tmp_path / "runs" / "job-test" / "config"),
+        raw_runs_dir=str(tmp_path / "runs" / "job-test" / "raw"),
+        state_file=str(tmp_path / "runs" / "job-test" / "state.json"),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+        daemon_log=str(tmp_path / "runs" / "job-test" / "daemon.log"),
+    )
+    app._jobs[job.id] = job
+
+    monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "start_docker_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_wait_for_daemon", lambda job: None)
+
+    def fake_run_suite(job, suite_key):
+        job.suite_results.append({"suite": suite_key, "exit_code": 0})
+
+    monkeypatch.setattr(app, "_run_suite", fake_run_suite)
+    monkeypatch.setattr(webui.subprocess, "check_output", lambda *args, **kwargs: "container-id\n")
+    monkeypatch.setattr(webui.subprocess, "run", lambda *args, **kwargs: None)
+
+    app._run_job(job)
+
+    assert (Path(job.config_dir) / "agent.toml").read_text(encoding="utf-8") == saved
+    assert job.status == "passed"
+
+
 def test_build_docker_run_command_forwards_tools_to_environment(tmp_path: Path):
     config = tmp_path / "config"
     config.mkdir()

@@ -80,6 +80,7 @@ def cli(argv: list[str] | None = None) -> int:
     p_webui.add_argument("--suites-dir", default=str(REPO_ROOT / "benchmark" / "suites"))
     p_webui.add_argument("--runs-dir", default=str(REPO_ROOT / "benchmark" / "runs" / "webui"))
     p_webui.add_argument("--base-config-dir", default=str(REPO_ROOT / "benchmark" / "config"))
+    p_webui.add_argument("--agent-config", default="")
     p_webui.add_argument("--daemon-image", default="aiden-mobilegym-daemon:local")
     p_webui.add_argument("--mobilegym-image", default="aiden-mobilegym-simulator:py311")
     p_webui.add_argument("--no-build-daemon-image", action="store_true")
@@ -107,6 +108,8 @@ def cli(argv: list[str] | None = None) -> int:
             "--daemon-image", args.daemon_image,
             "--mobilegym-image", args.mobilegym_image,
         ]
+        if args.agent_config:
+            forwarded.extend(["--agent-config", args.agent_config])
         if args.no_build_daemon_image:
             forwarded.append("--no-build-daemon-image")
         if args.no_build_mobilegym_image:

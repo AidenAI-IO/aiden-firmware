@@ -39,6 +39,7 @@ class WebUIConfig:
     suites_dir: Path = DEFAULT_SUITES_DIR
     runs_dir: Path = DEFAULT_RUNS_DIR
     base_config_dir: Path = DEFAULT_BASE_CONFIG_DIR
+    agent_config_path: Path | None = None
     daemon_image: str = DEFAULT_DAEMON_IMAGE
     mobilegym_image: str = DEFAULT_MOBILEGYM_IMAGE
     build_daemon_image: bool = True
@@ -111,6 +112,37 @@ class BenchmarkWebApp:
             jobs = [self._job_payload(job) for job in self._jobs.values()]
         jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         return jobs
+
+    def get_agent_config(self) -> dict[str, Any]:
+        path = self._agent_config_path()
+        content, source = ensure_webui_agent_config(self.config.base_config_dir, path)
+        return {
+            "content": content,
+            "path": str(path),
+            "source": source,
+        }
+
+    def save_agent_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        content = str(payload.get("content") or "")
+        validate_agent_toml(content)
+        path = self._agent_config_path()
+        write_text_atomic(path, content)
+        return {
+            "content": content,
+            "path": str(path),
+            "source": "saved",
+        }
+
+    def reset_agent_config(self) -> dict[str, Any]:
+        path = self._agent_config_path()
+        if path.exists():
+            path.unlink()
+        content, source = ensure_webui_agent_config(self.config.base_config_dir, path)
+        return {
+            "content": content,
+            "path": str(path),
+            "source": source,
+        }
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -299,6 +331,9 @@ class BenchmarkWebApp:
             for key, value in updates.items():
                 setattr(env, key, value)
 
+    def _agent_config_path(self) -> Path:
+        return self.config.agent_config_path or (self.config.runs_dir / "agent.toml")
+
     def _job_payload(self, job: Job) -> dict[str, Any]:
         payload = dc.asdict(job)
         payload["progress"] = read_json_file(Path(job.state_file))
@@ -321,7 +356,8 @@ class BenchmarkWebApp:
         host_port = int(urllib.parse.urlparse(job.agent_url).port or 0)
         try:
             self._set_job(job, status="preparing", started_at=now_iso(), message="preparing config")
-            prepare_run_config(self.config.base_config_dir, Path(job.config_dir))
+            agent_config_text = self.get_agent_config()["content"]
+            prepare_run_config(self.config.base_config_dir, Path(job.config_dir), agent_config_text=agent_config_text)
             self._set_job(job, status="starting_agent", message="starting docker agent")
             ensure_daemon_image(self.config.daemon_image, self.config.build_daemon_image, Path(job.runner_log))
             command = build_docker_run_command(
@@ -479,7 +515,7 @@ def resolve_suite_path(suites_dir: Path, key: str) -> Path:
     return path
 
 
-def prepare_run_config(base_config_dir: Path, dest_dir: Path) -> None:
+def prepare_run_config(base_config_dir: Path, dest_dir: Path, agent_config_text: str | None = None) -> None:
     if dest_dir.exists():
         shutil.rmtree(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -497,10 +533,51 @@ def prepare_run_config(base_config_dir: Path, dest_dir: Path) -> None:
         token_path.write_text(os.urandom(24).hex(), encoding="utf-8")
     template = dest_dir / "agent.toml.template"
     config = dest_dir / "agent.toml"
-    if template.exists() and not config.exists():
-        config.write_text(render_agent_template(template.read_text(encoding="utf-8")), encoding="utf-8")
-    if not config.exists():
-        config.write_text(default_agent_toml(), encoding="utf-8")
+    if agent_config_text is not None:
+        config.write_text(agent_config_text, encoding="utf-8")
+    else:
+        if template.exists() and not config.exists():
+            config.write_text(render_agent_template(template.read_text(encoding="utf-8")), encoding="utf-8")
+        if not config.exists():
+            config.write_text(default_agent_toml(), encoding="utf-8")
+
+
+def ensure_webui_agent_config(base_config_dir: Path, agent_config_path: Path) -> tuple[str, str]:
+    if agent_config_path.exists():
+        return agent_config_path.read_text(encoding="utf-8"), "saved"
+    content = initial_agent_config(base_config_dir)
+    write_text_atomic(agent_config_path, content)
+    return content, "generated"
+
+
+def initial_agent_config(base_config_dir: Path) -> str:
+    config = base_config_dir / "agent.toml"
+    if config.exists():
+        return config.read_text(encoding="utf-8")
+    template = base_config_dir / "agent.toml.template"
+    if template.exists():
+        return render_agent_template(template.read_text(encoding="utf-8"))
+    return default_agent_toml()
+
+
+def validate_agent_toml(content: str) -> None:
+    if not content.strip():
+        raise ValueError("agent.toml cannot be empty")
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        return
+    try:
+        tomllib.loads(content)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"invalid agent.toml: {exc}") from exc
+
+
+def write_text_atomic(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
 
 
 def render_agent_template(text: str) -> str:
@@ -818,6 +895,9 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/suites":
             self._send_json({"suites": self.server.app.list_suites()})
             return
+        if path == "/api/agent-config":
+            self._send_json({"config": self.server.app.get_agent_config()})
+            return
         if path == "/api/jobs":
             self._send_json({"jobs": self.server.app.list_jobs()})
             return
@@ -852,6 +932,23 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
             self._send_json({"environment": environment}, status=HTTPStatus.CREATED)
+            return
+        if path == "/api/agent-config":
+            try:
+                payload = self._read_json()
+                config = self.server.app.save_agent_config(payload)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json({"config": config})
+            return
+        if path == "/api/agent-config/reset":
+            try:
+                config = self.server.app.reset_agent_config()
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json({"config": config})
             return
         if path.startswith("/api/environments/mobilegym/") and path.endswith("/stop"):
             parts = path.strip("/").split("/")
@@ -989,6 +1086,7 @@ def cli(argv: list[str] | None = None) -> int:
     parser.add_argument("--suites-dir", default=str(DEFAULT_SUITES_DIR))
     parser.add_argument("--runs-dir", default=str(DEFAULT_RUNS_DIR))
     parser.add_argument("--base-config-dir", default=str(DEFAULT_BASE_CONFIG_DIR))
+    parser.add_argument("--agent-config", default="")
     parser.add_argument("--daemon-image", default=DEFAULT_DAEMON_IMAGE)
     parser.add_argument("--mobilegym-image", default=DEFAULT_MOBILEGYM_IMAGE)
     parser.add_argument("--no-build-daemon-image", action="store_true")
@@ -999,6 +1097,7 @@ def cli(argv: list[str] | None = None) -> int:
             suites_dir=Path(args.suites_dir),
             runs_dir=Path(args.runs_dir),
             base_config_dir=Path(args.base_config_dir),
+            agent_config_path=Path(args.agent_config) if args.agent_config else None,
             daemon_image=args.daemon_image,
             mobilegym_image=args.mobilegym_image,
             build_daemon_image=not args.no_build_daemon_image,
@@ -1151,18 +1250,35 @@ INDEX_HTML = r"""<!doctype html>
     input:not([type]),
     input[type="url"],
     input[type="search"],
-    select {
+    select,
+    textarea {
       width: 100%;
-      height: 40px;
       border: 0;
       border-bottom: 1px solid var(--border-strong);
       border-radius: 0;
-      padding: 0 12px;
       color: var(--text);
       background: var(--field);
       font: inherit;
     }
+    input[type="text"],
+    input:not([type]),
+    input[type="url"],
+    input[type="search"],
+    select {
+      height: 40px;
+      padding: 0 12px;
+    }
+    textarea {
+      min-height: 220px;
+      max-height: 360px;
+      resize: vertical;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+    }
     input:focus,
+    textarea:focus,
     button:focus,
     a:focus {
       outline: 2px solid var(--focus);
@@ -1192,6 +1308,18 @@ INDEX_HTML = r"""<!doctype html>
       padding: 0 8px;
     }
     .ghost-button:hover { background: #edf5ff; }
+    .config-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .config-actions span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .segmented {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1415,6 +1543,24 @@ INDEX_HTML = r"""<!doctype html>
       </section>
 
       <section class="tile">
+        <div class="tile-header">
+          <div>
+            <h2 class="tile-title">Agent config</h2>
+            <div id="agentConfigPath" class="tile-kicker">agent.toml</div>
+          </div>
+        </div>
+        <div class="field">
+          <label for="agentConfigText">agent.toml</label>
+          <textarea id="agentConfigText" spellcheck="false"></textarea>
+        </div>
+        <div class="config-actions">
+          <button id="saveAgentConfig" class="primary" type="button">Save</button>
+          <button id="resetAgentConfig" class="ghost-button" type="button">Reset</button>
+          <span id="agentConfigStatus" class="muted"></span>
+        </div>
+      </section>
+
+      <section class="tile">
         <div class="toolbar">
           <div>
             <h2 class="tile-title">Suites</h2>
@@ -1501,6 +1647,8 @@ INDEX_HTML = r"""<!doctype html>
     let selectedSuites = new Set();
     let jobs = [];
     let activeJobId = null;
+    let agentConfigDirty = false;
+    let agentConfigLoaded = false;
 
     function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
     function loadDeviceEnvs(){
@@ -1544,6 +1692,65 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('mobilegymTab').classList.toggle('active', isMobileGym);
       document.getElementById('devicePanel').hidden = isMobileGym;
       document.getElementById('mobilegymPanel').hidden = !isMobileGym;
+    }
+
+    function setAgentConfigStatus(text, isError = false){
+      const node = document.getElementById('agentConfigStatus');
+      node.textContent = text || '';
+      node.style.color = isError ? 'var(--red)' : '';
+    }
+
+    function applyAgentConfig(config){
+      document.getElementById('agentConfigText').value = config.content || '';
+      document.getElementById('agentConfigPath').textContent = config.path || 'agent.toml';
+      agentConfigDirty = false;
+      agentConfigLoaded = true;
+      setAgentConfigStatus(config.source === 'generated' ? 'Generated' : 'Saved');
+    }
+
+    async function loadAgentConfig(){
+      try {
+        const res = await fetch('/api/agent-config');
+        const body = await res.json();
+        if(!res.ok) throw new Error(body.error || 'failed to load agent.toml');
+        applyAgentConfig(body.config || {});
+      } catch (err) {
+        setAgentConfigStatus(err.message || String(err), true);
+      }
+    }
+
+    async function saveAgentConfig(options = {}){
+      const content = document.getElementById('agentConfigText').value;
+      try {
+        const res = await fetch('/api/agent-config', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({content})
+        });
+        const body = await res.json();
+        if(!res.ok) throw new Error(body.error || 'failed to save agent.toml');
+        applyAgentConfig(body.config || {content});
+        setAgentConfigStatus(options.silent ? 'Saved for run' : 'Saved');
+        return true;
+      } catch (err) {
+        const message = err.message || String(err);
+        setAgentConfigStatus(message, true);
+        document.getElementById('logBox').textContent = message;
+        return false;
+      }
+    }
+
+    async function resetAgentConfig(){
+      const res = await fetch('/api/agent-config/reset', {method: 'POST'});
+      const body = await res.json();
+      if(!res.ok){
+        const message = body.error || 'failed to reset agent.toml';
+        setAgentConfigStatus(message, true);
+        document.getElementById('logBox').textContent = message;
+        return;
+      }
+      applyAgentConfig(body.config || {});
+      setAgentConfigStatus('Reset');
     }
 
     function renderEnvs(){
@@ -1713,6 +1920,11 @@ INDEX_HTML = r"""<!doctype html>
     async function startRun(){
       const env = selectedEnv();
       if(!envCanRun(env) || selectedSuites.size === 0) return;
+      if(!agentConfigLoaded) await loadAgentConfig();
+      if(agentConfigDirty){
+        const saved = await saveAgentConfig({silent: true});
+        if(!saved) return;
+      }
       const res = await fetch('/api/jobs', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -1808,10 +2020,17 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById('mobilegymTab').onclick = () => setEnvMode('mobilegym');
     document.getElementById('saveEnv').onclick = saveEnvFromForm;
     document.getElementById('startMobileGym').onclick = startMobileGym;
+    document.getElementById('saveAgentConfig').onclick = () => saveAgentConfig();
+    document.getElementById('resetAgentConfig').onclick = resetAgentConfig;
+    document.getElementById('agentConfigText').oninput = () => {
+      agentConfigDirty = true;
+      setAgentConfigStatus('Modified');
+    };
     document.getElementById('suiteFilter').oninput = renderSuites;
     document.getElementById('runBtn').onclick = startRun;
     loadDeviceEnvs();
     renderEnvs();
+    loadAgentConfig();
     loadMobileGymEnvironments();
     loadSuites();
     refreshJobs();
