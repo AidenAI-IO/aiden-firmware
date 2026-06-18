@@ -126,6 +126,55 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
+TEST_CASE("config web colors live log lines by frontend classification") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("function classifyLine(line)") != std::string::npos);
+    CHECK(html.find("function renderLogText(el,text,emptyText)") != std::string::npos);
+    CHECK(html.find("split(/\\\\r?\\\\n/)") != std::string::npos);
+    CHECK(html.find("document.createElement('span')") != std::string::npos);
+    CHECK(html.find("span.className='log-line '+classifyLine(line);") != std::string::npos);
+
+    CHECK(html.find("log-error") != std::string::npos);
+    CHECK(html.find("log-warn") != std::string::npos);
+    CHECK(html.find("log-update") != std::string::npos);
+    CHECK(html.find("log-proxy") != std::string::npos);
+    CHECK(html.find("log-cache") != std::string::npos);
+    CHECK(html.find("log-http") != std::string::npos);
+    CHECK(html.find("log-success") != std::string::npos);
+
+    CHECK(html.find("failed") != std::string::npos);
+    CHECK(html.find("error") != std::string::npos);
+    CHECK(html.find("pq:") != std::string::npos);
+    CHECK(html.find("panic") != std::string::npos);
+    CHECK(html.find("fallback") != std::string::npos);
+    CHECK(html.find("not found") != std::string::npos);
+    CHECK(html.find("skip") != std::string::npos);
+    CHECK(html.find("warn") != std::string::npos);
+    CHECK(html.find("[update]") != std::string::npos);
+    CHECK(html.find("[proxy]") != std::string::npos);
+    CHECK(html.find("cache hit") != std::string::npos);
+    CHECK(html.find("[gin]") != std::string::npos);
+    CHECK(html.find("\\\\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\\\\b") != std::string::npos);
+    CHECK(html.find("page created") != std::string::npos);
+    CHECK(html.find("html updated") != std::string::npos);
+    CHECK(html.find("new resource") != std::string::npos);
+
+    CHECK(html.find(".log-line.log-error{color:#ff5555;border-left-color:#ff5555}") != std::string::npos);
+    CHECK(html.find(".log-line.log-warn{color:#ffaa00;border-left-color:#ffaa00}") != std::string::npos);
+    CHECK(html.find(".log-line.log-success{color:#00ff88}") != std::string::npos);
+    CHECK(html.find(".log-line.log-proxy{color:#808080}") != std::string::npos);
+    CHECK(html.find(".log-line.log-http{color:#00d9ff}") != std::string::npos);
+    CHECK(html.find(".log-line.log-cache{color:#bb88ff}") != std::string::npos);
+    CHECK(html.find(".log-line.log-update{color:#44bbff}") != std::string::npos);
+}
+
 TEST_CASE("config web exposes audio archive switch") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
