@@ -311,6 +311,43 @@ func TestFunctionAgentScratchpadDoesNotReplayToolSpeechAsArgument(t *testing.T) 
 	}
 }
 
+func TestFunctionAgentScratchpadReplaysToolSpeechWhenEnabled(t *testing.T) {
+	agent := &FunctionAgent{ToolCallSpeech: true}
+	messages := agent.constructFunctionScratchPad([]schema.AgentStep{{
+		Action: schema.AgentAction{
+			Tool:      "echo",
+			ToolInput: "hello",
+			Log:       formatToolActionLog("echo", `{"input":"hello","speech":"Echoing text."}`, "", "Echoing text.", "\n"),
+			ToolID:    "call_1",
+		},
+		Observation: "ok",
+	}})
+
+	if len(messages) == 0 || len(messages[0].Parts) != 1 {
+		t.Fatalf("unexpected scratchpad messages: %#v", messages)
+	}
+	toolCall, ok := messages[0].Parts[0].(llms.ToolCall)
+	if !ok {
+		t.Fatalf("expected tool call part, got %T", messages[0].Parts[0])
+	}
+	var args map[string]string
+	if err := json.Unmarshal([]byte(toolCall.FunctionCall.Arguments), &args); err != nil {
+		t.Fatalf("decode tool arguments: %v", err)
+	}
+	if args["input"] != "hello" {
+		t.Fatalf("scratchpad input = %q", args["input"])
+	}
+	if args["speech"] != "Echoing text." {
+		t.Fatalf("scratchpad speech = %q, want LLM tool-call speech", args["speech"])
+	}
+	if _, ok := args["description"]; ok {
+		t.Fatalf("scratchpad should not replay description argument: %#v", args)
+	}
+	if _, ok := args["__arg1"]; ok {
+		t.Fatalf("scratchpad should not replay __arg1: %#v", args)
+	}
+}
+
 func TestFunctionAgentScratchpadReplaysToolDescriptionAsAssistantText(t *testing.T) {
 	agent := &FunctionAgent{}
 	messages := agent.constructFunctionScratchPad([]schema.AgentStep{{

@@ -894,10 +894,10 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	}
 
 	if profile.Name == RoleExecutor && len(state.StepToolSteps) > 0 {
-		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(e.Tools), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.StepToolSteps)
+		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(e.Tools), ScreenshotPruning: e.ScreenshotPruning, ToolCallSpeech: e.ToolCallSpeech}).constructFunctionScratchPad(state.StepToolSteps)
 		messages = append(messages, scratchpad...)
 	} else if roleSeesToolScratchpad(profile.Name) && len(state.ToolSteps) > 0 {
-		scratchpad := (&FunctionAgent{Tools: e.Tools, ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.ToolSteps)
+		scratchpad := (&FunctionAgent{Tools: e.Tools, ScreenshotPruning: e.ScreenshotPruning, ToolCallSpeech: e.ToolCallSpeech}).constructFunctionScratchPad(state.ToolSteps)
 		messages = append(messages, scratchpad...)
 	}
 

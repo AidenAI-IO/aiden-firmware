@@ -225,8 +225,12 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 				ID:   scratchpadToolCallID(steps[j].Action, i, j),
 				Type: "function",
 				FunctionCall: &llms.FunctionCall{
-					Name:      steps[j].Action.Tool,
-					Arguments: encodeToolArguments(steps[j].Action.ToolInput),
+					Name: steps[j].Action.Tool,
+					Arguments: encodeToolArgumentsWithSpeech(
+						steps[j].Action.ToolInput,
+						toolSpeechFromAction(steps[j].Action),
+						a.ToolCallSpeech,
+					),
 				},
 			})
 		}
@@ -498,6 +502,10 @@ func extractToolInput(raw string) string {
 }
 
 func encodeToolArguments(input string) string {
+	return encodeToolArgumentsWithSpeech(input, "", false)
+}
+
+func encodeToolArgumentsWithSpeech(input string, speech string, includeSpeech bool) string {
 	args := map[string]any{}
 	trimmed := strings.TrimSpace(input)
 	if strings.HasPrefix(trimmed, "{") {
@@ -510,6 +518,11 @@ func encodeToolArguments(input string) string {
 	}
 	if len(args) == 0 && trimmed != "" {
 		args["input"] = input
+	}
+	if includeSpeech {
+		if speech = strings.TrimSpace(speech); speech != "" {
+			args[toolCallSpeechField] = speech
+		}
 	}
 	encoded, err := json.Marshal(args)
 	if err != nil {
