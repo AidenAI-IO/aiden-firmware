@@ -40,6 +40,14 @@ def test_perception_v1_settings_rubric_uses_0_1000_normalized_coordinates():
     assert "y in [441, 560]" in check
     assert "[0.75, 0.98]" not in check
 
+def test_mobilegym_basic_suite_loads_device_operation_tasks():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "mobilegym_basic.json"
+    suite = load_suite(suite_path)
+
+    assert suite.name == "mobilegym_basic"
+    assert {task.category for task in suite.tasks} == {"device_operation"}
+    assert all(task.rubric and task.rubric[0].check for task in suite.tasks)
+
 def test_load_suite_parses_expected_option_answer(tmp_path: Path):
     fixture = {
         **FIXTURE,
