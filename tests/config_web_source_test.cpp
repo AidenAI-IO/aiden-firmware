@@ -126,6 +126,27 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
+TEST_CASE("config web auto-scrolls agent logs only while pinned to bottom") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("agentLogPaused") == std::string::npos);
+    CHECK(html.find("agentLogAutoScroll:true") != std::string::npos);
+    CHECK(html.find("function isAgentLogAtBottom(el)") != std::string::npos);
+    CHECK(html.find("function setAgentLogAutoScroll(enabled)") != std::string::npos);
+    CHECK(html.find("function syncAgentLogAutoScroll()") != std::string::npos);
+    CHECK(html.find("function toggleAgentLogAutoScroll()") != std::string::npos);
+    CHECK(html.find("byId('agentLogText').addEventListener('scroll',syncAgentLogAutoScroll)") != std::string::npos);
+    CHECK(html.find("if(appState.agentLogAutoScroll){textEl.scrollTop=textEl.scrollHeight;}") != std::string::npos);
+    CHECK(html.find("btn.className='button '+(appState.agentLogAutoScroll?'primary':'ghost')") != std::string::npos);
+    CHECK(html.find("appState.agentLogPaused&&!showBanner") == std::string::npos);
+}
+
 TEST_CASE("config web colors live log lines by frontend classification") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());
