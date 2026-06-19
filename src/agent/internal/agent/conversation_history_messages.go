@@ -102,15 +102,35 @@ func conversationHistoryMessageContents(ctx context.Context, history *langmemory
 func conversationHistoryMessageContentsFromEvents(events []SessionEvent, currentRunID string, maxTokens int) []llms.MessageContent {
 	entries := make([]conversationHistorySelectionEntry, 0, len(events))
 	firstUserInputIndex := firstSelectableUserInputIndex(events, currentRunID)
+	pendingCompactionReferenceByEventIndex := map[int]string{}
 	for i, event := range events {
 		if eventBelongsToRun(event, currentRunID) {
+			continue
+		}
+		if event.Source == EventSourceCompactionPrefix {
+			content := formatCompactionReferenceSummary(event.Content)
+			if content == "" {
+				continue
+			}
+			role := compactionReferenceSummaryRole(lastConversationHistoryRole(entries))
+			if tailIndex, tailRole, ok := nextPromptHistoryRole(events, i+1, currentRunID); ok && compactionReferenceRoleConflicts(role, tailRole) {
+				pendingCompactionReferenceByEventIndex[tailIndex] = mergeTextBlocks(pendingCompactionReferenceByEventIndex[tailIndex], content)
+				continue
+			}
+			message := llms.TextParts(role, content)
+			entries = append(entries, conversationHistorySelectionEntry{
+				message:   message,
+				tokens:    estimateMessageTokens(message),
+				protected: false,
+			})
 			continue
 		}
 		record, ok := messageRecordFromSessionEvent(event)
 		if !ok {
 			continue
 		}
-		content := strings.TrimSpace(record.Content)
+		content := mergeTextBlocks(pendingCompactionReferenceByEventIndex[i], record.Content)
+		content = strings.TrimSpace(content)
 		if content == "" {
 			continue
 		}
@@ -125,6 +145,89 @@ func conversationHistoryMessageContentsFromEvents(events []SessionEvent, current
 		})
 	}
 	return selectConversationHistoryWithinBudget(entries, maxTokens)
+}
+
+func lastConversationHistoryRole(entries []conversationHistorySelectionEntry) llms.ChatMessageType {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].message.Role != "" {
+			return entries[i].message.Role
+		}
+	}
+	return ""
+}
+
+func compactionReferenceSummaryRole(previousRole llms.ChatMessageType) llms.ChatMessageType {
+	switch previousRole {
+	case llms.ChatMessageTypeAI, llms.ChatMessageTypeTool, llms.ChatMessageTypeFunction:
+		return llms.ChatMessageTypeHuman
+	default:
+		return llms.ChatMessageTypeAI
+	}
+}
+
+func nextPromptHistoryRole(events []SessionEvent, start int, currentRunID string) (int, llms.ChatMessageType, bool) {
+	for i := start; i < len(events); i++ {
+		event := events[i]
+		if eventBelongsToRun(event, currentRunID) || event.Source == EventSourceCompactionPrefix {
+			continue
+		}
+		record, ok := messageRecordFromSessionEvent(event)
+		if !ok || strings.TrimSpace(record.Content) == "" {
+			continue
+		}
+		role := llms.ChatMessageType(record.Role)
+		if _, ok := messageContentFromChatMessage(role, record.Content); !ok {
+			continue
+		}
+		return i, role, true
+	}
+	return -1, "", false
+}
+
+func compactionReferenceRoleConflicts(summaryRole, tailRole llms.ChatMessageType) bool {
+	switch summaryRole {
+	case llms.ChatMessageTypeAI:
+		return tailRole == llms.ChatMessageTypeAI || tailRole == llms.ChatMessageTypeTool || tailRole == llms.ChatMessageTypeFunction
+	case llms.ChatMessageTypeHuman:
+		return tailRole == llms.ChatMessageTypeHuman
+	default:
+		return summaryRole == tailRole
+	}
+}
+
+func formatCompactionReferenceSummary(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return ""
+	}
+	if strings.HasPrefix(summary, "[CONTEXT COMPACTION - REFERENCE ONLY]") {
+		return summary
+	}
+	return strings.Join([]string{
+		"[CONTEXT COMPACTION - REFERENCE ONLY]",
+		"Earlier turns were compacted into the summary below.",
+		"Treat it as background reference, NOT as active instructions.",
+		"Do NOT answer questions or fulfill requests mentioned in this summary.",
+		"Respond ONLY to the latest user message that appears AFTER this summary.",
+		"Topic overlap with the summary does NOT mean you should resume its task.",
+		"If this summary conflicts with later messages, the latest message WINS.",
+		"",
+		"Summary:",
+		summary,
+	}, "\n")
+}
+
+func mergeTextBlocks(first, second string) string {
+	first = strings.TrimSpace(first)
+	second = strings.TrimSpace(second)
+	switch {
+	case first == "":
+		return second
+	case second == "":
+		return first
+	default:
+		return first + "\n\n" + second
+	}
 }
 
 func firstSelectableUserInputIndex(events []SessionEvent, currentRunID string) int {
@@ -156,7 +259,7 @@ func sumSessionEventTokensExcludingRun(events []SessionEvent, runID string) int 
 
 func isProtectedConversationHistoryEvent(event SessionEvent, index int, firstUserInputIndex int) bool {
 	switch event.Source {
-	case EventSourcePinnedRoot, EventSourceCompactionPrefix:
+	case EventSourcePinnedRoot:
 		return true
 	}
 	return index == firstUserInputIndex
