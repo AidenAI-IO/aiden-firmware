@@ -141,7 +141,6 @@ type agentDTO struct {
 	VoiceStreamingTTSEnabled   bool    `json:"voice_streaming_tts_enabled"`
 	VoiceToolCallSpeech        bool    `json:"voice_tool_call_speech"`
 	VoiceProgressSpeechEnabled bool    `json:"voice_progress_speech_enabled"`
-	VoiceSpeechSummaryEnabled  bool    `json:"voice_speech_summary_enabled"`
 	VoiceMaxResponseTokens     int     `json:"voice_max_response_tokens"`
 	MaxIterations              int     `json:"max_iterations"`
 	ForceSimpleLoop            bool    `json:"force_simple_loop"`
@@ -266,7 +265,6 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		VoiceStreamingTTSEnabled:   boolPtr(d.Agent.VoiceStreamingTTSEnabled),
 		VoiceToolCallSpeech:        boolPtr(d.Agent.VoiceToolCallSpeech),
 		VoiceProgressSpeechEnabled: boolPtr(d.Agent.VoiceProgressSpeechEnabled),
-		VoiceSpeechSummaryEnabled:  boolPtr(d.Agent.VoiceSpeechSummaryEnabled),
 		VoiceMaxResponseTokens:     d.Agent.VoiceMaxResponseTokens,
 		MaxIterations:              d.Agent.MaxIterations,
 		ForceSimpleLoop:            d.Agent.ForceSimpleLoop,
@@ -384,7 +382,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			VoiceStreamingTTSEnabled:   cfg.VoiceStreamingTTSEnabledOrDefault(),
 			VoiceToolCallSpeech:        cfg.VoiceToolCallSpeechOrDefault(),
 			VoiceProgressSpeechEnabled: cfg.VoiceProgressSpeechEnabledOrDefault(),
-			VoiceSpeechSummaryEnabled:  cfg.VoiceSpeechSummaryEnabledOrDefault(),
 			VoiceMaxResponseTokens:     cfg.VoiceMaxResponseTokensOrDefault(),
 			MaxIterations:              cfg.MaxIterations,
 			ForceSimpleLoop:            cfg.ForceSimpleLoop,

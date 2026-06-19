@@ -80,9 +80,7 @@ voice_first_turn_timeout_ms = 10000
 voice_max_turns = 0
 voice_interrupt_on_wakeup = true
 voice_streaming_tts_enabled = true
-voice_tool_call_speech = false
-voice_speech_summary_enabled = true
-voice_speech_max_runes = 120
+voice_tool_call_speech = true
 voice_max_response_tokens = 400
 
 [audio]

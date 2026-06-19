@@ -21,9 +21,10 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		&stubTool{name: "screenshot", description: "Capture screen."},
 		&stubTool{name: "save_memory", description: "Save memory."},
 	}
+	toolSpeechDisabled := false
 
 	profiles := buildRoleProfiles(
-		AgentConfig{Instruction: "base", AdditionalPrompt: "extra"},
+		AgentConfig{Instruction: "base", AdditionalPrompt: "extra", VoiceToolCallSpeech: &toolSpeechDisabled},
 		skills,
 		tools,
 		"MEMORY CONTEXT",
@@ -254,9 +255,9 @@ func TestBuildRoleProfilesIncludesOpenAppRulesOnlyWhenAvailable(t *testing.T) {
 	}
 }
 
-func TestBuildRoleProfilesOmitsStructuredSpeechWhenSpeechSummaryDisabled(t *testing.T) {
+func TestBuildRoleProfilesUsePlainFinalAnswersForVoiceFirstOutput(t *testing.T) {
 	profiles := buildRoleProfiles(
-		AgentConfig{VoiceSpeechSummaryEnabled: boolPtrRoleProfile(false)},
+		AgentConfig{},
 		ResolvedSkills{},
 		nil,
 		MemoryContext{},
@@ -264,10 +265,10 @@ func TestBuildRoleProfilesOmitsStructuredSpeechWhenSpeechSummaryDisabled(t *test
 
 	for _, profile := range []RoleProfile{profiles.Planner, profiles.Verifier} {
 		if strings.Contains(profile.SystemPrompt, `"speech":`) {
-			t.Fatalf("%s prompt should not require structured speech when speech summary is disabled:\n%s", profile.Name, profile.SystemPrompt)
+			t.Fatalf("%s prompt should not require structured speech:\n%s", profile.Name, profile.SystemPrompt)
 		}
-		if profile.Name == RolePlanner && (!strings.Contains(profile.SystemPrompt, "plain text") || !strings.Contains(profile.SystemPrompt, "not JSON")) {
-			t.Fatalf("planner prompt should ask for plain text final answers when speech summary is disabled:\n%s", profile.SystemPrompt)
+		if profile.Name == RolePlanner && (!strings.Contains(profile.SystemPrompt, "Voice interaction is the core use case") || !strings.Contains(profile.SystemPrompt, "plain text")) {
+			t.Fatalf("planner prompt should ask for concise plain-text final answers:\n%s", profile.SystemPrompt)
 		}
 		if profile.Name == RoleVerifier && !strings.Contains(profile.SystemPrompt, "final_answer") {
 			t.Fatalf("verifier prompt should keep final_answer as the plain user-facing answer:\n%s", profile.SystemPrompt)

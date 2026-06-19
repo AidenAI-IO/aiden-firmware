@@ -551,7 +551,6 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"agent", "voice_streaming_tts_enabled", CONFIG_FIELD_BOOL},
         {"agent", "voice_tool_call_speech", CONFIG_FIELD_BOOL},
         {"agent", "voice_progress_speech_enabled", CONFIG_FIELD_BOOL},
-        {"agent", "voice_speech_summary_enabled", CONFIG_FIELD_BOOL},
         {"agent", "voice_max_response_tokens", CONFIG_FIELD_NUMBER},
         {"agent", "max_iterations", CONFIG_FIELD_NUMBER},
         {"agent", "force_simple_loop", CONFIG_FIELD_BOOL},
@@ -1466,7 +1465,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddBoolToObject(agent, "voice_streaming_tts_enabled", config.voice_streaming_tts_enabled ? 1 : 0);
     cJSON_AddBoolToObject(agent, "voice_tool_call_speech", config.voice_tool_call_speech ? 1 : 0);
     cJSON_AddBoolToObject(agent, "voice_progress_speech_enabled", config.voice_progress_speech_enabled ? 1 : 0);
-    cJSON_AddBoolToObject(agent, "voice_speech_summary_enabled", config.voice_speech_summary_enabled ? 1 : 0);
     cJSON_AddNumberToObject(agent, "voice_max_response_tokens", config.voice_max_response_tokens);
     cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
     cJSON_AddBoolToObject(agent, "force_simple_loop", config.force_simple_loop ? 1 : 0);
@@ -1735,7 +1733,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_bool(&config->voice_streaming_tts_enabled, agent, "voice_streaming_tts_enabled");
         set_json_bool(&config->voice_tool_call_speech, agent, "voice_tool_call_speech");
         set_json_bool(&config->voice_progress_speech_enabled, agent, "voice_progress_speech_enabled");
-        set_json_bool(&config->voice_speech_summary_enabled, agent, "voice_speech_summary_enabled");
         set_json_int(&config->voice_max_response_tokens, agent, "voice_max_response_tokens");
         set_json_int(&config->max_iterations, agent, "max_iterations");
         set_json_bool(&config->force_simple_loop, agent, "force_simple_loop");

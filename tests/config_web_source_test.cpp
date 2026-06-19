@@ -1105,7 +1105,7 @@ TEST_CASE("config web resolved config validation keeps required fields and type 
     CHECK(source.find("validate_required_string(model, \"model\", \"provider\", false") != std::string::npos);
     CHECK(source.find("\"search\", \"has_api_key\", CONFIG_FIELD_BOOL") != std::string::npos);
     CHECK(source.find("\"voice_progress_speech_enabled\", CONFIG_FIELD_BOOL") != std::string::npos);
-    CHECK(source.find("\"voice_speech_summary_enabled\", CONFIG_FIELD_BOOL") != std::string::npos);
+    CHECK(source.find("\"voice_speech_summary_enabled\", CONFIG_FIELD_BOOL") == std::string::npos);
 }
 
 TEST_CASE("config web rendered config controls are registered in field type guards") {

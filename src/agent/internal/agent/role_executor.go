@@ -2038,9 +2038,6 @@ func parseVerifierDecision(raw, fallbackAnswer string) verifierDecision {
 		if decision.Text != "" && decision.FinalAnswer == "" {
 			decision.FinalAnswer = decision.Text
 		}
-		if decision.CanFinish && decision.Text != "" && decision.Speech != "" {
-			decision.FinalAnswer = marshalStructuredFinalAnswer(decision.Speech, decision.Text)
-		}
 		decision.Reason = strings.TrimSpace(decision.Reason)
 		decision.ObservedState = normalizeObservedWorldState(decision.ObservedState)
 		if decision.NeedsReplan {
@@ -2073,17 +2070,6 @@ func parseVerifierDecision(raw, fallbackAnswer string) verifierDecision {
 		FinalAnswer: text,
 		Reason:      "verifier returned explicit non-JSON final answer",
 	}
-}
-
-func marshalStructuredFinalAnswer(speechText, output string) string {
-	payload, err := json.Marshal(structuredFinalAnswer{
-		Speech: strings.TrimSpace(speechText),
-		Text:   strings.TrimSpace(output),
-	})
-	if err != nil {
-		return strings.TrimSpace(output)
-	}
-	return string(payload)
 }
 
 func extractMarkedFinalAnswer(content string) string {

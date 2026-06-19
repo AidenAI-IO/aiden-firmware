@@ -97,11 +97,10 @@ func TestBuildSpeechTextNormalizesTablesAndTasksWithoutDroppingContent(t *testin
 	}
 }
 
-func TestBuildSpeechTextKeepsOutputWhenSummaryDisabled(t *testing.T) {
-	disabled := false
+func TestBuildSpeechTextKeepsOutput(t *testing.T) {
 	output := "第一句很长，但用户仍然应该能在关闭摘要时听到完整内容。\n\n第二段也要保留。"
 
-	speech := BuildSpeechText(output, Config{VoiceSpeechSummaryEnabled: &disabled})
+	speech := BuildSpeechText(output, Config{})
 
 	if speech != strings.TrimSpace(output) {
 		t.Fatalf("speech = %q, want original output", speech)
@@ -118,10 +117,10 @@ func TestBuildSpeechTextDoesNotKeepOnlyFirstSentence(t *testing.T) {
 	}
 }
 
-func TestRunResultSpeechTextReturnsSummaryWhenPresent(t *testing.T) {
+func TestRunResultSpokenTextReturnsOutputWhenSpeechTextPresent(t *testing.T) {
 	result := RunResult{Output: "完整回答。", SpeechText: "播报摘要。"}
-	if got := result.SpokenText(); got != "播报摘要。" {
-		t.Fatalf("SpokenText() = %q, want speech text", got)
+	if got := result.SpokenText(); got != "完整回答。" {
+		t.Fatalf("SpokenText() = %q, want output", got)
 	}
 }
 
@@ -132,19 +131,10 @@ func TestRunResultSpeechTextFallsBackToOutput(t *testing.T) {
 	}
 }
 
-func TestRunResultSpokenTextForConfigPrefersSpeechText(t *testing.T) {
+func TestRunResultSpokenTextForConfigReturnsOutput(t *testing.T) {
 	result := RunResult{Output: "完整回答应该显示。", SpeechText: "短口播。"}
-	if got := result.SpokenTextForConfig(Config{}); got != "短口播。" {
-		t.Fatalf("SpokenTextForConfig() = %q, want speech text", got)
-	}
-}
-
-func TestRunResultSpokenTextForConfigIgnoresSpeechTextWhenSummaryDisabled(t *testing.T) {
-	disabled := false
-	result := RunResult{Output: "完整回答应该显示。", SpeechText: "短口播。"}
-
-	if got := result.SpokenTextForConfig(Config{VoiceSpeechSummaryEnabled: &disabled}); got != "完整回答应该显示。" {
-		t.Fatalf("SpokenTextForConfig() = %q, want output when summary is disabled", got)
+	if got := result.SpokenTextForConfig(Config{}); got != "完整回答应该显示。" {
+		t.Fatalf("SpokenTextForConfig() = %q, want output", got)
 	}
 }
 
@@ -218,44 +208,41 @@ func TestFinalizeSpeechOutputParsesStructuredAnswer(t *testing.T) {
 	if output != "完整回答。\n\n保留给屏幕。" {
 		t.Fatalf("output = %q", output)
 	}
-	if speech != "短口播。" {
-		t.Fatalf("speech = %q", speech)
+	if speech != "" {
+		t.Fatalf("speech = %q, want empty", speech)
 	}
 }
 
-func TestFinalizeSpeechOutputIgnoresStructuredSpeechWhenSummaryDisabled(t *testing.T) {
-	disabled := false
-	raw := `{"speech":"短口播。","text":"完整回答。"}`
+func TestFinalizeSpeechOutputParsesFinalAnswerField(t *testing.T) {
+	raw := `{"speech":"短口播。","final_answer":"完整回答。"}`
 
-	output, speech := finalizeSpeechOutput(raw, Config{VoiceSpeechSummaryEnabled: &disabled})
+	output, speech := finalizeSpeechOutput(raw, Config{})
 
 	if output != "完整回答。" {
 		t.Fatalf("output = %q", output)
 	}
 	if speech != "" {
-		t.Fatalf("speech = %q, want empty when summary is disabled", speech)
+		t.Fatalf("speech = %q, want empty", speech)
 	}
 }
 
-func TestFinalizeSpeechOutputKeepsPlainTextWhenSummaryDisabled(t *testing.T) {
-	disabled := false
+func TestFinalizeSpeechOutputKeepsPlainText(t *testing.T) {
 	raw := "完整回答。"
 
-	output, speech := finalizeSpeechOutput(raw, Config{VoiceSpeechSummaryEnabled: &disabled})
+	output, speech := finalizeSpeechOutput(raw, Config{})
 
 	if output != "完整回答。" {
 		t.Fatalf("output = %q", output)
 	}
 	if speech != "" {
-		t.Fatalf("speech = %q, want empty for plain answer when summary is disabled", speech)
+		t.Fatalf("speech = %q, want empty for plain answer", speech)
 	}
 }
 
-func TestFinalizeSpeechOutputParsesTextOnlyWhenSummaryDisabled(t *testing.T) {
-	disabled := false
+func TestFinalizeSpeechOutputParsesTextOnlyStructuredAnswer(t *testing.T) {
 	raw := `{"text":"完整回答。"}`
 
-	output, speech := finalizeSpeechOutput(raw, Config{VoiceSpeechSummaryEnabled: &disabled})
+	output, speech := finalizeSpeechOutput(raw, Config{})
 
 	if output != "完整回答。" {
 		t.Fatalf("output = %q", output)

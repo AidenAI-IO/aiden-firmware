@@ -12,8 +12,7 @@ var (
 	markdownLinkPattern  = regexp.MustCompile(`\[([^\]]+)\]\(([^)]*)\)`)
 )
 
-// BuildSpeechText returns the full assistant output for fallback TTS. Structured
-// speech/text responses remain the preferred path for concise spoken output.
+// BuildSpeechText returns the full assistant output normalized for fallback TTS.
 func BuildSpeechText(output string, _ Config) string {
 	output = strings.TrimSpace(output)
 	if output == "" {
@@ -169,8 +168,9 @@ func NewSpeechStreamWriter(target io.Writer) *SpeechStreamWriter {
 }
 
 type structuredFinalAnswer struct {
-	Speech string `json:"speech"`
-	Text   string `json:"text"`
+	Speech      string `json:"speech"`
+	Text        string `json:"text"`
+	FinalAnswer string `json:"final_answer"`
 }
 
 func parseStructuredFinalAnswer(raw string) (output string, speechText string, ok bool) {
@@ -190,6 +190,9 @@ func parseStructuredFinalAnswer(raw string) (output string, speechText string, o
 		}
 	}
 	output = strings.TrimSpace(answer.Text)
+	if output == "" {
+		output = strings.TrimSpace(answer.FinalAnswer)
+	}
 	speechText = strings.TrimSpace(answer.Speech)
 	if output == "" {
 		return "", "", false
@@ -199,27 +202,16 @@ func parseStructuredFinalAnswer(raw string) (output string, speechText string, o
 
 func finalizeSpeechOutput(raw string, cfg Config) (string, string) {
 	output := strings.TrimSpace(raw)
-	if parsedOutput, parsedSpeech, ok := parseStructuredFinalAnswer(output); ok {
-		if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
-			return parsedOutput, ""
-		}
-		if parsedSpeech != "" {
-			return parsedOutput, parsedSpeech
-		}
-		return parsedOutput, BuildSpeechText(parsedOutput, cfg)
+	if parsedOutput, _, ok := parseStructuredFinalAnswer(output); ok {
+		return parsedOutput, ""
 	}
-	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
-		return output, ""
-	}
-	return output, BuildSpeechText(output, cfg)
+	return output, ""
 }
 
 func speechStreamWriterForConfig(target io.Writer, cfg Config) io.Writer {
 	if target == nil {
 		return nil
 	}
-	if cfg.VoiceSpeechSummaryEnabledOrDefault() {
-		return NewJSONFieldStreamWriter(target, "speech")
-	}
-	return NewJSONFieldOrPlainStreamWriter(target, "text")
+	_ = cfg
+	return NewJSONFieldOrPlainStreamWriter(target, "final_answer")
 }

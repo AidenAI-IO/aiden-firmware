@@ -123,9 +123,6 @@ func canonicalTurnInputFromRunRequest(req RunRequest) TurnInput {
 }
 
 func (r RunResult) SpokenText() string {
-	if text := strings.TrimSpace(r.SpeechText); text != "" {
-		return text
-	}
 	return strings.TrimSpace(r.Output)
 }
 
@@ -133,17 +130,7 @@ func (r RunResult) SpokenTextForConfig(cfg Config) string {
 	if r.WaitForWakeupRequested {
 		return ""
 	}
-	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
-		return strings.TrimSpace(r.Output)
-	}
-	if text := strings.TrimSpace(r.SpeechText); text != "" {
-		return text
-	}
-	text := BuildSpeechText(r.Output, cfg)
-	if text != "" {
-		return text
-	}
-	return r.SpokenText()
+	return strings.TrimSpace(r.Output)
 }
 
 type RunSteerMessage struct {
@@ -1140,12 +1127,11 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 	}
 	return buildRoleProfiles(
 		AgentConfig{
-			Instruction:               r.config.Instruction,
-			AdditionalPrompt:          r.config.AdditionalPrompt,
-			RuntimeContext:            runtimeContext,
-			ForceSimpleLoop:           r.config.ForceSimpleLoop,
-			VoiceSpeechSummaryEnabled: r.config.VoiceSpeechSummaryEnabled,
-			VoiceToolCallSpeech:       r.config.VoiceToolCallSpeech,
+			Instruction:         r.config.Instruction,
+			AdditionalPrompt:    r.config.AdditionalPrompt,
+			RuntimeContext:      runtimeContext,
+			ForceSimpleLoop:     r.config.ForceSimpleLoop,
+			VoiceToolCallSpeech: r.config.VoiceToolCallSpeech,
 		},
 		skills,
 		availableTools,
