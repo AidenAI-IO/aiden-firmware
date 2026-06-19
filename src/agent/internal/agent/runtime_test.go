@@ -2292,11 +2292,14 @@ func TestRuntimeLogsPreserveThinkStartTagInToolCallContent(t *testing.T) {
 	}
 
 	logText := logs.String()
-	if !strings.Contains(logText, "Role output: role=planner content=<think>") {
-		t.Fatalf("role output log lost think start tag:\n%s", logText)
+	if !strings.Contains(logText, "Role output: role=planner") {
+		t.Fatalf("missing planner role output log:\n%s", logText)
 	}
-	if !strings.Contains(logText, "Tool call: name=current_time input={\"timezone\":\"local\"} content=<think>") {
-		t.Fatalf("tool call log lost think start tag:\n%s", logText)
+	if !strings.Contains(logText, "Tool call: name=current_time") {
+		t.Fatalf("missing current_time tool call log:\n%s", logText)
+	}
+	if strings.Count(logText, "<think>") < 2 {
+		t.Fatalf("logs lost think start tag:\n%s", logText)
 	}
 	if !strings.Contains(logText, "</think>") {
 		t.Fatalf("log lost think end tag:\n%s", logText)

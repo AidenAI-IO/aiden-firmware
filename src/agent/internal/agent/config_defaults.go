@@ -10,6 +10,7 @@ const (
 	defaultModelName               = "bytedance-seed/seed-2.0-lite"
 	defaultModelTemperature        = 0.2
 	defaultModelMaxResponseTokens  = 1000
+	defaultModelLogRawResponse     = true
 	defaultTTSProvider             = "minimax-ws"
 	defaultTTSVoiceID              = "male-qn-qingse"
 	defaultTTSEmotion              = "happy"
@@ -63,6 +64,7 @@ func DefaultConfig() Config {
 			Model:             defaultModelName,
 			Temperature:       defaultModelTemperature,
 			MaxResponseTokens: defaultModelMaxResponseTokens,
+			LogRawResponse:    defaultModelLogRawResponse,
 		},
 		TTS: TTSConfig{
 			Provider: defaultTTSProvider,

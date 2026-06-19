@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -138,6 +139,40 @@ func TestOpenAICompatibleModelLogsRawResponseWhenEnabled(t *testing.T) {
 	assertRawResponseLogHasRFC3339NanoTimestamp(t, logText)
 }
 
+func TestOpenAICompatibleModelRawResponseLogUsesEffectiveRequestModel(t *testing.T) {
+	rawResponse := `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(rawResponse))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	model := newOpenAICompatibleModel(
+		server.URL,
+		"configured-model",
+		"",
+		server.Client(),
+		withOpenAICompatibleRawResponseLogger(newLLMRawResponseLogger(logDir)),
+	)
+	_, err := model.GenerateContent(
+		context.Background(),
+		[]llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart("hello")},
+		}},
+		llms.WithModel("override-model"),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	logText := readRawResponseLog(t, logDir)
+	if !strings.Contains(logText, "model=override-model") {
+		t.Fatalf("raw response log used wrong model metadata:\n%s", logText)
+	}
+}
+
 func TestOpenAICompatibleModelStreamsContent(t *testing.T) {
 	var captured struct {
 		Stream bool `json:"stream"`
@@ -254,7 +289,39 @@ func TestModelManagerEnablesRawResponseLoggingFromModelConfig(t *testing.T) {
 	}
 }
 
-func TestModelManagerDoesNotLogRawResponseByDefault(t *testing.T) {
+func TestModelManagerEnablesRawResponseLoggingFromDefaultConfig(t *testing.T) {
+	rawResponse := `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(rawResponse))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	cfg := DefaultConfig().Model
+	cfg.Provider = "openai"
+	cfg.Model = "test-model"
+	cfg.BaseURL = server.URL
+	manager := NewModelManager(cfg, ProxyConfig{}, WithLLMRawResponseLogDir(logDir))
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	_, err = model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	logText := readRawResponseLog(t, logDir)
+	if !strings.Contains(logText, rawResponse) {
+		t.Fatalf("raw response log missing response from default config:\n%s", logText)
+	}
+}
+
+func TestModelManagerDoesNotLogRawResponseWhenDisabled(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
@@ -280,7 +347,7 @@ func TestModelManagerDoesNotLogRawResponseByDefault(t *testing.T) {
 	}
 
 	if _, err := os.Stat(rawResponseLogPath(logDir)); !os.IsNotExist(err) {
-		t.Fatalf("raw response log should not exist by default, err=%v", err)
+		t.Fatalf("raw response log should not exist when disabled, err=%v", err)
 	}
 }
 
@@ -388,6 +455,11 @@ func readRawResponseLog(t *testing.T, logDir string) string {
 }
 
 func rawResponseLogPath(logDir string) string {
+	matches, _ := filepath.Glob(filepath.Join(logDir, "llm-raw-*.log"))
+	sort.Strings(matches)
+	if len(matches) > 0 {
+		return matches[len(matches)-1]
+	}
 	return filepath.Join(logDir, "llm-raw-"+time.Now().Format("20060102")+".log")
 }
 

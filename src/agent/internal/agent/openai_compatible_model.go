@@ -259,23 +259,28 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		_ = m.logRawResponse("http_error", resp.StatusCode, string(body))
+		_ = m.logRawResponse(reqPayload.Model, "http_error", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
 	if reqPayload.Stream {
-		return m.decodeStreamingResponse(ctx, resp.Body, callOpts.StreamingFunc, resp.StatusCode)
+		return m.decodeStreamingResponse(ctx, resp.Body, callOpts.StreamingFunc, reqPayload.Model, resp.StatusCode)
 	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-	_ = m.logRawResponse("http_response", resp.StatusCode, string(body))
 
 	var decoded compatibleChatResponse
-	if err := json.Unmarshal(body, &decoded); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	if m.rawLogger == nil {
+		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+			return nil, fmt.Errorf("decode response: %w", err)
+		}
+	} else {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read response: %w", err)
+		}
+		_ = m.logRawResponse(reqPayload.Model, "http_response", resp.StatusCode, string(body))
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			return nil, fmt.Errorf("decode response: %w", err)
+		}
 	}
 	if len(decoded.Choices) == 0 {
 		return nil, fmt.Errorf("empty response choices")
@@ -304,7 +309,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	return result, nil
 }
 
-func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, body io.Reader, stream func(context.Context, []byte) error, statusCode int) (*llms.ContentResponse, error) {
+func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, body io.Reader, stream func(context.Context, []byte) error, requestModel string, statusCode int) (*llms.ContentResponse, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -322,7 +327,7 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
-		_ = m.logRawResponse("stream_event", statusCode, rawLine)
+		_ = m.logRawResponse(requestModel, "stream_event", statusCode, rawLine)
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
 			break
@@ -411,11 +416,11 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	return &llms.ContentResponse{Choices: []*llms.ContentChoice{choice}}, nil
 }
 
-func (m *openAICompatibleModel) logRawResponse(kind string, statusCode int, raw string) error {
+func (m *openAICompatibleModel) logRawResponse(modelName, kind string, statusCode int, raw string) error {
 	if m == nil || m.rawLogger == nil {
 		return nil
 	}
-	return m.rawLogger.Log(m.model, kind, statusCode, raw)
+	return m.rawLogger.Log(modelName, kind, statusCode, raw)
 }
 
 func convertMessageContent(message llms.MessageContent) (compatibleMessage, error) {

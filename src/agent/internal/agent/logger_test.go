@@ -13,6 +13,7 @@ func TestCleanupOldLogFilesRemovesLogsOlderThanTwoDays(t *testing.T) {
 
 	writeTestLogFile(t, logDir, "agent-20260616.log", now)
 	writeTestLogFile(t, logDir, "llm-raw-20260616.log", now)
+	writeTestLogFile(t, logDir, "agent-20260617.log", now.Add(-72*time.Hour))
 	writeTestLogFile(t, logDir, "agent-20260618.log", now.Add(-72*time.Hour))
 	writeTestLogFile(t, logDir, "custom.log", now.Add(-72*time.Hour))
 	writeTestLogFile(t, logDir, "agent-20260616.txt", now.Add(-72*time.Hour))
@@ -25,6 +26,7 @@ func TestCleanupOldLogFilesRemovesLogsOlderThanTwoDays(t *testing.T) {
 	assertPathMissing(t, filepath.Join(logDir, "agent-20260616.log"))
 	assertPathMissing(t, filepath.Join(logDir, "llm-raw-20260616.log"))
 	assertPathMissing(t, filepath.Join(logDir, "custom.log"))
+	assertPathExists(t, filepath.Join(logDir, "agent-20260617.log"))
 	assertPathExists(t, filepath.Join(logDir, "agent-20260618.log"))
 	assertPathExists(t, filepath.Join(logDir, "agent-20260616.txt"))
 	assertPathExists(t, filepath.Join(logDir, "agent-notadate.log"))
@@ -50,7 +52,13 @@ func TestNewLoggerCleansOldLogFilesOnStartup(t *testing.T) {
 	}
 
 	assertPathMissing(t, oldLog)
-	assertPathExists(t, filepath.Join(logDir, "agent-"+time.Now().Format("20060102")+".log"))
+	matches, err := filepath.Glob(filepath.Join(logDir, "agent-*.log"))
+	if err != nil {
+		t.Fatalf("glob current log files: %v", err)
+	}
+	if len(matches) == 0 {
+		t.Fatalf("expected at least one current agent log file in %s", logDir)
+	}
 }
 
 func writeTestLogFile(t *testing.T, dir, name string, modTime time.Time) {

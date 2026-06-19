@@ -89,7 +89,7 @@ func logFileTime(name string, modTime time.Time) time.Time {
 			continue
 		}
 		if parsed, err := time.ParseInLocation("20060102", date, time.Local); err == nil {
-			return parsed
+			return parsed.Add(24 * time.Hour)
 		}
 	}
 	return modTime
