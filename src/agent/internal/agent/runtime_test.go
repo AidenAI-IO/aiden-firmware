@@ -1001,14 +1001,21 @@ func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T)
 		rootRequest,
 		"Latest user message",
 		correction,
-		"Follow-up classification:",
-		"correction",
 		"Latest committed plan",
 		"在微信群发送100块钱红包",
 		"发送100块钱红包",
 	} {
 		if !strings.Contains(resumePrompt, want) {
 			t.Fatalf("resume planner prompt missing %q:\n%s", want, resumePrompt)
+		}
+	}
+	for _, unwanted := range []string{
+		"Follow-up classification:",
+		"follow_up_relation",
+		"Latest correction",
+	} {
+		if strings.Contains(resumePrompt, unwanted) {
+			t.Fatalf("resume planner prompt should not expose follow-up relation judgement %q:\n%s", unwanted, resumePrompt)
 		}
 	}
 	if strings.Contains(resumePrompt, "发介绍") {
@@ -1081,12 +1088,18 @@ func TestRuntimeRunForcedFollowUpRelationMarksInterruptedCorrection(t *testing.T
 		rootRequest,
 		"Latest user message",
 		correction,
-		"Follow-up classification:",
-		FollowUpCorrection,
-		"Latest correction",
 	} {
 		if !strings.Contains(correctionPrompt, want) {
 			t.Fatalf("correction prompt missing %q:\n%s", want, correctionPrompt)
+		}
+	}
+	for _, unwanted := range []string{
+		"Follow-up classification:",
+		"follow_up_relation",
+		"Latest correction",
+	} {
+		if strings.Contains(correctionPrompt, unwanted) {
+			t.Fatalf("correction prompt should not expose follow-up relation judgement %q:\n%s", unwanted, correctionPrompt)
 		}
 	}
 
