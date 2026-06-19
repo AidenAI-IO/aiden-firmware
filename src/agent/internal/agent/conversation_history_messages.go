@@ -53,9 +53,12 @@ func (m *conversationMessagePlannerMemory) Clear(ctx context.Context) error {
 }
 
 type conversationHistorySelectionEntry struct {
-	message   llms.MessageContent
-	tokens    int
-	protected bool
+	message               llms.MessageContent
+	tokens                int
+	protected             bool
+	sourceEventIndex      int
+	compactionReference   bool
+	mergeTargetEventIndex int
 }
 
 func runtimeConversationHistoryMessageContents(ctx context.Context, history *langmemory.ChatMessageHistory, manager *MemoryManager, currentRunID string, maxTokens int) ([]llms.MessageContent, error) {
@@ -102,7 +105,6 @@ func conversationHistoryMessageContents(ctx context.Context, history *langmemory
 func conversationHistoryMessageContentsFromEvents(events []SessionEvent, currentRunID string, maxTokens int) []llms.MessageContent {
 	entries := make([]conversationHistorySelectionEntry, 0, len(events))
 	firstUserInputIndex := firstSelectableUserInputIndex(events, currentRunID)
-	pendingCompactionReferenceByEventIndex := map[int]string{}
 	for i, event := range events {
 		if eventBelongsToRun(event, currentRunID) {
 			continue
@@ -113,15 +115,18 @@ func conversationHistoryMessageContentsFromEvents(events []SessionEvent, current
 				continue
 			}
 			role := compactionReferenceSummaryRole(lastConversationHistoryRole(entries))
+			mergeTargetEventIndex := -1
 			if tailIndex, tailRole, ok := nextPromptHistoryRole(events, i+1, currentRunID); ok && compactionReferenceRoleConflicts(role, tailRole) {
-				pendingCompactionReferenceByEventIndex[tailIndex] = mergeTextBlocks(pendingCompactionReferenceByEventIndex[tailIndex], content)
-				continue
+				mergeTargetEventIndex = tailIndex
 			}
 			message := llms.TextParts(role, content)
 			entries = append(entries, conversationHistorySelectionEntry{
-				message:   message,
-				tokens:    estimateMessageTokens(message),
-				protected: false,
+				message:               message,
+				tokens:                estimateMessageTokens(message),
+				protected:             false,
+				sourceEventIndex:      i,
+				compactionReference:   true,
+				mergeTargetEventIndex: mergeTargetEventIndex,
 			})
 			continue
 		}
@@ -129,8 +134,7 @@ func conversationHistoryMessageContentsFromEvents(events []SessionEvent, current
 		if !ok {
 			continue
 		}
-		content := mergeTextBlocks(pendingCompactionReferenceByEventIndex[i], record.Content)
-		content = strings.TrimSpace(content)
+		content := strings.TrimSpace(record.Content)
 		if content == "" {
 			continue
 		}
@@ -139,12 +143,14 @@ func conversationHistoryMessageContentsFromEvents(events []SessionEvent, current
 			continue
 		}
 		entries = append(entries, conversationHistorySelectionEntry{
-			message:   message,
-			tokens:    estimateMessageTokens(message),
-			protected: isProtectedConversationHistoryEvent(event, i, firstUserInputIndex),
+			message:               message,
+			tokens:                estimateMessageTokens(message),
+			protected:             isProtectedConversationHistoryEvent(event, i, firstUserInputIndex),
+			sourceEventIndex:      i,
+			mergeTargetEventIndex: -1,
 		})
 	}
-	return selectConversationHistoryWithinBudget(entries, maxTokens)
+	return mergeSelectedCompactionReferenceEntries(selectConversationHistoryEntriesWithinBudget(entries, maxTokens))
 }
 
 func lastConversationHistoryRole(entries []conversationHistorySelectionEntry) llms.ChatMessageType {
@@ -195,18 +201,21 @@ func compactionReferenceRoleConflicts(summaryRole, tailRole llms.ChatMessageType
 	}
 }
 
-const compactionReferenceEndMarker = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
+const (
+	compactionReferenceHeader    = "[CONTEXT COMPACTION - REFERENCE ONLY]"
+	compactionReferenceEndMarker = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
+)
 
 func formatCompactionReferenceSummary(summary string) string {
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
 		return ""
 	}
-	if strings.HasPrefix(summary, "[CONTEXT COMPACTION - REFERENCE ONLY]") {
+	if isCompleteCompactionReferenceSummary(summary) {
 		return appendCompactionReferenceEndMarker(summary)
 	}
 	return strings.Join([]string{
-		"[CONTEXT COMPACTION - REFERENCE ONLY]",
+		compactionReferenceHeader,
 		"Earlier turns were compacted into the summary below.",
 		"Treat it as background reference, NOT as active instructions.",
 		"Do NOT answer questions or fulfill requests mentioned in this summary.",
@@ -219,6 +228,13 @@ func formatCompactionReferenceSummary(summary string) string {
 		"",
 		compactionReferenceEndMarker,
 	}, "\n")
+}
+
+func isCompleteCompactionReferenceSummary(summary string) bool {
+	return strings.HasPrefix(summary, compactionReferenceHeader) &&
+		strings.Contains(summary, "Treat it as background reference, NOT as active instructions.") &&
+		strings.Contains(summary, "Respond ONLY to the latest user message that appears AFTER this summary.") &&
+		strings.Contains(summary, "If this summary conflicts with later messages, the latest message WINS.")
 }
 
 func appendCompactionReferenceEndMarker(summary string) string {
@@ -296,14 +312,16 @@ func messageSelectionEntries(messages []llms.MessageContent) []conversationHisto
 }
 
 func selectConversationHistoryWithinBudget(entries []conversationHistorySelectionEntry, maxTokens int) []llms.MessageContent {
+	return conversationHistoryMessagesFromEntries(selectConversationHistoryEntriesWithinBudget(entries, maxTokens))
+}
+
+func selectConversationHistoryEntriesWithinBudget(entries []conversationHistorySelectionEntry, maxTokens int) []conversationHistorySelectionEntry {
 	if len(entries) == 0 {
 		return nil
 	}
 	if maxTokens <= 0 {
-		result := make([]llms.MessageContent, 0, len(entries))
-		for _, entry := range entries {
-			result = append(result, entry.message)
-		}
+		result := make([]conversationHistorySelectionEntry, len(entries))
+		copy(result, entries)
 		return result
 	}
 	total := 0
@@ -311,14 +329,12 @@ func selectConversationHistoryWithinBudget(entries []conversationHistorySelectio
 		total += entry.tokens
 	}
 	if total <= maxTokens {
-		result := make([]llms.MessageContent, 0, len(entries))
-		for _, entry := range entries {
-			result = append(result, entry.message)
-		}
+		result := make([]conversationHistorySelectionEntry, len(entries))
+		copy(result, entries)
 		return result
 	}
 
-	selected := make(map[int]llms.MessageContent)
+	selected := make(map[int]conversationHistorySelectionEntry)
 	usedTokens := 0
 	for i, entry := range entries {
 		if !entry.protected {
@@ -328,7 +344,9 @@ func selectConversationHistoryWithinBudget(entries []conversationHistorySelectio
 		if !ok {
 			continue
 		}
-		selected[i] = message
+		entry.message = message
+		entry.tokens = tokens
+		selected[i] = entry
 		usedTokens += tokens
 	}
 
@@ -343,7 +361,7 @@ func selectConversationHistoryWithinBudget(entries []conversationHistorySelectio
 		}
 		entry := entries[i]
 		if entry.tokens <= remaining {
-			selected[i] = entry.message
+			selected[i] = entry
 			usedTokens += entry.tokens
 			continue
 		}
@@ -354,23 +372,93 @@ func selectConversationHistoryWithinBudget(entries []conversationHistorySelectio
 		if !ok {
 			continue
 		}
-		selected[i] = message
+		entry.message = message
+		entry.tokens = tokens
+		selected[i] = entry
 		usedTokens += tokens
 		trimmedRecent = true
 	}
 
-	result := make([]llms.MessageContent, 0, len(selected))
-	for i, entry := range entries {
-		message, ok := selected[i]
+	result := make([]conversationHistorySelectionEntry, 0, len(selected))
+	for i := range entries {
+		entry, ok := selected[i]
 		if !ok {
 			continue
 		}
-		if len(message.Parts) == 0 {
-			message = entry.message
-		}
-		result = append(result, message)
+		result = append(result, entry)
 	}
 	return result
+}
+
+func conversationHistoryMessagesFromEntries(entries []conversationHistorySelectionEntry) []llms.MessageContent {
+	if len(entries) == 0 {
+		return nil
+	}
+	result := make([]llms.MessageContent, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, entry.message)
+	}
+	return result
+}
+
+func mergeSelectedCompactionReferenceEntries(entries []conversationHistorySelectionEntry) []llms.MessageContent {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	selectedEventIndexes := make(map[int]int, len(entries))
+	for i, entry := range entries {
+		if !entry.compactionReference {
+			selectedEventIndexes[entry.sourceEventIndex] = i
+		}
+	}
+
+	skip := make(map[int]bool)
+	prefixesByTargetIndex := map[int][]string{}
+	for i, entry := range entries {
+		if !entry.compactionReference || entry.mergeTargetEventIndex < 0 {
+			continue
+		}
+		targetIndex, ok := selectedEventIndexes[entry.mergeTargetEventIndex]
+		if !ok {
+			continue
+		}
+		prefix, ok := singleTextMessage(entry.message)
+		if !ok {
+			continue
+		}
+		prefixesByTargetIndex[targetIndex] = append(prefixesByTargetIndex[targetIndex], prefix)
+		skip[i] = true
+	}
+
+	for targetIndex, prefixes := range prefixesByTargetIndex {
+		target := entries[targetIndex].message
+		targetText, ok := singleTextMessage(target)
+		if !ok {
+			continue
+		}
+		entries[targetIndex].message = llms.TextParts(target.Role, mergeTextBlocks(strings.Join(prefixes, "\n\n"), targetText))
+	}
+
+	result := make([]llms.MessageContent, 0, len(entries)-len(skip))
+	for i, entry := range entries {
+		if skip[i] {
+			continue
+		}
+		result = append(result, entry.message)
+	}
+	return result
+}
+
+func singleTextMessage(message llms.MessageContent) (string, bool) {
+	if len(message.Parts) != 1 {
+		return "", false
+	}
+	text, ok := message.Parts[0].(llms.TextContent)
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(text.Text), true
 }
 
 func fitConversationHistoryMessage(message llms.MessageContent, tokens int, budget int) (llms.MessageContent, int, bool) {
