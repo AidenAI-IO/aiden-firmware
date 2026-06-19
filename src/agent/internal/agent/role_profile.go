@@ -53,7 +53,7 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 			RoleExecutor,
 			cfg,
 			skills,
-			executorToolsForConfig(availableTools),
+			appendExecutorMetaTools(toolsForRole(RoleExecutor, availableTools)),
 			"",
 			RoleCapabilities{CanExecuteStep: true, CanUseTools: true},
 			[]string{
@@ -128,21 +128,29 @@ func verifierRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 }
 
 func plannerToolsForConfig(cfg AgentConfig, tools []langtools.Tool) []langtools.Tool {
+	tools = toolsForRole(RolePlanner, tools)
 	if cfg.ForceSimpleLoop {
 		return appendSimpleTodoMetaTools(tools)
 	}
 	return appendDefaultLoopMetaTools(tools)
 }
 
-func executorToolsForConfig(tools []langtools.Tool) []langtools.Tool {
+func toolsForRole(role RoleName, tools []langtools.Tool) []langtools.Tool {
 	filtered := make([]langtools.Tool, 0, len(tools))
 	for _, tool := range tools {
-		if tool != nil && strings.EqualFold(tool.Name(), "save_memory") {
+		if tool == nil {
+			continue
+		}
+		if !NewToolSpec(tool).AgentExposedToRole(role) {
 			continue
 		}
 		filtered = append(filtered, tool)
 	}
-	return appendExecutorMetaTools(filtered)
+	return filtered
+}
+
+func toolSpecsForRole(role RoleName, tools []langtools.Tool) *ToolSpecs {
+	return NewToolSpecs(toolsForRole(role, tools))
 }
 
 func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {

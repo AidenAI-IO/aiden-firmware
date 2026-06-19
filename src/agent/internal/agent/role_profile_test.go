@@ -327,6 +327,58 @@ func TestRoleCollaborativeExecutorPassesToolsViaWithTools(t *testing.T) {
 	}
 }
 
+func TestExecutorRoleDoesNotExposePlannerOnlySaveMemoryTool(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("save_1", "save_memory", `{"type":"profile","title":"Location","content":"The user is in Shanghai."}`),
+		},
+	}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{
+			Executor: RoleProfile{Name: RoleExecutor, SystemPrompt: "executor"},
+		},
+		[]langtools.Tool{
+			&stubTool{name: "screenshot", description: "Capture screen."},
+			&stubTool{name: "save_memory", description: "Save memory.", output: `{"status":"saved"}`},
+		},
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{
+		Phase:               phaseExecution,
+		PlanCommitted:       true,
+		StepExecutionActive: true,
+		NextStep:            "remember the user's location",
+	}
+	inputs := map[string]string{"input": "remember that my location is Shanghai", "history": ""}
+
+	turn, err := executor.callExecutorTurn(context.Background(), inputs, state, toolSpecsForRole(RoleExecutor, executor.Tools))
+	if err != nil {
+		t.Fatalf("executor turn error: %v", err)
+	}
+	if len(model.tools) != 1 {
+		t.Fatalf("expected one executor model call, got %d", len(model.tools))
+	}
+	if !llmToolsContain(model.tools[0], "screenshot") || !llmToolsContain(model.tools[0], toolFinishStep) {
+		t.Fatalf("executor should receive ordinary executor tools and step meta tools: %#v", model.tools[0])
+	}
+	if llmToolsContain(model.tools[0], "save_memory") {
+		t.Fatalf("executor received planner-only save_memory tool: %#v", model.tools[0])
+	}
+	if turn.Kind != executorTurnTool || turn.Step == nil {
+		t.Fatalf("executor turn = %#v, want invalid tool step", turn)
+	}
+	if !strings.Contains(turn.Step.Observation, "save_memory is not a valid tool") {
+		t.Fatalf("executor should reject planner-only save_memory at execution time: %q", turn.Step.Observation)
+	}
+}
+
 func TestForceSimpleLoopOmitsPlanMetaTools(t *testing.T) {
 	tools := []langtools.Tool{&stubTool{name: "audio_volume", description: "Get or set audio playback volume."}}
 	profiles := buildRoleProfiles(
