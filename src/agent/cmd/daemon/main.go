@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 
 const (
 	wakeupListenTimeout                     = 10 * time.Second
+	wakeupDebounceInterval                  = 500 * time.Millisecond
 	defaultVoiceSteerListenTimeout          = 45 * time.Second
 	voiceTurnCancelWaitTimeout              = 2 * time.Second
 	voiceWakeupInterruptedCorrectionContext = "Voice interruption: the user pressed the physical wakeup button " +
@@ -28,6 +30,7 @@ const (
 )
 
 var voiceSteerListenTimeout = defaultVoiceSteerListenTimeout
+var wakeupDebounceNow = time.Now
 
 var wakeupGPIOPins = []int{33, 32}
 
@@ -245,10 +248,55 @@ func wakeupGPIOPinsLabel() string {
 }
 
 func startWakeupWatchers(newWatcher wakeupWatcherFactory, callback func()) ([]wakeupWatcher, error) {
+	return startWakeupWatchersWithDebounce(newWatcher, callback, wakeupDebounceInterval, wakeupDebounceNow)
+}
+
+type wakeupDebouncer struct {
+	mu       sync.Mutex
+	interval time.Duration
+	now      func() time.Time
+	last     time.Time
+}
+
+func newWakeupDebouncer(interval time.Duration, now func() time.Time) *wakeupDebouncer {
+	if now == nil {
+		now = time.Now
+	}
+	return &wakeupDebouncer{
+		interval: interval,
+		now:      now,
+	}
+}
+
+func (d *wakeupDebouncer) allow() bool {
+	if d == nil || d.interval <= 0 {
+		return true
+	}
+
+	now := d.now()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if !d.last.IsZero() {
+		elapsed := now.Sub(d.last)
+		if elapsed >= 0 && elapsed < d.interval {
+			return false
+		}
+	}
+	d.last = now
+	return true
+}
+
+func startWakeupWatchersWithDebounce(newWatcher wakeupWatcherFactory, callback func(), debounceInterval time.Duration, now func() time.Time) ([]wakeupWatcher, error) {
 	watchers := make([]wakeupWatcher, 0, len(wakeupGPIOPins))
+	debouncer := newWakeupDebouncer(debounceInterval, now)
 	for _, pin := range wakeupGPIOPins {
 		pin := pin
 		watcher, err := newWatcher(pin, func() {
+			if !debouncer.allow() {
+				log.Printf("[wakeup] GPIO %d wakeup event ignored by %s debounce", pin, debounceInterval)
+				return
+			}
 			log.Printf("[wakeup] GPIO %d wakeup event", pin)
 			callback()
 		})
