@@ -85,6 +85,7 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 
 	if len(choice.ToolCalls) > 0 {
 		actions := make([]schema.AgentAction, 0, len(choice.ToolCalls))
+		contentConsumed := false
 		for _, toolCall := range choice.ToolCalls {
 			if toolCall.FunctionCall == nil {
 				continue
@@ -92,14 +93,19 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 			functionName := toolCall.FunctionCall.Name
 			toolInputStr := toolCall.FunctionCall.Arguments
 			invocation := extractToolInvocation(toolInputStr, false)
-			if speech := a.toolSpeechFromChoiceContent(choice.Content); speech != "" {
+			toolCallContent := ""
+			if !contentConsumed {
+				toolCallContent = choice.Content
+				contentConsumed = true
+			}
+			if speech := a.toolSpeechFromChoiceContent(toolCallContent); speech != "" {
 				invocation.Speech = speech
 			}
-			invocation.Description = toolCallDescriptionText(choice.Content, invocation.Description)
+			invocation.Description = toolCallDescriptionText(toolCallContent, invocation.Description)
 
 			contentMsg := "\n"
-			if choice.Content != "" {
-				contentMsg = fmt.Sprintf("responded: %s\n", choice.Content)
+			if toolCallContent != "" {
+				contentMsg = fmt.Sprintf("responded: %s\n", toolCallContent)
 			}
 
 			actions = append(actions, schema.AgentAction{

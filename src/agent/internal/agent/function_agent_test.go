@@ -89,6 +89,70 @@ func TestFunctionAgentParseOutputUsesChoiceContentAsToolSpeech(t *testing.T) {
 	}
 }
 
+func TestFunctionAgentParseOutputBindsChoiceContentToFirstValidToolCall(t *testing.T) {
+	agent := &FunctionAgent{OutputKey: "output", ToolCallSpeech: true}
+
+	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
+		Choices: []*llms.ContentChoice{{
+			Content: "先检查。",
+			ToolCalls: []llms.ToolCall{
+				{ID: "ignored", Type: "function"},
+				{
+					ID:   "call_1",
+					Type: "function",
+					FunctionCall: &llms.FunctionCall{
+						Name:      "echo",
+						Arguments: `{"input":"first"}`,
+					},
+				},
+				{
+					ID:   "call_2",
+					Type: "function",
+					FunctionCall: &llms.FunctionCall{
+						Name:      "echo",
+						Arguments: `{"input":"second"}`,
+					},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ParseOutput() error = %v", err)
+	}
+	if finish != nil {
+		t.Fatalf("expected no finish, got %#v", finish)
+	}
+	if len(actions) != 2 {
+		t.Fatalf("expected 2 actions, got %#v", actions)
+	}
+	if actions[0].ToolInput != "first" || actions[0].ToolID != "call_1" {
+		t.Fatalf("unexpected first action: %#v", actions[0])
+	}
+	if actions[1].ToolInput != "second" || actions[1].ToolID != "call_2" {
+		t.Fatalf("unexpected second action: %#v", actions[1])
+	}
+	if got := toolDescriptionFromAction(actions[0]); got != "先检查。" {
+		t.Fatalf("first tool description = %q", got)
+	}
+	if got := toolSpeechFromAction(actions[0]); got != "先检查。" {
+		t.Fatalf("first tool speech = %q", got)
+	}
+	if got := toolDescriptionFromAction(actions[1]); got != "" {
+		t.Fatalf("second tool description = %q, want empty", got)
+	}
+	if got := toolSpeechFromAction(actions[1]); got != "" {
+		t.Fatalf("second tool speech = %q, want empty", got)
+	}
+
+	var secondLog toolActionLog
+	if err := json.Unmarshal([]byte(actions[1].Log), &secondLog); err != nil {
+		t.Fatalf("second action log should be structured JSON: %v", err)
+	}
+	if strings.Contains(secondLog.Message, "先检查。") {
+		t.Fatalf("second action log repeated assistant content: %#v", secondLog)
+	}
+}
+
 func TestFunctionAgentParseOutputExtractsGenericInputWrapper(t *testing.T) {
 	agent := &FunctionAgent{OutputKey: "output", ToolCallSpeech: true}
 
