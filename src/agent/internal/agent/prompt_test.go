@@ -191,7 +191,10 @@ func TestDefaultAgentBehaviorExcludesMigratedToolDetails(t *testing.T) {
 func TestRolePromptsRequireToolCallSpeechForExternalStateTools(t *testing.T) {
 	enabled := true
 	profiles := buildRoleProfiles(
-		AgentConfig{VoiceToolCallSpeech: &enabled},
+		AgentConfig{
+			VoiceToolCallSpeech: &enabled,
+			TTSConfigured:       true,
+		},
 		ResolvedSkills{},
 		nil,
 		MemoryContext{},
@@ -199,9 +202,15 @@ func TestRolePromptsRequireToolCallSpeechForExternalStateTools(t *testing.T) {
 
 	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
 		for _, want := range []string{
+			"The system prompt already includes the current date and weekday",
+			"Do not call current_time for ordinary date or weekday questions",
+			"when a precise clock time, timezone conversion, offset, timestamp, or elapsed-time calculation is required",
 			"Put a brief assistant content message before every tool call that observes, waits for, reads, or changes external state",
 			"screenshot, wait_for_stable_screen, quick_action, mouse_click, touch_gesture, keyboard_text, keyboard_tap, open_app, recall_memory",
-			"assistant content is spoken by the runtime",
+			"assistant content is spoken aloud by the runtime before the tool runs",
+			"Do not put the final answer in tool-call assistant content",
+			"TTS is configured, so user-facing text output will be spoken aloud",
+			"Do not duplicate the same sentence in tool-call assistant content and the final answer",
 		} {
 			if !strings.Contains(profile.SystemPrompt, want) {
 				t.Fatalf("%s prompt missing tool-call speech requirement %q:\n%s", profile.Name, want, profile.SystemPrompt)
