@@ -405,6 +405,7 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		`id="skillOptConfig"`,
 		`id="skillOptBackendSelect"`,
 		`id="skillSelect"`,
+		`id="skillOptTrainSuiteSelect"`,
 		`id="validationSuiteSelect"`,
 		`id="budgetInput"`,
 		`id="editBudgetInput"`,
@@ -412,9 +413,12 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		`function loadSkills()`,
 		`function loadSkillOptTargets()`,
 		`function syncSkillOptSuites()`,
+		`function loadSkillOptRuns()`,
+		`Promise.allSettled`,
+		`MOBILEGYM_LOCAL_BASE+'/benchmark/runs'`,
 		`skillOptTargets=[];`,
 		`skillOptTargetBySkill={};`,
-		`document.getElementById('suiteSelect').innerHTML='<option value="">(failed to load train suites)</option>';`,
+		`document.getElementById('skillOptTrainSuiteSelect').innerHTML='<option value="">(failed to load train suites)</option>';`,
 		`syncDelBtn();syncRunButtons();`,
 		`/benchmark/skills`,
 		`/benchmark/skillopt-targets`,
@@ -440,7 +444,7 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		`benchmarkEndpoint('/benchmark/status')`,
 		`benchmarkEndpoint('/benchmark/log')`,
 		`benchmarkEndpoint('/benchmark/runs')`,
-		`benchmarkEndpoint('/benchmark/report/')`,
+		`'/benchmark/report/'+encodeURIComponent(r.run_id)`,
 		`fetch(benchmarkEndpoint('/benchmark/status'))`,
 		`<th>Status</th><th>Progress</th><th>Model</th>`,
 		`progressText(r)`,
@@ -493,6 +497,34 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 	}
 	if strings.Contains(body, `s.multiple=mg;`) {
 		t.Errorf("MobileGym suite picker should use selected tags, not native multiple select")
+	}
+}
+
+func TestHandleBenchmarkIndex_SkillOptControlsOrder(t *testing.T) {
+	s := &Server{benchmarkDir: t.TempDir()}
+	req := httptest.NewRequest(http.MethodGet, "/benchmark", nil)
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkIndex(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	body := rec.Body.String()
+	markers := []string{
+		`id="skillSelect"`,
+		`id="skillOptBackendSelect"`,
+		`id="skillOptTrainSuiteSelect"`,
+		`id="validationSuiteSelect"`,
+	}
+	prev := -1
+	for _, marker := range markers {
+		idx := strings.Index(body, marker)
+		if idx < 0 {
+			t.Fatalf("body missing %q", marker)
+		}
+		if idx <= prev {
+			t.Fatalf("SkillOpt controls out of order around %q", marker)
+		}
+		prev = idx
 	}
 }
 

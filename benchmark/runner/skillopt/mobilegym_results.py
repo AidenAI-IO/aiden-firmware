@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from runner.judge import JudgeConfig
-from runner.models import HardAssertionResults, TaskResult
+from runner.models import HardAssertionResults, RubricVerdict, TaskResult
 from runner.runtask import evaluate_task_history
 from runner.suite import Suite, TaskSpec
 from runner.skillopt.score import task_result_to_rollout
@@ -63,7 +63,33 @@ def load_aiden_suite_task_results(
             continue
 
         merged = {**evidence.get(full_id, {}), **row}
+        metrics = {
+            "mobilegym_result": row,
+            "mobilegym_status": raw_status,
+            "mobilegym_reason": raw_reason,
+        }
+        runtime_sec = _row_runtime_sec(row)
+        if runtime_sec is not None:
+            metrics["mobilegym_runtime_sec"] = runtime_sec
+        timed_out = runtime_sec is not None and runtime_sec > task.hard_assertions.must_complete_within_sec
+
         history = merged.get("aiden_last_chat_history")
+        history_source = "aiden_last_chat_history"
+        if not isinstance(history, list):
+            judge_result = _task_result_from_mobilegym_judge(
+                suite=suite,
+                task=task,
+                run_id=run_id,
+                artifact_dir=artifact_dir,
+                row=merged,
+                metrics=metrics,
+                timed_out=timed_out,
+            )
+            if judge_result is not None:
+                results.append(judge_result)
+                continue
+            history = _history_from_execution_agent_message(merged)
+            history_source = "mobilegym_execution_agent_message" if history else history_source
         if not isinstance(history, list):
             results.append(_failed_task_result(
                 suite=suite,
@@ -76,15 +102,7 @@ def load_aiden_suite_task_results(
             ))
             continue
 
-        metrics = {
-            "mobilegym_result": row,
-            "mobilegym_status": raw_status,
-            "mobilegym_reason": raw_reason,
-        }
-        runtime_sec = _row_runtime_sec(row)
-        if runtime_sec is not None:
-            metrics["mobilegym_runtime_sec"] = runtime_sec
-        timed_out = runtime_sec is not None and runtime_sec > task.hard_assertions.must_complete_within_sec
+        metrics["aiden_history_source"] = history_source
         results.append(evaluate_task_history(
             suite=suite,
             task=task,
@@ -172,6 +190,65 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         if isinstance(row, dict):
             rows.append(row)
     return rows
+
+
+def _history_from_execution_agent_message(row: dict[str, Any]) -> list[dict[str, Any]] | None:
+    execution = row.get("execution")
+    message = execution.get("agent_message") if isinstance(execution, dict) else None
+    if message is None:
+        message = row.get("agent_message") or row.get("aiden_last_response")
+    text = str(message or "").strip()
+    if not text:
+        return None
+    return [{"type": "assistant", "content": text}]
+
+
+def _task_result_from_mobilegym_judge(
+    *,
+    suite: Suite,
+    task: TaskSpec,
+    run_id: str,
+    artifact_dir: Path,
+    row: dict[str, Any],
+    metrics: dict[str, Any],
+    timed_out: bool,
+) -> TaskResult | None:
+    judge = row.get("judge")
+    if not isinstance(judge, dict) or not isinstance(judge.get("passed"), bool):
+        return None
+    history = _history_from_execution_agent_message(row)
+    if not history:
+        return None
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "history.json").write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+    (artifact_dir / "mobilegym_judge.json").write_text(json.dumps(judge, ensure_ascii=False, indent=2), encoding="utf-8")
+    passed = bool(judge.get("passed")) and not timed_out
+    verdict = "yes" if passed else "no"
+    reason = "MobileGym grounded judge fallback; full Aiden chat history was unavailable."
+    if timed_out:
+        reason = "timed out before task deadline"
+    rubric = [RubricVerdict(id=item.id, verdict=verdict, reason=reason) for item in task.rubric]
+    fallback_metrics = dict(metrics)
+    fallback_metrics.update({
+        "aiden_history_source": "mobilegym_judge_fallback",
+        "mobilegym_judge_passed": bool(judge.get("passed")),
+    })
+    return TaskResult(
+        suite=suite.name,
+        run_id=run_id,
+        task_id=task.id,
+        category=task.category,
+        attempt=1,
+        status="passed" if passed else ("timeout" if timed_out else "failed"),
+        rubric=rubric,
+        rubric_pass_count=sum(1 for item in rubric if item.verdict == "yes"),
+        rubric_total=len(task.rubric),
+        hard_assertions=HardAssertionResults(timeout=not timed_out, response_exists=True),
+        metrics=fallback_metrics,
+        artifact_dir=str(artifact_dir),
+        description_for_judge=task.description_for_judge,
+        rubric_spec=[{"id": item.id, "check": item.check} for item in task.rubric],
+    )
 
 
 def _has_worker_failure(batch_dir: Path) -> bool:

@@ -74,7 +74,7 @@ input[type=text]{width:260px}
 <button id="refreshBtn" class="secondary" onclick="refreshBenchmark()">Refresh</button>
 </div>
 <div class="control-grid">
-<div>
+<div id="suiteControl">
 <label class="field-label" id="suiteSelectLabel" for="suiteSelect">Benchmarks</label>
 <select id="suiteSelect"><option value="">Loading...</option></select>
 <div id="selectedSuiteTags" class="selected-tags" aria-live="polite"></div>
@@ -89,8 +89,9 @@ input[type=text]{width:260px}
 </div>
 </div>
 <div id="skillOptConfig" class="row" style="display:none;margin-top:12px">
-<span class="inline-field"><label class="muted">Backend <select id="skillOptBackendSelect" onchange="syncSkillOptBackend()"><option value="device">Real device</option><option value="mobilegym">MobileGym</option></select></label></span>
 <span class="inline-field"><label class="muted">Skill <select id="skillSelect"><option value="">Loading skills...</option></select></label></span>
+<span class="inline-field"><label class="muted">Backend <select id="skillOptBackendSelect" onchange="syncSkillOptBackend()"><option value="device">Real device</option><option value="mobilegym">MobileGym</option></select></label></span>
+<span class="inline-field"><label class="muted">Train <select id="skillOptTrainSuiteSelect"><option value="">Loading suites...</option></select></label></span>
 <span class="inline-field"><label class="muted">Verification <select id="validationSuiteSelect"><option value="">Loading suites...</option></select></label></span>
 <span class="inline-field"><label class="muted">Budget <input type="number" id="budgetInput" value="10" min="1" max="100" style="width:70px"></label></span>
 <span class="inline-field"><label class="muted">Edit budget <input type="number" id="editBudgetInput" value="4" min="1" max="20" style="width:70px"></label></span>
@@ -232,12 +233,13 @@ function renderSelectedSuiteTags(){var wrap=document.getElementById('selectedSui
 function addSelectedSuiteKey(key){if(!key)return;var item=suiteIndex[key];if(!item)return;var current=selectedBenchmarkSuites();if(selectedSuiteKeysState.indexOf(key)<0){if(getMode()==='mobilegym'&&current.length>0&&current.some(function(x){return x.item.type!==item.type})){alert('Run Aiden and built-in MobileGym suites separately');document.getElementById('suiteSelect').value='';return}selectedSuiteKeysState.push(key)}document.getElementById('suiteSelect').value='';renderSelectedSuiteTags();syncDelBtn();syncRunButtons();}
 function removeSelectedSuiteKey(key){selectedSuiteKeysState=selectedSuiteKeysState.filter(function(item){return item!==key});renderSelectedSuiteTags();syncDelBtn();syncRunButtons();}
 function configureSuiteSelect(){var s=document.getElementById('suiteSelect');s.multiple=false;s.size=1;renderSelectedSuiteTags();}
-function syncRunButtons(status){if(status)lastBenchmarkStatus=status;var mode=getMode();var running=lastBenchmarkStatus&&lastBenchmarkStatus.status==='running';var hasBench=mode==='skillopt'?(benchmarkSuiteCount>0&&skillCount>0&&!!document.getElementById('suiteSelect').value&&!!document.getElementById('validationSuiteSelect').value):(benchmarkSuiteCount>0&&selectedSuiteKeys().length>0);document.getElementById('runBtn').disabled=(running||!hasBench);document.getElementById('runUnitBtn').disabled=(running||unitSuiteCount===0||mode!=='aiden')}
+function syncRunButtons(status){if(status)lastBenchmarkStatus=status;var mode=getMode();var running=lastBenchmarkStatus&&lastBenchmarkStatus.status==='running';var hasBench=mode==='skillopt'?(benchmarkSuiteCount>0&&skillCount>0&&!!document.getElementById('skillOptTrainSuiteSelect').value&&!!document.getElementById('validationSuiteSelect').value):(benchmarkSuiteCount>0&&selectedSuiteKeys().length>0);document.getElementById('runBtn').disabled=(running||!hasBench);document.getElementById('runUnitBtn').disabled=(running||unitSuiteCount===0||mode!=='aiden')}
 function onModeChange(){
 var mode=getMode();
 var mg=mode==='mobilegym';
 var skillopt=mode==='skillopt';
 document.getElementById('skillOptConfig').style.display=skillopt?'flex':'none';
+document.getElementById('suiteControl').style.display=skillopt?'none':'block';
 document.getElementById('unitCard').style.display=mode==='aiden'?'block':'none';
 document.getElementById('suiteSelectLabel').textContent=skillopt?'Train suite':'Benchmarks';
 if(!skillopt)selectedSuiteKeysState=[];
@@ -334,7 +336,7 @@ suiteIndex={};
 skillCount=0;
 benchmarkSuiteCount=0;
 document.getElementById('skillSelect').innerHTML='<option value="">(failed to load skills)</option>';
-document.getElementById('suiteSelect').innerHTML='<option value="">(failed to load train suites)</option>';
+document.getElementById('skillOptTrainSuiteSelect').innerHTML='<option value="">(failed to load train suites)</option>';
 document.getElementById('validationSuiteSelect').innerHTML='<option value="">(failed to load verification suites)</option>';
 syncDelBtn();syncRunButtons();
 loadStatus();
@@ -352,7 +354,7 @@ if(current&&skillOptTargetBySkill[current])sel.value=current;
 function syncSkillOptSuites(){
 var skill=document.getElementById('skillSelect').value;
 var target=skillOptTargetBySkill[skill]||{};
-var train=document.getElementById('suiteSelect');
+var train=document.getElementById('skillOptTrainSuiteSelect');
 var verification=document.getElementById('validationSuiteSelect');
 train.innerHTML='';verification.innerHTML='';suiteIndex={};benchmarkSuiteCount=0;
 function addOptions(labels,select,emptyText,countAsBenchmark){
@@ -402,17 +404,17 @@ span.textContent='Not ready';
 td.appendChild(span);
 return td;
 }
-var reportHref=r.report_path?benchmarkEndpoint(r.report_path):(benchmarkEndpoint('/benchmark/report/')+encodeURIComponent(r.run_id));
+var reportBase=(getMode()==='skillopt'&&r.__history_source==='mobilegym')?MOBILEGYM_LOCAL_BASE:(usesMobileGymLocal()?MOBILEGYM_LOCAL_BASE:'');
+var reportHref=reportBase+(r.report_path?r.report_path:('/benchmark/report/'+encodeURIComponent(r.run_id)));
 var link=document.createElement('a');
 link.href=reportHref;
 link.textContent='View';
 td.appendChild(link);
 return td;
 }
-function loadRuns(){
-fetch(benchmarkEndpoint('/benchmark/runs')).then(r=>r.json()).then(d=>{
+function renderRuns(d,emptyText){
 var tb=document.getElementById('historyBody');tb.innerHTML='';
-if(!d.length){tb.innerHTML='<tr><td colspan="8">No runs yet</td></tr>';return}
+if(!d.length){tb.innerHTML='<tr><td colspan="8">'+(emptyText||'No runs yet')+'</td></tr>';return}
 d.forEach(function(r){
 var t=r.totals||{};var suite=r.suite||'';
 var sn=suite.split('/').pop().replace('.json','');
@@ -426,7 +428,21 @@ appendTextCell(tr,t.passed||0,'pass');
 appendTextCell(tr,t.failed||0,'fail');
 tr.appendChild(reportCell(r));
 tb.appendChild(tr)});
-}).catch(function(e){
+}
+function isSkillOptRun(r){var id=String((r&&r.run_id)||'');var suite=String((r&&r.suite)||'');return id.indexOf('skillopt-')===0||suite.indexOf('skillopt/')===0}
+function mergeRunLists(lists){var byId={};lists.forEach(function(list){(list||[]).forEach(function(r){if(!isSkillOptRun(r))return;var id=String(r.run_id||'');if(id&&!byId[id])byId[id]=r;});});return Object.keys(byId).sort().reverse().map(function(id){return byId[id]})}
+function loadSkillOptRuns(){
+Promise.allSettled([
+fetch('/benchmark/runs').then(function(r){return r.json()}).then(function(d){return (d||[]).map(function(r){r.__history_source='board';return r})}),
+fetch(MOBILEGYM_LOCAL_BASE+'/benchmark/runs').then(function(r){return r.json()}).then(function(d){return (d||[]).map(function(r){r.__history_source='mobilegym';return r})})
+]).then(function(results){
+var lists=results.filter(function(x){return x.status==='fulfilled'&&Array.isArray(x.value)}).map(function(x){return x.value});
+renderRuns(mergeRunLists(lists),'No SkillOpt runs yet');
+}).catch(function(){renderRuns([],'Failed to load SkillOpt runs')})
+}
+function loadRuns(){
+if(getMode()==='skillopt'){loadSkillOptRuns();return}
+fetch(benchmarkEndpoint('/benchmark/runs')).then(r=>r.json()).then(function(d){renderRuns(d,'No runs yet')}).catch(function(e){
 var tb=document.getElementById('historyBody');
 tb.innerHTML='';
 var tr=document.createElement('tr');
@@ -475,7 +491,7 @@ function startRun(){
 var mode=getMode();
 var payload={};
 if(mode==='skillopt'){
-var key=document.getElementById('suiteSelect').value;
+var key=document.getElementById('skillOptTrainSuiteSelect').value;
 var item=suiteIndex[key];
 var skill=document.getElementById('skillSelect').value;
 var validationKey=document.getElementById('validationSuiteSelect').value;
@@ -624,6 +640,7 @@ body:JSON.stringify({name:x.name})}).then(function(r){return r.json()}).then(fun
 }
 document.getElementById('suiteSelect').addEventListener('change',function(){if(getMode()==='skillopt'){syncDelBtn();syncRunButtons();return}addSelectedSuiteKey(this.value);});
 document.getElementById('skillSelect').addEventListener('change',syncSkillOptSuites);
+document.getElementById('skillOptTrainSuiteSelect').addEventListener('change',function(){syncDelBtn();syncRunButtons();});
 load();
 </script></body></html>
 `

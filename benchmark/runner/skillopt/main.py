@@ -346,8 +346,12 @@ def _write_web_artifacts(
 ) -> None:
     run_dir = cfg.artifact_root / cfg.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    validation_total = len(cfg.selection_tasks)
-    passed = _passed_count(result.best_score, validation_total)
+    score_summary = _score_summary(result)
+    linked_reports = _linked_reports(cfg.run_id, result, backend)
+    raw_score_summary = _raw_score_summary(cfg, result, backend)
+    best_verification = score_summary.get("best_verification") or {}
+    validation_total = int(best_verification.get("n") or len(cfg.selection_tasks))
+    passed = int(best_verification.get("n_passed") or _passed_count(result.best_score, validation_total))
     totals = {"tasks": validation_total, "passed": passed, "failed": max(0, validation_total - passed)}
 
     manifest = {
@@ -363,6 +367,10 @@ def _write_web_artifacts(
         "optimizer_config": {"provider": cfg.optimizer_cfg.provider, "model": optimizer_model},
         "judge_config": {"provider": "openrouter", "model": judge_model} if judge_model else None,
         "scores": {"initial": result.initial_score, "best": result.best_score},
+        "score_summary": score_summary,
+        "raw_score_summary": raw_score_summary,
+        "linked_reports": linked_reports,
+        "artifacts": {"best_skill": "best_skill.md", "diff": "diff.patch", "result": "result.json"},
         "totals": totals,
     }
     (run_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -373,7 +381,93 @@ def _write_web_artifacts(
     (run_dir / "report.html").write_text(_render_report_html(manifest, result, original_skill, diff_text), encoding="utf-8")
 
 
+def _score_to_dict(score) -> dict:
+    if score is None:
+        return {}
+    return {
+        "hard": score.hard,
+        "soft": score.soft,
+        "n": score.n,
+        "n_passed": score.n_passed,
+    }
+
+
+def _score_summary(result: OptimizationResult) -> dict:
+    baseline = next((p.score for p in result.phase_summaries if p.phase == "baseline_selection"), None)
+    train_scores = [p.score for p in result.phase_summaries if p.kind == "train"]
+    verification_scores = [p.score for p in result.phase_summaries if p.kind == "verification"]
+    best_verification = max(verification_scores, key=lambda score: score.hard, default=None)
+    return {
+        "baseline_verification": _score_to_dict(baseline),
+        "latest_train": _score_to_dict(train_scores[-1] if train_scores else None),
+        "best_verification": _score_to_dict(best_verification),
+    }
+
+
+def _linked_reports(run_id: str, result: OptimizationResult, backend: str) -> dict[str, str]:
+    if backend != "mobilegym":
+        return {}
+    return {
+        summary.phase: f"/benchmark/report/{run_id}-{summary.phase}"
+        for summary in result.phase_summaries
+    }
+
+
+def _raw_score_summary(cfg: OptimizationConfig, result: OptimizationResult, backend: str) -> dict[str, dict]:
+    if backend != "mobilegym":
+        return {}
+    mobilegym_root = cfg.artifact_root.parent / "mobilegym"
+    out: dict[str, dict] = {}
+    for summary in result.phase_summaries:
+        path = mobilegym_root / f"{cfg.run_id}-{summary.phase}" / "summary.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        row = {
+            "passed": int(payload.get("passed") or 0),
+            "tasks": int(payload.get("tasks") or 0),
+            "failed": int(payload.get("failed") or 0),
+            "error": int(payload.get("error") or 0),
+        }
+        if payload.get("pass_rate") is not None:
+            row["pass_rate"] = payload.get("pass_rate")
+        out[summary.phase] = row
+    return out
+
+
 def _render_report_html(manifest: dict, result: OptimizationResult, original_skill: str, diff_text: str) -> str:
+    step_rows = _render_step_rows(result)
+    skill = html.escape(manifest["skill"])
+    train_suite = html.escape(manifest.get("train_suite", ""))
+    validation_suite = html.escape(manifest.get("validation_suite", ""))
+    diff = html.escape(diff_text or "(no diff)")
+    original_len = len(original_skill.splitlines())
+    best_len = len(result.best_skill.splitlines())
+    score_rows = _render_score_rows(result, manifest.get("linked_reports", {}), manifest.get("raw_score_summary", {}))
+    edit_rows = _render_edit_rows(result)
+    artifact_rows = _render_artifact_rows(manifest)
+    stop_reason = html.escape(result.stop_reason or "completed budget or accepted best candidate")
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>SkillOpt Report</title>
+<style>
+body{{font-family:system-ui,-apple-system,sans-serif;background:#f6f7fb;color:#273142;margin:0;padding:28px;max-width:1100px}}
+.card{{background:#fbfcff;border:1px solid #e6eaf2;border-radius:14px;padding:18px;margin:0 0 16px}}
+h1{{font-size:24px;margin:0 0 8px}} p{{color:#475569}} table{{width:100%;border-collapse:collapse;font-size:13px}} td,th{{border-bottom:1px solid #edf0f6;padding:8px;text-align:left;vertical-align:top}} pre{{background:#111827;color:#d1fae5;border-radius:12px;padding:14px;overflow:auto;font-size:12px;line-height:1.5}} code{{background:#eef2ff;border-radius:6px;padding:2px 6px}} a{{color:#2563eb}}
+</style></head><body>
+<h1>SkillOpt Report</h1>
+<div class="card"><p><strong>Skill:</strong> {skill}</p><p><strong>Train:</strong> {train_suite}</p><p><strong>Verification:</strong> {validation_suite}</p><p><strong>Initial score:</strong> {result.initial_score:.3f} <strong>Best score:</strong> {result.best_score:.3f}</p><p><strong>Stop reason:</strong> {stop_reason}</p><p><strong>Skill size:</strong> {original_len} lines to {best_len} lines</p></div>
+<div class="card"><h2>Scores</h2><p>The main result follows the selected backend. For MobileGym runs, <strong>MobileGym result</strong> matches the child report. <strong>Optimization score</strong> is the stricter score used internally for SkillOpt gate decisions. Task pass rate counts completed tasks; rubric pass rate counts rubric checks.</p><table><thead><tr><th>Phase</th><th>Kind</th><th>Suite</th><th>MobileGym result</th><th>Optimization score</th><th>Task pass rate</th><th>Rubric pass rate</th><th>Report</th></tr></thead><tbody>{score_rows}</tbody></table></div>
+<div class="card"><h2>Steps</h2><table><thead><tr><th>Step</th><th>Decision</th><th>Current</th><th>Candidate</th><th>Reason</th></tr></thead><tbody>{step_rows}</tbody></table></div>
+<div class="card"><h2>Edits</h2><table><thead><tr><th>Step</th><th>Status</th><th>Reasoning</th><th>Edits</th></tr></thead><tbody>{edit_rows}</tbody></table></div>
+<div class="card"><h2>Artifacts</h2><table><thead><tr><th>Name</th><th>Path</th></tr></thead><tbody>{artifact_rows}</tbody></table></div>
+<div class="card"><h2>Diff</h2><pre>{diff}</pre></div>
+</body></html>"""
+
+
+def _render_step_rows(result: OptimizationResult) -> str:
     rows = []
     for step in result.steps:
         rows.append(
@@ -385,25 +479,110 @@ def _render_report_html(manifest: dict, result: OptimizationResult, original_ski
             f"<td>{html.escape(step.reason)}</td>"
             "</tr>"
         )
-    step_rows = "".join(rows) or "<tr><td colspan=\"5\">No optimization steps ran.</td></tr>"
-    skill = html.escape(manifest["skill"])
-    train_suite = html.escape(manifest.get("train_suite", ""))
-    validation_suite = html.escape(manifest.get("validation_suite", ""))
-    diff = html.escape(diff_text or "(no diff)")
-    original_len = len(original_skill.splitlines())
-    best_len = len(result.best_skill.splitlines())
-    return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>SkillOpt Report</title>
-<style>
-body{{font-family:system-ui,-apple-system,sans-serif;background:#f6f7fb;color:#273142;margin:0;padding:28px;max-width:1100px}}
-.card{{background:#fbfcff;border:1px solid #e6eaf2;border-radius:14px;padding:18px;margin:0 0 16px}}
-h1{{font-size:24px;margin:0 0 8px}} p{{color:#475569}} table{{width:100%;border-collapse:collapse;font-size:13px}} td,th{{border-bottom:1px solid #edf0f6;padding:8px;text-align:left;vertical-align:top}} pre{{background:#111827;color:#d1fae5;border-radius:12px;padding:14px;overflow:auto;font-size:12px;line-height:1.5}}
-</style></head><body>
-<h1>SkillOpt Report</h1>
-<div class="card"><p><strong>Skill:</strong> {skill}</p><p><strong>Train:</strong> {train_suite}</p><p><strong>Verification:</strong> {validation_suite}</p><p><strong>Initial score:</strong> {result.initial_score:.3f} <strong>Best score:</strong> {result.best_score:.3f}</p><p><strong>Skill size:</strong> {original_len} lines to {best_len} lines</p></div>
-<div class="card"><h2>Steps</h2><table><thead><tr><th>Step</th><th>Decision</th><th>Current</th><th>Candidate</th><th>Reason</th></tr></thead><tbody>{step_rows}</tbody></table></div>
-<div class="card"><h2>Diff</h2><pre>{diff}</pre></div>
-</body></html>"""
+    if rows:
+        return "".join(rows)
+    stop = result.stop_reason or "No optimization steps produced edits."
+    step_label = _step_label_from_stop_reason(stop)
+    return (
+        "<tr>"
+        f"<td>{html.escape(step_label)}</td>"
+        "<td>stopped before candidate verification</td>"
+        "<td>-</td><td>-</td>"
+        f"<td>{html.escape(stop)}</td>"
+        "</tr>"
+    )
+
+
+def _step_label_from_stop_reason(reason: str) -> str:
+    match = re.search(r"step\s+(\d+)", reason, flags=re.IGNORECASE)
+    return f"Step {match.group(1)}" if match else "-"
+
+
+def _render_score_rows(result: OptimizationResult, linked_reports: dict[str, str], raw_scores: dict[str, dict]) -> str:
+    rows = []
+    for summary in result.phase_summaries:
+        report = linked_reports.get(summary.phase, "")
+        report_cell = f'<a href="{html.escape(report)}">open report</a>' if report else ""
+        raw = raw_scores.get(summary.phase) or {}
+        raw_cell = _format_raw_score(raw)
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(summary.phase)}</td>"
+            f"<td>{html.escape(summary.kind)}</td>"
+            f"<td>{html.escape(summary.suite_name)}</td>"
+            f"<td>{raw_cell}</td>"
+            f"<td>{summary.score.n_passed}/{summary.score.n}</td>"
+            f"<td>{summary.score.hard:.3f}</td>"
+            f"<td>{summary.score.soft:.3f}</td>"
+            f"<td>{report_cell}</td>"
+            "</tr>"
+        )
+    return "".join(rows) or "<tr><td colspan=\"8\">No rollout phases recorded.</td></tr>"
+
+
+def _format_raw_score(raw: dict) -> str:
+    tasks = int(raw.get("tasks") or 0)
+    if tasks <= 0:
+        return "-"
+    passed = int(raw.get("passed") or 0)
+    extras = []
+    if raw.get("failed"):
+        extras.append(f"failed={int(raw.get('failed') or 0)}")
+    if raw.get("error"):
+        extras.append(f"error={int(raw.get('error') or 0)}")
+    suffix = f" ({', '.join(extras)})" if extras else ""
+    return html.escape(f"{passed}/{tasks}{suffix}")
+
+
+def _render_edit_rows(result: OptimizationResult) -> str:
+    rows = []
+    for step in result.steps:
+        edits = step.edits_applied if step.accepted else step.edits_rejected
+        edit_text = "\n\n".join(_format_edit(edit) for edit in edits) or "(no edits)"
+        rows.append(
+            "<tr>"
+            f"<td>{step.step}</td>"
+            f"<td>{'applied' if step.accepted else 'rejected'}</td>"
+            f"<td><pre>{html.escape(step.patch_reasoning or '(no reasoning)')}</pre></td>"
+            f"<td><pre>{html.escape(edit_text)}</pre></td>"
+            "</tr>"
+        )
+    if rows:
+        return "".join(rows)
+    reason = result.stop_reason or "No optimization steps produced edits."
+    return f"<tr><td colspan=\"4\">{html.escape(reason)}</td></tr>"
+
+
+def _format_edit(edit) -> str:
+    parts = [f"op={edit.op}"]
+    if edit.target:
+        parts.append(f"target={edit.target}")
+    if edit.support_count is not None:
+        parts.append(f"support={edit.support_count}")
+    if edit.source_type:
+        parts.append(f"source={edit.source_type}")
+    if edit.content:
+        parts.append(f"content:\n{edit.content}")
+    return "\n".join(parts)
+
+
+def _render_artifact_rows(manifest: dict) -> str:
+    rows = []
+    for name, path in (manifest.get("artifacts") or {}).items():
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(name))}</td>"
+            f"<td><code>{html.escape(str(path))}</code></td>"
+            "</tr>"
+        )
+    for phase, report in (manifest.get("linked_reports") or {}).items():
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(phase))}</td>"
+            f"<td><a href=\"{html.escape(str(report))}\">{html.escape(str(report))}</a></td>"
+            "</tr>"
+        )
+    return "".join(rows) or "<tr><td colspan=\"2\">No artifacts recorded.</td></tr>"
 
 
 if __name__ == "__main__":

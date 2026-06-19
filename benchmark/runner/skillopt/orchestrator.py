@@ -30,7 +30,7 @@ from runner.skillopt.score import (
     validation_gate,
     DEFAULT_MIN_DELTA,
 )
-from runner.skillopt.types import Edit, OptimizationResult, StepDecision
+from runner.skillopt.types import Edit, OptimizationResult, PhaseSummary, ScoreSummary, StepDecision
 
 
 @dc.dataclass
@@ -67,6 +67,8 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
     run_root.mkdir(parents=True, exist_ok=True)
     train_suite = cfg.train_suite or cfg.suite
     selection_suite = cfg.selection_suite or cfg.suite
+    phase_summaries: list[PhaseSummary] = []
+    stop_reason = ""
     try:
         # Baseline eval on selection split
         print(f"[baseline] Evaluating original skill on {len(cfg.selection_tasks)} selection tasks...")
@@ -82,6 +84,12 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
             judge_cfg=cfg.judge_cfg,
         )
         current_score = aggregate_score(sel_rollouts)
+        phase_summaries.append(_phase_summary(
+            phase="baseline_selection",
+            kind="verification",
+            suite=selection_suite,
+            score=current_score,
+        ))
         print(f"[baseline] hard={current_score.hard:.3f} soft={current_score.soft:.3f} ({current_score.n_passed}/{current_score.n})")
 
         best = current
@@ -104,6 +112,13 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
                 judge_cfg=cfg.judge_cfg,
             )
             train_score = aggregate_score(train_rollouts)
+            train_summary = _phase_summary(
+                phase=f"step_{step_idx:02d}_train",
+                kind="train",
+                suite=train_suite,
+                score=train_score,
+            )
+            phase_summaries.append(train_summary)
             print(f"[step {step_idx}] train: hard={train_score.hard:.3f} soft={train_score.soft:.3f}")
 
             # Reflect
@@ -117,12 +132,14 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
                 rejected_context=rejected_ctx,
             )
             if not raw_patches:
+                stop_reason = f"step {step_idx}: no patches produced by reflect"
                 print(f"[step {step_idx}] no patches produced by reflect; stopping.")
                 break
 
             # Aggregate
             patch = aggregate(raw_patches, edit_budget=cfg.edit_budget)
             if not patch.edits:
+                stop_reason = f"step {step_idx}: aggregate produced 0 edits after dedup"
                 print(f"[step {step_idx}] aggregate produced 0 edits after dedup; stopping.")
                 break
             print(f"[step {step_idx}] {len(patch.edits)} edits: {[e.op for e in patch.edits]}")
@@ -153,6 +170,13 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
                 judge_cfg=cfg.judge_cfg,
             )
             candidate_score_agg = aggregate_score(cand_rollouts)
+            candidate_summary = _phase_summary(
+                phase=f"step_{step_idx:02d}_selection",
+                kind="verification",
+                suite=selection_suite,
+                score=candidate_score_agg,
+            )
+            phase_summaries.append(candidate_summary)
             print(f"[step {step_idx}] candidate: hard={candidate_score_agg.hard:.3f} soft={candidate_score_agg.soft:.3f}")
 
             # Gate
@@ -177,6 +201,11 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
                     accepted=True,
                     reason=decision.reason,
                     edits_applied=patch.edits,
+                    train_score=train_summary.score,
+                    candidate_selection_score=candidate_summary.score,
+                    patch_reasoning=patch.reasoning,
+                    patch_reports=reports,
+                    raw_patches=raw_patches,
                 ))
             else:
                 rejected.extend(patch.edits)
@@ -188,10 +217,16 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
                     accepted=False,
                     reason=decision.reason,
                     edits_rejected=patch.edits,
+                    train_score=train_summary.score,
+                    candidate_selection_score=candidate_summary.score,
+                    patch_reasoning=patch.reasoning,
+                    patch_reports=reports,
+                    raw_patches=raw_patches,
                 ))
 
             # Early stop
             if no_improvement_count >= cfg.early_stop_patience:
+                stop_reason = f"step {step_idx}: no improvement for {cfg.early_stop_patience} steps"
                 print(f"[step {step_idx}] no improvement for {cfg.early_stop_patience} steps; stopping.")
                 break
 
@@ -203,6 +238,26 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
             steps=steps,
             accepted_count=sum(1 for s in steps if s.accepted),
             rejected_count=sum(1 for s in steps if not s.accepted),
+            phase_summaries=phase_summaries,
+            stop_reason=stop_reason,
         )
     finally:
         backend.close()
+
+
+def _score_summary(score) -> ScoreSummary:
+    return ScoreSummary(
+        hard=score.hard,
+        soft=score.soft,
+        n=score.n,
+        n_passed=score.n_passed,
+    )
+
+
+def _phase_summary(*, phase: str, kind: str, suite: Suite, score) -> PhaseSummary:
+    return PhaseSummary(
+        phase=phase,
+        kind=kind,
+        suite_name=suite.name,
+        score=_score_summary(score),
+    )

@@ -218,3 +218,56 @@ def test_optimize_skill_uses_explicit_train_and_selection_suites(monkeypatch, tm
         ("baseline_selection", "validation_suite", ["validation_task"]),
         ("step_01_train", "train_suite", ["train_task"]),
     ]
+
+
+def test_optimize_skill_records_phase_scores_and_stop_reason(monkeypatch, tmp_path):
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text("base", encoding="utf-8")
+
+    class SummaryBackend:
+        def close(self):
+            pass
+
+        def run_rollout(self, *, phase, **kwargs):
+            del kwargs
+            if phase == "baseline_selection":
+                return [
+                    RolloutResult(id="selection_pass", hard=1, soft=1.0),
+                    RolloutResult(id="selection_fail", hard=0, soft=0.5),
+                ]
+            return [
+                RolloutResult(id="train_pass", hard=1, soft=1.0),
+                RolloutResult(id="train_fail", hard=0, soft=0.0),
+            ]
+
+    monkeypatch.setattr(orchestrator, "run_reflect", lambda *args, **kwargs: [])
+
+    cfg = orchestrator.OptimizationConfig(
+        skill_name="device-operator",
+        skill_path=skill_path,
+        suite=_suite(tmp_path, "train_suite"),
+        train_suite=_suite(tmp_path, "train_suite"),
+        selection_suite=_suite(tmp_path, "validation_suite"),
+        train_tasks=[_task("train_pass"), _task("train_fail")],
+        selection_tasks=[_task("selection_pass"), _task("selection_fail")],
+        budget=1,
+        run_id="run-001",
+        artifact_root=tmp_path / "runs" / "skillopt",
+        rollout_backend=SummaryBackend(),
+    )
+
+    result = orchestrator.optimize_skill(cfg)
+
+    assert result.initial_score == 0.5
+    assert result.best_score == 0.5
+    assert result.stop_reason == "step 1: no patches produced by reflect"
+    assert result.phase_summaries[0].phase == "baseline_selection"
+    assert result.phase_summaries[0].kind == "verification"
+    assert result.phase_summaries[0].score.hard == 0.5
+    assert result.phase_summaries[0].score.soft == 0.75
+    assert result.phase_summaries[0].score.n_passed == 1
+    assert result.phase_summaries[1].phase == "step_01_train"
+    assert result.phase_summaries[1].kind == "train"
+    assert result.phase_summaries[1].score.hard == 0.5
+    assert result.phase_summaries[1].score.soft == 0.5
+    assert result.steps == []

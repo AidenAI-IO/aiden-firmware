@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec
+from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec, TraceObservationSpec
 
 
 def _task(*, expected_answer: str | None = None, timeout_sec: int = 180) -> TaskSpec:
@@ -27,6 +27,25 @@ def _suite(tmp_path: Path, *, expected_answer: str | None = None, timeout_sec: i
         tasks=[task],
         sha256="sha",
         source_path=tmp_path / "device_operator_train.json",
+    )
+
+
+def _suite_with_trace_requirement(tmp_path: Path) -> Suite:
+    task = TaskSpec(
+        id="case_one",
+        category="single_step",
+        description_for_judge="Judge case one.",
+        prompt="Do case one.",
+        rubric=[RubricItem(id="ok", check="Task succeeds.")],
+        hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=5, must_complete_within_sec=180, response_required=True),
+    )
+    return Suite(
+        name="device_operator_train",
+        global_reset={},
+        tasks=[task],
+        sha256="sha",
+        source_path=tmp_path / "device_operator_train.json",
+        trace_observations=[TraceObservationSpec(id="skill_read", description="read skill", skill_name="device-operator")],
     )
 
 
@@ -78,6 +97,52 @@ def test_mobilegym_passed_row_without_aiden_history_is_hard_failure(tmp_path: Pa
 
     assert results[0].status == "failed"
     assert "missing aiden_last_chat_history" in results[0].metrics["error"]
+
+
+def test_mobilegym_passed_row_uses_execution_agent_message_as_aiden_response(tmp_path: Path):
+    suite = _suite(tmp_path)
+    batch = _write_result(
+        tmp_path / "batch",
+        suite,
+        {
+            "id": f"{suite.name}.case_one",
+            "is_success": True,
+            "execution": {
+                "stop_reason": "COMPLETE",
+                "agent_message": "done from mobilegym execution",
+            },
+        },
+    )
+
+    results = _load_results(batch, suite, tmp_path)
+
+    assert results[0].status == "passed"
+    assert results[0].metrics["mobilegym_status"] == "passed"
+    assert results[0].metrics["aiden_history_source"] == "mobilegym_execution_agent_message"
+
+
+def test_mobilegym_passed_row_with_judge_falls_back_when_full_history_missing(tmp_path: Path):
+    suite = _suite_with_trace_requirement(tmp_path)
+    batch = _write_result(
+        tmp_path / "batch",
+        suite,
+        {
+            "id": f"{suite.name}.case_one",
+            "is_success": True,
+            "execution": {
+                "stop_reason": "COMPLETE",
+                "agent_message": "done from mobilegym execution",
+                "runtime_s": 10,
+            },
+            "judge": {"passed": True, "success": True, "issues": []},
+        },
+    )
+
+    results = _load_results(batch, suite, tmp_path)
+
+    assert results[0].status == "passed"
+    assert results[0].rubric_pass_count == 1
+    assert results[0].metrics["aiden_history_source"] == "mobilegym_judge_fallback"
 
 
 def test_mobilegym_passed_row_uses_meta_evidence_and_aiden_checks(tmp_path: Path):
