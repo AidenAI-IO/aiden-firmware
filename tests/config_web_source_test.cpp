@@ -122,8 +122,10 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("agentLogText") != std::string::npos);
     CHECK(html.find("agentLogMeta") != std::string::npos);
     CHECK(html.find("refreshAgentLog") != std::string::npos);
+    CHECK(html.find("autoRefreshAgentLog") != std::string::npos);
     CHECK(html.find("/api/agent/logs") != std::string::npos);
-    CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
+    CHECK(html.find("setInterval(function(){autoRefreshAgentLog();},2000)") != std::string::npos);
+    CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") == std::string::npos);
 }
 
 TEST_CASE("config web auto-scrolls agent logs only while pinned to bottom") {
@@ -141,6 +143,10 @@ TEST_CASE("config web auto-scrolls agent logs only while pinned to bottom") {
     CHECK(html.find("function setAgentLogAutoScroll(enabled)") != std::string::npos);
     CHECK(html.find("function syncAgentLogAutoScroll()") != std::string::npos);
     CHECK(html.find("function toggleAgentLogAutoScroll()") != std::string::npos);
+    CHECK(html.find("function autoRefreshAgentLog()") != std::string::npos);
+    CHECK(html.find("isLogViewerSelectionActive(textEl)") != std::string::npos);
+    CHECK(html.find("bindLogViewerSelectionGuard('agentLogText')") != std::string::npos);
+    CHECK(html.find("!appState.agentLogAutoScroll||!isAgentLogAtBottom(textEl)||isLogViewerSelectionActive(textEl)") != std::string::npos);
     CHECK(html.find("byId('agentLogText').addEventListener('scroll',syncAgentLogAutoScroll)") != std::string::npos);
     CHECK(html.find("if(appState.agentLogAutoScroll){textEl.scrollTop=textEl.scrollHeight;}") != std::string::npos);
     CHECK(html.find("btn.className='button '+(appState.agentLogAutoScroll?'primary':'ghost')") != std::string::npos);
@@ -334,7 +340,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("setOtaLogPending") != std::string::npos);
     CHECK(html.find("OTA 更新已开始，等待日志输出...") != std::string::npos);
     CHECK(html.find("setOtaLogPending('OTA 更新已开始，等待日志输出...',Number(payload.ota_log_start_size_bytes||0));") != std::string::npos);
-    CHECK(html.find("renderOtaLog(snapshot, {preservePending:true})") != std::string::npos);
+    CHECK(html.find("renderOtaLog(snapshot,{preservePending:true})") != std::string::npos);
     CHECK(html.find("payload.ota_health_log") != std::string::npos);
     CHECK(html.find("extractOtaExitCode((payload.ota_log||{}).log||'')") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');setOtaLogPending(") != std::string::npos);
@@ -349,11 +355,14 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("otaLogMeta") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate") != std::string::npos);
     CHECK(html.find("refreshOtaLog") != std::string::npos);
+    CHECK(html.find("autoRefreshOtaLog") != std::string::npos);
     CHECK(html.find("/api/ota/update") != std::string::npos);
     CHECK(html.find("/api/ota/check-now") == std::string::npos);
     CHECK(html.find("/api/ota/logs") != std::string::npos);
-    CHECK(html.find("await refreshOtaLog(false)") == std::string::npos);
-    CHECK(html.find("setInterval(function(){refreshOtaLog(false);},2000)") != std::string::npos);
+    CHECK(html.find("bindLogViewerSelectionGuard('otaLogText')") != std::string::npos);
+    CHECK(html.find("!appState.otaLogVisible||!isAgentLogAtBottom(textEl)||isLogViewerSelectionActive(textEl)") != std::string::npos);
+    CHECK(html.find("setInterval(function(){autoRefreshOtaLog();},2000)") != std::string::npos);
+    CHECK(html.find("setInterval(function(){refreshOtaLog(false);},2000)") == std::string::npos);
 }
 
 TEST_CASE("config web exposes running firmware version and ota health status separately") {
