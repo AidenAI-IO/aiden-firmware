@@ -1596,8 +1596,13 @@ func verifierStepContinueResponse(reason string) *llms.ContentResponse {
 }
 
 func toolCallResponse(id, name, arguments string) *llms.ContentResponse {
+	return toolCallResponseWithContent(id, name, arguments, "")
+}
+
+func toolCallResponseWithContent(id, name, arguments, content string) *llms.ContentResponse {
 	return &llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
+			Content: content,
 			ToolCalls: []llms.ToolCall{{
 				ID:   id,
 				Type: "function",
@@ -2178,10 +2183,12 @@ func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 }
 
 func TestRuntimeRunEmitsToolSpeechOnlyWhenToolCallSpeechEnabled(t *testing.T) {
-	description := "我先读取当前音量并检查当前播放设备、音量状态、静音状态、输出通道以及系统返回结果是否一致。然后继续回答。"
 	speech := "读取音量。"
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", fmt.Sprintf(`{"__arg1":"{}","description":%q,"speech":%q}`, description, speech), "The current audio volume is 42."),
+		responses: []*llms.ContentResponse{
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, speech),
+			contentResponse("The current audio volume is 42."),
+		},
 	}
 	tool := &stubTool{
 		name:        "audio_volume",
@@ -2217,11 +2224,11 @@ func TestRuntimeRunEmitsToolSpeechOnlyWhenToolCallSpeechEnabled(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected tool_call event, got %#v", events)
 	}
-	if toolCall.Description != description {
+	if toolCall.Description != speech {
 		t.Fatalf("tool_call description changed: %q", toolCall.Description)
 	}
-	if toolCall.Content != description {
-		t.Fatalf("tool_call content = %q, want full description", toolCall.Content)
+	if toolCall.Content != speech {
+		t.Fatalf("tool_call content = %q, want assistant content", toolCall.Content)
 	}
 	if toolCall.Speech == "" {
 		t.Fatal("tool_call speech is empty when voice_tool_call_speech is enabled")

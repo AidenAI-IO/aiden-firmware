@@ -290,7 +290,10 @@ func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 	toolSpeech := true
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我会检查当前音量。","speech":"检查音量。"}`, "当前音量是 42。"),
+		responses: []*llms.ContentResponse{
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "检查音量。"),
+			contentResponse("当前音量是 42。"),
+		},
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{

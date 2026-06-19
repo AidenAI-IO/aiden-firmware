@@ -159,9 +159,10 @@ func TestRolePromptsRequireToolCallSpeechForExternalStateTools(t *testing.T) {
 
 	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
 		for _, want := range []string{
-			"Include the speech argument on every tool call that observes, waits for, reads, or changes external state",
+			"Put a brief assistant content message before every tool call that observes, waits for, reads, or changes external state",
 			"screenshot, wait_for_stable_screen, quick_action, mouse_click, touch_gesture, keyboard_text, keyboard_tap, open_app, recall_memory",
-			"Assistant text before a tool call is not a substitute for the speech argument",
+			"assistant content is spoken by the runtime",
+			"Do not add speech or description arguments to tool inputs",
 		} {
 			if !strings.Contains(profile.SystemPrompt, want) {
 				t.Fatalf("%s prompt missing tool-call speech requirement %q:\n%s", profile.Name, want, profile.SystemPrompt)

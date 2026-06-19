@@ -55,8 +55,8 @@ func TestAgentExposedToolsDoNotExposeLegacyArg1Schema(t *testing.T) {
 			if !ok {
 				t.Fatalf("enabled schema missing properties: %#v", enabledSchema)
 			}
-			if _, ok := enabledProps["speech"]; !ok {
-				t.Fatalf("enabled schema missing speech property: %#v", enabledSchema)
+			if _, ok := enabledProps["speech"]; ok {
+				t.Fatalf("enabled schema exposes speech metadata as a tool argument: %#v", enabledSchema)
 			}
 		})
 	}

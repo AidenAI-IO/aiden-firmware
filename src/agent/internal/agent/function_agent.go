@@ -91,7 +91,10 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 			}
 			functionName := toolCall.FunctionCall.Name
 			toolInputStr := toolCall.FunctionCall.Arguments
-			invocation := extractToolInvocation(toolInputStr, a.ToolCallSpeech)
+			invocation := extractToolInvocation(toolInputStr, false)
+			if speech := a.toolSpeechFromChoiceContent(choice.Content); speech != "" {
+				invocation.Speech = speech
+			}
 			invocation.Description = toolCallDescriptionText(choice.Content, invocation.Description)
 
 			contentMsg := "\n"
@@ -112,7 +115,10 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 	if choice.FuncCall != nil {
 		functionName := choice.FuncCall.Name
 		toolInputStr := choice.FuncCall.Arguments
-		invocation := extractToolInvocation(toolInputStr, a.ToolCallSpeech)
+		invocation := extractToolInvocation(toolInputStr, false)
+		if speech := a.toolSpeechFromChoiceContent(choice.Content); speech != "" {
+			invocation.Speech = speech
+		}
 		invocation.Description = toolCallDescriptionText(choice.Content, invocation.Description)
 
 		contentMsg := "\n"
@@ -142,13 +148,20 @@ func (a *FunctionAgent) toolsAsLLM() []llms.Tool {
 		if tool == nil {
 			continue
 		}
-		result = append(result, NewToolSpec(tool).LLMToolWithSpeech(a.ToolCallSpeech))
+		result = append(result, NewToolSpec(tool).LLMTool())
 	}
 	return result
 }
 
-func genericToolParameters(includeSpeech bool) map[string]any {
-	return addToolSpeechParameter(map[string]any{
+func (a *FunctionAgent) toolSpeechFromChoiceContent(content string) string {
+	if a == nil || !a.ToolCallSpeech {
+		return ""
+	}
+	return strings.TrimSpace(content)
+}
+
+func genericToolParameters() map[string]any {
+	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"input": map[string]string{
@@ -158,38 +171,15 @@ func genericToolParameters(includeSpeech bool) map[string]any {
 			},
 		},
 		"required": []string{"input"},
-	}, includeSpeech)
+	}
 }
 
-func toolParametersSchema(schema map[string]any, includeSpeech bool) map[string]any {
+func toolParametersSchema(schema map[string]any) map[string]any {
 	parameters := make(map[string]any, len(schema))
 	for key, value := range schema {
 		parameters[key] = value
 	}
 	parameters["type"] = "object"
-	return addToolSpeechParameter(parameters, includeSpeech)
-}
-
-func addToolSpeechParameter(parameters map[string]any, includeSpeech bool) map[string]any {
-	if parameters == nil {
-		parameters = map[string]any{}
-	}
-	if !includeSpeech {
-		return parameters
-	}
-	properties, _ := parameters["properties"].(map[string]any)
-	copiedProperties := make(map[string]any, len(properties)+1)
-	for key, value := range properties {
-		copiedProperties[key] = value
-	}
-	if _, exists := copiedProperties[toolCallSpeechField]; !exists {
-		copiedProperties[toolCallSpeechField] = map[string]string{
-			"title":       "speech",
-			"type":        "string",
-			"description": "Optional short spoken status before this tool call. Write natural TTS text directly; use the user's language, avoid implementation details, and keep it under 20 Chinese characters or 8 English words.",
-		}
-	}
-	parameters["properties"] = copiedProperties
 	return parameters
 }
 
@@ -231,12 +221,8 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 				ID:   scratchpadToolCallID(steps[j].Action, i, j),
 				Type: "function",
 				FunctionCall: &llms.FunctionCall{
-					Name: steps[j].Action.Tool,
-					Arguments: encodeToolArgumentsWithSpeech(
-						steps[j].Action.ToolInput,
-						toolSpeechFromAction(steps[j].Action),
-						a.ToolCallSpeech,
-					),
+					Name:      steps[j].Action.Tool,
+					Arguments: encodeToolArguments(steps[j].Action.ToolInput),
 				},
 			})
 		}
@@ -533,10 +519,6 @@ func extractToolInput(raw string) string {
 }
 
 func encodeToolArguments(input string) string {
-	return encodeToolArgumentsWithSpeech(input, "", false)
-}
-
-func encodeToolArgumentsWithSpeech(input string, speech string, includeSpeech bool) string {
 	args := map[string]any{}
 	trimmed := strings.TrimSpace(input)
 	if strings.HasPrefix(trimmed, "{") {
@@ -549,11 +531,6 @@ func encodeToolArgumentsWithSpeech(input string, speech string, includeSpeech bo
 	}
 	if len(args) == 0 && trimmed != "" {
 		args["input"] = input
-	}
-	if includeSpeech {
-		if speech = strings.TrimSpace(speech); speech != "" {
-			args[toolCallSpeechField] = speech
-		}
 	}
 	encoded, err := json.Marshal(args)
 	if err != nil {

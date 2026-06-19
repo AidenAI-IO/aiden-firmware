@@ -71,7 +71,7 @@ func TestEnterPlanModePreservesToolSteps(t *testing.T) {
 	}
 }
 
-func TestExecutorScratchpadReplaysToolSpeechWhenEnabled(t *testing.T) {
+func TestExecutorScratchpadDoesNotReplayToolSpeechWhenEnabled(t *testing.T) {
 	executor := newRoleCollaborativeExecutor(
 		&scriptedModel{},
 		RoleProfiles{},
@@ -113,8 +113,8 @@ func TestExecutorScratchpadReplaysToolSpeechWhenEnabled(t *testing.T) {
 			if err := json.Unmarshal([]byte(toolCall.FunctionCall.Arguments), &args); err != nil {
 				t.Fatalf("decode scratchpad tool arguments: %v", err)
 			}
-			if args["speech"] != "点击支付按钮" {
-				t.Fatalf("scratchpad speech = %#v, want previous tool-call speech; args=%#v", args["speech"], args)
+			if _, ok := args["speech"]; ok {
+				t.Fatalf("scratchpad should not replay previous tool-call speech as an argument; args=%#v", args)
 			}
 			return
 		}
