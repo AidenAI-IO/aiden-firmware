@@ -82,3 +82,30 @@ func TestChatHistoryStoreOmitsToolCallContentBeforePersistence(t *testing.T) {
 		t.Fatalf("callback should receive sanitized persisted message, got %#v", callbackMessages)
 	}
 }
+
+func TestChatHistoryStoreNormalizesMessageTypeBeforeToolCallPersistence(t *testing.T) {
+	store := NewChatHistoryStore(t.TempDir())
+	ctx := context.Background()
+
+	if err := store.Append(ctx, Message{
+		Type:     " \t" + runEventToolCall + " \n",
+		Content:  "我先查一下。",
+		ToolName: "weather",
+	}); err != nil {
+		t.Fatalf("Append tool call: %v", err)
+	}
+
+	messages, err := store.Load(ctx)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("messages = %d, want 1", len(messages))
+	}
+	if messages[0].Type != runEventToolCall {
+		t.Fatalf("persisted message type = %q, want %q", messages[0].Type, runEventToolCall)
+	}
+	if messages[0].Content != "" {
+		t.Fatalf("persisted tool_call content = %q, want empty", messages[0].Content)
+	}
+}
