@@ -1038,7 +1038,7 @@ func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T)
 	}
 }
 
-func TestRuntimeRunForcedSessionContinuationKeepsInterruptedCorrectionRuntimeOnly(t *testing.T) {
+func TestRuntimeRunVoiceInterruptionContextUsesTimeBoundary(t *testing.T) {
 	ctx := context.Background()
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	rootRequest := "打开微信，进入 Aden AI agent 群，发送100块钱红包"
@@ -1069,11 +1069,9 @@ func TestRuntimeRunForcedSessionContinuationKeepsInterruptedCorrectionRuntimeOnl
 		t.Fatalf("first Run() error = %v", err)
 	}
 	if _, err := runtime.Run(ctx, RunRequest{
-		Input:                     correction,
-		RequestID:                 "req-voice-correction",
-		ForceSessionContinuation:  true,
-		SessionContinuationReason: SessionContinuationReasonVoiceInterrupt,
-		RuntimeContext:            interruptionContext,
+		Input:          correction,
+		RequestID:      "req-voice-correction",
+		RuntimeContext: interruptionContext,
 	}); err != nil {
 		t.Fatalf("correction Run() error = %v", err)
 	}
@@ -1111,7 +1109,7 @@ func TestRuntimeRunForcedSessionContinuationKeepsInterruptedCorrectionRuntimeOnl
 			event.Content == correction &&
 			event.RequestID == "req-voice-correction"
 	}) {
-		t.Fatalf("session events missing forced continuation user input: %#v", events)
+		t.Fatalf("session events missing interrupted correction user input: %#v", events)
 	}
 	for _, event := range readSessionEventObjects(t, eventsPath) {
 		if _, ok := event["relation"]; ok {
@@ -3734,11 +3732,11 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunForceSessionContinuationSkipsBoundaryRotation(t *testing.T) {
+func TestRuntimeRunShortGapKeepsActiveSessionWithoutForcedContinuation(t *testing.T) {
 	configDir := t.TempDir()
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC().Add(-6 * time.Minute)
+	now := time.Now().UTC().Add(-45 * time.Second)
 	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold+1; i++ {
 		if _, err := session.AppendEvent(context.Background(), SessionEvent{
 			EventID: fmt.Sprintf("evt_old_%d", i),
@@ -3767,16 +3765,12 @@ func TestRuntimeRunForceSessionContinuationSkipsBoundaryRotation(t *testing.T) {
 	)
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
 
-	result, err := runtime.Run(context.Background(), RunRequest{
-		Input:                     "打开微信",
-		ForceSessionContinuation:  true,
-		SessionContinuationReason: SessionContinuationReasonVoiceInterrupt,
-	})
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if len(result.Memory) != DefaultBoundaryConfig().SmallSessionEventThreshold+3 {
-		t.Fatalf("forced continuation should keep previous context, got %#v", result.Memory)
+		t.Fatalf("short gap should keep previous context, got %#v", result.Memory)
 	}
 
 	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
@@ -3784,7 +3778,7 @@ func TestRuntimeRunForceSessionContinuationSkipsBoundaryRotation(t *testing.T) {
 		t.Fatalf("Glob archived sessions: %v", err)
 	}
 	if len(archiveDirs) != 0 {
-		t.Fatalf("forced continuation rotated session: %v", archiveDirs)
+		t.Fatalf("short gap rotated session: %v", archiveDirs)
 	}
 	for _, event := range readSessionEventObjects(t, session.eventsPath()) {
 		if _, ok := event["relation"]; ok {
@@ -3799,11 +3793,11 @@ func TestRuntimeRunForceSessionContinuationSkipsBoundaryRotation(t *testing.T) {
 	if got := episode.Extra["session_boundary_decision"]; got != BoundaryContinue {
 		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryContinue)
 	}
-	if got := episode.Extra["session_boundary_reason"]; got != BoundaryReasonForcedContinuation {
-		t.Fatalf("session_boundary_reason = %#v, want %q", got, BoundaryReasonForcedContinuation)
+	if got := episode.Extra["session_boundary_reason"]; got != BoundaryReasonTimeGapShort {
+		t.Fatalf("session_boundary_reason = %#v, want %q", got, BoundaryReasonTimeGapShort)
 	}
-	if got := episode.Extra["session_continuation_reason"]; got != SessionContinuationReasonVoiceInterrupt {
-		t.Fatalf("session_continuation_reason = %#v, want %q", got, SessionContinuationReasonVoiceInterrupt)
+	if _, ok := episode.Extra["session_continuation_reason"]; ok {
+		t.Fatalf("session_continuation_reason should not be recorded: %#v", episode.Extra)
 	}
 }
 

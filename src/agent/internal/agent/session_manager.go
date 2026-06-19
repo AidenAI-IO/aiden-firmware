@@ -19,16 +19,14 @@ type SessionManager interface {
 
 // SessionBeginRequest contains the run data needed before prompt construction.
 type SessionBeginRequest struct {
-	AgentName                 string
-	Input                     string
-	Turn                      TurnInput
-	SessionID                 string
-	EpisodeID                 string
-	RequestID                 string
-	RunID                     string
-	CurrentHints              CurrentEnvironmentHints
-	ForceSessionContinuation  bool
-	SessionContinuationReason string
+	AgentName    string
+	Input        string
+	Turn         TurnInput
+	SessionID    string
+	EpisodeID    string
+	RequestID    string
+	RunID        string
+	CurrentHints CurrentEnvironmentHints
 }
 
 // SessionBeginResult contains session state computed before prompt construction.
@@ -39,14 +37,9 @@ type SessionBeginResult struct {
 type sessionBoundaryTelemetry struct {
 	Decision             string
 	Reason               string
-	ContinuationReason   string
 	Rotated              bool
 	PendingRecallCounter *atomic.Int64
 }
-
-const (
-	SessionContinuationReasonVoiceInterrupt = "voice_interrupt"
-)
 
 // SessionCommitRequest contains the run data needed to update session memory.
 type SessionCommitRequest struct {
@@ -86,7 +79,7 @@ func (m memoryManagerSessionManager) BeginRun(ctx context.Context, req SessionBe
 	if turn.InputText == "" {
 		turn = NewTextTurnInput(req.Input, nil)
 	}
-	boundary := m.handleSessionBoundary(turn.InputText, req.ForceSessionContinuation, req.SessionContinuationReason)
+	boundary := m.handleSessionBoundary(turn.InputText)
 	if m.memories != nil {
 		agentName := req.AgentName
 		if agentName == "" {
@@ -105,14 +98,8 @@ func (m memoryManagerSessionManager) BeginRun(ctx context.Context, req SessionBe
 	return SessionBeginResult{Boundary: boundary}, nil
 }
 
-func (m memoryManagerSessionManager) handleSessionBoundary(input string, forceContinuation bool, continuationReason string) sessionBoundaryTelemetry {
+func (m memoryManagerSessionManager) handleSessionBoundary(input string) sessionBoundaryTelemetry {
 	var telemetry sessionBoundaryTelemetry
-	if forceContinuation {
-		telemetry.Decision = BoundaryContinue
-		telemetry.Reason = BoundaryReasonForcedContinuation
-		telemetry.ContinuationReason = strings.TrimSpace(continuationReason)
-		return telemetry
-	}
 	if m.memories == nil || m.memories.storageDir == "" {
 		return telemetry
 	}

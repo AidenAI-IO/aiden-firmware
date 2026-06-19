@@ -647,14 +647,12 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	}()
 
 	req := RunRequest{
-		Input:                     input.InputText,
-		Attachments:               input.Attachments,
-		Turn:                      input,
-		RequestID:                 requestID,
-		RuntimeContext:            turnContext.RuntimeContext,
-		ForceSessionContinuation:  turnContext.ForceSessionContinuation,
-		SessionContinuationReason: turnContext.SessionContinuationReason,
-		MaxTokens:                 d.config.VoiceMaxResponseTokensOrDefault(),
+		Input:          input.InputText,
+		Attachments:    input.Attachments,
+		Turn:           input,
+		RequestID:      requestID,
+		RuntimeContext: turnContext.RuntimeContext,
+		MaxTokens:      d.config.VoiceMaxResponseTokensOrDefault(),
 		EventHandler: func(event RunEvent) {
 			d.appendVoiceRunEvent(event, requestID)
 			d.HandleRunEvent(ctx, event)
