@@ -376,6 +376,26 @@ type fakeWakeupWatcher struct {
 	stopCount    int
 }
 
+func withWakeupDebounceClock(t *testing.T, start time.Time) func(time.Duration) {
+	t.Helper()
+	var mu sync.Mutex
+	current := start
+	originalNow := wakeupDebounceNow
+	wakeupDebounceNow = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	}
+	t.Cleanup(func() {
+		wakeupDebounceNow = originalNow
+	})
+	return func(delta time.Duration) {
+		mu.Lock()
+		current = current.Add(delta)
+		mu.Unlock()
+	}
+}
+
 func newTestAudioVAD(t *testing.T, alwaysBuffer bool, probabilities []float64) *agent.AudioVAD {
 	t.Helper()
 	vad, err := agent.NewAudioVADWithScorer(agent.AudioVADConfig{
@@ -433,6 +453,7 @@ func (w *fakeWakeupWatcher) Stop() {
 }
 
 func TestStartWakeupWatchersRegistersGPIO32And33Callbacks(t *testing.T) {
+	advanceWakeup := withWakeupDebounceClock(t, time.Unix(0, 0))
 	watchersByPin := map[int]*fakeWakeupWatcher{}
 	eventCount := 0
 
@@ -457,10 +478,37 @@ func TestStartWakeupWatchersRegistersGPIO32And33Callbacks(t *testing.T) {
 			t.Fatalf("GPIO %d watcher was not started", pin)
 		}
 		watcher.callback()
+		advanceWakeup(wakeupDebounceInterval + time.Millisecond)
 	}
 
 	if eventCount != 2 {
 		t.Fatalf("event count = %d, want one wakeup event per GPIO callback", eventCount)
+	}
+}
+
+func TestStartWakeupWatchersDebouncesImmediateGPIOBurst(t *testing.T) {
+	withWakeupDebounceClock(t, time.Unix(0, 0))
+	watchersByPin := map[int]*fakeWakeupWatcher{}
+	eventCount := 0
+
+	watchers, err := startWakeupWatchers(func(pin int, callback func()) (wakeupWatcher, error) {
+		watcher := &fakeWakeupWatcher{callback: callback}
+		watchersByPin[pin] = watcher
+		return watcher, nil
+	}, func() {
+		eventCount++
+	})
+	if err != nil {
+		t.Fatalf("startWakeupWatchers() error = %v", err)
+	}
+	defer stopWakeupWatchers(watchers)
+
+	watchersByPin[33].callback()
+	watchersByPin[32].callback()
+	watchersByPin[33].callback()
+
+	if eventCount != 1 {
+		t.Fatalf("event count = %d, want one wakeup event after immediate GPIO burst", eventCount)
 	}
 }
 
@@ -883,6 +931,7 @@ func TestRunWakeupModeBuffersSpeechDetectedByRKNNAfterInitialNonSpeech(t *testin
 }
 
 func TestRunWakeupModeStartsNewRecordingForNextWakeup(t *testing.T) {
+	advanceWakeup := withWakeupDebounceClock(t, time.Unix(0, 0))
 	sigChan := make(chan os.Signal, 1)
 	watcher := &fakeWakeupWatcher{fireOnStart: true}
 	voiceSessionDisabled := false
@@ -903,6 +952,7 @@ func TestRunWakeupModeStartsNewRecordingForNextWakeup(t *testing.T) {
 			} else if watcher.callback != nil {
 				go func() {
 					time.Sleep(10 * time.Millisecond)
+					advanceWakeup(wakeupDebounceInterval + time.Millisecond)
 					watcher.callback()
 				}()
 			}
@@ -936,6 +986,7 @@ func TestRunWakeupModeStartsNewRecordingForNextWakeup(t *testing.T) {
 }
 
 func TestRunWakeupModeSTTWakeupQueuesCorrectionWhileRunActive(t *testing.T) {
+	advanceWakeup := withWakeupDebounceClock(t, time.Unix(0, 0))
 	sigChan := make(chan os.Signal, 1)
 	watcher := &fakeWakeupWatcher{fireOnStart: true}
 	firstRunStarted := make(chan struct{})
@@ -1008,6 +1059,7 @@ func TestRunWakeupModeSTTWakeupQueuesCorrectionWhileRunActive(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("STT wakeup mode did not start the first voice run")
 	}
+	advanceWakeup(wakeupDebounceInterval + time.Millisecond)
 	watcher.callback()
 
 	select {
@@ -2058,6 +2110,7 @@ func TestRunVoiceSessionSpeakingInterruptMarksNextUtteranceCorrection(t *testing
 }
 
 func TestRunWakeupModeSTTSpeakingInterruptMarksNextTurnCorrection(t *testing.T) {
+	advanceWakeup := withWakeupDebounceClock(t, time.Unix(0, 0))
 	sigChan := make(chan os.Signal, 1)
 	watcher := &fakeWakeupWatcher{fireOnStart: true}
 	speakStarted := make(chan struct{})
@@ -2108,6 +2161,7 @@ func TestRunWakeupModeSTTSpeakingInterruptMarksNextTurnCorrection(t *testing.T) 
 	case <-time.After(2 * time.Second):
 		t.Fatal("runWakeupMode did not start speaking")
 	}
+	advanceWakeup(wakeupDebounceInterval + time.Millisecond)
 	watcher.callback()
 
 	select {

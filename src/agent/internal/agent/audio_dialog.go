@@ -394,6 +394,9 @@ func (d *AudioDialog) InterruptOutput() {
 	}
 
 	outputs := d.snapshotActiveOutputs()
+	if progress != nil || len(outputs) > 0 {
+		log.Printf("[audio] interrupt output requested: active_outputs=%d progress_active=%t\n", len(outputs), progress != nil)
+	}
 	for _, output := range outputs {
 		output.interrupt()
 	}
@@ -927,6 +930,11 @@ func (d *AudioDialog) playPromptSoundAsync(kind promptSoundKind, label string) {
 }
 
 func (d *AudioDialog) playPromptSound(kind promptSoundKind, label string, wait bool) {
+	if kind == promptSoundRecordingStart {
+		d.playPromptSoundUninterruptible(kind, label, wait)
+		return
+	}
+
 	outputCtx, cancelOutput := context.WithCancel(context.Background())
 	output := newActiveTTSOutput(cancelOutput)
 	unregisterOutput := d.registerActiveOutput(output)
@@ -940,6 +948,18 @@ func (d *AudioDialog) playPromptSound(kind promptSoundKind, label string, wait b
 	if err := playPromptSound(outputCtx, d.audioClient, kind, wait); err != nil {
 		log.Printf("[audio] %s prompt sound failed: %v\n", label, err)
 	}
+}
+
+func (d *AudioDialog) playPromptSoundUninterruptible(kind promptSoundKind, label string, wait bool) {
+	startedAt := time.Now()
+	log.Printf("[audio] %s prompt sound requested (uninterruptible)\n", label)
+	d.speechMu.Lock()
+	defer d.speechMu.Unlock()
+	if err := playPromptSound(context.Background(), d.audioClient, kind, wait); err != nil {
+		log.Printf("[audio] %s prompt sound failed after %s: %v\n", label, time.Since(startedAt).Round(time.Millisecond), err)
+		return
+	}
+	log.Printf("[audio] %s prompt sound completed in %s\n", label, time.Since(startedAt).Round(time.Millisecond))
 }
 
 // ProcessTextInput processes text input and speaks the response
