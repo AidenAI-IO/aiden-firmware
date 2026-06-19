@@ -862,14 +862,11 @@ func TestVoiceSessionConfigDefaults(t *testing.T) {
 	if !cfg.VoiceStreamingTTSEnabledOrDefault() {
 		t.Fatal("VoiceStreamingTTSEnabledOrDefault() = false, want true")
 	}
-	if cfg.VoiceToolCallSpeechOrDefault() {
-		t.Fatal("VoiceToolCallSpeechOrDefault() = true, want false")
+	if !cfg.VoiceToolCallSpeechOrDefault() {
+		t.Fatal("VoiceToolCallSpeechOrDefault() = false, want true")
 	}
 	if !cfg.VoiceProgressSpeechEnabledOrDefault() {
 		t.Fatal("VoiceProgressSpeechEnabledOrDefault() = false, want true")
-	}
-	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
-		t.Fatal("VoiceSpeechSummaryEnabledOrDefault() = false, want true")
 	}
 	if cfg.VoiceMaxResponseTokensOrDefault() != 300 {
 		t.Fatalf("VoiceMaxResponseTokensOrDefault() = %d, want 300", cfg.VoiceMaxResponseTokensOrDefault())
@@ -882,7 +879,6 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 	streamingDisabled := false
 	toolSpeech := false
 	progressSpeechDisabled := false
-	summaryDisabled := false
 	cfg := Config{
 		VoiceFollowupEnabled:       &followupEnabled,
 		VoiceFirstTurnTimeoutMs:    1234,
@@ -891,7 +887,6 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 		VoiceStreamingTTSEnabled:   &streamingDisabled,
 		VoiceToolCallSpeech:        &toolSpeech,
 		VoiceProgressSpeechEnabled: &progressSpeechDisabled,
-		VoiceSpeechSummaryEnabled:  &summaryDisabled,
 		VoiceMaxResponseTokens:     123,
 	}
 
@@ -915,9 +910,6 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 	}
 	if cfg.VoiceProgressSpeechEnabledOrDefault() {
 		t.Fatal("VoiceProgressSpeechEnabledOrDefault() = true, want false")
-	}
-	if cfg.VoiceSpeechSummaryEnabledOrDefault() {
-		t.Fatal("VoiceSpeechSummaryEnabledOrDefault() = true, want false")
 	}
 	if cfg.VoiceMaxResponseTokensOrDefault() != 123 {
 		t.Fatalf("VoiceMaxResponseTokensOrDefault() = %d, want 123", cfg.VoiceMaxResponseTokensOrDefault())

@@ -111,9 +111,8 @@ struct AgentToml {
     int voice_max_turns = 0;
     bool voice_interrupt_on_wakeup = true;
     bool voice_streaming_tts_enabled = true;
-    bool voice_tool_call_speech = false;
+    bool voice_tool_call_speech = true;
     bool voice_progress_speech_enabled = true;
-    bool voice_speech_summary_enabled = true;
     int voice_max_response_tokens = 300;
     int max_iterations = -1;
     bool force_simple_loop = false;

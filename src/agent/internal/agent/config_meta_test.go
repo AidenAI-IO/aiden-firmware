@@ -233,7 +233,6 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"agent.voice_streaming_tts_enabled", defaults.VoiceStreamingTTSEnabledOrDefault()},
 		{"agent.voice_tool_call_speech", defaults.VoiceToolCallSpeechOrDefault()},
 		{"agent.voice_progress_speech_enabled", defaults.VoiceProgressSpeechEnabledOrDefault()},
-		{"agent.voice_speech_summary_enabled", defaults.VoiceSpeechSummaryEnabledOrDefault()},
 		{"agent.voice_max_response_tokens", defaults.VoiceMaxResponseTokens},
 		{"agent.todo_reminder_tool_calls", defaults.TodoReminderToolCallsOrDefault()},
 		{"agent.max_iterations", defaults.MaxIterations},

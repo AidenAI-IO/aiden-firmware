@@ -122,7 +122,6 @@ type Config struct {
 	VoiceStreamingTTSEnabled   *bool              `toml:"voice_streaming_tts_enabled,omitempty"`
 	VoiceToolCallSpeech        *bool              `toml:"voice_tool_call_speech,omitempty"`
 	VoiceProgressSpeechEnabled *bool              `toml:"voice_progress_speech_enabled,omitempty"`
-	VoiceSpeechSummaryEnabled  *bool              `toml:"voice_speech_summary_enabled,omitempty"`
 	VoiceMaxResponseTokens     int                `toml:"voice_max_response_tokens,omitempty"`
 	TodoReminderToolCalls      int                `toml:"todo_reminder_tool_calls,omitempty"`
 	MaxIterations              int                `toml:"max_iterations,omitempty"`
@@ -403,12 +402,11 @@ type ModelConfig struct {
 
 // AgentConfig is used internally by the runtime prompt builder.
 type AgentConfig struct {
-	Instruction               string
-	AdditionalPrompt          string
-	RuntimeContext            string
-	ForceSimpleLoop           bool
-	VoiceSpeechSummaryEnabled *bool
-	VoiceToolCallSpeech       *bool
+	Instruction         string
+	AdditionalPrompt    string
+	RuntimeContext      string
+	ForceSimpleLoop     bool
+	VoiceToolCallSpeech *bool
 }
 
 // MemoryConfig is used internally by the memory manager.
@@ -1043,19 +1041,12 @@ func (c Config) VoiceToolCallSpeechOrDefault() bool {
 	if c.VoiceToolCallSpeech != nil {
 		return *c.VoiceToolCallSpeech
 	}
-	return false
+	return true
 }
 
 func (c Config) VoiceProgressSpeechEnabledOrDefault() bool {
 	if c.VoiceProgressSpeechEnabled != nil {
 		return *c.VoiceProgressSpeechEnabled
-	}
-	return true
-}
-
-func (c Config) VoiceSpeechSummaryEnabledOrDefault() bool {
-	if c.VoiceSpeechSummaryEnabled != nil {
-		return *c.VoiceSpeechSummaryEnabled
 	}
 	return true
 }

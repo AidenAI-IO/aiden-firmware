@@ -223,14 +223,12 @@ func TestAudioDialogRunAgentTurnStreamsThroughProviderManager(t *testing.T) {
 		NewSkillIndex(),
 	)
 	streamingEnabled := true
-	summaryDisabled := false
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
 		config: Config{
-			Model:                     ModelConfig{Provider: "fake"},
-			Audio:                     AudioConfig{SampleRate: 16000},
-			VoiceStreamingTTSEnabled:  &streamingEnabled,
-			VoiceSpeechSummaryEnabled: &summaryDisabled,
+			Model:                    ModelConfig{Provider: "fake"},
+			Audio:                    AudioConfig{SampleRate: 16000},
+			VoiceStreamingTTSEnabled: &streamingEnabled,
 		},
 		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
@@ -248,12 +246,12 @@ func TestAudioDialogRunAgentTurnStreamsThroughProviderManager(t *testing.T) {
 	}
 }
 
-func TestAudioDialogRunAgentTurnStreamsSpeechFromStructuredAnswer(t *testing.T) {
+func TestAudioDialogRunAgentTurnStreamsFinalAnswer(t *testing.T) {
 	model := &rawStreamingModel{
-		content: `{"speech":"已完成，当前音量是 42。","text":"已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。"}`,
+		content: `{"final_answer":"已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。"}`,
 		chunks: []string{
-			`{"speech":"已完成`,
-			`，当前音量是 42。","text":"已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。"}`,
+			`{"final_answer":"已完成设置`,
+			`，当前音量是 42。\n\n完整回答保留给屏幕。"}`,
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -264,14 +262,12 @@ func TestAudioDialogRunAgentTurnStreamsSpeechFromStructuredAnswer(t *testing.T) 
 		NewSkillIndex(),
 	)
 	streamingEnabled := true
-	summaryEnabled := true
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
 		config: Config{
-			Model:                     ModelConfig{Provider: "fake"},
-			Audio:                     AudioConfig{SampleRate: 16000},
-			VoiceStreamingTTSEnabled:  &streamingEnabled,
-			VoiceSpeechSummaryEnabled: &summaryEnabled,
+			Model:                    ModelConfig{Provider: "fake"},
+			Audio:                    AudioConfig{SampleRate: 16000},
+			VoiceStreamingTTSEnabled: &streamingEnabled,
 		},
 		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
@@ -287,10 +283,7 @@ func TestAudioDialogRunAgentTurnStreamsSpeechFromStructuredAnswer(t *testing.T) 
 	if result.Output != "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。" {
 		t.Fatalf("Output = %q", result.Output)
 	}
-	if result.SpeechText != "已完成，当前音量是 42。" {
-		t.Fatalf("SpeechText = %q", result.SpeechText)
-	}
-	if got := provider.texts(); len(got) != 1 || got[0] != "已完成，当前音量是 42。" {
+	if got := provider.texts(); len(got) != 1 || got[0] != "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。" {
 		t.Fatalf("provider texts = %#v", got)
 	}
 }
@@ -305,15 +298,13 @@ func TestAudioDialogInterruptOutputStopsActiveStreamingTTS(t *testing.T) {
 		NewSkillIndex(),
 	)
 	streamingEnabled := true
-	summaryDisabled := false
 	provider := newInterruptibleAudioTTSProvider("dialog-provider", 48000, false)
 	audioOps := &recordedAudioOps{}
 	dialog := &AudioDialog{
 		config: Config{
-			Model:                     ModelConfig{Provider: "fake"},
-			Audio:                     AudioConfig{SampleRate: 48000},
-			VoiceStreamingTTSEnabled:  &streamingEnabled,
-			VoiceSpeechSummaryEnabled: &summaryDisabled,
+			Model:                    ModelConfig{Provider: "fake"},
+			Audio:                    AudioConfig{SampleRate: 48000},
+			VoiceStreamingTTSEnabled: &streamingEnabled,
 		},
 		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
@@ -360,15 +351,13 @@ func TestAudioDialogProcessUtteranceSpeaksFinalAnswerWhenStreamingTTSInterrupted
 		NewSkillIndex(),
 	)
 	streamingEnabled := true
-	summaryDisabled := false
 	provider := newInterruptibleAudioTTSProvider("dialog-provider", 48000, false)
 	dialog := &AudioDialog{
 		config: Config{
-			InputMode:                 "audio",
-			Model:                     ModelConfig{Provider: "fake"},
-			Audio:                     AudioConfig{SampleRate: 48000},
-			VoiceStreamingTTSEnabled:  &streamingEnabled,
-			VoiceSpeechSummaryEnabled: &summaryDisabled,
+			InputMode:                "audio",
+			Model:                    ModelConfig{Provider: "fake"},
+			Audio:                    AudioConfig{SampleRate: 48000},
+			VoiceStreamingTTSEnabled: &streamingEnabled,
 		},
 		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, &recordedAudioOps{})),
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
@@ -420,12 +409,12 @@ func TestAudioDialogInterruptOutputStopsBackgroundToolSpeech(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunStreamsStructuredSpeechToWriter(t *testing.T) {
+func TestRuntimeRunStreamsFinalAnswerToWriter(t *testing.T) {
 	model := &rawStreamingModel{
-		content: `{"speech":"短口播。","text":"完整回答保留给屏幕。"}`,
+		content: `{"final_answer":"完整回答保留给屏幕。"}`,
 		chunks: []string{
-			`{"speech":"短`,
-			`口播。","text":"完整回答保留给屏幕。"}`,
+			`{"final_answer":"完整`,
+			`回答保留给屏幕。"}`,
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -439,20 +428,17 @@ func TestRuntimeRunStreamsStructuredSpeechToWriter(t *testing.T) {
 
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:             "hello",
-		StreamWriter:      NewSpeechStreamWriter(&stream),
+		StreamWriter:      NewJSONFieldOrPlainStreamWriter(&stream, "final_answer"),
 		StreamFinalChunks: true,
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if stream.String() != "短口播。" {
+	if stream.String() != "完整回答保留给屏幕。" {
 		t.Fatalf("stream = %q", stream.String())
 	}
 	if result.Output != "完整回答保留给屏幕。" {
 		t.Fatalf("Output = %q", result.Output)
-	}
-	if result.SpeechText != "短口播。" {
-		t.Fatalf("SpeechText = %q", result.SpeechText)
 	}
 }
 
