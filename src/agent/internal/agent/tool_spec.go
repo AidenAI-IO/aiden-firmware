@@ -354,10 +354,6 @@ func (spec ToolSpec) Descriptor() ToolDescriptor {
 }
 
 func (spec ToolSpec) LLMTool() llms.Tool {
-	return spec.LLMToolWithSpeech(false)
-}
-
-func (spec ToolSpec) LLMToolWithSpeech(_ bool) llms.Tool {
 	return llms.Tool{
 		Type: "function",
 		Function: &llms.FunctionDefinition{
@@ -375,10 +371,6 @@ func (spec ToolSpec) LLMSchema() map[string]any {
 		}
 	}
 	return genericToolParameters()
-}
-
-func (spec ToolSpec) LLMSchemaWithSpeech(_ bool) map[string]any {
-	return spec.LLMSchema()
 }
 
 func (spec ToolSpec) NormalizeInput(input string) string {
