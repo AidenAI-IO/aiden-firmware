@@ -73,8 +73,8 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 		for _, want := range []string{
 			"base instruction",
 			"extra prompt",
-			"### Environment",
-			"### Default Behavior",
+			"## Environment",
+			"## Default behavior",
 			"Default to replying in Simplified Chinese",
 			"Aiden hardware controller",
 			"not the device shown in screenshots",
@@ -92,30 +92,15 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 			"suitable for TTS",
 			"device-operator",
 			"visible target UI",
-			"Use wait_for_stable_screen only while operating a visible target UI",
-			"Do not call it for text-only reasoning",
+			"wait_for_stable_screen screenshot",
 			"Do not repeat the same click",
 			"prefer search over blind scrolling",
-			"US-keyboard ASCII",
-			"use backspace for ordinary deletion",
-			"Use the Delete key only for intentional forward-delete",
-			"prefer the audio_volume tool",
-			"Prefer coord_space:\"normalized\"",
-			"Use coord_space:\"pixel\" only when calibrated",
-			"prefer quick_action",
-			"delete backward/delete forward",
-			"quick_action {\"action\":\"back\",\"platform\":\"android\"}",
-			"Fall back to lower-level tools",
-			"type back/home",
+			"Base visible UI actions on the latest screenshot",
+			"Prefer direct or semantic tools",
+			"repeated swipes or scrolling",
+			"image_diff feedback",
 			"request confirmation",
-			"Swipe strategy",
-			"Directional swipe names describe finger movement",
-			"older chat/message history",
-			"Precision swipe loop",
 			"probe once with medium",
-			"strength/direction -> UI movement",
-			"Downshift when close to the target",
-			"if oscillating, use only tiny",
 			"save_memory with app name, control location, direction, strength/distance, and delta",
 		} {
 			if !strings.Contains(profile.SystemPrompt, want) {
@@ -144,6 +129,61 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 
 		if strings.Contains(profile.SystemPrompt, "Use long-term memory if relevant") {
 			t.Fatalf("%s system prompt should not contain benchmark-specific memory trigger:\n%s", profile.Name, profile.SystemPrompt)
+		}
+	}
+}
+
+func TestDefaultAgentBehaviorExcludesEnvironmentGuidance(t *testing.T) {
+	behavior := defaultAgentBehavior(AgentConfig{})
+
+	for _, unexpected := range []string{
+		"Environment",
+		"Aiden hardware controller",
+		"not the device shown in screenshots",
+		hostRuntimeInfoContext(),
+	} {
+		if strings.Contains(behavior, unexpected) {
+			t.Fatalf("defaultAgentBehavior should not include environment guidance %q:\n%s", unexpected, behavior)
+		}
+	}
+}
+
+func TestGlobalPromptsExcludeKeyboardTextInputDetails(t *testing.T) {
+	for name, prompt := range map[string]string{
+		"defaultAgentBehavior": defaultAgentBehavior(AgentConfig{}),
+		"defaultInstruction":   defaultInstruction,
+	} {
+		for _, unexpected := range []string{
+			`{"text":"App Store"}`,
+			"US-keyboard ASCII",
+			"must receive JSON",
+			"不要传裸字符串",
+			"非键盘字符",
+			"拼音/英文关键词",
+		} {
+			if strings.Contains(prompt, unexpected) {
+				t.Fatalf("%s should not include keyboard_text input detail %q:\n%s", name, unexpected, prompt)
+			}
+		}
+	}
+}
+
+func TestDefaultAgentBehaviorExcludesMigratedToolDetails(t *testing.T) {
+	behavior := defaultAgentBehavior(AgentConfig{})
+	for _, unexpected := range []string{
+		"stable=false means",
+		"audio_volume tool",
+		"Use the Delete key only",
+		"coord_space:\"normalized\"",
+		"coord_space:\"pixel\"",
+		`quick_action {"action":"back","platform":"android"}`,
+		"For phone edge navigation",
+		"Directional swipe names describe finger movement",
+		"Precision swipe loop",
+		"Horizontal carousels",
+	} {
+		if strings.Contains(behavior, unexpected) {
+			t.Fatalf("defaultAgentBehavior should not include migrated tool detail %q:\n%s", unexpected, behavior)
 		}
 	}
 }

@@ -519,9 +519,10 @@ func (t *KeyboardTextTool) Name() string { return "keyboard_text" }
 func (t *KeyboardTextTool) Description() string {
 	return `US-keyboard ASCII text input only via USB HID physical keyboard (not the on-screen soft keyboard). ` +
 		`Allowed characters: a-z, A-Z, 0-9, space, and common US-keyboard punctuation. ` +
+		`For model/tool calls, pass JSON only, for example {"text":"App Store"}; do not pass a bare string. ` +
 		`Do NOT pass Chinese/CJK, emoji, or any other non-ASCII text — if any character is unsupported, the tool returns an error and types nothing. ` +
 		`For Chinese targets, never copy the Chinese string into text; use pinyin or English keywords instead (e.g. {"text":"weixin"} or {"text":"zhangsan"}), then tap the on-screen candidate or search result. ` +
-		`Input JSON: {"text":"Settings"}. Bare plain text is accepted only as a compatibility fallback; prefer JSON.`
+		`Bare plain text is accepted only as a legacy compatibility fallback.`
 }
 
 func (t *KeyboardTextTool) ArgsSchema() map[string]any {
@@ -581,6 +582,7 @@ func (t *MouseClickTool) Description() string {
 	return `Move mouse to a position and click. Input JSON: {"x": 500, "y": 300, "button": "left", "coord_space": "normalized"}. ` +
 		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": x/y in [0,1000] are treated as normalized, otherwise pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
 		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
+		`Choose the visual center of the target in the latest screenshot; for small controls, estimate the control bounds and click the midpoint, biased inward. ` +
 		`pointer_mode absolute (default): moves to absolute HID coordinates, waits for iOS cursor smoothing, then clicks. ` +
 		`pointer_mode touchscreen (Android): sends a finger down/up at the resolved coordinate. ` +
 		`Use coord_space:"pixel" only when calibrated; pixel coordinates require a recent screenshot, are stale after 30s, and are rejected if outside cached bounds. ` +
@@ -697,11 +699,13 @@ func (t *TouchGestureTool) Description() string {
 		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back" (left-edge back), "home" (bottom-edge home). ` +
 		`coord_space defaults to "normalized" (x/y in [0,1000]) and also supports "pixel" and "absolute". ` +
 		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
+		`Choose the visual center of the target in the latest screenshot; for small controls, estimate the control bounds and touch the midpoint, biased inward. ` +
 		`pointer_mode absolute (default, iOS): every gesture moves to absolute coordinates before pressing; choose tap targets from the latest screenshot center and prefer normalized coordinates. ` +
 		`pointer_mode touchscreen (Android): gestures are sent as single-finger touch down/move/up reports. ` +
 		`Directional swipes accept optional "distance" (normalized 0-1000 travel, default 500), "anchor" (fixed-axis coordinate 0-1000, default 500), and "strength" ("large", "medium", "small", "tiny"). ` +
 		`Directional swipe names describe finger movement, not the content you want to reveal: "swipe_up" moves the finger upward and usually scrolls the viewport down to lower/newer items; "swipe_down" moves the finger downward and usually scrolls the viewport up to upper/older items. For chat or message history where older messages are above, use "swipe_down" (pull down), not "swipe_up". ` +
 		`For precise vertical or horizontal controls, first probe with medium/large, observe the screenshot, then use small/tiny near the target; if you overshoot, reverse direction and reduce strength. ` +
+		`For locally scrollable regions such as pickers, modal lists, embedded scroll views, or partial dialogs, keep start/end coordinates inside the control's visible bounds so the outer container does not capture the gesture. ` +
 		`Absolute-mode gestures wait for iOS HID-cursor smoothing to settle before pressing. ` +
 		`Tap and double_tap accept an optional "hold_ms" (dwell between press and release, default 60ms). ` +
 		`Swipe defaults to a slower 700ms / 24-step motion, applies "hold_before_ms" of 80ms after the press, and releases immediately at the destination by default; pass "hold_after_ms" only when a drag-like end dwell is required. ` +
