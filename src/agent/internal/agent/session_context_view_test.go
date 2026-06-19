@@ -44,6 +44,26 @@ func TestBuildSessionContextViewIgnoresHotWindowEventsWhenRuntimeEventsExist(t *
 	}
 }
 
+func TestBuildSessionContextViewDoesNotLeakPreRootPlanWhenRootIsLatestUser(t *testing.T) {
+	canFinish := true
+	events := []SessionEvent{
+		{Type: "planner_decision", Role: string(RolePlanner), Objective: "old objective", Plan: []string{"old step"}, RunID: "run-old"},
+		{Type: "verifier_decision", Role: string(RoleVerifier), Reason: "old verifier", CanFinish: &canFinish, RunID: "run-old"},
+		{Type: "user_input", Role: "user", Content: "new root request", RunID: "run-new"},
+	}
+
+	view := BuildSessionContextView(events, "new root request")
+	if view.RootUserRequest != "new root request" {
+		t.Fatalf("root request = %q, want latest user as root", view.RootUserRequest)
+	}
+	if view.LatestCommittedPlan != nil {
+		t.Fatalf("latest committed plan should not leak from before root, got %#v", view.LatestCommittedPlan)
+	}
+	if view.LatestVerifierSummary != "" {
+		t.Fatalf("latest verifier summary should not leak from before root, got %q", view.LatestVerifierSummary)
+	}
+}
+
 func TestFormatSessionContextViewOmitsFollowUpRelationJudgement(t *testing.T) {
 	events := []SessionEvent{
 		{Type: "user_input", Role: "user", Content: "打开微信", Relation: FollowUpRootRequest},

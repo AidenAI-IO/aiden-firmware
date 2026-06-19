@@ -338,19 +338,24 @@ func activeSessionRootUserInput(events []SessionEvent, latestUserIndex int) (str
 	return "", -1
 }
 
-func latestCommittedPlan(events []SessionEvent, rootIndex, latestUserIndex int) (plannerDecision, bool) {
+func sessionDecisionScanWindow(events []SessionEvent, rootIndex, latestUserIndex int) (int, int) {
 	limit := latestUserIndex
 	if limit < 0 || limit > len(events) {
 		limit = len(events)
 	}
 	start := 0
-	if rootIndex >= 0 && rootIndex < limit {
+	if rootIndex >= 0 && rootIndex < len(events) {
 		start = rootIndex + 1
 	}
-	for i := limit - 1; i >= 0; i-- {
-		if i < start {
-			break
-		}
+	if start > limit {
+		start = limit
+	}
+	return start, limit
+}
+
+func latestCommittedPlan(events []SessionEvent, rootIndex, latestUserIndex int) (plannerDecision, bool) {
+	start, limit := sessionDecisionScanWindow(events, rootIndex, latestUserIndex)
+	for i := limit - 1; i >= start; i-- {
 		event := events[i]
 		if event.Type != "planner_decision" {
 			continue
@@ -385,18 +390,8 @@ func plannerDecisionFromSessionEvent(event SessionEvent) (plannerDecision, bool)
 }
 
 func latestVerifierSummary(events []SessionEvent, rootIndex, latestUserIndex int) string {
-	limit := latestUserIndex
-	if limit < 0 || limit > len(events) {
-		limit = len(events)
-	}
-	start := 0
-	if rootIndex >= 0 && rootIndex < limit {
-		start = rootIndex + 1
-	}
-	for i := limit - 1; i >= 0; i-- {
-		if i < start {
-			break
-		}
+	start, limit := sessionDecisionScanWindow(events, rootIndex, latestUserIndex)
+	for i := limit - 1; i >= start; i-- {
 		event := events[i]
 		if event.Type != "verifier_decision" {
 			continue
