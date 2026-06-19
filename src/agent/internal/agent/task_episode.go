@@ -589,7 +589,7 @@ func (s *TaskEpisodeStore) AppendEpisodeEvent(ctx context.Context, episode TaskE
 	if err := s.materializeEventArtifact(dir, &event, step); err != nil {
 		return err
 	}
-	event.RawObservation = ""
+	event = sanitizeTaskEpisodeEventForPersistence(event)
 	file, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("open episode events: %w", err)
@@ -993,12 +993,18 @@ func writeEpisodeEventsJSONL(path string, events []TaskEpisodeEvent) error {
 	defer file.Close()
 	encoder := json.NewEncoder(file)
 	for _, event := range events {
-		event.RawObservation = ""
+		event = sanitizeTaskEpisodeEventForPersistence(event)
 		if err := encoder.Encode(event); err != nil {
 			return fmt.Errorf("encode episode event: %w", err)
 		}
 	}
 	return nil
+}
+
+func sanitizeTaskEpisodeEventForPersistence(event TaskEpisodeEvent) TaskEpisodeEvent {
+	event.Content = sanitizePersistentEventContent(event.Type, event.Content)
+	event.RawObservation = ""
+	return event
 }
 
 func readEpisodeEvents(path string) ([]TaskEpisodeEvent, error) {

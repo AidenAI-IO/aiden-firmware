@@ -45,3 +45,40 @@ func TestChatHistoryStorePersistsLightweightMessages(t *testing.T) {
 		t.Fatalf("tool result screenshot data should be omitted: %s", messages[1].Content)
 	}
 }
+
+func TestChatHistoryStoreOmitsToolCallContentBeforePersistence(t *testing.T) {
+	store := NewChatHistoryStore(t.TempDir())
+	ctx := context.Background()
+
+	var callbackMessages []Message
+	store.SetOnNewMessage(func(message Message) {
+		callbackMessages = append(callbackMessages, message)
+	})
+
+	if err := store.Append(ctx, Message{
+		Type:      runEventToolCall,
+		Content:   "我先查一下。",
+		ToolName:  "weather",
+		ToolInput: `{"location":"Shanghai"}`,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Append tool call: %v", err)
+	}
+
+	messages, err := store.Load(ctx)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("messages = %d, want 1", len(messages))
+	}
+	if messages[0].Content != "" {
+		t.Fatalf("persisted tool_call content = %q, want empty", messages[0].Content)
+	}
+	if messages[0].ToolName != "weather" || messages[0].ToolInput != `{"location":"Shanghai"}` {
+		t.Fatalf("tool metadata was not preserved: %#v", messages[0])
+	}
+	if len(callbackMessages) != 1 || callbackMessages[0].Content != "" {
+		t.Fatalf("callback should receive sanitized persisted message, got %#v", callbackMessages)
+	}
+}

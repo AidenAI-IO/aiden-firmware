@@ -206,6 +206,35 @@ func TestSessionMemoryAppendEventStripsScreenshotData(t *testing.T) {
 	}
 }
 
+func TestSessionMemoryAppendEventOmitsToolCallContentBeforePersistence(t *testing.T) {
+	ctx := context.Background()
+	session := NewSessionMemoryStore(t.TempDir())
+
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		Type:      runEventToolCall,
+		Role:      "assistant",
+		Content:   "我先查一下。",
+		ToolName:  "weather",
+		ToolInput: `{"location":"Shanghai"}`,
+	}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+
+	events, err := session.readEvents(session.eventsPath())
+	if err != nil {
+		t.Fatalf("ReadEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Content != "" {
+		t.Fatalf("persisted tool_call content = %q, want empty", events[0].Content)
+	}
+	if events[0].ToolName != "weather" || events[0].ToolInput != `{"location":"Shanghai"}` {
+		t.Fatalf("tool metadata was not preserved: %#v", events[0])
+	}
+}
+
 func TestMemoryManagerRestoresFromSessionEventsWhenSnapshotMissing(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
@@ -337,6 +366,33 @@ func TestMemoryManagerSaveDoesNotRegressEventCountWithRuntimeEvents(t *testing.T
 		if event.Sequence != want {
 			t.Fatalf("event %d sequence = %d, want %d; events=%#v", i, event.Sequence, want, events)
 		}
+	}
+}
+
+func TestMemoryManagerAppendSessionEventOmitsToolCallContentBeforePersistence(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:      runEventToolCall,
+		Role:      "assistant",
+		Content:   "我先查一下。",
+		ToolName:  "weather",
+		ToolInput: `{"location":"Shanghai"}`,
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendSessionEvent() error = %v", err)
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 session event, got %d: %#v", len(events), events)
+	}
+	if events[0].Content != "" {
+		t.Fatalf("persisted tool_call content = %q, want empty", events[0].Content)
+	}
+	if events[0].ToolName != "weather" || events[0].ToolInput != `{"location":"Shanghai"}` {
+		t.Fatalf("tool metadata was not preserved: %#v", events[0])
 	}
 }
 

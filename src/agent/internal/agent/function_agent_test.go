@@ -478,7 +478,7 @@ func TestFunctionAgentScratchpadDoesNotReplaySpeechArgumentAsContent(t *testing.
 	}
 }
 
-func TestFunctionAgentScratchpadReplaysToolContentAsAssistantText(t *testing.T) {
+func TestFunctionAgentScratchpadOmitsToolContentFromModelContext(t *testing.T) {
 	agent := &FunctionAgent{}
 	messages := agent.constructFunctionScratchPad([]schema.AgentStep{{
 		Action: schema.AgentAction{
@@ -490,15 +490,11 @@ func TestFunctionAgentScratchpadReplaysToolContentAsAssistantText(t *testing.T) 
 		Observation: "ok",
 	}})
 
-	if len(messages) == 0 || len(messages[0].Parts) != 2 {
+	if len(messages) == 0 || len(messages[0].Parts) != 1 {
 		t.Fatalf("unexpected scratchpad messages: %#v", messages)
 	}
-	text, ok := messages[0].Parts[0].(llms.TextContent)
-	if !ok || text.Text != "I will echo text." {
-		t.Fatalf("expected assistant text before tool call, got %#v", messages[0].Parts[0])
-	}
-	if _, ok := messages[0].Parts[1].(llms.ToolCall); !ok {
-		t.Fatalf("expected tool call after assistant text, got %#v", messages[0].Parts[1])
+	if _, ok := messages[0].Parts[0].(llms.ToolCall); !ok {
+		t.Fatalf("expected tool call without assistant text content, got %#v", messages[0].Parts[0])
 	}
 }
 

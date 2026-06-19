@@ -1695,10 +1695,17 @@ func normalizeSessionEventForAppend(event SessionEvent, ts time.Time, sequence i
 	if event.Role == "" {
 		event.Role = "system"
 	}
-	event.Content = stripScreenshotData(event.Content)
+	event.Content = sanitizePersistentEventContent(event.Type, event.Content)
 	event.ToolInput = stripScreenshotData(event.ToolInput)
 	event.Artifacts = sanitizeInputArtifacts(event.Artifacts)
 	return event
+}
+
+func sanitizePersistentEventContent(eventType string, content string) string {
+	if strings.TrimSpace(eventType) == runEventToolCall {
+		return ""
+	}
+	return stripScreenshotData(content)
 }
 
 func sessionEventFromTurnInput(input TurnInput) SessionEvent {
