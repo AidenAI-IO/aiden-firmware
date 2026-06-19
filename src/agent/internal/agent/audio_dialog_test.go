@@ -290,7 +290,10 @@ func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 	toolSpeech := true
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我会检查当前音量。","speech":"检查音量。"}`, "当前音量是 42。"),
+		responses: []*llms.ContentResponse{
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "检查音量。"),
+			contentResponse("当前音量是 42。"),
+		},
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -351,13 +354,13 @@ func TestAudioDialogDoesNotSpeakWaitForWakeupToolDescription(t *testing.T) {
 		Type:        runEventToolCall,
 		ToolName:    toolWaitForWakeup,
 		Description: "用户让我休息，我准备回到等待唤醒状态。",
-		Speech:      "我准备回到等待唤醒状态。",
+		Content:     "我准备回到等待唤醒状态。",
 	})
 
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
 }
 
-func TestAudioDialogSpeaksToolCallSpeechField(t *testing.T) {
+func TestAudioDialogSpeaksToolCallContent(t *testing.T) {
 	toolSpeech := true
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
@@ -372,7 +375,7 @@ func TestAudioDialogSpeaksToolCallSpeechField(t *testing.T) {
 		Type:        runEventToolCall,
 		ToolName:    "audio_volume",
 		Description: "完整工具描述保留给事件和上下文，不应该直接播报。",
-		Speech:      "读取当前音量。",
+		Content:     "读取当前音量。",
 	})
 
 	waitForProviderTextCount(t, provider, 1)

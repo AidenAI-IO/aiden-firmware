@@ -182,7 +182,6 @@ type RunEvent struct {
 	ToolName       string     `json:"tool_name,omitempty"`
 	ToolInput      string     `json:"tool_input,omitempty"`
 	Description    string     `json:"description,omitempty"`
-	Speech         string     `json:"speech,omitempty"`
 	Content        string     `json:"content,omitempty"`
 	Todo           *TodoState `json:"todo,omitempty"`
 	SpeechEligible bool       `json:"speech_eligible,omitempty"`
@@ -1372,8 +1371,7 @@ func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call T
 		ToolName:    call.Spec.Name,
 		ToolInput:   call.Input,
 		Description: description,
-		Speech:      h.toolCallSpeech(speech),
-		Content:     description,
+		Content:     h.toolCallContent(speech),
 		Timestamp:   time.Now(),
 	})
 }
@@ -1433,8 +1431,7 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 		ToolName:    action.Tool,
 		ToolInput:   action.ToolInput,
 		Description: description,
-		Speech:      h.toolCallSpeech(speech),
-		Content:     description,
+		Content:     h.toolCallContent(speech),
 		Timestamp:   time.Now(),
 	})
 }
@@ -1706,12 +1703,10 @@ func (h *runtimeCallbackHandler) recordFinalStreamError(err error) {
 
 var _ callbacks.Handler = (*runtimeCallbackHandler)(nil)
 
-func (h *runtimeCallbackHandler) toolCallSpeech(speech string) string {
+func (h *runtimeCallbackHandler) toolCallContent(speech string) string {
 	if h == nil || !h.toolCallSpeechEnabled {
 		return ""
 	}
-	// Intentionally do not derive speech from the tool description. Missing
-	// LLM-generated tool-call speech means this tool call stays silent.
 	return strings.TrimSpace(speech)
 }
 

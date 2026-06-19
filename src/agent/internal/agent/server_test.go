@@ -104,11 +104,11 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if !ok || toolCall.ToolName != "audio_volume" || toolCall.ToolInput != "{}" {
 		t.Fatalf("unexpected tool_call message: %#v", resp.History)
 	}
-	if toolCall.Description != "我先读取当前音量。" || toolCall.Content != "我先读取当前音量。" {
+	if toolCall.Description != "我先读取当前音量。" {
 		t.Fatalf("unexpected tool_call description: %#v", toolCall)
 	}
-	if toolCall.Speech != "" {
-		t.Fatalf("tool_call speech = %q, want empty when voice_tool_call_speech is disabled", toolCall.Speech)
+	if toolCall.Content != "" {
+		t.Fatalf("tool_call content = %q, want empty without assistant content", toolCall.Content)
 	}
 	toolResult, ok := firstMessageOfType(resp.History, "tool_result")
 	if !ok || toolResult.ToolName != "audio_volume" || toolResult.Content != `{"volume":42}` {
@@ -798,10 +798,12 @@ func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
 }
 
 func TestServerHandleChatDoesNotWaitForToolDescriptionTTSWhenEnabled(t *testing.T) {
-	description := "我先读取当前音量并检查当前播放设备、音量状态、静音状态、输出通道以及系统返回结果是否一致。然后继续回答。"
 	speech := "读取音量。"
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", fmt.Sprintf(`{"__arg1":"{}","description":%q,"speech":%q}`, description, speech), "The current audio volume is 42."),
+		responses: []*llms.ContentResponse{
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, speech),
+			contentResponse("The current audio volume is 42."),
+		},
 	}
 	streamingDisabled := false
 	toolSpeechEnabled := true
