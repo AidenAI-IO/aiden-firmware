@@ -198,7 +198,10 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 			groupEnd++
 		}
 
-		toolCallParts := make([]llms.ContentPart, 0, groupEnd-i)
+		toolCallParts := make([]llms.ContentPart, 0, groupEnd-i+1)
+		if content := toolContentFromAction(steps[i].Action); content != "" {
+			toolCallParts = append(toolCallParts, llms.TextPart(content))
+		}
 		for j := i; j < groupEnd; j++ {
 			toolCallParts = append(toolCallParts, llms.ToolCall{
 				ID:   scratchpadToolCallID(steps[j].Action, i, j),

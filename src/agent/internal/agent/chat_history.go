@@ -137,10 +137,6 @@ func (s *ChatHistoryStore) eventsPath() string {
 }
 
 func compactMessageForChatHistory(message Message) Message {
-	message.Type = strings.TrimSpace(message.Type)
-	if message.Type == runEventToolCall {
-		message.Content = ""
-	}
 	if message.Type == "tool_result" {
 		message.Content = compactToolResultForChatHistory(message.Content)
 	}
