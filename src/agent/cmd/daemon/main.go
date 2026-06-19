@@ -835,8 +835,9 @@ func voiceSteerListenTimeoutForConfig(_ agent.Config) time.Duration {
 
 func interruptedVoiceCorrectionContext() agent.VoiceTurnContext {
 	return agent.VoiceTurnContext{
-		FollowUpRelation: agent.FollowUpCorrection,
-		RuntimeContext:   voiceWakeupInterruptedCorrectionContext,
+		ForceSessionContinuation:  true,
+		SessionContinuationReason: agent.SessionContinuationReasonVoiceInterrupt,
+		RuntimeContext:            voiceWakeupInterruptedCorrectionContext,
 	}
 }
 

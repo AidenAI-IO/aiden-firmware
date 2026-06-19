@@ -185,6 +185,12 @@ commit task episode and extract reusable memory
 
 Runtime context is supplied per request and is not written back into memory. The phone bridge is the main producer today. It keeps connection status, platform, heartbeat time, and the latest phone environment. Each run receives only a compact summary: connection state, system type and version, locale/timezone, screen size, and confirmed launchable third-party app candidates. When the bridge disconnects, stale environment data is cleared.
 
+External runtime signals may force the current turn to continue the active
+session, for example a voice wakeup interruption. That control path affects
+session-boundary rotation and telemetry only. Model-facing facts from the signal
+must be supplied through runtime context, not persisted as session-event
+relationship labels.
+
 ### Session Hot Window
 
 At run begin, session management detects whether the input starts a new session

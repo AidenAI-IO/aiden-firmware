@@ -16,17 +16,17 @@ const (
 // strings so they can be logged and counted for telemetry without parsing
 // natural-language explanations.
 const (
-	BoundaryReasonTimeGapShort     = "time_gap_short"
-	BoundaryReasonTimeGapLong      = "time_gap_long"
-	BoundaryReasonNoPrev           = "no_prev_events"
-	BoundaryReasonContinuationWord = "continuation_word"
-	BoundaryReasonActionVerb       = "action_verb"
-	BoundaryReasonRunningEpisode   = "running_episode"
-	BoundaryReasonActiveEpisode    = "active_episode"
-	BoundaryReasonSmallSession     = "small_session"
-	BoundaryReasonDefaultNew       = "default_new"
-	BoundaryReasonScoreContinue    = "score_continue"
-	BoundaryReasonForcedFollowUp   = "forced_follow_up"
+	BoundaryReasonTimeGapShort       = "time_gap_short"
+	BoundaryReasonTimeGapLong        = "time_gap_long"
+	BoundaryReasonNoPrev             = "no_prev_events"
+	BoundaryReasonContinuationWord   = "continuation_word"
+	BoundaryReasonActionVerb         = "action_verb"
+	BoundaryReasonRunningEpisode     = "running_episode"
+	BoundaryReasonActiveEpisode      = "active_episode"
+	BoundaryReasonSmallSession       = "small_session"
+	BoundaryReasonDefaultNew         = "default_new"
+	BoundaryReasonScoreContinue      = "score_continue"
+	BoundaryReasonForcedContinuation = "forced_continuation"
 )
 
 // BoundaryConfig tunes ClassifyTurnBoundary. All fields are positive; zero

@@ -66,10 +66,14 @@ type RunRequest struct {
 	// RuntimeContext is dynamic per-turn system context, such as connected
 	// hardware/app state. It is not persisted as user configuration.
 	RuntimeContext string
-	// FollowUpRelation overrides automatic session follow-up classification for
-	// inputs whose relationship to the previous turn is known by the caller.
-	FollowUpRelation string
-	StreamWriter     io.Writer
+	// ForceSessionContinuation skips automatic session-boundary rotation when
+	// an external runtime signal proves this turn belongs to the active session.
+	ForceSessionContinuation bool
+	// SessionContinuationReason is optional telemetry for external continuation
+	// signals, such as "voice_interrupt". It is not persisted as a session event
+	// relation and is not used for prompt context selection.
+	SessionContinuationReason string
+	StreamWriter              io.Writer
 	// StreamFinalChunks allows final-answer chunks to be written through
 	// StreamWriter for audio paths. Non-final LLM calls must remain
 	// non-streaming because they may be planner, tool-call, or verifier turns.
@@ -560,15 +564,16 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		episodeID = newTaskEpisodeID(startTime.UTC())
 	}
 	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
-		AgentName:        "default",
-		Input:            normalizedInput,
-		Turn:             turnInput,
-		SessionID:        r.telemetrySessionID,
-		EpisodeID:        episodeID,
-		RequestID:        req.RequestID,
-		RunID:            runID,
-		CurrentHints:     currentHints,
-		FollowUpRelation: req.FollowUpRelation,
+		AgentName:                 "default",
+		Input:                     normalizedInput,
+		Turn:                      turnInput,
+		SessionID:                 r.telemetrySessionID,
+		EpisodeID:                 episodeID,
+		RequestID:                 req.RequestID,
+		RunID:                     runID,
+		CurrentHints:              currentHints,
+		ForceSessionContinuation:  req.ForceSessionContinuation,
+		SessionContinuationReason: req.SessionContinuationReason,
 	})
 	if err != nil {
 		return RunResult{}, err
@@ -1062,6 +1067,9 @@ func enrichEpisodeSessionBoundaryTelemetry(episode *TaskEpisode, boundary sessio
 	}
 	episode.Extra["session_boundary_decision"] = boundary.Decision
 	episode.Extra["session_boundary_reason"] = boundary.Reason
+	if boundary.ContinuationReason != "" {
+		episode.Extra["session_continuation_reason"] = boundary.ContinuationReason
+	}
 	episode.Extra["session_rotated"] = boundary.Rotated
 	pendingRecalled := int64(0)
 	if boundary.PendingRecallCounter != nil {
@@ -1526,9 +1534,6 @@ func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) Session
 		ToolInput:   event.ToolInput,
 		Description: event.Description,
 		IsError:     event.IsError,
-	}
-	if event.Type == "steer" {
-		sessionEvent.Relation = FollowUpCorrection
 	}
 	return sessionEvent
 }

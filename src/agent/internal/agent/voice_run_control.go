@@ -9,8 +9,9 @@ import (
 )
 
 type VoiceTurnContext struct {
-	FollowUpRelation string
-	RuntimeContext   string
+	ForceSessionContinuation  bool
+	SessionContinuationReason string
+	RuntimeContext            string
 }
 
 type queuedVoiceSteer struct {
@@ -39,8 +40,9 @@ type voiceSteerInterruptState struct {
 
 func normalizeVoiceTurnContext(turnContext VoiceTurnContext) VoiceTurnContext {
 	return VoiceTurnContext{
-		FollowUpRelation: normalizeFollowUpRelation(turnContext.FollowUpRelation),
-		RuntimeContext:   strings.TrimSpace(turnContext.RuntimeContext),
+		ForceSessionContinuation:  turnContext.ForceSessionContinuation,
+		SessionContinuationReason: strings.TrimSpace(turnContext.SessionContinuationReason),
+		RuntimeContext:            strings.TrimSpace(turnContext.RuntimeContext),
 	}
 }
 

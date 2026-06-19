@@ -4,34 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/tmc/langchaingo/schema"
 )
 
 const (
-	FollowUpRootRequest  = "root_request"
-	FollowUpContinuation = "continuation"
-	FollowUpCorrection   = "correction"
-	FollowUpReplacement  = "replacement"
-	FollowUpNewTask      = "new_task"
-
 	sessionContextInputKey = "session_context"
 	rootRequestInputKey    = "root_request"
 	latestUserInputKey     = "latest_user_message"
 )
 
 const maxSessionContextEvents = 200
-
-var (
-	correctionExplicitCueRe        = regexp.MustCompile(`(?i)(听错|看错|说错|写错|更正|纠正|不对|应该是|应当是|应该为|应为|\btypo\b|\bcorrection\b|\bcorrect\b|\bactually\b|\bshould be\b)`)
-	correctionContrastCueRe        = regexp.MustCompile(`(?i)(^|[\s,，。.!?！？])不是[^，。,.!?！？]+[\s,，。.!?！？]*(是|而是)[^，。,.!?！？]+`)
-	correctionEnglishContrastCueRe = regexp.MustCompile(`(?i)\bnot\s+[^,.!?]+[\s,]+but\s+[^,.!?]+`)
-	replacementCueRe               = regexp.MustCompile(`(?i)^[\s,，。.!?！？]*(算了|重新|从头|换成|改为新的|replace\b|instead\b|start over\b|new task\b)`)
-	continuationReferenceRe        = regexp.MustCompile(`(?i)(刚才|刚刚|上一个|上一条|前面|之前|这个|那个|它|同一个|\b(it|this|that|same|previous)\b|\bthe\s+last\b|\blast\s+(one|message|page|thing|item)\b)`)
-	independentCancelActionRe      = regexp.MustCompile(`(?i)^[\s,，。.!?！？]*(取消|撤销|cancel\b)`)
-)
 
 type sessionContextView struct {
 	RootUserRequest       string
@@ -119,133 +103,6 @@ func currentInputFromMemoryInputs(inputs map[string]any) string {
 	default:
 		return fmt.Sprint(typed)
 	}
-}
-
-func normalizeFollowUpRelation(relation string) string {
-	switch strings.TrimSpace(relation) {
-	case FollowUpRootRequest:
-		return FollowUpRootRequest
-	case FollowUpContinuation:
-		return FollowUpContinuation
-	case FollowUpCorrection:
-		return FollowUpCorrection
-	case FollowUpReplacement:
-		return FollowUpReplacement
-	case FollowUpNewTask:
-		return FollowUpNewTask
-	default:
-		return ""
-	}
-}
-
-// ClassifyFollowUpRelation is a local heuristic for session metadata only.
-// Keep its output out of LLM prompts and context-selection logic: the labels
-// are not semantic ground truth and should not decide the task root, restored
-// plan, verifier context, or any model-facing instruction. Runtime callers may
-// still pass an explicit FollowUpRelation when an external signal is stronger
-// than the text heuristic, such as a voice wakeup interrupt correction.
-func ClassifyFollowUpRelation(prevEvents []SessionEvent, input string, boundary string) string {
-	trimmed := strings.TrimSpace(input)
-	if trimmed == "" {
-		return FollowUpRootRequest
-	}
-	if boundary == BoundaryNew || !hasPreviousUserInput(prevEvents) {
-		return FollowUpRootRequest
-	}
-	if isReplacementFollowUp(trimmed) {
-		return FollowUpReplacement
-	}
-	if isCorrectionFollowUp(trimmed) {
-		return FollowUpCorrection
-	}
-	if hasContinuationReference(trimmed) {
-		return FollowUpContinuation
-	}
-	if actionVerbStartRe.MatchString(trimmed) || independentCancelActionRe.MatchString(trimmed) {
-		return FollowUpNewTask
-	}
-	return FollowUpContinuation
-}
-
-func hasPreviousUserInput(events []SessionEvent) bool {
-	for i := len(events) - 1; i >= 0; i-- {
-		event := events[i]
-		if event.Type == "user_input" && strings.TrimSpace(event.Content) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func isReplacementFollowUp(input string) bool {
-	if replacementCueRe.MatchString(input) {
-		return true
-	}
-	trimmed := strings.TrimLeft(input, " \t\r\n,，。.!?！？")
-	for _, prefix := range []string{"不用", "先别", "别"} {
-		if strings.HasPrefix(trimmed, prefix) {
-			return true
-		}
-	}
-	if rest, ok := strings.CutPrefix(trimmed, "取消"); ok {
-		return isContextualCancelTarget(rest)
-	}
-	lower := strings.ToLower(trimmed)
-	if rest, ok := strings.CutPrefix(lower, "cancel"); ok {
-		return isContextualCancelTarget(rest)
-	}
-	return false
-}
-
-func isContextualCancelTarget(target string) bool {
-	target = strings.TrimLeft(target, " \t\r\n,，。.!?！？")
-	if target == "" {
-		return true
-	}
-	for _, prefix := range []string{
-		"掉", "了", "吧", "这个", "那个", "它", "刚才", "刚刚", "上一个", "上一条", "前面", "之前", "当前", "这次", "本次",
-		"it", "this", "that", "same", "previous", "the previous", "the last",
-		"last one", "last message", "last page", "last thing", "last item",
-	} {
-		if strings.HasPrefix(target, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-func isCorrectionFollowUp(input string) bool {
-	if correctionExplicitCueRe.MatchString(input) ||
-		correctionContrastCueRe.MatchString(input) ||
-		correctionEnglishContrastCueRe.MatchString(input) {
-		return true
-	}
-	trimmed := strings.TrimLeft(input, " \t\r\n,，。.!?！？")
-	for _, prefix := range []string{"是", "改成", "改为", "更正为", "纠正为"} {
-		if rest, ok := strings.CutPrefix(trimmed, prefix); ok {
-			return looksLikeCorrectionValue(rest)
-		}
-	}
-	return false
-}
-
-func looksLikeCorrectionValue(value string) bool {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return false
-	}
-	switch strings.ToLower(strings.Trim(value, " \t\r\n,，。.!?！？")) {
-	case "的", "的吧", "吧", "吗", "不是", "not":
-		return false
-	}
-	if strings.HasPrefix(value, "不是") {
-		return false
-	}
-	return len([]rune(value)) >= 2
-}
-
-func hasContinuationReference(input string) bool {
-	return continuationMarkerRe.MatchString(input) || continuationReferenceRe.MatchString(input)
 }
 
 func BuildSessionContextView(events []SessionEvent, currentInput string) sessionContextView {

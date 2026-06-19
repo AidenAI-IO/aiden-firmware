@@ -995,7 +995,7 @@ func TestAudioDialogRunVoiceTurnDoesNotPersistUserWhenVoiceRunActive(t *testing.
 		TurnInput{InputText: "late correction", Transcript: "late correction"},
 		[]int16{100, -100},
 		nil,
-		VoiceTurnContext{FollowUpRelation: FollowUpCorrection},
+		VoiceTurnContext{ForceSessionContinuation: true},
 	)
 	if err == nil || !strings.Contains(err.Error(), "voice run already active") {
 		t.Fatalf("RunVoiceTurnWithContext() error = %v, want voice run already active", err)

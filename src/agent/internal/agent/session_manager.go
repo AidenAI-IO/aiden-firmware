@@ -19,15 +19,16 @@ type SessionManager interface {
 
 // SessionBeginRequest contains the run data needed before prompt construction.
 type SessionBeginRequest struct {
-	AgentName        string
-	Input            string
-	Turn             TurnInput
-	SessionID        string
-	EpisodeID        string
-	RequestID        string
-	RunID            string
-	CurrentHints     CurrentEnvironmentHints
-	FollowUpRelation string
+	AgentName                 string
+	Input                     string
+	Turn                      TurnInput
+	SessionID                 string
+	EpisodeID                 string
+	RequestID                 string
+	RunID                     string
+	CurrentHints              CurrentEnvironmentHints
+	ForceSessionContinuation  bool
+	SessionContinuationReason string
 }
 
 // SessionBeginResult contains session state computed before prompt construction.
@@ -38,9 +39,14 @@ type SessionBeginResult struct {
 type sessionBoundaryTelemetry struct {
 	Decision             string
 	Reason               string
+	ContinuationReason   string
 	Rotated              bool
 	PendingRecallCounter *atomic.Int64
 }
+
+const (
+	SessionContinuationReasonVoiceInterrupt = "voice_interrupt"
+)
 
 // SessionCommitRequest contains the run data needed to update session memory.
 type SessionCommitRequest struct {
@@ -80,7 +86,7 @@ func (m memoryManagerSessionManager) BeginRun(ctx context.Context, req SessionBe
 	if turn.InputText == "" {
 		turn = NewTextTurnInput(req.Input, nil)
 	}
-	boundary, relation := m.handleSessionBoundary(turn.InputText, req.FollowUpRelation)
+	boundary := m.handleSessionBoundary(turn.InputText, req.ForceSessionContinuation, req.SessionContinuationReason)
 	if m.memories != nil {
 		agentName := req.AgentName
 		if agentName == "" {
@@ -91,7 +97,6 @@ func (m memoryManagerSessionManager) BeginRun(ctx context.Context, req SessionBe
 			EpisodeID: req.EpisodeID,
 			RequestID: req.RequestID,
 			RunID:     req.RunID,
-			Relation:  relation,
 		}
 		if err := m.memories.AppendSessionEvent(ctx, agentName, sessionEventFromTurnInput(turn), meta); err != nil {
 			return SessionBeginResult{}, err
@@ -100,26 +105,27 @@ func (m memoryManagerSessionManager) BeginRun(ctx context.Context, req SessionBe
 	return SessionBeginResult{Boundary: boundary}, nil
 }
 
-func (m memoryManagerSessionManager) handleSessionBoundary(input string, forcedRelation string) (sessionBoundaryTelemetry, string) {
+func (m memoryManagerSessionManager) handleSessionBoundary(input string, forceContinuation bool, continuationReason string) sessionBoundaryTelemetry {
 	var telemetry sessionBoundaryTelemetry
-	if forcedRelation = normalizeFollowUpRelation(forcedRelation); forcedRelation != "" {
+	if forceContinuation {
 		telemetry.Decision = BoundaryContinue
-		telemetry.Reason = BoundaryReasonForcedFollowUp
-		return telemetry, forcedRelation
+		telemetry.Reason = BoundaryReasonForcedContinuation
+		telemetry.ContinuationReason = strings.TrimSpace(continuationReason)
+		return telemetry
 	}
 	if m.memories == nil || m.memories.storageDir == "" {
-		return telemetry, FollowUpRootRequest
+		return telemetry
 	}
 	cfg := m.memories.extraction
 	if !cfg.SessionBoundaryEnabled {
-		return telemetry, FollowUpRootRequest
+		return telemetry
 	}
 	events, err := loadLastNSessionEvents(m.memories, 20)
 	if err != nil {
 		if m.memories.logger != nil {
 			m.memories.logger.Warn("[memory] session boundary load failed: %v", err)
 		}
-		return telemetry, FollowUpRootRequest
+		return telemetry
 	}
 	boundaryCfg := BoundaryConfig{
 		ShortGapSeconds:            cfg.SessionBoundaryShortGapSeconds,
@@ -135,10 +141,9 @@ func (m memoryManagerSessionManager) handleSessionBoundary(input string, forcedR
 	boundary, reason := ClassifyTurnBoundary(events, input, now, boundaryCfg, episodeCtx)
 	telemetry.Decision = boundary
 	telemetry.Reason = reason
-	relation := ClassifyFollowUpRelation(events, input, boundary)
 
 	if boundary != BoundaryNew || len(events) == 0 {
-		return telemetry, relation
+		return telemetry
 	}
 
 	if m.memories.logger != nil {
@@ -149,12 +154,12 @@ func (m memoryManagerSessionManager) handleSessionBoundary(input string, forcedR
 		if m.memories.logger != nil {
 			m.memories.logger.Warn("[memory] session rotation failed: %v", err)
 		}
-		return telemetry, relation
+		return telemetry
 	}
 	if archiveDir != "" {
 		telemetry.Rotated = true
 	}
-	return telemetry, FollowUpRootRequest
+	return telemetry
 }
 
 func (m memoryManagerSessionManager) CommitRun(ctx context.Context, req SessionCommitRequest) (SessionCommitResult, error) {
