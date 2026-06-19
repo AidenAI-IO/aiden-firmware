@@ -53,7 +53,7 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 			RoleExecutor,
 			cfg,
 			skills,
-			appendExecutorMetaTools(availableTools),
+			executorToolsForConfig(availableTools),
 			"",
 			RoleCapabilities{CanExecuteStep: true, CanUseTools: true},
 			[]string{
@@ -132,6 +132,17 @@ func plannerToolsForConfig(cfg AgentConfig, tools []langtools.Tool) []langtools.
 		return appendSimpleTodoMetaTools(tools)
 	}
 	return appendDefaultLoopMetaTools(tools)
+}
+
+func executorToolsForConfig(tools []langtools.Tool) []langtools.Tool {
+	filtered := make([]langtools.Tool, 0, len(tools))
+	for _, tool := range tools {
+		if tool != nil && strings.EqualFold(tool.Name(), "save_memory") {
+			continue
+		}
+		filtered = append(filtered, tool)
+	}
+	return appendExecutorMetaTools(filtered)
 }
 
 func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {

@@ -17,7 +17,10 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		Names:        []string{"ui"},
 		Instructions: []string{"[ui] inspect before acting"},
 	}
-	tools := []langtools.Tool{&stubTool{name: "screenshot", description: "Capture screen."}}
+	tools := []langtools.Tool{
+		&stubTool{name: "screenshot", description: "Capture screen."},
+		&stubTool{name: "save_memory", description: "Save memory."},
+	}
 
 	profiles := buildRoleProfiles(
 		AgentConfig{Instruction: "base", AdditionalPrompt: "extra"},
@@ -102,6 +105,12 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	}
 	if !hasProfileTool(profiles.Planner, "screenshot") || !hasProfileTool(profiles.Planner, "enter_plan_mode") {
 		t.Fatalf("planner profile should retain callable tools and loop meta tools: %#v", profiles.Planner.Tools)
+	}
+	if !hasProfileTool(profiles.Planner, "save_memory") {
+		t.Fatalf("planner profile should retain save_memory: %#v", profiles.Planner.Tools)
+	}
+	if hasProfileTool(profiles.Executor, "save_memory") {
+		t.Fatalf("executor profile should not expose save_memory by default: %#v", profiles.Executor.Tools)
 	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "Route phase chooses direct_answer, simple, or plan") {
 		t.Fatalf("planner prompt should describe route-selected execution:\n%s", profiles.Planner.SystemPrompt)

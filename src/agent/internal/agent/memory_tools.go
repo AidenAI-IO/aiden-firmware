@@ -136,10 +136,15 @@ func (t *SaveMemoryTool) Name() string { return "save_memory" }
 func (t *SaveMemoryTool) Description() string {
 	return strings.Join([]string{
 		"Save a long-term memory for future recall.",
-		"Use when user explicitly asks to remember something, or when you observe a stable user preference, rule, or procedure worth persisting.",
+		"Mandatory use: when the user explicitly asks you to remember, save, record, keep in mind, or use something as a future default, call save_memory before saying it is remembered or saved.",
+		"Do not claim a memory was remembered or saved until this tool returns saved or ignored as a duplicate.",
+		"Also use when you observe a stable user preference, rule, or procedure worth persisting.",
 		`Input JSON: {"type":"preference","title":"short title","content":"what to remember","tags":["tag1"],"entities":["AppName"],"evidence":["exact user quote"],"priority":80}`,
 		"How to choose fields:",
 		"  - type: preference (user likes/dislikes), rule (must/must-not), procedure (how-to steps), fact (stable info), profile (user role/background).",
+		"  - Use type=profile for durable user profile facts such as name, nickname, location, home city, timezone, role, or background so they appear in the synthesized user profile.",
+		"  - Use type=preference or type=rule for future defaults such as the user's default city for weather queries.",
+		"  - Use type=fact only for stable facts that should be recalled but do not need to appear in the synthesized user profile.",
 		"  - tags: TOPIC/DOMAIN keywords for future search (e.g., 'verification', 'payment', 'expense'). NOT time words or vague terms.",
 		"  - entities: Specific named things mentioned (apps, accounts, services, people).",
 		"  - evidence: Original user quotes or context that led to this memory. Helps verify relevance later.",
