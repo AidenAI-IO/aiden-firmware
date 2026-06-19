@@ -116,11 +116,8 @@ func isWaitForWakeupTool(name string) bool {
 
 func waitForWakeupFinalAnswer(step *schema.AgentStep) string {
 	if step != nil {
-		if speech := toolSpeechFromAction(step.Action); speech != "" {
-			return speech
-		}
-		if description := toolDescriptionFromAction(step.Action); description != "" {
-			return description
+		if content := toolContentFromAction(step.Action); content != "" {
+			return content
 		}
 		if message := toolObservationMessage(step.Observation); message != "" {
 			return message

@@ -286,7 +286,7 @@ func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 	}
 }
 
-func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
+func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 	toolSpeech := true
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -331,14 +331,14 @@ func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 	waitForProviderTextCount(t, provider, 2)
 	texts := provider.texts()
 	if len(texts) != 2 {
-		t.Fatalf("expected tool description and final answer TTS, got %#v", texts)
+		t.Fatalf("expected tool content and final answer TTS, got %#v", texts)
 	}
 	if !containsString(texts, "检查音量。") || !containsString(texts, "当前音量是 42。") {
 		t.Fatalf("unexpected TTS texts: %#v", texts)
 	}
 }
 
-func TestAudioDialogDoesNotSpeakWaitForWakeupToolDescription(t *testing.T) {
+func TestAudioDialogDoesNotSpeakWaitForWakeupToolContent(t *testing.T) {
 	toolSpeech := true
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
@@ -350,10 +350,9 @@ func TestAudioDialogDoesNotSpeakWaitForWakeupToolDescription(t *testing.T) {
 	}
 
 	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:        runEventToolCall,
-		ToolName:    toolWaitForWakeup,
-		Description: "用户让我休息，我准备回到等待唤醒状态。",
-		Content:     "我准备回到等待唤醒状态。",
+		Type:     runEventToolCall,
+		ToolName: toolWaitForWakeup,
+		Content:  "我准备回到等待唤醒状态。",
 	})
 
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
@@ -371,10 +370,9 @@ func TestAudioDialogSpeaksToolCallContent(t *testing.T) {
 	}
 
 	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:        runEventToolCall,
-		ToolName:    "audio_volume",
-		Description: "完整工具描述保留给事件和上下文，不应该直接播报。",
-		Content:     "读取当前音量。",
+		Type:     runEventToolCall,
+		ToolName: "audio_volume",
+		Content:  "读取当前音量。",
 	})
 
 	waitForProviderTextCount(t, provider, 1)
@@ -383,7 +381,7 @@ func TestAudioDialogSpeaksToolCallContent(t *testing.T) {
 	}
 }
 
-func TestAudioDialogDoesNotFallbackToToolCallDescriptionForSpeech(t *testing.T) {
+func TestAudioDialogDoesNotSpeakToolCallWithoutContent(t *testing.T) {
 	toolSpeech := true
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
@@ -395,9 +393,8 @@ func TestAudioDialogDoesNotFallbackToToolCallDescriptionForSpeech(t *testing.T) 
 	}
 
 	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:        runEventToolCall,
-		ToolName:    "audio_volume",
-		Description: "完整工具描述保留给事件和上下文。",
+		Type:     runEventToolCall,
+		ToolName: "audio_volume",
 	})
 
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)

@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	toolDescriptionSpeechTimeout = 15 * time.Second
-	outputInterruptWaitTimeout   = 250 * time.Millisecond
+	toolContentSpeechTimeout   = 15 * time.Second
+	outputInterruptWaitTimeout = 250 * time.Millisecond
 )
 
 var (
@@ -814,14 +814,13 @@ func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
 	if event.Type != runEventToolCall || !d.config.VoiceToolCallSpeechOrDefault() || event.ToolName == toolWaitForWakeup {
 		return
 	}
-	// Tool-call speech is only explicit LLM-generated event content; do not
-	// synthesize speech from the description when it is missing.
-	go d.SpeakToolDescription(event.Content)
+	// Tool-call speech is only explicit LLM-generated event content.
+	go d.SpeakToolContent(event.Content)
 }
 
 func (d *AudioDialog) newRunProgressSpeaker() *progressSpeaker {
 	return newProgressSpeaker(func(ctx context.Context, text string) error {
-		return d.speak(ctx, text, nil, toolDescriptionSpeechTimeout)
+		return d.speak(ctx, text, nil, toolContentSpeechTimeout)
 	}, progressSpeakerConfig{})
 }
 
@@ -840,15 +839,15 @@ func (d *AudioDialog) currentProgressSpeaker() *progressSpeaker {
 	return d.progress
 }
 
-func (d *AudioDialog) SpeakToolDescription(description string) {
-	description = strings.TrimSpace(description)
-	if description == "" {
+func (d *AudioDialog) SpeakToolContent(content string) {
+	content = strings.TrimSpace(content)
+	if content == "" {
 		return
 	}
 	// Detached from the agent turn context so tool TTS is not cut off when
 	// runtime.Run returns or the parent context is cancelled.
-	if err := d.speak(context.Background(), description, nil, toolDescriptionSpeechTimeout); err != nil {
-		log.Printf("[error] Tool description TTS failed: %v", err)
+	if err := d.speak(context.Background(), content, nil, toolContentSpeechTimeout); err != nil {
+		log.Printf("[error] Tool content TTS failed: %v", err)
 	}
 }
 

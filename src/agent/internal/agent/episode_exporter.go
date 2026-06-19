@@ -467,12 +467,11 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 				end = pair.ResultTime
 			}
 			metadata := map[string]interface{}{
-				"event_id":         event.EventID,
-				"tool_name":        event.ToolName,
-				"tool_description": event.ToolDescription,
-				"has_tool_result":  paired && pair.HasResult,
-				"role":             event.Role,
-				"phase":            currentPhase,
+				"event_id":        event.EventID,
+				"tool_name":       event.ToolName,
+				"has_tool_result": paired && pair.HasResult,
+				"role":            event.Role,
+				"phase":           currentPhase,
 			}
 			if paired && pair.ResultEventID != "" {
 				metadata["result_event_id"] = pair.ResultEventID
@@ -1371,8 +1370,8 @@ func toolCallInput(event TaskEpisodeEvent) map[string]interface{} {
 	if strings.TrimSpace(event.ToolInput) != "" {
 		input["tool_input"] = event.ToolInput
 	}
-	if strings.TrimSpace(event.ToolDescription) != "" {
-		input["description"] = event.ToolDescription
+	if strings.TrimSpace(event.Content) != "" {
+		input["content"] = event.Content
 	}
 	return input
 }

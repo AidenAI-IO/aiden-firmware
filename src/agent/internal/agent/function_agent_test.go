@@ -45,8 +45,8 @@ func TestFunctionAgentParseOutputSkipsNilToolCalls(t *testing.T) {
 	}
 }
 
-func TestFunctionAgentParseOutputUsesChoiceContentAsToolSpeech(t *testing.T) {
-	agent := &FunctionAgent{OutputKey: "output", ToolCallSpeech: true}
+func TestFunctionAgentParseOutputUsesChoiceContentAsToolContent(t *testing.T) {
+	agent := &FunctionAgent{OutputKey: "output"}
 
 	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
@@ -73,24 +73,21 @@ func TestFunctionAgentParseOutputUsesChoiceContentAsToolSpeech(t *testing.T) {
 	if actions[0].ToolInput != "hello" {
 		t.Fatalf("ToolInput = %q, want stripped tool input", actions[0].ToolInput)
 	}
-	if got := toolDescriptionFromAction(actions[0]); got != "发送测试文本。" {
-		t.Fatalf("tool description = %q", got)
-	}
-	if got := toolSpeechFromAction(actions[0]); got != "发送测试文本。" {
-		t.Fatalf("tool speech = %q", got)
+	if got := toolContentFromAction(actions[0]); got != "发送测试文本。" {
+		t.Fatalf("tool content = %q", got)
 	}
 
 	var log toolActionLog
 	if err := json.Unmarshal([]byte(actions[0].Log), &log); err != nil {
 		t.Fatalf("action log should be structured JSON: %v", err)
 	}
-	if log.Version != toolActionLogVersion || log.ToolDescription != "发送测试文本。" || log.ToolSpeech != "发送测试文本。" {
+	if log.Version != toolActionLogVersion || log.ToolContent != "发送测试文本。" {
 		t.Fatalf("unexpected action log metadata: %#v", log)
 	}
 }
 
 func TestFunctionAgentParseOutputBindsChoiceContentToFirstValidToolCall(t *testing.T) {
-	agent := &FunctionAgent{OutputKey: "output", ToolCallSpeech: true}
+	agent := &FunctionAgent{OutputKey: "output"}
 
 	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
@@ -131,17 +128,11 @@ func TestFunctionAgentParseOutputBindsChoiceContentToFirstValidToolCall(t *testi
 	if actions[1].ToolInput != "second" || actions[1].ToolID != "call_2" {
 		t.Fatalf("unexpected second action: %#v", actions[1])
 	}
-	if got := toolDescriptionFromAction(actions[0]); got != "先检查。" {
-		t.Fatalf("first tool description = %q", got)
+	if got := toolContentFromAction(actions[0]); got != "先检查。" {
+		t.Fatalf("first tool content = %q", got)
 	}
-	if got := toolSpeechFromAction(actions[0]); got != "先检查。" {
-		t.Fatalf("first tool speech = %q", got)
-	}
-	if got := toolDescriptionFromAction(actions[1]); got != "" {
-		t.Fatalf("second tool description = %q, want empty", got)
-	}
-	if got := toolSpeechFromAction(actions[1]); got != "" {
-		t.Fatalf("second tool speech = %q, want empty", got)
+	if got := toolContentFromAction(actions[1]); got != "" {
+		t.Fatalf("second tool content = %q, want empty", got)
 	}
 
 	var secondLog toolActionLog
@@ -154,7 +145,7 @@ func TestFunctionAgentParseOutputBindsChoiceContentToFirstValidToolCall(t *testi
 }
 
 func TestFunctionAgentParseOutputExtractsGenericInputWrapper(t *testing.T) {
-	agent := &FunctionAgent{OutputKey: "output", ToolCallSpeech: true}
+	agent := &FunctionAgent{OutputKey: "output"}
 
 	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
@@ -181,16 +172,13 @@ func TestFunctionAgentParseOutputExtractsGenericInputWrapper(t *testing.T) {
 	if actions[0].ToolInput != "hello" {
 		t.Fatalf("ToolInput = %q, want generic input wrapper", actions[0].ToolInput)
 	}
-	if got := toolDescriptionFromAction(actions[0]); got != "Echoing text." {
-		t.Fatalf("tool description = %q", got)
-	}
-	if got := toolSpeechFromAction(actions[0]); got != "Echoing text." {
-		t.Fatalf("tool speech = %q", got)
+	if got := toolContentFromAction(actions[0]); got != "Echoing text." {
+		t.Fatalf("tool content = %q", got)
 	}
 }
 
 func TestFunctionAgentParseOutputPassesStructuredToolArguments(t *testing.T) {
-	agent := &FunctionAgent{OutputKey: "output", ToolCallSpeech: true}
+	agent := &FunctionAgent{OutputKey: "output"}
 
 	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
@@ -217,16 +205,13 @@ func TestFunctionAgentParseOutputPassesStructuredToolArguments(t *testing.T) {
 	if actions[0].ToolInput != `{"keys":["enter"]}` {
 		t.Fatalf("ToolInput = %q, want structured args without description", actions[0].ToolInput)
 	}
-	if got := toolDescriptionFromAction(actions[0]); got != "按回车。" {
-		t.Fatalf("tool description = %q", got)
-	}
-	if got := toolSpeechFromAction(actions[0]); got != "按回车。" {
-		t.Fatalf("tool speech = %q", got)
+	if got := toolContentFromAction(actions[0]); got != "按回车。" {
+		t.Fatalf("tool content = %q", got)
 	}
 }
 
-func TestFunctionAgentParseOutputKeepsLegacyArg1CompatibilityWithoutSpeechFallback(t *testing.T) {
-	agent := &FunctionAgent{OutputKey: "output", ToolCallSpeech: true}
+func TestFunctionAgentParseOutputKeepsLegacyArg1CompatibilityWithoutContentFallback(t *testing.T) {
+	agent := &FunctionAgent{OutputKey: "output"}
 
 	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
@@ -252,16 +237,13 @@ func TestFunctionAgentParseOutputKeepsLegacyArg1CompatibilityWithoutSpeechFallba
 	if actions[0].ToolInput != `{"keys":["enter"]}` {
 		t.Fatalf("ToolInput = %q, want legacy __arg1", actions[0].ToolInput)
 	}
-	if got := toolDescriptionFromAction(actions[0]); got != "我会按下回车键。" {
-		t.Fatalf("tool description = %q", got)
-	}
-	if got := toolSpeechFromAction(actions[0]); got != "" {
-		t.Fatalf("tool speech = %q, want empty without assistant content", got)
+	if got := toolContentFromAction(actions[0]); got != "" {
+		t.Fatalf("tool content = %q, want empty without assistant content", got)
 	}
 }
 
 func TestFunctionAgentParseOutputDoesNotConsumeSpeechArgumentAsMetadata(t *testing.T) {
-	agent := &FunctionAgent{OutputKey: "output", ToolCallSpeech: true}
+	agent := &FunctionAgent{OutputKey: "output"}
 
 	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
@@ -291,13 +273,13 @@ func TestFunctionAgentParseOutputDoesNotConsumeSpeechArgumentAsMetadata(t *testi
 	if _, ok := input["keys"]; !ok || input["speech"] != "按回车。" {
 		t.Fatalf("ToolInput should preserve speech as an ordinary tool argument: %#v", input)
 	}
-	if got := toolSpeechFromAction(actions[0]); got != "" {
-		t.Fatalf("tool speech = %q, want empty without assistant content", got)
+	if got := toolContentFromAction(actions[0]); got != "" {
+		t.Fatalf("tool content = %q, want empty without assistant content", got)
 	}
 }
 
-func TestFunctionAgentParseOutputDoesNotSynthesizeMissingToolSpeech(t *testing.T) {
-	agent := &FunctionAgent{OutputKey: "output", ToolCallSpeech: true}
+func TestFunctionAgentParseOutputDoesNotSynthesizeMissingToolContent(t *testing.T) {
+	agent := &FunctionAgent{OutputKey: "output"}
 
 	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
@@ -320,8 +302,8 @@ func TestFunctionAgentParseOutputDoesNotSynthesizeMissingToolSpeech(t *testing.T
 	if len(actions) != 1 {
 		t.Fatalf("expected 1 action, got %#v", actions)
 	}
-	if got := toolSpeechFromAction(actions[0]); got != "" {
-		t.Fatalf("tool speech = %q, want empty", got)
+	if got := toolContentFromAction(actions[0]); got != "" {
+		t.Fatalf("tool content = %q, want empty", got)
 	}
 }
 
@@ -356,16 +338,14 @@ func TestFunctionAgentParseOutputPreservesSpeechArgumentWhenDisabled(t *testing.
 	if input["speech"] != "hello" || input["volume"] != float64(1) {
 		t.Fatalf("ToolInput lost real speech argument: %#v", input)
 	}
-	if got := toolSpeechFromAction(actions[0]); got != "" {
-		t.Fatalf("tool speech metadata = %q, want empty", got)
+	if got := toolContentFromAction(actions[0]); got != "" {
+		t.Fatalf("tool content = %q, want empty", got)
 	}
 }
 
 func TestFunctionAgentParseOutputPreservesRealSpeechArgumentWhenSchemaDefinesIt(t *testing.T) {
 	agent := &FunctionAgent{
-		OutputKey:      "output",
-		ToolCallSpeech: true,
-		Tools: []langtools.Tool{&structuredStubTool{
+		OutputKey: "output", Tools: []langtools.Tool{&structuredStubTool{
 			stubTool: stubTool{name: "say", description: "Speak text."},
 			schema: map[string]any{
 				"type": "object",
@@ -406,32 +386,31 @@ func TestFunctionAgentParseOutputPreservesRealSpeechArgumentWhenSchemaDefinesIt(
 	if input["speech"] != "hello" || input["volume"] != float64(1) {
 		t.Fatalf("ToolInput lost real speech argument: %#v", input)
 	}
-	if got := toolSpeechFromAction(actions[0]); got != "准备播报。" {
-		t.Fatalf("tool speech metadata = %q", got)
+	if got := toolContentFromAction(actions[0]); got != "准备播报。" {
+		t.Fatalf("tool content = %q", got)
 	}
 }
 
-func TestFunctionAgentToolDescriptionIgnoresLogTextCollisions(t *testing.T) {
+func TestFunctionAgentToolContentIgnoresLogTextCollisions(t *testing.T) {
 	log := formatToolActionLog(
 		"echo",
-		"{\"__arg1\":\"payload\\nTool description: injected\"}",
-		"",
+		"{\"__arg1\":\"payload\\nTool content: injected\"}",
 		"",
 		"\n",
 	)
 
-	if got := toolDescriptionFromAction(schema.AgentAction{Log: log}); got != "" {
-		t.Fatalf("tool description = %q, want empty", got)
+	if got := toolContentFromAction(schema.AgentAction{Log: log}); got != "" {
+		t.Fatalf("tool content = %q, want empty", got)
 	}
 }
 
-func TestFunctionAgentScratchpadDoesNotReplayToolSpeechAsArgument(t *testing.T) {
+func TestFunctionAgentScratchpadDoesNotReplaySpeechArgument(t *testing.T) {
 	agent := &FunctionAgent{}
 	messages := agent.constructFunctionScratchPad([]schema.AgentStep{{
 		Action: schema.AgentAction{
 			Tool:      "echo",
 			ToolInput: "hello",
-			Log:       formatToolActionLog("echo", `{"input":"hello","speech":"Echoing text."}`, "", "Echoing text.", "\n"),
+			Log:       formatToolActionLog("echo", `{"input":"hello","speech":"Echoing text."}`, "", "\n"),
 			ToolID:    "call_1",
 		},
 		Observation: "ok",
@@ -462,13 +441,13 @@ func TestFunctionAgentScratchpadDoesNotReplayToolSpeechAsArgument(t *testing.T) 
 	}
 }
 
-func TestFunctionAgentScratchpadDoesNotReplayToolSpeechWhenEnabled(t *testing.T) {
-	agent := &FunctionAgent{ToolCallSpeech: true}
+func TestFunctionAgentScratchpadDoesNotReplaySpeechArgumentAsContent(t *testing.T) {
+	agent := &FunctionAgent{}
 	messages := agent.constructFunctionScratchPad([]schema.AgentStep{{
 		Action: schema.AgentAction{
 			Tool:      "echo",
 			ToolInput: "hello",
-			Log:       formatToolActionLog("echo", `{"input":"hello","speech":"Echoing text."}`, "", "Echoing text.", "\n"),
+			Log:       formatToolActionLog("echo", `{"input":"hello","speech":"Echoing text."}`, "", "\n"),
 			ToolID:    "call_1",
 		},
 		Observation: "ok",
@@ -499,13 +478,13 @@ func TestFunctionAgentScratchpadDoesNotReplayToolSpeechWhenEnabled(t *testing.T)
 	}
 }
 
-func TestFunctionAgentScratchpadReplaysToolDescriptionAsAssistantText(t *testing.T) {
+func TestFunctionAgentScratchpadReplaysToolContentAsAssistantText(t *testing.T) {
 	agent := &FunctionAgent{}
 	messages := agent.constructFunctionScratchPad([]schema.AgentStep{{
 		Action: schema.AgentAction{
 			Tool:      "echo",
 			ToolInput: "hello",
-			Log:       formatToolActionLog("echo", `{"input":"hello"}`, "I will echo text.", "", "responded: I will echo text.\n"),
+			Log:       formatToolActionLog("echo", `{"input":"hello"}`, "I will echo text.", "responded: I will echo text.\n"),
 			ToolID:    "call_1",
 		},
 		Observation: "ok",
@@ -720,7 +699,6 @@ func scratchpadToolResponseCount(messages []llms.MessageContent) int {
 
 func TestFunctionAgentToolsAsLLMUsesGenericInputFallback(t *testing.T) {
 	agent := &FunctionAgent{
-		ToolCallSpeech: true,
 		Tools: []langtools.Tool{&stubTool{
 			name:        "echo",
 			description: "Echo text.",
@@ -772,7 +750,7 @@ func TestFunctionAgentToolsAsLLMUsesGenericInputFallback(t *testing.T) {
 	}
 }
 
-func TestFunctionAgentToolsAsLLMOmitsSpeechWhenToolCallSpeechDisabled(t *testing.T) {
+func TestFunctionAgentToolsAsLLMOmitsSpeechMetadata(t *testing.T) {
 	agent := &FunctionAgent{
 		Tools: []langtools.Tool{&stubTool{
 			name:        "echo",
@@ -791,7 +769,7 @@ func TestFunctionAgentToolsAsLLMOmitsSpeechWhenToolCallSpeechDisabled(t *testing
 		t.Fatalf("unexpected properties: %#v", params["properties"])
 	}
 	if _, ok := props["speech"]; ok {
-		t.Fatalf("schema should not expose speech when tool-call speech is disabled: %#v", props)
+		t.Fatalf("schema should not expose speech metadata: %#v", props)
 	}
 }
 
@@ -804,7 +782,6 @@ func (t *structuredStubTool) ArgsSchema() map[string]any { return t.schema }
 
 func TestFunctionAgentToolsAsLLMUsesStructuredSchema(t *testing.T) {
 	agent := &FunctionAgent{
-		ToolCallSpeech: true,
 		Tools: []langtools.Tool{&structuredStubTool{
 			stubTool: stubTool{name: "structured", description: "Structured input."},
 			schema: map[string]any{

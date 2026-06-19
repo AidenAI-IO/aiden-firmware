@@ -215,7 +215,6 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 			state.CurrentApp = truncateLiveActivityText(app, 40)
 		}
 		state.CurrentStep = truncateLiveActivityText(firstNonEmptyString([]string{
-			event.Description,
 			event.Content,
 			toolStatus.step,
 			formatToolStep("Using", event.ToolName),

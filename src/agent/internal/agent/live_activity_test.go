@@ -25,10 +25,10 @@ func TestLiveActivityManagerLifecycle(t *testing.T) {
 	}
 
 	state = manager.UpdateFromRunEvent("req-1", RunEvent{
-		Type:        runEventToolCall,
-		ToolName:    "screenshot",
-		Description: "Checking the current screen",
-		Timestamp:   time.Now(),
+		Type:      runEventToolCall,
+		ToolName:  "screenshot",
+		Content:   "Checking the current screen",
+		Timestamp: time.Now(),
 	})
 	if state == nil || state.LastToolName != "screenshot" || !strings.Contains(state.CurrentStep, "Checking") {
 		t.Fatalf("unexpected tool update state: %#v", state)

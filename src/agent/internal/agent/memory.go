@@ -109,7 +109,6 @@ type SessionEvent struct {
 	ToolCallID         string          `json:"tool_call_id,omitempty"`
 	ToolName           string          `json:"tool_name,omitempty"`
 	ToolInput          string          `json:"tool_input,omitempty"`
-	Description        string          `json:"description,omitempty"`
 	Objective          string          `json:"objective,omitempty"`
 	CompletionCriteria []string        `json:"completion_criteria,omitempty"`
 	Plan               []string        `json:"plan,omitempty"`
@@ -1741,7 +1740,7 @@ func messageRecordFromSessionEvent(event SessionEvent) (MessageRecord, bool) {
 	case "system_event":
 		return MessageRecord{Role: string(llms.ChatMessageTypeSystem), Content: event.Content}, true
 	case "tool_result":
-		if event.ToolName == "" && event.ToolInput == "" && event.Description == "" {
+		if event.ToolName == "" && event.ToolInput == "" {
 			return MessageRecord{Role: string(llms.ChatMessageTypeTool), Content: event.Content}, true
 		}
 		return MessageRecord{}, false

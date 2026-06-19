@@ -34,7 +34,6 @@ type roleCollaborativeExecutor struct {
 	ScreenshotPruning     ScreenshotPruningConfig
 	InitialWorldState     worldState
 	ForceSimpleLoop       bool
-	ToolCallSpeech        bool
 	SteerProvider         func(context.Context) (RunSteerMessage, bool)
 	FinalSteerProvider    func(context.Context) (RunSteerMessage, bool)
 	SteerInterrupt        func() <-chan struct{}
@@ -537,9 +536,8 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 		}
 	}
 	parser := &FunctionAgent{
-		Tools:          plannerTools,
-		OutputKey:      e.OutputKey,
-		ToolCallSpeech: e.ToolCallSpeech,
+		Tools:     plannerTools,
+		OutputKey: e.OutputKey,
 	}
 	baseOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
 	finalStreaming := state.Phase == phaseDefault || e.ForceSimpleLoop
@@ -665,7 +663,7 @@ func (e *roleCollaborativeExecutor) callRouteTurn(
 		return plannerTurnResult{Kind: plannerTurnSteer}, nil
 	}
 
-	parser := &FunctionAgent{Tools: appendLoopMetaTools(toolsForRole(RolePlanner, e.Tools)), OutputKey: e.OutputKey, ToolCallSpeech: e.ToolCallSpeech}
+	parser := &FunctionAgent{Tools: appendLoopMetaTools(toolsForRole(RolePlanner, e.Tools)), OutputKey: e.OutputKey}
 	actions, _, parseErr := parser.ParseOutput(res)
 	if parseErr != nil && !errors.Is(parseErr, agents.ErrUnableToParseOutput) {
 		return plannerTurnResult{}, parseErr
@@ -952,9 +950,8 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 	messages := e.roleMessages(e.Profiles.Executor, inputs, *state, "Executor task: work on the current next_step across multiple tool calls if needed, then call finish_step when the step is ready for verification or abort_step if blocked.")
 	executorTools := appendExecutorMetaTools(toolsForRole(RoleExecutor, e.Tools))
 	parser := &FunctionAgent{
-		Tools:          executorTools,
-		OutputKey:      e.OutputKey,
-		ToolCallSpeech: e.ToolCallSpeech,
+		Tools:     executorTools,
+		OutputKey: e.OutputKey,
 	}
 	callOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
 	res, err := e.generateRoleContent(ctx, RoleExecutor, messages, callOptions...)
@@ -1097,10 +1094,10 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	}
 
 	if profile.Name == RoleExecutor && len(state.StepToolSteps) > 0 {
-		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(toolsForRole(RoleExecutor, e.Tools)), ScreenshotPruning: e.ScreenshotPruning, ToolCallSpeech: e.ToolCallSpeech}).constructFunctionScratchPad(state.StepToolSteps)
+		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(toolsForRole(RoleExecutor, e.Tools)), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.StepToolSteps)
 		messages = append(messages, scratchpad...)
 	} else if roleSeesToolScratchpad(profile.Name) && len(state.ToolSteps) > 0 {
-		scratchpad := (&FunctionAgent{Tools: toolsForRole(profile.Name, e.Tools), ScreenshotPruning: e.ScreenshotPruning, ToolCallSpeech: e.ToolCallSpeech}).constructFunctionScratchPad(state.ToolSteps)
+		scratchpad := (&FunctionAgent{Tools: toolsForRole(profile.Name, e.Tools), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.ToolSteps)
 		messages = append(messages, scratchpad...)
 	}
 

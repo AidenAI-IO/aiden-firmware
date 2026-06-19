@@ -112,7 +112,6 @@ type Message struct {
 	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
-	Description     string              `json:"description,omitempty"`
 	Attachments     []MessageAttachment `json:"attachments,omitempty"`
 	Artifacts       []InputArtifact     `json:"artifacts,omitempty"`
 	Source          string              `json:"source,omitempty"`
@@ -145,7 +144,6 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 		SpeechEligible: event.SpeechEligible,
 		ToolName:       event.ToolName,
 		ToolInput:      event.ToolInput,
-		Description:    event.Description,
 		Timestamp:      event.Timestamp,
 		IsError:        event.IsError,
 	}
@@ -827,7 +825,7 @@ func (s *Server) handleChatAsync(
 			}
 
 			if s.shouldSpeakToolCall(event) {
-				go s.speakToolDescription(runCtx, event.Content)
+				go s.speakToolContent(runCtx, event.Content)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
@@ -1093,7 +1091,7 @@ func (s *Server) handleChatSync(
 		EventHandler: func(event RunEvent) {
 			s.appendHistory(messageFromRunEvent(event, episodeID, ""))
 			if s.shouldSpeakToolCall(event) {
-				go s.speakToolDescription(r.Context(), event.Content)
+				go s.speakToolContent(r.Context(), event.Content)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
@@ -1272,7 +1270,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
 			if s.shouldSpeakToolCall(event) {
-				go s.speakToolDescription(ctx, event.Content)
+				go s.speakToolContent(ctx, event.Content)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
@@ -1589,22 +1587,22 @@ func (w *finalStreamFanoutWriter) StreamEmitted() bool {
 	return false
 }
 
-func (s *Server) speakToolDescription(ctx context.Context, description string) {
-	description = strings.TrimSpace(description)
-	if description == "" || s.audioClient == nil {
+func (s *Server) speakToolContent(ctx context.Context, content string) {
+	content = strings.TrimSpace(content)
+	if content == "" || s.audioClient == nil {
 		return
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ttsCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
+	ttsCtx, cancel := context.WithTimeout(ctx, toolContentSpeechTimeout)
 	defer cancel()
 	if s.logger != nil {
-		s.logger.Info("Tool description TTS playback: %q", description)
+		s.logger.Info("Tool content TTS playback: %q", content)
 	}
-	if err := s.speakText(ttsCtx, description, 0); err != nil {
+	if err := s.speakText(ttsCtx, content, 0); err != nil {
 		if s.logger != nil {
-			s.logger.Error("Tool description TTS playback failed: %v", err)
+			s.logger.Error("Tool content TTS playback failed: %v", err)
 		}
 	}
 }
@@ -1630,7 +1628,7 @@ func (s *Server) newRunProgressSpeaker() *progressSpeaker {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		ttsCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
+		ttsCtx, cancel := context.WithTimeout(ctx, toolContentSpeechTimeout)
 		defer cancel()
 		if s.logger != nil {
 			s.logger.Info("Progress TTS playback: %q", text)
