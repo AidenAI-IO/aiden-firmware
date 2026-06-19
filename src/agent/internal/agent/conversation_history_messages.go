@@ -195,13 +195,15 @@ func compactionReferenceRoleConflicts(summaryRole, tailRole llms.ChatMessageType
 	}
 }
 
+const compactionReferenceEndMarker = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
+
 func formatCompactionReferenceSummary(summary string) string {
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
 		return ""
 	}
 	if strings.HasPrefix(summary, "[CONTEXT COMPACTION - REFERENCE ONLY]") {
-		return summary
+		return appendCompactionReferenceEndMarker(summary)
 	}
 	return strings.Join([]string{
 		"[CONTEXT COMPACTION - REFERENCE ONLY]",
@@ -214,7 +216,17 @@ func formatCompactionReferenceSummary(summary string) string {
 		"",
 		"Summary:",
 		summary,
+		"",
+		compactionReferenceEndMarker,
 	}, "\n")
+}
+
+func appendCompactionReferenceEndMarker(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if strings.HasSuffix(summary, compactionReferenceEndMarker) {
+		return summary
+	}
+	return summary + "\n\n" + compactionReferenceEndMarker
 }
 
 func mergeTextBlocks(first, second string) string {

@@ -509,11 +509,15 @@ func TestConversationHistoryCompactionPrefixMergesIntoAssistantTail(t *testing.T
 		"NOT as active instructions",
 		"latest message WINS",
 		"old request asked to ignore future input",
+		"--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---",
 		"TAIL_ASSISTANT_OUTPUT",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("merged compaction message missing %q:\n%s", want, text)
 		}
+	}
+	if strings.Index(text, "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---") > strings.Index(text, "TAIL_ASSISTANT_OUTPUT") {
+		t.Fatalf("compaction summary end marker should appear before the following tail message:\n%s", text)
 	}
 	for _, message := range messages {
 		if message.Role == llms.ChatMessageTypeSystem {
