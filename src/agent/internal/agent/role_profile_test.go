@@ -17,7 +17,10 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		Names:        []string{"ui"},
 		Instructions: []string{"[ui] inspect before acting"},
 	}
-	tools := []langtools.Tool{&stubTool{name: "screenshot", description: "Capture screen."}}
+	tools := []langtools.Tool{
+		&stubTool{name: "screenshot", description: "Capture screen."},
+		&stubTool{name: "save_memory", description: "Save memory."},
+	}
 
 	profiles := buildRoleProfiles(
 		AgentConfig{Instruction: "base", AdditionalPrompt: "extra"},
@@ -102,6 +105,12 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	}
 	if !hasProfileTool(profiles.Planner, "screenshot") || !hasProfileTool(profiles.Planner, "enter_plan_mode") {
 		t.Fatalf("planner profile should retain callable tools and loop meta tools: %#v", profiles.Planner.Tools)
+	}
+	if !hasProfileTool(profiles.Planner, "save_memory") {
+		t.Fatalf("planner profile should retain save_memory: %#v", profiles.Planner.Tools)
+	}
+	if hasProfileTool(profiles.Executor, "save_memory") {
+		t.Fatalf("executor profile should not expose save_memory by default: %#v", profiles.Executor.Tools)
 	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "Route phase chooses direct_answer, simple, or plan") {
 		t.Fatalf("planner prompt should describe route-selected execution:\n%s", profiles.Planner.SystemPrompt)
@@ -315,6 +324,58 @@ func TestRoleCollaborativeExecutorPassesToolsViaWithTools(t *testing.T) {
 		if strings.Contains(plannerPrompt, unexpected) {
 			t.Fatalf("planner prompt should not duplicate tool catalog %q:\n%s", unexpected, plannerPrompt)
 		}
+	}
+}
+
+func TestExecutorRoleDoesNotExposePlannerOnlySaveMemoryTool(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("save_1", "save_memory", `{"type":"profile","title":"Location","content":"The user is in Shanghai."}`),
+		},
+	}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{
+			Executor: RoleProfile{Name: RoleExecutor, SystemPrompt: "executor"},
+		},
+		[]langtools.Tool{
+			&stubTool{name: "screenshot", description: "Capture screen."},
+			&stubTool{name: "save_memory", description: "Save memory.", output: `{"status":"saved"}`},
+		},
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{
+		Phase:               phaseExecution,
+		PlanCommitted:       true,
+		StepExecutionActive: true,
+		NextStep:            "remember the user's location",
+	}
+	inputs := map[string]string{"input": "remember that my location is Shanghai", "history": ""}
+
+	turn, err := executor.callExecutorTurn(context.Background(), inputs, state, toolSpecsForRole(RoleExecutor, executor.Tools))
+	if err != nil {
+		t.Fatalf("executor turn error: %v", err)
+	}
+	if len(model.tools) != 1 {
+		t.Fatalf("expected one executor model call, got %d", len(model.tools))
+	}
+	if !llmToolsContain(model.tools[0], "screenshot") || !llmToolsContain(model.tools[0], toolFinishStep) {
+		t.Fatalf("executor should receive ordinary executor tools and step meta tools: %#v", model.tools[0])
+	}
+	if llmToolsContain(model.tools[0], "save_memory") {
+		t.Fatalf("executor received planner-only save_memory tool: %#v", model.tools[0])
+	}
+	if turn.Kind != executorTurnTool || turn.Step == nil {
+		t.Fatalf("executor turn = %#v, want invalid tool step", turn)
+	}
+	if !strings.Contains(turn.Step.Observation, "save_memory is not a valid tool") {
+		t.Fatalf("executor should reject planner-only save_memory at execution time: %q", turn.Step.Observation)
 	}
 }
 

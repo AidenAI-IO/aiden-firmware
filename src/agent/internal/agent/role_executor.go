@@ -226,7 +226,8 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 		}
 	}
 
-	toolSpecs := NewToolSpecs(e.Tools)
+	plannerToolSpecs := toolSpecsForRole(RolePlanner, e.Tools)
+	executorToolSpecs := toolSpecsForRole(RoleExecutor, e.Tools)
 	initialPhase := phaseDecision
 	if e.ForceSimpleLoop {
 		initialPhase = phaseDefault
@@ -248,7 +249,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 		}
 		switch state.Phase {
 		case phaseDecision, phaseDefault, phasePlan:
-			turn, err := e.callPlannerTurn(ctx, inputs, &state, toolSpecs, options...)
+			turn, err := e.callPlannerTurn(ctx, inputs, &state, plannerToolSpecs, options...)
 			if err != nil {
 				return nil, err
 			}
@@ -370,7 +371,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), true)
 				}
 			}
-			turn, err := e.callExecutorTurn(ctx, inputs, &state, toolSpecs, options...)
+			turn, err := e.callExecutorTurn(ctx, inputs, &state, executorToolSpecs, options...)
 			if err != nil {
 				return nil, err
 			}
@@ -524,15 +525,15 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 	task := plannerTaskForPhase(state.Phase, *state, e.ForceSimpleLoop)
 	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
 	state.PendingTodoReminder = ""
-	plannerTools := e.Tools
+	plannerTools := toolsForRole(RolePlanner, e.Tools)
 	if e.ForceSimpleLoop {
-		plannerTools = appendSimpleTodoMetaTools(e.Tools)
+		plannerTools = appendSimpleTodoMetaTools(plannerTools)
 	} else {
 		switch state.Phase {
 		case phasePlan:
-			plannerTools = appendPlannerReadOnlyTools(loopMetaTools(), e.Tools)
+			plannerTools = appendPlannerReadOnlyTools(loopMetaTools(), plannerTools)
 		default:
-			plannerTools = appendDefaultLoopMetaTools(e.Tools)
+			plannerTools = appendDefaultLoopMetaTools(plannerTools)
 		}
 	}
 	parser := &FunctionAgent{
@@ -664,7 +665,7 @@ func (e *roleCollaborativeExecutor) callRouteTurn(
 		return plannerTurnResult{Kind: plannerTurnSteer}, nil
 	}
 
-	parser := &FunctionAgent{Tools: appendLoopMetaTools(e.Tools), OutputKey: e.OutputKey, ToolCallSpeech: e.ToolCallSpeech}
+	parser := &FunctionAgent{Tools: appendLoopMetaTools(toolsForRole(RolePlanner, e.Tools)), OutputKey: e.OutputKey, ToolCallSpeech: e.ToolCallSpeech}
 	actions, _, parseErr := parser.ParseOutput(res)
 	if parseErr != nil && !errors.Is(parseErr, agents.ErrUnableToParseOutput) {
 		return plannerTurnResult{}, parseErr
@@ -949,7 +950,7 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 	options ...chains.ChainCallOption,
 ) (executorTurnResult, error) {
 	messages := e.roleMessages(e.Profiles.Executor, inputs, *state, "Executor task: work on the current next_step across multiple tool calls if needed, then call finish_step when the step is ready for verification or abort_step if blocked.")
-	executorTools := appendExecutorMetaTools(e.Tools)
+	executorTools := appendExecutorMetaTools(toolsForRole(RoleExecutor, e.Tools))
 	parser := &FunctionAgent{
 		Tools:          executorTools,
 		OutputKey:      e.OutputKey,
@@ -1096,10 +1097,10 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	}
 
 	if profile.Name == RoleExecutor && len(state.StepToolSteps) > 0 {
-		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(e.Tools), ScreenshotPruning: e.ScreenshotPruning, ToolCallSpeech: e.ToolCallSpeech}).constructFunctionScratchPad(state.StepToolSteps)
+		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(toolsForRole(RoleExecutor, e.Tools)), ScreenshotPruning: e.ScreenshotPruning, ToolCallSpeech: e.ToolCallSpeech}).constructFunctionScratchPad(state.StepToolSteps)
 		messages = append(messages, scratchpad...)
 	} else if roleSeesToolScratchpad(profile.Name) && len(state.ToolSteps) > 0 {
-		scratchpad := (&FunctionAgent{Tools: e.Tools, ScreenshotPruning: e.ScreenshotPruning, ToolCallSpeech: e.ToolCallSpeech}).constructFunctionScratchPad(state.ToolSteps)
+		scratchpad := (&FunctionAgent{Tools: toolsForRole(profile.Name, e.Tools), ScreenshotPruning: e.ScreenshotPruning, ToolCallSpeech: e.ToolCallSpeech}).constructFunctionScratchPad(state.ToolSteps)
 		messages = append(messages, scratchpad...)
 	}
 
