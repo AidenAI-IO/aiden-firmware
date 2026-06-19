@@ -220,7 +220,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 	if _, ok := inputs["history"]; !ok {
 		inputs["history"] = ""
 	}
-	for _, key := range []string{sessionContextInputKey, rootRequestInputKey, latestUserInputKey, followUpRelationKey} {
+	for _, key := range []string{sessionContextInputKey, rootRequestInputKey, latestUserInputKey} {
 		if _, ok := inputs[key]; !ok {
 			inputs[key] = ""
 		}
@@ -1575,11 +1575,6 @@ func writeRequestContextAndCriteria(builder *strings.Builder, inputs map[string]
 	if latestUserMessage != "" && latestUserMessage != rootRequest {
 		builder.WriteString("\n\nLatest user message:\n")
 		builder.WriteString(latestUserMessage)
-		if relation := strings.TrimSpace(inputs[followUpRelationKey]); relation != "" {
-			builder.WriteString("\n\nFollow-up classification:\n")
-			builder.WriteString(relation)
-			builder.WriteByte('\n')
-		}
 	}
 	if len(state.CompletionCriteria) == 0 {
 		return

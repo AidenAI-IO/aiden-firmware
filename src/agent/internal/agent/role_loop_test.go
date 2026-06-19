@@ -862,10 +862,10 @@ func TestRecordPlanStepResultSurvivesStepClear(t *testing.T) {
 
 func TestRequestContextPromptDoesNotMarkRootRequestAuthoritative(t *testing.T) {
 	inputs := map[string]string{
-		"input":             "打开微信",
-		rootRequestInputKey: "查天气",
-		latestUserInputKey:  "打开微信",
-		followUpRelationKey: FollowUpContinuation,
+		"input":              "打开微信",
+		rootRequestInputKey:  "查天气",
+		latestUserInputKey:   "打开微信",
+		"follow_up_relation": FollowUpContinuation,
 	}
 	prompt := buildPlannerStatePrompt(inputs, roleLoopState{}, "Planner task.")
 
@@ -874,6 +874,8 @@ func TestRequestContextPromptDoesNotMarkRootRequestAuthoritative(t *testing.T) {
 		"authoritative; do not replace it with a subtask",
 		"Current objective:",
 		"Satisfy every explicit requirement in the original user request.",
+		"Follow-up classification:",
+		"follow_up_relation",
 	} {
 		if strings.Contains(prompt, unwanted) {
 			t.Fatalf("planner prompt should not contain %q:\n%s", unwanted, prompt)
