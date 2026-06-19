@@ -7,7 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -99,6 +104,40 @@ func TestOpenAICompatibleModelParsesToolCalls(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleModelLogsRawResponseWhenEnabled(t *testing.T) {
+	rawResponse := `{"choices":[{"message":{"content":"<think>\n需要查当前时间。\n</think>","tool_calls":[{"id":"call_1","type":"function","function":{"name":"current_time","arguments":"{\"timezone\":\"local\"}"}}]},"finish_reason":"tool_calls"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(rawResponse))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	model := newOpenAICompatibleModel(
+		server.URL,
+		"test-model",
+		"",
+		server.Client(),
+		withOpenAICompatibleRawResponseLogger(newLLMRawResponseLogger(logDir)),
+	)
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("现在几点了？")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	logText := readRawResponseLog(t, logDir)
+	if !strings.Contains(logText, rawResponse) {
+		t.Fatalf("raw response log missing exact response:\n%s", logText)
+	}
+	if !strings.Contains(logText, "kind=http_response") || !strings.Contains(logText, "model=test-model") {
+		t.Fatalf("raw response log missing metadata:\n%s", logText)
+	}
+	assertRawResponseLogHasRFC3339NanoTimestamp(t, logText)
+}
+
 func TestOpenAICompatibleModelStreamsContent(t *testing.T) {
 	var captured struct {
 		Stream bool `json:"stream"`
@@ -138,6 +177,110 @@ func TestOpenAICompatibleModelStreamsContent(t *testing.T) {
 	}
 	if len(chunks) != 2 || chunks[0] != "hello " || chunks[1] != "world" {
 		t.Fatalf("unexpected stream chunks: %#v", chunks)
+	}
+}
+
+func TestOpenAICompatibleModelLogsRawStreamingEventsWhenEnabled(t *testing.T) {
+	firstEvent := `data: {"choices":[{"delta":{"content":"<think>\n"}}]}`
+	secondEvent := `data: {"choices":[{"delta":{"content":"需要查当前时间。\n</think>"},"finish_reason":"tool_calls"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(firstEvent + "\n\n"))
+		w.Write([]byte(secondEvent + "\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	model := newOpenAICompatibleModel(
+		server.URL,
+		"test-model",
+		"",
+		server.Client(),
+		withOpenAICompatibleRawResponseLogger(newLLMRawResponseLogger(logDir)),
+	)
+	_, err := model.GenerateContent(
+		context.Background(),
+		[]llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart("现在几点了？")},
+		}},
+		llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error { return nil }),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	logText := readRawResponseLog(t, logDir)
+	if !strings.Contains(logText, firstEvent) || !strings.Contains(logText, secondEvent) || !strings.Contains(logText, "data: [DONE]") {
+		t.Fatalf("raw streaming log missing SSE events:\n%s", logText)
+	}
+	if !strings.Contains(logText, "kind=stream_event") || !strings.Contains(logText, "model=test-model") {
+		t.Fatalf("raw streaming log missing metadata:\n%s", logText)
+	}
+	assertRawResponseLogHasRFC3339NanoTimestamp(t, logText)
+}
+
+func TestModelManagerEnablesRawResponseLoggingFromModelConfig(t *testing.T) {
+	rawResponse := `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(rawResponse))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	manager := NewModelManager(ModelConfig{
+		Provider:       "openai",
+		Model:          "test-model",
+		BaseURL:        server.URL,
+		LogRawResponse: true,
+	}, ProxyConfig{}, WithLLMRawResponseLogDir(logDir))
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	_, err = model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	logText := readRawResponseLog(t, logDir)
+	if !strings.Contains(logText, rawResponse) {
+		t.Fatalf("raw response log missing response from model manager config:\n%s", logText)
+	}
+}
+
+func TestModelManagerDoesNotLogRawResponseByDefault(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	manager := NewModelManager(ModelConfig{
+		Provider: "openai",
+		Model:    "test-model",
+		BaseURL:  server.URL,
+	}, ProxyConfig{}, WithLLMRawResponseLogDir(logDir))
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	_, err = model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	if _, err := os.Stat(rawResponseLogPath(logDir)); !os.IsNotExist(err) {
+		t.Fatalf("raw response log should not exist by default, err=%v", err)
 	}
 }
 
@@ -232,6 +375,30 @@ func TestOpenAICompatibleModelIncludesUsageInGenerationInfo(t *testing.T) {
 	got := resp.Choices[0].GenerationInfo
 	if got["prompt_tokens"] != 11 || got["completion_tokens"] != 7 || got["total_tokens"] != 18 {
 		t.Fatalf("unexpected generation info: %#v", got)
+	}
+}
+
+func readRawResponseLog(t *testing.T, logDir string) string {
+	t.Helper()
+	data, err := os.ReadFile(rawResponseLogPath(logDir))
+	if err != nil {
+		t.Fatalf("read raw response log: %v", err)
+	}
+	return string(data)
+}
+
+func rawResponseLogPath(logDir string) string {
+	return filepath.Join(logDir, "llm-raw-"+time.Now().Format("20060102")+".log")
+}
+
+func assertRawResponseLogHasRFC3339NanoTimestamp(t *testing.T, logText string) {
+	t.Helper()
+	match := regexp.MustCompile(`ts=([^ ]+)`).FindStringSubmatch(logText)
+	if len(match) != 2 {
+		t.Fatalf("raw response log missing timestamp:\n%s", logText)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, match[1]); err != nil {
+		t.Fatalf("raw response log timestamp = %q, want RFC3339Nano: %v", match[1], err)
 	}
 }
 
