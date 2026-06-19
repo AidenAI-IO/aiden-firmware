@@ -535,10 +535,10 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 			plannerTools = appendDefaultLoopMetaTools(plannerTools)
 		}
 	}
-		parser := &FunctionAgent{
-			Tools:     plannerTools,
-			OutputKey: e.OutputKey,
-		}
+	parser := &FunctionAgent{
+		Tools:     plannerTools,
+		OutputKey: e.OutputKey,
+	}
 	baseOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
 	finalStreaming := state.Phase == phaseDefault || e.ForceSimpleLoop
 	callOptions := baseOptions
@@ -949,10 +949,10 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 ) (executorTurnResult, error) {
 	messages := e.roleMessages(e.Profiles.Executor, inputs, *state, "Executor task: work on the current next_step across multiple tool calls if needed, then call finish_step when the step is ready for verification or abort_step if blocked.")
 	executorTools := appendExecutorMetaTools(toolsForRole(RoleExecutor, e.Tools))
-		parser := &FunctionAgent{
-			Tools:     executorTools,
-			OutputKey: e.OutputKey,
-		}
+	parser := &FunctionAgent{
+		Tools:     executorTools,
+		OutputKey: e.OutputKey,
+	}
 	callOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
 	res, err := e.generateRoleContent(ctx, RoleExecutor, messages, callOptions...)
 	if err != nil {
