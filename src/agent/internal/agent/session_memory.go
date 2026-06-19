@@ -181,13 +181,11 @@ func (s *SessionMemoryStore) AppendEvent(ctx context.Context, event SessionEvent
 	if event.Role == "" {
 		event.Role = "system"
 	}
-	// Strip screenshot base64 payloads at the write boundary, regardless of
-	// origin (direct AppendEvent calls or sessionEventFromRecord). This is the
-	// second line of defense: sessionEventFromRecord already strips when
-	// converting from MessageRecord (the langchain path); AppendEvent handles
-	// direct writes. stripScreenshotData is idempotent—calling it twice on
-	// already-stripped content is safe—so we can sanitize here unconditionally.
-	event.Content = stripScreenshotData(event.Content)
+	// Sanitize content at the write boundary regardless of origin (direct
+	// AppendEvent calls or sessionEventFromRecord). This keeps replay-only
+	// tool-call speech out of persistent context and strips large screenshot
+	// payloads before compression/token accounting sees them.
+	event.Content = sanitizePersistentEventContent(event.Type, event.Content)
 	event.Artifacts = sanitizeInputArtifacts(event.Artifacts)
 
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
