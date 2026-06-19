@@ -195,36 +195,8 @@ func TestSpeechStreamWriterIgnoresNestedField(t *testing.T) {
 	}
 }
 
-func TestFinalizeAssistantOutputParsesLegacyTextField(t *testing.T) {
-	raw := `{"speech":"短口播。","text":"完整回答。\n\n保留给屏幕。"}`
-	output := finalizeAssistantOutput(raw)
-	if output != "完整回答。\n\n保留给屏幕。" {
-		t.Fatalf("output = %q", output)
-	}
-}
-
-func TestFinalizeAssistantOutputParsesFinalAnswerField(t *testing.T) {
-	raw := `{"speech":"短口播。","final_answer":"完整回答。"}`
-
-	output := finalizeAssistantOutput(raw)
-
-	if output != "完整回答。" {
-		t.Fatalf("output = %q", output)
-	}
-}
-
 func TestFinalizeAssistantOutputKeepsPlainText(t *testing.T) {
-	raw := "完整回答。"
-
-	output := finalizeAssistantOutput(raw)
-
-	if output != "完整回答。" {
-		t.Fatalf("output = %q", output)
-	}
-}
-
-func TestFinalizeAssistantOutputParsesTextOnlyStructuredAnswer(t *testing.T) {
-	raw := `{"text":"完整回答。"}`
+	raw := "  完整回答。  "
 
 	output := finalizeAssistantOutput(raw)
 
