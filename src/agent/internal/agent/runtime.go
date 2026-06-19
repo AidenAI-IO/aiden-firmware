@@ -91,7 +91,6 @@ type RunRequest struct {
 
 type RunResult struct {
 	Output                 string          `json:"output"`
-	SpeechText             string          `json:"-"`
 	Skills                 []string        `json:"skills"`
 	EpisodeID              string          `json:"episode_id,omitempty"`
 	Memory                 []MessageRecord `json:"memory,omitempty"`
@@ -689,7 +688,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 
-	output, speechText := finalizeSpeechOutput(output, r.config)
+	output = finalizeAssistantOutput(output)
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
 	commitReq := SessionCommitRequest{
 		AgentName: "default",
@@ -718,7 +717,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	return RunResult{
 		Output:                 output,
-		SpeechText:             speechText,
 		Skills:                 runSkills.GetActivatedSkills(),
 		EpisodeID:              episodeID,
 		Memory:                 commitResult.Memory,

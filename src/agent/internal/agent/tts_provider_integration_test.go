@@ -283,9 +283,6 @@ func TestAudioDialogRunAgentTurnStreamsFinalAnswer(t *testing.T) {
 	if result.Output != "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。" {
 		t.Fatalf("Output = %q", result.Output)
 	}
-	if result.SpeechText != "" {
-		t.Fatalf("SpeechText = %q", result.SpeechText)
-	}
 	if got := provider.texts(); len(got) != 1 || got[0] != "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。" {
 		t.Fatalf("provider texts = %#v", got)
 	}
@@ -442,9 +439,6 @@ func TestRuntimeRunStreamsFinalAnswerToWriter(t *testing.T) {
 	}
 	if result.Output != "完整回答保留给屏幕。" {
 		t.Fatalf("Output = %q", result.Output)
-	}
-	if result.SpeechText != "" {
-		t.Fatalf("SpeechText = %q", result.SpeechText)
 	}
 }
 

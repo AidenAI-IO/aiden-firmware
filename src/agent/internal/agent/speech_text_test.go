@@ -117,22 +117,15 @@ func TestBuildSpeechTextDoesNotKeepOnlyFirstSentence(t *testing.T) {
 	}
 }
 
-func TestRunResultSpokenTextReturnsOutputWhenSpeechTextPresent(t *testing.T) {
-	result := RunResult{Output: "完整回答。", SpeechText: "播报摘要。"}
+func TestRunResultSpokenTextReturnsOutput(t *testing.T) {
+	result := RunResult{Output: "完整回答。"}
 	if got := result.SpokenText(); got != "完整回答。" {
 		t.Fatalf("SpokenText() = %q, want output", got)
 	}
 }
 
-func TestRunResultSpeechTextFallsBackToOutput(t *testing.T) {
-	result := RunResult{Output: "完整回答。"}
-	if got := result.SpokenText(); got != "完整回答。" {
-		t.Fatalf("SpokenText() = %q, want output fallback", got)
-	}
-}
-
 func TestRunResultSpokenTextForConfigReturnsOutput(t *testing.T) {
-	result := RunResult{Output: "完整回答应该显示。", SpeechText: "短口播。"}
+	result := RunResult{Output: "完整回答应该显示。"}
 	if got := result.SpokenTextForConfig(Config{}); got != "完整回答应该显示。" {
 		t.Fatalf("SpokenTextForConfig() = %q, want output", got)
 	}
@@ -202,52 +195,40 @@ func TestSpeechStreamWriterIgnoresNestedField(t *testing.T) {
 	}
 }
 
-func TestFinalizeSpeechOutputParsesStructuredAnswer(t *testing.T) {
+func TestFinalizeAssistantOutputParsesLegacyTextField(t *testing.T) {
 	raw := `{"speech":"短口播。","text":"完整回答。\n\n保留给屏幕。"}`
-	output, speech := finalizeSpeechOutput(raw, Config{})
+	output := finalizeAssistantOutput(raw)
 	if output != "完整回答。\n\n保留给屏幕。" {
 		t.Fatalf("output = %q", output)
 	}
-	if speech != "" {
-		t.Fatalf("speech = %q, want empty", speech)
-	}
 }
 
-func TestFinalizeSpeechOutputParsesFinalAnswerField(t *testing.T) {
+func TestFinalizeAssistantOutputParsesFinalAnswerField(t *testing.T) {
 	raw := `{"speech":"短口播。","final_answer":"完整回答。"}`
 
-	output, speech := finalizeSpeechOutput(raw, Config{})
+	output := finalizeAssistantOutput(raw)
 
 	if output != "完整回答。" {
 		t.Fatalf("output = %q", output)
 	}
-	if speech != "" {
-		t.Fatalf("speech = %q, want empty", speech)
-	}
 }
 
-func TestFinalizeSpeechOutputKeepsPlainText(t *testing.T) {
+func TestFinalizeAssistantOutputKeepsPlainText(t *testing.T) {
 	raw := "完整回答。"
 
-	output, speech := finalizeSpeechOutput(raw, Config{})
+	output := finalizeAssistantOutput(raw)
 
 	if output != "完整回答。" {
 		t.Fatalf("output = %q", output)
-	}
-	if speech != "" {
-		t.Fatalf("speech = %q, want empty for plain answer", speech)
 	}
 }
 
-func TestFinalizeSpeechOutputParsesTextOnlyStructuredAnswer(t *testing.T) {
+func TestFinalizeAssistantOutputParsesTextOnlyStructuredAnswer(t *testing.T) {
 	raw := `{"text":"完整回答。"}`
 
-	output, speech := finalizeSpeechOutput(raw, Config{})
+	output := finalizeAssistantOutput(raw)
 
 	if output != "完整回答。" {
 		t.Fatalf("output = %q", output)
-	}
-	if speech != "" {
-		t.Fatalf("speech = %q, want empty for text-only structured answer", speech)
 	}
 }

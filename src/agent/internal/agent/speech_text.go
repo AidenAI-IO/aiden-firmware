@@ -167,45 +167,43 @@ func NewSpeechStreamWriter(target io.Writer) *SpeechStreamWriter {
 	return NewJSONFieldStreamWriter(target, "speech")
 }
 
-type structuredFinalAnswer struct {
-	Speech      string `json:"speech"`
+type legacyStructuredFinalAnswer struct {
 	Text        string `json:"text"`
 	FinalAnswer string `json:"final_answer"`
 }
 
-func parseStructuredFinalAnswer(raw string) (output string, speechText string, ok bool) {
+func parseLegacyStructuredFinalAnswer(raw string) (output string, ok bool) {
 	raw = stripMarkdownCodeFence(raw)
 	if raw == "" {
-		return "", "", false
+		return "", false
 	}
-	var answer structuredFinalAnswer
+	var answer legacyStructuredFinalAnswer
 	if err := json.Unmarshal([]byte(raw), &answer); err != nil {
 		start := strings.Index(raw, "{")
 		end := strings.LastIndex(raw, "}")
 		if start < 0 || end <= start {
-			return "", "", false
+			return "", false
 		}
 		if err := json.Unmarshal([]byte(raw[start:end+1]), &answer); err != nil {
-			return "", "", false
+			return "", false
 		}
 	}
 	output = strings.TrimSpace(answer.Text)
 	if output == "" {
 		output = strings.TrimSpace(answer.FinalAnswer)
 	}
-	speechText = strings.TrimSpace(answer.Speech)
 	if output == "" {
-		return "", "", false
+		return "", false
 	}
-	return output, speechText, true
+	return output, true
 }
 
-func finalizeSpeechOutput(raw string, cfg Config) (string, string) {
+func finalizeAssistantOutput(raw string) string {
 	output := strings.TrimSpace(raw)
-	if parsedOutput, _, ok := parseStructuredFinalAnswer(output); ok {
-		return parsedOutput, ""
+	if parsedOutput, ok := parseLegacyStructuredFinalAnswer(output); ok {
+		return parsedOutput
 	}
-	return output, ""
+	return output
 }
 
 func speechStreamWriterForConfig(target io.Writer, cfg Config) io.Writer {

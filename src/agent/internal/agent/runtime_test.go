@@ -2868,9 +2868,6 @@ func TestRuntimeRunDirectRouteUsesProviderFinalStreaming(t *testing.T) {
 	if result.Output != "Complete answer." {
 		t.Fatalf("Output = %q", result.Output)
 	}
-	if result.SpeechText != "" {
-		t.Fatalf("SpeechText = %q", result.SpeechText)
-	}
 }
 
 func TestRuntimeRunDefaultModeFinalAnswerUsesProviderFinalStreaming(t *testing.T) {
@@ -2918,9 +2915,6 @@ func TestRuntimeRunDefaultModeFinalAnswerUsesProviderFinalStreaming(t *testing.T
 	}
 	if result.Output != "Complete answer." {
 		t.Fatalf("Output = %q", result.Output)
-	}
-	if result.SpeechText != "" {
-		t.Fatalf("SpeechText = %q", result.SpeechText)
 	}
 }
 
@@ -3021,9 +3015,6 @@ func TestRuntimeRunResetsSpeechStreamWriterBetweenFinalStreamingAttempts(t *test
 	if result.Output != "最终完整回答。" {
 		t.Fatalf("Output = %q", result.Output)
 	}
-	if result.SpeechText != "" {
-		t.Fatalf("SpeechText = %q", result.SpeechText)
-	}
 	if stream.String() != "最终完整回答。" {
 		t.Fatalf("stream = %q, want final answer only", stream.String())
 	}
@@ -3108,9 +3099,6 @@ func TestRuntimeRunFallsBackWhenProviderStreamWriterErrorsAfterPartialFinalAnswe
 	}
 	if result.Output != "Complete answer." {
 		t.Fatalf("Output = %q", result.Output)
-	}
-	if result.SpeechText != "" {
-		t.Fatalf("SpeechText = %q", result.SpeechText)
 	}
 	if stream.String() != "BrokenComplete answer." {
 		t.Fatalf("stream = %q, want partial final answer followed by fallback final answer", stream.String())
