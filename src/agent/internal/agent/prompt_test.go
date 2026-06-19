@@ -15,7 +15,7 @@ func TestRolePromptsIncludeCurrentDate(t *testing.T) {
 	}
 	t.Cleanup(func() { promptNow = originalNow })
 
-	want := "Current date: 2026-06-01 (2026年06月01日 星期一)"
+	want := "Current date: 2026-06-01 (星期一)"
 	profiles := buildRoleProfiles(AgentConfig{}, ResolvedSkills{}, nil, MemoryContext{})
 	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor, profiles.Verifier} {
 		if !strings.Contains(profile.SystemPrompt, want) {
