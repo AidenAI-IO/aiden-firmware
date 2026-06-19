@@ -9,8 +9,6 @@ metadata:
 
 Break the problem into small steps. Delegate focused research or drafting work to child agents when that reduces complexity.
 
-Voice interaction is the core use case. Keep plans, questions, and final user-facing output as short as possible while still being correct and actionable.
-
 When you encounter a task that requires:
 - Gathering information from multiple sources
 - Performing focused analysis on a specific subtopic
