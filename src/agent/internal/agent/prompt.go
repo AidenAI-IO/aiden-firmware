@@ -75,7 +75,7 @@ func hostInfoValue(value string) string {
 
 func formatCurrentDate(t time.Time) string {
 	weekdays := []string{"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}
-	return "Current date: " + t.Format("2006-01-02") + " (" + t.Format("2006年01月02日") + " " + weekdays[t.Weekday()] + ")"
+	return "Current date: " + t.Format("2006-01-02") + " (" + weekdays[t.Weekday()] + ")"
 }
 
 func combinedAgentInstruction(cfg AgentConfig) string {
