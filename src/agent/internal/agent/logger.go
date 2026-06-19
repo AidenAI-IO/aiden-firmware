@@ -1,14 +1,18 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
+
+const logRetention = 48 * time.Hour
 
 // Logger provides structured logging to file and console
 type Logger struct {
@@ -37,10 +41,58 @@ func NewLogger(configDir string) (*Logger, error) {
 	log.SetOutput(multiWriter)
 	log.SetFlags(log.LstdFlags)
 
+	if err := cleanupOldLogFiles(logDir, time.Now()); err != nil {
+		logger.Printf("[WARN] log cleanup failed: %v", err)
+	}
+
 	return &Logger{
 		file:   f,
 		logger: logger,
 	}, nil
+}
+
+func cleanupOldLogFiles(logDir string, now time.Time) error {
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		return fmt.Errorf("read log directory: %w", err)
+	}
+	cutoff := now.Add(-logRetention)
+	var errs []error
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("stat log file %q: %w", entry.Name(), err))
+			continue
+		}
+		logTime := logFileTime(entry.Name(), info.ModTime())
+		if !logTime.Before(cutoff) {
+			continue
+		}
+		path := filepath.Join(logDir, entry.Name())
+		if err := os.Remove(path); err != nil {
+			errs = append(errs, fmt.Errorf("remove old log file %q: %w", entry.Name(), err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func logFileTime(name string, modTime time.Time) time.Time {
+	for _, prefix := range []string{"agent-", "llm-raw-"} {
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".log") {
+			continue
+		}
+		date := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".log")
+		if len(date) != len("20060102") {
+			continue
+		}
+		if parsed, err := time.ParseInLocation("20060102", date, time.Local); err == nil {
+			return parsed.Add(24 * time.Hour)
+		}
+	}
+	return modTime
 }
 
 func (l *Logger) Close() error {

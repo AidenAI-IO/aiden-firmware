@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -2260,6 +2261,48 @@ func TestRuntimeRunEmitsToolContentForToolCallSpeech(t *testing.T) {
 	}
 	if toolCall.Content != speech {
 		t.Fatalf("tool_call content = %q, want assistant content", toolCall.Content)
+	}
+}
+
+func TestRuntimeLogsPreserveThinkStartTagInToolCallContent(t *testing.T) {
+	thinkingContent := "<think>\n需要查当前时间。\n</think>"
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponseWithContent("call_1", "current_time", `{"timezone":"local"}`, thinkingContent),
+			contentResponse("已完成。"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools when external state is requested.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"current_time": NewCurrentTimeTool(),
+		}},
+		NewSkillIndex(),
+	)
+	var logs bytes.Buffer
+	runtime.logger = &Logger{logger: log.New(&logs, "", 0)}
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "现在几点了？"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	logText := logs.String()
+	if !strings.Contains(logText, "Role output: role=planner") {
+		t.Fatalf("missing planner role output log:\n%s", logText)
+	}
+	if !strings.Contains(logText, "Tool call: name=current_time") {
+		t.Fatalf("missing current_time tool call log:\n%s", logText)
+	}
+	if strings.Count(logText, "<think>") < 2 {
+		t.Fatalf("logs lost think start tag:\n%s", logText)
+	}
+	if !strings.Contains(logText, "</think>") {
+		t.Fatalf("log lost think end tag:\n%s", logText)
 	}
 }
 

@@ -73,6 +73,16 @@ func TestBuildSpeechTextNormalizesMarkdownWithoutDroppingContent(t *testing.T) {
 	}
 }
 
+func TestBuildSpeechTextPreservesThinkTags(t *testing.T) {
+	output := "<think>\n需要查当前时间。\n</think>"
+
+	speech := BuildSpeechText(output, Config{})
+
+	if speech != output {
+		t.Fatalf("speech = %q, want think tags preserved", speech)
+	}
+}
+
 func TestBuildSpeechTextNormalizesTablesAndTasksWithoutDroppingContent(t *testing.T) {
 	output := strings.Join([]string{
 		"| 项目 | 状态 |",

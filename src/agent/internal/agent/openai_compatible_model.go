@@ -9,8 +9,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -20,6 +24,58 @@ type openAICompatibleModel struct {
 	model      string
 	token      string
 	httpClient *http.Client
+	rawLogger  *llmRawResponseLogger
+}
+
+type openAICompatibleModelOption func(*openAICompatibleModel)
+
+func withOpenAICompatibleRawResponseLogger(logger *llmRawResponseLogger) openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) {
+		m.rawLogger = logger
+	}
+}
+
+type llmRawResponseLogger struct {
+	dir string
+	mu  sync.Mutex
+}
+
+func newLLMRawResponseLogger(logDir string) *llmRawResponseLogger {
+	logDir = strings.TrimSpace(logDir)
+	if logDir == "" {
+		return nil
+	}
+	return &llmRawResponseLogger{dir: logDir}
+}
+
+func (l *llmRawResponseLogger) Log(model, kind string, statusCode int, raw string) error {
+	if l == nil || strings.TrimSpace(l.dir) == "" {
+		return nil
+	}
+	now := time.Now()
+	entry := fmt.Sprintf(
+		"ts=%s model=%s kind=%s status=%d bytes=%d\n%s\n\n",
+		now.Format(time.RFC3339Nano),
+		strings.TrimSpace(model),
+		strings.TrimSpace(kind),
+		statusCode,
+		len([]byte(raw)),
+		raw,
+	)
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := os.MkdirAll(l.dir, 0755); err != nil {
+		return err
+	}
+	path := filepath.Join(l.dir, "llm-raw-"+now.Format("20060102")+".log")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = file.WriteString(entry)
+	return err
 }
 
 type compatibleChatRequest struct {
@@ -122,16 +178,22 @@ type compatibleToolCallDelta struct {
 	Function *compatibleFunctionCall `json:"function,omitempty"`
 }
 
-func newOpenAICompatibleModel(baseURL, model, token string, httpClient *http.Client) llms.Model {
+func newOpenAICompatibleModel(baseURL, model, token string, httpClient *http.Client, opts ...openAICompatibleModelOption) llms.Model {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return &openAICompatibleModel{
+	result := &openAICompatibleModel{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		model:      model,
 		token:      token,
 		httpClient: httpClient,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(result)
+		}
+	}
+	return result
 }
 
 func (m *openAICompatibleModel) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
@@ -197,16 +259,28 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		_ = m.logRawResponse(reqPayload.Model, "http_error", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
 	if reqPayload.Stream {
-		return m.decodeStreamingResponse(ctx, resp.Body, callOpts.StreamingFunc)
+		return m.decodeStreamingResponse(ctx, resp.Body, callOpts.StreamingFunc, reqPayload.Model, resp.StatusCode)
 	}
 
 	var decoded compatibleChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	if m.rawLogger == nil {
+		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+			return nil, fmt.Errorf("decode response: %w", err)
+		}
+	} else {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read response: %w", err)
+		}
+		_ = m.logRawResponse(reqPayload.Model, "http_response", resp.StatusCode, string(body))
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			return nil, fmt.Errorf("decode response: %w", err)
+		}
 	}
 	if len(decoded.Choices) == 0 {
 		return nil, fmt.Errorf("empty response choices")
@@ -235,7 +309,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	return result, nil
 }
 
-func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, body io.Reader, stream func(context.Context, []byte) error) (*llms.ContentResponse, error) {
+func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, body io.Reader, stream func(context.Context, []byte) error, requestModel string, statusCode int) (*llms.ContentResponse, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -245,13 +319,15 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	var generationInfo map[string]any
 
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		rawLine := scanner.Text()
+		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, ":") {
 			continue
 		}
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
+		_ = m.logRawResponse(requestModel, "stream_event", statusCode, rawLine)
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
 			break
@@ -338,6 +414,13 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 		choice.GenerationInfo = generationInfo
 	}
 	return &llms.ContentResponse{Choices: []*llms.ContentChoice{choice}}, nil
+}
+
+func (m *openAICompatibleModel) logRawResponse(modelName, kind string, statusCode int, raw string) error {
+	if m == nil || m.rawLogger == nil {
+		return nil
+	}
+	return m.rawLogger.Log(modelName, kind, statusCode, raw)
 }
 
 func convertMessageContent(message llms.MessageContent) (compatibleMessage, error) {
