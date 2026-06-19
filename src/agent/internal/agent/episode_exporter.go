@@ -470,7 +470,6 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 				"event_id":         event.EventID,
 				"tool_name":        event.ToolName,
 				"tool_description": event.ToolDescription,
-				"speech":           event.Speech,
 				"has_tool_result":  paired && pair.HasResult,
 				"role":             event.Role,
 				"phase":            currentPhase,
@@ -1374,9 +1373,6 @@ func toolCallInput(event TaskEpisodeEvent) map[string]interface{} {
 	}
 	if strings.TrimSpace(event.ToolDescription) != "" {
 		input["description"] = event.ToolDescription
-	}
-	if strings.TrimSpace(event.Speech) != "" {
-		input["speech"] = event.Speech
 	}
 	return input
 }

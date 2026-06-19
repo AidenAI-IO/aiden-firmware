@@ -104,11 +104,11 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if !ok || toolCall.ToolName != "audio_volume" || toolCall.ToolInput != "{}" {
 		t.Fatalf("unexpected tool_call message: %#v", resp.History)
 	}
-	if toolCall.Description != "我先读取当前音量。" || toolCall.Content != "我先读取当前音量。" {
+	if toolCall.Description != "我先读取当前音量。" {
 		t.Fatalf("unexpected tool_call description: %#v", toolCall)
 	}
-	if toolCall.Speech != "" {
-		t.Fatalf("tool_call speech = %q, want empty when voice_tool_call_speech is disabled", toolCall.Speech)
+	if toolCall.Content != "" {
+		t.Fatalf("tool_call content = %q, want empty without assistant content", toolCall.Content)
 	}
 	toolResult, ok := firstMessageOfType(resp.History, "tool_result")
 	if !ok || toolResult.ToolName != "audio_volume" || toolResult.Content != `{"volume":42}` {

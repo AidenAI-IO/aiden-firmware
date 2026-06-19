@@ -110,7 +110,6 @@ type Message struct {
 	Content         string              `json:"content"`
 	Todo            *TodoState          `json:"todo,omitempty"`
 	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
-	Speech          string              `json:"speech,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
 	Description     string              `json:"description,omitempty"`
@@ -144,7 +143,6 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 		Content:        event.Content,
 		Todo:           cloneTodoStatePtr(event.Todo),
 		SpeechEligible: event.SpeechEligible,
-		Speech:         event.Speech,
 		ToolName:       event.ToolName,
 		ToolInput:      event.ToolInput,
 		Description:    event.Description,
@@ -829,7 +827,7 @@ func (s *Server) handleChatAsync(
 			}
 
 			if s.shouldSpeakToolCall(event) {
-				go s.speakToolDescription(runCtx, event.Speech)
+				go s.speakToolDescription(runCtx, event.Content)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
@@ -1095,7 +1093,7 @@ func (s *Server) handleChatSync(
 		EventHandler: func(event RunEvent) {
 			s.appendHistory(messageFromRunEvent(event, episodeID, ""))
 			if s.shouldSpeakToolCall(event) {
-				go s.speakToolDescription(r.Context(), event.Speech)
+				go s.speakToolDescription(r.Context(), event.Content)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
@@ -1274,7 +1272,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
 			if s.shouldSpeakToolCall(event) {
-				go s.speakToolDescription(ctx, event.Speech)
+				go s.speakToolDescription(ctx, event.Content)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {

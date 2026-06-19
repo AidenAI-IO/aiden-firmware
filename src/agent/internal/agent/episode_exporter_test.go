@@ -122,7 +122,7 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 				Type:      runEventToolCall,
 				ToolName:  "mouse_click",
 				ToolInput: `{"x":100,"y":200}`,
-				Speech:    "点击设置。",
+				Content:   "点击设置。",
 			},
 			{
 				EventID:       "evt3",
@@ -232,15 +232,15 @@ func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
 	if !ok {
 		t.Fatalf("tool span input missing: %#v", toolBody["input"])
 	}
-	if toolInput["speech"] != "点击设置。" {
-		t.Fatalf("tool span speech input = %#v", toolInput["speech"])
+	if _, ok := toolInput["speech"]; ok {
+		t.Fatalf("tool span should not include speech input: %#v", toolInput)
 	}
 	toolMetadata, ok := toolBody["metadata"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("tool span metadata missing: %#v", toolBody["metadata"])
 	}
-	if toolMetadata["speech"] != "点击设置。" {
-		t.Fatalf("tool span speech metadata = %#v", toolMetadata["speech"])
+	if _, ok := toolMetadata["speech"]; ok {
+		t.Fatalf("tool span should not include speech metadata: %#v", toolMetadata)
 	}
 	if names["verifier"] != 1 {
 		t.Fatalf("verifier span count = %d, want 1", names["verifier"])

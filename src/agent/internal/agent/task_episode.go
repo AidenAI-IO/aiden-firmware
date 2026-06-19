@@ -70,7 +70,6 @@ type TaskEpisodeEvent struct {
 	ToolName           string              `json:"tool_name,omitempty" yaml:"tool_name,omitempty"`
 	ToolInput          string              `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
 	ToolDescription    string              `json:"tool_description,omitempty" yaml:"tool_description,omitempty"`
-	Speech             string              `json:"speech,omitempty" yaml:"speech,omitempty"`
 	Content            string              `json:"content,omitempty" yaml:"content,omitempty"`
 	Todo               *TodoState          `json:"todo,omitempty" yaml:"todo,omitempty"`
 	SpeechEligible     bool                `json:"speech_eligible,omitempty" yaml:"speech_eligible,omitempty"`
@@ -126,7 +125,7 @@ type EpisodeRecorder struct {
 	store     *TaskEpisodeStore
 	started   bool
 	startErr  error
-	// ToolCallSpeech gates persistence of LLM-generated tool-call speech.
+	// ToolCallSpeech gates persistence of LLM-generated tool-call content.
 	ToolCallSpeech bool
 }
 
@@ -311,9 +310,9 @@ func (r *EpisodeRecorder) recordExecutionForRole(result roleExecutionResult, rol
 			ToolDescription: description,
 		}
 		if r.ToolCallSpeech {
-			// Persist only explicit LLM-generated tool-call speech. Missing
-			// speech is intentionally left empty rather than derived.
-			event.Speech = toolSpeechFromAction(*result.Action)
+			// Persist only explicit LLM-generated tool-call content. Missing
+			// content is intentionally left empty rather than derived.
+			event.Content = toolSpeechFromAction(*result.Action)
 		}
 		r.append(event)
 	}

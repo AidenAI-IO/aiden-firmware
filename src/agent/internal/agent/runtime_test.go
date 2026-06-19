@@ -2171,18 +2171,18 @@ func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected tool_call event, got %#v", events)
 	}
-	if toolCall.Description != "我先读取当前音量。" || toolCall.Content != toolCall.Description {
+	if toolCall.Description != "我先读取当前音量。" {
 		t.Fatalf("unexpected tool description event: %#v", toolCall)
 	}
-	if toolCall.Speech != "" {
-		t.Fatalf("tool_call speech = %q, want empty when voice_tool_call_speech is disabled", toolCall.Speech)
+	if toolCall.Content != "" {
+		t.Fatalf("tool_call content = %q, want empty without assistant content", toolCall.Content)
 	}
 	if toolCall.ToolInput != "{}" {
 		t.Fatalf("tool_call event input = %q, want stripped input", toolCall.ToolInput)
 	}
 }
 
-func TestRuntimeRunEmitsToolSpeechOnlyWhenToolCallSpeechEnabled(t *testing.T) {
+func TestRuntimeRunEmitsToolContentForToolCallSpeech(t *testing.T) {
 	speech := "读取音量。"
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -2230,12 +2230,6 @@ func TestRuntimeRunEmitsToolSpeechOnlyWhenToolCallSpeechEnabled(t *testing.T) {
 	if toolCall.Content != speech {
 		t.Fatalf("tool_call content = %q, want assistant content", toolCall.Content)
 	}
-	if toolCall.Speech == "" {
-		t.Fatal("tool_call speech is empty when voice_tool_call_speech is enabled")
-	}
-	if toolCall.Speech != speech {
-		t.Fatalf("tool_call speech = %q, want LLM speech %q", toolCall.Speech, speech)
-	}
 }
 
 func TestRuntimeRunDoesNotDeriveToolSpeechWhenMissing(t *testing.T) {
@@ -2280,8 +2274,8 @@ func TestRuntimeRunDoesNotDeriveToolSpeechWhenMissing(t *testing.T) {
 	if toolCall.Description != description {
 		t.Fatalf("tool_call description changed: %q", toolCall.Description)
 	}
-	if toolCall.Speech != "" {
-		t.Fatalf("tool_call speech = %q, want empty when LLM omitted speech", toolCall.Speech)
+	if toolCall.Content != "" {
+		t.Fatalf("tool_call content = %q, want empty without assistant content", toolCall.Content)
 	}
 }
 

@@ -354,13 +354,13 @@ func TestAudioDialogDoesNotSpeakWaitForWakeupToolDescription(t *testing.T) {
 		Type:        runEventToolCall,
 		ToolName:    toolWaitForWakeup,
 		Description: "用户让我休息，我准备回到等待唤醒状态。",
-		Speech:      "我准备回到等待唤醒状态。",
+		Content:     "我准备回到等待唤醒状态。",
 	})
 
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
 }
 
-func TestAudioDialogSpeaksToolCallSpeechField(t *testing.T) {
+func TestAudioDialogSpeaksToolCallContent(t *testing.T) {
 	toolSpeech := true
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
@@ -375,7 +375,7 @@ func TestAudioDialogSpeaksToolCallSpeechField(t *testing.T) {
 		Type:        runEventToolCall,
 		ToolName:    "audio_volume",
 		Description: "完整工具描述保留给事件和上下文，不应该直接播报。",
-		Speech:      "读取当前音量。",
+		Content:     "读取当前音量。",
 	})
 
 	waitForProviderTextCount(t, provider, 1)
