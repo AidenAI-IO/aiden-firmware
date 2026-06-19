@@ -71,7 +71,7 @@ func TestEnterPlanModePreservesToolSteps(t *testing.T) {
 	}
 }
 
-func TestExecutorScratchpadDoesNotReplayToolSpeechWhenEnabled(t *testing.T) {
+func TestExecutorScratchpadDoesNotReplaySpeechArgumentAsContent(t *testing.T) {
 	executor := newRoleCollaborativeExecutor(
 		&scriptedModel{},
 		RoleProfiles{},
@@ -84,13 +84,12 @@ func TestExecutorScratchpadDoesNotReplayToolSpeechWhenEnabled(t *testing.T) {
 		ScreenshotPruningConfig{},
 		nil,
 	)
-	executor.ToolCallSpeech = true
 	state := roleLoopState{
 		StepToolSteps: []schema.AgentStep{{
 			Action: schema.AgentAction{
 				Tool:      "mouse_click",
 				ToolInput: `{"button":"left","x":500,"y":850}`,
-				Log:       formatToolActionLog("mouse_click", `{"button":"left","speech":"点击支付按钮","x":500,"y":850}`, "", "点击支付按钮", "\n"),
+				Log:       formatToolActionLog("mouse_click", `{"button":"left","speech":"点击支付按钮","x":500,"y":850}`, "", "\n"),
 				ToolID:    "call_1",
 			},
 			Observation: "ok",

@@ -47,7 +47,10 @@ func firstMessageOfType(messages []Message, messageType string) (Message, bool) 
 
 func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。","speech":"读取音量。"}`, "The current audio volume is 42."),
+		responses: []*llms.ContentResponse{
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "我先读取当前音量。"),
+			contentResponse("The current audio volume is 42."),
+		},
 	}
 	tool := &stubTool{
 		name:        "audio_volume",
@@ -104,11 +107,8 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if !ok || toolCall.ToolName != "audio_volume" || toolCall.ToolInput != "{}" {
 		t.Fatalf("unexpected tool_call message: %#v", resp.History)
 	}
-	if toolCall.Description != "我先读取当前音量。" {
-		t.Fatalf("unexpected tool_call description: %#v", toolCall)
-	}
-	if toolCall.Content != "" {
-		t.Fatalf("tool_call content = %q, want empty without assistant content", toolCall.Content)
+	if toolCall.Content != "我先读取当前音量。" {
+		t.Fatalf("unexpected tool_call content: %#v", toolCall)
 	}
 	toolResult, ok := firstMessageOfType(resp.History, "tool_result")
 	if !ok || toolResult.ToolName != "audio_volume" || toolResult.Content != `{"volume":42}` {
@@ -776,7 +776,7 @@ func TestHandleCoordinateDebugTapRecapturesUncroppedScreenshot(t *testing.T) {
 	}
 }
 
-func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
+func TestServerSpeakToolContentUsesTTS(t *testing.T) {
 	provider := &recordingTTSProvider{name: "server-provider"}
 	server := &Server{
 		runtime: NewRuntimeWithDeps(
@@ -790,14 +790,14 @@ func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
 		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 	}
 
-	server.speakToolDescription(context.Background(), " 我先读取当前音量。 ")
+	server.speakToolContent(context.Background(), " 我先读取当前音量。 ")
 
 	if got := provider.texts(); len(got) != 1 || got[0] != "我先读取当前音量。" {
 		t.Fatalf("unexpected TTS texts: %#v", got)
 	}
 }
 
-func TestServerHandleChatDoesNotWaitForToolDescriptionTTSWhenEnabled(t *testing.T) {
+func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
 	speech := "读取音量。"
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -847,12 +847,12 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTSWhenEnabled(t *testing.
 	case <-time.After(500 * time.Millisecond):
 		cancel()
 		<-done
-		t.Fatal("handleChat waited for tool description TTS")
+		t.Fatal("handleChat waited for tool content TTS")
 	}
 	select {
 	case <-provider.started:
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("tool description TTS was not started")
+		t.Fatal("tool content TTS was not started")
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
@@ -899,9 +899,12 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
 }
 
-func TestServerHandleChatSkipsToolDescriptionTTSWhenDisabled(t *testing.T) {
+func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。","speech":"读取音量。"}`, "The current audio volume is 42."),
+		responses: []*llms.ContentResponse{
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "我先读取当前音量。"),
+			contentResponse("The current audio volume is 42."),
+		},
 	}
 	streamingDisabled := false
 	toolSpeechDisabled := false
@@ -939,7 +942,7 @@ func TestServerHandleChatSkipsToolDescriptionTTSWhenDisabled(t *testing.T) {
 	}
 	select {
 	case <-provider.started:
-		t.Fatal("tool description TTS started despite voice_tool_call_speech=false")
+		t.Fatal("tool content TTS started despite voice_tool_call_speech=false")
 	case <-time.After(50 * time.Millisecond):
 	}
 }
@@ -1148,7 +1151,7 @@ func TestServerHandleChatStreamDuplicateRequestIDDoesNotAppendHistory(t *testing
 	}
 }
 
-func TestServerSpeakToolDescriptionUsesCallerContext(t *testing.T) {
+func TestServerSpeakToolContentUsesCallerContext(t *testing.T) {
 	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
 	server := &Server{
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
@@ -1158,7 +1161,7 @@ func TestServerSpeakToolDescriptionUsesCallerContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		server.speakToolDescription(ctx, "我先读取当前音量。")
+		server.speakToolContent(ctx, "我先读取当前音量。")
 		close(done)
 	}()
 
@@ -1166,13 +1169,13 @@ func TestServerSpeakToolDescriptionUsesCallerContext(t *testing.T) {
 	case <-provider.started:
 	case <-time.After(500 * time.Millisecond):
 		cancel()
-		t.Fatal("tool description TTS was not started")
+		t.Fatal("tool content TTS was not started")
 	}
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("tool description TTS did not stop after caller context cancellation")
+		t.Fatal("tool content TTS did not stop after caller context cancellation")
 	}
 }
 

@@ -595,7 +595,7 @@ The planner prompt receives `memory.Planner` plus `memory.Common`. The verifier 
 
 **3. Procedure（增强版）**  
 - **动作详情存储**：新增 `ProcedureStep` 结构，记录每步的：
-  - 工具名、description（从 tool_call arguments 自动提取）
+  - 工具名、content（来自 tool_call event 的 `content`）
   - 坐标（`x=500,y=850`）、输入文本
   - app_name、page_name、outcome_note
 - **按页面索引**：procedure ID 改为 `proc_<hash(app, page, goal)>`，page_name 进入 entities/tags
@@ -603,7 +603,7 @@ The planner prompt receives `memory.Planner` plus `memory.Common`. The verifier 
 
 **4. Navigation Memory（新增）**  
 - 抽取**页面间转移规则**：`美团/首页 → 美团/购物车`
-- 记录工具、坐标、描述，与具体任务目标解耦
+- 记录工具、坐标、tool-call content，与具体任务目标解耦
 - 与 procedure 同级路由到 Planner
 
 **5. Calibration Memory**  
@@ -619,7 +619,6 @@ The planner prompt receives `memory.Planner` plus `memory.Common`. The verifier 
 新增 `episode_extraction.go`，提供完整的 episode 事件解析：
 
 - **工具调用解析**：
-  - `extractToolCallDescription`：从 JSON 提取 description 字段
   - `extractToolCallCoords`：解析 tap/swipe 坐标
   - `extractToolCallText`：提取输入文本参数
 
@@ -660,7 +659,7 @@ memory/episodes/
 #### 测试覆盖
 
 新增 `device_memory_enhancements_test.go`，覆盖：
-- ✅ Procedure Steps 提取、坐标解析、description 保留
+- ✅ Procedure Steps 提取、坐标解析、tool-call content 保留
 - ✅ Page_name 索引和 entities 包含 page
 - ✅ Navigation 规则抽取
 - ✅ App profile 跨 episode 累积
@@ -690,7 +689,7 @@ memory/episodes/
 |------|---------|
 | `device_memory.go` | 扩展 `DeviceMemoryItem`（Steps、AppName、PageName、PagesSeen、ToolsUsed、KnownIssues）；新增 `ProcedureStep`；新增 `Get()` 方法；支持 navigation/ui_anchor 目录 |
 | `memory_plane.go` | 重写 `extractDeviceLessons`，新增 6 个辅助函数；扩展 `routeHit` 和 `renderMemoryHitLine`；新增 `mergeUniqueStrings`、`appendUniqueMemoryRef` |
-| `task_episode.go` | `TaskEpisodeEvent` 新增 `ToolDescription`；`RecordExecution` 提取 description |
+| `task_episode.go` | `TaskEpisodeEvent` 记录 tool-call content；`RecordExecution` 从 action log 写入 content |
 | `episode_extraction.go` | **新文件**：完整的工具调用解析、步骤抽取、页面/工具统计、转移规则抽取 |
 | `device_memory_enhancements_test.go` | **新文件**：5 个测试用例覆盖全部增强点 |
 

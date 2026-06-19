@@ -45,18 +45,17 @@ func TestEpisodeRecorderFinishAcceptsVerifierApproval(t *testing.T) {
 	}
 }
 
-func TestEpisodeRecorderDoesNotPersistToolSpeechAsEventField(t *testing.T) {
+func TestEpisodeRecorderPersistsToolContent(t *testing.T) {
 	action := schema.AgentAction{
 		Tool:      "echo",
 		ToolInput: "hello",
-		Log:       formatToolActionLog("echo", `{"input":"hello","speech":"Saying hi."}`, "I will echo.", "Saying hi.", "\n"),
+		Log:       formatToolActionLog("echo", `{"input":"hello","speech":"Saying hi."}`, "I will echo.", "\n"),
 	}
 
-	enabled := NewEpisodeRecorder(MemoryRetrieveRequest{Input: "test"}, MemoryContext{})
-	enabled.ToolCallSpeech = true
-	enabled.RecordExecution(roleExecutionResult{Action: &action})
-	enabledEpisode := enabled.Finish("", nil, nil, nil, nil)
-	if got := firstToolCallEventContent(enabledEpisode.Events); got != "Saying hi." {
+	recorder := NewEpisodeRecorder(MemoryRetrieveRequest{Input: "test"}, MemoryContext{})
+	recorder.RecordExecution(roleExecutionResult{Action: &action})
+	episode := recorder.Finish("", nil, nil, nil, nil)
+	if got := firstToolCallEventContent(episode.Events); got != "I will echo." {
 		t.Fatalf("tool event content = %q", got)
 	}
 }

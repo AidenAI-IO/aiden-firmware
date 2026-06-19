@@ -15,7 +15,6 @@ type FunctionAgent struct {
 	Tools             []langtools.Tool
 	OutputKey         string
 	ScreenshotPruning ScreenshotPruningConfig
-	ToolCallSpeech    bool
 }
 
 type visualObservationTool interface {
@@ -34,8 +33,6 @@ type structuredInputTool interface {
 
 const toolActionLogVersion = 1
 const maxToolObservationRunes = 4000
-const toolCallSpeechField = "speech"
-const toolCallDescriptionField = "description"
 
 type ScreenshotPruningConfig struct {
 	KeepN    int
@@ -65,16 +62,13 @@ func (c ScreenshotPruningConfig) PrunedCount(total int) int {
 }
 
 type toolActionLog struct {
-	Version         int    `json:"aiden_action_log_version"`
-	Message         string `json:"message"`
-	ToolDescription string `json:"tool_description,omitempty"`
-	ToolSpeech      string `json:"tool_speech,omitempty"`
+	Version     int    `json:"aiden_action_log_version"`
+	Message     string `json:"message"`
+	ToolContent string `json:"tool_content,omitempty"`
 }
 
 type toolInvocation struct {
-	Input       string
-	Description string
-	Speech      string
+	Input string
 }
 
 func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema.AgentAction, *schema.AgentFinish, error) {
@@ -92,16 +86,12 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 			}
 			functionName := toolCall.FunctionCall.Name
 			toolInputStr := toolCall.FunctionCall.Arguments
-			invocation := extractToolInvocation(toolInputStr, false)
+			invocation := extractToolInvocation(toolInputStr)
 			toolCallContent := ""
 			if !contentConsumed {
-				toolCallContent = choice.Content
+				toolCallContent = strings.TrimSpace(choice.Content)
 				contentConsumed = true
 			}
-			if speech := a.toolSpeechFromChoiceContent(toolCallContent); speech != "" {
-				invocation.Speech = speech
-			}
-			invocation.Description = toolCallDescriptionText(toolCallContent, invocation.Description)
 
 			contentMsg := "\n"
 			if toolCallContent != "" {
@@ -111,7 +101,7 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 			actions = append(actions, schema.AgentAction{
 				Tool:      functionName,
 				ToolInput: invocation.Input,
-				Log:       formatToolActionLog(functionName, toolInputStr, invocation.Description, invocation.Speech, contentMsg),
+				Log:       formatToolActionLog(functionName, toolInputStr, toolCallContent, contentMsg),
 				ToolID:    ensureToolCallID(toolCall.ID, len(actions)),
 			})
 		}
@@ -121,21 +111,18 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 	if choice.FuncCall != nil {
 		functionName := choice.FuncCall.Name
 		toolInputStr := choice.FuncCall.Arguments
-		invocation := extractToolInvocation(toolInputStr, false)
-		if speech := a.toolSpeechFromChoiceContent(choice.Content); speech != "" {
-			invocation.Speech = speech
-		}
-		invocation.Description = toolCallDescriptionText(choice.Content, invocation.Description)
+		invocation := extractToolInvocation(toolInputStr)
+		toolCallContent := strings.TrimSpace(choice.Content)
 
 		contentMsg := "\n"
-		if choice.Content != "" {
-			contentMsg = fmt.Sprintf("responded: %s\n", choice.Content)
+		if toolCallContent != "" {
+			contentMsg = fmt.Sprintf("responded: %s\n", toolCallContent)
 		}
 
 		return []schema.AgentAction{{
 			Tool:      functionName,
 			ToolInput: invocation.Input,
-			Log:       formatToolActionLog(functionName, toolInputStr, invocation.Description, invocation.Speech, contentMsg),
+			Log:       formatToolActionLog(functionName, toolInputStr, toolCallContent, contentMsg),
 			ToolID:    ensureToolCallID("", 0),
 		}}, nil, nil
 	}
@@ -157,13 +144,6 @@ func (a *FunctionAgent) toolsAsLLM() []llms.Tool {
 		result = append(result, NewToolSpec(tool).LLMTool())
 	}
 	return result
-}
-
-func (a *FunctionAgent) toolSpeechFromChoiceContent(content string) string {
-	if a == nil || !a.ToolCallSpeech {
-		return ""
-	}
-	return strings.TrimSpace(content)
 }
 
 func genericToolParameters() map[string]any {
@@ -219,8 +199,8 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 		}
 
 		toolCallParts := make([]llms.ContentPart, 0, groupEnd-i+1)
-		if description := toolDescriptionFromAction(steps[i].Action); description != "" {
-			toolCallParts = append(toolCallParts, llms.TextPart(description))
+		if content := toolContentFromAction(steps[i].Action); content != "" {
+			toolCallParts = append(toolCallParts, llms.TextPart(content))
 		}
 		for j := i; j < groupEnd; j++ {
 			toolCallParts = append(toolCallParts, llms.ToolCall{
@@ -468,7 +448,7 @@ func attachmentAwarePrompt(text string, attachments []InputAttachment, descripti
 	return text + "\n\nAttached content:\n- " + strings.Join(descriptions, "\n- ")
 }
 
-func extractToolInvocation(raw string, includeSpeech bool) toolInvocation {
+func extractToolInvocation(raw string) toolInvocation {
 	var toolInputMap map[string]any
 	if err := json.Unmarshal([]byte(raw), &toolInputMap); err != nil {
 		return toolInvocation{Input: raw}
@@ -476,25 +456,13 @@ func extractToolInvocation(raw string, includeSpeech bool) toolInvocation {
 	invocation := toolInvocation{Input: raw}
 	_, hasLegacyArg := toolInputMap["__arg1"]
 	hasGenericInput := false
-	if includeSpeech {
-		if speech, ok := toolInputMap[toolCallSpeechField].(string); ok {
-			invocation.Speech = strings.TrimSpace(speech)
-		}
-	}
 	if arg1, ok := toolInputMap["__arg1"].(string); ok {
 		invocation.Input = arg1
-	} else if input, ok := toolInputMap["input"].(string); ok && isGenericStringInputWrapper(toolInputMap, includeSpeech) {
+	} else if input, ok := toolInputMap["input"].(string); ok && isGenericStringInputWrapper(toolInputMap) {
 		invocation.Input = input
 		hasGenericInput = true
 	}
-	if description, ok := toolInputMap[toolCallDescriptionField].(string); ok {
-		invocation.Description = strings.TrimSpace(description)
-	}
 	if !hasLegacyArg && !hasGenericInput {
-		delete(toolInputMap, toolCallDescriptionField)
-		if includeSpeech {
-			delete(toolInputMap, toolCallSpeechField)
-		}
 		if encoded, err := json.Marshal(toolInputMap); err == nil {
 			invocation.Input = string(encoded)
 		}
@@ -502,18 +470,12 @@ func extractToolInvocation(raw string, includeSpeech bool) toolInvocation {
 	return invocation
 }
 
-func isGenericStringInputWrapper(fields map[string]any, includeSpeech bool) bool {
+func isGenericStringInputWrapper(fields map[string]any) bool {
 	if _, ok := fields["input"]; !ok {
 		return false
 	}
 	for key := range fields {
-		switch key {
-		case "input", toolCallDescriptionField:
-		case toolCallSpeechField:
-			if !includeSpeech {
-				return false
-			}
-		default:
+		if key != "input" {
 			return false
 		}
 	}
@@ -521,7 +483,7 @@ func isGenericStringInputWrapper(fields map[string]any, includeSpeech bool) bool
 }
 
 func extractToolInput(raw string) string {
-	return extractToolInvocation(raw, false).Input
+	return extractToolInvocation(raw).Input
 }
 
 func encodeToolArguments(input string) string {
@@ -545,13 +507,12 @@ func encodeToolArguments(input string) string {
 	return string(encoded)
 }
 
-func formatToolActionLog(name, arguments, description, speech, contentMsg string) string {
+func formatToolActionLog(name, arguments, content, contentMsg string) string {
 	message := fmt.Sprintf("Invoking: %s with %s %s", name, arguments, contentMsg)
 	metadata := toolActionLog{
-		Version:         toolActionLogVersion,
-		Message:         message,
-		ToolDescription: strings.TrimSpace(description),
-		ToolSpeech:      strings.TrimSpace(speech),
+		Version:     toolActionLogVersion,
+		Message:     message,
+		ToolContent: strings.TrimSpace(content),
 	}
 	encoded, err := json.Marshal(metadata)
 	if err != nil {
@@ -560,7 +521,7 @@ func formatToolActionLog(name, arguments, description, speech, contentMsg string
 	return string(encoded)
 }
 
-func toolDescriptionFromAction(action schema.AgentAction) string {
+func toolContentFromAction(action schema.AgentAction) string {
 	var metadata toolActionLog
 	if err := json.Unmarshal([]byte(action.Log), &metadata); err != nil {
 		return ""
@@ -568,25 +529,7 @@ func toolDescriptionFromAction(action schema.AgentAction) string {
 	if metadata.Version != toolActionLogVersion {
 		return ""
 	}
-	return strings.TrimSpace(metadata.ToolDescription)
-}
-
-func toolSpeechFromAction(action schema.AgentAction) string {
-	var metadata toolActionLog
-	if err := json.Unmarshal([]byte(action.Log), &metadata); err != nil {
-		return ""
-	}
-	if metadata.Version != toolActionLogVersion {
-		return ""
-	}
-	return strings.TrimSpace(metadata.ToolSpeech)
-}
-
-func toolCallDescriptionText(content, legacyDescription string) string {
-	if content = strings.TrimSpace(content); content != "" {
-		return content
-	}
-	return strings.TrimSpace(legacyDescription)
+	return strings.TrimSpace(metadata.ToolContent)
 }
 
 func extractFinalAnswer(content string) string {

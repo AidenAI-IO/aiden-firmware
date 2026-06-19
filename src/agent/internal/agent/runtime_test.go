@@ -2165,7 +2165,7 @@ func TestRuntimeAllowsRepeatedKeyboardText(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
+func TestRuntimeRunStripsLegacyToolInputWithoutDerivingContent(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。","speech":"读取音量。"}`, "The current audio volume is 42."),
 	}
@@ -2207,9 +2207,6 @@ func TestRuntimeRunEmitsToolDescriptionEventAndStripsToolInput(t *testing.T) {
 	toolCall, ok := firstRunEventOfType(events, runEventToolCall)
 	if !ok {
 		t.Fatalf("expected tool_call event, got %#v", events)
-	}
-	if toolCall.Description != "我先读取当前音量。" {
-		t.Fatalf("unexpected tool description event: %#v", toolCall)
 	}
 	if toolCall.Content != "" {
 		t.Fatalf("tool_call content = %q, want empty without assistant content", toolCall.Content)
@@ -2261,15 +2258,12 @@ func TestRuntimeRunEmitsToolContentForToolCallSpeech(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected tool_call event, got %#v", events)
 	}
-	if toolCall.Description != speech {
-		t.Fatalf("tool_call description changed: %q", toolCall.Description)
-	}
 	if toolCall.Content != speech {
 		t.Fatalf("tool_call content = %q, want assistant content", toolCall.Content)
 	}
 }
 
-func TestRuntimeRunDoesNotDeriveToolSpeechWhenMissing(t *testing.T) {
+func TestRuntimeRunDoesNotDeriveToolContentFromDescriptionArgument(t *testing.T) {
 	description := "我先读取当前音量并检查当前播放设备、音量状态、静音状态、输出通道以及系统返回结果是否一致。然后继续回答。"
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", fmt.Sprintf(`{"__arg1":"{}","description":%q}`, description), "The current audio volume is 42."),
@@ -2307,9 +2301,6 @@ func TestRuntimeRunDoesNotDeriveToolSpeechWhenMissing(t *testing.T) {
 	toolCall, ok := firstRunEventOfType(events, runEventToolCall)
 	if !ok {
 		t.Fatalf("expected tool_call event, got %#v", events)
-	}
-	if toolCall.Description != description {
-		t.Fatalf("tool_call description changed: %q", toolCall.Description)
 	}
 	if toolCall.Content != "" {
 		t.Fatalf("tool_call content = %q, want empty without assistant content", toolCall.Content)

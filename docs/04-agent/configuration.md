@@ -121,7 +121,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `voice_max_turns` | `0` | 单个 wakeup session 最大轮数；`0` 表示不限制 |
 | `voice_interrupt_on_wakeup` | `true` | session 内再次收到 wakeup 时取消 thinking/TTS 并重新听音；监听或录音阶段的重复 wakeup 会被合并或忽略 |
 | `voice_streaming_tts_enabled` | `true` | LLM 流式输出时按句送入 TTS，降低首句播放等待 |
-| `voice_tool_call_speech` | `true` | 是否异步朗读 LLM 在工具参数中显式生成的 `speech`；缺少 `speech` 时保持静默，不会从工具 `description` 派生口播 |
+| `voice_tool_call_speech` | `true` | 是否异步朗读 tool-call event 的 `content`；该内容只来自同一次 LLM tool-call 响应中的 assistant content，缺少时保持静默 |
 | `voice_progress_speech_enabled` | `true` | 是否在 todo item 进入 `in_progress` 时播报短进度；todo 状态仍会发送给 UI/trace |
 | `voice_max_response_tokens` | `400` | 语音回复的单次输出 token 上限（需 `>= 0`） |
 | `todo_reminder_tool_calls` | `3` | single-agent/default mode 中连续多少次工具调用后提醒模型更新 todo；设为 `0` 使用默认值 |

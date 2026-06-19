@@ -109,9 +109,9 @@ speed = 1.0
 
 ### 工具调用口播
 
-`voice_tool_call_speech = true` 时，运行时会把工具 schema 中可选的 `speech` 参数暴露给 LLM，并在工具调用事件到达时异步 TTS 播放该字段。`speech` 是运行时元字段，不会传给真实工具。
+`voice_tool_call_speech = true` 时，运行时会在工具调用事件到达时异步 TTS 播放该事件的 `content`。这个 `content` 只来自同一次 LLM tool-call 响应中的 assistant content，不来自工具参数。
 
-如果 LLM 没有生成 `speech`，该工具调用保持静默。运行时不会从工具 `description`、assistant text 或其他上下文字段派生短口播；`description` 只用于 UI、trace、memory 和调试上下文。
+如果 LLM 没有在 tool call 同一响应中生成 assistant content，该工具调用保持静默。运行时不会从工具参数里的 `speech`、`description` 或其他上下文字段派生短口播。
 
 ## TTS provider 使用方式
 

@@ -393,7 +393,7 @@ func TestAudioDialogInterruptOutputStopsBackgroundToolSpeech(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		dialog.SpeakToolDescription("tool is running")
+		dialog.SpeakToolContent("tool is running")
 		close(done)
 	}()
 
