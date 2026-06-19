@@ -1126,6 +1126,7 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 			RuntimeContext:      runtimeContext,
 			ForceSimpleLoop:     r.config.ForceSimpleLoop,
 			VoiceToolCallSpeech: r.config.VoiceToolCallSpeech,
+			TTSConfigured:       strings.TrimSpace(r.config.TTS.Provider) != "",
 		},
 		skills,
 		availableTools,
