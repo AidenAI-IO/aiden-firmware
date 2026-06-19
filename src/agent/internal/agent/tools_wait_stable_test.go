@@ -39,6 +39,20 @@ func TestScreenStableDefaultsInputJSON(t *testing.T) {
 	}
 }
 
+func TestWaitStableScreenDescriptionDocumentsUsePolicy(t *testing.T) {
+	desc := (&WaitStableScreenTool{}).Description()
+	for _, want := range []string{
+		"Use only while operating a visible target UI",
+		"known UI transition",
+		"do not call for text-only reasoning",
+		"stable=false means",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+}
+
 func TestWaitStableScreenToolReturnsScreenshotObservationJSON(t *testing.T) {
 	rawFrame := []byte{128, 128, 128, 128, 128, 128}
 	jpegData, err := encodeJPEG([]byte{

@@ -48,9 +48,8 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		}
 		for _, want := range []string{
 			"## Base instruction",
+			"## Environment",
 			"## Default behavior",
-			"### Environment",
-			"### Default Behavior",
 			"## Available skills",
 			"## Active skills",
 			"## Role rules",
@@ -61,6 +60,11 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		}
 		if strings.Contains(profile.SystemPrompt, "## Available tools") {
 			t.Fatalf("%s profile should not duplicate tool catalog in prompt:\n%s", profile.Name, profile.SystemPrompt)
+		}
+		for _, unexpected := range []string{"### Environment", "### Default Behavior"} {
+			if strings.Contains(profile.SystemPrompt, unexpected) {
+				t.Fatalf("%s profile should not include nested default prompt section %q:\n%s", profile.Name, unexpected, profile.SystemPrompt)
+			}
 		}
 	}
 	if !strings.Contains(profiles.Verifier.SystemPrompt, "## Role rules") {
@@ -127,14 +131,14 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		strings.Contains(profiles.Verifier.SystemPrompt, "open_app") {
 		t.Fatalf("role prompts should not mention open_app when that tool is unavailable: planner=%q verifier=%q", profiles.Planner.SystemPrompt, profiles.Verifier.SystemPrompt)
 	}
-	if !strings.Contains(profiles.Planner.SystemPrompt, "plan quick_action first") ||
-		!strings.Contains(profiles.Planner.SystemPrompt, "quick_action action=back platform=android") ||
-		!strings.Contains(profiles.Executor.SystemPrompt, "try quick_action first") ||
-		!strings.Contains(profiles.Executor.SystemPrompt, "fall back to keyboard_tap") {
+	if !strings.Contains(profiles.Planner.SystemPrompt, "plan quick_action when a matching action may exist") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "observed_state.platform") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "prefer quick_action when a matching action exists") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "switch to keyboard_tap") {
 		t.Fatalf("role prompts should prefer quick_action before low-level fallback: planner=%q executor=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt)
 	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "platform (ios/android/mac)") ||
-		!strings.Contains(profiles.Executor.SystemPrompt, "pass it explicitly") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "platform shown in World State") ||
 		!strings.Contains(profiles.Verifier.SystemPrompt, `"platform":""`) {
 		t.Fatalf("role prompts should propagate observed platform for platform-specific tools: planner=%q executor=%q verifier=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt, profiles.Verifier.SystemPrompt)
 	}

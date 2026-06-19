@@ -25,6 +25,7 @@ func (t *AudioVolumeTool) Name() string { return "audio_volume" }
 
 func (t *AudioVolumeTool) Description() string {
 	return `Get or set audio playback volume for audio_service/TTS playback. ` +
+		`Use this when the user asks to read or change Aiden playback/TTS volume; do not use it for phone system UI volume. ` +
 		`Input JSON: {} to read current volume, or {"volume": 70} to set it. ` +
 		`Volume range is 0..100.`
 }
