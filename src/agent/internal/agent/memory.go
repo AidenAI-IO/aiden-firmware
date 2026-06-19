@@ -98,7 +98,6 @@ type SessionEvent struct {
 	EpisodeID          string          `json:"episode_id,omitempty"`
 	RequestID          string          `json:"request_id,omitempty"`
 	RunID              string          `json:"run_id,omitempty"`
-	Relation           string          `json:"relation,omitempty"`
 	Status             string          `json:"status,omitempty"`
 	Modality           string          `json:"modality,omitempty"`
 	OriginalText       string          `json:"original_text,omitempty"`
@@ -126,7 +125,6 @@ type SessionEventMetadata struct {
 	EpisodeID string
 	RequestID string
 	RunID     string
-	Relation  string
 }
 
 // MemoryManagerOption configures a MemoryManager instance.
@@ -1730,9 +1728,6 @@ func applySessionEventMetadata(event SessionEvent, meta SessionEventMetadata) Se
 	}
 	if event.RunID == "" {
 		event.RunID = strings.TrimSpace(meta.RunID)
-	}
-	if event.Relation == "" {
-		event.Relation = strings.TrimSpace(meta.Relation)
 	}
 	return event
 }

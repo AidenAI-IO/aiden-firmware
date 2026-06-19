@@ -865,7 +865,7 @@ func TestRequestContextPromptDoesNotMarkRootRequestAuthoritative(t *testing.T) {
 		"input":              "打开微信",
 		rootRequestInputKey:  "查天气",
 		latestUserInputKey:   "打开微信",
-		"follow_up_relation": FollowUpContinuation,
+		"follow_up_relation": "continuation",
 	}
 	prompt := buildPlannerStatePrompt(inputs, roleLoopState{}, "Planner task.")
 

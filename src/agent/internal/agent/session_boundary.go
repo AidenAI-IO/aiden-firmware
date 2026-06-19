@@ -26,7 +26,6 @@ const (
 	BoundaryReasonSmallSession     = "small_session"
 	BoundaryReasonDefaultNew       = "default_new"
 	BoundaryReasonScoreContinue    = "score_continue"
-	BoundaryReasonForcedFollowUp   = "forced_follow_up"
 )
 
 // BoundaryConfig tunes ClassifyTurnBoundary. All fields are positive; zero

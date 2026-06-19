@@ -1038,7 +1038,7 @@ func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T)
 	}
 }
 
-func TestRuntimeRunForcedFollowUpRelationMarksInterruptedCorrection(t *testing.T) {
+func TestRuntimeRunVoiceInterruptionContextUsesTimeBoundary(t *testing.T) {
 	ctx := context.Background()
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	rootRequest := "打开微信，进入 Aden AI agent 群，发送100块钱红包"
@@ -1069,10 +1069,9 @@ func TestRuntimeRunForcedFollowUpRelationMarksInterruptedCorrection(t *testing.T
 		t.Fatalf("first Run() error = %v", err)
 	}
 	if _, err := runtime.Run(ctx, RunRequest{
-		Input:            correction,
-		RequestID:        "req-voice-correction",
-		FollowUpRelation: FollowUpCorrection,
-		RuntimeContext:   interruptionContext,
+		Input:          correction,
+		RequestID:      "req-voice-correction",
+		RuntimeContext: interruptionContext,
 	}); err != nil {
 		t.Fatalf("correction Run() error = %v", err)
 	}
@@ -1103,14 +1102,19 @@ func TestRuntimeRunForcedFollowUpRelationMarksInterruptedCorrection(t *testing.T
 		}
 	}
 
-	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	eventsPath := filepath.Join(storageDir, "session", "events.jsonl")
+	events := readSessionEvents(t, eventsPath)
 	if !sessionEventsContain(events, func(event SessionEvent) bool {
 		return event.Type == "user_input" &&
 			event.Content == correction &&
-			event.Relation == FollowUpCorrection &&
 			event.RequestID == "req-voice-correction"
 	}) {
-		t.Fatalf("session events missing forced correction relation: %#v", events)
+		t.Fatalf("session events missing interrupted correction user input: %#v", events)
+	}
+	for _, event := range readSessionEventObjects(t, eventsPath) {
+		if _, ok := event["relation"]; ok {
+			t.Fatalf("session event should not persist relation: %#v", event)
+		}
 	}
 }
 
@@ -1419,6 +1423,26 @@ func sessionEventsContain(events []SessionEvent, predicate func(SessionEvent) bo
 		}
 	}
 	return false
+}
+
+func readSessionEventObjects(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile session events: %v", err)
+	}
+	var events []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decode raw session event: %v", err)
+		}
+		events = append(events, event)
+	}
+	return events
 }
 
 func sessionEventsOfTypes(events []SessionEvent, types ...string) []SessionEvent {
@@ -3705,6 +3729,75 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 	}
 	if got := numericExtraValue(episode.Extra["pending_chunks_recalled"]); got != 0 {
 		t.Fatalf("pending_chunks_recalled = %#v, want 0 without recall tool call", got)
+	}
+}
+
+func TestRuntimeRunShortGapKeepsActiveSessionWithoutForcedContinuation(t *testing.T) {
+	configDir := t.TempDir()
+	storageDir := filepath.Join(configDir, "memory")
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC().Add(-45 * time.Second)
+	for i := 0; i < DefaultBoundaryConfig().SmallSessionEventThreshold+1; i++ {
+		if _, err := session.AppendEvent(context.Background(), SessionEvent{
+			EventID: fmt.Sprintf("evt_old_%d", i),
+			Ts:      now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("查天气旧任务 %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+
+	manager := NewMemoryManager(storageDir)
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(result.Memory) != DefaultBoundaryConfig().SmallSessionEventThreshold+3 {
+		t.Fatalf("short gap should keep previous context, got %#v", result.Memory)
+	}
+
+	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
+	if err != nil {
+		t.Fatalf("Glob archived sessions: %v", err)
+	}
+	if len(archiveDirs) != 0 {
+		t.Fatalf("short gap rotated session: %v", archiveDirs)
+	}
+	for _, event := range readSessionEventObjects(t, session.eventsPath()) {
+		if _, ok := event["relation"]; ok {
+			t.Fatalf("session event should not persist relation: %#v", event)
+		}
+	}
+
+	episode, err := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes")).Get(context.Background(), result.EpisodeID)
+	if err != nil {
+		t.Fatalf("Get episode: %v", err)
+	}
+	if got := episode.Extra["session_boundary_decision"]; got != BoundaryContinue {
+		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryContinue)
+	}
+	if got := episode.Extra["session_boundary_reason"]; got != BoundaryReasonTimeGapShort {
+		t.Fatalf("session_boundary_reason = %#v, want %q", got, BoundaryReasonTimeGapShort)
+	}
+	if _, ok := episode.Extra["session_continuation_reason"]; ok {
+		t.Fatalf("session_continuation_reason should not be recorded: %#v", episode.Extra)
 	}
 }
 

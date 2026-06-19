@@ -8,13 +8,13 @@ import (
 	"github.com/tmc/langchaingo/memory"
 )
 
-func TestBuildSessionContextViewUsesActiveSessionScopeIgnoringRelation(t *testing.T) {
+func TestBuildSessionContextViewUsesActiveSessionScope(t *testing.T) {
 	events := []SessionEvent{
-		{Type: "user_input", Role: "user", Content: "查天气", Relation: FollowUpRootRequest},
+		{Type: "user_input", Role: "user", Content: "查天气"},
 		{Type: "planner_decision", Role: string(RolePlanner), Objective: "查询天气", Plan: []string{"打开天气"}},
-		{Type: "user_input", Role: "user", Content: "打开微信", Relation: FollowUpNewTask},
+		{Type: "user_input", Role: "user", Content: "打开微信"},
 		{Type: "assistant_output", Role: "assistant", Content: "已打开微信"},
-		{Type: "user_input", Role: "user", Content: "然后给张三发消息", Relation: FollowUpContinuation},
+		{Type: "user_input", Role: "user", Content: "然后给张三发消息"},
 	}
 
 	view := BuildSessionContextView(events, "然后给张三发消息")
@@ -22,7 +22,7 @@ func TestBuildSessionContextViewUsesActiveSessionScopeIgnoringRelation(t *testin
 		t.Fatalf("root request = %q, want first active-session user input", view.RootUserRequest)
 	}
 	if view.LatestCommittedPlan == nil || view.LatestCommittedPlan.Objective != "查询天气" {
-		t.Fatalf("latest committed plan should come from active session regardless of relation, got %#v", view.LatestCommittedPlan)
+		t.Fatalf("latest committed plan should come from active session, got %#v", view.LatestCommittedPlan)
 	}
 }
 
@@ -30,9 +30,9 @@ func TestBuildSessionContextViewIgnoresHotWindowEventsWhenRuntimeEventsExist(t *
 	events := []SessionEvent{
 		{Type: "user_input", Role: "user", Content: "HOT_WINDOW_USER_ONLY_PLANNER"},
 		{Type: "assistant_output", Role: "assistant", Content: "HOT_WINDOW_ASSISTANT_ONLY_PLANNER"},
-		{Type: "user_input", Role: "user", Content: "打开微信", RunID: "run-1", Relation: FollowUpRootRequest},
+		{Type: "user_input", Role: "user", Content: "打开微信", RunID: "run-1"},
 		{Type: "planner_decision", Role: string(RolePlanner), Objective: "打开微信", Plan: []string{"打开微信"}, RunID: "run-1"},
-		{Type: "user_input", Role: "user", Content: "继续当前任务", RunID: "run-2", Relation: FollowUpContinuation},
+		{Type: "user_input", Role: "user", Content: "继续当前任务", RunID: "run-2"},
 	}
 
 	view := BuildSessionContextView(events, "继续当前任务")
@@ -64,11 +64,11 @@ func TestBuildSessionContextViewDoesNotLeakPreRootPlanWhenRootIsLatestUser(t *te
 	}
 }
 
-func TestFormatSessionContextViewOmitsFollowUpRelationJudgement(t *testing.T) {
+func TestFormatSessionContextViewOmitsLegacyRelationJudgement(t *testing.T) {
 	events := []SessionEvent{
-		{Type: "user_input", Role: "user", Content: "打开微信", Relation: FollowUpRootRequest},
+		{Type: "user_input", Role: "user", Content: "打开微信"},
 		{Type: "assistant_output", Role: "assistant", Content: "正在打开微信"},
-		{Type: "user_input", Role: "user", Content: "我喜欢吃小龙虾", Relation: FollowUpContinuation},
+		{Type: "user_input", Role: "user", Content: "我喜欢吃小龙虾"},
 	}
 
 	view := BuildSessionContextView(events, "我喜欢吃小龙虾")
@@ -93,7 +93,7 @@ func TestFormatSessionContextViewOmitsFollowUpRelationJudgement(t *testing.T) {
 	}
 }
 
-func TestSessionContextPlannerMemoryDoesNotExposeFollowUpRelationVariable(t *testing.T) {
+func TestSessionContextPlannerMemoryDoesNotExposeLegacyRelationVariable(t *testing.T) {
 	ctx := context.Background()
 	manager := NewMemoryManager(t.TempDir())
 	mem := newSessionContextPlannerMemory(memory.NewSimple(), manager, "default")
