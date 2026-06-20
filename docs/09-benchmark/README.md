@@ -8,7 +8,7 @@ Agent benchmark is a testing framework for evaluating the Go agent's phone contr
 
 ```bash
 cd benchmark
-uv run python -m runner run suites/memory_v1.json --agent-url http://192.168.1.100:8080
+uv run python -m runner run --suite suites/memory_v1.json --agent-url http://192.168.1.100:8080
 ```
 
 ### View Reports
@@ -53,11 +53,12 @@ benchmark/
 ### run - Run Benchmark
 
 ```bash
-uv run python -m runner run <suite.json> [options]
+uv run python -m runner run --suite <suite.json> [options]
 ```
 
 Options:
 
+- `--suite PATH` - Benchmark suite JSON path
 - `--agent-url URL` - Agent HTTP address (default `http://localhost:8080`)
 - `--no-judge` - Skip LLM judge, only run hard assertions
 - `--repeats N` - Repeat each task N times
@@ -68,7 +69,7 @@ Options:
 ### rejudge - Re-judge
 
 ```bash
-uv run python -m runner rejudge runs/<run_id>
+uv run python -m runner rejudge --run-dir runs/<run_id>
 ```
 
 Re-judge all tasks in an existing run without re-executing tasks.
@@ -76,7 +77,7 @@ Re-judge all tasks in an existing run without re-executing tasks.
 ### compare - Compare Two Runs
 
 ```bash
-uv run python -m runner compare runs/<run_a> runs/<run_b>
+uv run python -m runner compare --runs runs/<run_a> runs/<run_b>
 ```
 
 Output which tasks flipped status, latency differences, etc. between two runs.

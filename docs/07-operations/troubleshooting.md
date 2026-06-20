@@ -149,7 +149,8 @@ Solution:
 
 - Set `NO_PROXY` for device private IP / USB network adapter address;
 - First access `GET /api/tools` to confirm service is reachable;
-- When tool fails, check `is_error` and `output` in JSON response;
+- When a tool invocation fails, check `is_error` and `output` in the response
+  from `POST /api/tools/{tool_name}`;
 - Separate transport failure from tool failure judgement.
 
 ## Docker build fails

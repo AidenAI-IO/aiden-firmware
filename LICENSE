@@ -68,8 +68,13 @@ you MUST obtain a separate commercial license from AIDEN AGENT PTE. LTD.
 - Offering this software as a hosted service (SaaS)
 - Bundling this software with commercial products
 - Using this software internally in a for-profit organization
-- Modifying this software without open-sourcing your changes
+- Keeping modified versions proprietary or closed-source instead of complying
+  with AGPL-3.0 source-disclosure obligations
 - Any use that generates revenue or provides competitive advantage
+
+AGPL-3.0 copyleft obligations apply to AGPL-licensed use regardless of whether
+the use is commercial or non-commercial. A commercial license is required when
+you want proprietary rights or terms that remove those copyleft obligations.
 
 ### Commercial License Benefits:
 
@@ -83,7 +88,8 @@ you MUST obtain a separate commercial license from AIDEN AGENT PTE. LTD.
 ### How to Obtain a Commercial License:
 
 Contact us for pricing and terms:
-- Website: https://github.com/AidenAI-IO/aiden-hardware-demo
+- Email: contact@aidenai.io
+- Website: https://aidenai.io/
 - Technical and licensing discussions: https://github.com/AidenAI-IO/aiden-hardware-demo/discussions
 
 ---
@@ -99,17 +105,13 @@ under AGPL-3.0 terms**.
 
 ### Patent Restrictions
 
-1. **No Patent Applications**: You may NOT file patent applications claiming
-   inventions disclosed in this codebase. Any such applications are considered
-   a violation of this license and constitute copyright infringement.
-
-2. **Patent Defensive Termination**: If you initiate patent litigation against
+1. **Patent Defensive Termination**: If you initiate patent litigation against
    any entity (including a cross-claim or counterclaim) alleging that this
    software or any contribution to it constitutes patent infringement, your
    licenses under this agreement (AGPL-3.0 and any commercial license) terminate
    automatically and immediately.
 
-3. **Commercial Patent Rights**: Patent rights for commercial use are ONLY
+2. **Commercial Patent Rights**: Patent rights for commercial use are ONLY
    granted through a separate commercial license agreement.
 
 ### Patent Ownership
@@ -196,9 +198,9 @@ DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THIS SOFTWARE.
 
 ## Questions?
 
-**For licensing questions**: https://github.com/AidenAI-IO/aiden-hardware-demo/discussions
+**For licensing questions**: contact@aidenai.io
 **For technical questions**: https://github.com/AidenAI-IO/aiden-hardware-demo/discussions
-**For commercial inquiries**: https://github.com/AidenAI-IO/aiden-hardware-demo/discussions
+**For commercial inquiries**: contact@aidenai.io
 
 ---
 

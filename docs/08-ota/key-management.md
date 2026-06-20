@@ -78,7 +78,7 @@ Safe rotation process:
 
 1. Generate a new Ed25519 key pair offline.
 2. Keep the old private key in GitHub `OTA_ED25519_PRIVATE_KEY` temporarily.
-3. Build a transition OTA containing the new `/oem/etc/ota_pubkey.pem` or a keyring that trusts both old and new public keys.
+3. Build a transition OTA containing the new `/oem/etc/ota_pubkey.pem`.
 4. Sign and publish the transition release with the old private key.
 5. Confirm target devices have booted and marked successful via `ota status`, release telemetry, or field inspection.
 6. After confirming the fleet trusts the new public key, switch the GitHub secret to the new private key.

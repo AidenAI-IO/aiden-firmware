@@ -14,13 +14,13 @@ Measures the Go agent's phone-control capability by sending tasks via the HTTP A
 cd benchmark
 
 # Full run with LLM judge
-uv run python -m runner run suites/phone_control_v1.json
+uv run python -m runner run --suite suites/phone_control_v1.json
 
 # Dry run (no judge, just collect traces and screenshots)
-uv run python -m runner run suites/phone_control_v1.json --no-judge
+uv run python -m runner run --suite suites/phone_control_v1.json --no-judge
 
 # Override agent URL
-uv run python -m runner run suites/phone_control_v1.json --agent-url http://192.168.1.100:8080
+uv run python -m runner run --suite suites/phone_control_v1.json --agent-url http://192.168.1.100:8080
 ```
 
 ## Output
@@ -48,7 +48,7 @@ Each run creates `runs/<run_id>/`:
 Change rubric phrasing or judge model without re-running on hardware:
 
 ```bash
-uv run python -m runner rejudge runs/<id> --judge-model claude-sonnet-4-6
+uv run python -m runner rejudge --run-dir runs/<id> --judge-model claude-sonnet-4-6
 ```
 
 ## Comparing runs
