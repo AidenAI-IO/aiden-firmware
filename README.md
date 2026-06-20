@@ -34,7 +34,7 @@ Most mobile agent projects are lab prototypes that require a laptop or desktop t
 
 ### 2. **Fully Open**
 - **Open-source firmware** — Complete C++ services and Go agent code
-- **Open development board design** — Current prototyping board schematics and assembly guide available (production hardware designs remain proprietary)
+- **Development board reference** — Current prototyping board schematics and assembly guide available
 - **Any LLM** — Configure OpenAI, Anthropic, local models, or your own deployment
 - **Exportable data** — Your memory, skills, and learned behaviors are yours to keep and migrate
 - **Community-driven** — Contributions welcome; flash custom firmware freely
