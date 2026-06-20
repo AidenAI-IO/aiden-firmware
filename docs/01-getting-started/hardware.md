@@ -1,48 +1,59 @@
-# 硬件与连线
+# Hardware & Wiring
 
-## 目标硬件
+## Target Hardware
 
-本项目面向 Aiden 硬件演示设备，当前主要组件包括：
+This project targets the Aiden hardware device. Current main components include:
 
-- [Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero)：RV1106 / Rockchip 平台开发板，运行 Buildroot Linux。
-- [TC358743XBG](https://toshiba.semicon-storage.com/eu/semiconductor/product/interface-bridge-ics-for-mobile-peripheral-devices/hdmir-interface-bridge-ics/detail.TC358743XBG.html)：HDMI 转 CSI 桥接芯片，用于采集外部 HDMI 画面。
-- [CH375B](https://easyelecmodule.com/ch375b-u-disk-read-write-module-development-guide/)：USB 存储相关模块，作为硬件方案组成部分。
+- [Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero): RV1106 / Rockchip platform development board running Buildroot Linux.
+- [TC358743XBG](https://toshiba.semicon-storage.com/eu/semiconductor/product/interface-bridge-ics-for-mobile-peripheral-devices/hdmir-interface-bridge-ics/detail.TC358743XBG.html): HDMI to CSI bridge chip for capturing external HDMI video.
+- [CH375B](https://easyelecmodule.com/ch375b-u-disk-read-write-module-development-guide/): USB storage-related module, part of the hardware solution.
 
-## 核心连接关系
+## Core Connection Topology
+
+The target device (iPhone / PC) connects to Aiden through a USB-C hub. The hub splits the connection into HDMI output (for screen capture) and USB-C output (for data/power to the Pico Zero):
 
 ```text
-HDMI Source / iPhone / Host UI
-          │ HDMI
+Target Device (iPhone / PC)
+          │ USB-C
           ▼
-     TC358743XBG
-          │ CSI / V4L2: /dev/video0 + /dev/v4l-subdev2
-          ▼
-   Luckfox Pico Zero ─── USB-C gadget ─── Target Host / iOS / PC
-          │
-          ├─ HID keyboard / mouse / touch: /dev/hidg0, /dev/hidg1
-          ├─ Audio codec / ALSA
-          └─ Network: Wi-Fi or USB gadget network
+      USB-C Hub
+          ├─ HDMI out ──→ TC358743XBG (HDMI to CSI bridge)
+          │                      │ CSI cable
+          │                      ▼
+          └─ USB-C out ──→ Luckfox Pico Zero (CSI input + USB)
+                                   │
+                                   ├─ Video capture: /dev/video0 (from TC358743 CSI)
+                                   ├─ HID keyboard/mouse/touch: /dev/hidg0, /dev/hidg1
+                                   ├─ Audio codec / ALSA
+                                   └─ Network: Wi-Fi or USB gadget network
 ```
 
-## iOS HID 使用前置设置
+Physical wiring summary:
 
-如果要通过 USB HID 控制 iOS 设备，需要在目标 iOS 设备开启：
+1. Target device USB-C → USB-C hub input
+2. Hub HDMI output → TC358743XBG HDMI input
+3. TC358743XBG CSI output → Pico Zero CSI input (CSI cable between the two boards)
+4. Hub USB-C output → Pico Zero USB-C port (data + power)
+
+## iOS HID Prerequisites
+
+To control an iOS device via USB HID, enable on the target iOS device:
 
 ```text
 Settings > Accessibility > Touch > AssistiveTouch
 ```
 
-建议同时在 AssistiveTouch 页面启用 **Show Onscreen Keyboard**，以便键盘输入体验更稳定。
+It is also recommended to enable **Show Onscreen Keyboard** on the AssistiveTouch page for a more stable keyboard input experience.
 
-## 默认设备节点
+## Default Device Nodes
 
-| 能力 | 默认节点 / 路径 | 说明 |
+| Capability | Default node / path | Description |
 | --- | --- | --- |
-| 视频采集 | `/dev/video0` | TC358743 输出到 V4L2 capture device |
+| Video capture | `/dev/video0` | TC358743 output to V4L2 capture device |
 | HDMI subdev | `/dev/v4l-subdev2` | EDID / DV timings / HDMI sync |
-| 键盘 HID | `/dev/hidg0` | Go Agent 和示例工具默认键盘设备 |
-| 鼠标/触控 HID | `/dev/hidg1` | Go Agent 使用同一 HID 设备完成鼠标/触控输入 |
-| Frame socket | `/run/frame_service/frame_service.sock` | 系统服务部署默认路径 |
-| Audio socket | `/run/audio_service/audio_service.sock` | 系统服务部署默认路径 |
+| Keyboard HID | `/dev/hidg0` | Default keyboard device for Go Agent and example tools |
+| Mouse/touch HID | `/dev/hidg1` | Go Agent uses the same HID device for mouse/touch input |
+| Frame socket | `/run/frame_service/frame_service.sock` | Default path for system service deployment |
+| Audio socket | `/run/audio_service/audio_service.sock` | Default path for system service deployment |
 
-开发时直接运行二进制的默认 frame socket 是 `/tmp/frame_service.sock`；随固件启动脚本部署后默认使用 `/run/frame_service/frame_service.sock`。
+When running the binary directly during development, the default frame socket is `/tmp/frame_service.sock`; after deployment with the firmware startup script, it defaults to `/run/frame_service/frame_service.sock`.

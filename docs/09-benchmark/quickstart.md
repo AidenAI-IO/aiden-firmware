@@ -5,25 +5,27 @@ Measures the Go agent's phone-control capability by sending tasks via the HTTP A
 ## Prerequisites
 
 1. Go agent daemon running: `cd src/agent && go run ./cmd/daemon -addr :8080`
-2. Python deps installed: `uv sync` (from repo root)
-3. Judge API key: `export ANTHROPIC_API_KEY=sk-ant-...`
+2. Python environment set up: `cd benchmark && uv sync`
+3. Judge API key: `export ANTHROPIC_API_KEY=sk-ant-...` or `export OPENROUTER_API_KEY=...`
 
 ## Running
 
 ```bash
+cd benchmark
+
 # Full run with LLM judge
-uv run python -m benchmark.runner run --suite benchmark/suites/phone_control_v1.json
+uv run python -m runner run --suite suites/phone_control_v1.json
 
 # Dry run (no judge, just collect traces and screenshots)
-uv run python -m benchmark.runner run --suite benchmark/suites/phone_control_v1.json --no-judge
+uv run python -m runner run --suite suites/phone_control_v1.json --no-judge
 
 # Override agent URL
-uv run python -m benchmark.runner run --suite benchmark/suites/phone_control_v1.json --agent-url http://192.168.1.100:8080
+uv run python -m runner run --suite suites/phone_control_v1.json --agent-url http://192.168.1.100:8080
 ```
 
 ## Output
 
-Each run creates `benchmark/runs/<run_id>/`:
+Each run creates `runs/<run_id>/`:
 
 ```text
 <run_id>/
@@ -46,13 +48,13 @@ Each run creates `benchmark/runs/<run_id>/`:
 Change rubric phrasing or judge model without re-running on hardware:
 
 ```bash
-uv run python -m benchmark.runner rejudge --run-dir benchmark/runs/<id> --judge-model claude-sonnet-4-6
+uv run python -m runner rejudge --run-dir runs/<id> --judge-model claude-sonnet-4-6
 ```
 
 ## Comparing runs
 
 ```bash
-uv run python -m benchmark.runner compare --runs benchmark/runs/<id_a> benchmark/runs/<id_b>
+uv run python -m runner compare --runs runs/<id_a> runs/<id_b>
 ```
 
 ## Legacy

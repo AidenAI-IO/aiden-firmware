@@ -1,10 +1,10 @@
-# Episode 遥测与 Langfuse 接入
+# Episode Telemetry and Langfuse Integration
 
-Aiden Agent 在每次任务结束后，可将完整的 task episode（元数据、事件链、截图）异步上报到 [Langfuse](https://langfuse.com/)，用于 trace 浏览、数据集构建和评测。
+After each task completes, Aiden Agent can asynchronously report the complete task episode (metadata, event chain, screenshots) to [Langfuse](https://langfuse.com/) for trace browsing, dataset construction, and evaluation.
 
-## 功能开关
+## Feature Toggle
 
-在 `agent.toml` 中配置 `[telemetry]` 段。默认关闭，开启后不影响任务执行（best-effort 异步上报）。
+Configure the `[telemetry]` section in `agent.toml`. Disabled by default; when enabled, it does not affect task execution (best-effort async reporting).
 
 ```toml
 [telemetry]
@@ -20,45 +20,45 @@ environment = "prod"
 tags = ["aiden-hardware"]
 ```
 
-| 字段 | 说明 |
+| Field | Description |
 | --- | --- |
-| `enabled` | 总开关，`false` 时零开销 |
-| `base_url` | Langfuse Web 地址（不含路径） |
-| `public_key` / `secret_key` | Langfuse API 密钥 |
-| `upload_screenshots` | 是否上传 `artifacts/step_*.jpeg` 截图 |
-| `upload_timeout_sec` | 单次上报超时 |
-| `max_retry` | 失败后重试次数 |
-| `environment` | Langfuse trace 环境标签 |
-| `tags` | 附加到每条 trace 的标签 |
+| `enabled` | Master switch; zero overhead when `false` |
+| `base_url` | Langfuse Web address (without path) |
+| `public_key` / `secret_key` | Langfuse API keys |
+| `upload_screenshots` | Whether to upload `artifacts/step_*.jpeg` screenshots |
+| `upload_timeout_sec` | Timeout for single report |
+| `max_retry` | Retry count on failure |
+| `environment` | Langfuse trace environment tag |
+| `tags` | Tags attached to each trace |
 
-密钥直接写入 `agent.toml` 的 `[telemetry]` 段。
+Credentials are written directly into the `[telemetry]` section of `agent.toml`.
 
-## 数据流
+## Data Flow
 
 ```text
 Runtime.Run()
-  → Phased role loop（default / plan / execution）
-  → EpisodeRecorder 记录事件
-  → CommitEpisode 落盘 (episode.yaml + events.jsonl + artifacts/)
-  → exportEpisodeBestEffort 异步上报 Langfuse
+  → Phased role loop (default / plan / execution)
+  → EpisodeRecorder records events
+  → CommitEpisode persists to disk (episode.yaml + events.jsonl + artifacts/)
+  → exportEpisodeBestEffort async reports to Langfuse
 ```
 
-### Langfuse 映射
+### Langfuse Mapping
 
 | Aiden Episode | Langfuse |
 | --- | --- |
 | `TaskEpisode` | Trace (`aiden-episode`) |
-| 运行起点 | Span `phase/default`（所有 run 默认创建，覆盖 default 阶段活动） |
-| `loop_phase` | Span `phase/{content}`（`default` / `plan` / `execution`），metadata 含 `reason`（如 `enter_plan_mode`、`commit_plan`） |
-| `default_finish` | Span `planner/default_finish`（挂在当前 phase span 下） |
-| `planner_decision` | Span `iteration_N` + 子 Span `planner`（`commit_plan` 提交的计划） |
-| `tool_call` / `tool_result` | Planner 工具：`planner/tool/{name}` + `planner/tool_result/{name}`；Executor 工具：`tool/{name}` + `tool_result/{name}` |
-| `verifier_decision` | Span `verifier`（挂在 `iteration_N` 下，仅 execution 阶段） |
+| Run start | Span `phase/default` (created for all runs by default, covers default phase activity) |
+| `loop_phase` | Span `phase/{content}` (`default` / `plan` / `execution`), metadata contains `reason` (e.g., `enter_plan_mode`, `commit_plan`) |
+| `default_finish` | Span `planner/default_finish` (nested under current phase span) |
+| `planner_decision` | Span `iteration_N` + child Span `planner` (committed plan from `commit_plan`) |
+| `tool_call` / `tool_result` | Planner tools: `planner/tool/{name}` + `planner/tool_result/{name}`; Executor tools: `tool/{name}` + `tool_result/{name}` |
+| `verifier_decision` | Span `verifier` (nested under `iteration_N`, execution phase only) |
 | `Outcome.Success` | Boolean Score `success=1/0` |
-| `artifacts/*.jpeg` | Media upload + observation 引用 |
+| `artifacts/*.jpeg` | Media upload + observation reference |
 | `Extra` metrics | Trace metadata + generation model/cost/usage fields |
 
-典型 trace 结构：
+Typical trace structure:
 
 ```text
 aiden-episode (trace)
@@ -81,96 +81,96 @@ aiden-episode (committed execution)
 └── generation (planner/executor/verifier LLM calls)
 ```
 
-### Trace metadata 与 tags
+### Trace Metadata and Tags
 
-除 `episode.Extra` 中的 token、耗时、模型信息外，exporter 会从事件链派生 loop 指标并写入 trace `metadata`：
+In addition to tokens, duration, and model info in `episode.Extra`, the exporter derives loop metrics from the event chain and writes them into trace `metadata`:
 
-| 字段 | 说明 |
+| Field | Description |
 | --- | --- |
-| `loop_mode` | `default`（直结束）或 `committed`（经过 `commit_plan`） |
-| `final_phase` | 结束时所处阶段 |
-| `phase_transitions` | 阶段切换序列，如 `["plan:enter_plan_mode","execution:commit_plan"]` |
-| `loop_phase_count` | 阶段切换次数 |
-| `enter_plan_mode_count` / `commit_plan_count` / `cancel_plan_count` / `plan_exhausted_count` | 各 meta tool 触发次数 |
-| `default_finish` | 是否 default 直结束 |
-| `planner_tool_call_count` / `executor_tool_call_count` | 按 role 拆分的工具调用数 |
-| `replan_count` | verifier 触发 replan 次数 |
+| `loop_mode` | `default` (direct finish) or `committed` (went through `commit_plan`) |
+| `final_phase` | Phase at completion |
+| `phase_transitions` | Phase transition sequence, e.g., `["plan:enter_plan_mode","execution:commit_plan"]` |
+| `loop_phase_count` | Number of phase transitions |
+| `enter_plan_mode_count` / `commit_plan_count` / `cancel_plan_count` / `plan_exhausted_count` | Trigger count for each meta tool |
+| `default_finish` | Whether finished directly in default phase |
+| `planner_tool_call_count` / `executor_tool_call_count` | Tool call count split by role |
+| `replan_count` | Number of replans triggered by verifier |
 
-Trace `tags` 额外附加：
+Additional trace `tags`:
 
-| Tag | 条件 |
+| Tag | Condition |
 | --- | --- |
-| `loop:default_finish` | 存在 `default_finish` 事件 |
-| `loop:committed` | 存在 `planner_decision`（commit） |
-| `loop:plan` | 进入 plan 模式 |
-| `loop:execution` | commit 后进入 execution |
+| `loop:default_finish` | `default_finish` event exists |
+| `loop:committed` | `planner_decision` (commit) exists |
+| `loop:plan` | Entered plan mode |
+| `loop:execution` | Entered execution after commit |
 | `loop:cancelled` | cancel_plan |
-| `loop:exhausted` | plan 步耗尽 |
+| `loop:exhausted` | Plan steps exhausted |
 | `loop:replan` | verifier `needs_replan` |
 
-在 Langfuse UI 中可按 `loop:default_finish` 与 `loop:committed` 快速筛选简单任务与多步委托任务。
+In Langfuse UI, you can quickly filter simple tasks vs. multi-step delegated tasks using `loop:default_finish` and `loop:committed`.
 
-本地 episode 仍写入 `/userdata/agent/memory/episodes/`，Langfuse 为额外副本，用于集中分析和数据集管理。
+Local episodes are still written to `/userdata/agent/memory/episodes/`; Langfuse serves as an additional copy for centralized analysis and dataset management.
 
-## 自托管 Langfuse
+## Self-Hosted Langfuse
 
-项目提供 Docker Compose 配置：[`deploy/langfuse/docker-compose.yml`](../../deploy/langfuse/docker-compose.yml)
+The project provides a Docker Compose configuration: [`deploy/langfuse/docker-compose.yml`](../../deploy/langfuse/docker-compose.yml)
 
 ```bash
 cd deploy/langfuse
 cp .env.example .env
-# 编辑 .env，设置 ENCRYPTION_KEY=$(openssl rand -hex 32)
+# Edit .env, set ENCRYPTION_KEY=$(openssl rand -hex 32)
 docker compose up -d
 ```
 
-启动后访问 `http://localhost:3000`，创建 Organization / Project，复制 Public Key 和 Secret Key 到设备环境变量。
+After startup, visit `http://localhost:3000`, create an Organization / Project, and copy the Public Key and Secret Key to device environment variables.
 
-组件：Langfuse Web + Worker、Postgres、ClickHouse、Redis、MinIO（截图与事件 blob 存储）。
+Components: Langfuse Web + Worker, Postgres, ClickHouse, Redis, MinIO (screenshot and event blob storage).
 
-## 验证
+## Verification
 
-1. 启动 Langfuse（本地或远程）
-2. 设备 `agent.toml` 设置 `telemetry.enabled = true`
-3. 执行一次任务（Web UI 或 benchmark）
-4. 在 Langfuse UI → Traces 中确认：
-   - 存在 `aiden-episode` trace
-   - 含 `phase/default`（以及按需出现的 `phase/plan`、`phase/execution`）
-   - 简单任务可见 `planner/tool/*` 与 `planner/default_finish`
-   - 委托任务可见 `iteration_N` + `tool/*` + `verifier`
-   - 截图可在 tool_result observation 中预览
-   - metadata 含 `loop_mode`、`phase_transitions`、`planner_tool_call_count`、`executor_tool_call_count`、token 统计、tool/error/replan 计数
-   - tags 含 `loop:default_finish` 或 `loop:committed`
-   - trace 含 `userId`（设备 ID）和 `sessionId`（runtime 会话 ID）
+1. Start Langfuse (local or remote)
+2. Set `telemetry.enabled = true` in device `agent.toml`
+3. Execute a task (Web UI or benchmark)
+4. Confirm in Langfuse UI → Traces:
+   - `aiden-episode` trace exists
+   - Contains `phase/default` (and `phase/plan`, `phase/execution` as needed)
+   - Simple tasks show `planner/tool/*` and `planner/default_finish`
+   - Delegated tasks show `iteration_N` + `tool/*` + `verifier`
+   - Screenshots can be previewed in tool_result observations
+   - Metadata contains `loop_mode`, `phase_transitions`, `planner_tool_call_count`, `executor_tool_call_count`, token stats, tool/error/replan counts
+   - Tags contain `loop:default_finish` or `loop:committed`
+   - Trace contains `userId` (device ID) and `sessionId` (runtime session ID)
 
-## Trace → Dataset → Benchmark 工作流
+## Trace → Dataset → Benchmark Workflow
 
-Langfuse 用于从生产 episode 筛选高质量样本，再转化为项目 benchmark suite。
+Langfuse is used to filter high-quality samples from production episodes and convert them into project benchmark suites.
 
-### 1. 在 Langfuse 中筛选 Trace
+### 1. Filter Traces in Langfuse
 
-- 打开 **Traces**，按 tag（`success` / `failure`）或 metadata 过滤
-- 查看 iteration spans 和截图，确认任务质量
-- 对合格 trace 添加 label 或 score
+- Open **Traces**, filter by tag (`success` / `failure`) or metadata
+- Review iteration spans and screenshots to confirm task quality
+- Add labels or scores to qualified traces
 
-### 2. 创建 Dataset
+### 2. Create Dataset
 
-1. Langfuse UI → **Datasets** → New Dataset（例如 `phone_control_candidates_v2`）
-2. 从 trace 详情页 → **Add to dataset**
-3. 填写 input（用户目标 `user_goal`）和 expected output（`final_answer` 或 rubric 描述）
-4. 可选：将 screenshot media 作为 dataset item metadata 引用
+1. Langfuse UI → **Datasets** → New Dataset (e.g., `phone_control_candidates_v2`)
+2. From trace detail page → **Add to dataset**
+3. Fill in input (user goal `user_goal`) and expected output (`final_answer` or rubric description)
+4. Optional: Reference screenshot media as dataset item metadata
 
-### 3. 导出并转为 Benchmark Task
+### 3. Export and Convert to Benchmark Task
 
-Langfuse 支持导出 dataset items（UI 或 [Public API](https://langfuse.com/docs/api-and-data-platform/features/public-api)）。
+Langfuse supports exporting dataset items (UI or [Public API](https://langfuse.com/docs/api-and-data-platform/features/public-api)).
 
-将选中 item 手工或脚本转换为 [`benchmark/suites/`](../../benchmark/suites/) 格式：
+Convert selected items manually or via script to [`benchmark/suites/`](../../benchmark/suites/) format:
 
 ```json
 {
   "id": "open_settings_from_prod_001",
   "category": "single_step",
   "description_for_judge": "Agent must open Settings from home screen.",
-  "prompt": "请打开系统设置。",
+  "prompt": "Please open system settings.",
   "rubric": [
     {
       "id": "in_settings",
@@ -185,75 +185,75 @@ Langfuse 支持导出 dataset items（UI 或 [Public API](https://langfuse.com/d
 }
 ```
 
-字段对应关系：
+Field mapping:
 
-**Episode / trace metadata 附加字段：**
+**Episode / trace metadata additional fields:**
 
-| 字段 | 说明 |
+| Field | Description |
 | --- | --- |
-| `model` / `model_name` / `model_provider` | 本次 run 使用的 LLM（来自 `agent.toml` 的 `[model]`） |
-| `agent_commit` | Agent 二进制构建时的 git commit（`_build.sh` ldflags 注入） |
-| `agent_build` | Agent 构建版本号（`YYYYMMDD-HHMMSS-<commit>`） |
-| `firmware_version` | 设备 OTA 状态 `/userdata/ota/state.json` 中的 `current_version` |
+| `model` / `model_name` / `model_provider` | LLM used for this run (from `[model]` in `agent.toml`) |
+| `agent_commit` | Git commit when Agent binary was built (`_build.sh` ldflags injection) |
+| `agent_build` | Agent build version number (`YYYYMMDD-HHMMSS-<commit>`) |
+| `firmware_version` | `current_version` from device OTA state `/userdata/ota/state.json` |
 | `session_boundary_decision` / `session_boundary_reason` | Session-boundary classifier output for the run. |
 | `session_rotated` | Whether the run archived the previous active session before handling the user turn. |
 | `pending_chunks_recalled` | Number of `recall_session_chunks` results whose explicit result `source` is `pending`; `chunk_id` prefixes are ignored. |
 
-**Langfuse trace 字段映射：**
+**Langfuse trace field mapping:**
 
-| Langfuse 字段 | 来源 |
+| Langfuse Field | Source |
 | --- | --- |
-| `version` | Agent 构建版本 `agent_build`，若无则 `firmware_version` |
-| `release` | git commit `agent_commit`，若无则 `firmware_version` |
-| `metadata.model` | LLM 模型（如 `openrouter/google/gemini-3.5-flash`） |
-| `metadata` | 上述全部字段 + episode metrics |
-| `tags` | 配置 tags + `model:{provider/model}` |
-| `userId` | `device_scope.device_id`，或 `extra.user_id` |
-| `sessionId` | runtime 会话 ID，或 `extra.session_id` |
-| generation `modelParameters` | `temperature`、`max_tokens`、tool count 等调用参数 |
-| generation `usageDetails` / `costDetails` | token 用量与 provider/本地估算成本 |
-| score `success` | 每次任务都写入，成功为 `1`，失败为 `0` |
+| `version` | Agent build version `agent_build`, or `firmware_version` if absent |
+| `release` | Git commit `agent_commit`, or `firmware_version` if absent |
+| `metadata.model` | LLM model (e.g., `openrouter/google/gemini-3.5-flash`) |
+| `metadata` | All above fields + episode metrics |
+| `tags` | Configured tags + `model:{provider/model}` |
+| `userId` | `device_scope.device_id`, or `extra.user_id` |
+| `sessionId` | Runtime session ID, or `extra.session_id` |
+| generation `modelParameters` | Invocation parameters like `temperature`, `max_tokens`, tool count, etc. |
+| generation `usageDetails` / `costDetails` | Token usage and provider/local estimated cost |
+| score `success` | Written for every task, `1` for success, `0` for failure |
 
-**Langfuse Dataset → Benchmark 字段对应：**
+**Langfuse Dataset → Benchmark field mapping:**
 
 | Langfuse Dataset Item | Benchmark TaskSpec |
 | --- | --- |
 | `input` | `prompt` |
-| trace metadata `user_goal` | 同上或 `description_for_judge` 参考 |
-| expected output / 人工标注 | `rubric` checks |
-| trace tool 调用次数 | `hard_assertions.min/max_tool_calls` 参考 |
-| 截图 artifact | `input_screenshot`（静态感知类任务） |
+| trace metadata `user_goal` | Same or reference for `description_for_judge` |
+| expected output / manual annotation | `rubric` checks |
+| trace tool call count | Reference for `hard_assertions.min/max_tool_calls` |
+| Screenshot artifact | `input_screenshot` (for static perception tasks) |
 
-### 4. 回归验证
+### 4. Regression Validation
 
 ```bash
 cd benchmark
 uv run python -m runner.main --suite suites/phone_control_v1.json --agent-url http://device:8080
 ```
 
-新 task 加入 suite 后，用 benchmark runner 做自动化回归；Langfuse 继续收集新一轮生产 trace，形成闭环。
+After new tasks are added to the suite, use the benchmark runner for automated regression; Langfuse continues collecting new production traces, forming a closed loop.
 
-## 故障排查
+## Troubleshooting
 
-| 现象 | 可能原因 |
+| Symptom | Possible Cause |
 | --- | --- |
-| 日志 `[telemetry] export episode failed` | `base_url` 不可达、密钥错误、超时 |
-| Trace 无截图 / media not yet uploaded | Agent 未 PATCH 上传状态（已修复）；或 MinIO presigned URL 使用 `localhost:9090`，设备无法访问；检查 agent 日志 `[telemetry] screenshot upload failed` |
+| Log `[telemetry] export episode failed` | `base_url` unreachable, incorrect credentials, timeout |
+| Trace has no screenshots / media not yet uploaded | Agent did not PATCH upload status (fixed); or MinIO presigned URL uses `localhost:9090`, device cannot access; check agent log `[telemetry] screenshot upload failed` |
 
-截图上传完整链路：
+Screenshot upload complete flow:
 
-1. Agent `POST {base_url}/api/public/media` 获取 `mediaId` + presigned `uploadUrl`
-2. Agent `PUT uploadUrl` 直传 MinIO
-3. Agent `PATCH {base_url}/api/public/media/{mediaId}` 写入 `uploadHttpStatus=200`（**缺少此步会显示 media not yet uploaded**）
-4. Agent `POST /api/public/ingestion` 发送含 `@@@langfuseMedia:...@@@` 的 trace
+1. Agent `POST {base_url}/api/public/media` gets `mediaId` + presigned `uploadUrl`
+2. Agent `PUT uploadUrl` direct upload to MinIO
+3. Agent `PATCH {base_url}/api/public/media/{mediaId}` writes `uploadHttpStatus=200` (**missing this step shows media not yet uploaded**)
+4. Agent `POST /api/public/ingestion` sends trace containing `@@@langfuseMedia:...@@@`
 
-若 Agent 运行在 Luckfox 等设备上，Langfuse `.env` 需设置设备可达的 MinIO 地址：
+If Agent runs on devices like Luckfox, Langfuse `.env` needs to set a device-reachable MinIO address:
 
 ```bash
 LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT=http://192.168.50.246:9090
 ```
 
-修改后 `docker compose up -d` 重启 langfuse-web / langfuse-worker。
-| 无 trace | `telemetry.enabled=false` 或 episode 未 commit（空 `user_goal`） |
+After modification, restart langfuse-web / langfuse-worker with `docker compose up -d`.
+| No trace | `telemetry.enabled=false` or episode not committed (empty `user_goal`) |
 
-上报失败不会影响任务执行或本地 memory plane 写入。
+Report failures do not affect task execution or local memory plane writes.

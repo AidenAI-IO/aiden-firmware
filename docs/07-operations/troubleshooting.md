@@ -1,10 +1,10 @@
-# 故障排查
+# Troubleshooting
 
-## `example_camera_capture` 报 `Device or resource busy`
+## `example_camera_capture` reports `Device or resource busy`
 
-原因：`frame_service` 正在独占 `/dev/video0`。
+Cause: `frame_service` is exclusively using `/dev/video0`.
 
-处理：
+Solution:
 
 ```bash
 /etc/init.d/S52frame_service stop
@@ -12,15 +12,15 @@
 /etc/init.d/S52frame_service start
 ```
 
-日常截图和帧测试建议使用：
+For daily screenshots and frame testing, use:
 
 ```bash
 frame_service_cli screenshot --out /tmp/screenshot.bmp
 ```
 
-## `screenshot` 工具失败
+## `screenshot` tool fails
 
-检查：
+Check:
 
 ```bash
 /etc/init.d/S52frame_service status
@@ -28,31 +28,31 @@ frame_service_cli --socket /run/frame_service/frame_service.sock health
 ls -l /run/frame_service/frame_service.sock
 ```
 
-常见原因：
+Common causes:
 
-- `frame_service` 未运行；
-- `agent.toml` 中 `[hid].frame_socket` 路径不一致；
-- HDMI 输入未同步；
-- TC358743 / `/dev/v4l-subdev2` 状态异常。
+- `frame_service` is not running;
+- `[hid].frame_socket` path in `agent.toml` is inconsistent;
+- HDMI input is not synced;
+- TC358743 / `/dev/v4l-subdev2` status is abnormal.
 
-## Frame Service 一直重启
+## Frame Service keeps restarting
 
-查看日志：
+View logs:
 
 ```bash
 tail -f /var/log/frame_service/frame_service.log
 ```
 
-检查：
+Check:
 
-- `/oem/usr/bin/frame_service` 是否存在且可执行；
-- `/dev/video0`、`/dev/v4l-subdev2` 是否存在；
-- EDID / HDMI 信号是否正常；
-- 是否有其他进程占用 `/dev/video0`。
+- Whether `/oem/usr/bin/frame_service` exists and is executable;
+- Whether `/dev/video0`, `/dev/v4l-subdev2` exist;
+- Whether EDID / HDMI signal is normal;
+- Whether other processes are using `/dev/video0`.
 
-## Agent Web UI 打不开
+## Agent Web UI won't open
 
-检查：
+Check:
 
 ```bash
 /etc/init.d/S53agent status
@@ -60,23 +60,23 @@ tail -f /var/log/agent/agent.log
 netstat -lntp | grep 8080
 ```
 
-确认：
+Verify:
 
-- `input_mode = "text"`；
-- `agent.toml` TOML 语法正确；
-- 模型配置和 API key 可用；
-- 防火墙、USB 网络或 Wi-Fi IP 正确。
+- `input_mode = "text"`;
+- `agent.toml` TOML syntax is correct;
+- Model configuration and API key are available;
+- Firewall, USB network, or Wi-Fi IP is correct.
 
-## Wi-Fi 连接不稳定
+## Wi-Fi connection is unstable
 
-处理：
+Solution:
 
-- 接上外接 2.4 GHz 天线，天线接口采用 IPEX1 代；
-- 或尝试切换 Wi-Fi 信道，避开干扰较强的信道。
+- Connect an external 2.4 GHz antenna, antenna connector uses IPEX1 generation;
+- Or try switching Wi-Fi channel to avoid heavily interfered channels.
 
-## 语音模式没有声音或录不到音
+## Voice mode has no sound or cannot record audio
 
-检查：
+Check:
 
 ```bash
 /etc/init.d/S53audio_service status
@@ -86,31 +86,31 @@ amixer sget 'DAC HPMIX'
 amixer sget 'DAC LINEOUT'
 ```
 
-建议：
+Recommendations:
 
-- 先运行 `scripts/setup_audio_volume.sh`；
-- 确认 `[audio].socket` 路径与服务一致；
-- 使用 `record-stream` 和 `play-stream` 分别验证录音/播放；
-- TTS 失败时检查 `ffmpeg` 是否存在。
+- First run `scripts/setup_audio_volume.sh`;
+- Confirm `[audio].socket` path matches the service;
+- Use `record-stream` and `play-stream` to verify recording/playback separately;
+- Check if `ffmpeg` exists when TTS fails.
 
-## RKNN VAD 推理失败
+## RKNN VAD inference fails
 
-先在板端直接运行 helper 自检：
+First run helper self-test directly on the board:
 
 ```bash
 /oem/usr/bin/rknn_vad --model /oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn --weights /oem/usr/model/silero_vad_6_2_lstm_decoder_weights.bin --self-test
 /oem/usr/bin/cpu_vad --weights /oem/usr/model/silero_vad_6_2_lstm_decoder_weights.bin --self-test
 ```
 
-成功时会输出 `P <probability>`。当前 RV1106 helper 使用 RKNN zero-copy IO；如果输出 `rknn_set_io_mem failed`、`rknn_run failed`，或旧 helper 输出 `rknn_inputs_set failed`，检查：
+On success, it will output `P <probability>`. Current RV1106 helper uses RKNN zero-copy IO; if it outputs `rknn_set_io_mem failed`, `rknn_run failed`, or old helper outputs `rknn_inputs_set failed`, check:
 
-- `/oem/usr/lib/librknnmrt.so` 版本是否与模型匹配；
-- `silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` 是否为 RV1106 目标重新转换的 encoder 模型；
-- helper 日志中的输入/输出 tensor type、size、scale、zero-point 是否正常。
+- Whether `/oem/usr/lib/librknnmrt.so` version matches the model;
+- Whether `silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` is the encoder model re-converted for RV1106 target;
+- Whether input/output tensor type, size, scale, zero-point in helper logs are normal.
 
-## HID 输入无效
+## HID input is ineffective
 
-检查：
+Check:
 
 ```bash
 ls -l /dev/hidg*
@@ -118,54 +118,55 @@ mount | grep configfs
 lsmod | grep -E 'dwc2|libcomposite'
 ```
 
-尝试重新初始化：
+Try reinitializing:
 
 ```bash
 sudo ./build/bin/example_usb_hid cleanup
 sudo ./build/bin/example_usb_hid setup composite
 ```
 
-iOS 目标设备请确认 AssistiveTouch 已开启。
+For iOS target devices, confirm AssistiveTouch is enabled.
 
-## iPhone 16e 无法获取屏幕
+## Cannot capture screen from iPhone 16e
 
-原因：iPhone 16e 的 USB-C 接口存在兼容性问题。
+Cause: iPhone 16e's USB-C port has compatibility issues.
 
-处理：
+Solution:
 
-- 当前暂时无法支持 iPhone 16e 获取屏幕；
-- 更换其他兼容机型进行测试。
+- Currently unable to support screen capture from iPhone 16e;
+- Switch to other compatible models for testing.
 
-## 板子插上手机后频繁重启
+## Board reboots frequently after connecting phone
 
-原因：供电不足。
+Cause: Insufficient power supply.
 
-处理：
+Solution:
 
-- 换用供电能力更好的 USB hub；
-- 或使用支持外部供电的 USB hub。
+- Switch to a USB hub with better power supply capability;
+- Or use a USB hub with external power support.
 
-## HTTP Tool API 访问异常
+## HTTP Tool API access exception
 
-- 对设备私有 IP / USB 网卡地址设置 `NO_PROXY`；
-- 先访问 `GET /api/tools` 确认服务可达；
-- 工具失败时检查 JSON 响应中的 `is_error` 和 `output`；
-- transport failure 与 tool failure 分开判断。
+- Set `NO_PROXY` for device private IP / USB network adapter address;
+- First access `GET /api/tools` to confirm service is reachable;
+- When a tool invocation fails, check `is_error` and `output` in the response
+  from `POST /api/tools/{tool_name}`;
+- Separate transport failure from tool failure judgement.
 
-## Docker 构建失败
+## Docker build fails
 
-检查：
+Check:
 
 ```bash
 docker buildx version
 docker info
 ```
 
-Apple Silicon 推荐：
+Recommended for Apple Silicon:
 
 ```bash
 colima start --vm-type vz --vz-rosetta
 ./build.sh
 ```
 
-确认没有使用 `--arch x86_64` 启动 Colima VM。
+Confirm not using `--arch x86_64` to start Colima VM.

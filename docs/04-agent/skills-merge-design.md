@@ -1,45 +1,45 @@
-# Aiden Skills 同步与 LLM 合并设计
+# Aiden Skills Sync and LLM Merge Design
 
-> 状态：方案设计
-> 分支：`feature/hermes-skill-llm-merge`
-> 基线：`origin/main`
-> 目标：参考 Hermes 的 bundled skill 同步机制，为 Aiden 设计一套“内置 skill seed 到用户目录、运行时只加载用户目录、同名冲突由 LLM 自动合并”的 MVP 方案。
+> Status: Design Proposal
+> Branch: `feature/hermes-skill-llm-merge`
+> Baseline: `origin/main`
+> Goal: Drawing from Hermes' bundled skill sync mechanism, design an MVP solution for Aiden that “seeds bundled skills to user directory, loads only from user directory at runtime, and auto-merges name conflicts via LLM.”
 
 ---
 
-## 1. 核心设计
+## 1. Core Design
 
-Aiden 的 skill 管理采用 Hermes 风格的单一运行时来源：
+Aiden's skill management adopts Hermes-style single runtime source:
 
 ```text
-repo / 固件内置 skills
-  ↓ 启动 / 更新时同步
-用户本地 skills 目录
+repo / firmware bundled skills
+  ↓ sync on startup / update
+user local skills directory
   ↓
-运行时只从用户本地目录加载
+runtime loads only from user local directory
 ```
 
-核心原则：
+Core principles:
 
 ```text
-1. 内置 skills 随固件 / 代码发布。
-2. 启动或更新时，把内置 skills 同步到用户目录。
-3. 用户目录是运行时唯一真源。
-4. 用户自己下载 / 修改 / LLM 创建的 skills 也放用户目录。
-5. 如果同名冲突，尝试 LLM 合并。
-6. LLM 合并成功且校验通过，就自动应用。
-7. LLM 合并失败、校验失败或应用失败，就继续使用用户旧版本，并记录 `last_failed_merge_key`。
-8. LLM 合并异步执行，不阻塞启动或当前请求。
-9. 不持久化 running/queued/done 状态，避免板子重启后留下悬挂任务。
+1. Bundled skills are released with firmware / code.
+2. On startup or update, sync bundled skills to user directory.
+3. User directory is the sole runtime source of truth.
+4. User-downloaded / modified / LLM-created skills also go in user directory.
+5. If name conflict, attempt LLM merge.
+6. If LLM merge succeeds and validation passes, auto-apply.
+7. If LLM merge fails, validation fails, or application fails, continue using old user version and record `last_failed_merge_key`.
+8. LLM merge executes asynchronously, doesn't block startup or current request.
+9. Don't persist running/queued/done state to avoid dangling tasks after board restart.
 ```
 
-MVP 不做用户确认流程，不做高风险 skill 的特殊审批状态，也不支持恢复覆盖前的历史用户版本。支付、授权、删除等运行时风险由工具层 / 执行层的 safety guard 处理，不放在 skill 同步流程里。
+MVP does not include user confirmation flow, special approval state for high-risk skills, or restoration of historical user versions before overwrite. Runtime risks like payment, authorization, deletion are handled by tool layer / execution layer safety guards, not in the skill sync flow.
 
 ---
 
-## 2. 当前 Aiden 实现现状
+## 2. Current Aiden Implementation Status
 
-当前 main 上已有基础 Skills 机制：
+Current main branch has basic Skills mechanism:
 
 ```text
 src/agent/internal/agent/skill_loader.go
@@ -49,134 +49,134 @@ src/agent/config/skills/
 docs/04-agent/skills.md
 ```
 
-当前行为：
+Current behavior:
 
-- `LoadConfigFromDir()` 只检查：
+- `LoadConfigFromDir()` only checks:
 
 ```text
 configDir/skills
 ```
 
-- 如果该目录存在，则设置：
+- If this directory exists, sets:
 
 ```go
 cfg.SkillsDirs = []string{skillsDir}
 ```
 
-- `LoadSkillsFromDirs()` 扫描 `SKILL.md`。
-- 如果发现同名 skill，会直接报错：
+- `LoadSkillsFromDirs()` scans for `SKILL.md`.
+- If duplicate skill name found, directly errors:
 
 ```go
 return fmt.Errorf("duplicate skill name %q", skill.Name)
 ```
 
-- 仓库里存在内置示例：
+- Repository contains bundled examples:
 
 ```text
 src/agent/config/skills/planner/SKILL.md
 src/agent/config/skills/research/SKILL.md
 ```
 
-但当前没有完整的 bundled skill seed/update/merge 机制。
+But currently lacks complete bundled skill seed/update/merge mechanism.
 
 ---
 
-## 3. 目标行为
+## 3. Target Behavior
 
-## 3.1 运行时单一来源
+## 3.1 Single Runtime Source
 
-运行时只加载：
+Runtime only loads:
 
 ```text
 configDir/skills/**/SKILL.md
 ```
 
-例如设备上：
+For example, on device:
 
 ```text
 /userdata/agent/skills/
 ```
 
-这也是用户、App、下载器、LLM、同步器共同写入的目录。
+This is also where user, app, downloader, LLM, and syncer all write to.
 
-运行时不直接扫描内置目录。
+Runtime does not directly scan bundled directory.
 
-## 3.2 内置 skill 同步到用户目录
+## 3.2 Sync Bundled Skills to User Directory
 
-内置 skill 存在于：
-
-```text
-开发环境：src/agent/config/skills/
-设备环境：/oem/usr/share/aiden/skills/
-```
-
-启动或更新时同步到：
+Bundled skills exist in:
 
 ```text
-configDir/skills/
+Development: src/agent/config/skills/
+Device: /oem/usr/share/aiden/skills/
 ```
 
-同步完成后，运行时依旧只读：
+Synced on startup or update to:
 
 ```text
 configDir/skills/
 ```
 
-## 3.3 用户下载的 skill 也放同一目录
+After sync completes, runtime still only reads:
 
-用户下载、App 安装、Agent/LLM 创建的 skill 也放：
+```text
+configDir/skills/
+```
+
+## 3.3 User-Downloaded Skills Also in Same Directory
+
+User-downloaded, app-installed, Agent/LLM-created skills also go in:
 
 ```text
 configDir/skills/<skill-name>/SKILL.md
 ```
 
-因此运行时永远只有一个问题：
+Therefore runtime always has only one question:
 
 ```text
-扫描 configDir/skills 下有哪些 effective skills。
+Scan configDir/skills for which effective skills exist.
 ```
 
 ---
 
-## 4. 总体流程图
+## 4. Overall Flow Diagram
 
 ```mermaid
 flowchart LR
-    A[Bundled Skills<br/>固件/仓库内置] --> B[Sync Engine<br/>启动/更新时运行]
+    A[Bundled Skills<br/>Firmware/Repo Built-in] --> B[Sync Engine<br/>Run on Startup/Update]
     C[Manifest<br/>origin_hash / status] --> B
-    D[User Skills Dir<br/>用户目录，运行时真源] <--> B
-    Y[Bases<br/>上次 bundled baseline] --> B
+    D[User Skills Dir<br/>User Directory, Runtime Source of Truth] <--> B
+    Y[Bases<br/>Last Bundled Baseline] --> B
 
-    B --> E{同步判断}
+    B --> E{Sync Decision}
 
-    E -->|本地没有| F[复制 bundled 到用户目录]
-    E -->|用户未修改| G[自动更新 bundled 新版]
-    E -->|用户已修改<br/>bundled 未变| H[保留用户版本]
-    E -->|用户已修改<br/>bundled 也变| I[生成内存 merge job]
-    E -->|同名但无 manifest| I
+    E -->|Not Exists Locally| F[Copy Bundled to User Dir]
+    E -->|User Not Modified| G[Auto-Update Bundled New Version]
+    E -->|User Modified<br/>Bundled Unchanged| H[Keep User Version]
+    E -->|User Modified<br/>Bundled Also Changed| I[Generate In-Memory Merge Job]
+    E -->|Name Conflict but No Manifest| I
 
     I --> R[Runtime Loader]
     F --> R
     G --> R
     H --> R
 
-    R --> S[只加载 User Skills Dir]
-    S --> T[Agent 使用当前用户版本]
+    R --> S[Load Only from User Skills Dir]
+    S --> T[Agent Uses Current User Version]
 
-    I --> W[后台串行 Merge Worker]
-    W --> J{合并是否成功<br/>且校验通过?}
-    J -->|否| K[删除临时产物<br/>记录 last_failed_merge_key<br/>继续使用用户旧版本]
-    J -->|是| M[应用合并版到用户目录]
-    M --> N[更新 manifest / base<br/>记录 last_merged_key]
-    N --> U[默认下次 Runtime.Run/session/启动生效]
+    I --> W[Background Serial Merge Worker]
+    W --> J{Merge Successful<br/>and Validation Passed?}
+    J -->|No| K[Delete Temp Artifacts<br/>Record last_failed_merge_key<br/>Continue Using User Old Version]
+    J -->|Yes| M[Apply Merged Version to User Dir]
+    M --> N[Update Manifest / Base<br/>Record last_merged_key]
+    N --> U[Takes Effect by Default on Next Runtime.Run/Session/Startup]
     K --> U
 ```
 
 ---
 
-## 5. 推荐目录结构
+## 5. Recommended Directory Structure
 
-## 5.1 仓库 / 固件内置目录
+## 5.1 Repository / Firmware Built-in Directory
 
 ```text
 src/agent/config/skills/
@@ -187,7 +187,7 @@ src/agent/config/skills/
 └── app-login/SKILL.md
 ```
 
-设备安装后可以放到：
+After device installation, can be placed at:
 
 ```text
 /oem/usr/share/aiden/skills/
@@ -196,9 +196,9 @@ src/agent/config/skills/
 └── ...
 ```
 
-这是 bundled skills 源。
+This is the bundled skills source.
 
-## 5.2 用户运行时目录
+## 5.2 User Runtime Directory
 
 ```text
 /userdata/agent/
@@ -215,186 +215,186 @@ src/agent/config/skills/
         └── payment-confirm/SKILL.md
 ```
 
-说明：
+Explanation:
 
-- `skills/` 是运行时唯一 skill 来源。
-- `.bundled_manifest.json` 是同步器账本，不参与运行时加载。
-- `bases/` 保存上次同步成功时的 bundled 内容，是 LLM 三方合并的 `base`，用于提升合并质量。
-- LLM 合并候选不需要长期目录；可以先写临时文件，校验通过再覆盖用户目录，失败则删除临时文件。
-- 临时文件只保证失败候选不会污染用户目录，不提供合并成功后的历史回滚能力。
-- MVP 暂不保留 `backups/`，合并成功覆盖后不提供历史用户版本回滚。
+- `skills/` is the sole runtime skill source.
+- `.bundled_manifest.json` is the syncer's ledger, not involved in runtime loading.
+- `bases/` saves the bundled content from the last successful sync, serving as the `base` for LLM three-way merge to improve merge quality.
+- LLM merge candidates don't need a long-term directory; can write to temp files first, overwrite user directory after validation passes, delete temp files on failure.
+- Temp files only ensure failed candidates don't pollute user directory, don't provide historical rollback capability after successful merge.
+- MVP does not retain `backups/`, doesn't provide historical user version rollback after successful merge overwrites.
 
-### 5.3 `bases/` 的定位
+### 5.3 Positioning of `bases/`
 
-`bases/` 不参与运行时加载，它只服务于 LLM 三方合并：
+`bases/` does not participate in runtime loading, it only serves LLM three-way merge:
 
 ```text
-bases/ = 上次同步/合并成功时的 bundled baseline，用于下一次三方合并。
+bases/ = bundled baseline from last successful sync/merge, used for next three-way merge.
 ```
 
-三方合并需要：
+Three-way merge requires:
 
 ```text
-base     = 上次同步到用户目录时的 bundled 版本
-upstream = 当前新的 bundled 版本
-local    = 当前用户修改后的版本
+base     = bundled version from last sync to user directory
+upstream = current new bundled version
+local    = current user-modified version
 ```
 
-LLM 有 `base` 才能判断：
+LLM needs `base` to determine:
 
 ```text
-哪些内容是用户新增/删除；
-哪些内容是官方新增/删除；
-哪些内容是双方都改了同一块。
+Which content was added/deleted by user;
+Which content was added/deleted by official;
+Which content was modified by both sides in the same place.
 ```
 
-所以如果目标是让 LLM 合并效果更好，`bases/` 建议保留。
+So if the goal is to improve LLM merge quality, `bases/` is recommended to keep.
 
-MVP 暂不保留 `backups/`：
+MVP does not retain `backups/`:
 
 ```text
-合并失败时不会覆盖用户旧版本，所以不需要回滚。
-合并成功并校验通过后，会直接覆盖用户目录中的 SKILL.md。
-如果后续发现合并效果不好，MVP 只支持恢复当前 bundled 默认版本，不支持恢复被覆盖前的历史用户版本。
+When merge fails, user old version won't be overwritten, so no rollback needed.
+After merge succeeds and validation passes, will directly overwrite SKILL.md in user directory.
+If later found merge quality is poor, MVP only supports restoring current bundled default version, doesn't support restoring historical user version before overwrite.
 ```
 
-因此 MVP 建议：
+Therefore MVP recommends:
 
 ```text
-保留 manifest：必须，用于判断同步状态。
-保留 bases：建议，用于提升 LLM 三方合并质量。
-不保留 backups：先简化，不做历史用户版本回滚。
-不保留 merges：合并候选用临时文件即可。
+Retain manifest: Required, used to determine sync status.
+Retain bases: Recommended, used to improve LLM three-way merge quality.
+Don't retain backups: Simplify first, don't do historical user version rollback.
+Don't retain merges: Merge candidates use temp files.
 ```
 
 ---
 
-## 6. Manifest 的作用
+## 6. Role of Manifest
 
-Manifest 不是运行时加载用的。它是同步器的账本。
+Manifest is not for runtime loading. It's the syncer's ledger.
 
-它回答五个问题：
+It answers five questions:
 
 ```text
-1. 这个 skill 是不是以前从 bundled seed 到用户目录的？
-2. 用户目录里的版本有没有被用户改过？
-3. bundled 自己有没有更新过？
-4. 用户是不是曾经删除过这个 bundled skill？
-5. 当前用户目录版本是不是同步器上次写入的 effective copy？
+1. Was this skill previously seeded from bundled to user directory?
+2. Has the version in user directory been modified by user?
+3. Has bundled itself been updated?
+4. Did user previously delete this bundled skill?
+5. Is the current user directory version the effective copy last written by syncer?
 ```
 
-没有 manifest 时，系统只能看到：
+Without manifest, system can only see:
 
 ```text
 bundled/foo/SKILL.md
 user/skills/foo/SKILL.md
 ```
 
-但不知道：
+But doesn't know:
 
 ```text
-user/foo 是不是从 bundled/foo 拷贝来的？
-用户有没有改过？
-bundled 后来有没有更新？
-用户是不是故意删除过？
+Was user/foo copied from bundled/foo?
+Has user modified it?
+Was bundled updated later?
+Did user intentionally delete it?
 ```
 
-Manifest 提供一个关键参照点：
+Manifest provides a critical reference point:
 
 ```text
-origin_hash    = 上次同步 / 成功合并时对应的 bundled baseline hash
-effective_hash = 同步器上次写入用户目录后的 effective copy hash
+origin_hash    = bundled baseline hash from last sync / successful merge
+effective_hash = effective copy hash after syncer last wrote to user directory
 ```
 
-启动时现算：
+Calculated at startup:
 
 ```text
-current_bundled_hash = 当前内置版本 hash
-current_user_hash    = 当前用户目录版本 hash
-origin_hash          = manifest 中记录的上次同步 hash
-effective_hash       = manifest 中记录的上次系统写入用户目录后的 hash
+current_bundled_hash = current built-in version hash
+current_user_hash    = current user directory version hash
+origin_hash          = last sync hash recorded in manifest
+effective_hash       = hash after system last wrote to user directory, recorded in manifest
 ```
 
-然后判断：
+Then determine:
 
 ```text
-origin_hash 为空
-=> 同名冲突还没有成功 baseline，按双向合并处理
+origin_hash is empty
+=> Name conflict doesn't have successful baseline yet, handle as two-way merge
 
 user_hash == effective_hash
 bundled_hash == origin_hash
-=> 用户没有改过系统上次写入的 effective copy，bundled 也没变，保持当前状态
+=> User hasn't modified the effective copy system last wrote, bundled hasn't changed, maintain current state
 
 user_hash == origin_hash
 bundled_hash != origin_hash
-=> 用户目录仍是旧 bundled 原文，bundled 更新了，可以自动覆盖
+=> User directory is still old bundled original, bundled updated, can auto-overwrite
 
 user_hash != origin_hash
 bundled_hash == origin_hash
 user_hash != effective_hash
-=> 用户改过，bundled 没变，保留用户版本并标记 user_modified
+=> User modified, bundled unchanged, keep user version and mark user_modified
 
 user_hash != origin_hash
 bundled_hash == origin_hash
 user_hash == effective_hash
-=> 用户目录是上次 LLM 合并后的 effective copy，保持 merged 状态
+=> User directory is effective copy from last LLM merge, maintain merged state
 
 user_hash != origin_hash
 bundled_hash != origin_hash
-=> 本地 effective copy 与 bundled baseline 有差异，bundled 也更新了，尝试 LLM 合并
+=> Local effective copy differs from bundled baseline, bundled also updated, attempt LLM merge
 ```
 
-`effective_hash` 是为了让 `merged` 状态稳定。LLM 合并成功后，用户目录内容通常不等于 bundled 原文，因此不能只用 `user_hash != origin_hash` 就判断用户又改过。
+`effective_hash` is to keep `merged` state stable. After LLM merge succeeds, user directory content usually doesn't equal bundled original, so can't use `user_hash != origin_hash` alone to determine user modified again.
 
-## 6.1 最小 Manifest 格式
+## 6.1 Minimal Manifest Format
 
-MVP 使用最小字段即可：
+MVP uses minimal fields:
 
 ```json
 {
-  "version": 1,
-  "updated_at": "2026-05-25T10:30:00+08:00",
-  "skills": {
-    "planner": {
-      "origin_hash": "sha256:aaa111",
-      "effective_hash": "sha256:aaa111",
-      "status": "synced",
-      "base_path": "skill-state/bases/planner/SKILL.md",
-      "last_synced_at": "2026-05-25T10:30:00+08:00"
+  “version”: 1,
+  “updated_at”: “2026-05-25T10:30:00+08:00”,
+  “skills”: {
+    “planner”: {
+      “origin_hash”: “sha256:aaa111”,
+      “effective_hash”: “sha256:aaa111”,
+      “status”: “synced”,
+      “base_path”: “skill-state/bases/planner/SKILL.md”,
+      “last_synced_at”: “2026-05-25T10:30:00+08:00”
     },
-    "payment-confirm": {
-      "origin_hash": "sha256:bbb222",
-      "effective_hash": "sha256:merged333",
-      "status": "merged",
-      "base_path": "skill-state/bases/payment-confirm/SKILL.md",
-      "last_synced_at": "2026-05-25T10:30:00+08:00",
-      "last_merged_at": "2026-05-25T10:31:00+08:00",
-      "last_merged_key": "sha256:merge-input-key"
+    “payment-confirm”: {
+      “origin_hash”: “sha256:bbb222”,
+      “effective_hash”: “sha256:merged333”,
+      “status”: “merged”,
+      “base_path”: “skill-state/bases/payment-confirm/SKILL.md”,
+      “last_synced_at”: “2026-05-25T10:30:00+08:00”,
+      “last_merged_at”: “2026-05-25T10:31:00+08:00”,
+      “last_merged_key”: “sha256:merge-input-key”
     },
-    "research": {
-      "origin_hash": "sha256:ccc333",
-      "status": "deleted_by_user",
-      "last_synced_at": "2026-05-20T09:00:00+08:00"
+    “research”: {
+      “origin_hash”: “sha256:ccc333”,
+      “status”: “deleted_by_user”,
+      “last_synced_at”: “2026-05-20T09:00:00+08:00”
     }
   }
 }
 ```
 
-字段含义：
+Field meanings:
 
-- `origin_hash`：上次同步 / 成功合并后对应的 bundled baseline hash；同名冲突且从未成功 sync / merge 时可以暂为空。
-- `effective_hash`：同步器上次写入 `configDir/skills/<name>/SKILL.md` 后的文件 hash；`synced` 时通常等于 `origin_hash`，`merged` 时通常不等于 `origin_hash`，同名冲突且从未成功应用时可以暂为空。
-- `status`：同步状态，MVP 只保留少量状态。
-- `base_path`：可选，保存上次同步的 bundled 内容，用于三方合并。
-- `last_synced_at`：最近同步时间。
-- `last_merged_at` / `last_merged_key`：最近成功 LLM 合并时间和输入 key。
-- `last_failed_merge_key` / `last_merge_failed_at` / `last_merge_error`：最近失败的合并输入 key、时间和错误摘要，用于避免同一组输入反复重试。
+- `origin_hash`: Bundled baseline hash from last sync / successful merge; can be temporarily empty for name conflicts that never successfully synced/merged.
+- `effective_hash`: File hash after syncer last wrote to `configDir/skills/<name>/SKILL.md`; usually equals `origin_hash` when `synced`, usually doesn't equal `origin_hash` when `merged`, can be temporarily empty for name conflicts never successfully applied.
+- `status`: Sync status, MVP only retains a few states.
+- `base_path`: Optional, saves bundled content from last sync, used for three-way merge.
+- `last_synced_at`: Most recent sync time.
+- `last_merged_at` / `last_merged_key`: Most recent successful LLM merge time and input key.
+- `last_failed_merge_key` / `last_merge_failed_at` / `last_merge_error`: Most recent failed merge input key, time, and error summary, used to avoid repeated retries with same input set.
 
-不需要把 `current_bundled_hash` 和当前 `user_hash` 长期写入 manifest。它们可以每次启动时现算。`effective_hash` 不是当前 user hash 的缓存，而是“同步器上次成功写入用户目录”的参照点。
+Don't need to persist `current_bundled_hash` and current `user_hash` long-term in manifest. They can be calculated at each startup. `effective_hash` is not a cache of current user hash, but a reference point for “syncer last successfully wrote to user directory”.
 
-## 6.2 MVP 状态
+## 6.2 MVP States
 
-MVP 保留这些状态：
+MVP retains these states:
 
 ```text
 synced
@@ -403,22 +403,22 @@ merged
 deleted_by_user
 ```
 
-含义：
+Meanings:
 
-- `synced`：用户目录版本等于当前 bundled baseline，通常 `effective_hash == origin_hash`。
-- `user_modified`：用户目录版本和同步器上次写入的 effective copy 不一致，即 `user_hash != effective_hash`。
-- `merged`：用户目录版本是 LLM 合并后的结果，通常 `user_hash == effective_hash` 且 `effective_hash != origin_hash`。
-- `deleted_by_user`：用户曾删除该 bundled skill，不自动重新 copy。
+- `synced`: User directory version equals current bundled baseline, usually `effective_hash == origin_hash`.
+- `user_modified`: User directory version differs from effective copy syncer last wrote, i.e., `user_hash != effective_hash`.
+- `merged`: User directory version is result of LLM merge, usually `user_hash == effective_hash` and `effective_hash != origin_hash`.
+- `deleted_by_user`: User previously deleted this bundled skill, don't auto re-copy.
 
-合并失败不需要单独状态。失败时继续使用用户旧版本，状态保持或回到 `user_modified`。
+Merge failure doesn't need separate state. On failure, continue using user old version, status maintains or returns to `user_modified`.
 
-如果读取到旧 manifest 没有 `effective_hash`，且已有 `origin_hash`，MVP 可以临时按 `effective_hash = origin_hash` 兼容；下一次成功 sync / merge / reset 后写入真实 `effective_hash`。如果 `origin_hash` 也为空，表示同名冲突还没有任何成功 baseline，应按双向合并冲突处理。
+If reading old manifest without `effective_hash`, but has `origin_hash`, MVP can temporarily treat as `effective_hash = origin_hash` for compatibility; write real `effective_hash` on next successful sync/merge/reset. If `origin_hash` is also empty, indicates name conflict hasn't had any successful baseline, should handle as two-way merge conflict.
 
 ---
 
-## 7. 同步触发时机
+## 7. Sync Trigger Timing
 
-## 7.1 Agent 启动时
+## 7.1 On Agent Startup
 
 ```text
 LoadConfigFromDir(configDir)
@@ -428,29 +428,29 @@ SyncBundledSkills(configDir, bundledSkillsDir)
 LoadSkillsFromDirs([]string{configDir/skills})
 ```
 
-注意顺序：
+Note the order:
 
 ```text
-先同步，再加载。
+Sync first, then load.
 ```
 
-## 7.2 App / 固件更新后
+## 7.2 After App / Firmware Update
 
-固件或 agent binary 更新后，应运行一次：
+After firmware or agent binary update, should run once:
 
 ```text
 SyncBundledSkills()
 ```
 
-## 7.3 手动触发
+## 7.3 Manual Trigger
 
-MVP 可以先不做 CLI。内部保留函数即可：
+MVP can skip CLI first. Just keep internal function:
 
 ```go
 func SyncBundledSkills(ctx context.Context, opts SkillSyncOptions) (*SkillSyncReport, error)
 ```
 
-后续如果需要，再提供：
+Later if needed, provide:
 
 ```text
 skills sync
@@ -459,31 +459,31 @@ skills reset <name> --restore
 
 ---
 
-## 8. 异步合并与失败去重
+## 8. Async Merge and Failure Deduplication
 
-LLM 合并是耗时任务，不能阻塞 Agent 启动或当前用户请求。
+LLM merge is time-consuming task, can't block Agent startup or current user request.
 
-启动时 `SyncBundledSkills()` 只做轻量工作：
+At startup, `SyncBundledSkills()` only does lightweight work:
 
 ```text
-扫描 bundled/user skills
-读取 manifest
-计算 hash
-执行无需 LLM 的 copy/update/keep
-发现需要 LLM 合并时，生成内存 merge job
+Scan bundled/user skills
+Read manifest
+Calculate hash
+Execute copy/update/keep that don't need LLM
+Generate in-memory merge job when LLM merge needed
 ```
 
-然后立刻进入运行时加载：
+Then immediately enter runtime loading:
 
 ```text
 LoadSkillsFromDirs(configDir/skills)
 ```
 
-合并完成前，运行时继续使用用户目录里的当前版本。
+Before merge completes, runtime continues using current version in user directory.
 
-### 8.1 不持久化 running/queued/done
+### 8.1 Don't Persist running/queued/done
 
-MVP 不把以下状态写入 manifest：
+MVP doesn't write these states to manifest:
 
 ```text
 queued
@@ -491,76 +491,76 @@ running
 done
 ```
 
-原因：如果把 `running` 持久化，板子重启、进程崩溃或网络断开后，LLM 请求已经中断，没有 worker 会回来把 `running` 改成成功或失败，容易留下悬挂状态。
+Reason: If persisting `running`, after board restart, process crash, or network disconnect, LLM request has been interrupted, no worker will come back to change `running` to success or failure, easy to leave dangling state.
 
-因此：
+Therefore:
 
 ```text
-running 只存在内存里。
-manifest 不记录 running。
-manifest 只记录 last_failed_merge_key / last_merged_key。
+running only exists in memory.
+manifest doesn't record running.
+manifest only records last_failed_merge_key / last_merged_key.
 ```
 
 ### 8.2 merge_key
 
-每次需要 LLM 合并时，计算一个输入 key：
+Each time LLM merge is needed, calculate an input key:
 
 ```text
 merge_key = hash(skill_name + base_hash + upstream_hash + local_hash)
 ```
 
-其中：
+Where:
 
 ```text
-base_hash     = 上次 bundled baseline hash
-upstream_hash = 当前 bundled hash
-local_hash    = 当前用户 skill hash
+base_hash     = last bundled baseline hash
+upstream_hash = current bundled hash
+local_hash    = current user skill hash
 ```
 
-没有 base 的双向合并使用空 `base_hash`，并把 merge mode 纳入 key，避免和三方合并 key 混淆。
+Two-way merge without base uses empty `base_hash`, and includes merge mode in key to avoid confusion with three-way merge key.
 
-这个 key 表示“这一组输入是否已经尝试过”。
+This key represents “whether this input set has been attempted”.
 
-### 8.3 启动时如何决定是否入队
+### 8.3 How to Decide Whether to Enqueue at Startup
 
 ```text
 if need_merge:
     merge_key = hash(skill_name + base_hash + upstream_hash + local_hash)
 
     if last_failed_merge_key == merge_key:
-        跳过，不重复尝试同一组已经失败的输入
+        Skip, don't retry same already-failed input set
     else:
-        加入内存 mergeJobs
+        Add to in-memory mergeJobs
 ```
 
-如果用户修改了 skill，或者 bundled 再次升级，`merge_key` 会变化，就可以重新尝试。
+If user modifies skill, or bundled upgrades again, `merge_key` will change, can retry.
 
-### 8.4 后台串行处理
+### 8.4 Background Serial Processing
 
-MVP 使用一个后台 worker 串行处理合并任务：
+MVP uses one background worker to process merge tasks serially:
 
 ```text
-按 skill name 排序
-一个一个调用 LLM 合并
-一个 skill 失败不影响下一个 skill
+Sort by skill name
+Call LLM merge one by one
+One skill failure doesn't affect next skill
 ```
 
-不建议 MVP 并行处理。串行更简单：
+Don't recommend MVP parallel processing. Serial is simpler:
 
 ```text
-避免 LLM API 并发限流
-避免 manifest 写竞争
-避免多个 worker 同时覆盖 skills 目录
-方便定位失败
+Avoid LLM API concurrent rate limiting
+Avoid manifest write race
+Avoid multiple workers overwriting skills directory simultaneously
+Easier to locate failures
 ```
 
-### 8.5 合并成功
+### 8.5 Merge Success
 
 ```text
-write merged_skill_md → 临时文件
-校验临时文件通过
-确认 hash(user_path) == job.local_hash
-move 临时文件 → user_path
+write merged_skill_md → temp file
+validate temp file passes
+confirm hash(user_path) == job.local_hash
+move temp file → user_path
 merged_hash = hash(merged_skill_md)
 copy current bundled → base_path
 origin_hash = current bundled hash
@@ -568,70 +568,70 @@ effective_hash = merged_hash
 status = merged
 last_merged_key = merge_key
 last_merged_at = now
-清除 last_failed_merge_key / last_merge_error
+clear last_failed_merge_key / last_merge_error
 ```
 
-MVP 的默认生效边界是下一次 `Runtime.Run()` / 下一次 session / 重启后生效，不在同一次 agent loop 中途生效。
+MVP's default effective boundary is next `Runtime.Run()` / next session / after restart, doesn't take effect mid-way through same agent loop.
 
-这里的下一次 `Runtime.Run()` 指外部用户请求进入 runtime 的下一次完整执行，而不是同一次 Run 内的下一步 tool call 或下一次 LLM call：
+The next `Runtime.Run()` here refers to next complete execution when external user request enters runtime, not next tool call or next LLM call within same Run:
 
 ```text
-一次 Runtime.Run
-  = 组装 prompt
+One Runtime.Run
+  = assemble prompt
   + resolve skills
   + LLM/tool loop
-  + 返回本轮响应
+  + return this round's response
 ```
 
-因此如果后台 merge 在某次 Run 进行中完成：
+Therefore if background merge completes during a Run in progress:
 
 ```text
-当前 Run 已经 resolve 过 skills，不改变。
-下一次用户请求 / 下一次 Runtime.Run 开始前重新加载，才看到 merged skill。
+Current Run already resolved skills, don't change.
+Next user request / next Runtime.Run will reload before start, then see merged skill.
 ```
 
-同进程热加载采用 dirty flag 语义：merge worker 成功应用合并结果后标记 runtime skills dirty；下一次 `Runtime.Run()` 开始前重新加载 `configDir/skills` 并替换 `SkillIndex`。不要在同一次 Run 的 LLM/tool loop 中途替换 system prompt、skill instructions 或 tool restriction。
+In-process hot reload uses dirty flag semantics: merge worker marks runtime skills dirty after successfully applying merge result; before next `Runtime.Run()` starts, reload `configDir/skills` and replace `SkillIndex`. Don't replace system prompt, skill instructions, or tool restriction mid-way through LLM/tool loop of same Run.
 
-### 8.6 合并失败
+### 8.6 Merge Failure
 
 ```text
-删除临时合并产物
-不覆盖 user_path
-继续使用用户旧版本
+delete temp merge artifacts
+don't overwrite user_path
+continue using user old version
 status = user_modified
 last_failed_merge_key = merge_key
 last_merge_failed_at = now
-last_merge_error = 简短错误摘要
+last_merge_error = brief error summary
 ```
 
-所有失败路径都必须记录 `last_failed_merge_key`，包括 LLM 返回失败、LLM 调用错误、输出校验失败、临时文件写入失败、应用前发现输入过期等。合并失败不是系统错误，只表示这次 bundled 更新没有合入用户版本。
+All failure paths must record `last_failed_merge_key`, including LLM returns failure, LLM call error, output validation failure, temp file write failure, discovered input expired before application, etc. Merge failure is not system error, only indicates this bundled update wasn't merged into user version.
 
-### 8.7 应用前防止覆盖新修改
+### 8.7 Prevent Overwriting New Modifications Before Application
 
-后台合并是异步任务。合并运行期间，用户或 Agent 可能又修改了同一个 skill。
+Background merge is async task. During merge run, user or Agent might modify same skill again.
 
-因此应用 candidate 前必须重新计算当前用户文件 hash：
+Therefore must recalculate current user file hash before applying candidate:
 
 ```text
 if hash(user_path) != job.local_hash:
-    说明合并输入已经过期
-    删除临时 candidate
-    不覆盖 user_path
-    不更新 origin_hash / base_path
-    记录 last_failed_merge_key = merge_key
-    记录 last_merge_error = "local changed before apply"
-    等下次扫描用新的 local 重新生成 merge_key
+    indicates merge input already expired
+    delete temp candidate
+    don't overwrite user_path
+    don't update origin_hash / base_path
+    record last_failed_merge_key = merge_key
+    record last_merge_error = “local changed before apply”
+    wait for next scan to regenerate merge_key with new local
 ```
 
-这是异步期间 local 被更新导致的应用失败。虽然要记录 `last_failed_merge_key`，但下一次扫描会用新的 `local_hash` 生成新的 `merge_key`，因此不会阻止针对最新 local 的重试。
+This is application failure caused by local being updated during async period. Although must record `last_failed_merge_key`, next scan will generate new `merge_key` with new `local_hash`, so won't block retry against latest local.
 
 ---
 
-## 9. 同步规则
+## 9. Sync Rules
 
-## 9.1 新 bundled skill，本地不存在
+## 9.1 New Bundled Skill, Doesn't Exist Locally
 
-条件：
+Conditions:
 
 ```text
 bundled exists
@@ -639,7 +639,7 @@ user_path not exists
 manifest has no record
 ```
 
-行为：
+Behavior:
 
 ```text
 copy bundled → configDir/skills/<name>/SKILL.md
@@ -649,16 +649,16 @@ record effective_hash = bundled_hash
 status = synced
 ```
 
-## 9.2 bundled skill 更新，用户没改过
+## 9.2 Bundled Skill Updated, User Hasn't Modified
 
-条件：
+Conditions:
 
 ```text
 user_hash == origin_hash
 bundled_hash != origin_hash
 ```
 
-行为：
+Behavior:
 
 ```text
 copy bundled → user_path
@@ -668,9 +668,9 @@ update effective_hash = bundled_hash
 status = synced
 ```
 
-## 9.3 用户改过，bundled 没变
+## 9.3 User Modified, Bundled Unchanged
 
-条件：
+Conditions:
 
 ```text
 user_hash != origin_hash
@@ -678,101 +678,101 @@ bundled_hash == origin_hash
 user_hash != effective_hash
 ```
 
-行为：
+Behavior:
 
 ```text
-不覆盖
-继续使用用户版本
+don't overwrite
+continue using user version
 status = user_modified
-effective_hash 保持不变
+effective_hash remains unchanged
 ```
 
-如果 `user_hash == effective_hash && bundled_hash == origin_hash`，说明用户目录仍是同步器上次写入的 effective copy。此时保持原状态：`synced` 继续为 `synced`，`merged` 继续为 `merged`。
+If `user_hash == effective_hash && bundled_hash == origin_hash`, indicates user directory is still effective copy syncer last wrote. Maintain original state: `synced` continues as `synced`, `merged` continues as `merged`.
 
-## 9.4 用户删除过 bundled skill
+## 9.4 User Deleted Bundled Skill
 
-条件：
+Conditions:
 
 ```text
 manifest has record
 user_path missing
 ```
 
-行为：
+Behavior:
 
 ```text
-尊重删除
+respect deletion
 status = deleted_by_user
-不要重新 copy
+don't re-copy
 ```
 
-除非后续用户显式 restore。
+Unless user explicitly restores later.
 
-## 9.5 repo / 固件删除 bundled skill
+## 9.5 Repo / Firmware Deleted Bundled Skill
 
-条件：
+Conditions:
 
 ```text
 manifest has record
 bundled no longer exists
 ```
 
-行为：
+Behavior:
 
 ```text
-不直接删除用户目录 skill
-可以清理或标记 manifest stale
+don't directly delete user directory skill
+can clean up or mark manifest stale
 ```
 
-MVP 可以只清理 manifest 中不再存在的 bundled 记录，用户目录文件保持不动。
+MVP can just clean up bundled records that no longer exist in manifest, keep user directory files unchanged.
 
-## 9.6 本地 effective 与 baseline 有差异，bundled 也更新
+## 9.6 Local Effective Differs from Baseline, Bundled Also Updated
 
-条件：
+Conditions:
 
 ```text
 user_hash != origin_hash
 bundled_hash != origin_hash
 ```
 
-这里既包括用户手动修改过的情况，也包括上次已经 LLM 合并成功、当前 user_path 是 merged effective copy 的情况。
+This includes both cases where user manually modified, and where last LLM merge already succeeded and current user_path is merged effective copy.
 
-行为：
+Behavior:
 
 ```text
-生成后台 LLM 合并 job，不阻塞启动
-base     = base_path 中保存的上次 bundled 内容
-upstream = 当前 bundled 内容
-local    = 当前 user_path 内容
+generate background LLM merge job, don't block startup
+base     = last bundled content saved in base_path
+upstream = current bundled content
+local    = current user_path content
 ```
 
-如果 LLM 合并成功且校验通过：
+If LLM merge succeeds and validation passes:
 
 ```text
-write merged_skill_md → 临时文件
-校验临时文件通过
-确认 hash(user_path) == job.local_hash
-move 临时文件 → user_path
+write merged_skill_md → temp file
+validate temp file passes
+confirm hash(user_path) == job.local_hash
+move temp file → user_path
 copy current bundled → base_path
 update origin_hash = bundled_hash
 update effective_hash = hash(merged_skill_md)
 status = merged
 ```
 
-如果 LLM 合并失败、校验失败或应用失败：
+If LLM merge fails, validation fails, or application fails:
 
 ```text
-丢弃结果
-继续使用用户旧版本
+discard result
+continue using user old version
 status = user_modified
 last_failed_merge_key = merge_key
 last_merge_failed_at = now
-last_merge_error = 简短错误摘要
+last_merge_error = brief error summary
 ```
 
-## 9.7 同名但没有 manifest
+## 9.7 Same Name but No Manifest
 
-这是用户先安装了同名 skill，后来系统也新增了同名 bundled skill 的情况：
+This is case where user installed same-name skill first, later system also added same-name bundled skill:
 
 ```text
 user/skills/foo/SKILL.md exists
@@ -780,50 +780,50 @@ bundled/foo/SKILL.md exists
 manifest has no foo record
 ```
 
-此时没有共同 base，不能做标准三方合并。若之前已经因为同名冲突失败过，manifest 里可能已有一条 `origin_hash` 为空、只记录 `last_failed_merge_key` 的冲突记录；这种记录也按本节处理。
+At this point no common base, can't do standard three-way merge. If previously failed due to name conflict, manifest might already have a conflict record with empty `origin_hash` and only `last_failed_merge_key` recorded; this type of record also handled in this section.
 
-MVP 策略：
+MVP strategy:
 
 ```text
-生成后台 LLM 双向合并 job，不阻塞启动
+generate background LLM two-way merge job, don't block startup
 upstream = bundled foo
 local    = user foo
 ```
 
-如果合并成功且校验通过：
+If merge succeeds and validation passes:
 
 ```text
-write merged_skill_md → 临时文件
-校验临时文件通过
-move 临时文件 → user foo
+write merged_skill_md → temp file
+validate temp file passes
+move temp file → user foo
 copy bundled foo → base_path
 record origin_hash = bundled_hash
 record effective_hash = hash(merged_skill_md)
 status = merged
 ```
 
-如果合并失败、校验失败或应用失败：
+If merge fails, validation fails, or application fails:
 
 ```text
-继续使用用户旧版本
-不覆盖
-删除临时合并产物
-创建或更新 manifest 冲突记录
-origin_hash 保持为空
-effective_hash 保持为空
+continue using user old version
+don't overwrite
+delete temp merge artifacts
+create or update manifest conflict record
+origin_hash remains empty
+effective_hash remains empty
 status = user_modified
-记录 last_failed_merge_key = merge_key
-记录 last_merge_failed_at = now
-记录 last_merge_error = 简短错误摘要
+record last_failed_merge_key = merge_key
+record last_merge_failed_at = now
+record last_merge_error = brief error summary
 ```
 
-下次扫描时，如果 `origin_hash` 仍为空，就重新按双向合并计算 `merge_key`。输入没变则命中 `last_failed_merge_key` 并跳过；用户 skill 或 bundled skill 任一侧变化后，`merge_key` 改变，可以重新尝试。
+Next scan, if `origin_hash` still empty, recalculate `merge_key` as two-way merge. If input unchanged, hits `last_failed_merge_key` and skips; after either user skill or bundled skill changes, `merge_key` changes, can retry.
 
 ---
 
-## 10. LLM 合并契约
+## 10. LLM Merge Contract
 
-## 10.1 三方合并输入
+## 10.1 Three-Way Merge Input
 
 ```json
 {
@@ -849,7 +849,7 @@ status = user_modified
 }
 ```
 
-## 10.2 双向合并输入
+## 10.2 Two-Way Merge Input
 
 ```json
 {
@@ -871,78 +871,78 @@ status = user_modified
 }
 ```
 
-## 10.3 LLM 输出
+## 10.3 LLM Output
 
-成功：
+Success:
 
 ```json
 {
   "status": "merged",
   "merged_skill_md": "---\nname: payment-confirm\ndescription: ...\n---\n...",
-  "summary": "保留用户自定义确认话术，合入内置新版的截图前检查步骤。"
+  "summary": "Preserved user custom confirmation wording, merged built-in new version's pre-screenshot check steps."
 }
 ```
 
-失败：
+Failure:
 
 ```json
 {
   "status": "failed",
   "merged_skill_md": "",
-  "summary": "local 和 bundled 对核心操作流程冲突，无法可靠合并。"
+  "summary": "local and bundled conflict on core operation flow, cannot reliably merge."
 }
 ```
 
-MVP 不需要 `requires_review`、`risk_level`、`confidence`。是否应用只看程序校验是否通过。
+MVP doesn't need `requires_review`, `risk_level`, `confidence`. Whether to apply only depends on whether program validation passes.
 
 ---
 
-## 11. LLM 合并原则
+## 11. LLM Merge Principles
 
-合并 prompt 必须明确：
+Merge prompt must clarify:
 
 ```text
-你正在合并 Aiden Agent 的 SKILL.md。
-Skill 是影响设备行为的 SOP，不是普通文案。
+You are merging Aiden Agent's SKILL.md.
+Skill is SOP that affects device behavior, not ordinary copy.
 
-目标：
-1. 保留用户 local 的明确偏好和本地适配。
-2. 合入 bundled upstream 的 bugfix、工具名更新和新流程。
-3. 输出必须是合法 SKILL.md，保留 YAML frontmatter。
-4. skill name 必须保持不变。
-5. 如果不能可靠合并，返回 status=failed。
+Goals:
+1. Preserve user local's explicit preferences and local adaptations.
+2. Merge bundled upstream's bugfixes, tool name updates, and new flows.
+3. Output must be valid SKILL.md, retain YAML frontmatter.
+4. skill name must remain unchanged.
+5. If cannot reliably merge, return status=failed.
 ```
 
-禁止：
+Prohibitions:
 
 ```text
-- 不得简单拼接 base/upstream/local。
-- 不得输出没有 frontmatter 的 markdown。
-- 不得改名导致运行时 skill name 变化。
-- 不得返回解释文本冒充 SKILL.md。
+- Must not simply concatenate base/upstream/local.
+- Must not output markdown without frontmatter.
+- Must not rename causing runtime skill name to change.
+- Must not return explanatory text masquerading as SKILL.md.
 ```
 
 ---
 
-## 12. 合并成功校验
+## 12. Merge Success Validation
 
-LLM 输出不能直接应用。MVP 使用程序校验判断是否成功。
+LLM output cannot be directly applied. MVP uses program validation to determine success.
 
-合并成功必须满足：
+Merge success must satisfy:
 
 ```text
-1. LLM 调用成功。
-2. result.status == "merged"。
-3. merged_skill_md 非空。
-4. merged_skill_md 可解析 frontmatter。
-5. frontmatter.name == expected skill name。
-6. description 非空。
-7. body 非空。
-8. 文件大小不超过上限，例如 32KB。
-9. 如果有 allowed_tools，则引用的工具名都存在；`delegate_<child>` 形式的子 Agent 委派 pseudo-tool 允许通过。
+1. LLM call succeeds.
+2. result.status == "merged".
+3. merged_skill_md non-empty.
+4. merged_skill_md can parse frontmatter.
+5. frontmatter.name == expected skill name.
+6. description non-empty.
+7. body non-empty.
+8. file size doesn't exceed limit, e.g., 32KB.
+9. If has allowed_tools, then referenced tool names all exist; delegate_<child> form child Agent delegation pseudo-tools allowed to pass.
 ```
 
-伪代码：
+Pseudocode:
 
 ```go
 func MergeOK(result MergeResult, expectedName string) bool {
@@ -976,78 +976,78 @@ func MergeOK(result MergeResult, expectedName string) bool {
 }
 ```
 
-校验失败时：
+When validation fails:
 
 ```text
-不应用 candidate
-删除临时合并产物
-继续加载用户旧版本
+don't apply candidate
+delete temp merge artifacts
+continue loading user old version
 status = user_modified
 last_failed_merge_key = merge_key
 last_merge_failed_at = now
-last_merge_error = 校验失败摘要
+last_merge_error = validation failure summary
 ```
 
 ---
 
-## 13. 应用策略
+## 13. Application Strategy
 
-LLM 合并产物先写入临时文件，例如：
+LLM merge artifact first writes to temp file, e.g.:
 
 ```text
 skill-state/tmp/<name>.candidate.SKILL.md
 ```
 
-校验通过后才覆盖用户目录；校验失败则删除临时文件。MVP 只有两个最终结果。
+Only overwrite user directory after validation passes; delete temp file if validation fails. MVP only has two final results.
 
-## 13.1 合并成功并校验通过
+## 13.1 Merge Succeeds and Validation Passes
 
 ```text
-write merged_skill_md → 临时文件
-校验临时文件通过
-确认 hash(user_path) == job.local_hash
-move 临时文件 → user_path
+write merged_skill_md → temp file
+validate temp file passes
+confirm hash(user_path) == job.local_hash
+move temp file → user_path
 copy current bundled → base_path
 update manifest.origin_hash = current bundled hash
 update manifest.effective_hash = hash(merged_skill_md)
 status = merged
 ```
 
-## 13.2 合并失败、校验失败或应用失败
+## 13.2 Merge Fails, Validation Fails, or Application Fails
 
 ```text
-删除临时合并产物
-不覆盖 user_path
-继续使用用户旧版本
+delete temp merge artifacts
+don't overwrite user_path
+continue using user old version
 status = user_modified
 last_failed_merge_key = merge_key
 last_merge_failed_at = now
-last_merge_error = 简短错误摘要
+last_merge_error = brief error summary
 ```
 
-关键原则：
+Key principle:
 
 ```text
-合并失败不是系统错误。
-合并失败只是表示这次 bundled 更新没有合入用户版本。
-运行时继续使用用户目录中的旧 SKILL.md。
+Merge failure is not system error.
+Merge failure only indicates this bundled update wasn't merged into user version.
+Runtime continues using old SKILL.md in user directory.
 ```
 
 ---
 
-## 14. 恢复默认版本
+## 14. Restore Default Version
 
-MVP 不保留历史用户版本备份，因此不提供“恢复到覆盖前用户版本”的能力。
+MVP doesn't retain historical user version backups, so doesn't provide “restore to user version before overwrite” capability.
 
-只保留一个简单恢复操作：恢复当前 bundled 默认版本。
+Only retains one simple restore operation: restore current bundled default version.
 
-语义类似：
+Semantics similar to:
 
 ```text
 skills reset <name> --restore
 ```
 
-行为：
+Behavior:
 
 ```text
 copy current bundled → user_path
@@ -1057,19 +1057,19 @@ effective_hash = bundled_hash
 status = synced
 ```
 
-这个操作会丢弃用户当前修改，适合用户明确表示“恢复官方默认 skill”。
+This operation discards user's current modifications, suitable when user explicitly indicates “restore official default skill”.
 
 ---
 
-## 15. 运行时加载
+## 15. Runtime Loading
 
-运行时保持简单：
+Runtime keeps it simple:
 
 ```text
 LoadSkillsFromDirs([]string{configDir/skills})
 ```
 
-运行时不需要知道：
+Runtime doesn't need to know:
 
 ```text
 bundled
@@ -1077,28 +1077,28 @@ manifest
 base
 ```
 
-运行时看到的只有：
+Runtime only sees:
 
 ```text
-用户目录里的 effective SKILL.md
+effective SKILL.md in user directory
 ```
 
-这和 Hermes 的“用户 profile skills 是运行时真源”一致。
+This is consistent with Hermes' “user profile skills is runtime source of truth”.
 
 ---
 
-## 16. 与当前 Aiden 代码的改造点
+## 16. Refactoring Points for Current Aiden Code
 
-## 16.1 新增 sync 模块
+## 16.1 Add sync Module
 
-建议新增：
+Recommend adding:
 
 ```text
 src/agent/internal/agent/skill_sync.go
 src/agent/internal/agent/skill_sync_test.go
 ```
 
-核心类型：
+Core types:
 
 ```go
 type SkillSyncOptions struct {
@@ -1120,9 +1120,9 @@ type SkillSyncReport struct {
 func SyncBundledSkills(ctx context.Context, opts SkillSyncOptions) (*SkillSyncReport, error)
 ```
 
-## 16.2 启动时调用
+## 16.2 Call on Startup
 
-在 `NewRuntime()` 或 `LoadConfigFromDir()` 后、加载 skills 前调用：
+Call after `NewRuntime()` or `LoadConfigFromDir()`, before loading skills:
 
 ```go
 SyncBundledSkills(ctx, SkillSyncOptions{
@@ -1133,75 +1133,75 @@ SyncBundledSkills(ctx, SkillSyncOptions{
 })
 ```
 
-然后仍然：
+Then still:
 
 ```go
-LoadSkillsFromDirs([]string{filepath.Join(configDir, "skills")})
+LoadSkillsFromDirs([]string{filepath.Join(configDir, “skills”)})
 ```
 
-## 16.3 bundledSkillsDir 来源
+## 16.3 bundledSkillsDir Source
 
-开发环境：
+Development environment:
 
 ```text
 src/agent/config/skills
 ```
 
-设备安装环境：
+Device installation environment:
 
 ```text
 /oem/usr/share/aiden/skills
 ```
 
-MVP 可以从 build-time 常量、配置项或相对路径解析。
+MVP can resolve from build-time constant, config item, or relative path.
 
-## 16.4 manifest 路径
+## 16.4 manifest Path
 
 ```go
-manifestPath := filepath.Join(configDir, "skill-state", ".bundled_manifest.json")
+manifestPath := filepath.Join(configDir, “skill-state”, “.bundled_manifest.json”)
 ```
 
 ---
 
-## 17. 用户可见行为
+## 17. User-Visible Behavior
 
-普通同步：
+Normal sync:
 
 ```text
-已同步 2 个内置 skills。
+Synced 2 built-in skills.
 ```
 
-发现用户修改但 bundled 没变：
+User modified but bundled unchanged:
 
 ```text
-payment-confirm 已被用户修改，继续使用用户版本。
+payment-confirm has been modified by user, continuing with user version.
 ```
 
-发现用户修改且 bundled 也更新：
+User modified and bundled also updated:
 
 ```text
-payment-confirm 同时存在内置更新和用户修改，已加入后台合并任务。
+payment-confirm has both built-in updates and user modifications, added to background merge tasks.
 ```
 
-合并成功：
+Merge succeeded:
 
 ```text
-payment-confirm 后台合并完成，已应用内置更新。
+payment-confirm background merge completed, built-in updates applied.
 ```
 
-合并失败：
+Merge failed:
 
 ```text
-payment-confirm 合并失败，继续使用用户旧版本。
+payment-confirm merge failed, continuing with user old version.
 ```
 
 ---
 
-## 18. Skill Tools 与 System Prompt
+## 18. Skill Tools and System Prompt
 
-除了文件同步/合并框架，Aiden 还需要给 Agent 暴露一组 skill tools，并在 system prompt 中说明何时读取、何时修改 skill。
+In addition to file sync/merge framework, Aiden also needs to expose a set of skill tools to Agent, and explain in system prompt when to read and when to modify skills.
 
-MVP 工具沿用 Hermes 的命名和分层思路：
+MVP tools follow Hermes' naming and layering approach:
 
 ```text
 skill_list
@@ -1210,72 +1210,72 @@ skill_manage
 skill_mark_used
 ```
 
-其中 `skill_manage` 可以创建、修改、删除 `configDir/skills/` 下的任意 effective skill，管理 supporting files，并维护 lifecycle 状态。`skill_mark_used` 用于把“实际使用过某个 skill”和“只是读取过 skill”区分开。
+Where `skill_manage` can create, modify, delete any effective skill under `configDir/skills/`, manage supporting files, and maintain lifecycle state. `skill_mark_used` is used to distinguish “actually used a skill” from “only read a skill”.
 
-这些 skill meta-tools 默认随 runtime 注册。即使某个 active skill 使用 `allowed_tools` 收敛普通任务工具，`skill_list` / `skill_read` / `skill_manage` / `skill_mark_used` 仍保持可用，避免 prompt 要求读取或维护 skill 时模型没有对应工具。HTTP Tool API 只暴露非维护型 skill tools；`skill_manage` 不通过 HTTP 暴露。
+These skill meta-tools are registered with runtime by default. Even if an active skill uses `allowed_tools` to narrow ordinary task tools, `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used` remain available, avoiding cases where prompt requires reading or maintaining skills but model has no corresponding tools. HTTP Tool API only exposes non-maintenance skill tools; `skill_manage` is not exposed via HTTP.
 
-注意：
+Note:
 
 ```text
-configDir/skills/ 是运行时真源，可以被 skill_manage 修改。
-bundled source 目录不是运行时真源，不能被 skill_manage 修改。
-skill-state/ 由同步/合并系统维护，不能被 skill_manage 直接修改。
+configDir/skills/ is runtime source of truth, can be modified by skill_manage.
+bundled source directory is not runtime source of truth, cannot be modified by skill_manage.
+skill-state/ is maintained by sync/merge system, cannot be directly modified by skill_manage.
 ```
 
 ### 18.1 `skill_list`
 
-用途：列出 `configDir/skills/` 下已安装 skill 的 metadata，不加载全文。
+Purpose: List metadata of installed skills under `configDir/skills/`, without loading full text.
 
-输入示例：
+Input example:
 
 ```json
 {
-  "query": "payment login",
-  "limit": 20
+  “query”: “payment login”,
+  “limit”: 20
 }
 ```
 
-输出示例：
+Output example:
 
 ```json
 [
   {
-    "name": "payment-confirm",
-    "description": "付款前确认金额、收款方和操作目标",
-    "state": "active",
-    "view_count": 12,
-    "use_count": 5,
-    "modify_count": 1
+    “name”: “payment-confirm”,
+    “description”: “Confirm amount, payee, and operation target before payment”,
+    “state”: “active”,
+    “view_count”: 12,
+    “use_count”: 5,
+    “modify_count”: 1
   }
 ]
 ```
 
-规则：
+Rules:
 
 ```text
-默认过滤 state=archived 的 skill。
-传 include_archived=true 可包含 archived。
-传 state=active/stale/archived 可按 lifecycle 状态过滤。
+By default filter skills with state=archived.
+Pass include_archived=true to include archived.
+Pass state=active/stale/archived to filter by lifecycle state.
 ```
 
-Agent 在遇到可复用流程、App 操作、排查步骤、设备设置、登录、支付确认、表单填写等任务时，应先查看 prompt 中的 Available skills catalog；如果 catalog 不足以判断，或需要按关键词/状态搜索，再调用 `skill_list` 查找相关 skill。
+When Agent encounters reusable flows, App operations, troubleshooting steps, device settings, login, payment confirmation, form filling, etc., should first check Available skills catalog in prompt; if catalog is insufficient to judge, or needs to search by keyword/state, then call `skill_list` to find relevant skills.
 
 ### 18.2 `skill_read`
 
-用途：读取某个 skill 的完整 `SKILL.md`，或读取该 skill 下允许的 linked/supporting file。
+Purpose: Read complete `SKILL.md` of a skill, or read allowed linked/supporting file under that skill.
 
-输入示例：
+Input example:
 
 ```json
 {
-  "name": "payment-confirm",
-  "file_path": "references/merchant-checklist.md"
+  “name”: “payment-confirm”,
+  “file_path”: “references/merchant-checklist.md”
 }
 ```
 
-如果省略 `file_path`，默认读取 `SKILL.md`。输出为 UTF-8 文本本身，不再包一层 JSON；读取 `SKILL.md` 时会在尾部追加可通过 `skill_read {"name":"...","file_path":"..."}` 读取的 linked files 列表。
+If `file_path` omitted, defaults to reading `SKILL.md`. Output is UTF-8 text itself, no longer wrapped in JSON; when reading `SKILL.md`, will append list of linked files that can be read via `skill_read {“name”:”...”,”file_path”:”...”}` at the end.
 
-输出示例：
+Output example:
 
 ```markdown
 ---
@@ -1286,26 +1286,26 @@ description: ...
 ...
 
 ---
-Linked files available via skill_read {"name":"payment-confirm","file_path":...}:
+Linked files available via skill_read {“name”:”payment-confirm”,”file_path”:...}:
 - references/merchant-checklist.md
 ```
 
-规则：
+Rules:
 
 ```text
-如果 skill_list 返回相关 skill，Agent 必须先 skill_read 再执行。
-不要一次性读取所有 skill。
-修改已有 skill 前，必须先 skill_read 当前内容。
-file_path 只能是 SKILL.md，或 references/、templates/、scripts/、assets/ 下的相对路径。
-读取内容必须是 UTF-8 文本，单个文件最大 64KB；二进制 assets 不通过 skill_read 直接读取。
-路径解析必须同时锚定 configDir/skills 根目录和目标 skill 目录；拒绝 ../、绝对路径、supporting file symlink 逃逸，以及 configDir/skills/<name> 本身的 symlink 逃逸。
+If skill_list returns relevant skill, Agent must skill_read first before executing.
+Don't read all skills at once.
+Before modifying existing skill, must skill_read current content first.
+file_path can only be SKILL.md, or relative path under references/, templates/, scripts/, assets/.
+Read content must be UTF-8 text, single file max 64KB; binary assets not directly read through skill_read.
+Path resolution must anchor both configDir/skills root directory and target skill directory; reject ../, absolute paths, supporting file symlink escapes, and symlink escapes of configDir/skills/<name> itself.
 ```
 
 ### 18.3 `skill_manage`
 
-用途：创建、修改、删除 `configDir/skills/` 下的 effective skills，并管理其 supporting files。
+Purpose: Create, modify, delete effective skills under `configDir/skills/`, and manage their supporting files.
 
-沿用 Hermes 的管理动作，并增加 lifecycle 动作：
+Follow Hermes' management actions, and add lifecycle actions:
 
 ```text
 create
@@ -1319,80 +1319,80 @@ archive
 restore_archive
 ```
 
-其中 `create/edit/patch/delete` 操作 `SKILL.md`；`write_file/remove_file` 操作 skill 目录下的 supporting files；`mark_stale/archive/restore_archive` 只更新 `usage.json` 中的 lifecycle state。
+Where `create/edit/patch/delete` operate on `SKILL.md`; `write_file/remove_file` operate on supporting files under skill directory; `mark_stale/archive/restore_archive` only update lifecycle state in `usage.json`.
 
 #### create
 
-创建新 skill。
+Create new skill.
 
-规则：
+Rules:
 
 ```text
-目标路径必须不存在。
-写入 configDir/skills/<name>/SKILL.md。
-content 必须是完整合法的 SKILL.md。
-frontmatter.name 必须等于 name。
-description 非空。
-body 非空。
+Target path must not exist.
+Write to configDir/skills/<name>/SKILL.md.
+content must be complete valid SKILL.md.
+frontmatter.name must equal name.
+description non-empty.
+body non-empty.
 ```
 
-如果已存在，返回错误，提示使用 `edit` 或 `patch`。
+If already exists, return error, prompt to use `edit` or `patch`.
 
 #### edit
 
-整篇替换已有 skill。
+Replace entire existing skill.
 
-规则：
+Rules:
 
 ```text
-目标路径必须存在。
-content 必须是完整合法的 SKILL.md。
-frontmatter.name 必须等于 name。
-description 非空。
-body 非空。
-edit 前必须先 skill_read。
+Target path must exist.
+content must be complete valid SKILL.md.
+frontmatter.name must equal name.
+description non-empty.
+body non-empty.
+Must skill_read before edit.
 ```
 
-`edit` 适合 skill 大部分过时、需要整体重写的情况。
+`edit` is suitable when most of skill is outdated and needs complete rewrite.
 
 #### patch
 
-局部修改已有 skill。
+Partially modify existing skill.
 
-规则：
+Rules:
 
 ```text
-目标路径必须存在。
-old_string 必须唯一匹配。
-用 new_string 替换 old_string。
-替换后必须重新校验 SKILL.md。
-patch 前必须先 skill_read。
+Target path must exist.
+old_string must match uniquely.
+Replace old_string with new_string.
+Must re-validate SKILL.md after replacement.
+Must skill_read before patch.
 ```
 
-`patch` 比 `edit` 更安全，应鼓励 Agent 优先使用 `patch` 修正小问题。
+`patch` is safer than `edit`, should encourage Agent to prioritize using `patch` to fix minor issues.
 
 #### delete
 
-删除或移除某个 effective skill。
+Delete or remove an effective skill.
 
-MVP 采用“直接删除目录”的语义，行为类似 Hermes 的 delete，但 Aiden 不做 absorbed_into 重写：
+MVP adopts “directly delete directory” semantics, behavior similar to Hermes' delete, but Aiden doesn't do absorbed_into rewriting:
 
 ```text
-目标路径必须存在。
-删除 configDir/skills/<name>/ 整个 skill 目录。
-如果该 skill 在 bundled manifest 中有记录，status = deleted_by_user。
-如果该 skill 不在 manifest 中，直接删除即可。
+Target path must exist.
+Delete entire skill directory configDir/skills/<name>/.
+If this skill has record in bundled manifest, status = deleted_by_user.
+If this skill not in manifest, directly delete.
 ```
 
-删除 bundled-derived skill 时不要删除 bundled source，也不要删除 `bases/`；`bases/` 可作为同步器历史状态保留。
+When deleting bundled-derived skill, don't delete bundled source, also don't delete `bases/`; `bases/` can be retained as syncer historical state.
 
-为了避免误删，system prompt 应要求：只有当用户明确要求删除，或 skill 明显过时且当前任务目标就是清理 skill 时，才使用 `delete`。
+To avoid accidental deletion, system prompt should require: only use `delete` when user explicitly requests deletion, or skill is obviously outdated and current task goal is to clean up skills.
 
 #### write_file
 
-写入 skill supporting file。
+Write skill supporting file.
 
-允许路径必须位于该 skill 目录下的以下子目录：
+Allowed paths must be located in following subdirectories under that skill directory:
 
 ```text
 references/
@@ -1401,7 +1401,7 @@ scripts/
 assets/
 ```
 
-示例：
+Example:
 
 ```text
 configDir/skills/<name>/references/api.md
@@ -1410,47 +1410,47 @@ configDir/skills/<name>/scripts/check.py
 configDir/skills/<name>/assets/example.png
 ```
 
-规则：
+Rules:
 
 ```text
-不能写 SKILL.md；SKILL.md 用 create/edit/patch。
-不能写出 skill 目录。
-不能写 configDir/skill-state。
-不能写 bundled source。
-父目录不存在时可以创建。
-写入后可更新 usage.json 中的 modified 统计。
+Cannot write SKILL.md; use create/edit/patch for SKILL.md.
+Cannot write outside skill directory.
+Cannot write configDir/skill-state.
+Cannot write bundled source.
+Can create parent directory if doesn't exist.
+After write can update modified statistics in usage.json.
 ```
 
 #### remove_file
 
-删除 skill supporting file。
+Delete skill supporting file.
 
-规则：
+Rules:
 
 ```text
-只能删除 references/、templates/、scripts/、assets/ 下的文件。
-不能删除 SKILL.md。
-不能删除整个 skill 目录；删除整个 skill 用 action=delete。
-不能删除 configDir/skill-state 或 bundled source。
+Can only delete files under references/, templates/, scripts/, assets/.
+Cannot delete SKILL.md.
+Cannot delete entire skill directory; use action=delete to delete entire skill.
+Cannot delete configDir/skill-state or bundled source.
 ```
 
 #### mark_stale / archive / restore_archive
 
-维护 lifecycle 状态。
+Maintain lifecycle state.
 
-规则：
+Rules:
 
 ```text
-目标 skill 必须存在。
-mark_stale：state = stale。
-archive：state = archived，skill_list 默认不再返回。
-restore_archive：state = active。
-只写 usage.json，不移动文件，不修改 SKILL.md，不修改 manifest。
+Target skill must exist.
+mark_stale: state = stale.
+archive: state = archived, skill_list no longer returns by default.
+restore_archive: state = active.
+Only write usage.json, don't move files, don't modify SKILL.md, don't modify manifest.
 ```
 
-### 18.4 `skill_manage` 路径边界
+### 18.4 `skill_manage` Path Boundaries
 
-允许修改：
+Allowed to modify:
 
 ```text
 configDir/skills/<name>/SKILL.md
@@ -1460,45 +1460,45 @@ configDir/skills/<name>/scripts/**
 configDir/skills/<name>/assets/**
 ```
 
-禁止修改：
+Prohibited to modify:
 
 ```text
 /oem/usr/share/aiden/skills/<name>/SKILL.md
 src/agent/config/skills/<name>/SKILL.md
 configDir/skill-state/.bundled_manifest.json
 configDir/skill-state/bases/<name>/SKILL.md
-任意 configDir/skills 以外路径
+any path outside configDir/skills
 ```
 
-也就是说，Agent 可以修改用户运行时使用的 effective copy，但不能修改固件/仓库内置源文件，也不能直接修改同步器状态文件。
+In other words, Agent can modify effective copy used at user runtime, but cannot modify firmware/repo built-in source files, also cannot directly modify syncer state files.
 
-### 18.5 `skill_manage` 后 manifest 如何更新
+### 18.5 How manifest Updates After `skill_manage`
 
-如果修改的 skill 在 `.bundled_manifest.json` 中有记录，说明它是 bundled-derived effective copy。
+If the modified skill has a record in `.bundled_manifest.json`, indicates it's bundled-derived effective copy.
 
-`skill_manage` 修改 `SKILL.md` 后：
+After `skill_manage` modifies `SKILL.md`:
 
 ```text
 status = user_modified
-origin_hash 不变
-effective_hash 不变
-base_path 不变
-清除 last_failed_merge_key / last_merge_error
+origin_hash unchanged
+effective_hash unchanged
+base_path unchanged
+clear last_failed_merge_key / last_merge_error
 ```
 
-不要更新 `origin_hash`，因为 `origin_hash` 代表 bundled baseline，不跟用户/Agent 修改走。也不要更新 `effective_hash`，因为它代表同步器上次成功写入用户目录的参照点。
+Don't update `origin_hash`, because `origin_hash` represents bundled baseline, doesn't follow user/Agent modifications. Also don't update `effective_hash`, because it represents reference point when syncer last successfully wrote to user directory.
 
-`write_file/remove_file` 只修改 supporting files，不改变 SKILL.md merge 输入，因此不清除 `last_failed_merge_key`。`mark_stale/archive/restore_archive` 只写 `usage.json`，不写 manifest。
+`write_file/remove_file` only modifies supporting files, doesn't change SKILL.md merge input, so doesn't clear `last_failed_merge_key`. `mark_stale/archive/restore_archive` only writes `usage.json`, doesn't write manifest.
 
-如果修改的 skill 不在 manifest 中：
+If modified skill not in manifest:
 
 ```text
-不写 manifest
+don't write manifest
 ```
 
-因为 manifest 只管理 bundled sync，不是全量 skill registry。
+Because manifest only manages bundled sync, not full skill registry.
 
-### 18.6 `skill_manage` Schema 建议
+### 18.6 `skill_manage` Schema Recommendation
 
 ```json
 {
@@ -1545,22 +1545,22 @@ base_path 不变
 }
 ```
 
-参数要求：
+Parameter requirements:
 
 ```text
-action=create/edit：content 必填。
-action=patch：old_string 和 new_string 必填。
-action=delete：不需要 content/old_string/new_string。
-action=write_file：file_path 和 file_content 必填。
-action=remove_file：file_path 必填。
-action=mark_stale/archive/restore_archive：不需要 content/old_string/new_string/file_path。
+action=create/edit: content required.
+action=patch: old_string and new_string required.
+action=delete: don't need content/old_string/new_string.
+action=write_file: file_path and file_content required.
+action=remove_file: file_path required.
+action=mark_stale/archive/restore_archive: don't need content/old_string/new_string/file_path.
 ```
 
 ### 18.7 `skill_mark_used`
 
-用途：标记某个 skill 已被实际用于当前任务。
+Purpose: Mark that a skill has been actually used for current task.
 
-输入示例：
+Input example:
 
 ```json
 {
@@ -1568,262 +1568,262 @@ action=mark_stale/archive/restore_archive：不需要 content/old_string/new_str
 }
 ```
 
-行为：
+Behavior:
 
 ```text
-目标 skill 必须存在。
-use_count += 1。
-last_used_at = now。
+Target skill must exist.
+use_count += 1.
+last_used_at = now.
 ```
 
-### 18.8 System Prompt 规则
+### 18.8 System Prompt Rules
 
-建议加入 Aiden system prompt：
+Recommend adding to Aiden system prompt:
 
 ```markdown
 ## Skills
 
-Skills 是可复用的操作流程，不是 memory。它适合 App 操作、排障、设备流程、表单/授权/支付、重复任务和已验证的工具使用模式。
+Skills are reusable operation flows, not memory. They suit App operations, troubleshooting, device flows, forms/authorization/payment, repetitive tasks, and validated tool usage patterns.
 
-### 可用信息
-- Available skills 列出当前可用 skill 的名称和描述；Active skills 列出本轮已激活并注入的完整说明。
-- skill_list 用于浏览或搜索 skills，skill_read 用于加载相关 skill 的 SKILL.md 或链接文件，skill_manage 用于创建、编辑、归档或维护 skill，skill_mark_used 用于记录实际使用。
+### Available Information
+- Available skills lists names and descriptions of currently available skills; Active skills lists complete instructions for skills already activated and injected this round.
+- skill_list is for browsing or searching skills, skill_read is for loading relevant skill's SKILL.md or linked files, skill_manage is for creating, editing, archiving, or maintaining skills, skill_mark_used is for recording actual use.
 
-### 使用规则
-- 行动前先查看 Available skills；对可复用流程、App 操作、排障、设备设置、表单提交、支付/授权或已知重复任务，优先匹配 skill。
-- 如果 Available skills 不够判断，再用 skill_list 搜索；找到相关 skill 后，先 skill_read，再执行。
-- 不要读取所有 skill。只读取和当前任务相关的 skill；如果相关 skill 已在 Active skills 中，优先按已激活说明执行，只有需要完整 SKILL.md 细节时才再次 skill_read。
-- 已加载 skill 是本次任务 SOP；除非它和用户指令、安全规则、当前屏幕状态或工具结果冲突。skill 过时或部分错误时，基于当前证据调整本次执行。
-- 实际按某个 skill 执行后，如果有 skill_mark_used 工具，就用该 skill 名称调用它。
+### Usage Rules
+- Before action, check Available skills first; for reusable flows, App operations, troubleshooting, device settings, form submission, payment/authorization, or known repetitive tasks, prioritize matching skills.
+- If Available skills insufficient to judge, use skill_list to search; after finding relevant skill, skill_read first, then execute.
+- Don't read all skills. Only read skills relevant to current task; if relevant skill already in Active skills, prioritize executing according to already-activated instructions, only skill_read again when needing complete SKILL.md details.
+- Loaded skill is SOP for this task; unless it conflicts with user instructions, safety rules, current screen state, or tool results. When skill is outdated or partially wrong, adjust this execution based on current evidence.
+- After actually executing according to a skill, if skill_mark_used tool exists, call it with that skill name.
 
-### 维护规则
-- 只有可复用流程才写入或更新 skill；不要保存一次性进度、临时状态、秘密、原始日志或个人事实。
-- 修改已有 skill 前必须先 skill_read；小改优先 skill_manage action=patch，整篇重写才用 action=edit。
-- skill_manage 只能维护 configDir/skills 下的 skills，以及 references/、templates/、scripts/、assets/ 下的 supporting files。
-- 不要直接修改 bundled source 或 configDir/skill-state 文件。
+### Maintenance Rules
+- Only write or update skills for reusable flows; don't save one-time progress, temporary state, secrets, raw logs, or personal facts.
+- Must skill_read first before modifying existing skill; prioritize skill_manage action=patch for small changes, only use action=edit for complete rewrite.
+- skill_manage can only maintain skills under configDir/skills, and supporting files under references/, templates/, scripts/, assets/.
+- Don't directly modify bundled source or configDir/skill-state files.
 ```
 
-这段 prompt 可以保持静态，因为 skill meta-tools 在 runtime 中默认注册，并且不会被 active skill 的 `allowed_tools` 收敛掉。
+This prompt section can remain static, because skill meta-tools are registered by default in runtime, and won't be narrowed by active skill's `allowed_tools`.
 
-### 18.9 Skill 统计与使用记录
+### 18.9 Skill Statistics and Usage Records
 
-Hermes 除了 bundled manifest 外，还有 curator/usage 侧的统计，用来维护 agent-created skills。它记录的是 skill 查看、使用、修改等活动，不是 bundled sync 的必要状态。
+In addition to bundled manifest, Hermes also has curator/usage side statistics, used to maintain agent-created skills. It records skill viewing, usage, modification and other activities, not necessary state for bundled sync.
 
-Aiden 里这部分应与 manifest 分离：
+In Aiden this part should be separated from manifest:
 
 ```text
-.bundled_manifest.json = bundled sync / merge 账本
-usage.json             = runtime usage / maintenance 统计
+.bundled_manifest.json = bundled sync / merge ledger
+usage.json             = runtime usage / maintenance statistics
 ```
 
-统计不参与以下核心判断：
+Statistics don't participate in following core decisions:
 
 ```text
-是否用户改过 skill
-bundled 是否更新
-是否需要 LLM 合并
-LLM 合并的 base 是什么
-skill 是否有效
+Whether user modified skill
+Whether bundled updated
+Whether LLM merge needed
+What is base for LLM merge
+Whether skill is valid
 ```
 
-这些仍然由 manifest、hash、bases 和 SKILL.md 校验决定。
+These are still determined by manifest, hash, bases, and SKILL.md validation.
 
-统计主要用于后续能力：
+Statistics mainly used for subsequent capabilities:
 
 ```text
-skill_list 排序：常用、最近用过、匹配度高的 skill 可以排前。
-调试：解释为什么 Agent 经常读取/使用某个 skill。
-维护：发现长期不用、经常被修改、经常 read 但不用的 skill。
-curator：后续可以归档 stale skill、合并重复 skill、提示重写过时 skill。
-App UI：展示最近使用、常用、最近修改的 skills。
+skill_list sorting: commonly used, recently used, high-match skills can rank higher.
+Debugging: explain why Agent frequently reads/uses certain skill.
+Maintenance: discover skills that are unused long-term, frequently modified, frequently read but not used.
+curator: can later archive stale skills, merge duplicate skills, prompt rewrite outdated skills.
+App UI: display recently used, commonly used, recently modified skills.
 ```
 
-MVP 不做复杂 curator，但实现一个轻量 usage sidecar：
+MVP doesn't do complex curator, but implements lightweight usage sidecar:
 
 ```text
 configDir/skill-state/usage.json
 ```
 
-推荐最小字段：
+Recommended minimal fields:
 
 ```json
 {
-  "payment-confirm": {
-    "view_count": 12,
-    "use_count": 5,
-    "modify_count": 1,
-    "last_viewed_at": "2026-05-25T12:00:00+08:00",
-    "last_used_at": "2026-05-25T12:05:00+08:00",
-    "last_modified_at": "2026-05-25T12:10:00+08:00",
-    "state": "active",
-    "state_changed_at": "2026-05-25T12:10:00+08:00"
+  “payment-confirm”: {
+    “view_count”: 12,
+    “use_count”: 5,
+    “modify_count”: 1,
+    “last_viewed_at”: “2026-05-25T12:00:00+08:00”,
+    “last_used_at”: “2026-05-25T12:05:00+08:00”,
+    “last_modified_at”: “2026-05-25T12:10:00+08:00”,
+    “state”: “active”,
+    “state_changed_at”: “2026-05-25T12:10:00+08:00”
   }
 }
 ```
 
-字段含义：
+Field meanings:
 
 ```text
-view_count：skill_read 时递增，表示 Agent 查看过该 skill。
-use_count：skill_mark_used 时递增，表示 Agent 已实际按该 skill 执行过任务。
-modify_count：skill_manage create/edit/patch/delete/write_file/remove_file 成功后递增。
-last_viewed_at：最近一次 skill_read 时间。
-last_used_at：最近一次 skill_mark_used 时间。
-last_modified_at：最近一次 skill_manage 成功修改时间。
-state：skill lifecycle 状态，MVP 支持 active / stale / archived。
-state_changed_at：最近一次 lifecycle 状态变化时间。
+view_count: Incremented on skill_read, indicates Agent viewed this skill.
+use_count: Incremented on skill_mark_used, indicates Agent actually executed task according to this skill.
+modify_count: Incremented after skill_manage create/edit/patch/delete/write_file/remove_file succeeds.
+last_viewed_at: Most recent skill_read time.
+last_used_at: Most recent skill_mark_used time.
+last_modified_at: Most recent successful skill_manage modification time.
+state: skill lifecycle state, MVP supports active / stale / archived.
+state_changed_at: Most recent lifecycle state change time.
 ```
 
-`view_count`、`use_count`、`modify_count` 都是累计计数，只增不减。生命周期判断依赖 `last_viewed_at` / `last_used_at` / `last_modified_at`，不通过递减计数表达衰减。
+`view_count`, `use_count`, `modify_count` are all cumulative counters, only increase not decrease. Lifecycle decisions rely on `last_viewed_at` / `last_used_at` / `last_modified_at`, don't express decay through decrementing counters.
 
-`skill_mark_used` 用于区分“读取了 skill”和“实际按该 skill 执行了任务”：
+`skill_mark_used` is used to distinguish “read skill” from “actually executed task according to skill”:
 
 ```text
 skill_mark_used(name)
 ```
 
-usage 更新规则：
+usage update rules:
 
 ```text
-skill_read 成功：
+skill_read succeeds:
   view_count += 1
   last_viewed_at = now
 
-skill_mark_used 成功：
+skill_mark_used succeeds:
   use_count += 1
   last_used_at = now
 
-skill_manage 成功：
+skill_manage succeeds:
   modify_count += 1
   last_modified_at = now
 
-skill_manage mark_stale/archive/restore_archive 成功：
+skill_manage mark_stale/archive/restore_archive succeeds:
   state = stale/archived/active
   state_changed_at = now
 ```
 
-实现要求：
+Implementation requirements:
 
 ```text
-usage.json 原子写入。
-skill_read、skill_mark_used 和 skill_manage 并发写 usage.json 时需要加 usage 写锁。
-usage.json 不写进 SKILL.md frontmatter，避免频繁统计更新污染 skill 内容 diff。
+usage.json atomic write.
+When skill_read, skill_mark_used, and skill_manage write usage.json concurrently, need usage write lock.
+usage.json not written into SKILL.md frontmatter, avoiding frequent statistics updates polluting skill content diff.
 ```
 
-usage 统计不参与 skill 同步/合并主流程。它是后续 skill curator、推荐排序、陈旧 skill 清理和调试体验的基础能力。
+usage statistics don't participate in skill sync/merge main flow. It's foundational capability for subsequent skill curator, recommendation sorting, stale skill cleanup, and debugging experience.
 
 ### 18.10 Skill Lifecycle
 
-Lifecycle 是 skill 生命周期管理能力。它和 bundled sync/merge 是两套系统：
+Lifecycle is skill lifecycle management capability. It and bundled sync/merge are two separate systems:
 
 ```text
-sync/merge：维护 builtin/bundled skills 到用户目录的同步和冲突合并。
-lifecycle：维护 usage.json 中的 state/use_count/view_count 等统计和展示状态。
+sync/merge: Maintains sync and conflict merge of builtin/bundled skills to user directory.
+lifecycle: Maintains statistics and display state like state/use_count/view_count in usage.json.
 ```
 
-MVP 支持手动 lifecycle 状态，并对 agent-created skill 做轻量自动 stale/archive；不做自动 prune，不做 pinned，不自动删除任何 skill。
+MVP supports manual lifecycle state, and does lightweight automatic stale/archive for agent-created skills; doesn't do automatic prune, doesn't do pinned, never auto-deletes any skill.
 
-#### agent-created skill 元数据
+#### agent-created skill metadata
 
-`skill_manage(action=create)` 由 Agent 创建新 skill 时，建议自动补充：
+When `skill_manage(action=create)` creates new skill by Agent, recommend auto-supplementing:
 
 ```yaml
 ---
 name: hotel-wifi-login-debug
-description: 酒店 Wi-Fi 登录页排查流程
+description: Hotel Wi-Fi login page troubleshooting flow
 source: agent
 created_by: agent
 ---
 ```
 
-如果 Agent 修改已有 builtin/user/merged skill，不应把 `source` 改成 `agent`。这类修改只表示 effective copy 被编辑，bundled manifest 中如有记录则标记 `status=user_modified`。
+If Agent modifies existing builtin/user/merged skill, shouldn't change `source` to `agent`. This type of modification only indicates effective copy was edited, if there's record in bundled manifest then mark `status=user_modified`.
 
-#### Lifecycle 状态
+#### Lifecycle States
 
-Lifecycle 在 `usage.json` 中维护状态，而不是写进 manifest：
+Lifecycle maintains state in `usage.json`, not written into manifest:
 
 ```json
 {
-  "hotel-wifi-login-debug": {
-    "view_count": 2,
-    "use_count": 1,
-    "modify_count": 0,
-    "last_viewed_at": "2026-01-01T10:00:00+08:00",
-    "last_used_at": "2026-01-01T10:10:00+08:00",
-    "last_modified_at": "2026-01-01T09:00:00+08:00",
-    "state": "active",
-    "state_changed_at": "2026-01-01T09:00:00+08:00"
+  “hotel-wifi-login-debug”: {
+    “view_count”: 2,
+    “use_count”: 1,
+    “modify_count”: 0,
+    “last_viewed_at”: “2026-01-01T10:00:00+08:00”,
+    “last_used_at”: “2026-01-01T10:10:00+08:00”,
+    “last_modified_at”: “2026-01-01T09:00:00+08:00”,
+    “state”: “active”,
+    “state_changed_at”: “2026-01-01T09:00:00+08:00”
   }
 }
 ```
 
-建议状态：
+Recommended states:
 
 ```text
-active   = 正常可用，默认出现在 skill_list。
-stale    = 疑似过时或长期不用，仍可用，但排序降低或提示复查。
-archived = 已归档，默认不出现在 skill_list，但文件仍保留，可 restore。
+active   = Normal usable, appears in skill_list by default.
+stale    = Suspected outdated or unused long-term, still usable, but sorting lowered or prompted to review.
+archived = Already archived, doesn't appear in skill_list by default, but file still retained, can restore.
 ```
 
-MVP 不做 `pruned/deleted` 自动状态。真正删除应由用户明确触发 `skill_manage delete`。
+MVP doesn't do `pruned/deleted` automatic state. Real deletion should be triggered by user explicitly via `skill_manage delete`.
 
-#### stale 如何判定
+#### How stale is Determined
 
-`stale` 表示疑似过时或需要复查。MVP 支持两种进入方式：
+`stale` indicates suspected outdated or needs review. MVP supports two entry methods:
 
 ```text
-1. skill_manage action=mark_stale 手动设置。
-2. 对 source=agent 或 created_by=agent 的 skill，skill_list 时发现最近使用时间超过 90 天，自动标记 stale。自动扫描最多 24 小时运行一次。
+1. skill_manage action=mark_stale manual setting.
+2. For skills with source=agent or created_by=agent, when skill_list discovers last use time exceeds 90 days, auto-mark stale. Automatic scan runs at most once per 24 hours.
 ```
 
-可选规则：
+Optional rules:
 
 ```text
-自动 stale 只处理 source=agent / created_by=agent，并参考以下条件：
+Automatic stale only handles source=agent / created_by=agent, and considers following conditions:
 
-1. 90 天未被实际使用，进入 stale。
-2. 180 天未被实际使用，进入 archived。
-3. view_count 很高但 use_count 很低，说明描述可能误导。
-4. modify_count 很高，说明流程不稳定，可标记为需要复查，而不是直接 archive。
+1. Not actually used for 90 days, enters stale.
+2. Not actually used for 180 days, enters archived.
+3. view_count very high but use_count very low, indicates description might be misleading.
+4. modify_count very high, indicates flow unstable, can mark as needs review, not directly archive.
 ```
 
-注意：
+Note:
 
 ```text
-stale 不是删除。
-stale skill 仍可读、可用，只是排序降低或在 UI 中提示可能过时。
+stale is not deletion.
+stale skill still readable, usable, just sorting lowered or UI prompts might be outdated.
 ```
 
-#### archive 如何判定
+#### How archive is Determined
 
-`archive` 是比 stale 更进一步的整理动作。
+`archive` is a further organization action beyond stale.
 
-MVP 支持两种归档方式：
+MVP supports two archiving methods:
 
 ```text
-1. skill_manage action=archive 手动设置 state=archived。
-2. 对 source=agent 或 created_by=agent 的 skill，skill_list 时发现最近使用时间超过 180 天，自动标记 archived。自动扫描最多 24 小时运行一次。
+1. skill_manage action=archive manually sets state=archived.
+2. For skills with source=agent or created_by=agent, when skill_list discovers last use time exceeds 180 days, auto-mark archived. Automatic scan runs at most once per 24 hours.
 ```
 
-归档不移动文件：
+Archiving doesn't move files:
 
 ```text
-保持文件位置，在 usage.json 中 state=archived，skill_list 默认过滤 archived。
+Keep file location, set state=archived in usage.json, skill_list filters archived by default.
 ```
 
-这样不移动文件，恢复简单，也不影响路径和同步逻辑。
+This way doesn't move files, restore is simple, also doesn't affect paths and sync logic.
 
 #### restore
 
-`restore` 用于恢复 archived skill。
+`restore` is for restoring archived skill.
 
-恢复 archived skill 使用 `skill_manage action=restore_archive`：
+Restoring archived skill uses `skill_manage action=restore_archive`:
 
 ```text
 state = active
 ```
 
-如果 archived / stale skill 被实际召回使用，`skill_mark_used` 会自动恢复：
+If archived / stale skill is actually recalled for use, `skill_mark_used` auto-restores:
 
 ```text
 state = active
@@ -1833,115 +1833,115 @@ state_changed_at = now
 
 #### prune
 
-`prune` 是最终清理。Aiden 不建议 MVP 自动 prune。
+`prune` is final cleanup. Aiden doesn't recommend MVP auto-prune.
 
-如果未来要做，必须满足：
-
-```text
-只处理 source=agent。
-已经 archived 很长时间。
-删除前有备份或用户确认。
-永远不 prune builtin/user/merged skills。
-```
-
-#### Lifecycle 与 usage 的关系
-
-usage 是 lifecycle 的状态存储：
+If doing it in future, must satisfy:
 
 ```text
-skill_read 更新 view_count / last_viewed_at。
-skill_manage 更新 modify_count / last_modified_at。
-skill_mark_used 更新 use_count / last_used_at。
-skill_manage mark_stale/archive/restore_archive 更新 state / state_changed_at。
-skill_list 对 source=agent / created_by=agent 的 skill 执行 90/180 天 stale/archive 评估，扫描结果通过 lifecycle_scan.json 节流到最多 24 小时一次。
-skill_mark_used 对 stale/archived skill 执行自动 restore。
-skill_list 默认过滤 archived，除非 include_archived=true 或显式 state=archived。
+Only handle source=agent.
+Already archived for very long time.
+Before deletion have backup or user confirmation.
+Never prune builtin/user/merged skills.
 ```
 
-Lifecycle 不参与实时任务执行，也不影响当前 skill 同步/合并主流程。
+#### Relationship Between Lifecycle and usage
+
+usage is lifecycle's state storage:
+
+```text
+skill_read updates view_count / last_viewed_at.
+skill_manage updates modify_count / last_modified_at.
+skill_mark_used updates use_count / last_used_at.
+skill_manage mark_stale/archive/restore_archive updates state / state_changed_at.
+skill_list performs 90/180 day stale/archive evaluation for skills with source=agent / created_by=agent, scan results throttled through lifecycle_scan.json to at most once per 24 hours.
+skill_mark_used performs auto-restore on stale/archived skills.
+skill_list filters archived by default, unless include_archived=true or explicit state=archived.
+```
+
+Lifecycle doesn't participate in real-time task execution, also doesn't affect current skill sync/merge main flow.
 
 
-## 19. MVP 实施阶段
+## 19. MVP Implementation Phases
 
-## Phase 1：Hermes 式 seed/sync
+## Phase 1: Hermes-style seed/sync
 
-- 新增 `SyncBundledSkills()`。
-- 新内置 skill 自动 copy 到 `configDir/skills`。
-- 未修改的 bundled skill 自动更新。
-- 用户修改过且 bundled 未变时，不覆盖。
-- 用户删除过的 bundled skill 不重加。
-- 写 `.bundled_manifest.json`，记录 `origin_hash` 和 `effective_hash`。
-- 运行时只从 `configDir/skills` 加载。
+- Add `SyncBundledSkills()`.
+- New built-in skills auto-copy to `configDir/skills`.
+- Unmodified bundled skills auto-update.
+- When user modified and bundled unchanged, don't overwrite.
+- User-deleted bundled skills don't re-add.
+- Write `.bundled_manifest.json`, record `origin_hash` and `effective_hash`.
+- Runtime only loads from `configDir/skills`.
 
-## Phase 2：base 支持
+## Phase 2: base Support
 
-- 保存上次同步的 bundled 内容到 `skill-state/bases/<name>/SKILL.md`。
-- 支持恢复当前 bundled 默认版本。
-- 不保留历史用户版本 backup，MVP 不支持恢复覆盖前的用户版本。
+- Save last synced bundled content to `skill-state/bases/<name>/SKILL.md`.
+- Support restoring current bundled default version.
+- Don't retain historical user version backups, MVP doesn't support restoring user version before overwrite.
 
-## Phase 3：LLM 合并
+## Phase 3: LLM Merge
 
-- 新增 `SkillMergeModel` 接口。
-- 本地 effective copy 与 bundled baseline 有差异且 bundled 也更新时，生成后台三方合并任务。
-- 同名但无 manifest 时，生成后台双向合并任务。
-- 后台 worker 串行调用 LLM，输出 `merged_skill_md`。
-- 通过程序校验后自动应用。
-- 合并失败、校验失败或应用失败则继续使用用户旧版本，并记录 `last_failed_merge_key` 避免同一组输入反复重试。
+- Add `SkillMergeModel` interface.
+- When local effective copy differs from bundled baseline and bundled also updated, generate background three-way merge task.
+- When same name but no manifest, generate background two-way merge task.
+- Background worker serially calls LLM, outputs `merged_skill_md`.
+- Auto-apply after passing program validation.
+- If merge fails, validation fails, or application fails, continue using user old version, and record `last_failed_merge_key` to avoid repeated retries with same input set.
 
 ---
 
-## 20. 总结
+## 20. Summary
 
-Aiden skills 管理采用：
+Aiden skills management adopts:
 
 ```text
 bundled skills
   ↓ seed/sync/merge
-configDir/skills 作为运行时唯一真源
+configDir/skills as sole runtime source of truth
   ↓
-Agent 在 prompt 中展示 Available skills，并通过 skill_read 按需加载完整流程
+Agent displays Available skills in prompt, and loads complete flows on-demand via skill_read
 ```
 
-同步策略参考 Hermes：
+Sync strategy references Hermes:
 
 ```text
-新 skill 自动复制；
-未修改的 bundled skill 自动更新；
-用户修改过的不直接覆盖；
-用户删除过的不重加；
-repo / 固件删除 bundled skill 时，不直接删用户本地。
+New skills auto-copy;
+Unmodified bundled skills auto-update;
+User-modified not directly overwritten;
+User-deleted not re-added;
+When repo / firmware deletes bundled skill, don't directly delete user local.
 ```
 
-Aiden 在 Hermes 基础上新增：
+Aiden adds on top of Hermes:
 
 ```text
-同名冲突 / 本地 effective 与 baseline 不同且 bundled 已更新时，允许 LLM 做语义合并。
+When name conflict / local effective differs from baseline and bundled already updated, allow LLM to do semantic merge.
 ```
 
-MVP 的关键简化：
+MVP's key simplifications:
 
 ```text
-不做用户确认；
-不做高风险合并审批；
-合并成功并通过校验就应用；
-合并失败、校验失败或应用失败就继续使用用户旧版本，并记录 last_failed_merge_key；
-LLM 合并后台异步串行执行；
-manifest 不持久化 running/queued/done，只记录 last_failed_merge_key / last_merged_key；
-应用合并结果前必须确认 user_path 仍等于 job.local_hash，避免覆盖异步期间的新修改；若不相等，按应用失败记录 last_failed_merge_key。
+Don't do user confirmation;
+Don't do high-risk merge approval;
+Apply if merge succeeds and validation passes;
+Continue using user old version and record last_failed_merge_key if merge fails, validation fails, or application fails;
+LLM merge executes asynchronously serially in background;
+manifest doesn't persist running/queued/done, only records last_failed_merge_key / last_merged_key;
+Must confirm user_path still equals job.local_hash before applying merge result, avoiding overwriting new modifications during async period; if not equal, record last_failed_merge_key as application failure.
 ```
 
-Manifest 的定位：
+Manifest's positioning:
 
 ```text
-不是运行时依赖，而是同步器账本。
-它记录上次 bundled 同步的 baseline，帮助判断用户是否改过、bundled 是否更新、是否需要 LLM 合并。
-它同时记录 effective_hash，帮助区分“用户又改过”和“当前文件正是上次 merged 结果”。
+Not runtime dependency, but syncer's ledger.
+It records bundled baseline from last sync, helps determine whether user modified, whether bundled updated, whether LLM merge needed.
+It also records effective_hash, helps distinguish “user modified again” from “current file is exactly last merged result”.
 ```
 
-辅助目录的定位：
+Positioning of auxiliary directories:
 
 ```text
-bases/ 是为了合并质量：保存三方合并所需的 base。
-backups/ 不进入 MVP：先不支持历史用户版本回滚。
-merges/ 不进入 MVP：合并候选用临时文件，校验后立即应用或删除。
+bases/ is for merge quality: saves base needed for three-way merge.
+backups/ doesn't enter MVP: don't support historical user version rollback yet.
+merges/ doesn't enter MVP: merge candidates use temp files, apply or delete immediately after validation.
 ```

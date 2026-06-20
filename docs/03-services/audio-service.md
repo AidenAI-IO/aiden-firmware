@@ -1,23 +1,35 @@
-# Audio Service：音频录放服务
+# Audio Service: Audio Recording and Playback Service
 
-`audio_service` 是 C++ 长运行服务，提供录音、播放和音量控制能力。Go Agent 的设备语音链路和 `audio_volume` 工具通过 Unix domain socket 调用该服务。
+`audio_service` is a long-running C++ service that provides recording, playback, and volume control capabilities. The Go Agent's device voice pipeline and the `audio_volume` tool call this service through a Unix domain socket.
 
-## 默认参数
+## Default Parameters
 
-| 参数 | 默认值 |
+| Parameter | Default Value |
 | --- | --- |
 | Socket | `/run/audio_service/audio_service.sock` |
-| 日志 | `/var/log/audio_service/audio_service.log` |
-| 二进制 | `/oem/usr/bin/audio_service` |
+| Log | `/var/log/audio_service/audio_service.log` |
+| Binary | `/oem/usr/bin/audio_service` |
+| Volume state file | `/userdata/audio_service/playback_volume` |
 
-开发直接运行时也默认使用 `/run/audio_service/audio_service.sock`，可通过参数或环境变量改写：
+## Command-line Parameters
+
+```text
+audio_service [--socket PATH] [--volume-state PATH]
+```
+
+| Parameter | Description |
+| --- | --- |
+| `--socket PATH` | Unix domain socket path for service communication |
+| `--volume-state PATH` | File path for persisting playback volume across restarts; default `/userdata/audio_service/playback_volume` |
+
+When run directly during development, it also defaults to `/run/audio_service/audio_service.sock`, which can be overridden via a parameter or environment variable:
 
 ```bash
 AUDIO_SERVICE_SOCKET=/tmp/audio_service.sock ./build/bin/audio_service
 ./build/bin/audio_service --socket /tmp/audio_service.sock
 ```
 
-## 启动
+## Startup
 
 ```bash
 /etc/init.d/S53audio_service start
@@ -38,7 +50,7 @@ Commands:
   set-volume --volume N
 ```
 
-示例：
+Examples:
 
 ```bash
 ./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock health
@@ -46,19 +58,19 @@ Commands:
 ./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock set-volume --volume 80
 ```
 
-录音：
+Recording:
 
 ```bash
 ./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock record-stream --seconds 3 > /tmp/record.pcm
 ```
 
-播放：
+Playback:
 
 ```bash
 cat /tmp/record.pcm | ./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock play-stream --rate 16000 --ch 1 --bits 16
 ```
 
-## Agent 配置
+## Agent Configuration
 
 ```toml
 [audio]
@@ -68,19 +80,19 @@ channels = 1
 bit_width = 16
 ```
 
-语音模式下，Agent 会通过 audio service：
+In voice mode, the Agent uses the audio service to:
 
-1. 启动录音 session；
-2. 读取 PCM chunk；
-3. RKNN Silero VAD 判断语音边界；
-4. 需要播放时启动 playback session 并写入 PCM。
+1. Start a recording session;
+2. Read PCM chunks;
+3. Detect speech boundaries with RKNN Silero VAD;
+4. Start a playback session and write PCM when playback is needed.
 
-## 音量
+## Volume
 
-`audio_service` 暴露逻辑音量 `0..100`。底层设备最大音量初始化可使用：
+`audio_service` exposes a logical volume of `0..100`. The underlying device maximum volume can be initialized with:
 
 ```bash
 scripts/setup_audio_volume.sh
 ```
 
-详见 [音量初始化与调节](../07-operations/audio-volume.md)。
+See [Volume Initialization and Adjustment](../07-operations/audio-volume.md) for details.
