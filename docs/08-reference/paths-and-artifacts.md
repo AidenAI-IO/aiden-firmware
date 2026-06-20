@@ -44,6 +44,8 @@
 | `/var/log/frame_service/frame_service.log` | Frame Service 日志 |
 | `/var/log/audio_service/audio_service.log` | Audio Service 日志 |
 | `/var/log/agent/agent.log` | Agent init 脚本日志 |
+| `/userdata/agent/log/agent-YYYYMMDD.log` | Agent runtime 日志（按日期）|
+| `/userdata/agent/log/llm-http-YYYYMMDD-{session_id}.log` | LLM HTTP 请求/响应日志（JSONL 格式，按 session 组织）|
 
 ## 配置文件
 
@@ -94,6 +96,74 @@ curl http://<device-ip>:8080/api/tools
 /oem/usr/bin/ota status
 /oem/usr/bin/ota update
 /oem/usr/bin/abctl read /dev/block/by-name/misc
+
+# 日志查看
+tail -f /userdata/agent/log/agent-$(date +%Y%m%d).log
+jq . /userdata/agent/log/llm-http-$(date +%Y%m%d)-*.log
+```
+
+## Agent 日志
+
+### agent-YYYYMMDD.log
+
+Agent runtime 主日志，包含：
+- Session 启动标记（带 session ID）
+- Agent 运行状态
+- 工具调用信息
+- 错误和警告
+
+**Session 分隔格式**：
+```
+2026/06/20 15:06:16 [INFO] ========================================
+2026/06/20 15:06:16 [INFO] NEW SESSION STARTED
+2026/06/20 15:06:16 [INFO] Session ID: abc123def456
+2026/06/20 15:06:16 [INFO] ========================================
+```
+
+### llm-http-YYYYMMDD-{session_id}.log
+
+LLM HTTP 请求/响应原始日志（JSONL 格式），每个 session 独立文件。
+
+**格式示例**：
+```json
+{"ts":"15:00:00","kind":"http_request","status":0,"body":"{\"model\":\"test-model\",\"messages\":[...]}"}
+{"ts":"15:00:00","kind":"http_response","status":200,"body":"{\"choices\":[...]}"}
+```
+
+**字段说明**：
+- `ts` - 时间戳（HH:MM:SS）
+- `kind` - 类型：`http_request`, `http_response`, `http_stream`, `http_error`
+- `status` - HTTP 状态码（请求为 0）
+- `body` - 请求/响应体（JSON 字符串）
+
+**常用查询**：
+```bash
+# 查看特定 session 的所有调用
+jq . /userdata/agent/log/llm-http-20260620-abc123def.log
+
+# 只看响应
+jq 'select(.kind | test("response|stream"))' llm-http-*.log
+
+# 提取响应内容
+jq -r 'select(.kind == "http_response") | .body' llm-http-*.log
+
+# 按时间过滤
+jq 'select(.ts >= "14:00:00" and .ts <= "15:00:00")' llm-http-*.log
+
+# 统计请求类型
+jq -r '.kind' llm-http-20260620-*.log | sort | uniq -c
+```
+
+**日志管理**：
+```bash
+# 查看某天所有 session
+ls -lh /userdata/agent/log/llm-http-20260620-*.log
+
+# 删除特定 session
+rm /userdata/agent/log/llm-http-*-abc123def.log
+
+# 删除 7 天前的日志
+find /userdata/agent/log -name "llm-http-*.log" -mtime +7 -delete
 ```
 
 ## EDID 文件
