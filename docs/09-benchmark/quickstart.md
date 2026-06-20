@@ -54,7 +54,7 @@ uv run python -m runner rejudge runs/<id> --judge-model claude-sonnet-4-6
 ## Comparing runs
 
 ```bash
-uv run python -m benchmark.runner compare --runs benchmark/runs/<id_a> benchmark/runs/<id_b>
+uv run python -m runner compare --runs runs/<id_a> runs/<id_b>
 ```
 
 ## Legacy
