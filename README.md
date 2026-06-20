@@ -57,7 +57,7 @@ Flash a prebuilt or locally built `update.img`:
 The full documentation is organized under [`docs/`](docs/README.md):
 
 - [Documentation Hub](docs/README.md)
-- **Newcomers first: [Newcomer Quickstart](docs/01-getting-started/quickstart.md)** — strings the entire onboarding path together in the order wire up, flash, configure, develop, upgrade, troubleshoot
+- **Newcomers first: [Newcomer Quickstart](docs/01-getting-started/quickstart.md)**
 - [Hardware & Wiring](docs/01-getting-started/hardware.md)
 - [Firmware Build & Flashing](docs/01-getting-started/firmware.md)
 - [Build & Development Environment](docs/01-getting-started/build.md)

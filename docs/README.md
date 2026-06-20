@@ -55,7 +55,7 @@ This documentation hub is the structured entry point for the project. The root `
 
 ### 08. Reference
 
-- [Paths, Artifacts & Config Cheat Sheet](08-reference/paths-and-artifacts.md)
+- [Paths, Artifacts & Config Cheat Sheet](02-architecture/paths-and-artifacts.md)
 
 ### 09. OTA
 
