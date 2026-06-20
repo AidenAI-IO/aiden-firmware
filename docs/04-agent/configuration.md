@@ -24,45 +24,7 @@ On a device, open the config page in a browser at the USB-network gateway addres
 http://192.168.42.1
 ```
 
-The firmware starts `config_web` on port 80 (see the default command below).
-
-### Default deployment
-
-Init script:
-
-```text
-/etc/init.d/S56config_web
-```
-
-Default command:
-
-```bash
-/oem/usr/bin/aiden-env-run /oem/usr/bin/config_web --bind=0.0.0.0 --port=80 --config=/userdata/agent/agent.toml --wifi-config=/userdata/wpa_supplicant.conf --system-env=/userdata/system/env
-```
-
-Common commands:
-
-```bash
-/etc/init.d/S56config_web start
-/etc/init.d/S56config_web stop
-/etc/init.d/S56config_web restart
-```
-
-### Parameters
-
-Usage from the source:
-
-```text
-config_web [--bind=IP] [--port=PORT] [--config=PATH] [--wifi-config=PATH] [--system-env=PATH]
-```
-
-| Parameter | Description |
-| --- | --- |
-| `--bind=IP` | Bind address, default `0.0.0.0` |
-| `--port=PORT` | Listen port |
-| `--config=PATH` | Agent TOML config path |
-| `--wifi-config=PATH` | `wpa_supplicant.conf` path |
-| `--system-env=PATH` | System environment file path |
+The firmware starts `config_web` on port 80.
 
 ### What the page can configure
 

@@ -65,7 +65,7 @@ The full documentation is organized under [`docs/`](docs/README.md):
 - [Audio Service](docs/03-services/audio-service.md)
 - [USB HID & Device Control](docs/03-services/usb-hid.md)
 - [Go Agent](docs/04-agent/overview.md)
-- [Agent Configuration Reference (incl. Config Web config page)](docs/04-agent/configuration.md)
+- [Agent Configuration Reference](docs/04-agent/configuration.md)
 - [Tools HTTP API](docs/04-agent/tools-http-api.md)
 - [C++ SDK Reference](docs/05-sdk-and-tools/cpp-sdk.md)
 - [Unix Domain Socket Protocol](docs/06-protocols/uds-protocol.md)
