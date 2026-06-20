@@ -94,15 +94,7 @@ Field meanings, minimal working config examples, and TTS/STT provider values are
 
 After the four steps above, the board is ready to run. The Agent is supervised by the `S53agent` watchdog and starts with the firmware.
 
-### Configuration Changes
-
-When you save configuration changes in Config Web (`http://192.168.42.1/`), the system automatically restarts the Agent service to apply the new settings. **No manual restart is needed**.
-
-If you need to manually restart the Agent:
-
-```bash
-/etc/init.d/S53agent restart
-```
+**Configuration changes**: When you save settings in Config Web (`http://192.168.42.1/`), the system automatically restarts the Agent to apply them.
 
 ### Target Device Setup (iPhone)
 
