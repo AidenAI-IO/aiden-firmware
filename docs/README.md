@@ -59,14 +59,14 @@ This documentation hub is the structured entry point for the project. The root `
 
 ### 09. OTA
 
-- [OTA Overview](09-ota/README.md)
-- [OTA Architecture & Runtime](09-ota/architecture.md)
-- [OTA Key Management](09-ota/key-management.md)
-- [Device Acceptance Process](09-ota/device-acceptance.md)
-- [A/B & abctl Verification](09-ota/verification.md)
+- [OTA Overview](08-ota/README.md)
+- [OTA Architecture & Runtime](08-ota/architecture.md)
+- [OTA Key Management](08-ota/key-management.md)
+- [Device Acceptance Process](08-ota/device-acceptance.md)
+- [A/B & abctl Verification](08-ota/verification.md)
 
 ### 10. Benchmark
 
-- [Quick Start](10-benchmark/README.md)
-- [Architecture Design](10-benchmark/architecture.md)
-- [Detailed Guide](10-benchmark/quickstart.md)
+- [Quick Start](09-benchmark/README.md)
+- [Architecture Design](09-benchmark/architecture.md)
+- [Detailed Guide](09-benchmark/quickstart.md)

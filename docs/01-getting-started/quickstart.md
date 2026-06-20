@@ -14,7 +14,7 @@ This page is the main path for anyone touching Aiden hardware for the first time
 | 4 | Configure keys such as model / tts / stt | [Agent Configuration](../04-agent/configuration.md) |
 | 5 | Bring the board up and verify | [Testing & Verification](testing.md) |
 | 6 | Understand the architecture and modules | [Architecture Overview](../02-architecture/overview.md) |
-| 7 | Firmware build & OTA upgrade | [Firmware](firmware.md) / [OTA](../09-ota/README.md) |
+| 7 | Firmware build & OTA upgrade | [Firmware](firmware.md) / [OTA](../08-ota/README.md) |
 | 8 | Troubleshoot when something breaks | [Troubleshooting](../07-operations/troubleshooting.md) |
 
 ## 1. Hardware & Wiring
@@ -125,7 +125,7 @@ After development, build the firmware and upgrade the device:
 
 - Native / cross-compile dev environment: [Build & Development Environment](build.md);
 - Full firmware build (`./build_image.sh`) and flashing: [Firmware Build & Flashing](firmware.md);
-- Over-the-air upgrade: [OTA Overview](../09-ota/README.md).
+- Over-the-air upgrade: [OTA Overview](../08-ota/README.md).
 
 ### OTA for non-main branch firmware
 
@@ -142,7 +142,7 @@ ota update \
   --public-key /oem/etc/ota_pubkey.pem
 ```
 
-The official signing public key is already provisioned on the device at `/oem/etc/ota_pubkey.pem`, so official-repo builds need no extra public key. It is recommended to add `--dry-run` first to only download and verify without switching slots. See [OTA Release Channels](../09-ota/ota-release-channels.md) for details.
+The official signing public key is already provisioned on the device at `/oem/etc/ota_pubkey.pem`, so official-repo builds need no extra public key. It is recommended to add `--dry-run` first to only download and verify without switching slots. See [OTA Release Channels](../08-ota/ota-release-channels.md) for details.
 
 ## 8. Troubleshooting
 

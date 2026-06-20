@@ -144,9 +144,9 @@ ota update --manifest-url http://192.168.1.100:8000/manifest.json \
 - All existing tests pass ✅
 
 ### Documentation
-- `docs/09-ota/ota-external-developers.md` - Complete developer guide
-- `docs/09-ota/ota-quick-examples.md` - Quick usage examples
-- `docs/09-ota/ota-release-channels.md` - Release channel and branch distinction explanation
+- `docs/08-ota/ota-external-developers.md` - Complete developer guide
+- `docs/08-ota/ota-quick-examples.md` - Quick usage examples
+- `docs/08-ota/ota-release-channels.md` - Release channel and branch distinction explanation
 
 ## Security
 

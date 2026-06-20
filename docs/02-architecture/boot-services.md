@@ -97,7 +97,7 @@ Runtime directory:
 └── health.ok            # health confirmation marker written after the app is ready
 ```
 
-For more details see [OTA Overview](../09-ota/README.md).
+For more details see [OTA Overview](../08-ota/README.md).
 
 ## Config Web
 

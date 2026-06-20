@@ -72,4 +72,4 @@ The full documentation is organized under [`docs/`](docs/README.md):
 - [C++ SDK Reference](docs/05-sdk-and-tools/cpp-sdk.md)
 - [Unix Domain Socket Protocol](docs/06-protocols/uds-protocol.md)
 - [Troubleshooting](docs/07-operations/troubleshooting.md)
-- [OTA](docs/09-ota/README.md)
+- [OTA](docs/08-ota/README.md)

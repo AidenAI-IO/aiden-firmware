@@ -98,4 +98,4 @@ The production image uses an A/B partition layout. Online OTA only writes to the
 
 The released `update.img` embeds `/userdata/ota/config.json`, which contains `repo`, `channel`, `factory_version`, `factory_build_time`, and slot-aware `factory_partition_hashes`, so that after the device's first USB flash it can perform subsequent OTAs from GitHub Releases.
 
-For more OTA details, see [OTA Overview](../09-ota/README.md).
+For more OTA details, see [OTA Overview](../08-ota/README.md).
