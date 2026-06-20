@@ -39,14 +39,6 @@ The page fields cover the following config sections (all detailed later on this 
 - `env`: shell-style environment text written to `/userdata/system/env`, including optional proxy variables such as `http_proxy`, `HTTPS_PROXY`, and `NO_PROXY`
 - Wi-Fi: SSID / PSK etc. (written to `/userdata/wpa_supplicant.conf`)
 
-### Runtime apply behavior
-
-Config Web writes Agent, Wi-Fi, and system environment files. Saving Agent config still schedules an Agent restart. OTA updates read the effective `/userdata/system/env` file when `ota update` is run, so saving system environment no longer restarts OTA:
-
-```bash
-/etc/init.d/S53agent restart
-```
-
 ## Minimal Web UI config
 
 ```toml
