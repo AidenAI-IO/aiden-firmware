@@ -161,8 +161,37 @@ The full documentation is organized under [`docs/`](docs/README.md):
 
 ## Contributing
 
-Contributions are welcome! Whether you're fixing bugs, adding features, writing skills, or improving documentation, we'd love your help. See the documentation for architecture details and development setup.
+Contributions are welcome! Whether you're fixing bugs, adding features, writing skills, or improving documentation, we'd love your help.
+
+**Before contributing code**, please note:
+- By submitting a contribution, you agree to license it under both AGPL-3.0 (for open-source use) and grant AidenAI-IO the right to offer it under commercial licenses
+- See [LICENSE](LICENSE) for full details on our dual-licensing model
+- This allows us to maintain the project's business model while keeping it open-source
+
+For architecture details and development setup, see the [documentation](docs/README.md).
 
 ## License
 
-[Add license information here]
+This project is **dual-licensed**:
+
+### For Open Source / Non-Commercial Use
+**GNU Affero General Public License v3.0 (AGPL-3.0)**
+- ✅ Free for personal, academic, and non-profit use
+- ✅ Modifications must be shared under AGPL-3.0
+- ✅ Network use triggers source disclosure requirements
+- See [LICENSE](LICENSE) and [LICENSE-AGPL-3.0](LICENSE-AGPL-3.0)
+
+### For Commercial Use
+**Commercial License Required**
+- Manufacturing and selling devices with this firmware
+- Offering paid services or SaaS based on this software
+- Internal use in for-profit organizations
+- Integration into proprietary products
+
+**Contact**: [your-licensing-email] for commercial licensing inquiries.
+
+---
+
+**Hardware designs** are licensed under CERN-OHL-S-2.0 (strongly reciprocal).
+
+See [LICENSE](LICENSE) for complete terms, patent provisions, and contributor agreement details.

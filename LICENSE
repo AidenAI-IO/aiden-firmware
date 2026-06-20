@@ -1,0 +1,209 @@
+# Aiden Hardware Demo - Dual License
+
+Copyright (c) 2024 AidenAI-IO and Contributors
+
+This project is available under two licenses. Choose the one that best suits your needs.
+
+---
+
+## License Option 1: GNU Affero General Public License v3.0 (AGPL-3.0)
+
+### For Non-Commercial Use Only
+
+You may use, study, modify, and distribute this software under the terms of the
+GNU Affero General Public License version 3.0 (AGPL-3.0), **provided that your
+use is strictly non-commercial**.
+
+### AGPL-3.0 Requirements:
+
+- **Source Code Disclosure**: If you modify this software and make it available
+  over a network (including web services, APIs, or device firmware accessible
+  remotely), you MUST make the complete source code of your modified version
+  publicly available under AGPL-3.0.
+
+- **Preserve Attribution**: You must retain all copyright notices, this license
+  notice, and clearly state any changes you made to the original code.
+
+- **Share-Alike**: Any derivative work must also be licensed under AGPL-3.0 and
+  made publicly available.
+
+- **No Sublicensing**: You may not grant additional permissions or impose
+  additional restrictions beyond those in AGPL-3.0.
+
+### What Counts as Non-Commercial Use:
+
+✅ **Allowed**:
+- Personal hobby projects
+- Academic research and education
+- Non-profit organizations (registered 501(c)(3) or equivalent)
+- Open-source community contributions
+- Evaluation and testing by for-profit entities (up to 30 days)
+
+❌ **Requires Commercial License**:
+- Selling devices with this firmware pre-installed
+- Offering paid services or subscriptions based on this software
+- Integration into proprietary commercial products
+- Internal use by for-profit companies beyond evaluation period
+- Any revenue-generating activity involving this software
+
+### Full AGPL-3.0 Text:
+
+The complete GNU Affero General Public License v3.0 is available at:
+https://www.gnu.org/licenses/agpl-3.0.txt
+
+A copy is also included in the file `LICENSE-AGPL-3.0` in this repository.
+
+---
+
+## License Option 2: Commercial License
+
+### For Commercial Use
+
+If your intended use does not comply with AGPL-3.0 or is commercial in nature,
+you MUST obtain a separate commercial license from AidenAI-IO.
+
+### What Requires a Commercial License:
+
+- Manufacturing and selling devices with this firmware
+- Offering this software as a hosted service (SaaS)
+- Bundling this software with commercial products
+- Using this software internally in a for-profit organization
+- Modifying this software without open-sourcing your changes
+- Any use that generates revenue or provides competitive advantage
+
+### Commercial License Benefits:
+
+- Freedom to use in proprietary products
+- No requirement to open-source modifications
+- No copyleft obligations
+- Dedicated technical support options
+- Custom licensing terms available
+- Patent grant for commercial use
+
+### How to Obtain a Commercial License:
+
+Contact us for pricing and terms:
+- Email: [your-contact-email]
+- Website: https://github.com/AidenAI-IO/aiden-hardware-demo
+- License Inquiry Form: [your-form-url]
+
+---
+
+## Patent Grant and Defensive Termination
+
+### Patent License (AGPL-3.0 Non-Commercial Use Only)
+
+Contributors grant you a worldwide, royalty-free, non-exclusive patent license
+under their patent claims that are necessarily infringed by their contribution(s)
+alone or by combination with this software, **limited to non-commercial use
+under AGPL-3.0 terms**.
+
+### Patent Restrictions
+
+1. **No Patent Applications**: You may NOT file patent applications claiming
+   inventions disclosed in this codebase. Any such applications are considered
+   a violation of this license and constitute copyright infringement.
+
+2. **Patent Defensive Termination**: If you initiate patent litigation against
+   any entity (including a cross-claim or counterclaim) alleging that this
+   software or any contribution to it constitutes patent infringement, your
+   licenses under this agreement (AGPL-3.0 and any commercial license) terminate
+   automatically and immediately.
+
+3. **Commercial Patent Rights**: Patent rights for commercial use are ONLY
+   granted through a separate commercial license agreement.
+
+### Patent Ownership
+
+All patents covering inventions embodied in this software remain the property
+of their respective contributors and AidenAI-IO. No transfer of patent ownership
+is granted under any license option.
+
+---
+
+## Trademarks
+
+"Aiden" and the Aiden logo are trademarks of AidenAI-IO. Use of these trademarks
+is not granted under either license option without explicit written permission.
+
+You may state that your software is "based on Aiden Hardware Demo" or "compatible
+with Aiden," but you may not use our trademarks in a way that suggests official
+endorsement or creates confusion about the source of your product.
+
+---
+
+## Contributions
+
+### Contributor License Agreement (CLA)
+
+By submitting a contribution (pull request, patch, code, documentation, or any
+other material) to this project, you agree that:
+
+1. **License Grant**: You grant AidenAI-IO and all users a perpetual, worldwide,
+   non-exclusive, royalty-free license to your contribution under both AGPL-3.0
+   and our commercial license terms.
+
+2. **Patent Grant**: You grant a patent license for any patents you own or
+   control that cover your contribution, under the same terms as above.
+
+3. **Original Work**: Your contribution is your original work, and you have the
+   right to grant these licenses.
+
+4. **Dual Licensing Rights**: You acknowledge that AidenAI-IO may license your
+   contribution under commercial terms to third parties.
+
+### Why We Need This
+
+The dual-license model requires that we can offer commercial licenses for all
+code in the project, including community contributions. Your CLA makes this
+possible while ensuring your work remains open-source under AGPL-3.0.
+
+---
+
+## Hardware Designs
+
+Hardware schematics, PCB layouts, and related documentation in this repository
+are licensed under:
+
+**CERN Open Hardware Licence Version 2 - Strongly Reciprocal (CERN-OHL-S-2.0)**
+
+This ensures hardware designs remain open and modifications must be shared, while
+allowing commercial manufacturing with appropriate attribution.
+
+Full text: https://ohwr.org/cern_ohl_s_v2.txt
+
+---
+
+## Third-Party Components
+
+This software includes components licensed under their respective open-source
+licenses. See the `NOTICE` file and individual component directories for details.
+
+Third-party components retain their original licenses and are not subject to
+this dual-licensing scheme.
+
+---
+
+## Disclaimer of Warranty
+
+THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THIS SOFTWARE.
+
+---
+
+## Questions?
+
+**For licensing questions**: [licensing-email]
+**For technical questions**: https://github.com/AidenAI-IO/aiden-hardware-demo/discussions
+**For commercial inquiries**: [commercial-email]
+
+---
+
+## Version
+
+This license document version: 1.0
+Effective date: 2024-06-20
