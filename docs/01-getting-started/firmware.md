@@ -12,7 +12,7 @@ When flashing the full firmware, you typically use `update.img`.
 
 This project's firmware is built on `pico-sdk` and includes the following customizations:
 
-- Wi-Fi uses the onboard antenna by default;
+- Wi-Fi uses the external antenna by default;
 - Kernel enables the TC358743 driver;
 - DTS adds TC358743 support;
 - Built-in 1080p30-only EDID;
