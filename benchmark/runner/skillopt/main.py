@@ -21,6 +21,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 from runner.judge import JudgeConfig
 from runner.suite import load_suite
@@ -568,11 +569,15 @@ def _format_edit(edit) -> str:
 
 def _render_artifact_rows(manifest: dict) -> str:
     rows = []
+    run_id = str(manifest.get("run_id") or "")
     for name, path in (manifest.get("artifacts") or {}).items():
+        href = _report_artifact_href(run_id, str(path))
+        path_html = html.escape(str(path))
+        cell = f'<a href="{html.escape(href)}">{path_html}</a>' if href else f"<code>{path_html}</code>"
         rows.append(
             "<tr>"
             f"<td>{html.escape(str(name))}</td>"
-            f"<td><code>{html.escape(str(path))}</code></td>"
+            f"<td>{cell}</td>"
             "</tr>"
         )
     for phase, report in (manifest.get("linked_reports") or {}).items():
@@ -583,6 +588,13 @@ def _render_artifact_rows(manifest: dict) -> str:
             "</tr>"
         )
     return "".join(rows) or "<tr><td colspan=\"2\">No artifacts recorded.</td></tr>"
+
+
+def _report_artifact_href(run_id: str, path: str) -> str:
+    parts = path.split("/")
+    if _validate_run_id(run_id) or not _valid_safe_relative_label(path):
+        return ""
+    return "/benchmark/report/" + quote(run_id, safe="") + "/" + "/".join(quote(part, safe="") for part in parts)
 
 
 if __name__ == "__main__":

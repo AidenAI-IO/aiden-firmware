@@ -531,18 +531,42 @@ func (s *Server) handleBenchmarkReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/benchmark/report/")
-	safe := sanitizeRunID(id)
-	if safe == "" {
+	path, contentType, ok := benchmarkReportFileFor(s.benchmarkDir, id)
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	data, err := os.ReadFile(filepath.Join(s.benchmarkDir, "runs", safe, "report.html"))
+	data, err := os.ReadFile(path)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Type", contentType)
 	w.Write(data)
+}
+
+var skillOptArtifactContentTypes = map[string]string{
+	"best_skill.md": "text/markdown; charset=utf-8",
+	"diff.patch":    "text/plain; charset=utf-8",
+	"result.json":   "application/json; charset=utf-8",
+}
+
+func benchmarkReportFileFor(benchmarkDir, reportID string) (string, string, bool) {
+	parts := strings.Split(reportID, "/")
+	if len(parts) == 0 || sanitizeRunID(parts[0]) != parts[0] || parts[0] == "" {
+		return "", "", false
+	}
+	if len(parts) == 1 {
+		return filepath.Join(benchmarkDir, "runs", parts[0], "report.html"), "text/html; charset=utf-8", true
+	}
+	if len(parts) == 2 {
+		contentType, ok := skillOptArtifactContentTypes[parts[1]]
+		if !ok {
+			return "", "", false
+		}
+		return filepath.Join(benchmarkDir, "runs", parts[0], parts[1]), contentType, true
+	}
+	return "", "", false
 }
 
 func sanitizeRunID(id string) string {

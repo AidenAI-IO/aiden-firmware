@@ -67,3 +67,13 @@ def test_build_run_command_rejects_skillopt_device_on_host(tmp_path: Path):
         assert "requires skillopt_backend=mobilegym" in str(exc)
     else:
         raise AssertionError("expected device SkillOpt backend to be rejected by local launcher")
+
+
+def test_report_file_for_serves_skillopt_artifact(tmp_path: Path):
+    module = load_local_launcher_module()
+    run_dir = tmp_path / "runs" / "skillopt" / "skillopt-run"
+    run_dir.mkdir(parents=True)
+    artifact = run_dir / "best_skill.md"
+    artifact.write_text("skill contents", encoding="utf-8")
+
+    assert module.report_file_for(tmp_path, "skillopt-run/best_skill.md") == artifact

@@ -291,6 +291,31 @@ func TestHandleBenchmarkReport_ServesHTML(t *testing.T) {
 	}
 }
 
+func TestHandleBenchmarkReport_ServesSkillOptArtifact(t *testing.T) {
+	root := t.TempDir()
+	id := "skillopt-2026-06-20_120000-123456789"
+	runDir := filepath.Join(root, "runs", id)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "best_skill.md"), []byte("skill contents"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{benchmarkDir: root}
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/report/"+id+"/best_skill.md", nil)
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkReport(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body %q", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "skill contents" {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/markdown") {
+		t.Fatalf("content type = %q", got)
+	}
+}
+
 func TestHandleBenchmarkReport_RejectsTraversal(t *testing.T) {
 	root := t.TempDir()
 	s := &Server{benchmarkDir: root}

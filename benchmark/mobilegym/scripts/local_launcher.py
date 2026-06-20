@@ -28,6 +28,11 @@ LOG_PATH = _USER_TEMP / "mobilegym_run.log"
 PID_PATH = _USER_TEMP / "mobilegym_runner.pid"
 STATE_NAME = "state.json"
 TAIL_BYTES = 64 * 1024
+SKILLOPT_ARTIFACT_CONTENT_TYPES = {
+    "best_skill.md": "text/markdown; charset=utf-8",
+    "diff.patch": "text/plain; charset=utf-8",
+    "result.json": "application/json; charset=utf-8",
+}
 
 _SAFE_SUITE_SEGMENT = re.compile(r"^[A-Za-z0-9_.\-]+$")
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -546,10 +551,17 @@ def report_file_for(root: Path, report_id: str) -> Path | None:
         if skillopt_report.is_file():
             return skillopt_report
         return run_dir / "index.html"
+    if len(parts) == 2 and parts[1] in SKILLOPT_ARTIFACT_CONTENT_TYPES:
+        artifact = root / "runs" / "skillopt" / parts[0] / parts[1]
+        return artifact if artifact.is_file() else None
     suite = "/".join(parts[1:])
     if not valid_suite_name(suite):
         return None
     return run_dir / suite / "index.html"
+
+
+def report_content_type(path: Path) -> str:
+    return SKILLOPT_ARTIFACT_CONTENT_TYPES.get(path.name, "text/html; charset=utf-8")
 
 
 def state_run_items(run_id: str, state_for_run: dict[str, Any], progress: dict[str, Any]) -> list[dict[str, Any]]:
@@ -907,7 +919,7 @@ def make_handler(benchmark_root: str | Path = BENCHMARK_ROOT) -> type[BaseHTTPRe
                 self.send_error(404, "not found")
                 return
             self.send_response(200)
-            self.send_common_headers("text/html; charset=utf-8")
+            self.send_common_headers(report_content_type(report_path))
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

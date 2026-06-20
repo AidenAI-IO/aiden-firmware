@@ -269,6 +269,9 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
     assert "new rule" in report
     assert "best_skill.md" in report
     assert "diff.patch" in report
+    assert 'href="/benchmark/report/skillopt-summary-run/best_skill.md"' in report
+    assert 'href="/benchmark/report/skillopt-summary-run/diff.patch"' in report
+    assert 'href="/benchmark/report/skillopt-summary-run/result.json"' in report
     assert "/benchmark/report/skillopt-summary-run-step_01_train" in report
 
 
