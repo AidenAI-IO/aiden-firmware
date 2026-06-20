@@ -92,11 +92,28 @@ Field meanings, minimal working config examples, and TTS/STT provider values are
 
 ## 5. Bring the Board Up
 
-After the four steps above, the board is ready to run. The Agent is supervised by the `S53agent` watchdog and starts with the firmware. After config changes, the Agent usually needs a restart:
+After the four steps above, the board is ready to run. The Agent is supervised by the `S53agent` watchdog and starts with the firmware.
+
+### Configuration Changes
+
+When you save configuration changes in Config Web (`http://192.168.42.1/`), the system automatically restarts the Agent service to apply the new settings. **No manual restart is needed**.
+
+If you need to manually restart the Agent:
 
 ```bash
 /etc/init.d/S53agent restart
 ```
+
+### Target Device Setup (iPhone)
+
+To control an iPhone via USB HID, enable these settings on the target device:
+
+1. **Settings > Accessibility > Touch > AssistiveTouch** - Required for HID touch/mouse control
+2. **Show Onscreen Keyboard** (on the AssistiveTouch page) - Recommended for stable keyboard input
+
+See [Hardware & Wiring](hardware.md#ios-device-requirements) for details.
+
+### Verification
 
 Commands to verify the pipeline (Frame / Audio / Agent services, screenshots, voice) are in [Testing & Verification](testing.md). Service log locations and common service commands are in [Deployment](deployment.md).
 
