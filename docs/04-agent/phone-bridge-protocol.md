@@ -3,63 +3,63 @@
 **Version**: 1.1
 **Date**: 2026-06-10
 
-本文档定义硬件板子 (aiden-hardware-demo) 与手机 App (aiden-app) 之间的 WebSocket 命令协议。
+This document defines the WebSocket command protocol between the hardware board (aiden-hardware-demo) and phone app (aiden-app).
 
-## 连接
+## Connection
 
-- **URL**: `ws://192.168.42.1:8080/api/phone-bridge?platform=ios` (或 `platform=android`)
-- **方向**: App 作为 WebSocket client 主动连接板子 (WebSocket server)
-- **网络**: 通过 USB ECM 建立的 `192.168.42.0/24` 子网，板子固定 IP `192.168.42.1`
+- **URL**: `ws://192.168.42.1:8080/api/phone-bridge?platform=ios` (or `platform=android`)
+- **Direction**: App acts as WebSocket client actively connecting to board (WebSocket server)
+- **Network**: Via USB ECM established `192.168.42.0/24` subnet, board fixed IP `192.168.42.1`
 
-## 心跳
+## Heartbeat
 
-App 应每隔 10-15 秒发送一次心跳消息 (id 为 `"heartbeat"` 或 `"ping"` 的 JSON)，板子会原样回显，App 以此检测连接活性。
+The app should send a heartbeat message every 10-15 seconds (JSON with id `"heartbeat"` or `"ping"`), and the board will echo it back. The app uses this to detect connection liveness.
 
-示例:
+Example:
 ```json
 {"id": "heartbeat", "ok": true}
 ```
 
-板子会记录 `last_heartbeat_at` 时间戳，超过 60 秒未收到心跳视为连接不健康。
+The board records `last_heartbeat_at` timestamp; no heartbeat for more than 60 seconds is considered unhealthy connection.
 
-## 消息格式
+## Message Format
 
-### BridgeCommand (板子 → App)
+### BridgeCommand (board → app)
 
 ```typescript
 {
-  id: string;              // 唯一命令 ID
-  type: string;            // 命令类型 (见下方)
-  timeout_ms?: number;     // 超时毫秒 (可选，默认 5000)
+  id: string;              // Unique command ID
+  type: string;            // Command type (see below)
+  timeout_ms?: number;     // Timeout milliseconds (optional, default 5000)
   
-  // 以下字段根据 type 使用
-  ios_urls?: string[];           // open_app 专用
-  android_packages?: string[];   // open_app 专用
-  payload?: object;              // 其他命令类型的 JSON 负载
+  // Following fields used based on type
+  ios_urls?: string[];           // open_app specific
+  android_packages?: string[];   // open_app specific
+  payload?: object;              // JSON payload for other command types
 }
 ```
 
-### BridgeCommandResponse (App → 板子)
+### BridgeCommandResponse (app → board)
 
 ```typescript
 {
-  id: string;       // 与 BridgeCommand.id 一致
-  ok: boolean;      // 执行成功 true，失败 false
-  method?: string;  // 执行方式 (可选)
-  error?: string;   // ok=false 时填充错误信息
-  data?: object;    // 返回数据 (可选，读类命令使用)
+  id: string;       // Matches BridgeCommand.id
+  ok: boolean;      // Execution success true, failure false
+  method?: string;  // Execution method (optional)
+  error?: string;   // Filled when ok=false with error info
+  data?: object;    // Return data (optional, used by read commands)
 }
 ```
 
-### AppEvent (App → 板子)
+### AppEvent (app → board)
 
-App 也可以主动发送事件消息。事件复用 `BridgeCommandResponse` 外层字段，但 `id`/`method` 不对应任何板子下发的命令，板子不会把它当作 pending command 回执。
+The app can also actively send event messages. Events reuse the `BridgeCommandResponse` outer fields, but `id`/`method` don't correspond to any board-issued command; the board won't treat it as a pending command acknowledgment.
 
-当前事件:
+Current events:
 
-- `phone_environment`: App 在 WebSocket 连接成功、从后台回到前台时上报手机环境快照。
+- `phone_environment`: App reports phone environment snapshot upon WebSocket connection success and returning from background to foreground.
 
-示例:
+Example:
 
 ```json
 {
@@ -111,17 +111,17 @@ App 也可以主动发送事件消息。事件复用 `BridgeCommandResponse` 外
 }
 ```
 
-板子会把最新完整环境写入 `GET /api/phone-bridge/status` 的 `environment` 字段。每轮 Agent runtime context 只注入精简摘要：连接状态、系统类型/版本、语言地区/时区、屏幕尺寸、已确认可打开的第三方候选 App。断开连接时清理环境，避免使用旧信息。
+The board writes the latest complete environment to the `environment` field of `GET /api/phone-bridge/status`. Each Agent runtime context only injects a streamlined summary: connection status, system type/version, language/region/timezone, screen dimensions, confirmed openable third-party candidate apps. Environment is cleared on disconnection to avoid using stale information.
 
-`system_apps` 表示系统内置 App/能力，iOS 上不依赖 `canOpenURL` 判断是否存在；`third_party_apps` 表示第三方候选 App，iOS 通过 `canOpenURL`、Android 通过 package launchability 探测。`available_apps` 是兼容旧板子的第三方候选摘要，新实现应优先读取拆分后的字段。
+`system_apps` represents system built-in apps/capabilities; on iOS doesn't depend on `canOpenURL` to determine existence; `third_party_apps` represents third-party candidate apps, probed via `canOpenURL` on iOS and package launchability on Android. `available_apps` is a legacy third-party candidate summary for old board compatibility; new implementations should prioritize reading the split fields.
 
-## 命令类型
+## Command Types
 
 ### 1. `open_app`
 
-打开指定 App 或 URL。
+Open specified app or URL.
 
-**请求**:
+**Request**:
 ```json
 {
   "id": "open_001",
@@ -132,12 +132,12 @@ App 也可以主动发送事件消息。事件复用 `BridgeCommandResponse` 外
 }
 ```
 
-**iOS 实现**: 调用 `UIApplication.shared.open(URL(string: ios_urls[0])!)` 尝试打开第一个 URL。  
-**Android 实现**: 调用 `packageManager.getLaunchIntentForPackage(android_packages[0])` 或解析 deeplink。
+**iOS implementation**: Call `UIApplication.shared.open(URL(string: ios_urls[0])!)` to attempt opening the first URL.  
+**Android implementation**: Call `packageManager.getLaunchIntentForPackage(android_packages[0])` or parse deeplink.
 
-浏览器入口不要绑定固定网站：打开浏览器本身时传浏览器 URL scheme / Android browser intent；打开指定网页时传具体 `http`/`https` URL（Android 使用 `android.intent.action.VIEW:<url>`）。
+Browser entry should not be tied to a fixed website: when opening browser itself, pass browser URL scheme / Android browser intent; when opening specific webpage, pass specific `http`/`https` URL (Android uses `android.intent.action.VIEW:<url>`).
 
-**响应**:
+**Response**:
 ```json
 {
   "id": "open_001",
@@ -146,10 +146,10 @@ App 也可以主动发送事件消息。事件复用 `BridgeCommandResponse` 外
 }
 ```
 
-`method` 表示 App 侧采用的底层机制，常见值包括 `ios_url_scheme`、`ios_shortcut`、`android_intent`、`android_deeplink`、`launch_package`、`dial`、`open_url`。其中 `open_url` 只表示显式网页 URL。
-Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任务的 `method`（例如打开 App 返回 `open_app`，打开网页返回 `open_url`），并把底层值放在 `mechanism` 字段中。
+`method` indicates the underlying mechanism used by the app side, common values include `ios_url_scheme`, `ios_shortcut`, `android_intent`, `android_deeplink`, `launch_package`, `dial`, `open_url`. Where `open_url` only indicates explicit webpage URL.
+The Agent's exposed `open_app` tool normalizes these underlying mechanisms into task-oriented `method` (e.g., opening app returns `open_app`, opening webpage returns `open_url`), and places the underlying value in the `mechanism` field.
 
-失败时:
+On failure:
 ```json
 {
   "id": "open_001",
@@ -162,9 +162,9 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 
 ### 2. `clipboard_read`
 
-读取系统剪贴板内容。
+Read system clipboard content.
 
-**请求**:
+**Request**:
 ```json
 {
   "id": "clip_read_001",
@@ -173,48 +173,48 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-**iOS 实现**: `UIPasteboard.general.string`  
-**Android 实现**: `ClipboardManager.getPrimaryClip()`
+**iOS implementation**: `UIPasteboard.general.string`  
+**Android implementation**: `ClipboardManager.getPrimaryClip()`
 
-**响应**:
+**Response**:
 ```json
 {
   "id": "clip_read_001",
   "ok": true,
   "data": {
-    "text": "剪贴板内容"
+    "text": "clipboard content"
   }
 }
 ```
 
-空剪贴板返回 `"text": ""`。
+Empty clipboard returns `"text": ""`.
 
-**权限**:
-- iOS 16+ 会显示粘贴横幅，频繁读会打扰用户
-- Android 10+ 只有前台 app 可读剪贴板，后台需要 foreground service
+**Permissions**:
+- iOS 16+ will display paste banner, frequent reads will disturb users
+- Android 10+ only foreground app can read clipboard, background needs foreground service
 
 ---
 
 ### 3. `clipboard_write`
 
-写入系统剪贴板。
+Write to system clipboard.
 
-**请求**:
+**Request**:
 ```json
 {
   "id": "clip_write_001",
   "type": "clipboard_write",
   "payload": {
-    "text": "要复制的内容"
+    "text": "content to copy"
   },
   "timeout_ms": 5000
 }
 ```
 
-**iOS 实现**: `UIPasteboard.general.string = payload.text`  
-**Android 实现**: `ClipboardManager.setPrimaryClip(ClipData.newPlainText("label", text))`
+**iOS implementation**: `UIPasteboard.general.string = payload.text`  
+**Android implementation**: `ClipboardManager.setPrimaryClip(ClipData.newPlainText("label", text))`
 
-**响应**:
+**Response**:
 ```json
 {
   "id": "clip_write_001",
@@ -226,39 +226,39 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 
 ### 4. `calendar_create`
 
-创建日历事件。
+Create calendar event.
 
-**请求**:
+**Request**:
 ```json
 {
   "id": "cal_create_001",
   "type": "calendar_create",
   "payload": {
-    "title": "牙医预约",
+    "title": "Dentist appointment",
     "start_at": "2026-06-02T15:00:00+08:00",
     "end_at": "2026-06-02T16:00:00+08:00",
     "all_day": false,
-    "location": "诊所",
-    "notes": "带医保卡",
+    "location": "Clinic",
+    "notes": "Bring insurance card",
     "alarm_minutes_before": 30
   },
   "timeout_ms": 8000
 }
 ```
 
-**字段说明**:
-- `title` (必需): 事件标题
-- `start_at` (必需): 开始时间 (RFC3339 格式，带时区)
-- `end_at` (可选): 结束时间，未提供时默认 start_at + 1 小时
-- `all_day` (可选): 是否全天事件，默认 false
-- `location` (可选): 地点
-- `notes` (可选): 备注
-- `alarm_minutes_before` (可选): 提前多少分钟提醒，默认不设提醒
+**Field descriptions**:
+- `title` (required): Event title
+- `start_at` (required): Start time (RFC3339 format with timezone)
+- `end_at` (optional): End time, defaults to start_at + 1 hour if not provided
+- `all_day` (optional): Whether all-day event, default false
+- `location` (optional): Location
+- `notes` (optional): Notes
+- `alarm_minutes_before` (optional): Reminder minutes before, default no reminder
 
-**iOS 实现**: 使用 `EventKit` 框架，需要 `NSCalendarsUsageDescription` 或 `NSCalendarsWriteOnlyAccessUsageDescription` 权限。  
-**Android 实现**: 使用 `CalendarContract` API，需要 `WRITE_CALENDAR` 权限。
+**iOS implementation**: Uses `EventKit` framework, requires `NSCalendarsUsageDescription` or `NSCalendarsWriteOnlyAccessUsageDescription` permission.  
+**Android implementation**: Uses `CalendarContract` API, requires `WRITE_CALENDAR` permission.
 
-**响应**:
+**Response**:
 ```json
 {
   "id": "cal_create_001",
@@ -269,15 +269,15 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-`event_id` 是平台返回的事件唯一标识，用于后续删除。
+`event_id` is the platform-returned event unique identifier for subsequent deletion.
 
 ---
 
 ### 5. `calendar_query`
 
-查询指定时间范围内的日历事件。
+Query calendar events within specified time range.
 
-**请求**:
+**Request**:
 ```json
 {
   "id": "cal_query_001",
@@ -290,10 +290,10 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-**iOS 实现**: `EKEventStore.events(matching:)` 查询 `start_at` 到 `end_at` 范围。  
-**Android 实现**: 查询 `CalendarContract.Instances` 表，需要 `READ_CALENDAR` 权限。
+**iOS implementation**: `EKEventStore.events(matching:)` queries `start_at` to `end_at` range.  
+**Android implementation**: Queries `CalendarContract.Instances` table, requires `READ_CALENDAR` permission.
 
-**响应**:
+**Response**:
 ```json
 {
   "id": "cal_query_001",
@@ -302,25 +302,25 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
     "events": [
       {
         "event_id": "ios_calendar_id_123",
-        "title": "牙医预约",
+        "title": "Dentist appointment",
         "start_at": "2026-06-02T15:00:00+08:00",
         "end_at": "2026-06-02T16:00:00+08:00",
-        "location": "诊所"
+        "location": "Clinic"
       }
     ]
   }
 }
 ```
 
-无事件时返回空数组 `"events": []`。
+Returns empty array `"events": []` when no events.
 
 ---
 
 ### 6. `calendar_delete`
 
-删除指定日历事件。
+Delete specified calendar event.
 
-**请求**:
+**Request**:
 ```json
 {
   "id": "cal_delete_001",
@@ -332,10 +332,10 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-**iOS 实现**: `EKEventStore.remove(event:, span:, commit:)`  
-**Android 实现**: `ContentResolver.delete(CalendarContract.Events.CONTENT_URI, ...)`
+**iOS implementation**: `EKEventStore.remove(event:, span:, commit:)`  
+**Android implementation**: `ContentResolver.delete(CalendarContract.Events.CONTENT_URI, ...)`
 
-**响应**:
+**Response**:
 ```json
 {
   "id": "cal_delete_001",
@@ -343,35 +343,35 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-如果事件不存在，可返回 `ok: false, error: "Event not found"`，也可返回 `ok: true` (幂等删除)。
+If event doesn't exist, can return `ok: false, error: "Event not found"` or return `ok: true` (idempotent deletion).
 
 ---
 
 ### 7. `contacts_query`
 
-查询通讯录联系人。
+Query contacts.
 
-**请求**:
+**Request**:
 ```json
 {
   "id": "contacts_query_001",
   "type": "contacts_query",
   "payload": {
-    "query": "张三",
+    "query": "Zhang San",
     "limit": 20
   },
   "timeout_ms": 8000
 }
 ```
 
-**字段说明**:
-- `query` (可选): 搜索关键词，匹配姓名或电话号码
-- `limit` (可选): 最多返回数量，默认 20
+**Field descriptions**:
+- `query` (optional): Search keyword, matches name or phone number
+- `limit` (optional): Maximum return count, default 20
 
-**iOS 实现**: 使用 `CNContactStore` 查询，需要 `NSContactsUsageDescription` 权限。  
-**Android 实现**: 查询 `ContactsContract` API，需要 `READ_CONTACTS` 权限。
+**iOS implementation**: Uses `CNContactStore` query, requires `NSContactsUsageDescription` permission.  
+**Android implementation**: Queries `ContactsContract` API, requires `READ_CONTACTS` permission.
 
-**响应**:
+**Response**:
 ```json
 {
   "id": "contacts_query_001",
@@ -380,7 +380,7 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
     "contacts": [
       {
         "contact_id": "contact_123",
-        "name": "张三",
+        "name": "Zhang San",
         "phone_numbers": ["+86 138 1234 5678"],
         "emails": ["zhangsan@example.com"]
       }
@@ -389,41 +389,41 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-无匹配联系人时返回空数组 `"contacts": []`。
+Returns empty array `"contacts": []` when no matching contacts.
 
 ---
 
 ### 8. `contacts_create`
 
-新增联系人。
+Add new contact.
 
-**请求**:
+**Request**:
 ```json
 {
   "id": "contacts_create_001",
   "type": "contacts_create",
   "payload": {
-    "name": "李四",
+    "name": "Li Si",
     "phone_numbers": ["+86 139 8765 4321"],
     "emails": ["lisi@example.com"],
-    "organization": "公司名",
-    "notes": "备注信息"
+    "organization": "Company name",
+    "notes": "Notes"
   },
   "timeout_ms": 8000
 }
 ```
 
-**字段说明**:
-- `name` (必需): 联系人姓名
-- `phone_numbers` (可选): 电话号码数组
-- `emails` (可选): 邮箱地址数组
-- `organization` (可选): 公司/组织名称
-- `notes` (可选): 备注信息
+**Field descriptions**:
+- `name` (required): Contact name
+- `phone_numbers` (optional): Phone number array
+- `emails` (optional): Email address array
+- `organization` (optional): Company/organization name
+- `notes` (optional): Notes
 
-**iOS 实现**: 使用 `CNContactStore.add(CNSaveRequest)` 创建，需要 `NSContactsUsageDescription` 权限。  
-**Android 实现**: 使用 `ContentResolver.insert(ContactsContract.RawContacts.CONTENT_URI)`，需要 `WRITE_CONTACTS` 权限。
+**iOS implementation**: Uses `CNContactStore.add(CNSaveRequest)` to create, requires `NSContactsUsageDescription` permission.  
+**Android implementation**: Uses `ContentResolver.insert(ContactsContract.RawContacts.CONTENT_URI)`, requires `WRITE_CONTACTS` permission.
 
-**响应**:
+**Response**:
 ```json
 {
   "id": "contacts_create_001",
@@ -434,22 +434,22 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-`contact_id` 是平台返回的联系人唯一标识，用于后续更新。
+`contact_id` is the platform-returned contact unique identifier for subsequent updates.
 
 ---
 
 ### 9. `contacts_update`
 
-修改已有联系人。
+Update existing contact.
 
-**请求**:
+**Request**:
 ```json
 {
   "id": "contacts_update_001",
   "type": "contacts_update",
   "payload": {
     "contact_id": "contact_123",
-    "name": "李四（更新）",
+    "name": "Li Si (updated)",
     "phone_numbers": ["+86 139 8765 4321", "+86 010 1234 5678"],
     "emails": ["lisi_new@example.com"]
   },
@@ -457,14 +457,14 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-**字段说明**:
-- `contact_id` (必需): 要更新的联系人 ID
-- 其他字段同 `contacts_create`，提供的字段会覆盖原有值
+**Field descriptions**:
+- `contact_id` (required): Contact ID to update
+- Other fields same as `contacts_create`, provided fields will overwrite original values
 
-**iOS 实现**: 使用 `CNContactStore.execute(CNSaveRequest)` 更新联系人。  
-**Android 实现**: 使用 `ContentResolver.update()` 更新 `ContactsContract.Data` 表。
+**iOS implementation**: Uses `CNContactStore.execute(CNSaveRequest)` to update contact.  
+**Android implementation**: Uses `ContentResolver.update()` to update `ContactsContract.Data` table.
 
-**响应**:
+**Response**:
 ```json
 {
   "id": "contacts_update_001",
@@ -472,22 +472,22 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-如果联系人不存在，返回 `ok: false, error: "Contact not found"`。
+If contact doesn't exist, return `ok: false, error: "Contact not found"`.
 
 ---
 
 ### 10. `notification_send`
 
-发送本地通知。
+Send local notification.
 
-**请求**:
+**Request**:
 ```json
 {
   "id": "notification_001",
   "type": "notification_send",
   "payload": {
-    "title": "提醒",
-    "body": "该吃药了",
+    "title": "Reminder",
+    "body": "Time to take medicine",
     "schedule_at": "2026-06-04T18:00:00+08:00",
     "sound": true,
     "badge": 1
@@ -496,17 +496,17 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-**字段说明**:
-- `title` (必需): 通知标题
-- `body` (可选): 通知正文
-- `schedule_at` (可选): 定时发送时间 (RFC3339)，不填则立即发送
-- `sound` (可选): 是否播放声音，默认 true
-- `badge` (可选): 应用角标数字 (iOS)
+**Field descriptions**:
+- `title` (required): Notification title
+- `body` (optional): Notification body
+- `schedule_at` (optional): Scheduled send time (RFC3339), send immediately if not filled
+- `sound` (optional): Whether to play sound, default true
+- `badge` (optional): App badge number (iOS)
 
-**iOS 实现**: 使用 `UNUserNotificationCenter` 发送本地通知，需要用户授权。  
-**Android 实现**: 使用 `NotificationManager` 和 `AlarmManager` (定时)，Android 13+ 需要 `POST_NOTIFICATIONS` 权限。
+**iOS implementation**: Uses `UNUserNotificationCenter` to send local notification, requires user authorization.  
+**Android implementation**: Uses `NotificationManager` and `AlarmManager` (scheduled), Android 13+ requires `POST_NOTIFICATIONS` permission.
 
-**响应**:
+**Response**:
 ```json
 {
   "id": "notification_001",
@@ -517,110 +517,110 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-`notification_id` 可用于后续取消通知（未来扩展）。
+`notification_id` can be used for subsequent notification cancellation (future extension).
 
 ---
 
-## 错误处理
+## Error Handling
 
-当 App 无法执行命令时，应返回 `ok: false` 和 `error` 字段:
+When the app cannot execute a command, should return `ok: false` and `error` field:
 
 ```json
 {
   "id": "...",
   "ok": false,
-  "error": "需要日历权限"
+  "error": "Calendar permission required"
 }
 ```
 
-常见错误场景:
-- 权限未授予: `"需要日历权限"` / `"需要剪贴板权限"` / `"需要通讯录权限"` / `"需要通知权限"`
-- App 未安装: `"App not installed"`
-- 无效参数: `"Invalid start time format"`
-- 系统 API 失败: `"Calendar API error: ..."` / `"Contacts API error: ..."`
-- 联系人不存在: `"Contact not found"`
+Common error scenarios:
+- Permission not granted: `"Calendar permission required"` / `"Clipboard permission required"` / `"Contacts permission required"` / `"Notification permission required"`
+- App not installed: `"App not installed"`
+- Invalid parameters: `"Invalid start time format"`
+- System API failure: `"Calendar API error: ..."` / `"Contacts API error: ..."`
+- Contact doesn't exist: `"Contact not found"`
 
-## 超时与重连
+## Timeout and Reconnection
 
-- **超时**: 板子侧每个命令都有 `timeout_ms`，超时后放弃等待响应。App 应尽量在超时前响应。
-- **重连**: WebSocket 断开后，App 应自动重连，间隔 3-5 秒重试。板子侧没有主动重连机制。
-- **幂等**: 板子可能因超时重发命令，App 应尽量做到幂等 (如删除不存在的事件返回成功)。
+- **Timeout**: Each command on the board side has `timeout_ms`; stops waiting for response after timeout. App should respond before timeout as much as possible.
+- **Reconnection**: After WebSocket disconnects, app should auto-reconnect, retrying at 3-5 second intervals. Board side has no active reconnection mechanism.
+- **Idempotence**: Board may resend commands due to timeout; app should be as idempotent as possible (e.g., deleting non-existent event returns success).
 
-## 时间格式
+## Time Format
 
-所有时间字段必须是 **RFC3339 格式且带时区偏移**，例如:
-- `2026-06-02T15:00:00+08:00` (东八区下午3点)
-- `2026-06-02T07:00:00Z` (UTC 早上7点)
+All time fields must be **RFC3339 format with timezone offset**, e.g.:
+- `2026-06-02T15:00:00+08:00` (3pm GMT+8)
+- `2026-06-02T07:00:00Z` (7am UTC)
 
-解析时使用标准库 (iOS `ISO8601DateFormatter`, Android `Instant.parse`)。
+Use standard libraries for parsing (iOS `ISO8601DateFormatter`, Android `Instant.parse`).
 
-## 权限管理
+## Permission Management
 
 ### iOS
 
-- **剪贴板读取**: iOS 14+ 会显示横幅，无需声明权限
-- **日历**: 必须在 `Info.plist` 添加:
+- **Clipboard read**: iOS 14+ displays banner, no need to declare permission
+- **Calendar**: Must add to `Info.plist`:
   ```xml
   <key>NSCalendarsUsageDescription</key>
-  <string>用于快速创建和管理日历事件</string>
+  <string>Used to quickly create and manage calendar events</string>
   ```
-  iOS 17+ 细分为 `NSCalendarsFullAccessUsageDescription` (读写) 和 `NSCalendarsWriteOnlyAccessUsageDescription` (只写)。
-- **通讯录**: 必须在 `Info.plist` 添加:
+  iOS 17+ subdivided into `NSCalendarsFullAccessUsageDescription` (read/write) and `NSCalendarsWriteOnlyAccessUsageDescription` (write-only).
+- **Contacts**: Must add to `Info.plist`:
   ```xml
   <key>NSContactsUsageDescription</key>
-  <string>用于查询和管理联系人</string>
+  <string>Used to query and manage contacts</string>
   ```
-- **通知**: 需要通过 `UNUserNotificationCenter.requestAuthorization` 请求用户授权。
+- **Notification**: Need to request user authorization via `UNUserNotificationCenter.requestAuthorization`.
 
 ### Android
 
-- **剪贴板**: Android 10+ 后台无法读剪贴板，需要 foreground service 或确保 App 在前台。
-- **日历**: 需要运行时权限:
+- **Clipboard**: Android 10+ background cannot read clipboard, needs foreground service or ensure app is in foreground.
+- **Calendar**: Requires runtime permissions:
   ```xml
   <uses-permission android:name="android.permission.READ_CALENDAR" />
   <uses-permission android:name="android.permission.WRITE_CALENDAR" />
   ```
-  首次调用时弹授权框，拒绝后返回 `ok: false, error: "需要日历权限"`。
-- **通讯录**: 需要运行时权限:
+  Authorization popup on first call; after rejection return `ok: false, error: "Calendar permission required"`.
+- **Contacts**: Requires runtime permissions:
   ```xml
   <uses-permission android:name="android.permission.READ_CONTACTS" />
   <uses-permission android:name="android.permission.WRITE_CONTACTS" />
   ```
-- **通知**: Android 13+ 需要运行时权限:
+- **Notification**: Android 13+ requires runtime permission:
   ```xml
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
   ```
 
-## 测试建议
+## Testing Recommendations
 
-1. **Mock 测试**: App 可在 WebSocket 连接失败时进入 mock 模式，本地模拟命令响应，便于开发调试。
-2. **超时场景**: 测试权限弹框期间超时，确认 App 正确处理用户授权后的后续命令。
-3. **边界情况**: 空剪贴板、无日历事件、无效 `event_id`、全天事件、跨时区查询、空通讯录查询、重复联系人、无效 `contact_id`、定时通知取消等。
+1. **Mock testing**: App can enter mock mode when WebSocket connection fails, locally simulating command responses for development debugging convenience.
+2. **Timeout scenarios**: Test timeout during permission popup, confirm app correctly handles subsequent commands after user authorization.
+3. **Edge cases**: Empty clipboard, no calendar events, invalid `event_id`, all-day events, cross-timezone queries, empty contacts query, duplicate contacts, invalid `contact_id`, scheduled notification cancellation, etc.
 
-## 版本兼容
+## Version Compatibility
 
-当前协议版本 1.1，后续扩展新命令时:
-- 新增字段向后兼容 (旧版 App 忽略未知字段)
-- 新增命令类型，旧版 App 返回 `ok: false, error: "Unknown command type"`
-- 修改已有字段语义需升级版本号
+Current protocol version 1.1. When extending with new commands in the future:
+- New fields are backward compatible (old app ignores unknown fields)
+- New command types, old app returns `ok: false, error: "Unknown command type"`
+- Modifying existing field semantics requires version number upgrade
 
 ---
 
-## 附录: 完整示例
+## Appendix: Complete Examples
 
-### 心跳
-**App → 板子**:
+### Heartbeat
+**App → board**:
 ```json
 {"id": "heartbeat", "ok": true}
 ```
 
-**板子 → App (回显)**:
+**Board → app (echo)**:
 ```json
 {"id": "heartbeat", "ok": true}
 ```
 
-### 打开微信
-**板子 → App**:
+### Open WeChat
+**Board → app**:
 ```json
 {
   "id": "open_1717667890123_1",
@@ -631,7 +631,7 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-**App → 板子**:
+**App → board**:
 ```json
 {
   "id": "open_1717667890123_1",
@@ -640,8 +640,8 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-### 读剪贴板
-**板子 → App**:
+### Read Clipboard
+**Board → app**:
 ```json
 {
   "id": "clip_read_1717667890234_2",
@@ -650,7 +650,7 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-**App → 板子**:
+**App → board**:
 ```json
 {
   "id": "clip_read_1717667890234_2",
@@ -661,25 +661,25 @@ Agent 暴露的 `open_app` 工具会把这些底层机制归一化为面向任�
 }
 ```
 
-### 创建日历事件
-**板子 → App**:
+### Create Calendar Event
+**Board → app**:
 ```json
 {
   "id": "cal_create_1717667890345_3",
   "type": "calendar_create",
   "payload": {
-    "title": "团队会议",
+    "title": "Team meeting",
     "start_at": "2026-06-05T10:00:00+08:00",
     "end_at": "2026-06-05T11:00:00+08:00",
-    "location": "会议室 A",
-    "notes": "讨论 Q2 规划",
+    "location": "Meeting room A",
+    "notes": "Discuss Q2 planning",
     "alarm_minutes_before": 15
   },
   "timeout_ms": 8000
 }
 ```
 
-**App → 板子**:
+**App → board**:
 ```json
 {
   "id": "cal_create_1717667890345_3",
