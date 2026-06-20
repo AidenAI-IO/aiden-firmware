@@ -8,7 +8,7 @@ Allowing multiple processes to directly open `/dev/video0` can lead to resource 
 
 - Completes HDMI sync / EDID / DV timings / VI initialization at startup;
 - Copies frames to a ring buffer at a fixed FPS;
-- Provides frames to consumers (Agent, CLI, HTTP demo, etc.) through a socket;
+- Provides frames to consumers (Agent, CLI, HTTP examples, etc.) through a socket;
 - Supports restarting the capture manager on errors.
 
 ## Default Parameters

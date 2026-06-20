@@ -27,10 +27,10 @@ Aiden is an external hardware AI agent that sits between your phone/computer and
 ## Key Features
 
 ### 1. **True Portability**
-Most mobile agent projects are lab demos that require a laptop or desktop to run. Aiden is:
+Most mobile agent projects are lab prototypes that require a laptop or desktop to run. Aiden is:
 - **Pocket-sized** — Powered entirely by your phone's USB-C port (future versions will be credit-card-sized and magnetically attach to phone backs)
 - **Plug-and-play** — No setup, no pairing, no configuration wizards. Connect and start.
-- **Production-ready** — Designed for daily use, not just research demos
+- **Production-ready** — Designed for daily use, not just research prototypes
 
 ### 2. **Fully Open**
 - **Open-source firmware** — Complete C++ services and Go agent code

@@ -1,4 +1,4 @@
-# Aiden Hardware Demo Documentation Hub
+# Aiden Hardware Documentation Hub
 
 This documentation hub is the structured entry point for the project. The root `README.md` keeps only the project introduction, quick development info, and an index pointing to this directory.
 

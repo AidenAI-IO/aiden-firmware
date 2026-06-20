@@ -29,7 +29,7 @@ aiden-hardware-demo/
 | `uds_*` | Generic Unix domain socket transport layer |
 | `service_status.*` | Common service status enums |
 | `image_process.*` | Image cropping, black border removal, scaling, rotation |
-| `hid_server.*`, `example_usb_hid.cpp` | USB HID gadget and HTTP demo server |
+| `hid_server.*`, `example_usb_hid.cpp` | USB HID gadget and HTTP example server |
 | `config_web.*` | Device configuration web service, maintaining Agent TOML and Wi-Fi configuration |
 | `agent_toml.*` | C++ side Agent TOML parsing/writing |
 

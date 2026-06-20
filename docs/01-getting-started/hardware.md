@@ -2,7 +2,7 @@
 
 ## Target Hardware
 
-This project targets the Aiden hardware demo device. Current main components include:
+This project targets the Aiden hardware device. Current main components include:
 
 - [Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero): RV1106 / Rockchip platform development board running Buildroot Linux.
 - [TC358743XBG](https://toshiba.semicon-storage.com/eu/semiconductor/product/interface-bridge-ics-for-mobile-peripheral-devices/hdmir-interface-bridge-ics/detail.TC358743XBG.html): HDMI to CSI bridge chip for capturing external HDMI video.

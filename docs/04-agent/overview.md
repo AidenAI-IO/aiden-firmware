@@ -62,7 +62,7 @@ Device service:
 /oem/usr/bin/aiden-env-run /oem/usr/bin/agent -config /userdata/agent -addr :8080
 ```
 
-CLI demo:
+CLI runner:
 
 ```bash
 cd src/agent

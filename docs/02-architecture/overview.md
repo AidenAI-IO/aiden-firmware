@@ -1,6 +1,6 @@
 # System Architecture Overview
 
-Aiden Hardware Demo combines HDMI video capture, audio recording/playback, USB HID control, and LLM Agent into an automated demonstration system that runs on-device.
+Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID control, and LLM Agent into an automated system that runs on-device.
 
 ## Overall Architecture
 
@@ -40,7 +40,7 @@ Aiden Hardware Demo combines HDMI video capture, audio recording/playback, USB H
 | Hardware Abstraction | `src/aiden_sdk.*` | Encapsulates GPIO, audio, video, HID-related low-level capabilities |
 | Common Transport | `src/uds_*` | Unix domain socket one-shot request/response transport layer |
 | C++ Services | `frame_service`, `audio_service` | Centrally manage hardware resources and expose them to other processes |
-| Utility Programs | `*_cli`, `example_*`, `image_process` | Debugging, validation, and single-capability demonstrations |
+| Utility Programs | `*_cli`, `example_*`, `image_process` | Debugging, validation, and single-capability examples |
 | Go Agent | `src/agent` | LLM runtime, tool invocation, Web UI, HTTP Tool API, voice pipeline |
 | Firmware Integration | `overlay/`, `pico-sdk/` | Startup scripts, configuration files, userdata/oem injection |
 
