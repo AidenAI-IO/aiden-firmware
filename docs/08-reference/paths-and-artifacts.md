@@ -43,8 +43,7 @@
 | `/run/audio_service/audio_service.sock` | Audio Service socket |
 | `/var/log/frame_service/frame_service.log` | Frame Service 日志 |
 | `/var/log/audio_service/audio_service.log` | Audio Service 日志 |
-| `/var/log/agent/agent.log` | Agent init 脚本日志 |
-| `/userdata/agent/log/agent-YYYYMMDD.log` | Agent runtime 日志（按日期）|
+| `/var/log/agent/agent.log` | Agent 日志（包含 init 脚本和 runtime 输出）|
 | `/userdata/agent/log/llm-http-YYYYMMDD-{session_id}.log` | LLM HTTP 请求/响应日志（JSONL 格式，按 session 组织）|
 
 ## 配置文件
@@ -104,13 +103,17 @@ jq . /userdata/agent/log/llm-http-$(date +%Y%m%d)-*.log
 
 ## Agent 日志
 
-### agent-YYYYMMDD.log
+### agent.log
 
-Agent runtime 主日志，包含：
+**位置**: `/var/log/agent/agent.log`
+
+Agent 主日志，包含 init 脚本和 runtime 的所有输出，包括：
 - Session 启动标记（带 session ID）
 - Agent 运行状态
 - 工具调用信息
 - 错误和警告
+
+**输出方式**: Init 脚本 (`/etc/init.d/S53agent`) 通过重定向将 agent 进程的 stdout/stderr 写入此文件。
 
 **Session 分隔格式**：
 ```
@@ -118,6 +121,18 @@ Agent runtime 主日志，包含：
 2026/06/20 15:06:16 [INFO] NEW SESSION STARTED
 2026/06/20 15:06:16 [INFO] Session ID: abc123def456
 2026/06/20 15:06:16 [INFO] ========================================
+```
+
+**查看日志**：
+```bash
+# 实时追踪
+tail -f /var/log/agent/agent.log
+
+# 查看最近的日志
+tail -100 /var/log/agent/agent.log
+
+# 搜索特定 session
+grep "abc123def456" /var/log/agent/agent.log
 ```
 
 ### llm-http-YYYYMMDD-{session_id}.log
