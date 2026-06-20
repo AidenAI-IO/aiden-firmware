@@ -31,7 +31,7 @@ The board records `last_heartbeat_at` timestamp; no heartbeat for more than 60 s
   id: string;              // Unique command ID
   type: string;            // Command type (see below)
   timeout_ms?: number;     // Timeout milliseconds (optional, default 5000)
-  
+
   // Following fields used based on type
   ios_urls?: string[];           // open_app specific
   android_packages?: string[];   // open_app specific
@@ -132,7 +132,7 @@ Open specified app or URL.
 }
 ```
 
-**iOS implementation**: Call `UIApplication.shared.open(URL(string: ios_urls[0])!)` to attempt opening the first URL.  
+**iOS implementation**: Call `UIApplication.shared.open(URL(string: ios_urls[0])!)` to attempt opening the first URL.
 **Android implementation**: Call `packageManager.getLaunchIntentForPackage(android_packages[0])` or parse deeplink.
 
 Browser entry should not be tied to a fixed website: when opening browser itself, pass browser URL scheme / Android browser intent; when opening specific webpage, pass specific `http`/`https` URL (Android uses `android.intent.action.VIEW:<url>`).
@@ -173,7 +173,7 @@ Read system clipboard content.
 }
 ```
 
-**iOS implementation**: `UIPasteboard.general.string`  
+**iOS implementation**: `UIPasteboard.general.string`
 **Android implementation**: `ClipboardManager.getPrimaryClip()`
 
 **Response**:
@@ -211,7 +211,7 @@ Write to system clipboard.
 }
 ```
 
-**iOS implementation**: `UIPasteboard.general.string = payload.text`  
+**iOS implementation**: `UIPasteboard.general.string = payload.text`
 **Android implementation**: `ClipboardManager.setPrimaryClip(ClipData.newPlainText("label", text))`
 
 **Response**:
@@ -255,7 +255,7 @@ Create calendar event.
 - `notes` (optional): Notes
 - `alarm_minutes_before` (optional): Reminder minutes before, default no reminder
 
-**iOS implementation**: Uses `EventKit` framework, requires `NSCalendarsUsageDescription` or `NSCalendarsWriteOnlyAccessUsageDescription` permission.  
+**iOS implementation**: Uses `EventKit` framework, requires `NSCalendarsUsageDescription` or `NSCalendarsWriteOnlyAccessUsageDescription` permission.
 **Android implementation**: Uses `CalendarContract` API, requires `WRITE_CALENDAR` permission.
 
 **Response**:
@@ -290,7 +290,7 @@ Query calendar events within specified time range.
 }
 ```
 
-**iOS implementation**: `EKEventStore.events(matching:)` queries `start_at` to `end_at` range.  
+**iOS implementation**: `EKEventStore.events(matching:)` queries `start_at` to `end_at` range.
 **Android implementation**: Queries `CalendarContract.Instances` table, requires `READ_CALENDAR` permission.
 
 **Response**:
@@ -332,7 +332,7 @@ Delete specified calendar event.
 }
 ```
 
-**iOS implementation**: `EKEventStore.remove(event:, span:, commit:)`  
+**iOS implementation**: `EKEventStore.remove(event:, span:, commit:)`
 **Android implementation**: `ContentResolver.delete(CalendarContract.Events.CONTENT_URI, ...)`
 
 **Response**:
@@ -368,7 +368,7 @@ Query contacts.
 - `query` (optional): Search keyword, matches name or phone number
 - `limit` (optional): Maximum return count, default 20
 
-**iOS implementation**: Uses `CNContactStore` query, requires `NSContactsUsageDescription` permission.  
+**iOS implementation**: Uses `CNContactStore` query, requires `NSContactsUsageDescription` permission.
 **Android implementation**: Queries `ContactsContract` API, requires `READ_CONTACTS` permission.
 
 **Response**:
@@ -420,7 +420,7 @@ Add new contact.
 - `organization` (optional): Company/organization name
 - `notes` (optional): Notes
 
-**iOS implementation**: Uses `CNContactStore.add(CNSaveRequest)` to create, requires `NSContactsUsageDescription` permission.  
+**iOS implementation**: Uses `CNContactStore.add(CNSaveRequest)` to create, requires `NSContactsUsageDescription` permission.
 **Android implementation**: Uses `ContentResolver.insert(ContactsContract.RawContacts.CONTENT_URI)`, requires `WRITE_CONTACTS` permission.
 
 **Response**:
@@ -461,7 +461,7 @@ Update existing contact.
 - `contact_id` (required): Contact ID to update
 - Other fields same as `contacts_create`, provided fields will overwrite original values
 
-**iOS implementation**: Uses `CNContactStore.execute(CNSaveRequest)` to update contact.  
+**iOS implementation**: Uses `CNContactStore.execute(CNSaveRequest)` to update contact.
 **Android implementation**: Uses `ContentResolver.update()` to update `ContactsContract.Data` table.
 
 **Response**:
@@ -503,7 +503,7 @@ Send local notification.
 - `sound` (optional): Whether to play sound, default true
 - `badge` (optional): App badge number (iOS)
 
-**iOS implementation**: Uses `UNUserNotificationCenter` to send local notification, requires user authorization.  
+**iOS implementation**: Uses `UNUserNotificationCenter` to send local notification, requires user authorization.
 **Android implementation**: Uses `NotificationManager` and `AlarmManager` (scheduled), Android 13+ requires `POST_NOTIFICATIONS` permission.
 
 **Response**:

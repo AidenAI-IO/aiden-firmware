@@ -583,17 +583,17 @@ Phase 4: Benchmark
 
 ✅ All device memory types implemented:
 
-**1. Device Profile**  
+**1. Device Profile**
 - Automatically records screen dimensions, language, and other device info
 - Infers and updates device profile from episodes
 
-**2. App Profile (Enhanced)**  
+**2. App Profile (Enhanced)**
 - **Cumulative updates**: Accumulates `pages_seen`, `tools_used`, `success_count` across multiple episodes
 - **Failure tracking**: Records `known_issues` list
 - **Readable content**: Renders as "Pages observed: Home, Cart / Tools used: launch_app, touch_gesture"
 - Supports ASCII-safe paths (handles Chinese app names)
 
-**3. Procedure (Enhanced)**  
+**3. Procedure (Enhanced)**
 - **Action detail storage**: New `ProcedureStep` structure records for each step:
   - Tool name, content (from tool_call event's `content`)
   - Coordinates (`x=500,y=850`), input text
@@ -601,16 +601,16 @@ Phase 4: Benchmark
 - **Page-based indexing**: procedure ID changed to `proc_<hash(app, page, goal)>`, page_name enters entities/tags
 - **Structured rendering**: Expands first 5 steps in prompt, showing complete operation path
 
-**4. Navigation Memory (New)**  
+**4. Navigation Memory (New)**
 - Extracts **page transition rules**: `Meituan/Home → Meituan/Cart`
 - Records tools, coordinates, tool-call content, decoupled from specific task goals
 - Routes to Planner at same level as procedure
 
-**5. Calibration Memory**  
+**5. Calibration Memory**
 - Records calibration info like normalized coordinate preference
 - Includes applicability conditions and evidence refs
 
-**6. Failure Memory**  
+**6. Failure Memory**
 - Writes failure-type memories on failure
 - Routes to Verifier to indicate known failure modes
 
