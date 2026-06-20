@@ -1,6 +1,6 @@
 # Agent 配置参考
 
-Agent 期望 `-config` 指向一个目录，而不是单个配置文件。
+Agent 期望 `-config` 指向一个目录，而不是单个配置文件。本页同时覆盖设备上的 **Config Web 配置页面**（编辑这些字段最常用的方式）和 `agent.toml` 各字段的完整参考。
 
 ## 目录布局
 
@@ -13,6 +13,77 @@ Agent 期望 `-config` 指向一个目录，而不是单个配置文件。
 ```
 
 TOML 是当前支持的配置格式；JSON 配置已废弃。
+
+## Config Web: the device config page
+
+`config_web` is a lightweight C++ web service for maintaining the device Agent configuration, system environment variables, and Wi-Fi configuration. It is the primary way to edit the fields documented on this page without manually editing `agent.toml`.
+
+On a device, open the config page in a browser at the USB-network gateway address:
+
+```text
+http://192.168.42.1
+```
+
+The firmware starts `config_web` on port 80 (see the default command below).
+
+### Default deployment
+
+Init script:
+
+```text
+/etc/init.d/S56config_web
+```
+
+Default command:
+
+```bash
+/oem/usr/bin/aiden-env-run /oem/usr/bin/config_web --bind=0.0.0.0 --port=80 --config=/userdata/agent/agent.toml --wifi-config=/userdata/wpa_supplicant.conf --system-env=/userdata/system/env
+```
+
+Common commands:
+
+```bash
+/etc/init.d/S56config_web start
+/etc/init.d/S56config_web stop
+/etc/init.d/S56config_web restart
+```
+
+### Parameters
+
+Usage from the source:
+
+```text
+config_web [--bind=IP] [--port=PORT] [--config=PATH] [--wifi-config=PATH] [--system-env=PATH]
+```
+
+| Parameter | Description |
+| --- | --- |
+| `--bind=IP` | Bind address, default `0.0.0.0` |
+| `--port=PORT` | Listen port |
+| `--config=PATH` | Agent TOML config path |
+| `--wifi-config=PATH` | `wpa_supplicant.conf` path |
+| `--system-env=PATH` | System environment file path |
+
+### What the page can configure
+
+The page fields cover the following config sections (all detailed later on this page):
+
+- `agent`: `input_mode`, `trigger_mode`, VAD params, `max_iterations`, `custom_instruction`, `additional_prompt`
+- `model`: provider, token_env, model, api_key, base_url, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
+- `stt`: provider, api_key, model, base_url, Tencent ASR fields
+- `tts`: provider, api_key, model, voice_id, emotion, speed
+- `audio`: socket, sample_rate, channels, bit_width
+- `hid`: keyboard_device, mouse_device, frame_socket
+- `env`: shell-style environment text written to `/userdata/system/env`, including optional proxy variables such as `http_proxy`, `HTTPS_PROXY`, and `NO_PROXY`
+- Wi-Fi: SSID / PSK etc. (written to `/userdata/wpa_supplicant.conf`)
+
+### Runtime apply behavior
+
+Config Web writes Agent, Wi-Fi, and system environment files. Saving Agent config still schedules an Agent restart. OTA updates read the effective `/userdata/system/env` file when `ota update` is run, so saving system environment no longer restarts OTA:
+
+```bash
+/etc/init.d/S53agent restart
+```
 
 ## Web UI 最小配置
 

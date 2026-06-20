@@ -26,12 +26,11 @@
 - [Frame Service：HDMI 帧捕获服务](03-services/frame-service.md)
 - [Audio Service：音频录放服务](03-services/audio-service.md)
 - [USB HID 与设备控制](03-services/usb-hid.md)
-- [Config Web：设备配置网页](03-services/config-web.md)
 
 ### 04. Go Agent
 
 - [Agent 概览](04-agent/overview.md)
-- [Agent 配置参考](04-agent/configuration.md)
+- [Agent 配置参考（含 Config Web 配置页）](04-agent/configuration.md)
 - [Agent Context Lifecycle](04-agent/context-lifecycle.md)
 - [Session Memory Compaction](04-agent/session-memory.md)
 - [工具 HTTP API](04-agent/tools-http-api.md)

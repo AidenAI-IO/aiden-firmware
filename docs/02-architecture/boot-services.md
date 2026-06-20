@@ -107,7 +107,7 @@ WATCHDOG_PID_FILE=/run/audio_service/audio_service_watchdog.pid
 /oem/usr/bin/aiden-env-run /oem/usr/bin/config_web --bind=0.0.0.0 --config=/userdata/agent/agent.toml --wifi-config=/userdata/wpa_supplicant.conf --system-env=/userdata/system/env
 ```
 
-用途：通过网页维护 Agent 配置和 Wi-Fi 配置。默认 bind / port 见 [Config Web](../03-services/config-web.md)。
+用途：通过网页维护 Agent 配置和 Wi-Fi 配置。默认 bind / port 见 [Config Web](../04-agent/configuration.md#config-web-the-device-config-page)。
 
 ## System Environment
 

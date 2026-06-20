@@ -10,7 +10,7 @@ This page is the main path for anyone touching Aiden hardware for the first time
 | --- | --- | --- |
 | 1 | Wire up per the hardware design | [Hardware & Wiring](hardware.md) |
 | 2 | Flash the `update.img` firmware onto the Pico Zero | [Firmware Build & Flashing](firmware.md) |
-| 3 | Open the config page and connect to Wi-Fi | [Config Web](../03-services/config-web.md) |
+| 3 | Open the config page and connect to Wi-Fi | [Config Web](../04-agent/configuration.md#config-web-the-device-config-page) |
 | 4 | Configure keys such as model / tts / stt | [Agent Configuration](../04-agent/configuration.md) |
 | 5 | Bring the board up and verify | [Testing & Verification](testing.md) |
 | 6 | Understand the architecture and modules | [Architecture Overview](../02-architecture/overview.md) |
@@ -62,7 +62,7 @@ On the page, configure Wi-Fi first:
 - **Only 2.4GHz networks are supported**; 5GHz does not work;
 - Enter the SSID and password; on save it is written to `/userdata/wpa_supplicant.conf`.
 
-The config page also maintains Agent configuration and system environment variables. See [Config Web](../03-services/config-web.md) for details.
+The config page also maintains Agent configuration and system environment variables. See [Config Web](../04-agent/configuration.md#config-web-the-device-config-page) for details.
 
 ## 4. Configure the Keys
 
@@ -111,8 +111,8 @@ Then dive into each module:
 - [Frame Service](../03-services/frame-service.md): HDMI frame capture service
 - [Audio Service](../03-services/audio-service.md): audio record/playback service
 - [USB HID & Device Control](../03-services/usb-hid.md)
-- [Config Web](../03-services/config-web.md): device config web page
 - [Go Agent Overview](../04-agent/overview.md): LLM runtime, tool calling, voice pipeline
+- [Agent Configuration](../04-agent/configuration.md): agent.toml reference and the Config Web config page
 - [Tools HTTP API](../04-agent/tools-http-api.md)
 
 Source layout is in [Source Tree](../02-architecture/source-tree.md); boot services and runtime layout are in [Boot Services & Runtime Layout](../02-architecture/boot-services.md).
