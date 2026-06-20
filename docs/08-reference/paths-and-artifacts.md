@@ -121,13 +121,13 @@ LLM HTTP 请求/响应日志（JSONL 格式），每个 session 独立文件。
 
 **格式**：
 ```json
-{"ts":"15:00:00","kind":"http_request","status":0,"body":"{\"model\":\"...\",\"messages\":[...]}"}
-{"ts":"15:00:00","kind":"http_response","status":200,"body":"{\"choices\":[...]}"}
+{"ts":"15:00:00","kind":"request","status":0,"body":"{\"model\":\"...\",\"messages\":[...]}"}
+{"ts":"15:00:00","kind":"response","status":200,"body":"{\"choices\":[...]}"}
 ```
 
 **字段**：
 - `ts` - 时间戳（HH:MM:SS）
-- `kind` - `http_request`, `http_response`, `http_stream`, `http_error`
+- `kind` - `request`, `response`, `stream`, `error`
 - `status` - HTTP 状态码（请求为 0）
 - `body` - 请求/响应体（JSON 字符串）
 

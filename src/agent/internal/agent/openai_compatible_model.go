@@ -272,7 +272,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	}
 
 	// Log HTTP request body
-	_ = m.logRawHTTP(reqPayload.Model, "request", "http_request", 0, string(payloadBytes))
+	_ = m.logRawHTTP(reqPayload.Model, "request", "request", 0, string(payloadBytes))
 
 	endpoint := m.baseURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payloadBytes))
@@ -292,7 +292,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		_ = m.logRawHTTP(reqPayload.Model, "response", "http_error", resp.StatusCode, string(body))
+		_ = m.logRawHTTP(reqPayload.Model, "response", "error", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -310,7 +310,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 		if err != nil {
 			return nil, fmt.Errorf("read response: %w", err)
 		}
-		_ = m.logRawHTTP(reqPayload.Model, "response", "http_response", resp.StatusCode, string(body))
+		_ = m.logRawHTTP(reqPayload.Model, "response", "response", resp.StatusCode, string(body))
 		if err := json.Unmarshal(body, &decoded); err != nil {
 			return nil, fmt.Errorf("decode response: %w", err)
 		}
@@ -428,7 +428,7 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 
 	// Log the aggregated streaming response as a single line
 	if m.rawLogger != nil && len(rawStreamLines) > 0 {
-		_ = m.logRawHTTP(requestModel, "response", "http_stream", statusCode, strings.Join(rawStreamLines, "\n"))
+		_ = m.logRawHTTP(requestModel, "response", "stream", statusCode, strings.Join(rawStreamLines, "\n"))
 	}
 
 	orderedToolCalls := make([]compatibleToolCall, 0, len(toolCalls))
