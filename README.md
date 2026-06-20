@@ -22,7 +22,7 @@ Aiden is an external hardware AI agent that sits between your phone/computer and
 - No root/jailbreak required
 - Cross-app automation without API integrations
 - Works on locked-down enterprise devices
-- Universal compatibility — if it has a screen and USB-C, Aiden can control it
+- Broad compatibility — works with devices supporting USB-C DisplayPort Alt Mode (video output) and HID input
 
 ## Key Features
 
