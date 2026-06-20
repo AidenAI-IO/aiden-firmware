@@ -1,101 +1,101 @@
-# 固件构建与刷机
+# Firmware Build and Flashing
 
-## 获取预构建固件
+## Getting Prebuilt Firmware
 
-如果不想本地完整编译固件，可以从 Release 下载预构建镜像：
+If you don't want to compile the firmware locally from scratch, you can download a prebuilt image from Releases:
 
 - [Aiden Hardware Demo Releases](https://github.com/AidenAI-IO/aiden-hardware-demo/releases)
 
-通常刷入完整固件时使用 `update.img`。
+When flashing the full firmware, you typically use `update.img`.
 
-## 固件特性
+## Firmware Features
 
-本项目的固件基于 `pico-sdk` 构建，并包含以下定制：
+This project's firmware is built on `pico-sdk` and includes the following customizations:
 
-- Wi-Fi 默认使用板载天线；
-- Kernel 启用 TC358743 驱动；
-- DTS 添加 TC358743 支持；
-- 内置 1080p30-only EDID；
-- USB-C 口开机配置为 HID gadget；
-- 注入 `/overlay` 中的启动脚本、配置和应用二进制。
+- Wi-Fi uses the onboard antenna by default;
+- Kernel enables the TC358743 driver;
+- DTS adds TC358743 support;
+- Built-in 1080p30-only EDID;
+- USB-C port is configured as a HID gadget on boot;
+- Injects startup scripts, configuration, and application binaries from `/overlay`.
 
-相关底层改动可在 `pico-sdk/` 子模块中查看。
+The related low-level changes can be found in the `pico-sdk/` submodule.
 
-## 本地构建完整固件
+## Building the Full Firmware Locally
 
-需要 x86_64 Linux + Docker 环境，或可运行 amd64 容器的兼容环境：
+This requires an x86_64 Linux + Docker environment, or a compatible environment capable of running amd64 containers:
 
 ```bash
 ./build_image.sh
 ```
 
-`build_image.sh` 会以 privileged 模式启动 Luckfox Docker 镜像，并执行 `_build_image.sh`。流程概要：
+`build_image.sh` launches the Luckfox Docker image in privileged mode and runs `_build_image.sh`. Process overview:
 
-1. 编译应用程序：`./_build.sh`；
-2. 将 `build/bin/` 复制到 `overlay/oem/usr/bin/`；
-3. 同步 `overlay/etc/` 到 `pico-sdk` 的 Buildroot overlay；
-4. 执行 `pico-sdk/build.sh all`；
-5. 将 `overlay/oem`、`overlay/userdata` 注入输出目录；VAD 模型位于 `overlay/oem/usr/model/`，会随 OEM 分区进入 OTA；
-6. 生成 A/B 分区镜像和完整 USB 首刷包。
+1. Compile the application: `./_build.sh`;
+2. Copy `build/bin/` to `overlay/oem/usr/bin/`;
+3. Sync `overlay/etc/` to the `pico-sdk` Buildroot overlay;
+4. Run `pico-sdk/build.sh all`;
+5. Inject `overlay/oem` and `overlay/userdata` into the output directory; the VAD model is located in `overlay/oem/usr/model/` and is included in OTA along with the OEM partition;
+6. Generate the A/B partition images and the full USB first-flash package.
 
-构建结束后，镜像位于：
+After the build completes, the images are located in:
 
 ```text
 pico-sdk/output/image/
 ```
 
-## 刷入固件
+## Flashing the Firmware
 
-> 需要使用 Luckfox Pico Zero 板载 USB-C 口连接电脑。刷机方式有多种，完整说明参考 [Luckfox Pico Zero 官方刷机指南](https://wiki.luckfox.com/zh/Luckfox-Pico-Zero/Flash-image/)。
+> You need to connect the Luckfox Pico Zero's onboard USB-C port to a computer. There are several flashing methods; for the complete instructions, refer to the [Luckfox Pico Zero official flashing guide](https://wiki.luckfox.com/zh/Luckfox-Pico-Zero/Flash-image/).
 
-### 1. 进入 Maskrom / Loader 模式
+### 1. Enter Maskrom / Loader Mode
 
-可选方法：
+Available methods:
 
-- 按住板子的 BOOT 按钮，同时插入 USB-C；
-- 如果 BOOT 按键触发烧录模式不好用，可以先用 adb 或 TTL 串口登录到板子上，执行：
+- Hold down the board's BOOT button while plugging in USB-C;
+- If triggering flash mode with the BOOT button doesn't work well, you can first log in to the board via adb or the TTL serial port, then run:
 
 ```bash
 reboot loader
 ```
 
-### 2. 使用 upgrade_tool 刷写
+### 2. Flash with upgrade_tool
 
-项目自带 macOS 可用的 `upgrade_tool`。Linux / Windows 版本可从 `pico-sdk/tools/` 获取。
+The project ships with an `upgrade_tool` that works on macOS. The Linux / Windows versions can be obtained from `pico-sdk/tools/`.
 
 ```bash
 cd aiden-hardware-demo
 ./upgrade_tool/upgrade_tool uf ./update.img
 ```
 
-如果镜像来自本地构建，路径通常类似：
+If the image comes from a local build, the path is usually similar to:
 
 ```bash
 ./upgrade_tool/upgrade_tool uf ./pico-sdk/output/image/update.img
 ```
 
-## 分区参考
+## Partition Reference
 
-生产镜像使用 A/B 分区布局：
+The production image uses an A/B partition layout:
 
-| Partition | Size | 用途 |
+| Partition | Size | Purpose |
 | --- | ---: | --- |
-| `env` | 32 KB | Bootloader environment，工厂/USB recovery only |
-| `idblock` | 512 KB @ 32 KB | Rockchip idblock，工厂/USB recovery only |
-| `uboot` | 256 KB | Bootloader，工厂/USB recovery only |
-| `misc` | 4 MB | SPL A/B metadata，AVB A/B record 位于 byte offset `2048` |
-| `boot_a` | 32 MB | Slot A FIT boot image，指向 `rootfs_a` |
-| `boot_b` | 32 MB | Slot B FIT boot image，指向 `rootfs_b` |
-| `oem_a` | 256 MB | Slot A `/oem` 内容 |
-| `oem_b` | 256 MB | Slot B `/oem` 内容 |
+| `env` | 32 KB | Bootloader environment, factory/USB recovery only |
+| `idblock` | 512 KB @ 32 KB | Rockchip idblock, factory/USB recovery only |
+| `uboot` | 256 KB | Bootloader, factory/USB recovery only |
+| `misc` | 4 MB | SPL A/B metadata, AVB A/B record at byte offset `2048` |
+| `boot_a` | 32 MB | Slot A FIT boot image, points to `rootfs_a` |
+| `boot_b` | 32 MB | Slot B FIT boot image, points to `rootfs_b` |
+| `oem_a` | 256 MB | Slot A `/oem` contents |
+| `oem_b` | 256 MB | Slot B `/oem` contents |
 | `rootfs_a` | 1536 MB | Slot A root filesystem |
 | `rootfs_b` | 1536 MB | Slot B root filesystem |
-| `userdata` | 3 GB | 共享持久数据、OTA 配置和运行时状态 |
+| `userdata` | 3 GB | Shared persistent data, OTA configuration, and runtime state |
 
-`upgrade_tool` 支持单独更新指定分区；完整升级一般使用 `uf update.img`。
+`upgrade_tool` supports updating individual partitions; a full upgrade generally uses `uf update.img`.
 
-生产镜像使用 A/B 分区布局。在线 OTA 只写入非活动槽位的 `boot_*`、`oem_*`、`rootfs_*` 分区；`env`、`idblock`、`uboot` 仅用于工厂或 USB 恢复刷机，不通过 OTA 更新。`misc` 分区保存 Rockchip SPL A/B 元数据，元数据位于字节偏移 `2048`。
+The production image uses an A/B partition layout. Online OTA only writes to the inactive slot's `boot_*`, `oem_*`, and `rootfs_*` partitions; `env`, `idblock`, and `uboot` are used only for factory or USB recovery flashing and are not updated via OTA. The `misc` partition holds the Rockchip SPL A/B metadata, which is located at byte offset `2048`.
 
-发布版 `update.img` 会内置 `/userdata/ota/config.json`，其中包含 `repo`、`channel`、`factory_version`、`factory_build_time` 和 slot-aware `factory_partition_hashes`，设备首次 USB 刷机后即可从 GitHub Release 执行后续 OTA。
+The released `update.img` embeds `/userdata/ota/config.json`, which contains `repo`, `channel`, `factory_version`, `factory_build_time`, and slot-aware `factory_partition_hashes`, so that after the device's first USB flash it can perform subsequent OTAs from GitHub Releases.
 
-更多 OTA 细节见 [OTA 概览](../09-ota/README.md)。
+For more OTA details, see [OTA Overview](../09-ota/README.md).
