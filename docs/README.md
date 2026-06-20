@@ -30,7 +30,7 @@ This documentation hub is the structured entry point for the project. The root `
 ### 04. Go Agent
 
 - [Agent Overview](04-agent/overview.md)
-- [Agent Configuration Reference (incl. Config Web config page)](04-agent/configuration.md)
+- [Agent Configuration Reference](04-agent/configuration.md)
 - [Agent Context Lifecycle](04-agent/context-lifecycle.md)
 - [Session Memory Compaction](04-agent/session-memory.md)
 - [Tools HTTP API](04-agent/tools-http-api.md)
