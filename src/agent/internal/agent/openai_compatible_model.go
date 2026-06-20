@@ -65,13 +65,11 @@ func (l *llmRawHTTPLogger) Log(model, dir, kind string, statusCode int, raw stri
 	}
 
 	entry := fmt.Sprintf(
-		"ts=%s model=%s dir=%s kind=%s status=%d bytes=%d body=%s\n",
-		now.Format(time.RFC3339Nano),
-		strings.TrimSpace(model),
+		"ts=%s dir=%s kind=%s status=%d body=%s\n",
+		now.Format("2006-01-02 15:04:05"),
 		strings.TrimSpace(dir),
 		strings.TrimSpace(kind),
 		statusCode,
-		len([]byte(raw)),
 		raw,
 	)
 

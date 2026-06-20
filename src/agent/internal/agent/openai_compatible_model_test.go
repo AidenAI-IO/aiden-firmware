@@ -133,7 +133,7 @@ func TestOpenAICompatibleModelLogsRawHTTPWhenEnabled(t *testing.T) {
 	if !strings.Contains(logText, rawResponse) {
 		t.Fatalf("raw HTTP log missing exact response:\n%s", logText)
 	}
-	if !strings.Contains(logText, "kind=http_response") || !strings.Contains(logText, "model=test-model") {
+	if !strings.Contains(logText, "kind=http_response") {
 		t.Fatalf("raw HTTP log missing metadata:\n%s", logText)
 	}
 	if !strings.Contains(logText, "dir=response") {
@@ -145,7 +145,7 @@ func TestOpenAICompatibleModelLogsRawHTTPWhenEnabled(t *testing.T) {
 	if !strings.Contains(logText, "现在几点了") {
 		t.Fatalf("raw HTTP log missing request content:\n%s", logText)
 	}
-	assertRawHTTPLogHasRFC3339NanoTimestamp(t, logText)
+	assertRawHTTPLogHasSimpleTimestamp(t, logText)
 }
 
 func TestOpenAICompatibleModelRawHTTPLogUsesEffectiveRequestModel(t *testing.T) {
@@ -177,8 +177,8 @@ func TestOpenAICompatibleModelRawHTTPLogUsesEffectiveRequestModel(t *testing.T) 
 	}
 
 	logText := readRawHTTPLog(t, logDir)
-	if !strings.Contains(logText, "model=override-model") {
-		t.Fatalf("raw HTTP log used wrong model metadata:\n%s", logText)
+	if !strings.Contains(logText, `"model":"override-model"`) {
+		t.Fatalf("raw HTTP log should use effective model in request body:\n%s", logText)
 	}
 }
 
@@ -266,13 +266,13 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPWhenEnabled(t *testing.T) {
 	if !findLogLineContaining(logText, "data: [DONE]") {
 		t.Fatalf("raw streaming HTTP log missing [DONE] marker:\n%s", logText)
 	}
-	if !strings.Contains(logText, "kind=http_stream") || !strings.Contains(logText, "model=test-model") {
+	if !strings.Contains(logText, "kind=http_stream") {
 		t.Fatalf("raw streaming HTTP log missing metadata:\n%s", logText)
 	}
 	if !strings.Contains(logText, "dir=response") {
 		t.Fatalf("raw streaming HTTP log missing direction field:\n%s", logText)
 	}
-	assertRawHTTPLogHasRFC3339NanoTimestamp(t, logText)
+	assertRawHTTPLogHasSimpleTimestamp(t, logText)
 	assertEveryLineIsCompleteRecord(t, logText)
 }
 
@@ -483,14 +483,16 @@ func rawHTTPLogPath(logDir string) string {
 	return filepath.Join(logDir, "llm-http-"+time.Now().Format("20060102")+".log")
 }
 
-func assertRawHTTPLogHasRFC3339NanoTimestamp(t *testing.T, logText string) {
+func assertRawHTTPLogHasSimpleTimestamp(t *testing.T, logText string) {
 	t.Helper()
-	match := regexp.MustCompile(`ts=([^ ]+)`).FindStringSubmatch(logText)
+	// Match timestamp with space: ts=2006-01-02 15:04:05
+	match := regexp.MustCompile(`ts=([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2})`).FindStringSubmatch(logText)
 	if len(match) != 2 {
 		t.Fatalf("raw HTTP log missing timestamp:\n%s", logText)
 	}
-	if _, err := time.Parse(time.RFC3339Nano, match[1]); err != nil {
-		t.Fatalf("raw HTTP log timestamp = %q, want RFC3339Nano: %v", match[1], err)
+	// Format: 2006-01-02 15:04:05
+	if _, err := time.Parse("2006-01-02 15:04:05", match[1]); err != nil {
+		t.Fatalf("raw HTTP log timestamp = %q, want format '2006-01-02 15:04:05': %v", match[1], err)
 	}
 }
 
