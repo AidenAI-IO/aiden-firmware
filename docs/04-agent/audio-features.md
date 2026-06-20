@@ -122,37 +122,37 @@ All TTS providers are called through a unified streaming session: the Agent writ
 ```toml
 # Minimax WebSocket
 [tts]
-provider = “minimax-ws”
-model = “speech-2.8-hd”
-voice_id = “male-qn-qingse”
-emotion = “happy”
+provider = "minimax-ws"
+model = "speech-2.8-hd"
+voice_id = "male-qn-qingse"
+emotion = "happy"
 speed = 1.0
 ```
 
 ```toml
 # Fish Audio WebSocket
 [tts]
-provider = “fish-audio”
-model = “s2-pro”
-reference_id = “98655a12fa944e26b274c535e5e03842”
+provider = "fish-audio"
+model = "s2-pro"
+reference_id = "98655a12fa944e26b274c535e5e03842"
 speed = 1.0
 ```
 
 ```toml
 # Alicloud Qwen-TTS Realtime
 [tts]
-provider = “alicloud”
-model = “qwen3-tts-flash-realtime”
-voice_id = “Cherry”
+provider = "alicloud"
+model = "qwen3-tts-flash-realtime"
+voice_id = "Cherry"
 speed = 1.0
 ```
 
 ```toml
 # Volcengine WebSocket Bidirectional Streaming V3
 [tts]
-provider = “volcengine”
-model = “seed-tts-2.0”
-voice_id = “zh_female_vv_uranus_bigtts”
+provider = "volcengine"
+model = "seed-tts-2.0"
+voice_id = "zh_female_vv_uranus_bigtts"
 speed = 1.0
 ```
 
@@ -176,5 +176,4 @@ On success, it will output a line `P <probability>`; if there are still RKNN inp
 ## Known Limitations
 
 - Web UI and device voice loop currently cannot run simultaneously in the same daemon instance;
-- Tencent ASR is not yet fully implemented;
 - Direct audio mode depends on model/provider support for audio input.

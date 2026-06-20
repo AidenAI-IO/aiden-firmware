@@ -1,28 +1,34 @@
 # Aiden Hardware Demo
 
-Aiden is a **plug-and-play hardware solution for mobile AI agents**. It's a GUI agent that connects via USB-C to smartphones and computers, enabling LLM-powered control and automation across any app without system-level permissions.
+Aiden Hardware Demo is the firmware and device-side agent runtime for the
+current Aiden development board. The board observes a target device through
+HDMI capture and controls it through USB HID, so the agent can operate normal
+mobile or desktop apps without relying on app-specific automation APIs.
 
-This repository contains the firmware, services, and agent runtime for the current development board. A production-ready, low-power integrated device is planned for future release.
+This repository is for the development-board implementation: firmware overlay,
+C++ hardware services, the Go Agent, OTA tooling, tests, and benchmark support.
+It is not a final integrated hardware product.
 
 ![Aiden Development Board](./aiden-dev-board.webp)
 
-## What is Aiden?
+## What Aiden Does
 
-Aiden is an external hardware AI agent that sits between your phone/computer and your workflow. By capturing the screen via HDMI, processing it with an LLM, and sending touch/keyboard input via USB HID, Aiden can:
+The current hardware setup connects to a phone or computer through a USB-C hub:
 
-- **Execute multi-app tasks** — Break through app sandboxing and perform workflows spanning multiple applications
-- **Work without special permissions** — No jailbreak, no ADB, no developer mode required. Just plug in and go.
-- **Run anywhere** — Works with iPhones, Android phones, and any USB-C computer
-- **Operate continuously** — Learns your habits, updates skills, and improves over time with persistent memory
+- the target device's display output is captured through HDMI and the TC358743
+  HDMI-to-CSI path;
+- the Luckfox Pico Zero exposes a composite USB gadget with keyboard/pointer HID
+  and USB ECM networking;
+- the Go Agent sends screenshots to a configured multimodal model, decides the
+  next action, and writes keyboard/mouse/touch reports to `/dev/hidg0` and
+  `/dev/hidg1`;
+- voice mode records audio on the board, applies VAD, then uses configured STT,
+  LLM, and TTS providers.
 
-## Why External Hardware?
-
-**System-level permission bypass**: Unlike software-only agents limited by OS restrictions, Aiden operates at the hardware layer. It sees what you see (via HDMI capture) and interacts like a human (via USB HID). This means:
-
-- No root/jailbreak required
-- Cross-app automation without API integrations
-- Works on locked-down enterprise devices
-- Broad compatibility — works with devices supporting USB-C DisplayPort Alt Mode (video output) and HID input
+The basic control path does not require jailbreak, ADB, developer mode, or a
+custom app on the target device. It does require a target that can output video
+to the capture path and accept USB HID input. iOS control also requires
+AssistiveTouch to be enabled.
 
 ## Key Features
 
@@ -55,49 +61,73 @@ Most mobile agent projects are lab prototypes that require a laptop or desktop t
 - **Streaming STT/TTS** — Natural conversation flow with live transcription and speech synthesis
 - **Audio feedback** — Aiden speaks responses and status updates
 
-### 6. **Developer-Friendly**
-- **HTTP Tool API** — Call any Aiden capability (screenshot, HID, shell) via REST
-- **Skills system** — Write custom behaviors in Markdown; Aiden auto-discovers and activates them
-- **Modular architecture** — C++ services (Frame, Audio, HID) + Go Agent + Web UI
-- **Cross-compilation toolchain** — Build for ARM devices from any x86_64 Linux/Mac
-- **OTA updates** — A/B partition upgrades (two firmware slots: update installs to inactive slot, boot switches on success) with automatic rollback on failure
+## Repository Scope
 
-### 7. **Web UI & Tool Lab**
-- **Browser-based control** — Chat interface, tool invocation, skill management
-- **Tool Lab** — Interactive playground to test screenshot, HID, and shell tools
-- **Live Activity** — iOS Dynamic Island integration for task status (when using companion app)
-- **Session memory** — Automatic context compaction for long conversations
+- **Firmware integration**: Buildroot overlay, init scripts, USB gadget setup,
+  Wi-Fi/config portal defaults, and full `update.img` generation.
+- **C++ services**: `frame_service` owns HDMI capture and exposes screenshots over
+  Unix domain sockets; `audio_service` owns recording/playback and volume state.
+- **Go Agent**: the device-side LLM runtime, voice loop, skills, memory, and
+  built-in screenshot/HID/audio/shell tools.
+- **USB networking**: The board exposes `usb0` at `192.168.42.1` for the device
+  config page and local board-to-phone communication.
+- **OTA**: A/B partition updates, signed manifests, health confirmation, and
+  `abctl` diagnostics.
+
+The firmware has no required Aiden-hosted backend. Screenshots, audio, and text
+are sent only to the model/STT/TTS/search endpoints you configure.
 
 ## Architecture
 
-The project manages low-level hardware resources through **C++ services** and exposes Frame/Audio capabilities over Unix domain sockets. The **Go Agent** provides:
+```text
+Target display
+    -> HDMI / TC358743 / CSI
+    -> /dev/video0
+    -> frame_service
+    -> screenshot tool
+    -> Go Agent
+    -> HID tools
+    -> /dev/hidg0 and /dev/hidg1
+    -> target device input
 
-- Web UI for chat and tool interaction
-- HTTP Tool API for external integrations
-- Skills auto-discovery and runtime activation
-- Voice pipeline (VAD → STT → LLM → TTS)
-- USB HID automation (keyboard, mouse, touch gestures)
-- Persistent memory and session compaction
+Board audio
+    -> audio_service
+    -> VAD / STT or audio attachment
+    -> Go Agent / LLM
+    -> TTS
+    -> audio_service playback
+```
 
-**Data flow**:
-```
-HDMI Input → Frame Service → Screenshot Tool → LLM Agent → Tool Decisions
-                                                              ↓
-USB HID Output ← HID Service ← keyboard/mouse/touch tools ← Agent
-```
+At runtime, the Agent is intentionally decoupled from C++ service internals:
+Frame and Audio capabilities go through Unix domain sockets, while device
+control goes through the Linux USB gadget HID device nodes.
 
 ## Hardware
 
-Current development board uses:
-- [Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero) (RV1106 SoC, ARMv7)
-- [TC358743XBG](https://toshiba.semicon-storage.com/eu/semiconductor/product/interface-bridge-ics-for-mobile-peripheral-devices/hdmir-interface-bridge-ics/detail.TC358743XBG.html) (HDMI-to-CSI bridge for 1080p30 capture)
-- [CH375B](https://easyelecmodule.com/ch375b-u-disk-read-write-module-development-guide/) (USB host controller for HID injection)
+The current development setup centers on:
 
-This is a prototyping platform. Future integrated hardware will be purpose-built for size, power, and cost optimization.
+- [Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero), RV1106 /
+  Rockchip platform running Buildroot Linux;
+- [TC358743XBG](https://toshiba.semicon-storage.com/eu/semiconductor/product/interface-bridge-ics-for-mobile-peripheral-devices/hdmir-interface-bridge-ics/detail.TC358743XBG.html),
+  HDMI-to-CSI bridge for external screen capture;
+- a USB-C hub that provides HDMI output for capture and a USB data path back to
+  the target device;
+- the Pico Zero Linux USB gadget stack for keyboard, pointer/touch, and ECM
+  networking.
+
+Some prototype hardware revisions may include additional USB modules, but the
+firmware-documented HID path is the Linux gadget path exposed as `/dev/hidg0`
+and `/dev/hidg1`.
+
+See [Hardware & Wiring](docs/01-getting-started/hardware.md) for wiring and
+target-device prerequisites.
 
 ## Quick Start
 
-> **First-time users**: Go straight to [Newcomer Quickstart](docs/01-getting-started/quickstart.md) for the full onboarding flow (wiring → flashing → Wi-Fi → config → voice verification). Below is a quick build reference for developers.
+First-time hardware users should start with
+[Newcomer Quickstart](docs/01-getting-started/quickstart.md). It walks through
+wiring, flashing, Wi-Fi setup, Agent configuration, voice verification, and
+troubleshooting.
 
 Clone the repository:
 
@@ -106,23 +136,16 @@ git clone --recursive git@github.com:AidenAI-IO/aiden-hardware-demo.git
 cd aiden-hardware-demo
 ```
 
-Standard CMake build (host-native tests and SDK):
-
-```bash
-cmake -S . -B build-host
-cmake --build build-host
-```
-
-Luckfox cross-compilation (ARM binaries for device):
-
-```bash
-./build.sh
-```
-
-Run host unit tests:
+Run host-native unit tests:
 
 ```bash
 make test
+```
+
+Build ARM binaries for the device:
+
+```bash
+./build.sh
 ```
 
 Build the full firmware image:
@@ -137,16 +160,23 @@ Flash a prebuilt or locally built `update.img`:
 ./upgrade_tool/upgrade_tool uf ./update.img
 ```
 
-## Documentation Index
+For a locally built image, the usual output path is:
 
-The full documentation is organized under [`docs/`](docs/README.md):
+```bash
+./upgrade_tool/upgrade_tool uf ./pico-sdk/output/image/update.img
+```
+
+## Documentation
+
+The full documentation is organized under [docs/](docs/README.md):
 
 - [Documentation Hub](docs/README.md)
-- **Newcomers first: [Newcomer Quickstart](docs/01-getting-started/quickstart.md)**
+- [Newcomer Quickstart](docs/01-getting-started/quickstart.md)
 - [Hardware & Wiring](docs/01-getting-started/hardware.md)
 - [Firmware Build & Flashing](docs/01-getting-started/firmware.md)
 - [Build & Development Environment](docs/01-getting-started/build.md)
 - [Deployment to Device](docs/01-getting-started/deployment.md)
+- [Testing & Verification](docs/01-getting-started/testing.md)
 - [Architecture Overview](docs/02-architecture/overview.md)
 - [Frame Service](docs/03-services/frame-service.md)
 - [Audio Service](docs/03-services/audio-service.md)
@@ -154,44 +184,22 @@ The full documentation is organized under [`docs/`](docs/README.md):
 - [Go Agent](docs/04-agent/overview.md)
 - [Agent Configuration Reference](docs/04-agent/configuration.md)
 - [Tools HTTP API](docs/04-agent/tools-http-api.md)
-- [C++ SDK Reference](docs/05-sdk-and-tools/cpp-sdk.md)
-- [Unix Domain Socket Protocol](docs/06-protocols/uds-protocol.md)
-- [Troubleshooting](docs/07-operations/troubleshooting.md)
 - [OTA](docs/08-ota/README.md)
+- [Benchmark](docs/09-benchmark/README.md)
+- [Troubleshooting](docs/07-operations/troubleshooting.md)
 
 ## Contributing
 
-Contributions are welcome! Whether you're fixing bugs, adding features, writing skills, or improving documentation, we'd love your help.
+Contributions are welcome for firmware, services, Agent runtime, skills, tests,
+benchmarks, and documentation. Before contributing, read [LICENSE](LICENSE); it
+defines the dual-license terms, contribution license grant, patent terms, and
+hardware-design licensing notes for this repository.
 
-**Before contributing code**, please note:
-- By submitting a contribution, you agree to license it under both AGPL-3.0 (for open-source use) and grant AidenAI-IO the right to offer it under commercial licenses
-- See [LICENSE](LICENSE) for full details on our dual-licensing model
-- This allows us to maintain the project's business model while keeping it open-source
-
-For architecture details and development setup, see the [documentation](docs/README.md).
+Do not commit secrets, device-specific credentials, or local environment files.
 
 ## License
 
-This project is **dual-licensed**:
-
-### For Open Source / Non-Commercial Use
-**GNU Affero General Public License v3.0 (AGPL-3.0)**
-- ✅ Free for personal, academic, and non-profit use
-- ✅ Modifications must be shared under AGPL-3.0
-- ✅ Network use triggers source disclosure requirements
-- See [LICENSE](LICENSE) and [LICENSE-AGPL-3.0](LICENSE-AGPL-3.0)
-
-### For Commercial Use
-**Commercial License Required**
-- Manufacturing and selling devices with this firmware
-- Offering paid services or SaaS based on this software
-- Internal use in for-profit organizations
-- Integration into proprietary products
-
-**Contact**: [your-licensing-email] for commercial licensing inquiries.
-
----
-
-**Hardware designs** are licensed under CERN-OHL-S-2.0 (strongly reciprocal).
-
-See [LICENSE](LICENSE) for complete terms, patent provisions, and contributor agreement details.
+This repository is distributed under the dual-license terms described in
+[LICENSE](LICENSE), with the AGPL-3.0 text included in
+[LICENSE-AGPL-3.0](LICENSE-AGPL-3.0). Third-party components keep their own
+licenses; see [NOTICE](NOTICE) for details.

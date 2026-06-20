@@ -16,7 +16,8 @@ This project's firmware is built on `pico-sdk` and includes the following custom
 - Kernel enables the TC358743 driver;
 - DTS adds TC358743 support;
 - Built-in 1080p30-only EDID;
-- USB-C port is configured as a HID gadget on boot;
+- USB-C port is configured as a composite gadget on boot: keyboard HID,
+  pointer/touch HID, and CDC ECM networking (`usb0`, default `192.168.42.1`);
 - Injects startup scripts, configuration, and application binaries from `/overlay`.
 
 The related low-level changes can be found in the `pico-sdk/` submodule.

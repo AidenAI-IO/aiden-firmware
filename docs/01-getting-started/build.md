@@ -75,7 +75,7 @@ make test-clean   # Remove build-host/
 ```bash
 cmake -S . -B build-host -DAIDEN_TESTS=ON
 cmake --build build-host
-build-host/tests/aiden_tests
+cd build-host && ctest --output-on-failure
 ```
 
 ## Main Build Targets

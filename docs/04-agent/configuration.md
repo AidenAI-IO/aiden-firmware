@@ -138,6 +138,7 @@ keyboard_device = "/dev/hidg0"
 mouse_device = "/dev/hidg1"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
+
 ## Top-level fields
 
 ### General
