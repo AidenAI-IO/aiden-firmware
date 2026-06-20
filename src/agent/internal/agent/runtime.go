@@ -324,6 +324,14 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.waitForWakeup = waitForWakeupController
 	rt.mobileGym = mobileGymStore
 
+	// Log session start marker
+	if logger != nil {
+		logger.Info("========================================")
+		logger.Info("NEW SESSION STARTED")
+		logger.Info("Session ID: %s", rt.telemetrySessionID)
+		logger.Info("========================================")
+	}
+
 	if len(mergeNeeded) > 0 && cfg.SkillMergeModel != nil {
 		manifestPath := filepath.Join(cfg.ConfigDir, "skill-state", ".bundled_manifest.json")
 		worker := NewMergeWorker(cfg.SkillMergeModel, manifestPath)
