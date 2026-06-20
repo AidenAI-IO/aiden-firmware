@@ -64,13 +64,17 @@ func (l *llmRawHTTPLogger) Log(model, dir, kind string, statusCode int, raw stri
 		raw = strings.ReplaceAll(raw, "\r", "\\r")
 	}
 
-	// Create JSONL entry
-	entry := map[string]interface{}{
-		"ts":     now.Format("15:04:05"),
-		"dir":    strings.TrimSpace(dir),
-		"kind":   strings.TrimSpace(kind),
-		"status": statusCode,
-		"body":   raw,
+	// Create JSONL entry with ordered fields
+	entry := struct {
+		TS     string `json:"ts"`
+		Kind   string `json:"kind"`
+		Status int    `json:"status"`
+		Body   string `json:"body"`
+	}{
+		TS:     now.Format("15:04:05"),
+		Kind:   strings.TrimSpace(kind),
+		Status: statusCode,
+		Body:   raw,
 	}
 	entryBytes, err := json.Marshal(entry)
 	if err != nil {

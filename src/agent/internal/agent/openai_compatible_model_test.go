@@ -156,10 +156,7 @@ func TestOpenAICompatibleModelLogsRawHTTPWhenEnabled(t *testing.T) {
 	if !strings.Contains(logText, `"kind":"http_response"`) {
 		t.Fatalf("raw HTTP log missing response metadata:\n%s", logText)
 	}
-	if !strings.Contains(logText, `"dir":"response"`) {
-		t.Fatalf("raw HTTP log missing direction field:\n%s", logText)
-	}
-	if !strings.Contains(logText, `"dir":"request"`) || !strings.Contains(logText, `"kind":"http_request"`) {
+	if !strings.Contains(logText, `"kind":"http_request"`) {
 		t.Fatalf("raw HTTP log missing request record:\n%s", logText)
 	}
 	assertRawHTTPLogIsValidJSONL(t, logText)
@@ -321,9 +318,6 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPWhenEnabled(t *testing.T) {
 	}
 	if !strings.Contains(logText, `"kind":"http_stream"`) {
 		t.Fatalf("raw streaming HTTP log missing metadata:\n%s", logText)
-	}
-	if !strings.Contains(logText, `"dir":"response"`) {
-		t.Fatalf("raw streaming HTTP log missing direction field:\n%s", logText)
 	}
 	assertRawHTTPLogIsValidJSONL(t, logText)
 }
@@ -584,9 +578,6 @@ func assertRawHTTPLogIsValidJSONL(t *testing.T, logText string) {
 		// Check required fields
 		if _, ok := entry["ts"]; !ok {
 			t.Fatalf("line %d missing 'ts' field: %s", i+1, line)
-		}
-		if _, ok := entry["dir"]; !ok {
-			t.Fatalf("line %d missing 'dir' field: %s", i+1, line)
 		}
 		if _, ok := entry["kind"]; !ok {
 			t.Fatalf("line %d missing 'kind' field: %s", i+1, line)
