@@ -4,6 +4,8 @@ Aiden Hardware Demo is a hardware demo project for the Luckfox Pico Zero, integr
 
 The project manages low-level hardware resources through C++ services and exposes Frame / Audio capabilities over Unix domain sockets; the Go Agent provides a Web UI, HTTP Tool API, Skills, voice pipeline, and HID automation control on the device side.
 
+![Aiden Developmemt Board](./aiden-dev-board.webp)
+
 ## Hardware
 
 - [Luckfox Pico Zero](https://wiki.luckfox.com/Luckfox-Pico-Zero)
