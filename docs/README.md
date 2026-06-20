@@ -20,6 +20,7 @@ This documentation hub is the structured entry point for the project. The root `
 - [Architecture Overview](02-architecture/overview.md)
 - [Source Tree & Directory Layout](02-architecture/source-tree.md)
 - [Boot Services & Runtime Layout](02-architecture/boot-services.md)
+- [Paths, Artifacts & Config Cheat Sheet](02-architecture/paths-and-artifacts.md)
 
 ### 03. Hardware Services
 
@@ -53,11 +54,7 @@ This documentation hub is the structured entry point for the project. The root `
 - [Volume Initialization & Adjustment](07-operations/audio-volume.md)
 - [Troubleshooting](07-operations/troubleshooting.md)
 
-### 08. Reference
-
-- [Paths, Artifacts & Config Cheat Sheet](02-architecture/paths-and-artifacts.md)
-
-### 09. OTA
+### 08. OTA
 
 - [OTA Overview](08-ota/README.md)
 - [OTA Architecture & Runtime](08-ota/architecture.md)
@@ -65,7 +62,7 @@ This documentation hub is the structured entry point for the project. The root `
 - [Device Acceptance Process](08-ota/device-acceptance.md)
 - [A/B & abctl Verification](08-ota/verification.md)
 
-### 10. Benchmark
+### 09. Benchmark
 
 - [Quick Start](09-benchmark/README.md)
 - [Architecture Design](09-benchmark/architecture.md)
