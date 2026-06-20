@@ -485,14 +485,14 @@ func rawHTTPLogPath(logDir string) string {
 
 func assertRawHTTPLogHasSimpleTimestamp(t *testing.T, logText string) {
 	t.Helper()
-	// Match timestamp with space: ts=2006-01-02 15:04:05
-	match := regexp.MustCompile(`ts=([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2})`).FindStringSubmatch(logText)
+	// Match timestamp: ts=15:04:05
+	match := regexp.MustCompile(`ts=([0-9]{2}:[0-9]{2}:[0-9]{2})`).FindStringSubmatch(logText)
 	if len(match) != 2 {
 		t.Fatalf("raw HTTP log missing timestamp:\n%s", logText)
 	}
-	// Format: 2006-01-02 15:04:05
-	if _, err := time.Parse("2006-01-02 15:04:05", match[1]); err != nil {
-		t.Fatalf("raw HTTP log timestamp = %q, want format '2006-01-02 15:04:05': %v", match[1], err)
+	// Format: 15:04:05
+	if _, err := time.Parse("15:04:05", match[1]); err != nil {
+		t.Fatalf("raw HTTP log timestamp = %q, want format '15:04:05': %v", match[1], err)
 	}
 }
 
