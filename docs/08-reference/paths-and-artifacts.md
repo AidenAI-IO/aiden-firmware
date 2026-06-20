@@ -103,19 +103,11 @@ jq . /userdata/agent/log/llm-http-$(date +%Y%m%d)-*.log
 
 ## Agent 日志
 
-### agent.log
+### /var/log/agent/agent.log
 
-**位置**: `/var/log/agent/agent.log`
+Agent 主日志，包含 init 脚本和 runtime 的所有输出。
 
-Agent 主日志，包含 init 脚本和 runtime 的所有输出，包括：
-- Session 启动标记（带 session ID）
-- Agent 运行状态
-- 工具调用信息
-- 错误和警告
-
-**输出方式**: Init 脚本 (`/etc/init.d/S53agent`) 通过重定向将 agent 进程的 stdout/stderr 写入此文件。
-
-**Session 分隔格式**：
+**Session 分隔标记**：
 ```
 2026/06/20 15:06:16 [INFO] ========================================
 2026/06/20 15:06:16 [INFO] NEW SESSION STARTED
@@ -123,62 +115,35 @@ Agent 主日志，包含 init 脚本和 runtime 的所有输出，包括：
 2026/06/20 15:06:16 [INFO] ========================================
 ```
 
-**查看日志**：
-```bash
-# 实时追踪
-tail -f /var/log/agent/agent.log
+### /userdata/agent/log/llm-http-{YYYYMMDD}-{session_id}.log
 
-# 查看最近的日志
-tail -100 /var/log/agent/agent.log
+LLM HTTP 请求/响应日志（JSONL 格式），每个 session 独立文件。
 
-# 搜索特定 session
-grep "abc123def456" /var/log/agent/agent.log
-```
-
-### llm-http-YYYYMMDD-{session_id}.log
-
-LLM HTTP 请求/响应原始日志（JSONL 格式），每个 session 独立文件。
-
-**格式示例**：
+**格式**：
 ```json
-{"ts":"15:00:00","kind":"http_request","status":0,"body":"{\"model\":\"test-model\",\"messages\":[...]}"}
+{"ts":"15:00:00","kind":"http_request","status":0,"body":"{\"model\":\"...\",\"messages\":[...]}"}
 {"ts":"15:00:00","kind":"http_response","status":200,"body":"{\"choices\":[...]}"}
 ```
 
-**字段说明**：
+**字段**：
 - `ts` - 时间戳（HH:MM:SS）
-- `kind` - 类型：`http_request`, `http_response`, `http_stream`, `http_error`
+- `kind` - `http_request`, `http_response`, `http_stream`, `http_error`
 - `status` - HTTP 状态码（请求为 0）
 - `body` - 请求/响应体（JSON 字符串）
 
 **常用查询**：
 ```bash
-# 查看特定 session 的所有调用
+# 查看特定 session
 jq . /userdata/agent/log/llm-http-20260620-abc123def.log
 
 # 只看响应
 jq 'select(.kind | test("response|stream"))' llm-http-*.log
 
 # 提取响应内容
-jq -r 'select(.kind == "http_response") | .body' llm-http-*.log
-
-# 按时间过滤
-jq 'select(.ts >= "14:00:00" and .ts <= "15:00:00")' llm-http-*.log
+jq -r 'select(.kind == "http_response") | .body | fromjson' llm-http-*.log
 
 # 统计请求类型
-jq -r '.kind' llm-http-20260620-*.log | sort | uniq -c
-```
-
-**日志管理**：
-```bash
-# 查看某天所有 session
-ls -lh /userdata/agent/log/llm-http-20260620-*.log
-
-# 删除特定 session
-rm /userdata/agent/log/llm-http-*-abc123def.log
-
-# 删除 7 天前的日志
-find /userdata/agent/log -name "llm-http-*.log" -mtime +7 -delete
+jq -r '.kind' llm-http-*.log | sort | uniq -c
 ```
 
 ## EDID 文件
