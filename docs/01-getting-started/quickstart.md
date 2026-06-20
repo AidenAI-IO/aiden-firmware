@@ -1,135 +1,135 @@
-# 新手快速上手
+# Newcomer Quickstart
 
-本页是面向第一次接触 Aiden 硬件的人的主路径，按照「连线 → 刷机 → 联网 → 配置 → 跑起来 → 开发 → 升级 → 排障」的顺序，把你需要做的事串成一条线。每一步只讲关键动作，细节通过链接进入对应的专题文档。
+This page is the main path for anyone touching Aiden hardware for the first time. It follows the order **wire up → flash → connect Wi-Fi → configure → run → develop → upgrade → troubleshoot**, stringing the whole onboarding flow into one page. Each step covers only the key action; details are linked to the corresponding topic docs.
 
-> 语音交互是 Aiden 最核心的使用场景。`text` 模式主要用于开发和测试，方便用网页验证链路。
+> Voice interaction is Aiden's core usage scenario. `text` mode is mainly for development and testing, making it convenient to verify the pipeline through a web page.
 
-## 总览
+## Overview
 
-| 步骤 | 目标 | 详细文档 |
+| Step | Goal | Detailed doc |
 | --- | --- | --- |
-| 1 | 按硬件方案完成连线 | [硬件与连线](hardware.md) |
-| 2 | 给 Pico Zero 刷入 `update.img` 固件 | [固件构建与刷机](firmware.md) |
-| 3 | 进入配置页面并连上 Wi-Fi | [Config Web](../03-services/config-web.md) |
-| 4 | 配置 model / tts / stt 等 key | [Agent 配置参考](../04-agent/configuration.md) |
-| 5 | 让板子跑起来并验证 | [测试与验证](testing.md) |
-| 6 | 了解系统架构和各模块 | [系统架构概览](../02-architecture/overview.md) |
-| 7 | 固件构建与 OTA 升级 | [固件构建](firmware.md) / [OTA](../09-ota/README.md) |
-| 8 | 遇到问题时排查 | [故障排查](../07-operations/troubleshooting.md) |
+| 1 | Wire up per the hardware design | [Hardware & Wiring](hardware.md) |
+| 2 | Flash the `update.img` firmware onto the Pico Zero | [Firmware Build & Flashing](firmware.md) |
+| 3 | Open the config page and connect to Wi-Fi | [Config Web](../03-services/config-web.md) |
+| 4 | Configure keys such as model / tts / stt | [Agent Configuration](../04-agent/configuration.md) |
+| 5 | Bring the board up and verify | [Testing & Verification](testing.md) |
+| 6 | Understand the architecture and modules | [Architecture Overview](../02-architecture/overview.md) |
+| 7 | Firmware build & OTA upgrade | [Firmware](firmware.md) / [OTA](../09-ota/README.md) |
+| 8 | Troubleshoot when something breaks | [Troubleshooting](../07-operations/troubleshooting.md) |
 
-## 1. 硬件与连线
+## 1. Hardware & Wiring
 
-按照 [硬件与连线](hardware.md) 完成连线，核心连接关系：
+Follow [Hardware & Wiring](hardware.md) to complete the wiring. Key connections:
 
-- 外部 HDMI 画面源经 TC358743XBG 桥接芯片，从 CSI 进入 Pico Zero 的 `/dev/video0`；
-- Pico Zero 通过 USB-C gadget 连接目标设备（iOS / PC），对外模拟 HID 键鼠/触控；
-- 音频走板载 codec / ALSA，网络走 Wi-Fi 或 USB gadget network。
+- The external HDMI source is bridged by the TC358743XBG chip and enters the Pico Zero's `/dev/video0` via CSI;
+- The Pico Zero connects to the target device (iOS / PC) through a USB-C gadget, emulating an HID keyboard/mouse/touch externally;
+- Audio goes through the onboard codec / ALSA; networking goes through Wi-Fi or the USB gadget network.
 
-如果要用 USB HID 控制 iOS 设备，记得先在目标设备开启 `Settings > Accessibility > Touch > AssistiveTouch`，并建议启用 **Show Onscreen Keyboard**。
+To control an iOS device over USB HID, first enable `Settings > Accessibility > Touch > AssistiveTouch` on the target device, and it is recommended to enable **Show Onscreen Keyboard** as well.
 
-## 2. 刷入固件
+## 2. Flash the Firmware
 
-把 Pico Zero 的 USB-C 口接到电脑，刷入我们编译好的 `update.img`。刷机方式有多种，主要参考 Pico Zero 官方文档：
+Connect the Pico Zero's USB-C port to a computer and flash the prebuilt `update.img`. There are several flashing methods; the primary reference is the official Pico Zero documentation:
 
-- [Luckfox Pico Zero 刷机指南](https://wiki.luckfox.com/zh/Luckfox-Pico-Zero/Flash-image/)
+- [Luckfox Pico Zero Flashing Guide](https://wiki.luckfox.com/zh/Luckfox-Pico-Zero/Flash-image/)
 
-核心流程是先让板子进入烧录（Maskrom / Loader）模式，再用刷机工具写入 `update.img`：
+The core flow is to put the board into flashing (Maskrom / Loader) mode first, then write `update.img` with the flashing tool:
 
 ```bash
 ./upgrade_tool/upgrade_tool uf ./update.img
 ```
 
-进入烧录模式最常见的方式是按住板子的 BOOT 按键再插入 USB-C。**如果 BOOT 按键触发不好用**，可以先用 adb 或 TTL 串口登录到板子上，执行：
+The most common way to enter flashing mode is to hold the BOOT button while plugging in USB-C. **If the BOOT button does not work reliably**, log in to the board over adb or a TTL serial console first and run:
 
 ```bash
 reboot loader
 ```
 
-即可进入烧录模式。预构建固件、本地构建路径、`upgrade_tool` 用法和分区布局见 [固件构建与刷机](firmware.md)。
+to enter flashing mode. Prebuilt firmware, local build paths, `upgrade_tool` usage, and the partition layout are covered in [Firmware Build & Flashing](firmware.md).
 
-## 3. 连上 Wi-Fi
+## 3. Connect to Wi-Fi
 
-刷机完成、设备启动后，用 USB-C 连接到电脑，浏览器访问设备的配置页面：
+After flashing and the device boots, connect it to a computer over USB-C and open the device config page in a browser:
 
 ```text
 http://192.168.42.1
 ```
 
-`192.168.42.1` 是 USB 网络的网关地址，配置页面由设备上的 `config_web` 服务（默认 80 端口）提供。
+`192.168.42.1` is the gateway address of the USB network. The config page is served by the `config_web` service on the device (default port 80).
 
-进入页面后，首先配置 Wi-Fi：
+On the page, configure Wi-Fi first:
 
-- **只支持 2.4GHz 网络**，5GHz 不可用；
-- 填入 SSID 和密码，保存后写入 `/userdata/wpa_supplicant.conf`。
+- **Only 2.4GHz networks are supported**; 5GHz does not work;
+- Enter the SSID and password; on save it is written to `/userdata/wpa_supplicant.conf`.
 
-配置页面还能维护 Agent 配置和系统环境变量，详见 [Config Web：设备配置网页](../03-services/config-web.md)。
+The config page also maintains Agent configuration and system environment variables. See [Config Web](../03-services/config-web.md) for details.
 
-## 4. 配置各种 Key
+## 4. Configure the Keys
 
-同样在配置页面里填写各服务的 key。其中：
+Fill in the keys for each service on the same config page. Among them:
 
-- **`[model]` 是必须配置的**，且必须是支持多模态的 LLM（Agent 需要把截图作为图像输入发给模型）；
-- **`[tts]`** 用于支持语音播报（把模型回复转成语音）；
-- **`[stt]`** 用于支持语音输入转文字。
+- **`[model]` is required**, and it must be a multimodal LLM (the Agent needs to send screenshots to the model as image input);
+- **`[tts]`** enables voice playback (turning the model's reply into speech);
+- **`[stt]`** enables speech-to-text for voice input.
 
-### 选择 Agent 模式
+### Choosing the Agent mode
 
-由 `agent.toml` 的 `input_mode` 决定，三种模式：
+Determined by `input_mode` in `agent.toml`. Three modes:
 
-| 模式 | 行为 | 用途 |
+| Mode | Behavior | Use case |
 | --- | --- | --- |
-| `audio` | 设备录音 → 直接把音频附件发给 LLM → TTS 播报 | 语音交互（音频直送多模态模型） |
-| `stt` | 设备录音 → VAD → STT 转文字 → LLM → TTS 播报 | 语音交互（先转文字再发给 LLM） |
-| `text` | 启动 HTTP server + Web UI | 主要用于测试，访问 8080 端口网页做文字交互 |
+| `audio` | Device records → sends the audio attachment directly to the LLM → TTS playback | Voice interaction (audio sent straight to a multimodal model) |
+| `stt` | Device records → VAD → STT to text → LLM → TTS playback | Voice interaction (transcribe to text first, then send to the LLM) |
+| `text` | Starts the HTTP server + Web UI | Mainly for testing; use the web page on port 8080 for text interaction |
 
-`audio` 和 `stt` 是语音交互的两种方式：前者直接把音频发给 LLM，后者先转文字再发给 LLM。`text` 模式主要用于测试，可以访问设备 `8080` 端口的网页进行文字交互。
+`audio` and `stt` are the two ways to do voice interaction: the former sends audio directly to the LLM, the latter transcribes to text first. `text` mode is mainly for testing — open the web page on the device's port `8080` for text interaction.
 
-> 注意区分两个网页：`http://192.168.42.1`（80 端口）是设备配置页面；`http://<device-ip>:8080` 是 `text` 模式下的 Agent Web UI。
+> Note the two distinct web pages: `http://192.168.42.1` (port 80) is the device config page; `http://<device-ip>:8080` is the Agent Web UI in `text` mode.
 
-各字段含义、最小可用配置示例和 TTS/STT provider 取值见 [Agent 配置参考](../04-agent/configuration.md)。
+Field meanings, minimal working config examples, and TTS/STT provider values are in [Agent Configuration](../04-agent/configuration.md).
 
-## 5. 让板子跑起来
+## 5. Bring the Board Up
 
-完成上面 4 步后，板子就可以跑起来了。Agent 由 `S53agent` 守护进程随固件启动，配置改动后通常需要重启 Agent：
+After the four steps above, the board is ready to run. The Agent is supervised by the `S53agent` watchdog and starts with the firmware. After config changes, the Agent usually needs a restart:
 
 ```bash
 /etc/init.d/S53agent restart
 ```
 
-验证链路是否正常（Frame / Audio / Agent 服务、截图、语音）的命令见 [测试与验证](testing.md)。各服务日志位置和常用服务命令见 [部署到设备](deployment.md)。
+Commands to verify the pipeline (Frame / Audio / Agent services, screenshots, voice) are in [Testing & Verification](testing.md). Service log locations and common service commands are in [Deployment](deployment.md).
 
-接下来是开发部分。
+Next comes the development part.
 
-## 6. 系统架构与模块
+## 6. Architecture & Modules
 
-开始开发前，建议先建立整体认识：
+Before developing, build an overall understanding first:
 
-- [系统架构概览](../02-architecture/overview.md)：HDMI 采集、音频录放、USB HID、LLM Agent 如何组合，以及主要数据流。
+- [Architecture Overview](../02-architecture/overview.md): how HDMI capture, audio record/playback, USB HID, and the LLM Agent fit together, plus the main data flows.
 
-然后再深入各模块：
+Then dive into each module:
 
-- [Frame Service](../03-services/frame-service.md)：HDMI 帧捕获服务
-- [Audio Service](../03-services/audio-service.md)：音频录放服务
-- [USB HID 与设备控制](../03-services/usb-hid.md)
-- [Config Web](../03-services/config-web.md)：设备配置网页
-- [Go Agent 概览](../04-agent/overview.md)：LLM runtime、工具调用、语音链路
-- [工具 HTTP API](../04-agent/tools-http-api.md)
+- [Frame Service](../03-services/frame-service.md): HDMI frame capture service
+- [Audio Service](../03-services/audio-service.md): audio record/playback service
+- [USB HID & Device Control](../03-services/usb-hid.md)
+- [Config Web](../03-services/config-web.md): device config web page
+- [Go Agent Overview](../04-agent/overview.md): LLM runtime, tool calling, voice pipeline
+- [Tools HTTP API](../04-agent/tools-http-api.md)
 
-源码与目录结构见 [源码与目录结构](../02-architecture/source-tree.md)，启动服务与运行时布局见 [启动服务与运行时布局](../02-architecture/boot-services.md)。
+Source layout is in [Source Tree](../02-architecture/source-tree.md); boot services and runtime layout are in [Boot Services & Runtime Layout](../02-architecture/boot-services.md).
 
-## 7. 固件构建与 OTA 升级
+## 7. Firmware Build & OTA Upgrade
 
-开发完成后，构建固件并升级设备：
+After development, build the firmware and upgrade the device:
 
-- 本机 / 交叉编译开发环境见 [构建与开发环境](build.md)；
-- 完整固件构建（`./build_image.sh`）和刷机见 [固件构建与刷机](firmware.md)；
-- 在线升级见 [OTA 概览](../09-ota/README.md)。
+- Native / cross-compile dev environment: [Build & Development Environment](build.md);
+- Full firmware build (`./build_image.sh`) and flashing: [Firmware Build & Flashing](firmware.md);
+- Over-the-air upgrade: [OTA Overview](../09-ota/README.md).
 
-### 非 main 分支固件的 OTA
+### OTA for non-main branch firmware
 
-CI 会按分支区分发布渠道：`main` 是 `stable` 正式发布，**其他分支发布为 prerelease**。默认的 `ota update` 走 `releases/latest`，只会拿到最新的正式发布，因此不会误装到开发分支固件。
+CI assigns release channels by branch: `main` is the `stable` official release, while **other branches are published as prereleases**. The default `ota update` uses `releases/latest` and only picks up the latest official release, so it never accidentally installs dev-branch firmware.
 
-要把某个开发分支的固件刷到设备测试，必须通过 `--manifest-url` 显式指定该 dev release 的 manifest，绕过 `releases/latest` 查找：
+To flash a specific dev-branch build onto a device for testing, you must point at that dev release's manifest explicitly with `--manifest-url`, bypassing the `releases/latest` lookup:
 
 ```bash
 TAG="20260604-120000-abc1234"
@@ -140,8 +140,8 @@ ota update \
   --public-key /oem/etc/ota_pubkey.pem
 ```
 
-官方签名公钥已预置在设备 `/oem/etc/ota_pubkey.pem`，官方仓库构建无需额外指定公钥。建议先加 `--dry-run` 只下载校验、不切换 slot。详见 [OTA Release Channels](../09-ota/ota-release-channels.md)。
+The official signing public key is already provisioned on the device at `/oem/etc/ota_pubkey.pem`, so official-repo builds need no extra public key. It is recommended to add `--dry-run` first to only download and verify without switching slots. See [OTA Release Channels](../09-ota/ota-release-channels.md) for details.
 
-## 8. 故障排查
+## 8. Troubleshooting
 
-遇到问题时，先看 [故障排查](../07-operations/troubleshooting.md)，里面覆盖了常见的连接、服务、视频/音频、Agent 和 OTA 问题。日志位置见 [部署到设备](deployment.md)。
+When you hit problems, start with [Troubleshooting](../07-operations/troubleshooting.md), which covers common connection, service, video/audio, Agent, and OTA issues. Log locations are in [Deployment](deployment.md).
