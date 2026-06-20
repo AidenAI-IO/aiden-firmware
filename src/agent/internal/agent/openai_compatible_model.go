@@ -64,14 +64,18 @@ func (l *llmRawHTTPLogger) Log(model, dir, kind string, statusCode int, raw stri
 		raw = strings.ReplaceAll(raw, "\r", "\\r")
 	}
 
-	entry := fmt.Sprintf(
-		"ts=%s dir=%s kind=%s status=%d body=%s\n",
-		now.Format("15:04:05"),
-		strings.TrimSpace(dir),
-		strings.TrimSpace(kind),
-		statusCode,
-		raw,
-	)
+	// Create JSONL entry
+	entry := map[string]interface{}{
+		"ts":     now.Format("15:04:05"),
+		"dir":    strings.TrimSpace(dir),
+		"kind":   strings.TrimSpace(kind),
+		"status": statusCode,
+		"body":   raw,
+	}
+	entryBytes, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("marshal log entry: %w", err)
+	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -84,7 +88,7 @@ func (l *llmRawHTTPLogger) Log(model, dir, kind string, statusCode int, raw stri
 		return err
 	}
 	defer file.Close()
-	_, err = file.WriteString(entry)
+	_, err = file.Write(append(entryBytes, '\n'))
 	return err
 }
 

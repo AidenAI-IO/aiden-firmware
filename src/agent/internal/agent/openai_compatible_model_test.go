@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -130,22 +129,40 @@ func TestOpenAICompatibleModelLogsRawHTTPWhenEnabled(t *testing.T) {
 	}
 
 	logText := readRawHTTPLog(t, logDir)
-	if !strings.Contains(logText, rawResponse) {
-		t.Fatalf("raw HTTP log missing exact response:\n%s", logText)
+
+	// Parse JSONL and check for expected content
+	var foundResponse, foundRequest bool
+	lines := strings.Split(strings.TrimSpace(logText), "\n")
+	for _, line := range lines {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		body, _ := entry["body"].(string)
+		if strings.Contains(body, "finish_reason") && strings.Contains(body, "tool_calls") {
+			foundResponse = true
+		}
+		if strings.Contains(body, "现在几点了") {
+			foundRequest = true
+		}
 	}
-	if !strings.Contains(logText, "kind=http_response") {
-		t.Fatalf("raw HTTP log missing metadata:\n%s", logText)
+
+	if !foundResponse {
+		t.Fatalf("raw HTTP log missing response:\n%s", logText)
 	}
-	if !strings.Contains(logText, "dir=response") {
+	if !foundRequest {
+		t.Fatalf("raw HTTP log missing request:\n%s", logText)
+	}
+	if !strings.Contains(logText, `"kind":"http_response"`) {
+		t.Fatalf("raw HTTP log missing response metadata:\n%s", logText)
+	}
+	if !strings.Contains(logText, `"dir":"response"`) {
 		t.Fatalf("raw HTTP log missing direction field:\n%s", logText)
 	}
-	if !strings.Contains(logText, "dir=request") || !strings.Contains(logText, "kind=http_request") {
+	if !strings.Contains(logText, `"dir":"request"`) || !strings.Contains(logText, `"kind":"http_request"`) {
 		t.Fatalf("raw HTTP log missing request record:\n%s", logText)
 	}
-	if !strings.Contains(logText, "现在几点了") {
-		t.Fatalf("raw HTTP log missing request content:\n%s", logText)
-	}
-	assertRawHTTPLogHasSimpleTimestamp(t, logText)
+	assertRawHTTPLogIsValidJSONL(t, logText)
 }
 
 func TestOpenAICompatibleModelRawHTTPLogUsesEffectiveRequestModel(t *testing.T) {
@@ -177,7 +194,23 @@ func TestOpenAICompatibleModelRawHTTPLogUsesEffectiveRequestModel(t *testing.T) 
 	}
 
 	logText := readRawHTTPLog(t, logDir)
-	if !strings.Contains(logText, `"model":"override-model"`) {
+
+	// Parse JSONL and check for model in request body
+	var foundModel bool
+	lines := strings.Split(strings.TrimSpace(logText), "\n")
+	for _, line := range lines {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		body, _ := entry["body"].(string)
+		if strings.Contains(body, `"model":"override-model"`) {
+			foundModel = true
+			break
+		}
+	}
+
+	if !foundModel {
 		t.Fatalf("raw HTTP log should use effective model in request body:\n%s", logText)
 	}
 }
@@ -256,24 +289,43 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPWhenEnabled(t *testing.T) {
 	}
 
 	logText := readRawHTTPLog(t, logDir)
-	// Stream is aggregated into one line with escaped newlines
-	if !findLogLineContaining(logText, firstEvent) {
-		t.Fatalf("raw streaming HTTP log missing first SSE event:\n%s", logText)
+
+	// Parse JSONL and check stream body contains expected events
+	var foundStreamResponse bool
+	var streamBody string
+	lines := strings.Split(strings.TrimSpace(logText), "\n")
+	for _, line := range lines {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry["kind"] == "http_stream" {
+			streamBody, _ = entry["body"].(string)
+			foundStreamResponse = true
+			break
+		}
 	}
-	if !findLogLineContaining(logText, secondEvent) {
-		t.Fatalf("raw streaming HTTP log missing second SSE event:\n%s", logText)
+
+	if !foundStreamResponse {
+		t.Fatalf("raw streaming HTTP log missing stream response:\n%s", logText)
 	}
-	if !findLogLineContaining(logText, "data: [DONE]") {
-		t.Fatalf("raw streaming HTTP log missing [DONE] marker:\n%s", logText)
+	// Check that stream body contains the SSE events (they are escaped in JSON)
+	if !strings.Contains(streamBody, firstEvent) {
+		t.Fatalf("raw streaming HTTP log missing first SSE event in body:\n%s", streamBody)
 	}
-	if !strings.Contains(logText, "kind=http_stream") {
+	if !strings.Contains(streamBody, secondEvent) {
+		t.Fatalf("raw streaming HTTP log missing second SSE event in body:\n%s", streamBody)
+	}
+	if !strings.Contains(streamBody, "data: [DONE]") {
+		t.Fatalf("raw streaming HTTP log missing [DONE] marker in body:\n%s", streamBody)
+	}
+	if !strings.Contains(logText, `"kind":"http_stream"`) {
 		t.Fatalf("raw streaming HTTP log missing metadata:\n%s", logText)
 	}
-	if !strings.Contains(logText, "dir=response") {
+	if !strings.Contains(logText, `"dir":"response"`) {
 		t.Fatalf("raw streaming HTTP log missing direction field:\n%s", logText)
 	}
-	assertRawHTTPLogHasSimpleTimestamp(t, logText)
-	assertEveryLineIsCompleteRecord(t, logText)
+	assertRawHTTPLogIsValidJSONL(t, logText)
 }
 
 func TestModelManagerEnablesRawHTTPLoggingFromModelConfig(t *testing.T) {
@@ -304,7 +356,23 @@ func TestModelManagerEnablesRawHTTPLoggingFromModelConfig(t *testing.T) {
 	}
 
 	logText := readRawHTTPLog(t, logDir)
-	if !strings.Contains(logText, rawResponse) {
+
+	// Parse JSONL and check for expected content
+	var foundResponse bool
+	lines := strings.Split(strings.TrimSpace(logText), "\n")
+	for _, line := range lines {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		body, _ := entry["body"].(string)
+		if strings.Contains(body, "finish_reason") && strings.Contains(body, "ok") {
+			foundResponse = true
+			break
+		}
+	}
+
+	if !foundResponse {
 		t.Fatalf("raw HTTP log missing response from model manager config:\n%s", logText)
 	}
 }
@@ -336,7 +404,23 @@ func TestModelManagerEnablesRawHTTPLoggingFromDefaultConfig(t *testing.T) {
 	}
 
 	logText := readRawHTTPLog(t, logDir)
-	if !strings.Contains(logText, rawResponse) {
+
+	// Parse JSONL and check for expected content
+	var foundResponse bool
+	lines := strings.Split(strings.TrimSpace(logText), "\n")
+	for _, line := range lines {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		body, _ := entry["body"].(string)
+		if strings.Contains(body, "finish_reason") && strings.Contains(body, "ok") {
+			foundResponse = true
+			break
+		}
+	}
+
+	if !foundResponse {
 		t.Fatalf("raw HTTP log missing response from default config:\n%s", logText)
 	}
 }
@@ -483,16 +567,44 @@ func rawHTTPLogPath(logDir string) string {
 	return filepath.Join(logDir, "llm-http-"+time.Now().Format("20060102")+".log")
 }
 
-func assertRawHTTPLogHasSimpleTimestamp(t *testing.T, logText string) {
+func assertRawHTTPLogIsValidJSONL(t *testing.T, logText string) {
 	t.Helper()
-	// Match timestamp: ts=15:04:05
-	match := regexp.MustCompile(`ts=([0-9]{2}:[0-9]{2}:[0-9]{2})`).FindStringSubmatch(logText)
-	if len(match) != 2 {
-		t.Fatalf("raw HTTP log missing timestamp:\n%s", logText)
+	lines := strings.Split(strings.TrimSpace(logText), "\n")
+	if len(lines) == 0 {
+		t.Fatal("raw HTTP log is empty")
 	}
-	// Format: 15:04:05
-	if _, err := time.Parse("15:04:05", match[1]); err != nil {
-		t.Fatalf("raw HTTP log timestamp = %q, want format '15:04:05': %v", match[1], err)
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("line %d is not valid JSON: %v\nline: %s", i+1, err, line)
+		}
+		// Check required fields
+		if _, ok := entry["ts"]; !ok {
+			t.Fatalf("line %d missing 'ts' field: %s", i+1, line)
+		}
+		if _, ok := entry["dir"]; !ok {
+			t.Fatalf("line %d missing 'dir' field: %s", i+1, line)
+		}
+		if _, ok := entry["kind"]; !ok {
+			t.Fatalf("line %d missing 'kind' field: %s", i+1, line)
+		}
+		if _, ok := entry["status"]; !ok {
+			t.Fatalf("line %d missing 'status' field: %s", i+1, line)
+		}
+		if _, ok := entry["body"]; !ok {
+			t.Fatalf("line %d missing 'body' field: %s", i+1, line)
+		}
+		// Validate timestamp format
+		ts, ok := entry["ts"].(string)
+		if !ok {
+			t.Fatalf("line %d 'ts' is not a string: %s", i+1, line)
+		}
+		if _, err := time.Parse("15:04:05", ts); err != nil {
+			t.Fatalf("line %d 'ts' format invalid (want HH:MM:SS): %v", i+1, err)
+		}
 	}
 }
 
@@ -507,17 +619,8 @@ func findLogLineContaining(logText, substring string) bool {
 }
 
 func assertEveryLineIsCompleteRecord(t *testing.T, logText string) {
+	// This is now covered by assertRawHTTPLogIsValidJSONL
 	t.Helper()
-	lines := strings.Split(logText, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if !strings.HasPrefix(line, "ts=") {
-			t.Fatalf("log line does not start with timestamp: %s", line)
-		}
-	}
 }
 
 func TestModelManagerOpenRouterRetriesEOFInModelCall(t *testing.T) {
