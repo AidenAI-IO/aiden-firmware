@@ -9,9 +9,9 @@ LOCAL_LAUNCHER = BENCHMARK_ROOT / "mobilegym" / "scripts" / "local_launcher.py"
 
 def load_local_launcher_module():
     spec = importlib.util.spec_from_file_location("local_launcher_test_module", LOCAL_LAUNCHER)
-    module = importlib.util.module_from_spec(spec)
     assert spec is not None
     assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
