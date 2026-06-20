@@ -97,7 +97,7 @@ curl http://<device-ip>:8080/api/tools
 /oem/usr/bin/abctl read /dev/block/by-name/misc
 
 # 日志查看
-tail -f /userdata/agent/log/agent-$(date +%Y%m%d).log
+tail -f /var/log/agent/agent.log
 jq . /userdata/agent/log/llm-http-$(date +%Y%m%d)-*.log
 ```
 
@@ -139,8 +139,8 @@ jq . /userdata/agent/log/llm-http-20260620-abc123def.log
 # 只看响应
 jq 'select(.kind | test("response|stream"))' llm-http-*.log
 
-# 提取响应内容
-jq -r 'select(.kind == "http_response") | .body | fromjson' llm-http-*.log
+# 提取非流式响应内容
+jq -r 'select(.kind == "response") | .body | fromjson' llm-http-*.log
 
 # 统计请求类型
 jq -r '.kind' llm-http-*.log | sort | uniq -c

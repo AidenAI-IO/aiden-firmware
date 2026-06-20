@@ -351,6 +351,12 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	toolCalls := map[int]*compatibleToolCall{}
 	var generationInfo map[string]any
 	var rawStreamLines []string
+	logRawStream := func() {
+		if m.rawLogger != nil && len(rawStreamLines) > 0 {
+			_ = m.logRawHTTP(requestModel, "response", "stream", statusCode, strings.Join(rawStreamLines, "\n"))
+		}
+	}
+	defer logRawStream()
 
 	for scanner.Scan() {
 		rawLine := scanner.Text()
@@ -424,11 +430,6 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read stream response: %w", err)
-	}
-
-	// Log the aggregated streaming response as a single line
-	if m.rawLogger != nil && len(rawStreamLines) > 0 {
-		_ = m.logRawHTTP(requestModel, "response", "stream", statusCode, strings.Join(rawStreamLines, "\n"))
 	}
 
 	orderedToolCalls := make([]compatibleToolCall, 0, len(toolCalls))

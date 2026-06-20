@@ -322,6 +322,54 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPWhenEnabled(t *testing.T) {
 	assertRawHTTPLogIsValidJSONL(t, logText)
 }
 
+func TestOpenAICompatibleModelLogsRawStreamingHTTPOnDecodeError(t *testing.T) {
+	validEvent := `data: {"choices":[{"delta":{"content":"hello"}}]}`
+	malformedEvent := `data: {"choices":[`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(validEvent + "\n\n"))
+		w.Write([]byte(malformedEvent + "\n\n"))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	model := newOpenAICompatibleModel(
+		server.URL,
+		"test-model",
+		"",
+		server.Client(),
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+	)
+	_, err := model.GenerateContent(
+		context.Background(),
+		[]llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart("stream please")},
+		}},
+		llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error { return nil }),
+	)
+	if err == nil || !strings.Contains(err.Error(), "decode stream event") {
+		t.Fatalf("GenerateContent() error = %v, want decode stream event", err)
+	}
+
+	logText := readRawHTTPLog(t, logDir)
+	var streamBody string
+	for _, line := range strings.Split(strings.TrimSpace(logText), "\n") {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry["kind"] == "stream" {
+			streamBody, _ = entry["body"].(string)
+			break
+		}
+	}
+	if !strings.Contains(streamBody, validEvent) || !strings.Contains(streamBody, malformedEvent) {
+		t.Fatalf("raw streaming HTTP log missing failed SSE events:\nlog=%s\nstream=%s", logText, streamBody)
+	}
+	assertRawHTTPLogIsValidJSONL(t, logText)
+}
+
 func TestModelManagerEnablesRawHTTPLoggingFromModelConfig(t *testing.T) {
 	rawResponse := `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
