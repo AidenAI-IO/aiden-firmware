@@ -364,6 +364,10 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		telemetrySessionID: uuid.NewString(),
 		mobileGym:          &mobileGymSessionStore{},
 	}
+	// Set session ID for raw HTTP logging
+	if modelManager, ok := models.(*ModelManager); ok {
+		modelManager.SetSessionID(rt.telemetrySessionID)
+	}
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
 		rt.markInterruptedEpisodesBestEffort()

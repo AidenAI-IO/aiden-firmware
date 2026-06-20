@@ -118,7 +118,7 @@ func TestOpenAICompatibleModelLogsRawHTTPWhenEnabled(t *testing.T) {
 		"test-model",
 		"",
 		server.Client(),
-		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir)),
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
@@ -176,7 +176,7 @@ func TestOpenAICompatibleModelRawHTTPLogUsesEffectiveRequestModel(t *testing.T) 
 		"configured-model",
 		"",
 		server.Client(),
-		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir)),
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	_, err := model.GenerateContent(
 		context.Background(),
@@ -271,7 +271,7 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPWhenEnabled(t *testing.T) {
 		"test-model",
 		"",
 		server.Client(),
-		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir)),
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	_, err := model.GenerateContent(
 		context.Background(),
