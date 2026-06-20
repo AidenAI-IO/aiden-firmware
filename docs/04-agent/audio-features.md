@@ -115,7 +115,7 @@ speed = 1.0
 
 ## TTS provider 使用方式
 
-`[tts]` 的通用字段是 `provider`、`api_key`、`model`、`voice_id`、`emotion`、`speed` 和 `reference_id`。不同 provider 对字段的解释不同，完整说明见 [Agent 配置参考](configuration.md#stt-和-tts)。以下示例省略 `api_key`，只展示 adapter 行为相关配置。
+`[tts]` 的通用字段是 `provider`、`api_key`、`model`、`voice_id`、`emotion`、`speed` 和 `reference_id`。不同 provider 对字段的解释不同，完整说明见 [Agent 配置参考](configuration.md#stt-and-tts)。以下示例省略 `api_key`，只展示 adapter 行为相关配置。
 
 所有 TTS provider 都通过统一的 streaming session 调用：Agent 把 LLM 输出片段写入 adapter，adapter 再决定何时向后端发送。Fish Audio、阿里云和火山引擎是真流式 WebSocket 链路；Minimax WebSocket adapter 会在内部按句子边界缓冲后发送，上层不需要区分“真流式”或“句子级流式”。运行时可通过 `POST /api/settings/tts` 切换 provider，已开始的播放会继续使用旧 provider，后续请求使用新 provider。
 

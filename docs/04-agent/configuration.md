@@ -1,6 +1,22 @@
 # Agent Configuration Reference
 
-The Agent expects `-config` to point to a directory, not a single config file. This page covers both the on-device **Config Web configuration page** (the most common way to edit these fields) and a complete reference for each `agent.toml` field.
+The Agent expects `-config` to point to a directory, not a single config file. Every field below lives in `agent.toml` and can be edited either through the on-device [Config Web page](#config-web-the-device-config-page) or by hand. TOML is the only supported config format; JSON config is deprecated.
+
+## Contents
+
+- [Directory layout](#directory-layout)
+- [Config Web: the device config page](#config-web-the-device-config-page)
+- [Minimal config examples](#minimal-config-examples)
+- [Top-level fields](#top-level-fields)
+- [`[model]`](#model)
+- [`[audio]`](#audio)
+- [`[hid]`](#hid)
+- [`[stt]` and `[tts]`](#stt-and-tts)
+- [`[live_activity]`](#live_activity)
+- [Episode telemetry (Langfuse)](#episode-telemetry-langfuse)
+- [System environment variables](#system-environment-variables)
+- [`memory/extraction.yaml`](#memoryextractionyaml)
+- [Known limitations](#known-limitations)
 
 ## Directory layout
 
@@ -11,8 +27,6 @@ The Agent expects `-config` to point to a directory, not a single config file. T
 ├── log/             # runtime log directory
 └── memory/          # conversation memory persistence directory
 ```
-
-TOML is the currently supported config format; JSON config is deprecated.
 
 ## Config Web: the device config page
 
@@ -39,7 +53,9 @@ The page fields cover the following config sections (all detailed later on this 
 - `env`: shell-style environment text written to `/userdata/system/env`, including optional proxy variables such as `http_proxy`, `HTTPS_PROXY`, and `NO_PROXY`
 - Wi-Fi: SSID / PSK etc. (written to `/userdata/wpa_supplicant.conf`)
 
-## Minimal Web UI config
+## Minimal config examples
+
+### Web UI (text mode)
 
 ```toml
 custom_instruction = ""
@@ -72,7 +88,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 > `token_env` means the key is read from an environment variable. Overlay example configs may also write the `api_key` field directly; for production, prefer environment variables or a device-side secure injection method.
 
-## Minimal STT voice-mode config
+### STT voice mode
 
 ```toml
 custom_instruction = ""
@@ -122,8 +138,9 @@ keyboard_device = "/dev/hidg0"
 mouse_device = "/dev/hidg1"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
-
 ## Top-level fields
+
+### General
 
 | Field | Default / allowed values | Description |
 | --- | --- | --- |
@@ -133,6 +150,14 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `screenshot_keep_n` | `3` | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default |
 | `screenshot_prune_interval` | `2` | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default |
 | `input_mode` | `text` / `stt` / `audio` | Input mode |
+| `todo_reminder_tool_calls` | `3` | In single-agent/default mode, after how many consecutive tool calls to remind the model to update the todo; set to `0` to use the default |
+
+### Voice & VAD
+
+These fields apply to the `stt` and `audio` input modes.
+
+| Field | Default | Description |
+| --- | --- | --- |
 | `trigger_mode` | `manual` / `wakeup` | Voice-mode trigger method |
 | `vad_backend` | `rknn` | VAD backend: `rknn` uses NPU encoder + CPU LSTM/decoder, `cpu` uses a pure-CPU helper |
 | `vad_model_path` | `/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder model path; not used when `vad_backend="cpu"` |
@@ -149,7 +174,6 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `voice_tool_call_speech` | `true` | Whether to asynchronously read the `content` of a tool-call event; this content comes only from the assistant content in the same LLM tool-call response, and stays silent when absent |
 | `voice_progress_speech_enabled` | `true` | Whether to announce a short progress message when a todo item enters `in_progress`; todo state is still sent to the UI/trace |
 | `voice_max_response_tokens` | `400` | Per-turn output token limit for voice replies (must be `>= 0`) |
-| `todo_reminder_tool_calls` | `3` | In single-agent/default mode, after how many consecutive tool calls to remind the model to update the todo; set to `0` to use the default |
 
 The model pointed to by `vad_model_path` must first be converted from the Silero ONNX to RV1106 RKNN on a PC using `silero-vad/convert_silero_vad_to_rknn.py`, then placed at the corresponding path on the device. The CPU backend requires `silero_vad_6_2_lstm_decoder_weights.bin` to include the Conv1d encoder extension, which can be generated from the TorchScript file shipped with the repo using `silero-vad/export_silero_vad_v6_2_weights.py`.
 When `vad_helper_path` is still the built-in default, switching `vad_backend` automatically switches the helper; only when set to a custom path does it run that custom path.
@@ -168,43 +192,6 @@ When `vad_helper_path` is still the built-in default, switching `vad_backend` au
 | `context_window` | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback. |
 | `model_max_output_tokens` | Optional advertised max output override in tokens. Unset or `0` uses provider metadata when fetched, then the built-in registry. |
 
-## `memory/extraction.yaml`
-
-Optional. Place `memory/extraction.yaml` under the config directory to control session-memory compaction and chunk extraction. Missing files and invalid fields fall back to defaults. See [session-memory.md](./session-memory.md) for the full flow.
-
-| Field | Default | Description |
-| --- | --- | --- |
-| `reserve_tokens` | `8192` | Token headroom reserved below the active model context window. Compaction triggers when `prompt_tokens >= context_window - reserve_tokens`. The value is clamped to at most half of the window so small-window models remain usable. |
-| `keep_recent_tokens` | `20000` | Approximate token budget for the hot window retained by token-based cut-point selection. It is clamped together with `reserve_tokens` to fit the active window. |
-| `hot_window_events` | `30` | Target number of recent events retained by the count fallback. Used only when prompt-token data is unavailable. |
-| `count_compress_after_events` | `hot_window_events * 2` | Event-count trigger used only when prompt-token data is unavailable. If omitted, it is derived from the normalized `hot_window_events`; explicit values must be greater than `hot_window_events`. |
-| `context_window` | `32000` | Fallback context window for compaction when the active model is not present in `model_specs`. Runtime normally derives this from `ModelResolver.Spec()`; this value is only used for unknown models. |
-| `compress_at_percent` | `50` | Percentage trigger: compaction starts when `prompt_tokens / context_window >= compress_at_percent%`. |
-| `summary_max_chunks` | `10` | Number of chunk summaries kept in the Recent Chunks section of `summary.md`. Older entries move to the archive and are folded into the Rolling Summary. |
-| `session_boundary_enabled` | `true` | Classify each new user turn as continuing the current session or starting a new one. A `new` boundary archives the current `memory/session/` directory and recreates an empty active session. |
-| `session_boundary_short_gap_seconds` | `300` | Gap below which a turn is treated as continuation regardless of lexical signals. |
-| `session_boundary_long_gap_seconds` | `1800` | Gap above which a turn is treated as a fresh session regardless of lexical signals. |
-| `tag_candidates` | see defaults | Candidate keywords matched when tagging chunk summaries. |
-| `entity_suffixes` | `["App","app","APP"]` | Suffixes recognized during entity extraction. |
-
-## System Environment Variables
-
-The Agent no longer reads `[proxy]` from `agent.toml`. Outbound HTTP/WebSocket requests, shell tool subprocesses, OTA commands launched through `aiden-env-run`, and SSH login shells all use environment variables from `/userdata/system/env`. The file is loaded with shell syntax, for example:
-
-```sh
-HTTP_PROXY=http://127.0.0.1:7890
-HTTPS_PROXY=http://127.0.0.1:7890
-NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
-OPENROUTER_API_KEY=...
-```
-
-| Variable | Description |
-| --- | --- |
-| `HTTP_PROXY` / `http_proxy` | HTTP proxy URL, for example `http://127.0.0.1:7890` |
-| `HTTPS_PROXY` / `https_proxy` | HTTPS proxy URL, usually the same HTTP proxy endpoint |
-| `ALL_PROXY` / `all_proxy` | Generic proxy used by HTTP clients and some WebSocket adapters |
-| `NO_PROXY` / `no_proxy` | Comma-separated bypass rules; when a proxy URL is set and no bypass value is present, the launcher injects the default private-network bypass list |
-
 ## `[audio]`
 
 | Field | Default | Description |
@@ -221,23 +208,6 @@ OPENROUTER_API_KEY=...
 | `keyboard_device` | `/dev/hidg0` | Keyboard HID device |
 | `mouse_device` | `/dev/hidg1` | Mouse/touch HID device |
 | `frame_socket` | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool |
-
-## `[live_activity]`
-
-For the iOS companion app's Live Activity / Dynamic Island task status. The agent-side status snapshot is enabled by default; the APNs-related fields only apply to remote updates when the app is backgrounded, on the lock screen, or not open. Foreground local updates do not need and will not use APNs. See the full flow in [Live Activity / Dynamic Island](./live-activity.md).
-
-| Field | Default | Description |
-| --- | --- | --- |
-| `enabled` | `true` | Whether to enable the agent-side status snapshot and API |
-| `bundle_id` | - | iOS app bundle id; required only when configuring background APNs and `topic` is not explicitly set |
-| `topic` | `<bundle_id>.push-type.liveactivity` | APNs topic; usually does not need to be set manually |
-| `environment` | `sandbox` | `sandbox` or `production` |
-| `team_id` | - | Apple Developer Team ID; used only by background APNs |
-| `key_id` | - | APNs Auth Key ID; used only by background APNs |
-| `private_key_path` | - | APNs `.p8` private key path; used only by background APNs |
-| `private_key_pem` | - | Inline APNs `.p8` PEM directly; for development/debugging only, do not place in open-source config or on user boards in production |
-| `timeout_sec` | `10` | Background APNs request timeout |
-
 ## `[stt]` and `[tts]`
 
 `[stt]` is required when `input_mode = "stt"`; `[tts]` is required when `input_mode = "stt"` or `"audio"`.
@@ -277,6 +247,8 @@ Common TTS adapter configs:
 | `fish-audio` | `s2-pro` | `reference_id = "98655a12fa944e26b274c535e5e03842"` | WebSocket live TTS; `model` is sent via the handshake header, `reference_id` takes priority over `voice_id` |
 | `alicloud` | `qwen3-tts-flash-realtime` | `voice_id = "Cherry"` | DashScope Realtime; the adapter outputs 24 kHz PCM, automatically resampling when the sample rate differs |
 | `volcengine` | `seed-tts-2.0` | `voice_id = "zh_female_vv_uranus_bigtts"` | `model` maps to `X-Api-Resource-Id`, `voice_id` maps to the speaker, and the two must match |
+
+### Provider examples
 
 Minimax WebSocket:
 
@@ -325,7 +297,7 @@ speed = 1.0
 
 For Volcengine, `api_key` is the new console's `X-Api-Key`, `model` is the `X-Api-Resource-Id`, and `voice_id` is the speaker. `voice_id` must match the resource corresponding to `model`; when they do not match, the server returns `resource ID is mismatched with speaker related resource`. A verified working voice example for `seed-tts-2.0` is `zh_female_vv_uranus_bigtts`.
 
-Switching providers at runtime:
+### Switching providers at runtime
 
 ```bash
 curl -X POST http://<device-ip>:8080/api/settings/tts \
@@ -353,6 +325,21 @@ voice_id = "Cherry"
 model = "seed-tts-2.0"
 voice_id = "zh_female_vv_uranus_bigtts"
 ```
+## `[live_activity]`
+
+For the iOS companion app's Live Activity / Dynamic Island task status. The agent-side status snapshot is enabled by default; the APNs-related fields only apply to remote updates when the app is backgrounded, on the lock screen, or not open. Foreground local updates do not need and will not use APNs. See the full flow in [Live Activity / Dynamic Island](./live-activity.md).
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `enabled` | `true` | Whether to enable the agent-side status snapshot and API |
+| `bundle_id` | - | iOS app bundle id; required only when configuring background APNs and `topic` is not explicitly set |
+| `topic` | `<bundle_id>.push-type.liveactivity` | APNs topic; usually does not need to be set manually |
+| `environment` | `sandbox` | `sandbox` or `production` |
+| `team_id` | - | Apple Developer Team ID; used only by background APNs |
+| `key_id` | - | APNs Auth Key ID; used only by background APNs |
+| `private_key_path` | - | APNs `.p8` private key path; used only by background APNs |
+| `private_key_pem` | - | Inline APNs `.p8` PEM directly; for development/debugging only, do not place in open-source config or on user boards in production |
+| `timeout_sec` | `10` | Background APNs request timeout |
 
 ## Episode telemetry (Langfuse)
 
@@ -371,6 +358,43 @@ max_retry = 2
 environment = "default"
 tags = ["aiden-hardware"]
 ```
+
+## System environment variables
+
+The Agent no longer reads `[proxy]` from `agent.toml`. Outbound HTTP/WebSocket requests, shell tool subprocesses, OTA commands launched through `aiden-env-run`, and SSH login shells all use environment variables from `/userdata/system/env`. The file is loaded with shell syntax, for example:
+
+```sh
+HTTP_PROXY=http://127.0.0.1:7890
+HTTPS_PROXY=http://127.0.0.1:7890
+NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+OPENROUTER_API_KEY=...
+```
+
+| Variable | Description |
+| --- | --- |
+| `HTTP_PROXY` / `http_proxy` | HTTP proxy URL, for example `http://127.0.0.1:7890` |
+| `HTTPS_PROXY` / `https_proxy` | HTTPS proxy URL, usually the same HTTP proxy endpoint |
+| `ALL_PROXY` / `all_proxy` | Generic proxy used by HTTP clients and some WebSocket adapters |
+| `NO_PROXY` / `no_proxy` | Comma-separated bypass rules; when a proxy URL is set and no bypass value is present, the launcher injects the default private-network bypass list |
+
+## `memory/extraction.yaml`
+
+Optional. Place `memory/extraction.yaml` under the config directory to control session-memory compaction and chunk extraction. Missing files and invalid fields fall back to defaults. See [session-memory.md](./session-memory.md) for the full flow.
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `reserve_tokens` | `8192` | Token headroom reserved below the active model context window. Compaction triggers when `prompt_tokens >= context_window - reserve_tokens`. The value is clamped to at most half of the window so small-window models remain usable. |
+| `keep_recent_tokens` | `20000` | Approximate token budget for the hot window retained by token-based cut-point selection. It is clamped together with `reserve_tokens` to fit the active window. |
+| `hot_window_events` | `30` | Target number of recent events retained by the count fallback. Used only when prompt-token data is unavailable. |
+| `count_compress_after_events` | `hot_window_events * 2` | Event-count trigger used only when prompt-token data is unavailable. If omitted, it is derived from the normalized `hot_window_events`; explicit values must be greater than `hot_window_events`. |
+| `context_window` | `32000` | Fallback context window for compaction when the active model is not present in `model_specs`. Runtime normally derives this from `ModelResolver.Spec()`; this value is only used for unknown models. |
+| `compress_at_percent` | `50` | Percentage trigger: compaction starts when `prompt_tokens / context_window >= compress_at_percent%`. |
+| `summary_max_chunks` | `10` | Number of chunk summaries kept in the Recent Chunks section of `summary.md`. Older entries move to the archive and are folded into the Rolling Summary. |
+| `session_boundary_enabled` | `true` | Classify each new user turn as continuing the current session or starting a new one. A `new` boundary archives the current `memory/session/` directory and recreates an empty active session. |
+| `session_boundary_short_gap_seconds` | `300` | Gap below which a turn is treated as continuation regardless of lexical signals. |
+| `session_boundary_long_gap_seconds` | `1800` | Gap above which a turn is treated as a fresh session regardless of lexical signals. |
+| `tag_candidates` | see defaults | Candidate keywords matched when tagging chunk summaries. |
+| `entity_suffixes` | `["App","app","APP"]` | Suffixes recognized during entity extraction. |
 
 ## Known limitations
 
