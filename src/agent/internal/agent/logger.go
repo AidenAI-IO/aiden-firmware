@@ -80,7 +80,7 @@ func cleanupOldLogFiles(logDir string, now time.Time) error {
 }
 
 func logFileTime(name string, modTime time.Time) time.Time {
-	for _, prefix := range []string{"agent-", "llm-raw-"} {
+	for _, prefix := range []string{"agent-", "llm-http-"} {
 		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".log") {
 			continue
 		}

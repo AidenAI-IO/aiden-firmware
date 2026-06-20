@@ -114,7 +114,7 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(ne("model.provider", "openrouter"))},
 					{Key: "temperature", Widget: WidgetNumber, Default: defaults.Model.Temperature},
 					{Key: "max_response_tokens", Widget: WidgetNumber, Default: defaults.Model.MaxResponseTokens},
-					{Key: "log_raw_response", Widget: WidgetBoolean, Default: defaults.Model.LogRawResponse},
+					{Key: "log_raw_http", Widget: WidgetBoolean, Default: defaults.Model.LogRawHTTP},
 					{Key: "context_window", Widget: WidgetNumber, Default: defaults.Model.ContextWindow},
 					{Key: "model_max_output_tokens", Widget: WidgetNumber, Default: defaults.Model.ModelMaxOutputTokens},
 				},

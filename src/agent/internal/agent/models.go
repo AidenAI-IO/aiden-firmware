@@ -40,7 +40,7 @@ type ModelManager struct {
 	providerSpecFetchStarted  bool
 	metadataHTTPClient        *http.Client
 	providerMetadataCachePath string
-	rawResponseLogDir         string
+	rawHTTPLogDir             string
 }
 
 type ModelManagerOption func(*ModelManager)
@@ -51,9 +51,9 @@ func WithProviderModelMetadataCachePath(path string) ModelManagerOption {
 	}
 }
 
-func WithLLMRawResponseLogDir(path string) ModelManagerOption {
+func WithLLMRawHTTPLogDir(path string) ModelManagerOption {
 	return func(m *ModelManager) {
-		m.rawResponseLogDir = strings.TrimSpace(path)
+		m.rawHTTPLogDir = strings.TrimSpace(path)
 	}
 }
 
@@ -147,11 +147,11 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 }
 
 func (m *ModelManager) openAICompatibleOptions(cfg ModelConfig) []openAICompatibleModelOption {
-	if !cfg.LogRawResponse || strings.TrimSpace(m.rawResponseLogDir) == "" {
+	if !cfg.LogRawHTTP || strings.TrimSpace(m.rawHTTPLogDir) == "" {
 		return nil
 	}
 	return []openAICompatibleModelOption{
-		withOpenAICompatibleRawResponseLogger(newLLMRawResponseLogger(m.rawResponseLogDir)),
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(m.rawHTTPLogDir)),
 	}
 }
 

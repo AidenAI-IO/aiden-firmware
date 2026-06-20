@@ -12,7 +12,7 @@ func TestCleanupOldLogFilesRemovesLogsOlderThanTwoDays(t *testing.T) {
 	now := time.Date(2026, 6, 19, 12, 0, 0, 0, time.Local)
 
 	writeTestLogFile(t, logDir, "agent-20260616.log", now)
-	writeTestLogFile(t, logDir, "llm-raw-20260616.log", now)
+	writeTestLogFile(t, logDir, "llm-http-20260616.log", now)
 	writeTestLogFile(t, logDir, "agent-20260617.log", now.Add(-72*time.Hour))
 	writeTestLogFile(t, logDir, "agent-20260618.log", now.Add(-72*time.Hour))
 	writeTestLogFile(t, logDir, "custom.log", now.Add(-72*time.Hour))
@@ -24,7 +24,7 @@ func TestCleanupOldLogFilesRemovesLogsOlderThanTwoDays(t *testing.T) {
 	}
 
 	assertPathMissing(t, filepath.Join(logDir, "agent-20260616.log"))
-	assertPathMissing(t, filepath.Join(logDir, "llm-raw-20260616.log"))
+	assertPathMissing(t, filepath.Join(logDir, "llm-http-20260616.log"))
 	assertPathMissing(t, filepath.Join(logDir, "custom.log"))
 	assertPathExists(t, filepath.Join(logDir, "agent-20260617.log"))
 	assertPathExists(t, filepath.Join(logDir, "agent-20260618.log"))

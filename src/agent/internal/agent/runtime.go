@@ -287,8 +287,8 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	modelManagerOptions := []ModelManagerOption{}
 	if cfg.ConfigDir != "" {
 		modelManagerOptions = append(modelManagerOptions, WithProviderModelMetadataCachePath(filepath.Join(cfg.ConfigDir, "cache", "provider_model_metadata.json")))
-		if cfg.Model.LogRawResponse {
-			modelManagerOptions = append(modelManagerOptions, WithLLMRawResponseLogDir(filepath.Join(cfg.ConfigDir, "log")))
+		if cfg.Model.LogRawHTTP {
+			modelManagerOptions = append(modelManagerOptions, WithLLMRawHTTPLogDir(filepath.Join(cfg.ConfigDir, "log")))
 		}
 	}
 	modelManager := NewModelManager(cfg.Model, proxy, modelManagerOptions...)
