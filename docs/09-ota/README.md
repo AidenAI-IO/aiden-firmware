@@ -1,71 +1,71 @@
-# OTA 概览
+# OTA Overview
 
-本项目的生产 OTA 使用 A/B 分区、签名 manifest 和启动健康确认机制。设备运行中只写入 inactive slot，重启后由 Rockchip SPL 选择新 slot；如果新系统没有在健康窗口内确认成功，SPL 会自动回退到上一成功 slot。
+This project's production OTA uses A/B partitioning, signed manifests, and boot health confirmation mechanisms. During runtime, devices only write to the inactive slot. After reboot, Rockchip SPL selects the new slot; if the new system does not confirm success within the health window, SPL automatically rolls back to the previous successful slot.
 
-## 适用范围
+## Scope
 
-- 目标硬件：Luckfox Pico Zero / RV1106 + eMMC。
+- Target hardware: Luckfox Pico Zero / RV1106 + eMMC.
 - Distribution: GitHub Releases. Published assets contain `manifest.json` plus compressed image archives: `boot_a.img.tar.gz`, `boot_b.img.tar.gz`, `oem.img.tar.gz`, `rootfs.img.tar.gz`, and `update.img.tar.gz`. The extracted images still use the slot-neutral `oem.img` and `rootfs.img` layout introduced in PR #112; older releases used `oem_a.img`, `oem_b.img`, `rootfs_a.img`, and `rootfs_b.img`.
-- 更新方式：设备端 `/oem/usr/bin/ota` 拉取 manifest、验签、校验 SHA256、写 inactive slot、切换 `misc` 并重启。
-- 回滚方式：Rockchip SPL A/B metadata 控制 boot tries；应用健康确认后才 mark successful。
+- Update method: The device-side `/oem/usr/bin/ota` fetches the manifest, verifies signatures, validates SHA256, writes to the inactive slot, switches `misc`, and reboots.
+- Rollback method: Rockchip SPL A/B metadata controls boot tries; mark successful only after application health confirmation.
 
-## 文档索引
+## Documentation Index
 
-### 核心文档
+### Core Documentation
 
-- [OTA 架构与运行时](architecture.md)
-- [OTA 密钥管理](key-management.md)
-- [设备验收流程](device-acceptance.md)
-- [A/B 与 `abctl` 验证](verification.md)
+- [OTA Architecture and Runtime](architecture.md)
+- [OTA Key Management](key-management.md)
+- [Device Acceptance Process](device-acceptance.md)
+- [A/B and `abctl` Verification](verification.md)
 
-### 开放性与外部开发者
+### Openness and External Developers
 
-- [OTA 开放性改进](OTA_OPEN_SOURCES.md) - manifest 支持直接 URL、外部开发者分发固件
-- [外部开发者指南](ota-external-developers.md) - 如何使用自定义源分发固件
-- [快速示例](ota-quick-examples.md) - GitHub Releases、自建后端、混合模式示例
-- [发布渠道策略](ota-release-channels.md) - 分支与渠道隔离机制
+- [OTA Openness Improvements](OTA_OPEN_SOURCES.md) - manifest supports direct URLs, external developer firmware distribution
+- [External Developer Guide](ota-external-developers.md) - how to distribute firmware using custom sources
+- [Quick Examples](ota-quick-examples.md) - GitHub Releases, self-hosted backend, hybrid mode examples
+- [Release Channel Strategy](ota-release-channels.md) - branch and channel isolation mechanisms
 
-### 技术分析
+### Technical Analysis
 
-- [中性资源兼容性分析](OTA_COMPATIBILITY_ANALYSIS.md) - PR #112 向后兼容性评估
+- [Neutral Resource Compatibility Analysis](OTA_COMPATIBILITY_ANALYSIS.md) - PR #112 backward compatibility assessment
 
-## 核心约束
+## Core Constraints
 
-- OTA 不更新 `env`、`idblock`、`uboot`；这些只通过工厂或 USB recovery 更新。
-- OTA 只写 inactive slot 的 `boot_*`、`oem_*`、`rootfs_*`。
-- `/userdata` 跨升级保留，并保存 OTA 配置、状态、下载缓存和健康标记。
-- `boot_a.img` 与 `boot_b.img` 包含不同 slot bootargs，manifest 必须使用 slot-specific boot assets。
-- 缺少 factory baseline 或 manifest 签名/hash 校验失败时，设备必须 fail closed。
+- OTA does not update `env`, `idblock`, or `uboot`; these are only updated via factory or USB recovery.
+- OTA only writes to `boot_*`, `oem_*`, `rootfs_*` of the inactive slot.
+- `/userdata` is preserved across upgrades and stores OTA configuration, state, download cache, and health markers.
+- `boot_a.img` and `boot_b.img` contain different slot bootargs; manifests must use slot-specific boot assets.
+- When factory baseline is missing or manifest signature/hash verification fails, devices must fail closed.
 
-## 常用命令
+## Common Commands
 
 ```bash
-# 查看 OTA 状态
+# View OTA status
 /oem/usr/bin/ota status
 
-# 立即检查并执行一次 OTA
+# Check and perform OTA update immediately
 /oem/usr/bin/ota update
 
-# 查看 A/B metadata
+# View A/B metadata
 /oem/usr/bin/abctl read /dev/block/by-name/misc
 
-# 查看当前 slot 与 rootfs
+# View current slot and rootfs
 cat /proc/cmdline
 mount | grep ' /oem '
 ```
 
-`check-now` 仍作为兼容别名保留；新脚本和文档应使用 `update`。
+`check-now` is still retained as a compatibility alias; new scripts and documentation should use `update`.
 
-## 相关源码
+## Related Source Code
 
-| 路径 | 说明 |
+| Path | Description |
 | --- | --- |
-| `src/agent/cmd/ota` | OTA CLI 入口，包含手动更新和 health 处理 |
-| `src/agent/cmd/abctl` | A/B metadata 诊断工具 |
-| `src/agent/internal/ota` | manifest、下载、状态机、slot、health 等 OTA 核心逻辑 |
-| `overlay/etc/init.d/S20oemslot` | 根据 `aiden.slot_suffix` 挂载 `/oem` |
-| `overlay/etc/init.d/S54ota` | 开机一次性 OTA health 处理 |
-| `scripts/generate_ota_manifest.sh` | 生成签名 OTA manifest |
-| `scripts/generate_ota_device_config.sh` | 从 manifest 生成首刷配置 |
-| `scripts/repack_ota_update_image.sh` | 把首刷 OTA 配置重新打入 `userdata.img` 和 `update.img` |
-| `pico-sdk/project/scripts/mk-ab-misc.py` | 生成 factory `misc.img` A/B metadata |
+| `src/agent/cmd/ota` | OTA CLI entry point, including manual update and health handling |
+| `src/agent/cmd/abctl` | A/B metadata diagnostic tool |
+| `src/agent/internal/ota` | OTA core logic for manifest, download, state machine, slot, health, etc. |
+| `overlay/etc/init.d/S20oemslot` | Mount `/oem` based on `aiden.slot_suffix` |
+| `overlay/etc/init.d/S54ota` | One-time OTA health handling at boot |
+| `scripts/generate_ota_manifest.sh` | Generate signed OTA manifest |
+| `scripts/generate_ota_device_config.sh` | Generate factory configuration from manifest |
+| `scripts/repack_ota_update_image.sh` | Repack factory OTA configuration into `userdata.img` and `update.img` |
+| `pico-sdk/project/scripts/mk-ab-misc.py` | Generate factory `misc.img` A/B metadata |

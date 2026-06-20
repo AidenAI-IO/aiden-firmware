@@ -1,29 +1,29 @@
-# USB HID 与设备控制
+# USB HID and Device Control
 
-项目通过 Linux USB gadget framework 将 Luckfox Pico Zero 的 USB-C 口配置为 HID 设备，可模拟键盘、鼠标/触控输入。
+The project configures the Luckfox Pico Zero's USB-C port as an HID device through the Linux USB gadget framework, enabling simulation of keyboard, mouse, and touch input.
 
-## 启动方式
+## Startup Method
 
-固件中由启动脚本自动完成 gadget 初始化；开发环境可以手动执行：
+In the firmware, the gadget initialization is automatically completed by startup scripts; in the development environment, it can be executed manually:
 
 ```bash
 sudo ./build/bin/example_usb_hid setup composite
 ```
 
-也可以使用辅助脚本：
+You can also use the helper script:
 
 ```bash
 scripts/setup_usb_gadget.sh
 ```
 
-该脚本会：
+This script will:
 
-1. 挂载 configfs：`/sys/kernel/config`；
-2. 加载 `dwc2` 模块；
-3. 加载 `libcomposite` 模块；
-4. 调用 `example_usb_hid setup composite`。
+1. Mount configfs: `/sys/kernel/config`;
+2. Load the `dwc2` module;
+3. Load the `libcomposite` module;
+4. Call `example_usb_hid setup composite`.
 
-## example_usb_hid 用法
+## example_usb_hid Usage
 
 ```text
 example_usb_hid [global options] setup <keyboard|touch|composite>
@@ -41,7 +41,17 @@ example_usb_hid [global options] touch scroll <amount>
 example_usb_hid [global options] server [PORT]
 ```
 
-常用示例：
+### Server Command
+
+The `server` command starts a simple HTTP server that accepts HID commands via POST requests. This is useful for remote control or integration testing.
+
+```bash
+sudo ./build/bin/example_usb_hid server 8090
+```
+
+The server listens on the specified port (default 8080 if not specified) and accepts JSON payloads with command specifications.
+
+Common examples:
 
 ```bash
 sudo ./build/bin/example_usb_hid keyboard tap ENTER
@@ -51,25 +61,25 @@ sudo ./build/bin/example_usb_hid touch click 16000 16000
 sudo ./build/bin/example_usb_hid cleanup
 ```
 
-## 全局参数
+## Global Parameters
 
-| 参数 | 说明 |
+| Parameter | Description |
 | --- | --- |
-| `--gadget-root PATH` | configfs gadget 根路径 |
-| `--gadget-name NAME` | gadget 名称 |
-| `--keyboard-dev PATH` | 键盘 HID device |
-| `--touch-dev PATH` | 触控/鼠标 HID device |
-| `--state-dir PATH` | 状态文件目录 |
+| `--gadget-root PATH` | configfs gadget root path |
+| `--gadget-name NAME` | gadget name |
+| `--keyboard-dev PATH` | keyboard HID device |
+| `--touch-dev PATH` | touch/mouse HID device |
+| `--state-dir PATH` | state file directory |
 | `--manufacturer TEXT` | USB manufacturer string |
 | `--product-name TEXT` | USB product string |
 | `--serial TEXT` | USB serial string |
 | `--vendor INT` / `--product-id INT` | USB VID/PID |
-| `--udc NAME` | 指定 UDC |
-| `--width INT` / `--height INT` | 坐标空间尺寸 |
-| `--duration-ms INT` | 输入动作持续时间 |
-| `--force` | 强制执行某些操作 |
+| `--udc NAME` | specify UDC |
+| `--width INT` / `--height INT` | coordinate space dimensions |
+| `--duration-ms INT` | input action duration |
+| `--force` | force certain operations |
 
-## Agent HID 配置
+## Agent HID Configuration
 
 ```toml
 [hid]
@@ -78,7 +88,7 @@ mouse_device = "/dev/hidg1"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
-Agent 内置工具：
+Built-in Agent tools:
 
 - `keyboard_tap`
 - `keyboard_text`
@@ -87,6 +97,6 @@ Agent 内置工具：
 - `mouse_scroll`
 - `touch_gesture`
 
-建议使用 normalized 坐标（`0..1000`，中心为 `500,500`），避免显示分辨率变化导致点击位置偏移。
-对小按钮、列表项、输入框等密集目标，也优先估算目标中心的 normalized 坐标；只有截图像素坐标和 HID 触控坐标已经校准时，才显式传 `coord_space: "pixel"`。输入工具成功后会返回 post-action screenshot，应先确认画面变化再继续，避免重复点击。
-`keyboard_text` 模拟美式键盘，只能输入 ASCII 可键入字符；中文应通过拼音/英文搜索词和屏幕候选完成，不能把中文字符串直接传给工具。
+It is recommended to use normalized coordinates (`0..1000`, with center at `500,500`) to avoid click position shifts due to display resolution changes.
+For dense targets such as small buttons, list items, and input boxes, prioritize estimating the normalized coordinates of the target center; only explicitly pass `coord_space: "pixel"` when the screenshot pixel coordinates and HID touch coordinates are already calibrated. After successful input tool execution, a post-action screenshot is returned; screen changes should be confirmed before proceeding to avoid duplicate clicks.
+`keyboard_text` simulates a US keyboard and can only input ASCII typeable characters; Chinese input should be completed through pinyin/English search terms and on-screen candidates, and Chinese character strings cannot be passed directly to the tool.

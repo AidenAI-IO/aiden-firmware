@@ -1,52 +1,54 @@
-# 源码与目录结构
+# Source Code and Directory Structure
 
 ```text
 aiden-hardware-demo/
-├── CMakeLists.txt                 # C/C++ 主构建配置
-├── Makefile                       # 本机快捷构建/测试入口
-├── build.sh / _build.sh           # Docker 交叉编译应用
-├── build_image.sh / _build_image.sh # 完整固件构建入口
-├── cmake/                         # Toolchain 文件
-├── docs/                          # 结构化文档
-├── edid/                          # HDMI EDID hex 文件
-├── overlay/                       # 固件注入文件：etc/oem/userdata
-├── pico-sdk/                      # Luckfox SDK 子模块
-├── scripts/                       # 设备辅助脚本
-├── src/                           # C/C++ SDK、服务、工具
+├── CMakeLists.txt                 # Main C/C++ build configuration
+├── Makefile                       # Local build/test shortcut entry point
+├── build.sh / _build.sh           # Docker cross-compile the application
+├── build_image.sh / _build_image.sh # Full firmware build entry point
+├── cmake/                         # Toolchain files
+├── docs/                          # Structured documentation
+├── edid/                          # HDMI EDID hex files
+├── overlay/                       # Firmware injection files: etc/oem/userdata
+├── pico-sdk/                      # Luckfox SDK submodule
+├── scripts/                       # Device helper scripts
+├── src/                           # C/C++ SDK, services, tools
 ├── src/agent/                     # Go Agent
-├── tests/                         # host-native 单元测试
-├── third_party/                   # doctest、stb、opencv-mobile 等
-└── upgrade_tool/                  # 刷机工具
+├── tests/                         # host-native unit tests
+├── third_party/                   # doctest, stb, opencv-mobile, etc.
+└── upgrade_tool/                  # Flashing tool
 ```
 
-## `src/` 重点文件
+## Key files in `src/`
 
-| 文件 / 模块 | 说明 |
+| File / Module | Description |
 | --- | --- |
-| `aiden_sdk.*` | C++ SDK 入口，提供 Wakeup、AudioCapture、AudioPlayer、CameraCapture |
-| `frame_*` | Frame Service、帧缓存、摄像头源、帧协议与客户端 |
-| `audio_*` | Audio Service、录音/播放 session、协议与客户端 |
-| `uds_*` | 通用 Unix domain socket 传输层 |
-| `service_status.*` | 服务通用状态枚举 |
-| `image_process.*` | 图像裁剪、去黑边、缩放、旋转 |
-| `hid_server.*`、`example_usb_hid.cpp` | USB HID gadget 和 HTTP demo server |
-| `config_web.*` | 设备配置 Web 服务，维护 Agent TOML 和 Wi-Fi 配置 |
-| `agent_toml.*` | C++ 侧 Agent TOML 解析/写入 |
+| `aiden_sdk.*` | C++ SDK entry point, providing Wakeup, AudioCapture, AudioPlayer, CameraCapture |
+| `frame_*` | Frame Service, frame buffer, camera source, frame protocol and client |
+| `audio_*` | Audio Service, recording/playback session, protocol and client |
+| `uds_*` | Generic Unix domain socket transport layer |
+| `service_status.*` | Common service status enums |
+| `image_process.*` | Image cropping, black border removal, scaling, rotation |
+| `hid_server.*`, `example_usb_hid.cpp` | USB HID gadget and HTTP demo server |
+| `config_web.*` | Device configuration web service, maintaining Agent TOML and Wi-Fi configuration |
+| `agent_toml.*` | C++ side Agent TOML parsing/writing |
 
-## `src/agent/` 重点目录
+## Key directories in `src/agent/`
 
-| 路径 | 说明 |
+| Path | Description |
 | --- | --- |
-| `cmd/daemon` | 长运行 Agent daemon，提供 Web UI 或设备语音模式 |
-| `cmd/demo` | 本地 CLI demo runner |
-| `internal/agent/runtime.go` | Agent runtime、模型调用和工具循环 |
-| `internal/agent/server.go` | HTTP server / Web UI / 工具 API |
-| `internal/agent/tools*.go` | HID、截图、音频、shell 等内置工具 |
-| `internal/agent/stt.go` / `internal/agent/tts/` / `vad.go` | STT、可插拔 TTS provider、RKNN/CPU VAD 编排 |
-| `internal/agent/skills*.go` | Skill 加载、激活与工具限制 |
-| `config/agent.toml` | Agent 配置示例 |
+| `cmd/daemon` | Long-running Agent daemon, providing Web UI or device voice mode |
+| `cmd/demo` | Local CLI demo runner |
+| `cmd/abctl` | A/B partition control utility for OTA system |
+| `cmd/ota` | OTA update client |
+| `internal/agent/runtime.go` | Agent runtime, model invocation and tool loop |
+| `internal/agent/server.go` | HTTP server / Web UI / tool API |
+| `internal/agent/tools*.go` | Built-in tools such as HID, screenshot, audio, shell |
+| `internal/agent/stt.go` / `internal/agent/tts/` / `vad.go` | STT, pluggable TTS providers, RKNN/CPU VAD orchestration |
+| `internal/agent/skills*.go` | Skill loading, activation and tool restrictions |
+| `config/agent.toml` | Agent configuration example |
 
-## `overlay/` 结构
+## `overlay/` structure
 
 ```text
 overlay/
@@ -62,4 +64,4 @@ overlay/
     └── wpa_supplicant.conf
 ```
 
-`_build_image.sh` 会把应用二进制复制到 `overlay/oem/usr/bin/`，把 VAD 模型随 `overlay/oem/usr/model/` 注入 OEM 分区，并将 overlay 同步/注入到 `pico-sdk` 输出镜像。
+`_build_image.sh` copies the application binaries to `overlay/oem/usr/bin/`, injects the VAD model into the OEM partition along with `overlay/oem/usr/model/`, and syncs/injects the overlay into the `pico-sdk` output image.

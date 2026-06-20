@@ -1,12 +1,12 @@
-# OTA 开放性改进
+# OTA Openness Improvements
 
-本次改进让 OTA 系统更加开放，外部开发者可以从自己的仓库或后端分发固件。
+This improvement makes the OTA system more open, allowing external developers to distribute firmware from their own repositories or backends.
 
-## 主要改进
+## Key Improvements
 
-### 1. Manifest 支持直接 URL
+### 1. Manifest Supports Direct URLs
 
-`ManifestAsset` 新增可选的 `url` 字段：
+`ManifestAsset` adds an optional `url` field:
 
 ```json
 {
@@ -17,21 +17,21 @@
 }
 ```
 
-**优势**：
-- 不再强制要求 GitHub Release API 格式
-- 可以使用任何 Web 服务器（Nginx、Apache、S3、CDN 等）
-- 更适合内网部署和私有分发
+**Advantages**:
+- No longer requires GitHub Release API format
+- Can use any web server (Nginx, Apache, S3, CDN, etc.)
+- More suitable for intranet deployment and private distribution
 
-### 2. 新增 --manifest-url 参数
+### 2. New --manifest-url Parameter
 
-直接指定 manifest URL，跳过 Release API：
+Directly specify manifest URL, skip Release API:
 
 ```bash
 ota update --manifest-url https://example.com/firmware/manifest.json \
   --public-key /path/to/pubkey.pem
 ```
 
-### 3. Manifest 生成脚本支持 --base-url
+### 3. Manifest Generation Script Supports --base-url
 
 ```bash
 scripts/generate_ota_manifest.sh \
@@ -41,145 +41,145 @@ scripts/generate_ota_manifest.sh \
   --sign-key private_key.pem \
   --image-dir output/image \
   --output manifest.json \
-  --base-url https://firmware.example.com/v1.0.0  # 新增
+  --base-url https://firmware.example.com/v1.0.0  # New option
 ```
 
-自动在每个 asset 中注入完整下载 URL。
+Automatically inject complete download URLs into each asset.
 
-### 4. 官方仓库区分 main 和非 main 分支
+### 4. Official Repository Distinguishes main and Non-main Branches
 
-官方仓库的 CI/CD 现在根据分支自动区分发布渠道：
+The official repository's CI/CD now automatically distinguishes release channels based on branches:
 
-| 分支 | Channel | GitHub Release | 默认手动 OTA 行为 |
+| Branch | Channel | GitHub Release | Default Manual OTA Behavior |
 |------|---------|---------------|--------------|
-| `main` | `stable` | 正常 Release | `ota update` 默认可发现 |
-| 其他分支 | `dev-{分支名}` | Prerelease | 默认 `ota update` 不会发现 |
+| `main` | `stable` | Normal Release | `ota update` discoverable by default |
+| Other branches | `dev-{branch-name}` | Prerelease | `ota update` will not discover by default |
 
-**隔离机制**：
+**Isolation Mechanism**:
 
-非 main 分支的 Release 被标记为 **Prerelease**，而不指定 `--manifest-url` 的手动 `ota update` 走 `releases/latest` API，该接口只返回正式 Release，不返回 prerelease。因此默认手动更新不会发现非 main 分支的固件。
+Non-main branch releases are marked as **Prerelease**, while manual `ota update` without specifying `--manifest-url` uses the `releases/latest` API, which only returns official releases, not prereleases. Therefore, default manual updates will not discover non-main branch firmware.
 
-注：manifest 里的 `channel` 字段仅作为人类可读标签（CI 会为非 main 分支写入 `dev-{分支名}`），OTA 客户端只校验其字符串格式，并不会拿它和某个期望 channel 做匹配。真正起隔离作用的是上述 prerelease 机制。
+Note: The `channel` field in the manifest serves only as a human-readable label (CI writes `dev-{branch-name}` for non-main branches), and the OTA client only validates its string format without matching it to an expected channel. The actual isolation mechanism is the prerelease mechanism described above.
 
-这样非 main 分支的固件即使发布，也不会影响生产设备的默认手动 OTA 更新路径。
+This way, even if non-main branch firmware is published, it will not affect the default manual OTA update path for production devices.
 
-**测试非 main 分支固件**：
+**Testing Non-main Branch Firmware**:
 
 ```bash
-# 通过 manifest-url 手动指定 dev 分支的 release（标记为 Pre-release）
+# Manually specify dev branch release via manifest-url (marked as Pre-release)
 ota update \
   --manifest-url "https://github.com/AidenAI-IO/aiden-hardware-demo/releases/download/TAG/manifest.json" \
   --public-key /oem/etc/ota_pubkey.pem
 ```
 
-详见 [ota-release-channels.md](ota-release-channels.md)。
+See [ota-release-channels.md](ota-release-channels.md) for details.
 
-## 向后兼容
+## Backward Compatibility
 
-所有改动都是**可选和增量**的：
-- 现有不带 URL 的 manifest 继续正常工作
-- 现有的 GitHub Release 流程不受影响
-- 默认行为保持不变
+All changes are **optional and incremental**:
+- Existing manifests without URLs continue to work normally
+- Existing GitHub Release process is unaffected
+- Default behavior remains unchanged
 
-## 使用场景
+## Use Cases
 
-### 场景 1：开发者 Fork 仓库
+### Use Case 1: Developer Forks Repository
 
 ```bash
-# 开发者在自己的 GitHub 仓库构建并发布固件
-# 生成带 GitHub 直接 URL 的 manifest
+# Developer builds and publishes firmware in their own GitHub repository
+# Generate manifest with GitHub direct URLs
 TAG="v1.0.0-custom"
 REPO="developer/aiden-custom"
 scripts/generate_ota_manifest.sh ... \
   --base-url "https://github.com/$REPO/releases/download/$TAG"
 
-# 设备从开发者的 release 更新
+# Device updates from developer's release
 ota update \
   --manifest-url "https://github.com/$REPO/releases/download/$TAG/manifest.json" \
   --public-key /path/to/developer_pubkey.pem
 ```
 
-### 场景 2：自建服务器分发
+### Use Case 2: Self-hosted Server Distribution
 
 ```bash
-# 生成带 URL 的 manifest
+# Generate manifest with URLs
 scripts/generate_ota_manifest.sh ... \
   --base-url https://firmware.mycompany.com/aiden/v1.0.0
 
-# 上传到自己的服务器
+# Upload to your own server
 rsync -avz output/image/*.img manifest.json user@server:/var/www/firmware/
 
-# 设备直接从服务器更新
+# Device updates directly from server
 ota update --manifest-url https://firmware.mycompany.com/aiden/v1.0.0/manifest.json \
   --public-key /userdata/ota/company_pubkey.pem
 ```
 
-### 场景 3：本地开发测试
+### Use Case 3: Local Development Testing
 
 ```bash
-# 生成本地测试 manifest
+# Generate local test manifest
 scripts/generate_ota_manifest.sh ... \
   --base-url http://192.168.1.100:8000
 
-# 启动本地服务器
+# Start local server
 cd output/image && python3 -m http.server 8000
 
-# 测试（不实际刷写）
+# Test (without actually flashing)
 ota update --manifest-url http://192.168.1.100:8000/manifest.json \
   --public-key /path/to/dev_pubkey.pem --dry-run
 ```
 
-## 文件改动
+## File Changes
 
-### 代码改动
-- `src/agent/internal/ota/manifest.go` - 添加 URL 字段和验证
-- `src/agent/internal/ota/updater.go` - 支持直接 URL 和 manifest-url 参数
-- `src/agent/cmd/ota/main.go` - 添加 --manifest-url CLI 参数
-- `scripts/generate_ota_manifest.sh` - 添加 --base-url 选项
-- `scripts/create_github_release.sh` - 添加 --prerelease 选项
-- `.github/workflows/build.yml` - 区分 main 和非 main 分支的 channel 与发布策略
+### Code Changes
+- `src/agent/internal/ota/manifest.go` - Add URL field and validation
+- `src/agent/internal/ota/updater.go` - Support direct URL and manifest-url parameter
+- `src/agent/cmd/ota/main.go` - Add --manifest-url CLI parameter
+- `scripts/generate_ota_manifest.sh` - Add --base-url option
+- `scripts/create_github_release.sh` - Add --prerelease option
+- `.github/workflows/build.yml` - Distinguish channel and release strategy for main and non-main branches
 
-### 测试
-- `src/agent/internal/ota/manifest_test.go` - 新增 URL 字段测试
-- 所有现有测试通过 ✅
+### Tests
+- `src/agent/internal/ota/manifest_test.go` - Add URL field tests
+- All existing tests pass ✅
 
-### 文档
-- `docs/09-ota/ota-external-developers.md` - 完整开发者指南
-- `docs/09-ota/ota-quick-examples.md` - 快速使用示例
-- `docs/09-ota/ota-release-channels.md` - 发布渠道与分支区分说明
+### Documentation
+- `docs/09-ota/ota-external-developers.md` - Complete developer guide
+- `docs/09-ota/ota-quick-examples.md` - Quick usage examples
+- `docs/09-ota/ota-release-channels.md` - Release channel and branch distinction explanation
 
-## 安全性
+## Security
 
-**不变的安全保障**：
-1. 签名验证仍然是强制的
-2. 用户必须显式信任外部公钥
-3. 版本降级保护依然有效
-4. 所有现有安全检查保持不变
+**Unchanged Security Guarantees**:
+1. Signature verification is still mandatory
+2. Users must explicitly trust external public keys
+3. Version downgrade protection remains effective
+4. All existing security checks remain unchanged
 
-**新增的灵活性**：
-- 允许 HTTP（仅测试环境建议，生产环境必须使用 HTTPS）
-- URL 验证确保使用 HTTP 或 HTTPS 协议
+**New Flexibility**:
+- Allows HTTP (only recommended for test environments, production must use HTTPS)
+- URL validation ensures HTTP or HTTPS protocol usage
 
-## 测试验证
+## Test Verification
 
 ```bash
-# 编译测试
+# Compile test
 cd src/agent && go build ./cmd/ota
 
-# 运行测试
+# Run tests
 go test ./internal/ota -v
 
-# 所有测试通过 ✅
+# All tests pass ✅
 ```
 
-## 下一步
+## Next Steps
 
-建议的增强（未实现，可选）：
-1. 更新源配置管理（支持配置多个源并切换）
-2. 图形化配置界面
-3. 更新源的发现和订阅机制
+Suggested enhancements (not implemented, optional):
+1. Update source configuration management (support configuring multiple sources and switching)
+2. Graphical configuration interface
+3. Update source discovery and subscription mechanism
 
-## 参考文档
+## Reference Documentation
 
-- 详细指南：[ota-external-developers.md](ota-external-developers.md)
-- 快速示例：[ota-quick-examples.md](ota-quick-examples.md)
+- Detailed guide: [ota-external-developers.md](ota-external-developers.md)
+- Quick examples: [ota-quick-examples.md](ota-quick-examples.md)

@@ -104,7 +104,7 @@ For more details see [OTA Overview](../09-ota/README.md).
 Default startup command:
 
 ```bash
-/oem/usr/bin/aiden-env-run /oem/usr/bin/config_web --bind=0.0.0.0 --config=/userdata/agent/agent.toml --wifi-config=/userdata/wpa_supplicant.conf --system-env=/userdata/system/env
+/oem/usr/bin/aiden-env-run /oem/usr/bin/config_web --bind=0.0.0.0 --port=80 --config=/userdata/agent/agent.toml --wifi-config=/userdata/wpa_supplicant.conf --system-env=/userdata/system/env
 ```
 
 Purpose: maintain the Agent configuration and Wi-Fi configuration through a web page. For the default bind / port see [Config Web](../04-agent/configuration.md#config-web-the-device-config-page).

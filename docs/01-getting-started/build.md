@@ -1,53 +1,53 @@
-# 构建与开发环境
+# Build and Development Environment
 
-## 克隆项目
+## Clone the Project
 
 ```bash
 git clone --recursive git@github.com:AidenAI-IO/aiden-hardware-demo.git
 cd aiden-hardware-demo
 ```
 
-项目包含 `pico-sdk` 子模块，首次克隆建议使用 `--recursive`。如果已经克隆但缺少子模块：
+The project includes the `pico-sdk` submodule. It's recommended to use `--recursive` on the first clone. If you've already cloned but the submodule is missing:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-## 本机 CMake 构建
+## Local CMake Build
 
-标准 out-of-source 构建：
+Standard out-of-source build:
 
 ```bash
 cmake -S . -B build
 cmake --build build
 ```
 
-产物位置：
+Build artifacts location:
 
-- `build/lib/`：静态库，例如 `libaiden.a`、`libaiden_image.a`。
-- `build/bin/`：可执行程序，例如 `frame_service`、`audio_service`、`config_web`、示例工具等。
-- `build/CMakeFiles/`：CMake 中间文件。
+- `build/lib/`: Static libraries, e.g., `libaiden.a`, `libaiden_image.a`.
+- `build/bin/`: Executables, e.g., `frame_service`, `audio_service`, `config_web`, example tools, etc.
+- `build/CMakeFiles/`: CMake intermediate files.
 
-> 注意：完整硬件目标依赖 Rockchip / Luckfox SDK 库。本机 native 构建主要适合代码检查、部分工具和 host 测试；面向设备运行的产物请使用交叉编译流程。
+> Note: Full hardware targets depend on Rockchip / Luckfox SDK libraries. Local native builds are mainly suitable for code checking, partial tools, and host testing; for device-runnable artifacts, use the cross-compilation workflow.
 
-## Luckfox Docker 交叉编译
+## Luckfox Docker Cross-Compilation
 
-项目提供 `build.sh`，会启动 `luckfoxtech/luckfox_pico:1.0` 容器并执行 `_build.sh`：
+The project provides `build.sh`, which starts the `luckfoxtech/luckfox_pico:1.0` container and executes `_build.sh`:
 
 ```bash
 ./build.sh
 ```
 
-该流程会：
+This workflow will:
 
-1. 使用 `cmake/toolchain-arm-rockchip830.cmake` 编译 C/C++ 程序；
-2. 生成 `build/lib/libaiden.a` 和 `build/bin/*`；
-3. 安装/使用 Go 1.26.0；
-4. 交叉编译 Go Agent：`build/bin/agent`，目标 `linux/arm GOARM=7`。
+1. Compile C/C++ programs using `cmake/toolchain-arm-rockchip830.cmake`;
+2. Generate `build/lib/libaiden.a` and `build/bin/*`;
+3. Install/use Go 1.26.0;
+4. Cross-compile the Go Agent: `build/bin/agent`, targeting `linux/arm GOARM=7`.
 
 ## macOS Apple Silicon + Colima
 
-在 Apple Silicon 上建议使用原生 `aarch64` Colima VM，并通过 Docker `--platform linux/amd64` 运行 Luckfox 镜像：
+On Apple Silicon, it's recommended to use a native `aarch64` Colima VM and run the Luckfox image via Docker with `--platform linux/amd64`:
 
 ```bash
 brew install docker docker-buildx colima
@@ -59,18 +59,18 @@ docker buildx ls
 ./build.sh
 ```
 
-不要为该工作流启动 `--arch x86_64` 的 Colima VM；保持原生 VM，再让容器以 `linux/amd64` 运行即可。
+Do not start a `--arch x86_64` Colima VM for this workflow; keep the native VM and let the container run as `linux/amd64`.
 
-## Makefile 快捷命令
+## Makefile Shortcuts
 
 ```bash
 make build        # cmake -S . -B build && cmake --build build
-make clean        # 删除 build/
-make test         # 构建并运行 host-native 单元测试
-make test-clean   # 删除 build-host/
+make clean        # Remove build/
+make test         # Build and run host-native unit tests
+make test-clean   # Remove build-host/
 ```
 
-`make test` 等价于：
+`make test` is equivalent to:
 
 ```bash
 cmake -S . -B build-host -DAIDEN_TESTS=ON
@@ -78,15 +78,15 @@ cmake --build build-host
 build-host/tests/aiden_tests
 ```
 
-## 主要构建目标
+## Main Build Targets
 
-| 目标 | 说明 |
+| Target | Description |
 | --- | --- |
-| `libaiden.a` | C++ 硬件 SDK 与服务公共库 |
-| `libaiden_image.a` | 图像处理库 |
-| `frame_service` / `frame_service_cli` | HDMI 帧捕获服务及 CLI |
-| `audio_service` / `audio_service_cli` | 音频录放服务及 CLI |
-| `config_web` | 设备配置 Web 服务 |
-| `image_process` | 图像处理 CLI |
-| `example_*` | 唤醒、音频、相机、USB HID 示例 |
-| `agent` | Go Agent daemon，由 `_build.sh` 额外构建 |
+| `libaiden.a` | C++ hardware SDK and service common library |
+| `libaiden_image.a` | Image processing library |
+| `frame_service` / `frame_service_cli` | HDMI frame capture service and CLI |
+| `audio_service` / `audio_service_cli` | Audio recording/playback service and CLI |
+| `config_web` | Device configuration web service |
+| `image_process` | Image processing CLI |
+| `example_*` | Wake word, audio, camera, USB HID examples |
+| `agent` | Go Agent daemon, additionally built by `_build.sh` |

@@ -1,37 +1,37 @@
-# OTA 密钥管理
+# OTA Key Management
 
-生产 OTA manifest 使用 Ed25519 签名。设备通过 `/oem/etc/ota_pubkey.pem` 验证 `manifest.json`，只有签名和镜像 hash 都通过时才会写 inactive slot。
+Production OTA manifests use Ed25519 signatures. Devices verify `manifest.json` through `/oem/etc/ota_pubkey.pem`, and only write to the inactive slot when both signature and image hash verification pass.
 
-## 生成密钥
+## Key Generation
 
-离线生成生产 Ed25519 私钥和公钥：
+Generate production Ed25519 private and public keys offline:
 
 ```bash
 openssl genpkey -algorithm ed25519 -out ota_ed25519_private_key.pem
 openssl pkey -in ota_ed25519_private_key.pem -pubout -out ota_pubkey.pem
 ```
 
-私钥 `ota_ed25519_private_key.pem` 不得提交到仓库。把它视为 release signing infrastructure。
+The private key `ota_ed25519_private_key.pem` must not be committed to the repository. Treat it as release signing infrastructure.
 
-验证公钥格式：
+Verify public key format:
 
 ```bash
 scripts/validate_ota_pubkey.sh ota_pubkey.pem
 ```
 
-脚本只接受 Ed25519 public key。RSA、ECDSA、格式错误或缺失文件都会被拒绝。
+The script only accepts Ed25519 public keys. RSA, ECDSA, malformed keys, or missing files will be rejected.
 
-## 公钥部署
+## Public Key Deployment
 
-生产镜像构建必须提供生产公钥。`_build_image.sh` 支持两个来源：
+Production image builds must provide a production public key. `_build_image.sh` supports two sources:
 
 ```bash
 OTA_PUBLIC_KEY_PATH=/path/to/ota_pubkey.pem ./_build_image.sh
 ```
 
-或提交 `keys/ota_pubkey.pem`，前提是文件没有 dev/test/placeholder 标记。
+Or commit `keys/ota_pubkey.pem`, provided the file is not marked as dev/test/placeholder.
 
-构建脚本会把公钥复制到 overlay，并最终打包到：
+The build script copies the public key to the overlay and ultimately packages it into:
 
 ```text
 /oem/etc/ota_pubkey.pem
@@ -39,7 +39,7 @@ OTA_PUBLIC_KEY_PATH=/path/to/ota_pubkey.pem ./_build_image.sh
 
 ## GitHub Secret
 
-CI release workflow 使用名为 `OTA_ED25519_PRIVATE_KEY` 的 GitHub secret，内容是完整 PEM 私钥：
+The CI release workflow uses a GitHub secret named `OTA_ED25519_PRIVATE_KEY`, containing the complete PEM private key:
 
 ```text
 -----BEGIN PRIVATE KEY-----
@@ -47,16 +47,16 @@ CI release workflow 使用名为 `OTA_ED25519_PRIVATE_KEY` 的 GitHub secret，�
 -----END PRIVATE KEY-----
 ```
 
-workflow 使用该 secret：
+The workflow uses this secret to:
 
-- derive 对应 public key，供 image build 打包到 `/oem/etc/ota_pubkey.pem`。
-- 在 A/B images 构建完成后签名 `pico-sdk/output/image/manifest.json`。
+- Derive the corresponding public key for image builds to package into `/oem/etc/ota_pubkey.pem`.
+- Sign `pico-sdk/output/image/manifest.json` after A/B images are built.
 
-缺少该 secret 时 release workflow 应失败。
+The release workflow should fail when this secret is missing.
 
-## 本地签名
+## Local Signing
 
-本地生成 manifest 示例：
+Example of generating a manifest locally:
 
 ```bash
 scripts/generate_ota_manifest.sh \
@@ -70,34 +70,34 @@ scripts/generate_ota_manifest.sh \
 
 The script requires `boot_a.img`, `boot_b.img`, and either slot-specific or slot-neutral `oem` and `rootfs` images in `pico-sdk/output/image`. CI publishes `manifest.json` unchanged and uploads image assets as `.img.tar.gz` archives, including `update.img.tar.gz` for USB factory flashing after extraction.
 
-## 密钥轮换
+## Key Rotation
 
-V1 设备信任 `/oem/etc/ota_pubkey.pem`。不要在 fleet 接受新公钥前直接切换 GitHub `OTA_ED25519_PRIVATE_KEY`，否则旧设备会拒绝新私钥签名的 manifest。
+V1 devices trust `/oem/etc/ota_pubkey.pem`. Do not switch the GitHub `OTA_ED25519_PRIVATE_KEY` directly before the fleet accepts the new public key, or old devices will reject manifests signed by the new private key.
 
-安全轮换流程：
+Safe rotation process:
 
-1. 离线生成新 Ed25519 key pair。
-2. GitHub `OTA_ED25519_PRIVATE_KEY` 暂时保持旧私钥。
-3. 构建 transition OTA，内容包含新的 `/oem/etc/ota_pubkey.pem` 或同时信任新旧公钥的 keyring。
-4. 用旧私钥签名并发布 transition release。
-5. 通过 `ota status`、release telemetry 或现场检查确认目标设备已 boot 并 mark successful。
-6. 确认 fleet 已信任新公钥后，把 GitHub secret 切换为新私钥。
-7. 后续 release 使用新私钥签名。
+1. Generate a new Ed25519 key pair offline.
+2. Keep the old private key in GitHub `OTA_ED25519_PRIVATE_KEY` temporarily.
+3. Build a transition OTA containing the new `/oem/etc/ota_pubkey.pem` or a keyring that trusts both old and new public keys.
+4. Sign and publish the transition release with the old private key.
+5. Confirm target devices have booted and marked successful via `ota status`, release telemetry, or field inspection.
+6. After confirming the fleet trusts the new public key, switch the GitHub secret to the new private key.
+7. Sign subsequent releases with the new private key.
 
-USB 或工厂换钥是另一条路径：
+USB or factory key rotation is an alternative path:
 
-1. 构建包含新 public key 的完整镜像。
-2. 通过 USB recovery 或工厂流程刷机。
-3. 设备确认使用新 public key 后，再为对应 channel 切换 GitHub signing secret。
+1. Build a complete image containing the new public key.
+2. Flash via USB recovery or factory process.
+3. After confirming devices use the new public key, switch the GitHub signing secret for the corresponding channel.
 
-## 私钥泄露处理
+## Private Key Compromise Handling
 
-如果 OTA 私钥可能泄露：
+If the OTA private key may be compromised:
 
-1. 删除或禁用包含泄露 key 的 GitHub Actions secrets。
-2. 删除或隔离可能由泄露 key 签名的不可信 release 和 assets。
-3. 离线生成新的 Ed25519 key pair。
-4. 构建包含新 public key 的 recovery image。
-5. 优先使用 USB 或受控物理 recovery 处理无法安全信任 OTA 的设备。
-6. 如果必须 OTA，发布经过人工审计的 transition release，并用 `ota status` 和 `abctl read` 监控。
-7. 如果仓库访问 token 也可能泄露，单独轮换 `/userdata/ota/gh_token`。该 token 只用于私有仓库 Release 下载，不参与 manifest 签名；public Release 不需要配置 token。更多运行时路径见 [architecture.md](architecture.md#私有仓库-token)。
+1. Delete or disable GitHub Actions secrets containing the compromised key.
+2. Delete or isolate untrusted releases and assets that may have been signed with the compromised key.
+3. Generate a new Ed25519 key pair offline.
+4. Build a recovery image containing the new public key.
+5. Prioritize USB or controlled physical recovery for devices that cannot safely trust OTA.
+6. If OTA is required, publish a manually audited transition release and monitor with `ota status` and `abctl read`.
+7. If repository access tokens may also be compromised, separately rotate `/userdata/ota/gh_token`. This token is only used for private repository release downloads and does not participate in manifest signing; public releases do not require token configuration. See [architecture.md](architecture.md#private-repository-token) for more runtime paths.

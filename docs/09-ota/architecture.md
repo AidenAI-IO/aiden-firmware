@@ -1,104 +1,104 @@
-# OTA 架构与运行时
+# OTA Architecture and Runtime
 
-OTA 由三层配合完成：`pico-sdk` 生成 A/B 镜像和 factory `misc.img`，GitHub Actions 发布签名 Release，设备端 `ota` 在手动触发时完成下载、写入和切换，开机 one-shot health 处理负责启动后的健康提交。
+OTA is accomplished through three layers: `pico-sdk` generates A/B images and factory `misc.img`, GitHub Actions publishes signed releases, and the device-side `ota` completes download, write, and switching on manual trigger, with one-shot health handling at boot responsible for health commitment after startup.
 
-## 分区布局
+## Partition Layout
 
-生产镜像使用 A/B 布局：
+Production images use A/B layout:
 
 ```text
 32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata)
 ```
 
-| 分区 | A/B | OTA 行为 |
+| Partition | A/B | OTA Behavior |
 | --- | --- | --- |
-| `env` | 否 | 不 OTA 更新；只走工厂或 USB recovery |
-| `idblock` | 否 | 不 OTA 更新；避免 brick 风险 |
-| `uboot` | 否 | 不 OTA 更新；旧 bootloader 需完整刷机更新 |
-| `misc` | 否 | 保存 A/B metadata，OTA 只修改 slot 状态 |
-| `boot` | 是 | 写入 inactive `boot_a` 或 `boot_b` |
-| `oem` | 是 | 写入 inactive `oem_a` 或 `oem_b` |
-| `rootfs` | 是 | 写入 inactive `rootfs_a` 或 `rootfs_b` |
-| `userdata` | 否 | 跨升级保留，保存配置和运行时状态 |
+| `env` | No | Not updated via OTA; factory or USB recovery only |
+| `idblock` | No | Not updated via OTA; avoid brick risk |
+| `uboot` | No | Not updated via OTA; old bootloader requires full flash update |
+| `misc` | No | Stores A/B metadata, OTA only modifies slot state |
+| `boot` | Yes | Write to inactive `boot_a` or `boot_b` |
+| `oem` | Yes | Write to inactive `oem_a` or `oem_b` |
+| `rootfs` | Yes | Write to inactive `rootfs_a` or `rootfs_b` |
+| `userdata` | No | Preserved across upgrades, stores configuration and runtime state |
 
-## 启动流程
+## Boot Process
 
-1. ROM 加载 SPL。
-2. SPL 从 `misc` 分区 byte offset `2048` 读取 Android AVB A/B metadata。
-3. SPL 选择 priority 最高且 bootable 的 slot，并加载 `boot_a` 或 `boot_b`。
-4. slot-specific FIT boot image 提供 `root=PARTLABEL=rootfs_a|rootfs_b` 和 `aiden.slot_suffix=_a|_b`。
-5. Linux 挂载匹配的 `rootfs_*`。
-6. `S20oemslot` 根据 `aiden.slot_suffix` 挂载 `/dev/block/by-name/oem_a|oem_b` 到 `/oem`。
-7. `S54ota` 运行一次 `ota health`，处理 pending health 后退出。
+1. ROM loads SPL.
+2. SPL reads Android AVB A/B metadata from `misc` partition at byte offset `2048`.
+3. SPL selects the slot with highest priority and bootable status, loading `boot_a` or `boot_b`.
+4. Slot-specific FIT boot image provides `root=PARTLABEL=rootfs_a|rootfs_b` and `aiden.slot_suffix=_a|_b`.
+5. Linux mounts the matching `rootfs_*`.
+6. `S20oemslot` mounts `/dev/block/by-name/oem_a|oem_b` to `/oem` based on `aiden.slot_suffix`.
+7. `S54ota` runs `ota health` once, handles pending health, and exits.
 
-## 更新流程
+## Update Process
 
-1. `ota` 读取 `/userdata/ota/config.json` 和 `/oem/etc/ota_pubkey.pem`。
-2. 获取 manifest：配置了 `manifest_url` 时直接拉取该 URL；否则查询 GitHub Release `releases/latest` 端点（即 `DefaultReleaseURL`，可由 config 的 release URL 覆盖），从 release assets 里取 `manifest.json`。
-3. 下载 `manifest.json`，删除 `signature.value` 后做 canonical JSON Ed25519 验签。
-4. 拒绝旧 `build_time` 或同 build time 不同 version 的 downgrade。
-5. 选择 inactive slot，解析 manifest 中对应 slot 的 asset。
-6. 下载镜像到 `/userdata/ota/downloads`，校验 size 和 SHA256。
-7. 写入 inactive `boot_*`、`oem_*`、`rootfs_*`，并 fsync。
-8. 删除旧 `health.ok`，写入 `/userdata/ota/pending_boot.json`。
-9. 修改 `misc`，把目标 slot 设为 active trial slot，默认 tries 为 3。
-10. 重启进入目标 slot。
+1. `ota` reads `/userdata/ota/config.json` and `/oem/etc/ota_pubkey.pem`.
+2. Fetch manifest: if `manifest_url` is configured, fetch that URL directly; otherwise query the GitHub Release `releases/latest` endpoint (i.e., `DefaultReleaseURL`, can be overridden by config's release URL), and retrieve `manifest.json` from release assets.
+3. Download `manifest.json`, remove `signature.value`, and perform canonical JSON Ed25519 signature verification.
+4. Reject downgrades with older `build_time` or different version with same build time.
+5. Select inactive slot and parse corresponding slot assets from manifest.
+6. Download images to `/userdata/ota/downloads`, verify size and SHA256.
+7. Write to inactive `boot_*`, `oem_*`, `rootfs_*`, and fsync.
+8. Delete old `health.ok`, write `/userdata/ota/pending_boot.json`.
+9. Modify `misc`, set target slot as active trial slot with default tries of 3.
+10. Reboot into target slot.
 
-## 健康确认与回滚
+## Health Confirmation and Rollback
 
-新 slot 启动后，Go daemon 在 runtime init 完成后调用 OTA health 写入逻辑。只有同时满足以下条件才写 `/userdata/ota/health.ok`：
+After the new slot boots, the Go daemon calls OTA health write logic after runtime init completes. `/userdata/ota/health.ok` is only written when all the following conditions are met:
 
-- `pending_boot.json` 存在。
-- 当前 `aiden.slot_suffix` 等于 pending target slot。
-- 当前 rootfs slot 等于 pending target slot。
-- health marker 写入时包含 pending 中的 version、build time、nonce 和当前 boot ID。
+- `pending_boot.json` exists.
+- Current `aiden.slot_suffix` equals pending target slot.
+- Current rootfs slot equals pending target slot.
+- Health marker write includes version, build time, nonce, and current boot ID from pending.
 
-`ota` 看到匹配 marker 后：
+When `ota` sees a matching marker:
 
-1. 调用 `abctl`/slot logic mark successful。
-2. 更新 `/userdata/ota/state.json` 的 committed version/build time 和 per-slot partition hashes。
-3. 删除 `pending_boot.json` 和 `health.ok`。
+1. Call `abctl`/slot logic to mark successful.
+2. Update committed version/build time and per-slot partition hashes in `/userdata/ota/state.json`.
+3. Delete `pending_boot.json` and `health.ok`.
 
-如果健康窗口超时，`ota health` 会主动 reboot，让 SPL 消耗 tries。tries 用尽且目标 slot 未 successful 时，SPL 回退到上一成功 slot。`ota health` 在旧 slot 观察到已经回滚后，会清理 pending 状态并把 state phase 标记为 `rolled-back`。
+If the health window times out, `ota health` actively reboots, allowing SPL to consume tries. When tries are exhausted and the target slot is not successful, SPL falls back to the previous successful slot. When `ota health` observes a rollback in the old slot, it cleans up pending state and marks the state phase as `rolled-back`.
 
-## Manifest 约定
+## Manifest Convention
 
-Manifest 中 `parts[].name` 只能是 `boot`、`oem`、`rootfs`。每个 part 使用以下 asset 形式之一：
+`parts[].name` in the manifest can only be `boot`, `oem`, or `rootfs`. Each part uses one of the following asset forms:
 
-- `asset`：slot-neutral `{name,size,sha256}`，只适用于两边字节完全一致的镜像。
-- `asset_a` 和 `asset_b`：slot-specific `{name,size,sha256}`。
+- `asset`: slot-neutral `{name,size,sha256}`, only applicable to byte-identical images on both sides.
+- `asset_a` and `asset_b`: slot-specific `{name,size,sha256}`.
 
 For `.img.tar.gz` assets, `size` and `sha256` describe the downloaded archive. The required `image_sha256` field describes the extracted `.img`; OTA state and `requires_partitions` compare this extracted image hash.
 
-`boot` 必须使用 `asset_a` 和 `asset_b`，因为 boot image 内包含 slot-specific DTB bootargs。`oem` 和 `rootfs` 可以使用 slot-specific assets，也可以在确认为 byte-identical 时使用 slot-neutral asset。
+`boot` must use `asset_a` and `asset_b` because the boot image contains slot-specific DTB bootargs. `oem` and `rootfs` can use slot-specific assets or slot-neutral assets when confirmed as byte-identical.
 
-## Factory baseline
+## Factory Baseline
 
-发布版 `update.img` 必须内置 `/userdata/ota/config.json`。CI 在生成签名 manifest 后调用 `scripts/generate_ota_device_config.sh` 生成该文件，再通过 `scripts/repack_ota_update_image.sh` 只重建 `userdata.img` 和 `update.img`。
+Release `update.img` must embed `/userdata/ota/config.json`. After generating the signed manifest, CI calls `scripts/generate_ota_device_config.sh` to generate this file, then rebuilds only `userdata.img` and `update.img` via `scripts/repack_ota_update_image.sh`.
 
-`config.json` 至少包含：
+`config.json` must contain at least:
 
-- `factory_version` - 首刷版本号，用于防止降级和选择性更新验证
-- `factory_build_time` - 首刷构建时间
-- `factory_partition_hashes.a.boot|oem|rootfs` - slot A 各分区的 SHA256
-- `factory_partition_hashes.b.boot|oem|rootfs` - slot B 各分区的 SHA256
+- `factory_version` - factory flash version number, used for downgrade protection and selective update verification
+- `factory_build_time` - factory flash build time
+- `factory_partition_hashes.a.boot|oem|rootfs` - SHA256 of each slot A partition
+- `factory_partition_hashes.b.boot|oem|rootfs` - SHA256 of each slot B partition
 
-可选配置字段：
+Optional configuration fields:
 
-- `manifest_url` - 直接指定 manifest URL（跳过 GitHub Release API）
-- `public_key_path` - 覆盖默认公钥路径（默认 `/oem/etc/ota_pubkey.pem`）
-- `github_token_path` - GitHub token 文件路径（私有仓库需要）
+- `manifest_url` - directly specify manifest URL (skip GitHub Release API)
+- `public_key_path` - override default public key path (default `/oem/etc/ota_pubkey.pem`)
+- `github_token_path` - GitHub token file path (required for private repositories)
 
-Factory baseline 必须 slot-aware，因为 `boot_a.img` 和 `boot_b.img` hash 不同。缺失 baseline 时 OTA 初始化必须失败，不应猜测当前分区版本。
+Factory baseline must be slot-aware because `boot_a.img` and `boot_b.img` have different hashes. When baseline is missing, OTA initialization must fail; it should not guess current partition versions.
 
-注：`generate_ota_device_config.sh` 生成的 config.json 还包含 `repo` 和 `channel` 字段，但这些字段仅用于人类可读性，不被 OTA 代码读取。实际的 channel 验证来自 manifest 本身。
+Note: The `config.json` generated by `generate_ota_device_config.sh` also includes `repo` and `channel` fields, but these fields are only for human readability and are not read by OTA code. Actual channel verification comes from the manifest itself.
 
-## 私有仓库 token
+## Private Repository Token
 
-Public GitHub Release 不需要 device token。私有仓库可以把只读 token 放在：
+Public GitHub releases do not require a device token. Private repositories can place a read-only token at:
 
 ```text
 /userdata/ota/gh_token
 ```
 
-存在 token 时，`ota` 会对 GitHub Release metadata、manifest 和 image 下载请求加 bearer token。OTA signing key 与 GitHub token 是两套独立凭据。
+When a token exists, `ota` adds a bearer token to GitHub Release metadata, manifest, and image download requests. The OTA signing key and GitHub token are two independent credentials.

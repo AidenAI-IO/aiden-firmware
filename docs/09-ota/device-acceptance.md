@@ -1,17 +1,17 @@
-# OTA 设备验收流程
+# OTA Device Acceptance Process
 
-启用生产 OTA rollout 前，应在代表性硬件上跑完以下验收。建议记录设备序列号、硬件版本、起始 slot、目标 release version、每一步的 `abctl read` 和 `ota status` 输出。
+Before enabling production OTA rollout, the following acceptance tests should be completed on representative hardware. It is recommended to record device serial number, hardware version, starting slot, target release version, and `abctl read` and `ota status` output at each step.
 
-## 前置条件
+## Prerequisites
 
 - The production image is built with the production Ed25519 public key.
 - GitHub Release contains `manifest.json` plus compressed image archives: `boot_a.img.tar.gz`, `boot_b.img.tar.gz`, `oem.img.tar.gz`, `rootfs.img.tar.gz`, and `update.img.tar.gz`.
 - The `update.img` inside `update.img.tar.gz` has `/userdata/ota/config.json` embedded.
-- 有 UART 时建议同时记录 SPL rollback 日志。
+- When UART is available, it is recommended to record SPL rollback logs simultaneously.
 
-`S54ota` 在启动时只处理 `/userdata/ota/pending_boot.json` health，不做网络或 GitHub update check。手动更新必须通过 `ota update` 触发。
+`S54ota` only handles `/userdata/ota/pending_boot.json` health at startup, does not perform network or GitHub update checks. Manual updates must be triggered via `ota update`.
 
-## 1. USB 首刷验收
+## 1. USB Factory Flash Acceptance
 
 Download the release `update.img.tar.gz`, extract `update.img`, then flash it with the normal USB recovery flow:
 
@@ -20,7 +20,7 @@ tar -xzf update.img.tar.gz update.img
 ./upgrade_tool/upgrade_tool uf ./update.img
 ```
 
-设备启动后检查：
+After device boots, check:
 
 ```bash
 cat /proc/cmdline
@@ -29,17 +29,17 @@ mount | grep ' /oem '
 /oem/usr/bin/ota status
 ```
 
-期望：
+Expected:
 
-- factory boot 在 slot A。
-- `/proc/cmdline` 包含 `aiden.slot_suffix=_a` 和 `root=PARTLABEL=rootfs_a`。
-- `/oem` 挂载自 `/dev/block/by-name/oem_a`。
-- `misc` metadata 能从 byte offset `2048` 正常解析，slot A successful。
-- `/userdata/ota/config.json` 存在，`ota status` 不报 missing factory baseline。
+- Factory boot is in slot A.
+- `/proc/cmdline` contains `aiden.slot_suffix=_a` and `root=PARTLABEL=rootfs_a`.
+- `/oem` is mounted from `/dev/block/by-name/oem_a`.
+- `misc` metadata can be parsed normally from byte offset `2048`, slot A is successful.
+- `/userdata/ota/config.json` exists, `ota status` does not report missing factory baseline.
 
-## 2. 手动 slot 切换
+## 2. Manual Slot Switch
 
-切到 inactive slot：
+Switch to inactive slot:
 
 ```bash
 /oem/usr/bin/abctl set-active /dev/block/by-name/misc b --tries 3
@@ -47,7 +47,7 @@ sync
 reboot
 ```
 
-重启后检查：
+After reboot, check:
 
 ```bash
 cat /proc/cmdline
@@ -55,15 +55,15 @@ mount | grep ' /oem '
 /oem/usr/bin/abctl read /dev/block/by-name/misc
 ```
 
-期望：
+Expected:
 
-- `/proc/cmdline` 包含 `aiden.slot_suffix=_b` 和 `root=PARTLABEL=rootfs_b`。
-- `/oem` 挂载自 `/dev/block/by-name/oem_b`。
-- slot B 在 mark successful 前有 remaining tries。
+- `/proc/cmdline` contains `aiden.slot_suffix=_b` and `root=PARTLABEL=rootfs_b`.
+- `/oem` is mounted from `/dev/block/by-name/oem_b`.
+- Slot B has remaining tries before mark successful.
 
-## 3. Mark successful
+## 3. Mark Successful
 
-确认新 slot 可用后提交：
+After confirming the new slot is usable, commit:
 
 ```bash
 /oem/usr/bin/abctl mark-successful /dev/block/by-name/misc b
@@ -71,11 +71,11 @@ sync
 /oem/usr/bin/abctl read /dev/block/by-name/misc
 ```
 
-期望：slot B successful，tries 为 0；上一 slot 仍保留为可回退 slot。
+Expected: slot B successful with tries 0; previous slot is still retained as a fallback slot.
 
-## 4. Rollback 试启动
+## 4. Rollback Trial Boot
 
-强制试启动另一个 slot，但不要 mark successful：
+Force trial boot to another slot, but do not mark successful:
 
 ```bash
 /oem/usr/bin/abctl set-active /dev/block/by-name/misc a --tries 1
@@ -83,37 +83,37 @@ sync
 reboot
 ```
 
-如果需要阻止 health success，可在试启动期间停止 `ota` 或阻止应用 readiness。tries 消耗完后再次 reboot。
+To prevent health success, stop `ota` or prevent application readiness during trial boot. Reboot again after tries are consumed.
 
-期望：SPL 回到上一 successful slot。用 UART、`cat /proc/cmdline` 和 `abctl read` 确认。
+Expected: SPL returns to the previous successful slot. Confirm with UART, `cat /proc/cmdline`, and `abctl read`.
 
-## 5. OTA happy path
+## 5. OTA Happy Path
 
-确认配置：
+Confirm configuration:
 
 ```bash
 cat /userdata/ota/config.json
 ```
 
-配置应指向目标 repo/channel，并包含 `factory_partition_hashes.a` 和 `factory_partition_hashes.b` 的 `boot`、`oem`、`rootfs` hash。
+Configuration should point to target repo/channel and include `boot`, `oem`, `rootfs` hashes in `factory_partition_hashes.a` and `factory_partition_hashes.b`.
 
-执行一次 OTA：
+Execute OTA once:
 
 ```bash
 /oem/usr/bin/ota update
 ```
 
-期望流程：
+Expected process:
 
-1. 下载并验证签名 manifest。
-2. 选择 inactive slot 的 assets。
-3. 下载、校验并写入 inactive partitions。
-4. 写入 `/userdata/ota/pending_boot.json`。
-5. 切换 `misc` 并重启。
-6. 新 slot 启动后写入匹配的 `/userdata/ota/health.ok`。
-7. `ota` mark successful 并删除 pending files。
+1. Download and verify signed manifest.
+2. Select inactive slot assets.
+3. Download, verify, and write to inactive partitions.
+4. Write `/userdata/ota/pending_boot.json`.
+5. Switch `misc` and reboot.
+6. After new slot boots, write matching `/userdata/ota/health.ok`.
+7. `ota` marks successful and deletes pending files.
 
-成功后检查：
+After success, check:
 
 ```bash
 /oem/usr/bin/ota status
@@ -121,23 +121,23 @@ cat /userdata/ota/config.json
 ls -l /userdata/ota/pending_boot.json /userdata/ota/health.ok 2>&1 || true
 ```
 
-期望：
+Expected:
 
-- `ota status` 显示 committed version/build time。
-- active slot successful 且 tries 为 0。
-- `pending_boot.json` 和 `health.ok` 已清理。
+- `ota status` shows committed version/build time.
+- Active slot successful with tries 0.
+- `pending_boot.json` and `health.ok` are cleaned up.
 
-## 6. 失败场景
+## 6. Failure Scenarios
 
-至少覆盖以下失败场景：
+At least cover the following failure scenarios:
 
-| 场景 | 期望 |
+| Scenario | Expected |
 | --- | --- |
-| 无效签名或无效 manifest | 拒绝更新，不写分区，不切 slot |
-| SHA256 或 size 不匹配 | 拒绝更新，不写目标分区 |
-| 降级 release | 拒绝更新，不切 slot |
-| health marker 缺失或不匹配 | 目标 slot 不 mark successful，tries 消耗后回滚 |
-| inactive boot image 损坏 | SPL 不应卡死，应回退到 previous successful slot |
-| 下载中断 | 不切 slot；恢复网络后可重试或重新下载 |
+| Invalid signature or invalid manifest | Reject update, do not write partitions, do not switch slot |
+| SHA256 or size mismatch | Reject update, do not write target partition |
+| Downgrade release | Reject update, do not switch slot |
+| Health marker missing or mismatched | Target slot not marked successful, rollback after tries consumed |
+| Inactive boot image corrupted | SPL should not hang, should fall back to previous successful slot |
+| Download interrupted | Do not switch slot; can retry or re-download after network recovery |
 
-断电中断写分区应通过可控电源或 HIL rig 做，不建议手工随机拔电。
+Power interruption during partition write should be done via controlled power supply or HIL rig; manual random power disconnection is not recommended.

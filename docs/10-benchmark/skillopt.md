@@ -1,35 +1,35 @@
-# SkillOpt 接入方案
+# SkillOpt Integration Solution
 
-## 定位
+## Positioning
 
-**项目内部开发工具**，参照 [Microsoft SkillOpt](https://github.com/microsoft/SkillOpt) 的算法，基于 Aiden 现有 benchmark runner 实现 skill 文本优化能力。开发者手动跑，产出优化后的 SKILL.md，**经人工 review 后提交回代码仓库**。
+**Internal project development tool**, implementing skill text optimization capabilities based on Aiden's existing benchmark runner, following the algorithm from [Microsoft SkillOpt](https://github.com/microsoft/SkillOpt). Developers run it manually to produce optimized SKILL.md, which is **submitted back to the code repository after manual review**.
 
-不在 Agent 内置，不通过对话触发，不影响最终用户。
+Not built into the agent, not triggered via conversation, does not affect end users.
 
-## 与现有 benchmark 的关系
+## Relationship with Existing Benchmark
 
-跟 `benchmark/runner` 是同一套东西的延伸：
+An extension of the same `benchmark/runner`:
 
-- benchmark runner 跑测试 → 产出 pass/fail 报告
-- skillopt runner 跑训练 → 产出优化后的 SKILL.md
+- benchmark runner runs tests → produces pass/fail reports
+- skillopt runner runs training → produces optimized SKILL.md
 
-**完全复用 benchmark 已有的能力**：
+**Completely reuses existing benchmark capabilities**:
 
-- `agent_client.py`：HTTP 调用 agent
-- `suite.py`：加载任务集
-- `reset.py`：任务隔离（global_reset + per_task_setup）
-- `runtask.py`：执行单个任务
-- `judge.py`：LLM 评分
-- `assertions.py`：硬断言
+- `agent_client.py`: HTTP calls to agent
+- `suite.py`: Load task sets
+- `reset.py`: Task isolation (global_reset + per_task_setup)
+- `runtask.py`: Execute individual tasks
+- `judge.py`: LLM scoring
+- `assertions.py`: Hard assertions
 
-## 开发者使用流程
+## Developer Usage Flow
 
 ```bash
-# 1. 启动 agent（开发板，专门用于优化）
+# 1. Start agent (development board, dedicated for optimization)
 cd src/agent
 ./agent --config config/agent.toml
 
-# 2. 跑优化（另一个终端）
+# 2. Run optimization (another terminal)
 cd benchmark
 python -m runner.skillopt \
     --skill device-operator \
@@ -38,23 +38,23 @@ python -m runner.skillopt \
     --budget 10 \
     --output /tmp/device-operator-optimized.md
 
-# 3. 查看 diff
+# 3. View diff
 diff src/agent/config/skills/device-operator/SKILL.md /tmp/device-operator-optimized.md
 
-# 4. 满意则提交
+# 4. If satisfied, submit
 cp /tmp/device-operator-optimized.md src/agent/config/skills/device-operator/SKILL.md
 git add src/agent/config/skills/device-operator/SKILL.md
 git commit -m "skillopt: improve device-operator (phone_control_v1, 65% → 78%)"
 ```
 
-## 核心算法（vendor 自官方）
+## Core Algorithm (Vendored from Official)
 
-参考 `microsoft/SkillOpt` 仓库主干 commit。需要 port 到本工程的核心逻辑：
+Reference main branch commits from the `microsoft/SkillOpt` repository. Core logic that needs to be ported to this project:
 
 ```text
 skillopt/optimizer/skill.py        → benchmark/runner/skillopt/patch.py
   apply_edit / apply_patch_with_report
-  支持 op: append / insert_after / replace / delete
+  Support op: append / insert_after / replace / delete
 
 skillopt/gradient/reflect.py       → benchmark/runner/skillopt/reflect.py
   run_error_analyst_minibatch
@@ -62,33 +62,33 @@ skillopt/gradient/reflect.py       → benchmark/runner/skillopt/reflect.py
   fmt_minibatch_trajectories
 
 skillopt/evaluation/gate.py        → benchmark/runner/skillopt/score.py
-  validation gate（候选分数 > 当前分数 + min_delta 才接受）
+  validation gate (accept candidate only if score > current score + min_delta)
 
 skillopt/prompts/analyst_error.md     → benchmark/runner/skillopt/prompts/analyst_error.md
 skillopt/prompts/analyst_success.md   → benchmark/runner/skillopt/prompts/analyst_success.md
 ```
 
-第一版**不实现** slow update / meta skill / 高度并行的 analyst worker。
+Version 1 **does not implement** slow update / meta skill / highly parallel analyst workers.
 
-## 数据结构（对齐官方）
+## Data Structures (Aligned with Official)
 
 ```python
-# Edit 操作
+# Edit operation
 @dataclass
 class Edit:
     op: Literal["append", "insert_after", "replace", "delete"]
-    content: str = ""           # append/insert_after/replace 用
-    target: str = ""            # insert_after/replace/delete 用
+    content: str = ""           # For append/insert_after/replace
+    target: str = ""            # For insert_after/replace/delete
     source_type: Literal["failure", "success"] | None = None
     support_count: int | None = None
 
-# 一组 edits
+# A group of edits
 @dataclass
 class Patch:
     edits: list[Edit]
     reasoning: str = ""
 
-# Reflect 输出
+# Reflect output
 @dataclass
 class RawPatch:
     patch: Patch
@@ -97,45 +97,45 @@ class RawPatch:
     failure_summary: list[FailureSummaryEntry]
 ```
 
-## Skill Override 机制
+## Skill Override Mechanism
 
-**临时文件替换**（开发环境用，最简单）：
+**Temporary file replacement** (for development environment, simplest approach):
 
 ```python
 def with_candidate_skill(skill_path: Path, candidate: str):
-    """Context manager: 临时替换 SKILL.md，rollout 完恢复"""
+    """Context manager: temporarily replace SKILL.md, restore after rollout"""
     original = skill_path.read_text()
     skill_path.write_text(candidate)
     try:
-        # 通知 agent reload skills（如果有这个 endpoint）
-        # 或直接 chat（如果 agent 每次 Run 都会 reload）
+        # Notify agent to reload skills (if this endpoint exists)
+        # Or chat directly (if agent reloads on every Run)
         yield
     finally:
         skill_path.write_text(original)
 ```
 
-**注意**：Aiden 的 `reloadSkillsIfDirty` 机制需要触发 `MarkSkillsDirty`。简单做法是写完文件后调 `/api/clear`（顺便清掉 history），下次 chat 会自动 reload。
+**Note**: Aiden's `reloadSkillsIfDirty` mechanism requires triggering `MarkSkillsDirty`. Simple approach: call `/api/clear` after writing file (also clears history), next chat will auto-reload.
 
-不需要在 Go 侧加 `skill_overrides` 字段。
+No need to add `skill_overrides` field on Go side.
 
-## 数据集
+## Dataset
 
-**Phase 1 直接复用现有 benchmark suite**，不让 LLM 生成：
+**Phase 1 directly reuses existing benchmark suites**, no LLM generation:
 
-- `benchmark/suites/skillopt/device_operator_skillopt_v1.json` — 用于优化 device-operator
+- `benchmark/suites/skillopt/device_operator_skillopt_v1.json` — For optimizing device-operator
 - `benchmark/suites/skillopt/device_operator_skillopt_validation_v1.json` — device-operator held-out validation
-- `benchmark/suites/memory_v1.json` — 用于优化 memory 相关 skill
-- 其他 suite 按需
+- `benchmark/suites/memory_v1.json` — For optimizing memory-related skills
+- Other suites as needed
 
-每个 suite 在 SkillOpt 内部按需 split 成 train / selection：
+Each suite is internally split into train / selection within SkillOpt:
 
 ```python
-# 简单的 split 策略
+# Simple split strategy
 train_tasks = suite.tasks[:int(len(suite.tasks) * 0.7)]
 selection_tasks = suite.tasks[int(len(suite.tasks) * 0.7):]
 ```
 
-或在 CLI 里显式指定：
+Or explicitly specify in CLI:
 
 ```bash
 python -m runner.skillopt \
@@ -145,22 +145,22 @@ python -m runner.skillopt \
     ...
 ```
 
-## 任务隔离
+## Task Isolation
 
-**完全复用 benchmark 现有机制**：
+**Completely reuses existing benchmark mechanism**:
 
 ```python
-# 每个 task 之前
-client.clear_history()              # 清 agent history（可能也清 memory）
+# Before each task
+client.clear_history()              # Clear agent history (may also clear memory)
 global_reset(client, suite)         # home + back + wait
-per_task_setup(client, task.setup)  # 任务前置状态
+per_task_setup(client, task.setup)  # Task prerequisite state
 ```
 
-跟 benchmark runner 一模一样。
+Exactly the same as benchmark runner.
 
-**不需要保护用户数据**：开发板就是用来跑测试的，memory 被清也无所谓。
+**No need to protect user data**: development board is for testing, memory being cleared doesn't matter.
 
-## 优化循环
+## Optimization Loop
 
 ```python
 def optimize_skill(skill_name, skill_content, suite, budget):
@@ -172,14 +172,14 @@ def optimize_skill(skill_name, skill_content, suite, budget):
     rejected_edits = []
 
     for step in range(budget):
-        # 1. Train rollout（用 current skill 跑 train tasks）
+        # 1. Train rollout (run train tasks with current skill)
         rollouts = run_train_rollouts(current, suite.train_tasks)
 
-        # 2. 按 hard 分组 minibatch
+        # 2. Group minibatch by hard
         failures = [r for r in rollouts if r.hard == 0]
         successes = [r for r in rollouts if r.hard == 1]
 
-        # 3. Reflect（调 LLM）
+        # 3. Reflect (call LLM)
         failure_patches = run_error_analyst_minibatch(current, failures)
         success_patches = run_success_analyst_minibatch(current, successes)
 
@@ -190,7 +190,7 @@ def optimize_skill(skill_name, skill_content, suite, budget):
         # 5. Apply edits
         candidate = apply_patch(current, Patch(edits=selected))
 
-        # 6. Selection rollout（用 candidate 跑 selection tasks）
+        # 6. Selection rollout (run selection tasks with candidate)
         candidate_score = eval_score(candidate, suite.selection_tasks)
 
         # 7. Gate
@@ -214,45 +214,45 @@ def optimize_skill(skill_name, skill_content, suite, budget):
     )
 ```
 
-## 模块组织
+## Module Organization
 
 ```text
 benchmark/runner/skillopt/
 ├── __init__.py
-├── main.py              # CLI 入口
-├── orchestrator.py      # 优化主循环
-├── reflect.py           # 调 LLM 生成 edits（vendor）
-├── patch.py             # Apply edits（vendor）
-├── score.py             # Gate 逻辑（vendor）
-├── aggregate.py         # 合并去重多个 patch
+├── main.py              # CLI entry point
+├── orchestrator.py      # Optimization main loop
+├── reflect.py           # Call LLM to generate edits (vendored)
+├── patch.py             # Apply edits (vendored)
+├── score.py             # Gate logic (vendored)
+├── aggregate.py         # Merge and deduplicate multiple patches
 ├── types.py             # Edit / Patch / RolloutResult dataclass
 ├── prompts/
 │   ├── analyst_error.md
 │   └── analyst_success.md
 └── tests/
     ├── test_patch.py
-    ├── test_reflect.py    # 用 mock LLM
+    ├── test_reflect.py    # Using mock LLM
     └── test_orchestrator.py
 ```
 
-## 产出
+## Output
 
 ```text
 runs/skillopt-<run_id>/
-├── manifest.json                 # 运行元信息（skill, suite, budget, model）
-├── result.json                   # 优化结果（initial_score, best_score, accepted/rejected）
-├── best_skill.md                 # 最终最佳 skill
-├── diff.patch                    # 与原 skill 的 diff
+├── manifest.json                 # Run metadata (skill, suite, budget, model)
+├── result.json                   # Optimization results (initial_score, best_score, accepted/rejected)
+├── best_skill.md                 # Final best skill
+├── diff.patch                    # Diff from original skill
 ├── rollouts/
 │   ├── step_001/
-│   │   ├── train/                # train rollout 结果
-│   │   ├── selection/            # selection rollout 结果
+│   │   ├── train/                # train rollout results
+│   │   ├── selection/            # selection rollout results
 │   │   ├── candidate.md
-│   │   ├── patch.json            # 这一步生成的 edits
-│   │   ├── decision.json         # accepted / rejected + 原因
+│   │   ├── patch.json            # edits generated in this step
+│   │   ├── decision.json         # accepted / rejected + reasoning
 │   │   └── ...
 │   └── ...
-└── report.html                   # 可视化报告（optional）
+└── report.html                   # Visual report (optional)
 ```
 
 ## CLI
@@ -268,37 +268,37 @@ python -m runner.skillopt \
     [--judge-model claude-opus-4-7] \
     [--agent-url http://localhost:8080] \
     [--output <path>] \
-    [--dry-run]              # 不真正写文件，只输出 diff
+    [--dry-run]              # Don't actually write files, only output diff
 ```
 
-## 工作量
+## Effort Estimation
 
-| 任务                                                          | 工作量    |
+| Task                                                          | Effort    |
 | ------------------------------------------------------------- | --------- |
-| Vendor 官方 patch.py                                          | 0.5 天    |
-| Vendor 官方 reflect.py + prompts                              | 1 天      |
-| Vendor 官方 gate.py                                           | 0.3 天    |
-| 实现 aggregate.py（merge + rank）                             | 0.5 天    |
-| 实现 orchestrator.py（主循环 + early stop）                   | 1 天      |
-| CLI main.py                                                   | 0.3 天    |
-| 与 benchmark runner 集成（复用 agent_client、suite、runtask） | 0.5 天    |
-| 单元测试（patch、aggregate、score）                           | 0.5 天    |
-| 真机端到端 smoke 测试 + 调优                                  | 1 天      |
-| **总计**                                                      | **~5 天** |
+| Vendor official patch.py                                      | 0.5 days  |
+| Vendor official reflect.py + prompts                          | 1 day     |
+| Vendor official gate.py                                       | 0.3 days  |
+| Implement aggregate.py (merge + rank)                         | 0.5 days  |
+| Implement orchestrator.py (main loop + early stop)            | 1 day     |
+| CLI main.py                                                   | 0.3 days  |
+| Integration with benchmark runner (reuse agent_client, suite, runtask) | 0.5 days |
+| Unit tests (patch, aggregate, score)                          | 0.5 days  |
+| Real device end-to-end smoke test + tuning                    | 1 day     |
+| **Total**                                                     | **~5 days** |
 
-## 不做的事情（Phase 1）
+## Things Not To Do (Phase 1)
 
-- ❌ Slow update / meta skill（官方 epoch-level 机制）
-- ❌ 自动生成 dataset（用现有 suite）
-- ❌ Agent 内置功能 / 对话触发
-- ❌ 用户可见的优化模式
-- ❌ 自动提交 PR（手动 review 后提交）
-- ❌ Go 侧 `skill_overrides` HTTP 字段
-- ❌ History/Memory 隔离机制
-- ❌ Envelope hash 校验（开发环境不需要）
+- ❌ Slow update / meta skill (official epoch-level mechanism)
+- ❌ Auto-generate dataset (use existing suites)
+- ❌ Built-in agent feature / conversation trigger
+- ❌ User-visible optimization mode
+- ❌ Auto-submit PR (submit manually after review)
+- ❌ Go-side `skill_overrides` HTTP field
+- ❌ History/Memory isolation mechanism
+- ❌ Envelope hash verification (not needed in dev environment)
 
-## 参考
+## References
 
 - Microsoft SkillOpt: https://github.com/microsoft/SkillOpt
-- Benchmark 架构: [architecture.md](./architecture.md)
-- Benchmark 快速开始: [quickstart.md](./quickstart.md)
+- Benchmark Architecture: [architecture.md](./architecture.md)
+- Benchmark Quick Start: [quickstart.md](./quickstart.md)

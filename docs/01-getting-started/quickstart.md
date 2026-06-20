@@ -19,11 +19,13 @@ This page is the main path for anyone touching Aiden hardware for the first time
 
 ## 1. Hardware & Wiring
 
-Follow [Hardware & Wiring](hardware.md) to complete the wiring. Key connections:
+Follow [Hardware & Wiring](hardware.md) to complete the wiring. Key connection flow:
 
-- The external HDMI source is bridged by the TC358743XBG chip and enters the Pico Zero's `/dev/video0` via CSI;
-- The Pico Zero connects to the target device (iOS / PC) through a USB-C gadget, emulating an HID keyboard/mouse/touch externally;
-- Audio goes through the onboard codec / ALSA; networking goes through Wi-Fi or the USB gadget network.
+- The target device (iPhone / PC) connects to a **USB-C hub**;
+- The hub's **HDMI output** goes to the TC358743XBG HDMI-to-CSI bridge, which feeds the Pico Zero's `/dev/video0` via CSI;
+- The hub's **USB-C output** connects to the Pico Zero for data and power;
+- The Pico Zero emulates an HID keyboard/mouse/touch device (`/dev/hidg0`, `/dev/hidg1`) back to the target over the USB connection;
+- Audio goes through the Pico Zero's onboard codec / ALSA; networking goes through Wi-Fi or the USB gadget network.
 
 To control an iOS device over USB HID, first enable `Settings > Accessibility > Touch > AssistiveTouch` on the target device, and it is recommended to enable **Show Onscreen Keyboard** as well.
 
