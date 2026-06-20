@@ -3,7 +3,6 @@ package agent
 import (
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -14,39 +13,29 @@ import (
 
 const logRetention = 48 * time.Hour
 
-// Logger provides structured logging to file and console
+// Logger provides structured logging to stdout/stderr
+// Output is captured by the init script and written to /var/log/agent/agent.log
 type Logger struct {
-	file   *os.File
 	logger *log.Logger
 	mu     sync.Mutex
 }
 
-// NewLogger creates a new logger that writes to config/log/agent-YYYYMMDD.log
+// NewLogger creates a new logger that writes to stdout/stderr
+// The init script redirects output to /var/log/agent/agent.log
 func NewLogger(configDir string) (*Logger, error) {
-	logDir := filepath.Join(configDir, "log")
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return nil, fmt.Errorf("create log directory: %w", err)
-	}
-
-	// Create log file with date suffix
-	logFile := filepath.Join(logDir, fmt.Sprintf("agent-%s.log", time.Now().Format("20060102")))
-	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("open log file: %w", err)
-	}
-
-	// Write to both file and stderr
-	multiWriter := io.MultiWriter(f, os.Stderr)
-	logger := log.New(multiWriter, "", log.LstdFlags)
-	log.SetOutput(multiWriter)
+	logger := log.New(os.Stderr, "", log.LstdFlags)
+	log.SetOutput(os.Stderr)
 	log.SetFlags(log.LstdFlags)
 
-	if err := cleanupOldLogFiles(logDir, time.Now()); err != nil {
-		logger.Printf("[WARN] log cleanup failed: %v", err)
+	// Cleanup old llm-http logs in configDir if set
+	if configDir != "" {
+		llmLogDir := filepath.Join(configDir, "log")
+		if err := cleanupOldLogFiles(llmLogDir, time.Now()); err != nil {
+			logger.Printf("[WARN] log cleanup failed: %v", err)
+		}
 	}
 
 	return &Logger{
-		file:   f,
 		logger: logger,
 	}, nil
 }
@@ -60,6 +49,10 @@ func cleanupOldLogFiles(logDir string, now time.Time) error {
 	var errs []error
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		// Only clean up llm-http logs (not agent.log)
+		if !strings.HasPrefix(entry.Name(), "llm-http-") {
 			continue
 		}
 		info, err := entry.Info()
@@ -80,17 +73,19 @@ func cleanupOldLogFiles(logDir string, now time.Time) error {
 }
 
 func logFileTime(name string, modTime time.Time) time.Time {
-	for _, prefix := range []string{"agent-", "llm-raw-"} {
-		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".log") {
-			continue
-		}
-		date := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".log")
-		if len(date) != len("20060102") {
-			continue
-		}
-		if parsed, err := time.ParseInLocation("20060102", date, time.Local); err == nil {
-			return parsed.Add(24 * time.Hour)
-		}
+	// Only parse llm-http logs
+	if !strings.HasPrefix(name, "llm-http-") || !strings.HasSuffix(name, ".log") {
+		return modTime
+	}
+	// Extract date from llm-http-YYYYMMDD-*.log
+	parts := strings.TrimPrefix(name, "llm-http-")
+	parts = strings.TrimSuffix(parts, ".log")
+	if len(parts) < 8 {
+		return modTime
+	}
+	dateStr := parts[:8]
+	if parsed, err := time.ParseInLocation("20060102", dateStr, time.Local); err == nil {
+		return parsed.Add(24 * time.Hour)
 	}
 	return modTime
 }
@@ -98,9 +93,6 @@ func logFileTime(name string, modTime time.Time) time.Time {
 func (l *Logger) Close() error {
 	log.SetOutput(os.Stderr)
 	log.SetFlags(log.LstdFlags)
-	if l.file != nil {
-		return l.file.Close()
-	}
 	return nil
 }
 

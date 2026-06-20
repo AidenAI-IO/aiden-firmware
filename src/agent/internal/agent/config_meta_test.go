@@ -197,7 +197,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"model.model", defaults.Model.Model},
 		{"model.temperature", defaults.Model.Temperature},
 		{"model.max_response_tokens", defaults.Model.MaxResponseTokens},
-		{"model.log_raw_response", defaults.Model.LogRawResponse},
+		{"model.log_raw_http", defaults.Model.LogRawHTTP},
 		{"tts.provider", defaults.TTS.Provider},
 		{"tts.voice_id", defaults.TTS.VoiceID},
 		{"tts.emotion", defaults.TTS.Emotion},

@@ -43,7 +43,8 @@
 | `/run/audio_service/audio_service.sock` | Audio Service socket |
 | `/var/log/frame_service/frame_service.log` | Frame Service 日志 |
 | `/var/log/audio_service/audio_service.log` | Audio Service 日志 |
-| `/var/log/agent/agent.log` | Agent init 脚本日志 |
+| `/var/log/agent/agent.log` | Agent 日志（包含 init 脚本和 runtime 输出）|
+| `/userdata/agent/log/llm-http-YYYYMMDD-{session_id}.log` | LLM HTTP 请求/响应日志（JSONL 格式，按 session 组织）|
 
 ## 配置文件
 
@@ -94,6 +95,55 @@ curl http://<device-ip>:8080/api/tools
 /oem/usr/bin/ota status
 /oem/usr/bin/ota update
 /oem/usr/bin/abctl read /dev/block/by-name/misc
+
+# 日志查看
+tail -f /var/log/agent/agent.log
+jq . /userdata/agent/log/llm-http-$(date +%Y%m%d)-*.log
+```
+
+## Agent 日志
+
+### /var/log/agent/agent.log
+
+Agent 主日志，包含 init 脚本和 runtime 的所有输出。
+
+**Session 分隔标记**：
+```
+2026/06/20 15:06:16 [INFO] ========================================
+2026/06/20 15:06:16 [INFO] NEW SESSION STARTED
+2026/06/20 15:06:16 [INFO] Session ID: abc123def456
+2026/06/20 15:06:16 [INFO] ========================================
+```
+
+### /userdata/agent/log/llm-http-{YYYYMMDD}-{session_id}.log
+
+LLM HTTP 请求/响应日志（JSONL 格式），每个 session 独立文件。
+
+**格式**：
+```json
+{"ts":"15:00:00","kind":"request","status":0,"body":"{\"model\":\"...\",\"messages\":[...]}"}
+{"ts":"15:00:00","kind":"response","status":200,"body":"{\"choices\":[...]}"}
+```
+
+**字段**：
+- `ts` - 时间戳（HH:MM:SS）
+- `kind` - `request`, `response`, `stream`, `error`
+- `status` - HTTP 状态码（请求为 0）
+- `body` - 请求/响应体（JSON 字符串）
+
+**常用查询**：
+```bash
+# 查看特定 session
+jq . /userdata/agent/log/llm-http-20260620-abc123def.log
+
+# 只看响应
+jq 'select(.kind | test("response|stream"))' llm-http-*.log
+
+# 提取非流式响应内容
+jq -r 'select(.kind == "response") | .body | fromjson' llm-http-*.log
+
+# 统计请求类型
+jq -r '.kind' llm-http-*.log | sort | uniq -c
 ```
 
 ## EDID 文件

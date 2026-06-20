@@ -197,8 +197,8 @@ provider = "fake"
 		t.Fatalf("VoiceMaxResponseTokens = %d, want runtime default %d",
 			cfg.VoiceMaxResponseTokens, defaultVoiceMaxResponseTokens)
 	}
-	if !cfg.Model.LogRawResponse {
-		t.Fatal("Model.LogRawResponse = false, want runtime default true")
+	if !cfg.Model.LogRawHTTP {
+		t.Fatal("Model.LogRawHTTP = false, want runtime default true")
 	}
 	if cfg.ScreenStableTimeoutMs != defaultStableWaitTimeoutMs {
 		t.Fatalf("ScreenStableTimeoutMs = %d, want runtime default %d",
@@ -212,13 +212,13 @@ provider = "fake"
 	}
 }
 
-func TestLoadRuntimeConfigCanDisableRawResponseLogging(t *testing.T) {
+func TestLoadRuntimeConfigCanDisableRawHTTPLogging(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
 [model]
 provider = "fake"
-log_raw_response = false
+log_raw_http = false
 `), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -227,8 +227,8 @@ log_raw_response = false
 	if err != nil {
 		t.Fatalf("LoadRuntimeConfig() error = %v", err)
 	}
-	if cfg.Model.LogRawResponse {
-		t.Fatal("Model.LogRawResponse = true, want explicit false to disable raw response logging")
+	if cfg.Model.LogRawHTTP {
+		t.Fatal("Model.LogRawHTTP = true, want explicit false to disable raw HTTP logging")
 	}
 }
 

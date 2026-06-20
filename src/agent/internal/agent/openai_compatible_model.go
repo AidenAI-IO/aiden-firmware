@@ -24,57 +24,87 @@ type openAICompatibleModel struct {
 	model      string
 	token      string
 	httpClient *http.Client
-	rawLogger  *llmRawResponseLogger
+	rawLogger  *llmRawHTTPLogger
 }
 
 type openAICompatibleModelOption func(*openAICompatibleModel)
 
-func withOpenAICompatibleRawResponseLogger(logger *llmRawResponseLogger) openAICompatibleModelOption {
+func withOpenAICompatibleRawHTTPLogger(logger *llmRawHTTPLogger) openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.rawLogger = logger
 	}
 }
 
-type llmRawResponseLogger struct {
-	dir string
-	mu  sync.Mutex
+type llmRawHTTPLogger struct {
+	dir       string
+	sessionID string
+	mu        sync.Mutex
 }
 
-func newLLMRawResponseLogger(logDir string) *llmRawResponseLogger {
+func newLLMRawHTTPLogger(logDir, sessionID string) *llmRawHTTPLogger {
 	logDir = strings.TrimSpace(logDir)
 	if logDir == "" {
 		return nil
 	}
-	return &llmRawResponseLogger{dir: logDir}
+	return &llmRawHTTPLogger{
+		dir:       logDir,
+		sessionID: sessionID,
+	}
 }
 
-func (l *llmRawResponseLogger) Log(model, kind string, statusCode int, raw string) error {
+func (l *llmRawHTTPLogger) Log(model, dir, kind string, statusCode int, raw string) error {
 	if l == nil || strings.TrimSpace(l.dir) == "" {
 		return nil
 	}
 	now := time.Now()
-	entry := fmt.Sprintf(
-		"ts=%s model=%s kind=%s status=%d bytes=%d\n%s\n\n",
-		now.Format(time.RFC3339Nano),
-		strings.TrimSpace(model),
-		strings.TrimSpace(kind),
-		statusCode,
-		len([]byte(raw)),
-		raw,
-	)
+
+	// Compact JSON bodies to single line if possible
+	compacted := new(bytes.Buffer)
+	if err := json.Compact(compacted, []byte(raw)); err == nil {
+		raw = compacted.String()
+	} else {
+		// Not JSON or malformed, escape newlines
+		raw = strings.ReplaceAll(raw, "\n", "\\n")
+		raw = strings.ReplaceAll(raw, "\r", "\\r")
+	}
+
+	// Create JSONL entry with ordered fields
+	entry := struct {
+		TS     string `json:"ts"`
+		Kind   string `json:"kind"`
+		Status int    `json:"status"`
+		Body   string `json:"body"`
+	}{
+		TS:     now.Format("15:04:05"),
+		Kind:   strings.TrimSpace(kind),
+		Status: statusCode,
+		Body:   raw,
+	}
+	entryBytes, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("marshal log entry: %w", err)
+	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := os.MkdirAll(l.dir, 0755); err != nil {
 		return err
 	}
-	path := filepath.Join(l.dir, "llm-raw-"+now.Format("20060102")+".log")
+
+	// File name includes both date and session ID
+	dateStr := now.Format("20060102")
+	fileName := "llm-http-" + dateStr + ".log"
+	if l.sessionID != "" {
+		fileName = "llm-http-" + dateStr + "-" + l.sessionID + ".log"
+	}
+
+	path := filepath.Join(l.dir, fileName)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	_, err = file.WriteString(entry)
+	_, err = file.Write(append(entryBytes, '\n'))
 	return err
 }
 
@@ -241,6 +271,9 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 		return nil, fmt.Errorf("marshal chat request: %w", err)
 	}
 
+	// Log HTTP request body
+	_ = m.logRawHTTP(reqPayload.Model, "request", "request", 0, string(payloadBytes))
+
 	endpoint := m.baseURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payloadBytes))
 	if err != nil {
@@ -259,7 +292,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		_ = m.logRawResponse(reqPayload.Model, "http_error", resp.StatusCode, string(body))
+		_ = m.logRawHTTP(reqPayload.Model, "response", "error", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -277,7 +310,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 		if err != nil {
 			return nil, fmt.Errorf("read response: %w", err)
 		}
-		_ = m.logRawResponse(reqPayload.Model, "http_response", resp.StatusCode, string(body))
+		_ = m.logRawHTTP(reqPayload.Model, "response", "response", resp.StatusCode, string(body))
 		if err := json.Unmarshal(body, &decoded); err != nil {
 			return nil, fmt.Errorf("decode response: %w", err)
 		}
@@ -317,9 +350,24 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	stopReason := ""
 	toolCalls := map[int]*compatibleToolCall{}
 	var generationInfo map[string]any
+	var rawStream strings.Builder
+	hasRawStream := false
+	logRawStream := func() {
+		if m.rawLogger != nil && hasRawStream {
+			_ = m.logRawHTTP(requestModel, "response", "stream", statusCode, rawStream.String())
+		}
+	}
+	defer logRawStream()
 
 	for scanner.Scan() {
 		rawLine := scanner.Text()
+		if m.rawLogger != nil {
+			if hasRawStream {
+				rawStream.WriteByte('\n')
+			}
+			rawStream.WriteString(rawLine)
+			hasRawStream = true
+		}
 		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, ":") {
 			continue
@@ -327,7 +375,6 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
-		_ = m.logRawResponse(requestModel, "stream_event", statusCode, rawLine)
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
 			break
@@ -416,11 +463,11 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	return &llms.ContentResponse{Choices: []*llms.ContentChoice{choice}}, nil
 }
 
-func (m *openAICompatibleModel) logRawResponse(modelName, kind string, statusCode int, raw string) error {
+func (m *openAICompatibleModel) logRawHTTP(modelName, dir, kind string, statusCode int, raw string) error {
 	if m == nil || m.rawLogger == nil {
 		return nil
 	}
-	return m.rawLogger.Log(modelName, kind, statusCode, raw)
+	return m.rawLogger.Log(modelName, dir, kind, statusCode, raw)
 }
 
 func convertMessageContent(message llms.MessageContent) (compatibleMessage, error) {

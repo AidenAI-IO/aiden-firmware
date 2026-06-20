@@ -287,8 +287,8 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	modelManagerOptions := []ModelManagerOption{}
 	if cfg.ConfigDir != "" {
 		modelManagerOptions = append(modelManagerOptions, WithProviderModelMetadataCachePath(filepath.Join(cfg.ConfigDir, "cache", "provider_model_metadata.json")))
-		if cfg.Model.LogRawResponse {
-			modelManagerOptions = append(modelManagerOptions, WithLLMRawResponseLogDir(filepath.Join(cfg.ConfigDir, "log")))
+		if cfg.Model.LogRawHTTP {
+			modelManagerOptions = append(modelManagerOptions, WithLLMRawHTTPLogDir(filepath.Join(cfg.ConfigDir, "log")))
 		}
 	}
 	modelManager := NewModelManager(cfg.Model, proxy, modelManagerOptions...)
@@ -323,6 +323,14 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.profileDebouncer = debouncer
 	rt.waitForWakeup = waitForWakeupController
 	rt.mobileGym = mobileGymStore
+
+	// Log session start marker
+	if logger != nil {
+		logger.Info("========================================")
+		logger.Info("NEW SESSION STARTED")
+		logger.Info("Session ID: %s", rt.telemetrySessionID)
+		logger.Info("========================================")
+	}
 
 	if len(mergeNeeded) > 0 && cfg.SkillMergeModel != nil {
 		manifestPath := filepath.Join(cfg.ConfigDir, "skill-state", ".bundled_manifest.json")
@@ -363,6 +371,10 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		waitForWakeup:      waitForWakeupController,
 		telemetrySessionID: uuid.NewString(),
 		mobileGym:          &mobileGymSessionStore{},
+	}
+	// Set session ID for raw HTTP logging
+	if modelManager, ok := models.(*ModelManager); ok {
+		modelManager.SetSessionID(rt.telemetrySessionID)
 	}
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
