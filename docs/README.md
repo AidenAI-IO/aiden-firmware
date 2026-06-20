@@ -2,13 +2,16 @@
 
 本文档中心是项目的结构化入口。根目录 `README.md` 仅保留项目简介、快速开发信息和指向本目录的目录索引。
 
+> **第一次接触 Aiden？** 从 [新手快速上手](01-getting-started/quickstart.md) 开始，它按「连线 → 刷机 → 联网 → 配置 → 跑起来 → 开发 → 升级 → 排障」的顺序把整条上手路径串成一页，并链接到下面的专题文档。
+
 ## 文档结构
 
 ### 01. 入门
 
+- [新手快速上手](01-getting-started/quickstart.md)
 - [硬件与连线](01-getting-started/hardware.md)
-- [构建与开发环境](01-getting-started/build.md)
 - [固件构建与刷机](01-getting-started/firmware.md)
+- [构建与开发环境](01-getting-started/build.md)
 - [部署到设备](01-getting-started/deployment.md)
 - [测试与验证](01-getting-started/testing.md)
 

@@ -12,6 +12,8 @@ Aiden Hardware Demo 是面向 Luckfox Pico Zero 的硬件演示项目，集成 H
 
 ## 快速开始
 
+> 第一次上手硬件（连线、刷机、配置、跑通语音）请直接看 [新手快速上手](docs/01-getting-started/quickstart.md)。下面是面向开发者的构建速查。
+
 ```bash
 git clone --recursive git@github.com:AidenAI-IO/aiden-hardware-demo.git
 cd aiden-hardware-demo
@@ -53,14 +55,16 @@ make test
 完整文档已整理到 [`docs/`](docs/README.md)：
 
 - [文档中心](docs/README.md)
+- **新手优先：[新手快速上手](docs/01-getting-started/quickstart.md)** — 按连线、刷机、配置、开发、升级、排障的顺序串起整条上手路径
 - [硬件与连线](docs/01-getting-started/hardware.md)
-- [构建与开发环境](docs/01-getting-started/build.md)
 - [固件构建与刷机](docs/01-getting-started/firmware.md)
+- [构建与开发环境](docs/01-getting-started/build.md)
 - [部署到设备](docs/01-getting-started/deployment.md)
 - [系统架构概览](docs/02-architecture/overview.md)
 - [Frame Service](docs/03-services/frame-service.md)
 - [Audio Service](docs/03-services/audio-service.md)
 - [USB HID 与设备控制](docs/03-services/usb-hid.md)
+- [Config Web：设备配置网页](docs/03-services/config-web.md)
 - [Go Agent](docs/04-agent/overview.md)
 - [Agent 配置参考](docs/04-agent/configuration.md)
 - [工具 HTTP API](docs/04-agent/tools-http-api.md)

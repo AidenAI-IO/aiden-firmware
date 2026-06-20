@@ -46,14 +46,14 @@ pico-sdk/output/image/
 
 ## 刷入固件
 
-> 需要使用 Luckfox Pico Zero 板载 USB-C 口连接电脑。
+> 需要使用 Luckfox Pico Zero 板载 USB-C 口连接电脑。刷机方式有多种，完整说明参考 [Luckfox Pico Zero 官方刷机指南](https://wiki.luckfox.com/zh/Luckfox-Pico-Zero/Flash-image/)。
 
 ### 1. 进入 Maskrom / Loader 模式
 
 可选方法：
 
-- 按住板子的 boot 按钮，同时插入 USB-C；
-- 或在设备 shell 中执行：
+- 按住板子的 BOOT 按钮，同时插入 USB-C；
+- 如果 BOOT 按键触发烧录模式不好用，可以先用 adb 或 TTL 串口登录到板子上，执行：
 
 ```bash
 reboot loader
