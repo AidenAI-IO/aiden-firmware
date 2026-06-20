@@ -350,10 +350,11 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	stopReason := ""
 	toolCalls := map[int]*compatibleToolCall{}
 	var generationInfo map[string]any
-	var rawStreamLines []string
+	var rawStream strings.Builder
+	hasRawStream := false
 	logRawStream := func() {
-		if m.rawLogger != nil && len(rawStreamLines) > 0 {
-			_ = m.logRawHTTP(requestModel, "response", "stream", statusCode, strings.Join(rawStreamLines, "\n"))
+		if m.rawLogger != nil && hasRawStream {
+			_ = m.logRawHTTP(requestModel, "response", "stream", statusCode, rawStream.String())
 		}
 	}
 	defer logRawStream()
@@ -361,7 +362,11 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	for scanner.Scan() {
 		rawLine := scanner.Text()
 		if m.rawLogger != nil {
-			rawStreamLines = append(rawStreamLines, rawLine)
+			if hasRawStream {
+				rawStream.WriteByte('\n')
+			}
+			rawStream.WriteString(rawLine)
+			hasRawStream = true
 		}
 		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, ":") {

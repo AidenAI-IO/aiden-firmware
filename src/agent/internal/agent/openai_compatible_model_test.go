@@ -611,10 +611,11 @@ func rawHTTPLogPath(logDir string) string {
 
 func assertRawHTTPLogIsValidJSONL(t *testing.T, logText string) {
 	t.Helper()
-	lines := strings.Split(strings.TrimSpace(logText), "\n")
-	if len(lines) == 0 {
+	trimmed := strings.TrimSpace(logText)
+	if trimmed == "" {
 		t.Fatal("raw HTTP log is empty")
 	}
+	lines := strings.Split(trimmed, "\n")
 	for i, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
