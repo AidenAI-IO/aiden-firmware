@@ -595,6 +595,59 @@ func TestHandleBenchmarkSkillOptTargetsDiscoversSkillScopedSuites(t *testing.T) 
 	}
 }
 
+func TestHandleBenchmarkSkillOptTargetsIncludesConfiguredSkillsWithoutSuites(t *testing.T) {
+	root := t.TempDir()
+	skillsDir := filepath.Join(root, "skills")
+	for _, name := range []string{"device-operator", "planner"} {
+		dir := filepath.Join(skillsDir, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# "+name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	suiteDir := filepath.Join(root, "suites", "skillopt", "device-operator")
+	if err := os.MkdirAll(suiteDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(suiteDir, "device_operator_train.json"), []byte(`{"name":"train","tasks":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{
+		benchmarkDir: root,
+		runtime: &Runtime{config: Config{
+			SkillsDirs: []string{skillsDir},
+		}},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/skillopt-targets", nil)
+	rec := httptest.NewRecorder()
+	s.handleBenchmarkSkillOptTargets(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []skillOptTargetItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	bySkill := map[string]skillOptTargetItem{}
+	for _, item := range got {
+		bySkill[item.Skill] = item
+	}
+	if _, ok := bySkill["device-operator"]; !ok {
+		t.Fatalf("device-operator missing from targets: %+v", got)
+	}
+	planner, ok := bySkill["planner"]
+	if !ok {
+		t.Fatalf("planner missing from targets: %+v", got)
+	}
+	if len(planner.TrainSuites) != 0 || len(planner.VerificationSuites) != 0 {
+		t.Fatalf("planner should not inherit suites: %+v", planner)
+	}
+}
+
 func TestHandleBenchmarkSkillOptTargetsIgnoresFlatSkillOptSuites(t *testing.T) {
 	root := t.TempDir()
 	suites := filepath.Join(root, "suites", "skillopt")

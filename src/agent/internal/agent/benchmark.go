@@ -197,8 +197,32 @@ func (s *Server) handleBenchmarkSkillOptTargets(w http.ResponseWriter, r *http.R
 		return
 	}
 	items := scanSkillOptTargets(s.benchmarkDir)
+	items = mergeSkillOptTargetsWithSkills(items, scanBenchmarkSkills(s.benchmarkSkillDirs()))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(items)
+}
+
+func mergeSkillOptTargetsWithSkills(targets []skillOptTargetItem, skills []skillListItem) []skillOptTargetItem {
+	bySkill := map[string]skillOptTargetItem{}
+	for _, target := range targets {
+		bySkill[target.Skill] = target
+	}
+	for _, skill := range skills {
+		if _, exists := bySkill[skill.Name]; exists {
+			continue
+		}
+		bySkill[skill.Name] = skillOptTargetItem{
+			Skill:              skill.Name,
+			TrainSuites:        []string{},
+			VerificationSuites: []string{},
+		}
+	}
+	items := make([]skillOptTargetItem, 0, len(bySkill))
+	for _, item := range bySkill {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Skill < items[j].Skill })
+	return items
 }
 
 func scanSkillOptTargets(benchmarkDir string) []skillOptTargetItem {
