@@ -2,7 +2,7 @@
 
 This page is the main path for anyone touching Aiden hardware for the first time. It follows the order **wire up → flash → connect Wi-Fi → configure → run → develop → upgrade → troubleshoot**, stringing the whole onboarding flow into one page. Each step covers only the key action; details are linked to the corresponding topic docs.
 
-> Voice interaction is Aiden's core usage scenario. `text` mode is mainly for development and testing, making it convenient to verify the pipeline through a web page.
+> Voice interaction is Aiden's core usage scenario. `text` mode is mainly for development and testing—it bypasses the audio hardware (recording/playback) and provides a Web UI to validate the agent logic chain without requiring the full voice pipeline.
 
 ## Overview
 

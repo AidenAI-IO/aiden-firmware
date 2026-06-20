@@ -60,7 +60,7 @@ Most mobile agent projects are lab demos that require a laptop or desktop to run
 - **Skills system** — Write custom behaviors in Markdown; Aiden auto-discovers and activates them
 - **Modular architecture** — C++ services (Frame, Audio, HID) + Go Agent + Web UI
 - **Cross-compilation toolchain** — Build for ARM devices from any x86_64 Linux/Mac
-- **OTA updates** — A/B partition upgrades with rollback safety
+- **OTA updates** — A/B partition upgrades (two firmware slots: update installs to inactive slot, boot switches on success) with automatic rollback on failure
 
 ### 7. **Web UI & Tool Lab**
 - **Browser-based control** — Chat interface, tool invocation, skill management
