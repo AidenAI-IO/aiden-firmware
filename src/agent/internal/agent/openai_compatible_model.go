@@ -277,6 +277,9 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	endpoint := m.baseURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payloadBytes))
 	if err != nil {
+		// statusCode 0 marks a failure with no HTTP response, keeping every
+		// logged request paired with a response entry the viewer can match.
+		_ = m.logRawHTTP(reqPayload.Model, "response", 0, "create request error: "+err.Error())
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -286,6 +289,10 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
+		// Transport-level failure (timeout, connection refused, context
+		// cancelled): no HTTP response arrives, so log status 0 with the error
+		// rather than leaving the request entry unpaired.
+		_ = m.logRawHTTP(reqPayload.Model, "response", 0, "transport error: "+err.Error())
 		return nil, fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
@@ -308,6 +315,9 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	} else {
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
+			// HTTP status arrived but the body could not be read: log the real
+			// status with the read error so the request still has a response.
+			_ = m.logRawHTTP(reqPayload.Model, "response", resp.StatusCode, "read response error: "+err.Error())
 			return nil, fmt.Errorf("read response: %w", err)
 		}
 		_ = m.logRawHTTP(reqPayload.Model, "response", resp.StatusCode, string(body))
@@ -352,12 +362,23 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	var generationInfo map[string]any
 	var rawStream strings.Builder
 	hasRawStream := false
-	logRawStream := func() {
-		if m.rawLogger != nil && hasRawStream {
+	logRawStream := func(scanErr error) {
+		if m.rawLogger == nil {
+			return
+		}
+		// Pair every request with a response, even when the stream yields no
+		// data or fails mid-read. Status 0 + error text for scanner failures;
+		// the actual HTTP status + captured SSE body otherwise.
+		if hasRawStream {
 			_ = m.logRawHTTP(requestModel, "response", statusCode, rawStream.String())
+		} else if scanErr != nil {
+			_ = m.logRawHTTP(requestModel, "response", 0, "stream read error: "+scanErr.Error())
+		} else {
+			_ = m.logRawHTTP(requestModel, "response", statusCode, "(empty stream response)")
 		}
 	}
-	defer logRawStream()
+	var scanErr error
+	defer func() { logRawStream(scanErr) }()
 
 	for scanner.Scan() {
 		rawLine := scanner.Text()
@@ -434,6 +455,7 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		scanErr = err
 		return nil, fmt.Errorf("read stream response: %w", err)
 	}
 

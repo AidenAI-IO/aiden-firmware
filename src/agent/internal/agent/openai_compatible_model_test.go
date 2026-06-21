@@ -370,6 +370,66 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPOnDecodeError(t *testing.T) {
 	assertRawHTTPLogIsValidJSONL(t, logText)
 }
 
+// countRawHTTPKinds returns how many log entries carry each kind, so tests can
+// assert the request/response pairing invariant the log viewer relies on.
+func countRawHTTPKinds(t *testing.T, logText string) map[string]int {
+	t.Helper()
+	counts := map[string]int{}
+	for _, line := range strings.Split(strings.TrimSpace(logText), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("invalid JSONL line: %v\nline: %s", err, line)
+		}
+		kind, _ := entry["kind"].(string)
+		counts[kind]++
+	}
+	return counts
+}
+
+func TestOpenAICompatibleModelLogsResponseOnTransportError(t *testing.T) {
+	// Point the model at a server that is already closed so httpClient.Do
+	// fails at the transport layer before any HTTP response exists.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	closedURL := server.URL
+	client := server.Client()
+	server.Close()
+
+	logDir := t.TempDir()
+	model := newOpenAICompatibleModel(
+		closedURL,
+		"test-model",
+		"",
+		client,
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+	)
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err == nil {
+		t.Fatal("expected transport error, got nil")
+	}
+
+	logText := readRawHTTPLog(t, logDir)
+	counts := countRawHTTPKinds(t, logText)
+	if counts["request"] != 1 {
+		t.Fatalf("expected 1 request entry, got %d:\n%s", counts["request"], logText)
+	}
+	if counts["response"] != 1 {
+		t.Fatalf("expected 1 response entry on transport failure, got %d:\n%s", counts["response"], logText)
+	}
+	if !strings.Contains(logText, "transport error:") {
+		t.Fatalf("response entry missing transport error detail:\n%s", logText)
+	}
+	if !strings.Contains(logText, `"status":0`) {
+		t.Fatalf("transport failure should log status 0:\n%s", logText)
+	}
+	assertRawHTTPLogIsValidJSONL(t, logText)
+}
+
 func TestModelManagerEnablesRawHTTPLoggingFromModelConfig(t *testing.T) {
 	rawResponse := `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
